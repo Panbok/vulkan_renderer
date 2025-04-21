@@ -1,18 +1,50 @@
+/**
+ * @file string.h
+ * @brief Defines string structures and manipulation functions.
+ */
+
 #pragma once
 
 #include <stddef.h>
 
 #include "arena.h"
 
-#define string_lit(str) string_create((char *)str, sizeof(str) - 1)
+#define string8_lit(str) string8_create((uint8_t *)str, sizeof(str) - 1)
 
-typedef struct String {
-  char *str;
+/**
+ * @brief A string representation of UTF-8 encoded characters.
+ */
+typedef struct String8 {
+  uint8_t *str;
   size_t length;
-} String;
+} String8;
 
-String string_create(char *data, size_t length);
-char *string_cstr(String *str);
-void string_destroy(String *str);
+/**
+ * @brief Create a new string of 8-bit characters.
+ * @param data The data to create the string from.
+ * @param length The length of the string.
+ * @return A new string of 8-bit characters.
+ */
+String8 string8_create(uint8_t *data, size_t length);
 
-String string_concat(Arena *arena, String *str1, String *str2);
+/**
+ * @brief Get the C string representation of a string of 8-bit characters.
+ * @param str The string to get the C string representation of.
+ * @return A pointer to the C string representation of the string.
+ */
+uint8_t *string8_cstr(String8 *str);
+
+/**
+ * @brief Destroy a string of 8-bit characters.
+ * @param str The string to destroy.
+ */
+void string8_destroy(String8 *str);
+
+/**
+ * @brief Concatenate two strings of 8-bit characters.
+ * @param arena The arena to allocate the new string from.
+ * @param str1 The first string to concatenate.
+ * @param str2 The second string to concatenate.
+ * @return A new string of 8-bit characters.
+ */
+String8 string8_concat(Arena *arena, String8 *str1, String8 *str2);

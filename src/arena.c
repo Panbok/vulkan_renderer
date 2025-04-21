@@ -133,7 +133,7 @@ void *arena_alloc(Arena *arena, size_t size) {
     cmt_pst_aligned -= cmt_pst_aligned % current->cmt_size;
     size_t cmt_pst_clamped = ClampTop(cmt_pst_aligned, current->rsv);
     size_t cmt_size = cmt_pst_clamped - current->cmt;
-    char *cmt_ptr = (char *)current + current->cmt;
+    uint8_t *cmt_ptr = (uint8_t *)current + current->cmt;
 
     if (!mem_commit(cmt_ptr, cmt_size)) {
       exit(1);
