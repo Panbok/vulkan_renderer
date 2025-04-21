@@ -9,6 +9,8 @@
 #include <unistd.h>
 
 #define ALIGN_UP(x, b) (((x) + (b) - 1) & (~((b) - 1)))
+#define AlignOf(T) __alignof(T)
+
 #define ClampTop(x, y) ((x) < (y) ? (y) : (x))
 #define ClampBot(x, y) ((x) > (y) ? (y) : (x))
 
