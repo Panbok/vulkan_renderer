@@ -1,0 +1,10 @@
+.cache
+build
+
+*.o
+*.out
+*.a
+*.so
+*.dylib
+*.lib
+*.exp
