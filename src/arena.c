@@ -30,8 +30,8 @@
 Arena *arena_create(size_t rsv_size, size_t cmt_size) {
   assert(sizeof(Arena) <= ARENA_HEADER_SIZE && "Arena struct is too large");
 
-  size_t s_rsv_size = ALIGN_UP(rsv_size, get_page_size());
-  size_t s_cmt_size = ALIGN_UP(cmt_size, get_page_size());
+  size_t s_rsv_size = AlginPow2(ARENA_HEADER_SIZE + rsv_size, AlignOf(void *));
+  size_t s_cmt_size = AlginPow2(ARENA_HEADER_SIZE + cmt_size, AlignOf(void *));
 
   Arena *arena = (Arena *)mem_reserve(rsv_size);
   if (!mem_commit(arena, cmt_size) || !arena) {
@@ -88,7 +88,7 @@ void arena_destroy(Arena *arena) {
 void *arena_alloc(Arena *arena, size_t size) {
   Arena *current = arena->current;
 
-  size_t pos_pre = ALIGN_UP(current->pos, AlignOf(void *));
+  size_t pos_pre = AlginPow2(current->pos, AlignOf(void *));
   size_t pos_post = pos_pre + size;
 
   if (current->rsv < pos_post) {
@@ -97,7 +97,7 @@ void *arena_alloc(Arena *arena, size_t size) {
     Arena *prev_block = NULL;
     for (new_block = arena->free_last, prev_block = NULL; new_block != NULL;
          prev_block = new_block, new_block = new_block->prev) {
-      if (new_block->rsv >= ALIGN_UP(size, AlignOf(void *))) {
+      if (new_block->rsv >= AlginPow2(size, AlignOf(void *))) {
         if (prev_block) {
           prev_block->prev = new_block->prev;
         } else {
@@ -113,8 +113,8 @@ void *arena_alloc(Arena *arena, size_t size) {
       size_t s_rsv_size = current->rsv_size;
       size_t s_cmt_size = current->cmt_size;
       if (size + ARENA_HEADER_SIZE > s_rsv_size) {
-        s_rsv_size = ALIGN_UP(size + ARENA_HEADER_SIZE, AlignOf(void *));
-        s_cmt_size = ALIGN_UP(size + ARENA_HEADER_SIZE, AlignOf(void *));
+        s_rsv_size = AlginPow2(size + ARENA_HEADER_SIZE, AlignOf(void *));
+        s_cmt_size = AlginPow2(size + ARENA_HEADER_SIZE, AlignOf(void *));
       }
 
       new_block = arena_create(s_rsv_size, s_cmt_size);
@@ -124,7 +124,7 @@ void *arena_alloc(Arena *arena, size_t size) {
     SingleListAppend(arena->current, new_block, prev);
 
     current = new_block;
-    pos_pre = ALIGN_UP(current->pos, AlignOf(void *));
+    pos_pre = AlginPow2(current->pos, AlignOf(void *));
     pos_post = pos_pre + size;
   }
 
