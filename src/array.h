@@ -23,13 +23,13 @@
   type *array_get_##name(const Array_##name *array, const size_t index) {      \
     assert(array != NULL);                                                     \
     assert(index < array->length);                                             \
-    return (type *)(array->data + index * array->stride);                      \
+    return (type *)(array->data + index);                                      \
   }                                                                            \
                                                                                \
   void array_set_##name(Array_##name *array, const size_t index, type value) { \
     assert(array != NULL);                                                     \
     assert(index < array->length);                                             \
-    array->data[index * array->stride] = value;                                \
+    array->data[index] = value;                                                \
   }
 
 #define Array(type) ArrayConstructor(type, type)
