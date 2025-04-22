@@ -25,6 +25,7 @@
  * adjustment if the `Arena` struct changes significantly.
  */
 #include "arena.h"
+#include <stdint.h>
 
 Arena *arena_create(size_t rsv_size, size_t cmt_size) {
   assert(sizeof(Arena) <= ARENA_HEADER_SIZE && "Arena struct is too large");
@@ -143,7 +144,7 @@ void *arena_alloc(Arena *arena, size_t size) {
 
   void *result = NULL;
   if (current->cmt >= pos_post) {
-    result = (void *)(current + pos_pre);
+    result = (uint8_t *)current + pos_pre;
     current->pos = pos_post;
   }
 
