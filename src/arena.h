@@ -56,14 +56,17 @@
  * Destroying the scratch resets the arena's position back to where it was
  * when the scratch was created, effectively freeing all memory allocated
  * within the scratch's lifetime in O(1) time.
+ *
+ * Scratch Arenas are useful for:
+ * - Short-lived allocations
+ * - Temporary buffers
+ * - Function-local allocations
+ * - Any other case where you need to allocate memory without having to
+ *   manually free it later.
  */
 
 // clang-format on
 #pragma once
-
-#include <assert.h>
-#include <stddef.h>
-#include <stdlib.h>
 
 #include "core.h"
 
@@ -217,6 +220,6 @@ Scratch scratch_create(Arena *arena);
  * @brief Ends a temporary allocation scope (scratch).
  * Resets the arena back to the position recorded when the scratch was created,
  * effectively freeing all memory allocated since `scratch_create` was called.
- * @param scratch Pointer to the Scratch structure to end.
+ * @param scratch The Scratch structure to end.
  */
-void scratch_destroy(Scratch *scratch);
+void scratch_destroy(Scratch scratch);

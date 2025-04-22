@@ -5,8 +5,6 @@
 
 #pragma once
 
-#include <stddef.h>
-
 #include "arena.h"
 
 #define string8_lit(str) string8_create((uint8_t *)str, sizeof(str) - 1)

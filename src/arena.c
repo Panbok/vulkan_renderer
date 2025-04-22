@@ -25,7 +25,6 @@
  * adjustment if the `Arena` struct changes significantly.
  */
 #include "arena.h"
-#include "core.h"
 
 Arena *arena_create(size_t rsv_size, size_t cmt_size) {
   assert(sizeof(Arena) <= ARENA_HEADER_SIZE && "Arena struct is too large");
@@ -207,6 +206,6 @@ Scratch scratch_create(Arena *arena) {
   return scratch;
 }
 
-void scratch_destroy(Scratch *scratch) {
-  arena_reset_to(scratch->arena, scratch->pos);
+void scratch_destroy(Scratch scratch) {
+  arena_reset_to(scratch.arena, scratch.pos);
 }
