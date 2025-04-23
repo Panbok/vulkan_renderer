@@ -1,12 +1,24 @@
 #pragma once
 
 #include <assert.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+
+#define LOG_LEVEL 5
+
+#if defined(__has_builtin) && !defined(__ibmxl__)
+#if __has_builtin(__builtin_debugtrap)
+#define debug_break() __builtin_debugtrap()
+#elif __has_builtin(__debugbreak)
+#define debug_break() __debugbreak()
+#endif
+#endif
 
 #define AlginPow2(x, b) (((x) + (b) - 1) & (~((b) - 1)))
 #define AlignOf(T) __alignof(T)
