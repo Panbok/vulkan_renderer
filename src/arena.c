@@ -34,7 +34,7 @@ Arena *arena_create(size_t rsv_size, size_t cmt_size) {
 
   Arena *arena = (Arena *)mem_reserve(rsv_size);
   if (!mem_commit(arena, cmt_size) || !arena) {
-    exit(1);
+    assert(0 && "Failed to commit memory");
   }
 
   arena->current = arena;
@@ -135,7 +135,7 @@ void *arena_alloc(Arena *arena, size_t size) {
     uint8_t *cmt_ptr = (uint8_t *)current + current->cmt;
 
     if (!mem_commit(cmt_ptr, cmt_size)) {
-      exit(1);
+      assert(0 && "Failed to commit memory");
     }
 
     current->cmt = cmt_pst_clamped;
