@@ -1,6 +1,7 @@
 #pragma once
 
 #include "arena.h"
+#include "logger.h"
 
 #define ArrayConstructor(type, name)                                           \
   struct Array_##name;                                                         \
@@ -12,8 +13,8 @@
   } Array_##name;                                                              \
                                                                                \
   Array_##name array_create_##name(Arena *arena, const size_t length) {        \
-    assert(arena != NULL);                                                     \
-    assert(length > 0);                                                        \
+    assert_log(arena != NULL, "Arena is NULL");                                \
+    assert_log(length > 0, "Length is 0");                                     \
                                                                                \
     Array_##name array = {arena, sizeof(type), length,                         \
                           arena_alloc(arena, length * sizeof(type))};          \
@@ -21,18 +22,18 @@
   }                                                                            \
                                                                                \
   type *array_get_##name(const Array_##name *array, const size_t index) {      \
-    assert(array != NULL);                                                     \
-    assert(index < array->length);                                             \
+    assert_log(array != NULL, "Array is NULL");                                \
+    assert_log(index < array->length, "Index is out of bounds");               \
     return (type *)(array->data + index);                                      \
   }                                                                            \
                                                                                \
   void array_set_##name(Array_##name *array, const size_t index, type value) { \
-    assert(array != NULL);                                                     \
-    assert(index < array->length);                                             \
+    assert_log(array != NULL, "Array is NULL");                                \
+    assert_log(index < array->length, "Index is out of bounds");               \
     array->data[index] = value;                                                \
   }                                                                            \
   void array_destroy_##name(Array_##name *array) {                             \
-    assert(array != NULL);                                                     \
+    assert_log(array != NULL, "Array is NULL");                                \
     array->data = NULL;                                                        \
     array->arena = NULL;                                                       \
     array->length = 0;                                                         \

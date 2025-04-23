@@ -4,6 +4,9 @@
 #include "vector.h"
 
 int main(int argc, char **argv) {
+  Arena *log_arena = arena_create(MB(1), MB(1));
+  log_init(log_arena);
+
   Arena *arena = arena_create();
   Scratch scratch = scratch_create(arena);
 
@@ -12,7 +15,7 @@ int main(int argc, char **argv) {
     array_set_uint32_t(&array, i, i * 1024);
   }
   for (size_t i = 0; i < array.length; i++) {
-    log_info(arena, "Static array: %d", *array_get_uint32_t(&array, i));
+    log_info("Static array: %d", *array_get_uint32_t(&array, i));
   }
   scratch_destroy(scratch);
   array_destroy_uint32_t(&array);
@@ -23,7 +26,7 @@ int main(int argc, char **argv) {
     vector_push_uint32_t(&vector, i * 32);
   }
   for (size_t i = 0; i < vector.length; i++) {
-    log_info(arena, "Dynamic array: %d", *vector_get_uint32_t(&vector, i));
+    log_info("Dynamic array: %d", *vector_get_uint32_t(&vector, i));
   }
   scratch_destroy(scratch);
   vector_destroy_uint32_t(&vector);
@@ -31,12 +34,12 @@ int main(int argc, char **argv) {
   String8 str1 = string8_lit("Hello, ");
   String8 str2 = string8_lit("World!");
   String8 str = string8_concat(arena, &str1, &str2);
-  log_trace(arena, "%s", string8_cstr(&str));
-  log_info(arena, "%s", string8_cstr(&str));
-  log_debug(arena, "%s", string8_cstr(&str));
-  log_warn(arena, "%s", string8_cstr(&str));
-  log_error(arena, "%s", string8_cstr(&str));
-  log_fatal(arena, "%s", string8_cstr(&str));
+  log_trace("%s", string8_cstr(&str));
+  log_info("%s", string8_cstr(&str));
+  log_debug("%s", string8_cstr(&str));
+  log_warn("%s", string8_cstr(&str));
+  log_error("%s", string8_cstr(&str));
+  assert_log(0 == 1, string8_cstr(&str));
   scratch_destroy(scratch);
   string8_destroy(&str);
 

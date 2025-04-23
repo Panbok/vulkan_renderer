@@ -1,8 +1,10 @@
 #include "string.h"
+#include "logger.h"
+#include <assert.h>
 
 String8 string8_create(uint8_t *data, size_t length) {
-  assert(data != NULL);
-  assert(length > 0);
+  assert(data != NULL && "Data is NULL");
+  assert(length > 0 && "Length is 0");
 
   String8 str = {data, length};
   return str;
@@ -10,8 +12,8 @@ String8 string8_create(uint8_t *data, size_t length) {
 
 String8 string8_create_formatted_v(Arena *arena, const char *fmt,
                                    va_list args) {
-  assert(arena != NULL);
-  assert(fmt != NULL);
+  assert(arena != NULL && "Arena is NULL");
+  assert(fmt != NULL && "Format string is NULL");
 
   va_list args_copy;
   va_copy(args_copy, args);
@@ -19,16 +21,12 @@ String8 string8_create_formatted_v(Arena *arena, const char *fmt,
   uint32_t required_size = vsnprintf(NULL, 0, fmt, args_copy);
   va_end(args_copy);
 
-  if (required_size < 0) {
-    return (String8){NULL, 0};
-  }
+  assert(required_size >= 0 && "Failed to format string");
 
   size_t buffer_size = (size_t)required_size + 1;
   uint8_t *buffer = arena_alloc(arena, buffer_size);
 
-  if (buffer == NULL) {
-    return (String8){NULL, 0};
-  }
+  assert(buffer != NULL && "Failed to allocate buffer");
 
   vsnprintf((char *)buffer, buffer_size, fmt, args);
 
@@ -36,6 +34,9 @@ String8 string8_create_formatted_v(Arena *arena, const char *fmt,
 }
 
 String8 string8_create_formatted(Arena *arena, const char *fmt, ...) {
+  assert(arena != NULL && "Arena is NULL");
+  assert(fmt != NULL && "Format string is NULL");
+
   va_list args;
   va_start(args, fmt);
   String8 result = string8_create_formatted_v(arena, fmt, args);
@@ -43,19 +44,22 @@ String8 string8_create_formatted(Arena *arena, const char *fmt, ...) {
   return result;
 }
 
-uint8_t *string8_cstr(String8 *str) { return str->str; }
+uint8_t *string8_cstr(String8 *str) {
+  assert(str != NULL && "String is NULL");
+  return str->str;
+}
 
 void string8_destroy(String8 *str) {
-  assert(str != NULL);
+  assert(str != NULL && "String is NULL");
 
   str->str = NULL;
   str->length = 0;
 }
 
 String8 string8_concat(Arena *arena, String8 *str1, String8 *str2) {
-  assert(arena != NULL);
-  assert(str1 != NULL);
-  assert(str2 != NULL);
+  assert(arena != NULL && "Arena is NULL");
+  assert(str1 != NULL && "String1 is NULL");
+  assert(str2 != NULL && "String2 is NULL");
 
   String8 str = {NULL, 0};
 

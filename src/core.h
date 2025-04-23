@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #define LOG_LEVEL 5
+#define ASSERT_LOG 1
 
 #if defined(__has_builtin) && !defined(__ibmxl__)
 #if __has_builtin(__builtin_debugtrap)

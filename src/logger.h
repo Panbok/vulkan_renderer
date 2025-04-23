@@ -19,43 +19,54 @@ typedef enum LogLevel {
   LOG_LEVEL_TRACE = 5,
 } LogLevel;
 
-void _log_message(Arena *arena, LogLevel level, const char *file, int line,
-                  const char *fmt, ...);
+void log_init(Arena *arena);
+void _log_message(LogLevel level, const char *file, int line, const char *fmt,
+                  ...);
 
-#define log_fatal(arena, fmt, ...)                                             \
-  _log_message(arena, LOG_LEVEL_FATAL, __FILE__, __LINE__, fmt, __VA_ARGS__);
+#define log_fatal(fmt, ...)                                                    \
+  _log_message(LOG_LEVEL_FATAL, __FILE__, __LINE__, fmt, ##__VA_ARGS__);
+
+#if ASSERT_LOG
+#define assert_log(expr, message)                                              \
+  if (!(expr)) {                                                               \
+    _log_message(LOG_LEVEL_FATAL, __FILE__, __LINE__,                          \
+                 "Assertion Failure: %s, message: '%s'", #expr, message);      \
+  }
+#else
+#define assert_log(expr, message)
+#endif
 
 #if LOG_LEVEL >= 1
-#define log_error(arena, fmt, ...)                                             \
-  _log_message(arena, LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, __VA_ARGS__);
+#define log_error(fmt, ...)                                                    \
+  _log_message(LOG_LEVEL_ERROR, __FILE__, __LINE__, fmt, ##__VA_ARGS__);
 #else
-#define log_error(arena, fmt, ...)
+#define log_error(fmt, ...)
 #endif
 
 #if LOG_LEVEL >= 2
-#define log_warn(arena, fmt, ...)                                              \
-  _log_message(arena, LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, __VA_ARGS__);
+#define log_warn(fmt, ...)                                                     \
+  _log_message(LOG_LEVEL_WARN, __FILE__, __LINE__, fmt, ##__VA_ARGS__);
 #else
-#define log_warn(arena, fmt, ...)
+#define log_warn(fmt, ...)
 #endif
 
 #if LOG_LEVEL >= 3
-#define log_info(arena, fmt, ...)                                              \
-  _log_message(arena, LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, __VA_ARGS__);
+#define log_info(fmt, ...)                                                     \
+  _log_message(LOG_LEVEL_INFO, __FILE__, __LINE__, fmt, ##__VA_ARGS__);
 #else
-#define log_info(arena, fmt, ...)
+#define log_info(fmt, ...)
 #endif
 
 #if LOG_LEVEL >= 4
-#define log_debug(arena, fmt, ...)                                             \
-  _log_message(arena, LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, __VA_ARGS__);
+#define log_debug(fmt, ...)                                                    \
+  _log_message(LOG_LEVEL_DEBUG, __FILE__, __LINE__, fmt, ##__VA_ARGS__);
 #else
-#define log_debug(arena, fmt, ...)
+#define log_debug(fmt, ...)
 #endif
 
 #if LOG_LEVEL >= 5
-#define log_trace(arena, fmt, ...)                                             \
-  _log_message(arena, LOG_LEVEL_TRACE, __FILE__, __LINE__, fmt, __VA_ARGS__);
+#define log_trace(fmt, ...)                                                    \
+  _log_message(LOG_LEVEL_TRACE, __FILE__, __LINE__, fmt, ##__VA_ARGS__);
 #else
-#define log_trace(arena, fmt, ...)
+#define log_trace(fmt, ...)
 #endif
