@@ -6,6 +6,7 @@
 
 int main(int argc, char **argv) {
   Arena *arena = arena_create();
+
   Scratch scratch = scratch_create(arena);
   Array_uint32_t array = array_create_uint32_t(arena, 10);
   for (size_t i = 0; i < 10; i++) {
@@ -15,6 +16,7 @@ int main(int argc, char **argv) {
     printf("Static array: %d\n", *array_get_uint32_t(&array, i));
   }
   scratch_destroy(scratch);
+  array_destroy_uint32_t(&array);
 
   Vector_uint32_t vector = vector_create_uint32_t(arena);
   Scratch scratch2 = scratch_create(arena);
@@ -25,13 +27,16 @@ int main(int argc, char **argv) {
     printf("Dynamic array: %d\n", *vector_get_uint32_t(&vector, i));
   }
   scratch_destroy(scratch2);
+  vector_destroy_uint32_t(&vector);
 
   String8 str1 = string8_lit("Hello, ");
   String8 str2 = string8_lit("World!");
+  Scratch scratch3 = scratch_create(arena);
   String8 str = string8_concat(arena, &str1, &str2);
   printf("%s\n", string8_cstr(&str));
-
+  scratch_destroy(scratch3);
   string8_destroy(&str);
+
   arena_destroy(arena);
   return 0;
 }

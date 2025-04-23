@@ -2,7 +2,7 @@
 
 #include "arena.h"
 
-#define DEFAULT_VECTOR_CAPACITY 2
+#define DEFAULT_VECTOR_CAPACITY 16
 #define DEFAULT_VECTOR_RESIZE_FACTOR 2
 
 #define VectorConstructor(type, name)                                          \
@@ -80,6 +80,14 @@
     assert(vector->arena != NULL);                                             \
     assert(index < vector->length);                                            \
     return (type *)(vector->data + index);                                     \
+  }                                                                            \
+  void vector_destroy_##name(Vector_##name *vector) {                          \
+    assert(vector != NULL);                                                    \
+    vector->data = NULL;                                                       \
+    vector->arena = NULL;                                                      \
+    vector->capacity = 0;                                                      \
+    vector->length = 0;                                                        \
+    vector->stride = 0;                                                        \
   }
 
 #define Vector(type) VectorConstructor(type, type)

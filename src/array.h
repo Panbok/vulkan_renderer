@@ -30,6 +30,13 @@
     assert(array != NULL);                                                     \
     assert(index < array->length);                                             \
     array->data[index] = value;                                                \
+  }                                                                            \
+  void array_destroy_##name(Array_##name *array) {                             \
+    assert(array != NULL);                                                     \
+    array->data = NULL;                                                        \
+    array->arena = NULL;                                                       \
+    array->length = 0;                                                         \
+    array->stride = 0;                                                         \
   }
 
 #define Array(type) ArrayConstructor(type, type)
