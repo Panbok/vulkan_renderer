@@ -25,7 +25,6 @@
  * adjustment if the `Arena` struct changes significantly.
  */
 #include "arena.h"
-#include <stdint.h>
 
 Arena *arena_create(size_t rsv_size, size_t cmt_size) {
   assert(sizeof(Arena) <= ARENA_HEADER_SIZE && "Arena struct is too large");
@@ -176,19 +175,23 @@ size_t arena_pos(Arena *arena) {
  * 7. Set `current->pos = new_pos`.
  */
 void arena_reset_to(Arena *arena, size_t pos) {
-  size_t big_pos = ClampBot(ARENA_HEADER_SIZE, pos);
+  size_t big_pos = pos;
   Arena *current = arena->current;
 
-  for (Arena *prev = NULL; current->base_pos >= big_pos; current = prev) {
+  for (Arena *prev = NULL;
+       current != NULL && current->prev != NULL && current->base_pos >= big_pos;
+       current = prev) {
     prev = current->prev;
     current->pos = ARENA_HEADER_SIZE;
-    arena->free_size += current->rsv_size;
+    arena->free_size += current->rsv;
     SingleListAppend(arena->free_last, current, prev);
   }
 
+  assert(current != NULL);
   arena->current = current;
+
   size_t new_pos = big_pos - current->base_pos;
-  current->pos = new_pos;
+  current->pos = ClampBot(ARENA_HEADER_SIZE, new_pos);
 }
 
 void arena_clear(Arena *arena) { arena_reset_to(arena, 0); }

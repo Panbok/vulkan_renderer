@@ -11,8 +11,10 @@
 #define AlginPow2(x, b) (((x) + (b) - 1) & (~((b) - 1)))
 #define AlignOf(T) __alignof(T)
 
-#define ClampTop(x, y) ((x) < (y) ? (y) : (x))
-#define ClampBot(x, y) ((x) > (y) ? (y) : (x))
+#define Min(A, B) (((A) < (B)) ? (A) : (B))
+#define Max(A, B) (((A) > (B)) ? (A) : (B))
+#define ClampTop(A, X) Min(A, X)
+#define ClampBot(X, B) Max(X, B)
 
 #define KB(x) ((x) * 1024)
 #define MB(x) ((x) * 1024 * 1024)
