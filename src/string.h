@@ -26,6 +26,26 @@ typedef struct String8 {
 String8 string8_create(uint8_t *data, size_t length);
 
 /**
+ * @brief Create a new string of 8-bit characters from a format string and
+ * arguments.
+ * @param arena The arena to allocate the new string from.
+ * @param fmt The format string.
+ * @param ... The arguments to the format string.
+ * @return A new string of 8-bit characters.
+ */
+String8 string8_create_formatted(Arena *arena, const char *fmt, ...);
+
+/**
+ * @brief Create a new string of 8-bit characters from a format string and
+ * a va_list of arguments.
+ * @param arena The arena to allocate the new string from.
+ * @param fmt The format string.
+ * @param args The va_list of arguments.
+ * @return A new string of 8-bit characters.
+ */
+String8 string8_create_formatted_v(Arena *arena, const char *fmt, va_list args);
+
+/**
  * @brief Get the C string representation of a string of 8-bit characters.
  * @param str The string to get the C string representation of.
  * @return A pointer to the C string representation of the string.
