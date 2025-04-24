@@ -2,23 +2,17 @@ cmake_minimum_required(VERSION 3.13)
 
 project(opengl_renderer)
 
-# Discover all source files in src
-file(GLOB_RECURSE ALL_SOURCES src/*.c src/*.h)
+# Set explicit C standard
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_EXTENSIONS ON)
+set(CMAKE_C_STANDARD_REQUIRED ON)
 
-set(CMAKE_C_STANDARD 23) # Enable the C23 standard
-# Add -g for debug symbols, essential for ASan
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fsanitize=address -fno-omit-frame-pointer -g")
+# Add sanitizer flags for debug builds
+set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -fsanitize=address -fno-omit-frame-pointer -g")
+# Disable implicit function declaration warnings
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-implicit-function-declaration")
 
-# Create source list for the main application (all sources except *_test.c files)
-set(APP_SOURCES ${ALL_SOURCES})
-list(FILTER APP_SOURCES EXCLUDE REGEX "_test\\.c$") # Exclude files ending in _test.c
-
-# Create source list for the test executable (all sources except the main app file)
-set(TEST_SOURCES ${ALL_SOURCES})
-list(FILTER TEST_SOURCES EXCLUDE REGEX "/main\\.c$") # Exclude main.c
-
-# Main application executable
-add_executable(opengl_renderer ${APP_SOURCES})
-
-# Test executable
-add_executable(opengl_renderer_tester ${TEST_SOURCES})
+# Add subdirectories for each component
+add_subdirectory(lib)
+add_subdirectory(app)
+add_subdirectory(tests)

@@ -2,6 +2,7 @@
 
 #include "arena.h"
 #include "logger.h"
+#include "pch.h"
 
 #define DEFAULT_VECTOR_CAPACITY 16
 #define DEFAULT_VECTOR_RESIZE_FACTOR 2
@@ -41,7 +42,7 @@
     assert_log(new_data != NULL, "Failed to allocate memory");                 \
                                                                                \
     if (vector->data != NULL && vector->length > 0) {                          \
-      MemCopy(new_data, vector->data, vector->length * vector->stride);        \
+      memmove(new_data, vector->data, vector->length * vector->stride);        \
     }                                                                          \
                                                                                \
     vector->data = new_data;                                                   \

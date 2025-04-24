@@ -1,3 +1,4 @@
+#include "arena.h"
 #include "array.h"
 #include "logger.h"
 #include "string.h"

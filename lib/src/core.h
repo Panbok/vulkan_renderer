@@ -1,14 +1,6 @@
 #pragma once
 
-#include <assert.h>
-#include <stdarg.h>
-#include <stdbool.h>
-#include <stddef.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/mman.h>
-#include <unistd.h>
+#include "pch.h"
 
 #define LOG_LEVEL 5
 #define ASSERT_LOG 1

@@ -12,4 +12,4 @@ set -e # Exit early if any commands fail
 )
 
 # Execute the test runner
-exec $(dirname $0)/build/opengl_renderer_tester "$@" 
+exec $(dirname $0)/build/tests/opengl_renderer_tester "$@" 

@@ -6,6 +6,10 @@
 #pragma once
 
 #include "arena.h"
+#include "pch.h"
+
+// Forward declaration for Arena type
+typedef struct Arena Arena;
 
 #define string8_lit(str) string8_create((uint8_t *)str, sizeof(str) - 1)
 

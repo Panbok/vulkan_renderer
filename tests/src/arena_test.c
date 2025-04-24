@@ -1,4 +1,4 @@
-#include "arena_test.h" // Removed
+#include "arena_test.h"
 
 // Helper to get the initial position (header size aligned up)
 static size_t get_initial_pos() {

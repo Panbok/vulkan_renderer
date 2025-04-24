@@ -1,6 +1,4 @@
 #include "string.h"
-#include "logger.h"
-#include <assert.h>
 
 String8 string8_create(uint8_t *data, size_t length) {
   assert(data != NULL && "Data is NULL");
@@ -64,10 +62,10 @@ String8 string8_concat(Arena *arena, String8 *str1, String8 *str2) {
   String8 str = {NULL, 0};
 
   str.length = str1->length + str2->length;
-  str.str = arena_alloc(arena, str.length);
+  str.str = arena_alloc(arena, str.length + 1); // +1 for null terminator
 
-  MemCopy(str.str, str1->str, str1->length);
-  MemCopy(str.str + str1->length, str2->str, str2->length);
+  memmove(str.str, str1->str, str1->length);
+  memmove(str.str + str1->length, str2->str, str2->length);
   str.str[str.length] = '\0';
 
   return str;
