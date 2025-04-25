@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.27)
 
-project(opengl_renderer)
+project(vulkan_renderer)
 
 # Set explicit C standard
 set(CMAKE_C_STANDARD 11)

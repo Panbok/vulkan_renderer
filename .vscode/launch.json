@@ -11,7 +11,7 @@
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}/build/",
             "environment": [],
-            "program": "${workspaceFolder}/build/opengl_renderer",
+            "program": "${workspaceFolder}/build/vulkan_renderer",
             "osx": {
                 "MIMode": "lldb",
                 "targetArchitecture": "arm64",
@@ -25,7 +25,7 @@
             },
             "windows": {
                 "type": "cppvsdbg",
-                "program": "${workspaceFolder}/build/opengl_renderer.exe",
+                "program": "${workspaceFolder}/build/vulkan_renderer.exe",
                 // cppvsdbg requires this instead of externalConsole
                 "console": "integratedTerminal",
             },
@@ -34,7 +34,7 @@
             "name": "Launch Tests",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/opengl_renderer_tester",
+            "program": "${workspaceFolder}/build/vulkan_renderer_tester",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}/build/",
@@ -48,7 +48,7 @@
             },
             "windows": {
                 "type": "cppvsdbg",
-                "program": "${workspaceFolder}/build/opengl_renderer_tester.exe",
+                "program": "${workspaceFolder}/build/vulkan_renderer_tester.exe",
                 // cppvsdbg requires this instead of externalConsole
                 "console": "integratedTerminal",
             }

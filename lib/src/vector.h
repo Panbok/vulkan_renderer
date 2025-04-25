@@ -42,7 +42,7 @@
     assert_log(new_data != NULL, "Failed to allocate memory");                 \
                                                                                \
     if (vector->data != NULL && vector->length > 0) {                          \
-      memmove(new_data, vector->data, vector->length * vector->stride);        \
+      MemCopy(new_data, vector->data, vector->length * vector->stride);        \
     }                                                                          \
                                                                                \
     vector->data = new_data;                                                   \

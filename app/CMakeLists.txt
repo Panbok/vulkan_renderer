@@ -2,16 +2,16 @@
 file(GLOB_RECURSE APP_SOURCES src/*.c src/*.h)
 
 # Create the main application executable
-add_executable(opengl_renderer ${APP_SOURCES})
+add_executable(vulkan_renderer ${APP_SOURCES})
 
 # Link against the renderer_lib
-target_link_libraries(opengl_renderer PRIVATE renderer_lib)
+target_link_libraries(vulkan_renderer PRIVATE renderer_lib)
 
 # Include directories
-target_include_directories(opengl_renderer
+target_include_directories(vulkan_renderer
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
     PRIVATE ${CMAKE_SOURCE_DIR}/lib/src
 )
 
 # Set up installation rules if needed
-# install(TARGETS opengl_renderer DESTINATION bin) 
+# install(TARGETS vulkan_renderer DESTINATION bin) 
