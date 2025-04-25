@@ -64,8 +64,8 @@ String8 string8_concat(Arena *arena, String8 *str1, String8 *str2) {
   str.length = str1->length + str2->length;
   str.str = arena_alloc(arena, str.length + 1); // +1 for null terminator
 
-  memmove(str.str, str1->str, str1->length);
-  memmove(str.str + str1->length, str2->str, str2->length);
+  MemCopy(str.str, str1->str, str1->length);
+  MemCopy(str.str + str1->length, str2->str, str2->length);
   str.str[str.length] = '\0';
 
   return str;
