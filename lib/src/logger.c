@@ -1,7 +1,5 @@
 #include "logger.h"
 
-static Arena *_log_arena = NULL;
-
 void log_init(Arena *arena) {
   assert(arena != NULL && "Log arena is not initialized.");
   _log_arena = arena;

@@ -4,6 +4,8 @@
 #include "core.h"
 #include "string.h"
 
+static Arena *_log_arena = NULL;
+
 static const char *LOG_LEVELS[6] = {
     "[FATAL]: ", "[ERROR]: ", "[WARN]: ", "[INFO]: ", "[DEBUG]: ", "[TRACE]: "};
 // FATAL, ERROR, WARN, INFO, DEBUG, TRACE
