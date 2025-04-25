@@ -1,14 +1,22 @@
-#include "arena_test.h"
-#include <stdio.h>
+#include "test_main.h"
 
 int main(int argc, char **argv) {
-  printf("Running tests...\n");
+  (void)argc; // Unused
+  (void)argv; // Unused
+  printf("Running tests...\n\n");
+
+  Arena *log_arena = arena_create(MB(1), MB(1));
+  log_init(log_arena);
+
+  bool all_passed = true;
 
   // Run all tests
-  run_arena_tests();
+  all_passed &= run_arena_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_array_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_vector_tests();
 
-  // Additional test functions would be called here
-
-  printf("All tests completed.\n");
-  return 0;
+  printf("\nAll tests completed.\n");
+  return all_passed ? 0 : 1; // Return 0 on success, 1 on failure
 }
