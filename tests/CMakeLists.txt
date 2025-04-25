@@ -1,4 +1,5 @@
 # Discover all source files in tests/src
+# Note: GLOB_RECURSE includes headers, which is fine but unnecessary for compilation
 file(GLOB_RECURSE TEST_SOURCES src/*.c src/*.h)
 
 # Create the test executable
@@ -9,12 +10,8 @@ target_link_libraries(opengl_renderer_tester PRIVATE renderer_lib)
 
 # Include directories
 target_include_directories(opengl_renderer_tester
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-    PRIVATE ${CMAKE_SOURCE_DIR}/lib/src
-    # Include app source directory to test app-specific code
-    PRIVATE ${CMAKE_SOURCE_DIR}/app/src
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src # For test headers (e.g., arena_test.h)
+    PRIVATE ${CMAKE_SOURCE_DIR}/lib/src     # For library headers (e.g., arena.h)
+    # Include app source directory if tests need app-specific code
+    # PRIVATE ${CMAKE_SOURCE_DIR}/app/src
 )
-
-# Add tests if using CTest
-# enable_testing()
-# add_test(NAME RendererTests COMMAND opengl_renderer_tester) 
