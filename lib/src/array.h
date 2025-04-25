@@ -12,7 +12,8 @@
     type *data;                                                                \
   } Array_##name;                                                              \
                                                                                \
-  Array_##name array_create_##name(Arena *arena, const size_t length) {        \
+  static inline Array_##name array_create_##name(Arena *arena,                 \
+                                                 const size_t length) {        \
     assert_log(arena != NULL, "Arena is NULL");                                \
     assert_log(length > 0, "Length is 0");                                     \
                                                                                \
@@ -21,18 +22,20 @@
     return array;                                                              \
   }                                                                            \
                                                                                \
-  type *array_get_##name(const Array_##name *array, const size_t index) {      \
+  static inline type *array_get_##name(const Array_##name *array,              \
+                                       const size_t index) {                   \
     assert_log(array != NULL, "Array is NULL");                                \
     assert_log(index < array->length, "Index is out of bounds");               \
     return (type *)(array->data + index);                                      \
   }                                                                            \
                                                                                \
-  void array_set_##name(Array_##name *array, const size_t index, type value) { \
+  static inline void array_set_##name(Array_##name *array, const size_t index, \
+                                      type value) {                            \
     assert_log(array != NULL, "Array is NULL");                                \
     assert_log(index < array->length, "Index is out of bounds");               \
     array->data[index] = value;                                                \
   }                                                                            \
-  void array_destroy_##name(Array_##name *array) {                             \
+  static inline void array_destroy_##name(Array_##name *array) {               \
     assert_log(array != NULL, "Array is NULL");                                \
     array->data = NULL;                                                        \
     array->arena = NULL;                                                       \
