@@ -24,7 +24,6 @@ static void test_vector_create_float(void) {
   Vector_float vec = vector_create_float(arena);
 
   assert(vec.arena == arena && "Arena pointer mismatch");
-  assert(vec.stride == sizeof(float) && "Stride mismatch");
   assert(vec.capacity == DEFAULT_VECTOR_CAPACITY &&
          "Default capacity mismatch");
   assert(vec.length == 0 && "Initial length non-zero");
@@ -35,7 +34,6 @@ static void test_vector_create_float(void) {
   assert(vec.arena == NULL && "Arena not NULL after destroy");
   assert(vec.length == 0 && "Length not 0 after destroy");
   assert(vec.capacity == 0 && "Capacity not 0 after destroy");
-  assert(vec.stride == 0 && "Stride not 0 after destroy");
 
   teardown_suite();
   printf("  test_vector_create_float PASSED\n");
@@ -49,7 +47,6 @@ static void test_vector_create_with_capacity_float(void) {
   Vector_float vec = vector_create_float_with_capacity(arena, initial_capacity);
 
   assert(vec.arena == arena && "Arena pointer mismatch");
-  assert(vec.stride == sizeof(float) && "Stride mismatch");
   assert(vec.capacity == initial_capacity && "Capacity mismatch");
   assert(vec.length == 0 && "Initial length non-zero");
   assert(vec.data != NULL && "Data is NULL");

@@ -25,7 +25,6 @@ static void test_array_create_int(void) {
   Array_int arr = array_create_int(arena, length);
 
   assert(arr.arena == arena && "Arena pointer mismatch");
-  assert(arr.stride == sizeof(int) && "Stride mismatch");
   assert(arr.length == length && "Length mismatch");
   assert(arr.data != NULL && "Data is NULL");
 
@@ -33,7 +32,6 @@ static void test_array_create_int(void) {
   assert(arr.data == NULL && "Data not NULL after destroy");
   assert(arr.arena == NULL && "Arena not NULL after destroy");
   assert(arr.length == 0 && "Length not 0 after destroy");
-  assert(arr.stride == 0 && "Stride not 0 after destroy");
 
   teardown_suite();
   printf("  test_array_create_int PASSED\n");

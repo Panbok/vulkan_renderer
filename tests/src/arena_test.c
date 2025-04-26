@@ -6,7 +6,7 @@ static size_t get_initial_pos() {
 }
 
 static void test_arena_creation() {
-  printf("Running test_arena_creation...\n");
+  printf("  Running test_arena_creation...\n");
   // Use smaller sizes for testing to make calculations easier
   size_t test_rsv = KB(64);
   size_t test_cmt = KB(4);
@@ -28,11 +28,11 @@ static void test_arena_creation() {
   assert(arena->cmt_size >= test_cmt && "Stored cmt_size incorrect");
 
   arena_destroy(arena);
-  printf("test_arena_creation PASSED\n");
+  printf("  test_arena_creation PASSED\n");
 }
 
 static void test_arena_simple_alloc() {
-  printf("Running test_arena_simple_alloc...\n");
+  printf("  Running test_arena_simple_alloc...\n");
   Arena *arena = arena_create();
   size_t initial_pos = arena_pos(arena);
   assert(initial_pos == get_initial_pos() && "Initial pos mismatch");
@@ -65,11 +65,11 @@ static void test_arena_simple_alloc() {
   assert(*(unsigned char *)ptr2 == 0xBB);
 
   arena_destroy(arena);
-  printf("test_arena_simple_alloc PASSED\n");
+  printf("  test_arena_simple_alloc PASSED\n");
 }
 
 static void test_arena_commit_grow() {
-  printf("Running test_arena_commit_grow...\n");
+  printf("  Running test_arena_commit_grow...\n");
   // Force commit growth by allocating slightly more than initial commit
   size_t test_rsv = KB(64);
   size_t test_cmt = KB(4); // Small initial commit
@@ -90,11 +90,11 @@ static void test_arena_commit_grow() {
   memset(ptr, 0xCC, alloc_size); // Write test
 
   arena_destroy(arena);
-  printf("test_arena_commit_grow PASSED\n");
+  printf("  test_arena_commit_grow PASSED\n");
 }
 
 static void test_arena_block_grow() {
-  printf("Running test_arena_block_grow...\n");
+  printf("  Running test_arena_block_grow...\n");
   // Force block growth by allocating more than reserved size
   size_t test_rsv = KB(4); // Very small reserve
   size_t test_cmt = KB(4);
@@ -124,11 +124,11 @@ static void test_arena_block_grow() {
   memset(ptr, 0xDD, alloc_size); // Write test
 
   arena_destroy(arena);
-  printf("test_arena_block_grow PASSED\n");
+  printf("  test_arena_block_grow PASSED\n");
 }
 
 static void test_arena_reset_to() {
-  printf("Running test_arena_reset_to...\n");
+  printf("  Running test_arena_reset_to...\n");
   Arena *arena = arena_create();
   size_t pos0 = arena_pos(arena);
 
@@ -169,11 +169,11 @@ static void test_arena_reset_to() {
          "Position after reset0+alloc too large");
 
   arena_destroy(arena);
-  printf("test_arena_reset_to PASSED\n");
+  printf("  test_arena_reset_to PASSED\n");
 }
 
 static void test_arena_clear() {
-  printf("Running test_arena_clear...\n");
+  printf("  Running test_arena_clear...\n");
   Arena *arena = arena_create();
   size_t initial_pos = arena_pos(arena);
 
@@ -191,11 +191,11 @@ static void test_arena_clear() {
          "Position incorrect after clear+alloc");
 
   arena_destroy(arena);
-  printf("test_arena_clear PASSED\n");
+  printf("  test_arena_clear PASSED\n");
 }
 
 static void test_arena_scratch() {
-  printf("Running test_arena_scratch...\n");
+  printf("  Running test_arena_scratch...\n");
   Arena *arena = arena_create();
   size_t pos0 = arena_pos(arena);
 
@@ -244,11 +244,11 @@ static void test_arena_scratch() {
          "Position incorrect after all scratches");
 
   arena_destroy(arena);
-  printf("test_arena_scratch PASSED\n");
+  printf("  test_arena_scratch PASSED\n");
 }
 
 static void test_arena_alignment() {
-  printf("Running test_arena_alignment...\n");
+  printf("  Running test_arena_alignment...\n");
   Arena *arena = arena_create();
   size_t alignment = AlignOf(void *); // Platform default alignment
 
@@ -276,7 +276,7 @@ static void test_arena_alignment() {
   ts_ptr->ld = 1.23L; // Touch memory
 
   arena_destroy(arena);
-  printf("test_arena_alignment PASSED\n");
+  printf("  test_arena_alignment PASSED\n");
 }
 
 // --- Test Runner ---
