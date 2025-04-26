@@ -8,7 +8,7 @@ int main(int argc, char **argv) {
   Arena *log_arena = arena_create(MB(1), MB(1));
   log_init(log_arena);
 
-  bool all_passed = true;
+  bool32_t all_passed = true;
 
   // Run all tests
   all_passed &= run_arena_tests();

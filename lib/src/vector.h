@@ -12,8 +12,8 @@
  *
  * +---------------------+ <-- Vector_TYPE structure
  * | Arena *arena        |     (Pointer to the arena allocator used for memory)
- * | size_t capacity     |     (Current allocated capacity of the vector)
- * | size_t length       |     (Current number of elements in the vector)
+ * | uint64_t capacity     |     (Current allocated capacity of the vector)
+ * | uint64_t length       |     (Current number of elements in the vector)
  * | TYPE *data          | --> Points to contiguous memory block of capacity *
  * | sizeof(TYPE)        |     (Size of each element in the vector)
  * +---------------------+
@@ -60,10 +60,10 @@
    */                                                                          \
   struct Vector_##name;                                                        \
   typedef struct Vector_##name {                                               \
-    Arena *arena;    /**< Arena allocator used for memory allocation */        \
-    size_t capacity; /**< Current allocated capacity of the vector */          \
-    size_t length;   /**< Current number of elements in the vector */          \
-    type *data;      /**< Pointer to the contiguous vector storage */          \
+    Arena *arena;      /**< Arena allocator used for memory allocation */      \
+    uint64_t capacity; /**< Current allocated capacity of the vector */        \
+    uint64_t length;   /**< Current number of elements in the vector */        \
+    type *data;        /**< Pointer to the contiguous vector storage */        \
   } Vector_##name;                                                             \
   /**                                                                          \
    * @brief Creates a new vector with default capacity                         \
@@ -85,7 +85,7 @@
    * @return Initialized Vector_##name structure with the specified capacity   \
    */                                                                          \
   static inline Vector_##name vector_create_##name##_with_capacity(            \
-      Arena *arena, size_t capacity) {                                         \
+      Arena *arena, uint64_t capacity) {                                       \
     assert_log(arena != NULL, "Arena is NULL");                                \
     assert_log(capacity > 0, "Capacity is 0");                                 \
     Vector_##name vector = {arena, capacity, 0,                                \
@@ -103,8 +103,9 @@
     assert_log(vector != NULL, "Vector is NULL");                              \
     assert_log(vector->arena != NULL, "Arena is NULL");                        \
                                                                                \
-    size_t target_capacity = vector->capacity * DEFAULT_VECTOR_RESIZE_FACTOR;  \
-    size_t allocation_size = target_capacity * sizeof(type);                   \
+    uint64_t target_capacity =                                                 \
+        vector->capacity * DEFAULT_VECTOR_RESIZE_FACTOR;                       \
+    uint64_t allocation_size = target_capacity * sizeof(type);                 \
     type *new_data = arena_alloc(vector->arena, allocation_size);              \
     assert_log(new_data != NULL, "Failed to allocate memory");                 \
                                                                                \
@@ -161,7 +162,7 @@
    * @param value Value to assign to the element                               \
    * @note Asserts if index is out of bounds                                   \
    */                                                                          \
-  static inline void vector_set_##name(Vector_##name *vector, size_t index,    \
+  static inline void vector_set_##name(Vector_##name *vector, uint64_t index,  \
                                        type value) {                           \
     assert_log(vector != NULL, "Vector is NULL");                              \
     assert_log(vector->arena != NULL, "Arena is NULL");                        \
@@ -176,7 +177,7 @@
    * @note Asserts if index is out of bounds                                   \
    */                                                                          \
   static inline type *vector_get_##name(const Vector_##name *vector,           \
-                                        size_t index) {                        \
+                                        uint64_t index) {                      \
     assert_log(vector != NULL, "Vector is NULL");                              \
     assert_log(vector->arena != NULL, "Arena is NULL");                        \
     assert_log(index < vector->length, "Index is out of bounds");              \
@@ -200,4 +201,5 @@
 Vector(uint8_t);
 Vector(uint32_t);
 Vector(uint64_t);
-Vector(size_t);
+Vector(float32_t);
+Vector(float64_t);

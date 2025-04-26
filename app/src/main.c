@@ -12,10 +12,10 @@ int main(int argc, char **argv) {
   Scratch scratch = scratch_create(arena);
 
   Array_uint32_t array = array_create_uint32_t(arena, 10);
-  for (size_t i = 0; i < 10; i++) {
+  for (uint64_t i = 0; i < 10; i++) {
     array_set_uint32_t(&array, i, i * 1024);
   }
-  for (size_t i = 0; i < array.length; i++) {
+  for (uint64_t i = 0; i < array.length; i++) {
     log_info("Static array: %d", *array_get_uint32_t(&array, i));
   }
   scratch_destroy(scratch);
@@ -23,10 +23,10 @@ int main(int argc, char **argv) {
 
   Vector_uint32_t vector = vector_create_uint32_t(arena);
 
-  for (size_t i = 0; i < 100; i++) {
+  for (uint64_t i = 0; i < 100; i++) {
     vector_push_uint32_t(&vector, i * 32);
   }
-  for (size_t i = 0; i < vector.length; i++) {
+  for (uint64_t i = 0; i < vector.length; i++) {
     log_info("Dynamic array: %d", *vector_get_uint32_t(&vector, i));
   }
   scratch_destroy(scratch);

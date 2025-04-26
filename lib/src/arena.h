@@ -69,8 +69,9 @@
 #pragma once
 
 #include "core.h"
+#include "defines.h"
 
-#define ARENA_HEADER_SIZE (sizeof(Arena))
+#define ARENA_HEADER_SIZE 128
 // Default size for reserved virtual address space per arena block.
 #define ARENA_RSV_SIZE MB(64)
 // Default size for initially committed memory per arena block. More is
@@ -88,24 +89,24 @@ typedef struct Arena Arena;
 typedef struct Arena {
   Arena *prev; /**< Pointer to the previous arena block in the linked list. NULL
                   for the first block. */
-  Arena *current;  /**< Pointer to the *active* block for allocations (head of
-                      the list). Only valid in the *first* block's header, NULL
-                      otherwise. */
-  size_t cmt_size; /**< The default commit chunk size for this block. */
-  size_t rsv_size; /**< The default reserve size used when *creating* subsequent
-                      blocks (if needed). */
-  size_t base_pos; /**< The starting offset of this block relative to the
+  Arena *current;    /**< Pointer to the *active* block for allocations (head of
+                        the list). Only valid in the *first* block's header, NULL
+                        otherwise. */
+  uint64_t cmt_size; /**< The default commit chunk size for this block. */
+  uint64_t rsv_size; /**< The default reserve size used when *creating*
+                      subsequent blocks (if needed). */
+  uint64_t base_pos; /**< The starting offset of this block relative to the
                       beginning of the *entire* arena (across all blocks). */
-  size_t pos; /**< Current allocation offset *within this block*, relative to
+  uint64_t pos; /**< Current allocation offset *within this block*, relative to
                    the start of the block. Includes the header size. */
-  size_t cmt; /**< Amount of memory committed *in this block*, relative to the
+  uint64_t cmt; /**< Amount of memory committed *in this block*, relative to the
                    start of the block. */
-  size_t rsv; /**< Total amount of memory reserved *for this block*, relative to
-                 the start of the block. */
-  size_t free_size; /**< Total reserved size of all blocks currently in the free
-                       list. Only valid in the *first* block's header. */
-  Arena *free_last; /**< Pointer to the last block added to the free list
-                       (LIFO). Only valid in the *first* block's header. */
+  uint64_t rsv; /**< Total amount of memory reserved *for this block*, relative
+                 to the start of the block. */
+  uint64_t free_size; /**< Total reserved size of all blocks currently in the
+                       free list. Only valid in the *first* block's header. */
+  Arena *free_last;   /**< Pointer to the last block added to the free list
+                         (LIFO). Only valid in the *first* block's header. */
 } Arena;
 
 /**
@@ -114,8 +115,8 @@ typedef struct Arena {
  */
 typedef struct Scratch {
   Arena *arena; /**< The arena this scratch operates on. */
-  size_t pos;   /**< The absolute position in the arena when the scratch was
-                   created. */
+  uint64_t pos; /**< The absolute position in the arena when the scratch was
+                 created. */
 } Scratch;
 
 /**
@@ -128,7 +129,7 @@ typedef struct Scratch {
  * @return Pointer to the initialized Arena structure (the first block). Exits
  * on failure.
  */
-Arena *arena_create_internal(size_t rsv_size, size_t cmt_size);
+Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size);
 
 /**
  * @brief Macro to create an arena with default or specified sizes.
@@ -160,7 +161,7 @@ void arena_destroy(Arena *arena);
  * @return Pointer to the allocated memory, or NULL on failure (though failure
  * typically exits).
  */
-void *arena_alloc(Arena *arena, size_t size);
+void *arena_alloc(Arena *arena, uint64_t size);
 
 /**
  * @brief Gets the current absolute position (high-water mark) in the arena.
@@ -168,7 +169,7 @@ void *arena_alloc(Arena *arena, size_t size);
  * @param arena Pointer to the arena.
  * @return The current absolute position offset.
  */
-size_t arena_pos(Arena *arena);
+uint64_t arena_pos(Arena *arena);
 
 /**
  * @brief Resets the arena's allocation position back to a specific absolute
@@ -189,7 +190,7 @@ size_t arena_pos(Arena *arena);
  * @param pos The absolute position to reset to. Clamped to be at least
  * sizeof(Arena).
  */
-void arena_reset_to(Arena *arena, size_t pos);
+void arena_reset_to(Arena *arena, uint64_t pos);
 
 /**
  * @brief Resets the arena completely, freeing all allocations.
@@ -206,7 +207,7 @@ void arena_clear(Arena *arena);
  * @param arena Pointer to the arena.
  * @param amt The number of bytes to "free" from the end.
  */
-void arena_reset(Arena *arena, size_t amt);
+void arena_reset(Arena *arena, uint64_t amt);
 
 /**
  * @brief Begins a temporary allocation scope (scratch).

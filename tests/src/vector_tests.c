@@ -4,7 +4,7 @@
 Vector(float);
 
 static Arena *arena = NULL;
-static const size_t ARENA_SIZE = 1024 * 1024; // 1MB
+static const uint64_t ARENA_SIZE = 1024 * 1024; // 1MB
 
 // Setup function called before each test function in this suite
 static void setup_suite(void) { arena = arena_create(ARENA_SIZE); }
@@ -43,7 +43,7 @@ static void test_vector_create_with_capacity_float(void) {
   printf("  Running test_vector_create_with_capacity_float...\n");
   setup_suite();
 
-  const size_t initial_capacity = 5;
+  const uint64_t initial_capacity = 5;
   Vector_float vec = vector_create_float_with_capacity(arena, initial_capacity);
 
   assert(vec.arena == arena && "Arena pointer mismatch");
@@ -114,7 +114,7 @@ static void test_vector_resize_float(void) {
   printf("  Running test_vector_resize_float...\n");
   setup_suite();
 
-  const size_t initial_capacity = 2;
+  const uint64_t initial_capacity = 2;
   Vector_float vec = vector_create_float_with_capacity(arena, initial_capacity);
 
   vector_push_float(&vec, 1.0f);
@@ -163,7 +163,7 @@ static void test_vector_clear_float(void) {
 }
 
 // Test runner for this suite
-bool run_vector_tests() {
+bool32_t run_vector_tests() {
   printf("--- Starting Vector Tests ---\n");
 
   test_vector_create_float();

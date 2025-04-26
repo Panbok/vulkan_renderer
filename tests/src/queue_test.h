@@ -7,4 +7,4 @@
 
 Queue(int);
 
-bool run_queue_tests();
+bool32_t run_queue_tests();

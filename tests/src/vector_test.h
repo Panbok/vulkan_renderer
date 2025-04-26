@@ -7,4 +7,4 @@
 #include "vector.h"
 
 // Forward declaration of the runner function
-bool run_vector_tests();
+bool32_t run_vector_tests();

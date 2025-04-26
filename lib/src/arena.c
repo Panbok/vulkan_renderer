@@ -26,11 +26,11 @@
  */
 #include "arena.h"
 
-Arena *arena_create(size_t rsv_size, size_t cmt_size) {
-  assert(sizeof(Arena) <= ARENA_HEADER_SIZE && "Arena struct is too large");
-
-  size_t s_rsv_size = AlginPow2(ARENA_HEADER_SIZE + rsv_size, AlignOf(void *));
-  size_t s_cmt_size = AlginPow2(ARENA_HEADER_SIZE + cmt_size, AlignOf(void *));
+Arena *arena_create(uint64_t rsv_size, uint64_t cmt_size) {
+  uint64_t s_rsv_size =
+      AlginPow2(ARENA_HEADER_SIZE + rsv_size, AlignOf(void *));
+  uint64_t s_cmt_size =
+      AlginPow2(ARENA_HEADER_SIZE + cmt_size, AlignOf(void *));
 
   Arena *arena = (Arena *)mem_reserve(rsv_size);
   if (!mem_commit(arena, cmt_size) || !arena) {
@@ -84,11 +84,11 @@ void arena_destroy(Arena *arena) {
  * 5. **Failure:** If memory cannot be reserved or committed, the program exits
  * (or could return NULL).
  */
-void *arena_alloc(Arena *arena, size_t size) {
+void *arena_alloc(Arena *arena, uint64_t size) {
   Arena *current = arena->current;
 
-  size_t pos_pre = AlginPow2(current->pos, AlignOf(void *));
-  size_t pos_post = pos_pre + size;
+  uint64_t pos_pre = AlginPow2(current->pos, AlignOf(void *));
+  uint64_t pos_post = pos_pre + size;
 
   if (current->rsv < pos_post) {
     Arena *new_block = NULL;
@@ -109,8 +109,8 @@ void *arena_alloc(Arena *arena, size_t size) {
     }
 
     if (new_block == NULL) {
-      size_t s_rsv_size = current->rsv_size;
-      size_t s_cmt_size = current->cmt_size;
+      uint64_t s_rsv_size = current->rsv_size;
+      uint64_t s_cmt_size = current->cmt_size;
       if (size + ARENA_HEADER_SIZE > s_rsv_size) {
         s_rsv_size = AlginPow2(size + ARENA_HEADER_SIZE, AlignOf(void *));
         s_cmt_size = AlginPow2(size + ARENA_HEADER_SIZE, AlignOf(void *));
@@ -128,10 +128,10 @@ void *arena_alloc(Arena *arena, size_t size) {
   }
 
   if (current->cmt < pos_post) {
-    size_t cmt_pst_aligned = pos_post + current->cmt_size - 1;
+    uint64_t cmt_pst_aligned = pos_post + current->cmt_size - 1;
     cmt_pst_aligned -= cmt_pst_aligned % current->cmt_size;
-    size_t cmt_pst_clamped = ClampTop(cmt_pst_aligned, current->rsv);
-    size_t cmt_size = cmt_pst_clamped - current->cmt;
+    uint64_t cmt_pst_clamped = ClampTop(cmt_pst_aligned, current->rsv);
+    uint64_t cmt_size = cmt_pst_clamped - current->cmt;
     uint8_t *cmt_ptr = (uint8_t *)current + current->cmt;
 
     if (!mem_commit(cmt_ptr, cmt_size)) {
@@ -150,7 +150,7 @@ void *arena_alloc(Arena *arena, size_t size) {
   return result;
 }
 
-size_t arena_pos(Arena *arena) {
+uint64_t arena_pos(Arena *arena) {
   Arena *current = arena->current;
   return current->pos + current->base_pos;
 }
@@ -174,8 +174,8 @@ size_t arena_pos(Arena *arena) {
  * current->base_pos`.
  * 7. Set `current->pos = new_pos`.
  */
-void arena_reset_to(Arena *arena, size_t pos) {
-  size_t big_pos = pos;
+void arena_reset_to(Arena *arena, uint64_t pos) {
+  uint64_t big_pos = ClampBot(ARENA_HEADER_SIZE, pos);
   Arena *current = arena->current;
 
   for (Arena *prev = NULL;
@@ -183,22 +183,23 @@ void arena_reset_to(Arena *arena, size_t pos) {
        current = prev) {
     prev = current->prev;
     current->pos = ARENA_HEADER_SIZE;
-    arena->free_size += current->rsv;
+    arena->free_size += current->rsv_size;
     SingleListAppend(arena->free_last, current, prev);
   }
 
   assert(current != NULL);
   arena->current = current;
 
-  size_t new_pos = big_pos - current->base_pos;
-  current->pos = ClampBot(ARENA_HEADER_SIZE, new_pos);
+  uint64_t new_pos = big_pos - current->base_pos;
+  assert(new_pos <= current->pos);
+  current->pos = new_pos;
 }
 
 void arena_clear(Arena *arena) { arena_reset_to(arena, 0); }
 
-void arena_reset(Arena *arena, size_t amt) {
-  size_t pos_old = arena_pos(arena);
-  size_t pos_new = pos_old;
+void arena_reset(Arena *arena, uint64_t amt) {
+  uint64_t pos_old = arena_pos(arena);
+  uint64_t pos_new = pos_old;
   if (amt < pos_old) {
     pos_new = pos_old - amt;
   }

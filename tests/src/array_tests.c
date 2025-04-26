@@ -4,7 +4,7 @@
 Array(int);
 
 static Arena *arena = NULL;
-static const size_t ARENA_SIZE = 1024 * 1024; // 1MB
+static const uint64_t ARENA_SIZE = 1024 * 1024; // 1MB
 
 // Setup function called before each test function in this suite
 static void setup_suite(void) { arena = arena_create(ARENA_SIZE); }
@@ -21,7 +21,7 @@ static void test_array_create_int(void) {
   printf("  Running test_array_create_int...\n");
   setup_suite();
 
-  const size_t length = 10;
+  const uint64_t length = 10;
   Array_int arr = array_create_int(arena, length);
 
   assert(arr.arena == arena && "Arena pointer mismatch");
@@ -41,15 +41,15 @@ static void test_array_set_get_int(void) {
   printf("  Running test_array_set_get_int...\n");
   setup_suite();
 
-  const size_t length = 5;
+  const uint64_t length = 5;
   // Correctly pass the arena pointer
   Array_int arr = array_create_int(arena, length);
 
-  for (size_t i = 0; i < length; ++i) {
+  for (uint64_t i = 0; i < length; ++i) {
     array_set_int(&arr, i, (int)(i * i));
   }
 
-  for (size_t i = 0; i < length; ++i) {
+  for (uint64_t i = 0; i < length; ++i) {
     int *value_ptr = array_get_int(&arr, i);
     assert(value_ptr != NULL && "Got NULL pointer from get");
     assert(*value_ptr == (int)(i * i) && "Value mismatch");
@@ -65,7 +65,7 @@ static void test_array_set_get_int(void) {
 // static void test_xxx() { ... }
 
 // Test runner for this suite
-bool run_array_tests() {
+bool32_t run_array_tests() {
   printf("--- Starting Array Tests ---\n");
 
   test_array_create_int();

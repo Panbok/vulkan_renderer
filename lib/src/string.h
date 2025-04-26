@@ -18,7 +18,7 @@ typedef struct Arena Arena;
  */
 typedef struct String8 {
   uint8_t *str;
-  size_t length;
+  uint64_t length;
 } String8;
 
 /**
@@ -27,7 +27,7 @@ typedef struct String8 {
  * @param length The length of the string.
  * @return A new string of 8-bit characters.
  */
-String8 string8_create(uint8_t *data, size_t length);
+String8 string8_create(uint8_t *data, uint64_t length);
 
 /**
  * @brief Create a new string of 8-bit characters from a format string and

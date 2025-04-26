@@ -7,4 +7,4 @@
 // Forward declaration
 typedef struct Arena Arena;
 
-bool run_arena_tests();
+bool32_t run_arena_tests();

@@ -1,6 +1,6 @@
 #include "string.h"
 
-String8 string8_create(uint8_t *data, size_t length) {
+String8 string8_create(uint8_t *data, uint64_t length) {
   assert(data != NULL && "Data is NULL");
   assert(length > 0 && "Length is 0");
 
@@ -21,14 +21,14 @@ String8 string8_create_formatted_v(Arena *arena, const char *fmt,
 
   assert(required_size >= 0 && "Failed to format string");
 
-  size_t buffer_size = (size_t)required_size + 1;
+  uint64_t buffer_size = (uint64_t)required_size + 1;
   uint8_t *buffer = arena_alloc(arena, buffer_size);
 
   assert(buffer != NULL && "Failed to allocate buffer");
 
   vsnprintf((char *)buffer, buffer_size, fmt, args);
 
-  return string8_create(buffer, (size_t)required_size);
+  return string8_create(buffer, (uint64_t)required_size);
 }
 
 String8 string8_create_formatted(Arena *arena, const char *fmt, ...) {

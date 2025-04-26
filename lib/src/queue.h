@@ -12,10 +12,10 @@
  *
  * +---------------------+ <-- Queue_TYPE structure
  * | Arena *arena        |     (Pointer to the arena allocator used for memory)
- * | size_t capacity     |     (Maximum number of elements the queue can hold)
- * | size_t size         |     (Current number of elements in the queue)
- * | size_t tail         |     (Index where next element will be inserted)
- * | size_t head         |     (Index where next element will be removed from)
+ * | uint64_t capacity     |     (Maximum number of elements the queue can hold)
+ * | uint64_t size         |     (Current number of elements in the queue)
+ * | uint64_t tail         |     (Index where next element will be inserted)
+ * | uint64_t head         |     (Index where next element will be removed from)
  * | TYPE *data          | --> Points to contiguous memory block of capacity *
  * | sizeof(TYPE)        |     (Size of each element in the queue)
  * +---------------------+
@@ -50,12 +50,12 @@
    */                                                                          \
   struct Queue_##name;                                                         \
   typedef struct Queue_##name {                                                \
-    Arena *arena;    /**< Arena allocator used for memory allocation */        \
-    size_t capacity; /**< Maximum number of elements the queue can hold */     \
-    size_t size;     /**< Current number of elements in the queue */           \
-    size_t tail;     /**< Index where the next element will be inserted */     \
-    size_t head;     /**< Index where the next element will be removed from */ \
-    type *data;      /**< Pointer to the circular buffer storage */            \
+    Arena *arena;      /**< Arena allocator used for memory allocation */      \
+    uint64_t capacity; /**< Maximum number of elements the queue can hold */   \
+    uint64_t size;     /**< Current number of elements in the queue */         \
+    uint64_t tail;     /**< Index where the next element will be inserted */   \
+    uint64_t head; /**< Index where the next element will be removed from */   \
+    type *data;    /**< Pointer to the circular buffer storage */              \
   } Queue_##name;                                                              \
   /**                                                                          \
    * @brief Creates a new queue with the specified capacity                    \
@@ -64,7 +64,7 @@
    * @return Initialized Queue_##name structure                                \
    */                                                                          \
   static inline Queue_##name queue_create_##name(Arena *arena,                 \
-                                                 size_t capacity) {            \
+                                                 uint64_t capacity) {          \
     assert_log(arena != NULL, "Arena is NULL");                                \
     assert_log(capacity > 0, "Capacity is 0");                                 \
     Queue_##name queue = {arena, capacity,                                     \
@@ -77,7 +77,7 @@
    * @param queue Pointer to the queue to check                                \
    * @return true if the queue is empty, false otherwise                       \
    */                                                                          \
-  static inline bool queue_is_empty_##name(const Queue_##name *queue) {        \
+  static inline bool32_t queue_is_empty_##name(const Queue_##name *queue) {    \
     assert_log(queue != NULL, "Queue pointer cannot be NULL");                 \
     return queue->size == 0;                                                   \
   }                                                                            \
@@ -86,7 +86,7 @@
    * @param queue Pointer to the queue to check                                \
    * @return true if the queue is full, false otherwise                        \
    */                                                                          \
-  static inline bool queue_is_full_##name(const Queue_##name *queue) {         \
+  static inline bool32_t queue_is_full_##name(const Queue_##name *queue) {     \
     assert_log(queue != NULL, "Queue pointer cannot be NULL");                 \
     return queue->size == queue->capacity;                                     \
   }                                                                            \
@@ -96,7 +96,7 @@
    * @param data Element to add to the queue                                   \
    * @return true if the element was added, false if the queue is full         \
    */                                                                          \
-  static inline bool queue_enqueue_##name(Queue_##name *q, type data) {        \
+  static inline bool32_t queue_enqueue_##name(Queue_##name *q, type data) {    \
     assert_log(q != NULL, "Queue is NULL");                                    \
     if (queue_is_full_##name(q)) {                                             \
       return false;                                                            \
@@ -113,7 +113,7 @@
    * NULL                                                                      \
    * @return true if an element was removed, false if the queue is empty       \
    */                                                                          \
-  static inline bool queue_dequeue_##name(                                     \
+  static inline bool32_t queue_dequeue_##name(                                 \
       Queue_##name *q, type *value_ptr /* optional parameter */) {             \
     assert_log(q != NULL, "Queue is NULL");                                    \
     if (queue_is_empty_##name(q)) {                                            \

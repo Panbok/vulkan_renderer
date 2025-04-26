@@ -11,7 +11,7 @@
  *
  * +---------------------+ <-- Array_TYPE structure
  * | Arena *arena        |     (Pointer to the arena allocator used for memory)
- * | size_t length       |     (Number of elements in the array)
+ * | uint64_t length       |     (Number of elements in the array)
  * | TYPE *data          | --> Points to contiguous memory block of length *
  * | sizeof(TYPE)        |     (Size of each element in the array)
  * +---------------------+
@@ -43,9 +43,9 @@
    */                                                                          \
   struct Array_##name;                                                         \
   typedef struct Array_##name {                                                \
-    Arena *arena;  /**< Arena allocator used for memory allocation */          \
-    size_t length; /**< Number of elements in the array */                     \
-    type *data;    /**< Pointer to the contiguous array storage */             \
+    Arena *arena;    /**< Arena allocator used for memory allocation */        \
+    uint64_t length; /**< Number of elements in the array */                   \
+    type *data;      /**< Pointer to the contiguous array storage */           \
   } Array_##name;                                                              \
                                                                                \
   /**                                                                          \
@@ -55,7 +55,7 @@
    * @return Initialized Array_##name structure                                \
    */                                                                          \
   static inline Array_##name array_create_##name(Arena *arena,                 \
-                                                 const size_t length) {        \
+                                                 const uint64_t length) {      \
     assert_log(arena != NULL, "Arena is NULL");                                \
     assert_log(length > 0, "Length is 0");                                     \
                                                                                \
@@ -72,7 +72,7 @@
    * @note Asserts if index is out of bounds                                   \
    */                                                                          \
   static inline type *array_get_##name(const Array_##name *array,              \
-                                       const size_t index) {                   \
+                                       const uint64_t index) {                 \
     assert_log(array != NULL, "Array is NULL");                                \
     assert_log(index < array->length, "Index is out of bounds");               \
     return (type *)(array->data + index);                                      \
@@ -85,8 +85,8 @@
    * @param value Value to assign to the element                               \
    * @note Asserts if index is out of bounds                                   \
    */                                                                          \
-  static inline void array_set_##name(Array_##name *array, const size_t index, \
-                                      type value) {                            \
+  static inline void array_set_##name(Array_##name *array,                     \
+                                      const uint64_t index, type value) {      \
     assert_log(array != NULL, "Array is NULL");                                \
     assert_log(index < array->length, "Index is out of bounds");               \
     array->data[index] = value;                                                \
@@ -106,9 +106,8 @@
 #define Array(type) ArrayConstructor(type, type)
 
 Array(uint8_t);
-
+Array(uint16_t);
 Array(uint32_t);
-
 Array(uint64_t);
-
-Array(size_t);
+Array(float32_t);
+Array(float64_t);

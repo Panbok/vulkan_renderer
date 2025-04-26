@@ -1,5 +1,6 @@
 #pragma once
 
+#include "defines.h"
 #include "pch.h"
 
 #define LOG_LEVEL 5
@@ -29,9 +30,9 @@
 
 #define MemCopy(dst, src, size) memmove((dst), (src), (size))
 
-void *mem_reserve(size_t size);
-bool mem_commit(void *ptr, size_t size);
-void mem_decommit(void *ptr, size_t size);
-void mem_release(void *ptr, size_t size);
+void *mem_reserve(uint64_t size);
+bool32_t mem_commit(void *ptr, uint64_t size);
+void mem_decommit(void *ptr, uint64_t size);
+void mem_release(void *ptr, uint64_t size);
 
-size_t get_page_size();
+uint64_t get_page_size();
