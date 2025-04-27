@@ -18,6 +18,8 @@ int main(int argc, char **argv) {
   all_passed &= run_vector_tests();
   printf("\n"); // Add spacing
   all_passed &= run_queue_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_bitset_tests();
 
   printf("\nAll tests completed.\n");
   return all_passed ? 0 : 1; // Return 0 on success, 1 on failure
