@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.27)
+
+project(vulkan_renderer_app)
+
 # Discover all source files in app/src
 file(GLOB_RECURSE APP_SOURCES src/*.c src/*.h)
 

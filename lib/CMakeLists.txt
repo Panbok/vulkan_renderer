@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.27)
+
+project(renderer_lib)
+
 # Discover all source files in lib/src
 file(GLOB_RECURSE LIB_SOURCES src/*.c src/*.h)
 

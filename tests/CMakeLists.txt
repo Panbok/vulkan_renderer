@@ -1,3 +1,7 @@
+cmake_minimum_required(VERSION 3.27)
+
+project(vulkan_renderer_tester)
+
 # Discover all source files in tests/src
 # Note: GLOB_RECURSE includes headers, which is fine but unnecessary for compilation
 file(GLOB_RECURSE TEST_SOURCES src/*.c src/*.h)
