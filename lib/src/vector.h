@@ -52,6 +52,11 @@
 #define DEFAULT_VECTOR_CAPACITY 16
 #define DEFAULT_VECTOR_RESIZE_FACTOR 2
 
+typedef struct VectorFindResult {
+  uint64_t index;
+  bool32_t found;
+} VectorFindResult;
+
 #define VectorConstructor(type, name)                                          \
   /**                                                                          \
    * @brief Vector structure for storing dynamic collections of elements of    \
@@ -148,6 +153,7 @@
    * @brief Removes and returns the element at the specified index             \
    * @param vector Pointer to the vector                                       \
    * @param index Zero-based index of the element to remove                    \
+   * @param dest Pointer to a variable to store the removed element (optional) \
    * @return The removed element from the specified index                      \
    * @note Asserts if index is out of bounds                                   \
    */                                                                          \
@@ -156,10 +162,11 @@
     assert_log(vector != NULL, "Vector is NULL");                              \
     assert_log(vector->arena != NULL, "Arena is NULL");                        \
     assert_log(index < vector->length, "Index is out of bounds");              \
-    assert_log(dest != NULL, "Destination is NULL");                           \
     uint64_t length = vector->length;                                          \
     uint64_t stride = sizeof(type);                                            \
-    MemCopy(dest, vector->data + index, stride);                               \
+    if (dest != NULL) {                                                        \
+      MemCopy(dest, vector->data + index, stride);                             \
+    }                                                                          \
     if (index != length - 1) {                                                 \
       uint64_t elements_to_move = length - 1 - index;                          \
       MemCopy(vector->data + index, vector->data + index + 1,                  \
@@ -167,6 +174,24 @@
     }                                                                          \
     vector->length--;                                                          \
     return dest;                                                               \
+  }                                                                            \
+  /**                                                                          \
+   * @brief Finds the index of the first occurrence of a value in the vector   \
+   * @param vector Pointer to the vector                                       \
+   * @param value Value to find in the vector                                  \
+   * @return Index of the first occurrence of the value, or UINT64_MAX if not  \
+   * found                                                                     \
+   */                                                                          \
+  static inline VectorFindResult vector_find_##name(                           \
+      const Vector_##name *vector, type *value) {                              \
+    assert_log(vector != NULL, "Vector is NULL");                              \
+    assert_log(vector->arena != NULL, "Arena is NULL");                        \
+    for (uint64_t i = 0; i < vector->length; i++) {                            \
+      if (vector->data[i] == *value) {                                         \
+        return (VectorFindResult){i, true};                                    \
+      }                                                                        \
+    }                                                                          \
+    return (VectorFindResult){0, false};                                       \
   }                                                                            \
   /**                                                                          \
    * @brief Removes all elements from the vector                               \

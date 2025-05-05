@@ -194,10 +194,37 @@ static void test_vector_pop_at_float(void) {
   assert(vec.data[2] == 6.0f && "Element 2 mismatch");
   assert(vec.data[3] == 7.0f && "Element 3 mismatch");
 
+  vector_pop_at_float(&vec, 1, NULL);
+  assert(vec.length == 3 && "Length after pop at 1 mismatch");
+
   vector_destroy_float(&vec);
 
   teardown_suite();
   printf("  test_vector_pop_at_float PASSED\n");
+}
+
+static void test_vector_find_float(void) {
+  printf("  Running test_vector_find_float...\n");
+  setup_suite();
+
+  Vector_float vec = vector_create_float(arena);
+  vector_push_float(&vec, 1.0f);
+  vector_push_float(&vec, 2.0f);
+  vector_push_float(&vec, 3.0f);
+
+  float val = 2.0f;
+  VectorFindResult res = vector_find_float(&vec, &val);
+  assert(res.found && "Find 2.0f mismatch");
+  assert(res.index == 1 && "Index of 2.0f mismatch");
+
+  val = 4.0f;
+  res = vector_find_float(&vec, &val);
+  assert(!res.found && "Find 4.0f mismatch");
+
+  vector_destroy_float(&vec);
+
+  teardown_suite();
+  printf("  test_vector_find_float PASSED\n");
 }
 
 // Test runner for this suite
@@ -211,6 +238,7 @@ bool32_t run_vector_tests() {
   test_vector_resize_float();
   test_vector_clear_float();
   test_vector_pop_at_float();
+  test_vector_find_float();
   // Call other test functions here
 
   printf("--- Vector Tests Completed ---\n");
