@@ -29,6 +29,7 @@
 #define SingleListPop(f, n) ((f) = (n)->next)
 
 #define MemCopy(dst, src, size) memmove((dst), (src), (size))
+#define MemZero(dst, size) memset((dst), 0, (size))
 
 void *mem_reserve(uint64_t size);
 bool32_t mem_commit(void *ptr, uint64_t size);
