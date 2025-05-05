@@ -162,6 +162,44 @@ static void test_vector_clear_float(void) {
   printf("  test_vector_clear_float PASSED\n");
 }
 
+static void test_vector_pop_at_float(void) {
+  printf("  Running test_vector_pop_at_float...\n");
+  setup_suite();
+
+  Vector_float vec = vector_create_float(arena);
+  vector_push_float(&vec, 1.0f);
+  vector_push_float(&vec, 2.0f);
+  vector_push_float(&vec, 3.0f);
+
+  float val = 0.0f;
+  vector_pop_at_float(&vec, 1, &val);
+  assert(val == 2.0f && "Pop at 1 value mismatch");
+  assert(vec.length == 2 && "Length after pop at 1 mismatch");
+
+  vector_pop_at_float(&vec, 1, &val);
+  assert(val == 3.0f && "Pop at 1 value mismatch");
+  assert(vec.length == 1 && "Length after pop at 1 mismatch");
+
+  vector_push_float(&vec, 4.0f);
+  vector_push_float(&vec, 5.0f);
+  vector_push_float(&vec, 6.0f);
+  vector_push_float(&vec, 7.0f);
+
+  vector_pop_at_float(&vec, 1, &val);
+  assert(val == 4.0f && "Pop at 1 value mismatch");
+  assert(vec.length == 4 && "Length after pop at 1 mismatch");
+
+  assert(vec.data[0] == 1.0f && "Element 0 mismatch");
+  assert(vec.data[1] == 5.0f && "Element 1 mismatch");
+  assert(vec.data[2] == 6.0f && "Element 2 mismatch");
+  assert(vec.data[3] == 7.0f && "Element 3 mismatch");
+
+  vector_destroy_float(&vec);
+
+  teardown_suite();
+  printf("  test_vector_pop_at_float PASSED\n");
+}
+
 // Test runner for this suite
 bool32_t run_vector_tests() {
   printf("--- Starting Vector Tests ---\n");
@@ -172,6 +210,7 @@ bool32_t run_vector_tests() {
   test_vector_get_set_float();
   test_vector_resize_float();
   test_vector_clear_float();
+  test_vector_pop_at_float();
   // Call other test functions here
 
   printf("--- Vector Tests Completed ---\n");

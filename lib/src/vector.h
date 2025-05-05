@@ -145,6 +145,30 @@
     return (type)(vector->data[--vector->length]);                             \
   }                                                                            \
   /**                                                                          \
+   * @brief Removes and returns the element at the specified index             \
+   * @param vector Pointer to the vector                                       \
+   * @param index Zero-based index of the element to remove                    \
+   * @return The removed element from the specified index                      \
+   * @note Asserts if index is out of bounds                                   \
+   */                                                                          \
+  static inline type *vector_pop_at_##name(Vector_##name *vector,              \
+                                           uint64_t index, type *dest) {       \
+    assert_log(vector != NULL, "Vector is NULL");                              \
+    assert_log(vector->arena != NULL, "Arena is NULL");                        \
+    assert_log(index < vector->length, "Index is out of bounds");              \
+    assert_log(dest != NULL, "Destination is NULL");                           \
+    uint64_t length = vector->length;                                          \
+    uint64_t stride = sizeof(type);                                            \
+    MemCopy(dest, vector->data + index, stride);                               \
+    if (index != length - 1) {                                                 \
+      uint64_t elements_to_move = length - 1 - index;                          \
+      MemCopy(vector->data + index, vector->data + index + 1,                  \
+              elements_to_move * stride);                                      \
+    }                                                                          \
+    vector->length--;                                                          \
+    return dest;                                                               \
+  }                                                                            \
+  /**                                                                          \
    * @brief Removes all elements from the vector                               \
    * @param vector Pointer to the vector                                       \
    * @note This does not deallocate memory or change capacity, only resets     \
