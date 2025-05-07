@@ -1,6 +1,5 @@
 #include "mmemory.h"
-#include "core.h"
-#include <stdint.h>
+#include "platform.h"
 
 // Struct to hold slot finding results
 typedef struct SlotResult {
@@ -73,7 +72,7 @@ bool32_t mmemory_create(uint64_t capacity, MMemory *out_allocator) {
   assert_log(out_allocator != NULL, "out_allocator is NULL");
   assert_log(capacity > 0, "capacity is not greater than 0");
 
-  out_allocator->page_size = get_page_size();
+  out_allocator->page_size = platform_get_page_size();
   if (out_allocator->page_size == 0) {
     return false;
   }
@@ -101,7 +100,8 @@ void mmemory_destroy(MMemory *allocator) {
 
   for (uint64_t i = 0; i < allocator->capacity; i++) {
     if (allocator->blocks[i].is_used && allocator->blocks[i].ptr != NULL) {
-      mem_release(allocator->blocks[i].ptr, allocator->blocks[i].rsv_size);
+      platform_mem_release(allocator->blocks[i].ptr,
+                           allocator->blocks[i].rsv_size);
     }
   }
 
@@ -122,13 +122,13 @@ void *mmemory_alloc(MMemory *allocator, uint64_t size) {
   }
 
   uint64_t rsv_size = round_up_to_page_size(size, allocator->page_size);
-  void *ptr = mem_reserve(rsv_size);
+  void *ptr = platform_mem_reserve(rsv_size);
   if (ptr == NULL) {
     return NULL;
   }
 
-  if (!mem_commit(ptr, size)) {
-    mem_release(ptr, rsv_size);
+  if (!platform_mem_commit(ptr, size)) {
+    platform_mem_release(ptr, rsv_size);
     return NULL;
   }
 
@@ -154,7 +154,7 @@ bool32_t mmemory_free(MMemory *allocator, void *ptr) {
 
   MBlock *block = &allocator->blocks[slot_result.slot];
 
-  mem_release(block->ptr, block->rsv_size);
+  platform_mem_release(block->ptr, block->rsv_size);
 
   block->is_used = false;
   block->ptr = NULL;

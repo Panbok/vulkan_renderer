@@ -1,8 +1,8 @@
 #pragma once
 
-#include "core.h"
 #include "mmemory.h"
 #include "pch.h"
+#include "platform.h"
 
 // Forward declaration
 typedef struct MMemory MMemory;

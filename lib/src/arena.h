@@ -68,8 +68,8 @@
 // clang-format on
 #pragma once
 
-#include "core.h"
 #include "defines.h"
+#include "platform.h"
 
 #define ARENA_HEADER_SIZE 128
 // Default size for reserved virtual address space per arena block.

@@ -54,9 +54,9 @@
 #pragma once
 
 #include "array.h"
-#include "core.h"
 #include "defines.h"
 #include "pch.h"
+#include "platform.h"
 #include "queue.h"
 #include "vector.h"
 

@@ -56,9 +56,9 @@
 #pragma once
 
 #include "bitset.h"
-#include "core.h"
 #include "logger.h"
 #include "pch.h"
+#include "platform.h"
 
 /**
  * @brief Represents a single memory block managed by the MMemory allocator.

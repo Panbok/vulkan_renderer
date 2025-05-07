@@ -32,8 +32,8 @@ Arena *arena_create(uint64_t rsv_size, uint64_t cmt_size) {
   uint64_t s_cmt_size =
       AlginPow2(ARENA_HEADER_SIZE + cmt_size, AlignOf(void *));
 
-  Arena *arena = (Arena *)mem_reserve(rsv_size);
-  if (!mem_commit(arena, cmt_size) || !arena) {
+  Arena *arena = (Arena *)platform_mem_reserve(rsv_size);
+  if (!platform_mem_commit(arena, cmt_size) || !arena) {
     assert(0 && "Failed to commit memory");
   }
 
@@ -54,7 +54,7 @@ void arena_destroy(Arena *arena) {
   for (Arena *current = arena->current, *prev = NULL; current != NULL;
        current = prev) {
     prev = current->prev;
-    mem_release(current, current->rsv);
+    platform_mem_release(current, current->rsv);
   }
 }
 
@@ -134,7 +134,7 @@ void *arena_alloc(Arena *arena, uint64_t size) {
     uint64_t cmt_size = cmt_pst_clamped - current->cmt;
     uint8_t *cmt_ptr = (uint8_t *)current + current->cmt;
 
-    if (!mem_commit(cmt_ptr, cmt_size)) {
+    if (!platform_mem_commit(cmt_ptr, cmt_size)) {
       assert(0 && "Failed to commit memory");
     }
 

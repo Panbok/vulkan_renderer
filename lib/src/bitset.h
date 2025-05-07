@@ -8,9 +8,9 @@
 
 #pragma once
 
-#include "core.h"
 #include "defines.h"
 #include "logger.h"
+#include "platform.h"
 
 typedef struct Bitset8 {
   uint8_t set;

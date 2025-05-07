@@ -1,7 +1,7 @@
 #pragma once
 
 #include "arena.h"
-#include "core.h"
+#include "platform.h"
 #include "string.h"
 
 static Arena *_log_arena = NULL;

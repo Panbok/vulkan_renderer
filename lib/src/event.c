@@ -1,6 +1,4 @@
 #include "event.h"
-#include "arena.h"
-#include "defines.h"
 
 /**
  * @brief The main function for the dedicated event processing thread.
@@ -101,6 +99,8 @@ void event_manager_destroy(EventManager *manager) {
   for (uint16_t i = 0; i < EVENT_TYPE_MAX; i++) {
     vector_destroy_EventCallback(&manager->callbacks[i]);
   }
+
+  queue_destroy_Event(&manager->queue);
 }
 
 void event_manager_subscribe(EventManager *manager, EventType type,
