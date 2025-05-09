@@ -36,34 +36,48 @@ static void *events_processor(void *arg) {
       event_dequeued = queue_dequeue_Event(&manager->queue, &event);
     }
 
-    pthread_mutex_unlock(&manager->mutex);
-
-    if (event_dequeued) {
-      if (event.type < EVENT_TYPE_MAX) {
-        pthread_mutex_lock(&manager->mutex);
-        Scratch scratch = scratch_create(local_thread_arena);
-        Vector_EventCallback *callbacks = &manager->callbacks[event.type];
-        uint16_t subs_count = callbacks->length;
-        Array_EventCallback local_callbacks =
-            array_create_EventCallback(scratch.arena, subs_count);
-        if (subs_count > 0) {
-          MemCopy(local_callbacks.data, callbacks->data,
-                  subs_count * sizeof(EventCallback));
-        }
-        pthread_mutex_unlock(&manager->mutex);
-
-        for (uint16_t i = 0; i < subs_count; i++) {
-          if (local_callbacks.data[i] != NULL) {
-            local_callbacks.data[i](&event);
-          }
-        }
-
-        array_destroy_EventCallback(&local_callbacks);
-        scratch_destroy(scratch);
-      } else {
-        log_warn("Processed event with invalid type: %u", event.type);
-      }
+    if (!event_dequeued) {
+      pthread_mutex_unlock(&manager->mutex);
+      continue;
     }
+
+    if (event.type >= EVENT_TYPE_MAX) {
+      log_warn("Processed event with invalid type: %u", event.type);
+      pthread_mutex_unlock(&manager->mutex);
+      continue;
+    }
+
+    Scratch scratch = scratch_create(local_thread_arena);
+    Vector_EventCallback *callbacks_vec = &manager->callbacks[event.type];
+    uint16_t subs_count = callbacks_vec->length;
+
+    if (subs_count == 0) {
+      scratch_destroy(scratch);
+      pthread_mutex_unlock(&manager->mutex);
+      continue;
+    }
+
+    Array_EventCallback local_callbacks_copy =
+        array_create_EventCallback(scratch.arena, subs_count);
+    if (callbacks_vec->data != NULL && local_callbacks_copy.data != NULL) {
+      MemCopy(local_callbacks_copy.data, callbacks_vec->data,
+              subs_count * sizeof(EventCallback));
+      pthread_mutex_unlock(&manager->mutex);
+
+      for (uint16_t i = 0; i < subs_count; i++) {
+        if (local_callbacks_copy.data[i] != NULL) {
+          local_callbacks_copy.data[i](&event);
+        }
+      }
+    } else {
+      log_warn("Event_processor: subs_count (%u) for event type %d, but "
+               "vector or array data pointer is NULL. Callbacks skipped.",
+               subs_count, event.type);
+      pthread_mutex_unlock(&manager->mutex);
+    }
+
+    array_destroy_EventCallback(&local_callbacks_copy);
+    scratch_destroy(scratch);
   }
 
   arena_destroy(local_thread_arena);
