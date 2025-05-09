@@ -144,13 +144,40 @@ void event_manager_unsubscribe(EventManager *manager, EventType type,
 }
 
 bool32_t event_manager_dispatch(EventManager *manager, Event event) {
-  assert_log(event.type < EVENT_TYPE_MAX, "Invalid event type");
   assert_log(manager != NULL, "Manager is NULL");
-  assert_log(event.data != NULL, "Event data is NULL");
+  assert_log(event.type < EVENT_TYPE_MAX, "Invalid event type");
+  // If data_size > 0, then event.data must not be NULL.
+  // If data_size == 0, event.data can be NULL (it will be ignored for copying).
+  assert_log(!(event.data_size > 0 && event.data == NULL),
+             "Event data is NULL but data_size is greater than 0");
 
   pthread_mutex_lock(&manager->mutex);
-  if (!queue_enqueue_Event(&manager->queue, event)) {
-    log_warn("Failed to enqueue event");
+
+  Event event_to_enqueue = event;
+
+  if (event.data_size > 0) {
+    void *copied_data = arena_alloc(manager->arena, event.data_size);
+    if (copied_data == NULL) {
+      log_warn(
+          "Failed to allocate memory for event data (type: %d, size: %llu). "
+          "Event not dispatched.",
+          event.type, event.data_size);
+      pthread_mutex_unlock(&manager->mutex);
+      return false;
+    }
+    MemCopy(copied_data, event.data, event.data_size);
+    event_to_enqueue.data = copied_data;
+  } else {
+    event_to_enqueue.data = NULL;
+    event_to_enqueue.data_size = 0;
+  }
+
+  if (!queue_enqueue_Event(&manager->queue, event_to_enqueue)) {
+    log_warn("Failed to enqueue event (type: %d). Queue might be full.",
+             event_to_enqueue.type);
+    // Note: If arena_alloc succeeded but enqueue failed, the allocated
+    // memory for copied_data is orphaned in the arena until the arena is
+    // reset or destroyed. This is generally acceptable for arenas.
     pthread_mutex_unlock(&manager->mutex);
     return false;
   }

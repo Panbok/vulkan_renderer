@@ -69,8 +69,12 @@ typedef enum EventType : uint16_t {
   EVENT_TYPE_NONE = 0,
   EVENT_TYPE_KEY_PRESS = 1,
   EVENT_TYPE_KEY_RELEASE = 2,
-  EVENT_TYPE_MOUSE_MOVE = 3,
-  EVENT_TYPE_MOUSE_CLICK = 4,
+  EVENT_TYPE_BUTTON_PRESS = 3,
+  EVENT_TYPE_BUTTON_RELEASE = 4,
+  EVENT_TYPE_MOUSE_MOVE = 5,
+  EVENT_TYPE_MOUSE_WHEEL = 6,
+  EVENT_TYPE_INPUT_SYSTEM_SHUTDOWN = 7,
+  EVENT_TYPE_INPUT_SYSTEM_INIT = 8,
   EVENT_TYPE_MAX = 16384, /**< Maximum number of event types allowed. */
 } EventType;
 
@@ -80,10 +84,16 @@ typedef enum EventType : uint16_t {
 typedef struct Event {
   EventType type; /**< The type of the event, used to determine which callbacks
                    to invoke. */
-  void *data; /**< Pointer to event-specific data. The ownership and lifetime
-                 of this data are managed by the code that dispatches the
-                 event. The event system only passes this pointer to the
-                 callbacks; it does not allocate, free, or modify it. */
+  void *data;     /**< Pointer to event-specific data. If an event is dispatched
+                     via `event_manager_dispatch` and `data_size` is greater than
+                     zero, this will point to a copy of the original data, managed
+                     by the event system within its arena. Otherwise, its meaning
+                     and lifetime depend on how the event was created and
+                     processed. */
+  uint64_t data_size; /**< The size of the data pointed to by `data`, if it's
+                         to be copied by `event_manager_dispatch`. If zero,
+                         no data is copied, and `data` may be NULL or used
+                         differently. */
 } Event;
 
 /**
@@ -172,12 +182,16 @@ void event_manager_unsubscribe(EventManager *manager, EventType type,
  * @brief Dispatches an event into the queue for asynchronous processing.
  * Enqueues the event and signals the processing thread if it is waiting.
  * This operation is thread-safe and non-blocking unless the queue is full.
- * The caller retains ownership of the memory pointed to by `event.data` and
- * must ensure it remains valid until processed by all callbacks.
+ * The caller provides an `Event` structure. If `event.data_size` is greater
+ * than zero and `event.data` is non-NULL, the data pointed to by `event.data`
+ * (up to `event.data_size` bytes) is copied into memory managed by the
+ * `EventManager`'s arena. The `Event` enqueued will then point to this
+ * copied data. If `event.data_size` is zero, no copy occurs.
  * @param manager Pointer to the EventManager.
- * @param event The `Event` structure to dispatch. This structure is copied into
- * the queue.
- * @return `true` if the event was successfully enqueued, `false` if the queue
- * was full.
+ * @param event The `Event` structure to dispatch. Its `type`, `data`, and
+ * `data_size` fields are used.
+ * @return `true` if the event was successfully enqueued (and data copied, if
+ * applicable), `false` if the queue was full or memory allocation for data
+ * copy failed.
  */
 bool32_t event_manager_dispatch(EventManager *manager, Event event);

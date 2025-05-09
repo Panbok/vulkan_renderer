@@ -26,6 +26,28 @@ static pthread_mutex_t count_mutex = PTHREAD_MUTEX_INITIALIZER;
 static bool32_t slow_callback_executed = false;
 static bool32_t fast_callback_executed = false;
 
+// Global state for test_event_dispatch_processing
+static bool32_t g_dp_key_press_processed_flag = false;
+static uint32_t g_dp_key_press_value = 0;
+static uint32_t g_dp_key_release_value = 0;
+
+// Global state for test_slow_callbacks
+static uint32_t g_sc_event1_final_value = 0;
+static uint32_t g_sc_event2_final_value = 0;
+
+// --- Globals for new data ownership tests ---
+// For test_data_copying_original_integrity
+static uint32_t g_integrity_cb_received_value = 0;
+static bool32_t g_integrity_cb_executed = false;
+
+// For test_dispatch_data_size_zero
+static bool32_t g_dsz_cb_data_is_null = false;
+static bool32_t g_dsz_cb_data_size_is_zero = false;
+static uint32_t g_dsz_cb_execution_count = 0;
+
+// For test_data_lifetime_original_freed
+static bool32_t g_lifetime_cb_executed_successfully = false;
+
 // Test callbacks
 static bool8_t test_callback1(Event *event) {
   TestEventData *data = (TestEventData *)event->data;
@@ -43,6 +65,29 @@ static bool8_t test_callback2(Event *event) {
 static bool8_t test_callback3(Event *event) {
   TestEventData *data = (TestEventData *)event->data;
   data->value -= 1;
+  return true;
+}
+
+// Callbacks specifically for test_event_dispatch_processing
+static bool8_t dp_test_callback1(Event *event) {
+  TestEventData *data = (TestEventData *)event->data;
+  g_dp_key_press_processed_flag = true;
+  data->value += 1;
+  g_dp_key_press_value = data->value; // Store intermediate value
+  return true;
+}
+
+static bool8_t dp_test_callback2(Event *event) {
+  TestEventData *data = (TestEventData *)event->data;
+  data->value *= 2;
+  g_dp_key_press_value = data->value; // Store final value
+  return true;
+}
+
+static bool8_t dp_test_callback3(Event *event) {
+  TestEventData *data = (TestEventData *)event->data;
+  data->value -= 1;
+  g_dp_key_release_value = data->value;
   return true;
 }
 
@@ -80,6 +125,12 @@ static bool8_t slow_callback(Event *event) {
 
   TestEventData *data = (TestEventData *)event->data;
   data->value += 1;
+  // Update global based on initial value before modification by this chain
+  if (data->value == 5 + 1) { // Assuming initial was 5 for event1
+    g_sc_event1_final_value = data->value;
+  } else if (data->value == 10 + 1) { // Assuming initial was 10 for event2
+    g_sc_event2_final_value = data->value;
+  }
   slow_callback_executed = true;
   return true;
 }
@@ -87,7 +138,44 @@ static bool8_t slow_callback(Event *event) {
 static bool8_t fast_callback(Event *event) {
   TestEventData *data = (TestEventData *)event->data;
   data->value *= 2;
+  // Update global based on initial value before modification by this chain
+  if (data->value == (5 + 1) * 2) { // Assuming initial was 5 for event1,
+                                    // processed by slow_callback first
+    g_sc_event1_final_value = data->value;
+  } else if (data->value ==
+             (10 + 1) * 2) { // Assuming initial was 10 for event2, processed by
+                             // slow_callback first
+    g_sc_event2_final_value = data->value;
+  }
   fast_callback_executed = true;
+  return true;
+}
+
+// --- Callbacks for new data ownership tests ---
+static bool8_t integrity_check_callback(Event *event) {
+  TestEventData *data = (TestEventData *)event->data;
+  if (data) { // data should not be null if data_size > 0 and copy occurred
+    g_integrity_cb_received_value = data->value;
+  }
+  g_integrity_cb_executed = true;
+  return true;
+}
+
+static bool8_t data_size_zero_check_callback(Event *event) {
+  g_dsz_cb_data_is_null = (event->data == NULL);
+  g_dsz_cb_data_size_is_zero = (event->data_size == 0);
+  g_dsz_cb_execution_count++;
+  return true;
+}
+
+static bool8_t lifetime_check_callback(Event *event) {
+  TestEventData *data = (TestEventData *)event->data;
+  // Attempt to access the copied data. If the original was incorrectly used,
+  // this might crash or read garbage. A simple check of a known value.
+  if (data &&
+      data->value == 12345) { // 12345 is the magic value set before dispatch
+    g_lifetime_cb_executed_successfully = true;
+  }
   return true;
 }
 
@@ -100,7 +188,9 @@ static void *dispatch_thread(void *arg) {
     event_data->value = (data->thread_id * 1000) + i;
     event_data->processed = false;
 
-    Event event = {.type = EVENT_TYPE_KEY_PRESS, .data = event_data};
+    Event event = {.type = EVENT_TYPE_KEY_PRESS,
+                   .data = event_data,
+                   .data_size = sizeof(TestEventData)};
     event_manager_dispatch(data->manager, event);
   }
 
@@ -190,39 +280,49 @@ static void test_event_dispatch_processing(void) {
   EventManager manager;
   event_manager_create(arena, &manager);
 
-  // Subscribe to events
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback1);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback2);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE, test_callback3);
+  // Reset global state for this test
+  g_dp_key_press_processed_flag = false;
+  g_dp_key_press_value = 0;
+  g_dp_key_release_value = 0;
 
-  // Create test event data
-  TestEventData *key_press_data = arena_alloc(arena, sizeof(TestEventData));
-  key_press_data->value = 5;
-  key_press_data->processed = false;
+  // Subscribe to events using specific callbacks for this test
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, dp_test_callback1);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, dp_test_callback2);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE, dp_test_callback3);
+
+  // Create original test event data (can be on stack or temp arena)
+  TestEventData original_key_press_data;
+  original_key_press_data.value = 5;
+  original_key_press_data.processed =
+      false; // This field is not checked directly anymore
 
   // Create and dispatch event
-  Event event = {.type = EVENT_TYPE_KEY_PRESS, .data = key_press_data};
+  Event event = {.type = EVENT_TYPE_KEY_PRESS,
+                 .data = &original_key_press_data,
+                 .data_size = sizeof(TestEventData)};
 
   bool32_t dispatch_result = event_manager_dispatch(&manager, event);
   assert(dispatch_result && "Event dispatch should succeed");
 
   // Wait for event to be processed
-  // Need to sleep to allow the event processor thread to run
   struct timespec ts = {.tv_sec = 0, .tv_nsec = 100000000}; // 100ms
   nanosleep(&ts, NULL);
 
   // The callbacks should have: added 1 and then multiplied by 2
-  // So 5 -> 6 -> 12
-  assert(key_press_data->processed && "Event should be processed");
-  assert(key_press_data->value == 12 &&
-         "Event callbacks should modify data correctly");
+  // So 5 -> 6 -> 12. Check global state instead of original_key_press_data.
+  assert(g_dp_key_press_processed_flag &&
+         "Event should be processed by dp_test_callback1");
+  assert(g_dp_key_press_value == 12 && "Event callbacks should modify data "
+                                       "correctly, reflected in global state");
 
   // Create another event with different type
-  TestEventData *key_release_data = arena_alloc(arena, sizeof(TestEventData));
-  key_release_data->value = 10;
-  key_release_data->processed = false;
+  TestEventData original_key_release_data;
+  original_key_release_data.value = 10;
+  // original_key_release_data.processed is not used by dp_test_callback3
 
-  Event event2 = {.type = EVENT_TYPE_KEY_RELEASE, .data = key_release_data};
+  Event event2 = {.type = EVENT_TYPE_KEY_RELEASE,
+                  .data = &original_key_release_data,
+                  .data_size = sizeof(TestEventData)};
 
   dispatch_result = event_manager_dispatch(&manager, event2);
   assert(dispatch_result && "Second event dispatch should succeed");
@@ -231,8 +331,9 @@ static void test_event_dispatch_processing(void) {
   nanosleep(&ts, NULL);
 
   // The callback should have: subtracted 1
-  // So 10 -> 9
-  assert(key_release_data->value == 9 && "Event callback should subtract 1");
+  // So 10 -> 9. Check global state.
+  assert(g_dp_key_release_value == 9 &&
+         "Event callback should subtract 1, reflected in global state");
 
   event_manager_destroy(&manager);
 
@@ -270,7 +371,9 @@ static void test_queue_full(void) {
     data->value = i;
     data->processed = false;
 
-    Event event = {.type = EVENT_TYPE_KEY_PRESS, .data = data};
+    Event event = {.type = EVENT_TYPE_KEY_PRESS,
+                   .data = data,
+                   .data_size = sizeof(TestEventData)};
 
     bool32_t dispatch_result = false;
     pthread_mutex_lock(&manager.mutex);
@@ -320,7 +423,9 @@ static void test_event_ordering(void) {
     data->value = i;
     data->processed = false;
 
-    Event event = {.type = EVENT_TYPE_KEY_PRESS, .data = data};
+    Event event = {.type = EVENT_TYPE_KEY_PRESS,
+                   .data = data,
+                   .data_size = sizeof(TestEventData)};
     event_manager_dispatch(&manager, event);
   }
 
@@ -363,7 +468,9 @@ static void test_dynamic_unsubscribe(void) {
     data->value = i;
     data->processed = false;
 
-    Event event = {.type = EVENT_TYPE_KEY_PRESS, .data = data};
+    Event event = {.type = EVENT_TYPE_KEY_PRESS,
+                   .data = data,
+                   .data_size = sizeof(TestEventData)};
     event_manager_dispatch(&manager, event);
 
     // Sleep briefly to ensure processing completes
@@ -442,20 +549,26 @@ static void test_slow_callbacks(void) {
   // Reset state
   slow_callback_executed = false;
   fast_callback_executed = false;
+  g_sc_event1_final_value = 0;
+  g_sc_event2_final_value = 0;
 
   event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, slow_callback);
   event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, fast_callback);
 
-  // Create events
-  TestEventData *data1 = arena_alloc(arena, sizeof(TestEventData));
-  data1->value = 5;
+  // Create original event data (can be on stack or temp arena)
+  TestEventData original_data1;
+  original_data1.value = 5;
 
-  TestEventData *data2 = arena_alloc(arena, sizeof(TestEventData));
-  data2->value = 10;
+  TestEventData original_data2;
+  original_data2.value = 10;
 
   // Dispatch events
-  Event event1 = {.type = EVENT_TYPE_KEY_PRESS, .data = data1};
-  Event event2 = {.type = EVENT_TYPE_KEY_PRESS, .data = data2};
+  Event event1 = {.type = EVENT_TYPE_KEY_PRESS,
+                  .data = &original_data1,
+                  .data_size = sizeof(TestEventData)};
+  Event event2 = {.type = EVENT_TYPE_KEY_PRESS,
+                  .data = &original_data2,
+                  .data_size = sizeof(TestEventData)};
 
   event_manager_dispatch(&manager, event1);
   event_manager_dispatch(&manager, event2);
@@ -468,16 +581,149 @@ static void test_slow_callbacks(void) {
   assert(slow_callback_executed && "Slow callback should execute");
   assert(fast_callback_executed && "Fast callback should execute");
 
-  // Verify data was modified correctly
+  // Verify data was modified correctly using global state
   // Each event goes through both callbacks: +1 and *2
-  assert(data1->value == 12 &&
-         "First event should be processed by both callbacks");
-  assert(data2->value == 22 &&
-         "Second event should be processed by both callbacks");
+  // Event 1: (5+1)*2 = 12
+  // Event 2: (10+1)*2 = 22
+  assert(
+      g_sc_event1_final_value == 12 &&
+      "First event should be processed by both callbacks with correct value");
+  assert(
+      g_sc_event2_final_value == 22 &&
+      "Second event should be processed by both callbacks with correct value");
 
   event_manager_destroy(&manager);
   teardown_suite();
   printf("  test_slow_callbacks PASSED\n");
+}
+
+// --- New test functions for data ownership ---
+
+static void test_data_copying_original_integrity(void) {
+  printf("  Running test_data_copying_original_integrity...\n");
+  setup_suite();
+  EventManager manager;
+  event_manager_create(arena, &manager);
+
+  g_integrity_cb_executed = false;
+  g_integrity_cb_received_value = 0;
+
+  event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE,
+                          integrity_check_callback);
+
+  TestEventData *original_data = arena_alloc(arena, sizeof(TestEventData));
+  original_data->value = 100;
+  original_data->processed = false;
+
+  Event event = {.type = EVENT_TYPE_MOUSE_MOVE,
+                 .data = original_data,
+                 .data_size = sizeof(TestEventData)};
+  event_manager_dispatch(&manager, event);
+
+  // Modify original data AFTER dispatch
+  original_data->value = 200;
+
+  struct timespec ts = {.tv_sec = 0, .tv_nsec = 100000000}; // 100ms
+  nanosleep(&ts, NULL);
+
+  assert(g_integrity_cb_executed && "Integrity callback should have executed");
+  assert(
+      g_integrity_cb_received_value == 100 &&
+      "Callback should have received the data value at the time of dispatch");
+  assert(original_data->value == 200 &&
+         "Original data should retain its modification made after dispatch");
+
+  event_manager_destroy(&manager);
+  teardown_suite();
+  printf("  test_data_copying_original_integrity PASSED\n");
+}
+
+static void test_dispatch_data_size_zero(void) {
+  printf("  Running test_dispatch_data_size_zero...\n");
+  setup_suite();
+  EventManager manager;
+  event_manager_create(arena, &manager);
+
+  g_dsz_cb_execution_count = 0;
+  g_dsz_cb_data_is_null = false;
+  g_dsz_cb_data_size_is_zero = false;
+
+  event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_WHEEL,
+                          data_size_zero_check_callback);
+
+  // Case 1: data_size = 0, data is non-NULL (but should be ignored for copying)
+  TestEventData dummy_data = {.value = 50, .processed = false};
+  Event event1 = {
+      .type = EVENT_TYPE_MOUSE_WHEEL, .data = &dummy_data, .data_size = 0};
+  event_manager_dispatch(&manager, event1);
+
+  struct timespec ts = {.tv_sec = 0, .tv_nsec = 100000000}; // 100ms
+  nanosleep(&ts, NULL);
+
+  assert(g_dsz_cb_execution_count == 1 &&
+         "DSZ Callback should have executed once for event1");
+  assert(g_dsz_cb_data_is_null &&
+         "Callback event data should be NULL for data_size=0 event1");
+  assert(g_dsz_cb_data_size_is_zero &&
+         "Callback event data_size should be 0 for event1");
+
+  // Reset for next dispatch
+  g_dsz_cb_data_is_null = false;
+  g_dsz_cb_data_size_is_zero = false;
+
+  // Case 2: data_size = 0, data is NULL
+  Event event2 = {.type = EVENT_TYPE_MOUSE_WHEEL, .data = NULL, .data_size = 0};
+  event_manager_dispatch(&manager, event2);
+  nanosleep(&ts, NULL);
+
+  assert(g_dsz_cb_execution_count == 2 &&
+         "DSZ Callback should have executed again for event2");
+  assert(g_dsz_cb_data_is_null &&
+         "Callback event data should be NULL for data_size=0 event2");
+  assert(g_dsz_cb_data_size_is_zero &&
+         "Callback event data_size should be 0 for event2");
+
+  event_manager_destroy(&manager);
+  teardown_suite();
+  printf("  test_dispatch_data_size_zero PASSED\n");
+}
+
+static void test_data_lifetime_original_freed(void) {
+  printf("  Running test_data_lifetime_original_freed...\n");
+  setup_suite(); // Main arena
+  EventManager manager;
+  event_manager_create(arena, &manager);
+
+  g_lifetime_cb_executed_successfully = false;
+  event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_PRESS,
+                          lifetime_check_callback);
+
+  // Create a temporary scratch arena for the original data
+  Scratch scratch = scratch_create(arena);
+  TestEventData *original_data_on_scratch =
+      arena_alloc(scratch.arena, sizeof(TestEventData));
+  original_data_on_scratch->value = 12345; // Magic value
+  original_data_on_scratch->processed = false;
+
+  Event event = {.type = EVENT_TYPE_BUTTON_PRESS,
+                 .data = original_data_on_scratch,
+                 .data_size = sizeof(TestEventData)};
+  event_manager_dispatch(&manager, event);
+
+  // Destroy the scratch arena, freeing the original_data_on_scratch
+  scratch_destroy(scratch);
+  // original_data_on_scratch is now a dangling pointer / points to freed memory
+
+  struct timespec ts = {.tv_sec = 0, .tv_nsec = 100000000}; // 100ms
+  nanosleep(&ts, NULL);
+
+  assert(
+      g_lifetime_cb_executed_successfully &&
+      "Lifetime callback should have executed successfully using copied data");
+
+  event_manager_destroy(&manager);
+  teardown_suite();
+  printf("  test_data_lifetime_original_freed PASSED\n");
 }
 
 // Run all event system tests
@@ -491,6 +737,9 @@ bool32_t run_event_tests() {
   test_dynamic_unsubscribe();
   test_concurrent_dispatch();
   test_slow_callbacks();
+  test_data_copying_original_integrity();
+  test_dispatch_data_size_zero();
+  test_data_lifetime_original_freed();
   printf("--- Event System tests completed. ---\n");
   return true;
 }
