@@ -93,8 +93,7 @@ static void test_input_init() {
                           on_input_system_shutdown);
   input_init(&manager);
 
-  struct timespec ts = {.tv_sec = 0, .tv_nsec = 100000000}; // 100ms
-  nanosleep(&ts, NULL);
+  platform_sleep(100);
 
   assert(input_initialized == true && "Input system not initialized");
 
@@ -118,8 +117,7 @@ static void test_input_shutdown() {
   input_init(&manager);
   input_shutdown();
 
-  struct timespec ts = {.tv_sec = 0, .tv_nsec = 100000000}; // 100ms
-  nanosleep(&ts, NULL);
+  platform_sleep(100);
 
   assert(input_initialized == false && "Input system was not shutdown");
 
@@ -146,8 +144,7 @@ static void test_input_key_press_release() {
 
   // Test KEY_A press
   input_process_key(KEY_A, true);
-  struct timespec ts = {.tv_sec = 0, .tv_nsec = 100000000}; // 100ms
-  nanosleep(&ts, NULL); // Allow time for event processing
+  platform_sleep(100);
 
   assert(input_is_key_down(KEY_A) && "KEY_A should be down");
   assert(input_is_key_up(KEY_A) == false && "KEY_A should not be up");
@@ -164,7 +161,7 @@ static void test_input_key_press_release() {
 
   // Test KEY_A release
   input_process_key(KEY_A, false);
-  nanosleep(&ts, NULL); // Allow time for event processing
+  platform_sleep(100);
 
   assert(input_is_key_down(KEY_A) == false && "KEY_A should not be down");
   assert(input_is_key_up(KEY_A) && "KEY_A should be up");
@@ -182,8 +179,7 @@ static void test_input_key_press_release() {
 
   // Test no event if state doesn't change
   input_process_key(KEY_A, false); // Already released
-  nanosleep(&ts,
-            NULL); // Allow time for any potential (erroneous) event processing
+  platform_sleep(100);
   assert(key_event_received == false &&
          "Event received when state did not change");
 
@@ -207,7 +203,7 @@ static void test_input_button_press_release() {
 
   // Test BUTTON_LEFT press
   input_process_button(BUTTON_LEFT, true);
-  nanosleep(&ts, NULL); // Allow time for event processing
+  platform_sleep(100); // Allow time for event processing
 
   assert(input_is_button_down(BUTTON_LEFT) && "BUTTON_LEFT should be down");
   assert(input_is_button_up(BUTTON_LEFT) == false &&
@@ -227,7 +223,7 @@ static void test_input_button_press_release() {
 
   // Test BUTTON_LEFT release
   input_process_button(BUTTON_LEFT, false);
-  nanosleep(&ts, NULL); // Allow time for event processing
+  platform_sleep(100); // Allow time for event processing
 
   assert(input_is_button_down(BUTTON_LEFT) == false &&
          "BUTTON_LEFT should not be down");
@@ -247,8 +243,8 @@ static void test_input_button_press_release() {
 
   // Test no event if state doesn't change
   input_process_button(BUTTON_LEFT, false); // Already released
-  nanosleep(&ts,
-            NULL); // Allow time for any potential (erroneous) event processing
+  platform_sleep(
+      100); // Allow time for any potential (erroneous) event processing
   assert(button_event_received == false &&
          "Event received when button state did not change");
 
@@ -274,7 +270,7 @@ static void test_input_mouse_move() {
 
   // Initial move
   input_process_mouse_move(100, 200);
-  nanosleep(&ts, NULL); // Allow time for event processing
+  platform_sleep(100); // Allow time for event processing
 
   input_get_mouse_position(&current_x, &current_y);
   assert(current_x == 100 && current_y == 200 &&
@@ -292,7 +288,7 @@ static void test_input_mouse_move() {
 
   // Second move
   input_process_mouse_move(-50, 75);
-  nanosleep(&ts, NULL); // Allow time for event processing
+  platform_sleep(100); // Allow time for event processing
 
   input_get_mouse_position(&current_x, &current_y);
   assert(current_x == -50 && current_y == 75 &&
@@ -315,8 +311,8 @@ static void test_input_mouse_move() {
 
   // No event if position doesn't change
   input_process_mouse_move(-50, 75); // Same position
-  nanosleep(&ts,
-            NULL); // Allow time for any potential (erroneous) event processing
+  platform_sleep(
+      100); // Allow time for any potential (erroneous) event processing
   assert(mouse_move_event_received == false &&
          "Mouse move event received when position did not change");
 
@@ -342,7 +338,7 @@ static void test_input_mouse_wheel() {
 
   // Initial wheel movement (scroll up)
   input_process_mouse_wheel(1);
-  nanosleep(&ts, NULL); // Allow time for event processing
+  platform_sleep(100); // Allow time for event processing
 
   input_get_mouse_wheel(
       &current_delta); // Although this gets current, the event is key
@@ -354,7 +350,7 @@ static void test_input_mouse_wheel() {
 
   // Subsequent wheel movement (scroll down)
   input_process_mouse_wheel(-1);
-  nanosleep(&ts, NULL); // Allow time for event processing
+  platform_sleep(100); // Allow time for event processing
 
   input_get_mouse_wheel(&current_delta);
   assert(current_delta == -1 &&
@@ -373,7 +369,7 @@ static void test_input_mouse_wheel() {
   // non-zero, that should be a change.
 
   input_process_mouse_wheel(0); // Reset wheel to 0
-  nanosleep(&ts, NULL);         // Allow time for event processing
+  platform_sleep(100);          // Allow time for event processing
 
   input_get_mouse_wheel(&current_delta);
   assert(current_delta == 0 && "Mouse wheel delta not reset to 0");
@@ -385,8 +381,8 @@ static void test_input_mouse_wheel() {
 
   // Test no event if delta is already 0 and we process 0 again
   input_process_mouse_wheel(0);
-  nanosleep(&ts,
-            NULL); // Allow time for any potential (erroneous) event processing
+  platform_sleep(
+      100); // Allow time for any potential (erroneous) event processing
   assert(mouse_wheel_event_received == false &&
          "Mouse wheel event received when delta did not change from 0");
 

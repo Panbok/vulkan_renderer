@@ -20,4 +20,18 @@ void platform_mem_release(void *ptr, uint64_t size) { munmap(ptr, size); }
 
 uint64_t platform_get_page_size() { return getpagesize(); }
 
+void platform_sleep(uint64_t ms) {
+#if _POSIX_C_SOURCE >= 199309L
+  struct timespec ts;
+  ts.tv_sec = ms / 1000;
+  ts.tv_nsec = (ms % 1000) * 1000 * 1000;
+  nanosleep(&ts, 0);
+#else
+  if (ms >= 1000) {
+    sleep(ms / 1000);
+  }
+  usleep((ms % 1000) * 1000);
+#endif
+}
+
 #endif
