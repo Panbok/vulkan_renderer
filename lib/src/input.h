@@ -5,53 +5,66 @@
  *
  * This system is responsible for tracking and processing user input from various
  * devices, primarily the keyboard and mouse. It maintains the current and
- * previous state of inputs, allowing for checks like "key just pressed" or
- * "button was released". It integrates with an EventManager to dispatch
- * events when input states change.
+ * previous state of inputs for a given input context (e.g., a window),
+ * allowing for checks like "key just pressed" or "button was released".
+ * It integrates with an EventManager to dispatch events when input states change.
  *
  * Key Features:
+ * - **Explicit State Management:** Input state is managed via an `InputState`
+ *   structure, allowing for multiple independent input contexts (e.g., one per window).
  * - **State Tracking:** Keeps track of the current and previous states for keys
- *   and mouse buttons.
+ *   and mouse buttons within a given `InputState`.
  * - **Mouse Position & Wheel:** Tracks current and previous mouse cursor
- *   positions and mouse wheel delta.
+ *   positions and mouse wheel delta within a given `InputState`.
  * - **Event Dispatch:** Dispatches events (e.g., key press/release, mouse
- *   button press/release, mouse move, mouse wheel) via an `EventManager` when
- *   input states change.
+ *   button press/release, mouse move, mouse wheel) via a provided `EventManager`
+ *   when input states change.
  * - **Platform Agnostic Core:** The core logic is platform-agnostic; platform-
- *   specific code is expected to call the `input_process_*` functions to feed
- *   raw input data into this system.
+ *   specific code is expected to call the `input_process_*` functions with the
+ *   appropriate `InputState` to feed raw input data into this system.
  *
  * Architecture:
- * 1. **InputState:** A static internal structure (`InputState` in input.c) holds
- *    the current and previous states for keyboard keys and mouse buttons/position/wheel.
+ * 1. **InputState:** An `InputState` structure holds the current and previous
+ *    states for keyboard keys, mouse buttons, mouse position, and mouse wheel,
+ *    as well as a pointer to an `EventManager`. Instances of this struct are
+ *    managed by the application (e.g., one per window).
  * 2. **Initialization & Shutdown:**
- *    - `input_init()`: Initializes the input system, primarily by storing a
- *      pointer to an `EventManager` and dispatching an `EVENT_TYPE_INPUT_SYSTEM_INIT` event.
- *    - `input_shutdown()`: Performs cleanup and dispatches an
- *      `EVENT_TYPE_INPUT_SYSTEM_SHUTDOWN` event.
+ *    - `input_init()`: Called to initialize an `InputState` structure. It takes
+ *      an `EventManager*` and returns the initialized `InputState`. It also
+ *      dispatches an `EVENT_TYPE_INPUT_SYSTEM_INIT` event.
+ *    - `input_shutdown()`: Called with a pointer to an `InputState` to perform
+ *      cleanup and dispatch an `EVENT_TYPE_INPUT_SYSTEM_SHUTDOWN` event.
  * 3. **State Update:**
- *    - `input_update()`: Called once per frame (typically). It copies the current
- *      input states to the previous input states. This is crucial for detecting
- *      state transitions (e.g., key just pressed).
+ *    - `input_update()`: Called once per frame (typically) for each active
+ *      `InputState`. It copies the current input states to the previous input states
+ *      within that `InputState`. This is crucial for detecting state transitions.
  * 4. **Input Processing:**
- *    - `input_process_key()`: Called by the platform layer when a key event occurs.
- *    - `input_process_button()`: Called by the platform layer for mouse button events.
- *    - `input_process_mouse_move()`: Called by the platform layer for mouse movement.
- *    - `input_process_mouse_wheel()`: Called by the platform layer for mouse wheel events.
- *    These functions update the internal current state and dispatch corresponding events if a change occurred.
+ *    - `input_process_key()`, `input_process_button()`, `input_process_mouse_move()`,
+ *      `input_process_mouse_wheel()`: These functions are called by the platform
+ *      layer (or application logic) with a pointer to the relevant `InputState`
+ *      when a raw input event occurs. They update the current state within that
+ *      `InputState` and dispatch corresponding events if a change occurred.
  * 5. **State Querying:**
  *    - `input_is_key_down()`, `input_is_key_up()`, `input_was_key_down()`, `input_was_key_up()`.
  *    - `input_is_button_down()`, `input_is_button_up()`, `input_was_button_down()`, `input_was_button_up()`.
  *    - `input_get_mouse_position()`, `input_get_previous_mouse_position()`.
  *    - `input_get_mouse_wheel()`.
- *    These functions allow other systems to query the current and previous input states.
+ *    These functions take a pointer to an `InputState` and allow other systems
+ *    to query its current and previous input states.
  *
- * Usage Pattern:
- * 1. Initialize the system with `input_init(&event_manager)`.
- * 2. In the main game loop, call `input_update()` once per frame before processing game logic that depends on input.
- * 3. The platform layer (e.g., window event handling) calls the appropriate `input_process_*` functions when it receives raw input from the OS.
- * 4. Game logic can then use `input_is_*` or `input_get_*` functions to check input states or subscribe to input events via the EventManager.
- * 5. Call `input_shutdown()` when the application is closing.
+ * Usage Pattern (Example: Per-Window Input):
+ * 1. Application creates an `EventManager` instance.
+ * 2. When a window is created, it initializes its own `InputState`:
+ *    `InputState window_input_state = input_init(&my_app_event_manager);`
+ * 3. In the main game loop, for each active/focused window, call `input_update()`:
+ *    `input_update(&window_input_state, delta_time);`
+ * 4. The platform layer (e.g., window event handling for the focused window)
+ *    calls the appropriate `input_process_*` functions with `&window_input_state`
+ *    when it receives raw input from the OS.
+ * 5. Game logic can then use `input_is_*` or `input_get_*` functions with
+ *    `&window_input_state` to check input states for that specific window,
+ *    or subscribe to input events via the `EventManager`.
+ * 6. When a window is destroyed, call `input_shutdown(&window_input_state)`.
  */
 // clang-format on
 #pragma once
@@ -270,19 +283,41 @@ typedef struct MouseWheelEventData {
                    scroll up/forward, negative for scroll down/backward. */
 } MouseWheelEventData;
 
+typedef struct KeysState {
+  bool8_t keys[KEYS_MAX_KEYS];
+} KeysState;
+
+typedef struct ButtonsState {
+  bool8_t buttons[BUTTON_MAX_BUTTONS];
+  int32_t x;
+  int32_t y;
+  int8_t wheel;
+} ButtonsState;
+
+typedef struct InputState {
+  EventManager *event_manager;
+  KeysState previous_keys;
+  KeysState current_keys;
+  ButtonsState previous_buttons;
+  ButtonsState current_buttons;
+} InputState;
+
 /**
  * @brief Initializes the input system.
  * Stores the provided event manager for dispatching input events and dispatches
  * an `EVENT_TYPE_INPUT_SYSTEM_INIT` event.
  * @param event_manager Pointer to an initialized `EventManager` instance.
+ * @return An `InputState` structure initialized with the event manager and
+ * default input states.
  */
-void input_init(EventManager *event_manager);
+InputState input_init(EventManager *event_manager);
 
 /**
  * @brief Shuts down the input system.
  * Dispatches an `EVENT_TYPE_INPUT_SYSTEM_SHUTDOWN` event.
+ * @param input_state Pointer to the `InputState` to shut down.
  */
-void input_shutdown();
+void input_shutdown(InputState *input_state);
 
 /**
  * @brief Updates the input system's state.
@@ -290,41 +325,46 @@ void input_shutdown();
  * logic that depends on input. It copies the current input states (keys,
  * buttons, mouse position) to the previous state buffers, allowing for
  * detection of just-pressed/just-released states.
+ * @param input_state Pointer to the `InputState` to update.
  * @param delta_time The time elapsed since the last frame (in seconds).
  * Currently unused but common for update functions.
  */
-void input_update(float64_t delta_time);
+void input_update(InputState *input_state, float64_t delta_time);
 
 /**
  * @brief Checks if a specific keyboard key is currently held down.
+ * @param input_state Pointer to the `InputState` to query.
  * @param key The `Keys` identifier of the key to check.
  * @return `true` if the key is currently down, `false` otherwise.
  */
-bool8_t input_is_key_down(Keys key);
+bool8_t input_is_key_down(InputState *input_state, Keys key);
 
 /**
  * @brief Checks if a specific keyboard key is currently up (not pressed).
+ * @param input_state Pointer to the `InputState` to query.
  * @param key The `Keys` identifier of the key to check.
  * @return `true` if the key is currently up, `false` otherwise.
  */
-bool8_t input_is_key_up(Keys key);
+bool8_t input_is_key_up(InputState *input_state, Keys key);
 
 /**
  * @brief Checks if a specific keyboard key was held down in the previous frame.
  * Requires `input_update()` to have been called to update previous states.
+ * @param input_state Pointer to the `InputState` to query.
  * @param key The `Keys` identifier of the key to check.
  * @return `true` if the key was down in the previous frame, `false` otherwise.
  */
-bool8_t input_was_key_down(Keys key);
+bool8_t input_was_key_down(InputState *input_state, Keys key);
 
 /**
  * @brief Checks if a specific keyboard key was up (not pressed) in the previous
  * frame. Requires `input_update()` to have been called to update previous
  * states.
+ * @param input_state Pointer to the `InputState` to query.
  * @param key The `Keys` identifier of the key to check.
  * @return `true` if the key was up in the previous frame, `false` otherwise.
  */
-bool8_t input_was_key_up(Keys key);
+bool8_t input_was_key_up(InputState *input_state, Keys key);
 
 /**
  * @brief Processes a keyboard key event.
@@ -332,67 +372,76 @@ bool8_t input_was_key_up(Keys key);
  * Updates the internal current key state and dispatches a
  * `EVENT_TYPE_KEY_PRESS` or `EVENT_TYPE_KEY_RELEASE` event via the
  * `EventManager` if the state changed.
+ * @param input_state Pointer to the `InputState` to modify.
  * @param key The `Keys` identifier of the key involved in the event.
  * @param pressed `true` if the key was pressed, `false` if it was released.
  */
-void input_process_key(Keys key, bool8_t pressed);
+void input_process_key(InputState *input_state, Keys key, bool8_t pressed);
 
 /**
  * @brief Checks if a specific mouse button is currently held down.
+ * @param input_state Pointer to the `InputState` to query.
  * @param button The `Buttons` identifier of the mouse button to check.
  * @return `true` if the button is currently down, `false` otherwise.
  */
-bool8_t input_is_button_down(Buttons button);
+bool8_t input_is_button_down(InputState *input_state, Buttons button);
 
 /**
  * @brief Checks if a specific mouse button is currently up (not pressed).
+ * @param input_state Pointer to the `InputState` to query.
  * @param button The `Buttons` identifier of the mouse button to check.
  * @return `true` if the button is currently up, `false` otherwise.
  */
-bool8_t input_is_button_up(Buttons button);
+bool8_t input_is_button_up(InputState *input_state, Buttons button);
 
 /**
  * @brief Checks if a specific mouse button was held down in the previous frame.
  * Requires `input_update()` to have been called to update previous states.
+ * @param input_state Pointer to the `InputState` to query.
  * @param button The `Buttons` identifier of the mouse button to check.
  * @return `true` if the button was down in the previous frame, `false`
  * otherwise.
  */
-bool8_t input_was_button_down(Buttons button);
+bool8_t input_was_button_down(InputState *input_state, Buttons button);
 
 /**
  * @brief Checks if a specific mouse button was up (not pressed) in the previous
  * frame. Requires `input_update()` to have been called to update previous
  * states.
+ * @param input_state Pointer to the `InputState` to query.
  * @param button The `Buttons` identifier of the mouse button to check.
  * @return `true` if the button was up in the previous frame, `false` otherwise.
  */
-bool8_t input_was_button_up(Buttons button);
+bool8_t input_was_button_up(InputState *input_state, Buttons button);
 
 /**
  * @brief Retrieves the current mouse cursor position.
+ * @param input_state Pointer to the `InputState` to query.
  * @param[out] x Pointer to store the current X-coordinate of the mouse.
  * @param[out] y Pointer to store the current Y-coordinate of the mouse.
  */
-void input_get_mouse_position(int32_t *x, int32_t *y);
+void input_get_mouse_position(InputState *input_state, int32_t *x, int32_t *y);
 
 /**
  * @brief Retrieves the mouse cursor position from the previous frame.
  * Requires `input_update()` to have been called to update previous states.
+ * @param input_state Pointer to the `InputState` to query.
  * @param[out] x Pointer to store the previous X-coordinate of the mouse.
  * @param[out] y Pointer to store the previous Y-coordinate of the mouse.
  */
-void input_get_previous_mouse_position(int32_t *x, int32_t *y);
+void input_get_previous_mouse_position(InputState *input_state, int32_t *x,
+                                       int32_t *y);
 
 /**
  * @brief Retrieves the last processed mouse wheel delta.
  * Note: The concept of a "previous" mouse wheel delta is not explicitly stored
  * across frames in the same way as position or button states. This function
  * returns the most recent delta processed by `input_process_mouse_wheel`.
+ * @param input_state Pointer to the `InputState` to query.
  * @param[out] delta Pointer to store the last mouse wheel delta. Positive for
  * up/forward, negative for down/backward.
  */
-void input_get_mouse_wheel(int8_t *delta);
+void input_get_mouse_wheel(InputState *input_state, int8_t *delta);
 
 /**
  * @brief Processes a mouse button event.
@@ -400,20 +449,23 @@ void input_get_mouse_wheel(int8_t *delta);
  * Updates the internal current button state and dispatches a
  * `EVENT_TYPE_BUTTON_PRESS` or `EVENT_TYPE_BUTTON_RELEASE` event via the
  * `EventManager` if the state changed.
+ * @param input_state Pointer to the `InputState` to modify.
  * @param button The `Buttons` identifier of the mouse button involved.
  * @param pressed `true` if the button was pressed, `false` if it was released.
  */
-void input_process_button(Buttons button, bool8_t pressed);
+void input_process_button(InputState *input_state, Buttons button,
+                          bool8_t pressed);
 
 /**
  * @brief Processes a mouse movement event.
  * Called by the platform layer when the mouse cursor moves.
  * Updates the internal current mouse position and dispatches an
  * `EVENT_TYPE_MOUSE_MOVE` event via the `EventManager` if the position changed.
+ * @param input_state Pointer to the `InputState` to modify.
  * @param x The new X-coordinate of the mouse cursor.
  * @param y The new Y-coordinate of the mouse cursor.
  */
-void input_process_mouse_move(int16_t x, int16_t y);
+void input_process_mouse_move(InputState *input_state, int16_t x, int16_t y);
 
 /**
  * @brief Processes a mouse wheel scroll event.
@@ -421,7 +473,8 @@ void input_process_mouse_move(int16_t x, int16_t y);
  * Updates the internal mouse wheel state and dispatches an
  * `EVENT_TYPE_MOUSE_WHEEL` event via the `EventManager` if the delta is
  * non-zero or changed from the previous non-zero delta.
+ * @param input_state Pointer to the `InputState` to modify.
  * @param delta The amount the wheel was scrolled. Positive for up/forward,
  * negative for down/backward.
  */
-void input_process_mouse_wheel(int8_t delta);
+void input_process_mouse_wheel(InputState *input_state, int8_t delta);
