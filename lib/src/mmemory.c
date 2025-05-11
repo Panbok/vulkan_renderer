@@ -1,4 +1,5 @@
 #include "mmemory.h"
+#include "defines.h"
 #include "platform.h"
 
 // Struct to hold slot finding results
@@ -71,6 +72,8 @@ static inline SlotResult find_slot_by_ptr(MMemory *allocator, void *ptr) {
 bool32_t mmemory_create(uint64_t capacity, MMemory *out_allocator) {
   assert_log(out_allocator != NULL, "out_allocator is NULL");
   assert_log(capacity > 0, "capacity is not greater than 0");
+
+  MemZero(out_allocator, sizeof(MMemory));
 
   out_allocator->page_size = platform_get_page_size();
   if (out_allocator->page_size == 0) {
