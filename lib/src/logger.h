@@ -2,7 +2,7 @@
 
 #include "arena.h"
 #include "platform.h"
-#include "string.h"
+#include "str.h"
 
 static Arena *_log_arena = NULL;
 
