@@ -5,13 +5,13 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Launch OpenGL Renderer",
+            "name": "Launch Vulkan Renderer",
             "type": "lldb",
             "request": "launch",
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}/build/",
             "environment": [],
-            "program": "${workspaceFolder}/build/vulkan_renderer",
+            "program": "${workspaceFolder}/build/app/vulkan_renderer",
             "osx": {
                 "MIMode": "lldb",
                 "targetArchitecture": "arm64",
