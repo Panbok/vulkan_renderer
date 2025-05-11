@@ -34,4 +34,5 @@ void platform_sleep(uint64_t ms) {
 #endif
 }
 
+float64_t platform_get_absolute_time() { return mach_absolute_time(); }
 #endif

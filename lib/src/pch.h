@@ -11,3 +11,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+
+#if defined(PLATFORM_APPLE)
+#include <mach/mach_time.h>
+#endif
