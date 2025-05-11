@@ -96,6 +96,7 @@ static void test_input_init() {
   platform_sleep(100);
 
   assert(input_initialized == true && "Input system not initialized");
+  assert(input_state.is_initialized == true && "Input state not initialized");
 
   input_shutdown(&input_state);
   event_manager_destroy(&manager);
@@ -120,6 +121,7 @@ static void test_input_shutdown() {
   platform_sleep(100);
 
   assert(input_initialized == false && "Input system was not shutdown");
+  assert(input_state.is_initialized == false && "Input state not shutdown");
 
   event_manager_destroy(&manager);
 

@@ -78,9 +78,9 @@
  * @brief Defines mouse button identifiers.
  */
 typedef enum Buttons {
-  BUTTON_LEFT,  /**< Left mouse button. */
-  BUTTON_RIGHT, /**< Right mouse button. */
-  // BUTTON_MIDDLE,   // Example: Middle mouse button (if supported/needed)
+  BUTTON_LEFT,   /**< Left mouse button. */
+  BUTTON_RIGHT,  /**< Right mouse button. */
+  BUTTON_MIDDLE, /**< Middle mouse button. */
   // BUTTON_X1,       // Example: Extra mouse button 1 (if supported/needed)
   // BUTTON_X2,       // Example: Extra mouse button 2 (if supported/needed)
   BUTTON_MAX_BUTTONS /**< Maximum number of mouse buttons supported. */
@@ -97,7 +97,7 @@ typedef enum Buttons {
  * @brief Defines keyboard key identifiers. Values are typically platform-
  * independent virtual key codes.
  */
-typedef enum Keys {
+typedef enum Keys : uint32_t {
   DEFINE_KEY(BACKSPACE, 0x08), /**< Backspace key. */
   DEFINE_KEY(ENTER, 0x0D),     /**< Enter key. */
   DEFINE_KEY(TAB, 0x09),       /**< Tab key. */
@@ -300,6 +300,7 @@ typedef struct InputState {
   KeysState current_keys;
   ButtonsState previous_buttons;
   ButtonsState current_buttons;
+  bool32_t is_initialized;
 } InputState;
 
 /**

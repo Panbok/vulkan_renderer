@@ -75,6 +75,8 @@ typedef enum EventType : uint16_t {
   EVENT_TYPE_MOUSE_WHEEL = 6,
   EVENT_TYPE_INPUT_SYSTEM_SHUTDOWN = 7,
   EVENT_TYPE_INPUT_SYSTEM_INIT = 8,
+  EVENT_TYPE_WINDOW_RESIZE = 9,
+  EVENT_TYPE_APPLICATION_QUIT = 10,
   EVENT_TYPE_MAX = 16384, /**< Maximum number of event types allowed. */
 } EventType;
 

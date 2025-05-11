@@ -9,6 +9,7 @@ InputState input_init(EventManager *event_manager) {
       .current_keys = {0},
       .previous_buttons = {0},
       .current_buttons = {0},
+      .is_initialized = true,
   };
 
   Event event = {
@@ -30,6 +31,7 @@ void input_shutdown(InputState *input_state) {
       .data = NULL,
       .data_size = 0,
   };
+  input_state->is_initialized = false;
   event_manager_dispatch(input_state->event_manager, event);
   log_info("Input system shutdown");
 }

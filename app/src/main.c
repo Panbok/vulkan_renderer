@@ -1,49 +1,48 @@
-#include "arena.h"
-#include "array.h"
+#include "event.h"
+#include "input.h"
 #include "logger.h"
-#include "string.h"
-#include "vector.h"
+#include "window.h"
+
+static bool8_t event_callback_window_resize(Event *event) {
+  WindowResizeEventData *data = (WindowResizeEventData *)event->data;
+  log_info("Window resized to %d x %d", data->width, data->height);
+  return true_v;
+}
+
+static bool8_t event_callback_key_press(Event *event) {
+  KeyEventData *data = (KeyEventData *)event->data;
+  log_info("Key pressed: %d", data->key);
+  return true_v;
+}
 
 int main(int argc, char **argv) {
   Arena *log_arena = arena_create(MB(1), MB(1));
   log_init(log_arena);
 
-  Arena *arena = arena_create();
-  Scratch scratch = scratch_create(arena);
+  Arena *arena = arena_create(MB(1), MB(1));
+  EventManager event_manager = {0};
+  event_manager_create(arena, &event_manager);
+  // InputState input_state = input_init(&event_manager);
 
-  Array_uint32_t array = array_create_uint32_t(arena, 10);
-  for (uint64_t i = 0; i < 10; i++) {
-    array_set_uint32_t(&array, i, i * 1024);
+  Window window = {0};
+  bool8_t result = window_create(&window, &event_manager, "Hello, World!", 100,
+                                 100, 800, 600);
+  assert_log(result, "Failed to create window");
+
+  event_manager_subscribe(&event_manager, EVENT_TYPE_WINDOW_RESIZE,
+                          event_callback_window_resize);
+  event_manager_subscribe(&event_manager, EVENT_TYPE_KEY_PRESS,
+                          event_callback_key_press);
+  bool8_t running = true_v;
+  while (running) {
+    running = window_update(&window);
+    input_update(&window.input_state, 0);
   }
-  for (uint64_t i = 0; i < array.length; i++) {
-    log_info("Static array: %d", *array_get_uint32_t(&array, i));
-  }
-  scratch_destroy(scratch);
-  array_destroy_uint32_t(&array);
 
-  Vector_uint32_t vector = vector_create_uint32_t(arena);
-
-  for (uint64_t i = 0; i < 100; i++) {
-    vector_push_uint32_t(&vector, i * 32);
-  }
-  for (uint64_t i = 0; i < vector.length; i++) {
-    log_info("Dynamic array: %d", *vector_get_uint32_t(&vector, i));
-  }
-  scratch_destroy(scratch);
-  vector_destroy_uint32_t(&vector);
-
-  String8 str1 = string8_lit("Hello, ");
-  String8 str2 = string8_lit("World!");
-  String8 str = string8_concat(arena, &str1, &str2);
-  log_trace("%s", string8_cstr(&str));
-  log_info("%s", string8_cstr(&str));
-  log_debug("%s", string8_cstr(&str));
-  log_warn("%s", string8_cstr(&str));
-  log_error("%s", string8_cstr(&str));
-  assert_log(0 == 1, string8_cstr(&str));
-  scratch_destroy(scratch);
-  string8_destroy(&str);
-
+  window_destroy(&window);
+  // input_shutdown(&input_state);
+  event_manager_destroy(&event_manager);
   arena_destroy(arena);
+  arena_destroy(log_arena);
   return 0;
 }
