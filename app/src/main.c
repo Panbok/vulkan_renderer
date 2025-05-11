@@ -22,7 +22,6 @@ int main(int argc, char **argv) {
   Arena *arena = arena_create(MB(1), MB(1));
   EventManager event_manager = {0};
   event_manager_create(arena, &event_manager);
-  // InputState input_state = input_init(&event_manager);
 
   Window window = {0};
   bool8_t result = window_create(&window, &event_manager, "Hello, World!", 100,
@@ -40,7 +39,6 @@ int main(int argc, char **argv) {
   }
 
   window_destroy(&window);
-  // input_shutdown(&input_state);
   event_manager_destroy(&event_manager);
   arena_destroy(arena);
   arena_destroy(log_arena);

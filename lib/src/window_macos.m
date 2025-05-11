@@ -17,7 +17,7 @@ typedef struct PlatformState {
   CAMetalLayer *layer;
   bool8_t quit_flagged;
   EventManager *event_manager;
-  InputState *input_state_ptr;
+  InputState *input_state;
 } PlatformState;
 
 // Key translation
@@ -147,7 +147,7 @@ Keys translate_keycode(uint32_t ns_keycode);
 }
 
 - (void)mouseDown:(NSEvent *)event {
-  input_process_button(platform_state->input_state_ptr, BUTTON_LEFT, true_v);
+  input_process_button(platform_state->input_state, BUTTON_LEFT, true_v);
 }
 
 - (void)mouseDragged:(NSEvent *)event {
@@ -156,18 +156,18 @@ Keys translate_keycode(uint32_t ns_keycode);
 }
 
 - (void)mouseUp:(NSEvent *)event {
-  input_process_button(platform_state->input_state_ptr, BUTTON_LEFT, false_v);
+  input_process_button(platform_state->input_state, BUTTON_LEFT, false_v);
 }
 
 - (void)mouseMoved:(NSEvent *)event {
   const NSPoint pos = [event locationInWindow];
 
-  input_process_mouse_move(platform_state->input_state_ptr, (int16_t)pos.x,
+  input_process_mouse_move(platform_state->input_state, (int16_t)pos.x,
                            (int16_t)pos.y);
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
-  input_process_button(platform_state->input_state_ptr, BUTTON_RIGHT, true_v);
+  input_process_button(platform_state->input_state, BUTTON_RIGHT, true_v);
 }
 
 - (void)rightMouseDragged:(NSEvent *)event {
@@ -176,12 +176,12 @@ Keys translate_keycode(uint32_t ns_keycode);
 }
 
 - (void)rightMouseUp:(NSEvent *)event {
-  input_process_button(platform_state->input_state_ptr, BUTTON_RIGHT, false_v);
+  input_process_button(platform_state->input_state, BUTTON_RIGHT, false_v);
 }
 
 - (void)otherMouseDown:(NSEvent *)event {
   // Interpreted as middle click
-  input_process_button(platform_state->input_state_ptr, BUTTON_MIDDLE, true_v);
+  input_process_button(platform_state->input_state, BUTTON_MIDDLE, true_v);
 }
 
 - (void)otherMouseDragged:(NSEvent *)event {
@@ -191,13 +191,13 @@ Keys translate_keycode(uint32_t ns_keycode);
 
 - (void)otherMouseUp:(NSEvent *)event {
   // Interpreted as middle click
-  input_process_button(platform_state->input_state_ptr, BUTTON_MIDDLE, false_v);
+  input_process_button(platform_state->input_state, BUTTON_MIDDLE, false_v);
 }
 
 - (void)keyDown:(NSEvent *)event {
   Keys key = translate_keycode((uint32_t)[event keyCode]);
 
-  input_process_key(platform_state->input_state_ptr, key, true_v);
+  input_process_key(platform_state->input_state, key, true_v);
 
   [self interpretKeyEvents:@[ event ]];
 }
@@ -205,11 +205,11 @@ Keys translate_keycode(uint32_t ns_keycode);
 - (void)keyUp:(NSEvent *)event {
   Keys key = translate_keycode((uint32_t)[event keyCode]);
 
-  input_process_key(platform_state->input_state_ptr, key, false_v);
+  input_process_key(platform_state->input_state, key, false_v);
 }
 
 - (void)scrollWheel:(NSEvent *)event {
-  input_process_mouse_wheel(platform_state->input_state_ptr,
+  input_process_mouse_wheel(platform_state->input_state,
                             (int8_t)[event scrollingDeltaY]);
 }
 
@@ -300,12 +300,13 @@ bool8_t window_create(Window *window, EventManager *event_manager,
   assert_log(width > 0, "Width not initialized");
   assert_log(height > 0, "Height not initialized");
 
-  window->event_manager = event_manager;
   window->title = (char *)title;
   window->x = x;
   window->y = y;
   window->width = width;
   window->height = height;
+  window->event_manager = event_manager;
+  window->input_state = input_init(event_manager);
 
   PlatformState *state = (PlatformState *)malloc(sizeof(PlatformState));
   if (!state) {
@@ -321,9 +322,7 @@ bool8_t window_create(Window *window, EventManager *event_manager,
   state->layer = nil;
   state->quit_flagged = false_v;
   state->event_manager = event_manager;
-
-  window->input_state = input_init(event_manager);
-  state->input_state_ptr = &window->input_state;
+  state->input_state = &window->input_state;
 
   window->platform_state = state;
 
@@ -418,6 +417,11 @@ void window_destroy(Window *window) {
       state->wnd_delegate = nil;
     }
 
+    if (state->layer) {
+      [state->layer release];
+      state->layer = nil;
+    }
+
     if (state->view) {
       [state->view release];
       state->view = nil;
@@ -429,7 +433,7 @@ void window_destroy(Window *window) {
     }
   }
 
-  input_shutdown(state->input_state_ptr);
+  input_shutdown(state->input_state);
   free(state);
 }
 
