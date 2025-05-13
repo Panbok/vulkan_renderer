@@ -132,6 +132,17 @@ typedef struct EventManager {
   pthread_t thread;    /**< Handle for the dedicated event processing thread. */
   bool32_t running;    /**< Flag indicating if the event processor thread should
                         continue running. */
+  /*
+   * IMPORTANT NOTE ON THREAD SAFETY:
+   * The EventManager guarantees thread safety for its internal operations
+   * (subscribing, unsubscribing, dispatching). However, the internal mutex is
+   * *released* before callbacks are executed by the worker thread.
+   * Therefore, it is the responsibility of the individual EventCallback
+   * implementations to ensure thread safety if they access or modify any shared
+   * application data that could be concurrently accessed by other threads.
+   * The EventManager does *not* provide synchronization for data external to
+   * its own management structures during callback execution.
+   */
 } EventManager;
 
 /**
