@@ -34,7 +34,7 @@
             "name": "Launch Tests",
             "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/build/vulkan_renderer_tester",
+            "program": "${workspaceFolder}/build/tests/vulkan_renderer_tester",
             "args": [],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}/build/",
