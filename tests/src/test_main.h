@@ -3,6 +3,7 @@
 #include "arena_test.h"
 #include "array_test.h"
 #include "bitset_test.h"
+#include "clock_test.h"
 #include "event_test.h"
 #include "input_test.h"
 #include "mmemory_test.h"
