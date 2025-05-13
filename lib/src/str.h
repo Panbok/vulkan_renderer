@@ -58,12 +58,6 @@ String8 string8_create_formatted_v(Arena *arena, const char *fmt, va_list args);
 uint8_t *string8_cstr(String8 *str);
 
 /**
- * @brief Destroy a string of 8-bit characters.
- * @param str The string to destroy.
- */
-void string8_destroy(String8 *str);
-
-/**
  * @brief Concatenate two strings of 8-bit characters.
  * @param arena The arena to allocate the new string from.
  * @param str1 The first string to concatenate.
@@ -71,3 +65,9 @@ void string8_destroy(String8 *str);
  * @return A new string of 8-bit characters.
  */
 String8 string8_concat(Arena *arena, String8 *str1, String8 *str2);
+
+/**
+ * @brief Destroy a string of 8-bit characters.
+ * @param str The string to destroy.
+ */
+void string8_destroy(String8 *str);

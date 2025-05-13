@@ -29,6 +29,7 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_clock_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_string_tests();
 
   printf("\nAll tests completed.\n");
   return all_passed ? 0 : 1; // Return 0 on success, 1 on failure
