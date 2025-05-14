@@ -327,10 +327,8 @@ void input_shutdown(InputState *input_state);
  * buttons, mouse position) to the previous state buffers, allowing for
  * detection of just-pressed/just-released states.
  * @param input_state Pointer to the `InputState` to update.
- * @param delta_time The time elapsed since the last frame (in seconds).
- * Currently unused but common for update functions.
  */
-void input_update(InputState *input_state, float64_t delta_time);
+void input_update(InputState *input_state);
 
 /**
  * @brief Checks if a specific keyboard key is currently held down.

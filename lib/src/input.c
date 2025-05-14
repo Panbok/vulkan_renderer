@@ -36,7 +36,7 @@ void input_shutdown(InputState *input_state) {
   log_info("Input system shutdown");
 }
 
-void input_update(InputState *input_state, float64_t delta_time) {
+void input_update(InputState *input_state) {
   assert_log(input_state != NULL, "Input state is NULL");
 
   MemCopy(&input_state->previous_keys, &input_state->current_keys,

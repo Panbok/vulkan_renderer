@@ -157,7 +157,7 @@ static void test_input_key_press_release() {
          "Incorrect state in press event");
   reset_event_trackers();
 
-  input_update(&input_state, 0.0); // Simulate a frame update
+  input_update(&input_state); // Simulate a frame update
   assert(input_was_key_down(&input_state, KEY_A) &&
          "KEY_A should have been down previously");
   assert(input_was_key_up(&input_state, KEY_A) == false &&
@@ -176,7 +176,7 @@ static void test_input_key_press_release() {
          "Incorrect state in release event");
   reset_event_trackers();
 
-  input_update(&input_state, 0.0);
+  input_update(&input_state);
   assert(input_was_key_down(&input_state, KEY_A) == false &&
          "KEY_A should not have been down previously after release");
   assert(input_was_key_up(&input_state, KEY_A) &&
@@ -221,7 +221,7 @@ static void test_input_button_press_release() {
          "Incorrect state in press event");
   reset_event_trackers();
 
-  input_update(&input_state, 0.0); // Simulate a frame update
+  input_update(&input_state);
   assert(input_was_button_down(&input_state, BUTTON_LEFT) &&
          "BUTTON_LEFT should have been down previously");
   assert(input_was_button_up(&input_state, BUTTON_LEFT) == false &&
@@ -242,7 +242,7 @@ static void test_input_button_press_release() {
          "Incorrect state in release event");
   reset_event_trackers();
 
-  input_update(&input_state, 0.0);
+  input_update(&input_state);
   assert(input_was_button_down(&input_state, BUTTON_LEFT) == false &&
          "BUTTON_LEFT should not have been down previously after release");
   assert(input_was_button_up(&input_state, BUTTON_LEFT) &&
@@ -288,7 +288,7 @@ static void test_input_mouse_move() {
          "Incorrect data in mouse move event");
   reset_event_trackers();
 
-  input_update(&input_state, 0.0);
+  input_update(&input_state);
   input_get_previous_mouse_position(&input_state, &prev_x, &prev_y);
   assert(prev_x == 100 && prev_y == 200 &&
          "Previous mouse position not updated correctly after update");
@@ -307,7 +307,7 @@ static void test_input_mouse_move() {
          "Incorrect data in second mouse move event");
   reset_event_trackers();
 
-  input_update(&input_state, 0.0);
+  input_update(&input_state);
   input_get_mouse_position(&input_state, &current_x, &current_y);
   input_get_previous_mouse_position(&input_state, &prev_x, &prev_y);
   assert(current_x == -50 && current_y == 75 &&
@@ -424,7 +424,7 @@ static void test_input_update_state_copy() {
   assert(input_was_key_up(&input_state, KEY_S) &&
          "Initial: KEY_S should have been up previously");
 
-  input_update(&input_state, 0.0);
+  input_update(&input_state);
 
   // After update: Previous state should now match the last current state
   // W was down, S was up.
@@ -448,7 +448,7 @@ static void test_input_update_state_copy() {
   assert(input_was_key_up(&input_state, KEY_S) &&
          "New Current: KEY_S should still show previous as up");
 
-  input_update(&input_state, 0.0);
+  input_update(&input_state);
 
   // After second update: Previous state should match the new current state
   // W was up, S was down.
@@ -471,7 +471,7 @@ static void test_input_update_state_copy() {
   assert(input_was_button_up(&input_state, BUTTON_RIGHT) &&
          "Initial: BUTTON_RIGHT should have been up previously");
 
-  input_update(&input_state, 0.0);
+  input_update(&input_state);
 
   assert(input_was_button_down(&input_state, BUTTON_LEFT) &&
          "After Update: BUTTON_LEFT should have been down");
@@ -486,13 +486,13 @@ static void test_input_update_state_copy() {
   // tests. The critical part is that after update, prev == current of that
   // frame.
 
-  input_update(&input_state, 0.0);
+  input_update(&input_state);
   input_get_previous_mouse_position(&input_state, &prev_x, &prev_y);
   assert(prev_x == 10 && prev_y == 20 &&
          "Mouse position not copied to previous correctly");
 
   input_process_mouse_move(&input_state, 30, 40);
-  input_update(&input_state, 0.0);
+  input_update(&input_state);
   input_get_previous_mouse_position(&input_state, &prev_x, &prev_y);
   assert(prev_x == 30 && prev_y == 40 &&
          "Mouse position not copied to previous correctly on second update");
