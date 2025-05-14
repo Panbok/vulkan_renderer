@@ -47,7 +47,7 @@ Keys translate_keycode(uint32_t ns_keycode);
 - (BOOL)windowShouldClose:(id)sender {
   state->quit_flagged = true_v;
 
-  Event event = {.type = EVENT_TYPE_APPLICATION_QUIT};
+  Event event = {.type = EVENT_TYPE_WINDOW_CLOSE};
   event_manager_dispatch(state->event_manager, event);
 
   return YES;
@@ -292,7 +292,6 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
 bool8_t window_create(Window *window, EventManager *event_manager,
                       const char *title, int32_t x, int32_t y, int32_t width,
                       int32_t height) {
-  assert_log(window->platform_state == NULL, "Window already initialized");
   assert_log(event_manager != NULL, "Event manager not initialized");
   assert_log(title != NULL, "Title not initialized");
   assert_log(x >= 0, "X position not initialized");
@@ -390,6 +389,9 @@ bool8_t window_create(Window *window, EventManager *event_manager,
     // Putting window in front on launch
     [NSApp activateIgnoringOtherApps:YES];
     [state->window makeKeyAndOrderFront:nil];
+
+    event_manager_dispatch(event_manager,
+                           (Event){.type = EVENT_TYPE_WINDOW_INIT});
 
     return true_v;
 
