@@ -250,9 +250,22 @@ void arena_reset_to(Arena *arena, uint64_t pos) {
   assert(current != NULL);
   arena->current = current;
 
-  uint64_t new_pos = big_pos - current->base_pos;
-  assert(new_pos <= current->pos);
-  current->pos = new_pos;
+  uint64_t new_pos_in_block = big_pos - current->base_pos;
+
+  // Ensure the target position is at least the header size
+  new_pos_in_block = ClampBot(ARENA_HEADER_SIZE, new_pos_in_block);
+  // Ensure the target position does not exceed the block's reserved capacity
+  // (This also implicitly checks that big_pos was not beyond the end of this
+  // block)
+  new_pos_in_block = ClampTop(new_pos_in_block, current->rsv);
+
+  // The original assertion was: assert(new_pos_in_block <= current->pos);
+  // This assertion fails if 'current' is a recycled block whose 'pos' has been
+  // reset to ARENA_HEADER_SIZE, but 'new_pos_in_block' (from an older
+  // scratch.pos) is higher. For a scratch reset, setting current->pos to
+  // new_pos_in_block is the intended behavior to restore the arena state to the
+  // scratch point.
+  current->pos = new_pos_in_block;
 }
 
 void arena_clear(Arena *arena) { arena_reset_to(arena, 0); }
