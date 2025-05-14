@@ -32,14 +32,32 @@ Arena *arena_create(uint64_t rsv_size, uint64_t cmt_size) {
   uint64_t s_cmt_size =
       AlginPow2(ARENA_HEADER_SIZE + cmt_size, AlignOf(void *));
 
-  Arena *arena = (Arena *)platform_mem_reserve(rsv_size);
-  if (!platform_mem_commit(arena, cmt_size) || !arena) {
-    assert(0 && "Failed to commit memory");
+  uint64_t page_size = platform_get_page_size();
+
+  // Ensure s_rsv_size is page-aligned for mmap (usually good practice)
+  s_rsv_size = AlginPow2(s_rsv_size, page_size);
+
+  // s_cmt_size is the initial commit. It also should be page-aligned.
+  // The base address from mmap (mem_block) will be page-aligned.
+  // We need to ensure the *size* of the initial commit is page-aligned.
+  s_cmt_size = AlginPow2(s_cmt_size, page_size);
+
+  void *mem_block = platform_mem_reserve(s_rsv_size);
+  if (mem_block == (void *)-1 || mem_block == NULL) {
+    assert(0 && "Failed to reserve memory for arena");
+    return NULL;
+  }
+
+  Arena *arena = (Arena *)mem_block;
+  if (!platform_mem_commit(arena, s_cmt_size)) {
+    platform_mem_release(arena, s_rsv_size);
+    assert(0 && "Failed to commit memory for arena");
+    return NULL;
   }
 
   arena->current = arena;
-  arena->rsv_size = rsv_size;
-  arena->cmt_size = cmt_size;
+  arena->rsv_size = s_rsv_size;
+  arena->cmt_size = s_cmt_size;
   arena->base_pos = 0;
   arena->pos = ARENA_HEADER_SIZE;
   arena->cmt = s_cmt_size;
@@ -128,17 +146,59 @@ void *arena_alloc(Arena *arena, uint64_t size) {
   }
 
   if (current->cmt < pos_post) {
-    uint64_t cmt_pst_aligned = pos_post + current->cmt_size - 1;
-    cmt_pst_aligned -= cmt_pst_aligned % current->cmt_size;
-    uint64_t cmt_pst_clamped = ClampTop(cmt_pst_aligned, current->rsv);
-    uint64_t cmt_size = cmt_pst_clamped - current->cmt;
-    uint8_t *cmt_ptr = (uint8_t *)current + current->cmt;
+    uint64_t page_size = platform_get_page_size();
 
-    if (!platform_mem_commit(cmt_ptr, cmt_size)) {
-      assert(0 && "Failed to commit memory");
+    // Calculate the actual region to be committed, page-aligned
+    // Start of commit region: align current->cmt (current commit boundary) UP
+    // to page boundary conceptually for start of NEW data However, mprotect
+    // needs the STARTING ADDRESS of the region to change permissions for. This
+    // starting address (cmt_ptr_page_aligned) must be page_aligned. The memory
+    // to be made writable starts effectively at current->pos, but we commit in
+    // page-sized chunks.
+
+    uint8_t *actual_data_start_ptr =
+        (uint8_t *)current + current->pos; // Where data will soon be written
+    uint8_t *commit_start_ptr =
+        (uint8_t *)current + current->cmt; // Current end of committed region
+    uint8_t *required_commit_end_ptr =
+        (uint8_t *)current + pos_post; // We need to be able to write up to here
+
+    // Align the start of the mprotect call DOWN to the nearest page boundary.
+    // This is the start of the physical pages whose permissions we are
+    // changing.
+    uint8_t *mprotect_region_start =
+        (uint8_t *)AlginPow2Down((uintptr_t)commit_start_ptr, page_size);
+    if (mprotect_region_start < (uint8_t *)current + ARENA_HEADER_SIZE) {
+      mprotect_region_start =
+          (uint8_t *)current + ARENA_HEADER_SIZE; // Should not happen if header
+                                                  // is page aligned from start
+      mprotect_region_start =
+          (uint8_t *)AlginPow2Down((uintptr_t)mprotect_region_start, page_size);
     }
 
-    current->cmt = cmt_pst_clamped;
+    // Align the end of the mprotect call UP to the nearest page boundary to
+    // cover required_commit_end_ptr.
+    uint8_t *mprotect_region_end =
+        (uint8_t *)AlginPow2((uintptr_t)required_commit_end_ptr, page_size);
+
+    // Clamp the mprotect region end to not exceed the reserved block size
+    if (mprotect_region_end > (uint8_t *)current + current->rsv) {
+      mprotect_region_end = (uint8_t *)current + current->rsv;
+    }
+
+    if (mprotect_region_start <
+        mprotect_region_end) { // Only commit if there's actually a region to
+                               // commit
+      uint64_t mprotect_size = mprotect_region_end - mprotect_region_start;
+
+      if (!platform_mem_commit(mprotect_region_start, mprotect_size)) {
+        assert(0 && "Failed to commit memory");
+      }
+      // Update current->cmt to the new total committed boundary within the
+      // block The new committed boundary is effectively mprotect_region_end
+      // relative to 'current'
+      current->cmt = (uint64_t)(mprotect_region_end - (uint8_t *)current);
+    }
   }
 
   void *result = NULL;
