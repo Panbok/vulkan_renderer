@@ -63,6 +63,14 @@
  * - Function-local allocations
  * - Any other case where you need to allocate memory without having to
  *   manually free it later.
+ *
+ * Memory Statistics:
+ * The arena allocator also provides a system for tracking memory usage categorized
+ * by `ArenaMemoryTag`. When memory is allocated or an arena/scratch is reset,
+ * the corresponding tag's accumulated size is updated. These statistics are stored
+ * in the `tags` array within the main `Arena` structure (the one returned by
+ * `arena_create`). The `arena_format_statistics` function can be used to retrieve
+ * a human-readable report of this usage.
  */
 
 // clang-format on
@@ -71,7 +79,7 @@
 #include "defines.h"
 #include "platform.h"
 
-#define ARENA_HEADER_SIZE 128
+#define ARENA_HEADER_SIZE 192
 // Default size for reserved virtual address space per arena block.
 #define ARENA_RSV_SIZE MB(64)
 // Default size for initially committed memory per arena block. More is
@@ -79,6 +87,27 @@
 #define ARENA_CMT_SIZE                                                         \
   KB(4) // Smaller initial commit can save physical memory if allocations are
         // small.
+
+typedef enum ArenaMemoryTag {
+  ARENA_MEMORY_TAG_UNKNOWN,
+  ARENA_MEMORY_TAG_ARRAY,
+  ARENA_MEMORY_TAG_STRING,
+  ARENA_MEMORY_TAG_VECTOR,
+  ARENA_MEMORY_TAG_QUEUE,
+  ARENA_MEMORY_TAG_STRUCT,
+  ARENA_MEMORY_TAG_BUFFER,
+
+  ARENA_MEMORY_TAG_MAX,
+} ArenaMemoryTag;
+
+static const char *ArenaMemoryTagNames[ARENA_MEMORY_TAG_MAX] = {
+    "UNKNOWN", "ARRAY", "STRING", "VECTOR", "QUEUE", "STRUCT", "BUFFER",
+};
+
+typedef struct ArenaMemoryTagInfo {
+  ArenaMemoryTag tag;
+  uint64_t size;
+} ArenaMemoryTagInfo;
 
 typedef struct Arena Arena;
 /**
@@ -107,6 +136,12 @@ typedef struct Arena {
                        free list. Only valid in the *first* block's header. */
   Arena *free_last;   /**< Pointer to the last block added to the free list
                          (LIFO). Only valid in the *first* block's header. */
+  ArenaMemoryTagInfo
+      tags[ARENA_MEMORY_TAG_MAX]; /**< Array storing memory usage statistics for
+                               each `ArenaMemoryTag`. Each element tracks the
+                               total bytes allocated under that specific tag.
+                               These statistics are global to the arena and
+                               maintained in the first block. */
 } Arena;
 
 /**
@@ -158,10 +193,12 @@ void arena_destroy(Arena *arena);
  * Allocation address is aligned up to `sizeof(void*)`.
  * @param arena Pointer to the arena.
  * @param size Number of bytes to allocate.
+ * @param tag The memory tag to associate with this allocation for statistics
+ * tracking.
  * @return Pointer to the allocated memory, or NULL on failure (though failure
  * typically exits).
  */
-void *arena_alloc(Arena *arena, uint64_t size);
+void *arena_alloc(Arena *arena, uint64_t size, ArenaMemoryTag tag);
 
 /**
  * @brief Gets the current absolute position (high-water mark) in the arena.
@@ -189,16 +226,20 @@ uint64_t arena_pos(Arena *arena);
  * @param arena Pointer to the arena.
  * @param pos The absolute position to reset to. Clamped to be at least
  * sizeof(Arena).
+ * @param tag The memory tag whose statistics should be updated to reflect the
+ * reclaimed memory.
  */
-void arena_reset_to(Arena *arena, uint64_t pos);
+void arena_reset_to(Arena *arena, uint64_t pos, ArenaMemoryTag tag);
 
 /**
  * @brief Resets the arena completely, freeing all allocations.
  * Equivalent to `arena_reset_to(arena, 0)`. All blocks except the first
  * are moved to the free list.
  * @param arena Pointer to the arena.
+ * @param tag The memory tag whose statistics should be updated to reflect the
+ * total reclaimed memory from the reset.
  */
-void arena_clear(Arena *arena);
+void arena_clear(Arena *arena, ArenaMemoryTag tag);
 
 /**
  * @brief Resets the arena by a relative amount.
@@ -206,8 +247,10 @@ void arena_clear(Arena *arena);
  * Equivalent to `arena_reset_to(arena, arena_pos(arena) - amt)`.
  * @param arena Pointer to the arena.
  * @param amt The number of bytes to "free" from the end.
+ * @param tag The memory tag whose statistics should be updated to reflect the
+ * reclaimed memory.
  */
-void arena_reset(Arena *arena, uint64_t amt);
+void arena_reset(Arena *arena, uint64_t amt, ArenaMemoryTag tag);
 
 /**
  * @brief Begins a temporary allocation scope (scratch).
@@ -222,5 +265,22 @@ Scratch scratch_create(Arena *arena);
  * Resets the arena back to the position recorded when the scratch was created,
  * effectively freeing all memory allocated since `scratch_create` was called.
  * @param scratch The Scratch structure to end.
+ * @param tag The memory tag whose statistics should be updated to reflect the
+ * memory reclaimed by this scratch reset.
  */
-void scratch_destroy(Scratch scratch);
+void scratch_destroy(Scratch scratch, ArenaMemoryTag tag);
+
+/**
+ * @brief Formats the memory usage statistics for the arena into a string.
+ * Iterates through all `ArenaMemoryTag` types, reporting the total bytes
+ * allocated under each tag (e.g., "ARRAY: 1024 bytes\n").
+ * The returned string is allocated from the provided `str_arena`.
+ * @param arena Pointer to the arena whose statistics are to be formatted.
+ * @param str_arena Pointer to a (potentially different) arena used for
+ * allocating the result string. The caller is responsible for managing this
+ * arena and the lifetime of the returned string.
+ * @return A null-terminated string containing the formatted statistics, or NULL
+ * if `arena` or `str_arena` is NULL, or if memory allocation for the string
+ * fails.
+ */
+char *arena_format_statistics(Arena *arena, Arena *str_arena);

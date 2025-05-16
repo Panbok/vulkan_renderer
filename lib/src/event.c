@@ -52,7 +52,7 @@ static void *events_processor(void *arg) {
     uint16_t subs_count = callbacks_vec->length;
 
     if (subs_count == 0) {
-      scratch_destroy(scratch);
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_VECTOR);
       pthread_mutex_unlock(&manager->mutex);
       continue;
     }
@@ -77,7 +77,7 @@ static void *events_processor(void *arg) {
     }
 
     array_destroy_EventCallback(&local_callbacks_copy);
-    scratch_destroy(scratch);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_VECTOR);
   }
 
   arena_destroy(local_thread_arena);
@@ -170,7 +170,8 @@ bool32_t event_manager_dispatch(EventManager *manager, Event event) {
   Event event_to_enqueue = event;
 
   if (event.data_size > 0) {
-    void *copied_data = arena_alloc(manager->arena, event.data_size);
+    void *copied_data =
+        arena_alloc(manager->arena, event.data_size, ARENA_MEMORY_TAG_BUFFER);
     if (copied_data == NULL) {
       log_warn(
           "Failed to allocate memory for event data (type: %d, size: %llu). "

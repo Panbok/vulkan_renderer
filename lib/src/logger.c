@@ -31,5 +31,5 @@ void _log_message(LogLevel level, const char *file, int line, const char *fmt,
     debug_break();
   }
 
-  scratch_destroy(scratch);
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
 }

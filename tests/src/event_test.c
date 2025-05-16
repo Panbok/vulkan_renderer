@@ -1,6 +1,4 @@
 #include "event_test.h"
-#include "platform.h"
-#include <stdio.h>
 
 static Arena *arena = NULL;
 static const uint64_t ARENA_SIZE = 1024 * 1024; // 1MB
@@ -184,7 +182,8 @@ static void *dispatch_thread(void *arg) {
   const uint32_t EVENTS_PER_THREAD = 50;
 
   for (uint32_t i = 0; i < EVENTS_PER_THREAD; i++) {
-    TestEventData *event_data = arena_alloc(data->arena, sizeof(TestEventData));
+    TestEventData *event_data = arena_alloc(data->arena, sizeof(TestEventData),
+                                            ARENA_MEMORY_TAG_UNKNOWN);
     event_data->value = (data->thread_id * 1000) + i;
     event_data->processed = false;
 
@@ -366,7 +365,8 @@ static void test_queue_full(void) {
   // Fill the queue
   bool32_t queue_full = false;
   for (uint32_t i = 0; i < 2000; i++) {
-    TestEventData *data = arena_alloc(arena, sizeof(TestEventData));
+    TestEventData *data =
+        arena_alloc(arena, sizeof(TestEventData), ARENA_MEMORY_TAG_UNKNOWN);
     data->value = i;
     data->processed = false;
 
@@ -411,14 +411,16 @@ static void test_event_ordering(void) {
 
   // Create an array to record the order of processing
   const uint32_t EVENT_COUNT = 10;
-  test_process_order = arena_alloc(arena, sizeof(uint32_t) * EVENT_COUNT);
+  test_process_order = arena_alloc(arena, sizeof(uint32_t) * EVENT_COUNT,
+                                   ARENA_MEMORY_TAG_UNKNOWN);
   test_next_index = 0;
 
   event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, order_callback);
 
   // Dispatch events with sequential IDs
   for (uint32_t i = 0; i < EVENT_COUNT; i++) {
-    TestEventData *data = arena_alloc(arena, sizeof(TestEventData));
+    TestEventData *data =
+        arena_alloc(arena, sizeof(TestEventData), ARENA_MEMORY_TAG_UNKNOWN);
     data->value = i;
     data->processed = false;
 
@@ -462,7 +464,8 @@ static void test_dynamic_unsubscribe(void) {
 
   // Dispatch several events
   for (uint32_t i = 0; i < 5; i++) {
-    TestEventData *data = arena_alloc(arena, sizeof(TestEventData));
+    TestEventData *data =
+        arena_alloc(arena, sizeof(TestEventData), ARENA_MEMORY_TAG_UNKNOWN);
     data->value = i;
     data->processed = false;
 
@@ -606,7 +609,8 @@ static void test_data_copying_original_integrity(void) {
   event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE,
                           integrity_check_callback);
 
-  TestEventData *original_data = arena_alloc(arena, sizeof(TestEventData));
+  TestEventData *original_data =
+      arena_alloc(arena, sizeof(TestEventData), ARENA_MEMORY_TAG_UNKNOWN);
   original_data->value = 100;
   original_data->processed = false;
 
@@ -693,8 +697,8 @@ static void test_data_lifetime_original_freed(void) {
 
   // Create a temporary scratch arena for the original data
   Scratch scratch = scratch_create(arena);
-  TestEventData *original_data_on_scratch =
-      arena_alloc(scratch.arena, sizeof(TestEventData));
+  TestEventData *original_data_on_scratch = arena_alloc(
+      scratch.arena, sizeof(TestEventData), ARENA_MEMORY_TAG_UNKNOWN);
   original_data_on_scratch->value = 12345; // Magic value
   original_data_on_scratch->processed = false;
 
@@ -704,7 +708,7 @@ static void test_data_lifetime_original_freed(void) {
   event_manager_dispatch(&manager, event);
 
   // Destroy the scratch arena, freeing the original_data_on_scratch
-  scratch_destroy(scratch);
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_UNKNOWN);
   // original_data_on_scratch is now a dangling pointer / points to freed memory
 
   platform_sleep(100);

@@ -15,6 +15,10 @@ typedef struct State {
   Array_float64_t player_position_y;
 
   InputState *input_state;
+
+  Arena *app_arena;
+  Arena *event_arena;
+  Arena *stats_arena;
 } State;
 
 State *state = NULL;
@@ -29,10 +33,7 @@ bool8_t application_on_window_event(Event *event) {
   return true_v;
 }
 
-bool8_t application_on_key_event(Event *event) {
-  // KeyEventData *key_event_data = (KeyEventData *)event->data;
-  return true_v;
-}
+bool8_t application_on_key_event(Event *event) { return true_v; }
 
 bool8_t application_on_mouse_event(Event *event) {
   // log_debug("Application on mouse event: %d", event->type);
@@ -77,6 +78,18 @@ void application_update(Application *application, float64_t delta) {
               *array_get_uint16_t(&state->entities, i), *player_position_x,
               *player_position_y);
   }
+
+  if (input_is_key_up(state->input_state, KEY_M) &&
+      input_was_key_down(state->input_state, KEY_M)) {
+    Scratch scratch_stats = scratch_create(state->stats_arena);
+    char *arena_stats =
+        arena_format_statistics(state->app_arena, scratch_stats.arena);
+    char *event_stats =
+        arena_format_statistics(state->event_arena, scratch_stats.arena);
+    log_debug("Application arena stats:\n%s", arena_stats);
+    log_debug("Event arena stats:\n%s", event_stats);
+    scratch_destroy(scratch_stats, ARENA_MEMORY_TAG_STRING);
+  }
 }
 
 int main(int argc, char **argv) {
@@ -95,13 +108,17 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  state = arena_alloc(application.app_arena, sizeof(State));
+  state = arena_alloc(application.app_arena, sizeof(State),
+                      ARENA_MEMORY_TAG_STRUCT);
+  state->stats_arena = arena_create(KB(1), KB(1));
   state->entities = array_create_uint16_t(application.app_arena, ENTITY_COUNT);
   state->player_position_x =
       array_create_float64_t(application.app_arena, ENTITY_COUNT);
   state->player_position_y =
       array_create_float64_t(application.app_arena, ENTITY_COUNT);
   state->input_state = &application.window.input_state;
+  state->app_arena = application.app_arena;
+  state->event_arena = application.event_arena;
 
   application_start(&application);
   application_close(&application);

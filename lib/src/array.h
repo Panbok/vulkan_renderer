@@ -59,8 +59,9 @@
     assert_log(arena != NULL, "Arena is NULL");                                \
     assert_log(length > 0, "Length is 0");                                     \
                                                                                \
-    Array_##name array = {arena, length,                                       \
-                          arena_alloc(arena, length * sizeof(type))};          \
+    Array_##name array = {                                                     \
+        arena, length,                                                         \
+        arena_alloc(arena, length * sizeof(type), ARENA_MEMORY_TAG_ARRAY)};    \
     return array;                                                              \
   }                                                                            \
                                                                                \

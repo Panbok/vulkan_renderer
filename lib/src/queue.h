@@ -67,9 +67,13 @@
                                                  uint64_t capacity) {          \
     assert_log(arena != NULL, "Arena is NULL");                                \
     assert_log(capacity > 0, "Capacity is 0");                                 \
-    Queue_##name queue = {arena, capacity,                                     \
-                          0,     0,                                            \
-                          0,     arena_alloc(arena, capacity * sizeof(type))}; \
+    Queue_##name queue = {                                                     \
+        arena,                                                                 \
+        capacity,                                                              \
+        0,                                                                     \
+        0,                                                                     \
+        0,                                                                     \
+        arena_alloc(arena, capacity * sizeof(type), ARENA_MEMORY_TAG_QUEUE)};  \
     return queue;                                                              \
   }                                                                            \
   /**                                                                          \

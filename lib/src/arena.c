@@ -55,6 +55,8 @@ Arena *arena_create(uint64_t rsv_size, uint64_t cmt_size) {
     return NULL;
   }
 
+  memset(arena->tags, 0, sizeof(arena->tags));
+
   arena->current = arena;
   arena->rsv_size = s_rsv_size;
   arena->cmt_size = s_cmt_size;
@@ -102,7 +104,7 @@ void arena_destroy(Arena *arena) {
  * 5. **Failure:** If memory cannot be reserved or committed, the program exits
  * (or could return NULL).
  */
-void *arena_alloc(Arena *arena, uint64_t size) {
+void *arena_alloc(Arena *arena, uint64_t size, ArenaMemoryTag tag) {
   Arena *current = arena->current;
 
   uint64_t pos_pre = AlginPow2(current->pos, AlignOf(void *));
@@ -205,6 +207,10 @@ void *arena_alloc(Arena *arena, uint64_t size) {
   if (current->cmt >= pos_post) {
     result = (uint8_t *)current + pos_pre;
     current->pos = pos_post;
+
+    if (tag < ARENA_MEMORY_TAG_MAX) {
+      arena->tags[tag].size += size;
+    }
   }
 
   return result;
@@ -234,49 +240,56 @@ uint64_t arena_pos(Arena *arena) {
  * current->base_pos`.
  * 7. Set `current->pos = new_pos`.
  */
-void arena_reset_to(Arena *arena, uint64_t pos) {
+void arena_reset_to(Arena *arena, uint64_t pos, ArenaMemoryTag tag) {
+  uint64_t pos_before_reset = arena_pos(arena);
+
   uint64_t big_pos = ClampBot(ARENA_HEADER_SIZE, pos);
-  Arena *current = arena->current;
+  Arena *current_block_iter = arena->current;
 
   for (Arena *prev = NULL;
-       current != NULL && current->prev != NULL && current->base_pos >= big_pos;
-       current = prev) {
-    prev = current->prev;
-    current->pos = ARENA_HEADER_SIZE;
-    arena->free_size += current->rsv_size;
-    SingleListAppend(arena->free_last, current, prev);
+       current_block_iter != NULL && current_block_iter->prev != NULL &&
+       current_block_iter->base_pos >= big_pos;
+       current_block_iter = prev) {
+    prev = current_block_iter->prev;
+    current_block_iter->pos = ARENA_HEADER_SIZE;
+    arena->free_size += current_block_iter->rsv_size;
+    SingleListAppend(arena->free_last, current_block_iter, prev);
   }
 
-  assert(current != NULL);
-  arena->current = current;
+  assert(current_block_iter != NULL);
+  arena->current = current_block_iter;
 
-  uint64_t new_pos_in_block = big_pos - current->base_pos;
+  uint64_t new_pos_in_block = big_pos - arena->current->base_pos;
 
-  // Ensure the target position is at least the header size
   new_pos_in_block = ClampBot(ARENA_HEADER_SIZE, new_pos_in_block);
-  // Ensure the target position does not exceed the block's reserved capacity
-  // (This also implicitly checks that big_pos was not beyond the end of this
-  // block)
-  new_pos_in_block = ClampTop(new_pos_in_block, current->rsv);
+  new_pos_in_block = ClampTop(new_pos_in_block, arena->current->rsv);
+  arena->current->pos = new_pos_in_block;
 
-  // The original assertion was: assert(new_pos_in_block <= current->pos);
-  // This assertion fails if 'current' is a recycled block whose 'pos' has been
-  // reset to ARENA_HEADER_SIZE, but 'new_pos_in_block' (from an older
-  // scratch.pos) is higher. For a scratch reset, setting current->pos to
-  // new_pos_in_block is the intended behavior to restore the arena state to the
-  // scratch point.
-  current->pos = new_pos_in_block;
+  uint64_t pos_after_reset = arena_pos(arena);
+
+  if (pos_before_reset > pos_after_reset) {
+    uint64_t reclaimed = pos_before_reset - pos_after_reset;
+    if (tag < ARENA_MEMORY_TAG_MAX) {
+      if (arena->tags[tag].size >= reclaimed) {
+        arena->tags[tag].size -= reclaimed;
+      } else {
+        arena->tags[tag].size = 0;
+      }
+    }
+  }
 }
 
-void arena_clear(Arena *arena) { arena_reset_to(arena, 0); }
+void arena_clear(Arena *arena, ArenaMemoryTag tag) {
+  arena_reset_to(arena, 0, tag);
+}
 
-void arena_reset(Arena *arena, uint64_t amt) {
+void arena_reset(Arena *arena, uint64_t amt, ArenaMemoryTag tag) {
   uint64_t pos_old = arena_pos(arena);
   uint64_t pos_new = pos_old;
   if (amt < pos_old) {
     pos_new = pos_old - amt;
   }
-  arena_reset_to(arena, pos_new);
+  arena_reset_to(arena, pos_new, tag);
 }
 
 Scratch scratch_create(Arena *arena) {
@@ -284,6 +297,103 @@ Scratch scratch_create(Arena *arena) {
   return scratch;
 }
 
-void scratch_destroy(Scratch scratch) {
-  arena_reset_to(scratch.arena, scratch.pos);
+void scratch_destroy(Scratch scratch, ArenaMemoryTag tag) {
+  arena_reset_to(scratch.arena, scratch.pos, tag);
+}
+
+char *arena_format_statistics(Arena *arena, Arena *str_arena) {
+  if (!arena || !str_arena) {
+    return NULL;
+  }
+
+  char line_buffer[256];
+  uint64_t total_len = 0;
+  int num_tags = (int)ARENA_MEMORY_TAG_MAX;
+
+  for (int i = 0; i < num_tags; ++i) {
+    const char *tag_name =
+        (i >= 0 && i < ARENA_MEMORY_TAG_MAX && ArenaMemoryTagNames[i])
+            ? ArenaMemoryTagNames[i]
+            : "INVALID_TAG_INDEX";
+    uint64_t size_stat = arena->tags[i].size;
+    int current_line_len = 0;
+
+    if (size_stat < KB(1)) {
+      current_line_len =
+          snprintf(line_buffer, sizeof(line_buffer), "%s: %llu Bytes\n",
+                   tag_name, (unsigned long long)size_stat);
+    } else if (size_stat < MB(1)) {
+      current_line_len =
+          snprintf(line_buffer, sizeof(line_buffer), "%s: %.2f KB\n", tag_name,
+                   (double)size_stat / KB(1));
+    } else if (size_stat < GB(1)) {
+      current_line_len =
+          snprintf(line_buffer, sizeof(line_buffer), "%s: %.2f MB\n", tag_name,
+                   (double)size_stat / MB(1));
+    } else {
+      current_line_len =
+          snprintf(line_buffer, sizeof(line_buffer), "%s: %.2f GB\n", tag_name,
+                   (double)size_stat / GB(1));
+    }
+
+    if (current_line_len > 0) {
+      total_len += current_line_len;
+    }
+  }
+  total_len += 1;
+
+  char *result_str =
+      (char *)arena_alloc(str_arena, total_len, ARENA_MEMORY_TAG_STRING);
+  if (!result_str) {
+    return NULL;
+  }
+
+  char *current_write_pos = result_str;
+  uint64_t remaining_capacity = total_len;
+
+  if (total_len == 1) {
+    result_str[0] = '\0';
+  } else {
+    for (int i = 0; i < num_tags; ++i) {
+      const char *tag_name =
+          (i >= 0 && i < ARENA_MEMORY_TAG_MAX && ArenaMemoryTagNames[i])
+              ? ArenaMemoryTagNames[i]
+              : "INVALID_TAG_INDEX";
+      uint64_t size_stat = arena->tags[i].size;
+      int current_line_len = 0;
+
+      if (size_stat < KB(1)) {
+        current_line_len =
+            snprintf(current_write_pos, remaining_capacity, "%s: %llu Bytes\n",
+                     tag_name, (unsigned long long)size_stat);
+      } else if (size_stat < MB(1)) {
+        current_line_len =
+            snprintf(current_write_pos, remaining_capacity, "%s: %.2f KB\n",
+                     tag_name, (double)size_stat / KB(1));
+      } else if (size_stat < GB(1)) {
+        current_line_len =
+            snprintf(current_write_pos, remaining_capacity, "%s: %.2f MB\n",
+                     tag_name, (double)size_stat / MB(1));
+      } else {
+        current_line_len =
+            snprintf(current_write_pos, remaining_capacity, "%s: %.2f GB\n",
+                     tag_name, (double)size_stat / GB(1));
+      }
+
+      if (current_line_len > 0 &&
+          (uint64_t)current_line_len < remaining_capacity) {
+        current_write_pos += current_line_len;
+        remaining_capacity -= current_line_len;
+      } else {
+        *current_write_pos = '\0';
+        break;
+      }
+    }
+
+    if (current_write_pos < result_str + total_len) {
+      *current_write_pos = '\0';
+    }
+  }
+
+  return result_str;
 }

@@ -80,7 +80,8 @@ typedef struct VectorFindResult {
                                                                                \
     Vector_##name vector = {                                                   \
         arena, DEFAULT_VECTOR_CAPACITY, 0,                                     \
-        arena_alloc(arena, DEFAULT_VECTOR_CAPACITY * sizeof(type))};           \
+        arena_alloc(arena, DEFAULT_VECTOR_CAPACITY * sizeof(type),             \
+                    ARENA_MEMORY_TAG_VECTOR)};                                 \
     return vector;                                                             \
   }                                                                            \
   /**                                                                          \
@@ -93,8 +94,9 @@ typedef struct VectorFindResult {
       Arena *arena, uint64_t capacity) {                                       \
     assert_log(arena != NULL, "Arena is NULL");                                \
     assert_log(capacity > 0, "Capacity is 0");                                 \
-    Vector_##name vector = {arena, capacity, 0,                                \
-                            arena_alloc(arena, capacity * sizeof(type))};      \
+    Vector_##name vector = {                                                   \
+        arena, capacity, 0,                                                    \
+        arena_alloc(arena, capacity * sizeof(type), ARENA_MEMORY_TAG_VECTOR)}; \
     return vector;                                                             \
   }                                                                            \
   /**                                                                          \
@@ -111,7 +113,8 @@ typedef struct VectorFindResult {
     uint64_t target_capacity =                                                 \
         vector->capacity * DEFAULT_VECTOR_RESIZE_FACTOR;                       \
     uint64_t allocation_size = target_capacity * sizeof(type);                 \
-    type *new_data = arena_alloc(vector->arena, allocation_size);              \
+    type *new_data =                                                           \
+        arena_alloc(vector->arena, allocation_size, ARENA_MEMORY_TAG_VECTOR);  \
     assert_log(new_data != NULL, "Failed to allocate memory");                 \
                                                                                \
     if (vector->data != NULL && vector->length > 0) {                          \

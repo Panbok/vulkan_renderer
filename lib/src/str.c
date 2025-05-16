@@ -23,7 +23,7 @@ String8 string8_create_formatted_v(Arena *arena, const char *fmt,
   assert(required_size >= 0 && "Failed to format string");
 
   uint64_t buffer_size = (uint64_t)required_size + 1;
-  uint8_t *buffer = arena_alloc(arena, buffer_size);
+  uint8_t *buffer = arena_alloc(arena, buffer_size, ARENA_MEMORY_TAG_STRING);
 
   assert(buffer != NULL && "Failed to allocate buffer");
 
@@ -63,7 +63,7 @@ String8 string8_concat(Arena *arena, String8 *str1, String8 *str2) {
   String8 str = {NULL, 0};
 
   str.length = str1->length + str2->length;
-  str.str = arena_alloc(arena, str.length + 1); // +1 for null terminator
+  str.str = arena_alloc(arena, str.length + 1, ARENA_MEMORY_TAG_STRING);
 
   MemCopy(str.str, str1->str, str1->length);
   MemCopy(str.str + str1->length, str2->str, str2->length);

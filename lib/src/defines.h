@@ -19,8 +19,9 @@
 #define ClampTop(A, X) Min(A, X)
 #define ClampBot(X, B) Max(X, B)
 
-#define KB(x) ((x) * 1024)
-#define MB(x) ((x) * 1024 * 1024)
+#define KB(x) ((x) * 1024ULL)
+#define MB(x) ((x) * 1024ULL * 1024ULL)
+#define GB(x) ((x) * 1024ULL * 1024ULL * 1024ULL)
 
 #define SingleListAppend(f, n, next) ((n)->next = (f), (f) = (n))
 #define SingleListPop(f, n) ((f) = (n)->next)
