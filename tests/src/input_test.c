@@ -86,7 +86,7 @@ static void test_input_init() {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
   event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_INIT,
                           on_input_system_init);
   event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_SHUTDOWN,
@@ -110,7 +110,7 @@ static void test_input_shutdown() {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
   event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_INIT,
                           on_input_system_init);
   event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_SHUTDOWN,
@@ -135,7 +135,7 @@ static void test_input_key_press_release() {
   reset_event_trackers();
 
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
   event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, on_key_event);
   event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE, on_key_event);
   // Subscribe dummy handler for INPUT_SYSTEM_INIT for this test context
@@ -200,7 +200,7 @@ static void test_input_button_press_release() {
   reset_event_trackers();
 
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
   event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_PRESS, on_button_event);
   event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_RELEASE, on_button_event);
   InputState input_state = input_init(&manager);
@@ -267,7 +267,7 @@ static void test_input_mouse_move() {
   reset_event_trackers();
 
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
   event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE, on_mouse_move_event);
   InputState input_state = input_init(&manager);
   struct timespec ts = {.tv_sec = 0, .tv_nsec = 100000000}; // 100ms
@@ -335,7 +335,7 @@ static void test_input_mouse_wheel() {
   reset_event_trackers();
 
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
   event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_WHEEL,
                           on_mouse_wheel_event);
   InputState input_state = input_init(&manager);
@@ -406,7 +406,7 @@ static void test_input_update_state_copy() {
 
   // Correctly initialize with an EventManager
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
   InputState input_state = input_init(&manager);
 
   // 1. Test Key State Copy

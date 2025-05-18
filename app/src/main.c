@@ -47,7 +47,7 @@ void application_update(Application *application, float64_t delta) {
   } else {
     fps_value = 1.0 / application->config->target_frame_rate;
   }
-  log_debug("CALCULATED FPS VALUE: %f, DELTA WAS: %f", fps_value, delta);
+  // log_debug("CALCULATED FPS VALUE: %f, DELTA WAS: %f", fps_value, delta);
 
   if (state == NULL || state->input_state == NULL) {
     log_error("State or input state is NULL");
@@ -74,9 +74,9 @@ void application_update(Application *application, float64_t delta) {
       *player_position_y -= PLAYER_SPEED * delta;
     }
 
-    log_debug("Entity ID: %u, Player Position: (x - %f, y - %f)",
-              *array_get_uint16_t(&state->entities, i), *player_position_x,
-              *player_position_y);
+    // log_debug("Entity ID: %u, Player Position: (x - %f, y - %f)",
+    //           *array_get_uint16_t(&state->entities, i), *player_position_x,
+    //           *player_position_y);
   }
 
   if (input_is_key_up(state->input_state, KEY_M) &&
@@ -118,7 +118,7 @@ int main(int argc, char **argv) {
       array_create_float64_t(application.app_arena, ENTITY_COUNT);
   state->input_state = &application.window.input_state;
   state->app_arena = application.app_arena;
-  state->event_arena = application.event_arena;
+  state->event_arena = application.event_manager.arena;
 
   application_start(&application);
   application_close(&application);

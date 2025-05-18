@@ -91,10 +91,9 @@ typedef struct ApplicationConfig {
  * application to run.
  */
 typedef struct Application {
-  Arena *app_arena;   /**< Main memory arena for general application use (e.g.,
-                         game entities, state). */
-  Arena *log_arena;   /**< Memory arena dedicated to the logging system. */
-  Arena *event_arena; /**< Memory arena dedicated to the event system. */
+  Arena *app_arena; /**< Main memory arena for general application use (e.g.,
+                       game entities, state). */
+  Arena *log_arena; /**< Memory arena dedicated to the logging system. */
   EventManager event_manager; /**< Manages event dispatch and subscriptions. */
   Window window;              /**< Represents the application window. */
   ApplicationConfig *config;  /**< Pointer to the configuration used to create
@@ -180,7 +179,8 @@ bool8_t application_create(Application *application,
   assert(config->target_frame_rate > 0 && "Application target frame rate is 0");
 
   application->config = config;
-  application->app_arena = arena_create(config->app_arena_size);
+  application->app_arena =
+      arena_create(config->app_arena_size, config->app_arena_size);
   if (!application->app_arena) {
     log_fatal("Failed to create app_arena!");
     return false_v;
@@ -195,19 +195,9 @@ bool8_t application_create(Application *application,
   }
   log_init(application->log_arena);
 
-  application->event_arena = arena_create(MB(5));
-  if (!application->event_arena) {
-    log_fatal("Failed to create event_arena!");
-    if (application->log_arena)
-      arena_destroy(application->log_arena);
-    if (application->app_arena)
-      arena_destroy(application->app_arena);
-    return false_v;
-  }
-
   log_info("Application initializing...");
 
-  event_manager_create(application->event_arena, &application->event_manager);
+  event_manager_create(&application->event_manager);
   window_create(&application->window, &application->event_manager,
                 config->title, config->x, config->y, config->width,
                 config->height);
@@ -421,5 +411,4 @@ void application_shutdown(Application *application) {
   event_manager_destroy(&application->event_manager);
   arena_destroy(application->log_arena);
   arena_destroy(application->app_arena);
-  arena_destroy(application->event_arena);
 }

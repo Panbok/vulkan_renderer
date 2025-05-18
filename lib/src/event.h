@@ -55,6 +55,7 @@
 
 #include "array.h"
 #include "defines.h"
+#include "event_data_buffer.h"
 #include "pch.h"
 #include "platform.h"
 #include "queue.h"
@@ -118,20 +119,28 @@ Queue(Event);
 Vector(EventCallback);
 Array(EventCallback);
 
+#define DEFAULT_EVENT_DATA_RING_BUFFER_CAPACITY                                \
+  (MB(4)) // Default capacity for the event data ring buffer
+#define DEFAULT_EVENT_QUEUE_CAPACITY 1024
+
 /**
  * @brief Manages the event queue, callback subscriptions, and the processing
  * thread.
  */
 typedef struct EventManager {
   Arena *arena;      /**< Arena used for internal allocations (e.g., callback
-                      vectors). */
+                      vectors, event data ring buffer). */
   Queue_Event queue; /**< The queue holding dispatched events awaiting
                       processing. */
   Vector_EventCallback
       callbacks[EVENT_TYPE_MAX]; /**< Array of vectors, indexed by EventType,
                                     storing registered callbacks. */
-  pthread_mutex_t mutex;         /**< Mutex protecting access to the queue and
-                                    callback vectors. */
+
+  EventDataBuffer
+      event_data_buf; /**< Buffer for storing variable-sized event data. */
+
+  pthread_mutex_t mutex; /**< Mutex protecting access to the queue,
+                            callback vectors, and event data buffer. */
   pthread_cond_t cond; /**< Condition variable used by the worker thread to wait
                         for events or shutdown signal. */
   pthread_t thread;    /**< Handle for the dedicated event processing thread. */
@@ -154,11 +163,9 @@ typedef struct EventManager {
  * @brief Creates and initializes a new EventManager.
  * Allocates necessary resources (queue, mutex, condition variable) and starts
  * the background event processing thread.
- * @param arena The memory arena to use for internal allocations (callback
- * vectors).
  * @param manager Pointer to the EventManager structure to initialize.
  */
-void event_manager_create(Arena *arena, EventManager *manager);
+void event_manager_create(EventManager *manager);
 
 /**
  * @brief Destroys an EventManager, cleans up resources, and stops the

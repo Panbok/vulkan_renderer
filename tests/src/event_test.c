@@ -213,9 +213,9 @@ static void test_event_manager_create_destroy(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
 
-  assert(manager.arena == arena && "Arena pointer mismatch");
+  assert(manager.arena != NULL && "Arena pointer should not be NULL");
   assert(manager.running == true && "Manager should be running");
   assert(manager.queue.data != NULL && "Queue data should be initialized");
 
@@ -231,7 +231,7 @@ static void test_event_subscription(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
 
   // Subscribe to an event
   event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback1);
@@ -277,7 +277,7 @@ static void test_event_dispatch_processing(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
 
   // Reset global state for this test
   g_dp_key_press_processed_flag = false;
@@ -345,7 +345,7 @@ static void test_queue_full(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
 
   // We need to fill the queue without processing events
   // First, stop the event processor
@@ -407,7 +407,7 @@ static void test_event_ordering(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
 
   // Create an array to record the order of processing
   const uint32_t EVENT_COUNT = 10;
@@ -450,7 +450,7 @@ static void test_dynamic_unsubscribe(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
 
   // Reset counters
   callback1_count = 0;
@@ -496,7 +496,7 @@ static void test_concurrent_dispatch(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
 
   // Reset counter
   processed_count = 0;
@@ -543,7 +543,7 @@ static void test_slow_callbacks(void) {
   setup_suite();
 
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
 
   // Reset state
   slow_callback_executed = false;
@@ -601,7 +601,7 @@ static void test_data_copying_original_integrity(void) {
   printf("  Running test_data_copying_original_integrity...\n");
   setup_suite();
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
 
   g_integrity_cb_executed = false;
   g_integrity_cb_received_value = 0;
@@ -640,7 +640,7 @@ static void test_dispatch_data_size_zero(void) {
   printf("  Running test_dispatch_data_size_zero...\n");
   setup_suite();
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
 
   g_dsz_cb_execution_count = 0;
   g_dsz_cb_data_is_null = false;
@@ -689,7 +689,7 @@ static void test_data_lifetime_original_freed(void) {
   printf("  Running test_data_lifetime_original_freed...\n");
   setup_suite(); // Main arena
   EventManager manager;
-  event_manager_create(arena, &manager);
+  event_manager_create(&manager);
 
   g_lifetime_cb_executed_successfully = false;
   event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_PRESS,

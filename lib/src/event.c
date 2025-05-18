@@ -34,6 +34,14 @@ static void *events_processor(void *arg) {
 
     if (!queue_is_empty_Event(&manager->queue)) {
       event_dequeued = queue_dequeue_Event(&manager->queue, &event);
+      if (event_dequeued && event.data_size > 0 && event.data != NULL) {
+        if (!event_data_buffer_free(&manager->event_data_buf,
+                                    event.data_size)) {
+          log_error("Events_processor: Failed to free data for event type %d, "
+                    "size %llu from event data buffer.",
+                    event.type, event.data_size);
+        }
+      }
     }
 
     if (!event_dequeued) {
@@ -69,6 +77,7 @@ static void *events_processor(void *arg) {
           local_callbacks_copy.data[i](&event);
         }
       }
+
     } else {
       log_warn("Event_processor: subs_count (%u) for event type %d, but "
                "vector or array data pointer is NULL. Callbacks skipped.",
@@ -84,13 +93,20 @@ static void *events_processor(void *arg) {
   return NULL;
 }
 
-void event_manager_create(Arena *arena, EventManager *manager) {
-  assert_log(arena != NULL, "Arena is NULL");
+void event_manager_create(EventManager *manager) {
   assert_log(manager != NULL, "Manager is NULL");
 
-  manager->arena = arena;
+  manager->arena = arena_create(MB(1), MB(1));
   MemZero(manager->callbacks, sizeof(manager->callbacks));
-  manager->queue = queue_create_Event(arena, 1024);
+  manager->queue =
+      queue_create_Event(manager->arena, DEFAULT_EVENT_QUEUE_CAPACITY);
+
+  if (!event_data_buffer_create(manager->arena,
+                                DEFAULT_EVENT_DATA_RING_BUFFER_CAPACITY,
+                                &manager->event_data_buf)) {
+    log_fatal("Failed to create event data buffer for EventManager.");
+    return;
+  }
 
   pthread_mutex_init(&manager->mutex, NULL);
   pthread_cond_init(&manager->cond, NULL);
@@ -115,6 +131,8 @@ void event_manager_destroy(EventManager *manager) {
   }
 
   queue_destroy_Event(&manager->queue);
+  event_data_buffer_destroy(&manager->event_data_buf);
+  arena_destroy(manager->arena);
 }
 
 void event_manager_subscribe(EventManager *manager, EventType type,
@@ -160,39 +178,60 @@ void event_manager_unsubscribe(EventManager *manager, EventType type,
 bool32_t event_manager_dispatch(EventManager *manager, Event event) {
   assert_log(manager != NULL, "Manager is NULL");
   assert_log(event.type < EVENT_TYPE_MAX, "Invalid event type");
-  // If data_size > 0, then event.data must not be NULL.
-  // If data_size == 0, event.data can be NULL (it will be ignored for copying).
   assert_log(!(event.data_size > 0 && event.data == NULL),
              "Event data is NULL but data_size is greater than 0");
 
   pthread_mutex_lock(&manager->mutex);
 
   Event event_to_enqueue = event;
+  void *copied_data_ptr_in_buffer = NULL;
 
   if (event.data_size > 0) {
-    void *copied_data =
-        arena_alloc(manager->arena, event.data_size, ARENA_MEMORY_TAG_BUFFER);
-    if (copied_data == NULL) {
-      log_warn(
-          "Failed to allocate memory for event data (type: %d, size: %llu). "
-          "Event not dispatched.",
-          event.type, event.data_size);
+    if (queue_is_full_Event(&manager->queue)) {
+      log_warn("Event queue full. Cannot dispatch event type %d.", event.type);
       pthread_mutex_unlock(&manager->mutex);
       return false;
     }
-    MemCopy(copied_data, event.data, event.data_size);
-    event_to_enqueue.data = copied_data;
+
+    if (!event_data_buffer_can_alloc(&manager->event_data_buf,
+                                     event.data_size)) {
+      log_warn("Event data buffer cannot allocate %llu bytes for event type %d "
+               "(full or too fragmented).",
+               event.data_size, event.type);
+      pthread_mutex_unlock(&manager->mutex);
+      return false;
+    }
+
+    if (!event_data_buffer_alloc(&manager->event_data_buf, event.data_size,
+                                 &copied_data_ptr_in_buffer)) {
+      log_warn(
+          "Failed to allocate %llu bytes in event data buffer for event type "
+          "%d. Allocation failed unexpectedly after can_alloc passed.",
+          event.data_size, event.type);
+      pthread_mutex_unlock(&manager->mutex);
+      return false;
+    }
+
+    MemCopy(copied_data_ptr_in_buffer, event.data, event.data_size);
+
+    event_to_enqueue.data = copied_data_ptr_in_buffer;
+
   } else {
     event_to_enqueue.data = NULL;
     event_to_enqueue.data_size = 0;
   }
 
   if (!queue_enqueue_Event(&manager->queue, event_to_enqueue)) {
-    log_warn("Failed to enqueue event (type: %d). Queue might be full.",
+    log_warn("Failed to enqueue event (type: %d). Event queue might be full.",
              event_to_enqueue.type);
-    // Note: If arena_alloc succeeded but enqueue failed, the allocated
-    // memory for copied_data is orphaned in the arena until the arena is
-    // reset or destroyed. This is generally acceptable for arenas.
+
+    if (event.data_size > 0 && copied_data_ptr_in_buffer != NULL) {
+      log_debug("Rolling back event data buffer allocation for event type %d "
+                "due to queue enqueue failure.",
+                event.type);
+      event_data_buffer_rollback_last_alloc(&manager->event_data_buf);
+    }
+
     pthread_mutex_unlock(&manager->mutex);
     return false;
   }
