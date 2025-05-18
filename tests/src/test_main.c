@@ -23,6 +23,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_mmemory_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_event_data_buffer_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_event_tests();
   printf("\n"); // Add spacing
   all_passed &= run_input_tests();
