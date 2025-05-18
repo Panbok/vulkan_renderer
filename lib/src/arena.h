@@ -166,15 +166,35 @@ typedef struct Scratch {
  */
 Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size);
 
+// Helper macro to count variadic arguments (0, 1, or 2 for this context).
+// Uses GNU '##__VA_ARGS__' extension to handle empty __VA_ARGS__ correctly by
+// removing the preceding comma.
+#define ARENA_NARGS_IMPL(dummy_for_empty_case, _1, _2, N, ...) N
+#define ARENA_NARGS(...) ARENA_NARGS_IMPL(dummy, ##__VA_ARGS__, 2, 1, 0)
+
+// Specific implementations for different numbers of arguments
+#define arena_create_0() arena_create_internal(ARENA_RSV_SIZE, ARENA_CMT_SIZE)
+#define arena_create_1(rsv)                                                    \
+  arena_create_internal(rsv, rsv) // Assume rsv for cmt if only one arg
+#define arena_create_2(rsv, cmt) arena_create_internal(rsv, cmt)
+
+// Concatenation helpers for dispatch
+#define ARENA_CONCAT_IMPL(prefix, count) prefix##count
+#define ARENA_CONCAT(prefix, count) ARENA_CONCAT_IMPL(prefix, count)
+
+// Dispatcher macro: calls arena_create_N(...) based on N (number of arguments)
+#define arena_create_DISPATCH(N, ...)                                          \
+  ARENA_CONCAT(arena_create_, N)(__VA_ARGS__)
+
 /**
  * @brief Macro to create an arena with default or specified sizes.
- * If called with no arguments, uses `ARENA_RSV_SIZE` and `ARENA_CMT_SIZE`.
- * If called with two arguments (rsv_size, cmt_size), uses those values.
+ * - `arena_create()`: Uses `ARENA_RSV_SIZE` and `ARENA_CMT_SIZE`.
+ * - `arena_create(rsv_size)`: Uses `rsv_size` for both reserve and commit.
+ * - `arena_create(rsv_size, cmt_size)`: Uses the specified `rsv_size` and
+ * `cmt_size`.
  */
-#define ARENA_CREATE_RESOLVE(_1, _2, NAME, ...) NAME
 #define arena_create(...)                                                      \
-  ARENA_CREATE_RESOLVE(__VA_ARGS__, arena_create_internal(__VA_ARGS__),        \
-                       arena_create_internal(ARENA_RSV_SIZE, ARENA_CMT_SIZE))
+  arena_create_DISPATCH(ARENA_NARGS(__VA_ARGS__), ##__VA_ARGS__)
 
 /**
  * @brief Destroys an arena and releases all associated memory blocks.
