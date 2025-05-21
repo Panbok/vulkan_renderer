@@ -1,6 +1,7 @@
 #pragma once
 
 #include "arena.h"
+#include "defines.h"
 #include "platform.h"
 #include "str.h"
 
@@ -22,8 +23,8 @@ typedef enum LogLevel {
 } LogLevel;
 
 void log_init(Arena *arena);
-void _log_message(LogLevel level, const char *file, int line, const char *fmt,
-                  ...);
+void _log_message(LogLevel level, const char *file, uint32_t line,
+                  const char *fmt, ...);
 
 #define log_fatal(fmt, ...)                                                    \
   _log_message(LOG_LEVEL_FATAL, __FILE__, __LINE__, fmt, ##__VA_ARGS__);

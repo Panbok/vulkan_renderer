@@ -88,7 +88,7 @@ static void test_mmemory_capacity_growth() {
 
   // Allocate more blocks than initial capacity
   void *ptrs[5];
-  for (int i = 0; i < 5; i++) {
+  for (uint32_t i = 0; i < 5; i++) {
     ptrs[i] = mmemory_alloc(&allocator, 100);
     assert(ptrs[i] != NULL && "Allocation failed");
   }
@@ -98,7 +98,7 @@ static void test_mmemory_capacity_growth() {
   assert(allocator.count == 5 && "Count incorrect after allocations");
 
   // Verify all allocations are tracked
-  for (int i = 0; i < 5; i++) {
+  for (uint32_t i = 0; i < 5; i++) {
     bool32_t found = false;
     for (uint64_t j = 0; j < allocator.capacity; j++) {
       if (allocator.blocks[j].ptr == ptrs[i]) {

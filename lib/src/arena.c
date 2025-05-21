@@ -308,15 +308,15 @@ char *arena_format_statistics(Arena *arena, Arena *str_arena) {
 
   char line_buffer[256];
   uint64_t total_len = 0;
-  int num_tags = (int)ARENA_MEMORY_TAG_MAX;
+  uint32_t num_tags = (uint32_t)ARENA_MEMORY_TAG_MAX;
 
-  for (int i = 0; i < num_tags; ++i) {
+  for (uint32_t i = 0; i < num_tags; ++i) {
     const char *tag_name =
         (i >= 0 && i < ARENA_MEMORY_TAG_MAX && ArenaMemoryTagNames[i])
             ? ArenaMemoryTagNames[i]
             : "INVALID_TAG_INDEX";
     uint64_t size_stat = arena->tags[i].size;
-    int current_line_len = 0;
+    uint32_t current_line_len = 0;
 
     if (size_stat < KB(1)) {
       current_line_len =
@@ -354,13 +354,13 @@ char *arena_format_statistics(Arena *arena, Arena *str_arena) {
   if (total_len == 1) {
     result_str[0] = '\0';
   } else {
-    for (int i = 0; i < num_tags; ++i) {
+    for (uint32_t i = 0; i < num_tags; ++i) {
       const char *tag_name =
           (i >= 0 && i < ARENA_MEMORY_TAG_MAX && ArenaMemoryTagNames[i])
               ? ArenaMemoryTagNames[i]
               : "INVALID_TAG_INDEX";
       uint64_t size_stat = arena->tags[i].size;
-      int current_line_len = 0;
+      uint32_t current_line_len = 0;
 
       if (size_stat < KB(1)) {
         current_line_len =

@@ -1,8 +1,5 @@
 #include "array_test.h"
 
-// Instantiate Array for a specific type for testing
-Array(int);
-
 static Arena *arena = NULL;
 static const uint64_t ARENA_SIZE = 1024 * 1024; // 1MB
 
@@ -22,13 +19,13 @@ static void test_array_create_int(void) {
   setup_suite();
 
   const uint64_t length = 10;
-  Array_int arr = array_create_int(arena, length);
+  Array_uint32_t arr = array_create_uint32_t(arena, length);
 
   assert(arr.arena == arena && "Arena pointer mismatch");
   assert(arr.length == length && "Length mismatch");
   assert(arr.data != NULL && "Data is NULL");
 
-  array_destroy_int(&arr);
+  array_destroy_uint32_t(&arr);
   assert(arr.data == NULL && "Data not NULL after destroy");
   assert(arr.arena == NULL && "Arena not NULL after destroy");
   assert(arr.length == 0 && "Length not 0 after destroy");
@@ -43,19 +40,19 @@ static void test_array_set_get_int(void) {
 
   const uint64_t length = 5;
   // Correctly pass the arena pointer
-  Array_int arr = array_create_int(arena, length);
+  Array_uint32_t arr = array_create_uint32_t(arena, length);
 
   for (uint64_t i = 0; i < length; ++i) {
-    array_set_int(&arr, i, (int)(i * i));
+    array_set_uint32_t(&arr, i, (uint32_t)(i * i));
   }
 
   for (uint64_t i = 0; i < length; ++i) {
-    int *value_ptr = array_get_int(&arr, i);
+    uint32_t *value_ptr = array_get_uint32_t(&arr, i);
     assert(value_ptr != NULL && "Got NULL pointer from get");
-    assert(*value_ptr == (int)(i * i) && "Value mismatch");
+    assert(*value_ptr == (uint32_t)(i * i) && "Value mismatch");
   }
 
-  array_destroy_int(&arr);
+  array_destroy_uint32_t(&arr);
 
   teardown_suite();
   printf("  test_array_set_get_int PASSED\n");

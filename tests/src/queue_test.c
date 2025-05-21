@@ -14,148 +14,148 @@ static void teardown_suite(void) {
   }
 }
 
-static void test_queue_create_int(void) {
-  printf("  Running test_queue_create_int...\n");
+static void test_queue_create_uint32_t(void) {
+  printf("  Running test_queue_create_uint32_t...\n");
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_int queue = queue_create_int(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
 
   assert(queue.arena == arena && "Arena pointer mismatch");
   assert(queue.capacity == capacity && "Capacity mismatch");
   assert(queue.size == 0 && "Size mismatch");
   assert(queue.data != NULL && "Data pointer mismatch");
 
-  queue_destroy_int(&queue);
+  queue_destroy_uint32_t(&queue);
 
   teardown_suite();
-  printf("  test_queue_create_int PASSED\n");
+  printf("  test_queue_create_uint32_t PASSED\n");
 }
 
-static void test_queue_enqueue_int(void) {
-  printf("  Running test_queue_enqueue_int...\n");
+static void test_queue_enqueue_uint32_t(void) {
+  printf("  Running test_queue_enqueue_uint32_t...\n");
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_int queue = queue_create_int(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
 
   for (uint64_t i = 0; i < capacity; ++i) {
-    assert(queue_enqueue_int(&queue, i) && "Enqueue failed");
+    assert(queue_enqueue_uint32_t(&queue, i) && "Enqueue failed");
   }
 
-  assert(queue_is_full_int(&queue) && "Queue should be full");
+  assert(queue_is_full_uint32_t(&queue) && "Queue should be full");
 
-  queue_destroy_int(&queue);
+  queue_destroy_uint32_t(&queue);
 
   teardown_suite();
-  printf("  test_queue_enqueue_int PASSED\n");
+  printf("  test_queue_enqueue_uint32_t PASSED\n");
 }
 
-static void test_queue_dequeue_int(void) {
-  printf("  Running test_queue_dequeue_int...\n");
+static void test_queue_dequeue_uint32_t(void) {
+  printf("  Running test_queue_dequeue_uint32_t...\n");
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_int queue = queue_create_int(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
 
   for (uint64_t i = 0; i < capacity; ++i) {
-    assert(queue_enqueue_int(&queue, i) && "Enqueue failed");
+    assert(queue_enqueue_uint32_t(&queue, i) && "Enqueue failed");
   }
 
   for (uint64_t i = 0; i < capacity; ++i) {
-    assert(queue_dequeue_int(&queue, NULL) && "Dequeue failed");
+    assert(queue_dequeue_uint32_t(&queue, NULL) && "Dequeue failed");
   }
 
-  assert(queue_is_empty_int(&queue) && "Queue should be empty");
+  assert(queue_is_empty_uint32_t(&queue) && "Queue should be empty");
 
-  queue_destroy_int(&queue);
+  queue_destroy_uint32_t(&queue);
 
   teardown_suite();
-  printf("  test_queue_dequeue_int PASSED\n");
+  printf("  test_queue_dequeue_uint32_t PASSED\n");
 }
 
-static void test_queue_is_empty_int(void) {
-  printf("  Running test_queue_is_empty_int...\n");
+static void test_queue_is_empty_uint32_t(void) {
+  printf("  Running test_queue_is_empty_uint32_t...\n");
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_int queue = queue_create_int(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
 
-  assert(queue_is_empty_int(&queue) && "Queue should be empty");
+  assert(queue_is_empty_uint32_t(&queue) && "Queue should be empty");
 
-  queue_destroy_int(&queue);
+  queue_destroy_uint32_t(&queue);
 
   teardown_suite();
-  printf("  test_queue_is_empty_int PASSED\n");
+  printf("  test_queue_is_empty_uint32_t PASSED\n");
 }
 
-static void test_queue_is_full_int(void) {
-  printf("  Running test_queue_is_full_int...\n");
+static void test_queue_is_full_uint32_t(void) {
+  printf("  Running test_queue_is_full_uint32_t...\n");
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_int queue = queue_create_int(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
 
   for (uint64_t i = 0; i < capacity; ++i) {
-    assert(queue_enqueue_int(&queue, i) && "Enqueue failed");
+    assert(queue_enqueue_uint32_t(&queue, i) && "Enqueue failed");
   }
 
-  assert(queue_is_full_int(&queue) && "Queue should be full");
+  assert(queue_is_full_uint32_t(&queue) && "Queue should be full");
 
-  queue_destroy_int(&queue);
+  queue_destroy_uint32_t(&queue);
 
   teardown_suite();
-  printf("  test_queue_is_full_int PASSED\n");
+  printf("  test_queue_is_full_uint32_t PASSED\n");
 }
 
-static void test_queue_peek_int(void) {
-  printf("  Running test_queue_peek_int...\n");
+static void test_queue_peek_uint32_t(void) {
+  printf("  Running test_queue_peek_uint32_t...\n");
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_int queue = queue_create_int(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
 
   for (uint64_t i = 0; i < capacity; ++i) {
-    assert(queue_enqueue_int(&queue, i) && "Enqueue failed");
+    assert(queue_enqueue_uint32_t(&queue, i) && "Enqueue failed");
   }
 
-  assert(queue_peek_int(&queue) == 0 && "Peek value mismatch");
+  assert(queue_peek_uint32_t(&queue) == 0 && "Peek value mismatch");
 
-  queue_destroy_int(&queue);
+  queue_destroy_uint32_t(&queue);
 
   teardown_suite();
-  printf("  test_queue_peek_int PASSED\n");
+  printf("  test_queue_peek_uint32_t PASSED\n");
 }
 
-static void test_queue_clear_int(void) {
-  printf("  Running test_queue_clear_int...\n");
+static void test_queue_clear_uint32_t(void) {
+  printf("  Running test_queue_clear_uint32_t...\n");
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_int queue = queue_create_int(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
 
   for (uint64_t i = 0; i < capacity; ++i) {
-    assert(queue_enqueue_int(&queue, i) && "Enqueue failed");
+    assert(queue_enqueue_uint32_t(&queue, i) && "Enqueue failed");
   }
 
-  queue_clear_int(&queue);
+  queue_clear_uint32_t(&queue);
 
-  assert(queue_is_empty_int(&queue) && "Queue should be empty");
+  assert(queue_is_empty_uint32_t(&queue) && "Queue should be empty");
 
-  queue_destroy_int(&queue);
+  queue_destroy_uint32_t(&queue);
 
   teardown_suite();
-  printf("  test_queue_clear_int PASSED\n");
+  printf("  test_queue_clear_uint32_t PASSED\n");
 }
 
-static void test_queue_destroy_int(void) {
-  printf("  Running test_queue_destroy_int...\n");
+static void test_queue_destroy_uint32_t(void) {
+  printf("  Running test_queue_destroy_uint32_t...\n");
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_int queue = queue_create_int(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
 
-  queue_destroy_int(&queue);
+  queue_destroy_uint32_t(&queue);
 
   assert(queue.arena == NULL && "Arena pointer should be NULL");
   assert(queue.capacity == 0 && "Capacity should be 0");
@@ -163,19 +163,19 @@ static void test_queue_destroy_int(void) {
   assert(queue.data == NULL && "Data pointer should be NULL");
 
   teardown_suite();
-  printf("  test_queue_destroy_int PASSED\n");
+  printf("  test_queue_destroy_uint32_t PASSED\n");
 }
 
 bool32_t run_queue_tests() {
   printf("--- Running Queue tests... ---\n");
-  test_queue_create_int();
-  test_queue_enqueue_int();
-  test_queue_dequeue_int();
-  test_queue_is_empty_int();
-  test_queue_is_full_int();
-  test_queue_peek_int();
-  test_queue_clear_int();
-  test_queue_destroy_int();
+  test_queue_create_uint32_t();
+  test_queue_enqueue_uint32_t();
+  test_queue_dequeue_uint32_t();
+  test_queue_is_empty_uint32_t();
+  test_queue_is_full_uint32_t();
+  test_queue_peek_uint32_t();
+  test_queue_clear_uint32_t();
+  test_queue_destroy_uint32_t();
   printf("--- Queue tests completed. ---\n");
   return true;
 }

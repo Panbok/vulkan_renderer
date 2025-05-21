@@ -11,7 +11,7 @@ void *platform_mem_reserve(uint64_t size) {
 }
 
 bool32_t platform_mem_commit(void *ptr, uint64_t size) {
-  int result = mprotect(ptr, size, PROT_READ | PROT_WRITE);
+  uint32_t result = mprotect(ptr, size, PROT_READ | PROT_WRITE);
   return result == 0;
 }
 

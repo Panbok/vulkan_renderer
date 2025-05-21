@@ -763,7 +763,7 @@ static void test_arena_alignment() {
   uint64_t alignment = AlignOf(void *); // Platform default alignment
 
   // Allocate small sizes to check alignment
-  for (int i = 1; i < (int)alignment * 2; ++i) {
+  for (uint32_t i = 1; i < (uint32_t)alignment * 2; ++i) {
     void *ptr = arena_alloc(arena, i, ARENA_MEMORY_TAG_UNKNOWN);
     assert(ptr != NULL && "Alignment alloc failed");
     assert((uintptr_t)ptr % alignment == 0 && "Pointer not aligned correctly");
@@ -774,7 +774,7 @@ static void test_arena_alignment() {
   typedef struct {
     long double ld; // Often requires 16-byte alignment
     char c;
-    int i;
+    uint32_t i;
     double d;
   } TestStruct;
 
@@ -800,7 +800,7 @@ static void test_arena_tagging_and_statistics() {
   assert(str_arena != NULL && "String arena creation failed");
 
   // Initial check: all tag sizes should be 0
-  for (int i = 0; i < ARENA_MEMORY_TAG_MAX; ++i) {
+  for (uint32_t i = 0; i < ARENA_MEMORY_TAG_MAX; ++i) {
     assert(arena->tags[i].size == 0 && "Initial tag size non-zero");
   }
 

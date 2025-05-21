@@ -218,7 +218,7 @@ void test_event_data_buffer_alloc_fragmented(void) {
   // Try alloc 4 (5 -> block 13).
   // Fits at end (19 >= 13).
   assert(event_data_buffer_alloc(&edb, 5, &p4));
-  assert((char *)p4 == edb.buffer + 41 + sizeof(uint64_t) &&
+  assert((uint8_t *)p4 == edb.buffer + 41 + sizeof(uint64_t) &&
          "p4 not at expected location");
   assert(edb.tail == 41 + (sizeof(uint64_t) + 5) &&
          "Tail not updated correctly");
