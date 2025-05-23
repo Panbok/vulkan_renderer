@@ -54,7 +54,14 @@ typedef struct s_BufferResource *BufferHandle;
 typedef struct s_ShaderModule *ShaderHandle;
 typedef struct s_Pipeline *PipelineHandle;
 
-typedef void *BackendResourceHandle;
+typedef union {
+  void *ptr;
+  uint64_t id;
+  struct {
+    uint32_t type;
+    uint32_t index;
+  } typed;
+} BackendResourceHandle;
 
 typedef enum RendererBackendType {
   RENDERER_BACKEND_TYPE_VULKAN,
@@ -201,7 +208,8 @@ typedef struct GraphicsPipelineDescription {
 // ============================================================================
 
 // --- START Initialization and Shutdown ---
-RendererFrontendHandle renderer_create(RendererBackendType backend_type,
+RendererFrontendHandle renderer_create(Arena *arena,
+                                       RendererBackendType backend_type,
                                        Window *window,
                                        RendererError *out_error);
 
@@ -214,7 +222,8 @@ String8 renderer_get_error_string(RendererError error);
 
 // --- START Resource Management ---
 BufferHandle renderer_create_buffer(RendererFrontendHandle renderer,
-                                    BufferDescription *description,
+                                    const BufferDescription *description,
+                                    const void *initial_data,
                                     RendererError *out_error);
 
 void renderer_destroy_buffer(RendererFrontendHandle renderer,
@@ -244,19 +253,21 @@ RendererError renderer_update_buffer(RendererFrontendHandle renderer,
 // --- END Data Update ---
 
 // --- START Frame Lifecycle & Rendering Commands ---
-RendererError renderer_begin_frame(RendererFrontendHandle renderer);
+RendererError renderer_begin_frame(RendererFrontendHandle renderer,
+                                   float64_t delta_time);
 
-void renderer_set_viewport(RendererFrontendHandle renderer, uint32_t x,
-                           uint32_t y, uint32_t width, uint32_t height);
+void renderer_set_viewport(RendererFrontendHandle renderer, int32_t x,
+                           int32_t y, uint32_t width, uint32_t height,
+                           float32_t min_depth, float32_t max_depth);
 
-void renderer_set_scissor(RendererFrontendHandle renderer, uint32_t x,
-                          uint32_t y, uint32_t width, uint32_t height);
+void renderer_set_scissor(RendererFrontendHandle renderer, int32_t x, int32_t y,
+                          uint32_t width, uint32_t height);
 
 void renderer_resize(RendererFrontendHandle renderer, uint32_t width,
                      uint32_t height);
 
-void renderer_clear_color(RendererFrontendHandle renderer, float r, float g,
-                          float b, float a);
+void renderer_clear_color(RendererFrontendHandle renderer, float32_t r,
+                          float32_t g, float32_t b, float32_t a);
 
 void renderer_bind_graphics_pipeline(RendererFrontendHandle renderer,
                                      PipelineHandle pipeline);
@@ -268,7 +279,8 @@ void renderer_draw(RendererFrontendHandle renderer, uint32_t vertex_count,
                    uint32_t instance_count, uint32_t first_vertex,
                    uint32_t first_instance);
 
-RendererError renderer_end_frame(RendererFrontendHandle renderer);
+RendererError renderer_end_frame(RendererFrontendHandle renderer,
+                                 float64_t delta_time);
 // --- END Frame Lifecycle & Rendering Commands ---
 
 // ============================================================================
@@ -293,17 +305,18 @@ typedef struct RendererBackendInterface {
                     uint32_t new_height);
 
   // --- Frame Management ---
-  bool32_t (*begin_frame)(void *backend_state, float delta_time);
-  bool32_t (*end_frame)(void *backend_state,
-                        float delta_time); // Includes present
+  RendererError (*begin_frame)(void *backend_state, float64_t delta_time);
+  RendererError (*end_frame)(void *backend_state,
+                             float64_t delta_time); // Includes present
 
   // --- Resource Management ---
   BackendResourceHandle (*buffer_create)(void *backend_state,
                                          const BufferDescription *desc,
                                          const void *initial_data);
   void (*buffer_destroy)(void *backend_state, BackendResourceHandle handle);
-  bool32_t (*buffer_update)(void *backend_state, BackendResourceHandle handle,
-                            uint64_t offset, uint64_t size, const void *data);
+  RendererError (*buffer_update)(void *backend_state,
+                                 BackendResourceHandle handle, uint64_t offset,
+                                 uint64_t size, const void *data);
 
   // --- Shader & Pipeline Management (NEW) ---
   BackendResourceHandle (*shader_create_from_source)(
@@ -312,23 +325,20 @@ typedef struct RendererBackendInterface {
                          BackendResourceHandle shader_handle);
 
   BackendResourceHandle (*pipeline_create)(
-      void *backend_state, const GraphicsPipelineDescription *description,
-      // May need handles to backend-specific shader objects if not passed in
-      // desc
-      BackendResourceHandle vertex_shader_backend_handle,  // Example
-      BackendResourceHandle fragment_shader_backend_handle // Example
-  );
+      void *backend_state, const GraphicsPipelineDescription *description);
   void (*pipeline_destroy)(void *backend_state,
                            BackendResourceHandle pipeline_handle);
 
   // --- Drawing Commands (Called by Frontend within a frame/render pass) ---
   // These are the "abstract commands" translated by the frontend.
-  void (*cmd_set_viewport)(void *backend_state, float x, float y, float width,
-                           float height, float min_depth, float max_depth);
-  void (*cmd_set_scissor)(void *backend_state, int32_t x, int32_t y,
-                          uint32_t width, uint32_t height);
+  void (*set_viewport)(void *backend_state, int32_t x, int32_t y,
+                       uint32_t width, uint32_t height, float32_t min_depth,
+                       float32_t max_depth);
+  void (*set_scissor)(void *backend_state, int32_t x, int32_t y, uint32_t width,
+                      uint32_t height);
 
-  void (*clear_color)(void *backend_state, float r, float g, float b, float a);
+  void (*clear_color)(void *backend_state, float32_t r, float32_t g,
+                      float32_t b, float32_t a);
 
   void (*bind_pipeline)(void *backend_state,
                         BackendResourceHandle pipeline_handle);

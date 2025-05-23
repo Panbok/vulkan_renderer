@@ -16,6 +16,9 @@ target_include_directories(renderer_lib
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+find_package(Vulkan REQUIRED)
+target_link_libraries(renderer_lib PRIVATE ${Vulkan_LIBRARIES})
+
 # Set platform-specific definitions and link libraries
 if(APPLE)
     target_compile_definitions(renderer_lib PRIVATE PLATFORM_APPLE=1)

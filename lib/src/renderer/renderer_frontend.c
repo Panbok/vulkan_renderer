@@ -1,0 +1,280 @@
+#include "defines.h"
+#include "renderer.h"
+
+#include "vulkan/vulkan_backend.h"
+
+struct s_RendererFrontend {
+  Arena *arena;
+  RendererBackendType backend_type;
+  Window *window;
+  void *backend_state;
+  RendererBackendInterface backend;
+  bool32_t frame_active;
+};
+
+RendererFrontendHandle renderer_create(Arena *arena,
+                                       RendererBackendType backend_type,
+                                       Window *window,
+                                       RendererError *out_error) {
+  assert_log(arena != NULL, "Arena is NULL");
+  assert_log(window != NULL, "Window is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  struct s_RendererFrontend *renderer = arena_alloc(
+      arena, sizeof(struct s_RendererFrontend), ARENA_MEMORY_TAG_RENDERER);
+  renderer->arena = arena;
+  renderer->backend_type = backend_type;
+  renderer->window = window;
+  renderer->frame_active = false;
+
+  if (backend_type == RENDERER_BACKEND_TYPE_VULKAN) {
+    renderer->backend = renderer_vulkan_get_interface();
+  } else {
+    *out_error = RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    return NULL;
+  }
+
+  uint32_t width = (uint32_t)window->width;
+  uint32_t height = (uint32_t)window->height;
+  if (!renderer->backend.initialize(&renderer->backend_state, backend_type,
+                                    window, width, height)) {
+    *out_error = RENDERER_ERROR_INITIALIZATION_FAILED;
+    return NULL;
+  }
+
+  *out_error = RENDERER_ERROR_NONE;
+  return renderer;
+}
+
+void renderer_destroy(RendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+
+  if (renderer->backend_state && renderer->backend.shutdown) {
+    renderer->backend.shutdown(renderer->backend_state);
+  }
+}
+
+String8 renderer_get_error_string(RendererError error) {
+  switch (error) {
+  case RENDERER_ERROR_NONE:
+    return string8_lit("No error");
+  case RENDERER_ERROR_UNKNOWN:
+    return string8_lit("Unknown error");
+  case RENDERER_ERROR_BACKEND_NOT_SUPPORTED:
+    return string8_lit("Backend not supported");
+  case RENDERER_ERROR_RESOURCE_CREATION_FAILED:
+    return string8_lit("Resource creation failed");
+  case RENDERER_ERROR_INVALID_HANDLE:
+    return string8_lit("Invalid handle");
+  case RENDERER_ERROR_INVALID_PARAMETER:
+    return string8_lit("Invalid parameter");
+  case RENDERER_ERROR_SHADER_COMPILATION_FAILED:
+    return string8_lit("Shader compilation failed");
+  case RENDERER_ERROR_OUT_OF_MEMORY:
+    return string8_lit("Out of memory");
+  case RENDERER_ERROR_COMMAND_RECORDING_FAILED:
+    return string8_lit("Command recording failed");
+  case RENDERER_ERROR_FRAME_PREPARATION_FAILED:
+    return string8_lit("Frame preparation failed");
+  case RENDERER_ERROR_PRESENTATION_FAILED:
+    return string8_lit("Presentation failed");
+  case RENDERER_ERROR_FRAME_IN_PROGRESS:
+    return string8_lit("Frame in progress");
+  default:
+    return string8_lit("Unknown error");
+  }
+}
+
+BufferHandle renderer_create_buffer(RendererFrontendHandle renderer,
+                                    const BufferDescription *description,
+                                    const void *initial_data,
+                                    RendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(description != NULL, "Description is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  BackendResourceHandle handle = renderer->backend.buffer_create(
+      renderer->backend_state, description, initial_data);
+  if (handle.ptr == NULL) {
+    *out_error = RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return NULL;
+  }
+
+  *out_error = RENDERER_ERROR_NONE;
+  return (BufferHandle)handle.ptr;
+}
+
+void renderer_destroy_buffer(RendererFrontendHandle renderer,
+                             BufferHandle buffer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(buffer != NULL, "Buffer is NULL");
+
+  BackendResourceHandle handle = {.ptr = (void *)buffer};
+  renderer->backend.buffer_destroy(renderer->backend_state, handle);
+}
+
+ShaderHandle
+renderer_create_shader_from_source(RendererFrontendHandle renderer,
+                                   const ShaderModuleDescription *description,
+                                   RendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(description != NULL, "Description is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  BackendResourceHandle handle = renderer->backend.shader_create_from_source(
+      renderer->backend_state, description);
+  if (handle.ptr == NULL) {
+    *out_error = RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return NULL;
+  }
+
+  *out_error = RENDERER_ERROR_NONE;
+  return (ShaderHandle)handle.ptr;
+}
+
+void renderer_destroy_shader(RendererFrontendHandle renderer,
+                             ShaderHandle shader) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(shader != NULL, "Shader is NULL");
+
+  BackendResourceHandle handle = {.ptr = (void *)shader};
+  renderer->backend.shader_destroy(renderer->backend_state, handle);
+}
+
+PipelineHandle
+renderer_create_pipeline(RendererFrontendHandle renderer,
+                         const GraphicsPipelineDescription *description,
+                         RendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(description != NULL, "Description is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  BackendResourceHandle handle =
+      renderer->backend.pipeline_create(renderer->backend_state, description);
+  if (handle.ptr == NULL) {
+    *out_error = RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return NULL;
+  }
+
+  *out_error = RENDERER_ERROR_NONE;
+  return (PipelineHandle)handle.ptr;
+}
+
+void renderer_destroy_pipeline(RendererFrontendHandle renderer,
+                               PipelineHandle pipeline) {
+  assert_log(renderer != NULL, "Pipeline is NULL");
+  assert_log(pipeline != NULL, "Pipeline is NULL");
+
+  BackendResourceHandle handle = {.ptr = (void *)pipeline};
+  renderer->backend.pipeline_destroy(renderer->backend_state, handle);
+}
+
+RendererError renderer_update_buffer(RendererFrontendHandle renderer,
+                                     BufferHandle buffer, uint64_t offset,
+                                     uint64_t size, const void *data) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(buffer != NULL, "Buffer is NULL");
+
+  BackendResourceHandle handle = {.ptr = (void *)buffer};
+  return renderer->backend.buffer_update(renderer->backend_state, handle,
+                                         offset, size, data);
+}
+
+RendererError renderer_begin_frame(RendererFrontendHandle renderer,
+                                   float64_t delta_time) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+
+  if (renderer->frame_active) {
+    return RENDERER_ERROR_FRAME_IN_PROGRESS;
+  }
+
+  RendererError result =
+      renderer->backend.begin_frame(renderer->backend_state, delta_time);
+  if (result == RENDERER_ERROR_NONE) {
+    renderer->frame_active = true;
+  }
+
+  return result;
+}
+
+void renderer_set_viewport(RendererFrontendHandle renderer, int32_t x,
+                           int32_t y, uint32_t width, uint32_t height,
+                           float32_t min_depth, float32_t max_depth) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(renderer->frame_active, "Set viewport called outside of frame");
+
+  renderer->backend.set_viewport(renderer->backend_state, x, y, width, height,
+                                 min_depth, max_depth);
+}
+
+void renderer_set_scissor(RendererFrontendHandle renderer, int32_t x, int32_t y,
+                          uint32_t width, uint32_t height) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(renderer->frame_active, "Set scissor called outside of frame");
+
+  renderer->backend.set_scissor(renderer->backend_state, (int32_t)x, (int32_t)y,
+                                width, height);
+}
+
+void renderer_resize(RendererFrontendHandle renderer, uint32_t width,
+                     uint32_t height) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+
+  renderer->backend.on_resize(renderer->backend_state, width, height);
+}
+
+void renderer_clear_color(RendererFrontendHandle renderer, float32_t r,
+                          float32_t g, float32_t b, float32_t a) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(renderer->frame_active, "Clear color called outside of frame");
+
+  renderer->backend.clear_color(renderer->backend_state, r, g, b, a);
+}
+
+void renderer_bind_graphics_pipeline(RendererFrontendHandle renderer,
+                                     PipelineHandle pipeline) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(pipeline != NULL, "Pipeline is NULL");
+  assert_log(renderer->frame_active, "Bind pipeline called outside of frame");
+
+  BackendResourceHandle handle = {.ptr = (void *)pipeline};
+  renderer->backend.bind_pipeline(renderer->backend_state, handle);
+}
+
+void renderer_bind_vertex_buffer(RendererFrontendHandle renderer,
+                                 BufferHandle buffer, uint32_t binding_index,
+                                 uint64_t offset) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(buffer != NULL, "Buffer is NULL");
+  assert_log(renderer->frame_active,
+             "Bind vertex buffer called outside of frame");
+
+  BackendResourceHandle handle = {.ptr = (void *)buffer};
+  renderer->backend.bind_vertex_buffer(renderer->backend_state, handle,
+                                       binding_index, offset);
+}
+
+void renderer_draw(RendererFrontendHandle renderer, uint32_t vertex_count,
+                   uint32_t instance_count, uint32_t first_vertex,
+                   uint32_t first_instance) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(renderer->frame_active, "Draw called outside of frame");
+
+  renderer->backend.draw(renderer->backend_state, vertex_count, instance_count,
+                         first_vertex, first_instance);
+}
+
+RendererError renderer_end_frame(RendererFrontendHandle renderer,
+                                 float64_t delta_time) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+
+  if (!renderer->frame_active) {
+    return RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  RendererError result =
+      renderer->backend.end_frame(renderer->backend_state, delta_time);
+  renderer->frame_active = false;
+
+  return result;
+}
