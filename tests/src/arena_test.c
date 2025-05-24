@@ -952,6 +952,381 @@ static void test_arena_tagging_and_statistics() {
   printf("  test_arena_tagging_and_statistics PASSED\n");
 }
 
+static void test_arena_large_pages_creation() {
+  printf("  Running test_arena_large_pages_creation...\n");
+  uint64_t page_size = platform_get_page_size();
+  uint64_t large_page_size = platform_get_large_page_size();
+
+  // Test creating arena without large page flag (default)
+  Arena *arena_regular = arena_create();
+  assert(arena_regular != NULL && "Regular arena creation failed");
+  assert(arena_regular->rsv % page_size == 0 &&
+         "Regular arena not aligned to base page size");
+  assert(arena_regular->cmt % page_size == 0 &&
+         "Regular arena commit not aligned to base page size");
+  arena_destroy(arena_regular);
+
+  // Test creating arena with large page flag using 3-parameter macro
+  ArenaFlags large_page_flags = bitset8_create();
+  bitset8_set(&large_page_flags, ARENA_FLAG_LARGE_PAGES);
+
+  Arena *arena_large =
+      arena_create(ARENA_RSV_SIZE, ARENA_CMT_SIZE, large_page_flags);
+  assert(arena_large != NULL && "Large page arena creation failed");
+  assert(arena_large->rsv % large_page_size == 0 &&
+         "Large page arena not aligned to large page size");
+  assert(arena_large->cmt % large_page_size == 0 &&
+         "Large page arena commit not aligned to large page size");
+  assert(arena_large->rsv >= ARENA_RSV_SIZE + ARENA_HEADER_SIZE &&
+         "Large page arena rsv too small");
+  assert(arena_large->cmt >= ARENA_CMT_SIZE + ARENA_HEADER_SIZE &&
+         "Large page arena cmt too small");
+  arena_destroy(arena_large);
+
+  // Test creating arena with large page flag and custom sizes
+  uint64_t custom_rsv = KB(128);
+  uint64_t custom_cmt = KB(16);
+  Arena *arena_large_custom =
+      arena_create(custom_rsv, custom_cmt, large_page_flags);
+  assert(arena_large_custom != NULL &&
+         "Large page arena with custom sizes creation failed");
+  assert(arena_large_custom->rsv % large_page_size == 0 &&
+         "Custom large page arena not aligned to large page size");
+  assert(arena_large_custom->cmt % large_page_size == 0 &&
+         "Custom large page arena commit not aligned to large page size");
+  assert(arena_large_custom->rsv >= custom_rsv + ARENA_HEADER_SIZE &&
+         "Custom large page arena rsv too small");
+  assert(arena_large_custom->cmt >= custom_cmt + ARENA_HEADER_SIZE &&
+         "Custom large page arena cmt too small");
+  arena_destroy(arena_large_custom);
+
+  // Test that large page arena has larger or equal alignment than regular arena
+  assert(large_page_size >= page_size &&
+         "Large page size should be >= base page size");
+
+  printf("  test_arena_large_pages_creation PASSED\n");
+}
+
+static void test_arena_large_pages_allocation() {
+  printf("  Running test_arena_large_pages_allocation...\n");
+
+  // Create both regular and large page arenas for comparison
+  Arena *arena_regular = arena_create();
+
+  ArenaFlags large_page_flags = bitset8_create();
+  bitset8_set(&large_page_flags, ARENA_FLAG_LARGE_PAGES);
+  Arena *arena_large =
+      arena_create(ARENA_RSV_SIZE, ARENA_CMT_SIZE, large_page_flags);
+
+  assert(arena_regular != NULL && "Regular arena creation failed");
+  assert(arena_large != NULL && "Large page arena creation failed");
+
+  // Test basic allocations work the same way
+  uint64_t alloc_size = 1024;
+  void *ptr_regular =
+      arena_alloc(arena_regular, alloc_size, ARENA_MEMORY_TAG_UNKNOWN);
+  void *ptr_large =
+      arena_alloc(arena_large, alloc_size, ARENA_MEMORY_TAG_UNKNOWN);
+
+  assert(ptr_regular != NULL && "Regular arena allocation failed");
+  assert(ptr_large != NULL && "Large page arena allocation failed");
+  assert((uintptr_t)ptr_regular % AlignOf(void *) == 0 &&
+         "Regular arena ptr not aligned");
+  assert((uintptr_t)ptr_large % AlignOf(void *) == 0 &&
+         "Large page arena ptr not aligned");
+
+  // Test that we can write to both allocations
+  memset(ptr_regular, 0xAA, alloc_size);
+  memset(ptr_large, 0xBB, alloc_size);
+  assert(*(unsigned char *)ptr_regular == 0xAA &&
+         "Regular arena memory write failed");
+  assert(*(unsigned char *)ptr_large == 0xBB &&
+         "Large page arena memory write failed");
+
+  // Test position tracking works correctly for both
+  uint64_t pos_regular = arena_pos(arena_regular);
+  uint64_t pos_large = arena_pos(arena_large);
+  assert(pos_regular >= get_initial_pos() + alloc_size &&
+         "Regular arena position tracking incorrect");
+  assert(pos_large >= get_initial_pos() + alloc_size &&
+         "Large page arena position tracking incorrect");
+
+  // Test multiple allocations
+  for (int i = 0; i < 10; i++) {
+    void *ptr_r = arena_alloc(arena_regular, 128, ARENA_MEMORY_TAG_UNKNOWN);
+    void *ptr_l = arena_alloc(arena_large, 128, ARENA_MEMORY_TAG_UNKNOWN);
+    assert(ptr_r != NULL && "Regular arena multiple alloc failed");
+    assert(ptr_l != NULL && "Large page arena multiple alloc failed");
+    memset(ptr_r, i, 128);
+    memset(ptr_l, i + 100, 128);
+  }
+
+  arena_destroy(arena_regular);
+  arena_destroy(arena_large);
+  printf("  test_arena_large_pages_allocation PASSED\n");
+}
+
+static void test_arena_large_pages_commit_grow() {
+  printf("  Running test_arena_large_pages_commit_grow...\n");
+  uint64_t large_page_size = platform_get_large_page_size();
+
+  // Create large page arena with small initial commit to test growth
+  uint64_t test_rsv =
+      MB(8); // Larger reserve to accommodate large page alignment
+  uint64_t test_cmt_chunk = large_page_size; // Start with one large page
+
+  ArenaFlags large_page_flags = bitset8_create();
+  bitset8_set(&large_page_flags, ARENA_FLAG_LARGE_PAGES);
+  Arena *arena = arena_create(test_rsv, test_cmt_chunk, large_page_flags);
+
+  assert(arena != NULL && "Large page arena creation for commit test failed");
+
+  uint64_t initial_total_committed_in_block = arena->current->cmt;
+  assert(initial_total_committed_in_block % large_page_size == 0 &&
+         "Initial commit not aligned to large page boundary");
+
+  uint64_t current_pos_in_block = arena->current->pos;
+  uint64_t remaining_in_initial_commit =
+      initial_total_committed_in_block - current_pos_in_block;
+
+  // Allocate exactly up to remaining initial commit
+  if (remaining_in_initial_commit > 0) {
+    void *ptr_exact = arena_alloc(arena, remaining_in_initial_commit,
+                                  ARENA_MEMORY_TAG_UNKNOWN);
+    assert(ptr_exact != NULL &&
+           "Large page alloc exact remaining commit failed");
+    memset(ptr_exact, 0xAA, remaining_in_initial_commit);
+    assert(arena->current->cmt == initial_total_committed_in_block &&
+           "Large page commit size grew when it should not have");
+  }
+
+  // Allocate 1 more byte: cmt should grow by at least one large page
+  uint64_t cmt_before_grow = arena->current->cmt;
+  void *ptr_grow = arena_alloc(arena, 1, ARENA_MEMORY_TAG_UNKNOWN);
+  assert(ptr_grow != NULL && "Large page alloc 1 byte to grow commit failed");
+  memset(ptr_grow, 0xBB, 1);
+  assert(arena->current->cmt > cmt_before_grow &&
+         "Large page commit size did not grow");
+  assert(arena->current->cmt % large_page_size == 0 &&
+         "Grown large page cmt not large page aligned");
+  assert(arena->current->cmt <= arena->current->rsv &&
+         "Large page commit exceeded reserve");
+
+  // The growth should be at least one large page
+  assert(arena->current->cmt - cmt_before_grow >= large_page_size &&
+         "Large page commit growth less than one large page");
+
+  arena_destroy(arena);
+  printf("  test_arena_large_pages_commit_grow PASSED\n");
+}
+
+static void test_arena_large_pages_block_grow() {
+  printf("  Running test_arena_large_pages_block_grow...\n");
+  uint64_t large_page_size = platform_get_large_page_size();
+
+  // Create large page arena with small reserve to force block growth
+  uint64_t first_block_rsv_config = large_page_size * 2; // Just 2 large pages
+  ArenaFlags large_page_flags = bitset8_create();
+  bitset8_set(&large_page_flags, ARENA_FLAG_LARGE_PAGES);
+  Arena *arena = arena_create(first_block_rsv_config, first_block_rsv_config,
+                              large_page_flags);
+
+  Arena *first_block = arena->current;
+  uint64_t actual_first_block_rsv = first_block->rsv;
+  uint64_t initial_pos_in_first_block = first_block->pos;
+  uint64_t remaining_in_first_block =
+      actual_first_block_rsv - initial_pos_in_first_block;
+
+  // Fill up most of the first block
+  if (remaining_in_first_block > 100) {
+    void *ptr_fill = arena_alloc(arena, remaining_in_first_block - 50,
+                                 ARENA_MEMORY_TAG_UNKNOWN);
+    assert(ptr_fill != NULL && "Large page fill first block failed");
+    memset(ptr_fill, 0xAA, remaining_in_first_block - 50);
+    assert(arena->current == first_block &&
+           "Large page arena block grew unexpectedly");
+  }
+
+  // Allocate something that will spill to a new block
+  Arena *block_before_grow = arena->current;
+  uint64_t spill_size = 1024; // Should spill to new block
+  void *ptr_grow_block =
+      arena_alloc(arena, spill_size, ARENA_MEMORY_TAG_UNKNOWN);
+  assert(ptr_grow_block != NULL &&
+         "Large page alloc spill to new block failed");
+  memset(ptr_grow_block, 0xBB, spill_size);
+
+  // Should have moved to a new block
+  assert(arena->current != block_before_grow &&
+         "Large page arena did not switch to new block");
+  assert(arena->current->prev == block_before_grow &&
+         "Large page new block prev pointer incorrect");
+  assert(arena->current->base_pos ==
+             block_before_grow->base_pos + block_before_grow->rsv &&
+         "Large page new block base_pos incorrect");
+
+  // New block should be large page aligned
+  assert(arena->current->rsv % large_page_size == 0 &&
+         "Large page new block rsv not large page aligned");
+  assert(arena->current->cmt % large_page_size == 0 &&
+         "Large page new block cmt not large page aligned");
+
+  arena_destroy(arena);
+  printf("  test_arena_large_pages_block_grow PASSED\n");
+}
+
+static void test_arena_large_pages_reset_and_scratch() {
+  printf("  Running test_arena_large_pages_reset_and_scratch...\n");
+
+  ArenaFlags large_page_flags = bitset8_create();
+  bitset8_set(&large_page_flags, ARENA_FLAG_LARGE_PAGES);
+  Arena *arena = arena_create(MB(4), MB(1), large_page_flags);
+
+  uint64_t initial_pos = arena_pos(arena);
+
+  // Test basic reset functionality with large pages
+  void *p1 = arena_alloc(arena, 1024, ARENA_MEMORY_TAG_UNKNOWN);
+  uint64_t pos1 = arena_pos(arena);
+  void *p2 = arena_alloc(arena, 2048, ARENA_MEMORY_TAG_UNKNOWN);
+  uint64_t pos2 = arena_pos(arena);
+  assert(p1 && p2 && "Large page allocations for reset test failed");
+
+  arena_reset_to(arena, pos1, ARENA_MEMORY_TAG_UNKNOWN);
+  assert(arena_pos(arena) == pos1 && "Large page reset_to failed");
+
+  arena_clear(arena, ARENA_MEMORY_TAG_UNKNOWN);
+  assert(arena_pos(arena) == initial_pos && "Large page clear failed");
+
+  // Test scratch functionality with large pages
+  Scratch scratch = scratch_create(arena);
+  assert(scratch.arena == arena && "Large page scratch arena mismatch");
+  assert(scratch.pos == initial_pos &&
+         "Large page scratch initial pos mismatch");
+
+  void *p_scratch1 = arena_alloc(arena, 512, ARENA_MEMORY_TAG_UNKNOWN);
+  void *p_scratch2 = arena_alloc(arena, 1024, ARENA_MEMORY_TAG_UNKNOWN);
+  assert(p_scratch1 && p_scratch2 && "Large page scratch allocations failed");
+  assert(arena_pos(arena) > initial_pos &&
+         "Large page scratch arena pos not advanced");
+
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_UNKNOWN);
+  assert(arena_pos(arena) == initial_pos &&
+         "Large page scratch destroy failed to reset");
+
+  // Verify arena is still usable after scratch
+  void *p_after_scratch = arena_alloc(arena, 256, ARENA_MEMORY_TAG_UNKNOWN);
+  assert(p_after_scratch != NULL &&
+         "Large page arena not usable after scratch");
+
+  arena_destroy(arena);
+  printf("  test_arena_large_pages_reset_and_scratch PASSED\n");
+}
+
+static void test_arena_large_pages_statistics() {
+  printf("  Running test_arena_large_pages_statistics...\n");
+
+  ArenaFlags large_page_flags = bitset8_create();
+  bitset8_set(&large_page_flags, ARENA_FLAG_LARGE_PAGES);
+  Arena *arena = arena_create(MB(4), MB(1), large_page_flags);
+  Arena *str_arena = arena_create(KB(16), KB(4));
+
+  assert(arena && str_arena &&
+         "Large page arenas creation for stats test failed");
+
+  // Test that statistics work correctly with large page arenas
+  uint64_t alloc_size = KB(2);
+  arena_alloc(arena, alloc_size, ARENA_MEMORY_TAG_ARRAY);
+  arena_alloc(arena, alloc_size * 2, ARENA_MEMORY_TAG_STRING);
+
+  assert(arena->tags[ARENA_MEMORY_TAG_ARRAY].size == alloc_size &&
+         "Large page arena array tag size incorrect");
+  assert(arena->tags[ARENA_MEMORY_TAG_STRING].size == alloc_size * 2 &&
+         "Large page arena string tag size incorrect");
+
+  char *stats_str = arena_format_statistics(arena, str_arena);
+  assert(stats_str != NULL && "Large page arena statistics formatting failed");
+
+  // Check that the statistics contain expected values
+  char check_buffer[256];
+  snprintf(check_buffer, sizeof(check_buffer), "%s: %.2f KB\n",
+           ArenaMemoryTagNames[ARENA_MEMORY_TAG_ARRAY],
+           (double)alloc_size / KB(1));
+  assert(strstr(stats_str, check_buffer) != NULL &&
+         "Large page array stats not found");
+
+  snprintf(check_buffer, sizeof(check_buffer), "%s: %.2f KB\n",
+           ArenaMemoryTagNames[ARENA_MEMORY_TAG_STRING],
+           (double)(alloc_size * 2) / KB(1));
+  assert(strstr(stats_str, check_buffer) != NULL &&
+         "Large page string stats not found");
+
+  arena_destroy(str_arena);
+  arena_destroy(arena);
+  printf("  test_arena_large_pages_statistics PASSED\n");
+}
+
+static void test_arena_large_pages_mixed_usage() {
+  printf("  Running test_arena_large_pages_mixed_usage...\n");
+
+  // Test using both regular and large page arenas together
+  Arena *arena_regular = arena_create();
+
+  ArenaFlags large_page_flags = bitset8_create();
+  bitset8_set(&large_page_flags, ARENA_FLAG_LARGE_PAGES);
+  Arena *arena_large = arena_create(MB(2), KB(256), large_page_flags);
+
+  assert(arena_regular && arena_large && "Mixed arena creation failed");
+
+  // Allocate from both and verify they work independently
+  void *ptr_reg = arena_alloc(arena_regular, 1024, ARENA_MEMORY_TAG_ARRAY);
+  void *ptr_large = arena_alloc(arena_large, 1024, ARENA_MEMORY_TAG_VECTOR);
+
+  assert(ptr_reg && ptr_large && "Mixed arena allocations failed");
+  assert(ptr_reg != ptr_large &&
+         "Mixed arena allocations returned same pointer");
+
+  memset(ptr_reg, 0xAA, 1024);
+  memset(ptr_large, 0xBB, 1024);
+
+  assert(*(unsigned char *)ptr_reg == 0xAA && "Regular arena data corrupted");
+  assert(*(unsigned char *)ptr_large == 0xBB &&
+         "Large page arena data corrupted");
+
+  // Test that statistics are independent
+  assert(arena_regular->tags[ARENA_MEMORY_TAG_ARRAY].size == 1024 &&
+         "Regular arena array tag incorrect");
+  assert(arena_regular->tags[ARENA_MEMORY_TAG_VECTOR].size == 0 &&
+         "Regular arena vector tag should be zero");
+  assert(arena_large->tags[ARENA_MEMORY_TAG_VECTOR].size == 1024 &&
+         "Large page arena vector tag incorrect");
+  assert(arena_large->tags[ARENA_MEMORY_TAG_ARRAY].size == 0 &&
+         "Large page arena array tag should be zero");
+
+  // Test scratches work independently
+  Scratch scratch_reg = scratch_create(arena_regular);
+  Scratch scratch_large = scratch_create(arena_large);
+
+  arena_alloc(arena_regular, 512, ARENA_MEMORY_TAG_UNKNOWN);
+  arena_alloc(arena_large, 512, ARENA_MEMORY_TAG_UNKNOWN);
+
+  uint64_t pos_reg_before_destroy = arena_pos(arena_regular);
+  uint64_t pos_large_before_destroy = arena_pos(arena_large);
+
+  scratch_destroy(scratch_reg, ARENA_MEMORY_TAG_UNKNOWN);
+  assert(arena_pos(arena_regular) < pos_reg_before_destroy &&
+         "Regular scratch destroy failed");
+  assert(arena_pos(arena_large) == pos_large_before_destroy &&
+         "Large page arena affected by regular scratch");
+
+  scratch_destroy(scratch_large, ARENA_MEMORY_TAG_UNKNOWN);
+  assert(arena_pos(arena_large) < pos_large_before_destroy &&
+         "Large page scratch destroy failed");
+
+  arena_destroy(arena_regular);
+  arena_destroy(arena_large);
+  printf("  test_arena_large_pages_mixed_usage PASSED\n");
+}
+
 // --- Test Runner ---
 bool32_t run_arena_tests() {
   printf("--- Starting Arena Tests ---\n");
@@ -965,6 +1340,15 @@ bool32_t run_arena_tests() {
   test_arena_scratch();
   test_arena_alignment();
   test_arena_tagging_and_statistics();
+
+  // Add large page tests
+  test_arena_large_pages_creation();
+  test_arena_large_pages_allocation();
+  test_arena_large_pages_commit_grow();
+  test_arena_large_pages_block_grow();
+  test_arena_large_pages_reset_and_scratch();
+  test_arena_large_pages_statistics();
+  test_arena_large_pages_mixed_usage();
 
   printf("--- Arena Tests Completed ---\n");
   return true;

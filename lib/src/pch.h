@@ -10,8 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#include <sys/sysctl.h>
+#include <sys/types.h>
 #include <unistd.h>
-#include <vulkan/vulkan.h>
 
 #if defined(PLATFORM_APPLE)
 #include <mach/mach_time.h>

@@ -13,6 +13,8 @@ void platform_mem_release(void *ptr, uint64_t size);
 
 uint64_t platform_get_page_size();
 
+uint64_t platform_get_large_page_size();
+
 void platform_sleep(uint64_t milliseconds);
 
 float64_t platform_get_absolute_time();

@@ -76,6 +76,7 @@
 // clang-format on
 #pragma once
 
+#include "bitset.h"
 #include "defines.h"
 #include "platform.h"
 
@@ -87,6 +88,7 @@
 #define ARENA_CMT_SIZE                                                         \
   KB(4) // Smaller initial commit can save physical memory if allocations are
         // small.
+#define ARENA_DEFAULT_FLAGS bitset8_create()
 
 typedef enum ArenaMemoryTag {
   ARENA_MEMORY_TAG_UNKNOWN,
@@ -104,6 +106,13 @@ typedef enum ArenaMemoryTag {
 static const char *ArenaMemoryTagNames[ARENA_MEMORY_TAG_MAX] = {
     "UNKNOWN", "ARRAY", "STRING", "VECTOR", "QUEUE", "STRUCT", "BUFFER",
 };
+
+typedef Bitset8 ArenaFlags;
+
+typedef enum ArenaFlag {
+  ARENA_FLAG_NONE = 0,
+  ARENA_FLAG_LARGE_PAGES = 1 << 0,
+} ArenaFlag;
 
 typedef struct ArenaMemoryTagInfo {
   ArenaMemoryTag tag;
@@ -125,8 +134,10 @@ typedef struct Arena {
   uint64_t cmt_size; /**< The default commit chunk size for this block. */
   uint64_t rsv_size; /**< The default reserve size used when *creating*
                       subsequent blocks (if needed). */
-  uint64_t base_pos; /**< The starting offset of this block relative to the
-                      beginning of the *entire* arena (across all blocks). */
+  uint64_t page_size; /**< The page size used for alignment in this arena (base
+                         or large page). */
+  uint64_t base_pos;  /**< The starting offset of this block relative to the
+                       beginning of the *entire* arena (across all blocks). */
   uint64_t pos; /**< Current allocation offset *within this block*, relative to
                    the start of the block. Includes the header size. */
   uint64_t cmt; /**< Amount of memory committed *in this block*, relative to the
@@ -165,19 +176,24 @@ typedef struct Scratch {
  * @return Pointer to the initialized Arena structure (the first block). Exits
  * on failure.
  */
-Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size);
+Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size,
+                             ArenaFlags flags);
 
 // Helper macro to count variadic arguments (0, 1, or 2 for this context).
 // Uses GNU '##__VA_ARGS__' extension to handle empty __VA_ARGS__ correctly by
 // removing the preceding comma.
-#define ARENA_NARGS_IMPL(dummy_for_empty_case, _1, _2, N, ...) N
-#define ARENA_NARGS(...) ARENA_NARGS_IMPL(dummy, ##__VA_ARGS__, 2, 1, 0)
+#define ARENA_NARGS_IMPL(dummy_for_empty_case, _1, _2, _3, N, ...) N
+#define ARENA_NARGS(...) ARENA_NARGS_IMPL(dummy, ##__VA_ARGS__, 3, 2, 1, 0)
 
 // Specific implementations for different numbers of arguments
-#define arena_create_0() arena_create_internal(ARENA_RSV_SIZE, ARENA_CMT_SIZE)
+#define arena_create_0()                                                       \
+  arena_create_internal(ARENA_RSV_SIZE, ARENA_CMT_SIZE, ARENA_DEFAULT_FLAGS)
 #define arena_create_1(rsv)                                                    \
-  arena_create_internal(rsv, rsv) // Assume rsv for cmt if only one arg
-#define arena_create_2(rsv, cmt) arena_create_internal(rsv, cmt)
+  arena_create_internal(                                                       \
+      rsv, rsv, ARENA_DEFAULT_FLAGS) // Assume rsv for cmt if only one arg
+#define arena_create_2(rsv, cmt)                                               \
+  arena_create_internal(rsv, cmt, ARENA_DEFAULT_FLAGS)
+#define arena_create_3(rsv, cmt, flags) arena_create_internal(rsv, cmt, flags)
 
 // Concatenation helpers for dispatch
 #define ARENA_CONCAT_IMPL(prefix, count) prefix##count
