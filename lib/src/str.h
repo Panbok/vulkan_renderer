@@ -7,7 +7,6 @@
 
 #include "arena.h"
 #include "pch.h"
-// #include_next <string.h> // Include system string.h for memmove, etc.
 
 // Forward declaration for Arena type
 typedef struct Arena Arena;

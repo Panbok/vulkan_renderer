@@ -61,6 +61,10 @@
 #include "queue.h"
 #include "vector.h"
 
+// TODO: Explore possibility of re-writing this into event loop system, like
+// Node.js, where events are processed in a loop, and the event manager is
+// responsible for dispatching events to the event loop.
+
 /**
  * @brief Defines the different types of events that can be processed.
  * Applications should extend this enum with their specific event types,

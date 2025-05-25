@@ -18,6 +18,7 @@
 #define Max(A, B) (((A) > (B)) ? (A) : (B))
 #define ClampTop(A, X) Min(A, X)
 #define ClampBot(X, B) Max(X, B)
+#define ArrayCount(array) (sizeof(array) / sizeof(array[0]))
 
 #define KB(x) ((x) * 1024ULL)
 #define MB(x) ((x) * 1024ULL * 1024ULL)

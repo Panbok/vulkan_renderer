@@ -112,3 +112,4 @@ Array(uint32_t);
 Array(uint64_t);
 Array(float32_t);
 Array(float64_t);
+Array(String8);
