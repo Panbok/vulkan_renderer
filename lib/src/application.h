@@ -52,6 +52,8 @@
 #include "logger.h"
 #include "window.h"
 
+#include "renderer/renderer.h"
+
 /**
  * @brief Flags representing the current state of the application.
  * These flags are used to manage the application's lifecycle and behavior.
@@ -94,10 +96,12 @@ typedef struct Application {
   Arena *app_arena; /**< Main memory arena for general application use (e.g.,
                        game entities, state). */
   Arena *log_arena; /**< Memory arena dedicated to the logging system. */
+  Arena *renderer_arena;      /**< Memory arena dedicated to the renderer. */
   EventManager event_manager; /**< Manages event dispatch and subscriptions. */
   Window window;              /**< Represents the application window. */
   ApplicationConfig *config;  /**< Pointer to the configuration used to create
                                  this application instance. */
+  RendererFrontendHandle renderer; /**< Renderer instance. */
 
   Clock clock; /**< Clock used for timing frames and calculating delta time. */
   float64_t last_frame_time; /**< Timestamp of the previous frame, used for
@@ -179,14 +183,19 @@ bool8_t application_create(Application *application,
   assert(config->target_frame_rate > 0 && "Application target frame rate is 0");
 
   application->config = config;
-  application->app_arena =
-      arena_create(config->app_arena_size, config->app_arena_size);
+
+  ArenaFlags app_arena_flags = bitset8_create();
+  bitset8_set(&app_arena_flags, ARENA_FLAG_LARGE_PAGES);
+  application->app_arena = arena_create(
+      config->app_arena_size, config->app_arena_size, app_arena_flags);
   if (!application->app_arena) {
     log_fatal("Failed to create app_arena!");
     return false_v;
   }
 
-  application->log_arena = arena_create(MB(5));
+  ArenaFlags log_arena_flags = bitset8_create();
+  bitset8_set(&log_arena_flags, ARENA_FLAG_LARGE_PAGES);
+  application->log_arena = arena_create(MB(5), MB(5), log_arena_flags);
   if (!application->log_arena) {
     log_fatal("Failed to create log_arena!");
     if (application->app_arena)
@@ -202,6 +211,29 @@ bool8_t application_create(Application *application,
                 config->title, config->x, config->y, config->width,
                 config->height);
   application->clock = clock_create();
+
+  application->renderer_arena = arena_create(MB(1));
+  if (!application->renderer_arena) {
+    log_fatal("Failed to create renderer_arena!");
+    if (application->app_arena)
+      arena_destroy(application->app_arena);
+    return false_v;
+  }
+
+  RendererError renderer_error = RENDERER_ERROR_NONE;
+  application->renderer =
+      renderer_create(application->renderer_arena, RENDERER_BACKEND_TYPE_VULKAN,
+                      &application->window, &renderer_error);
+  if (renderer_error != RENDERER_ERROR_NONE) {
+    log_fatal("Failed to create renderer!");
+    if (application->app_arena)
+      arena_destroy(application->app_arena);
+    if (application->log_arena)
+      arena_destroy(application->log_arena);
+    if (application->renderer_arena)
+      arena_destroy(application->renderer_arena);
+    return false_v;
+  }
 
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_WINDOW_CLOSE,
                           application_on_window_event);
@@ -252,7 +284,8 @@ bool8_t application_create(Application *application,
 
 /**
  * @brief Starts the main application loop.
- * This function contains the core loop that drives the application. It handles:
+ * This function contains the core loop that drives the application. It
+ * handles:
  * - Updating the application clock and calculating delta time.
  * - Processing window events (input, close requests, etc.).
  * - Calling the user-defined `application_update()` function.
@@ -407,8 +440,10 @@ void application_shutdown(Application *application) {
   event_manager_dispatch(&application->event_manager,
                          (Event){.type = EVENT_TYPE_APPLICATION_SHUTDOWN});
 
+  renderer_destroy(application->renderer);
   window_destroy(&application->window);
   event_manager_destroy(&application->event_manager);
+  arena_destroy(application->renderer_arena);
   arena_destroy(application->log_arena);
   arena_destroy(application->app_arena);
 }

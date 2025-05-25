@@ -1,3 +1,4 @@
+#include "arena.h"
 #include "defines.h"
 #include "renderer.h"
 
@@ -16,9 +17,10 @@ RendererFrontendHandle renderer_create(Arena *arena,
                                        RendererBackendType backend_type,
                                        Window *window,
                                        RendererError *out_error) {
-  assert_log(arena != NULL, "Arena is NULL");
   assert_log(window != NULL, "Window is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
+
+  log_debug("Creating renderer");
 
   struct s_RendererFrontend *renderer = arena_alloc(
       arena, sizeof(struct s_RendererFrontend), ARENA_MEMORY_TAG_RENDERER);
@@ -34,6 +36,9 @@ RendererFrontendHandle renderer_create(Arena *arena,
     return NULL;
   }
 
+  renderer->backend_state =
+      arena_alloc(arena, MB(8), ARENA_MEMORY_TAG_RENDERER);
+
   uint32_t width = (uint32_t)window->width;
   uint32_t height = (uint32_t)window->height;
   if (!renderer->backend.initialize(&renderer->backend_state, backend_type,
@@ -48,6 +53,8 @@ RendererFrontendHandle renderer_create(Arena *arena,
 
 void renderer_destroy(RendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
+
+  log_debug("Destroying renderer");
 
   if (renderer->backend_state && renderer->backend.shutdown) {
     renderer->backend.shutdown(renderer->backend_state);
@@ -93,6 +100,8 @@ BufferHandle renderer_create_buffer(RendererFrontendHandle renderer,
   assert_log(description != NULL, "Description is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
+  log_debug("Creating buffer");
+
   BackendResourceHandle handle = renderer->backend.buffer_create(
       renderer->backend_state, description, initial_data);
   if (handle.ptr == NULL) {
@@ -109,6 +118,8 @@ void renderer_destroy_buffer(RendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(buffer != NULL, "Buffer is NULL");
 
+  log_debug("Destroying buffer");
+
   BackendResourceHandle handle = {.ptr = (void *)buffer};
   renderer->backend.buffer_destroy(renderer->backend_state, handle);
 }
@@ -120,6 +131,8 @@ renderer_create_shader_from_source(RendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(description != NULL, "Description is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
+
+  log_debug("Creating shader from source");
 
   BackendResourceHandle handle = renderer->backend.shader_create_from_source(
       renderer->backend_state, description);
@@ -137,6 +150,8 @@ void renderer_destroy_shader(RendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(shader != NULL, "Shader is NULL");
 
+  log_debug("Destroying shader");
+
   BackendResourceHandle handle = {.ptr = (void *)shader};
   renderer->backend.shader_destroy(renderer->backend_state, handle);
 }
@@ -148,6 +163,8 @@ renderer_create_pipeline(RendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(description != NULL, "Description is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
+
+  log_debug("Creating pipeline");
 
   BackendResourceHandle handle =
       renderer->backend.pipeline_create(renderer->backend_state, description);
@@ -165,6 +182,8 @@ void renderer_destroy_pipeline(RendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Pipeline is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
 
+  log_debug("Destroying pipeline");
+
   BackendResourceHandle handle = {.ptr = (void *)pipeline};
   renderer->backend.pipeline_destroy(renderer->backend_state, handle);
 }
@@ -175,6 +194,8 @@ RendererError renderer_update_buffer(RendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(buffer != NULL, "Buffer is NULL");
 
+  log_debug("Updating buffer");
+
   BackendResourceHandle handle = {.ptr = (void *)buffer};
   return renderer->backend.buffer_update(renderer->backend_state, handle,
                                          offset, size, data);
@@ -183,6 +204,8 @@ RendererError renderer_update_buffer(RendererFrontendHandle renderer,
 RendererError renderer_begin_frame(RendererFrontendHandle renderer,
                                    float64_t delta_time) {
   assert_log(renderer != NULL, "Renderer is NULL");
+
+  log_debug("Beginning frame");
 
   if (renderer->frame_active) {
     return RENDERER_ERROR_FRAME_IN_PROGRESS;
@@ -203,6 +226,9 @@ void renderer_set_viewport(RendererFrontendHandle renderer, int32_t x,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(renderer->frame_active, "Set viewport called outside of frame");
 
+  log_debug("Setting viewport to %d %d %d %d %f %f", x, y, width, height,
+            min_depth, max_depth);
+
   renderer->backend.set_viewport(renderer->backend_state, x, y, width, height,
                                  min_depth, max_depth);
 }
@@ -212,6 +238,8 @@ void renderer_set_scissor(RendererFrontendHandle renderer, int32_t x, int32_t y,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(renderer->frame_active, "Set scissor called outside of frame");
 
+  log_debug("Setting scissor to %d %d %d %d", x, y, width, height);
+
   renderer->backend.set_scissor(renderer->backend_state, (int32_t)x, (int32_t)y,
                                 width, height);
 }
@@ -219,6 +247,8 @@ void renderer_set_scissor(RendererFrontendHandle renderer, int32_t x, int32_t y,
 void renderer_resize(RendererFrontendHandle renderer, uint32_t width,
                      uint32_t height) {
   assert_log(renderer != NULL, "Renderer is NULL");
+
+  log_debug("Resizing renderer to %d %d", width, height);
 
   renderer->backend.on_resize(renderer->backend_state, width, height);
 }
@@ -228,6 +258,8 @@ void renderer_clear_color(RendererFrontendHandle renderer, float32_t r,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(renderer->frame_active, "Clear color called outside of frame");
 
+  log_debug("Clearing color to %f %f %f %f", r, g, b, a);
+
   renderer->backend.clear_color(renderer->backend_state, r, g, b, a);
 }
 
@@ -236,6 +268,8 @@ void renderer_bind_graphics_pipeline(RendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
   assert_log(renderer->frame_active, "Bind pipeline called outside of frame");
+
+  log_debug("Binding pipeline");
 
   BackendResourceHandle handle = {.ptr = (void *)pipeline};
   renderer->backend.bind_pipeline(renderer->backend_state, handle);
@@ -249,6 +283,9 @@ void renderer_bind_vertex_buffer(RendererFrontendHandle renderer,
   assert_log(renderer->frame_active,
              "Bind vertex buffer called outside of frame");
 
+  log_debug("Binding vertex buffer to %d with offset %d", binding_index,
+            offset);
+
   BackendResourceHandle handle = {.ptr = (void *)buffer};
   renderer->backend.bind_vertex_buffer(renderer->backend_state, handle,
                                        binding_index, offset);
@@ -260,6 +297,9 @@ void renderer_draw(RendererFrontendHandle renderer, uint32_t vertex_count,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(renderer->frame_active, "Draw called outside of frame");
 
+  log_debug("Drawing %d vertices with %d instances starting at %d with %d",
+            vertex_count, instance_count, first_vertex, first_instance);
+
   renderer->backend.draw(renderer->backend_state, vertex_count, instance_count,
                          first_vertex, first_instance);
 }
@@ -267,6 +307,8 @@ void renderer_draw(RendererFrontendHandle renderer, uint32_t vertex_count,
 RendererError renderer_end_frame(RendererFrontendHandle renderer,
                                  float64_t delta_time) {
   assert_log(renderer != NULL, "Renderer is NULL");
+
+  log_debug("Ending frame");
 
   if (!renderer->frame_active) {
     return RENDERER_ERROR_INVALID_PARAMETER;

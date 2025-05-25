@@ -11,13 +11,21 @@ enable_language(C OBJC)
 # Create a static library
 add_library(renderer_lib STATIC ${LIB_SOURCES})
 
+# Find Vulkan package
+find_package(Vulkan REQUIRED)
+
 # Set include directories
 target_include_directories(renderer_lib
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PRIVATE ${Vulkan_INCLUDE_DIRS}
 )
 
-find_package(Vulkan REQUIRED)
-target_link_libraries(renderer_lib PRIVATE ${Vulkan_LIBRARIES})
+# Link Vulkan - use modern target if available, otherwise use libraries directly
+if(TARGET Vulkan::Vulkan)
+    target_link_libraries(renderer_lib PRIVATE Vulkan::Vulkan)
+else()
+    target_link_libraries(renderer_lib PRIVATE ${Vulkan_LIBRARIES})
+endif()
 
 # Set platform-specific definitions and link libraries
 if(APPLE)
@@ -30,7 +38,3 @@ if(APPLE)
 endif()
 
 target_precompile_headers(renderer_lib PRIVATE src/pch.h)
-
-# Set up installation rules if needed
-# install(TARGETS renderer_lib DESTINATION lib)
-# install(DIRECTORY src/ DESTINATION include FILES_MATCHING PATTERN "*.h") 

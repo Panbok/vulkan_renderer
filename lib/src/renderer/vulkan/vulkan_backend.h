@@ -1,6 +1,7 @@
 #pragma once
 
-#include "../renderer.h"
+#include "vulkan_instance.h"
+#include "vulkan_types.h"
 
 RendererBackendInterface renderer_vulkan_get_interface();
 
