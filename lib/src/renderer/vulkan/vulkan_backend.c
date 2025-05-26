@@ -36,9 +36,17 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
 
   log_debug("Initializing Vulkan backend");
 
+  ArenaFlags temp_arena_flags = bitset8_create();
+  Arena *temp_arena = arena_create(MB(4), KB(64), temp_arena_flags);
+  if (!temp_arena) {
+    log_fatal("Failed to create temporary arena");
+    arena_destroy(temp_arena);
+    return false;
+  }
+
   ArenaFlags arena_flags = bitset8_create();
   bitset8_set(&arena_flags, ARENA_FLAG_LARGE_PAGES);
-  Arena *arena = arena_create(MB(8), MB(1), arena_flags);
+  Arena *arena = arena_create(MB(4), MB(1), arena_flags);
   if (!arena) {
     log_fatal("Failed to create arena");
     return false;
@@ -52,7 +60,9 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
+  MemZero(backend_state, sizeof(VulkanBackendState));
   backend_state->arena = arena;
+  backend_state->temp_arena = temp_arena;
 
   *out_backend_state = backend_state;
 
@@ -66,14 +76,21 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
+  if (!vulkan_device_create_physical_device(backend_state)) {
+    log_fatal("Failed to create Vulkan physical device");
+    return false;
+  }
+
   return true;
 }
 
 void renderer_vulkan_shutdown(void *backend_state) {
   log_debug("Shutting down Vulkan backend");
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  vulkan_device_destroy_physical_device(state);
   vulkan_debug_destroy_debug_messenger(state);
   vulkan_instance_destroy(state);
+  arena_destroy(state->temp_arena);
   arena_destroy(state->arena);
   return;
 }

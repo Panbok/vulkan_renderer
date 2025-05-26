@@ -1,5 +1,6 @@
 #pragma once
 
+#include "vulkan_device.h"
 #include "vulkan_instance.h"
 #include "vulkan_types.h"
 
