@@ -28,6 +28,7 @@ RendererFrontendHandle renderer_create(Arena *arena,
   renderer->backend_type = backend_type;
   renderer->window = window;
   renderer->frame_active = false;
+  renderer->backend_state = NULL;
 
   if (backend_type == RENDERER_BACKEND_TYPE_VULKAN) {
     renderer->backend = renderer_vulkan_get_interface();
@@ -35,9 +36,6 @@ RendererFrontendHandle renderer_create(Arena *arena,
     *out_error = RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
     return NULL;
   }
-
-  renderer->backend_state =
-      arena_alloc(arena, MB(8), ARENA_MEMORY_TAG_RENDERER);
 
   uint32_t width = (uint32_t)window->width;
   uint32_t height = (uint32_t)window->height;
