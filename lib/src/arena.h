@@ -80,7 +80,7 @@
 #include "defines.h"
 #include "platform.h"
 
-#define ARENA_HEADER_SIZE 192
+#define ARENA_HEADER_SIZE AlginPow2(sizeof(Arena), AlignOf(void *))
 // Default size for reserved virtual address space per arena block.
 #define ARENA_RSV_SIZE MB(64)
 // Default size for initially committed memory per arena block. More is
@@ -104,7 +104,8 @@ typedef enum ArenaMemoryTag {
 } ArenaMemoryTag;
 
 static const char *ArenaMemoryTagNames[ARENA_MEMORY_TAG_MAX] = {
-    "UNKNOWN", "ARRAY", "STRING", "VECTOR", "QUEUE", "STRUCT", "BUFFER",
+    "UNKNOWN", "ARRAY",  "STRING", "VECTOR",
+    "QUEUE",   "STRUCT", "BUFFER", "RENDERER",
 };
 
 typedef Bitset8 ArenaFlags;
