@@ -21,8 +21,6 @@ typedef struct VulkanBackendState {
   VkInstance instance;
   VkDebugUtilsMessengerEXT debug_messenger;
   Array_VkExtensionProperties extension_properties;
-  Array_String8 enabled_layers;
-  Array_String8 enabled_extensions;
 
   VkPhysicalDevice physical_device;
   VkDevice device;

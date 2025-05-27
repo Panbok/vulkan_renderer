@@ -1,29 +1,32 @@
 #include "vulkan_instance.h"
+#include "defines.h"
 
 // TODO: should probably only use in debug builds
-static bool32_t check_validation_layer_support(VulkanBackendState *state) {
-  uint32_t layer_count = 0;
-  vkEnumerateInstanceLayerProperties(&layer_count, NULL);
+static bool32_t check_validation_layer_support(VulkanBackendState *state,
+                                               const char **layer_names,
+                                               uint32_t layer_count) {
+  uint32_t available_layer_count = 0;
+  vkEnumerateInstanceLayerProperties(&available_layer_count, NULL);
 
   Array_VkLayerProperties layer_properties =
-      array_create_VkLayerProperties(state->temp_arena, layer_count);
-  vkEnumerateInstanceLayerProperties(&layer_count, layer_properties.data);
+      array_create_VkLayerProperties(state->temp_arena, available_layer_count);
+  vkEnumerateInstanceLayerProperties(&available_layer_count,
+                                     layer_properties.data);
 
-  for (uint32_t i = 0; i < state->enabled_layers.length; i++) {
+  for (uint32_t i = 0; i < layer_count; i++) {
     bool32_t layer_found = false;
-    for (uint32_t j = 0; j < layer_count; j++) {
-      uint8_t *layer_name =
-          string8_cstr(array_get_String8(&state->enabled_layers, i));
+    for (uint32_t j = 0; j < available_layer_count; j++) {
       const char *vk_layer_name =
           (const char *)array_get_VkLayerProperties(&layer_properties, j)
               ->layerName;
-      if (strcmp((const char *)layer_name, vk_layer_name) == 0) {
+      if (strcmp(layer_names[i], vk_layer_name) == 0) {
         layer_found = true;
         break;
       }
     }
 
     if (!layer_found) {
+      array_destroy_VkLayerProperties(&layer_properties);
       return false;
     }
   }
@@ -48,73 +51,46 @@ bool32_t vulkan_instance_create(VulkanBackendState *state, Window *window) {
   create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   create_info.pApplicationInfo = &app_info;
 
-  state->enabled_extensions = array_create_String8(state->arena, 5);
-  array_set_String8(&state->enabled_extensions, 0,
-                    string8_lit(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME));
-  array_set_String8(&state->enabled_extensions, 1,
-                    string8_lit(VK_KHR_SURFACE_EXTENSION_NAME));
-  array_set_String8(&state->enabled_extensions, 2,
-                    string8_lit(VK_EXT_METAL_SURFACE_EXTENSION_NAME));
-  // TODO: remove this in release builds
-  array_set_String8(&state->enabled_extensions, 3,
-                    string8_lit(VK_EXT_DEBUG_UTILS_EXTENSION_NAME));
-  array_set_String8(&state->enabled_extensions, 4,
-                    string8_lit(VK_EXT_DEBUG_REPORT_EXTENSION_NAME));
+  const char *extension_names[] = {
+      VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
+      VK_KHR_SURFACE_EXTENSION_NAME, VK_EXT_METAL_SURFACE_EXTENSION_NAME,
+      // TODO: remove these in release builds
+      VK_EXT_DEBUG_UTILS_EXTENSION_NAME, VK_EXT_DEBUG_REPORT_EXTENSION_NAME};
+  uint32_t extension_count = ArrayCount(extension_names);
 
-  state->enabled_layers = array_create_String8(state->arena, 1);
-  array_set_String8(&state->enabled_layers, 0,
-                    string8_lit(VK_LAYER_KHRONOS_VALIDATION_LAYER_NAME));
+  const char *layer_names[] = {VK_LAYER_KHRONOS_VALIDATION_LAYER_NAME};
+  uint32_t layer_count = ArrayCount(layer_names);
 
-  if (!check_validation_layer_support(state)) {
+  if (!check_validation_layer_support(state, layer_names, layer_count)) {
     log_fatal("Validation layers not supported");
     return false;
   }
 
   log_debug("Validation layers supported");
 
-  Scratch scratch = scratch_create(state->temp_arena);
-  const char **extension_names = (const char **)arena_alloc(
-      scratch.arena, state->enabled_extensions.length * sizeof(char *),
-      ARENA_MEMORY_TAG_RENDERER);
-  for (uint32_t i = 0; i < state->enabled_extensions.length; i++) {
-    extension_names[i] = (const char *)string8_cstr(
-        array_get_String8(&state->enabled_extensions, i));
-  }
-
-  create_info.enabledExtensionCount = state->enabled_extensions.length;
+  create_info.enabledExtensionCount = extension_count;
   create_info.ppEnabledExtensionNames = extension_names;
-
-  const char **layer_names = (const char **)arena_alloc(
-      scratch.arena, state->enabled_layers.length * sizeof(char *),
-      ARENA_MEMORY_TAG_RENDERER);
-  for (uint32_t i = 0; i < state->enabled_layers.length; i++) {
-    layer_names[i] = (const char *)string8_cstr(
-        array_get_String8(&state->enabled_layers, i));
-  }
-
-  create_info.enabledLayerCount = state->enabled_layers.length;
+  create_info.enabledLayerCount = layer_count;
   create_info.ppEnabledLayerNames = layer_names;
   create_info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 
   VkResult result = vkCreateInstance(&create_info, NULL, &state->instance);
   if (result != VK_SUCCESS) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
     log_fatal("Failed to create Vulkan instance: %s", string_VkResult(result));
     return false;
   }
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+  uint32_t available_extension_count = 0;
+  vkEnumerateInstanceExtensionProperties(NULL, &available_extension_count,
+                                         NULL);
 
-  uint32_t extension_count = 0;
-  vkEnumerateInstanceExtensionProperties(NULL, &extension_count, NULL);
-
-  state->extension_properties =
-      array_create_VkExtensionProperties(state->arena, extension_count);
-  vkEnumerateInstanceExtensionProperties(NULL, &extension_count,
+  state->extension_properties = array_create_VkExtensionProperties(
+      state->arena, available_extension_count);
+  vkEnumerateInstanceExtensionProperties(NULL, &available_extension_count,
                                          state->extension_properties.data);
 
-  log_debug("Avaliable extensions: %d", extension_count);
-  for (uint32_t i = 0; i < extension_count; i++) {
+  log_debug("Avaliable extensions: %d", available_extension_count);
+  for (uint32_t i = 0; i < available_extension_count; i++) {
     log_debug("Extension %d: %s", i,
               array_get_VkExtensionProperties(&state->extension_properties, i)
                   ->extensionName);
@@ -131,7 +107,5 @@ void vulkan_instance_destroy(VulkanBackendState *state) {
   log_debug("Destroying Vulkan instance");
 
   array_destroy_VkExtensionProperties(&state->extension_properties);
-  array_destroy_String8(&state->enabled_extensions);
-  array_destroy_String8(&state->enabled_layers);
   vkDestroyInstance(state->instance, NULL);
 }
