@@ -4,6 +4,10 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
 
+#if defined(PLATFORM_APPLE)
+#include <vulkan/vulkan_metal.h>
+#endif
+
 #include "../renderer.h"
 #include "str.h"
 
@@ -18,6 +22,7 @@ Array(VkQueueFamilyProperties);
 typedef struct VulkanBackendState {
   Arena *arena;
   Arena *temp_arena;
+  Window *window;
 
   Array_String8 validation_layers;
 

@@ -52,12 +52,9 @@ bool32_t vulkan_instance_create(VulkanBackendState *state, Window *window) {
   create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   create_info.pApplicationInfo = &app_info;
 
-  const char *extension_names[] = {
-      VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
-      VK_KHR_SURFACE_EXTENSION_NAME, VK_EXT_METAL_SURFACE_EXTENSION_NAME,
-      // TODO: remove these in release builds
-      VK_EXT_DEBUG_UTILS_EXTENSION_NAME, VK_EXT_DEBUG_REPORT_EXTENSION_NAME};
-  uint32_t extension_count = ArrayCount(extension_names);
+  uint32_t extension_count = 0;
+  const char **extension_names =
+      vulkan_platform_get_required_extensions(&extension_count);
 
   Scratch scratch = scratch_create(state->temp_arena);
   const char **layer_names = (const char **)arena_alloc(

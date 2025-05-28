@@ -706,4 +706,12 @@ Keys translate_keycode(uint32_t ns_keycode) {
     return KEYS_MAX_KEYS;
   }
 }
+
+void *window_get_metal_layer(Window *window) {
+  assert_log(window != NULL, "Window not initialized");
+  assert_log(window->platform_state != NULL, "Platform state not initialized");
+
+  PlatformState *state = (PlatformState *)window->platform_state;
+  return state->layer;
+}
 #endif

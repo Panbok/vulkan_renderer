@@ -63,6 +63,7 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
   MemZero(backend_state, sizeof(VulkanBackendState));
   backend_state->arena = arena;
   backend_state->temp_arena = temp_arena;
+  backend_state->window = window;
 
   *out_backend_state = backend_state;
 
@@ -78,6 +79,11 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
 
   if (!vulkan_debug_create_debug_messenger(backend_state)) {
     log_fatal("Failed to create Vulkan debug messenger");
+    return false;
+  }
+
+  if (!vulkan_platform_create_surface(backend_state)) {
+    log_fatal("Failed to create Vulkan surface");
     return false;
   }
 
@@ -99,6 +105,7 @@ void renderer_vulkan_shutdown(void *backend_state) {
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   vulkan_device_destroy_logical_device(state);
   vulkan_device_release_physical_device(state);
+  vulkan_platform_destroy_surface(state);
   vulkan_debug_destroy_debug_messenger(state);
   vulkan_instance_destroy(state);
   array_destroy_String8(&state->validation_layers);

@@ -48,8 +48,8 @@
  * window owns its `InputState`.
  */
 typedef struct Window {
-  void *platform_state; /**< Opaque pointer to platform-specific window state.
-                           Managed internally. */
+  void *platform_state;        /**< Opaque pointer to platform-specific window
+                                  state. Managed internally. */
   EventManager *event_manager; /**< Pointer to the global EventManager. Not
                                   owned by the window. */
   InputState input_state; /**< Input state specific to this window. Owned and
@@ -124,3 +124,16 @@ void window_destroy(Window *window);
  * clicked the close button) and the application should terminate.
  */
 bool8_t window_update(Window *window);
+
+#if defined(PLATFORM_APPLE)
+/**
+ * @brief Gets the Metal layer from the window for Vulkan surface creation.
+ * This function provides access to the CAMetalLayer needed for creating
+ * a Vulkan surface on macOS.
+ *
+ * @param window Pointer to the `Window` to get the Metal layer from. Must not
+ * be NULL.
+ * @return Pointer to the CAMetalLayer, or NULL if not available.
+ */
+void *window_get_metal_layer(Window *window);
+#endif

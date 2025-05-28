@@ -8,6 +8,7 @@ typedef struct QueueFamilyIndex {
 
 typedef struct QueueFamilyIndices {
   QueueFamilyIndex graphics_family;
+  QueueFamilyIndex present_family;
 } QueueFamilyIndices;
 
 static QueueFamilyIndices find_queue_family_index(VulkanBackendState *state,
@@ -30,7 +31,8 @@ static QueueFamilyIndices find_queue_family_index(VulkanBackendState *state,
                                            queue_family_properties.data);
 
   for (uint32_t i = 0; i < queue_family_count; i++) {
-    if (indices.graphics_family.is_present) {
+    if (indices.graphics_family.is_present &&
+        indices.present_family.is_present) {
       break;
     }
 
@@ -40,6 +42,14 @@ static QueueFamilyIndices find_queue_family_index(VulkanBackendState *state,
     if (properties.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
       indices.graphics_family.index = i;
       indices.graphics_family.is_present = true;
+    }
+
+    VkBool32 presentSupport = false;
+    vkGetPhysicalDeviceSurfaceSupportKHR(device, i, state->surface,
+                                         &presentSupport);
+    if (presentSupport) {
+      indices.present_family.index = i;
+      indices.present_family.is_present = true;
     }
   }
 
@@ -63,7 +73,8 @@ static bool32_t is_device_suitable(VulkanBackendState *state,
 
   QueueFamilyIndices indices = find_queue_family_index(state, device);
 
-  if (!indices.graphics_family.is_present) {
+  if (!indices.graphics_family.is_present ||
+      !indices.present_family.is_present) {
     return false;
   }
 
