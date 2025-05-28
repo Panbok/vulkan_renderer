@@ -39,13 +39,14 @@ bool32_t vulkan_instance_create(VulkanBackendState *state, Window *window) {
   assert_log(state != NULL, "State is NULL");
   assert_log(window != NULL, "Window is NULL");
 
-  VkApplicationInfo app_info = {0};
-  app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-  app_info.pApplicationName = window->title;
-  app_info.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-  app_info.pEngineName = "Vulkan Renderer";
-  app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-  app_info.apiVersion = VK_API_VERSION_1_2;
+  VkApplicationInfo app_info = {
+      .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
+      .pApplicationName = window->title,
+      .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
+      .pEngineName = "Vulkan Renderer",
+      .engineVersion = VK_MAKE_VERSION(1, 0, 0),
+      .apiVersion = VK_API_VERSION_1_2,
+  };
 
   VkInstanceCreateInfo create_info = {0};
   create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
