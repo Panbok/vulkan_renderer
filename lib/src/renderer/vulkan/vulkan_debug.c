@@ -72,19 +72,18 @@ bool32_t vulkan_debug_create_debug_messenger(VulkanBackendState *state) {
     return false;
   }
 
-  log_debug("Debug messenger created with handle: %p",
-            (void *)state->debug_messenger);
+  log_debug("Debug messenger created with handle: %p", state->debug_messenger);
+
   return true;
 }
 
 void vulkan_debug_destroy_debug_messenger(VulkanBackendState *state) {
   assert_log(state != NULL, "State is NULL");
+  assert_log(state->debug_messenger != VK_NULL_HANDLE,
+             "Debug messenger was not created");
 
   log_debug("Destroying debug messenger");
 
-  if (state->debug_messenger != VK_NULL_HANDLE) {
-    DestroyDebugUtilsMessengerEXT(state->instance, state->debug_messenger,
-                                  NULL);
-    state->debug_messenger = VK_NULL_HANDLE;
-  }
+  DestroyDebugUtilsMessengerEXT(state->instance, state->debug_messenger, NULL);
+  state->debug_messenger = VK_NULL_HANDLE;
 }

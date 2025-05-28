@@ -66,6 +66,11 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
 
   *out_backend_state = backend_state;
 
+  backend_state->validation_layers =
+      array_create_String8(backend_state->arena, 1);
+  array_set_String8(&backend_state->validation_layers, 0,
+                    string8_lit("VK_LAYER_KHRONOS_validation"));
+
   if (!vulkan_instance_create(backend_state, window)) {
     log_fatal("Failed to create Vulkan instance");
     return false;
@@ -76,8 +81,13 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
-  if (!vulkan_device_create_physical_device(backend_state)) {
+  if (!vulkan_device_pick_physical_device(backend_state)) {
     log_fatal("Failed to create Vulkan physical device");
+    return false;
+  }
+
+  if (!vulkan_device_create_logical_device(backend_state)) {
+    log_fatal("Failed to create Vulkan logical device");
     return false;
   }
 
@@ -87,9 +97,11 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
 void renderer_vulkan_shutdown(void *backend_state) {
   log_debug("Shutting down Vulkan backend");
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  vulkan_device_destroy_physical_device(state);
+  vulkan_device_destroy_logical_device(state);
+  vulkan_device_release_physical_device(state);
   vulkan_debug_destroy_debug_messenger(state);
   vulkan_instance_destroy(state);
+  array_destroy_String8(&state->validation_layers);
   arena_destroy(state->temp_arena);
   arena_destroy(state->arena);
   return;

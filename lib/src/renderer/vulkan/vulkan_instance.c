@@ -58,10 +58,17 @@ bool32_t vulkan_instance_create(VulkanBackendState *state, Window *window) {
       VK_EXT_DEBUG_UTILS_EXTENSION_NAME, VK_EXT_DEBUG_REPORT_EXTENSION_NAME};
   uint32_t extension_count = ArrayCount(extension_names);
 
-  const char *layer_names[] = {VK_LAYER_KHRONOS_VALIDATION_LAYER_NAME};
-  uint32_t layer_count = ArrayCount(layer_names);
+  Scratch scratch = scratch_create(state->temp_arena);
+  const char **layer_names = (const char **)arena_alloc(
+      scratch.arena, state->validation_layers.length * sizeof(char *),
+      ARENA_MEMORY_TAG_RENDERER);
+  for (uint32_t i = 0; i < state->validation_layers.length; i++) {
+    layer_names[i] = (const char *)string8_cstr(
+        array_get_String8(&state->validation_layers, i));
+  }
 
-  if (!check_validation_layer_support(state, layer_names, layer_count)) {
+  if (!check_validation_layer_support(state, layer_names,
+                                      state->validation_layers.length)) {
     log_fatal("Validation layers not supported");
     return false;
   }
@@ -70,15 +77,18 @@ bool32_t vulkan_instance_create(VulkanBackendState *state, Window *window) {
 
   create_info.enabledExtensionCount = extension_count;
   create_info.ppEnabledExtensionNames = extension_names;
-  create_info.enabledLayerCount = layer_count;
+  create_info.enabledLayerCount = state->validation_layers.length;
   create_info.ppEnabledLayerNames = layer_names;
   create_info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 
   VkResult result = vkCreateInstance(&create_info, NULL, &state->instance);
   if (result != VK_SUCCESS) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
     log_fatal("Failed to create Vulkan instance: %s", string_VkResult(result));
     return false;
   }
+
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
   uint32_t available_extension_count = 0;
   vkEnumerateInstanceExtensionProperties(NULL, &available_extension_count,
@@ -108,4 +118,5 @@ void vulkan_instance_destroy(VulkanBackendState *state) {
 
   array_destroy_VkExtensionProperties(&state->extension_properties);
   vkDestroyInstance(state->instance, NULL);
+  state->instance = VK_NULL_HANDLE;
 }
