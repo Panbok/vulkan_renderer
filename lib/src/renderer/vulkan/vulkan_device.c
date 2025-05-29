@@ -1,21 +1,29 @@
 #include "vulkan_device.h"
 #include "defines.h"
 
+typedef enum QueueFamilyType : uint32_t {
+  QUEUE_FAMILY_TYPE_GRAPHICS,
+  QUEUE_FAMILY_TYPE_PRESENT,
+  QUEUE_FAMILY_TYPE_COUNT,
+} QueueFamilyType;
+
 typedef struct QueueFamilyIndex {
   uint32_t index;
+  QueueFamilyType type;
   bool32_t is_present;
 } QueueFamilyIndex;
 
-typedef struct QueueFamilyIndices {
-  QueueFamilyIndex graphics_family;
-  QueueFamilyIndex present_family;
-} QueueFamilyIndices;
+Array(QueueFamilyIndex);
 
-static QueueFamilyIndices find_queue_family_index(VulkanBackendState *state,
-                                                  VkPhysicalDevice device) {
-  QueueFamilyIndices indices = {
-      {0, false},
-  };
+static Array_QueueFamilyIndex find_queue_family_index(VulkanBackendState *state,
+                                                      VkPhysicalDevice device) {
+  Array_QueueFamilyIndex indices =
+      array_create_QueueFamilyIndex(state->temp_arena, QUEUE_FAMILY_TYPE_COUNT);
+  for (uint32_t i = 0; i < QUEUE_FAMILY_TYPE_COUNT; i++) {
+    QueueFamilyIndex invalid_index = {
+        .index = 0, .type = i, .is_present = false};
+    array_set_QueueFamilyIndex(&indices, i, invalid_index);
+  }
 
   uint32_t queue_family_count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, NULL);
@@ -31,25 +39,33 @@ static QueueFamilyIndices find_queue_family_index(VulkanBackendState *state,
                                            queue_family_properties.data);
 
   for (uint32_t i = 0; i < queue_family_count; i++) {
-    if (indices.graphics_family.is_present &&
-        indices.present_family.is_present) {
+    QueueFamilyIndex *graphics_index =
+        array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_GRAPHICS);
+    QueueFamilyIndex *present_index =
+        array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_PRESENT);
+
+    if (graphics_index->is_present && present_index->is_present) {
       break;
     }
 
     VkQueueFamilyProperties properties =
         *array_get_VkQueueFamilyProperties(&queue_family_properties, i);
 
-    if (properties.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-      indices.graphics_family.index = i;
-      indices.graphics_family.is_present = true;
+    if (properties.queueFlags & VK_QUEUE_GRAPHICS_BIT &&
+        !graphics_index->is_present) {
+      QueueFamilyIndex index = {
+          .index = i, .type = QUEUE_FAMILY_TYPE_GRAPHICS, .is_present = true};
+      array_set_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_GRAPHICS, index);
+      continue;
     }
 
     VkBool32 presentSupport = false;
     vkGetPhysicalDeviceSurfaceSupportKHR(device, i, state->surface,
                                          &presentSupport);
-    if (presentSupport) {
-      indices.present_family.index = i;
-      indices.present_family.is_present = true;
+    if (presentSupport && !present_index->is_present) {
+      QueueFamilyIndex index = {
+          .index = i, .type = QUEUE_FAMILY_TYPE_PRESENT, .is_present = true};
+      array_set_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_PRESENT, index);
     }
   }
 
@@ -71,17 +87,23 @@ static bool32_t is_device_suitable(VulkanBackendState *state,
   VkPhysicalDeviceFeatures deviceFeatures;
   vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
 
-  QueueFamilyIndices indices = find_queue_family_index(state, device);
+  Scratch scratch = scratch_create(state->temp_arena);
+  Array_QueueFamilyIndex indices = find_queue_family_index(state, device);
 
-  if (!indices.graphics_family.is_present ||
-      !indices.present_family.is_present) {
-    return false;
-  }
+  QueueFamilyIndex *graphics_index =
+      array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_GRAPHICS);
+  QueueFamilyIndex *present_index =
+      array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_PRESENT);
+
+  bool32_t has_required_queues =
+      graphics_index->is_present && present_index->is_present;
+
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
   return properties.apiVersion >= VK_API_VERSION_1_2 &&
          (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ||
           properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) &&
-         deviceFeatures.tessellationShader;
+         deviceFeatures.tessellationShader && has_required_queues;
 }
 
 bool32_t vulkan_device_pick_physical_device(VulkanBackendState *state) {
@@ -137,22 +159,34 @@ void vulkan_device_release_physical_device(VulkanBackendState *state) {
 bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
   assert_log(state != NULL, "State is NULL");
 
-  QueueFamilyIndices indices =
+  Scratch scratch = scratch_create(state->temp_arena);
+  Array_QueueFamilyIndex indices =
       find_queue_family_index(state, state->physical_device);
 
-  float32_t queue_priority = 1.0f;
-  VkDeviceQueueCreateInfo queue_create_info = {
-      .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
-      .queueFamilyIndex = indices.graphics_family.index,
-      .queueCount = 1,
-      .pQueuePriorities = &queue_priority,
-  };
+  state->queue_create_infos =
+      array_create_VkDeviceQueueCreateInfo(state->arena, indices.length);
+
+  static const float32_t queue_priority = 1.0f;
+  for (uint32_t i = 0; i < indices.length; i++) {
+    QueueFamilyIndex *index = array_get_QueueFamilyIndex(&indices, i);
+    VkDeviceQueueCreateInfo queue_create_info = {
+        .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+        .queueFamilyIndex = index->index,
+        .queueCount = 1,
+        .pQueuePriorities = &queue_priority,
+    };
+    array_set_VkDeviceQueueCreateInfo(&state->queue_create_infos, i,
+                                      queue_create_info);
+  }
+
+  array_destroy_QueueFamilyIndex(&indices);
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
   VkPhysicalDeviceFeatures device_features = {
       .tessellationShader = VK_TRUE,
   };
 
-  Scratch scratch = scratch_create(state->temp_arena);
+  scratch = scratch_create(state->temp_arena);
   const char **layer_names = (const char **)arena_alloc(
       scratch.arena, state->validation_layers.length * sizeof(char *),
       ARENA_MEMORY_TAG_RENDERER);
@@ -169,8 +203,8 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
 
   VkDeviceCreateInfo device_create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-      .queueCreateInfoCount = 1,
-      .pQueueCreateInfos = &queue_create_info,
+      .queueCreateInfoCount = state->queue_create_infos.length,
+      .pQueueCreateInfos = state->queue_create_infos.data,
       .pEnabledFeatures = &device_features,
       .enabledExtensionCount = extension_count,
       .ppEnabledExtensionNames = extension_names,
@@ -192,6 +226,20 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
 
   log_debug("Logical device created with handle: %p", state->device);
 
+  vkGetDeviceQueue(state->device,
+                   array_get_VkDeviceQueueCreateInfo(&state->queue_create_infos,
+                                                     QUEUE_FAMILY_TYPE_GRAPHICS)
+                       ->queueFamilyIndex,
+                   0, &state->graphics_queue);
+  vkGetDeviceQueue(state->device,
+                   array_get_VkDeviceQueueCreateInfo(&state->queue_create_infos,
+                                                     QUEUE_FAMILY_TYPE_PRESENT)
+                       ->queueFamilyIndex,
+                   0, &state->present_queue);
+
+  log_debug("Graphics queue: %p", state->graphics_queue);
+  log_debug("Present queue: %p", state->present_queue);
+
   return true;
 }
 
@@ -200,6 +248,7 @@ void vulkan_device_destroy_logical_device(VulkanBackendState *state) {
 
   log_debug("Destroying logical device");
 
+  array_destroy_VkDeviceQueueCreateInfo(&state->queue_create_infos);
   vkDestroyDevice(state->device, NULL);
   state->device = VK_NULL_HANDLE;
 }

@@ -15,6 +15,7 @@ Array(VkExtensionProperties);
 Array(VkLayerProperties);
 Array(VkPhysicalDevice);
 Array(VkQueueFamilyProperties);
+Array(VkDeviceQueueCreateInfo);
 
 #define VK_EXT_METAL_SURFACE_EXTENSION_NAME "VK_EXT_metal_surface"
 #define VK_LAYER_KHRONOS_VALIDATION_LAYER_NAME "VK_LAYER_KHRONOS_validation"
@@ -32,7 +33,10 @@ typedef struct VulkanBackendState {
 
   VkPhysicalDevice physical_device;
   VkDevice device;
+
+  Array_VkDeviceQueueCreateInfo queue_create_infos;
   VkQueue graphics_queue;
+  VkQueue present_queue;
 
   VkSurfaceKHR surface;
 } VulkanBackendState;
