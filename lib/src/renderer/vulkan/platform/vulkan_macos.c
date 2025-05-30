@@ -12,6 +12,13 @@ const char **vulkan_platform_get_required_extensions(uint32_t *out_count) {
   return extensions;
 }
 
+const char **
+vulkan_platform_get_required_device_extensions(uint32_t *out_count) {
+  static const char *extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+  *out_count = ArrayCount(extensions);
+  return extensions;
+}
+
 bool8_t vulkan_platform_create_surface(VulkanBackendState *state) {
   assert_log(state != NULL, "State is not set");
   assert_log(state->window != NULL, "Window is not set");

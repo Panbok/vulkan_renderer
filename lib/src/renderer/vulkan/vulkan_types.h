@@ -16,9 +16,17 @@ Array(VkLayerProperties);
 Array(VkPhysicalDevice);
 Array(VkQueueFamilyProperties);
 Array(VkDeviceQueueCreateInfo);
+Array(VkSurfaceFormatKHR);
+Array(VkPresentModeKHR);
 
 #define VK_EXT_METAL_SURFACE_EXTENSION_NAME "VK_EXT_metal_surface"
 #define VK_LAYER_KHRONOS_VALIDATION_LAYER_NAME "VK_LAYER_KHRONOS_validation"
+
+typedef struct VulkanSwapchainDetails {
+  VkSurfaceCapabilitiesKHR capabilities;
+  Array_VkSurfaceFormatKHR formats;
+  Array_VkPresentModeKHR present_modes;
+} VulkanSwapchainDetails;
 
 typedef struct VulkanBackendState {
   Arena *arena;
@@ -39,4 +47,5 @@ typedef struct VulkanBackendState {
   VkQueue present_queue;
 
   VkSurfaceKHR surface;
+  VulkanSwapchainDetails swapchain_details;
 } VulkanBackendState;

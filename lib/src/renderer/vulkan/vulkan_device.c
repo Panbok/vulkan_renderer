@@ -75,6 +75,73 @@ static Array_QueueFamilyIndex find_queue_family_index(VulkanBackendState *state,
   return indices;
 }
 
+static void vulkan_swapchain_query_details(VulkanBackendState *state,
+                                           VkPhysicalDevice device,
+                                           VulkanSwapchainDetails *details) {
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, state->surface,
+                                            &details->capabilities);
+
+  uint32_t format_count = 0;
+  vkGetPhysicalDeviceSurfaceFormatsKHR(device, state->surface, &format_count,
+                                       NULL);
+  if (format_count != 0) {
+    details->formats =
+        array_create_VkSurfaceFormatKHR(state->arena, format_count);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(device, state->surface, &format_count,
+                                         details->formats.data);
+  }
+
+  uint32_t present_mode_count = 0;
+  vkGetPhysicalDeviceSurfacePresentModesKHR(device, state->surface,
+                                            &present_mode_count, NULL);
+  if (present_mode_count != 0) {
+    details->present_modes =
+        array_create_VkPresentModeKHR(state->arena, present_mode_count);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(device, state->surface,
+                                              &present_mode_count,
+                                              details->present_modes.data);
+  }
+}
+
+static bool32_t has_required_extensions(VulkanBackendState *state,
+                                        VkPhysicalDevice device) {
+  uint32_t extension_count = 0;
+  vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, NULL);
+
+  Scratch scratch = scratch_create(state->temp_arena);
+  Array_VkExtensionProperties available_extensions =
+      array_create_VkExtensionProperties(scratch.arena, extension_count);
+  vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count,
+                                       available_extensions.data);
+
+  uint32_t required_extension_count = 0;
+  const char **required_extensions =
+      vulkan_platform_get_required_device_extensions(&required_extension_count);
+
+  for (uint32_t i = 0; i < required_extension_count; i++) {
+    bool32_t extension_found = false;
+    for (uint32_t j = 0; j < extension_count; j++) {
+      if (strcmp(required_extensions[i],
+                 array_get_VkExtensionProperties(&available_extensions, j)
+                     ->extensionName) == 0) {
+        extension_found = true;
+        break;
+      }
+    }
+
+    if (!extension_found) {
+      array_destroy_VkExtensionProperties(&available_extensions);
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+      return false;
+    }
+  }
+
+  array_destroy_VkExtensionProperties(&available_extensions);
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+
+  return true;
+}
+
 // todo: we need to check if the device supports the required extensions
 // todo: pick up the best device based on the scoring algorithm
 static bool32_t is_device_suitable(VulkanBackendState *state,
@@ -99,6 +166,22 @@ static bool32_t is_device_suitable(VulkanBackendState *state,
       graphics_index->is_present && present_index->is_present;
 
   scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+
+  if (!has_required_extensions(state, device)) {
+    return false;
+  }
+
+  state->swapchain_details = (VulkanSwapchainDetails){
+      .formats = NULL,
+      .present_modes = NULL,
+      .capabilities = (VkSurfaceCapabilitiesKHR){0},
+  };
+  vulkan_swapchain_query_details(state, device, &state->swapchain_details);
+
+  if (array_is_null_VkSurfaceFormatKHR(&state->swapchain_details.formats) ||
+      array_is_null_VkPresentModeKHR(&state->swapchain_details.present_modes)) {
+    return false;
+  }
 
   return properties.apiVersion >= VK_API_VERSION_1_2 &&
          (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ||

@@ -23,6 +23,7 @@ RendererBackendInterface renderer_vulkan_get_interface() {
   };
 }
 
+// todo: set up event manager for window stuff and maybe other events
 bool32_t renderer_vulkan_initialize(void **out_backend_state,
                                     RendererBackendType type, Window *window,
                                     uint32_t initial_width,
