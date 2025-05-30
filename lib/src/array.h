@@ -102,6 +102,24 @@
     array->data = NULL;                                                        \
     array->arena = NULL;                                                       \
     array->length = 0;                                                         \
+  }                                                                            \
+  /**                                                                          \
+   * @brief Checks if the array was never initialized or has been destroyed    \
+   * @param array Pointer to the array                                         \
+   * @return True if the array data pointer is NULL, false otherwise           \
+   */                                                                          \
+  static inline bool32_t array_is_null_##name(const Array_##name *array) {     \
+    assert_log(array != NULL, "Array is NULL");                                \
+    return array->data == NULL;                                                \
+  }                                                                            \
+  /**                                                                          \
+   * @brief Checks if the array is empty (has zero length)                     \
+   * @param array Pointer to the array                                         \
+   * @return True if the array has zero length, false otherwise                \
+   */                                                                          \
+  static inline bool32_t array_is_empty_##name(const Array_##name *array) {    \
+    assert_log(array != NULL, "Array is NULL");                                \
+    return array->length == 0;                                                 \
   }
 
 #define Array(type) ArrayConstructor(type, type)

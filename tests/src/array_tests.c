@@ -58,6 +58,88 @@ static void test_array_set_get_int(void) {
   printf("  test_array_set_get_int PASSED\n");
 }
 
+static void test_array_is_null(void) {
+  printf("  Running test_array_is_null...\n");
+  setup_suite();
+
+  // Test 1: Uninitialized array (zero-initialized)
+  Array_uint32_t uninitialized_arr = {0};
+  assert(array_is_null_uint32_t(&uninitialized_arr) == true &&
+         "Uninitialized array should be null");
+
+  // Test 2: Properly created array should not be null
+  const uint64_t length = 5;
+  Array_uint32_t arr = array_create_uint32_t(arena, length);
+  assert(array_is_null_uint32_t(&arr) == false &&
+         "Created array should not be null");
+
+  // Test 3: Destroyed array should be null
+  array_destroy_uint32_t(&arr);
+  assert(array_is_null_uint32_t(&arr) == true &&
+         "Destroyed array should be null");
+
+  teardown_suite();
+  printf("  test_array_is_null PASSED\n");
+}
+
+static void test_array_is_empty(void) {
+  printf("  Running test_array_is_empty...\n");
+  setup_suite();
+
+  // Test 1: Array with length 0 should be empty
+  Array_uint32_t zero_length_arr = array_create_uint32_t(arena, 1);
+  // Manually set length to 0 to test the empty condition
+  zero_length_arr.length = 0;
+  assert(array_is_empty_uint32_t(&zero_length_arr) == true &&
+         "Array with length 0 should be empty");
+
+  // Test 2: Array with length > 0 should not be empty
+  Array_uint32_t arr = array_create_uint32_t(arena, 5);
+  assert(array_is_empty_uint32_t(&arr) == false &&
+         "Array with length > 0 should not be empty");
+
+  // Test 3: Even after setting values, array with length > 0 is not empty
+  array_set_uint32_t(&arr, 0, 42);
+  assert(array_is_empty_uint32_t(&arr) == false &&
+         "Array with elements should not be empty");
+
+  array_destroy_uint32_t(&arr);
+
+  teardown_suite();
+  printf("  test_array_is_empty PASSED\n");
+}
+
+static void test_array_null_vs_empty_semantics(void) {
+  printf("  Running test_array_null_vs_empty_semantics...\n");
+  setup_suite();
+
+  // Test the semantic difference between null and empty
+
+  // Case 1: Uninitialized array
+  Array_uint32_t uninitialized = {0};
+  assert(array_is_null_uint32_t(&uninitialized) == true &&
+         "Uninitialized array should be null");
+  assert(array_is_empty_uint32_t(&uninitialized) == true &&
+         "Uninitialized array should be empty (length 0)");
+
+  // Case 2: Created array with length > 0
+  Array_uint32_t normal_arr = array_create_uint32_t(arena, 3);
+  assert(array_is_null_uint32_t(&normal_arr) == false &&
+         "Created array should not be null");
+  assert(array_is_empty_uint32_t(&normal_arr) == false &&
+         "Created array with length > 0 should not be empty");
+
+  // Case 3: Destroyed array
+  array_destroy_uint32_t(&normal_arr);
+  assert(array_is_null_uint32_t(&normal_arr) == true &&
+         "Destroyed array should be null");
+  assert(array_is_empty_uint32_t(&normal_arr) == true &&
+         "Destroyed array should be empty (length set to 0)");
+
+  teardown_suite();
+  printf("  test_array_null_vs_empty_semantics PASSED\n");
+}
+
 // Add more tests here following the pattern:
 // static void test_xxx() { ... }
 
@@ -67,6 +149,9 @@ bool32_t run_array_tests() {
 
   test_array_create_int();
   test_array_set_get_int();
+  test_array_is_null();
+  test_array_is_empty();
+  test_array_null_vs_empty_semantics();
   // Call other test functions here
 
   printf("--- Array Tests Completed ---\n");
