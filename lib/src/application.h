@@ -176,8 +176,6 @@ bool8_t application_create(Application *application,
   assert(config != NULL && "Application config is NULL");
   assert(config->title != NULL && "Application title is NULL");
   assert(config->app_arena_size > 0 && "Application arena size is 0");
-  assert(config->x >= 0 && "Application x is less than 0");
-  assert(config->y >= 0 && "Application y is less than 0");
   assert(config->width > 0 && "Application width is less than 0");
   assert(config->height > 0 && "Application height is less than 0");
   assert(config->target_frame_rate > 0 && "Application target frame rate is 0");
