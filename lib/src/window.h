@@ -58,9 +58,14 @@ typedef struct Window {
                   the caller or be static/long-lived. */
   int32_t x;   /**< Initial x-coordinate of the window's top-left corner. */
   int32_t y;   /**< Initial y-coordinate of the window's top-left corner. */
-  int32_t width;  /**< Initial width of the window's client area. */
-  int32_t height; /**< Initial height of the window's client area. */
+  uint32_t width;  /**< Initial width of the window's client area. */
+  uint32_t height; /**< Initial height of the window's client area. */
 } Window;
+
+typedef struct WindowPixelSize {
+  uint32_t width;
+  uint32_t height;
+} WindowPixelSize;
 
 /**
  * @brief Data for window resize event (EVENT_TYPE_WINDOW_RESIZE).
@@ -68,8 +73,8 @@ typedef struct Window {
  * framebuffer) size changes.
  */
 typedef struct WindowResizeEventData {
-  uint16_t width; /**< The new width of the window's client/framebuffer area. */
-  uint16_t
+  uint32_t width; /**< The new width of the window's client/framebuffer area. */
+  uint32_t
       height; /**< The new height of the window's client/framebuffer area. */
 } WindowResizeEventData;
 
@@ -95,8 +100,8 @@ typedef struct WindowResizeEventData {
  * logged.
  */
 bool8_t window_create(Window *window, EventManager *event_manager,
-                      const char *title, int32_t x, int32_t y, int32_t width,
-                      int32_t height);
+                      const char *title, int32_t x, int32_t y, uint32_t width,
+                      uint32_t height);
 
 /**
  * @brief Destroys a window and releases all associated platform resources.
@@ -124,6 +129,8 @@ void window_destroy(Window *window);
  * clicked the close button) and the application should terminate.
  */
 bool8_t window_update(Window *window);
+
+WindowPixelSize window_get_pixel_size(Window *window);
 
 #if defined(PLATFORM_APPLE)
 /**

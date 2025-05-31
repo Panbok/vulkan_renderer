@@ -76,8 +76,8 @@ typedef enum ApplicationFlag {
  */
 typedef struct ApplicationConfig {
   const char *title;          /**< The title of the application window. */
-  uint32_t x;                 /**< The initial x-coordinate of the window. */
-  uint32_t y;                 /**< The initial y-coordinate of the window. */
+  int32_t x;                  /**< The initial x-coordinate of the window. */
+  int32_t y;                  /**< The initial y-coordinate of the window. */
   uint32_t width;             /**< The initial width of the window. */
   uint32_t height;            /**< The initial height of the window. */
   uint64_t target_frame_rate; /**< The desired target frame rate for the

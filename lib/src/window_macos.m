@@ -57,8 +57,8 @@ Keys translate_keycode(uint32_t ns_keycode);
   const NSRect contentRect = [state->view frame];
   const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
   WindowResizeEventData resize_data = {
-      .width = (uint16_t)framebufferRect.size.width,
-      .height = (uint16_t)framebufferRect.size.height};
+      .width = (uint32_t)framebufferRect.size.width,
+      .height = (uint32_t)framebufferRect.size.height};
   Event event = {.type = EVENT_TYPE_WINDOW_RESIZE,
                  .data = &resize_data,
                  .data_size = sizeof(WindowResizeEventData)};
@@ -79,8 +79,8 @@ Keys translate_keycode(uint32_t ns_keycode);
   const NSRect contentRect = [state->view frame];
   const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
   WindowResizeEventData resize_data = {
-      .width = (uint16_t)framebufferRect.size.width,
-      .height = (uint16_t)framebufferRect.size.height};
+      .width = (uint32_t)framebufferRect.size.width,
+      .height = (uint32_t)framebufferRect.size.height};
   Event event = {.type = EVENT_TYPE_WINDOW_RESIZE,
                  .data = &resize_data,
                  .data_size = sizeof(WindowResizeEventData)};
@@ -290,8 +290,8 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
 @end // ApplicationDelegate
 
 bool8_t window_create(Window *window, EventManager *event_manager,
-                      const char *title, int32_t x, int32_t y, int32_t width,
-                      int32_t height) {
+                      const char *title, int32_t x, int32_t y, uint32_t width,
+                      uint32_t height) {
   assert_log(event_manager != NULL, "Event manager not initialized");
   assert_log(title != NULL, "Title not initialized");
   assert_log(x >= 0, "X position not initialized");
@@ -471,6 +471,21 @@ bool8_t window_update(Window *window) {
   } // autoreleasepool
 
   return !state->quit_flagged;
+}
+
+WindowPixelSize window_get_pixel_size(Window *window) {
+  assert_log(window != NULL, "Window not initialized");
+  assert_log(window->platform_state != NULL, "Platform state not initialized");
+
+  PlatformState *state = (PlatformState *)window->platform_state;
+
+  const NSRect contentRect = [state->view frame];
+  const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
+
+  return (WindowPixelSize){
+      .width = (uint32_t)framebufferRect.size.width,
+      .height = (uint32_t)framebufferRect.size.height,
+  };
 }
 
 Keys translate_keycode(uint32_t ns_keycode) {

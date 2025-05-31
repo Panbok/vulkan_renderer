@@ -98,12 +98,18 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
+  if (!vulkan_swapchain_create(backend_state)) {
+    log_fatal("Failed to create Vulkan swapchain");
+    return false;
+  }
+
   return true;
 }
 
 void renderer_vulkan_shutdown(void *backend_state) {
   log_debug("Shutting down Vulkan backend");
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  vulkan_swapchain_destroy(state);
   vulkan_device_destroy_logical_device(state);
   vulkan_device_release_physical_device(state);
   vulkan_platform_destroy_surface(state);

@@ -11,6 +11,19 @@
 #include "../renderer.h"
 #include "str.h"
 
+typedef enum QueueFamilyType : uint32_t {
+  QUEUE_FAMILY_TYPE_GRAPHICS,
+  QUEUE_FAMILY_TYPE_PRESENT,
+  QUEUE_FAMILY_TYPE_COUNT,
+} QueueFamilyType;
+
+typedef struct QueueFamilyIndex {
+  uint32_t index;
+  QueueFamilyType type;
+  bool32_t is_present;
+} QueueFamilyIndex;
+
+Array(QueueFamilyIndex);
 Array(VkExtensionProperties);
 Array(VkLayerProperties);
 Array(VkPhysicalDevice);
@@ -47,5 +60,5 @@ typedef struct VulkanBackendState {
   VkQueue present_queue;
 
   VkSurfaceKHR surface;
-  VulkanSwapchainDetails swapchain_details;
+  VkSwapchainKHR swapchain;
 } VulkanBackendState;
