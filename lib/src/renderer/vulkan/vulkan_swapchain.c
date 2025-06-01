@@ -116,6 +116,47 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
 
   state->swapchain = swapchain;
 
+  vkGetSwapchainImagesKHR(state->device, state->swapchain, &image_count, NULL);
+  if (image_count != 0) {
+    state->swapChainImages = array_create_VkImage(state->arena, image_count);
+    vkGetSwapchainImagesKHR(state->device, state->swapchain, &image_count,
+                            state->swapChainImages.data);
+  }
+
+  state->swapChainImageFormat = surface_format->format;
+  state->swapChainExtent = extent;
+
+  state->swapChainImageViews =
+      array_create_VkImageView(state->arena, image_count);
+  for (uint32_t i = 0; i < image_count; i++) {
+    VkImageViewCreateInfo create_info = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = state->swapChainImages.data[i],
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = state->swapChainImageFormat,
+        .components =
+            {
+                .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+                .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+            },
+        .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+    };
+
+    if (vkCreateImageView(state->device, &create_info, NULL,
+                          &state->swapChainImageViews.data[i]) != VK_SUCCESS) {
+      return false;
+    }
+  }
+
   log_debug("Swapchain created with handle %p", swapchain);
 
   return true;
@@ -127,6 +168,11 @@ void vulkan_swapchain_destroy(VulkanBackendState *state) {
 
   log_debug("Destroying swapchain");
 
+  for (uint32_t i = 0; i < state->swapChainImageViews.length; i++) {
+    vkDestroyImageView(state->device, state->swapChainImageViews.data[i], NULL);
+  }
+  array_destroy_VkImageView(&state->swapChainImageViews);
+  array_destroy_VkImage(&state->swapChainImages);
   vkDestroySwapchainKHR(state->device, state->swapchain, NULL);
   state->swapchain = VK_NULL_HANDLE;
 }

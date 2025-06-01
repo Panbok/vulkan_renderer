@@ -31,6 +31,8 @@ Array(VkQueueFamilyProperties);
 Array(VkDeviceQueueCreateInfo);
 Array(VkSurfaceFormatKHR);
 Array(VkPresentModeKHR);
+Array(VkImage);
+Array(VkImageView);
 
 #define VK_EXT_METAL_SURFACE_EXTENSION_NAME "VK_EXT_metal_surface"
 #define VK_LAYER_KHRONOS_VALIDATION_LAYER_NAME "VK_LAYER_KHRONOS_validation"
@@ -61,4 +63,8 @@ typedef struct VulkanBackendState {
 
   VkSurfaceKHR surface;
   VkSwapchainKHR swapchain;
+  VkFormat swapChainImageFormat;
+  VkExtent2D swapChainExtent;
+  Array_VkImage swapChainImages;
+  Array_VkImageView swapChainImageViews;
 } VulkanBackendState;
