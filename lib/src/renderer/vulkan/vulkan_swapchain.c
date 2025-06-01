@@ -117,11 +117,14 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
   state->swapchain = swapchain;
 
   vkGetSwapchainImagesKHR(state->device, state->swapchain, &image_count, NULL);
-  if (image_count != 0) {
-    state->swapChainImages = array_create_VkImage(state->arena, image_count);
-    vkGetSwapchainImagesKHR(state->device, state->swapchain, &image_count,
-                            state->swapChainImages.data);
+  if (image_count == 0) {
+    log_error("Swapchain has no images");
+    return false;
   }
+
+  state->swapChainImages = array_create_VkImage(state->arena, image_count);
+  vkGetSwapchainImagesKHR(state->device, state->swapchain, &image_count,
+                          state->swapChainImages.data);
 
   state->swapChainImageFormat = surface_format->format;
   state->swapChainExtent = extent;
@@ -153,6 +156,12 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
 
     if (vkCreateImageView(state->device, &create_info, NULL,
                           &state->swapChainImageViews.data[i]) != VK_SUCCESS) {
+      for (uint32_t j = 0; j < i; j++) {
+        vkDestroyImageView(state->device, state->swapChainImageViews.data[j],
+                           NULL);
+      }
+      array_destroy_VkImageView(&state->swapChainImageViews);
+      array_destroy_VkImage(&state->swapChainImages);
       return false;
     }
   }
