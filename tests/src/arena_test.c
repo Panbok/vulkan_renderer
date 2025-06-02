@@ -158,7 +158,7 @@ static void test_arena_simple_alloc() {
   // This isn't quite right, arena_alloc aligns start of alloc, not size itself
   // internally for next alloc. The position calculation is pos_pre =
   // AlginPow2(current->pos, AlignOf(void *)); pos_post = pos_pre + size; So
-  // ptr2 should be at (char*)ptr1 + (pos_after_alloc1 -
+  // ptr2 should be at (uint8*)ptr1 + (pos_after_alloc1 -
   // current_arena_pos_before_ptr1) if there were no internal fragmentations due
   // to header. Simpler: (uintptr_t)ptr2 should be >= (uintptr_t)ptr1 +
   // alloc_size1. And more precisely, ptr2 should be exactly at the arena_pos()

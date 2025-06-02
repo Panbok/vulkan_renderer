@@ -105,7 +105,7 @@ void arena_destroy(Arena *arena) {
  * reserved size (`current->rsv`). c. Call `mem_commit` to make the physical
  * pages available. d. Update `current->cmt`.
  * 4. **Allocate:** If `current->cmt >= pos_post`, the space is available.
- *    a. Calculate the result pointer: `(char*)current + pos_pre`.
+ *    a. Calculate the result pointer: `(uint8*)current + pos_pre`.
  *    b. Update the current block's position: `current->pos = pos_post`.
  *    c. Return the result pointer.
  * 5. **Failure:** If memory cannot be reserved or committed, the program exits

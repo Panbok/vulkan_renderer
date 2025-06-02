@@ -16,20 +16,20 @@
  * +------------------+ <-- Block Start (Arena*)
  * |   Arena Header   |     (Contains metadata like sizes, links, positions)
  * | (sizeof(Arena))  |
- * +------------------+ <-- Start of allocatable memory ((char*)Arena +sizeof(Arena)) 
+ * +------------------+ <-- Start of allocatable memory ((uint8*)Arena +sizeof(Arena)) 
  * |                  | 
  * | Committed Memory |     (Memory backed by physical pages, usable for allocations) 
  * | (Arena->cmt)     | 
  * | Arena->pos       | ----> Current allocation high-water mark within this block
  * |                  |
- * +------------------+ <-- End of Committed Region ((char*)Arena + Arena->cmt)
+ * +------------------+ <-- End of Committed Region ((uint8*)Arena + Arena->cmt)
  * |                  |
  * | Reserved but     |     (Virtual address space reserved, but not yet backed by physical pages) 
  * | NOT Committed    | 
  * | (Arena->rsv -    |
  * |     Arena->cmt)  |
  * |                  |
- * +------------------+ <-- End of Reserved Region ((char*)Arena + Arena->rsv)
+ * +------------------+ <-- End of Reserved Region ((uint8*)Arena + Arena->rsv)
  *
  * Linked Blocks:
  * If an allocation request exceeds the remaining capacity of the current block,
