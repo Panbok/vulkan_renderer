@@ -27,7 +27,7 @@ typedef struct FileHandle {
   FileMode mode;
 } FileHandle;
 
-FilePath file_path_create(const char *path, FilePathType type);
+FilePath file_path_create(char *path, FilePathType type);
 
 bool8_t file_open(FilePath *path, FileMode mode, FileHandle *out_handle);
 
