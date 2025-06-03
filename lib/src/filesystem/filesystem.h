@@ -171,6 +171,9 @@ typedef enum FileError : uint32_t {
   FILE_ERROR_ACCESS_DENIED, /**< Insufficient permissions to access file */
   FILE_ERROR_IO_ERROR, /**< General I/O error (disk full, network error, etc.)
                         */
+  FILE_ERROR_INVALID_MODE,   /**< Invalid file mode */
+  FILE_ERROR_INVALID_PATH,   /**< Invalid file path */
+  FILE_ERROR_OPEN_FAILED,    /**< Failed to open file */
   FILE_ERROR_INVALID_HANDLE, /**< File handle is invalid or file is not open */
   FILE_ERROR_COUNT,          /**< Total number of error types */
 } FileError;
@@ -255,98 +258,118 @@ FilePath file_path_create(const char *path, FilePathType type);
  * }
  * ```
  */
-bool8_t file_open(FilePath *path, FileMode mode, FileHandle *out_handle);
+FileError file_open(const FilePath *path, FileMode mode,
+                    FileHandle *out_handle);
 
 /**
  * @brief Closes an open file handle.
  *
- * Closes the file associated with the handle and releases any system resources.
- * After calling this function, the handle should not be used for further
- * operations. It is safe to call this function multiple times on the same
+ * Closes the file associated with the handle and releases
+ * any system resources. After calling this function, the
+ * handle should not be used for further operations. It is
+ * safe to call this function multiple times on the same
  * handle.
  *
- * @param handle Pointer to the file handle to close. Must not be NULL.
+ * @param handle Pointer to the file handle to close. Must
+ * not be NULL.
  */
 void file_close(FileHandle *handle);
 
 /**
  * @brief Checks if a file or directory exists.
  *
- * Tests whether the specified path exists in the filesystem without opening it.
- * This function works for both files and directories.
+ * Tests whether the specified path exists in the filesystem
+ * without opening it. This function works for both files
+ * and directories.
  *
- * @param path The file path to check as a null-terminated string. Must not be
- * NULL or empty.
+ * @param path The file path to check as a null-terminated
+ * string. Must not be NULL or empty.
  * @return `true` if the path exists, `false` otherwise.
  */
 bool8_t file_exists(const char *path);
 
 /**
- * @brief Retrieves file statistics without opening the file.
+ * @brief Retrieves file statistics without opening the
+ * file.
  *
- * Gathers basic information about the file such as size and modification time.
- * This is more efficient than opening the file just to get metadata.
+ * Gathers basic information about the file such as size and
+ * modification time. This is more efficient than opening
+ * the file just to get metadata.
  *
  * @param path Pointer to the file path. Must not be NULL.
- * @param out_stats Pointer to store the file statistics. Must not be NULL.
- * @return `FILE_ERROR_NONE` on success, `FILE_ERROR_NOT_FOUND` if the file
- * doesn't exist, or another error code on failure.
+ * @param out_stats Pointer to store the file statistics.
+ * Must not be NULL.
+ * @return `FILE_ERROR_NONE` on success,
+ * `FILE_ERROR_NOT_FOUND` if the file doesn't exist, or
+ * another error code on failure.
  */
 FileError file_stats(FilePath *path, FileStats *out_stats);
 
 /**
  * @brief Reads a single line from a text file.
  *
- * Reads one line from the current position in the file, including the newline
- * character if present. The line is allocated from the provided arena and
- * stored as a `String8`. The file position advances to the start of the next
- * line.
+ * Reads one line from the current position in the file,
+ * including the newline character if present. The line is
+ * allocated from the provided arena and stored as a
+ * `String8`. The file position advances to the start of the
+ * next line.
  *
- * @param handle Pointer to an open file handle. Must not be NULL.
- * @param arena Arena to allocate the line string from. Must not be NULL.
- * @param out_line Pointer to store the line as a `String8`. Must not be NULL.
- * @return `FILE_ERROR_NONE` on success, `FILE_ERROR_INVALID_HANDLE` if the file
- * is not open, or another error code on failure.
+ * @param handle Pointer to an open file handle. Must not be
+ * NULL.
+ * @param arena Arena to allocate the line string from. Must
+ * not be NULL.
+ * @param out_line Pointer to store the line as a `String8`.
+ * Must not be NULL.
+ * @return `FILE_ERROR_NONE` on success,
+ * `FILE_ERROR_INVALID_HANDLE` if the file is not open, or
+ * another error code on failure.
  *
- * @note The maximum line length is 32,000 characters. Longer lines will be
- * truncated.
+ * @note The maximum line length is 32,000 characters.
+ * Longer lines will be truncated.
  */
 FileError file_read_line(FileHandle *handle, Arena *arena, String8 *out_line);
 
 /**
  * @brief Writes a line of text to a file.
  *
- * Writes the contents of the string to the file followed by a newline
- * character. The file is automatically flushed after writing to ensure data
- * persistence.
+ * Writes the contents of the string to the file followed by
+ * a newline character. The file is automatically flushed
+ * after writing to ensure data persistence.
  *
- * @param handle Pointer to an open file handle with write permissions. Must not
- * be NULL.
- * @param text Pointer to the string to write. Must not be NULL.
- * @return `FILE_ERROR_NONE` on success, `FILE_ERROR_INVALID_HANDLE` if the file
- * is not open for writing, `FILE_ERROR_IO_ERROR` on write failure, or another
- * error code.
+ * @param handle Pointer to an open file handle with write
+ * permissions. Must not be NULL.
+ * @param text Pointer to the string to write. Must not be
+ * NULL.
+ * @return `FILE_ERROR_NONE` on success,
+ * `FILE_ERROR_INVALID_HANDLE` if the file is not open for
+ * writing, `FILE_ERROR_IO_ERROR` on write failure, or
+ * another error code.
  */
 FileError file_write_line(FileHandle *handle, const String8 *text);
 
 /**
  * @brief Reads a specific number of bytes from a file.
  *
- * Reads up to `size` bytes from the current file position into a buffer
- * allocated from the provided arena. The actual number of bytes read is
- * returned through `bytes_read`, which may be less than requested if EOF is
+ * Reads up to `size` bytes from the current file position
+ * into a buffer allocated from the provided arena. The
+ * actual number of bytes read is returned through
+ * `bytes_read`, which may be less than requested if EOF is
  * reached.
  *
- * @param handle Pointer to an open file handle with read permissions. Must not
- * be NULL.
- * @param arena Arena to allocate the read buffer from. Must not be NULL.
- * @param size Number of bytes to read. Must be greater than 0.
- * @param bytes_read Pointer to store the actual number of bytes read. Must not
- * be NULL.
- * @param out_buffer Pointer to store the allocated buffer containing the data.
- * Must not be NULL.
- * @return `FILE_ERROR_NONE` on success, `FILE_ERROR_INVALID_HANDLE` if the file
- * is not open, `FILE_ERROR_IO_ERROR` on read failure, or another error code.
+ * @param handle Pointer to an open file handle with read
+ * permissions. Must not be NULL.
+ * @param arena Arena to allocate the read buffer from. Must
+ * not be NULL.
+ * @param size Number of bytes to read. Must be greater than
+ * 0.
+ * @param bytes_read Pointer to store the actual number of
+ * bytes read. Must not be NULL.
+ * @param out_buffer Pointer to store the allocated buffer
+ * containing the data. Must not be NULL.
+ * @return `FILE_ERROR_NONE` on success,
+ * `FILE_ERROR_INVALID_HANDLE` if the file is not open,
+ * `FILE_ERROR_IO_ERROR` on read failure, or another error
+ * code.
  */
 FileError file_read(FileHandle *handle, Arena *arena, uint64_t size,
                     uint64_t *bytes_read, uint8_t **out_buffer);
@@ -354,18 +377,22 @@ FileError file_read(FileHandle *handle, Arena *arena, uint64_t size,
 /**
  * @brief Writes raw data to a file.
  *
- * Writes the specified buffer contents to the file at the current position.
- * The file is automatically flushed after writing to ensure data persistence.
+ * Writes the specified buffer contents to the file at the
+ * current position. The file is automatically flushed after
+ * writing to ensure data persistence.
  *
- * @param handle Pointer to an open file handle with write permissions. Must not
- * be NULL.
- * @param size Number of bytes to write. Must be greater than 0.
- * @param buffer Pointer to the data to write. Must not be NULL.
- * @param bytes_written Pointer to store the actual number of bytes written.
- * Must not be NULL.
- * @return `FILE_ERROR_NONE` on success, `FILE_ERROR_INVALID_HANDLE` if the file
- * is not open for writing, `FILE_ERROR_IO_ERROR` on write failure, or another
- * error code.
+ * @param handle Pointer to an open file handle with write
+ * permissions. Must not be NULL.
+ * @param size Number of bytes to write. Must be greater
+ * than 0.
+ * @param buffer Pointer to the data to write. Must not be
+ * NULL.
+ * @param bytes_written Pointer to store the actual number
+ * of bytes written. Must not be NULL.
+ * @return `FILE_ERROR_NONE` on success,
+ * `FILE_ERROR_INVALID_HANDLE` if the file is not open for
+ * writing, `FILE_ERROR_IO_ERROR` on write failure, or
+ * another error code.
  */
 FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
                      uint64_t *bytes_written);
@@ -373,40 +400,50 @@ FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
 /**
  * @brief Reads the entire file as a UTF-8 string.
  *
- * Reads all remaining content from the current file position to the end and
- * returns it as a null-terminated `String8`. This is convenient for loading
- * text files where the entire content is needed at once.
+ * Reads all remaining content from the current file
+ * position to the end and returns it as a null-terminated
+ * `String8`. This is convenient for loading text files
+ * where the entire content is needed at once.
  *
- * @param handle Pointer to an open file handle with read permissions. Must not
+ * @param handle Pointer to an open file handle with read
+ * permissions. Must not be NULL.
+ * @param arena Arena to allocate the string from. Must not
  * be NULL.
- * @param arena Arena to allocate the string from. Must not be NULL.
- * @param out_data Pointer to store the file contents as a `String8`. Must not
- * be NULL.
- * @return `FILE_ERROR_NONE` on success, `FILE_ERROR_INVALID_HANDLE` if the file
- * is not open, `FILE_ERROR_IO_ERROR` on read failure, or another error code.
+ * @param out_data Pointer to store the file contents as a
+ * `String8`. Must not be NULL.
+ * @return `FILE_ERROR_NONE` on success,
+ * `FILE_ERROR_INVALID_HANDLE` if the file is not open,
+ * `FILE_ERROR_IO_ERROR` on read failure, or another error
+ * code.
  *
- * @note The returned string includes a null terminator for C compatibility.
+ * @note The returned string includes a null terminator for
+ * C compatibility.
  */
 FileError file_read_string(FileHandle *handle, Arena *arena, String8 *out_data);
 
 /**
  * @brief Reads all remaining data from a file.
  *
- * Reads from the current file position to the end of the file, allocating
- * a buffer from the provided arena. This preserves the current file position
- * behavior - it reads from wherever the file pointer currently is.
+ * Reads from the current file position to the end of the
+ * file, allocating a buffer from the provided arena. This
+ * preserves the current file position behavior - it reads
+ * from wherever the file pointer currently is.
  *
- * @param handle Pointer to an open file handle with read permissions. Must not
- * be NULL.
- * @param arena Arena to allocate the read buffer from. Must not be NULL.
- * @param out_buffer Pointer to store the allocated buffer containing the data.
- * Must not be NULL.
- * @param bytes_read Pointer to store the number of bytes read. Must not be
- * NULL.
- * @return `FILE_ERROR_NONE` on success, `FILE_ERROR_INVALID_HANDLE` if the file
- * is not open, `FILE_ERROR_IO_ERROR` on read failure, or another error code.
+ * @param handle Pointer to an open file handle with read
+ * permissions. Must not be NULL.
+ * @param arena Arena to allocate the read buffer from. Must
+ * not be NULL.
+ * @param out_buffer Pointer to store the allocated buffer
+ * containing the data. Must not be NULL.
+ * @param bytes_read Pointer to store the number of bytes
+ * read. Must not be NULL.
+ * @return `FILE_ERROR_NONE` on success,
+ * `FILE_ERROR_INVALID_HANDLE` if the file is not open,
+ * `FILE_ERROR_IO_ERROR` on read failure, or another error
+ * code.
  *
- * @note Uses `ftello`/`fseeko` for large file support (>2GB).
+ * @note Uses `ftello`/`fseeko` for large file support
+ * (>2GB).
  */
 FileError file_read_all(FileHandle *handle, Arena *arena, uint8_t **out_buffer,
                         uint64_t *bytes_read);
