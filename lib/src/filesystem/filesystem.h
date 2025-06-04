@@ -241,8 +241,9 @@ FilePath file_path_create(const char *path, Arena *arena, FilePathType type);
  * The mode bitset can contain any combination of `FileModeFlags` to achieve
  * the desired file access behavior.
  *
- * @param path Pointer to the file path to open. Must not be NULL. It will be
- * owned by the caller and must be freed after use.
+ * @param path Pointer to the file path to open. Must not be NULL. The caller
+ * is responsible for managing the lifetime of the FilePath structure and its
+ * associated arena-allocated memory.
  * @param mode Bitset containing the desired file mode flags.
  * @param out_handle Pointer to store the opened file handle. Must not be NULL.
  * @return `true` if the file was opened successfully, `false` otherwise.
