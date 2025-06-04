@@ -303,7 +303,7 @@ bool8_t file_exists(const char *path);
  * `FILE_ERROR_NOT_FOUND` if the file doesn't exist, or
  * another error code on failure.
  */
-FileError file_stats(FilePath *path, FileStats *out_stats);
+FileError file_stats(const FilePath *path, FileStats *out_stats);
 
 /**
  * @brief Reads a single line from a text file.
