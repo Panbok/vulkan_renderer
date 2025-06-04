@@ -1,13 +1,20 @@
 #include "filesystem.h"
 
-FilePath file_path_create(const char *path, FilePathType type) {
+FilePath file_path_create(const char *path, Arena *arena, FilePathType type) {
   assert_log(path != NULL, "path is NULL");
+  assert_log(arena != NULL, "arena is NULL");
   assert_log(strlen(path) > 0, "path is empty");
   assert_log(type == FILE_PATH_TYPE_RELATIVE || type == FILE_PATH_TYPE_ABSOLUTE,
              "invalid file path type");
 
   FilePath result = {0};
-  result.path = string8_create((uint8_t *)path, strlen(path));
+
+  uint64_t path_len = strlen(path);
+  uint8_t *path_str =
+      (uint8_t *)arena_alloc(arena, path_len, ARENA_MEMORY_TAG_STRING);
+  strcpy((char *)path_str, path);
+
+  result.path = string8_create(path_str, path_len);
   result.type = type;
   return result;
 }
@@ -93,7 +100,7 @@ FileError file_open(const FilePath *path, FileMode mode,
   }
 
   out_handle->handle = file;
-  out_handle->path = file_path_create((char *)path->path.str, path->type);
+  out_handle->path = path;
   out_handle->mode = mode;
 
   return FILE_ERROR_NONE;
@@ -137,12 +144,12 @@ FileError file_write_line(FileHandle *handle, const String8 *text) {
       result = fputc('\n', (FILE *)handle->handle);
       if (result == EOF) {
         log_error("Error writing line to file: '%s'",
-                  (char *)handle->path.path.str);
+                  (char *)handle->path->path.str);
         return FILE_ERROR_IO_ERROR;
       }
     } else {
       log_error("Error writing line to file: '%s'",
-                (char *)handle->path.path.str);
+                (char *)handle->path->path.str);
       return FILE_ERROR_IO_ERROR;
     }
 

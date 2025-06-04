@@ -204,9 +204,9 @@ typedef struct FilePath {
  * and mode information for debugging and error reporting.
  */
 typedef struct FileHandle {
-  void *handle;  /**< Platform-specific file handle (FILE* on POSIX) */
-  FilePath path; /**< Copy of the file path used to open this file */
-  FileMode mode; /**< Copy of the mode flags used to open this file */
+  void *handle;         /**< Platform-specific file handle (FILE* on POSIX) */
+  const FilePath *path; /**< Pointer to the file path used to open this file */
+  FileMode mode;        /**< Copy of the mode flags used to open this file */
 } FileHandle;
 
 /**
@@ -228,10 +228,11 @@ typedef struct FileStats {
  *
  * @param path The file path as a null-terminated string. Must not be NULL or
  * empty.
+ * @param arena Arena to allocate the file path from. Must not be NULL.
  * @param type Whether the path is relative or absolute.
  * @return A new `FilePath` structure containing the path information.
  */
-FilePath file_path_create(const char *path, FilePathType type);
+FilePath file_path_create(const char *path, Arena *arena, FilePathType type);
 
 /**
  * @brief Opens a file with the specified mode flags.
@@ -240,7 +241,8 @@ FilePath file_path_create(const char *path, FilePathType type);
  * The mode bitset can contain any combination of `FileModeFlags` to achieve
  * the desired file access behavior.
  *
- * @param path Pointer to the file path to open. Must not be NULL.
+ * @param path Pointer to the file path to open. Must not be NULL. It will be
+ * owned by the caller and must be freed after use.
  * @param mode Bitset containing the desired file mode flags.
  * @param out_handle Pointer to store the opened file handle. Must not be NULL.
  * @return `true` if the file was opened successfully, `false` otherwise.
