@@ -14,7 +14,7 @@ FilePath file_path_create(const char *path, Arena *arena, FilePathType type) {
       (uint8_t *)arena_alloc(arena, path_len, ARENA_MEMORY_TAG_STRING);
   strcpy((char *)path_str, path);
 
-  result.path = string8_create(path_str, path_len);
+  result.path = string8_create(path_str, strlen(path));
   result.type = type;
   return result;
 }
