@@ -333,6 +333,7 @@ bool8_t window_create(Window *window, EventManager *event_manager,
     state->app_delegate = [[ApplicationDelegate alloc] init];
     if (!state->app_delegate) {
       log_error("Failed to create application delegate");
+      free(state);
       return false_v;
     }
     [NSApp setDelegate:state->app_delegate];
@@ -341,6 +342,7 @@ bool8_t window_create(Window *window, EventManager *event_manager,
     state->wnd_delegate = [[WindowDelegate alloc] initWithState:state];
     if (!state->wnd_delegate) {
       log_error("Failed to create window delegate");
+      free(state);
       return false_v;
     }
 
@@ -355,6 +357,7 @@ bool8_t window_create(Window *window, EventManager *event_manager,
                                         defer:NO];
     if (!state->window) {
       log_error("Failed to create window");
+      free(state);
       return false_v;
     }
 
@@ -362,6 +365,7 @@ bool8_t window_create(Window *window, EventManager *event_manager,
     state->layer = [CAMetalLayer layer];
     if (!state->layer) {
       log_error("Failed to create layer for view");
+      free(state);
       return false_v;
     }
 
@@ -565,29 +569,29 @@ Keys translate_keycode(uint32_t ns_keycode) {
     return KEY_Z;
 
   case 0x27:
-    return KEYS_MAX_KEYS; // Apostrophe
+    return KEY_MAX_KEYS; // Apostrophe
   case 0x2A:
-    return KEYS_MAX_KEYS; // Backslash
+    return KEY_MAX_KEYS; // Backslash
   case 0x2B:
     return KEY_COMMA;
   case 0x18:
-    return KEYS_MAX_KEYS; // Equal
+    return KEY_MAX_KEYS; // Equal
   case 0x32:
     return KEY_GRAVE;
   case 0x21:
-    return KEYS_MAX_KEYS; // Left bracket
+    return KEY_MAX_KEYS; // Left bracket
   case 0x1B:
     return KEY_MINUS;
   case 0x2F:
     return KEY_PERIOD;
   case 0x1E:
-    return KEYS_MAX_KEYS; // Right bracket
+    return KEY_MAX_KEYS; // Right bracket
   case 0x29:
     return KEY_SEMICOLON;
   case 0x2C:
     return KEY_SLASH;
   case 0x0A:
-    return KEYS_MAX_KEYS;
+    return KEY_MAX_KEYS;
 
   case 0x33:
     return KEY_BACKSPACE;
@@ -658,13 +662,13 @@ Keys translate_keycode(uint32_t ns_keycode) {
   case 0x37:
     return KEY_LWIN;
   case 0x6E:
-    return KEYS_MAX_KEYS; // Menu
+    return KEY_MAX_KEYS; // Menu
   case 0x47:
     return KEY_NUMLOCK;
   case 0x79:
-    return KEYS_MAX_KEYS; // Page down
+    return KEY_MAX_KEYS; // Page down
   case 0x74:
-    return KEYS_MAX_KEYS; // Page up
+    return KEY_MAX_KEYS; // Page up
   case 0x7C:
     return KEY_RIGHT;
   case 0x3D:
@@ -718,7 +722,7 @@ Keys translate_keycode(uint32_t ns_keycode) {
     return KEY_SUBTRACT;
 
   default:
-    return KEYS_MAX_KEYS;
+    return KEY_MAX_KEYS;
   }
 }
 
