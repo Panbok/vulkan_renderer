@@ -26,8 +26,12 @@ static inline SlotResult find_or_grow_slot(MMemory *allocator) {
   }
 
   uint64_t old_capacity = allocator->capacity;
-  uint64_t new_capacity = old_capacity * 2;
+  if (old_capacity > UINT64_MAX / 2) {
+    // Prevent overflow
+    return result;
+  }
 
+  uint64_t new_capacity = old_capacity * 2;
   MBlock *new_blocks =
       (MBlock *)realloc(allocator->blocks, new_capacity * sizeof(MBlock));
   if (new_blocks == NULL) {
@@ -183,6 +187,14 @@ void *mmemory_realloc(MMemory *allocator, void *old_ptr, uint64_t new_size) {
 
   uint64_t new_rsv_size = round_up_to_page_size(new_size, allocator->page_size);
   if (old_rsv_size >= new_rsv_size) {
+    if (new_size > old_block->usr_size) {
+      uint8_t *commit_start = (uint8_t *)old_ptr + old_block->usr_size;
+      uint64_t commit_size = new_size - old_block->usr_size;
+      if (!platform_mem_commit(commit_start, commit_size)) {
+        return NULL;
+      }
+    }
+    old_block->usr_size = new_size;
     return old_ptr;
   }
 
