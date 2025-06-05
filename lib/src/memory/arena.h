@@ -80,7 +80,7 @@
 #include "defines.h"
 #include "platform/platform.h"
 
-#define ARENA_HEADER_SIZE AlginPow2(sizeof(Arena), AlignOf(void *))
+#define ARENA_HEADER_SIZE AlignPow2(sizeof(Arena), AlignOf(void *))
 // Default size for reserved virtual address space per arena block.
 #define ARENA_RSV_SIZE MB(64)
 // Default size for initially committed memory per arena block. More is

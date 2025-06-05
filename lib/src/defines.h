@@ -9,8 +9,8 @@
 #define LOG_LEVEL 5
 #define ASSERT_LOG 1
 
-#define AlginPow2(x, b) (((x) + (b) - 1) & (~((b) - 1)))
-#define AlginPow2Down(x, b)                                                    \
+#define AlignPow2(x, b) (((x) + (b) - 1) & (~((b) - 1)))
+#define AlignPow2Down(x, b)                                                    \
   ((x) & (~((b) - 1))) // Align x down to multiple of b (b must be power of 2)
 #define AlignOf(T) __alignof(T)
 

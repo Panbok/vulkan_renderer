@@ -5,7 +5,7 @@ static uint64_t get_initial_pos() {
   // ARENA_HEADER_SIZE should already be multiple of AlignOf(void*) or page size
   // for safety but explicit alignment here for calculation isn't strictly
   // needed if header is always aligned up.
-  return AlginPow2(ARENA_HEADER_SIZE, AlignOf(void *));
+  return AlignPow2(ARENA_HEADER_SIZE, AlignOf(void *));
 }
 
 static void test_arena_creation() {
@@ -85,13 +85,13 @@ static void test_arena_simple_alloc() {
          "0-byte ptr not aligned");
   // Position might advance to next alignment boundary or by AlignOf(void*)
   uint64_t expected_pos_after_zero =
-      AlginPow2(pos_before_zero_alloc, AlignOf(void *));
+      AlignPow2(pos_before_zero_alloc, AlignOf(void *));
   if (expected_pos_after_zero ==
       pos_before_zero_alloc) { // if already aligned, 0 byte alloc might advance
                                // by min alignment
     // Or it might not advance at all if size is 0. Current code advances by
     // size, which is 0 for pos_post calculation. However, pos_pre =
-    // AlginPow2(current->pos, AlignOf(void *)) might advance current->pos if it
+    // AlignPow2(current->pos, AlignOf(void *)) might advance current->pos if it
     // wasn't aligned. Let's assume it might advance minimally if pos was
     // unaligned, or not at all if size is truly 0 and pos was aligned. The
     // current arena_alloc will set current->pos to pos_post = pos_pre + 0. So
@@ -107,7 +107,7 @@ static void test_arena_simple_alloc() {
   assert(ptr1 != NULL && "Allocation 1 failed");
   uint64_t pos_after_alloc1 = arena_pos(arena);
   uint64_t expected_aligned_pos1 =
-      AlginPow2(pos_before_zero_alloc, AlignOf(void *)) +
+      AlignPow2(pos_before_zero_alloc, AlignOf(void *)) +
       alloc_size1; // Assuming 0-byte alloc didn't advance pos meaningfully for
                    // next alloc start More robust: track pos before ptr1
                    // specifically
@@ -154,10 +154,10 @@ static void test_arena_simple_alloc() {
 
   // Check pointer arithmetic
   // The start of ptr2 should be at ptr1 + aligned_size_of_ptr1_allocation
-  uint64_t aligned_alloc_size1 = AlginPow2(alloc_size1, AlignOf(void *));
+  uint64_t aligned_alloc_size1 = AlignPow2(alloc_size1, AlignOf(void *));
   // This isn't quite right, arena_alloc aligns start of alloc, not size itself
   // internally for next alloc. The position calculation is pos_pre =
-  // AlginPow2(current->pos, AlignOf(void *)); pos_post = pos_pre + size; So
+  // AlignPow2(current->pos, AlignOf(void *)); pos_post = pos_pre + size; So
   // ptr2 should be at (uint8*)ptr1 + (pos_after_alloc1 -
   // current_arena_pos_before_ptr1) if there were no internal fragmentations due
   // to header. Simpler: (uintptr_t)ptr2 should be >= (uintptr_t)ptr1 +
@@ -324,7 +324,7 @@ static void test_arena_block_grow() {
   assert(arena->current->rsv >=
              large_alloc_spilling_default + ARENA_HEADER_SIZE &&
          "New block for large spill not big enough");
-  assert(AlginPow2(arena->current->pos - large_alloc_spilling_default,
+  assert(AlignPow2(arena->current->pos - large_alloc_spilling_default,
                    AlignOf(void *)) == get_initial_pos() &&
          "Pos in large spill block incorrect (aligned start check)");
 
@@ -368,7 +368,7 @@ static void test_arena_reset_to() {
       arena->current; // This is the first block at this stage
   uint64_t current_pos_in_block_to_spill = block_to_test_spill->pos;
   uint64_t aligned_start_for_fill =
-      AlginPow2(current_pos_in_block_to_spill, AlignOf(void *));
+      AlignPow2(current_pos_in_block_to_spill, AlignOf(void *));
   uint64_t space_available_for_fill =
       block_to_test_spill->rsv - aligned_start_for_fill;
 
@@ -478,7 +478,7 @@ static void test_arena_reset_to() {
       // fill was calculated right for a single block. However, if first_block
       // was very small (e.g. only KB(4) rsv), even this fill could spill. Test
       // assumes first_block is reasonably large. For arena_create(KB(4),
-      // KB(4)), first_block->rsv is AlginPow2(HDR_SIZE+KB(4), PAGE_SIZE) which
+      // KB(4)), first_block->rsv is AlignPow2(HDR_SIZE+KB(4), PAGE_SIZE) which
       // is likely KB(8) if PAGE_SIZE=KB(4). So KB(8) - HDR_SIZE has enough
       // space for this usually. We rely on the spill check logic in arena_alloc
       // to handle if it does spill here, affecting arena->current.
@@ -489,7 +489,7 @@ static void test_arena_reset_to() {
   // remaining if the fill worked as intended on first_block.
 
   uint64_t remaining_in_current_before_reuse_attempt =
-      arena->current->rsv - AlginPow2(arena->current->pos, AlignOf(void *));
+      arena->current->rsv - AlignPow2(arena->current->pos, AlignOf(void *));
 
   // Condition for attempting reuse from free list:
   // 1. Some blocks were actually freed and are on the list.
@@ -577,7 +577,7 @@ static void test_arena_clear() {
            // And must be > remaining space after alignment of current pos.
   // Ensure alloc_to_spill_size is greater than remaining in current block
   uint64_t current_pos_val = arena->current->pos;
-  uint64_t aligned_current_pos = AlginPow2(current_pos_val, AlignOf(void *));
+  uint64_t aligned_current_pos = AlignPow2(current_pos_val, AlignOf(void *));
   if (arena->current->rsv - aligned_current_pos >= alloc_to_spill_size) {
     // If it still fits, make it bigger to force spill from first_block for the
     // test. This might happen if usable_space_in_first_block was very small and
@@ -639,7 +639,7 @@ static void test_arena_clear() {
       // fill was calculated right for a single block. However, if first_block
       // was very small (e.g. only KB(4) rsv), even this fill could spill. Test
       // assumes first_block is reasonably large. For arena_create(KB(4),
-      // KB(4)), first_block->rsv is AlginPow2(HDR_SIZE+KB(4), PAGE_SIZE) which
+      // KB(4)), first_block->rsv is AlignPow2(HDR_SIZE+KB(4), PAGE_SIZE) which
       // is likely KB(8) if PAGE_SIZE=KB(4). So KB(8) - HDR_SIZE has enough
       // space for this usually. We rely on the spill check logic in arena_alloc
       // to handle if it does spill here, affecting arena->current.
@@ -650,7 +650,7 @@ static void test_arena_clear() {
   // remaining if the fill worked as intended on first_block.
 
   uint64_t remaining_in_current_before_reuse_attempt =
-      arena->current->rsv - AlginPow2(arena->current->pos, AlignOf(void *));
+      arena->current->rsv - AlignPow2(arena->current->pos, AlignOf(void *));
 
   // Condition for attempting reuse from free list:
   // 1. Some blocks were actually freed and are on the list.
