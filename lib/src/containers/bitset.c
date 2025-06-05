@@ -3,7 +3,8 @@
 Bitset8 bitset8_create() { return (Bitset8){0}; }
 
 void bitset8_set(Bitset8 *bitset, uint8_t flag) {
-  assert(flag < 8 && "Flag must be less than 8");
+  assert((flag & (flag - 1)) == 0 && flag != 0 && flag <= 0x80 &&
+         "Flag must be a single power of 2 within 8-bit range");
   assert(bitset != NULL && "Bitset must not be NULL");
   bitset->set |= flag; // Use bitwise OR to set the flag
 }
