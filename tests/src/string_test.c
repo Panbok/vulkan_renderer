@@ -79,7 +79,7 @@ static void test_str8_cstr(void) {
   setup_suite();
 
   String8 str = string8_create_formatted(arena, "Hello, %s!", "World");
-  uint8_t *cstr = string8_cstr(&str);
+  const uint8_t *cstr = string8_cstr(&str);
   assert(strcmp((char *)cstr, "Hello, World!") == 0 &&
          "String is not 'Hello, World!'");
 

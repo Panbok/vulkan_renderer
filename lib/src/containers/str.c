@@ -8,6 +8,16 @@ String8 string8_create(uint8_t *data, uint64_t length) {
   return str;
 }
 
+String8 string8_create_from_cstr(const uint8_t *data, uint64_t length) {
+  assert(data != NULL && "Data is NULL");
+  assert(length > 0 && "Length is 0");
+
+  // Cast away const for string literals - this is safe because we know
+  // these are read-only string literals that won't be modified
+  String8 str = {(uint8_t *)data, length};
+  return str;
+}
+
 String8 string8_create_formatted_v(Arena *arena, const char *fmt,
                                    va_list args) {
   assert(arena != NULL && "Arena is NULL");
@@ -46,7 +56,7 @@ String8 string8_create_formatted(Arena *arena, const char *fmt, ...) {
   return result;
 }
 
-uint8_t *string8_cstr(String8 *str) {
+const uint8_t *string8_cstr(const String8 *str) {
   assert(str != NULL && "String is NULL");
   return str->str;
 }

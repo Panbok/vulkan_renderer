@@ -15,7 +15,9 @@ typedef struct Arena Arena;
 // ascii chars and for complex string use a RichString which is a string a
 // unicode string with some metadata like encoding, length, locale, etc.
 
-#define string8_lit(str) string8_create((uint8_t *)str, sizeof(str) - 1)
+// Note : Only use with string literals, not char pointers
+#define string8_lit(str)                                                       \
+  string8_create_from_cstr((const uint8_t *)str, sizeof(str) - 1)
 
 /**
  * @brief A string representation of UTF-8 encoded characters.
@@ -32,6 +34,15 @@ typedef struct String8 {
  * @return A new string of 8-bit characters.
  */
 String8 string8_create(uint8_t *data, uint64_t length);
+
+/**
+ * @brief Create a new string of 8-bit characters from const data (e.g., string
+ * literals).
+ * @param data The const data to create the string from.
+ * @param length The length of the string.
+ * @return A new string of 8-bit characters.
+ */
+String8 string8_create_from_cstr(const uint8_t *data, uint64_t length);
 
 /**
  * @brief Create a new string of 8-bit characters from a format string and
@@ -58,7 +69,7 @@ String8 string8_create_formatted_v(Arena *arena, const char *fmt, va_list args);
  * @param str The string to get the C string representation of.
  * @return A pointer to the C string representation of the string.
  */
-uint8_t *string8_cstr(String8 *str);
+const uint8_t *string8_cstr(const String8 *str);
 
 /**
  * @brief Concatenate two strings of 8-bit characters.
