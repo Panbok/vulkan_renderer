@@ -17,7 +17,10 @@ String8 string8_create_formatted_v(Arena *arena, const char *fmt,
   va_list args_copy;
   va_copy(args_copy, args);
 
-  uint32_t required_size = vsnprintf(NULL, 0, fmt, args_copy);
+  int32_t required_size_i = vsnprintf(NULL, 0, fmt, args_copy);
+  assert(required_size_i >= 0 && "Failed to format string");
+
+  uint32_t required_size = (uint32_t)required_size_i;
   va_end(args_copy);
 
   assert(required_size >= 0 && "Failed to format string");
