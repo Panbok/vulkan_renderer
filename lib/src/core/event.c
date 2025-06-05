@@ -10,7 +10,7 @@
  * Uses a thread-local arena with scratch allocations for the temporary callback
  * buffer.
  * Continues processing until the `manager->running` flag is set to false and
- * the queue is empty.
+ * all remaining events in the queue have been drained (graceful shutdown).
  * Cleans up the thread-local arena before exiting.
  * @param arg Pointer to the EventManager instance.
  * @return void* Always returns NULL.
@@ -30,7 +30,7 @@ static void *events_processor(void *arg) {
       pthread_cond_wait(&manager->cond, &manager->mutex);
     }
 
-    should_run = manager->running;
+    should_run = manager->running || !queue_is_empty_Event(&manager->queue);
 
     if (!queue_is_empty_Event(&manager->queue)) {
       event_dequeued = queue_dequeue_Event(&manager->queue, &event);
