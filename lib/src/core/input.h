@@ -96,7 +96,7 @@ typedef enum Buttons {
  * @brief Defines keyboard key identifiers. Values are typically platform-
  * independent virtual key codes.
  */
-typedef enum Keys : uint32_t {
+typedef enum Keys {
   DEFINE_KEY(BACKSPACE, 0x08), /**< Backspace key. */
   DEFINE_KEY(ENTER, 0x0D),     /**< Enter key. */
   DEFINE_KEY(TAB, 0x09),       /**< Tab key. */
@@ -133,7 +133,17 @@ typedef enum Keys : uint32_t {
 
   // ASCII 0-9 match their character codes for convenience if platform supports
   // it but these are for the top-row numbers, not numpad. DEFINE_KEY(0, 0x30),
-  // DEFINE_KEY(1, 0x31), ..., DEFINE_KEY(9, 0x39)
+  // Number keys (top row, not numpad)
+  DEFINE_KEY(0, 0x30), /**< 0 key. */
+  DEFINE_KEY(1, 0x31), /**< 1 key. */
+  DEFINE_KEY(2, 0x32), /**< 2 key. */
+  DEFINE_KEY(3, 0x33), /**< 3 key. */
+  DEFINE_KEY(4, 0x34), /**< 4 key. */
+  DEFINE_KEY(5, 0x35), /**< 5 key. */
+  DEFINE_KEY(6, 0x36), /**< 6 key. */
+  DEFINE_KEY(7, 0x37), /**< 7 key. */
+  DEFINE_KEY(8, 0x38), /**< 8 key. */
+  DEFINE_KEY(9, 0x39), /**< 9 key. */
 
   // ASCII A-Z match their character codes
   DEFINE_KEY(A, 0x41), /**< A key. */
@@ -239,7 +249,7 @@ typedef enum Keys : uint32_t {
   DEFINE_KEY(GRAVE,
              0xC0), /**< Grave accent key (OEM_3 typically '`~' for US). */
 
-  KEYS_MAX_KEYS /**< Maximum number of keys supported. Sentinel value. */
+  KEY_MAX_KEYS /**< Maximum number of keys supported. Sentinel value. */
 } Keys;
 
 /**
@@ -283,7 +293,7 @@ typedef struct MouseWheelEventData {
 } MouseWheelEventData;
 
 typedef struct KeysState {
-  bool8_t keys[KEYS_MAX_KEYS];
+  bool8_t keys[KEY_MAX_KEYS];
 } KeysState;
 
 typedef struct ButtonsState {
@@ -463,7 +473,7 @@ void input_process_button(InputState *input_state, Buttons button,
  * @param x The new X-coordinate of the mouse cursor.
  * @param y The new Y-coordinate of the mouse cursor.
  */
-void input_process_mouse_move(InputState *input_state, int16_t x, int16_t y);
+void input_process_mouse_move(InputState *input_state, int32_t x, int32_t y);
 
 /**
  * @brief Processes a mouse wheel scroll event.

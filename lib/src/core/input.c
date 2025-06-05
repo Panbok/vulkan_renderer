@@ -114,7 +114,7 @@ void input_process_button(InputState *input_state, Buttons button,
   }
 }
 
-void input_process_mouse_move(InputState *input_state, int16_t x, int16_t y) {
+void input_process_mouse_move(InputState *input_state, int32_t x, int32_t y) {
   if (input_state->current_buttons.x != x ||
       input_state->current_buttons.y != y) {
     input_state->current_buttons.x = x;
