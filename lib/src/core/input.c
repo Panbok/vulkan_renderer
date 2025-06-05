@@ -18,7 +18,10 @@ InputState input_init(EventManager *event_manager) {
       .data_size = 0,
   };
 
-  event_manager_dispatch(event_manager, event);
+  if (!event_manager_dispatch(event_manager, event)) {
+    log_warn("Failed to enqueue INPUT_SYSTEM_INIT event");
+  }
+
   log_info("Input system initialized");
   return input_state;
 }
