@@ -285,11 +285,10 @@ void file_close(FileHandle *handle);
  * without opening it. This function works for both files
  * and directories.
  *
- * @param path The file path to check as a null-terminated
- * string. Must not be NULL or empty.
+ * @param path The file path to check. Must not be NULL.
  * @return `true` if the path exists, `false` otherwise.
  */
-bool8_t file_exists(const char *path);
+bool8_t file_exists(const FilePath *path);
 
 /**
  * @brief Retrieves file statistics without opening the

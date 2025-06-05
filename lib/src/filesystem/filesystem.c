@@ -19,12 +19,12 @@ FilePath file_path_create(const char *path, Arena *arena, FilePathType type) {
   return result;
 }
 
-bool8_t file_exists(const char *path) {
+bool8_t file_exists(const FilePath *path) {
   assert_log(path != NULL, "path is NULL");
-  assert_log(strlen(path) > 0, "path is empty");
+  assert_log(path->path.length > 0, "path is empty");
 
   struct stat buffer;
-  return stat(path, &buffer) == 0;
+  return stat((char *)path->path.str, &buffer) == 0;
 }
 
 FileError file_stats(const FilePath *path, FileStats *out_stats) {
