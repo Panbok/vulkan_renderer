@@ -60,9 +60,10 @@
     assert_log(arena != NULL, "Arena is NULL");                                \
     assert_log(length > 0, "Length is 0");                                     \
                                                                                \
-    Array_##name array = {                                                     \
-        arena, length,                                                         \
-        arena_alloc(arena, length * sizeof(type), ARENA_MEMORY_TAG_ARRAY)};    \
+    type *buf =                                                                \
+        arena_alloc(arena, length * sizeof(type), ARENA_MEMORY_TAG_ARRAY);     \
+    assert_log(buf != NULL, "arena_alloc failed for array_create");            \
+    Array_##name array = {arena, buf ? length : 0, buf};                       \
     return array;                                                              \
   }                                                                            \
                                                                                \

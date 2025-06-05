@@ -78,10 +78,10 @@ typedef struct VectorFindResult {
   static inline Vector_##name vector_create_##name(Arena *arena) {             \
     assert_log(arena != NULL, "Arena is NULL");                                \
                                                                                \
-    Vector_##name vector = {                                                   \
-        arena, DEFAULT_VECTOR_CAPACITY, 0,                                     \
-        arena_alloc(arena, DEFAULT_VECTOR_CAPACITY * sizeof(type),             \
-                    ARENA_MEMORY_TAG_VECTOR)};                                 \
+    type *buf = arena_alloc(arena, DEFAULT_VECTOR_CAPACITY * sizeof(type),     \
+                            ARENA_MEMORY_TAG_VECTOR);                          \
+    assert_log(buf != NULL, "arena_alloc failed in vector_create");            \
+    Vector_##name vector = {arena, DEFAULT_VECTOR_CAPACITY, 0, buf};           \
     return vector;                                                             \
   }                                                                            \
   /**                                                                          \
