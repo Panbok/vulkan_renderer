@@ -45,8 +45,8 @@
 
 #pragma once
 
-#include "arena.h"
-#include "logger.h"
+#include "core/logger.h"
+#include "memory/arena.h"
 #include "pch.h"
 
 #define DEFAULT_VECTOR_CAPACITY 16

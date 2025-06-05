@@ -1,9 +1,9 @@
 #pragma once
 
-#include "arena.h"
+#include "containers/str.h"
 #include "defines.h"
-#include "platform.h"
-#include "str.h"
+#include "memory/arena.h"
+#include "platform/platform.h"
 
 static Arena *_log_arena = NULL;
 

@@ -1,10 +1,9 @@
 #pragma once
 
-#include "arena.h"
-#include "logger.h"
+#include "containers/vector.h"
+#include "core/logger.h"
 #include "pch.h"
-#include "platform.h"
-#include "vector.h"
+#include "platform/platform.h"
 
 // Forward declaration of the runner function
 bool32_t run_vector_tests();

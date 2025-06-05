@@ -1,9 +1,9 @@
 #pragma once
 
-#include "event_data_buffer.h"
-#include "logger.h"
+#include "core/event_data_buffer.h"
+#include "core/logger.h"
 #include "pch.h"
-#include "platform.h"
+#include "platform/platform.h"
 
 // Test function declarations
 void test_event_data_buffer_create_destroy(void);

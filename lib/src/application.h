@@ -45,12 +45,12 @@
 // clang-format on
 #pragma once
 
-#include "bitset.h"
-#include "clock.h"
+#include "containers/bitset.h"
+#include "core/clock.h"
+#include "core/event.h"
+#include "core/logger.h"
 #include "defines.h"
-#include "event.h"
-#include "logger.h"
-#include "window.h"
+#include "platform/window.h"
 
 #include "renderer/renderer.h"
 

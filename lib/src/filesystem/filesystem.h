@@ -1,11 +1,11 @@
 #pragma once
 
-#include "arena.h"
-#include "bitset.h"
+#include "containers/bitset.h"
+#include "containers/str.h"
 #include "defines.h"
+#include "memory/arena.h"
 #include "pch.h"
-#include "platform.h"
-#include "str.h"
+#include "platform/platform.h"
 
 /**
  * @file filesystem.h

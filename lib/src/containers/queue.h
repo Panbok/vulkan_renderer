@@ -39,9 +39,9 @@
 
 #pragma once
 
-#include "logger.h"
+#include "core/logger.h"
 #include "pch.h"
-#include "platform.h"
+#include "platform/platform.h"
 
 #define QueueConstruct(type, name)                                             \
   /**                                                                          \

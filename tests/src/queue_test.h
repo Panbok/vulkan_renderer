@@ -1,9 +1,9 @@
 #pragma once
 
-#include "logger.h"
+#include "containers/queue.h"
+#include "core/logger.h"
 #include "pch.h"
-#include "platform.h"
-#include "queue.h"
+#include "platform/platform.h"
 
 Queue(uint32_t);
 

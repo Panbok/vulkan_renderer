@@ -69,10 +69,9 @@
 // clang-format on
 #pragma once
 
+#include "core/event.h"
 #include "defines.h"
-#include "event.h"
-#include "logger.h"
-#include "platform.h"
+#include "platform/platform.h"
 
 /**
  * @brief Defines mouse button identifiers.

@@ -55,10 +55,11 @@
 // clang-format on
 #pragma once
 
-#include "bitset.h"
-#include "logger.h"
+#include "containers/bitset.h"
+#include "core/logger.h"
+#include "defines.h"
 #include "pch.h"
-#include "platform.h"
+#include "platform/platform.h"
 
 /**
  * @brief Represents a single memory block managed by the MMemory allocator.

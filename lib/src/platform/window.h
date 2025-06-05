@@ -36,8 +36,8 @@
 // clang-format on
 #pragma once
 
-#include "event.h"
-#include "input.h"
+#include "core/event.h"
+#include "core/input.h"
 #include "pch.h"
 #include "platform.h"
 

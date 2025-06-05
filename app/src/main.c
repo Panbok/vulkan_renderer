@@ -1,9 +1,9 @@
 #include "application.h"
-#include "arena.h"
-#include "array.h"
-#include "event.h"
-#include "input.h"
-#include "logger.h"
+#include "containers/array.h"
+#include "core/event.h"
+#include "core/input.h"
+#include "core/logger.h"
+#include "memory/arena.h"
 
 #define PLAYER_SPEED 50.0
 #define ENTITY_COUNT 1

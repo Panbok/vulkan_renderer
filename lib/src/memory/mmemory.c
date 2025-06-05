@@ -1,6 +1,4 @@
 #include "mmemory.h"
-#include "defines.h"
-#include "platform.h"
 
 // Struct to hold slot finding results
 typedef struct SlotResult {

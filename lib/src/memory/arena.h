@@ -76,9 +76,9 @@
 // clang-format on
 #pragma once
 
-#include "bitset.h"
+#include "containers/bitset.h"
 #include "defines.h"
-#include "platform.h"
+#include "platform/platform.h"
 
 #define ARENA_HEADER_SIZE AlginPow2(sizeof(Arena), AlignOf(void *))
 // Default size for reserved virtual address space per arena block.

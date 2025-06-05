@@ -1,9 +1,9 @@
 #pragma once
 
-#include "event.h"
-#include "input.h"
-#include "logger.h"
+#include "core/event.h"
+#include "core/input.h"
+#include "core/logger.h"
 #include "pch.h"
-#include "platform.h"
+#include "platform/platform.h"
 
 bool32_t run_input_tests();

@@ -1,6 +1,5 @@
-#include "arena.h"
-#include "defines.h"
-#include "renderer.h"
+#include "memory/arena.h"
+#include "renderer/renderer.h"
 
 #include "vulkan/vulkan_backend.h"
 

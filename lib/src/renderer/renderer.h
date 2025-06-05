@@ -1,10 +1,10 @@
 #pragma once
 
-#include "bitset.h"
+#include "containers/bitset.h"
 #include "defines.h"
 #include "pch.h"
-#include "platform.h"
-#include "window.h"
+#include "platform/platform.h"
+#include "platform/window.h"
 
 // ============================================================================
 // Design Overview

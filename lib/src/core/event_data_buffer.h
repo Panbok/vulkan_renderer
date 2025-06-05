@@ -1,10 +1,10 @@
 #pragma once
 
-#include "arena.h"
 #include "defines.h"
 #include "logger.h"
+#include "memory/arena.h"
 #include "pch.h"
-#include "platform.h"
+#include "platform/platform.h"
 
 /**
  * @brief Structure for managing a ring buffer for variable-sized event data.

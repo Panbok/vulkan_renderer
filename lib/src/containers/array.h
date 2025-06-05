@@ -33,8 +33,9 @@
 
 #pragma once
 
-#include "arena.h"
-#include "logger.h"
+#include "containers/str.h"
+#include "core/logger.h"
+#include "memory/arena.h"
 
 #define ArrayConstructor(type, name)                                           \
   /**                                                                          \

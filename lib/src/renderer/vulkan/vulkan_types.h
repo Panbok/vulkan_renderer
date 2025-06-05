@@ -8,8 +8,8 @@
 #include <vulkan/vulkan_metal.h>
 #endif
 
-#include "../renderer.h"
-#include "str.h"
+#include "containers/str.h"
+#include "renderer/renderer.h"
 
 typedef enum QueueFamilyType : uint32_t {
   QUEUE_FAMILY_TYPE_GRAPHICS,

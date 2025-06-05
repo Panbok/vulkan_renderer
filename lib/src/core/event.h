@@ -53,13 +53,13 @@
 // clang-format on
 #pragma once
 
-#include "array.h"
+#include "containers/array.h"
+#include "containers/queue.h"
+#include "containers/vector.h"
 #include "defines.h"
 #include "event_data_buffer.h"
 #include "pch.h"
-#include "platform.h"
-#include "queue.h"
-#include "vector.h"
+#include "platform/platform.h"
 
 // TODO: Explore possibility of re-writing this into event loop system, like
 // Node.js, where events are processed in a loop, and the event manager is

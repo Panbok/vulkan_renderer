@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include "arena.h"
+#include "memory/arena.h"
 #include "pch.h"
 
 // Forward declaration for Arena type
