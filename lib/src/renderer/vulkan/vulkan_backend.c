@@ -46,7 +46,6 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
   }
 
   ArenaFlags arena_flags = bitset8_create();
-  bitset8_set(&arena_flags, ARENA_FLAG_LARGE_PAGES);
   Arena *arena = arena_create(MB(1), MB(1), arena_flags);
   if (!arena) {
     log_fatal("Failed to create arena");
