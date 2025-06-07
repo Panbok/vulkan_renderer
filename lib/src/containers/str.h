@@ -69,7 +69,7 @@ String8 string8_create_formatted_v(Arena *arena, const char *fmt, va_list args);
  * @param str The string to get the C string representation of.
  * @return A pointer to the C string representation of the string.
  */
-const uint8_t *string8_cstr(const String8 *str);
+const char *string8_cstr(const String8 *str);
 
 /**
  * @brief Concatenate two strings of 8-bit characters.

@@ -56,9 +56,9 @@ String8 string8_create_formatted(Arena *arena, const char *fmt, ...) {
   return result;
 }
 
-const uint8_t *string8_cstr(const String8 *str) {
+const char *string8_cstr(const String8 *str) {
   assert(str != NULL && "String is NULL");
-  return str->str;
+  return (char *)str->str;
 }
 
 void string8_destroy(String8 *str) {
