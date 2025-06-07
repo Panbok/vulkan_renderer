@@ -275,6 +275,8 @@ FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
                                  uint8_t **shader_data, uint64_t *shader_size) {
   assert_log(path != NULL, "path is NULL");
   assert_log(arena != NULL, "arena is NULL");
+  assert_log(shader_data != NULL, "shader_data is NULL");
+  assert_log(shader_size != NULL, "shader_size is NULL");
 
   FileMode shader_mode = bitset8_create();
   bitset8_set(&shader_mode, FILE_MODE_READ);
@@ -295,7 +297,7 @@ FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
     return file_error;
   }
 
-  if (shader_data == NULL || shader_size == 0) {
+  if (*shader_data == NULL || *shader_size == 0) {
     file_close(&shader_handle);
     log_error("Shader file is empty or failed to load");
     return FILE_ERROR_FILE_EMPTY;
@@ -312,7 +314,7 @@ FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
       log_fatal("Failed to allocate 4-byte aligned memory for shader data");
       return FILE_ERROR_INVALID_SPIR_V;
     }
-    memcpy(aligned_data, shader_data, *shader_size);
+    memcpy(aligned_data, *shader_data, *shader_size);
     *shader_data = aligned_data;
   }
 

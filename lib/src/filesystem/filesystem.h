@@ -458,7 +458,8 @@ FileError file_read_all(FileHandle *handle, Arena *arena, uint8_t **out_buffer,
  *
  * @param path The file path to load the shader from.
  * @param arena The arena to allocate the shader from.
- * @param out_shader The shader to load the shader into.
+ * @param out_data Pointer to store the allocated shader data buffer.
+ * @param out_size Pointer to store the size of the loaded shader data.
  * @return `FILE_ERROR_NONE` on success,
  * `FILE_ERROR_INVALID_PATH` if the file does not exist,
  * `FILE_ERROR_IO_ERROR` on read failure, or another error
