@@ -163,13 +163,47 @@ void renderer_vulkan_destroy_buffer(void *backend_state,
 BackendResourceHandle
 renderer_vulkan_create_shader(void *backend_state,
                               const ShaderModuleDescription *desc) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(desc != NULL, "Shader module description is NULL");
+
   log_debug("Creating Vulkan shader");
-  return (BackendResourceHandle){.ptr = NULL};
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  struct s_ShaderModule *shader = arena_alloc(
+      state->arena, sizeof(struct s_ShaderModule), ARENA_MEMORY_TAG_RENDERER);
+  if (!shader) {
+    log_fatal("Failed to allocate shader");
+    return (BackendResourceHandle){.ptr = NULL};
+  }
+
+  MemZero(shader, sizeof(struct s_ShaderModule));
+
+  if (!vulkan_shader_module_create(state, desc, shader)) {
+    log_fatal("Failed to create Vulkan shader");
+    return (BackendResourceHandle){.ptr = NULL};
+  }
+
+  return (BackendResourceHandle){.ptr = shader};
 }
 
 void renderer_vulkan_destroy_shader(void *backend_state,
                                     BackendResourceHandle handle) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(handle.ptr != NULL, "Handle is NULL");
+
   log_debug("Destroying Vulkan shader");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  struct s_ShaderModule *shader = (struct s_ShaderModule *)handle.ptr;
+  if (!shader) {
+    log_fatal("Shader is NULL");
+    return;
+  }
+
+  vulkan_shader_module_destroy(state, shader);
+
   return;
 }
 

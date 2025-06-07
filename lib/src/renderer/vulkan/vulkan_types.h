@@ -9,6 +9,8 @@
 #endif
 
 #include "containers/str.h"
+#include "core/logger.h"
+#include "filesystem/filesystem.h"
 #include "renderer/renderer.h"
 
 typedef enum QueueFamilyType : uint32_t {
@@ -36,6 +38,17 @@ Array(VkImageView);
 
 #define VK_EXT_METAL_SURFACE_EXTENSION_NAME "VK_EXT_metal_surface"
 #define VK_LAYER_KHRONOS_VALIDATION_LAYER_NAME "VK_LAYER_KHRONOS_validation"
+
+struct s_ShaderModule {
+  String8 name;
+  FilePath path;
+  uint64_t size;
+  const uint8_t *code;
+  const String8 *entry_point;
+  ShaderStageFlags stage;
+  VkShaderModule module;
+  VkPipelineShaderStageCreateInfo stage_info;
+};
 
 typedef struct VulkanSwapchainDetails {
   VkSurfaceCapabilitiesKHR capabilities;

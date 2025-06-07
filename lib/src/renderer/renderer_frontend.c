@@ -1,16 +1,4 @@
-#include "memory/arena.h"
-#include "renderer/renderer.h"
-
-#include "vulkan/vulkan_backend.h"
-
-struct s_RendererFrontend {
-  Arena *arena;
-  RendererBackendType backend_type;
-  Window *window;
-  void *backend_state;
-  RendererBackendInterface backend;
-  bool32_t frame_active;
-};
+#include "renderer/renderer_frontend.h"
 
 RendererFrontendHandle renderer_create(Arena *arena,
                                        RendererBackendType backend_type,
@@ -87,6 +75,21 @@ String8 renderer_get_error_string(RendererError error) {
   default:
     return string8_lit("Unknown error");
   }
+}
+
+Window *renderer_get_window(RendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  return renderer->window;
+}
+
+RendererBackendType renderer_get_backend_type(RendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  return renderer->backend_type;
+}
+
+bool32_t renderer_is_frame_active(RendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  return renderer->frame_active;
 }
 
 BufferHandle renderer_create_buffer(RendererFrontendHandle renderer,

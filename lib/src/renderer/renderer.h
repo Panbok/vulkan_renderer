@@ -164,9 +164,12 @@ typedef struct BufferDescription {
 
 typedef struct ShaderModuleDescription {
   ShaderStageFlags stage;
-  const uint8_t *code;        // Null-terminated string of shader code
-  const uint8_t *entry_point; // e.g., "main"
-                              // Future: defines, include paths etc.
+  const uint64_t size; // Size of the shader bytecode in bytes (must be multiple
+                       // of 4 for SPIR-V)
+  const uint8_t *code; // Pointer to shader bytecode (SPIR-V format, must be
+                       // 4-byte aligned)
+  const String8 entry_point; // e.g., "main"
+                             // Future: defines, include paths etc.
 } ShaderModuleDescription;
 
 typedef struct VertexInputAttributeDescription {
@@ -218,6 +221,9 @@ void renderer_destroy(RendererFrontendHandle renderer);
 
 // --- START Utility ---
 String8 renderer_get_error_string(RendererError error);
+Window *renderer_get_window(RendererFrontendHandle renderer);
+RendererBackendType renderer_get_backend_type(RendererFrontendHandle renderer);
+bool32_t renderer_is_frame_active(RendererFrontendHandle renderer);
 // --- END Utility ---
 
 // --- START Resource Management ---

@@ -2,6 +2,8 @@
 
 #include "vulkan_device.h"
 #include "vulkan_instance.h"
+#include "vulkan_pipeline.h"
+#include "vulkan_shaders.h"
 #include "vulkan_swapchain.h"
 #include "vulkan_types.h"
 
