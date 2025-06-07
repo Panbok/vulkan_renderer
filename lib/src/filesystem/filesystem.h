@@ -2,6 +2,7 @@
 
 #include "containers/bitset.h"
 #include "containers/str.h"
+#include "core/logger.h"
 #include "defines.h"
 #include "memory/arena.h"
 #include "pch.h"
@@ -165,7 +166,7 @@ typedef enum FileModeFlags : uint32_t {
  * These codes provide detailed information about what went wrong during
  * file operations, allowing for appropriate error handling and user feedback.
  */
-typedef enum FileError : uint32_t {
+typedef enum FileError {
   FILE_ERROR_NONE,          /**< Operation completed successfully */
   FILE_ERROR_NOT_FOUND,     /**< File or directory does not exist */
   FILE_ERROR_ACCESS_DENIED, /**< Insufficient permissions to access file */
@@ -175,6 +176,8 @@ typedef enum FileError : uint32_t {
   FILE_ERROR_INVALID_PATH,   /**< Invalid file path */
   FILE_ERROR_OPEN_FAILED,    /**< Failed to open file */
   FILE_ERROR_INVALID_HANDLE, /**< File handle is invalid or file is not open */
+  FILE_ERROR_INVALID_SPIR_V, /**< Invalid SPIR-V file */
+  FILE_ERROR_FILE_EMPTY,     /**< File is empty */
   FILE_ERROR_COUNT,          /**< Total number of error types */
 } FileError;
 
@@ -449,3 +452,25 @@ FileError file_read_string(FileHandle *handle, Arena *arena, String8 *out_data);
  */
 FileError file_read_all(FileHandle *handle, Arena *arena, uint8_t **out_buffer,
                         uint64_t *bytes_read);
+
+/**
+ * @brief Loads a SPIR-V shader from a file.
+ *
+ * @param path The file path to load the shader from.
+ * @param arena The arena to allocate the shader from.
+ * @param out_shader The shader to load the shader into.
+ * @return `FILE_ERROR_NONE` on success,
+ * `FILE_ERROR_INVALID_PATH` if the file does not exist,
+ * `FILE_ERROR_IO_ERROR` on read failure, or another error
+ * code.
+ */
+FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
+                                 uint8_t **out_data, uint64_t *out_size);
+
+/**
+ * @brief Gets the error string for a file error code.
+ *
+ * @param error The file error code.
+ * @return The error string.
+ */
+String8 file_get_error_string(FileError error);

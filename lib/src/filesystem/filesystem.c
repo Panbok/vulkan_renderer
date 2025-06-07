@@ -270,3 +270,95 @@ FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
 
   return FILE_ERROR_INVALID_HANDLE;
 }
+
+FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
+                                 uint8_t **shader_data, uint64_t *shader_size) {
+  assert_log(path != NULL, "path is NULL");
+  assert_log(arena != NULL, "arena is NULL");
+
+  FileMode shader_mode = bitset8_create();
+  bitset8_set(&shader_mode, FILE_MODE_READ);
+  bitset8_set(&shader_mode, FILE_MODE_BINARY);
+
+  FileHandle shader_handle;
+  FileError file_error = file_open(path, shader_mode, &shader_handle);
+  if (file_error != FILE_ERROR_NONE) {
+    log_error("Failed to open shader: %s", file_get_error_string(file_error));
+    return file_error;
+  }
+
+  file_error = file_read_all(&shader_handle, arena, shader_data, shader_size);
+  if (file_error != FILE_ERROR_NONE) {
+    file_close(&shader_handle);
+    log_error("Failed to read shader file: %s",
+              file_get_error_string(file_error));
+    return file_error;
+  }
+
+  if (shader_data == NULL || shader_size == 0) {
+    file_close(&shader_handle);
+    log_error("Shader file is empty or failed to load");
+    return FILE_ERROR_FILE_EMPTY;
+  }
+
+  // Ensure 4-byte alignment for SPIR-V data
+  if ((uintptr_t)(*shader_data) % 4 != 0) {
+    log_warn("Shader data not 4-byte aligned, copying to aligned buffer");
+    uint8_t *aligned_data =
+        (uint8_t *)arena_alloc(arena, *shader_size, ARENA_MEMORY_TAG_RENDERER);
+    // Ensure the new allocation is 4-byte aligned
+    if ((uintptr_t)aligned_data % 4 != 0) {
+      file_close(&shader_handle);
+      log_fatal("Failed to allocate 4-byte aligned memory for shader data");
+      return FILE_ERROR_INVALID_SPIR_V;
+    }
+    memcpy(aligned_data, shader_data, *shader_size);
+    *shader_data = aligned_data;
+  }
+
+  // Validate SPIR-V magic number (0x07230203)
+  if (*shader_size >= 4) {
+    uint32_t *magic = (uint32_t *)(*shader_data);
+    if (*magic != 0x07230203) {
+      file_close(&shader_handle);
+      log_fatal("Invalid SPIR-V magic number: 0x%08X (expected 0x07230203)",
+                *magic);
+      return FILE_ERROR_INVALID_SPIR_V;
+    }
+    log_debug("SPIR-V magic number validated: 0x%08X", *magic);
+  } else {
+    file_close(&shader_handle);
+    log_error("Shader file too small to contain valid SPIR-V header");
+    return FILE_ERROR_INVALID_SPIR_V;
+  }
+
+  file_close(&shader_handle);
+  return FILE_ERROR_NONE;
+}
+
+String8 file_get_error_string(FileError error) {
+  switch (error) {
+  case FILE_ERROR_NONE:
+    return string8_lit("No error");
+  case FILE_ERROR_NOT_FOUND:
+    return string8_lit("File not found");
+  case FILE_ERROR_ACCESS_DENIED:
+    return string8_lit("Access denied");
+  case FILE_ERROR_IO_ERROR:
+    return string8_lit("I/O error");
+  case FILE_ERROR_INVALID_MODE:
+    return string8_lit("Invalid mode");
+  case FILE_ERROR_INVALID_PATH:
+    return string8_lit("Invalid path");
+  case FILE_ERROR_OPEN_FAILED:
+    return string8_lit("Open failed");
+  case FILE_ERROR_INVALID_HANDLE:
+    return string8_lit("Invalid handle");
+  case FILE_ERROR_INVALID_SPIR_V:
+    return string8_lit("Invalid SPIR-V file format");
+  case FILE_ERROR_FILE_EMPTY:
+    return string8_lit("File is empty");
+  case FILE_ERROR_COUNT:
+    return string8_lit("Unknown error");
+  }
+}
