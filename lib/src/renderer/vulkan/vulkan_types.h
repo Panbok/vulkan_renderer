@@ -40,12 +40,7 @@ Array(VkImageView);
 #define VK_LAYER_KHRONOS_VALIDATION_LAYER_NAME "VK_LAYER_KHRONOS_validation"
 
 struct s_ShaderModule {
-  String8 name;
-  FilePath path;
-  uint64_t size;
-  const uint8_t *code;
-  const String8 *entry_point;
-  ShaderStageFlags stage;
+  const ShaderModuleDescription *desc;
   VkShaderModule module;
   VkPipelineShaderStageCreateInfo stage_info;
 };

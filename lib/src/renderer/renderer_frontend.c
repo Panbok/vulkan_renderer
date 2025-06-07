@@ -179,7 +179,7 @@ renderer_create_pipeline(RendererFrontendHandle renderer,
 
 void renderer_destroy_pipeline(RendererFrontendHandle renderer,
                                PipelineHandle pipeline) {
-  assert_log(renderer != NULL, "Pipeline is NULL");
+  assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
 
   log_debug("Destroying pipeline");

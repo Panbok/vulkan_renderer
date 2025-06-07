@@ -3,24 +3,45 @@
 #include "containers/str.h"
 #include "core/logger.h"
 #include "defines.h"
-#include "renderer/renderer.h"
 
-static VkShaderStageFlagBits vulkan_shader_stage_to_vk(ShaderStageFlags stage) {
+typedef struct VulkanShaderStageFlagResult {
+  VkShaderStageFlagBits flag;
+  bool8_t is_valid;
+} VulkanShaderStageFlagResult;
+
+static VulkanShaderStageFlagResult
+vulkan_shader_stage_to_vk(ShaderStageFlags stage) {
+  int stage_count = 0;
+  VkShaderStageFlagBits result = 0;
+
   if (bitset8_is_set(&stage, SHADER_STAGE_VERTEX_BIT)) {
-    return VK_SHADER_STAGE_VERTEX_BIT;
+    result = VK_SHADER_STAGE_VERTEX_BIT;
+    stage_count++;
   } else if (bitset8_is_set(&stage, SHADER_STAGE_FRAGMENT_BIT)) {
-    return VK_SHADER_STAGE_FRAGMENT_BIT;
-  } else if (bitset8_is_set(&stage, SHADER_STAGE_COMPUTE_BIT)) {
-    return VK_SHADER_STAGE_COMPUTE_BIT;
+    result = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stage_count++;
   } else if (bitset8_is_set(&stage, SHADER_STAGE_GEOMETRY_BIT)) {
-    return VK_SHADER_STAGE_GEOMETRY_BIT;
+    result = VK_SHADER_STAGE_GEOMETRY_BIT;
+    stage_count++;
   } else if (bitset8_is_set(&stage, SHADER_STAGE_TESSELLATION_CONTROL_BIT)) {
-    return VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+    result = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+    stage_count++;
   } else if (bitset8_is_set(&stage, SHADER_STAGE_TESSELLATION_EVALUATION_BIT)) {
-    return VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+    result = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+    stage_count++;
+  } else if (bitset8_is_set(&stage, SHADER_STAGE_COMPUTE_BIT)) {
+    result = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage_count++;
   }
 
-  return VK_SHADER_STAGE_ALL_GRAPHICS;
+  if (stage_count != 1) {
+    log_error(
+        "Invalid shader stage configuration: exactly one stage must be set");
+    return (VulkanShaderStageFlagResult){.flag = VK_SHADER_STAGE_ALL_GRAPHICS,
+                                         .is_valid = false};
+  }
+
+  return (VulkanShaderStageFlagResult){.flag = result, .is_valid = true};
 }
 
 bool8_t vulkan_shader_module_create(VulkanBackendState *state,
@@ -61,18 +82,23 @@ bool8_t vulkan_shader_module_create(VulkanBackendState *state,
     return false;
   }
 
+  VulkanShaderStageFlagResult stage_result =
+      vulkan_shader_stage_to_vk(desc->stage);
+  if (!stage_result.is_valid) {
+    log_error("Invalid shader stage configuration: exactly one stage must be "
+              "set");
+    return false;
+  }
+
   VkPipelineShaderStageCreateInfo stage_info = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-      .stage = vulkan_shader_stage_to_vk(desc->stage),
+      .stage = stage_result.flag,
       .module = shader_module,
       .pName = string8_cstr(&desc->entry_point),
   };
 
+  out_shader->desc = desc;
   out_shader->module = shader_module;
-  out_shader->stage = desc->stage;
-  out_shader->size = desc->size;
-  out_shader->entry_point = &desc->entry_point;
-  out_shader->code = desc->code;
   out_shader->stage_info = stage_info;
 
   log_debug("Shader module created: %p", out_shader);

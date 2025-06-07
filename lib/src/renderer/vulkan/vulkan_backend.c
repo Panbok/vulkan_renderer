@@ -197,10 +197,6 @@ void renderer_vulkan_destroy_shader(void *backend_state,
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
   struct s_ShaderModule *shader = (struct s_ShaderModule *)handle.ptr;
-  if (!shader) {
-    log_fatal("Shader is NULL");
-    return;
-  }
 
   vulkan_shader_module_destroy(state, shader);
 

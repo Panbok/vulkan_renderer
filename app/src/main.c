@@ -134,11 +134,6 @@ int main(int argc, char **argv) {
   }
 
   // Load shaders
-  FileMode shader_mode = bitset8_create();
-  bitset8_set(&shader_mode, FILE_MODE_READ);
-  bitset8_set(&shader_mode, FILE_MODE_BINARY);
-
-  FileHandle shader_handle;
   uint8_t *shader_data = NULL;
   uint64_t shader_size = 0;
   FileError file_error = file_load_spirv_shader(
@@ -148,8 +143,6 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  RendererError renderer_error = RENDERER_ERROR_NONE;
-
   ShaderModuleDescription vertex_shader_desc = {
       .stage = SHADER_STAGE_VERTEX_BIT,
       .code = (const uint8_t *)shader_data,
@@ -157,11 +150,13 @@ int main(int argc, char **argv) {
       .entry_point = string8_lit("vertexMain"),
   };
 
+  RendererError renderer_error = RENDERER_ERROR_NONE;
   ShaderHandle vertex_shader = renderer_create_shader_from_source(
       application.renderer, &vertex_shader_desc, &renderer_error);
   if (renderer_error != RENDERER_ERROR_NONE) {
-    log_fatal("Failed to create vertex shader: %d",
+    log_fatal("Failed to create vertex shader: %s",
               renderer_get_error_string(renderer_error));
+    return 1;
   }
 
   ShaderModuleDescription fragment_shader_desc = {
@@ -174,8 +169,9 @@ int main(int argc, char **argv) {
   ShaderHandle fragment_shader = renderer_create_shader_from_source(
       application.renderer, &fragment_shader_desc, &renderer_error);
   if (renderer_error != RENDERER_ERROR_NONE) {
-    log_fatal("Failed to create fragment shader: %d",
+    log_fatal("Failed to create fragment shader: %s",
               renderer_get_error_string(renderer_error));
+    return 1;
   }
 
   state->vertex_shader = vertex_shader;
