@@ -31,5 +31,5 @@ set -e # Exit early if any commands fail
   cmake --install ./build
 
   echo "Copying shaders to build directory"
-  cp -R lib/assets/*.spv build/lib
+  cp -R lib/assets/*.spv assets
 )

@@ -210,7 +210,7 @@ bool8_t application_create(Application *application,
                 config->height);
   application->clock = clock_create();
 
-  application->renderer_arena = arena_create(MB(1));
+  application->renderer_arena = arena_create(MB(3));
   if (!application->renderer_arena) {
     log_fatal("Failed to create renderer_arena!");
     if (application->app_arena)

@@ -5,7 +5,7 @@ set -e # Exit early if any commands fail
 (
   echo "Compiling shaders"
   cd "$(dirname "$0")" # Ensure compile steps are run within the repository directory
-  cd lib/assets
+  cd app/assets
   
   # Check if slangc compiler is available
   if ! command -v slangc >/dev/null 2>&1; then
@@ -31,7 +31,7 @@ set -e # Exit early if any commands fail
   cmake --build ./build --target vulkan_renderer
 
   echo "Copying shaders to build directory"
-  cp -R lib/assets/*.spv build/lib
+  cp -R app/assets/*.spv assets
 )
 
 exec $(dirname $0)/build/app/vulkan_renderer "$@"
