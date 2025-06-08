@@ -102,8 +102,8 @@ bool8_t vulkan_pipeline_create(VulkanBackendState *state,
 
   VkPipelineDepthStencilStateCreateInfo depth_stencil_state = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-      .depthTestEnable = VK_TRUE,
-      .depthWriteEnable = VK_TRUE,
+      .depthTestEnable = VK_FALSE,
+      .depthWriteEnable = VK_FALSE,
       .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
       .depthBoundsTestEnable = VK_FALSE,
       .stencilTestEnable = VK_FALSE,
@@ -212,15 +212,15 @@ void vulkan_pipeline_destroy(VulkanBackendState *state,
   assert_log(state != NULL, "State is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
 
-  if (pipeline && pipeline->pipeline_layout != VK_NULL_HANDLE) {
-    log_debug("Destroying Vulkan pipeline");
-    vkDestroyPipelineLayout(state->device, pipeline->pipeline_layout, NULL);
-    pipeline->pipeline_layout = VK_NULL_HANDLE;
-  }
-
   if (pipeline && pipeline->pipeline != VK_NULL_HANDLE) {
     log_debug("Destroying Vulkan pipeline");
     vkDestroyPipeline(state->device, pipeline->pipeline, NULL);
     pipeline->pipeline = VK_NULL_HANDLE;
+  }
+
+  if (pipeline && pipeline->pipeline_layout != VK_NULL_HANDLE) {
+    log_debug("Destroying Vulkan pipeline layout");
+    vkDestroyPipelineLayout(state->device, pipeline->pipeline_layout, NULL);
+    pipeline->pipeline_layout = VK_NULL_HANDLE;
   }
 }

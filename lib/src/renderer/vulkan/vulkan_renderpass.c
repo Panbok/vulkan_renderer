@@ -27,12 +27,30 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
       .pColorAttachments = &color_attachment_ref,
   };
 
+  VkSubpassDependency deps[2] = {
+      {.srcSubpass = VK_SUBPASS_EXTERNAL,
+       .dstSubpass = 0,
+       .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+       .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+       .srcAccessMask = 0,
+       .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+       .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT},
+      {.srcSubpass = 0,
+       .dstSubpass = VK_SUBPASS_EXTERNAL,
+       .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+       .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+       .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+       .dstAccessMask = 0,
+       .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT}};
+
   VkRenderPassCreateInfo render_pass_info = {
       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
       .attachmentCount = 1,
       .pAttachments = &color_attachment,
       .subpassCount = 1,
       .pSubpasses = &subpass,
+      .dependencyCount = ArrayCount(deps),
+      .pDependencies = deps,
   };
 
   VkRenderPass render_pass;
@@ -54,5 +72,6 @@ void vulkan_renderpass_destroy(VulkanBackendState *state,
 
   if (pipeline->render_pass != VK_NULL_HANDLE) {
     vkDestroyRenderPass(state->device, pipeline->render_pass, NULL);
+    pipeline->render_pass = VK_NULL_HANDLE;
   }
 }

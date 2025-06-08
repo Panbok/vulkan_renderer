@@ -41,7 +41,6 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
   Arena *temp_arena = arena_create(MB(4), KB(64), temp_arena_flags);
   if (!temp_arena) {
     log_fatal("Failed to create temporary arena");
-    arena_destroy(temp_arena);
     return false;
   }
 
@@ -232,6 +231,7 @@ renderer_vulkan_create_pipeline(void *backend_state,
 
   if (!vulkan_pipeline_create(state, desc, pipeline)) {
     log_fatal("Failed to create Vulkan pipeline layout");
+    vulkan_renderpass_destroy(state, pipeline);
     return (BackendResourceHandle){.ptr = NULL};
   }
 
