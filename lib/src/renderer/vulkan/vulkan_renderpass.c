@@ -74,6 +74,5 @@ void vulkan_renderpass_destroy(VulkanBackendState *state,
 
   if (render_pass != VK_NULL_HANDLE) {
     vkDestroyRenderPass(state->device, render_pass, NULL);
-    render_pass = VK_NULL_HANDLE;
   }
 }
