@@ -64,7 +64,7 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
 
   *out_render_pass = render_pass;
 
-  log_debug("Created Vulkan render pass: %p", out_render_pass);
+  log_debug("Created Vulkan render pass: %p", render_pass);
 
   return true_v;
 }
