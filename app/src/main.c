@@ -22,8 +22,7 @@ typedef struct State {
   Arena *event_arena;
   Arena *stats_arena;
 
-  ShaderHandle vertex_shader;
-  ShaderHandle fragment_shader;
+  GraphicsPipelineDescription pipeline;
 } State;
 
 State *state = NULL;
@@ -174,15 +173,31 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  state->vertex_shader = vertex_shader;
-  state->fragment_shader = fragment_shader;
-
   log_debug("Vertex shader: %p", vertex_shader);
   log_debug("Fragment shader: %p", fragment_shader);
+
+  const GraphicsPipelineDescription pipeline_desc = {
+      .vertex_shader = vertex_shader,
+      .fragment_shader = fragment_shader,
+      .attribute_count = 0,
+      .attributes = NULL,
+      .binding_count = 0,
+      .bindings = NULL,
+      .topology = PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+  };
+
+  PipelineHandle pipeline = renderer_create_pipeline(
+      application.renderer, &pipeline_desc, &renderer_error);
+  if (renderer_error != RENDERER_ERROR_NONE) {
+    log_fatal("Failed to create pipeline: %s",
+              renderer_get_error_string(renderer_error));
+    return 1;
+  }
 
   application_start(&application);
   application_close(&application);
 
+  renderer_destroy_pipeline(application.renderer, pipeline);
   renderer_destroy_shader(application.renderer, vertex_shader);
   renderer_destroy_shader(application.renderer, fragment_shader);
 

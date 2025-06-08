@@ -206,13 +206,52 @@ void renderer_vulkan_destroy_shader(void *backend_state,
 BackendResourceHandle
 renderer_vulkan_create_pipeline(void *backend_state,
                                 const GraphicsPipelineDescription *desc) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(desc != NULL, "Pipeline description is NULL");
+
   log_debug("Creating Vulkan pipeline");
-  return (BackendResourceHandle){.ptr = NULL};
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  struct s_GraphicsPipeline *pipeline =
+      arena_alloc(state->arena, sizeof(struct s_GraphicsPipeline),
+                  ARENA_MEMORY_TAG_RENDERER);
+  if (!pipeline) {
+    log_fatal("Failed to allocate pipeline");
+    return (BackendResourceHandle){.ptr = NULL};
+  }
+
+  MemZero(pipeline, sizeof(struct s_GraphicsPipeline));
+
+  pipeline->desc = desc;
+
+  if (!vulkan_renderpass_create(state, pipeline)) {
+    log_fatal("Failed to create Vulkan render pass");
+    return (BackendResourceHandle){.ptr = NULL};
+  }
+
+  if (!vulkan_pipeline_create(state, desc, pipeline)) {
+    log_fatal("Failed to create Vulkan pipeline layout");
+    return (BackendResourceHandle){.ptr = NULL};
+  }
+
+  return (BackendResourceHandle){.ptr = pipeline};
 }
 
 void renderer_vulkan_destroy_pipeline(void *backend_state,
                                       BackendResourceHandle handle) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(handle.ptr != NULL, "Handle is NULL");
+
   log_debug("Destroying Vulkan pipeline");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  struct s_GraphicsPipeline *pipeline = (struct s_GraphicsPipeline *)handle.ptr;
+
+  vulkan_renderpass_destroy(state, pipeline);
+  vulkan_pipeline_destroy(state, pipeline);
+
   return;
 }
 

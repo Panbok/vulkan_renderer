@@ -10,6 +10,7 @@
 
 #include "containers/str.h"
 #include "core/logger.h"
+#include "defines.h"
 #include "filesystem/filesystem.h"
 #include "renderer/renderer.h"
 
@@ -38,6 +39,13 @@ Array(VkImageView);
 
 #define VK_EXT_METAL_SURFACE_EXTENSION_NAME "VK_EXT_metal_surface"
 #define VK_LAYER_KHRONOS_VALIDATION_LAYER_NAME "VK_LAYER_KHRONOS_validation"
+
+struct s_GraphicsPipeline {
+  const GraphicsPipelineDescription *desc;
+  VkPipelineLayout pipeline_layout;
+  VkRenderPass render_pass;
+  VkPipeline pipeline;
+};
 
 struct s_ShaderModule {
   const ShaderModuleDescription *desc;
