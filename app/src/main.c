@@ -96,6 +96,9 @@ void application_update(Application *application, float64_t delta) {
   }
 }
 
+// todo: should look into using DLLs in debug builds for hot reload
+// and static for release builds, also should look into how we can
+// implement hot reload for the application in debug builds
 int main(int argc, char **argv) {
   ApplicationConfig config = {0};
   config.title = "Hello, World!";

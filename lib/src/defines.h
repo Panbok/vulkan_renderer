@@ -1,11 +1,5 @@
 #pragma once
 
-#if defined(__APPLE__)
-// Apple platforms
-#define PLATFORM_APPLE 1
-#include <TargetConditionals.h>
-#endif
-
 #define LOG_LEVEL 5
 #define ASSERT_LOG 1
 

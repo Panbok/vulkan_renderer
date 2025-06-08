@@ -18,5 +18,6 @@
 #include <unistd.h>
 
 #if defined(PLATFORM_APPLE)
+#include <TargetConditionals.h>
 #include <mach/mach_time.h>
 #endif
