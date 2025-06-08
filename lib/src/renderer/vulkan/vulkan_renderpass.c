@@ -64,6 +64,8 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
 
   *out_render_pass = render_pass;
 
+  log_debug("Created Vulkan render pass: %p", out_render_pass);
+
   return true_v;
 }
 
@@ -71,6 +73,8 @@ void vulkan_renderpass_destroy(VulkanBackendState *state,
                                VkRenderPass render_pass) {
   assert_log(state != NULL, "State is NULL");
   assert_log(render_pass != VK_NULL_HANDLE, "Render pass is NULL");
+
+  log_debug("Destroying Vulkan render pass");
 
   if (render_pass != VK_NULL_HANDLE) {
     vkDestroyRenderPass(state->device, render_pass, NULL);
