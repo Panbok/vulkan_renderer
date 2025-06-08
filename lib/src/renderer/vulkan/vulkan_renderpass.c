@@ -1,9 +1,11 @@
 #include "vulkan_renderpass.h"
 
+// todo: for now we are only supporting a single render pass (main render pass),
+// but we should support multiple render passes in the future
 bool8_t vulkan_renderpass_create(VulkanBackendState *state,
-                                 struct s_GraphicsPipeline *pipeline) {
+                                 VkRenderPass *out_render_pass) {
   assert_log(state != NULL, "State is NULL");
-  assert_log(pipeline != NULL, "Pipeline is NULL");
+  assert_log(out_render_pass != NULL, "Out render pass is NULL");
 
   VkAttachmentDescription color_attachment = {
       .format = state->swapChainImageFormat,
@@ -60,18 +62,18 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
     return false_v;
   }
 
-  pipeline->render_pass = render_pass;
+  *out_render_pass = render_pass;
 
   return true_v;
 }
 
 void vulkan_renderpass_destroy(VulkanBackendState *state,
-                               struct s_GraphicsPipeline *pipeline) {
+                               VkRenderPass render_pass) {
   assert_log(state != NULL, "State is NULL");
-  assert_log(pipeline != NULL, "Pipeline is NULL");
+  assert_log(render_pass != VK_NULL_HANDLE, "Render pass is NULL");
 
-  if (pipeline->render_pass != VK_NULL_HANDLE) {
-    vkDestroyRenderPass(state->device, pipeline->render_pass, NULL);
-    pipeline->render_pass = VK_NULL_HANDLE;
+  if (render_pass != VK_NULL_HANDLE) {
+    vkDestroyRenderPass(state->device, render_pass, NULL);
+    render_pass = VK_NULL_HANDLE;
   }
 }

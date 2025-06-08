@@ -101,12 +101,19 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
+  if (!vulkan_renderpass_create(backend_state,
+                                &backend_state->main_render_pass)) {
+    log_fatal("Failed to create Vulkan render pass");
+    return false;
+  }
+
   return true;
 }
 
 void renderer_vulkan_shutdown(void *backend_state) {
   log_debug("Shutting down Vulkan backend");
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  vulkan_renderpass_destroy(state, state->main_render_pass);
   vulkan_swapchain_destroy(state);
   vulkan_device_destroy_logical_device(state);
   vulkan_device_release_physical_device(state);
@@ -224,14 +231,8 @@ renderer_vulkan_create_pipeline(void *backend_state,
 
   pipeline->desc = desc;
 
-  if (!vulkan_renderpass_create(state, pipeline)) {
-    log_fatal("Failed to create Vulkan render pass");
-    return (BackendResourceHandle){.ptr = NULL};
-  }
-
   if (!vulkan_pipeline_create(state, desc, pipeline)) {
     log_fatal("Failed to create Vulkan pipeline layout");
-    vulkan_renderpass_destroy(state, pipeline);
     return (BackendResourceHandle){.ptr = NULL};
   }
 
@@ -249,7 +250,6 @@ void renderer_vulkan_destroy_pipeline(void *backend_state,
 
   struct s_GraphicsPipeline *pipeline = (struct s_GraphicsPipeline *)handle.ptr;
 
-  vulkan_renderpass_destroy(state, pipeline);
   vulkan_pipeline_destroy(state, pipeline);
 
   return;

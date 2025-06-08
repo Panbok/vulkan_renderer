@@ -36,6 +36,7 @@ Array(VkSurfaceFormatKHR);
 Array(VkPresentModeKHR);
 Array(VkImage);
 Array(VkImageView);
+Array(VkFramebuffer);
 
 #define VK_EXT_METAL_SURFACE_EXTENSION_NAME "VK_EXT_metal_surface"
 #define VK_LAYER_KHRONOS_VALIDATION_LAYER_NAME "VK_LAYER_KHRONOS_validation"
@@ -43,7 +44,6 @@ Array(VkImageView);
 struct s_GraphicsPipeline {
   const GraphicsPipelineDescription *desc;
   VkPipelineLayout pipeline_layout;
-  VkRenderPass render_pass;
   VkPipeline pipeline;
 };
 
@@ -77,10 +77,13 @@ typedef struct VulkanBackendState {
   VkQueue graphics_queue;
   VkQueue present_queue;
 
+  VkRenderPass main_render_pass;
+
   VkSurfaceKHR surface;
   VkSwapchainKHR swapchain;
   VkFormat swapChainImageFormat;
   VkExtent2D swapChainExtent;
   Array_VkImage swapChainImages;
   Array_VkImageView swapChainImageViews;
+  Array_VkFramebuffer swapChainFramebuffers;
 } VulkanBackendState;
