@@ -1,6 +1,9 @@
 #pragma once
 
+#include "vulkan_command.h"
 #include "vulkan_device.h"
+#include "vulkan_fence.h"
+#include "vulkan_framebuffer.h"
 #include "vulkan_instance.h"
 #include "vulkan_pipeline.h"
 #include "vulkan_renderpass.h"
@@ -19,6 +22,8 @@ void renderer_vulkan_shutdown(void *backend_state);
 
 void renderer_vulkan_on_resize(void *backend_state, uint32_t new_width,
                                uint32_t new_height);
+
+void renderer_vulkan_wait_idle(void *backend_state);
 
 RendererError renderer_vulkan_begin_frame(void *backend_state,
                                           float64_t delta_time);
@@ -52,16 +57,6 @@ renderer_vulkan_create_pipeline(void *backend_state,
 
 void renderer_vulkan_destroy_pipeline(void *backend_state,
                                       BackendResourceHandle handle);
-
-void renderer_vulkan_set_viewport(void *backend_state, int32_t x, int32_t y,
-                                  uint32_t width, uint32_t height,
-                                  float32_t min_depth, float32_t max_depth);
-
-void renderer_vulkan_set_scissor(void *backend_state, int32_t x, int32_t y,
-                                 uint32_t width, uint32_t height);
-
-void renderer_vulkan_clear_color(void *backend_state, float r, float g, float b,
-                                 float a);
 
 void renderer_vulkan_bind_pipeline(void *backend_state,
                                    BackendResourceHandle pipeline_handle);

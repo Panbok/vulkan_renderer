@@ -21,8 +21,6 @@ typedef struct State {
   Arena *app_arena;
   Arena *event_arena;
   Arena *stats_arena;
-
-  GraphicsPipelineDescription pipeline;
 } State;
 
 State *state = NULL;
@@ -127,82 +125,8 @@ int main(int argc, char **argv) {
   state->app_arena = application.app_arena;
   state->event_arena = application.event_manager.arena;
 
-  const char *shader_path = "assets/triangle.spv";
-  const FilePath path = file_path_create(
-      shader_path, application.renderer_arena, FILE_PATH_TYPE_RELATIVE);
-  if (!file_exists(&path)) {
-    log_fatal("Vertex shader file does not exist: %s", shader_path);
-    return 1;
-  }
-
-  // Load shaders
-  uint8_t *shader_data = NULL;
-  uint64_t shader_size = 0;
-  FileError file_error = file_load_spirv_shader(
-      &path, application.renderer_arena, &shader_data, &shader_size);
-  if (file_error != FILE_ERROR_NONE) {
-    log_fatal("Failed to load shader: %s", file_get_error_string(file_error));
-    return 1;
-  }
-
-  ShaderModuleDescription vertex_shader_desc = {
-      .stage = SHADER_STAGE_VERTEX_BIT,
-      .code = (const uint8_t *)shader_data,
-      .size = shader_size,
-      .entry_point = string8_lit("vertexMain"),
-  };
-
-  RendererError renderer_error = RENDERER_ERROR_NONE;
-  ShaderHandle vertex_shader = renderer_create_shader_from_source(
-      application.renderer, &vertex_shader_desc, &renderer_error);
-  if (renderer_error != RENDERER_ERROR_NONE) {
-    log_fatal("Failed to create vertex shader: %s",
-              renderer_get_error_string(renderer_error));
-    return 1;
-  }
-
-  ShaderModuleDescription fragment_shader_desc = {
-      .stage = SHADER_STAGE_FRAGMENT_BIT,
-      .code = (const uint8_t *)shader_data,
-      .size = shader_size,
-      .entry_point = string8_lit("fragmentMain"),
-  };
-
-  ShaderHandle fragment_shader = renderer_create_shader_from_source(
-      application.renderer, &fragment_shader_desc, &renderer_error);
-  if (renderer_error != RENDERER_ERROR_NONE) {
-    log_fatal("Failed to create fragment shader: %s",
-              renderer_get_error_string(renderer_error));
-    return 1;
-  }
-
-  log_debug("Vertex shader: %p", vertex_shader);
-  log_debug("Fragment shader: %p", fragment_shader);
-
-  const GraphicsPipelineDescription pipeline_desc = {
-      .vertex_shader = vertex_shader,
-      .fragment_shader = fragment_shader,
-      .attribute_count = 0,
-      .attributes = NULL,
-      .binding_count = 0,
-      .bindings = NULL,
-      .topology = PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-  };
-
-  PipelineHandle pipeline = renderer_create_pipeline(
-      application.renderer, &pipeline_desc, &renderer_error);
-  if (renderer_error != RENDERER_ERROR_NONE) {
-    log_fatal("Failed to create pipeline: %s",
-              renderer_get_error_string(renderer_error));
-    return 1;
-  }
-
   application_start(&application);
   application_close(&application);
-
-  renderer_destroy_pipeline(application.renderer, pipeline);
-  renderer_destroy_shader(application.renderer, vertex_shader);
-  renderer_destroy_shader(application.renderer, fragment_shader);
 
   array_destroy_uint16_t(&state->entities);
   array_destroy_float64_t(&state->player_position_x);

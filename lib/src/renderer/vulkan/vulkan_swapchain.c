@@ -1,5 +1,6 @@
 #include "vulkan_swapchain.h"
 #include "core/logger.h"
+#include "defines.h"
 #include "vulkan_utils.h"
 
 static VkSurfaceFormatKHR *
@@ -69,6 +70,9 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
       image_count > swapchain_details.capabilities.maxImageCount) {
     image_count = swapchain_details.capabilities.maxImageCount;
   }
+
+  state->swapchain_image_count = image_count;
+  state->swapchain_max_in_flight_frames = image_count - 1;
 
   VkSwapchainCreateInfoKHR create_info = {
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -184,4 +188,76 @@ void vulkan_swapchain_destroy(VulkanBackendState *state) {
   array_destroy_VkImage(&state->swapChainImages);
   vkDestroySwapchainKHR(state->device, state->swapchain, NULL);
   state->swapchain = VK_NULL_HANDLE;
+}
+
+bool8_t
+vulkan_swapchain_acquire_next_image(VulkanBackendState *state, uint64_t timeout,
+                                    VkSemaphore *image_available_semaphore,
+                                    uint32_t *out_image_index) {
+  assert_log(state != NULL, "State not initialized");
+  assert_log(state->swapchain != VK_NULL_HANDLE, "Swapchain not initialized");
+  assert_log(timeout > 0, "Timeout is 0");
+  assert_log(image_available_semaphore != NULL,
+             "Image available semaphore is NULL");
+  assert_log(out_image_index != NULL, "Out image index is NULL");
+
+  VkResult result = vkAcquireNextImageKHR(state->device, state->swapchain,
+                                          timeout, *image_available_semaphore,
+                                          VK_NULL_HANDLE, out_image_index);
+
+  if (result != VK_SUCCESS) {
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+      log_warn("Swapchain out of date during image acquisition");
+      return false;
+    } else if (result == VK_SUBOPTIMAL_KHR) {
+      log_warn("Swapchain suboptimal during image acquisition");
+      // Continue despite suboptimal result
+    } else {
+      log_error("Failed to acquire next image with error code: %d", result);
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool8_t vulkan_swapchain_present(VulkanBackendState *state,
+                                 VkSemaphore *queue_complete_semaphore,
+                                 uint32_t image_index) {
+  assert_log(state != NULL, "State not initialized");
+  assert_log(state->swapchain != VK_NULL_HANDLE, "Swapchain not initialized");
+  assert_log(queue_complete_semaphore != NULL,
+             "Queue complete semaphore is NULL");
+  assert_log(image_index < state->swapChainImages.length,
+             "Image index out of bounds");
+
+  VkPresentInfoKHR present_info = {
+      .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+      .waitSemaphoreCount = 1,
+      .pWaitSemaphores = queue_complete_semaphore,
+      .swapchainCount = 1,
+      .pSwapchains = &state->swapchain,
+      .pImageIndices = &image_index,
+  };
+
+  VkResult result = vkQueuePresentKHR(state->present_queue, &present_info);
+  if (result != VK_SUCCESS) {
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+      log_warn("Swapchain out of date during present");
+      return false;
+    } else if (result == VK_SUBOPTIMAL_KHR) {
+      log_warn("Swapchain suboptimal during present");
+      // Continue despite suboptimal result
+    } else {
+      log_error("Failed to present image with error code: %d", result);
+      return false;
+    }
+  }
+
+  // Move to next frame (should cycle through max_in_flight_frames, not image
+  // count)
+  state->current_frame =
+      (state->current_frame + 1) % state->swapchain_max_in_flight_frames;
+
+  return true;
 }

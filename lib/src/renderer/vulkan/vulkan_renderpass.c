@@ -1,11 +1,25 @@
 #include "vulkan_renderpass.h"
+#include "defines.h"
 
 // todo: for now we are only supporting a single render pass (main render pass),
 // but we should support multiple render passes in the future
 bool8_t vulkan_renderpass_create(VulkanBackendState *state,
-                                 VkRenderPass *out_render_pass) {
+                                 VulkanRenderPass *out_render_pass) {
   assert_log(state != NULL, "State is NULL");
   assert_log(out_render_pass != NULL, "Out render pass is NULL");
+
+  out_render_pass->state = RENDER_PASS_STATE_NOT_ALLOCATED;
+  out_render_pass->handle = VK_NULL_HANDLE;
+  out_render_pass->x = 0.0f;
+  out_render_pass->y = 0.0;
+  out_render_pass->width = state->swapChainExtent.width;
+  out_render_pass->height = state->swapChainExtent.height;
+  out_render_pass->r = 0.0f;
+  out_render_pass->g = 0.0f;
+  out_render_pass->b = 0.0f;
+  out_render_pass->a = 1.0f;
+  out_render_pass->depth = 0.0f;
+  out_render_pass->stencil = 1.0;
 
   VkAttachmentDescription color_attachment = {
       .format = state->swapChainImageFormat,
@@ -55,28 +69,67 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
       .pDependencies = deps,
   };
 
-  VkRenderPass render_pass;
   if (vkCreateRenderPass(state->device, &render_pass_info, NULL,
-                         &render_pass) != VK_SUCCESS) {
+                         &out_render_pass->handle) != VK_SUCCESS) {
     log_fatal("Failed to create render pass");
     return false_v;
   }
 
-  *out_render_pass = render_pass;
+  out_render_pass->state = RENDER_PASS_STATE_READY;
 
-  log_debug("Created Vulkan render pass: %p", render_pass);
+  log_debug("Created Vulkan render pass: %p", out_render_pass->handle);
 
   return true_v;
 }
 
 void vulkan_renderpass_destroy(VulkanBackendState *state,
-                               VkRenderPass render_pass) {
+                               VulkanRenderPass *render_pass) {
   assert_log(state != NULL, "State is NULL");
   assert_log(render_pass != VK_NULL_HANDLE, "Render pass is NULL");
 
   log_debug("Destroying Vulkan render pass");
 
-  if (render_pass != VK_NULL_HANDLE) {
-    vkDestroyRenderPass(state->device, render_pass, NULL);
-  }
+  vkDestroyRenderPass(state->device, render_pass->handle, NULL);
+
+  render_pass->handle = VK_NULL_HANDLE;
+  render_pass->state = RENDER_PASS_STATE_NOT_ALLOCATED;
+}
+
+bool8_t vulkan_renderpass_begin(VulkanCommandBuffer *command_buffer,
+                                VulkanRenderPass *render_pass,
+                                VkFramebuffer framebuffer) {
+  assert_log(command_buffer != NULL, "Command buffer is NULL");
+  assert_log(render_pass != VK_NULL_HANDLE, "Render pass is NULL");
+
+  VkClearValue clear_value = {
+      .color = {.float32 = {render_pass->r, render_pass->g, render_pass->b,
+                            render_pass->a}},
+  };
+
+  VkRenderPassBeginInfo render_pass_info = {
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+      .renderPass = render_pass->handle,
+      .framebuffer = framebuffer,
+      .renderArea = {.offset = {render_pass->x, render_pass->y},
+                     .extent = {render_pass->width, render_pass->height}},
+      .clearValueCount = 1,
+      .pClearValues = &clear_value,
+  };
+
+  vkCmdBeginRenderPass(command_buffer->handle, &render_pass_info,
+                       VK_SUBPASS_CONTENTS_INLINE);
+
+  render_pass->state = RENDER_PASS_STATE_RECORDING;
+
+  return true_v;
+}
+
+bool8_t vulkan_renderpass_end(VulkanCommandBuffer *command_buffer) {
+  assert_log(command_buffer != NULL, "Command buffer is NULL");
+
+  vkCmdEndRenderPass(command_buffer->handle);
+
+  command_buffer->state = COMMAND_BUFFER_STATE_RECORDING_ENDED;
+
+  return true_v;
 }

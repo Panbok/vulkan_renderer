@@ -92,6 +92,11 @@ bool32_t renderer_is_frame_active(RendererFrontendHandle renderer) {
   return renderer->frame_active;
 }
 
+void renderer_wait_idle(RendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  renderer->backend.wait_idle(renderer->backend_state);
+}
+
 BufferHandle renderer_create_buffer(RendererFrontendHandle renderer,
                                     const BufferDescription *description,
                                     const void *initial_data,
@@ -184,6 +189,10 @@ void renderer_destroy_pipeline(RendererFrontendHandle renderer,
 
   log_debug("Destroying pipeline");
 
+  // Wait for GPU to be idle to ensure no command buffers are still using this
+  // pipeline
+  renderer->backend.wait_idle(renderer->backend_state);
+
   BackendResourceHandle handle = {.ptr = (void *)pipeline};
   renderer->backend.pipeline_destroy(renderer->backend_state, handle);
 }
@@ -205,7 +214,7 @@ RendererError renderer_begin_frame(RendererFrontendHandle renderer,
                                    float64_t delta_time) {
   assert_log(renderer != NULL, "Renderer is NULL");
 
-  log_debug("Beginning frame");
+  // log_debug("Beginning frame");
 
   if (renderer->frame_active) {
     return RENDERER_ERROR_FRAME_IN_PROGRESS;
@@ -220,30 +229,6 @@ RendererError renderer_begin_frame(RendererFrontendHandle renderer,
   return result;
 }
 
-void renderer_set_viewport(RendererFrontendHandle renderer, int32_t x,
-                           int32_t y, uint32_t width, uint32_t height,
-                           float32_t min_depth, float32_t max_depth) {
-  assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(renderer->frame_active, "Set viewport called outside of frame");
-
-  log_debug("Setting viewport to %d %d %d %d %f %f", x, y, width, height,
-            min_depth, max_depth);
-
-  renderer->backend.set_viewport(renderer->backend_state, x, y, width, height,
-                                 min_depth, max_depth);
-}
-
-void renderer_set_scissor(RendererFrontendHandle renderer, int32_t x, int32_t y,
-                          uint32_t width, uint32_t height) {
-  assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(renderer->frame_active, "Set scissor called outside of frame");
-
-  log_debug("Setting scissor to %d %d %d %d", x, y, width, height);
-
-  renderer->backend.set_scissor(renderer->backend_state, (int32_t)x, (int32_t)y,
-                                width, height);
-}
-
 void renderer_resize(RendererFrontendHandle renderer, uint32_t width,
                      uint32_t height) {
   assert_log(renderer != NULL, "Renderer is NULL");
@@ -253,23 +238,13 @@ void renderer_resize(RendererFrontendHandle renderer, uint32_t width,
   renderer->backend.on_resize(renderer->backend_state, width, height);
 }
 
-void renderer_clear_color(RendererFrontendHandle renderer, float32_t r,
-                          float32_t g, float32_t b, float32_t a) {
-  assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(renderer->frame_active, "Clear color called outside of frame");
-
-  log_debug("Clearing color to %f %f %f %f", r, g, b, a);
-
-  renderer->backend.clear_color(renderer->backend_state, r, g, b, a);
-}
-
 void renderer_bind_graphics_pipeline(RendererFrontendHandle renderer,
                                      PipelineHandle pipeline) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
   assert_log(renderer->frame_active, "Bind pipeline called outside of frame");
 
-  log_debug("Binding pipeline");
+  // log_debug("Binding pipeline");
 
   BackendResourceHandle handle = {.ptr = (void *)pipeline};
   renderer->backend.bind_pipeline(renderer->backend_state, handle);
@@ -283,8 +258,8 @@ void renderer_bind_vertex_buffer(RendererFrontendHandle renderer,
   assert_log(renderer->frame_active,
              "Bind vertex buffer called outside of frame");
 
-  log_debug("Binding vertex buffer to %d with offset %d", binding_index,
-            offset);
+  // log_debug("Binding vertex buffer to %d with offset %d", binding_index,
+  //           offset);
 
   BackendResourceHandle handle = {.ptr = (void *)buffer};
   renderer->backend.bind_vertex_buffer(renderer->backend_state, handle,
@@ -297,8 +272,8 @@ void renderer_draw(RendererFrontendHandle renderer, uint32_t vertex_count,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(renderer->frame_active, "Draw called outside of frame");
 
-  log_debug("Drawing %d vertices with %d instances starting at %d with %d",
-            vertex_count, instance_count, first_vertex, first_instance);
+  // log_debug("Drawing %d vertices with %d instances starting at %d with %d",
+  //           vertex_count, instance_count, first_vertex, first_instance);
 
   renderer->backend.draw(renderer->backend_state, vertex_count, instance_count,
                          first_vertex, first_instance);
@@ -308,7 +283,7 @@ RendererError renderer_end_frame(RendererFrontendHandle renderer,
                                  float64_t delta_time) {
   assert_log(renderer != NULL, "Renderer is NULL");
 
-  log_debug("Ending frame");
+  // log_debug("Ending frame");
 
   if (!renderer->frame_active) {
     return RENDERER_ERROR_INVALID_PARAMETER;

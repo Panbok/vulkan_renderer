@@ -159,6 +159,15 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
                                       queue_create_info);
   }
 
+  QueueFamilyIndex *graphics_index =
+      array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_GRAPHICS);
+
+  VkCommandPoolCreateInfo pool_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+      .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+      .queueFamilyIndex = graphics_index->index,
+  };
+
   array_destroy_QueueFamilyIndex(&indices);
   scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
@@ -206,6 +215,14 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
 
   log_debug("Logical device created with handle: %p", state->device);
 
+  if (vkCreateCommandPool(state->device, &pool_info, NULL,
+                          &state->command_pool) != VK_SUCCESS) {
+    log_fatal("Failed to create Vulkan command pool");
+    return false_v;
+  }
+
+  log_debug("Created Vulkan command pool: %p", state->command_pool);
+
   vkGetDeviceQueue(state->device,
                    array_get_VkDeviceQueueCreateInfo(&state->queue_create_infos,
                                                      QUEUE_FAMILY_TYPE_GRAPHICS)
@@ -226,9 +243,13 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
 void vulkan_device_destroy_logical_device(VulkanBackendState *state) {
   assert_log(state != NULL, "State is NULL");
 
-  log_debug("Destroying logical device");
+  log_debug("Destroying logical device and command pool");
 
   array_destroy_VkDeviceQueueCreateInfo(&state->queue_create_infos);
+
+  vkDestroyCommandPool(state->device, state->command_pool, NULL);
+  state->command_pool = VK_NULL_HANDLE;
+
   vkDestroyDevice(state->device, NULL);
   state->device = VK_NULL_HANDLE;
 }

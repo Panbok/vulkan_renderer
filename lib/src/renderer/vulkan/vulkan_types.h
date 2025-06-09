@@ -37,6 +37,7 @@ Array(VkPresentModeKHR);
 Array(VkImage);
 Array(VkImageView);
 Array(VkFramebuffer);
+Array(VkSemaphore);
 
 #define VK_EXT_METAL_SURFACE_EXTENSION_NAME "VK_EXT_metal_surface"
 #define VK_LAYER_KHRONOS_VALIDATION_LAYER_NAME "VK_LAYER_KHRONOS_validation"
@@ -53,16 +54,65 @@ struct s_ShaderModule {
   VkPipelineShaderStageCreateInfo stage_info;
 };
 
+typedef struct VulkanFence {
+  VkFence handle;
+  bool8_t is_signaled;
+} VulkanFence;
+
+typedef enum VulkanRenderPassState {
+  RENDER_PASS_STATE_READY,
+  RENDER_PASS_STATE_RECORDING,
+  RENDER_PASS_STATE_IN_RENDER_PASS,
+  RENDER_PASS_STATE_RECORDING_ENDED,
+  RENDER_PASS_STATE_SUBMITTED,
+  RENDER_PASS_STATE_NOT_ALLOCATED
+} VulkanRenderPassState;
+
+typedef struct VulkanRenderPass {
+  VkRenderPass handle;
+  float32_t x, y, width, height;
+  float32_t r, g, b, a;
+
+  float32_t depth;
+
+  uint32_t stencil;
+
+  VulkanRenderPassState state;
+} VulkanRenderPass;
+
+typedef enum VulkanCommandBufferState {
+  COMMAND_BUFFER_STATE_READY,
+  COMMAND_BUFFER_STATE_RECORDING,
+  COMMAND_BUFFER_STATE_IN_RENDER_PASS,
+  COMMAND_BUFFER_STATE_RECORDING_ENDED,
+  COMMAND_BUFFER_STATE_SUBMITTED,
+  COMMAND_BUFFER_STATE_NOT_ALLOCATED
+} VulkanCommandBufferState;
+
+typedef struct VulkanCommandBuffer {
+  VkCommandBuffer handle;
+  VulkanCommandBufferState state;
+} VulkanCommandBuffer;
+
 typedef struct VulkanSwapchainDetails {
   VkSurfaceCapabilitiesKHR capabilities;
   Array_VkSurfaceFormatKHR formats;
   Array_VkPresentModeKHR present_modes;
 } VulkanSwapchainDetails;
 
+typedef VulkanFence *VulkanFencePtr;
+
+Array(VulkanCommandBuffer);
+Array(VulkanFence);
+Array(VulkanFencePtr);
+
 typedef struct VulkanBackendState {
   Arena *arena;
   Arena *temp_arena;
   Window *window;
+
+  uint32_t current_frame;
+  uint32_t image_index;
 
   Array_String8 validation_layers;
 
@@ -72,18 +122,28 @@ typedef struct VulkanBackendState {
 
   VkPhysicalDevice physical_device;
   VkDevice device;
+  VkCommandPool command_pool;
 
   Array_VkDeviceQueueCreateInfo queue_create_infos;
   VkQueue graphics_queue;
   VkQueue present_queue;
 
-  VkRenderPass main_render_pass;
+  VulkanRenderPass *main_render_pass;
 
   VkSurfaceKHR surface;
   VkSwapchainKHR swapchain;
+  uint32_t swapchain_image_count;
+  uint8_t swapchain_max_in_flight_frames;
   VkFormat swapChainImageFormat;
   VkExtent2D swapChainExtent;
   Array_VkImage swapChainImages;
   Array_VkImageView swapChainImageViews;
   Array_VkFramebuffer swapChainFramebuffers;
+
+  Array_VkSemaphore image_available_semaphores;
+  Array_VkSemaphore queue_complete_semaphores;
+  Array_VulkanFence in_flight_fences;
+  Array_VulkanFencePtr images_in_flight;
+
+  Array_VulkanCommandBuffer graphics_command_buffers;
 } VulkanBackendState;

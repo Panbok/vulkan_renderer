@@ -50,8 +50,8 @@
 #include "core/event.h"
 #include "core/logger.h"
 #include "defines.h"
+#include "filesystem/filesystem.h"
 #include "platform/window.h"
-
 #include "renderer/renderer.h"
 
 /**
@@ -108,6 +108,9 @@ typedef struct Application {
                                 delta time calculation. */
   Bitset8 app_flags;         /**< Bitset holding `ApplicationFlag`s to track the
                                 current state. */
+
+  GraphicsPipelineDescription pipeline;
+  PipelineHandle pipeline_handle;
 } Application;
 
 /**
@@ -233,6 +236,75 @@ bool8_t application_create(Application *application,
     return false_v;
   }
 
+  const char *shader_path = "assets/triangle.spv";
+  const FilePath path = file_path_create(
+      shader_path, application->renderer_arena, FILE_PATH_TYPE_RELATIVE);
+  if (!file_exists(&path)) {
+    log_fatal("Vertex shader file does not exist: %s", shader_path);
+    return false_v;
+  }
+
+  // Load shaders
+  uint8_t *shader_data = NULL;
+  uint64_t shader_size = 0;
+  FileError file_error = file_load_spirv_shader(
+      &path, application->renderer_arena, &shader_data, &shader_size);
+  if (file_error != FILE_ERROR_NONE) {
+    log_fatal("Failed to load shader: %s", file_get_error_string(file_error));
+    return false_v;
+  }
+
+  ShaderModuleDescription vertex_shader_desc = {
+      .stage = SHADER_STAGE_VERTEX_BIT,
+      .code = (const uint8_t *)shader_data,
+      .size = shader_size,
+      .entry_point = string8_lit("vertexMain"),
+  };
+
+  ShaderHandle vertex_shader = renderer_create_shader_from_source(
+      application->renderer, &vertex_shader_desc, &renderer_error);
+  if (renderer_error != RENDERER_ERROR_NONE) {
+    log_fatal("Failed to create vertex shader: %s",
+              renderer_get_error_string(renderer_error));
+    return false_v;
+  }
+
+  ShaderModuleDescription fragment_shader_desc = {
+      .stage = SHADER_STAGE_FRAGMENT_BIT,
+      .code = (const uint8_t *)shader_data,
+      .size = shader_size,
+      .entry_point = string8_lit("fragmentMain"),
+  };
+
+  ShaderHandle fragment_shader = renderer_create_shader_from_source(
+      application->renderer, &fragment_shader_desc, &renderer_error);
+  if (renderer_error != RENDERER_ERROR_NONE) {
+    log_fatal("Failed to create fragment shader: %s",
+              renderer_get_error_string(renderer_error));
+    return false_v;
+  }
+
+  log_debug("Vertex shader: %p", vertex_shader);
+  log_debug("Fragment shader: %p", fragment_shader);
+
+  application->pipeline = (GraphicsPipelineDescription){
+      .vertex_shader = vertex_shader,
+      .fragment_shader = fragment_shader,
+      .attribute_count = 0,
+      .attributes = NULL,
+      .binding_count = 0,
+      .bindings = NULL,
+      .topology = PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+  };
+
+  application->pipeline_handle = renderer_create_pipeline(
+      application->renderer, &application->pipeline, &renderer_error);
+  if (renderer_error != RENDERER_ERROR_NONE) {
+    log_fatal("Failed to create pipeline: %s",
+              renderer_get_error_string(renderer_error));
+    return false_v;
+  }
+
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_WINDOW_CLOSE,
                           application_on_window_event);
 
@@ -278,6 +350,32 @@ bool8_t application_create(Application *application,
 
   log_info("Application initialized");
   return true_v;
+}
+
+void application_draw_frame(Application *application, float64_t delta) {
+  assert(application != NULL && "Application is NULL");
+  assert(bitset8_is_set(&application->app_flags, APPLICATION_FLAG_RUNNING) &&
+         "Application is not running");
+
+  RendererError renderer_error =
+      renderer_begin_frame(application->renderer, 0.0);
+  if (renderer_error != RENDERER_ERROR_NONE) {
+    log_fatal("Failed to begin frame: %s",
+              renderer_get_error_string(renderer_error));
+    return;
+  }
+
+  renderer_bind_graphics_pipeline(application->renderer,
+                                  application->pipeline_handle);
+
+  renderer_draw(application->renderer, 3, 1, 0, 0);
+
+  renderer_error = renderer_end_frame(application->renderer, delta);
+  if (renderer_error != RENDERER_ERROR_NONE) {
+    log_fatal("Failed to end frame: %s",
+              renderer_get_error_string(renderer_error));
+    return;
+  }
 }
 
 /**
@@ -343,10 +441,9 @@ void application_start(Application *application) {
     float64_t frame_processing_start_time = platform_get_absolute_time();
 
     application_update(application, delta);
-    input_update(&application->window.input_state);
     // NOTE: Rendering would typically happen here as well
 
-    application->last_frame_time = current_frame_time;
+    application_draw_frame(application, delta);
 
     // Frame limiting / yielding CPU
     float64_t frame_processing_end_time = platform_get_absolute_time();
@@ -363,6 +460,10 @@ void application_start(Application *application) {
         platform_sleep(remaining_ms);
       }
     }
+
+    input_update(&application->window.input_state);
+
+    application->last_frame_time = current_frame_time;
   }
 }
 
@@ -438,6 +539,12 @@ void application_shutdown(Application *application) {
   event_manager_dispatch(&application->event_manager,
                          (Event){.type = EVENT_TYPE_APPLICATION_SHUTDOWN});
 
+  renderer_destroy_pipeline(application->renderer,
+                            application->pipeline_handle);
+  renderer_destroy_shader(application->renderer,
+                          application->pipeline.vertex_shader);
+  renderer_destroy_shader(application->renderer,
+                          application->pipeline.fragment_shader);
   renderer_destroy(application->renderer);
   window_destroy(&application->window);
   event_manager_destroy(&application->event_manager);
