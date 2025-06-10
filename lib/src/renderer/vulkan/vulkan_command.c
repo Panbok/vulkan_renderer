@@ -40,7 +40,7 @@ void vulkan_command_buffer_destroy(VulkanBackendState *state,
 }
 
 bool8_t vulkan_command_buffer_begin(VulkanCommandBuffer *command_buffer) {
-  assert_log(command_buffer != VK_NULL_HANDLE, "Command buffer is NULL");
+  assert_log(command_buffer != NULL, "Command buffer is NULL");
 
   VkCommandBufferBeginInfo begin_info = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,

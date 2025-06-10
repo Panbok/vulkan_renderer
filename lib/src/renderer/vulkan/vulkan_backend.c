@@ -186,9 +186,13 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
     };
 
-    vkCreateSemaphore(
-        backend_state->device, &semaphore_info, NULL,
-        array_get_VkSemaphore(&backend_state->queue_complete_semaphores, i));
+    if (vkCreateSemaphore(backend_state->device, &semaphore_info, NULL,
+                          array_get_VkSemaphore(
+                              &backend_state->queue_complete_semaphores, i)) !=
+        VK_SUCCESS) {
+      log_fatal("Failed to create Vulkan queue complete semaphore");
+      return false;
+    }
   }
 
   backend_state->images_in_flight = array_create_VulkanFencePtr(
