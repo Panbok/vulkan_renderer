@@ -92,9 +92,9 @@ bool32_t renderer_is_frame_active(RendererFrontendHandle renderer) {
   return renderer->frame_active;
 }
 
-void renderer_wait_idle(RendererFrontendHandle renderer) {
+RendererError renderer_wait_idle(RendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
-  renderer->backend.wait_idle(renderer->backend_state);
+  return renderer->backend.wait_idle(renderer->backend_state);
 }
 
 BufferHandle renderer_create_buffer(RendererFrontendHandle renderer,

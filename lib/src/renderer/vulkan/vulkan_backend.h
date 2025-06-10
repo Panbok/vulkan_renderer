@@ -23,7 +23,7 @@ void renderer_vulkan_shutdown(void *backend_state);
 void renderer_vulkan_on_resize(void *backend_state, uint32_t new_width,
                                uint32_t new_height);
 
-void renderer_vulkan_wait_idle(void *backend_state);
+RendererError renderer_vulkan_wait_idle(void *backend_state);
 
 RendererError renderer_vulkan_begin_frame(void *backend_state,
                                           float64_t delta_time);

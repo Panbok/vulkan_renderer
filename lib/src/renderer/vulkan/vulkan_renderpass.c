@@ -85,7 +85,7 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
 void vulkan_renderpass_destroy(VulkanBackendState *state,
                                VulkanRenderPass *render_pass) {
   assert_log(state != NULL, "State is NULL");
-  assert_log(render_pass != VK_NULL_HANDLE, "Render pass is NULL");
+  assert_log(render_pass != NULL, "Render pass is NULL");
 
   log_debug("Destroying Vulkan render pass");
 
@@ -99,12 +99,15 @@ bool8_t vulkan_renderpass_begin(VulkanCommandBuffer *command_buffer,
                                 VulkanRenderPass *render_pass,
                                 VkFramebuffer framebuffer) {
   assert_log(command_buffer != NULL, "Command buffer is NULL");
-  assert_log(render_pass != VK_NULL_HANDLE, "Render pass is NULL");
+  assert_log(render_pass != NULL, "Render pass is NULL");
 
-  VkClearValue clear_value = {
-      .color = {.float32 = {render_pass->r, render_pass->g, render_pass->b,
-                            render_pass->a}},
-  };
+  VkClearValue clear_values[2];
+  clear_values[0].color.float32[0] = render_pass->r;
+  clear_values[0].color.float32[1] = render_pass->g;
+  clear_values[0].color.float32[2] = render_pass->b;
+  clear_values[0].color.float32[3] = render_pass->a;
+  clear_values[1].depthStencil.depth = render_pass->depth;
+  clear_values[1].depthStencil.stencil = render_pass->stencil;
 
   VkRenderPassBeginInfo render_pass_info = {
       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
@@ -112,8 +115,8 @@ bool8_t vulkan_renderpass_begin(VulkanCommandBuffer *command_buffer,
       .framebuffer = framebuffer,
       .renderArea = {.offset = {render_pass->x, render_pass->y},
                      .extent = {render_pass->width, render_pass->height}},
-      .clearValueCount = 1,
-      .pClearValues = &clear_value,
+      .clearValueCount = 2,
+      .pClearValues = clear_values,
   };
 
   vkCmdBeginRenderPass(command_buffer->handle, &render_pass_info,
@@ -129,7 +132,7 @@ bool8_t vulkan_renderpass_end(VulkanCommandBuffer *command_buffer) {
 
   vkCmdEndRenderPass(command_buffer->handle);
 
-  command_buffer->state = COMMAND_BUFFER_STATE_RECORDING_ENDED;
+  command_buffer->state = COMMAND_BUFFER_STATE_RECORDING;
 
   return true_v;
 }

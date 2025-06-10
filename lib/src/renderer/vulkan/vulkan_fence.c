@@ -1,6 +1,7 @@
 #include "vulkan_fence.h"
 #include "core/logger.h"
 #include "defines.h"
+#include <stdint.h>
 
 void vulkan_fence_create(VulkanBackendState *state, bool8_t is_signaled,
                          VulkanFence *out_fence) {
@@ -33,7 +34,8 @@ void vulkan_fence_destroy(VulkanBackendState *state, VulkanFence *fence) {
   fence->is_signaled = false_v;
 }
 
-bool8_t vulkan_fence_wait(VulkanBackendState *state, VulkanFence *fence) {
+bool8_t vulkan_fence_wait(VulkanBackendState *state, uint64_t timeout,
+                          VulkanFence *fence) {
   assert_log(state != NULL, "Vulkan backend state is NULL");
   assert_log(fence != NULL, "Vulkan fence is NULL");
 
@@ -42,7 +44,7 @@ bool8_t vulkan_fence_wait(VulkanBackendState *state, VulkanFence *fence) {
   }
 
   VkResult result =
-      vkWaitForFences(state->device, 1, &fence->handle, true_v, UINT64_MAX);
+      vkWaitForFences(state->device, 1, &fence->handle, true_v, timeout);
   switch (result) {
   case VK_SUCCESS:
     fence->is_signaled = true_v;

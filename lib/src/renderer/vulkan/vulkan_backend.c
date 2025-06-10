@@ -112,6 +112,8 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
+  MemZero(main_render_pass, sizeof(VulkanRenderPass));
+
   if (!vulkan_renderpass_create(backend_state, main_render_pass)) {
     log_fatal("Failed to create Vulkan render pass");
     return false;
@@ -136,7 +138,7 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
   }
 
   if (backend_state->graphics_command_buffers.length == 0) {
-    Scratch scratch = scratch_create(backend_state->temp_arena);
+    Scratch scratch = scratch_create(backend_state->arena);
     backend_state->graphics_command_buffers = array_create_VulkanCommandBuffer(
         scratch.arena, backend_state->swapChainImages.length);
     for (uint32_t i = 0; i < backend_state->swapChainImages.length; i++) {
@@ -163,9 +165,13 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
     };
 
-    vkCreateSemaphore(
-        backend_state->device, &semaphore_info, NULL,
-        array_get_VkSemaphore(&backend_state->image_available_semaphores, i));
+    if (vkCreateSemaphore(backend_state->device, &semaphore_info, NULL,
+                          array_get_VkSemaphore(
+                              &backend_state->image_available_semaphores, i)) !=
+        VK_SUCCESS) {
+      log_fatal("Failed to create Vulkan image available semaphore");
+      return false;
+    }
 
     // fence is created with is_signaled set to true, because we want to wait on
     // the fence until the previous frame is finished
@@ -242,16 +248,24 @@ void renderer_vulkan_shutdown(void *backend_state) {
   return;
 }
 
+// todo: resizing functionality requires swapchain recreation and recording
+// the framebuffer params
 void renderer_vulkan_on_resize(void *backend_state, uint32_t new_width,
                                uint32_t new_height) {
   log_debug("Resizing Vulkan backend to %d x %d", new_width, new_height);
   return;
 }
 
-void renderer_vulkan_wait_idle(void *backend_state) {
+RendererError renderer_vulkan_wait_idle(void *backend_state) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  vkDeviceWaitIdle(state->device);
+  VkResult result = vkDeviceWaitIdle(state->device);
+  if (result != VK_SUCCESS) {
+    log_warn("Failed to wait for Vulkan device to be idle");
+    return RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  return RENDERER_ERROR_NONE;
 }
 
 RendererError renderer_vulkan_begin_frame(void *backend_state,
@@ -261,8 +275,9 @@ RendererError renderer_vulkan_begin_frame(void *backend_state,
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
   // Wait for the current frame's fence to be signaled (previous frame finished)
-  if (!vulkan_fence_wait(state, array_get_VulkanFence(&state->in_flight_fences,
-                                                      state->current_frame))) {
+  if (!vulkan_fence_wait(state, UINT64_MAX,
+                         array_get_VulkanFence(&state->in_flight_fences,
+                                               state->current_frame))) {
     log_warn("Vulkan fence timed out");
     return RENDERER_ERROR_NONE;
   }
@@ -368,7 +383,10 @@ RendererError renderer_vulkan_end_frame(void *backend_state,
   VulkanFencePtr *image_fence =
       array_get_VulkanFencePtr(&state->images_in_flight, state->image_index);
   if (*image_fence != NULL) { // was frame
-    vulkan_fence_wait(state, *image_fence);
+    if (!vulkan_fence_wait(state, UINT64_MAX, *image_fence)) {
+      log_warn("Failed to wait for Vulkan fence");
+      return RENDERER_ERROR_NONE;
+    }
   }
 
   // Mark the image fence as in-use by this frame.

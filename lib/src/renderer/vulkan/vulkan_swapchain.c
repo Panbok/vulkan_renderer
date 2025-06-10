@@ -3,6 +3,8 @@
 #include "defines.h"
 #include "vulkan_utils.h"
 
+// todo: add support for swapchain recreation
+
 static VkSurfaceFormatKHR *
 choose_swap_surface_format(VulkanSwapchainDetails *swapchain_details) {
   for (uint32_t i = 0; i < swapchain_details->formats.length; i++) {

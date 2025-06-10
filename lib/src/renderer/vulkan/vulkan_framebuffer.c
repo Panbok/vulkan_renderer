@@ -34,7 +34,8 @@ bool8_t vulkan_framebuffer_create(VulkanBackendState *state,
 void vulkan_framebuffer_destroy(VulkanBackendState *state,
                                 VkFramebuffer *framebuffer) {
   assert_log(state != NULL, "State is NULL");
-  assert_log(framebuffer != VK_NULL_HANDLE, "Framebuffer is NULL");
+  assert_log(framebuffer != NULL, "Framebuffer pointer is NULL");
+  assert_log(*framebuffer != VK_NULL_HANDLE, "Framebuffer is NULL");
 
   log_debug("Destroy Vulkan framebuffer");
 

@@ -237,8 +237,9 @@ bool8_t application_create(Application *application,
   }
 
   const char *shader_path = "assets/triangle.spv";
-  const FilePath path = file_path_create(
-      shader_path, application->renderer_arena, FILE_PATH_TYPE_RELATIVE);
+  // we need file path to live for the whole duration of the application
+  const FilePath path = file_path_create(shader_path, application->app_arena,
+                                         FILE_PATH_TYPE_RELATIVE);
   if (!file_exists(&path)) {
     log_fatal("Vertex shader file does not exist: %s", shader_path);
     return false_v;
@@ -302,6 +303,8 @@ bool8_t application_create(Application *application,
   if (renderer_error != RENDERER_ERROR_NONE) {
     log_fatal("Failed to create pipeline: %s",
               renderer_get_error_string(renderer_error));
+    renderer_destroy_shader(application->renderer, vertex_shader);
+    renderer_destroy_shader(application->renderer, fragment_shader);
     return false_v;
   }
 
@@ -358,7 +361,7 @@ void application_draw_frame(Application *application, float64_t delta) {
          "Application is not running");
 
   RendererError renderer_error =
-      renderer_begin_frame(application->renderer, 0.0);
+      renderer_begin_frame(application->renderer, delta);
   if (renderer_error != RENDERER_ERROR_NONE) {
     log_fatal("Failed to begin frame: %s",
               renderer_get_error_string(renderer_error));
@@ -538,6 +541,10 @@ void application_shutdown(Application *application) {
 
   event_manager_dispatch(&application->event_manager,
                          (Event){.type = EVENT_TYPE_APPLICATION_SHUTDOWN});
+
+  if (renderer_wait_idle(application->renderer) != RENDERER_ERROR_NONE) {
+    log_warn("Failed to wait for renderer to be idle");
+  }
 
   renderer_destroy_pipeline(application->renderer,
                             application->pipeline_handle);

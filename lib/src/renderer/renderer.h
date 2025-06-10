@@ -84,6 +84,7 @@ typedef enum RendererError {
   RENDERER_ERROR_FRAME_PREPARATION_FAILED,
   RENDERER_ERROR_PRESENTATION_FAILED,
   RENDERER_ERROR_FRAME_IN_PROGRESS,
+  RENDERER_ERROR_DEVICE_ERROR,
   RENDERER_ERROR_COUNT
 } RendererError;
 
@@ -224,7 +225,7 @@ String8 renderer_get_error_string(RendererError error);
 Window *renderer_get_window(RendererFrontendHandle renderer);
 RendererBackendType renderer_get_backend_type(RendererFrontendHandle renderer);
 bool32_t renderer_is_frame_active(RendererFrontendHandle renderer);
-void renderer_wait_idle(RendererFrontendHandle renderer);
+RendererError renderer_wait_idle(RendererFrontendHandle renderer);
 // --- END Utility ---
 
 // --- START Resource Management ---
@@ -302,7 +303,7 @@ typedef struct RendererBackendInterface {
                     uint32_t new_height);
 
   // --- Synchronization ---
-  void (*wait_idle)(void *backend_state); // Wait for GPU to be idle
+  RendererError (*wait_idle)(void *backend_state); // Wait for GPU to be idle
 
   // --- Frame Management ---
   RendererError (*begin_frame)(void *backend_state, float64_t delta_time);

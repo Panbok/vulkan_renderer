@@ -28,7 +28,7 @@ bool8_t vulkan_command_buffer_create(VulkanBackendState *state,
 void vulkan_command_buffer_destroy(VulkanBackendState *state,
                                    VulkanCommandBuffer *command_buffer) {
   assert_log(state != NULL, "State is NULL");
-  assert_log(command_buffer != VK_NULL_HANDLE, "Command buffer is NULL");
+  assert_log(command_buffer != NULL, "Command buffer is NULL");
 
   log_debug("Destroying Vulkan command buffer");
 
