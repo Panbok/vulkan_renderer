@@ -12,8 +12,8 @@ bool8_t vulkan_framebuffer_create(VulkanBackendState *state,
       .renderPass = state->main_render_pass->handle,
       .attachmentCount = 1,
       .pAttachments = image_view,
-      .width = state->swapChainExtent.width,
-      .height = state->swapChainExtent.height,
+      .width = state->swapchain.extent.width,
+      .height = state->swapchain.extent.height,
       .layers = 1,
   };
 
@@ -32,12 +32,11 @@ bool8_t vulkan_framebuffer_create(VulkanBackendState *state,
 }
 
 void vulkan_framebuffer_destroy(VulkanBackendState *state,
-                                VkFramebuffer *framebuffer) {
+                                VkFramebuffer framebuffer) {
   assert_log(state != NULL, "State is NULL");
-  assert_log(framebuffer != NULL, "Framebuffer pointer is NULL");
-  assert_log(*framebuffer != VK_NULL_HANDLE, "Framebuffer is NULL");
+  assert_log(framebuffer != VK_NULL_HANDLE, "Framebuffer is NULL");
 
   log_debug("Destroy Vulkan framebuffer");
 
-  vkDestroyFramebuffer(state->device, *framebuffer, NULL);
+  vkDestroyFramebuffer(state->device, framebuffer, NULL);
 }

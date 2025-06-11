@@ -7,4 +7,4 @@ bool8_t vulkan_framebuffer_create(VulkanBackendState *state,
                                   VkFramebuffer *out_framebuffer);
 
 void vulkan_framebuffer_destroy(VulkanBackendState *state,
-                                VkFramebuffer *framebuffer);
+                                VkFramebuffer framebuffer);

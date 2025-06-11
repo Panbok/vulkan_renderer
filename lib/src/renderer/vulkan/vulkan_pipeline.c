@@ -57,15 +57,15 @@ bool8_t vulkan_pipeline_create(VulkanBackendState *state,
   VkViewport viewport = {
       .x = 0.0f,
       .y = 0.0f,
-      .width = (float)state->swapChainExtent.width,
-      .height = (float)state->swapChainExtent.height,
+      .width = (float32_t)state->swapchain.extent.width,
+      .height = (float32_t)state->swapchain.extent.height,
       .minDepth = 0.0f,
       .maxDepth = 1.0f,
   };
 
   VkRect2D scissor = {
       .offset = {0, 0},
-      .extent = {state->swapChainExtent.width, state->swapChainExtent.height},
+      .extent = {state->swapchain.extent.width, state->swapchain.extent.height},
   };
 
   VkPipelineViewportStateCreateInfo viewport_state = {

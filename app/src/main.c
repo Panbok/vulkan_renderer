@@ -133,5 +133,6 @@ int main(int argc, char **argv) {
   array_destroy_float64_t(&state->player_position_y);
 
   application_shutdown(&application);
+
   return 0;
 }

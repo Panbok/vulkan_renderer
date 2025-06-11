@@ -1,9 +1,8 @@
 #include "vulkan_swapchain.h"
 #include "core/logger.h"
 #include "defines.h"
+#include "vulkan_backend.h"
 #include "vulkan_utils.h"
-
-// todo: add support for swapchain recreation
 
 static VkSurfaceFormatKHR *
 choose_swap_surface_format(VulkanSwapchainDetails *swapchain_details) {
@@ -73,8 +72,8 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
     image_count = swapchain_details.capabilities.maxImageCount;
   }
 
-  state->swapchain_image_count = image_count;
-  state->swapchain_max_in_flight_frames = image_count - 1;
+  state->swapchain.image_count = image_count;
+  state->swapchain.max_in_flight_frames = image_count - 1;
 
   VkSwapchainCreateInfoKHR create_info = {
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -120,29 +119,30 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
     return false;
   }
 
-  state->swapchain = swapchain;
+  state->swapchain.handle = swapchain;
 
-  vkGetSwapchainImagesKHR(state->device, state->swapchain, &image_count, NULL);
+  vkGetSwapchainImagesKHR(state->device, state->swapchain.handle, &image_count,
+                          NULL);
   if (image_count == 0) {
     log_error("Swapchain has no images");
     return false;
   }
 
-  state->swapChainImages = array_create_VkImage(state->arena, image_count);
-  vkGetSwapchainImagesKHR(state->device, state->swapchain, &image_count,
-                          state->swapChainImages.data);
+  state->swapchain.images = array_create_VkImage(state->arena, image_count);
+  vkGetSwapchainImagesKHR(state->device, state->swapchain.handle, &image_count,
+                          state->swapchain.images.data);
 
-  state->swapChainImageFormat = surface_format->format;
-  state->swapChainExtent = extent;
+  state->swapchain.format = surface_format->format;
+  state->swapchain.extent = extent;
 
-  state->swapChainImageViews =
+  state->swapchain.image_views =
       array_create_VkImageView(state->arena, image_count);
   for (uint32_t i = 0; i < image_count; i++) {
     VkImageViewCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-        .image = state->swapChainImages.data[i],
+        .image = state->swapchain.images.data[i],
         .viewType = VK_IMAGE_VIEW_TYPE_2D,
-        .format = state->swapChainImageFormat,
+        .format = state->swapchain.format,
         .components =
             {
                 .r = VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -161,13 +161,14 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
     };
 
     if (vkCreateImageView(state->device, &create_info, NULL,
-                          &state->swapChainImageViews.data[i]) != VK_SUCCESS) {
+                          &state->swapchain.image_views.data[i]) !=
+        VK_SUCCESS) {
       for (uint32_t j = 0; j < i; j++) {
-        vkDestroyImageView(state->device, state->swapChainImageViews.data[j],
+        vkDestroyImageView(state->device, state->swapchain.image_views.data[j],
                            NULL);
       }
-      array_destroy_VkImageView(&state->swapChainImageViews);
-      array_destroy_VkImage(&state->swapChainImages);
+      array_destroy_VkImageView(&state->swapchain.image_views);
+      array_destroy_VkImage(&state->swapchain.images);
       return false;
     }
   }
@@ -179,17 +180,19 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
 
 void vulkan_swapchain_destroy(VulkanBackendState *state) {
   assert_log(state != NULL, "State not initialized");
-  assert_log(state->swapchain != VK_NULL_HANDLE, "Swapchain not initialized");
+  assert_log(state->swapchain.handle != VK_NULL_HANDLE,
+             "Swapchain not initialized");
 
   log_debug("Destroying swapchain");
 
-  for (uint32_t i = 0; i < state->swapChainImageViews.length; i++) {
-    vkDestroyImageView(state->device, state->swapChainImageViews.data[i], NULL);
+  for (uint32_t i = 0; i < state->swapchain.image_views.length; i++) {
+    vkDestroyImageView(state->device, state->swapchain.image_views.data[i],
+                       NULL);
   }
-  array_destroy_VkImageView(&state->swapChainImageViews);
-  array_destroy_VkImage(&state->swapChainImages);
-  vkDestroySwapchainKHR(state->device, state->swapchain, NULL);
-  state->swapchain = VK_NULL_HANDLE;
+  array_destroy_VkImageView(&state->swapchain.image_views);
+  array_destroy_VkImage(&state->swapchain.images);
+  vkDestroySwapchainKHR(state->device, state->swapchain.handle, NULL);
+  state->swapchain.handle = VK_NULL_HANDLE;
 }
 
 bool8_t
@@ -197,20 +200,40 @@ vulkan_swapchain_acquire_next_image(VulkanBackendState *state, uint64_t timeout,
                                     VkSemaphore *image_available_semaphore,
                                     uint32_t *out_image_index) {
   assert_log(state != NULL, "State not initialized");
-  assert_log(state->swapchain != VK_NULL_HANDLE, "Swapchain not initialized");
+  assert_log(state->swapchain.handle != VK_NULL_HANDLE,
+             "Swapchain not initialized");
   assert_log(timeout > 0, "Timeout is 0");
   assert_log(image_available_semaphore != NULL,
              "Image available semaphore is NULL");
   assert_log(out_image_index != NULL, "Out image index is NULL");
 
-  VkResult result = vkAcquireNextImageKHR(state->device, state->swapchain,
-                                          timeout, *image_available_semaphore,
-                                          VK_NULL_HANDLE, out_image_index);
+  VkResult result = vkAcquireNextImageKHR(
+      state->device, state->swapchain.handle, timeout,
+      *image_available_semaphore, VK_NULL_HANDLE, out_image_index);
 
   if (result != VK_SUCCESS) {
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-      log_warn("Swapchain out of date during image acquisition");
-      return false;
+      log_warn("Swapchain out of date during image acquisition, recreating...");
+
+      // Attempt to recreate the swapchain
+      if (!vulkan_backend_recreate_swapchain(state)) {
+        log_error("Failed to recreate swapchain during image acquisition");
+        return false;
+      }
+
+      // Try acquiring again after recreation
+      result = vkAcquireNextImageKHR(state->device, state->swapchain.handle,
+                                     timeout, *image_available_semaphore,
+                                     VK_NULL_HANDLE, out_image_index);
+
+      if (result != VK_SUCCESS) {
+        log_error("Failed to acquire image even after swapchain recreation: %d",
+                  result);
+        return false;
+      }
+
+      log_debug("Successfully acquired image after swapchain recreation");
+      return true;
     } else if (result == VK_SUBOPTIMAL_KHR) {
       log_warn("Swapchain suboptimal during image acquisition");
       // Continue despite suboptimal result
@@ -227,10 +250,11 @@ bool8_t vulkan_swapchain_present(VulkanBackendState *state,
                                  VkSemaphore *queue_complete_semaphore,
                                  uint32_t image_index) {
   assert_log(state != NULL, "State not initialized");
-  assert_log(state->swapchain != VK_NULL_HANDLE, "Swapchain not initialized");
+  assert_log(state->swapchain.handle != VK_NULL_HANDLE,
+             "Swapchain not initialized");
   assert_log(queue_complete_semaphore != NULL,
              "Queue complete semaphore is NULL");
-  assert_log(image_index < state->swapChainImages.length,
+  assert_log(image_index < state->swapchain.images.length,
              "Image index out of bounds");
 
   VkPresentInfoKHR present_info = {
@@ -238,15 +262,24 @@ bool8_t vulkan_swapchain_present(VulkanBackendState *state,
       .waitSemaphoreCount = 1,
       .pWaitSemaphores = queue_complete_semaphore,
       .swapchainCount = 1,
-      .pSwapchains = &state->swapchain,
+      .pSwapchains = &state->swapchain.handle,
       .pImageIndices = &image_index,
   };
 
   VkResult result = vkQueuePresentKHR(state->present_queue, &present_info);
   if (result != VK_SUCCESS) {
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
-      log_warn("Swapchain out of date during present");
-      return false;
+      log_warn("Swapchain out of date during present, recreating...");
+
+      // Attempt to recreate the swapchain
+      if (!vulkan_backend_recreate_swapchain(state)) {
+        log_error("Failed to recreate swapchain during present");
+        return false;
+      }
+
+      log_debug("Swapchain recreated successfully after present failure");
+      // Note: We don't retry present after recreation since the frame is
+      // already done The next frame will use the new swapchain
     } else if (result == VK_SUBOPTIMAL_KHR) {
       log_warn("Swapchain suboptimal during present");
       // Continue despite suboptimal result
@@ -259,7 +292,23 @@ bool8_t vulkan_swapchain_present(VulkanBackendState *state,
   // Move to next frame (should cycle through max_in_flight_frames, not image
   // count)
   state->current_frame =
-      (state->current_frame + 1) % state->swapchain_max_in_flight_frames;
+      (state->current_frame + 1) % state->swapchain.max_in_flight_frames;
+
+  return true;
+}
+
+bool32_t vulkan_swapchain_recreate(VulkanBackendState *state) {
+  assert_log(state != NULL, "State not initialized");
+  assert_log(state->swapchain.handle != VK_NULL_HANDLE,
+             "Swapchain not initialized");
+
+  log_debug("Recreating swapchain");
+
+  vulkan_swapchain_destroy(state);
+  if (!vulkan_swapchain_create(state)) {
+    log_error("Failed to recreate swapchain");
+    return false;
+  }
 
   return true;
 }

@@ -12,8 +12,8 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
   out_render_pass->handle = VK_NULL_HANDLE;
   out_render_pass->x = 0.0f;
   out_render_pass->y = 0.0;
-  out_render_pass->width = state->swapChainExtent.width;
-  out_render_pass->height = state->swapChainExtent.height;
+  out_render_pass->width = state->swapchain.extent.width;
+  out_render_pass->height = state->swapchain.extent.height;
   out_render_pass->r = 0.0f;
   out_render_pass->g = 0.0f;
   out_render_pass->b = 0.0f;
@@ -22,7 +22,7 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
   out_render_pass->stencil = 1.0;
 
   VkAttachmentDescription color_attachment = {
-      .format = state->swapChainImageFormat,
+      .format = state->swapchain.format,
       .samples = VK_SAMPLE_COUNT_1_BIT,
       .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
       .storeOp = VK_ATTACHMENT_STORE_OP_STORE,

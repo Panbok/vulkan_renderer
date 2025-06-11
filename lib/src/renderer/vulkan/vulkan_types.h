@@ -94,6 +94,37 @@ typedef struct VulkanCommandBuffer {
   VulkanCommandBufferState state;
 } VulkanCommandBuffer;
 
+typedef struct VulkanImage {
+  VkImage handle;
+  VkDeviceMemory memory;
+  VkImageView view;
+  uint32_t width;
+  uint32_t height;
+} VulkanImage;
+
+typedef struct VulkanFramebuffer {
+  VkFramebuffer handle;
+  uint32_t attachment_count;
+  Array_VkImageView attachments;
+  VulkanRenderPass *renderpass;
+} VulkanFramebuffer;
+
+Array(VulkanFramebuffer);
+typedef struct VulkanSwapchain {
+  VkSwapchainKHR handle;
+  VkFormat format;
+  VkExtent2D extent;
+
+  uint32_t image_count;
+  uint8_t max_in_flight_frames;
+
+  VulkanImage depth_attachment;
+
+  Array_VkImage images;
+  Array_VkImageView image_views;
+  Array_VulkanFramebuffer framebuffers;
+} VulkanSwapchain;
+
 typedef struct VulkanSwapchainDetails {
   VkSurfaceCapabilitiesKHR capabilities;
   Array_VkSurfaceFormatKHR formats;
@@ -110,6 +141,8 @@ typedef struct VulkanBackendState {
   Arena *arena;
   Arena *temp_arena;
   Window *window;
+
+  bool8_t is_swapchain_recreation_requested;
 
   uint32_t current_frame;
   uint32_t image_index;
@@ -131,14 +164,7 @@ typedef struct VulkanBackendState {
   VulkanRenderPass *main_render_pass;
 
   VkSurfaceKHR surface;
-  VkSwapchainKHR swapchain;
-  uint32_t swapchain_image_count;
-  uint8_t swapchain_max_in_flight_frames;
-  VkFormat swapChainImageFormat;
-  VkExtent2D swapChainExtent;
-  Array_VkImage swapChainImages;
-  Array_VkImageView swapChainImageViews;
-  Array_VkFramebuffer swapChainFramebuffers;
+  VulkanSwapchain swapchain;
 
   Array_VkSemaphore image_available_semaphores;
   Array_VkSemaphore queue_complete_semaphores;

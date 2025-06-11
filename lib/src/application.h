@@ -111,6 +111,12 @@ typedef struct Application {
 
   GraphicsPipelineDescription pipeline;
   PipelineHandle pipeline_handle;
+
+  // Window size tracking for resize detection
+  uint32_t
+      last_window_width; /**< Last known window width for resize detection */
+  uint32_t
+      last_window_height; /**< Last known window height for resize detection */
 } Application;
 
 /**
@@ -346,6 +352,11 @@ bool8_t application_create(Application *application,
   event_manager_subscribe(&application->event_manager,
                           EVENT_TYPE_APPLICATION_RESUME, application_on_event);
 
+  // Initialize window size tracking
+  WindowPixelSize initial_size = window_get_pixel_size(&application->window);
+  application->last_window_width = initial_size.width;
+  application->last_window_height = initial_size.height;
+
   bitset8_set(&application->app_flags, APPLICATION_FLAG_INITIALIZED);
 
   event_manager_dispatch(&application->event_manager,
@@ -355,6 +366,56 @@ bool8_t application_create(Application *application,
   return true_v;
 }
 
+/**
+ * @brief Handles window resize events.
+ * This function is called when the window is resized. It updates the window
+ * dimensions and the renderer.
+ * @param application Pointer to the `Application` structure.
+ */
+void application_handle_window_resize(Application *application) {
+  assert(application != NULL && "Application is NULL");
+
+  WindowPixelSize current_size = window_get_pixel_size(&application->window);
+
+  if (current_size.width != application->last_window_width ||
+      current_size.height != application->last_window_height) {
+
+    if (current_size.width == 0 || current_size.height == 0) {
+      log_debug("Skipping resize with zero dimensions: %dx%d",
+                current_size.width, current_size.height);
+      application->last_window_width = current_size.width;
+      application->last_window_height = current_size.height;
+      return;
+    }
+
+    log_info("Processing window resize to %dx%d", current_size.width,
+             current_size.height);
+
+    renderer_resize(application->renderer, current_size.width,
+                    current_size.height);
+
+    application->window.width = current_size.width;
+    application->window.height = current_size.height;
+
+    application->last_window_width = current_size.width;
+    application->last_window_height = current_size.height;
+  }
+}
+
+/**
+ * @brief Draws a frame using the renderer.
+ * This function is called once per frame from within the main application loop
+ * (`application_start`). It handles:
+ * - Calling the user-defined `application_update()` function.
+ * - Updating the input system state.
+ * - Implementing frame rate limiting to match `target_frame_rate`.
+ * - Calling the user-defined `application_draw_frame()` function.
+ * - Updating the input system state.
+ * - Implementing frame rate limiting to match `target_frame_rate`.
+ * Asserts that the application has been initialized and is running.
+ * @param application Pointer to the initialized `Application` structure.
+ * @param delta The time elapsed since the last frame, in seconds.
+ */
 void application_draw_frame(Application *application, float64_t delta) {
   assert(application != NULL && "Application is NULL");
   assert(bitset8_is_set(&application->app_flags, APPLICATION_FLAG_RUNNING) &&
@@ -440,6 +501,9 @@ void application_start(Application *application) {
       }
       continue;
     }
+
+    // Check for window size changes and handle resize if needed
+    application_handle_window_resize(application);
 
     float64_t frame_processing_start_time = platform_get_absolute_time();
 

@@ -11,6 +11,9 @@
 #include "vulkan_swapchain.h"
 #include "vulkan_types.h"
 
+// Internal function for swapchain recreation (used by swapchain module)
+bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state);
+
 RendererBackendInterface renderer_vulkan_get_interface();
 
 bool32_t renderer_vulkan_initialize(void **out_backend_state,
