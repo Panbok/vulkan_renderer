@@ -197,7 +197,8 @@ void vulkan_swapchain_destroy(VulkanBackendState *state) {
 
 bool8_t
 vulkan_swapchain_acquire_next_image(VulkanBackendState *state, uint64_t timeout,
-                                    VkSemaphore *image_available_semaphore,
+                                    VkSemaphore image_available_semaphore,
+                                    VkFence in_flight_fence,
                                     uint32_t *out_image_index) {
   assert_log(state != NULL, "State not initialized");
   assert_log(state->swapchain.handle != VK_NULL_HANDLE,
@@ -209,7 +210,7 @@ vulkan_swapchain_acquire_next_image(VulkanBackendState *state, uint64_t timeout,
 
   VkResult result = vkAcquireNextImageKHR(
       state->device, state->swapchain.handle, timeout,
-      *image_available_semaphore, VK_NULL_HANDLE, out_image_index);
+      image_available_semaphore, in_flight_fence, out_image_index);
 
   if (result != VK_SUCCESS) {
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
@@ -223,8 +224,8 @@ vulkan_swapchain_acquire_next_image(VulkanBackendState *state, uint64_t timeout,
 
       // Try acquiring again after recreation
       result = vkAcquireNextImageKHR(state->device, state->swapchain.handle,
-                                     timeout, *image_available_semaphore,
-                                     VK_NULL_HANDLE, out_image_index);
+                                     timeout, image_available_semaphore,
+                                     in_flight_fence, out_image_index);
 
       if (result != VK_SUCCESS) {
         log_error("Failed to acquire image even after swapchain recreation: %d",
@@ -247,7 +248,7 @@ vulkan_swapchain_acquire_next_image(VulkanBackendState *state, uint64_t timeout,
 }
 
 bool8_t vulkan_swapchain_present(VulkanBackendState *state,
-                                 VkSemaphore *queue_complete_semaphore,
+                                 VkSemaphore queue_complete_semaphore,
                                  uint32_t image_index) {
   assert_log(state != NULL, "State not initialized");
   assert_log(state->swapchain.handle != VK_NULL_HANDLE,
@@ -260,7 +261,7 @@ bool8_t vulkan_swapchain_present(VulkanBackendState *state,
   VkPresentInfoKHR present_info = {
       .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
       .waitSemaphoreCount = 1,
-      .pWaitSemaphores = queue_complete_semaphore,
+      .pWaitSemaphores = &queue_complete_semaphore,
       .swapchainCount = 1,
       .pSwapchains = &state->swapchain.handle,
       .pImageIndices = &image_index,

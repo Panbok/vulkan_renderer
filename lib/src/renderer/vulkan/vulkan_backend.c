@@ -403,8 +403,10 @@ RendererError renderer_vulkan_begin_frame(void *backend_state,
   // Acquire the next image from the swapchain
   if (!vulkan_swapchain_acquire_next_image(
           state, UINT64_MAX,
-          array_get_VkSemaphore(&state->image_available_semaphores,
-                                state->current_frame),
+          *array_get_VkSemaphore(&state->image_available_semaphores,
+                                 state->current_frame),
+          VK_NULL_HANDLE, // Don't use fence with acquire - it conflicts with
+                          // queue submit
           &state->image_index)) {
     log_warn("Failed to acquire next image");
     return RENDERER_ERROR_NONE;
@@ -544,8 +546,8 @@ RendererError renderer_vulkan_end_frame(void *backend_state,
 
   if (!vulkan_swapchain_present(
           state,
-          array_get_VkSemaphore(&state->queue_complete_semaphores,
-                                state->image_index),
+          *array_get_VkSemaphore(&state->queue_complete_semaphores,
+                                 state->image_index),
           state->image_index)) {
     log_warn("Failed to present Vulkan image");
     return RENDERER_ERROR_NONE;
