@@ -410,8 +410,6 @@ void application_handle_window_resize(Application *application) {
  * - Updating the input system state.
  * - Implementing frame rate limiting to match `target_frame_rate`.
  * - Calling the user-defined `application_draw_frame()` function.
- * - Updating the input system state.
- * - Implementing frame rate limiting to match `target_frame_rate`.
  * Asserts that the application has been initialized and is running.
  * @param application Pointer to the initialized `Application` structure.
  * @param delta The time elapsed since the last frame, in seconds.

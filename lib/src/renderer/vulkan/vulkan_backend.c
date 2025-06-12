@@ -74,9 +74,6 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
     return false;
   }
 
-  state->main_render_pass->width = state->swapchain.extent.width;
-  state->main_render_pass->height = state->swapchain.extent.height;
-
   // cleanup swapchain
   for (uint32_t i = 0; i < state->swapchain.image_count; ++i) {
     vulkan_command_buffer_destroy(
@@ -250,11 +247,9 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
                                 });
   }
 
-  if (backend_state->graphics_command_buffers.length == 0) {
-    if (!create_command_buffers(backend_state)) {
-      log_fatal("Failed to create Vulkan command buffers");
-      return false;
-    }
+  if (!create_command_buffers(backend_state)) {
+    log_fatal("Failed to create Vulkan command buffers");
+    return false;
   }
 
   backend_state->image_available_semaphores = array_create_VkSemaphore(
@@ -374,9 +369,6 @@ void renderer_vulkan_on_resize(void *backend_state, uint32_t new_width,
     log_error("Failed to recreate swapchain");
     return;
   }
-
-  state->main_render_pass->width = state->swapchain.extent.width;
-  state->main_render_pass->height = state->swapchain.extent.height;
 
   return;
 }
