@@ -23,6 +23,7 @@ choose_swap_present_mode(VulkanSwapchainDetails *swapchain_details) {
   for (uint32_t i = 0; i < swapchain_details->present_modes.length; i++) {
     VkPresentModeKHR present_mode =
         *array_get_VkPresentModeKHR(&swapchain_details->present_modes, i);
+    // this present mode enables triple buffering
     if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR) {
       return present_mode;
     }

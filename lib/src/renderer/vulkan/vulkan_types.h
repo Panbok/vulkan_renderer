@@ -142,6 +142,9 @@ typedef struct VulkanBackendState {
   Arena *temp_arena;
   Window *window;
 
+  // todo: pass allocator to every vulkan function
+  VkAllocationCallbacks *allocator;
+
   bool8_t is_swapchain_recreation_requested;
 
   uint32_t current_frame;
@@ -151,13 +154,11 @@ typedef struct VulkanBackendState {
 
   VkInstance instance;
   VkDebugUtilsMessengerEXT debug_messenger;
-  Array_VkExtensionProperties extension_properties;
 
   VkPhysicalDevice physical_device;
   VkDevice device;
   VkCommandPool command_pool;
 
-  Array_VkDeviceQueueCreateInfo queue_create_infos;
   VkQueue graphics_queue;
   VkQueue present_queue;
 

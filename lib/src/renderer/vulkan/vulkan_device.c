@@ -143,7 +143,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
   Array_QueueFamilyIndex indices =
       find_queue_family_indices(state, state->physical_device);
 
-  state->queue_create_infos =
+  Array_VkDeviceQueueCreateInfo queue_create_infos =
       array_create_VkDeviceQueueCreateInfo(state->arena, indices.length);
 
   static const float32_t queue_priority = 1.0f;
@@ -155,7 +155,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
         .queueCount = 1,
         .pQueuePriorities = &queue_priority,
     };
-    array_set_VkDeviceQueueCreateInfo(&state->queue_create_infos, i,
+    array_set_VkDeviceQueueCreateInfo(&queue_create_infos, i,
                                       queue_create_info);
   }
 
@@ -192,8 +192,8 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
 
   VkDeviceCreateInfo device_create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-      .queueCreateInfoCount = state->queue_create_infos.length,
-      .pQueueCreateInfos = state->queue_create_infos.data,
+      .queueCreateInfoCount = queue_create_infos.length,
+      .pQueueCreateInfos = queue_create_infos.data,
       .pEnabledFeatures = &device_features,
       .enabledExtensionCount = extension_count,
       .ppEnabledExtensionNames = extension_names,
@@ -224,15 +224,17 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
   log_debug("Created Vulkan command pool: %p", state->command_pool);
 
   vkGetDeviceQueue(state->device,
-                   array_get_VkDeviceQueueCreateInfo(&state->queue_create_infos,
+                   array_get_VkDeviceQueueCreateInfo(&queue_create_infos,
                                                      QUEUE_FAMILY_TYPE_GRAPHICS)
                        ->queueFamilyIndex,
                    0, &state->graphics_queue);
   vkGetDeviceQueue(state->device,
-                   array_get_VkDeviceQueueCreateInfo(&state->queue_create_infos,
+                   array_get_VkDeviceQueueCreateInfo(&queue_create_infos,
                                                      QUEUE_FAMILY_TYPE_PRESENT)
                        ->queueFamilyIndex,
                    0, &state->present_queue);
+
+  array_destroy_VkDeviceQueueCreateInfo(&queue_create_infos);
 
   log_debug("Graphics queue: %p", state->graphics_queue);
   log_debug("Present queue: %p", state->present_queue);
@@ -244,8 +246,6 @@ void vulkan_device_destroy_logical_device(VulkanBackendState *state) {
   assert_log(state != NULL, "State is NULL");
 
   log_debug("Destroying logical device and command pool");
-
-  array_destroy_VkDeviceQueueCreateInfo(&state->queue_create_infos);
 
   vkDestroyCommandPool(state->device, state->command_pool, NULL);
   state->command_pool = VK_NULL_HANDLE;

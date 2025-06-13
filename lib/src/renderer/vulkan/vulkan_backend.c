@@ -173,6 +173,7 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
   backend_state->window = window;
 
   *out_backend_state = backend_state;
+  backend_state->allocator = VK_NULL_HANDLE;
 
   backend_state->validation_layers =
       array_create_String8(backend_state->arena, 1);

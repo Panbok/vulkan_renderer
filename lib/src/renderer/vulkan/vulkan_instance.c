@@ -88,22 +88,6 @@ bool32_t vulkan_instance_create(VulkanBackendState *state, Window *window) {
 
   scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
-  uint32_t available_extension_count = 0;
-  vkEnumerateInstanceExtensionProperties(NULL, &available_extension_count,
-                                         NULL);
-
-  state->extension_properties = array_create_VkExtensionProperties(
-      state->arena, available_extension_count);
-  vkEnumerateInstanceExtensionProperties(NULL, &available_extension_count,
-                                         state->extension_properties.data);
-
-  log_debug("Avaliable extensions: %d", available_extension_count);
-  for (uint32_t i = 0; i < available_extension_count; i++) {
-    log_debug("Extension %d: %s", i,
-              array_get_VkExtensionProperties(&state->extension_properties, i)
-                  ->extensionName);
-  }
-
   log_debug("Vulkan instance created with handle: %p", state->instance);
 
   return true;
@@ -114,7 +98,6 @@ void vulkan_instance_destroy(VulkanBackendState *state) {
 
   log_debug("Destroying Vulkan instance");
 
-  array_destroy_VkExtensionProperties(&state->extension_properties);
   vkDestroyInstance(state->instance, NULL);
   state->instance = VK_NULL_HANDLE;
 }
