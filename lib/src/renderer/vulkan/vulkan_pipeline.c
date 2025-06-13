@@ -29,6 +29,10 @@ bool8_t vulkan_pipeline_create(VulkanBackendState *state,
                                struct s_GraphicsPipeline *out_pipeline) {
   assert_log(state != NULL, "State is NULL");
   assert_log(desc != NULL, "Description is NULL");
+  assert_log(out_pipeline != NULL, "Out pipeline is NULL");
+
+  // Bind the description so subsequent dereferences are valid
+  out_pipeline->desc = desc;
 
   VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
                                      VK_DYNAMIC_STATE_SCISSOR};

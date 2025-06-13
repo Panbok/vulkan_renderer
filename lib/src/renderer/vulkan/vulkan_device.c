@@ -169,13 +169,11 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
   };
 
   array_destroy_QueueFamilyIndex(&indices);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
   VkPhysicalDeviceFeatures device_features = {
       .tessellationShader = VK_TRUE,
   };
 
-  scratch = scratch_create(state->temp_arena);
   const char **layer_names = (const char **)arena_alloc(
       scratch.arena, state->validation_layers.length * sizeof(char *),
       ARENA_MEMORY_TAG_RENDERER);
