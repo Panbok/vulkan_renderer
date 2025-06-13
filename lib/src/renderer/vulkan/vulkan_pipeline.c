@@ -161,7 +161,8 @@ bool8_t vulkan_pipeline_create(VulkanBackendState *state,
   };
 
   VkPipelineLayout pipeline_layout;
-  if (vkCreatePipelineLayout(state->device, &pipeline_layout_info, NULL,
+  if (vkCreatePipelineLayout(state->device, &pipeline_layout_info,
+                             state->allocator,
                              &pipeline_layout) != VK_SUCCESS) {
     log_fatal("Failed to create pipeline layout");
     return false_v;
@@ -194,8 +195,8 @@ bool8_t vulkan_pipeline_create(VulkanBackendState *state,
   };
 
   VkPipeline pipeline;
-  if (vkCreateGraphicsPipelines(state->device, NULL, 1, &pipeline_info, NULL,
-                                &pipeline) != VK_SUCCESS) {
+  if (vkCreateGraphicsPipelines(state->device, NULL, 1, &pipeline_info,
+                                state->allocator, &pipeline) != VK_SUCCESS) {
     log_fatal("Failed to create graphics pipeline");
     return false_v;
   }
@@ -214,13 +215,14 @@ void vulkan_pipeline_destroy(VulkanBackendState *state,
 
   if (pipeline && pipeline->pipeline != VK_NULL_HANDLE) {
     log_debug("Destroying Vulkan pipeline");
-    vkDestroyPipeline(state->device, pipeline->pipeline, NULL);
+    vkDestroyPipeline(state->device, pipeline->pipeline, state->allocator);
     pipeline->pipeline = VK_NULL_HANDLE;
   }
 
   if (pipeline && pipeline->pipeline_layout != VK_NULL_HANDLE) {
     log_debug("Destroying Vulkan pipeline layout");
-    vkDestroyPipelineLayout(state->device, pipeline->pipeline_layout, NULL);
+    vkDestroyPipelineLayout(state->device, pipeline->pipeline_layout,
+                            state->allocator);
     pipeline->pipeline_layout = VK_NULL_HANDLE;
   }
 }

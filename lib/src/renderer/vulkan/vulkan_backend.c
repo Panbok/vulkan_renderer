@@ -264,10 +264,10 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
     };
 
-    if (vkCreateSemaphore(backend_state->device, &semaphore_info, NULL,
-                          array_get_VkSemaphore(
-                              &backend_state->image_available_semaphores, i)) !=
-        VK_SUCCESS) {
+    if (vkCreateSemaphore(
+            backend_state->device, &semaphore_info, backend_state->allocator,
+            array_get_VkSemaphore(&backend_state->image_available_semaphores,
+                                  i)) != VK_SUCCESS) {
       log_fatal("Failed to create Vulkan image available semaphore");
       return false;
     }
@@ -285,10 +285,10 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
     };
 
-    if (vkCreateSemaphore(backend_state->device, &semaphore_info, NULL,
-                          array_get_VkSemaphore(
-                              &backend_state->queue_complete_semaphores, i)) !=
-        VK_SUCCESS) {
+    if (vkCreateSemaphore(
+            backend_state->device, &semaphore_info, backend_state->allocator,
+            array_get_VkSemaphore(&backend_state->queue_complete_semaphores,
+                                  i)) != VK_SUCCESS) {
       log_fatal("Failed to create Vulkan queue complete semaphore");
       return false;
     }
@@ -326,12 +326,14 @@ void renderer_vulkan_shutdown(void *backend_state) {
                          array_get_VulkanFence(&state->in_flight_fences, i));
     vkDestroySemaphore(
         state->device,
-        *array_get_VkSemaphore(&state->image_available_semaphores, i), NULL);
+        *array_get_VkSemaphore(&state->image_available_semaphores, i),
+        state->allocator);
   }
   for (uint32_t i = 0; i < state->swapchain.image_count; i++) {
     vkDestroySemaphore(
         state->device,
-        *array_get_VkSemaphore(&state->queue_complete_semaphores, i), NULL);
+        *array_get_VkSemaphore(&state->queue_complete_semaphores, i),
+        state->allocator);
   }
   for (uint32_t i = 0; i < state->swapchain.framebuffers.length; i++) {
     VulkanFramebuffer *framebuffer =

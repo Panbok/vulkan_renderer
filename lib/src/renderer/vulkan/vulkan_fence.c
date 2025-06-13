@@ -18,8 +18,8 @@ void vulkan_fence_create(VulkanBackendState *state, bool8_t is_signaled,
     fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
   }
 
-  if (vkCreateFence(state->device, &fence_info, NULL, &out_fence->handle) !=
-      VK_SUCCESS) {
+  if (vkCreateFence(state->device, &fence_info, state->allocator,
+                    &out_fence->handle) != VK_SUCCESS) {
     log_fatal("Failed to create Vulkan fence");
   }
 }
@@ -28,7 +28,7 @@ void vulkan_fence_destroy(VulkanBackendState *state, VulkanFence *fence) {
   assert_log(state != NULL, "Vulkan backend state is NULL");
 
   if (fence->handle) {
-    vkDestroyFence(state->device, fence->handle, NULL);
+    vkDestroyFence(state->device, fence->handle, state->allocator);
     fence->handle = VK_NULL_HANDLE;
   }
   fence->is_signaled = false_v;

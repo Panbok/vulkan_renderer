@@ -79,7 +79,8 @@ bool32_t vulkan_instance_create(VulkanBackendState *state, Window *window) {
   create_info.ppEnabledLayerNames = layer_names;
   create_info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 
-  VkResult result = vkCreateInstance(&create_info, NULL, &state->instance);
+  VkResult result =
+      vkCreateInstance(&create_info, state->allocator, &state->instance);
   if (result != VK_SUCCESS) {
     scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
     log_fatal("Failed to create Vulkan instance: %s", string_VkResult(result));
@@ -98,6 +99,6 @@ void vulkan_instance_destroy(VulkanBackendState *state) {
 
   log_debug("Destroying Vulkan instance");
 
-  vkDestroyInstance(state->instance, NULL);
+  vkDestroyInstance(state->instance, state->allocator);
   state->instance = VK_NULL_HANDLE;
 }

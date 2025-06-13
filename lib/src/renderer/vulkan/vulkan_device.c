@@ -202,8 +202,8 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
   };
 
   VkDevice device;
-  if (vkCreateDevice(state->physical_device, &device_create_info, NULL,
-                     &device) != VK_SUCCESS) {
+  if (vkCreateDevice(state->physical_device, &device_create_info,
+                     state->allocator, &device) != VK_SUCCESS) {
     scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
     log_fatal("Failed to create logical device");
     return false;
@@ -215,7 +215,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
 
   log_debug("Logical device created with handle: %p", state->device);
 
-  if (vkCreateCommandPool(state->device, &pool_info, NULL,
+  if (vkCreateCommandPool(state->device, &pool_info, state->allocator,
                           &state->command_pool) != VK_SUCCESS) {
     log_fatal("Failed to create Vulkan command pool");
     return false_v;
@@ -247,9 +247,9 @@ void vulkan_device_destroy_logical_device(VulkanBackendState *state) {
 
   log_debug("Destroying logical device and command pool");
 
-  vkDestroyCommandPool(state->device, state->command_pool, NULL);
+  vkDestroyCommandPool(state->device, state->command_pool, state->allocator);
   state->command_pool = VK_NULL_HANDLE;
 
-  vkDestroyDevice(state->device, NULL);
+  vkDestroyDevice(state->device, state->allocator);
   state->device = VK_NULL_HANDLE;
 }

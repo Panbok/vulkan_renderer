@@ -65,8 +65,8 @@ bool32_t vulkan_debug_create_debug_messenger(VulkanBackendState *state) {
       .pUserData = NULL, // Optional
   };
 
-  VkResult result = CreateDebugUtilsMessengerEXT(state->instance, &create_info,
-                                                 NULL, &state->debug_messenger);
+  VkResult result = CreateDebugUtilsMessengerEXT(
+      state->instance, &create_info, state->allocator, &state->debug_messenger);
   if (result != VK_SUCCESS) {
     log_fatal("Failed to create debug messenger: %s", string_VkResult(result));
     return false;
@@ -84,6 +84,7 @@ void vulkan_debug_destroy_debug_messenger(VulkanBackendState *state) {
 
   log_debug("Destroying debug messenger");
 
-  DestroyDebugUtilsMessengerEXT(state->instance, state->debug_messenger, NULL);
+  DestroyDebugUtilsMessengerEXT(state->instance, state->debug_messenger,
+                                state->allocator);
   state->debug_messenger = VK_NULL_HANDLE;
 }

@@ -69,7 +69,7 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
       .pDependencies = deps,
   };
 
-  if (vkCreateRenderPass(state->device, &render_pass_info, NULL,
+  if (vkCreateRenderPass(state->device, &render_pass_info, state->allocator,
                          &out_render_pass->handle) != VK_SUCCESS) {
     log_fatal("Failed to create render pass");
     return false_v;
@@ -89,7 +89,7 @@ void vulkan_renderpass_destroy(VulkanBackendState *state,
 
   log_debug("Destroying Vulkan render pass");
 
-  vkDestroyRenderPass(state->device, render_pass->handle, NULL);
+  vkDestroyRenderPass(state->device, render_pass->handle, state->allocator);
 
   render_pass->handle = VK_NULL_HANDLE;
   render_pass->state = RENDER_PASS_STATE_NOT_ALLOCATED;

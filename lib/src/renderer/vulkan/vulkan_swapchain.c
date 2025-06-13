@@ -115,8 +115,8 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
   }
 
   VkSwapchainKHR swapchain;
-  if (vkCreateSwapchainKHR(state->device, &create_info, NULL, &swapchain) !=
-      VK_SUCCESS) {
+  if (vkCreateSwapchainKHR(state->device, &create_info, state->allocator,
+                           &swapchain) != VK_SUCCESS) {
     return false;
   }
 
@@ -161,12 +161,12 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
             },
     };
 
-    if (vkCreateImageView(state->device, &create_info, NULL,
+    if (vkCreateImageView(state->device, &create_info, state->allocator,
                           &state->swapchain.image_views.data[i]) !=
         VK_SUCCESS) {
       for (uint32_t j = 0; j < i; j++) {
         vkDestroyImageView(state->device, state->swapchain.image_views.data[j],
-                           NULL);
+                           state->allocator);
       }
       array_destroy_VkImageView(&state->swapchain.image_views);
       array_destroy_VkImage(&state->swapchain.images);
@@ -188,11 +188,12 @@ void vulkan_swapchain_destroy(VulkanBackendState *state) {
 
   for (uint32_t i = 0; i < state->swapchain.image_views.length; i++) {
     vkDestroyImageView(state->device, state->swapchain.image_views.data[i],
-                       NULL);
+                       state->allocator);
   }
   array_destroy_VkImageView(&state->swapchain.image_views);
   array_destroy_VkImage(&state->swapchain.images);
-  vkDestroySwapchainKHR(state->device, state->swapchain.handle, NULL);
+  vkDestroySwapchainKHR(state->device, state->swapchain.handle,
+                        state->allocator);
   state->swapchain.handle = VK_NULL_HANDLE;
 }
 

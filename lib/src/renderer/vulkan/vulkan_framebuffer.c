@@ -18,7 +18,7 @@ bool8_t vulkan_framebuffer_create(VulkanBackendState *state,
   };
 
   VkFramebuffer framebuffer;
-  if (vkCreateFramebuffer(state->device, &framebuffer_info, NULL,
+  if (vkCreateFramebuffer(state->device, &framebuffer_info, state->allocator,
                           &framebuffer) != VK_SUCCESS) {
     log_fatal("Failed to create framebuffer");
     return false_v;
@@ -38,5 +38,5 @@ void vulkan_framebuffer_destroy(VulkanBackendState *state,
 
   log_debug("Destroy Vulkan framebuffer");
 
-  vkDestroyFramebuffer(state->device, framebuffer, NULL);
+  vkDestroyFramebuffer(state->device, framebuffer, state->allocator);
 }
