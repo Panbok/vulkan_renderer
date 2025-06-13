@@ -202,6 +202,8 @@ bool8_t vulkan_pipeline_create(VulkanBackendState *state,
   if (vkCreateGraphicsPipelines(state->device, NULL, 1, &pipeline_info,
                                 state->allocator, &pipeline) != VK_SUCCESS) {
     log_fatal("Failed to create graphics pipeline");
+    vkDestroyPipelineLayout(state->device, pipeline_layout, state->allocator);
+    out_pipeline->pipeline_layout = VK_NULL_HANDLE;
     return false_v;
   }
 
