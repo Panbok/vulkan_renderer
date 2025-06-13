@@ -144,7 +144,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
       find_queue_family_indices(state, state->physical_device);
 
   Array_VkDeviceQueueCreateInfo queue_create_infos =
-      array_create_VkDeviceQueueCreateInfo(state->arena, indices.length);
+      array_create_VkDeviceQueueCreateInfo(scratch.arena, indices.length);
 
   static const float32_t queue_priority = 1.0f;
   for (uint32_t i = 0; i < indices.length; i++) {
