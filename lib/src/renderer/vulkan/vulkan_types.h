@@ -14,6 +14,9 @@
 #include "filesystem/filesystem.h"
 #include "renderer/renderer.h"
 
+// todo: make this configurable
+#define BUFFERING_FRAMES 3
+
 typedef enum QueueFamilyType : uint32_t {
   QUEUE_FAMILY_TYPE_GRAPHICS,
   QUEUE_FAMILY_TYPE_PRESENT,

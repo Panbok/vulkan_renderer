@@ -74,7 +74,9 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
   }
 
   state->swapchain.image_count = image_count;
-  state->swapchain.max_in_flight_frames = image_count - 1;
+
+  // configure the number of frames to buffer (double/triple buffering)
+  state->swapchain.max_in_flight_frames = Min(image_count, BUFFERING_FRAMES);
 
   VkSwapchainCreateInfoKHR create_info = {
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
