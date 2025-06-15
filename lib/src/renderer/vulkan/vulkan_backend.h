@@ -19,12 +19,17 @@ RendererBackendInterface renderer_vulkan_get_interface();
 bool32_t renderer_vulkan_initialize(void **out_backend_state,
                                     RendererBackendType type, Window *window,
                                     uint32_t initial_width,
-                                    uint32_t initial_height);
+                                    uint32_t initial_height,
+                                    DeviceRequirements *device_requirements);
 
 void renderer_vulkan_shutdown(void *backend_state);
 
 void renderer_vulkan_on_resize(void *backend_state, uint32_t new_width,
                                uint32_t new_height);
+
+void renderer_vulkan_get_device_information(
+    void *backend_state, DeviceInformation *device_information,
+    Arena *temp_arena);
 
 RendererError renderer_vulkan_wait_idle(void *backend_state);
 

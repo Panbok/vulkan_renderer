@@ -151,6 +151,56 @@ typedef enum MemoryPropertyBits {
 typedef Bitset8 MemoryPropertyFlags;
 
 // ============================================================================
+// Device Resources
+// ============================================================================
+typedef enum DeviceTypeBits {
+  DEVICE_TYPE_DISCRETE_BIT = 1 << 0,
+  DEVICE_TYPE_INTEGRATED_BIT = 1 << 1,
+  DEVICE_TYPE_VIRTUAL_BIT = 1 << 2,
+  DEVICE_TYPE_CPU_BIT = 1 << 3,
+  DEVICE_TYPE_COUNT
+} DeviceTypeBits;
+typedef Bitset8 DeviceTypeFlags;
+
+typedef enum DeviceQueueBits {
+  DEVICE_QUEUE_GRAPHICS_BIT = 1 << 0,
+  DEVICE_QUEUE_COMPUTE_BIT = 1 << 1,
+  DEVICE_QUEUE_TRANSFER_BIT = 1 << 2,
+  DEVICE_QUEUE_SPARSE_BINDING_BIT = 1 << 3,
+  DEVICE_QUEUE_PROTECTED_BIT = 1 << 4,
+  DEVICE_QUEUE_PRESENT_BIT = 1 << 5,
+  DEVICE_QUEUE_COUNT
+} DeviceQueueBits;
+typedef Bitset8 DeviceQueueFlags;
+
+typedef enum SamplerFilterBits {
+  SAMPLER_FILTER_ANISOTROPIC_BIT = 1 << 0,
+  SAMPLER_FILTER_LINEAR_BIT = 1 << 1,
+  SAMPLER_FILTER_COUNT
+} SamplerFilterBits;
+typedef Bitset8 SamplerFilterFlags;
+
+typedef struct DeviceRequirements {
+  ShaderStageFlags supported_stages;
+  DeviceQueueFlags supported_queues;
+  DeviceTypeFlags allowed_device_types;
+  SamplerFilterFlags supported_sampler_filters;
+} DeviceRequirements;
+
+typedef struct DeviceInformation {
+  String8 device_name;
+  String8 vendor_name;
+  String8 driver_version;
+  String8 api_version;
+  uint64_t vram_size;
+  uint64_t vram_local_size;
+  uint64_t vram_shared_size;
+  DeviceTypeFlags device_types;
+  DeviceQueueFlags device_queues;
+  SamplerFilterFlags sampler_filters;
+} DeviceInformation;
+
+// ============================================================================
 // Resource Descriptions
 // ============================================================================
 
@@ -215,6 +265,7 @@ typedef struct GraphicsPipelineDescription {
 RendererFrontendHandle renderer_create(Arena *arena,
                                        RendererBackendType backend_type,
                                        Window *window,
+                                       DeviceRequirements *device_requirements,
                                        RendererError *out_error);
 
 void renderer_destroy(RendererFrontendHandle renderer);
@@ -226,6 +277,9 @@ Window *renderer_get_window(RendererFrontendHandle renderer);
 RendererBackendType renderer_get_backend_type(RendererFrontendHandle renderer);
 bool32_t renderer_is_frame_active(RendererFrontendHandle renderer);
 RendererError renderer_wait_idle(RendererFrontendHandle renderer);
+void renderer_get_device_information(RendererFrontendHandle renderer,
+                                     DeviceInformation *device_information,
+                                     Arena *temp_arena);
 // --- END Utility ---
 
 // --- START Resource Management ---
@@ -297,10 +351,13 @@ typedef struct RendererBackendInterface {
   bool32_t (*initialize)(
       void **out_backend_state, // Backend allocates and returns its state
       RendererBackendType type, Window *window, uint32_t initial_width,
-      uint32_t initial_height);
+      uint32_t initial_height, DeviceRequirements *device_requirements);
   void (*shutdown)(void *backend_state);
   void (*on_resize)(void *backend_state, uint32_t new_width,
                     uint32_t new_height);
+  void (*get_device_information)(void *backend_state,
+                                 DeviceInformation *device_information,
+                                 Arena *temp_arena);
 
   // --- Synchronization ---
   RendererError (*wait_idle)(void *backend_state); // Wait for GPU to be idle

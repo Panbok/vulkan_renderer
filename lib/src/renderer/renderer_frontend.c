@@ -3,6 +3,7 @@
 RendererFrontendHandle renderer_create(Arena *arena,
                                        RendererBackendType backend_type,
                                        Window *window,
+                                       DeviceRequirements *device_requirements,
                                        RendererError *out_error) {
   assert_log(window != NULL, "Window is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
@@ -27,7 +28,8 @@ RendererFrontendHandle renderer_create(Arena *arena,
   uint32_t width = (uint32_t)window->width;
   uint32_t height = (uint32_t)window->height;
   if (!renderer->backend.initialize(&renderer->backend_state, backend_type,
-                                    window, width, height)) {
+                                    window, width, height,
+                                    device_requirements)) {
     *out_error = RENDERER_ERROR_INITIALIZATION_FAILED;
     return NULL;
   }
@@ -85,6 +87,14 @@ Window *renderer_get_window(RendererFrontendHandle renderer) {
 RendererBackendType renderer_get_backend_type(RendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
   return renderer->backend_type;
+}
+
+void renderer_get_device_information(RendererFrontendHandle renderer,
+                                     DeviceInformation *device_information,
+                                     Arena *temp_arena) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  renderer->backend.get_device_information(renderer->backend_state,
+                                           device_information, temp_arena);
 }
 
 bool32_t renderer_is_frame_active(RendererFrontendHandle renderer) {

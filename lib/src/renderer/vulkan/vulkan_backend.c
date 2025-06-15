@@ -115,6 +115,7 @@ RendererBackendInterface renderer_vulkan_get_interface() {
       .initialize = renderer_vulkan_initialize,
       .shutdown = renderer_vulkan_shutdown,
       .on_resize = renderer_vulkan_on_resize,
+      .get_device_information = renderer_vulkan_get_device_information,
       .wait_idle = renderer_vulkan_wait_idle,
       .buffer_create = renderer_vulkan_create_buffer,
       .buffer_destroy = renderer_vulkan_destroy_buffer,
@@ -135,7 +136,8 @@ RendererBackendInterface renderer_vulkan_get_interface() {
 bool32_t renderer_vulkan_initialize(void **out_backend_state,
                                     RendererBackendType type, Window *window,
                                     uint32_t initial_width,
-                                    uint32_t initial_height) {
+                                    uint32_t initial_height,
+                                    DeviceRequirements *device_requirements) {
   assert_log(out_backend_state != NULL, "Out backend state is NULL");
   assert_log(type == RENDERER_BACKEND_TYPE_VULKAN,
              "Vulkan backend type is required");
@@ -171,6 +173,7 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
   backend_state->arena = arena;
   backend_state->temp_arena = temp_arena;
   backend_state->window = window;
+  backend_state->device_requirements = device_requirements;
 
   *out_backend_state = backend_state;
   backend_state->allocator = VK_NULL_HANDLE;
@@ -301,6 +304,14 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
   }
 
   return true;
+}
+
+void renderer_vulkan_get_device_information(
+    void *backend_state, DeviceInformation *device_information,
+    Arena *temp_arena) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  vulkan_device_get_information(state, device_information, temp_arena);
 }
 
 void renderer_vulkan_shutdown(void *backend_state) {

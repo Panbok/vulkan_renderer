@@ -51,6 +51,7 @@
 #include "core/logger.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
+#include "memory/arena.h"
 #include "platform/window.h"
 #include "renderer/renderer.h"
 
@@ -85,6 +86,8 @@ typedef struct ApplicationConfig {
 
   uint64_t app_arena_size; /**< The size of the main application arena, used for
                               general game/application allocations. */
+  DeviceRequirements device_requirements; /**< The device requirements for the
+                                             application. */
 } ApplicationConfig;
 
 /**
@@ -115,8 +118,8 @@ typedef struct Application {
   // Window size tracking for resize detection
   uint32_t
       last_window_width; /**< Last known window width for resize detection */
-  uint32_t
-      last_window_height; /**< Last known window height for resize detection */
+  uint32_t last_window_height; /**< Last known window height for resize
+                                  detection */
 } Application;
 
 /**
@@ -161,7 +164,8 @@ bool8_t application_on_mouse_event(Event *event);
 
 /**
  * @brief User-defined application update function.
- * This function is called once per frame from within the main application loop
+ * This function is called once per frame from within the main application
+ * loop
  * (`application_start`). It is intended to house the primary game logic,
  * rendering calls, and other per-frame updates.
  * @param application Pointer to the main `Application` structure.
@@ -228,9 +232,10 @@ bool8_t application_create(Application *application,
   }
 
   RendererError renderer_error = RENDERER_ERROR_NONE;
-  application->renderer =
-      renderer_create(application->renderer_arena, RENDERER_BACKEND_TYPE_VULKAN,
-                      &application->window, &renderer_error);
+  application->renderer = renderer_create(
+      application->renderer_arena, RENDERER_BACKEND_TYPE_VULKAN,
+      &application->window, &application->config->device_requirements,
+      &renderer_error);
   if (renderer_error != RENDERER_ERROR_NONE) {
     log_fatal("Failed to create renderer!");
     if (application->app_arena)
@@ -404,7 +409,8 @@ void application_handle_window_resize(Application *application) {
 
 /**
  * @brief Draws a frame using the renderer.
- * This function is called once per frame from within the main application loop
+ * This function is called once per frame from within the main application
+ * loop
  * (`application_start`). It handles:
  * - Calling the user-defined `application_update()` function.
  * - Updating the input system state.

@@ -1,5 +1,4 @@
 #include "vulkan_device.h"
-#include "vulkan_utils.h"
 
 static bool32_t has_required_extensions(VulkanBackendState *state,
                                         VkPhysicalDevice device) {
@@ -40,10 +39,8 @@ static bool32_t has_required_extensions(VulkanBackendState *state,
   return true;
 }
 
-// todo: we need to check if the device supports the required extensions
-// todo: pick up the best device based on the scoring algorithm
-static bool32_t is_device_suitable(VulkanBackendState *state,
-                                   VkPhysicalDevice device) {
+static uint32_t score_device(VulkanBackendState *state,
+                             VkPhysicalDevice device) {
   assert_log(device != NULL, "Device is NULL");
 
   VkPhysicalDeviceProperties properties;
@@ -51,6 +48,14 @@ static bool32_t is_device_suitable(VulkanBackendState *state,
 
   VkPhysicalDeviceFeatures deviceFeatures;
   vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
+
+  uint32_t score = 0;
+
+  // Check basic requirements first - if these fail, device is unsuitable (score
+  // = 0)
+  if (!has_required_extensions(state, device)) {
+    return 0;
+  }
 
   Scratch scratch = scratch_create(state->temp_arena);
   Array_QueueFamilyIndex indices = find_queue_family_indices(state, device);
@@ -62,11 +67,10 @@ static bool32_t is_device_suitable(VulkanBackendState *state,
   const bool32_t has_required_queues =
       graphics_index->is_present && present_index->is_present;
 
-  array_destroy_QueueFamilyIndex(&indices);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
-
-  if (!has_required_extensions(state, device)) {
-    return false;
+  if (!has_required_queues) {
+    array_destroy_QueueFamilyIndex(&indices);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    return 0;
   }
 
   VulkanSwapchainDetails swapchain_details = {
@@ -77,13 +81,106 @@ static bool32_t is_device_suitable(VulkanBackendState *state,
 
   if (array_is_null_VkSurfaceFormatKHR(&swapchain_details.formats) ||
       array_is_null_VkPresentModeKHR(&swapchain_details.present_modes)) {
-    return false;
+    array_destroy_QueueFamilyIndex(&indices);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    return 0;
   }
 
-  return properties.apiVersion >= VK_API_VERSION_1_2 &&
-         (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ||
-          properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) &&
-         deviceFeatures.tessellationShader && has_required_queues;
+  // Start with base score for meeting minimum requirements
+  score = 100;
+
+  DeviceRequirements *req = state->device_requirements;
+  if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
+      bitset8_is_set(&req->allowed_device_types, DEVICE_TYPE_DISCRETE_BIT)) {
+    score += 1000; // Discrete GPU gets highest preference
+  } else if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU &&
+             bitset8_is_set(&req->allowed_device_types,
+                            DEVICE_TYPE_INTEGRATED_BIT)) {
+    score += 500; // Integrated GPU gets medium preference
+  } else if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU &&
+             bitset8_is_set(&req->allowed_device_types,
+                            DEVICE_TYPE_VIRTUAL_BIT)) {
+    score += 200; // Virtual GPU gets lower preference
+  } else if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU &&
+             bitset8_is_set(&req->allowed_device_types, DEVICE_TYPE_CPU_BIT)) {
+    score += 50; // CPU gets lowest preference
+  } else {
+    // Device type not in allowed types, but still give some score if it meets
+    // basic requirements
+    score += 10;
+  }
+
+  // Bonus for more VRAM (for discrete/integrated GPUs)
+  if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ||
+      properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+    VkPhysicalDeviceMemoryProperties memProperties;
+    vkGetPhysicalDeviceMemoryProperties(device, &memProperties);
+
+    uint64_t vram_size = 0;
+    for (uint32_t i = 0; i < memProperties.memoryHeapCount; i++) {
+      if (memProperties.memoryHeaps[i].flags &
+          VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+        vram_size = memProperties.memoryHeaps[i].size;
+        break;
+      }
+    }
+
+    // Add points based on VRAM size (1 point per GB, capped at 32 points)
+    score += (uint32_t)((vram_size / (1024 * 1024 * 1024)) > 32
+                            ? 32
+                            : (vram_size / (1024 * 1024 * 1024)));
+  }
+
+  for (uint32_t i = 0; i < indices.length; i++) {
+    QueueFamilyIndex *queue_index = array_get_QueueFamilyIndex(&indices, i);
+    if (queue_index->type == QUEUE_FAMILY_TYPE_GRAPHICS &&
+        bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_GRAPHICS_BIT)) {
+      score += 10;
+    }
+  }
+
+  if (deviceFeatures.samplerAnisotropy &&
+      bitset8_is_set(&req->supported_sampler_filters,
+                     SAMPLER_FILTER_ANISOTROPIC_BIT)) {
+    score += 50;
+  }
+
+  array_destroy_QueueFamilyIndex(&indices);
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+
+  return score;
+}
+
+static VkPhysicalDevice pick_suitable_device(VulkanBackendState *state,
+                                             Array_VkPhysicalDevice *devices) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(devices != NULL, "Devices array is NULL");
+  assert_log(devices->length > 0, "No devices provided");
+
+  VkPhysicalDevice best_device = VK_NULL_HANDLE;
+  uint32_t best_score = 0;
+  for (uint32_t i = 0; i < devices->length; i++) {
+    VkPhysicalDevice device = *array_get_VkPhysicalDevice(devices, i);
+    uint32_t score = score_device(state, device);
+
+    if (score > best_score) {
+      best_score = score;
+      best_device = device;
+    }
+
+    VkPhysicalDeviceProperties properties;
+    vkGetPhysicalDeviceProperties(device, &properties);
+    log_debug("Device '%s' scored %u points", properties.deviceName, score);
+  }
+
+  if (best_device != VK_NULL_HANDLE) {
+    VkPhysicalDeviceProperties properties;
+    vkGetPhysicalDeviceProperties(best_device, &properties);
+    log_debug("Selected device '%s' with score %u", properties.deviceName,
+              best_score);
+  }
+
+  return best_device;
 }
 
 bool32_t vulkan_device_pick_physical_device(VulkanBackendState *state) {
@@ -104,12 +201,12 @@ bool32_t vulkan_device_pick_physical_device(VulkanBackendState *state) {
   vkEnumeratePhysicalDevices(state->instance, &device_count,
                              physical_devices.data);
 
-  for (uint32_t i = 0; i < device_count; i++) {
-    VkPhysicalDevice device = *array_get_VkPhysicalDevice(&physical_devices, i);
-    if (is_device_suitable(state, device)) {
-      state->physical_device = device;
-      break;
-    }
+  state->physical_device = pick_suitable_device(state, &physical_devices);
+  if (state->physical_device == VK_NULL_HANDLE) {
+    array_destroy_VkPhysicalDevice(&physical_devices);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    log_fatal("No suitable Vulkan physical device found");
+    return false;
   }
 
   if (state->physical_device == VK_NULL_HANDLE) {
@@ -124,6 +221,192 @@ bool32_t vulkan_device_pick_physical_device(VulkanBackendState *state) {
   log_debug("Physical device acquired with handle: %p", state->physical_device);
 
   return true;
+}
+
+void vulkan_device_get_information(VulkanBackendState *state,
+                                   DeviceInformation *device_information,
+                                   Arena *temp_arena) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(state->physical_device != VK_NULL_HANDLE,
+             "Physical device was not acquired");
+
+  VkPhysicalDeviceProperties properties;
+  vkGetPhysicalDeviceProperties(state->physical_device, &properties);
+
+  VkPhysicalDeviceFeatures features;
+  vkGetPhysicalDeviceFeatures(state->physical_device, &features);
+
+  VkPhysicalDeviceMemoryProperties memory_properties;
+  vkGetPhysicalDeviceMemoryProperties(state->physical_device,
+                                      &memory_properties);
+
+  // Device name
+  String8 device_name =
+      string8_create_formatted(temp_arena, "%s", properties.deviceName);
+
+  // Vendor name based on vendor ID
+  String8 vendor_name;
+  switch (properties.vendorID) {
+  case 0x1002:
+    vendor_name = string8_lit("AMD");
+    break;
+  case 0x10DE:
+    vendor_name = string8_lit("NVIDIA");
+    break;
+  case 0x8086:
+    vendor_name = string8_lit("Intel");
+    break;
+  case 0x13B5:
+    vendor_name = string8_lit("ARM");
+    break;
+  case 0x5143:
+    vendor_name = string8_lit("Qualcomm");
+    break;
+  case 0x1010:
+    vendor_name = string8_lit("ImgTec");
+    break;
+  default: {
+    vendor_name = string8_create_formatted(temp_arena, "Unknown (0x%X)",
+                                           properties.vendorID);
+    break;
+  }
+  }
+
+  // Driver version (vendor-specific formatting)
+  String8 driver_version;
+  if (properties.vendorID == 0x10DE) { // NVIDIA
+    uint32_t major = (properties.driverVersion >> 22) & 0x3FF;
+    uint32_t minor = (properties.driverVersion >> 14) & 0xFF;
+    uint32_t secondary = (properties.driverVersion >> 6) & 0xFF;
+    uint32_t tertiary = properties.driverVersion & 0x3F;
+    driver_version = string8_create_formatted(temp_arena, "%u.%u.%u.%u", major,
+                                              minor, secondary, tertiary);
+  } else if (properties.vendorID == 0x8086) { // Intel
+    uint32_t major = properties.driverVersion >> 14;
+    uint32_t minor = properties.driverVersion & 0x3FFF;
+    driver_version =
+        string8_create_formatted(temp_arena, "%u.%u", major, minor);
+  } else { // AMD and others - use standard Vulkan version format
+    uint32_t major = VK_VERSION_MAJOR(properties.driverVersion);
+    uint32_t minor = VK_VERSION_MINOR(properties.driverVersion);
+    uint32_t patch = VK_VERSION_PATCH(properties.driverVersion);
+    driver_version =
+        string8_create_formatted(temp_arena, "%u.%u.%u", major, minor, patch);
+  }
+
+  // API version
+  uint32_t api_major = VK_VERSION_MAJOR(properties.apiVersion);
+  uint32_t api_minor = VK_VERSION_MINOR(properties.apiVersion);
+  uint32_t api_patch = VK_VERSION_PATCH(properties.apiVersion);
+  String8 api_version = string8_create_formatted(
+      temp_arena, "%u.%u.%u", api_major, api_minor, api_patch);
+
+  // Memory information
+  uint64_t vram_size = 0;
+  uint64_t vram_local_size = 0;
+  uint64_t vram_shared_size = 0;
+
+  for (uint32_t i = 0; i < memory_properties.memoryHeapCount; i++) {
+    VkMemoryHeap heap = memory_properties.memoryHeaps[i];
+    if (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+      vram_local_size += heap.size;
+    } else {
+      vram_shared_size += heap.size;
+    }
+    vram_size += heap.size;
+  }
+
+  // Device type flags
+  DeviceTypeFlags device_types = bitset8_create();
+  switch (properties.deviceType) {
+  case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+    bitset8_set(&device_types, DEVICE_TYPE_DISCRETE_BIT);
+    break;
+  case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+    bitset8_set(&device_types, DEVICE_TYPE_INTEGRATED_BIT);
+    break;
+  case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+    bitset8_set(&device_types, DEVICE_TYPE_VIRTUAL_BIT);
+    break;
+  case VK_PHYSICAL_DEVICE_TYPE_CPU:
+    bitset8_set(&device_types, DEVICE_TYPE_CPU_BIT);
+    break;
+  default:
+    break;
+  }
+
+  // Queue family capabilities
+  Array_QueueFamilyIndex queue_indices =
+      find_queue_family_indices(state, state->physical_device);
+  DeviceQueueFlags device_queues = bitset8_create();
+
+  uint32_t queue_family_count = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(state->physical_device,
+                                           &queue_family_count, NULL);
+
+  Array_VkQueueFamilyProperties queue_families =
+      array_create_VkQueueFamilyProperties(temp_arena, queue_family_count);
+  vkGetPhysicalDeviceQueueFamilyProperties(
+      state->physical_device, &queue_family_count, queue_families.data);
+
+  for (uint32_t i = 0; i < queue_family_count; i++) {
+    VkQueueFamilyProperties *family =
+        array_get_VkQueueFamilyProperties(&queue_families, i);
+
+    if (family->queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+      bitset8_set(&device_queues, DEVICE_QUEUE_GRAPHICS_BIT);
+    }
+    if (family->queueFlags & VK_QUEUE_COMPUTE_BIT) {
+      bitset8_set(&device_queues, DEVICE_QUEUE_COMPUTE_BIT);
+    }
+    if (family->queueFlags & VK_QUEUE_TRANSFER_BIT) {
+      bitset8_set(&device_queues, DEVICE_QUEUE_TRANSFER_BIT);
+    }
+    if (family->queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) {
+      bitset8_set(&device_queues, DEVICE_QUEUE_SPARSE_BINDING_BIT);
+    }
+    if (family->queueFlags & VK_QUEUE_PROTECTED_BIT) {
+      bitset8_set(&device_queues, DEVICE_QUEUE_PROTECTED_BIT);
+    }
+  }
+
+  // Check for present support (this is surface-dependent)
+  QueueFamilyIndex *present_index =
+      array_get_QueueFamilyIndex(&queue_indices, QUEUE_FAMILY_TYPE_PRESENT);
+  if (present_index->is_present) {
+    bitset8_set(&device_queues, DEVICE_QUEUE_PRESENT_BIT);
+  }
+
+  // Sampler filter capabilities
+  SamplerFilterFlags sampler_filters = bitset8_create();
+  if (features.samplerAnisotropy) {
+    bitset8_set(&sampler_filters, SAMPLER_FILTER_ANISOTROPIC_BIT);
+  }
+  // Linear filtering is almost universally supported
+  bitset8_set(&sampler_filters, SAMPLER_FILTER_LINEAR_BIT);
+
+  array_destroy_QueueFamilyIndex(&queue_indices);
+  array_destroy_VkQueueFamilyProperties(&queue_families);
+
+  String8 persistent_device_name = string8_create_formatted(
+      state->arena, "%.*s", (int)device_name.length, device_name.str);
+  String8 persistent_vendor_name = string8_create_formatted(
+      state->arena, "%.*s", (int)vendor_name.length, vendor_name.str);
+  String8 persistent_driver_version = string8_create_formatted(
+      state->arena, "%.*s", (int)driver_version.length, driver_version.str);
+  String8 persistent_api_version = string8_create_formatted(
+      state->arena, "%.*s", (int)api_version.length, api_version.str);
+
+  device_information->device_name = persistent_device_name;
+  device_information->vendor_name = persistent_vendor_name;
+  device_information->driver_version = persistent_driver_version;
+  device_information->api_version = persistent_api_version;
+  device_information->vram_size = vram_size;
+  device_information->vram_local_size = vram_local_size;
+  device_information->vram_shared_size = vram_shared_size;
+  device_information->device_types = device_types;
+  device_information->device_queues = device_queues;
+  device_information->sampler_filters = sampler_filters;
 }
 
 void vulkan_device_release_physical_device(VulkanBackendState *state) {

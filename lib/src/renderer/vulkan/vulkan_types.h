@@ -144,8 +144,8 @@ typedef struct VulkanBackendState {
   Arena *arena;
   Arena *temp_arena;
   Window *window;
+  DeviceRequirements *device_requirements;
 
-  // todo: pass allocator to every vulkan function
   VkAllocationCallbacks *allocator;
 
   bool8_t is_swapchain_recreation_requested;

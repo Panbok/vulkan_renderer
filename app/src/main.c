@@ -106,6 +106,14 @@ int main(int argc, char **argv) {
   config.height = 600;
   config.app_arena_size = MB(1);
   config.target_frame_rate = 60;
+  config.device_requirements = (DeviceRequirements){
+      .supported_stages = SHADER_STAGE_VERTEX_BIT | SHADER_STAGE_FRAGMENT_BIT,
+      .supported_queues = DEVICE_QUEUE_GRAPHICS_BIT |
+                          DEVICE_QUEUE_TRANSFER_BIT | DEVICE_QUEUE_PRESENT_BIT,
+      .allowed_device_types =
+          DEVICE_TYPE_DISCRETE_BIT | DEVICE_TYPE_INTEGRATED_BIT,
+      .supported_sampler_filters = SAMPLER_FILTER_ANISOTROPIC_BIT,
+  };
 
   Application application;
   if (!application_create(&application, &config)) {
@@ -124,6 +132,23 @@ int main(int argc, char **argv) {
   state->input_state = &application.window.input_state;
   state->app_arena = application.app_arena;
   state->event_arena = application.event_manager.arena;
+
+  Scratch scratch = scratch_create(application.app_arena);
+  DeviceInformation device_information;
+  renderer_get_device_information(application.renderer, &device_information,
+                                  scratch.arena);
+  log_info("Device Name: %s", device_information.device_name.str);
+  log_info("Device Vendor: %s", device_information.vendor_name.str);
+  log_info("Device Driver Version: %s", device_information.driver_version.str);
+  log_info("Device Graphics API Version: %s",
+           device_information.api_version.str);
+  log_info("Device VRAM Size: %.2f GB",
+           (float64_t)device_information.vram_size / GB(1));
+  log_info("Device VRAM Local Size: %.2f GB",
+           (float64_t)device_information.vram_local_size / GB(1));
+  log_info("Device VRAM Shared Size: %.2f GB",
+           (float64_t)device_information.vram_shared_size / GB(1));
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
   application_start(&application);
   application_close(&application);
