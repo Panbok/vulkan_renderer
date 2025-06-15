@@ -92,16 +92,12 @@ static uint32_t score_device(VulkanBackendState *state,
     return 0;
   }
 
-  if (!deviceFeatures.tessellationShader) {
-    array_destroy_QueueFamilyIndex(&indices);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
-    return 0;
-  }
-
   DeviceRequirements *req = state->device_requirements;
 
   if (bitset8_is_set(&req->supported_stages, SHADER_STAGE_GEOMETRY_BIT) &&
       !deviceFeatures.geometryShader) {
+    array_destroy_VkSurfaceFormatKHR(&swapchain_details.formats);
+    array_destroy_VkPresentModeKHR(&swapchain_details.present_modes);
     array_destroy_QueueFamilyIndex(&indices);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
     return 0;
