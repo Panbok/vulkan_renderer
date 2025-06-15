@@ -158,7 +158,6 @@ typedef enum DeviceTypeBits {
   DEVICE_TYPE_INTEGRATED_BIT = 1 << 1,
   DEVICE_TYPE_VIRTUAL_BIT = 1 << 2,
   DEVICE_TYPE_CPU_BIT = 1 << 3,
-  DEVICE_TYPE_COUNT
 } DeviceTypeBits;
 typedef Bitset8 DeviceTypeFlags;
 
@@ -169,14 +168,12 @@ typedef enum DeviceQueueBits {
   DEVICE_QUEUE_SPARSE_BINDING_BIT = 1 << 3,
   DEVICE_QUEUE_PROTECTED_BIT = 1 << 4,
   DEVICE_QUEUE_PRESENT_BIT = 1 << 5,
-  DEVICE_QUEUE_COUNT
 } DeviceQueueBits;
 typedef Bitset8 DeviceQueueFlags;
 
 typedef enum SamplerFilterBits {
   SAMPLER_FILTER_ANISOTROPIC_BIT = 1 << 0,
   SAMPLER_FILTER_LINEAR_BIT = 1 << 1,
-  SAMPLER_FILTER_COUNT
 } SamplerFilterBits;
 typedef Bitset8 SamplerFilterFlags;
 

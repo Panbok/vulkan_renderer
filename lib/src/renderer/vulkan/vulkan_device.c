@@ -1,4 +1,6 @@
 #include "vulkan_device.h"
+#include "containers/bitset.h"
+#include "vulkan_utils.h"
 
 static bool32_t has_required_extensions(VulkanBackendState *state,
                                         VkPhysicalDevice device) {
@@ -51,8 +53,6 @@ static uint32_t score_device(VulkanBackendState *state,
 
   uint32_t score = 0;
 
-  // Check basic requirements first - if these fail, device is unsuitable (score
-  // = 0)
   if (!has_required_extensions(state, device)) {
     return 0;
   }
@@ -86,10 +86,115 @@ static uint32_t score_device(VulkanBackendState *state,
     return 0;
   }
 
-  // Start with base score for meeting minimum requirements
-  score = 100;
+  if (properties.apiVersion < VK_API_VERSION_1_2) {
+    array_destroy_QueueFamilyIndex(&indices);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    return 0;
+  }
+
+  if (!deviceFeatures.tessellationShader) {
+    array_destroy_QueueFamilyIndex(&indices);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    return 0;
+  }
 
   DeviceRequirements *req = state->device_requirements;
+
+  if (bitset8_is_set(&req->supported_stages, SHADER_STAGE_GEOMETRY_BIT) &&
+      !deviceFeatures.geometryShader) {
+    array_destroy_QueueFamilyIndex(&indices);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    return 0;
+  }
+
+  if (bitset8_is_set(&req->supported_stages,
+                     SHADER_STAGE_TESSELLATION_CONTROL_BIT) &&
+      !deviceFeatures.tessellationShader) {
+    array_destroy_QueueFamilyIndex(&indices);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    return 0;
+  }
+
+  if (bitset8_is_set(&req->supported_stages,
+                     SHADER_STAGE_TESSELLATION_EVALUATION_BIT) &&
+      !deviceFeatures.tessellationShader) {
+    array_destroy_QueueFamilyIndex(&indices);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    return 0;
+  }
+
+  uint32_t queue_family_count = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, NULL);
+
+  Array_VkQueueFamilyProperties queue_families =
+      array_create_VkQueueFamilyProperties(scratch.arena, queue_family_count);
+  vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count,
+                                           queue_families.data);
+
+  bool32_t has_required_graphics =
+      !bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_GRAPHICS_BIT);
+  bool32_t has_required_compute =
+      !bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_COMPUTE_BIT);
+  bool32_t has_required_transfer =
+      !bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_TRANSFER_BIT);
+  bool32_t has_required_sparse =
+      !bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_SPARSE_BINDING_BIT);
+  bool32_t has_required_protected =
+      !bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_PROTECTED_BIT);
+  bool32_t has_required_present =
+      !bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_PRESENT_BIT);
+
+  for (uint32_t i = 0; i < queue_family_count; i++) {
+    VkQueueFamilyProperties *family =
+        array_get_VkQueueFamilyProperties(&queue_families, i);
+
+    if (family->queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+      has_required_graphics = true;
+    }
+    if (family->queueFlags & VK_QUEUE_COMPUTE_BIT) {
+      has_required_compute = true;
+    }
+    if (family->queueFlags & VK_QUEUE_TRANSFER_BIT) {
+      has_required_transfer = true;
+    }
+    if (family->queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) {
+      has_required_sparse = true;
+    }
+    if (family->queueFlags & VK_QUEUE_PROTECTED_BIT) {
+      has_required_protected = true;
+    }
+  }
+
+  // Check present support separately (surface-dependent)
+  if (bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_PRESENT_BIT)) {
+    QueueFamilyIndex *present_index =
+        array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_PRESENT);
+    has_required_present = present_index->is_present;
+  }
+
+  array_destroy_VkQueueFamilyProperties(&queue_families);
+
+  if (!has_required_graphics || !has_required_compute ||
+      !has_required_transfer || !has_required_sparse ||
+      !has_required_protected || !has_required_present) {
+    array_destroy_QueueFamilyIndex(&indices);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    return 0;
+  }
+
+  if (bitset8_is_set(&req->supported_sampler_filters,
+                     SAMPLER_FILTER_ANISOTROPIC_BIT) &&
+      !deviceFeatures.samplerAnisotropy) {
+    array_destroy_QueueFamilyIndex(&indices);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    return 0;
+  }
+
+  // Note: Linear filtering is universally supported in Vulkan, so no need to
+  // check
+
+  // Start with base score for meeting minimum requirements
+  score = 100;
   if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
       bitset8_is_set(&req->allowed_device_types, DEVICE_TYPE_DISCRETE_BIT)) {
     score += 1000; // Discrete GPU gets highest preference
@@ -131,18 +236,57 @@ static uint32_t score_device(VulkanBackendState *state,
                             : (vram_size / (1024 * 1024 * 1024)));
   }
 
-  for (uint32_t i = 0; i < indices.length; i++) {
-    QueueFamilyIndex *queue_index = array_get_QueueFamilyIndex(&indices, i);
-    if (queue_index->type == QUEUE_FAMILY_TYPE_GRAPHICS &&
-        bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_GRAPHICS_BIT)) {
-      score += 10;
+  // Bonus points for additional features beyond requirements
+  if (deviceFeatures.geometryShader) {
+    score += 25;
+  }
+
+  if (deviceFeatures.samplerAnisotropy) {
+    score += 25;
+  }
+
+  if (deviceFeatures.wideLines) {
+    score += 10;
+  }
+
+  if (deviceFeatures.largePoints) {
+    score += 10;
+  }
+
+  // Bonus for having multiple queue families of the same type (better
+  // parallelism)
+  uint32_t graphics_queue_count = 0;
+  uint32_t compute_queue_count = 0;
+
+  uint32_t bonus_queue_family_count = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(device, &bonus_queue_family_count,
+                                           NULL);
+
+  Array_VkQueueFamilyProperties bonus_queue_families =
+      array_create_VkQueueFamilyProperties(scratch.arena,
+                                           bonus_queue_family_count);
+  vkGetPhysicalDeviceQueueFamilyProperties(device, &bonus_queue_family_count,
+                                           bonus_queue_families.data);
+
+  for (uint32_t i = 0; i < bonus_queue_family_count; i++) {
+    VkQueueFamilyProperties *family =
+        array_get_VkQueueFamilyProperties(&bonus_queue_families, i);
+    if (family->queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+      graphics_queue_count += family->queueCount;
+    }
+    if (family->queueFlags & VK_QUEUE_COMPUTE_BIT) {
+      compute_queue_count += family->queueCount;
     }
   }
 
-  if (deviceFeatures.samplerAnisotropy &&
-      bitset8_is_set(&req->supported_sampler_filters,
-                     SAMPLER_FILTER_ANISOTROPIC_BIT)) {
-    score += 50;
+  array_destroy_VkQueueFamilyProperties(&bonus_queue_families);
+
+  // Bonus for multiple queues (better parallelism)
+  if (graphics_queue_count > 1) {
+    score += 15;
+  }
+  if (compute_queue_count > 1) {
+    score += 15;
   }
 
   array_destroy_QueueFamilyIndex(&indices);
@@ -209,12 +353,6 @@ bool32_t vulkan_device_pick_physical_device(VulkanBackendState *state) {
     return false;
   }
 
-  if (state->physical_device == VK_NULL_HANDLE) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
-    log_fatal("No suitable Vulkan physical device found");
-    return false;
-  }
-
   array_destroy_VkPhysicalDevice(&physical_devices);
   scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
@@ -229,6 +367,8 @@ void vulkan_device_get_information(VulkanBackendState *state,
   assert_log(state != NULL, "State is NULL");
   assert_log(state->physical_device != VK_NULL_HANDLE,
              "Physical device was not acquired");
+  assert_log(device_information != NULL, "Device information is NULL");
+  assert_log(temp_arena != NULL, "Temp arena is NULL");
 
   VkPhysicalDeviceProperties properties;
   vkGetPhysicalDeviceProperties(state->physical_device, &properties);

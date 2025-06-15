@@ -7,6 +7,7 @@ RendererFrontendHandle renderer_create(Arena *arena,
                                        RendererError *out_error) {
   assert_log(window != NULL, "Window is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
+  assert_log(device_requirements != NULL, "Device requirements is NULL");
 
   log_debug("Creating renderer");
 
@@ -93,6 +94,8 @@ void renderer_get_device_information(RendererFrontendHandle renderer,
                                      DeviceInformation *device_information,
                                      Arena *temp_arena) {
   assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(device_information != NULL, "Device information is NULL");
+  assert_log(temp_arena != NULL, "Temp arena is NULL");
   renderer->backend.get_device_information(renderer->backend_state,
                                            device_information, temp_arena);
 }

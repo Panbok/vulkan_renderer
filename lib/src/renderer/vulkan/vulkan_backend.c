@@ -144,6 +144,7 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
   assert_log(window != NULL, "Window is NULL");
   assert_log(initial_width > 0, "Initial width is 0");
   assert_log(initial_height > 0, "Initial height is 0");
+  assert_log(device_requirements != NULL, "Device requirements is NULL");
 
   log_debug("Initializing Vulkan backend");
 
@@ -310,6 +311,8 @@ void renderer_vulkan_get_device_information(
     void *backend_state, DeviceInformation *device_information,
     Arena *temp_arena) {
   assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(device_information != NULL, "Device information is NULL");
+  assert_log(temp_arena != NULL, "Temp arena is NULL");
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   vulkan_device_get_information(state, device_information, temp_arena);
 }
