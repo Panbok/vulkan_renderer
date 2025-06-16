@@ -9,7 +9,6 @@
             "type": "lldb",
             "request": "launch",
             "stopAtEntry": false,
-            "cwd": "${workspaceFolder}/build/",
             "environment": [],
             "program": "${workspaceFolder}/build/app/vulkan_renderer",
             "osx": {
