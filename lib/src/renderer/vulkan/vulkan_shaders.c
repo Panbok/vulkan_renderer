@@ -75,8 +75,9 @@ bool8_t vulkan_shader_module_create(VulkanBackendState *state,
   };
 
   VkShaderModule shader_module;
-  VkResult result = vkCreateShaderModule(state->device, &create_info,
-                                         state->allocator, &shader_module);
+  VkResult result =
+      vkCreateShaderModule(state->device.logical_device, &create_info,
+                           state->allocator, &shader_module);
   if (result != VK_SUCCESS) {
     log_error("Failed to create shader module: %s", string_VkResult(result));
     return false;
@@ -111,7 +112,8 @@ void vulkan_shader_module_destroy(VulkanBackendState *state,
   if (shader && shader->module != VK_NULL_HANDLE) {
     log_debug("Destroying shader module: %p", shader);
 
-    vkDestroyShaderModule(state->device, shader->module, state->allocator);
+    vkDestroyShaderModule(state->device.logical_device, shader->module,
+                          state->allocator);
     shader->module = VK_NULL_HANDLE;
   };
 }

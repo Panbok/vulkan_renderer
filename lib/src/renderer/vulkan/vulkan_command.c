@@ -7,12 +7,12 @@ bool8_t vulkan_command_buffer_create(VulkanBackendState *state,
 
   VkCommandBufferAllocateInfo alloc_info = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-      .commandPool = state->command_pool,
+      .commandPool = state->device.graphics_command_pool,
       .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
       .commandBufferCount = 1,
   };
 
-  if (vkAllocateCommandBuffers(state->device, &alloc_info,
+  if (vkAllocateCommandBuffers(state->device.logical_device, &alloc_info,
                                &out_command_buffer->handle) != VK_SUCCESS) {
     log_fatal("Failed to allocate Vulkan command buffer");
     return false_v;
@@ -32,7 +32,8 @@ void vulkan_command_buffer_destroy(VulkanBackendState *state,
 
   log_debug("Destroying Vulkan command buffer");
 
-  vkFreeCommandBuffers(state->device, state->command_pool, 1,
+  vkFreeCommandBuffers(state->device.logical_device,
+                       state->device.graphics_command_pool, 1,
                        &command_buffer->handle);
 
   command_buffer->handle = VK_NULL_HANDLE;

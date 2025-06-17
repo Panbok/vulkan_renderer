@@ -18,7 +18,7 @@ void vulkan_fence_create(VulkanBackendState *state, bool8_t is_signaled,
     fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
   }
 
-  if (vkCreateFence(state->device, &fence_info, state->allocator,
+  if (vkCreateFence(state->device.logical_device, &fence_info, state->allocator,
                     &out_fence->handle) != VK_SUCCESS) {
     log_fatal("Failed to create Vulkan fence");
   }
@@ -28,7 +28,8 @@ void vulkan_fence_destroy(VulkanBackendState *state, VulkanFence *fence) {
   assert_log(state != NULL, "Vulkan backend state is NULL");
 
   if (fence->handle) {
-    vkDestroyFence(state->device, fence->handle, state->allocator);
+    vkDestroyFence(state->device.logical_device, fence->handle,
+                   state->allocator);
     fence->handle = VK_NULL_HANDLE;
   }
   fence->is_signaled = false_v;
@@ -43,8 +44,8 @@ bool8_t vulkan_fence_wait(VulkanBackendState *state, uint64_t timeout,
     return true_v;
   }
 
-  VkResult result =
-      vkWaitForFences(state->device, 1, &fence->handle, true_v, timeout);
+  VkResult result = vkWaitForFences(state->device.logical_device, 1,
+                                    &fence->handle, true_v, timeout);
   switch (result) {
   case VK_SUCCESS:
     fence->is_signaled = true_v;
@@ -74,7 +75,7 @@ void vulkan_fence_reset(VulkanBackendState *state, VulkanFence *fence) {
   assert_log(fence != NULL, "Vulkan fence is NULL");
 
   if (fence->is_signaled) {
-    vkResetFences(state->device, 1, &fence->handle);
+    vkResetFences(state->device.logical_device, 1, &fence->handle);
     fence->is_signaled = false_v;
   }
 }

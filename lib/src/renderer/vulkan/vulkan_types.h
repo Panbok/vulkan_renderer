@@ -20,6 +20,7 @@
 typedef enum QueueFamilyType : uint32_t {
   QUEUE_FAMILY_TYPE_GRAPHICS,
   QUEUE_FAMILY_TYPE_PRESENT,
+  QUEUE_FAMILY_TYPE_TRANSFER,
   QUEUE_FAMILY_TYPE_COUNT,
 } QueueFamilyType;
 
@@ -103,11 +104,42 @@ typedef struct VulkanImage {
   VkImageView view;
   uint32_t width;
   uint32_t height;
+  uint32_t mip_levels;
+  uint32_t array_layers;
 } VulkanImage;
+
+Array(VulkanImage);
+
+typedef struct VulkanSwapchainDetails {
+  VkSurfaceCapabilitiesKHR capabilities;
+  Array_VkSurfaceFormatKHR formats;
+  Array_VkPresentModeKHR present_modes;
+} VulkanSwapchainDetails;
+
+typedef struct VulkanDevice {
+  VkPhysicalDevice physical_device;
+  VkDevice logical_device;
+  VkCommandPool graphics_command_pool;
+
+  VulkanSwapchainDetails swapchain_details;
+
+  int32_t graphics_queue_index;
+  int32_t present_queue_index;
+  int32_t transfer_queue_index;
+
+  VkQueue graphics_queue;
+  VkQueue present_queue;
+  VkQueue transfer_queue;
+
+  VkPhysicalDeviceProperties properties;
+  VkPhysicalDeviceFeatures features;
+  VkPhysicalDeviceMemoryProperties memory;
+
+  VkFormat depth_format;
+} VulkanDevice;
 
 typedef struct VulkanFramebuffer {
   VkFramebuffer handle;
-  uint32_t attachment_count;
   Array_VkImageView attachments;
   VulkanRenderPass *renderpass;
 } VulkanFramebuffer;
@@ -128,12 +160,6 @@ typedef struct VulkanSwapchain {
   Array_VulkanFramebuffer framebuffers;
 } VulkanSwapchain;
 
-typedef struct VulkanSwapchainDetails {
-  VkSurfaceCapabilitiesKHR capabilities;
-  Array_VkSurfaceFormatKHR formats;
-  Array_VkPresentModeKHR present_modes;
-} VulkanSwapchainDetails;
-
 typedef VulkanFence *VulkanFencePtr;
 
 Array(VulkanCommandBuffer);
@@ -143,6 +169,7 @@ Array(VulkanFencePtr);
 typedef struct VulkanBackendState {
   Arena *arena;
   Arena *temp_arena;
+  Arena *swapchain_arena;
   Window *window;
   DeviceRequirements *device_requirements;
 
@@ -153,21 +180,18 @@ typedef struct VulkanBackendState {
   uint32_t current_frame;
   uint32_t image_index;
 
+  // todo: remove
   Array_String8 validation_layers;
 
   VkInstance instance;
   VkDebugUtilsMessengerEXT debug_messenger;
 
-  VkPhysicalDevice physical_device;
-  VkDevice device;
-  VkCommandPool command_pool;
-
-  VkQueue graphics_queue;
-  VkQueue present_queue;
+  VulkanDevice device;
 
   VulkanRenderPass *main_render_pass;
 
   VkSurfaceKHR surface;
+
   VulkanSwapchain swapchain;
 
   Array_VkSemaphore image_available_semaphores;

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "defines.h"
+#include "vulkan_device.h"
+#include "vulkan_image.h"
 #include "vulkan_types.h"
 
 bool32_t vulkan_swapchain_create(VulkanBackendState *state);

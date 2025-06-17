@@ -25,32 +25,6 @@ static bool32_t create_command_buffers(VulkanBackendState *state) {
   return true;
 }
 
-static bool32_t regenerate_framebuffers(VulkanBackendState *state,
-                                        VulkanSwapchain *swapchain,
-                                        VulkanRenderPass *renderpass) {
-  for (uint32_t i = 0; i < swapchain->image_count; ++i) {
-    // Only use 1 attachment to match the render pass setup
-    uint32_t attachment_count = 1;
-    VkImageView *image_view = array_get_VkImageView(&swapchain->image_views, i);
-
-    VkFramebuffer framebuffer;
-    if (!vulkan_framebuffer_create(state, image_view, &framebuffer)) {
-      log_fatal("Failed to create Vulkan framebuffer");
-      return false;
-    }
-
-    array_set_VulkanFramebuffer(&state->swapchain.framebuffers, i,
-                                (VulkanFramebuffer){
-                                    .handle = framebuffer,
-                                    .attachment_count = attachment_count,
-                                    .attachments = {.data = image_view},
-                                    .renderpass = renderpass,
-                                });
-  }
-
-  return true;
-}
-
 bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
   assert_log(state != NULL, "State not initialized");
   assert_log(state->swapchain.handle != VK_NULL_HANDLE,
@@ -84,8 +58,7 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
   // Framebuffers.
   for (uint32_t i = 0; i < state->swapchain.image_count; ++i) {
     vulkan_framebuffer_destroy(
-        state,
-        array_get_VulkanFramebuffer(&state->swapchain.framebuffers, i)->handle);
+        state, array_get_VulkanFramebuffer(&state->swapchain.framebuffers, i));
   }
 
   state->main_render_pass->x = 0;
@@ -93,8 +66,8 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
   state->main_render_pass->width = state->swapchain.extent.width;
   state->main_render_pass->height = state->swapchain.extent.height;
 
-  if (!regenerate_framebuffers(state, &state->swapchain,
-                               state->main_render_pass)) {
+  if (!vulkan_framebuffer_regenerate(state, &state->swapchain,
+                                     state->main_render_pass)) {
     log_error("Failed to regenerate framebuffers");
     return false;
   }
@@ -155,6 +128,14 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
+  ArenaFlags swapchain_arena_flags = bitset8_create();
+  Arena *swapchain_arena = arena_create(KB(64), KB(64), swapchain_arena_flags);
+  if (!swapchain_arena) {
+    log_fatal("Failed to create swapchain arena");
+    arena_destroy(temp_arena);
+    return false;
+  }
+
   ArenaFlags arena_flags = bitset8_create();
   Arena *arena = arena_create(MB(1), MB(1), arena_flags);
   if (!arena) {
@@ -167,12 +148,14 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
   if (!backend_state) {
     log_fatal("Failed to allocate backend state");
     arena_destroy(arena);
+    arena_destroy(temp_arena);
     return false;
   }
 
   MemZero(backend_state, sizeof(VulkanBackendState));
   backend_state->arena = arena;
   backend_state->temp_arena = temp_arena;
+  backend_state->swapchain_arena = swapchain_arena;
   backend_state->window = window;
   backend_state->device_requirements = device_requirements;
 
@@ -232,24 +215,20 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
   backend_state->main_render_pass = main_render_pass;
 
   backend_state->swapchain.framebuffers = array_create_VulkanFramebuffer(
-      backend_state->arena, backend_state->swapchain.images.length);
+      backend_state->swapchain_arena, backend_state->swapchain.images.length);
   for (uint32_t i = 0; i < backend_state->swapchain.images.length; i++) {
-    VkImageView *image_view =
-        array_get_VkImageView(&backend_state->swapchain.image_views, i);
-    VkFramebuffer framebuffer;
-    if (!vulkan_framebuffer_create(backend_state, image_view, &framebuffer)) {
-      array_destroy_VulkanFramebuffer(&backend_state->swapchain.framebuffers);
-      log_fatal("Failed to create Vulkan framebuffer");
-      return false;
-    }
-
     array_set_VulkanFramebuffer(&backend_state->swapchain.framebuffers, i,
                                 (VulkanFramebuffer){
-                                    .handle = framebuffer,
-                                    .attachment_count = 1,
-                                    .attachments = {.data = image_view},
-                                    .renderpass = main_render_pass,
+                                    .handle = VK_NULL_HANDLE,
+                                    .attachments = {0},
+                                    .renderpass = VK_NULL_HANDLE,
                                 });
+  }
+
+  if (!vulkan_framebuffer_regenerate(backend_state, &backend_state->swapchain,
+                                     main_render_pass)) {
+    log_fatal("Failed to regenerate Vulkan framebuffers");
+    return false;
   }
 
   if (!create_command_buffers(backend_state)) {
@@ -268,10 +247,11 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
     };
 
-    if (vkCreateSemaphore(
-            backend_state->device, &semaphore_info, backend_state->allocator,
-            array_get_VkSemaphore(&backend_state->image_available_semaphores,
-                                  i)) != VK_SUCCESS) {
+    if (vkCreateSemaphore(backend_state->device.logical_device, &semaphore_info,
+                          backend_state->allocator,
+                          array_get_VkSemaphore(
+                              &backend_state->image_available_semaphores, i)) !=
+        VK_SUCCESS) {
       log_fatal("Failed to create Vulkan image available semaphore");
       return false;
     }
@@ -289,10 +269,11 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
     };
 
-    if (vkCreateSemaphore(
-            backend_state->device, &semaphore_info, backend_state->allocator,
-            array_get_VkSemaphore(&backend_state->queue_complete_semaphores,
-                                  i)) != VK_SUCCESS) {
+    if (vkCreateSemaphore(backend_state->device.logical_device, &semaphore_info,
+                          backend_state->allocator,
+                          array_get_VkSemaphore(
+                              &backend_state->queue_complete_semaphores, i)) !=
+        VK_SUCCESS) {
       log_fatal("Failed to create Vulkan queue complete semaphore");
       return false;
     }
@@ -322,7 +303,7 @@ void renderer_vulkan_shutdown(void *backend_state) {
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
   // Ensure all GPU work is complete before destroying any resources
-  vkDeviceWaitIdle(state->device);
+  vkDeviceWaitIdle(state->device.logical_device);
 
   // Free command buffers first to release references to pipelines
   for (uint32_t i = 0; i < state->graphics_command_buffers.length; i++) {
@@ -333,26 +314,26 @@ void renderer_vulkan_shutdown(void *backend_state) {
   array_destroy_VulkanCommandBuffer(&state->graphics_command_buffers);
 
   // Wait again to ensure command buffer cleanup is complete
-  vkDeviceWaitIdle(state->device);
+  vkDeviceWaitIdle(state->device.logical_device);
 
   for (uint32_t i = 0; i < state->swapchain.max_in_flight_frames; i++) {
     vulkan_fence_destroy(state,
                          array_get_VulkanFence(&state->in_flight_fences, i));
     vkDestroySemaphore(
-        state->device,
+        state->device.logical_device,
         *array_get_VkSemaphore(&state->image_available_semaphores, i),
         state->allocator);
   }
   for (uint32_t i = 0; i < state->swapchain.image_count; i++) {
     vkDestroySemaphore(
-        state->device,
+        state->device.logical_device,
         *array_get_VkSemaphore(&state->queue_complete_semaphores, i),
         state->allocator);
   }
   for (uint32_t i = 0; i < state->swapchain.framebuffers.length; i++) {
     VulkanFramebuffer *framebuffer =
         array_get_VulkanFramebuffer(&state->swapchain.framebuffers, i);
-    vulkan_framebuffer_destroy(state, framebuffer->handle);
+    vulkan_framebuffer_destroy(state, framebuffer);
   }
   array_destroy_VulkanFramebuffer(&state->swapchain.framebuffers);
   vulkan_renderpass_destroy(state, state->main_render_pass);
@@ -363,6 +344,7 @@ void renderer_vulkan_shutdown(void *backend_state) {
   vulkan_debug_destroy_debug_messenger(state);
   vulkan_instance_destroy(state);
   array_destroy_String8(&state->validation_layers);
+  arena_destroy(state->swapchain_arena);
   arena_destroy(state->temp_arena);
   arena_destroy(state->arena);
   return;
@@ -393,7 +375,7 @@ void renderer_vulkan_on_resize(void *backend_state, uint32_t new_width,
 RendererError renderer_vulkan_wait_idle(void *backend_state) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  VkResult result = vkDeviceWaitIdle(state->device);
+  VkResult result = vkDeviceWaitIdle(state->device.logical_device);
   if (result != VK_SUCCESS) {
     log_warn("Failed to wait for Vulkan device to be idle");
     return RENDERER_ERROR_DEVICE_ERROR;
@@ -551,7 +533,7 @@ RendererError renderer_vulkan_end_frame(void *backend_state,
   };
 
   VkResult result = vkQueueSubmit(
-      state->graphics_queue, 1, &submit_info,
+      state->device.graphics_queue, 1, &submit_info,
       array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
           ->handle);
   if (result != VK_SUCCESS) {

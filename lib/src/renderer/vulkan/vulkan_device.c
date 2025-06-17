@@ -1,5 +1,7 @@
 #include "vulkan_device.h"
 #include "containers/bitset.h"
+#include "defines.h"
+#include "renderer/vulkan/vulkan_types.h"
 #include "vulkan_utils.h"
 
 static bool32_t has_required_extensions(VulkanBackendState *state,
@@ -64,8 +66,11 @@ static uint32_t score_device(VulkanBackendState *state,
       array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_GRAPHICS);
   QueueFamilyIndex *present_index =
       array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_PRESENT);
-  const bool32_t has_required_queues =
-      graphics_index->is_present && present_index->is_present;
+  QueueFamilyIndex *transfer_index =
+      array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_TRANSFER);
+  const bool32_t has_required_queues = graphics_index->is_present &&
+                                       present_index->is_present &&
+                                       transfer_index->is_present;
 
   if (!has_required_queues) {
     array_destroy_QueueFamilyIndex(&indices);
@@ -77,7 +82,7 @@ static uint32_t score_device(VulkanBackendState *state,
       .formats = NULL,
       .present_modes = NULL,
       .capabilities = (VkSurfaceCapabilitiesKHR){0}};
-  vulkan_swapchain_query_details(state, device, &swapchain_details);
+  vulkan_device_query_swapchain_details(state, device, &swapchain_details);
 
   if (array_is_null_VkSurfaceFormatKHR(&swapchain_details.formats) ||
       array_is_null_VkPresentModeKHR(&swapchain_details.present_modes)) {
@@ -323,10 +328,145 @@ static VkPhysicalDevice pick_suitable_device(VulkanBackendState *state,
   return best_device;
 }
 
+VkSurfaceFormatKHR *vulkan_device_choose_swap_surface_format(
+    VulkanSwapchainDetails *swapchain_details) {
+  for (uint32_t i = 0; i < swapchain_details->formats.length; i++) {
+    if (array_get_VkSurfaceFormatKHR(&swapchain_details->formats, i)->format ==
+            VK_FORMAT_B8G8R8A8_SRGB &&
+        array_get_VkSurfaceFormatKHR(&swapchain_details->formats, i)
+                ->colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+      return array_get_VkSurfaceFormatKHR(&swapchain_details->formats, i);
+    }
+  }
+
+  return array_get_VkSurfaceFormatKHR(&swapchain_details->formats, 0);
+}
+
+VkPresentModeKHR vulkan_device_choose_swap_present_mode(
+    VulkanSwapchainDetails *swapchain_details) {
+  for (uint32_t i = 0; i < swapchain_details->present_modes.length; i++) {
+    VkPresentModeKHR present_mode =
+        *array_get_VkPresentModeKHR(&swapchain_details->present_modes, i);
+    // this present mode enables triple buffering
+    if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+      return present_mode;
+    }
+  }
+
+  return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+VkExtent2D
+vulkan_device_choose_swap_extent(VulkanBackendState *state,
+                                 VulkanSwapchainDetails *swapchain_details) {
+  if (swapchain_details->capabilities.currentExtent.width != UINT32_MAX) {
+    return swapchain_details->capabilities.currentExtent;
+  }
+
+  WindowPixelSize window_size = window_get_pixel_size(state->window);
+  VkExtent2D current_extent = {
+      .width = window_size.width,
+      .height = window_size.height,
+  };
+
+  current_extent.width =
+      Clamp(current_extent.width,
+            swapchain_details->capabilities.minImageExtent.width,
+            swapchain_details->capabilities.maxImageExtent.width);
+  current_extent.height =
+      Clamp(current_extent.height,
+            swapchain_details->capabilities.minImageExtent.height,
+            swapchain_details->capabilities.maxImageExtent.height);
+
+  return current_extent;
+}
+
+void vulkan_device_query_swapchain_details(VulkanBackendState *state,
+                                           VkPhysicalDevice device,
+                                           VulkanSwapchainDetails *details) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(device != VK_NULL_HANDLE, "Device is NULL");
+  assert_log(state->surface != VK_NULL_HANDLE, "Surface was not acquired");
+  assert_log(details != NULL, "Details is NULL");
+
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, state->surface,
+                                            &details->capabilities);
+
+  uint32_t format_count = 0;
+  vkGetPhysicalDeviceSurfaceFormatsKHR(device, state->surface, &format_count,
+                                       NULL);
+  if (format_count != 0) {
+    details->formats =
+        array_create_VkSurfaceFormatKHR(state->swapchain_arena, format_count);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(device, state->surface, &format_count,
+                                         details->formats.data);
+  }
+
+  uint32_t present_mode_count = 0;
+  vkGetPhysicalDeviceSurfacePresentModesKHR(device, state->surface,
+                                            &present_mode_count, NULL);
+  if (present_mode_count != 0) {
+    details->present_modes = array_create_VkPresentModeKHR(
+        state->swapchain_arena, present_mode_count);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(device, state->surface,
+                                              &present_mode_count,
+                                              details->present_modes.data);
+  }
+}
+
+bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
+  assert_log(device != NULL, "Device is NULL");
+  assert_log(device->physical_device != VK_NULL_HANDLE,
+             "Physical device was not acquired");
+
+  // Format candidates
+  const uint32_t candidate_count = 3;
+  VkFormat candidates[3] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT,
+                            VK_FORMAT_D24_UNORM_S8_UINT};
+
+  uint32_t flags = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+  for (uint32_t i = 0; i < candidate_count; ++i) {
+    VkFormatProperties properties;
+    vkGetPhysicalDeviceFormatProperties(device->physical_device, candidates[i],
+                                        &properties);
+
+    if ((properties.linearTilingFeatures & flags) == flags) {
+      device->depth_format = candidates[i];
+      return true;
+    } else if ((properties.optimalTilingFeatures & flags) == flags) {
+      device->depth_format = candidates[i];
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void vulkan_device_query_queue_indices(VulkanBackendState *state,
+                                       Array_QueueFamilyIndex *indices) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(state->device.physical_device != VK_NULL_HANDLE,
+             "Physical device was not acquired");
+
+  *indices = find_queue_family_indices(state, state->device.physical_device);
+
+  QueueFamilyIndex *graphics_index =
+      array_get_QueueFamilyIndex(indices, QUEUE_FAMILY_TYPE_GRAPHICS);
+  QueueFamilyIndex *present_index =
+      array_get_QueueFamilyIndex(indices, QUEUE_FAMILY_TYPE_PRESENT);
+  QueueFamilyIndex *transfer_index =
+      array_get_QueueFamilyIndex(indices, QUEUE_FAMILY_TYPE_TRANSFER);
+
+  state->device.graphics_queue_index = graphics_index->index;
+  state->device.present_queue_index = present_index->index;
+  state->device.transfer_queue_index = transfer_index->index;
+}
+
 bool32_t vulkan_device_pick_physical_device(VulkanBackendState *state) {
   assert_log(state != NULL, "State is NULL");
   assert_log(state->instance != NULL, "Instance is NULL");
-  assert_log(state->physical_device == NULL, "Physical device already created");
+  assert_log(state->device.physical_device == NULL,
+             "Physical device already created");
 
   uint32_t device_count = 0;
   vkEnumeratePhysicalDevices(state->instance, &device_count, NULL);
@@ -341,8 +481,9 @@ bool32_t vulkan_device_pick_physical_device(VulkanBackendState *state) {
   vkEnumeratePhysicalDevices(state->instance, &device_count,
                              physical_devices.data);
 
-  state->physical_device = pick_suitable_device(state, &physical_devices);
-  if (state->physical_device == VK_NULL_HANDLE) {
+  state->device.physical_device =
+      pick_suitable_device(state, &physical_devices);
+  if (state->device.physical_device == VK_NULL_HANDLE) {
     array_destroy_VkPhysicalDevice(&physical_devices);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
     log_fatal("No suitable Vulkan physical device found");
@@ -352,7 +493,8 @@ bool32_t vulkan_device_pick_physical_device(VulkanBackendState *state) {
   array_destroy_VkPhysicalDevice(&physical_devices);
   scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
-  log_debug("Physical device acquired with handle: %p", state->physical_device);
+  log_debug("Physical device acquired with handle: %p",
+            state->device.physical_device);
 
   return true;
 }
@@ -361,19 +503,19 @@ void vulkan_device_get_information(VulkanBackendState *state,
                                    DeviceInformation *device_information,
                                    Arena *temp_arena) {
   assert_log(state != NULL, "State is NULL");
-  assert_log(state->physical_device != VK_NULL_HANDLE,
+  assert_log(state->device.physical_device != VK_NULL_HANDLE,
              "Physical device was not acquired");
   assert_log(device_information != NULL, "Device information is NULL");
   assert_log(temp_arena != NULL, "Temp arena is NULL");
 
   VkPhysicalDeviceProperties properties;
-  vkGetPhysicalDeviceProperties(state->physical_device, &properties);
+  vkGetPhysicalDeviceProperties(state->device.physical_device, &properties);
 
   VkPhysicalDeviceFeatures features;
-  vkGetPhysicalDeviceFeatures(state->physical_device, &features);
+  vkGetPhysicalDeviceFeatures(state->device.physical_device, &features);
 
   VkPhysicalDeviceMemoryProperties memory_properties;
-  vkGetPhysicalDeviceMemoryProperties(state->physical_device,
+  vkGetPhysicalDeviceMemoryProperties(state->device.physical_device,
                                       &memory_properties);
 
   // Device name
@@ -473,17 +615,17 @@ void vulkan_device_get_information(VulkanBackendState *state,
 
   // Queue family capabilities
   Array_QueueFamilyIndex queue_indices =
-      find_queue_family_indices(state, state->physical_device);
+      find_queue_family_indices(state, state->device.physical_device);
   DeviceQueueFlags device_queues = bitset8_create();
 
   uint32_t queue_family_count = 0;
-  vkGetPhysicalDeviceQueueFamilyProperties(state->physical_device,
+  vkGetPhysicalDeviceQueueFamilyProperties(state->device.physical_device,
                                            &queue_family_count, NULL);
 
   Array_VkQueueFamilyProperties queue_families =
       array_create_VkQueueFamilyProperties(temp_arena, queue_family_count);
   vkGetPhysicalDeviceQueueFamilyProperties(
-      state->physical_device, &queue_family_count, queue_families.data);
+      state->device.physical_device, &queue_family_count, queue_families.data);
 
   for (uint32_t i = 0; i < queue_family_count; i++) {
     VkQueueFamilyProperties *family =
@@ -547,20 +689,20 @@ void vulkan_device_get_information(VulkanBackendState *state,
 
 void vulkan_device_release_physical_device(VulkanBackendState *state) {
   assert_log(state != NULL, "State is NULL");
-  assert_log(state->physical_device != VK_NULL_HANDLE,
+  assert_log(state->device.physical_device != VK_NULL_HANDLE,
              "Physical device was not acquired");
 
   log_debug("Unbinding physical device");
 
-  state->physical_device = VK_NULL_HANDLE;
+  state->device.physical_device = VK_NULL_HANDLE;
 }
 
 bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
   assert_log(state != NULL, "State is NULL");
 
   Scratch scratch = scratch_create(state->temp_arena);
-  Array_QueueFamilyIndex indices =
-      find_queue_family_indices(state, state->physical_device);
+  Array_QueueFamilyIndex indices = {0};
+  vulkan_device_query_queue_indices(state, &indices);
 
   Array_VkDeviceQueueCreateInfo queue_create_infos =
       array_create_VkDeviceQueueCreateInfo(scratch.arena, indices.length);
@@ -619,7 +761,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
   };
 
   VkDevice device;
-  if (vkCreateDevice(state->physical_device, &device_create_info,
+  if (vkCreateDevice(state->device.physical_device, &device_create_info,
                      state->allocator, &device) != VK_SUCCESS) {
     scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
     log_fatal("Failed to create logical device");
@@ -628,33 +770,40 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
 
   scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
-  state->device = device;
+  state->device.logical_device = device;
 
   log_debug("Logical device created with handle: %p", state->device);
 
-  if (vkCreateCommandPool(state->device, &pool_info, state->allocator,
-                          &state->command_pool) != VK_SUCCESS) {
+  if (vkCreateCommandPool(state->device.logical_device, &pool_info,
+                          state->allocator,
+                          &state->device.graphics_command_pool) != VK_SUCCESS) {
     log_fatal("Failed to create Vulkan command pool");
     return false_v;
   }
 
-  log_debug("Created Vulkan command pool: %p", state->command_pool);
+  log_debug("Created Vulkan command pool: %p",
+            state->device.graphics_command_pool);
 
-  vkGetDeviceQueue(state->device,
+  vkGetDeviceQueue(state->device.logical_device,
                    array_get_VkDeviceQueueCreateInfo(&queue_create_infos,
                                                      QUEUE_FAMILY_TYPE_GRAPHICS)
                        ->queueFamilyIndex,
-                   0, &state->graphics_queue);
-  vkGetDeviceQueue(state->device,
+                   0, &state->device.graphics_queue);
+  vkGetDeviceQueue(state->device.logical_device,
                    array_get_VkDeviceQueueCreateInfo(&queue_create_infos,
                                                      QUEUE_FAMILY_TYPE_PRESENT)
                        ->queueFamilyIndex,
-                   0, &state->present_queue);
+                   0, &state->device.present_queue);
+  vkGetDeviceQueue(state->device.logical_device,
+                   array_get_VkDeviceQueueCreateInfo(&queue_create_infos,
+                                                     QUEUE_FAMILY_TYPE_TRANSFER)
+                       ->queueFamilyIndex,
+                   0, &state->device.transfer_queue);
 
   array_destroy_VkDeviceQueueCreateInfo(&queue_create_infos);
 
-  log_debug("Graphics queue: %p", state->graphics_queue);
-  log_debug("Present queue: %p", state->present_queue);
+  log_debug("Graphics queue: %p", state->device.graphics_queue);
+  log_debug("Present queue: %p", state->device.present_queue);
 
   return true;
 }
@@ -664,9 +813,20 @@ void vulkan_device_destroy_logical_device(VulkanBackendState *state) {
 
   log_debug("Destroying logical device and command pool");
 
-  vkDestroyCommandPool(state->device, state->command_pool, state->allocator);
-  state->command_pool = VK_NULL_HANDLE;
+  vkDestroyCommandPool(state->device.logical_device,
+                       state->device.graphics_command_pool, state->allocator);
+  state->device.graphics_command_pool = VK_NULL_HANDLE;
 
-  vkDestroyDevice(state->device, state->allocator);
-  state->device = VK_NULL_HANDLE;
+  vkDestroyDevice(state->device.logical_device, state->allocator);
+  state->device.logical_device = VK_NULL_HANDLE;
+
+  state->device.depth_format = VK_FORMAT_UNDEFINED;
+
+  state->device.graphics_queue_index = -1;
+  state->device.present_queue_index = -1;
+  state->device.transfer_queue_index = -1;
+
+  state->device.graphics_queue = VK_NULL_HANDLE;
+  state->device.present_queue = VK_NULL_HANDLE;
+  state->device.transfer_queue = VK_NULL_HANDLE;
 }

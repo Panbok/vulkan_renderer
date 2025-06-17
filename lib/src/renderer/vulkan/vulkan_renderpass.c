@@ -21,6 +21,9 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
   out_render_pass->depth = 0.0f;
   out_render_pass->stencil = 1.0;
 
+  const uint32_t attachment_description_count = 2; // todo: make this dynamic
+  VkAttachmentDescription attachment_descriptions[attachment_description_count];
+
   VkAttachmentDescription color_attachment = {
       .format = state->swapchain.format,
       .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -32,15 +35,37 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
       .finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
   };
 
+  attachment_descriptions[0] = color_attachment;
+
   VkAttachmentReference color_attachment_ref = {
       .attachment = 0,
       .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
   };
 
+  VkAttachmentDescription depth_attachment = {
+      .format = state->device.depth_format,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+      .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+      .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+  };
+
+  VkAttachmentReference depth_attachment_ref = {
+      .attachment = 1,
+      .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+
+  };
+
+  attachment_descriptions[1] = depth_attachment;
+
   VkSubpassDescription subpass = {
       .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
       .colorAttachmentCount = 1,
       .pColorAttachments = &color_attachment_ref,
+      .pDepthStencilAttachment = &depth_attachment_ref,
   };
 
   VkSubpassDependency deps[2] = {
@@ -49,27 +74,30 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
        .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
        .srcAccessMask = 0,
-       .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+       .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT},
       {.srcSubpass = 0,
        .dstSubpass = VK_SUBPASS_EXTERNAL,
        .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
        .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-       .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+       .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
        .dstAccessMask = 0,
        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT}};
 
   VkRenderPassCreateInfo render_pass_info = {
       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-      .attachmentCount = 1,
-      .pAttachments = &color_attachment,
+      .attachmentCount = attachment_description_count,
+      .pAttachments = attachment_descriptions,
       .subpassCount = 1,
       .pSubpasses = &subpass,
       .dependencyCount = ArrayCount(deps),
       .pDependencies = deps,
   };
 
-  if (vkCreateRenderPass(state->device, &render_pass_info, state->allocator,
+  if (vkCreateRenderPass(state->device.logical_device, &render_pass_info,
+                         state->allocator,
                          &out_render_pass->handle) != VK_SUCCESS) {
     log_fatal("Failed to create render pass");
     return false_v;
@@ -89,7 +117,8 @@ void vulkan_renderpass_destroy(VulkanBackendState *state,
 
   log_debug("Destroying Vulkan render pass");
 
-  vkDestroyRenderPass(state->device, render_pass->handle, state->allocator);
+  vkDestroyRenderPass(state->device.logical_device, render_pass->handle,
+                      state->allocator);
 
   render_pass->handle = VK_NULL_HANDLE;
   render_pass->state = RENDER_PASS_STATE_NOT_ALLOCATED;
