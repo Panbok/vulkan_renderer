@@ -9,6 +9,9 @@ bool8_t vulkan_framebuffer_create(VulkanBackendState *state,
   assert_log(state != NULL, "State is NULL");
   assert_log(renderpass != NULL, "Renderpass is NULL");
   assert_log(out_framebuffer != NULL, "Out framebuffer is NULL");
+  assert_log(attachments != NULL, "Attachments is NULL");
+  assert_log(attachments->length > 0,
+             "Attachments must have at least 1 attachment");
 
   VkFramebufferCreateInfo framebuffer_info = {
       .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,

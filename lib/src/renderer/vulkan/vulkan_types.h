@@ -116,6 +116,7 @@ typedef struct VulkanSwapchainDetails {
   Array_VkPresentModeKHR present_modes;
 } VulkanSwapchainDetails;
 
+/* non-copyable */
 typedef struct VulkanDevice {
   VkPhysicalDevice physical_device;
   VkDevice logical_device;

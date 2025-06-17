@@ -1,4 +1,5 @@
 #include "vulkan_image.h"
+#include "core/logger.h"
 #include "defines.h"
 
 bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
@@ -9,6 +10,9 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
                              VkImageViewType view_type,
                              VkImageAspectFlags view_aspect_flags,
                              VulkanImage *out_image) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(out_image != NULL, "Output image is NULL");
+
   // todo: support configurable depth, sample count, and sharing mode.
   VkImageCreateInfo image_create_info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
@@ -47,6 +51,8 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
                         memory_requirements.memoryTypeBits, memory_flags);
   if (memory_type == -1) {
     log_error("Required memory type not found. Image not valid.");
+    vkDestroyImage(state->device.logical_device, out_image->handle,
+                   state->allocator);
     return false;
   }
 

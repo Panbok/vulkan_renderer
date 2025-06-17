@@ -768,8 +768,6 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
     return false;
   }
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
-
   state->device.logical_device = device;
 
   log_debug("Logical device created with handle: %p", state->device);
@@ -801,6 +799,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
                    0, &state->device.transfer_queue);
 
   array_destroy_VkDeviceQueueCreateInfo(&queue_create_infos);
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
   log_debug("Graphics queue: %p", state->device.graphics_queue);
   log_debug("Present queue: %p", state->device.present_queue);
