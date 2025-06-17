@@ -11,7 +11,7 @@ void vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
   // image, sample count, and sharing mode.
   VkImageCreateInfo image_create_info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-      .imageType = VK_IMAGE_TYPE_2D,
+      .imageType = image_type,
       .extent.width = width,
       .extent.height = height,
       .extent.depth = 1,
@@ -27,6 +27,7 @@ void vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
 
   out_image->width = width;
   out_image->height = height;
+  out_image->view = VK_NULL_HANDLE;
 
   if (vkCreateImage(state->device.logical_device, &image_create_info,
                     state->allocator, &out_image->handle) != VK_SUCCESS) {
@@ -55,12 +56,18 @@ void vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
   if (vkAllocateMemory(state->device.logical_device, &memory_allocate_info,
                        state->allocator, &out_image->memory) != VK_SUCCESS) {
     log_error("Failed to allocate memory");
+    vkDestroyImage(state->device.logical_device, out_image->handle,
+                   state->allocator);
     return;
   }
 
   if (vkBindImageMemory(state->device.logical_device, out_image->handle,
                         out_image->memory, 0) != VK_SUCCESS) {
     log_error("Failed to bind memory");
+    vkFreeMemory(state->device.logical_device, out_image->memory,
+                 state->allocator);
+    vkDestroyImage(state->device.logical_device, out_image->handle,
+                   state->allocator);
     return;
   }
 
