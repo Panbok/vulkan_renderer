@@ -53,6 +53,8 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
     log_error("Required memory type not found. Image not valid.");
     vkDestroyImage(state->device.logical_device, out_image->handle,
                    state->allocator);
+    out_image->handle = VK_NULL_HANDLE;
+    out_image->memory = VK_NULL_HANDLE;
     return false;
   }
 
