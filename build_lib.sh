@@ -30,6 +30,11 @@ set -e # Exit early if any commands fail
   cmake -B build -S . -DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake
   cmake --install ./build
 
-  echo "Copying shaders to build directory"
-  cp -R lib/assets/*.spv assets
+  echo "Copying shaders to release build directory"
+  mkdir -p assets
+  if ls app/assets/*.spv >/dev/null 2>&1; then
+    cp -R app/assets/*.spv assets
+  else
+    echo "No .spv files to copy – skipping"
+  fi
 )

@@ -31,7 +31,12 @@ set -e # Exit early if any commands fail
   cmake --build ./build_release_info --target vulkan_renderer --config RelWithDebInfo
 
   echo "Copying shaders to release build directory"
-  cp -R app/assets/*.spv assets
+  mkdir -p assets
+  if ls app/assets/*.spv >/dev/null 2>&1; then
+    cp -R app/assets/*.spv assets
+  else
+    echo "No .spv files to copy – skipping"
+  fi
 )
 
 exec $(dirname $0)/build_release_info/app/vulkan_renderer "$@" 
