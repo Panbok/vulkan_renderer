@@ -37,4 +37,14 @@ if(APPLE)
     target_link_libraries(renderer_lib PRIVATE ${COCOA_LIBRARY} ${FOUNDATION_LIBRARY} ${QUARTZCORE_LIBRARY})
 endif()
 
+# Set compile definitions for logging based on build type
+target_compile_definitions(renderer_lib PRIVATE
+    $<$<CONFIG:Release>:LOG_LEVEL=1>
+    $<$<CONFIG:Release>:ASSERT_LOG=0>
+    $<$<CONFIG:RelWithDebInfo>:LOG_LEVEL=3>
+    $<$<CONFIG:RelWithDebInfo>:ASSERT_LOG=0>
+    $<$<CONFIG:Debug>:LOG_LEVEL=4>
+    $<$<CONFIG:Debug>:ASSERT_LOG=1>
+)
+
 target_precompile_headers(renderer_lib PRIVATE src/pch.h)

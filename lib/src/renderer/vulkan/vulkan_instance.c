@@ -1,7 +1,7 @@
 #include "vulkan_instance.h"
 #include "defines.h"
 
-// TODO: should probably only use in debug builds
+#ifndef NDEBUG
 static bool32_t check_validation_layer_support(VulkanBackendState *state,
                                                const char **layer_names,
                                                uint32_t layer_count) {
@@ -34,6 +34,7 @@ static bool32_t check_validation_layer_support(VulkanBackendState *state,
   array_destroy_VkLayerProperties(&layer_properties);
   return true;
 }
+#endif
 
 bool32_t vulkan_instance_create(VulkanBackendState *state, Window *window) {
   assert_log(state != NULL, "State is NULL");
@@ -56,38 +57,30 @@ bool32_t vulkan_instance_create(VulkanBackendState *state, Window *window) {
   const char **extension_names =
       vulkan_platform_get_required_extensions(&extension_count);
 
-  Scratch scratch = scratch_create(state->temp_arena);
-  const char **layer_names = (const char **)arena_alloc(
-      scratch.arena, state->validation_layers.length * sizeof(char *),
-      ARENA_MEMORY_TAG_RENDERER);
-  for (uint32_t i = 0; i < state->validation_layers.length; i++) {
-    layer_names[i] = (const char *)string8_cstr(
-        array_get_String8(&state->validation_layers, i));
-  }
-
-  if (!check_validation_layer_support(state, layer_names,
-                                      state->validation_layers.length)) {
+#ifndef NDEBUG
+  if (!check_validation_layer_support(state, VALIDATION_LAYERS,
+                                      ArrayCount(VALIDATION_LAYERS))) {
     log_fatal("Validation layers not supported");
     return false;
   }
+#endif
 
   log_debug("Validation layers supported");
 
   create_info.enabledExtensionCount = extension_count;
   create_info.ppEnabledExtensionNames = extension_names;
-  create_info.enabledLayerCount = state->validation_layers.length;
-  create_info.ppEnabledLayerNames = layer_names;
+#ifndef NDEBUG
+  create_info.enabledLayerCount = ArrayCount(VALIDATION_LAYERS);
+  create_info.ppEnabledLayerNames = VALIDATION_LAYERS;
+#endif
   create_info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 
   VkResult result =
       vkCreateInstance(&create_info, state->allocator, &state->instance);
   if (result != VK_SUCCESS) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
     log_fatal("Failed to create Vulkan instance: %s", string_VkResult(result));
     return false;
   }
-
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
   log_debug("Vulkan instance created with handle: %p", state->instance);
 

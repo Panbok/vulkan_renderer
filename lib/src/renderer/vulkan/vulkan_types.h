@@ -44,7 +44,11 @@ Array(VkFramebuffer);
 Array(VkSemaphore);
 
 #define VK_EXT_METAL_SURFACE_EXTENSION_NAME "VK_EXT_metal_surface"
+
+#ifndef NDEBUG
 #define VK_LAYER_KHRONOS_VALIDATION_LAYER_NAME "VK_LAYER_KHRONOS_validation"
+static const char *VALIDATION_LAYERS[] = {"VK_LAYER_KHRONOS_validation"};
+#endif
 
 struct s_GraphicsPipeline {
   const GraphicsPipelineDescription *desc;
@@ -181,11 +185,11 @@ typedef struct VulkanBackendState {
   uint32_t current_frame;
   uint32_t image_index;
 
-  // todo: remove
-  Array_String8 validation_layers;
-
   VkInstance instance;
+
+#ifndef NDEBUG
   VkDebugUtilsMessengerEXT debug_messenger;
+#endif
 
   VulkanDevice device;
 

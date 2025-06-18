@@ -1,7 +1,13 @@
 #pragma once
 
+// Only define these if not already defined by CMake
+#ifndef LOG_LEVEL
 #define LOG_LEVEL 5
+#endif
+
+#ifndef ASSERT_LOG
 #define ASSERT_LOG 1
+#endif
 
 #define AlignPow2(x, b) (((x) + (b) - 1) & (~((b) - 1)))
 #define AlignPow2Down(x, b)                                                    \

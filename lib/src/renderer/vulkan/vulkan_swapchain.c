@@ -159,6 +159,9 @@ void vulkan_swapchain_destroy(VulkanBackendState *state) {
 
   vulkan_image_destroy(state, &state->swapchain.depth_attachment);
 
+  // we are only destroying the array struct for holding images and
+  // deallocating view images, "real" images are owned by the swapchain
+  // and will be destroyed when the swapchain is destroyed
   for (uint32_t i = 0; i < state->swapchain.image_views.length; i++) {
     vkDestroyImageView(state->device.logical_device,
                        state->swapchain.image_views.data[i], state->allocator);

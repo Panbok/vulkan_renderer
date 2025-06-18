@@ -1,3 +1,5 @@
+#ifndef NDEBUG
+
 #include "vulkan_debug.h"
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL
@@ -88,3 +90,5 @@ void vulkan_debug_destroy_debug_messenger(VulkanBackendState *state) {
                                 state->allocator);
   state->debug_messenger = VK_NULL_HANDLE;
 }
+
+#endif // NDEBUG

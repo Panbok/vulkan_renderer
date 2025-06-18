@@ -36,7 +36,6 @@
             "program": "${workspaceFolder}/build/tests/vulkan_renderer_tester",
             "args": [],
             "stopAtEntry": false,
-            "cwd": "${workspaceFolder}/build/",
             "osx": {
                 "MIMode": "lldb",
                 "targetArchitecture": "arm64",

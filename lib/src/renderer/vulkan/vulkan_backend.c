@@ -162,20 +162,17 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
   *out_backend_state = backend_state;
   backend_state->allocator = VK_NULL_HANDLE;
 
-  backend_state->validation_layers =
-      array_create_String8(backend_state->arena, 1);
-  array_set_String8(&backend_state->validation_layers, 0,
-                    string8_lit("VK_LAYER_KHRONOS_validation"));
-
   if (!vulkan_instance_create(backend_state, window)) {
     log_fatal("Failed to create Vulkan instance");
     return false;
   }
 
+#ifndef NDEBUG
   if (!vulkan_debug_create_debug_messenger(backend_state)) {
     log_fatal("Failed to create Vulkan debug messenger");
     return false;
   }
+#endif
 
   if (!vulkan_platform_create_surface(backend_state)) {
     log_fatal("Failed to create Vulkan surface");
@@ -207,7 +204,11 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
 
   MemZero(main_render_pass, sizeof(VulkanRenderPass));
 
-  if (!vulkan_renderpass_create(backend_state, main_render_pass)) {
+  if (!vulkan_renderpass_create(
+          backend_state, main_render_pass, 0.0f, 0.0f,
+          (float32_t)backend_state->swapchain.extent.width,
+          (float32_t)backend_state->swapchain.extent.height, 0.0f, 0.2f, 1.0f,
+          1.0f, 0.0f, 0)) {
     log_fatal("Failed to create Vulkan render pass");
     return false;
   }
@@ -341,9 +342,10 @@ void renderer_vulkan_shutdown(void *backend_state) {
   vulkan_device_destroy_logical_device(state);
   vulkan_device_release_physical_device(state);
   vulkan_platform_destroy_surface(state);
+#ifndef NDEBUG
   vulkan_debug_destroy_debug_messenger(state);
+#endif
   vulkan_instance_destroy(state);
-  array_destroy_String8(&state->validation_layers);
   arena_destroy(state->swapchain_arena);
   arena_destroy(state->temp_arena);
   arena_destroy(state->arena);

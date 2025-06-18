@@ -5,9 +5,13 @@
 const char **vulkan_platform_get_required_extensions(uint32_t *out_count) {
   static const char *extensions[] = {
       VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
-      VK_KHR_SURFACE_EXTENSION_NAME, VK_EXT_METAL_SURFACE_EXTENSION_NAME,
-      // TODO: remove these in release builds
-      VK_EXT_DEBUG_UTILS_EXTENSION_NAME, VK_EXT_DEBUG_REPORT_EXTENSION_NAME};
+      VK_KHR_SURFACE_EXTENSION_NAME,
+      VK_EXT_METAL_SURFACE_EXTENSION_NAME,
+#ifndef NDEBUG
+      VK_EXT_DEBUG_UTILS_EXTENSION_NAME,
+      VK_EXT_DEBUG_REPORT_EXTENSION_NAME,
+#endif
+  };
   *out_count = ArrayCount(extensions);
   return extensions;
 }

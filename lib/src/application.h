@@ -213,9 +213,10 @@ bool8_t application_create(Application *application,
       arena_destroy(application->app_arena);
     return false_v;
   }
+
   log_init(application->log_arena);
 
-  log_info("Application initializing...");
+  log_debug("Initialized logging");
 
   event_manager_create(&application->event_manager);
   window_create(&application->window, &application->event_manager,

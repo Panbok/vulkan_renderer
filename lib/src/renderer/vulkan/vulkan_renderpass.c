@@ -4,22 +4,26 @@
 // todo: for now we are only supporting a single render pass (main render pass),
 // but we should support multiple render passes in the future
 bool8_t vulkan_renderpass_create(VulkanBackendState *state,
-                                 VulkanRenderPass *out_render_pass) {
+                                 VulkanRenderPass *out_render_pass, float32_t x,
+                                 float32_t y, float32_t w, float32_t h,
+                                 float32_t r, float32_t g, float32_t b,
+                                 float32_t a, float32_t depth,
+                                 uint32_t stencil) {
   assert_log(state != NULL, "State is NULL");
   assert_log(out_render_pass != NULL, "Out render pass is NULL");
 
   out_render_pass->state = RENDER_PASS_STATE_NOT_ALLOCATED;
   out_render_pass->handle = VK_NULL_HANDLE;
-  out_render_pass->x = 0.0f;
-  out_render_pass->y = 0.0;
-  out_render_pass->width = state->swapchain.extent.width;
-  out_render_pass->height = state->swapchain.extent.height;
-  out_render_pass->r = 0.0f;
-  out_render_pass->g = 0.0f;
-  out_render_pass->b = 0.0f;
-  out_render_pass->a = 1.0f;
-  out_render_pass->depth = 0.0f;
-  out_render_pass->stencil = 1.0;
+  out_render_pass->x = x;
+  out_render_pass->y = y;
+  out_render_pass->width = w;
+  out_render_pass->height = h;
+  out_render_pass->r = r;
+  out_render_pass->g = g;
+  out_render_pass->b = b;
+  out_render_pass->a = a;
+  out_render_pass->depth = depth;
+  out_render_pass->stencil = stencil;
 
   const uint32_t attachment_description_count = 2; // todo: make this dynamic
   VkAttachmentDescription attachment_descriptions[attachment_description_count];

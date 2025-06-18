@@ -11,6 +11,10 @@
 #include "vulkan_swapchain.h"
 #include "vulkan_types.h"
 
+#ifndef NDEBUG
+#include "vulkan_debug.h"
+#endif
+
 // Internal function for swapchain recreation (used by swapchain module)
 bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state);
 

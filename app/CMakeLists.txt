@@ -17,5 +17,15 @@ target_include_directories(vulkan_renderer
     PRIVATE ${CMAKE_SOURCE_DIR}/lib/src
 )
 
+# Set compile definitions for logging based on build type
+target_compile_definitions(vulkan_renderer PRIVATE
+    $<$<CONFIG:Release>:LOG_LEVEL=1>
+    $<$<CONFIG:Release>:ASSERT_LOG=0>
+    $<$<CONFIG:RelWithDebInfo>:LOG_LEVEL=3>
+    $<$<CONFIG:RelWithDebInfo>:ASSERT_LOG=0>
+    $<$<CONFIG:Debug>:LOG_LEVEL=4>
+    $<$<CONFIG:Debug>:ASSERT_LOG=1>
+)
+
 # Set up installation rules if needed
 # install(TARGETS vulkan_renderer DESTINATION bin) 
