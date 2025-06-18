@@ -735,17 +735,16 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
       .tessellationShader = VK_TRUE,
   };
 
-  const char *extension_names[] = {
-      VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-      "VK_KHR_portability_subset",
-  };
+  uint32_t ext_count = 0;
+  const char **extension_names =
+      vulkan_platform_get_required_device_extensions(&ext_count);
 
   VkDeviceCreateInfo device_create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
       .queueCreateInfoCount = queue_create_infos.length,
       .pQueueCreateInfos = queue_create_infos.data,
       .pEnabledFeatures = &device_features,
-      .enabledExtensionCount = ArrayCount(extension_names),
+      .enabledExtensionCount = ext_count,
       .ppEnabledExtensionNames = extension_names,
 #ifndef NDEBUG
       .enabledLayerCount = ArrayCount(VALIDATION_LAYERS),

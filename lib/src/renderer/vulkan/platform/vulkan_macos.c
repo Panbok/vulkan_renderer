@@ -18,7 +18,10 @@ const char **vulkan_platform_get_required_extensions(uint32_t *out_count) {
 
 const char **
 vulkan_platform_get_required_device_extensions(uint32_t *out_count) {
-  static const char *extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+  static const char *extensions[] = {
+      VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+      "VK_KHR_portability_subset",
+  };
   *out_count = ArrayCount(extensions);
   return extensions;
 }
