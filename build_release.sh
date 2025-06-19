@@ -39,4 +39,4 @@ set -e # Exit early if any commands fail
   fi
 )
 
-exec $(dirname $0)/build_release/app/vulkan_renderer "$@" 
+exec "$(dirname "$0")/build_release/app/vulkan_renderer" "$@"
