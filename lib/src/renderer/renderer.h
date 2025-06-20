@@ -30,12 +30,20 @@
          The frontend will call these functions.
 
     Key Concepts:
-    - Handles: Opaque pointers (e.g., `MeshHandle`, `TextureHandle`) are used
-      in the frontend API to refer to resources. This hides internal details
-      and backend-specific representations from the user.
+    - Handles: Opaque pointers (e.g., `BufferHandle`, `ShaderHandle`,
+      `PipelineHandle`) are used in the frontend API to refer to resources.
+      This hides internal details and backend-specific representations from
+      the user.
     - Resource Descriptions: Structs (e.g., `BufferDescription`,
-      `TextureDescription`) are used to specify parameters for resource
-      creation.
+      `GraphicsPipelineDescription`) are used to specify parameters for
+      resource creation.
+    - Buffer Management: Generic buffers can be created for any purpose
+      (vertex, index, uniform), but binding functions are specialized to
+      provide context and type safety (e.g., `VertexBufferBinding`,
+      `IndexBufferBinding`).
+    - Vertex Layout Connection: Vertex input descriptions in pipelines define
+      the layout, and vertex buffer bindings at runtime must reference the
+      correct binding points defined in the pipeline.
     - Command Generation: The frontend internally generates a list of
       abstract rendering commands. These are then processed by the active
       backend. (The exact structure of these internal commands is not exposed
@@ -220,15 +228,18 @@ typedef struct ShaderModuleDescription {
                              // Future: defines, include paths etc.
 } ShaderModuleDescription;
 
+// Used at PIPELINE CREATION time to define vertex layout
 typedef struct VertexInputAttributeDescription {
-  uint32_t location;   // Shader input location
+  uint32_t location;   // Shader input location (layout(location = X) in shader)
   uint32_t binding;    // Which vertex buffer binding this attribute uses
   VertexFormat format; // Format of the attribute data
   uint32_t offset;     // Offset within the vertex stride
 } VertexInputAttributeDescription;
 
+// Used at PIPELINE CREATION time to define vertex buffer bindings
 typedef struct VertexInputBindingDescription {
-  uint32_t binding; // The binding number (matches attribute's binding)
+  uint32_t binding; // The binding number (referenced by attributes and runtime
+                    // bindings)
   uint32_t stride;  // Distance between consecutive elements for this binding
   VertexInputRate input_rate; // Per-vertex or per-instance
 } VertexInputBindingDescription;
@@ -253,6 +264,66 @@ typedef struct GraphicsPipelineDescription {
   // Dynamic states (e.g. viewport, scissor - already handled by separate
   // commands)
 } GraphicsPipelineDescription;
+
+// ============================================================================
+// Buffer and Vertex/Index Data Structures
+// ============================================================================
+
+/* Usage Example:
+ *
+ * // 1. Create pipeline with vertex input layout
+ * VertexInputAttributeDescription attrs[] = {
+ *   {.location = 0, .binding = 0, .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+ * .offset = 0},  // position
+ *   {.location = 1, .binding = 0, .format = VERTEX_FORMAT_R32G32_SFLOAT,
+ * .offset = 12},   // uv
+ * };
+ * VertexInputBindingDescription bindings[] = {
+ *   {.binding = 0, .stride = 20, .input_rate = VERTEX_INPUT_RATE_VERTEX}
+ * };
+ * GraphicsPipelineDescription pipeline_desc = {
+ *   .vertex_shader = vs, .fragment_shader = fs,
+ *   .attribute_count = 2, .attributes = attrs,
+ *   .binding_count = 1, .bindings = bindings,
+ *   // ... other pipeline state
+ * };
+ * PipelineHandle pipeline = renderer_create_pipeline(renderer, &pipeline_desc,
+ * &err);
+ *
+ * // 2. Create buffers
+ * BufferHandle vb = renderer_create_vertex_buffer(renderer, vertex_data_size,
+ * vertex_data, &err);
+ * BufferHandle ib = renderer_create_index_buffer(renderer,
+ * index_data_size, INDEX_TYPE_UINT16, index_data, &err);
+ *
+ * // 3. Render
+ * renderer_begin_frame(renderer, dt);
+ * renderer_bind_graphics_pipeline(renderer, pipeline);
+ *
+ * VertexBufferBinding vb_binding = {.buffer = vb, .binding = 0, .offset = 0};
+ * renderer_bind_vertex_buffer(renderer, &vb_binding);
+ *
+ * IndexBufferBinding ib_binding = {.buffer = ib, .type = INDEX_TYPE_UINT16,
+ * .offset = 0}; renderer_bind_index_buffer(renderer, &ib_binding);
+ *
+ * renderer_draw_indexed(renderer, index_count, 1, 0, 0, 0);
+ * renderer_end_frame(renderer, dt);
+ */
+
+// Used at RUNTIME to bind actual buffers to the vertex input bindings defined
+// in the pipeline
+typedef struct VertexBufferBinding {
+  BufferHandle buffer;
+  uint32_t binding; // Must match a binding number from
+                    // VertexInputBindingDescription in the current pipeline
+  uint64_t offset;  // Offset into the buffer
+} VertexBufferBinding;
+
+typedef struct IndexBufferBinding {
+  BufferHandle buffer;
+  IndexType type;  // uint16 or uint32
+  uint64_t offset; // Offset into the buffer
+} IndexBufferBinding;
 
 // ============================================================================
 // Frontend API (User-Facing)
@@ -284,6 +355,17 @@ BufferHandle renderer_create_buffer(RendererFrontendHandle renderer,
                                     const BufferDescription *description,
                                     const void *initial_data,
                                     RendererError *out_error);
+
+// Convenience functions for common buffer types
+BufferHandle renderer_create_vertex_buffer(RendererFrontendHandle renderer,
+                                           uint64_t size,
+                                           const void *initial_data,
+                                           RendererError *out_error);
+
+BufferHandle renderer_create_index_buffer(RendererFrontendHandle renderer,
+                                          uint64_t size, IndexType type,
+                                          const void *initial_data,
+                                          RendererError *out_error);
 
 void renderer_destroy_buffer(RendererFrontendHandle renderer,
                              BufferHandle buffer);
@@ -320,13 +402,28 @@ void renderer_resize(RendererFrontendHandle renderer, uint32_t width,
 
 void renderer_bind_graphics_pipeline(RendererFrontendHandle renderer,
                                      PipelineHandle pipeline);
+
+// Bind a vertex buffer (most common case)
 void renderer_bind_vertex_buffer(RendererFrontendHandle renderer,
-                                 BufferHandle buffer, uint32_t binding_index,
-                                 uint64_t offset);
+                                 const VertexBufferBinding *binding);
+
+// Bind multiple vertex buffers at once - for advanced use cases
+void renderer_bind_vertex_buffers(RendererFrontendHandle renderer,
+                                  uint32_t first_binding,
+                                  uint32_t binding_count,
+                                  const VertexBufferBinding *bindings);
+
+void renderer_bind_index_buffer(RendererFrontendHandle renderer,
+                                const IndexBufferBinding *binding);
 
 void renderer_draw(RendererFrontendHandle renderer, uint32_t vertex_count,
                    uint32_t instance_count, uint32_t first_vertex,
                    uint32_t first_instance);
+
+void renderer_draw_indexed(RendererFrontendHandle renderer,
+                           uint32_t index_count, uint32_t instance_count,
+                           uint32_t first_index, int32_t vertex_offset,
+                           uint32_t first_instance);
 
 RendererError renderer_end_frame(RendererFrontendHandle renderer,
                                  float64_t delta_time);
@@ -379,6 +476,10 @@ typedef struct RendererBackendInterface {
   void (*shader_destroy)(void *backend_state,
                          BackendResourceHandle shader_handle);
 
+  // Pipeline creation uses VertexInputAttributeDescription and
+  // VertexInputBindingDescription from GraphicsPipelineDescription to
+  // configure the vertex input layout. Runtime vertex buffer bindings
+  // must reference the binding numbers defined in these descriptions.
   BackendResourceHandle (*pipeline_create)(
       void *backend_state, const GraphicsPipelineDescription *description);
   void (*pipeline_destroy)(void *backend_state,
@@ -388,11 +489,22 @@ typedef struct RendererBackendInterface {
   // These are the "abstract commands" translated by the frontend.
   void (*bind_pipeline)(void *backend_state,
                         BackendResourceHandle pipeline_handle);
+
   void (*bind_vertex_buffer)(void *backend_state,
-                             BackendResourceHandle buffer_handle,
-                             uint32_t binding_index, uint64_t offset);
+                             const VertexBufferBinding *binding);
+
+  void (*bind_vertex_buffers)(void *backend_state, uint32_t first_binding,
+                              uint32_t binding_count,
+                              const VertexBufferBinding *bindings);
+
+  void (*bind_index_buffer)(void *backend_state,
+                            const IndexBufferBinding *binding);
 
   void (*draw)(void *backend_state, uint32_t vertex_count,
                uint32_t instance_count, uint32_t first_vertex,
                uint32_t first_instance);
+
+  void (*draw_indexed)(void *backend_state, uint32_t index_count,
+                       uint32_t instance_count, uint32_t first_index,
+                       int32_t vertex_offset, uint32_t first_instance);
 } RendererBackendInterface;

@@ -131,6 +131,34 @@ BufferHandle renderer_create_buffer(RendererFrontendHandle renderer,
   return (BufferHandle)handle.ptr;
 }
 
+BufferHandle renderer_create_vertex_buffer(RendererFrontendHandle renderer,
+                                           uint64_t size,
+                                           const void *initial_data,
+                                           RendererError *out_error) {
+  BufferDescription desc = {.size = size,
+                            .usage = BUFFER_USAGE_VERTEX_BUFFER |
+                                     BUFFER_USAGE_TRANSFER_DST,
+                            .memory_properties = MEMORY_PROPERTY_DEVICE_LOCAL};
+
+  return renderer_create_buffer(renderer, &desc, initial_data, out_error);
+}
+
+BufferHandle renderer_create_index_buffer(RendererFrontendHandle renderer,
+                                          uint64_t size, IndexType type,
+                                          const void *initial_data,
+                                          RendererError *out_error) {
+  // Note: type parameter is for documentation/validation, the actual buffer
+  // doesn't need to know the index type (that's specified at bind time)
+  (void)type; // Suppress unused parameter warning
+
+  BufferDescription desc = {.size = size,
+                            .usage = BUFFER_USAGE_INDEX_BUFFER |
+                                     BUFFER_USAGE_TRANSFER_DST,
+                            .memory_properties = MEMORY_PROPERTY_DEVICE_LOCAL};
+
+  return renderer_create_buffer(renderer, &desc, initial_data, out_error);
+}
+
 void renderer_destroy_buffer(RendererFrontendHandle renderer,
                              BufferHandle buffer) {
   assert_log(renderer != NULL, "Renderer is NULL");
@@ -263,20 +291,49 @@ void renderer_bind_graphics_pipeline(RendererFrontendHandle renderer,
   renderer->backend.bind_pipeline(renderer->backend_state, handle);
 }
 
-void renderer_bind_vertex_buffer(RendererFrontendHandle renderer,
-                                 BufferHandle buffer, uint32_t binding_index,
-                                 uint64_t offset) {
+void renderer_bind_vertex_buffers(RendererFrontendHandle renderer,
+                                  uint32_t first_binding,
+                                  uint32_t binding_count,
+                                  const VertexBufferBinding *bindings) {
   assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(buffer != NULL, "Buffer is NULL");
+  assert_log(bindings != NULL, "Bindings is NULL");
+  assert_log(binding_count > 0, "Binding count must be > 0");
+  assert_log(renderer->frame_active,
+             "Bind vertex buffers called outside of frame");
+
+  // log_debug("Binding %d vertex buffers starting at binding %d",
+  // binding_count, first_binding);
+
+  renderer->backend.bind_vertex_buffers(renderer->backend_state, first_binding,
+                                        binding_count, bindings);
+}
+
+void renderer_bind_vertex_buffer(RendererFrontendHandle renderer,
+                                 const VertexBufferBinding *binding) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(binding != NULL, "Binding is NULL");
+  assert_log(binding->buffer != NULL, "Buffer is NULL");
   assert_log(renderer->frame_active,
              "Bind vertex buffer called outside of frame");
 
-  // log_debug("Binding vertex buffer to %d with offset %d", binding_index,
-  //           offset);
+  // log_debug("Binding vertex buffer to binding %d with offset %llu",
+  //           binding->binding, binding->offset);
 
-  BackendResourceHandle handle = {.ptr = (void *)buffer};
-  renderer->backend.bind_vertex_buffer(renderer->backend_state, handle,
-                                       binding_index, offset);
+  renderer->backend.bind_vertex_buffer(renderer->backend_state, binding);
+}
+
+void renderer_bind_index_buffer(RendererFrontendHandle renderer,
+                                const IndexBufferBinding *binding) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(binding != NULL, "Binding is NULL");
+  assert_log(binding->buffer != NULL, "Buffer is NULL");
+  assert_log(renderer->frame_active,
+             "Bind index buffer called outside of frame");
+
+  // log_debug("Binding index buffer with type %d and offset %llu",
+  //           binding->type, binding->offset);
+
+  renderer->backend.bind_index_buffer(renderer->backend_state, binding);
 }
 
 void renderer_draw(RendererFrontendHandle renderer, uint32_t vertex_count,
@@ -290,6 +347,22 @@ void renderer_draw(RendererFrontendHandle renderer, uint32_t vertex_count,
 
   renderer->backend.draw(renderer->backend_state, vertex_count, instance_count,
                          first_vertex, first_instance);
+}
+
+void renderer_draw_indexed(RendererFrontendHandle renderer,
+                           uint32_t index_count, uint32_t instance_count,
+                           uint32_t first_index, int32_t vertex_offset,
+                           uint32_t first_instance) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(renderer->frame_active, "Draw indexed called outside of frame");
+
+  // log_debug("Drawing %d indices with %d instances starting at %d with vertex
+  // offset %d",
+  //           index_count, instance_count, first_index, vertex_offset);
+
+  renderer->backend.draw_indexed(renderer->backend_state, index_count,
+                                 instance_count, first_index, vertex_offset,
+                                 first_instance);
 }
 
 RendererError renderer_end_frame(RendererFrontendHandle renderer,
