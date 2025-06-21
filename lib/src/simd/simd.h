@@ -86,7 +86,11 @@
  * @brief Alignment attribute for optimal SIMD performance.
  * Ensures 16-byte alignment required by most SIMD instruction sets.
  */
+#if defined(_MSC_VER)
+#define SIMD_ALIGN __declspec(align(16))
+#else
 #define SIMD_ALIGN __attribute__((aligned(16)))
+#endif
 
 // =============================================================================
 // SIMD Type Definitions
@@ -607,6 +611,10 @@ INLINE float32_t simd_dot4_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
 
 INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
                                      int32_t z, int32_t w) {
+  assert(x >= 0 && x < 4);
+  assert(y >= 0 && y < 4);
+  assert(z >= 0 && z < 4);
+  assert(w >= 0 && w < 4);
   // ARM NEON doesn't have arbitrary shuffle, so we use element access
   SIMD_F32X4 result;
   result.elements[0] = v.elements[x];
@@ -738,6 +746,10 @@ INLINE float32_t simd_dot4_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
 
 INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
                                      int32_t z, int32_t w) {
+  assert(x >= 0 && x < 4);
+  assert(y >= 0 && y < 4);
+  assert(z >= 0 && z < 4);
+  assert(w >= 0 && w < 4);
   SIMD_F32X4 result = {
       {v.elements[x], v.elements[y], v.elements[z], v.elements[w]}};
   return result;

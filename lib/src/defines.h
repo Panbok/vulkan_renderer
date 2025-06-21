@@ -43,7 +43,7 @@
 #define false_v (uint8_t)0
 
 // Inlining
-#if defined(__clang__) || defined(__gcc__)
+#if defined(__clang__) || defined(__GNUC__)
 #define INLINE __attribute__((always_inline)) inline
 #define NOINLINE __attribute__((noinline))
 #elif defined(_MSC_VER)
