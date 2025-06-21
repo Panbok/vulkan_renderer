@@ -96,18 +96,25 @@
 // SIMD Type Definitions
 // =============================================================================
 
-#if SIMD_ARM_NEON
 /**
- * @brief 128-bit vector of four 32-bit floating-point values (ARM NEON).
+ * @brief 128-bit vector of four 32-bit floating-point values (ARM NEON, x86
+ * SSE).
  * Provides multiple access patterns for different use cases:
  * - Mathematical: x, y, z, w components
  * - Color: r, g, b, a channels
  * - Texture: s, t, p, q coordinates
  * - Array: elements[0-3] for indexed access
  * - Native: .neon for direct ARM NEON intrinsic access
+ * - Native: .sse for direct x86 SSE intrinsic access
  */
 typedef SIMD_ALIGN union {
+#if SIMD_ARM_NEON
   float32x4_t neon; /**< Native ARM NEON vector register */
+#elif SIMD_X86_SSE
+  __m128 sse; /**< Native x86 SSE vector register */
+#else
+#endif
+
   union {
     struct {
       union {
@@ -132,7 +139,12 @@ typedef SIMD_ALIGN union {
  * Optimized for 2D operations like texture coordinates or complex numbers.
  */
 typedef SIMD_ALIGN union {
+#if SIMD_ARM_NEON
   float32x2_t neon; /**< Native ARM NEON 64-bit vector register */
+#elif SIMD_X86_SSE
+  __m128 sse; /**< Native x86 SSE vector register */
+#else
+#endif
   struct {
     union {
       float32_t x, r, s, u; /**< First element: X/Red/S/U coordinate */
@@ -149,78 +161,12 @@ typedef SIMD_ALIGN union {
  * Used for integer vector operations, masks, and bit manipulation.
  */
 typedef SIMD_ALIGN union {
+#if SIMD_ARM_NEON
   int32x4_t neon; /**< Native ARM NEON integer vector register */
-  union {
-    struct {
-      union {
-        int32_t x, r, s; /**< First element: X/Red/S coordinate */
-      };
-      union {
-        int32_t y, g, t; /**< Second element: Y/Green/T coordinate */
-      };
-      union {
-        int32_t z, b, p; /**< Third element: Z/Blue/P coordinate */
-      };
-      union {
-        int32_t w, a, q; /**< Fourth element: W/Alpha/Q coordinate */
-      };
-    };
-  };
-  int32_t elements[4]; /**< Array access to all four elements */
-} SIMD_I32X4;
-
 #elif SIMD_X86_SSE
-/**
- * @brief 128-bit vector of four 32-bit floating-point values (x86 SSE).
- * Future implementation - currently uses type definitions only.
- * @note Implementation pending - falls back to scalar operations.
- */
-typedef SIMD_ALIGN union {
-  __m128 sse; /**< Native x86 SSE vector register */
-  union {
-    struct {
-      union {
-        float32_t x, r, s; /**< First element: X/Red/S coordinate */
-      };
-      union {
-        float32_t y, g, t; /**< Second element: Y/Green/T coordinate */
-      };
-      union {
-        float32_t z, b, p; /**< Third element: Z/Blue/P coordinate */
-      };
-      union {
-        float32_t w, a, q; /**< Fourth element: W/Alpha/Q coordinate */
-      };
-    };
-  };
-  float32_t elements[4]; /**< Array access to all four elements */
-} SIMD_F32X4;
-
-/**
- * @brief 128-bit storage for two 32-bit floating-point values (x86 SSE).
- * Uses full 128-bit register for alignment, with only first two elements used.
- * @note Implementation pending - falls back to scalar operations.
- */
-typedef SIMD_ALIGN union {
-  __m128
-      sse; /**< Native x86 SSE vector register (full 128-bit for alignment) */
-  struct {
-    union {
-      float32_t x, r, s, u; /**< First element: X/Red/S/U coordinate */
-    };
-    union {
-      float32_t y, g, t, v; /**< Second element: Y/Green/T/V coordinate */
-    };
-  };
-  float32_t elements[4]; /**< Array access (only first 2 elements used) */
-} SIMD_F32x2;
-
-/**
- * @brief 128-bit vector of four 32-bit signed integers (x86 SSE).
- * @note Implementation pending - falls back to scalar operations.
- */
-typedef SIMD_ALIGN union {
   __m128i sse; /**< Native x86 SSE integer vector register */
+#else
+#endif
   union {
     struct {
       union {
@@ -239,40 +185,6 @@ typedef SIMD_ALIGN union {
   };
   int32_t elements[4]; /**< Array access to all four elements */
 } SIMD_I32X4;
-
-#else
-/**
- * @brief Scalar fallback for 128-bit vector of four 32-bit floating-point
- * values. Used on platforms without SIMD support. Structured to encourage
- * compiler auto-vectorization where possible.
- */
-typedef SIMD_ALIGN union {
-  struct {
-    float32_t x, y, z, w; /**< Four scalar floating-point elements */
-  };
-  float32_t elements[4]; /**< Array access to all four elements */
-} SIMD_F32X4;
-
-/**
- * @brief Scalar fallback for 64-bit vector of two 32-bit floating-point values.
- */
-typedef SIMD_ALIGN union {
-  struct {
-    float32_t x, y; /**< Two scalar floating-point elements */
-  };
-  float32_t elements[2]; /**< Array access to both elements */
-} SIMD_F32x2;
-
-/**
- * @brief Scalar fallback for 128-bit vector of four 32-bit signed integers.
- */
-typedef SIMD_ALIGN union {
-  struct {
-    int32_t x, y, z, w; /**< Four scalar integer elements */
-  };
-  int32_t elements[4]; /**< Array access to all four elements */
-} SIMD_I32X4;
-#endif
 
 // =============================================================================
 // General-Purpose SIMD Operations
