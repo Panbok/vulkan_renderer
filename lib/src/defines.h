@@ -42,6 +42,25 @@
 #define true_v (uint8_t)1
 #define false_v (uint8_t)0
 
+// Inlining
+#if defined(__clang__) || defined(__gcc__)
+#define INLINE __attribute__((always_inline)) inline
+#define NOINLINE __attribute__((noinline))
+#elif defined(_MSC_VER)
+#define INLINE __forceinline
+#define NOINLINE __declspec(noinline)
+#else
+#define INLINE static inline
+#define NOINLINE
+#endif
+
+// Check if any SIMD is available
+#if defined(SIMD_ARM_NEON) || defined(SIMD_X86_SSE)
+#define SIMD_AVAILABLE 1
+#else
+#define SIMD_AVAILABLE 0
+#endif
+
 // Floating point types
 /** @brief 32-bit floating point number */
 typedef float float32_t;
