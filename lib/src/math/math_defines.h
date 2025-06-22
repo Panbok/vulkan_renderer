@@ -131,7 +131,9 @@
  *  @note Value: 1e30f (1 × 10^30)
  *  @note Use for bounds checking and initialization of minimum values
  *  @note Should be larger than any realistic value in your application */
+#ifndef INFINITY
 #define INFINITY 1e30f
+#endif
 
 /** @brief Machine epsilon for float32_t precision
  *  @note Smallest positive number where 1.0f + FLOAT_EPSILON != 1.0f
