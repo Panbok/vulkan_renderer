@@ -74,8 +74,8 @@
 // clang-format on
 #pragma once
 
+#include "../math/math_utils.h"
 #include "defines.h"
-#include "math.h"
 #include "pch.h"
 
 // =============================================================================
