@@ -7,6 +7,7 @@
 #include "event_data_buffer_test.h"
 #include "event_test.h"
 #include "input_test.h"
+#include "math_utils_test.h"
 #include "mmemory_test.h"
 #include "queue_test.h"
 #include "string_test.h"
