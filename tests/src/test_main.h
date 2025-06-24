@@ -10,5 +10,6 @@
 #include "math_utils_test.h"
 #include "mmemory_test.h"
 #include "queue_test.h"
+#include "simd_test.h"
 #include "string_test.h"
 #include "vector_test.h"

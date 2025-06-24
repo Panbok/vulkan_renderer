@@ -31,6 +31,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_math_utils_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_simd_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_clock_tests();
   printf("\n"); // Add spacing
   all_passed &= run_string_tests();
