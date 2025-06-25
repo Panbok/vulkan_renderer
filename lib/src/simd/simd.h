@@ -135,28 +135,6 @@ typedef SIMD_ALIGN union {
 } SIMD_F32X4;
 
 /**
- * @brief 64-bit vector of two 32-bit floating-point values (ARM NEON).
- * Optimized for 2D operations like texture coordinates or complex numbers.
- */
-typedef SIMD_ALIGN union {
-#if SIMD_ARM_NEON
-  float32x2_t neon; /**< Native ARM NEON 64-bit vector register */
-#elif SIMD_X86_SSE
-  __m128 sse; /**< Native x86 SSE vector register */
-#else
-#endif
-  struct {
-    union {
-      float32_t x, r, s, u; /**< First element: X/Red/S/U coordinate */
-    };
-    union {
-      float32_t y, g, t, v; /**< Second element: Y/Green/T/V coordinate */
-    };
-  };
-  float32_t elements[2]; /**< Array access to both elements */
-} SIMD_F32x2;
-
-/**
  * @brief 128-bit vector of four 32-bit signed integers (ARM NEON).
  * Used for integer vector operations, masks, and bit manipulation.
  */
@@ -188,6 +166,10 @@ typedef SIMD_ALIGN union {
 
 // =============================================================================
 // General-Purpose SIMD Operations
+// =============================================================================
+
+// =============================================================================
+// SIMD Operations for float32_t vectors
 // =============================================================================
 
 /**
@@ -391,6 +373,52 @@ INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
                                      int32_t z, int32_t w);
 
 // =============================================================================
+// SIMD Operations for int32_t vectors
+// =============================================================================
+
+/**
+ * @brief Creates a SIMD integer vector from four individual int32_t values.
+ * @param x First component (X/Red/S coordinate).
+ * @param y Second component (Y/Green/T coordinate).
+ * @param z Third component (Z/Blue/P coordinate).
+ * @param w Fourth component (W/Alpha/Q coordinate).
+ * @return SIMD integer vector with the specified component values.
+ */
+INLINE SIMD_I32X4 simd_set_i32x4(int32_t x, int32_t y, int32_t z, int32_t w);
+
+/**
+ * @brief Creates a SIMD integer vector with all four components set to the
+ * same value.
+ * @param value The value to broadcast to all four components.
+ * @return SIMD integer vector with all components equal to value.
+ */
+INLINE SIMD_I32X4 simd_set1_i32x4(int32_t value);
+
+/**
+ * @brief Performs element-wise addition of two SIMD integer vectors.
+ * @param a First vector operand.
+ * @param b Second vector operand.
+ * @return Vector containing {a.x+b.x, a.y+b.y, a.z+b.z, a.w+b.w}.
+ */
+INLINE SIMD_I32X4 simd_add_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
+
+/**
+ * @brief Performs element-wise subtraction of two SIMD integer vectors.
+ * @param a First vector operand (minuend).
+ * @param b Second vector operand (subtrahend).
+ * @return Vector containing {a.x-b.x, a.y-b.y, a.z-b.z, a.w-b.w}.
+ */
+INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
+
+/**
+ * @brief Performs element-wise multiplication of two SIMD integer vectors.
+ * @param a First vector operand.
+ * @param b Second vector operand.
+ * @return Vector containing {a.x*b.x, a.y*b.y, a.z*b.z, a.w*b.w}.
+ */
+INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
+
+// =============================================================================
 // Platform-specific implementations
 // =============================================================================
 
@@ -536,6 +564,36 @@ INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
   return result;
 }
 
+INLINE SIMD_I32X4 simd_set_i32x4(int32_t x, int32_t y, int32_t z, int32_t w) {
+  SIMD_I32X4 result;
+  result.neon = (int32x4_t){x, y, z, w};
+  return result;
+}
+
+INLINE SIMD_I32X4 simd_set1_i32x4(int32_t value) {
+  SIMD_I32X4 result;
+  result.neon = vdupq_n_s32(value);
+  return result;
+}
+
+INLINE SIMD_I32X4 simd_add_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+  SIMD_I32X4 result;
+  result.neon = vaddq_s32(a.neon, b.neon);
+  return result;
+}
+
+INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+  SIMD_I32X4 result;
+  result.neon = vsubq_s32(a.neon, b.neon);
+  return result;
+}
+
+INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+  SIMD_I32X4 result;
+  result.neon = vmulq_s32(a.neon, b.neon);
+  return result;
+}
+
 #else
 // Fallback scalar implementations
 INLINE SIMD_F32X4 simd_load_f32x4(const float32_t *ptr) {
@@ -664,6 +722,31 @@ INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
   assert(w >= 0 && w < 4);
   SIMD_F32X4 result = {
       {v.elements[x], v.elements[y], v.elements[z], v.elements[w]}};
+  return result;
+}
+
+INLINE SIMD_I32X4 simd_set_i32x4(int32_t x, int32_t y, int32_t z, int32_t w) {
+  SIMD_I32X4 result = {{x, y, z, w}};
+  return result;
+}
+
+INLINE SIMD_I32X4 simd_set1_i32x4(int32_t value) {
+  SIMD_I32X4 result = {{value, value, value, value}};
+  return result;
+}
+
+INLINE SIMD_I32X4 simd_add_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+  SIMD_I32X4 result = {{a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w}};
+  return result;
+}
+
+INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+  SIMD_I32X4 result = {{a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w}};
+  return result;
+}
+
+INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+  SIMD_I32X4 result = {{a.x * b.x, a.y * b.y, a.z * b.z, a.w * b.w}};
   return result;
 }
 #endif

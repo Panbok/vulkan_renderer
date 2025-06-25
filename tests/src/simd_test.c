@@ -6,8 +6,149 @@ static bool32_t simd_vector_equals(SIMD_F32X4 a, SIMD_F32X4 b,
          (abs_f32(a.z - b.z) < epsilon) && (abs_f32(a.w - b.w) < epsilon);
 }
 
+static bool32_t simd_i32_vector_equals(SIMD_I32X4 a, SIMD_I32X4 b) {
+  return (a.x == b.x) && (a.y == b.y) && (a.z == b.z) && (a.w == b.w);
+}
+
 static bool32_t float_equals(float32_t a, float32_t b, float32_t epsilon) {
   return abs_f32(a - b) < epsilon;
+}
+
+static void test_simd_i32_set(void) {
+  printf("  Running test_simd_i32_set...\n");
+
+  // Test simd_set_i32x4
+  SIMD_I32X4 v1 = simd_set_i32x4(10, 20, 30, 40);
+  assert(v1.x == 10 && "simd_set_i32x4 failed for x");
+  assert(v1.y == 20 && "simd_set_i32x4 failed for y");
+  assert(v1.z == 30 && "simd_set_i32x4 failed for z");
+  assert(v1.w == 40 && "simd_set_i32x4 failed for w");
+
+  // Test simd_set1_i32x4 (broadcast)
+  SIMD_I32X4 v2 = simd_set1_i32x4(42);
+  assert(v2.x == 42 && "simd_set1_i32x4 failed for x");
+  assert(v2.y == 42 && "simd_set1_i32x4 failed for y");
+  assert(v2.z == 42 && "simd_set1_i32x4 failed for z");
+  assert(v2.w == 42 && "simd_set1_i32x4 failed for w");
+
+  // Test element access patterns
+  assert(v1.r == 10 && "Color access (r) failed");
+  assert(v1.g == 20 && "Color access (g) failed");
+  assert(v1.b == 30 && "Color access (b) failed");
+  assert(v1.a == 40 && "Color access (a) failed");
+
+  assert(v1.s == 10 && "Texture access (s) failed");
+  assert(v1.t == 20 && "Texture access (t) failed");
+  assert(v1.p == 30 && "Texture access (p) failed");
+  assert(v1.q == 40 && "Texture access (q) failed");
+
+  assert(v1.elements[0] == 10 && "Array access [0] failed");
+  assert(v1.elements[1] == 20 && "Array access [1] failed");
+  assert(v1.elements[2] == 30 && "Array access [2] failed");
+  assert(v1.elements[3] == 40 && "Array access [3] failed");
+
+  // Test with negative values
+  SIMD_I32X4 v3 = simd_set_i32x4(-5, -10, -15, -20);
+  assert(v3.x == -5 && "Negative value test failed for x");
+  assert(v3.y == -10 && "Negative value test failed for y");
+  assert(v3.z == -15 && "Negative value test failed for z");
+  assert(v3.w == -20 && "Negative value test failed for w");
+
+  printf("  test_simd_i32_set PASSED\n");
+}
+
+static void test_simd_i32_arithmetic(void) {
+  printf("  Running test_simd_i32_arithmetic...\n");
+
+  SIMD_I32X4 a = simd_set_i32x4(100, 200, 300, 400);
+  SIMD_I32X4 b = simd_set_i32x4(10, 20, 30, 40);
+
+  // Test addition
+  SIMD_I32X4 add_result = simd_add_i32x4(a, b);
+  SIMD_I32X4 expected_add = simd_set_i32x4(110, 220, 330, 440);
+  assert(simd_i32_vector_equals(add_result, expected_add) &&
+         "simd_add_i32x4 failed");
+
+  // Test subtraction
+  SIMD_I32X4 sub_result = simd_sub_i32x4(a, b);
+  SIMD_I32X4 expected_sub = simd_set_i32x4(90, 180, 270, 360);
+  assert(simd_i32_vector_equals(sub_result, expected_sub) &&
+         "simd_sub_i32x4 failed");
+
+  // Test multiplication
+  SIMD_I32X4 mul_result = simd_mul_i32x4(a, b);
+  SIMD_I32X4 expected_mul = simd_set_i32x4(1000, 4000, 9000, 16000);
+  assert(simd_i32_vector_equals(mul_result, expected_mul) &&
+         "simd_mul_i32x4 failed");
+
+  // Test with negative values
+  SIMD_I32X4 neg_a = simd_set_i32x4(-10, 15, -25, 35);
+  SIMD_I32X4 neg_b = simd_set_i32x4(5, -3, 7, -2);
+
+  SIMD_I32X4 neg_add = simd_add_i32x4(neg_a, neg_b);
+  SIMD_I32X4 expected_neg_add = simd_set_i32x4(-5, 12, -18, 33);
+  assert(simd_i32_vector_equals(neg_add, expected_neg_add) &&
+         "simd_add_i32x4 failed with negative values");
+
+  SIMD_I32X4 neg_sub = simd_sub_i32x4(neg_a, neg_b);
+  SIMD_I32X4 expected_neg_sub = simd_set_i32x4(-15, 18, -32, 37);
+  assert(simd_i32_vector_equals(neg_sub, expected_neg_sub) &&
+         "simd_sub_i32x4 failed with negative values");
+
+  SIMD_I32X4 neg_mul = simd_mul_i32x4(neg_a, neg_b);
+  SIMD_I32X4 expected_neg_mul = simd_set_i32x4(-50, -45, -175, -70);
+  assert(simd_i32_vector_equals(neg_mul, expected_neg_mul) &&
+         "simd_mul_i32x4 failed with negative values");
+
+  printf("  test_simd_i32_arithmetic PASSED\n");
+}
+
+static void test_simd_i32_edge_cases(void) {
+  printf("  Running test_simd_i32_edge_cases...\n");
+
+  // Test with zero
+  SIMD_I32X4 zero = simd_set1_i32x4(0);
+  SIMD_I32X4 any_value = simd_set_i32x4(123, -456, 789, -101);
+
+  // Addition with zero
+  SIMD_I32X4 zero_add = simd_add_i32x4(any_value, zero);
+  assert(simd_i32_vector_equals(zero_add, any_value) &&
+         "Addition with zero failed");
+
+  // Subtraction with zero
+  SIMD_I32X4 zero_sub = simd_sub_i32x4(any_value, zero);
+  assert(simd_i32_vector_equals(zero_sub, any_value) &&
+         "Subtraction with zero failed");
+
+  // Multiplication with zero
+  SIMD_I32X4 zero_mul = simd_mul_i32x4(any_value, zero);
+  assert(simd_i32_vector_equals(zero_mul, zero) &&
+         "Multiplication with zero failed");
+
+  // Test with one
+  SIMD_I32X4 one = simd_set1_i32x4(1);
+  SIMD_I32X4 one_mul = simd_mul_i32x4(any_value, one);
+  assert(simd_i32_vector_equals(one_mul, any_value) &&
+         "Multiplication with one failed");
+
+  // Test with maximum and minimum values
+  SIMD_I32X4 max_vals = simd_set1_i32x4(2147483647);  // INT32_MAX
+  SIMD_I32X4 min_vals = simd_set1_i32x4(-2147483648); // INT32_MIN
+
+  // Test that we can create and access extreme values
+  assert(max_vals.x == 2147483647 && "Max value access failed");
+  assert(min_vals.x == -2147483648 && "Min value access failed");
+
+  // Test mixed large values
+  SIMD_I32X4 large_vals = simd_set_i32x4(1000000, -1000000, 500000, -500000);
+  SIMD_I32X4 small_vals = simd_set_i32x4(2, -2, 3, -3);
+  SIMD_I32X4 large_add = simd_add_i32x4(large_vals, small_vals);
+  SIMD_I32X4 expected_large_add =
+      simd_set_i32x4(1000002, -1000002, 500003, -500003);
+  assert(simd_i32_vector_equals(large_add, expected_large_add) &&
+         "Addition with large values failed");
+
+  printf("  test_simd_i32_edge_cases PASSED\n");
 }
 
 static void test_simd_load_store(void) {
@@ -364,6 +505,7 @@ static void test_simd_edge_cases(void) {
 bool32_t run_simd_tests(void) {
   printf("--- Starting SIMD Tests ---\n");
 
+  // Float SIMD tests
   test_simd_load_store();
   test_simd_set();
   test_simd_arithmetic();
@@ -373,6 +515,11 @@ bool32_t run_simd_tests(void) {
   test_simd_dot_products();
   test_simd_shuffle();
   test_simd_edge_cases();
+
+  // Integer SIMD tests
+  test_simd_i32_set();
+  test_simd_i32_arithmetic();
+  test_simd_i32_edge_cases();
 
   printf("--- SIMD Tests Completed ---\n");
   return true;
