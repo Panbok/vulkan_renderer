@@ -339,10 +339,6 @@ static inline Vec2 vec2_div(Vec2 a, Vec2 b) {
   return (Vec2){a.x / b.x, a.y / b.y};
 }
 
-static inline Vec3 vec3_div(Vec3 a, Vec3 b) {
-  return (Vec3){a.x / b.x, a.y / b.y, a.z / b.z};
-}
-
 static inline Vec2 vec2_negate(Vec2 v) { return (Vec2){-v.x, -v.y}; }
 
 // =============================================================================
@@ -359,6 +355,10 @@ static inline Vec3 vec3_sub(Vec3 a, Vec3 b) {
 
 static inline Vec3 vec3_mul(Vec3 a, Vec3 b) {
   return (Vec3){a.x * b.x, a.y * b.y, a.z * b.z};
+}
+
+static inline Vec3 vec3_div(Vec3 a, Vec3 b) {
+  return (Vec3){a.x / b.x, a.y / b.y, a.z / b.z};
 }
 
 static inline Vec3 vec3_scale(Vec3 v, float s) {
@@ -497,7 +497,7 @@ static inline Vec3 vec3_lerp(Vec3 a, Vec3 b, float t) {
 // FMA-optimized Vec4 lerp: a + t * (b - a)
 static inline Vec4 vec4_lerp(Vec4 a, Vec4 b, float t) {
   Vec4 t_vec = vec4_new(t, t, t, t);
-  return simd_fma_f32x4(a, simd_sub_f32x4(b, a), t_vec);
+  return simd_fma_f32x4(simd_sub_f32x4(b, a), t_vec, a);
 }
 
 static inline Vec3 vec3_reflect(Vec3 v, Vec3 n) {
@@ -565,7 +565,7 @@ static inline Vec4 vec4_mulsub(Vec4 a, Vec4 b, Vec4 c) {
 }
 
 static inline Vec4 vec4_scaleadd(Vec4 a, Vec4 v, float scale) {
-  return simd_fma_f32x4(a, v, simd_set1_f32x4(scale));
+  return simd_fma_f32x4(v, simd_set1_f32x4(scale), a);
 }
 
 static inline float vec4_dot3(Vec4 a, Vec4 b) { return simd_dot3_f32x4(a, b); }
