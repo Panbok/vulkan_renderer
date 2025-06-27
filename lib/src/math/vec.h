@@ -260,73 +260,73 @@ typedef SIMD_I32X4 IVec4;
 // Vector Constructor Functions
 // =============================================================================
 
-static inline Vec2 vec2_new(float x, float y) { return (Vec2){x, y}; }
+static INLINE Vec2 vec2_new(float x, float y) { return (Vec2){x, y}; }
 
-static inline Vec2 vec2_zero(void) { return (Vec2){0.0f, 0.0f}; }
+static INLINE Vec2 vec2_zero(void) { return (Vec2){0.0f, 0.0f}; }
 
-static inline Vec2 vec2_one(void) { return (Vec2){1.0f, 1.0f}; }
+static INLINE Vec2 vec2_one(void) { return (Vec2){1.0f, 1.0f}; }
 
-static inline Vec3 vec3_new(float x, float y, float z) {
+static INLINE Vec3 vec3_new(float x, float y, float z) {
   return (Vec3){x, y, z};
 }
 
-static inline Vec3 vec3_zero(void) { return (Vec3){0.0f, 0.0f, 0.0f}; }
+static INLINE Vec3 vec3_zero(void) { return (Vec3){0.0f, 0.0f, 0.0f}; }
 
-static inline Vec3 vec3_one(void) { return (Vec3){1.0f, 1.0f, 1.0f}; }
+static INLINE Vec3 vec3_one(void) { return (Vec3){1.0f, 1.0f, 1.0f}; }
 
-static inline Vec4 vec4_new(float x, float y, float z, float w) {
+static INLINE Vec4 vec4_new(float x, float y, float z, float w) {
   return simd_set_f32x4(x, y, z, w);
 }
 
-static inline Vec4 vec4_zero(void) { return simd_set1_f32x4(0.0f); }
+static INLINE Vec4 vec4_zero(void) { return simd_set1_f32x4(0.0f); }
 
-static inline Vec4 vec4_one(void) { return simd_set1_f32x4(1.0f); }
+static INLINE Vec4 vec4_one(void) { return simd_set1_f32x4(1.0f); }
 
-static inline IVec2 ivec2_new(int32_t x, int32_t y) { return (IVec2){x, y}; }
+static INLINE IVec2 ivec2_new(int32_t x, int32_t y) { return (IVec2){x, y}; }
 
-static inline IVec2 ivec2_zero(void) { return (IVec2){0, 0}; }
+static INLINE IVec2 ivec2_zero(void) { return (IVec2){0, 0}; }
 
-static inline IVec3 ivec3_new(int32_t x, int32_t y, int32_t z) {
+static INLINE IVec3 ivec3_new(int32_t x, int32_t y, int32_t z) {
   return (IVec3){x, y, z};
 }
 
-static inline IVec3 ivec3_zero(void) { return (IVec3){0, 0, 0}; }
+static INLINE IVec3 ivec3_zero(void) { return (IVec3){0, 0, 0}; }
 
-static inline IVec4 ivec4_new(int32_t x, int32_t y, int32_t z, int32_t w) {
+static INLINE IVec4 ivec4_new(int32_t x, int32_t y, int32_t z, int32_t w) {
   return simd_set_i32x4(x, y, z, w);
 }
 
-static inline IVec4 ivec4_zero(void) { return simd_set1_i32x4(0); }
+static INLINE IVec4 ivec4_zero(void) { return simd_set1_i32x4(0); }
 
 // =============================================================================
 // Vec2 Operations
 // =============================================================================
 
-static inline Vec2 vec2_add(Vec2 a, Vec2 b) {
+static INLINE Vec2 vec2_add(Vec2 a, Vec2 b) {
   return (Vec2){a.x + b.x, a.y + b.y};
 }
 
-static inline Vec2 vec2_sub(Vec2 a, Vec2 b) {
+static INLINE Vec2 vec2_sub(Vec2 a, Vec2 b) {
   return (Vec2){a.x - b.x, a.y - b.y};
 }
 
-static inline Vec2 vec2_mul(Vec2 a, Vec2 b) {
+static INLINE Vec2 vec2_mul(Vec2 a, Vec2 b) {
   return (Vec2){a.x * b.x, a.y * b.y};
 }
 
-static inline Vec2 vec2_scale(Vec2 v, float s) {
+static INLINE Vec2 vec2_scale(Vec2 v, float s) {
   return (Vec2){v.x * s, v.y * s};
 }
 
-static inline float vec2_dot(Vec2 a, Vec2 b) { return a.x * b.x + a.y * b.y; }
+static INLINE float vec2_dot(Vec2 a, Vec2 b) { return a.x * b.x + a.y * b.y; }
 
-static inline float vec2_length_squared(Vec2 v) { return vec2_dot(v, v); }
+static INLINE float vec2_length_squared(Vec2 v) { return vec2_dot(v, v); }
 
-static inline float vec2_length(Vec2 v) {
+static INLINE float vec2_length(Vec2 v) {
   return sqrt_f32(vec2_length_squared(v));
 }
 
-static inline Vec2 vec2_normalize(Vec2 v) {
+static INLINE Vec2 vec2_normalize(Vec2 v) {
   float len_sq = vec2_length_squared(v);
   if (len_sq > FLOAT_EPSILON * FLOAT_EPSILON) {
     float inv_len = 1.0f / sqrt_f32(len_sq);
@@ -335,52 +335,52 @@ static inline Vec2 vec2_normalize(Vec2 v) {
   return vec2_zero();
 }
 
-static inline Vec2 vec2_div(Vec2 a, Vec2 b) {
+static INLINE Vec2 vec2_div(Vec2 a, Vec2 b) {
   return (Vec2){a.x / b.x, a.y / b.y};
 }
 
-static inline Vec2 vec2_negate(Vec2 v) { return (Vec2){-v.x, -v.y}; }
+static INLINE Vec2 vec2_negate(Vec2 v) { return (Vec2){-v.x, -v.y}; }
 
 // =============================================================================
 // Vec3 Operations
 // =============================================================================
 
-static inline Vec3 vec3_add(Vec3 a, Vec3 b) {
+static INLINE Vec3 vec3_add(Vec3 a, Vec3 b) {
   return (Vec3){a.x + b.x, a.y + b.y, a.z + b.z};
 }
 
-static inline Vec3 vec3_sub(Vec3 a, Vec3 b) {
+static INLINE Vec3 vec3_sub(Vec3 a, Vec3 b) {
   return (Vec3){a.x - b.x, a.y - b.y, a.z - b.z};
 }
 
-static inline Vec3 vec3_mul(Vec3 a, Vec3 b) {
+static INLINE Vec3 vec3_mul(Vec3 a, Vec3 b) {
   return (Vec3){a.x * b.x, a.y * b.y, a.z * b.z};
 }
 
-static inline Vec3 vec3_div(Vec3 a, Vec3 b) {
+static INLINE Vec3 vec3_div(Vec3 a, Vec3 b) {
   return (Vec3){a.x / b.x, a.y / b.y, a.z / b.z};
 }
 
-static inline Vec3 vec3_scale(Vec3 v, float s) {
+static INLINE Vec3 vec3_scale(Vec3 v, float s) {
   return (Vec3){v.x * s, v.y * s, v.z * s};
 }
 
-static inline float vec3_dot(Vec3 a, Vec3 b) {
+static INLINE float vec3_dot(Vec3 a, Vec3 b) {
   return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
-static inline Vec3 vec3_cross(Vec3 a, Vec3 b) {
+static INLINE Vec3 vec3_cross(Vec3 a, Vec3 b) {
   return (Vec3){a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z,
                 a.x * b.y - a.y * b.x};
 }
 
-static inline float vec3_length_squared(Vec3 v) { return vec3_dot(v, v); }
+static INLINE float vec3_length_squared(Vec3 v) { return vec3_dot(v, v); }
 
-static inline float vec3_length(Vec3 v) {
+static INLINE float vec3_length(Vec3 v) {
   return sqrt_f32(vec3_length_squared(v));
 }
 
-static inline Vec3 vec3_normalize(Vec3 v) {
+static INLINE Vec3 vec3_normalize(Vec3 v) {
   float len_sq = vec3_length_squared(v);
   if (len_sq > FLOAT_EPSILON * FLOAT_EPSILON) {
     float inv_len = 1.0f / sqrt_f32(len_sq);
@@ -389,31 +389,31 @@ static inline Vec3 vec3_normalize(Vec3 v) {
   return vec3_zero();
 }
 
-static inline Vec3 vec3_negate(Vec3 v) { return (Vec3){-v.x, -v.y, -v.z}; }
+static INLINE Vec3 vec3_negate(Vec3 v) { return (Vec3){-v.x, -v.y, -v.z}; }
 
 // =============================================================================
 // Vec4 Operations (SIMD-optimized)
 // =============================================================================
 
-static inline Vec4 vec4_add(Vec4 a, Vec4 b) { return simd_add_f32x4(a, b); }
+static INLINE Vec4 vec4_add(Vec4 a, Vec4 b) { return simd_add_f32x4(a, b); }
 
-static inline Vec4 vec4_sub(Vec4 a, Vec4 b) { return simd_sub_f32x4(a, b); }
+static INLINE Vec4 vec4_sub(Vec4 a, Vec4 b) { return simd_sub_f32x4(a, b); }
 
-static inline Vec4 vec4_mul(Vec4 a, Vec4 b) { return simd_mul_f32x4(a, b); }
+static INLINE Vec4 vec4_mul(Vec4 a, Vec4 b) { return simd_mul_f32x4(a, b); }
 
-static inline Vec4 vec4_scale(Vec4 v, float s) {
+static INLINE Vec4 vec4_scale(Vec4 v, float s) {
   return simd_mul_f32x4(v, simd_set1_f32x4(s));
 }
 
-static inline float vec4_dot(Vec4 a, Vec4 b) { return simd_dot4_f32x4(a, b); }
+static INLINE float vec4_dot(Vec4 a, Vec4 b) { return simd_dot4_f32x4(a, b); }
 
-static inline float vec4_length_squared(Vec4 v) { return vec4_dot(v, v); }
+static INLINE float vec4_length_squared(Vec4 v) { return vec4_dot(v, v); }
 
-static inline float vec4_length(Vec4 v) {
+static INLINE float vec4_length(Vec4 v) {
   return sqrt_f32(vec4_length_squared(v));
 }
 
-static inline Vec4 vec4_normalize(Vec4 v) {
+static INLINE Vec4 vec4_normalize(Vec4 v) {
   float len_sq = vec4_length_squared(v);
   if (len_sq > FLOAT_EPSILON * FLOAT_EPSILON) {
     return simd_mul_f32x4(v, simd_rsqrt_f32x4(simd_set1_f32x4(len_sq)));
@@ -421,9 +421,9 @@ static inline Vec4 vec4_normalize(Vec4 v) {
   return vec4_zero();
 }
 
-static inline Vec4 vec4_div(Vec4 a, Vec4 b) { return simd_div_f32x4(a, b); }
+static INLINE Vec4 vec4_div(Vec4 a, Vec4 b) { return simd_div_f32x4(a, b); }
 
-static inline Vec4 vec4_negate(Vec4 v) {
+static INLINE Vec4 vec4_negate(Vec4 v) {
   return simd_sub_f32x4(vec4_zero(), v);
 }
 
@@ -431,19 +431,19 @@ static inline Vec4 vec4_negate(Vec4 v) {
 // IVec2 Operations
 // =============================================================================
 
-static inline IVec2 ivec2_add(IVec2 a, IVec2 b) {
+static INLINE IVec2 ivec2_add(IVec2 a, IVec2 b) {
   return (IVec2){a.x + b.x, a.y + b.y};
 }
 
-static inline IVec2 ivec2_sub(IVec2 a, IVec2 b) {
+static INLINE IVec2 ivec2_sub(IVec2 a, IVec2 b) {
   return (IVec2){a.x - b.x, a.y - b.y};
 }
 
-static inline IVec2 ivec2_mul(IVec2 a, IVec2 b) {
+static INLINE IVec2 ivec2_mul(IVec2 a, IVec2 b) {
   return (IVec2){a.x * b.x, a.y * b.y};
 }
 
-static inline IVec2 ivec2_scale(IVec2 v, int32_t s) {
+static INLINE IVec2 ivec2_scale(IVec2 v, int32_t s) {
   return (IVec2){v.x * s, v.y * s};
 }
 
@@ -451,19 +451,19 @@ static inline IVec2 ivec2_scale(IVec2 v, int32_t s) {
 // IVec3 Operations
 // =============================================================================
 
-static inline IVec3 ivec3_add(IVec3 a, IVec3 b) {
+static INLINE IVec3 ivec3_add(IVec3 a, IVec3 b) {
   return (IVec3){a.x + b.x, a.y + b.y, a.z + b.z};
 }
 
-static inline IVec3 ivec3_sub(IVec3 a, IVec3 b) {
+static INLINE IVec3 ivec3_sub(IVec3 a, IVec3 b) {
   return (IVec3){a.x - b.x, a.y - b.y, a.z - b.z};
 }
 
-static inline IVec3 ivec3_mul(IVec3 a, IVec3 b) {
+static INLINE IVec3 ivec3_mul(IVec3 a, IVec3 b) {
   return (IVec3){a.x * b.x, a.y * b.y, a.z * b.z};
 }
 
-static inline IVec3 ivec3_scale(IVec3 v, int32_t s) {
+static INLINE IVec3 ivec3_scale(IVec3 v, int32_t s) {
   return (IVec3){v.x * s, v.y * s, v.z * s};
 }
 
@@ -471,13 +471,13 @@ static inline IVec3 ivec3_scale(IVec3 v, int32_t s) {
 // IVec4 Operations (SIMD-optimized)
 // =============================================================================
 
-static inline IVec4 ivec4_add(IVec4 a, IVec4 b) { return simd_add_i32x4(a, b); }
+static INLINE IVec4 ivec4_add(IVec4 a, IVec4 b) { return simd_add_i32x4(a, b); }
 
-static inline IVec4 ivec4_sub(IVec4 a, IVec4 b) { return simd_sub_i32x4(a, b); }
+static INLINE IVec4 ivec4_sub(IVec4 a, IVec4 b) { return simd_sub_i32x4(a, b); }
 
-static inline IVec4 ivec4_mul(IVec4 a, IVec4 b) { return simd_mul_i32x4(a, b); }
+static INLINE IVec4 ivec4_mul(IVec4 a, IVec4 b) { return simd_mul_i32x4(a, b); }
 
-static inline IVec4 ivec4_scale(IVec4 v, int32_t s) {
+static INLINE IVec4 ivec4_scale(IVec4 v, int32_t s) {
   return simd_mul_i32x4(v, simd_set1_i32x4(s));
 }
 
@@ -486,33 +486,33 @@ static inline IVec4 ivec4_scale(IVec4 v, int32_t s) {
 // =============================================================================
 
 // Linear interpolation
-static inline Vec2 vec2_lerp(Vec2 a, Vec2 b, float t) {
+static INLINE Vec2 vec2_lerp(Vec2 a, Vec2 b, float t) {
   return vec2_add(a, vec2_scale(vec2_sub(b, a), t));
 }
 
-static inline Vec3 vec3_lerp(Vec3 a, Vec3 b, float t) {
+static INLINE Vec3 vec3_lerp(Vec3 a, Vec3 b, float t) {
   return vec3_add(a, vec3_scale(vec3_sub(b, a), t));
 }
 
 // FMA-optimized Vec4 lerp: a + t * (b - a)
-static inline Vec4 vec4_lerp(Vec4 a, Vec4 b, float t) {
+static INLINE Vec4 vec4_lerp(Vec4 a, Vec4 b, float t) {
   Vec4 t_vec = vec4_new(t, t, t, t);
   return simd_fma_f32x4(simd_sub_f32x4(b, a), t_vec, a);
 }
 
-static inline Vec3 vec3_reflect(Vec3 v, Vec3 n) {
+static INLINE Vec3 vec3_reflect(Vec3 v, Vec3 n) {
   return vec3_sub(v, vec3_scale(n, 2.0f * vec3_dot(v, n)));
 }
 
-static inline float vec2_distance(Vec2 a, Vec2 b) {
+static INLINE float vec2_distance(Vec2 a, Vec2 b) {
   return vec2_length(vec2_sub(a, b));
 }
 
-static inline float vec3_distance(Vec3 a, Vec3 b) {
+static INLINE float vec3_distance(Vec3 a, Vec3 b) {
   return vec3_length(vec3_sub(a, b));
 }
 
-static inline float vec4_distance(Vec4 a, Vec4 b) {
+static INLINE float vec4_distance(Vec4 a, Vec4 b) {
   return vec4_length(vec4_sub(a, b));
 }
 
@@ -520,15 +520,15 @@ static inline float vec4_distance(Vec4 a, Vec4 b) {
 // Type Conversions
 // =============================================================================
 
-static inline Vec3 vec4_to_vec3(Vec4 v) { return (Vec3){v.x, v.y, v.z}; }
+static INLINE Vec3 vec4_to_vec3(Vec4 v) { return (Vec3){v.x, v.y, v.z}; }
 
-static inline Vec4 vec3_to_vec4(Vec3 v, float w) {
+static INLINE Vec4 vec3_to_vec4(Vec3 v, float w) {
   return vec4_new(v.x, v.y, v.z, w);
 }
 
-static inline Vec2 vec3_to_vec2(Vec3 v) { return (Vec2){v.x, v.y}; }
+static INLINE Vec2 vec3_to_vec2(Vec3 v) { return (Vec2){v.x, v.y}; }
 
-static inline Vec3 vec2_to_vec3(Vec2 v, float z) {
+static INLINE Vec3 vec2_to_vec3(Vec2 v, float z) {
   return vec3_new(v.x, v.y, z);
 }
 
@@ -536,19 +536,19 @@ static inline Vec3 vec2_to_vec3(Vec2 v, float z) {
 // Mutable Operations (for performance-critical code)
 // =============================================================================
 
-static inline void vec4_add_mut(Vec4 *dest, Vec4 a, Vec4 b) {
+static INLINE void vec4_add_mut(Vec4 *dest, Vec4 a, Vec4 b) {
   *dest = simd_add_f32x4(a, b);
 }
 
-static inline void vec4_sub_mut(Vec4 *dest, Vec4 a, Vec4 b) {
+static INLINE void vec4_sub_mut(Vec4 *dest, Vec4 a, Vec4 b) {
   *dest = simd_sub_f32x4(a, b);
 }
 
-static inline void vec4_mul_mut(Vec4 *dest, Vec4 a, Vec4 b) {
+static INLINE void vec4_mul_mut(Vec4 *dest, Vec4 a, Vec4 b) {
   *dest = simd_mul_f32x4(a, b);
 }
 
-static inline void vec4_scale_mut(Vec4 *dest, Vec4 v, float s) {
+static INLINE void vec4_scale_mut(Vec4 *dest, Vec4 v, float s) {
   *dest = simd_mul_f32x4(v, simd_set1_f32x4(s));
 }
 
@@ -556,24 +556,24 @@ static inline void vec4_scale_mut(Vec4 *dest, Vec4 v, float s) {
 // FMA-Optimized Operations
 // =============================================================================
 
-static inline Vec4 vec4_muladd(Vec4 a, Vec4 b, Vec4 c) {
+static INLINE Vec4 vec4_muladd(Vec4 a, Vec4 b, Vec4 c) {
   return simd_fma_f32x4(a, b, c);
 }
 
-static inline Vec4 vec4_mulsub(Vec4 a, Vec4 b, Vec4 c) {
+static INLINE Vec4 vec4_mulsub(Vec4 a, Vec4 b, Vec4 c) {
   return simd_fms_f32x4(a, b, c);
 }
 
-static inline Vec4 vec4_scaleadd(Vec4 a, Vec4 v, float scale) {
+static INLINE Vec4 vec4_scaleadd(Vec4 a, Vec4 v, float scale) {
   return simd_fma_f32x4(v, simd_set1_f32x4(scale), a);
 }
 
-static inline float vec4_dot3(Vec4 a, Vec4 b) { return simd_dot3_f32x4(a, b); }
+static INLINE float vec4_dot3(Vec4 a, Vec4 b) { return simd_dot3_f32x4(a, b); }
 
-static inline float vec4_length_squared_fast(Vec4 v) {
+static INLINE float vec4_length_squared_fast(Vec4 v) {
   return simd_dot4_f32x4(v, v);
 }
 
-static inline float vec4_length3_squared_fast(Vec4 v) {
+static INLINE float vec4_length3_squared_fast(Vec4 v) {
   return simd_dot3_f32x4(v, v);
 }
