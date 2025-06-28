@@ -497,7 +497,7 @@ static INLINE Vec3 vec3_lerp(Vec3 a, Vec3 b, float t) {
 // FMA-optimized Vec4 lerp: a + t * (b - a)
 static INLINE Vec4 vec4_lerp(Vec4 a, Vec4 b, float t) {
   Vec4 t_vec = vec4_new(t, t, t, t);
-  return simd_fma_f32x4(simd_sub_f32x4(b, a), t_vec, a);
+  return simd_fma_f32x4(a, simd_sub_f32x4(b, a), t_vec);
 }
 
 static INLINE Vec3 vec3_reflect(Vec3 v, Vec3 n) {
@@ -557,15 +557,15 @@ static INLINE void vec4_scale_mut(Vec4 *dest, Vec4 v, float s) {
 // =============================================================================
 
 static INLINE Vec4 vec4_muladd(Vec4 a, Vec4 b, Vec4 c) {
-  return simd_fma_f32x4(a, b, c);
+  return simd_fma_f32x4(c, a, b);
 }
 
 static INLINE Vec4 vec4_mulsub(Vec4 a, Vec4 b, Vec4 c) {
-  return simd_fms_f32x4(a, b, c);
+  return simd_sub_f32x4(simd_mul_f32x4(a, b), c);
 }
 
 static INLINE Vec4 vec4_scaleadd(Vec4 a, Vec4 v, float scale) {
-  return simd_fma_f32x4(v, simd_set1_f32x4(scale), a);
+  return simd_fma_f32x4(a, v, simd_set1_f32x4(scale));
 }
 
 static INLINE float vec4_dot3(Vec4 a, Vec4 b) { return simd_dot3_f32x4(a, b); }
