@@ -167,8 +167,7 @@
 #pragma once
 
 #include "../simd/simd.h"
-#include "math_defines.h"
-#include "math_utils.h"
+#include "math.h"
 
 // =============================================================================
 // Vector Type Definitions

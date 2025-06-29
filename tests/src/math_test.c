@@ -1,4 +1,4 @@
-#include "math_utils_test.h"
+#include "math_test.h"
 
 static bool32_t float_equals(float32_t a, float32_t b, float32_t epsilon) {
   return abs_f32(a - b) < epsilon;
@@ -399,8 +399,8 @@ static void test_mathematical_identities(void) {
   printf("  test_mathematical_identities PASSED\n");
 }
 
-bool32_t run_math_utils_tests(void) {
-  printf("--- Starting Math Utils Tests ---\n");
+bool32_t run_math_tests(void) {
+  printf("--- Starting Math Tests ---\n");
 
   test_angle_conversion();
   test_basic_math_operations();
@@ -412,6 +412,6 @@ bool32_t run_math_utils_tests(void) {
   test_edge_cases();
   test_mathematical_identities();
 
-  printf("--- Math Utils Tests Completed ---\n");
+  printf("--- Math Tests Completed ---\n");
   return true;
 }

@@ -29,7 +29,9 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_input_tests();
   printf("\n"); // Add spacing
-  all_passed &= run_math_utils_tests();
+  all_passed &= run_math_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_vec_tests();
   printf("\n"); // Add spacing
   all_passed &= run_simd_tests();
   printf("\n"); // Add spacing
