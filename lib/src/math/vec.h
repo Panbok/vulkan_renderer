@@ -24,13 +24,15 @@
  * All vector types use union-based structures to provide multiple semantic
  * access patterns for the same underlying data:
  *
- * Vec3 Memory Layout:
- * +------------------+ <-- 12-byte structure (3 × float32_t)
+ * Vec3 Memory Layout (internally Vec4 with W=0):
+ * +------------------+ <-- 16-byte SIMD aligned structure
  * | union { x,r,s,u} |  [0] First component (mathematical/color/texture/UV)
  * +------------------+
  * | union { y,g,t,v} |  [4] Second component (mathematical/color/texture/UV)
  * +------------------+
  * | union { z,b,p,q} |  [8] Third component (mathematical/color/texture/coord)
+ * +------------------+
+ * | w = 0            | [12] Fourth component (always 0, ignored for Vec3)
  * +------------------+
  *
  * Semantic Access Patterns:
@@ -54,11 +56,12 @@
  * ```
  *
  * Performance Characteristics:
- * - Vec4: Hardware SIMD acceleration with FMA support
- * - Vec2/Vec3: Scalar operations optimized for compiler auto-vectorization
- * - Normalization: Uses optimized rsqrt for Vec4, standard sqrt for Vec2/Vec3
- * - Memory: Minimal copying, pass-by-value for small vectors
- * - Branching: Optimized conditionals in normalization functions
+ * - Vec3/Vec4: Full hardware SIMD acceleration with FMA support
+ * - Vec3: Uses Vec4 operations internally with W=0 for optimal performance
+ * - Vec2: Scalar operations optimized for compiler auto-vectorization
+ * - Normalization: Uses optimized SIMD rsqrt for Vec3/Vec4
+ * - Memory: 16-byte aligned for Vec3/Vec4, optimal cache line usage
+ * - Branching: Minimal branching in hot paths
  *
  * API Design Patterns:
  * 1. Constructor Functions: vec3_new(), vec3_zero(), vec3_one()
@@ -133,12 +136,12 @@
  * ```c
  * // Seamless conversion between vector types
  * Vec2 texture_coord = vec2_new(0.5f, 0.25f);
- * Vec3 position_3d = vec2_to_vec3(texture_coord, 0.0f);
- * Vec4 homogeneous = vec3_to_vec4(position_3d, 1.0f);
+ * Vec3 position_3d = vec2_to_vec3(texture_coord, 0.0f);  // W=0 automatically
+ * Vec4 homogeneous = vec3_to_vec4(position_3d, 1.0f);    // Sets W=1
  * 
  * // Extract components
- * Vec3 rgb = vec4_to_vec3(homogeneous);
- * Vec2 uv = vec3_to_vec2(position_3d);
+ * Vec3 rgb = vec4_to_vec3(homogeneous);  // Sets W=0
+ * Vec2 uv = vec3_to_vec2(position_3d);   // Drops Z and W
  * ```
  *
  * Performance-Critical Code:
@@ -190,23 +193,12 @@ typedef union {
 } Vec2;
 
 /**
- * @brief 96-bit vector of three 32-bit floating-point values.
- * Optimized for 3D operations like positions or directions.
+ * @brief 3D vector type using 128-bit SIMD representation internally.
+ * Uses Vec4 (SIMD) operations for hardware acceleration with W=0 padding.
+ * This follows industry standard practice for optimal performance.
+ * @note The W component is always 0 for Vec3 operations and should be ignored.
  */
-typedef union {
-  struct {
-    union {
-      float32_t x, r, s, u; /**< First element: X/Red/S/U coordinate */
-    };
-    union {
-      float32_t y, g, t, v; /**< Second element: Y/Green/T/V coordinate */
-    };
-    union {
-      float32_t z, b, p, q; /**< Third element: Z/Blue/P/Q coordinate */
-    };
-  };
-  float32_t elements[3]; /**< Array access to all three elements */
-} Vec3;
+typedef SIMD_F32X4 Vec3;
 
 /**
  * @brief 128-bit vector of four 32-bit floating-point values.
@@ -266,12 +258,14 @@ static INLINE Vec2 vec2_zero(void) { return (Vec2){0.0f, 0.0f}; }
 static INLINE Vec2 vec2_one(void) { return (Vec2){1.0f, 1.0f}; }
 
 static INLINE Vec3 vec3_new(float x, float y, float z) {
-  return (Vec3){x, y, z};
+  return simd_set_f32x4(x, y, z, 0.0f); // Pad with 0 for W
 }
 
-static INLINE Vec3 vec3_zero(void) { return (Vec3){0.0f, 0.0f, 0.0f}; }
+static INLINE Vec3 vec3_zero(void) { return simd_set1_f32x4(0.0f); }
 
-static INLINE Vec3 vec3_one(void) { return (Vec3){1.0f, 1.0f, 1.0f}; }
+static INLINE Vec3 vec3_one(void) {
+  return simd_set_f32x4(1.0f, 1.0f, 1.0f, 0.0f);
+}
 
 static INLINE Vec4 vec4_new(float x, float y, float z, float w) {
   return simd_set_f32x4(x, y, z, w);
@@ -341,39 +335,43 @@ static INLINE Vec2 vec2_div(Vec2 a, Vec2 b) {
 static INLINE Vec2 vec2_negate(Vec2 v) { return (Vec2){-v.x, -v.y}; }
 
 // =============================================================================
-// Vec3 Operations
+// Vec3 Operations (SIMD-accelerated using Vec4 with W=0)
 // =============================================================================
 
-static INLINE Vec3 vec3_add(Vec3 a, Vec3 b) {
-  return (Vec3){a.x + b.x, a.y + b.y, a.z + b.z};
-}
+static INLINE Vec3 vec3_add(Vec3 a, Vec3 b) { return simd_add_f32x4(a, b); }
 
-static INLINE Vec3 vec3_sub(Vec3 a, Vec3 b) {
-  return (Vec3){a.x - b.x, a.y - b.y, a.z - b.z};
-}
+static INLINE Vec3 vec3_sub(Vec3 a, Vec3 b) { return simd_sub_f32x4(a, b); }
 
-static INLINE Vec3 vec3_mul(Vec3 a, Vec3 b) {
-  return (Vec3){a.x * b.x, a.y * b.y, a.z * b.z};
-}
+static INLINE Vec3 vec3_mul(Vec3 a, Vec3 b) { return simd_mul_f32x4(a, b); }
 
 static INLINE Vec3 vec3_div(Vec3 a, Vec3 b) {
-  return (Vec3){a.x / b.x, a.y / b.y, a.z / b.z};
+  // Set W to 1 to avoid division by 0 (result W is ignored)
+  Vec3 b_safe = simd_set_f32x4(b.x, b.y, b.z, 1.0f);
+  return simd_div_f32x4(a, b_safe);
 }
 
 static INLINE Vec3 vec3_scale(Vec3 v, float s) {
-  return (Vec3){v.x * s, v.y * s, v.z * s};
+  return simd_mul_f32x4(v, simd_set1_f32x4(s));
 }
 
-static INLINE float vec3_dot(Vec3 a, Vec3 b) {
-  return a.x * b.x + a.y * b.y + a.z * b.z;
-}
+static INLINE float vec3_dot(Vec3 a, Vec3 b) { return simd_dot3_f32x4(a, b); }
 
 static INLINE Vec3 vec3_cross(Vec3 a, Vec3 b) {
-  return (Vec3){a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z,
-                a.x * b.y - a.y * b.x};
+  Vec3 a_yzx = simd_shuffle_f32x4(a, 1, 2, 0, 3); // (y, z, x, w)
+  Vec3 b_yzx = simd_shuffle_f32x4(b, 1, 2, 0, 3); // (y, z, x, w)
+  Vec3 a_zxy = simd_shuffle_f32x4(a, 2, 0, 1, 3); // (z, x, y, w)
+  Vec3 b_zxy = simd_shuffle_f32x4(b, 2, 0, 1, 3); // (z, x, y, w)
+
+  Vec3 result = simd_sub_f32x4(simd_mul_f32x4(a_yzx, b_zxy),
+                               simd_mul_f32x4(a_zxy, b_yzx));
+
+  result.w = 0.0f;
+  return result;
 }
 
-static INLINE float vec3_length_squared(Vec3 v) { return vec3_dot(v, v); }
+static INLINE float vec3_length_squared(Vec3 v) {
+  return simd_dot3_f32x4(v, v);
+}
 
 static INLINE float vec3_length(Vec3 v) {
   return sqrt_f32(vec3_length_squared(v));
@@ -382,13 +380,16 @@ static INLINE float vec3_length(Vec3 v) {
 static INLINE Vec3 vec3_normalize(Vec3 v) {
   float len_sq = vec3_length_squared(v);
   if (len_sq > FLOAT_EPSILON * FLOAT_EPSILON) {
-    float inv_len = 1.0f / sqrt_f32(len_sq);
-    return vec3_scale(v, inv_len);
+    Vec3 result = simd_mul_f32x4(v, simd_rsqrt_f32x4(simd_set1_f32x4(len_sq)));
+    result.w = 0.0f;
+    return result;
   }
   return vec3_zero();
 }
 
-static INLINE Vec3 vec3_negate(Vec3 v) { return (Vec3){-v.x, -v.y, -v.z}; }
+static INLINE Vec3 vec3_negate(Vec3 v) {
+  return simd_sub_f32x4(vec3_zero(), v); // W stays 0
+}
 
 // =============================================================================
 // Vec4 Operations (SIMD-optimized)
@@ -490,7 +491,8 @@ static INLINE Vec2 vec2_lerp(Vec2 a, Vec2 b, float t) {
 }
 
 static INLINE Vec3 vec3_lerp(Vec3 a, Vec3 b, float t) {
-  return vec3_add(a, vec3_scale(vec3_sub(b, a), t));
+  Vec4 t_vec = vec4_new(t, t, t, 0.0f); // Keep W at 0
+  return simd_fma_f32x4(a, simd_sub_f32x4(b, a), t_vec);
 }
 
 // FMA-optimized Vec4 lerp: a + t * (b - a)
@@ -500,7 +502,8 @@ static INLINE Vec4 vec4_lerp(Vec4 a, Vec4 b, float t) {
 }
 
 static INLINE Vec3 vec3_reflect(Vec3 v, Vec3 n) {
-  return vec3_sub(v, vec3_scale(n, 2.0f * vec3_dot(v, n)));
+  float dot2 = 2.0f * simd_dot3_f32x4(v, n);
+  return simd_sub_f32x4(v, simd_mul_f32x4(n, simd_set1_f32x4(dot2)));
 }
 
 static INLINE float vec2_distance(Vec2 a, Vec2 b) {
@@ -519,10 +522,15 @@ static INLINE float vec4_distance(Vec4 a, Vec4 b) {
 // Type Conversions
 // =============================================================================
 
-static INLINE Vec3 vec4_to_vec3(Vec4 v) { return (Vec3){v.x, v.y, v.z}; }
+static INLINE Vec3 vec4_to_vec3(Vec4 v) {
+  v.w = 0.0f;
+  return v;
+}
 
 static INLINE Vec4 vec3_to_vec4(Vec3 v, float w) {
-  return vec4_new(v.x, v.y, v.z, w);
+  Vec4 result = v;
+  result.w = w;
+  return result;
 }
 
 static INLINE Vec2 vec3_to_vec2(Vec3 v) { return (Vec2){v.x, v.y}; }
