@@ -183,6 +183,31 @@ static void test_vec3_constructors(void) {
   assert(vec3_equals(v3, vec3_new(1.0f, 1.0f, 1.0f), FLOAT_EPSILON) &&
          "vec3_one failed");
 
+  // Test direction constructors (right-handed coordinate system)
+  Vec3 up = vec3_up();
+  assert(vec3_equals(up, vec3_new(0.0f, 1.0f, 0.0f), FLOAT_EPSILON) &&
+         "vec3_up failed");
+
+  Vec3 down = vec3_down();
+  assert(vec3_equals(down, vec3_new(0.0f, -1.0f, 0.0f), FLOAT_EPSILON) &&
+         "vec3_down failed");
+
+  Vec3 right = vec3_right();
+  assert(vec3_equals(right, vec3_new(1.0f, 0.0f, 0.0f), FLOAT_EPSILON) &&
+         "vec3_right failed");
+
+  Vec3 left = vec3_left();
+  assert(vec3_equals(left, vec3_new(-1.0f, 0.0f, 0.0f), FLOAT_EPSILON) &&
+         "vec3_left failed");
+
+  Vec3 forward = vec3_forward();
+  assert(vec3_equals(forward, vec3_new(0.0f, 0.0f, -1.0f), FLOAT_EPSILON) &&
+         "vec3_forward failed (right-handed: -Z is forward)");
+
+  Vec3 back = vec3_back();
+  assert(vec3_equals(back, vec3_new(0.0f, 0.0f, 1.0f), FLOAT_EPSILON) &&
+         "vec3_back failed (right-handed: +Z is backward)");
+
   printf("  test_vec3_constructors PASSED\n");
 }
 
@@ -239,18 +264,33 @@ static void test_vec3_geometric(void) {
   float dot_result = vec3_dot(a, b);
   assert(float_equals(dot_result, 32.0f, FLOAT_EPSILON) && "vec3_dot failed");
 
-  // Test cross product
+  // Test cross product (RIGHT-HANDED coordinate system)
+  // In right-handed: X × Y = Z, Y × Z = X, Z × X = Y
   Vec3 cross_x_y = vec3_cross(unit_x, unit_y);
   assert(vec3_equals(cross_x_y, unit_z, FLOAT_EPSILON) &&
-         "vec3_cross x×y failed");
+         "vec3_cross x×y=z failed (right-handed)");
 
   Vec3 cross_y_z = vec3_cross(unit_y, unit_z);
   assert(vec3_equals(cross_y_z, unit_x, FLOAT_EPSILON) &&
-         "vec3_cross y×z failed");
+         "vec3_cross y×z=x failed (right-handed)");
 
   Vec3 cross_z_x = vec3_cross(unit_z, unit_x);
   assert(vec3_equals(cross_z_x, unit_y, FLOAT_EPSILON) &&
-         "vec3_cross z×x failed");
+         "vec3_cross z×x=y failed (right-handed)");
+
+  // Test anti-commutativity: A × B = -(B × A)
+  Vec3 cross_y_x = vec3_cross(unit_y, unit_x);
+  Vec3 neg_z = vec3_negate(unit_z);
+  assert(vec3_equals(cross_y_x, neg_z, FLOAT_EPSILON) &&
+         "vec3_cross anti-commutativity failed");
+
+  // Test cross product with arbitrary vectors
+  Vec3 v1 = vec3_new(2.0f, 0.0f, 0.0f);
+  Vec3 v2 = vec3_new(0.0f, 3.0f, 0.0f);
+  Vec3 cross_v1_v2 = vec3_cross(v1, v2);
+  Vec3 expected_cross = vec3_new(0.0f, 0.0f, 6.0f);
+  assert(vec3_equals(cross_v1_v2, expected_cross, FLOAT_EPSILON) &&
+         "vec3_cross arbitrary vectors failed");
 
   // Test length squared
   float len_sq = vec3_length_squared(a);
@@ -646,6 +686,125 @@ static void test_mutable_operations(void) {
 }
 
 // =============================================================================
+// Coordinate System and Edge Case Tests
+// =============================================================================
+
+static void test_coordinate_system_validation(void) {
+  printf("  Running test_coordinate_system_validation...\n");
+
+  // Test right-handed coordinate system consistency
+  Vec3 x_axis = vec3_right();
+  Vec3 y_axis = vec3_up();
+  Vec3 z_axis = vec3_back();         // +Z in right-handed
+  Vec3 forward_dir = vec3_forward(); // -Z in right-handed
+
+  // Verify cross products follow right-hand rule
+  Vec3 x_cross_y = vec3_cross(x_axis, y_axis);
+  assert(vec3_equals(x_cross_y, z_axis, FLOAT_EPSILON) &&
+         "Right-handed rule: X × Y = Z failed");
+
+  Vec3 y_cross_z = vec3_cross(y_axis, z_axis);
+  assert(vec3_equals(y_cross_z, x_axis, FLOAT_EPSILON) &&
+         "Right-handed rule: Y × Z = X failed");
+
+  Vec3 z_cross_x = vec3_cross(z_axis, x_axis);
+  assert(vec3_equals(z_cross_x, y_axis, FLOAT_EPSILON) &&
+         "Right-handed rule: Z × X = Y failed");
+
+  // Verify forward direction is negative Z
+  Vec3 neg_z = vec3_negate(z_axis);
+  assert(vec3_equals(forward_dir, neg_z, FLOAT_EPSILON) &&
+         "Forward direction should be -Z in right-handed system");
+
+  // Test orthogonality of basis vectors
+  assert(float_equals(vec3_dot(x_axis, y_axis), 0.0f, FLOAT_EPSILON) &&
+         "X and Y axes should be orthogonal");
+  assert(float_equals(vec3_dot(y_axis, z_axis), 0.0f, FLOAT_EPSILON) &&
+         "Y and Z axes should be orthogonal");
+  assert(float_equals(vec3_dot(z_axis, x_axis), 0.0f, FLOAT_EPSILON) &&
+         "Z and X axes should be orthogonal");
+
+  // Test unit length of basis vectors
+  assert(float_equals(vec3_length(x_axis), 1.0f, FLOAT_EPSILON) &&
+         "X axis should be unit length");
+  assert(float_equals(vec3_length(y_axis), 1.0f, FLOAT_EPSILON) &&
+         "Y axis should be unit length");
+  assert(float_equals(vec3_length(z_axis), 1.0f, FLOAT_EPSILON) &&
+         "Z axis should be unit length");
+
+  printf("  test_coordinate_system_validation PASSED\n");
+}
+
+static void test_edge_cases(void) {
+  printf("  Running test_edge_cases...\n");
+
+  // Test normalization of very small vector
+  Vec3 tiny = vec3_new(1e-10f, 1e-10f, 1e-10f);
+  Vec3 tiny_norm = vec3_normalize(tiny);
+  assert(vec3_equals(tiny_norm, vec3_zero(), FLOAT_EPSILON) &&
+         "Normalize of tiny vector should return zero");
+
+  // Test cross product of parallel vectors
+  Vec3 parallel1 = vec3_new(2.0f, 4.0f, 6.0f);
+  Vec3 parallel2 = vec3_new(1.0f, 2.0f, 3.0f);
+  Vec3 cross_parallel = vec3_cross(parallel1, parallel2);
+  assert(vec3_equals(cross_parallel, vec3_zero(), 0.001f) &&
+         "Cross product of parallel vectors should be zero");
+
+  // Test cross product of antiparallel vectors
+  Vec3 antiparallel = vec3_negate(parallel1);
+  Vec3 cross_antiparallel = vec3_cross(parallel1, antiparallel);
+  assert(vec3_equals(cross_antiparallel, vec3_zero(), 0.001f) &&
+         "Cross product of antiparallel vectors should be zero");
+
+  // Test Vec4 W component preservation in Vec3 operations
+  Vec3 v3_test = vec3_new(1.0f, 2.0f, 3.0f);
+  assert(float_equals(v3_test.w, 0.0f, FLOAT_EPSILON) &&
+         "Vec3 W component should always be 0");
+
+  Vec3 v3_scaled = vec3_scale(v3_test, 5.0f);
+  assert(float_equals(v3_scaled.w, 0.0f, FLOAT_EPSILON) &&
+         "Vec3 W component should remain 0 after scaling");
+
+  Vec3 v3_added = vec3_add(v3_test, vec3_one());
+  assert(float_equals(v3_added.w, 0.0f, FLOAT_EPSILON) &&
+         "Vec3 W component should remain 0 after addition");
+
+  printf("  test_edge_cases PASSED\n");
+}
+
+static void test_precision_and_consistency(void) {
+  printf("  Running test_precision_and_consistency...\n");
+
+  // Test FMA precision vs regular operations
+  Vec4 a = vec4_new(1.000001f, 2.000001f, 3.000001f, 4.000001f);
+  Vec4 b = vec4_new(1.000001f, 1.000001f, 1.000001f, 1.000001f);
+  Vec4 c = vec4_new(0.000001f, 0.000001f, 0.000001f, 0.000001f);
+
+  Vec4 fma_result = vec4_muladd(a, b, c);
+  Vec4 regular_result = vec4_add(vec4_mul(a, b), c);
+
+  // FMA should be at least as precise as regular operations
+  // (This test mainly ensures API consistency)
+  assert(!vec4_equals(fma_result, vec4_zero(), FLOAT_EPSILON) &&
+         "FMA result should not be zero");
+
+  // Test dot product consistency between Vec3 and Vec4
+  Vec3 v3a = vec3_new(1.0f, 2.0f, 3.0f);
+  Vec3 v3b = vec3_new(4.0f, 5.0f, 6.0f);
+  Vec4 v4a = vec3_to_vec4(v3a, 0.0f);
+  Vec4 v4b = vec3_to_vec4(v3b, 0.0f);
+
+  float32_t dot3_result = vec3_dot(v3a, v3b);
+  float32_t dot4_result = vec4_dot3(v4a, v4b);
+
+  assert(float_equals(dot3_result, dot4_result, FLOAT_EPSILON) &&
+         "Vec3 dot and Vec4 dot3 should give same result");
+
+  printf("  test_precision_and_consistency PASSED\n");
+}
+
+// =============================================================================
 // Test Runner
 // =============================================================================
 
@@ -678,6 +837,11 @@ bool32_t run_vec_tests(void) {
   // Advanced operation tests
   test_fma_operations();
   test_mutable_operations();
+
+  // Comprehensive validation tests
+  test_coordinate_system_validation();
+  test_edge_cases();
+  test_precision_and_consistency();
 
   printf("--- Vector Math Tests Completed ---\n");
   return true;
