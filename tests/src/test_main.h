@@ -9,6 +9,7 @@
 #include "input_test.h"
 #include "math_test.h"
 #include "mmemory_test.h"
+#include "quat_test.h"
 #include "queue_test.h"
 #include "simd_test.h"
 #include "string_test.h"

@@ -1,6 +1,7 @@
 #pragma once
 
-#include "defines.h"
+#include "../defines.h"
+#include "../simd/simd.h"
 #include "vec.h"
 
 // ================================================
@@ -181,7 +182,7 @@ static INLINE Quat quat_inverse(Quat q) {
 }
 
 /**
- * @brief Multiplies two quaternions (PROPER Hamilton product)
+ * @brief Multiplies two quaternions (SIMD-optimized)
  * @param a First quaternion (applied second)
  * @param b Second quaternion (applied first)
  * @return Combined rotation a*b
@@ -190,29 +191,39 @@ static INLINE Quat quat_inverse(Quat q) {
  *          (a*b).x = a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y
  *          (a*b).y = a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x
  *          (a*b).z = a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w
+ *
+ * Uses straightforward SIMD approach for better readability and correctness
  */
-static INLINE Quat quat_mul(Quat a, Quat b) {
-  // SIMD-optimized quaternion multiplication
-  Vec4 a_wxyz = simd_shuffle_f32x4(a, 3, 0, 1, 2); // (w,x,y,z)
-  Vec4 a_zwxy = simd_shuffle_f32x4(a, 2, 3, 0, 1); // (z,w,x,y)
-  Vec4 a_yzwx = simd_shuffle_f32x4(a, 1, 2, 3, 0); // (y,z,w,x)
+static Quat quat_mul(Quat a, Quat b) {
+  // Calculate w: a.w*b.w - a.x*b.x - a.y*b.y - a.z*b.z
+  Vec4 a_for_w = simd_shuffle_f32x4(a, 3, 0, 1, 2); // [a.w, a.x, a.y, a.z]
+  Vec4 b_for_w = simd_shuffle_f32x4(b, 3, 0, 1, 2); // [b.w, b.x, b.y, b.z]
+  Vec4 sign_w = simd_set_f32x4(1.0f, -1.0f, -1.0f, -1.0f);
+  Vec4 terms_w = simd_mul_f32x4(a_for_w, simd_mul_f32x4(b_for_w, sign_w));
+  float32_t w = simd_hadd_f32x4(terms_w);
 
-  Vec4 b_wxyz = simd_shuffle_f32x4(b, 3, 0, 1, 2); // (w,x,y,z)
-  Vec4 b_zwxy = simd_shuffle_f32x4(b, 2, 3, 0, 1); // (z,w,x,y)
-  Vec4 b_yzwx = simd_shuffle_f32x4(b, 1, 2, 3, 0); // (y,z,w,x)
+  // Calculate x: a.w*b.x + a.x*b.w + a.y*b.z - a.z*b.y
+  Vec4 a_for_x = simd_shuffle_f32x4(a, 3, 0, 1, 2); // [a.w, a.x, a.y, a.z]
+  Vec4 b_for_x = simd_shuffle_f32x4(b, 0, 3, 2, 1); // [b.x, b.w, b.z, b.y]
+  Vec4 sign_x = simd_set_f32x4(1.0f, 1.0f, 1.0f, -1.0f);
+  Vec4 terms_x = simd_mul_f32x4(a_for_x, simd_mul_f32x4(b_for_x, sign_x));
+  float32_t x = simd_hadd_f32x4(terms_x);
 
-  // Signs for the multiplication
-  Vec4 sign1 = vec4_new(1.0f, 1.0f, 1.0f, -1.0f);
-  Vec4 sign2 = vec4_new(-1.0f, 1.0f, -1.0f, -1.0f);
-  Vec4 sign3 = vec4_new(-1.0f, -1.0f, 1.0f, -1.0f);
+  // Calculate y: a.w*b.y - a.x*b.z + a.y*b.w + a.z*b.x
+  Vec4 a_for_y = simd_shuffle_f32x4(a, 3, 0, 1, 2); // [a.w, a.x, a.y, a.z]
+  Vec4 b_for_y = simd_shuffle_f32x4(b, 1, 2, 3, 0); // [b.y, b.z, b.w, b.x]
+  Vec4 sign_y = simd_set_f32x4(1.0f, -1.0f, 1.0f, 1.0f);
+  Vec4 terms_y = simd_mul_f32x4(a_for_y, simd_mul_f32x4(b_for_y, sign_y));
+  float32_t y = simd_hadd_f32x4(terms_y);
 
-  // Compute result using FMA operations
-  Vec4 result = vec4_mul(vec4_mul(a, b_wxyz), sign1);
-  result = vec4_muladd(vec4_mul(a_wxyz, b), sign1, result);
-  result = vec4_muladd(vec4_mul(a_yzwx, b_zwxy), sign2, result);
-  result = vec4_muladd(vec4_mul(a_zwxy, b_yzwx), sign3, result);
+  // Calculate z: a.w*b.z + a.x*b.y - a.y*b.x + a.z*b.w
+  Vec4 a_for_z = simd_shuffle_f32x4(a, 3, 0, 1, 2); // [a.w, a.x, a.y, a.z]
+  Vec4 b_for_z = simd_shuffle_f32x4(b, 2, 1, 0, 3); // [b.z, b.y, b.x, b.w]
+  Vec4 sign_z = simd_set_f32x4(1.0f, 1.0f, -1.0f, 1.0f);
+  Vec4 terms_z = simd_mul_f32x4(a_for_z, simd_mul_f32x4(b_for_z, sign_z));
+  float32_t z = simd_hadd_f32x4(terms_z);
 
-  return result;
+  return vec4_new(x, y, z, w);
 }
 
 /**
@@ -321,22 +332,14 @@ static INLINE Quat quat_slerp(Quat a, Quat b, float32_t t) {
  * * v) This is mathematically equivalent to: v' = q * v * q^-1
  */
 static INLINE Vec3 quat_rotate_vec3(Quat q, Vec3 v) {
-  // Convert Vec3 to Vec4 for SIMD operations (w=0 for pure vector)
-  Vec4 v4 = vec4_new(v.x, v.y, v.z, 0.0f);
-
-  // Extract quaternion vector part as Vec4
-  Vec4 qv = vec4_new(q.x, q.y, q.z, 0.0f);
-
-  // First cross product: qv × v
-  Vec4 c1 = vec4_new(q.y * v.z - q.z * v.y, q.z * v.x - q.x * v.z,
-                     q.x * v.y - q.y * v.x, 0.0f);
+  // First cross product: q × v
+  Vec4 c1 = vec4_cross3(q, v);
 
   // Scale by q.w and add to c1: (qv × v + q.w * v)
-  Vec4 c1_plus_wv = vec4_muladd(v4, vec4_new(q.w, q.w, q.w, 0.0f), c1);
+  Vec4 c1_plus_wv = vec4_muladd(v, vec4_new(q.w, q.w, q.w, 0.0f), c1);
 
   // Second cross product: qv × (qv × v + q.w * v)
-  Vec3 temp = vec3_new(c1_plus_wv.x, c1_plus_wv.y, c1_plus_wv.z);
-  Vec3 c2 = vec3_cross(vec3_new(q.x, q.y, q.z), temp);
+  Vec3 c2 = vec3_cross(q, c1_plus_wv);
 
   // Final result: v + 2 * c2
   return vec3_add(v, vec3_scale(c2, 2.0f));
@@ -350,34 +353,54 @@ static INLINE Vec3 quat_rotate_vec3(Quat q, Vec3 v) {
  * @note In right-handed system: Right = Forward × Up, Up = Right × Forward
  */
 static INLINE Quat quat_look_at(Vec3 forward, Vec3 up) {
-  // Ensure forward is normalized
+  // Ensure inputs are normalized
   Vec3 f = vec3_normalize(forward);
+  Vec3 u = vec3_normalize(up);
 
   // Calculate right vector (Forward × Up for right-handed)
-  Vec3 r = vec3_normalize(vec3_cross(f, up));
+  Vec3 r = vec3_normalize(vec3_cross(f, u));
 
   // Recalculate up to ensure orthogonality (Right × Forward)
-  Vec3 u = vec3_cross(r, f);
+  u = vec3_cross(r, f);
 
-  // Convert rotation matrix to quaternion
-  float32_t trace = r.x + u.y + f.z;
+  // Build rotation matrix (column-major: right, up, -forward)
+  // In right-handed system, we look down negative Z, so we need -forward for Z
+  // column
+  float32_t m00 = r.x, m01 = u.x, m02 = -f.x;
+  float32_t m10 = r.y, m11 = u.y, m12 = -f.y;
+  float32_t m20 = r.z, m21 = u.z, m22 = -f.z;
+
+  // Convert rotation matrix to quaternion using Shepperd's method
+  float32_t trace = m00 + m11 + m22;
 
   if (trace > 0.0f) {
-    float32_t s = 0.5f / sqrt_f32(trace + 1.0f);
-    return vec4_new((u.z - f.y) * s, (f.x - r.z) * s, (r.y - u.x) * s,
-                    0.25f / s);
-  } else if (r.x > u.y && r.x > f.z) {
-    float32_t s = 2.0f * sqrt_f32(1.0f + r.x - u.y - f.z);
-    return vec4_new(0.25f * s, (u.x + r.y) / s, (f.x + r.z) / s,
-                    (u.z - f.y) / s);
-  } else if (u.y > f.z) {
-    float32_t s = 2.0f * sqrt_f32(1.0f + u.y - r.x - f.z);
-    return vec4_new((u.x + r.y) / s, 0.25f * s, (f.y + u.z) / s,
-                    (f.x - r.z) / s);
+    float32_t s = sqrt_f32(trace + 1.0f) * 2.0f;    // s = 4 * qw
+    return quat_normalize(vec4_new((m21 - m12) / s, // qx
+                                   (m02 - m20) / s, // qy
+                                   (m10 - m01) / s, // qz
+                                   0.25f * s        // qw
+                                   ));
+  } else if (m00 > m11 && m00 > m22) {
+    float32_t s = sqrt_f32(1.0f + m00 - m11 - m22) * 2.0f; // s = 4 * qx
+    return quat_normalize(vec4_new(0.25f * s,              // qx
+                                   (m01 + m10) / s,        // qy
+                                   (m02 + m20) / s,        // qz
+                                   (m21 - m12) / s         // qw
+                                   ));
+  } else if (m11 > m22) {
+    float32_t s = sqrt_f32(1.0f + m11 - m00 - m22) * 2.0f; // s = 4 * qy
+    return quat_normalize(vec4_new((m01 + m10) / s,        // qx
+                                   0.25f * s,              // qy
+                                   (m12 + m21) / s,        // qz
+                                   (m02 - m20) / s         // qw
+                                   ));
   } else {
-    float32_t s = 2.0f * sqrt_f32(1.0f + f.z - r.x - u.y);
-    return vec4_new((f.x + r.z) / s, (f.y + u.z) / s, 0.25f * s,
-                    (r.y - u.x) / s);
+    float32_t s = sqrt_f32(1.0f + m22 - m00 - m11) * 2.0f; // s = 4 * qz
+    return quat_normalize(vec4_new((m02 + m20) / s,        // qx
+                                   (m12 + m21) / s,        // qy
+                                   0.25f * s,              // qz
+                                   (m10 - m01) / s         // qw
+                                   ));
   }
 }
 
@@ -429,14 +452,38 @@ static INLINE float32_t quat_angle(Quat q) {
 }
 
 /**
- * @brief Gets the rotation axis from a quaternion
+ * @brief Gets the rotation axis from a quaternion with improved numerical
+ * stability
  * @param q Input quaternion
  * @return Normalized rotation axis (or forward vector if no rotation)
+ * @note Improved precision for small angles using alternative computation
  */
 static INLINE Vec3 quat_axis(Quat q) {
-  float32_t s = sqrt_f32(1.0f - q.w * q.w);
-  if (s < QUAT_EPSILON) {
-    return vec3_new(0.0f, 0.0f, 1.0f); // No rotation, return arbitrary axis
+  // For small angles, use alternative stable computation
+  // When angle is small, sin(angle/2) ≈ angle/2, so we can use the vector part
+  // directly
+  Vec3 vec_part = vec3_new(q.x, q.y, q.z);
+  float32_t vec_length_sq = vec3_length_squared(vec_part);
+
+  // Threshold for small angle detection (roughly 0.1 radians or ~5.7 degrees)
+  const float32_t small_angle_threshold_sq = 0.0025f; // (0.05)^2
+
+  if (vec_length_sq < small_angle_threshold_sq) {
+    // For very small rotations, use the vector part directly if it's
+    // significant
+    if (vec_length_sq > QUAT_EPSILON * QUAT_EPSILON) {
+      float32_t inv_vec_length = 1.0f / sqrt_f32(vec_length_sq);
+      return vec3_scale(vec_part, inv_vec_length);
+    } else {
+      // Essentially no rotation, return arbitrary normalized axis
+      return vec3_new(0.0f, 0.0f, 1.0f);
+    }
+  } else {
+    // Standard computation for larger angles
+    float32_t s = sqrt_f32(1.0f - q.w * q.w);
+    if (s < QUAT_EPSILON) {
+      return vec3_new(0.0f, 0.0f, 1.0f); // No rotation, return arbitrary axis
+    }
+    return vec3_scale(vec_part, 1.0f / s);
   }
-  return vec3_scale(vec3_new(q.x, q.y, q.z), 1.0f / s);
 }
