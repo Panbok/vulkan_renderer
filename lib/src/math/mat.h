@@ -608,7 +608,7 @@ static INLINE Mat4 mat4_euler_rotate_z(float32_t angle) {
  * @note For orthogonal matrices: transpose equals inverse (M^T = M^-1)
  * @note Transpose is its own inverse: (M^T)^T = M
  * @note Used in matrix inverse calculations and coordinate system conversions
- * @note ARM NEON implementation uses efficient transpose instructions
+ * @note ARM NEON implementation uses complete 4-step transpose algorithm
  * @performance O(16) - ARM NEON optimized, scalar fallback available
  * @example
  * ```c
@@ -625,19 +625,27 @@ static INLINE Mat4 mat4_euler_rotate_z(float32_t angle) {
 static INLINE Mat4 mat4_transpose(Mat4 m) {
   Mat4 result;
 #if SIMD_ARM_NEON
-  // ARM NEON has efficient transpose operations
-  // Use vtrn (transpose) instructions for 2x2 blocks
-  float32x4x2_t row01 = vtrnq_f32(m.cols[0].neon, m.cols[1].neon);
-  float32x4x2_t row23 = vtrnq_f32(m.cols[2].neon, m.cols[3].neon);
+  // Complete 4x4 transpose using ARM NEON 4-step algorithm
+  // Step 1: Transpose 2x2 blocks within each pair of vectors
+  float32x4x2_t t0 = vtrnq_f32(m.cols[0].neon, m.cols[1].neon);
+  float32x4x2_t t1 = vtrnq_f32(m.cols[2].neon, m.cols[3].neon);
 
-  result.cols[0].neon =
-      vcombine_f32(vget_low_f32(row01.val[0]), vget_low_f32(row23.val[0]));
-  result.cols[1].neon =
-      vcombine_f32(vget_low_f32(row01.val[1]), vget_low_f32(row23.val[1]));
-  result.cols[2].neon =
-      vcombine_f32(vget_high_f32(row01.val[0]), vget_high_f32(row23.val[0]));
-  result.cols[3].neon =
-      vcombine_f32(vget_high_f32(row01.val[1]), vget_high_f32(row23.val[1]));
+  // Step 2: Extract low and high 64-bit parts
+  float32x2_t a0_lo = vget_low_f32(t0.val[0]);  // [m00, m10]
+  float32x2_t a0_hi = vget_high_f32(t0.val[0]); // [m20, m30]
+  float32x2_t a1_lo = vget_low_f32(t0.val[1]);  // [m01, m11]
+  float32x2_t a1_hi = vget_high_f32(t0.val[1]); // [m21, m31]
+
+  float32x2_t b0_lo = vget_low_f32(t1.val[0]);  // [m02, m12]
+  float32x2_t b0_hi = vget_high_f32(t1.val[0]); // [m22, m32]
+  float32x2_t b1_lo = vget_low_f32(t1.val[1]);  // [m03, m13]
+  float32x2_t b1_hi = vget_high_f32(t1.val[1]); // [m23, m33]
+
+  // Step 3: Combine to complete the transpose
+  result.cols[0].neon = vcombine_f32(a0_lo, b0_lo); // [m00, m10, m02, m12]
+  result.cols[1].neon = vcombine_f32(a1_lo, b1_lo); // [m01, m11, m03, m13]
+  result.cols[2].neon = vcombine_f32(a0_hi, b0_hi); // [m20, m30, m22, m32]
+  result.cols[3].neon = vcombine_f32(a1_hi, b1_hi); // [m21, m31, m23, m33]
 #else
   // Fallback implementation - still faster than individual element access
   result.cols[0] = vec4_new(m.cols[0].x, m.cols[1].x, m.cols[2].x, m.cols[3].x);
@@ -1139,11 +1147,13 @@ static INLINE Mat4 mat4_mul(Mat4 a, Mat4 b) {
     Vec4 z = simd_set1_f32x4(col.z);
     Vec4 w = simd_set1_f32x4(col.w);
 
-    // Correctly compute: a.cols[0]*x + a.cols[1]*y + a.cols[2]*z + a.cols[3]*w
-    result.cols[i] = simd_mul_f32x4(a.cols[0], x);
-    result.cols[i] = simd_fma_f32x4(result.cols[i], a.cols[1], y);
-    result.cols[i] = simd_fma_f32x4(result.cols[i], a.cols[2], z);
-    result.cols[i] = simd_fma_f32x4(result.cols[i], a.cols[3], w);
+    // Compute: a.cols[0]*x + a.cols[1]*y + a.cols[2]*z + a.cols[3]*w
+    // Note: simd_fma_f32x4(dst, b, c) computes dst + (b * c)
+    Vec4 temp = simd_mul_f32x4(a.cols[0], x);
+    temp = simd_fma_f32x4(temp, a.cols[1], y); // temp + (a.cols[1] * y)
+    temp = simd_fma_f32x4(temp, a.cols[2], z); // temp + (a.cols[2] * z)
+    result.cols[i] =
+        simd_fma_f32x4(temp, a.cols[3], w); // temp + (a.cols[3] * w)
   }
   return result;
 }
@@ -1588,10 +1598,13 @@ static INLINE void mat4_mul_mut(Mat4 *dest, Mat4 a, Mat4 b) {
     Vec4 z = simd_set1_f32x4(col.z);
     Vec4 w = simd_set1_f32x4(col.w);
 
-    dest->cols[i] = simd_mul_f32x4(a.cols[0], x);
-    dest->cols[i] = simd_fma_f32x4(dest->cols[i], a.cols[1], y);
-    dest->cols[i] = simd_fma_f32x4(dest->cols[i], a.cols[2], z);
-    dest->cols[i] = simd_fma_f32x4(dest->cols[i], a.cols[3], w);
+    // Compute: a.cols[0]*x + a.cols[1]*y + a.cols[2]*z + a.cols[3]*w
+    // Note: simd_fma_f32x4(dst, b, c) computes dst + (b * c)
+    Vec4 temp = simd_mul_f32x4(a.cols[0], x);
+    temp = simd_fma_f32x4(temp, a.cols[1], y); // temp + (a.cols[1] * y)
+    temp = simd_fma_f32x4(temp, a.cols[2], z); // temp + (a.cols[2] * z)
+    dest->cols[i] =
+        simd_fma_f32x4(temp, a.cols[3], w); // temp + (a.cols[3] * w)
   }
 }
 
