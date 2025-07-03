@@ -1,6 +1,5 @@
 #pragma once
 
-#include "core/logger.h"
 #include "math/vec.h"
 #include "pch.h"
 #include "platform/platform.h"

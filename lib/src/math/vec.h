@@ -728,6 +728,27 @@ static INLINE float32_t vec4_dot(Vec4 a, Vec4 b) {
 }
 
 /**
+ * @brief Computes the 3D cross product of two Vec4 vectors (SIMD-optimized)
+ * @param a First vector operand
+ * @param b Second vector operand
+ * @return Cross product vector perpendicular to both inputs (W component = 0)
+ * @note Treats Vec4 as 3D vectors, ignoring W components in calculation
+ * @note Follows right-hand rule: thumb=a, fingers=b, palm=result
+ * @note Consistent with vec4_dot3() for 3D operations on Vec4 data
+ */
+static INLINE Vec4 vec4_cross3(Vec4 a, Vec4 b) {
+  Vec4 a_yzx = simd_shuffle_f32x4(a, 1, 2, 0, 3); // (y, z, x, w)
+  Vec4 b_yzx = simd_shuffle_f32x4(b, 1, 2, 0, 3); // (y, z, x, w)
+  Vec4 a_zxy = simd_shuffle_f32x4(a, 2, 0, 1, 3); // (z, x, y, w)
+  Vec4 b_zxy = simd_shuffle_f32x4(b, 2, 0, 1, 3); // (z, x, y, w)
+
+  Vec4 result = simd_sub_f32x4(simd_mul_f32x4(a_yzx, b_zxy),
+                               simd_mul_f32x4(a_zxy, b_yzx));
+  result.w = 0.0f; // Ensure W component is 0 for 3D cross product
+  return result;
+}
+
+/**
  * @brief Computes the squared length of a 4D vector (SIMD-optimized)
  * @param v Input vector
  * @return Squared magnitude (avoids expensive sqrt operation)

@@ -456,6 +456,69 @@ static void test_vec4_geometric(void) {
   assert(vec4_equals(lerp_result, vec4_new(1.0f, 2.0f, 3.0f, 4.0f), 0.001f) &&
          "vec4_lerp failed");
 
+  // Test 3D cross product on Vec4 (RIGHT-HANDED coordinate system, treats Vec4
+  // as 3D+W)
+  Vec4 unit_x = vec4_new(1.0f, 0.0f, 0.0f, 0.0f);
+  Vec4 unit_y = vec4_new(0.0f, 1.0f, 0.0f, 0.0f);
+  Vec4 unit_z = vec4_new(0.0f, 0.0f, 1.0f, 0.0f);
+
+  // In right-handed: X × Y = Z, Y × Z = X, Z × X = Y
+  Vec4 cross_x_y = vec4_cross3(unit_x, unit_y);
+  assert(vec4_equals(cross_x_y, unit_z, FLOAT_EPSILON) &&
+         "vec4_cross3 x×y=z failed (right-handed)");
+
+  Vec4 cross_y_z = vec4_cross3(unit_y, unit_z);
+  assert(vec4_equals(cross_y_z, unit_x, FLOAT_EPSILON) &&
+         "vec4_cross3 y×z=x failed (right-handed)");
+
+  Vec4 cross_z_x = vec4_cross3(unit_z, unit_x);
+  assert(vec4_equals(cross_z_x, unit_y, FLOAT_EPSILON) &&
+         "vec4_cross3 z×x=y failed (right-handed)");
+
+  // Test anti-commutativity: A × B = -(B × A)
+  Vec4 cross_y_x = vec4_cross3(unit_y, unit_x);
+  Vec4 neg_z = vec4_negate(unit_z);
+  assert(vec4_equals(cross_y_x, neg_z, FLOAT_EPSILON) &&
+         "vec4_cross3 anti-commutativity failed");
+
+  // Test cross product with arbitrary vectors (ignoring W components)
+  Vec4 v1 = vec4_new(2.0f, 0.0f, 0.0f, 5.0f); // W component should be ignored
+  Vec4 v2 = vec4_new(0.0f, 3.0f, 0.0f, 7.0f); // W component should be ignored
+  Vec4 cross_v1_v2 = vec4_cross3(v1, v2);
+  Vec4 expected_cross = vec4_new(0.0f, 0.0f, 6.0f, 0.0f); // W should be 0
+  assert(vec4_equals(cross_v1_v2, expected_cross, FLOAT_EPSILON) &&
+         "vec4_cross3 arbitrary vectors failed");
+
+  // Test W component is always 0 in result
+  assert(float_equals(cross_v1_v2.w, 0.0f, FLOAT_EPSILON) &&
+         "vec4_cross3 result W component should be 0");
+
+  // Test cross product of parallel vectors should be zero
+  Vec4 parallel1 = vec4_new(2.0f, 4.0f, 6.0f, 1.0f);
+  Vec4 parallel2 = vec4_new(1.0f, 2.0f, 3.0f, 2.0f);
+  Vec4 cross_parallel = vec4_cross3(parallel1, parallel2);
+  Vec4 zero_vec = vec4_new(0.0f, 0.0f, 0.0f, 0.0f);
+  assert(vec4_equals(cross_parallel, zero_vec, 0.001f) &&
+         "vec4_cross3 of parallel vectors should be zero");
+
+  // Test cross product with zero vector
+  Vec4 cross_with_zero = vec4_cross3(v1, vec4_zero());
+  assert(vec4_equals(cross_with_zero, vec4_zero(), FLOAT_EPSILON) &&
+         "vec4_cross3 with zero vector should be zero");
+
+  // Test consistency with vec3_cross when W=0
+  Vec3 v3a = vec3_new(1.0f, 2.0f, 3.0f);
+  Vec3 v3b = vec3_new(4.0f, 5.0f, 6.0f);
+  Vec4 v4a = vec3_to_vec4(v3a, 0.0f);
+  Vec4 v4b = vec3_to_vec4(v3b, 0.0f);
+
+  Vec3 cross3_result = vec3_cross(v3a, v3b);
+  Vec4 cross4_result = vec4_cross3(v4a, v4b);
+  Vec3 cross4_as_vec3 = vec4_to_vec3(cross4_result);
+
+  assert(vec3_equals(cross3_result, cross4_as_vec3, FLOAT_EPSILON) &&
+         "vec4_cross3 should match vec3_cross when W=0");
+
   printf("  test_vec4_geometric PASSED\n");
 }
 
