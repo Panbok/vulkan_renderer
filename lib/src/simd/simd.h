@@ -423,22 +423,21 @@ INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
 // =============================================================================
 
 /**
- * @brief Scatters the elements of a SIMD vector into a larger vector based on
- * indices.
+ * @brief Scatters the elements of a SIMD vector into specific positions based
+ * on indices.
  * @param v Input vector to scatter.
  * @param indices Indices to scatter the elements into.
- * @return Vector with elements scattered from v into the positions specified by
- * indices.
+ * @return Vector with elements from v placed at positions specified by indices,
+ * with out-of-bounds indices ignored and unwritten positions set to zero.
  */
 INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices);
 
 /**
- * @brief Gathers the elements of a SIMD vector from a larger vector based on
- * indices.
+ * @brief Gathers elements from a SIMD vector at positions specified by indices.
  * @param v Input vector to gather from.
  * @param indices Indices to gather the elements from.
- * @return Vector with elements gathered from v at the positions specified by
- * indices.
+ * @return Vector with elements gathered from v at positions specified by
+ * indices, with out-of-bounds indices producing zero elements.
  */
 INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices);
 
