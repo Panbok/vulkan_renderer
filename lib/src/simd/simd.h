@@ -419,6 +419,30 @@ INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
 INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
 
 // =============================================================================
+// SIMD Operations Scatter-
+// =============================================================================
+
+/**
+ * @brief Scatters the elements of a SIMD vector into a larger vector based on
+ * indices.
+ * @param v Input vector to scatter.
+ * @param indices Indices to scatter the elements into.
+ * @return Vector with elements scattered from v into the positions specified by
+ * indices.
+ */
+INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices);
+
+/**
+ * @brief Gathers the elements of a SIMD vector from a larger vector based on
+ * indices.
+ * @param v Input vector to gather from.
+ * @param indices Indices to gather the elements from.
+ * @return Vector with elements gathered from v at the positions specified by
+ * indices.
+ */
+INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices);
+
+// =============================================================================
 // Platform-specific implementations
 // =============================================================================
 
@@ -594,6 +618,38 @@ INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
   return result;
 }
 
+INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
+  // ARM NEON doesn't have direct scatter, so we use element access
+  // This creates a result vector where each element from v is placed at the
+  // position specified by the corresponding index (with bounds checking)
+  SIMD_F32X4 result = simd_set1_f32x4(0.0f); // Initialize to zero
+
+  for (int i = 0; i < 4; i++) {
+    int32_t idx = indices.elements[i];
+    if (idx >= 0 && idx < 4) {
+      result.elements[idx] = v.elements[i];
+    }
+  }
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
+  // ARM NEON doesn't have direct gather, so we use element access
+  // This gathers elements from v using indices to specify which elements to
+  // pick
+  SIMD_F32X4 result;
+
+  for (int i = 0; i < 4; i++) {
+    int32_t idx = indices.elements[i];
+    if (idx >= 0 && idx < 4) {
+      result.elements[i] = v.elements[idx];
+    } else {
+      result.elements[i] = 0.0f; // Safety fallback for out-of-bounds indices
+    }
+  }
+  return result;
+}
+
 #else
 // Fallback scalar implementations
 INLINE SIMD_F32X4 simd_load_f32x4(const float32_t *ptr) {
@@ -747,6 +803,34 @@ INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
 
 INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
   SIMD_I32X4 result = {{a.x * b.x, a.y * b.y, a.z * b.z, a.w * b.w}};
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
+  // Scalar fallback for scatter operation
+  SIMD_F32X4 result = {{0.0f, 0.0f, 0.0f, 0.0f}}; // Initialize to zero
+
+  for (int i = 0; i < 4; i++) {
+    int32_t idx = indices.elements[i];
+    if (idx >= 0 && idx < 4) {
+      result.elements[idx] = v.elements[i];
+    }
+  }
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
+  // Scalar fallback for gather operation
+  SIMD_F32X4 result;
+
+  for (int i = 0; i < 4; i++) {
+    int32_t idx = indices.elements[i];
+    if (idx >= 0 && idx < 4) {
+      result.elements[i] = v.elements[idx];
+    } else {
+      result.elements[i] = 0.0f; // Safety fallback for out-of-bounds indices
+    }
+  }
   return result;
 }
 #endif

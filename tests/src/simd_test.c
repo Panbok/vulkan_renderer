@@ -502,6 +502,150 @@ static void test_simd_edge_cases(void) {
   printf("  test_simd_edge_cases PASSED\n");
 }
 
+static void test_simd_scatter_gather(void) {
+  printf("  Running test_simd_scatter_gather...\n");
+
+  // Test data
+  SIMD_F32X4 source = simd_set_f32x4(10.0f, 20.0f, 30.0f, 40.0f);
+
+  // Test basic gather operation - identity indices
+  SIMD_I32X4 identity_indices = simd_set_i32x4(0, 1, 2, 3);
+  SIMD_F32X4 gather_identity = simd_gather_f32x4(source, identity_indices);
+  assert(simd_vector_equals(gather_identity, source, FLOAT_EPSILON) &&
+         "Gather with identity indices failed");
+
+  // Test reverse gather
+  SIMD_I32X4 reverse_indices = simd_set_i32x4(3, 2, 1, 0);
+  SIMD_F32X4 gather_reverse = simd_gather_f32x4(source, reverse_indices);
+  SIMD_F32X4 expected_reverse = simd_set_f32x4(40.0f, 30.0f, 20.0f, 10.0f);
+  assert(simd_vector_equals(gather_reverse, expected_reverse, FLOAT_EPSILON) &&
+         "Gather with reverse indices failed");
+
+  // Test gather with duplicated indices
+  SIMD_I32X4 dup_indices = simd_set_i32x4(0, 0, 2, 2);
+  SIMD_F32X4 gather_dup = simd_gather_f32x4(source, dup_indices);
+  SIMD_F32X4 expected_dup = simd_set_f32x4(10.0f, 10.0f, 30.0f, 30.0f);
+  assert(simd_vector_equals(gather_dup, expected_dup, FLOAT_EPSILON) &&
+         "Gather with duplicated indices failed");
+
+  // Test gather with mixed indices
+  SIMD_I32X4 mixed_indices = simd_set_i32x4(1, 3, 0, 2);
+  SIMD_F32X4 gather_mixed = simd_gather_f32x4(source, mixed_indices);
+  SIMD_F32X4 expected_mixed = simd_set_f32x4(20.0f, 40.0f, 10.0f, 30.0f);
+  assert(simd_vector_equals(gather_mixed, expected_mixed, FLOAT_EPSILON) &&
+         "Gather with mixed indices failed");
+
+  // Test gather with out-of-bounds indices (should return 0.0f for invalid
+  // indices)
+  SIMD_I32X4 oob_indices = simd_set_i32x4(-1, 1, 4, 2);
+  SIMD_F32X4 gather_oob = simd_gather_f32x4(source, oob_indices);
+  SIMD_F32X4 expected_oob = simd_set_f32x4(0.0f, 20.0f, 0.0f, 30.0f);
+  assert(simd_vector_equals(gather_oob, expected_oob, FLOAT_EPSILON) &&
+         "Gather with out-of-bounds indices failed");
+
+  // Test basic scatter operation - identity indices
+  SIMD_F32X4 scatter_identity = simd_scatter_f32x4(source, identity_indices);
+  assert(simd_vector_equals(scatter_identity, source, FLOAT_EPSILON) &&
+         "Scatter with identity indices failed");
+
+  // Test scatter with reverse indices
+  SIMD_F32X4 scatter_reverse = simd_scatter_f32x4(source, reverse_indices);
+  SIMD_F32X4 expected_scatter_reverse =
+      simd_set_f32x4(40.0f, 30.0f, 20.0f, 10.0f);
+  assert(simd_vector_equals(scatter_reverse, expected_scatter_reverse,
+                            FLOAT_EPSILON) &&
+         "Scatter with reverse indices failed");
+
+  // Test scatter with mixed indices
+  SIMD_F32X4 values_to_scatter = simd_set_f32x4(100.0f, 200.0f, 300.0f, 400.0f);
+  SIMD_I32X4 scatter_indices = simd_set_i32x4(2, 0, 3, 1);
+  SIMD_F32X4 scatter_mixed =
+      simd_scatter_f32x4(values_to_scatter, scatter_indices);
+  SIMD_F32X4 expected_scatter_mixed =
+      simd_set_f32x4(200.0f, 400.0f, 100.0f, 300.0f);
+  assert(simd_vector_equals(scatter_mixed, expected_scatter_mixed,
+                            FLOAT_EPSILON) &&
+         "Scatter with mixed indices failed");
+
+  // Test scatter with duplicate indices (later writes should overwrite earlier
+  // ones)
+  SIMD_F32X4 dup_values = simd_set_f32x4(1.0f, 2.0f, 3.0f, 4.0f);
+  SIMD_I32X4 dup_scatter_indices = simd_set_i32x4(0, 0, 1, 1);
+  SIMD_F32X4 scatter_dup = simd_scatter_f32x4(dup_values, dup_scatter_indices);
+  // Expected: position 0 gets overwritten (1.0f then 2.0f), position 1 gets
+  // overwritten (3.0f then 4.0f) In our implementation, later indices overwrite
+  // earlier ones due to the loop order
+  SIMD_F32X4 expected_scatter_dup = simd_set_f32x4(2.0f, 4.0f, 0.0f, 0.0f);
+  assert(simd_vector_equals(scatter_dup, expected_scatter_dup, FLOAT_EPSILON) &&
+         "Scatter with duplicate indices failed");
+
+  // Test scatter with out-of-bounds indices (should ignore invalid indices)
+  SIMD_F32X4 oob_values = simd_set_f32x4(11.0f, 22.0f, 33.0f, 44.0f);
+  SIMD_I32X4 oob_scatter_indices = simd_set_i32x4(-1, 1, 4, 2);
+  SIMD_F32X4 scatter_oob = simd_scatter_f32x4(oob_values, oob_scatter_indices);
+  SIMD_F32X4 expected_scatter_oob = simd_set_f32x4(0.0f, 22.0f, 44.0f, 0.0f);
+  assert(simd_vector_equals(scatter_oob, expected_scatter_oob, FLOAT_EPSILON) &&
+         "Scatter with out-of-bounds indices failed");
+
+  printf("  test_simd_scatter_gather PASSED\n");
+}
+
+static void test_simd_scatter_gather_edge_cases(void) {
+  printf("  Running test_simd_scatter_gather_edge_cases...\n");
+
+  // Test with zero values
+  SIMD_F32X4 zero_values = simd_set1_f32x4(0.0f);
+  SIMD_I32X4 valid_indices = simd_set_i32x4(0, 1, 2, 3);
+
+  SIMD_F32X4 gather_zero = simd_gather_f32x4(zero_values, valid_indices);
+  assert(simd_vector_equals(gather_zero, zero_values, FLOAT_EPSILON) &&
+         "Gather with zero values failed");
+
+  SIMD_F32X4 scatter_zero = simd_scatter_f32x4(zero_values, valid_indices);
+  assert(simd_vector_equals(scatter_zero, zero_values, FLOAT_EPSILON) &&
+         "Scatter with zero values failed");
+
+  // Test with negative values
+  SIMD_F32X4 negative_values = simd_set_f32x4(-1.0f, -2.0f, -3.0f, -4.0f);
+  SIMD_F32X4 gather_negative =
+      simd_gather_f32x4(negative_values, valid_indices);
+  assert(simd_vector_equals(gather_negative, negative_values, FLOAT_EPSILON) &&
+         "Gather with negative values failed");
+
+  SIMD_F32X4 scatter_negative =
+      simd_scatter_f32x4(negative_values, valid_indices);
+  assert(simd_vector_equals(scatter_negative, negative_values, FLOAT_EPSILON) &&
+         "Scatter with negative values failed");
+
+  // Test with large values
+  SIMD_F32X4 large_values =
+      simd_set_f32x4(1000000.0f, 2000000.0f, 3000000.0f, 4000000.0f);
+  SIMD_F32X4 gather_large = simd_gather_f32x4(large_values, valid_indices);
+  assert(simd_vector_equals(gather_large, large_values, 1.0f) &&
+         "Gather with large values failed");
+
+  SIMD_F32X4 scatter_large = simd_scatter_f32x4(large_values, valid_indices);
+  assert(simd_vector_equals(scatter_large, large_values, 1.0f) &&
+         "Scatter with large values failed");
+
+  // Test round-trip consistency: scatter then gather should preserve data (with
+  // identity indices)
+  SIMD_F32X4 original = simd_set_f32x4(7.5f, 8.25f, 9.75f, 10.125f);
+  SIMD_F32X4 scattered = simd_scatter_f32x4(original, valid_indices);
+  SIMD_F32X4 gathered = simd_gather_f32x4(scattered, valid_indices);
+  assert(simd_vector_equals(gathered, original, FLOAT_EPSILON) &&
+         "Scatter-gather round-trip failed");
+
+  // Test gather then scatter round-trip with permutation
+  SIMD_I32X4 perm_indices = simd_set_i32x4(2, 0, 3, 1);
+  SIMD_F32X4 gathered_perm = simd_gather_f32x4(original, perm_indices);
+  SIMD_F32X4 scattered_perm = simd_scatter_f32x4(gathered_perm, perm_indices);
+  assert(simd_vector_equals(scattered_perm, original, FLOAT_EPSILON) &&
+         "Gather-scatter permutation round-trip failed");
+
+  printf("  test_simd_scatter_gather_edge_cases PASSED\n");
+}
+
 bool32_t run_simd_tests(void) {
   printf("--- Starting SIMD Tests ---\n");
 
@@ -514,6 +658,8 @@ bool32_t run_simd_tests(void) {
   test_simd_fma();
   test_simd_dot_products();
   test_simd_shuffle();
+  test_simd_scatter_gather();
+  test_simd_scatter_gather_edge_cases();
   test_simd_edge_cases();
 
   // Integer SIMD tests
