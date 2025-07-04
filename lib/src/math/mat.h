@@ -1695,13 +1695,13 @@ static INLINE Mat4 mat4_inverse_rigid(Mat4 m) {
 
   // Compute -R^T * t for the translation column
   Vec3 translation = vec3_new(m.m03, m.m13, m.m23);
+  Vec3 row0 = vec4_to_vec3(result.cols[0]);
+  Vec3 row1 = vec4_to_vec3(result.cols[1]);
+  Vec3 row2 = vec4_to_vec3(result.cols[2]);
+
   Vec3 rotated_translation =
-      vec3_new(-(result.m00 * translation.x + result.m01 * translation.y +
-                 result.m02 * translation.z),
-               -(result.m10 * translation.x + result.m11 * translation.y +
-                 result.m12 * translation.z),
-               -(result.m20 * translation.x + result.m21 * translation.y +
-                 result.m22 * translation.z));
+      vec3_new(-vec3_dot(row0, translation), -vec3_dot(row1, translation),
+               -vec3_dot(row2, translation));
 
   result.m03 = rotated_translation.x;
   result.m13 = rotated_translation.y;
