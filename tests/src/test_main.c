@@ -33,6 +33,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_vec_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_mat_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_quat_tests();
   printf("\n"); // Add spacing
   all_passed &= run_simd_tests();
