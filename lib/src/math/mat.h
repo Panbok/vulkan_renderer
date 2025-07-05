@@ -657,21 +657,12 @@ static INLINE Mat4 mat4_transpose(Mat4 m) {
 }
 
 /**
- * @brief Computes the inverse of a general 4x4 matrix using cofactor method
- * (SIMD-optimized)
+ * @brief Computes the inverse of a general 4x4 matrix
  * @param m Input matrix to invert
  * @return Inverse matrix M^-1 such that M * M^-1 = I, or identity if not
  * invertible
- * @note Uses SIMD-accelerated cofactor expansion for numerical robustness
  * @note Returns identity matrix if determinant is too small (matrix is
  * singular)
- * @note For special matrix types, prefer specialized inverses for better
- * performance
- * @note General inverse handles all invertible 4x4 matrices including complex
- * transformations
- * @note Threshold for singularity: |det| < 1e-6
- * @performance O(120) - Most expensive matrix operation, use specialized
- * variants when possible
  * @example
  * ```c
  * // General transformation with complex scaling and shearing
@@ -687,95 +678,83 @@ static INLINE Mat4 mat4_transpose(Mat4 m) {
  * ```
  */
 static INLINE Mat4 mat4_inverse(Mat4 m) {
-  Vec4 minor0, minor1, minor2, minor3;
-  Vec4 row0, row1, row2, row3;
-  Vec4 det, tmp1;
+  // Calculate determinant using cofactor expansion along first row
+  float32_t m00 = m.m00, m01 = m.m01, m02 = m.m02, m03 = m.m03;
+  float32_t m10 = m.m10, m11 = m.m11, m12 = m.m12, m13 = m.m13;
+  float32_t m20 = m.m20, m21 = m.m21, m22 = m.m22, m23 = m.m23;
+  float32_t m30 = m.m30, m31 = m.m31, m32 = m.m32, m33 = m.m33;
 
-  row0 = m.cols[0];
-  row1 = m.cols[1];
-  row2 = m.cols[2];
-  row3 = m.cols[3];
+  // Calculate 3x3 cofactors for determinant
+  float32_t c00 = m11 * (m22 * m33 - m23 * m32) -
+                  m12 * (m21 * m33 - m23 * m31) + m13 * (m21 * m32 - m22 * m31);
+  float32_t c01 = m10 * (m22 * m33 - m23 * m32) -
+                  m12 * (m20 * m33 - m23 * m30) + m13 * (m20 * m32 - m22 * m30);
+  float32_t c02 = m10 * (m21 * m33 - m23 * m31) -
+                  m11 * (m20 * m33 - m23 * m30) + m13 * (m20 * m31 - m21 * m30);
+  float32_t c03 = m10 * (m21 * m32 - m22 * m31) -
+                  m11 * (m20 * m32 - m22 * m30) + m12 * (m20 * m31 - m21 * m30);
 
-  tmp1 = simd_sub_f32x4(
-      simd_mul_f32x4(row0, simd_shuffle_f32x4(row1, 1, 0, 3, 2)),
-      simd_mul_f32x4(row1, simd_shuffle_f32x4(row0, 1, 0, 3, 2)));
-
-  minor0 = simd_sub_f32x4(
-      simd_mul_f32x4(row2, simd_shuffle_f32x4(row3, 1, 0, 3, 2)),
-      simd_mul_f32x4(row3, simd_shuffle_f32x4(row2, 1, 0, 3, 2)));
-
-  minor1 = simd_sub_f32x4(
-      simd_mul_f32x4(row0, simd_shuffle_f32x4(row3, 1, 0, 3, 2)),
-      simd_mul_f32x4(row3, simd_shuffle_f32x4(row0, 1, 0, 3, 2)));
-
-  minor2 = simd_sub_f32x4(
-      simd_mul_f32x4(row0, simd_shuffle_f32x4(row2, 1, 0, 3, 2)),
-      simd_mul_f32x4(row2, simd_shuffle_f32x4(row0, 1, 0, 3, 2)));
-
-  minor3 = simd_sub_f32x4(
-      simd_mul_f32x4(row1, simd_shuffle_f32x4(row2, 1, 0, 3, 2)),
-      simd_mul_f32x4(row2, simd_shuffle_f32x4(row1, 1, 0, 3, 2)));
-
-  det = simd_mul_f32x4(tmp1, minor0);
-  det = simd_fma_f32x4(det, simd_shuffle_f32x4(tmp1, 2, 3, 0, 1),
-                       simd_shuffle_f32x4(minor0, 2, 3, 0, 1));
-
-  float32_t determinant = det.x - det.y + det.z - det.w;
+  float32_t det = m00 * c00 - m01 * c01 + m02 * c02 - m03 * c03;
 
   // Check if matrix is invertible
-  if (fabs_f32(determinant) < 1e-6f) {
+  if (abs_f32(det) < 1e-6f) {
     return mat4_identity();
   }
 
-  Vec4 inv_det = simd_set1_f32x4(1.0f / determinant);
+  float32_t inv_det = 1.0f / det;
 
+  // Calculate cofactor matrix using optimized method
   Mat4 result;
 
-  // Apply sign pattern and multiply by inverse determinant
-  Vec4 sign_a = vec4_new(1.0f, -1.0f, 1.0f, -1.0f);
-  Vec4 sign_b = vec4_new(-1.0f, 1.0f, -1.0f, 1.0f);
+  // Row 0
+  result.m00 = inv_det * c00;
+  result.m10 = -inv_det * c01;
+  result.m20 = inv_det * c02;
+  result.m30 = -inv_det * c03;
 
-  // First column
-  result.cols[0] = simd_mul_f32x4(
-      simd_mul_f32x4(
-          simd_sub_f32x4(
-              simd_mul_f32x4(row1, minor0),
-              simd_mul_f32x4(simd_shuffle_f32x4(row1, 2, 3, 0, 1),
-                             simd_shuffle_f32x4(minor0, 2, 3, 0, 1))),
-          sign_a),
-      inv_det);
+  // Row 1
+  result.m01 = -inv_det *
+               (m01 * (m22 * m33 - m23 * m32) - m02 * (m21 * m33 - m23 * m31) +
+                m03 * (m21 * m32 - m22 * m31));
+  result.m11 =
+      inv_det * (m00 * (m22 * m33 - m23 * m32) - m02 * (m20 * m33 - m23 * m30) +
+                 m03 * (m20 * m32 - m22 * m30));
+  result.m21 = -inv_det *
+               (m00 * (m21 * m33 - m23 * m31) - m01 * (m20 * m33 - m23 * m30) +
+                m03 * (m20 * m31 - m21 * m30));
+  result.m31 =
+      inv_det * (m00 * (m21 * m32 - m22 * m31) - m01 * (m20 * m32 - m22 * m30) +
+                 m02 * (m20 * m31 - m21 * m30));
 
-  // Second column
-  result.cols[1] = simd_mul_f32x4(
-      simd_mul_f32x4(
-          simd_sub_f32x4(
-              simd_mul_f32x4(row0, minor0),
-              simd_mul_f32x4(simd_shuffle_f32x4(row0, 2, 3, 0, 1),
-                             simd_shuffle_f32x4(minor0, 2, 3, 0, 1))),
-          sign_b),
-      inv_det);
+  // Row 2
+  result.m02 =
+      inv_det * (m01 * (m12 * m33 - m13 * m32) - m02 * (m11 * m33 - m13 * m31) +
+                 m03 * (m11 * m32 - m12 * m31));
+  result.m12 = -inv_det *
+               (m00 * (m12 * m33 - m13 * m32) - m02 * (m10 * m33 - m13 * m30) +
+                m03 * (m10 * m32 - m12 * m30));
+  result.m22 =
+      inv_det * (m00 * (m11 * m33 - m13 * m31) - m01 * (m10 * m33 - m13 * m30) +
+                 m03 * (m10 * m31 - m11 * m30));
+  result.m32 = -inv_det *
+               (m00 * (m11 * m32 - m12 * m31) - m01 * (m10 * m32 - m12 * m30) +
+                m02 * (m10 * m31 - m11 * m30));
 
-  // Third column
-  result.cols[2] = simd_mul_f32x4(
-      simd_mul_f32x4(
-          simd_add_f32x4(
-              simd_mul_f32x4(row3, minor3),
-              simd_mul_f32x4(simd_shuffle_f32x4(row3, 2, 3, 0, 1),
-                             simd_shuffle_f32x4(minor3, 2, 3, 0, 1))),
-          sign_a),
-      inv_det);
+  // Row 3
+  result.m03 = -inv_det *
+               (m01 * (m12 * m23 - m13 * m22) - m02 * (m11 * m23 - m13 * m21) +
+                m03 * (m11 * m22 - m12 * m21));
+  result.m13 =
+      inv_det * (m00 * (m12 * m23 - m13 * m22) - m02 * (m10 * m23 - m13 * m20) +
+                 m03 * (m10 * m22 - m12 * m20));
+  result.m23 = -inv_det *
+               (m00 * (m11 * m23 - m13 * m21) - m01 * (m10 * m23 - m13 * m20) +
+                m03 * (m10 * m21 - m11 * m20));
+  result.m33 =
+      inv_det * (m00 * (m11 * m22 - m12 * m21) - m01 * (m10 * m22 - m12 * m20) +
+                 m02 * (m10 * m21 - m11 * m20));
 
-  // Fourth column
-  result.cols[3] = simd_mul_f32x4(
-      simd_mul_f32x4(
-          simd_sub_f32x4(
-              simd_mul_f32x4(row2, minor3),
-              simd_mul_f32x4(simd_shuffle_f32x4(row2, 2, 3, 0, 1),
-                             simd_shuffle_f32x4(minor3, 2, 3, 0, 1))),
-          sign_b),
-      inv_det);
-
-  return mat4_transpose(result);
+  return result;
 }
 
 /**
@@ -835,7 +814,7 @@ static INLINE Mat4 mat4_inverse_affine(Mat4 m) {
   float32_t det = vec3_dot((Vec3){m.m00, m.m01, m.m02},
                            (Vec3){cross0.x, cross0.y, cross0.z});
 
-  if (fabs_f32(det) < 1e-6f) {
+  if (abs_f32(det) < 1e-6f) {
     return mat4_identity();
   }
 
@@ -985,29 +964,26 @@ static INLINE void mat4_set(Mat4 *m, int32_t row, int32_t col,
  * @return Determinant value
  */
 static INLINE float32_t mat4_determinant(Mat4 m) {
-  // Use the same calculation as in mat4_inverse for consistency
-  Vec4 minor0, minor1, minor2, minor3;
-  Vec4 row0, row1, row2, row3;
-  Vec4 det, tmp1;
+  // Calculate determinant using cofactor expansion along first row
+  // det(M) = m00*C00 - m01*C01 + m02*C02 - m03*C03
+  // where Cij is the cofactor (determinant of 3x3 minor)
 
-  row0 = m.cols[0];
-  row1 = m.cols[1];
-  row2 = m.cols[2];
-  row3 = m.cols[3];
+  float32_t m00 = m.m00, m01 = m.m01, m02 = m.m02, m03 = m.m03;
+  float32_t m10 = m.m10, m11 = m.m11, m12 = m.m12, m13 = m.m13;
+  float32_t m20 = m.m20, m21 = m.m21, m22 = m.m22, m23 = m.m23;
+  float32_t m30 = m.m30, m31 = m.m31, m32 = m.m32, m33 = m.m33;
 
-  tmp1 = simd_sub_f32x4(
-      simd_mul_f32x4(row0, simd_shuffle_f32x4(row1, 1, 0, 3, 2)),
-      simd_mul_f32x4(row1, simd_shuffle_f32x4(row0, 1, 0, 3, 2)));
+  // Calculate 3x3 cofactors
+  float32_t c00 = m11 * (m22 * m33 - m23 * m32) -
+                  m12 * (m21 * m33 - m23 * m31) + m13 * (m21 * m32 - m22 * m31);
+  float32_t c01 = m10 * (m22 * m33 - m23 * m32) -
+                  m12 * (m20 * m33 - m23 * m30) + m13 * (m20 * m32 - m22 * m30);
+  float32_t c02 = m10 * (m21 * m33 - m23 * m31) -
+                  m11 * (m20 * m33 - m23 * m30) + m13 * (m20 * m31 - m21 * m30);
+  float32_t c03 = m10 * (m21 * m32 - m22 * m31) -
+                  m11 * (m20 * m32 - m22 * m30) + m12 * (m20 * m31 - m21 * m30);
 
-  minor0 = simd_sub_f32x4(
-      simd_mul_f32x4(row2, simd_shuffle_f32x4(row3, 1, 0, 3, 2)),
-      simd_mul_f32x4(row3, simd_shuffle_f32x4(row2, 1, 0, 3, 2)));
-
-  det = simd_mul_f32x4(tmp1, minor0);
-  det = simd_fma_f32x4(det, simd_shuffle_f32x4(tmp1, 2, 3, 0, 1),
-                       simd_shuffle_f32x4(minor0, 2, 3, 0, 1));
-
-  return det.x - det.y + det.z - det.w;
+  return m00 * c00 - m01 * c01 + m02 * c02 - m03 * c03;
 }
 
 /**
@@ -1695,9 +1671,11 @@ static INLINE Mat4 mat4_inverse_rigid(Mat4 m) {
 
   // Compute -R^T * t for the translation column
   Vec3 translation = vec3_new(m.m03, m.m13, m.m23);
-  Vec3 row0 = vec4_to_vec3(result.cols[0]);
-  Vec3 row1 = vec4_to_vec3(result.cols[1]);
-  Vec3 row2 = vec4_to_vec3(result.cols[2]);
+  // Get the rows of the transposed rotation matrix (which are the columns of
+  // the original rotation matrix)
+  Vec3 row0 = vec3_new(result.m00, result.m01, result.m02); // First row of R^T
+  Vec3 row1 = vec3_new(result.m10, result.m11, result.m12); // Second row of R^T
+  Vec3 row2 = vec3_new(result.m20, result.m21, result.m22); // Third row of R^T
 
   Vec3 rotated_translation =
       vec3_new(-vec3_dot(row0, translation), -vec3_dot(row1, translation),
