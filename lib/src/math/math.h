@@ -149,6 +149,18 @@
  *  @example Use abs_f32(a - b) < FLOAT_EPSILON instead of a == b */
 #define FLOAT_EPSILON 1.192092896e-07f
 
+/** @brief Maximum value for float32_t
+ *  @note Value: 3.402823466e+38f
+ *  @note Use for bounds checking and initialization of maximum values
+ *  @note Should be smaller than any realistic value in your application */
+#define FLOAT_MAX 3.402823466e+38f
+
+/** @brief Minimum value for float32_t
+ *  @note Value: 1.175494351e-38f
+ *  @note Use for bounds checking and initialization of minimum values
+ *  @note Should be larger than any realistic value in your application */
+#define FLOAT_MIN 1.175494351e-38f
+
 static bool8_t rand_seeded = false;
 
 /**
