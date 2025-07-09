@@ -42,6 +42,8 @@ Array(VkImage);
 Array(VkImageView);
 Array(VkFramebuffer);
 Array(VkSemaphore);
+Array(VkVertexInputBindingDescription);
+Array(VkVertexInputAttributeDescription);
 
 #define VK_EXT_METAL_SURFACE_EXTENSION_NAME "VK_EXT_metal_surface"
 
@@ -67,6 +69,18 @@ struct s_BufferHandle {
   VulkanBuffer *buffer;
   BufferDescription description;
 };
+
+typedef struct VulkanBuffer {
+  VkBuffer handle;
+  VkDeviceMemory memory;
+  VkBufferUsageFlagBits usage;
+  uint64_t total_size;
+
+  bool8_t is_locked;
+
+  int32_t memory_index;
+  uint32_t memory_property_flags;
+} VulkanBuffer;
 typedef struct VulkanFence {
   VkFence handle;
   bool8_t is_signaled;
@@ -101,18 +115,6 @@ typedef enum VulkanCommandBufferState {
   COMMAND_BUFFER_STATE_SUBMITTED,
   COMMAND_BUFFER_STATE_NOT_ALLOCATED
 } VulkanCommandBufferState;
-
-typedef struct VulkanBuffer {
-  VkBuffer handle;
-  VkDeviceMemory memory;
-  VkBufferUsageFlagBits usage;
-  uint64_t total_size;
-
-  bool8_t is_locked;
-
-  int32_t memory_index;
-  uint32_t memory_property_flags;
-} VulkanBuffer;
 
 typedef struct VulkanCommandBuffer {
   VkCommandBuffer handle;
