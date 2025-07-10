@@ -54,7 +54,7 @@ void bitset8_toggle(Bitset8 *bitset, uint8_t flag);
  *             only one bit for unambiguous checking.
  * @return true if the specified flag bit is set, false otherwise.
  */
-bool32_t bitset8_is_set(Bitset8 *bitset, uint8_t flag);
+bool32_t bitset8_is_set(const Bitset8 *bitset, uint8_t flag);
 
 /**
  * @brief Returns the current value of the bitset as an unsigned 8-bit integer.
