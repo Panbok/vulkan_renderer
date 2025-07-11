@@ -64,11 +64,10 @@ struct s_ShaderModule {
   VkPipelineShaderStageCreateInfo stage_info;
 };
 
-typedef struct VulkanBuffer VulkanBuffer;
-struct s_BufferHandle {
-  VulkanBuffer *buffer;
-  BufferDescription description;
-};
+typedef struct VulkanFence {
+  VkFence handle;
+  bool8_t is_signaled;
+} VulkanFence;
 
 typedef struct VulkanBuffer {
   VkBuffer handle;
@@ -80,11 +79,14 @@ typedef struct VulkanBuffer {
 
   int32_t memory_index;
   uint32_t memory_property_flags;
+
+  VkCommandPool command_pool;
+  VkQueue queue;
 } VulkanBuffer;
-typedef struct VulkanFence {
-  VkFence handle;
-  bool8_t is_signaled;
-} VulkanFence;
+struct s_BufferHandle {
+  VulkanBuffer buffer;
+  BufferDescription description;
+};
 
 typedef enum VulkanRenderPassState {
   RENDER_PASS_STATE_READY,

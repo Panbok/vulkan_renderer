@@ -39,6 +39,8 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
 
   if (out_buffer->buffer.memory_index == -1) {
     log_error("Failed to find memory index for buffer");
+    vkDestroyBuffer(state->device.logical_device, out_buffer->buffer.handle,
+                    state->allocator);
     return false_v;
   }
 
@@ -52,14 +54,16 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
                        state->allocator,
                        &out_buffer->buffer.memory) != VK_SUCCESS) {
     log_error("Failed to allocate memory for buffer");
+    vkDestroyBuffer(state->device.logical_device, out_buffer->buffer.handle,
+                    state->allocator);
     return false_v;
   }
 
-  // Set up command pool and queue before binding if this is a graphics buffer
   if (bitset8_is_set(&desc->buffer_type, BUFFER_TYPE_GRAPHICS)) {
     out_buffer->buffer.command_pool = state->device.graphics_command_pool;
     out_buffer->buffer.queue = state->device.graphics_queue;
-    vulkan_fence_create(state, false_v, &out_buffer->buffer.fence);
+    // Note: We use temporary fences for buffer operations, no need for
+    // per-buffer fences
   }
 
   if (desc->bind_on_create) {
@@ -82,8 +86,6 @@ void vulkan_buffer_destroy(VulkanBackendState *state, VulkanBuffer *buffer) {
     vkFreeMemory(state->device.logical_device, buffer->memory,
                  state->allocator);
   }
-
-  vulkan_fence_destroy(state, &buffer->fence);
 
   buffer->handle = VK_NULL_HANDLE;
   buffer->memory = VK_NULL_HANDLE;
@@ -140,12 +142,16 @@ bool8_t vulkan_buffer_resize(VulkanBackendState *state, uint64_t new_size,
     return false_v;
   }
 
-  vkBindBufferMemory(state->device.logical_device, new_buffer, new_memory, 0);
+  if (vkBindBufferMemory(state->device.logical_device, new_buffer, new_memory,
+                         0) != VK_SUCCESS) {
+    log_error("Failed to bind buffer memory");
+    vkDestroyBuffer(state->device.logical_device, new_buffer, state->allocator);
+    vkFreeMemory(state->device.logical_device, new_memory, state->allocator);
+    return false_v;
+  }
 
   vulkan_buffer_copy_to(state, buffer, buffer->handle, 0, new_buffer, 0,
                         buffer->total_size);
-
-  vkDeviceWaitIdle(state->device.logical_device);
 
   vulkan_buffer_destroy(state, buffer);
 
@@ -214,22 +220,44 @@ bool8_t vulkan_buffer_copy_to(VulkanBackendState *state,
   };
 
   VkCommandBuffer command_buffer;
-  vkAllocateCommandBuffers(state->device.logical_device, &alloc_info,
-                           &command_buffer);
+  if (vkAllocateCommandBuffers(state->device.logical_device, &alloc_info,
+                               &command_buffer) != VK_SUCCESS) {
+    log_error("Failed to allocate command buffer");
+    return false_v;
+  }
 
   VkCommandBufferBeginInfo begin_info = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
       .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
   };
 
-  vkBeginCommandBuffer(command_buffer, &begin_info);
+  if (vkBeginCommandBuffer(command_buffer, &begin_info) != VK_SUCCESS) {
+    log_error("Failed to begin command buffer");
+    vkFreeCommandBuffers(state->device.logical_device,
+                         buffer_handle->command_pool, 1, &command_buffer);
+    return false_v;
+  }
 
   VkBufferCopy copy_region = {
       .srcOffset = source_offset, .dstOffset = dest_offset, .size = size};
 
   vkCmdCopyBuffer(command_buffer, source, dest, 1, &copy_region);
 
-  vkEndCommandBuffer(command_buffer);
+  if (vkEndCommandBuffer(command_buffer) != VK_SUCCESS) {
+    log_error("Failed to end command buffer");
+    vkFreeCommandBuffers(state->device.logical_device,
+                         buffer_handle->command_pool, 1, &command_buffer);
+    return false_v;
+  }
+
+  VulkanFence temp_fence;
+  vulkan_fence_create(state, false_v, &temp_fence);
+  if (temp_fence.handle == VK_NULL_HANDLE) {
+    log_error("Failed to create temporary fence");
+    vkFreeCommandBuffers(state->device.logical_device,
+                         buffer_handle->command_pool, 1, &command_buffer);
+    return false_v;
+  }
 
   VkSubmitInfo submit_info = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
@@ -237,11 +265,28 @@ bool8_t vulkan_buffer_copy_to(VulkanBackendState *state,
       .pCommandBuffers = &command_buffer,
   };
 
-  vkQueueSubmit(buffer_handle->queue, 1, &submit_info,
-                buffer_handle->fence.handle);
+  if (vkQueueSubmit(buffer_handle->queue, 1, &submit_info, temp_fence.handle) !=
+      VK_SUCCESS) {
+    log_error("Failed to submit command buffer");
+    vulkan_fence_destroy(state, &temp_fence);
+    vkFreeCommandBuffers(state->device.logical_device,
+                         buffer_handle->command_pool, 1, &command_buffer);
+    return false_v;
+  }
 
+  // Wait for the temporary fence
+  if (!vulkan_fence_wait(state, UINT64_MAX, &temp_fence)) {
+    log_error("Failed to wait for fence");
+    vulkan_fence_destroy(state, &temp_fence);
+    vkFreeCommandBuffers(state->device.logical_device,
+                         buffer_handle->command_pool, 1, &command_buffer);
+    return false_v;
+  }
+
+  // Ensure queue is completely idle before cleanup to avoid validation errors
   vkQueueWaitIdle(buffer_handle->queue);
 
+  vulkan_fence_destroy(state, &temp_fence);
   vkFreeCommandBuffers(state->device.logical_device,
                        buffer_handle->command_pool, 1, &command_buffer);
 
