@@ -150,8 +150,13 @@ bool8_t vulkan_buffer_resize(VulkanBackendState *state, uint64_t new_size,
     return false_v;
   }
 
-  vulkan_buffer_copy_to(state, buffer, buffer->handle, 0, new_buffer, 0,
-                        buffer->total_size);
+  if (!vulkan_buffer_copy_to(state, buffer, buffer->handle, 0, new_buffer, 0,
+                             buffer->total_size)) {
+    log_error("Failed to copy buffer data");
+    vkDestroyBuffer(state->device.logical_device, new_buffer, state->allocator);
+    vkFreeMemory(state->device.logical_device, new_memory, state->allocator);
+    return false_v;
+  }
 
   vulkan_buffer_destroy(state, buffer);
 
@@ -169,8 +174,8 @@ void *vulkan_buffer_lock_memory(VulkanBackendState *state, VulkanBuffer *buffer,
   assert_log(buffer != NULL, "Buffer is NULL");
 
   void *data;
-  if (vkMapMemory(state->device.logical_device, buffer->memory, offset, size, 0,
-                  &data) != VK_SUCCESS) {
+  if (vkMapMemory(state->device.logical_device, buffer->memory, offset, size,
+                  flags, &data) != VK_SUCCESS) {
     log_error("Failed to lock memory");
     return NULL;
   }
