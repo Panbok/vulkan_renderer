@@ -30,7 +30,7 @@ VertexOutput vertexMain(VertexInput input)
     output.position = mul(ubo.projection, viewPos);
     
     // Pass through color (or use position-based coloring)
-    output.color = input.color;
+    output.color = float3(1.0, 0.0, 1.0);
     
     return output;
 }
