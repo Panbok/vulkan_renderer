@@ -1,18 +1,16 @@
 // Uniform buffer for MVP matrices
 struct UniformBufferObject 
 {
-    float4x4 model;
-    float4x4 view;
-    float4x4 projection;
+    column_major float4x4 model;
+    column_major float4x4 view;
+    column_major float4x4 projection;
 };
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<UniformBufferObject> ubo;
-
 struct VertexInput
 {
     [[vk::location(0)]] float3 position : POSITION;
-    [[vk::location(1)]] float3 color : COLOR;
 };
 
 struct VertexOutput

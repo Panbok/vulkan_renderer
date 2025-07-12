@@ -4,7 +4,6 @@
 struct VertexInput
 {
     [[vk::location(0)]] float3 position : POSITION;
-    [[vk::location(1)]] float3 color : COLOR;
 };
 
 struct VertexOutput
