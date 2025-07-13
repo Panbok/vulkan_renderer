@@ -1,7 +1,8 @@
 #include "vulkan_command.h"
 
-bool8_t vulkan_command_buffer_create(VulkanBackendState *state,
-                                     VulkanCommandBuffer *out_command_buffer) {
+bool8_t
+vulkan_command_buffer_allocate(VulkanBackendState *state,
+                               VulkanCommandBuffer *out_command_buffer) {
   assert_log(state != NULL, "State is NULL");
   assert_log(out_command_buffer != NULL, "Out command buffer is NULL");
 
@@ -25,8 +26,8 @@ bool8_t vulkan_command_buffer_create(VulkanBackendState *state,
   return true_v;
 }
 
-void vulkan_command_buffer_destroy(VulkanBackendState *state,
-                                   VulkanCommandBuffer *command_buffer) {
+void vulkan_command_buffer_free(VulkanBackendState *state,
+                                VulkanCommandBuffer *command_buffer) {
   assert_log(state != NULL, "State is NULL");
   assert_log(command_buffer != NULL, "Command buffer is NULL");
 
@@ -82,4 +83,54 @@ void vulkan_command_buffer_reset(VulkanCommandBuffer *command_buffer) {
   assert_log(command_buffer != VK_NULL_HANDLE, "Command buffer is NULL");
 
   command_buffer->state = COMMAND_BUFFER_STATE_READY;
+}
+
+bool8_t vulkan_command_buffer_allocate_and_begin_single_use(
+    VulkanBackendState *state, VulkanCommandBuffer *command_buffer) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(command_buffer != NULL, "Command buffer is NULL");
+
+  if (!vulkan_command_buffer_allocate(state, command_buffer)) {
+    log_error("Failed to allocate Vulkan command buffer");
+    return false_v;
+  }
+
+  if (!vulkan_command_buffer_begin(command_buffer)) {
+    log_error("Failed to begin Vulkan command buffer");
+    return false_v;
+  }
+
+  return true_v;
+}
+
+bool8_t vulkan_command_buffer_end_single_use(
+    VulkanBackendState *state, VkCommandPool pool,
+    VulkanCommandBuffer *command_buffer, VkQueue queue) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(command_buffer != NULL, "Command buffer is NULL");
+
+  if (!vulkan_command_buffer_end(command_buffer)) {
+    log_error("Failed to end Vulkan command buffer");
+    return false_v;
+  }
+
+  VkSubmitInfo submit_info = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &command_buffer->handle,
+  };
+
+  if (vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE) != VK_SUCCESS) {
+    log_error("Failed to submit Vulkan command buffer");
+    return false_v;
+  }
+
+  if (vkQueueWaitIdle(queue) != VK_SUCCESS) {
+    log_error("Failed to wait for Vulkan command buffer to finish");
+    return false_v;
+  }
+
+  vulkan_command_buffer_free(state, command_buffer);
+
+  return true_v;
 }
