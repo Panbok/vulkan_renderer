@@ -2,6 +2,7 @@
 #include "core/logger.h"
 #include "defines.h"
 #include "memory/arena.h"
+#include "renderer/vulkan/vulkan_buffer.h"
 #include "renderer/vulkan/vulkan_command.h"
 #include "renderer/vulkan/vulkan_swapchain.h"
 #include "renderer/vulkan/vulkan_types.h"
@@ -14,7 +15,7 @@ static bool32_t create_command_buffers(VulkanBackendState *state) {
   for (uint32_t i = 0; i < state->swapchain.images.length; i++) {
     VulkanCommandBuffer *command_buffer =
         array_get_VulkanCommandBuffer(&state->graphics_command_buffers, i);
-    if (!vulkan_command_buffer_create(state, command_buffer)) {
+    if (!vulkan_command_buffer_allocate(state, command_buffer)) {
       scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
       array_destroy_VulkanCommandBuffer(&state->graphics_command_buffers);
       log_fatal("Failed to create Vulkan command buffer");
@@ -50,9 +51,8 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
 
   // cleanup swapchain
   for (uint32_t i = 0; i < state->swapchain.image_count; ++i) {
-    vulkan_command_buffer_destroy(
-        state,
-        array_get_VulkanCommandBuffer(&state->graphics_command_buffers, i));
+    vulkan_command_buffer_free(state, array_get_VulkanCommandBuffer(
+                                          &state->graphics_command_buffers, i));
   }
 
   // Framebuffers.
@@ -93,15 +93,19 @@ RendererBackendInterface renderer_vulkan_get_interface() {
       .buffer_create = renderer_vulkan_create_buffer,
       .buffer_destroy = renderer_vulkan_destroy_buffer,
       .buffer_update = renderer_vulkan_update_buffer,
+      .buffer_upload = renderer_vulkan_upload_buffer,
+      .buffer_update_global_uniform =
+          renderer_vulkan_update_buffer_global_uniform,
       .shader_create_from_source = renderer_vulkan_create_shader,
       .shader_destroy = renderer_vulkan_destroy_shader,
-      .pipeline_create = renderer_vulkan_create_pipeline,
+      .graphics_pipeline_create = renderer_vulkan_create_graphics_pipeline,
       .pipeline_destroy = renderer_vulkan_destroy_pipeline,
       .begin_frame = renderer_vulkan_begin_frame,
       .end_frame = renderer_vulkan_end_frame,
       .bind_pipeline = renderer_vulkan_bind_pipeline,
-      .bind_vertex_buffer = renderer_vulkan_bind_vertex_buffer,
+      .bind_buffer = renderer_vulkan_bind_buffer,
       .draw = renderer_vulkan_draw,
+      .draw_indexed = renderer_vulkan_draw_indexed,
   };
 }
 
@@ -207,7 +211,7 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
   if (!vulkan_renderpass_create(
           backend_state, main_render_pass, 0.0f, 0.0f,
           (float32_t)backend_state->swapchain.extent.width,
-          (float32_t)backend_state->swapchain.extent.height, 0.0f, 0.2f, 1.0f,
+          (float32_t)backend_state->swapchain.extent.height, 0.0f, 0.0f, 0.0f,
           1.0f, 0.0f, 0)) {
     log_fatal("Failed to create Vulkan render pass");
     return false;
@@ -286,6 +290,77 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
     array_set_VulkanFencePtr(&backend_state->images_in_flight, i, NULL);
   }
 
+  // global descriptor pool, sets, bindings
+  VkDescriptorSetLayoutBinding global_descriptor_set_layout_binding = {
+      .binding = 0,
+      .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+      .descriptorCount = 1,
+      .pImmutableSamplers = NULL,
+      .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+  };
+
+  VkDescriptorSetLayoutBinding global_descriptor_set_layout_bindings[] = {
+      global_descriptor_set_layout_binding,
+  };
+
+  VkDescriptorSetLayoutCreateInfo global_descriptor_set_layout_create_info = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+      .bindingCount = 1,
+      .pBindings = global_descriptor_set_layout_bindings,
+  };
+
+  if (vkCreateDescriptorSetLayout(
+          backend_state->device.logical_device,
+          &global_descriptor_set_layout_create_info, backend_state->allocator,
+          &backend_state->global_descriptor_set_layout) != VK_SUCCESS) {
+    log_fatal("Failed to create Vulkan global descriptor set layout");
+    return false;
+  }
+
+  VkDescriptorPoolSize global_pool_size = {
+      .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+      .descriptorCount = backend_state->swapchain.image_count,
+  };
+
+  VkDescriptorPoolCreateInfo descriptor_pool_create_info = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+      .maxSets = backend_state->swapchain.image_count,
+      .poolSizeCount = 1,
+      .pPoolSizes = &global_pool_size,
+  };
+
+  if (vkCreateDescriptorPool(
+          backend_state->device.logical_device, &descriptor_pool_create_info,
+          backend_state->allocator,
+          &backend_state->global_descriptor_pool) != VK_SUCCESS) {
+    log_fatal("Failed to create Vulkan global descriptor pool");
+    return false;
+  }
+
+  VkDescriptorSetLayout global_descriptor_layouts[3] = {
+      backend_state->global_descriptor_set_layout,
+      backend_state->global_descriptor_set_layout,
+      backend_state->global_descriptor_set_layout,
+  };
+
+  VkDescriptorSetAllocateInfo global_descriptor_set_allocate_info = {
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+      .descriptorPool = backend_state->global_descriptor_pool,
+      .descriptorSetCount = 3,
+      .pSetLayouts = global_descriptor_layouts,
+  };
+
+  if (vkAllocateDescriptorSets(backend_state->device.logical_device,
+                               &global_descriptor_set_allocate_info,
+                               backend_state->global_descriptor_sets) !=
+      VK_SUCCESS) {
+    log_fatal("Failed to allocate Vulkan global descriptor sets");
+    return false;
+  }
+
+  log_debug("Created Vulkan global descriptor pool: %p",
+            backend_state->global_descriptor_pool);
+
   return true;
 }
 
@@ -308,9 +383,8 @@ void renderer_vulkan_shutdown(void *backend_state) {
 
   // Free command buffers first to release references to pipelines
   for (uint32_t i = 0; i < state->graphics_command_buffers.length; i++) {
-    vulkan_command_buffer_destroy(
-        state,
-        array_get_VulkanCommandBuffer(&state->graphics_command_buffers, i));
+    vulkan_command_buffer_free(state, array_get_VulkanCommandBuffer(
+                                          &state->graphics_command_buffers, i));
   }
   array_destroy_VulkanCommandBuffer(&state->graphics_command_buffers);
 
@@ -337,6 +411,13 @@ void renderer_vulkan_shutdown(void *backend_state) {
     vulkan_framebuffer_destroy(state, framebuffer);
   }
   array_destroy_VulkanFramebuffer(&state->swapchain.framebuffers);
+
+  vkDestroyDescriptorPool(state->device.logical_device,
+                          state->global_descriptor_pool, state->allocator);
+  vkDestroyDescriptorSetLayout(state->device.logical_device,
+                               state->global_descriptor_set_layout,
+                               state->allocator);
+
   vulkan_renderpass_destroy(state, state->main_render_pass);
   vulkan_swapchain_destroy(state);
   vulkan_device_destroy_logical_device(state);
@@ -557,12 +638,111 @@ RendererError renderer_vulkan_end_frame(void *backend_state,
   return RENDERER_ERROR_NONE;
 }
 
+void renderer_vulkan_draw_indexed(void *backend_state, uint32_t index_count,
+                                  uint32_t instance_count, uint32_t first_index,
+                                  int32_t vertex_offset,
+                                  uint32_t first_instance) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(index_count > 0, "Index count is 0");
+  assert_log(instance_count > 0, "Instance count is 0");
+
+  // log_debug("Drawing Vulkan indexed vertices");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+      &state->graphics_command_buffers, state->image_index);
+
+  vkCmdDrawIndexed(command_buffer->handle, index_count, instance_count,
+                   first_index, vertex_offset, first_instance);
+
+  return;
+}
+
 BackendResourceHandle
 renderer_vulkan_create_buffer(void *backend_state,
                               const BufferDescription *desc,
                               const void *initial_data) {
   log_debug("Creating Vulkan buffer");
-  return (BackendResourceHandle){.ptr = NULL};
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  struct s_BufferHandle *buffer = arena_alloc(
+      state->arena, sizeof(struct s_BufferHandle), ARENA_MEMORY_TAG_RENDERER);
+  if (!buffer) {
+    log_fatal("Failed to allocate buffer");
+    return (BackendResourceHandle){.ptr = NULL};
+  }
+
+  MemZero(buffer, sizeof(struct s_BufferHandle));
+
+  // Copy the description so we can access usage flags later
+  buffer->description = *desc;
+
+  // Check if global uniform buffer already exists
+  if (bitset8_is_set(&desc->usage, BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER)) {
+    if (state->global_uniform_buffer.handle != VK_NULL_HANDLE) {
+      log_fatal("Global uniform buffer already exists");
+      return (BackendResourceHandle){.ptr = NULL};
+    }
+  }
+
+  if (!vulkan_buffer_create(state, desc, buffer)) {
+    log_fatal("Failed to create Vulkan buffer");
+    return (BackendResourceHandle){.ptr = NULL};
+  }
+
+  // Set the global uniform buffer reference and update descriptor sets
+  if (bitset8_is_set(&desc->usage, BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER)) {
+    state->global_uniform_buffer = buffer->buffer;
+    vulkan_update_global_descriptor_sets(state);
+  }
+
+  // If initial data is provided, load it into the buffer
+  if (initial_data && desc->size > 0) {
+    if (!vulkan_buffer_load_data(state, &buffer->buffer, 0, desc->size, 0,
+                                 initial_data)) {
+      log_error("Failed to load initial data into buffer");
+      vulkan_buffer_destroy(state, &buffer->buffer);
+      return (BackendResourceHandle){.ptr = NULL};
+    }
+  }
+
+  return (BackendResourceHandle){.ptr = buffer};
+}
+
+void vulkan_update_global_descriptor_sets(VulkanBackendState *state) {
+  if (state->global_uniform_buffer.handle == VK_NULL_HANDLE) {
+    log_warn("Global uniform buffer not created yet, skipping descriptor set "
+             "update");
+    return;
+  }
+
+  // Update descriptor sets to bind the uniform buffer
+  for (uint32_t i = 0; i < state->swapchain.image_count; i++) {
+    VkDescriptorBufferInfo buffer_info = {
+        .buffer = state->global_uniform_buffer.handle,
+        .offset = 0,
+        .range = sizeof(GlobalUniformObject),
+    };
+
+    VkWriteDescriptorSet descriptor_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = state->global_descriptor_sets[i],
+        .dstBinding = 0,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .pBufferInfo = &buffer_info,
+        .pImageInfo = NULL,
+        .pTexelBufferView = NULL,
+    };
+
+    vkUpdateDescriptorSets(state->device.logical_device, 1, &descriptor_write,
+                           0, NULL);
+  }
+
+  log_debug("Updated global descriptor sets with uniform buffer");
 }
 
 RendererError renderer_vulkan_update_buffer(void *backend_state,
@@ -570,12 +750,92 @@ RendererError renderer_vulkan_update_buffer(void *backend_state,
                                             uint64_t offset, uint64_t size,
                                             const void *data) {
   log_debug("Updating Vulkan buffer");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
+  if (!vulkan_buffer_load_data(state, &buffer->buffer, offset, size, 0, data)) {
+    log_fatal("Failed to update Vulkan buffer");
+    return RENDERER_ERROR_NONE;
+  }
+
   return RENDERER_ERROR_NONE;
 }
 
+RendererError renderer_vulkan_update_buffer_global_uniform(
+    void *backend_state, BackendResourceHandle handle, uint64_t offset,
+    uint64_t size, const void *data) {
+  // log_debug("Updating Vulkan buffer global uniform");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
+
+  if (!vulkan_buffer_load_data(state, &buffer->buffer, offset, size, 0, data)) {
+    log_fatal("Failed to update Vulkan buffer global uniform");
+    return RENDERER_ERROR_NONE;
+  }
+
+  return RENDERER_ERROR_NONE;
+}
+
+RendererError renderer_vulkan_upload_buffer(void *backend_state,
+                                            BackendResourceHandle handle,
+                                            uint64_t offset, uint64_t size,
+                                            const void *data) {
+  log_debug("Uploading Vulkan buffer");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
+
+  Scratch scratch = scratch_create(state->temp_arena);
+  // Create a host-visible staging buffer to upload to. Mark it as the source of
+  // the transfer.
+  BufferTypeFlags buffer_type = bitset8_create();
+  bitset8_set(&buffer_type, BUFFER_TYPE_GRAPHICS);
+  const BufferDescription staging_buffer_desc = {
+      .size = size,
+      .memory_properties = memory_property_flags_from_bits(
+          MEMORY_PROPERTY_HOST_VISIBLE | MEMORY_PROPERTY_HOST_COHERENT),
+      .usage = buffer_usage_flags_from_bits(BUFFER_USAGE_TRANSFER_SRC),
+      .buffer_type = buffer_type,
+      .bind_on_create = true_v,
+  };
+  struct s_BufferHandle *staging_buffer = arena_alloc(
+      scratch.arena, sizeof(struct s_BufferHandle), ARENA_MEMORY_TAG_RENDERER);
+
+  if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    log_fatal("Failed to create staging buffer");
+    return RENDERER_ERROR_NONE;
+  }
+
+  if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, size, 0,
+                               data)) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    log_fatal("Failed to load data into staging buffer");
+    return RENDERER_ERROR_NONE;
+  }
+
+  if (!vulkan_buffer_copy_to(state, &staging_buffer->buffer,
+                             staging_buffer->buffer.handle, 0,
+                             buffer->buffer.handle, offset, size)) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    log_fatal("Failed to copy Vulkan buffer");
+    return RENDERER_ERROR_NONE;
+  }
+
+  vulkan_buffer_destroy(state, &staging_buffer->buffer);
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+
+  return RENDERER_ERROR_NONE;
+}
 void renderer_vulkan_destroy_buffer(void *backend_state,
                                     BackendResourceHandle handle) {
   log_debug("Destroying Vulkan buffer");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
+  vulkan_buffer_destroy(state, &buffer->buffer);
+
   return;
 }
 
@@ -622,9 +882,8 @@ void renderer_vulkan_destroy_shader(void *backend_state,
   return;
 }
 
-BackendResourceHandle
-renderer_vulkan_create_pipeline(void *backend_state,
-                                const GraphicsPipelineDescription *desc) {
+BackendResourceHandle renderer_vulkan_create_graphics_pipeline(
+    void *backend_state, const GraphicsPipelineDescription *desc) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(desc != NULL, "Pipeline description is NULL");
 
@@ -644,7 +903,7 @@ renderer_vulkan_create_pipeline(void *backend_state,
 
   pipeline->desc = desc;
 
-  if (!vulkan_pipeline_create(state, desc, pipeline)) {
+  if (!vulkan_graphics_graphics_pipeline_create(state, desc, pipeline)) {
     log_fatal("Failed to create Vulkan pipeline layout");
     return (BackendResourceHandle){.ptr = NULL};
   }
@@ -663,7 +922,7 @@ void renderer_vulkan_destroy_pipeline(void *backend_state,
 
   struct s_GraphicsPipeline *pipeline = (struct s_GraphicsPipeline *)handle.ptr;
 
-  vulkan_pipeline_destroy(state, pipeline);
+  vulkan_graphics_pipeline_destroy(state, pipeline);
 
   return;
 }
@@ -687,13 +946,46 @@ void renderer_vulkan_bind_pipeline(void *backend_state,
   vkCmdBindPipeline(command_buffer->handle, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     pipeline->pipeline);
 
+  // Bind global descriptor set if available
+  if (state->global_uniform_buffer.handle != VK_NULL_HANDLE) {
+    vkCmdBindDescriptorSets(
+        command_buffer->handle, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        pipeline->pipeline_layout, 0, 1,
+        &state->global_descriptor_sets[state->image_index], 0, NULL);
+  }
+
   return;
 }
 
-void renderer_vulkan_bind_vertex_buffer(void *backend_state,
-                                        BackendResourceHandle buffer_handle,
-                                        uint32_t binding_index,
-                                        uint64_t offset) {
-  log_debug("Binding Vulkan vertex buffer");
+void renderer_vulkan_bind_buffer(void *backend_state,
+                                 BackendResourceHandle buffer_handle,
+                                 uint64_t offset) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(buffer_handle.ptr != NULL, "Buffer handle is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_BufferHandle *buffer = (struct s_BufferHandle *)buffer_handle.ptr;
+
+  // log_debug("Binding Vulkan buffer with usage flags");
+
+  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+      &state->graphics_command_buffers, state->image_index);
+
+  // log_debug("Current command buffer handle: %p", command_buffer->handle);
+
+  if (bitset8_is_set(&buffer->description.usage, BUFFER_USAGE_VERTEX_BUFFER)) {
+    vulkan_buffer_bind_vertex_buffer(state, command_buffer, 0,
+                                     buffer->buffer.handle, offset);
+  } else if (bitset8_is_set(&buffer->description.usage,
+                            BUFFER_USAGE_INDEX_BUFFER)) {
+    // Default to uint32 index type - could be improved by storing in buffer
+    // description
+    vulkan_buffer_bind_index_buffer(state, command_buffer,
+                                    buffer->buffer.handle, offset,
+                                    VK_INDEX_TYPE_UINT32);
+  } else {
+    log_warn("Buffer has unknown usage flags for pipeline binding");
+  }
+
   return;
 }
