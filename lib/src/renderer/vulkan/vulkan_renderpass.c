@@ -14,14 +14,18 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
 
   out_render_pass->state = RENDER_PASS_STATE_NOT_ALLOCATED;
   out_render_pass->handle = VK_NULL_HANDLE;
+
   out_render_pass->x = x;
   out_render_pass->y = y;
+
   out_render_pass->width = w;
   out_render_pass->height = h;
+
   out_render_pass->r = r;
   out_render_pass->g = g;
   out_render_pass->b = b;
   out_render_pass->a = a;
+
   out_render_pass->depth = depth;
   out_render_pass->stencil = stencil;
 
