@@ -220,6 +220,12 @@ typedef struct VulkanBackendState {
 
   VulkanSwapchain swapchain;
 
+  VkDescriptorPool global_descriptor_pool;
+  VkDescriptorSet global_descriptor_sets[3];
+  VkDescriptorSetLayout global_descriptor_set_layout;
+  VkDescriptorSetLayoutBinding global_descriptor_set_layout_binding;
+  VulkanBuffer global_uniform_buffer;
+
   Array_VkSemaphore image_available_semaphores;
   Array_VkSemaphore queue_complete_semaphores;
   Array_VulkanFence in_flight_fences;
