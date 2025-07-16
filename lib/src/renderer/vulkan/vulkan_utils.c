@@ -94,3 +94,120 @@ int32_t find_memory_index(VkPhysicalDevice device, uint32_t type_filter,
   log_warn("Unable to find suitable memory type");
   return -1;
 }
+
+VkFormat vulkan_vertex_format_to_vk(VertexFormat format) {
+  switch (format) {
+  case VERTEX_FORMAT_R32_SFLOAT:
+    return VK_FORMAT_R32_SFLOAT;
+  case VERTEX_FORMAT_R32G32_SFLOAT:
+    return VK_FORMAT_R32G32_SFLOAT;
+  case VERTEX_FORMAT_R32G32B32_SFLOAT:
+    return VK_FORMAT_R32G32B32_SFLOAT;
+  case VERTEX_FORMAT_R32G32B32A32_SFLOAT:
+    return VK_FORMAT_R32G32B32A32_SFLOAT;
+  case VERTEX_FORMAT_R8G8B8A8_UNORM:
+    return VK_FORMAT_R8G8B8A8_UNORM;
+  default:
+    log_error("Unknown vertex format");
+    return VK_FORMAT_UNDEFINED;
+  }
+}
+
+VkPrimitiveTopology
+vulkan_primitive_topology_to_vk(PrimitiveTopology topology) {
+  switch (topology) {
+  case PRIMITIVE_TOPOLOGY_POINT_LIST:
+    return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+  case PRIMITIVE_TOPOLOGY_LINE_LIST:
+    return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+  case PRIMITIVE_TOPOLOGY_LINE_STRIP:
+    return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
+  case PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:
+    return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  case PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP:
+    return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+  case PRIMITIVE_TOPOLOGY_TRIANGLE_FAN:
+    return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
+  default:
+    log_fatal("Invalid primitive topology: %d", topology);
+    return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+  }
+}
+
+VkPolygonMode vulkan_polygon_mode_to_vk(PolygonMode mode) {
+  switch (mode) {
+  case POLYGON_MODE_FILL:
+    return VK_POLYGON_MODE_FILL;
+  case POLYGON_MODE_LINE:
+    return VK_POLYGON_MODE_LINE;
+  case POLYGON_MODE_POINT:
+    return VK_POLYGON_MODE_POINT;
+  default:
+    log_fatal("Invalid polygon mode: %d", mode);
+    return VK_POLYGON_MODE_FILL;
+  }
+}
+
+VkBufferUsageFlags vulkan_buffer_usage_to_vk(BufferUsageFlags usage) {
+  VkBufferUsageFlags vk_usage = 0;
+
+  if (bitset8_is_set(&usage, BUFFER_USAGE_VERTEX_BUFFER)) {
+    vk_usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+  }
+
+  if (bitset8_is_set(&usage, BUFFER_USAGE_INDEX_BUFFER)) {
+    vk_usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+  }
+
+  if (bitset8_is_set(&usage, BUFFER_USAGE_UNIFORM) ||
+      bitset8_is_set(&usage, BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER)) {
+    vk_usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+  }
+
+  if (bitset8_is_set(&usage, BUFFER_USAGE_TRANSFER_SRC)) {
+    vk_usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  }
+
+  if (bitset8_is_set(&usage, BUFFER_USAGE_TRANSFER_DST)) {
+    vk_usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  }
+
+  if (bitset8_is_set(&usage, BUFFER_USAGE_STORAGE)) {
+    vk_usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+  }
+
+  if (vk_usage == 0) {
+    log_fatal("Invalid buffer usage: no valid flags set");
+    return VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+  }
+
+  return vk_usage;
+}
+
+VkMemoryPropertyFlags
+vulkan_memory_property_flags_to_vk(MemoryPropertyFlags flags) {
+  VkMemoryPropertyFlags vk_flags = 0;
+
+  if (bitset8_is_set(&flags, MEMORY_PROPERTY_HOST_VISIBLE)) {
+    vk_flags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+  }
+
+  if (bitset8_is_set(&flags, MEMORY_PROPERTY_HOST_COHERENT)) {
+    vk_flags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+  }
+
+  if (bitset8_is_set(&flags, MEMORY_PROPERTY_HOST_CACHED)) {
+    vk_flags |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+  }
+
+  if (bitset8_is_set(&flags, MEMORY_PROPERTY_DEVICE_LOCAL)) {
+    vk_flags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  }
+
+  if (vk_flags == 0) {
+    log_fatal("Invalid memory property flags: no valid flags set");
+    return VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+  }
+
+  return vk_flags;
+}
