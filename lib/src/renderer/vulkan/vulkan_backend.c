@@ -1,12 +1,4 @@
 #include "vulkan_backend.h"
-#include "core/logger.h"
-#include "defines.h"
-#include "memory/arena.h"
-#include "renderer/vulkan/vulkan_buffer.h"
-#include "renderer/vulkan/vulkan_command.h"
-#include "renderer/vulkan/vulkan_swapchain.h"
-#include "renderer/vulkan/vulkan_types.h"
-#include <vulkan/vulkan_core.h>
 
 static bool32_t create_command_buffers(VulkanBackendState *state) {
   Scratch scratch = scratch_create(state->arena);
@@ -94,15 +86,11 @@ RendererBackendInterface renderer_vulkan_get_interface() {
       .buffer_destroy = renderer_vulkan_destroy_buffer,
       .buffer_update = renderer_vulkan_update_buffer,
       .buffer_upload = renderer_vulkan_upload_buffer,
-      .buffer_update_global_uniform =
-          renderer_vulkan_update_buffer_global_uniform,
-      .shader_create_from_source = renderer_vulkan_create_shader,
-      .shader_destroy = renderer_vulkan_destroy_shader,
       .graphics_pipeline_create = renderer_vulkan_create_graphics_pipeline,
+      .pipeline_update_state = renderer_vulkan_update_pipeline_state,
       .pipeline_destroy = renderer_vulkan_destroy_pipeline,
       .begin_frame = renderer_vulkan_begin_frame,
       .end_frame = renderer_vulkan_end_frame,
-      .bind_pipeline = renderer_vulkan_bind_pipeline,
       .bind_buffer = renderer_vulkan_bind_buffer,
       .draw = renderer_vulkan_draw,
       .draw_indexed = renderer_vulkan_draw_indexed,
@@ -212,7 +200,7 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
           backend_state, main_render_pass, 0.0f, 0.0f,
           (float32_t)backend_state->swapchain.extent.width,
           (float32_t)backend_state->swapchain.extent.height, 0.0f, 0.0f, 0.0f,
-          1.0f, 0.0f, 0)) {
+          1.0f, 1.0f, 0)) {
     log_fatal("Failed to create Vulkan render pass");
     return false;
   }
@@ -290,77 +278,6 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
     array_set_VulkanFencePtr(&backend_state->images_in_flight, i, NULL);
   }
 
-  // global descriptor pool, sets, bindings
-  VkDescriptorSetLayoutBinding global_descriptor_set_layout_binding = {
-      .binding = 0,
-      .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-      .descriptorCount = 1,
-      .pImmutableSamplers = NULL,
-      .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-  };
-
-  VkDescriptorSetLayoutBinding global_descriptor_set_layout_bindings[] = {
-      global_descriptor_set_layout_binding,
-  };
-
-  VkDescriptorSetLayoutCreateInfo global_descriptor_set_layout_create_info = {
-      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-      .bindingCount = 1,
-      .pBindings = global_descriptor_set_layout_bindings,
-  };
-
-  if (vkCreateDescriptorSetLayout(
-          backend_state->device.logical_device,
-          &global_descriptor_set_layout_create_info, backend_state->allocator,
-          &backend_state->global_descriptor_set_layout) != VK_SUCCESS) {
-    log_fatal("Failed to create Vulkan global descriptor set layout");
-    return false;
-  }
-
-  VkDescriptorPoolSize global_pool_size = {
-      .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-      .descriptorCount = backend_state->swapchain.image_count,
-  };
-
-  VkDescriptorPoolCreateInfo descriptor_pool_create_info = {
-      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-      .maxSets = backend_state->swapchain.image_count,
-      .poolSizeCount = 1,
-      .pPoolSizes = &global_pool_size,
-  };
-
-  if (vkCreateDescriptorPool(
-          backend_state->device.logical_device, &descriptor_pool_create_info,
-          backend_state->allocator,
-          &backend_state->global_descriptor_pool) != VK_SUCCESS) {
-    log_fatal("Failed to create Vulkan global descriptor pool");
-    return false;
-  }
-
-  VkDescriptorSetLayout global_descriptor_layouts[3] = {
-      backend_state->global_descriptor_set_layout,
-      backend_state->global_descriptor_set_layout,
-      backend_state->global_descriptor_set_layout,
-  };
-
-  VkDescriptorSetAllocateInfo global_descriptor_set_allocate_info = {
-      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-      .descriptorPool = backend_state->global_descriptor_pool,
-      .descriptorSetCount = 3,
-      .pSetLayouts = global_descriptor_layouts,
-  };
-
-  if (vkAllocateDescriptorSets(backend_state->device.logical_device,
-                               &global_descriptor_set_allocate_info,
-                               backend_state->global_descriptor_sets) !=
-      VK_SUCCESS) {
-    log_fatal("Failed to allocate Vulkan global descriptor sets");
-    return false;
-  }
-
-  log_debug("Created Vulkan global descriptor pool: %p",
-            backend_state->global_descriptor_pool);
-
   return true;
 }
 
@@ -411,12 +328,6 @@ void renderer_vulkan_shutdown(void *backend_state) {
     vulkan_framebuffer_destroy(state, framebuffer);
   }
   array_destroy_VulkanFramebuffer(&state->swapchain.framebuffers);
-
-  vkDestroyDescriptorPool(state->device.logical_device,
-                          state->global_descriptor_pool, state->allocator);
-  vkDestroyDescriptorSetLayout(state->device.logical_device,
-                               state->global_descriptor_set_layout,
-                               state->allocator);
 
   vulkan_renderpass_destroy(state, state->main_render_pass);
   vulkan_swapchain_destroy(state);
@@ -679,23 +590,9 @@ renderer_vulkan_create_buffer(void *backend_state,
   // Copy the description so we can access usage flags later
   buffer->description = *desc;
 
-  // Check if global uniform buffer already exists
-  if (bitset8_is_set(&desc->usage, BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER)) {
-    if (state->global_uniform_buffer.handle != VK_NULL_HANDLE) {
-      log_fatal("Global uniform buffer already exists");
-      return (BackendResourceHandle){.ptr = NULL};
-    }
-  }
-
   if (!vulkan_buffer_create(state, desc, buffer)) {
     log_fatal("Failed to create Vulkan buffer");
     return (BackendResourceHandle){.ptr = NULL};
-  }
-
-  // Set the global uniform buffer reference and update descriptor sets
-  if (bitset8_is_set(&desc->usage, BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER)) {
-    state->global_uniform_buffer = buffer->buffer;
-    vulkan_update_global_descriptor_sets(state);
   }
 
   // If initial data is provided, load it into the buffer
@@ -711,40 +608,6 @@ renderer_vulkan_create_buffer(void *backend_state,
   return (BackendResourceHandle){.ptr = buffer};
 }
 
-void vulkan_update_global_descriptor_sets(VulkanBackendState *state) {
-  if (state->global_uniform_buffer.handle == VK_NULL_HANDLE) {
-    log_warn("Global uniform buffer not created yet, skipping descriptor set "
-             "update");
-    return;
-  }
-
-  // Update descriptor sets to bind the uniform buffer
-  for (uint32_t i = 0; i < state->swapchain.image_count; i++) {
-    VkDescriptorBufferInfo buffer_info = {
-        .buffer = state->global_uniform_buffer.handle,
-        .offset = 0,
-        .range = sizeof(GlobalUniformObject),
-    };
-
-    VkWriteDescriptorSet descriptor_write = {
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = state->global_descriptor_sets[i],
-        .dstBinding = 0,
-        .dstArrayElement = 0,
-        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = 1,
-        .pBufferInfo = &buffer_info,
-        .pImageInfo = NULL,
-        .pTexelBufferView = NULL,
-    };
-
-    vkUpdateDescriptorSets(state->device.logical_device, 1, &descriptor_write,
-                           0, NULL);
-  }
-
-  log_debug("Updated global descriptor sets with uniform buffer");
-}
-
 RendererError renderer_vulkan_update_buffer(void *backend_state,
                                             BackendResourceHandle handle,
                                             uint64_t offset, uint64_t size,
@@ -755,22 +618,6 @@ RendererError renderer_vulkan_update_buffer(void *backend_state,
   struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
   if (!vulkan_buffer_load_data(state, &buffer->buffer, offset, size, 0, data)) {
     log_fatal("Failed to update Vulkan buffer");
-    return RENDERER_ERROR_NONE;
-  }
-
-  return RENDERER_ERROR_NONE;
-}
-
-RendererError renderer_vulkan_update_buffer_global_uniform(
-    void *backend_state, BackendResourceHandle handle, uint64_t offset,
-    uint64_t size, const void *data) {
-  // log_debug("Updating Vulkan buffer global uniform");
-
-  VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
-
-  if (!vulkan_buffer_load_data(state, &buffer->buffer, offset, size, 0, data)) {
-    log_fatal("Failed to update Vulkan buffer global uniform");
     return RENDERER_ERROR_NONE;
   }
 
@@ -839,49 +686,6 @@ void renderer_vulkan_destroy_buffer(void *backend_state,
   return;
 }
 
-BackendResourceHandle
-renderer_vulkan_create_shader(void *backend_state,
-                              const ShaderModuleDescription *desc) {
-  assert_log(backend_state != NULL, "Backend state is NULL");
-  assert_log(desc != NULL, "Shader module description is NULL");
-
-  log_debug("Creating Vulkan shader");
-
-  VulkanBackendState *state = (VulkanBackendState *)backend_state;
-
-  struct s_ShaderModule *shader = arena_alloc(
-      state->arena, sizeof(struct s_ShaderModule), ARENA_MEMORY_TAG_RENDERER);
-  if (!shader) {
-    log_fatal("Failed to allocate shader");
-    return (BackendResourceHandle){.ptr = NULL};
-  }
-
-  MemZero(shader, sizeof(struct s_ShaderModule));
-
-  if (!vulkan_shader_module_create(state, desc, shader)) {
-    log_fatal("Failed to create Vulkan shader");
-    return (BackendResourceHandle){.ptr = NULL};
-  }
-
-  return (BackendResourceHandle){.ptr = shader};
-}
-
-void renderer_vulkan_destroy_shader(void *backend_state,
-                                    BackendResourceHandle handle) {
-  assert_log(backend_state != NULL, "Backend state is NULL");
-  assert_log(handle.ptr != NULL, "Handle is NULL");
-
-  log_debug("Destroying Vulkan shader");
-
-  VulkanBackendState *state = (VulkanBackendState *)backend_state;
-
-  struct s_ShaderModule *shader = (struct s_ShaderModule *)handle.ptr;
-
-  vulkan_shader_module_destroy(state, shader);
-
-  return;
-}
-
 BackendResourceHandle renderer_vulkan_create_graphics_pipeline(
     void *backend_state, const GraphicsPipelineDescription *desc) {
   assert_log(backend_state != NULL, "Backend state is NULL");
@@ -909,6 +713,22 @@ BackendResourceHandle renderer_vulkan_create_graphics_pipeline(
   }
 
   return (BackendResourceHandle){.ptr = pipeline};
+}
+
+RendererError renderer_vulkan_update_pipeline_state(
+    void *backend_state, BackendResourceHandle pipeline_handle,
+    const GlobalUniformObject *uniform, const void *data, uint32_t size) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(pipeline_handle.ptr != NULL, "Pipeline handle is NULL");
+
+  // log_debug("Updating Vulkan pipeline state");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_GraphicsPipeline *pipeline =
+      (struct s_GraphicsPipeline *)pipeline_handle.ptr;
+
+  return vulkan_graphics_pipeline_update_state(state, pipeline, uniform, data,
+                                               size);
 }
 
 void renderer_vulkan_destroy_pipeline(void *backend_state,
@@ -946,14 +766,6 @@ void renderer_vulkan_bind_pipeline(void *backend_state,
   vkCmdBindPipeline(command_buffer->handle, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     pipeline->pipeline);
 
-  // Bind global descriptor set if available
-  if (state->global_uniform_buffer.handle != VK_NULL_HANDLE) {
-    vkCmdBindDescriptorSets(
-        command_buffer->handle, VK_PIPELINE_BIND_POINT_GRAPHICS,
-        pipeline->pipeline_layout, 0, 1,
-        &state->global_descriptor_sets[state->image_index], 0, NULL);
-  }
-
   return;
 }
 
@@ -980,9 +792,9 @@ void renderer_vulkan_bind_buffer(void *backend_state,
                             BUFFER_USAGE_INDEX_BUFFER)) {
     // Default to uint32 index type - could be improved by storing in buffer
     // description
-    vulkan_buffer_bind_index_buffer(state, command_buffer,
-                                    buffer->buffer.handle, offset,
-                                    VK_INDEX_TYPE_UINT32);
+    vulkan_buffer_bind_index_buffer(
+        state, command_buffer, buffer->buffer.handle, offset,
+        VK_INDEX_TYPE_UINT32); // todo: append index type to buffer description
   } else {
     log_warn("Buffer has unknown usage flags for pipeline binding");
   }

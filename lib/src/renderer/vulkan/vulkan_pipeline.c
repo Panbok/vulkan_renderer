@@ -1,7 +1,4 @@
 #include "vulkan_pipeline.h"
-#include "core/logger.h"
-#include "renderer/vulkan/vulkan_types.h"
-#include <vulkan/vulkan_core.h>
 
 bool8_t vulkan_graphics_graphics_pipeline_create(
     VulkanBackendState *state, const GraphicsPipelineDescription *desc,
@@ -9,6 +6,12 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   assert_log(state != NULL, "State is NULL");
   assert_log(desc != NULL, "Description is NULL");
   assert_log(out_pipeline != NULL, "Out pipeline is NULL");
+
+  if (!vulkan_shader_object_create(state, &desc->shader_object_description,
+                                   &out_pipeline->shader_object)) {
+    log_fatal("Failed to create shader object");
+    return false_v;
+  }
 
   // Bind the description so subsequent dereferences are valid
   out_pipeline->desc = desc;
@@ -148,7 +151,7 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   VkPipelineLayoutCreateInfo pipeline_layout_info = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
       .setLayoutCount = 1,
-      .pSetLayouts = &state->global_descriptor_set_layout,
+      .pSetLayouts = &out_pipeline->shader_object.global_descriptor_set_layout,
       .pushConstantRangeCount = 0,
       .pPushConstantRanges = NULL,
   };
@@ -164,8 +167,8 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   out_pipeline->pipeline_layout = pipeline_layout;
 
   VkPipelineShaderStageCreateInfo shader_stages[] = {
-      out_pipeline->desc->vertex_shader->stage_info,
-      out_pipeline->desc->fragment_shader->stage_info,
+      out_pipeline->shader_object.stages[SHADER_STAGE_VERTEX],
+      out_pipeline->shader_object.stages[SHADER_STAGE_FRAGMENT],
   };
 
   VkGraphicsPipelineCreateInfo pipeline_info = {
@@ -216,10 +219,56 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   return true_v;
 }
 
+void vulkan_graphics_pipeline_bind(VulkanCommandBuffer *command_buffer,
+                                   VkPipelineBindPoint bind_point,
+                                   struct s_GraphicsPipeline *pipeline) {
+  assert_log(command_buffer != NULL, "Command buffer is NULL");
+  assert_log(pipeline != NULL, "Pipeline is NULL");
+
+  vkCmdBindPipeline(command_buffer->handle, bind_point, pipeline->pipeline);
+}
+
+RendererError vulkan_graphics_pipeline_update_state(
+    VulkanBackendState *state, struct s_GraphicsPipeline *pipeline,
+    const GlobalUniformObject *uniform, const void *data, uint32_t size) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(pipeline != NULL, "Pipeline is NULL");
+
+  uint32_t image_index = state->image_index;
+  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+      &state->graphics_command_buffers, image_index);
+
+  if (uniform != NULL) {
+    if (!vulkan_shader_update_global_state(state, &pipeline->shader_object,
+                                           pipeline->pipeline_layout,
+                                           uniform)) {
+      log_error("Failed to update global state");
+      return RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
+    }
+  }
+
+  if (data != NULL && size > 0) {
+    if (!vulkan_shader_update_state(state, &pipeline->shader_object,
+                                    pipeline->pipeline_layout, data, size)) {
+      log_error("Failed to update state");
+      return RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
+    }
+  }
+
+  // Some GPUs don't support updating the pipeline state after the pipeline was
+  // bound, so we bind it here
+  vulkan_graphics_pipeline_bind(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                pipeline);
+
+  return RENDERER_ERROR_NONE;
+}
+
 void vulkan_graphics_pipeline_destroy(VulkanBackendState *state,
                                       struct s_GraphicsPipeline *pipeline) {
   assert_log(state != NULL, "State is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
+
+  vulkan_shader_object_destroy(state, &pipeline->shader_object);
 
   if (pipeline && pipeline->pipeline != VK_NULL_HANDLE) {
     log_debug("Destroying Vulkan pipeline");

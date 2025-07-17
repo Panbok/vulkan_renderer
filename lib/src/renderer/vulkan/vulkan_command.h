@@ -22,6 +22,7 @@ void vulkan_command_buffer_reset(VulkanCommandBuffer *command_buffer);
 bool8_t vulkan_command_buffer_allocate_and_begin_single_use(
     VulkanBackendState *state, VulkanCommandBuffer *command_buffer);
 
-bool8_t vulkan_command_buffer_end_single_use(
-    VulkanBackendState *state, VkCommandPool pool,
-    VulkanCommandBuffer *command_buffer, VkQueue queue);
+bool8_t
+vulkan_command_buffer_end_single_use(VulkanBackendState *state,
+                                     VulkanCommandBuffer *command_buffer,
+                                     VkQueue queue, VkFence fence);

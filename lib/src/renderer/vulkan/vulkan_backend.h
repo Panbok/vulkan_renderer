@@ -54,10 +54,6 @@ RendererError renderer_vulkan_update_buffer(void *backend_state,
                                             uint64_t offset, uint64_t size,
                                             const void *data);
 
-RendererError renderer_vulkan_update_buffer_global_uniform(
-    void *backend_state, BackendResourceHandle handle, uint64_t offset,
-    uint64_t size, const void *data);
-
 RendererError renderer_vulkan_upload_buffer(void *backend_state,
                                             BackendResourceHandle handle,
                                             uint64_t offset, uint64_t size,
@@ -66,21 +62,15 @@ RendererError renderer_vulkan_upload_buffer(void *backend_state,
 void renderer_vulkan_destroy_buffer(void *backend_state,
                                     BackendResourceHandle handle);
 
-BackendResourceHandle
-renderer_vulkan_create_shader(void *backend_state,
-                              const ShaderModuleDescription *desc);
-
-void renderer_vulkan_destroy_shader(void *backend_state,
-                                    BackendResourceHandle handle);
-
 BackendResourceHandle renderer_vulkan_create_graphics_pipeline(
     void *backend_state, const GraphicsPipelineDescription *desc);
 
+RendererError renderer_vulkan_update_pipeline_state(
+    void *backend_state, BackendResourceHandle pipeline_handle,
+    const GlobalUniformObject *uniform, const void *data, uint32_t size);
+
 void renderer_vulkan_destroy_pipeline(void *backend_state,
                                       BackendResourceHandle handle);
-
-void renderer_vulkan_bind_pipeline(void *backend_state,
-                                   BackendResourceHandle pipeline_handle);
 
 void renderer_vulkan_bind_buffer(void *backend_state,
                                  BackendResourceHandle buffer_handle,
@@ -94,6 +84,3 @@ void renderer_vulkan_draw_indexed(void *backend_state, uint32_t index_count,
                                   uint32_t instance_count, uint32_t first_index,
                                   int32_t vertex_offset,
                                   uint32_t first_instance);
-
-// Internal helper functions
-void vulkan_update_global_descriptor_sets(VulkanBackendState *state);

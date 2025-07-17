@@ -103,14 +103,16 @@ bool8_t vulkan_command_buffer_allocate_and_begin_single_use(
   return true_v;
 }
 
-bool8_t vulkan_command_buffer_end_single_use(
-    VulkanBackendState *state, VkCommandPool pool,
-    VulkanCommandBuffer *command_buffer, VkQueue queue) {
+bool8_t
+vulkan_command_buffer_end_single_use(VulkanBackendState *state,
+                                     VulkanCommandBuffer *command_buffer,
+                                     VkQueue queue, VkFence fence) {
   assert_log(state != NULL, "State is NULL");
   assert_log(command_buffer != NULL, "Command buffer is NULL");
 
   if (!vulkan_command_buffer_end(command_buffer)) {
     log_error("Failed to end Vulkan command buffer");
+    vulkan_command_buffer_free(state, command_buffer);
     return false_v;
   }
 
@@ -122,11 +124,13 @@ bool8_t vulkan_command_buffer_end_single_use(
 
   if (vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE) != VK_SUCCESS) {
     log_error("Failed to submit Vulkan command buffer");
+    vulkan_command_buffer_free(state, command_buffer);
     return false_v;
   }
 
   if (vkQueueWaitIdle(queue) != VK_SUCCESS) {
     log_error("Failed to wait for Vulkan command buffer to finish");
+    vulkan_command_buffer_free(state, command_buffer);
     return false_v;
   }
 

@@ -2,6 +2,13 @@
 
 #include "vulkan_types.h"
 
+typedef struct VulkanShaderStageFlagResult {
+  VkShaderStageFlagBits flag;
+  bool8_t is_valid;
+} VulkanShaderStageFlagResult;
+
+VulkanShaderStageFlagResult vulkan_shader_stage_to_vk(ShaderStageFlags stage);
+
 Array_QueueFamilyIndex find_queue_family_indices(VulkanBackendState *state,
                                                  VkPhysicalDevice device);
 

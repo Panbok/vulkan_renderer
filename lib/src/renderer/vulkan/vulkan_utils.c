@@ -1,5 +1,39 @@
 #include "vulkan_utils.h"
 
+VulkanShaderStageFlagResult vulkan_shader_stage_to_vk(ShaderStageFlags stage) {
+  int stage_count = 0;
+  VkShaderStageFlagBits result = 0;
+
+  if (bitset8_is_set(&stage, SHADER_STAGE_VERTEX_BIT)) {
+    result = VK_SHADER_STAGE_VERTEX_BIT;
+    stage_count++;
+  } else if (bitset8_is_set(&stage, SHADER_STAGE_FRAGMENT_BIT)) {
+    result = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stage_count++;
+  } else if (bitset8_is_set(&stage, SHADER_STAGE_GEOMETRY_BIT)) {
+    result = VK_SHADER_STAGE_GEOMETRY_BIT;
+    stage_count++;
+  } else if (bitset8_is_set(&stage, SHADER_STAGE_TESSELLATION_CONTROL_BIT)) {
+    result = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
+    stage_count++;
+  } else if (bitset8_is_set(&stage, SHADER_STAGE_TESSELLATION_EVALUATION_BIT)) {
+    result = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
+    stage_count++;
+  } else if (bitset8_is_set(&stage, SHADER_STAGE_COMPUTE_BIT)) {
+    result = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage_count++;
+  }
+
+  if (stage_count != 1) {
+    log_error(
+        "Invalid shader stage configuration: exactly one stage must be set");
+    return (VulkanShaderStageFlagResult){.flag = VK_SHADER_STAGE_ALL_GRAPHICS,
+                                         .is_valid = false};
+  }
+
+  return (VulkanShaderStageFlagResult){.flag = result, .is_valid = true};
+}
+
 Array_QueueFamilyIndex find_queue_family_indices(VulkanBackendState *state,
                                                  VkPhysicalDevice device) {
   Array_QueueFamilyIndex indices =

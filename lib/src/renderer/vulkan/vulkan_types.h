@@ -52,18 +52,6 @@ Array(VkVertexInputAttributeDescription);
 static const char *VALIDATION_LAYERS[] = {"VK_LAYER_KHRONOS_validation"};
 #endif
 
-struct s_GraphicsPipeline {
-  const GraphicsPipelineDescription *desc;
-  VkPipelineLayout pipeline_layout;
-  VkPipeline pipeline;
-};
-
-struct s_ShaderModule {
-  const ShaderModuleDescription *desc;
-  VkShaderModule module;
-  VkPipelineShaderStageCreateInfo stage_info;
-};
-
 typedef struct VulkanFence {
   VkFence handle;
   bool8_t is_signaled;
@@ -83,10 +71,6 @@ typedef struct VulkanBuffer {
   VkCommandPool command_pool;
   VkQueue queue;
 } VulkanBuffer;
-struct s_BufferHandle {
-  VulkanBuffer buffer;
-  BufferDescription description;
-};
 
 typedef enum VulkanRenderPassState {
   RENDER_PASS_STATE_READY,
@@ -192,6 +176,30 @@ Array(VulkanCommandBuffer);
 Array(VulkanFence);
 Array(VulkanFencePtr);
 
+struct s_BufferHandle {
+  VulkanBuffer buffer;
+  BufferDescription description;
+};
+
+typedef struct VulkanShaderObject {
+  VkPipelineShaderStageCreateInfo stages[SHADER_STAGE_COUNT];
+  VkShaderModule modules[SHADER_STAGE_COUNT];
+
+  VkDescriptorPool global_descriptor_pool;
+  VkDescriptorSet global_descriptor_sets[3];
+  VkDescriptorSetLayout global_descriptor_set_layout;
+  VkDescriptorSetLayoutBinding global_descriptor_set_layout_binding;
+  struct s_BufferHandle global_uniform_buffer;
+} VulkanShaderObject;
+
+struct s_GraphicsPipeline {
+  const GraphicsPipelineDescription *desc;
+  VkPipelineLayout pipeline_layout;
+  VkPipeline pipeline;
+
+  VulkanShaderObject shader_object;
+};
+
 typedef struct VulkanBackendState {
   Arena *arena;
   Arena *temp_arena;
@@ -219,12 +227,6 @@ typedef struct VulkanBackendState {
   VkSurfaceKHR surface;
 
   VulkanSwapchain swapchain;
-
-  VkDescriptorPool global_descriptor_pool;
-  VkDescriptorSet global_descriptor_sets[3];
-  VkDescriptorSetLayout global_descriptor_set_layout;
-  VkDescriptorSetLayoutBinding global_descriptor_set_layout_binding;
-  VulkanBuffer global_uniform_buffer;
 
   Array_VkSemaphore image_available_semaphores;
   Array_VkSemaphore queue_complete_semaphores;

@@ -1,5 +1,4 @@
 #include "vulkan_buffer.h"
-#include "renderer/vulkan/vulkan_fence.h"
 
 bool8_t vulkan_buffer_create(VulkanBackendState *state,
                              const BufferDescription *desc,
@@ -66,11 +65,11 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
     // per-buffer fences
   }
 
+  log_debug("Created Vulkan buffer: %p", out_buffer->buffer.handle);
+
   if (desc->bind_on_create) {
     return vulkan_buffer_bind(state, &out_buffer->buffer, 0);
   }
-
-  log_debug("Created Vulkan buffer: %p", out_buffer->buffer.handle);
 
   return true_v;
 }
