@@ -148,12 +148,18 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
       .pAttachments = &color_blend_attachment_state,
   };
 
+  VkPushConstantRange push_constant = {
+      .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+      .offset = sizeof(ShaderStateObject) * 0,
+      .size = sizeof(ShaderStateObject) * 2,
+  };
+
   VkPipelineLayoutCreateInfo pipeline_layout_info = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
       .setLayoutCount = 1,
       .pSetLayouts = &out_pipeline->shader_object.global_descriptor_set_layout,
-      .pushConstantRangeCount = 0,
-      .pPushConstantRanges = NULL,
+      .pushConstantRangeCount = 1,
+      .pPushConstantRanges = &push_constant,
   };
 
   VkPipelineLayout pipeline_layout;
@@ -230,7 +236,7 @@ void vulkan_graphics_pipeline_bind(VulkanCommandBuffer *command_buffer,
 
 RendererError vulkan_graphics_pipeline_update_state(
     VulkanBackendState *state, struct s_GraphicsPipeline *pipeline,
-    const GlobalUniformObject *uniform, const void *data, uint32_t size) {
+    const GlobalUniformObject *uniform, const ShaderStateObject *data) {
   assert_log(state != NULL, "State is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
 
@@ -247,9 +253,9 @@ RendererError vulkan_graphics_pipeline_update_state(
     }
   }
 
-  if (data != NULL && size > 0) {
+  if (data != NULL) {
     if (!vulkan_shader_update_state(state, &pipeline->shader_object,
-                                    pipeline->pipeline_layout, data, size)) {
+                                    pipeline->pipeline_layout, data)) {
       log_error("Failed to update state");
       return RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
     }

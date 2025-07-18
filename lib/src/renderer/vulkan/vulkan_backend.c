@@ -1,5 +1,8 @@
 #include "vulkan_backend.h"
 
+// todo: we are having issues with image ghosting when camera moves
+// too fast, need to figure out why (clues VSync/present mode issues)
+
 static bool32_t create_command_buffers(VulkanBackendState *state) {
   Scratch scratch = scratch_create(state->arena);
   state->graphics_command_buffers = array_create_VulkanCommandBuffer(
@@ -717,7 +720,7 @@ BackendResourceHandle renderer_vulkan_create_graphics_pipeline(
 
 RendererError renderer_vulkan_update_pipeline_state(
     void *backend_state, BackendResourceHandle pipeline_handle,
-    const GlobalUniformObject *uniform, const void *data, uint32_t size) {
+    const GlobalUniformObject *uniform, const ShaderStateObject *data) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(pipeline_handle.ptr != NULL, "Pipeline handle is NULL");
 
@@ -727,8 +730,7 @@ RendererError renderer_vulkan_update_pipeline_state(
   struct s_GraphicsPipeline *pipeline =
       (struct s_GraphicsPipeline *)pipeline_handle.ptr;
 
-  return vulkan_graphics_pipeline_update_state(state, pipeline, uniform, data,
-                                               size);
+  return vulkan_graphics_pipeline_update_state(state, pipeline, uniform, data);
 }
 
 void renderer_vulkan_destroy_pipeline(void *backend_state,

@@ -17,7 +17,7 @@ bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
 bool8_t vulkan_shader_update_state(VulkanBackendState *state,
                                    VulkanShaderObject *shader_object,
                                    VkPipelineLayout pipeline_layout,
-                                   const void *data, uint32_t size);
+                                   const ShaderStateObject *data);
 
 void vulkan_shader_object_destroy(VulkanBackendState *state,
                                   VulkanShaderObject *out_shader_object);

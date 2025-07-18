@@ -11,7 +11,7 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
 
 RendererError vulkan_graphics_pipeline_update_state(
     VulkanBackendState *state, struct s_GraphicsPipeline *pipeline,
-    const GlobalUniformObject *uniform, const void *data, uint32_t size);
+    const GlobalUniformObject *uniform, const ShaderStateObject *data);
 
 void vulkan_graphics_pipeline_bind(VulkanCommandBuffer *command_buffer,
                                    VkPipelineBindPoint bind_point,

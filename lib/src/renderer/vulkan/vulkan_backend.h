@@ -67,7 +67,7 @@ BackendResourceHandle renderer_vulkan_create_graphics_pipeline(
 
 RendererError renderer_vulkan_update_pipeline_state(
     void *backend_state, BackendResourceHandle pipeline_handle,
-    const GlobalUniformObject *uniform, const void *data, uint32_t size);
+    const GlobalUniformObject *uniform, const ShaderStateObject *data);
 
 void renderer_vulkan_destroy_pipeline(void *backend_state,
                                       BackendResourceHandle handle);

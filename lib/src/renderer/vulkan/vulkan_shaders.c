@@ -267,21 +267,21 @@ bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
 bool8_t vulkan_shader_update_state(VulkanBackendState *state,
                                    VulkanShaderObject *shader_object,
                                    VkPipelineLayout pipeline_layout,
-                                   const void *data, uint32_t size) {
+                                   const ShaderStateObject *data) {
   assert_log(state != NULL, "Backend state is NULL");
   assert_log(shader_object != NULL, "Shader object is NULL");
   assert_log(pipeline_layout != VK_NULL_HANDLE, "Pipeline layout is NULL");
   assert_log(data != NULL, "Data is NULL");
-  assert_log(size > 0, "Size is 0");
 
   uint32_t image_index = state->image_index;
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, image_index);
 
   vkCmdPushConstants(command_buffer->handle, pipeline_layout,
-                     VK_SHADER_STAGE_VERTEX_BIT, 0, size, data);
+                     VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ShaderStateObject),
+                     data);
 
-  log_debug("Updated shader state");
+  // log_debug("Updated shader state");
 
   return true;
 }
