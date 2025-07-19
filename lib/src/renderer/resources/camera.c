@@ -20,7 +20,7 @@ void camera_perspective_create(Camera *camera, InputState *input_state,
   camera->pitch = 0.0f;
 
   camera->position = vec3_new(0.0f, 0.0f, -5.0f);
-  camera->forward = vec3_new(0.0f, 0.0f, -6.0f);
+  camera->forward = vec3_new(0.0f, 0.0f, -1.0f);
   camera->up = vec3_new(0.0f, 1.0f, 0.0f);
   camera->right = vec3_new(1.0f, 0.0f, 0.0f);
   camera->world_up = vec3_new(0.0f, 1.0f, 0.0f);
@@ -54,8 +54,8 @@ void camera_orthographic_create(Camera *camera, InputState *input_state,
   camera->yaw = -90.0f;
   camera->pitch = 0.0f;
 
-  camera->position = vec3_new(0.0f, 0.0f, 0.0f);
-  camera->forward = vec3_new(0.0f, 0.0f, 1.0f);
+  camera->position = vec3_new(0.0f, 0.0f, -5.0f);
+  camera->forward = vec3_new(0.0f, 0.0f, -1.0f);
   camera->up = vec3_new(0.0f, 1.0f, 0.0f);
   camera->right = vec3_new(1.0f, 0.0f, 0.0f);
   camera->world_up = vec3_new(0.0f, 1.0f, 0.0f);
@@ -83,26 +83,22 @@ void camera_update(Camera *camera, float32_t delta_time) {
   float32_t velocity = camera->speed * delta_time;
   if (input_is_key_down(camera->input_state, KEY_W)) {
     camera->position =
-        vec3_sub(camera->position,
-                 vec3_scale(camera->forward, camera->speed * delta_time));
+        vec3_sub(camera->position, vec3_scale(camera->forward, velocity));
   }
 
   if (input_is_key_down(camera->input_state, KEY_S)) {
     camera->position =
-        vec3_add(camera->position,
-                 vec3_scale(camera->forward, camera->speed * delta_time));
+        vec3_add(camera->position, vec3_scale(camera->forward, velocity));
   }
 
   if (input_is_key_down(camera->input_state, KEY_A)) {
     camera->position =
-        vec3_sub(camera->position,
-                 vec3_scale(camera->right, camera->speed * delta_time));
+        vec3_sub(camera->position, vec3_scale(camera->right, velocity));
   }
 
   if (input_is_key_down(camera->input_state, KEY_D)) {
     camera->position =
-        vec3_add(camera->position,
-                 vec3_scale(camera->right, camera->speed * delta_time));
+        vec3_add(camera->position, vec3_scale(camera->right, velocity));
   }
 
   int8_t wheel_delta;
@@ -156,7 +152,7 @@ void camera_update(Camera *camera, float32_t delta_time) {
   camera->up = vec3_normalize(vec3_cross(camera->right, camera->forward));
 }
 
-Mat4 camera_get_view_matrix(Camera *camera) {
+Mat4 camera_get_view_matrix(const Camera *camera) {
   assert_log(camera != NULL, "Camera is NULL");
   assert_log(camera->type != CAMERA_TYPE_NONE, "Camera type is NONE");
 
@@ -164,7 +160,7 @@ Mat4 camera_get_view_matrix(Camera *camera) {
                       vec3_add(camera->position, camera->forward), camera->up);
 }
 
-Mat4 camera_get_projection_matrix(Camera *camera) {
+Mat4 camera_get_projection_matrix(const Camera *camera) {
   assert_log(camera != NULL, "Camera is NULL");
   assert_log(camera->type != CAMERA_TYPE_NONE, "Camera type is NONE");
 
@@ -186,6 +182,8 @@ Mat4 camera_get_projection_matrix(Camera *camera) {
 }
 
 void camera_destroy(Camera *camera) {
+  assert_log(camera != NULL, "Camera is NULL");
+
   camera->type = CAMERA_TYPE_NONE;
   camera->input_state = NULL;
   camera->window = NULL;

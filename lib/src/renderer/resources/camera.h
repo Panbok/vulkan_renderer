@@ -59,8 +59,8 @@ void camera_orthographic_create(Camera *camera, InputState *input_state,
 
 void camera_update(Camera *camera, float32_t delta_time);
 
-Mat4 camera_get_view_matrix(Camera *camera);
+Mat4 camera_get_view_matrix(const Camera *camera);
 
-Mat4 camera_get_projection_matrix(Camera *camera);
+Mat4 camera_get_projection_matrix(const Camera *camera);
 
 void camera_destroy(Camera *camera);
