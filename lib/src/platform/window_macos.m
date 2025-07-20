@@ -214,28 +214,13 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 
     input_process_mouse_move(platform_state->input_state, new_x, new_y);
 
-    // Update restore position to reflect virtual cursor movement
-    // Convert virtual position back to window coordinates for restoration
-    const NSRect contentRect = [platform_state->view frame];
-
-    // Convert from scaled pixel coordinates back to window coordinates
-    float64_t window_x = (float64_t)new_x / platform_state->layer.contentsScale;
-    float64_t window_y = (float64_t)new_y / platform_state->layer.contentsScale;
-
-    // Clamp to window bounds to prevent cursor from appearing outside window
-    window_x = max_f64(0.0, min_f64(window_x, contentRect.size.width));
-    window_y = max_f64(0.0, min_f64(window_y, contentRect.size.height));
-
-    // Store for restoration
-    // new_y is already in top-left origin (inverted during input processing)
-    platform_state->restore_cursor_x = window_x;
-    platform_state->restore_cursor_y = window_y;
-
+    // NOTE: Do NOT update restore coordinates during capture mode.
+    // The restore position should remain fixed to where the mouse was
+    // when capture was first enabled, not follow virtual cursor movement.
 #ifndef NDEBUG
     static int log_counter = 0;
     if (++log_counter % 60 == 0) { // Log every 60 mouse moves to avoid spam
-      log_debug("Virtual cursor: (%d, %d) -> Window coords: (%.1f, %.1f)",
-                new_x, new_y, window_x, window_y);
+      log_debug("Virtual cursor: (%d, %d)", new_x, new_y);
     }
 #endif
   } else {
@@ -249,6 +234,15 @@ static bool8_t cursor_in_content_area(PlatformState *state);
     int32_t x = pos.x * platform_state->layer.contentsScale;
     int32_t y =
         window_size.height - (pos.y * platform_state->layer.contentsScale);
+#ifndef NDEBUG
+    static int normal_mode_log_counter = 0;
+    if (++normal_mode_log_counter % 60 ==
+        0) { // Log every 60 mouse moves to avoid spam
+      log_debug("Normal mode cursor: (%d, %d) -> Window coords: (%.1f, %.1f)",
+                x, y, pos.x, pos.y);
+    }
+#endif
+
     input_process_mouse_move(platform_state->input_state, x, y);
   }
 
@@ -662,8 +656,11 @@ void window_set_mouse_capture(Window *window, bool8_t capture) {
 
       const NSPoint pos = [state->window mouseLocationOutsideOfEventStream];
       const NSRect contentRect = [state->view frame];
+
+      // Store restore coordinates in window coordinate system (bottom-left
+      // origin)
       state->restore_cursor_x = pos.x;
-      state->restore_cursor_y = contentRect.size.height - pos.y;
+      state->restore_cursor_y = pos.y;
 
       // Initialize virtual cursor position to match current physical position
       // This provides continuity when entering capture mode
@@ -689,6 +686,7 @@ void window_set_mouse_capture(Window *window, bool8_t capture) {
       const NSRect contentRect = [state->view frame];
 
       // Clamp restore position to window bounds
+      // Note: restore coordinates are stored in bottom-left origin system
       float64_t clamped_x = max_f64(
           0.0, min_f64(state->restore_cursor_x, contentRect.size.width));
       float64_t clamped_y = max_f64(
@@ -699,8 +697,8 @@ void window_set_mouse_capture(Window *window, bool8_t capture) {
                 clamped_x, clamped_y, contentRect.size.width,
                 contentRect.size.height);
 
-      const NSRect localRect =
-          NSMakeRect(clamped_x, contentRect.size.height - clamped_y, 0, 0);
+      // Create local rect - coordinates are already in bottom-left origin
+      const NSRect localRect = NSMakeRect(clamped_x, clamped_y, 0, 0);
       const NSRect globalRect = [state->window convertRectToScreen:localRect];
       const NSPoint globalPoint = globalRect.origin;
 
