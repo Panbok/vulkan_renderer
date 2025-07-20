@@ -18,10 +18,25 @@ typedef struct PlatformState {
   bool8_t quit_flagged;
   EventManager *event_manager;
   InputState *input_state;
+
+  // Mouse capture state
+  bool8_t cursor_hidden;
+  bool8_t mouse_captured;
+  float64_t restore_cursor_x;
+  float64_t restore_cursor_y;
+  float64_t cursor_warp_delta_x;
+  float64_t cursor_warp_delta_y;
 } PlatformState;
 
 // Key translation
-Keys translate_keycode(uint32_t ns_keycode);
+static Keys translate_keycode(uint32_t ns_keycode);
+
+// Helper functions for cursor management
+static void hide_cursor(PlatformState *state);
+static void show_cursor(PlatformState *state);
+static void update_cursor_image(PlatformState *state);
+static void center_cursor_in_window(PlatformState *state);
+static bool8_t cursor_in_content_area(PlatformState *state);
 
 @interface WindowDelegate : NSObject <NSWindowDelegate> {
   PlatformState *state;
@@ -63,6 +78,11 @@ Keys translate_keycode(uint32_t ns_keycode);
                  .data = &resize_data,
                  .data_size = sizeof(WindowResizeEventData)};
   event_manager_dispatch(state->event_manager, event);
+
+  // Re-center cursor if in capture mode after window resize
+  if (state->mouse_captured) {
+    center_cursor_in_window(state);
+  }
 }
 
 - (void)windowDidMiniaturize:(NSNotification *)notification {
@@ -103,6 +123,20 @@ Keys translate_keycode(uint32_t ns_keycode);
   }
 }
 
+- (void)windowDidBecomeKey:(NSNotification *)notification {
+  if (state->mouse_captured) {
+    center_cursor_in_window(state);
+  }
+  update_cursor_image(state);
+}
+
+- (void)windowDidResignKey:(NSNotification *)notification {
+  // When window loses focus, show cursor if it was hidden due to capture
+  if (state->mouse_captured) {
+    show_cursor(state);
+  }
+}
+
 @end // WindowDelegate
 
 @interface ContentView : NSView <NSTextInputClient> {
@@ -125,6 +159,10 @@ Keys translate_keycode(uint32_t ns_keycode);
   if (self != nil) {
     window = initWindow;
     platform_state = initState;
+    trackingArea = nil;
+    markedText = [[NSMutableAttributedString alloc] init];
+
+    [self updateTrackingAreas];
   }
 
   return self;
@@ -160,10 +198,63 @@ Keys translate_keycode(uint32_t ns_keycode);
 }
 
 - (void)mouseMoved:(NSEvent *)event {
-  const NSPoint pos = [event locationInWindow];
+  if (platform_state->mouse_captured) {
+    // In capture mode, use delta movement
+    const float64_t dx = [event deltaX] - platform_state->cursor_warp_delta_x;
+    const float64_t dy = [event deltaY] - platform_state->cursor_warp_delta_y;
 
-  input_process_mouse_move(platform_state->input_state, (int16_t)pos.x,
-                           (int16_t)pos.y);
+    // Get current virtual cursor position from input state
+    int32_t current_x, current_y;
+    input_get_mouse_position(platform_state->input_state, &current_x,
+                             &current_y);
+
+    // Update virtual position with delta
+    int32_t new_x = current_x + (int32_t)dx;
+    int32_t new_y = current_y + (int32_t)dy;
+
+    input_process_mouse_move(platform_state->input_state, new_x, new_y);
+
+    // Update restore position to reflect virtual cursor movement
+    // Convert virtual position back to window coordinates for restoration
+    const NSRect contentRect = [platform_state->view frame];
+
+    // Convert from scaled pixel coordinates back to window coordinates
+    float64_t window_x = (float64_t)new_x / platform_state->layer.contentsScale;
+    float64_t window_y = (float64_t)new_y / platform_state->layer.contentsScale;
+
+    // Clamp to window bounds to prevent cursor from appearing outside window
+    window_x = max_f64(0.0, min_f64(window_x, contentRect.size.width));
+    window_y = max_f64(0.0, min_f64(window_y, contentRect.size.height));
+
+    // Store for restoration
+    // new_y is already in top-left origin (inverted during input processing)
+    platform_state->restore_cursor_x = window_x;
+    platform_state->restore_cursor_y = window_y;
+
+#ifndef NDEBUG
+    static int log_counter = 0;
+    if (++log_counter % 60 == 0) { // Log every 60 mouse moves to avoid spam
+      log_debug("Virtual cursor: (%d, %d) -> Window coords: (%.1f, %.1f)",
+                new_x, new_y, window_x, window_y);
+    }
+#endif
+  } else {
+    // Normal mode, use absolute position
+    const NSPoint pos = [event locationInWindow];
+
+    // Need to invert Y on macOS, since origin is bottom-left.
+    // Also need to scale the mouse position by the device pixel ratio so screen
+    // lookups are correct.
+    NSSize window_size = platform_state->layer.drawableSize;
+    int32_t x = pos.x * platform_state->layer.contentsScale;
+    int32_t y =
+        window_size.height - (pos.y * platform_state->layer.contentsScale);
+    input_process_mouse_move(platform_state->input_state, x, y);
+  }
+
+  // Reset warp deltas
+  platform_state->cursor_warp_delta_x = 0;
+  platform_state->cursor_warp_delta_y = 0;
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
@@ -211,6 +302,52 @@ Keys translate_keycode(uint32_t ns_keycode);
 - (void)scrollWheel:(NSEvent *)event {
   input_process_mouse_wheel(platform_state->input_state,
                             (int8_t)[event scrollingDeltaY]);
+}
+
+- (void)mouseEntered:(NSEvent *)event {
+  if (platform_state->mouse_captured) {
+    hide_cursor(platform_state);
+  }
+}
+
+- (void)mouseExited:(NSEvent *)event {
+  if (platform_state->mouse_captured) {
+    show_cursor(platform_state);
+  }
+}
+
+- (void)cursorUpdate:(NSEvent *)event {
+  update_cursor_image(platform_state);
+}
+
+- (void)updateTrackingAreas {
+  if (trackingArea != nil) {
+    [self removeTrackingArea:trackingArea];
+    [trackingArea release];
+  }
+
+  const NSTrackingAreaOptions options =
+      NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow |
+      NSTrackingEnabledDuringMouseDrag | NSTrackingCursorUpdate |
+      NSTrackingInVisibleRect | NSTrackingAssumeInside;
+
+  trackingArea = [[NSTrackingArea alloc] initWithRect:[self bounds]
+                                              options:options
+                                                owner:self
+                                             userInfo:nil];
+
+  [self addTrackingArea:trackingArea];
+  [super updateTrackingAreas];
+}
+
+- (void)dealloc {
+  if (trackingArea) {
+    [trackingArea release];
+  }
+  if (markedText) {
+    [markedText release];
+  }
+  [super dealloc];
 }
 
 - (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
@@ -289,6 +426,11 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
 
 @end // ApplicationDelegate
 
+/********************************************************************************
+ *********************** External Window Functions *****************************
+ ********************************************************************************
+ */
+
 bool8_t window_create(Window *window, EventManager *event_manager,
                       const char *title, int32_t x, int32_t y, uint32_t width,
                       uint32_t height) {
@@ -322,6 +464,14 @@ bool8_t window_create(Window *window, EventManager *event_manager,
   state->quit_flagged = false_v;
   state->event_manager = event_manager;
   state->input_state = &window->input_state;
+
+  // Initialize mouse capture state
+  state->cursor_hidden = false_v;
+  state->mouse_captured = false_v;
+  state->restore_cursor_x = 0.0;
+  state->restore_cursor_y = 0.0;
+  state->cursor_warp_delta_x = 0.0;
+  state->cursor_warp_delta_y = 0.0;
 
   window->platform_state = state;
 
@@ -490,6 +640,169 @@ WindowPixelSize window_get_pixel_size(Window *window) {
       .width = (uint32_t)framebufferRect.size.width,
       .height = (uint32_t)framebufferRect.size.height,
   };
+}
+
+void *window_get_metal_layer(Window *window) {
+  assert_log(window != NULL, "Window not initialized");
+  assert_log(window->platform_state != NULL, "Platform state not initialized");
+
+  PlatformState *state = (PlatformState *)window->platform_state;
+  return state->layer;
+}
+
+void window_set_mouse_capture(Window *window, bool8_t capture) {
+  assert_log(window != NULL, "Window not initialized");
+  assert_log(window->platform_state != NULL, "Platform state not initialized");
+
+  PlatformState *state = (PlatformState *)window->platform_state;
+
+  @autoreleasepool {
+    if (capture) {
+      state->mouse_captured = true_v;
+
+      const NSPoint pos = [state->window mouseLocationOutsideOfEventStream];
+      const NSRect contentRect = [state->view frame];
+      state->restore_cursor_x = pos.x;
+      state->restore_cursor_y = contentRect.size.height - pos.y;
+
+      // Initialize virtual cursor position to match current physical position
+      // This provides continuity when entering capture mode
+      NSSize window_size = state->layer.drawableSize;
+      int32_t virtual_x = (int32_t)(pos.x * state->layer.contentsScale);
+      int32_t virtual_y =
+          (int32_t)(window_size.height - (pos.y * state->layer.contentsScale));
+      input_process_mouse_move(state->input_state, virtual_x, virtual_y);
+
+      log_debug(
+          "Initialized virtual cursor to: (%d, %d) from physical: (%.1f, %.1f)",
+          virtual_x, virtual_y, pos.x, pos.y);
+
+      CGAssociateMouseAndMouseCursorPosition(false);
+
+      update_cursor_image(state);
+    } else {
+      state->mouse_captured = false_v;
+
+      CGAssociateMouseAndMouseCursorPosition(true);
+
+      // Restore cursor position directly without recursion
+      const NSRect contentRect = [state->view frame];
+
+      // Clamp restore position to window bounds
+      float64_t clamped_x = max_f64(
+          0.0, min_f64(state->restore_cursor_x, contentRect.size.width));
+      float64_t clamped_y = max_f64(
+          0.0, min_f64(state->restore_cursor_y, contentRect.size.height));
+
+      log_debug("Restoring cursor to window coords: (%.1f, %.1f) in window "
+                "size: (%.1f, %.1f)",
+                clamped_x, clamped_y, contentRect.size.width,
+                contentRect.size.height);
+
+      const NSRect localRect =
+          NSMakeRect(clamped_x, contentRect.size.height - clamped_y, 0, 0);
+      const NSRect globalRect = [state->window convertRectToScreen:localRect];
+      const NSPoint globalPoint = globalRect.origin;
+
+      const CGFloat screenHeight =
+          CGDisplayBounds(CGMainDisplayID()).size.height;
+      CGWarpMouseCursorPosition(
+          CGPointMake(globalPoint.x, screenHeight - globalPoint.y - 1));
+
+      update_cursor_image(state);
+    }
+  }
+}
+
+bool8_t window_is_mouse_captured(Window *window) {
+  assert_log(window != NULL, "Window not initialized");
+  assert_log(window->platform_state != NULL, "Platform state not initialized");
+
+  PlatformState *state = (PlatformState *)window->platform_state;
+  return state->mouse_captured;
+}
+
+void window_set_mouse_position(Window *window, int32_t x, int32_t y) {
+  assert_log(window != NULL, "Window not initialized");
+  assert_log(window->platform_state != NULL, "Platform state not initialized");
+
+  PlatformState *state = (PlatformState *)window->platform_state;
+
+  @autoreleasepool {
+    update_cursor_image(state);
+
+    const NSRect contentRect = [state->view frame];
+
+    const NSPoint currentPos =
+        [state->window mouseLocationOutsideOfEventStream];
+
+    // Calculate warp deltas to smooth out movement
+    state->cursor_warp_delta_x += x - currentPos.x;
+    state->cursor_warp_delta_y += y - (contentRect.size.height - currentPos.y);
+
+    // Convert window coordinates to screen coordinates
+    const NSRect localRect =
+        NSMakeRect(x, contentRect.size.height - y - 1, 0, 0);
+    const NSRect globalRect = [state->window convertRectToScreen:localRect];
+    const NSPoint globalPoint = globalRect.origin;
+
+    // Transform Y coordinate for screen space (macOS screen origin is top -
+    // left for CGWarp)
+    const CGFloat screenHeight = CGDisplayBounds(CGMainDisplayID()).size.height;
+    CGWarpMouseCursorPosition(
+        CGPointMake(globalPoint.x, screenHeight - globalPoint.y - 1));
+
+    // Re-associate mouse and cursor position to prevent freezing
+    // This is a workaround for macOS behavior after warping
+    if (!state->mouse_captured) {
+      CGAssociateMouseAndMouseCursorPosition(true);
+    }
+  }
+}
+
+/********************************************************************************
+ ***************************** Helper Functions ********************************
+ ********************************************************************************
+ */
+
+bool8_t cursor_in_content_area(PlatformState *state) {
+  const NSPoint pos = [state->window mouseLocationOutsideOfEventStream];
+  return [state->view mouse:pos inRect:[state->view frame]];
+}
+
+void hide_cursor(PlatformState *state) {
+  if (!state->cursor_hidden) {
+    [NSCursor hide];
+    state->cursor_hidden = true_v;
+  }
+}
+
+void show_cursor(PlatformState *state) {
+  if (state->cursor_hidden) {
+    [NSCursor unhide];
+    state->cursor_hidden = false_v;
+  }
+}
+
+void update_cursor_image(PlatformState *state) {
+  if (state->mouse_captured) {
+    hide_cursor(state);
+  } else {
+    show_cursor(state);
+    [[NSCursor arrowCursor] set];
+  }
+}
+
+void center_cursor_in_window(PlatformState *state) {
+  const NSRect contentRect = [state->view frame];
+  const NSRect globalRect = [state->window
+      convertRectToScreen:NSMakeRect(contentRect.size.width / 2.0,
+                                     contentRect.size.height / 2.0, 0, 0)];
+  const NSPoint globalPoint = globalRect.origin;
+
+  const CGFloat screenHeight = CGDisplayBounds(CGMainDisplayID()).size.height;
+  CGWarpMouseCursorPosition(
+      CGPointMake(globalPoint.x, screenHeight - globalPoint.y - 1));
 }
 
 Keys translate_keycode(uint32_t ns_keycode) {
@@ -724,13 +1037,5 @@ Keys translate_keycode(uint32_t ns_keycode) {
   default:
     return KEY_MAX_KEYS;
   }
-}
-
-void *window_get_metal_layer(Window *window) {
-  assert_log(window != NULL, "Window not initialized");
-  assert_log(window->platform_state != NULL, "Platform state not initialized");
-
-  PlatformState *state = (PlatformState *)window->platform_state;
-  return state->layer;
 }
 #endif

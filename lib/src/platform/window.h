@@ -38,6 +38,7 @@
 
 #include "core/event.h"
 #include "core/input.h"
+#include "math/math.h"
 #include "pch.h"
 #include "platform.h"
 
@@ -144,3 +145,29 @@ WindowPixelSize window_get_pixel_size(Window *window);
  */
 void *window_get_metal_layer(Window *window);
 #endif
+
+/**
+ * @brief Sets the mouse capture state.
+ * @param window Pointer to the `Window` to modify.
+ * @param capture `true` if the mouse should be captured, `false` otherwise.
+ * @note This function is platform-specific and may not be available on all
+ * platforms.
+ */
+void window_set_mouse_capture(Window *window, bool8_t capture);
+
+/**
+ * @brief Checks if the mouse is captured by the window.
+ * @param window Pointer to the `Window` to check.
+ * @return `true_v` if the mouse is captured, `false_v` otherwise.
+ * @note This function is platform-specific and may not be available on all
+ * platforms.
+ */
+bool8_t window_is_mouse_captured(Window *window);
+
+/**
+ * @brief Sets the mouse position.
+ * @param window Pointer to the `Window` to modify.
+ * @param x The new x-coordinate of the mouse.
+ * @param y The new y-coordinate of the mouse.
+ */
+void window_set_mouse_position(Window *window, int32_t x, int32_t y);

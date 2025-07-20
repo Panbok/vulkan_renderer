@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/input.h"
+#include "core/logger.h"
 #include "math/mat.h"
 #include "math/math.h"
 #include "math/vec.h"

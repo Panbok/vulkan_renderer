@@ -1,5 +1,4 @@
 #include "camera.h"
-#include "math/math.h"
 
 void camera_perspective_create(Camera *camera, InputState *input_state,
                                Window *window, float32_t target_frame_rate,
@@ -68,16 +67,18 @@ void camera_orthographic_create(Camera *camera, InputState *input_state,
   camera->top_clip = top;
 }
 
-// todo: impl proper mouse capture with center warping (proper FPS camera)
 // todo: impl setting dirty flag for skipping view and projection matrix
 // recalculation
+// todo: since FPS camera is impl, should we remove the ability to move
+// camera when mouse is not captured?
 void camera_update(Camera *camera, float32_t delta_time) {
   assert_log(camera->input_state != NULL, "Input state is NULL");
   assert_log(camera->type != CAMERA_TYPE_NONE, "Camera type is NONE");
 
-  if (input_is_key_down(camera->input_state, KEY_TAB)) {
+  if (input_is_key_down(camera->input_state, KEY_TAB) &&
+      input_was_key_up(camera->input_state, KEY_TAB)) {
     window_set_mouse_capture(camera->window,
-                             !camera->window->is_mouse_captured);
+                             !window_is_mouse_captured(camera->window));
   }
 
   float32_t velocity = camera->speed * delta_time;
