@@ -169,5 +169,7 @@ bool8_t window_is_mouse_captured(Window *window);
  * @param window Pointer to the `Window` to modify.
  * @param x The new x-coordinate of the mouse.
  * @param y The new y-coordinate of the mouse.
+ * @note This function is platform-specific and may not be available on all
+ * platforms.
  */
 void window_set_mouse_position(Window *window, int32_t x, int32_t y);
