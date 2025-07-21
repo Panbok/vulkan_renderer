@@ -1,0 +1,14 @@
+{
+  "recommendations": [
+    "coderabbit.coderabbit-vscode", 
+    "ms-vscode.cmake-tools", 
+    "eamodio.gitlens", 
+    "aaron-bond.better-comments",
+    "xaver.clang-format",
+    "llvm-vs-code-extensions.vscode-clangd",
+    "twxs.cmake",
+    "streetsidesoftware.code-spell-checker",
+    "vadimcn.vscode-lldb",
+    "shader-slang.slang-language-extension"
+  ]
+}

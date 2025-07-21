@@ -17,7 +17,7 @@ set -e # Exit early if any commands fail
   if ls *.slang >/dev/null 2>&1; then
     for file in *.slang; do
       echo "Compiling $file"
-      slangc -o "${file%.slang}.spv" "$file"
+      slangc -target spirv -o "${file%.slang}.spv" "$file"
     done
   else
     echo "No .slang files found to compile"
