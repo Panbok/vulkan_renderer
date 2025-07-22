@@ -1,5 +1,7 @@
 #pragma once
 
+#include "pch.h"
+
 // Only define these if not already defined by CMake
 #ifndef LOG_LEVEL
 #define LOG_LEVEL 5
