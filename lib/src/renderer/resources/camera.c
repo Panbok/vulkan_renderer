@@ -13,16 +13,16 @@ void camera_perspective_create(Camera *camera, InputState *input_state,
 
   camera->type = CAMERA_TYPE_PERSPECTIVE;
 
-  camera->speed = 2.5f;
-  camera->sensitivity = 0.1f;
-  camera->yaw = -90.0f;
-  camera->pitch = 0.0f;
+  camera->speed = DEFAULT_SPEED;
+  camera->sensitivity = DEFAULT_SENSITIVITY;
+  camera->yaw = DEFAULT_YAW;
+  camera->pitch = DEFAULT_PITCH;
 
-  camera->position = vec3_new(0.0f, 0.0f, -5.0f);
-  camera->forward = vec3_new(0.0f, 0.0f, -1.0f);
-  camera->up = vec3_new(0.0f, 1.0f, 0.0f);
-  camera->right = vec3_new(1.0f, 0.0f, 0.0f);
-  camera->world_up = vec3_new(0.0f, 1.0f, 0.0f);
+  camera->position = DEFAULT_POSITION;
+  camera->forward = DEFAULT_FORWARD;
+  camera->up = DEFAULT_UP;
+  camera->right = DEFAULT_RIGHT;
+  camera->world_up = DEFAULT_WORLD_UP;
 
   camera->near_clip = near_clip;
   camera->far_clip = far_clip;
@@ -46,18 +46,18 @@ void camera_orthographic_create(Camera *camera, InputState *input_state,
 
   camera->type = CAMERA_TYPE_ORTHOGRAPHIC;
   camera->target_frame_rate = target_frame_rate;
-  camera->zoom = 1.0f;
+  camera->zoom = DEFAULT_ZOOM;
 
-  camera->speed = 1.0f;
-  camera->sensitivity = 0.1f;
-  camera->yaw = -90.0f;
-  camera->pitch = 0.0f;
+  camera->speed = DEFAULT_SPEED;
+  camera->sensitivity = DEFAULT_SENSITIVITY;
+  camera->yaw = DEFAULT_YAW;
+  camera->pitch = DEFAULT_PITCH;
 
-  camera->position = vec3_new(0.0f, 0.0f, -5.0f);
-  camera->forward = vec3_new(0.0f, 0.0f, -1.0f);
-  camera->up = vec3_new(0.0f, 1.0f, 0.0f);
-  camera->right = vec3_new(1.0f, 0.0f, 0.0f);
-  camera->world_up = vec3_new(0.0f, 1.0f, 0.0f);
+  camera->position = DEFAULT_POSITION;
+  camera->forward = DEFAULT_FORWARD;
+  camera->up = DEFAULT_UP;
+  camera->right = DEFAULT_RIGHT;
+  camera->world_up = DEFAULT_WORLD_UP;
 
   camera->near_clip = near_clip;
   camera->far_clip = far_clip;
@@ -140,6 +140,7 @@ void camera_update(Camera *camera, float32_t delta_time) {
   camera->yaw -= x_offset * frame_adjusted_sensitivity;
   camera->pitch += y_offset * frame_adjusted_sensitivity;
 
+  // Done to prevent camera from flipping
   if (camera->pitch > 89.0f)
     camera->pitch = 89.0f;
   if (camera->pitch < -89.0f)
@@ -182,22 +183,4 @@ Mat4 camera_get_projection_matrix(const Camera *camera) {
   }
 
   return mat4_identity();
-}
-
-void camera_destroy(Camera *camera) {
-  assert_log(camera != NULL, "Camera is NULL");
-
-  camera->type = CAMERA_TYPE_NONE;
-  camera->input_state = NULL;
-  camera->window = NULL;
-  camera->zoom = 0.0f;
-  camera->speed = 0.0f;
-  camera->sensitivity = 0.0f;
-  camera->yaw = 0.0f;
-  camera->pitch = 0.0f;
-  camera->position = vec3_zero();
-  camera->forward = vec3_zero();
-  camera->up = vec3_zero();
-  camera->right = vec3_zero();
-  camera->world_up = vec3_zero();
 }
