@@ -22,7 +22,7 @@ InputState input_init(EventManager *event_manager) {
     log_warn("Failed to enqueue INPUT_SYSTEM_INIT event");
   }
 
-  log_info("Input system initialized");
+  log_debug("Input system initialized");
   return input_state;
 }
 
@@ -36,7 +36,7 @@ void input_shutdown(InputState *input_state) {
   };
   input_state->is_initialized = false;
   event_manager_dispatch(input_state->event_manager, event);
-  log_info("Input system shutdown");
+  log_debug("Input system shutdown");
 }
 
 void input_update(InputState *input_state) {
