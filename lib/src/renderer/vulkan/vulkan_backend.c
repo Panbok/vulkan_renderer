@@ -600,10 +600,11 @@ renderer_vulkan_create_buffer(void *backend_state,
 
   // If initial data is provided, load it into the buffer
   if (initial_data && desc->size > 0) {
-    if (!vulkan_buffer_load_data(state, &buffer->buffer, 0, desc->size, 0,
-                                 initial_data)) {
-      log_error("Failed to load initial data into buffer");
+    if (renderer_vulkan_upload_buffer(
+            backend_state, (BackendResourceHandle){.ptr = buffer}, 0,
+            desc->size, initial_data) != RENDERER_ERROR_NONE) {
       vulkan_buffer_destroy(state, &buffer->buffer);
+      log_error("Failed to upload initial data into buffer");
       return (BackendResourceHandle){.ptr = NULL};
     }
   }
@@ -637,8 +638,8 @@ RendererError renderer_vulkan_upload_buffer(void *backend_state,
   struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
 
   Scratch scratch = scratch_create(state->temp_arena);
-  // Create a host-visible staging buffer to upload to. Mark it as the source of
-  // the transfer.
+  // Create a host-visible staging buffer to upload to. Mark it as the source
+  // of the transfer.
   BufferTypeFlags buffer_type = bitset8_create();
   bitset8_set(&buffer_type, BUFFER_TYPE_GRAPHICS);
   const BufferDescription staging_buffer_desc = {
@@ -796,7 +797,8 @@ void renderer_vulkan_bind_buffer(void *backend_state,
     // description
     vulkan_buffer_bind_index_buffer(
         state, command_buffer, buffer->buffer.handle, offset,
-        VK_INDEX_TYPE_UINT32); // todo: append index type to buffer description
+        VK_INDEX_TYPE_UINT32); // todo: append index type to buffer
+                               // description
   } else {
     log_warn("Buffer has unknown usage flags for pipeline binding");
   }
