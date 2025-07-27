@@ -2,6 +2,7 @@
 
 #include "containers/bitset.h"
 #include "defines.h"
+#include "math/mat.h"
 #include "pch.h"
 #include "platform/platform.h"
 #include "platform/window.h"
@@ -59,7 +60,6 @@
 
 typedef struct s_RendererFrontend *RendererFrontendHandle;
 typedef struct s_BufferResource *BufferHandle;
-typedef struct s_ShaderModule *ShaderHandle;
 typedef struct s_Pipeline *PipelineHandle;
 
 typedef union {
@@ -93,6 +93,7 @@ typedef enum RendererError {
   RENDERER_ERROR_PRESENTATION_FAILED,
   RENDERER_ERROR_FRAME_IN_PROGRESS,
   RENDERER_ERROR_DEVICE_ERROR,
+  RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED,
   RENDERER_ERROR_COUNT
 } RendererError;
 
@@ -110,6 +111,35 @@ typedef enum ShaderStageBits {
       SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
 } ShaderStageBits;
 typedef Bitset8 ShaderStageFlags; // Assuming Bitset8 is sufficient for now
+
+// ShaderStageFlags helper functions
+static inline ShaderStageFlags shader_stage_flags_create(void) {
+  return bitset8_create();
+}
+
+static inline ShaderStageFlags shader_stage_flags_from_bits(uint8_t bits) {
+  ShaderStageFlags flags = bitset8_create();
+  if (bits & SHADER_STAGE_VERTEX_BIT)
+    bitset8_set(&flags, SHADER_STAGE_VERTEX_BIT);
+  if (bits & SHADER_STAGE_FRAGMENT_BIT)
+    bitset8_set(&flags, SHADER_STAGE_FRAGMENT_BIT);
+  if (bits & SHADER_STAGE_COMPUTE_BIT)
+    bitset8_set(&flags, SHADER_STAGE_COMPUTE_BIT);
+  if (bits & SHADER_STAGE_GEOMETRY_BIT)
+    bitset8_set(&flags, SHADER_STAGE_GEOMETRY_BIT);
+  if (bits & SHADER_STAGE_TESSELLATION_CONTROL_BIT)
+    bitset8_set(&flags, SHADER_STAGE_TESSELLATION_CONTROL_BIT);
+  if (bits & SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
+    bitset8_set(&flags, SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
+  return flags;
+}
+
+#define SHADER_STAGE_FLAGS_VERTEX_FRAGMENT()                                   \
+  shader_stage_flags_from_bits(SHADER_STAGE_VERTEX_BIT |                       \
+                               SHADER_STAGE_FRAGMENT_BIT)
+
+#define SHADER_STAGE_FLAGS_ALL_GRAPHICS()                                      \
+  shader_stage_flags_from_bits(SHADER_STAGE_ALL_GRAPHICS)
 
 typedef enum PrimitiveTopology {
   PRIMITIVE_TOPOLOGY_POINT_LIST,
@@ -139,16 +169,65 @@ typedef enum IndexType {
   INDEX_TYPE_UINT32,
 } IndexType;
 
+typedef enum PolygonMode {
+  POLYGON_MODE_FILL = 0,
+  POLYGON_MODE_LINE,
+  POLYGON_MODE_POINT,
+} PolygonMode;
+
 typedef enum BufferUsageBits {
   BUFFER_USAGE_NONE = 0,
   BUFFER_USAGE_VERTEX_BUFFER = 1 << 0,
   BUFFER_USAGE_INDEX_BUFFER = 1 << 1,
-  BUFFER_USAGE_UNIFORM = 1 << 2,
-  BUFFER_USAGE_STORAGE = 1 << 3,      // For compute/more advanced
-  BUFFER_USAGE_TRANSFER_SRC = 1 << 4, // Can be source of a copy
-  BUFFER_USAGE_TRANSFER_DST = 1 << 5, // Can be destination of a copy
+  BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER = 1 << 2,
+  BUFFER_USAGE_UNIFORM = 1 << 3,
+  BUFFER_USAGE_STORAGE = 1 << 4,      // For compute/more advanced
+  BUFFER_USAGE_TRANSFER_SRC = 1 << 5, // Can be source of a copy
+  BUFFER_USAGE_TRANSFER_DST = 1 << 6, // Can be destination of a copy
 } BufferUsageBits;
 typedef Bitset8 BufferUsageFlags;
+
+// BufferUsageFlags helper functions
+static inline BufferUsageFlags buffer_usage_flags_create(void) {
+  return bitset8_create();
+}
+
+static inline BufferUsageFlags buffer_usage_flags_from_bits(uint8_t bits) {
+  BufferUsageFlags flags = bitset8_create();
+  if (bits & BUFFER_USAGE_VERTEX_BUFFER)
+    bitset8_set(&flags, BUFFER_USAGE_VERTEX_BUFFER);
+  if (bits & BUFFER_USAGE_INDEX_BUFFER)
+    bitset8_set(&flags, BUFFER_USAGE_INDEX_BUFFER);
+  if (bits & BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER)
+    bitset8_set(&flags, BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER);
+  if (bits & BUFFER_USAGE_UNIFORM)
+    bitset8_set(&flags, BUFFER_USAGE_UNIFORM);
+  if (bits & BUFFER_USAGE_STORAGE)
+    bitset8_set(&flags, BUFFER_USAGE_STORAGE);
+  if (bits & BUFFER_USAGE_TRANSFER_SRC)
+    bitset8_set(&flags, BUFFER_USAGE_TRANSFER_SRC);
+  if (bits & BUFFER_USAGE_TRANSFER_DST)
+    bitset8_set(&flags, BUFFER_USAGE_TRANSFER_DST);
+  return flags;
+}
+
+#define BUFFER_USAGE_FLAGS_VERTEX()                                            \
+  buffer_usage_flags_from_bits(BUFFER_USAGE_VERTEX_BUFFER |                    \
+                               BUFFER_USAGE_TRANSFER_DST)
+
+#define BUFFER_USAGE_FLAGS_INDEX()                                             \
+  buffer_usage_flags_from_bits(BUFFER_USAGE_INDEX_BUFFER |                     \
+                               BUFFER_USAGE_TRANSFER_DST)
+
+#define BUFFER_USAGE_FLAGS_UNIFORM()                                           \
+  buffer_usage_flags_from_bits(BUFFER_USAGE_UNIFORM | BUFFER_USAGE_TRANSFER_DST)
+
+typedef enum BufferTypeBits {
+  BUFFER_TYPE_GRAPHICS = 1 << 0,
+  BUFFER_TYPE_COMPUTE = 1 << 1,
+  BUFFER_TYPE_TRANSFER = 1 << 2,
+} BufferTypeBits;
+typedef Bitset8 BufferTypeFlags;
 
 typedef enum MemoryPropertyBits {
   MEMORY_PROPERTY_DEVICE_LOCAL = 1 << 0,  // GPU optimal memory
@@ -157,6 +236,32 @@ typedef enum MemoryPropertyBits {
   MEMORY_PROPERTY_HOST_CACHED = 1 << 3,   // CPU cacheable
 } MemoryPropertyBits;
 typedef Bitset8 MemoryPropertyFlags;
+
+// MemoryPropertyFlags helper functions
+static inline MemoryPropertyFlags memory_property_flags_create(void) {
+  return bitset8_create();
+}
+
+static inline MemoryPropertyFlags
+memory_property_flags_from_bits(uint8_t bits) {
+  MemoryPropertyFlags flags = bitset8_create();
+  if (bits & MEMORY_PROPERTY_DEVICE_LOCAL)
+    bitset8_set(&flags, MEMORY_PROPERTY_DEVICE_LOCAL);
+  if (bits & MEMORY_PROPERTY_HOST_VISIBLE)
+    bitset8_set(&flags, MEMORY_PROPERTY_HOST_VISIBLE);
+  if (bits & MEMORY_PROPERTY_HOST_COHERENT)
+    bitset8_set(&flags, MEMORY_PROPERTY_HOST_COHERENT);
+  if (bits & MEMORY_PROPERTY_HOST_CACHED)
+    bitset8_set(&flags, MEMORY_PROPERTY_HOST_CACHED);
+  return flags;
+}
+
+#define MEMORY_PROPERTY_FLAGS_DEVICE_LOCAL()                                   \
+  memory_property_flags_from_bits(MEMORY_PROPERTY_DEVICE_LOCAL)
+
+#define MEMORY_PROPERTY_FLAGS_HOST_VISIBLE()                                   \
+  memory_property_flags_from_bits(MEMORY_PROPERTY_HOST_VISIBLE |               \
+                                  MEMORY_PROPERTY_HOST_COHERENT)
 
 // ============================================================================
 // Device Resources
@@ -216,17 +321,65 @@ typedef struct BufferDescription {
   // For staging, the frontend might create two buffers:
   // one HOST_VISIBLE for upload, one DEVICE_LOCAL for rendering.
   // Or the backend abstracts this.
+
+  BufferTypeFlags buffer_type;
+
+  bool8_t bind_on_create;
 } BufferDescription;
 
+typedef enum ShaderStage {
+  SHADER_STAGE_VERTEX = 0,
+  SHADER_STAGE_FRAGMENT = 1,
+  // Future: geometry_shader, tess_control_shader, tess_eval_shader
+  SHADER_STAGE_COUNT,
+} ShaderStage;
+
+typedef enum ShaderFileFormat {
+  SHADER_FILE_FORMAT_SPIR_V = 0,
+  SHADER_FILE_FORMAT_HLSL,
+  SHADER_FILE_FORMAT_GLSL,
+} ShaderFileFormat;
+
+typedef enum ShaderFileType {
+  SHADER_FILE_TYPE_SINGLE = 0,
+  SHADER_FILE_TYPE_MULTI,
+} ShaderFileType;
+
+// Used to create a single global uniform object for the entire scene
+// This is used to pass the MVP matrix to the shader
+typedef struct GlobalUniformObject {
+  Mat4 view;
+  Mat4 projection;
+  // Padding to align to 256 bytes (required by Nvidia GPUs)
+  uint8_t padding[128];
+} GlobalUniformObject;
+
+typedef struct ShaderStateObject {
+  Mat4 model;
+} ShaderStateObject;
+
 typedef struct ShaderModuleDescription {
-  ShaderStageFlags stage;
-  const uint64_t size; // Size of the shader bytecode in bytes (must be multiple
-                       // of 4 for SPIR-V)
-  const uint8_t *code; // Pointer to shader bytecode (SPIR-V format, must be
-                       // 4-byte aligned)
-  const String8 entry_point; // e.g., "main"
-                             // Future: defines, include paths etc.
+  ShaderStageFlags stages;
+  /* Path to the shader file (same path for single file, different paths for
+   * multi-file) */
+  const String8 path;
+  /* Entry point for the shader (e.g., "main") */
+  const String8 entry_point;
+  // Future: defines, include paths etc.
 } ShaderModuleDescription;
+
+typedef struct ShaderObjectDescription {
+  /* Format of the shader file (e.g., SPIR-V, HLSL, GLSL) */
+  ShaderFileFormat file_format;
+  /* Determines if the shader is a single file or a multi-file shader (e.g.,
+   * single, multi) */
+  ShaderFileType file_type;
+
+  ShaderModuleDescription modules[SHADER_STAGE_COUNT];
+
+  GlobalUniformObject global_uniform_object;
+  ShaderStateObject shader_state_object;
+} ShaderObjectDescription;
 
 // Used at PIPELINE CREATION time to define vertex layout
 typedef struct VertexInputAttributeDescription {
@@ -243,11 +396,8 @@ typedef struct VertexInputBindingDescription {
   uint32_t stride;  // Distance between consecutive elements for this binding
   VertexInputRate input_rate; // Per-vertex or per-instance
 } VertexInputBindingDescription;
-
 typedef struct GraphicsPipelineDescription {
-  ShaderHandle vertex_shader;
-  ShaderHandle fragment_shader;
-  // Future: geometry_shader, tess_control_shader, tess_eval_shader
+  ShaderObjectDescription shader_object_description;
 
   uint32_t attribute_count;
   VertexInputAttributeDescription *attributes;
@@ -255,6 +405,8 @@ typedef struct GraphicsPipelineDescription {
   VertexInputBindingDescription *bindings;
 
   PrimitiveTopology topology;
+
+  PolygonMode polygon_mode;
 
   // Simplified for now. Add more states as needed:
   // RasterizationState rasterization_state;
@@ -268,47 +420,6 @@ typedef struct GraphicsPipelineDescription {
 // ============================================================================
 // Buffer and Vertex/Index Data Structures
 // ============================================================================
-
-/* Usage Example:
- *
- * // 1. Create pipeline with vertex input layout
- * VertexInputAttributeDescription attrs[] = {
- *   {.location = 0, .binding = 0, .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
- * .offset = 0},  // position
- *   {.location = 1, .binding = 0, .format = VERTEX_FORMAT_R32G32_SFLOAT,
- * .offset = 12},   // uv
- * };
- * VertexInputBindingDescription bindings[] = {
- *   {.binding = 0, .stride = 20, .input_rate = VERTEX_INPUT_RATE_VERTEX}
- * };
- * GraphicsPipelineDescription pipeline_desc = {
- *   .vertex_shader = vs, .fragment_shader = fs,
- *   .attribute_count = 2, .attributes = attrs,
- *   .binding_count = 1, .bindings = bindings,
- *   // ... other pipeline state
- * };
- * PipelineHandle pipeline = renderer_create_pipeline(renderer, &pipeline_desc,
- * &err);
- *
- * // 2. Create buffers
- * BufferHandle vb = renderer_create_vertex_buffer(renderer, vertex_data_size,
- * vertex_data, &err);
- * BufferHandle ib = renderer_create_index_buffer(renderer,
- * index_data_size, INDEX_TYPE_UINT16, index_data, &err);
- *
- * // 3. Render
- * renderer_begin_frame(renderer, dt);
- * renderer_bind_graphics_pipeline(renderer, pipeline);
- *
- * VertexBufferBinding vb_binding = {.buffer = vb, .binding = 0, .offset = 0};
- * renderer_bind_vertex_buffer(renderer, &vb_binding);
- *
- * IndexBufferBinding ib_binding = {.buffer = ib, .type = INDEX_TYPE_UINT16,
- * .offset = 0}; renderer_bind_index_buffer(renderer, &ib_binding);
- *
- * renderer_draw_indexed(renderer, index_count, 1, 0, 0, 0);
- * renderer_end_frame(renderer, dt);
- */
 
 // Used at RUNTIME to bind actual buffers to the vertex input bindings defined
 // in the pipeline
@@ -370,18 +481,9 @@ BufferHandle renderer_create_index_buffer(RendererFrontendHandle renderer,
 void renderer_destroy_buffer(RendererFrontendHandle renderer,
                              BufferHandle buffer);
 
-ShaderHandle
-renderer_create_shader_from_source(RendererFrontendHandle renderer,
-                                   const ShaderModuleDescription *description,
-                                   RendererError *out_error);
-
-void renderer_destroy_shader(RendererFrontendHandle renderer,
-                             ShaderHandle shader);
-
-PipelineHandle
-renderer_create_pipeline(RendererFrontendHandle renderer,
-                         const GraphicsPipelineDescription *description,
-                         RendererError *out_error);
+PipelineHandle renderer_create_graphics_pipeline(
+    RendererFrontendHandle renderer,
+    const GraphicsPipelineDescription *description, RendererError *out_error);
 
 void renderer_destroy_pipeline(RendererFrontendHandle renderer,
                                PipelineHandle pipeline);
@@ -389,6 +491,15 @@ void renderer_destroy_pipeline(RendererFrontendHandle renderer,
 
 // --- START Data Update ---
 RendererError renderer_update_buffer(RendererFrontendHandle renderer,
+                                     BufferHandle buffer, uint64_t offset,
+                                     uint64_t size, const void *data);
+
+RendererError renderer_update_pipeline_state(RendererFrontendHandle renderer,
+                                             PipelineHandle pipeline,
+                                             const GlobalUniformObject *uniform,
+                                             const ShaderStateObject *data);
+
+RendererError renderer_upload_buffer(RendererFrontendHandle renderer,
                                      BufferHandle buffer, uint64_t offset,
                                      uint64_t size, const void *data);
 // --- END Data Update ---
@@ -400,18 +511,9 @@ RendererError renderer_begin_frame(RendererFrontendHandle renderer,
 void renderer_resize(RendererFrontendHandle renderer, uint32_t width,
                      uint32_t height);
 
-void renderer_bind_graphics_pipeline(RendererFrontendHandle renderer,
-                                     PipelineHandle pipeline);
-
 // Bind a vertex buffer (most common case)
 void renderer_bind_vertex_buffer(RendererFrontendHandle renderer,
                                  const VertexBufferBinding *binding);
-
-// Bind multiple vertex buffers at once - for advanced use cases
-void renderer_bind_vertex_buffers(RendererFrontendHandle renderer,
-                                  uint32_t first_binding,
-                                  uint32_t binding_count,
-                                  const VertexBufferBinding *bindings);
 
 void renderer_bind_index_buffer(RendererFrontendHandle renderer,
                                 const IndexBufferBinding *binding);
@@ -469,36 +571,25 @@ typedef struct RendererBackendInterface {
   RendererError (*buffer_update)(void *backend_state,
                                  BackendResourceHandle handle, uint64_t offset,
                                  uint64_t size, const void *data);
-
-  // --- Shader & Pipeline Management (NEW) ---
-  BackendResourceHandle (*shader_create_from_source)(
-      void *backend_state, const ShaderModuleDescription *description);
-  void (*shader_destroy)(void *backend_state,
-                         BackendResourceHandle shader_handle);
+  RendererError (*buffer_upload)(void *backend_state,
+                                 BackendResourceHandle handle, uint64_t offset,
+                                 uint64_t size, const void *data);
 
   // Pipeline creation uses VertexInputAttributeDescription and
   // VertexInputBindingDescription from GraphicsPipelineDescription to
   // configure the vertex input layout. Runtime vertex buffer bindings
   // must reference the binding numbers defined in these descriptions.
-  BackendResourceHandle (*pipeline_create)(
+  BackendResourceHandle (*graphics_pipeline_create)(
       void *backend_state, const GraphicsPipelineDescription *description);
+  RendererError (*pipeline_update_state)(void *backend_state,
+                                         BackendResourceHandle pipeline_handle,
+                                         const GlobalUniformObject *uniform,
+                                         const ShaderStateObject *data);
   void (*pipeline_destroy)(void *backend_state,
                            BackendResourceHandle pipeline_handle);
 
-  // --- Drawing Commands (Called by Frontend within a frame/render pass) ---
-  // These are the "abstract commands" translated by the frontend.
-  void (*bind_pipeline)(void *backend_state,
-                        BackendResourceHandle pipeline_handle);
-
-  void (*bind_vertex_buffer)(void *backend_state,
-                             const VertexBufferBinding *binding);
-
-  void (*bind_vertex_buffers)(void *backend_state, uint32_t first_binding,
-                              uint32_t binding_count,
-                              const VertexBufferBinding *bindings);
-
-  void (*bind_index_buffer)(void *backend_state,
-                            const IndexBufferBinding *binding);
+  void (*bind_buffer)(void *backend_state, BackendResourceHandle buffer_handle,
+                      uint64_t offset);
 
   void (*draw)(void *backend_state, uint32_t vertex_count,
                uint32_t instance_count, uint32_t first_vertex,
