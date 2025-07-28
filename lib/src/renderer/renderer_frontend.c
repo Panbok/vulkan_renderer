@@ -135,10 +135,17 @@ BufferHandle renderer_create_vertex_buffer(RendererFrontendHandle renderer,
                                            uint64_t size,
                                            const void *initial_data,
                                            RendererError *out_error) {
-  BufferDescription desc = {.size = size,
-                            .usage = BUFFER_USAGE_VERTEX_BUFFER |
-                                     BUFFER_USAGE_TRANSFER_DST,
-                            .memory_properties = MEMORY_PROPERTY_DEVICE_LOCAL};
+  BufferTypeFlags buffer_type = bitset8_create();
+  bitset8_set(&buffer_type, BUFFER_TYPE_GRAPHICS);
+  BufferDescription desc = {
+      .size = size,
+      .memory_properties =
+          memory_property_flags_from_bits(MEMORY_PROPERTY_DEVICE_LOCAL),
+      .usage = buffer_usage_flags_from_bits(BUFFER_USAGE_VERTEX_BUFFER |
+                                            BUFFER_USAGE_TRANSFER_DST |
+                                            BUFFER_USAGE_TRANSFER_SRC),
+      .bind_on_create = true_v,
+      .buffer_type = buffer_type};
 
   return renderer_create_buffer(renderer, &desc, initial_data, out_error);
 }
@@ -151,10 +158,17 @@ BufferHandle renderer_create_index_buffer(RendererFrontendHandle renderer,
   // doesn't need to know the index type (that's specified at bind time)
   (void)type; // Suppress unused parameter warning
 
-  BufferDescription desc = {.size = size,
-                            .usage = BUFFER_USAGE_INDEX_BUFFER |
-                                     BUFFER_USAGE_TRANSFER_DST,
-                            .memory_properties = MEMORY_PROPERTY_DEVICE_LOCAL};
+  BufferTypeFlags buffer_type = bitset8_create();
+  bitset8_set(&buffer_type, BUFFER_TYPE_GRAPHICS);
+  BufferDescription desc = {
+      .size = size,
+      .memory_properties =
+          memory_property_flags_from_bits(MEMORY_PROPERTY_DEVICE_LOCAL),
+      .usage = buffer_usage_flags_from_bits(BUFFER_USAGE_INDEX_BUFFER |
+                                            BUFFER_USAGE_TRANSFER_DST |
+                                            BUFFER_USAGE_TRANSFER_SRC),
+      .bind_on_create = true_v,
+      .buffer_type = buffer_type};
 
   return renderer_create_buffer(renderer, &desc, initial_data, out_error);
 }
@@ -170,17 +184,16 @@ void renderer_destroy_buffer(RendererFrontendHandle renderer,
   renderer->backend.buffer_destroy(renderer->backend_state, handle);
 }
 
-ShaderHandle
-renderer_create_shader_from_source(RendererFrontendHandle renderer,
-                                   const ShaderModuleDescription *description,
-                                   RendererError *out_error) {
+PipelineHandle renderer_create_graphics_pipeline(
+    RendererFrontendHandle renderer,
+    const GraphicsPipelineDescription *description, RendererError *out_error) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(description != NULL, "Description is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  log_debug("Creating shader from source");
+  log_debug("Creating pipeline");
 
-  BackendResourceHandle handle = renderer->backend.shader_create_from_source(
+  BackendResourceHandle handle = renderer->backend.graphics_pipeline_create(
       renderer->backend_state, description);
   if (handle.ptr == NULL) {
     *out_error = RENDERER_ERROR_RESOURCE_CREATION_FAILED;
@@ -188,39 +201,21 @@ renderer_create_shader_from_source(RendererFrontendHandle renderer,
   }
 
   *out_error = RENDERER_ERROR_NONE;
-  return (ShaderHandle)handle.ptr;
-}
-
-void renderer_destroy_shader(RendererFrontendHandle renderer,
-                             ShaderHandle shader) {
-  assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(shader != NULL, "Shader is NULL");
-
-  log_debug("Destroying shader");
-
-  BackendResourceHandle handle = {.ptr = (void *)shader};
-  renderer->backend.shader_destroy(renderer->backend_state, handle);
-}
-
-PipelineHandle
-renderer_create_pipeline(RendererFrontendHandle renderer,
-                         const GraphicsPipelineDescription *description,
-                         RendererError *out_error) {
-  assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(description != NULL, "Description is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
-
-  log_debug("Creating pipeline");
-
-  BackendResourceHandle handle =
-      renderer->backend.pipeline_create(renderer->backend_state, description);
-  if (handle.ptr == NULL) {
-    *out_error = RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    return NULL;
-  }
-
-  *out_error = RENDERER_ERROR_NONE;
   return (PipelineHandle)handle.ptr;
+}
+
+RendererError renderer_update_pipeline_state(RendererFrontendHandle renderer,
+                                             PipelineHandle pipeline,
+                                             const GlobalUniformObject *uniform,
+                                             const ShaderStateObject *data) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(pipeline != NULL, "Pipeline is NULL");
+
+  // log_debug("Updating pipeline state");
+
+  BackendResourceHandle handle = {.ptr = (void *)pipeline};
+  return renderer->backend.pipeline_update_state(renderer->backend_state,
+                                                 handle, uniform, data);
 }
 
 void renderer_destroy_pipeline(RendererFrontendHandle renderer,
@@ -251,6 +246,18 @@ RendererError renderer_update_buffer(RendererFrontendHandle renderer,
                                          offset, size, data);
 }
 
+RendererError renderer_upload_buffer(RendererFrontendHandle renderer,
+                                     BufferHandle buffer, uint64_t offset,
+                                     uint64_t size, const void *data) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(buffer != NULL, "Buffer is NULL");
+
+  log_debug("Uploading buffer");
+
+  BackendResourceHandle handle = {.ptr = (void *)buffer};
+  return renderer->backend.buffer_upload(renderer->backend_state, handle,
+                                         offset, size, data);
+}
 RendererError renderer_begin_frame(RendererFrontendHandle renderer,
                                    float64_t delta_time) {
   assert_log(renderer != NULL, "Renderer is NULL");
@@ -279,35 +286,6 @@ void renderer_resize(RendererFrontendHandle renderer, uint32_t width,
   renderer->backend.on_resize(renderer->backend_state, width, height);
 }
 
-void renderer_bind_graphics_pipeline(RendererFrontendHandle renderer,
-                                     PipelineHandle pipeline) {
-  assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(pipeline != NULL, "Pipeline is NULL");
-  assert_log(renderer->frame_active, "Bind pipeline called outside of frame");
-
-  // log_debug("Binding pipeline");
-
-  BackendResourceHandle handle = {.ptr = (void *)pipeline};
-  renderer->backend.bind_pipeline(renderer->backend_state, handle);
-}
-
-void renderer_bind_vertex_buffers(RendererFrontendHandle renderer,
-                                  uint32_t first_binding,
-                                  uint32_t binding_count,
-                                  const VertexBufferBinding *bindings) {
-  assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(bindings != NULL, "Bindings is NULL");
-  assert_log(binding_count > 0, "Binding count must be > 0");
-  assert_log(renderer->frame_active,
-             "Bind vertex buffers called outside of frame");
-
-  // log_debug("Binding %d vertex buffers starting at binding %d",
-  // binding_count, first_binding);
-
-  renderer->backend.bind_vertex_buffers(renderer->backend_state, first_binding,
-                                        binding_count, bindings);
-}
-
 void renderer_bind_vertex_buffer(RendererFrontendHandle renderer,
                                  const VertexBufferBinding *binding) {
   assert_log(renderer != NULL, "Renderer is NULL");
@@ -319,7 +297,9 @@ void renderer_bind_vertex_buffer(RendererFrontendHandle renderer,
   // log_debug("Binding vertex buffer to binding %d with offset %llu",
   //           binding->binding, binding->offset);
 
-  renderer->backend.bind_vertex_buffer(renderer->backend_state, binding);
+  BackendResourceHandle handle = {.ptr = (void *)binding->buffer};
+  renderer->backend.bind_buffer(renderer->backend_state, handle,
+                                binding->offset);
 }
 
 void renderer_bind_index_buffer(RendererFrontendHandle renderer,
@@ -333,7 +313,9 @@ void renderer_bind_index_buffer(RendererFrontendHandle renderer,
   // log_debug("Binding index buffer with type %d and offset %llu",
   //           binding->type, binding->offset);
 
-  renderer->backend.bind_index_buffer(renderer->backend_state, binding);
+  BackendResourceHandle handle = {.ptr = (void *)binding->buffer};
+  renderer->backend.bind_buffer(renderer->backend_state, handle,
+                                binding->offset);
 }
 
 void renderer_draw(RendererFrontendHandle renderer, uint32_t vertex_count,
