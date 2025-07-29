@@ -200,6 +200,22 @@ INLINE float32_t min_f32(float32_t a, float32_t b) { return (a < b) ? a : b; }
 INLINE float32_t max_f32(float32_t a, float32_t b) { return (a > b) ? a : b; }
 
 /**
+ * @brief Returns the minimum of two float64_t values
+ * @param a First value to compare
+ * @param b Second value to compare
+ * @return The smaller of the two input values
+ */
+INLINE float64_t min_f64(float64_t a, float64_t b) { return (a < b) ? a : b; }
+
+/**
+ * @brief Returns the maximum of two float64_t values
+ * @param a First value to compare
+ * @param b Second value to compare
+ * @return The larger of the two input values
+ */
+INLINE float64_t max_f64(float64_t a, float64_t b) { return (a > b) ? a : b; }
+
+/**
  * @brief Clamps a value between a minimum and maximum range
  * @param value The value to clamp
  * @param min_val The minimum allowed value (inclusive)
@@ -210,6 +226,19 @@ INLINE float32_t max_f32(float32_t a, float32_t b) { return (a > b) ? a : b; }
  */
 INLINE float32_t clamp_f32(float32_t value, float32_t min_val,
                            float32_t max_val) {
+  return (value < min_val) ? min_val : (value > max_val) ? max_val : value;
+}
+
+/**
+ * @brief Clamps a value between a minimum and maximum range
+ * @param value The value to clamp
+ * @param min_val The minimum allowed value (inclusive)
+ * @param max_val The maximum allowed value (inclusive)
+ * @return The input value clamped to [min_val, max_val]
+ * @note If min_val > max_val, behavior is undefined
+ */
+INLINE float64_t clamp_f64(float64_t value, float64_t min_val,
+                           float64_t max_val) {
   return (value < min_val) ? min_val : (value > max_val) ? max_val : value;
 }
 
