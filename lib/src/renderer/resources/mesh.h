@@ -230,7 +230,7 @@ typedef struct {
   Array_Vec3 positions; // World/model space positions
   Array_Vec3 normals;   // Surface normals
   Array_Vec2 texcoords; // UV texture coordinates
-  Array_Vec3 colors;    // RGBA8 colors
+  Array_Vec3 colors;    // RGB colors
 
   // Index data
   Array_uint32_t indices; // Triangle indices

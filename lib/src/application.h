@@ -314,6 +314,12 @@ bool8_t application_create(Application *application,
   application->cube_vertex_array = vertex_array_from_mesh(
       application->renderer, application->renderer_arena, &cube_mesh, opts,
       string8_lit("Cube Vertex Array"), &renderer_error);
+  if (renderer_error != RENDERER_ERROR_NONE) {
+    log_fatal("Failed to create cube vertex array: %s",
+              renderer_get_error_string(renderer_error));
+    return false_v;
+  }
+
   log_debug("Cube mesh uploaded to GPU successfully");
 
   log_debug("Attribute count: %d",

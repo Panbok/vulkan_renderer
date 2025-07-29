@@ -60,10 +60,10 @@ void mesh_transform_positions(Mesh *mesh, const Mat4 *transform_matrix) {
 
   for (uint32_t i = simd_count * 4; i < mesh->vertex_count; i++) {
     Vec3 *pos = array_get_Vec3(&mesh->positions, i);
-    SIMD_F32X4 position = *pos;
+    Vec3 position = *pos;
 
     SIMD_F32X4 result = simd_fma_f32x4(
-        row3, simd_set1_f32x4(position.w),
+        row3, simd_set1_f32x4(1.0f), // w = 1.0 for positions
         simd_fma_f32x4(
             row2, simd_set1_f32x4(position.z),
             simd_fma_f32x4(row1, simd_set1_f32x4(position.y),

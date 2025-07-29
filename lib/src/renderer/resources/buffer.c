@@ -323,12 +323,6 @@ RendererError vertex_array_add_vertex_buffer(VertexArray *vertex_array,
     return RENDERER_ERROR_INVALID_PARAMETER;
   }
 
-  // Check if we have space
-  if (vertex_array->vertex_buffers.length == 0) {
-    log_error("Vertex array buffer storage is full");
-    return RENDERER_ERROR_OUT_OF_MEMORY;
-  }
-
   // Find an empty slot or check if binding already exists
   for (uint64_t i = 0; i < vertex_array->vertex_buffers.length; i++) {
     VertexBuffer *existing =
@@ -441,7 +435,7 @@ RendererError vertex_array_compute_pipeline_data(VertexArray *vertex_array) {
     if (vb->handle != NULL) {
       vertex_array->bindings[binding_index] =
           (VertexInputBindingDescription){.binding = binding_index,
-                                          .stride = offset + vb->stride,
+                                          .stride = vb->stride,
                                           .input_rate = vb->input_rate};
 
       // Create a simple attribute assuming the entire vertex buffer is one
@@ -768,6 +762,15 @@ static VertexArray vertex_array_from_mesh_interleaved(
       return vertex_array;
     }
 
+    if (mesh->positions.length < mesh->vertex_count ||
+        mesh->normals.length < mesh->vertex_count ||
+        mesh->texcoords.length < mesh->vertex_count ||
+        mesh->colors.length < mesh->vertex_count) {
+      log_error("Mesh arrays have insufficient data for vertex count");
+      *out_error = RENDERER_ERROR_INVALID_PARAMETER;
+      return vertex_array;
+    }
+
     // Convert from SoA to AoS
     for (uint32_t i = 0; i < mesh->vertex_count; i++) {
       vertex_data[i].position = *array_get_Vec3(&mesh->positions, i);
@@ -810,6 +813,13 @@ static VertexArray vertex_array_from_mesh_interleaved(
     if (!vertex_data) {
       log_error("Failed to allocate memory for position-color vertex data");
       *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+      return vertex_array;
+    }
+
+    if (mesh->positions.length < mesh->vertex_count ||
+        mesh->colors.length < mesh->vertex_count) {
+      log_error("Mesh arrays have insufficient data for vertex count");
+      *out_error = RENDERER_ERROR_INVALID_PARAMETER;
       return vertex_array;
     }
 
