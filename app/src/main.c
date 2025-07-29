@@ -4,6 +4,8 @@
 #include "core/input.h"
 #include "core/logger.h"
 #include "filesystem/filesystem.h"
+#include "math/mat.h"
+#include "math/quat.h"
 #include "memory/arena.h"
 #include "renderer/renderer.h"
 
@@ -42,6 +44,14 @@ bool8_t application_on_mouse_event(Event *event) {
   return true_v;
 }
 
+Camera application_init_camera(Application *application) {
+  Camera camera;
+  camera_perspective_create(
+      &camera, &application->window.input_state, &application->window,
+      application->config->target_frame_rate, 60.0f, 0.1f, 100.0f);
+  return camera;
+}
+
 void application_update(Application *application, float64_t delta) {
   double fps_value = 0.0;
   if (delta > 0.000001) {
@@ -51,34 +61,21 @@ void application_update(Application *application, float64_t delta) {
   }
   // log_debug("CALCULATED FPS VALUE: %f, DELTA WAS: %f", fps_value, delta);
 
+  // Add rotation to test descriptors
+  static float64_t rotation_angle = 0.0;
+  rotation_angle += delta * 90.0; // Rotate 90 degrees per second
+  if (rotation_angle > 360.0) {
+    rotation_angle -= 360.0;
+  }
+
+  // Quat q = quat_from_euler(to_radians(rotation_angle),
+  //                          to_radians(rotation_angle), 0);
+  // application->pipeline.shader_object_description.shader_state_object.model =
+  //     quat_to_mat4(q);
+
   if (state == NULL || state->input_state == NULL) {
     log_error("State or input state is NULL");
     return;
-  }
-
-  InputState *input_state = state->input_state;
-  for (uint16_t i = 0; i < state->entities.length; i++) {
-    float64_t *player_position_x =
-        array_get_float64_t(&state->player_position_x, i);
-    float64_t *player_position_y =
-        array_get_float64_t(&state->player_position_y, i);
-
-    if (input_is_key_down(input_state, KEY_W)) {
-      *player_position_x += PLAYER_SPEED * delta;
-    }
-    if (input_is_key_down(input_state, KEY_S)) {
-      *player_position_x -= PLAYER_SPEED * delta;
-    }
-    if (input_is_key_down(input_state, KEY_A)) {
-      *player_position_y += PLAYER_SPEED * delta;
-    }
-    if (input_is_key_down(input_state, KEY_D)) {
-      *player_position_y -= PLAYER_SPEED * delta;
-    }
-
-    // log_debug("Entity ID: %u, Player Position: (x - %f, y - %f)",
-    //           *array_get_uint16_t(&state->entities, i), *player_position_x,
-    //           *player_position_y);
   }
 
   if (input_is_key_up(state->input_state, KEY_M) &&
@@ -115,7 +112,7 @@ int main(int argc, char **argv) {
       .supported_sampler_filters = SAMPLER_FILTER_ANISOTROPIC_BIT,
   };
 
-  Application application;
+  Application application = {0};
   if (!application_create(&application, &config)) {
     log_fatal("Application creation failed!");
     return 1;

@@ -45,15 +45,19 @@
 // clang-format on
 #pragma once
 
+#include "./defines.h"
 #include "containers/bitset.h"
 #include "core/clock.h"
 #include "core/event.h"
 #include "core/logger.h"
-#include "defines.h"
 #include "filesystem/filesystem.h"
+#include "math/mat.h"
+#include "math/math.h"
+#include "math/vec.h"
 #include "memory/arena.h"
 #include "platform/window.h"
 #include "renderer/renderer.h"
+#include "renderer/resources/resources.h"
 
 /**
  * @brief Flags representing the current state of the application.
@@ -112,8 +116,13 @@ typedef struct Application {
   Bitset8 app_flags;         /**< Bitset holding `ApplicationFlag`s to track the
                                 current state. */
 
+  Camera camera;
+
   GraphicsPipelineDescription pipeline;
   PipelineHandle pipeline_handle;
+
+  Array_Mesh meshes;
+  VertexArray cube_vertex_array;
 
   // Window size tracking for resize detection
   uint32_t
@@ -163,6 +172,13 @@ bool8_t application_on_key_event(Event *event);
 bool8_t application_on_mouse_event(Event *event);
 
 /**
+ * @brief Initializes the camera for the application
+ * @param application Pointer to the `Application` structure.
+ * @return The initialized camera
+ */
+Camera application_init_camera(Application *application);
+
+/**
  * @brief User-defined application update function.
  * This function is called once per frame from within the main application
  * loop
@@ -172,6 +188,12 @@ bool8_t application_on_mouse_event(Event *event);
  * @param delta The time elapsed since the last frame, in seconds.
  */
 void application_update(Application *application, float64_t delta);
+/**
+ * @brief Creates a cube mesh and uploads it to GPU buffers
+ * @param application Pointer to the `Application` structure.
+ * @return `true_v` on success, `false_v` on failure
+ */
+bool8_t application_create_cube_mesh(Application *application);
 
 /**
  * @brief Initializes the application and its core subsystems.
@@ -194,6 +216,7 @@ bool8_t application_create(Application *application,
   assert(config->target_frame_rate > 0 && "Application target frame rate is 0");
 
   application->config = config;
+  application->app_flags = bitset8_create();
 
   ArenaFlags app_arena_flags = bitset8_create();
   bitset8_set(&app_arena_flags, ARENA_FLAG_LARGE_PAGES);
@@ -248,75 +271,71 @@ bool8_t application_create(Application *application,
     return false_v;
   }
 
-  const char *shader_path = "assets/triangle.spv";
-  // we need file path to live for the whole duration of the application
-  const FilePath path = file_path_create(shader_path, application->app_arena,
-                                         FILE_PATH_TYPE_RELATIVE);
-  if (!file_exists(&path)) {
-    log_fatal("Vertex shader file does not exist: %s", shader_path);
-    return false_v;
-  }
+  Mat4 model = mat4_identity();
+  application->camera = application_init_camera(application);
 
-  // Load shaders
-  uint8_t *shader_data = NULL;
-  uint64_t shader_size = 0;
-  FileError file_error = file_load_spirv_shader(
-      &path, application->renderer_arena, &shader_data, &shader_size);
-  if (file_error != FILE_ERROR_NONE) {
-    log_fatal("Failed to load shader: %s", file_get_error_string(file_error));
-    return false_v;
-  }
-
-  ShaderModuleDescription vertex_shader_desc = {
-      .stage = SHADER_STAGE_VERTEX_BIT,
-      .code = (const uint8_t *)shader_data,
-      .size = shader_size,
-      .entry_point = string8_lit("vertexMain"),
+  ShaderObjectDescription shader_object_description = {
+      .file_format = SHADER_FILE_FORMAT_SPIR_V,
+      .file_type = SHADER_FILE_TYPE_SINGLE,
+      .modules =
+          {
+              [SHADER_STAGE_VERTEX] =
+                  {
+                      .stages =
+                          shader_stage_flags_from_bits(SHADER_STAGE_VERTEX_BIT),
+                      .path = string8_lit("assets/cube.spv"),
+                      .entry_point = string8_lit("vertexMain"),
+                  },
+              [SHADER_STAGE_FRAGMENT] =
+                  {
+                      .stages = shader_stage_flags_from_bits(
+                          SHADER_STAGE_FRAGMENT_BIT),
+                      .path = string8_lit("assets/cube.spv"),
+                      .entry_point = string8_lit("fragmentMain"),
+                  },
+          },
+      .global_uniform_object =
+          (GlobalUniformObject){
+              .view = camera_get_view_matrix(&application->camera),
+              .projection = camera_get_projection_matrix(&application->camera),
+          },
+      .shader_state_object =
+          (ShaderStateObject){
+              .model = model,
+          },
   };
 
-  ShaderHandle vertex_shader = renderer_create_shader_from_source(
-      application->renderer, &vertex_shader_desc, &renderer_error);
-  if (renderer_error != RENDERER_ERROR_NONE) {
-    log_fatal("Failed to create vertex shader: %s",
-              renderer_get_error_string(renderer_error));
-    return false_v;
-  }
+  // Generate cube mesh (1x1x1 cube)
+  Mesh cube_mesh =
+      mesh_generate_cube(application->renderer_arena, 2.0f, 2.0f, 2.0f);
 
-  ShaderModuleDescription fragment_shader_desc = {
-      .stage = SHADER_STAGE_FRAGMENT_BIT,
-      .code = (const uint8_t *)shader_data,
-      .size = shader_size,
-      .entry_point = string8_lit("fragmentMain"),
-  };
+  VertexArrayFromMeshOptions opts =
+      VERTEX_ARRAY_FROM_MESH_OPTIONS_INTERLEAVED_POSITION_COLOR();
+  application->cube_vertex_array = vertex_array_from_mesh(
+      application->renderer, application->renderer_arena, &cube_mesh, opts,
+      string8_lit("Cube Vertex Array"), &renderer_error);
+  log_debug("Cube mesh uploaded to GPU successfully");
 
-  ShaderHandle fragment_shader = renderer_create_shader_from_source(
-      application->renderer, &fragment_shader_desc, &renderer_error);
-  if (renderer_error != RENDERER_ERROR_NONE) {
-    log_fatal("Failed to create fragment shader: %s",
-              renderer_get_error_string(renderer_error));
-    return false_v;
-  }
-
-  log_debug("Vertex shader: %p", vertex_shader);
-  log_debug("Fragment shader: %p", fragment_shader);
+  log_debug("Attribute count: %d",
+            application->cube_vertex_array.attribute_count);
+  log_debug("Binding count: %d", application->cube_vertex_array.binding_count);
+  log_debug("Attributes: %p", application->cube_vertex_array.attributes);
+  log_debug("Bindings: %p", application->cube_vertex_array.bindings);
 
   application->pipeline = (GraphicsPipelineDescription){
-      .vertex_shader = vertex_shader,
-      .fragment_shader = fragment_shader,
-      .attribute_count = 0,
-      .attributes = NULL,
-      .binding_count = 0,
-      .bindings = NULL,
-      .topology = PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+      .shader_object_description = shader_object_description,
+      .attribute_count = application->cube_vertex_array.attribute_count,
+      .attributes = application->cube_vertex_array.attributes,
+      .binding_count = application->cube_vertex_array.binding_count,
+      .bindings = application->cube_vertex_array.bindings,
+      .topology = application->cube_vertex_array.topology,
   };
 
-  application->pipeline_handle = renderer_create_pipeline(
+  application->pipeline_handle = renderer_create_graphics_pipeline(
       application->renderer, &application->pipeline, &renderer_error);
   if (renderer_error != RENDERER_ERROR_NONE) {
     log_fatal("Failed to create pipeline: %s",
               renderer_get_error_string(renderer_error));
-    renderer_destroy_shader(application->renderer, vertex_shader);
-    renderer_destroy_shader(application->renderer, fragment_shader);
     return false_v;
   }
 
@@ -397,6 +416,9 @@ void application_handle_window_resize(Application *application) {
     log_info("Processing window resize to %dx%d", current_size.width,
              current_size.height);
 
+    application->pipeline.shader_object_description.global_uniform_object
+        .projection = camera_get_projection_matrix(&application->camera);
+
     renderer_resize(application->renderer, current_size.width,
                     current_size.height);
 
@@ -434,10 +456,16 @@ void application_draw_frame(Application *application, float64_t delta) {
     return;
   }
 
-  renderer_bind_graphics_pipeline(application->renderer,
-                                  application->pipeline_handle);
+  application->pipeline.shader_object_description.global_uniform_object.view =
+      camera_get_view_matrix(&application->camera);
 
-  renderer_draw(application->renderer, 3, 1, 0, 0);
+  renderer_update_pipeline_state(
+      application->renderer, application->pipeline_handle,
+      &application->pipeline.shader_object_description.global_uniform_object,
+      &application->pipeline.shader_object_description.shader_state_object);
+
+  vertex_array_render(application->renderer, &application->cube_vertex_array,
+                      1);
 
   renderer_error = renderer_end_frame(application->renderer, delta);
   if (renderer_error != RENDERER_ERROR_NONE) {
@@ -513,7 +541,8 @@ void application_start(Application *application) {
     float64_t frame_processing_start_time = platform_get_absolute_time();
 
     application_update(application, delta);
-    // NOTE: Rendering would typically happen here as well
+
+    camera_update(&application->camera, delta);
 
     application_draw_frame(application, delta);
 
@@ -615,12 +644,9 @@ void application_shutdown(Application *application) {
     log_warn("Failed to wait for renderer to be idle");
   }
 
+  vertex_array_destroy(application->renderer, &application->cube_vertex_array);
   renderer_destroy_pipeline(application->renderer,
                             application->pipeline_handle);
-  renderer_destroy_shader(application->renderer,
-                          application->pipeline.vertex_shader);
-  renderer_destroy_shader(application->renderer,
-                          application->pipeline.fragment_shader);
   renderer_destroy(application->renderer);
   window_destroy(&application->window);
   event_manager_destroy(&application->event_manager);
