@@ -59,7 +59,10 @@ void application_update(Application *application, float64_t delta) {
   } else {
     fps_value = 1.0 / application->config->target_frame_rate;
   }
-  // log_debug("CALCULATED FPS VALUE: %f, DELTA WAS: %f", fps_value, delta);
+  static int log_fps_counter = 0;
+  if (++log_fps_counter % 60 == 0) { // Log every 60 mouse moves to avoid spam
+    log_debug("CALCULATED FPS VALUE: %f, DELTA WAS: %f", fps_value, delta);
+  }
 
   // Add rotation to test descriptors
   static float64_t rotation_angle = 0.0;
