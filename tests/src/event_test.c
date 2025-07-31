@@ -21,7 +21,7 @@ static uint32_t callback1_count = 0;
 static uint32_t callback2_count = 0;
 static EventManager *self_unsubscribe_manager = NULL;
 static uint32_t processed_count = 0;
-static pthread_mutex_t count_mutex = PTHREAD_MUTEX_INITIALIZER;
+static Mutex count_mutex = NULL;
 static bool32_t slow_callback_executed = false;
 static bool32_t fast_callback_executed = false;
 
@@ -111,9 +111,9 @@ static bool8_t persistent_callback(Event *event) {
 }
 
 static bool8_t counting_callback(Event *event) {
-  pthread_mutex_lock(&count_mutex);
+  mutex_lock(count_mutex);
   processed_count++;
-  pthread_mutex_unlock(&count_mutex);
+  mutex_unlock(count_mutex);
   return true;
 }
 
@@ -349,18 +349,18 @@ static void test_queue_full(void) {
 
   // We need to fill the queue without processing events
   // First, stop the event processor
-  pthread_mutex_lock(&manager.mutex);
+  mutex_lock(manager.mutex);
   manager.running = false;
-  pthread_mutex_unlock(&manager.mutex);
-  pthread_cond_signal(&manager.cond);
+  mutex_unlock(manager.mutex);
+  cond_signal(manager.cond);
 
   // Wait for the thread to exit
-  pthread_join(manager.thread, NULL);
+  thread_join(manager.thread);
 
   // Now reinitialize queue and mutex manually without a thread
   manager.running = false;
-  pthread_mutex_init(&manager.mutex, NULL);
-  pthread_cond_init(&manager.cond, NULL);
+  mutex_create(manager.arena, &manager.mutex);
+  cond_create(manager.arena, &manager.cond);
 
   // Fill the queue
   bool32_t queue_full = false;
@@ -375,9 +375,9 @@ static void test_queue_full(void) {
                    .data_size = sizeof(TestEventData)};
 
     bool32_t dispatch_result = false;
-    pthread_mutex_lock(&manager.mutex);
+    mutex_lock(manager.mutex);
     dispatch_result = queue_enqueue_Event(&manager.queue, event);
-    pthread_mutex_unlock(&manager.mutex);
+    mutex_unlock(manager.mutex);
 
     if (!dispatch_result) {
       queue_full = true;
@@ -388,8 +388,8 @@ static void test_queue_full(void) {
   assert(queue_full && "Queue should become full after many events");
 
   // Manually clean up resources
-  pthread_mutex_destroy(&manager.mutex);
-  pthread_cond_destroy(&manager.cond);
+  mutex_destroy(manager.arena, &manager.mutex);
+  cond_destroy(manager.arena, &manager.cond);
 
   for (uint16_t i = 0; i < EVENT_TYPE_MAX; i++) {
     if (manager.callbacks[i].data != NULL) {
@@ -500,38 +500,38 @@ static void test_concurrent_dispatch(void) {
 
   // Reset counter
   processed_count = 0;
-  pthread_mutex_init(&count_mutex, NULL);
+  mutex_create(arena, &count_mutex);
 
   event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, counting_callback);
 
   // Create and start multiple threads
   const uint32_t THREAD_COUNT = 4;
   const uint32_t EVENTS_PER_THREAD = 50;
-  pthread_t threads[THREAD_COUNT];
+  Thread threads[THREAD_COUNT];
   ThreadData thread_data[THREAD_COUNT];
 
   for (uint32_t i = 0; i < THREAD_COUNT; i++) {
     thread_data[i].manager = &manager;
     thread_data[i].arena = arena;
     thread_data[i].thread_id = i;
-    pthread_create(&threads[i], NULL, dispatch_thread, &thread_data[i]);
+    thread_create(arena, &threads[i], dispatch_thread, &thread_data[i]);
   }
 
   // Wait for all threads to complete
   for (uint32_t i = 0; i < THREAD_COUNT; i++) {
-    pthread_join(threads[i], NULL);
+    thread_join(threads[i]);
   }
 
   // Wait for event processing to complete
   platform_sleep(500);
 
   // Verify all events were processed
-  pthread_mutex_lock(&count_mutex);
+  mutex_lock(count_mutex);
   assert(processed_count == THREAD_COUNT * EVENTS_PER_THREAD &&
          "All events from all threads should be processed");
-  pthread_mutex_unlock(&count_mutex);
+  mutex_unlock(count_mutex);
 
-  pthread_mutex_destroy(&count_mutex);
+  mutex_destroy(arena, &count_mutex);
   event_manager_destroy(&manager);
   teardown_suite();
   printf("  test_concurrent_dispatch PASSED\n");

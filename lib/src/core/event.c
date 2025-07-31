@@ -24,10 +24,10 @@ static void *events_processor(void *arg) {
     Event event;
     bool32_t event_dequeued = false;
 
-    pthread_mutex_lock(&manager->mutex);
+    mutex_lock(manager->mutex);
 
     while (queue_is_empty_Event(&manager->queue) && manager->running) {
-      pthread_cond_wait(&manager->cond, &manager->mutex);
+      cond_wait(manager->cond, manager->mutex);
     }
 
     should_run = manager->running || !queue_is_empty_Event(&manager->queue);
@@ -45,13 +45,13 @@ static void *events_processor(void *arg) {
     }
 
     if (!event_dequeued) {
-      pthread_mutex_unlock(&manager->mutex);
+      mutex_unlock(manager->mutex);
       continue;
     }
 
     if (event.type >= EVENT_TYPE_MAX) {
       log_warn("Processed event with invalid type: %u", event.type);
-      pthread_mutex_unlock(&manager->mutex);
+      mutex_unlock(manager->mutex);
       continue;
     }
 
@@ -61,7 +61,7 @@ static void *events_processor(void *arg) {
 
     if (subs_count == 0) {
       scratch_destroy(scratch, ARENA_MEMORY_TAG_VECTOR);
-      pthread_mutex_unlock(&manager->mutex);
+      mutex_unlock(manager->mutex);
       continue;
     }
 
@@ -70,7 +70,7 @@ static void *events_processor(void *arg) {
     if (callbacks_vec->data != NULL && local_callbacks_copy.data != NULL) {
       MemCopy(local_callbacks_copy.data, callbacks_vec->data,
               subs_count * sizeof(EventCallback));
-      pthread_mutex_unlock(&manager->mutex);
+      mutex_unlock(manager->mutex);
 
       for (uint16_t i = 0; i < subs_count; i++) {
         if (local_callbacks_copy.data[i] != NULL) {
@@ -82,7 +82,7 @@ static void *events_processor(void *arg) {
       log_warn("Event_processor: subs_count (%u) for event type %d, but "
                "vector or array data pointer is NULL. Callbacks skipped.",
                subs_count, event.type);
-      pthread_mutex_unlock(&manager->mutex);
+      mutex_unlock(manager->mutex);
     }
 
     array_destroy_EventCallback(&local_callbacks_copy);
@@ -108,23 +108,23 @@ void event_manager_create(EventManager *manager) {
     return;
   }
 
-  pthread_mutex_init(&manager->mutex, NULL);
-  pthread_cond_init(&manager->cond, NULL);
+  mutex_create(manager->arena, &manager->mutex);
+  cond_create(manager->arena, &manager->cond);
   manager->running = true;
 
-  pthread_create(&manager->thread, NULL, events_processor, manager);
+  thread_create(manager->arena, &manager->thread, events_processor, manager);
 }
 
 void event_manager_destroy(EventManager *manager) {
   assert_log(manager != NULL, "Manager is NULL");
-  pthread_mutex_lock(&manager->mutex);
+  mutex_lock(manager->mutex);
   manager->running = false;
-  pthread_mutex_unlock(&manager->mutex);
-  pthread_cond_signal(&manager->cond);
+  mutex_unlock(manager->mutex);
+  cond_signal(manager->cond);
 
-  pthread_join(manager->thread, NULL);
-  pthread_mutex_destroy(&manager->mutex);
-  pthread_cond_destroy(&manager->cond);
+  thread_join(manager->thread);
+  mutex_destroy(manager->arena, &manager->mutex);
+  cond_destroy(manager->arena, &manager->cond);
 
   for (uint16_t i = 0; i < EVENT_TYPE_MAX; i++) {
     vector_destroy_EventCallback(&manager->callbacks[i]);
@@ -141,7 +141,7 @@ void event_manager_subscribe(EventManager *manager, EventType type,
   assert_log(callback != NULL, "Callback is NULL");
   assert_log(manager != NULL, "Manager is NULL");
 
-  pthread_mutex_lock(&manager->mutex);
+  mutex_lock(manager->mutex);
 
   if (manager->callbacks[type].data == NULL) {
     manager->callbacks[type] = vector_create_EventCallback(manager->arena);
@@ -151,13 +151,13 @@ void event_manager_subscribe(EventManager *manager, EventType type,
   for (uint16_t i = 0; i < subs_count; i++) {
     if (manager->callbacks[type].data[i] == callback) {
       log_warn("Callback already subscribed");
-      pthread_mutex_unlock(&manager->mutex);
+      mutex_unlock(manager->mutex);
       return;
     }
   }
 
   vector_push_EventCallback(&manager->callbacks[type], callback);
-  pthread_mutex_unlock(&manager->mutex);
+  mutex_unlock(manager->mutex);
 }
 
 void event_manager_unsubscribe(EventManager *manager, EventType type,
@@ -166,13 +166,13 @@ void event_manager_unsubscribe(EventManager *manager, EventType type,
   assert_log(callback != NULL, "Callback is NULL");
   assert_log(manager != NULL, "Manager is NULL");
 
-  pthread_mutex_lock(&manager->mutex);
+  mutex_lock(manager->mutex);
   VectorFindResult res =
       vector_find_EventCallback(&manager->callbacks[type], &callback);
   if (res.found) {
     vector_pop_at_EventCallback(&manager->callbacks[type], res.index, NULL);
   }
-  pthread_mutex_unlock(&manager->mutex);
+  mutex_unlock(manager->mutex);
 }
 
 bool32_t event_manager_dispatch(EventManager *manager, Event event) {
@@ -181,7 +181,7 @@ bool32_t event_manager_dispatch(EventManager *manager, Event event) {
   assert_log(!(event.data_size > 0 && event.data == NULL),
              "Event data is NULL but data_size is greater than 0");
 
-  pthread_mutex_lock(&manager->mutex);
+  mutex_lock(manager->mutex);
 
   Event event_to_enqueue = event;
   void *copied_data_ptr_in_buffer = NULL;
@@ -189,7 +189,7 @@ bool32_t event_manager_dispatch(EventManager *manager, Event event) {
   if (event.data_size > 0) {
     if (queue_is_full_Event(&manager->queue)) {
       log_warn("Event queue full. Cannot dispatch event type %d.", event.type);
-      pthread_mutex_unlock(&manager->mutex);
+      mutex_unlock(manager->mutex);
       return false;
     }
 
@@ -198,7 +198,7 @@ bool32_t event_manager_dispatch(EventManager *manager, Event event) {
       log_warn("Event data buffer cannot allocate %llu bytes for event type %d "
                "(full or too fragmented).",
                event.data_size, event.type);
-      pthread_mutex_unlock(&manager->mutex);
+      mutex_unlock(manager->mutex);
       return false;
     }
 
@@ -208,7 +208,7 @@ bool32_t event_manager_dispatch(EventManager *manager, Event event) {
           "Failed to allocate %llu bytes in event data buffer for event type "
           "%d. Allocation failed unexpectedly after can_alloc passed.",
           event.data_size, event.type);
-      pthread_mutex_unlock(&manager->mutex);
+      mutex_unlock(manager->mutex);
       return false;
     }
 
@@ -232,12 +232,12 @@ bool32_t event_manager_dispatch(EventManager *manager, Event event) {
       event_data_buffer_rollback_last_alloc(&manager->event_data_buf);
     }
 
-    pthread_mutex_unlock(&manager->mutex);
+    mutex_unlock(manager->mutex);
     return false;
   }
 
-  pthread_cond_signal(&manager->cond);
-  pthread_mutex_unlock(&manager->mutex);
+  cond_signal(manager->cond);
+  mutex_unlock(manager->mutex);
 
   return true;
 }

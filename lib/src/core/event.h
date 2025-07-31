@@ -31,9 +31,9 @@
  *    continuously waits for events on the queue. When events are available, it
  *    dequeues them and executes all registered callbacks for the event's type.
  * 5. **Synchronization:**
- *    - A `pthread_mutex_t` protects access to the event queue and the callback
+ *    - A `Mutex` protects access to the event queue and the callback
  *      registry vectors.
- *    - A `pthread_cond_t` allows the worker thread to sleep efficiently when the
+ *    - A `CondVar` allows the worker thread to sleep efficiently when the
  *      queue is empty, waking up only when new events are dispatched or when the
  *      manager is shutting down.
  *
@@ -60,6 +60,7 @@
 #include "event_data_buffer.h"
 #include "pch.h"
 #include "platform/platform.h"
+#include "platform/threads.h"
 
 // TODO: Explore possibility of re-writing this into event loop system, like
 // Node.js, where events are processed in a loop, and the event manager is
@@ -143,11 +144,11 @@ typedef struct EventManager {
   EventDataBuffer
       event_data_buf; /**< Buffer for storing variable-sized event data. */
 
-  pthread_mutex_t mutex; /**< Mutex protecting access to the queue,
+  Mutex mutex; /**< Mutex protecting access to the queue,
                             callback vectors, and event data buffer. */
-  pthread_cond_t cond; /**< Condition variable used by the worker thread to wait
+  CondVar cond; /**< Condition variable used by the worker thread to wait
                         for events or shutdown signal. */
-  pthread_t thread;    /**< Handle for the dedicated event processing thread. */
+  Thread thread;    /**< Handle for the dedicated event processing thread. */
   bool32_t running;    /**< Flag indicating if the event processor thread should
                         continue running. */
   /*
