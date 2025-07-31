@@ -1,7 +1,4 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
@@ -11,6 +8,7 @@
             "stopAtEntry": false,
             "environment": [],
             "program": "${workspaceFolder}/build/app/vulkan_renderer",
+            "cwd": "${workspaceFolder}",
             "osx": {
                 "MIMode": "lldb",
                 "targetArchitecture": "arm64",
@@ -24,9 +22,9 @@
             },
             "windows": {
                 "type": "cppvsdbg",
-                "program": "${workspaceFolder}/build/vulkan_renderer.exe",
-                // cppvsdbg requires this instead of externalConsole
-                "console": "integratedTerminal",
+                "program": "${workspaceFolder}/build/app/vulkan_renderer.exe",
+                "externalConsole": false,
+                "stopAtEntry": false
             },
         },
         {
@@ -46,9 +44,9 @@
             },
             "windows": {
                 "type": "cppvsdbg",
-                "program": "${workspaceFolder}/build/vulkan_renderer_tester.exe",
-                // cppvsdbg requires this instead of externalConsole
-                "console": "integratedTerminal",
+                "program": "${workspaceFolder}/build/tests/vulkan_renderer_tester.exe",
+                "externalConsole": false,
+                "stopAtEntry": false
             }
         }
     ]

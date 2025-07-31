@@ -7,5 +7,10 @@
     "stdlib.h": "c",
     "stdio.h": "c"
   },
-  "editor.defaultFormatter": "xaver.clang-format"
+  "editor.defaultFormatter": "xaver.clang-format",
+  "editor.formatOnSave": true,
+  "rad-debugger-communication.targetPath": "build/app/vulkan_renderer.exe",
+  "rad-debugger-communication.targetPathIsWorkspaceRelative": true,
+  "rad-debugger-communication.closeRaddbgOnProgramExit": true,
+  "rad-debugger-communication.autoRun": true
 }

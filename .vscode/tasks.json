@@ -7,8 +7,11 @@
             "options": {
                 "cwd": "${workspaceFolder}"
             },
+            "windows": {
+                "command": "${workspaceFolder}/build.bat"
+            },
             "problemMatcher": [
-                "$gcc"
+                "$msCompile"
             ],
             "group": {
                 "kind": "build",
@@ -22,14 +25,17 @@
             "options": {
                 "cwd": "${workspaceFolder}"
             },
+            "windows": {
+                "command": "${workspaceFolder}/build_test.bat"
+            },
             "problemMatcher": [
-                "$gcc"
+                "$msCompile"
             ],
             "group": {
                 "kind": "build",
                 "isDefault": true
             }
-        },
+        }
     ],
     "version": "2.0.0"
 }
