@@ -17,8 +17,8 @@ struct s_CondVar {
   pthread_cond_t cond;
 };
 
-bool32_t thread_create(Arena *arena, Thread *thread, ThreadFunc func,
-                       void *arg) {
+bool32_t vkr_thread_create(Arena *arena, Thread *thread, ThreadFunc func,
+                           void *arg) {
   *thread =
       arena_alloc(arena, sizeof(struct s_Thread), ARENA_MEMORY_TAG_STRUCT);
   if (*thread == NULL) {
@@ -40,7 +40,7 @@ bool32_t thread_create(Arena *arena, Thread *thread, ThreadFunc func,
   return true;
 }
 
-bool32_t thread_join(Thread thread) {
+bool32_t vkr_thread_join(Thread thread) {
   if (thread == NULL || thread->joined) {
     return false;
   }
@@ -53,7 +53,7 @@ bool32_t thread_join(Thread thread) {
   return false;
 }
 
-bool32_t thread_destroy(Arena *arena, Thread *thread) {
+bool32_t vkr_thread_destroy(Arena *arena, Thread *thread) {
   if (thread == NULL || *thread == NULL) {
     return false;
   }
@@ -75,7 +75,7 @@ bool32_t thread_destroy(Arena *arena, Thread *thread) {
   return success;
 }
 
-bool32_t mutex_create(Arena *arena, Mutex *mutex) {
+bool32_t vkr_mutex_create(Arena *arena, Mutex *mutex) {
   *mutex = arena_alloc(arena, sizeof(struct s_Mutex), ARENA_MEMORY_TAG_STRUCT);
   if (*mutex == NULL) {
     return false;
@@ -87,7 +87,7 @@ bool32_t mutex_create(Arena *arena, Mutex *mutex) {
   return result == 0;
 }
 
-bool32_t mutex_lock(Mutex mutex) {
+bool32_t vkr_mutex_lock(Mutex mutex) {
   if (mutex == NULL) {
     return false;
   }
@@ -96,7 +96,7 @@ bool32_t mutex_lock(Mutex mutex) {
   return result == 0;
 }
 
-bool32_t mutex_unlock(Mutex mutex) {
+bool32_t vkr_mutex_unlock(Mutex mutex) {
   if (mutex == NULL) {
     return false;
   }
@@ -105,7 +105,7 @@ bool32_t mutex_unlock(Mutex mutex) {
   return result == 0;
 }
 
-bool32_t mutex_destroy(Arena *arena, Mutex *mutex) {
+bool32_t vkr_mutex_destroy(Arena *arena, Mutex *mutex) {
   if (mutex == NULL || *mutex == NULL) {
     return false;
   }
@@ -119,7 +119,7 @@ bool32_t mutex_destroy(Arena *arena, Mutex *mutex) {
   return result == 0;
 }
 
-bool32_t cond_create(Arena *arena, CondVar *cond) {
+bool32_t vkr_cond_create(Arena *arena, CondVar *cond) {
   *cond = arena_alloc(arena, sizeof(struct s_CondVar), ARENA_MEMORY_TAG_STRUCT);
   if (*cond == NULL) {
     return false;
@@ -131,7 +131,7 @@ bool32_t cond_create(Arena *arena, CondVar *cond) {
   return result == 0;
 }
 
-bool32_t cond_wait(CondVar cond, Mutex mutex) {
+bool32_t vkr_cond_wait(CondVar cond, Mutex mutex) {
   if (cond == NULL || mutex == NULL) {
     return false;
   }
@@ -140,7 +140,7 @@ bool32_t cond_wait(CondVar cond, Mutex mutex) {
   return result == 0;
 }
 
-bool32_t cond_signal(CondVar cond) {
+bool32_t vkr_cond_signal(CondVar cond) {
   if (cond == NULL) {
     return false;
   }
@@ -149,7 +149,7 @@ bool32_t cond_signal(CondVar cond) {
   return result == 0;
 }
 
-bool32_t cond_destroy(Arena *arena, CondVar *cond) {
+bool32_t vkr_cond_destroy(Arena *arena, CondVar *cond) {
   if (cond == NULL || *cond == NULL) {
     return false;
   }

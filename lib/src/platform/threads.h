@@ -51,15 +51,15 @@ typedef struct s_CondVar *CondVar;
  * @param arg Argument to pass to the thread function.
  * @return true_v on success, false_v on failure.
  */
-bool32_t thread_create(Arena *arena, Thread *thread, ThreadFunc func,
-                       void *arg);
+bool32_t vkr_thread_create(Arena *arena, Thread *thread, ThreadFunc func,
+                           void *arg);
 
 /**
  * @brief Waits for a thread to complete execution.
  * @param thread Thread to wait for.
  * @return true_v on success, false_v on failure.
  */
-bool32_t thread_join(Thread thread);
+bool32_t vkr_thread_join(Thread thread);
 
 /**
  * @brief Destroys a thread and releases its resources.
@@ -67,7 +67,7 @@ bool32_t thread_join(Thread thread);
  * @param thread Thread to destroy.
  * @return true_v on success, false_v on failure.
  */
-bool32_t thread_destroy(Arena *arena, Thread *thread);
+bool32_t vkr_thread_destroy(Arena *arena, Thread *thread);
 
 /**
  * @brief Creates a new mutex.
@@ -75,21 +75,21 @@ bool32_t thread_destroy(Arena *arena, Thread *thread);
  * @param mutex Pointer to receive the created mutex handle.
  * @return true_v on success, false_v on failure.
  */
-bool32_t mutex_create(Arena *arena, Mutex *mutex);
+bool32_t vkr_mutex_create(Arena *arena, Mutex *mutex);
 
 /**
  * @brief Locks a mutex, blocking if already locked.
  * @param mutex Mutex to lock.
  * @return true_v on success, false_v on failure.
  */
-bool32_t mutex_lock(Mutex mutex);
+bool32_t vkr_mutex_lock(Mutex mutex);
 
 /**
  * @brief Unlocks a mutex.
  * @param mutex Mutex to unlock.
  * @return true_v on success, false_v on failure.
  */
-bool32_t mutex_unlock(Mutex mutex);
+bool32_t vkr_mutex_unlock(Mutex mutex);
 
 /**
  * @brief Destroys a mutex and releases its resources.
@@ -97,7 +97,7 @@ bool32_t mutex_unlock(Mutex mutex);
  * @param mutex Mutex to destroy.
  * @return true_v on success, false_v on failure.
  */
-bool32_t mutex_destroy(Arena *arena, Mutex *mutex);
+bool32_t vkr_mutex_destroy(Arena *arena, Mutex *mutex);
 
 /**
  * @brief Creates a new condition variable.
@@ -105,7 +105,7 @@ bool32_t mutex_destroy(Arena *arena, Mutex *mutex);
  * @param cond Pointer to receive the created condition variable handle.
  * @return true_v on success, false_v on failure.
  */
-bool32_t cond_create(Arena *arena, CondVar *cond);
+bool32_t vkr_cond_create(Arena *arena, CondVar *cond);
 
 /**
  * @brief Waits on a condition variable, atomically releasing the mutex.
@@ -113,14 +113,14 @@ bool32_t cond_create(Arena *arena, CondVar *cond);
  * @param mutex Mutex to release while waiting.
  * @return true_v on success, false_v on failure.
  */
-bool32_t cond_wait(CondVar cond, Mutex mutex);
+bool32_t vkr_cond_wait(CondVar cond, Mutex mutex);
 
 /**
  * @brief Signals a condition variable, waking one waiting thread.
  * @param cond Condition variable to signal.
  * @return true_v on success, false_v on failure.
  */
-bool32_t cond_signal(CondVar cond);
+bool32_t vkr_cond_signal(CondVar cond);
 
 /**
  * @brief Destroys a condition variable and releases its resources.
@@ -128,4 +128,4 @@ bool32_t cond_signal(CondVar cond);
  * @param cond Condition variable to destroy.
  * @return true_v on success, false_v on failure.
  */
-bool32_t cond_destroy(Arena *arena, CondVar *cond);
+bool32_t vkr_cond_destroy(Arena *arena, CondVar *cond);

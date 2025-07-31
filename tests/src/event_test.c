@@ -111,9 +111,9 @@ static bool8_t persistent_callback(Event *event) {
 }
 
 static bool8_t counting_callback(Event *event) {
-  mutex_lock(count_mutex);
+  vkr_mutex_lock(count_mutex);
   processed_count++;
-  mutex_unlock(count_mutex);
+  vkr_mutex_unlock(count_mutex);
   return true;
 }
 
@@ -349,18 +349,18 @@ static void test_queue_full(void) {
 
   // We need to fill the queue without processing events
   // First, stop the event processor
-  mutex_lock(manager.mutex);
+  vkr_mutex_lock(manager.mutex);
   manager.running = false;
-  mutex_unlock(manager.mutex);
-  cond_signal(manager.cond);
+  vkr_mutex_unlock(manager.mutex);
+  vkr_cond_signal(manager.cond);
 
   // Wait for the thread to exit
-  thread_join(manager.thread);
+  vkr_thread_join(manager.thread);
 
   // Now reinitialize queue and mutex manually without a thread
   manager.running = false;
-  mutex_create(manager.arena, &manager.mutex);
-  cond_create(manager.arena, &manager.cond);
+  vkr_mutex_create(manager.arena, &manager.mutex);
+  vkr_cond_create(manager.arena, &manager.cond);
 
   // Fill the queue
   bool32_t queue_full = false;
@@ -375,9 +375,9 @@ static void test_queue_full(void) {
                    .data_size = sizeof(TestEventData)};
 
     bool32_t dispatch_result = false;
-    mutex_lock(manager.mutex);
+    vkr_mutex_lock(manager.mutex);
     dispatch_result = queue_enqueue_Event(&manager.queue, event);
-    mutex_unlock(manager.mutex);
+    vkr_mutex_unlock(manager.mutex);
 
     if (!dispatch_result) {
       queue_full = true;
@@ -388,8 +388,8 @@ static void test_queue_full(void) {
   assert(queue_full && "Queue should become full after many events");
 
   // Manually clean up resources
-  mutex_destroy(manager.arena, &manager.mutex);
-  cond_destroy(manager.arena, &manager.cond);
+  vkr_mutex_destroy(manager.arena, &manager.mutex);
+  vkr_cond_destroy(manager.arena, &manager.cond);
 
   for (uint16_t i = 0; i < EVENT_TYPE_MAX; i++) {
     if (manager.callbacks[i].data != NULL) {
@@ -500,7 +500,7 @@ static void test_concurrent_dispatch(void) {
 
   // Reset counter
   processed_count = 0;
-  mutex_create(arena, &count_mutex);
+  vkr_mutex_create(arena, &count_mutex);
 
   event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, counting_callback);
 
@@ -514,24 +514,24 @@ static void test_concurrent_dispatch(void) {
     thread_data[i].manager = &manager;
     thread_data[i].arena = arena;
     thread_data[i].thread_id = i;
-    thread_create(arena, &threads[i], dispatch_thread, &thread_data[i]);
+    vkr_thread_create(arena, &threads[i], dispatch_thread, &thread_data[i]);
   }
 
   // Wait for all threads to complete
   for (uint32_t i = 0; i < THREAD_COUNT; i++) {
-    thread_join(threads[i]);
+    vkr_thread_join(threads[i]);
   }
 
   // Wait for event processing to complete
   platform_sleep(500);
 
   // Verify all events were processed
-  mutex_lock(count_mutex);
+  vkr_mutex_lock(count_mutex);
   assert(processed_count == THREAD_COUNT * EVENTS_PER_THREAD &&
          "All events from all threads should be processed");
-  mutex_unlock(count_mutex);
+  vkr_mutex_unlock(count_mutex);
 
-  mutex_destroy(arena, &count_mutex);
+  vkr_mutex_destroy(arena, &count_mutex);
   event_manager_destroy(&manager);
   teardown_suite();
   printf("  test_concurrent_dispatch PASSED\n");
