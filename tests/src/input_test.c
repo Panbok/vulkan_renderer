@@ -204,7 +204,6 @@ static void test_input_button_press_release() {
   event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_PRESS, on_button_event);
   event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_RELEASE, on_button_event);
   InputState input_state = input_init(&manager);
-  struct timespec ts = {.tv_sec = 0, .tv_nsec = 100000000}; // 100ms
 
   // Test BUTTON_LEFT press
   input_process_button(&input_state, BUTTON_LEFT, true);
@@ -270,7 +269,6 @@ static void test_input_mouse_move() {
   event_manager_create(&manager);
   event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE, on_mouse_move_event);
   InputState input_state = input_init(&manager);
-  struct timespec ts = {.tv_sec = 0, .tv_nsec = 100000000}; // 100ms
 
   int32_t current_x, current_y;
   int32_t prev_x, prev_y;
@@ -339,8 +337,6 @@ static void test_input_mouse_wheel() {
   event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_WHEEL,
                           on_mouse_wheel_event);
   InputState input_state = input_init(&manager);
-  struct timespec ts = {.tv_sec = 0, .tv_nsec = 100000000}; // 100ms
-
   int8_t current_delta;
 
   // Initial wheel movement (scroll up)
