@@ -110,7 +110,7 @@
 typedef SIMD_ALIGN union {
 #if SIMD_ARM_NEON
   float32x4_t neon; /**< Native ARM NEON vector register */
-#elif SIMD_X86_SSE
+#elif SIMD_X86_AVX
   __m128 sse; /**< Native x86 SSE vector register */
 #else
 #endif
@@ -141,7 +141,7 @@ typedef SIMD_ALIGN union {
 typedef SIMD_ALIGN union {
 #if SIMD_ARM_NEON
   int32x4_t neon; /**< Native ARM NEON integer vector register */
-#elif SIMD_X86_SSE
+#elif SIMD_X86_AVX
   __m128i sse; /**< Native x86 SSE integer vector register */
 #else
 #endif
@@ -649,6 +649,190 @@ INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
   return result;
 }
 
+#elif defined(SIMD_X86_AVX)
+
+INLINE SIMD_F32X4 simd_load_f32x4(const float32_t *ptr) {
+  SIMD_F32X4 result;
+  result.sse = _mm_loadu_ps(ptr);
+  return result;
+}
+
+INLINE void simd_store_f32x4(float32_t *ptr, SIMD_F32X4 v) {
+  _mm_storeu_ps(ptr, v.sse);
+}
+
+INLINE SIMD_F32X4 simd_set_f32x4(float32_t x, float32_t y, float32_t z,
+                                 float32_t w) {
+  SIMD_F32X4 result;
+  result.sse = _mm_set_ps(w, z, y, x);
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_set1_f32x4(float32_t value) {
+  SIMD_F32X4 result;
+  result.sse = _mm_set1_ps(value);
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_add_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+  SIMD_F32X4 result;
+  result.sse = _mm_add_ps(a.sse, b.sse);
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_sub_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+  SIMD_F32X4 result;
+  result.sse = _mm_sub_ps(a.sse, b.sse);
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_mul_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+  SIMD_F32X4 result;
+  result.sse = _mm_mul_ps(a.sse, b.sse);
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_div_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+  SIMD_F32X4 result;
+  result.sse = _mm_div_ps(a.sse, b.sse);
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_sqrt_f32x4(SIMD_F32X4 v) {
+  SIMD_F32X4 result;
+  result.sse = _mm_sqrt_ps(v.sse);
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_rsqrt_f32x4(SIMD_F32X4 v) {
+  SIMD_F32X4 result;
+  result.sse = _mm_rsqrt_ps(v.sse);
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_min_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+  SIMD_F32X4 result;
+  result.sse = _mm_min_ps(a.sse, b.sse);
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_max_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+  SIMD_F32X4 result;
+  result.sse = _mm_max_ps(a.sse, b.sse);
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_fma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+  SIMD_F32X4 result;
+  result.sse = _mm_fmadd_ps(a.sse, b.sse, c.sse);
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_fms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+  SIMD_F32X4 result;
+  result.sse = _mm_fmsub_ps(a.sse, b.sse, c.sse);
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_fnma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+  SIMD_F32X4 result;
+  result.sse = _mm_fnmadd_ps(a.sse, b.sse, c.sse);
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_fnms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+  SIMD_F32X4 result;
+  result.sse = _mm_fnmsub_ps(a.sse, b.sse, c.sse);
+  return result;
+}
+
+INLINE float32_t simd_hadd_f32x4(SIMD_F32X4 v) {
+  return _mm_cvtss_f32(_mm_hadd_ps(v.sse, v.sse));
+}
+
+INLINE float32_t simd_dot_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+  return _mm_cvtss_f32(_mm_dp_ps(a.sse, b.sse, 0xFF));
+}
+
+INLINE float32_t simd_dot3_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+  return _mm_cvtss_f32(_mm_dp_ps(a.sse, b.sse, 0xF1));
+}
+
+INLINE float32_t simd_dot4_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+  return _mm_cvtss_f32(_mm_dp_ps(a.sse, b.sse, 0xFF));
+}
+
+INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
+                                     int32_t z, int32_t w) {
+  // _mm_shuffle_ps requires a compile-time constant for the control mask,
+  // so we must do the shuffle manually for variable indices.
+  SIMD_F32X4 result;
+  float tmp[4];
+  _mm_storeu_ps(tmp, v.sse);
+  float out[4];
+  out[0] = tmp[x];
+  out[1] = tmp[y];
+  out[2] = tmp[z];
+  out[3] = tmp[w];
+  result.sse = _mm_loadu_ps(out);
+  return result;
+}
+
+INLINE SIMD_I32X4 simd_set_i32x4(int32_t x, int32_t y, int32_t z, int32_t w) {
+  SIMD_I32X4 result;
+  result.sse = _mm_set_epi32(w, z, y, x);
+  return result;
+}
+
+INLINE SIMD_I32X4 simd_set1_i32x4(int32_t value) {
+  SIMD_I32X4 result;
+  result.sse = _mm_set1_epi32(value);
+  return result;
+}
+
+INLINE SIMD_I32X4 simd_add_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+  SIMD_I32X4 result;
+  result.sse = _mm_add_epi32(a.sse, b.sse);
+  return result;
+}
+
+INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+  SIMD_I32X4 result;
+  result.sse = _mm_sub_epi32(a.sse, b.sse);
+  return result;
+}
+
+INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+  SIMD_I32X4 result;
+  result.sse = _mm_mullo_epi32(a.sse, b.sse);
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
+  SIMD_F32X4 result = simd_set1_f32x4(0.0f); // Initialize to zero
+
+  for (int i = 0; i < 4; i++) {
+    int32_t idx = indices.elements[i];
+    if (idx >= 0 && idx < 4) {
+      result.elements[idx] = v.elements[i];
+    }
+  }
+  return result;
+}
+
+INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
+  SIMD_F32X4 result;
+
+  for (int i = 0; i < 4; i++) {
+    int32_t idx = indices.elements[i];
+    if (idx >= 0 && idx < 4) {
+      result.elements[i] = v.elements[idx];
+    } else {
+      result.elements[i] = 0.0f; // Safety fallback for out-of-bounds indices
+    }
+  }
+  return result;
+}
 #else
 // Fallback scalar implementations
 INLINE SIMD_F32X4 simd_load_f32x4(const float32_t *ptr) {
