@@ -5,6 +5,8 @@ int main(int argc, char **argv) {
   (void)argv; // Unused
   printf("Running tests...\n\n");
 
+  platform_init();
+
   Arena *log_arena = arena_create(MB(1), MB(1));
   log_init(log_arena);
 
@@ -25,9 +27,9 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_event_data_buffer_tests();
   printf("\n"); // Add spacing
-  all_passed &= run_event_tests();
-  printf("\n"); // Add spacing
   all_passed &= run_input_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_event_tests();
   printf("\n"); // Add spacing
   all_passed &= run_math_tests();
   printf("\n"); // Add spacing
@@ -42,6 +44,8 @@ int main(int argc, char **argv) {
   all_passed &= run_clock_tests();
   printf("\n"); // Add spacing
   all_passed &= run_string_tests();
+
+  platform_shutdown();
 
   printf("\nAll tests completed.\n");
   return all_passed ? 0 : 1; // Return 0 on success, 1 on failure

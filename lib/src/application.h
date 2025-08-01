@@ -215,6 +215,8 @@ bool8_t application_create(Application *application,
   assert(config->height > 0 && "Application height is less than 0");
   assert(config->target_frame_rate > 0 && "Application target frame rate is 0");
 
+  platform_init();
+
   application->config = config;
   application->app_flags = bitset8_create();
 
@@ -656,6 +658,9 @@ void application_shutdown(Application *application) {
   renderer_destroy(application->renderer);
   window_destroy(&application->window);
   event_manager_destroy(&application->event_manager);
+
+  platform_shutdown();
+
   arena_destroy(application->renderer_arena);
   arena_destroy(application->log_arena);
   arena_destroy(application->app_arena);

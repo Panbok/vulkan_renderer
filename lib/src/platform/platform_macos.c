@@ -5,6 +5,12 @@
 static mach_timebase_info_data_t timebase_info;
 static bool32_t timebase_initialized = false;
 
+void platform_init() {
+  kern_return_t kr = mach_timebase_info(&timebase_info);
+  assert(kr == KERN_SUCCESS && "mach_timebase_info failed");
+  timebase_initialized = true;
+}
+
 void *platform_mem_reserve(uint64_t size) {
   void *result = mmap(0, size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
   return result;
@@ -67,15 +73,13 @@ void platform_sleep(uint64_t ms) {
 }
 
 float64_t platform_get_absolute_time() {
-  if (!timebase_initialized) {
-    kern_return_t kr = mach_timebase_info(&timebase_info);
-    if (kr != KERN_SUCCESS) {
-      assert(kr == KERN_SUCCESS && "mach_timebase_info failed");
-    }
-    timebase_initialized = true;
-  }
   uint64_t mach_now = mach_absolute_time();
   return (float64_t)(mach_now * timebase_info.numer) /
          (timebase_info.denom * 1e9);
+}
+
+void platform_shutdown() {
+  mach_timebase_info(&timebase_info);
+  timebase_initialized = false;
 }
 #endif
