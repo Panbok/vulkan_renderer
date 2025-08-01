@@ -98,7 +98,7 @@ bool8_t event_data_buffer_alloc(EventDataBuffer *edb, uint64_t payload_size,
   assert_log(actual_write_location != NULL,
              "Write location should have been determined.");
 
-  *(uint64_t *)actual_write_location = payload_size;
+  MemCopy(actual_write_location, &payload_size, sizeof(uint64_t));
   *out_payload_ptr = actual_write_location + sizeof(uint64_t);
 
   edb->tail = new_tail_candidate % edb->capacity;
@@ -125,8 +125,10 @@ bool8_t event_data_buffer_free(EventDataBuffer *edb,
   }
 
   assert_log(edb->head < edb->capacity, "Buffer head out of bounds.");
-  uint64_t actual_payload_size_in_header =
-      *(uint64_t *)(edb->buffer + edb->head);
+
+  uint64_t actual_payload_size_in_header;
+  MemCopy(&actual_payload_size_in_header, edb->buffer + edb->head,
+          sizeof(uint64_t));
 
   if (actual_payload_size_in_header != payload_size_from_event) {
     log_fatal("EventDataBuffer consistency error during free! Expected payload "

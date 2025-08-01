@@ -1,5 +1,4 @@
 #include "event_data_buffer_test.h"
-#include <string.h> // For memcpy in tests
 
 static Arena *arena = NULL;
 static const uint64_t DEFAULT_TEST_BUFFER_CAPACITY =
@@ -84,7 +83,9 @@ void test_event_data_buffer_alloc_simple(void) {
 
   // Check header content (indirectly by checking where payload_ptr is)
   char *block_start = (char *)payload_ptr - sizeof(uint64_t);
-  assert(*(uint64_t *)block_start == payload_size &&
+  uint64_t header_payload_size;
+  MemCopy(&header_payload_size, block_start, sizeof(uint64_t));
+  assert(header_payload_size == payload_size &&
          "Header does not contain correct payload size");
 
   fill_test_data(payload_ptr, payload_size, 0);
