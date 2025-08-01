@@ -169,7 +169,7 @@ static bool8_t rand_seeded = false;
  * @return Equivalent angle value in radians
  * @note Uses the precise conversion factor DEG2RAD_MULTIPLIER (π/180)
  */
-INLINE float32_t to_radians(float32_t degrees) {
+static INLINE float32_t to_radians(float32_t degrees) {
   return degrees * DEG2RAD_MULTIPLIER;
 }
 
@@ -179,7 +179,7 @@ INLINE float32_t to_radians(float32_t degrees) {
  * @return Equivalent angle value in degrees
  * @note Uses the precise conversion factor RAD2DEG_MULTIPLIER (180/π)
  */
-INLINE float32_t to_degrees(float32_t radians) {
+static INLINE float32_t to_degrees(float32_t radians) {
   return radians * RAD2DEG_MULTIPLIER;
 }
 
@@ -189,7 +189,9 @@ INLINE float32_t to_degrees(float32_t radians) {
  * @param b Second value to compare
  * @return The smaller of the two input values
  */
-INLINE float32_t min_f32(float32_t a, float32_t b) { return (a < b) ? a : b; }
+static INLINE float32_t min_f32(float32_t a, float32_t b) {
+  return (a < b) ? a : b;
+}
 
 /**
  * @brief Returns the maximum of two float32_t values
@@ -197,7 +199,9 @@ INLINE float32_t min_f32(float32_t a, float32_t b) { return (a < b) ? a : b; }
  * @param b Second value to compare
  * @return The larger of the two input values
  */
-INLINE float32_t max_f32(float32_t a, float32_t b) { return (a > b) ? a : b; }
+static INLINE float32_t max_f32(float32_t a, float32_t b) {
+  return (a > b) ? a : b;
+}
 
 /**
  * @brief Returns the minimum of two float64_t values
@@ -205,7 +209,9 @@ INLINE float32_t max_f32(float32_t a, float32_t b) { return (a > b) ? a : b; }
  * @param b Second value to compare
  * @return The smaller of the two input values
  */
-INLINE float64_t min_f64(float64_t a, float64_t b) { return (a < b) ? a : b; }
+static INLINE float64_t min_f64(float64_t a, float64_t b) {
+  return (a < b) ? a : b;
+}
 
 /**
  * @brief Returns the maximum of two float64_t values
@@ -213,7 +219,9 @@ INLINE float64_t min_f64(float64_t a, float64_t b) { return (a < b) ? a : b; }
  * @param b Second value to compare
  * @return The larger of the two input values
  */
-INLINE float64_t max_f64(float64_t a, float64_t b) { return (a > b) ? a : b; }
+static INLINE float64_t max_f64(float64_t a, float64_t b) {
+  return (a > b) ? a : b;
+}
 
 /**
  * @brief Clamps a value between a minimum and maximum range
@@ -224,8 +232,8 @@ INLINE float64_t max_f64(float64_t a, float64_t b) { return (a > b) ? a : b; }
  * @note If min_val > max_val, behavior is undefined
  * @example clamp_f32(150.0f, 0.0f, 100.0f) returns 100.0f
  */
-INLINE float32_t clamp_f32(float32_t value, float32_t min_val,
-                           float32_t max_val) {
+static INLINE float32_t clamp_f32(float32_t value, float32_t min_val,
+                                  float32_t max_val) {
   return (value < min_val) ? min_val : (value > max_val) ? max_val : value;
 }
 
@@ -237,8 +245,8 @@ INLINE float32_t clamp_f32(float32_t value, float32_t min_val,
  * @return The input value clamped to [min_val, max_val]
  * @note If min_val > max_val, behavior is undefined
  */
-INLINE float64_t clamp_f64(float64_t value, float64_t min_val,
-                           float64_t max_val) {
+static INLINE float64_t clamp_f64(float64_t value, float64_t min_val,
+                                  float64_t max_val) {
   return (value < min_val) ? min_val : (value > max_val) ? max_val : value;
 }
 
@@ -251,7 +259,7 @@ INLINE float64_t clamp_f64(float64_t value, float64_t min_val,
  * @note t values outside [0.0, 1.0] will extrapolate beyond the range [a, b]
  * @example lerp_f32(10.0f, 20.0f, 0.5f) returns 15.0f
  */
-INLINE float32_t lerp_f32(float32_t a, float32_t b, float32_t t) {
+static INLINE float32_t lerp_f32(float32_t a, float32_t b, float32_t t) {
   return a + t * (b - a);
 }
 
@@ -261,7 +269,7 @@ INLINE float32_t lerp_f32(float32_t a, float32_t b, float32_t t) {
  * @return Non-negative absolute value of the input
  * @note Uses the optimized fabsf() function from math.h
  */
-INLINE float32_t abs_f32(float32_t value) { return fabsf(value); }
+static INLINE float32_t abs_f32(float32_t value) { return fabsf(value); }
 
 /**
  * @brief Returns the sign of a float32_t value
@@ -270,7 +278,9 @@ INLINE float32_t abs_f32(float32_t value) { return fabsf(value); }
  * @note Uses copysignf() for IEEE 754 compliant sign extraction
  * @note Returns 1.0f for +0.0f and -1.0f for -0.0f
  */
-INLINE float32_t sign_f32(float32_t value) { return copysignf(1.0f, value); }
+static INLINE float32_t sign_f32(float32_t value) {
+  return copysignf(1.0f, value);
+}
 
 /**
  * @brief Computes the square root of a float32_t value
@@ -279,7 +289,7 @@ INLINE float32_t sign_f32(float32_t value) { return copysignf(1.0f, value); }
  * @note Behavior is undefined for negative inputs
  * @note Uses the optimized sqrtf() function from math.h
  */
-INLINE float32_t sqrt_f32(float32_t value) { return sqrtf(value); }
+static INLINE float32_t sqrt_f32(float32_t value) { return sqrtf(value); }
 
 /**
  * @brief Rounds a float32_t value down to the nearest integer
@@ -287,7 +297,7 @@ INLINE float32_t sqrt_f32(float32_t value) { return sqrtf(value); }
  * @return Largest integer less than or equal to the input
  * @example floor_f32(3.7f) returns 3.0f, floor_f32(-2.3f) returns -3.0f
  */
-INLINE float32_t floor_f32(float32_t value) { return floorf(value); }
+static INLINE float32_t floor_f32(float32_t value) { return floorf(value); }
 
 /**
  * @brief Rounds a float32_t value up to the nearest integer
@@ -295,7 +305,7 @@ INLINE float32_t floor_f32(float32_t value) { return floorf(value); }
  * @return Smallest integer greater than or equal to the input
  * @example ceil_f32(3.2f) returns 4.0f, ceil_f32(-2.7f) returns -2.0f
  */
-INLINE float32_t ceil_f32(float32_t value) { return ceilf(value); }
+static INLINE float32_t ceil_f32(float32_t value) { return ceilf(value); }
 
 /**
  * @brief Rounds a float32_t value to the nearest integer
@@ -303,7 +313,7 @@ INLINE float32_t ceil_f32(float32_t value) { return ceilf(value); }
  * @return Nearest integer value (ties round away from zero)
  * @example round_f32(3.6f) returns 4.0f, round_f32(3.4f) returns 3.0f
  */
-INLINE float32_t round_f32(float32_t value) { return roundf(value); }
+static INLINE float32_t round_f32(float32_t value) { return roundf(value); }
 
 /**
  * @brief Raises a base to the power of an exponent
@@ -312,7 +322,7 @@ INLINE float32_t round_f32(float32_t value) { return roundf(value); }
  * @return base raised to the power of exponent (base^exponent)
  * @note Special cases follow IEEE 754 standards (e.g., pow(0, 0) = 1)
  */
-INLINE float32_t pow_f32(float32_t base, float32_t exponent) {
+static INLINE float32_t pow_f32(float32_t base, float32_t exponent) {
   return powf(base, exponent);
 }
 
@@ -322,7 +332,7 @@ INLINE float32_t pow_f32(float32_t base, float32_t exponent) {
  * @return e raised to the power of the input value
  * @note e ≈ 2.71828182845904523536
  */
-INLINE float32_t exp_f32(float32_t value) { return expf(value); }
+static INLINE float32_t exp_f32(float32_t value) { return expf(value); }
 
 /**
  * @brief Computes the natural logarithm (base e)
@@ -330,21 +340,21 @@ INLINE float32_t exp_f32(float32_t value) { return expf(value); }
  * @return Natural logarithm of the input value
  * @note Behavior is undefined for non-positive inputs
  */
-INLINE float32_t log_f32(float32_t value) { return logf(value); }
+static INLINE float32_t log_f32(float32_t value) { return logf(value); }
 
 /**
  * @brief Computes the sine of an angle in radians
  * @param value Angle in radians
  * @return Sine of the input angle, range [-1.0, 1.0]
  */
-INLINE float32_t sin_f32(float32_t value) { return sinf(value); }
+static INLINE float32_t sin_f32(float32_t value) { return sinf(value); }
 
 /**
  * @brief Computes the cosine of an angle in radians
  * @param value Angle in radians
  * @return Cosine of the input angle, range [-1.0, 1.0]
  */
-INLINE float32_t cos_f32(float32_t value) { return cosf(value); }
+static INLINE float32_t cos_f32(float32_t value) { return cosf(value); }
 
 /**
  * @brief Computes the tangent of an angle in radians
@@ -352,7 +362,7 @@ INLINE float32_t cos_f32(float32_t value) { return cosf(value); }
  * @return Tangent of the input angle
  * @note Returns ±∞ for odd multiples of π/2
  */
-INLINE float32_t tan_f32(float32_t value) { return tanf(value); }
+static INLINE float32_t tan_f32(float32_t value) { return tanf(value); }
 
 /**
  * @brief Computes the arc sine (inverse sine) in radians
@@ -360,7 +370,7 @@ INLINE float32_t tan_f32(float32_t value) { return tanf(value); }
  * @return Arc sine of the input, range [-π/2, π/2]
  * @note Behavior is undefined for inputs outside [-1.0, 1.0]
  */
-INLINE float32_t asin_f32(float32_t value) { return asinf(value); }
+static INLINE float32_t asin_f32(float32_t value) { return asinf(value); }
 
 /**
  * @brief Computes the arc cosine (inverse cosine) in radians
@@ -368,14 +378,14 @@ INLINE float32_t asin_f32(float32_t value) { return asinf(value); }
  * @return Arc cosine of the input, range [0, π]
  * @note Behavior is undefined for inputs outside [-1.0, 1.0]
  */
-INLINE float32_t acos_f32(float32_t value) { return acosf(value); }
+static INLINE float32_t acos_f32(float32_t value) { return acosf(value); }
 
 /**
  * @brief Computes the arc tangent (inverse tangent) in radians
  * @param value Input value
  * @return Arc tangent of the input, range [-π/2, π/2]
  */
-INLINE float32_t atan_f32(float32_t value) { return atanf(value); }
+static INLINE float32_t atan_f32(float32_t value) { return atanf(value); }
 
 /**
  * @brief Computes the arc tangent of y/x using the signs to determine quadrant
@@ -386,7 +396,9 @@ INLINE float32_t atan_f32(float32_t value) { return atanf(value); }
  * @note Returns correct angles for (0,0), (+0,-0), etc.
  * @example atan2_f32(1.0f, 1.0f) returns π/4 (45°)
  */
-INLINE float32_t atan2_f32(float32_t y, float32_t x) { return atan2f(y, x); }
+static INLINE float32_t atan2_f32(float32_t y, float32_t x) {
+  return atan2f(y, x);
+}
 
 /**
  * @brief Generates a random float32_t value in the range [0.0, 1.0]
@@ -394,7 +406,9 @@ INLINE float32_t atan2_f32(float32_t y, float32_t x) { return atan2f(y, x); }
  * @note Uses the standard C rand() function, automatically seeds on first use
  * @note NOT thread-safe due to global state in rand()
  */
-INLINE float32_t rand_f32() { return (float32_t)rand() / (float32_t)RAND_MAX; }
+static INLINE float32_t rand_f32() {
+  return (float32_t)rand() / (float32_t)RAND_MAX;
+}
 
 /**
  * @brief Generates a random float32_t value within a specified range
@@ -405,7 +419,7 @@ INLINE float32_t rand_f32() { return (float32_t)rand() / (float32_t)RAND_MAX; }
  * @note NOT thread-safe due to dependency on rand_f32()
  * @example rand_range_f32(1.5f, 10.5f) might return 7.23f
  */
-INLINE float32_t rand_range_f32(float32_t min, float32_t max) {
+static INLINE float32_t rand_range_f32(float32_t min, float32_t max) {
   return min + rand_f32() * (max - min);
 }
 
@@ -434,6 +448,6 @@ static INLINE int32_t rand_i32() {
  * @note NOT thread-safe due to dependency on rand_i32()
  * @example rand_range_i32(1, 6) simulates a dice roll (returns 1-6)
  */
-INLINE int32_t rand_range_i32(int32_t min, int32_t max) {
+static INLINE int32_t rand_range_i32(int32_t min, int32_t max) {
   return (rand_i32() % (max - min + 1)) + min;
 }

@@ -179,7 +179,7 @@ typedef SIMD_ALIGN union {
  * @return SIMD vector containing the loaded values.
  * @note Undefined behavior if ptr is null or points to invalid memory.
  */
-INLINE SIMD_F32X4 simd_load_f32x4(const float32_t *ptr);
+static INLINE SIMD_F32X4 simd_load_f32x4(const float32_t *ptr);
 
 /**
  * @brief Stores a SIMD vector to aligned memory as four 32-bit floats.
@@ -188,7 +188,7 @@ INLINE SIMD_F32X4 simd_load_f32x4(const float32_t *ptr);
  * @param v SIMD vector to store.
  * @note Undefined behavior if ptr is null or points to invalid memory.
  */
-INLINE void simd_store_f32x4(float32_t *ptr, SIMD_F32X4 v);
+static INLINE void simd_store_f32x4(float32_t *ptr, SIMD_F32X4 v);
 
 /**
  * @brief Creates a SIMD vector from four individual float values.
@@ -198,15 +198,15 @@ INLINE void simd_store_f32x4(float32_t *ptr, SIMD_F32X4 v);
  * @param w Fourth component (W/Alpha/Q coordinate).
  * @return SIMD vector with the specified component values.
  */
-INLINE SIMD_F32X4 simd_set_f32x4(float32_t x, float32_t y, float32_t z,
-                                 float32_t w);
+static INLINE SIMD_F32X4 simd_set_f32x4(float32_t x, float32_t y, float32_t z,
+                                        float32_t w);
 
 /**
  * @brief Creates a SIMD vector with all four components set to the same value.
  * @param value The value to broadcast to all four components.
  * @return SIMD vector with all components equal to value.
  */
-INLINE SIMD_F32X4 simd_set1_f32x4(float32_t value);
+static INLINE SIMD_F32X4 simd_set1_f32x4(float32_t value);
 
 /**
  * @brief Performs element-wise addition of two SIMD vectors.
@@ -214,7 +214,7 @@ INLINE SIMD_F32X4 simd_set1_f32x4(float32_t value);
  * @param b Second vector operand.
  * @return Vector containing {a.x+b.x, a.y+b.y, a.z+b.z, a.w+b.w}.
  */
-INLINE SIMD_F32X4 simd_add_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
+static INLINE SIMD_F32X4 simd_add_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
 
 /**
  * @brief Performs element-wise subtraction of two SIMD vectors.
@@ -222,7 +222,7 @@ INLINE SIMD_F32X4 simd_add_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
  * @param b Second vector operand (subtrahend).
  * @return Vector containing {a.x-b.x, a.y-b.y, a.z-b.z, a.w-b.w}.
  */
-INLINE SIMD_F32X4 simd_sub_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
+static INLINE SIMD_F32X4 simd_sub_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
 
 /**
  * @brief Performs element-wise multiplication of two SIMD vectors.
@@ -230,7 +230,7 @@ INLINE SIMD_F32X4 simd_sub_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
  * @param b Second vector operand.
  * @return Vector containing {a.x*b.x, a.y*b.y, a.z*b.z, a.w*b.w}.
  */
-INLINE SIMD_F32X4 simd_mul_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
+static INLINE SIMD_F32X4 simd_mul_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
 
 /**
  * @brief Performs element-wise division of two SIMD vectors.
@@ -239,7 +239,7 @@ INLINE SIMD_F32X4 simd_mul_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
  * @return Vector containing {a.x/b.x, a.y/b.y, a.z/b.z, a.w/b.w}.
  * @note Division by zero behavior is platform-dependent.
  */
-INLINE SIMD_F32X4 simd_div_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
+static INLINE SIMD_F32X4 simd_div_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
 
 /**
  * @brief Computes the square root of each element in the vector.
@@ -247,7 +247,7 @@ INLINE SIMD_F32X4 simd_div_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
  * @return Vector containing {sqrt(v.x), sqrt(v.y), sqrt(v.z), sqrt(v.w)}.
  * @note Square root of negative values is platform-dependent.
  */
-INLINE SIMD_F32X4 simd_sqrt_f32x4(SIMD_F32X4 v);
+static INLINE SIMD_F32X4 simd_sqrt_f32x4(SIMD_F32X4 v);
 
 /**
  * @brief Computes the reciprocal square root (1/sqrt) of each element.
@@ -258,7 +258,7 @@ INLINE SIMD_F32X4 simd_sqrt_f32x4(SIMD_F32X4 v);
  * @note Reciprocal square root of zero or negative values is
  * platform-dependent.
  */
-INLINE SIMD_F32X4 simd_rsqrt_f32x4(SIMD_F32X4 v);
+static INLINE SIMD_F32X4 simd_rsqrt_f32x4(SIMD_F32X4 v);
 
 /**
  * @brief Computes the element-wise minimum of two vectors.
@@ -267,7 +267,7 @@ INLINE SIMD_F32X4 simd_rsqrt_f32x4(SIMD_F32X4 v);
  * @return Vector containing {min(a.x,b.x), min(a.y,b.y), min(a.z,b.z),
  * min(a.w,b.w)}.
  */
-INLINE SIMD_F32X4 simd_min_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
+static INLINE SIMD_F32X4 simd_min_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
 
 /**
  * @brief Computes the element-wise maximum of two vectors.
@@ -276,7 +276,7 @@ INLINE SIMD_F32X4 simd_min_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
  * @return Vector containing {max(a.x,b.x), max(a.y,b.y), max(a.z,b.z),
  * max(a.w,b.w)}.
  */
-INLINE SIMD_F32X4 simd_max_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
+static INLINE SIMD_F32X4 simd_max_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
 
 /**
  * @brief Performs fused multiply-add operation: a + (b * c).
@@ -287,7 +287,8 @@ INLINE SIMD_F32X4 simd_max_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
  * a.w+(b.w*c.w)}.
  * @note Uses hardware FMA on ARM NEON for improved precision and performance.
  */
-INLINE SIMD_F32X4 simd_fma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c);
+static INLINE SIMD_F32X4 simd_fma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                        SIMD_F32X4 c);
 
 /**
  * @brief Performs fused multiply-subtract operation: a - (b * c).
@@ -298,7 +299,8 @@ INLINE SIMD_F32X4 simd_fma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c);
  * a.w-(b.w*c.w)}.
  * @note Uses hardware FMA on ARM NEON for improved precision and performance.
  */
-INLINE SIMD_F32X4 simd_fms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c);
+static INLINE SIMD_F32X4 simd_fms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                        SIMD_F32X4 c);
 
 /**
  * @brief Performs negated fused multiply-add operation: -(a + b * c).
@@ -309,7 +311,8 @@ INLINE SIMD_F32X4 simd_fms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c);
  * -(a.w+b.w*c.w)}.
  * @note Uses hardware FMA on ARM NEON for improved precision and performance.
  */
-INLINE SIMD_F32X4 simd_fnma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c);
+static INLINE SIMD_F32X4 simd_fnma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                         SIMD_F32X4 c);
 
 /**
  * @brief Performs negated fused multiply-subtract operation: -(a - b * c).
@@ -320,7 +323,8 @@ INLINE SIMD_F32X4 simd_fnma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c);
  * -(a.w-b.w*c.w)}.
  * @note Uses hardware FMA on ARM NEON for improved precision and performance.
  */
-INLINE SIMD_F32X4 simd_fnms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c);
+static INLINE SIMD_F32X4 simd_fnms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                         SIMD_F32X4 c);
 
 /**
  * @brief Computes the horizontal sum of all elements in the vector.
@@ -328,7 +332,7 @@ INLINE SIMD_F32X4 simd_fnms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c);
  * @return Single float containing v.x + v.y + v.z + v.w.
  * @note Useful for reduction operations and computing vector magnitudes.
  */
-INLINE float32_t simd_hadd_f32x4(SIMD_F32X4 v);
+static INLINE float32_t simd_hadd_f32x4(SIMD_F32X4 v);
 
 /**
  * @brief Computes the 4D dot product of two vectors.
@@ -337,7 +341,7 @@ INLINE float32_t simd_hadd_f32x4(SIMD_F32X4 v);
  * @return Single float containing a.x*b.x + a.y*b.y + a.z*b.z + a.w*b.w.
  * @note Optimized with hardware acceleration on supported platforms.
  */
-INLINE float32_t simd_dot_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
+static INLINE float32_t simd_dot_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
 
 /**
  * @brief Computes the 3D dot product of two vectors (ignores W component).
@@ -346,7 +350,7 @@ INLINE float32_t simd_dot_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
  * @return Single float containing a.x*b.x + a.y*b.y + a.z*b.z.
  * @note Optimized for 3D vector operations, commonly used in graphics.
  */
-INLINE float32_t simd_dot3_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
+static INLINE float32_t simd_dot3_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
 
 /**
  * @brief Computes the 4D dot product of two vectors (alias for clarity).
@@ -355,7 +359,7 @@ INLINE float32_t simd_dot3_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
  * @return Single float containing a.x*b.x + a.y*b.y + a.z*b.z + a.w*b.w.
  * @note Identical to simd_dot_f32x4(), provided for API consistency.
  */
-INLINE float32_t simd_dot4_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
+static INLINE float32_t simd_dot4_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
 
 /**
  * @brief Shuffles vector elements according to the specified indices.
@@ -369,8 +373,8 @@ INLINE float32_t simd_dot4_f32x4(SIMD_F32X4 a, SIMD_F32X4 b);
  * @note ARM NEON implementation uses element access due to limited shuffle
  * support.
  */
-INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
-                                     int32_t z, int32_t w);
+static INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
+                                            int32_t z, int32_t w);
 
 // =============================================================================
 // SIMD Operations for int32_t vectors
@@ -384,7 +388,8 @@ INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
  * @param w Fourth component (W/Alpha/Q coordinate).
  * @return SIMD integer vector with the specified component values.
  */
-INLINE SIMD_I32X4 simd_set_i32x4(int32_t x, int32_t y, int32_t z, int32_t w);
+static INLINE SIMD_I32X4 simd_set_i32x4(int32_t x, int32_t y, int32_t z,
+                                        int32_t w);
 
 /**
  * @brief Creates a SIMD integer vector with all four components set to the
@@ -392,7 +397,7 @@ INLINE SIMD_I32X4 simd_set_i32x4(int32_t x, int32_t y, int32_t z, int32_t w);
  * @param value The value to broadcast to all four components.
  * @return SIMD integer vector with all components equal to value.
  */
-INLINE SIMD_I32X4 simd_set1_i32x4(int32_t value);
+static INLINE SIMD_I32X4 simd_set1_i32x4(int32_t value);
 
 /**
  * @brief Performs element-wise addition of two SIMD integer vectors.
@@ -400,7 +405,7 @@ INLINE SIMD_I32X4 simd_set1_i32x4(int32_t value);
  * @param b Second vector operand.
  * @return Vector containing {a.x+b.x, a.y+b.y, a.z+b.z, a.w+b.w}.
  */
-INLINE SIMD_I32X4 simd_add_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
+static INLINE SIMD_I32X4 simd_add_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
 
 /**
  * @brief Performs element-wise subtraction of two SIMD integer vectors.
@@ -408,7 +413,7 @@ INLINE SIMD_I32X4 simd_add_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
  * @param b Second vector operand (subtrahend).
  * @return Vector containing {a.x-b.x, a.y-b.y, a.z-b.z, a.w-b.w}.
  */
-INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
+static INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
 
 /**
  * @brief Performs element-wise multiplication of two SIMD integer vectors.
@@ -416,7 +421,7 @@ INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
  * @param b Second vector operand.
  * @return Vector containing {a.x*b.x, a.y*b.y, a.z*b.z, a.w*b.w}.
  */
-INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
+static INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
 
 // =============================================================================
 // SIMD Operations Scatter-
@@ -430,7 +435,7 @@ INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b);
  * @return Vector with elements from v placed at positions specified by indices,
  * with out-of-bounds indices ignored and unwritten positions set to zero.
  */
-INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices);
+static INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices);
 
 /**
  * @brief Gathers elements from a SIMD vector at positions specified by indices.
@@ -439,70 +444,70 @@ INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices);
  * @return Vector with elements gathered from v at positions specified by
  * indices, with out-of-bounds indices producing zero elements.
  */
-INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices);
+static INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices);
 
 // =============================================================================
 // Platform-specific implementations
 // =============================================================================
 
-// Include platform-specific inline implementations
+// Include platform-specific static INLINE implementations
 #if SIMD_ARM_NEON
 
-// ARM NEON inline implementations
-INLINE SIMD_F32X4 simd_load_f32x4(const float32_t *ptr) {
+// ARM NEON static INLINE implementations
+static INLINE SIMD_F32X4 simd_load_f32x4(const float32_t *ptr) {
   SIMD_F32X4 result;
   result.neon = vld1q_f32(ptr);
   return result;
 }
 
-INLINE void simd_store_f32x4(float32_t *ptr, SIMD_F32X4 v) {
+static INLINE void simd_store_f32x4(float32_t *ptr, SIMD_F32X4 v) {
   vst1q_f32(ptr, v.neon);
 }
 
-INLINE SIMD_F32X4 simd_set_f32x4(float32_t x, float32_t y, float32_t z,
-                                 float32_t w) {
+static INLINE SIMD_F32X4 simd_set_f32x4(float32_t x, float32_t y, float32_t z,
+                                        float32_t w) {
   SIMD_F32X4 result;
   result.neon = (float32x4_t){x, y, z, w};
   return result;
 }
 
-INLINE SIMD_F32X4 simd_set1_f32x4(float32_t value) {
+static INLINE SIMD_F32X4 simd_set1_f32x4(float32_t value) {
   SIMD_F32X4 result;
   result.neon = vdupq_n_f32(value);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_add_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_add_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result;
   result.neon = vaddq_f32(a.neon, b.neon);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_sub_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_sub_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result;
   result.neon = vsubq_f32(a.neon, b.neon);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_mul_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_mul_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result;
   result.neon = vmulq_f32(a.neon, b.neon);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_div_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_div_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result;
   result.neon = vdivq_f32(a.neon, b.neon);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_sqrt_f32x4(SIMD_F32X4 v) {
+static INLINE SIMD_F32X4 simd_sqrt_f32x4(SIMD_F32X4 v) {
   SIMD_F32X4 result;
   result.neon = vsqrtq_f32(v.neon);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_rsqrt_f32x4(SIMD_F32X4 v) {
+static INLINE SIMD_F32X4 simd_rsqrt_f32x4(SIMD_F32X4 v) {
   SIMD_F32X4 result;
   result.neon = vrsqrteq_f32(v.neon);
   // One Newton-Raphson iteration for better precision
@@ -511,49 +516,55 @@ INLINE SIMD_F32X4 simd_rsqrt_f32x4(SIMD_F32X4 v) {
   return result;
 }
 
-INLINE SIMD_F32X4 simd_min_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_min_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result;
   result.neon = vminq_f32(a.neon, b.neon);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_max_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_max_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result;
   result.neon = vmaxq_f32(a.neon, b.neon);
   return result;
 }
 
 // ARM NEON FMA implementations
-INLINE SIMD_F32X4 simd_fma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+static INLINE SIMD_F32X4 simd_fma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                        SIMD_F32X4 c) {
   SIMD_F32X4 result;
   result.neon = vfmaq_f32(a.neon, b.neon, c.neon); // a + (b * c)
   return result;
 }
 
-INLINE SIMD_F32X4 simd_fms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+static INLINE SIMD_F32X4 simd_fms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                        SIMD_F32X4 c) {
   SIMD_F32X4 result;
   result.neon = vfmsq_f32(a.neon, b.neon, c.neon); // a - (b * c)
   return result;
 }
 
-INLINE SIMD_F32X4 simd_fnma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+static INLINE SIMD_F32X4 simd_fnma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                         SIMD_F32X4 c) {
   SIMD_F32X4 result;
   // -(a + b * c) = -a - (b * c)
   result.neon = vfmsq_f32(vnegq_f32(a.neon), b.neon, c.neon);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_fnms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+static INLINE SIMD_F32X4 simd_fnms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                         SIMD_F32X4 c) {
   SIMD_F32X4 result;
   // -(a - b * c) = -a + (b * c)
   result.neon = vfmaq_f32(vnegq_f32(a.neon), b.neon, c.neon);
   return result;
 }
 
-INLINE float32_t simd_hadd_f32x4(SIMD_F32X4 v) { return vaddvq_f32(v.neon); }
+static INLINE float32_t simd_hadd_f32x4(SIMD_F32X4 v) {
+  return vaddvq_f32(v.neon);
+}
 
 // Optimized dot product using FMA and pairwise operations
-INLINE float32_t simd_dot_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE float32_t simd_dot_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   // Multiply the vectors element-wise
   float32x4_t prod = vmulq_f32(a.neon, b.neon);
   // Sum all elements of the result vector
@@ -561,19 +572,19 @@ INLINE float32_t simd_dot_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
 }
 
 // 3D dot product (optimized for vec3 stored in vec4)
-INLINE float32_t simd_dot3_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE float32_t simd_dot3_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   float32x4_t prod = vmulq_f32(a.neon, b.neon);
   float32x2_t sum = vpadd_f32(vget_low_f32(prod), vget_low_f32(prod));
   return vget_lane_f32(sum, 0) + vgetq_lane_f32(prod, 2);
 }
 
 // 4D dot product (alias for clarity)
-INLINE float32_t simd_dot4_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE float32_t simd_dot4_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   return simd_dot_f32x4(a, b);
 }
 
-INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
-                                     int32_t z, int32_t w) {
+static INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
+                                            int32_t z, int32_t w) {
   assert(x >= 0 && x < 4);
   assert(y >= 0 && y < 4);
   assert(z >= 0 && z < 4);
@@ -587,37 +598,38 @@ INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
   return result;
 }
 
-INLINE SIMD_I32X4 simd_set_i32x4(int32_t x, int32_t y, int32_t z, int32_t w) {
+static INLINE SIMD_I32X4 simd_set_i32x4(int32_t x, int32_t y, int32_t z,
+                                        int32_t w) {
   SIMD_I32X4 result;
   result.neon = (int32x4_t){x, y, z, w};
   return result;
 }
 
-INLINE SIMD_I32X4 simd_set1_i32x4(int32_t value) {
+static INLINE SIMD_I32X4 simd_set1_i32x4(int32_t value) {
   SIMD_I32X4 result;
   result.neon = vdupq_n_s32(value);
   return result;
 }
 
-INLINE SIMD_I32X4 simd_add_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+static INLINE SIMD_I32X4 simd_add_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
   SIMD_I32X4 result;
   result.neon = vaddq_s32(a.neon, b.neon);
   return result;
 }
 
-INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+static INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
   SIMD_I32X4 result;
   result.neon = vsubq_s32(a.neon, b.neon);
   return result;
 }
 
-INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+static INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
   SIMD_I32X4 result;
   result.neon = vmulq_s32(a.neon, b.neon);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
+static INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
   // ARM NEON doesn't have direct scatter, so we use element access
   // This creates a result vector where each element from v is placed at the
   // position specified by the corresponding index (with bounds checking)
@@ -632,7 +644,7 @@ INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
   return result;
 }
 
-INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
+static INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
   // ARM NEON doesn't have direct gather, so we use element access
   // This gathers elements from v using indices to specify which elements to
   // pick
@@ -651,119 +663,123 @@ INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
 
 #elif defined(SIMD_X86_AVX)
 
-INLINE SIMD_F32X4 simd_load_f32x4(const float32_t *ptr) {
+static INLINE SIMD_F32X4 simd_load_f32x4(const float32_t *ptr) {
   SIMD_F32X4 result;
   result.sse = _mm_loadu_ps(ptr);
   return result;
 }
 
-INLINE void simd_store_f32x4(float32_t *ptr, SIMD_F32X4 v) {
+static INLINE void simd_store_f32x4(float32_t *ptr, SIMD_F32X4 v) {
   _mm_storeu_ps(ptr, v.sse);
 }
 
-INLINE SIMD_F32X4 simd_set_f32x4(float32_t x, float32_t y, float32_t z,
-                                 float32_t w) {
+static INLINE SIMD_F32X4 simd_set_f32x4(float32_t x, float32_t y, float32_t z,
+                                        float32_t w) {
   SIMD_F32X4 result;
   result.sse = _mm_set_ps(w, z, y, x);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_set1_f32x4(float32_t value) {
+static INLINE SIMD_F32X4 simd_set1_f32x4(float32_t value) {
   SIMD_F32X4 result;
   result.sse = _mm_set1_ps(value);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_add_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_add_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result;
   result.sse = _mm_add_ps(a.sse, b.sse);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_sub_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_sub_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result;
   result.sse = _mm_sub_ps(a.sse, b.sse);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_mul_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_mul_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result;
   result.sse = _mm_mul_ps(a.sse, b.sse);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_div_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_div_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result;
   result.sse = _mm_div_ps(a.sse, b.sse);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_sqrt_f32x4(SIMD_F32X4 v) {
+static INLINE SIMD_F32X4 simd_sqrt_f32x4(SIMD_F32X4 v) {
   SIMD_F32X4 result;
   result.sse = _mm_sqrt_ps(v.sse);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_rsqrt_f32x4(SIMD_F32X4 v) {
+static INLINE SIMD_F32X4 simd_rsqrt_f32x4(SIMD_F32X4 v) {
   SIMD_F32X4 result;
   result.sse = _mm_rsqrt_ps(v.sse);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_min_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_min_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result;
   result.sse = _mm_min_ps(a.sse, b.sse);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_max_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_max_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result;
   result.sse = _mm_max_ps(a.sse, b.sse);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_fma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+static INLINE SIMD_F32X4 simd_fma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                        SIMD_F32X4 c) {
   SIMD_F32X4 result;
   result.sse = _mm_fmadd_ps(a.sse, b.sse, c.sse);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_fms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+static INLINE SIMD_F32X4 simd_fms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                        SIMD_F32X4 c) {
   SIMD_F32X4 result;
   result.sse = _mm_fmsub_ps(a.sse, b.sse, c.sse);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_fnma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+static INLINE SIMD_F32X4 simd_fnma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                         SIMD_F32X4 c) {
   SIMD_F32X4 result;
   result.sse = _mm_fnmadd_ps(a.sse, b.sse, c.sse);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_fnms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+static INLINE SIMD_F32X4 simd_fnms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                         SIMD_F32X4 c) {
   SIMD_F32X4 result;
   result.sse = _mm_fnmsub_ps(a.sse, b.sse, c.sse);
   return result;
 }
 
-INLINE float32_t simd_hadd_f32x4(SIMD_F32X4 v) {
+static INLINE float32_t simd_hadd_f32x4(SIMD_F32X4 v) {
   return _mm_cvtss_f32(_mm_hadd_ps(v.sse, v.sse));
 }
 
-INLINE float32_t simd_dot_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE float32_t simd_dot_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   return _mm_cvtss_f32(_mm_dp_ps(a.sse, b.sse, 0xFF));
 }
 
-INLINE float32_t simd_dot3_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE float32_t simd_dot3_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   return _mm_cvtss_f32(_mm_dp_ps(a.sse, b.sse, 0xF1));
 }
 
-INLINE float32_t simd_dot4_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE float32_t simd_dot4_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   return _mm_cvtss_f32(_mm_dp_ps(a.sse, b.sse, 0xFF));
 }
 
-INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
-                                     int32_t z, int32_t w) {
+static INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
+                                            int32_t z, int32_t w) {
   // _mm_shuffle_ps requires a compile-time constant for the control mask,
   // so we must do the shuffle manually for variable indices.
   SIMD_F32X4 result;
@@ -778,37 +794,38 @@ INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
   return result;
 }
 
-INLINE SIMD_I32X4 simd_set_i32x4(int32_t x, int32_t y, int32_t z, int32_t w) {
+static INLINE SIMD_I32X4 simd_set_i32x4(int32_t x, int32_t y, int32_t z,
+                                        int32_t w) {
   SIMD_I32X4 result;
   result.sse = _mm_set_epi32(w, z, y, x);
   return result;
 }
 
-INLINE SIMD_I32X4 simd_set1_i32x4(int32_t value) {
+static INLINE SIMD_I32X4 simd_set1_i32x4(int32_t value) {
   SIMD_I32X4 result;
   result.sse = _mm_set1_epi32(value);
   return result;
 }
 
-INLINE SIMD_I32X4 simd_add_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+static INLINE SIMD_I32X4 simd_add_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
   SIMD_I32X4 result;
   result.sse = _mm_add_epi32(a.sse, b.sse);
   return result;
 }
 
-INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+static INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
   SIMD_I32X4 result;
   result.sse = _mm_sub_epi32(a.sse, b.sse);
   return result;
 }
 
-INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+static INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
   SIMD_I32X4 result;
   result.sse = _mm_mullo_epi32(a.sse, b.sse);
   return result;
 }
 
-INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
+static INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
   SIMD_F32X4 result = simd_set1_f32x4(0.0f); // Initialize to zero
 
   for (int i = 0; i < 4; i++) {
@@ -820,7 +837,7 @@ INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
   return result;
 }
 
-INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
+static INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
   SIMD_F32X4 result;
 
   for (int i = 0; i < 4; i++) {
@@ -835,102 +852,108 @@ INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
 }
 #else
 // Fallback scalar implementations
-INLINE SIMD_F32X4 simd_load_f32x4(const float32_t *ptr) {
+static INLINE SIMD_F32X4 simd_load_f32x4(const float32_t *ptr) {
   SIMD_F32X4 result = {{ptr[0], ptr[1], ptr[2], ptr[3]}};
   return result;
 }
 
-INLINE void simd_store_f32x4(float32_t *ptr, SIMD_F32X4 v) {
+static INLINE void simd_store_f32x4(float32_t *ptr, SIMD_F32X4 v) {
   ptr[0] = v.x;
   ptr[1] = v.y;
   ptr[2] = v.z;
   ptr[3] = v.w;
 }
 
-INLINE SIMD_F32X4 simd_set_f32x4(float32_t x, float32_t y, float32_t z,
-                                 float32_t w) {
+static INLINE SIMD_F32X4 simd_set_f32x4(float32_t x, float32_t y, float32_t z,
+                                        float32_t w) {
   SIMD_F32X4 result = {{x, y, z, w}};
   return result;
 }
 
-INLINE SIMD_F32X4 simd_set1_f32x4(float32_t value) {
+static INLINE SIMD_F32X4 simd_set1_f32x4(float32_t value) {
   SIMD_F32X4 result = {{value, value, value, value}};
   return result;
 }
 
-INLINE SIMD_F32X4 simd_add_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_add_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result = {{a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w}};
   return result;
 }
 
-INLINE SIMD_F32X4 simd_sub_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_sub_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result = {{a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w}};
   return result;
 }
 
-INLINE SIMD_F32X4 simd_mul_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_mul_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result = {{a.x * b.x, a.y * b.y, a.z * b.z, a.w * b.w}};
   return result;
 }
 
-INLINE SIMD_F32X4 simd_div_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_div_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result = {{a.x / b.x, a.y / b.y, a.z / b.z, a.w / b.w}};
   return result;
 }
 
-INLINE SIMD_F32X4 simd_sqrt_f32x4(SIMD_F32X4 v) {
+static INLINE SIMD_F32X4 simd_sqrt_f32x4(SIMD_F32X4 v) {
   SIMD_F32X4 result = {
       {sqrt_f32(v.x), sqrt_f32(v.y), sqrt_f32(v.z), sqrt_f32(v.w)}};
   return result;
 }
 
-INLINE SIMD_F32X4 simd_rsqrt_f32x4(SIMD_F32X4 v) {
+static INLINE SIMD_F32X4 simd_rsqrt_f32x4(SIMD_F32X4 v) {
   SIMD_F32X4 result = {{1.0f / sqrt_f32(v.x), 1.0f / sqrt_f32(v.y),
                         1.0f / sqrt_f32(v.z), 1.0f / sqrt_f32(v.w)}};
   return result;
 }
 
-INLINE SIMD_F32X4 simd_min_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_min_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result = {
       {Min(a.x, b.x), Min(a.y, b.y), Min(a.z, b.z), Min(a.w, b.w)}};
   return result;
 }
 
-INLINE SIMD_F32X4 simd_max_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE SIMD_F32X4 simd_max_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   SIMD_F32X4 result = {
       {Max(a.x, b.x), Max(a.y, b.y), Max(a.z, b.z), Max(a.w, b.w)}};
   return result;
 }
 
 // Fallback FMA implementations
-INLINE SIMD_F32X4 simd_fma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+static INLINE SIMD_F32X4 simd_fma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                        SIMD_F32X4 c) {
   SIMD_F32X4 result = {{a.x + (b.x * c.x), a.y + (b.y * c.y), a.z + (b.z * c.z),
                         a.w + (b.w * c.w)}};
   return result;
 }
 
-INLINE SIMD_F32X4 simd_fms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+static INLINE SIMD_F32X4 simd_fms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                        SIMD_F32X4 c) {
   SIMD_F32X4 result = {{a.x - (b.x * c.x), a.y - (b.y * c.y), a.z - (b.z * c.z),
                         a.w - (b.w * c.w)}};
   return result;
 }
 
-INLINE SIMD_F32X4 simd_fnma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+static INLINE SIMD_F32X4 simd_fnma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                         SIMD_F32X4 c) {
   SIMD_F32X4 result = {{-(a.x + b.x * c.x), -(a.y + b.y * c.y),
                         -(a.z + b.z * c.z), -(a.w + b.w * c.w)}};
   return result;
 }
 
-INLINE SIMD_F32X4 simd_fnms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b, SIMD_F32X4 c) {
+static INLINE SIMD_F32X4 simd_fnms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
+                                         SIMD_F32X4 c) {
   SIMD_F32X4 result = {{-(a.x - b.x * c.x), -(a.y - b.y * c.y),
                         -(a.z - b.z * c.z), -(a.w - b.w * c.w)}};
   return result;
 }
 
-INLINE float32_t simd_hadd_f32x4(SIMD_F32X4 v) { return v.x + v.y + v.z + v.w; }
+static INLINE float32_t simd_hadd_f32x4(SIMD_F32X4 v) {
+  return v.x + v.y + v.z + v.w;
+}
 
 // Optimized fallback dot product - hint to compiler for FMA
-INLINE float32_t simd_dot_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE float32_t simd_dot_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   // Structure to encourage compiler FMA generation
   float result = a.x * b.x;
   result += a.y * b.y; // Compiler may generate FMA here
@@ -940,7 +963,7 @@ INLINE float32_t simd_dot_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
 }
 
 // Fallback 3D dot product
-INLINE float32_t simd_dot3_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE float32_t simd_dot3_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   float result = a.x * b.x;
   result += a.y * b.y;
   result += a.z * b.z;
@@ -949,12 +972,12 @@ INLINE float32_t simd_dot3_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
 }
 
 // Fallback 4D dot product (alias)
-INLINE float32_t simd_dot4_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
+static INLINE float32_t simd_dot4_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
   return simd_dot_f32x4(a, b);
 }
 
-INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
-                                     int32_t z, int32_t w) {
+static INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
+                                            int32_t z, int32_t w) {
   assert(x >= 0 && x < 4);
   assert(y >= 0 && y < 4);
   assert(z >= 0 && z < 4);
@@ -964,32 +987,33 @@ INLINE SIMD_F32X4 simd_shuffle_f32x4(SIMD_F32X4 v, int32_t x, int32_t y,
   return result;
 }
 
-INLINE SIMD_I32X4 simd_set_i32x4(int32_t x, int32_t y, int32_t z, int32_t w) {
+static INLINE SIMD_I32X4 simd_set_i32x4(int32_t x, int32_t y, int32_t z,
+                                        int32_t w) {
   SIMD_I32X4 result = {{x, y, z, w}};
   return result;
 }
 
-INLINE SIMD_I32X4 simd_set1_i32x4(int32_t value) {
+static INLINE SIMD_I32X4 simd_set1_i32x4(int32_t value) {
   SIMD_I32X4 result = {{value, value, value, value}};
   return result;
 }
 
-INLINE SIMD_I32X4 simd_add_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+static INLINE SIMD_I32X4 simd_add_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
   SIMD_I32X4 result = {{a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w}};
   return result;
 }
 
-INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+static INLINE SIMD_I32X4 simd_sub_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
   SIMD_I32X4 result = {{a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w}};
   return result;
 }
 
-INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
+static INLINE SIMD_I32X4 simd_mul_i32x4(SIMD_I32X4 a, SIMD_I32X4 b) {
   SIMD_I32X4 result = {{a.x * b.x, a.y * b.y, a.z * b.z, a.w * b.w}};
   return result;
 }
 
-INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
+static INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
   // Scalar fallback for scatter operation
   SIMD_F32X4 result = {{0.0f, 0.0f, 0.0f, 0.0f}}; // Initialize to zero
 
@@ -1002,7 +1026,7 @@ INLINE SIMD_F32X4 simd_scatter_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
   return result;
 }
 
-INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
+static INLINE SIMD_F32X4 simd_gather_f32x4(SIMD_F32X4 v, SIMD_I32X4 indices) {
   // Scalar fallback for gather operation
   SIMD_F32X4 result;
 
