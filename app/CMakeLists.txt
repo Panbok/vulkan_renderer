@@ -8,6 +8,8 @@ file(GLOB_RECURSE APP_SOURCES src/*.c src/*.h)
 # Create the main application executable
 add_executable(vulkan_renderer ${APP_SOURCES})
 
+target_compile_options(vulkan_renderer PRIVATE -march=native)
+
 # Link against the renderer_lib
 target_link_libraries(vulkan_renderer PRIVATE renderer_lib)
 
