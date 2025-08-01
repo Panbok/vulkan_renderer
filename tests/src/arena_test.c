@@ -81,17 +81,16 @@ static void test_arena_simple_alloc() {
   uint64_t pos_before_zero_alloc = arena_pos(arena);
   void *ptr_zero = arena_alloc(arena, 0, ARENA_MEMORY_TAG_UNKNOWN);
   assert(ptr_zero != NULL && "0-byte allocation failed");
-  assert((uintptr_t)ptr_zero % MaxAlign() == 0 &&
-         "0-byte ptr not aligned");
-  // Position might advance to next alignment boundary or by AlignOf(void*)
+  assert((uintptr_t)ptr_zero % MaxAlign() == 0 && "0-byte ptr not aligned");
+  // Position might advance to next alignment boundary or by MaxAlign()
   uint64_t expected_pos_after_zero =
-      AlignPow2(pos_before_zero_alloc, AlignOf(void *));
+      AlignPow2(pos_before_zero_alloc, MaxAlign());
   if (expected_pos_after_zero ==
       pos_before_zero_alloc) { // if already aligned, 0 byte alloc might advance
                                // by min alignment
     // Or it might not advance at all if size is 0. Current code advances by
     // size, which is 0 for pos_post calculation. However, pos_pre =
-    // AlignPow2(current->pos, AlignOf(void *)) might advance current->pos if it
+    // AlignPow2(current->pos, MaxAlign()) might advance current->pos if it
     // wasn't aligned. Let's assume it might advance minimally if pos was
     // unaligned, or not at all if size is truly 0 and pos was aligned. The
     // current arena_alloc will set current->pos to pos_post = pos_pre + 0. So
@@ -107,7 +106,7 @@ static void test_arena_simple_alloc() {
   assert(ptr1 != NULL && "Allocation 1 failed");
   uint64_t pos_after_alloc1 = arena_pos(arena);
   uint64_t expected_aligned_pos1 =
-      AlignPow2(pos_before_zero_alloc, AlignOf(void *)) +
+      AlignPow2(pos_before_zero_alloc, MaxAlign()) +
       alloc_size1; // Assuming 0-byte alloc didn't advance pos meaningfully for
                    // next alloc start More robust: track pos before ptr1
                    // specifically
@@ -154,10 +153,10 @@ static void test_arena_simple_alloc() {
 
   // Check pointer arithmetic
   // The start of ptr2 should be at ptr1 + aligned_size_of_ptr1_allocation
-  uint64_t aligned_alloc_size1 = AlignPow2(alloc_size1, AlignOf(void *));
+  uint64_t aligned_alloc_size1 = AlignPow2(alloc_size1, MaxAlign());
   // This isn't quite right, arena_alloc aligns start of alloc, not size itself
   // internally for next alloc. The position calculation is pos_pre =
-  // AlignPow2(current->pos, AlignOf(void *)); pos_post = pos_pre + size; So
+  // AlignPow2(current->pos, MaxAlign()); pos_post = pos_pre + size; So
   // ptr2 should be at (uint8*)ptr1 + (pos_after_alloc1 -
   // current_arena_pos_before_ptr1) if there were no internal fragmentations due
   // to header. Simpler: (uintptr_t)ptr2 should be >= (uintptr_t)ptr1 +

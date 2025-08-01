@@ -215,7 +215,10 @@ bool8_t application_create(Application *application,
   assert(config->height > 0 && "Application height is less than 0");
   assert(config->target_frame_rate > 0 && "Application target frame rate is 0");
 
-  platform_init();
+  if (!platform_init()) {
+    log_fatal("Failed to initialize platform!");
+    return false_v;
+  }
 
   application->config = config;
   application->app_flags = bitset8_create();

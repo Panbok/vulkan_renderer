@@ -229,7 +229,7 @@ void arena_destroy(Arena *arena);
  * If the current block lacks sufficient committed space, it commits more.
  * If the current block lacks sufficient reserved space, it tries to reuse a
  * block from the free list or allocates a new block.
- * Allocation address is aligned up to `sizeof(void*)`.
+ * Allocation address is aligned up to `MaxAlign()`.
  * @param arena Pointer to the arena.
  * @param size Number of bytes to allocate.
  * @param tag The memory tag to associate with this allocation for statistics

@@ -3,8 +3,9 @@
 #if defined(PLATFORM_WINDOWS)
 static float64_t clock_frequency;
 static bool32_t high_res_timer_enabled = false;
+static UINT timer_resolution = 0;
 
-void platform_init() {
+bool8_t platform_init() {
   LARGE_INTEGER frequency;
   QueryPerformanceFrequency(&frequency);
   clock_frequency = 1.0 / (float64_t)frequency.QuadPart;
@@ -16,8 +17,11 @@ void platform_init() {
     UINT target_resolution = min(max(tc.wPeriodMin, 1), tc.wPeriodMax);
     if (timeBeginPeriod(target_resolution) == TIMERR_NOERROR) {
       high_res_timer_enabled = true;
+      timer_resolution = target_resolution;
     }
   }
+
+  return true_v;
 }
 
 void *platform_mem_reserve(uint64_t size) {
@@ -32,8 +36,8 @@ void platform_mem_decommit(void *ptr, uint64_t size) {
   VirtualFree(ptr, size, MEM_DECOMMIT);
 }
 
-void platform_mem_release(void *ptr, uint64_t size) {
-  VirtualFree(ptr, size, MEM_RELEASE);
+void platform_mem_release(void *ptr, uint64_t _size) {
+  VirtualFree(ptr, 0, MEM_RELEASE);
 }
 
 uint64_t platform_get_page_size() {
@@ -62,7 +66,7 @@ void platform_sleep(uint64_t ms) {
   } else {
     // For longer delays, sleep for most of the time, then busy-wait the
     // remainder
-    if (ms > 3) {
+    if (ms > 1) {
       Sleep(ms - 1); // Sleep for most of the duration
     }
 
@@ -84,7 +88,7 @@ float64_t platform_get_absolute_time() {
 
 void platform_shutdown() {
   if (high_res_timer_enabled) {
-    timeEndPeriod(1);
+    timeEndPeriod(timer_resolution);
     high_res_timer_enabled = false;
   }
 }

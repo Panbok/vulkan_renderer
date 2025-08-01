@@ -17,7 +17,7 @@
  *   blocks that are no longer needed are not immediately released but are
  *   added to a singly linked free list (`arena->free_last`). `arena_alloc`
  *   checks this free list before creating a new block, allowing for reuse.
- * - **Alignment:** Allocations are aligned to `sizeof(void*)` (implicitly via
+ * - **Alignment:** Allocations are aligned to `MaxAlign()` (implicitly via
  * ALIGN_UP with page size granularity in commit logic, and header size
  * alignment). Commit/Reserve sizes are page-aligned.
  * - **Header:** Each block starts with an `Arena` struct containing metadata.
@@ -28,10 +28,8 @@
 
 Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size,
                              ArenaFlags flags) {
-  uint64_t s_rsv_size =
-      AlignPow2(ARENA_HEADER_SIZE + rsv_size, MaxAlign());
-  uint64_t s_cmt_size =
-      AlignPow2(ARENA_HEADER_SIZE + cmt_size, MaxAlign());
+  uint64_t s_rsv_size = AlignPow2(ARENA_HEADER_SIZE + rsv_size, MaxAlign());
+  uint64_t s_cmt_size = AlignPow2(ARENA_HEADER_SIZE + cmt_size, MaxAlign());
 
   uint64_t page_size = 0;
   if (bitset8_is_set(&flags, ARENA_FLAG_LARGE_PAGES)) {
@@ -138,9 +136,9 @@ void *arena_alloc(Arena *arena, uint64_t size, ArenaMemoryTag tag) {
     if (new_block == NULL) {
       uint64_t s_rsv_size = current->rsv_size;
       uint64_t s_cmt_size = current->cmt_size;
-      if (size + ARENA_HEADER_SIZE > s_rsv_size) {
-        s_rsv_size = AlignPow2(size + ARENA_HEADER_SIZE, MaxAlign());
-        s_cmt_size = AlignPow2(size + ARENA_HEADER_SIZE, MaxAlign());
+      if (size > s_rsv_size) {
+        s_rsv_size = AlignPow2(size, MaxAlign());
+        s_cmt_size = AlignPow2(size, MaxAlign());
       }
 
       // Determine flags based on the original arena's page size

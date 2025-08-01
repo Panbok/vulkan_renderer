@@ -78,9 +78,14 @@
 #define NOINLINE __declspec(noinline)
 #endif
 #else
-// Fallback for other compilers, defaults to static inline for both cases
+// Fallback for other compilers
+#ifndef NDEBUG
+#define INLINE inline
+#define NOINLINE
+#else
 #define INLINE static inline
 #define NOINLINE
+#endif
 #endif
 
 // Check if any SIMD is available
