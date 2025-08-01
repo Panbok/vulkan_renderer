@@ -2,10 +2,10 @@
 
 // Helper to get the initial position (header size aligned up)
 static uint64_t get_initial_pos() {
-  // ARENA_HEADER_SIZE should already be multiple of AlignOf(void*) or page size
+  // ARENA_HEADER_SIZE should already be multiple of MaxAlign() or page size
   // for safety but explicit alignment here for calculation isn't strictly
   // needed if header is always aligned up.
-  return AlignPow2(ARENA_HEADER_SIZE, AlignOf(void *));
+  return AlignPow2(ARENA_HEADER_SIZE, MaxAlign());
 }
 
 static void test_arena_creation() {
@@ -81,7 +81,7 @@ static void test_arena_simple_alloc() {
   uint64_t pos_before_zero_alloc = arena_pos(arena);
   void *ptr_zero = arena_alloc(arena, 0, ARENA_MEMORY_TAG_UNKNOWN);
   assert(ptr_zero != NULL && "0-byte allocation failed");
-  assert((uintptr_t)ptr_zero % AlignOf(void *) == 0 &&
+  assert((uintptr_t)ptr_zero % MaxAlign() == 0 &&
          "0-byte ptr not aligned");
   // Position might advance to next alignment boundary or by AlignOf(void*)
   uint64_t expected_pos_after_zero =
@@ -133,9 +133,9 @@ static void test_arena_simple_alloc() {
   assert(pos_after_alloc1 >= current_arena_pos_before_ptr1 + alloc_size1 &&
          "Position after alloc 1 too small");
   assert(pos_after_alloc1 <
-             current_arena_pos_before_ptr1 + alloc_size1 + AlignOf(void *) &&
+             current_arena_pos_before_ptr1 + alloc_size1 + MaxAlign() &&
          "Position after alloc 1 too large");
-  assert((uintptr_t)ptr1 % AlignOf(void *) == 0 && "Pointer 1 not aligned");
+  assert((uintptr_t)ptr1 % MaxAlign() == 0 && "Pointer 1 not aligned");
   memset(ptr1, 0xAA, alloc_size1);
 
   uint64_t alloc_size2 = 200;
@@ -144,9 +144,9 @@ static void test_arena_simple_alloc() {
   uint64_t pos_after_alloc2 = arena_pos(arena);
   assert(pos_after_alloc2 >= pos_after_alloc1 + alloc_size2 &&
          "Position after alloc 2 too small");
-  assert(pos_after_alloc2 < pos_after_alloc1 + alloc_size2 + AlignOf(void *) &&
+  assert(pos_after_alloc2 < pos_after_alloc1 + alloc_size2 + MaxAlign() &&
          "Position after alloc 2 too large");
-  assert((uintptr_t)ptr2 % AlignOf(void *) == 0 && "Pointer 2 not aligned");
+  assert((uintptr_t)ptr2 % MaxAlign() == 0 && "Pointer 2 not aligned");
   memset(ptr2, 0xBB, alloc_size2);
 
   assert(*(unsigned char *)ptr1 == 0xAA && "Data verification for ptr1 failed");
@@ -760,7 +760,7 @@ static void test_arena_scratch() {
 static void test_arena_alignment() {
   printf("  Running test_arena_alignment...\n");
   Arena *arena = arena_create();
-  uint64_t alignment = AlignOf(void *); // Platform default alignment
+  uint64_t alignment = MaxAlign(); // Maximum platform alignment
 
   // Allocate small sizes to check alignment
   for (uint32_t i = 1; i < (uint32_t)alignment * 2; ++i) {

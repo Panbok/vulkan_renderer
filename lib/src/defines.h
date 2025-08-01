@@ -15,6 +15,16 @@
 #define AlignPow2Down(x, b)                                                    \
   ((x) & (~((b) - 1))) // Align x down to multiple of b (b must be power of 2)
 #define AlignOf(T) __alignof(T)
+// Maximum fundamental alignment for the platform
+// Use the compiler's __BIGGEST_ALIGNMENT__ if available, otherwise fall back to
+// common values
+#if defined(__BIGGEST_ALIGNMENT__)
+#define MaxAlign() __BIGGEST_ALIGNMENT__
+#elif defined(_MSC_VER)
+#define MaxAlign() 16 // MSVC typically uses 16-byte max alignment
+#else
+#define MaxAlign() 16 // Most modern platforms use 16-byte max alignment
+#endif
 
 #define Min(A, B) (((A) < (B)) ? (A) : (B))
 #define Max(A, B) (((A) > (B)) ? (A) : (B))
@@ -46,18 +56,35 @@
 
 // Inlining
 #if defined(__clang__) || defined(__GNUC__)
+// If NDEBUG is NOT defined (i.e., debug build), use plain 'inline'
+// Otherwise (NDEBUG is defined, release/optimized build), use aggressive
+// 'always_inline'
+#ifndef NDEBUG
+#define INLINE inline
+#define NOINLINE __attribute__((noinline))
+#else
 #define INLINE __attribute__((always_inline)) inline
 #define NOINLINE __attribute__((noinline))
+#endif
 #elif defined(_MSC_VER)
-#define INLINE __forceinline
+// If NDEBUG is NOT defined (i.e., debug build), use plain 'inline'
+// Otherwise (NDEBUG is defined, release/optimized build), use aggressive
+// '__forceinline'
+#ifndef NDEBUG
+#define INLINE inline
 #define NOINLINE __declspec(noinline)
 #else
+#define INLINE __forceinline
+#define NOINLINE __declspec(noinline)
+#endif
+#else
+// Fallback for other compilers, defaults to static inline for both cases
 #define INLINE static inline
 #define NOINLINE
 #endif
 
 // Check if any SIMD is available
-#if defined(SIMD_ARM_NEON) || defined(SIMD_X86_SSE)
+#if defined(SIMD_ARM_NEON) || defined(SIMD_X86_AVX)
 #define SIMD_AVAILABLE 1
 #else
 #define SIMD_AVAILABLE 0
