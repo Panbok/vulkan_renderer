@@ -113,6 +113,14 @@
  * ```
  */
 
+#if defined(_WIN32) || defined(_WIN64)
+#define FSEEK64 _fseeki64
+#define FTELL64 _ftelli64
+#else
+#define FSEEK64 fseeko
+#define FTELL64 ftello
+#endif
+
 /**
  * @brief Specifies whether a file path is relative or absolute.
  */

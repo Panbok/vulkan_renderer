@@ -218,23 +218,23 @@ FileError file_read_all(FileHandle *handle, Arena *arena, uint8_t **out_buffer,
   assert_log(bytes_read != NULL, "bytes_read is NULL");
 
   if (handle->handle) {
-    off_t current_pos = ftello((FILE *)handle->handle);
+    off_t current_pos = FTELL64((FILE *)handle->handle);
     if (current_pos == (off_t)-1) {
       return FILE_ERROR_IO_ERROR;
     }
 
-    if (fseeko((FILE *)handle->handle, 0, SEEK_END) != 0) {
+    if (FSEEK64((FILE *)handle->handle, 0, SEEK_END) != 0) {
       return FILE_ERROR_IO_ERROR;
     }
 
-    off_t file_end = ftello((FILE *)handle->handle);
+    off_t file_end = FTELL64((FILE *)handle->handle);
     if (file_end == (off_t)-1) {
       return FILE_ERROR_IO_ERROR;
     }
 
     uint64_t file_size = (uint64_t)(file_end - current_pos);
 
-    if (fseeko((FILE *)handle->handle, current_pos, SEEK_SET) != 0) {
+    if (FSEEK64((FILE *)handle->handle, current_pos, SEEK_SET) != 0) {
       return FILE_ERROR_IO_ERROR;
     }
 
@@ -314,7 +314,7 @@ FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
       log_fatal("Failed to allocate 4-byte aligned memory for shader data");
       return FILE_ERROR_INVALID_SPIR_V;
     }
-    memcpy(aligned_data, *shader_data, *shader_size);
+    MemCopy(aligned_data, *shader_data, *shader_size);
     *shader_data = aligned_data;
   }
 
