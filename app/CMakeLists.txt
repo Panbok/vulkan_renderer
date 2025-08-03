@@ -8,7 +8,12 @@ file(GLOB_RECURSE APP_SOURCES src/*.c src/*.h)
 # Create the main application executable
 add_executable(vulkan_renderer ${APP_SOURCES})
 
-target_compile_options(vulkan_renderer PRIVATE -march=native)
+# Platform-specific optimization flags
+if(MSVC)
+    target_compile_options(renderer_lib PRIVATE /arch:AVX2)
+else()
+    target_compile_options(vulkan_renderer PRIVATE -march=native)
+endif()
 
 # Link against the renderer_lib
 target_link_libraries(vulkan_renderer PRIVATE renderer_lib)

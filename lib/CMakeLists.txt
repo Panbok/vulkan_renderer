@@ -12,7 +12,12 @@ endif()
 # Create a static library
 add_library(renderer_lib STATIC ${LIB_SOURCES})
 
-target_compile_options(renderer_lib PRIVATE -march=native)
+# Platform-specific optimization flags
+if(MSVC)
+    target_compile_options(renderer_lib PRIVATE /arch:AVX2)
+else()
+    target_compile_options(renderer_lib PRIVATE -march=native)
+endif()
 
 # Find Vulkan package
 find_package(Vulkan REQUIRED)

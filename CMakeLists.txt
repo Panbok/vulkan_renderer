@@ -7,12 +7,19 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
-set(SAN_FLAGS "-fsanitize=address,undefined -fno-omit-frame-pointer")
-set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} ${SAN_FLAGS} -g")
-set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} ${SAN_FLAGS}")
-
-# Disable implicit function declaration warnings
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-implicit-function-declaration")
+if(MSVC)
+    set(SAN_FLAGS "/fsanitize=address,undefined")
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} ${SAN_FLAGS} /Zi")
+    set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} ${SAN_FLAGS}")
+    
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /wd4013 /arch:AVX2")  # implicit function declaration
+else()
+    set(SAN_FLAGS "-fsanitize=address,undefined -fno-omit-frame-pointer")
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} ${SAN_FLAGS} -g")
+    set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} ${SAN_FLAGS}")
+    
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-implicit-function-declaration -march=native")
+endif()
 
 # Add subdirectories for each component
 add_subdirectory(lib)

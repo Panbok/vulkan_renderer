@@ -10,3 +10,4 @@ build_release_info
 *.dylib
 *.lib
 *.exp
+.vs

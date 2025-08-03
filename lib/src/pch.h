@@ -37,7 +37,7 @@
 #if defined(__ARM_NEON) || defined(__ARM_NEON__)
 #define SIMD_ARM_NEON 1
 #include <arm_neon.h>
-#elif (defined(__AVX2__) || defined(__AVX__)) && defined(__FMA__)
+#elif defined(__AVX2__) || defined(__AVX__)
 #define SIMD_X86_AVX 1
 #include <immintrin.h>
 #endif
