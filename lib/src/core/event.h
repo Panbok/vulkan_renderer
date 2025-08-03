@@ -71,7 +71,7 @@
  * Applications should extend this enum with their specific event types,
  * ensuring EVENT_TYPE_MAX remains the highest value.
  */
-typedef enum EventType : uint16_t {
+typedef enum EventType {
   EVENT_TYPE_NONE = 0,
   EVENT_TYPE_KEY_PRESS = 1,
   EVENT_TYPE_KEY_RELEASE = 2,
@@ -144,13 +144,13 @@ typedef struct EventManager {
   EventDataBuffer
       event_data_buf; /**< Buffer for storing variable-sized event data. */
 
-  Mutex mutex; /**< Mutex protecting access to the queue,
-                            callback vectors, and event data buffer. */
-  CondVar cond; /**< Condition variable used by the worker thread to wait
-                        for events or shutdown signal. */
+  Mutex mutex;      /**< Mutex protecting access to the queue,
+                                 callback vectors, and event data buffer. */
+  CondVar cond;     /**< Condition variable used by the worker thread to wait
+                            for events or shutdown signal. */
   Thread thread;    /**< Handle for the dedicated event processing thread. */
-  bool32_t running;    /**< Flag indicating if the event processor thread should
-                        continue running. */
+  bool32_t running; /**< Flag indicating if the event processor thread should
+                     continue running. */
   /*
    * IMPORTANT NOTE ON THREAD SAFETY:
    * The EventManager guarantees thread safety for its internal operations

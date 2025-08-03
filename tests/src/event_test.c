@@ -1,5 +1,8 @@
 #include "event_test.h"
 
+#define THREAD_COUNT 4
+#define EVENTS_PER_THREAD 50
+
 static Arena *arena = NULL;
 static const uint64_t ARENA_SIZE = 1024 * 1024; // 1MB
 
@@ -179,7 +182,6 @@ static bool8_t lifetime_check_callback(Event *event) {
 
 static void *dispatch_thread(void *arg) {
   ThreadData *data = (ThreadData *)arg;
-  const uint32_t EVENTS_PER_THREAD = 50;
 
   for (uint32_t i = 0; i < EVENTS_PER_THREAD; i++) {
     TestEventData *event_data = arena_alloc(data->arena, sizeof(TestEventData),
@@ -505,8 +507,6 @@ static void test_concurrent_dispatch(void) {
   event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, counting_callback);
 
   // Create and start multiple threads
-  const uint32_t THREAD_COUNT = 4;
-  const uint32_t EVENTS_PER_THREAD = 50;
   Thread threads[THREAD_COUNT];
   ThreadData thread_data[THREAD_COUNT];
 

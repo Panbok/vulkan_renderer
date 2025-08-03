@@ -124,7 +124,7 @@
 /**
  * @brief Specifies whether a file path is relative or absolute.
  */
-typedef enum FilePathType : uint32_t {
+typedef enum FilePathType {
   FILE_PATH_TYPE_RELATIVE, /**< Path is relative to current working directory */
   FILE_PATH_TYPE_ABSOLUTE, /**< Path is absolute from filesystem root */
 } FilePathType;
@@ -135,7 +135,7 @@ typedef enum FilePathType : uint32_t {
  * These flags control how a file is opened and what operations are permitted.
  * Multiple flags can be combined to achieve the desired behavior.
  */
-typedef enum FileModeFlags : uint32_t {
+typedef enum FileModeFlags {
   FILE_MODE_FLAGS_NONE = 0,    /**< No flags set */
   FILE_MODE_READ = 1 << 0,     /**< Enable reading from file */
   FILE_MODE_WRITE = 1 << 1,    /**< Enable writing to file */
