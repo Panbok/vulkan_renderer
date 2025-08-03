@@ -737,33 +737,39 @@ static INLINE SIMD_F32X4 simd_max_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
 static INLINE SIMD_F32X4 simd_fma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
                                         SIMD_F32X4 c) {
   SIMD_F32X4 result;
-  result.sse = _mm_fmadd_ps(a.sse, b.sse, c.sse);
+  result.sse = _mm_fmadd_ps(b.sse, c.sse, a.sse); // a + (b * c)
   return result;
 }
 
 static INLINE SIMD_F32X4 simd_fms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
                                         SIMD_F32X4 c) {
   SIMD_F32X4 result;
-  result.sse = _mm_fmsub_ps(a.sse, b.sse, c.sse);
+  result.sse = _mm_fnmadd_ps(b.sse, c.sse, a.sse); // a - (b * c)
   return result;
 }
 
 static INLINE SIMD_F32X4 simd_fnma_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
                                          SIMD_F32X4 c) {
   SIMD_F32X4 result;
-  result.sse = _mm_fnmadd_ps(a.sse, b.sse, c.sse);
+  result.sse = _mm_fnmsub_ps(b.sse, c.sse, a.sse); // -(a + b * c)
   return result;
 }
 
 static INLINE SIMD_F32X4 simd_fnms_f32x4(SIMD_F32X4 a, SIMD_F32X4 b,
                                          SIMD_F32X4 c) {
   SIMD_F32X4 result;
-  result.sse = _mm_fnmsub_ps(a.sse, b.sse, c.sse);
+  result.sse = _mm_fmsub_ps(b.sse, c.sse, a.sse); // -(a - b * c)
   return result;
 }
 
 static INLINE float32_t simd_hadd_f32x4(SIMD_F32X4 v) {
-  return _mm_cvtss_f32(_mm_hadd_ps(v.sse, v.sse));
+  // _mm_hadd_ps(a, b) gives [a0+a1, a2+a3, b0+b1, b2+b3]
+  // So _mm_hadd_ps(v, v) gives [v0+v1, v2+v3, v0+v1, v2+v3]
+  // We need to extract and add the first two elements
+  __m128 hadd_result = _mm_hadd_ps(v.sse, v.sse);
+  return _mm_cvtss_f32(hadd_result) +
+         _mm_cvtss_f32(
+             _mm_shuffle_ps(hadd_result, hadd_result, _MM_SHUFFLE(1, 1, 1, 1)));
 }
 
 static INLINE float32_t simd_dot_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
@@ -771,7 +777,7 @@ static INLINE float32_t simd_dot_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
 }
 
 static INLINE float32_t simd_dot3_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {
-  return _mm_cvtss_f32(_mm_dp_ps(a.sse, b.sse, 0xF1));
+  return _mm_cvtss_f32(_mm_dp_ps(a.sse, b.sse, 0x71));
 }
 
 static INLINE float32_t simd_dot4_f32x4(SIMD_F32X4 a, SIMD_F32X4 b) {

@@ -10,11 +10,10 @@ add_executable(vulkan_renderer ${APP_SOURCES})
 
 # Platform-specific optimization flags
 if(MSVC)
-    target_compile_options(renderer_lib PRIVATE /arch:AVX2)
+    target_compile_options(vulkan_renderer PRIVATE /arch:AVX2)
 else()
     target_compile_options(vulkan_renderer PRIVATE -march=native)
 endif()
-
 # Link against the renderer_lib
 target_link_libraries(vulkan_renderer PRIVATE renderer_lib)
 

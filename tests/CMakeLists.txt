@@ -9,6 +9,12 @@ file(GLOB_RECURSE TEST_SOURCES src/*.c src/*.h)
 # Create the test executable
 add_executable(vulkan_renderer_tester ${TEST_SOURCES})
 
+if(MSVC)
+    target_compile_options(vulkan_renderer_tester PRIVATE /arch:AVX2)
+else()
+    target_compile_options(vulkan_renderer_tester PRIVATE -march=native)
+endif()
+
 # Link against the renderer_lib
 target_link_libraries(vulkan_renderer_tester PRIVATE renderer_lib)
 
