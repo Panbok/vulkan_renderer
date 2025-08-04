@@ -209,8 +209,10 @@ static bool8_t cursor_in_content_area(PlatformState *state);
                              &current_y);
 
     // Update virtual position with delta
+    // In captured mode, we want to invert the Y delta so that moving mouse up
+    // results in positive Y movement (camera goes up)
     int32_t new_x = current_x + (int32_t)dx;
-    int32_t new_y = current_y + (int32_t)dy;
+    int32_t new_y = current_y - (int32_t)dy; // Invert Y delta
 
     input_process_mouse_move(platform_state->input_state, new_x, new_y);
 
