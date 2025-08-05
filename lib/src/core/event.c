@@ -2,7 +2,8 @@
 
 static bool8_t event_callback_equals(EventCallbackData *current_value,
                                      EventCallbackData *value) {
-  return current_value->callback == value->callback;
+  return current_value->callback == value->callback &&
+         current_value->user_data == value->user_data;
 }
 
 /**

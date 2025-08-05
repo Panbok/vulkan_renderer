@@ -306,7 +306,12 @@ bool8_t application_create(Application *application,
                 config->title, config->x, config->y, config->width,
                 config->height);
   application->clock = clock_create();
-  vkr_mutex_create(application->app_arena, &application->app_mutex);
+  if (!vkr_mutex_create(application->app_arena, &application->app_mutex)) {
+    log_fatal("Failed to create application mutex!");
+    arena_destroy(application->log_arena);
+    arena_destroy(application->app_arena);
+    return false_v;
+  }
 
   application->renderer_arena = arena_create(MB(3));
   if (!application->renderer_arena) {
@@ -676,8 +681,8 @@ void application_shutdown(Application *application) {
                             application->pipeline_handle);
   renderer_destroy(application->renderer);
   window_destroy(&application->window);
-  vkr_mutex_destroy(application->app_arena, &application->app_mutex);
   event_manager_destroy(&application->event_manager);
+  vkr_mutex_destroy(application->app_arena, &application->app_mutex);
 
   platform_shutdown();
 
