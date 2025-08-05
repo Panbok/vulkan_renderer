@@ -178,19 +178,24 @@ typedef struct VectorFindResult {
     vector->length--;                                                          \
     return dest;                                                               \
   }                                                                            \
+  typedef bool8_t (*VectorFindCallback_##name)(type * current_value,           \
+                                               type * value);                  \
   /**                                                                          \
    * @brief Finds the index of the first occurrence of a value in the vector   \
    * @param vector Pointer to the vector                                       \
    * @param value Value to find in the vector                                  \
+   * @param callback Callback to use for comparison                            \
    * @return Index of the first occurrence of the value, or UINT64_MAX if not  \
    * found                                                                     \
    */                                                                          \
   static inline VectorFindResult vector_find_##name(                           \
-      const Vector_##name *vector, type *value) {                              \
+      const Vector_##name *vector, type *value,                                \
+      VectorFindCallback_##name callback) {                                    \
     assert_log(vector != NULL, "Vector is NULL");                              \
     assert_log(vector->arena != NULL, "Arena is NULL");                        \
+    assert_log(callback != NULL, "Callback is NULL");                          \
     for (uint64_t i = 0; i < vector->length; i++) {                            \
-      if (vector->data[i] == *value) {                                         \
+      if (callback(&vector->data[i], value)) {                                 \
         return (VectorFindResult){i, true};                                    \
       }                                                                        \
     }                                                                          \

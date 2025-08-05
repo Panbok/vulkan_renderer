@@ -203,6 +203,19 @@ static void test_vector_pop_at_float(void) {
   printf("  test_vector_pop_at_float PASSED\n");
 }
 
+static bool8_t float_equals(float *current_value, float *value) {
+  return *current_value == *value;
+}
+
+static bool8_t float_approx_equals(float *current_value, float *value) {
+  const float tolerance = 0.01f;
+  return fabsf(*current_value - *value) < tolerance;
+}
+
+static bool8_t float_greater_than(float *current_value, float *value) {
+  return *current_value > *value;
+}
+
 static void test_vector_find_float(void) {
   printf("  Running test_vector_find_float...\n");
   setup_suite();
@@ -213,18 +226,83 @@ static void test_vector_find_float(void) {
   vector_push_float(&vec, 3.0f);
 
   float val = 2.0f;
-  VectorFindResult res = vector_find_float(&vec, &val);
+  VectorFindResult res = vector_find_float(&vec, &val, float_equals);
   assert(res.found && "Find 2.0f mismatch");
   assert(res.index == 1 && "Index of 2.0f mismatch");
 
   val = 4.0f;
-  res = vector_find_float(&vec, &val);
+  res = vector_find_float(&vec, &val, float_equals);
   assert(!res.found && "Find 4.0f mismatch");
 
   vector_destroy_float(&vec);
 
   teardown_suite();
   printf("  test_vector_find_float PASSED\n");
+}
+
+static void test_vector_find_with_custom_callbacks(void) {
+  printf("  Running test_vector_find_with_custom_callbacks...\n");
+  setup_suite();
+
+  Vector_float vec = vector_create_float(arena);
+  vector_push_float(&vec, 1.0f);
+  vector_push_float(&vec, 2.005f); // Slightly off from 2.0
+  vector_push_float(&vec, 3.0f);
+  vector_push_float(&vec, 4.5f);
+
+  // Test exact equality callback
+  float val = 2.0f;
+  VectorFindResult res = vector_find_float(&vec, &val, float_equals);
+  assert(!res.found && "Exact find should not match 2.005f");
+
+  // Test approximate equality callback
+  res = vector_find_float(&vec, &val, float_approx_equals);
+  assert(res.found && "Approximate find should match 2.005f");
+  assert(res.index == 1 && "Index of approximate match should be 1");
+
+  // Test greater than callback
+  val = 3.5f;
+  res = vector_find_float(&vec, &val, float_greater_than);
+  assert(res.found && "Should find first value greater than 3.5f");
+  assert(res.index == 3 && "Index of first value > 3.5f should be 3 (4.5f)");
+
+  // Test greater than callback with no matches
+  val = 5.0f;
+  res = vector_find_float(&vec, &val, float_greater_than);
+  assert(!res.found && "Should not find any value greater than 5.0f");
+
+  vector_destroy_float(&vec);
+
+  teardown_suite();
+  printf("  test_vector_find_with_custom_callbacks PASSED\n");
+}
+
+static void test_vector_find_edge_cases(void) {
+  printf("  Running test_vector_find_edge_cases...\n");
+  setup_suite();
+
+  // Test with empty vector
+  Vector_float empty_vec = vector_create_float(arena);
+  float val = 1.0f;
+  VectorFindResult res = vector_find_float(&empty_vec, &val, float_equals);
+  assert(!res.found && "Find in empty vector should return not found");
+  assert(res.index == 0 && "Index should be 0 when not found");
+
+  // Test with single element
+  vector_push_float(&empty_vec, 42.0f);
+  val = 42.0f;
+  res = vector_find_float(&empty_vec, &val, float_equals);
+  assert(res.found && "Should find single element");
+  assert(res.index == 0 && "Index should be 0 for single element");
+
+  val = 43.0f;
+  res = vector_find_float(&empty_vec, &val, float_equals);
+  assert(!res.found && "Should not find non-matching single element");
+
+  vector_destroy_float(&empty_vec);
+
+  teardown_suite();
+  printf("  test_vector_find_edge_cases PASSED\n");
 }
 
 // Test runner for this suite
@@ -239,7 +317,8 @@ bool32_t run_vector_tests() {
   test_vector_clear_float();
   test_vector_pop_at_float();
   test_vector_find_float();
-  // Call other test functions here
+  test_vector_find_with_custom_callbacks();
+  test_vector_find_edge_cases();
 
   printf("--- Vector Tests Completed ---\n");
   return true; // Assumes asserts halt on failure
