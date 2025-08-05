@@ -51,27 +51,27 @@ static uint32_t g_dsz_cb_execution_count = 0;
 static bool32_t g_lifetime_cb_executed_successfully = false;
 
 // Test callbacks
-static bool8_t test_callback1(Event *event) {
+static bool8_t test_callback1(Event *event, UserData user_data) {
   TestEventData *data = (TestEventData *)event->data;
   data->processed = true;
   data->value += 1;
   return true;
 }
 
-static bool8_t test_callback2(Event *event) {
+static bool8_t test_callback2(Event *event, UserData user_data) {
   TestEventData *data = (TestEventData *)event->data;
   data->value *= 2;
   return true;
 }
 
-static bool8_t test_callback3(Event *event) {
+static bool8_t test_callback3(Event *event, UserData user_data) {
   TestEventData *data = (TestEventData *)event->data;
   data->value -= 1;
   return true;
 }
 
 // Callbacks specifically for test_event_dispatch_processing
-static bool8_t dp_test_callback1(Event *event) {
+static bool8_t dp_test_callback1(Event *event, UserData user_data) {
   TestEventData *data = (TestEventData *)event->data;
   g_dp_key_press_processed_flag = true;
   data->value += 1;
@@ -79,28 +79,27 @@ static bool8_t dp_test_callback1(Event *event) {
   return true;
 }
 
-static bool8_t dp_test_callback2(Event *event) {
+static bool8_t dp_test_callback2(Event *event, UserData user_data) {
   TestEventData *data = (TestEventData *)event->data;
   data->value *= 2;
   g_dp_key_press_value = data->value; // Store final value
   return true;
 }
 
-static bool8_t dp_test_callback3(Event *event) {
+static bool8_t dp_test_callback3(Event *event, UserData user_data) {
   TestEventData *data = (TestEventData *)event->data;
   data->value -= 1;
   g_dp_key_release_value = data->value;
   return true;
 }
 
-// Callbacks for the new tests
-static bool8_t order_callback(Event *event) {
+static bool8_t order_callback(Event *event, UserData user_data) {
   TestEventData *data = (TestEventData *)event->data;
   test_process_order[test_next_index++] = data->value;
   return true;
 }
 
-static bool8_t self_unsubscribe_callback(Event *event) {
+static bool8_t self_unsubscribe_callback(Event *event, UserData user_data) {
   callback1_count++;
   // Unsubscribe after first call
   event_manager_unsubscribe(self_unsubscribe_manager, EVENT_TYPE_KEY_PRESS,
@@ -108,19 +107,19 @@ static bool8_t self_unsubscribe_callback(Event *event) {
   return true;
 }
 
-static bool8_t persistent_callback(Event *event) {
+static bool8_t persistent_callback(Event *event, UserData user_data) {
   callback2_count++;
   return true;
 }
 
-static bool8_t counting_callback(Event *event) {
+static bool8_t counting_callback(Event *event, UserData user_data) {
   vkr_mutex_lock(count_mutex);
   processed_count++;
   vkr_mutex_unlock(count_mutex);
   return true;
 }
 
-static bool8_t slow_callback(Event *event) {
+static bool8_t slow_callback(Event *event, UserData user_data) {
   // Sleep to simulate long processing
   platform_sleep(100);
 
@@ -136,7 +135,7 @@ static bool8_t slow_callback(Event *event) {
   return true;
 }
 
-static bool8_t fast_callback(Event *event) {
+static bool8_t fast_callback(Event *event, UserData user_data) {
   TestEventData *data = (TestEventData *)event->data;
   data->value *= 2;
   // Update global based on initial value before modification by this chain
@@ -152,8 +151,7 @@ static bool8_t fast_callback(Event *event) {
   return true;
 }
 
-// --- Callbacks for new data ownership tests ---
-static bool8_t integrity_check_callback(Event *event) {
+static bool8_t integrity_check_callback(Event *event, UserData user_data) {
   TestEventData *data = (TestEventData *)event->data;
   if (data) { // data should not be null if data_size > 0 and copy occurred
     g_integrity_cb_received_value = data->value;
@@ -162,14 +160,14 @@ static bool8_t integrity_check_callback(Event *event) {
   return true;
 }
 
-static bool8_t data_size_zero_check_callback(Event *event) {
+static bool8_t data_size_zero_check_callback(Event *event, UserData user_data) {
   g_dsz_cb_data_is_null = (event->data == NULL);
   g_dsz_cb_data_size_is_zero = (event->data_size == 0);
   g_dsz_cb_execution_count++;
   return true;
 }
 
-static bool8_t lifetime_check_callback(Event *event) {
+static bool8_t lifetime_check_callback(Event *event, UserData user_data) {
   TestEventData *data = (TestEventData *)event->data;
   // Attempt to access the copied data. If the original was incorrectly used,
   // this might crash or read garbage. A simple check of a known value.
@@ -236,24 +234,25 @@ static void test_event_subscription(void) {
   event_manager_create(&manager);
 
   // Subscribe to an event
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback1);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback1, NULL);
 
   // Check that callback was added
   assert(manager.callbacks[EVENT_TYPE_KEY_PRESS].length == 1 &&
          "Callback should be added to the manager");
 
   // Subscribe another callback to the same event
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback2);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback2, NULL);
   assert(manager.callbacks[EVENT_TYPE_KEY_PRESS].length == 2 &&
          "Second callback should be added to the manager");
 
   // Subscribe to a different event
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE, test_callback3);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE, test_callback3,
+                          NULL);
   assert(manager.callbacks[EVENT_TYPE_KEY_RELEASE].length == 1 &&
          "Callback should be added to different event type");
 
   // Test duplicate subscription (should be ignored)
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback1);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, test_callback1, NULL);
   assert(manager.callbacks[EVENT_TYPE_KEY_PRESS].length == 2 &&
          "Duplicate subscription should be ignored");
 
@@ -287,9 +286,12 @@ static void test_event_dispatch_processing(void) {
   g_dp_key_release_value = 0;
 
   // Subscribe to events using specific callbacks for this test
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, dp_test_callback1);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, dp_test_callback2);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE, dp_test_callback3);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, dp_test_callback1,
+                          NULL);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, dp_test_callback2,
+                          NULL);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE, dp_test_callback3,
+                          NULL);
 
   // Create original test event data (can be on stack or temp arena)
   TestEventData original_key_press_data;
@@ -395,7 +397,7 @@ static void test_queue_full(void) {
 
   for (uint16_t i = 0; i < EVENT_TYPE_MAX; i++) {
     if (manager.callbacks[i].data != NULL) {
-      vector_destroy_EventCallback(&manager.callbacks[i]);
+      vector_destroy_EventCallbackData(&manager.callbacks[i]);
     }
   }
 
@@ -417,7 +419,7 @@ static void test_event_ordering(void) {
                                    ARENA_MEMORY_TAG_UNKNOWN);
   test_next_index = 0;
 
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, order_callback);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, order_callback, NULL);
 
   // Dispatch events with sequential IDs
   for (uint32_t i = 0; i < EVENT_COUNT; i++) {
@@ -461,8 +463,9 @@ static void test_dynamic_unsubscribe(void) {
 
   // Subscribe both callbacks
   event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS,
-                          self_unsubscribe_callback);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, persistent_callback);
+                          self_unsubscribe_callback, NULL);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, persistent_callback,
+                          NULL);
 
   // Dispatch several events
   for (uint32_t i = 0; i < 5; i++) {
@@ -504,7 +507,8 @@ static void test_concurrent_dispatch(void) {
   processed_count = 0;
   vkr_mutex_create(arena, &count_mutex);
 
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, counting_callback);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, counting_callback,
+                          NULL);
 
   // Create and start multiple threads
   Thread threads[THREAD_COUNT];
@@ -551,8 +555,8 @@ static void test_slow_callbacks(void) {
   g_sc_event1_final_value = 0;
   g_sc_event2_final_value = 0;
 
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, slow_callback);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, fast_callback);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, slow_callback, NULL);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, fast_callback, NULL);
 
   // Create original event data (can be on stack or temp arena)
   TestEventData original_data1;
@@ -595,7 +599,80 @@ static void test_slow_callbacks(void) {
   printf("  test_slow_callbacks PASSED\n");
 }
 
-// --- New test functions for data ownership ---
+static bool8_t increment_counter_callback(Event *event, UserData user_data) {
+  uint32_t *counter = (uint32_t *)user_data;
+  if (counter != NULL) {
+    (*counter)++;
+  }
+  return true;
+}
+
+static void test_user_data_callback_functionality(void) {
+  printf("  Running test_user_data_callback_functionality...\n");
+  setup_suite();
+
+  EventManager manager;
+  event_manager_create(&manager);
+
+  // Test data structures to pass as user_data
+  uint32_t counter1 = 0;
+  uint32_t counter2 = 0;
+
+  // Subscribe same callback with different user_data
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS,
+                          increment_counter_callback, &counter1);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS,
+                          increment_counter_callback, &counter2);
+
+  // Dispatch an event
+  TestEventData event_data = {.value = 42, .processed = false};
+  Event event = {.type = EVENT_TYPE_KEY_PRESS,
+                 .data = &event_data,
+                 .data_size = sizeof(TestEventData)};
+  event_manager_dispatch(&manager, event);
+
+  // Wait for processing
+  platform_sleep(100);
+
+  // Both counters should be incremented since they have different user_data
+  assert(counter1 == 1 && "Counter1 should be incremented once");
+  assert(counter2 == 1 && "Counter2 should be incremented once");
+
+  event_manager_destroy(&manager);
+  teardown_suite();
+  printf("  test_user_data_callback_functionality PASSED\n");
+}
+
+static void test_same_callback_different_user_data_subscription(void) {
+  printf("  Running test_same_callback_different_user_data_subscription...\n");
+  setup_suite();
+
+  EventManager manager;
+  event_manager_create(&manager);
+
+  uint32_t data1 = 100;
+  uint32_t data2 = 200;
+
+  // Subscribe same callback with different user_data - should be allowed
+  event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE, test_callback1,
+                          &data1);
+  event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE, test_callback1,
+                          &data2);
+
+  // Should have 2 subscriptions
+  assert(manager.callbacks[EVENT_TYPE_MOUSE_MOVE].length == 2 &&
+         "Should have 2 subscriptions with different user_data");
+
+  // Try to subscribe same callback with same user_data - should be ignored
+  event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE, test_callback1,
+                          &data1);
+  assert(manager.callbacks[EVENT_TYPE_MOUSE_MOVE].length == 2 &&
+         "Duplicate subscription should be ignored");
+
+  event_manager_destroy(&manager);
+  teardown_suite();
+  printf("  test_same_callback_different_user_data_subscription PASSED\n");
+}
 
 static void test_data_copying_original_integrity(void) {
   printf("  Running test_data_copying_original_integrity...\n");
@@ -607,7 +684,7 @@ static void test_data_copying_original_integrity(void) {
   g_integrity_cb_received_value = 0;
 
   event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE,
-                          integrity_check_callback);
+                          integrity_check_callback, NULL);
 
   TestEventData *original_data =
       arena_alloc(arena, sizeof(TestEventData), ARENA_MEMORY_TAG_UNKNOWN);
@@ -647,7 +724,7 @@ static void test_dispatch_data_size_zero(void) {
   g_dsz_cb_data_size_is_zero = false;
 
   event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_WHEEL,
-                          data_size_zero_check_callback);
+                          data_size_zero_check_callback, NULL);
 
   // Case 1: data_size = 0, data is non-NULL (but should be ignored for copying)
   TestEventData dummy_data = {.value = 50, .processed = false};
@@ -693,7 +770,7 @@ static void test_data_lifetime_original_freed(void) {
 
   g_lifetime_cb_executed_successfully = false;
   event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_PRESS,
-                          lifetime_check_callback);
+                          lifetime_check_callback, NULL);
 
   // Create a temporary scratch arena for the original data
   Scratch scratch = scratch_create(arena);
@@ -733,6 +810,8 @@ bool32_t run_event_tests() {
   test_dynamic_unsubscribe();
   test_concurrent_dispatch();
   test_slow_callbacks();
+  test_user_data_callback_functionality();
+  test_same_callback_different_user_data_subscription();
   test_data_copying_original_integrity();
   test_dispatch_data_size_zero();
   test_data_lifetime_original_freed();

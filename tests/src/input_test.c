@@ -15,12 +15,12 @@ static void teardown_suite(void) {
 }
 
 static bool8_t input_initialized = false;
-static bool8_t on_input_system_init(Event *event) {
+static bool8_t on_input_system_init(Event *event, UserData user_data) {
   input_initialized = true;
   return true;
 }
 
-static bool8_t on_input_system_shutdown(Event *event) {
+static bool8_t on_input_system_shutdown(Event *event, UserData user_data) {
   input_initialized = false;
   return true;
 }
@@ -39,32 +39,32 @@ static bool8_t mouse_wheel_event_received = false;
 static MouseWheelEventData last_mouse_wheel_event_data;
 
 // --- Helper event handlers for detailed event testing ---
-static bool8_t on_key_event(Event *event) {
+static bool8_t on_key_event(Event *event, UserData user_data) {
   key_event_received = true;
   last_key_event_data = *(KeyEventData *)event->data;
   return true;
 }
 
-static bool8_t on_button_event(Event *event) {
+static bool8_t on_button_event(Event *event, UserData user_data) {
   button_event_received = true;
   last_button_event_data = *(ButtonEventData *)event->data;
   return true;
 }
 
-static bool8_t on_mouse_move_event(Event *event) {
+static bool8_t on_mouse_move_event(Event *event, UserData user_data) {
   mouse_move_event_received = true;
   last_mouse_move_event_data = *(MouseMoveEventData *)event->data;
   return true;
 }
 
-static bool8_t on_mouse_wheel_event(Event *event) {
+static bool8_t on_mouse_wheel_event(Event *event, UserData user_data) {
   mouse_wheel_event_received = true;
   last_mouse_wheel_event_data = *(MouseWheelEventData *)event->data;
   return true;
 }
 
 // Dummy handler for EVENT_TYPE_INPUT_SYSTEM_INIT to diagnose potential issue
-static bool8_t dummy_input_init_handler(Event *event) {
+static bool8_t dummy_input_init_handler(Event *event, UserData user_data) {
   (void)event; // Mark as unused
   return true;
 }
@@ -88,9 +88,9 @@ static void test_input_init() {
   EventManager manager;
   event_manager_create(&manager);
   event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_INIT,
-                          on_input_system_init);
+                          on_input_system_init, NULL);
   event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_SHUTDOWN,
-                          on_input_system_shutdown);
+                          on_input_system_shutdown, NULL);
   InputState input_state = input_init(&manager);
 
   platform_sleep(100);
@@ -112,9 +112,9 @@ static void test_input_shutdown() {
   EventManager manager;
   event_manager_create(&manager);
   event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_INIT,
-                          on_input_system_init);
+                          on_input_system_init, NULL);
   event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_SHUTDOWN,
-                          on_input_system_shutdown);
+                          on_input_system_shutdown, NULL);
   InputState input_state = input_init(&manager);
   input_shutdown(&input_state);
 
@@ -136,11 +136,11 @@ static void test_input_key_press_release() {
 
   EventManager manager;
   event_manager_create(&manager);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, on_key_event);
-  event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE, on_key_event);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, on_key_event, NULL);
+  event_manager_subscribe(&manager, EVENT_TYPE_KEY_RELEASE, on_key_event, NULL);
   // Subscribe dummy handler for INPUT_SYSTEM_INIT for this test context
   event_manager_subscribe(&manager, EVENT_TYPE_INPUT_SYSTEM_INIT,
-                          dummy_input_init_handler);
+                          dummy_input_init_handler, NULL);
 
   InputState input_state = input_init(&manager);
 
@@ -201,8 +201,10 @@ static void test_input_button_press_release() {
 
   EventManager manager;
   event_manager_create(&manager);
-  event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_PRESS, on_button_event);
-  event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_RELEASE, on_button_event);
+  event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_PRESS, on_button_event,
+                          NULL);
+  event_manager_subscribe(&manager, EVENT_TYPE_BUTTON_RELEASE, on_button_event,
+                          NULL);
   InputState input_state = input_init(&manager);
 
   // Test BUTTON_LEFT press
@@ -267,7 +269,8 @@ static void test_input_mouse_move() {
 
   EventManager manager;
   event_manager_create(&manager);
-  event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE, on_mouse_move_event);
+  event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_MOVE, on_mouse_move_event,
+                          NULL);
   InputState input_state = input_init(&manager);
 
   int32_t current_x, current_y;
@@ -335,7 +338,7 @@ static void test_input_mouse_wheel() {
   EventManager manager;
   event_manager_create(&manager);
   event_manager_subscribe(&manager, EVENT_TYPE_MOUSE_WHEEL,
-                          on_mouse_wheel_event);
+                          on_mouse_wheel_event, NULL);
   InputState input_state = input_init(&manager);
   int8_t current_delta;
 

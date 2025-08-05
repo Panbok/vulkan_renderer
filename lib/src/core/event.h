@@ -110,19 +110,33 @@ typedef struct Event {
 } Event;
 
 /**
+ * @brief User-defined data passed to event callbacks.
+ */
+typedef void *UserData;
+
+/**
  * @brief Function pointer type for event callbacks.
  * Functions matching this signature can be registered to handle specific event
  * types.
  * @param event Pointer to the `Event` structure being processed.
+ * @param user_data Pointer to user-defined data passed to the callback.
  * @return bool8_t Typically true, potentially used for future enhancements
  *         (e.g., stopping further propagation, though not currently
  * implemented).
  */
-typedef bool8_t (*EventCallback)(Event *event);
+typedef bool8_t (*EventCallback)(Event *event, UserData user_data);
+
+/**
+ * @brief Data associated with an event callback.
+ */
+typedef struct EventCallbackData {
+  EventCallback callback; /**< Function pointer to the callback. */
+  UserData user_data;     /**< User-defined data passed to the callback. */
+} EventCallbackData;
 
 Queue(Event);
-Vector(EventCallback);
-Array(EventCallback);
+Vector(EventCallbackData);
+Array(EventCallbackData);
 
 #define DEFAULT_EVENT_DATA_RING_BUFFER_CAPACITY                                \
   (MB(4)) // Default capacity for the event data ring buffer
@@ -137,7 +151,7 @@ typedef struct EventManager {
                       vectors, event data ring buffer). */
   Queue_Event queue; /**< The queue holding dispatched events awaiting
                       processing. */
-  Vector_EventCallback
+  Vector_EventCallbackData
       callbacks[EVENT_TYPE_MAX]; /**< Array of vectors, indexed by EventType,
                                     storing registered callbacks. */
 
@@ -192,9 +206,10 @@ void event_manager_destroy(EventManager *manager);
  * @param manager Pointer to the EventManager.
  * @param type The `EventType` to subscribe to.
  * @param callback The function pointer (`EventCallback`) to register.
+ * @param user_data Pointer to user-defined data passed to the callback.
  */
 void event_manager_subscribe(EventManager *manager, EventType type,
-                             EventCallback callback);
+                             EventCallback callback, UserData user_data);
 
 /**
  * @brief Unsubscribes a callback function from a specific event type.

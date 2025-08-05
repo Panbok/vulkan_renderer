@@ -1,5 +1,10 @@
 #include "event.h"
 
+static bool8_t event_callback_equals(EventCallbackData *current_value,
+                                     EventCallbackData *value) {
+  return current_value->callback == value->callback;
+}
+
 /**
  * @brief The main function for the dedicated event processing thread.
  * Waits for events on the queue using a condition variable. When woken up,
@@ -56,7 +61,7 @@ static void *events_processor(void *arg) {
     }
 
     Scratch scratch = scratch_create(local_thread_arena);
-    Vector_EventCallback *callbacks_vec = &manager->callbacks[event.type];
+    Vector_EventCallbackData *callbacks_vec = &manager->callbacks[event.type];
     uint16_t subs_count = callbacks_vec->length;
 
     if (subs_count == 0) {
@@ -65,16 +70,17 @@ static void *events_processor(void *arg) {
       continue;
     }
 
-    Array_EventCallback local_callbacks_copy =
-        array_create_EventCallback(scratch.arena, subs_count);
+    Array_EventCallbackData local_callbacks_copy =
+        array_create_EventCallbackData(scratch.arena, subs_count);
     if (callbacks_vec->data != NULL && local_callbacks_copy.data != NULL) {
       MemCopy(local_callbacks_copy.data, callbacks_vec->data,
-              subs_count * sizeof(EventCallback));
+              subs_count * sizeof(EventCallbackData));
       vkr_mutex_unlock(manager->mutex);
 
       for (uint16_t i = 0; i < subs_count; i++) {
-        if (local_callbacks_copy.data[i] != NULL) {
-          local_callbacks_copy.data[i](&event);
+        if (local_callbacks_copy.data[i].callback != NULL) {
+          local_callbacks_copy.data[i].callback(
+              &event, local_callbacks_copy.data[i].user_data);
         }
       }
 
@@ -85,7 +91,7 @@ static void *events_processor(void *arg) {
       vkr_mutex_unlock(manager->mutex);
     }
 
-    array_destroy_EventCallback(&local_callbacks_copy);
+    array_destroy_EventCallbackData(&local_callbacks_copy);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_VECTOR);
   }
 
@@ -127,8 +133,8 @@ void event_manager_destroy(EventManager *manager) {
   vkr_mutex_destroy(manager->arena, &manager->mutex);
   vkr_cond_destroy(manager->arena, &manager->cond);
 
-  for (uint16_t i = 0; i < EVENT_TYPE_MAX; i++) {
-    vector_destroy_EventCallback(&manager->callbacks[i]);
+  for (uint32_t i = 0; i < EVENT_TYPE_MAX; i++) {
+    vector_destroy_EventCallbackData(&manager->callbacks[i]);
   }
 
   queue_destroy_Event(&manager->queue);
@@ -137,7 +143,7 @@ void event_manager_destroy(EventManager *manager) {
 }
 
 void event_manager_subscribe(EventManager *manager, EventType type,
-                             EventCallback callback) {
+                             EventCallback callback, UserData user_data) {
   assert_log(type < EVENT_TYPE_MAX, "Invalid event type");
   assert_log(callback != NULL, "Callback is NULL");
   assert_log(manager != NULL, "Manager is NULL");
@@ -145,19 +151,21 @@ void event_manager_subscribe(EventManager *manager, EventType type,
   vkr_mutex_lock(manager->mutex);
 
   if (manager->callbacks[type].data == NULL) {
-    manager->callbacks[type] = vector_create_EventCallback(manager->arena);
+    manager->callbacks[type] = vector_create_EventCallbackData(manager->arena);
   }
 
   uint16_t subs_count = manager->callbacks[type].length;
   for (uint16_t i = 0; i < subs_count; i++) {
-    if (manager->callbacks[type].data[i] == callback) {
+    if (manager->callbacks[type].data[i].callback == callback &&
+        manager->callbacks[type].data[i].user_data == user_data) {
       log_warn("Callback already subscribed");
       vkr_mutex_unlock(manager->mutex);
       return;
     }
   }
 
-  vector_push_EventCallback(&manager->callbacks[type], callback);
+  vector_push_EventCallbackData(&manager->callbacks[type],
+                                (EventCallbackData){callback, user_data});
   vkr_mutex_unlock(manager->mutex);
 }
 
@@ -168,10 +176,11 @@ void event_manager_unsubscribe(EventManager *manager, EventType type,
   assert_log(manager != NULL, "Manager is NULL");
 
   vkr_mutex_lock(manager->mutex);
-  VectorFindResult res =
-      vector_find_EventCallback(&manager->callbacks[type], &callback);
+  VectorFindResult res = vector_find_EventCallbackData(
+      &manager->callbacks[type], &(EventCallbackData){callback, NULL},
+      event_callback_equals);
   if (res.found) {
-    vector_pop_at_EventCallback(&manager->callbacks[type], res.index, NULL);
+    vector_pop_at_EventCallbackData(&manager->callbacks[type], res.index, NULL);
   }
   vkr_mutex_unlock(manager->mutex);
 }

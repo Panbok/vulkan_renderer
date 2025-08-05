@@ -55,6 +55,7 @@
 #include "math/math.h"
 #include "math/vec.h"
 #include "memory/arena.h"
+#include "platform/threads.h"
 #include "platform/window.h"
 #include "renderer/renderer.h"
 #include "renderer/resources/resources.h"
@@ -115,6 +116,7 @@ typedef struct Application {
                                 delta time calculation. */
   Bitset8 app_flags;         /**< Bitset holding `ApplicationFlag`s to track the
                                 current state. */
+  Mutex app_mutex;           /**< Mutex for application state. */
 
   Camera camera;
 
@@ -139,7 +141,7 @@ typedef struct Application {
  * @return `true_v` if the event was handled, `false_v` otherwise (though
  * typically always `true_v`).
  */
-bool8_t application_on_event(Event *event);
+bool8_t application_on_event(Event *event, UserData user_data);
 
 /**
  * @brief Default event handler for window-specific events.
@@ -149,7 +151,7 @@ bool8_t application_on_event(Event *event);
  * @return `true_v` if the event was handled, `false_v` otherwise (though
  * typically always `true_v`).
  */
-bool8_t application_on_window_event(Event *event);
+bool8_t application_on_window_event(Event *event, UserData user_data);
 
 /**
  * @brief Default event handler for key input events.
@@ -159,7 +161,7 @@ bool8_t application_on_window_event(Event *event);
  * @return `true_v` if the event was handled, `false_v` otherwise (though
  * typically always `true_v`).
  */
-bool8_t application_on_key_event(Event *event);
+bool8_t application_on_key_event(Event *event, UserData user_data);
 
 /**
  * @brief Default event handler for mouse input events.
@@ -169,7 +171,7 @@ bool8_t application_on_key_event(Event *event);
  * @return `true_v` if the event was handled, `false_v` otherwise (though
  * typically always `true_v`).
  */
-bool8_t application_on_mouse_event(Event *event);
+bool8_t application_on_mouse_event(Event *event, UserData user_data);
 
 /**
  * @brief Initializes the camera for the application
@@ -194,6 +196,59 @@ void application_update(Application *application, float64_t delta);
  * @return `true_v` on success, `false_v` on failure
  */
 bool8_t application_create_cube_mesh(Application *application);
+
+/**
+ * @brief Handles window resize events.
+ * This function is called when the window is resized. It updates the window
+ * dimensions and the renderer.
+ * @param application Pointer to the `Application` structure.
+ */
+static bool8_t application_handle_window_resize(Event *event,
+                                                UserData user_data) {
+  assert(event != NULL && "Event is NULL");
+  assert(event->type == EVENT_TYPE_WINDOW_RESIZE &&
+         "Event is not a window resize event");
+
+  Application *application = (Application *)user_data;
+  assert(application != NULL && "Application is NULL");
+
+  vkr_mutex_lock(application->app_mutex);
+
+  WindowResizeEventData *resize_event_data =
+      (WindowResizeEventData *)event->data;
+
+  if (resize_event_data->width != application->last_window_width ||
+      resize_event_data->height != application->last_window_height) {
+
+    if (resize_event_data->width == 0 || resize_event_data->height == 0) {
+      log_debug("Skipping resize with zero dimensions: %dx%d",
+                resize_event_data->width, resize_event_data->height);
+      application->last_window_width = resize_event_data->width;
+      application->last_window_height = resize_event_data->height;
+      vkr_mutex_unlock(application->app_mutex);
+      return true_v;
+    }
+
+    log_info("Processing window resize to %dx%d", resize_event_data->width,
+             resize_event_data->height);
+
+    application->pipeline.shader_object_description.global_uniform_object
+        .projection = camera_get_projection_matrix(&application->camera);
+
+    renderer_resize(application->renderer, resize_event_data->width,
+                    resize_event_data->height);
+
+    application->window.width = resize_event_data->width;
+    application->window.height = resize_event_data->height;
+
+    application->last_window_width = resize_event_data->width;
+    application->last_window_height = resize_event_data->height;
+  }
+
+  vkr_mutex_unlock(application->app_mutex);
+
+  return true_v;
+}
 
 /**
  * @brief Initializes the application and its core subsystems.
@@ -251,6 +306,7 @@ bool8_t application_create(Application *application,
                 config->title, config->x, config->y, config->width,
                 config->height);
   application->clock = clock_create();
+  vkr_mutex_create(application->app_arena, &application->app_mutex);
 
   application->renderer_arena = arena_create(MB(3));
   if (!application->renderer_arena) {
@@ -351,42 +407,44 @@ bool8_t application_create(Application *application,
   }
 
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_WINDOW_CLOSE,
-                          application_on_window_event);
+                          application_on_window_event, NULL);
 
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_WINDOW_RESIZE,
-                          application_on_window_event);
+                          application_handle_window_resize, application);
 
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_WINDOW_INIT,
-                          application_on_window_event);
+                          application_on_window_event, NULL);
 
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_KEY_PRESS,
-                          application_on_key_event);
+                          application_on_key_event, NULL);
 
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_KEY_RELEASE,
-                          application_on_key_event);
+                          application_on_key_event, NULL);
 
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_MOUSE_MOVE,
-                          application_on_mouse_event);
+                          application_on_mouse_event, NULL);
 
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_MOUSE_WHEEL,
-                          application_on_mouse_event);
+                          application_on_mouse_event, NULL);
 
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_BUTTON_PRESS,
-                          application_on_mouse_event);
+                          application_on_mouse_event, NULL);
 
   event_manager_subscribe(&application->event_manager,
-                          EVENT_TYPE_BUTTON_RELEASE,
-                          application_on_mouse_event);
+                          EVENT_TYPE_BUTTON_RELEASE, application_on_mouse_event,
+                          NULL);
 
   event_manager_subscribe(&application->event_manager,
-                          EVENT_TYPE_APPLICATION_INIT, application_on_event);
+                          EVENT_TYPE_APPLICATION_INIT, application_on_event,
+                          NULL);
 
   event_manager_subscribe(&application->event_manager,
-                          EVENT_TYPE_APPLICATION_SHUTDOWN,
-                          application_on_event);
+                          EVENT_TYPE_APPLICATION_SHUTDOWN, application_on_event,
+                          NULL);
 
   event_manager_subscribe(&application->event_manager,
-                          EVENT_TYPE_APPLICATION_RESUME, application_on_event);
+                          EVENT_TYPE_APPLICATION_RESUME, application_on_event,
+                          NULL);
 
   // Initialize window size tracking
   WindowPixelSize initial_size = window_get_pixel_size(&application->window);
@@ -400,45 +458,6 @@ bool8_t application_create(Application *application,
 
   log_info("Application initialized");
   return true_v;
-}
-
-/**
- * @brief Handles window resize events.
- * This function is called when the window is resized. It updates the window
- * dimensions and the renderer.
- * @param application Pointer to the `Application` structure.
- */
-void application_handle_window_resize(Application *application) {
-  assert(application != NULL && "Application is NULL");
-
-  WindowPixelSize current_size = window_get_pixel_size(&application->window);
-
-  if (current_size.width != application->last_window_width ||
-      current_size.height != application->last_window_height) {
-
-    if (current_size.width == 0 || current_size.height == 0) {
-      log_debug("Skipping resize with zero dimensions: %dx%d",
-                current_size.width, current_size.height);
-      application->last_window_width = current_size.width;
-      application->last_window_height = current_size.height;
-      return;
-    }
-
-    log_info("Processing window resize to %dx%d", current_size.width,
-             current_size.height);
-
-    application->pipeline.shader_object_description.global_uniform_object
-        .projection = camera_get_projection_matrix(&application->camera);
-
-    renderer_resize(application->renderer, current_size.width,
-                    current_size.height);
-
-    application->window.width = current_size.width;
-    application->window.height = current_size.height;
-
-    application->last_window_width = current_size.width;
-    application->last_window_height = current_size.height;
-  }
 }
 
 /**
@@ -545,9 +564,6 @@ void application_start(Application *application) {
       }
       continue;
     }
-
-    // Check for window size changes and handle resize if needed
-    application_handle_window_resize(application);
 
     float64_t frame_processing_start_time = platform_get_absolute_time();
 
@@ -660,6 +676,7 @@ void application_shutdown(Application *application) {
                             application->pipeline_handle);
   renderer_destroy(application->renderer);
   window_destroy(&application->window);
+  vkr_mutex_destroy(application->app_arena, &application->app_mutex);
   event_manager_destroy(&application->event_manager);
 
   platform_shutdown();

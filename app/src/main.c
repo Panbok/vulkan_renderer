@@ -27,19 +27,21 @@ typedef struct State {
 
 State *state = NULL;
 
-bool8_t application_on_event(Event *event) {
+bool8_t application_on_event(Event *event, UserData user_data) {
   // log_debug("Application on event: %d", event->type);
   return true_v;
 }
 
-bool8_t application_on_window_event(Event *event) {
+bool8_t application_on_window_event(Event *event, UserData user_data) {
   // log_debug("Application on window event: %d", event->type);
   return true_v;
 }
 
-bool8_t application_on_key_event(Event *event) { return true_v; }
+bool8_t application_on_key_event(Event *event, UserData user_data) {
+  return true_v;
+}
 
-bool8_t application_on_mouse_event(Event *event) {
+bool8_t application_on_mouse_event(Event *event, UserData user_data) {
   // log_debug("Application on mouse event: %d", event->type);
   return true_v;
 }
