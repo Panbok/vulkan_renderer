@@ -8,17 +8,17 @@
 #include "platform/window.h"
 
 #define MAX_MOUSE_DELTA 100.0f
-#define DEFAULT_ZOOM 1.0f
-#define DEFAULT_SPEED 2.5f
-#define DEFAULT_SENSITIVITY 0.1f
-#define DEFAULT_YAW -90.0f
-#define DEFAULT_PITCH 0.0f
+#define DEFAULT_CAMERA_ZOOM 1.0f
+#define DEFAULT_CAMERA_SPEED 2.5f
+#define DEFAULT_CAMERA_SENSITIVITY 0.1f
+#define DEFAULT_CAMERA_YAW -90.0f
+#define DEFAULT_CAMERA_PITCH 0.0f
 
-#define DEFAULT_POSITION vec3_new(0.0f, 0.0f, -5.0f)
-#define DEFAULT_FORWARD vec3_new(0.0f, 0.0f, -1.0f)
-#define DEFAULT_UP vec3_new(0.0f, 1.0f, 0.0f)
-#define DEFAULT_RIGHT vec3_new(1.0f, 0.0f, 0.0f)
-#define DEFAULT_WORLD_UP vec3_new(0.0f, 1.0f, 0.0f)
+#define DEFAULT_CAMERA_POSITION vec3_new(0.0f, 0.0f, -5.0f)
+#define DEFAULT_CAMERA_FORWARD vec3_new(0.0f, 0.0f, -1.0f)
+#define DEFAULT_CAMERA_UP vec3_new(0.0f, 1.0f, 0.0f)
+#define DEFAULT_CAMERA_RIGHT vec3_new(1.0f, 0.0f, 0.0f)
+#define DEFAULT_CAMERA_WORLD_UP vec3_new(0.0f, 1.0f, 0.0f)
 
 /**
  * @brief Camera projection types.

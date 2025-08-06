@@ -13,16 +13,16 @@ void camera_perspective_create(Camera *camera, InputState *input_state,
 
   camera->type = CAMERA_TYPE_PERSPECTIVE;
 
-  camera->speed = DEFAULT_SPEED;
-  camera->sensitivity = DEFAULT_SENSITIVITY;
-  camera->yaw = DEFAULT_YAW;
-  camera->pitch = DEFAULT_PITCH;
+  camera->speed = DEFAULT_CAMERA_SPEED;
+  camera->sensitivity = DEFAULT_CAMERA_SENSITIVITY;
+  camera->yaw = DEFAULT_CAMERA_YAW;
+  camera->pitch = DEFAULT_CAMERA_PITCH;
 
-  camera->position = DEFAULT_POSITION;
-  camera->forward = DEFAULT_FORWARD;
-  camera->up = DEFAULT_UP;
-  camera->right = DEFAULT_RIGHT;
-  camera->world_up = DEFAULT_WORLD_UP;
+  camera->position = DEFAULT_CAMERA_POSITION;
+  camera->forward = DEFAULT_CAMERA_FORWARD;
+  camera->up = DEFAULT_CAMERA_UP;
+  camera->right = DEFAULT_CAMERA_RIGHT;
+  camera->world_up = DEFAULT_CAMERA_WORLD_UP;
 
   camera->near_clip = near_clip;
   camera->far_clip = far_clip;
@@ -46,18 +46,18 @@ void camera_orthographic_create(Camera *camera, InputState *input_state,
 
   camera->type = CAMERA_TYPE_ORTHOGRAPHIC;
   camera->target_frame_rate = target_frame_rate;
-  camera->zoom = DEFAULT_ZOOM;
+  camera->zoom = DEFAULT_CAMERA_ZOOM;
 
-  camera->speed = DEFAULT_SPEED;
-  camera->sensitivity = DEFAULT_SENSITIVITY;
-  camera->yaw = DEFAULT_YAW;
-  camera->pitch = DEFAULT_PITCH;
+  camera->speed = DEFAULT_CAMERA_SPEED;
+  camera->sensitivity = DEFAULT_CAMERA_SENSITIVITY;
+  camera->yaw = DEFAULT_CAMERA_YAW;
+  camera->pitch = DEFAULT_CAMERA_PITCH;
 
-  camera->position = DEFAULT_POSITION;
-  camera->forward = DEFAULT_FORWARD;
-  camera->up = DEFAULT_UP;
-  camera->right = DEFAULT_RIGHT;
-  camera->world_up = DEFAULT_WORLD_UP;
+  camera->position = DEFAULT_CAMERA_POSITION;
+  camera->forward = DEFAULT_CAMERA_FORWARD;
+  camera->up = DEFAULT_CAMERA_UP;
+  camera->right = DEFAULT_CAMERA_RIGHT;
+  camera->world_up = DEFAULT_CAMERA_WORLD_UP;
 
   camera->near_clip = near_clip;
   camera->far_clip = far_clip;
