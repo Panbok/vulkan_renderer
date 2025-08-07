@@ -24,7 +24,7 @@ static uint32_t callback1_count = 0;
 static uint32_t callback2_count = 0;
 static EventManager *self_unsubscribe_manager = NULL;
 static uint32_t processed_count = 0;
-static Mutex count_mutex = NULL;
+static VkrMutex count_mutex = NULL;
 static bool32_t slow_callback_executed = false;
 static bool32_t fast_callback_executed = false;
 
@@ -511,7 +511,7 @@ static void test_concurrent_dispatch(void) {
                           NULL);
 
   // Create and start multiple threads
-  Thread threads[THREAD_COUNT];
+  VkrThread threads[THREAD_COUNT];
   ThreadData thread_data[THREAD_COUNT];
 
   for (uint32_t i = 0; i < THREAD_COUNT; i++) {

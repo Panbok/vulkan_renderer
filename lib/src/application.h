@@ -55,7 +55,7 @@
 #include "math/math.h"
 #include "math/vec.h"
 #include "memory/arena.h"
-#include "platform/threads.h"
+#include "platform/vkr_threads.h"
 #include "platform/window.h"
 #include "renderer/renderer.h"
 #include "renderer/resources/resources.h"
@@ -116,7 +116,7 @@ typedef struct Application {
                                 delta time calculation. */
   Bitset8 app_flags;         /**< Bitset holding `ApplicationFlag`s to track the
                                 current state. */
-  Mutex app_mutex;           /**< Mutex for application state. */
+  VkrMutex app_mutex;        /**< Mutex for application state. */
 
   Camera camera;
 

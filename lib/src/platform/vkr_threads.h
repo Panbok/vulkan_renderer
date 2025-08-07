@@ -11,14 +11,14 @@
  * - **Platform Abstraction:** Common API with platform-specific implementations
  * - **Arena Memory Management:** All structures are allocated from provided
  * arenas
- * - **Thread Management:** Create, join, and destroy threads with custom
+ * - **VkrThread Management:** Create, join, and destroy threads with custom
  * functions
  * - **Synchronization:** Mutexes and condition variables for thread
  * coordination
  *
  * Architecture:
- * - **Opaque Types:** Thread, Mutex, and CondVar are opaque pointers to
- * platform-specific structures
+ * - **Opaque Types:** VkrThread, VkrMutex, and VkrCondVar are opaque pointers
+ * to platform-specific structures
  * - **Arena Allocation:** All structures are allocated from arenas for
  * efficient bulk deallocation
  * - **Error Handling:** All functions return bool32_t indicating
@@ -34,14 +34,14 @@
  * @param arg User-provided argument passed to the thread function.
  * @return Pointer to thread result data (can be NULL).
  */
-typedef void *(*ThreadFunc)(void *);
+typedef void *(*VkrThreadFunc)(void *);
 
 /** @brief Opaque thread handle. */
-typedef struct s_Thread *Thread;
+typedef struct s_VkrThread *VkrThread;
 /** @brief Opaque mutex handle. */
-typedef struct s_Mutex *Mutex;
+typedef struct s_VkrMutex *VkrMutex;
 /** @brief Opaque condition variable handle. */
-typedef struct s_CondVar *CondVar;
+typedef struct s_VkrCondVar *VkrCondVar;
 
 /**
  * @brief Creates a new thread.
@@ -51,23 +51,23 @@ typedef struct s_CondVar *CondVar;
  * @param arg Argument to pass to the thread function.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_thread_create(Arena *arena, Thread *thread, ThreadFunc func,
+bool32_t vkr_thread_create(Arena *arena, VkrThread *thread, VkrThreadFunc func,
                            void *arg);
 
 /**
  * @brief Waits for a thread to complete execution.
- * @param thread Thread to wait for.
+ * @param thread VkrThread to wait for.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_thread_join(Thread thread);
+bool32_t vkr_thread_join(VkrThread thread);
 
 /**
  * @brief Destroys a thread and releases its resources.
  * @param arena Arena that was used to create the thread.
- * @param thread Thread to destroy.
+ * @param thread VkrThread to destroy.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_thread_destroy(Arena *arena, Thread *thread);
+bool32_t vkr_thread_destroy(Arena *arena, VkrThread *thread);
 
 /**
  * @brief Creates a new mutex.
@@ -75,29 +75,29 @@ bool32_t vkr_thread_destroy(Arena *arena, Thread *thread);
  * @param mutex Pointer to receive the created mutex handle.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_mutex_create(Arena *arena, Mutex *mutex);
+bool32_t vkr_mutex_create(Arena *arena, VkrMutex *mutex);
 
 /**
  * @brief Locks a mutex, blocking if already locked.
- * @param mutex Mutex to lock.
+ * @param mutex VkrMutex to lock.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_mutex_lock(Mutex mutex);
+bool32_t vkr_mutex_lock(VkrMutex mutex);
 
 /**
  * @brief Unlocks a mutex.
- * @param mutex Mutex to unlock.
+ * @param mutex VkrMutex to unlock.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_mutex_unlock(Mutex mutex);
+bool32_t vkr_mutex_unlock(VkrMutex mutex);
 
 /**
  * @brief Destroys a mutex and releases its resources.
  * @param arena Arena that was used to create the mutex.
- * @param mutex Mutex to destroy.
+ * @param mutex VkrMutex to destroy.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_mutex_destroy(Arena *arena, Mutex *mutex);
+bool32_t vkr_mutex_destroy(Arena *arena, VkrMutex *mutex);
 
 /**
  * @brief Creates a new condition variable.
@@ -105,22 +105,22 @@ bool32_t vkr_mutex_destroy(Arena *arena, Mutex *mutex);
  * @param cond Pointer to receive the created condition variable handle.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_cond_create(Arena *arena, CondVar *cond);
+bool32_t vkr_cond_create(Arena *arena, VkrCondVar *cond);
 
 /**
  * @brief Waits on a condition variable, atomically releasing the mutex.
  * @param cond Condition variable to wait on.
- * @param mutex Mutex to release while waiting.
+ * @param mutex VkrMutex to release while waiting.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_cond_wait(CondVar cond, Mutex mutex);
+bool32_t vkr_cond_wait(VkrCondVar cond, VkrMutex mutex);
 
 /**
  * @brief Signals a condition variable, waking one waiting thread.
  * @param cond Condition variable to signal.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_cond_signal(CondVar cond);
+bool32_t vkr_cond_signal(VkrCondVar cond);
 
 /**
  * @brief Destroys a condition variable and releases its resources.
@@ -128,4 +128,4 @@ bool32_t vkr_cond_signal(CondVar cond);
  * @param cond Condition variable to destroy.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_cond_destroy(Arena *arena, CondVar *cond);
+bool32_t vkr_cond_destroy(Arena *arena, VkrCondVar *cond);
