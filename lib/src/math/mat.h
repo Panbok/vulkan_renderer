@@ -341,13 +341,14 @@ static INLINE Mat4 mat4_identity(void) {
  * ```
  */
 static INLINE Mat4 mat4_ortho(float32_t left, float32_t right, float32_t bottom,
-                              float32_t top, float32_t near, float32_t far) {
+                              float32_t top, float32_t near_clip,
+                              float32_t far_clip) {
   float32_t tx = -((right + left) / (right - left));
   float32_t ty = -((top + bottom) / (top - bottom));
-  float32_t tz = -((far + near) / (far - near));
+  float32_t tz = -((far_clip + near_clip) / (far_clip - near_clip));
   return mat4_new(2.0f / (right - left), 0.0f, 0.0f, 0.0f, 0.0f,
                   2.0f / (top - bottom), 0.0f, 0.0f, 0.0f, 0.0f,
-                  -2.0f / (far - near), 0.0f, tx, ty, tz, 1.0f);
+                  -2.0f / (far_clip - near_clip), 0.0f, tx, ty, tz, 1.0f);
 }
 
 /**
@@ -379,7 +380,7 @@ static INLINE Mat4 mat4_ortho(float32_t left, float32_t right, float32_t bottom,
  * ```
  */
 static INLINE Mat4 mat4_perspective(float32_t fov, float32_t aspect,
-                                    float32_t near, float32_t far) {
+                                    float32_t near_clip, float32_t far_clip) {
   // Right-handed perspective matrix for Vulkan (Z range [0,1])
   float32_t f = 1.0f / tan_f32(fov * 0.5f);
 
@@ -387,8 +388,8 @@ static INLINE Mat4 mat4_perspective(float32_t fov, float32_t aspect,
   // We negate the Y scaling to account for this
   return mat4_new(f / aspect, 0.0f, 0.0f, 0.0f, 0.0f, -f, 0.0f,
                   0.0f, // Negated Y for Vulkan
-                  0.0f, 0.0f, far / (far - near), 1.0f, 0.0f, 0.0f,
-                  -(far * near) / (far - near), 0.0f);
+                  0.0f, 0.0f, far_clip / (far_clip - near_clip), 1.0f, 0.0f,
+                  0.0f, -(far_clip * near_clip) / (far_clip - near_clip), 0.0f);
 }
 
 /**

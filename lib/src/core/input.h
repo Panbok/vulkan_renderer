@@ -125,7 +125,9 @@ typedef enum Keys {
   DEFINE_KEY(DOWN, 0x28),     /**< Down Arrow key. */
   DEFINE_KEY(SELECT, 0x29),   /**< Select key. */
   DEFINE_KEY(PRINT, 0x2A),    /**< Print key. */
+  #if defined(PLATFORM_APPLE)
   DEFINE_KEY(EXECUTE, 0x2B),  /**< Execute key. */
+  #endif
   DEFINE_KEY(SNAPSHOT, 0x2C), /**< Print Screen key. */
   DEFINE_KEY(INSERT, 0x2D),   /**< Insert key. */
   DEFINE_KEY(DELETE, 0x2E),   /**< Delete key. */
