@@ -1,11 +1,14 @@
 #pragma once
 
-#include <vulkan/vk_enum_string_helper.h>
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_core.h>
 
 #if defined(PLATFORM_APPLE)
 #include <vulkan/vulkan_metal.h>
+#endif
+
+#if defined(PLATFORM_WINDOWS)
+#include <vulkan/vulkan_win32.h>
 #endif
 
 #include "containers/str.h"
@@ -17,7 +20,7 @@
 // todo: make this configurable
 #define BUFFERING_FRAMES 3
 
-typedef enum QueueFamilyType : uint32_t {
+typedef enum QueueFamilyType {
   QUEUE_FAMILY_TYPE_GRAPHICS,
   QUEUE_FAMILY_TYPE_PRESENT,
   QUEUE_FAMILY_TYPE_TRANSFER,
