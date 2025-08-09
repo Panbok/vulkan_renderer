@@ -131,6 +131,12 @@ void window_destroy(Window *window);
  */
 bool8_t window_update(Window *window);
 
+/**
+ * @brief Gets the pixel size of the window.
+ * @param window Pointer to the `Window` to get the pixel size from. Must not
+ * be NULL.
+ * @return The pixel size of the window.
+ */
 WindowPixelSize window_get_pixel_size(Window *window);
 
 #if defined(PLATFORM_APPLE)
@@ -144,6 +150,22 @@ WindowPixelSize window_get_pixel_size(Window *window);
  * @return Pointer to the CAMetalLayer, or NULL if not available.
  */
 void *window_get_metal_layer(Window *window);
+#endif
+
+#if defined(PLATFORM_WINDOWS)
+/**
+ * @brief Gets the Win32 window handle from the window for Vulkan surface
+ * creation. This function provides access to the HWND needed for creating a
+ * Vulkan surface on Windows.
+ */
+void *window_get_win32_handle(Window *window);
+
+/**
+ * @brief Gets the Win32 instance from the window for Vulkan surface creation.
+ * This function provides access to the HINSTANCE needed for creating a Vulkan
+ * surface on Windows.
+ */
+void *window_get_win32_instance(Window *window);
 #endif
 
 /**
