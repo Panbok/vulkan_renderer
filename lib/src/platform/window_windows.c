@@ -133,7 +133,7 @@ bool8_t window_create(Window *window, EventManager *event_manager,
   // Create window
   state->window = CreateWindowExA(
       window_ex_style, class_name, title, window_style, x, y, window_width,
-      window_height, NULL, NULL, state->instance, NULL);
+      window_height, NULL, NULL, state->instance, state);
 
   if (!state->window) {
     log_error("Failed to create window");
@@ -143,9 +143,6 @@ bool8_t window_create(Window *window, EventManager *event_manager,
     window->platform_state = NULL;
     return false_v;
   }
-
-  // Associate the state with this window for the window procedure
-  SetWindowLongPtr(state->window, GWLP_USERDATA, (LONG_PTR)state);
 
   // Show and update window
   ShowWindow(state->window, SW_SHOW);
@@ -359,6 +356,14 @@ void window_set_mouse_position(Window *window, int32_t x, int32_t y) {
 // Window procedure
 static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
                                     LPARAM lparam) {
+
+  if (msg == WM_NCCREATE) {
+    CREATESTRUCT *cs = (CREATESTRUCT *)lparam;
+    PlatformState *p = (PlatformState *)cs->lpCreateParams;
+    SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)p);
+    return TRUE;
+  }
+
   PlatformState *state = (PlatformState *)GetWindowLongPtr(hwnd, GWLP_USERDATA);
 
   if (!state) {
@@ -370,7 +375,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     state->quit_flagged = true_v;
     Event event = {.type = EVENT_TYPE_WINDOW_CLOSE};
     event_manager_dispatch(state->event_manager, event);
-    return 0;
+    return FALSE;
   }
 
   case WM_SIZE: {
@@ -391,7 +396,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     if (state->mouse_captured) {
       center_cursor_in_window(state);
     }
-    return 0;
+    return FALSE;
   }
 
   case WM_KEYDOWN:
@@ -400,7 +405,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     if (key != KEY_MAX_KEYS) {
       input_process_key(state->input_state, key, true_v);
     }
-    return 0;
+    return FALSE;
   }
 
   case WM_KEYUP:
@@ -409,37 +414,37 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     if (key != KEY_MAX_KEYS) {
       input_process_key(state->input_state, key, false_v);
     }
-    return 0;
+    return FALSE;
   }
 
   case WM_LBUTTONDOWN: {
     input_process_button(state->input_state, BUTTON_LEFT, true_v);
-    return 0;
+    return FALSE;
   }
 
   case WM_LBUTTONUP: {
     input_process_button(state->input_state, BUTTON_LEFT, false_v);
-    return 0;
+    return FALSE;
   }
 
   case WM_RBUTTONDOWN: {
     input_process_button(state->input_state, BUTTON_RIGHT, true_v);
-    return 0;
+    return FALSE;
   }
 
   case WM_RBUTTONUP: {
     input_process_button(state->input_state, BUTTON_RIGHT, false_v);
-    return 0;
+    return FALSE;
   }
 
   case WM_MBUTTONDOWN: {
     input_process_button(state->input_state, BUTTON_MIDDLE, true_v);
-    return 0;
+    return FALSE;
   }
 
   case WM_MBUTTONUP: {
     input_process_button(state->input_state, BUTTON_MIDDLE, false_v);
-    return 0;
+    return FALSE;
   }
 
   case WM_MOUSEMOVE: {
@@ -498,14 +503,14 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     // Reset warp deltas
     state->cursor_warp_delta_x = 0.0;
     state->cursor_warp_delta_y = 0.0;
-    return 0;
+    return FALSE;
   }
 
   case WM_MOUSEWHEEL: {
     int16_t delta = GET_WHEEL_DELTA_WPARAM(wparam);
     int8_t wheel_delta = (int8_t)(delta / WHEEL_DELTA);
     input_process_mouse_wheel(state->input_state, wheel_delta);
-    return 0;
+    return FALSE;
   }
 
   case WM_ACTIVATE: {
@@ -521,7 +526,7 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
       }
     }
     update_cursor_image(state);
-    return 0;
+    return FALSE;
   }
 
   default:
@@ -531,17 +536,23 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
 
 // Helper functions
 static void hide_cursor(PlatformState *state) {
-  if (!state->cursor_hidden) {
-    ShowCursor(FALSE);
-    state->cursor_hidden = true_v;
-  }
+  // if (!state->cursor_hidden) {
+  //   ShowCursor(FALSE);
+  //   state->cursor_hidden = true_v;
+  // }
+  while (ShowCursor(FALSE) >= 0)
+    ;
+  state->cursor_hidden = true_v;
 }
 
 static void show_cursor(PlatformState *state) {
-  if (state->cursor_hidden) {
-    ShowCursor(TRUE);
-    state->cursor_hidden = false_v;
-  }
+  // if (state->cursor_hidden) {
+  //   ShowCursor(TRUE);
+  //   state->cursor_hidden = false_v;
+  // }
+  while (ShowCursor(TRUE) < 0)
+    ;
+  state->cursor_hidden = false_v;
 }
 
 static void update_cursor_image(PlatformState *state) {

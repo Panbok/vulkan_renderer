@@ -3,7 +3,7 @@
 #if defined(PLATFORM_WINDOWS)
 struct s_VkrThread {
   HANDLE handle;
-  ThreadFunc func;
+  VkrThreadFunc func;
   void *arg;
   void *result;
 };
