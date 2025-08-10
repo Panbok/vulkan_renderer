@@ -70,7 +70,7 @@ bool32_t vulkan_debug_create_debug_messenger(VulkanBackendState *state) {
   VkResult result = CreateDebugUtilsMessengerEXT(
       state->instance, &create_info, state->allocator, &state->debug_messenger);
   if (result != VK_SUCCESS) {
-    log_fatal("Failed to create debug messenger: %s", string_VkResult(result));
+    log_fatal("Failed to create debug messenger");
     return false;
   }
 

@@ -35,7 +35,7 @@ bool8_t vulkan_shader_module_create(
       vkCreateShaderModule(state->device.logical_device, &create_info,
                            state->allocator, &shader_module);
   if (result != VK_SUCCESS) {
-    log_error("Failed to create shader module: %s", string_VkResult(result));
+    log_error("Failed to create shader module");
     return false;
   }
 

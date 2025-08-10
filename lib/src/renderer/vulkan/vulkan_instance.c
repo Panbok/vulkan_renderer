@@ -78,7 +78,7 @@ bool32_t vulkan_instance_create(VulkanBackendState *state, Window *window) {
   VkResult result =
       vkCreateInstance(&create_info, state->allocator, &state->instance);
   if (result != VK_SUCCESS) {
-    log_fatal("Failed to create Vulkan instance: %s", string_VkResult(result));
+    log_fatal("Failed to create Vulkan instance");
     return false;
   }
 

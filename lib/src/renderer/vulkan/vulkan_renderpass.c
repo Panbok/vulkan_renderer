@@ -29,8 +29,7 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
   out_render_pass->depth = depth;
   out_render_pass->stencil = stencil;
 
-  const uint32_t attachment_description_count = 2; // todo: make this dynamic
-  VkAttachmentDescription attachment_descriptions[attachment_description_count];
+  VkAttachmentDescription attachment_descriptions[2] = {0};
 
   VkAttachmentDescription color_attachment = {
       .format = state->swapchain.format,
@@ -96,7 +95,7 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
 
   VkRenderPassCreateInfo render_pass_info = {
       .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-      .attachmentCount = attachment_description_count,
+      .attachmentCount = 2,
       .pAttachments = attachment_descriptions,
       .subpassCount = 1,
       .pSubpasses = &subpass,

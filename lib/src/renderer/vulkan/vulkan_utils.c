@@ -84,17 +84,6 @@ Array_QueueFamilyIndex find_queue_family_indices(VulkanBackendState *state,
       continue;
     }
 
-    if ((properties.queueFlags & VK_QUEUE_TRANSFER_BIT) &&
-        !transfer_index->is_present) {
-      QueueFamilyIndex index = {
-          .index = i, .type = QUEUE_FAMILY_TYPE_TRANSFER, .is_present = true};
-      array_set_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_TRANSFER, index);
-
-      // it's ok to continue here, we need unique indices for transfer and
-      // present queues
-      continue;
-    }
-
     VkBool32 presentSupport = false;
     vkGetPhysicalDeviceSurfaceSupportKHR(device, i, state->surface,
                                          &presentSupport);
@@ -102,6 +91,17 @@ Array_QueueFamilyIndex find_queue_family_indices(VulkanBackendState *state,
       QueueFamilyIndex index = {
           .index = i, .type = QUEUE_FAMILY_TYPE_PRESENT, .is_present = true};
       array_set_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_PRESENT, index);
+
+      // it's ok to continue here, we need unique indices for present and
+      // graphics queues
+      continue;
+    }
+
+    if ((properties.queueFlags & VK_QUEUE_TRANSFER_BIT) &&
+        !transfer_index->is_present) {
+      QueueFamilyIndex index = {
+          .index = i, .type = QUEUE_FAMILY_TYPE_TRANSFER, .is_present = true};
+      array_set_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_TRANSFER, index);
     }
   }
 
