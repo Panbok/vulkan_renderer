@@ -80,8 +80,20 @@ typedef enum Buttons {
   BUTTON_LEFT,   /**< Left mouse button. */
   BUTTON_RIGHT,  /**< Right mouse button. */
   BUTTON_MIDDLE, /**< Middle mouse button. */
-  // BUTTON_X1,       // Example: Extra mouse button 1 (if supported/needed)
-  // BUTTON_X2,       // Example: Extra mouse button 2 (if supported/needed)
+  BUTTON_GAMEPAD_A,
+  BUTTON_GAMEPAD_B,
+  BUTTON_GAMEPAD_X,
+  BUTTON_GAMEPAD_Y,
+  BUTTON_GAMEPAD_LEFT_SHOULDER,
+  BUTTON_GAMEPAD_RIGHT_SHOULDER,
+  BUTTON_GAMEPAD_LEFT_TRIGGER,
+  BUTTON_GAMEPAD_RIGHT_TRIGGER,
+  BUTTON_GAMEPAD_BACK,
+  BUTTON_GAMEPAD_START,
+  BUTTON_GAMEPAD_DPAD_UP,
+  BUTTON_GAMEPAD_DPAD_DOWN,
+  BUTTON_GAMEPAD_DPAD_LEFT,
+  BUTTON_GAMEPAD_DPAD_RIGHT,
   BUTTON_MAX_BUTTONS /**< Maximum number of mouse buttons supported. */
 } Buttons;
 
@@ -114,20 +126,20 @@ typedef enum Keys {
   DEFINE_KEY(ACCEPT, 0x1E),     /**< IME Accept key. */
   DEFINE_KEY(MODECHANGE, 0x1F), /**< IME Mode change request. */
 
-  DEFINE_KEY(SPACE, 0x20),    /**< Spacebar. */
-  DEFINE_KEY(PRIOR, 0x21),    /**< Page Up key. */
-  DEFINE_KEY(NEXT, 0x22),     /**< Page Down key. */
-  DEFINE_KEY(END, 0x23),      /**< End key. */
-  DEFINE_KEY(HOME, 0x24),     /**< Home key. */
-  DEFINE_KEY(LEFT, 0x25),     /**< Left Arrow key. */
-  DEFINE_KEY(UP, 0x26),       /**< Up Arrow key. */
-  DEFINE_KEY(RIGHT, 0x27),    /**< Right Arrow key. */
-  DEFINE_KEY(DOWN, 0x28),     /**< Down Arrow key. */
-  DEFINE_KEY(SELECT, 0x29),   /**< Select key. */
-  DEFINE_KEY(PRINT, 0x2A),    /**< Print key. */
-  #if defined(PLATFORM_APPLE)
-  DEFINE_KEY(EXECUTE, 0x2B),  /**< Execute key. */
-  #endif
+  DEFINE_KEY(SPACE, 0x20),  /**< Spacebar. */
+  DEFINE_KEY(PRIOR, 0x21),  /**< Page Up key. */
+  DEFINE_KEY(NEXT, 0x22),   /**< Page Down key. */
+  DEFINE_KEY(END, 0x23),    /**< End key. */
+  DEFINE_KEY(HOME, 0x24),   /**< Home key. */
+  DEFINE_KEY(LEFT, 0x25),   /**< Left Arrow key. */
+  DEFINE_KEY(UP, 0x26),     /**< Up Arrow key. */
+  DEFINE_KEY(RIGHT, 0x27),  /**< Right Arrow key. */
+  DEFINE_KEY(DOWN, 0x28),   /**< Down Arrow key. */
+  DEFINE_KEY(SELECT, 0x29), /**< Select key. */
+  DEFINE_KEY(PRINT, 0x2A),  /**< Print key. */
+#if defined(PLATFORM_APPLE)
+  DEFINE_KEY(EXECUTE, 0x2B), /**< Execute key. */
+#endif
   DEFINE_KEY(SNAPSHOT, 0x2C), /**< Print Screen key. */
   DEFINE_KEY(INSERT, 0x2D),   /**< Insert key. */
   DEFINE_KEY(DELETE, 0x2E),   /**< Delete key. */
@@ -251,6 +263,22 @@ typedef enum Keys {
   DEFINE_KEY(GRAVE,
              0xC0), /**< Grave accent key (OEM_3 typically '`~' for US). */
 
+  // Gamepad buttons
+  DEFINE_KEY(GAMEPAD_A, 0x100),
+  DEFINE_KEY(GAMEPAD_B, 0x101),
+  DEFINE_KEY(GAMEPAD_X, 0x102),
+  DEFINE_KEY(GAMEPAD_Y, 0x103),
+  DEFINE_KEY(GAMEPAD_LEFT_SHOULDER, 0x104),
+  DEFINE_KEY(GAMEPAD_RIGHT_SHOULDER, 0x105),
+  DEFINE_KEY(GAMEPAD_LEFT_TRIGGER, 0x106),
+  DEFINE_KEY(GAMEPAD_RIGHT_TRIGGER, 0x107),
+  DEFINE_KEY(GAMEPAD_BACK, 0x108),
+  DEFINE_KEY(GAMEPAD_START, 0x109),
+  DEFINE_KEY(GAMEPAD_DPAD_UP, 0x10A),
+  DEFINE_KEY(GAMEPAD_DPAD_DOWN, 0x10B),
+  DEFINE_KEY(GAMEPAD_DPAD_LEFT, 0x10C),
+  DEFINE_KEY(GAMEPAD_DPAD_RIGHT, 0x10D),
+
   KEY_MAX_KEYS /**< Maximum number of keys supported. Sentinel value. */
 } Keys;
 
@@ -305,12 +333,34 @@ typedef struct ButtonsState {
   int8_t wheel;
 } ButtonsState;
 
+typedef struct GamepadAxes {
+  float left_x;
+  float left_y;
+  float right_x;
+  float right_y;
+} GamepadAxes;
+
+// TODO(v2): Multi-device input design
+// Currently, all raw input devices contributing to a window (mouse, keyboard,
+// any connected gamepads) are merged into a single `InputState` owned by the
+// window. This means multiple devices share the same state. In the future,
+// consider one of the following approaches:
+//  - Option A: Maintain a distinct `InputState` per physical input device
+//    (e.g., `InputStateKeyboard`, `InputStateMouse`, `InputStateGamepad[N]`),
+//    and expose a higher-level aggregator for per-window queries.
+//  - Option B: Extend `InputState` to track multiple devices internally
+//    (e.g., arrays/maps of device states keyed by device id/type), and add an
+//    API to query by device and to aggregate across devices when needed.
+// Not implementing now; this is a tracked future enhancement.
+
 typedef struct InputState {
   EventManager *event_manager;
   KeysState previous_keys;
   KeysState current_keys;
   ButtonsState previous_buttons;
   ButtonsState current_buttons;
+  GamepadAxes previous_axes;
+  GamepadAxes current_axes;
   bool32_t is_initialized;
 } InputState;
 
@@ -488,3 +538,57 @@ void input_process_mouse_move(InputState *input_state, int32_t x, int32_t y);
  * negative for down/backward.
  */
 void input_process_mouse_wheel(InputState *input_state, int8_t delta);
+
+/**
+ * @brief Gamepad thumbsticks: stored as normalized values in range [-1, 1]
+ * after platform deadzone filtering. No events are dispatched for axes; poll
+ * via getters.
+ * @param input_state Pointer to the `InputState` to modify.
+ * @param left_x The normalized X-coordinate of the left thumbstick.
+ * @param left_y The normalized Y-coordinate of the left thumbstick.
+ * @param right_x The normalized X-coordinate of the right thumbstick.
+ * @param right_y The normalized Y-coordinate of the right thumbstick.
+ */
+void input_process_thumbsticks(InputState *input_state, float left_x,
+                               float left_y, float right_x, float right_y);
+
+/**
+ * @brief Retrieves the current left thumbstick state.
+ * @param input_state Pointer to the `InputState` to query.
+ * @param[out] x Pointer to store the current X-coordinate of the left
+ * thumbstick.
+ * @param[out] y Pointer to store the current Y-coordinate of the left
+ * thumbstick.
+ */
+void input_get_left_stick(InputState *input_state, float *x, float *y);
+
+/**
+ * @brief Retrieves the previous left thumbstick state.
+ * @param input_state Pointer to the `InputState` to query.
+ * @param[out] x Pointer to store the previous X-coordinate of the left
+ * thumbstick.
+ * @param[out] y Pointer to store the previous Y-coordinate of the left
+ * thumbstick.
+ */
+void input_get_previous_left_stick(InputState *input_state, float *x, float *y);
+
+/**
+ * @brief Retrieves the current right thumbstick state.
+ * @param input_state Pointer to the `InputState` to query.
+ * @param[out] x Pointer to store the current X-coordinate of the right
+ * thumbstick.
+ * @param[out] y Pointer to store the current Y-coordinate of the right
+ * thumbstick.
+ */
+void input_get_right_stick(InputState *input_state, float *x, float *y);
+
+/**
+ * @brief Retrieves the previous right thumbstick state.
+ * @param input_state Pointer to the `InputState` to query.
+ * @param[out] x Pointer to store the previous X-coordinate of the right
+ * thumbstick.
+ * @param[out] y Pointer to store the previous Y-coordinate of the right
+ * thumbstick.
+ */
+void input_get_previous_right_stick(InputState *input_state, float *x,
+                                    float *y);
