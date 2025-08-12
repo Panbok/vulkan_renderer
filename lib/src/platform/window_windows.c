@@ -29,6 +29,9 @@ typedef struct PlatformState {
   // Window state
   uint32_t window_width;
   uint32_t window_height;
+
+  // Gamepads
+  VkrGamepad gamepads[XUSER_MAX_COUNT];
 } PlatformState;
 
 // Forward declarations
@@ -87,6 +90,12 @@ bool8_t window_create(Window *window, EventManager *event_manager,
   state->first_mouse_move = true_v;
   state->mouse_last_x = 0;
   state->mouse_last_y = 0;
+
+  // Initialize and attempt to connect all XInput gamepads
+  for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
+    vkr_gamepad_init(&state->gamepads[i], (int32_t)i, state->input_state);
+    vkr_gamepad_connect(&state->gamepads[i]);
+  }
 
   window->platform_state = state;
 
@@ -186,6 +195,11 @@ bool8_t window_update(Window *window) {
   while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
     TranslateMessage(&msg);
     DispatchMessage(&msg);
+  }
+
+  // Poll all gamepads once per frame (simple)
+  for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
+    vkr_gamepad_poll(&state->gamepads[i]);
   }
 
   // Re-center cursor if in capture mode and it has moved since the last call
