@@ -32,7 +32,7 @@ bool8_t vkr_gamepad_init(VkrGamepad *gamepad, int32_t id,
     return false_v;
   gamepad->id = id;
   gamepad->is_connected = false_v;
-  gamepad->type = GAMEPAD_TYPE_GENERIC;
+  gamepad->type = VKR_GAMEPAD_TYPE_GENERIC;
   gamepad->input_state = input_state;
   return true_v;
 }
@@ -45,7 +45,7 @@ bool8_t vkr_gamepad_connect(VkrGamepad *gamepad) {
   if (result == ERROR_SUCCESS) {
     gamepad->is_connected = true_v;
     // Heuristic: XInput usually exposes Xbox layout. Keep GENERIC otherwise.
-    gamepad->type = GAMEPAD_TYPE_XBOX;
+    gamepad->type = VKR_GAMEPAD_TYPE_XBOX;
     return true_v;
   }
   gamepad->is_connected = false_v;
@@ -125,14 +125,17 @@ bool8_t vkr_gamepad_poll(VkrGamepad *gamepad) {
   const int16_t deadzone_l = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE;
   const int16_t deadzone_r = XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE;
 
-  float n_lx = 0.0f, n_ly = 0.0f, n_rx = 0.0f, n_ry = 0.0f;
+  float32_t n_lx = 0.0f, n_ly = 0.0f, n_rx = 0.0f, n_ry = 0.0f;
 
   // Left stick magnitude
-  int32_t mag_l = (int32_t)sqrt((double)((int32_t)lx * lx + (int32_t)ly * ly));
+  // todo: we need srqt_f64 op
+  int32_t mag_l = (int32_t)sqrt((float64_t)lx * (float64_t)lx +
+                                (float64_t)ly * (float64_t)ly);
   if (mag_l > deadzone_l) {
-    float nx = (float)lx / 32767.0f;
-    float ny = (float)ly / 32767.0f;
-    float scale = (float)(mag_l - deadzone_l) / (float)(32767 - deadzone_l);
+    float32_t nx = (float32_t)lx / 32767.0f;
+    float32_t ny = (float32_t)ly / 32767.0f;
+    float32_t scale =
+        (float32_t)(mag_l - deadzone_l) / (float32_t)(32767 - deadzone_l);
     if (scale > 1.0f)
       scale = 1.0f;
     n_lx = nx * scale;
@@ -140,11 +143,13 @@ bool8_t vkr_gamepad_poll(VkrGamepad *gamepad) {
   }
 
   // Right stick magnitude
-  int32_t mag_r = (int32_t)sqrt((double)((int32_t)rx * rx + (int32_t)ry * ry));
+  int32_t mag_r = (int32_t)sqrt((float64_t)rx * (float64_t)rx +
+                                (float64_t)ry * (float64_t)ry);
   if (mag_r > deadzone_r) {
-    float nx = (float)rx / 32767.0f;
-    float ny = (float)ry / 32767.0f;
-    float scale = (float)(mag_r - deadzone_r) / (float)(32767 - deadzone_r);
+    float32_t nx = (float32_t)rx / 32767.0f;
+    float32_t ny = (float32_t)ry / 32767.0f;
+    float32_t scale =
+        (float32_t)(mag_r - deadzone_r) / (float32_t)(32767 - deadzone_r);
     if (scale > 1.0f)
       scale = 1.0f;
     n_rx = nx * scale;
