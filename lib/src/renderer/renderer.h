@@ -405,11 +405,22 @@ typedef enum TextureType {
 } TextureType;
 
 typedef enum TextureFormat {
+  // RGBA formats
   TEXTURE_FORMAT_R8G8B8A8_UNORM,
   TEXTURE_FORMAT_R8G8B8A8_SRGB,
   TEXTURE_FORMAT_R8G8B8A8_UINT,
   TEXTURE_FORMAT_R8G8B8A8_SNORM,
   TEXTURE_FORMAT_R8G8B8A8_SINT,
+  // Single/dual channel formats
+  TEXTURE_FORMAT_R8_UNORM,
+  TEXTURE_FORMAT_R16_SFLOAT,
+  TEXTURE_FORMAT_R32_SFLOAT,
+  TEXTURE_FORMAT_R8G8_UNORM,
+  // Depth/stencil formats
+  TEXTURE_FORMAT_D32_SFLOAT,
+  TEXTURE_FORMAT_D24_UNORM_S8_UINT,
+
+  TEXTURE_FORMAT_COUNT,
 } TextureFormat;
 
 typedef enum TexturePropertyBits {
@@ -417,7 +428,6 @@ typedef enum TexturePropertyBits {
   TEXTURE_PROPERTY_FILTER_ANISOTROPIC_BIT = 1 << 1,
   TEXTURE_PROPERTY_FILTER_MIPMAP_BIT = 1 << 2,
   TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT = 1 << 3,
-  TEXTURE_PROPERTY_COUNT,
 } TexturePropertyBits;
 typedef Bitset8 TexturePropertyFlags;
 

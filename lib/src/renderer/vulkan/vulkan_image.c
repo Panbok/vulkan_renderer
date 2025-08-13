@@ -157,6 +157,7 @@ bool8_t vulkan_image_transition_layout(VulkanBackendState *state,
       .image = image->handle,
       .subresourceRange =
           {
+              // todo: support depth and stencil aspects
               .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
               .baseMipLevel = 0,
               .levelCount = image->mip_levels,

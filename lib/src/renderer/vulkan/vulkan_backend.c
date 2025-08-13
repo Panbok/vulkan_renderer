@@ -699,6 +699,7 @@ renderer_vulkan_create_texture(void *backend_state,
                                const void *initial_data) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(desc != NULL, "Texture description is NULL");
+  assert_log(initial_data != NULL, "Initial data is NULL");
 
   log_debug("Creating Vulkan texture");
 
@@ -832,6 +833,10 @@ renderer_vulkan_create_texture(void *backend_state,
     return (BackendResourceHandle){.ptr = NULL};
   }
 
+  vkFreeCommandBuffers(state->device.logical_device,
+                       state->device.graphics_command_pool, 1,
+                       &temp_command_buffer.handle);
+
   VkSamplerCreateInfo sampler_create_info = {
       .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
       .magFilter = VK_FILTER_LINEAR,
@@ -866,8 +871,15 @@ renderer_vulkan_create_texture(void *backend_state,
     return (BackendResourceHandle){.ptr = NULL};
   }
 
-  bitset8_set(&texture->description.properties,
-              TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
+  // Only set transparency bit for formats that support alpha channel
+  if (desc->channels == 4 || desc->format == TEXTURE_FORMAT_R8G8B8A8_UNORM ||
+      desc->format == TEXTURE_FORMAT_R8G8B8A8_SRGB ||
+      desc->format == TEXTURE_FORMAT_R8G8B8A8_UINT ||
+      desc->format == TEXTURE_FORMAT_R8G8B8A8_SNORM ||
+      desc->format == TEXTURE_FORMAT_R8G8B8A8_SINT) {
+    bitset8_set(&texture->description.properties,
+                TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
+  }
   texture->description.generation++;
 
   vulkan_buffer_destroy(state, &staging_buffer->buffer);
@@ -885,6 +897,11 @@ void renderer_vulkan_destroy_texture(void *backend_state,
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   struct s_TextureHandle *texture = (struct s_TextureHandle *)handle.ptr;
+
+  // Ensure the texture is not in use before destroying
+  if (renderer_vulkan_wait_idle(backend_state) != RENDERER_ERROR_NONE) {
+    log_error("Failed to wait for idle before destroying texture");
+  }
 
   vulkan_image_destroy(state, &texture->texture.image);
   vkDestroySampler(state->device.logical_device, texture->texture.sampler,
