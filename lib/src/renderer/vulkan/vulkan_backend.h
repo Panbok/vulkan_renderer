@@ -62,6 +62,14 @@ RendererError renderer_vulkan_upload_buffer(void *backend_state,
 void renderer_vulkan_destroy_buffer(void *backend_state,
                                     BackendResourceHandle handle);
 
+BackendResourceHandle
+renderer_vulkan_create_texture(void *backend_state,
+                               const TextureDescription *desc,
+                               const void *initial_data);
+
+void renderer_vulkan_destroy_texture(void *backend_state,
+                                     BackendResourceHandle handle);
+
 BackendResourceHandle renderer_vulkan_create_graphics_pipeline(
     void *backend_state, const GraphicsPipelineDescription *desc);
 

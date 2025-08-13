@@ -14,6 +14,17 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
 
 void vulkan_image_destroy(VulkanBackendState *state, VulkanImage *image);
 
+bool8_t vulkan_image_transition_layout(VulkanBackendState *state,
+                                       VulkanImage *image,
+                                       VulkanCommandBuffer *command_buffer,
+                                       VkFormat format,
+                                       VkImageLayout old_layout,
+                                       VkImageLayout new_layout);
+
+bool8_t vulkan_image_copy_from_buffer(VulkanBackendState *state,
+                                      VulkanImage *image, VkBuffer buffer,
+                                      VulkanCommandBuffer *command_buffer);
+
 bool32_t vulkan_create_image_view(VulkanBackendState *state, VkFormat format,
                                   VkImageViewType view_type, VulkanImage *image,
                                   VkImageAspectFlags aspect_flags);

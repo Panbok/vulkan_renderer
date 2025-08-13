@@ -25,3 +25,5 @@ VkBufferUsageFlags vulkan_buffer_usage_to_vk(BufferUsageFlags usage);
 
 VkMemoryPropertyFlags
 vulkan_memory_property_flags_to_vk(MemoryPropertyFlags flags);
+
+VkFormat vulkan_image_format_from_texture_format(TextureFormat format);

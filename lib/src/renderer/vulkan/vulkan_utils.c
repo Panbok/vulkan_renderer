@@ -245,3 +245,21 @@ vulkan_memory_property_flags_to_vk(MemoryPropertyFlags flags) {
 
   return vk_flags;
 }
+
+VkFormat vulkan_image_format_from_texture_format(TextureFormat format) {
+  switch (format) {
+  case TEXTURE_FORMAT_R8G8B8A8_UNORM:
+    return VK_FORMAT_R8G8B8A8_UNORM;
+  case TEXTURE_FORMAT_R8G8B8A8_SRGB:
+    return VK_FORMAT_R8G8B8A8_SRGB;
+  case TEXTURE_FORMAT_R8G8B8A8_UINT:
+    return VK_FORMAT_R8G8B8A8_UINT;
+  case TEXTURE_FORMAT_R8G8B8A8_SNORM:
+    return VK_FORMAT_R8G8B8A8_SNORM;
+  case TEXTURE_FORMAT_R8G8B8A8_SINT:
+    return VK_FORMAT_R8G8B8A8_SINT;
+  default:
+    log_fatal("Invalid texture format: %d", format);
+    return VK_FORMAT_UNDEFINED;
+  }
+}

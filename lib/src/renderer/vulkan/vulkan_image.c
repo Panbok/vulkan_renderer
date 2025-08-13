@@ -1,6 +1,4 @@
 #include "vulkan_image.h"
-#include "core/logger.h"
-#include "defines.h"
 
 bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
                              uint32_t width, uint32_t height, VkFormat format,
@@ -133,6 +131,99 @@ bool32_t vulkan_create_image_view(VulkanBackendState *state, VkFormat format,
   log_debug("Created Vulkan image view: %p", image->view);
 
   return true;
+}
+
+bool8_t vulkan_image_transition_layout(VulkanBackendState *state,
+                                       VulkanImage *image,
+                                       VulkanCommandBuffer *command_buffer,
+                                       VkFormat format,
+                                       VkImageLayout old_layout,
+                                       VkImageLayout new_layout) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(image != NULL, "Image is NULL");
+  assert_log(command_buffer != NULL, "Command buffer is NULL");
+  assert_log(format != VK_FORMAT_UNDEFINED, "Format is undefined");
+  assert_log(new_layout != VK_IMAGE_LAYOUT_UNDEFINED,
+             "New layout is undefined");
+
+  VkImageMemoryBarrier barrier = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = 0,
+      .dstAccessMask = 0,
+      .oldLayout = old_layout,
+      .newLayout = new_layout,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = image->handle,
+      .subresourceRange =
+          {
+              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+              .baseMipLevel = 0,
+              .levelCount = image->mip_levels,
+              .baseArrayLayer = 0,
+              .layerCount = image->array_layers,
+          },
+  };
+
+  VkPipelineStageFlags source_stage;
+  VkPipelineStageFlags destination_stage;
+
+  if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED &&
+      new_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    destination_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+  } else if (old_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
+             new_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    destination_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  } else if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED &&
+             new_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    destination_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  } else {
+    log_fatal("Unsupported layout transition!");
+    return false_v;
+  }
+
+  vkCmdPipelineBarrier(command_buffer->handle, source_stage, destination_stage,
+                       0, 0, NULL, 0, NULL, 1, &barrier);
+
+  return true_v;
+}
+
+bool8_t vulkan_image_copy_from_buffer(VulkanBackendState *state,
+                                      VulkanImage *image, VkBuffer buffer,
+                                      VulkanCommandBuffer *command_buffer) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(image != NULL, "Image is NULL");
+  assert_log(buffer != VK_NULL_HANDLE, "Buffer is NULL");
+  assert_log(command_buffer != NULL, "Command buffer is NULL");
+
+  VkBufferImageCopy region = {
+      .bufferOffset = 0,
+      .bufferRowLength = 0,
+      .bufferImageHeight = 0,
+      .imageSubresource =
+          {
+              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+              .mipLevel = 0,
+              .baseArrayLayer = 0,
+              .layerCount = image->array_layers,
+          },
+      .imageOffset = {0, 0, 0},
+      .imageExtent = {image->width, image->height, 1},
+  };
+
+  vkCmdCopyBufferToImage(command_buffer->handle, buffer, image->handle,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+  return true_v;
 }
 
 void vulkan_image_destroy(VulkanBackendState *state, VulkanImage *image) {

@@ -184,6 +184,38 @@ void renderer_destroy_buffer(RendererFrontendHandle renderer,
   renderer->backend.buffer_destroy(renderer->backend_state, handle);
 }
 
+TextureHandle renderer_create_texture(RendererFrontendHandle renderer,
+                                      const TextureDescription *description,
+                                      const void *initial_data,
+                                      RendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(description != NULL, "Description is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  log_debug("Creating texture");
+
+  BackendResourceHandle handle = renderer->backend.texture_create(
+      renderer->backend_state, description, initial_data);
+  if (handle.ptr == NULL) {
+    *out_error = RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return NULL;
+  }
+
+  *out_error = RENDERER_ERROR_NONE;
+  return (TextureHandle)handle.ptr;
+}
+
+void renderer_destroy_texture(RendererFrontendHandle renderer,
+                              TextureHandle texture) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(texture != NULL, "Texture is NULL");
+
+  log_debug("Destroying texture");
+
+  BackendResourceHandle handle = {.ptr = (void *)texture};
+  renderer->backend.texture_destroy(renderer->backend_state, handle);
+}
+
 PipelineHandle renderer_create_graphics_pipeline(
     RendererFrontendHandle renderer,
     const GraphicsPipelineDescription *description, RendererError *out_error) {

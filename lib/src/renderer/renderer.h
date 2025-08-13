@@ -61,6 +61,7 @@
 typedef struct s_RendererFrontend *RendererFrontendHandle;
 typedef struct s_BufferResource *BufferHandle;
 typedef struct s_Pipeline *PipelineHandle;
+typedef struct s_Texture *TextureHandle;
 
 typedef union {
   void *ptr;
@@ -396,6 +397,60 @@ typedef struct VertexInputBindingDescription {
   uint32_t stride;  // Distance between consecutive elements for this binding
   VertexInputRate input_rate; // Per-vertex or per-instance
 } VertexInputBindingDescription;
+
+typedef enum TextureType {
+  TEXTURE_TYPE_2D,
+  TEXTURE_TYPE_CUBE_MAP,
+  TEXTURE_TYPE_COUNT,
+} TextureType;
+
+typedef enum TextureFormat {
+  TEXTURE_FORMAT_R8G8B8A8_UNORM,
+  TEXTURE_FORMAT_R8G8B8A8_SRGB,
+  TEXTURE_FORMAT_R8G8B8A8_UINT,
+  TEXTURE_FORMAT_R8G8B8A8_SNORM,
+  TEXTURE_FORMAT_R8G8B8A8_SINT,
+} TextureFormat;
+
+typedef enum TexturePropertyBits {
+  TEXTURE_PROPERTY_FILTER_LINEAR_BIT = 1 << 0,
+  TEXTURE_PROPERTY_FILTER_ANISOTROPIC_BIT = 1 << 1,
+  TEXTURE_PROPERTY_FILTER_MIPMAP_BIT = 1 << 2,
+  TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT = 1 << 3,
+  TEXTURE_PROPERTY_COUNT,
+} TexturePropertyBits;
+typedef Bitset8 TexturePropertyFlags;
+
+static inline TexturePropertyFlags texture_property_flags_create(void) {
+  return bitset8_create();
+}
+
+static inline TexturePropertyFlags
+texture_property_flags_from_bits(uint8_t bits) {
+  TexturePropertyFlags flags = bitset8_create();
+  if (bits & TEXTURE_PROPERTY_FILTER_LINEAR_BIT)
+    bitset8_set(&flags, TEXTURE_PROPERTY_FILTER_LINEAR_BIT);
+  if (bits & TEXTURE_PROPERTY_FILTER_ANISOTROPIC_BIT)
+    bitset8_set(&flags, TEXTURE_PROPERTY_FILTER_ANISOTROPIC_BIT);
+  if (bits & TEXTURE_PROPERTY_FILTER_MIPMAP_BIT)
+    bitset8_set(&flags, TEXTURE_PROPERTY_FILTER_MIPMAP_BIT);
+  if (bits & TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT)
+    bitset8_set(&flags, TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
+  return flags;
+}
+
+typedef struct TextureDescription {
+  uint32_t id;
+  uint32_t width;
+  uint32_t height;
+  uint32_t generation;
+  uint32_t channels;
+
+  TextureType type;
+  TextureFormat format;
+  TexturePropertyFlags properties;
+} TextureDescription;
+
 typedef struct GraphicsPipelineDescription {
   ShaderObjectDescription shader_object_description;
 
@@ -407,14 +462,6 @@ typedef struct GraphicsPipelineDescription {
   PrimitiveTopology topology;
 
   PolygonMode polygon_mode;
-
-  // Simplified for now. Add more states as needed:
-  // RasterizationState rasterization_state;
-  // DepthStencilState depth_stencil_state;
-  // BlendState blend_state;
-  // MultiSampleState multi_sample_state;
-  // Dynamic states (e.g. viewport, scissor - already handled by separate
-  // commands)
 } GraphicsPipelineDescription;
 
 // ============================================================================
@@ -477,6 +524,14 @@ BufferHandle renderer_create_index_buffer(RendererFrontendHandle renderer,
                                           uint64_t size, IndexType type,
                                           const void *initial_data,
                                           RendererError *out_error);
+
+TextureHandle renderer_create_texture(RendererFrontendHandle renderer,
+                                      const TextureDescription *description,
+                                      const void *initial_data,
+                                      RendererError *out_error);
+
+void renderer_destroy_texture(RendererFrontendHandle renderer,
+                              TextureHandle texture);
 
 void renderer_destroy_buffer(RendererFrontendHandle renderer,
                              BufferHandle buffer);
@@ -574,6 +629,11 @@ typedef struct RendererBackendInterface {
   RendererError (*buffer_upload)(void *backend_state,
                                  BackendResourceHandle handle, uint64_t offset,
                                  uint64_t size, const void *data);
+
+  BackendResourceHandle (*texture_create)(void *backend_state,
+                                          const TextureDescription *desc,
+                                          const void *initial_data);
+  void (*texture_destroy)(void *backend_state, BackendResourceHandle handle);
 
   // Pipeline creation uses VertexInputAttributeDescription and
   // VertexInputBindingDescription from GraphicsPipelineDescription to

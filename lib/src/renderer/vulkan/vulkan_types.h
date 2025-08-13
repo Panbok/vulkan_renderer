@@ -122,6 +122,11 @@ typedef struct VulkanImage {
 
 Array(VulkanImage);
 
+typedef struct VulkanTexture {
+  VulkanImage image;
+  VkSampler sampler;
+} VulkanTexture;
+
 typedef struct VulkanSwapchainDetails {
   VkSurfaceCapabilitiesKHR capabilities;
   Array_VkSurfaceFormatKHR formats;
@@ -201,6 +206,11 @@ struct s_GraphicsPipeline {
   VkPipeline pipeline;
 
   VulkanShaderObject shader_object;
+};
+
+struct s_TextureHandle {
+  VulkanTexture texture;
+  TextureDescription description;
 };
 
 typedef struct VulkanBackendState {
