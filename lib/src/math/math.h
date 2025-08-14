@@ -19,7 +19,7 @@
  *    - lerp_f32()
  *
  * 4. **Power and Root Functions**: Exponential and logarithmic operations
- *    - sqrt_f32(), pow_f32(), exp_f32(), log_f32()
+ *    - sqrt_f32(), sqrt_f64(), pow_f32(), exp_f32(), log_f32()
  *
  * 5. **Rounding Functions**: Float-to-integer rounding operations
  *    - floor_f32(), ceil_f32(), round_f32()
@@ -290,6 +290,15 @@ static INLINE float32_t sign_f32(float32_t value) {
  * @note Uses the optimized sqrtf() function from math.h
  */
 static INLINE float32_t sqrt_f32(float32_t value) { return sqrtf(value); }
+
+/**
+ * @brief Computes the square root of a float64_t value
+ * @param value Input value (must be non-negative)
+ * @return Square root of the input value
+ * @note Behavior is undefined for negative inputs
+ * @note Uses the optimized sqrt() function from math.h
+ */
+static INLINE float64_t sqrt_f64(float64_t value) { return sqrt(value); }
 
 /**
  * @brief Rounds a float32_t value down to the nearest integer

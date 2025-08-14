@@ -41,7 +41,6 @@
 #include "math/math.h"
 #include "pch.h"
 #include "platform.h"
-#include "platform/vkr_gamepad.h"
 
 /**
  * @brief Represents a platform window and its associated state.

@@ -50,6 +50,7 @@
 #include "core/clock.h"
 #include "core/event.h"
 #include "core/logger.h"
+#include "core/vkr_gamepad.h"
 #include "filesystem/filesystem.h"
 #include "math/mat.h"
 #include "math/math.h"
@@ -59,6 +60,7 @@
 #include "platform/window.h"
 #include "renderer/renderer.h"
 #include "renderer/resources/resources.h"
+
 
 /**
  * @brief Flags representing the current state of the application.
@@ -118,7 +120,9 @@ typedef struct Application {
                                 current state. */
   VkrMutex app_mutex;        /**< Mutex for application state. */
 
-  Camera camera;
+  Camera camera; /**< The camera for the application. */
+
+  VkrGamepad gamepad; /**< The gamepad system for the application. */
 
   GraphicsPipelineDescription pipeline;
   PipelineHandle pipeline_handle;
@@ -338,6 +342,8 @@ bool8_t application_create(Application *application,
   }
 
   Mat4 model = mat4_identity();
+
+  vkr_gamepad_init(&application->gamepad, &application->window.input_state);
   application->camera = application_init_camera(application);
 
   ShaderObjectDescription shader_object_description = {
@@ -572,6 +578,8 @@ void application_start(Application *application) {
 
     float64_t frame_processing_start_time = platform_get_absolute_time();
 
+    vkr_gamepad_poll_all(&application->gamepad);
+
     application_update(application, delta);
 
     camera_update(&application->camera, delta);
@@ -663,9 +671,9 @@ void application_close(Application *application) {
  * @param application Pointer to the `Application` structure to be shut down.
  */
 void application_shutdown(Application *application) {
-  assert(application != NULL && "Application is NULL");
-  assert(!bitset8_is_set(&application->app_flags, APPLICATION_FLAG_RUNNING) &&
-         "Application is still running");
+  assert_log(application != NULL, "Application is NULL");
+  assert_log(!bitset8_is_set(&application->app_flags, APPLICATION_FLAG_RUNNING),
+             "Application is still running");
 
   log_info("Application shutting down...");
 
@@ -683,6 +691,7 @@ void application_shutdown(Application *application) {
   window_destroy(&application->window);
   event_manager_destroy(&application->event_manager);
   vkr_mutex_destroy(application->app_arena, &application->app_mutex);
+  vkr_gamepad_shutdown(&application->gamepad);
 
   platform_shutdown();
 
