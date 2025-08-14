@@ -46,20 +46,26 @@ bool8_t vkr_gamepad_init(VkrGamepad *gamepad, InputState *input_state) {
   return true_v;
 }
 
-bool8_t vkr_gamepad_connect(VkrGamepadState *gamepad, InputState *input_state) {
-  assert_log(gamepad, "Gamepad is NULL");
+bool8_t vkr_gamepad_connect(VkrGamepad *system, int32_t controller_id) {
+  assert_log(system, "Gamepad system is NULL");
+  assert_log(controller_id >= 0 && controller_id < VKR_GAMEPAD_MAX_CONTROLLERS,
+             "Controller id is out of bounds");
+  assert_log(system->input_state, "Input state is NULL");
 
   XINPUT_STATE state;
-  DWORD result = XInputGetState((DWORD)gamepad->id, &state);
-  if (result == ERROR_SUCCESS && !gamepad->is_connected) {
-    gamepad->is_connected = true_v;
-    gamepad->type = VKR_GAMEPAD_TYPE_XBOX;
-    log_debug("Gamepad %d connected", gamepad->id);
+  DWORD result = XInputGetState((DWORD)controller_id, &state);
+  if (result == ERROR_SUCCESS &&
+      !system->gamepads[controller_id].is_connected) {
+    system->gamepads[controller_id].is_connected = true_v;
+    system->gamepads[controller_id].type = VKR_GAMEPAD_TYPE_XBOX;
+    log_debug("Gamepad %d connected", controller_id);
     return true_v;
-  } else if (result != ERROR_SUCCESS && gamepad->is_connected) {
-    vkr_gamepad_disconnect(gamepad, input_state);
+  } else if (result != ERROR_SUCCESS &&
+             system->gamepads[controller_id].is_connected) {
+    vkr_gamepad_disconnect(system, controller_id);
     return false_v;
-  } else if (result == ERROR_SUCCESS && gamepad->is_connected) {
+  } else if (result == ERROR_SUCCESS &&
+             system->gamepads[controller_id].is_connected) {
     return true_v;
   }
 
@@ -72,7 +78,7 @@ bool8_t vkr_gamepad_poll_all(VkrGamepad *gamepad) {
 
   for (int32_t i = 0; i < VKR_GAMEPAD_MAX_CONTROLLERS; i++) {
     VkrGamepadState *gamepad_state = &gamepad->gamepads[i];
-    if (!vkr_gamepad_poll(gamepad_state, gamepad->input_state)) {
+    if (!vkr_gamepad_poll(gamepad, i)) {
       continue;
     }
   }
@@ -80,23 +86,26 @@ bool8_t vkr_gamepad_poll_all(VkrGamepad *gamepad) {
   return true_v;
 }
 
-bool8_t vkr_gamepad_poll(VkrGamepadState *gamepad, InputState *input_state) {
-  assert_log(gamepad, "Gamepad is NULL");
-  assert_log(input_state, "Input state is NULL");
+bool8_t vkr_gamepad_poll(VkrGamepad *system, int32_t controller_id) {
+  assert_log(system, "Gamepad system is NULL");
+  assert_log(controller_id >= 0 && controller_id < VKR_GAMEPAD_MAX_CONTROLLERS,
+             "Controller id is out of bounds");
+  assert_log(system->input_state, "Input state is NULL");
 
-  if (!vkr_gamepad_connect(gamepad, input_state)) {
+  if (!vkr_gamepad_connect(system, controller_id)) {
     return false_v;
   }
 
   // NOTE: Double polling is not ideal, probably better to set it as a state on
   // a gamepad when we connect just once and simply pull the data from there
   XINPUT_STATE xi_state;
-  DWORD result = XInputGetState((DWORD)gamepad->id, &xi_state);
+  DWORD result = XInputGetState((DWORD)controller_id, &xi_state);
   if (result != ERROR_SUCCESS) {
-    log_warn("Failed to poll gamepad %d", gamepad->id);
+    log_warn("Failed to poll gamepad %d", controller_id);
     return false_v;
   }
 
+  InputState *input_state = system->input_state;
   const XINPUT_GAMEPAD *g = &xi_state.Gamepad;
 
   // Buttons
@@ -186,13 +195,14 @@ bool8_t vkr_gamepad_poll(VkrGamepadState *gamepad, InputState *input_state) {
   return true_v;
 }
 
-bool8_t vkr_gamepad_disconnect(VkrGamepadState *gamepad,
-                               InputState *input_state) {
-  assert_log(gamepad, "Gamepad is NULL");
+bool8_t vkr_gamepad_disconnect(VkrGamepad *system, int32_t controller_id) {
+  assert_log(system, "Gamepad system is NULL");
+  assert_log(controller_id >= 0 && controller_id < VKR_GAMEPAD_MAX_CONTROLLERS,
+             "Controller id is out of bounds");
 
-  gamepad->is_connected = false_v;
-  vkr_gamepad_release_all(input_state);
-  log_debug("Gamepad %d disconnected", gamepad->id);
+  system->gamepads[controller_id].is_connected = false_v;
+  vkr_gamepad_release_all(system->input_state);
+  log_debug("Gamepad %d disconnected", controller_id);
   return true_v;
 }
 
@@ -200,8 +210,8 @@ bool8_t vkr_gamepad_shutdown(VkrGamepad *gamepad) {
   assert_log(gamepad, "Gamepad is NULL");
 
   for (int32_t i = 0; i < VKR_GAMEPAD_MAX_CONTROLLERS; i++) {
-    if (!vkr_gamepad_disconnect(&gamepad->gamepads[i], gamepad->input_state)) {
-      log_warn("Failed to disconnect gamepad %d", gamepad->gamepads[i].id);
+    if (!vkr_gamepad_disconnect(gamepad, i)) {
+      log_warn("Failed to disconnect gamepad %d", i);
       return false_v;
     }
   }

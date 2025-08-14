@@ -55,20 +55,19 @@ bool8_t vkr_gamepad_init(VkrGamepad *gamepad, InputState *input_state);
 
 /**
  * @brief Connect a gamepad.
- * @param gamepad The gamepad to connect.
- * @param input_state The input state to dispatch events to.
+ * @param system The gamepad system to connect.
+ * @param controller_id The controller id to connect.
  * @return true if the gamepad was connected successfully, false otherwise.
  */
-bool8_t vkr_gamepad_connect(VkrGamepadState *gamepad, InputState *input_state);
+bool8_t vkr_gamepad_connect(VkrGamepad *system, int32_t controller_id);
 
 /**
  * @brief Disconnect a gamepad.
- * @param gamepad The gamepad to disconnect.
- * @param input_state The input state to dispatch events to.
+ * @param system The gamepad system to disconnect.
+ * @param controller_id The controller id to disconnect.
  * @return true if the gamepad was disconnected successfully, false otherwise.
  */
-bool8_t vkr_gamepad_disconnect(VkrGamepadState *gamepad,
-                               InputState *input_state);
+bool8_t vkr_gamepad_disconnect(VkrGamepad *system, int32_t controller_id);
 
 /**
  * @brief Shutdown gamepad system.
@@ -87,8 +86,8 @@ bool8_t vkr_gamepad_poll_all(VkrGamepad *gamepad);
 
 /**
  * @brief Polls a specific gamepad.
- * @param gamepad The gamepad to poll.
- * @param input_state The input state to dispatch events to.
+ * @param system The gamepad system to poll.
+ * @param controller_id The controller id to poll.
  * @return true if the gamepad was polled successfully, false otherwise.
  */
-bool8_t vkr_gamepad_poll(VkrGamepadState *gamepad, InputState *input_state);
+bool8_t vkr_gamepad_poll(VkrGamepad *system, int32_t controller_id);
