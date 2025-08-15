@@ -34,7 +34,8 @@ typedef enum CameraType {
  *
  * Supports both perspective and orthographic projections with mouse look,
  * WASD movement, and mouse wheel zoom. Handles input capture and frame-rate
- * independent movement.
+ * independent movement. Also supports gamepad input with right thumbstick
+ * for movement and left thumbstick for camera rotation.
  */
 typedef struct Camera {
   InputState *input_state;     /**< Input system reference */
@@ -67,6 +68,10 @@ typedef struct Camera {
   float32_t right_clip;  /**< Right boundary for orthographic */
   float32_t bottom_clip; /**< Bottom boundary for orthographic */
   float32_t top_clip;    /**< Top boundary for orthographic */
+
+  // Gamepad
+  bool8_t should_use_gamepad; /**< When true, uses right thumbstick for movement
+                                 and left thumbstick for camera rotation */
 } Camera;
 
 /**

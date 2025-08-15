@@ -79,57 +79,118 @@ void camera_update(Camera *camera, float32_t delta_time) {
                              !window_is_mouse_captured(camera->window));
   }
 
+  if (input_is_button_down(camera->input_state, BUTTON_GAMEPAD_A) &&
+      input_was_button_up(camera->input_state, BUTTON_GAMEPAD_A)) {
+    window_set_mouse_capture(camera->window,
+                             !window_is_mouse_captured(camera->window));
+    camera->should_use_gamepad = !camera->should_use_gamepad;
+  }
+
   if (!window_is_mouse_captured(camera->window)) {
     return;
   }
 
-  float32_t velocity = camera->speed * delta_time;
-  if (input_is_key_down(camera->input_state, KEY_W)) {
-    camera->position =
-        vec3_sub(camera->position, vec3_scale(camera->forward, velocity));
+  float32_t x_offset;
+  float32_t y_offset;
+  if (!camera->should_use_gamepad) {
+
+    float32_t velocity = camera->speed * delta_time;
+    if (input_is_key_down(camera->input_state, KEY_W)) {
+      camera->position =
+          vec3_sub(camera->position, vec3_scale(camera->forward, velocity));
+    }
+
+    if (input_is_key_down(camera->input_state, KEY_S)) {
+      camera->position =
+          vec3_add(camera->position, vec3_scale(camera->forward, velocity));
+    }
+
+    if (input_is_key_down(camera->input_state, KEY_A)) {
+      camera->position =
+          vec3_sub(camera->position, vec3_scale(camera->right, velocity));
+    }
+
+    if (input_is_key_down(camera->input_state, KEY_D)) {
+      camera->position =
+          vec3_add(camera->position, vec3_scale(camera->right, velocity));
+    }
+
+    int8_t wheel_delta;
+    input_get_mouse_wheel(camera->input_state, &wheel_delta);
+
+    if (wheel_delta != camera->previous_wheel_delta) {
+      camera->zoom -= wheel_delta * 0.1f;
+      if (camera->zoom < 1.0f)
+        camera->zoom = 1.0f;
+      if (camera->zoom > 45.0f)
+        camera->zoom = 45.0f;
+
+      camera->previous_wheel_delta = wheel_delta;
+    }
+
+    int32_t x, y;
+    input_get_mouse_position(camera->input_state, &x, &y);
+
+    int32_t last_x, last_y;
+    input_get_previous_mouse_position(camera->input_state, &last_x, &last_y);
+
+    if ((x == last_x && y == last_y) || (x == 0 && y == 0) ||
+        (last_x == 0 && last_y == 0)) {
+      return;
+    }
+
+    x_offset = x - last_x;
+    y_offset = last_y - y;
+  } else {
+    // Gamepad mode: Use right thumbstick for camera movement
+    float32_t velocity = camera->speed * delta_time;
+
+    // Get right thumbstick values for movement
+    float right_x, right_y;
+    input_get_right_stick(camera->input_state, &right_x, &right_y);
+
+    // Apply deadzone to prevent drift
+    float deadzone = 0.1f;
+    if (abs_f32(right_x) > deadzone || abs_f32(right_y) > deadzone) {
+      // Forward/backward movement (Y-axis)
+      if (right_y > deadzone) {
+        camera->position =
+            vec3_sub(camera->position,
+                     vec3_scale(camera->forward, velocity * abs_f32(right_y)));
+      } else if (right_y < -deadzone) {
+        camera->position =
+            vec3_add(camera->position,
+                     vec3_scale(camera->forward, velocity * abs_f32(right_y)));
+      }
+
+      // Left/right movement (X-axis)
+      if (right_x > deadzone) {
+        camera->position =
+            vec3_add(camera->position,
+                     vec3_scale(camera->right, velocity * abs_f32(right_x)));
+      } else if (right_x < -deadzone) {
+        camera->position =
+            vec3_sub(camera->position,
+                     vec3_scale(camera->right, velocity * abs_f32(right_x)));
+      }
+    }
+
+    // Use left stick for camera rotation (look around)
+    float left_x, left_y;
+    input_get_left_stick(camera->input_state, &left_x, &left_y);
+
+    // Apply deadzone to prevent drift
+    float rotation_deadzone = 0.1f;
+    if (abs_f32(left_x) < rotation_deadzone)
+      left_x = 0.0f;
+    if (abs_f32(left_y) < rotation_deadzone)
+      left_y = 0.0f;
+
+    // Use direct stick values for rotation instead of deltas
+    // This prevents the camera from following the stick back to center
+    x_offset = left_x * 20.0f;  // Scale for sensitivity
+    y_offset = -left_y * 20.0f; // Invert Y for natural camera movement
   }
-
-  if (input_is_key_down(camera->input_state, KEY_S)) {
-    camera->position =
-        vec3_add(camera->position, vec3_scale(camera->forward, velocity));
-  }
-
-  if (input_is_key_down(camera->input_state, KEY_A)) {
-    camera->position =
-        vec3_sub(camera->position, vec3_scale(camera->right, velocity));
-  }
-
-  if (input_is_key_down(camera->input_state, KEY_D)) {
-    camera->position =
-        vec3_add(camera->position, vec3_scale(camera->right, velocity));
-  }
-
-  int8_t wheel_delta;
-  input_get_mouse_wheel(camera->input_state, &wheel_delta);
-
-  if (wheel_delta != camera->previous_wheel_delta) {
-    camera->zoom -= wheel_delta * 0.1f;
-    if (camera->zoom < 1.0f)
-      camera->zoom = 1.0f;
-    if (camera->zoom > 45.0f)
-      camera->zoom = 45.0f;
-
-    camera->previous_wheel_delta = wheel_delta;
-  }
-
-  int32_t x, y;
-  input_get_mouse_position(camera->input_state, &x, &y);
-
-  int32_t last_x, last_y;
-  input_get_previous_mouse_position(camera->input_state, &last_x, &last_y);
-
-  if ((x == last_x && y == last_y) || (x == 0 && y == 0) ||
-      (last_x == 0 && last_y == 0)) {
-    return;
-  }
-
-  float32_t x_offset = x - last_x;
-  float32_t y_offset = last_y - y;
 
   float32_t max_mouse_delta = MAX_MOUSE_DELTA / camera->sensitivity;
   x_offset = clamp_f32(x_offset, -max_mouse_delta, max_mouse_delta);
