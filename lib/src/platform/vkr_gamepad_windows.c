@@ -216,6 +216,8 @@ bool8_t vkr_gamepad_shutdown(VkrGamepad *gamepad) {
     }
   }
 
+  log_debug("Gamepad system shutdown");
+
   return true_v;
 }
 
