@@ -192,13 +192,20 @@ bool8_t vkr_gamepad_poll(VkrGamepad *system, int32_t controller_id) {
   input_process_button(input_state, BUTTON_GAMEPAD_RIGHT_TRIGGER,
                        pad.rightTrigger.isPressed ? true_v : false_v);
 
-  // Start/Back (menu/options) if available
-  // Start/Menu mapping omitted to maintain compatibility across SDK versions
-  input_process_button(input_state, BUTTON_GAMEPAD_START, false_v);
-
-  // Back/Options mapping omitted for broad SDK compatibility; treat as not
-  // pressed
-  input_process_button(input_state, BUTTON_GAMEPAD_BACK, false_v);
+  // Start/Back (menu/options)
+  if (@available(iOS 13.0, macOS 10.15, tvOS 13.0, *)) {
+    if (pad.buttonMenu) {
+      input_process_button(input_state, BUTTON_GAMEPAD_START,
+                           pad.buttonMenu.isPressed ? true_v : false_v);
+    }
+    if (pad.buttonOptions) {
+      input_process_button(input_state, BUTTON_GAMEPAD_BACK,
+                           pad.buttonOptions.isPressed ? true_v : false_v);
+    }
+  } else {
+    input_process_button(input_state, BUTTON_GAMEPAD_START, false_v);
+    input_process_button(input_state, BUTTON_GAMEPAD_BACK, false_v);
+  }
 
   // D-Pad
   GCControllerDirectionPad *d = pad.dpad;
