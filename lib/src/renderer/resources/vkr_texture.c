@@ -1,13 +1,11 @@
 #include "vkr_texture.h"
 
-void vkr_texture_create_checkerboard(RendererFrontendHandle renderer,
-                                     Arena *texture_arena,
-                                     VkrTexture *out_texture,
-                                     RendererError *out_error) {
+RendererError vkr_texture_create_checkerboard(RendererFrontendHandle renderer,
+                                              Arena *texture_arena,
+                                              VkrTexture *out_texture) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(texture_arena != NULL, "Texture arena is NULL");
   assert_log(out_texture != NULL, "Out texture is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
 
   // Setup texture description
   out_texture->description = (TextureDescription){
@@ -26,6 +24,10 @@ void vkr_texture_create_checkerboard(RendererFrontendHandle renderer,
                         (uint64_t)out_texture->description.channels;
   out_texture->image =
       arena_alloc(texture_arena, image_size, ARENA_MEMORY_TAG_TEXTURE);
+  if (out_texture->image == NULL) {
+    return RENDERER_ERROR_OUT_OF_MEMORY;
+  }
+
   MemSet(out_texture->image, 255, image_size); // default white RGBA
 
   // Checkerboard parameters
@@ -45,12 +47,15 @@ void vkr_texture_create_checkerboard(RendererFrontendHandle renderer,
     }
   }
 
+  RendererError out_error = RENDERER_ERROR_NONE;
   out_texture->handle = renderer_create_texture(
-      renderer, &out_texture->description, out_texture->image, out_error);
-  if (*out_error != RENDERER_ERROR_NONE) {
+      renderer, &out_texture->description, out_texture->image, &out_error);
+  if (out_error != RENDERER_ERROR_NONE) {
     log_error("Failed to create checkerboard texture: %s",
-              renderer_get_error_string(*out_error));
+              renderer_get_error_string(out_error));
   }
+
+  return out_error;
 }
 
 void vkr_texture_destroy(RendererFrontendHandle renderer, VkrTexture *texture) {

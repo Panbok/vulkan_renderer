@@ -8,9 +8,8 @@ typedef struct VkrTexture {
   uint8_t *image;
 } VkrTexture;
 
-void vkr_texture_create_checkerboard(RendererFrontendHandle renderer,
-                                     Arena *renderer_arena,
-                                     VkrTexture *out_texture,
-                                     RendererError *out_error);
+RendererError vkr_texture_create_checkerboard(RendererFrontendHandle renderer,
+                                              Arena *renderer_arena,
+                                              VkrTexture *out_texture);
 
 void vkr_texture_destroy(RendererFrontendHandle renderer, VkrTexture *texture);

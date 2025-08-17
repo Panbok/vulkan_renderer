@@ -349,9 +349,9 @@ bool8_t application_create(Application *application,
   // TODO: Move all resources and renderer related stuff to front-end
   Mat4 model = mat4_identity();
 
-  vkr_texture_create_checkerboard(
+  renderer_error = vkr_texture_create_checkerboard(
       application->renderer, application->renderer_arena,
-      &application->default_texture, &renderer_error);
+      &application->default_texture);
   if (renderer_error != RENDERER_ERROR_NONE) {
     log_fatal("Failed to create default texture: %s",
               renderer_get_error_string(renderer_error));
