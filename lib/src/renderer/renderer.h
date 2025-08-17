@@ -346,58 +346,6 @@ typedef enum ShaderFileType {
   SHADER_FILE_TYPE_MULTI,
 } ShaderFileType;
 
-// Used to create a single global uniform object for the entire scene
-// This is used to pass the MVP matrix to the shader
-typedef struct GlobalUniformObject {
-  Mat4 view;
-  Mat4 projection;
-  // Padding to align to 256 bytes (required by Nvidia GPUs)
-  uint8_t padding[128];
-} GlobalUniformObject;
-
-typedef struct ShaderStateObject {
-  Mat4 model;
-} ShaderStateObject;
-
-typedef struct ShaderModuleDescription {
-  ShaderStageFlags stages;
-  /* Path to the shader file (same path for single file, different paths for
-   * multi-file) */
-  const String8 path;
-  /* Entry point for the shader (e.g., "main") */
-  const String8 entry_point;
-  // Future: defines, include paths etc.
-} ShaderModuleDescription;
-
-typedef struct ShaderObjectDescription {
-  /* Format of the shader file (e.g., SPIR-V, HLSL, GLSL) */
-  ShaderFileFormat file_format;
-  /* Determines if the shader is a single file or a multi-file shader (e.g.,
-   * single, multi) */
-  ShaderFileType file_type;
-
-  ShaderModuleDescription modules[SHADER_STAGE_COUNT];
-
-  GlobalUniformObject global_uniform_object;
-  ShaderStateObject shader_state_object;
-} ShaderObjectDescription;
-
-// Used at PIPELINE CREATION time to define vertex layout
-typedef struct VertexInputAttributeDescription {
-  uint32_t location;   // Shader input location (layout(location = X) in shader)
-  uint32_t binding;    // Which vertex buffer binding this attribute uses
-  VertexFormat format; // Format of the attribute data
-  uint32_t offset;     // Offset within the vertex stride
-} VertexInputAttributeDescription;
-
-// Used at PIPELINE CREATION time to define vertex buffer bindings
-typedef struct VertexInputBindingDescription {
-  uint32_t binding; // The binding number (referenced by attributes and runtime
-                    // bindings)
-  uint32_t stride;  // Distance between consecutive elements for this binding
-  VertexInputRate input_rate; // Per-vertex or per-instance
-} VertexInputBindingDescription;
-
 typedef enum TextureType {
   TEXTURE_TYPE_2D,
   TEXTURE_TYPE_CUBE_MAP,
@@ -460,6 +408,67 @@ typedef struct TextureDescription {
   TextureFormat format;
   TexturePropertyFlags properties;
 } TextureDescription;
+
+// Used to create a single global uniform object for the entire scene
+// This is used to pass the MVP matrix to the shader
+typedef struct GlobalUniformObject {
+  Mat4 view;
+  Mat4 projection;
+  // Padding to align to 256 bytes (required by Nvidia GPUs)
+  uint8_t padding[128];
+} GlobalUniformObject;
+
+// Used to pass the object's properties to the shader
+typedef struct LocalUniformObject {
+  Vec4 diffuse_color;
+  // Padding to align to 256 bytes (required by Nvidia GPUs)
+  uint8_t padding[256 - sizeof(Vec4)];
+} LocalUniformObject;
+
+typedef struct ShaderStateObject {
+  Mat4 model;
+  uint32_t object_id;
+  TextureHandle textures[16];
+} ShaderStateObject;
+
+typedef struct ShaderModuleDescription {
+  ShaderStageFlags stages;
+  /* Path to the shader file (same path for single file, different paths for
+   * multi-file) */
+  const String8 path;
+  /* Entry point for the shader (e.g., "main") */
+  const String8 entry_point;
+  // Future: defines, include paths etc.
+} ShaderModuleDescription;
+
+typedef struct ShaderObjectDescription {
+  /* Format of the shader file (e.g., SPIR-V, HLSL, GLSL) */
+  ShaderFileFormat file_format;
+  /* Determines if the shader is a single file or a multi-file shader (e.g.,
+   * single, multi) */
+  ShaderFileType file_type;
+
+  ShaderModuleDescription modules[SHADER_STAGE_COUNT];
+
+  GlobalUniformObject global_uniform_object;
+  ShaderStateObject shader_state_object;
+} ShaderObjectDescription;
+
+// Used at PIPELINE CREATION time to define vertex layout
+typedef struct VertexInputAttributeDescription {
+  uint32_t location;   // Shader input location (layout(location = X) in shader)
+  uint32_t binding;    // Which vertex buffer binding this attribute uses
+  VertexFormat format; // Format of the attribute data
+  uint32_t offset;     // Offset within the vertex stride
+} VertexInputAttributeDescription;
+
+// Used at PIPELINE CREATION time to define vertex buffer bindings
+typedef struct VertexInputBindingDescription {
+  uint32_t binding; // The binding number (referenced by attributes and runtime
+                    // bindings)
+  uint32_t stride;  // Distance between consecutive elements for this binding
+  VertexInputRate input_rate; // Per-vertex or per-instance
+} VertexInputBindingDescription;
 
 typedef struct GraphicsPipelineDescription {
   ShaderObjectDescription shader_object_description;

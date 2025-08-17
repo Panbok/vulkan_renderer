@@ -189,6 +189,22 @@ struct s_BufferHandle {
   BufferDescription description;
 };
 
+#define VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT 3
+typedef struct VulkanShaderObjectDescriptorState {
+  uint32_t generations[3];
+} VulkanShaderObjectDescriptorState;
+
+#define VULKAN_SHADER_OBJECT_LOCAL_STATE_COUNT 1024
+typedef struct VulkanShaderObjectLocalState {
+  VkDescriptorSet descriptor_sets[3];
+
+  VulkanShaderObjectDescriptorState
+      descriptor_states[VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT];
+  VkDescriptorSetLayoutBinding descriptor_set_layout_bindings
+      [VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT];
+
+} VulkanShaderObjectLocalState;
+
 typedef struct VulkanShaderObject {
   VkPipelineShaderStageCreateInfo stages[SHADER_STAGE_COUNT];
   VkShaderModule modules[SHADER_STAGE_COUNT];
@@ -198,6 +214,14 @@ typedef struct VulkanShaderObject {
   VkDescriptorSetLayout global_descriptor_set_layout;
   VkDescriptorSetLayoutBinding global_descriptor_set_layout_binding;
   struct s_BufferHandle global_uniform_buffer;
+
+  // todo: rework into free list of objects
+  uint32_t local_uniform_buffer_count;
+  VkDescriptorPool local_descriptor_pool;
+  VkDescriptorSetLayout local_descriptor_set_layout;
+  struct s_BufferHandle local_uniform_buffer;
+  VulkanShaderObjectLocalState
+      local_states[VULKAN_SHADER_OBJECT_LOCAL_STATE_COUNT];
 } VulkanShaderObject;
 
 struct s_GraphicsPipeline {
@@ -224,6 +248,7 @@ typedef struct VulkanBackendState {
 
   bool8_t is_swapchain_recreation_requested;
 
+  float64_t frame_delta;
   uint32_t current_frame;
   uint32_t image_index;
 

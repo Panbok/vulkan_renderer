@@ -42,6 +42,14 @@ typedef struct {
 } InterleavedVertex_PositionNormalTexcoord;
 
 /**
+ * @brief Vertex format with position and texture coordinates only
+ */
+typedef struct {
+  Vec3 position;
+  Vec2 texcoord;
+} InterleavedVertex_PositionTexcoord;
+
+/**
  * @brief Full vertex format with all standard attributes
  * Complete vertex format for advanced rendering with all attributes.
  */
@@ -454,6 +462,14 @@ void vertex_array_from_mesh_options_add_flag(
   vertex_array_from_mesh_options_from_flags(                                   \
       VERTEX_ARRAY_FROM_MESH_OPTION_INTERLEAVED |                              \
       VERTEX_ARRAY_FROM_MESH_OPTION_INCLUDE_COLORS)
+
+/**
+ * @brief Creates options with interleaved position and texture coordinates
+ */
+#define VERTEX_ARRAY_FROM_MESH_OPTIONS_INTERLEAVED_POSITION_TEXCOORD()         \
+  vertex_array_from_mesh_options_from_flags(                                   \
+      VERTEX_ARRAY_FROM_MESH_OPTION_INTERLEAVED |                              \
+      VERTEX_ARRAY_FROM_MESH_OPTION_INCLUDE_TEXCOORDS)
 
 /**
  * @brief Creates options with interleaved full attributes (single buffer)

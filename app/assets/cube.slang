@@ -5,13 +5,27 @@ struct UniformBufferObject
     column_major float4x4 projection;
 };
 
+struct LocalUniformObject
+{
+    float4 diffuse_color;
+};
+
 struct ShaderStateObject
 {
     column_major float4x4 model;
 };
 
+[[vk::binding(1, 1)]]
+Texture2D<float4> texture;
+
 [[vk::binding(0, 0)]]
 ConstantBuffer<UniformBufferObject> ubo;
+
+[[vk::binding(0, 1)]]
+ConstantBuffer<LocalUniformObject> local_ubo;
+
+[[vk::binding(2, 1)]]
+SamplerState sampler;
 
 [[vk::push_constant]]
 ConstantBuffer<ShaderStateObject> push_constants;
@@ -19,13 +33,13 @@ ConstantBuffer<ShaderStateObject> push_constants;
 struct VertexInput
 {
     [[vk::location(0)]] float3 position : POSITION;
-    [[vk::location(1)]] float3 color : COLOR;
+    [[vk::location(1)]] float2 texcoord : TEXCOORD;
 };
 
 struct VertexOutput
 {
     float4 position : SV_Position;
-    float3 color : COLOR;
+    float2 texcoord : TEXCOORD;
 };
 
 [shader("vertex")]
@@ -38,7 +52,7 @@ VertexOutput vertexMain(VertexInput input)
     float4 clipPos = mul(ubo.projection, viewPos);
 
     output.position = clipPos;
-    output.color = input.color;
+    output.texcoord = input.texcoord;
 
     return output;
 }
@@ -46,6 +60,6 @@ VertexOutput vertexMain(VertexInput input)
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target
 {
-    return float4(input.color, 1.0);
+    return texture.Sample(sampler, input.texcoord) * local_ubo.diffuse_color;
 } 
 

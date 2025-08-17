@@ -506,6 +506,8 @@ vertex_array_compute_pipeline_data_interleaved(VertexArray *vertex_array) {
     attribute_count = 3; // position + normal + color
   } else if (vb->stride == sizeof(InterleavedVertex_PositionNormalTexcoord)) {
     attribute_count = 3; // position + normal + texcoord
+  } else if (vb->stride == sizeof(InterleavedVertex_PositionTexcoord)) {
+    attribute_count = 2; // position + texcoord
   } else if (vb->stride == sizeof(InterleavedVertex_Full)) {
     attribute_count = 4; // position + normal + texcoord + color
   } else if (vb->stride == sizeof(Vec3)) {
@@ -563,6 +565,33 @@ vertex_array_compute_pipeline_data_interleaved(VertexArray *vertex_array) {
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
         .offset = offsetof(InterleavedVertex_PositionNormalColor, color)};
+  } else if (vb->stride == sizeof(InterleavedVertex_PositionNormalTexcoord)) {
+    vertex_array->attributes[0] = (VertexInputAttributeDescription){
+        .location = 0,
+        .binding = 0,
+        .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+        .offset = offsetof(InterleavedVertex_PositionNormalTexcoord, position)};
+    vertex_array->attributes[1] = (VertexInputAttributeDescription){
+        .location = 1,
+        .binding = 0,
+        .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+        .offset = offsetof(InterleavedVertex_PositionNormalTexcoord, normal)};
+    vertex_array->attributes[2] = (VertexInputAttributeDescription){
+        .location = 2,
+        .binding = 0,
+        .format = VERTEX_FORMAT_R32G32_SFLOAT,
+        .offset = offsetof(InterleavedVertex_PositionNormalTexcoord, texcoord)};
+  } else if (vb->stride == sizeof(InterleavedVertex_PositionTexcoord)) {
+    vertex_array->attributes[0] = (VertexInputAttributeDescription){
+        .location = 0,
+        .binding = 0,
+        .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+        .offset = offsetof(InterleavedVertex_PositionTexcoord, position)};
+    vertex_array->attributes[1] = (VertexInputAttributeDescription){
+        .location = 1,
+        .binding = 0,
+        .format = VERTEX_FORMAT_R32G32_SFLOAT,
+        .offset = offsetof(InterleavedVertex_PositionTexcoord, texcoord)};
   } else if (vb->stride == sizeof(InterleavedVertex_Full)) {
     vertex_array->attributes[0] = (VertexInputAttributeDescription){
         .location = 0,
@@ -894,6 +923,50 @@ static VertexArray vertex_array_from_mesh_interleaved(
     vertex_array_add_attribute(
         &vertex_array, 2, 0, VERTEX_FORMAT_R32G32B32_SFLOAT,
         offsetof(InterleavedVertex_PositionNormalColor, color));
+
+  } else if (!include_normals && include_texcoords && !include_colors) {
+    // Position + Texcoord format
+    InterleavedVertex_PositionTexcoord *vertex_data = arena_alloc(
+        arena, mesh->vertex_count * sizeof(InterleavedVertex_PositionTexcoord),
+        ARENA_MEMORY_TAG_RENDERER);
+
+    if (!vertex_data) {
+      log_error("Failed to allocate memory for position-texcoord vertex data");
+      *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+      return vertex_array;
+    }
+
+    if (mesh->positions.length < mesh->vertex_count ||
+        mesh->texcoords.length < mesh->vertex_count) {
+      log_error("Mesh arrays have insufficient data for vertex count");
+      *out_error = RENDERER_ERROR_INVALID_PARAMETER;
+      return vertex_array;
+    }
+
+    for (uint32_t i = 0; i < mesh->vertex_count; i++) {
+      vertex_data[i].position = *array_get_Vec3(&mesh->positions, i);
+      vertex_data[i].texcoord = *array_get_Vec2(&mesh->texcoords, i);
+    }
+
+    VertexBuffer interleaved_buffer = vertex_buffer_create(
+        renderer, arena, vertex_data,
+        sizeof(InterleavedVertex_PositionTexcoord), mesh->vertex_count,
+        VERTEX_INPUT_RATE_VERTEX, debug_name, out_error);
+
+    if (*out_error != RENDERER_ERROR_NONE) {
+      log_error(
+          "Failed to create interleaved vertex buffer (position-texcoord)");
+      return vertex_array;
+    }
+
+    vertex_array_add_vertex_buffer(&vertex_array, &interleaved_buffer, 0);
+
+    vertex_array_add_attribute(
+        &vertex_array, 0, 0, VERTEX_FORMAT_R32G32B32_SFLOAT,
+        offsetof(InterleavedVertex_PositionTexcoord, position));
+    vertex_array_add_attribute(
+        &vertex_array, 1, 0, VERTEX_FORMAT_R32G32_SFLOAT,
+        offsetof(InterleavedVertex_PositionTexcoord, texcoord));
 
   } else {
     // Default to position-only for unsupported combinations

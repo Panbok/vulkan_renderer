@@ -154,10 +154,15 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
       .size = sizeof(ShaderStateObject) * 2,
   };
 
+  VkDescriptorSetLayout set_layouts[2] = {
+      out_pipeline->shader_object.global_descriptor_set_layout,
+      out_pipeline->shader_object.local_descriptor_set_layout,
+  };
+
   VkPipelineLayoutCreateInfo pipeline_layout_info = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-      .setLayoutCount = 1,
-      .pSetLayouts = &out_pipeline->shader_object.global_descriptor_set_layout,
+      .setLayoutCount = 2,
+      .pSetLayouts = set_layouts,
       .pushConstantRangeCount = 1,
       .pPushConstantRanges = &push_constant,
   };
@@ -205,6 +210,14 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
                             state->allocator);
     out_pipeline->pipeline_layout = VK_NULL_HANDLE;
     out_pipeline->pipeline = VK_NULL_HANDLE;
+    return false_v;
+  }
+
+  // todo: remove it later (for debugging)
+  uint32_t acquired_object_id = 0;
+  if (!vulkan_shader_acquire_resource(state, &out_pipeline->shader_object,
+                                      &acquired_object_id)) {
+    log_fatal("Failed to acquire shader object");
     return false_v;
   }
 
@@ -273,6 +286,11 @@ void vulkan_graphics_pipeline_destroy(VulkanBackendState *state,
                                       struct s_GraphicsPipeline *pipeline) {
   assert_log(state != NULL, "State is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
+
+  // todo: remove it later (for debugging)
+  if (!vulkan_shader_release_resource(state, &pipeline->shader_object, 0)) {
+    log_fatal("Failed to release shader object");
+  }
 
   vulkan_shader_object_destroy(state, &pipeline->shader_object);
 

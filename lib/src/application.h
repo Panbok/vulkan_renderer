@@ -59,8 +59,8 @@
 #include "platform/vkr_threads.h"
 #include "platform/window.h"
 #include "renderer/renderer.h"
+#include "renderer/resources/buffer.h"
 #include "renderer/resources/resources.h"
-
 
 /**
  * @brief Flags representing the current state of the application.
@@ -129,6 +129,8 @@ typedef struct Application {
 
   Array_Mesh meshes;
   VertexArray cube_vertex_array;
+
+  VkrTexture default_texture;
 
   // Window size tracking for resize detection
   uint32_t
@@ -341,10 +343,20 @@ bool8_t application_create(Application *application,
     return false_v;
   }
 
-  Mat4 model = mat4_identity();
-
   vkr_gamepad_init(&application->gamepad, &application->window.input_state);
   application->camera = application_init_camera(application);
+
+  // TODO: Move all resources and renderer related stuff to front-end
+  Mat4 model = mat4_identity();
+
+  vkr_texture_create_checkerboard(
+      application->renderer, application->renderer_arena,
+      &application->default_texture, &renderer_error);
+  if (renderer_error != RENDERER_ERROR_NONE) {
+    log_fatal("Failed to create default texture: %s",
+              renderer_get_error_string(renderer_error));
+    return false_v;
+  }
 
   ShaderObjectDescription shader_object_description = {
       .file_format = SHADER_FILE_FORMAT_SPIR_V,
@@ -373,6 +385,8 @@ bool8_t application_create(Application *application,
           },
       .shader_state_object =
           (ShaderStateObject){
+              .object_id = 0,
+              .textures = {application->default_texture.handle},
               .model = model,
           },
   };
@@ -382,7 +396,7 @@ bool8_t application_create(Application *application,
       mesh_generate_cube(application->renderer_arena, 2.0f, 2.0f, 2.0f);
 
   VertexArrayFromMeshOptions opts =
-      VERTEX_ARRAY_FROM_MESH_OPTIONS_INTERLEAVED_POSITION_COLOR();
+      VERTEX_ARRAY_FROM_MESH_OPTIONS_INTERLEAVED_POSITION_TEXCOORD();
   application->cube_vertex_array = vertex_array_from_mesh(
       application->renderer, application->renderer_arena, &cube_mesh, opts,
       string8_lit("Cube Vertex Array"), &renderer_error);
@@ -416,6 +430,7 @@ bool8_t application_create(Application *application,
               renderer_get_error_string(renderer_error));
     return false_v;
   }
+  // TODO: Move all resources and renderer related stuff to front-end
 
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_WINDOW_CLOSE,
                           application_on_window_event, NULL);
@@ -578,8 +593,6 @@ void application_start(Application *application) {
 
     float64_t frame_processing_start_time = platform_get_absolute_time();
 
-    vkr_gamepad_poll_all(&application->gamepad);
-
     application_update(application, delta);
 
     camera_update(&application->camera, delta);
@@ -601,6 +614,8 @@ void application_start(Application *application) {
         platform_sleep(remaining_ms);
       }
     }
+
+    vkr_gamepad_poll_all(&application->gamepad);
 
     input_update(&application->window.input_state);
 
@@ -684,6 +699,7 @@ void application_shutdown(Application *application) {
     log_warn("Failed to wait for renderer to be idle");
   }
 
+  vkr_texture_destroy(application->renderer, &application->default_texture);
   vertex_array_destroy(application->renderer, &application->cube_vertex_array);
   renderer_destroy_pipeline(application->renderer,
                             application->pipeline_handle);

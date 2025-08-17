@@ -19,6 +19,14 @@ bool8_t vulkan_shader_update_state(VulkanBackendState *state,
                                    VkPipelineLayout pipeline_layout,
                                    const ShaderStateObject *data);
 
+bool8_t vulkan_shader_acquire_resource(VulkanBackendState *state,
+                                       VulkanShaderObject *shader_object,
+                                       uint32_t *out_object_id);
+
+bool8_t vulkan_shader_release_resource(VulkanBackendState *state,
+                                       VulkanShaderObject *shader_object,
+                                       uint32_t object_id);
+
 void vulkan_shader_object_destroy(VulkanBackendState *state,
                                   VulkanShaderObject *out_shader_object);
 

@@ -388,6 +388,7 @@ RendererError renderer_vulkan_begin_frame(void *backend_state,
   // log_debug("Beginning Vulkan frame");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  state->frame_delta = delta_time;
 
   // Wait for the current frame's fence to be signaled (previous frame
   // finished)

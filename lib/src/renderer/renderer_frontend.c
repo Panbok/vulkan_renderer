@@ -243,8 +243,6 @@ RendererError renderer_update_pipeline_state(RendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
 
-  // log_debug("Updating pipeline state");
-
   BackendResourceHandle handle = {.ptr = (void *)pipeline};
   return renderer->backend.pipeline_update_state(renderer->backend_state,
                                                  handle, uniform, data);

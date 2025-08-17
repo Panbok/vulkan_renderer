@@ -42,6 +42,7 @@
 
 #define MemCopy(dst, src, size) memmove((dst), (src), (size))
 #define MemZero(dst, size) memset((dst), 0, (size))
+#define MemSet(dst, value, size) memset((dst), (value), (size))
 
 #if defined(__has_builtin) && !defined(__ibmxl__)
 #if __has_builtin(__builtin_debugtrap)
@@ -53,6 +54,12 @@
 
 #define true_v (uint8_t)1
 #define false_v (uint8_t)0
+
+#define vkr_global static
+#define vkr_local_persist static
+#define vkr_internal static
+
+#define VKR_INVALID_OBJECT_ID 4294967295U
 
 // Inlining
 #if defined(__clang__) || defined(__GNUC__)
@@ -83,7 +90,7 @@
 #define INLINE inline
 #define NOINLINE
 #else
-#define INLINE static inline
+#define INLINE inline
 #define NOINLINE
 #endif
 #endif
