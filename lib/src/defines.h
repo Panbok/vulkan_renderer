@@ -11,9 +11,9 @@
 #define ASSERT_LOG 1
 #endif
 
-#define AlignPow2(x, b) (((x) + (b) - 1) & (~((b) - 1)))
+#define AlignPow2(x, b) (((x) + (b)-1) & (~((b)-1)))
 #define AlignPow2Down(x, b)                                                    \
-  ((x) & (~((b) - 1))) // Align x down to multiple of b (b must be power of 2)
+  ((x) & (~((b)-1))) // Align x down to multiple of b (b must be power of 2)
 #define AlignOf(T) __alignof(T)
 // Maximum fundamental alignment for the platform
 // Use the compiler's __BIGGEST_ALIGNMENT__ if available, otherwise fall back to
@@ -44,12 +44,37 @@
 #define MemZero(dst, size) memset((dst), 0, (size))
 #define MemSet(dst, value, size) memset((dst), (value), (size))
 
+#if !defined(NDEBUG) // Often debug_break is only active in debug builds
 #if defined(__has_builtin) && !defined(__ibmxl__)
 #if __has_builtin(__builtin_debugtrap)
 #define debug_break() __builtin_debugtrap()
 #elif __has_builtin(__debugbreak)
 #define debug_break() __debugbreak()
+#else
+// Fallback for compilers without specific intrinsics (e.g., assembly for
+// x86/x64)
+#if defined(_MSC_VER)
+#include <intrin.h> // For __debugbreak
+#define debug_break() __debugbreak()
+#elif defined(__GNUC__) || defined(__clang__)
+#define debug_break() __asm__("int $3") // For GCC/Clang on x86/x64
+#else
+#define debug_break() /* no-op or custom crash for other platforms */
 #endif
+#endif
+#else
+// Compilers without __has_builtin
+#if defined(_MSC_VER)
+#include <intrin.h> // For __debugbreak
+#define debug_break() __debugbreak()
+#elif defined(__GNUC__) || defined(__clang__)
+#define debug_break() __asm__("int $3")
+#else
+#define debug_break() /* no-op or custom crash */
+#endif
+#endif
+#else                           // NDEBUG is defined (release build)
+#define debug_break() ((void)0) // No-op in release builds
 #endif
 
 #define true_v (uint8_t)1

@@ -277,8 +277,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
     return false;
   }
 
-  const uint32_t descriptor_set_layout_count = 2;
-  VkDescriptorSetLayout layouts[descriptor_set_layout_count] = {
+  VkDescriptorSetLayout layouts[2] = {
       out_shader_object->local_descriptor_set_layout,
       out_shader_object->local_descriptor_set_layout,
   };

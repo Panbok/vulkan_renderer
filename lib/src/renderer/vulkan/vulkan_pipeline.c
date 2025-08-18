@@ -150,8 +150,10 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
 
   VkPushConstantRange push_constant = {
       .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-      .offset = sizeof(ShaderStateObject) * 0,
-      .size = sizeof(ShaderStateObject) * 2,
+      .offset = sizeof(Mat4) * 0,
+      .size =
+          sizeof(Mat4) * 2, // NOTE: guaranteed to be 128 bytes or more (AMD RX
+                            // 6700 XT has 256 bytes while Mac M1 has 4k bytes)
   };
 
   VkDescriptorSetLayout set_layouts[2] = {

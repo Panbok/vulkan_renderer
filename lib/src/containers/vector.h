@@ -150,7 +150,7 @@ typedef struct VectorFindResult {
     assert_log(vector != NULL, "Vector is NULL");                              \
     assert_log(vector->arena != NULL, "Arena is NULL");                        \
     assert_log(vector->length > 0, "Vector is empty");                         \
-    return (type)(vector->data[--vector->length]);                             \
+    return (vector->data[--vector->length]);                                   \
   }                                                                            \
   /**                                                                          \
    * @brief Removes and returns the element at the specified index             \

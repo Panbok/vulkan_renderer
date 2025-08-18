@@ -28,6 +28,8 @@ void camera_perspective_create(Camera *camera, InputState *input_state,
   camera->far_clip = far_clip;
   camera->zoom = zoom;
 
+  camera->should_use_gamepad = false_v;
+
   int8_t wheel_delta;
   input_get_mouse_wheel(camera->input_state, &wheel_delta);
   camera->previous_wheel_delta = wheel_delta;
@@ -65,6 +67,8 @@ void camera_orthographic_create(Camera *camera, InputState *input_state,
   camera->right_clip = right;
   camera->bottom_clip = bottom;
   camera->top_clip = top;
+
+  camera->should_use_gamepad = false_v;
 }
 
 // todo: impl setting dirty flag for skipping view and projection matrix

@@ -435,9 +435,9 @@ typedef struct ShaderModuleDescription {
   ShaderStageFlags stages;
   /* Path to the shader file (same path for single file, different paths for
    * multi-file) */
-  const String8 path;
+  String8 path;
   /* Entry point for the shader (e.g., "main") */
-  const String8 entry_point;
+  String8 entry_point;
   // Future: defines, include paths etc.
 } ShaderModuleDescription;
 
