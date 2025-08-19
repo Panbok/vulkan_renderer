@@ -23,7 +23,7 @@ set -e # Exit early if any commands fail
     echo "No .slang files found to compile"
   fi
   
-  cd ../../
+  cd ..
 
   echo "Building vulkan_renderer (Release)"
   cd "$(dirname "$0")" # Ensure compile steps are run within the repository directory

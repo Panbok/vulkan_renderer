@@ -11,3 +11,4 @@ build_release_info
 *.lib
 *.exp
 .vs
+assets/*.spv
