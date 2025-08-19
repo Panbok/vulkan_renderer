@@ -5,7 +5,7 @@ set -e # Exit early if any commands fail
 (
   echo "Compiling shaders"
   cd "$(dirname "$0")" # Ensure compile steps are run within the repository directory
-  cd app/assets
+  cd assets
   
   # Check if slangc compiler is available
   if ! command -v slangc >/dev/null 2>&1; then
@@ -17,7 +17,7 @@ set -e # Exit early if any commands fail
   if ls *.slang >/dev/null 2>&1; then
     for file in *.slang; do
       echo "Compiling $file"
-      slangc -o "${file%.slang}.spv" "$file"
+      slangc -target spirv -o "${file%.slang}.spv" "$file"
     done
   else
     echo "No .slang files found to compile"
@@ -27,16 +27,26 @@ set -e # Exit early if any commands fail
 
   echo "Building vulkan_renderer (Release)"
   cd "$(dirname "$0")" # Ensure compile steps are run within the repository directory
-  cmake -B build_release -S . -DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake -DCMAKE_BUILD_TYPE=Release
+  GENERATOR=""
+  if command -v ninja >/dev/null 2>&1; then
+    GENERATOR="-G Ninja"
+  fi
+  COMPILERS=""
+  if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
+    COMPILERS="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
+  fi
+  TOOLCHAIN=""
+  if [ -n "${VCPKG_ROOT}" ]; then
+    TOOLCHAIN="-DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+  fi
+  cmake -B build_release -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS} ${TOOLCHAIN}
   cmake --build ./build_release --target vulkan_renderer --config Release
 
   echo "Copying shaders to release build directory"
-  mkdir -p assets
-  if ls app/assets/*.spv >/dev/null 2>&1; then
-    cp -R app/assets/*.spv assets
+  mkdir -p build_release/app/assets
+  if ls assets/*.spv >/dev/null 2>&1; then
+    cp -R assets/*.spv build_release/app/assets
   else
     echo "No .spv files to copy – skipping"
   fi
 )
-
-exec "$(dirname "$0")/build_release/app/vulkan_renderer" "$@"
