@@ -14,15 +14,15 @@ FilePath file_path_create(const char *path, Arena *arena, FilePathType type) {
     uint64_t full_path_len = strlen(PROJECT_SOURCE_DIR) + strlen(path) + 1;
     uint8_t *full_path =
         (uint8_t *)arena_alloc(arena, full_path_len, ARENA_MEMORY_TAG_STRING);
-    strcpy_s((char *)full_path, full_path_len, PROJECT_SOURCE_DIR);
-    strcat_s((char *)full_path, full_path_len, path);
+    snprintf((char *)full_path, full_path_len, "%s%s", PROJECT_SOURCE_DIR,
+             path);
 
     result.path = string8_create(full_path, full_path_len);
   } else {
     uint64_t path_len = strlen(path) + 1;
     uint8_t *path_str =
         (uint8_t *)arena_alloc(arena, path_len, ARENA_MEMORY_TAG_STRING);
-    strcpy_s((char *)path_str, path_len, path);
+    snprintf((char *)path_str, path_len, "%s", path);
 
     result.path = string8_create(path_str, path_len);
   }

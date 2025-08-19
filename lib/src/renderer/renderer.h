@@ -61,7 +61,7 @@
 typedef struct s_RendererFrontend *RendererFrontendHandle;
 typedef struct s_BufferResource *BufferHandle;
 typedef struct s_Pipeline *PipelineHandle;
-typedef struct s_Texture *TextureHandle;
+typedef struct s_TextureHandle *TextureHandle;
 
 typedef union {
   void *ptr;

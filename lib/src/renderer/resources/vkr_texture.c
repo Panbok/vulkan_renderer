@@ -16,6 +16,7 @@ RendererError vkr_texture_create_checkerboard(RendererFrontendHandle renderer,
       .type = TEXTURE_TYPE_2D,
       .properties = texture_property_flags_from_bits(
           TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT),
+      .generation = VKR_INVALID_OBJECT_ID,
   };
 
   // Generate checkerboard image

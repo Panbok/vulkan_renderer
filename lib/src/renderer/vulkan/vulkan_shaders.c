@@ -386,7 +386,13 @@ bool8_t vulkan_shader_update_state(VulkanBackendState *state,
 
   VkWriteDescriptorSet
       descriptor_writes[VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT];
+  VkDescriptorBufferInfo
+      buffer_infos[VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT];
+  VkDescriptorImageInfo
+      image_infos[VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT];
   MemZero(descriptor_writes, sizeof(descriptor_writes));
+  MemZero(buffer_infos, sizeof(buffer_infos));
+  MemZero(image_infos, sizeof(image_infos));
 
   uint32_t descriptor_index = 0;
   uint32_t descriptor_count = 0;
@@ -421,24 +427,23 @@ bool8_t vulkan_shader_update_state(VulkanBackendState *state,
 
   if (local_state->descriptor_states[descriptor_index]
           .generations[image_index] == VKR_INVALID_OBJECT_ID) {
-    VkDescriptorBufferInfo descriptor_buffer_info = {
+    buffer_infos[descriptor_count] = (VkDescriptorBufferInfo){
         .buffer = shader_object->local_uniform_buffer.buffer.handle,
         .offset = offset,
         .range = range,
     };
 
-    VkWriteDescriptorSet descriptor_write = {
+    descriptor_writes[descriptor_count] = (VkWriteDescriptorSet){
         .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
         .dstSet = local_descriptor,
         .dstBinding = descriptor_index,
         .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         .descriptorCount = 1,
-        .pBufferInfo = &descriptor_buffer_info,
+        .pBufferInfo = &buffer_infos[descriptor_count],
         .pImageInfo = NULL,
         .pTexelBufferView = NULL,
     };
 
-    descriptor_writes[descriptor_count] = descriptor_write;
     descriptor_count++;
 
     local_state->descriptor_states[descriptor_index].generations[image_index] =
@@ -465,23 +470,23 @@ bool8_t vulkan_shader_update_state(VulkanBackendState *state,
 
       if (*image_desc_generation != texture->description.generation ||
           *image_desc_generation == VKR_INVALID_OBJECT_ID) {
-        VkDescriptorImageInfo image_info = {
+        image_infos[descriptor_count] = (VkDescriptorImageInfo){
             .sampler = VK_NULL_HANDLE,
             .imageView = texture_object->image.view,
             .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
         };
 
-        VkWriteDescriptorSet write_image = {
+        descriptor_writes[descriptor_count] = (VkWriteDescriptorSet){
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet = local_descriptor,
             .dstBinding = 1,
             .dstArrayElement = 0,
             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
             .descriptorCount = 1,
-            .pImageInfo = &image_info,
+            .pImageInfo = &image_infos[descriptor_count],
         };
 
-        descriptor_writes[descriptor_count++] = write_image;
+        descriptor_count++;
         *image_desc_generation = texture->description.generation;
       }
     }
@@ -493,23 +498,23 @@ bool8_t vulkan_shader_update_state(VulkanBackendState *state,
 
       if (*sampler_desc_generation != texture->description.generation ||
           *sampler_desc_generation == VKR_INVALID_OBJECT_ID) {
-        VkDescriptorImageInfo sampler_info = {
+        image_infos[descriptor_count] = (VkDescriptorImageInfo){
             .sampler = texture_object->sampler,
             .imageView = VK_NULL_HANDLE,
             .imageLayout = VK_IMAGE_LAYOUT_UNDEFINED,
         };
 
-        VkWriteDescriptorSet write_sampler = {
+        descriptor_writes[descriptor_count] = (VkWriteDescriptorSet){
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet = local_descriptor,
             .dstBinding = 2,
             .dstArrayElement = 0,
             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
             .descriptorCount = 1,
-            .pImageInfo = &sampler_info,
+            .pImageInfo = &image_infos[descriptor_count],
         };
 
-        descriptor_writes[descriptor_count++] = write_sampler;
+        descriptor_count++;
         *sampler_desc_generation = texture->description.generation;
       }
     }
