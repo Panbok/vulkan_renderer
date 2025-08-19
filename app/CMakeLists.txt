@@ -12,7 +12,8 @@ if(CMAKE_GENERATOR MATCHES "Visual Studio")
     set_property(TARGET vulkan_renderer PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/")
 endif()
 if(CMAKE_GENERATOR MATCHES "Xcode")
-    set_property(TARGET vulkan_renderer PROPERTY XCODE_ATTRIBUTE_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/")
+    set_property(TARGET vulkan_renderer PROPERTY XCODE_GENERATE_SCHEME TRUE)
+    set_property(TARGET vulkan_renderer PROPERTY XCODE_SCHEME_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 endif()
 
 # Platform-specific optimization flags

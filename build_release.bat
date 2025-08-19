@@ -36,16 +36,22 @@ set "GENERATOR="
 where ninja >nul 2>&1 && set "GENERATOR=-G Ninja"
 
 set "COMPILERS="
-where clang >nul 2>&1 >nul
-if %errorlevel%==0 (
-    where clang++ >nul 2>&1 >nul
-    if %errorlevel%==0 set "COMPILERS=-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
+set "GEN_TOOLSET="
+if /I "%GENERATOR%"=="-G Ninja" (
+    where clang >nul 2>&1
+    if %errorlevel%==0 (
+        where clang++ >nul 2>&1
+        if %errorlevel%==0 set "COMPILERS=-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
+    )
+) else (
+    where clang-cl >nul 2>&1
+    if %errorlevel%==0 set "GEN_TOOLSET=-T ClangCL"
 )
 
 set "TOOLCHAIN="
-if defined VCPKG_ROOT set "TOOLCHAIN=-DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"
+if defined VCPKG_ROOT if exist "%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" set "TOOLCHAIN=-DCMAKE_TOOLCHAIN_FILE=""%VCPKG_ROOT%\scripts\builds
 
-cmake -S . -B build_release -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE %GENERATOR% %COMPILERS% %TOOLCHAIN%
+cmake -S . -B build_release -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE %GENERATOR% %GEN_TOOLSET% %COMPILERS% %TOOLCHAIN%
 if %errorlevel% neq 0 (
     echo CMake configure failed.
     exit /b 1
