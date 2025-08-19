@@ -9,12 +9,24 @@ FilePath file_path_create(const char *path, Arena *arena, FilePathType type) {
 
   FilePath result = {0};
 
-  uint64_t path_len = strlen(path) + 1;
-  uint8_t *path_str =
-      (uint8_t *)arena_alloc(arena, path_len, ARENA_MEMORY_TAG_STRING);
-  strcpy((char *)path_str, path);
+  if (type == FILE_PATH_TYPE_RELATIVE) {
+    assert_log(PROJECT_SOURCE_DIR != NULL, "PROJECT_SOURCE_DIR is NULL");
+    uint64_t full_path_len = strlen(PROJECT_SOURCE_DIR) + strlen(path) + 1;
+    uint8_t *full_path =
+        (uint8_t *)arena_alloc(arena, full_path_len, ARENA_MEMORY_TAG_STRING);
+    strcpy_s((char *)full_path, full_path_len, PROJECT_SOURCE_DIR);
+    strcat_s((char *)full_path, full_path_len, path);
 
-  result.path = string8_create(path_str, strlen(path));
+    result.path = string8_create(full_path, full_path_len);
+  } else {
+    uint64_t path_len = strlen(path) + 1;
+    uint8_t *path_str =
+        (uint8_t *)arena_alloc(arena, path_len, ARENA_MEMORY_TAG_STRING);
+    strcpy_s((char *)path_str, path_len, path);
+
+    result.path = string8_create(path_str, path_len);
+  }
+
   result.type = type;
   return result;
 }
@@ -22,6 +34,8 @@ FilePath file_path_create(const char *path, Arena *arena, FilePathType type) {
 bool8_t file_exists(const FilePath *path) {
   assert_log(path != NULL, "path is NULL");
   assert_log(path->path.length > 0, "path is empty");
+
+  log_debug("Checking if file exists: %s", path->path.str);
 
   struct stat buffer;
   return stat((char *)path->path.str, &buffer) == 0;

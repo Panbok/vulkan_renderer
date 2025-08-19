@@ -579,6 +579,7 @@ void application_start(Application *application) {
     }
 
     running = window_update(&application->window);
+    vkr_gamepad_poll_all(&application->gamepad);
 
     if (!running ||
         bitset8_is_set(&application->app_flags, APPLICATION_FLAG_SUSPENDED)) {
@@ -614,8 +615,6 @@ void application_start(Application *application) {
         platform_sleep(remaining_ms);
       }
     }
-
-    vkr_gamepad_poll_all(&application->gamepad);
 
     input_update(&application->window.input_state);
 

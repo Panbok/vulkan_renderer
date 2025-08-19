@@ -9,6 +9,13 @@ file(GLOB_RECURSE TEST_SOURCES src/*.c src/*.h)
 # Create the test executable
 add_executable(vulkan_renderer_tester ${TEST_SOURCES})
 
+if(CMAKE_GENERATOR MATCHES "Visual Studio")
+    set_property(TARGET vulkan_renderer_tester PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/")
+endif()
+if(CMAKE_GENERATOR MATCHES "Xcode")
+    set_property(TARGET vulkan_renderer_tester PROPERTY XCODE_ATTRIBUTE_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/")
+endif()
+
 if(MSVC)
     target_compile_options(vulkan_renderer_tester PRIVATE /arch:AVX2)
 else()

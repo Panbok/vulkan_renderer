@@ -46,7 +46,7 @@ if(APPLE)
     target_link_libraries(renderer_lib PRIVATE ${COCOA_LIBRARY} ${FOUNDATION_LIBRARY} ${QUARTZCORE_LIBRARY} ${GAMECONTROLLER_LIBRARY})
 elseif(WIN32)
     target_compile_definitions(renderer_lib PRIVATE PLATFORM_WINDOWS=1)
-    target_link_libraries(renderer_lib PRIVATE user32.lib winmm.lib)
+    target_link_libraries(renderer_lib PRIVATE user32.lib winmm.lib Xinput.lib)
 endif()
 
 # Set compile definitions for logging based on build type

@@ -8,6 +8,13 @@ file(GLOB_RECURSE APP_SOURCES src/*.c src/*.h)
 # Create the main application executable
 add_executable(vulkan_renderer ${APP_SOURCES})
 
+if(CMAKE_GENERATOR MATCHES "Visual Studio")
+    set_property(TARGET vulkan_renderer PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/")
+endif()
+if(CMAKE_GENERATOR MATCHES "Xcode")
+    set_property(TARGET vulkan_renderer PROPERTY XCODE_ATTRIBUTE_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/")
+endif()
+
 # Platform-specific optimization flags
 if(MSVC)
     target_compile_options(vulkan_renderer PRIVATE /arch:AVX2)

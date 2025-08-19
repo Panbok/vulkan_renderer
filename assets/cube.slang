@@ -10,7 +10,7 @@ struct LocalUniformObject
     float4 diffuse_color;
 };
 
-struct ShaderStateObject
+struct PushConstantsObject
 {
     column_major float4x4 model;
 };
@@ -28,7 +28,7 @@ ConstantBuffer<LocalUniformObject> local_ubo;
 SamplerState sampler;
 
 [[vk::push_constant]]
-ConstantBuffer<ShaderStateObject> push_constants;
+ConstantBuffer<PushConstantsObject> push_constants;
 
 struct VertexInput
 {
