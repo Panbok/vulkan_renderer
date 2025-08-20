@@ -187,15 +187,15 @@
 // clang-format on
 #pragma once
 
-#include "../../containers/array.h"
+#include "containers/array.h"
 #include "core/logger.h"
 #include "defines.h"
 #include "math/mat.h"
 #include "math/quat.h"
+#include "math/simd.h"
 #include "math/vec.h"
 #include "memory/arena.h"
 #include "memory/mmemory.h"
-#include "simd/simd.h"
 
 // =============================================================================
 // Mesh Container Type Definitions

@@ -385,11 +385,11 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
     state->window_width = new_width;
     state->window_height = new_height;
 
-    WindowResizeEventData resize_data = {.width = new_width,
-                                         .height = new_height};
+    VkrWindowResizeEventData resize_data = {.width = new_width,
+                                            .height = new_height};
     Event event = {.type = EVENT_TYPE_WINDOW_RESIZE,
                    .data = &resize_data,
-                   .data_size = sizeof(WindowResizeEventData)};
+                   .data_size = sizeof(VkrWindowResizeEventData)};
     event_manager_dispatch(state->event_manager, event);
 
     // Re-center cursor if in capture mode after window resize
