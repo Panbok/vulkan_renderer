@@ -45,21 +45,20 @@
 // clang-format on
 #pragma once
 
-#include "./defines.h"
 #include "containers/bitset.h"
 #include "core/clock.h"
 #include "core/event.h"
 #include "core/logger.h"
 #include "core/vkr_gamepad.h"
+#include "core/vkr_threads.h"
+#include "core/vkr_window.h"
+#include "defines.h"
 #include "filesystem/filesystem.h"
 #include "math/mat.h"
 #include "math/math.h"
 #include "math/vec.h"
 #include "memory/arena.h"
-#include "platform/vkr_threads.h"
-#include "platform/window.h"
 #include "renderer/renderer.h"
-#include "renderer/resources/buffer.h"
 #include "renderer/resources/resources.h"
 
 /**
@@ -108,7 +107,7 @@ typedef struct Application {
   Arena *log_arena; /**< Memory arena dedicated to the logging system. */
   Arena *renderer_arena;      /**< Memory arena dedicated to the renderer. */
   EventManager event_manager; /**< Manages event dispatch and subscriptions. */
-  Window window;              /**< Represents the application window. */
+  VkrWindow window;           /**< Represents the application window. */
   ApplicationConfig *config;  /**< Pointer to the configuration used to create
                                  this application instance. */
   RendererFrontendHandle renderer; /**< Renderer instance. */
@@ -220,8 +219,8 @@ static bool8_t application_handle_window_resize(Event *event,
 
   vkr_mutex_lock(application->app_mutex);
 
-  WindowResizeEventData *resize_event_data =
-      (WindowResizeEventData *)event->data;
+  VkrWindowResizeEventData *resize_event_data =
+      (VkrWindowResizeEventData *)event->data;
 
   if (resize_event_data->width != application->last_window_width ||
       resize_event_data->height != application->last_window_height) {
@@ -308,9 +307,9 @@ bool8_t application_create(Application *application,
   log_debug("Initialized logging");
 
   event_manager_create(&application->event_manager);
-  window_create(&application->window, &application->event_manager,
-                config->title, config->x, config->y, config->width,
-                config->height);
+  vkr_window_create(&application->window, &application->event_manager,
+                    config->title, config->x, config->y, config->width,
+                    config->height);
   application->clock = clock_create();
   if (!vkr_mutex_create(application->app_arena, &application->app_mutex)) {
     log_fatal("Failed to create application mutex!");
@@ -473,7 +472,8 @@ bool8_t application_create(Application *application,
                           NULL);
 
   // Initialize window size tracking
-  WindowPixelSize initial_size = window_get_pixel_size(&application->window);
+  VkrWindowPixelSize initial_size =
+      vkr_window_get_pixel_size(&application->window);
   application->last_window_width = initial_size.width;
   application->last_window_height = initial_size.height;
 
@@ -578,7 +578,7 @@ void application_start(Application *application) {
       delta = target_frame_seconds;
     }
 
-    running = window_update(&application->window);
+    running = vkr_window_update(&application->window);
     vkr_gamepad_poll_all(&application->gamepad);
 
     if (!running ||
@@ -703,7 +703,7 @@ void application_shutdown(Application *application) {
   renderer_destroy_pipeline(application->renderer,
                             application->pipeline_handle);
   renderer_destroy(application->renderer);
-  window_destroy(&application->window);
+  vkr_window_destroy(&application->window);
   event_manager_destroy(&application->event_manager);
   vkr_mutex_destroy(application->app_arena, &application->app_mutex);
   vkr_gamepad_shutdown(&application->gamepad);

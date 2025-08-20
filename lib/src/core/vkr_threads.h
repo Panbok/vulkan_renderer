@@ -1,5 +1,5 @@
 /**
- * @file threads.h
+ * @file vkr_threads.h
  * @brief Platform-agnostic threading interface for creating and managing
  * threads, mutexes, and condition variables.
  *
@@ -28,6 +28,10 @@
 
 #include "defines.h"
 #include "memory/arena.h"
+
+// NOTE; We should think about re-working the current threading system. So
+// that each thread has its own arena and threads communicate with each other
+// by copying data between arenas.
 
 /**
  * @brief Function pointer type for thread entry points.

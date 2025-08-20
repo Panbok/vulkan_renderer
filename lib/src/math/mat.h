@@ -1,9 +1,9 @@
 #pragma once
 
-#include "../simd/simd.h"
 #include "defines.h"
 #include "math.h"
 #include "quat.h"
+#include "simd.h"
 #include "vec.h"
 
 // clang-format off

@@ -363,7 +363,7 @@ vulkan_device_choose_swap_extent(VulkanBackendState *state,
     return swapchain_details->capabilities.currentExtent;
   }
 
-  WindowPixelSize window_size = window_get_pixel_size(state->window);
+  VkrWindowPixelSize window_size = vkr_window_get_pixel_size(state->window);
   VkExtent2D current_extent = {
       .width = window_size.width,
       .height = window_size.height,

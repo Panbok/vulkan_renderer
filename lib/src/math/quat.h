@@ -1,7 +1,7 @@
 #pragma once
 
-#include "../defines.h"
-#include "../simd/simd.h"
+#include "defines.h"
+#include "simd.h"
 #include "vec.h"
 
 // ================================================

@@ -1,4 +1,4 @@
-#include "window.h"
+#include "core/vkr_window.h"
 
 #if defined(PLATFORM_WINDOWS)
 
@@ -41,9 +41,9 @@ static void update_cursor_image(PlatformState *state);
 static void center_cursor_in_window(PlatformState *state);
 static bool8_t cursor_in_content_area(PlatformState *state);
 
-bool8_t window_create(Window *window, EventManager *event_manager,
-                      const char *title, int32_t x, int32_t y, uint32_t width,
-                      uint32_t height) {
+bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
+                          const char *title, int32_t x, int32_t y,
+                          uint32_t width, uint32_t height) {
   assert_log(event_manager != NULL, "Event manager not initialized");
   assert_log(title != NULL, "Title not initialized");
   assert_log(x >= 0, "X position not initialized");
@@ -156,7 +156,7 @@ bool8_t window_create(Window *window, EventManager *event_manager,
   return true_v;
 }
 
-void window_destroy(Window *window) {
+void vkr_window_destroy(VkrWindow *window) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
@@ -172,7 +172,7 @@ void window_destroy(Window *window) {
   window->platform_state = NULL;
 }
 
-bool8_t window_update(Window *window) {
+bool8_t vkr_window_update(VkrWindow *window) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
@@ -223,7 +223,7 @@ bool8_t window_update(Window *window) {
   return !state->quit_flagged;
 }
 
-WindowPixelSize window_get_pixel_size(Window *window) {
+VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
@@ -232,13 +232,13 @@ WindowPixelSize window_get_pixel_size(Window *window) {
   RECT client_rect;
   GetClientRect(state->window, &client_rect);
 
-  return (WindowPixelSize){
+  return (VkrWindowPixelSize){
       .width = (uint32_t)(client_rect.right - client_rect.left),
       .height = (uint32_t)(client_rect.bottom - client_rect.top),
   };
 }
 
-void *window_get_win32_handle(Window *window) {
+void *vkr_window_get_win32_handle(VkrWindow *window) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
@@ -246,7 +246,7 @@ void *window_get_win32_handle(Window *window) {
   return state->window;
 }
 
-void *window_get_win32_instance(Window *window) {
+void *vkr_window_get_win32_instance(VkrWindow *window) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
@@ -254,7 +254,7 @@ void *window_get_win32_instance(Window *window) {
   return state->instance;
 }
 
-void window_set_mouse_capture(Window *window, bool8_t capture) {
+void vkr_window_set_mouse_capture(VkrWindow *window, bool8_t capture) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
@@ -322,7 +322,7 @@ void window_set_mouse_capture(Window *window, bool8_t capture) {
   }
 }
 
-bool8_t window_is_mouse_captured(Window *window) {
+bool8_t vkr_window_is_mouse_captured(VkrWindow *window) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
@@ -330,7 +330,7 @@ bool8_t window_is_mouse_captured(Window *window) {
   return state->mouse_captured;
 }
 
-void window_set_mouse_position(Window *window, int32_t x, int32_t y) {
+void vkr_window_set_mouse_position(VkrWindow *window, int32_t x, int32_t y) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
@@ -448,6 +448,8 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
   }
 
   case WM_MOUSEMOVE: {
+    // NOTE: We probably need to use ScreenToClient to get the correct position
+    // for the mouse.
     int32_t x = GET_X_LPARAM(lparam);
     int32_t y = GET_Y_LPARAM(lparam);
 

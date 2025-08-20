@@ -56,15 +56,19 @@
 #include "containers/array.h"
 #include "containers/queue.h"
 #include "containers/vector.h"
+#include "core/vkr_threads.h"
 #include "defines.h"
 #include "event_data_buffer.h"
 #include "pch.h"
 #include "platform/platform.h"
-#include "platform/vkr_threads.h"
 
 // TODO: Explore possibility of re-writing this into event loop system, like
 // Node.js, where events are processed in a loop, and the event manager is
 // responsible for dispatching events to the event loop.
+
+// NOTE: The current data handling is way too complicated. We should simplify it
+// by using simple union structures that are fixed size and fields for generic
+// data.
 
 /**
  * @brief Defines the different types of events that can be processed.

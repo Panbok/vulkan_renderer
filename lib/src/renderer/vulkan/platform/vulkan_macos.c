@@ -30,7 +30,7 @@ bool8_t vulkan_platform_create_surface(VulkanBackendState *state) {
   assert_log(state != NULL, "State is not set");
   assert_log(state->window != NULL, "Window is not set");
 
-  void *metal_layer = window_get_metal_layer(state->window);
+  void *metal_layer = vkr_window_get_metal_layer(state->window);
   if (metal_layer == NULL) {
     log_fatal("Failed to get Metal layer from window");
     return false;

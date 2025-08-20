@@ -1,6 +1,6 @@
 // clang-format off
 /**
- * @file gamepad.h
+ * @file vkr_gamepad.h
  * @brief Platform-layer gamepad interface and minimal state. The platform
  * implementation (e.g., Windows/macOS) is responsible for polling native
  * controller APIs and translating them into input events via `InputState`.

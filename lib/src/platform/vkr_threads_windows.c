@@ -1,4 +1,4 @@
-#include "vkr_threads.h"
+#include "core/vkr_threads.h"
 
 #if defined(PLATFORM_WINDOWS)
 struct s_VkrThread {

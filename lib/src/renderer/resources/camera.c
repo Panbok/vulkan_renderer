@@ -1,7 +1,7 @@
 #include "camera.h"
 
 void camera_perspective_create(Camera *camera, InputState *input_state,
-                               Window *window, float32_t target_frame_rate,
+                               VkrWindow *window, float32_t target_frame_rate,
                                float32_t zoom, float32_t near_clip,
                                float32_t far_clip) {
   assert_log(input_state != NULL, "Input state is NULL");
@@ -36,7 +36,7 @@ void camera_perspective_create(Camera *camera, InputState *input_state,
 }
 
 void camera_orthographic_create(Camera *camera, InputState *input_state,
-                                Window *window, float32_t target_frame_rate,
+                                VkrWindow *window, float32_t target_frame_rate,
                                 float32_t left, float32_t right,
                                 float32_t bottom, float32_t top,
                                 float32_t near_clip, float32_t far_clip) {
@@ -79,18 +79,18 @@ void camera_update(Camera *camera, float32_t delta_time) {
 
   if (input_is_key_down(camera->input_state, KEY_TAB) &&
       input_was_key_up(camera->input_state, KEY_TAB)) {
-    window_set_mouse_capture(camera->window,
-                             !window_is_mouse_captured(camera->window));
+    vkr_window_set_mouse_capture(camera->window,
+                                 !vkr_window_is_mouse_captured(camera->window));
   }
 
   if (input_is_button_down(camera->input_state, BUTTON_GAMEPAD_A) &&
       input_was_button_up(camera->input_state, BUTTON_GAMEPAD_A)) {
-    window_set_mouse_capture(camera->window,
-                             !window_is_mouse_captured(camera->window));
+    vkr_window_set_mouse_capture(camera->window,
+                                 !vkr_window_is_mouse_captured(camera->window));
     camera->should_use_gamepad = !camera->should_use_gamepad;
   }
 
-  if (!window_is_mouse_captured(camera->window)) {
+  if (!vkr_window_is_mouse_captured(camera->window)) {
     return;
   }
 
@@ -234,7 +234,7 @@ Mat4 camera_get_projection_matrix(const Camera *camera) {
   assert_log(camera->type != CAMERA_TYPE_NONE, "Camera type is NONE");
 
   if (camera->type == CAMERA_TYPE_PERSPECTIVE) {
-    WindowPixelSize window_size = window_get_pixel_size(camera->window);
+    VkrWindowPixelSize window_size = vkr_window_get_pixel_size(camera->window);
     return mat4_perspective(to_radians(camera->zoom),
                             (float32_t)window_size.width /
                                 (float32_t)window_size.height,

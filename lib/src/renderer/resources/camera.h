@@ -2,10 +2,10 @@
 
 #include "core/input.h"
 #include "core/logger.h"
+#include "core/vkr_window.h"
 #include "math/mat.h"
 #include "math/math.h"
 #include "math/vec.h"
-#include "platform/window.h"
 
 #define MAX_MOUSE_DELTA 100.0f
 #define DEFAULT_CAMERA_ZOOM 1.0f
@@ -39,7 +39,7 @@ typedef enum CameraType {
  */
 typedef struct Camera {
   InputState *input_state;     /**< Input system reference */
-  Window *window;              /**< Window for input capture and aspect ratio */
+  VkrWindow *window;           /**< Window for input capture and aspect ratio */
   float32_t target_frame_rate; /**< Target FPS for frame-independent movement */
 
   CameraType type; /**< Current projection type */
@@ -85,7 +85,7 @@ typedef struct Camera {
  * @param far_clip Far clipping plane distance
  */
 void camera_perspective_create(Camera *camera, InputState *input_state,
-                               Window *window, float32_t target_frame_rate,
+                               VkrWindow *window, float32_t target_frame_rate,
                                float32_t fov, float32_t near_clip,
                                float32_t far_clip);
 
@@ -103,7 +103,7 @@ void camera_perspective_create(Camera *camera, InputState *input_state,
  * @param far_clip Far clipping plane distance
  */
 void camera_orthographic_create(Camera *camera, InputState *input_state,
-                                Window *window, float32_t target_frame_rate,
+                                VkrWindow *window, float32_t target_frame_rate,
                                 float32_t left, float32_t right,
                                 float32_t bottom, float32_t top,
                                 float32_t near_clip, float32_t far_clip);

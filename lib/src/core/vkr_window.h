@@ -1,6 +1,6 @@
 // clang-format off
 /**
- * @file window.h
+ * @file vkr_window.h
  * @brief Defines the interface for the platform-agnostic windowing system.
  *
  * This system provides a way to create, manage, and interact with a native
@@ -40,7 +40,7 @@
 #include "core/input.h"
 #include "math/math.h"
 #include "pch.h"
-#include "platform.h"
+#include "platform/platform.h"
 
 /**
  * @brief Represents a platform window and its associated state.
@@ -48,7 +48,7 @@
  * platform-specific data (e.g., native window handles, delegates on macOS). The
  * window owns its `InputState`.
  */
-typedef struct Window {
+typedef struct VkrWindow {
   void *platform_state;        /**< Opaque pointer to platform-specific window
                                   state. Managed internally. */
   EventManager *event_manager; /**< Pointer to the global EventManager. Not
@@ -61,23 +61,23 @@ typedef struct Window {
   int32_t y;   /**< Initial y-coordinate of the window's top-left corner. */
   uint32_t width;  /**< Initial width of the window's client area. */
   uint32_t height; /**< Initial height of the window's client area. */
-} Window;
+} VkrWindow;
 
-typedef struct WindowPixelSize {
+typedef struct VkrWindowPixelSize {
   uint32_t width;
   uint32_t height;
-} WindowPixelSize;
+} VkrWindowPixelSize;
 
 /**
  * @brief Data for window resize event (EVENT_TYPE_WINDOW_RESIZE).
  * Dispatched by the platform layer when the window's client area (or
  * framebuffer) size changes.
  */
-typedef struct WindowResizeEventData {
+typedef struct VkrWindowResizeEventData {
   uint32_t width; /**< The new width of the window's client/framebuffer area. */
   uint32_t
       height; /**< The new height of the window's client/framebuffer area. */
-} WindowResizeEventData;
+} VkrWindowResizeEventData;
 
 /**
  * @brief Creates and initializes a new platform window.
@@ -100,9 +100,9 @@ typedef struct WindowResizeEventData {
  *         On failure, `window->platform_state` will be NULL and an error
  * logged.
  */
-bool8_t window_create(Window *window, EventManager *event_manager,
-                      const char *title, int32_t x, int32_t y, uint32_t width,
-                      uint32_t height);
+bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
+                          const char *title, int32_t x, int32_t y,
+                          uint32_t width, uint32_t height);
 
 /**
  * @brief Destroys a window and releases all associated platform resources.
@@ -113,7 +113,7 @@ bool8_t window_create(Window *window, EventManager *event_manager,
  *               `window->platform_state` is NULL, the function does nothing or
  * asserts.
  */
-void window_destroy(Window *window);
+void vkr_window_destroy(VkrWindow *window);
 
 /**
  * @brief Processes pending window events and updates the window state.
@@ -129,7 +129,7 @@ void window_destroy(Window *window);
  * continue running. `false_v` if a close request has been processed (e.g., user
  * clicked the close button) and the application should terminate.
  */
-bool8_t window_update(Window *window);
+bool8_t vkr_window_update(VkrWindow *window);
 
 /**
  * @brief Gets the pixel size of the window.
@@ -137,7 +137,7 @@ bool8_t window_update(Window *window);
  * be NULL.
  * @return The pixel size of the window.
  */
-WindowPixelSize window_get_pixel_size(Window *window);
+VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window);
 
 #if defined(PLATFORM_APPLE)
 /**
@@ -149,7 +149,7 @@ WindowPixelSize window_get_pixel_size(Window *window);
  * be NULL.
  * @return Pointer to the CAMetalLayer, or NULL if not available.
  */
-void *window_get_metal_layer(Window *window);
+void *vkr_window_get_metal_layer(VkrWindow *window);
 #endif
 
 #if defined(PLATFORM_WINDOWS)
@@ -158,14 +158,14 @@ void *window_get_metal_layer(Window *window);
  * creation. This function provides access to the HWND needed for creating a
  * Vulkan surface on Windows.
  */
-void *window_get_win32_handle(Window *window);
+void *vkr_window_get_win32_handle(VkrWindow *window);
 
 /**
  * @brief Gets the Win32 instance from the window for Vulkan surface creation.
  * This function provides access to the HINSTANCE needed for creating a Vulkan
  * surface on Windows.
  */
-void *window_get_win32_instance(Window *window);
+void *vkr_window_get_win32_instance(VkrWindow *window);
 #endif
 
 /**
@@ -175,7 +175,7 @@ void *window_get_win32_instance(Window *window);
  * @note This function is platform-specific and may not be available on all
  * platforms.
  */
-void window_set_mouse_capture(Window *window, bool8_t capture);
+void vkr_window_set_mouse_capture(VkrWindow *window, bool8_t capture);
 
 /**
  * @brief Checks if the mouse is captured by the window.
@@ -184,7 +184,7 @@ void window_set_mouse_capture(Window *window, bool8_t capture);
  * @note This function is platform-specific and may not be available on all
  * platforms.
  */
-bool8_t window_is_mouse_captured(Window *window);
+bool8_t vkr_window_is_mouse_captured(VkrWindow *window);
 
 /**
  * @brief Sets the mouse position.
@@ -194,4 +194,4 @@ bool8_t window_is_mouse_captured(Window *window);
  * @note This function is platform-specific and may not be available on all
  * platforms.
  */
-void window_set_mouse_position(Window *window, int32_t x, int32_t y);
+void vkr_window_set_mouse_position(VkrWindow *window, int32_t x, int32_t y);

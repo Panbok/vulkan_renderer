@@ -60,7 +60,7 @@
 
 #pragma once
 
-#include "../platform/platform.h"
+#include "platform/platform.h"
 
 /** @brief Mathematical constant π (pi) with high precision
  *  @note Value: 3.14159265358979323846...

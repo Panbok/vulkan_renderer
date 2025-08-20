@@ -104,7 +104,7 @@ RendererBackendInterface renderer_vulkan_get_interface() {
 
 // todo: set up event manager for window stuff and maybe other events
 bool32_t renderer_vulkan_initialize(void **out_backend_state,
-                                    RendererBackendType type, Window *window,
+                                    RendererBackendType type, VkrWindow *window,
                                     uint32_t initial_width,
                                     uint32_t initial_height,
                                     DeviceRequirements *device_requirements) {
@@ -204,7 +204,7 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
   if (!vulkan_renderpass_create(
           backend_state, main_render_pass, 0.0f, 0.0f,
           (float32_t)backend_state->swapchain.extent.width,
-          (float32_t)backend_state->swapchain.extent.height, 0.0f, 0.0f, 0.0f,
+          (float32_t)backend_state->swapchain.extent.height, 0.0f, 0.0f, 0.2f,
           1.0f, 1.0f, 0)) {
     log_fatal("Failed to create Vulkan render pass");
     return false;

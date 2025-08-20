@@ -22,7 +22,7 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state);
 RendererBackendInterface renderer_vulkan_get_interface();
 
 bool32_t renderer_vulkan_initialize(void **out_backend_state,
-                                    RendererBackendType type, Window *window,
+                                    RendererBackendType type, VkrWindow *window,
                                     uint32_t initial_width,
                                     uint32_t initial_height,
                                     DeviceRequirements *device_requirements);

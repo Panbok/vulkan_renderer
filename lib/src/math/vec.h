@@ -178,8 +178,8 @@
 // clang-format on
 #pragma once
 
-#include "../simd/simd.h"
 #include "math.h"
+#include "simd.h"
 
 // =============================================================================
 // Vector Type Definitions

@@ -241,7 +241,7 @@ typedef struct VulkanBackendState {
   Arena *arena;
   Arena *temp_arena;
   Arena *swapchain_arena;
-  Window *window;
+  VkrWindow *window;
   DeviceRequirements *device_requirements;
 
   VkAllocationCallbacks *allocator;

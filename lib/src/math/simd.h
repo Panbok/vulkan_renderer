@@ -112,7 +112,6 @@ typedef SIMD_ALIGN union {
   float32x4_t neon; /**< Native ARM NEON vector register */
 #elif SIMD_X86_AVX
   __m128 sse; /**< Native x86 SSE vector register */
-#else
 #endif
 
   union {
@@ -143,7 +142,6 @@ typedef SIMD_ALIGN union {
   int32x4_t neon; /**< Native ARM NEON integer vector register */
 #elif SIMD_X86_AVX
   __m128i sse; /**< Native x86 SSE integer vector register */
-#else
 #endif
   union {
     struct {

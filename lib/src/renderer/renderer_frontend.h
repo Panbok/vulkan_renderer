@@ -8,7 +8,7 @@
 struct s_RendererFrontend {
   Arena *arena;
   RendererBackendType backend_type;
-  Window *window;
+  VkrWindow *window;
   void *backend_state;
   RendererBackendInterface backend;
   bool32_t frame_active;

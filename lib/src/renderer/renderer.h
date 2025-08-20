@@ -1,11 +1,11 @@
 #pragma once
 
 #include "containers/bitset.h"
+#include "core/vkr_window.h"
 #include "defines.h"
 #include "math/mat.h"
 #include "pch.h"
 #include "platform/platform.h"
-#include "platform/window.h"
 
 // ============================================================================
 // Design Overview
@@ -509,7 +509,7 @@ typedef struct IndexBufferBinding {
 // --- START Initialization and Shutdown ---
 RendererFrontendHandle renderer_create(Arena *arena,
                                        RendererBackendType backend_type,
-                                       Window *window,
+                                       VkrWindow *window,
                                        DeviceRequirements *device_requirements,
                                        RendererError *out_error);
 
@@ -518,7 +518,7 @@ void renderer_destroy(RendererFrontendHandle renderer);
 
 // --- START Utility ---
 String8 renderer_get_error_string(RendererError error);
-Window *renderer_get_window(RendererFrontendHandle renderer);
+VkrWindow *renderer_get_window(RendererFrontendHandle renderer);
 RendererBackendType renderer_get_backend_type(RendererFrontendHandle renderer);
 bool32_t renderer_is_frame_active(RendererFrontendHandle renderer);
 RendererError renderer_wait_idle(RendererFrontendHandle renderer);
@@ -620,7 +620,7 @@ typedef struct RendererBackendInterface {
   // `window_handle` is platform specific (HWND, xcb_window_t, etc.)
   bool32_t (*initialize)(
       void **out_backend_state, // Backend allocates and returns its state
-      RendererBackendType type, Window *window, uint32_t initial_width,
+      RendererBackendType type, VkrWindow *window, uint32_t initial_width,
       uint32_t initial_height, DeviceRequirements *device_requirements);
   void (*shutdown)(void *backend_state);
   void (*on_resize)(void *backend_state, uint32_t new_width,

@@ -1,4 +1,4 @@
-#include "window.h"
+#include "core/vkr_window.h"
 
 #if defined(PLATFORM_APPLE)
 #import <Cocoa/Cocoa.h>
@@ -71,12 +71,12 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 - (void)windowDidResize:(NSNotification *)notification {
   const NSRect contentRect = [state->view frame];
   const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
-  WindowResizeEventData resize_data = {
+  VkrWindowResizeEventData resize_data = {
       .width = (uint32_t)framebufferRect.size.width,
       .height = (uint32_t)framebufferRect.size.height};
   Event event = {.type = EVENT_TYPE_WINDOW_RESIZE,
                  .data = &resize_data,
-                 .data_size = sizeof(WindowResizeEventData)};
+                 .data_size = sizeof(VkrWindowResizeEventData)};
   event_manager_dispatch(state->event_manager, event);
 
   // Re-center cursor if in capture mode after window resize
@@ -86,10 +86,10 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 }
 
 - (void)windowDidMiniaturize:(NSNotification *)notification {
-  WindowResizeEventData resize_data = {.width = 0, .height = 0};
+  VkrWindowResizeEventData resize_data = {.width = 0, .height = 0};
   Event event = {.type = EVENT_TYPE_WINDOW_RESIZE,
                  .data = &resize_data,
-                 .data_size = sizeof(WindowResizeEventData)};
+                 .data_size = sizeof(VkrWindowResizeEventData)};
   event_manager_dispatch(state->event_manager, event);
 
   // [state->window miniaturize:nil]; // Redundant, system already miniaturized
@@ -98,12 +98,12 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 - (void)windowDidDeminiaturize:(NSNotification *)notification {
   const NSRect contentRect = [state->view frame];
   const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
-  WindowResizeEventData resize_data = {
+  VkrWindowResizeEventData resize_data = {
       .width = (uint32_t)framebufferRect.size.width,
       .height = (uint32_t)framebufferRect.size.height};
   Event event = {.type = EVENT_TYPE_WINDOW_RESIZE,
                  .data = &resize_data,
-                 .data_size = sizeof(WindowResizeEventData)};
+                 .data_size = sizeof(VkrWindowResizeEventData)};
   event_manager_dispatch(state->event_manager, event);
 
   // [state->window deminiaturize:nil]; // Redundant, system already
@@ -427,9 +427,9 @@ static const NSRange kEmptyRange = {NSNotFound, 0};
  ********************************************************************************
  */
 
-bool8_t window_create(Window *window, EventManager *event_manager,
-                      const char *title, int32_t x, int32_t y, uint32_t width,
-                      uint32_t height) {
+bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
+                          const char *title, int32_t x, int32_t y,
+                          uint32_t width, uint32_t height) {
   assert_log(event_manager != NULL, "Event manager not initialized");
   assert_log(title != NULL, "Title not initialized");
   assert_log(x >= 0, "X position not initialized");
@@ -548,7 +548,7 @@ bool8_t window_create(Window *window, EventManager *event_manager,
   } // autoreleasepool
 }
 
-void window_destroy(Window *window) {
+void vkr_window_destroy(VkrWindow *window) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
@@ -589,7 +589,7 @@ void window_destroy(Window *window) {
   free(state);
 }
 
-bool8_t window_update(Window *window) {
+bool8_t vkr_window_update(VkrWindow *window) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
@@ -623,7 +623,7 @@ bool8_t window_update(Window *window) {
   return !state->quit_flagged;
 }
 
-WindowPixelSize window_get_pixel_size(Window *window) {
+VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
@@ -632,13 +632,13 @@ WindowPixelSize window_get_pixel_size(Window *window) {
   const NSRect contentRect = [state->view frame];
   const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
 
-  return (WindowPixelSize){
+  return (VkrWindowPixelSize){
       .width = (uint32_t)framebufferRect.size.width,
       .height = (uint32_t)framebufferRect.size.height,
   };
 }
 
-void *window_get_metal_layer(Window *window) {
+void *vkr_window_get_metal_layer(VkrWindow *window) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
@@ -646,7 +646,7 @@ void *window_get_metal_layer(Window *window) {
   return state->layer;
 }
 
-void window_set_mouse_capture(Window *window, bool8_t capture) {
+void vkr_window_set_mouse_capture(VkrWindow *window, bool8_t capture) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
@@ -714,7 +714,7 @@ void window_set_mouse_capture(Window *window, bool8_t capture) {
   }
 }
 
-bool8_t window_is_mouse_captured(Window *window) {
+bool8_t vkr_window_is_mouse_captured(VkrWindow *window) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 
@@ -722,7 +722,7 @@ bool8_t window_is_mouse_captured(Window *window) {
   return state->mouse_captured;
 }
 
-void window_set_mouse_position(Window *window, int32_t x, int32_t y) {
+void vkr_window_set_mouse_position(VkrWindow *window, int32_t x, int32_t y) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");
 

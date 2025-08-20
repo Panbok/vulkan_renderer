@@ -2,7 +2,7 @@
 
 RendererFrontendHandle renderer_create(Arena *arena,
                                        RendererBackendType backend_type,
-                                       Window *window,
+                                       VkrWindow *window,
                                        DeviceRequirements *device_requirements,
                                        RendererError *out_error) {
   assert_log(window != NULL, "Window is NULL");
@@ -80,7 +80,7 @@ String8 renderer_get_error_string(RendererError error) {
   }
 }
 
-Window *renderer_get_window(RendererFrontendHandle renderer) {
+VkrWindow *renderer_get_window(RendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
   return renderer->window;
 }

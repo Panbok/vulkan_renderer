@@ -36,7 +36,7 @@ static bool32_t check_validation_layer_support(VulkanBackendState *state,
 }
 #endif
 
-bool32_t vulkan_instance_create(VulkanBackendState *state, Window *window) {
+bool32_t vulkan_instance_create(VulkanBackendState *state, VkrWindow *window) {
   assert_log(state != NULL, "State is NULL");
   assert_log(window != NULL, "Window is NULL");
 
