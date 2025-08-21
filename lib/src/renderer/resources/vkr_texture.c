@@ -74,8 +74,16 @@ RendererError vkr_texture_load(RendererFrontendHandle renderer,
   stbi_set_flip_vertically_on_load(true);
 
   int32_t width, height, original_channels;
+  int32_t stbi_req_comp = (desired_channels <= VKR_TEXTURE_RGBA_CHANNELS)
+                              ? (int)desired_channels
+                              : 0;
+  if (desired_channels > VKR_TEXTURE_RGBA_CHANNELS) {
+    log_warn("desired_channels=%u is invalid; falling back to auto-detect.",
+             desired_channels);
+  }
+
   uint8_t *image = stbi_load((char *)out_texture->file_path.path.str, &width,
-                             &height, &original_channels, desired_channels);
+                             &height, &original_channels, stbi_req_comp);
   if (image == NULL) {
     const char *failure_reason = stbi_failure_reason();
     if (failure_reason) {
@@ -83,8 +91,10 @@ RendererError vkr_texture_load(RendererFrontendHandle renderer,
       if (strstr(failure_reason, "can't fopen") ||
           strstr(failure_reason, "file not found")) {
         return RENDERER_ERROR_FILE_NOT_FOUND;
-      } else if (strstr(failure_reason, "out of memory")) {
+      } else if (strstr(failure_reason, "outofmem")) {
         return RENDERER_ERROR_OUT_OF_MEMORY;
+      } else if (strstr(failure_reason, "bad req_comp")) {
+        return RENDERER_ERROR_INVALID_PARAMETER;
       } else {
         return RENDERER_ERROR_RESOURCE_CREATION_FAILED;
       }
@@ -103,10 +113,10 @@ RendererError vkr_texture_load(RendererFrontendHandle renderer,
   uint32_t actual_channels =
       desired_channels > 0 ? desired_channels : original_channels;
 
-  if (original_channels < desired_channels && desired_channels > 0) {
-    log_warn("Texture channels mismatch: %d requested but %d available (stbi "
-             "padded to %d)",
-             original_channels, desired_channels, actual_channels);
+  if (original_channels < (int32_t)desired_channels && desired_channels > 0) {
+    log_warn("Texture channels mismatch: %u requested but %d available (stbi "
+             "padded to %u)",
+             desired_channels, original_channels, desired_channels);
   }
 
   TextureFormat format;
@@ -166,11 +176,29 @@ RendererError vkr_texture_load(RendererFrontendHandle renderer,
     }
   }
 
+  // Heuristic for LA (luminance+alpha) inputs
+  if (!has_transparency && loaded_channels == VKR_TEXTURE_RG_CHANNELS &&
+      (original_channels == VKR_TEXTURE_RG_CHANNELS ||
+       desired_channels == VKR_TEXTURE_RG_CHANNELS)) {
+    for (uint64_t i = 1; i < loaded_image_size; i += loaded_channels) {
+      if (image[i] < 255) { // alpha channel at index 1
+        has_transparency = true;
+        break;
+      }
+    }
+  }
+
   out_texture->description.properties = texture_property_flags_from_bits(
       has_transparency ? TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT : 0);
 
   uint64_t final_image_size =
       (uint64_t)width * (uint64_t)height * (uint64_t)actual_channels;
+  if (final_image_size > SIZE_MAX) {
+    log_error("Image too large after conversion: %llu bytes", final_image_size);
+    stbi_image_free(image);
+    return RENDERER_ERROR_OUT_OF_MEMORY;
+  }
+
   out_texture->image =
       arena_alloc(renderer_arena, final_image_size, ARENA_MEMORY_TAG_TEXTURE);
   if (out_texture->image == NULL) {
@@ -189,7 +217,7 @@ RendererError vkr_texture_load(RendererFrontendHandle renderer,
       out_texture->image[dst_idx + 3] = 255;                // A (opaque)
     }
   } else {
-    MemCopy(out_texture->image, image, loaded_image_size);
+    MemCopy(out_texture->image, image, (size_t)loaded_image_size);
   }
 
   stbi_image_free(image);
