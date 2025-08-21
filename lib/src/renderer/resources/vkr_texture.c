@@ -61,6 +61,7 @@ RendererError vkr_texture_create_checkerboard(RendererFrontendHandle renderer,
 
 RendererError vkr_texture_load(RendererFrontendHandle renderer,
                                Arena *renderer_arena, String8 path,
+                               uint32_t desired_channels,
                                VkrTexture *out_texture) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(renderer_arena != NULL, "Renderer arena is NULL");
@@ -72,51 +73,124 @@ RendererError vkr_texture_load(RendererFrontendHandle renderer,
 
   stbi_set_flip_vertically_on_load(true);
 
-  uint64_t req_channels = 4;
-
-  int32_t width, height, channels;
+  int32_t width, height, original_channels;
   uint8_t *image = stbi_load((char *)out_texture->file_path.path.str, &width,
-                             &height, &channels, req_channels);
+                             &height, &original_channels, desired_channels);
   if (image == NULL) {
-    if (stbi_failure_reason()) {
-      log_error("Failed to load texture: %s", stbi_failure_reason());
+    const char *failure_reason = stbi_failure_reason();
+    if (failure_reason) {
+      log_error("Failed to load texture: %s", failure_reason);
+      if (strstr(failure_reason, "can't fopen") ||
+          strstr(failure_reason, "file not found")) {
+        return RENDERER_ERROR_FILE_NOT_FOUND;
+      } else if (strstr(failure_reason, "out of memory")) {
+        return RENDERER_ERROR_OUT_OF_MEMORY;
+      } else {
+        return RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      }
     }
-
     return RENDERER_ERROR_FILE_NOT_FOUND;
   }
 
-  // TODO: Handle different image formats
+  if (width <= 0 || height <= 0 || width > VKR_TEXTURE_MAX_DIMENSION ||
+      height > VKR_TEXTURE_MAX_DIMENSION) {
+    log_error("Invalid texture dimensions: %dx%d (max: %u)", width, height,
+              VKR_TEXTURE_MAX_DIMENSION);
+    stbi_image_free(image);
+    return RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  uint32_t actual_channels =
+      desired_channels > 0 ? desired_channels : original_channels;
+
+  if (original_channels < desired_channels && desired_channels > 0) {
+    log_warn("Texture channels mismatch: %d requested but %d available (stbi "
+             "padded to %d)",
+             original_channels, desired_channels, actual_channels);
+  }
+
+  TextureFormat format;
+  switch (actual_channels) {
+  case VKR_TEXTURE_R_CHANNELS:
+    format = TEXTURE_FORMAT_R8_UNORM;
+    break;
+  case VKR_TEXTURE_RG_CHANNELS:
+    format = TEXTURE_FORMAT_R8G8_UNORM;
+    break;
+  case VKR_TEXTURE_RGB_CHANNELS:
+    // Note: Most GPUs don't support RGB8, so we'll use RGBA8 and pad
+    format = TEXTURE_FORMAT_R8G8B8A8_UNORM;
+    actual_channels = VKR_TEXTURE_RGBA_CHANNELS; // Adjust for GPU compatibility
+    break;
+  case VKR_TEXTURE_RGBA_CHANNELS:
+    format = TEXTURE_FORMAT_R8G8B8A8_UNORM;
+    break;
+  default:
+    // Fallback for unexpected channel counts
+    format = TEXTURE_FORMAT_R8G8B8A8_UNORM;
+    actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
+    log_warn("Unexpected channel count %d, defaulting to RGBA",
+             actual_channels);
+    break;
+  }
+
   out_texture->description = (TextureDescription){
       .width = (uint32_t)width,
       .height = (uint32_t)height,
-      .channels = (uint32_t)req_channels,
-      .format = TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      .channels = actual_channels,
+      .format = format,
       .type = TEXTURE_TYPE_2D,
-      .properties = texture_property_flags_from_bits(
-          TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT),
+      .properties =
+          texture_property_flags_create(), // Initialize as empty, set below
       .generation = VKR_INVALID_OBJECT_ID,
   };
 
-  uint64_t image_size = (uint64_t)width * (uint64_t)height * (uint64_t)channels;
+  uint32_t loaded_channels =
+      desired_channels > 0 ? desired_channels : original_channels;
+  uint64_t loaded_image_size =
+      (uint64_t)width * (uint64_t)height * (uint64_t)loaded_channels;
+
+  if (loaded_image_size > SIZE_MAX) {
+    log_error("Image too large: %llu bytes", loaded_image_size);
+    stbi_image_free(image);
+    return RENDERER_ERROR_OUT_OF_MEMORY;
+  }
 
   bool32_t has_transparency = false;
-  for (uint64_t i = 0; i < image_size; i += req_channels) {
-    if (image[i + 3] < 255) {
-      has_transparency = true;
-      break;
+  if (loaded_channels >= VKR_TEXTURE_RGBA_CHANNELS) {
+    for (uint64_t i = 0; i < loaded_image_size; i += loaded_channels) {
+      if (image[i + 3] < 255) {
+        has_transparency = true;
+        break;
+      }
     }
   }
 
   out_texture->description.properties = texture_property_flags_from_bits(
       has_transparency ? TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT : 0);
 
+  uint64_t final_image_size =
+      (uint64_t)width * (uint64_t)height * (uint64_t)actual_channels;
   out_texture->image =
-      arena_alloc(renderer_arena, image_size, ARENA_MEMORY_TAG_TEXTURE);
+      arena_alloc(renderer_arena, final_image_size, ARENA_MEMORY_TAG_TEXTURE);
   if (out_texture->image == NULL) {
+    stbi_image_free(image);
     return RENDERER_ERROR_OUT_OF_MEMORY;
   }
 
-  MemCopy(out_texture->image, image, image_size);
+  if (loaded_channels == VKR_TEXTURE_RGB_CHANNELS &&
+      actual_channels == VKR_TEXTURE_RGBA_CHANNELS) {
+    for (uint32_t i = 0; i < (uint32_t)width * (uint32_t)height; i++) {
+      uint32_t src_idx = i * VKR_TEXTURE_RGB_CHANNELS;
+      uint32_t dst_idx = i * VKR_TEXTURE_RGBA_CHANNELS;
+      out_texture->image[dst_idx + 0] = image[src_idx + 0]; // R
+      out_texture->image[dst_idx + 1] = image[src_idx + 1]; // G
+      out_texture->image[dst_idx + 2] = image[src_idx + 2]; // B
+      out_texture->image[dst_idx + 3] = 255;                // A (opaque)
+    }
+  } else {
+    MemCopy(out_texture->image, image, loaded_image_size);
+  }
 
   stbi_image_free(image);
 
@@ -126,6 +200,7 @@ RendererError vkr_texture_load(RendererFrontendHandle renderer,
   if (out_error != RENDERER_ERROR_NONE) {
     log_error("Failed to create texture: %s",
               renderer_get_error_string(out_error));
+    return out_error;
   }
 
   if (out_texture->description.generation == VKR_INVALID_OBJECT_ID) {

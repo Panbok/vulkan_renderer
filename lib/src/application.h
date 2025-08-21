@@ -350,7 +350,8 @@ bool8_t application_create(Application *application,
 
   renderer_error = vkr_texture_load(
       application->renderer, application->renderer_arena,
-      string8_lit("assets/cobblestone.png"), &application->default_texture);
+      string8_lit("assets/cobblestone.png"), VKR_TEXTURE_RGBA_CHANNELS,
+      &application->default_texture);
   if (renderer_error != RENDERER_ERROR_NONE) {
     log_fatal("Failed to load default texture: %s",
               renderer_get_error_string(renderer_error));
