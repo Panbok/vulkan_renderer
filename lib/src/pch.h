@@ -14,6 +14,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include <stb_image.h>
+
 #if defined(PLATFORM_APPLE)
 #include <CoreGraphics/CoreGraphics.h>
 #include <TargetConditionals.h>

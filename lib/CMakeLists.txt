@@ -25,6 +25,7 @@ find_package(Vulkan REQUIRED)
 # Set include directories
 target_include_directories(renderer_lib
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PUBLIC ${CMAKE_SOURCE_DIR}/vendor
     PRIVATE ${Vulkan_INCLUDE_DIRS}
 )
 
