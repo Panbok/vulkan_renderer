@@ -81,37 +81,44 @@ const char *string8_cstr(const String8 *str);
 String8 string8_concat(Arena *arena, String8 *str1, String8 *str2);
 
 /**
- * @brief Get a substring of a string of 8-bit characters.
- * @param str The string to get the substring of.
- * @param start The start index of the substring.
- * @param end The end index of the substring.
- * @return A new string of 8-bit characters.
+ * @brief Get a byte-slice (non-owning) substring of a UTF-8 string.
+ * @details Indices are byte offsets; end is exclusive. Returns a view into
+ * `str` (no allocation). Preconditions: 0 <= start <= end <= str->length. Note:
+ * Operates on bytes and does not validate UTF-8 boundaries; callers must ensure
+ * start/end align to code point boundaries if required.
+ * @param str The source string (not modified).
+ * @param start The start byte offset (inclusive).
+ * @param end The end byte offset (exclusive).
+ * @return A String8 view into the original buffer (not NUL-terminated).
  */
-String8 string8_substring(String8 *str, uint64_t start, uint64_t end);
+String8 string8_substring(const String8 *str, uint64_t start, uint64_t end);
 
 /**
- * @brief Check if a string contains a substring.
- * @param str The string to check.
- * @param substring The substring to check for.
- * @return True if the string contains the substring, false otherwise.
+ * @brief Bytewise substring test (no Unicode normalization/case-folding).
+ * @details Matches on raw bytes. An empty substring returns true.
+ * @param str The source string (not modified).
+ * @param substring The substring to search for (not modified).
+ * @return True if `substring` occurs in `str`, false otherwise.
  */
-bool8_t string8_contains(String8 *str, String8 *substring);
+bool8_t string8_contains(const String8 *str, const String8 *substring);
 
 /**
- * @brief Check if a string contains a substring.
- * @param str The string to check.
- * @param substring The substring to check for.
- * @return True if the string contains the substring, false otherwise.
+ * @brief Check if a string contains a null-terminated C-string substring.
+ * @details Interprets `substring` as UTF-8; matches on raw bytes. An empty
+ * substring returns true.
+ * @param str The source string (not modified).
+ * @param substring The null-terminated substring to search for.
+ * @return True if `substring` occurs in `str`, false otherwise.
  */
-bool8_t string8_contains_cstr(String8 *str, const char *substring);
+bool8_t string8_contains_cstr(const String8 *str, const char *substring);
 
 /**
- * @brief Check if a string equals another string.
- * @param str1 The first string to compare.
- * @param str2 The second string to compare.
- * @return True if the strings are equal, false otherwise.
+ * @brief Bytewise equality check (no Unicode normalization/case-folding).
+ * @param str1 The first string (not modified).
+ * @param str2 The second string (not modified).
+ * @return True if both length and bytes match exactly, false otherwise.
  */
-bool8_t string8_equals(String8 *str1, String8 *str2);
+bool8_t string8_equals(const String8 *str1, const String8 *str2);
 
 /**
  * @brief Destroy a string of 8-bit characters.

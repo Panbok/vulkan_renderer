@@ -131,8 +131,10 @@ static void test_str8_substring(void) {
   assert(string8_equals(&sub, &res) && "Substring is not equal to string");
 
   string8_destroy(&str);
-  string8_destroy(&sub);
   string8_destroy(&res);
+  if (sub.str != str.str) {
+    string8_destroy(&sub);
+  }
   teardown_suite();
   printf("  test_str8_substring PASSED\n");
 }
@@ -144,6 +146,11 @@ static void test_str8_contains(void) {
   String8 str = string8_lit("Hello, World!");
   String8 sub = string8_substring(&str, 0, 5);
   assert(string8_contains(&str, &sub) && "String does not contain substring");
+
+  if (sub.str != str.str) {
+    string8_destroy(&sub);
+  }
+  teardown_suite();
   printf("  test_str8_contains PASSED\n");
 }
 
@@ -154,6 +161,7 @@ static void test_str8_contains_cstr(void) {
   String8 str = string8_lit("Hello, World!");
   assert(string8_contains_cstr(&str, "Hello") &&
          "String does not contain substring");
+  teardown_suite();
   printf("  test_str8_contains_cstr PASSED\n");
 }
 
@@ -164,6 +172,7 @@ static void test_str8_equals(void) {
   String8 str1 = string8_lit("Hello, World!");
   String8 str2 = string8_lit("Hello, World!");
   assert(string8_equals(&str1, &str2) && "Strings are not equal");
+  teardown_suite();
   printf("  test_str8_equals PASSED\n");
 }
 

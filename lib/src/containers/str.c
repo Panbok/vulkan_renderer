@@ -56,35 +56,77 @@ String8 string8_create_formatted(Arena *arena, const char *fmt, ...) {
   return result;
 }
 
-String8 string8_substring(String8 *str, uint64_t start, uint64_t end) {
+String8 string8_substring(const String8 *str, uint64_t start, uint64_t end) {
   assert(str != NULL && "String is NULL");
-  assert(start >= 0 && "Start is negative");
-  assert(end >= 0 && "End is negative");
   assert(start <= end && "Start is greater than end");
-  assert(start < str->length && "Start is greater than string length");
+  assert(start <= str->length && "Start is greater than string length");
   assert(end <= str->length && "End is greater than string length");
 
   String8 result = {str->str + start, end - start};
   return result;
 }
 
-bool8_t string8_contains(String8 *str, String8 *substring) {
+bool8_t string8_contains(const String8 *str, const String8 *substring) {
   assert(str != NULL && "String is NULL");
   assert(substring != NULL && "Substring is NULL");
 
-  // todo: implement this and throw away string.h implementation
-  return strstr((char *)str->str, (char *)substring->str) != NULL;
+  if (substring->length == 0) {
+    return true;
+  }
+
+  if (substring->length > str->length) {
+    return false;
+  }
+
+  for (uint64_t i = 0; i <= str->length - substring->length; i++) {
+    bool8_t match = true;
+    for (uint64_t j = 0; j < substring->length; j++) {
+      if (str->str[i + j] != substring->str[j]) {
+        match = false;
+        break;
+      }
+    }
+
+    if (match) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
-bool8_t string8_contains_cstr(String8 *str, const char *substring) {
+bool8_t string8_contains_cstr(const String8 *str, const char *substring) {
   assert(str != NULL && "String is NULL");
   assert(substring != NULL && "Substring is NULL");
 
-  // todo: implement this and throw away string.h implementation
-  return strstr((char *)str->str, substring) != NULL;
+  uint64_t substring_len = strlen(substring);
+
+  if (substring_len == 0) {
+    return true;
+  }
+
+  if (substring_len > str->length) {
+    return false;
+  }
+
+  for (uint64_t i = 0; i <= str->length - substring_len; i++) {
+    bool8_t match = true;
+    for (uint64_t j = 0; j < substring_len; j++) {
+      if (str->str[i + j] != substring[j]) {
+        match = false;
+        break;
+      }
+    }
+
+    if (match) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
-bool8_t string8_equals(String8 *str1, String8 *str2) {
+bool8_t string8_equals(const String8 *str1, const String8 *str2) {
   assert(str1 != NULL && "String1 is NULL");
   assert(str2 != NULL && "String2 is NULL");
 
