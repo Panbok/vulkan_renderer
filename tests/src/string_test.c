@@ -107,6 +107,7 @@ static void test_str8_concat(void) {
 
 static void test_str8_destroy(void) {
   printf("  Running test_str8_destroy...\n");
+  setup_suite();
 
   String8 str = string8_lit("Hello, World!");
   string8_destroy(&str);
@@ -114,7 +115,56 @@ static void test_str8_destroy(void) {
   assert(str.str == NULL && "String is not NULL");
   assert(str.length == 0 && "String length is not 0");
 
+  teardown_suite();
   printf("  test_str8_destroy PASSED\n");
+}
+
+static void test_str8_substring(void) {
+  printf("  Running test_str8_substring...\n");
+  setup_suite();
+
+  String8 str = string8_lit("Hello, World!");
+  String8 sub = string8_substring(&str, 0, 5);
+  String8 res = string8_lit("Hello");
+
+  assert(sub.length == 5 && "Substring length is not 5");
+  assert(string8_equals(&sub, &res) && "Substring is not equal to string");
+
+  string8_destroy(&str);
+  string8_destroy(&sub);
+  string8_destroy(&res);
+  teardown_suite();
+  printf("  test_str8_substring PASSED\n");
+}
+
+static void test_str8_contains(void) {
+  printf("  Running test_str8_contains...\n");
+  setup_suite();
+
+  String8 str = string8_lit("Hello, World!");
+  String8 sub = string8_substring(&str, 0, 5);
+  assert(string8_contains(&str, &sub) && "String does not contain substring");
+  printf("  test_str8_contains PASSED\n");
+}
+
+static void test_str8_contains_cstr(void) {
+  printf("  Running test_str8_contains_cstr...\n");
+  setup_suite();
+
+  String8 str = string8_lit("Hello, World!");
+  assert(string8_contains_cstr(&str, "Hello") &&
+         "String does not contain substring");
+  printf("  test_str8_contains_cstr PASSED\n");
+}
+
+static void test_str8_equals(void) {
+  printf("  Running test_str8_equals...\n");
+  setup_suite();
+
+  String8 str1 = string8_lit("Hello, World!");
+  String8 str2 = string8_lit("Hello, World!");
+  assert(string8_equals(&str1, &str2) && "Strings are not equal");
+  printf("  test_str8_equals PASSED\n");
 }
 
 bool32_t run_string_tests(void) {
@@ -126,6 +176,10 @@ bool32_t run_string_tests(void) {
   test_str8_create_formatted_v();
   test_str8_cstr();
   test_str8_concat();
+  test_str8_substring();
+  test_str8_contains();
+  test_str8_contains_cstr();
+  test_str8_equals();
   test_str8_destroy();
 
   printf("--- String Tests Completed ---\n");

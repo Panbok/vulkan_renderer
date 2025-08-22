@@ -81,6 +81,39 @@ const char *string8_cstr(const String8 *str);
 String8 string8_concat(Arena *arena, String8 *str1, String8 *str2);
 
 /**
+ * @brief Get a substring of a string of 8-bit characters.
+ * @param str The string to get the substring of.
+ * @param start The start index of the substring.
+ * @param end The end index of the substring.
+ * @return A new string of 8-bit characters.
+ */
+String8 string8_substring(String8 *str, uint64_t start, uint64_t end);
+
+/**
+ * @brief Check if a string contains a substring.
+ * @param str The string to check.
+ * @param substring The substring to check for.
+ * @return True if the string contains the substring, false otherwise.
+ */
+bool8_t string8_contains(String8 *str, String8 *substring);
+
+/**
+ * @brief Check if a string contains a substring.
+ * @param str The string to check.
+ * @param substring The substring to check for.
+ * @return True if the string contains the substring, false otherwise.
+ */
+bool8_t string8_contains_cstr(String8 *str, const char *substring);
+
+/**
+ * @brief Check if a string equals another string.
+ * @param str1 The first string to compare.
+ * @param str2 The second string to compare.
+ * @return True if the strings are equal, false otherwise.
+ */
+bool8_t string8_equals(String8 *str1, String8 *str2);
+
+/**
  * @brief Destroy a string of 8-bit characters.
  * @param str The string to destroy.
  */

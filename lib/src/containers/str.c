@@ -56,6 +56,51 @@ String8 string8_create_formatted(Arena *arena, const char *fmt, ...) {
   return result;
 }
 
+String8 string8_substring(String8 *str, uint64_t start, uint64_t end) {
+  assert(str != NULL && "String is NULL");
+  assert(start >= 0 && "Start is negative");
+  assert(end >= 0 && "End is negative");
+  assert(start <= end && "Start is greater than end");
+  assert(start < str->length && "Start is greater than string length");
+  assert(end <= str->length && "End is greater than string length");
+
+  String8 result = {str->str + start, end - start};
+  return result;
+}
+
+bool8_t string8_contains(String8 *str, String8 *substring) {
+  assert(str != NULL && "String is NULL");
+  assert(substring != NULL && "Substring is NULL");
+
+  // todo: implement this and throw away string.h implementation
+  return strstr((char *)str->str, (char *)substring->str) != NULL;
+}
+
+bool8_t string8_contains_cstr(String8 *str, const char *substring) {
+  assert(str != NULL && "String is NULL");
+  assert(substring != NULL && "Substring is NULL");
+
+  // todo: implement this and throw away string.h implementation
+  return strstr((char *)str->str, substring) != NULL;
+}
+
+bool8_t string8_equals(String8 *str1, String8 *str2) {
+  assert(str1 != NULL && "String1 is NULL");
+  assert(str2 != NULL && "String2 is NULL");
+
+  if (str1->length != str2->length) {
+    return false;
+  }
+
+  for (uint64_t i = 0; i < str1->length; i++) {
+    if (str1->str[i] != str2->str[i]) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 const char *string8_cstr(const String8 *str) {
   assert(str != NULL && "String is NULL");
   return (char *)str->str;
