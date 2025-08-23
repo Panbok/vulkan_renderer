@@ -173,14 +173,6 @@ char *string_duplicate(const char *str);
 bool8_t string_contains(const char *str, const char *substring);
 
 /**
- * @brief Check if a string contains a null-terminated C-string substring.
- * @param str The string.
- * @param substring The null-terminated substring to search for.
- * @return True if the string contains the substring, false otherwise.
- */
-bool8_t string_contains_cstr(const char *str, const char *substring);
-
-/**
  * @brief Get a substring of a string.
  * @param arena The arena to allocate the new string from.
  * @param str The string.
@@ -262,4 +254,4 @@ void string_mid(char *dest, const char *source, int32_t start, int32_t length);
  * @param c The character to search for.
  * @return The index of the character, -1 if not found.
  */
-int32_t string_index_of(char *str, char c);
+int32_t string_index_of(const char *str, char c);

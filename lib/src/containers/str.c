@@ -219,13 +219,6 @@ bool8_t string_contains(const char *str, const char *substring) {
   return strstr(str, substring) != NULL;
 }
 
-bool8_t string_contains_cstr(const char *str, const char *substring) {
-  assert(str != NULL && "String is NULL");
-  assert(substring != NULL && "Substring is NULL");
-
-  return strstr(str, substring) != NULL;
-}
-
 char *string_substring(Arena *arena, const char *str, int32_t start,
                        int32_t length) {
   assert(str != NULL && "String is NULL");
@@ -298,6 +291,7 @@ char *string_copy(char *dest, const char *source) {
 char *string_ncopy(char *dest, const char *source, int64_t length) {
   assert(dest != NULL && "Destination is NULL");
   assert(source != NULL && "Source is NULL");
+  assert(length > 0 && "Length must be positive");
 
   return strncpy(dest, source, length);
 }
@@ -323,35 +317,36 @@ char *string_trim(char *str) {
 void string_mid(char *dest, const char *source, int32_t start, int32_t length) {
   assert(dest != NULL && "Destination is NULL");
   assert(source != NULL && "Source is NULL");
+  assert(start >= 0 && "Start must be non-negative");
 
   if (length == 0) {
     return;
   }
 
   uint64_t src_length = string_length(source);
-  if (start >= src_length) {
-    dest[0] = 0;
+  if ((uint64_t)start >= src_length) {
+    dest[0] = '\0';
     return;
   }
 
   if (length > 0) {
     uint64_t j = 0;
-    for (uint64_t i = (uint64_t)start; j < (uint64_t)length && source[i];
+    for (uint64_t i = (uint64_t)start; j < (uint64_t)length && i < src_length;
          ++i, ++j) {
       dest[j] = source[i];
     }
-    dest[j] = 0;
+    dest[j] = '\0';
   } else {
     // If a negative value is passed, proceed to the end of the string.
     uint64_t j = 0;
-    for (uint64_t i = (uint64_t)start; source[i]; ++i, ++j) {
+    for (uint64_t i = (uint64_t)start; i < src_length; ++i, ++j) {
       dest[j] = source[i];
     }
-    dest[j] = 0;
+    dest[j] = '\0';
   }
 }
 
-int32_t string_index_of(char *str, char c) {
+int32_t string_index_of(const char *str, char c) {
   if (!str) {
     return -1;
   }

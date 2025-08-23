@@ -235,15 +235,6 @@ static void test_cstring_contains(void) {
   printf("  test_cstring_contains PASSED\n");
 }
 
-static void test_cstring_contains_cstr(void) {
-  printf("  Running test_cstring_contains_cstr...\n");
-  const char *src = "Hello, World!";
-  assert(string_contains_cstr(src, "Hello"));
-  assert(string_contains_cstr(src, ""));
-  assert(!string_contains_cstr(src, "Mars"));
-  printf("  test_cstring_contains_cstr PASSED\n");
-}
-
 static void test_cstring_substring(void) {
   printf("  Running test_cstring_substring...\n");
   setup_suite();
@@ -369,7 +360,6 @@ bool32_t run_string_tests(void) {
   test_cstring_length();
   test_cstring_duplicate();
   test_cstring_contains();
-  test_cstring_contains_cstr();
   test_cstring_substring();
   test_cstring_format();
   test_cstring_format_v();
