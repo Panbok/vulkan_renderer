@@ -88,12 +88,12 @@ RendererError vkr_texture_load(RendererFrontendHandle renderer,
     const char *failure_reason = stbi_failure_reason();
     if (failure_reason) {
       log_error("Failed to load texture: %s", failure_reason);
-      if (strstr(failure_reason, "can't fopen") ||
-          strstr(failure_reason, "file not found")) {
+      if (string_contains(failure_reason, "can't fopen") ||
+          string_contains(failure_reason, "file not found")) {
         return RENDERER_ERROR_FILE_NOT_FOUND;
-      } else if (strstr(failure_reason, "outofmem")) {
+      } else if (string_contains(failure_reason, "outofmem")) {
         return RENDERER_ERROR_OUT_OF_MEMORY;
-      } else if (strstr(failure_reason, "bad req_comp")) {
+      } else if (string_contains(failure_reason, "bad req_comp")) {
         return RENDERER_ERROR_INVALID_PARAMETER;
       } else {
         return RENDERER_ERROR_RESOURCE_CREATION_FAILED;

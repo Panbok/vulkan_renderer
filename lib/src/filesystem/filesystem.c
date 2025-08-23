@@ -3,7 +3,7 @@
 FilePath file_path_create(const char *path, Arena *arena, FilePathType type) {
   assert_log(path != NULL, "path is NULL");
   assert_log(arena != NULL, "arena is NULL");
-  assert_log(strlen(path) > 0, "path is empty");
+  assert_log(string_length(path) > 0, "path is empty");
   assert_log(type == FILE_PATH_TYPE_RELATIVE || type == FILE_PATH_TYPE_ABSOLUTE,
              "invalid file path type");
 
@@ -11,7 +11,8 @@ FilePath file_path_create(const char *path, Arena *arena, FilePathType type) {
 
   if (type == FILE_PATH_TYPE_RELATIVE) {
     assert_log(PROJECT_SOURCE_DIR != NULL, "PROJECT_SOURCE_DIR is NULL");
-    uint64_t full_path_len = strlen(PROJECT_SOURCE_DIR) + strlen(path) + 1;
+    uint64_t full_path_len =
+        string_length(PROJECT_SOURCE_DIR) + string_length(path) + 1;
     uint8_t *full_path =
         (uint8_t *)arena_alloc(arena, full_path_len, ARENA_MEMORY_TAG_STRING);
     snprintf((char *)full_path, full_path_len, "%s%s", PROJECT_SOURCE_DIR,
@@ -19,7 +20,7 @@ FilePath file_path_create(const char *path, Arena *arena, FilePathType type) {
 
     result.path = string8_create(full_path, full_path_len);
   } else {
-    uint64_t path_len = strlen(path) + 1;
+    uint64_t path_len = string_length(path) + 1;
     uint8_t *path_str =
         (uint8_t *)arena_alloc(arena, path_len, ARENA_MEMORY_TAG_STRING);
     snprintf((char *)path_str, path_len, "%s", path);
@@ -137,10 +138,10 @@ FileError file_read_line(FileHandle *handle, Arena *arena, String8 *out_line) {
   if (handle->handle) {
     char buffer[32000]; // Should be enough for most lines
     if (fgets(buffer, 32000, (FILE *)handle->handle) != 0) {
-      out_line->length = strlen(buffer);
+      out_line->length = string_length(buffer);
       out_line->str = (uint8_t *)arena_alloc(arena, out_line->length + 1,
                                              ARENA_MEMORY_TAG_STRING);
-      strcpy((char *)out_line->str, buffer);
+      string_copy((char *)out_line->str, buffer);
       return FILE_ERROR_NONE;
     }
   }

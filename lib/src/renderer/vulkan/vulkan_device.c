@@ -22,9 +22,9 @@ static bool32_t has_required_extensions(VulkanBackendState *state,
   for (uint32_t i = 0; i < required_extension_count; i++) {
     bool32_t extension_found = false;
     for (uint32_t j = 0; j < extension_count; j++) {
-      if (strcmp(required_extensions[i],
-                 array_get_VkExtensionProperties(&available_extensions, j)
-                     ->extensionName) == 0) {
+      if (string_equals(required_extensions[i], array_get_VkExtensionProperties(
+                                                    &available_extensions, j)
+                                                    ->extensionName)) {
         extension_found = true;
         break;
       }

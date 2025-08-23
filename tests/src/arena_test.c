@@ -879,48 +879,48 @@ static void test_arena_tagging_and_statistics() {
   snprintf(check_buffer, sizeof(check_buffer), "%s: %llu Bytes\n",
            ArenaMemoryTagNames[ARENA_MEMORY_TAG_ARRAY],
            (unsigned long long)size_array_bytes);
-  assert(strstr(stats_str, check_buffer) != NULL &&
+  assert(string_contains(stats_str, check_buffer) &&
          "Array stats (Bytes) incorrect or missing");
 
   // ARENA_MEMORY_TAG_STRING (KB)
   snprintf(check_buffer, sizeof(check_buffer), "%s: %.2f KB\n",
            ArenaMemoryTagNames[ARENA_MEMORY_TAG_STRING],
            (double)size_string_kb / KB(1));
-  assert(strstr(stats_str, check_buffer) != NULL &&
+  assert(string_contains(stats_str, check_buffer) &&
          "String stats (KB) incorrect or missing");
 
   // ARENA_MEMORY_TAG_STRUCT (MB)
   snprintf(check_buffer, sizeof(check_buffer), "%s: %.2f MB\n",
            ArenaMemoryTagNames[ARENA_MEMORY_TAG_STRUCT],
            (double)size_struct_mb / MB(1));
-  assert(strstr(stats_str, check_buffer) != NULL &&
+  assert(string_contains(stats_str, check_buffer) &&
          "Struct stats (MB) incorrect or missing");
 
   // ARENA_MEMORY_TAG_VECTOR (GB)
   snprintf(check_buffer, sizeof(check_buffer), "%s: %.2f GB\n",
            ArenaMemoryTagNames[ARENA_MEMORY_TAG_VECTOR],
            (double)size_vector_gb / GB(1));
-  assert(strstr(stats_str, check_buffer) != NULL &&
+  assert(string_contains(stats_str, check_buffer) &&
          "Vector stats (GB) incorrect or missing");
 
   // ARENA_MEMORY_TAG_BUFFER (Exact KB)
   snprintf(check_buffer, sizeof(check_buffer), "%s: %.2f KB\n",
            ArenaMemoryTagNames[ARENA_MEMORY_TAG_BUFFER],
            (double)size_buffer_exact_kb / KB(1));
-  assert(strstr(stats_str, check_buffer) != NULL &&
+  assert(string_contains(stats_str, check_buffer) &&
          "Buffer stats (Exact KB) incorrect or missing");
 
   // Check a tag that should be zero (e.g. QUEUE)
   snprintf(check_buffer, sizeof(check_buffer),
            "%s: 0 Bytes\n", // Zero is always Bytes
            ArenaMemoryTagNames[ARENA_MEMORY_TAG_QUEUE]);
-  assert(strstr(stats_str, check_buffer) != NULL &&
+  assert(string_contains(stats_str, check_buffer) &&
          "Queue (expected zero) stats incorrect or missing");
 
   // Check UNKNOWN tag (should also be 0 Bytes)
   snprintf(check_buffer, sizeof(check_buffer), "%s: 0 Bytes\n",
            ArenaMemoryTagNames[ARENA_MEMORY_TAG_UNKNOWN]);
-  assert(strstr(stats_str, check_buffer) != NULL &&
+  assert(string_contains(stats_str, check_buffer) &&
          "Unknown (expected zero) stats incorrect or missing");
 
   // 5. Test arena_clear with a specific tag
@@ -1250,13 +1250,13 @@ static void test_arena_large_pages_statistics() {
   snprintf(check_buffer, sizeof(check_buffer), "%s: %.2f KB\n",
            ArenaMemoryTagNames[ARENA_MEMORY_TAG_ARRAY],
            (double)alloc_size / KB(1));
-  assert(strstr(stats_str, check_buffer) != NULL &&
+  assert(string_contains(stats_str, check_buffer) &&
          "Large page array stats not found");
 
   snprintf(check_buffer, sizeof(check_buffer), "%s: %.2f KB\n",
            ArenaMemoryTagNames[ARENA_MEMORY_TAG_STRING],
            (double)(alloc_size * 2) / KB(1));
-  assert(strstr(stats_str, check_buffer) != NULL &&
+  assert(string_contains(stats_str, check_buffer) &&
          "Large page string stats not found");
 
   arena_destroy(str_arena);

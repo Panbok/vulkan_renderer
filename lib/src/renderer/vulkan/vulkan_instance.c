@@ -19,7 +19,7 @@ static bool32_t check_validation_layer_support(VulkanBackendState *state,
       const char *vk_layer_name =
           (const char *)array_get_VkLayerProperties(&layer_properties, j)
               ->layerName;
-      if (strcmp(layer_names[i], vk_layer_name) == 0) {
+      if (string_equals(layer_names[i], vk_layer_name)) {
         layer_found = true;
         break;
       }
