@@ -20,6 +20,7 @@
       const VkrHashTable_##name *table, const char *name) {                    \
     assert_log(table != NULL, "Table must not be NULL");                       \
     assert_log(name != NULL, "Name must not be NULL");                         \
+    assert_log(table->capacity > 0, "Table capacity must be greater than 0");  \
     unsigned const char *us;                                                   \
     uint64_t hash = 0;                                                         \
     for (us = (unsigned const char *)name; *us; us++) {                        \

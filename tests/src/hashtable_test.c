@@ -4,7 +4,10 @@ static Arena *arena = NULL;
 static const uint64_t ARENA_SIZE = MB(1);
 
 // Setup function called before each test function in this suite
-static void setup_suite(void) { arena = arena_create(ARENA_SIZE, ARENA_SIZE); }
+static void setup_suite(void) {
+  arena = arena_create(ARENA_SIZE, ARENA_SIZE);
+  assert(arena && "arena_create failed");
+}
 
 // Teardown function called after each test function in this suite
 static void teardown_suite(void) {
