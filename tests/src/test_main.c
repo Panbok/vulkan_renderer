@@ -44,6 +44,8 @@ int main(int argc, char **argv) {
   all_passed &= run_clock_tests();
   printf("\n"); // Add spacing
   all_passed &= run_string_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_hashtable_tests();
 
   platform_shutdown();
 
