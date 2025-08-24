@@ -4,6 +4,9 @@
 #include "core/logger.h"
 #include "memory/arena.h"
 
+// TODO: Use open addressing for collision resolution in the future
+// version of the hash table
+
 #define VKR_HASH_TABLE_MULTIPLIER 97
 
 #define VkrHashTableConstructor(type, name)                                    \
