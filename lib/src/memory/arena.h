@@ -78,7 +78,7 @@
 
 #include "containers/bitset.h"
 #include "defines.h"
-#include "platform/platform.h"
+#include "platform/vkr_platform.h"
 
 #define ARENA_HEADER_SIZE AlignPow2(sizeof(Arena), MaxAlign())
 // Default size for reserved virtual address space per arena block.

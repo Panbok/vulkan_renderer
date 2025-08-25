@@ -3,7 +3,7 @@
 #include "containers/str.h"
 #include "defines.h"
 #include "memory/arena.h"
-#include "platform/platform.h"
+#include "platform/vkr_platform.h"
 
 static Arena *_log_arena = NULL;
 

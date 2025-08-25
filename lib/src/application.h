@@ -275,7 +275,7 @@ bool8_t application_create(Application *application,
   assert(config->height > 0 && "Application height is less than 0");
   assert(config->target_frame_rate > 0 && "Application target frame rate is 0");
 
-  if (!platform_init()) {
+  if (!vkr_platform_init()) {
     log_fatal("Failed to initialize platform!");
     return false_v;
   }
@@ -602,7 +602,7 @@ void application_start(Application *application) {
       continue;
     }
 
-    float64_t frame_processing_start_time = platform_get_absolute_time();
+    float64_t frame_processing_start_time = vkr_platform_get_absolute_time();
 
     application_update(application, delta);
 
@@ -611,7 +611,7 @@ void application_start(Application *application) {
     application_draw_frame(application, delta);
 
     // Frame limiting / yielding CPU
-    float64_t frame_processing_end_time = platform_get_absolute_time();
+    float64_t frame_processing_end_time = vkr_platform_get_absolute_time();
     float64_t frame_elapsed_processing_time =
         frame_processing_end_time - frame_processing_start_time;
     float64_t remaining_seconds_in_frame =
@@ -622,7 +622,7 @@ void application_start(Application *application) {
       if (remaining_ms > 0) {
         // Consider a flag to enable/disable this sleep for debugging or
         // specific needs
-        platform_sleep(remaining_ms);
+        vkr_platform_sleep(remaining_ms);
       }
     }
 
@@ -718,7 +718,7 @@ void application_shutdown(Application *application) {
   vkr_mutex_destroy(application->app_arena, &application->app_mutex);
   vkr_gamepad_shutdown(&application->gamepad);
 
-  platform_shutdown();
+  vkr_platform_shutdown();
 
   arena_destroy(application->renderer_arena);
   arena_destroy(application->log_arena);

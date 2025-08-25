@@ -71,7 +71,7 @@
 
 #include "core/event.h"
 #include "defines.h"
-#include "platform/platform.h"
+#include "platform/vkr_platform.h"
 
 /**
  * @brief Defines mouse button identifiers.

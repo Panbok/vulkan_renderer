@@ -60,7 +60,7 @@
 
 #pragma once
 
-#include "platform/platform.h"
+#include "platform/vkr_platform.h"
 
 /** @brief Mathematical constant π (pi) with high precision
  *  @note Value: 3.14159265358979323846...
@@ -436,12 +436,12 @@ static INLINE float32_t rand_range_f32(float32_t min, float32_t max) {
  * @brief Generates a random int32_t value
  * @return Random int32_t value in the range [0, RAND_MAX]
  * @note Automatically seeds the random number generator on first call
- * @note Uses platform_get_absolute_time() for seeding to ensure uniqueness
+ * @note Uses vkr_platform_get_absolute_time() for seeding to ensure uniqueness
  * @note NOT thread-safe due to global state in rand() and seeding logic
  */
 static INLINE int32_t rand_i32() {
   if (!rand_seeded) {
-    srand((int32_t)platform_get_absolute_time());
+    srand((int32_t)vkr_platform_get_absolute_time());
     rand_seeded = true;
   }
 

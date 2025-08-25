@@ -40,7 +40,7 @@
 #include "core/input.h"
 #include "math/math.h"
 #include "pch.h"
-#include "platform/platform.h"
+#include "platform/vkr_platform.h"
 
 /**
  * @brief Represents a platform window and its associated state.

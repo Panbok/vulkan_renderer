@@ -2,7 +2,7 @@
 
 #include "defines.h"
 #include "pch.h"
-#include "platform/platform.h"
+#include "platform/vkr_platform.h"
 
 typedef struct Clock {
   float64_t start_time;

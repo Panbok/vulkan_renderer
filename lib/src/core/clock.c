@@ -7,11 +7,11 @@ void clock_update(Clock *clock) {
     return;
   }
 
-  clock->elapsed = platform_get_absolute_time() - clock->start_time;
+  clock->elapsed = vkr_platform_get_absolute_time() - clock->start_time;
 }
 
 void clock_start(Clock *clock) {
-  clock->start_time = platform_get_absolute_time();
+  clock->start_time = vkr_platform_get_absolute_time();
   clock->elapsed = 0.0;
 }
 

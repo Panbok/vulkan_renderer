@@ -60,7 +60,7 @@
 #include "defines.h"
 #include "event_data_buffer.h"
 #include "pch.h"
-#include "platform/platform.h"
+#include "platform/vkr_platform.h"
 
 // TODO: Explore possibility of re-writing this into event loop system, like
 // Node.js, where events are processed in a loop, and the event manager is

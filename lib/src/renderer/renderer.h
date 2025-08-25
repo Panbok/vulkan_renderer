@@ -5,7 +5,7 @@
 #include "defines.h"
 #include "math/mat.h"
 #include "pch.h"
-#include "platform/platform.h"
+#include "platform/vkr_platform.h"
 
 // ============================================================================
 // Design Overview

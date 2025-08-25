@@ -59,7 +59,7 @@
 #include "core/logger.h"
 #include "defines.h"
 #include "pch.h"
-#include "platform/platform.h"
+#include "platform/vkr_platform.h"
 
 /**
  * @brief Represents a single memory block managed by the MMemory allocator.

@@ -33,9 +33,9 @@ Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size,
 
   uint64_t page_size = 0;
   if (bitset8_is_set(&flags, ARENA_FLAG_LARGE_PAGES)) {
-    page_size = platform_get_large_page_size();
+    page_size = vkr_platform_get_large_page_size();
   } else {
-    page_size = platform_get_page_size();
+    page_size = vkr_platform_get_page_size();
   }
 
   // Ensure s_rsv_size is page-aligned for mmap (usually good practice)
@@ -46,15 +46,15 @@ Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size,
   // We need to ensure the *size* of the initial commit is page-aligned.
   s_cmt_size = AlignPow2(s_cmt_size, page_size);
 
-  void *mem_block = platform_mem_reserve(s_rsv_size);
+  void *mem_block = vkr_platform_mem_reserve(s_rsv_size);
   if (mem_block == (void *)-1 || mem_block == NULL) {
     assert(0 && "Failed to reserve memory for arena");
     return NULL;
   }
 
   Arena *arena = (Arena *)mem_block;
-  if (!platform_mem_commit(arena, s_cmt_size)) {
-    platform_mem_release(arena, s_rsv_size);
+  if (!vkr_platform_mem_commit(arena, s_cmt_size)) {
+    vkr_platform_mem_release(arena, s_rsv_size);
     assert(0 && "Failed to commit memory for arena");
     return NULL;
   }
@@ -79,7 +79,7 @@ void arena_destroy(Arena *arena) {
   for (Arena *current = arena->current, *prev = NULL; current != NULL;
        current = prev) {
     prev = current->prev;
-    platform_mem_release(current, current->rsv);
+    vkr_platform_mem_release(current, current->rsv);
   }
 }
 
@@ -143,7 +143,7 @@ void *arena_alloc(Arena *arena, uint64_t size, ArenaMemoryTag tag) {
 
       // Determine flags based on the original arena's page size
       ArenaFlags new_block_flags = bitset8_create();
-      uint64_t base_page_size = platform_get_page_size();
+      uint64_t base_page_size = vkr_platform_get_page_size();
       if (arena->page_size > base_page_size) {
         bitset8_set(&new_block_flags, ARENA_FLAG_LARGE_PAGES);
       }
@@ -177,7 +177,7 @@ void *arena_alloc(Arena *arena, uint64_t size, ArenaMemoryTag tag) {
       uint8_t *commit_start = (uint8_t *)current + current->cmt;
       uint64_t commit_size = required_cmt_from_block_start - current->cmt;
 
-      if (!platform_mem_commit(commit_start, commit_size)) {
+      if (!vkr_platform_mem_commit(commit_start, commit_size)) {
         assert(0 && "Failed to commit memory");
       }
 
