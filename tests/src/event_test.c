@@ -121,7 +121,7 @@ static bool8_t counting_callback(Event *event, UserData user_data) {
 
 static bool8_t slow_callback(Event *event, UserData user_data) {
   // Sleep to simulate long processing
-  platform_sleep(100);
+  vkr_platform_sleep(100);
 
   TestEventData *data = (TestEventData *)event->data;
   data->value += 1;
@@ -308,7 +308,7 @@ static void test_event_dispatch_processing(void) {
   assert(dispatch_result && "Event dispatch should succeed");
 
   // Wait for event to be processed
-  platform_sleep(100);
+  vkr_platform_sleep(100);
 
   // The callbacks should have: added 1 and then multiplied by 2
   // So 5 -> 6 -> 12. Check global state instead of original_key_press_data.
@@ -330,7 +330,7 @@ static void test_event_dispatch_processing(void) {
   assert(dispatch_result && "Second event dispatch should succeed");
 
   // Wait for event to be processed
-  platform_sleep(100);
+  vkr_platform_sleep(100);
 
   // The callback should have: subtracted 1
   // So 10 -> 9. Check global state.
@@ -435,7 +435,7 @@ static void test_event_ordering(void) {
   }
 
   // Wait for events to be processed
-  platform_sleep(100);
+  vkr_platform_sleep(100);
 
   // Verify events were processed in FIFO order
   for (uint32_t i = 0; i < EVENT_COUNT; i++) {
@@ -480,7 +480,7 @@ static void test_dynamic_unsubscribe(void) {
     event_manager_dispatch(&manager, event);
 
     // Sleep briefly to ensure processing completes
-    platform_sleep(50);
+    vkr_platform_sleep(50);
   }
 
   // Verify first callback only received one event before unsubscribing
@@ -527,7 +527,7 @@ static void test_concurrent_dispatch(void) {
   }
 
   // Wait for event processing to complete
-  platform_sleep(500);
+  vkr_platform_sleep(500);
 
   // Verify all events were processed
   vkr_mutex_lock(count_mutex);
@@ -577,7 +577,7 @@ static void test_slow_callbacks(void) {
   event_manager_dispatch(&manager, event2);
 
   // Wait for processing
-  platform_sleep(300);
+  vkr_platform_sleep(300);
 
   // Verify both callbacks were executed
   assert(slow_callback_executed && "Slow callback should execute");
@@ -632,7 +632,7 @@ static void test_user_data_callback_functionality(void) {
   event_manager_dispatch(&manager, event);
 
   // Wait for processing
-  platform_sleep(100);
+  vkr_platform_sleep(100);
 
   // Both counters should be incremented since they have different user_data
   assert(counter1 == 1 && "Counter1 should be incremented once");
@@ -699,7 +699,7 @@ static void test_data_copying_original_integrity(void) {
   // Modify original data AFTER dispatch
   original_data->value = 200;
 
-  platform_sleep(100);
+  vkr_platform_sleep(100);
 
   assert(g_integrity_cb_executed && "Integrity callback should have executed");
   assert(
@@ -732,7 +732,7 @@ static void test_dispatch_data_size_zero(void) {
       .type = EVENT_TYPE_MOUSE_WHEEL, .data = &dummy_data, .data_size = 0};
   event_manager_dispatch(&manager, event1);
 
-  platform_sleep(100);
+  vkr_platform_sleep(100);
 
   assert(g_dsz_cb_execution_count == 1 &&
          "DSZ Callback should have executed once for event1");
@@ -748,7 +748,7 @@ static void test_dispatch_data_size_zero(void) {
   // Case 2: data_size = 0, data is NULL
   Event event2 = {.type = EVENT_TYPE_MOUSE_WHEEL, .data = NULL, .data_size = 0};
   event_manager_dispatch(&manager, event2);
-  platform_sleep(100);
+  vkr_platform_sleep(100);
 
   assert(g_dsz_cb_execution_count == 2 &&
          "DSZ Callback should have executed again for event2");
@@ -788,7 +788,7 @@ static void test_data_lifetime_original_freed(void) {
   scratch_destroy(scratch, ARENA_MEMORY_TAG_UNKNOWN);
   // original_data_on_scratch is now a dangling pointer / points to freed memory
 
-  platform_sleep(100);
+  vkr_platform_sleep(100);
 
   assert(
       g_lifetime_cb_executed_successfully &&

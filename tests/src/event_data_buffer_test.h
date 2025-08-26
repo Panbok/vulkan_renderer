@@ -3,7 +3,7 @@
 #include "core/event_data_buffer.h"
 #include "core/logger.h"
 #include "pch.h"
-#include "platform/platform.h"
+#include "platform/vkr_platform.h"
 
 // Test function declarations
 void test_event_data_buffer_create_destroy(void);

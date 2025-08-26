@@ -10,7 +10,7 @@ static uint64_t get_initial_pos() {
 
 static void test_arena_creation() {
   printf("  Running test_arena_creation...\n");
-  uint64_t page_size = platform_get_page_size();
+  uint64_t page_size = vkr_platform_get_page_size();
 
   // Test with specific small sizes
   uint64_t test_rsv_s = KB(64);
@@ -176,7 +176,7 @@ static void test_arena_simple_alloc() {
 
 static void test_arena_commit_grow() {
   printf("  Running test_arena_commit_grow...\n");
-  uint64_t page_size = platform_get_page_size();
+  uint64_t page_size = vkr_platform_get_page_size();
   uint64_t test_rsv = KB(64);
   uint64_t test_cmt_chunk = KB(4); // Small initial commit chunk
   Arena *arena = arena_create(test_rsv, test_cmt_chunk);
@@ -238,7 +238,7 @@ static void test_arena_commit_grow() {
 
 static void test_arena_block_grow() {
   printf("  Running test_arena_block_grow...\n");
-  uint64_t page_size = platform_get_page_size();
+  uint64_t page_size = vkr_platform_get_page_size();
   uint64_t first_block_rsv_config = KB(4); // Very small reserve for first block
   Arena *arena = arena_create(first_block_rsv_config, first_block_rsv_config);
   Arena *first_block = arena->current;
@@ -953,8 +953,8 @@ static void test_arena_tagging_and_statistics() {
 
 static void test_arena_large_pages_creation() {
   printf("  Running test_arena_large_pages_creation...\n");
-  uint64_t page_size = platform_get_page_size();
-  uint64_t large_page_size = platform_get_large_page_size();
+  uint64_t page_size = vkr_platform_get_page_size();
+  uint64_t large_page_size = vkr_platform_get_large_page_size();
 
   // Test creating arena without large page flag (default)
   Arena *arena_regular = arena_create();
@@ -1067,7 +1067,7 @@ static void test_arena_large_pages_allocation() {
 
 static void test_arena_large_pages_commit_grow() {
   printf("  Running test_arena_large_pages_commit_grow...\n");
-  uint64_t large_page_size = platform_get_large_page_size();
+  uint64_t large_page_size = vkr_platform_get_large_page_size();
 
   // Create large page arena with small initial commit to test growth
   uint64_t test_rsv =
@@ -1121,7 +1121,7 @@ static void test_arena_large_pages_commit_grow() {
 
 static void test_arena_large_pages_block_grow() {
   printf("  Running test_arena_large_pages_block_grow...\n");
-  uint64_t large_page_size = platform_get_large_page_size();
+  uint64_t large_page_size = vkr_platform_get_large_page_size();
 
   // Create large page arena with small reserve to force block growth
   uint64_t first_block_rsv_config = large_page_size * 2; // Just 2 large pages

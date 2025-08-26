@@ -5,7 +5,7 @@ int main(int argc, char **argv) {
   (void)argv; // Unused
   printf("Running tests...\n\n");
 
-  platform_init();
+  vkr_platform_init();
 
   Arena *log_arena = arena_create(MB(1), MB(1));
   log_init(log_arena);
@@ -47,7 +47,7 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_hashtable_tests();
 
-  platform_shutdown();
+  vkr_platform_shutdown();
 
   printf("\nAll tests completed.\n");
   return all_passed ? 0 : 1; // Return 0 on success, 1 on failure

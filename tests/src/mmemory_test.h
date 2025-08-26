@@ -2,7 +2,7 @@
 
 #include "memory/mmemory.h"
 #include "pch.h"
-#include "platform/platform.h"
+#include "platform/vkr_platform.h"
 
 // Forward declaration
 typedef struct MMemory MMemory;

@@ -20,7 +20,7 @@ static void test_clock_stop(void) {
   printf("  Running test_clock_stop...\n");
   Clock clock = clock_create();
   clock_start(&clock);
-  platform_sleep(1);
+  vkr_platform_sleep(1);
   clock_update(&clock);
   clock_stop(&clock);
   assert(clock.elapsed != 0.000000 && "Clock elapsed time is 0.0");
@@ -39,7 +39,7 @@ static void test_clock_update_non_zero_start_time(void) {
   printf("  Running test_clock_update_non_zero_start_time...\n");
   Clock clock = clock_create();
   clock_start(&clock);
-  platform_sleep(1);
+  vkr_platform_sleep(1);
   clock_update(&clock);
   assert(clock.elapsed != 0.000000 && "Clock elapsed time is 0.0");
   printf("  test_clock_update_non_zero_start_time PASSED\n");

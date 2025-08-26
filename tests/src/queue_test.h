@@ -3,7 +3,7 @@
 #include "containers/queue.h"
 #include "core/logger.h"
 #include "pch.h"
-#include "platform/platform.h"
+#include "platform/vkr_platform.h"
 
 Queue(uint32_t);
 
