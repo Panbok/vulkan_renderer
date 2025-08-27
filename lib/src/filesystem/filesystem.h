@@ -175,11 +175,13 @@ typedef enum FileModeFlags {
  * file operations, allowing for appropriate error handling and user feedback.
  */
 typedef enum FileError {
-  FILE_ERROR_NONE,          /**< Operation completed successfully */
-  FILE_ERROR_NOT_FOUND,     /**< File or directory does not exist */
-  FILE_ERROR_ACCESS_DENIED, /**< Insufficient permissions to access file */
-  FILE_ERROR_IO_ERROR, /**< General I/O error (disk full, network error, etc.)
-                        */
+  FILE_ERROR_NONE,           /**< Operation completed successfully */
+  FILE_ERROR_NOT_FOUND,      /**< File or directory does not exist */
+  FILE_ERROR_ACCESS_DENIED,  /**< Insufficient permissions to access file */
+  FILE_ERROR_IO_ERROR,       /**< General I/O error (disk full, network error,
+                                etc.) */
+  FILE_ERROR_EOF,            /**< End of file */
+  FILE_ERROR_LINE_TOO_LONG,  /**< Line was too long */
   FILE_ERROR_INVALID_MODE,   /**< Invalid file mode */
   FILE_ERROR_INVALID_PATH,   /**< Invalid file path */
   FILE_ERROR_OPEN_FAILED,    /**< Failed to open file */
@@ -332,11 +334,10 @@ FileError file_stats(const FilePath *path, FileStats *out_stats);
  * @param arena Arena to allocate the line string from. Must
  * not be NULL.
  * @param line_arena Arena to allocate the line string from. Must
- * not be NULL.
- * @param out_line Pointer to store the line as a `String8`.
- * Must not be NULL.
+ *   not be NULL.
  * @param max_line_length Maximum length of the line to read. Must be greater
- * than 0.
+ *   than 0.
+ * @param out_line Pointer to store the line as a `String8`. Must not be NULL.
  * @return `FILE_ERROR_NONE` on success,
  * `FILE_ERROR_INVALID_HANDLE` if the file is not open, or
  * another error code on failure.
