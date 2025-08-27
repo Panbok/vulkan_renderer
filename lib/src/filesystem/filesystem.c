@@ -400,6 +400,10 @@ String8 file_get_error_string(FileError error) {
     return string8_lit("Invalid SPIR-V file format");
   case FILE_ERROR_FILE_EMPTY:
     return string8_lit("File is empty");
+  case FILE_ERROR_LINE_TOO_LONG:
+    return string8_lit("Line too long");
+  case FILE_ERROR_EOF:
+    return string8_lit("End of file");
   case FILE_ERROR_COUNT:
     return string8_lit("Unknown error");
   }
