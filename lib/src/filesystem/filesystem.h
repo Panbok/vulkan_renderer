@@ -6,7 +6,7 @@
 #include "defines.h"
 #include "memory/arena.h"
 #include "pch.h"
-#include "platform/platform.h"
+#include "platform/vkr_platform.h"
 
 /**
  * @file filesystem.h
@@ -331,8 +331,12 @@ FileError file_stats(const FilePath *path, FileStats *out_stats);
  * NULL.
  * @param arena Arena to allocate the line string from. Must
  * not be NULL.
+ * @param line_arena Arena to allocate the line string from. Must
+ * not be NULL.
  * @param out_line Pointer to store the line as a `String8`.
  * Must not be NULL.
+ * @param max_line_length Maximum length of the line to read. Must be greater
+ * than 0.
  * @return `FILE_ERROR_NONE` on success,
  * `FILE_ERROR_INVALID_HANDLE` if the file is not open, or
  * another error code on failure.
@@ -340,7 +344,8 @@ FileError file_stats(const FilePath *path, FileStats *out_stats);
  * @note The maximum line length is 32,000 characters.
  * Longer lines will be truncated.
  */
-FileError file_read_line(FileHandle *handle, Arena *arena, String8 *out_line);
+FileError file_read_line(FileHandle *handle, Arena *arena, Arena *line_arena,
+                         uint64_t max_line_length, String8 *out_line);
 
 /**
  * @brief Writes a line of text to a file.

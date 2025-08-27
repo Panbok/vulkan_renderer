@@ -130,18 +130,24 @@ void file_close(FileHandle *handle) {
   }
 }
 
-FileError file_read_line(FileHandle *handle, Arena *arena, String8 *out_line) {
+FileError file_read_line(FileHandle *handle, Arena *arena, Arena *line_arena,
+                         uint64_t max_line_length, String8 *out_line) {
   assert_log(handle != NULL, "handle is NULL");
   assert_log(arena != NULL, "arena is NULL");
+  assert_log(line_arena != NULL, "line_arena is NULL");
   assert_log(out_line != NULL, "out_line is NULL");
+  assert_log(max_line_length > 0, "max_line_length must be greater than 0");
 
   if (handle->handle) {
-    char buffer[32000]; // Should be enough for most lines
-    if (fgets(buffer, 32000, (FILE *)handle->handle) != 0) {
+    Scratch line_scratch = scratch_create(line_arena);
+    char *buffer = (char *)arena_alloc(line_scratch.arena, max_line_length,
+                                       ARENA_MEMORY_TAG_STRING);
+    if (fgets(buffer, max_line_length, (FILE *)handle->handle) != 0) {
       out_line->length = string_length(buffer);
       out_line->str = (uint8_t *)arena_alloc(arena, out_line->length + 1,
                                              ARENA_MEMORY_TAG_STRING);
       string_copy((char *)out_line->str, buffer);
+      scratch_destroy(line_scratch, ARENA_MEMORY_TAG_STRING);
       return FILE_ERROR_NONE;
     }
   }
