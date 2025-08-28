@@ -22,6 +22,8 @@ else()
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-implicit-function-declaration -march=native")
 endif()
 
+# TODO: Add optimization flags for release build like -O3, -flto, -ffast-math, etc.
+
 # Add subdirectories for each component
 add_subdirectory(lib)
 add_subdirectory(app)

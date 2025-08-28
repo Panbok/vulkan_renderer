@@ -22,13 +22,13 @@ if(MSVC)
 else()
     target_compile_options(vulkan_renderer PRIVATE -march=native)
 endif()
+
 # Link against the renderer_lib
 target_link_libraries(vulkan_renderer PRIVATE renderer_lib)
 
 # Include directories
 target_include_directories(vulkan_renderer
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-    PRIVATE ${CMAKE_SOURCE_DIR}/lib/src
 )
 
 # Set compile definitions for logging based on build type
