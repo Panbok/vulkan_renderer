@@ -4,9 +4,8 @@
 #include "memory/arena.h"
 
 typedef struct VkrFreeListNode {
-  uint32_t size;
-  uint32_t offset;
-
+  uint64_t size;
+  uint64_t offset;
   struct VkrFreeListNode *next;
 } VkrFreeListNode;
 
