@@ -19,6 +19,12 @@ typedef enum VkrOccupancyState {
   VKR_EMPTY = 0,
 } VkrOccupancyState;
 
+// todo: create a temp arena for resizing hash table, when we need to
+// resize the table we simply copy the table into the temp arena, zero
+// the main arena, reset the position and allocate more memory with bigger
+// capacity then we copy the table back into the main arena and zero and reset
+// the temp arena
+
 #define VkrHashTableConstructor(type, name)                                    \
   typedef struct VkrHashEntry_##name {                                         \
     const char *key;                                                           \
@@ -64,6 +70,7 @@ typedef enum VkrOccupancyState {
   vkr_internal INLINE void vkr_hash_table_resize_##name(                       \
       VkrHashTable_##name *table, uint64_t new_capacity) {                     \
     assert_log(table != NULL, "Table must not be NULL");                       \
+    assert_log(new_capacity > 0, "New capacity must be greater than 0");       \
     VkrHashTable_##name new_table =                                            \
         vkr_hash_table_create_##name(table->arena, new_capacity);              \
     for (uint64_t i = 0; i < table->capacity; i++) {                           \
@@ -112,7 +119,7 @@ typedef enum VkrOccupancyState {
       index = (index + 1) % table->capacity;                                   \
       probes++;                                                                \
       if (probes >= VKR_HASH_TABLE_MAX_PROBES || probes >= table->capacity) {  \
-        log_debug("Hash table probe limit exceeded");                          \
+        log_error("Hash table probe limit exceeded for key: %s", key);         \
         return false_v;                                                        \
       }                                                                        \
     }                                                                          \
