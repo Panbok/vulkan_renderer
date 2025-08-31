@@ -191,12 +191,14 @@ struct s_BufferHandle {
 
 #define VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT 3
 typedef struct VulkanShaderObjectDescriptorState {
-  uint32_t generations[3];
+  // Per-frame descriptor generation tracking; length == frame_count
+  uint32_t *generations;
 } VulkanShaderObjectDescriptorState;
 
 #define VULKAN_SHADER_OBJECT_LOCAL_STATE_COUNT 1024
 typedef struct VulkanShaderObjectLocalState {
-  VkDescriptorSet descriptor_sets[3];
+  // Per-frame descriptor sets; length == frame_count
+  VkDescriptorSet *descriptor_sets;
 
   VulkanShaderObjectDescriptorState
       descriptor_states[VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT];
@@ -210,13 +212,17 @@ typedef struct VulkanShaderObject {
   VkShaderModule modules[SHADER_STAGE_COUNT];
 
   VkDescriptorPool global_descriptor_pool;
-  VkDescriptorSet global_descriptor_sets[3];
+  // Per-frame global descriptor sets; length == frame_count
+  VkDescriptorSet *global_descriptor_sets;
   VkDescriptorSetLayout global_descriptor_set_layout;
   VkDescriptorSetLayoutBinding global_descriptor_set_layout_binding;
   struct s_BufferHandle global_uniform_buffer;
 
   // todo: rework into free list of objects
+  uint32_t frame_count;
   uint32_t local_uniform_buffer_count;
+  uint32_t local_state_free_count;
+  uint32_t local_state_free_ids[VULKAN_SHADER_OBJECT_LOCAL_STATE_COUNT];
   VkDescriptorPool local_descriptor_pool;
   VkDescriptorSetLayout local_descriptor_set_layout;
   struct s_BufferHandle local_uniform_buffer;

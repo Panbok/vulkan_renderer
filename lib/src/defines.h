@@ -11,15 +11,16 @@
 #define ASSERT_LOG 1
 #endif
 
-#define AlignPow2(x, b) (((x) + (b)-1) & (~((b)-1)))
+#define AlignPow2(x, b) (((x) + (b) - 1) & (~((b) - 1)))
 #define AlignPow2Down(x, b)                                                    \
-  ((x) & (~((b)-1))) // Align x down to multiple of b (b must be power of 2)
+  ((x) & (~((b) - 1))) // Align x down to multiple of b (b must be power of 2)
 #define AlignOf(T) __alignof(T)
 // Maximum fundamental alignment for the platform
 // Use the compiler's __BIGGEST_ALIGNMENT__ if available, otherwise fall back to
 // common values
 #if defined(__BIGGEST_ALIGNMENT__)
-#define MaxAlign() __BIGGEST_ALIGNMENT__
+#define MaxAlign()                                                             \
+  (((__BIGGEST_ALIGNMENT__) < 16) ? 16 : (__BIGGEST_ALIGNMENT__))
 #elif defined(_MSC_VER)
 #define MaxAlign() 16 // MSVC typically uses 16-byte max alignment
 #else
@@ -84,7 +85,7 @@
 #define vkr_local_persist static
 #define vkr_internal static
 
-#define VKR_INVALID_OBJECT_ID 4294967295U
+#define VKR_INVALID_ID 4294967295U
 
 // Inlining
 #if defined(__clang__) || defined(__GNUC__)
