@@ -6,6 +6,7 @@
 #pragma once
 
 #include "defines.h"
+#include "math/vec.h"
 #include "memory/arena.h"
 
 // Forward declaration for Arena type
@@ -125,6 +126,16 @@ bool8_t string8_contains_cstr(const String8 *str, const char *substring);
 bool8_t string8_equals(const String8 *str1, const String8 *str2);
 
 /**
+ * @brief Case-insensitive equality check for String8 (ASCII only)
+ */
+bool8_t string8_equalsi(const String8 *str1, const String8 *str2);
+
+/**
+ * @brief Trim leading and trailing ASCII whitespace in-place on a String8 view
+ */
+void string8_trim(String8 *s);
+
+/**
  * @brief Destroy a string of 8-bit characters.
  * @param str The string to destroy.
  */
@@ -149,6 +160,13 @@ bool8_t string_equals(const char *str1, const char *str2);
  * @return True if the strings are equal, false otherwise.
  */
 bool8_t string_equalsi(const char *str1, const char *str2);
+
+/**
+ * @brief Alias for case-insensitive equality on C-strings (ASCII only)
+ */
+static inline bool8_t string_equali(const char *a, const char *b) {
+  return string_equalsi(a, b);
+}
 
 /**
  * @brief Get the length of a string.
@@ -255,3 +273,171 @@ void string_mid(char *dest, const char *source, int32_t start, int32_t length);
  * @return The index of the character, -1 if not found.
  */
 int32_t string_index_of(const char *str, char c);
+
+/////////////////////
+// Conversions (CString)
+/////////////////////
+
+/*
+ * @brief Convert a string to a float64_t
+ * @param s The string to convert.
+ * @param out The float64_t to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string_to_f64(const char *s, float64_t *out);
+
+/*
+ * @brief Convert a string to a float32_t
+ * @param s The string to convert.
+ * @param out The float32_t to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string_to_f32(const char *s, float32_t *out);
+
+/*
+ * @brief Convert a string to a int64_t
+ * @param s The string to convert.
+ * @param out The int64_t to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string_to_i64(const char *s, int64_t *out);
+
+/*
+ * @brief Convert a string to a uint64_t
+ * @param s The string to convert.
+ * @param out The uint64_t to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string_to_u64(const char *s, uint64_t *out);
+
+/*
+ * @brief Convert a string to a int32_t
+ * @param s The string to convert.
+ * @param out The int32_t to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string_to_i32(const char *s, int32_t *out);
+
+/*
+ * @brief Convert a string to a uint32_t
+ * @param s The string to convert.
+ * @param out The uint32_t to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string_to_u32(const char *s, uint32_t *out);
+
+/*
+ * @brief Convert a string to a bool8_t
+ * @param s The string to convert.
+ * @param out The bool8_t to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string_to_bool(const char *s, bool8_t *out);
+
+/*
+ * @brief Convert a string to a Vec2
+ * @param s The string to convert.
+ * @param out The Vec2 to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string_to_vec2(const char *s, Vec2 *out);
+
+/*
+ * @brief Convert a string to a Vec3
+ * @param s The string to convert.
+ * @param out The Vec3 to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string_to_vec3(const char *s, Vec3 *out);
+
+/*
+ * @brief Convert a string to a Vec4
+ * @param s The string to convert.
+ * @param out The Vec4 to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string_to_vec4(const char *s, Vec4 *out);
+
+/////////////////////
+// Conversions (String8)
+/////////////////////
+
+/**
+ * @brief Convert a string to a float64_t
+ * @param s The string to convert.
+ * @param out The float64_t to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string8_to_f64(const String8 *s, float64_t *out);
+
+/*
+ * @brief Convert a string to a float32_t
+ * @param s The string to convert.
+ * @param out The float32_t to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string8_to_f32(const String8 *s, float32_t *out);
+
+/**
+ * @brief Convert a string to a int64_t
+ * @param s The string to convert.
+ * @param out The int64_t to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string8_to_i64(const String8 *s, int64_t *out);
+
+/**
+ * @brief Convert a string to a uint64_t
+ * @param s The string to convert.
+ * @param out The uint64_t to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string8_to_u64(const String8 *s, uint64_t *out);
+
+/**
+ * @brief Convert a string to a int32_t
+ * @param s The string to convert.
+ * @param out The int32_t to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string8_to_i32(const String8 *s, int32_t *out);
+
+/**
+ * @brief Convert a string to a uint32_t
+ * @param s The string to convert.
+ * @param out The uint32_t to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string8_to_u32(const String8 *s, uint32_t *out);
+
+/**
+ * @brief Convert a string to a bool8_t
+ * @param s The string to convert.
+ * @param out The bool8_t to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string8_to_bool(const String8 *s, bool8_t *out);
+
+/**
+ * @brief Convert a string to a Vec2
+ * @param s The string to convert.
+ * @param out The Vec2 to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string8_to_vec2(const String8 *s, Vec2 *out);
+
+/**
+ * @brief Convert a string to a Vec3
+ * @param s The string to convert.
+ * @param out The Vec3 to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string8_to_vec3(const String8 *s, Vec3 *out);
+
+/**
+ * @brief Convert a string to a Vec4
+ * @param s The string to convert.
+ * @param out The Vec4 to store the result.
+ * @return True if the conversion was successful, false otherwise.
+ */
+bool8_t string8_to_vec4(const String8 *s, Vec4 *out);

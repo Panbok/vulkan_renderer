@@ -1,5 +1,9 @@
 #include "str.h"
 
+#include <alloca.h>
+#include <ctype.h>
+#include <errno.h>
+
 /////////////////////
 // String8
 /////////////////////
@@ -145,6 +149,48 @@ bool8_t string8_equals(const String8 *str1, const String8 *str2) {
   }
 
   return true;
+}
+
+bool8_t string8_equalsi(const String8 *str1, const String8 *str2) {
+  assert(str1 != NULL && "String1 is NULL");
+  assert(str2 != NULL && "String2 is NULL");
+
+  if (str1->length != str2->length) {
+    return false;
+  }
+
+  for (uint64_t i = 0; i < str1->length; i++) {
+    uint8_t a = (uint8_t)str1->str[i];
+    uint8_t b = (uint8_t)str2->str[i];
+    if ((uint8_t)tolower(a) != (uint8_t)tolower(b)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+void string8_trim(String8 *s) {
+  assert(s != NULL && "String is NULL");
+
+  if (!s->str || s->length == 0) {
+    return;
+  }
+
+  uint64_t start = 0;
+  while (start < s->length &&
+         (s->str[start] == ' ' || s->str[start] == '\t' ||
+          s->str[start] == '\r' || s->str[start] == '\n')) {
+    start++;
+  }
+
+  uint64_t end = s->length;
+  while (end > start && (s->str[end - 1] == ' ' || s->str[end - 1] == '\t' ||
+                         s->str[end - 1] == '\r' || s->str[end - 1] == '\n')) {
+    end--;
+  }
+
+  *s = string8_substring(s, start, end);
 }
 
 const char *string8_cstr(const String8 *str) {
@@ -361,4 +407,249 @@ int32_t string_index_of(const char *str, char c) {
   }
 
   return -1;
+}
+
+/////////////////////
+// Conversions
+/////////////////////
+
+static inline const char *string__skip_ws(const char *p) {
+  while (*p && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')) {
+    p++;
+  }
+  return p;
+}
+
+static inline bool8_t string__parse_f64(const char *s, float64_t *out) {
+  if (!s || !out)
+    return false_v;
+
+  char *endptr = NULL;
+  errno = 0;
+  const char *start = string__skip_ws(s);
+
+  float64_t v = strtod(start, &endptr);
+  if (start == endptr || errno == ERANGE)
+    return false_v;
+
+  const char *trail = string__skip_ws(endptr);
+  if (*trail != '\0')
+    return false_v;
+
+  *out = (float64_t)v;
+  return true_v;
+}
+
+static inline bool8_t string__parse_f32(const char *s, float32_t *out) {
+  float64_t d;
+  if (!string__parse_f64(s, &d))
+    return false_v;
+
+  *out = (float32_t)d;
+  return true_v;
+}
+
+static inline bool8_t string__parse_i64(const char *s, int64_t *out) {
+  if (!s || !out)
+    return false_v;
+
+  char *endptr = NULL;
+  errno = 0;
+
+  const char *start = string__skip_ws(s);
+  int64_t v = strtoll(start, &endptr, 10);
+  if (start == endptr || errno == ERANGE)
+    return false_v;
+  const char *trail = string__skip_ws(endptr);
+  if (*trail != '\0')
+    return false_v;
+  *out = (int64_t)v;
+  return true_v;
+}
+
+static inline bool8_t string__parse_u64(const char *s, uint64_t *out) {
+  if (!s || !out)
+    return false_v;
+
+  char *endptr = NULL;
+  errno = 0;
+
+  const char *start = string__skip_ws(s);
+  uint64_t v = strtoull(start, &endptr, 10);
+  if (start == endptr || errno == ERANGE)
+    return false_v;
+
+  const char *trail = string__skip_ws(endptr);
+  if (*trail != '\0')
+    return false_v;
+
+  *out = (uint64_t)v;
+  return true_v;
+}
+
+bool8_t string_to_f64(const char *s, float64_t *out) {
+  return string__parse_f64(s, out);
+}
+bool8_t string_to_f32(const char *s, float32_t *out) {
+  return string__parse_f32(s, out);
+}
+bool8_t string_to_i64(const char *s, int64_t *out) {
+  return string__parse_i64(s, out);
+}
+bool8_t string_to_u64(const char *s, uint64_t *out) {
+  return string__parse_u64(s, out);
+}
+
+bool8_t string_to_i32(const char *s, int32_t *out) {
+  int64_t v;
+  if (!string__parse_i64(s, &v))
+    return false_v;
+  if (v < INT32_MIN || v > INT32_MAX)
+    return false_v;
+  *out = (int32_t)v;
+  return true_v;
+}
+
+bool8_t string_to_u32(const char *s, uint32_t *out) {
+  uint64_t v;
+  if (!string__parse_u64(s, &v))
+    return false_v;
+  if (v > UINT32_MAX)
+    return false_v;
+  *out = (uint32_t)v;
+  return true_v;
+}
+
+bool8_t string_to_bool(const char *s, bool8_t *out) {
+  if (!s || !out)
+    return false_v;
+  const char *p = string__skip_ws(s);
+  if (string_equalsi(p, "true") || string_equalsi(p, "yes") ||
+      string_equalsi(p, "on") || string_equals(p, "1")) {
+    *out = true_v;
+    return true_v;
+  }
+  if (string_equalsi(p, "false") || string_equalsi(p, "no") ||
+      string_equalsi(p, "off") || string_equals(p, "0")) {
+    *out = false_v;
+    return true_v;
+  }
+  return false_v;
+}
+
+static inline bool8_t string__parse_vecn(const char *s, double *dst, int n) {
+  if (!s || !dst)
+    return false_v;
+  int32_t matched = 0;
+  switch (n) {
+  case 2:
+    matched = sscanf(s, "%lf , %lf", &dst[0], &dst[1]);
+    break;
+  case 3:
+    matched = sscanf(s, "%lf , %lf , %lf", &dst[0], &dst[1], &dst[2]);
+    break;
+  case 4:
+    matched =
+        sscanf(s, "%lf , %lf , %lf , %lf", &dst[0], &dst[1], &dst[2], &dst[3]);
+    break;
+  default:
+    return false_v;
+  }
+  return matched == n ? true_v : false_v;
+}
+
+bool8_t string_to_vec2(const char *s, Vec2 *out) {
+  float64_t v[2];
+  if (!string__parse_vecn(s, v, 2))
+    return false_v;
+  *out = vec2_new((float)v[0], (float)v[1]);
+  return true_v;
+}
+
+bool8_t string_to_vec3(const char *s, Vec3 *out) {
+  float64_t v[3];
+  if (!string__parse_vecn(s, v, 3))
+    return false_v;
+  *out = vec3_new((float)v[0], (float)v[1], (float)v[2]);
+  return true_v;
+}
+
+bool8_t string_to_vec4(const char *s, Vec4 *out) {
+  float64_t v[4];
+  if (!string__parse_vecn(s, v, 4))
+    return false_v;
+  *out = vec4_new((float)v[0], (float)v[1], (float)v[2], (float)v[3]);
+  return true_v;
+}
+
+// String8 wrappers
+static inline bool8_t string8__to_cbuf(const String8 *s, char **out_buf) {
+  if (!s || !s->str || s->length == 0)
+    return false_v;
+  char *buf = (char *)alloca((size_t)s->length + 1);
+  MemCopy(buf, s->str, (size_t)s->length);
+  buf[s->length] = '\0';
+  *out_buf = buf;
+  return true_v;
+}
+
+bool8_t string8_to_f64(const String8 *s, float64_t *out) {
+  char *buf;
+  if (!string8__to_cbuf(s, &buf))
+    return false_v;
+  return string_to_f64(buf, out);
+}
+bool8_t string8_to_f32(const String8 *s, float32_t *out) {
+  char *buf;
+  if (!string8__to_cbuf(s, &buf))
+    return false_v;
+  return string_to_f32(buf, out);
+}
+bool8_t string8_to_i64(const String8 *s, int64_t *out) {
+  char *buf;
+  if (!string8__to_cbuf(s, &buf))
+    return false_v;
+  return string_to_i64(buf, out);
+}
+bool8_t string8_to_u64(const String8 *s, uint64_t *out) {
+  char *buf;
+  if (!string8__to_cbuf(s, &buf))
+    return false_v;
+  return string_to_u64(buf, out);
+}
+bool8_t string8_to_i32(const String8 *s, int32_t *out) {
+  char *buf;
+  if (!string8__to_cbuf(s, &buf))
+    return false_v;
+  return string_to_i32(buf, out);
+}
+bool8_t string8_to_u32(const String8 *s, uint32_t *out) {
+  char *buf;
+  if (!string8__to_cbuf(s, &buf))
+    return false_v;
+  return string_to_u32(buf, out);
+}
+bool8_t string8_to_bool(const String8 *s, bool8_t *out) {
+  char *buf;
+  if (!string8__to_cbuf(s, &buf))
+    return false_v;
+  return string_to_bool(buf, out);
+}
+bool8_t string8_to_vec2(const String8 *s, Vec2 *out) {
+  char *buf;
+  if (!string8__to_cbuf(s, &buf))
+    return false_v;
+  return string_to_vec2(buf, out);
+}
+bool8_t string8_to_vec3(const String8 *s, Vec3 *out) {
+  char *buf;
+  if (!string8__to_cbuf(s, &buf))
+    return false_v;
+  return string_to_vec3(buf, out);
+}
+bool8_t string8_to_vec4(const String8 *s, Vec4 *out) {
+  char *buf;
+  if (!string8__to_cbuf(s, &buf))
+    return false_v;
+  return string_to_vec4(buf, out);
 }

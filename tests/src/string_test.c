@@ -181,6 +181,27 @@ static void test_str8_equals(void) {
   printf("  test_str8_equals PASSED\n");
 }
 
+static void test_str8_equalsi(void) {
+  printf("  Running test_str8_equalsi...\n");
+  setup_suite();
+  String8 a = string8_lit("AbC");
+  String8 b = string8_lit("aBc");
+  assert(string8_equalsi(&a, &b));
+  teardown_suite();
+  printf("  test_str8_equalsi PASSED\n");
+}
+
+static void test_str8_trim(void) {
+  printf("  Running test_str8_trim...\n");
+  setup_suite();
+  String8 s = string8_lit("  \t  hello  \n  ");
+  string8_trim(&s);
+  String8 expect = string8_lit("hello");
+  assert(string8_equals(&s, &expect));
+  teardown_suite();
+  printf("  test_str8_trim PASSED\n");
+}
+
 /////////////////////
 // CString Tests
 /////////////////////
@@ -331,6 +352,35 @@ static void test_cstring_mid(void) {
   printf("  test_cstring_mid PASSED\n");
 }
 
+static void test_string_conversions(void) {
+  printf("  Running test_string_conversions...\n");
+  float64_t d;
+  float32_t f;
+  int64_t i64;
+  uint64_t u64;
+  int32_t i32;
+  uint32_t u32;
+  bool8_t b;
+  assert(string_to_f64("3.14", &d) && fabs(d - 3.14) < 1e-9);
+  assert(string_to_f32("2.5", &f) && fabsf(f - 2.5f) < 1e-6f);
+  assert(string_to_i64("-42", &i64) && i64 == -42);
+  assert(string_to_u64("42", &u64) && u64 == 42ULL);
+  assert(string_to_i32("-7", &i32) && i32 == -7);
+  assert(string_to_u32("7", &u32) && u32 == 7U);
+  assert(string_to_bool("true", &b) && b == true_v);
+  assert(string_to_bool("Off", &b) && b == false_v);
+
+  Vec2 v2;
+  Vec3 v3;
+  Vec4 v4;
+  assert(string_to_vec2("1,2", &v2) && v2.x == 1.0f && v2.y == 2.0f);
+  assert(string_to_vec3("1,2,3", &v3) && v3.x == 1.0f && v3.y == 2.0f &&
+         v3.z == 3.0f);
+  assert(string_to_vec4("1,2,3,4", &v4) && v4.x == 1.0f && v4.y == 2.0f &&
+         v4.z == 3.0f && v4.w == 4.0f);
+  printf("  test_string_conversions PASSED\n");
+}
+
 static void test_cstring_index_of(void) {
   printf("  Running test_cstring_index_of...\n");
   assert(string_index_of("Hello, World!", 'W') == 7);
@@ -352,7 +402,9 @@ bool32_t run_string_tests(void) {
   test_str8_contains();
   test_str8_contains_cstr();
   test_str8_equals();
+  test_str8_equalsi();
   test_str8_destroy();
+  test_str8_trim();
 
   // CString tests
   test_cstring_equals();
@@ -369,6 +421,7 @@ bool32_t run_string_tests(void) {
   test_cstring_trim();
   test_cstring_mid();
   test_cstring_index_of();
+  test_string_conversions();
 
   printf("--- String Tests Completed ---\n");
   return true;
