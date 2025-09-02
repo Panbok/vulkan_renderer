@@ -182,7 +182,9 @@ VkrGeometryHandle vkr_geometry_system_create_default_cube(
  * @param layout The layout to use
  * @param arena The arena to allocate the vertex input descriptions from
  * @param out_attr_count The number of attributes
+ * @param out_bindings The bindings
  * @param out_attrs The attributes
+ * @param out_attr_count The number of attributes
  * @param out_binding_count The number of bindings
  * @param out_stride The stride
  */

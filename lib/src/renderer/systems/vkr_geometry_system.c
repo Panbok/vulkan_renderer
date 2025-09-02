@@ -62,6 +62,12 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
   uint64_t ib_total_bytes =
       pool->capacity_indices * (uint64_t)vkr_index_type_size(INDEX_TYPE_UINT32);
 
+  if (vb_total_bytes > UINT32_MAX) {
+    log_error("Vertex buffer size exceeds maximum: %llu bytes", vb_total_bytes);
+    *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
   if (!vkr_freelist_create(system->arena, (uint32_t)vb_total_bytes,
                            &pool->vertex_freelist)) {
     log_error("Failed to create geometry vertex freelist");
@@ -248,9 +254,13 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
   uint32_t vb_bytes = vertex_count * pool->vertex_stride_bytes;
   uint32_t ib_bytes =
       index_count * vkr_index_type_size(pool->index_buffer.type);
-  // Align allocations to stride/element for safety
-  uint32_t vb_align = Max(1u, pool->vertex_stride_bytes);
-  uint32_t ib_align = Max(1u, vkr_index_type_size(pool->index_buffer.type));
+  // Align allocations to stride/element for safety and round up to next power
+  // of 2
+  uint32_t vb_align =
+      1u << (32 - VkrCountLeadingZeros32(pool->vertex_stride_bytes - 1));
+  uint32_t ib_align =
+      1u << (32 - VkrCountLeadingZeros32(
+                      vkr_index_type_size(pool->index_buffer.type) - 1));
   vb_bytes = (uint32_t)AlignPow2(vb_bytes, vb_align);
   ib_bytes = (uint32_t)AlignPow2(ib_bytes, ib_align);
 
@@ -298,6 +308,12 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
                                vb_offset_bytes, vb_bytes, vertices);
   if (err != RENDERER_ERROR_NONE) {
     log_error("Failed to upload vertices for '%s'", string8_cstr(&debug_name));
+    // Rollback allocations and entry
+    vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
+    vkr_freelist_free(&pool->index_freelist, ib_bytes, ib_offset_bytes);
+    // Return entry to pool
+    entry->id = 0;
+    entry->ref_count = 0;
     *out_error = err;
     return (VkrGeometryHandle){0};
   }
@@ -306,6 +322,12 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
                                ib_offset_bytes, ib_bytes, indices);
   if (err != RENDERER_ERROR_NONE) {
     log_error("Failed to upload indices for '%s'", string8_cstr(&debug_name));
+    // Rollback allocations and entry
+    vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
+    vkr_freelist_free(&pool->index_freelist, ib_bytes, ib_offset_bytes);
+    // Return entry to pool
+    entry->id = 0;
+    entry->ref_count = 0;
     *out_error = err;
     return (VkrGeometryHandle){0};
   }
