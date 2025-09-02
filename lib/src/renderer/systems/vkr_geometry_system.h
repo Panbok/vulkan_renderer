@@ -17,8 +17,9 @@ typedef struct VkrGeometrySystemConfig {
   uint32_t max_geometries;
   uint64_t max_vertices; // in vertices, not bytes (per layout pool default)
   uint64_t max_indices;  // in indices, not bytes (per layout pool default)
-  uint32_t vertex_stride_bytes;       // default stride for primary layout
-  VkrGeometryVertexLayoutType layout; // primary layout to initialize eagerly
+  uint32_t vertex_stride_bytes; // default stride for primary layout
+  VkrGeometryVertexLayoutType
+      primary_layout; // primary layout to initialize eagerly
 } VkrGeometrySystemConfig;
 
 typedef struct VkrGeometryEntry {

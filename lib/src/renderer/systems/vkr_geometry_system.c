@@ -131,10 +131,12 @@ geometry_acquire_entry(VkrGeometrySystem *system,
     *out_handle = (VkrGeometryHandle){.id = e->id, .generation = e->generation};
     return e;
   }
-  for (uint32_t i = 0; i < system->max_geometries; i++) {
-    VkrGeometryEntry *e = array_get_VkrGeometryEntry(&system->entries, i);
+
+  for (uint32_t geometry = 0; geometry < system->max_geometries; geometry++) {
+    VkrGeometryEntry *e =
+        array_get_VkrGeometryEntry(&system->entries, geometry);
     if (e->id == 0 && e->generation == 0) {
-      e->id = i + 1;
+      e->id = geometry + 1;
       e->generation = 1;
       e->ref_count = 1;
       *out_handle =
@@ -187,15 +189,16 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
   system->geometry_by_name = vkr_hash_table_create_VkrGeometryHandle(
       system->arena, (uint64_t)system->max_geometries * 2);
 
-  for (uint32_t i = 0; i < GEOMETRY_VERTEX_LAYOUT_COUNT; i++) {
-    system->pools[i].initialized = false_v;
-    system->pools[i].layout = (VkrGeometryVertexLayoutType)i;
-    system->pools[i].vertex_stride_bytes = 0;
+  for (VkrGeometryVertexLayoutType layout_type = 0;
+       layout_type < GEOMETRY_VERTEX_LAYOUT_COUNT; layout_type++) {
+    system->pools[layout_type].initialized = false_v;
+    system->pools[layout_type].layout = layout_type;
+    system->pools[layout_type].vertex_stride_bytes = 0;
   }
 
   // Eagerly initialize primary layout pool using provided stride
   if (config->vertex_stride_bytes > 0) {
-    if (!vkr_geometry_pool_init(system, config->layout,
+    if (!vkr_geometry_pool_init(system, config->primary_layout,
                                 config->vertex_stride_bytes, out_error)) {
       return false_v;
     }
@@ -384,8 +387,11 @@ void vkr_geometry_system_release(VkrGeometrySystem *system,
     uint32_t vb_bytes = entry->vertex_count * pool->vertex_stride_bytes;
     uint32_t ib_bytes =
         entry->index_count * vkr_index_type_size(pool->index_buffer.type);
-    uint32_t vb_align = Max(1u, pool->vertex_stride_bytes);
-    uint32_t ib_align = Max(1u, vkr_index_type_size(pool->index_buffer.type));
+    uint32_t vb_align =
+        1u << (32 - VkrCountLeadingZeros32(pool->vertex_stride_bytes - 1));
+    uint32_t ib_align =
+        1u << (32 - VkrCountLeadingZeros32(
+                        vkr_index_type_size(pool->index_buffer.type) - 1));
     vb_bytes = (uint32_t)AlignPow2(vb_bytes, vb_align);
     ib_bytes = (uint32_t)AlignPow2(ib_bytes, ib_align);
     uint32_t vb_offset_bytes = entry->first_vertex * pool->vertex_stride_bytes;
