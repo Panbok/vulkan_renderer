@@ -20,9 +20,9 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
   assert_log(layout < GEOMETRY_VERTEX_LAYOUT_COUNT, "Invalid layout");
   assert_log(out_error != NULL, "Out error is NULL");
   assert_log(vertex_stride_bytes > 0, "Vertex stride bytes must be > 0");
-  assert_log(system->default_capacity_vertices > 0,
+  assert_log(system->config.default_max_vertices > 0,
              "Default capacity vertices must be > 0");
-  assert_log(system->default_capacity_indices > 0,
+  assert_log(system->config.default_max_indices > 0,
              "Default capacity indices must be > 0");
 
   VkrGeometryPool *pool = &system->pools[layout];
@@ -33,8 +33,8 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
 
   pool->layout = layout;
   pool->vertex_stride_bytes = vertex_stride_bytes;
-  pool->capacity_vertices = system->default_capacity_vertices;
-  pool->capacity_indices = system->default_capacity_indices;
+  pool->capacity_vertices = system->config.default_max_vertices;
+  pool->capacity_indices = system->config.default_max_indices;
 
   RendererError err = RENDERER_ERROR_NONE;
   pool->vertex_buffer = vertex_buffer_create(
@@ -101,11 +101,11 @@ vkr_geometry_get_pool(VkrGeometrySystem *system,
     uint32_t attr_count = 0, binding_count = 0, stride = 0;
     VertexInputAttributeDescription *attrs = NULL;
     VertexInputBindingDescription *bindings = NULL;
-    uint64_t mark = arena_pos(system->arena);
+    Scratch mark = scratch_create(system->arena);
     vkr_geometry_fill_vertex_input_descriptions(
         layout, system->arena, &attr_count, &attrs, &binding_count, &bindings,
         &stride);
-    arena_reset_to(system->arena, mark, ARENA_MEMORY_TAG_RENDERER);
+    scratch_destroy(mark, ARENA_MEMORY_TAG_RENDERER);
 
     if (!vkr_geometry_pool_init(system, layout, stride, out_error)) {
       return NULL;
@@ -115,35 +115,37 @@ vkr_geometry_get_pool(VkrGeometrySystem *system,
   return pool;
 }
 
-vkr_internal VkrGeometryEntry *
-geometry_acquire_entry(VkrGeometrySystem *system,
-                       VkrGeometryHandle *out_handle) {
+vkr_internal VkrGeometry *geometry_acquire_slot(VkrGeometrySystem *system,
+                                                VkrGeometryHandle *out_handle) {
   assert_log(system != NULL, "System is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
 
   if (system->free_count > 0) {
     uint32_t slot = system->free_ids.data[system->free_count - 1];
     system->free_count--;
-    VkrGeometryEntry *e = array_get_VkrGeometryEntry(&system->entries, slot);
-    e->id = slot + 1;
-    e->generation = (e->generation == 0) ? 1 : (e->generation + 1);
-    e->ref_count = 1;
-    *out_handle = (VkrGeometryHandle){.id = e->id, .generation = e->generation};
-    return e;
+    VkrGeometry *geometry_slot =
+        array_get_VkrGeometry(&system->geometries, slot);
+    geometry_slot->id = slot + 1;
+    geometry_slot->generation = (geometry_slot->generation == 0)
+                                    ? system->generation_counter++
+                                    : (system->generation_counter++);
+    *out_handle = (VkrGeometryHandle){.id = geometry_slot->id,
+                                      .generation = geometry_slot->generation};
+    return geometry_slot;
   }
 
   for (uint32_t geometry = 0; geometry < system->max_geometries; geometry++) {
-    VkrGeometryEntry *e =
-        array_get_VkrGeometryEntry(&system->entries, geometry);
-    if (e->id == 0 && e->generation == 0) {
-      e->id = geometry + 1;
-      e->generation = 1;
-      e->ref_count = 1;
-      *out_handle =
-          (VkrGeometryHandle){.id = e->id, .generation = e->generation};
-      return e;
+    VkrGeometry *geometry_slot =
+        array_get_VkrGeometry(&system->geometries, geometry);
+    if (geometry_slot->id == 0 && geometry_slot->generation == 0) {
+      geometry_slot->id = geometry + 1;
+      geometry_slot->generation = system->generation_counter++;
+      *out_handle = (VkrGeometryHandle){
+          .id = geometry_slot->id, .generation = geometry_slot->generation};
+      return geometry_slot;
     }
   }
+
   return NULL;
 }
 
@@ -172,22 +174,26 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
   }
 
   system->renderer = renderer;
-  system->max_geometries = config->max_geometries;
-  system->default_capacity_vertices = config->max_vertices;
-  system->default_capacity_indices = config->max_indices;
+  system->max_geometries = config->default_max_geometries;
+  system->config = *config;
 
-  system->entries =
-      array_create_VkrGeometryEntry(system->arena, system->max_geometries);
-  for (uint32_t i = 0; i < system->max_geometries; i++) {
-    VkrGeometryEntry init = {0};
-    array_set_VkrGeometryEntry(&system->entries, i, init);
+  system->geometries =
+      array_create_VkrGeometry(system->arena, system->max_geometries);
+  for (uint32_t geometry = 0; geometry < system->max_geometries; geometry++) {
+    VkrGeometry init = {0};
+    init.pipeline_id =
+        VKR_INVALID_ID; // todo: get pipeline id from config and use it
+    // back-end of the renderer instead of object_id on ShaderStateObject
+    array_set_VkrGeometry(&system->geometries, geometry, init);
   }
   system->free_ids =
       array_create_uint32_t(system->arena, system->max_geometries);
   system->free_count = 0;
 
-  system->geometry_by_name = vkr_hash_table_create_VkrGeometryHandle(
+  system->geometry_by_name = vkr_hash_table_create_VkrGeometryEntry(
       system->arena, (uint64_t)system->max_geometries * 2);
+
+  system->generation_counter = 1;
 
   for (VkrGeometryVertexLayoutType layout_type = 0;
        layout_type < GEOMETRY_VERTEX_LAYOUT_COUNT; layout_type++) {
@@ -197,9 +203,10 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
   }
 
   // Eagerly initialize primary layout pool using provided stride
-  if (config->vertex_stride_bytes > 0) {
+  if (config->default_vertex_stride_bytes > 0) {
     if (!vkr_geometry_pool_init(system, config->primary_layout,
-                                config->vertex_stride_bytes, out_error)) {
+                                config->default_vertex_stride_bytes,
+                                out_error)) {
       return false_v;
     }
   }
@@ -224,7 +231,7 @@ void vkr_geometry_system_shutdown(VkrGeometrySystem *system) {
     pool->initialized = false_v;
   }
 
-  array_destroy_VkrGeometryEntry(&system->entries);
+  array_destroy_VkrGeometry(&system->geometries);
   array_destroy_uint32_t(&system->free_ids);
 
   if (system->arena) {
@@ -238,7 +245,8 @@ void vkr_geometry_system_shutdown(VkrGeometrySystem *system) {
 VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
     VkrGeometrySystem *system, VkrGeometryVertexLayoutType layout,
     const void *vertices, uint32_t vertex_count, const uint32_t *indices,
-    uint32_t index_count, String8 debug_name, RendererError *out_error) {
+    uint32_t index_count, bool8_t auto_release, String8 debug_name,
+    RendererError *out_error) {
   assert_log(system != NULL, "Geometry system is NULL");
   assert_log(vertices != NULL, "Vertices is NULL");
   assert_log(indices != NULL, "Indices is NULL");
@@ -290,8 +298,8 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
   uint32_t first_index =
       ib_offset_bytes / vkr_index_type_size(pool->index_buffer.type);
 
-  VkrGeometryEntry *entry = geometry_acquire_entry(system, &handle);
-  if (!entry) {
+  VkrGeometry *geom = geometry_acquire_slot(system, &handle);
+  if (!geom) {
     // Rollback allocations
     vkr_freelist_free(&pool->index_freelist, ib_bytes, ib_offset_bytes);
     vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
@@ -300,11 +308,11 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
     return (VkrGeometryHandle){0};
   }
 
-  entry->layout = layout;
-  entry->first_vertex = first_vertex;
-  entry->vertex_count = vertex_count;
-  entry->first_index = first_index;
-  entry->index_count = index_count;
+  geom->layout = layout;
+  geom->first_vertex = first_vertex;
+  geom->vertex_count = vertex_count;
+  geom->first_index = first_index;
+  geom->index_count = index_count;
 
   // Upload data to GPU buffers at the allocated offsets
   err = renderer_upload_buffer(system->renderer, pool->vertex_buffer.handle,
@@ -314,9 +322,8 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
     // Rollback allocations and entry
     vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
     vkr_freelist_free(&pool->index_freelist, ib_bytes, ib_offset_bytes);
-    // Return entry to pool
-    entry->id = 0;
-    entry->ref_count = 0;
+    // Return slot to unused state
+    geom->id = 0;
     *out_error = err;
     return (VkrGeometryHandle){0};
   }
@@ -328,21 +335,39 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
     // Rollback allocations and entry
     vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
     vkr_freelist_free(&pool->index_freelist, ib_bytes, ib_offset_bytes);
-    // Return entry to pool
-    entry->id = 0;
-    entry->ref_count = 0;
+    // Return slot to unused state
+    geom->id = 0;
     *out_error = err;
     return (VkrGeometryHandle){0};
   }
 
-  // Optional: register by name if provided
+  // Register lifetime entry by name (create stable key; synthesize if missing)
+  const char *stable_name = NULL;
   if (debug_name.str && debug_name.length > 0) {
-    entry->name = (const char *)debug_name.str;
-    vkr_hash_table_insert_VkrGeometryHandle(&system->geometry_by_name,
-                                            entry->name, handle);
+    char *name_copy = (char *)arena_alloc(system->arena, debug_name.length + 1,
+                                          ARENA_MEMORY_TAG_STRING);
+    assert_log(name_copy != NULL, "Failed to allocate geometry name");
+    MemCopy(name_copy, debug_name.str, (size_t)debug_name.length);
+    name_copy[debug_name.length] = '\0';
+    stable_name = (const char *)name_copy;
   } else {
-    entry->name = NULL;
+    char *name_copy =
+        (char *)arena_alloc(system->arena, 32, ARENA_MEMORY_TAG_STRING);
+    assert_log(name_copy != NULL, "Failed to allocate geometry name");
+    int written = snprintf(name_copy, 32, "geom_%u", handle.id);
+    if (written < 0) {
+      MemCopy(name_copy, "geom", 5);
+    }
+    stable_name = (const char *)name_copy;
   }
+
+  geom->name = stable_name;
+  VkrGeometryEntry life_entry = {.id = (handle.id - 1),
+                                 .ref_count = 1,
+                                 .auto_release = auto_release,
+                                 .name = stable_name};
+  vkr_hash_table_insert_VkrGeometryEntry(&system->geometry_by_name, stable_name,
+                                         life_entry);
 
   *out_error = RENDERER_ERROR_NONE;
   return handle;
@@ -354,16 +379,22 @@ void vkr_geometry_system_acquire(VkrGeometrySystem *system,
   assert_log(handle.id != 0, "Handle is invalid");
 
   uint32_t idx = handle.id - 1;
-  if (idx >= system->entries.length)
+  if (idx >= system->geometries.length)
     return;
 
-  VkrGeometryEntry *entry = array_get_VkrGeometryEntry(&system->entries, idx);
-  if (entry->generation != handle.generation)
+  VkrGeometry *geometry = array_get_VkrGeometry(&system->geometries, idx);
+  if (geometry->generation != handle.generation)
     return;
-  if (entry->id == 0)
+  if (geometry->id == 0)
     return;
 
-  entry->ref_count++;
+  if (geometry->name) {
+    VkrGeometryEntry *lifetime_entry = vkr_hash_table_get_VkrGeometryEntry(
+        &system->geometry_by_name, geometry->name);
+    if (lifetime_entry) {
+      lifetime_entry->ref_count++;
+    }
+  }
 }
 
 void vkr_geometry_system_release(VkrGeometrySystem *system,
@@ -372,21 +403,34 @@ void vkr_geometry_system_release(VkrGeometrySystem *system,
   assert_log(handle.id != 0, "Handle is invalid");
 
   uint32_t idx = handle.id - 1;
-  if (idx >= system->entries.length)
+  if (idx >= system->geometries.length)
     return;
 
-  VkrGeometryEntry *entry = array_get_VkrGeometryEntry(&system->entries, idx);
-  if (entry->generation != handle.generation)
+  VkrGeometry *geometry = array_get_VkrGeometry(&system->geometries, idx);
+  if (geometry->generation != handle.generation)
     return;
 
-  if (entry->ref_count > 0)
-    entry->ref_count--;
-  if (entry->ref_count == 0) {
+  VkrGeometryEntry *lifetime_entry = NULL;
+  if (geometry->name) {
+    lifetime_entry = vkr_hash_table_get_VkrGeometryEntry(
+        &system->geometry_by_name, geometry->name);
+  }
+
+  if (lifetime_entry && lifetime_entry->ref_count > 0)
+    lifetime_entry->ref_count--;
+
+  bool32_t should_release = false_v;
+  if (lifetime_entry) {
+    should_release =
+        (lifetime_entry->ref_count == 0) && lifetime_entry->auto_release;
+  }
+
+  if (should_release) {
     // Free ranges back to freelists
-    VkrGeometryPool *pool = &system->pools[entry->layout];
-    uint32_t vb_bytes = entry->vertex_count * pool->vertex_stride_bytes;
+    VkrGeometryPool *pool = &system->pools[geometry->layout];
+    uint32_t vb_bytes = geometry->vertex_count * pool->vertex_stride_bytes;
     uint32_t ib_bytes =
-        entry->index_count * vkr_index_type_size(pool->index_buffer.type);
+        geometry->index_count * vkr_index_type_size(pool->index_buffer.type);
     uint32_t vb_align =
         1u << (32 - VkrCountLeadingZeros32(pool->vertex_stride_bytes - 1));
     uint32_t ib_align =
@@ -394,9 +438,10 @@ void vkr_geometry_system_release(VkrGeometrySystem *system,
                         vkr_index_type_size(pool->index_buffer.type) - 1));
     vb_bytes = (uint32_t)AlignPow2(vb_bytes, vb_align);
     ib_bytes = (uint32_t)AlignPow2(ib_bytes, ib_align);
-    uint32_t vb_offset_bytes = entry->first_vertex * pool->vertex_stride_bytes;
+    uint32_t vb_offset_bytes =
+        geometry->first_vertex * pool->vertex_stride_bytes;
     uint32_t ib_offset_bytes =
-        entry->first_index * vkr_index_type_size(pool->index_buffer.type);
+        geometry->first_index * vkr_index_type_size(pool->index_buffer.type);
     vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
     vkr_freelist_free(&pool->index_freelist, ib_bytes, ib_offset_bytes);
 
@@ -406,15 +451,15 @@ void vkr_geometry_system_release(VkrGeometrySystem *system,
     system->free_ids.data[system->free_count++] = idx;
 
     // mark slot as empty
-    entry->id = 0;
-    entry->first_vertex = 0;
-    entry->vertex_count = 0;
-    entry->first_index = 0;
-    entry->index_count = 0;
-    if (entry->name) {
-      vkr_hash_table_remove_VkrGeometryHandle(&system->geometry_by_name,
-                                              entry->name);
-      entry->name = NULL;
+    geometry->id = 0;
+    geometry->first_vertex = 0;
+    geometry->vertex_count = 0;
+    geometry->first_index = 0;
+    geometry->index_count = 0;
+    if (geometry->name) {
+      vkr_hash_table_remove_VkrGeometryEntry(&system->geometry_by_name,
+                                             geometry->name);
+      geometry->name = NULL;
     }
   }
 }
@@ -428,12 +473,13 @@ void vkr_geometry_system_render(RendererFrontendHandle renderer,
   assert_log(handle.id != 0, "Handle is invalid");
   assert_log(instance_count > 0, "Instance count must be > 0");
 
-  VkrGeometryEntry *entry = NULL;
+  VkrGeometry *entry = NULL;
   uint32_t idx = handle.id - 1;
   if (idx < system->max_geometries) {
-    VkrGeometryEntry *e = array_get_VkrGeometryEntry(&system->entries, idx);
-    if (e->generation == handle.generation) {
-      entry = e;
+    VkrGeometry *geometry_candidate =
+        array_get_VkrGeometry(&system->geometries, idx);
+    if (geometry_candidate->generation == handle.generation) {
+      entry = geometry_candidate;
     }
   }
   if (!entry)
@@ -473,61 +519,61 @@ VkrGeometryHandle vkr_geometry_system_create_default_cube(
   float32_t hd = depth * 0.5f;
 
   GeoVertexPT verts[24] = {0};
-  uint32_t idx = 0;
+  uint32_t vert_write_index = 0;
   // Front
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, hd),
-                               .texcoord = vec2_new(0, 0)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(hw, -hh, hd),
-                               .texcoord = vec2_new(1, 0)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(hw, hh, hd),
-                               .texcoord = vec2_new(1, 1)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(-hw, hh, hd),
-                               .texcoord = vec2_new(0, 1)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, hd),
+                                            .texcoord = vec2_new(0, 0)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, -hh, hd),
+                                            .texcoord = vec2_new(1, 0)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, hh, hd),
+                                            .texcoord = vec2_new(1, 1)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, hh, hd),
+                                            .texcoord = vec2_new(0, 1)};
   // Back
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, -hd),
-                               .texcoord = vec2_new(1, 0)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(hw, -hh, -hd),
-                               .texcoord = vec2_new(0, 0)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(hw, hh, -hd),
-                               .texcoord = vec2_new(0, 1)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(-hw, hh, -hd),
-                               .texcoord = vec2_new(1, 1)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, -hd),
+                                            .texcoord = vec2_new(1, 0)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, -hh, -hd),
+                                            .texcoord = vec2_new(0, 0)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, hh, -hd),
+                                            .texcoord = vec2_new(0, 1)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, hh, -hd),
+                                            .texcoord = vec2_new(1, 1)};
   // Left
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, -hd),
-                               .texcoord = vec2_new(0, 0)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, hd),
-                               .texcoord = vec2_new(1, 0)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(-hw, hh, hd),
-                               .texcoord = vec2_new(1, 1)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(-hw, hh, -hd),
-                               .texcoord = vec2_new(0, 1)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, -hd),
+                                            .texcoord = vec2_new(0, 0)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, hd),
+                                            .texcoord = vec2_new(1, 0)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, hh, hd),
+                                            .texcoord = vec2_new(1, 1)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, hh, -hd),
+                                            .texcoord = vec2_new(0, 1)};
   // Right
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(hw, -hh, -hd),
-                               .texcoord = vec2_new(1, 0)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(hw, -hh, hd),
-                               .texcoord = vec2_new(0, 0)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(hw, hh, hd),
-                               .texcoord = vec2_new(0, 1)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(hw, hh, -hd),
-                               .texcoord = vec2_new(1, 1)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, -hh, -hd),
+                                            .texcoord = vec2_new(1, 0)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, -hh, hd),
+                                            .texcoord = vec2_new(0, 0)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, hh, hd),
+                                            .texcoord = vec2_new(0, 1)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, hh, -hd),
+                                            .texcoord = vec2_new(1, 1)};
   // Top
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(-hw, hh, hd),
-                               .texcoord = vec2_new(0, 1)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(hw, hh, hd),
-                               .texcoord = vec2_new(1, 1)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(hw, hh, -hd),
-                               .texcoord = vec2_new(1, 0)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(-hw, hh, -hd),
-                               .texcoord = vec2_new(0, 0)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, hh, hd),
+                                            .texcoord = vec2_new(0, 1)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, hh, hd),
+                                            .texcoord = vec2_new(1, 1)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, hh, -hd),
+                                            .texcoord = vec2_new(1, 0)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, hh, -hd),
+                                            .texcoord = vec2_new(0, 0)};
   // Bottom
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, -hd),
-                               .texcoord = vec2_new(0, 0)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(hw, -hh, -hd),
-                               .texcoord = vec2_new(1, 0)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(hw, -hh, hd),
-                               .texcoord = vec2_new(1, 1)};
-  verts[idx++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, hd),
-                               .texcoord = vec2_new(0, 1)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, -hd),
+                                            .texcoord = vec2_new(0, 0)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, -hh, -hd),
+                                            .texcoord = vec2_new(1, 0)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, -hh, hd),
+                                            .texcoord = vec2_new(1, 1)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, hd),
+                                            .texcoord = vec2_new(0, 1)};
 
   uint32_t indices[36] = {
       0,  1,  2,  2,  3,  0,  // Front
@@ -540,7 +586,7 @@ VkrGeometryHandle vkr_geometry_system_create_default_cube(
 
   VkrGeometryHandle h = vkr_geometry_system_create_from_interleaved(
       system, GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD, verts, 24, indices, 36,
-      string8_lit("Default Cube"), out_error);
+      false_v, string8_lit("Default Cube"), out_error);
   if (out_error && *out_error == RENDERER_ERROR_NONE) {
     system->default_geometry = h;
   }

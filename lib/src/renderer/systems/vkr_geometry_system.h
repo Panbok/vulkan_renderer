@@ -14,32 +14,27 @@
 // =============================================================================
 
 typedef struct VkrGeometrySystemConfig {
-  uint32_t max_geometries;
-  uint64_t max_vertices; // in vertices, not bytes (per layout pool default)
-  uint64_t max_indices;  // in indices, not bytes (per layout pool default)
-  uint32_t vertex_stride_bytes; // default stride for primary layout
+  uint32_t default_max_geometries;
+  uint64_t
+      default_max_vertices; // in vertices, not bytes (per layout pool default)
+  uint64_t
+      default_max_indices; // in indices, not bytes (per layout pool default)
+  uint32_t default_vertex_stride_bytes; // default stride for primary layout
   VkrGeometryVertexLayoutType
       primary_layout; // primary layout to initialize eagerly
 } VkrGeometrySystemConfig;
 
+// Lifetime entry stored only in a hash table keyed by geometry name.
+// 'id' is the index into the geometries array. This structure manages
+// references and auto-release behavior only.
 typedef struct VkrGeometryEntry {
-  uint32_t id;
-  uint32_t generation;
-  uint32_t ref_count;
-  const char *name; // optional name key for hashtable removal
-
-  // Layout used by this geometry
-  VkrGeometryVertexLayoutType layout;
-
-  // Ranges into pooled buffers (indices into vertices/indices, not bytes)
-  uint32_t first_vertex;
-  uint32_t vertex_count;
-  uint32_t first_index;
-  uint32_t index_count;
+  uint32_t id;          // index into geometries array
+  uint32_t ref_count;   // number of holders
+  bool8_t auto_release; // release when ref_count hits 0
+  const char *name;     // geometry name (hash key)
 } VkrGeometryEntry;
 
-Array(VkrGeometryEntry);
-VkrHashTable(VkrGeometryHandle);
+VkrHashTable(VkrGeometryEntry);
 
 typedef struct VkrGeometryPool {
   bool8_t initialized;
@@ -65,15 +60,17 @@ typedef struct VkrGeometrySystem {
 
   RendererFrontendHandle renderer;
 
-  // Entry storage and ID free list
-  Array_VkrGeometryEntry entries;
+  // Geometry storage and ID free list
+  Array_VkrGeometry geometries;
   Array_uint32_t free_ids; // stack of free indices
   uint32_t free_count;
   uint32_t max_geometries;
 
-  // Default capacities used when lazily initializing new layout pools
-  uint64_t default_capacity_vertices;
-  uint64_t default_capacity_indices;
+  // Monotonic generation for geometry handles
+  uint32_t generation_counter;
+
+  // Config used when lazily initializing new layout pools
+  VkrGeometrySystemConfig config;
 
   // Pools per layout
   VkrGeometryPool pools[GEOMETRY_VERTEX_LAYOUT_COUNT];
@@ -81,8 +78,8 @@ typedef struct VkrGeometrySystem {
   // Default/fallback geometry
   VkrGeometryHandle default_geometry;
 
-  // Optional lookup: name -> handle
-  VkrHashTable_VkrGeometryHandle geometry_by_name;
+  // Lifetime map: name -> entry (ref_count/auto_release/index)
+  VkrHashTable_VkrGeometryEntry geometry_by_name;
 } VkrGeometrySystem;
 
 // =============================================================================
@@ -120,13 +117,15 @@ void vkr_geometry_system_shutdown(VkrGeometrySystem *system);
  * @param vertex_count The number of vertices
  * @param indices The indices to use
  * @param index_count The number of indices
+ * @param auto_release The auto release flag
  * @param debug_name The debug name to use
  * @param out_error The error output
  */
 VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
     VkrGeometrySystem *system, VkrGeometryVertexLayoutType layout,
     const void *vertices, uint32_t vertex_count, const uint32_t *indices,
-    uint32_t index_count, String8 debug_name, RendererError *out_error);
+    uint32_t index_count, bool8_t auto_release, String8 debug_name,
+    RendererError *out_error);
 
 /**
  * @brief Adds a reference to the geometry
