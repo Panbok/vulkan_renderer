@@ -30,8 +30,18 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   system->config = *config;
   system->materials =
       array_create_VkrMaterial(system->arena, config->max_material_count);
-  system->material_by_name = vkr_hash_table_create_VkrMaterialEntry(
-      system->arena, ((uint64_t)config->max_material_count) * 2ULL);
+
+  uint64_t hash_size = ((uint64_t)config->max_material_count) * 2ULL;
+  if (hash_size > UINT32_MAX) {
+    log_fatal("Hash table size overflow for max_material_count %u",
+              config->max_material_count);
+    arena_destroy(system->arena);
+    arena_destroy(system->temp_arena);
+    return false_v;
+  }
+  system->material_by_name =
+      vkr_hash_table_create_VkrMaterialEntry(system->arena, hash_size);
+
   system->free_ids =
       array_create_uint32_t(system->arena, config->max_material_count);
   system->free_count = 0;
