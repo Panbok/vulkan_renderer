@@ -82,23 +82,30 @@ VkrMaterialHandle
 vkr_material_system_create_default(VkrMaterialSystem *system) {
   assert_log(system != NULL, "Material system is NULL");
 
-  VkrMaterial *m = &system->materials.data[0];
-  m->id = 1; // slot 0 -> id 1
-  m->generation = system->generation_counter++;
-  m->name = "__default";
-  m->diffuse_color = vec4_new(1, 1, 1, 1);
-  m->specular_color = vec4_new(1, 1, 1, 1);
-  m->shininess = 32.0f;
-  m->emission_color = vec3_new(0, 0, 0);
-  m->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle =
+  VkrMaterial *material = &system->materials.data[0];
+  material->id = 1; // slot 0 -> id 1
+  material->generation = system->generation_counter++;
+  material->name = "__default";
+  material->phong.diffuse_color = vec4_new(1, 1, 1, 1);
+  material->phong.specular_color = vec4_new(1, 1, 1, 1);
+  material->phong.shininess = 32.0f;
+  material->phong.emission_color = vec3_new(0, 0, 0);
+  // Initialize all texture slots disabled
+  for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; i++) {
+    material->textures[i].slot = (VkrTextureSlot)i;
+    material->textures[i].handle = VKR_TEXTURE_HANDLE_INVALID;
+    material->textures[i].enabled = false;
+  }
+  // Set default diffuse
+  material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle =
       vkr_texture_system_get_default_handle(system->texture_system);
-  m->textures[VKR_TEXTURE_SLOT_DIFFUSE].slot = VKR_TEXTURE_SLOT_DIFFUSE;
-  m->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = true;
+  material->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = true;
 
   if (system->next_free_index == 0)
     system->next_free_index = 1;
 
-  VkrMaterialHandle handle = {.id = m->id, .generation = m->generation};
+  VkrMaterialHandle handle = {.id = material->id,
+                              .generation = material->generation};
   return handle;
 }
 
@@ -142,24 +149,30 @@ VkrMaterialHandle vkr_material_system_acquire(VkrMaterialSystem *system,
     system->next_free_index = slot + 1;
   }
 
-  VkrMaterial *m = &system->materials.data[slot];
-  m->id = slot + 1;
-  m->generation = system->generation_counter++;
+  VkrMaterial *material = &system->materials.data[slot];
+  material->id = slot + 1;
+  material->generation = system->generation_counter++;
   // Copy name into system arena to ensure stable lifetime
   char *stable_name =
       arena_alloc(system->arena, name.length + 1, ARENA_MEMORY_TAG_STRING);
   assert_log(stable_name != NULL, "Failed to allocate name for material");
   MemCopy(stable_name, name.str, (size_t)name.length);
   stable_name[name.length] = '\0';
-  m->name = (const char *)stable_name;
-  m->diffuse_color = vec4_new(1, 1, 1, 1);
-  m->specular_color = vec4_new(1, 1, 1, 1);
-  m->shininess = 32.0f;
-  m->emission_color = vec3_new(0, 0, 0);
-  m->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle =
+  material->name = (const char *)stable_name;
+  material->phong.diffuse_color = vec4_new(1, 1, 1, 1);
+  material->phong.specular_color = vec4_new(1, 1, 1, 1);
+  material->phong.shininess = 32.0f;
+  material->phong.emission_color = vec3_new(0, 0, 0);
+  // Initialize all texture slots disabled
+  for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; i++) {
+    material->textures[i].slot = (VkrTextureSlot)i;
+    material->textures[i].handle = VKR_TEXTURE_HANDLE_INVALID;
+    material->textures[i].enabled = false;
+  }
+  // Set default diffuse
+  material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle =
       vkr_texture_system_get_default_handle(system->texture_system);
-  m->textures[VKR_TEXTURE_SLOT_DIFFUSE].slot = VKR_TEXTURE_SLOT_DIFFUSE;
-  m->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = true;
+  material->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = true;
 
   VkrMaterialEntry new_entry = {.id = slot,
                                 .ref_count = 1,
@@ -167,14 +180,14 @@ VkrMaterialHandle vkr_material_system_acquire(VkrMaterialSystem *system,
                                 .name = (const char *)stable_name};
   vkr_hash_table_insert_VkrMaterialEntry(&system->material_by_name,
                                          (const char *)stable_name, new_entry);
-  return (VkrMaterialHandle){.id = m->id, .generation = m->generation};
+  return (VkrMaterialHandle){.id = material->id,
+                             .generation = material->generation};
 }
 
 void vkr_material_system_set(VkrMaterialSystem *system,
                              VkrMaterialHandle handle,
-                             VkrTextureHandle base_color, Vec4 diffuse_color,
-                             Vec4 specular_color, float32_t shininess,
-                             Vec3 emission_color) {
+                             VkrTextureHandle base_color,
+                             VkrPhongProperties phong) {
   assert_log(system != NULL, "System is NULL");
   assert_log(handle.id != 0, "Handle is invalid");
 
@@ -182,19 +195,74 @@ void vkr_material_system_set(VkrMaterialSystem *system,
   if (idx >= system->materials.length)
     return;
 
-  VkrMaterial *m = &system->materials.data[idx];
-  if (m->generation != handle.generation)
+  VkrMaterial *material = &system->materials.data[idx];
+  if (material->generation != handle.generation)
     return;
 
-  m->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle =
+  material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle =
       base_color.id != 0
           ? base_color
           : vkr_texture_system_get_default_handle(system->texture_system);
-  m->diffuse_color = diffuse_color;
-  m->specular_color = specular_color;
-  m->shininess = shininess;
-  m->emission_color = emission_color;
-  m->generation = system->generation_counter++;
+  material->textures[VKR_TEXTURE_SLOT_DIFFUSE].slot = VKR_TEXTURE_SLOT_DIFFUSE;
+  material->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = (base_color.id != 0);
+
+  material->phong = phong;
+  material->generation = system->generation_counter++;
+}
+
+void vkr_material_system_set_texture(VkrMaterialSystem *system,
+                                     VkrMaterialHandle handle,
+                                     VkrTextureSlot slot,
+                                     VkrTextureHandle texture_handle,
+                                     bool8_t enable) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(handle.id != 0, "Handle is invalid");
+
+  uint32_t index = handle.id - 1;
+  if (index >= system->materials.length)
+    return;
+
+  VkrMaterial *material = &system->materials.data[index];
+  if (material->generation != handle.generation)
+    return;
+
+  material->textures[slot].slot = slot;
+  if (texture_handle.id == 0) {
+    material->textures[slot].handle = VKR_TEXTURE_HANDLE_INVALID;
+    material->textures[slot].enabled = false;
+  } else {
+    material->textures[slot].handle = texture_handle;
+    material->textures[slot].enabled = enable;
+  }
+  material->generation = system->generation_counter++;
+}
+
+void vkr_material_system_set_textures(
+    VkrMaterialSystem *system, VkrMaterialHandle handle,
+    const VkrTextureHandle textures[VKR_TEXTURE_SLOT_COUNT],
+    const bool8_t enabled[VKR_TEXTURE_SLOT_COUNT]) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(handle.id != 0, "Handle is invalid");
+
+  uint32_t index = handle.id - 1;
+  if (index >= system->materials.length)
+    return;
+
+  VkrMaterial *material = &system->materials.data[index];
+  if (material->generation != handle.generation)
+    return;
+
+  for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; i++) {
+    material->textures[i].slot = (VkrTextureSlot)i;
+    if (textures[i].id == 0) {
+      material->textures[i].handle = VKR_TEXTURE_HANDLE_INVALID;
+      material->textures[i].enabled = false;
+    } else {
+      material->textures[i].handle = textures[i];
+      material->textures[i].enabled = enabled ? enabled[i] : true_v;
+    }
+  }
+  material->generation = system->generation_counter++;
 }
 
 void vkr_material_system_release(VkrMaterialSystem *system,
@@ -206,20 +274,20 @@ void vkr_material_system_release(VkrMaterialSystem *system,
   if (idx >= system->materials.length)
     return;
 
-  VkrMaterial *m = &system->materials.data[idx];
-  if (m->generation != handle.generation || m->id == 0)
+  VkrMaterial *material = &system->materials.data[idx];
+  if (material->generation != handle.generation || material->id == 0)
     return;
 
-  if (!m->name)
+  if (!material->name)
     return;
 
-  VkrMaterialEntry *entry =
-      vkr_hash_table_get_VkrMaterialEntry(&system->material_by_name, m->name);
+  VkrMaterialEntry *entry = vkr_hash_table_get_VkrMaterialEntry(
+      &system->material_by_name, material->name);
   if (!entry)
     return;
 
   if (entry->ref_count == 0) {
-    log_warn("Over-release detected for material '%s'", m->name);
+    log_warn("Over-release detected for material '%s'", material->name);
     return;
   }
 
@@ -228,17 +296,17 @@ void vkr_material_system_release(VkrMaterialSystem *system,
   bool32_t should_release = (entry->ref_count == 0) && entry->auto_release;
   if (should_release) {
     // Reset material slot and push id to free stack
-    m->id = 0;
-    m->name = NULL;
-    m->pipeline_id = VKR_INVALID_ID;
-    m->diffuse_color = vec4_new(1, 1, 1, 1);
-    m->specular_color = vec4_new(1, 1, 1, 1);
-    m->shininess = 0.0f;
-    m->emission_color = vec3_new(0, 0, 0);
+    material->id = 0;
+    material->name = NULL;
+    material->pipeline_id = VKR_INVALID_ID;
+    material->phong.diffuse_color = vec4_new(1, 1, 1, 1);
+    material->phong.specular_color = vec4_new(1, 1, 1, 1);
+    material->phong.shininess = 0.0f;
+    material->phong.emission_color = vec3_new(0, 0, 0);
     for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; i++) {
-      m->textures[i].handle = VKR_TEXTURE_HANDLE_INVALID;
-      m->textures[i].enabled = false;
-      m->textures[i].slot = (VkrTextureSlot)i;
+      material->textures[i].handle = VKR_TEXTURE_HANDLE_INVALID;
+      material->textures[i].enabled = false;
+      material->textures[i].slot = (VkrTextureSlot)i;
     }
     assert_log(system->free_count < system->free_ids.length,
                "free_ids overflow in material system");
@@ -297,13 +365,20 @@ bool8_t vkr_material_system_load_from_mt(RendererFrontendHandle renderer,
                                string_length(name_buf)),
       true_v);
 
-  // Defaults (Phong)
+  // Defaults (Phong, textures)
   VkrTextureHandle base_color =
       vkr_texture_system_get_default_handle(system->texture_system);
-  Vec4 diffuse_color = vec4_new(1, 1, 1, 1);
-  Vec4 specular_color = vec4_new(1, 1, 1, 1);
-  float32_t shininess = 32.0f;
-  Vec3 emission_color = vec3_new(0, 0, 0);
+  VkrPhongProperties phong = {
+      .diffuse_color = vec4_new(1, 1, 1, 1),
+      .specular_color = vec4_new(1, 1, 1, 1),
+      .shininess = 32.0f,
+      .emission_color = vec3_new(0, 0, 0),
+  };
+  VkrTextureHandle textures[VKR_TEXTURE_SLOT_COUNT] = {0};
+  bool8_t enabled[VKR_TEXTURE_SLOT_COUNT] = {false_v};
+  // initialize defaults for diffuse
+  textures[VKR_TEXTURE_SLOT_DIFFUSE] = base_color;
+  enabled[VKR_TEXTURE_SLOT_DIFFUSE] = true_v;
 
   // Read file line by line
   // Use two distinct arenas for file_read_line (system temp for the buffer,
@@ -354,6 +429,8 @@ bool8_t vkr_material_system_load_from_mt(RendererFrontendHandle renderer,
                                      true_v, temp_arena, &tex_err);
       if (tex_err == RENDERER_ERROR_NONE && th.id != 0) {
         base_color = th;
+        textures[VKR_TEXTURE_SLOT_DIFFUSE] = th;
+        enabled[VKR_TEXTURE_SLOT_DIFFUSE] = true_v;
       } else {
         // Ensure value is NUL-terminated for logging
         char *val_cstr = (char *)arena_alloc(temp_arena, value.length + 1,
@@ -366,31 +443,41 @@ bool8_t vkr_material_system_load_from_mt(RendererFrontendHandle renderer,
     } else if (string8_contains_cstr(&key, "diffuse_color")) {
       Vec4 v;
       if (string8_to_vec4(&value, &v)) {
-        diffuse_color = v;
+        phong.diffuse_color = v;
       } else {
         char *val_cstr = (char *)arena_alloc(temp_arena, value.length + 1,
                                              ARENA_MEMORY_TAG_STRING);
         MemCopy(val_cstr, value.str, (size_t)value.length);
         val_cstr[value.length] = '\0';
-        log_warn("Material '%s': invalid diffuse_color '%s'", name_buf,
-                 val_cstr);
+        float x, y, z, w;
+        if (sscanf(val_cstr, "%f , %f , %f , %f", &x, &y, &z, &w) == 4) {
+          phong.diffuse_color = vec4_new(x, y, z, w);
+        } else {
+          log_warn("Material '%s': invalid diffuse_color '%s'", name_buf,
+                   val_cstr);
+        }
       }
     } else if (string8_contains_cstr(&key, "specular_color")) {
       Vec4 v;
       if (string8_to_vec4(&value, &v)) {
-        specular_color = v;
+        phong.specular_color = v;
       } else {
         char *val_cstr = (char *)arena_alloc(temp_arena, value.length + 1,
                                              ARENA_MEMORY_TAG_STRING);
         MemCopy(val_cstr, value.str, (size_t)value.length);
         val_cstr[value.length] = '\0';
-        log_warn("Material '%s': invalid specular_color '%s'", name_buf,
-                 val_cstr);
+        float x, y, z, w;
+        if (sscanf(val_cstr, "%f , %f , %f , %f", &x, &y, &z, &w) == 4) {
+          phong.specular_color = vec4_new(x, y, z, w);
+        } else {
+          log_warn("Material '%s': invalid specular_color '%s'", name_buf,
+                   val_cstr);
+        }
       }
     } else if (string8_contains_cstr(&key, "shininess")) {
       float32_t s = 0.0f;
       if (string8_to_f32(&value, &s)) {
-        shininess = s;
+        phong.shininess = s;
       } else {
         char *val_cstr = (char *)arena_alloc(temp_arena, value.length + 1,
                                              ARENA_MEMORY_TAG_STRING);
@@ -401,14 +488,46 @@ bool8_t vkr_material_system_load_from_mt(RendererFrontendHandle renderer,
     } else if (string8_contains_cstr(&key, "emission_color")) {
       Vec3 v;
       if (string8_to_vec3(&value, &v)) {
-        emission_color = v;
+        phong.emission_color = v;
       } else {
         char *val_cstr = (char *)arena_alloc(temp_arena, value.length + 1,
                                              ARENA_MEMORY_TAG_STRING);
         MemCopy(val_cstr, value.str, (size_t)value.length);
         val_cstr[value.length] = '\0';
-        log_warn("Material '%s': invalid emission_color '%s'", name_buf,
-                 val_cstr);
+        float x, y, z;
+        if (sscanf(val_cstr, "%f , %f , %f", &x, &y, &z) == 3) {
+          phong.emission_color = vec3_new(x, y, z);
+        } else {
+          log_warn("Material '%s': invalid emission_color '%s'", name_buf,
+                   val_cstr);
+        }
+      }
+    } else if (string8_contains_cstr(&key, "normal_map")) {
+      RendererError tex_err = RENDERER_ERROR_NONE;
+      VkrTextureHandle th =
+          vkr_texture_system_acquire(renderer, system->texture_system, value,
+                                     true_v, temp_arena, &tex_err);
+      if (tex_err == RENDERER_ERROR_NONE && th.id != 0) {
+        textures[VKR_TEXTURE_SLOT_NORMAL] = th;
+        enabled[VKR_TEXTURE_SLOT_NORMAL] = true_v;
+      }
+    } else if (string8_contains_cstr(&key, "specular_map")) {
+      RendererError tex_err = RENDERER_ERROR_NONE;
+      VkrTextureHandle th =
+          vkr_texture_system_acquire(renderer, system->texture_system, value,
+                                     true_v, temp_arena, &tex_err);
+      if (tex_err == RENDERER_ERROR_NONE && th.id != 0) {
+        textures[VKR_TEXTURE_SLOT_SPECULAR] = th;
+        enabled[VKR_TEXTURE_SLOT_SPECULAR] = true_v;
+      }
+    } else if (string8_contains_cstr(&key, "emission_map")) {
+      RendererError tex_err = RENDERER_ERROR_NONE;
+      VkrTextureHandle th =
+          vkr_texture_system_acquire(renderer, system->texture_system, value,
+                                     true_v, temp_arena, &tex_err);
+      if (tex_err == RENDERER_ERROR_NONE && th.id != 0) {
+        textures[VKR_TEXTURE_SLOT_EMISSION] = th;
+        enabled[VKR_TEXTURE_SLOT_EMISSION] = true_v;
       }
     } else {
       // pipeline or unknown keys can be ignored for now
@@ -418,8 +537,8 @@ bool8_t vkr_material_system_load_from_mt(RendererFrontendHandle renderer,
   scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
   file_close(&fh);
 
-  vkr_material_system_set(system, handle, base_color, diffuse_color,
-                          specular_color, shininess, emission_color);
+  vkr_material_system_set(system, handle, base_color, phong);
+  vkr_material_system_set_textures(system, handle, textures, enabled);
   // Sync handle generation after set() may bump generation
   if (handle.id != 0) {
     uint32_t idx_handle = handle.id - 1;
@@ -463,10 +582,11 @@ vkr_material_system_load_default_from_mt(RendererFrontendHandle renderer,
   VkrMaterial *def = &system->materials.data[0];
   def->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle =
       loaded->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle;
-  def->diffuse_color = loaded->diffuse_color;
-  def->specular_color = loaded->specular_color;
-  def->shininess = loaded->shininess;
-  def->emission_color = loaded->emission_color;
+  // also copy all texture slots to mirror loaded defaults
+  for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; i++) {
+    def->textures[i] = loaded->textures[i];
+  }
+  def->phong = loaded->phong;
   def->generation = system->generation_counter++;
   // Keep the stored default handle in sync with the new generation
   system->default_material.generation = def->generation;

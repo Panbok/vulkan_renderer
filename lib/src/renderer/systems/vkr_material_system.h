@@ -110,33 +110,66 @@ void vkr_material_system_release(VkrMaterialSystem *system,
                                  VkrMaterialHandle handle);
 
 /**
- * @brief Updates a material's properties according to Phong model
+ * @brief Updates a material's diffuse texture and Phong properties
  * @param system The material system to update the material in
  * @param handle The handle to the material to update
- * @param base_color The base color of the material
- * @param diffuse_color The diffuse color of the material
- * @param specular_color The specular color of the material
- * @param shininess The shininess of the material
- * @param emission_color The emission color of the material
+ * @param base_color The base color texture handle (slot: diffuse)
+ * @param phong Phong lighting properties
  */
 void vkr_material_system_set(VkrMaterialSystem *system,
                              VkrMaterialHandle handle,
-                             VkrTextureHandle base_color, Vec4 diffuse_color,
-                             Vec4 specular_color, float32_t shininess,
-                             Vec3 emission_color);
+                             VkrTextureHandle base_color,
+                             VkrPhongProperties phong);
+
+/**
+ * @brief Sets a single texture map on a material.
+ * If texture_handle.id == 0, the slot will be disabled regardless of 'enable'.
+ */
+void vkr_material_system_set_texture(VkrMaterialSystem *system,
+                                     VkrMaterialHandle handle,
+                                     VkrTextureSlot slot,
+                                     VkrTextureHandle texture_handle,
+                                     bool8_t enable);
+
+/**
+ * @brief Sets all texture maps on a material at once.
+ * 'enabled' may be NULL to infer enable from texture id!=0.
+ */
+void vkr_material_system_set_textures(
+    VkrMaterialSystem *system, VkrMaterialHandle handle,
+    const VkrTextureHandle textures[VKR_TEXTURE_SLOT_COUNT],
+    const bool8_t enabled[VKR_TEXTURE_SLOT_COUNT]);
 
 // =============================================================================
 // Material Loading
 // =============================================================================
 
-// Load a material from a .mt file and return its handle. The .mt format is:
-// base_color=assets/texture.png
-// diffuse_color=R,G,B,A
-// specular_color=R,G,B,A
-// shininess=FLOAT
-// emission_color=R,G,B
-// The texture will be acquired via the texture system. The material name is
-// derived from the file basename (without extension). Returns true on success.
+// =============================================================================
+// .mt Material File Format
+// =============================================================================
+// Key-value pairs, one per line, 'key=value'. Lines starting with '#' are
+// comments. Whitespace around keys/values is trimmed.
+//
+// Supported keys:
+//   base_color="assets/texture.png"   // Diffuse/base color texture
+//   diffuse_color=R,G,B,A              // Vec4
+//   specular_color=R,G,B,A             // Vec4
+//   shininess=FLOAT                    // Specular exponent
+//   emission_color=R,G,B               // Vec3
+//
+// Optional texture maps (handled by the material system even if unused by the
+// current backend):
+//   normal_map="assets/normal.png"
+//   specular_map="assets/spec.png"
+//   emission_map="assets/emissive.png"
+//
+// Notes:
+// - Paths are relative to the executable working directory.
+// - Unknown keys are logged and ignored.
+// - The material name is derived from the file basename (without extension).
+// - Missing textures fall back to the texture system default for diffuse; other
+//   maps remain disabled unless provided.
+
 /**
  * @brief Loads a material from a .mt file and returns its handle
  * @param renderer The renderer to use

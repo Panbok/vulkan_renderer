@@ -540,22 +540,33 @@ bool8_t string_to_bool(const char *s, bool8_t *out) {
 static inline bool8_t string__parse_vecn(const char *s, double *dst, int n) {
   if (!s || !dst)
     return false_v;
-  int32_t matched = 0;
-  switch (n) {
-  case 2:
-    matched = sscanf(s, "%lf , %lf", &dst[0], &dst[1]);
-    break;
-  case 3:
-    matched = sscanf(s, "%lf , %lf , %lf", &dst[0], &dst[1], &dst[2]);
-    break;
-  case 4:
-    matched =
-        sscanf(s, "%lf , %lf , %lf , %lf", &dst[0], &dst[1], &dst[2], &dst[3]);
-    break;
-  default:
-    return false_v;
+
+  const char *p = s;
+  p = string__skip_ws(p);
+
+  for (int i = 0; i < n; i++) {
+    errno = 0;
+    char *endptr = NULL;
+    double v = strtod(p, &endptr);
+    if (p == endptr || errno == ERANGE)
+      return false_v;
+    dst[i] = v;
+    p = endptr;
+    p = string__skip_ws(p);
+    if (i < n - 1) {
+      if (*p == ',') {
+        p++;
+      }
+      p = string__skip_ws(p);
+    }
   }
-  return matched == n ? true_v : false_v;
+
+  // Only trailing whitespace is allowed
+  p = string__skip_ws(p);
+  if (*p != '\0')
+    return false_v;
+
+  return true_v;
 }
 
 bool8_t string_to_vec2(const char *s, Vec2 *out) {

@@ -102,13 +102,14 @@ typedef enum ArenaMemoryTag {
   ARENA_MEMORY_TAG_FILE,
   ARENA_MEMORY_TAG_TEXTURE,
   ARENA_MEMORY_TAG_HASH_TABLE,
+  ARENA_MEMORY_TAG_FREELIST,
 
   ARENA_MEMORY_TAG_MAX,
 } ArenaMemoryTag;
 
 static const char *ArenaMemoryTagNames[ARENA_MEMORY_TAG_MAX] = {
     "UNKNOWN", "ARRAY",    "STRING", "VECTOR",  "QUEUE",      "STRUCT",
-    "BUFFER",  "RENDERER", "FILE",   "TEXTURE", "HASH_TABLE",
+    "BUFFER",  "RENDERER", "FILE",   "TEXTURE", "HASH_TABLE", "FREELIST",
 };
 
 typedef Bitset8 ArenaFlags;

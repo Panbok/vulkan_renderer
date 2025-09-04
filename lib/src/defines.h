@@ -87,6 +87,105 @@
 
 #define VKR_INVALID_ID 4294967295U
 
+// Count leading zeros for 32-bit integers - macro version
+#if defined(__GNUC__) || defined(__clang__)
+#define VkrCountLeadingZeros32(x) ((x) == 0 ? 32 : __builtin_clz(x))
+#elif defined(_MSC_VER)
+#define VkrCountLeadingZeros32(x)                                              \
+  ((x) == 0 ? 32 : ({                                                          \
+    unsigned long _clz_index;                                                  \
+    _BitScanReverse(&_clz_index, (x));                                         \
+    31 - (int)_clz_index;                                                      \
+  }))
+#else
+// Fallback macro implementation
+#define VkrCountLeadingZeros32(x)                                              \
+  ((x) == 0 ? 32 : ({                                                          \
+    uint32_t _clz_val = (x);                                                   \
+    int _clz_count = 0;                                                        \
+    if (_clz_val <= 0x0000FFFF) {                                              \
+      _clz_count += 16;                                                        \
+      _clz_val <<= 16;                                                         \
+    }                                                                          \
+    if (_clz_val <= 0x00FFFFFF) {                                              \
+      _clz_count += 8;                                                         \
+      _clz_val <<= 8;                                                          \
+    }                                                                          \
+    if (_clz_val <= 0x0FFFFFFF) {                                              \
+      _clz_count += 4;                                                         \
+      _clz_val <<= 4;                                                          \
+    }                                                                          \
+    if (_clz_val <= 0x3FFFFFFF) {                                              \
+      _clz_count += 2;                                                         \
+      _clz_val <<= 2;                                                          \
+    }                                                                          \
+    if (_clz_val <= 0x7FFFFFFF) {                                              \
+      _clz_count += 1;                                                         \
+    }                                                                          \
+    _clz_count;                                                                \
+  }))
+#endif
+
+// Count leading zeros for 64-bit integers - macro version
+#if defined(__GNUC__) || defined(__clang__)
+#define VkrCountLeadingZeros64(x) ((x) == 0 ? 64 : __builtin_clzll(x))
+#elif defined(_MSC_VER)
+#ifdef _WIN64
+#define VkrCountLeadingZeros64(x)                                              \
+  ((x) == 0 ? 64 : ({                                                          \
+    unsigned long _clz_index;                                                  \
+    _BitScanReverse64(&_clz_index, (x));                                       \
+    63 - (int)_clz_index;                                                      \
+  }))
+#else
+#define VkrCountLeadingZeros64(x)                                              \
+  ((x) == 0 ? 64 : ({                                                          \
+    uint64_t _clz_val = (x);                                                   \
+    uint32_t _clz_high = (uint32_t)(_clz_val >> 32);                           \
+    (_clz_high != 0) ? CountLeadingZeros32(_clz_high)                          \
+                     : 32 + CountLeadingZeros32((uint32_t)_clz_val);           \
+  }))
+#endif
+#else
+// Fallback macro implementation for 64-bit
+#define VkrCountLeadingZeros64(x)                                              \
+  ((x) == 0 ? 64 : ({                                                          \
+    uint64_t _clz_val = (x);                                                   \
+    int _clz_count = 0;                                                        \
+    if (_clz_val <= 0x00000000FFFFFFFFULL) {                                   \
+      _clz_count += 32;                                                        \
+      _clz_val <<= 32;                                                         \
+    }                                                                          \
+    if (_clz_val <= 0x0000FFFFFFFFFFFFULL) {                                   \
+      _clz_count += 16;                                                        \
+      _clz_val <<= 16;                                                         \
+    }                                                                          \
+    if (_clz_val <= 0x00FFFFFFFFFFFFFFULL) {                                   \
+      _clz_count += 8;                                                         \
+      _clz_val <<= 8;                                                          \
+    }                                                                          \
+    if (_clz_val <= 0x0FFFFFFFFFFFFFFFULL) {                                   \
+      _clz_count += 4;                                                         \
+      _clz_val <<= 4;                                                          \
+    }                                                                          \
+    if (_clz_val <= 0x3FFFFFFFFFFFFFFFULL) {                                   \
+      _clz_count += 2;                                                         \
+      _clz_val <<= 2;                                                          \
+    }                                                                          \
+    if (_clz_val <= 0x7FFFFFFFFFFFFFFFULL) {                                   \
+      _clz_count += 1;                                                         \
+    }                                                                          \
+    _clz_count;                                                                \
+  }))
+#endif
+
+// Generic macro that chooses the appropriate macro based on type size
+#define VkrCountLeadingZeros(x)                                                \
+  _Generic((x),                                                                \
+      uint32_t: VkrCountLeadingZeros32(x),                                     \
+      uint64_t: VkrCountLeadingZeros64(x),                                     \
+      default: VkrCountLeadingZeros32(x))
+
 // Inlining
 #if defined(__clang__) || defined(__GNUC__)
 // If NDEBUG is NOT defined (i.e., debug build), use plain 'inline'
