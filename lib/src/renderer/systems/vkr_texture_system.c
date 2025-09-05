@@ -140,8 +140,7 @@ VkrTextureHandle vkr_texture_system_acquire(RendererFrontendHandle renderer,
   if (*out_error != RENDERER_ERROR_NONE) {
     log_warn("Falling back to default texture for '%s'",
              string8_cstr(&texture_name));
-    VkrTexture *default_texture =
-        &system->textures.data[system->default_texture.id - 1];
+    VkrTexture *default_texture = &system->textures.data[0];
     return (VkrTextureHandle){.id = default_texture->description.id,
                               .generation =
                                   default_texture->description.generation};
@@ -270,15 +269,16 @@ RendererError vkr_texture_system_load(RendererFrontendHandle renderer,
   assert_log(file_path.str != NULL, "Path is NULL");
 
   // Ensure a NUL-terminated copy of the path (String8 is not NUL-terminated)
-  char *c_string_path = (char *)arena_alloc(system->arena, file_path.length + 1,
-                                            ARENA_MEMORY_TAG_STRING);
+  Scratch c_string_scratch = scratch_create(system->arena);
+  char *c_string_path = (char *)arena_alloc(
+      c_string_scratch.arena, file_path.length + 1, ARENA_MEMORY_TAG_STRING);
   assert_log(c_string_path != NULL,
              "Failed to allocate path buffer for texture load");
   MemCopy(c_string_path, file_path.str, (size_t)file_path.length);
   c_string_path[file_path.length] = '\0';
   out_texture->file_path =
       file_path_create(c_string_path, system->arena, FILE_PATH_TYPE_RELATIVE);
-
+  scratch_destroy(c_string_scratch, ARENA_MEMORY_TAG_STRING);
   stbi_set_flip_vertically_on_load(true);
 
   int32_t width, height, original_channels;
@@ -343,12 +343,12 @@ RendererError vkr_texture_system_load(RendererFrontendHandle renderer,
   uint64_t final_image_size =
       (uint64_t)width * (uint64_t)height * (uint64_t)actual_channels;
 
-  Scratch scratch = scratch_create(system->arena);
-  out_texture->image =
-      arena_alloc(scratch.arena, final_image_size, ARENA_MEMORY_TAG_TEXTURE);
+  Scratch image_scratch = scratch_create(system->arena);
+  out_texture->image = arena_alloc(image_scratch.arena, final_image_size,
+                                   ARENA_MEMORY_TAG_TEXTURE);
   if (!out_texture->image) {
     stbi_image_free(loaded_image_data);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_TEXTURE);
+    scratch_destroy(image_scratch, ARENA_MEMORY_TAG_TEXTURE);
     return RENDERER_ERROR_OUT_OF_MEMORY;
   }
 
@@ -380,7 +380,7 @@ RendererError vkr_texture_system_load(RendererFrontendHandle renderer,
     out_texture->description.generation = system->generation_counter++;
   }
   // Free CPU-side pixels after upload
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_TEXTURE);
+  scratch_destroy(image_scratch, ARENA_MEMORY_TAG_TEXTURE);
   out_texture->image = NULL;
   return renderer_error;
 }
@@ -401,8 +401,9 @@ VkrTexture *vkr_texture_system_get_by_handle(VkrTextureSystem *system,
                                              VkrTextureHandle handle) {
   assert_log(system != NULL, "System is NULL");
 
-  if (!system || handle.id == 0)
+  if (handle.id == 0)
     return NULL;
+
   uint32_t idx = handle.id - 1;
   if (idx >= system->textures.length)
     return NULL;
@@ -429,9 +430,10 @@ VkrTextureHandle
 vkr_texture_system_get_default_handle(VkrTextureSystem *system) {
   assert_log(system != NULL, "System is NULL");
 
-  if (system->default_texture.id - 1 >= system->textures.length)
+  if (system->textures.length == 0)
     return VKR_TEXTURE_HANDLE_INVALID;
-  VkrTexture *texture = &system->textures.data[system->default_texture.id - 1];
+
+  VkrTexture *texture = &system->textures.data[0];
   if (texture->description.id == VKR_INVALID_ID ||
       texture->description.generation == VKR_INVALID_ID)
     return VKR_TEXTURE_HANDLE_INVALID;

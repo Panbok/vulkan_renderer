@@ -46,10 +46,10 @@ typedef struct VkrTextureSystem {
 
 /**
  * @brief Initializes the texture system
- * @param system The texture system to initialize
  * @param renderer The renderer to use
  * @param config The configuration for the texture system
- * @param out_error The error output
+ * @param out_system The initialized texture system (output)
+ * @return true on success, false on failure
  */
 bool8_t vkr_texture_system_init(RendererFrontendHandle renderer,
                                 const VkrTextureSystemConfig *config,
@@ -69,8 +69,10 @@ void vkr_texture_system_shutdown(RendererFrontendHandle renderer,
 
 /**
  * @brief Creates a default texture
+ * @param renderer The renderer to use
  * @param system The texture system to create the default texture in
- * @param out_texture The texture to create the default texture in
+ * @param out_texture The created default texture (output)
+ * @return RendererError indicating success or failure
  */
 RendererError vkr_texture_system_create_default(RendererFrontendHandle renderer,
                                                 VkrTextureSystem *system,
@@ -78,10 +80,12 @@ RendererError vkr_texture_system_create_default(RendererFrontendHandle renderer,
 
 /**
  * @brief Loads a texture from a file
+ * @param renderer The renderer to use
  * @param system The texture system to load the texture in
- * @param path The path to the texture file
+ * @param file_path The path to the texture file
  * @param desired_channels The desired number of channels for the texture
  * @param out_texture The texture to load the texture into
+ * @return RendererError indicating success or failure
  */
 RendererError vkr_texture_system_load(RendererFrontendHandle renderer,
                                       VkrTextureSystem *system,
@@ -99,12 +103,14 @@ void vkr_texture_system_destroy(RendererFrontendHandle renderer,
 
 /**
  * @brief Acquires a texture by name; increments refcount or loads if missing.
+ * @param renderer The renderer to use
  * @param system The texture system to acquire the texture from
- * @param name The name of the texture to acquire
+ * @param texture_name The name of the texture to acquire
  * @param auto_release Whether to auto-release the texture when the refcount
  * reaches 0
  * @param temp_arena The temporary arena to use
  * @param out_error The error output
+ * @return The handle to the acquired texture
  */
 VkrTextureHandle vkr_texture_system_acquire(RendererFrontendHandle renderer,
                                             VkrTextureSystem *system,
@@ -115,8 +121,9 @@ VkrTextureHandle vkr_texture_system_acquire(RendererFrontendHandle renderer,
 
 /**
  * @brief Releases a texture by name
+ * @param renderer The renderer to use
  * @param system The texture system to release the texture from
- * @param name The name of the texture to release
+ * @param texture_name The name of the texture to release
  */
 void vkr_texture_system_release(RendererFrontendHandle renderer,
                                 VkrTextureSystem *system, String8 texture_name);
