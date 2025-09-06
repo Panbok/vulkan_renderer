@@ -5,7 +5,7 @@
 #include "defines.h"
 #include "memory/arena.h"
 #include "renderer/renderer.h"
-#include "renderer/resources/resources.h"
+#include "renderer/resources/vkr_resources.h"
 
 // =============================================================================
 // Texture System - Basic texture management with array and hash table

@@ -6,8 +6,8 @@
 #include "defines.h"
 #include "memory/arena.h"
 #include "renderer/renderer.h"
-#include "renderer/resources/buffer.h"
-#include "renderer/resources/resources.h"
+#include "renderer/resources/vkr_resources.h"
+#include "renderer/vkr_buffer.h"
 
 // =============================================================================
 // Geometry System - Manages pooled geometry in shared vertex/index buffers
@@ -45,8 +45,8 @@ typedef struct VkrGeometryPool {
   uint64_t capacity_indices;  // in indices
 
   // Shared GPU buffers
-  VertexBuffer vertex_buffer;
-  IndexBuffer index_buffer;
+  VkrVertexBuffer vertex_buffer;
+  VkrIndexBuffer index_buffer;
 
   // Free space management in BYTES
   VkrFreeList vertex_freelist; // total size = capacity_vertices * stride

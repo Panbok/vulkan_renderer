@@ -37,7 +37,7 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
   pool->capacity_indices = system->config.default_max_indices;
 
   RendererError err = RENDERER_ERROR_NONE;
-  pool->vertex_buffer = vertex_buffer_create(
+  pool->vertex_buffer = vkr_vertex_buffer_create(
       system->renderer, system->arena, NULL, pool->vertex_stride_bytes,
       (uint32_t)pool->capacity_vertices, VERTEX_INPUT_RATE_VERTEX,
       string8_lit("GeometrySystem.VertexBuffer"), &err);
@@ -46,10 +46,10 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
     return false_v;
   }
 
-  pool->index_buffer =
-      index_buffer_create(system->renderer, system->arena, NULL,
-                          INDEX_TYPE_UINT32, (uint32_t)pool->capacity_indices,
-                          string8_lit("GeometrySystem.IndexBuffer"), &err);
+  pool->index_buffer = vkr_index_buffer_create(
+      system->renderer, system->arena, NULL, INDEX_TYPE_UINT32,
+      (uint32_t)pool->capacity_indices,
+      string8_lit("GeometrySystem.IndexBuffer"), &err);
   if (err != RENDERER_ERROR_NONE) {
     *out_error = err;
     return false_v;
@@ -224,8 +224,8 @@ void vkr_geometry_system_shutdown(VkrGeometrySystem *system) {
     VkrGeometryPool *pool = &system->pools[i];
     if (!pool->initialized)
       continue;
-    vertex_buffer_destroy(system->renderer, &pool->vertex_buffer);
-    index_buffer_destroy(system->renderer, &pool->index_buffer);
+    vkr_vertex_buffer_destroy(system->renderer, &pool->vertex_buffer);
+    vkr_index_buffer_destroy(system->renderer, &pool->index_buffer);
     vkr_freelist_destroy(&pool->vertex_freelist);
     vkr_freelist_destroy(&pool->index_freelist);
     pool->initialized = false_v;
@@ -506,7 +506,7 @@ void vkr_geometry_system_render(RendererFrontendHandle renderer,
   renderer_draw_indexed(renderer, entry->index_count, instance_count, 0, 0, 0);
 }
 
-typedef InterleavedVertex_PositionTexcoord GeoVertexPT;
+typedef VkrInterleavedVertex_PositionTexcoord GeoVertexPT;
 
 VkrGeometryHandle vkr_geometry_system_create_default_cube(
     VkrGeometrySystem *system, float32_t width, float32_t height,
@@ -608,7 +608,7 @@ void vkr_geometry_fill_vertex_input_descriptions(
   case GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD: {
     *out_attr_count = 2;
     *out_binding_count = 1;
-    *out_stride = sizeof(InterleavedVertex_PositionTexcoord);
+    *out_stride = sizeof(VkrInterleavedVertex_PositionTexcoord);
     VertexInputAttributeDescription *attrs = arena_alloc(
         arena, sizeof(VertexInputAttributeDescription) * (*out_attr_count),
         ARENA_MEMORY_TAG_RENDERER);
@@ -619,12 +619,12 @@ void vkr_geometry_fill_vertex_input_descriptions(
         .location = 0,
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(InterleavedVertex_PositionTexcoord, position)};
+        .offset = offsetof(VkrInterleavedVertex_PositionTexcoord, position)};
     attrs[1] = (VertexInputAttributeDescription){
         .location = 1,
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32_SFLOAT,
-        .offset = offsetof(InterleavedVertex_PositionTexcoord, texcoord)};
+        .offset = offsetof(VkrInterleavedVertex_PositionTexcoord, texcoord)};
     bindings[0] =
         (VertexInputBindingDescription){.binding = 0,
                                         .stride = *out_stride,
@@ -636,7 +636,7 @@ void vkr_geometry_fill_vertex_input_descriptions(
   case GEOMETRY_VERTEX_LAYOUT_POSITION_COLOR: {
     *out_attr_count = 2;
     *out_binding_count = 1;
-    *out_stride = sizeof(InterleavedVertex_PositionColor);
+    *out_stride = sizeof(VkrInterleavedVertex_PositionColor);
     VertexInputAttributeDescription *attrs = arena_alloc(
         arena, sizeof(VertexInputAttributeDescription) * (*out_attr_count),
         ARENA_MEMORY_TAG_RENDERER);
@@ -647,12 +647,12 @@ void vkr_geometry_fill_vertex_input_descriptions(
         .location = 0,
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(InterleavedVertex_PositionColor, position)};
+        .offset = offsetof(VkrInterleavedVertex_PositionColor, position)};
     attrs[1] = (VertexInputAttributeDescription){
         .location = 1,
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(InterleavedVertex_PositionColor, color)};
+        .offset = offsetof(VkrInterleavedVertex_PositionColor, color)};
     bindings[0] =
         (VertexInputBindingDescription){.binding = 0,
                                         .stride = *out_stride,
@@ -664,7 +664,7 @@ void vkr_geometry_fill_vertex_input_descriptions(
   case GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_COLOR: {
     *out_attr_count = 3;
     *out_binding_count = 1;
-    *out_stride = sizeof(InterleavedVertex_PositionNormalColor);
+    *out_stride = sizeof(VkrInterleavedVertex_PositionNormalColor);
     VertexInputAttributeDescription *attrs = arena_alloc(
         arena, sizeof(VertexInputAttributeDescription) * (*out_attr_count),
         ARENA_MEMORY_TAG_RENDERER);
@@ -675,17 +675,17 @@ void vkr_geometry_fill_vertex_input_descriptions(
         .location = 0,
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(InterleavedVertex_PositionNormalColor, position)};
+        .offset = offsetof(VkrInterleavedVertex_PositionNormalColor, position)};
     attrs[1] = (VertexInputAttributeDescription){
         .location = 1,
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(InterleavedVertex_PositionNormalColor, normal)};
+        .offset = offsetof(VkrInterleavedVertex_PositionNormalColor, normal)};
     attrs[2] = (VertexInputAttributeDescription){
         .location = 2,
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(InterleavedVertex_PositionNormalColor, color)};
+        .offset = offsetof(VkrInterleavedVertex_PositionNormalColor, color)};
     bindings[0] =
         (VertexInputBindingDescription){.binding = 0,
                                         .stride = *out_stride,
@@ -697,7 +697,7 @@ void vkr_geometry_fill_vertex_input_descriptions(
   case GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD: {
     *out_attr_count = 3;
     *out_binding_count = 1;
-    *out_stride = sizeof(InterleavedVertex_PositionNormalTexcoord);
+    *out_stride = sizeof(VkrInterleavedVertex_PositionNormalTexcoord);
     VertexInputAttributeDescription *attrs = arena_alloc(
         arena, sizeof(VertexInputAttributeDescription) * (*out_attr_count),
         ARENA_MEMORY_TAG_RENDERER);
@@ -708,17 +708,20 @@ void vkr_geometry_fill_vertex_input_descriptions(
         .location = 0,
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(InterleavedVertex_PositionNormalTexcoord, position)};
+        .offset =
+            offsetof(VkrInterleavedVertex_PositionNormalTexcoord, position)};
     attrs[1] = (VertexInputAttributeDescription){
         .location = 1,
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(InterleavedVertex_PositionNormalTexcoord, normal)};
+        .offset =
+            offsetof(VkrInterleavedVertex_PositionNormalTexcoord, normal)};
     attrs[2] = (VertexInputAttributeDescription){
         .location = 2,
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32_SFLOAT,
-        .offset = offsetof(InterleavedVertex_PositionNormalTexcoord, texcoord)};
+        .offset =
+            offsetof(VkrInterleavedVertex_PositionNormalTexcoord, texcoord)};
     bindings[0] =
         (VertexInputBindingDescription){.binding = 0,
                                         .stride = *out_stride,
@@ -730,7 +733,7 @@ void vkr_geometry_fill_vertex_input_descriptions(
   case GEOMETRY_VERTEX_LAYOUT_FULL: {
     *out_attr_count = 4;
     *out_binding_count = 1;
-    *out_stride = sizeof(InterleavedVertex_Full);
+    *out_stride = sizeof(VkrInterleavedVertex_Full);
     VertexInputAttributeDescription *attrs = arena_alloc(
         arena, sizeof(VertexInputAttributeDescription) * (*out_attr_count),
         ARENA_MEMORY_TAG_RENDERER);
@@ -741,22 +744,22 @@ void vkr_geometry_fill_vertex_input_descriptions(
         .location = 0,
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(InterleavedVertex_Full, position)};
+        .offset = offsetof(VkrInterleavedVertex_Full, position)};
     attrs[1] = (VertexInputAttributeDescription){
         .location = 1,
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(InterleavedVertex_Full, normal)};
+        .offset = offsetof(VkrInterleavedVertex_Full, normal)};
     attrs[2] = (VertexInputAttributeDescription){
         .location = 2,
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32_SFLOAT,
-        .offset = offsetof(InterleavedVertex_Full, texcoord)};
+        .offset = offsetof(VkrInterleavedVertex_Full, texcoord)};
     attrs[3] = (VertexInputAttributeDescription){
         .location = 3,
         .binding = 0,
         .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(InterleavedVertex_Full, color)};
+        .offset = offsetof(VkrInterleavedVertex_Full, color)};
     bindings[0] =
         (VertexInputBindingDescription){.binding = 0,
                                         .stride = *out_stride,

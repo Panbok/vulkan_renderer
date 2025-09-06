@@ -5,7 +5,7 @@
 #include "defines.h"
 #include "memory/arena.h"
 #include "renderer/renderer.h"
-#include "renderer/resources/resources.h"
+#include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_texture_system.h"
 
 // =============================================================================
@@ -30,9 +30,6 @@ VkrHashTable(VkrMaterialEntry);
 // Default arena sizing for material system internal allocators
 #define VKR_MATERIAL_SYSTEM_DEFAULT_ARENA_RSV MB(8)
 #define VKR_MATERIAL_SYSTEM_DEFAULT_ARENA_CMT MB(4)
-
-// todo: hash table should count lifetime objects of materials
-// with ref counts, but we currently don't do that
 
 typedef struct VkrMaterialSystem {
   // Internal arenas owned by the material system

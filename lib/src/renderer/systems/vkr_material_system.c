@@ -583,8 +583,8 @@ vkr_material_system_load_default_from_mt(RendererFrontendHandle renderer,
   def->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle =
       loaded->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle;
   // also copy all texture slots to mirror loaded defaults
-  for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; i++) {
-    def->textures[i] = loaded->textures[i];
+  for (uint32_t slot = 0; slot < VKR_TEXTURE_SLOT_COUNT; slot++) {
+    def->textures[slot] = loaded->textures[slot];
   }
   def->phong = loaded->phong;
   def->generation = system->generation_counter++;
