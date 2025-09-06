@@ -38,7 +38,7 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
 
   RendererError err = RENDERER_ERROR_NONE;
   pool->vertex_buffer = vkr_vertex_buffer_create(
-      system->renderer, system->arena, NULL, pool->vertex_stride_bytes,
+      system->renderer, NULL, pool->vertex_stride_bytes,
       (uint32_t)pool->capacity_vertices, VERTEX_INPUT_RATE_VERTEX,
       string8_lit("GeometrySystem.VertexBuffer"), &err);
   if (err != RENDERER_ERROR_NONE) {
@@ -46,10 +46,10 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
     return false_v;
   }
 
-  pool->index_buffer = vkr_index_buffer_create(
-      system->renderer, system->arena, NULL, INDEX_TYPE_UINT32,
-      (uint32_t)pool->capacity_indices,
-      string8_lit("GeometrySystem.IndexBuffer"), &err);
+  pool->index_buffer =
+      vkr_index_buffer_create(system->renderer, NULL, INDEX_TYPE_UINT32,
+                              (uint32_t)pool->capacity_indices,
+                              string8_lit("GeometrySystem.IndexBuffer"), &err);
   if (err != RENDERER_ERROR_NONE) {
     *out_error = err;
     return false_v;

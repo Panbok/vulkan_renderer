@@ -5,13 +5,12 @@
 // =============================================================================
 
 VkrVertexBuffer vkr_vertex_buffer_create(RendererFrontendHandle renderer,
-                                         Arena *arena, const void *data,
-                                         uint32_t stride, uint32_t vertex_count,
+                                         const void *data, uint32_t stride,
+                                         uint32_t vertex_count,
                                          VertexInputRate input_rate,
                                          String8 debug_name,
                                          RendererError *out_error) {
   assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(arena != NULL, "Arena is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
   assert_log(stride > 0, "Stride must be > 0");
   assert_log(vertex_count > 0, "Vertex count must be > 0");
@@ -41,12 +40,10 @@ VkrVertexBuffer vkr_vertex_buffer_create(RendererFrontendHandle renderer,
 }
 
 VkrIndexBuffer vkr_index_buffer_create(RendererFrontendHandle renderer,
-                                       Arena *arena, const void *data,
-                                       IndexType type, uint32_t index_count,
-                                       String8 debug_name,
+                                       const void *data, IndexType type,
+                                       uint32_t index_count, String8 debug_name,
                                        RendererError *out_error) {
   assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(arena != NULL, "Arena is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
   assert_log(index_count > 0, "Index count must be > 0");
 
@@ -75,12 +72,12 @@ VkrIndexBuffer vkr_index_buffer_create(RendererFrontendHandle renderer,
   return index_buffer;
 }
 
-VkrUniformBuffer vkr_uniform_buffer_create(
-    RendererFrontendHandle renderer, Arena *arena, const void *data,
-    uint64_t size_bytes, uint32_t binding, ShaderStageFlags stages,
-    bool32_t dynamic, String8 debug_name, RendererError *out_error) {
+VkrUniformBuffer
+vkr_uniform_buffer_create(RendererFrontendHandle renderer, const void *data,
+                          uint64_t size_bytes, uint32_t binding,
+                          ShaderStageFlags stages, bool32_t dynamic,
+                          String8 debug_name, RendererError *out_error) {
   assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(arena != NULL, "Arena is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
   assert_log(size_bytes > 0, "Size must be > 0");
 
@@ -134,7 +131,8 @@ RendererError vkr_vertex_buffer_update(RendererFrontendHandle renderer,
   assert_log(vertex_buffer != NULL, "Vertex buffer is NULL");
   assert_log(data != NULL, "Data is NULL");
 
-  if (offset_vertices + vertex_count > vertex_buffer->vertex_count) {
+  if (offset_vertices > vertex_buffer->vertex_count ||
+      vertex_count > (vertex_buffer->vertex_count - offset_vertices)) {
     log_error("Vertex buffer update out of bounds: offset %u + count %u > "
               "capacity %u",
               offset_vertices, vertex_count, vertex_buffer->vertex_count);
@@ -163,7 +161,8 @@ RendererError vkr_index_buffer_update(RendererFrontendHandle renderer,
   assert_log(index_buffer != NULL, "Index buffer is NULL");
   assert_log(data != NULL, "Data is NULL");
 
-  if (offset_indices + index_count > index_buffer->index_count) {
+  if (offset_indices > index_buffer->index_count ||
+      index_count > (index_buffer->index_count - offset_indices)) {
     log_error(
         "Index buffer update out of bounds: offset %u + count %u > capacity %u",
         offset_indices, index_count, index_buffer->index_count);
@@ -195,7 +194,8 @@ RendererError vkr_uniform_buffer_update(RendererFrontendHandle renderer,
   assert_log(uniform_buffer != NULL, "Uniform buffer is NULL");
   assert_log(data != NULL, "Data is NULL");
 
-  if (offset_bytes + size_bytes > uniform_buffer->size_bytes) {
+  if (offset_bytes > uniform_buffer->size_bytes ||
+      size_bytes > (uniform_buffer->size_bytes - offset_bytes)) {
     log_error("Uniform buffer update out of bounds: offset %llu + size %llu > "
               "capacity %llu",
               offset_bytes, size_bytes, uniform_buffer->size_bytes);

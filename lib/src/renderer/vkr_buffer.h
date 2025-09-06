@@ -119,7 +119,6 @@ Array(VkrUniformBuffer);
 /**
  * @brief Creates a vertex buffer from raw vertex data
  * @param renderer Renderer instance
- * @param arena Memory allocator
  * @param data Vertex data
  * @param stride Size of one vertex
  * @param vertex_count Number of vertices
@@ -129,8 +128,8 @@ Array(VkrUniformBuffer);
  * @return Created VkrVertexBuffer
  */
 VkrVertexBuffer vkr_vertex_buffer_create(RendererFrontendHandle renderer,
-                                         Arena *arena, const void *data,
-                                         uint32_t stride, uint32_t vertex_count,
+                                         const void *data, uint32_t stride,
+                                         uint32_t vertex_count,
                                          VertexInputRate input_rate,
                                          String8 debug_name,
                                          RendererError *out_error);
@@ -147,9 +146,8 @@ VkrVertexBuffer vkr_vertex_buffer_create(RendererFrontendHandle renderer,
  * @return Created VkrIndexBuffer
  */
 VkrIndexBuffer vkr_index_buffer_create(RendererFrontendHandle renderer,
-                                       Arena *arena, const void *data,
-                                       IndexType type, uint32_t index_count,
-                                       String8 debug_name,
+                                       const void *data, IndexType type,
+                                       uint32_t index_count, String8 debug_name,
                                        RendererError *out_error);
 
 /**
@@ -165,24 +163,11 @@ VkrIndexBuffer vkr_index_buffer_create(RendererFrontendHandle renderer,
  * @param out_error Error output
  * @return Created VkrUniformBuffer
  */
-VkrUniformBuffer vkr_uniform_buffer_create(
-    RendererFrontendHandle renderer, Arena *arena, const void *data,
-    uint64_t size_bytes, uint32_t binding, ShaderStageFlags stages,
-    bool32_t dynamic, String8 debug_name, RendererError *out_error);
-
-/**
- * @brief Creates a global uniform buffer
- * @param renderer Renderer instance
- * @param arena Memory allocator
- * @param global_uniform_object Global uniform object
- * @param debug_name Optional debug name
- * @param out_error Error output
- * @return Created VkrUniformBuffer
- */
 VkrUniformBuffer
-vkr_global_uniform_buffer_create(RendererFrontendHandle renderer, Arena *arena,
-                                 GlobalUniformObject *global_uniform_object,
-                                 String8 debug_name, RendererError *out_error);
+vkr_uniform_buffer_create(RendererFrontendHandle renderer, const void *data,
+                          uint64_t size_bytes, uint32_t binding,
+                          ShaderStageFlags stages, bool32_t dynamic,
+                          String8 debug_name, RendererError *out_error);
 
 // =============================================================================
 // Buffer Update Functions
