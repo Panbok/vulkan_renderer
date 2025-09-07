@@ -5,9 +5,6 @@
 #include "memory/arena.h"
 #include "renderer/renderer.h"
 #include "renderer/resources/vkr_resources.h"
-#include "renderer/systems/vkr_geometry_system.h"
-#include "renderer/systems/vkr_material_system.h"
-#include "renderer/systems/vkr_texture_system.h"
 
 // =============================================================================
 // Resource System - Loader registry and generic load/unload dispatch
@@ -22,11 +19,14 @@ typedef enum VkrResourceType {
 } VkrResourceType;
 
 typedef struct VkrResourceHandleInfo {
+  uint32_t
+      loader_id; // id of the loader that created this handle, or VKR_INVALID_ID
   VkrResourceType type;
   union {
     VkrTextureHandle texture;
     VkrMaterialHandle material;
     VkrGeometryHandle geometry;
+    void *custom; // VKR_RESOURCE_TYPE_CUSTOM
   } as;
 } VkrResourceHandleInfo;
 
@@ -35,10 +35,10 @@ typedef struct VkrResourceSystem
     VkrResourceSystem; // forward decl for loader callbacks
 
 struct VkrResourceLoader {
-  uint32_t id;             // assigned on registration
-  VkrResourceType type;    // resource type
-  const char *custom_type; // optional custom subtype tag
-  const char *type_path;   // optional logical type path (unused for now)
+  uint32_t id;          // assigned on registration
+  VkrResourceType type; // resource type
+  String8 custom_type;  // optional custom subtype tag
+  String8 type_path;    // optional logical type path (unused for now)
 
   VkrResourceSystem *system;
   RendererFrontendHandle renderer;
@@ -74,7 +74,7 @@ struct VkrResourceLoader {
                  String8 name);
 };
 
-typedef struct VkrResourceSystem {
+struct VkrResourceSystem {
   Arena *arena; // persistent storage for keys/entries
   RendererFrontendHandle renderer;
 
@@ -82,7 +82,7 @@ typedef struct VkrResourceSystem {
   VkrResourceLoader *loaders;
   uint32_t loader_count;
   uint32_t loader_capacity;
-} VkrResourceSystem;
+};
 
 // =============================================================================
 // Initialization / Shutdown
@@ -146,7 +146,7 @@ bool8_t vkr_resource_system_load(VkrResourceSystem *system,
  * @return True if the resource was loaded, false otherwise
  */
 bool8_t vkr_resource_system_load_custom(VkrResourceSystem *system,
-                                        const char *custom_type, String8 name,
+                                        String8 custom_type, String8 name,
                                         Arena *temp_arena,
                                         VkrResourceHandleInfo *out_info,
                                         RendererError *out_error);
@@ -154,10 +154,9 @@ bool8_t vkr_resource_system_load_custom(VkrResourceSystem *system,
 /**
  * @brief Unloads a resource using the appropriate loader
  * @param system The resource system to unload the resource from
- * @param type The type of the resource to unload
  * @param info The info of the resource to unload
  * @param name The name of the resource to unload
  */
-void vkr_resource_system_unload(VkrResourceSystem *system, VkrResourceType type,
+void vkr_resource_system_unload(VkrResourceSystem *system,
                                 const VkrResourceHandleInfo *info,
                                 String8 name);

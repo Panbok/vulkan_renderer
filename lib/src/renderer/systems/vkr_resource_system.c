@@ -10,7 +10,8 @@ bool8_t vkr_resource_system_init(Arena *arena, RendererFrontendHandle renderer,
   out_system->arena = arena;
   out_system->renderer = renderer;
 
-  out_system->loader_capacity = 16;
+  out_system->loader_capacity =
+      16; // todo: this needs to be a part of the config file
   out_system->loaders =
       arena_alloc(out_system->arena,
                   sizeof(VkrResourceLoader) * out_system->loader_capacity,
@@ -18,6 +19,10 @@ bool8_t vkr_resource_system_init(Arena *arena, RendererFrontendHandle renderer,
   assert_log(out_system->loaders != NULL, "Failed to allocate loaders array");
   out_system->loader_count =
       0; // loaders must be registered explicitly by resources
+
+  for (uint32_t loader = 0; loader < out_system->loader_capacity; loader++) {
+    out_system->loaders[loader].id = VKR_INVALID_ID;
+  }
 
   return true_v;
 }
@@ -47,12 +52,14 @@ bool8_t vkr_resource_system_register_loader(VkrResourceSystem *system,
     system->loader_capacity = new_capacity;
   }
 
-  loader.id = system->loader_count;
-  system->loaders[system->loader_count++] = loader;
+  uint32_t id = system->loader_count++;
+  system->loaders[id] = loader;
 
-  loader.resource_system = resource_system;
-  loader.system = system;
-  loader.renderer = system->renderer;
+  VkrResourceLoader *dst = &system->loaders[id];
+  dst->id = id;
+  dst->resource_system = resource_system;
+  dst->system = system;
+  dst->renderer = system->renderer;
 
   return true_v;
 }
@@ -67,6 +74,7 @@ bool8_t vkr_resource_system_load(VkrResourceSystem *system,
   assert_log(out_info != NULL, "Out info is NULL");
 
   out_info->type = VKR_RESOURCE_TYPE_UNKNOWN;
+  out_info->loader_id = VKR_INVALID_ID;
 
   // Try loaders matching the provided type first
   for (uint32_t i = 0; i < system->loader_count; i++) {
@@ -79,6 +87,7 @@ bool8_t vkr_resource_system_load(VkrResourceSystem *system,
     VkrResourceHandleInfo loaded_info = {0};
     if (loader->load &&
         loader->load(loader, path, temp_arena, &loaded_info, out_error)) {
+      loaded_info.loader_id = loader->id;
       *out_info = loaded_info;
       return true_v;
     }
@@ -92,6 +101,7 @@ bool8_t vkr_resource_system_load(VkrResourceSystem *system,
     VkrResourceHandleInfo loaded_info = {0};
     if (loader->load &&
         loader->load(loader, path, temp_arena, &loaded_info, out_error)) {
+      loaded_info.loader_id = loader->id;
       *out_info = loaded_info;
       return true_v;
     }
@@ -103,17 +113,22 @@ bool8_t vkr_resource_system_load(VkrResourceSystem *system,
 }
 
 bool8_t vkr_resource_system_load_custom(VkrResourceSystem *system,
-                                        const char *custom_type, String8 path,
+                                        String8 custom_type, String8 path,
                                         Arena *temp_arena,
                                         VkrResourceHandleInfo *out_info,
                                         RendererError *out_error) {
-  assert_log(custom_type != NULL, "Custom type is NULL");
+  assert_log(system != NULL, "Resource system is NULL");
+  assert_log(custom_type.str != NULL, "Custom type is NULL");
+  assert_log(path.str != NULL, "Path is NULL");
+  assert_log(out_info != NULL, "Out info is NULL");
+  out_info->type = VKR_RESOURCE_TYPE_UNKNOWN;
+
   for (uint32_t i = 0; i < system->loader_count; i++) {
     VkrResourceLoader *loader = &system->loaders[i];
-    if (!loader->custom_type)
+    if (!loader->custom_type.str)
       continue;
     // simple case-insensitive compare of C strings
-    if (string_equalsi(loader->custom_type, custom_type)) {
+    if (string8_equalsi(&loader->custom_type, &custom_type)) {
       if (loader->can_load && !loader->can_load(loader, path))
         continue;
       VkrResourceHandleInfo loaded_info = {0};
@@ -127,12 +142,24 @@ bool8_t vkr_resource_system_load_custom(VkrResourceSystem *system,
   return false_v;
 }
 
-void vkr_resource_system_unload(VkrResourceSystem *system, VkrResourceType type,
+void vkr_resource_system_unload(VkrResourceSystem *system,
                                 const VkrResourceHandleInfo *info,
                                 String8 name) {
   assert_log(system != NULL, "Resource system is NULL");
   assert_log(info != NULL, "Info is NULL");
-  (void)type; // type can be implied from info->type
+  assert_log(name.str != NULL, "Name is NULL");
+
+  // Prefer unloading with the loader that created the resource if available
+  if (info->loader_id != VKR_INVALID_ID &&
+      info->loader_id < system->loader_count) {
+    VkrResourceLoader *by_id = &system->loaders[info->loader_id];
+    if (by_id->unload && by_id->type == info->type) {
+      by_id->unload(by_id, info, name);
+      return;
+    }
+  }
+
+  // Fallback: unload by matching type
   for (uint32_t i = 0; i < system->loader_count; i++) {
     VkrResourceLoader *loader = &system->loaders[i];
     if (loader->type == info->type && loader->unload) {
@@ -140,4 +167,7 @@ void vkr_resource_system_unload(VkrResourceSystem *system, VkrResourceType type,
       return;
     }
   }
+
+  log_warn("Resource system: no unloader for type=%u name='%s'",
+           (unsigned)info->type, string8_cstr(&name));
 }
