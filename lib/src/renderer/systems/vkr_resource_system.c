@@ -1,5 +1,18 @@
 #include "renderer/systems/vkr_resource_system.h"
 
+struct VkrResourceSystem {
+  Arena *arena; // persistent storage for keys/entries
+  RendererFrontendHandle renderer;
+
+  // Registered loaders
+  VkrResourceLoader *loaders;
+  uint32_t loader_count;
+  uint32_t loader_capacity;
+};
+
+/**
+ * @brief Global resource system instance, Not thread-safe
+ */
 vkr_global VkrResourceSystem *vkr_resource_system = NULL;
 
 bool8_t vkr_resource_system_init(Arena *arena,
@@ -8,7 +21,14 @@ bool8_t vkr_resource_system_init(Arena *arena,
   assert_log(renderer != NULL, "Renderer is NULL");
 
   if (vkr_resource_system) {
-    log_warn("Resource system already initialized");
+    if (vkr_resource_system->arena != arena ||
+        vkr_resource_system->renderer != renderer) {
+      log_error(
+          "Resource system already initialized with different parameters");
+      return false_v;
+    }
+
+    log_debug("Resource system already initialized with same parameters");
     return true_v;
   }
 
@@ -46,7 +66,7 @@ bool8_t vkr_resource_system_init(Arena *arena,
 bool8_t vkr_resource_system_register_loader(void *resource_system,
                                             VkrResourceLoader loader) {
   assert_log(vkr_resource_system != NULL, "Resource system is NULL");
-  assert_log(resource_system != NULL, "Resource system is NULL");
+  assert_log(resource_system != NULL, "Loader resource system context is NULL");
 
   if (vkr_resource_system->loader_count >=
       vkr_resource_system->loader_capacity) {
@@ -83,36 +103,27 @@ bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
   out_info->type = VKR_RESOURCE_TYPE_UNKNOWN;
   out_info->loader_id = VKR_INVALID_ID;
 
-  // Try loaders matching the provided type first
-  for (uint32_t loader_idx = 0; loader_idx < vkr_resource_system->loader_count;
-       loader_idx++) {
-    VkrResourceLoader *loader = &vkr_resource_system->loaders[loader_idx];
-    if (type != VKR_RESOURCE_TYPE_UNKNOWN && loader->type != type)
-      continue;
-    if (loader->can_load && !loader->can_load(loader, path))
-      continue;
+  for (int32_t pass = 0; pass < 2; pass++) {
+    for (uint32_t loader_idx = 0;
+         loader_idx < vkr_resource_system->loader_count; loader_idx++) {
+      VkrResourceLoader *loader = &vkr_resource_system->loaders[loader_idx];
 
-    VkrResourceHandleInfo loaded_info = {0};
-    if (loader->load &&
-        loader->load(loader, path, temp_arena, &loaded_info, out_error)) {
-      loaded_info.loader_id = loader->id;
-      *out_info = loaded_info;
-      return true_v;
-    }
-  }
+      // First pass: only try loaders matching the type
+      // Second pass: try any loader
+      if (pass == 0 && type != VKR_RESOURCE_TYPE_UNKNOWN &&
+          loader->type != type)
+        continue;
 
-  // Fallback: try any loader that can load
-  for (uint32_t loader_idx = 0; loader_idx < vkr_resource_system->loader_count;
-       loader_idx++) {
-    VkrResourceLoader *loader = &vkr_resource_system->loaders[loader_idx];
-    if (loader->can_load && !loader->can_load(loader, path))
-      continue;
-    VkrResourceHandleInfo loaded_info = {0};
-    if (loader->load &&
-        loader->load(loader, path, temp_arena, &loaded_info, out_error)) {
-      loaded_info.loader_id = loader->id;
-      *out_info = loaded_info;
-      return true_v;
+      if (loader->can_load && !loader->can_load(loader, path))
+        continue;
+
+      VkrResourceHandleInfo loaded_info = {0};
+      if (loader->load &&
+          loader->load(loader, path, temp_arena, &loaded_info, out_error)) {
+        loaded_info.loader_id = loader->id;
+        *out_info = loaded_info;
+        return true_v;
+      }
     }
   }
 
@@ -190,7 +201,7 @@ uint32_t vkr_resource_system_get_loader_id(VkrResourceType type, String8 name) {
   for (uint32_t loader_idx = 0; loader_idx < vkr_resource_system->loader_count;
        loader_idx++) {
     VkrResourceLoader *loader = &vkr_resource_system->loaders[loader_idx];
-    if (loader->type == type && string8_equalsi(&loader->type_path, &name)) {
+    if (loader->type == type) {
       return loader->id;
     }
   }

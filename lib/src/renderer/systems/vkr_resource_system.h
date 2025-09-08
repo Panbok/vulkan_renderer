@@ -38,10 +38,10 @@ struct VkrResourceLoader {
   uint32_t id;          // assigned on registration
   VkrResourceType type; // resource type
   String8 custom_type;  // optional custom subtype tag
-  String8 type_path;    // optional logical type path (unused for now)
 
   RendererFrontendHandle renderer;
-  void *resource_system; // resource system of implemented loader
+  void *resource_system; // opaque pointer to loader-specific resource system
+                         // implementation
 
   /**
    * @brief Callback to check if the loader can load the resource
@@ -73,16 +73,6 @@ struct VkrResourceLoader {
                  String8 name);
 };
 
-struct VkrResourceSystem {
-  Arena *arena; // persistent storage for keys/entries
-  RendererFrontendHandle renderer;
-
-  // Registered loaders
-  VkrResourceLoader *loaders;
-  uint32_t loader_count;
-  uint32_t loader_capacity;
-};
-
 // =============================================================================
 // Initialization / Shutdown
 // =============================================================================
@@ -97,7 +87,8 @@ bool8_t vkr_resource_system_init(Arena *arena, RendererFrontendHandle renderer);
 
 /**
  * @brief Registers a resource loader
- * @param resource_system The resource system to use
+ * @param resource_system Loader-specific resource system implementation (can be
+ * NULL)
  * @param loader The loader to register
  * @return True if the loader was registered, false otherwise
  */
