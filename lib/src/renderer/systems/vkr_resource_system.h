@@ -40,9 +40,8 @@ struct VkrResourceLoader {
   String8 custom_type;  // optional custom subtype tag
   String8 type_path;    // optional logical type path (unused for now)
 
-  VkrResourceSystem *system;
   RendererFrontendHandle renderer;
-  void *resource_system;
+  void *resource_system; // resource system of implemented loader
 
   /**
    * @brief Callback to check if the loader can load the resource
@@ -92,27 +91,17 @@ struct VkrResourceSystem {
  * @brief Initializes the resource system
  * @param arena The arena to use
  * @param renderer The renderer to use
- * @param out_system The output system
  * @return True if the resource system was initialized, false otherwise
  */
-bool8_t vkr_resource_system_init(Arena *arena, RendererFrontendHandle renderer,
-                                 VkrResourceSystem *out_system);
-
-/**
- * @brief Shuts down the resource system
- * @param system The resource system to shutdown
- */
-void vkr_resource_system_shutdown(VkrResourceSystem *system);
+bool8_t vkr_resource_system_init(Arena *arena, RendererFrontendHandle renderer);
 
 /**
  * @brief Registers a resource loader
- * @param system The resource system to register the loader in
  * @param resource_system The resource system to use
  * @param loader The loader to register
  * @return True if the loader was registered, false otherwise
  */
-bool8_t vkr_resource_system_register_loader(VkrResourceSystem *system,
-                                            void *resource_system,
+bool8_t vkr_resource_system_register_loader(void *resource_system,
                                             VkrResourceLoader loader);
 
 // =============================================================================
@@ -121,7 +110,6 @@ bool8_t vkr_resource_system_register_loader(VkrResourceSystem *system,
 
 /**
  * @brief Loads a resource using a loader for the given type
- * @param system The resource system to load the resource from
  * @param type The type of the resource to load
  * @param name The name of the resource to load
  * @param temp_arena The temporary arena to use
@@ -129,15 +117,13 @@ bool8_t vkr_resource_system_register_loader(VkrResourceSystem *system,
  * @param out_error The output error
  * @return True if the resource was loaded, false otherwise
  */
-bool8_t vkr_resource_system_load(VkrResourceSystem *system,
-                                 VkrResourceType type, String8 name,
+bool8_t vkr_resource_system_load(VkrResourceType type, String8 name,
                                  Arena *temp_arena,
                                  VkrResourceHandleInfo *out_info,
                                  RendererError *out_error);
 
 /**
  * @brief Loads a resource using a custom type tag
- * @param system The resource system to load the resource from
  * @param custom_type The custom type tag to use
  * @param name The name of the resource to load
  * @param temp_arena The temporary arena to use
@@ -145,18 +131,27 @@ bool8_t vkr_resource_system_load(VkrResourceSystem *system,
  * @param out_error The output error
  * @return True if the resource was loaded, false otherwise
  */
-bool8_t vkr_resource_system_load_custom(VkrResourceSystem *system,
-                                        String8 custom_type, String8 name,
+bool8_t vkr_resource_system_load_custom(String8 custom_type, String8 name,
                                         Arena *temp_arena,
                                         VkrResourceHandleInfo *out_info,
                                         RendererError *out_error);
 
 /**
  * @brief Unloads a resource using the appropriate loader
- * @param system The resource system to unload the resource from
  * @param info The info of the resource to unload
  * @param name The name of the resource to unload
  */
-void vkr_resource_system_unload(VkrResourceSystem *system,
-                                const VkrResourceHandleInfo *info,
+void vkr_resource_system_unload(const VkrResourceHandleInfo *info,
                                 String8 name);
+
+// =============================================================================
+// Getters
+// =============================================================================
+
+/**
+ * @brief Gets the loader id for a resource
+ * @param type The type of the resource
+ * @param name The name of the resource
+ * @return The loader id
+ */
+uint32_t vkr_resource_system_get_loader_id(VkrResourceType type, String8 name);
