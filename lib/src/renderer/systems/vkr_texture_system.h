@@ -6,6 +6,10 @@
 #include "memory/arena.h"
 #include "renderer/renderer.h"
 #include "renderer/resources/vkr_resources.h"
+#include "renderer/systems/vkr_resource_system.h"
+
+// todo: should we merge this with material system, since
+// textures are only used by materials?
 
 // =============================================================================
 // Texture System - Basic texture management with array and hash table
@@ -26,6 +30,7 @@ typedef struct VkrTextureSystemConfig {
 } VkrTextureSystemConfig;
 
 typedef struct VkrTextureSystem {
+  RendererFrontendHandle renderer;
   Arena *arena; // internal arena owned by the system
   VkrTextureSystemConfig config;
 
@@ -68,65 +73,26 @@ void vkr_texture_system_shutdown(RendererFrontendHandle renderer,
 // =============================================================================
 
 /**
- * @brief Creates a default texture
- * @param renderer The renderer to use
- * @param system The texture system to create the default texture in
- * @param out_texture The created default texture (output)
- * @return RendererError indicating success or failure
- */
-RendererError vkr_texture_system_create_default(RendererFrontendHandle renderer,
-                                                VkrTextureSystem *system,
-                                                VkrTexture *out_texture);
-
-/**
- * @brief Loads a texture from a file
- * @param renderer The renderer to use
- * @param system The texture system to load the texture in
- * @param file_path The path to the texture file
- * @param desired_channels The desired number of channels for the texture
- * @param out_texture The texture to load the texture into
- * @return RendererError indicating success or failure
- */
-RendererError vkr_texture_system_load(RendererFrontendHandle renderer,
-                                      VkrTextureSystem *system,
-                                      String8 file_path,
-                                      uint32_t desired_channels,
-                                      VkrTexture *out_texture);
-
-/**
- * @brief Destroys a texture
- * @param system The texture system to destroy the texture in
- * @param texture The texture to destroy
- */
-void vkr_texture_system_destroy(RendererFrontendHandle renderer,
-                                VkrTextureSystem *system, VkrTexture *texture);
-
-/**
- * @brief Acquires a texture by name; increments refcount or loads if missing.
- * @param renderer The renderer to use
+ * @brief Acquires a texture by name; increments refcount if exists, fails if
+ * not loaded.
  * @param system The texture system to acquire the texture from
  * @param texture_name The name of the texture to acquire
  * @param auto_release Whether to auto-release the texture when the refcount
  * reaches 0
- * @param temp_arena The temporary arena to use
  * @param out_error The error output
- * @return The handle to the acquired texture
+ * @return The handle to the acquired texture, invalid handle if not loaded
  */
-VkrTextureHandle vkr_texture_system_acquire(RendererFrontendHandle renderer,
-                                            VkrTextureSystem *system,
+VkrTextureHandle vkr_texture_system_acquire(VkrTextureSystem *system,
                                             String8 texture_name,
                                             bool8_t auto_release,
-                                            Arena *temp_arena,
                                             RendererError *out_error);
 
 /**
  * @brief Releases a texture by name
- * @param renderer The renderer to use
  * @param system The texture system to release the texture from
  * @param texture_name The name of the texture to release
  */
-void vkr_texture_system_release(RendererFrontendHandle renderer,
-                                VkrTextureSystem *system, String8 texture_name);
+void vkr_texture_system_release(VkrTextureSystem *system, String8 texture_name);
 
 // =============================================================================
 // Getters
@@ -164,3 +130,47 @@ VkrTexture *vkr_texture_system_get_default(VkrTextureSystem *system);
  */
 VkrTextureHandle
 vkr_texture_system_get_default_handle(VkrTextureSystem *system);
+
+// =============================================================================
+// Helpers (used by loaders with direct system access)
+// =============================================================================
+
+/**
+ * @brief Loads a texture from a file
+ * @param self The texture system
+ * @param file_path The path to the file
+ * @param desired_channels The desired number of channels
+ * @param out_texture The output texture
+ * @return The error
+ */
+RendererError vkr_texture_system_load_from_file(VkrTextureSystem *self,
+                                                String8 file_path,
+                                                uint32_t desired_channels,
+                                                VkrTexture *out_texture);
+
+/**
+ * @brief Loads a texture from a file
+ * @param system The texture system
+ * @param name The name of the texture to load
+ * @param temp_arena The temporary arena to use
+ * @param out_handle The output handle
+ * @param out_error The output error
+ */
+bool8_t vkr_texture_system_load(VkrTextureSystem *system, String8 name,
+                                Arena *temp_arena, VkrTextureHandle *out_handle,
+                                RendererError *out_error);
+
+/**
+ * @brief Finds a free slot in the texture system
+ * @param system The texture system to search
+ * @return The index of a free slot, or VKR_INVALID_ID if none available
+ */
+uint32_t vkr_texture_system_find_free_slot(VkrTextureSystem *system);
+
+/**
+ * @brief Destroys a texture (internal use)
+ * @param renderer The renderer to use
+ * @param texture The texture to destroy
+ */
+void vkr_texture_destroy_internal(RendererFrontendHandle renderer,
+                                  VkrTexture *texture);

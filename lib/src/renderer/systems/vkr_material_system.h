@@ -6,6 +6,7 @@
 #include "memory/arena.h"
 #include "renderer/renderer.h"
 #include "renderer/resources/vkr_resources.h"
+#include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 
 // =============================================================================
@@ -85,17 +86,19 @@ void vkr_material_system_shutdown(VkrMaterialSystem *system);
 VkrMaterialHandle vkr_material_system_create_default(VkrMaterialSystem *system);
 
 /**
- * @brief Acquires a material by name; increments refcount or creates with
- * defaults if missing.
+ * @brief Acquires a material by name; increments refcount if exists, fails if
+ * not loaded.
  * @param system The material system to acquire the material from
  * @param name The name of the material to acquire
  * @param auto_release Whether to auto-release the material when the refcount
  * reaches 0
- * @return The handle to the acquired material
+ * @param out_error The error output
+ * @return The handle to the acquired material, invalid handle if not loaded
  */
 VkrMaterialHandle vkr_material_system_acquire(VkrMaterialSystem *system,
                                               String8 name,
-                                              bool8_t auto_release);
+                                              bool8_t auto_release,
+                                              RendererError *out_error);
 
 /**
  * @brief Releases a material by handle; will free when ref_count hits 0 and
@@ -136,62 +139,3 @@ void vkr_material_system_set_textures(
     VkrMaterialSystem *system, VkrMaterialHandle handle,
     const VkrTextureHandle textures[VKR_TEXTURE_SLOT_COUNT],
     const bool8_t enabled[VKR_TEXTURE_SLOT_COUNT]);
-
-// =============================================================================
-// Material Loading
-// =============================================================================
-
-// =============================================================================
-// .mt Material File Format
-// =============================================================================
-// Key-value pairs, one per line, 'key=value'. Lines starting with '#' are
-// comments. Whitespace around keys/values is trimmed.
-//
-// Supported keys:
-//   base_color="assets/texture.png"   // Diffuse/base color texture
-//   diffuse_color=R,G,B,A              // Vec4
-//   specular_color=R,G,B,A             // Vec4
-//   shininess=FLOAT                    // Specular exponent
-//   emission_color=R,G,B               // Vec3
-//
-// Optional texture maps (handled by the material system even if unused by the
-// current backend):
-//   normal_map="assets/normal.png"
-//   specular_map="assets/spec.png"
-//   emission_map="assets/emissive.png"
-//
-// Notes:
-// - Paths are relative to the executable working directory.
-// - Unknown keys are logged and ignored.
-// - The material name is derived from the file basename (without extension).
-// - Missing textures fall back to the texture system default for diffuse; other
-//   maps remain disabled unless provided.
-
-/**
- * @brief Loads a material from a .mt file and returns its handle
- * @param renderer The renderer to use
- * @param system The material system to load the material into
- * @param path The path to the .mt file
- * @param temp_arena The temporary arena to use
- * @param out_handle The handle to the loaded material
- * @return True on success, false otherwise
- */
-bool8_t vkr_material_system_load_from_mt(RendererFrontendHandle renderer,
-                                         VkrMaterialSystem *system,
-                                         String8 path, Arena *temp_arena,
-                                         VkrMaterialHandle *out_handle);
-
-/**
- * @brief Loads default material properties from a .mt file into the existing
- * default material (index 0). Keeps the material id/name mapping stable and
- * only updates base_color and Phong properties. Returns true on success.
- * @param renderer The renderer to use
- * @param system The material system to load the material into
- * @param path The path to the .mt file
- * @param temp_arena The temporary arena to use
- * @return True on success, false otherwise
- */
-bool8_t
-vkr_material_system_load_default_from_mt(RendererFrontendHandle renderer,
-                                         VkrMaterialSystem *system,
-                                         String8 path, Arena *temp_arena);

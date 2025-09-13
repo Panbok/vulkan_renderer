@@ -15,6 +15,11 @@ typedef struct Arena Arena;
 // todo: maybe consider using a simple string impl which is just an array of
 // ascii chars and for complex string use a RichString which is a string a
 // unicode string with some metadata like encoding, length, locale, etc.
+// Have Text, String and RichString
+// Text is an immutable cstring
+// String is a mutable array of ascii chars
+// RichString is a String with some metadata like encoding, length,
+// locale, etc.
 
 /////////////////////
 // String8
