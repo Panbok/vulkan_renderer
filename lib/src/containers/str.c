@@ -421,11 +421,10 @@ vkr_internal INLINE bool8_t string__parse_f64(const char *s, float64_t *out) {
     return false_v;
 
   char *endptr = NULL;
-  errno = 0;
   const char *start = string__skip_ws(s);
 
   float64_t v = strtod(start, &endptr);
-  if (start == endptr || errno == ERANGE)
+  if (start == endptr)
     return false_v;
 
   const char *trail = string__skip_ws(endptr);
@@ -450,11 +449,10 @@ vkr_internal INLINE bool8_t string__parse_i64(const char *s, int64_t *out) {
     return false_v;
 
   char *endptr = NULL;
-  errno = 0;
 
   const char *start = string__skip_ws(s);
   int64_t v = strtoll(start, &endptr, 10);
-  if (start == endptr || errno == ERANGE)
+  if (start == endptr)
     return false_v;
   const char *trail = string__skip_ws(endptr);
   if (*trail != '\0')
@@ -468,11 +466,10 @@ vkr_internal INLINE bool8_t string__parse_u64(const char *s, uint64_t *out) {
     return false_v;
 
   char *endptr = NULL;
-  errno = 0;
 
   const char *start = string__skip_ws(s);
   uint64_t v = strtoull(start, &endptr, 10);
-  if (start == endptr || errno == ERANGE)
+  if (start == endptr)
     return false_v;
 
   const char *trail = string__skip_ws(endptr);
@@ -545,10 +542,9 @@ vkr_internal INLINE bool8_t string__parse_vecn(const char *s, double *dst,
   p = string__skip_ws(p);
 
   for (int i = 0; i < n; i++) {
-    errno = 0;
     char *endptr = NULL;
     double v = strtod(p, &endptr);
-    if (p == endptr || errno == ERANGE)
+    if (p == endptr)
       return false_v;
     dst[i] = v;
     p = endptr;
@@ -600,8 +596,6 @@ vkr_internal INLINE bool8_t string8__parse_as_cstring(
   if (!s || !s->str || s->length == 0)
     return false_v;
 
-  // Create a temporary null-terminated buffer on the stack
-  // This is safe because we use it immediately in the same function
   char temp_buf[256]; // Should be enough for typical vector/number strings
   if (s->length >= sizeof(temp_buf))
     return false_v;

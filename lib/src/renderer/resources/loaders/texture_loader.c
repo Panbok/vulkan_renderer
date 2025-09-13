@@ -20,11 +20,19 @@ vkr_internal bool8_t vkr_texture_loader_can_load(VkrResourceLoader *self,
   for (uint64_t ext_length = name.length; ext_length > 0; ext_length--) {
     if (extension_chars[ext_length - 1] == '.') {
       String8 ext = string8_substring(&name, ext_length, name.length);
-      return string_equalsi(string8_cstr(&ext), png_ext) ||
-             string_equalsi(string8_cstr(&ext), jpg_ext) ||
-             string_equalsi(string8_cstr(&ext), jpeg_ext) ||
-             string_equalsi(string8_cstr(&ext), bmp_ext) ||
-             string_equalsi(string8_cstr(&ext), tga_ext);
+      String8 png = string8_create_from_cstr((const uint8_t *)png_ext,
+                                             string_length(png_ext));
+      String8 jpg = string8_create_from_cstr((const uint8_t *)jpg_ext,
+                                             string_length(jpg_ext));
+      String8 jpeg = string8_create_from_cstr((const uint8_t *)jpeg_ext,
+                                              string_length(jpeg_ext));
+      String8 bmp = string8_create_from_cstr((const uint8_t *)bmp_ext,
+                                             string_length(bmp_ext));
+      String8 tga = string8_create_from_cstr((const uint8_t *)tga_ext,
+                                             string_length(tga_ext));
+      return string8_equalsi(&ext, &png) || string8_equalsi(&ext, &jpg) ||
+             string8_equalsi(&ext, &jpeg) || string8_equalsi(&ext, &bmp) ||
+             string8_equalsi(&ext, &tga);
     }
   }
 
@@ -45,9 +53,9 @@ vkr_internal bool8_t vkr_texture_loader_load(VkrResourceLoader *self,
 
   VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
   RendererError renderer_error = RENDERER_ERROR_NONE;
-  if (!vkr_texture_system_load(system, name, temp_arena, &handle,
-                               &renderer_error) ||
+  if (!vkr_texture_system_load(system, name, &handle, &renderer_error) ||
       renderer_error != RENDERER_ERROR_NONE) {
+    *out_error = renderer_error;
     log_error("Failed to load texture '%s': %s", string8_cstr(&name),
               renderer_get_error_string(renderer_error).str);
     return false_v;
@@ -70,11 +78,17 @@ vkr_internal void vkr_texture_loader_unload(VkrResourceLoader *self,
 
   VkrTextureSystem *system = (VkrTextureSystem *)self->resource_system;
 
-  const char *texture_key = (const char *)name.str;
-  VkrTextureEntry *entry =
-      vkr_hash_table_get_VkrTextureEntry(&system->texture_map, texture_key);
+  char texture_key_buffer[256];
+  uint64_t copy_length = (name.length < sizeof(texture_key_buffer) - 1)
+                             ? name.length
+                             : sizeof(texture_key_buffer) - 1;
+  MemCopy(texture_key_buffer, name.str, copy_length);
+  texture_key_buffer[copy_length] = '\0';
+
+  VkrTextureEntry *entry = vkr_hash_table_get_VkrTextureEntry(
+      &system->texture_map, texture_key_buffer);
   if (!entry) {
-    log_warn("Attempted to remove unknown texture '%s'", texture_key);
+    log_warn("Attempted to remove unknown texture '%s'", texture_key_buffer);
     return;
   }
 
@@ -88,14 +102,15 @@ vkr_internal void vkr_texture_loader_unload(VkrResourceLoader *self,
 
   // Destroy GPU resources
   VkrTexture *texture = &system->textures.data[texture_index];
-  vkr_texture_destroy_internal(self->renderer, texture);
+  vkr_texture_destroy(self->renderer, texture);
 
   // Mark slot as free
   texture->description.id = VKR_INVALID_ID;
   texture->description.generation = VKR_INVALID_ID;
 
   // Remove from hash table
-  vkr_hash_table_remove_VkrTextureEntry(&system->texture_map, texture_key);
+  vkr_hash_table_remove_VkrTextureEntry(&system->texture_map,
+                                        texture_key_buffer);
 
   // Update free index for slot reuse
   if (texture_index < system->next_free_index) {

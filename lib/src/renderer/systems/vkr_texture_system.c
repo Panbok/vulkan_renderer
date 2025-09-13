@@ -141,7 +141,7 @@ void vkr_texture_system_shutdown(RendererFrontendHandle renderer,
        texture_id++) {
     VkrTexture *texture = &system->textures.data[texture_id];
     if (texture->description.generation != VKR_INVALID_ID && texture->handle) {
-      vkr_texture_destroy_internal(renderer, texture);
+      vkr_texture_destroy(renderer, texture);
     }
   }
 
@@ -215,8 +215,41 @@ void vkr_texture_system_release(VkrTextureSystem *system,
   }
 }
 
-void vkr_texture_destroy_internal(RendererFrontendHandle renderer,
-                                  VkrTexture *texture) {
+void vkr_texture_system_release_by_handle(VkrTextureSystem *system,
+                                          VkrTextureHandle handle) {
+  assert_log(system != NULL, "System is NULL");
+
+  if (handle.id == 0) {
+    log_warn("Attempted to release invalid texture handle");
+    return;
+  }
+
+  for (uint64_t i = 0; i < system->texture_map.capacity; i++) {
+
+    VkrHashEntry_VkrTextureEntry *entry = &system->texture_map.entries[i];
+    if (entry->occupied == VKR_OCCUPIED) {
+
+      uint32_t texture_index = entry->value.index;
+      if (texture_index < system->textures.length) {
+
+        VkrTexture *texture = &system->textures.data[texture_index];
+        if (texture->description.id == handle.id &&
+            texture->description.generation == handle.generation) {
+
+          String8 texture_name = string8_create_from_cstr(
+              (const uint8_t *)entry->key, strlen(entry->key));
+          vkr_texture_system_release(system, texture_name);
+          return;
+        }
+      }
+    }
+  }
+
+  log_warn("Attempted to release unknown texture handle (id=%u, generation=%u)",
+           handle.id, handle.generation);
+}
+
+void vkr_texture_destroy(RendererFrontendHandle renderer, VkrTexture *texture) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(texture != NULL, "Texture is NULL");
 
@@ -231,7 +264,7 @@ VkrTexture *vkr_texture_system_get_by_handle(VkrTextureSystem *system,
                                              VkrTextureHandle handle) {
   assert_log(system != NULL, "System is NULL");
 
-  if (handle.id == 0)
+  if (handle.id == VKR_INVALID_ID)
     return NULL;
 
   uint32_t idx = handle.id - 1;
@@ -290,6 +323,8 @@ RendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
   out_texture->file_path =
       file_path_create(c_string_path, system->arena, FILE_PATH_TYPE_RELATIVE);
   scratch_destroy(c_string_scratch, ARENA_MEMORY_TAG_STRING);
+
+  // todo: this should be toggle only once on application startup
   stbi_set_flip_vertically_on_load(true);
 
   int32_t width, height, original_channels;
@@ -396,11 +431,10 @@ RendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
 }
 
 bool8_t vkr_texture_system_load(VkrTextureSystem *system, String8 name,
-                                Arena *temp_arena, VkrTextureHandle *out_handle,
+                                VkrTextureHandle *out_handle,
                                 RendererError *out_error) {
   assert_log(system != NULL, "System is NULL");
   assert_log(name.str != NULL, "Name is NULL");
-  assert_log(temp_arena != NULL, "Temp arena is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
@@ -417,6 +451,9 @@ bool8_t vkr_texture_system_load(VkrTextureSystem *system, String8 name,
     log_error("Texture system is full (max=%u)",
               system->config.max_texture_count);
     *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+    if (loaded_texture.handle) {
+      renderer_destroy_texture(system->renderer, loaded_texture.handle);
+    }
     return false_v;
   }
 
@@ -426,6 +463,9 @@ bool8_t vkr_texture_system_load(VkrTextureSystem *system, String8 name,
   if (!stable_key) {
     log_error("Failed to allocate key copy for texture map");
     *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+    if (loaded_texture.handle) {
+      renderer_destroy_texture(system->renderer, loaded_texture.handle);
+    }
     return false_v;
   }
   MemCopy(stable_key, name.str, (size_t)name.length);

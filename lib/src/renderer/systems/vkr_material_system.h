@@ -86,14 +86,16 @@ void vkr_material_system_shutdown(VkrMaterialSystem *system);
 VkrMaterialHandle vkr_material_system_create_default(VkrMaterialSystem *system);
 
 /**
- * @brief Acquires a material by name; increments refcount if exists, fails if
- * not loaded.
+ * @brief Acquires a material by name; increments refcount if it exists; fails
+ * if not loaded.
  * @param system The material system to acquire the material from
  * @param name The name of the material to acquire
  * @param auto_release Whether to auto-release the material when the refcount
  * reaches 0
- * @param out_error The error output
- * @return The handle to the acquired material, invalid handle if not loaded
+ * @param out_error Optional; set to a descriptive error on failure (may be
+ * NULL).
+ * @return The handle to the acquired material; returns
+ * VKR_MATERIAL_HANDLE_INVALID if not loaded.
  */
 VkrMaterialHandle vkr_material_system_acquire(VkrMaterialSystem *system,
                                               String8 name,

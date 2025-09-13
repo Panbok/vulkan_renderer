@@ -14,6 +14,8 @@ typedef struct VkrGeometryHandle {
   uint32_t generation;
 } VkrGeometryHandle;
 
+#define VKR_GEOMETRY_HANDLE_INVALID                                            \
+  (VkrGeometryHandle) { .id = 0, .generation = VKR_INVALID_ID }
 typedef enum VkrGeometryVertexLayoutType {
   GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD = 0,
   GEOMETRY_VERTEX_LAYOUT_POSITION_COLOR,
@@ -82,12 +84,13 @@ Array(VkrTexture);
 
 // =============================================================================
 // Material resource types (decoupled from systems)
-// =============================================================================
-
 typedef struct VkrMaterialHandle {
   uint32_t id;
   uint32_t generation;
 } VkrMaterialHandle;
+
+#define VKR_MATERIAL_HANDLE_INVALID                                            \
+  (VkrMaterialHandle) { .id = 0, .generation = VKR_INVALID_ID }
 
 typedef struct VkrPhongProperties {
   Vec4 diffuse_color;  // Base color factor
@@ -99,7 +102,7 @@ typedef struct VkrPhongProperties {
 typedef struct VkrMaterialTexture {
   VkrTextureHandle handle;
   VkrTextureSlot slot;
-  bool enabled; // Allow disabling without removing
+  bool8_t enabled; // Allow disabling without removing
 } VkrMaterialTexture;
 
 typedef struct VkrMaterial {

@@ -94,6 +94,19 @@ VkrTextureHandle vkr_texture_system_acquire(VkrTextureSystem *system,
  */
 void vkr_texture_system_release(VkrTextureSystem *system, String8 texture_name);
 
+/**
+ * @brief Releases a texture by handle (no name required)
+ */
+void vkr_texture_system_release_by_handle(VkrTextureSystem *system,
+                                          VkrTextureHandle handle);
+/**
+ * @brief Releases a texture by handle
+ * @param system The texture system to release the texture from
+ * @param handle The handle of the texture to release
+ */
+void vkr_texture_system_release_by_handle(VkrTextureSystem *system,
+                                          VkrTextureHandle handle);
+
 // =============================================================================
 // Getters
 // =============================================================================
@@ -152,12 +165,11 @@ RendererError vkr_texture_system_load_from_file(VkrTextureSystem *self,
  * @brief Loads a texture from a file
  * @param system The texture system
  * @param name The name of the texture to load
- * @param temp_arena The temporary arena to use
  * @param out_handle The output handle
  * @param out_error The output error
  */
 bool8_t vkr_texture_system_load(VkrTextureSystem *system, String8 name,
-                                Arena *temp_arena, VkrTextureHandle *out_handle,
+                                VkrTextureHandle *out_handle,
                                 RendererError *out_error);
 
 /**
@@ -168,9 +180,8 @@ bool8_t vkr_texture_system_load(VkrTextureSystem *system, String8 name,
 uint32_t vkr_texture_system_find_free_slot(VkrTextureSystem *system);
 
 /**
- * @brief Destroys a texture (internal use)
+ * @brief Destroys a texture
  * @param renderer The renderer to use
  * @param texture The texture to destroy
  */
-void vkr_texture_destroy_internal(RendererFrontendHandle renderer,
-                                  VkrTexture *texture);
+void vkr_texture_destroy(RendererFrontendHandle renderer, VkrTexture *texture);

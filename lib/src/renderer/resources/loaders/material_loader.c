@@ -1,6 +1,11 @@
 #include "renderer/resources/loaders/material_loader.h"
 
 vkr_global const char *mt_ext = "mt";
+
+/**
+ * @brief Arena for storing file buffer. Loaders are never unloaded, so we can
+ * reuse the same arena for all loaders.
+ */
 vkr_global Arena *file_buffer_arena = NULL;
 
 vkr_internal void vkr_get_stable_material_name(char *material_name_buf,
@@ -18,11 +23,13 @@ vkr_internal void vkr_get_stable_material_name(char *material_name_buf,
   const char *dot = strrchr(fname, '.');
   if (dot && (size_t)(dot - fname) < material_name_buf_size) {
     MemCopy(material_name_buf, fname, (size_t)(dot - fname));
+    material_name_buf[dot - fname] = '\0';
   } else {
     size_t flen = string_length(fname);
     size_t copy_len =
         flen < material_name_buf_size - 1 ? flen : material_name_buf_size - 1;
     MemCopy(material_name_buf, fname, copy_len);
+    material_name_buf[copy_len] = '\0';
   }
 
   *out_name = string8_create_from_cstr((const uint8_t *)material_name_buf,
@@ -43,7 +50,9 @@ vkr_internal bool8_t vkr_material_loader_can_load(VkrResourceLoader *self,
   for (uint64_t ch = name.length; ch > 0; ch--) {
     if (s[ch - 1] == '.') {
       String8 ext = string8_substring(&name, ch, name.length);
-      return string_equalsi((const char *)ext.str, mt_ext);
+      String8 mt = string8_create_from_cstr((const uint8_t *)mt_ext,
+                                            string_length(mt_ext));
+      return string8_equalsi(&ext, &mt);
     }
   }
 
@@ -174,6 +183,14 @@ vkr_material_loader_unload(VkrResourceLoader *self,
 
   // Reset material slot
   VkrMaterial *material = &system->materials.data[material_index];
+
+  for (uint32_t tex_slot = 0; tex_slot < VKR_TEXTURE_SLOT_COUNT; tex_slot++) {
+    VkrTextureHandle handle = material->textures[tex_slot].handle;
+    if (handle.id != 0) {
+      vkr_texture_system_release_by_handle(system->texture_system, handle);
+    }
+  }
+
   material->id = 0;
   material->name = NULL;
   material->pipeline_id = VKR_INVALID_ID;
@@ -258,10 +275,13 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
     FileError le =
         file_read_line(&fh, file_buffer_arena, temp_arena, 32000, &line);
     if (le == FILE_ERROR_EOF) {
+      log_debug("Reached end of material file '%s'", (char *)path.str);
       break;
     }
 
     if (le != FILE_ERROR_NONE) {
+      log_error("Failed reading '%s': %s", (char *)path.str,
+                file_get_error_string(le).str);
       break;
     }
 
@@ -308,8 +328,7 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
       VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
       RendererError renderer_error = RENDERER_ERROR_NONE;
       if (!vkr_texture_system_load(material_system->texture_system,
-                                   texture_path, temp_arena, &handle,
-                                   &renderer_error) ||
+                                   texture_path, &handle, &renderer_error) ||
           renderer_error != RENDERER_ERROR_NONE) {
         log_error("Failed to load texture '%s': %s", texture_path_cstr,
                   renderer_get_error_string(renderer_error).str);
