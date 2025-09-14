@@ -155,7 +155,7 @@ void vkr_camera_system_update(VkrCamera *camera, float32_t delta_time) {
     input_get_right_stick(camera->input_state, &right_x, &right_y);
 
     // Apply deadzone to prevent drift
-    float deadzone = 0.1f;
+    float deadzone = VKR_GAMEPAD_MOVEMENT_DEADZONE;
     if (abs_f32(right_x) > deadzone || abs_f32(right_y) > deadzone) {
       // Forward/backward movement (Y-axis)
       if (right_y > deadzone) {
@@ -193,8 +193,10 @@ void vkr_camera_system_update(VkrCamera *camera, float32_t delta_time) {
 
     // Use direct stick values for rotation instead of deltas
     // This prevents the camera from following the stick back to center
-    x_offset = left_x * 20.0f;  // Scale for sensitivity
-    y_offset = -left_y * 20.0f; // Invert Y for natural camera movement
+    x_offset = left_x * VKR_GAMEPAD_ROTATION_SCALE; // Scale for sensitivity
+    y_offset =
+        -left_y *
+        VKR_GAMEPAD_ROTATION_SCALE; // Invert Y for natural camera movement
   }
 
   float32_t max_mouse_delta = VKR_MAX_MOUSE_DELTA / camera->sensitivity;
@@ -248,5 +250,6 @@ Mat4 vkr_camera_system_get_projection_matrix(const VkrCamera *camera) {
                       camera->far_clip);
   }
 
+  assert_log(false, "Unhandled camera type");
   return mat4_identity();
 }
