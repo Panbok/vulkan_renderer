@@ -5,6 +5,7 @@
 
 #include "vulkan/vulkan_backend.h"
 
+// todo: we need to either remove this or use it in the application
 typedef struct WorldGraphicsPipeline {
   GraphicsPipelineDescription pipeline;
   PipelineHandle pipeline_handle;

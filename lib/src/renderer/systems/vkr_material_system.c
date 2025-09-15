@@ -263,8 +263,8 @@ void vkr_material_system_release(VkrMaterialSystem *system,
   }
 }
 
-VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
-                                               VkrMaterialHandle handle) {
+const VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
+                                                     VkrMaterialHandle handle) {
   if (!system || handle.id == 0)
     return NULL;
   uint32_t index = handle.id - 1;

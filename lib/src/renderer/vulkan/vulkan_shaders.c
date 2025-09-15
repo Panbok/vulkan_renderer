@@ -41,8 +41,8 @@ bool8_t vulkan_shader_module_create(
 
   VulkanShaderStageFlagResult stage_result = vulkan_shader_stage_to_vk(stage);
   if (!stage_result.is_valid) {
-    log_error("Invalid shader stage configuration: exactly one stage must be "
-              "set");
+    log_error(
+        "Invalid shader stage configuration: exactly one stage must be set");
     return false;
   }
 
@@ -381,7 +381,8 @@ bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
 bool8_t vulkan_shader_update_state(VulkanBackendState *state,
                                    VulkanShaderObject *shader_object,
                                    VkPipelineLayout pipeline_layout,
-                                   const ShaderStateObject *data) {
+                                   const ShaderStateObject *data,
+                                   const RendererMaterialState *material) {
   assert_log(state != NULL, "Backend state is NULL");
   assert_log(shader_object != NULL, "Shader object is NULL");
   assert_log(pipeline_layout != VK_NULL_HANDLE, "Pipeline layout is NULL");
@@ -396,7 +397,7 @@ bool8_t vulkan_shader_update_state(VulkanBackendState *state,
                      VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4), &data->model);
 
   VulkanShaderObjectLocalState *local_state =
-      &shader_object->local_states[data->object_id];
+      &shader_object->local_states[data->local_state.id];
   if (local_state->descriptor_sets == NULL ||
       local_state->descriptor_sets[image_index] == VK_NULL_HANDLE) {
     log_warn("Local descriptor set not created yet, skipping update");
@@ -420,10 +421,15 @@ bool8_t vulkan_shader_update_state(VulkanBackendState *state,
   LocalUniformObject local_uniform_object;
 
   uint32_t range = sizeof(LocalUniformObject);
-  uint64_t offset = sizeof(LocalUniformObject) * data->object_id;
+  uint64_t offset = sizeof(LocalUniformObject) * data->local_state.id;
 
-  // Material diffuse color factor
-  local_uniform_object.diffuse_color = data->material_color_factor;
+  // Material uniforms provided explicitly
+  if (material) {
+    local_uniform_object = material->uniforms;
+  } else {
+    // Fallback: ensure zeroed
+    MemZero(&local_uniform_object, sizeof(LocalUniformObject));
+  }
 
   if (!vulkan_buffer_load_data(state,
                                &shader_object->local_uniform_buffer.buffer,
@@ -461,10 +467,12 @@ bool8_t vulkan_shader_update_state(VulkanBackendState *state,
   const uint32_t sampler_count = 1;
   for (uint32_t sampler_index = 0; sampler_index < sampler_count;
        sampler_index++) {
-    struct s_TextureHandle *texture =
-        (struct s_TextureHandle *)data->textures[sampler_index];
+    struct s_TextureHandle *texture = NULL;
+    if (material && material->texture0_enabled) {
+      texture = (struct s_TextureHandle *)material->texture0;
+    }
     if (texture == NULL || texture->texture.image.handle == VK_NULL_HANDLE) {
-      log_warn("Texture not created yet, skipping update");
+      // No texture bound; skip image/sampler updates
       continue;
     }
 

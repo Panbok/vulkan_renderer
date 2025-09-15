@@ -144,6 +144,11 @@ void vkr_material_system_set_textures(
 /**
  * @brief Returns a pointer to the material referenced by handle if valid; NULL
  * otherwise.
+ * @note Pointer is invalidated if the material is freed or if its slot is
+ * reused; existing handles become invalid when generation changes
+ * @param system The material system to get the material from
+ * @param handle The handle to the material to get
+ * @return A pointer to the material if valid; NULL otherwise.
  */
-VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
-                                               VkrMaterialHandle handle);
+const VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
+                                                     VkrMaterialHandle handle);

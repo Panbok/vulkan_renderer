@@ -1,6 +1,7 @@
 #pragma once
 
 #include "defines.h"
+#include "renderer/renderer.h"
 #include "vulkan_types.h"
 
 bool8_t vulkan_graphics_graphics_pipeline_create(
