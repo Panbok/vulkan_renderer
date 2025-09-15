@@ -75,7 +75,18 @@ BackendResourceHandle renderer_vulkan_create_graphics_pipeline(
 
 RendererError renderer_vulkan_update_pipeline_state(
     void *backend_state, BackendResourceHandle pipeline_handle,
-    const GlobalUniformObject *uniform, const ShaderStateObject *data);
+    const GlobalUniformObject *uniform, const ShaderStateObject *data,
+    const RendererMaterialState *material);
+
+RendererError
+renderer_vulkan_local_state_acquire(void *backend_state,
+                                    BackendResourceHandle pipeline_handle,
+                                    RendererLocalStateHandle *out_handle);
+
+RendererError
+renderer_vulkan_local_state_release(void *backend_state,
+                                    BackendResourceHandle pipeline_handle,
+                                    RendererLocalStateHandle handle);
 
 void renderer_vulkan_destroy_pipeline(void *backend_state,
                                       BackendResourceHandle handle);

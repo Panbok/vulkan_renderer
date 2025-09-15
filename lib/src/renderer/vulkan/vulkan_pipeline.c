@@ -215,13 +215,7 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
     return false_v;
   }
 
-  // todo: remove it later (for debugging)
-  uint32_t acquired_object_id = 0;
-  if (!vulkan_shader_acquire_resource(state, &out_pipeline->shader_object,
-                                      &acquired_object_id)) {
-    log_fatal("Failed to acquire shader object");
-    return false_v;
-  }
+  // Note: Local state is now acquired via frontend API per renderable.
 
   if (desc->binding_count > 0) {
     array_destroy_VkVertexInputBindingDescription(&bindings);
@@ -251,7 +245,8 @@ void vulkan_graphics_pipeline_bind(VulkanCommandBuffer *command_buffer,
 
 RendererError vulkan_graphics_pipeline_update_state(
     VulkanBackendState *state, struct s_GraphicsPipeline *pipeline,
-    const GlobalUniformObject *uniform, const ShaderStateObject *data) {
+    const GlobalUniformObject *uniform, const ShaderStateObject *data,
+    const RendererMaterialState *material) {
   assert_log(state != NULL, "State is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
 
@@ -270,7 +265,8 @@ RendererError vulkan_graphics_pipeline_update_state(
 
   if (data != NULL) {
     if (!vulkan_shader_update_state(state, &pipeline->shader_object,
-                                    pipeline->pipeline_layout, data)) {
+                                    pipeline->pipeline_layout, data,
+                                    material)) {
       log_error("Failed to update state");
       return RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
     }
@@ -289,10 +285,8 @@ void vulkan_graphics_pipeline_destroy(VulkanBackendState *state,
   assert_log(state != NULL, "State is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
 
-  // todo: remove it later (for debugging)
-  if (!vulkan_shader_release_resource(state, &pipeline->shader_object, 0)) {
-    log_fatal("Failed to release shader object");
-  }
+  // Local state resources are released via frontend per-object. Nothing to do
+  // here.
 
   vulkan_shader_object_destroy(state, &pipeline->shader_object);
 

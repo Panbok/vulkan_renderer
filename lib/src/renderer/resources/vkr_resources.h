@@ -128,5 +128,6 @@ typedef struct VkrRenderable {
   VkrGeometryHandle geometry;
   VkrMaterialHandle material;
   Mat4 model;
+  RendererLocalStateHandle local_state;
 } VkrRenderable;
 Array(VkrRenderable);

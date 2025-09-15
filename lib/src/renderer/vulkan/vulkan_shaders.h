@@ -17,7 +17,8 @@ bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
 bool8_t vulkan_shader_update_state(VulkanBackendState *state,
                                    VulkanShaderObject *shader_object,
                                    VkPipelineLayout pipeline_layout,
-                                   const ShaderStateObject *data);
+                                   const ShaderStateObject *data,
+                                   const RendererMaterialState *material);
 
 bool8_t vulkan_shader_acquire_resource(VulkanBackendState *state,
                                        VulkanShaderObject *shader_object,

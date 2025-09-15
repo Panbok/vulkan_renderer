@@ -4,8 +4,6 @@
 #include "core/vkr_window.h"
 #include "defines.h"
 #include "math/mat.h"
-#include "pch.h"
-#include "platform/vkr_platform.h"
 
 // ============================================================================
 // Design Overview
@@ -96,6 +94,8 @@ typedef enum RendererError {
   RENDERER_ERROR_DEVICE_ERROR,
   RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED,
   RENDERER_ERROR_FILE_NOT_FOUND,
+  RENDERER_ERROR_RESOURCE_NOT_LOADED,
+
   RENDERER_ERROR_COUNT
 } RendererError;
 
@@ -410,6 +410,14 @@ typedef struct TextureDescription {
   TexturePropertyFlags properties;
 } TextureDescription;
 
+// ----------------------------------------------------------------------------
+// Local state & material state
+// ----------------------------------------------------------------------------
+
+typedef struct RendererLocalStateHandle {
+  uint32_t id;
+} RendererLocalStateHandle;
+
 // Used to create a single global uniform object for the entire scene
 // This is used to pass the MVP matrix to the shader
 typedef struct GlobalUniformObject {
@@ -426,11 +434,34 @@ typedef struct LocalUniformObject {
   uint8_t padding[256 - sizeof(Vec4)];
 } LocalUniformObject;
 
+/*
+  Vulkan backend descriptor layout (current)
+  - Descriptor set 0 (per-frame/global):
+      binding 0 = uniform buffer (GlobalUniformObject: view, projection)
+  - Descriptor set 1 (per-object/local):
+      binding 0 = uniform buffer (LocalUniformObject: material uniforms)
+      binding 1 = sampled image (combined image sampler slot 0)
+      binding 2 = sampler (slot 0)
+
+  Notes:
+  - Materials currently bind exactly 1 texture (base color) via slot 0.
+  - Additional textures (normal/metallic/emissive) are not yet exposed; future
+    work may extend set 1 or use descriptor arrays.
+*/
+
 typedef struct ShaderStateObject {
   Mat4 model;
-  uint32_t object_id;
-  TextureHandle textures[16];
+  // Local state management: hidden behind a typed handle.
+  RendererLocalStateHandle local_state;
 } ShaderStateObject;
+
+typedef struct RendererMaterialState {
+  // Per-material uniforms for the local UBO
+  LocalUniformObject uniforms;
+  // Current base color texture for slot 0 (may be NULL when disabled)
+  TextureHandle texture0;
+  bool8_t texture0_enabled;
+} RendererMaterialState;
 
 typedef struct ShaderModuleDescription {
   ShaderStageFlags stages;
@@ -569,10 +600,46 @@ RendererError renderer_update_buffer(RendererFrontendHandle renderer,
                                      BufferHandle buffer, uint64_t offset,
                                      uint64_t size, const void *data);
 
-RendererError renderer_update_pipeline_state(RendererFrontendHandle renderer,
-                                             PipelineHandle pipeline,
-                                             const GlobalUniformObject *uniform,
-                                             const ShaderStateObject *data);
+RendererError renderer_update_pipeline_state(
+    RendererFrontendHandle renderer, PipelineHandle pipeline,
+    const GlobalUniformObject *uniform, const ShaderStateObject *data,
+    const RendererMaterialState *material);
+
+/**
+ * @brief Update only the per-frame global state (e.g., view/projection). Call
+ * once per frame before drawing renderables.
+ *
+ * @param renderer
+ * @param pipeline
+ * @param uniform
+ * @return RendererError
+ */
+RendererError renderer_update_global_state(RendererFrontendHandle renderer,
+                                           PipelineHandle pipeline,
+                                           const GlobalUniformObject *uniform);
+
+/**
+ * @brief Update only the per-object local state (e.g., model matrix, material
+ * uniforms, textures). Call per renderable.
+ *
+ * @param renderer
+ * @param pipeline
+ * @param data
+ * @return RendererError
+ */
+RendererError renderer_update_local_state(
+    RendererFrontendHandle renderer, PipelineHandle pipeline,
+    const ShaderStateObject *data, const RendererMaterialState *material);
+
+// Local state lifetime
+RendererError
+renderer_acquire_local_state(RendererFrontendHandle renderer,
+                             PipelineHandle pipeline,
+                             RendererLocalStateHandle *out_handle);
+
+RendererError renderer_release_local_state(RendererFrontendHandle renderer,
+                                           PipelineHandle pipeline,
+                                           RendererLocalStateHandle handle);
 
 RendererError renderer_upload_buffer(RendererFrontendHandle renderer,
                                      BufferHandle buffer, uint64_t offset,
@@ -664,9 +731,18 @@ typedef struct RendererBackendInterface {
   RendererError (*pipeline_update_state)(void *backend_state,
                                          BackendResourceHandle pipeline_handle,
                                          const GlobalUniformObject *uniform,
-                                         const ShaderStateObject *data);
+                                         const ShaderStateObject *data,
+                                         const RendererMaterialState *material);
   void (*pipeline_destroy)(void *backend_state,
                            BackendResourceHandle pipeline_handle);
+
+  // Local state management
+  RendererError (*local_state_acquire)(void *backend_state,
+                                       BackendResourceHandle pipeline_handle,
+                                       RendererLocalStateHandle *out_handle);
+  RendererError (*local_state_release)(void *backend_state,
+                                       BackendResourceHandle pipeline_handle,
+                                       RendererLocalStateHandle handle);
 
   void (*bind_buffer)(void *backend_state, BackendResourceHandle buffer_handle,
                       uint64_t offset);

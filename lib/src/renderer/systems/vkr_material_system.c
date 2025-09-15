@@ -262,3 +262,14 @@ void vkr_material_system_release(VkrMaterialSystem *system,
     vkr_resource_system_unload(&handle_info, name);
   }
 }
+
+VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
+                                               VkrMaterialHandle handle) {
+  if (!system || handle.id == 0)
+    return NULL;
+  uint32_t index = handle.id - 1;
+  if (index >= system->materials.length)
+    return NULL;
+  VkrMaterial *material = &system->materials.data[index];
+  return (material->generation == handle.generation) ? material : NULL;
+}

@@ -93,6 +93,8 @@ RendererBackendInterface renderer_vulkan_get_interface() {
       .texture_destroy = renderer_vulkan_destroy_texture,
       .graphics_pipeline_create = renderer_vulkan_create_graphics_pipeline,
       .pipeline_update_state = renderer_vulkan_update_pipeline_state,
+      .local_state_acquire = renderer_vulkan_local_state_acquire,
+      .local_state_release = renderer_vulkan_local_state_release,
       .pipeline_destroy = renderer_vulkan_destroy_pipeline,
       .begin_frame = renderer_vulkan_begin_frame,
       .end_frame = renderer_vulkan_end_frame,
@@ -943,7 +945,8 @@ BackendResourceHandle renderer_vulkan_create_graphics_pipeline(
 
 RendererError renderer_vulkan_update_pipeline_state(
     void *backend_state, BackendResourceHandle pipeline_handle,
-    const GlobalUniformObject *uniform, const ShaderStateObject *data) {
+    const GlobalUniformObject *uniform, const ShaderStateObject *data,
+    const RendererMaterialState *material) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(pipeline_handle.ptr != NULL, "Pipeline handle is NULL");
 
@@ -953,7 +956,49 @@ RendererError renderer_vulkan_update_pipeline_state(
   struct s_GraphicsPipeline *pipeline =
       (struct s_GraphicsPipeline *)pipeline_handle.ptr;
 
-  return vulkan_graphics_pipeline_update_state(state, pipeline, uniform, data);
+  return vulkan_graphics_pipeline_update_state(state, pipeline, uniform, data,
+                                               material);
+}
+
+RendererError
+renderer_vulkan_local_state_acquire(void *backend_state,
+                                    BackendResourceHandle pipeline_handle,
+                                    RendererLocalStateHandle *out_handle) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(pipeline_handle.ptr != NULL, "Pipeline handle is NULL");
+  assert_log(out_handle != NULL, "Out handle is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_GraphicsPipeline *pipeline =
+      (struct s_GraphicsPipeline *)pipeline_handle.ptr;
+
+  uint32_t object_id = 0;
+  if (!vulkan_shader_acquire_resource(state, &pipeline->shader_object,
+                                      &object_id)) {
+    return RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
+  }
+
+  out_handle->id = object_id;
+  return RENDERER_ERROR_NONE;
+}
+
+RendererError
+renderer_vulkan_local_state_release(void *backend_state,
+                                    BackendResourceHandle pipeline_handle,
+                                    RendererLocalStateHandle handle) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(pipeline_handle.ptr != NULL, "Pipeline handle is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_GraphicsPipeline *pipeline =
+      (struct s_GraphicsPipeline *)pipeline_handle.ptr;
+
+  if (!vulkan_shader_release_resource(state, &pipeline->shader_object,
+                                      handle.id)) {
+    return RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
+  }
+
+  return RENDERER_ERROR_NONE;
 }
 
 void renderer_vulkan_destroy_pipeline(void *backend_state,

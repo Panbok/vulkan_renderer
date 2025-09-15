@@ -75,6 +75,14 @@ String8 renderer_get_error_string(RendererError error) {
     return string8_lit("Presentation failed");
   case RENDERER_ERROR_FRAME_IN_PROGRESS:
     return string8_lit("Frame in progress");
+  case RENDERER_ERROR_DEVICE_ERROR:
+    return string8_lit("Device error");
+  case RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED:
+    return string8_lit("Pipeline state update failed");
+  case RENDERER_ERROR_FILE_NOT_FOUND:
+    return string8_lit("File not found");
+  case RENDERER_ERROR_RESOURCE_NOT_LOADED:
+    return string8_lit("Resource not loaded");
   default:
     return string8_lit("Unknown error");
   }
@@ -236,16 +244,64 @@ PipelineHandle renderer_create_graphics_pipeline(
   return (PipelineHandle)handle.ptr;
 }
 
-RendererError renderer_update_pipeline_state(RendererFrontendHandle renderer,
-                                             PipelineHandle pipeline,
-                                             const GlobalUniformObject *uniform,
-                                             const ShaderStateObject *data) {
+RendererError renderer_update_pipeline_state(
+    RendererFrontendHandle renderer, PipelineHandle pipeline,
+    const GlobalUniformObject *uniform, const ShaderStateObject *data,
+    const RendererMaterialState *material) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
 
   BackendResourceHandle handle = {.ptr = (void *)pipeline};
+  return renderer->backend.pipeline_update_state(
+      renderer->backend_state, handle, uniform, data, material);
+}
+
+RendererError renderer_update_global_state(RendererFrontendHandle renderer,
+                                           PipelineHandle pipeline,
+                                           const GlobalUniformObject *uniform) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(pipeline != NULL, "Pipeline is NULL");
+  assert_log(uniform != NULL, "Uniform is NULL");
+
+  BackendResourceHandle handle = {.ptr = (void *)pipeline};
   return renderer->backend.pipeline_update_state(renderer->backend_state,
-                                                 handle, uniform, data);
+                                                 handle, uniform, NULL, NULL);
+}
+
+RendererError renderer_update_local_state(
+    RendererFrontendHandle renderer, PipelineHandle pipeline,
+    const ShaderStateObject *data, const RendererMaterialState *material) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(pipeline != NULL, "Pipeline is NULL");
+  assert_log(data != NULL, "Data is NULL");
+
+  BackendResourceHandle handle = {.ptr = (void *)pipeline};
+  return renderer->backend.pipeline_update_state(renderer->backend_state,
+                                                 handle, NULL, data, material);
+}
+
+RendererError
+renderer_acquire_local_state(RendererFrontendHandle renderer,
+                             PipelineHandle pipeline,
+                             RendererLocalStateHandle *out_handle) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(pipeline != NULL, "Pipeline is NULL");
+  assert_log(out_handle != NULL, "Out handle is NULL");
+
+  BackendResourceHandle handle = {.ptr = (void *)pipeline};
+  return renderer->backend.local_state_acquire(renderer->backend_state, handle,
+                                               out_handle);
+}
+
+RendererError renderer_release_local_state(RendererFrontendHandle renderer,
+                                           PipelineHandle pipeline,
+                                           RendererLocalStateHandle handle) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(pipeline != NULL, "Pipeline is NULL");
+
+  BackendResourceHandle h = {.ptr = (void *)pipeline};
+  return renderer->backend.local_state_release(renderer->backend_state, h,
+                                               handle);
 }
 
 void renderer_destroy_pipeline(RendererFrontendHandle renderer,

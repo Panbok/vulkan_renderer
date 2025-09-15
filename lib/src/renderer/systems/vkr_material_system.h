@@ -6,7 +6,6 @@
 #include "memory/arena.h"
 #include "renderer/renderer.h"
 #include "renderer/resources/vkr_resources.h"
-#include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 
 // =============================================================================
@@ -141,3 +140,10 @@ void vkr_material_system_set_textures(
     VkrMaterialSystem *system, VkrMaterialHandle handle,
     const VkrTextureHandle textures[VKR_TEXTURE_SLOT_COUNT],
     const bool8_t enabled[VKR_TEXTURE_SLOT_COUNT]);
+
+/**
+ * @brief Returns a pointer to the material referenced by handle if valid; NULL
+ * otherwise.
+ */
+VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
+                                               VkrMaterialHandle handle);
