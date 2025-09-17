@@ -1,5 +1,10 @@
 #include "logger.h"
 
+vkr_global Arena *_log_arena = NULL;
+
+vkr_global const char *LOG_LEVELS[6] = {
+    "[FATAL]: ", "[ERROR]: ", "[WARN]: ", "[INFO]: ", "[DEBUG]: ", "[TRACE]: "};
+
 void log_init(Arena *arena) {
   assert(arena != NULL && "Log arena is not initialized.");
   _log_arena = arena;
@@ -18,14 +23,13 @@ void _log_message(LogLevel level, const char *file, uint32_t line,
   assert(message.str != NULL && "Error formatting log message.");
 
   String8 formatted_message = string8_create_formatted(
-      _log_arena, "%s%s(%s:%d) %.*s\033[0m", LOG_LEVEL_COLOURS[level],
-      LOG_LEVELS[level], file, line, (uint32_t)message.length, message.str);
+      scratch.arena, "%s(%s:%d) %.*s\033[0m\n", LOG_LEVELS[level], file, line,
+      message.length, message.str);
 
   assert(formatted_message.str != NULL &&
          "Error formatting final log message.");
 
-  fprintf(stdout, "%.*s\n", (uint32_t)formatted_message.length,
-          formatted_message.str);
+  vkr_platform_console_write(string8_cstr(&formatted_message), level);
 
   if (level == LOG_LEVEL_FATAL) {
     debug_break();

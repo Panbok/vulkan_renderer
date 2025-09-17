@@ -19,6 +19,8 @@ void vkr_platform_sleep(uint64_t milliseconds);
 
 float64_t vkr_platform_get_absolute_time();
 
+void vkr_platform_console_write(const char *message, uint8_t colour);
+
 bool8_t vkr_platform_init();
 
 void vkr_platform_shutdown();

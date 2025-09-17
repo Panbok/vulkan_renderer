@@ -1,4 +1,5 @@
 #include "vkr_platform.h"
+#include <stdint.h>
 
 #if defined(PLATFORM_APPLE)
 
@@ -74,10 +75,19 @@ void vkr_platform_sleep(uint64_t ms) {
 }
 
 float64_t vkr_platform_get_absolute_time() {
-  assert(timebase_initialized && "platform_init() must be called first");
+  assert(timebase_initialized && "vkr_platform_init() must be called first");
   uint64_t mach_now = mach_absolute_time();
   return (float64_t)(mach_now * timebase_info.numer) /
          (timebase_info.denom * 1e9);
+}
+
+void vkr_platform_console_write(const char *message, uint8_t colour) {
+  const char *colour_strings[] = {"0;41", "1;31", "1;33",
+                                  "1;32", "1;34", "1;30"};
+  uint8_t safe_colour =
+      (colour < 6) ? colour
+                   : 3; // Default to INFO level (index 3) if out of bounds
+  printf("\033[%sm%s\033[0m", colour_strings[safe_colour], message);
 }
 
 void vkr_platform_shutdown() { timebase_initialized = false; }

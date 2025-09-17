@@ -5,14 +5,6 @@
 #include "memory/arena.h"
 #include "platform/vkr_platform.h"
 
-static Arena *_log_arena = NULL;
-
-static const char *LOG_LEVELS[6] = {
-    "[FATAL]: ", "[ERROR]: ", "[WARN]: ", "[INFO]: ", "[DEBUG]: ", "[TRACE]: "};
-// FATAL, ERROR, WARN, INFO, DEBUG, TRACE
-static const char *LOG_LEVEL_COLOURS[6] = {"\033[41m", "\033[31m", "\033[33m",
-                                           "\033[32m", "\033[35m", "\033[30m"};
-
 typedef enum LogLevel {
   LOG_LEVEL_FATAL = 0,
   LOG_LEVEL_ERROR = 1,

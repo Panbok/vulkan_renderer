@@ -86,6 +86,24 @@ float64_t vkr_platform_get_absolute_time() {
   return (float64_t)now.QuadPart * clock_frequency;
 }
 
+void vkr_platform_console_write(const char *message, uint8_t colour) {
+  HANDLE console_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+  // FATAL,ERROR,WARN,INFO,DEBUG,TRACE
+  static uint8_t levels[6] = {64, 4, 6, 2, 1, 8};
+
+  uint8_t safe_colour =
+      (colour < 6) ? colour
+                   : 3; // Default to INFO level (index 3) if out of bounds
+  SetConsoleTextAttribute(console_handle, levels[safe_colour]);
+
+  OutputDebugStringA(message);
+  uint64_t length = strlen(message);
+  DWORD number_written_var;
+  WriteConsoleA(console_handle, message, (DWORD)length, &number_written_var, 0);
+  SetConsoleTextAttribute(console_handle,
+                          FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+}
+
 void vkr_platform_shutdown() {
   if (high_res_timer_enabled) {
     timeEndPeriod(timer_resolution);
