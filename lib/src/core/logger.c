@@ -23,7 +23,7 @@ void _log_message(LogLevel level, const char *file, uint32_t line,
   assert(message.str != NULL && "Error formatting log message.");
 
   String8 formatted_message = string8_create_formatted(
-      scratch.arena, "%s(%s:%d) %.*s\033[0m\n", LOG_LEVELS[level], file, line,
+      scratch.arena, "%s(%s:%d) %.*s\n", LOG_LEVELS[level], file, line,
       message.length, message.str);
 
   assert(formatted_message.str != NULL &&

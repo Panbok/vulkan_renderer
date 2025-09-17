@@ -88,6 +88,7 @@ void vkr_platform_console_write(const char *message, uint8_t colour) {
       (colour < 6) ? colour
                    : 3; // Default to INFO level (index 3) if out of bounds
   printf("\033[%sm%s\033[0m", colour_strings[safe_colour], message);
+  fflush(stdout);
 }
 
 void vkr_platform_shutdown() { timebase_initialized = false; }

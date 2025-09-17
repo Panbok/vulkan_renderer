@@ -88,6 +88,10 @@ float64_t vkr_platform_get_absolute_time() {
 
 void vkr_platform_console_write(const char *message, uint8_t colour) {
   HANDLE console_handle = GetStdHandle(STD_OUTPUT_HANDLE);
+  if (console_handle == INVALID_HANDLE_VALUE) {
+    OutputDebugStringA(message);
+    return;
+  }
   // FATAL,ERROR,WARN,INFO,DEBUG,TRACE
   static uint8_t levels[6] = {64, 4, 6, 2, 1, 8};
 
