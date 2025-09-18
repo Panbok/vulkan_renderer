@@ -1,5 +1,5 @@
 #pragma once
 
-#include "core/clock.h"
+#include "core/vkr_clock.h"
 
 bool32_t run_clock_tests(void);
