@@ -5,8 +5,9 @@
 #include "platform/vkr_platform.h"
 
 typedef struct VkrClock {
-  float64_t start_time;
-  float64_t elapsed;
+  float64_t
+      start_time;    // Absolute time when clock was started, 0.0 when stopped
+  float64_t elapsed; // Elapsed time since start_time
 } VkrClock;
 
 VkrClock vkr_clock_create();
