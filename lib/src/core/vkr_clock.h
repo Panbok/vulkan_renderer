@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/logger.h"
 #include "defines.h"
 #include "pch.h"
 #include "platform/vkr_platform.h"
