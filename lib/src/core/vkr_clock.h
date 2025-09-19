@@ -1,9 +1,6 @@
 #pragma once
 
-#include "core/logger.h"
 #include "defines.h"
-#include "pch.h"
-#include "platform/vkr_platform.h"
 
 /**
  * @brief Represents a clock that can be started, stopped, and updated.

@@ -1,4 +1,6 @@
 #include "vkr_clock.h"
+#include "core/logger.h"
+#include "platform/vkr_platform.h"
 
 VkrClock vkr_clock_create() { return (VkrClock){0.0, 0.0}; }
 

@@ -1177,7 +1177,7 @@ static INLINE Vec4 vec4_scaleadd(Vec4 a, Vec4 v, float32_t scale) {
  * @param a First vector operand
  * @param b Second vector operand
  * @return Scalar dot product (a.x*b.x + a.y*b.y + a.z*b.z)
- * @note Alias for vkr_simd_dot3_f32x4 for consistency with Vec4 API
+ * @note Provides 3D dot product for consistency with Vec4 API
  * @note Commonly used for 3D operations stored in Vec4 format
  */
 static INLINE float32_t vec4_dot3(Vec4 a, Vec4 b) {

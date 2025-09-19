@@ -74,8 +74,8 @@
 // clang-format on
 #pragma once
 
-#include "../math/math.h"
 #include "defines.h"
+#include "math.h"
 #include "pch.h"
 
 // =============================================================================
@@ -700,7 +700,7 @@ vkr_simd_gather_f32x4(VKR_SIMD_F32X4 v, VKR_SIMD_I32X4 indices) {
   return result;
 }
 
-#elif defined(SIMD_X86_AVX)
+#elif defined(VKR_SIMD_X86_AVX)
 
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_load_f32x4(const float32_t *ptr) {
   VKR_SIMD_F32X4 result;
