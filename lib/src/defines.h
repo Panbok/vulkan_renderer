@@ -221,10 +221,10 @@
 #endif
 
 // Check if any SIMD is available
-#if defined(SIMD_ARM_NEON) || defined(SIMD_X86_AVX)
-#define SIMD_AVAILABLE 1
+#if defined(VKR_SIMD_ARM_NEON) || defined(VKR_SIMD_X86_AVX)
+#define VKR_SIMD_AVAILABLE 1
 #else
-#define SIMD_AVAILABLE 0
+#define VKR_SIMD_AVAILABLE 0
 #endif
 
 // Floating point types

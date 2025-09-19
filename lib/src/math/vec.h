@@ -179,7 +179,7 @@
 #pragma once
 
 #include "math.h"
-#include "simd.h"
+#include "vkr_simd.h"
 
 // =============================================================================
 // Vector Type Definitions
@@ -207,13 +207,13 @@ typedef union {
  * This follows industry standard practice for optimal performance.
  * @note The W component is always 0 for Vec3 operations and should be ignored.
  */
-typedef SIMD_F32X4 Vec3;
+typedef VKR_SIMD_F32X4 Vec3;
 
 /**
  * @brief 128-bit vector of four 32-bit floating-point values.
  * Optimized for 4D operations like homogeneous coordinates or colors.
  */
-typedef SIMD_F32X4 Vec4;
+typedef VKR_SIMD_F32X4 Vec4;
 
 /**
  * @brief 64-bit vector of two 32-bit signed integers.
@@ -254,7 +254,7 @@ typedef union {
  * @brief 128-bit vector of four 32-bit signed integers.
  * Used for integer vector operations, masks, and bit manipulation.
  */
-typedef SIMD_I32X4 IVec4;
+typedef VKR_SIMD_I32X4 IVec4;
 
 // =============================================================================
 // Vector Constructor Functions
@@ -288,21 +288,21 @@ static INLINE Vec2 vec2_one(void) { return (Vec2){1.0f, 1.0f}; }
  * @return 3D vector with specified components (W automatically set to 0)
  */
 static INLINE Vec3 vec3_new(float32_t x, float32_t y, float32_t z) {
-  return simd_set_f32x4(x, y, z, 0.0f); // Pad with 0 for W
+  return vkr_simd_set_f32x4(x, y, z, 0.0f); // Pad with 0 for W
 }
 
 /**
  * @brief Creates a zero 3D vector (0, 0, 0)
  * @return 3D vector with all components set to zero
  */
-static INLINE Vec3 vec3_zero(void) { return simd_set1_f32x4(0.0f); }
+static INLINE Vec3 vec3_zero(void) { return vkr_simd_set1_f32x4(0.0f); }
 
 /**
  * @brief Creates a 3D vector with all components set to one (1, 1, 1)
  * @return 3D vector with all components set to one (W=0)
  */
 static INLINE Vec3 vec3_one(void) {
-  return simd_set_f32x4(1.0f, 1.0f, 1.0f, 0.0f);
+  return vkr_simd_set_f32x4(1.0f, 1.0f, 1.0f, 0.0f);
 }
 
 /**
@@ -311,7 +311,7 @@ static INLINE Vec3 vec3_one(void) {
  * @note In right-handed system: Y-axis points upward
  */
 static INLINE Vec3 vec3_up(void) {
-  return simd_set_f32x4(0.0f, 1.0f, 0.0f, 0.0f);
+  return vkr_simd_set_f32x4(0.0f, 1.0f, 0.0f, 0.0f);
 }
 
 /**
@@ -320,7 +320,7 @@ static INLINE Vec3 vec3_up(void) {
  * @note In right-handed system: Negative Y-axis points downward
  */
 static INLINE Vec3 vec3_down(void) {
-  return simd_set_f32x4(0.0f, -1.0f, 0.0f, 0.0f);
+  return vkr_simd_set_f32x4(0.0f, -1.0f, 0.0f, 0.0f);
 }
 
 /**
@@ -329,7 +329,7 @@ static INLINE Vec3 vec3_down(void) {
  * @note In right-handed system: Negative X-axis points left
  */
 static INLINE Vec3 vec3_left(void) {
-  return simd_set_f32x4(-1.0f, 0.0f, 0.0f, 0.0f);
+  return vkr_simd_set_f32x4(-1.0f, 0.0f, 0.0f, 0.0f);
 }
 
 /**
@@ -338,7 +338,7 @@ static INLINE Vec3 vec3_left(void) {
  * @note In right-handed system: X-axis points right
  */
 static INLINE Vec3 vec3_right(void) {
-  return simd_set_f32x4(1.0f, 0.0f, 0.0f, 0.0f);
+  return vkr_simd_set_f32x4(1.0f, 0.0f, 0.0f, 0.0f);
 }
 
 /**
@@ -348,8 +348,8 @@ static INLINE Vec3 vec3_right(void) {
  * @note Compatible with Vulkan, USD, glTF coordinate conventions
  */
 static INLINE Vec3 vec3_forward(void) {
-  return simd_set_f32x4(0.0f, 0.0f, -1.0f,
-                        0.0f); // -Z is forward in right-handed
+  return vkr_simd_set_f32x4(0.0f, 0.0f, -1.0f,
+                            0.0f); // -Z is forward in right-handed
 }
 
 /**
@@ -361,8 +361,8 @@ static INLINE Vec3 vec3_forward(void) {
  * @note Compatible with Vulkan, USD, glTF coordinate conventions
  */
 static INLINE Vec3 vec3_back(void) {
-  return simd_set_f32x4(0.0f, 0.0f, 1.0f,
-                        0.0f); // +Z is backward in right-handed
+  return vkr_simd_set_f32x4(0.0f, 0.0f, 1.0f,
+                            0.0f); // +Z is backward in right-handed
 }
 
 /**
@@ -375,20 +375,20 @@ static INLINE Vec3 vec3_back(void) {
  */
 static INLINE Vec4 vec4_new(float32_t x, float32_t y, float32_t z,
                             float32_t w) {
-  return simd_set_f32x4(x, y, z, w);
+  return vkr_simd_set_f32x4(x, y, z, w);
 }
 
 /**
  * @brief Creates a zero 4D vector (0, 0, 0, 0)
  * @return 4D vector with all components set to zero
  */
-static INLINE Vec4 vec4_zero(void) { return simd_set1_f32x4(0.0f); }
+static INLINE Vec4 vec4_zero(void) { return vkr_simd_set1_f32x4(0.0f); }
 
 /**
  * @brief Creates a 4D vector with all components set to one (1, 1, 1, 1)
  * @return 4D vector with all components set to one
  */
-static INLINE Vec4 vec4_one(void) { return simd_set1_f32x4(1.0f); }
+static INLINE Vec4 vec4_one(void) { return vkr_simd_set1_f32x4(1.0f); }
 
 /**
  * @brief Creates a 2D integer vector from individual components
@@ -431,14 +431,14 @@ static INLINE IVec3 ivec3_zero(void) { return (IVec3){0, 0, 0}; }
  * @return 4D integer vector with specified components
  */
 static INLINE IVec4 ivec4_new(int32_t x, int32_t y, int32_t z, int32_t w) {
-  return simd_set_i32x4(x, y, z, w);
+  return vkr_simd_set_i32x4(x, y, z, w);
 }
 
 /**
  * @brief Creates a zero 4D integer vector (0, 0, 0, 0)
  * @return 4D integer vector with all components set to zero
  */
-static INLINE IVec4 ivec4_zero(void) { return simd_set1_i32x4(0); }
+static INLINE IVec4 ivec4_zero(void) { return vkr_simd_set1_i32x4(0); }
 
 // =============================================================================
 // Vec2 Operations
@@ -554,7 +554,7 @@ static INLINE Vec2 vec2_negate(Vec2 v) { return (Vec2){-v.x, -v.y}; }
  * @param b Second vector operand
  * @return Vector containing {a.x+b.x, a.y+b.y, a.z+b.z, 0}
  */
-static INLINE Vec3 vec3_add(Vec3 a, Vec3 b) { return simd_add_f32x4(a, b); }
+static INLINE Vec3 vec3_add(Vec3 a, Vec3 b) { return vkr_simd_add_f32x4(a, b); }
 
 /**
  * @brief Performs element-wise subtraction of two 3D vectors (SIMD-optimized)
@@ -562,7 +562,7 @@ static INLINE Vec3 vec3_add(Vec3 a, Vec3 b) { return simd_add_f32x4(a, b); }
  * @param b Second vector operand (subtrahend)
  * @return Vector containing {a.x-b.x, a.y-b.y, a.z-b.z, 0}
  */
-static INLINE Vec3 vec3_sub(Vec3 a, Vec3 b) { return simd_sub_f32x4(a, b); }
+static INLINE Vec3 vec3_sub(Vec3 a, Vec3 b) { return vkr_simd_sub_f32x4(a, b); }
 
 /**
  * @brief Performs element-wise multiplication of two 3D vectors
@@ -571,7 +571,7 @@ static INLINE Vec3 vec3_sub(Vec3 a, Vec3 b) { return simd_sub_f32x4(a, b); }
  * @param b Second vector operand
  * @return Vector containing {a.x*b.x, a.y*b.y, a.z*b.z, 0}
  */
-static INLINE Vec3 vec3_mul(Vec3 a, Vec3 b) { return simd_mul_f32x4(a, b); }
+static INLINE Vec3 vec3_mul(Vec3 a, Vec3 b) { return vkr_simd_mul_f32x4(a, b); }
 
 /**
  * @brief Performs element-wise division of two 3D vectors (SIMD-optimized)
@@ -583,8 +583,8 @@ static INLINE Vec3 vec3_mul(Vec3 a, Vec3 b) { return simd_mul_f32x4(a, b); }
  */
 static INLINE Vec3 vec3_div(Vec3 a, Vec3 b) {
   // Set W to 1 to avoid division by 0 (result W is ignored)
-  Vec3 b_safe = simd_set_f32x4(b.x, b.y, b.z, 1.0f);
-  return simd_div_f32x4(a, b_safe);
+  Vec3 b_safe = vkr_simd_set_f32x4(b.x, b.y, b.z, 1.0f);
+  return vkr_simd_div_f32x4(a, b_safe);
 }
 
 /**
@@ -594,7 +594,7 @@ static INLINE Vec3 vec3_div(Vec3 a, Vec3 b) {
  * @return Scaled vector {v.x*s, v.y*s, v.z*s, 0}
  */
 static INLINE Vec3 vec3_scale(Vec3 v, float32_t s) {
-  return simd_mul_f32x4(v, simd_set1_f32x4(s));
+  return vkr_simd_mul_f32x4(v, vkr_simd_set1_f32x4(s));
 }
 
 /**
@@ -605,7 +605,7 @@ static INLINE Vec3 vec3_scale(Vec3 v, float32_t s) {
  * @note W component is ignored in calculation
  */
 static INLINE float32_t vec3_dot(Vec3 a, Vec3 b) {
-  return simd_dot3_f32x4(a, b);
+  return vkr_simd_dot3_f32x4(a, b);
 }
 
 /**
@@ -618,13 +618,13 @@ static INLINE float32_t vec3_dot(Vec3 a, Vec3 b) {
  * @note Cross product is anti-commutative: a×b = -(b×a)
  */
 static INLINE Vec3 vec3_cross(Vec3 a, Vec3 b) {
-  Vec3 a_yzx = simd_shuffle_f32x4(a, 1, 2, 0, 3); // (y, z, x, w)
-  Vec3 b_yzx = simd_shuffle_f32x4(b, 1, 2, 0, 3); // (y, z, x, w)
-  Vec3 a_zxy = simd_shuffle_f32x4(a, 2, 0, 1, 3); // (z, x, y, w)
-  Vec3 b_zxy = simd_shuffle_f32x4(b, 2, 0, 1, 3); // (z, x, y, w)
+  Vec3 a_yzx = vkr_simd_shuffle_f32x4(a, 1, 2, 0, 3); // (y, z, x, w)
+  Vec3 b_yzx = vkr_simd_shuffle_f32x4(b, 1, 2, 0, 3); // (y, z, x, w)
+  Vec3 a_zxy = vkr_simd_shuffle_f32x4(a, 2, 0, 1, 3); // (z, x, y, w)
+  Vec3 b_zxy = vkr_simd_shuffle_f32x4(b, 2, 0, 1, 3); // (z, x, y, w)
 
-  Vec3 result = simd_sub_f32x4(simd_mul_f32x4(a_yzx, b_zxy),
-                               simd_mul_f32x4(a_zxy, b_yzx));
+  Vec3 result = vkr_simd_sub_f32x4(vkr_simd_mul_f32x4(a_yzx, b_zxy),
+                                   vkr_simd_mul_f32x4(a_zxy, b_yzx));
 
   result.w = 0.0f;
   return result;
@@ -637,7 +637,7 @@ static INLINE Vec3 vec3_cross(Vec3 a, Vec3 b) {
  * @note W component is ignored in calculation
  */
 static INLINE float32_t vec3_length_squared(Vec3 v) {
-  return simd_dot3_f32x4(v, v);
+  return vkr_simd_dot3_f32x4(v, v);
 }
 
 /**
@@ -662,7 +662,8 @@ static INLINE float32_t vec3_length(Vec3 v) {
 static INLINE Vec3 vec3_normalize(Vec3 v) {
   float32_t len_sq = vec3_length_squared(v);
   if (len_sq > FLOAT_EPSILON * FLOAT_EPSILON) {
-    Vec3 result = simd_mul_f32x4(v, simd_rsqrt_f32x4(simd_set1_f32x4(len_sq)));
+    Vec3 result = vkr_simd_mul_f32x4(
+        v, vkr_simd_rsqrt_f32x4(vkr_simd_set1_f32x4(len_sq)));
     result.w = 0.0f;
     return result;
   }
@@ -675,7 +676,7 @@ static INLINE Vec3 vec3_normalize(Vec3 v) {
  * @return Vector with all components negated {-v.x, -v.y, -v.z, 0}
  */
 static INLINE Vec3 vec3_negate(Vec3 v) {
-  return simd_sub_f32x4(vec3_zero(), v); // W stays 0
+  return vkr_simd_sub_f32x4(vec3_zero(), v); // W stays 0
 }
 
 // =============================================================================
@@ -688,7 +689,7 @@ static INLINE Vec3 vec3_negate(Vec3 v) {
  * @param b Second vector operand
  * @return Vector containing {a.x+b.x, a.y+b.y, a.z+b.z, a.w+b.w}
  */
-static INLINE Vec4 vec4_add(Vec4 a, Vec4 b) { return simd_add_f32x4(a, b); }
+static INLINE Vec4 vec4_add(Vec4 a, Vec4 b) { return vkr_simd_add_f32x4(a, b); }
 
 /**
  * @brief Performs element-wise subtraction of two 4D vectors (SIMD-optimized)
@@ -696,7 +697,7 @@ static INLINE Vec4 vec4_add(Vec4 a, Vec4 b) { return simd_add_f32x4(a, b); }
  * @param b Second vector operand (subtrahend)
  * @return Vector containing {a.x-b.x, a.y-b.y, a.z-b.z, a.w-b.w}
  */
-static INLINE Vec4 vec4_sub(Vec4 a, Vec4 b) { return simd_sub_f32x4(a, b); }
+static INLINE Vec4 vec4_sub(Vec4 a, Vec4 b) { return vkr_simd_sub_f32x4(a, b); }
 
 /**
  * @brief Performs element-wise multiplication of two 4D vectors
@@ -705,7 +706,7 @@ static INLINE Vec4 vec4_sub(Vec4 a, Vec4 b) { return simd_sub_f32x4(a, b); }
  * @param b Second vector operand
  * @return Vector containing {a.x*b.x, a.y*b.y, a.z*b.z, a.w*b.w}
  */
-static INLINE Vec4 vec4_mul(Vec4 a, Vec4 b) { return simd_mul_f32x4(a, b); }
+static INLINE Vec4 vec4_mul(Vec4 a, Vec4 b) { return vkr_simd_mul_f32x4(a, b); }
 
 /**
  * @brief Scales a 4D vector by a scalar value (SIMD-optimized)
@@ -714,7 +715,7 @@ static INLINE Vec4 vec4_mul(Vec4 a, Vec4 b) { return simd_mul_f32x4(a, b); }
  * @return Scaled vector {v.x*s, v.y*s, v.z*s, v.w*s}
  */
 static INLINE Vec4 vec4_scale(Vec4 v, float32_t s) {
-  return simd_mul_f32x4(v, simd_set1_f32x4(s));
+  return vkr_simd_mul_f32x4(v, vkr_simd_set1_f32x4(s));
 }
 
 /**
@@ -724,7 +725,7 @@ static INLINE Vec4 vec4_scale(Vec4 v, float32_t s) {
  * @return Scalar dot product (a.x*b.x + a.y*b.y + a.z*b.z + a.w*b.w)
  */
 static INLINE float32_t vec4_dot(Vec4 a, Vec4 b) {
-  return simd_dot4_f32x4(a, b);
+  return vkr_simd_dot4_f32x4(a, b);
 }
 
 /**
@@ -737,13 +738,13 @@ static INLINE float32_t vec4_dot(Vec4 a, Vec4 b) {
  * @note Consistent with vec4_dot3() for 3D operations on Vec4 data
  */
 static INLINE Vec4 vec4_cross3(Vec4 a, Vec4 b) {
-  Vec4 a_yzx = simd_shuffle_f32x4(a, 1, 2, 0, 3); // (y, z, x, w)
-  Vec4 b_yzx = simd_shuffle_f32x4(b, 1, 2, 0, 3); // (y, z, x, w)
-  Vec4 a_zxy = simd_shuffle_f32x4(a, 2, 0, 1, 3); // (z, x, y, w)
-  Vec4 b_zxy = simd_shuffle_f32x4(b, 2, 0, 1, 3); // (z, x, y, w)
+  Vec4 a_yzx = vkr_simd_shuffle_f32x4(a, 1, 2, 0, 3); // (y, z, x, w)
+  Vec4 b_yzx = vkr_simd_shuffle_f32x4(b, 1, 2, 0, 3); // (y, z, x, w)
+  Vec4 a_zxy = vkr_simd_shuffle_f32x4(a, 2, 0, 1, 3); // (z, x, y, w)
+  Vec4 b_zxy = vkr_simd_shuffle_f32x4(b, 2, 0, 1, 3); // (z, x, y, w)
 
-  Vec4 result = simd_sub_f32x4(simd_mul_f32x4(a_yzx, b_zxy),
-                               simd_mul_f32x4(a_zxy, b_yzx));
+  Vec4 result = vkr_simd_sub_f32x4(vkr_simd_mul_f32x4(a_yzx, b_zxy),
+                                   vkr_simd_mul_f32x4(a_zxy, b_yzx));
   result.w = 0.0f; // Ensure W component is 0 for 3D cross product
   return result;
 }
@@ -775,7 +776,8 @@ static INLINE float32_t vec4_length(Vec4 v) {
 static INLINE Vec4 vec4_normalize(Vec4 v) {
   float32_t len_sq = vec4_length_squared(v);
   if (len_sq > FLOAT_EPSILON * FLOAT_EPSILON) {
-    return simd_mul_f32x4(v, simd_rsqrt_f32x4(simd_set1_f32x4(len_sq)));
+    return vkr_simd_mul_f32x4(
+        v, vkr_simd_rsqrt_f32x4(vkr_simd_set1_f32x4(len_sq)));
   }
   return vec4_zero();
 }
@@ -787,7 +789,7 @@ static INLINE Vec4 vec4_normalize(Vec4 v) {
  * @return Vector containing {a.x/b.x, a.y/b.y, a.z/b.z, a.w/b.w}
  * @note Division by zero behavior is undefined
  */
-static INLINE Vec4 vec4_div(Vec4 a, Vec4 b) { return simd_div_f32x4(a, b); }
+static INLINE Vec4 vec4_div(Vec4 a, Vec4 b) { return vkr_simd_div_f32x4(a, b); }
 
 /**
  * @brief Negates all components of a 4D vector (SIMD-optimized)
@@ -795,7 +797,7 @@ static INLINE Vec4 vec4_div(Vec4 a, Vec4 b) { return simd_div_f32x4(a, b); }
  * @return Vector with all components negated {-v.x, -v.y, -v.z, -v.w}
  */
 static INLINE Vec4 vec4_negate(Vec4 v) {
-  return simd_sub_f32x4(vec4_zero(), v);
+  return vkr_simd_sub_f32x4(vec4_zero(), v);
 }
 
 // =============================================================================
@@ -897,7 +899,9 @@ static INLINE IVec3 ivec3_scale(IVec3 v, int32_t s) {
  * @param b Second vector operand
  * @return Vector containing {a.x+b.x, a.y+b.y, a.z+b.z, a.w+b.w}
  */
-static INLINE IVec4 ivec4_add(IVec4 a, IVec4 b) { return simd_add_i32x4(a, b); }
+static INLINE IVec4 ivec4_add(IVec4 a, IVec4 b) {
+  return vkr_simd_add_i32x4(a, b);
+}
 
 /**
  * @brief Performs element-wise subtraction of two 4D integer vectors
@@ -906,7 +910,9 @@ static INLINE IVec4 ivec4_add(IVec4 a, IVec4 b) { return simd_add_i32x4(a, b); }
  * @param b Second vector operand (subtrahend)
  * @return Vector containing {a.x-b.x, a.y-b.y, a.z-b.z, a.w-b.w}
  */
-static INLINE IVec4 ivec4_sub(IVec4 a, IVec4 b) { return simd_sub_i32x4(a, b); }
+static INLINE IVec4 ivec4_sub(IVec4 a, IVec4 b) {
+  return vkr_simd_sub_i32x4(a, b);
+}
 
 /**
  * @brief Performs element-wise multiplication of two 4D integer vectors
@@ -915,7 +921,9 @@ static INLINE IVec4 ivec4_sub(IVec4 a, IVec4 b) { return simd_sub_i32x4(a, b); }
  * @param b Second vector operand
  * @return Vector containing {a.x*b.x, a.y*b.y, a.z*b.z, a.w*b.w}
  */
-static INLINE IVec4 ivec4_mul(IVec4 a, IVec4 b) { return simd_mul_i32x4(a, b); }
+static INLINE IVec4 ivec4_mul(IVec4 a, IVec4 b) {
+  return vkr_simd_mul_i32x4(a, b);
+}
 
 /**
  * @brief Scales a 4D integer vector by a scalar value (SIMD-optimized)
@@ -924,7 +932,7 @@ static INLINE IVec4 ivec4_mul(IVec4 a, IVec4 b) { return simd_mul_i32x4(a, b); }
  * @return Scaled vector {v.x*s, v.y*s, v.z*s, v.w*s}
  */
 static INLINE IVec4 ivec4_scale(IVec4 v, int32_t s) {
-  return simd_mul_i32x4(v, simd_set1_i32x4(s));
+  return vkr_simd_mul_i32x4(v, vkr_simd_set1_i32x4(s));
 }
 
 // =============================================================================
@@ -956,7 +964,7 @@ static INLINE Vec2 vec2_lerp(Vec2 a, Vec2 b, float32_t t) {
  */
 static INLINE Vec3 vec3_lerp(Vec3 a, Vec3 b, float32_t t) {
   Vec4 t_vec = vec4_new(t, t, t, 0.0f); // Keep W at 0
-  return simd_fma_f32x4(a, simd_sub_f32x4(b, a), t_vec);
+  return vkr_simd_fma_f32x4(a, vkr_simd_sub_f32x4(b, a), t_vec);
 }
 
 /**
@@ -970,7 +978,7 @@ static INLINE Vec3 vec3_lerp(Vec3 a, Vec3 b, float32_t t) {
  */
 static INLINE Vec4 vec4_lerp(Vec4 a, Vec4 b, float32_t t) {
   Vec4 t_vec = vec4_new(t, t, t, t);
-  return simd_fma_f32x4(a, simd_sub_f32x4(b, a), t_vec);
+  return vkr_simd_fma_f32x4(a, vkr_simd_sub_f32x4(b, a), t_vec);
 }
 
 /**
@@ -983,8 +991,9 @@ static INLINE Vec4 vec4_lerp(Vec4 a, Vec4 b, float32_t t) {
  * @note Commonly used for ray tracing, lighting calculations, and physics
  */
 static INLINE Vec3 vec3_reflect(Vec3 v, Vec3 n) {
-  float32_t dot2 = 2.0f * simd_dot3_f32x4(v, n);
-  return simd_sub_f32x4(v, simd_mul_f32x4(n, simd_set1_f32x4(dot2)));
+  float32_t dot2 = 2.0f * vkr_simd_dot3_f32x4(v, n);
+  return vkr_simd_sub_f32x4(v,
+                            vkr_simd_mul_f32x4(n, vkr_simd_set1_f32x4(dot2)));
 }
 
 /**
@@ -1080,7 +1089,7 @@ static INLINE Vec3 vec2_to_vec3(Vec2 v, float32_t z) {
  * @note Useful in performance-critical loops and accumulation operations
  */
 static INLINE void vec4_add_mut(Vec4 *dest, Vec4 a, Vec4 b) {
-  *dest = simd_add_f32x4(a, b);
+  *dest = vkr_simd_add_f32x4(a, b);
 }
 
 /**
@@ -1092,7 +1101,7 @@ static INLINE void vec4_add_mut(Vec4 *dest, Vec4 a, Vec4 b) {
  * @note Useful in performance-critical loops and physics updates
  */
 static INLINE void vec4_sub_mut(Vec4 *dest, Vec4 a, Vec4 b) {
-  *dest = simd_sub_f32x4(a, b);
+  *dest = vkr_simd_sub_f32x4(a, b);
 }
 
 /**
@@ -1104,7 +1113,7 @@ static INLINE void vec4_sub_mut(Vec4 *dest, Vec4 a, Vec4 b) {
  * @note Useful in performance-critical loops and component-wise scaling
  */
 static INLINE void vec4_mul_mut(Vec4 *dest, Vec4 a, Vec4 b) {
-  *dest = simd_mul_f32x4(a, b);
+  *dest = vkr_simd_mul_f32x4(a, b);
 }
 
 /**
@@ -1116,7 +1125,7 @@ static INLINE void vec4_mul_mut(Vec4 *dest, Vec4 a, Vec4 b) {
  * @note Useful in performance-critical loops and batch processing
  */
 static INLINE void vec4_scale_mut(Vec4 *dest, Vec4 v, float32_t s) {
-  *dest = simd_mul_f32x4(v, simd_set1_f32x4(s));
+  *dest = vkr_simd_mul_f32x4(v, vkr_simd_set1_f32x4(s));
 }
 
 // =============================================================================
@@ -1134,7 +1143,7 @@ static INLINE void vec4_scale_mut(Vec4 *dest, Vec4 v, float32_t s) {
  * @note Single rounding error instead of two separate operations
  */
 static INLINE Vec4 vec4_muladd(Vec4 a, Vec4 b, Vec4 c) {
-  return simd_fma_f32x4(c, a, b);
+  return vkr_simd_fma_f32x4(c, a, b);
 }
 
 /**
@@ -1147,7 +1156,7 @@ static INLINE Vec4 vec4_muladd(Vec4 a, Vec4 b, Vec4 c) {
  * @note More precise than separate multiply and subtract operations
  */
 static INLINE Vec4 vec4_mulsub(Vec4 a, Vec4 b, Vec4 c) {
-  return simd_sub_f32x4(simd_mul_f32x4(a, b), c);
+  return vkr_simd_sub_f32x4(vkr_simd_mul_f32x4(a, b), c);
 }
 
 /**
@@ -1160,7 +1169,7 @@ static INLINE Vec4 vec4_mulsub(Vec4 a, Vec4 b, Vec4 c) {
  * @note Useful for accumulation operations and physics updates
  */
 static INLINE Vec4 vec4_scaleadd(Vec4 a, Vec4 v, float32_t scale) {
-  return simd_fma_f32x4(a, v, simd_set1_f32x4(scale));
+  return vkr_simd_fma_f32x4(a, v, vkr_simd_set1_f32x4(scale));
 }
 
 /**
@@ -1168,11 +1177,11 @@ static INLINE Vec4 vec4_scaleadd(Vec4 a, Vec4 v, float32_t scale) {
  * @param a First vector operand
  * @param b Second vector operand
  * @return Scalar dot product (a.x*b.x + a.y*b.y + a.z*b.z)
- * @note Alias for simd_dot3_f32x4 for consistency with Vec4 API
+ * @note Alias for vkr_simd_dot3_f32x4 for consistency with Vec4 API
  * @note Commonly used for 3D operations stored in Vec4 format
  */
 static INLINE float32_t vec4_dot3(Vec4 a, Vec4 b) {
-  return simd_dot3_f32x4(a, b);
+  return vkr_simd_dot3_f32x4(a, b);
 }
 
 /**
@@ -1183,7 +1192,7 @@ static INLINE float32_t vec4_dot3(Vec4 a, Vec4 b) {
  * @note Avoids function call overhead in hot paths
  */
 static INLINE float32_t vec4_length_squared_fast(Vec4 v) {
-  return simd_dot4_f32x4(v, v);
+  return vkr_simd_dot4_f32x4(v, v);
 }
 
 /**
@@ -1194,5 +1203,5 @@ static INLINE float32_t vec4_length_squared_fast(Vec4 v) {
  * @note Useful when working with Vec4 storage but 3D semantics
  */
 static INLINE float32_t vec4_length3_squared_fast(Vec4 v) {
-  return simd_dot3_f32x4(v, v);
+  return vkr_simd_dot3_f32x4(v, v);
 }

@@ -3,7 +3,7 @@
 #include "defines.h"
 #include "math.h"
 #include "quat.h"
-#include "simd.h"
+#include "vkr_simd.h"
 #include "vec.h"
 
 // clang-format off
@@ -204,7 +204,7 @@
 
 // clang-format on
 
-typedef SIMD_ALIGN union Mat4 {
+typedef VKR_SIMD_ALIGN union Mat4 {
   // Column-major layout (OpenGL/GLM style)
   struct {
     Vec4 col0, col1, col2, col3;
@@ -625,7 +625,7 @@ static INLINE Mat4 mat4_euler_rotate_z(float32_t angle) {
  */
 static INLINE Mat4 mat4_transpose(Mat4 m) {
   Mat4 result;
-#if SIMD_ARM_NEON
+#if VKR_SIMD_ARM_NEON
   // Complete 4x4 transpose using ARM NEON 4-step algorithm
   // Step 1: Transpose 2x2 blocks within each pair of vectors
   float32x4x2_t t0 = vtrnq_f32(m.cols[0].neon, m.cols[1].neon);
@@ -1119,18 +1119,18 @@ static INLINE Mat4 mat4_mul(Mat4 a, Mat4 b) {
   Mat4 result;
   for (int i = 0; i < 4; i++) {
     Vec4 col = b.cols[i];
-    Vec4 x = simd_set1_f32x4(col.x);
-    Vec4 y = simd_set1_f32x4(col.y);
-    Vec4 z = simd_set1_f32x4(col.z);
-    Vec4 w = simd_set1_f32x4(col.w);
+    Vec4 x = vkr_simd_set1_f32x4(col.x);
+    Vec4 y = vkr_simd_set1_f32x4(col.y);
+    Vec4 z = vkr_simd_set1_f32x4(col.z);
+    Vec4 w = vkr_simd_set1_f32x4(col.w);
 
     // Compute: a.cols[0]*x + a.cols[1]*y + a.cols[2]*z + a.cols[3]*w
-    // Note: simd_fma_f32x4(dst, b, c) computes dst + (b * c)
-    Vec4 temp = simd_mul_f32x4(a.cols[0], x);
-    temp = simd_fma_f32x4(temp, a.cols[1], y); // temp + (a.cols[1] * y)
-    temp = simd_fma_f32x4(temp, a.cols[2], z); // temp + (a.cols[2] * z)
+    // Note: vkr_simd_fma_f32x4(dst, b, c) computes dst + (b * c)
+    Vec4 temp = vkr_simd_mul_f32x4(a.cols[0], x);
+    temp = vkr_simd_fma_f32x4(temp, a.cols[1], y); // temp + (a.cols[1] * y)
+    temp = vkr_simd_fma_f32x4(temp, a.cols[2], z); // temp + (a.cols[2] * z)
     result.cols[i] =
-        simd_fma_f32x4(temp, a.cols[3], w); // temp + (a.cols[3] * w)
+        vkr_simd_fma_f32x4(temp, a.cols[3], w); // temp + (a.cols[3] * w)
   }
   return result;
 }
@@ -1570,18 +1570,18 @@ static INLINE Mat4 mat4_from_quat_pos(Quat q, Vec3 position) {
 static INLINE void mat4_mul_mut(Mat4 *dest, Mat4 a, Mat4 b) {
   for (int i = 0; i < 4; i++) {
     Vec4 col = b.cols[i];
-    Vec4 x = simd_set1_f32x4(col.x);
-    Vec4 y = simd_set1_f32x4(col.y);
-    Vec4 z = simd_set1_f32x4(col.z);
-    Vec4 w = simd_set1_f32x4(col.w);
+    Vec4 x = vkr_simd_set1_f32x4(col.x);
+    Vec4 y = vkr_simd_set1_f32x4(col.y);
+    Vec4 z = vkr_simd_set1_f32x4(col.z);
+    Vec4 w = vkr_simd_set1_f32x4(col.w);
 
     // Compute: a.cols[0]*x + a.cols[1]*y + a.cols[2]*z + a.cols[3]*w
-    // Note: simd_fma_f32x4(dst, b, c) computes dst + (b * c)
-    Vec4 temp = simd_mul_f32x4(a.cols[0], x);
-    temp = simd_fma_f32x4(temp, a.cols[1], y); // temp + (a.cols[1] * y)
-    temp = simd_fma_f32x4(temp, a.cols[2], z); // temp + (a.cols[2] * z)
+    // Note: vkr_simd_fma_f32x4(dst, b, c) computes dst + (b * c)
+    Vec4 temp = vkr_simd_mul_f32x4(a.cols[0], x);
+    temp = vkr_simd_fma_f32x4(temp, a.cols[1], y); // temp + (a.cols[1] * y)
+    temp = vkr_simd_fma_f32x4(temp, a.cols[2], z); // temp + (a.cols[2] * z)
     dest->cols[i] =
-        simd_fma_f32x4(temp, a.cols[3], w); // temp + (a.cols[3] * w)
+        vkr_simd_fma_f32x4(temp, a.cols[3], w); // temp + (a.cols[3] * w)
   }
 }
 
