@@ -84,6 +84,8 @@ Array(VkrTexture);
 
 // =============================================================================
 // Material resource types (decoupled from systems)
+// =============================================================================
+
 typedef struct VkrMaterialHandle {
   uint32_t id;
   uint32_t generation;
@@ -131,3 +133,34 @@ typedef struct VkrRenderable {
   RendererLocalStateHandle local_state;
 } VkrRenderable;
 Array(VkrRenderable);
+
+// =============================================================================
+// Pipeline resource types (decoupled from systems)
+// =============================================================================
+
+typedef enum VkrPipelineDomain {
+  VKR_PIPELINE_DOMAIN_WORLD = 0,
+  VKR_PIPELINE_DOMAIN_UI = 1,
+  VKR_PIPELINE_DOMAIN_SHADOW = 2,
+  VKR_PIPELINE_DOMAIN_POST = 3,
+  VKR_PIPELINE_DOMAIN_COMPUTE = 4,
+
+  VKR_PIPELINE_DOMAIN_COUNT
+} VkrPipelineDomain;
+
+typedef struct VkrPipelineHandle {
+  uint32_t id;
+  uint32_t generation;
+} VkrPipelineHandle;
+
+#define VKR_PIPELINE_HANDLE_INVALID                                            \
+  (VkrPipelineHandle) { .id = 0, .generation = VKR_INVALID_ID }
+
+typedef struct VkrPipeline {
+  VkrPipelineHandle handle;
+  GraphicsPipelineDescription description;
+
+  VkrPipelineDomain domain;
+  PipelineHandle backend_handle;
+} VkrPipeline;
+Array(VkrPipeline);

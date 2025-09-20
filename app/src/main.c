@@ -3,9 +3,7 @@
 #include "core/event.h"
 #include "core/input.h"
 #include "core/logger.h"
-#include "filesystem/filesystem.h"
-#include "math/mat.h"
-#include "math/quat.h"
+#include "defines.h"
 #include "memory/arena.h"
 #include "renderer/renderer.h"
 
@@ -23,9 +21,13 @@ typedef struct State {
   Arena *app_arena;
   Arena *event_arena;
   Arena *stats_arena;
+
+  // todo: test materials
+  VkrResourceHandleInfo materials[3];
+  uint8_t material_index;
 } State;
 
-State *state = NULL;
+vkr_global State *state = NULL;
 
 bool8_t application_on_event(Event *event, UserData user_data) {
   // log_debug("Application on event: %d", event->type);
@@ -46,9 +48,9 @@ bool8_t application_on_mouse_event(Event *event, UserData user_data) {
   return true_v;
 }
 
-Camera application_init_camera(Application *application) {
-  Camera camera;
-  camera_perspective_create(
+VkrCamera application_init_camera(Application *application) {
+  VkrCamera camera;
+  vkr_camera_system_perspective_create(
       &camera, &application->window.input_state, &application->window,
       application->config->target_frame_rate, 60.0f, 0.1f, 100.0f);
   return camera;
@@ -61,13 +63,13 @@ void application_update(Application *application, float64_t delta) {
   } else {
     fps_value = 1.0 / application->config->target_frame_rate;
   }
-  static int log_fps_counter = 0;
+  vkr_local_persist int log_fps_counter = 0;
   if (++log_fps_counter % 60 == 0) { // Log every 60 mouse moves to avoid spam
     log_debug("CALCULATED FPS VALUE: %f, DELTA WAS: %f", fps_value, delta);
   }
 
   // Add rotation to test descriptors
-  static float64_t rotation_angle = 0.0;
+  vkr_local_persist float64_t rotation_angle = 0.0;
   rotation_angle += delta * 90.0; // Rotate 90 degrees per second
   if (rotation_angle > 360.0) {
     rotation_angle -= 360.0;
@@ -77,6 +79,24 @@ void application_update(Application *application, float64_t delta) {
   //                          to_radians(rotation_angle), 0);
   // application->pipeline.shader_object_description.shader_state_object.model =
   //     quat_to_mat4(q);
+
+  if (input_is_key_up(state->input_state, KEY_T) &&
+      input_was_key_down(state->input_state, KEY_T)) {
+    log_debug("Material index: %d", state->material_index);
+    // Update material color factor and texture (simple showcase)
+    VkrPhongProperties phong_props = {
+        .diffuse_color = vec4_new(1, 1, 1, 1),
+        .specular_color = vec4_new(1, 1, 1, 1),
+        .shininess = 32.0f,
+        .emission_color = vec3_new(0, 0, 0),
+    };
+    application->current_material =
+        state->materials[state->material_index].as.material;
+    state->material_index++;
+    if (state->material_index >= 3) {
+      state->material_index = 0;
+    }
+  }
 
   if (state == NULL || state->input_state == NULL) {
     log_error("State or input state is NULL");
@@ -134,6 +154,43 @@ int main(int argc, char **argv) {
   state->input_state = &application.window.input_state;
   state->app_arena = application.app_arena;
   state->event_arena = application.event_manager.arena;
+
+  state->material_index = 0;
+
+  VkrResourceHandleInfo material_info = {0};
+  RendererError material_load_error = RENDERER_ERROR_NONE;
+  if (vkr_resource_system_load(
+          VKR_RESOURCE_TYPE_MATERIAL, string8_lit("assets/default1.mt"),
+          application.app_arena, &material_info, &material_load_error)) {
+    log_info("Successfully loaded default material from assets/default1.mt");
+    state->materials[0] = material_info;
+  } else {
+    log_warn("Failed to load default material from assets/default.mt; using "
+             "built-in default: %s",
+             renderer_get_error_string(material_load_error).str);
+  }
+
+  if (vkr_resource_system_load(
+          VKR_RESOURCE_TYPE_MATERIAL, string8_lit("assets/default2.mt"),
+          application.app_arena, &material_info, &material_load_error)) {
+    log_info("Successfully loaded default material from assets/default2.mt");
+    state->materials[1] = material_info;
+  } else {
+    log_warn("Failed to load default material from assets/default.mt; using "
+             "built-in default: %s",
+             renderer_get_error_string(material_load_error).str);
+  }
+
+  if (vkr_resource_system_load(
+          VKR_RESOURCE_TYPE_MATERIAL, string8_lit("assets/default3.mt"),
+          application.app_arena, &material_info, &material_load_error)) {
+    log_info("Successfully loaded default material from assets/default3.mt");
+    state->materials[2] = material_info;
+  } else {
+    log_warn("Failed to load default material from assets/default.mt; using "
+             "built-in default: %s",
+             renderer_get_error_string(material_load_error).str);
+  }
 
   Scratch scratch = scratch_create(application.app_arena);
   DeviceInformation device_information;

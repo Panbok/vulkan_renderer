@@ -46,20 +46,25 @@
 #pragma once
 
 #include "containers/bitset.h"
-#include "core/clock.h"
 #include "core/event.h"
 #include "core/logger.h"
+#include "core/vkr_clock.h"
 #include "core/vkr_gamepad.h"
 #include "core/vkr_threads.h"
 #include "core/vkr_window.h"
 #include "defines.h"
-#include "filesystem/filesystem.h"
 #include "math/mat.h"
-#include "math/math.h"
-#include "math/vec.h"
 #include "memory/arena.h"
 #include "renderer/renderer.h"
-#include "renderer/resources/resources.h"
+#include "renderer/resources/loaders/material_loader.h"
+#include "renderer/resources/loaders/texture_loader.h"
+#include "renderer/resources/vkr_resources.h"
+#include "renderer/systems/vkr_camera.h"
+#include "renderer/systems/vkr_geometry_system.h"
+#include "renderer/systems/vkr_material_system.h"
+#include "renderer/systems/vkr_pipeline_registry.h"
+#include "renderer/systems/vkr_resource_system.h"
+#include "renderer/systems/vkr_texture_system.h"
 
 /**
  * @brief Flags representing the current state of the application.
@@ -112,24 +117,37 @@ typedef struct Application {
                                  this application instance. */
   RendererFrontendHandle renderer; /**< Renderer instance. */
 
-  Clock clock; /**< Clock used for timing frames and calculating delta time. */
+  VkrPipelineRegistry pipeline_registry;
+  VkrPipelineHandle world_pipeline;
+
+  VkrClock
+      clock; /**< Clock used for timing frames and calculating delta time. */
   float64_t last_frame_time; /**< Timestamp of the previous frame, used for
                                 delta time calculation. */
   Bitset8 app_flags;         /**< Bitset holding `ApplicationFlag`s to track the
                                 current state. */
   VkrMutex app_mutex;        /**< Mutex for application state. */
 
-  Camera camera; /**< The camera for the application. */
+  VkrCamera camera; /**< The camera for the application. */
+
+  // Per-frame and per-draw state
+  GlobalUniformObject global_uniform;
+  ShaderStateObject draw_state;
 
   VkrGamepad gamepad; /**< The gamepad system for the application. */
 
-  GraphicsPipelineDescription pipeline;
-  PipelineHandle pipeline_handle;
+  VkrGeometrySystem geometry_system;
+  VkrGeometryHandle cube_geometry;
 
-  Array_Mesh meshes;
-  VertexArray cube_vertex_array;
+  VkrTextureSystem texture_system;
+  VkrMaterialSystem material_system;
 
-  VkrTexture default_texture;
+  // todo: testing materials swapping
+  VkrMaterialHandle current_material;
+
+  // Scene renderables
+  Array_VkrRenderable renderables;
+  uint32_t renderable_count;
 
   // Window size tracking for resize detection
   uint32_t
@@ -183,7 +201,7 @@ bool8_t application_on_mouse_event(Event *event, UserData user_data);
  * @param application Pointer to the `Application` structure.
  * @return The initialized camera
  */
-Camera application_init_camera(Application *application);
+VkrCamera application_init_camera(Application *application);
 
 /**
  * @brief User-defined application update function.
@@ -237,8 +255,8 @@ static bool8_t application_handle_window_resize(Event *event,
     log_info("Processing window resize to %dx%d", resize_event_data->width,
              resize_event_data->height);
 
-    application->pipeline.shader_object_description.global_uniform_object
-        .projection = camera_get_projection_matrix(&application->camera);
+    application->global_uniform.projection =
+        vkr_camera_system_get_projection_matrix(&application->camera);
 
     renderer_resize(application->renderer, resize_event_data->width,
                     resize_event_data->height);
@@ -310,7 +328,7 @@ bool8_t application_create(Application *application,
   vkr_window_create(&application->window, &application->event_manager,
                     config->title, config->x, config->y, config->width,
                     config->height);
-  application->clock = clock_create();
+  application->clock = vkr_clock_create();
   if (!vkr_mutex_create(application->app_arena, &application->app_mutex)) {
     log_fatal("Failed to create application mutex!");
     arena_destroy(application->log_arena);
@@ -345,101 +363,122 @@ bool8_t application_create(Application *application,
   vkr_gamepad_init(&application->gamepad, &application->window.input_state);
   application->camera = application_init_camera(application);
 
+  vkr_pipeline_registry_init(&application->pipeline_registry,
+                             application->renderer, NULL);
+
   // TODO: Move all resources and renderer related stuff to front-end
   Mat4 model = mat4_identity();
 
-  renderer_error = vkr_texture_load(
-      application->renderer, application->renderer_arena,
-      string8_lit("assets/cobblestone.png"), VKR_TEXTURE_RGBA_CHANNELS,
-      &application->default_texture);
-  if (renderer_error != RENDERER_ERROR_NONE) {
-    log_fatal("Failed to load default texture: %s",
-              renderer_get_error_string(renderer_error));
+  // Resource system init (central registry and delegate to systems)
+  if (!vkr_resource_system_init(application->app_arena,
+                                application->renderer)) {
+    log_fatal("Failed to initialize resource system");
     return false_v;
   }
 
-  // renderer_error = vkr_texture_create_checkerboard(
-  //     application->renderer, application->renderer_arena,
-  //     &application->default_texture);
-  // if (renderer_error != RENDERER_ERROR_NONE) {
-  //   log_fatal("Failed to create default texture: %s",
-  //             renderer_get_error_string(renderer_error));
-  //   return false_v;
-  // }
-
-  ShaderObjectDescription shader_object_description = {
-      .file_format = SHADER_FILE_FORMAT_SPIR_V,
-      .file_type = SHADER_FILE_TYPE_SINGLE,
-      .modules =
-          {
-              [SHADER_STAGE_VERTEX] =
-                  {
-                      .stages =
-                          shader_stage_flags_from_bits(SHADER_STAGE_VERTEX_BIT),
-                      .path = string8_lit("assets/cube.spv"),
-                      .entry_point = string8_lit("vertexMain"),
-                  },
-              [SHADER_STAGE_FRAGMENT] =
-                  {
-                      .stages = shader_stage_flags_from_bits(
-                          SHADER_STAGE_FRAGMENT_BIT),
-                      .path = string8_lit("assets/cube.spv"),
-                      .entry_point = string8_lit("fragmentMain"),
-                  },
-          },
-      .global_uniform_object =
-          (GlobalUniformObject){
-              .view = camera_get_view_matrix(&application->camera),
-              .projection = camera_get_projection_matrix(&application->camera),
-          },
-      .shader_state_object =
-          (ShaderStateObject){
-              .object_id = 0,
-              .textures = {application->default_texture.handle},
-              .model = model,
-          },
+  VkrGeometrySystemConfig geo_cfg = {
+      .default_max_geometries = 1024,
+      .default_max_vertices = 200000,
+      .default_max_indices = 300000,
+      .primary_layout = GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD,
+      .default_vertex_stride_bytes =
+          sizeof(VkrInterleavedVertex_PositionTexcoord),
   };
-
-  // Generate cube mesh (1x1x1 cube)
-  Mesh cube_mesh =
-      mesh_generate_cube(application->renderer_arena, 2.0f, 2.0f, 2.0f);
-
-  VertexArrayFromMeshOptions opts =
-      VERTEX_ARRAY_FROM_MESH_OPTIONS_INTERLEAVED_POSITION_TEXCOORD();
-  application->cube_vertex_array = vertex_array_from_mesh(
-      application->renderer, application->renderer_arena, &cube_mesh, opts,
-      string8_lit("Cube Vertex Array"), &renderer_error);
-  if (renderer_error != RENDERER_ERROR_NONE) {
-    log_fatal("Failed to create cube vertex array: %s",
+  if (!vkr_geometry_system_init(&application->geometry_system,
+                                application->renderer, &geo_cfg,
+                                &renderer_error)) {
+    log_fatal("Failed to initialize geometry system: %s",
               renderer_get_error_string(renderer_error));
     return false_v;
   }
 
-  log_debug("Cube mesh uploaded to GPU successfully");
-
-  log_debug("Attribute count: %d",
-            application->cube_vertex_array.attribute_count);
-  log_debug("Binding count: %d", application->cube_vertex_array.binding_count);
-  log_debug("Attributes: %p", application->cube_vertex_array.attributes);
-  log_debug("Bindings: %p", application->cube_vertex_array.bindings);
-
-  application->pipeline = (GraphicsPipelineDescription){
-      .shader_object_description = shader_object_description,
-      .attribute_count = application->cube_vertex_array.attribute_count,
-      .attributes = application->cube_vertex_array.attributes,
-      .binding_count = application->cube_vertex_array.binding_count,
-      .bindings = application->cube_vertex_array.bindings,
-      .topology = application->cube_vertex_array.topology,
-  };
-
-  application->pipeline_handle = renderer_create_graphics_pipeline(
-      application->renderer, &application->pipeline, &renderer_error);
-  if (renderer_error != RENDERER_ERROR_NONE) {
-    log_fatal("Failed to create pipeline: %s",
-              renderer_get_error_string(renderer_error));
+  VkrTextureSystemConfig tex_cfg = {.max_texture_count = 1024};
+  if (!vkr_texture_system_init(application->renderer, &tex_cfg,
+                               &application->texture_system)) {
+    log_fatal("Failed to initialize texture system");
     return false_v;
   }
+
+  VkrMaterialSystemConfig mat_cfg = {.max_material_count = 1024};
+  if (!vkr_material_system_init(&application->material_system,
+                                application->app_arena,
+                                &application->texture_system, &mat_cfg)) {
+    log_fatal("Failed to initialize material system");
+    return false_v;
+  }
+
+  vkr_resource_system_register_loader((void *)&application->texture_system,
+                                      vkr_texture_loader_create());
+  vkr_resource_system_register_loader((void *)&application->material_system,
+                                      vkr_material_loader_create());
+
   // TODO: Move all resources and renderer related stuff to front-end
+
+  VkrResourceHandleInfo default_material_info = {0};
+  RendererError material_load_error = RENDERER_ERROR_NONE;
+  if (vkr_resource_system_load(VKR_RESOURCE_TYPE_MATERIAL,
+                               string8_lit("assets/default.mt"),
+                               application->app_arena, &default_material_info,
+                               &material_load_error)) {
+    log_info("Successfully loaded default material from assets/default.mt");
+    application->current_material = default_material_info.as.material;
+  } else {
+    log_warn("Failed to load default material from assets/default.mt; using "
+             "built-in default: %s",
+             renderer_get_error_string(material_load_error).str);
+  }
+
+  application->global_uniform = (GlobalUniformObject){
+      .view = vkr_camera_system_get_view_matrix(&application->camera),
+      .projection =
+          vkr_camera_system_get_projection_matrix(&application->camera),
+  };
+  application->draw_state =
+      (ShaderStateObject){.model = model, .local_state = {0}};
+
+  application->cube_geometry = vkr_geometry_system_create_default_cube(
+      &application->geometry_system, 2.0f, 2.0f, 2.0f, &renderer_error);
+  if (renderer_error != RENDERER_ERROR_NONE) {
+    log_fatal("Failed to create default geometry: %s",
+              renderer_get_error_string(renderer_error));
+    return false_v;
+  }
+
+  RendererError pipeline_error = RENDERER_ERROR_NONE;
+  if (!vkr_pipeline_registry_create_from_material_layout(
+          &application->pipeline_registry, VKR_PIPELINE_DOMAIN_WORLD,
+          GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD,
+          string8_lit("assets/cube.spv"), string8_lit("world"),
+          &application->world_pipeline, &pipeline_error)) {
+    log_fatal("Failed to create world pipeline: %s",
+              renderer_get_error_string(pipeline_error));
+    return false_v;
+  }
+
+  application->renderables =
+      array_create_VkrRenderable(application->app_arena, 1024);
+  VkrRenderable r0 = {
+      .geometry = application->cube_geometry,
+      .material = application->current_material,
+      .model = mat4_identity(),
+      .local_state = {0},
+  };
+  array_set_VkrRenderable(&application->renderables, 0, r0);
+  application->renderable_count++;
+
+  for (uint32_t renderable_idx = 0;
+       renderable_idx < application->renderable_count; ++renderable_idx) {
+    VkrRenderable *renderable =
+        array_get_VkrRenderable(&application->renderables, renderable_idx);
+    RendererError ls_err = RENDERER_ERROR_NONE;
+    if (!vkr_pipeline_registry_acquire_local_state(
+            &application->pipeline_registry, application->world_pipeline,
+            &renderable->local_state, &ls_err)) {
+      log_fatal("Failed to acquire local renderer state for renderable %u",
+                renderable_idx);
+      return false_v;
+    }
+  }
 
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_WINDOW_CLOSE,
                           application_on_window_event, NULL);
@@ -522,16 +561,45 @@ void application_draw_frame(Application *application, float64_t delta) {
     return;
   }
 
-  application->pipeline.shader_object_description.global_uniform_object.view =
-      camera_get_view_matrix(&application->camera);
+  application->global_uniform.view =
+      vkr_camera_system_get_view_matrix(&application->camera);
 
-  renderer_update_pipeline_state(
-      application->renderer, application->pipeline_handle,
-      &application->pipeline.shader_object_description.global_uniform_object,
-      &application->pipeline.shader_object_description.shader_state_object);
+  RendererError reg_err = RENDERER_ERROR_NONE;
+  vkr_pipeline_registry_bind_pipeline(&application->pipeline_registry,
+                                      application->world_pipeline, &reg_err);
+  vkr_pipeline_registry_update_global_state(
+      &application->pipeline_registry, &application->global_uniform, &reg_err);
 
-  vertex_array_render(application->renderer, &application->cube_vertex_array,
-                      1);
+  for (uint32_t i = 0; i < application->renderable_count; i++) {
+    VkrRenderable *renderable =
+        array_get_VkrRenderable(&application->renderables, i);
+    // Resolve material via handle
+    const VkrMaterial *material = vkr_material_system_get_by_handle(
+        &application->material_system, renderable->material);
+
+    application->draw_state.model = renderable->model;
+    application->draw_state.local_state = renderable->local_state;
+
+    RendererMaterialState mat_state = {0};
+    if (material) {
+      mat_state.uniforms.diffuse_color = material->phong.diffuse_color;
+      VkrTexture *t = vkr_texture_system_get_by_handle(
+          &application->texture_system,
+          material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle);
+      if (t) {
+        mat_state.texture0 = t->handle;
+        mat_state.texture0_enabled = true_v;
+      }
+    }
+
+    vkr_pipeline_registry_update_local_state(
+        &application->pipeline_registry, application->world_pipeline,
+        &application->draw_state, &mat_state, &reg_err);
+
+    vkr_geometry_system_render(application->renderer,
+                               &application->geometry_system,
+                               renderable->geometry, 1);
+  }
 
   renderer_error = renderer_end_frame(application->renderer, delta);
   if (renderer_error != RENDERER_ERROR_NONE) {
@@ -565,8 +633,8 @@ void application_start(Application *application) {
 
   log_info("Application is running...");
 
-  clock_start(&application->clock);
-  clock_update(&application->clock);
+  vkr_clock_start(&application->clock);
+  vkr_clock_update(&application->clock);
   application->last_frame_time = application->clock.elapsed;
 
   const float64_t target_frame_seconds =
@@ -578,7 +646,7 @@ void application_start(Application *application) {
       bitset8_is_set(&application->app_flags, APPLICATION_FLAG_RUNNING) &&
       bitset8_is_set(&application->app_flags, APPLICATION_FLAG_INITIALIZED)) {
 
-    clock_update(&application->clock);
+    vkr_clock_update(&application->clock);
     float64_t current_frame_time = application->clock.elapsed;
     float64_t delta = current_frame_time - application->last_frame_time;
 
@@ -606,7 +674,7 @@ void application_start(Application *application) {
 
     application_update(application, delta);
 
-    camera_update(&application->camera, delta);
+    vkr_camera_system_update(&application->camera, delta);
 
     application_draw_frame(application, delta);
 
@@ -708,10 +776,21 @@ void application_shutdown(Application *application) {
     log_warn("Failed to wait for renderer to be idle");
   }
 
-  vkr_texture_destroy(application->renderer, &application->default_texture);
-  vertex_array_destroy(application->renderer, &application->cube_vertex_array);
-  renderer_destroy_pipeline(application->renderer,
-                            application->pipeline_handle);
+  // Resource system does not own GPU resources; shutdown registry first
+  // Release per-renderable local renderer state before destroying pipeline
+  for (uint32_t i = 0; i < application->renderable_count; ++i) {
+    VkrRenderable *r = array_get_VkrRenderable(&application->renderables, i);
+    vkr_pipeline_registry_release_local_state(
+        &application->pipeline_registry, application->world_pipeline,
+        r->local_state, &(RendererError){0});
+  }
+  vkr_pipeline_registry_destroy_pipeline(&application->pipeline_registry,
+                                         application->world_pipeline);
+  vkr_pipeline_registry_shutdown(&application->pipeline_registry);
+  vkr_texture_system_shutdown(application->renderer,
+                              &application->texture_system);
+  vkr_material_system_shutdown(&application->material_system);
+  vkr_geometry_system_shutdown(&application->geometry_system);
   renderer_destroy(application->renderer);
   vkr_window_destroy(&application->window);
   event_manager_destroy(&application->event_manager);
