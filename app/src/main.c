@@ -165,7 +165,7 @@ int main(int argc, char **argv) {
     log_info("Successfully loaded default material from assets/default1.mt");
     state->materials[0] = material_info;
   } else {
-    log_warn("Failed to load default material from assets/default.mt; using "
+    log_warn("Failed to load default material from assets/default1.mt; using "
              "built-in default: %s",
              renderer_get_error_string(material_load_error).str);
   }
@@ -176,7 +176,7 @@ int main(int argc, char **argv) {
     log_info("Successfully loaded default material from assets/default2.mt");
     state->materials[1] = material_info;
   } else {
-    log_warn("Failed to load default material from assets/default.mt; using "
+    log_warn("Failed to load default material from assets/default2.mt; using "
              "built-in default: %s",
              renderer_get_error_string(material_load_error).str);
   }
@@ -187,7 +187,7 @@ int main(int argc, char **argv) {
     log_info("Successfully loaded default material from assets/default3.mt");
     state->materials[2] = material_info;
   } else {
-    log_warn("Failed to load default material from assets/default.mt; using "
+    log_warn("Failed to load default material from assets/default3.mt; using "
              "built-in default: %s",
              renderer_get_error_string(material_load_error).str);
   }

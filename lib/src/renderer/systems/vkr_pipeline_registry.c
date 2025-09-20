@@ -56,8 +56,8 @@ bool8_t vkr_pipeline_registry_init(VkrPipelineRegistry *registry,
   registry->next_free_index = 0;
   registry->generation_counter = 1;
 
-  for (uint32_t d = 0; d < 5; d++) {
-    registry->pipelines_by_domain[d] = array_create_VkrPipelineHandle(
+  for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
+    registry->pipelines_by_domain[domain] = array_create_VkrPipelineHandle(
         registry->pipeline_arena, registry->config.max_pipelines_per_domain);
   }
 
@@ -96,9 +96,7 @@ vkr__acquire_pipeline_slot(VkrPipelineRegistry *registry,
     registry->free_count--;
     VkrPipeline *p = &registry->pipelines.data[slot];
     p->handle.id = slot + 1;
-    p->handle.generation = (p->handle.generation == 0)
-                               ? registry->generation_counter++
-                               : (registry->generation_counter++);
+    p->handle.generation = registry->generation_counter++;
     *out_handle = p->handle;
     return p;
   }
@@ -280,7 +278,12 @@ bool8_t vkr_pipeline_registry_destroy_pipeline(VkrPipelineRegistry *registry,
   }
 
   // push to free list
+  if (registry->free_count >= registry->free_ids.length) {
+    log_error("Free list overflow in pipeline registry");
+    return false_v;
+  }
   registry->free_ids.data[registry->free_count++] = idx;
+
   p->handle.id = 0;
   return true_v;
 }
@@ -532,7 +535,7 @@ bool8_t vkr_pipeline_registry_render_current_batch(
     RendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
-  // Placeholder: batching not yet implemented. Just mark globals clean if set.
+  // NOTE: batching not yet implemented. Just mark globals clean if set.
   if (global_uniform) {
     registry->state.global_state_dirty = false_v;
   }
@@ -606,8 +609,7 @@ bool8_t vkr_pipeline_registry_get_pipeline_for_material(
     return true_v;
   }
 
-  // Not found: create from material+layout using current shader path fallback
-  // Note: In a full impl, shader path would be carried by material/pipeline
+  // NOTE: In a full impl, shader path would be carried by material/pipeline
   String8 shader_path = string8_lit("assets/cube.spv");
   if (!vkr_pipeline_registry_create_from_material_layout(
           registry, domain, vertex_layout, shader_path, name, out_handle,
