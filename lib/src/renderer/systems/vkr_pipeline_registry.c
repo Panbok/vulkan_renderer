@@ -1,15 +1,19 @@
-// Keep includes minimal; rely on header declarations
 #include "renderer/systems/vkr_pipeline_registry.h"
 #include "core/logger.h"
 #include "renderer/systems/vkr_geometry_system.h"
 
-vkr_internal INLINE void vkr__reset_registry_state(VkrPipelineRegistry *r) {
-  r->state.current_pipeline = VKR_PIPELINE_HANDLE_INVALID;
-  r->state.current_domain = VKR_PIPELINE_DOMAIN_WORLD;
-  r->state.global_state_dirty = true_v;
-  r->state.pipeline_bound = false_v;
-  r->state.frame_pipeline_changes = 0;
-  r->state.frame_redundant_binds_avoided = 0;
+// TODO: we need to impl batch rendering, state caching, etc.
+
+vkr_internal INLINE void
+vkr__reset_registry_state(VkrPipelineRegistry *registry) {
+  assert_log(registry != NULL, "Registry is NULL");
+
+  registry->state.current_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  registry->state.current_domain = VKR_PIPELINE_DOMAIN_WORLD;
+  registry->state.global_state_dirty = true_v;
+  registry->state.pipeline_bound = false_v;
+  registry->state.frame_pipeline_changes = 0;
+  registry->state.frame_redundant_binds_avoided = 0;
 }
 
 bool8_t vkr_pipeline_registry_init(VkrPipelineRegistry *registry,
@@ -41,10 +45,11 @@ bool8_t vkr_pipeline_registry_init(VkrPipelineRegistry *registry,
   uint32_t max_pipelines = registry->config.max_pipeline_count;
   registry->pipelines =
       array_create_VkrPipeline(registry->pipeline_arena, max_pipelines);
-  for (uint32_t i = 0; i < registry->pipelines.length; i++) {
-    registry->pipelines.data[i].handle = (VkrPipelineHandle){0};
-    registry->pipelines.data[i].backend_handle = NULL;
-    registry->pipelines.data[i].domain = VKR_PIPELINE_DOMAIN_WORLD;
+  for (uint32_t pipeline = 0; pipeline < registry->pipelines.length;
+       pipeline++) {
+    registry->pipelines.data[pipeline].handle = (VkrPipelineHandle){0};
+    registry->pipelines.data[pipeline].backend_handle = NULL;
+    registry->pipelines.data[pipeline].domain = VKR_PIPELINE_DOMAIN_WORLD;
   }
 
   registry->pipelines_by_name = vkr_hash_table_create_VkrPipelineEntry(
@@ -70,13 +75,13 @@ bool8_t vkr_pipeline_registry_shutdown(VkrPipelineRegistry *registry) {
   if (!registry)
     return true_v;
 
-  // Destroy all live pipelines
-  for (uint32_t i = 0; i < registry->pipelines.length; i++) {
-    VkrPipeline *p = &registry->pipelines.data[i];
-    if (p->handle.id != 0 && p->backend_handle) {
-      renderer_destroy_pipeline(registry->renderer, p->backend_handle);
-      p->backend_handle = NULL;
-      p->handle.id = 0;
+  for (uint32_t pipeline_id = 0; pipeline_id < registry->pipelines.length;
+       pipeline_id++) {
+    VkrPipeline *pipeline = &registry->pipelines.data[pipeline_id];
+    if (pipeline->handle.id != 0 && pipeline->backend_handle) {
+      renderer_destroy_pipeline(registry->renderer, pipeline->backend_handle);
+      pipeline->backend_handle = NULL;
+      pipeline->handle.id = 0;
     }
   }
 
@@ -94,20 +99,21 @@ vkr__acquire_pipeline_slot(VkrPipelineRegistry *registry,
   if (registry->free_count > 0) {
     uint32_t slot = registry->free_ids.data[registry->free_count - 1];
     registry->free_count--;
-    VkrPipeline *p = &registry->pipelines.data[slot];
-    p->handle.id = slot + 1;
-    p->handle.generation = registry->generation_counter++;
-    *out_handle = p->handle;
-    return p;
+    VkrPipeline *pipeline = &registry->pipelines.data[slot];
+    pipeline->handle.id = slot + 1;
+    pipeline->handle.generation = registry->generation_counter++;
+    *out_handle = pipeline->handle;
+    return pipeline;
   }
 
-  for (uint32_t i = 0; i < registry->pipelines.length; i++) {
-    VkrPipeline *p = &registry->pipelines.data[i];
-    if (p->handle.id == 0 && p->handle.generation == 0) {
-      p->handle.id = i + 1;
-      p->handle.generation = registry->generation_counter++;
-      *out_handle = p->handle;
-      return p;
+  for (uint32_t pipeline_id = 0; pipeline_id < registry->pipelines.length;
+       pipeline_id++) {
+    VkrPipeline *pipeline = &registry->pipelines.data[pipeline_id];
+    if (pipeline->handle.id == 0 && pipeline->handle.generation == 0) {
+      pipeline->handle.id = pipeline_id + 1;
+      pipeline->handle.generation = registry->generation_counter++;
+      *out_handle = pipeline->handle;
+      return pipeline;
     }
   }
   return NULL;
@@ -125,24 +131,24 @@ bool8_t vkr_pipeline_registry_create_graphics_pipeline(
   *out_handle = VKR_PIPELINE_HANDLE_INVALID;
 
   VkrPipelineHandle handle = {0};
-  VkrPipeline *p = vkr__acquire_pipeline_slot(registry, &handle);
-  if (!p) {
+  VkrPipeline *pipeline = vkr__acquire_pipeline_slot(registry, &handle);
+  if (!pipeline) {
     *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
 
-  p->description = *desc;
-  p->domain =
+  pipeline->description = *desc;
+  pipeline->domain =
       VKR_PIPELINE_DOMAIN_WORLD; // default; caller can override via name
 
   PipelineHandle backend = renderer_create_graphics_pipeline(
-      registry->renderer, &p->description, out_error);
+      registry->renderer, &pipeline->description, out_error);
   if (*out_error != RENDERER_ERROR_NONE || backend == NULL) {
     // release slot
-    p->handle.id = 0;
+    pipeline->handle.id = 0;
     return false_v;
   }
-  p->backend_handle = backend;
+  pipeline->backend_handle = backend;
 
   if (name.str && name.length > 0) {
     // Store lifetime entry by name
@@ -154,7 +160,7 @@ bool8_t vkr_pipeline_registry_create_graphics_pipeline(
                               .ref_count = 1,
                               .auto_release = false_v,
                               .name = key,
-                              .domain = p->domain};
+                              .domain = pipeline->domain};
     vkr_hash_table_insert_VkrPipelineEntry(&registry->pipelines_by_name, key,
                                            entry);
   }
@@ -213,14 +219,14 @@ bool8_t vkr_pipeline_registry_create_from_material_layout(
   if (!ok)
     return false_v;
 
-  VkrPipeline *p = NULL;
-  if (vkr_pipeline_registry_get_pipeline(registry, *out_handle, &p)) {
-    p->domain = domain;
+  VkrPipeline *pipeline = NULL;
+  if (vkr_pipeline_registry_get_pipeline(registry, *out_handle, &pipeline)) {
+    pipeline->domain = domain;
     Array_VkrPipelineHandle *domain_list =
         &registry->pipelines_by_domain[domain];
-    for (uint32_t i = 0; i < domain_list->length; i++) {
-      if (domain_list->data[i].id == 0) {
-        domain_list->data[i] = *out_handle;
+    for (uint32_t domain = 0; domain < domain_list->length; domain++) {
+      if (domain_list->data[domain].id == 0) {
+        domain_list->data[domain] = *out_handle;
         break;
       }
     }
@@ -263,28 +269,29 @@ bool8_t vkr_pipeline_registry_acquire_by_name(VkrPipelineRegistry *registry,
 bool8_t vkr_pipeline_registry_destroy_pipeline(VkrPipelineRegistry *registry,
                                                VkrPipelineHandle handle) {
   assert_log(registry != NULL, "Registry is NULL");
+
   if (handle.id == 0)
     return false_v;
   uint32_t idx = handle.id - 1;
   if (idx >= registry->pipelines.length)
     return false_v;
-  VkrPipeline *p = &registry->pipelines.data[idx];
-  if (p->handle.generation != handle.generation || p->handle.id == 0)
+  VkrPipeline *pipeline = &registry->pipelines.data[idx];
+  if (pipeline->handle.generation != handle.generation ||
+      pipeline->handle.id == 0)
     return false_v;
 
-  if (p->backend_handle) {
-    renderer_destroy_pipeline(registry->renderer, p->backend_handle);
-    p->backend_handle = NULL;
+  if (pipeline->backend_handle) {
+    renderer_destroy_pipeline(registry->renderer, pipeline->backend_handle);
+    pipeline->backend_handle = NULL;
   }
 
-  // push to free list
   if (registry->free_count >= registry->free_ids.length) {
     log_error("Free list overflow in pipeline registry");
     return false_v;
   }
   registry->free_ids.data[registry->free_count++] = idx;
 
-  p->handle.id = 0;
+  pipeline->handle.id = 0;
   return true_v;
 }
 
@@ -303,14 +310,18 @@ bool8_t vkr_pipeline_registry_acquire(VkrPipelineRegistry *registry,
 bool8_t vkr_pipeline_registry_release(VkrPipelineRegistry *registry,
                                       VkrPipelineHandle handle) {
   assert_log(registry != NULL, "Registry is NULL");
+
   if (handle.id == 0)
     return false_v;
   uint32_t idx = handle.id - 1;
   if (idx >= registry->pipelines.length)
     return false_v;
-  VkrPipeline *p = &registry->pipelines.data[idx];
-  (void)p;
-  // No global refcount maintained unless acquired by name; keep simple.
+  VkrPipeline *pipeline = &registry->pipelines.data[idx];
+  if (pipeline->handle.generation != handle.generation ||
+      pipeline->handle.id == 0)
+    return false_v;
+  pipeline->handle.id = 0;
+
   return true_v;
 }
 
@@ -319,27 +330,32 @@ bool8_t vkr_pipeline_registry_get_pipeline(VkrPipelineRegistry *registry,
                                            VkrPipeline **out_pipeline) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_pipeline != NULL, "Out pipeline is NULL");
+
   if (handle.id == 0)
     return false_v;
   uint32_t idx = handle.id - 1;
   if (idx >= registry->pipelines.length)
     return false_v;
-  VkrPipeline *p = &registry->pipelines.data[idx];
-  if (p->handle.generation != handle.generation || p->handle.id == 0)
+  VkrPipeline *pipeline = &registry->pipelines.data[idx];
+  if (pipeline->handle.generation != handle.generation ||
+      pipeline->handle.id == 0)
     return false_v;
-  *out_pipeline = p;
+  *out_pipeline = pipeline;
+
   return true_v;
 }
 
 VkrPipelineHandle
 vkr_pipeline_registry_get_current_pipeline(VkrPipelineRegistry *registry) {
   assert_log(registry != NULL, "Registry is NULL");
+
   return registry->state.current_pipeline;
 }
 
 bool8_t vkr_pipeline_registry_is_pipeline_bound(VkrPipelineRegistry *registry,
                                                 VkrPipelineHandle handle) {
   assert_log(registry != NULL, "Registry is NULL");
+
   return (registry->state.pipeline_bound &&
           registry->state.current_pipeline.id == handle.id &&
           registry->state.current_pipeline.generation == handle.generation)
@@ -352,6 +368,7 @@ bool8_t vkr_pipeline_registry_bind_pipeline(VkrPipelineRegistry *registry,
                                             RendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
+
   *out_error = RENDERER_ERROR_NONE;
 
   if (vkr_pipeline_registry_is_pipeline_bound(registry, handle)) {
@@ -359,19 +376,20 @@ bool8_t vkr_pipeline_registry_bind_pipeline(VkrPipelineRegistry *registry,
     return true_v;
   }
 
-  VkrPipeline *p = NULL;
-  if (!vkr_pipeline_registry_get_pipeline(registry, handle, &p)) {
+  VkrPipeline *pipeline = NULL;
+  if (!vkr_pipeline_registry_get_pipeline(registry, handle, &pipeline)) {
     *out_error = RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
 
   // Vulkan backend binds inside update_state, but we track logical state here
   registry->state.current_pipeline = handle;
-  registry->state.current_domain = p->domain;
+  registry->state.current_domain = pipeline->domain;
   registry->state.pipeline_bound = true_v;
   registry->state.global_state_dirty = true_v; // mark globals dirty on bind
   registry->state.frame_pipeline_changes++;
   registry->stats.total_pipeline_binds++;
+
   return true_v;
 }
 
@@ -387,15 +405,15 @@ bool8_t vkr_pipeline_registry_update_global_state(
     return false_v;
   }
 
-  VkrPipeline *p = NULL;
+  VkrPipeline *pipeline = NULL;
   if (!vkr_pipeline_registry_get_pipeline(
-          registry, registry->state.current_pipeline, &p)) {
+          registry, registry->state.current_pipeline, &pipeline)) {
     *out_error = RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
 
   RendererError err = renderer_update_global_state(
-      registry->renderer, p->backend_handle, global_uniform);
+      registry->renderer, pipeline->backend_handle, global_uniform);
   if (err != RENDERER_ERROR_NONE) {
     *out_error = err;
     return false_v;
@@ -417,18 +435,19 @@ bool8_t vkr_pipeline_registry_acquire_local_state(
   assert_log(out_local_state != NULL, "Out local state is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  VkrPipeline *p = NULL;
-  if (!vkr_pipeline_registry_get_pipeline(registry, handle, &p)) {
+  VkrPipeline *pipeline = NULL;
+  if (!vkr_pipeline_registry_get_pipeline(registry, handle, &pipeline)) {
     *out_error = RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
 
   RendererError err = renderer_acquire_local_state(
-      registry->renderer, p->backend_handle, out_local_state);
+      registry->renderer, pipeline->backend_handle, out_local_state);
   if (err != RENDERER_ERROR_NONE) {
     *out_error = err;
     return false_v;
   }
+
   return true_v;
 }
 
@@ -438,17 +457,19 @@ bool8_t vkr_pipeline_registry_release_local_state(
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  VkrPipeline *p = NULL;
-  if (!vkr_pipeline_registry_get_pipeline(registry, handle, &p)) {
+  VkrPipeline *pipeline = NULL;
+  if (!vkr_pipeline_registry_get_pipeline(registry, handle, &pipeline)) {
     *out_error = RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
+
   RendererError err = renderer_release_local_state(
-      registry->renderer, p->backend_handle, local_state);
+      registry->renderer, pipeline->backend_handle, local_state);
   if (err != RENDERER_ERROR_NONE) {
     *out_error = err;
     return false_v;
   }
+
   return true_v;
 }
 
@@ -460,17 +481,19 @@ bool8_t vkr_pipeline_registry_update_local_state(
   assert_log(out_error != NULL, "Out error is NULL");
   *out_error = RENDERER_ERROR_NONE;
 
-  VkrPipeline *p = NULL;
-  if (!vkr_pipeline_registry_get_pipeline(registry, handle, &p)) {
+  VkrPipeline *pipeline = NULL;
+  if (!vkr_pipeline_registry_get_pipeline(registry, handle, &pipeline)) {
     *out_error = RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
+
   RendererError err = renderer_update_local_state(
-      registry->renderer, p->backend_handle, data, material);
+      registry->renderer, pipeline->backend_handle, data, material);
   if (err != RENDERER_ERROR_NONE) {
     *out_error = err;
     return false_v;
   }
+
   return true_v;
 }
 
@@ -480,6 +503,7 @@ bool8_t vkr_pipeline_registry_render_renderable(
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(renderable != NULL, "Renderable is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
+
   *out_error = RENDERER_ERROR_NONE;
 
   // Minimal implementation: assume a single world pipeline already created
@@ -498,12 +522,14 @@ bool8_t vkr_pipeline_registry_begin_batch(VkrPipelineRegistry *registry,
                                           RendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
+
   registry->current_batch.active = true_v;
   registry->current_batch.domain = domain;
   registry->current_batch.renderables =
       array_create_VkrRenderable(registry->temp_arena, 1024);
   registry->current_batch.renderable_count = 0;
   *out_error = RENDERER_ERROR_NONE;
+
   return true_v;
 }
 
@@ -513,10 +539,12 @@ bool8_t vkr_pipeline_registry_add_to_batch(VkrPipelineRegistry *registry,
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(renderable != NULL, "Renderable is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
+
   if (!registry->current_batch.active) {
     *out_error = RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
+
   if (registry->current_batch.renderables.length > 0 &&
       registry->current_batch.renderable_count <
           registry->current_batch.renderables.length) {
@@ -526,7 +554,9 @@ bool8_t vkr_pipeline_registry_add_to_batch(VkrPipelineRegistry *registry,
     registry->current_batch.renderable_count++;
     registry->stats.total_renderables_batched++;
   }
+
   *out_error = RENDERER_ERROR_NONE;
+
   return true_v;
 }
 
@@ -535,11 +565,14 @@ bool8_t vkr_pipeline_registry_render_current_batch(
     RendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
+
   // NOTE: batching not yet implemented. Just mark globals clean if set.
   if (global_uniform) {
     registry->state.global_state_dirty = false_v;
   }
+
   *out_error = RENDERER_ERROR_NONE;
+
   return true_v;
 }
 
@@ -631,6 +664,7 @@ void vkr_pipeline_registry_get_frame_stats(
     VkrPipelineRegistry *registry, uint32_t *out_pipeline_changes,
     uint32_t *out_redundant_binds_avoided) {
   assert_log(registry != NULL, "Registry is NULL");
+
   if (out_pipeline_changes)
     *out_pipeline_changes = registry->state.frame_pipeline_changes;
   if (out_redundant_binds_avoided)
@@ -644,6 +678,7 @@ void vkr_pipeline_registry_get_stats(VkrPipelineRegistry *registry,
                                      uint32_t *out_total_redundant_avoided,
                                      uint32_t *out_total_batched) {
   assert_log(registry != NULL, "Registry is NULL");
+
   if (out_total_pipelines)
     *out_total_pipelines = registry->stats.total_pipelines_created;
   if (out_total_binds)

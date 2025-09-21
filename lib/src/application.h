@@ -363,8 +363,11 @@ bool8_t application_create(Application *application,
   vkr_gamepad_init(&application->gamepad, &application->window.input_state);
   application->camera = application_init_camera(application);
 
-  vkr_pipeline_registry_init(&application->pipeline_registry,
-                             application->renderer, NULL);
+  if (!vkr_pipeline_registry_init(&application->pipeline_registry,
+                                  application->renderer, NULL)) {
+    log_fatal("Failed to initialize pipeline registry");
+    return false_v;
+  }
 
   // TODO: Move all resources and renderer related stuff to front-end
   Mat4 model = mat4_identity();
