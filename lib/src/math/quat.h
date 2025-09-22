@@ -440,7 +440,7 @@ static INLINE void quat_to_euler(Quat q, float32_t *roll, float32_t *pitch,
     *roll = vkr_atan2_f32(-2.0f * (yz - wx), 1.0f - 2.0f * (xx + yy));
     *yaw = 0.0f; // Set yaw to 0 in gimbal lock
   } else {
-    *pitch = vkr_sin_f32(vkr_clamp_f32(sinp, -1.0f, 1.0f));
+    *pitch = vkr_asin_f32(vkr_clamp_f32(sinp, -1.0f, 1.0f));
     *roll = vkr_atan2_f32(2.0f * (yz + wx), 1.0f - 2.0f * (xx + yy));
     *yaw = vkr_atan2_f32(2.0f * (xy + wz), 1.0f - 2.0f * (yy + zz));
   }
