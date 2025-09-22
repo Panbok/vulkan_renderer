@@ -2,7 +2,7 @@
 
 // Helper function for floating-point comparison with epsilon
 static bool32_t float_equals(float32_t a, float32_t b, float32_t epsilon) {
-  return abs_f32(a - b) < epsilon;
+  return vkr_abs_f32(a - b) < epsilon;
 }
 
 // Helper function for Mat4 comparison
@@ -36,35 +36,40 @@ static void test_mat4_constructors(void) {
 
   // Test mat4_new
   Mat4 m1 = mat4_new(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 5, 10, 15, 1);
-  assert(float_equals(m1.m00, 1.0f, FLOAT_EPSILON) && "mat4_new m00 failed");
-  assert(float_equals(m1.m03, 5.0f, FLOAT_EPSILON) && "mat4_new m03 failed");
-  assert(float_equals(m1.m13, 10.0f, FLOAT_EPSILON) && "mat4_new m13 failed");
-  assert(float_equals(m1.m23, 15.0f, FLOAT_EPSILON) && "mat4_new m23 failed");
+  assert(float_equals(m1.m00, 1.0f, VKR_FLOAT_EPSILON) &&
+         "mat4_new m00 failed");
+  assert(float_equals(m1.m03, 5.0f, VKR_FLOAT_EPSILON) &&
+         "mat4_new m03 failed");
+  assert(float_equals(m1.m13, 10.0f, VKR_FLOAT_EPSILON) &&
+         "mat4_new m13 failed");
+  assert(float_equals(m1.m23, 15.0f, VKR_FLOAT_EPSILON) &&
+         "mat4_new m23 failed");
 
   // Test mat4_zero
   Mat4 zero = mat4_zero();
   Mat4 expected_zero = mat4_new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
-  assert(mat4_equals(zero, expected_zero, FLOAT_EPSILON) && "mat4_zero failed");
+  assert(mat4_equals(zero, expected_zero, VKR_FLOAT_EPSILON) &&
+         "mat4_zero failed");
 
   // Test mat4_identity
   Mat4 identity = mat4_identity();
   Mat4 expected_identity =
       mat4_new(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1);
-  assert(mat4_equals(identity, expected_identity, FLOAT_EPSILON) &&
+  assert(mat4_equals(identity, expected_identity, VKR_FLOAT_EPSILON) &&
          "mat4_identity failed");
 
   // Test mat4_translate
   Mat4 translate = mat4_translate(vec3_new(2.0f, 3.0f, 4.0f));
   Mat4 expected_translate =
       mat4_new(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 2, 3, 4, 1);
-  assert(mat4_equals(translate, expected_translate, FLOAT_EPSILON) &&
+  assert(mat4_equals(translate, expected_translate, VKR_FLOAT_EPSILON) &&
          "mat4_translate failed");
 
   // Test mat4_scale
   Mat4 scale = mat4_scale(vec3_new(2.0f, 3.0f, 4.0f));
   Mat4 expected_scale =
       mat4_new(2, 0, 0, 0, 0, 3, 0, 0, 0, 0, 4, 0, 0, 0, 0, 1);
-  assert(mat4_equals(scale, expected_scale, FLOAT_EPSILON) &&
+  assert(mat4_equals(scale, expected_scale, VKR_FLOAT_EPSILON) &&
          "mat4_scale failed");
 
   printf("  test_mat4_constructors PASSED\n");
@@ -74,14 +79,14 @@ static void test_mat4_rotation_constructors(void) {
   printf("  Running test_mat4_rotation_constructors...\n");
 
   // Test mat4_euler_rotate_x (90 degrees)
-  Mat4 rot_x = mat4_euler_rotate_x(to_radians(90.0f));
+  Mat4 rot_x = mat4_euler_rotate_x(vkr_to_radians(90.0f));
   Vec3 test_y = vec3_up();
   Vec3 rotated_y =
       vec4_to_vec3(mat4_mul_vec4(rot_x, vec3_to_vec4(test_y, 1.0f)));
   assert(vec3_equals(rotated_y, vec3_forward(), 0.001f) && "X rotation failed");
 
   // Test mat4_euler_rotate_y (90 degrees)
-  Mat4 rot_y = mat4_euler_rotate_y(to_radians(90.0f));
+  Mat4 rot_y = mat4_euler_rotate_y(vkr_to_radians(90.0f));
   Vec3 test_x = vec3_right();
   Vec3 rotated_x =
       vec4_to_vec3(mat4_mul_vec4(rot_y, vec3_to_vec4(test_x, 1.0f)));
@@ -90,7 +95,7 @@ static void test_mat4_rotation_constructors(void) {
   // Test mat4_euler_rotate_z (90 degrees)
   // In right-handed system: +90° around +Z rotates +X toward -Y (clockwise when
   // looking down +Z)
-  Mat4 rot_z = mat4_euler_rotate_z(to_radians(90.0f));
+  Mat4 rot_z = mat4_euler_rotate_z(vkr_to_radians(90.0f));
   Vec3 test_x_z = vec3_right();
   Vec3 rotated_x_z =
       vec4_to_vec3(mat4_mul_vec4(rot_z, vec3_to_vec4(test_x_z, 1.0f)));
@@ -98,7 +103,7 @@ static void test_mat4_rotation_constructors(void) {
 
   // Test arbitrary axis rotation
   Vec3 axis = vec3_normalize(vec3_new(1.0f, 1.0f, 1.0f));
-  Mat4 rot_axis = mat4_euler_rotate(axis, to_radians(120.0f));
+  Mat4 rot_axis = mat4_euler_rotate(axis, vkr_to_radians(120.0f));
   // Just verify the matrix is orthogonal (rotation matrices preserve
   // orthogonality)
   Mat4 rot_transpose = mat4_transpose(rot_axis);
@@ -117,34 +122,34 @@ static void test_mat4_accessors(void) {
 
   // Test mat4_col
   Vec4 col0 = mat4_col(test_matrix, 0);
-  assert(vec4_equals(col0, vec4_new(1, 2, 3, 4), FLOAT_EPSILON) &&
+  assert(vec4_equals(col0, vec4_new(1, 2, 3, 4), VKR_FLOAT_EPSILON) &&
          "mat4_col 0 failed");
 
   Vec4 col3 = mat4_col(test_matrix, 3);
-  assert(vec4_equals(col3, vec4_new(13, 14, 15, 16), FLOAT_EPSILON) &&
+  assert(vec4_equals(col3, vec4_new(13, 14, 15, 16), VKR_FLOAT_EPSILON) &&
          "mat4_col 3 failed");
 
   // Test mat4_row
   Vec4 row0 = mat4_row(test_matrix, 0);
-  assert(vec4_equals(row0, vec4_new(1, 5, 9, 13), FLOAT_EPSILON) &&
+  assert(vec4_equals(row0, vec4_new(1, 5, 9, 13), VKR_FLOAT_EPSILON) &&
          "mat4_row 0 failed");
 
   Vec4 row3 = mat4_row(test_matrix, 3);
-  assert(vec4_equals(row3, vec4_new(4, 8, 12, 16), FLOAT_EPSILON) &&
+  assert(vec4_equals(row3, vec4_new(4, 8, 12, 16), VKR_FLOAT_EPSILON) &&
          "mat4_row 3 failed");
 
   // Test mat4_at
-  assert(float_equals(mat4_at(test_matrix, 0, 0), 1.0f, FLOAT_EPSILON) &&
+  assert(float_equals(mat4_at(test_matrix, 0, 0), 1.0f, VKR_FLOAT_EPSILON) &&
          "mat4_at(0,0) failed");
-  assert(float_equals(mat4_at(test_matrix, 2, 1), 7.0f, FLOAT_EPSILON) &&
+  assert(float_equals(mat4_at(test_matrix, 2, 1), 7.0f, VKR_FLOAT_EPSILON) &&
          "mat4_at(2,1) failed");
-  assert(float_equals(mat4_at(test_matrix, 3, 3), 16.0f, FLOAT_EPSILON) &&
+  assert(float_equals(mat4_at(test_matrix, 3, 3), 16.0f, VKR_FLOAT_EPSILON) &&
          "mat4_at(3,3) failed");
 
   // Test mat4_set
   Mat4 set_test = mat4_identity();
   mat4_set(&set_test, 1, 2, 42.0f);
-  assert(float_equals(mat4_at(set_test, 1, 2), 42.0f, FLOAT_EPSILON) &&
+  assert(float_equals(mat4_at(set_test, 1, 2), 42.0f, VKR_FLOAT_EPSILON) &&
          "mat4_set failed");
 
   // Test mat4_determinant
@@ -155,7 +160,7 @@ static void test_mat4_accessors(void) {
   // Test determinant of zero matrix
   Mat4 zero = mat4_zero();
   float zero_det = mat4_determinant(zero);
-  assert(float_equals(zero_det, 0.0f, FLOAT_EPSILON) &&
+  assert(float_equals(zero_det, 0.0f, VKR_FLOAT_EPSILON) &&
          "mat4_determinant zero failed");
 
   // Test determinant of 2x scale matrix (should be 8.0 for uniform 2x scale)
@@ -166,13 +171,13 @@ static void test_mat4_accessors(void) {
 
   // Test mat4_trace
   float trace = mat4_trace(test_matrix);
-  assert(float_equals(trace, 34.0f, FLOAT_EPSILON) &&
+  assert(float_equals(trace, 34.0f, VKR_FLOAT_EPSILON) &&
          "mat4_trace failed"); // 1+6+11+16 = 34
 
   // Test mat4_is_identity
-  assert(mat4_is_identity(mat4_identity(), FLOAT_EPSILON) &&
+  assert(mat4_is_identity(mat4_identity(), VKR_FLOAT_EPSILON) &&
          "mat4_is_identity true failed");
-  assert(!mat4_is_identity(test_matrix, FLOAT_EPSILON) &&
+  assert(!mat4_is_identity(test_matrix, VKR_FLOAT_EPSILON) &&
          "mat4_is_identity false failed");
 
   printf("  test_mat4_accessors PASSED\n");
@@ -187,14 +192,14 @@ static void test_mat4_operations(void) {
   // Test mat4_add
   Mat4 add_result = mat4_add(a, b);
   Mat4 expected_add = mat4_new(2, 0, 0, 0, 0, 2, 0, 0, 0, 0, 2, 0, 5, 7, 9, 2);
-  assert(mat4_equals(add_result, expected_add, FLOAT_EPSILON) &&
+  assert(mat4_equals(add_result, expected_add, VKR_FLOAT_EPSILON) &&
          "mat4_add failed");
 
   // Test mat4_sub
   Mat4 sub_result = mat4_sub(a, b);
   Mat4 expected_sub =
       mat4_new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, -3, -3, -3, 0);
-  assert(mat4_equals(sub_result, expected_sub, FLOAT_EPSILON) &&
+  assert(mat4_equals(sub_result, expected_sub, VKR_FLOAT_EPSILON) &&
          "mat4_sub failed");
 
   // Test mat4_mul (matrix multiplication)
@@ -217,13 +222,13 @@ static void test_mat4_operations(void) {
   Mat4 transposed = mat4_transpose(test_transpose);
   Mat4 expected_transpose =
       mat4_new(1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15, 4, 8, 12, 16);
-  assert(mat4_equals(transposed, expected_transpose, FLOAT_EPSILON) &&
+  assert(mat4_equals(transposed, expected_transpose, VKR_FLOAT_EPSILON) &&
          "mat4_transpose failed");
 
   // Test in-place operations
   Mat4 mut_test = mat4_identity();
   mat4_mul_mut(&mut_test, translate1, scale2);
-  assert(mat4_equals(mut_test, mul_result, FLOAT_EPSILON) &&
+  assert(mat4_equals(mut_test, mul_result, VKR_FLOAT_EPSILON) &&
          "mat4_mul_mut failed");
 
   printf("  test_mat4_operations PASSED\n");
@@ -234,7 +239,7 @@ static void test_mat4_vector_extraction(void) {
 
   // Create a transform matrix with known orientation
   Mat4 transform = mat4_mul(mat4_translate(vec3_new(10.0f, 20.0f, 30.0f)),
-                            mat4_euler_rotate_y(to_radians(90.0f)));
+                            mat4_euler_rotate_y(vkr_to_radians(90.0f)));
 
   // Test position extraction
   Vec3 position = mat4_position(transform);
@@ -271,7 +276,7 @@ static void test_mat4_inverse_operations(void) {
   assert(mat4_is_identity(identity_inv, 0.001f) && "Identity inverse failed");
 
   // Test orthogonal inverse (rotation matrix)
-  Mat4 rotation = mat4_euler_rotate_z(to_radians(45.0f));
+  Mat4 rotation = mat4_euler_rotate_z(vkr_to_radians(45.0f));
   Mat4 rotation_inv = mat4_inverse_orthogonal(rotation);
   Mat4 should_be_identity = mat4_mul(rotation, rotation_inv);
   assert(mat4_is_identity(should_be_identity, 0.001f) &&
@@ -279,7 +284,7 @@ static void test_mat4_inverse_operations(void) {
 
   // Test rigid body inverse (rotation + translation)
   Mat4 rigid_transform = mat4_mul(mat4_translate(vec3_new(5.0f, 10.0f, 15.0f)),
-                                  mat4_euler_rotate_x(to_radians(30.0f)));
+                                  mat4_euler_rotate_x(vkr_to_radians(30.0f)));
   Mat4 rigid_inv = mat4_inverse_rigid(rigid_transform);
   Mat4 rigid_identity = mat4_mul(rigid_transform, rigid_inv);
   assert(mat4_is_identity(rigid_identity, 0.001f) &&
@@ -288,7 +293,7 @@ static void test_mat4_inverse_operations(void) {
   // Test affine inverse
   Mat4 affine_transform =
       mat4_mul(mat4_translate(vec3_new(2.0f, 3.0f, 4.0f)),
-               mat4_mul(mat4_euler_rotate_z(to_radians(45.0f)),
+               mat4_mul(mat4_euler_rotate_z(vkr_to_radians(45.0f)),
                         mat4_scale(vec3_new(2.0f, 2.0f, 2.0f))));
   Mat4 affine_inv = mat4_inverse_affine(affine_transform);
   Mat4 affine_identity = mat4_mul(affine_transform, affine_inv);
@@ -327,7 +332,7 @@ static void test_mat4_projection_matrices(void) {
 
   // Test perspective projection
   Mat4 perspective =
-      mat4_perspective(to_radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f);
+      mat4_perspective(vkr_to_radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f);
 
   // Test that center point at near plane has w equal to original z coordinate
   Vec4 center_near =
@@ -353,8 +358,8 @@ static void test_mat4_quaternion_conversion(void) {
   printf("  Running test_mat4_quaternion_conversion...\n");
 
   // Test quaternion to matrix conversion
-  Quat rotation_quat =
-      quat_from_euler(to_radians(30.0f), to_radians(45.0f), to_radians(60.0f));
+  Quat rotation_quat = quat_from_euler(
+      vkr_to_radians(30.0f), vkr_to_radians(45.0f), vkr_to_radians(60.0f));
   Mat4 quat_matrix = quat_to_mat4(rotation_quat);
 
   // Matrix should be orthogonal (rotation preserves orthogonality)
@@ -364,7 +369,7 @@ static void test_mat4_quaternion_conversion(void) {
          "Quaternion matrix not orthogonal");
 
   // Test matrix to quaternion conversion
-  Mat4 rotation_matrix = mat4_euler_rotate_y(to_radians(90.0f));
+  Mat4 rotation_matrix = mat4_euler_rotate_y(vkr_to_radians(90.0f));
   Quat extracted_quat = mat4_to_quat(rotation_matrix);
   Mat4 reconstructed_matrix = quat_to_mat4(extracted_quat);
   assert(mat4_equals(rotation_matrix, reconstructed_matrix, 0.001f) &&
@@ -396,7 +401,7 @@ static void test_mat4_edge_cases(void) {
   // Test zero matrix determinant
   Mat4 zero = mat4_zero();
   float zero_det = mat4_determinant(zero);
-  assert(float_equals(zero_det, 0.0f, FLOAT_EPSILON) &&
+  assert(float_equals(zero_det, 0.0f, VKR_FLOAT_EPSILON) &&
          "Zero matrix determinant failed");
 
   // Test singular matrix inverse (should return identity)
@@ -415,7 +420,7 @@ static void test_mat4_edge_cases(void) {
 
   // Test coordinate system consistency
   Mat4 transform = mat4_mul(mat4_translate(vec3_new(1.0f, 2.0f, 3.0f)),
-                            mat4_euler_rotate_y(to_radians(90.0f)));
+                            mat4_euler_rotate_y(vkr_to_radians(90.0f)));
 
   Vec3 right = mat4_right(transform);
   Vec3 up = mat4_up(transform);

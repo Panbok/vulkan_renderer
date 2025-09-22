@@ -75,8 +75,8 @@
 #pragma once
 
 #include "defines.h"
-#include "math.h"
 #include "pch.h"
+#include "vkr_math.h"
 
 // =============================================================================
 // SIMD Alignment and Attributes

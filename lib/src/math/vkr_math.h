@@ -1,5 +1,5 @@
 /**
- * @file math.h
+ * @file vkr_math.h
  * @brief Comprehensive collection of inline mathematical utilities
  *
  * This file provides a complete set of fast, inline mathematical functions
@@ -10,26 +10,29 @@
  * Function Categories:
  *
  * 1. **Angle Conversion**: Convert between radians and degrees
- *    - to_radians(), to_degrees()
+ *    - vkr_to_radians(), vkr_to_degrees()
  *
  * 2. **Basic Math Operations**: Common mathematical operations
- *    - min_f32(), max_f32(), clamp_f32(), abs_f32(), sign_f32()
+ *    - vkr_min_f32(), vkr_max_f32(), vkr_clamp_f32(), vkr_abs_f32(),
+ * vkr_sign_f32()
  *
  * 3. **Interpolation**: Linear interpolation functions
- *    - lerp_f32()
+ *    - vkr_lerp_f32()
  *
  * 4. **Power and Root Functions**: Exponential and logarithmic operations
- *    - sqrt_f32(), sqrt_f64(), pow_f32(), exp_f32(), log_f32()
+ *    - vkr_sqrt_f32(), vkr_sqrt_f64(), vkr_pow_f32(), vkr_exp_f32(),
+ * vkr_log_f32()
  *
  * 5. **Rounding Functions**: Float-to-integer rounding operations
- *    - floor_f32(), ceil_f32(), round_f32()
+ *    - vkr_floor_f32(), vkr_ceil_f32(), vkr_round_f32()
  *
  * 6. **Trigonometric Functions**: Complete set of trig functions
- *    - sin_f32(), cos_f32(), tan_f32()
- *    - asin_f32(), acos_f32(), atan_f32(), atan2_f32()
+ *    - vkr_sin_f32(), vkr_cos_f32(), vkr_tan_f32()
+ *    - vkr_asin_f32(), vkr_acos_f32(), vkr_atan_f32(), vkr_atan2_f32()
  *
  * 7. **Random Number Generation**: Pseudo-random number utilities
- *    - rand_f32(), rand_range_f32(), rand_i32(), rand_range_i32()
+ *    - vkr_rand_f32(), vkr_rand_range_f32(), vkr_rand_i32(),
+ * vkr_rand_range_i32()
  *
  * Performance Notes:
  * - All functions are marked INLINE for maximum performance
@@ -45,94 +48,95 @@
  * Usage Example:
  * ```c
  * // Angle conversion
- * float32_t angle_rad = to_radians(45.0f);  // Convert 45° to radians
- * float32_t angle_deg = to_degrees(PI);     // Convert π to degrees
+ * float32_t angle_rad = vkr_to_radians(45.0f);  // Convert 45° to radians
+ * float32_t angle_deg = vkr_to_degrees(VKR_PI); // Convert π to degrees
  *
  * // Clamping and interpolation
- * float32_t health = clamp_f32(damage, 0.0f, 100.0f);
- * float32_t smooth_pos = lerp_f32(start_pos, end_pos, 0.5f);
+ * float32_t health = vkr_clamp_f32(damage, 0.0f, 100.0f);
+ * float32_t smooth_pos = vkr_lerp_f32(start_pos, end_pos, 0.5f);
  *
  * // Random number generation
- * float32_t random_speed = rand_range_f32(1.0f, 10.0f);
- * int32_t random_index = rand_range_i32(0, array_size - 1);
+ * float32_t random_speed = vkr_rand_range_f32(1.0f, 10.0f);
+ * int32_t random_index = vkr_rand_range_i32(0, array_size - 1);
  * ```
  */
 
 #pragma once
 
+#include "defines.h"
 #include "platform/vkr_platform.h"
 
 /** @brief Mathematical constant π (pi) with high precision
  *  @note Value: 3.14159265358979323846...
  *  @note Uses 17 significant digits for optimal float32_t accuracy */
-#define PI 3.14159265358979323846f
+#define VKR_PI 3.14159265358979323846f
 
 /** @brief Mathematical constant 2π (two pi)
  *  @note Useful for complete circle calculations
  *  @note Computed as 2.0 * PI for compile-time evaluation */
-#define PI_2 2.0f * PI
+#define VKR_PI_2 2.0f * VKR_PI
 
 /** @brief Mathematical constant π/2 (half pi)
  *  @note Represents 90 degrees in radians
  *  @note Computed as 0.5 * PI for compile-time evaluation */
-#define HALF_PI 0.5f * PI
+#define VKR_HALF_PI 0.5f * VKR_PI
 
 /** @brief Mathematical constant π/4 (quarter pi)
  *  @note Represents 45 degrees in radians
  *  @note Computed as 0.25 * PI for compile-time evaluation */
-#define QUARTER_PI 0.25f * PI
+#define VKR_QUARTER_PI 0.25f * VKR_PI
 
 /** @brief Reciprocal of π (1/π)
  *  @note Useful for avoiding division by PI in calculations
  *  @note Computed as 1.0 / PI for compile-time evaluation */
-#define ONE_OVER_PI 1.0f / PI
+#define VKR_ONE_OVER_PI 1.0f / VKR_PI
 
 /** @brief Reciprocal of 2π (1/(2π))
  *  @note Useful for frequency calculations and normalization
  *  @note Computed as 1.0 / PI_2 for compile-time evaluation */
-#define ONE_OVER_TWO_PI 1.0f / PI_2
+#define VKR_ONE_OVER_TWO_PI 1.0f / VKR_PI_2
 
 /** @brief Square root of 2 (√2) with high precision
  *  @note Value: 1.41421356237309504880...
  *  @note Useful for diagonal calculations and normalization */
-#define SQRT_TWO 1.41421356237309504880f
+#define VKR_SQRT_TWO 1.41421356237309504880f
 
 /** @brief Square root of 3 (√3) with high precision
  *  @note Value: 1.73205080756887729352...
  *  @note Useful for triangular and hexagonal calculations */
-#define SQRT_THREE 1.73205080756887729352f
+#define VKR_SQRT_THREE 1.73205080756887729352f
 
 /** @brief Square root of 1/2 (1/√2) with high precision
  *  @note Value: 0.70710678118654752440...
  *  @note Equivalent to √2/2, useful for 45-degree rotations */
-#define SQRT_ONE_OVER_TWO 0.70710678118654752440f
+#define VKR_SQRT_ONE_OVER_TWO 0.70710678118654752440f
 
 /** @brief Square root of 1/3 (1/√3) with high precision
  *  @note Value: 0.57735026918962576450...
  *  @note Equivalent to √3/3, useful for equilateral triangle calculations */
-#define SQRT_ONE_OVER_THREE 0.57735026918962576450f
+#define VKR_SQRT_ONE_OVER_THREE 0.57735026918962576450f
 
 /** @brief Conversion multiplier from degrees to radians
  *  @note Multiply degrees by this value to get radians
  *  @note Computed as PI / 180.0 for compile-time evaluation
  *  @example 45.0f * DEG2RAD_MULTIPLIER = π/4 radians */
-#define DEG2RAD_MULTIPLIER PI / 180.0f
+#define VKR_DEG2RAD_MULTIPLIER VKR_PI / 180.0f
 
 /** @brief Conversion multiplier from radians to degrees
  *  @note Multiply radians by this value to get degrees
  *  @note Computed as 180.0 / PI for compile-time evaluation
  *  @example PI * RAD2DEG_MULTIPLIER = 180.0f degrees */
-#define RAD2DEG_MULTIPLIER 180.0f / PI
+#define VKR_RAD2DEG_MULTIPLIER 180.0f / VKR_PI
 
 /** @brief Conversion multiplier from seconds to milliseconds
  *  @note Multiply seconds by this value to get milliseconds
  *  @note Value: 1000.0f (1 second = 1000 milliseconds) */
-#define SEC_TO_MS_MULTIPLIER 1000.0f
+#define VKR_SEC_TO_MS_MULTIPLIER 1000.0f
 
 /** @brief Conversion multiplier from milliseconds to seconds
  *  @note Multiply milliseconds by this value to get seconds
  *  @note Value: 0.001f (1 millisecond = 0.001 seconds) */
-#define MS_TO_SEC_MULTIPLIER 0.001f
+#define VKR_MS_TO_SEC_MULTIPLIER 0.001f
 
 /** @brief Large value representing positive infinity for float32_t
  *  @note Value: 1e30f (1 × 10^30)
@@ -147,40 +151,40 @@
  *  @note Value: 1.192092896e-07f (approximately 1.19 × 10^-7)
  *  @note Use for floating-point equality comparisons and numerical stability
  *  @example Use abs_f32(a - b) < FLOAT_EPSILON instead of a == b */
-#define FLOAT_EPSILON 1.192092896e-07f
+#define VKR_FLOAT_EPSILON 1.192092896e-07f
 
 /** @brief Maximum value for float32_t
  *  @note Value: 3.402823466e+38f
  *  @note Use for bounds checking and initialization of maximum values
  *  @note Should be smaller than any realistic value in your application */
-#define FLOAT_MAX 3.402823466e+38f
+#define VKR_FLOAT_MAX 3.402823466e+38f
 
 /** @brief Minimum value for float32_t
  *  @note Value: 1.175494351e-38f
  *  @note Use for bounds checking and initialization of minimum values
  *  @note Should be larger than any realistic value in your application */
-#define FLOAT_MIN 1.175494351e-38f
+#define VKR_FLOAT_MIN 1.175494351e-38f
 
-static bool8_t rand_seeded = false;
+vkr_global bool8_t vkr_rand_seeded = false;
 
 /**
  * @brief Converts degrees to radians
  * @param degrees Angle value in degrees
  * @return Equivalent angle value in radians
- * @note Uses the precise conversion factor DEG2RAD_MULTIPLIER (π/180)
+ * @note Uses the precise conversion factor VKR_DEG2RAD_MULTIPLIER (π/180)
  */
-static INLINE float32_t to_radians(float32_t degrees) {
-  return degrees * DEG2RAD_MULTIPLIER;
+vkr_internal INLINE float32_t vkr_to_radians(float32_t degrees) {
+  return degrees * VKR_DEG2RAD_MULTIPLIER;
 }
 
 /**
  * @brief Converts radians to degrees
  * @param radians Angle value in radians
  * @return Equivalent angle value in degrees
- * @note Uses the precise conversion factor RAD2DEG_MULTIPLIER (180/π)
+ * @note Uses the precise conversion factor VKR_RAD2DEG_MULTIPLIER (180/π)
  */
-static INLINE float32_t to_degrees(float32_t radians) {
-  return radians * RAD2DEG_MULTIPLIER;
+vkr_internal INLINE float32_t vkr_to_degrees(float32_t radians) {
+  return radians * VKR_RAD2DEG_MULTIPLIER;
 }
 
 /**
@@ -189,7 +193,7 @@ static INLINE float32_t to_degrees(float32_t radians) {
  * @param b Second value to compare
  * @return The smaller of the two input values
  */
-static INLINE float32_t min_f32(float32_t a, float32_t b) {
+vkr_internal INLINE float32_t vkr_min_f32(float32_t a, float32_t b) {
   return (a < b) ? a : b;
 }
 
@@ -199,7 +203,7 @@ static INLINE float32_t min_f32(float32_t a, float32_t b) {
  * @param b Second value to compare
  * @return The larger of the two input values
  */
-static INLINE float32_t max_f32(float32_t a, float32_t b) {
+vkr_internal INLINE float32_t vkr_max_f32(float32_t a, float32_t b) {
   return (a > b) ? a : b;
 }
 
@@ -209,7 +213,17 @@ static INLINE float32_t max_f32(float32_t a, float32_t b) {
  * @param b Second value to compare
  * @return The smaller of the two input values
  */
-static INLINE float64_t min_f64(float64_t a, float64_t b) {
+vkr_internal INLINE float64_t vkr_min_f64(float64_t a, float64_t b) {
+  return (a < b) ? a : b;
+}
+
+/**
+ * @brief Returns the minimum of two uint64_t values
+ * @param a First value to compare
+ * @param b Second value to compare
+ * @return The smaller of the two input values
+ */
+vkr_internal INLINE uint64_t vkr_min_u64(uint64_t a, uint64_t b) {
   return (a < b) ? a : b;
 }
 
@@ -219,7 +233,7 @@ static INLINE float64_t min_f64(float64_t a, float64_t b) {
  * @param b Second value to compare
  * @return The larger of the two input values
  */
-static INLINE float64_t max_f64(float64_t a, float64_t b) {
+vkr_internal INLINE float64_t vkr_max_f64(float64_t a, float64_t b) {
   return (a > b) ? a : b;
 }
 
@@ -230,10 +244,10 @@ static INLINE float64_t max_f64(float64_t a, float64_t b) {
  * @param max_val The maximum allowed value (inclusive)
  * @return The input value clamped to [min_val, max_val]
  * @note If min_val > max_val, behavior is undefined
- * @example clamp_f32(150.0f, 0.0f, 100.0f) returns 100.0f
+ * @example vkr_clamp_f32(150.0f, 0.0f, 100.0f) returns 100.0f
  */
-static INLINE float32_t clamp_f32(float32_t value, float32_t min_val,
-                                  float32_t max_val) {
+vkr_internal INLINE float32_t vkr_clamp_f32(float32_t value, float32_t min_val,
+                                            float32_t max_val) {
   return (value < min_val) ? min_val : (value > max_val) ? max_val : value;
 }
 
@@ -245,8 +259,8 @@ static INLINE float32_t clamp_f32(float32_t value, float32_t min_val,
  * @return The input value clamped to [min_val, max_val]
  * @note If min_val > max_val, behavior is undefined
  */
-static INLINE float64_t clamp_f64(float64_t value, float64_t min_val,
-                                  float64_t max_val) {
+vkr_internal INLINE float64_t vkr_clamp_f64(float64_t value, float64_t min_val,
+                                            float64_t max_val) {
   return (value < min_val) ? min_val : (value > max_val) ? max_val : value;
 }
 
@@ -257,9 +271,10 @@ static INLINE float64_t clamp_f64(float64_t value, float64_t min_val,
  * @param t Interpolation parameter, typically in range [0.0, 1.0]
  * @return Interpolated value between a and b
  * @note t values outside [0.0, 1.0] will extrapolate beyond the range [a, b]
- * @example lerp_f32(10.0f, 20.0f, 0.5f) returns 15.0f
+ * @example vkr_lerp_f32(10.0f, 20.0f, 0.5f) returns 15.0f
  */
-static INLINE float32_t lerp_f32(float32_t a, float32_t b, float32_t t) {
+vkr_internal INLINE float32_t vkr_lerp_f32(float32_t a, float32_t b,
+                                           float32_t t) {
   return a + t * (b - a);
 }
 
@@ -269,7 +284,9 @@ static INLINE float32_t lerp_f32(float32_t a, float32_t b, float32_t t) {
  * @return Non-negative absolute value of the input
  * @note Uses the optimized fabsf() function from math.h
  */
-static INLINE float32_t abs_f32(float32_t value) { return fabsf(value); }
+vkr_internal INLINE float32_t vkr_abs_f32(float32_t value) {
+  return fabsf(value);
+}
 
 /**
  * @brief Returns the sign of a float32_t value
@@ -278,7 +295,7 @@ static INLINE float32_t abs_f32(float32_t value) { return fabsf(value); }
  * @note Uses copysignf() for IEEE 754 compliant sign extraction
  * @note Returns 1.0f for +0.0f and -1.0f for -0.0f
  */
-static INLINE float32_t sign_f32(float32_t value) {
+vkr_internal INLINE float32_t vkr_sign_f32(float32_t value) {
   return copysignf(1.0f, value);
 }
 
@@ -289,7 +306,9 @@ static INLINE float32_t sign_f32(float32_t value) {
  * @note Behavior is undefined for negative inputs
  * @note Uses the optimized sqrtf() function from math.h
  */
-static INLINE float32_t sqrt_f32(float32_t value) { return sqrtf(value); }
+vkr_internal INLINE float32_t vkr_sqrt_f32(float32_t value) {
+  return sqrtf(value);
+}
 
 /**
  * @brief Computes the square root of a float64_t value
@@ -298,31 +317,39 @@ static INLINE float32_t sqrt_f32(float32_t value) { return sqrtf(value); }
  * @note Behavior is undefined for negative inputs
  * @note Uses the optimized sqrt() function from math.h
  */
-static INLINE float64_t sqrt_f64(float64_t value) { return sqrt(value); }
+vkr_internal INLINE float64_t vkr_sqrt_f64(float64_t value) {
+  return sqrt(value);
+}
 
 /**
  * @brief Rounds a float32_t value down to the nearest integer
  * @param value Input floating-point value
  * @return Largest integer less than or equal to the input
- * @example floor_f32(3.7f) returns 3.0f, floor_f32(-2.3f) returns -3.0f
+ * @example vkr_floor_f32(3.7f) returns 3.0f, vkr_floor_f32(-2.3f) returns -3.0f
  */
-static INLINE float32_t floor_f32(float32_t value) { return floorf(value); }
+vkr_internal INLINE float32_t vkr_floor_f32(float32_t value) {
+  return floorf(value);
+}
 
 /**
  * @brief Rounds a float32_t value up to the nearest integer
  * @param value Input floating-point value
  * @return Smallest integer greater than or equal to the input
- * @example ceil_f32(3.2f) returns 4.0f, ceil_f32(-2.7f) returns -2.0f
+ * @example vkr_ceil_f32(3.2f) returns 4.0f, vkr_ceil_f32(-2.7f) returns -2.0f
  */
-static INLINE float32_t ceil_f32(float32_t value) { return ceilf(value); }
+vkr_internal INLINE float32_t vkr_ceil_f32(float32_t value) {
+  return ceilf(value);
+}
 
 /**
  * @brief Rounds a float32_t value to the nearest integer
  * @param value Input floating-point value
  * @return Nearest integer value (ties round away from zero)
- * @example round_f32(3.6f) returns 4.0f, round_f32(3.4f) returns 3.0f
+ * @example vkr_round_f32(3.6f) returns 4.0f, vkr_round_f32(3.4f) returns 3.0f
  */
-static INLINE float32_t round_f32(float32_t value) { return roundf(value); }
+vkr_internal INLINE float32_t vkr_round_f32(float32_t value) {
+  return roundf(value);
+}
 
 /**
  * @brief Raises a base to the power of an exponent
@@ -331,7 +358,7 @@ static INLINE float32_t round_f32(float32_t value) { return roundf(value); }
  * @return base raised to the power of exponent (base^exponent)
  * @note Special cases follow IEEE 754 standards (e.g., pow(0, 0) = 1)
  */
-static INLINE float32_t pow_f32(float32_t base, float32_t exponent) {
+vkr_internal INLINE float32_t vkr_pow_f32(float32_t base, float32_t exponent) {
   return powf(base, exponent);
 }
 
@@ -341,7 +368,9 @@ static INLINE float32_t pow_f32(float32_t base, float32_t exponent) {
  * @return e raised to the power of the input value
  * @note e ≈ 2.71828182845904523536
  */
-static INLINE float32_t exp_f32(float32_t value) { return expf(value); }
+vkr_internal INLINE float32_t vkr_exp_f32(float32_t value) {
+  return expf(value);
+}
 
 /**
  * @brief Computes the natural logarithm (base e)
@@ -349,21 +378,27 @@ static INLINE float32_t exp_f32(float32_t value) { return expf(value); }
  * @return Natural logarithm of the input value
  * @note Behavior is undefined for non-positive inputs
  */
-static INLINE float32_t log_f32(float32_t value) { return logf(value); }
+vkr_internal INLINE float32_t vkr_log_f32(float32_t value) {
+  return logf(value);
+}
 
 /**
  * @brief Computes the sine of an angle in radians
  * @param value Angle in radians
  * @return Sine of the input angle, range [-1.0, 1.0]
  */
-static INLINE float32_t sin_f32(float32_t value) { return sinf(value); }
+vkr_internal INLINE float32_t vkr_sin_f32(float32_t value) {
+  return sinf(value);
+}
 
 /**
  * @brief Computes the cosine of an angle in radians
  * @param value Angle in radians
  * @return Cosine of the input angle, range [-1.0, 1.0]
  */
-static INLINE float32_t cos_f32(float32_t value) { return cosf(value); }
+vkr_internal INLINE float32_t vkr_cos_f32(float32_t value) {
+  return cosf(value);
+}
 
 /**
  * @brief Computes the tangent of an angle in radians
@@ -371,7 +406,9 @@ static INLINE float32_t cos_f32(float32_t value) { return cosf(value); }
  * @return Tangent of the input angle
  * @note Returns ±∞ for odd multiples of π/2
  */
-static INLINE float32_t tan_f32(float32_t value) { return tanf(value); }
+vkr_internal INLINE float32_t vkr_tan_f32(float32_t value) {
+  return tanf(value);
+}
 
 /**
  * @brief Computes the arc sine (inverse sine) in radians
@@ -379,7 +416,9 @@ static INLINE float32_t tan_f32(float32_t value) { return tanf(value); }
  * @return Arc sine of the input, range [-π/2, π/2]
  * @note Behavior is undefined for inputs outside [-1.0, 1.0]
  */
-static INLINE float32_t asin_f32(float32_t value) { return asinf(value); }
+vkr_internal INLINE float32_t vkr_asin_f32(float32_t value) {
+  return asinf(value);
+}
 
 /**
  * @brief Computes the arc cosine (inverse cosine) in radians
@@ -387,14 +426,18 @@ static INLINE float32_t asin_f32(float32_t value) { return asinf(value); }
  * @return Arc cosine of the input, range [0, π]
  * @note Behavior is undefined for inputs outside [-1.0, 1.0]
  */
-static INLINE float32_t acos_f32(float32_t value) { return acosf(value); }
+vkr_internal INLINE float32_t vkr_acos_f32(float32_t value) {
+  return acosf(value);
+}
 
 /**
  * @brief Computes the arc tangent (inverse tangent) in radians
  * @param value Input value
  * @return Arc tangent of the input, range [-π/2, π/2]
  */
-static INLINE float32_t atan_f32(float32_t value) { return atanf(value); }
+vkr_internal INLINE float32_t vkr_atan_f32(float32_t value) {
+  return atanf(value);
+}
 
 /**
  * @brief Computes the arc tangent of y/x using the signs to determine quadrant
@@ -403,9 +446,9 @@ static INLINE float32_t atan_f32(float32_t value) { return atanf(value); }
  * @return Arc tangent of y/x, range [-π, π]
  * @note Handles all quadrants correctly, including when x = 0
  * @note Returns correct angles for (0,0), (+0,-0), etc.
- * @example atan2_f32(1.0f, 1.0f) returns π/4 (45°)
+ * @example vkr_atan2_f32(1.0f, 1.0f) returns π/4 (45°)
  */
-static INLINE float32_t atan2_f32(float32_t y, float32_t x) {
+vkr_internal INLINE float32_t vkr_atan2_f32(float32_t y, float32_t x) {
   return atan2f(y, x);
 }
 
@@ -415,7 +458,7 @@ static INLINE float32_t atan2_f32(float32_t y, float32_t x) {
  * @note Uses the standard C rand() function, automatically seeds on first use
  * @note NOT thread-safe due to global state in rand()
  */
-static INLINE float32_t rand_f32() {
+vkr_internal INLINE float32_t vkr_rand_f32() {
   return (float32_t)rand() / (float32_t)RAND_MAX;
 }
 
@@ -425,11 +468,11 @@ static INLINE float32_t rand_f32() {
  * @param max Maximum value (inclusive)
  * @return Random float32_t value in the range [min, max]
  * @note If min > max, behavior is undefined
- * @note NOT thread-safe due to dependency on rand_f32()
- * @example rand_range_f32(1.5f, 10.5f) might return 7.23f
+ * @note NOT thread-safe due to dependency on vkr_rand_f32()
+ * @example vkr_rand_range_f32(1.5f, 10.5f) might return 7.23f
  */
-static INLINE float32_t rand_range_f32(float32_t min, float32_t max) {
-  return min + rand_f32() * (max - min);
+vkr_internal INLINE float32_t vkr_rand_range_f32(float32_t min, float32_t max) {
+  return min + vkr_rand_f32() * (max - min);
 }
 
 /**
@@ -439,10 +482,10 @@ static INLINE float32_t rand_range_f32(float32_t min, float32_t max) {
  * @note Uses vkr_platform_get_absolute_time() for seeding to ensure uniqueness
  * @note NOT thread-safe due to global state in rand() and seeding logic
  */
-static INLINE int32_t rand_i32() {
-  if (!rand_seeded) {
+vkr_internal INLINE int32_t vkr_rand_i32() {
+  if (!vkr_rand_seeded) {
     srand((int32_t)vkr_platform_get_absolute_time());
-    rand_seeded = true;
+    vkr_rand_seeded = true;
   }
 
   return rand();
@@ -454,9 +497,9 @@ static INLINE int32_t rand_i32() {
  * @param max Maximum value (inclusive)
  * @return Random int32_t value in the range [min, max]
  * @note If min > max, behavior is undefined
- * @note NOT thread-safe due to dependency on rand_i32()
- * @example rand_range_i32(1, 6) simulates a dice roll (returns 1-6)
+ * @note NOT thread-safe due to dependency on vkr_rand_i32()
+ * @example vkr_rand_range_i32(1, 6) simulates a dice roll (returns 1-6)
  */
-static INLINE int32_t rand_range_i32(int32_t min, int32_t max) {
-  return (rand_i32() % (max - min + 1)) + min;
+vkr_internal INLINE int32_t vkr_rand_range_i32(int32_t min, int32_t max) {
+  return (vkr_rand_i32() % (max - min + 1)) + min;
 }

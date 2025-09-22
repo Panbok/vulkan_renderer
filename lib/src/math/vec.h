@@ -507,7 +507,7 @@ static INLINE float32_t vec2_length_squared(Vec2 v) { return vec2_dot(v, v); }
  * @return Length of the vector
  */
 static INLINE float32_t vec2_length(Vec2 v) {
-  return sqrt_f32(vec2_length_squared(v));
+  return vkr_sqrt_f32(vec2_length_squared(v));
 }
 
 /**
@@ -515,12 +515,12 @@ static INLINE float32_t vec2_length(Vec2 v) {
  * @param v Vector to normalize
  * @return Unit vector in the same direction, or zero vector if input is too
  * small
- * @note Returns zero vector if input length is smaller than FLOAT_EPSILON
+ * @note Returns zero vector if input length is smaller than VKR_FLOAT_EPSILON
  */
 static INLINE Vec2 vec2_normalize(Vec2 v) {
   float32_t len_sq = vec2_length_squared(v);
-  if (len_sq > FLOAT_EPSILON * FLOAT_EPSILON) {
-    float32_t inv_len = 1.0f / sqrt_f32(len_sq);
+  if (len_sq > VKR_FLOAT_EPSILON * VKR_FLOAT_EPSILON) {
+    float32_t inv_len = 1.0f / vkr_sqrt_f32(len_sq);
     return vec2_scale(v, inv_len);
   }
   return vec2_zero();
@@ -647,7 +647,7 @@ static INLINE float32_t vec3_length_squared(Vec3 v) {
  * @note W component is ignored in calculation
  */
 static INLINE float32_t vec3_length(Vec3 v) {
-  return sqrt_f32(vec3_length_squared(v));
+  return vkr_sqrt_f32(vec3_length_squared(v));
 }
 
 /**
@@ -655,13 +655,13 @@ static INLINE float32_t vec3_length(Vec3 v) {
  * @param v Vector to normalize
  * @return Unit vector in the same direction, or zero vector if input is too
  * small
- * @note Returns zero vector if input length is smaller than FLOAT_EPSILON
+ * @note Returns zero vector if input length is smaller than VKR_FLOAT_EPSILON
  * @note Uses hardware-accelerated reciprocal square root when available
  * @note W component is always set to 0
  */
 static INLINE Vec3 vec3_normalize(Vec3 v) {
   float32_t len_sq = vec3_length_squared(v);
-  if (len_sq > FLOAT_EPSILON * FLOAT_EPSILON) {
+  if (len_sq > VKR_FLOAT_EPSILON * VKR_FLOAT_EPSILON) {
     Vec3 result = vkr_simd_mul_f32x4(
         v, vkr_simd_rsqrt_f32x4(vkr_simd_set1_f32x4(len_sq)));
     result.w = 0.0f;
@@ -762,7 +762,7 @@ static INLINE float32_t vec4_length_squared(Vec4 v) { return vec4_dot(v, v); }
  * @return Length of the vector
  */
 static INLINE float32_t vec4_length(Vec4 v) {
-  return sqrt_f32(vec4_length_squared(v));
+  return vkr_sqrt_f32(vec4_length_squared(v));
 }
 
 /**
@@ -770,12 +770,12 @@ static INLINE float32_t vec4_length(Vec4 v) {
  * @param v Vector to normalize
  * @return Unit vector in the same direction, or zero vector if input is too
  * small
- * @note Returns zero vector if input length is smaller than FLOAT_EPSILON
+ * @note Returns zero vector if input length is smaller than VKR_FLOAT_EPSILON
  * @note Uses hardware-accelerated reciprocal square root when available
  */
 static INLINE Vec4 vec4_normalize(Vec4 v) {
   float32_t len_sq = vec4_length_squared(v);
-  if (len_sq > FLOAT_EPSILON * FLOAT_EPSILON) {
+  if (len_sq > VKR_FLOAT_EPSILON * VKR_FLOAT_EPSILON) {
     return vkr_simd_mul_f32x4(
         v, vkr_simd_rsqrt_f32x4(vkr_simd_set1_f32x4(len_sq)));
   }

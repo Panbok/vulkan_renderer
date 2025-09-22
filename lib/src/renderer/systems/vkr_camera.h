@@ -4,8 +4,8 @@
 #include "core/logger.h"
 #include "core/vkr_window.h"
 #include "math/mat.h"
-#include "math/math.h"
 #include "math/vec.h"
+#include "math/vkr_math.h"
 
 #define VKR_MAX_MOUSE_DELTA 100.0f
 #define VKR_DEFAULT_CAMERA_ZOOM 1.0f

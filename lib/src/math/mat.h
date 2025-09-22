@@ -3,8 +3,8 @@
 #include "defines.h"
 #include "math.h"
 #include "quat.h"
-#include "vkr_simd.h"
 #include "vec.h"
+#include "vkr_simd.h"
 
 // clang-format off
 
@@ -169,7 +169,7 @@
  * Matrix Analysis and Debugging:
  * ```c
  * // Check matrix properties
- * bool8_t is_invertible = abs_f32(mat4_determinant(matrix)) > FLOAT_EPSILON;
+ * bool8_t is_invertible = vkr_abs_f32(mat4_determinant(matrix)) > FLOAT_EPSILON;
  * bool8_t is_identity = mat4_is_identity(matrix, FLOAT_EPSILON);
  * float32_t matrix_trace = mat4_trace(matrix);
  * 
@@ -382,7 +382,7 @@ static INLINE Mat4 mat4_ortho(float32_t left, float32_t right, float32_t bottom,
 static INLINE Mat4 mat4_perspective(float32_t fov, float32_t aspect,
                                     float32_t near_clip, float32_t far_clip) {
   // Right-handed perspective matrix for Vulkan (Z range [0,1])
-  float32_t f = 1.0f / tan_f32(fov * 0.5f);
+  float32_t f = 1.0f / vkr_tan_f32(fov * 0.5f);
 
   // Note: Vulkan clip space has inverted Y (top = -1, bottom = +1)
   // We negate the Y scaling to account for this
@@ -416,7 +416,8 @@ static INLINE Mat4 mat4_perspective(float32_t fov, float32_t aspect,
  *
  * // Orbit camera around object
  * float32_t angle = game_time * 0.5f;
- * Vec3 orbit_pos = vec3_new(cos_f32(angle) * 10.0f, 5.0f, sin_f32(angle)
+ * Vec3 orbit_pos = vec3_new(vkr_cos_f32(angle) * 10.0f, 5.0f,
+ * vkr_sin_f32(angle)
  * * 10.0f); Mat4 orbit_view = mat4_look_at(orbit_pos, vec3_zero(), vec3_up());
  * ```
  */
@@ -447,7 +448,8 @@ static INLINE Mat4 mat4_look_at(Vec3 eye, Vec3 center, Vec3 up) {
  * Mat4 translation = mat4_translate(vec3_new(5.0f, 3.0f, -2.0f));
  *
  * // Animate object position over time
- * Vec3 animated_pos = vec3_new(sin_f32(time) * 10.0f, 0.0f, cos_f32(time)
+ * Vec3 animated_pos = vec3_new(vkr_sin_f32(time) * 10.0f, 0.0f,
+ * vkr_cos_f32(time)
  * * 10.0f); Mat4 animated_transform = mat4_translate(animated_pos);
  * ```
  */
@@ -511,8 +513,8 @@ static INLINE Mat4 mat4_scale(Vec3 v) {
  */
 static INLINE Mat4 mat4_euler_rotate(Vec3 axis, float32_t angle) {
   axis = vec3_normalize(axis); // Ensure axis is normalized
-  float32_t s = sin_f32(angle);
-  float32_t c = cos_f32(angle);
+  float32_t s = vkr_sin_f32(angle);
+  float32_t c = vkr_cos_f32(angle);
   float32_t t = 1.0f - c;
   return mat4_new(
       t * axis.x * axis.x + c, t * axis.x * axis.y - s * axis.z,
@@ -541,8 +543,8 @@ static INLINE Mat4 mat4_euler_rotate(Vec3 axis, float32_t angle) {
  * ```
  */
 static INLINE Mat4 mat4_euler_rotate_x(float32_t angle) {
-  float32_t s = sin_f32(angle);
-  float32_t c = cos_f32(angle);
+  float32_t s = vkr_sin_f32(angle);
+  float32_t c = vkr_cos_f32(angle);
   // Right-handed rotation around X: positive angle rotates Y toward Z
   return mat4_new(1.0f, 0.0f, 0.0f, 0.0f, 0.0f, c, -s, 0.0f, 0.0f, s, c, 0.0f,
                   0.0f, 0.0f, 0.0f, 1.0f);
@@ -567,8 +569,8 @@ static INLINE Mat4 mat4_euler_rotate_x(float32_t angle) {
  * ```
  */
 static INLINE Mat4 mat4_euler_rotate_y(float32_t angle) {
-  float32_t s = sin_f32(angle);
-  float32_t c = cos_f32(angle);
+  float32_t s = vkr_sin_f32(angle);
+  float32_t c = vkr_cos_f32(angle);
   // Right-handed rotation around Y: positive angle rotates Z toward X
   return mat4_new(c, 0.0f, s, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, -s, 0.0f, c, 0.0f,
                   0.0f, 0.0f, 0.0f, 1.0f);
@@ -594,8 +596,8 @@ static INLINE Mat4 mat4_euler_rotate_y(float32_t angle) {
  * ```
  */
 static INLINE Mat4 mat4_euler_rotate_z(float32_t angle) {
-  float32_t s = sin_f32(angle);
-  float32_t c = cos_f32(angle);
+  float32_t s = vkr_sin_f32(angle);
+  float32_t c = vkr_cos_f32(angle);
   // Right-handed rotation around Z: positive angle rotates X toward Y
   return mat4_new(c, -s, 0.0f, 0.0f, s, c, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
                   0.0f, 0.0f, 0.0f, 1.0f);
@@ -698,7 +700,7 @@ static INLINE Mat4 mat4_inverse(Mat4 m) {
   float32_t det = m00 * c00 - m01 * c01 + m02 * c02 - m03 * c03;
 
   // Check if matrix is invertible
-  if (abs_f32(det) < 1e-6f) {
+  if (vkr_abs_f32(det) < 1e-6f) {
     return mat4_identity();
   }
 
@@ -815,7 +817,7 @@ static INLINE Mat4 mat4_inverse_affine(Mat4 m) {
   float32_t det = vec3_dot((Vec3){m.m00, m.m01, m.m02},
                            (Vec3){cross0.x, cross0.y, cross0.z});
 
-  if (abs_f32(det) < 1e-6f) {
+  if (vkr_abs_f32(det) < 1e-6f) {
     return mat4_identity();
   }
 
@@ -1004,18 +1006,20 @@ static INLINE float32_t mat4_trace(Mat4 m) {
  */
 static INLINE bool8_t mat4_is_identity(Mat4 m, float32_t epsilon) {
   // Check diagonal elements are close to 1
-  if (abs_f32(m.m00 - 1.0f) > epsilon || abs_f32(m.m11 - 1.0f) > epsilon ||
-      abs_f32(m.m22 - 1.0f) > epsilon || abs_f32(m.m33 - 1.0f) > epsilon) {
+  if (vkr_abs_f32(m.m00 - 1.0f) > epsilon ||
+      vkr_abs_f32(m.m11 - 1.0f) > epsilon ||
+      vkr_abs_f32(m.m22 - 1.0f) > epsilon ||
+      vkr_abs_f32(m.m33 - 1.0f) > epsilon) {
     return false;
   }
 
   // Check off-diagonal elements are close to 0
-  if (abs_f32(m.m01) > epsilon || abs_f32(m.m02) > epsilon ||
-      abs_f32(m.m03) > epsilon || abs_f32(m.m10) > epsilon ||
-      abs_f32(m.m12) > epsilon || abs_f32(m.m13) > epsilon ||
-      abs_f32(m.m20) > epsilon || abs_f32(m.m21) > epsilon ||
-      abs_f32(m.m23) > epsilon || abs_f32(m.m30) > epsilon ||
-      abs_f32(m.m31) > epsilon || abs_f32(m.m32) > epsilon) {
+  if (vkr_abs_f32(m.m01) > epsilon || vkr_abs_f32(m.m02) > epsilon ||
+      vkr_abs_f32(m.m03) > epsilon || vkr_abs_f32(m.m10) > epsilon ||
+      vkr_abs_f32(m.m12) > epsilon || vkr_abs_f32(m.m13) > epsilon ||
+      vkr_abs_f32(m.m20) > epsilon || vkr_abs_f32(m.m21) > epsilon ||
+      vkr_abs_f32(m.m23) > epsilon || vkr_abs_f32(m.m30) > epsilon ||
+      vkr_abs_f32(m.m31) > epsilon || vkr_abs_f32(m.m32) > epsilon) {
     return false;
   }
 
@@ -1411,19 +1415,19 @@ static INLINE Quat mat4_to_quat(Mat4 m) {
   float32_t trace = m.m00 + m.m11 + m.m22;
 
   if (trace > 0.0f) {
-    float32_t s = 0.5f / sqrt_f32(trace + 1.0f);
+    float32_t s = 0.5f / vkr_sqrt_f32(trace + 1.0f);
     return vec4_new((m.m21 - m.m12) * s, (m.m02 - m.m20) * s,
                     (m.m10 - m.m01) * s, 0.25f / s);
   } else if (m.m00 > m.m11 && m.m00 > m.m22) {
-    float32_t s = 2.0f * sqrt_f32(1.0f + m.m00 - m.m11 - m.m22);
+    float32_t s = 2.0f * vkr_sqrt_f32(1.0f + m.m00 - m.m11 - m.m22);
     return vec4_new(0.25f * s, (m.m01 + m.m10) / s, (m.m02 + m.m20) / s,
                     (m.m21 - m.m12) / s);
   } else if (m.m11 > m.m22) {
-    float32_t s = 2.0f * sqrt_f32(1.0f + m.m11 - m.m00 - m.m22);
+    float32_t s = 2.0f * vkr_sqrt_f32(1.0f + m.m11 - m.m00 - m.m22);
     return vec4_new((m.m01 + m.m10) / s, 0.25f * s, (m.m12 + m.m21) / s,
                     (m.m02 - m.m20) / s);
   } else {
-    float32_t s = 2.0f * sqrt_f32(1.0f + m.m22 - m.m00 - m.m11);
+    float32_t s = 2.0f * vkr_sqrt_f32(1.0f + m.m22 - m.m00 - m.m11);
     return vec4_new((m.m02 + m.m20) / s, (m.m12 + m.m21) / s, 0.25f * s,
                     (m.m10 - m.m01) / s);
   }

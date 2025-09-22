@@ -156,27 +156,27 @@ void vkr_camera_system_update(VkrCamera *camera, float32_t delta_time) {
 
     // Apply deadzone to prevent drift
     float deadzone = VKR_GAMEPAD_MOVEMENT_DEADZONE;
-    if (abs_f32(right_x) > deadzone || abs_f32(right_y) > deadzone) {
+    if (vkr_abs_f32(right_x) > deadzone || vkr_abs_f32(right_y) > deadzone) {
       // Forward/backward movement (Y-axis)
       if (right_y > deadzone) {
-        camera->position =
-            vec3_sub(camera->position,
-                     vec3_scale(camera->forward, velocity * abs_f32(right_y)));
+        camera->position = vec3_sub(
+            camera->position,
+            vec3_scale(camera->forward, velocity * vkr_abs_f32(right_y)));
       } else if (right_y < -deadzone) {
-        camera->position =
-            vec3_add(camera->position,
-                     vec3_scale(camera->forward, velocity * abs_f32(right_y)));
+        camera->position = vec3_add(
+            camera->position,
+            vec3_scale(camera->forward, velocity * vkr_abs_f32(right_y)));
       }
 
       // Left/right movement (X-axis)
       if (right_x > deadzone) {
-        camera->position =
-            vec3_add(camera->position,
-                     vec3_scale(camera->right, velocity * abs_f32(right_x)));
+        camera->position = vec3_add(
+            camera->position,
+            vec3_scale(camera->right, velocity * vkr_abs_f32(right_x)));
       } else if (right_x < -deadzone) {
-        camera->position =
-            vec3_sub(camera->position,
-                     vec3_scale(camera->right, velocity * abs_f32(right_x)));
+        camera->position = vec3_sub(
+            camera->position,
+            vec3_scale(camera->right, velocity * vkr_abs_f32(right_x)));
       }
     }
 
@@ -186,9 +186,9 @@ void vkr_camera_system_update(VkrCamera *camera, float32_t delta_time) {
 
     // Apply deadzone to prevent drift
     float rotation_deadzone = 0.1f;
-    if (abs_f32(left_x) < rotation_deadzone)
+    if (vkr_abs_f32(left_x) < rotation_deadzone)
       left_x = 0.0f;
-    if (abs_f32(left_y) < rotation_deadzone)
+    if (vkr_abs_f32(left_y) < rotation_deadzone)
       left_y = 0.0f;
 
     // Use direct stick values for rotation instead of deltas
@@ -200,8 +200,8 @@ void vkr_camera_system_update(VkrCamera *camera, float32_t delta_time) {
   }
 
   float32_t max_mouse_delta = VKR_MAX_MOUSE_DELTA / camera->sensitivity;
-  x_offset = clamp_f32(x_offset, -max_mouse_delta, max_mouse_delta);
-  y_offset = clamp_f32(y_offset, -max_mouse_delta, max_mouse_delta);
+  x_offset = vkr_clamp_f32(x_offset, -max_mouse_delta, max_mouse_delta);
+  y_offset = vkr_clamp_f32(y_offset, -max_mouse_delta, max_mouse_delta);
 
   float32_t frame_adjusted_sensitivity =
       camera->sensitivity * delta_time * camera->target_frame_rate;
@@ -214,10 +214,11 @@ void vkr_camera_system_update(VkrCamera *camera, float32_t delta_time) {
   if (camera->pitch < -89.0f)
     camera->pitch = -89.0f;
 
-  Vec3 front = vec3_new(
-      cos_f32(to_radians(camera->yaw)) * cos_f32(to_radians(camera->pitch)),
-      sin_f32(to_radians(camera->pitch)),
-      sin_f32(to_radians(camera->yaw)) * cos_f32(to_radians(camera->pitch)));
+  Vec3 front = vec3_new(vkr_cos_f32(vkr_to_radians(camera->yaw)) *
+                            vkr_cos_f32(vkr_to_radians(camera->pitch)),
+                        vkr_sin_f32(vkr_to_radians(camera->pitch)),
+                        vkr_sin_f32(vkr_to_radians(camera->yaw)) *
+                            vkr_cos_f32(vkr_to_radians(camera->pitch)));
   camera->forward = vec3_normalize(front);
 
   camera->right = vec3_normalize(vec3_cross(camera->forward, camera->world_up));
@@ -238,7 +239,7 @@ Mat4 vkr_camera_system_get_projection_matrix(const VkrCamera *camera) {
 
   if (camera->type == VKR_CAMERA_TYPE_PERSPECTIVE) {
     VkrWindowPixelSize window_size = vkr_window_get_pixel_size(camera->window);
-    return mat4_perspective(to_radians(camera->zoom),
+    return mat4_perspective(vkr_to_radians(camera->zoom),
                             (float32_t)window_size.width /
                                 (float32_t)window_size.height,
                             camera->near_clip, camera->far_clip);

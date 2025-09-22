@@ -689,10 +689,10 @@ void vkr_window_set_mouse_capture(VkrWindow *window, bool8_t capture) {
 
       // Clamp restore position to window bounds
       // Note: restore coordinates are stored in bottom-left origin system
-      float64_t clamped_x = max_f64(
-          0.0, min_f64(state->restore_cursor_x, contentRect.size.width));
-      float64_t clamped_y = max_f64(
-          0.0, min_f64(state->restore_cursor_y, contentRect.size.height));
+      float64_t clamped_x = vkr_max_f64(
+          0.0, vkr_min_f64(state->restore_cursor_x, contentRect.size.width));
+      float64_t clamped_y = vkr_max_f64(
+          0.0, vkr_min_f64(state->restore_cursor_y, contentRect.size.height));
 
       log_debug("Restoring cursor to window coords: (%.1f, %.1f) in window "
                 "size: (%.1f, %.1f)",

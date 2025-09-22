@@ -2,7 +2,7 @@
 
 // Helper function for floating-point comparison with epsilon
 static bool32_t float_equals(float32_t a, float32_t b, float32_t epsilon) {
-  return abs_f32(a - b) < epsilon;
+  return vkr_abs_f32(a - b) < epsilon;
 }
 
 // Helper function for Quat comparison
@@ -26,32 +26,32 @@ static void test_quat_constructors(void) {
 
   // Test quat_new
   Quat q1 = quat_new(0.1f, 0.2f, 0.3f, 0.4f);
-  assert(float_equals(q1.x, 0.1f, FLOAT_EPSILON) && "quat_new x failed");
-  assert(float_equals(q1.y, 0.2f, FLOAT_EPSILON) && "quat_new y failed");
-  assert(float_equals(q1.z, 0.3f, FLOAT_EPSILON) && "quat_new z failed");
-  assert(float_equals(q1.w, 0.4f, FLOAT_EPSILON) && "quat_new w failed");
+  assert(float_equals(q1.x, 0.1f, VKR_FLOAT_EPSILON) && "quat_new x failed");
+  assert(float_equals(q1.y, 0.2f, VKR_FLOAT_EPSILON) && "quat_new y failed");
+  assert(float_equals(q1.z, 0.3f, VKR_FLOAT_EPSILON) && "quat_new z failed");
+  assert(float_equals(q1.w, 0.4f, VKR_FLOAT_EPSILON) && "quat_new w failed");
 
   // Test semantic aliases (quaternion is Vec4 internally)
-  assert(float_equals(q1.r, 0.1f, FLOAT_EPSILON) && "quat r alias failed");
-  assert(float_equals(q1.g, 0.2f, FLOAT_EPSILON) && "quat g alias failed");
-  assert(float_equals(q1.b, 0.3f, FLOAT_EPSILON) && "quat b alias failed");
-  assert(float_equals(q1.a, 0.4f, FLOAT_EPSILON) && "quat a alias failed");
+  assert(float_equals(q1.r, 0.1f, VKR_FLOAT_EPSILON) && "quat r alias failed");
+  assert(float_equals(q1.g, 0.2f, VKR_FLOAT_EPSILON) && "quat g alias failed");
+  assert(float_equals(q1.b, 0.3f, VKR_FLOAT_EPSILON) && "quat b alias failed");
+  assert(float_equals(q1.a, 0.4f, VKR_FLOAT_EPSILON) && "quat a alias failed");
 
   // Test array access
-  assert(float_equals(q1.elements[0], 0.1f, FLOAT_EPSILON) &&
+  assert(float_equals(q1.elements[0], 0.1f, VKR_FLOAT_EPSILON) &&
          "quat elements[0] failed");
-  assert(float_equals(q1.elements[1], 0.2f, FLOAT_EPSILON) &&
+  assert(float_equals(q1.elements[1], 0.2f, VKR_FLOAT_EPSILON) &&
          "quat elements[1] failed");
-  assert(float_equals(q1.elements[2], 0.3f, FLOAT_EPSILON) &&
+  assert(float_equals(q1.elements[2], 0.3f, VKR_FLOAT_EPSILON) &&
          "quat elements[2] failed");
-  assert(float_equals(q1.elements[3], 0.4f, FLOAT_EPSILON) &&
+  assert(float_equals(q1.elements[3], 0.4f, VKR_FLOAT_EPSILON) &&
          "quat elements[3] failed");
 
   // Test quat_identity
   Quat identity = quat_identity();
-  assert(
-      quat_equals(identity, quat_new(0.0f, 0.0f, 0.0f, 1.0f), FLOAT_EPSILON) &&
-      "quat_identity failed");
+  assert(quat_equals(identity, quat_new(0.0f, 0.0f, 0.0f, 1.0f),
+                     VKR_FLOAT_EPSILON) &&
+         "quat_identity failed");
 
   printf("  test_quat_constructors PASSED\n");
 }
@@ -61,18 +61,18 @@ static void test_quat_from_axis_angle(void) {
 
   // Test rotation around X axis (90 degrees)
   Vec3 x_axis = vec3_new(1.0f, 0.0f, 0.0f);
-  float32_t angle_90 = HALF_PI; // 90 degrees
+  float32_t angle_90 = VKR_HALF_PI; // 90 degrees
   Quat q_x_90 = quat_from_axis_angle(x_axis, angle_90);
 
   // Expected: cos(45°) = √2/2, sin(45°) = √2/2
-  float32_t half_sqrt2 = SQRT_ONE_OVER_TWO;
+  float32_t half_sqrt2 = VKR_SQRT_ONE_OVER_TWO;
   Quat expected_x_90 = quat_new(half_sqrt2, 0.0f, 0.0f, half_sqrt2);
   assert(quat_equals(q_x_90, expected_x_90, 0.001f) &&
          "quat_from_axis_angle X 90° failed");
 
   // Test rotation around Y axis (180 degrees)
   Vec3 y_axis = vec3_new(0.0f, 1.0f, 0.0f);
-  float32_t angle_180 = PI;
+  float32_t angle_180 = VKR_PI;
   Quat q_y_180 = quat_from_axis_angle(y_axis, angle_180);
 
   Quat expected_y_180 = quat_new(0.0f, 1.0f, 0.0f, 0.0f);
@@ -81,24 +81,24 @@ static void test_quat_from_axis_angle(void) {
 
   // Test rotation around Z axis (270 degrees)
   Vec3 z_axis = vec3_new(0.0f, 0.0f, 1.0f);
-  float32_t angle_270 = 3.0f * HALF_PI;
+  float32_t angle_270 = 3.0f * VKR_HALF_PI;
   Quat q_z_270 = quat_from_axis_angle(z_axis, angle_270);
 
   // cos(135°) = -√2/2, sin(135°) = √2/2
-  float32_t neg_half_sqrt2 = -SQRT_ONE_OVER_TWO;
+  float32_t neg_half_sqrt2 = -VKR_SQRT_ONE_OVER_TWO;
   Quat expected_z_270 = quat_new(0.0f, 0.0f, half_sqrt2, neg_half_sqrt2);
   assert(quat_equals(q_z_270, expected_z_270, 0.001f) &&
          "quat_from_axis_angle Z 270° failed");
 
   // Test zero angle (should return identity)
   Quat q_zero = quat_from_axis_angle(x_axis, 0.0f);
-  assert(quat_equals(q_zero, quat_identity(), FLOAT_EPSILON) &&
+  assert(quat_equals(q_zero, quat_identity(), VKR_FLOAT_EPSILON) &&
          "quat_from_axis_angle zero angle failed");
 
   // Test zero axis (should return identity)
   Vec3 zero_axis = vec3_zero();
   Quat q_zero_axis = quat_from_axis_angle(zero_axis, angle_90);
-  assert(quat_equals(q_zero_axis, quat_identity(), FLOAT_EPSILON) &&
+  assert(quat_equals(q_zero_axis, quat_identity(), VKR_FLOAT_EPSILON) &&
          "quat_from_axis_angle zero axis failed");
 
   // Test non-normalized axis (should auto-normalize)
@@ -119,11 +119,11 @@ static void test_quat_from_euler(void) {
          "quat_from_euler identity failed");
 
   // Test single axis rotations (90 degrees each)
-  float32_t angle_90 = HALF_PI;
+  float32_t angle_90 = VKR_HALF_PI;
 
   // Roll (X axis) 90°
   Quat q_roll = quat_from_euler(angle_90, 0.0f, 0.0f);
-  float32_t half_sqrt2 = SQRT_ONE_OVER_TWO;
+  float32_t half_sqrt2 = VKR_SQRT_ONE_OVER_TWO;
   Quat expected_roll = quat_new(half_sqrt2, 0.0f, 0.0f, half_sqrt2);
   assert(quat_equals(q_roll, expected_roll, 0.001f) &&
          "quat_from_euler roll 90° failed");
@@ -141,7 +141,7 @@ static void test_quat_from_euler(void) {
          "quat_from_euler yaw 90° failed");
 
   // Test combined rotation (45° each axis)
-  float32_t angle_45 = QUARTER_PI;
+  float32_t angle_45 = VKR_QUARTER_PI;
   Quat q_combined = quat_from_euler(angle_45, angle_45, angle_45);
 
   // Verify the quaternion is normalized
@@ -150,7 +150,7 @@ static void test_quat_from_euler(void) {
          "quat_from_euler combined rotation not normalized");
 
   // Test 180° rotations
-  Quat q_roll_180 = quat_from_euler(PI, 0.0f, 0.0f);
+  Quat q_roll_180 = quat_from_euler(VKR_PI, 0.0f, 0.0f);
   Quat expected_roll_180 = quat_new(1.0f, 0.0f, 0.0f, 0.0f);
   assert(quat_equals(q_roll_180, expected_roll_180, 0.001f) &&
          "quat_from_euler roll 180° failed");
@@ -171,11 +171,11 @@ static void test_quat_basic_operations(void) {
   // Test length and length_squared
   float32_t len_sq = quat_length_squared(q1);
   float32_t expected_len_sq = 0.01f + 0.04f + 0.09f + 0.16f; // 0.3
-  assert(float_equals(len_sq, expected_len_sq, FLOAT_EPSILON) &&
+  assert(float_equals(len_sq, expected_len_sq, VKR_FLOAT_EPSILON) &&
          "quat_length_squared failed");
 
   float32_t len = quat_length(q1);
-  assert(float_equals(len, sqrt_f32(expected_len_sq), FLOAT_EPSILON) &&
+  assert(float_equals(len, vkr_sqrt_f32(expected_len_sq), VKR_FLOAT_EPSILON) &&
          "quat_length failed");
 
   // Test normalization
@@ -186,7 +186,7 @@ static void test_quat_basic_operations(void) {
   // Test conjugate
   Quat q_conj = quat_conjugate(q1);
   Quat expected_conj = quat_new(-0.1f, -0.2f, -0.3f, 0.4f);
-  assert(quat_equals(q_conj, expected_conj, FLOAT_EPSILON) &&
+  assert(quat_equals(q_conj, expected_conj, VKR_FLOAT_EPSILON) &&
          "quat_conjugate failed");
 
   // Test inverse
@@ -199,22 +199,25 @@ static void test_quat_basic_operations(void) {
   // Test add, sub, scale
   Quat q_add = quat_add(q1, q2);
   Quat expected_add = quat_new(0.6f, 0.8f, 1.0f, 1.2f);
-  assert(quat_equals(q_add, expected_add, FLOAT_EPSILON) && "quat_add failed");
+  assert(quat_equals(q_add, expected_add, VKR_FLOAT_EPSILON) &&
+         "quat_add failed");
 
   Quat q_sub = quat_sub(q2, q1);
   Quat expected_sub = quat_new(0.4f, 0.4f, 0.4f, 0.4f);
-  assert(quat_equals(q_sub, expected_sub, FLOAT_EPSILON) && "quat_sub failed");
+  assert(quat_equals(q_sub, expected_sub, VKR_FLOAT_EPSILON) &&
+         "quat_sub failed");
 
   Quat q_scaled = quat_scale(q1, 2.0f);
   Quat expected_scaled = quat_new(0.2f, 0.4f, 0.6f, 0.8f);
-  assert(quat_equals(q_scaled, expected_scaled, FLOAT_EPSILON) &&
+  assert(quat_equals(q_scaled, expected_scaled, VKR_FLOAT_EPSILON) &&
          "quat_scale failed");
 
   // Test dot product
   float32_t dot = quat_dot(q1, q2);
   float32_t expected_dot =
       0.1f * 0.5f + 0.2f * 0.6f + 0.3f * 0.7f + 0.4f * 0.8f;
-  assert(float_equals(dot, expected_dot, FLOAT_EPSILON) && "quat_dot failed");
+  assert(float_equals(dot, expected_dot, VKR_FLOAT_EPSILON) &&
+         "quat_dot failed");
 
   printf("  test_quat_basic_operations PASSED\n");
 }
@@ -256,11 +259,11 @@ static void test_quat_multiplication(void) {
   // Test specific known multiplication with simpler case
   // 90° rotation around X axis
   Vec3 x_axis = vec3_new(1.0f, 0.0f, 0.0f);
-  Quat q_x_90 = quat_from_axis_angle(x_axis, HALF_PI);
+  Quat q_x_90 = quat_from_axis_angle(x_axis, VKR_HALF_PI);
 
   // Test multiplication with itself (180° total)
   Quat q_x_180 = quat_mul(q_x_90, q_x_90);
-  Quat expected_x_180 = quat_from_axis_angle(x_axis, PI);
+  Quat expected_x_180 = quat_from_axis_angle(x_axis, VKR_PI);
 
   // Both should represent the same rotation (allowing for quaternion
   // double-cover)
@@ -271,7 +274,7 @@ static void test_quat_multiplication(void) {
 
   // Test non-commutativity with 90° rotations around different axes
   Vec3 y_axis = vec3_new(0.0f, 1.0f, 0.0f);
-  Quat q_y_90 = quat_from_axis_angle(y_axis, HALF_PI);
+  Quat q_y_90 = quat_from_axis_angle(y_axis, VKR_HALF_PI);
 
   Quat q_xy = quat_mul(q_x_90, q_y_90);
   Quat q_yx = quat_mul(q_y_90, q_x_90);
@@ -296,13 +299,13 @@ static void test_quat_rotate_vec3(void) {
   Vec3 v = vec3_new(1.0f, 2.0f, 3.0f);
   Quat identity = quat_identity();
   Vec3 v_rotated = quat_rotate_vec3(identity, v);
-  assert(vec3_equals(v_rotated, v, FLOAT_EPSILON) &&
+  assert(vec3_equals(v_rotated, v, VKR_FLOAT_EPSILON) &&
          "quat_rotate_vec3 identity failed");
 
   // Test 90° rotation around Z axis
   Vec3 x_axis = vec3_new(1.0f, 0.0f, 0.0f);
   Vec3 z_axis = vec3_new(0.0f, 0.0f, 1.0f);
-  Quat q_z_90 = quat_from_axis_angle(z_axis, HALF_PI);
+  Quat q_z_90 = quat_from_axis_angle(z_axis, VKR_HALF_PI);
 
   Vec3 x_rotated_z = quat_rotate_vec3(q_z_90, x_axis);
   Vec3 expected_y = vec3_new(0.0f, 1.0f, 0.0f);
@@ -311,7 +314,7 @@ static void test_quat_rotate_vec3(void) {
 
   // Test 90° rotation around X axis
   Vec3 y_axis = vec3_new(0.0f, 1.0f, 0.0f);
-  Quat q_x_90 = quat_from_axis_angle(x_axis, HALF_PI);
+  Quat q_x_90 = quat_from_axis_angle(x_axis, VKR_HALF_PI);
 
   Vec3 y_rotated_x = quat_rotate_vec3(q_x_90, y_axis);
   Vec3 expected_z = vec3_new(0.0f, 0.0f, 1.0f);
@@ -319,7 +322,7 @@ static void test_quat_rotate_vec3(void) {
          "quat_rotate_vec3 90° X rotation failed");
 
   // Test 90° rotation around Y axis
-  Quat q_y_90 = quat_from_axis_angle(y_axis, HALF_PI);
+  Quat q_y_90 = quat_from_axis_angle(y_axis, VKR_HALF_PI);
 
   Vec3 z_rotated_y = quat_rotate_vec3(q_y_90, z_axis);
   Vec3 expected_x = vec3_new(1.0f, 0.0f, 0.0f);
@@ -327,7 +330,7 @@ static void test_quat_rotate_vec3(void) {
          "quat_rotate_vec3 90° Y rotation failed");
 
   // Test 180° rotation
-  Quat q_x_180 = quat_from_axis_angle(x_axis, PI);
+  Quat q_x_180 = quat_from_axis_angle(x_axis, VKR_PI);
   Vec3 y_rotated_180 = quat_rotate_vec3(q_x_180, y_axis);
   Vec3 expected_neg_y = vec3_new(0.0f, -1.0f, 0.0f);
   assert(vec3_equals(y_rotated_180, expected_neg_y, 0.001f) &&
@@ -356,7 +359,7 @@ static void test_quat_interpolation(void) {
   // Test lerp at endpoints
   Quat q1 = quat_identity();
   Vec3 axis = vec3_new(0.0f, 0.0f, 1.0f);
-  Quat q2 = quat_from_axis_angle(axis, HALF_PI);
+  Quat q2 = quat_from_axis_angle(axis, VKR_HALF_PI);
 
   Quat lerp_start = quat_lerp(q1, q2, 0.0f);
   assert(quat_equals(lerp_start, q1, 0.001f) && "quat_lerp t=0 failed");
@@ -428,7 +431,7 @@ static void test_quat_to_euler(void) {
          "quat_to_euler identity yaw failed");
 
   // Test single axis rotations
-  float32_t angle_90 = HALF_PI;
+  float32_t angle_90 = VKR_HALF_PI;
 
   // Roll 90°
   Quat q_roll = quat_from_euler(angle_90, 0.0f, 0.0f);
@@ -495,24 +498,24 @@ static void test_quat_axis_angle_extraction(void) {
 
   // Test 90° rotation around X axis
   Vec3 x_axis = vec3_new(1.0f, 0.0f, 0.0f);
-  Quat q_x_90 = quat_from_axis_angle(x_axis, HALF_PI);
+  Quat q_x_90 = quat_from_axis_angle(x_axis, VKR_HALF_PI);
 
   float32_t extracted_angle = quat_angle(q_x_90);
   Vec3 extracted_axis = quat_axis(q_x_90);
 
-  assert(float_equals(extracted_angle, HALF_PI, 0.001f) &&
+  assert(float_equals(extracted_angle, VKR_HALF_PI, 0.001f) &&
          "quat_angle 90° X rotation failed");
   assert(vec3_equals(extracted_axis, x_axis, 0.001f) &&
          "quat_axis 90° X rotation failed");
 
   // Test 180° rotation around arbitrary axis
   Vec3 arbitrary_axis = vec3_normalize(vec3_new(1.0f, 1.0f, 1.0f));
-  Quat q_arbitrary_180 = quat_from_axis_angle(arbitrary_axis, PI);
+  Quat q_arbitrary_180 = quat_from_axis_angle(arbitrary_axis, VKR_PI);
 
   float32_t extracted_angle_180 = quat_angle(q_arbitrary_180);
   Vec3 extracted_axis_180 = quat_axis(q_arbitrary_180);
 
-  assert(float_equals(extracted_angle_180, PI, 0.001f) &&
+  assert(float_equals(extracted_angle_180, VKR_PI, 0.001f) &&
          "quat_angle 180° arbitrary rotation failed");
   assert(vec3_equals(extracted_axis_180, arbitrary_axis, 0.001f) &&
          "quat_axis 180° arbitrary rotation failed");
@@ -589,14 +592,14 @@ static void test_quat_edge_cases(void) {
   // Test inverse of zero quaternion (should return identity)
   Quat zero_q = quat_new(0.0f, 0.0f, 0.0f, 0.0f);
   Quat zero_inv = quat_inverse(zero_q);
-  assert(quat_equals(zero_inv, quat_identity(), FLOAT_EPSILON) &&
+  assert(quat_equals(zero_inv, quat_identity(), VKR_FLOAT_EPSILON) &&
          "quat_inverse of zero quaternion failed");
 
   // Test normalization of zero quaternion
   Quat zero_norm = quat_normalize(zero_q);
-  assert(
-      quat_equals(zero_norm, quat_new(0.0f, 0.0f, 0.0f, 0.0f), FLOAT_EPSILON) &&
-      "quat_normalize of zero quaternion failed");
+  assert(quat_equals(zero_norm, quat_new(0.0f, 0.0f, 0.0f, 0.0f),
+                     VKR_FLOAT_EPSILON) &&
+         "quat_normalize of zero quaternion failed");
 
   // Test very small quaternion normalization
   Quat tiny_q = quat_new(1e-10f, 1e-10f, 1e-10f, 1e-10f);
@@ -605,23 +608,23 @@ static void test_quat_edge_cases(void) {
 
   // Test gimbal lock scenarios in Euler conversion
   // Create a quaternion that represents 90° pitch directly
-  Quat q_gimbal = quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f), HALF_PI);
+  Quat q_gimbal = quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f), VKR_HALF_PI);
   float32_t roll, pitch, yaw;
   quat_to_euler(q_gimbal, &roll, &pitch, &yaw);
 
   // In gimbal lock, we should get approximately 90° pitch
   // The other angles may be adjusted due to gimbal lock handling
-  assert(float_equals(abs_f32(pitch), HALF_PI, 0.01f) &&
+  assert(float_equals(vkr_abs_f32(pitch), VKR_HALF_PI, 0.01f) &&
          "quat_to_euler gimbal lock pitch failed");
   assert(float_equals(yaw, 0.0f, 0.01f) &&
          "quat_to_euler gimbal lock yaw not zeroed");
 
   // Test negative gimbal lock
   Quat q_gimbal_neg =
-      quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f), -HALF_PI);
+      quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f), -VKR_HALF_PI);
   quat_to_euler(q_gimbal_neg, &roll, &pitch, &yaw);
 
-  assert(float_equals(abs_f32(pitch), HALF_PI, 0.01f) &&
+  assert(float_equals(vkr_abs_f32(pitch), VKR_HALF_PI, 0.01f) &&
          "quat_to_euler negative gimbal lock pitch failed");
   assert(float_equals(yaw, 0.0f, 0.01f) &&
          "quat_to_euler negative gimbal lock yaw not zeroed");
@@ -630,7 +633,7 @@ static void test_quat_edge_cases(void) {
   Vec3 zero_vec = vec3_zero();
   Quat arbitrary_q = quat_from_axis_angle(vec3_new(1.0f, 0.0f, 0.0f), 1.0f);
   Vec3 rotated_zero = quat_rotate_vec3(arbitrary_q, zero_vec);
-  assert(vec3_equals(rotated_zero, zero_vec, FLOAT_EPSILON) &&
+  assert(vec3_equals(rotated_zero, zero_vec, VKR_FLOAT_EPSILON) &&
          "quat_rotate_vec3 of zero vector failed");
 
   // Test slerp with identical quaternions
@@ -655,9 +658,9 @@ static void test_quat_coordinate_system(void) {
   Vec3 z_axis = vec3_new(0.0f, 0.0f, 1.0f);
 
   // Test X → Y → Z → X rotation sequence (right-handed)
-  Quat q_x_90 = quat_from_axis_angle(x_axis, HALF_PI);
-  Quat q_y_90 = quat_from_axis_angle(y_axis, HALF_PI);
-  Quat q_z_90 = quat_from_axis_angle(z_axis, HALF_PI);
+  Quat q_x_90 = quat_from_axis_angle(x_axis, VKR_HALF_PI);
+  Quat q_y_90 = quat_from_axis_angle(y_axis, VKR_HALF_PI);
+  Quat q_z_90 = quat_from_axis_angle(z_axis, VKR_HALF_PI);
 
   // X rotation: Y → Z, Z → -Y
   Vec3 y_rotated_x = quat_rotate_vec3(q_x_90, y_axis);

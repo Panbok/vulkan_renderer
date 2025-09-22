@@ -19,7 +19,7 @@
  * @brief Epsilon for quaternion operations
  * Used for checking near-zero conditions in normalization and axis extraction
  */
-#define QUAT_EPSILON FLOAT_EPSILON
+#define QUAT_EPSILON VKR_FLOAT_EPSILON
 
 /**
  * @brief Gimbal lock threshold for Euler angle extraction
@@ -94,11 +94,11 @@ static INLINE Quat quat_from_axis_angle(Vec3 axis, float32_t angle) {
   // Normalize axis if needed
   Vec3 norm_axis = (axis_len_sq > 0.999f && axis_len_sq < 1.001f)
                        ? axis
-                       : vec3_scale(axis, 1.0f / sqrt_f32(axis_len_sq));
+                       : vec3_scale(axis, 1.0f / vkr_sqrt_f32(axis_len_sq));
 
   float32_t half_angle = angle * 0.5f;
-  float32_t s = sin_f32(half_angle);
-  float32_t c = cos_f32(half_angle);
+  float32_t s = vkr_sin_f32(half_angle);
+  float32_t c = vkr_cos_f32(half_angle);
 
   return vec4_new(norm_axis.x * s, norm_axis.y * s, norm_axis.z * s, c);
 }
@@ -115,12 +115,12 @@ static INLINE Quat quat_from_axis_angle(Vec3 axis, float32_t angle) {
  */
 static INLINE Quat quat_from_euler(float32_t roll, float32_t pitch,
                                    float32_t yaw) {
-  float32_t cr = cos_f32(roll * 0.5f);
-  float32_t sr = sin_f32(roll * 0.5f);
-  float32_t cp = cos_f32(pitch * 0.5f);
-  float32_t sp = sin_f32(pitch * 0.5f);
-  float32_t cy = cos_f32(yaw * 0.5f);
-  float32_t sy = sin_f32(yaw * 0.5f);
+  float32_t cr = vkr_cos_f32(roll * 0.5f);
+  float32_t sr = vkr_sin_f32(roll * 0.5f);
+  float32_t cp = vkr_cos_f32(pitch * 0.5f);
+  float32_t sp = vkr_sin_f32(pitch * 0.5f);
+  float32_t cy = vkr_cos_f32(yaw * 0.5f);
+  float32_t sy = vkr_sin_f32(yaw * 0.5f);
 
   // XYZ order multiplication (right-handed standard)
   return vec4_new(sr * cp * cy + cr * sp * sy, // x
@@ -304,14 +304,14 @@ static INLINE Quat quat_slerp(Quat a, Quat b, float32_t t) {
   }
 
   // Calculate the angle between quaternions
-  float32_t theta = acos_f32(dot);
+  float32_t theta = vkr_acos_f32(dot);
 
   // Pre-compute reciprocal of sin(theta) for performance
-  float32_t inv_sin_theta = 1.0f / sin_f32(theta);
+  float32_t inv_sin_theta = 1.0f / vkr_sin_f32(theta);
 
   // Calculate interpolation weights using pre-computed reciprocal
-  float32_t w1 = sin_f32((1.0f - t) * theta) * inv_sin_theta;
-  float32_t w2 = sin_f32(t * theta) * inv_sin_theta;
+  float32_t w1 = vkr_sin_f32((1.0f - t) * theta) * inv_sin_theta;
+  float32_t w2 = vkr_sin_f32(t * theta) * inv_sin_theta;
 
   // Perform spherical linear interpolation using SIMD operations
   Vec4 w1_vec = vec4_new(w1, w1, w1, w1);
@@ -378,32 +378,32 @@ static INLINE Quat quat_look_at(Vec3 forward, Vec3 up) {
   float32_t trace = m00 + m11 + m22;
 
   if (trace > 0.0f) {
-    float32_t s = sqrt_f32(trace + 1.0f) * 2.0f;    // s = 4 * qw
-    return quat_normalize(vec4_new((m21 - m12) / s, // qx
-                                   (m02 - m20) / s, // qy
-                                   (m10 - m01) / s, // qz
-                                   0.25f * s        // qw
+    float32_t s = vkr_sqrt_f32(trace + 1.0f) * 2.0f; // s = 4 * qw
+    return quat_normalize(vec4_new((m21 - m12) / s,  // qx
+                                   (m02 - m20) / s,  // qy
+                                   (m10 - m01) / s,  // qz
+                                   0.25f * s         // qw
                                    ));
   } else if (m00 > m11 && m00 > m22) {
-    float32_t s = sqrt_f32(1.0f + m00 - m11 - m22) * 2.0f; // s = 4 * qx
-    return quat_normalize(vec4_new(0.25f * s,              // qx
-                                   (m01 + m10) / s,        // qy
-                                   (m02 + m20) / s,        // qz
-                                   (m21 - m12) / s         // qw
+    float32_t s = vkr_sqrt_f32(1.0f + m00 - m11 - m22) * 2.0f; // s = 4 * qx
+    return quat_normalize(vec4_new(0.25f * s,                  // qx
+                                   (m01 + m10) / s,            // qy
+                                   (m02 + m20) / s,            // qz
+                                   (m21 - m12) / s             // qw
                                    ));
   } else if (m11 > m22) {
-    float32_t s = sqrt_f32(1.0f + m11 - m00 - m22) * 2.0f; // s = 4 * qy
-    return quat_normalize(vec4_new((m01 + m10) / s,        // qx
-                                   0.25f * s,              // qy
-                                   (m12 + m21) / s,        // qz
-                                   (m02 - m20) / s         // qw
+    float32_t s = vkr_sqrt_f32(1.0f + m11 - m00 - m22) * 2.0f; // s = 4 * qy
+    return quat_normalize(vec4_new((m01 + m10) / s,            // qx
+                                   0.25f * s,                  // qy
+                                   (m12 + m21) / s,            // qz
+                                   (m02 - m20) / s             // qw
                                    ));
   } else {
-    float32_t s = sqrt_f32(1.0f + m22 - m00 - m11) * 2.0f; // s = 4 * qz
-    return quat_normalize(vec4_new((m02 + m20) / s,        // qx
-                                   (m12 + m21) / s,        // qy
-                                   0.25f * s,              // qz
-                                   (m10 - m01) / s         // qw
+    float32_t s = vkr_sqrt_f32(1.0f + m22 - m00 - m11) * 2.0f; // s = 4 * qz
+    return quat_normalize(vec4_new((m02 + m20) / s,            // qx
+                                   (m12 + m21) / s,            // qy
+                                   0.25f * s,                  // qz
+                                   (m10 - m01) / s             // qw
                                    ));
   }
 }
@@ -434,15 +434,15 @@ static INLINE void quat_to_euler(Quat q, float32_t *roll, float32_t *pitch,
   // Extract angles for XYZ order (right-handed)
   float32_t sinp = 2.0f * (wy - xz);
 
-  if (abs_f32(sinp) >= QUAT_GIMBAL_LOCK_THRESHOLD) {
+  if (vkr_abs_f32(sinp) >= QUAT_GIMBAL_LOCK_THRESHOLD) {
     // Gimbal lock case: pitch = ±90°
-    *pitch = copysignf(HALF_PI, sinp);
-    *roll = atan2_f32(-2.0f * (yz - wx), 1.0f - 2.0f * (xx + yy));
+    *pitch = copysignf(VKR_HALF_PI, sinp);
+    *roll = vkr_atan2_f32(-2.0f * (yz - wx), 1.0f - 2.0f * (xx + yy));
     *yaw = 0.0f; // Set yaw to 0 in gimbal lock
   } else {
-    *pitch = asin_f32(clamp_f32(sinp, -1.0f, 1.0f));
-    *roll = atan2_f32(2.0f * (yz + wx), 1.0f - 2.0f * (xx + yy));
-    *yaw = atan2_f32(2.0f * (xy + wz), 1.0f - 2.0f * (yy + zz));
+    *pitch = vkr_sin_f32(vkr_clamp_f32(sinp, -1.0f, 1.0f));
+    *roll = vkr_atan2_f32(2.0f * (yz + wx), 1.0f - 2.0f * (xx + yy));
+    *yaw = vkr_atan2_f32(2.0f * (xy + wz), 1.0f - 2.0f * (yy + zz));
   }
 }
 
@@ -452,7 +452,7 @@ static INLINE void quat_to_euler(Quat q, float32_t *roll, float32_t *pitch,
  * @return Angle in radians [0, 2π]
  */
 static INLINE float32_t quat_angle(Quat q) {
-  return 2.0f * acos_f32(clamp_f32(q.w, -1.0f, 1.0f));
+  return 2.0f * vkr_acos_f32(vkr_clamp_f32(q.w, -1.0f, 1.0f));
 }
 
 /**
@@ -476,7 +476,7 @@ static INLINE Vec3 quat_axis(Quat q) {
     // For very small rotations, use the vector part directly if it's
     // significant
     if (vec_length_sq > QUAT_EPSILON * QUAT_EPSILON) {
-      float32_t inv_vec_length = 1.0f / sqrt_f32(vec_length_sq);
+      float32_t inv_vec_length = 1.0f / vkr_sqrt_f32(vec_length_sq);
       return vec3_scale(vec_part, inv_vec_length);
     } else {
       // Essentially no rotation, return arbitrary normalized axis
@@ -484,7 +484,7 @@ static INLINE Vec3 quat_axis(Quat q) {
     }
   } else {
     // Standard computation for larger angles
-    float32_t s = sqrt_f32(1.0f - q.w * q.w);
+    float32_t s = vkr_sqrt_f32(1.0f - q.w * q.w);
     if (s < QUAT_EPSILON) {
       return vec3_new(0.0f, 0.0f, 1.0f); // No rotation, return arbitrary axis
     }

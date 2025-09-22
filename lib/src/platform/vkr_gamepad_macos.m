@@ -1,5 +1,5 @@
 #include "core/vkr_gamepad.h"
-#include "math/math.h"
+#include "math/vkr_math.h"
 
 #if defined(PLATFORM_APPLE)
 #import <Foundation/Foundation.h>
@@ -161,9 +161,9 @@ bool8_t vkr_gamepad_poll(VkrGamepad *system, int32_t controller_id) {
 
     // Simple deadzone
     const float32_t dz = 0.12f;
-    if (abs_f32(lx) < dz)
+    if (vkr_abs_f32(lx) < dz)
       lx = 0.0f;
-    if (abs_f32(ly) < dz)
+    if (vkr_abs_f32(ly) < dz)
       ly = 0.0f;
 
     input_process_thumbsticks(input_state, lx, ly, rx, ry);
@@ -226,13 +226,13 @@ bool8_t vkr_gamepad_poll(VkrGamepad *system, int32_t controller_id) {
 
   // Simple deadzone filtering
   const float32_t dz = 0.12f;
-  if (abs_f32(lx) < dz)
+  if (vkr_abs_f32(lx) < dz)
     lx = 0.0f;
-  if (abs_f32(ly) < dz)
+  if (vkr_abs_f32(ly) < dz)
     ly = 0.0f;
-  if (abs_f32(rx) < dz)
+  if (vkr_abs_f32(rx) < dz)
     rx = 0.0f;
-  if (abs_f32(ry) < dz)
+  if (vkr_abs_f32(ry) < dz)
     ry = 0.0f;
 
   input_process_thumbsticks(input_state, lx, ly, rx, ry);

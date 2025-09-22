@@ -19,7 +19,7 @@
 
 #include "core/input.h"
 #include "defines.h"
-#include "math/math.h"
+#include "math/vkr_math.h"
 
 #define VKR_GAMEPAD_THUMB_MAX 32767.0f
 #define VKR_GAMEPAD_MAX_CONTROLLERS 4
