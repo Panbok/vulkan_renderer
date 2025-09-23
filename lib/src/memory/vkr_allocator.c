@@ -105,7 +105,7 @@ void *vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
 
   // Per-allocator counters
   allocator->stats.total_allocs++;
-  g_vkr_allocator_stats.tagged_allocs[tag] += size;
+  allocator->stats.tagged_allocs[tag] += size;
   allocator->stats.total_allocated += size;
 
   return allocator->alloc(allocator->ctx, size, tag);
@@ -222,7 +222,7 @@ vkr_allocator_get_statistics(const VkrAllocator *allocator) {
   return allocator->stats;
 }
 
-char *vkr_allocator_print_statistics(const VkrAllocator *allocator) {
+char *vkr_allocator_print_statistics(VkrAllocator *allocator) {
   assert_log(allocator != NULL, "Allocator must not be NULL");
   return vkr_allocator_format_statistics(allocator, &allocator->stats);
 }
@@ -231,6 +231,7 @@ VkrAllocatorStatistics vkr_allocator_get_global_statistics(void) {
   return g_vkr_allocator_stats;
 }
 
-char *vkr_allocator_print_global_statistics(void) {
-  return vkr_allocator_format_statistics(NULL, &g_vkr_allocator_stats);
+char *vkr_allocator_print_global_statistics(VkrAllocator *allocator) {
+  assert_log(allocator != NULL, "Allocator must not be NULL");
+  return vkr_allocator_format_statistics(allocator, &g_vkr_allocator_stats);
 }
