@@ -1,4 +1,3 @@
-// vkr_allocator.c
 #include "vkr_allocator.h"
 #include "core/logger.h"
 #include "defines.h"
