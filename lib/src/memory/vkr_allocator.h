@@ -104,26 +104,31 @@ void *vkr_allocator_realloc(VkrAllocator *allocator, void *ptr,
 
 /**
  * @brief Sets the memory.
+ * @param allocator The allocator to use. (Optional)
  * @param ptr The pointer to the memory to set.
  * @param value The value to set.
  * @param size The size of the memory to set.
  */
-void vkr_allocator_set(void *ptr, uint32_t value, uint64_t size);
+void vkr_allocator_set(VkrAllocator *allocator, void *ptr, uint32_t value,
+                       uint64_t size);
 
 /**
  * @brief Zeros the memory.
+ * @param allocator The allocator to use. (Optional)
  * @param ptr The pointer to the memory to zero.
  * @param size The size of the memory to zero.
  */
-void vkr_allocator_zero(void *ptr, uint64_t size);
+void vkr_allocator_zero(VkrAllocator *allocator, void *ptr, uint64_t size);
 
 /**
  * @brief Copies the memory.
+ * @param allocator The allocator to use. (Optional)
  * @param dst The pointer to the memory to copy to.
  * @param src The pointer to the memory to copy from.
  * @param size The size of the memory to copy.
  */
-void vkr_allocator_copy(void *dst, const void *src, uint64_t size);
+void vkr_allocator_copy(VkrAllocator *allocator, void *dst, const void *src,
+                        uint64_t size);
 
 /**
  * @brief Gets the statistics from the allocator.

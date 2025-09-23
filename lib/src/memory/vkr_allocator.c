@@ -193,26 +193,43 @@ void *vkr_allocator_realloc(VkrAllocator *allocator, void *ptr,
   return allocator->realloc(allocator->ctx, ptr, old_size, new_size, tag);
 }
 
-void vkr_allocator_set(void *ptr, uint32_t value, uint64_t size) {
+void vkr_allocator_set(VkrAllocator *allocator, void *ptr, uint32_t value,
+                       uint64_t size) {
   assert_log(ptr != NULL, "Pointer must not be NULL");
+
+  MemSet(ptr, value, size);
 
   g_vkr_allocator_stats.total_sets++;
-  MemSet(ptr, value, size);
+
+  if (allocator) {
+    allocator->stats.total_sets++;
+  }
 }
 
-void vkr_allocator_zero(void *ptr, uint64_t size) {
+void vkr_allocator_zero(VkrAllocator *allocator, void *ptr, uint64_t size) {
   assert_log(ptr != NULL, "Pointer must not be NULL");
 
-  g_vkr_allocator_stats.total_zeros++;
   MemZero(ptr, size);
+
+  g_vkr_allocator_stats.total_zeros++;
+
+  if (allocator) {
+    allocator->stats.total_zeros++;
+  }
 }
 
-void vkr_allocator_copy(void *dst, const void *src, uint64_t size) {
+void vkr_allocator_copy(VkrAllocator *allocator, void *dst, const void *src,
+                        uint64_t size) {
   assert_log(dst != NULL, "Destination pointer must not be NULL");
   assert_log(src != NULL, "Source pointer must not be NULL");
 
-  g_vkr_allocator_stats.total_copies++;
   MemCopy(dst, src, size);
+
+  g_vkr_allocator_stats.total_copies++;
+
+  if (allocator) {
+    allocator->stats.total_copies++;
+  }
 }
 
 VkrAllocatorStatistics
