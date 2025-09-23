@@ -8,6 +8,12 @@ const char *VkrAllocatorMemoryTagNames[VKR_ALLOCATOR_MEMORY_TAG_MAX] = {
     "BUFFER",  "RENDERER", "FILE",   "TEXTURE", "HASH_TABLE", "FREELIST",
 };
 
+const char *VkrAllocatorTypeNames[VKR_ALLOCATOR_TYPE_MAX] = {
+    "ARENA",
+    "MMEMORY",
+    "UNKNOWN",
+};
+
 vkr_global VkrAllocatorStatistics g_vkr_allocator_stats = {0};
 
 vkr_internal INLINE uint32_t
@@ -108,6 +114,10 @@ void *vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
   allocator->stats.tagged_allocs[tag] += size;
   allocator->stats.total_allocated += size;
 
+  log_debug("Allocated (%llu bytes) from allocator - [%s] for tag - [%s]",
+            (unsigned long long)size, VkrAllocatorTypeNames[allocator->type],
+            VkrAllocatorMemoryTagNames[tag]);
+
   return allocator->alloc(allocator->ctx, size, tag);
 }
 
@@ -148,6 +158,11 @@ void vkr_allocator_free(VkrAllocator *allocator, void *ptr, uint64_t old_size,
       dec = vkr_min_u64(allocator->stats.tagged_allocs[tag], old_size);
       allocator->stats.tagged_allocs[tag] -= dec;
     }
+
+    log_debug("Freed (%llu bytes) from allocator - [%s] for tag - [%s]",
+              (unsigned long long)old_size,
+              VkrAllocatorTypeNames[allocator->type],
+              VkrAllocatorMemoryTagNames[tag]);
   }
 
   allocator->free(allocator->ctx, ptr, old_size, tag);
@@ -164,6 +179,11 @@ void *vkr_allocator_realloc(VkrAllocator *allocator, void *ptr,
 
   g_vkr_allocator_stats.total_reallocs++;
   allocator->stats.total_reallocs++;
+
+  log_debug("Reallocated (%llu bytes) from allocator - [%s] for tag - [%s]",
+            (unsigned long long)old_size,
+            VkrAllocatorTypeNames[allocator->type],
+            VkrAllocatorMemoryTagNames[tag]);
 
   if (old_size <= 0) {
     return allocator->realloc(allocator->ctx, ptr, old_size, new_size, tag);

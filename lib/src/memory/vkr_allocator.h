@@ -29,8 +29,9 @@ typedef enum VkrAllocatorMemoryTag {
 typedef enum VkrAllocatorType {
   VKR_ALLOCATOR_TYPE_ARENA,
   VKR_ALLOCATOR_TYPE_MMEMORY,
-
   VKR_ALLOCATOR_TYPE_UNKNOWN,
+
+  VKR_ALLOCATOR_TYPE_MAX,
 } VkrAllocatorType;
 
 /**
