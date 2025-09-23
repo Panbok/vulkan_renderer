@@ -130,14 +130,16 @@ void vkr_allocator_copy(void *dst, const void *src, uint64_t size);
  * @param allocator The allocator to use.
  * @return The statistics from the allocator.
  */
-VkrAllocatorStatistics vkr_allocator_get_statistics(VkrAllocator *allocator);
+VkrAllocatorStatistics
+vkr_allocator_get_statistics(const VkrAllocator *allocator);
 
 /**
  * @brief Prints the statistics from the allocator.
  * @param allocator The allocator to use.
- * @return The statistics from the allocator.
+ * @return Dynamically allocated string with statistics. Caller must free with
+ * vkr_allocator_free. Returns NULL on allocation failure.
  */
-char *vkr_allocator_print_statistics(VkrAllocator *allocator);
+char *vkr_allocator_print_statistics(const VkrAllocator *allocator);
 
 /**
  * @brief Gets the global statistics from the allocator.
@@ -147,6 +149,7 @@ VkrAllocatorStatistics vkr_allocator_get_global_statistics();
 
 /**
  * @brief Prints the global statistics from the allocator.
- * @return The global statistics from the allocator.
+ * @return Dynamically allocated string with global statistics. Caller must free
+ * with vkr_allocator_free. Returns NULL on allocation failure.
  */
 char *vkr_allocator_print_global_statistics();

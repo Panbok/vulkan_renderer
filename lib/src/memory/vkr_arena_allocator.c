@@ -2,6 +2,9 @@
 #include "core/logger.h"
 #include "defines.h"
 
+_Static_assert(VKR_ALLOCATOR_MEMORY_TAG_MAX == ARENA_MEMORY_TAG_MAX,
+               "Memory tag enums must have the same size");
+
 vkr_internal INLINE ArenaMemoryTag to_arena_tag(VkrAllocatorMemoryTag t) {
   return (ArenaMemoryTag)t;
 }
@@ -14,6 +17,10 @@ vkr_internal INLINE void *arena_alloc_cb(void *ctx, uint64_t size,
 
 vkr_internal INLINE void arena_free_cb(void *ctx, void *ptr, uint64_t old_size,
                                        VkrAllocatorMemoryTag tag) {
+  (void)ctx;
+  (void)ptr;
+  (void)old_size;
+  (void)tag;
   return;
 }
 
@@ -42,13 +49,13 @@ void vkr_allocator_arena(VkrAllocator *out_allocator) {
   assert_log(out_allocator != NULL, "Arena and out_allocator must not be NULL");
 
   if (out_allocator->ctx == NULL) {
-    log_error("Arena must not be NULL");
+    log_error("Allocator context (Arena) must not be NULL");
     return;
   }
 
   out_allocator->type = VKR_ALLOCATOR_TYPE_ARENA;
   out_allocator->stats = (VkrAllocatorStatistics){0};
-  out_allocator->alloc = &arena_alloc_cb;
-  out_allocator->free = &arena_free_cb;
-  out_allocator->realloc = &arena_realloc_cb;
+  out_allocator->alloc = arena_alloc_cb;
+  out_allocator->free = arena_free_cb;
+  out_allocator->realloc = arena_realloc_cb;
 }
