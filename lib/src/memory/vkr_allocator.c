@@ -224,6 +224,9 @@ void vkr_allocator_set(VkrAllocator *allocator, void *ptr, uint32_t value,
   if (allocator) {
     allocator->stats.total_sets++;
   }
+
+  log_debug("Set (%llu bytes) from allocator - [%s]", (unsigned long long)size,
+            VkrAllocatorTypeNames[allocator->type]);
 }
 
 void vkr_allocator_zero(VkrAllocator *allocator, void *ptr, uint64_t size) {
@@ -236,6 +239,9 @@ void vkr_allocator_zero(VkrAllocator *allocator, void *ptr, uint64_t size) {
   if (allocator) {
     allocator->stats.total_zeros++;
   }
+
+  log_debug("Zeroed (%llu bytes) from allocator - [%s]",
+            (unsigned long long)size, VkrAllocatorTypeNames[allocator->type]);
 }
 
 void vkr_allocator_copy(VkrAllocator *allocator, void *dst, const void *src,
@@ -250,6 +256,9 @@ void vkr_allocator_copy(VkrAllocator *allocator, void *dst, const void *src,
   if (allocator) {
     allocator->stats.total_copies++;
   }
+
+  log_debug("Copied (%llu bytes) from allocator - [%s]",
+            (unsigned long long)size, VkrAllocatorTypeNames[allocator->type]);
 }
 
 VkrAllocatorStatistics
