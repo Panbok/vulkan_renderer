@@ -440,6 +440,21 @@ vkr_internal INLINE float32_t vkr_atan_f32(float32_t value) {
 }
 
 /**
+ * @brief Copies the sign of one float32_t value to another
+ * @param value Input value
+ * @param sign Sign value to copy
+ * @return The input value with the sign of the sign value
+ */
+vkr_internal INLINE float32_t vkr_copysign_f32(float32_t value,
+                                               float32_t sign) {
+#if defined(VKR_PLATFORM_WINDOWS)
+  return _copysignf(value, sign);
+#else
+  return copysignf(value, sign);
+#endif
+}
+
+/**
  * @brief Computes the arc tangent of y/x using the signs to determine quadrant
  * @param y Y-coordinate (numerator)
  * @param x X-coordinate (denominator)

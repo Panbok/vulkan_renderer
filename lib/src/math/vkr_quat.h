@@ -449,7 +449,7 @@ vkr_internal INLINE void vkr_quat_to_euler(VkrQuat q, float32_t *roll,
 
   if (vkr_abs_f32(sinp) >= VKR_QUAT_GIMBAL_LOCK_THRESHOLD) {
     // Gimbal lock case: pitch = ±90°
-    *pitch = copysignf(VKR_HALF_PI, sinp);
+    *pitch = vkr_copysign_f32(VKR_HALF_PI, sinp);
     *roll = vkr_atan2_f32(-2.0f * (yz - wx), 1.0f - 2.0f * (xx + yy));
     *yaw = 0.0f; // Set yaw to 0 in gimbal lock
   } else {
