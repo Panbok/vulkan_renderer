@@ -2,8 +2,8 @@
 
 #include "defines.h"
 #include "math.h"
-#include "quat.h"
 #include "vec.h"
+#include "vkr_quat.h"
 #include "vkr_simd.h"
 
 // clang-format off
@@ -88,7 +88,7 @@
  * 3. Utility Functions: mat4_determinant(), mat4_trace(), mat4_is_identity()
  * 4. Vector Extraction: mat4_position(), mat4_forward(), mat4_right()
  * 5. In-Place Operations: mat4_mul_mut(), mat4_add_mut() for performance
- * 6. Type Conversions: mat4_to_quat(), quat_to_mat4()
+ * 6. Type Conversions: mat4_to_quat(), vkr_quat_to_mat4()
  * 7. Specialized Variants: mat4_inverse_rigid(), mat4_inverse_affine()
  *
  * Performance Characteristics:
@@ -134,7 +134,7 @@
  * mat4_mul_mut(&result, result, projection);    // result = result * projection
  * 
  * // Fast inverse for rigid body transforms (no scaling)
- * Mat4 camera_transform = mat4_from_quat_pos(camera_rotation, camera_position);
+ * Mat4 camera_transform = mat4_from_vkr_quat_pos(camera_rotation, camera_position);
  * Mat4 view_matrix = mat4_inverse_rigid(camera_transform);  // 5x faster than general inverse
  * ```
  *
@@ -142,12 +142,12 @@
  * ```c
  * // Model transformation
  * Vec3 object_pos = vec3_new(0.0f, 0.0f, -10.0f);
- * Quat object_rot = quat_from_euler(0.0f, game_time, 0.0f);
+ * VkrQuat object_rot = vkr_quat_from_euler(0.0f, game_time, 0.0f);
  * Vec3 object_scale = vec3_one();
  * 
  * Mat4 model_matrix = mat4_mul(
  *     mat4_translate(object_pos),
- *     mat4_mul(quat_to_mat4(object_rot), mat4_scale(object_scale))
+ *     mat4_mul(vkr_quat_to_mat4(object_rot), mat4_scale(object_scale))
  * );
  * 
  * // View transformation  
@@ -180,7 +180,7 @@
  * Vec3 up_dir = mat4_up(transform);
  * 
  * // Convert to quaternion for rotation interpolation
- * Quat rotation = mat4_to_quat(transform);
+ * VkrQuat rotation = mat4_to_quat(transform);
  * ```
  *
  * Vulkan-Specific Considerations:
@@ -498,7 +498,7 @@ static INLINE Mat4 mat4_scale(Vec3 v) {
  * @note Axis vector is automatically normalized for convenience
  * @note More flexible than individual axis rotations but slightly more
  * expensive
- * @note Quaternions are often preferred for arbitrary axis rotations
+ * @note VkrQuaternions are often preferred for arbitrary axis rotations
  * @performance O(8) - Involves trigonometric functions and vector operations
  * @example
  * ```c
@@ -1383,13 +1383,13 @@ static INLINE Vec3 mat4_position(Mat4 m) {
 }
 
 // =============================================================================
-// Matrix To Quaternion Operations
+// Matrix To VkrQuaternion Operations
 // =============================================================================
 
 /**
  * @brief Converts a 4x4 rotation matrix to a quaternion using Shepperd's method
  * @param m Input rotation matrix (should be orthonormal for accurate results)
- * @return Quaternion representing the same rotation as the matrix
+ * @return VkrQuaternion representing the same rotation as the matrix
  * @note Uses Shepperd's method for numerical stability across all cases
  * @note Input should be a pure rotation matrix (orthonormal, no
  * scaling/translation)
@@ -1402,16 +1402,16 @@ static INLINE Vec3 mat4_position(Mat4 m) {
  * ```c
  * // Convert rotation matrix to quaternion for interpolation
  * Mat4 rotation_matrix = mat4_euler_rotate_y(to_radians(45.0f));
- * Quat rotation_quat = mat4_to_quat(rotation_matrix);
+ * VkrQuat rotation_quat = mat4_to_quat(rotation_matrix);
  *
  * // Extract rotation from complex transformation matrix
  * Mat4 full_transform = mat4_mul(translation, mat4_mul(rotation, scale));
  * // Remove scaling first if needed for accurate conversion
  * Mat4 rotation_only = normalize_rotation_part(full_transform);
- * Quat extracted_rotation = mat4_to_quat(rotation_only);
+ * VkrQuat extracted_rotation = mat4_to_quat(rotation_only);
  * ```
  */
-static INLINE Quat mat4_to_quat(Mat4 m) {
+static INLINE VkrQuat mat4_to_quat(Mat4 m) {
   float32_t trace = m.m00 + m.m11 + m.m22;
 
   if (trace > 0.0f) {
@@ -1436,18 +1436,18 @@ static INLINE Quat mat4_to_quat(Mat4 m) {
 /**
  * @brief Alias for mat4_to_quat for API consistency with quaternion module
  * @param m Input rotation matrix (should be orthonormal)
- * @return Quaternion representing the same rotation as the matrix
+ * @return VkrQuaternion representing the same rotation as the matrix
  * @note Identical to mat4_to_quat(), provided for naming consistency
  * @note Use this when working primarily with quaternion operations
  * @performance O(10) - Same as mat4_to_quat()
  * @example
  * ```c
  * // Consistent with quaternion API naming
- * Quat rotation = quat_from_mat4(rotation_matrix);
- * Quat interpolated = quat_slerp(rotation, target_rotation, 0.5f);
+ * VkrQuat rotation = vkr_quat_from_mat4(rotation_matrix);
+ * VkrQuat interpolated = vkr_quat_slerp(rotation, target_rotation, 0.5f);
  * ```
  */
-static INLINE Quat quat_from_mat4(Mat4 m) { return mat4_to_quat(m); }
+static INLINE VkrQuat vkr_quat_from_mat4(Mat4 m) { return mat4_to_quat(m); }
 
 /**
  * @brief Converts a normalized quaternion to a 4x4 rotation matrix
@@ -1464,19 +1464,19 @@ static INLINE Quat quat_from_mat4(Mat4 m) { return mat4_to_quat(m); }
  * @example
  * ```c
  * // Convert quaternion rotation to matrix form
- * Quat rotation = quat_from_euler(roll, pitch, yaw);
- * Mat4 rotation_matrix = quat_to_mat4(rotation);
+ * VkrQuat rotation = vkr_quat_from_euler(roll, pitch, yaw);
+ * Mat4 rotation_matrix = vkr_quat_to_mat4(rotation);
  *
  * // Use in transformation chain
  * Mat4 full_transform = mat4_mul(translation, mat4_mul(rotation_matrix,
  * scale));
  *
  * // Interpolated rotation to matrix
- * Quat interpolated = quat_slerp(start_rotation, end_rotation, t);
- * Mat4 interpolated_matrix = quat_to_mat4(interpolated);
+ * VkrQuat interpolated = vkr_quat_slerp(start_rotation, end_rotation, t);
+ * Mat4 interpolated_matrix = vkr_quat_to_mat4(interpolated);
  * ```
  */
-static INLINE Mat4 quat_to_mat4(Quat q) {
+static INLINE Mat4 vkr_quat_to_mat4(VkrQuat q) {
   // Extract quaternion components
   float32_t x = q.x, y = q.y, z = q.z, w = q.w;
 
@@ -1506,29 +1506,30 @@ static INLINE Mat4 quat_to_mat4(Quat q) {
  * @param position Translation vector for the transformation
  * @return 4x4 transformation matrix combining rotation and translation
  * @note Combines rotation (from quaternion) and translation in one operation
- * @note More efficient than separate quat_to_mat4() and mat4_translate() +
+ * @note More efficient than separate vkr_quat_to_mat4() and mat4_translate() +
  * mat4_mul()
- * @note Quaternion should be normalized for accurate rotation
+ * @note VkrQuaternion should be normalized for accurate rotation
  * @note Resulting matrix has no scaling (uniform scale = 1.0)
  * @note Perfect for rigid body transformations (rotation + translation only)
- * @performance O(15) - Same as quat_to_mat4() with direct translation
+ * @performance O(15) - Same as vkr_quat_to_mat4() with direct translation
  * assignment
  * @example
  * ```c
  * // Create object transformation from rotation and position
- * Quat object_rotation = quat_from_euler(0.0f, to_radians(45.0f), 0.0f);
+ * VkrQuat object_rotation = vkr_quat_from_euler(0.0f, to_radians(45.0f), 0.0f);
  * Vec3 object_position = vec3_new(10.0f, 0.0f, 5.0f);
- * Mat4 object_transform = mat4_from_quat_pos(object_rotation, object_position);
+ * Mat4 object_transform = mat4_from_vkr_quat_pos(object_rotation,
+ * object_position);
  *
  * // Character controller transformation
  * Vec3 character_pos = get_character_position();
- * Quat character_orientation = get_character_orientation();
- * Mat4 character_matrix = mat4_from_quat_pos(character_orientation,
+ * VkrQuat character_orientation = get_character_orientation();
+ * Mat4 character_matrix = mat4_from_vkr_quat_pos(character_orientation,
  * character_pos);
  * ```
  */
-static INLINE Mat4 mat4_from_quat_pos(Quat q, Vec3 position) {
-  Mat4 result = quat_to_mat4(q);
+static INLINE Mat4 mat4_from_vkr_quat_pos(VkrQuat q, Vec3 position) {
+  Mat4 result = vkr_quat_to_mat4(q);
   result.m03 = position.x;
   result.m13 = position.y;
   result.m23 = position.z;
@@ -1642,8 +1643,8 @@ static INLINE void mat4_add_mut(Mat4 *dest, Mat4 a, Mat4 b) {
  * @example
  * ```c
  * // Camera view matrix from camera transformation
- * Mat4 camera_transform = mat4_from_quat_pos(camera_rotation, camera_position);
- * Mat4 view_matrix = mat4_inverse_rigid(camera_transform);
+ * Mat4 camera_transform = mat4_from_vkr_quat_pos(camera_rotation,
+ * camera_position); Mat4 view_matrix = mat4_inverse_rigid(camera_transform);
  *
  * // Object to world space and back
  * Mat4 object_to_world = mat4_mul(translation, rotation);  // No scaling

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "math/quat.h"
+#include "math/vkr_quat.h"
 #include "pch.h"
 #include "platform/vkr_platform.h"
 

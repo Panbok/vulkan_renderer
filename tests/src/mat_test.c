@@ -358,39 +358,39 @@ static void test_mat4_quaternion_conversion(void) {
   printf("  Running test_mat4_quaternion_conversion...\n");
 
   // Test quaternion to matrix conversion
-  Quat rotation_quat = quat_from_euler(
+  VkrQuat rotation_quat = vkr_quat_from_euler(
       vkr_to_radians(30.0f), vkr_to_radians(45.0f), vkr_to_radians(60.0f));
-  Mat4 quat_matrix = quat_to_mat4(rotation_quat);
+  Mat4 vkr_quat_matrix = vkr_quat_to_mat4(rotation_quat);
 
   // Matrix should be orthogonal (rotation preserves orthogonality)
-  Mat4 quat_transpose = mat4_transpose(quat_matrix);
-  Mat4 quat_identity = mat4_mul(quat_matrix, quat_transpose);
-  assert(mat4_is_identity(quat_identity, 0.001f) &&
-         "Quaternion matrix not orthogonal");
+  Mat4 vkr_quat_transpose = mat4_transpose(vkr_quat_matrix);
+  Mat4 vkr_quat_identity = mat4_mul(vkr_quat_matrix, vkr_quat_transpose);
+  assert(mat4_is_identity(vkr_quat_identity, 0.001f) &&
+         "VkrQuaternion matrix not orthogonal");
 
   // Test matrix to quaternion conversion
   Mat4 rotation_matrix = mat4_euler_rotate_y(vkr_to_radians(90.0f));
-  Quat extracted_quat = mat4_to_quat(rotation_matrix);
-  Mat4 reconstructed_matrix = quat_to_mat4(extracted_quat);
+  VkrQuat extracted_quat = mat4_to_quat(rotation_matrix);
+  Mat4 reconstructed_matrix = vkr_quat_to_mat4(extracted_quat);
   assert(mat4_equals(rotation_matrix, reconstructed_matrix, 0.001f) &&
          "Matrix to quaternion conversion failed");
 
-  // Test mat4_from_quat_pos
+  // Test mat4_from_vkr_quat_pos
   Vec3 position = vec3_new(5.0f, 10.0f, 15.0f);
-  Mat4 quat_pos_matrix = mat4_from_quat_pos(rotation_quat, position);
+  Mat4 vkr_quat_pos_matrix = mat4_from_vkr_quat_pos(rotation_quat, position);
 
   // Check position is correctly set
-  Vec3 extracted_pos = mat4_position(quat_pos_matrix);
+  Vec3 extracted_pos = mat4_position(vkr_quat_pos_matrix);
   assert(vec3_equals(extracted_pos, position, 0.001f) &&
-         "mat4_from_quat_pos position failed");
+         "mat4_from_vkr_quat_pos position failed");
 
   // Check rotation part matches
-  Mat4 rotation_part = quat_to_mat4(rotation_quat);
-  rotation_part.m03 = quat_pos_matrix.m03;
-  rotation_part.m13 = quat_pos_matrix.m13;
-  rotation_part.m23 = quat_pos_matrix.m23;
-  assert(mat4_equals(quat_pos_matrix, rotation_part, 0.001f) &&
-         "mat4_from_quat_pos rotation failed");
+  Mat4 rotation_part = vkr_quat_to_mat4(rotation_quat);
+  rotation_part.m03 = vkr_quat_pos_matrix.m03;
+  rotation_part.m13 = vkr_quat_pos_matrix.m13;
+  rotation_part.m23 = vkr_quat_pos_matrix.m23;
+  assert(mat4_equals(vkr_quat_pos_matrix, rotation_part, 0.001f) &&
+         "mat4_from_vkr_quat_pos rotation failed");
 
   printf("  test_mat4_quaternion_conversion PASSED\n");
 }
@@ -472,7 +472,7 @@ bool32_t run_mat_tests(void) {
   // Projection matrix tests
   test_mat4_projection_matrices();
 
-  // Quaternion conversion tests
+  // VkrQuaternion conversion tests
   test_mat4_quaternion_conversion();
 
   // Edge case and validation tests

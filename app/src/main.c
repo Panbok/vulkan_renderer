@@ -75,10 +75,10 @@ void application_update(Application *application, float64_t delta) {
     rotation_angle -= 360.0;
   }
 
-  // Quat q = quat_from_euler(to_radians(rotation_angle),
+  // VkrQuat q = vkr_quat_from_euler(to_radians(rotation_angle),
   //                          to_radians(rotation_angle), 0);
   // application->pipeline.shader_object_description.shader_state_object.model =
-  //     quat_to_mat4(q);
+  //     vkr_quat_to_mat4(q);
 
   if (input_is_key_up(state->input_state, KEY_T) &&
       input_was_key_down(state->input_state, KEY_T)) {
