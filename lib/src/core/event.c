@@ -41,8 +41,8 @@ static void *events_processor(void *arg) {
     if (!queue_is_empty_Event(&manager->queue)) {
       event_dequeued = queue_dequeue_Event(&manager->queue, &event);
       if (event_dequeued && event.data_size > 0 && event.data != NULL) {
-        if (!event_data_buffer_free(&manager->event_data_buf,
-                                    event.data_size)) {
+        if (!vkr_event_data_buffer_free(&manager->event_data_buf,
+                                        event.data_size)) {
           log_error("Events_processor: Failed to free data for event type %d, "
                     "size %llu from event data buffer.",
                     event.type, event.data_size);
@@ -108,9 +108,9 @@ void event_manager_create(EventManager *manager) {
   manager->queue =
       queue_create_Event(manager->arena, DEFAULT_EVENT_QUEUE_CAPACITY);
 
-  if (!event_data_buffer_create(manager->arena,
-                                DEFAULT_EVENT_DATA_RING_BUFFER_CAPACITY,
-                                &manager->event_data_buf)) {
+  if (!vkr_event_data_buffer_create(manager->arena,
+                                    DEFAULT_EVENT_DATA_RING_BUFFER_CAPACITY,
+                                    &manager->event_data_buf)) {
     log_fatal("Failed to create event data buffer for EventManager.");
     return;
   }
@@ -139,7 +139,7 @@ void event_manager_destroy(EventManager *manager) {
   }
 
   queue_destroy_Event(&manager->queue);
-  event_data_buffer_destroy(&manager->event_data_buf);
+  vkr_event_data_buffer_destroy(&manager->event_data_buf);
   arena_destroy(manager->arena);
 }
 
@@ -204,8 +204,8 @@ bool32_t event_manager_dispatch(EventManager *manager, Event event) {
       return false;
     }
 
-    if (!event_data_buffer_can_alloc(&manager->event_data_buf,
-                                     event.data_size)) {
+    if (!vkr_event_data_buffer_can_alloc(&manager->event_data_buf,
+                                         event.data_size)) {
       log_warn("Event data buffer cannot allocate %llu bytes for event type %d "
                "(full or too fragmented).",
                event.data_size, event.type);
@@ -213,8 +213,8 @@ bool32_t event_manager_dispatch(EventManager *manager, Event event) {
       return false;
     }
 
-    if (!event_data_buffer_alloc(&manager->event_data_buf, event.data_size,
-                                 &copied_data_ptr_in_buffer)) {
+    if (!vkr_event_data_buffer_alloc(&manager->event_data_buf, event.data_size,
+                                     &copied_data_ptr_in_buffer)) {
       log_warn(
           "Failed to allocate %llu bytes in event data buffer for event type "
           "%d. Allocation failed unexpectedly after can_alloc passed.",
@@ -240,7 +240,7 @@ bool32_t event_manager_dispatch(EventManager *manager, Event event) {
       log_debug("Rolling back event data buffer allocation for event type %d "
                 "due to queue enqueue failure.",
                 event.type);
-      event_data_buffer_rollback_last_alloc(&manager->event_data_buf);
+      vkr_event_data_buffer_rollback_last_alloc(&manager->event_data_buf);
     }
 
     vkr_mutex_unlock(manager->mutex);

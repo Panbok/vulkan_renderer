@@ -14,9 +14,9 @@
  * 2. The actual payload data.
  *
  * This structure is not inherently thread-safe; synchronization must be
- * handled externally (e.g., by EventManager's mutex).
+ * handled externally (e.g., by VkrEventManager's mutex).
  */
-typedef struct EventDataBuffer {
+typedef struct VkrEventDataBuffer {
   Arena *arena;      /**< Arena from which this buffer's memory is allocated
                         (optional, for context). */
   uint8_t *buffer;   /**< The contiguous memory block for the ring buffer. */
@@ -27,51 +27,52 @@ typedef struct EventDataBuffer {
                         payloads). */
   uint64_t last_alloc_block_size; /**< Size of the last successfully allocated
                                      block (header + payload), for rollback. */
-} EventDataBuffer;
+} VkrEventDataBuffer;
 
 /**
- * @brief Creates and initializes an EventDataBuffer.
+ * @brief Creates and initializes an VkrEventDataBuffer.
  *
  * Allocates memory for the buffer itself from the provided arena.
  *
- * @param owner_arena The arena to allocate the EventDataBuffer's internal
+ * @param owner_arena The arena to allocate the VkrEventDataBuffer's internal
  * buffer from.
  * @param capacity The desired capacity of the ring buffer in bytes.
- * @param out_edb Pointer to the EventDataBuffer structure to initialize.
+ * @param out_edb Pointer to the VkrEventDataBuffer structure to initialize.
  * @return true if creation was successful, false otherwise (e.g., allocation
  * failure).
  */
-bool8_t event_data_buffer_create(Arena *owner_arena, uint64_t capacity,
-                                 EventDataBuffer *out_edb);
+bool8_t vkr_event_data_buffer_create(Arena *owner_arena, uint64_t capacity,
+                                     VkrEventDataBuffer *out_edb);
 
 /**
- * @brief Destroys an EventDataBuffer.
+ * @brief Destroys an VkrEventDataBuffer.
  *
- * This function primarily resets the EventDataBuffer's fields. The actual
+ * This function primarily resets the VkrEventDataBuffer's fields. The actual
  * memory for `buffer` is managed by the `owner_arena` used during creation
  * and will be freed when that arena is destroyed.
  *
- * @param edb Pointer to the EventDataBuffer to destroy.
+ * @param edb Pointer to the VkrEventDataBuffer to destroy.
  */
-void event_data_buffer_destroy(EventDataBuffer *edb);
+void vkr_event_data_buffer_destroy(VkrEventDataBuffer *edb);
 
 /**
- * @brief Attempts to allocate a block of memory in the EventDataBuffer for
+ * @brief Attempts to allocate a block of memory in the VkrEventDataBuffer for
  * event payload.
  *
  * The allocation includes space for a header (payload size) and the payload
  * itself. If successful, `out_payload_ptr` will point to the beginning of the
  * payload section within the allocated block.
  *
- * @param edb Pointer to the EventDataBuffer.
+ * @param edb Pointer to the VkrEventDataBuffer.
  * @param payload_size The size of the payload data to allocate.
  * @param out_payload_ptr Pointer to a void* that will be set to the location of
  * the payload data within the buffer if allocation is successful.
  * @return true if allocation was successful, false if there's not enough
  * contiguous space or buffer is too full.
  */
-bool8_t event_data_buffer_alloc(EventDataBuffer *edb, uint64_t payload_size,
-                                void **out_payload_ptr);
+bool8_t vkr_event_data_buffer_alloc(VkrEventDataBuffer *edb,
+                                    uint64_t payload_size,
+                                    void **out_payload_ptr);
 
 /**
  * @brief Frees the oldest data block from the EventDataBuffer.
@@ -81,33 +82,34 @@ bool8_t event_data_buffer_alloc(EventDataBuffer *edb, uint64_t payload_size,
  * This function should be called after the data associated with the oldest
  * event has been processed.
  *
- * @param edb Pointer to the EventDataBuffer.
+ * @param edb Pointer to the VkrEventDataBuffer.
  * @param payload_size The size of the payload that was at the head of the
  * buffer. This is used for sanity checks and to correctly update `fill`.
  * @return true if a block was successfully marked as free, false on error
  * (e.g., empty buffer, size mismatch).
  */
-bool8_t event_data_buffer_free(EventDataBuffer *edb, uint64_t payload_size);
+bool8_t vkr_event_data_buffer_free(VkrEventDataBuffer *edb,
+                                   uint64_t payload_size);
 
 /**
  * @brief Rolls back the last successful allocation made by
- * event_data_buffer_alloc.
+ * vkr_event_data_buffer_alloc.
  *
  * This is used if an event could not be enqueued after its data was allocated
  * in the buffer, to prevent orphaning the space.
  *
- * @param edb Pointer to the EventDataBuffer.
+ * @param edb Pointer to the VkrEventDataBuffer.
  */
-void event_data_buffer_rollback_last_alloc(EventDataBuffer *edb);
+void vkr_event_data_buffer_rollback_last_alloc(VkrEventDataBuffer *edb);
 
 /**
- * @brief Checks if the EventDataBuffer can accommodate a new allocation of a
+ * @brief Checks if the VkrEventDataBuffer can accommodate a new allocation of a
  * given payload size.
  *
  * This does not perform the allocation, only checks if it's possible.
- * @param edb Pointer to the EventDataBuffer.
+ * @param edb Pointer to the VkrEventDataBuffer.
  * @param payload_size The size of the payload data to check for.
  * @return true if an allocation of this size is possible, false otherwise.
  */
-bool8_t event_data_buffer_can_alloc(const EventDataBuffer *edb,
-                                    uint64_t payload_size);
+bool8_t vkr_event_data_buffer_can_alloc(const VkrEventDataBuffer *edb,
+                                        uint64_t payload_size);

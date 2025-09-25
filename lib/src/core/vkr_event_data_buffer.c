@@ -1,9 +1,9 @@
-#include "event_data_buffer.h"
+#include "vkr_event_data_buffer.h"
 
-bool8_t event_data_buffer_create(Arena *owner_arena, uint64_t capacity,
-                                 EventDataBuffer *out_edb) {
+bool8_t vkr_event_data_buffer_create(Arena *owner_arena, uint64_t capacity,
+                                     VkrEventDataBuffer *out_edb) {
   assert_log(owner_arena != NULL, "Owner arena cannot be NULL.");
-  assert_log(out_edb != NULL, "Output EventDataBuffer cannot be NULL.");
+  assert_log(out_edb != NULL, "Output VkrEventDataBuffer cannot be NULL.");
   assert_log(capacity > 0, "Capacity must be greater than 0.");
 
   out_edb->arena = owner_arena;
@@ -11,7 +11,8 @@ bool8_t event_data_buffer_create(Arena *owner_arena, uint64_t capacity,
   out_edb->buffer = arena_alloc(owner_arena, capacity, ARENA_MEMORY_TAG_BUFFER);
 
   if (out_edb->buffer == NULL) {
-    log_error("Failed to allocate memory for EventDataBuffer internal buffer.");
+    log_error(
+        "Failed to allocate memory for VkrEventDataBuffer internal buffer.");
     return false;
   }
 
@@ -23,7 +24,7 @@ bool8_t event_data_buffer_create(Arena *owner_arena, uint64_t capacity,
   return true;
 }
 
-void event_data_buffer_destroy(EventDataBuffer *edb) {
+void vkr_event_data_buffer_destroy(VkrEventDataBuffer *edb) {
   assert_log(edb != NULL, "EventDataBuffer cannot be NULL.");
   edb->buffer = NULL;
   edb->arena = NULL;
@@ -34,9 +35,9 @@ void event_data_buffer_destroy(EventDataBuffer *edb) {
   edb->last_alloc_block_size = 0;
 }
 
-bool8_t event_data_buffer_can_alloc(const EventDataBuffer *edb,
-                                    uint64_t payload_size) {
-  assert_log(edb != NULL, "EventDataBuffer cannot be NULL.");
+bool8_t vkr_event_data_buffer_can_alloc(const VkrEventDataBuffer *edb,
+                                        uint64_t payload_size) {
+  assert_log(edb != NULL, "VkrEventDataBuffer cannot be NULL.");
   if (payload_size == 0) {
     return true;
   }
@@ -44,8 +45,9 @@ bool8_t event_data_buffer_can_alloc(const EventDataBuffer *edb,
   return edb->fill + block_size_needed <= edb->capacity;
 }
 
-bool8_t event_data_buffer_alloc(EventDataBuffer *edb, uint64_t payload_size,
-                                void **out_payload_ptr) {
+bool8_t vkr_event_data_buffer_alloc(VkrEventDataBuffer *edb,
+                                    uint64_t payload_size,
+                                    void **out_payload_ptr) {
   assert_log(edb != NULL, "EventDataBuffer cannot be NULL.");
   assert_log(out_payload_ptr != NULL, "Output payload pointer cannot be NULL.");
 
@@ -108,9 +110,9 @@ bool8_t event_data_buffer_alloc(EventDataBuffer *edb, uint64_t payload_size,
   return true;
 }
 
-bool8_t event_data_buffer_free(EventDataBuffer *edb,
-                               uint64_t payload_size_from_event) {
-  assert_log(edb != NULL, "EventDataBuffer cannot be NULL.");
+bool8_t vkr_event_data_buffer_free(VkrEventDataBuffer *edb,
+                                   uint64_t payload_size_from_event) {
+  assert_log(edb != NULL, "VkrEventDataBuffer cannot be NULL.");
 
   if (payload_size_from_event == 0) {
     return true;
@@ -131,12 +133,13 @@ bool8_t event_data_buffer_free(EventDataBuffer *edb,
           sizeof(uint64_t));
 
   if (actual_payload_size_in_header != payload_size_from_event) {
-    log_fatal("EventDataBuffer consistency error during free! Expected payload "
-              "size %llu from event, "
-              "but header at buffer head contains %llu. Head: %llu, Fill: "
-              "%llu, Capacity: %llu",
-              payload_size_from_event, actual_payload_size_in_header, edb->head,
-              edb->fill, edb->capacity);
+    log_fatal(
+        "VkrEventDataBuffer consistency error during free! Expected payload "
+        "size %llu from event, "
+        "but header at buffer head contains %llu. Head: %llu, Fill: "
+        "%llu, Capacity: %llu",
+        payload_size_from_event, actual_payload_size_in_header, edb->head,
+        edb->fill, edb->capacity);
     return false;
   }
 
@@ -145,7 +148,7 @@ bool8_t event_data_buffer_free(EventDataBuffer *edb,
 
   if (edb->fill < actual_block_size_to_free) {
     log_fatal(
-        "EventDataBuffer consistency error during free! Fill count %llu "
+        "VkrEventDataBuffer consistency error during free! Fill count %llu "
         "is less than "
         "block size to free %llu (payload %llu). Head: %llu, Capacity: %llu",
         edb->fill, actual_block_size_to_free, actual_payload_size_in_header,
@@ -164,8 +167,8 @@ bool8_t event_data_buffer_free(EventDataBuffer *edb,
   return true;
 }
 
-void event_data_buffer_rollback_last_alloc(EventDataBuffer *edb) {
-  assert_log(edb != NULL, "EventDataBuffer cannot be NULL.");
+void vkr_event_data_buffer_rollback_last_alloc(VkrEventDataBuffer *edb) {
+  assert_log(edb != NULL, "VkrEventDataBuffer cannot be NULL.");
 
   if (edb->last_alloc_block_size == 0) {
     return;

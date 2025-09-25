@@ -1,7 +1,7 @@
 #pragma once
 
-#include "core/event_data_buffer.h"
 #include "core/logger.h"
+#include "core/vkr_event_data_buffer.h"
 #include "pch.h"
 #include "platform/vkr_platform.h"
 

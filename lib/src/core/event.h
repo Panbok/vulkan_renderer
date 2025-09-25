@@ -58,9 +58,9 @@
 #include "containers/vector.h"
 #include "core/vkr_threads.h"
 #include "defines.h"
-#include "event_data_buffer.h"
 #include "pch.h"
 #include "platform/vkr_platform.h"
+#include "vkr_event_data_buffer.h"
 
 // TODO: Explore possibility of re-writing this into event loop system, like
 // Node.js, where events are processed in a loop, and the event manager is
@@ -159,7 +159,7 @@ typedef struct EventManager {
       callbacks[EVENT_TYPE_MAX]; /**< Array of vectors, indexed by EventType,
                                     storing registered callbacks. */
 
-  EventDataBuffer
+  VkrEventDataBuffer
       event_data_buf; /**< Buffer for storing variable-sized event data. */
 
   VkrMutex mutex;   /**< Mutex protecting access to the queue,
