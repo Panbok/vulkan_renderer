@@ -47,7 +47,7 @@
 
 #include "core/logger.h"
 #include "memory/arena.h"
-#include "pch.h"
+#include "vkr_pch.h"
 
 #define DEFAULT_VECTOR_CAPACITY 16
 #define DEFAULT_VECTOR_RESIZE_FACTOR 2

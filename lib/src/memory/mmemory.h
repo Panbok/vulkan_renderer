@@ -58,8 +58,8 @@
 #include "containers/bitset.h"
 #include "core/logger.h"
 #include "defines.h"
-#include "pch.h"
 #include "platform/vkr_platform.h"
+#include "vkr_pch.h"
 
 /**
  * @brief Represents a single memory block managed by the MMemory allocator.

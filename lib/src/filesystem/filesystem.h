@@ -5,8 +5,8 @@
 #include "core/logger.h"
 #include "defines.h"
 #include "memory/arena.h"
-#include "pch.h"
 #include "platform/vkr_platform.h"
+#include "vkr_pch.h"
 
 /**
  * @file filesystem.h

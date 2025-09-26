@@ -1,6 +1,6 @@
 #pragma once
 
-#include "pch.h"
+#include "vkr_pch.h"
 
 // Only define these if not already defined by CMake
 #ifndef LOG_LEVEL

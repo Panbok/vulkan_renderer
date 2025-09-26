@@ -60,4 +60,4 @@ target_compile_definitions(renderer_lib PRIVATE
     $<$<CONFIG:Debug>:ASSERT_LOG=1>
 )
 
-target_precompile_headers(renderer_lib PRIVATE src/pch.h)
+target_precompile_headers(renderer_lib PRIVATE src/vkr_pch.h)

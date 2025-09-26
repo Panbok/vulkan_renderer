@@ -1,8 +1,8 @@
 #pragma once
 
 #include "memory/arena.h"
-#include "pch.h"
 #include "platform/vkr_platform.h"
+#include "vkr_pch.h"
 
 // Forward declaration
 typedef struct Arena Arena;

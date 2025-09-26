@@ -58,9 +58,9 @@
 #include "containers/vector.h"
 #include "core/vkr_threads.h"
 #include "defines.h"
-#include "pch.h"
 #include "platform/vkr_platform.h"
 #include "vkr_event_data_buffer.h"
+#include "vkr_pch.h"
 
 // TODO: Explore possibility of re-writing this into event loop system, like
 // Node.js, where events are processed in a loop, and the event manager is

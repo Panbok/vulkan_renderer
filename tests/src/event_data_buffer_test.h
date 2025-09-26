@@ -2,8 +2,8 @@
 
 #include "core/logger.h"
 #include "core/vkr_event_data_buffer.h"
-#include "pch.h"
 #include "platform/vkr_platform.h"
+#include "vkr_pch.h"
 
 // Test function declarations
 void test_event_data_buffer_create_destroy(void);

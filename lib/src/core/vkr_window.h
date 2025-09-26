@@ -39,8 +39,8 @@
 #include "core/event.h"
 #include "core/input.h"
 #include "math/vkr_math.h"
-#include "pch.h"
 #include "platform/vkr_platform.h"
+#include "vkr_pch.h"
 
 /**
  * @brief Represents a platform window and its associated state.

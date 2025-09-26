@@ -3,8 +3,8 @@
 #include "defines.h"
 #include "logger.h"
 #include "memory/arena.h"
-#include "pch.h"
 #include "platform/vkr_platform.h"
+#include "vkr_pch.h"
 
 /**
  * @brief Structure for managing a ring buffer for variable-sized event data.

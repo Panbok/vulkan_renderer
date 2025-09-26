@@ -1,7 +1,7 @@
 #pragma once
 
 #include "defines.h"
-#include "pch.h"
+#include "vkr_pch.h"
 
 void *vkr_platform_mem_reserve(uint64_t size);
 
