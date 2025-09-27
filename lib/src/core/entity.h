@@ -15,11 +15,14 @@ typedef enum VkrEntityType {
   VKR_ENTITY_TYPE_DYNAMIC = 2,
 } VkrEntityType;
 
+// todo: revise the attributes and properties
 typedef enum VkrEntityAttribute {
   VKR_ENTITY_ATTRIBUTE_NONE = 0 << 0,
   VKR_ENTITY_ATTRIBUTE_VISIBLE = 1 << 0,
   VKR_ENTITY_ATTRIBUTE_STATIC = 1 << 1,
 } VkrEntityAttribute;
+
+// todo: revise the attributes and properties
 
 typedef enum VkrEntityProperty {
   VKR_ENTITY_PROPERTY_NONE = 0 << 0,
