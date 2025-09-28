@@ -262,7 +262,7 @@ RendererError vulkan_graphics_pipeline_update_state(
   if (state->current_render_pass_domain != target_domain ||
       !state->render_pass_active) {
     if (state->render_pass_active) {
-      vulkan_renderpass_end(command_buffer);
+      vulkan_renderpass_end(command_buffer, state);
       state->render_pass_active = false;
       state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
     }

@@ -275,6 +275,7 @@ typedef struct VulkanBackendState {
   VkrPipelineDomain current_render_pass_domain;
   bool8_t render_pass_active;
   uint32_t active_image_index;
+  bool8_t swapchain_image_is_present_ready;
 
   VkSurfaceKHR surface;
 

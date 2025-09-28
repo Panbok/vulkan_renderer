@@ -232,10 +232,18 @@ bool8_t vulkan_renderpass_begin(VulkanCommandBuffer *command_buffer,
   return true_v;
 }
 
-bool8_t vulkan_renderpass_end(VulkanCommandBuffer *command_buffer) {
+bool8_t vulkan_renderpass_end(VulkanCommandBuffer *command_buffer,
+                              VulkanBackendState *state) {
   assert_log(command_buffer != NULL, "Command buffer is NULL");
+  assert_log(state != NULL, "State is NULL");
 
   vkCmdEndRenderPass(command_buffer->handle);
+
+  // Set the present ready flag if this was a UI or POST render pass
+  if (state->current_render_pass_domain == VKR_PIPELINE_DOMAIN_UI ||
+      state->current_render_pass_domain == VKR_PIPELINE_DOMAIN_POST) {
+    state->swapchain_image_is_present_ready = true;
+  }
 
   command_buffer->state = COMMAND_BUFFER_STATE_RECORDING;
 

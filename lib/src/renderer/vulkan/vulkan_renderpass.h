@@ -32,4 +32,5 @@ bool8_t vulkan_renderpass_begin(VulkanCommandBuffer *command_buffer,
                                 VulkanRenderPass *render_pass,
                                 VkFramebuffer framebuffer);
 
-bool8_t vulkan_renderpass_end(VulkanCommandBuffer *command_buffer);
+bool8_t vulkan_renderpass_end(VulkanCommandBuffer *command_buffer,
+                              VulkanBackendState *state);
