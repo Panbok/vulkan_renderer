@@ -205,8 +205,7 @@ bool8_t vulkan_renderpass_begin(VulkanCommandBuffer *command_buffer,
 
   case VKR_PIPELINE_DOMAIN_COMPUTE:
     log_warn("COMPUTE domain doesn't use traditional render pass begin");
-    clear_value_count = 0;
-    break;
+    return true_v;
 
   default:
     log_fatal("Unknown render pass domain: %d", render_pass->domain);
@@ -273,9 +272,7 @@ bool8_t vulkan_renderpass_create_world(VulkanBackendState *state,
       .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
       .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-      .finalLayout =
-          VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, // Direct to present (temporary until
-                                           // UI is active)
+      .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
   };
 
   // Depth attachment
@@ -321,16 +318,17 @@ bool8_t vulkan_renderpass_create_world(VulkanBackendState *state,
                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
           .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
       },
-      // subpass 0 → external (end of render pass, transition for present)
+      // subpass 0 → external (end of render pass, transition for UI pass)
       {
           .srcSubpass = 0,
           .dstSubpass = VK_SUBPASS_EXTERNAL,
           .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
                           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-          .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+          .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
           .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-          .dstAccessMask = 0,
+          .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
           .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
       }};
 
