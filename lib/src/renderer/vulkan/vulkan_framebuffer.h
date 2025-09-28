@@ -14,3 +14,8 @@ void vulkan_framebuffer_destroy(VulkanBackendState *state,
 bool32_t vulkan_framebuffer_regenerate(VulkanBackendState *state,
                                        VulkanSwapchain *swapchain,
                                        VulkanRenderPass *renderpass);
+
+bool32_t vulkan_framebuffer_regenerate_for_domain(
+    VulkanBackendState *state, VulkanSwapchain *swapchain,
+    VulkanRenderPass *renderpass, VkrPipelineDomain domain,
+    Array_VulkanFramebuffer *framebuffers);

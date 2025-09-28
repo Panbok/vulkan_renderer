@@ -4,11 +4,26 @@
 #include "vulkan_types.h"
 
 bool8_t vulkan_renderpass_create(VulkanBackendState *state,
-                                 VulkanRenderPass *out_render_pass, float32_t x,
-                                 float32_t y, float32_t w, float32_t h,
-                                 float32_t r, float32_t g, float32_t b,
-                                 float32_t a, float32_t depth,
+                                 VulkanRenderPass *out_render_pass,
+                                 Vec2 position, Vec4 color, float32_t w,
+                                 float32_t h, float32_t depth,
                                  uint32_t stencil);
+
+bool8_t vulkan_renderpass_create_for_domain(VulkanBackendState *state,
+                                            VkrPipelineDomain domain,
+                                            VulkanRenderPass *out_render_pass);
+
+bool8_t vulkan_renderpass_create_world(VulkanBackendState *state,
+                                       VulkanRenderPass *out_render_pass);
+
+bool8_t vulkan_renderpass_create_ui(VulkanBackendState *state,
+                                    VulkanRenderPass *out_render_pass);
+
+bool8_t vulkan_renderpass_create_shadow(VulkanBackendState *state,
+                                        VulkanRenderPass *out_render_pass);
+
+bool8_t vulkan_renderpass_create_post(VulkanBackendState *state,
+                                      VulkanRenderPass *out_render_pass);
 
 void vulkan_renderpass_destroy(VulkanBackendState *state,
                                VulkanRenderPass *render_pass);

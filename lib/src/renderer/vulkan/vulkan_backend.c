@@ -1,9 +1,10 @@
 #include "vulkan_backend.h"
+#include "defines.h"
 
 // todo: we are having issues with image ghosting when camera moves
 // too fast, need to figure out why (clues VSync/present mode issues)
 
-static bool32_t create_command_buffers(VulkanBackendState *state) {
+vkr_internal bool32_t create_command_buffers(VulkanBackendState *state) {
   Scratch scratch = scratch_create(state->arena);
   state->graphics_command_buffers = array_create_VulkanCommandBuffer(
       scratch.arena, state->swapchain.images.length);
@@ -16,6 +17,75 @@ static bool32_t create_command_buffers(VulkanBackendState *state) {
       log_fatal("Failed to create Vulkan command buffer");
       return false;
     }
+  }
+
+  return true;
+}
+
+vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
+  assert_log(state != NULL, "State not initialized");
+
+  for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
+    state->domain_render_passes[domain] = arena_alloc(
+        state->arena, sizeof(VulkanRenderPass), ARENA_MEMORY_TAG_RENDERER);
+    if (!state->domain_render_passes[domain]) {
+      log_fatal("Failed to allocate domain render pass for domain %u", domain);
+      return false;
+    }
+
+    MemZero(state->domain_render_passes[domain], sizeof(VulkanRenderPass));
+
+    if (!vulkan_renderpass_create_for_domain(
+            state, (VkrPipelineDomain)domain,
+            state->domain_render_passes[domain])) {
+      log_fatal("Failed to create domain render pass for domain %u", domain);
+      return false;
+    }
+
+    state->domain_initialized[domain] = true;
+    log_debug("Created domain render pass for domain %u", domain);
+  }
+
+  return true;
+}
+
+vkr_internal bool32_t create_domain_framebuffers(VulkanBackendState *state) {
+  assert_log(state != NULL, "State not initialized");
+
+  for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
+    if (!state->domain_initialized[domain]) {
+      continue;
+    }
+
+    if (state->domain_framebuffers[domain].length > 0) {
+      for (uint32_t i = 0; i < state->domain_framebuffers[domain].length; ++i) {
+        VulkanFramebuffer *old_fb =
+            array_get_VulkanFramebuffer(&state->domain_framebuffers[domain], i);
+        vulkan_framebuffer_destroy(state, old_fb);
+      }
+      array_destroy_VulkanFramebuffer(&state->domain_framebuffers[domain]);
+    }
+
+    state->domain_framebuffers[domain] = array_create_VulkanFramebuffer(
+        state->swapchain_arena, state->swapchain.images.length);
+
+    for (uint32_t i = 0; i < state->swapchain.images.length; i++) {
+      array_set_VulkanFramebuffer(&state->domain_framebuffers[domain], i,
+                                  (VulkanFramebuffer){
+                                      .handle = VK_NULL_HANDLE,
+                                      .attachments = {0},
+                                      .renderpass = NULL,
+                                  });
+    }
+
+    if (!vulkan_framebuffer_regenerate_for_domain(
+            state, &state->swapchain, state->domain_render_passes[domain],
+            (VkrPipelineDomain)domain, &state->domain_framebuffers[domain])) {
+      log_fatal("Failed to regenerate framebuffers for domain %u", domain);
+      return false;
+    }
+
+    log_debug("Created domain framebuffers for domain %u", domain);
   }
 
   return true;
@@ -44,26 +114,35 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
     return false;
   }
 
-  // cleanup swapchain
   for (uint32_t i = 0; i < state->swapchain.image_count; ++i) {
     vulkan_command_buffer_free(state, array_get_VulkanCommandBuffer(
                                           &state->graphics_command_buffers, i));
   }
 
-  // Framebuffers.
   for (uint32_t i = 0; i < state->swapchain.image_count; ++i) {
     vulkan_framebuffer_destroy(
         state, array_get_VulkanFramebuffer(&state->swapchain.framebuffers, i));
   }
 
-  state->main_render_pass->x = 0;
-  state->main_render_pass->y = 0;
-  state->main_render_pass->width = state->swapchain.extent.width;
-  state->main_render_pass->height = state->swapchain.extent.height;
+  for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
+    if (state->domain_initialized[domain]) {
+      state->domain_render_passes[domain]->position = (Vec2){0, 0};
+      state->domain_render_passes[domain]->width =
+          state->swapchain.extent.width;
+      state->domain_render_passes[domain]->height =
+          state->swapchain.extent.height;
+    }
+  }
 
-  if (!vulkan_framebuffer_regenerate(state, &state->swapchain,
-                                     state->main_render_pass)) {
-    log_error("Failed to regenerate framebuffers");
+  if (!create_domain_framebuffers(state)) {
+    log_error("Failed to recreate domain framebuffers");
+    return false;
+  }
+
+  if (!vulkan_framebuffer_regenerate(
+          state, &state->swapchain,
+          state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD])) {
+    log_error("Failed to regenerate legacy framebuffers");
     return false;
   }
 
@@ -72,7 +151,6 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
     return false;
   }
 
-  // Clear the recreating flag.
   state->is_swapchain_recreation_requested = false;
 
   return true;
@@ -158,6 +236,17 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
   backend_state->window = window;
   backend_state->device_requirements = device_requirements;
 
+  backend_state->current_render_pass_domain =
+      VKR_PIPELINE_DOMAIN_COUNT; // Invalid domain
+  backend_state->render_pass_active = false;
+  backend_state->active_image_index = 0;
+
+  for (uint32_t i = 0; i < VKR_PIPELINE_DOMAIN_COUNT; i++) {
+    backend_state->domain_render_passes[i] = NULL;
+    backend_state->domain_framebuffers[i] = (Array_VulkanFramebuffer){0};
+    backend_state->domain_initialized[i] = false;
+  }
+
   *out_backend_state = backend_state;
   backend_state->allocator = VK_NULL_HANDLE;
 
@@ -193,26 +282,15 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
-  VulkanRenderPass *main_render_pass =
-      arena_alloc(backend_state->arena, sizeof(VulkanRenderPass),
-                  ARENA_MEMORY_TAG_RENDERER);
-  if (!main_render_pass) {
-    log_fatal("Failed to allocate main render pass");
+  if (!create_domain_render_passes(backend_state)) {
+    log_fatal("Failed to create Vulkan domain render passes");
     return false;
   }
 
-  MemZero(main_render_pass, sizeof(VulkanRenderPass));
-
-  if (!vulkan_renderpass_create(
-          backend_state, main_render_pass, 0.0f, 0.0f,
-          (float32_t)backend_state->swapchain.extent.width,
-          (float32_t)backend_state->swapchain.extent.height, 0.0f, 0.0f, 0.2f,
-          1.0f, 1.0f, 0)) {
-    log_fatal("Failed to create Vulkan render pass");
+  if (!create_domain_framebuffers(backend_state)) {
+    log_fatal("Failed to create Vulkan domain framebuffers");
     return false;
   }
-
-  backend_state->main_render_pass = main_render_pass;
 
   backend_state->swapchain.framebuffers = array_create_VulkanFramebuffer(
       backend_state->swapchain_arena, backend_state->swapchain.images.length);
@@ -225,8 +303,11 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
                                 });
   }
 
-  if (!vulkan_framebuffer_regenerate(backend_state, &backend_state->swapchain,
-                                     main_render_pass)) {
+  // For now, continue creating the legacy framebuffers to avoid breaking
+  // existing code This will be removed in later phases
+  if (!vulkan_framebuffer_regenerate(
+          backend_state, &backend_state->swapchain,
+          backend_state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD])) {
     log_fatal("Failed to regenerate Vulkan framebuffers");
     return false;
   }
@@ -336,7 +417,23 @@ void renderer_vulkan_shutdown(void *backend_state) {
   }
   array_destroy_VulkanFramebuffer(&state->swapchain.framebuffers);
 
-  vulkan_renderpass_destroy(state, state->main_render_pass);
+  for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
+    if (state->domain_initialized[domain]) {
+      for (uint32_t i = 0; i < state->domain_framebuffers[domain].length; ++i) {
+        VulkanFramebuffer *framebuffer =
+            array_get_VulkanFramebuffer(&state->domain_framebuffers[domain], i);
+        vulkan_framebuffer_destroy(state, framebuffer);
+      }
+      array_destroy_VulkanFramebuffer(&state->domain_framebuffers[domain]);
+    }
+  }
+
+  for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
+    if (state->domain_initialized[domain] &&
+        state->domain_render_passes[domain]) {
+      vulkan_renderpass_destroy(state, state->domain_render_passes[domain]);
+    }
+  }
   vulkan_swapchain_destroy(state);
   vulkan_device_destroy_logical_device(state);
   vulkan_device_release_physical_device(state);
@@ -439,18 +536,18 @@ RendererError renderer_vulkan_begin_frame(void *backend_state,
   vkCmdSetViewport(command_buffer->handle, 0, 1, &viewport);
   vkCmdSetScissor(command_buffer->handle, 0, 1, &scissor);
 
-  if (!vulkan_renderpass_begin(
-          command_buffer, state->main_render_pass,
-          array_get_VulkanFramebuffer(&state->swapchain.framebuffers,
-                                      state->image_index)
-              ->handle)) {
-    log_fatal("Failed to begin Vulkan render pass");
-    return RENDERER_ERROR_NONE;
-  }
+  // Render passes are now started automatically when pipelines are bound
+
+  // Don't start any render pass in begin_frame
+  // Render passes will be started automatically when pipelines are bound
+  // This is part of the P14A automatic render pass management
 
   // here we end command buffer recording, next you should call binding
   // functions like bind pipeline, bind vertex buffer, etc. then call draw
   // functions and finally call end frame
+  state->render_pass_active = false;
+  state->current_render_pass_domain =
+      VKR_PIPELINE_DOMAIN_COUNT; // Invalid domain
 
   return RENDERER_ERROR_NONE;
 }
@@ -490,9 +587,13 @@ RendererError renderer_vulkan_end_frame(void *backend_state,
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, state->image_index);
 
-  if (!vulkan_renderpass_end(command_buffer)) {
-    log_fatal("Failed to end Vulkan render pass");
-    return RENDERER_ERROR_NONE;
+  if (state->render_pass_active) {
+    if (!vulkan_renderpass_end(command_buffer)) {
+      log_fatal("Failed to end Vulkan render pass");
+      return RENDERER_ERROR_NONE;
+    }
+    state->render_pass_active = false;
+    state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
   }
 
   if (!vulkan_command_buffer_end(command_buffer)) {
@@ -932,8 +1033,6 @@ BackendResourceHandle renderer_vulkan_create_graphics_pipeline(
   }
 
   MemZero(pipeline, sizeof(struct s_GraphicsPipeline));
-
-  pipeline->desc = desc;
 
   if (!vulkan_graphics_graphics_pipeline_create(state, desc, pipeline)) {
     log_fatal("Failed to create Vulkan pipeline layout");

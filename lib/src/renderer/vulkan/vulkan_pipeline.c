@@ -1,4 +1,5 @@
 #include "vulkan_pipeline.h"
+#include "vulkan_renderpass.h"
 
 bool8_t vulkan_graphics_graphics_pipeline_create(
     VulkanBackendState *state, const GraphicsPipelineDescription *desc,
@@ -14,7 +15,7 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   }
 
   // Bind the description so subsequent dereferences are valid
-  out_pipeline->desc = desc;
+  out_pipeline->desc = *desc;
 
   VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
                                      VK_DYNAMIC_STATE_SCISSOR,
@@ -184,6 +185,8 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
       out_pipeline->shader_object.stages[SHADER_STAGE_FRAGMENT],
   };
 
+  VulkanRenderPass *render_pass = state->domain_render_passes[desc->domain];
+
   VkGraphicsPipelineCreateInfo pipeline_info = {
       .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
       .stageCount = ArrayCount(shader_stages),
@@ -197,7 +200,7 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
       .pColorBlendState = &color_blend_state,
       .pDynamicState = &dynamic_state,
       .layout = pipeline_layout,
-      .renderPass = state->main_render_pass->handle,
+      .renderPass = render_pass->handle,
       .subpass = 0,
       .basePipelineHandle = VK_NULL_HANDLE,
       .basePipelineIndex = -1,
@@ -253,6 +256,25 @@ RendererError vulkan_graphics_pipeline_update_state(
   uint32_t image_index = state->image_index;
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, image_index);
+
+  VkrPipelineDomain target_domain = pipeline->desc.domain;
+
+  if (state->current_render_pass_domain != target_domain ||
+      !state->render_pass_active) {
+    if (state->render_pass_active) {
+      vulkan_renderpass_end(command_buffer);
+      state->render_pass_active = false;
+      state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
+    }
+
+    VulkanRenderPass *render_pass = state->domain_render_passes[target_domain];
+    VulkanFramebuffer *framebuffer = array_get_VulkanFramebuffer(
+        &state->domain_framebuffers[target_domain], image_index);
+
+    vulkan_renderpass_begin(command_buffer, render_pass, framebuffer->handle);
+    state->current_render_pass_domain = target_domain;
+    state->render_pass_active = true;
+  }
 
   if (uniform != NULL) {
     if (!vulkan_shader_update_global_state(state, &pipeline->shader_object,

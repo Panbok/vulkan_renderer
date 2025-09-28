@@ -502,6 +502,16 @@ typedef struct VertexInputBindingDescription {
   VertexInputRate input_rate; // Per-vertex or per-instance
 } VertexInputBindingDescription;
 
+typedef enum VkrPipelineDomain {
+  VKR_PIPELINE_DOMAIN_WORLD = 0,
+  VKR_PIPELINE_DOMAIN_UI = 1,
+  VKR_PIPELINE_DOMAIN_SHADOW = 2,
+  VKR_PIPELINE_DOMAIN_POST = 3,
+  VKR_PIPELINE_DOMAIN_COMPUTE = 4,
+
+  VKR_PIPELINE_DOMAIN_COUNT
+} VkrPipelineDomain;
+
 typedef struct GraphicsPipelineDescription {
   ShaderObjectDescription shader_object_description;
 
@@ -513,6 +523,8 @@ typedef struct GraphicsPipelineDescription {
   PrimitiveTopology topology;
 
   PolygonMode polygon_mode;
+
+  VkrPipelineDomain domain;
 } GraphicsPipelineDescription;
 
 // ============================================================================

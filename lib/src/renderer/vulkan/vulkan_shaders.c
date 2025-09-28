@@ -1,4 +1,5 @@
 #include "vulkan_shaders.h"
+#include "filesystem/filesystem.h"
 
 bool8_t vulkan_shader_module_create(
     VulkanBackendState *state, ShaderStageFlags stage, const uint64_t size,

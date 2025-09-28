@@ -211,7 +211,8 @@ bool8_t vkr_pipeline_registry_create_from_material_layout(
                                       .bindings = bindings,
                                       .topology =
                                           PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-                                      .polygon_mode = POLYGON_MODE_FILL};
+                                      .polygon_mode = POLYGON_MODE_FILL,
+                                      .domain = domain};
 
   bool8_t ok = vkr_pipeline_registry_create_graphics_pipeline(
       registry, &desc, name, out_handle, out_error);

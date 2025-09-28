@@ -12,9 +12,7 @@
 #endif
 
 #include "containers/str.h"
-#include "core/logger.h"
 #include "defines.h"
-#include "filesystem/filesystem.h"
 #include "renderer/renderer.h"
 
 // todo: make this configurable
@@ -86,14 +84,18 @@ typedef enum VulkanRenderPassState {
 
 typedef struct VulkanRenderPass {
   VkRenderPass handle;
-  float32_t x, y, width, height;
-  float32_t r, g, b, a;
+
+  Vec2 position;
+  Vec4 color;
+
+  float32_t width, height;
 
   float32_t depth;
 
   uint32_t stencil;
 
   VulkanRenderPassState state;
+  VkrPipelineDomain domain;
 } VulkanRenderPass;
 
 typedef enum VulkanCommandBufferState {
@@ -231,7 +233,7 @@ typedef struct VulkanShaderObject {
 } VulkanShaderObject;
 
 struct s_GraphicsPipeline {
-  const GraphicsPipelineDescription *desc;
+  GraphicsPipelineDescription desc;
   VkPipelineLayout pipeline_layout;
   VkPipeline pipeline;
 
@@ -266,7 +268,13 @@ typedef struct VulkanBackendState {
 
   VulkanDevice device;
 
-  VulkanRenderPass *main_render_pass;
+  VulkanRenderPass *domain_render_passes[VKR_PIPELINE_DOMAIN_COUNT];
+  Array_VulkanFramebuffer domain_framebuffers[VKR_PIPELINE_DOMAIN_COUNT];
+  bool8_t domain_initialized[VKR_PIPELINE_DOMAIN_COUNT];
+
+  VkrPipelineDomain current_render_pass_domain;
+  bool8_t render_pass_active;
+  uint32_t active_image_index;
 
   VkSurfaceKHR surface;
 

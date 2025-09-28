@@ -42,8 +42,10 @@ void vulkan_framebuffer_destroy(VulkanBackendState *state,
                                 VulkanFramebuffer *framebuffer) {
   assert_log(state != NULL, "State is NULL");
   assert_log(framebuffer != NULL, "Framebuffer is NULL");
-  assert_log(framebuffer->handle != VK_NULL_HANDLE,
-             "Framebuffer handle is NULL");
+
+  if (framebuffer->handle == VK_NULL_HANDLE) {
+    return;
+  }
 
   log_debug("Destroy Vulkan framebuffer: %p", framebuffer->handle);
 
@@ -83,5 +85,86 @@ bool32_t vulkan_framebuffer_regenerate(VulkanBackendState *state,
     }
   }
 
+  return true;
+}
+
+bool32_t vulkan_framebuffer_regenerate_for_domain(
+    VulkanBackendState *state, VulkanSwapchain *swapchain,
+    VulkanRenderPass *renderpass, VkrPipelineDomain domain,
+    Array_VulkanFramebuffer *framebuffers) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(swapchain != NULL, "Swapchain is NULL");
+  assert_log(renderpass != NULL, "Renderpass is NULL");
+  assert_log(framebuffers != NULL, "Framebuffers is NULL");
+
+  uint32_t attachment_count;
+  bool use_color = false;
+  bool use_depth = false;
+
+  switch (domain) {
+  case VKR_PIPELINE_DOMAIN_WORLD:
+    attachment_count = 2;
+    use_color = true;
+    use_depth = true;
+    break;
+
+  case VKR_PIPELINE_DOMAIN_UI:
+    attachment_count = 1;
+    use_color = true;
+    use_depth = false;
+    break;
+
+  case VKR_PIPELINE_DOMAIN_SHADOW:
+    attachment_count = 1;
+    use_color = false;
+    use_depth = true;
+    break;
+
+  case VKR_PIPELINE_DOMAIN_POST:
+    attachment_count = 1;
+    use_color = true;
+    use_depth = false;
+    break;
+
+  case VKR_PIPELINE_DOMAIN_COMPUTE:
+    log_warn("COMPUTE domain doesn't use traditional framebuffers");
+    return true;
+
+  default:
+    log_fatal("Unknown pipeline domain: %d", domain);
+    return false;
+  }
+
+  for (uint32_t i = 0; i < swapchain->image_count; ++i) {
+    VulkanFramebuffer *framebuffer =
+        array_get_VulkanFramebuffer(framebuffers, i);
+
+    framebuffer->attachments =
+        array_create_VkImageView(state->swapchain_arena, attachment_count);
+
+    uint32_t attachment_index = 0;
+
+    if (use_color) {
+      array_set_VkImageView(&framebuffer->attachments, attachment_index,
+                            *array_get_VkImageView(&swapchain->image_views, i));
+      attachment_index++;
+    }
+
+    if (use_depth) {
+      array_set_VkImageView(&framebuffer->attachments, attachment_index,
+                            swapchain->depth_attachment.view);
+      attachment_index++;
+    }
+
+    if (!vulkan_framebuffer_create(state, renderpass, swapchain->extent.width,
+                                   swapchain->extent.height,
+                                   &framebuffer->attachments, framebuffer)) {
+      log_fatal("Failed to create Vulkan framebuffer for domain %d", domain);
+      return false;
+    }
+  }
+
+  log_debug("Created framebuffers for domain %d with %d attachments", domain,
+            attachment_count);
   return true;
 }
