@@ -759,7 +759,7 @@ VkrRendererError renderer_vulkan_update_buffer(void *backend_state,
   struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
   if (!vulkan_buffer_load_data(state, &buffer->buffer, offset, size, 0, data)) {
     log_fatal("Failed to update Vulkan buffer");
-    return VKR_RENDERER_ERROR_NONE;
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
   return VKR_RENDERER_ERROR_NONE;
