@@ -1,7 +1,7 @@
 #include "vulkan_buffer.h"
 
 bool8_t vulkan_buffer_create(VulkanBackendState *state,
-                             const BufferDescription *desc,
+                             const VkrBufferDescription *desc,
                              struct s_BufferHandle *out_buffer) {
   assert_log(state != NULL, "State is NULL");
   assert_log(out_buffer != NULL, "Out buffer is NULL");
@@ -58,7 +58,7 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
     return false_v;
   }
 
-  if (bitset8_is_set(&desc->buffer_type, BUFFER_TYPE_GRAPHICS)) {
+  if (bitset8_is_set(&desc->buffer_type, VKR_BUFFER_TYPE_GRAPHICS)) {
     out_buffer->buffer.command_pool = state->device.graphics_command_pool;
     out_buffer->buffer.queue = state->device.graphics_queue;
     // Note: We use temporary fences for buffer operations, no need for

@@ -156,8 +156,8 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
   return true;
 }
 
-RendererBackendInterface renderer_vulkan_get_interface() {
-  return (RendererBackendInterface){
+VkrRendererBackendInterface renderer_vulkan_get_interface() {
+  return (VkrRendererBackendInterface){
       .initialize = renderer_vulkan_initialize,
       .shutdown = renderer_vulkan_shutdown,
       .on_resize = renderer_vulkan_on_resize,
@@ -183,13 +183,13 @@ RendererBackendInterface renderer_vulkan_get_interface() {
 }
 
 // todo: set up event manager for window stuff and maybe other events
-bool32_t renderer_vulkan_initialize(void **out_backend_state,
-                                    RendererBackendType type, VkrWindow *window,
-                                    uint32_t initial_width,
-                                    uint32_t initial_height,
-                                    DeviceRequirements *device_requirements) {
+bool32_t
+renderer_vulkan_initialize(void **out_backend_state,
+                           VkrRendererBackendType type, VkrWindow *window,
+                           uint32_t initial_width, uint32_t initial_height,
+                           VkrDeviceRequirements *device_requirements) {
   assert_log(out_backend_state != NULL, "Out backend state is NULL");
-  assert_log(type == RENDERER_BACKEND_TYPE_VULKAN,
+  assert_log(type == VKR_RENDERER_BACKEND_TYPE_VULKAN,
              "Vulkan backend type is required");
   assert_log(window != NULL, "Window is NULL");
   assert_log(initial_width > 0, "Initial width is 0");
@@ -370,7 +370,7 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
 }
 
 void renderer_vulkan_get_device_information(
-    void *backend_state, DeviceInformation *device_information,
+    void *backend_state, VkrDeviceInformation *device_information,
     Arena *temp_arena) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(device_information != NULL, "Device information is NULL");
@@ -470,20 +470,20 @@ void renderer_vulkan_on_resize(void *backend_state, uint32_t new_width,
   return;
 }
 
-RendererError renderer_vulkan_wait_idle(void *backend_state) {
+VkrRendererError renderer_vulkan_wait_idle(void *backend_state) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   VkResult result = vkDeviceWaitIdle(state->device.logical_device);
   if (result != VK_SUCCESS) {
     log_warn("Failed to wait for Vulkan device to be idle");
-    return RENDERER_ERROR_DEVICE_ERROR;
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
-  return RENDERER_ERROR_NONE;
+  return VKR_RENDERER_ERROR_NONE;
 }
 
-RendererError renderer_vulkan_begin_frame(void *backend_state,
-                                          float64_t delta_time) {
+VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
+                                             float64_t delta_time) {
   // log_debug("Beginning Vulkan frame");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
@@ -496,7 +496,7 @@ RendererError renderer_vulkan_begin_frame(void *backend_state,
                          array_get_VulkanFence(&state->in_flight_fences,
                                                state->current_frame))) {
     log_warn("Vulkan fence timed out");
-    return RENDERER_ERROR_NONE;
+    return VKR_RENDERER_ERROR_NONE;
   }
 
   // Acquire the next image from the swapchain
@@ -508,7 +508,7 @@ RendererError renderer_vulkan_begin_frame(void *backend_state,
                           // queue submit
           &state->image_index)) {
     log_warn("Failed to acquire next image");
-    return RENDERER_ERROR_NONE;
+    return VKR_RENDERER_ERROR_NONE;
   }
 
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
@@ -517,7 +517,7 @@ RendererError renderer_vulkan_begin_frame(void *backend_state,
 
   if (!vulkan_command_buffer_begin(command_buffer)) {
     log_fatal("Failed to begin Vulkan command buffer");
-    return RENDERER_ERROR_NONE;
+    return VKR_RENDERER_ERROR_NONE;
   }
 
   VkViewport viewport = {
@@ -550,7 +550,7 @@ RendererError renderer_vulkan_begin_frame(void *backend_state,
   state->current_render_pass_domain =
       VKR_PIPELINE_DOMAIN_COUNT; // Invalid domain
 
-  return RENDERER_ERROR_NONE;
+  return VKR_RENDERER_ERROR_NONE;
 }
 
 void renderer_vulkan_draw(void *backend_state, uint32_t vertex_count,
@@ -576,8 +576,8 @@ void renderer_vulkan_draw(void *backend_state, uint32_t vertex_count,
   return;
 }
 
-RendererError renderer_vulkan_end_frame(void *backend_state,
-                                        float64_t delta_time) {
+VkrRendererError renderer_vulkan_end_frame(void *backend_state,
+                                           float64_t delta_time) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(delta_time > 0, "Delta time is 0");
 
@@ -591,7 +591,7 @@ RendererError renderer_vulkan_end_frame(void *backend_state,
   if (state->render_pass_active) {
     if (!vulkan_renderpass_end(command_buffer, state)) {
       log_fatal("Failed to end Vulkan render pass");
-      return RENDERER_ERROR_NONE;
+      return VKR_RENDERER_ERROR_NONE;
     }
     state->render_pass_active = false;
     state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
@@ -629,7 +629,7 @@ RendererError renderer_vulkan_end_frame(void *backend_state,
 
   if (!vulkan_command_buffer_end(command_buffer)) {
     log_fatal("Failed to end Vulkan command buffer");
-    return RENDERER_ERROR_NONE;
+    return VKR_RENDERER_ERROR_NONE;
   }
 
   // Make sure the previous frame is not using this image (i.e. its fence is
@@ -639,7 +639,7 @@ RendererError renderer_vulkan_end_frame(void *backend_state,
   if (*image_fence != NULL) { // was frame
     if (!vulkan_fence_wait(state, UINT64_MAX, *image_fence)) {
       log_warn("Failed to wait for Vulkan fence");
-      return RENDERER_ERROR_NONE;
+      return VKR_RENDERER_ERROR_NONE;
     }
   }
 
@@ -672,7 +672,7 @@ RendererError renderer_vulkan_end_frame(void *backend_state,
           ->handle);
   if (result != VK_SUCCESS) {
     log_fatal("Failed to submit Vulkan command buffer");
-    return RENDERER_ERROR_NONE;
+    return VKR_RENDERER_ERROR_NONE;
   }
 
   vulkan_command_buffer_update_submitted(command_buffer);
@@ -683,10 +683,10 @@ RendererError renderer_vulkan_end_frame(void *backend_state,
                                  state->image_index),
           state->image_index)) {
     log_warn("Failed to present Vulkan image");
-    return RENDERER_ERROR_NONE;
+    return VKR_RENDERER_ERROR_NONE;
   }
 
-  return RENDERER_ERROR_NONE;
+  return VKR_RENDERER_ERROR_NONE;
 }
 
 void renderer_vulkan_draw_indexed(void *backend_state, uint32_t index_count,
@@ -710,9 +710,9 @@ void renderer_vulkan_draw_indexed(void *backend_state, uint32_t index_count,
   return;
 }
 
-BackendResourceHandle
+VkrBackendResourceHandle
 renderer_vulkan_create_buffer(void *backend_state,
-                              const BufferDescription *desc,
+                              const VkrBufferDescription *desc,
                               const void *initial_data) {
   log_debug("Creating Vulkan buffer");
 
@@ -722,7 +722,7 @@ renderer_vulkan_create_buffer(void *backend_state,
       state->arena, sizeof(struct s_BufferHandle), ARENA_MEMORY_TAG_RENDERER);
   if (!buffer) {
     log_fatal("Failed to allocate buffer");
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   MemZero(buffer, sizeof(struct s_BufferHandle));
@@ -732,43 +732,43 @@ renderer_vulkan_create_buffer(void *backend_state,
 
   if (!vulkan_buffer_create(state, desc, buffer)) {
     log_fatal("Failed to create Vulkan buffer");
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   // If initial data is provided, load it into the buffer
   if (initial_data && desc->size > 0) {
     if (renderer_vulkan_upload_buffer(
-            backend_state, (BackendResourceHandle){.ptr = buffer}, 0,
-            desc->size, initial_data) != RENDERER_ERROR_NONE) {
+            backend_state, (VkrBackendResourceHandle){.ptr = buffer}, 0,
+            desc->size, initial_data) != VKR_RENDERER_ERROR_NONE) {
       vulkan_buffer_destroy(state, &buffer->buffer);
       log_error("Failed to upload initial data into buffer");
-      return (BackendResourceHandle){.ptr = NULL};
+      return (VkrBackendResourceHandle){.ptr = NULL};
     }
   }
 
-  return (BackendResourceHandle){.ptr = buffer};
+  return (VkrBackendResourceHandle){.ptr = buffer};
 }
 
-RendererError renderer_vulkan_update_buffer(void *backend_state,
-                                            BackendResourceHandle handle,
-                                            uint64_t offset, uint64_t size,
-                                            const void *data) {
+VkrRendererError renderer_vulkan_update_buffer(void *backend_state,
+                                               VkrBackendResourceHandle handle,
+                                               uint64_t offset, uint64_t size,
+                                               const void *data) {
   log_debug("Updating Vulkan buffer");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
   if (!vulkan_buffer_load_data(state, &buffer->buffer, offset, size, 0, data)) {
     log_fatal("Failed to update Vulkan buffer");
-    return RENDERER_ERROR_NONE;
+    return VKR_RENDERER_ERROR_NONE;
   }
 
-  return RENDERER_ERROR_NONE;
+  return VKR_RENDERER_ERROR_NONE;
 }
 
-RendererError renderer_vulkan_upload_buffer(void *backend_state,
-                                            BackendResourceHandle handle,
-                                            uint64_t offset, uint64_t size,
-                                            const void *data) {
+VkrRendererError renderer_vulkan_upload_buffer(void *backend_state,
+                                               VkrBackendResourceHandle handle,
+                                               uint64_t offset, uint64_t size,
+                                               const void *data) {
   log_debug("Uploading Vulkan buffer");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
@@ -777,13 +777,13 @@ RendererError renderer_vulkan_upload_buffer(void *backend_state,
   Scratch scratch = scratch_create(state->temp_arena);
   // Create a host-visible staging buffer to upload to. Mark it as the source
   // of the transfer.
-  BufferTypeFlags buffer_type = bitset8_create();
-  bitset8_set(&buffer_type, BUFFER_TYPE_GRAPHICS);
-  const BufferDescription staging_buffer_desc = {
+  VkrBufferTypeFlags buffer_type = bitset8_create();
+  bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
+  const VkrBufferDescription staging_buffer_desc = {
       .size = size,
       .memory_properties = memory_property_flags_from_bits(
-          MEMORY_PROPERTY_HOST_VISIBLE | MEMORY_PROPERTY_HOST_COHERENT),
-      .usage = buffer_usage_flags_from_bits(BUFFER_USAGE_TRANSFER_SRC),
+          VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
+      .usage = buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
       .buffer_type = buffer_type,
       .bind_on_create = true_v,
   };
@@ -793,14 +793,14 @@ RendererError renderer_vulkan_upload_buffer(void *backend_state,
   if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
     log_fatal("Failed to create staging buffer");
-    return RENDERER_ERROR_NONE;
+    return VKR_RENDERER_ERROR_NONE;
   }
 
   if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, size, 0,
                                data)) {
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
     log_fatal("Failed to load data into staging buffer");
-    return RENDERER_ERROR_NONE;
+    return VKR_RENDERER_ERROR_NONE;
   }
 
   if (!vulkan_buffer_copy_to(state, &staging_buffer->buffer,
@@ -808,17 +808,17 @@ RendererError renderer_vulkan_upload_buffer(void *backend_state,
                              buffer->buffer.handle, offset, size)) {
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
     log_fatal("Failed to copy Vulkan buffer");
-    return RENDERER_ERROR_NONE;
+    return VKR_RENDERER_ERROR_NONE;
   }
 
   vulkan_buffer_destroy(state, &staging_buffer->buffer);
   scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
 
-  return RENDERER_ERROR_NONE;
+  return VKR_RENDERER_ERROR_NONE;
 }
 
 void renderer_vulkan_destroy_buffer(void *backend_state,
-                                    BackendResourceHandle handle) {
+                                    VkrBackendResourceHandle handle) {
   log_debug("Destroying Vulkan buffer");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
@@ -828,9 +828,9 @@ void renderer_vulkan_destroy_buffer(void *backend_state,
   return;
 }
 
-BackendResourceHandle
+VkrBackendResourceHandle
 renderer_vulkan_create_texture(void *backend_state,
-                               const TextureDescription *desc,
+                               const VkrTextureDescription *desc,
                                const void *initial_data) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(desc != NULL, "Texture description is NULL");
@@ -844,7 +844,7 @@ renderer_vulkan_create_texture(void *backend_state,
       state->arena, sizeof(struct s_TextureHandle), ARENA_MEMORY_TAG_RENDERER);
   if (!texture) {
     log_fatal("Failed to allocate texture");
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   MemZero(texture, sizeof(struct s_TextureHandle));
@@ -857,14 +857,14 @@ renderer_vulkan_create_texture(void *backend_state,
 
   VkFormat image_format = vulkan_image_format_from_texture_format(desc->format);
 
-  BufferTypeFlags buffer_type = bitset8_create();
-  bitset8_set(&buffer_type, BUFFER_TYPE_GRAPHICS);
+  VkrBufferTypeFlags buffer_type = bitset8_create();
+  bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
 
-  const BufferDescription staging_buffer_desc = {
+  const VkrBufferDescription staging_buffer_desc = {
       .size = image_size,
-      .usage = buffer_usage_flags_from_bits(BUFFER_USAGE_TRANSFER_SRC),
+      .usage = buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
       .memory_properties = memory_property_flags_from_bits(
-          MEMORY_PROPERTY_HOST_VISIBLE | MEMORY_PROPERTY_HOST_COHERENT),
+          VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
       .buffer_type = buffer_type,
       .bind_on_create = true_v,
   };
@@ -874,13 +874,13 @@ renderer_vulkan_create_texture(void *backend_state,
       scratch.arena, sizeof(struct s_BufferHandle), ARENA_MEMORY_TAG_RENDERER);
   if (!staging_buffer) {
     log_fatal("Failed to allocate staging buffer");
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
     log_fatal("Failed to create staging buffer");
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, image_size, 0,
@@ -888,7 +888,7 @@ renderer_vulkan_create_texture(void *backend_state,
     log_fatal("Failed to load data into staging buffer");
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   if (!vulkan_image_create(
@@ -901,7 +901,7 @@ renderer_vulkan_create_texture(void *backend_state,
     log_fatal("Failed to create Vulkan image");
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   VulkanCommandBuffer temp_command_buffer = {0};
@@ -911,7 +911,7 @@ renderer_vulkan_create_texture(void *backend_state,
     vulkan_image_destroy(state, &texture->texture.image);
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   if (!vulkan_image_transition_layout(
@@ -925,7 +925,7 @@ renderer_vulkan_create_texture(void *backend_state,
     vulkan_image_destroy(state, &texture->texture.image);
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   if (!vulkan_image_copy_from_buffer(state, &texture->texture.image,
@@ -939,7 +939,7 @@ renderer_vulkan_create_texture(void *backend_state,
     vulkan_image_destroy(state, &texture->texture.image);
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   if (!vulkan_image_transition_layout(
@@ -954,7 +954,7 @@ renderer_vulkan_create_texture(void *backend_state,
     vulkan_image_destroy(state, &texture->texture.image);
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   if (!vulkan_command_buffer_end_single_use(
@@ -965,7 +965,7 @@ renderer_vulkan_create_texture(void *backend_state,
     vulkan_image_destroy(state, &texture->texture.image);
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   vkFreeCommandBuffers(state->device.logical_device,
@@ -1003,28 +1003,29 @@ renderer_vulkan_create_texture(void *backend_state,
     vulkan_image_destroy(state, &texture->texture.image);
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   // Only set transparency bit for formats that support alpha channel
-  if (desc->channels == 4 || desc->format == TEXTURE_FORMAT_R8G8B8A8_UNORM ||
-      desc->format == TEXTURE_FORMAT_R8G8B8A8_SRGB ||
-      desc->format == TEXTURE_FORMAT_R8G8B8A8_UINT ||
-      desc->format == TEXTURE_FORMAT_R8G8B8A8_SNORM ||
-      desc->format == TEXTURE_FORMAT_R8G8B8A8_SINT) {
+  if (desc->channels == 4 ||
+      desc->format == VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM ||
+      desc->format == VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB ||
+      desc->format == VKR_TEXTURE_FORMAT_R8G8B8A8_UINT ||
+      desc->format == VKR_TEXTURE_FORMAT_R8G8B8A8_SNORM ||
+      desc->format == VKR_TEXTURE_FORMAT_R8G8B8A8_SINT) {
     bitset8_set(&texture->description.properties,
-                TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
+                VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
   }
   texture->description.generation++;
 
   vulkan_buffer_destroy(state, &staging_buffer->buffer);
   scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
 
-  return (BackendResourceHandle){.ptr = texture};
+  return (VkrBackendResourceHandle){.ptr = texture};
 }
 
 void renderer_vulkan_destroy_texture(void *backend_state,
-                                     BackendResourceHandle handle) {
+                                     VkrBackendResourceHandle handle) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(handle.ptr != NULL, "Handle is NULL");
 
@@ -1034,7 +1035,7 @@ void renderer_vulkan_destroy_texture(void *backend_state,
   struct s_TextureHandle *texture = (struct s_TextureHandle *)handle.ptr;
 
   // Ensure the texture is not in use before destroying
-  if (renderer_vulkan_wait_idle(backend_state) != RENDERER_ERROR_NONE) {
+  if (renderer_vulkan_wait_idle(backend_state) != VKR_RENDERER_ERROR_NONE) {
     log_error("Failed to wait for idle before destroying texture");
   }
 
@@ -1046,8 +1047,8 @@ void renderer_vulkan_destroy_texture(void *backend_state,
   return;
 }
 
-BackendResourceHandle renderer_vulkan_create_graphics_pipeline(
-    void *backend_state, const GraphicsPipelineDescription *desc) {
+VkrBackendResourceHandle renderer_vulkan_create_graphics_pipeline(
+    void *backend_state, const VkrGraphicsPipelineDescription *desc) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(desc != NULL, "Pipeline description is NULL");
 
@@ -1060,23 +1061,23 @@ BackendResourceHandle renderer_vulkan_create_graphics_pipeline(
                   ARENA_MEMORY_TAG_RENDERER);
   if (!pipeline) {
     log_fatal("Failed to allocate pipeline");
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   MemZero(pipeline, sizeof(struct s_GraphicsPipeline));
 
   if (!vulkan_graphics_graphics_pipeline_create(state, desc, pipeline)) {
     log_fatal("Failed to create Vulkan pipeline layout");
-    return (BackendResourceHandle){.ptr = NULL};
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
-  return (BackendResourceHandle){.ptr = pipeline};
+  return (VkrBackendResourceHandle){.ptr = pipeline};
 }
 
-RendererError renderer_vulkan_update_pipeline_state(
-    void *backend_state, BackendResourceHandle pipeline_handle,
-    const GlobalUniformObject *uniform, const ShaderStateObject *data,
-    const RendererMaterialState *material) {
+VkrRendererError renderer_vulkan_update_pipeline_state(
+    void *backend_state, VkrBackendResourceHandle pipeline_handle,
+    const VkrGlobalUniformObject *uniform, const VkrShaderStateObject *data,
+    const VkrRendererMaterialState *material) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(pipeline_handle.ptr != NULL, "Pipeline handle is NULL");
 
@@ -1090,10 +1091,10 @@ RendererError renderer_vulkan_update_pipeline_state(
                                                material);
 }
 
-RendererError
+VkrRendererError
 renderer_vulkan_local_state_acquire(void *backend_state,
-                                    BackendResourceHandle pipeline_handle,
-                                    RendererLocalStateHandle *out_handle) {
+                                    VkrBackendResourceHandle pipeline_handle,
+                                    VkrRendererLocalStateHandle *out_handle) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(pipeline_handle.ptr != NULL, "Pipeline handle is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
@@ -1105,17 +1106,17 @@ renderer_vulkan_local_state_acquire(void *backend_state,
   uint32_t object_id = 0;
   if (!vulkan_shader_acquire_resource(state, &pipeline->shader_object,
                                       &object_id)) {
-    return RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
+    return VKR_RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
   }
 
   out_handle->id = object_id;
-  return RENDERER_ERROR_NONE;
+  return VKR_RENDERER_ERROR_NONE;
 }
 
-RendererError
+VkrRendererError
 renderer_vulkan_local_state_release(void *backend_state,
-                                    BackendResourceHandle pipeline_handle,
-                                    RendererLocalStateHandle handle) {
+                                    VkrBackendResourceHandle pipeline_handle,
+                                    VkrRendererLocalStateHandle handle) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(pipeline_handle.ptr != NULL, "Pipeline handle is NULL");
 
@@ -1125,14 +1126,14 @@ renderer_vulkan_local_state_release(void *backend_state,
 
   if (!vulkan_shader_release_resource(state, &pipeline->shader_object,
                                       handle.id)) {
-    return RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
+    return VKR_RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
   }
 
-  return RENDERER_ERROR_NONE;
+  return VKR_RENDERER_ERROR_NONE;
 }
 
 void renderer_vulkan_destroy_pipeline(void *backend_state,
-                                      BackendResourceHandle handle) {
+                                      VkrBackendResourceHandle handle) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(handle.ptr != NULL, "Handle is NULL");
 
@@ -1148,7 +1149,7 @@ void renderer_vulkan_destroy_pipeline(void *backend_state,
 }
 
 void renderer_vulkan_bind_pipeline(void *backend_state,
-                                   BackendResourceHandle pipeline_handle) {
+                                   VkrBackendResourceHandle pipeline_handle) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(pipeline_handle.ptr != NULL, "Pipeline handle is NULL");
 
@@ -1170,7 +1171,7 @@ void renderer_vulkan_bind_pipeline(void *backend_state,
 }
 
 void renderer_vulkan_bind_buffer(void *backend_state,
-                                 BackendResourceHandle buffer_handle,
+                                 VkrBackendResourceHandle buffer_handle,
                                  uint64_t offset) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(buffer_handle.ptr != NULL, "Buffer handle is NULL");
@@ -1185,11 +1186,12 @@ void renderer_vulkan_bind_buffer(void *backend_state,
 
   // log_debug("Current command buffer handle: %p", command_buffer->handle);
 
-  if (bitset8_is_set(&buffer->description.usage, BUFFER_USAGE_VERTEX_BUFFER)) {
+  if (bitset8_is_set(&buffer->description.usage,
+                     VKR_BUFFER_USAGE_VERTEX_BUFFER)) {
     vulkan_buffer_bind_vertex_buffer(state, command_buffer, 0,
                                      buffer->buffer.handle, offset);
   } else if (bitset8_is_set(&buffer->description.usage,
-                            BUFFER_USAGE_INDEX_BUFFER)) {
+                            VKR_BUFFER_USAGE_INDEX_BUFFER)) {
     // Default to uint32 index type - could be improved by storing in buffer
     // description
     vulkan_buffer_bind_index_buffer(

@@ -13,7 +13,7 @@
 
 #include "containers/str.h"
 #include "defines.h"
-#include "renderer/renderer.h"
+#include "renderer/vkr_renderer.h"
 
 // todo: make this configurable
 #define BUFFERING_FRAMES 3
@@ -188,7 +188,7 @@ Array(VulkanFencePtr);
 
 struct s_BufferHandle {
   VulkanBuffer buffer;
-  BufferDescription description;
+  VkrBufferDescription description;
 };
 
 #define VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT 3
@@ -210,8 +210,8 @@ typedef struct VulkanShaderObjectLocalState {
 } VulkanShaderObjectLocalState;
 
 typedef struct VulkanShaderObject {
-  VkPipelineShaderStageCreateInfo stages[SHADER_STAGE_COUNT];
-  VkShaderModule modules[SHADER_STAGE_COUNT];
+  VkPipelineShaderStageCreateInfo stages[VKR_SHADER_STAGE_COUNT];
+  VkShaderModule modules[VKR_SHADER_STAGE_COUNT];
 
   VkDescriptorPool global_descriptor_pool;
   // Per-frame global descriptor sets; length == frame_count
@@ -233,7 +233,7 @@ typedef struct VulkanShaderObject {
 } VulkanShaderObject;
 
 struct s_GraphicsPipeline {
-  GraphicsPipelineDescription desc;
+  VkrGraphicsPipelineDescription desc;
   VkPipelineLayout pipeline_layout;
   VkPipeline pipeline;
 
@@ -242,7 +242,7 @@ struct s_GraphicsPipeline {
 
 struct s_TextureHandle {
   VulkanTexture texture;
-  TextureDescription description;
+  VkrTextureDescription description;
 };
 
 typedef struct VulkanBackendState {
@@ -250,7 +250,7 @@ typedef struct VulkanBackendState {
   Arena *temp_arena;
   Arena *swapchain_arena;
   VkrWindow *window;
-  DeviceRequirements *device_requirements;
+  VkrDeviceRequirements *device_requirements;
 
   VkAllocationCallbacks *allocator;
 

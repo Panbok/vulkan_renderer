@@ -2,7 +2,7 @@
 #include "vulkan_renderpass.h"
 
 bool8_t vulkan_graphics_graphics_pipeline_create(
-    VulkanBackendState *state, const GraphicsPipelineDescription *desc,
+    VulkanBackendState *state, const VkrGraphicsPipelineDescription *desc,
     struct s_GraphicsPipeline *out_pipeline) {
   assert_log(state != NULL, "State is NULL");
   assert_log(desc != NULL, "Description is NULL");
@@ -37,9 +37,10 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
       VkVertexInputBindingDescription binding = {
           .binding = desc->bindings[i].binding,
           .stride = desc->bindings[i].stride,
-          .inputRate = desc->bindings[i].input_rate == VERTEX_INPUT_RATE_VERTEX
-                           ? VK_VERTEX_INPUT_RATE_VERTEX
-                           : VK_VERTEX_INPUT_RATE_INSTANCE,
+          .inputRate =
+              desc->bindings[i].input_rate == VKR_VERTEX_INPUT_RATE_VERTEX
+                  ? VK_VERTEX_INPUT_RATE_VERTEX
+                  : VK_VERTEX_INPUT_RATE_INSTANCE,
       };
       array_set_VkVertexInputBindingDescription(&bindings, i, binding);
     }
@@ -181,8 +182,8 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   out_pipeline->pipeline_layout = pipeline_layout;
 
   VkPipelineShaderStageCreateInfo shader_stages[] = {
-      out_pipeline->shader_object.stages[SHADER_STAGE_VERTEX],
-      out_pipeline->shader_object.stages[SHADER_STAGE_FRAGMENT],
+      out_pipeline->shader_object.stages[VKR_SHADER_STAGE_VERTEX],
+      out_pipeline->shader_object.stages[VKR_SHADER_STAGE_FRAGMENT],
   };
 
   VulkanRenderPass *render_pass = state->domain_render_passes[desc->domain];
@@ -246,10 +247,10 @@ void vulkan_graphics_pipeline_bind(VulkanCommandBuffer *command_buffer,
   vkCmdBindPipeline(command_buffer->handle, bind_point, pipeline->pipeline);
 }
 
-RendererError vulkan_graphics_pipeline_update_state(
+VkrRendererError vulkan_graphics_pipeline_update_state(
     VulkanBackendState *state, struct s_GraphicsPipeline *pipeline,
-    const GlobalUniformObject *uniform, const ShaderStateObject *data,
-    const RendererMaterialState *material) {
+    const VkrGlobalUniformObject *uniform, const VkrShaderStateObject *data,
+    const VkrRendererMaterialState *material) {
   assert_log(state != NULL, "State is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
 
@@ -281,7 +282,7 @@ RendererError vulkan_graphics_pipeline_update_state(
                                            pipeline->pipeline_layout,
                                            uniform)) {
       log_error("Failed to update global state");
-      return RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
+      return VKR_RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
     }
   }
 
@@ -290,7 +291,7 @@ RendererError vulkan_graphics_pipeline_update_state(
                                     pipeline->pipeline_layout, data,
                                     material)) {
       log_error("Failed to update state");
-      return RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
+      return VKR_RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
     }
   }
 
@@ -299,7 +300,7 @@ RendererError vulkan_graphics_pipeline_update_state(
   vulkan_graphics_pipeline_bind(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 pipeline);
 
-  return RENDERER_ERROR_NONE;
+  return VKR_RENDERER_ERROR_NONE;
 }
 
 void vulkan_graphics_pipeline_destroy(VulkanBackendState *state,

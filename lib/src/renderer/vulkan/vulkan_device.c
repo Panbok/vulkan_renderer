@@ -97,9 +97,9 @@ static uint32_t score_device(VulkanBackendState *state,
     return 0;
   }
 
-  DeviceRequirements *req = state->device_requirements;
+  VkrDeviceRequirements *req = state->device_requirements;
 
-  if (bitset8_is_set(&req->supported_stages, SHADER_STAGE_GEOMETRY_BIT) &&
+  if (bitset8_is_set(&req->supported_stages, VKR_SHADER_STAGE_GEOMETRY_BIT) &&
       !deviceFeatures.geometryShader) {
     array_destroy_VkSurfaceFormatKHR(&swapchain_details.formats);
     array_destroy_VkPresentModeKHR(&swapchain_details.present_modes);
@@ -109,7 +109,7 @@ static uint32_t score_device(VulkanBackendState *state,
   }
 
   if (bitset8_is_set(&req->supported_stages,
-                     SHADER_STAGE_TESSELLATION_CONTROL_BIT) &&
+                     VKR_SHADER_STAGE_TESSELLATION_CONTROL_BIT) &&
       !deviceFeatures.tessellationShader) {
     array_destroy_QueueFamilyIndex(&indices);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
@@ -117,7 +117,7 @@ static uint32_t score_device(VulkanBackendState *state,
   }
 
   if (bitset8_is_set(&req->supported_stages,
-                     SHADER_STAGE_TESSELLATION_EVALUATION_BIT) &&
+                     VKR_SHADER_STAGE_TESSELLATION_EVALUATION_BIT) &&
       !deviceFeatures.tessellationShader) {
     array_destroy_QueueFamilyIndex(&indices);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
@@ -133,17 +133,17 @@ static uint32_t score_device(VulkanBackendState *state,
                                            queue_families.data);
 
   bool32_t has_required_graphics =
-      !bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_GRAPHICS_BIT);
+      !bitset8_is_set(&req->supported_queues, VKR_DEVICE_QUEUE_GRAPHICS_BIT);
   bool32_t has_required_compute =
-      !bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_COMPUTE_BIT);
+      !bitset8_is_set(&req->supported_queues, VKR_DEVICE_QUEUE_COMPUTE_BIT);
   bool32_t has_required_transfer =
-      !bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_TRANSFER_BIT);
-  bool32_t has_required_sparse =
-      !bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_SPARSE_BINDING_BIT);
+      !bitset8_is_set(&req->supported_queues, VKR_DEVICE_QUEUE_TRANSFER_BIT);
+  bool32_t has_required_sparse = !bitset8_is_set(
+      &req->supported_queues, VKR_DEVICE_QUEUE_SPARSE_BINDING_BIT);
   bool32_t has_required_protected =
-      !bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_PROTECTED_BIT);
+      !bitset8_is_set(&req->supported_queues, VKR_DEVICE_QUEUE_PROTECTED_BIT);
   bool32_t has_required_present =
-      !bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_PRESENT_BIT);
+      !bitset8_is_set(&req->supported_queues, VKR_DEVICE_QUEUE_PRESENT_BIT);
 
   for (uint32_t i = 0; i < queue_family_count; i++) {
     VkQueueFamilyProperties *family =
@@ -167,7 +167,7 @@ static uint32_t score_device(VulkanBackendState *state,
   }
 
   // Check present support separately (surface-dependent)
-  if (bitset8_is_set(&req->supported_queues, DEVICE_QUEUE_PRESENT_BIT)) {
+  if (bitset8_is_set(&req->supported_queues, VKR_DEVICE_QUEUE_PRESENT_BIT)) {
     QueueFamilyIndex *present_index =
         array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_PRESENT);
     has_required_present = present_index->is_present;
@@ -184,7 +184,7 @@ static uint32_t score_device(VulkanBackendState *state,
   }
 
   if (bitset8_is_set(&req->supported_sampler_filters,
-                     SAMPLER_FILTER_ANISOTROPIC_BIT) &&
+                     VKR_SAMPLER_FILTER_ANISOTROPIC_BIT) &&
       !deviceFeatures.samplerAnisotropy) {
     array_destroy_QueueFamilyIndex(&indices);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
@@ -197,18 +197,20 @@ static uint32_t score_device(VulkanBackendState *state,
   // Start with base score for meeting minimum requirements
   score = 100;
   if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
-      bitset8_is_set(&req->allowed_device_types, DEVICE_TYPE_DISCRETE_BIT)) {
+      bitset8_is_set(&req->allowed_device_types,
+                     VKR_DEVICE_TYPE_DISCRETE_BIT)) {
     score += 1000; // Discrete GPU gets highest preference
   } else if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU &&
              bitset8_is_set(&req->allowed_device_types,
-                            DEVICE_TYPE_INTEGRATED_BIT)) {
+                            VKR_DEVICE_TYPE_INTEGRATED_BIT)) {
     score += 500; // Integrated GPU gets medium preference
   } else if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU &&
              bitset8_is_set(&req->allowed_device_types,
-                            DEVICE_TYPE_VIRTUAL_BIT)) {
+                            VKR_DEVICE_TYPE_VIRTUAL_BIT)) {
     score += 200; // Virtual GPU gets lower preference
   } else if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU &&
-             bitset8_is_set(&req->allowed_device_types, DEVICE_TYPE_CPU_BIT)) {
+             bitset8_is_set(&req->allowed_device_types,
+                            VKR_DEVICE_TYPE_CPU_BIT)) {
     score += 50; // CPU gets lowest preference
   } else {
     // Device type not in allowed types, but still give some score if it meets
@@ -500,7 +502,7 @@ bool32_t vulkan_device_pick_physical_device(VulkanBackendState *state) {
 }
 
 void vulkan_device_get_information(VulkanBackendState *state,
-                                   DeviceInformation *device_information,
+                                   VkrDeviceInformation *device_information,
                                    Arena *temp_arena) {
   assert_log(state != NULL, "State is NULL");
   assert_log(state->device.physical_device != VK_NULL_HANDLE,
@@ -595,19 +597,19 @@ void vulkan_device_get_information(VulkanBackendState *state,
   }
 
   // Device type flags
-  DeviceTypeFlags device_types = bitset8_create();
+  VkrDeviceTypeFlags device_types = bitset8_create();
   switch (properties.deviceType) {
   case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
-    bitset8_set(&device_types, DEVICE_TYPE_DISCRETE_BIT);
+    bitset8_set(&device_types, VKR_DEVICE_TYPE_DISCRETE_BIT);
     break;
   case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
-    bitset8_set(&device_types, DEVICE_TYPE_INTEGRATED_BIT);
+    bitset8_set(&device_types, VKR_DEVICE_TYPE_INTEGRATED_BIT);
     break;
   case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
-    bitset8_set(&device_types, DEVICE_TYPE_VIRTUAL_BIT);
+    bitset8_set(&device_types, VKR_DEVICE_TYPE_VIRTUAL_BIT);
     break;
   case VK_PHYSICAL_DEVICE_TYPE_CPU:
-    bitset8_set(&device_types, DEVICE_TYPE_CPU_BIT);
+    bitset8_set(&device_types, VKR_DEVICE_TYPE_CPU_BIT);
     break;
   default:
     break;
@@ -616,7 +618,7 @@ void vulkan_device_get_information(VulkanBackendState *state,
   // Queue family capabilities
   Array_QueueFamilyIndex queue_indices =
       find_queue_family_indices(state, state->device.physical_device);
-  DeviceQueueFlags device_queues = bitset8_create();
+  VkrDeviceQueueFlags device_queues = bitset8_create();
 
   uint32_t queue_family_count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(state->device.physical_device,
@@ -632,19 +634,19 @@ void vulkan_device_get_information(VulkanBackendState *state,
         array_get_VkQueueFamilyProperties(&queue_families, i);
 
     if (family->queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-      bitset8_set(&device_queues, DEVICE_QUEUE_GRAPHICS_BIT);
+      bitset8_set(&device_queues, VKR_DEVICE_QUEUE_GRAPHICS_BIT);
     }
     if (family->queueFlags & VK_QUEUE_COMPUTE_BIT) {
-      bitset8_set(&device_queues, DEVICE_QUEUE_COMPUTE_BIT);
+      bitset8_set(&device_queues, VKR_DEVICE_QUEUE_COMPUTE_BIT);
     }
     if (family->queueFlags & VK_QUEUE_TRANSFER_BIT) {
-      bitset8_set(&device_queues, DEVICE_QUEUE_TRANSFER_BIT);
+      bitset8_set(&device_queues, VKR_DEVICE_QUEUE_TRANSFER_BIT);
     }
     if (family->queueFlags & VK_QUEUE_SPARSE_BINDING_BIT) {
-      bitset8_set(&device_queues, DEVICE_QUEUE_SPARSE_BINDING_BIT);
+      bitset8_set(&device_queues, VKR_DEVICE_QUEUE_SPARSE_BINDING_BIT);
     }
     if (family->queueFlags & VK_QUEUE_PROTECTED_BIT) {
-      bitset8_set(&device_queues, DEVICE_QUEUE_PROTECTED_BIT);
+      bitset8_set(&device_queues, VKR_DEVICE_QUEUE_PROTECTED_BIT);
     }
   }
 
@@ -652,16 +654,16 @@ void vulkan_device_get_information(VulkanBackendState *state,
   QueueFamilyIndex *present_index =
       array_get_QueueFamilyIndex(&queue_indices, QUEUE_FAMILY_TYPE_PRESENT);
   if (present_index->is_present) {
-    bitset8_set(&device_queues, DEVICE_QUEUE_PRESENT_BIT);
+    bitset8_set(&device_queues, VKR_DEVICE_QUEUE_PRESENT_BIT);
   }
 
   // Sampler filter capabilities
-  SamplerFilterFlags sampler_filters = bitset8_create();
+  VkrSamplerFilterFlags sampler_filters = bitset8_create();
   if (features.samplerAnisotropy) {
-    bitset8_set(&sampler_filters, SAMPLER_FILTER_ANISOTROPIC_BIT);
+    bitset8_set(&sampler_filters, VKR_SAMPLER_FILTER_ANISOTROPIC_BIT);
   }
   // Linear filtering is almost universally supported
-  bitset8_set(&sampler_filters, SAMPLER_FILTER_LINEAR_BIT);
+  bitset8_set(&sampler_filters, VKR_SAMPLER_FILTER_LINEAR_BIT);
 
   array_destroy_QueueFamilyIndex(&queue_indices);
   array_destroy_VkQueueFamilyProperties(&queue_families);

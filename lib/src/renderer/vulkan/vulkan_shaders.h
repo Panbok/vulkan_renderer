@@ -6,19 +6,18 @@
 #include "vulkan_utils.h"
 
 bool8_t vulkan_shader_object_create(VulkanBackendState *state,
-                                    const ShaderObjectDescription *desc,
+                                    const VkrShaderObjectDescription *desc,
                                     VulkanShaderObject *out_shader_object);
 
-bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
-                                          VulkanShaderObject *shader_object,
-                                          VkPipelineLayout pipeline_layout,
-                                          const GlobalUniformObject *uniform);
+bool8_t vulkan_shader_update_global_state(
+    VulkanBackendState *state, VulkanShaderObject *shader_object,
+    VkPipelineLayout pipeline_layout, const VkrGlobalUniformObject *uniform);
 
 bool8_t vulkan_shader_update_state(VulkanBackendState *state,
                                    VulkanShaderObject *shader_object,
                                    VkPipelineLayout pipeline_layout,
-                                   const ShaderStateObject *data,
-                                   const RendererMaterialState *material);
+                                   const VkrShaderStateObject *data,
+                                   const VkrRendererMaterialState *material);
 
 bool8_t vulkan_shader_acquire_resource(VulkanBackendState *state,
                                        VulkanShaderObject *shader_object,
@@ -32,8 +31,8 @@ void vulkan_shader_object_destroy(VulkanBackendState *state,
                                   VulkanShaderObject *out_shader_object);
 
 bool8_t vulkan_shader_module_create(VulkanBackendState *state,
-                                    ShaderStageFlags stage, const uint64_t size,
-                                    const uint8_t *code,
+                                    VkrShaderStageFlags stage,
+                                    const uint64_t size, const uint8_t *code,
                                     const String8 entry_point,
                                     VkShaderModule *out_shader,
                                     VkPipelineShaderStageCreateInfo *out_stage);

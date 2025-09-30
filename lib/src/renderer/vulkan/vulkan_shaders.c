@@ -2,7 +2,7 @@
 #include "filesystem/filesystem.h"
 
 bool8_t vulkan_shader_module_create(
-    VulkanBackendState *state, ShaderStageFlags stage, const uint64_t size,
+    VulkanBackendState *state, VkrShaderStageFlags stage, const uint64_t size,
     const uint8_t *code, const String8 entry_point, VkShaderModule *out_shader,
     VkPipelineShaderStageCreateInfo *out_stage) {
   assert_log(state != NULL, "Backend state is NULL");
@@ -74,17 +74,17 @@ void vulkan_shader_module_destroy(VulkanBackendState *state,
 }
 
 bool8_t vulkan_shader_object_create(VulkanBackendState *state,
-                                    const ShaderObjectDescription *desc,
+                                    const VkrShaderObjectDescription *desc,
                                     VulkanShaderObject *out_shader_object) {
   assert_log(state != NULL, "Backend state is NULL");
   assert_log(desc != NULL, "Shader object description is NULL");
 
-  if (desc->file_format != SHADER_FILE_FORMAT_SPIR_V) {
+  if (desc->file_format != VKR_SHADER_FILE_FORMAT_SPIR_V) {
     log_error("Only SPIR-V shader file format is supported");
     return false_v;
   }
 
-  if (desc->file_type == SHADER_FILE_TYPE_SINGLE) {
+  if (desc->file_type == VKR_SHADER_FILE_TYPE_SINGLE) {
     const FilePath path =
         file_path_create(string8_cstr(&desc->modules[0].path), state->arena,
                          FILE_PATH_TYPE_RELATIVE);
@@ -104,7 +104,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
       return false_v;
     }
 
-    for (uint32_t i = 0; i < SHADER_STAGE_COUNT; i++) {
+    for (uint32_t i = 0; i < VKR_SHADER_STAGE_COUNT; i++) {
       vulkan_shader_module_create(state, desc->modules[i].stages, shader_size,
                                   shader_data, desc->modules[i].entry_point,
                                   &out_shader_object->modules[i],
@@ -202,16 +202,16 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   log_debug("Created Vulkan global descriptor pool: %p",
             out_shader_object->global_descriptor_pool);
 
-  BufferTypeFlags buffer_type = bitset8_create();
-  bitset8_set(&buffer_type, BUFFER_TYPE_GRAPHICS);
-  BufferDescription global_uniform_buffer_desc = {
-      .size = sizeof(GlobalUniformObject),
-      .usage = buffer_usage_flags_from_bits(BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER |
-                                            BUFFER_USAGE_TRANSFER_DST |
-                                            BUFFER_USAGE_TRANSFER_SRC),
+  VkrBufferTypeFlags buffer_type = bitset8_create();
+  bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
+  VkrBufferDescription global_uniform_buffer_desc = {
+      .size = sizeof(VkrGlobalUniformObject),
+      .usage = buffer_usage_flags_from_bits(
+          VKR_BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER |
+          VKR_BUFFER_USAGE_TRANSFER_DST | VKR_BUFFER_USAGE_TRANSFER_SRC),
       .memory_properties = memory_property_flags_from_bits(
-          MEMORY_PROPERTY_DEVICE_LOCAL | MEMORY_PROPERTY_HOST_VISIBLE |
-          MEMORY_PROPERTY_HOST_COHERENT),
+          VKR_MEMORY_PROPERTY_DEVICE_LOCAL | VKR_MEMORY_PROPERTY_HOST_VISIBLE |
+          VKR_MEMORY_PROPERTY_HOST_COHERENT),
       .buffer_type = buffer_type,
       .bind_on_create = true_v};
 
@@ -299,15 +299,15 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
       out_shader_object->local_descriptor_set_layout,
   };
 
-  BufferDescription local_uniform_buffer_desc = {
-      .size =
-          sizeof(LocalUniformObject) * VULKAN_SHADER_OBJECT_LOCAL_STATE_COUNT,
-      .usage = buffer_usage_flags_from_bits(BUFFER_USAGE_TRANSFER_DST |
-                                            BUFFER_USAGE_TRANSFER_SRC |
-                                            BUFFER_USAGE_UNIFORM),
+  VkrBufferDescription local_uniform_buffer_desc = {
+      .size = sizeof(VkrLocalUniformObject) *
+              VULKAN_SHADER_OBJECT_LOCAL_STATE_COUNT,
+      .usage = buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_DST |
+                                            VKR_BUFFER_USAGE_TRANSFER_SRC |
+                                            VKR_BUFFER_USAGE_UNIFORM),
       .memory_properties = memory_property_flags_from_bits(
-          MEMORY_PROPERTY_DEVICE_LOCAL | MEMORY_PROPERTY_HOST_VISIBLE |
-          MEMORY_PROPERTY_HOST_COHERENT),
+          VKR_MEMORY_PROPERTY_DEVICE_LOCAL | VKR_MEMORY_PROPERTY_HOST_VISIBLE |
+          VKR_MEMORY_PROPERTY_HOST_COHERENT),
       .buffer_type = buffer_type,
       .bind_on_create = true_v};
 
@@ -323,10 +323,9 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   return true;
 }
 
-bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
-                                          VulkanShaderObject *shader_object,
-                                          VkPipelineLayout pipeline_layout,
-                                          const GlobalUniformObject *uniform) {
+bool8_t vulkan_shader_update_global_state(
+    VulkanBackendState *state, VulkanShaderObject *shader_object,
+    VkPipelineLayout pipeline_layout, const VkrGlobalUniformObject *uniform) {
   assert_log(state != NULL, "Backend state is NULL");
   assert_log(shader_object != NULL, "Shader object is NULL");
   assert_log(pipeline_layout != VK_NULL_HANDLE, "Pipeline layout is NULL");
@@ -350,7 +349,7 @@ bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
 
   if (!vulkan_buffer_load_data(state,
                                &shader_object->global_uniform_buffer.buffer, 0,
-                               sizeof(GlobalUniformObject), 0, uniform)) {
+                               sizeof(VkrGlobalUniformObject), 0, uniform)) {
     log_error("Failed to load global uniform buffer data");
     return false;
   }
@@ -358,7 +357,7 @@ bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
   VkDescriptorBufferInfo buffer_info = {
       .buffer = shader_object->global_uniform_buffer.buffer.handle,
       .offset = 0,
-      .range = sizeof(GlobalUniformObject),
+      .range = sizeof(VkrGlobalUniformObject),
   };
 
   VkWriteDescriptorSet descriptor_write = {
@@ -382,8 +381,8 @@ bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
 bool8_t vulkan_shader_update_state(VulkanBackendState *state,
                                    VulkanShaderObject *shader_object,
                                    VkPipelineLayout pipeline_layout,
-                                   const ShaderStateObject *data,
-                                   const RendererMaterialState *material) {
+                                   const VkrShaderStateObject *data,
+                                   const VkrRendererMaterialState *material) {
   assert_log(state != NULL, "Backend state is NULL");
   assert_log(shader_object != NULL, "Shader object is NULL");
   assert_log(pipeline_layout != VK_NULL_HANDLE, "Pipeline layout is NULL");
@@ -419,17 +418,17 @@ bool8_t vulkan_shader_update_state(VulkanBackendState *state,
 
   uint32_t descriptor_index = 0;
   uint32_t descriptor_count = 0;
-  LocalUniformObject local_uniform_object;
+  VkrLocalUniformObject local_uniform_object;
 
-  uint32_t range = sizeof(LocalUniformObject);
-  uint64_t offset = sizeof(LocalUniformObject) * data->local_state.id;
+  uint32_t range = sizeof(VkrLocalUniformObject);
+  uint64_t offset = sizeof(VkrLocalUniformObject) * data->local_state.id;
 
   // Material uniforms provided explicitly
   if (material) {
     local_uniform_object = material->uniforms;
   } else {
     // Fallback: ensure zeroed
-    MemZero(&local_uniform_object, sizeof(LocalUniformObject));
+    MemZero(&local_uniform_object, sizeof(VkrLocalUniformObject));
   }
 
   if (!vulkan_buffer_load_data(state,
@@ -680,7 +679,7 @@ void vulkan_shader_object_destroy(VulkanBackendState *state,
   vulkan_buffer_destroy(state,
                         &out_shader_object->global_uniform_buffer.buffer);
 
-  for (uint32_t i = 0; i < SHADER_STAGE_COUNT; i++) {
+  for (uint32_t i = 0; i < VKR_SHADER_STAGE_COUNT; i++) {
     vulkan_shader_module_destroy(state, out_shader_object->modules[i]);
   }
 }

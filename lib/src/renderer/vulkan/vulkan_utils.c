@@ -1,25 +1,28 @@
 #include "vulkan_utils.h"
 
-VulkanShaderStageFlagResult vulkan_shader_stage_to_vk(ShaderStageFlags stage) {
+VulkanShaderStageFlagResult
+vulkan_shader_stage_to_vk(VkrShaderStageFlags stage) {
   int stage_count = 0;
   VkShaderStageFlagBits result = 0;
 
-  if (bitset8_is_set(&stage, SHADER_STAGE_VERTEX_BIT)) {
+  if (bitset8_is_set(&stage, VKR_SHADER_STAGE_VERTEX_BIT)) {
     result = VK_SHADER_STAGE_VERTEX_BIT;
     stage_count++;
-  } else if (bitset8_is_set(&stage, SHADER_STAGE_FRAGMENT_BIT)) {
+  } else if (bitset8_is_set(&stage, VKR_SHADER_STAGE_FRAGMENT_BIT)) {
     result = VK_SHADER_STAGE_FRAGMENT_BIT;
     stage_count++;
-  } else if (bitset8_is_set(&stage, SHADER_STAGE_GEOMETRY_BIT)) {
+  } else if (bitset8_is_set(&stage, VKR_SHADER_STAGE_GEOMETRY_BIT)) {
     result = VK_SHADER_STAGE_GEOMETRY_BIT;
     stage_count++;
-  } else if (bitset8_is_set(&stage, SHADER_STAGE_TESSELLATION_CONTROL_BIT)) {
+  } else if (bitset8_is_set(&stage,
+                            VKR_SHADER_STAGE_TESSELLATION_CONTROL_BIT)) {
     result = VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT;
     stage_count++;
-  } else if (bitset8_is_set(&stage, SHADER_STAGE_TESSELLATION_EVALUATION_BIT)) {
+  } else if (bitset8_is_set(&stage,
+                            VKR_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)) {
     result = VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT;
     stage_count++;
-  } else if (bitset8_is_set(&stage, SHADER_STAGE_COMPUTE_BIT)) {
+  } else if (bitset8_is_set(&stage, VKR_SHADER_STAGE_COMPUTE_BIT)) {
     result = VK_SHADER_STAGE_COMPUTE_BIT;
     stage_count++;
   }
@@ -129,17 +132,17 @@ int32_t find_memory_index(VkPhysicalDevice device, uint32_t type_filter,
   return -1;
 }
 
-VkFormat vulkan_vertex_format_to_vk(VertexFormat format) {
+VkFormat vulkan_vertex_format_to_vk(VkrVertexFormat format) {
   switch (format) {
-  case VERTEX_FORMAT_R32_SFLOAT:
+  case VKR_VERTEX_FORMAT_R32_SFLOAT:
     return VK_FORMAT_R32_SFLOAT;
-  case VERTEX_FORMAT_R32G32_SFLOAT:
+  case VKR_VERTEX_FORMAT_R32G32_SFLOAT:
     return VK_FORMAT_R32G32_SFLOAT;
-  case VERTEX_FORMAT_R32G32B32_SFLOAT:
+  case VKR_VERTEX_FORMAT_R32G32B32_SFLOAT:
     return VK_FORMAT_R32G32B32_SFLOAT;
-  case VERTEX_FORMAT_R32G32B32A32_SFLOAT:
+  case VKR_VERTEX_FORMAT_R32G32B32A32_SFLOAT:
     return VK_FORMAT_R32G32B32A32_SFLOAT;
-  case VERTEX_FORMAT_R8G8B8A8_UNORM:
+  case VKR_VERTEX_FORMAT_R8G8B8A8_UNORM:
     return VK_FORMAT_R8G8B8A8_UNORM;
   default:
     log_error("Unknown vertex format");
@@ -148,19 +151,19 @@ VkFormat vulkan_vertex_format_to_vk(VertexFormat format) {
 }
 
 VkPrimitiveTopology
-vulkan_primitive_topology_to_vk(PrimitiveTopology topology) {
+vulkan_primitive_topology_to_vk(VkrPrimitiveTopology topology) {
   switch (topology) {
-  case PRIMITIVE_TOPOLOGY_POINT_LIST:
+  case VKR_PRIMITIVE_TOPOLOGY_POINT_LIST:
     return VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
-  case PRIMITIVE_TOPOLOGY_LINE_LIST:
+  case VKR_PRIMITIVE_TOPOLOGY_LINE_LIST:
     return VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-  case PRIMITIVE_TOPOLOGY_LINE_STRIP:
+  case VKR_PRIMITIVE_TOPOLOGY_LINE_STRIP:
     return VK_PRIMITIVE_TOPOLOGY_LINE_STRIP;
-  case PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:
+  case VKR_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST:
     return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-  case PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP:
+  case VKR_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP:
     return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
-  case PRIMITIVE_TOPOLOGY_TRIANGLE_FAN:
+  case VKR_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN:
     return VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
   default:
     log_fatal("Invalid primitive topology: %d", topology);
@@ -168,13 +171,13 @@ vulkan_primitive_topology_to_vk(PrimitiveTopology topology) {
   }
 }
 
-VkPolygonMode vulkan_polygon_mode_to_vk(PolygonMode mode) {
+VkPolygonMode vulkan_polygon_mode_to_vk(VkrPolygonMode mode) {
   switch (mode) {
-  case POLYGON_MODE_FILL:
+  case VKR_POLYGON_MODE_FILL:
     return VK_POLYGON_MODE_FILL;
-  case POLYGON_MODE_LINE:
+  case VKR_POLYGON_MODE_LINE:
     return VK_POLYGON_MODE_LINE;
-  case POLYGON_MODE_POINT:
+  case VKR_POLYGON_MODE_POINT:
     return VK_POLYGON_MODE_POINT;
   default:
     log_fatal("Invalid polygon mode: %d", mode);
@@ -182,31 +185,31 @@ VkPolygonMode vulkan_polygon_mode_to_vk(PolygonMode mode) {
   }
 }
 
-VkBufferUsageFlags vulkan_buffer_usage_to_vk(BufferUsageFlags usage) {
+VkBufferUsageFlags vulkan_buffer_usage_to_vk(VkrBufferUsageFlags usage) {
   VkBufferUsageFlags vk_usage = 0;
 
-  if (bitset8_is_set(&usage, BUFFER_USAGE_VERTEX_BUFFER)) {
+  if (bitset8_is_set(&usage, VKR_BUFFER_USAGE_VERTEX_BUFFER)) {
     vk_usage |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
   }
 
-  if (bitset8_is_set(&usage, BUFFER_USAGE_INDEX_BUFFER)) {
+  if (bitset8_is_set(&usage, VKR_BUFFER_USAGE_INDEX_BUFFER)) {
     vk_usage |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
   }
 
-  if (bitset8_is_set(&usage, BUFFER_USAGE_UNIFORM) ||
-      bitset8_is_set(&usage, BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER)) {
+  if (bitset8_is_set(&usage, VKR_BUFFER_USAGE_UNIFORM) ||
+      bitset8_is_set(&usage, VKR_BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER)) {
     vk_usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
   }
 
-  if (bitset8_is_set(&usage, BUFFER_USAGE_TRANSFER_SRC)) {
+  if (bitset8_is_set(&usage, VKR_BUFFER_USAGE_TRANSFER_SRC)) {
     vk_usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
   }
 
-  if (bitset8_is_set(&usage, BUFFER_USAGE_TRANSFER_DST)) {
+  if (bitset8_is_set(&usage, VKR_BUFFER_USAGE_TRANSFER_DST)) {
     vk_usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT;
   }
 
-  if (bitset8_is_set(&usage, BUFFER_USAGE_STORAGE)) {
+  if (bitset8_is_set(&usage, VKR_BUFFER_USAGE_STORAGE)) {
     vk_usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   }
 
@@ -219,22 +222,22 @@ VkBufferUsageFlags vulkan_buffer_usage_to_vk(BufferUsageFlags usage) {
 }
 
 VkMemoryPropertyFlags
-vulkan_memory_property_flags_to_vk(MemoryPropertyFlags flags) {
+vulkan_memory_property_flags_to_vk(VkrMemoryPropertyFlags flags) {
   VkMemoryPropertyFlags vk_flags = 0;
 
-  if (bitset8_is_set(&flags, MEMORY_PROPERTY_HOST_VISIBLE)) {
+  if (bitset8_is_set(&flags, VKR_MEMORY_PROPERTY_HOST_VISIBLE)) {
     vk_flags |= VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
   }
 
-  if (bitset8_is_set(&flags, MEMORY_PROPERTY_HOST_COHERENT)) {
+  if (bitset8_is_set(&flags, VKR_MEMORY_PROPERTY_HOST_COHERENT)) {
     vk_flags |= VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
   }
 
-  if (bitset8_is_set(&flags, MEMORY_PROPERTY_HOST_CACHED)) {
+  if (bitset8_is_set(&flags, VKR_MEMORY_PROPERTY_HOST_CACHED)) {
     vk_flags |= VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
   }
 
-  if (bitset8_is_set(&flags, MEMORY_PROPERTY_DEVICE_LOCAL)) {
+  if (bitset8_is_set(&flags, VKR_MEMORY_PROPERTY_DEVICE_LOCAL)) {
     vk_flags |= VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
   }
 
@@ -246,17 +249,17 @@ vulkan_memory_property_flags_to_vk(MemoryPropertyFlags flags) {
   return vk_flags;
 }
 
-VkFormat vulkan_image_format_from_texture_format(TextureFormat format) {
+VkFormat vulkan_image_format_from_texture_format(VkrTextureFormat format) {
   switch (format) {
-  case TEXTURE_FORMAT_R8G8B8A8_UNORM:
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM:
     return VK_FORMAT_R8G8B8A8_UNORM;
-  case TEXTURE_FORMAT_R8G8B8A8_SRGB:
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB:
     return VK_FORMAT_R8G8B8A8_SRGB;
-  case TEXTURE_FORMAT_R8G8B8A8_UINT:
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_UINT:
     return VK_FORMAT_R8G8B8A8_UINT;
-  case TEXTURE_FORMAT_R8G8B8A8_SNORM:
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_SNORM:
     return VK_FORMAT_R8G8B8A8_SNORM;
-  case TEXTURE_FORMAT_R8G8B8A8_SINT:
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_SINT:
     return VK_FORMAT_R8G8B8A8_SINT;
   default:
     log_fatal("Invalid texture format: %d", format);

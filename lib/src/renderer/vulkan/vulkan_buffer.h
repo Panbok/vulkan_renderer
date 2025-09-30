@@ -4,7 +4,7 @@
 #include "vulkan_types.h"
 
 bool8_t vulkan_buffer_create(VulkanBackendState *state,
-                             const BufferDescription *desc,
+                             const VkrBufferDescription *desc,
                              struct s_BufferHandle *out_buffer);
 
 void vulkan_buffer_destroy(VulkanBackendState *state, VulkanBuffer *buffer);

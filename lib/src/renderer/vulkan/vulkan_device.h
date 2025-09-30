@@ -15,7 +15,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state);
 void vulkan_device_destroy_logical_device(VulkanBackendState *state);
 
 void vulkan_device_get_information(VulkanBackendState *state,
-                                   DeviceInformation *device_information,
+                                   VkrDeviceInformation *device_information,
                                    Arena *temp_arena);
 
 void vulkan_device_query_queue_indices(VulkanBackendState *state,

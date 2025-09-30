@@ -1,7 +1,6 @@
 #include "vulkan_fence.h"
 #include "core/logger.h"
 #include "defines.h"
-#include <stdint.h>
 
 void vulkan_fence_create(VulkanBackendState *state, bool8_t is_signaled,
                          VulkanFence *out_fence) {
