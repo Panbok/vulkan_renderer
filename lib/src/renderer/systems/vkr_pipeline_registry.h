@@ -3,8 +3,8 @@
 #include "containers/array.h"
 #include "containers/str.h"
 #include "containers/vkr_hashtable.h"
-#include "renderer/renderer.h"
 #include "renderer/resources/vkr_resources.h"
+#include "renderer/vkr_renderer.h"
 
 // =============================================================================
 // Configuration and Constants
@@ -78,7 +78,7 @@ typedef struct VkrPipelineRegistry {
   VkrPipelineRegistryConfig config;
 
   // Renderer integration
-  RendererFrontendHandle renderer;
+  VkrRendererFrontendHandle renderer;
 
   // Pipeline storage and management
   uint32_t generation_counter; // Global generation counter
@@ -121,7 +121,7 @@ typedef struct VkrPipelineRegistry {
  * @return true on success, false on failure
  */
 bool8_t vkr_pipeline_registry_init(VkrPipelineRegistry *registry,
-                                   RendererFrontendHandle renderer,
+                                   VkrRendererFrontendHandle renderer,
                                    const VkrPipelineRegistryConfig *config);
 
 /**
@@ -145,8 +145,8 @@ bool8_t vkr_pipeline_registry_shutdown(VkrPipelineRegistry *registry);
  * @return true on success, false on failure
  */
 bool8_t vkr_pipeline_registry_create_graphics_pipeline(
-    VkrPipelineRegistry *registry, const GraphicsPipelineDescription *desc,
-    String8 name, VkrPipelineHandle *out_handle, RendererError *out_error);
+    VkrPipelineRegistry *registry, const VkrGraphicsPipelineDescription *desc,
+    String8 name, VkrPipelineHandle *out_handle, VkrRendererError *out_error);
 
 /**
  * @brief Create a pipeline automatically from material and geometry layout
@@ -162,7 +162,7 @@ bool8_t vkr_pipeline_registry_create_graphics_pipeline(
 bool8_t vkr_pipeline_registry_create_from_material_layout(
     VkrPipelineRegistry *registry, VkrPipelineDomain domain,
     VkrGeometryVertexLayoutType vertex_layout, String8 shader_path,
-    String8 name, VkrPipelineHandle *out_handle, RendererError *out_error);
+    String8 name, VkrPipelineHandle *out_handle, VkrRendererError *out_error);
 
 /**
  * @brief Acquire a pipeline by name (loads if not present and auto-creation
@@ -178,7 +178,7 @@ bool8_t vkr_pipeline_registry_acquire_by_name(VkrPipelineRegistry *registry,
                                               String8 name,
                                               bool8_t auto_release,
                                               VkrPipelineHandle *out_handle,
-                                              RendererError *out_error);
+                                              VkrRendererError *out_error);
 
 /**
  * @brief Destroy a pipeline and release associated resources
@@ -252,7 +252,7 @@ bool8_t vkr_pipeline_registry_is_pipeline_bound(VkrPipelineRegistry *registry,
  */
 bool8_t vkr_pipeline_registry_bind_pipeline(VkrPipelineRegistry *registry,
                                             VkrPipelineHandle handle,
-                                            RendererError *out_error);
+                                            VkrRendererError *out_error);
 
 /**
  * @brief Update global state for the current pipeline
@@ -262,8 +262,8 @@ bool8_t vkr_pipeline_registry_bind_pipeline(VkrPipelineRegistry *registry,
  * @return true on success, false on failure
  */
 bool8_t vkr_pipeline_registry_update_global_state(
-    VkrPipelineRegistry *registry, const GlobalUniformObject *global_uniform,
-    RendererError *out_error);
+    VkrPipelineRegistry *registry, const VkrGlobalUniformObject *global_uniform,
+    VkrRendererError *out_error);
 
 /**
  * @brief Mark global state as dirty (needs update)
@@ -283,8 +283,8 @@ void vkr_pipeline_registry_mark_global_state_dirty(
  */
 bool8_t vkr_pipeline_registry_update_local_state(
     VkrPipelineRegistry *registry, VkrPipelineHandle handle,
-    const ShaderStateObject *data, const RendererMaterialState *material,
-    RendererError *out_error);
+    const VkrShaderStateObject *data, const VkrRendererMaterialState *material,
+    VkrRendererError *out_error);
 
 // =============================================================================
 // Local State Management
@@ -300,7 +300,7 @@ bool8_t vkr_pipeline_registry_update_local_state(
  */
 bool8_t vkr_pipeline_registry_acquire_local_state(
     VkrPipelineRegistry *registry, VkrPipelineHandle handle,
-    RendererLocalStateHandle *out_local_state, RendererError *out_error);
+    VkrRendererLocalStateHandle *out_local_state, VkrRendererError *out_error);
 
 /**
  * @brief Release local state for a pipeline
@@ -312,7 +312,7 @@ bool8_t vkr_pipeline_registry_acquire_local_state(
  */
 bool8_t vkr_pipeline_registry_release_local_state(
     VkrPipelineRegistry *registry, VkrPipelineHandle handle,
-    RendererLocalStateHandle local_state, RendererError *out_error);
+    VkrRendererLocalStateHandle local_state, VkrRendererError *out_error);
 
 // =============================================================================
 // High-Level Rendering Interface
@@ -328,7 +328,7 @@ bool8_t vkr_pipeline_registry_release_local_state(
  */
 bool8_t vkr_pipeline_registry_render_renderable(
     VkrPipelineRegistry *registry, const VkrRenderable *renderable,
-    const GlobalUniformObject *global_uniform, RendererError *out_error);
+    const VkrGlobalUniformObject *global_uniform, VkrRendererError *out_error);
 
 // =============================================================================
 // Batch Rendering Interface
@@ -343,7 +343,7 @@ bool8_t vkr_pipeline_registry_render_renderable(
  */
 bool8_t vkr_pipeline_registry_begin_batch(VkrPipelineRegistry *registry,
                                           VkrPipelineDomain domain,
-                                          RendererError *out_error);
+                                          VkrRendererError *out_error);
 
 /**
  * @brief Add a renderable to the current batch
@@ -354,7 +354,7 @@ bool8_t vkr_pipeline_registry_begin_batch(VkrPipelineRegistry *registry,
  */
 bool8_t vkr_pipeline_registry_add_to_batch(VkrPipelineRegistry *registry,
                                            const VkrRenderable *renderable,
-                                           RendererError *out_error);
+                                           VkrRendererError *out_error);
 
 /**
  * @brief Render the current batch with optimal state management
@@ -364,8 +364,8 @@ bool8_t vkr_pipeline_registry_add_to_batch(VkrPipelineRegistry *registry,
  * @return true on success, false on failure
  */
 bool8_t vkr_pipeline_registry_render_current_batch(
-    VkrPipelineRegistry *registry, const GlobalUniformObject *global_uniform,
-    RendererError *out_error);
+    VkrPipelineRegistry *registry, const VkrGlobalUniformObject *global_uniform,
+    VkrRendererError *out_error);
 
 /**
  * @brief End the current batch and reset batch state
@@ -384,8 +384,8 @@ void vkr_pipeline_registry_end_batch(VkrPipelineRegistry *registry);
  */
 bool8_t vkr_pipeline_registry_render_batch(
     VkrPipelineRegistry *registry, const VkrRenderable *renderables,
-    uint32_t count, const GlobalUniformObject *global_uniform,
-    RendererError *out_error);
+    uint32_t count, const VkrGlobalUniformObject *global_uniform,
+    VkrRendererError *out_error);
 
 // =============================================================================
 // Domain and Query Interface
@@ -416,7 +416,7 @@ bool8_t vkr_pipeline_registry_get_pipelines_by_domain(
 bool8_t vkr_pipeline_registry_get_pipeline_for_material(
     VkrPipelineRegistry *registry, uint32_t material_pipeline_id,
     VkrGeometryVertexLayoutType vertex_layout, VkrPipelineHandle *out_handle,
-    RendererError *out_error);
+    VkrRendererError *out_error);
 
 // =============================================================================
 // Statistics and Debugging

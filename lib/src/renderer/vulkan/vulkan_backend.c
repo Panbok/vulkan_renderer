@@ -781,9 +781,9 @@ VkrRendererError renderer_vulkan_upload_buffer(void *backend_state,
   bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
   const VkrBufferDescription staging_buffer_desc = {
       .size = size,
-      .memory_properties = memory_property_flags_from_bits(
+      .memory_properties = vkr_memory_property_flags_from_bits(
           VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
-      .usage = buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
+      .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
       .buffer_type = buffer_type,
       .bind_on_create = true_v,
   };
@@ -862,8 +862,8 @@ renderer_vulkan_create_texture(void *backend_state,
 
   const VkrBufferDescription staging_buffer_desc = {
       .size = image_size,
-      .usage = buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
-      .memory_properties = memory_property_flags_from_bits(
+      .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
+      .memory_properties = vkr_memory_property_flags_from_bits(
           VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
       .buffer_type = buffer_type,
       .bind_on_create = true_v,

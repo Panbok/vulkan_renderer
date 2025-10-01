@@ -133,7 +133,7 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   VkPipelineColorBlendAttachmentState color_blend_attachment_state = {
       .colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                         VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
-      .blendEnable = VK_TRUE,
+      .blendEnable = VK_FALSE,
       .srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA,
       .dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
       .colorBlendOp = VK_BLEND_OP_ADD,
@@ -142,12 +142,42 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
       .alphaBlendOp = VK_BLEND_OP_ADD,
   };
 
+  switch (desc->domain) {
+  case VKR_PIPELINE_DOMAIN_WORLD:
+    // Depth on, blending off (default)
+    depth_stencil_state.depthTestEnable = VK_TRUE;
+    depth_stencil_state.depthWriteEnable = VK_TRUE;
+    color_blend_attachment_state.blendEnable = VK_FALSE;
+    break;
+  case VKR_PIPELINE_DOMAIN_UI:
+    // Depth off, alpha blending on
+    depth_stencil_state.depthTestEnable = VK_FALSE;
+    depth_stencil_state.depthWriteEnable = VK_FALSE;
+    color_blend_attachment_state.blendEnable = VK_TRUE;
+    break;
+  case VKR_PIPELINE_DOMAIN_POST:
+    // Screen-space: no depth; blending off by default
+    depth_stencil_state.depthTestEnable = VK_FALSE;
+    depth_stencil_state.depthWriteEnable = VK_FALSE;
+    color_blend_attachment_state.blendEnable = VK_FALSE;
+    break;
+  case VKR_PIPELINE_DOMAIN_SHADOW:
+    // Depth-only pipeline; no color attachments. Keep depth on; blending n/a
+    depth_stencil_state.depthTestEnable = VK_TRUE;
+    depth_stencil_state.depthWriteEnable = VK_TRUE;
+    break;
+  default:
+    break;
+  }
+
   VkPipelineColorBlendStateCreateInfo color_blend_state = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
       .logicOpEnable = VK_FALSE,
       .logicOp = VK_LOGIC_OP_COPY,
-      .attachmentCount = 1,
-      .pAttachments = &color_blend_attachment_state,
+      .attachmentCount = (desc->domain == VKR_PIPELINE_DOMAIN_SHADOW) ? 0 : 1,
+      .pAttachments = (desc->domain == VKR_PIPELINE_DOMAIN_SHADOW)
+                          ? NULL
+                          : &color_blend_attachment_state,
   };
 
   VkPushConstantRange push_constant = {

@@ -206,10 +206,10 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
   VkrBufferDescription global_uniform_buffer_desc = {
       .size = sizeof(VkrGlobalUniformObject),
-      .usage = buffer_usage_flags_from_bits(
+      .usage = vkr_buffer_usage_flags_from_bits(
           VKR_BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER |
           VKR_BUFFER_USAGE_TRANSFER_DST | VKR_BUFFER_USAGE_TRANSFER_SRC),
-      .memory_properties = memory_property_flags_from_bits(
+      .memory_properties = vkr_memory_property_flags_from_bits(
           VKR_MEMORY_PROPERTY_DEVICE_LOCAL | VKR_MEMORY_PROPERTY_HOST_VISIBLE |
           VKR_MEMORY_PROPERTY_HOST_COHERENT),
       .buffer_type = buffer_type,
@@ -302,10 +302,10 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   VkrBufferDescription local_uniform_buffer_desc = {
       .size = sizeof(VkrLocalUniformObject) *
               VULKAN_SHADER_OBJECT_LOCAL_STATE_COUNT,
-      .usage = buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_DST |
-                                            VKR_BUFFER_USAGE_TRANSFER_SRC |
-                                            VKR_BUFFER_USAGE_UNIFORM),
-      .memory_properties = memory_property_flags_from_bits(
+      .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_DST |
+                                                VKR_BUFFER_USAGE_TRANSFER_SRC |
+                                                VKR_BUFFER_USAGE_UNIFORM),
+      .memory_properties = vkr_memory_property_flags_from_bits(
           VKR_MEMORY_PROPERTY_DEVICE_LOCAL | VKR_MEMORY_PROPERTY_HOST_VISIBLE |
           VKR_MEMORY_PROPERTY_HOST_COHERENT),
       .buffer_type = buffer_type,

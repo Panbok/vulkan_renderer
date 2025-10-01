@@ -17,7 +17,7 @@ vkr__reset_registry_state(VkrPipelineRegistry *registry) {
 }
 
 bool8_t vkr_pipeline_registry_init(VkrPipelineRegistry *registry,
-                                   RendererFrontendHandle renderer,
+                                   VkrRendererFrontendHandle renderer,
                                    const VkrPipelineRegistryConfig *config) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(renderer != NULL, "Renderer is NULL");
@@ -79,7 +79,8 @@ bool8_t vkr_pipeline_registry_shutdown(VkrPipelineRegistry *registry) {
        pipeline_id++) {
     VkrPipeline *pipeline = &registry->pipelines.data[pipeline_id];
     if (pipeline->handle.id != 0 && pipeline->backend_handle) {
-      renderer_destroy_pipeline(registry->renderer, pipeline->backend_handle);
+      vkr_renderer_destroy_pipeline(registry->renderer,
+                                    pipeline->backend_handle);
       pipeline->backend_handle = NULL;
       pipeline->handle.id = 0;
     }
@@ -120,35 +121,49 @@ vkr__acquire_pipeline_slot(VkrPipelineRegistry *registry,
 }
 
 bool8_t vkr_pipeline_registry_create_graphics_pipeline(
-    VkrPipelineRegistry *registry, const GraphicsPipelineDescription *desc,
-    String8 name, VkrPipelineHandle *out_handle, RendererError *out_error) {
+    VkrPipelineRegistry *registry, const VkrGraphicsPipelineDescription *desc,
+    String8 name, VkrPipelineHandle *out_handle, VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(desc != NULL, "Description is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
   *out_handle = VKR_PIPELINE_HANDLE_INVALID;
 
   VkrPipelineHandle handle = {0};
   VkrPipeline *pipeline = vkr__acquire_pipeline_slot(registry, &handle);
   if (!pipeline) {
-    *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
 
   pipeline->description = *desc;
-  pipeline->domain =
-      VKR_PIPELINE_DOMAIN_WORLD; // default; caller can override via name
+  pipeline->domain = desc->domain;
 
-  PipelineHandle backend = renderer_create_graphics_pipeline(
+  VkrPipelineOpaqueHandle backend = vkr_renderer_create_graphics_pipeline(
       registry->renderer, &pipeline->description, out_error);
-  if (*out_error != RENDERER_ERROR_NONE || backend == NULL) {
+  if (*out_error != VKR_RENDERER_ERROR_NONE || backend == NULL) {
     // release slot
     pipeline->handle.id = 0;
     return false_v;
   }
   pipeline->backend_handle = backend;
+
+  // NOTE: Also appends to domain list here.
+  // "vkr_pipeline_registry_create_from_material_layout" performs a similar
+  // append after creation. When refactoring, consolidate this into a single
+  // registration site (prefer doing it here) to avoid duplicates.
+  {
+    Array_VkrPipelineHandle *domain_list =
+        &registry->pipelines_by_domain[pipeline->domain];
+    for (uint32_t i = 0; i < domain_list->length; i++) {
+      if (domain_list->data[i].id == 0) {
+        domain_list->data[i] = handle;
+        break;
+      }
+    }
+  }
 
   if (name.str && name.length > 0) {
     // Store lifetime entry by name
@@ -173,46 +188,46 @@ bool8_t vkr_pipeline_registry_create_graphics_pipeline(
 bool8_t vkr_pipeline_registry_create_from_material_layout(
     VkrPipelineRegistry *registry, VkrPipelineDomain domain,
     VkrGeometryVertexLayoutType vertex_layout, String8 shader_path,
-    String8 name, VkrPipelineHandle *out_handle, RendererError *out_error) {
+    String8 name, VkrPipelineHandle *out_handle, VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
   *out_handle = VKR_PIPELINE_HANDLE_INVALID;
 
   Scratch scratch = scratch_create(registry->temp_arena);
   uint32_t attr_count = 0, binding_count = 0, stride = 0;
-  VertexInputAttributeDescription *attrs = NULL;
-  VertexInputBindingDescription *bindings = NULL;
+  VkrVertexInputAttributeDescription *attrs = NULL;
+  VkrVertexInputBindingDescription *bindings = NULL;
   vkr_geometry_fill_vertex_input_descriptions(
       vertex_layout, scratch.arena, &attr_count, &attrs, &binding_count,
       &bindings, &stride);
 
-  ShaderObjectDescription shader_desc = {
-      .file_format = SHADER_FILE_FORMAT_SPIR_V,
-      .file_type = SHADER_FILE_TYPE_SINGLE,
-      .modules =
-          {[SHADER_STAGE_VERTEX] = {.stages = shader_stage_flags_from_bits(
-                                        SHADER_STAGE_VERTEX_BIT),
-                                    .path = shader_path,
-                                    .entry_point = string8_lit("vertexMain")},
-           [SHADER_STAGE_FRAGMENT] = {.stages = shader_stage_flags_from_bits(
-                                          SHADER_STAGE_FRAGMENT_BIT),
-                                      .path = shader_path,
-                                      .entry_point =
-                                          string8_lit("fragmentMain")}},
+  VkrShaderObjectDescription shader_desc = {
+      .file_format = VKR_SHADER_FILE_FORMAT_SPIR_V,
+      .file_type = VKR_SHADER_FILE_TYPE_SINGLE,
+      .modules = {[VKR_SHADER_STAGE_VERTEX] =
+                      {.stages = vkr_shader_stage_flags_from_bits(
+                           VKR_SHADER_STAGE_VERTEX_BIT),
+                       .path = shader_path,
+                       .entry_point = string8_lit("vertexMain")},
+                  [VKR_SHADER_STAGE_FRAGMENT] =
+                      {.stages = vkr_shader_stage_flags_from_bits(
+                           VKR_SHADER_STAGE_FRAGMENT_BIT),
+                       .path = shader_path,
+                       .entry_point = string8_lit("fragmentMain")}},
   };
 
-  GraphicsPipelineDescription desc = {.shader_object_description = shader_desc,
-                                      .attribute_count = attr_count,
-                                      .attributes = attrs,
-                                      .binding_count = binding_count,
-                                      .bindings = bindings,
-                                      .topology =
-                                          PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-                                      .polygon_mode = POLYGON_MODE_FILL,
-                                      .domain = domain};
+  VkrGraphicsPipelineDescription desc = {
+      .shader_object_description = shader_desc,
+      .attribute_count = attr_count,
+      .attributes = attrs,
+      .binding_count = binding_count,
+      .bindings = bindings,
+      .topology = VKR_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+      .polygon_mode = VKR_POLYGON_MODE_FILL,
+      .domain = domain};
 
   bool8_t ok = vkr_pipeline_registry_create_graphics_pipeline(
       registry, &desc, name, out_handle, out_error);
@@ -240,16 +255,16 @@ bool8_t vkr_pipeline_registry_acquire_by_name(VkrPipelineRegistry *registry,
                                               String8 name,
                                               bool8_t auto_release,
                                               VkrPipelineHandle *out_handle,
-                                              RendererError *out_error) {
+                                              VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
   *out_handle = VKR_PIPELINE_HANDLE_INVALID;
 
   if (!name.str) {
-    *out_error = RENDERER_ERROR_INVALID_PARAMETER;
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
 
@@ -257,7 +272,7 @@ bool8_t vkr_pipeline_registry_acquire_by_name(VkrPipelineRegistry *registry,
   VkrPipelineEntry *found =
       vkr_hash_table_get_VkrPipelineEntry(&registry->pipelines_by_name, key);
   if (!found) {
-    *out_error = RENDERER_ERROR_RESOURCE_NOT_LOADED;
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
     return false_v;
   }
   found->auto_release = auto_release;
@@ -282,7 +297,7 @@ bool8_t vkr_pipeline_registry_destroy_pipeline(VkrPipelineRegistry *registry,
     return false_v;
 
   if (pipeline->backend_handle) {
-    renderer_destroy_pipeline(registry->renderer, pipeline->backend_handle);
+    vkr_renderer_destroy_pipeline(registry->renderer, pipeline->backend_handle);
     pipeline->backend_handle = NULL;
   }
 
@@ -366,11 +381,11 @@ bool8_t vkr_pipeline_registry_is_pipeline_bound(VkrPipelineRegistry *registry,
 
 bool8_t vkr_pipeline_registry_bind_pipeline(VkrPipelineRegistry *registry,
                                             VkrPipelineHandle handle,
-                                            RendererError *out_error) {
+                                            VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
 
   if (vkr_pipeline_registry_is_pipeline_bound(registry, handle)) {
     registry->state.frame_redundant_binds_avoided++;
@@ -379,7 +394,7 @@ bool8_t vkr_pipeline_registry_bind_pipeline(VkrPipelineRegistry *registry,
 
   VkrPipeline *pipeline = NULL;
   if (!vkr_pipeline_registry_get_pipeline(registry, handle, &pipeline)) {
-    *out_error = RENDERER_ERROR_INVALID_PARAMETER;
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
 
@@ -395,27 +410,27 @@ bool8_t vkr_pipeline_registry_bind_pipeline(VkrPipelineRegistry *registry,
 }
 
 bool8_t vkr_pipeline_registry_update_global_state(
-    VkrPipelineRegistry *registry, const GlobalUniformObject *global_uniform,
-    RendererError *out_error) {
+    VkrPipelineRegistry *registry, const VkrGlobalUniformObject *global_uniform,
+    VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
   if (!registry->state.pipeline_bound) {
-    *out_error = RENDERER_ERROR_INVALID_PARAMETER;
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
 
   VkrPipeline *pipeline = NULL;
   if (!vkr_pipeline_registry_get_pipeline(
           registry, registry->state.current_pipeline, &pipeline)) {
-    *out_error = RENDERER_ERROR_INVALID_PARAMETER;
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
 
-  RendererError err = renderer_update_global_state(
+  VkrRendererError err = vkr_renderer_update_global_state(
       registry->renderer, pipeline->backend_handle, global_uniform);
-  if (err != RENDERER_ERROR_NONE) {
+  if (err != VKR_RENDERER_ERROR_NONE) {
     *out_error = err;
     return false_v;
   }
@@ -431,20 +446,20 @@ void vkr_pipeline_registry_mark_global_state_dirty(
 
 bool8_t vkr_pipeline_registry_acquire_local_state(
     VkrPipelineRegistry *registry, VkrPipelineHandle handle,
-    RendererLocalStateHandle *out_local_state, RendererError *out_error) {
+    VkrRendererLocalStateHandle *out_local_state, VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_local_state != NULL, "Out local state is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
   VkrPipeline *pipeline = NULL;
   if (!vkr_pipeline_registry_get_pipeline(registry, handle, &pipeline)) {
-    *out_error = RENDERER_ERROR_INVALID_PARAMETER;
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
 
-  RendererError err = renderer_acquire_local_state(
+  VkrRendererError err = vkr_renderer_acquire_local_state(
       registry->renderer, pipeline->backend_handle, out_local_state);
-  if (err != RENDERER_ERROR_NONE) {
+  if (err != VKR_RENDERER_ERROR_NONE) {
     *out_error = err;
     return false_v;
   }
@@ -454,19 +469,19 @@ bool8_t vkr_pipeline_registry_acquire_local_state(
 
 bool8_t vkr_pipeline_registry_release_local_state(
     VkrPipelineRegistry *registry, VkrPipelineHandle handle,
-    RendererLocalStateHandle local_state, RendererError *out_error) {
+    VkrRendererLocalStateHandle local_state, VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
   VkrPipeline *pipeline = NULL;
   if (!vkr_pipeline_registry_get_pipeline(registry, handle, &pipeline)) {
-    *out_error = RENDERER_ERROR_INVALID_PARAMETER;
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
 
-  RendererError err = renderer_release_local_state(
+  VkrRendererError err = vkr_renderer_release_local_state(
       registry->renderer, pipeline->backend_handle, local_state);
-  if (err != RENDERER_ERROR_NONE) {
+  if (err != VKR_RENDERER_ERROR_NONE) {
     *out_error = err;
     return false_v;
   }
@@ -476,21 +491,21 @@ bool8_t vkr_pipeline_registry_release_local_state(
 
 bool8_t vkr_pipeline_registry_update_local_state(
     VkrPipelineRegistry *registry, VkrPipelineHandle handle,
-    const ShaderStateObject *data, const RendererMaterialState *material,
-    RendererError *out_error) {
+    const VkrShaderStateObject *data, const VkrRendererMaterialState *material,
+    VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
 
   VkrPipeline *pipeline = NULL;
   if (!vkr_pipeline_registry_get_pipeline(registry, handle, &pipeline)) {
-    *out_error = RENDERER_ERROR_INVALID_PARAMETER;
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
 
-  RendererError err = renderer_update_local_state(
+  VkrRendererError err = vkr_renderer_update_local_state(
       registry->renderer, pipeline->backend_handle, data, material);
-  if (err != RENDERER_ERROR_NONE) {
+  if (err != VKR_RENDERER_ERROR_NONE) {
     *out_error = err;
     return false_v;
   }
@@ -500,12 +515,12 @@ bool8_t vkr_pipeline_registry_update_local_state(
 
 bool8_t vkr_pipeline_registry_render_renderable(
     VkrPipelineRegistry *registry, const VkrRenderable *renderable,
-    const GlobalUniformObject *global_uniform, RendererError *out_error) {
+    const VkrGlobalUniformObject *global_uniform, VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(renderable != NULL, "Renderable is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
 
   // Minimal implementation: assume a single world pipeline already created
   // and bound by caller; update global if dirty, then local state and draw via
@@ -514,13 +529,13 @@ bool8_t vkr_pipeline_registry_render_renderable(
     vkr_pipeline_registry_update_global_state(registry, global_uniform,
                                               out_error);
   }
-  // Local update is handled by the app using renderer_update_local_state.
+  // Local update is handled by the app using vkr_renderer_update_local_state.
   return true_v;
 }
 
 bool8_t vkr_pipeline_registry_begin_batch(VkrPipelineRegistry *registry,
                                           VkrPipelineDomain domain,
-                                          RendererError *out_error) {
+                                          VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
@@ -529,20 +544,20 @@ bool8_t vkr_pipeline_registry_begin_batch(VkrPipelineRegistry *registry,
   registry->current_batch.renderables =
       array_create_VkrRenderable(registry->temp_arena, 1024);
   registry->current_batch.renderable_count = 0;
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
 
   return true_v;
 }
 
 bool8_t vkr_pipeline_registry_add_to_batch(VkrPipelineRegistry *registry,
                                            const VkrRenderable *renderable,
-                                           RendererError *out_error) {
+                                           VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(renderable != NULL, "Renderable is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
   if (!registry->current_batch.active) {
-    *out_error = RENDERER_ERROR_INVALID_PARAMETER;
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
 
@@ -556,14 +571,14 @@ bool8_t vkr_pipeline_registry_add_to_batch(VkrPipelineRegistry *registry,
     registry->stats.total_renderables_batched++;
   }
 
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
 
   return true_v;
 }
 
 bool8_t vkr_pipeline_registry_render_current_batch(
-    VkrPipelineRegistry *registry, const GlobalUniformObject *global_uniform,
-    RendererError *out_error) {
+    VkrPipelineRegistry *registry, const VkrGlobalUniformObject *global_uniform,
+    VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
@@ -572,7 +587,7 @@ bool8_t vkr_pipeline_registry_render_current_batch(
     registry->state.global_state_dirty = false_v;
   }
 
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
 
   return true_v;
 }
@@ -583,10 +598,11 @@ void vkr_pipeline_registry_end_batch(VkrPipelineRegistry *registry) {
   arena_clear(registry->temp_arena, ARENA_MEMORY_TAG_RENDERER);
 }
 
+// todo: implement batch rendering
 bool8_t vkr_pipeline_registry_render_batch(
     VkrPipelineRegistry *registry, const VkrRenderable *renderables,
-    uint32_t count, const GlobalUniformObject *global_uniform,
-    RendererError *out_error) {
+    uint32_t count, const VkrGlobalUniformObject *global_uniform,
+    VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
   (void)renderables;
@@ -594,7 +610,7 @@ bool8_t vkr_pipeline_registry_render_batch(
   if (global_uniform) {
     registry->state.global_state_dirty = false_v;
   }
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
 }
 
@@ -617,11 +633,11 @@ bool8_t vkr_pipeline_registry_get_pipelines_by_domain(
 bool8_t vkr_pipeline_registry_get_pipeline_for_material(
     VkrPipelineRegistry *registry, uint32_t material_pipeline_id,
     VkrGeometryVertexLayoutType vertex_layout, VkrPipelineHandle *out_handle,
-    RendererError *out_error) {
+    VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
 
   // For now, map material_pipeline_id to domain if in range; default to WORLD
   VkrPipelineDomain domain = VKR_PIPELINE_DOMAIN_WORLD;
