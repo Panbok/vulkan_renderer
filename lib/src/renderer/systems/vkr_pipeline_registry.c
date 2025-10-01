@@ -150,10 +150,6 @@ bool8_t vkr_pipeline_registry_create_graphics_pipeline(
   }
   pipeline->backend_handle = backend;
 
-  // NOTE: Also appends to domain list here.
-  // "vkr_pipeline_registry_create_from_material_layout" performs a similar
-  // append after creation. When refactoring, consolidate this into a single
-  // registration site (prefer doing it here) to avoid duplicates.
   {
     Array_VkrPipelineHandle *domain_list =
         &registry->pipelines_by_domain[pipeline->domain];
@@ -234,19 +230,6 @@ bool8_t vkr_pipeline_registry_create_from_material_layout(
   scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
   if (!ok)
     return false_v;
-
-  VkrPipeline *pipeline = NULL;
-  if (vkr_pipeline_registry_get_pipeline(registry, *out_handle, &pipeline)) {
-    pipeline->domain = domain;
-    Array_VkrPipelineHandle *domain_list =
-        &registry->pipelines_by_domain[domain];
-    for (uint32_t domain = 0; domain < domain_list->length; domain++) {
-      if (domain_list->data[domain].id == 0) {
-        domain_list->data[domain] = *out_handle;
-        break;
-      }
-    }
-  }
 
   return true_v;
 }
