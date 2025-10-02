@@ -1,27 +1,24 @@
 #pragma once
 
 #include "memory/arena.h"
-#include "renderer/renderer.h"
-
-#include "vulkan/vulkan_backend.h"
-
+#include "renderer/vkr_renderer.h"
 // todo: we need to either remove this or use it in the application
 typedef struct WorldGraphicsPipeline {
-  GraphicsPipelineDescription pipeline;
-  PipelineHandle pipeline_handle;
+  VkrGraphicsPipelineDescription pipeline;
+  VkrPipelineOpaqueHandle pipeline_handle;
 
   uint32_t pipeline_attr_count;
-  VertexInputAttributeDescription *pipeline_attrs;
+  VkrVertexInputAttributeDescription *pipeline_attrs;
   uint32_t pipeline_binding_count;
-  VertexInputBindingDescription *pipeline_bindings;
+  VkrVertexInputBindingDescription *pipeline_bindings;
 } WorldGraphicsPipeline;
 
 struct s_RendererFrontend {
   Arena *arena;
   VkrWindow *window;
   void *backend_state;
-  RendererBackendType backend_type;
-  RendererBackendInterface backend;
+  VkrRendererBackendType backend_type;
+  VkrRendererBackendInterface backend;
 
   WorldGraphicsPipeline world_graphics_pipeline;
 
