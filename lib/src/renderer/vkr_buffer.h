@@ -5,8 +5,8 @@
 #include "defines.h"
 #include "math/vec.h"
 #include "memory/arena.h"
-#include "renderer/renderer.h"
 #include "renderer/resources/vkr_resources.h"
+#include "renderer/vkr_renderer.h"
 
 // =============================================================================
 // Interleaved Vertex Structures
@@ -71,10 +71,10 @@ typedef struct {
  * and pipeline creation. Can be created from any vertex data source.
  */
 typedef struct VkrVertexBuffer {
-  BufferHandle handle;
-  uint32_t stride;            // Size of one vertex in bytes
-  uint32_t vertex_count;      // Number of vertices in this buffer
-  VertexInputRate input_rate; // Per-vertex or per-instance
+  VkrBufferHandle handle;
+  uint32_t stride;               // Size of one vertex in bytes
+  uint32_t vertex_count;         // Number of vertices in this buffer
+  VkrVertexInputRate input_rate; // Per-vertex or per-instance
 
   // Optional metadata
   String8 debug_name;  // For debugging/profiling
@@ -87,8 +87,8 @@ Array(VkrVertexBuffer);
  * @brief Index buffer with metadata for rendering operations
  */
 typedef struct VkrIndexBuffer {
-  BufferHandle handle;
-  IndexType type;       // uint16 or uint32
+  VkrBufferHandle handle;
+  VkrIndexType type;    // uint16 or uint32
   uint32_t index_count; // Number of indices
 
   // Optional metadata
@@ -100,10 +100,10 @@ typedef struct VkrIndexBuffer {
  * @brief Uniform buffer for shader constants
  */
 typedef struct VkrUniformBuffer {
-  BufferHandle handle;
-  uint32_t binding;        // Descriptor set binding point
-  ShaderStageFlags stages; // Which shader stages use this
-  uint64_t size_bytes;     // Buffer size
+  VkrBufferHandle handle;
+  uint32_t binding;           // Descriptor set binding point
+  VkrShaderStageFlags stages; // Which shader stages use this
+  uint64_t size_bytes;        // Buffer size
 
   // Optional metadata
   String8 debug_name; // For debugging/profiling
@@ -127,12 +127,12 @@ Array(VkrUniformBuffer);
  * @param out_error Error output
  * @return Created VkrVertexBuffer
  */
-VkrVertexBuffer vkr_vertex_buffer_create(RendererFrontendHandle renderer,
+VkrVertexBuffer vkr_vertex_buffer_create(VkrRendererFrontendHandle renderer,
                                          const void *data, uint32_t stride,
                                          uint32_t vertex_count,
-                                         VertexInputRate input_rate,
+                                         VkrVertexInputRate input_rate,
                                          String8 debug_name,
-                                         RendererError *out_error);
+                                         VkrRendererError *out_error);
 
 /**
  * @brief Creates an index buffer from index data
@@ -145,10 +145,10 @@ VkrVertexBuffer vkr_vertex_buffer_create(RendererFrontendHandle renderer,
  * @param out_error Error output
  * @return Created VkrIndexBuffer
  */
-VkrIndexBuffer vkr_index_buffer_create(RendererFrontendHandle renderer,
-                                       const void *data, IndexType type,
+VkrIndexBuffer vkr_index_buffer_create(VkrRendererFrontendHandle renderer,
+                                       const void *data, VkrIndexType type,
                                        uint32_t index_count, String8 debug_name,
-                                       RendererError *out_error);
+                                       VkrRendererError *out_error);
 
 /**
  * @brief Creates a uniform buffer
@@ -164,10 +164,10 @@ VkrIndexBuffer vkr_index_buffer_create(RendererFrontendHandle renderer,
  * @return Created VkrUniformBuffer
  */
 VkrUniformBuffer
-vkr_uniform_buffer_create(RendererFrontendHandle renderer, const void *data,
+vkr_uniform_buffer_create(VkrRendererFrontendHandle renderer, const void *data,
                           uint64_t size_bytes, uint32_t binding,
-                          ShaderStageFlags stages, bool32_t dynamic,
-                          String8 debug_name, RendererError *out_error);
+                          VkrShaderStageFlags stages, bool32_t dynamic,
+                          String8 debug_name, VkrRendererError *out_error);
 
 // =============================================================================
 // Buffer Update Functions
@@ -182,11 +182,11 @@ vkr_uniform_buffer_create(RendererFrontendHandle renderer, const void *data,
  * @param vertex_count Number of vertices to update
  * @return RendererError indicating success or failure
  */
-RendererError vkr_vertex_buffer_update(RendererFrontendHandle renderer,
-                                       VkrVertexBuffer *vertex_buffer,
-                                       const void *data,
-                                       uint32_t offset_vertices,
-                                       uint32_t vertex_count);
+VkrRendererError vkr_vertex_buffer_update(VkrRendererFrontendHandle renderer,
+                                          VkrVertexBuffer *vertex_buffer,
+                                          const void *data,
+                                          uint32_t offset_vertices,
+                                          uint32_t vertex_count);
 
 /**
  * @brief Updates index buffer data
@@ -197,10 +197,11 @@ RendererError vkr_vertex_buffer_update(RendererFrontendHandle renderer,
  * @param index_count Number of indices to update
  * @return RendererError indicating success or failure
  */
-RendererError vkr_index_buffer_update(RendererFrontendHandle renderer,
-                                      VkrIndexBuffer *index_buffer,
-                                      const void *data, uint32_t offset_indices,
-                                      uint32_t index_count);
+VkrRendererError vkr_index_buffer_update(VkrRendererFrontendHandle renderer,
+                                         VkrIndexBuffer *index_buffer,
+                                         const void *data,
+                                         uint32_t offset_indices,
+                                         uint32_t index_count);
 
 /**
  * @brief Updates uniform buffer data
@@ -211,10 +212,11 @@ RendererError vkr_index_buffer_update(RendererFrontendHandle renderer,
  * @param size_bytes Size of the data to update
  * @return RendererError indicating success or failure
  */
-RendererError vkr_uniform_buffer_update(RendererFrontendHandle renderer,
-                                        VkrUniformBuffer *uniform_buffer,
-                                        const void *data, uint64_t offset_bytes,
-                                        uint64_t size_bytes);
+VkrRendererError vkr_uniform_buffer_update(VkrRendererFrontendHandle renderer,
+                                           VkrUniformBuffer *uniform_buffer,
+                                           const void *data,
+                                           uint64_t offset_bytes,
+                                           uint64_t size_bytes);
 
 // =============================================================================
 // Buffer Cleanup
@@ -225,7 +227,7 @@ RendererError vkr_uniform_buffer_update(RendererFrontendHandle renderer,
  * @param renderer Renderer instance
  * @param vertex_buffer Vertex buffer to destroy
  */
-void vkr_vertex_buffer_destroy(RendererFrontendHandle renderer,
+void vkr_vertex_buffer_destroy(VkrRendererFrontendHandle renderer,
                                VkrVertexBuffer *vertex_buffer);
 
 /**
@@ -233,7 +235,7 @@ void vkr_vertex_buffer_destroy(RendererFrontendHandle renderer,
  * @param renderer Renderer instance
  * @param index_buffer Index buffer to destroy
  */
-void vkr_index_buffer_destroy(RendererFrontendHandle renderer,
+void vkr_index_buffer_destroy(VkrRendererFrontendHandle renderer,
                               VkrIndexBuffer *index_buffer);
 
 /**
@@ -241,5 +243,5 @@ void vkr_index_buffer_destroy(RendererFrontendHandle renderer,
  * @param renderer Renderer instance
  * @param uniform_buffer Uniform buffer to destroy
  */
-void vkr_uniform_buffer_destroy(RendererFrontendHandle renderer,
+void vkr_uniform_buffer_destroy(VkrRendererFrontendHandle renderer,
                                 VkrUniformBuffer *uniform_buffer);
