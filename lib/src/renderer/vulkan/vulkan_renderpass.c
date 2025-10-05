@@ -112,6 +112,64 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
   return true_v;
 }
 
+/**
+ * @brief Create a domain-specific render pass
+ *
+ * DOMAIN-SPECIFIC RENDER PASS SYSTEM:
+ * This function creates render passes tailored to specific rendering domains.
+ * Each domain has unique attachment configurations, load/store operations,
+ * and image layout transitions optimized for its use case.
+ *
+ * DOMAIN CONFIGURATIONS:
+ *
+ * 1. WORLD Domain (3D World Geometry):
+ *    - Attachments: Color + Depth
+ *    - Load Ops: CLEAR both (fresh frame)
+ *    - Color Final Layout: COLOR_ATTACHMENT_OPTIMAL
+ *      → Optimized for chaining to UI pass without transition
+ *      → If no UI pass: Manual transition to PRESENT in end_frame
+ *    - Depth Final Layout: DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+ *    - Use Case: Primary 3D scene rendering with depth testing
+ *
+ * 2. UI Domain (2D User Interface):
+ *    - Attachments: Color only (no depth)
+ *    - Load Op: LOAD (preserves world rendering underneath)
+ *    - Color Initial Layout: COLOR_ATTACHMENT_OPTIMAL (from WORLD)
+ *    - Color Final Layout: PRESENT_SRC_KHR (ready for presentation)
+ *      → Sets swapchain_image_is_present_ready = true in end
+ *      → Eliminates manual transition in end_frame
+ *    - Use Case: Render UI elements on top of 3D world
+ *
+ * 3. SHADOW Domain (Shadow Map Generation):
+ *    - Attachments: Depth only (no color)
+ *    - Load Op: CLEAR
+ *    - Use Case: Render scene from light's perspective to depth texture
+ *
+ * 4. POST Domain (Post-Processing Effects):
+ *    - Attachments: Color only
+ *    - Load Op: CLEAR (fresh start for effects)
+ *    - Final Layout: PRESENT_SRC_KHR
+ *    - Use Case: Fullscreen effects (bloom, tone mapping, etc.)
+ *
+ * 5. COMPUTE Domain:
+ *    - No traditional render pass (uses compute pipelines)
+ *    - Use Case: GPU compute operations
+ *
+ * RENDER PASS CHAINING OPTIMIZATION:
+ * The WORLD → UI chain is optimized for zero-cost composition:
+ * - WORLD ends in COLOR_ATTACHMENT_OPTIMAL layout
+ * - UI starts in COLOR_ATTACHMENT_OPTIMAL layout (no transition)
+ * - UI loads existing color data (preserves world rendering)
+ * - UI ends in PRESENT_SRC_KHR layout (ready for swapchain present)
+ *
+ * This eliminates the need for explicit layout transitions between world
+ * and UI rendering, reducing GPU overhead for common rendering patterns.
+ *
+ * @param state Vulkan backend state
+ * @param domain Pipeline domain (WORLD, UI, SHADOW, POST, COMPUTE)
+ * @param out_render_pass Output render pass object
+ * @return true on success, false on failure
+ */
 bool8_t vulkan_renderpass_create_for_domain(VulkanBackendState *state,
                                             VkrPipelineDomain domain,
                                             VulkanRenderPass *out_render_pass) {
@@ -126,7 +184,7 @@ bool8_t vulkan_renderpass_create_for_domain(VulkanBackendState *state,
   out_render_pass->height = (float32_t)state->swapchain.extent.height;
   out_render_pass->depth = 1.0f;
   out_render_pass->stencil = 0;
-  out_render_pass->domain = domain; // Set the domain
+  out_render_pass->domain = domain; // Store domain for later reference
 
   switch (domain) {
   case VKR_PIPELINE_DOMAIN_WORLD:
@@ -255,14 +313,49 @@ bool8_t vulkan_renderpass_end(VulkanCommandBuffer *command_buffer,
 // =========================================================================
 
 /**
- * @brief Creates a render pass for the WORLD domain
- * @details World domain: color + depth attachments
- * @details Color attachment: CLEAR → COLOR_ATTACHMENT_OPTIMAL (for sharing with
- * UI)
- * @details Depth attachment: CLEAR → DEPTH_STENCIL_ATTACHMENT_OPTIMAL
- * @param state The Vulkan backend state
- * @param out_render_pass The render pass to create
- * @return true if the render pass was created successfully, false otherwise
+ * @brief Create render pass for WORLD domain (3D scene geometry)
+ *
+ * WORLD DOMAIN SPECIFICATION:
+ * This render pass is designed for rendering 3D world geometry with depth
+ * testing and potential alpha blending for transparent objects.
+ *
+ * ATTACHMENT CONFIGURATION:
+ * - Color Attachment:
+ *   - Format: Swapchain format (typically BGRA8_SRGB)
+ *   - Load Op: CLEAR (start fresh each frame)
+ *   - Store Op: STORE (preserve for UI pass or presentation)
+ *   - Initial Layout: UNDEFINED (don't care about previous contents)
+ *   - Final Layout: COLOR_ATTACHMENT_OPTIMAL
+ *     → CRITICAL: Stays in attachment-optimal layout for efficient UI chaining
+ *     → If UI pass runs next: Zero-cost transition (same layout)
+ *     → If no UI pass: Manual transition to PRESENT in end_frame
+ *
+ * - Depth Attachment:
+ *   - Format: Device depth format (D32_SFLOAT or D24_UNORM_S8_UINT)
+ *   - Load Op: CLEAR (start fresh each frame)
+ *   - Store Op: DONT_CARE (depth not needed after world pass)
+ *   - Initial Layout: UNDEFINED
+ *   - Final Layout: DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+ *
+ * SUBPASS DEPENDENCIES:
+ * 1. External → Subpass 0:
+ *    - Ensures previous frame's color/depth writes complete before this pass
+ *    - Synchronizes COLOR_ATTACHMENT_OUTPUT and EARLY_FRAGMENT_TESTS stages
+ *
+ * 2. Subpass 0 → External:
+ *    - Allows subsequent passes (UI) to read color attachment
+ *    - Synchronizes for WORLD→UI transition
+ *
+ * PIPELINE COMPATIBILITY:
+ * Pipelines using this render pass should have:
+ * - Depth testing enabled (depthTestEnable = VK_TRUE)
+ * - Depth writing enabled (depthWriteEnable = VK_TRUE)
+ * - Blend mode: Typically opaque (blendEnable = VK_FALSE)
+ *   - Can enable for transparent objects (per-material)
+ *
+ * @param state Vulkan backend state
+ * @param out_render_pass Output render pass object
+ * @return true on success, false on failure
  */
 bool8_t vulkan_renderpass_create_world(VulkanBackendState *state,
                                        VulkanRenderPass *out_render_pass) {
@@ -363,13 +456,62 @@ bool8_t vulkan_renderpass_create_world(VulkanBackendState *state,
 }
 
 /**
- * @brief Creates a render pass for the UI domain
- * @details UI domain: color attachment only
- * @details Color attachment: LOAD → PRESENT_SRC_KHR (preserve world contents,
- * final output) No depth attachment (UI renders on top)
- * @param state The Vulkan backend state
- * @param out_render_pass The render pass to create
- * @return true if the render pass was created successfully, false otherwise
+ * @brief Create render pass for UI domain (2D user interface overlay)
+ *
+ * UI DOMAIN SPECIFICATION:
+ * This render pass is optimized for rendering 2D UI elements on top of the
+ * 3D world geometry. It preserves the world rendering and composites UI with
+ * alpha blending.
+ *
+ * ATTACHMENT CONFIGURATION:
+ * - Color Attachment Only (no depth):
+ *   - Format: Swapchain format (matches WORLD pass)
+ *   - Load Op: LOAD
+ *     → CRITICAL: Preserves world rendering underneath
+ *     → UI elements are composited on top of existing color data
+ *   - Store Op: STORE (save final composed image)
+ *   - Initial Layout: COLOR_ATTACHMENT_OPTIMAL
+ *     → Matches WORLD final layout (zero-cost transition)
+ *     → Efficient chaining from WORLD pass
+ *   - Final Layout: PRESENT_SRC_KHR
+ *     → Image is ready for swapchain presentation
+ *     → Sets swapchain_image_is_present_ready = true
+ *     → Eliminates manual transition in end_frame
+ *
+ * NO DEPTH ATTACHMENT:
+ * - UI rendering typically doesn't need depth testing
+ * - UI elements are drawn in painter's order (back-to-front)
+ * - Omitting depth saves memory bandwidth
+ *
+ * SUBPASS DEPENDENCIES:
+ * 1. External (WORLD pass) → UI Subpass:
+ *    - Ensures WORLD color writes complete before UI reads
+ *    - Synchronizes COLOR_ATTACHMENT_OUTPUT stages
+ *
+ * 2. UI Subpass → External (Present):
+ *    - Ensures UI writes complete before presentation
+ *    - Synchronizes for swapchain present operation
+ *
+ * PIPELINE COMPATIBILITY:
+ * Pipelines using this render pass should have:
+ * - Depth testing disabled (depthTestEnable = VK_FALSE)
+ * - Depth writing disabled (depthWriteEnable = VK_FALSE)
+ * - Alpha blending enabled (blendEnable = VK_TRUE)
+ *   - Src factor: VK_BLEND_FACTOR_SRC_ALPHA
+ *   - Dst factor: VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
+ *   - Blend op: VK_BLEND_OP_ADD
+ *
+ * TYPICAL RENDERING FLOW:
+ * 1. WORLD pass renders 3D geometry (color in COLOR_ATTACHMENT_OPTIMAL)
+ * 2. Automatic transition to UI pass (same layout, no GPU cost)
+ * 3. UI pass LOADs existing color data
+ * 4. UI elements drawn with alpha blending
+ * 5. Final image transitioned to PRESENT_SRC_KHR
+ * 6. Frame submitted to swapchain for display
+ *
+ * @param state Vulkan backend state
+ * @param out_render_pass Output render pass object
+ * @return true on success, false on failure
  */
 bool8_t vulkan_renderpass_create_ui(VulkanBackendState *state,
                                     VulkanRenderPass *out_render_pass) {

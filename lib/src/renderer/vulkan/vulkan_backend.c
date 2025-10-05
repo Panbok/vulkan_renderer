@@ -482,6 +482,41 @@ VkrRendererError renderer_vulkan_wait_idle(void *backend_state) {
   return VKR_RENDERER_ERROR_NONE;
 }
 
+/**
+ * @brief Begin a new rendering frame
+ *
+ * AUTOMATIC RENDER PASS MANAGEMENT:
+ * This function deliberately does NOT start any render pass. Instead, render
+ * passes are started automatically when the first pipeline is bound via
+ * vulkan_graphics_pipeline_update_state(). This enables automatic multi-pass
+ * rendering based on pipeline domains.
+ *
+ * FRAME LIFECYCLE:
+ * 1. Wait for previous frame fence (GPU finished previous frame)
+ * 2. Acquire next swapchain image
+ * 3. Reset and begin command buffer recording
+ * 4. Set initial viewport and scissor (may be overridden by render pass
+ * switches)
+ * 5. Mark render pass as inactive (render_pass_active = false)
+ * 6. Set domain to invalid (current_render_pass_domain = COUNT)
+ *
+ * RENDER PASS STATE:
+ * - render_pass_active = false: No render pass is active at frame start
+ * - current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT: Invalid domain
+ * - swapchain_image_is_present_ready = false: Image not yet transitioned to
+ * PRESENT
+ *
+ * NEXT STEPS:
+ * After begin_frame, the application should:
+ * 1. Update global uniforms (view/projection matrices)
+ * 2. Bind pipelines (automatically starts domain-specific render passes)
+ * 3. Draw geometry
+ * 4. Call end_frame (automatically ends any active render pass)
+ *
+ * @param backend_state Vulkan backend state
+ * @param delta_time Frame delta time in seconds
+ * @return VKR_RENDERER_ERROR_NONE on success
+ */
 VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
                                              float64_t delta_time) {
   // log_debug("Beginning Vulkan frame");
@@ -537,18 +572,29 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
   vkCmdSetViewport(command_buffer->handle, 0, 1, &viewport);
   vkCmdSetScissor(command_buffer->handle, 0, 1, &scissor);
 
-  // Render passes are now started automatically when pipelines are bound
+  // ============================================================================
+  // CRITICAL: DO NOT START ANY RENDER PASS HERE
+  // ============================================================================
+  // Render passes are started automatically in
+  // vulkan_graphics_pipeline_update_state() when the first pipeline is bound.
+  // This enables automatic domain-based multi-pass rendering without
+  // application intervention.
+  //
+  // The automatic system works as follows:
+  // 1. Application binds a pipeline (e.g., WORLD domain)
+  // 2. update_state detects no pass is active (render_pass_active == false)
+  // 3. update_state starts the WORLD render pass automatically
+  // 4. Application binds another pipeline (e.g., UI domain)
+  // 5. update_state detects domain change (WORLD → UI)
+  // 6. update_state ends WORLD pass and starts UI pass automatically
+  // 7. end_frame ends the final active pass (UI)
+  //
+  // This design eliminates manual render pass management from the application.
+  // ============================================================================
 
-  // Don't start any render pass in begin_frame
-  // Render passes will be started automatically when pipelines are bound
-  // This is part of the P14A automatic render pass management
-
-  // here we end command buffer recording, next you should call binding
-  // functions like bind pipeline, bind vertex buffer, etc. then call draw
-  // functions and finally call end frame
   state->render_pass_active = false;
   state->current_render_pass_domain =
-      VKR_PIPELINE_DOMAIN_COUNT; // Invalid domain
+      VKR_PIPELINE_DOMAIN_COUNT; // Invalid domain (no pass active)
 
   return VKR_RENDERER_ERROR_NONE;
 }
@@ -576,6 +622,48 @@ void renderer_vulkan_draw(void *backend_state, uint32_t vertex_count,
   return;
 }
 
+/**
+ * @brief End the current rendering frame and submit to GPU
+ *
+ * AUTOMATIC RENDER PASS MANAGEMENT:
+ * This function automatically ends any active render pass before submitting
+ * the command buffer to the GPU. This ensures proper cleanup regardless of
+ * which domain was last active (WORLD, UI, SHADOW, POST).
+ *
+ * RENDER PASS CLEANUP:
+ * - If a render pass is active: End it and mark as inactive
+ * - Reset current_render_pass_domain to invalid state (COUNT)
+ * - Prepare for next frame's automatic pass management
+ *
+ * IMAGE LAYOUT TRANSITIONS:
+ * The function handles a critical layout transition case:
+ * - If WORLD domain was last active: Image is in COLOR_ATTACHMENT_OPTIMAL
+ * - Image must be transitioned to PRESENT_SRC_KHR for presentation
+ * - If UI/POST domain was last: Image is already in PRESENT_SRC_KHR (no-op)
+ *
+ * This is tracked via swapchain_image_is_present_ready flag:
+ * - Set by UI/POST render passes (finalLayout = PRESENT_SRC_KHR)
+ * - If false: Manual transition required (WORLD was last)
+ * - If true: No transition needed (UI/POST was last)
+ *
+ * FRAME SUBMISSION FLOW:
+ * 1. End any active render pass
+ * 2. Transition image to PRESENT layout if needed
+ * 3. End command buffer recording
+ * 4. Wait for previous frame using this image (fence)
+ * 5. Submit command buffer to GPU queue
+ * 6. Present image to swapchain
+ * 7. Advance frame counter for triple buffering
+ *
+ * SYNCHRONIZATION:
+ * - Image available semaphore: Signals when image is acquired from swapchain
+ * - Queue complete semaphore: Signals when GPU finishes rendering
+ * - In-flight fence: Ensures previous frame using this image has completed
+ *
+ * @param backend_state Vulkan backend state
+ * @param delta_time Frame delta time in seconds
+ * @return VKR_RENDERER_ERROR_NONE on success
+ */
 VkrRendererError renderer_vulkan_end_frame(void *backend_state,
                                            float64_t delta_time) {
   assert_log(backend_state != NULL, "Backend state is NULL");
@@ -588,6 +676,17 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, state->image_index);
 
+  // ============================================================================
+  // AUTOMATIC RENDER PASS CLEANUP
+  // ============================================================================
+  // End any active render pass before submitting the command buffer.
+  // This handles all domain types (WORLD, UI, SHADOW, POST) uniformly.
+  //
+  // The render_pass_active flag is set by
+  // vulkan_graphics_pipeline_update_state() when a render pass is started
+  // automatically. We reset it here to prepare for the next frame's automatic
+  // pass management cycle.
+  // ============================================================================
   if (state->render_pass_active) {
     if (!vulkan_renderpass_end(command_buffer, state)) {
       log_fatal("Failed to end Vulkan render pass");
@@ -597,9 +696,26 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
     state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
   }
 
-  // Transition swapchain image from COLOR_ATTACHMENT_OPTIMAL to PRESENT_SRC_KHR
-  // This is needed when no UI or POST pass runs to transition the image for
-  // present
+  // ============================================================================
+  // CRITICAL IMAGE LAYOUT TRANSITION
+  // ============================================================================
+  // Handle the case where WORLD domain was the last (or only) pass active:
+  //
+  // WORLD render pass: finalLayout = COLOR_ATTACHMENT_OPTIMAL
+  //   → Image is left in attachment-optimal layout for efficient UI chaining
+  //   → If no UI pass runs, we must transition to PRESENT_SRC_KHR here
+  //
+  // UI render pass: finalLayout = PRESENT_SRC_KHR
+  //   → Image is already in present layout, no transition needed
+  //   → swapchain_image_is_present_ready = true (set by UI pass)
+  //
+  // POST render pass: finalLayout = PRESENT_SRC_KHR
+  //   → Image is already in present layout, no transition needed
+  //   → swapchain_image_is_present_ready = true (set by POST pass)
+  //
+  // This design allows efficient WORLD→UI chaining without extra transitions,
+  // while still supporting WORLD-only frames via manual transition here.
+  // ============================================================================
   if (!state->swapchain_image_is_present_ready) {
     VkImageMemoryBarrier present_barrier = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,

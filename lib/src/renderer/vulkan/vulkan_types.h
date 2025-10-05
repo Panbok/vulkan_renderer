@@ -245,6 +245,31 @@ struct s_TextureHandle {
   VkrTextureDescription description;
 };
 
+/**
+ * @brief Vulkan backend state containing all rendering resources and state
+ *
+ * This structure manages the entire Vulkan rendering pipeline including the
+ * automatic multi-render pass system (P14 implementation). Key features:
+ *
+ * MULTI-RENDER PASS SYSTEM (P14):
+ * - Domain-based render passes allow automatic switching between rendering
+ *   contexts (WORLD, UI, SHADOW, POST, COMPUTE)
+ * - Render passes are started/stopped automatically based on pipeline domain
+ * - No explicit render pass management required by application code
+ *
+ * RENDER PASS LIFECYCLE:
+ * 1. begin_frame: Does NOT start any render pass (state.render_pass_active =
+ * false)
+ * 2. pipeline bind: Automatically starts domain-specific render pass if needed
+ * 3. pipeline domain change: Automatically ends current pass, starts new pass
+ * 4. end_frame: Automatically ends any active render pass
+ *
+ * DOMAIN CONFIGURATIONS:
+ * - WORLD: Color+Depth, finalLayout=COLOR_ATTACHMENT_OPTIMAL (chains to UI)
+ * - UI: Color-only, loadOp=LOAD (preserves world), finalLayout=PRESENT_SRC_KHR
+ * - SHADOW: Depth-only, for shadow map generation
+ * - POST: Color-only, for post-processing effects
+ */
 typedef struct VulkanBackendState {
   Arena *arena;
   Arena *temp_arena;
@@ -268,13 +293,48 @@ typedef struct VulkanBackendState {
 
   VulkanDevice device;
 
+  /**
+   * Domain-specific render passes indexed by VkrPipelineDomain.
+   * Each domain has unique attachment configurations and pipeline states:
+   * - WORLD: Color + Depth attachments
+   * - UI: Color only (preserves world rendering)
+   * - SHADOW: Depth only
+   * - POST: Color only (for post-processing)
+   */
   VulkanRenderPass *domain_render_passes[VKR_PIPELINE_DOMAIN_COUNT];
+
+  /**
+   * Framebuffers for each domain, per swapchain image.
+   * Indexed as: domain_framebuffers[domain][swapchain_image_index]
+   * Recreated on swapchain resize/recreation.
+   */
   Array_VulkanFramebuffer domain_framebuffers[VKR_PIPELINE_DOMAIN_COUNT];
+
+  /** Tracks which domains have been initialized */
   bool8_t domain_initialized[VKR_PIPELINE_DOMAIN_COUNT];
 
+  /**
+   * Currently active render pass domain.
+   * Set to VKR_PIPELINE_DOMAIN_COUNT when no pass is active.
+   * Used by automatic switching logic to detect domain changes.
+   */
   VkrPipelineDomain current_render_pass_domain;
+
+  /**
+   * Indicates if a render pass is currently recording.
+   * - Set to false in begin_frame (no pass started)
+   * - Set to true when pipeline binding starts a render pass
+   * - Set to false in end_frame after ending any active pass
+   */
   bool8_t render_pass_active;
+
   uint32_t active_image_index;
+
+  /**
+   * Tracks if the swapchain image is in PRESENT_SRC_KHR layout.
+   * Used to avoid redundant layout transitions in end_frame.
+   * Set to true when UI or POST domain ends (transitions to PRESENT).
+   */
   bool8_t swapchain_image_is_present_ready;
 
   VkSurfaceKHR surface;
