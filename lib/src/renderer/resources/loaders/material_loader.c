@@ -1,4 +1,5 @@
 #include "renderer/resources/loaders/material_loader.h"
+#include "containers/str.h"
 
 vkr_global const char *mt_ext = "mt";
 
@@ -36,8 +37,27 @@ vkr_internal void vkr_get_stable_material_name(char *material_name_buf,
                                        string_length(material_name_buf));
 }
 
+vkr_internal uint32_t vkr_get_pipeline_id_from_string(char *value) {
+  assert_log(value != NULL, "Value is NULL");
+  assert_log(strlen(value) > 0, "Value is empty");
+
+  if (string_equalsi(value, "world")) {
+    return VKR_PIPELINE_DOMAIN_WORLD;
+  } else if (string_equalsi(value, "ui")) {
+    return VKR_PIPELINE_DOMAIN_UI;
+  } else if (string_equalsi(value, "compute")) {
+    return VKR_PIPELINE_DOMAIN_COMPUTE;
+  } else if (string_equalsi(value, "shadow")) {
+    return VKR_PIPELINE_DOMAIN_SHADOW;
+  } else if (string_equalsi(value, "post")) {
+    return VKR_PIPELINE_DOMAIN_POST;
+  }
+
+  return VKR_INVALID_ID;
+}
+
 // Forward declarations
-vkr_internal RendererError
+vkr_internal VkrRendererError
 vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
                                  Arena *temp_arena, VkrMaterial *out_material);
 
@@ -62,7 +82,7 @@ vkr_internal bool8_t vkr_material_loader_can_load(VkrResourceLoader *self,
 vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
                                               String8 name, Arena *temp_arena,
                                               VkrResourceHandleInfo *out_handle,
-                                              RendererError *out_error) {
+                                              VkrRendererError *out_error) {
   assert_log(self != NULL, "Self is NULL");
   assert_log(name.str != NULL, "Name is NULL");
   assert_log(temp_arena != NULL, "Temp arena is NULL");
@@ -75,7 +95,7 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
   VkrMaterial loaded_material = {0};
   *out_error = vkr_material_loader_load_from_mt(self, name, temp_arena,
                                                 &loaded_material);
-  if (*out_error != RENDERER_ERROR_NONE) {
+  if (*out_error != VKR_RENDERER_ERROR_NONE) {
     return false_v;
   }
 
@@ -89,7 +109,7 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
       &system->material_by_name, material_key);
   if (existing_entry) {
     log_warn("Material '%s' already exists in system", material_key);
-    *out_error = RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return false_v;
   }
 
@@ -106,7 +126,7 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
       slot++;
     if (slot >= system->materials.length) {
       log_error("Material system is full");
-      *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       return false_v;
     }
     system->next_free_index = slot + 1;
@@ -117,7 +137,7 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
                                   ARENA_MEMORY_TAG_STRING);
   if (!stable_name) {
     log_error("Failed to allocate name for material");
-    *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
   MemCopy(stable_name, material_name.str, (size_t)material_name.length);
@@ -146,7 +166,7 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
   out_handle->type = VKR_RESOURCE_TYPE_MATERIAL;
   out_handle->loader_id = self->id;
   out_handle->as.material = handle;
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
 
   return true_v;
 }
@@ -218,7 +238,7 @@ vkr_material_loader_unload(VkrResourceLoader *self,
   }
 }
 
-vkr_internal RendererError
+vkr_internal VkrRendererError
 vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
                                  Arena *temp_arena, VkrMaterial *out_material) {
   assert_log(self != NULL, "Self is NULL");
@@ -238,7 +258,7 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
   if (fe != FILE_ERROR_NONE) {
     log_error("Failed to open material file '%s': %s", (char *)path.str,
               file_get_error_string(fe).str);
-    return RENDERER_ERROR_FILE_NOT_FOUND;
+    return VKR_RENDERER_ERROR_FILE_NOT_FOUND;
   }
 
   char material_name_buf[128] = {0};
@@ -267,7 +287,7 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
 
   if (!file_buffer_arena) {
     file_close(&fh);
-    return RENDERER_ERROR_OUT_OF_MEMORY;
+    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
   }
 
   while (true) {
@@ -326,20 +346,22 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
       log_debug("Material '%s': base_color texture requested: %s",
                 string8_cstr(&name), texture_path_cstr);
       VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
-      RendererError renderer_error = RENDERER_ERROR_NONE;
+      VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
       if (!vkr_texture_system_load(material_system->texture_system,
                                    texture_path, &handle, &renderer_error) ||
-          renderer_error != RENDERER_ERROR_NONE) {
+          renderer_error != VKR_RENDERER_ERROR_NONE) {
+        String8 error_string = vkr_renderer_get_error_string(renderer_error);
         log_error("Failed to load texture '%s': %s", texture_path_cstr,
-                  renderer_get_error_string(renderer_error).str);
+                  string8_cstr(&error_string));
       }
 
       handle =
           vkr_texture_system_acquire(material_system->texture_system,
                                      texture_path, true_v, &renderer_error);
-      if (renderer_error != RENDERER_ERROR_NONE) {
+      if (renderer_error != VKR_RENDERER_ERROR_NONE) {
+        String8 error_string = vkr_renderer_get_error_string(renderer_error);
         log_error("Failed to acquire texture '%s': %s", texture_path_cstr,
-                  renderer_get_error_string(renderer_error).str);
+                  string8_cstr(&error_string));
       }
 
       scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
@@ -382,6 +404,16 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
                  string8_cstr(&name), string8_cstr(&value));
       }
 
+    } else if (string8_contains_cstr(&key, "pipeline")) {
+      string_trim((char *)value.str);
+      uint32_t pipeline_id = vkr_get_pipeline_id_from_string((char *)value.str);
+      if (pipeline_id != VKR_INVALID_ID) {
+        out_material->pipeline_id = pipeline_id;
+      } else {
+        log_warn("Material '%s': invalid pipeline '%s'", string8_cstr(&name),
+                 string8_cstr(&value));
+        out_material->pipeline_id = VKR_INVALID_ID;
+      }
     } else {
       // Unknown keys are ignored for now
       log_debug("Material '%s': ignoring unknown key '%.*s'",
@@ -391,7 +423,7 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
 
   file_close(&fh);
 
-  return RENDERER_ERROR_NONE;
+  return VKR_RENDERER_ERROR_NONE;
 }
 
 VkrResourceLoader vkr_material_loader_create(void) {

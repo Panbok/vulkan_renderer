@@ -5,7 +5,7 @@
 #include "core/logger.h"
 #include "defines.h"
 #include "memory/arena.h"
-#include "renderer/renderer.h"
+#include "renderer/vkr_renderer.h"
 
 #define PLAYER_SPEED 50.0
 #define ENTITY_COUNT 1
@@ -21,10 +21,6 @@ typedef struct State {
   Arena *app_arena;
   Arena *event_arena;
   Arena *stats_arena;
-
-  // todo: test materials
-  VkrResourceHandleInfo materials[3];
-  uint8_t material_index;
 } State;
 
 vkr_global State *state = NULL;
@@ -80,24 +76,6 @@ void application_update(Application *application, float64_t delta) {
   // application->pipeline.shader_object_description.shader_state_object.model =
   //     vkr_quat_to_mat4(q);
 
-  if (input_is_key_up(state->input_state, KEY_T) &&
-      input_was_key_down(state->input_state, KEY_T)) {
-    log_debug("Material index: %d", state->material_index);
-    // Update material color factor and texture (simple showcase)
-    VkrPhongProperties phong_props = {
-        .diffuse_color = vec4_new(1, 1, 1, 1),
-        .specular_color = vec4_new(1, 1, 1, 1),
-        .shininess = 32.0f,
-        .emission_color = vec3_new(0, 0, 0),
-    };
-    application->current_material =
-        state->materials[state->material_index].as.material;
-    state->material_index++;
-    if (state->material_index >= 3) {
-      state->material_index = 0;
-    }
-  }
-
   if (state == NULL || state->input_state == NULL) {
     log_error("State or input state is NULL");
     return;
@@ -128,13 +106,15 @@ int main(int argc, char **argv) {
   config.height = 600;
   config.app_arena_size = MB(1);
   config.target_frame_rate = 60;
-  config.device_requirements = (DeviceRequirements){
-      .supported_stages = SHADER_STAGE_VERTEX_BIT | SHADER_STAGE_FRAGMENT_BIT,
-      .supported_queues = DEVICE_QUEUE_GRAPHICS_BIT |
-                          DEVICE_QUEUE_TRANSFER_BIT | DEVICE_QUEUE_PRESENT_BIT,
+  config.device_requirements = (VkrDeviceRequirements){
+      .supported_stages =
+          VKR_SHADER_STAGE_VERTEX_BIT | VKR_SHADER_STAGE_FRAGMENT_BIT,
+      .supported_queues = VKR_DEVICE_QUEUE_GRAPHICS_BIT |
+                          VKR_DEVICE_QUEUE_TRANSFER_BIT |
+                          VKR_DEVICE_QUEUE_PRESENT_BIT,
       .allowed_device_types =
-          DEVICE_TYPE_DISCRETE_BIT | DEVICE_TYPE_INTEGRATED_BIT,
-      .supported_sampler_filters = SAMPLER_FILTER_ANISOTROPIC_BIT,
+          VKR_DEVICE_TYPE_DISCRETE_BIT | VKR_DEVICE_TYPE_INTEGRATED_BIT,
+      .supported_sampler_filters = VKR_SAMPLER_FILTER_ANISOTROPIC_BIT,
   };
 
   Application application = {0};
@@ -155,47 +135,10 @@ int main(int argc, char **argv) {
   state->app_arena = application.app_arena;
   state->event_arena = application.event_manager.arena;
 
-  state->material_index = 0;
-
-  VkrResourceHandleInfo material_info = {0};
-  RendererError material_load_error = RENDERER_ERROR_NONE;
-  if (vkr_resource_system_load(
-          VKR_RESOURCE_TYPE_MATERIAL, string8_lit("assets/default1.mt"),
-          application.app_arena, &material_info, &material_load_error)) {
-    log_info("Successfully loaded default material from assets/default1.mt");
-    state->materials[0] = material_info;
-  } else {
-    log_warn("Failed to load default material from assets/default1.mt; using "
-             "built-in default: %s",
-             renderer_get_error_string(material_load_error).str);
-  }
-
-  if (vkr_resource_system_load(
-          VKR_RESOURCE_TYPE_MATERIAL, string8_lit("assets/default2.mt"),
-          application.app_arena, &material_info, &material_load_error)) {
-    log_info("Successfully loaded default material from assets/default2.mt");
-    state->materials[1] = material_info;
-  } else {
-    log_warn("Failed to load default material from assets/default2.mt; using "
-             "built-in default: %s",
-             renderer_get_error_string(material_load_error).str);
-  }
-
-  if (vkr_resource_system_load(
-          VKR_RESOURCE_TYPE_MATERIAL, string8_lit("assets/default3.mt"),
-          application.app_arena, &material_info, &material_load_error)) {
-    log_info("Successfully loaded default material from assets/default3.mt");
-    state->materials[2] = material_info;
-  } else {
-    log_warn("Failed to load default material from assets/default3.mt; using "
-             "built-in default: %s",
-             renderer_get_error_string(material_load_error).str);
-  }
-
   Scratch scratch = scratch_create(application.app_arena);
-  DeviceInformation device_information;
-  renderer_get_device_information(application.renderer, &device_information,
-                                  scratch.arena);
+  VkrDeviceInformation device_information;
+  vkr_renderer_get_device_information(application.renderer, &device_information,
+                                      scratch.arena);
   log_info("Device Name: %s", device_information.device_name.str);
   log_info("Device Vendor: %s", device_information.vendor_name.str);
   log_info("Device Driver Version: %s", device_information.driver_version.str);

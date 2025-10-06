@@ -1,11 +1,11 @@
 #include "renderer/systems/vkr_geometry_system.h"
 
 // Convenience for index type bytes
-vkr_internal INLINE uint32_t vkr_index_type_size(IndexType type) {
+vkr_internal INLINE uint32_t vkr_index_type_size(VkrIndexType type) {
   switch (type) {
-  case INDEX_TYPE_UINT16:
+  case VKR_INDEX_TYPE_UINT16:
     return 2;
-  case INDEX_TYPE_UINT32:
+  case VKR_INDEX_TYPE_UINT32:
   default:
     return 4;
   }
@@ -15,7 +15,7 @@ vkr_internal INLINE uint32_t vkr_index_type_size(IndexType type) {
 vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
                                              VkrGeometryVertexLayoutType layout,
                                              uint32_t vertex_stride_bytes,
-                                             RendererError *out_error) {
+                                             VkrRendererError *out_error) {
   assert_log(system != NULL, "System is NULL");
   assert_log(layout < GEOMETRY_VERTEX_LAYOUT_COUNT, "Invalid layout");
   assert_log(out_error != NULL, "Out error is NULL");
@@ -27,7 +27,7 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
 
   VkrGeometryPool *pool = &system->pools[layout];
   if (pool->initialized) {
-    *out_error = RENDERER_ERROR_NONE;
+    *out_error = VKR_RENDERER_ERROR_NONE;
     return true_v;
   }
 
@@ -36,21 +36,21 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
   pool->capacity_vertices = system->config.default_max_vertices;
   pool->capacity_indices = system->config.default_max_indices;
 
-  RendererError err = RENDERER_ERROR_NONE;
+  VkrRendererError err = VKR_RENDERER_ERROR_NONE;
   pool->vertex_buffer = vkr_vertex_buffer_create(
       system->renderer, NULL, pool->vertex_stride_bytes,
-      (uint32_t)pool->capacity_vertices, VERTEX_INPUT_RATE_VERTEX,
+      (uint32_t)pool->capacity_vertices, VKR_VERTEX_INPUT_RATE_VERTEX,
       string8_lit("GeometrySystem.VertexBuffer"), &err);
-  if (err != RENDERER_ERROR_NONE) {
+  if (err != VKR_RENDERER_ERROR_NONE) {
     *out_error = err;
     return false_v;
   }
 
   pool->index_buffer =
-      vkr_index_buffer_create(system->renderer, NULL, INDEX_TYPE_UINT32,
+      vkr_index_buffer_create(system->renderer, NULL, VKR_INDEX_TYPE_UINT32,
                               (uint32_t)pool->capacity_indices,
                               string8_lit("GeometrySystem.IndexBuffer"), &err);
-  if (err != RENDERER_ERROR_NONE) {
+  if (err != VKR_RENDERER_ERROR_NONE) {
     *out_error = err;
     return false_v;
   }
@@ -60,37 +60,38 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
   uint64_t vb_total_bytes =
       pool->capacity_vertices * (uint64_t)pool->vertex_stride_bytes;
   uint64_t ib_total_bytes =
-      pool->capacity_indices * (uint64_t)vkr_index_type_size(INDEX_TYPE_UINT32);
+      pool->capacity_indices *
+      (uint64_t)vkr_index_type_size(VKR_INDEX_TYPE_UINT32);
 
   if (vb_total_bytes > UINT32_MAX) {
     log_error("Vertex buffer size exceeds maximum: %llu bytes", vb_total_bytes);
-    *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
 
   if (!vkr_freelist_create(system->arena, (uint32_t)vb_total_bytes,
                            &pool->vertex_freelist)) {
     log_error("Failed to create geometry vertex freelist");
-    *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
 
   if (!vkr_freelist_create(system->arena, (uint32_t)ib_total_bytes,
                            &pool->index_freelist)) {
     log_error("Failed to create geometry index freelist");
-    *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
 
   pool->initialized = true_v;
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
 }
 
 vkr_internal INLINE VkrGeometryPool *
 vkr_geometry_get_pool(VkrGeometrySystem *system,
                       VkrGeometryVertexLayoutType layout,
-                      RendererError *out_error) {
+                      VkrRendererError *out_error) {
   assert_log(system != NULL, "System is NULL");
   assert_log(layout < GEOMETRY_VERTEX_LAYOUT_COUNT, "Invalid layout");
   assert_log(out_error != NULL, "Out error is NULL");
@@ -99,8 +100,8 @@ vkr_geometry_get_pool(VkrGeometrySystem *system,
   if (!pool->initialized) {
     // Determine stride for this layout if not primary
     uint32_t attr_count = 0, binding_count = 0, stride = 0;
-    VertexInputAttributeDescription *attrs = NULL;
-    VertexInputBindingDescription *bindings = NULL;
+    VkrVertexInputAttributeDescription *attrs = NULL;
+    VkrVertexInputBindingDescription *bindings = NULL;
     Scratch mark = scratch_create(system->arena);
     vkr_geometry_fill_vertex_input_descriptions(
         layout, system->arena, &attr_count, &attrs, &binding_count, &bindings,
@@ -111,7 +112,7 @@ vkr_geometry_get_pool(VkrGeometrySystem *system,
       return NULL;
     }
   }
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
   return pool;
 }
 
@@ -150,9 +151,9 @@ vkr_internal VkrGeometry *geometry_acquire_slot(VkrGeometrySystem *system,
 }
 
 bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
-                                  RendererFrontendHandle renderer,
+                                  VkrRendererFrontendHandle renderer,
                                   const VkrGeometrySystemConfig *config,
-                                  RendererError *out_error) {
+                                  VkrRendererError *out_error) {
   assert_log(system != NULL, "Geometry system is NULL");
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(config != NULL, "Config is NULL");
@@ -169,7 +170,7 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
   system->arena = arena_create(MB(32), MB(8), app_arena_flags);
   if (!system->arena) {
     log_fatal("Failed to create geometry system arena");
-    *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
 
@@ -211,7 +212,7 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
     }
   }
 
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
 }
 
@@ -246,7 +247,7 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
     VkrGeometrySystem *system, VkrGeometryVertexLayoutType layout,
     const void *vertices, uint32_t vertex_count, const uint32_t *indices,
     uint32_t index_count, bool8_t auto_release, String8 debug_name,
-    RendererError *out_error) {
+    VkrRendererError *out_error) {
   assert_log(system != NULL, "Geometry system is NULL");
   assert_log(vertices != NULL, "Vertices is NULL");
   assert_log(indices != NULL, "Indices is NULL");
@@ -254,9 +255,9 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
 
   VkrGeometryHandle handle = (VkrGeometryHandle){0};
 
-  RendererError err = RENDERER_ERROR_NONE;
+  VkrRendererError err = VKR_RENDERER_ERROR_NONE;
   VkrGeometryPool *pool = vkr_geometry_get_pool(system, layout, &err);
-  if (!pool || err != RENDERER_ERROR_NONE) {
+  if (!pool || err != VKR_RENDERER_ERROR_NONE) {
     *out_error = err;
     return handle;
   }
@@ -280,7 +281,7 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
                              &vb_offset_bytes)) {
     log_error("Geometry vertex pool out of space for '%s'",
               string8_cstr(&debug_name));
-    *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return handle;
   }
 
@@ -290,7 +291,7 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
     vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
     log_error("Geometry index pool out of space for '%s'",
               string8_cstr(&debug_name));
-    *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return handle;
   }
 
@@ -304,7 +305,7 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
     vkr_freelist_free(&pool->index_freelist, ib_bytes, ib_offset_bytes);
     vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
     log_error("No free geometry entries for '%s'", string8_cstr(&debug_name));
-    *out_error = RENDERER_ERROR_OUT_OF_MEMORY;
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return (VkrGeometryHandle){0};
   }
 
@@ -315,9 +316,9 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
   geom->index_count = index_count;
 
   // Upload data to GPU buffers at the allocated offsets
-  err = renderer_upload_buffer(system->renderer, pool->vertex_buffer.handle,
-                               vb_offset_bytes, vb_bytes, vertices);
-  if (err != RENDERER_ERROR_NONE) {
+  err = vkr_renderer_upload_buffer(system->renderer, pool->vertex_buffer.handle,
+                                   vb_offset_bytes, vb_bytes, vertices);
+  if (err != VKR_RENDERER_ERROR_NONE) {
     log_error("Failed to upload vertices for '%s'", string8_cstr(&debug_name));
     // Rollback allocations and entry
     vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
@@ -328,9 +329,9 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
     return (VkrGeometryHandle){0};
   }
 
-  err = renderer_upload_buffer(system->renderer, pool->index_buffer.handle,
-                               ib_offset_bytes, ib_bytes, indices);
-  if (err != RENDERER_ERROR_NONE) {
+  err = vkr_renderer_upload_buffer(system->renderer, pool->index_buffer.handle,
+                                   ib_offset_bytes, ib_bytes, indices);
+  if (err != VKR_RENDERER_ERROR_NONE) {
     log_error("Failed to upload indices for '%s'", string8_cstr(&debug_name));
     // Rollback allocations and entry
     vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
@@ -369,7 +370,7 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
   vkr_hash_table_insert_VkrGeometryEntry(&system->geometry_by_name, stable_name,
                                          life_entry);
 
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
   return handle;
 }
 
@@ -464,7 +465,7 @@ void vkr_geometry_system_release(VkrGeometrySystem *system,
   }
 }
 
-void vkr_geometry_system_render(RendererFrontendHandle renderer,
+void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
                                 VkrGeometrySystem *system,
                                 VkrGeometryHandle handle,
                                 uint32_t instance_count) {
@@ -487,30 +488,31 @@ void vkr_geometry_system_render(RendererFrontendHandle renderer,
 
   VkrGeometryPool *pool = &system->pools[entry->layout];
 
-  VertexBufferBinding vbb = {
+  VkrVertexBufferBinding vbb = {
       .buffer = pool->vertex_buffer.handle,
       .binding = 0,
       .offset =
           (uint64_t)entry->first_vertex * (uint64_t)pool->vertex_stride_bytes,
   };
-  renderer_bind_vertex_buffer(renderer, &vbb);
+  vkr_renderer_bind_vertex_buffer(renderer, &vbb);
 
-  IndexBufferBinding ibb = {
+  VkrIndexBufferBinding ibb = {
       .buffer = pool->index_buffer.handle,
-      .type = INDEX_TYPE_UINT32,
-      .offset =
-          (uint64_t)entry->first_index * vkr_index_type_size(INDEX_TYPE_UINT32),
+      .type = VKR_INDEX_TYPE_UINT32,
+      .offset = (uint64_t)entry->first_index *
+                vkr_index_type_size(VKR_INDEX_TYPE_UINT32),
   };
-  renderer_bind_index_buffer(renderer, &ibb);
+  vkr_renderer_bind_index_buffer(renderer, &ibb);
 
-  renderer_draw_indexed(renderer, entry->index_count, instance_count, 0, 0, 0);
+  vkr_renderer_draw_indexed(renderer, entry->index_count, instance_count, 0, 0,
+                            0);
 }
 
 typedef VkrInterleavedVertex_PositionTexcoord GeoVertexPT;
 
 VkrGeometryHandle vkr_geometry_system_create_default_cube(
     VkrGeometrySystem *system, float32_t width, float32_t height,
-    float32_t depth, RendererError *out_error) {
+    float32_t depth, VkrRendererError *out_error) {
   assert_log(system != NULL, "Geometry system is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
@@ -587,7 +589,41 @@ VkrGeometryHandle vkr_geometry_system_create_default_cube(
   VkrGeometryHandle h = vkr_geometry_system_create_from_interleaved(
       system, GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD, verts, 24, indices, 36,
       false_v, string8_lit("Default Cube"), out_error);
-  if (out_error && *out_error == RENDERER_ERROR_NONE) {
+  if (out_error && *out_error == VKR_RENDERER_ERROR_NONE) {
+    system->default_geometry = h;
+  }
+
+  return h;
+}
+
+VkrGeometryHandle
+vkr_geometry_system_create_default_plane(VkrGeometrySystem *system,
+                                         float32_t width, float32_t height,
+                                         VkrRendererError *out_error) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  float32_t hw = width * 0.5f;
+  float32_t hh = height * 0.5f;
+
+  GeoVertexPT verts[4] = {0};
+  uint32_t vert_write_index = 0;
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, 0),
+                                            .texcoord = vec2_new(0, 0)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, -hh, 0),
+                                            .texcoord = vec2_new(1, 0)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, hh, 0),
+                                            .texcoord = vec2_new(1, 1)};
+  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, hh, 0),
+                                            .texcoord = vec2_new(0, 1)};
+
+  // counter-clockwise winding
+  uint32_t indices[6] = {0, 2, 1, 0, 3, 2};
+
+  VkrGeometryHandle h = vkr_geometry_system_create_from_interleaved(
+      system, GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD, verts, 4, indices, 6,
+      false_v, string8_lit("Default Plane"), out_error);
+  if (out_error && *out_error == VKR_RENDERER_ERROR_NONE) {
     system->default_geometry = h;
   }
 
@@ -596,8 +632,8 @@ VkrGeometryHandle vkr_geometry_system_create_default_cube(
 
 void vkr_geometry_fill_vertex_input_descriptions(
     VkrGeometryVertexLayoutType layout, Arena *arena, uint32_t *out_attr_count,
-    VertexInputAttributeDescription **out_attrs, uint32_t *out_binding_count,
-    VertexInputBindingDescription **out_bindings, uint32_t *out_stride) {
+    VkrVertexInputAttributeDescription **out_attrs, uint32_t *out_binding_count,
+    VkrVertexInputBindingDescription **out_bindings, uint32_t *out_stride) {
   assert_log(arena != NULL, "Arena is NULL");
   assert_log(out_attr_count != NULL && out_attrs != NULL, "Attr outputs NULL");
   assert_log(out_binding_count != NULL && out_bindings != NULL,
@@ -609,26 +645,26 @@ void vkr_geometry_fill_vertex_input_descriptions(
     *out_attr_count = 2;
     *out_binding_count = 1;
     *out_stride = sizeof(VkrInterleavedVertex_PositionTexcoord);
-    VertexInputAttributeDescription *attrs = arena_alloc(
-        arena, sizeof(VertexInputAttributeDescription) * (*out_attr_count),
+    VkrVertexInputAttributeDescription *attrs = arena_alloc(
+        arena, sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
         ARENA_MEMORY_TAG_RENDERER);
-    VertexInputBindingDescription *bindings = arena_alloc(
-        arena, sizeof(VertexInputBindingDescription) * (*out_binding_count),
+    VkrVertexInputBindingDescription *bindings = arena_alloc(
+        arena, sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
         ARENA_MEMORY_TAG_RENDERER);
-    attrs[0] = (VertexInputAttributeDescription){
+    attrs[0] = (VkrVertexInputAttributeDescription){
         .location = 0,
         .binding = 0,
-        .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
         .offset = offsetof(VkrInterleavedVertex_PositionTexcoord, position)};
-    attrs[1] = (VertexInputAttributeDescription){
+    attrs[1] = (VkrVertexInputAttributeDescription){
         .location = 1,
         .binding = 0,
-        .format = VERTEX_FORMAT_R32G32_SFLOAT,
+        .format = VKR_VERTEX_FORMAT_R32G32_SFLOAT,
         .offset = offsetof(VkrInterleavedVertex_PositionTexcoord, texcoord)};
-    bindings[0] =
-        (VertexInputBindingDescription){.binding = 0,
-                                        .stride = *out_stride,
-                                        .input_rate = VERTEX_INPUT_RATE_VERTEX};
+    bindings[0] = (VkrVertexInputBindingDescription){
+        .binding = 0,
+        .stride = *out_stride,
+        .input_rate = VKR_VERTEX_INPUT_RATE_VERTEX};
     *out_attrs = attrs;
     *out_bindings = bindings;
     break;
@@ -637,26 +673,26 @@ void vkr_geometry_fill_vertex_input_descriptions(
     *out_attr_count = 2;
     *out_binding_count = 1;
     *out_stride = sizeof(VkrInterleavedVertex_PositionColor);
-    VertexInputAttributeDescription *attrs = arena_alloc(
-        arena, sizeof(VertexInputAttributeDescription) * (*out_attr_count),
+    VkrVertexInputAttributeDescription *attrs = arena_alloc(
+        arena, sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
         ARENA_MEMORY_TAG_RENDERER);
-    VertexInputBindingDescription *bindings = arena_alloc(
-        arena, sizeof(VertexInputBindingDescription) * (*out_binding_count),
+    VkrVertexInputBindingDescription *bindings = arena_alloc(
+        arena, sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
         ARENA_MEMORY_TAG_RENDERER);
-    attrs[0] = (VertexInputAttributeDescription){
+    attrs[0] = (VkrVertexInputAttributeDescription){
         .location = 0,
         .binding = 0,
-        .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
         .offset = offsetof(VkrInterleavedVertex_PositionColor, position)};
-    attrs[1] = (VertexInputAttributeDescription){
+    attrs[1] = (VkrVertexInputAttributeDescription){
         .location = 1,
         .binding = 0,
-        .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
         .offset = offsetof(VkrInterleavedVertex_PositionColor, color)};
-    bindings[0] =
-        (VertexInputBindingDescription){.binding = 0,
-                                        .stride = *out_stride,
-                                        .input_rate = VERTEX_INPUT_RATE_VERTEX};
+    bindings[0] = (VkrVertexInputBindingDescription){
+        .binding = 0,
+        .stride = *out_stride,
+        .input_rate = VKR_VERTEX_INPUT_RATE_VERTEX};
     *out_attrs = attrs;
     *out_bindings = bindings;
     break;
@@ -665,31 +701,31 @@ void vkr_geometry_fill_vertex_input_descriptions(
     *out_attr_count = 3;
     *out_binding_count = 1;
     *out_stride = sizeof(VkrInterleavedVertex_PositionNormalColor);
-    VertexInputAttributeDescription *attrs = arena_alloc(
-        arena, sizeof(VertexInputAttributeDescription) * (*out_attr_count),
+    VkrVertexInputAttributeDescription *attrs = arena_alloc(
+        arena, sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
         ARENA_MEMORY_TAG_RENDERER);
-    VertexInputBindingDescription *bindings = arena_alloc(
-        arena, sizeof(VertexInputBindingDescription) * (*out_binding_count),
+    VkrVertexInputBindingDescription *bindings = arena_alloc(
+        arena, sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
         ARENA_MEMORY_TAG_RENDERER);
-    attrs[0] = (VertexInputAttributeDescription){
+    attrs[0] = (VkrVertexInputAttributeDescription){
         .location = 0,
         .binding = 0,
-        .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
         .offset = offsetof(VkrInterleavedVertex_PositionNormalColor, position)};
-    attrs[1] = (VertexInputAttributeDescription){
+    attrs[1] = (VkrVertexInputAttributeDescription){
         .location = 1,
         .binding = 0,
-        .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
         .offset = offsetof(VkrInterleavedVertex_PositionNormalColor, normal)};
-    attrs[2] = (VertexInputAttributeDescription){
+    attrs[2] = (VkrVertexInputAttributeDescription){
         .location = 2,
         .binding = 0,
-        .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
         .offset = offsetof(VkrInterleavedVertex_PositionNormalColor, color)};
-    bindings[0] =
-        (VertexInputBindingDescription){.binding = 0,
-                                        .stride = *out_stride,
-                                        .input_rate = VERTEX_INPUT_RATE_VERTEX};
+    bindings[0] = (VkrVertexInputBindingDescription){
+        .binding = 0,
+        .stride = *out_stride,
+        .input_rate = VKR_VERTEX_INPUT_RATE_VERTEX};
     *out_attrs = attrs;
     *out_bindings = bindings;
     break;
@@ -698,34 +734,34 @@ void vkr_geometry_fill_vertex_input_descriptions(
     *out_attr_count = 3;
     *out_binding_count = 1;
     *out_stride = sizeof(VkrInterleavedVertex_PositionNormalTexcoord);
-    VertexInputAttributeDescription *attrs = arena_alloc(
-        arena, sizeof(VertexInputAttributeDescription) * (*out_attr_count),
+    VkrVertexInputAttributeDescription *attrs = arena_alloc(
+        arena, sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
         ARENA_MEMORY_TAG_RENDERER);
-    VertexInputBindingDescription *bindings = arena_alloc(
-        arena, sizeof(VertexInputBindingDescription) * (*out_binding_count),
+    VkrVertexInputBindingDescription *bindings = arena_alloc(
+        arena, sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
         ARENA_MEMORY_TAG_RENDERER);
-    attrs[0] = (VertexInputAttributeDescription){
+    attrs[0] = (VkrVertexInputAttributeDescription){
         .location = 0,
         .binding = 0,
-        .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
         .offset =
             offsetof(VkrInterleavedVertex_PositionNormalTexcoord, position)};
-    attrs[1] = (VertexInputAttributeDescription){
+    attrs[1] = (VkrVertexInputAttributeDescription){
         .location = 1,
         .binding = 0,
-        .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
         .offset =
             offsetof(VkrInterleavedVertex_PositionNormalTexcoord, normal)};
-    attrs[2] = (VertexInputAttributeDescription){
+    attrs[2] = (VkrVertexInputAttributeDescription){
         .location = 2,
         .binding = 0,
-        .format = VERTEX_FORMAT_R32G32_SFLOAT,
+        .format = VKR_VERTEX_FORMAT_R32G32_SFLOAT,
         .offset =
             offsetof(VkrInterleavedVertex_PositionNormalTexcoord, texcoord)};
-    bindings[0] =
-        (VertexInputBindingDescription){.binding = 0,
-                                        .stride = *out_stride,
-                                        .input_rate = VERTEX_INPUT_RATE_VERTEX};
+    bindings[0] = (VkrVertexInputBindingDescription){
+        .binding = 0,
+        .stride = *out_stride,
+        .input_rate = VKR_VERTEX_INPUT_RATE_VERTEX};
     *out_attrs = attrs;
     *out_bindings = bindings;
     break;
@@ -734,36 +770,36 @@ void vkr_geometry_fill_vertex_input_descriptions(
     *out_attr_count = 4;
     *out_binding_count = 1;
     *out_stride = sizeof(VkrInterleavedVertex_Full);
-    VertexInputAttributeDescription *attrs = arena_alloc(
-        arena, sizeof(VertexInputAttributeDescription) * (*out_attr_count),
+    VkrVertexInputAttributeDescription *attrs = arena_alloc(
+        arena, sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
         ARENA_MEMORY_TAG_RENDERER);
-    VertexInputBindingDescription *bindings = arena_alloc(
-        arena, sizeof(VertexInputBindingDescription) * (*out_binding_count),
+    VkrVertexInputBindingDescription *bindings = arena_alloc(
+        arena, sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
         ARENA_MEMORY_TAG_RENDERER);
-    attrs[0] = (VertexInputAttributeDescription){
+    attrs[0] = (VkrVertexInputAttributeDescription){
         .location = 0,
         .binding = 0,
-        .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
         .offset = offsetof(VkrInterleavedVertex_Full, position)};
-    attrs[1] = (VertexInputAttributeDescription){
+    attrs[1] = (VkrVertexInputAttributeDescription){
         .location = 1,
         .binding = 0,
-        .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
         .offset = offsetof(VkrInterleavedVertex_Full, normal)};
-    attrs[2] = (VertexInputAttributeDescription){
+    attrs[2] = (VkrVertexInputAttributeDescription){
         .location = 2,
         .binding = 0,
-        .format = VERTEX_FORMAT_R32G32_SFLOAT,
+        .format = VKR_VERTEX_FORMAT_R32G32_SFLOAT,
         .offset = offsetof(VkrInterleavedVertex_Full, texcoord)};
-    attrs[3] = (VertexInputAttributeDescription){
+    attrs[3] = (VkrVertexInputAttributeDescription){
         .location = 3,
         .binding = 0,
-        .format = VERTEX_FORMAT_R32G32B32_SFLOAT,
+        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
         .offset = offsetof(VkrInterleavedVertex_Full, color)};
-    bindings[0] =
-        (VertexInputBindingDescription){.binding = 0,
-                                        .stride = *out_stride,
-                                        .input_rate = VERTEX_INPUT_RATE_VERTEX};
+    bindings[0] = (VkrVertexInputBindingDescription){
+        .binding = 0,
+        .stride = *out_stride,
+        .input_rate = VKR_VERTEX_INPUT_RATE_VERTEX};
     *out_attrs = attrs;
     *out_bindings = bindings;
     break;

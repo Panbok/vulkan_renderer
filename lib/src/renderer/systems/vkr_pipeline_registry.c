@@ -643,7 +643,7 @@ bool8_t vkr_pipeline_registry_get_pipeline_for_material(
   }
 
   // NOTE: In a full impl, shader path would be carried by material/pipeline
-  String8 shader_path = string8_lit("assets/cube.spv");
+  String8 shader_path = string8_lit("assets/deafult.world.spv");
   if (!vkr_pipeline_registry_create_from_material_layout(
           registry, domain, vertex_layout, shader_path, name, out_handle,
           out_error)) {

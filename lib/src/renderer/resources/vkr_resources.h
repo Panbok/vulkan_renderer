@@ -3,7 +3,7 @@
 #include "containers/array.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
-#include "renderer/renderer.h"
+#include "renderer/vkr_renderer.h"
 
 // =============================================================================
 // Geometry resource types (decoupled from systems)
@@ -75,8 +75,8 @@ typedef enum VkrTextureSlot {
 } VkrTextureSlot;
 
 typedef struct VkrTexture {
-  TextureDescription description;
-  TextureHandle handle;
+  VkrTextureDescription description;
+  VkrTextureOpaqueHandle handle;
   FilePath file_path;
   uint8_t *image;
 } VkrTexture;
@@ -123,18 +123,6 @@ typedef struct VkrMaterial {
 Array(VkrMaterial);
 
 // =============================================================================
-// Renderable (geometry + material + model) - app/scene-side draw unit
-// =============================================================================
-
-typedef struct VkrRenderable {
-  VkrGeometryHandle geometry;
-  VkrMaterialHandle material;
-  Mat4 model;
-  RendererLocalStateHandle local_state;
-} VkrRenderable;
-Array(VkrRenderable);
-
-// =============================================================================
 // Pipeline resource types (decoupled from systems)
 // =============================================================================
 
@@ -148,9 +136,22 @@ typedef struct VkrPipelineHandle {
 
 typedef struct VkrPipeline {
   VkrPipelineHandle handle;
-  GraphicsPipelineDescription description;
+  VkrGraphicsPipelineDescription description;
 
   VkrPipelineDomain domain;
-  PipelineHandle backend_handle;
+  VkrPipelineOpaqueHandle backend_handle;
 } VkrPipeline;
 Array(VkrPipeline);
+
+// =============================================================================
+// Renderable (geometry + material + model) - app/scene-side draw unit
+// =============================================================================
+
+typedef struct VkrRenderable {
+  VkrGeometryHandle geometry;
+  VkrMaterialHandle material;
+  VkrPipelineHandle pipeline;
+  Mat4 model;
+  VkrRendererLocalStateHandle local_state;
+} VkrRenderable;
+Array(VkrRenderable);

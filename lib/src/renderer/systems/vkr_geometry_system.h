@@ -5,9 +5,9 @@
 #include "containers/vkr_hashtable.h"
 #include "defines.h"
 #include "memory/arena.h"
-#include "renderer/renderer.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/vkr_buffer.h"
+#include "renderer/vkr_renderer.h"
 
 // =============================================================================
 // Geometry System - Manages pooled geometry in shared vertex/index buffers
@@ -58,7 +58,7 @@ typedef struct VkrGeometrySystem {
   // Internal arena for CPU-side allocations owned by the geometry system
   Arena *arena;
 
-  RendererFrontendHandle renderer;
+  VkrRendererFrontendHandle renderer;
 
   // Geometry storage and ID free list
   Array_VkrGeometry geometries;
@@ -94,9 +94,9 @@ typedef struct VkrGeometrySystem {
  * @param out_error The error output
  */
 bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
-                                  RendererFrontendHandle renderer,
+                                  VkrRendererFrontendHandle renderer,
                                   const VkrGeometrySystemConfig *config,
-                                  RendererError *out_error);
+                                  VkrRendererError *out_error);
 
 /**
  * @brief Shuts down the geometry system
@@ -125,7 +125,7 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
     VkrGeometrySystem *system, VkrGeometryVertexLayoutType layout,
     const void *vertices, uint32_t vertex_count, const uint32_t *indices,
     uint32_t index_count, bool8_t auto_release, String8 debug_name,
-    RendererError *out_error);
+    VkrRendererError *out_error);
 
 /**
  * @brief Adds a reference to the geometry
@@ -154,7 +154,7 @@ void vkr_geometry_system_release(VkrGeometrySystem *system,
  * @param handle The geometry handle to render
  * @param instance_count The number of instances to render
  */
-void vkr_geometry_system_render(RendererFrontendHandle renderer,
+void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
                                 VkrGeometrySystem *system,
                                 VkrGeometryHandle handle,
                                 uint32_t instance_count);
@@ -174,7 +174,20 @@ void vkr_geometry_system_render(RendererFrontendHandle renderer,
  */
 VkrGeometryHandle vkr_geometry_system_create_default_cube(
     VkrGeometrySystem *system, float32_t width, float32_t height,
-    float32_t depth, RendererError *out_error);
+    float32_t depth, VkrRendererError *out_error);
+
+/**
+ * @brief Creates a default plane (2x2 by default) using the POSITION_TEXCOORD
+ * layout and set as default geometry. Dimensions are full extents.
+ * @param system The geometry system to create the default plane in
+ * @param width The width of the plane
+ * @param height The height of the plane
+ * @param out_error The error output
+ */
+VkrGeometryHandle
+vkr_geometry_system_create_default_plane(VkrGeometrySystem *system,
+                                         float32_t width, float32_t height,
+                                         VkrRendererError *out_error);
 
 /**
  * @brief Allocates and fills vertex input descriptions for the given layout.
@@ -190,5 +203,5 @@ VkrGeometryHandle vkr_geometry_system_create_default_cube(
  */
 void vkr_geometry_fill_vertex_input_descriptions(
     VkrGeometryVertexLayoutType layout, Arena *arena, uint32_t *out_attr_count,
-    VertexInputAttributeDescription **out_attrs, uint32_t *out_binding_count,
-    VertexInputBindingDescription **out_bindings, uint32_t *out_stride);
+    VkrVertexInputAttributeDescription **out_attrs, uint32_t *out_binding_count,
+    VkrVertexInputBindingDescription **out_bindings, uint32_t *out_stride);
