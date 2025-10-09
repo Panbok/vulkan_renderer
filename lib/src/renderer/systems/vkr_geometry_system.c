@@ -1,4 +1,5 @@
 #include "renderer/systems/vkr_geometry_system.h"
+#include "memory/vkr_arena_allocator.h"
 
 // Convenience for index type bytes
 vkr_internal INLINE uint32_t vkr_index_type_size(VkrIndexType type) {
@@ -69,16 +70,50 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
     return false_v;
   }
 
-  if (!vkr_freelist_create(system->arena, (uint32_t)vb_total_bytes,
-                           &pool->vertex_freelist)) {
-    log_error("Failed to create geometry vertex freelist");
+  // Allocate memory for vertex freelist nodes
+  uint64_t vb_freelist_mem_size =
+      vkr_freelist_calculate_memory_requirement((uint32_t)vb_total_bytes);
+  pool->vertex_freelist_memory =
+      vkr_allocator_alloc(&system->allocator, vb_freelist_mem_size,
+                          VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
+  if (pool->vertex_freelist_memory == NULL) {
+    log_error("Failed to allocate memory for vertex freelist");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
 
-  if (!vkr_freelist_create(system->arena, (uint32_t)ib_total_bytes,
-                           &pool->index_freelist)) {
+  if (!vkr_freelist_create(pool->vertex_freelist_memory, vb_freelist_mem_size,
+                           (uint32_t)vb_total_bytes, &pool->vertex_freelist)) {
+    log_error("Failed to create geometry vertex freelist");
+    vkr_allocator_free(&system->allocator, pool->vertex_freelist_memory,
+                       vb_freelist_mem_size, VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
+  // Allocate memory for index freelist nodes
+  uint64_t ib_freelist_mem_size =
+      vkr_freelist_calculate_memory_requirement((uint32_t)ib_total_bytes);
+  pool->index_freelist_memory =
+      vkr_allocator_alloc(&system->allocator, ib_freelist_mem_size,
+                          VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
+  if (pool->index_freelist_memory == NULL) {
+    log_error("Failed to allocate memory for index freelist");
+    vkr_freelist_destroy(&pool->vertex_freelist);
+    vkr_allocator_free(&system->allocator, pool->vertex_freelist_memory,
+                       vb_freelist_mem_size, VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
+  if (!vkr_freelist_create(pool->index_freelist_memory, ib_freelist_mem_size,
+                           (uint32_t)ib_total_bytes, &pool->index_freelist)) {
     log_error("Failed to create geometry index freelist");
+    vkr_freelist_destroy(&pool->vertex_freelist);
+    vkr_allocator_free(&system->allocator, pool->vertex_freelist_memory,
+                       vb_freelist_mem_size, VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
+    vkr_allocator_free(&system->allocator, pool->index_freelist_memory,
+                       ib_freelist_mem_size, VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
@@ -104,8 +139,8 @@ vkr_geometry_get_pool(VkrGeometrySystem *system,
     VkrVertexInputBindingDescription *bindings = NULL;
     Scratch mark = scratch_create(system->arena);
     vkr_geometry_fill_vertex_input_descriptions(
-        layout, system->arena, &attr_count, &attrs, &binding_count, &bindings,
-        &stride);
+        layout, &system->allocator, &attr_count, &attrs, &binding_count,
+        &bindings, &stride);
     scratch_destroy(mark, ARENA_MEMORY_TAG_RENDERER);
 
     if (!vkr_geometry_pool_init(system, layout, stride, out_error)) {
@@ -174,6 +209,13 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
     return false_v;
   }
 
+  system->allocator.ctx = system->arena;
+  if (!vkr_allocator_arena(&system->allocator)) {
+    log_fatal("Failed to create geometry system allocator");
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
   system->renderer = renderer;
   system->max_geometries = config->default_max_geometries;
   system->config = *config;
@@ -227,8 +269,28 @@ void vkr_geometry_system_shutdown(VkrGeometrySystem *system) {
       continue;
     vkr_vertex_buffer_destroy(system->renderer, &pool->vertex_buffer);
     vkr_index_buffer_destroy(system->renderer, &pool->index_buffer);
+
+    // Destroy freelists and free their memory
     vkr_freelist_destroy(&pool->vertex_freelist);
+    if (pool->vertex_freelist_memory) {
+      uint64_t vb_freelist_mem_size = vkr_freelist_calculate_memory_requirement(
+          pool->vertex_freelist.total_size);
+      vkr_allocator_free(&system->allocator, pool->vertex_freelist_memory,
+                         vb_freelist_mem_size,
+                         VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
+      pool->vertex_freelist_memory = NULL;
+    }
+
     vkr_freelist_destroy(&pool->index_freelist);
+    if (pool->index_freelist_memory) {
+      uint64_t ib_freelist_mem_size = vkr_freelist_calculate_memory_requirement(
+          pool->index_freelist.total_size);
+      vkr_allocator_free(&system->allocator, pool->index_freelist_memory,
+                         ib_freelist_mem_size,
+                         VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
+      pool->index_freelist_memory = NULL;
+    }
+
     pool->initialized = false_v;
   }
 
@@ -345,15 +407,16 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
   // Register lifetime entry by name (create stable key; synthesize if missing)
   const char *stable_name = NULL;
   if (debug_name.str && debug_name.length > 0) {
-    char *name_copy = (char *)arena_alloc(system->arena, debug_name.length + 1,
-                                          ARENA_MEMORY_TAG_STRING);
+    char *name_copy =
+        (char *)vkr_allocator_alloc(&system->allocator, debug_name.length + 1,
+                                    VKR_ALLOCATOR_MEMORY_TAG_STRING);
     assert_log(name_copy != NULL, "Failed to allocate geometry name");
     MemCopy(name_copy, debug_name.str, (size_t)debug_name.length);
     name_copy[debug_name.length] = '\0';
     stable_name = (const char *)name_copy;
   } else {
-    char *name_copy =
-        (char *)arena_alloc(system->arena, 32, ARENA_MEMORY_TAG_STRING);
+    char *name_copy = (char *)vkr_allocator_alloc(
+        &system->allocator, 32, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     assert_log(name_copy != NULL, "Failed to allocate geometry name");
     int written = snprintf(name_copy, 32, "geom_%u", handle.id);
     if (written < 0) {
@@ -631,10 +694,11 @@ vkr_geometry_system_create_default_plane(VkrGeometrySystem *system,
 }
 
 void vkr_geometry_fill_vertex_input_descriptions(
-    VkrGeometryVertexLayoutType layout, Arena *arena, uint32_t *out_attr_count,
-    VkrVertexInputAttributeDescription **out_attrs, uint32_t *out_binding_count,
+    VkrGeometryVertexLayoutType layout, VkrAllocator *allocator,
+    uint32_t *out_attr_count, VkrVertexInputAttributeDescription **out_attrs,
+    uint32_t *out_binding_count,
     VkrVertexInputBindingDescription **out_bindings, uint32_t *out_stride) {
-  assert_log(arena != NULL, "Arena is NULL");
+  assert_log(allocator != NULL, "Allocator is NULL");
   assert_log(out_attr_count != NULL && out_attrs != NULL, "Attr outputs NULL");
   assert_log(out_binding_count != NULL && out_bindings != NULL,
              "Binding outputs NULL");
@@ -645,12 +709,14 @@ void vkr_geometry_fill_vertex_input_descriptions(
     *out_attr_count = 2;
     *out_binding_count = 1;
     *out_stride = sizeof(VkrInterleavedVertex_PositionTexcoord);
-    VkrVertexInputAttributeDescription *attrs = arena_alloc(
-        arena, sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
-        ARENA_MEMORY_TAG_RENDERER);
-    VkrVertexInputBindingDescription *bindings = arena_alloc(
-        arena, sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
-        ARENA_MEMORY_TAG_RENDERER);
+    VkrVertexInputAttributeDescription *attrs = vkr_allocator_alloc(
+        allocator,
+        sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    VkrVertexInputBindingDescription *bindings = vkr_allocator_alloc(
+        allocator,
+        sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     attrs[0] = (VkrVertexInputAttributeDescription){
         .location = 0,
         .binding = 0,
@@ -673,12 +739,14 @@ void vkr_geometry_fill_vertex_input_descriptions(
     *out_attr_count = 2;
     *out_binding_count = 1;
     *out_stride = sizeof(VkrInterleavedVertex_PositionColor);
-    VkrVertexInputAttributeDescription *attrs = arena_alloc(
-        arena, sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
-        ARENA_MEMORY_TAG_RENDERER);
-    VkrVertexInputBindingDescription *bindings = arena_alloc(
-        arena, sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
-        ARENA_MEMORY_TAG_RENDERER);
+    VkrVertexInputAttributeDescription *attrs = vkr_allocator_alloc(
+        allocator,
+        sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    VkrVertexInputBindingDescription *bindings = vkr_allocator_alloc(
+        allocator,
+        sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     attrs[0] = (VkrVertexInputAttributeDescription){
         .location = 0,
         .binding = 0,
@@ -701,12 +769,14 @@ void vkr_geometry_fill_vertex_input_descriptions(
     *out_attr_count = 3;
     *out_binding_count = 1;
     *out_stride = sizeof(VkrInterleavedVertex_PositionNormalColor);
-    VkrVertexInputAttributeDescription *attrs = arena_alloc(
-        arena, sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
-        ARENA_MEMORY_TAG_RENDERER);
-    VkrVertexInputBindingDescription *bindings = arena_alloc(
-        arena, sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
-        ARENA_MEMORY_TAG_RENDERER);
+    VkrVertexInputAttributeDescription *attrs = vkr_allocator_alloc(
+        allocator,
+        sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    VkrVertexInputBindingDescription *bindings = vkr_allocator_alloc(
+        allocator,
+        sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     attrs[0] = (VkrVertexInputAttributeDescription){
         .location = 0,
         .binding = 0,
@@ -734,12 +804,14 @@ void vkr_geometry_fill_vertex_input_descriptions(
     *out_attr_count = 3;
     *out_binding_count = 1;
     *out_stride = sizeof(VkrInterleavedVertex_PositionNormalTexcoord);
-    VkrVertexInputAttributeDescription *attrs = arena_alloc(
-        arena, sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
-        ARENA_MEMORY_TAG_RENDERER);
-    VkrVertexInputBindingDescription *bindings = arena_alloc(
-        arena, sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
-        ARENA_MEMORY_TAG_RENDERER);
+    VkrVertexInputAttributeDescription *attrs = vkr_allocator_alloc(
+        allocator,
+        sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    VkrVertexInputBindingDescription *bindings = vkr_allocator_alloc(
+        allocator,
+        sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     attrs[0] = (VkrVertexInputAttributeDescription){
         .location = 0,
         .binding = 0,
@@ -770,12 +842,14 @@ void vkr_geometry_fill_vertex_input_descriptions(
     *out_attr_count = 4;
     *out_binding_count = 1;
     *out_stride = sizeof(VkrInterleavedVertex_Full);
-    VkrVertexInputAttributeDescription *attrs = arena_alloc(
-        arena, sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
-        ARENA_MEMORY_TAG_RENDERER);
-    VkrVertexInputBindingDescription *bindings = arena_alloc(
-        arena, sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
-        ARENA_MEMORY_TAG_RENDERER);
+    VkrVertexInputAttributeDescription *attrs = vkr_allocator_alloc(
+        allocator,
+        sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    VkrVertexInputBindingDescription *bindings = vkr_allocator_alloc(
+        allocator,
+        sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     attrs[0] = (VkrVertexInputAttributeDescription){
         .location = 0,
         .binding = 0,

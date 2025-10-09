@@ -1,21 +1,5 @@
 #include "freelist_test.h"
-
-static Arena *arena = NULL;
-static const uint64_t ARENA_SIZE = MB(1);
-
-// Setup function called before each test function in this suite
-static void setup_suite(void) {
-  arena = arena_create(ARENA_SIZE, ARENA_SIZE);
-  assert(arena && "arena_create failed");
-}
-
-// Teardown function called after each test function in this suite
-static void teardown_suite(void) {
-  if (arena) {
-    arena_destroy(arena);
-    arena = NULL;
-  }
-}
+#include <stdlib.h>
 
 ////////////////////////
 //// Freelist Tests ////
@@ -23,11 +7,16 @@ static void teardown_suite(void) {
 
 static void test_freelist_create(void) {
   printf("  Running test_freelist_create...\n");
-  setup_suite();
 
   VkrFreeList freelist;
   const uint32_t TOTAL_SIZE = 1024;
-  assert(vkr_freelist_create(arena, TOTAL_SIZE, &freelist));
+
+  // Allocate memory for freelist nodes
+  uint64_t mem_size = vkr_freelist_calculate_memory_requirement(TOTAL_SIZE);
+  void *memory = malloc(mem_size);
+  assert(memory != NULL);
+
+  assert(vkr_freelist_create(memory, mem_size, TOTAL_SIZE, &freelist));
 
   assert(freelist.total_size == TOTAL_SIZE);
   assert(freelist.head != NULL);
@@ -38,17 +27,20 @@ static void test_freelist_create(void) {
   assert(vkr_freelist_free_space(&freelist) == TOTAL_SIZE);
 
   vkr_freelist_destroy(&freelist);
-  teardown_suite();
+  free(memory);
   printf("  test_freelist_create PASSED\n");
 }
 
 static void test_allocate_exact_and_refill(void) {
   printf("  Running test_allocate_exact_and_refill...\n");
-  setup_suite();
 
   VkrFreeList freelist;
   const uint32_t TOTAL_SIZE = 1024;
-  assert(vkr_freelist_create(arena, TOTAL_SIZE, &freelist));
+
+  uint64_t mem_size = vkr_freelist_calculate_memory_requirement(TOTAL_SIZE);
+  void *memory = malloc(mem_size);
+  assert(memory != NULL);
+  assert(vkr_freelist_create(memory, mem_size, TOTAL_SIZE, &freelist));
 
   uint32_t offset = VKR_INVALID_ID;
   assert(vkr_freelist_allocate(&freelist, TOTAL_SIZE, &offset));
@@ -65,17 +57,20 @@ static void test_allocate_exact_and_refill(void) {
   assert(offset == 0);
 
   vkr_freelist_destroy(&freelist);
-  teardown_suite();
+  free(memory);
   printf("  test_allocate_exact_and_refill PASSED\n");
 }
 
 static void test_allocate_split_then_coalesce(void) {
   printf("  Running test_allocate_split_then_coalesce...\n");
-  setup_suite();
 
   VkrFreeList freelist;
   const uint32_t TOTAL_SIZE = 1024;
-  assert(vkr_freelist_create(arena, TOTAL_SIZE, &freelist));
+
+  uint64_t mem_size = vkr_freelist_calculate_memory_requirement(TOTAL_SIZE);
+  void *memory = malloc(mem_size);
+  assert(memory != NULL);
+  assert(vkr_freelist_create(memory, mem_size, TOTAL_SIZE, &freelist));
 
   uint32_t o1 = VKR_INVALID_ID;
   uint32_t o2 = VKR_INVALID_ID;
@@ -96,17 +91,20 @@ static void test_allocate_split_then_coalesce(void) {
   assert(freelist.head->size == TOTAL_SIZE);
 
   vkr_freelist_destroy(&freelist);
-  teardown_suite();
+  free(memory);
   printf("  test_allocate_split_then_coalesce PASSED\n");
 }
 
 static void test_multiple_alloc_free_patterns(void) {
   printf("  Running test_multiple_alloc_free_patterns...\n");
-  setup_suite();
 
   VkrFreeList fr;
   const uint32_t TOTAL = 2048;
-  assert(vkr_freelist_create(arena, TOTAL, &fr));
+
+  uint64_t mem_size = vkr_freelist_calculate_memory_requirement(TOTAL);
+  void *memory = malloc(mem_size);
+  assert(memory != NULL);
+  assert(vkr_freelist_create(memory, mem_size, TOTAL, &fr));
 
   uint32_t a = VKR_INVALID_ID, b = VKR_INVALID_ID, c = VKR_INVALID_ID,
            d = VKR_INVALID_ID;
@@ -127,17 +125,20 @@ static void test_multiple_alloc_free_patterns(void) {
   assert(fr.head->offset == 0 && fr.head->size == TOTAL);
 
   vkr_freelist_destroy(&fr);
-  teardown_suite();
+  free(memory);
   printf("  test_multiple_alloc_free_patterns PASSED\n");
 }
 
 static void test_double_free_detection(void) {
   printf("  Running test_double_free_detection...\n");
-  setup_suite();
 
   VkrFreeList fr;
   const uint32_t TOTAL = 1024;
-  assert(vkr_freelist_create(arena, TOTAL, &fr));
+
+  uint64_t mem_size = vkr_freelist_calculate_memory_requirement(TOTAL);
+  void *memory = malloc(mem_size);
+  assert(memory != NULL);
+  assert(vkr_freelist_create(memory, mem_size, TOTAL, &fr));
 
   uint32_t off = VKR_INVALID_ID;
   assert(vkr_freelist_allocate(&fr, 128, &off)); // [0..128)
@@ -146,17 +147,20 @@ static void test_double_free_detection(void) {
   assert(!vkr_freelist_free(&fr, 128, off));
 
   vkr_freelist_destroy(&fr);
-  teardown_suite();
+  free(memory);
   printf("  test_double_free_detection PASSED\n");
 }
 
 static void test_clear_resets_to_single_block(void) {
   printf("  Running test_clear_resets_to_single_block...\n");
-  setup_suite();
 
   VkrFreeList fr;
   const uint32_t TOTAL = 4096;
-  assert(vkr_freelist_create(arena, TOTAL, &fr));
+
+  uint64_t mem_size = vkr_freelist_calculate_memory_requirement(TOTAL);
+  void *memory = malloc(mem_size);
+  assert(memory != NULL);
+  assert(vkr_freelist_create(memory, mem_size, TOTAL, &fr));
 
   uint32_t o1 = VKR_INVALID_ID, o2 = VKR_INVALID_ID;
   assert(vkr_freelist_allocate(&fr, 512, &o1));
@@ -170,17 +174,20 @@ static void test_clear_resets_to_single_block(void) {
   assert(vkr_freelist_free_space(&fr) == TOTAL);
 
   vkr_freelist_destroy(&fr);
-  teardown_suite();
+  free(memory);
   printf("  test_clear_resets_to_single_block PASSED\n");
 }
 
 static void test_insert_into_empty_list(void) {
   printf("  Running test_insert_into_empty_list...\n");
-  setup_suite();
 
   VkrFreeList fr;
   const uint32_t TOTAL = 256;
-  assert(vkr_freelist_create(arena, TOTAL, &fr));
+
+  uint64_t mem_size = vkr_freelist_calculate_memory_requirement(TOTAL);
+  void *memory = malloc(mem_size);
+  assert(memory != NULL);
+  assert(vkr_freelist_create(memory, mem_size, TOTAL, &fr));
 
   uint32_t off = VKR_INVALID_ID;
   // Consume entire range
@@ -195,7 +202,7 @@ static void test_insert_into_empty_list(void) {
   assert(vkr_freelist_free_space(&fr) == 64);
 
   vkr_freelist_destroy(&fr);
-  teardown_suite();
+  free(memory);
   printf("  test_insert_into_empty_list PASSED\n");
 }
 

@@ -1,4 +1,6 @@
 #include "containers/vkr_freelist.h"
+#include "core/logger.h"
+#include "defines.h"
 
 vkr_internal VkrFreeListNode *vkr_freelist_get_node(VkrFreeList *freelist) {
   for (uint32_t node_index = 0; node_index < freelist->max_count;
@@ -18,41 +20,43 @@ vkr_internal void vkr_return_node(VkrFreeList *freelist,
   node->next = NULL;
 }
 
-bool8_t vkr_freelist_create(Arena *arena, uint32_t total_size,
-                            VkrFreeList *out_freelist) {
-  assert_log(arena != NULL, "Arena must not be NULL");
-  assert_log(total_size > 0, "Total size must be greater than 0");
-  assert_log(out_freelist != NULL, "Output freelist must not be NULL");
-
+uint64_t vkr_freelist_calculate_memory_requirement(uint32_t total_size) {
   // Use a reasonable default: assume average block size of 4KB
   uint32_t max_count = (uint32_t)(total_size / 4096) + 16;
   if (max_count < 2) {
     max_count = 2; // ensure at least head + one additional node is available
   }
-  // Cap at a reasonable maximum to avoid excessive memory usage
+
   if (max_count > 1024) {
     max_count = 1024;
   }
-  uint64_t mem_size =
-      sizeof(VkrFreeList) + ((uint64_t)max_count * sizeof(VkrFreeListNode));
-  // Check for overflow
-  if (mem_size < sizeof(VkrFreeList)) {
-    log_error("Memory size calculation overflow");
+
+  uint64_t mem_size = (uint64_t)max_count * sizeof(VkrFreeListNode);
+  return mem_size;
+}
+
+bool8_t vkr_freelist_create(void *memory, uint64_t memory_size,
+                            uint32_t total_size, VkrFreeList *out_freelist) {
+  assert_log(memory != NULL, "Memory must not be NULL");
+  assert_log(memory_size > 0, "Memory size must be greater than 0");
+  assert_log(total_size > 0, "Total size must be greater than 0");
+  assert_log(out_freelist != NULL, "Output freelist must not be NULL");
+
+  uint64_t max_count = memory_size / sizeof(VkrFreeListNode);
+  if (max_count < 2) {
+    log_error("Memory block too small for freelist (need at least 2 nodes)");
     return false_v;
   }
 
-  out_freelist->arena = arena;
-  out_freelist->memory =
-      arena_alloc(arena, mem_size, ARENA_MEMORY_TAG_FREELIST);
-  if (out_freelist->memory == NULL) {
-    return false_v;
+  if (max_count > 1024) {
+    max_count = 1024;
   }
 
+  out_freelist->memory = memory;
   out_freelist->total_size = total_size;
-  out_freelist->max_count = max_count;
-  out_freelist->nodes_allocated_size = mem_size;
-  out_freelist->nodes = (VkrFreeListNode *)(((uint8_t *)out_freelist->memory) +
-                                            sizeof(VkrFreeList));
+  out_freelist->max_count = (uint32_t)max_count;
+  out_freelist->nodes_allocated_size = memory_size;
+  out_freelist->nodes = (VkrFreeListNode *)memory;
 
   out_freelist->head = &out_freelist->nodes[0];
   out_freelist->head->size = total_size;
@@ -72,16 +76,13 @@ void vkr_freelist_destroy(VkrFreeList *freelist) {
   assert_log(freelist != NULL, "Freelist must not be NULL");
   assert_log(freelist->memory != NULL, "Freelist memory must not be NULL");
 
-  // Zero out the internal allocation used for nodes. This is separate from the
-  // managed range tracked by the freelist (which is represented by offsets and
-  // sizes, not actual owned memory here).
-  MemZero(freelist->memory, freelist->nodes_allocated_size);
   freelist->memory = NULL;
   freelist->total_size = 0;
   freelist->max_count = 0;
   freelist->nodes_allocated_size = 0;
   freelist->head = NULL;
   freelist->nodes = NULL;
+  MemZero(freelist, sizeof(VkrFreeList));
 }
 
 bool8_t vkr_freelist_allocate(VkrFreeList *freelist, uint32_t size,

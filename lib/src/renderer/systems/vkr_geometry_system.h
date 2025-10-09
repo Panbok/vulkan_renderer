@@ -5,6 +5,7 @@
 #include "containers/vkr_hashtable.h"
 #include "defines.h"
 #include "memory/arena.h"
+#include "memory/vkr_allocator.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/vkr_buffer.h"
 #include "renderer/vkr_renderer.h"
@@ -49,7 +50,9 @@ typedef struct VkrGeometryPool {
   VkrIndexBuffer index_buffer;
 
   // Free space management in BYTES
-  VkrFreeList vertex_freelist; // total size = capacity_vertices * stride
+  void *vertex_freelist_memory; // Memory block for vertex freelist nodes
+  void *index_freelist_memory;  // Memory block for index freelist nodes
+  VkrFreeList vertex_freelist;  // total size = capacity_vertices * stride
   VkrFreeList
       index_freelist; // total size = capacity_indices * sizeof(uint32_t)
 } VkrGeometryPool;
@@ -57,6 +60,7 @@ typedef struct VkrGeometryPool {
 typedef struct VkrGeometrySystem {
   // Internal arena for CPU-side allocations owned by the geometry system
   Arena *arena;
+  VkrAllocator allocator;
 
   VkrRendererFrontendHandle renderer;
 
@@ -193,7 +197,7 @@ vkr_geometry_system_create_default_plane(VkrGeometrySystem *system,
  * @brief Allocates and fills vertex input descriptions for the given layout.
  * Memory is allocated from the provided arena. Returns stride via out_stride.
  * @param layout The layout to use
- * @param arena The arena to allocate the vertex input descriptions from
+ * @param allocator The allocator to allocate the vertex input descriptions from
  * @param out_attr_count The number of attributes
  * @param out_bindings The bindings
  * @param out_attrs The attributes
@@ -202,6 +206,7 @@ vkr_geometry_system_create_default_plane(VkrGeometrySystem *system,
  * @param out_stride The stride
  */
 void vkr_geometry_fill_vertex_input_descriptions(
-    VkrGeometryVertexLayoutType layout, Arena *arena, uint32_t *out_attr_count,
-    VkrVertexInputAttributeDescription **out_attrs, uint32_t *out_binding_count,
+    VkrGeometryVertexLayoutType layout, VkrAllocator *allocator,
+    uint32_t *out_attr_count, VkrVertexInputAttributeDescription **out_attrs,
+    uint32_t *out_binding_count,
     VkrVertexInputBindingDescription **out_bindings, uint32_t *out_stride);
