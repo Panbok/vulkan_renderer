@@ -271,20 +271,22 @@ void vkr_geometry_system_shutdown(VkrGeometrySystem *system) {
     vkr_index_buffer_destroy(system->renderer, &pool->index_buffer);
 
     // Destroy freelists and free their memory
+    uint32_t vb_total = pool->vertex_freelist.total_size;
     vkr_freelist_destroy(&pool->vertex_freelist);
     if (pool->vertex_freelist_memory) {
-      uint64_t vb_freelist_mem_size = vkr_freelist_calculate_memory_requirement(
-          pool->vertex_freelist.total_size);
+      uint64_t vb_freelist_mem_size =
+          vkr_freelist_calculate_memory_requirement(vb_total);
       vkr_allocator_free(&system->allocator, pool->vertex_freelist_memory,
                          vb_freelist_mem_size,
                          VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
       pool->vertex_freelist_memory = NULL;
     }
 
+    uint32_t ib_total = pool->index_freelist.total_size;
     vkr_freelist_destroy(&pool->index_freelist);
     if (pool->index_freelist_memory) {
-      uint64_t ib_freelist_mem_size = vkr_freelist_calculate_memory_requirement(
-          pool->index_freelist.total_size);
+      uint64_t ib_freelist_mem_size =
+          vkr_freelist_calculate_memory_requirement(ib_total);
       vkr_allocator_free(&system->allocator, pool->index_freelist_memory,
                          ib_freelist_mem_size,
                          VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
