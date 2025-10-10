@@ -22,7 +22,7 @@ vkr_internal void vkr_return_node(VkrFreeList *freelist,
 
 uint64_t vkr_freelist_calculate_memory_requirement(uint64_t total_size) {
   // Use a reasonable default: assume average block size of 4KB
-  uint64_t max_count = (uint64_t)(total_size / 4096) + 16;
+  uint64_t max_count = (total_size / 4096) + 16;
   if (max_count < 2) {
     max_count = 2; // ensure at least head + one additional node is available
   }
