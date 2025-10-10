@@ -20,9 +20,9 @@ vkr_internal void vkr_return_node(VkrFreeList *freelist,
   node->next = NULL;
 }
 
-uint64_t vkr_freelist_calculate_memory_requirement(uint32_t total_size) {
+uint64_t vkr_freelist_calculate_memory_requirement(uint64_t total_size) {
   // Use a reasonable default: assume average block size of 4KB
-  uint32_t max_count = (uint32_t)(total_size / 4096) + 16;
+  uint64_t max_count = (uint64_t)(total_size / 4096) + 16;
   if (max_count < 2) {
     max_count = 2; // ensure at least head + one additional node is available
   }
@@ -36,7 +36,7 @@ uint64_t vkr_freelist_calculate_memory_requirement(uint32_t total_size) {
 }
 
 bool8_t vkr_freelist_create(void *memory, uint64_t memory_size,
-                            uint32_t total_size, VkrFreeList *out_freelist) {
+                            uint64_t total_size, VkrFreeList *out_freelist) {
   assert_log(memory != NULL, "Memory must not be NULL");
   assert_log(memory_size > 0, "Memory size must be greater than 0");
   assert_log(total_size > 0, "Total size must be greater than 0");
@@ -85,8 +85,8 @@ void vkr_freelist_destroy(VkrFreeList *freelist) {
   MemZero(freelist, sizeof(VkrFreeList));
 }
 
-bool8_t vkr_freelist_allocate(VkrFreeList *freelist, uint32_t size,
-                              uint32_t *out_offset) {
+bool8_t vkr_freelist_allocate(VkrFreeList *freelist, uint64_t size,
+                              uint64_t *out_offset) {
   assert_log(freelist != NULL, "Freelist must not be NULL");
   assert_log(freelist->memory != NULL, "Freelist memory must not be NULL");
   assert_log(size > 0, "Size must be greater than 0");
@@ -120,8 +120,8 @@ bool8_t vkr_freelist_allocate(VkrFreeList *freelist, uint32_t size,
   return false_v;
 }
 
-bool8_t vkr_freelist_free(VkrFreeList *freelist, uint32_t size,
-                          uint32_t offset) {
+bool8_t vkr_freelist_free(VkrFreeList *freelist, uint64_t size,
+                          uint64_t offset) {
   assert_log(freelist != NULL, "Freelist must not be NULL");
   assert_log(freelist->memory != NULL, "Freelist memory must not be NULL");
   if (offset == VKR_INVALID_ID) {
@@ -132,7 +132,7 @@ bool8_t vkr_freelist_free(VkrFreeList *freelist, uint32_t size,
     log_error("Zero size passed to vkr_freelist_free");
     return false_v;
   }
-  if ((uint64_t)offset + (uint64_t)size > freelist->total_size) {
+  if (offset + size > freelist->total_size) {
     log_error("Free block exceeds freelist range");
     return false_v;
   }
@@ -151,8 +151,8 @@ bool8_t vkr_freelist_free(VkrFreeList *freelist, uint32_t size,
     return true_v;
   }
 
-  uint32_t block_start = offset;
-  uint32_t block_end = offset + size;
+  uint64_t block_start = offset;
+  uint64_t block_end = offset + size;
 
   VkrFreeListNode *node = freelist->head;
   VkrFreeListNode *previous = NULL;
@@ -165,7 +165,7 @@ bool8_t vkr_freelist_free(VkrFreeList *freelist, uint32_t size,
 
   // Detect overlap with previous
   if (previous) {
-    uint32_t previous_end = previous->offset + previous->size;
+    uint64_t previous_end = previous->offset + previous->size;
     if (block_start < previous_end) {
       log_error("Free range overlaps with existing free block (prev)");
       return false_v;

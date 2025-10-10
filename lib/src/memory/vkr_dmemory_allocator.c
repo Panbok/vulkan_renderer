@@ -22,7 +22,7 @@ vkr_internal INLINE void dmemory_free_cb(void *ctx, void *ptr,
              "Tag must be less than VKR_ALLOCATOR_MEMORY_TAG_MAX");
 
   VkrDMemory *dmemory = (VkrDMemory *)ctx;
-  if (vkr_dmemory_free(ctx, ptr, old_size)) {
+  if (vkr_dmemory_free(dmemory, ptr, old_size)) {
     return;
   }
 

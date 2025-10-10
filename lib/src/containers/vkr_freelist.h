@@ -11,7 +11,7 @@ typedef struct VkrFreeListNode {
 typedef struct VkrFreeList {
   void *memory; // Raw memory block for storing nodes
 
-  uint32_t total_size; // Total size of the address space being tracked
+  uint64_t total_size; // Total size of the address space being tracked
   uint32_t max_count;  // Maximum number of nodes available
   uint64_t nodes_allocated_size; // Size of the memory block for nodes
 
@@ -28,7 +28,7 @@ typedef struct VkrFreeList {
  * @return true if successful, false otherwise
  */
 bool8_t vkr_freelist_create(void *memory, uint64_t memory_size,
-                            uint32_t total_size, VkrFreeList *out_freelist);
+                            uint64_t total_size, VkrFreeList *out_freelist);
 
 /**
  * @brief Destroys a freelist (clears state, does not free memory)
@@ -43,8 +43,8 @@ void vkr_freelist_destroy(VkrFreeList *freelist);
  * @param out_offset Output offset of the allocated block
  * @return true if allocation succeeded, false otherwise
  */
-bool8_t vkr_freelist_allocate(VkrFreeList *freelist, uint32_t size,
-                              uint32_t *out_offset);
+bool8_t vkr_freelist_allocate(VkrFreeList *freelist, uint64_t size,
+                              uint64_t *out_offset);
 
 /**
  * @brief Frees a block back to the freelist
@@ -53,8 +53,8 @@ bool8_t vkr_freelist_allocate(VkrFreeList *freelist, uint32_t size,
  * @param offset Offset of the block to free
  * @return true if free succeeded, false otherwise
  */
-bool8_t vkr_freelist_free(VkrFreeList *freelist, uint32_t size,
-                          uint32_t offset);
+bool8_t vkr_freelist_free(VkrFreeList *freelist, uint64_t size,
+                          uint64_t offset);
 
 /**
  * @brief Clears the freelist, marking all space as free
@@ -74,4 +74,4 @@ uint64_t vkr_freelist_free_space(VkrFreeList *freelist);
  * @param total_size Total size of address space to track
  * @return Required memory size in bytes for node storage
  */
-uint64_t vkr_freelist_calculate_memory_requirement(uint32_t total_size);
+uint64_t vkr_freelist_calculate_memory_requirement(uint64_t total_size);

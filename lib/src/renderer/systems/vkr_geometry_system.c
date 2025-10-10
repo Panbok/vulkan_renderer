@@ -72,7 +72,7 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
 
   // Allocate memory for vertex freelist nodes
   uint64_t vb_freelist_mem_size =
-      vkr_freelist_calculate_memory_requirement((uint32_t)vb_total_bytes);
+      vkr_freelist_calculate_memory_requirement(vb_total_bytes);
   pool->vertex_freelist_memory =
       vkr_allocator_alloc(&system->allocator, vb_freelist_mem_size,
                           VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
@@ -83,7 +83,7 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
   }
 
   if (!vkr_freelist_create(pool->vertex_freelist_memory, vb_freelist_mem_size,
-                           (uint32_t)vb_total_bytes, &pool->vertex_freelist)) {
+                           vb_total_bytes, &pool->vertex_freelist)) {
     log_error("Failed to create geometry vertex freelist");
     vkr_allocator_free(&system->allocator, pool->vertex_freelist_memory,
                        vb_freelist_mem_size, VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
@@ -93,7 +93,7 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
 
   // Allocate memory for index freelist nodes
   uint64_t ib_freelist_mem_size =
-      vkr_freelist_calculate_memory_requirement((uint32_t)ib_total_bytes);
+      vkr_freelist_calculate_memory_requirement(ib_total_bytes);
   pool->index_freelist_memory =
       vkr_allocator_alloc(&system->allocator, ib_freelist_mem_size,
                           VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
@@ -107,7 +107,7 @@ vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
   }
 
   if (!vkr_freelist_create(pool->index_freelist_memory, ib_freelist_mem_size,
-                           (uint32_t)ib_total_bytes, &pool->index_freelist)) {
+                           ib_total_bytes, &pool->index_freelist)) {
     log_error("Failed to create geometry index freelist");
     vkr_freelist_destroy(&pool->vertex_freelist);
     vkr_allocator_free(&system->allocator, pool->vertex_freelist_memory,
@@ -271,7 +271,7 @@ void vkr_geometry_system_shutdown(VkrGeometrySystem *system) {
     vkr_index_buffer_destroy(system->renderer, &pool->index_buffer);
 
     // Destroy freelists and free their memory
-    uint32_t vb_total = pool->vertex_freelist.total_size;
+    uint64_t vb_total = pool->vertex_freelist.total_size;
     vkr_freelist_destroy(&pool->vertex_freelist);
     if (pool->vertex_freelist_memory) {
       uint64_t vb_freelist_mem_size =
@@ -282,7 +282,7 @@ void vkr_geometry_system_shutdown(VkrGeometrySystem *system) {
       pool->vertex_freelist_memory = NULL;
     }
 
-    uint32_t ib_total = pool->index_freelist.total_size;
+    uint64_t ib_total = pool->index_freelist.total_size;
     vkr_freelist_destroy(&pool->index_freelist);
     if (pool->index_freelist_memory) {
       uint64_t ib_freelist_mem_size =
@@ -327,20 +327,20 @@ VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
   }
 
   // Allocate ranges in BYTES from freelists; enforce size multiples of stride
-  uint32_t vb_bytes = vertex_count * pool->vertex_stride_bytes;
-  uint32_t ib_bytes =
-      index_count * vkr_index_type_size(pool->index_buffer.type);
+  uint64_t vb_bytes = (uint64_t)vertex_count * pool->vertex_stride_bytes;
+  uint64_t ib_bytes =
+      (uint64_t)index_count * vkr_index_type_size(pool->index_buffer.type);
   // Align allocations to stride/element for safety and round up to next power
   // of 2
-  uint32_t vb_align =
-      1u << (32 - VkrCountLeadingZeros32(pool->vertex_stride_bytes - 1));
-  uint32_t ib_align =
-      1u << (32 - VkrCountLeadingZeros32(
+  uint64_t vb_align =
+      1u << (64 - VkrCountLeadingZeros64(pool->vertex_stride_bytes - 1));
+  uint64_t ib_align =
+      1u << (64 - VkrCountLeadingZeros64(
                       vkr_index_type_size(pool->index_buffer.type) - 1));
-  vb_bytes = (uint32_t)AlignPow2(vb_bytes, vb_align);
-  ib_bytes = (uint32_t)AlignPow2(ib_bytes, ib_align);
+  vb_bytes = AlignPow2(vb_bytes, vb_align);
+  ib_bytes = AlignPow2(ib_bytes, ib_align);
 
-  uint32_t vb_offset_bytes = 0, ib_offset_bytes = 0;
+  uint64_t vb_offset_bytes = 0, ib_offset_bytes = 0;
   if (!vkr_freelist_allocate(&pool->vertex_freelist, vb_bytes,
                              &vb_offset_bytes)) {
     log_error("Geometry vertex pool out of space for '%s'",

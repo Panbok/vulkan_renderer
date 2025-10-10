@@ -39,7 +39,7 @@ bool8_t vkr_dmemory_create(uint64_t total_size, VkrDMemory *out_dmemory) {
   out_dmemory->base_memory = base_memory;
 
   uint64_t freelist_memory_size =
-      vkr_freelist_calculate_memory_requirement((uint32_t)aligned_total_size);
+      vkr_freelist_calculate_memory_requirement(aligned_total_size);
   uint64_t aligned_freelist_size =
       vkr_align_to_page(freelist_memory_size, out_dmemory->page_size);
   out_dmemory->freelist_memory_size = aligned_freelist_size;
@@ -71,8 +71,7 @@ bool8_t vkr_dmemory_create(uint64_t total_size, VkrDMemory *out_dmemory) {
   }
 
   if (!vkr_freelist_create(freelist_memory, aligned_freelist_size,
-                           (uint32_t)aligned_total_size,
-                           &out_dmemory->freelist)) {
+                           aligned_total_size, &out_dmemory->freelist)) {
     log_error("Failed to create freelist");
     vkr_platform_mem_decommit(base_memory, aligned_total_size);
     vkr_platform_mem_release(freelist_memory, aligned_freelist_size);
@@ -115,8 +114,8 @@ void *vkr_dmemory_alloc(VkrDMemory *dmemory, uint64_t size) {
     return NULL;
   }
 
-  uint32_t offset = 0;
-  if (!vkr_freelist_allocate(&dmemory->freelist, (uint32_t)size, &offset)) {
+  uint64_t offset = 0;
+  if (!vkr_freelist_allocate(&dmemory->freelist, size, &offset)) {
     log_error("Failed to allocate %llu bytes from freelist",
               (unsigned long long)size);
     return NULL;
@@ -131,8 +130,11 @@ bool8_t vkr_dmemory_free(VkrDMemory *dmemory, void *ptr, uint64_t size) {
   assert_log(ptr != NULL, "Pointer must not be NULL");
   assert_log(size > 0, "Size must be greater than 0");
 
-  if (ptr < dmemory->base_memory ||
-      ptr >= (void *)((uint8_t *)dmemory->base_memory + dmemory->total_size)) {
+  uintptr_t base_addr = (uintptr_t)dmemory->base_memory;
+  uintptr_t end_addr = base_addr + (uintptr_t)dmemory->total_size;
+  uintptr_t target_addr = (uintptr_t)ptr;
+
+  if (target_addr < base_addr || target_addr >= end_addr) {
     log_error("Pointer out of range for this dmemory allocator");
     return false_v;
   }
@@ -144,8 +146,7 @@ bool8_t vkr_dmemory_free(VkrDMemory *dmemory, void *ptr, uint64_t size) {
     return false_v;
   }
 
-  if (!vkr_freelist_free(&dmemory->freelist, (uint32_t)size,
-                         (uint32_t)offset)) {
+  if (!vkr_freelist_free(&dmemory->freelist, size, offset)) {
     log_error("Failed to free memory at offset %llu",
               (unsigned long long)offset);
     return false_v;
