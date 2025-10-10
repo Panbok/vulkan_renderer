@@ -48,6 +48,8 @@ int main(int argc, char **argv) {
   all_passed &= run_hashtable_tests();
   printf("\n"); // Add spacing
   all_passed &= run_freelist_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_dmemory_tests();
 
   vkr_platform_shutdown();
 

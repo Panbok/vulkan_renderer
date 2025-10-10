@@ -4,6 +4,7 @@
 #include "array_test.h"
 #include "bitset_test.h"
 #include "clock_test.h"
+#include "dmemory_test.h"
 #include "event_data_buffer_test.h"
 #include "event_test.h"
 #include "freelist_test.h"
