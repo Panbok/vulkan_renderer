@@ -4,9 +4,9 @@
 #include "containers/vkr_hashtable.h"
 #include "defines.h"
 #include "memory/arena.h"
-#include "renderer/renderer.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_texture_system.h"
+#include "renderer/vkr_renderer.h"
 
 // =============================================================================
 // Material System - Basic materials management with array and hash table
@@ -99,7 +99,7 @@ VkrMaterialHandle vkr_material_system_create_default(VkrMaterialSystem *system);
 VkrMaterialHandle vkr_material_system_acquire(VkrMaterialSystem *system,
                                               String8 name,
                                               bool8_t auto_release,
-                                              RendererError *out_error);
+                                              VkrRendererError *out_error);
 
 /**
  * @brief Releases a material by handle; will free when ref_count hits 0 and

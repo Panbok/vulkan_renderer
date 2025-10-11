@@ -112,13 +112,13 @@ vkr_material_system_create_default(VkrMaterialSystem *system) {
 VkrMaterialHandle vkr_material_system_acquire(VkrMaterialSystem *system,
                                               String8 name,
                                               bool8_t auto_release,
-                                              RendererError *out_error) {
+                                              VkrRendererError *out_error) {
   assert_log(system != NULL, "Material system is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
   if (!name.str) {
     log_warn("Attempted to acquire material with NULL name, using default");
-    *out_error = RENDERER_ERROR_INVALID_PARAMETER;
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return system->default_material;
   }
 
@@ -130,7 +130,7 @@ VkrMaterialHandle vkr_material_system_acquire(VkrMaterialSystem *system,
       entry->auto_release = auto_release;
     }
     entry->ref_count++;
-    *out_error = RENDERER_ERROR_NONE;
+    *out_error = VKR_RENDERER_ERROR_NONE;
     VkrMaterial *m = &system->materials.data[entry->id];
     return (VkrMaterialHandle){.id = m->id, .generation = m->generation};
   }
@@ -138,7 +138,7 @@ VkrMaterialHandle vkr_material_system_acquire(VkrMaterialSystem *system,
   // Material not loaded - return error
   log_warn("Material '%s' not yet loaded, use resource system to load first",
            string8_cstr(&name));
-  *out_error = RENDERER_ERROR_RESOURCE_NOT_LOADED;
+  *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
   return (VkrMaterialHandle){.id = 0, .generation = 0};
 }
 
