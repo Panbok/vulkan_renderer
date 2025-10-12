@@ -33,7 +33,7 @@ bool8_t vkr_dmemory_create(uint64_t total_size, VkrDMemory *out_dmemory) {
   void *base_memory = vkr_platform_mem_reserve(aligned_total_size);
   if (base_memory == NULL) {
     log_error("Failed to reserve %llu bytes of memory",
-              (unsigned long long)aligned_total_size);
+              (uint64_t)aligned_total_size);
     return false_v;
   }
   out_dmemory->base_memory = base_memory;
@@ -47,14 +47,14 @@ bool8_t vkr_dmemory_create(uint64_t total_size, VkrDMemory *out_dmemory) {
   void *freelist_memory = vkr_platform_mem_reserve(aligned_freelist_size);
   if (freelist_memory == NULL) {
     log_error("Failed to reserve %llu bytes for freelist",
-              (unsigned long long)aligned_freelist_size);
+              (uint64_t)aligned_freelist_size);
     vkr_platform_mem_release(base_memory, aligned_total_size);
     return false_v;
   }
 
   if (!vkr_platform_mem_commit(freelist_memory, aligned_freelist_size)) {
     log_error("Failed to commit %llu bytes for freelist",
-              (unsigned long long)aligned_freelist_size);
+              (uint64_t)aligned_freelist_size);
     vkr_platform_mem_release(freelist_memory, aligned_freelist_size);
     vkr_platform_mem_release(base_memory, aligned_total_size);
     return false_v;
@@ -64,7 +64,7 @@ bool8_t vkr_dmemory_create(uint64_t total_size, VkrDMemory *out_dmemory) {
 
   if (!vkr_platform_mem_commit(base_memory, aligned_total_size)) {
     log_error("Failed to commit %llu bytes for base memory",
-              (unsigned long long)aligned_total_size);
+              (uint64_t)aligned_total_size);
     vkr_platform_mem_release(freelist_memory, aligned_freelist_size);
     vkr_platform_mem_release(base_memory, aligned_total_size);
     return false_v;
@@ -109,15 +109,14 @@ void *vkr_dmemory_alloc(VkrDMemory *dmemory, uint64_t size) {
   assert_log(dmemory != NULL, "DMemory must not be NULL");
   assert_log(size > 0, "Size must be greater than 0");
 
-  if (size > UINT32_MAX) {
-    log_error("Allocation size too large: %llu", (unsigned long long)size);
+  if (size > UINT64_MAX) {
+    log_error("Allocation size too large: %llu", size);
     return NULL;
   }
 
   uint64_t offset = 0;
   if (!vkr_freelist_allocate(&dmemory->freelist, size, &offset)) {
-    log_error("Failed to allocate %llu bytes from freelist",
-              (unsigned long long)size);
+    log_error("Failed to allocate %llu bytes from freelist", size);
     return NULL;
   }
 
@@ -147,8 +146,7 @@ bool8_t vkr_dmemory_free(VkrDMemory *dmemory, void *ptr, uint64_t size) {
   }
 
   if (!vkr_freelist_free(&dmemory->freelist, size, offset)) {
-    log_error("Failed to free memory at offset %llu",
-              (unsigned long long)offset);
+    log_error("Failed to free memory at offset %llu", (uint64_t)offset);
     return false_v;
   }
 
@@ -158,4 +156,99 @@ bool8_t vkr_dmemory_free(VkrDMemory *dmemory, void *ptr, uint64_t size) {
 uint64_t vkr_dmemory_get_free_space(VkrDMemory *dmemory) {
   assert_log(dmemory != NULL, "DMemory must not be NULL");
   return vkr_freelist_free_space(&dmemory->freelist);
+}
+
+bool8_t vkr_dmemory_resize(VkrDMemory *dmemory, uint64_t new_total_size) {
+  assert_log(dmemory != NULL, "DMemory must not be NULL");
+
+  if (new_total_size <= dmemory->total_size) {
+    log_error(
+        "Cannot resize: new size %llu must be greater than current size %llu",
+        (uint64_t)new_total_size, (uint64_t)dmemory->total_size);
+    return false_v;
+  }
+
+  uint64_t free_space = vkr_dmemory_get_free_space(dmemory);
+  uint64_t used_space = dmemory->total_size - free_space;
+
+  if (new_total_size < used_space) {
+    log_error(
+        "Cannot resize: new size %llu is smaller than allocated space %llu",
+        (uint64_t)new_total_size, (uint64_t)used_space);
+    return false_v;
+  }
+
+  uint64_t aligned_new_size =
+      vkr_align_to_page(new_total_size, dmemory->page_size);
+
+  void *new_base_memory = vkr_platform_mem_reserve(aligned_new_size);
+  if (new_base_memory == NULL) {
+    log_error("Failed to reserve %llu bytes of new memory",
+              (uint64_t)aligned_new_size);
+    return false_v;
+  }
+
+  if (!vkr_platform_mem_commit(new_base_memory, aligned_new_size)) {
+    log_error("Failed to commit %llu bytes of new memory",
+              (uint64_t)aligned_new_size);
+    vkr_platform_mem_release(new_base_memory, aligned_new_size);
+    return false_v;
+  }
+
+  uint64_t new_freelist_memory_size =
+      vkr_freelist_calculate_memory_requirement(aligned_new_size);
+  uint64_t aligned_new_freelist_size =
+      vkr_align_to_page(new_freelist_memory_size, dmemory->page_size);
+
+  void *new_freelist_memory =
+      vkr_platform_mem_reserve(aligned_new_freelist_size);
+  if (new_freelist_memory == NULL) {
+    log_error("Failed to reserve %llu bytes for new freelist",
+              (uint64_t)aligned_new_freelist_size);
+    vkr_platform_mem_decommit(new_base_memory, aligned_new_size);
+    vkr_platform_mem_release(new_base_memory, aligned_new_size);
+    return false_v;
+  }
+
+  if (!vkr_platform_mem_commit(new_freelist_memory,
+                               aligned_new_freelist_size)) {
+    log_error("Failed to commit %llu bytes for new freelist",
+              (uint64_t)aligned_new_freelist_size);
+    vkr_platform_mem_release(new_freelist_memory, aligned_new_freelist_size);
+    vkr_platform_mem_decommit(new_base_memory, aligned_new_size);
+    vkr_platform_mem_release(new_base_memory, aligned_new_size);
+    return false_v;
+  }
+
+  void *old_freelist_memory = NULL;
+  if (!vkr_freelist_resize(&dmemory->freelist, aligned_new_size,
+                           new_freelist_memory, &old_freelist_memory)) {
+    log_error("Failed to resize freelist");
+    vkr_platform_mem_decommit(new_freelist_memory, aligned_new_freelist_size);
+    vkr_platform_mem_release(new_freelist_memory, aligned_new_freelist_size);
+    vkr_platform_mem_decommit(new_base_memory, aligned_new_size);
+    vkr_platform_mem_release(new_base_memory, aligned_new_size);
+    return false_v;
+  }
+
+  // Copy all data from old base to new base
+  // We copy the entire committed region to preserve all allocated data
+  MemCopy(new_base_memory, dmemory->base_memory, dmemory->total_size);
+
+  void *old_base_memory = dmemory->base_memory;
+  uint64_t old_total_size = dmemory->total_size;
+  uint64_t old_freelist_size = dmemory->freelist_memory_size;
+
+  vkr_platform_mem_decommit(old_base_memory, old_total_size);
+  vkr_platform_mem_release(old_base_memory, old_total_size);
+  vkr_platform_mem_decommit(old_freelist_memory, old_freelist_size);
+  vkr_platform_mem_release(old_freelist_memory, old_freelist_size);
+
+  dmemory->base_memory = new_base_memory;
+  dmemory->total_size = aligned_new_size;
+  dmemory->committed_size = aligned_new_size;
+  dmemory->freelist_memory = new_freelist_memory;
+  dmemory->freelist_memory_size = aligned_new_freelist_size;
+
+  return true_v;
 }

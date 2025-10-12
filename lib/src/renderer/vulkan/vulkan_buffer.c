@@ -1,4 +1,5 @@
 #include "vulkan_buffer.h"
+#include "memory/vkr_dmemory_allocator.h"
 
 bool8_t vulkan_buffer_create(VulkanBackendState *state,
                              const VkrBufferDescription *desc,
@@ -67,6 +68,21 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
 
   log_debug("Created Vulkan buffer: %p", out_buffer->buffer.handle);
 
+  // Initialize offset allocator for sub-allocations
+  // Create dmemory for offset tracking (manages virtual address space, not real
+  // memory)
+  if (!vkr_dmemory_create(desc->size, &out_buffer->buffer.offset_allocator)) {
+    log_error("Failed to create offset allocator for buffer");
+    vkFreeMemory(state->device.logical_device, out_buffer->buffer.memory,
+                 state->allocator);
+    vkDestroyBuffer(state->device.logical_device, out_buffer->buffer.handle,
+                    state->allocator);
+    return false_v;
+  }
+
+  out_buffer->buffer.allocator.ctx = &out_buffer->buffer.offset_allocator;
+  vkr_dmemory_allocator_create(&out_buffer->buffer.allocator);
+
   if (desc->bind_on_create) {
     return vulkan_buffer_bind(state, &out_buffer->buffer, 0);
   }
@@ -76,6 +92,8 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
 
 void vulkan_buffer_destroy(VulkanBackendState *state, VulkanBuffer *buffer) {
   log_debug("Destroying Vulkan buffer: %p", buffer->handle);
+
+  vkr_dmemory_allocator_destroy(&buffer->allocator);
 
   if (buffer->handle != VK_NULL_HANDLE) {
     vkDestroyBuffer(state->device.logical_device, buffer->handle,
@@ -109,6 +127,11 @@ bool8_t vulkan_buffer_resize(VulkanBackendState *state, uint64_t new_size,
                              VkCommandPool pool) {
   assert_log(state != NULL, "State is NULL");
   assert_log(buffer != NULL, "Buffer is NULL");
+  assert_log(new_size > buffer->total_size,
+             "New size must be greater than current size");
+
+  log_debug("Resizing buffer from %llu to %llu bytes",
+            (uint64_t)buffer->total_size, (uint64_t)new_size);
 
   VkBufferCreateInfo buffer_info = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -120,7 +143,7 @@ bool8_t vulkan_buffer_resize(VulkanBackendState *state, uint64_t new_size,
   VkBuffer new_buffer;
   if (vkCreateBuffer(state->device.logical_device, &buffer_info,
                      state->allocator, &new_buffer) != VK_SUCCESS) {
-    log_error("Failed to create buffer");
+    log_error("Failed to create new buffer during resize");
     return false_v;
   }
 
@@ -137,13 +160,14 @@ bool8_t vulkan_buffer_resize(VulkanBackendState *state, uint64_t new_size,
   VkDeviceMemory new_memory;
   if (vkAllocateMemory(state->device.logical_device, &alloc_info,
                        state->allocator, &new_memory) != VK_SUCCESS) {
-    log_error("Failed to allocate memory for buffer");
+    log_error("Failed to allocate memory for new buffer during resize");
+    vkDestroyBuffer(state->device.logical_device, new_buffer, state->allocator);
     return false_v;
   }
 
   if (vkBindBufferMemory(state->device.logical_device, new_buffer, new_memory,
                          0) != VK_SUCCESS) {
-    log_error("Failed to bind buffer memory");
+    log_error("Failed to bind buffer memory during resize");
     vkDestroyBuffer(state->device.logical_device, new_buffer, state->allocator);
     vkFreeMemory(state->device.logical_device, new_memory, state->allocator);
     return false_v;
@@ -151,17 +175,36 @@ bool8_t vulkan_buffer_resize(VulkanBackendState *state, uint64_t new_size,
 
   if (!vulkan_buffer_copy_to(state, buffer, buffer->handle, 0, new_buffer, 0,
                              buffer->total_size)) {
-    log_error("Failed to copy buffer data");
+    log_error("Failed to copy buffer data during resize");
     vkDestroyBuffer(state->device.logical_device, new_buffer, state->allocator);
     vkFreeMemory(state->device.logical_device, new_memory, state->allocator);
     return false_v;
   }
 
-  vulkan_buffer_destroy(state, buffer);
+  if (!vkr_dmemory_resize(&buffer->offset_allocator, new_size)) {
+    log_error("Failed to resize offset allocator during buffer resize");
+    vkDestroyBuffer(state->device.logical_device, new_buffer, state->allocator);
+    vkFreeMemory(state->device.logical_device, new_memory, state->allocator);
+    return false_v;
+  }
+
+  // Cleanup old Vulkan resources (don't use vulkan_buffer_destroy as it would
+  // destroy offset_allocator)
+  VkBuffer old_buffer = buffer->handle;
+  VkDeviceMemory old_memory = buffer->memory;
+
+  if (old_buffer != VK_NULL_HANDLE) {
+    vkDestroyBuffer(state->device.logical_device, old_buffer, state->allocator);
+  }
+  if (old_memory != VK_NULL_HANDLE) {
+    vkFreeMemory(state->device.logical_device, old_memory, state->allocator);
+  }
 
   buffer->handle = new_buffer;
   buffer->memory = new_memory;
   buffer->total_size = new_size;
+
+  log_debug("Buffer resized successfully to %llu bytes", (uint64_t)new_size);
 
   return true_v;
 }
@@ -345,4 +388,47 @@ void vulkan_buffer_bind_index_buffer(VulkanBackendState *state,
   const char *index_type_str =
       (index_type == VK_INDEX_TYPE_UINT16) ? "uint16" : "uint32";
   // log_debug("Bound index buffer with type %s", index_type_str);
+}
+
+bool8_t vulkan_buffer_allocate(VulkanBackendState *state, VulkanBuffer *buffer,
+                               uint64_t size, uint64_t *out_offset) {
+  assert_log(buffer != NULL, "Buffer is NULL");
+  assert_log(out_offset != NULL, "Output offset is NULL");
+
+  void *ptr = vkr_allocator_alloc(&buffer->allocator, size,
+                                  VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  if (ptr == NULL) {
+    log_error("Failed to allocate %llu bytes from buffer offset allocator",
+              (uint64_t)size);
+    return false_v;
+  }
+
+  // Convert pointer to offset
+  uintptr_t base = (uintptr_t)buffer->offset_allocator.base_memory;
+  uintptr_t allocated = (uintptr_t)ptr;
+  *out_offset = (uint64_t)(allocated - base);
+
+  log_debug("Allocated %llu bytes at offset %llu in buffer", (uint64_t)size,
+            (uint64_t)*out_offset);
+
+  return true_v;
+}
+
+bool8_t vulkan_buffer_free(VulkanBackendState *state, VulkanBuffer *buffer,
+                           uint64_t size, uint64_t offset) {
+  assert_log(buffer != NULL, "Buffer is NULL");
+
+  // Convert offset to pointer
+  void *ptr =
+      (void *)((uint8_t *)buffer->offset_allocator.base_memory + offset);
+
+  vkr_allocator_free(&buffer->allocator, ptr, size,
+                     VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+
+  return true_v;
+}
+
+uint64_t vulkan_buffer_free_space(VulkanBuffer *buffer) {
+  assert_log(buffer != NULL, "Buffer is NULL");
+  return vkr_dmemory_get_free_space(&buffer->offset_allocator);
 }

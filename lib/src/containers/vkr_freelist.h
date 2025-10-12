@@ -75,3 +75,15 @@ uint64_t vkr_freelist_free_space(VkrFreeList *freelist);
  * @return Required memory size in bytes for node storage
  */
 uint64_t vkr_freelist_calculate_memory_requirement(uint64_t total_size);
+
+/**
+ * @brief Resizes a freelist to track a larger address space
+ * @param freelist The freelist to resize
+ * @param new_total_size New total size of address space to track
+ * @param new_memory New memory block for storing nodes (must be large
+ * enough)
+ * @param out_old_memory Output pointer to old memory block (for caller to free)
+ * @return true if successful, false otherwise
+ */
+bool8_t vkr_freelist_resize(VkrFreeList *freelist, uint64_t new_total_size,
+                            void *new_memory, void **out_old_memory);

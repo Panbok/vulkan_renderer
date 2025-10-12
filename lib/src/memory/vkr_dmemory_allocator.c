@@ -1,4 +1,5 @@
 #include "vkr_dmemory_allocator.h"
+#include "core/logger.h"
 #include "memory/vkr_dmemory.h"
 
 vkr_internal INLINE void *dmemory_alloc_cb(void *ctx, uint64_t size,

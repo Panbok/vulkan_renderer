@@ -257,3 +257,85 @@ uint64_t vkr_freelist_free_space(VkrFreeList *freelist) {
 
   return free_space;
 }
+
+bool8_t vkr_freelist_resize(VkrFreeList *freelist, uint64_t new_total_size,
+                            void *new_memory, void **out_old_memory) {
+  assert_log(freelist != NULL, "Freelist must not be NULL");
+  assert_log(freelist->memory != NULL, "Freelist memory must not be NULL");
+  assert_log(new_memory != NULL, "New node memory must not be NULL");
+  assert_log(out_old_memory != NULL, "Output old memory must not be NULL");
+  assert_log(new_total_size > freelist->total_size,
+             "New total size must be greater than current size");
+
+  uint64_t old_total_size = freelist->total_size;
+  void *old_memory = freelist->memory;
+
+  uint64_t required_mem_size =
+      vkr_freelist_calculate_memory_requirement(new_total_size);
+  uint32_t new_max_count =
+      (uint32_t)(required_mem_size / sizeof(VkrFreeListNode));
+
+  if (new_max_count < 2) {
+    log_error(
+        "New memory block too small for freelist (need at least 2 nodes)");
+    return false_v;
+  }
+
+  if (new_max_count > 1024) {
+    new_max_count = 1024;
+  }
+
+  VkrFreeListNode *new_nodes = (VkrFreeListNode *)new_memory;
+  for (uint32_t i = 0; i < new_max_count; i++) {
+    new_nodes[i].size = VKR_INVALID_ID;
+    new_nodes[i].offset = VKR_INVALID_ID;
+    new_nodes[i].next = NULL;
+  }
+
+  // Copy active nodes from old to new memory
+  // We need to track which nodes are active and rebuild the linked list
+  uint32_t new_node_idx = 0;
+  VkrFreeListNode *old_node = freelist->head;
+  VkrFreeListNode *new_head = NULL;
+  VkrFreeListNode *new_prev = NULL;
+
+  while (old_node != NULL && new_node_idx < new_max_count) {
+    new_nodes[new_node_idx].size = old_node->size;
+    new_nodes[new_node_idx].offset = old_node->offset;
+    new_nodes[new_node_idx].next = NULL;
+
+    if (new_head == NULL) {
+      new_head = &new_nodes[new_node_idx];
+    }
+
+    if (new_prev != NULL) {
+      new_prev->next = &new_nodes[new_node_idx];
+    }
+
+    new_prev = &new_nodes[new_node_idx];
+    new_node_idx++;
+    old_node = old_node->next;
+  }
+
+  if (old_node != NULL) {
+    log_error("Ran out of nodes while copying freelist (need more memory)");
+    return false_v;
+  }
+
+  freelist->memory = new_memory;
+  freelist->nodes = new_nodes;
+  freelist->nodes_allocated_size = required_mem_size;
+  freelist->max_count = new_max_count;
+  freelist->head = new_head;
+  freelist->total_size = new_total_size;
+
+  uint64_t growth_size = new_total_size - old_total_size;
+  if (!vkr_freelist_free(freelist, growth_size, old_total_size)) {
+    log_error("Failed to add new space to freelist after resize");
+    return false_v;
+  }
+
+  *out_old_memory = old_memory;
+
+  return true_v;
+}

@@ -63,3 +63,11 @@ bool8_t vkr_dmemory_free(VkrDMemory *dmemory, void *ptr, uint64_t size);
  * @return Total free space in bytes
  */
 uint64_t vkr_dmemory_get_free_space(VkrDMemory *dmemory);
+
+/**
+ * @brief Resizes a dmemory allocator to a larger size
+ * @param dmemory The dmemory to resize
+ * @param new_total_size New total size (will be page-aligned)
+ * @return true if successful, false otherwise
+ */
+bool8_t vkr_dmemory_resize(VkrDMemory *dmemory, uint64_t new_total_size);

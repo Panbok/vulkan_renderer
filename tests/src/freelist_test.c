@@ -206,6 +206,212 @@ static void test_insert_into_empty_list(void) {
   printf("  test_insert_into_empty_list PASSED\n");
 }
 
+static void test_freelist_resize_empty(void) {
+  printf("  Running test_freelist_resize_empty...\n");
+
+  VkrFreeList freelist;
+  const uint64_t INITIAL_SIZE = 1024;
+  const uint64_t NEW_SIZE = 2048;
+
+  uint64_t mem_size = vkr_freelist_calculate_memory_requirement(INITIAL_SIZE);
+  void *memory = malloc(mem_size);
+  assert(memory != NULL);
+  assert(vkr_freelist_create(memory, mem_size, INITIAL_SIZE, &freelist));
+
+  // Resize with no allocations
+  uint64_t new_mem_size = vkr_freelist_calculate_memory_requirement(NEW_SIZE);
+  void *new_memory = malloc(new_mem_size);
+  assert(new_memory != NULL);
+
+  void *old_memory = NULL;
+  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, &old_memory));
+  assert(old_memory == memory);
+
+  // Verify new size
+  assert(freelist.total_size == NEW_SIZE);
+  assert(vkr_freelist_free_space(&freelist) == NEW_SIZE);
+
+  // Allocate from new space
+  uint64_t offset = VKR_INVALID_ID;
+  assert(vkr_freelist_allocate(&freelist, 1500, &offset));
+  assert(offset == 0);
+
+  vkr_freelist_destroy(&freelist);
+  free(new_memory);
+  free(old_memory);
+  printf("  test_freelist_resize_empty PASSED\n");
+}
+
+static void test_freelist_resize_with_allocations(void) {
+  printf("  Running test_freelist_resize_with_allocations...\n");
+
+  VkrFreeList freelist;
+  const uint64_t INITIAL_SIZE = 1024;
+  const uint64_t NEW_SIZE = 2048;
+
+  uint64_t mem_size = vkr_freelist_calculate_memory_requirement(INITIAL_SIZE);
+  void *memory = malloc(mem_size);
+  assert(memory != NULL);
+  assert(vkr_freelist_create(memory, mem_size, INITIAL_SIZE, &freelist));
+
+  // Make some allocations
+  uint64_t off1 = VKR_INVALID_ID, off2 = VKR_INVALID_ID;
+  assert(vkr_freelist_allocate(&freelist, 256, &off1));
+  assert(vkr_freelist_allocate(&freelist, 128, &off2));
+  assert(off1 == 0);
+  assert(off2 == 256);
+
+  uint64_t free_before = vkr_freelist_free_space(&freelist);
+
+  // Resize
+  uint64_t new_mem_size = vkr_freelist_calculate_memory_requirement(NEW_SIZE);
+  void *new_memory = malloc(new_mem_size);
+  assert(new_memory != NULL);
+
+  void *old_memory = NULL;
+  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, &old_memory));
+
+  // Verify allocations are preserved (free space should have grown by NEW_SIZE
+  // - INITIAL_SIZE)
+  uint64_t free_after = vkr_freelist_free_space(&freelist);
+  assert(free_after == free_before + (NEW_SIZE - INITIAL_SIZE));
+
+  // We should be able to free the old allocations at same offsets
+  assert(vkr_freelist_free(&freelist, 256, off1));
+  assert(vkr_freelist_free(&freelist, 128, off2));
+
+  assert(vkr_freelist_free_space(&freelist) == NEW_SIZE);
+
+  vkr_freelist_destroy(&freelist);
+  free(new_memory);
+  free(old_memory);
+  printf("  test_freelist_resize_with_allocations PASSED\n");
+}
+
+static void test_freelist_resize_and_allocate_new(void) {
+  printf("  Running test_freelist_resize_and_allocate_new...\n");
+
+  VkrFreeList freelist;
+  const uint64_t INITIAL_SIZE = 512;
+  const uint64_t NEW_SIZE = 1024;
+
+  uint64_t mem_size = vkr_freelist_calculate_memory_requirement(INITIAL_SIZE);
+  void *memory = malloc(mem_size);
+  assert(memory != NULL);
+  assert(vkr_freelist_create(memory, mem_size, INITIAL_SIZE, &freelist));
+
+  // Fill initial space
+  uint64_t off1 = VKR_INVALID_ID;
+  assert(vkr_freelist_allocate(&freelist, INITIAL_SIZE, &off1));
+
+  // Resize
+  uint64_t new_mem_size = vkr_freelist_calculate_memory_requirement(NEW_SIZE);
+  void *new_memory = malloc(new_mem_size);
+  assert(new_memory != NULL);
+
+  void *old_memory = NULL;
+  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, &old_memory));
+
+  // Now allocate from the new space
+  uint64_t off2 = VKR_INVALID_ID;
+  assert(vkr_freelist_allocate(&freelist, 256, &off2));
+  assert(off2 == INITIAL_SIZE); // Should be at the start of new space
+
+  vkr_freelist_destroy(&freelist);
+  free(new_memory);
+  free(old_memory);
+  printf("  test_freelist_resize_and_allocate_new PASSED\n");
+}
+
+static void test_freelist_resize_coalescing(void) {
+  printf("  Running test_freelist_resize_coalescing...\n");
+
+  VkrFreeList freelist;
+  const uint64_t INITIAL_SIZE = 1024;
+  const uint64_t NEW_SIZE = 2048;
+
+  uint64_t mem_size = vkr_freelist_calculate_memory_requirement(INITIAL_SIZE);
+  void *memory = malloc(mem_size);
+  assert(memory != NULL);
+  assert(vkr_freelist_create(memory, mem_size, INITIAL_SIZE, &freelist));
+
+  // Allocate from beginning, leaving tail free
+  uint64_t off1 = VKR_INVALID_ID;
+  assert(vkr_freelist_allocate(&freelist, 512, &off1));
+
+  // Resize - the new space should coalesce with the free tail
+  uint64_t new_mem_size = vkr_freelist_calculate_memory_requirement(NEW_SIZE);
+  void *new_memory = malloc(new_mem_size);
+  assert(new_memory != NULL);
+
+  void *old_memory = NULL;
+  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, &old_memory));
+
+  // Should be able to allocate a large block from the coalesced free space
+  uint64_t off2 = VKR_INVALID_ID;
+  assert(vkr_freelist_allocate(&freelist, 1024, &off2));
+  assert(off2 == 512); // Should start where first allocation ended
+
+  vkr_freelist_destroy(&freelist);
+  free(new_memory);
+  free(old_memory);
+  printf("  test_freelist_resize_coalescing PASSED\n");
+}
+
+static void test_freelist_resize_node_copy(void) {
+  printf("  Running test_freelist_resize_node_copy...\n");
+
+  VkrFreeList freelist;
+  const uint64_t INITIAL_SIZE = 2048;
+  const uint64_t NEW_SIZE = 4096;
+
+  uint64_t mem_size = vkr_freelist_calculate_memory_requirement(INITIAL_SIZE);
+  void *memory = malloc(mem_size);
+  assert(memory != NULL);
+  assert(vkr_freelist_create(memory, mem_size, INITIAL_SIZE, &freelist));
+
+  // Create a fragmented allocation pattern
+  uint64_t offsets[5];
+  assert(vkr_freelist_allocate(&freelist, 256, &offsets[0]));
+  assert(vkr_freelist_allocate(&freelist, 256, &offsets[1]));
+  assert(vkr_freelist_allocate(&freelist, 256, &offsets[2]));
+  assert(vkr_freelist_allocate(&freelist, 256, &offsets[3]));
+  assert(vkr_freelist_allocate(&freelist, 256, &offsets[4]));
+
+  // Free every other allocation to create fragmentation
+  assert(vkr_freelist_free(&freelist, 256, offsets[1]));
+  assert(vkr_freelist_free(&freelist, 256, offsets[3]));
+
+  uint64_t free_before = vkr_freelist_free_space(&freelist);
+
+  // Resize
+  uint64_t new_mem_size = vkr_freelist_calculate_memory_requirement(NEW_SIZE);
+  void *new_memory = malloc(new_mem_size);
+  assert(new_memory != NULL);
+
+  void *old_memory = NULL;
+  assert(vkr_freelist_resize(&freelist, NEW_SIZE, new_memory, &old_memory));
+
+  // Free space should be previous free + growth
+  uint64_t free_after = vkr_freelist_free_space(&freelist);
+  assert(free_after == free_before + (NEW_SIZE - INITIAL_SIZE));
+
+  // All operations should still work
+  uint64_t new_off = VKR_INVALID_ID;
+  assert(vkr_freelist_allocate(&freelist, 200, &new_off));
+  assert(vkr_freelist_free(&freelist, 256, offsets[0]));
+  assert(vkr_freelist_free(&freelist, 256, offsets[2]));
+  assert(vkr_freelist_free(&freelist, 256, offsets[4]));
+  assert(vkr_freelist_free(&freelist, 200, new_off));
+
+  assert(vkr_freelist_free_space(&freelist) == NEW_SIZE);
+
+  vkr_freelist_destroy(&freelist);
+  free(new_memory);
+  free(old_memory);
+  printf("  test_freelist_resize_node_copy PASSED\n");
+}
+
 bool32_t run_freelist_tests() {
   printf("--- Starting Freelist Tests ---\n");
 
@@ -216,6 +422,13 @@ bool32_t run_freelist_tests() {
   test_double_free_detection();
   test_clear_resets_to_single_block();
   test_insert_into_empty_list();
+
+  // Resize tests
+  test_freelist_resize_empty();
+  test_freelist_resize_with_allocations();
+  test_freelist_resize_and_allocate_new();
+  test_freelist_resize_coalescing();
+  test_freelist_resize_node_copy();
 
   printf("--- Freelist Tests Completed ---\n");
   return true;

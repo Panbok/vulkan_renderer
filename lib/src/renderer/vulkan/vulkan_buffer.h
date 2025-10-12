@@ -46,3 +46,11 @@ bool8_t vulkan_buffer_copy_to(VulkanBackendState *state,
                               VulkanBuffer *buffer_handle, VkBuffer source,
                               uint64_t source_offset, VkBuffer dest,
                               uint64_t dest_offset, uint64_t size);
+
+bool8_t vulkan_buffer_allocate(VulkanBackendState *state, VulkanBuffer *buffer,
+                               uint64_t size, uint64_t *out_offset);
+
+bool8_t vulkan_buffer_free(VulkanBackendState *state, VulkanBuffer *buffer,
+                           uint64_t size, uint64_t offset);
+
+uint64_t vulkan_buffer_free_space(VulkanBuffer *buffer);

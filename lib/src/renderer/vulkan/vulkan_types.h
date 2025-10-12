@@ -13,6 +13,8 @@
 
 #include "containers/str.h"
 #include "defines.h"
+#include "memory/vkr_allocator.h"
+#include "memory/vkr_dmemory.h"
 #include "renderer/vkr_renderer.h"
 
 // todo: make this configurable
@@ -71,6 +73,10 @@ typedef struct VulkanBuffer {
 
   VkCommandPool command_pool;
   VkQueue queue;
+
+  // DMemory Allocator for offset tracking (not actual memory, just bookkeeping)
+  VkrAllocator allocator;
+  VkrDMemory offset_allocator; // Tracks which offsets are allocated
 } VulkanBuffer;
 
 typedef enum VulkanRenderPassState {
