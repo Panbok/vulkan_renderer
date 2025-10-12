@@ -322,6 +322,11 @@ bool8_t vkr_freelist_resize(VkrFreeList *freelist, uint64_t new_total_size,
     return false_v;
   }
 
+  VkrFreeListNode *old_nodes = freelist->nodes;
+  uint32_t old_max_count = freelist->max_count;
+  uint64_t old_nodes_allocated_size = freelist->nodes_allocated_size;
+  VkrFreeListNode *old_head = freelist->head;
+
   freelist->memory = new_memory;
   freelist->nodes = new_nodes;
   freelist->nodes_allocated_size = required_mem_size;
@@ -332,6 +337,12 @@ bool8_t vkr_freelist_resize(VkrFreeList *freelist, uint64_t new_total_size,
   uint64_t growth_size = new_total_size - old_total_size;
   if (!vkr_freelist_free(freelist, growth_size, old_total_size)) {
     log_error("Failed to add new space to freelist after resize");
+    freelist->memory = old_memory;
+    freelist->nodes = old_nodes;
+    freelist->nodes_allocated_size = old_nodes_allocated_size;
+    freelist->max_count = old_max_count;
+    freelist->head = old_head;
+    freelist->total_size = old_total_size;
     return false_v;
   }
 
