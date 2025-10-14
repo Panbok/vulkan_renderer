@@ -95,11 +95,6 @@ VkrTextureHandle vkr_texture_system_acquire(VkrTextureSystem *system,
 void vkr_texture_system_release(VkrTextureSystem *system, String8 texture_name);
 
 /**
- * @brief Releases a texture by handle (no name required)
- */
-void vkr_texture_system_release_by_handle(VkrTextureSystem *system,
-                                          VkrTextureHandle handle);
-/**
  * @brief Releases a texture by handle
  * @param system The texture system to release the texture from
  * @param handle The handle of the texture to release

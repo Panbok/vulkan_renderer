@@ -2,7 +2,7 @@
 
 struct VkrResourceSystem {
   Arena *arena; // persistent storage for keys/entries
-  RendererFrontendHandle renderer;
+  VkrRendererFrontendHandle renderer;
 
   // Registered loaders
   VkrResourceLoader *loaders;
@@ -16,7 +16,7 @@ struct VkrResourceSystem {
 vkr_global VkrResourceSystem *vkr_resource_system = NULL;
 
 bool8_t vkr_resource_system_init(Arena *arena,
-                                 RendererFrontendHandle renderer) {
+                                 VkrRendererFrontendHandle renderer) {
   assert_log(arena != NULL, "Arena is NULL");
   assert_log(renderer != NULL, "Renderer is NULL");
 
@@ -95,7 +95,7 @@ bool8_t vkr_resource_system_register_loader(void *resource_system,
 bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
                                  Arena *temp_arena,
                                  VkrResourceHandleInfo *out_info,
-                                 RendererError *out_error) {
+                                 VkrRendererError *out_error) {
   assert_log(vkr_resource_system != NULL, "Resource system is NULL");
   assert_log(path.str != NULL, "Path is NULL");
   assert_log(out_info != NULL, "Out info is NULL");
@@ -135,7 +135,7 @@ bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
 bool8_t vkr_resource_system_load_custom(String8 custom_type, String8 path,
                                         Arena *temp_arena,
                                         VkrResourceHandleInfo *out_info,
-                                        RendererError *out_error) {
+                                        VkrRendererError *out_error) {
   assert_log(vkr_resource_system != NULL, "Resource system is NULL");
   assert_log(custom_type.str != NULL, "Custom type is NULL");
   assert_log(path.str != NULL, "Path is NULL");

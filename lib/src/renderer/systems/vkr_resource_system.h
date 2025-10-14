@@ -3,8 +3,8 @@
 #include "containers/str.h"
 #include "defines.h"
 #include "memory/arena.h"
-#include "renderer/renderer.h"
 #include "renderer/resources/vkr_resources.h"
+#include "renderer/vkr_renderer.h"
 
 // =============================================================================
 // Resource System - Loader registry and generic load/unload dispatch
@@ -39,7 +39,7 @@ struct VkrResourceLoader {
   VkrResourceType type; // resource type
   String8 custom_type;  // optional custom subtype tag
 
-  RendererFrontendHandle renderer;
+  VkrRendererFrontendHandle renderer;
   void *resource_system; // opaque pointer to loader-specific resource system
                          // implementation
 
@@ -61,7 +61,8 @@ struct VkrResourceLoader {
    * @return True if the resource was loaded, false otherwise
    */
   bool8_t (*load)(VkrResourceLoader *self, String8 name, Arena *temp_arena,
-                  VkrResourceHandleInfo *out_handle, RendererError *out_error);
+                  VkrResourceHandleInfo *out_handle,
+                  VkrRendererError *out_error);
 
   /**
    * @brief Callback to unload the resource
@@ -83,7 +84,8 @@ struct VkrResourceLoader {
  * @param renderer The renderer to use
  * @return True if the resource system was initialized, false otherwise
  */
-bool8_t vkr_resource_system_init(Arena *arena, RendererFrontendHandle renderer);
+bool8_t vkr_resource_system_init(Arena *arena,
+                                 VkrRendererFrontendHandle renderer);
 
 /**
  * @brief Registers a resource loader
@@ -111,7 +113,7 @@ bool8_t vkr_resource_system_register_loader(void *resource_system,
 bool8_t vkr_resource_system_load(VkrResourceType type, String8 name,
                                  Arena *temp_arena,
                                  VkrResourceHandleInfo *out_info,
-                                 RendererError *out_error);
+                                 VkrRendererError *out_error);
 
 /**
  * @brief Loads a resource using a custom type tag
@@ -125,7 +127,7 @@ bool8_t vkr_resource_system_load(VkrResourceType type, String8 name,
 bool8_t vkr_resource_system_load_custom(String8 custom_type, String8 name,
                                         Arena *temp_arena,
                                         VkrResourceHandleInfo *out_info,
-                                        RendererError *out_error);
+                                        VkrRendererError *out_error);
 
 /**
  * @brief Unloads a resource using the appropriate loader
