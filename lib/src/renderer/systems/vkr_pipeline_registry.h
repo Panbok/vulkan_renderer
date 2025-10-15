@@ -3,6 +3,7 @@
 #include "containers/array.h"
 #include "containers/str.h"
 #include "containers/vkr_hashtable.h"
+#include "memory/vkr_allocator.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/vkr_renderer.h"
 
@@ -75,6 +76,7 @@ typedef struct VkrPipelineRegistry {
   // Core configuration and memory management
   Arena *pipeline_arena; // Persistent allocations
   Arena *temp_arena;     // Temporary allocations during operations
+  VkrAllocator temp_allocator;
   VkrPipelineRegistryConfig config;
 
   // Renderer integration

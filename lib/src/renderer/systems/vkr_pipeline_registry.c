@@ -1,5 +1,6 @@
 #include "renderer/systems/vkr_pipeline_registry.h"
 #include "core/logger.h"
+#include "memory/vkr_arena_allocator.h"
 #include "renderer/systems/vkr_geometry_system.h"
 
 // TODO: we need to impl batch rendering, state caching, etc.
@@ -34,6 +35,17 @@ bool8_t vkr_pipeline_registry_init(VkrPipelineRegistry *registry,
   registry->temp_arena = arena_create(KB(64), KB(64));
   if (!registry->pipeline_arena || !registry->temp_arena) {
     log_fatal("Failed to create pipeline registry arenas");
+    if (registry->pipeline_arena)
+      arena_destroy(registry->pipeline_arena);
+    if (registry->temp_arena)
+      arena_destroy(registry->temp_arena);
+    MemZero(registry, sizeof(*registry));
+    return false_v;
+  }
+
+  registry->temp_allocator.ctx = registry->temp_arena;
+  if (!vkr_allocator_arena(&registry->temp_allocator)) {
+    log_fatal("Failed to create pipeline registry temp allocator");
     if (registry->pipeline_arena)
       arena_destroy(registry->pipeline_arena);
     if (registry->temp_arena)
@@ -197,8 +209,8 @@ bool8_t vkr_pipeline_registry_create_from_material_layout(
   VkrVertexInputAttributeDescription *attrs = NULL;
   VkrVertexInputBindingDescription *bindings = NULL;
   vkr_geometry_fill_vertex_input_descriptions(
-      vertex_layout, scratch.arena, &attr_count, &attrs, &binding_count,
-      &bindings, &stride);
+      vertex_layout, &registry->temp_allocator, &attr_count, &attrs,
+      &binding_count, &bindings, &stride);
 
   VkrShaderObjectDescription shader_desc = {
       .file_format = VKR_SHADER_FILE_FORMAT_SPIR_V,
