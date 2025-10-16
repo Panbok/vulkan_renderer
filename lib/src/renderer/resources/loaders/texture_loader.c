@@ -7,7 +7,7 @@ vkr_global const char *bmp_ext = "bmp";
 vkr_global const char *tga_ext = "tga";
 
 // Forward declarations
-vkr_internal RendererError vkr_texture_loader_load_from_file(
+vkr_internal VkrRendererError vkr_texture_loader_load_from_file(
     VkrResourceLoader *self, String8 file_path, uint32_t desired_channels,
     VkrTexture *out_texture);
 
@@ -42,7 +42,7 @@ vkr_internal bool8_t vkr_texture_loader_can_load(VkrResourceLoader *self,
 vkr_internal bool8_t vkr_texture_loader_load(VkrResourceLoader *self,
                                              String8 name, Arena *temp_arena,
                                              VkrResourceHandleInfo *out_handle,
-                                             RendererError *out_error) {
+                                             VkrRendererError *out_error) {
   assert_log(self != NULL, "Self is NULL");
   assert_log(name.str != NULL, "Name is NULL");
   assert_log(temp_arena != NULL, "Temp arena is NULL");
@@ -52,19 +52,20 @@ vkr_internal bool8_t vkr_texture_loader_load(VkrResourceLoader *self,
   VkrTextureSystem *system = (VkrTextureSystem *)self->resource_system;
 
   VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
-  RendererError renderer_error = RENDERER_ERROR_NONE;
+  VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_texture_system_load(system, name, &handle, &renderer_error) ||
-      renderer_error != RENDERER_ERROR_NONE) {
+      renderer_error != VKR_RENDERER_ERROR_NONE) {
     *out_error = renderer_error;
+    String8 error_string = vkr_renderer_get_error_string(renderer_error);
     log_error("Failed to load texture '%s': %s", string8_cstr(&name),
-              renderer_get_error_string(renderer_error).str);
+              string8_cstr(&error_string));
     return false_v;
   }
 
   out_handle->type = VKR_RESOURCE_TYPE_TEXTURE;
   out_handle->loader_id = self->id;
   out_handle->as.texture = handle;
-  *out_error = RENDERER_ERROR_NONE;
+  *out_error = VKR_RENDERER_ERROR_NONE;
 
   return true_v;
 }
