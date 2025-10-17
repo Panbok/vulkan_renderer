@@ -58,8 +58,8 @@
 
 typedef struct s_RendererFrontend *VkrRendererFrontendHandle;
 typedef struct s_BufferResource *VkrBufferHandle;
-typedef struct s_Pipeline *VkrPipelineHandle;
-typedef struct s_TextureHandle *VkrTextureHandle;
+typedef struct s_Pipeline *VkrPipelineOpaqueHandle;
+typedef struct s_TextureHandle *VkrTextureOpaqueHandle;
 
 typedef union {
   void *ptr;
@@ -465,7 +465,7 @@ typedef struct VkrRendererMaterialState {
   // Per-material uniforms for the local UBO
   VkrLocalUniformObject uniforms;
   // Current base color texture for slot 0 (may be NULL when disabled)
-  VkrTextureHandle texture0;
+  VkrTextureOpaqueHandle texture0;
   bool8_t texture0_enabled;
 } VkrRendererMaterialState;
 
@@ -591,25 +591,25 @@ VkrBufferHandle vkr_renderer_create_index_buffer(
     VkrRendererFrontendHandle renderer, uint64_t size, VkrIndexType type,
     const void *initial_data, VkrRendererError *out_error);
 
-VkrTextureHandle
+VkrTextureOpaqueHandle
 vkr_renderer_create_texture(VkrRendererFrontendHandle renderer,
                             const VkrTextureDescription *description,
                             const void *initial_data,
                             VkrRendererError *out_error);
 
 void vkr_renderer_destroy_texture(VkrRendererFrontendHandle renderer,
-                                  VkrTextureHandle texture);
+                                  VkrTextureOpaqueHandle texture);
 
 void vkr_renderer_destroy_buffer(VkrRendererFrontendHandle renderer,
                                  VkrBufferHandle buffer);
 
-VkrPipelineHandle vkr_renderer_create_graphics_pipeline(
+VkrPipelineOpaqueHandle vkr_renderer_create_graphics_pipeline(
     VkrRendererFrontendHandle renderer,
     const VkrGraphicsPipelineDescription *description,
     VkrRendererError *out_error);
 
 void vkr_renderer_destroy_pipeline(VkrRendererFrontendHandle renderer,
-                                   VkrPipelineHandle pipeline);
+                                   VkrPipelineOpaqueHandle pipeline);
 // --- END Resource Management ---
 
 // --- START Data Update ---
@@ -619,7 +619,7 @@ VkrRendererError vkr_renderer_update_buffer(VkrRendererFrontendHandle renderer,
                                             const void *data);
 
 VkrRendererError vkr_renderer_update_pipeline_state(
-    VkrRendererFrontendHandle renderer, VkrPipelineHandle pipeline,
+    VkrRendererFrontendHandle renderer, VkrPipelineOpaqueHandle pipeline,
     const VkrGlobalUniformObject *uniform, const VkrShaderStateObject *data,
     const VkrRendererMaterialState *material);
 
@@ -634,7 +634,7 @@ VkrRendererError vkr_renderer_update_pipeline_state(
  */
 VkrRendererError
 vkr_renderer_update_global_state(VkrRendererFrontendHandle renderer,
-                                 VkrPipelineHandle pipeline,
+                                 VkrPipelineOpaqueHandle pipeline,
                                  const VkrGlobalUniformObject *uniform);
 
 /**
@@ -647,18 +647,18 @@ vkr_renderer_update_global_state(VkrRendererFrontendHandle renderer,
  * @return VkrRendererError
  */
 VkrRendererError vkr_renderer_update_local_state(
-    VkrRendererFrontendHandle renderer, VkrPipelineHandle pipeline,
+    VkrRendererFrontendHandle renderer, VkrPipelineOpaqueHandle pipeline,
     const VkrShaderStateObject *data, const VkrRendererMaterialState *material);
 
 // Local state lifetime
 VkrRendererError
 vkr_renderer_acquire_local_state(VkrRendererFrontendHandle renderer,
-                                 VkrPipelineHandle pipeline,
+                                 VkrPipelineOpaqueHandle pipeline,
                                  VkrRendererLocalStateHandle *out_handle);
 
 VkrRendererError
 vkr_renderer_release_local_state(VkrRendererFrontendHandle renderer,
-                                 VkrPipelineHandle pipeline,
+                                 VkrPipelineOpaqueHandle pipeline,
                                  VkrRendererLocalStateHandle handle);
 
 VkrRendererError vkr_renderer_upload_buffer(VkrRendererFrontendHandle renderer,
