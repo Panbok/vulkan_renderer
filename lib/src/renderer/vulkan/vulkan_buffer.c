@@ -73,7 +73,8 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
   // memory)
   // Reserve 4x the initial size to allow for efficient growth without
   // reallocation
-  uint64_t reserve_size = desc->size * 4;
+  uint64_t reserve_size =
+      desc->size > (UINT64_MAX / 4) ? UINT64_MAX : desc->size * 4;
   if (!vkr_dmemory_create(desc->size, reserve_size,
                           &out_buffer->buffer.offset_allocator)) {
     log_error("Failed to create offset allocator for buffer");
