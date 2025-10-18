@@ -71,7 +71,11 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
   // Initialize offset allocator for sub-allocations
   // Create dmemory for offset tracking (manages virtual address space, not real
   // memory)
-  if (!vkr_dmemory_create(desc->size, &out_buffer->buffer.offset_allocator)) {
+  // Reserve 4x the initial size to allow for efficient growth without
+  // reallocation
+  uint64_t reserve_size = desc->size * 4;
+  if (!vkr_dmemory_create(desc->size, reserve_size,
+                          &out_buffer->buffer.offset_allocator)) {
     log_error("Failed to create offset allocator for buffer");
     vkFreeMemory(state->device.logical_device, out_buffer->buffer.memory,
                  state->allocator);

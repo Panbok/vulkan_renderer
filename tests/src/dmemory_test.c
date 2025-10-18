@@ -11,8 +11,9 @@ static void test_dmemory_create(void) {
 
   VkrDMemory dmemory;
   const uint64_t TOTAL_SIZE = MB(1);
+  const uint64_t RESERVE_SIZE = MB(10);
 
-  assert(vkr_dmemory_create(TOTAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
 
   // Verify initialization
   assert(dmemory.base_memory != NULL);
@@ -30,8 +31,9 @@ static void test_dmemory_alloc_basic(void) {
 
   VkrDMemory dmemory;
   const uint64_t TOTAL_SIZE = MB(1);
+  const uint64_t RESERVE_SIZE = MB(10);
 
-  assert(vkr_dmemory_create(TOTAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
 
   // Allocate a simple block
   void *ptr1 = vkr_dmemory_alloc(&dmemory, 1024);
@@ -57,8 +59,9 @@ static void test_dmemory_multiple_allocs(void) {
 
   VkrDMemory dmemory;
   const uint64_t TOTAL_SIZE = MB(1);
+  const uint64_t RESERVE_SIZE = MB(10);
 
-  assert(vkr_dmemory_create(TOTAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
 
   uint64_t initial_free = vkr_dmemory_get_free_space(&dmemory);
 
@@ -106,8 +109,9 @@ static void test_dmemory_free_and_realloc(void) {
 
   VkrDMemory dmemory;
   const uint64_t TOTAL_SIZE = MB(1);
+  const uint64_t RESERVE_SIZE = MB(10);
 
-  assert(vkr_dmemory_create(TOTAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
 
   // Allocate some blocks
   void *ptr1 = vkr_dmemory_alloc(&dmemory, 1024);
@@ -146,8 +150,9 @@ static void test_dmemory_out_of_memory(void) {
 
   VkrDMemory dmemory;
   const uint64_t TOTAL_SIZE = KB(64); // Small size for testing
+  const uint64_t RESERVE_SIZE = MB(1);
 
-  assert(vkr_dmemory_create(TOTAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
 
   // Allocate almost all memory
   void *ptr1 = vkr_dmemory_alloc(&dmemory, KB(32));
@@ -176,8 +181,9 @@ static void test_dmemory_upfront_commit(void) {
 
   VkrDMemory dmemory;
   const uint64_t TOTAL_SIZE = MB(1);
+  const uint64_t RESERVE_SIZE = MB(10);
 
-  assert(vkr_dmemory_create(TOTAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
 
   // All memory should be committed upfront
   assert(dmemory.committed_size == dmemory.total_size);
@@ -213,8 +219,9 @@ static void test_dmemory_free_pattern(void) {
 
   VkrDMemory dmemory;
   const uint64_t TOTAL_SIZE = MB(1);
+  const uint64_t RESERVE_SIZE = MB(10);
 
-  assert(vkr_dmemory_create(TOTAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
 
   // Allocate several blocks
   void *ptrs[5];
@@ -247,8 +254,9 @@ static void test_dmemory_invalid_free(void) {
 
   VkrDMemory dmemory;
   const uint64_t TOTAL_SIZE = MB(1);
+  const uint64_t RESERVE_SIZE = MB(10);
 
-  assert(vkr_dmemory_create(TOTAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
 
   void *ptr1 = vkr_dmemory_alloc(&dmemory, 1024);
   assert(ptr1 != NULL);
@@ -272,8 +280,9 @@ static void test_dmemory_fragmentation(void) {
 
   VkrDMemory dmemory;
   const uint64_t TOTAL_SIZE = KB(256);
+  const uint64_t RESERVE_SIZE = MB(5);
 
-  assert(vkr_dmemory_create(TOTAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
 
   // Create a fragmented memory pattern
   void *ptrs[10];
@@ -313,8 +322,9 @@ static void test_dmemory_boundary_conditions(void) {
 
   VkrDMemory dmemory;
   const uint64_t TOTAL_SIZE = KB(64);
+  const uint64_t RESERVE_SIZE = MB(1);
 
-  assert(vkr_dmemory_create(TOTAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
 
   // Test allocation at start
   void *ptr1 = vkr_dmemory_alloc(&dmemory, 1);
@@ -344,8 +354,9 @@ static void test_dmemory_write_read_integrity(void) {
 
   VkrDMemory dmemory;
   const uint64_t TOTAL_SIZE = MB(1);
+  const uint64_t RESERVE_SIZE = MB(10);
 
-  assert(vkr_dmemory_create(TOTAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
 
   // Allocate and write different patterns
   struct TestData {
@@ -404,8 +415,9 @@ static void test_dmemory_resize_empty(void) {
   VkrDMemory dmemory;
   const uint64_t INITIAL_SIZE = MB(1);
   const uint64_t NEW_SIZE = MB(2);
+  const uint64_t RESERVE_SIZE = MB(5);
 
-  assert(vkr_dmemory_create(INITIAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(INITIAL_SIZE, RESERVE_SIZE, &dmemory));
 
   // Verify initial state
   assert(vkr_dmemory_get_free_space(&dmemory) == dmemory.total_size);
@@ -431,8 +443,9 @@ static void test_dmemory_resize_with_allocations(void) {
   VkrDMemory dmemory;
   const uint64_t INITIAL_SIZE = MB(1);
   const uint64_t NEW_SIZE = MB(2);
+  const uint64_t RESERVE_SIZE = MB(5);
 
-  assert(vkr_dmemory_create(INITIAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(INITIAL_SIZE, RESERVE_SIZE, &dmemory));
 
   // Make some allocations and write data
   void *ptr1 = vkr_dmemory_alloc(&dmemory, KB(64));
@@ -448,13 +461,19 @@ static void test_dmemory_resize_with_allocations(void) {
   // Resize
   assert(vkr_dmemory_resize(&dmemory, NEW_SIZE));
 
-  // Verify data is preserved
+  // With sparse buffers, pointers remain valid after resize!
   uint8_t *data1 = (uint8_t *)ptr1;
   uint8_t *data2 = (uint8_t *)ptr2;
 
-  // Note: After resize, ptrs are no longer valid since base_memory changed
-  // We need to calculate new pointers based on offsets
-  // For this test, we'll just verify free space increased appropriately
+  // Verify data is preserved
+  for (uint32_t i = 0; i < KB(64); i++) {
+    assert(data1[i] == 0xAA);
+  }
+  for (uint32_t i = 0; i < KB(128); i++) {
+    assert(data2[i] == 0xBB);
+  }
+
+  // Verify free space increased appropriately
   uint64_t free_after = vkr_dmemory_get_free_space(&dmemory);
   uint64_t expected_growth = dmemory.total_size - INITIAL_SIZE;
 
@@ -471,8 +490,9 @@ static void test_dmemory_resize_and_allocate(void) {
   VkrDMemory dmemory;
   const uint64_t INITIAL_SIZE = KB(512);
   const uint64_t NEW_SIZE = MB(1);
+  const uint64_t RESERVE_SIZE = MB(5);
 
-  assert(vkr_dmemory_create(INITIAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(INITIAL_SIZE, RESERVE_SIZE, &dmemory));
 
   // Fill initial space
   void *ptr1 = vkr_dmemory_alloc(&dmemory, KB(512));
@@ -502,8 +522,9 @@ static void test_dmemory_resize_shrink_rejected(void) {
   VkrDMemory dmemory;
   const uint64_t INITIAL_SIZE = MB(2);
   const uint64_t NEW_SIZE = MB(1);
+  const uint64_t RESERVE_SIZE = MB(10);
 
-  assert(vkr_dmemory_create(INITIAL_SIZE, &dmemory));
+  assert(vkr_dmemory_create(INITIAL_SIZE, RESERVE_SIZE, &dmemory));
 
   // Allocate more than NEW_SIZE
   void *ptr1 = vkr_dmemory_alloc(&dmemory, MB(1) + KB(256));
