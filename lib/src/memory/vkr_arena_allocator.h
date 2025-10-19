@@ -10,4 +10,4 @@
  * function. The caller retains ownership of the arena and must ensure it
  * outlives the allocator.
  */
-void vkr_allocator_arena(VkrAllocator *out_allocator);
+bool8_t vkr_allocator_arena(VkrAllocator *out_allocator);
