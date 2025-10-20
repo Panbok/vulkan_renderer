@@ -491,6 +491,75 @@ vkr_internal INLINE float32_t vkr_rand_range_f32(float32_t min, float32_t max) {
 }
 
 /**
+ * @brief Divides a value by another value and rounds up to the nearest integer
+ * @param a Dividend
+ * @param b Divisor
+ * @return Result of (a + b - 1u) / b
+ */
+vkr_internal INLINE uint32_t vkr_ceil_div_u32(uint32_t a, uint32_t b) {
+  return (a + b - 1u) / b;
+}
+
+/**
+ * @brief Aligns a value up to the nearest multiple of another value
+ * @param v Value to align
+ * @param a Alignment value
+ * @return Value aligned up to the nearest multiple of a
+ */
+vkr_internal INLINE uint32_t vkr_align_up_u32(uint32_t v, uint32_t a) {
+  uint32_t m = a - 1u;
+  return (v + m) & ~m;
+}
+
+/**
+ * @brief Returns the number of decimal digits in a uint32_t value
+ * @param x Input value
+ * @return Number of decimal digits in the input value
+ */
+vkr_internal INLINE uint32_t vkr_dec_digits_u32(uint32_t x) {
+  if (x >= 1000000000u)
+    return 10u;
+  if (x >= 100000000u)
+    return 9u;
+  if (x >= 10000000u)
+    return 8u;
+  if (x >= 1000000u)
+    return 7u;
+  if (x >= 100000u)
+    return 6u;
+  if (x >= 10000u)
+    return 5u;
+  if (x >= 1000u)
+    return 4u;
+  if (x >= 100u)
+    return 3u;
+  if (x >= 10u)
+    return 2u;
+  return 1u;
+}
+
+/**
+ * @brief Writes a uint32_t value to a string as decimal digits without leading
+ * zeros
+ * @param p Pointer to the string
+ * @param v Value to write
+ * @return Pointer to the next character after the written digits
+ */
+vkr_internal INLINE char *vkr_write_u32_dec(char *p, uint32_t v) {
+  // write decimal digits without leading zeros
+  char buf[10];
+  uint32_t n = 0;
+  do {
+    buf[n++] = (char)('0' + (v % 10u));
+    v /= 10u;
+  } while (v);
+  // reverse into p
+  for (uint32_t i = 0; i < n; ++i)
+    p[i] = buf[n - 1 - i];
+  return p + n;
+}
+
+/**
  * @brief Generates a random int32_t value
  * @return Random int32_t value in the range [0, RAND_MAX]
  * @note Automatically seeds the random number generator on first call
