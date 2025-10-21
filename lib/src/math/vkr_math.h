@@ -497,16 +497,21 @@ vkr_internal INLINE float32_t vkr_rand_range_f32(float32_t min, float32_t max) {
  * @return Result of (a + b - 1u) / b
  */
 vkr_internal INLINE uint32_t vkr_ceil_div_u32(uint32_t a, uint32_t b) {
-  return (a + b - 1u) / b;
+  if (b == 0u)
+    return 0u; // or handle error appropriately
+  // Overflow-safe: equivalent to (a + b - 1) / b but avoids overflow
+  return a / b + (a % b != 0u ? 1u : 0u);
 }
 
 /**
  * @brief Aligns a value up to the nearest multiple of another value
  * @param v Value to align
- * @param a Alignment value
+ * @param a Alignment value (must be a power of 2)
  * @return Value aligned up to the nearest multiple of a
+ * @note a must be a power of 2 and non-zero, otherwise behavior is undefined
  */
 vkr_internal INLINE uint32_t vkr_align_up_u32(uint32_t v, uint32_t a) {
+  assert(a != 0u && (a & (a - 1u)) == 0u);
   uint32_t m = a - 1u;
   return (v + m) & ~m;
 }
@@ -541,9 +546,12 @@ vkr_internal INLINE uint32_t vkr_dec_digits_u32(uint32_t x) {
 /**
  * @brief Writes a uint32_t value to a string as decimal digits without leading
  * zeros
- * @param p Pointer to the string
+ * @param p Pointer to buffer (must have space for at least 10 characters)
  * @param v Value to write
  * @return Pointer to the next character after the written digits
+ * @note Caller must ensure p points to a buffer with at least 10 bytes
+ * available
+ * @note Does not null-terminate the string
  */
 vkr_internal INLINE char *vkr_write_u32_dec(char *p, uint32_t v) {
   // write decimal digits without leading zeros
