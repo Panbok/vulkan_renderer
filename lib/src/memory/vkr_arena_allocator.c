@@ -46,7 +46,7 @@ vkr_internal INLINE void *arena_realloc_cb(void *ctx, void *ptr,
 }
 
 bool8_t vkr_allocator_arena(VkrAllocator *out_allocator) {
-  assert_log(out_allocator != NULL, "Arena and out_allocator must not be NULL");
+  assert_log(out_allocator != NULL, "out_allocator must not be NULL");
 
   if (out_allocator->ctx == NULL) {
     log_error("Allocator context (Arena) must not be NULL");
