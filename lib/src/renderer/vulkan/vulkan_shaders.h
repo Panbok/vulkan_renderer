@@ -13,17 +13,17 @@ bool8_t vulkan_shader_update_global_state(
     VulkanBackendState *state, VulkanShaderObject *shader_object,
     VkPipelineLayout pipeline_layout, const VkrGlobalUniformObject *uniform);
 
-bool8_t vulkan_shader_update_state(VulkanBackendState *state,
-                                   VulkanShaderObject *shader_object,
-                                   VkPipelineLayout pipeline_layout,
-                                   const VkrShaderStateObject *data,
-                                   const VkrRendererMaterialState *material);
+bool8_t vulkan_shader_update_instance(VulkanBackendState *state,
+                                      VulkanShaderObject *shader_object,
+                                      VkPipelineLayout pipeline_layout,
+                                      const VkrShaderStateObject *data,
+                                      const VkrRendererMaterialState *material);
 
-bool8_t vulkan_shader_acquire_resource(VulkanBackendState *state,
+bool8_t vulkan_shader_acquire_instance(VulkanBackendState *state,
                                        VulkanShaderObject *shader_object,
                                        uint32_t *out_object_id);
 
-bool8_t vulkan_shader_release_resource(VulkanBackendState *state,
+bool8_t vulkan_shader_release_instance(VulkanBackendState *state,
                                        VulkanShaderObject *shader_object,
                                        uint32_t object_id);
 

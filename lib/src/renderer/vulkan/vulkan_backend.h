@@ -78,15 +78,14 @@ VkrRendererError renderer_vulkan_update_pipeline_state(
     const VkrGlobalUniformObject *uniform, const VkrShaderStateObject *data,
     const VkrRendererMaterialState *material);
 
-VkrRendererError
-renderer_vulkan_local_state_acquire(void *backend_state,
-                                    VkrBackendResourceHandle pipeline_handle,
-                                    VkrRendererLocalStateHandle *out_handle);
+VkrRendererError renderer_vulkan_instance_state_acquire(
+    void *backend_state, VkrBackendResourceHandle pipeline_handle,
+    VkrRendererInstanceStateHandle *out_handle);
 
 VkrRendererError
-renderer_vulkan_local_state_release(void *backend_state,
-                                    VkrBackendResourceHandle pipeline_handle,
-                                    VkrRendererLocalStateHandle handle);
+renderer_vulkan_instance_state_release(void *backend_state,
+                                       VkrBackendResourceHandle pipeline_handle,
+                                       VkrRendererInstanceStateHandle handle);
 
 void renderer_vulkan_destroy_pipeline(void *backend_state,
                                       VkrBackendResourceHandle handle);
@@ -103,3 +102,7 @@ void renderer_vulkan_draw_indexed(void *backend_state, uint32_t index_count,
                                   uint32_t instance_count, uint32_t first_index,
                                   int32_t vertex_offset,
                                   uint32_t first_instance);
+
+// Telemetry
+uint64_t
+renderer_vulkan_get_and_reset_descriptor_writes_avoided(void *backend_state);

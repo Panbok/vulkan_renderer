@@ -180,25 +180,30 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
                           : &color_blend_attachment_state,
   };
 
-  VkPushConstantRange push_constant = {
-      .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-      .offset = sizeof(Mat4) * 0,
-      .size =
-          sizeof(Mat4) * 2, // NOTE: guaranteed to be 128 bytes or more (AMD RX
-                            // 6700 XT has 256 bytes while Mac M1 has 4k bytes)
-  };
+  VkPushConstantRange push_constant = {0};
+  if (desc->shader_object_description.push_constant_size > 0) {
+    push_constant = (VkPushConstantRange){
+        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+        .offset = 0,
+        .size = (uint32_t)desc->shader_object_description.push_constant_size,
+    };
+  }
 
   VkDescriptorSetLayout set_layouts[2] = {
       out_pipeline->shader_object.global_descriptor_set_layout,
-      out_pipeline->shader_object.local_descriptor_set_layout,
+      out_pipeline->shader_object.instance_descriptor_set_layout,
   };
 
   VkPipelineLayoutCreateInfo pipeline_layout_info = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
       .setLayoutCount = 2,
       .pSetLayouts = set_layouts,
-      .pushConstantRangeCount = 1,
-      .pPushConstantRanges = &push_constant,
+      .pushConstantRangeCount =
+          (desc->shader_object_description.push_constant_size > 0) ? 1u : 0u,
+      .pPushConstantRanges =
+          (desc->shader_object_description.push_constant_size > 0)
+              ? &push_constant
+              : NULL,
   };
 
   VkPipelineLayout pipeline_layout;
@@ -412,9 +417,9 @@ VkrRendererError vulkan_graphics_pipeline_update_state(
   }
 
   if (data != NULL) {
-    if (!vulkan_shader_update_state(state, &pipeline->shader_object,
-                                    pipeline->pipeline_layout, data,
-                                    material)) {
+    if (!vulkan_shader_update_instance(state, &pipeline->shader_object,
+                                       pipeline->pipeline_layout, data,
+                                       material)) {
       log_error("Failed to update state");
       return VKR_RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
     }

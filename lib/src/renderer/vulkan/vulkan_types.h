@@ -203,8 +203,8 @@ typedef struct VulkanShaderObjectDescriptorState {
   uint32_t *generations;
 } VulkanShaderObjectDescriptorState;
 
-#define VULKAN_SHADER_OBJECT_LOCAL_STATE_COUNT 1024
-typedef struct VulkanShaderObjectLocalState {
+#define VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT 1024
+typedef struct VulkanShaderObjectInstanceState {
   // Per-frame descriptor sets; length == frame_count
   VkDescriptorSet *descriptor_sets;
 
@@ -213,7 +213,7 @@ typedef struct VulkanShaderObjectLocalState {
   VkDescriptorSetLayoutBinding descriptor_set_layout_bindings
       [VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT];
 
-} VulkanShaderObjectLocalState;
+} VulkanShaderObjectInstanceState;
 
 typedef struct VulkanShaderObject {
   VkPipelineShaderStageCreateInfo stages[VKR_SHADER_STAGE_COUNT];
@@ -226,16 +226,21 @@ typedef struct VulkanShaderObject {
   VkDescriptorSetLayoutBinding global_descriptor_set_layout_binding;
   struct s_BufferHandle global_uniform_buffer;
 
-  // todo: rework into free list of objects
   uint32_t frame_count;
-  uint32_t local_uniform_buffer_count;
-  uint32_t local_state_free_count;
-  uint32_t local_state_free_ids[VULKAN_SHADER_OBJECT_LOCAL_STATE_COUNT];
-  VkDescriptorPool local_descriptor_pool;
-  VkDescriptorSetLayout local_descriptor_set_layout;
-  struct s_BufferHandle local_uniform_buffer;
-  VulkanShaderObjectLocalState
-      local_states[VULKAN_SHADER_OBJECT_LOCAL_STATE_COUNT];
+  uint32_t instance_uniform_buffer_count;
+  uint32_t instance_state_free_count;
+  uint32_t instance_state_free_ids[VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT];
+  VkDescriptorPool instance_descriptor_pool;
+  VkDescriptorSetLayout instance_descriptor_set_layout;
+  struct s_BufferHandle instance_uniform_buffer;
+  VulkanShaderObjectInstanceState
+      instance_states[VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT];
+
+  uint64_t global_ubo_size;
+  uint64_t global_ubo_stride;
+  uint64_t instance_ubo_size;
+  uint64_t instance_ubo_stride;
+  uint64_t push_constant_size;
 } VulkanShaderObject;
 
 struct s_GraphicsPipeline {
@@ -353,4 +358,5 @@ typedef struct VulkanBackendState {
   Array_VulkanFencePtr images_in_flight;
 
   Array_VulkanCommandBuffer graphics_command_buffers;
+  uint64_t descriptor_writes_avoided; // telemetry
 } VulkanBackendState;

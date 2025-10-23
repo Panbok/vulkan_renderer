@@ -139,13 +139,6 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
     return false;
   }
 
-  if (!vulkan_framebuffer_regenerate(
-          state, &state->swapchain,
-          state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD])) {
-    log_error("Failed to regenerate legacy framebuffers");
-    return false;
-  }
-
   if (!create_command_buffers(state)) {
     log_error("Failed to create Vulkan command buffers");
     return false;
@@ -171,15 +164,24 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .texture_destroy = renderer_vulkan_destroy_texture,
       .graphics_pipeline_create = renderer_vulkan_create_graphics_pipeline,
       .pipeline_update_state = renderer_vulkan_update_pipeline_state,
-      .local_state_acquire = renderer_vulkan_local_state_acquire,
-      .local_state_release = renderer_vulkan_local_state_release,
+      .instance_state_acquire = renderer_vulkan_instance_state_acquire,
+      .instance_state_release = renderer_vulkan_instance_state_release,
       .pipeline_destroy = renderer_vulkan_destroy_pipeline,
       .begin_frame = renderer_vulkan_begin_frame,
       .end_frame = renderer_vulkan_end_frame,
       .bind_buffer = renderer_vulkan_bind_buffer,
       .draw = renderer_vulkan_draw,
       .draw_indexed = renderer_vulkan_draw_indexed,
+      .get_and_reset_descriptor_writes_avoided =
+          renderer_vulkan_get_and_reset_descriptor_writes_avoided,
   };
+}
+uint64_t
+renderer_vulkan_get_and_reset_descriptor_writes_avoided(void *backend_state) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  uint64_t value = state->descriptor_writes_avoided;
+  state->descriptor_writes_avoided = 0;
+  return value;
 }
 
 // todo: set up event manager for window stuff and maybe other events
@@ -235,6 +237,7 @@ renderer_vulkan_initialize(void **out_backend_state,
   backend_state->swapchain_arena = swapchain_arena;
   backend_state->window = window;
   backend_state->device_requirements = device_requirements;
+  backend_state->descriptor_writes_avoided = 0;
 
   backend_state->current_render_pass_domain =
       VKR_PIPELINE_DOMAIN_COUNT; // Invalid domain
@@ -301,15 +304,6 @@ renderer_vulkan_initialize(void **out_backend_state,
                                     .attachments = {0},
                                     .renderpass = VK_NULL_HANDLE,
                                 });
-  }
-
-  // For now, continue creating the legacy framebuffers to avoid breaking
-  // existing code This will be removed in later phases
-  if (!vulkan_framebuffer_regenerate(
-          backend_state, &backend_state->swapchain,
-          backend_state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD])) {
-    log_fatal("Failed to regenerate Vulkan framebuffers");
-    return false;
   }
 
   if (!create_command_buffers(backend_state)) {
@@ -1207,10 +1201,9 @@ VkrRendererError renderer_vulkan_update_pipeline_state(
                                                material);
 }
 
-VkrRendererError
-renderer_vulkan_local_state_acquire(void *backend_state,
-                                    VkrBackendResourceHandle pipeline_handle,
-                                    VkrRendererLocalStateHandle *out_handle) {
+VkrRendererError renderer_vulkan_instance_state_acquire(
+    void *backend_state, VkrBackendResourceHandle pipeline_handle,
+    VkrRendererInstanceStateHandle *out_handle) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(pipeline_handle.ptr != NULL, "Pipeline handle is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
@@ -1220,7 +1213,7 @@ renderer_vulkan_local_state_acquire(void *backend_state,
       (struct s_GraphicsPipeline *)pipeline_handle.ptr;
 
   uint32_t object_id = 0;
-  if (!vulkan_shader_acquire_resource(state, &pipeline->shader_object,
+  if (!vulkan_shader_acquire_instance(state, &pipeline->shader_object,
                                       &object_id)) {
     return VKR_RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
   }
@@ -1230,9 +1223,9 @@ renderer_vulkan_local_state_acquire(void *backend_state,
 }
 
 VkrRendererError
-renderer_vulkan_local_state_release(void *backend_state,
-                                    VkrBackendResourceHandle pipeline_handle,
-                                    VkrRendererLocalStateHandle handle) {
+renderer_vulkan_instance_state_release(void *backend_state,
+                                       VkrBackendResourceHandle pipeline_handle,
+                                       VkrRendererInstanceStateHandle handle) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(pipeline_handle.ptr != NULL, "Pipeline handle is NULL");
 
@@ -1240,7 +1233,7 @@ renderer_vulkan_local_state_release(void *backend_state,
   struct s_GraphicsPipeline *pipeline =
       (struct s_GraphicsPipeline *)pipeline_handle.ptr;
 
-  if (!vulkan_shader_release_resource(state, &pipeline->shader_object,
+  if (!vulkan_shader_release_instance(state, &pipeline->shader_object,
                                       handle.id)) {
     return VKR_RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
   }

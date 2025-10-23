@@ -142,6 +142,10 @@ VkFormat vulkan_vertex_format_to_vk(VkrVertexFormat format) {
     return VK_FORMAT_R32G32B32_SFLOAT;
   case VKR_VERTEX_FORMAT_R32G32B32A32_SFLOAT:
     return VK_FORMAT_R32G32B32A32_SFLOAT;
+  case VKR_VERTEX_FORMAT_R32_SINT:
+    return VK_FORMAT_R32_SINT;
+  case VKR_VERTEX_FORMAT_R32_UINT:
+    return VK_FORMAT_R32_UINT;
   case VKR_VERTEX_FORMAT_R8G8B8A8_UNORM:
     return VK_FORMAT_R8G8B8A8_UNORM;
   default:
