@@ -84,6 +84,42 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
     return false_v;
   }
 
+  const VkPhysicalDeviceLimits *limits = &state->device.properties.limits;
+  if (desc->global_ubo_stride < desc->global_ubo_size) {
+    log_fatal("global_ubo_stride (%llu) < global_ubo_size (%llu)",
+              (uint64_t)desc->global_ubo_stride,
+              (uint64_t)desc->global_ubo_size);
+    return false_v;
+  }
+
+  if (desc->instance_ubo_stride < desc->instance_ubo_size) {
+    log_fatal("instance_ubo_stride (%llu) < instance_ubo_size (%llu)",
+              (uint64_t)desc->instance_ubo_stride,
+              (uint64_t)desc->instance_ubo_size);
+    return false_v;
+  }
+
+  if (desc->global_ubo_size > limits->maxUniformBufferRange) {
+    log_fatal(
+        "global_ubo_size (%llu) exceeds device maxUniformBufferRange (%u)",
+        (uint64_t)desc->global_ubo_size, limits->maxUniformBufferRange);
+    return false_v;
+  }
+
+  if (desc->instance_ubo_size > limits->maxUniformBufferRange) {
+    log_fatal(
+        "instance_ubo_size (%llu) exceeds device maxUniformBufferRange (%u)",
+        (uint64_t)desc->instance_ubo_size, limits->maxUniformBufferRange);
+    return false_v;
+  }
+
+  if (desc->push_constant_size > limits->maxPushConstantsSize) {
+    log_fatal(
+        "push_constant_size (%llu) exceeds device maxPushConstantsSize (%u)",
+        (uint64_t)desc->push_constant_size, limits->maxPushConstantsSize);
+    return false_v;
+  }
+
   if (desc->file_type == VKR_SHADER_FILE_TYPE_SINGLE) {
     const FilePath path =
         file_path_create(string8_cstr(&desc->modules[0].path), state->arena,
@@ -110,6 +146,14 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
               state, desc->modules[i].stages, shader_size, shader_data,
               desc->modules[i].entry_point, &out_shader_object->modules[i],
               &out_shader_object->stages[i])) {
+        log_error("Failed to create shader module: %s",
+                  string8_cstr(&desc->modules[i].path));
+        for (uint32_t j = 0; j < i; j++) {
+          if (out_shader_object->modules[j] != VK_NULL_HANDLE) {
+            vulkan_shader_module_destroy(state, out_shader_object->modules[j]);
+            out_shader_object->modules[j] = VK_NULL_HANDLE;
+          }
+        }
         return false_v;
       }
     }
@@ -151,46 +195,6 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   }
 
   // Global descriptors
-  const VkPhysicalDeviceLimits *limits = &state->device.properties.limits;
-  if (out_shader_object->global_ubo_stride <
-      out_shader_object->global_ubo_size) {
-    log_fatal("global_ubo_stride (%llu) < global_ubo_size (%llu)",
-              (uint64_t)out_shader_object->global_ubo_stride,
-              (uint64_t)out_shader_object->global_ubo_size);
-    return false_v;
-  }
-
-  if (out_shader_object->instance_ubo_stride <
-      out_shader_object->instance_ubo_size) {
-    log_fatal("instance_ubo_stride (%llu) < instance_ubo_size (%llu)",
-              (uint64_t)out_shader_object->instance_ubo_stride,
-              (uint64_t)out_shader_object->instance_ubo_size);
-    return false_v;
-  }
-
-  if (out_shader_object->global_ubo_size > limits->maxUniformBufferRange) {
-    log_fatal(
-        "global_ubo_size (%llu) exceeds device maxUniformBufferRange (%u)",
-        (uint64_t)out_shader_object->global_ubo_size,
-        limits->maxUniformBufferRange);
-    return false_v;
-  }
-
-  if (out_shader_object->instance_ubo_size > limits->maxUniformBufferRange) {
-    log_fatal(
-        "instance_ubo_size (%llu) exceeds device maxUniformBufferRange (%u)",
-        (uint64_t)out_shader_object->instance_ubo_size,
-        limits->maxUniformBufferRange);
-    return false_v;
-  }
-
-  if (out_shader_object->push_constant_size > limits->maxPushConstantsSize) {
-    log_fatal(
-        "push_constant_size (%llu) exceeds device maxPushConstantsSize (%u)",
-        (uint64_t)out_shader_object->push_constant_size,
-        limits->maxPushConstantsSize);
-    return false_v;
-  }
 
   VkDescriptorSetLayoutBinding global_descriptor_set_layout_binding = {
       .binding = 0,
@@ -767,9 +771,11 @@ void vulkan_shader_object_destroy(VulkanBackendState *state,
       state->device.logical_device,
       out_shader_object->instance_descriptor_set_layout, state->allocator);
 
-  vkDestroyDescriptorPool(state->device.logical_device,
-                          out_shader_object->global_descriptor_pool,
-                          state->allocator);
+  if (out_shader_object->instance_descriptor_pool != VK_NULL_HANDLE) {
+    vkDestroyDescriptorPool(state->device.logical_device,
+                            out_shader_object->global_descriptor_pool,
+                            state->allocator);
+  }
   vkDestroyDescriptorSetLayout(state->device.logical_device,
                                out_shader_object->global_descriptor_set_layout,
                                state->allocator);

@@ -492,6 +492,14 @@ bool32_t vulkan_device_pick_physical_device(VulkanBackendState *state) {
     return false;
   }
 
+  // Query and store device properties, features, and memory properties
+  vkGetPhysicalDeviceProperties(state->device.physical_device,
+                                &state->device.properties);
+  vkGetPhysicalDeviceFeatures(state->device.physical_device,
+                              &state->device.features);
+  vkGetPhysicalDeviceMemoryProperties(state->device.physical_device,
+                                      &state->device.memory);
+
   array_destroy_VkPhysicalDevice(&physical_devices);
   scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
@@ -735,6 +743,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
 
   VkPhysicalDeviceFeatures device_features = {
       .tessellationShader = VK_TRUE,
+      .samplerAnisotropy = VK_TRUE,
   };
 
   uint32_t ext_count = 0;
