@@ -90,6 +90,14 @@ const char *string8_cstr(const String8 *str);
 String8 string8_concat(Arena *arena, String8 *str1, String8 *str2);
 
 /**
+ * @brief Duplicate a string of 8-bit characters.
+ * @param arena The arena to allocate the new string from.
+ * @param str The string to duplicate.
+ * @return A new string of 8-bit characters.
+ */
+String8 string8_duplicate(Arena *arena, const String8 *str);
+
+/**
  * @brief Get a byte-slice (non-owning) substring of a UTF-8 string.
  * @details Indices are byte offsets; end is exclusive. Returns a view into
  * `str` (no allocation). Preconditions: 0 <= start <= end <= str->length. Note:

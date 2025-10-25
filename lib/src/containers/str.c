@@ -218,6 +218,18 @@ String8 string8_concat(Arena *arena, String8 *str1, String8 *str2) {
   return str;
 }
 
+String8 string8_duplicate(Arena *arena, const String8 *str) {
+  assert(arena != NULL && "Arena is NULL");
+  assert(str != NULL && "String is NULL");
+
+  String8 result = {NULL, 0};
+  result.str = arena_alloc(arena, str->length + 1, ARENA_MEMORY_TAG_STRING);
+  MemCopy(result.str, str->str, str->length);
+  result.str[str->length] = '\0';
+  result.length = str->length;
+  return result;
+}
+
 /////////////////////
 // Native CString
 /////////////////////
