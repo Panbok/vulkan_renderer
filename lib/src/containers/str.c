@@ -222,8 +222,14 @@ String8 string8_duplicate(Arena *arena, const String8 *str) {
   assert(arena != NULL && "Arena is NULL");
   assert(str != NULL && "String is NULL");
 
+  if (!str->str || str->length == 0) {
+    String8 result = {NULL, 0};
+    return result;
+  }
+
   String8 result = {NULL, 0};
   result.str = arena_alloc(arena, str->length + 1, ARENA_MEMORY_TAG_STRING);
+  assert(result.str != NULL && "Failed to allocate memory");
   MemCopy(result.str, str->str, str->length);
   result.str[str->length] = '\0';
   result.length = str->length;

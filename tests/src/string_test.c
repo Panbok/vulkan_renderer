@@ -1,4 +1,5 @@
 #include "string_test.h"
+#include "containers/str.h"
 #include <stdarg.h> // Ensure va_list and related macros are available
 
 static Arena *arena = NULL;
@@ -200,6 +201,36 @@ static void test_str8_trim(void) {
   assert(string8_equals(&s, &expect));
   teardown_suite();
   printf("  test_str8_trim PASSED\n");
+}
+
+static void test_str8_duplicate(void) {
+  printf("  Running test_str8_duplicate...\n");
+  setup_suite();
+  String8 str = string8_lit("Hello, World!");
+  String8 dup = string8_duplicate(arena, &str);
+  assert(string8_equals(&dup, &str));
+  teardown_suite();
+  printf("  test_str8_duplicate PASSED\n");
+}
+
+static void test_str8_duplicate_empty(void) {
+  printf("  Running test_str8_duplicate_empty...\n");
+  setup_suite();
+  String8 str = {NULL, 0};
+  String8 dup = string8_duplicate(arena, &str);
+  assert(string8_equals(&dup, &str));
+  teardown_suite();
+  printf("  test_str8_duplicate_empty PASSED\n");
+}
+
+static void test_str8_duplicate_null(void) {
+  printf("  Running test_str8_duplicate_null...\n");
+  setup_suite();
+  String8 str = {NULL, 0};
+  String8 dup = string8_duplicate(arena, &str);
+  assert(string8_equals(&dup, &str));
+  teardown_suite();
+  printf("  test_str8_duplicate_null PASSED\n");
 }
 
 /////////////////////
@@ -405,6 +436,9 @@ bool32_t run_string_tests(void) {
   test_str8_equalsi();
   test_str8_destroy();
   test_str8_trim();
+  test_str8_duplicate();
+  test_str8_duplicate_empty();
+  test_str8_duplicate_null();
 
   // CString tests
   test_cstring_equals();
