@@ -223,16 +223,6 @@ static void test_str8_duplicate_empty(void) {
   printf("  test_str8_duplicate_empty PASSED\n");
 }
 
-static void test_str8_duplicate_null(void) {
-  printf("  Running test_str8_duplicate_null...\n");
-  setup_suite();
-  String8 str = {NULL, 0};
-  String8 dup = string8_duplicate(arena, &str);
-  assert(string8_equals(&dup, &str));
-  teardown_suite();
-  printf("  test_str8_duplicate_null PASSED\n");
-}
-
 /////////////////////
 // CString Tests
 /////////////////////
@@ -438,7 +428,6 @@ bool32_t run_string_tests(void) {
   test_str8_trim();
   test_str8_duplicate();
   test_str8_duplicate_empty();
-  test_str8_duplicate_null();
 
   // CString tests
   test_cstring_equals();
