@@ -10,7 +10,7 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
 
 VkrRendererError vulkan_graphics_pipeline_update_state(
     VulkanBackendState *state, struct s_GraphicsPipeline *pipeline,
-    const VkrGlobalUniformObject *uniform, const VkrShaderStateObject *data,
+    const void *uniform, const VkrShaderStateObject *data,
     const VkrRendererMaterialState *material);
 
 void vulkan_graphics_pipeline_bind(VulkanCommandBuffer *command_buffer,

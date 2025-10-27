@@ -75,7 +75,7 @@ VkrBackendResourceHandle renderer_vulkan_create_graphics_pipeline(
 
 VkrRendererError renderer_vulkan_update_pipeline_state(
     void *backend_state, VkrBackendResourceHandle pipeline_handle,
-    const VkrGlobalUniformObject *uniform, const VkrShaderStateObject *data,
+    const void *uniform, const VkrShaderStateObject *data,
     const VkrRendererMaterialState *material);
 
 VkrRendererError renderer_vulkan_instance_state_acquire(

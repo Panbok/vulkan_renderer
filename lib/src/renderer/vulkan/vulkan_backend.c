@@ -1186,7 +1186,7 @@ VkrBackendResourceHandle renderer_vulkan_create_graphics_pipeline(
 
 VkrRendererError renderer_vulkan_update_pipeline_state(
     void *backend_state, VkrBackendResourceHandle pipeline_handle,
-    const VkrGlobalUniformObject *uniform, const VkrShaderStateObject *data,
+    const void *uniform, const VkrShaderStateObject *data,
     const VkrRendererMaterialState *material) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(pipeline_handle.ptr != NULL, "Pipeline handle is NULL");

@@ -9,9 +9,10 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
                                     const VkrShaderObjectDescription *desc,
                                     VulkanShaderObject *out_shader_object);
 
-bool8_t vulkan_shader_update_global_state(
-    VulkanBackendState *state, VulkanShaderObject *shader_object,
-    VkPipelineLayout pipeline_layout, const VkrGlobalUniformObject *uniform);
+bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
+                                          VulkanShaderObject *shader_object,
+                                          VkPipelineLayout pipeline_layout,
+                                          const void *uniform);
 
 bool8_t vulkan_shader_update_instance(VulkanBackendState *state,
                                       VulkanShaderObject *shader_object,

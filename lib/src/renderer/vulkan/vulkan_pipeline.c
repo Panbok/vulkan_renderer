@@ -341,7 +341,7 @@ void vulkan_graphics_pipeline_bind(VulkanCommandBuffer *command_buffer,
  */
 VkrRendererError vulkan_graphics_pipeline_update_state(
     VulkanBackendState *state, struct s_GraphicsPipeline *pipeline,
-    const VkrGlobalUniformObject *uniform, const VkrShaderStateObject *data,
+    const void *uniform, const VkrShaderStateObject *data,
     const VkrRendererMaterialState *material) {
   assert_log(state != NULL, "State is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");

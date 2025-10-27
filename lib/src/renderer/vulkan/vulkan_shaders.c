@@ -290,6 +290,8 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   out_shader_object->instance_ubo_size = desc->instance_ubo_size;
   out_shader_object->instance_ubo_stride = desc->instance_ubo_stride;
   out_shader_object->push_constant_size = desc->push_constant_size;
+  out_shader_object->global_texture_count = desc->global_texture_count;
+  out_shader_object->instance_texture_count = desc->instance_texture_count;
 
   VkrBufferDescription global_uniform_buffer_desc = {
       .size =
@@ -311,7 +313,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
 
   // Instance descriptors: binding 0 = uniform buffer, 1 = sampled image, 2 =
   // sampler
-  const uint32_t instance_sampler_count = 1;
+  const uint32_t instance_sampler_count = desc->instance_texture_count;
   VkDescriptorSetLayoutBinding instance_descriptor_set_layout_bindings
       [VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT];
 
@@ -323,25 +325,31 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
       .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
   };
 
-  instance_descriptor_set_layout_bindings[1] = (VkDescriptorSetLayoutBinding){
-      .binding = 1,
-      .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-      .descriptorCount = 1,
-      .pImmutableSamplers = NULL,
-      .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-  };
-
-  instance_descriptor_set_layout_bindings[2] = (VkDescriptorSetLayoutBinding){
-      .binding = 2,
-      .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
-      .descriptorCount = 1,
-      .pImmutableSamplers = NULL,
-      .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-  };
+  // Bindings: 0 = UBO; 1..N = sampled images; (N+1)..(2N) = samplers
+  for (uint32_t i = 0; i < instance_sampler_count; i++) {
+    instance_descriptor_set_layout_bindings[1 + i] =
+        (VkDescriptorSetLayoutBinding){
+            .binding = 1 + i,
+            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+            .descriptorCount = 1,
+            .pImmutableSamplers = NULL,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        };
+  }
+  for (uint32_t i = 0; i < instance_sampler_count; i++) {
+    instance_descriptor_set_layout_bindings[1 + instance_sampler_count + i] =
+        (VkDescriptorSetLayoutBinding){
+            .binding = 1 + instance_sampler_count + i,
+            .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
+            .descriptorCount = 1,
+            .pImmutableSamplers = NULL,
+            .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        };
+  }
 
   VkDescriptorSetLayoutCreateInfo instance_descriptor_set_layout_create_info = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-      .bindingCount = VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT,
+      .bindingCount = 1 + instance_sampler_count * 2,
       .pBindings = instance_descriptor_set_layout_bindings,
   };
 
@@ -354,18 +362,14 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   }
 
   VkDescriptorPoolSize instance_pool_size[3] = {
-      {
-          .type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-          .descriptorCount = VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT,
-      },
-      {
-          .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-          .descriptorCount = VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT,
-      },
-      {
-          .type = VK_DESCRIPTOR_TYPE_SAMPLER,
-          .descriptorCount = VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT,
-      },
+      {.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+       .descriptorCount = VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT},
+      {.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+       .descriptorCount =
+           VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT * instance_sampler_count},
+      {.type = VK_DESCRIPTOR_TYPE_SAMPLER,
+       .descriptorCount =
+           VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT * instance_sampler_count},
   };
 
   VkDescriptorPoolCreateInfo instance_descriptor_pool_create_info = {
@@ -414,9 +418,10 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   return true;
 }
 
-bool8_t vulkan_shader_update_global_state(
-    VulkanBackendState *state, VulkanShaderObject *shader_object,
-    VkPipelineLayout pipeline_layout, const VkrGlobalUniformObject *uniform) {
+bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
+                                          VulkanShaderObject *shader_object,
+                                          VkPipelineLayout pipeline_layout,
+                                          const void *uniform) {
   assert_log(state != NULL, "Backend state is NULL");
   assert_log(shader_object != NULL, "Shader object is NULL");
   assert_log(pipeline_layout != VK_NULL_HANDLE, "Pipeline layout is NULL");
@@ -483,15 +488,18 @@ bool8_t vulkan_shader_update_instance(
   uint32_t image_index = state->image_index;
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, image_index);
-
-  // Push constants (config-driven size). Use minimum of configured size and
-  // available data size (Mat4) to avoid overruns.
   if (shader_object->push_constant_size > 0) {
-    uint32_t pc_size = (uint32_t)shader_object->push_constant_size;
-    if (pc_size > sizeof(Mat4))
-      pc_size = (uint32_t)sizeof(Mat4);
-    vkCmdPushConstants(command_buffer->handle, pipeline_layout,
-                       VK_SHADER_STAGE_VERTEX_BIT, 0, pc_size, &data->model);
+    if (!data->push_constants_data || data->push_constants_size == 0) {
+      log_warn("Push constants required but no data provided");
+    } else {
+      uint32_t pc_size = (uint32_t)shader_object->push_constant_size;
+      uint32_t use = data->push_constants_size;
+      if (use > pc_size)
+        use = pc_size;
+      vkCmdPushConstants(command_buffer->handle, pipeline_layout,
+                         VK_SHADER_STAGE_VERTEX_BIT, 0, use,
+                         data->push_constants_data);
+    }
   }
 
   VulkanShaderObjectInstanceState *instance_state =
@@ -517,25 +525,23 @@ bool8_t vulkan_shader_update_instance(
 
   uint32_t descriptor_index = 0;
   uint32_t descriptor_count = 0;
-  VkrInstanceUniformObject local_uniform_object;
 
   uint32_t range = (uint32_t)shader_object->instance_ubo_size;
   uint64_t offset =
       shader_object->instance_ubo_stride * (uint64_t)data->instance_state.id;
 
-  // Material uniforms provided explicitly
-  if (material) {
-    local_uniform_object = material->uniforms;
+  if (!data->instance_ubo_data || data->instance_ubo_size == 0) {
+    log_warn("Instance UBO required but no data provided");
   } else {
-    // Fallback: ensure zeroed
-    MemZero(&local_uniform_object, sizeof(VkrInstanceUniformObject));
-  }
-
-  if (!vulkan_buffer_load_data(state,
-                               &shader_object->instance_uniform_buffer.buffer,
-                               offset, range, 0, &local_uniform_object)) {
-    log_error("Failed to load instance uniform buffer data");
-    return false;
+    uint32_t use = data->instance_ubo_size;
+    if (use > range)
+      use = range;
+    if (!vulkan_buffer_load_data(state,
+                                 &shader_object->instance_uniform_buffer.buffer,
+                                 offset, use, 0, data->instance_ubo_data)) {
+      log_error("Failed to load instance uniform buffer data (raw)");
+      return false;
+    }
   }
 
   if (instance_state->descriptor_states[descriptor_index]
@@ -564,12 +570,13 @@ bool8_t vulkan_shader_update_instance(
   }
   descriptor_index++;
 
-  const uint32_t sampler_count = 1;
+  const uint32_t sampler_count = shader_object->instance_texture_count;
   for (uint32_t sampler_index = 0; sampler_index < sampler_count;
        sampler_index++) {
     struct s_TextureHandle *texture = NULL;
-    if (material && material->texture0_enabled) {
-      texture = (struct s_TextureHandle *)material->texture0;
+    if (material && sampler_index < material->texture_count &&
+        material->textures_enabled[sampler_index]) {
+      texture = (struct s_TextureHandle *)material->textures[sampler_index];
     }
     if (texture == NULL || texture->texture.image.handle == VK_NULL_HANDLE) {
       // No texture bound; skip image/sampler updates
@@ -578,10 +585,12 @@ bool8_t vulkan_shader_update_instance(
 
     VulkanTexture *texture_object = &texture->texture;
 
-    // Binding 1: SAMPLED_IMAGE (image view + layout)
+    // Binding (1+sampler_index): SAMPLED_IMAGE (image view + layout)
     {
+      uint32_t binding_image = 1 + sampler_index;
       uint32_t *image_desc_generation =
-          &instance_state->descriptor_states[1].generations[image_index];
+          &instance_state->descriptor_states[binding_image]
+               .generations[image_index];
 
       if (*image_desc_generation != texture->description.generation ||
           *image_desc_generation == VKR_INVALID_ID) {
@@ -594,7 +603,7 @@ bool8_t vulkan_shader_update_instance(
         descriptor_writes[descriptor_count] = (VkWriteDescriptorSet){
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet = local_descriptor,
-            .dstBinding = 1,
+            .dstBinding = binding_image,
             .dstArrayElement = 0,
             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
             .descriptorCount = 1,
@@ -606,10 +615,12 @@ bool8_t vulkan_shader_update_instance(
       }
     }
 
-    // Binding 2: SAMPLER (sampler only)
+    // Binding (1+sampler_count+sampler_index): SAMPLER (sampler only)
     {
+      uint32_t binding_sampler = 1 + sampler_count + sampler_index;
       uint32_t *sampler_desc_generation =
-          &instance_state->descriptor_states[2].generations[image_index];
+          &instance_state->descriptor_states[binding_sampler]
+               .generations[image_index];
 
       if (*sampler_desc_generation != texture->description.generation ||
           *sampler_desc_generation == VKR_INVALID_ID) {
@@ -622,7 +633,7 @@ bool8_t vulkan_shader_update_instance(
         descriptor_writes[descriptor_count] = (VkWriteDescriptorSet){
             .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
             .dstSet = local_descriptor,
-            .dstBinding = 2,
+            .dstBinding = binding_sampler,
             .dstArrayElement = 0,
             .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
             .descriptorCount = 1,

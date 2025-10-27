@@ -197,7 +197,7 @@ struct s_BufferHandle {
   VkrBufferDescription description;
 };
 
-#define VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT 3
+#define VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT 8
 typedef struct VulkanShaderObjectDescriptorState {
   // Per-frame descriptor generation tracking; length == frame_count
   uint32_t *generations;
@@ -241,6 +241,8 @@ typedef struct VulkanShaderObject {
   uint64_t instance_ubo_size;
   uint64_t instance_ubo_stride;
   uint64_t push_constant_size;
+  uint32_t global_texture_count;
+  uint32_t instance_texture_count;
 } VulkanShaderObject;
 
 struct s_GraphicsPipeline {
