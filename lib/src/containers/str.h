@@ -148,6 +148,23 @@ bool8_t string8_equalsi(const String8 *str1, const String8 *str2);
 void string8_trim(String8 *s);
 
 /**
+ * @brief Check if a string equals a null-terminated C-string.
+ * @param str The string to check.
+ * @param cstr The null-terminated C-string to compare.
+ * @return True if the string equals the C-string, false otherwise.
+ */
+bool8_t vkr_string8_equals_cstr(const String8 *str, const char *cstr);
+
+/**
+ * @brief Check if a string equals a null-terminated C-string ignoring case.
+ * @param str The string to check.
+ * @param cstr The null-terminated C-string to compare.
+ * @return True if the string equals the C-string ignoring case, false
+ * otherwise.
+ */
+bool8_t vkr_string8_equals_cstr_i(const String8 *str, const char *cstr);
+
+/**
  * @brief Destroy a string of 8-bit characters.
  * @param str The string to destroy.
  */

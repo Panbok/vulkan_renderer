@@ -236,6 +236,39 @@ String8 string8_duplicate(Arena *arena, const String8 *str) {
   return result;
 }
 
+bool8_t vkr_string8_equals_cstr(const String8 *str, const char *cstr) {
+  if (!str || !str->str || !cstr) {
+    return false_v;
+  }
+
+  uint64_t cstr_len = (uint64_t)strlen(cstr);
+  if (str->length != cstr_len) {
+    return false_v;
+  }
+
+  return memcmp(str->str, cstr, str->length) == 0;
+}
+
+bool8_t vkr_string8_equals_cstr_i(const String8 *str, const char *cstr) {
+  if (!str || !str->str || !cstr) {
+    return false_v;
+  }
+
+  uint64_t cstr_len = (uint64_t)strlen(cstr);
+  if (str->length != cstr_len) {
+    return false_v;
+  }
+
+  for (uint64_t i = 0; i < str->length; i++) {
+    if (tolower((unsigned char)str->str[i]) !=
+        tolower((unsigned char)cstr[i])) {
+      return false_v;
+    }
+  }
+
+  return true_v;
+}
+
 /////////////////////
 // Native CString
 /////////////////////
