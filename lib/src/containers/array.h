@@ -35,6 +35,7 @@
 
 #include "containers/str.h"
 #include "core/logger.h"
+#include "defines.h"
 #include "memory/arena.h"
 
 #define ArrayConstructor(type, name)                                           \
@@ -133,3 +134,4 @@ Array(uint64_t);
 Array(float32_t);
 Array(float64_t);
 Array(String8);
+Array(bool8_t);

@@ -188,3 +188,5 @@ typedef enum VkrOccupancyState {
 #define VkrHashTable(type) VkrHashTableConstructor(type, type)
 
 VkrHashTable(uint8_t);
+VkrHashTable(uint16_t);
+VkrHashTable(uint32_t);

@@ -237,9 +237,9 @@ String8 string8_duplicate(Arena *arena, const String8 *str) {
 }
 
 bool8_t vkr_string8_equals_cstr(const String8 *str, const char *cstr) {
-  if (!str || !str->str || !cstr) {
-    return false_v;
-  }
+  assert(str != NULL && "String is NULL");
+  assert(str->str != NULL && "String data is NULL");
+  assert(cstr != NULL && "C string is NULL");
 
   uint64_t cstr_len = (uint64_t)strlen(cstr);
   if (str->length != cstr_len) {
@@ -250,9 +250,9 @@ bool8_t vkr_string8_equals_cstr(const String8 *str, const char *cstr) {
 }
 
 bool8_t vkr_string8_equals_cstr_i(const String8 *str, const char *cstr) {
-  if (!str || !str->str || !cstr) {
-    return false_v;
-  }
+  assert(str != NULL && "String is NULL");
+  assert(str->str != NULL && "String data is NULL");
+  assert(cstr != NULL && "C string is NULL");
 
   uint64_t cstr_len = (uint64_t)strlen(cstr);
   if (str->length != cstr_len) {
