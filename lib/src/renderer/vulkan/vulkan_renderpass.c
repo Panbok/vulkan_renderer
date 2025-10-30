@@ -1,8 +1,6 @@
 #include "vulkan_renderpass.h"
 #include "defines.h"
 
-// todo: for now we are only supporting a single render pass (main render pass),
-// but we should support multiple render passes in the future
 bool8_t vulkan_renderpass_create(VulkanBackendState *state,
                                  VulkanRenderPass *out_render_pass,
                                  Vec2 position, Vec4 color, float32_t w,

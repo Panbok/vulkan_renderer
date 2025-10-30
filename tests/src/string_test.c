@@ -223,6 +223,20 @@ static void test_str8_duplicate_empty(void) {
   printf("  test_str8_duplicate_empty PASSED\n");
 }
 
+static void test_string8_equals_cstr(void) {
+  printf("  Running test_string8_equals_cstr...\n");
+  String8 str = string8_lit("Hello, World!");
+  assert(vkr_string8_equals_cstr(&str, "Hello, World!"));
+  printf("  test_string8_equals_cstr PASSED\n");
+}
+
+static void test_string8_equals_cstr_i(void) {
+  printf("  Running test_string8_equals_cstr_i...\n");
+  String8 str = string8_lit("hello, world!");
+  assert(vkr_string8_equals_cstr_i(&str, "Hello, World!"));
+  printf("  test_string8_equals_cstr_i PASSED\n");
+}
+
 /////////////////////
 // CString Tests
 /////////////////////
@@ -428,6 +442,8 @@ bool32_t run_string_tests(void) {
   test_str8_trim();
   test_str8_duplicate();
   test_str8_duplicate_empty();
+  test_string8_equals_cstr();
+  test_string8_equals_cstr_i();
 
   // CString tests
   test_cstring_equals();
