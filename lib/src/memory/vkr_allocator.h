@@ -75,10 +75,16 @@ typedef struct VkrAllocator {
  * @param allocator The allocator to use.
  * @param size The size of the memory to allocate.
  * @param tag The tag to associate with the allocation.
+ * @param alloc_line The line number of the allocation.
+ * @param alloc_file The file name of the allocation.
  * @return Pointer to the allocated memory, or NULL on failure.
  */
-void *vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
-                          VkrAllocatorMemoryTag tag);
+void *_vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
+                           VkrAllocatorMemoryTag tag, uint32_t alloc_line,
+                           const char *alloc_file);
+
+#define vkr_allocator_alloc(allocator, size, tag)                              \
+  _vkr_allocator_alloc(allocator, size, tag, __LINE__, __FILE__)
 
 /**
  * @brief Frees memory from the allocator.

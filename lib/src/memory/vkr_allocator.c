@@ -95,13 +95,16 @@ vkr_allocator_format_statistics(VkrAllocator *allocator,
   return result_str;
 }
 
-void *vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
-                          VkrAllocatorMemoryTag tag) {
+void *_vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
+                           VkrAllocatorMemoryTag tag, uint32_t alloc_line,
+                           const char *alloc_file) {
   assert_log(allocator != NULL, "Allocator must not be NULL");
   assert_log(allocator->alloc != NULL, "Allocator->alloc must be set");
   assert_log(size > 0, "Size must be greater than 0");
   assert_log(tag < VKR_ALLOCATOR_MEMORY_TAG_MAX,
              "Tag must be less than VKR_ALLOCATOR_MEMORY_TAG_MAX");
+  assert_log(alloc_line > 0, "Alloc line must be greater than 0");
+  assert_log(alloc_file != NULL, "Alloc file must not be NULL");
 
   // Global counters
   g_vkr_allocator_stats.total_allocs++;
@@ -113,9 +116,10 @@ void *vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
   allocator->stats.tagged_allocs[tag] += size;
   allocator->stats.total_allocated += size;
 
-  log_debug("Allocated (%llu bytes) from allocator - [%s] for tag - [%s]",
+  log_debug("Allocated (%llu bytes) from allocator - [%s] for tag - [%s] at "
+            "line - [%d] in file - [%s]",
             (unsigned long long)size, VkrAllocatorTypeNames[allocator->type],
-            VkrAllocatorMemoryTagNames[tag]);
+            VkrAllocatorMemoryTagNames[tag], alloc_line, alloc_file);
 
   return allocator->alloc(allocator->ctx, size, tag);
 }
