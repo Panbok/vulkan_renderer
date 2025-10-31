@@ -117,8 +117,8 @@ void *_vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
   allocator->stats.total_allocated += size;
 
   log_debug("Allocated (%llu bytes) from allocator - [%s] for tag - [%s] at "
-            "line - [%d] in file - [%s]",
-            (unsigned long long)size, VkrAllocatorTypeNames[allocator->type],
+            "line - [%u] in file - [%s]",
+            (uint64_t)size, VkrAllocatorTypeNames[allocator->type],
             VkrAllocatorMemoryTagNames[tag], alloc_line, alloc_file);
 
   return allocator->alloc(allocator->ctx, size, tag);
