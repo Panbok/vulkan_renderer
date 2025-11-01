@@ -132,46 +132,68 @@ void file_close(FileHandle *handle) {
 
 FileError file_read_line(FileHandle *handle, Arena *arena, Arena *line_arena,
                          uint64_t max_line_length, String8 *out_line) {
-  assert_log(handle != NULL, "handle is NULL");
-  assert_log(arena != NULL, "arena is NULL");
-  assert_log(line_arena != NULL, "line_arena is NULL");
-  assert_log(
-      line_arena != arena,
-      "line_arena and arena must be different to avoid memory conflicts");
-  assert_log(out_line != NULL, "out_line is NULL");
-  assert_log(max_line_length > 0, "max_line_length must be greater than 0");
+  assert(handle != NULL && "File handle is NULL");
+  assert(out_line != NULL && "Out line is NULL");
 
-  if (handle->handle) {
-    Scratch line_scratch = scratch_create(line_arena);
-    char *buffer = (char *)arena_alloc(line_scratch.arena, max_line_length,
-                                       ARENA_MEMORY_TAG_STRING);
-    if (fgets(buffer, max_line_length, (FILE *)handle->handle) != NULL) {
-      out_line->length = string_length(buffer);
-      // Check if line was truncated (no newline at end and not EOF)
-      bool truncated = (out_line->length == max_line_length - 1 &&
-                        buffer[out_line->length - 1] != '\n' &&
-                        !feof((FILE *)handle->handle));
-      if (truncated) {
-        scratch_destroy(line_scratch, ARENA_MEMORY_TAG_STRING);
-        return FILE_ERROR_LINE_TOO_LONG;
-      }
-
-      out_line->str = (uint8_t *)arena_alloc(arena, out_line->length + 1,
-                                             ARENA_MEMORY_TAG_STRING);
-      string_copy((char *)out_line->str, buffer);
-      scratch_destroy(line_scratch, ARENA_MEMORY_TAG_STRING);
-      return FILE_ERROR_NONE;
-    } else {
-      scratch_destroy(line_scratch, ARENA_MEMORY_TAG_STRING);
-      if (feof((FILE *)handle->handle)) {
-        return FILE_ERROR_EOF; // Assuming this error code exists
-      } else if (ferror((FILE *)handle->handle)) {
-        return FILE_ERROR_IO_ERROR;
-      }
-    }
+  if (!handle->handle) {
+    return FILE_ERROR_INVALID_HANDLE;
   }
 
-  return FILE_ERROR_INVALID_HANDLE;
+  // If the same arena is passed for both, fall back to a scratch copy to avoid
+  // conflicts
+  bool8_t same_arena = (arena == line_arena);
+  Scratch scratch = {0};
+  Arena *target_arena = line_arena;
+  if (same_arena) {
+    scratch = scratch_create(arena);
+    target_arena = scratch.arena;
+  }
+
+  // Read into a temporary dynamic buffer
+  uint64_t capacity = max_line_length + 1; // include terminator
+  uint8_t *buf =
+      (uint8_t *)arena_alloc(target_arena, capacity, ARENA_MEMORY_TAG_STRING);
+  if (!buf) {
+    if (same_arena)
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    return FILE_ERROR_IO_ERROR;
+  }
+
+  uint64_t len = 0;
+  int ch = 0;
+  while (len < max_line_length) {
+    ch = fgetc((FILE *)handle->handle);
+    if (ch == EOF)
+      break;
+    buf[len++] = (uint8_t)ch;
+    if (ch == '\n')
+      break;
+  }
+
+  if (len == 0 && ch == EOF) {
+    if (same_arena)
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    return FILE_ERROR_EOF;
+  }
+
+  buf[len] = '\0';
+
+  // If we used scratch (same_arena), duplicate into the provided arena
+  if (same_arena) {
+    uint8_t *dup =
+        (uint8_t *)arena_alloc(arena, len + 1, ARENA_MEMORY_TAG_STRING);
+    if (!dup) {
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+      return FILE_ERROR_IO_ERROR;
+    }
+    MemCopy(dup, buf, len + 1);
+    *out_line = (String8){.str = dup, .length = len};
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+  } else {
+    *out_line = (String8){.str = buf, .length = len};
+  }
+
+  return FILE_ERROR_NONE;
 }
 
 FileError file_write_line(FileHandle *handle, const String8 *text) {
