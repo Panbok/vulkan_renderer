@@ -34,7 +34,7 @@ ConstantBuffer<PushConstantsObject> push_constants;
 
 struct VertexInput
 {
-    [[vk::location(0)]] float3 position : POSITION;
+    [[vk::location(0)]] float2 position : POSITION;
     [[vk::location(1)]] float2 texcoord : TEXCOORD;
 };
 
@@ -49,7 +49,7 @@ VertexOutput vertexMain(VertexInput input)
 {
     VertexOutput output;
     
-    float4 worldPos = mul(push_constants.model, float4(input.position, 1.0));
+    float4 worldPos = mul(push_constants.model, float4(input.position, 0.0, 1.0));
     float4 viewPos = mul(ubo.view, worldPos);
     float4 clipPos = mul(ubo.projection, viewPos);
 
