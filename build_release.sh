@@ -13,7 +13,8 @@ set -e # Exit early if any commands fail
     exit 1
   fi
   
-  # Check if any .slang files exist
+  # Check if any .slang files exist in shaders subdirectory
+  cd shaders 2>/dev/null || exit 0
   if ls *.slang >/dev/null 2>&1; then
     for file in *.slang; do
       echo "Compiling $file"
@@ -23,7 +24,7 @@ set -e # Exit early if any commands fail
     echo "No .slang files found to compile"
   fi
   
-  cd ..
+  cd ../..
 
   echo "Building vulkan_renderer (Release)"
   cd "$(dirname "$0")" # Ensure compile steps are run within the repository directory
@@ -44,8 +45,8 @@ set -e # Exit early if any commands fail
 
   echo "Copying shaders to release build directory"
   mkdir -p build_release/app/assets
-  if ls assets/*.spv >/dev/null 2>&1; then
-    cp -R assets/*.spv build_release/app/assets
+  if ls assets/shaders/*.spv >/dev/null 2>&1; then
+    cp -R assets/shaders/*.spv build_release/app/assets
   else
     echo "No .spv files to copy – skipping"
   fi

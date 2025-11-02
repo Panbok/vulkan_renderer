@@ -1,0 +1,48 @@
+# Default UI Shader Configuration
+# This shader is used for rendering 2D UI elements (sprites, text, panels)
+# with optional texture and color tinting.
+
+version=1.0
+name=shader.default.ui
+renderpass=renderpass.default.ui
+stages=vertex,fragment
+stagefiles=assets/shaders/default.ui.spv
+use_instance=1
+use_local=1
+vertex_layout=GEOMETRY_VERTEX_LAYOUT_POSITION2_TEXCOORD
+
+# ============================================================================
+# Vertex Attributes (2D position + UV coordinates)
+# ============================================================================
+# Positions are 2D for UI
+attribute=vec2,in_position   # Location 0, offset 0, size 8 (screen space pos)
+attribute=vec2,in_texcoord   # Location 1, offset 8, size 8 (texture coords)
+# Total stride: 16 bytes per vertex (aligned)
+
+# ============================================================================
+# Uniforms
+# ============================================================================
+
+# Global uniforms (orthographic projection for UI)
+uniform=mat4,0,projection    # Orthographic projection (2D)
+uniform=mat4,0,view          # View matrix (typically identity for UI)
+
+# Instance uniforms (per UI element/widget)
+uniform=vec4,1,diffuse_color    # UI element color/tint
+uniform=samp,1,diffuse_texture  # UI texture (atlas, icon, etc.)
+
+# Local uniforms (per UI element transform)
+uniform=mat4,2,model         # 2D transform (position, scale, rotation)
+
+# ============================================================================
+# Computed Layout
+# ============================================================================
+# Attributes:
+#   stride = 16 bytes
+#
+# Global UBO: 256 bytes (same as world shader)
+# Instance UBO: 256 bytes (same as world shader)
+# Push Constants: 64 bytes (same as world shader)
+#
+# Note: Identical uniform layout to world shader allows sharing backend code
+

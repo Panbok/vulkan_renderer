@@ -15,7 +15,8 @@ BUILD_TYPE="${1:-Debug}"
     exit 1
   fi
 
-  # Check if any .slang files exist
+  # Check if any .slang files exist in shaders subdirectory
+  cd shaders 2>/dev/null || exit 0
   if ls *.slang >/dev/null 2>&1; then
     for file in *.slang; do
       echo "Compiling $file"
@@ -25,7 +26,7 @@ BUILD_TYPE="${1:-Debug}"
     echo "No .slang files found to compile"
   fi
 
-  cd ..
+  cd ../..
 
   echo "Building vulkan_renderer (${BUILD_TYPE})"
   cd "$(dirname "$0")"
@@ -50,8 +51,8 @@ BUILD_TYPE="${1:-Debug}"
 
   echo "Copying shaders to build/app/assets"
   mkdir -p build/app/assets
-  if ls assets/*.spv >/dev/null 2>&1; then
-    cp -R assets/*.spv build/app/assets
+  if ls assets/shaders/*.spv >/dev/null 2>&1; then
+    cp -R assets/shaders/*.spv build/app/assets
   else
     echo "No .spv files to copy – skipping"
   fi

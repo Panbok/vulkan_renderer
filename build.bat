@@ -23,14 +23,18 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
-dir *.slang >nul 2>&1
-if %errorlevel% equ 0 (
-    for %%f in (*.slang) do (
-        echo Compiling %%f
-        slangc -target spirv -o "%%~nf.spv" "%%f"
+pushd shaders 2>nul
+if not errorlevel 1 (
+    dir *.slang >nul 2>&1
+    if %errorlevel% equ 0 (
+        for %%f in (*.slang) do (
+            echo Compiling %%f
+            slangc -target spirv -o "%%~nf.spv" "%%f"
+        )
+    ) else (
+        echo No .slang files found to compile
     )
-) else (
-    echo No .slang files found to compile
+    popd
 )
 popd
 
@@ -68,9 +72,9 @@ echo Copying shaders to build/app directory
 if not exist build\app md build\app
 if not exist build\app\assets md build\app\assets
 
-dir assets\*.spv >nul 2>&1
+dir assets\shaders\*.spv >nul 2>&1
 if %errorlevel% equ 0 (
-    copy /Y assets\*.spv build\app\assets\ >nul
+    copy /Y assets\shaders\*.spv build\app\assets\ >nul
 ) else (
     echo No .spv files to copy to build/app - skipping
 )

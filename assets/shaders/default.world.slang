@@ -21,9 +21,11 @@ Texture2D<float4> texture;
 [[vk::binding(0, 0)]]
 ConstantBuffer<UniformBufferObject> ubo;
 
+// Instance UBO (set 1, binding 0)
 [[vk::binding(0, 1)]]
 ConstantBuffer<LocalUniformObject> local_ubo;
 
+// Sampler in the same instance set: set 1, binding 2 (after image at binding 1)
 [[vk::binding(2, 1)]]
 SamplerState sampler;
 

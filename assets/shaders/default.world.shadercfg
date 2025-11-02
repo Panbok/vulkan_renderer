@@ -1,0 +1,67 @@
+# Default World Shader Configuration
+# This shader is used for rendering 3D objects in the world with basic Phong-style lighting
+# and a single diffuse texture.
+
+version=1.0
+name=shader.default.world
+renderpass=renderpass.default.world
+stages=vertex,fragment
+stagefiles=assets/shaders/default.world.spv
+use_instance=1
+use_local=1
+vertex_layout=GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD
+
+# ============================================================================
+# Vertex Attributes (tightly packed, interleaved)
+# ============================================================================
+# Location assigned in declaration order (0, 1, 2, ...)
+# Offsets are cumulative: vec3=12 bytes, vec2=8 bytes
+# Total stride: 20 bytes per vertex
+
+attribute=vec3,in_position   # Location 0, offset 0,  size 12
+attribute=vec2,in_texcoord   # Location 1, offset 12, size 8
+
+# ============================================================================
+# Uniforms
+# ============================================================================
+# Format: uniform=type,scope,name
+# Scopes: 0=global (per-frame), 1=instance (per-material), 2=local (per-object)
+# Types: float, vec2, vec3, vec4, mat4, samp (sampler)
+
+# Global uniforms (descriptor set 0, binding 0 - UBO)
+# Updated once per frame, shared across all materials
+uniform=mat4,0,view          # Camera view matrix
+uniform=mat4,0,projection    # Camera projection matrix
+
+# Instance uniforms (descriptor set 1)
+# Updated per material, each material gets its own descriptor set
+uniform=vec4,1,diffuse_color    # Material diffuse color (tint)
+uniform=samp,1,diffuse_texture  # Material diffuse texture (slot 0)
+
+# Local uniforms (push constants)
+# Updated per draw call (per object in the world)
+uniform=mat4,2,model         # Object model matrix (transform)
+
+# ============================================================================
+# Computed Layout (for reference, calculated by loader)
+# ============================================================================
+# Attributes:
+#   stride = 20 bytes
+#
+# Global UBO (std140):
+#   view:       offset=0,  size=64 (mat4)
+#   projection: offset=64, size=64 (mat4)
+#   → ubo_size = 128 bytes
+#   → ubo_stride = align_up(128, 256) = 256 bytes
+#
+# Instance UBO (std140):
+#   diffuse_color: offset=0, size=16 (vec4)
+#   → ubo_size = 16 bytes  
+#   → ubo_stride = align_up(16, 256) = 256 bytes
+#   instance_texture_count = 1 (diffuse_texture)
+#
+# Push Constants:
+#   model: offset=0, size=64 (mat4)
+#   → push_constant_size = 64 bytes
+#   → push_constant_stride = align_up(64, 4) = 64 bytes
+
