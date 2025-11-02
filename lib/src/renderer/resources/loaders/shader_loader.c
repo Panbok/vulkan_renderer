@@ -70,6 +70,7 @@ typedef struct VkrShaderConfigParser {
 
 vkr_internal INLINE uint64_t vkr_align_up_u64(uint64_t value,
                                               uint64_t alignment) {
+  // NOTE: alignment must be a power of 2
   return (value + alignment - 1) & ~(alignment - 1);
 }
 
@@ -792,6 +793,8 @@ vkr_shader_loader_parse(String8 path, Arena *arena, Arena *scratch_arena,
     String8 key, value;
     if (!vkr_split_key_value_scratch(line_scratch.arena, &trimmed_line, &key,
                                      &value)) {
+      log_warn("Malformed key=value line %u: %.*s", parser.line_number,
+               trimmed_line.length, trimmed_line.str);
       scratch_destroy(line_scratch, ARENA_MEMORY_TAG_STRING);
       continue; // Skip malformed lines
     }
