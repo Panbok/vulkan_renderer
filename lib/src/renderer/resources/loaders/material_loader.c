@@ -1,5 +1,6 @@
 #include "renderer/resources/loaders/material_loader.h"
 #include "containers/str.h"
+#include "renderer/systems/vkr_material_system.h"
 
 vkr_global const char *mt_ext = "mt";
 
@@ -330,7 +331,7 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
     string8_trim(&key);
     string8_trim(&value);
 
-    if (string8_contains_cstr(&key, "base_color")) {
+    if (string8_contains_cstr(&key, "diffuse_texture")) {
       Scratch scratch = scratch_create(temp_arena);
       char *texture_path_cstr = (char *)arena_alloc(
           scratch.arena, value.length + 1, ARENA_MEMORY_TAG_STRING);
@@ -343,7 +344,7 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
       String8 texture_path = string8_create_from_cstr(
           (const uint8_t *)texture_path_cstr, value.length);
 
-      log_debug("Material '%s': base_color texture requested: %s",
+      log_debug("Material '%s': diffuse_texture texture requested: %s",
                 string8_cstr(&name), texture_path_cstr);
       VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
       VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
@@ -404,6 +405,22 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
                  string8_cstr(&name), string8_cstr(&value));
       }
 
+    } else if (string8_contains_cstr(&key, "shader")) {
+      // Preferred shader name (e.g., shader.default.world)
+      // Trim whitespace/newlines from the value before storing
+      char *trimmed = (char *)value.str;
+      trimmed = string_trim(trimmed);
+      uint32_t trimmed_len = (uint32_t)string_length(trimmed);
+      char *stable = (char *)arena_alloc(
+          material_system->arena, trimmed_len + 1, ARENA_MEMORY_TAG_STRING);
+      if (stable) {
+        MemCopy(stable, trimmed, (size_t)trimmed_len);
+        stable[trimmed_len] = '\0';
+        out_material->shader_name = stable;
+      } else {
+        log_warn("Material '%s': failed to allocate shader name",
+                 string8_cstr(&name));
+      }
     } else if (string8_contains_cstr(&key, "pipeline")) {
       string_trim((char *)value.str);
       uint32_t pipeline_id = vkr_get_pipeline_id_from_string((char *)value.str);

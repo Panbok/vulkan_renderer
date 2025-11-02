@@ -1,4 +1,7 @@
 #include "renderer/resources/loaders/texture_loader.h"
+#include "renderer/systems/vkr_texture_system.h"
+
+#include "stb_image.h"
 
 vkr_global const char *png_ext = "png";
 vkr_global const char *jpg_ext = "jpg";
