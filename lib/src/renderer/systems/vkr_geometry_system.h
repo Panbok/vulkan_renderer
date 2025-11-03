@@ -20,7 +20,6 @@ typedef struct VkrGeometrySystemConfig {
       default_max_vertices; // in vertices, not bytes (per layout pool default)
   uint64_t
       default_max_indices; // in indices, not bytes (per layout pool default)
-  uint32_t default_vertex_stride_bytes; // default stride for primary layout
   VkrGeometryVertexLayoutType
       primary_layout; // primary layout to initialize eagerly
 } VkrGeometrySystemConfig;
@@ -194,19 +193,26 @@ vkr_geometry_system_create_default_plane(VkrGeometrySystem *system,
                                          VkrRendererError *out_error);
 
 /**
- * @brief Allocates and fills vertex input descriptions for the given layout.
- * Memory is allocated from the provided arena. Returns stride via out_stride.
- * @param layout The layout to use
- * @param allocator The allocator to allocate the vertex input descriptions from
- * @param out_attr_count The number of attributes
- * @param out_bindings The bindings
- * @param out_attrs The attributes
- * @param out_attr_count The number of attributes
- * @param out_binding_count The number of bindings
- * @param out_stride The stride
+ * @brief Creates a default 2D plane (2x2 by default) using the
+ * POSITION2_TEXCOORD layout. Vertex format: [x, y, u, v].
  */
-void vkr_geometry_fill_vertex_input_descriptions(
-    VkrGeometryVertexLayoutType layout, VkrAllocator *allocator,
-    uint32_t *out_attr_count, VkrVertexInputAttributeDescription **out_attrs,
-    uint32_t *out_binding_count,
-    VkrVertexInputBindingDescription **out_bindings, uint32_t *out_stride);
+VkrGeometryHandle
+vkr_geometry_system_create_default_plane2d(VkrGeometrySystem *system,
+                                           float32_t width, float32_t height,
+                                           VkrRendererError *out_error);
+
+/**
+ * @brief Retrieves the vertex layout used by a geometry handle.
+ */
+bool32_t
+vkr_geometry_system_get_layout(VkrGeometrySystem *system,
+                               VkrGeometryHandle handle,
+                               VkrGeometryVertexLayoutType *out_layout);
+
+/**
+ * @brief Ensure a layout pool exists with the provided stride. Initializes a
+ *        pool if missing; errors if an existing pool has a mismatched stride.
+ */
+void vkr_geometry_system_require_layout_stride(
+    VkrGeometrySystem *system, VkrGeometryVertexLayoutType layout,
+    uint32_t stride_bytes, VkrRendererError *out_error);

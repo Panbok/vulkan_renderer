@@ -132,23 +132,13 @@ vkr_geometry_get_pool(VkrGeometrySystem *system,
   assert_log(out_error != NULL, "Out error is NULL");
 
   VkrGeometryPool *pool = &system->pools[layout];
-  if (!pool->initialized) {
-    // Determine stride for this layout if not primary
-    uint32_t attr_count = 0, binding_count = 0, stride = 0;
-    VkrVertexInputAttributeDescription *attrs = NULL;
-    VkrVertexInputBindingDescription *bindings = NULL;
-    Scratch mark = scratch_create(system->arena);
-    vkr_geometry_fill_vertex_input_descriptions(
-        layout, &system->allocator, &attr_count, &attrs, &binding_count,
-        &bindings, &stride);
-    scratch_destroy(mark, ARENA_MEMORY_TAG_RENDERER);
-
-    if (!vkr_geometry_pool_init(system, layout, stride, out_error)) {
-      return NULL;
-    }
+  if (pool->initialized) {
+    *out_error = VKR_RENDERER_ERROR_NONE;
+    return pool;
   }
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return pool;
+  // Pool not yet configured; caller must require a stride first
+  *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  return NULL;
 }
 
 vkr_internal VkrGeometry *geometry_acquire_slot(VkrGeometrySystem *system,
@@ -243,15 +233,6 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
     system->pools[layout_type].initialized = false_v;
     system->pools[layout_type].layout = layout_type;
     system->pools[layout_type].vertex_stride_bytes = 0;
-  }
-
-  // Eagerly initialize primary layout pool using provided stride
-  if (config->default_vertex_stride_bytes > 0) {
-    if (!vkr_geometry_pool_init(system, config->primary_layout,
-                                config->default_vertex_stride_bytes,
-                                out_error)) {
-      return false_v;
-    }
   }
 
   *out_error = VKR_RENDERER_ERROR_NONE;
@@ -573,8 +554,6 @@ void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
                             0);
 }
 
-typedef VkrInterleavedVertex_PositionTexcoord GeoVertexPT;
-
 VkrGeometryHandle vkr_geometry_system_create_default_cube(
     VkrGeometrySystem *system, float32_t width, float32_t height,
     float32_t depth, VkrRendererError *out_error) {
@@ -585,62 +564,206 @@ VkrGeometryHandle vkr_geometry_system_create_default_cube(
   float32_t hh = height * 0.5f;
   float32_t hd = depth * 0.5f;
 
-  GeoVertexPT verts[24] = {0};
-  uint32_t vert_write_index = 0;
+  float32_t verts[24 * 8] = {0};
+  uint32_t w = 0;
   // Front
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, hd),
-                                            .texcoord = vec2_new(0, 0)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, -hh, hd),
-                                            .texcoord = vec2_new(1, 0)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, hh, hd),
-                                            .texcoord = vec2_new(1, 1)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, hh, hd),
-                                            .texcoord = vec2_new(0, 1)};
+  verts[w++] = -hw;
+  verts[w++] = -hh;
+  verts[w++] = hd;
+  verts[w++] = 0.0f; // pad
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = hw;
+  verts[w++] = -hh;
+  verts[w++] = hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = hw;
+  verts[w++] = hh;
+  verts[w++] = hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = -hw;
+  verts[w++] = hh;
+  verts[w++] = hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
   // Back
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, -hd),
-                                            .texcoord = vec2_new(1, 0)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, -hh, -hd),
-                                            .texcoord = vec2_new(0, 0)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, hh, -hd),
-                                            .texcoord = vec2_new(0, 1)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, hh, -hd),
-                                            .texcoord = vec2_new(1, 1)};
+  verts[w++] = -hw;
+  verts[w++] = -hh;
+  verts[w++] = -hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = hw;
+  verts[w++] = -hh;
+  verts[w++] = -hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = hw;
+  verts[w++] = hh;
+  verts[w++] = -hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = -hw;
+  verts[w++] = hh;
+  verts[w++] = -hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
   // Left
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, -hd),
-                                            .texcoord = vec2_new(0, 0)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, hd),
-                                            .texcoord = vec2_new(1, 0)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, hh, hd),
-                                            .texcoord = vec2_new(1, 1)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, hh, -hd),
-                                            .texcoord = vec2_new(0, 1)};
+  verts[w++] = -hw;
+  verts[w++] = -hh;
+  verts[w++] = -hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = -hw;
+  verts[w++] = -hh;
+  verts[w++] = hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = -hw;
+  verts[w++] = hh;
+  verts[w++] = hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = -hw;
+  verts[w++] = hh;
+  verts[w++] = -hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
   // Right
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, -hh, -hd),
-                                            .texcoord = vec2_new(1, 0)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, -hh, hd),
-                                            .texcoord = vec2_new(0, 0)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, hh, hd),
-                                            .texcoord = vec2_new(0, 1)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, hh, -hd),
-                                            .texcoord = vec2_new(1, 1)};
+  verts[w++] = hw;
+  verts[w++] = -hh;
+  verts[w++] = -hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = hw;
+  verts[w++] = -hh;
+  verts[w++] = hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = hw;
+  verts[w++] = hh;
+  verts[w++] = hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = hw;
+  verts[w++] = hh;
+  verts[w++] = -hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
   // Top
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, hh, hd),
-                                            .texcoord = vec2_new(0, 1)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, hh, hd),
-                                            .texcoord = vec2_new(1, 1)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, hh, -hd),
-                                            .texcoord = vec2_new(1, 0)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, hh, -hd),
-                                            .texcoord = vec2_new(0, 0)};
+  verts[w++] = -hw;
+  verts[w++] = hh;
+  verts[w++] = hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = hw;
+  verts[w++] = hh;
+  verts[w++] = hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = hw;
+  verts[w++] = hh;
+  verts[w++] = -hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = -hw;
+  verts[w++] = hh;
+  verts[w++] = -hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
   // Bottom
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, -hd),
-                                            .texcoord = vec2_new(0, 0)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, -hh, -hd),
-                                            .texcoord = vec2_new(1, 0)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, -hh, hd),
-                                            .texcoord = vec2_new(1, 1)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, hd),
-                                            .texcoord = vec2_new(0, 1)};
+  verts[w++] = -hw;
+  verts[w++] = -hh;
+  verts[w++] = -hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = hw;
+  verts[w++] = -hh;
+  verts[w++] = -hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = hw;
+  verts[w++] = -hh;
+  verts[w++] = hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = -hw;
+  verts[w++] = -hh;
+  verts[w++] = hd;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
 
   uint32_t indices[36] = {
       0,  1,  2,  2,  3,  0,  // Front
@@ -671,16 +794,40 @@ vkr_geometry_system_create_default_plane(VkrGeometrySystem *system,
   float32_t hw = width * 0.5f;
   float32_t hh = height * 0.5f;
 
-  GeoVertexPT verts[4] = {0};
-  uint32_t vert_write_index = 0;
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, -hh, 0),
-                                            .texcoord = vec2_new(0, 0)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, -hh, 0),
-                                            .texcoord = vec2_new(1, 0)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(hw, hh, 0),
-                                            .texcoord = vec2_new(1, 1)};
-  verts[vert_write_index++] = (GeoVertexPT){.position = vec3_new(-hw, hh, 0),
-                                            .texcoord = vec2_new(0, 1)};
+  float32_t verts[4 * 8] = {0};
+  uint32_t w = 0;
+  verts[w++] = -hw;
+  verts[w++] = -hh;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = hw;
+  verts[w++] = -hh;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = hw;
+  verts[w++] = hh;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = -hw;
+  verts[w++] = hh;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
 
   // counter-clockwise winding
   uint32_t indices[6] = {0, 2, 1, 0, 3, 2};
@@ -695,198 +842,93 @@ vkr_geometry_system_create_default_plane(VkrGeometrySystem *system,
   return h;
 }
 
-void vkr_geometry_fill_vertex_input_descriptions(
-    VkrGeometryVertexLayoutType layout, VkrAllocator *allocator,
-    uint32_t *out_attr_count, VkrVertexInputAttributeDescription **out_attrs,
-    uint32_t *out_binding_count,
-    VkrVertexInputBindingDescription **out_bindings, uint32_t *out_stride) {
-  assert_log(allocator != NULL, "Allocator is NULL");
-  assert_log(out_attr_count != NULL && out_attrs != NULL, "Attr outputs NULL");
-  assert_log(out_binding_count != NULL && out_bindings != NULL,
-             "Binding outputs NULL");
-  assert_log(out_stride != NULL, "Stride output NULL");
+VkrGeometryHandle
+vkr_geometry_system_create_default_plane2d(VkrGeometrySystem *system,
+                                           float32_t width, float32_t height,
+                                           VkrRendererError *out_error) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
 
-  switch (layout) {
-  case GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD: {
-    *out_attr_count = 2;
-    *out_binding_count = 1;
-    *out_stride = sizeof(VkrInterleavedVertex_PositionTexcoord);
-    VkrVertexInputAttributeDescription *attrs = vkr_allocator_alloc(
-        allocator,
-        sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
-        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    VkrVertexInputBindingDescription *bindings = vkr_allocator_alloc(
-        allocator,
-        sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
-        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    attrs[0] = (VkrVertexInputAttributeDescription){
-        .location = 0,
-        .binding = 0,
-        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(VkrInterleavedVertex_PositionTexcoord, position)};
-    attrs[1] = (VkrVertexInputAttributeDescription){
-        .location = 1,
-        .binding = 0,
-        .format = VKR_VERTEX_FORMAT_R32G32_SFLOAT,
-        .offset = offsetof(VkrInterleavedVertex_PositionTexcoord, texcoord)};
-    bindings[0] = (VkrVertexInputBindingDescription){
-        .binding = 0,
-        .stride = *out_stride,
-        .input_rate = VKR_VERTEX_INPUT_RATE_VERTEX};
-    *out_attrs = attrs;
-    *out_bindings = bindings;
-    break;
+  float32_t hw = width * 0.5f;
+  float32_t hh = height * 0.5f;
+
+  // [x, y, u, v]
+  float32_t verts[4 * 4] = {0};
+  uint32_t w = 0;
+  verts[w++] = -hw;  // x
+  verts[w++] = -hh;  // y
+  verts[w++] = 0.0f; // u
+  verts[w++] = 0.0f; // v
+
+  verts[w++] = hw;
+  verts[w++] = -hh;
+  verts[w++] = 1.0f;
+  verts[w++] = 0.0f;
+
+  verts[w++] = hw;
+  verts[w++] = hh;
+  verts[w++] = 1.0f;
+  verts[w++] = 1.0f;
+
+  verts[w++] = -hw;
+  verts[w++] = hh;
+  verts[w++] = 0.0f;
+  verts[w++] = 1.0f;
+
+  uint32_t indices[6] = {0, 2, 1, 0, 3, 2};
+
+  VkrGeometryHandle h = vkr_geometry_system_create_from_interleaved(
+      system, GEOMETRY_VERTEX_LAYOUT_POSITION2_TEXCOORD, verts, 4, indices, 6,
+      false_v, string8_lit("Default UI Plane2D"), out_error);
+  return h;
+}
+
+bool32_t
+vkr_geometry_system_get_layout(VkrGeometrySystem *system,
+                               VkrGeometryHandle handle,
+                               VkrGeometryVertexLayoutType *out_layout) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  assert_log(out_layout != NULL, "Out layout is NULL");
+
+  if (handle.id == 0)
+    return false_v;
+  uint32_t idx = handle.id - 1;
+  if (idx >= system->geometries.length)
+    return false_v;
+  VkrGeometry *geom = array_get_VkrGeometry(&system->geometries, idx);
+  if (geom->generation != handle.generation || geom->id == 0)
+    return false_v;
+  *out_layout = geom->layout;
+  return true_v;
+}
+
+void vkr_geometry_system_require_layout_stride(
+    VkrGeometrySystem *system, VkrGeometryVertexLayoutType layout,
+    uint32_t stride_bytes, VkrRendererError *out_error) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  if (layout >= GEOMETRY_VERTEX_LAYOUT_COUNT || stride_bytes == 0) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return;
   }
-  case GEOMETRY_VERTEX_LAYOUT_POSITION_COLOR: {
-    *out_attr_count = 2;
-    *out_binding_count = 1;
-    *out_stride = sizeof(VkrInterleavedVertex_PositionColor);
-    VkrVertexInputAttributeDescription *attrs = vkr_allocator_alloc(
-        allocator,
-        sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
-        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    VkrVertexInputBindingDescription *bindings = vkr_allocator_alloc(
-        allocator,
-        sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
-        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    attrs[0] = (VkrVertexInputAttributeDescription){
-        .location = 0,
-        .binding = 0,
-        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(VkrInterleavedVertex_PositionColor, position)};
-    attrs[1] = (VkrVertexInputAttributeDescription){
-        .location = 1,
-        .binding = 0,
-        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(VkrInterleavedVertex_PositionColor, color)};
-    bindings[0] = (VkrVertexInputBindingDescription){
-        .binding = 0,
-        .stride = *out_stride,
-        .input_rate = VKR_VERTEX_INPUT_RATE_VERTEX};
-    *out_attrs = attrs;
-    *out_bindings = bindings;
-    break;
+
+  VkrGeometryPool *pool = &system->pools[layout];
+  if (pool->initialized) {
+    if (pool->vertex_stride_bytes != stride_bytes) {
+      log_error(
+          "Geometry pool for layout %u already initialized with stride %u; "
+          "requested stride %u",
+          (uint32_t)layout, pool->vertex_stride_bytes, stride_bytes);
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return;
+    }
+    *out_error = VKR_RENDERER_ERROR_NONE;
+    return;
   }
-  case GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_COLOR: {
-    *out_attr_count = 3;
-    *out_binding_count = 1;
-    *out_stride = sizeof(VkrInterleavedVertex_PositionNormalColor);
-    VkrVertexInputAttributeDescription *attrs = vkr_allocator_alloc(
-        allocator,
-        sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
-        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    VkrVertexInputBindingDescription *bindings = vkr_allocator_alloc(
-        allocator,
-        sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
-        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    attrs[0] = (VkrVertexInputAttributeDescription){
-        .location = 0,
-        .binding = 0,
-        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(VkrInterleavedVertex_PositionNormalColor, position)};
-    attrs[1] = (VkrVertexInputAttributeDescription){
-        .location = 1,
-        .binding = 0,
-        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(VkrInterleavedVertex_PositionNormalColor, normal)};
-    attrs[2] = (VkrVertexInputAttributeDescription){
-        .location = 2,
-        .binding = 0,
-        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(VkrInterleavedVertex_PositionNormalColor, color)};
-    bindings[0] = (VkrVertexInputBindingDescription){
-        .binding = 0,
-        .stride = *out_stride,
-        .input_rate = VKR_VERTEX_INPUT_RATE_VERTEX};
-    *out_attrs = attrs;
-    *out_bindings = bindings;
-    break;
-  }
-  case GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD: {
-    *out_attr_count = 3;
-    *out_binding_count = 1;
-    *out_stride = sizeof(VkrInterleavedVertex_PositionNormalTexcoord);
-    VkrVertexInputAttributeDescription *attrs = vkr_allocator_alloc(
-        allocator,
-        sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
-        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    VkrVertexInputBindingDescription *bindings = vkr_allocator_alloc(
-        allocator,
-        sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
-        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    attrs[0] = (VkrVertexInputAttributeDescription){
-        .location = 0,
-        .binding = 0,
-        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset =
-            offsetof(VkrInterleavedVertex_PositionNormalTexcoord, position)};
-    attrs[1] = (VkrVertexInputAttributeDescription){
-        .location = 1,
-        .binding = 0,
-        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset =
-            offsetof(VkrInterleavedVertex_PositionNormalTexcoord, normal)};
-    attrs[2] = (VkrVertexInputAttributeDescription){
-        .location = 2,
-        .binding = 0,
-        .format = VKR_VERTEX_FORMAT_R32G32_SFLOAT,
-        .offset =
-            offsetof(VkrInterleavedVertex_PositionNormalTexcoord, texcoord)};
-    bindings[0] = (VkrVertexInputBindingDescription){
-        .binding = 0,
-        .stride = *out_stride,
-        .input_rate = VKR_VERTEX_INPUT_RATE_VERTEX};
-    *out_attrs = attrs;
-    *out_bindings = bindings;
-    break;
-  }
-  case GEOMETRY_VERTEX_LAYOUT_FULL: {
-    *out_attr_count = 4;
-    *out_binding_count = 1;
-    *out_stride = sizeof(VkrInterleavedVertex_Full);
-    VkrVertexInputAttributeDescription *attrs = vkr_allocator_alloc(
-        allocator,
-        sizeof(VkrVertexInputAttributeDescription) * (*out_attr_count),
-        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    VkrVertexInputBindingDescription *bindings = vkr_allocator_alloc(
-        allocator,
-        sizeof(VkrVertexInputBindingDescription) * (*out_binding_count),
-        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    attrs[0] = (VkrVertexInputAttributeDescription){
-        .location = 0,
-        .binding = 0,
-        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(VkrInterleavedVertex_Full, position)};
-    attrs[1] = (VkrVertexInputAttributeDescription){
-        .location = 1,
-        .binding = 0,
-        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(VkrInterleavedVertex_Full, normal)};
-    attrs[2] = (VkrVertexInputAttributeDescription){
-        .location = 2,
-        .binding = 0,
-        .format = VKR_VERTEX_FORMAT_R32G32_SFLOAT,
-        .offset = offsetof(VkrInterleavedVertex_Full, texcoord)};
-    attrs[3] = (VkrVertexInputAttributeDescription){
-        .location = 3,
-        .binding = 0,
-        .format = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
-        .offset = offsetof(VkrInterleavedVertex_Full, color)};
-    bindings[0] = (VkrVertexInputBindingDescription){
-        .binding = 0,
-        .stride = *out_stride,
-        .input_rate = VKR_VERTEX_INPUT_RATE_VERTEX};
-    *out_attrs = attrs;
-    *out_bindings = bindings;
-    break;
-  }
-  default: {
-    *out_attr_count = 0;
-    *out_binding_count = 0;
-    *out_stride = 0;
-    *out_attrs = NULL;
-    *out_bindings = NULL;
-    break;
-  }
+
+  // Initialize the pool with the requested stride
+  if (!vkr_geometry_pool_init(system, layout, stride_bytes, out_error)) {
+    return;
   }
 }

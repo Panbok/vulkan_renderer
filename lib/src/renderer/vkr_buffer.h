@@ -1,64 +1,8 @@
 #pragma once
 
 #include "containers/array.h"
-#include "containers/bitset.h"
 #include "defines.h"
-#include "math/vec.h"
-#include "memory/arena.h"
-#include "renderer/resources/vkr_resources.h"
 #include "renderer/vkr_renderer.h"
-
-// =============================================================================
-// Interleaved Vertex Structures
-// =============================================================================
-
-/**
- * @brief Standard vertex format with position and color
- * This is the most basic vertex format for simple colored geometry.
- */
-typedef struct {
-  Vec3 position;
-  Vec3 color;
-} VkrInterleavedVertex_PositionColor;
-
-/**
- * @brief Standard vertex format with position, normal, and color
- * Common format for basic lit colored geometry.
- */
-typedef struct {
-  Vec3 position;
-  Vec3 normal;
-  Vec3 color;
-} VkrInterleavedVertex_PositionNormalColor;
-
-/**
- * @brief Standard vertex format with position, normal, and texture coordinates
- * Common format for textured geometry with lighting.
- */
-typedef struct {
-  Vec3 position;
-  Vec3 normal;
-  Vec2 texcoord;
-} VkrInterleavedVertex_PositionNormalTexcoord;
-
-/**
- * @brief Vertex format with position and texture coordinates only
- */
-typedef struct {
-  Vec3 position;
-  Vec2 texcoord;
-} VkrInterleavedVertex_PositionTexcoord;
-
-/**
- * @brief Full vertex format with all standard attributes
- * Complete vertex format for advanced rendering with all attributes.
- */
-typedef struct {
-  Vec3 position;
-  Vec3 normal;
-  Vec2 texcoord;
-  Vec3 color;
-} VkrInterleavedVertex_Full;
 
 // =============================================================================
 // Generic Buffer Wrappers
