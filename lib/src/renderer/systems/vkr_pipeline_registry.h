@@ -108,6 +108,12 @@ typedef struct VkrPipelineRegistry {
     uint32_t total_pipeline_binds;
     uint32_t redundant_binds_avoided;
     uint32_t total_renderables_batched;
+    // telemetry
+    uint64_t total_global_applies;
+    uint64_t total_instance_applies;
+    uint64_t total_instance_acquired;
+    uint64_t total_instance_released;
+    uint64_t total_descriptor_writes_avoided;
   } stats;
 } VkrPipelineRegistry;
 
@@ -151,19 +157,19 @@ bool8_t vkr_pipeline_registry_create_graphics_pipeline(
     String8 name, VkrPipelineHandle *out_handle, VkrRendererError *out_error);
 
 /**
- * @brief Create a pipeline automatically from material and geometry layout
+ * @brief Create a pipeline from a shader config
  * @param registry Pipeline registry
- * @param domain Pipeline domain (world, ui, etc.)
- * @param vertex_layout Geometry vertex layout type
- * @param shader_path Path to shader files
+ * @param config Shader config
+ * @param domain Pipeline domain
+ * @param vertex_layout Geometry vertex layout
  * @param name Pipeline name for lookup
  * @param out_handle Output pipeline handle
  * @param out_error Output error code
  * @return true on success, false on failure
  */
-bool8_t vkr_pipeline_registry_create_from_material_layout(
-    VkrPipelineRegistry *registry, VkrPipelineDomain domain,
-    VkrGeometryVertexLayoutType vertex_layout, String8 shader_path,
+bool8_t vkr_pipeline_registry_create_from_shader_config(
+    VkrPipelineRegistry *registry, const VkrShaderConfig *config,
+    VkrPipelineDomain domain, VkrGeometryVertexLayoutType vertex_layout,
     String8 name, VkrPipelineHandle *out_handle, VkrRendererError *out_error);
 
 /**
@@ -263,9 +269,9 @@ bool8_t vkr_pipeline_registry_bind_pipeline(VkrPipelineRegistry *registry,
  * @param out_error Output error code
  * @return true on success, false on failure
  */
-bool8_t vkr_pipeline_registry_update_global_state(
-    VkrPipelineRegistry *registry, const VkrGlobalUniformObject *global_uniform,
-    VkrRendererError *out_error);
+bool8_t vkr_pipeline_registry_update_global_state(VkrPipelineRegistry *registry,
+                                                  const void *global_uniform,
+                                                  VkrRendererError *out_error);
 
 /**
  * @brief Mark global state as dirty (needs update)
@@ -302,7 +308,8 @@ bool8_t vkr_pipeline_registry_update_local_state(
  */
 bool8_t vkr_pipeline_registry_acquire_local_state(
     VkrPipelineRegistry *registry, VkrPipelineHandle handle,
-    VkrRendererLocalStateHandle *out_local_state, VkrRendererError *out_error);
+    VkrRendererInstanceStateHandle *out_local_state,
+    VkrRendererError *out_error);
 
 /**
  * @brief Release local state for a pipeline
@@ -314,7 +321,7 @@ bool8_t vkr_pipeline_registry_acquire_local_state(
  */
 bool8_t vkr_pipeline_registry_release_local_state(
     VkrPipelineRegistry *registry, VkrPipelineHandle handle,
-    VkrRendererLocalStateHandle local_state, VkrRendererError *out_error);
+    VkrRendererInstanceStateHandle local_state, VkrRendererError *out_error);
 
 // =============================================================================
 // High-Level Rendering Interface
@@ -328,9 +335,10 @@ bool8_t vkr_pipeline_registry_release_local_state(
  * @param out_error Output error code
  * @return true on success, false on failure
  */
-bool8_t vkr_pipeline_registry_render_renderable(
-    VkrPipelineRegistry *registry, const VkrRenderable *renderable,
-    const VkrGlobalUniformObject *global_uniform, VkrRendererError *out_error);
+bool8_t vkr_pipeline_registry_render_renderable(VkrPipelineRegistry *registry,
+                                                const VkrRenderable *renderable,
+                                                const void *global_uniform,
+                                                VkrRendererError *out_error);
 
 // =============================================================================
 // Batch Rendering Interface
@@ -365,9 +373,10 @@ bool8_t vkr_pipeline_registry_add_to_batch(VkrPipelineRegistry *registry,
  * @param out_error Output error code
  * @return true on success, false on failure
  */
-bool8_t vkr_pipeline_registry_render_current_batch(
-    VkrPipelineRegistry *registry, const VkrGlobalUniformObject *global_uniform,
-    VkrRendererError *out_error);
+bool8_t
+vkr_pipeline_registry_render_current_batch(VkrPipelineRegistry *registry,
+                                           const void *global_uniform,
+                                           VkrRendererError *out_error);
 
 /**
  * @brief End the current batch and reset batch state
@@ -384,10 +393,11 @@ void vkr_pipeline_registry_end_batch(VkrPipelineRegistry *registry);
  * @param out_error Output error code
  * @return true on success, false on failure
  */
-bool8_t vkr_pipeline_registry_render_batch(
-    VkrPipelineRegistry *registry, const VkrRenderable *renderables,
-    uint32_t count, const VkrGlobalUniformObject *global_uniform,
-    VkrRendererError *out_error);
+bool8_t vkr_pipeline_registry_render_batch(VkrPipelineRegistry *registry,
+                                           const VkrRenderable *renderables,
+                                           uint32_t count,
+                                           const void *global_uniform,
+                                           VkrRendererError *out_error);
 
 // =============================================================================
 // Domain and Query Interface
@@ -416,9 +426,23 @@ bool8_t vkr_pipeline_registry_get_pipelines_by_domain(
  * @return true on success, false on failure
  */
 bool8_t vkr_pipeline_registry_get_pipeline_for_material(
-    VkrPipelineRegistry *registry, uint32_t material_pipeline_id,
-    VkrGeometryVertexLayoutType vertex_layout, VkrPipelineHandle *out_handle,
-    VkrRendererError *out_error);
+    VkrPipelineRegistry *registry, const char *shader_name,
+    uint32_t material_pipeline_id, VkrGeometryVertexLayoutType vertex_layout,
+    VkrPipelineHandle *out_handle, VkrRendererError *out_error);
+
+/**
+ * @brief Register an additional name (alias) for an existing pipeline handle
+ *        to enable lookups by alternate keys (e.g., shader name).
+ * @param registry Pipeline registry
+ * @param handle Pipeline handle
+ * @param alias Alias name
+ * @param out_error Output error code
+ * @return true on success, false on failure
+ */
+bool8_t vkr_pipeline_registry_alias_pipeline_name(VkrPipelineRegistry *registry,
+                                                  VkrPipelineHandle handle,
+                                                  String8 alias,
+                                                  VkrRendererError *out_error);
 
 // =============================================================================
 // Statistics and Debugging

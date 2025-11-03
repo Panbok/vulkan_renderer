@@ -5,6 +5,7 @@
 #include "defines.h"
 #include "memory/arena.h"
 #include "renderer/resources/vkr_resources.h"
+#include "renderer/systems/vkr_shader_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/vkr_renderer.h"
 
@@ -44,7 +45,8 @@ typedef struct VkrMaterialSystem {
   Array_uint32_t free_ids;
   uint32_t free_count;
 
-  VkrTextureSystem *texture_system; // dependency
+  VkrTextureSystem *texture_system;
+  VkrShaderSystem *shader_system;
 
   uint32_t next_free_index;
   uint32_t generation_counter;
@@ -61,10 +63,12 @@ typedef struct VkrMaterialSystem {
  * @param system The material system to initialize
  * @param arena The arena to use
  * @param texture_system The texture system to use
+ * @param shader_system The shader system to use
  * @param config The configuration for the material system
  */
 bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
                                  VkrTextureSystem *texture_system,
+                                 VkrShaderSystem *shader_system,
                                  const VkrMaterialSystemConfig *config);
 
 /**
@@ -111,35 +115,32 @@ void vkr_material_system_release(VkrMaterialSystem *system,
                                  VkrMaterialHandle handle);
 
 /**
- * @brief Updates a material's diffuse texture and Phong properties
- * @param system The material system to update the material in
- * @param handle The handle to the material to update
- * @param base_color The base color texture handle (slot: diffuse)
- * @param phong Phong lighting properties
+ * @brief Applies the global material state to the material system
+ * @param system The material system to apply the global material state to
+ * @param global_state The global material state to apply
+ * @param domain The domain to apply the global material state to
  */
-void vkr_material_system_set(VkrMaterialSystem *system,
-                             VkrMaterialHandle handle,
-                             VkrTextureHandle base_color,
-                             VkrPhongProperties phong);
+void vkr_material_system_apply_global(VkrMaterialSystem *system,
+                                      VkrGlobalMaterialState *global_state,
+                                      VkrPipelineDomain domain);
 
 /**
- * @brief Sets a single texture map on a material.
- * If texture_handle.id == 0, the slot will be disabled regardless of 'enable'.
+ * @brief Applies the instance material state to the material system
+ * @param system The material system to apply the instance material state to
+ * @param material The material to apply the instance material state to
+ * @param domain The domain to apply the instance material state to
  */
-void vkr_material_system_set_texture(VkrMaterialSystem *system,
-                                     VkrMaterialHandle handle,
-                                     VkrTextureSlot slot,
-                                     VkrTextureHandle texture_handle,
-                                     bool8_t enable);
+void vkr_material_system_apply_instance(VkrMaterialSystem *system,
+                                        const VkrMaterial *material,
+                                        VkrPipelineDomain domain);
 
 /**
- * @brief Sets all texture maps on a material at once.
- * 'enabled' may be NULL to infer enable from texture id!=0.
+ * @brief Applies the local material state to the material system
+ * @param system The material system to apply the local material state to
+ * @param local_state The local material state to apply
  */
-void vkr_material_system_set_textures(
-    VkrMaterialSystem *system, VkrMaterialHandle handle,
-    const VkrTextureHandle textures[VKR_TEXTURE_SLOT_COUNT],
-    const bool8_t enabled[VKR_TEXTURE_SLOT_COUNT]);
+void vkr_material_system_apply_local(VkrMaterialSystem *system,
+                                     VkrLocalMaterialState *local_state);
 
 /**
  * @brief Returns a pointer to the material referenced by handle if valid; NULL

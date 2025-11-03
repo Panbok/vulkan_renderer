@@ -2,10 +2,12 @@
 
 bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
                                  VkrTextureSystem *texture_system,
+                                 VkrShaderSystem *shader_system,
                                  const VkrMaterialSystemConfig *config) {
   assert_log(system != NULL, "Material system is NULL");
   assert_log(arena != NULL, "Arena is NULL");
   assert_log(texture_system != NULL, "Texture system is NULL");
+  assert_log(shader_system != NULL, "Shader system is NULL");
   assert_log(config != NULL, "Config is NULL");
 
   MemZero(system, sizeof(*system));
@@ -27,6 +29,7 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   }
 
   system->texture_system = texture_system;
+  system->shader_system = shader_system;
   system->config = *config;
   system->materials =
       array_create_VkrMaterial(system->arena, config->max_material_count);
@@ -142,87 +145,6 @@ VkrMaterialHandle vkr_material_system_acquire(VkrMaterialSystem *system,
   return (VkrMaterialHandle){.id = 0, .generation = 0};
 }
 
-void vkr_material_system_set(VkrMaterialSystem *system,
-                             VkrMaterialHandle handle,
-                             VkrTextureHandle base_color,
-                             VkrPhongProperties phong) {
-  assert_log(system != NULL, "System is NULL");
-  assert_log(handle.id != 0, "Handle is invalid");
-
-  uint32_t idx = handle.id - 1;
-  if (idx >= system->materials.length)
-    return;
-
-  VkrMaterial *material = &system->materials.data[idx];
-  if (material->generation != handle.generation)
-    return;
-
-  material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle =
-      base_color.id != 0
-          ? base_color
-          : vkr_texture_system_get_default_handle(system->texture_system);
-  material->textures[VKR_TEXTURE_SLOT_DIFFUSE].slot = VKR_TEXTURE_SLOT_DIFFUSE;
-  material->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = (base_color.id != 0);
-
-  material->phong = phong;
-  material->generation = system->generation_counter++;
-}
-
-void vkr_material_system_set_texture(VkrMaterialSystem *system,
-                                     VkrMaterialHandle handle,
-                                     VkrTextureSlot slot,
-                                     VkrTextureHandle texture_handle,
-                                     bool8_t enable) {
-  assert_log(system != NULL, "System is NULL");
-  assert_log(handle.id != 0, "Handle is invalid");
-
-  uint32_t index = handle.id - 1;
-  if (index >= system->materials.length)
-    return;
-
-  VkrMaterial *material = &system->materials.data[index];
-  if (material->generation != handle.generation)
-    return;
-
-  material->textures[slot].slot = slot;
-  if (texture_handle.id == 0) {
-    material->textures[slot].handle = VKR_TEXTURE_HANDLE_INVALID;
-    material->textures[slot].enabled = false;
-  } else {
-    material->textures[slot].handle = texture_handle;
-    material->textures[slot].enabled = enable;
-  }
-  material->generation = system->generation_counter++;
-}
-
-void vkr_material_system_set_textures(
-    VkrMaterialSystem *system, VkrMaterialHandle handle,
-    const VkrTextureHandle textures[VKR_TEXTURE_SLOT_COUNT],
-    const bool8_t enabled[VKR_TEXTURE_SLOT_COUNT]) {
-  assert_log(system != NULL, "System is NULL");
-  assert_log(handle.id != 0, "Handle is invalid");
-
-  uint32_t index = handle.id - 1;
-  if (index >= system->materials.length)
-    return;
-
-  VkrMaterial *material = &system->materials.data[index];
-  if (material->generation != handle.generation)
-    return;
-
-  for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; i++) {
-    material->textures[i].slot = (VkrTextureSlot)i;
-    if (textures[i].id == 0) {
-      material->textures[i].handle = VKR_TEXTURE_HANDLE_INVALID;
-      material->textures[i].enabled = false;
-    } else {
-      material->textures[i].handle = textures[i];
-      material->textures[i].enabled = enabled ? enabled[i] : true_v;
-    }
-  }
-  material->generation = system->generation_counter++;
-}
-
 void vkr_material_system_release(VkrMaterialSystem *system,
                                  VkrMaterialHandle handle) {
   assert_log(system != NULL, "System is NULL");
@@ -261,6 +183,102 @@ void vkr_material_system_release(VkrMaterialSystem *system,
         .as.material = handle};
     vkr_resource_system_unload(&handle_info, name);
   }
+}
+
+void vkr_material_system_apply_global(VkrMaterialSystem *system,
+                                      VkrGlobalMaterialState *global_state,
+                                      VkrPipelineDomain domain) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(global_state != NULL, "Global state is NULL");
+
+  if (domain == VKR_PIPELINE_DOMAIN_UI) {
+    vkr_shader_system_uniform_set(system->shader_system, "view",
+                                  &global_state->ui_view);
+
+    vkr_shader_system_uniform_set(system->shader_system, "projection",
+                                  &global_state->ui_projection);
+
+  } else {
+    vkr_shader_system_uniform_set(system->shader_system, "view",
+                                  &global_state->view);
+
+    vkr_shader_system_uniform_set(system->shader_system, "projection",
+                                  &global_state->projection);
+    vkr_shader_system_uniform_set(system->shader_system, "ambient_color",
+                                  &global_state->ambient_color);
+    vkr_shader_system_uniform_set(system->shader_system, "view_position",
+                                  &global_state->view_position);
+    vkr_shader_system_uniform_set(system->shader_system, "render_mode",
+                                  &global_state->render_mode);
+  }
+
+  vkr_shader_system_apply_global(system->shader_system);
+}
+
+void vkr_material_system_apply_instance(VkrMaterialSystem *system,
+                                        const VkrMaterial *material,
+                                        VkrPipelineDomain domain) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(material != NULL, "Material is NULL");
+
+  VkrTexture *diffuse_texture = vkr_texture_system_get_by_handle(
+      system->texture_system,
+      material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle);
+
+  // Domain-specific instance uniforms/samplers
+  if (domain == VKR_PIPELINE_DOMAIN_UI) {
+    vkr_shader_system_uniform_set(system->shader_system, "diffuse_color",
+                                  &material->phong.diffuse_color);
+
+    if (diffuse_texture) {
+      vkr_shader_system_sampler_set(system->shader_system, "diffuse_texture",
+                                    diffuse_texture->handle);
+    }
+  } else {
+    VkrTexture *specular_texture = vkr_texture_system_get_by_handle(
+        system->texture_system,
+        material->textures[VKR_TEXTURE_SLOT_SPECULAR].handle);
+
+    VkrTexture *normal_texture = vkr_texture_system_get_by_handle(
+        system->texture_system,
+        material->textures[VKR_TEXTURE_SLOT_NORMAL].handle);
+
+    // World domain: set all supported Phong-like properties when provided
+    vkr_shader_system_uniform_set(system->shader_system, "diffuse_color",
+                                  &material->phong.diffuse_color);
+
+    if (diffuse_texture) {
+      vkr_shader_system_sampler_set(system->shader_system, "diffuse_texture",
+                                    diffuse_texture->handle);
+    }
+
+    vkr_shader_system_uniform_set(system->shader_system, "specular_color",
+                                  &material->phong.specular_color);
+
+    if (specular_texture) {
+      vkr_shader_system_sampler_set(system->shader_system, "specular_texture",
+                                    specular_texture->handle);
+    }
+
+    vkr_shader_system_uniform_set(system->shader_system, "shininess",
+                                  &material->phong.shininess);
+
+    if (normal_texture) {
+      vkr_shader_system_sampler_set(system->shader_system, "normal_texture",
+                                    normal_texture->handle);
+    }
+  }
+
+  vkr_shader_system_apply_instance(system->shader_system);
+}
+
+void vkr_material_system_apply_local(VkrMaterialSystem *system,
+                                     VkrLocalMaterialState *local_state) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(local_state != NULL, "Local state is NULL");
+
+  vkr_shader_system_uniform_set(system->shader_system, "model",
+                                &local_state->model);
 }
 
 const VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,

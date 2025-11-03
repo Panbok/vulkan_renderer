@@ -219,6 +219,10 @@ vkr_parse_vertex_layout_type(const String8 *layout_str) {
     return GEOMETRY_VERTEX_LAYOUT_POSITION2_TEXCOORD;
   if (vkr_string8_equals_cstr_i(layout_str, "GEOMETRY_VERTEX_LAYOUT_FULL"))
     return GEOMETRY_VERTEX_LAYOUT_FULL;
+  if (vkr_string8_equals_cstr_i(
+          layout_str,
+          "GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD2_COLOR_TANGENT"))
+    return GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD2_COLOR_TANGENT;
   return GEOMETRY_VERTEX_LAYOUT_COUNT;
 }
 
