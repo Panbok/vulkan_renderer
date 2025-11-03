@@ -53,17 +53,9 @@
 #include "core/vkr_threads.h"
 #include "core/vkr_window.h"
 #include "defines.h"
-#include "math/mat.h"
 #include "memory/arena.h"
-#include "renderer/resources/loaders/material_loader.h"
-#include "renderer/resources/loaders/texture_loader.h"
-#include "renderer/resources/vkr_resources.h"
+#include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_camera.h"
-#include "renderer/systems/vkr_geometry_system.h"
-#include "renderer/systems/vkr_material_system.h"
-#include "renderer/systems/vkr_pipeline_registry.h"
-#include "renderer/systems/vkr_resource_system.h"
-#include "renderer/systems/vkr_texture_system.h"
 #include "renderer/vkr_renderer.h"
 
 /**
@@ -110,16 +102,11 @@ typedef struct Application {
   Arena *app_arena; /**< Main memory arena for general application use (e.g.,
                        game entities, state). */
   Arena *log_arena; /**< Memory arena dedicated to the logging system. */
-  Arena *renderer_arena;      /**< Memory arena dedicated to the renderer. */
   EventManager event_manager; /**< Manages event dispatch and subscriptions. */
   VkrWindow window;           /**< Represents the application window. */
   ApplicationConfig *config;  /**< Pointer to the configuration used to create
                                  this application instance. */
-  VkrRendererFrontendHandle renderer; /**< Renderer instance. */
-
-  VkrPipelineRegistry pipeline_registry;
-  VkrPipelineHandle world_pipeline;
-  VkrPipelineHandle ui_pipeline;
+  RendererFrontend renderer;  /**< Renderer frontend state (public). */
 
   VkrClock
       clock; /**< Clock used for timing frames and calculating delta time. */
@@ -129,36 +116,8 @@ typedef struct Application {
                                 current state. */
   VkrMutex app_mutex;        /**< Mutex for application state. */
 
-  VkrCamera camera; /**< The camera for the application. */
-
-  // Per-frame and per-draw state
-  VkrGlobalUniformObject global_uniform;
-  VkrShaderStateObject draw_state;
-
   VkrGamepad gamepad; /**< The gamepad system for the application. */
 
-  VkrGeometrySystem geometry_system;
-  VkrGeometryHandle cube_geometry;
-  VkrGeometryHandle ui_geometry;
-
-  VkrTextureSystem texture_system;
-  VkrMaterialSystem material_system;
-
-  Mat4 world_model;
-  Mat4 ui_model;
-
-  VkrMaterialHandle world_material;
-  VkrMaterialHandle ui_material;
-
-  // Scene renderables
-  Array_VkrRenderable renderables;
-  uint32_t renderable_count;
-
-  // Window size tracking for resize detection
-  uint32_t
-      last_window_width; /**< Last known window width for resize detection */
-  uint32_t last_window_height; /**< Last known window height for resize
-                                  detection */
 } Application;
 
 /**
@@ -226,59 +185,6 @@ void application_update(Application *application, float64_t delta);
 bool8_t application_create_cube_mesh(Application *application);
 
 /**
- * @brief Handles window resize events.
- * This function is called when the window is resized. It updates the window
- * dimensions and the renderer.
- * @param application Pointer to the `Application` structure.
- */
-static bool8_t application_handle_window_resize(Event *event,
-                                                UserData user_data) {
-  assert(event != NULL && "Event is NULL");
-  assert(event->type == EVENT_TYPE_WINDOW_RESIZE &&
-         "Event is not a window resize event");
-
-  Application *application = (Application *)user_data;
-  assert(application != NULL && "Application is NULL");
-
-  vkr_mutex_lock(application->app_mutex);
-
-  VkrWindowResizeEventData *resize_event_data =
-      (VkrWindowResizeEventData *)event->data;
-
-  if (resize_event_data->width != application->last_window_width ||
-      resize_event_data->height != application->last_window_height) {
-
-    if (resize_event_data->width == 0 || resize_event_data->height == 0) {
-      log_debug("Skipping resize with zero dimensions: %dx%d",
-                resize_event_data->width, resize_event_data->height);
-      application->last_window_width = resize_event_data->width;
-      application->last_window_height = resize_event_data->height;
-      vkr_mutex_unlock(application->app_mutex);
-      return true_v;
-    }
-
-    log_info("Processing window resize to %dx%d", resize_event_data->width,
-             resize_event_data->height);
-
-    application->global_uniform.projection =
-        vkr_camera_system_get_projection_matrix(&application->camera);
-
-    vkr_renderer_resize(application->renderer, resize_event_data->width,
-                        resize_event_data->height);
-
-    application->window.width = resize_event_data->width;
-    application->window.height = resize_event_data->height;
-
-    application->last_window_width = resize_event_data->width;
-    application->last_window_height = resize_event_data->height;
-  }
-
-  vkr_mutex_unlock(application->app_mutex);
-
-  return true_v;
-}
-
-/**
  * @brief Initializes the application and its core subsystems.
  * Sets up memory arenas, logging, event manager, window, and clock.
  * Subscribes default event handlers.
@@ -320,8 +226,6 @@ bool8_t application_create(Application *application,
   application->log_arena = arena_create(MB(5), MB(5), log_arena_flags);
   if (!application->log_arena) {
     log_fatal("Failed to create log_arena!");
-    if (application->app_arena)
-      arena_destroy(application->app_arena);
     return false_v;
   }
 
@@ -336,211 +240,33 @@ bool8_t application_create(Application *application,
   application->clock = vkr_clock_create();
   if (!vkr_mutex_create(application->app_arena, &application->app_mutex)) {
     log_fatal("Failed to create application mutex!");
-    arena_destroy(application->log_arena);
-    arena_destroy(application->app_arena);
-    return false_v;
-  }
-
-  application->renderer_arena = arena_create(MB(3));
-  if (!application->renderer_arena) {
-    log_fatal("Failed to create renderer_arena!");
-    if (application->app_arena)
-      arena_destroy(application->app_arena);
     return false_v;
   }
 
   VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
-  application->renderer = vkr_renderer_create(
-      application->renderer_arena, VKR_RENDERER_BACKEND_TYPE_VULKAN,
-      &application->window, &application->config->device_requirements,
-      &renderer_error);
-  if (renderer_error != VKR_RENDERER_ERROR_NONE) {
+  if (!vkr_renderer_initialize(
+          &application->renderer, VKR_RENDERER_BACKEND_TYPE_VULKAN,
+          &application->window, &application->event_manager,
+          &application->config->device_requirements, &renderer_error)) {
     log_fatal("Failed to create renderer!");
-    if (application->app_arena)
-      arena_destroy(application->app_arena);
-    if (application->log_arena)
-      arena_destroy(application->log_arena);
-    if (application->renderer_arena)
-      arena_destroy(application->renderer_arena);
     return false_v;
   }
 
   vkr_gamepad_init(&application->gamepad, &application->window.input_state);
-  application->camera = application_init_camera(application);
+  application->renderer.camera = application_init_camera(application);
 
-  if (!vkr_pipeline_registry_init(&application->pipeline_registry,
-                                  application->renderer, NULL)) {
-    log_fatal("Failed to initialize pipeline registry");
+  if (!vkr_renderer_systems_initialize(&application->renderer)) {
+    log_fatal("Failed to initialize renderer frontend systems");
     return false_v;
   }
 
-  // TODO: Move all resources and renderer related stuff to front-end
-  application->world_model = mat4_identity();
-  application->ui_model = mat4_identity();
-
-  // Resource system init (central registry and delegate to systems)
-  if (!vkr_resource_system_init(application->app_arena,
-                                application->renderer)) {
-    log_fatal("Failed to initialize resource system");
+  if (!vkr_renderer_default_scene(&application->renderer)) {
+    log_fatal("Failed to bootstrap default scene");
     return false_v;
-  }
-
-  VkrGeometrySystemConfig geo_cfg = {
-      .default_max_geometries = 1024,
-      .default_max_vertices = 200000,
-      .default_max_indices = 300000,
-      .primary_layout = GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD,
-      .default_vertex_stride_bytes =
-          sizeof(VkrInterleavedVertex_PositionTexcoord),
-  };
-  if (!vkr_geometry_system_init(&application->geometry_system,
-                                application->renderer, &geo_cfg,
-                                &renderer_error)) {
-    log_fatal("Failed to initialize geometry system: %s",
-              vkr_renderer_get_error_string(renderer_error));
-    return false_v;
-  }
-
-  VkrTextureSystemConfig tex_cfg = {.max_texture_count = 1024};
-  if (!vkr_texture_system_init(application->renderer, &tex_cfg,
-                               &application->texture_system)) {
-    log_fatal("Failed to initialize texture system");
-    return false_v;
-  }
-
-  VkrMaterialSystemConfig mat_cfg = {.max_material_count = 1024};
-  if (!vkr_material_system_init(&application->material_system,
-                                application->app_arena,
-                                &application->texture_system, &mat_cfg)) {
-    log_fatal("Failed to initialize material system");
-    return false_v;
-  }
-
-  vkr_resource_system_register_loader((void *)&application->texture_system,
-                                      vkr_texture_loader_create());
-  vkr_resource_system_register_loader((void *)&application->material_system,
-                                      vkr_material_loader_create());
-
-  // TODO: Move all resources and renderer related stuff to front-end
-
-  VkrResourceHandleInfo default_material_info = {0};
-  VkrRendererError material_load_error = VKR_RENDERER_ERROR_NONE;
-  if (vkr_resource_system_load(VKR_RESOURCE_TYPE_MATERIAL,
-                               string8_lit("assets/default.world.mt"),
-                               application->app_arena, &default_material_info,
-                               &material_load_error)) {
-    log_info(
-        "Successfully loaded default material from assets/default.world.mt");
-    application->world_material = default_material_info.as.material;
-  } else {
-    String8 error_string = vkr_renderer_get_error_string(material_load_error);
-    log_warn(
-        "Failed to load default material from assets/default.world.mt; using "
-        "built-in default: %s",
-        string8_cstr(&error_string));
-  }
-
-  VkrResourceHandleInfo default_ui_material_info = {0};
-  if (vkr_resource_system_load(
-          VKR_RESOURCE_TYPE_MATERIAL, string8_lit("assets/default.ui.mt"),
-          application->app_arena, &default_ui_material_info,
-          &material_load_error)) {
-    log_info(
-        "Successfully loaded default UI material from assets/default.ui.mt");
-    application->ui_material = default_ui_material_info.as.material;
-  } else {
-    String8 error_string = vkr_renderer_get_error_string(material_load_error);
-    log_warn(
-        "Failed to load default UI material from assets/default.ui.mt; using "
-        "built-in default: %s",
-        string8_cstr(&error_string));
-  }
-
-  application->global_uniform = (VkrGlobalUniformObject){
-      .view = vkr_camera_system_get_view_matrix(&application->camera),
-      .projection =
-          vkr_camera_system_get_projection_matrix(&application->camera),
-  };
-  application->draw_state = (VkrShaderStateObject){
-      .model = application->world_model, .local_state = {0}};
-
-  application->cube_geometry = vkr_geometry_system_create_default_cube(
-      &application->geometry_system, 2.0f, 2.0f, 2.0f, &renderer_error);
-  if (renderer_error != VKR_RENDERER_ERROR_NONE) {
-    log_fatal("Failed to create default geometry: %s",
-              vkr_renderer_get_error_string(renderer_error));
-    return false_v;
-  }
-
-  application->ui_geometry = vkr_geometry_system_create_default_plane(
-      &application->geometry_system, 2.0f, 2.0f, &renderer_error);
-  if (renderer_error != VKR_RENDERER_ERROR_NONE) {
-    log_fatal("Failed to create default UI geometry: %s",
-              vkr_renderer_get_error_string(renderer_error));
-    return false_v;
-  }
-
-  VkrRendererError pipeline_error = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_pipeline_registry_create_from_material_layout(
-          &application->pipeline_registry, VKR_PIPELINE_DOMAIN_WORLD,
-          GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD,
-          string8_lit("assets/deafult.world.spv"), string8_lit("world"),
-          &application->world_pipeline, &pipeline_error)) {
-    log_fatal("Failed to create world pipeline: %s",
-              vkr_renderer_get_error_string(pipeline_error));
-    return false_v;
-  }
-
-  if (!vkr_pipeline_registry_create_from_material_layout(
-          &application->pipeline_registry, VKR_PIPELINE_DOMAIN_UI,
-          GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD,
-          string8_lit("assets/deafult.ui.spv"), string8_lit("ui"),
-          &application->ui_pipeline, &pipeline_error)) {
-    log_fatal("Failed to create UI pipeline: %s",
-              vkr_renderer_get_error_string(pipeline_error));
-    return false_v;
-  }
-
-  application->renderables =
-      array_create_VkrRenderable(application->app_arena, 1024);
-  VkrRenderable r0 = {
-      .geometry = application->cube_geometry,
-      .material = application->world_material,
-      .pipeline = application->world_pipeline,
-      .model = application->world_model,
-      .local_state = {0},
-  };
-  VkrRenderable r1 = {
-      .geometry = application->ui_geometry,
-      .material = application->ui_material,
-      .pipeline = application->ui_pipeline,
-      .model = mat4_mul(mat4_translate(vec3_new(200.0f, 200.0f, 0.0f)),
-                        mat4_scale(vec3_new(200.0f, 200.0f, 1.0f))),
-      .local_state = {0},
-  };
-  array_set_VkrRenderable(&application->renderables, 0, r0);
-  array_set_VkrRenderable(&application->renderables, 1, r1);
-  application->renderable_count = 2;
-
-  for (uint32_t renderable_idx = 0;
-       renderable_idx < application->renderable_count; ++renderable_idx) {
-    VkrRenderable *renderable =
-        array_get_VkrRenderable(&application->renderables, renderable_idx);
-    VkrRendererError ls_err = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_pipeline_registry_acquire_local_state(
-            &application->pipeline_registry, renderable->pipeline,
-            &renderable->local_state, &ls_err)) {
-      log_fatal("Failed to acquire local renderer state for renderable %u",
-                renderable_idx);
-      return false_v;
-    }
   }
 
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_WINDOW_CLOSE,
                           application_on_window_event, NULL);
-
-  event_manager_subscribe(&application->event_manager, EVENT_TYPE_WINDOW_RESIZE,
-                          application_handle_window_resize, application);
 
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_WINDOW_INIT,
                           application_on_window_event, NULL);
@@ -576,12 +302,6 @@ bool8_t application_create(Application *application,
                           EVENT_TYPE_APPLICATION_RESUME, application_on_event,
                           NULL);
 
-  // Initialize window size tracking
-  VkrWindowPixelSize initial_size =
-      vkr_window_get_pixel_size(&application->window);
-  application->last_window_width = initial_size.width;
-  application->last_window_height = initial_size.height;
-
   bitset8_set(&application->app_flags, APPLICATION_FLAG_INITIALIZED);
 
   event_manager_dispatch(&application->event_manager,
@@ -609,90 +329,17 @@ void application_draw_frame(Application *application, float64_t delta) {
   assert(bitset8_is_set(&application->app_flags, APPLICATION_FLAG_RUNNING) &&
          "Application is not running");
 
-  VkrRendererError renderer_error =
-      vkr_renderer_begin_frame(application->renderer, delta);
-  if (renderer_error != VKR_RENDERER_ERROR_NONE) {
-    log_fatal("Failed to begin frame: %s",
-              vkr_renderer_get_error_string(renderer_error));
+  if (vkr_renderer_begin_frame(&application->renderer, delta) !=
+      VKR_RENDERER_ERROR_NONE) {
+    log_fatal("Failed to begin renderer frame");
     return;
   }
 
-  application->global_uniform.view =
-      vkr_camera_system_get_view_matrix(&application->camera);
-  application->global_uniform.projection =
-      vkr_camera_system_get_projection_matrix(&application->camera);
+  vkr_renderer_draw_frame(&application->renderer);
 
-  VkrRendererError reg_err = VKR_RENDERER_ERROR_NONE;
-  vkr_pipeline_registry_bind_pipeline(&application->pipeline_registry,
-                                      application->world_pipeline, &reg_err);
-  vkr_pipeline_registry_update_global_state(
-      &application->pipeline_registry, &application->global_uniform, &reg_err);
-
-  for (uint32_t i = 0; i < application->renderable_count; i++) {
-    VkrRenderable *renderable =
-        array_get_VkrRenderable(&application->renderables, i);
-    // Resolve material via handle
-    const VkrMaterial *material = vkr_material_system_get_by_handle(
-        &application->material_system, renderable->material);
-
-    application->draw_state.model = renderable->model;
-    application->draw_state.local_state = renderable->local_state;
-
-    VkrRendererMaterialState mat_state = {0};
-    if (material) {
-      mat_state.uniforms.diffuse_color = material->phong.diffuse_color;
-      VkrTexture *t = vkr_texture_system_get_by_handle(
-          &application->texture_system,
-          material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle);
-      if (t) {
-        mat_state.texture0 = t->handle;
-        mat_state.texture0_enabled = true_v;
-      }
-    }
-
-    // Ensure correct pipeline and global state before local update
-    VkrPipelineHandle current_pipeline =
-        vkr_pipeline_registry_get_current_pipeline(
-            &application->pipeline_registry);
-    // Ensure correct pipeline is bound
-    if (current_pipeline.id != renderable->pipeline.id ||
-        current_pipeline.generation != renderable->pipeline.generation) {
-      vkr_pipeline_registry_bind_pipeline(&application->pipeline_registry,
-                                          renderable->pipeline, &reg_err);
-    }
-
-    // Upload correct globals per-domain (avoid relying on cached flag)
-    if (renderable->pipeline.id == application->ui_pipeline.id &&
-        renderable->pipeline.generation ==
-            application->ui_pipeline.generation) {
-      VkrWindowPixelSize sz = vkr_window_get_pixel_size(&application->window);
-      application->global_uniform.view = mat4_identity();
-      application->global_uniform.projection = mat4_ortho(
-          0.0f, (float32_t)sz.width, (float32_t)sz.height, 0.0f, -1.0f, 1.0f);
-    } else {
-      application->global_uniform.view =
-          vkr_camera_system_get_view_matrix(&application->camera);
-      application->global_uniform.projection =
-          vkr_camera_system_get_projection_matrix(&application->camera);
-    }
-    // Force upload
-    vkr_pipeline_registry_update_global_state(&application->pipeline_registry,
-                                              &application->global_uniform,
-                                              &reg_err);
-
-    vkr_pipeline_registry_update_local_state(
-        &application->pipeline_registry, renderable->pipeline,
-        &application->draw_state, &mat_state, &reg_err);
-
-    vkr_geometry_system_render(application->renderer,
-                               &application->geometry_system,
-                               renderable->geometry, 1);
-  }
-
-  renderer_error = vkr_renderer_end_frame(application->renderer, delta);
-  if (renderer_error != VKR_RENDERER_ERROR_NONE) {
-    log_fatal("Failed to end frame: %s",
-              vkr_renderer_get_error_string(renderer_error));
+  if (vkr_renderer_end_frame(&application->renderer, delta) !=
+      VKR_RENDERER_ERROR_NONE) {
+    log_fatal("Failed to end renderer frame");
     return;
   }
 }
@@ -762,7 +409,15 @@ void application_start(Application *application) {
 
     application_update(application, delta);
 
-    vkr_camera_system_update(&application->camera, delta);
+    vkr_camera_system_update(&application->renderer.camera, delta);
+
+    // Update world view/projection from camera each frame to reflect movement
+    application->renderer.globals.view =
+        vkr_camera_system_get_view_matrix(&application->renderer.camera);
+    application->renderer.globals.projection =
+        vkr_camera_system_get_projection_matrix(&application->renderer.camera);
+    application->renderer.globals.view_position =
+        application->renderer.camera.position;
 
     application_draw_frame(application, delta);
 
@@ -860,29 +515,12 @@ void application_shutdown(Application *application) {
   event_manager_dispatch(&application->event_manager,
                          (Event){.type = EVENT_TYPE_APPLICATION_SHUTDOWN});
 
-  if (vkr_renderer_wait_idle(application->renderer) !=
+  if (vkr_renderer_wait_idle(&application->renderer) !=
       VKR_RENDERER_ERROR_NONE) {
     log_warn("Failed to wait for renderer to be idle");
   }
 
-  // Resource system does not own GPU resources; shutdown registry first
-  // Release per-renderable local renderer state before destroying pipeline
-  for (uint32_t i = 0; i < application->renderable_count; ++i) {
-    VkrRenderable *r = array_get_VkrRenderable(&application->renderables, i);
-    vkr_pipeline_registry_release_local_state(&application->pipeline_registry,
-                                              r->pipeline, r->local_state,
-                                              &(VkrRendererError){0});
-  }
-  vkr_pipeline_registry_destroy_pipeline(&application->pipeline_registry,
-                                         application->world_pipeline);
-  vkr_pipeline_registry_destroy_pipeline(&application->pipeline_registry,
-                                         application->ui_pipeline);
-  vkr_pipeline_registry_shutdown(&application->pipeline_registry);
-  vkr_texture_system_shutdown(application->renderer,
-                              &application->texture_system);
-  vkr_material_system_shutdown(&application->material_system);
-  vkr_geometry_system_shutdown(&application->geometry_system);
-  vkr_renderer_destroy(application->renderer);
+  vkr_renderer_destroy(&application->renderer);
   vkr_window_destroy(&application->window);
   event_manager_destroy(&application->event_manager);
   vkr_mutex_destroy(application->app_arena, &application->app_mutex);
@@ -890,7 +528,6 @@ void application_shutdown(Application *application) {
 
   vkr_platform_shutdown();
 
-  arena_destroy(application->renderer_arena);
   arena_destroy(application->log_arena);
   arena_destroy(application->app_arena);
 }

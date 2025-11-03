@@ -137,7 +137,7 @@ int main(int argc, char **argv) {
 
   Scratch scratch = scratch_create(application.app_arena);
   VkrDeviceInformation device_information;
-  vkr_renderer_get_device_information(application.renderer, &device_information,
+  vkr_renderer_get_device_information(&application.renderer, &device_information,
                                       scratch.arena);
   log_info("Device Name: %s", device_information.device_name.str);
   log_info("Device Vendor: %s", device_information.vendor_name.str);

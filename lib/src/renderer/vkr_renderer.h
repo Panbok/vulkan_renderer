@@ -1,6 +1,7 @@
 #pragma once
 
 #include "containers/bitset.h"
+#include "core/event.h"
 #include "core/vkr_window.h"
 #include "defines.h"
 #include "math/mat.h"
@@ -160,6 +161,8 @@ typedef enum VkrVertexFormat {
   VKR_VERTEX_FORMAT_R32G32_SFLOAT,
   VKR_VERTEX_FORMAT_R32G32B32_SFLOAT,
   VKR_VERTEX_FORMAT_R32G32B32A32_SFLOAT,
+  VKR_VERTEX_FORMAT_R32_SINT,
+  VKR_VERTEX_FORMAT_R32_UINT,
   VKR_VERTEX_FORMAT_R8G8B8A8_UNORM,
 } VkrVertexFormat;
 
@@ -417,35 +420,40 @@ typedef struct VkrTextureDescription {
 } VkrTextureDescription;
 
 // ----------------------------------------------------------------------------
-// Local state & material state
+// Instance state & material state
 // ----------------------------------------------------------------------------
 
-typedef struct VkrRendererLocalStateHandle {
-  uint32_t id;
-} VkrRendererLocalStateHandle;
+typedef enum VkrRenderMode {
+  VKR_RENDER_MODE_DEFAULT = 0,
+  VKR_RENDER_MODE_LIGHTING = 1,
+  VKR_RENDER_MODE_NORMAL = 2,
+  VKR_RENDER_MODE_COUNT,
+} VkrRenderMode;
 
-// Used to create a single global uniform object for the entire scene
-// This is used to pass the MVP matrix to the shader
-typedef struct VkrGlobalUniformObject {
-  Mat4 view;
+typedef struct VkrGlobalMaterialState {
   Mat4 projection;
-  // Padding to align to 256 bytes (required by Nvidia GPUs)
-  uint8_t padding[128];
-} VkrGlobalUniformObject;
+  Mat4 view;
+  Mat4 ui_projection;
+  Mat4 ui_view;
+  Vec4 ambient_color;
+  Vec3 view_position;
+  VkrRenderMode render_mode;
+} VkrGlobalMaterialState;
 
-// Used to pass the object's properties to the shader
-typedef struct VkrLocalUniformObject {
-  Vec4 diffuse_color;
-  // Padding to align to 256 bytes (required by Nvidia GPUs)
-  uint8_t padding[256 - sizeof(Vec4)];
-} VkrLocalUniformObject;
+typedef struct VkrLocalMaterialState {
+  Mat4 model;
+} VkrLocalMaterialState;
+
+typedef struct VkrRendererInstanceStateHandle {
+  uint32_t id;
+} VkrRendererInstanceStateHandle;
 
 /*
   Vulkan backend descriptor layout (current)
   - Descriptor set 0 (per-frame/global):
       binding 0 = uniform buffer (GlobalUniformObject: view, projection)
-  - Descriptor set 1 (per-object/local):
-      binding 0 = uniform buffer (LocalUniformObject: material uniforms)
+  - Descriptor set 1 (per-object/instance):
+      binding 0 = uniform buffer (InstanceUniformObject: material uniforms)
       binding 1 = sampled image (combined image sampler slot 0)
       binding 2 = sampler (slot 0)
 
@@ -456,17 +464,22 @@ typedef struct VkrLocalUniformObject {
 */
 
 typedef struct VkrShaderStateObject {
-  Mat4 model;
-  // Local state management: hidden behind a typed handle.
-  VkrRendererLocalStateHandle local_state;
+  // Instance state management: hidden behind a typed handle.
+  VkrRendererInstanceStateHandle instance_state;
+  // Raw data for instance uniforms and push constants (config-sized)
+  const void *instance_ubo_data;
+  uint64_t instance_ubo_size;
+  const void *push_constants_data;
+  uint64_t push_constants_size;
 } VkrShaderStateObject;
 
 typedef struct VkrRendererMaterialState {
-  // Per-material uniforms for the local UBO
-  VkrLocalUniformObject uniforms;
-  // Current base color texture for slot 0 (may be NULL when disabled)
-  VkrTextureOpaqueHandle texture0;
-  bool8_t texture0_enabled;
+  // Per-material uniforms (raw mode only; legacy struct removed)
+// Dynamic sampler slots (config-driven). Only the first texture_count are used.
+#define VKR_MAX_INSTANCE_TEXTURES 8
+  VkrTextureOpaqueHandle textures[VKR_MAX_INSTANCE_TEXTURES];
+  bool8_t textures_enabled[VKR_MAX_INSTANCE_TEXTURES];
+  uint32_t texture_count;
 } VkrRendererMaterialState;
 
 typedef struct VkrShaderModuleDescription {
@@ -488,8 +501,15 @@ typedef struct VkrShaderObjectDescription {
 
   VkrShaderModuleDescription modules[VKR_SHADER_STAGE_COUNT];
 
-  VkrGlobalUniformObject global_uniform_object;
-  VkrShaderStateObject shader_state_object;
+  // Deprecated fields removed: uniforms are config-driven
+
+  uint64_t global_ubo_size;
+  uint64_t global_ubo_stride;
+  uint64_t instance_ubo_size;
+  uint64_t instance_ubo_stride;
+  uint64_t push_constant_size;
+  uint32_t global_texture_count;
+  uint32_t instance_texture_count;
 } VkrShaderObjectDescription;
 
 // Used at PIPELINE CREATION time to define vertex layout
@@ -557,9 +577,16 @@ typedef struct VkrIndexBufferBinding {
 // ============================================================================
 
 // --- START Initialization and Shutdown ---
-VkrRendererFrontendHandle vkr_renderer_create(
-    Arena *arena, VkrRendererBackendType backend_type, VkrWindow *window,
-    VkrDeviceRequirements *device_requirements, VkrRendererError *out_error);
+bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
+                                 VkrRendererBackendType type, VkrWindow *window,
+                                 EventManager *event_manager,
+                                 VkrDeviceRequirements *device_requirements,
+                                 VkrRendererError *out_error);
+
+bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer);
+
+// Create default scene (shaders, pipelines, geometries, materials, renderables)
+bool32_t vkr_renderer_default_scene(VkrRendererFrontendHandle renderer);
 
 void vkr_renderer_destroy(VkrRendererFrontendHandle renderer);
 // --- END Initialization and Shutdown ---
@@ -620,7 +647,7 @@ VkrRendererError vkr_renderer_update_buffer(VkrRendererFrontendHandle renderer,
 
 VkrRendererError vkr_renderer_update_pipeline_state(
     VkrRendererFrontendHandle renderer, VkrPipelineOpaqueHandle pipeline,
-    const VkrGlobalUniformObject *uniform, const VkrShaderStateObject *data,
+    const void *uniform, const VkrShaderStateObject *data,
     const VkrRendererMaterialState *material);
 
 /**
@@ -635,7 +662,7 @@ VkrRendererError vkr_renderer_update_pipeline_state(
 VkrRendererError
 vkr_renderer_update_global_state(VkrRendererFrontendHandle renderer,
                                  VkrPipelineOpaqueHandle pipeline,
-                                 const VkrGlobalUniformObject *uniform);
+                                 const void *uniform);
 
 /**
  * @brief Update only the per-object local state (e.g., model matrix, material
@@ -646,20 +673,20 @@ vkr_renderer_update_global_state(VkrRendererFrontendHandle renderer,
  * @param data
  * @return VkrRendererError
  */
-VkrRendererError vkr_renderer_update_local_state(
+VkrRendererError vkr_renderer_update_instance_state(
     VkrRendererFrontendHandle renderer, VkrPipelineOpaqueHandle pipeline,
     const VkrShaderStateObject *data, const VkrRendererMaterialState *material);
 
-// Local state lifetime
+// Instance state lifetime
 VkrRendererError
-vkr_renderer_acquire_local_state(VkrRendererFrontendHandle renderer,
-                                 VkrPipelineOpaqueHandle pipeline,
-                                 VkrRendererLocalStateHandle *out_handle);
+vkr_renderer_acquire_instance_state(VkrRendererFrontendHandle renderer,
+                                    VkrPipelineOpaqueHandle pipeline,
+                                    VkrRendererInstanceStateHandle *out_handle);
 
 VkrRendererError
-vkr_renderer_release_local_state(VkrRendererFrontendHandle renderer,
-                                 VkrPipelineOpaqueHandle pipeline,
-                                 VkrRendererLocalStateHandle handle);
+vkr_renderer_release_instance_state(VkrRendererFrontendHandle renderer,
+                                    VkrPipelineOpaqueHandle pipeline,
+                                    VkrRendererInstanceStateHandle handle);
 
 VkrRendererError vkr_renderer_upload_buffer(VkrRendererFrontendHandle renderer,
                                             VkrBufferHandle buffer,
@@ -681,6 +708,9 @@ void vkr_renderer_bind_vertex_buffer(VkrRendererFrontendHandle renderer,
 void vkr_renderer_bind_index_buffer(VkrRendererFrontendHandle renderer,
                                     const VkrIndexBufferBinding *binding);
 
+// High-level draw of current scene graph (uses configured systems)
+void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer);
+
 void vkr_renderer_draw(VkrRendererFrontendHandle renderer,
                        uint32_t vertex_count, uint32_t instance_count,
                        uint32_t first_vertex, uint32_t first_instance);
@@ -693,6 +723,10 @@ void vkr_renderer_draw_indexed(VkrRendererFrontendHandle renderer,
 VkrRendererError vkr_renderer_end_frame(VkrRendererFrontendHandle renderer,
                                         float64_t delta_time);
 // --- END Frame Lifecycle & Rendering Commands ---
+
+// Returns and resets backend descriptor writes avoided counter for the frame
+uint64_t vkr_renderer_get_and_reset_descriptor_writes_avoided(
+    VkrRendererFrontendHandle renderer);
 
 // ============================================================================
 // Backend Interface (Implemented by each backend, e.g., Vulkan)
@@ -753,18 +787,18 @@ typedef struct VkrRendererBackendInterface {
       void *backend_state, const VkrGraphicsPipelineDescription *description);
   VkrRendererError (*pipeline_update_state)(
       void *backend_state, VkrBackendResourceHandle pipeline_handle,
-      const VkrGlobalUniformObject *uniform, const VkrShaderStateObject *data,
+      const void *global_uniform_data, const VkrShaderStateObject *data,
       const VkrRendererMaterialState *material);
   void (*pipeline_destroy)(void *backend_state,
                            VkrBackendResourceHandle pipeline_handle);
 
-  // Local state management
-  VkrRendererError (*local_state_acquire)(
+  // Instance state management
+  VkrRendererError (*instance_state_acquire)(
       void *backend_state, VkrBackendResourceHandle pipeline_handle,
-      VkrRendererLocalStateHandle *out_handle);
-  VkrRendererError (*local_state_release)(
+      VkrRendererInstanceStateHandle *out_handle);
+  VkrRendererError (*instance_state_release)(
       void *backend_state, VkrBackendResourceHandle pipeline_handle,
-      VkrRendererLocalStateHandle handle);
+      VkrRendererInstanceStateHandle handle);
 
   void (*bind_buffer)(void *backend_state,
                       VkrBackendResourceHandle buffer_handle, uint64_t offset);
@@ -776,4 +810,7 @@ typedef struct VkrRendererBackendInterface {
   void (*draw_indexed)(void *backend_state, uint32_t index_count,
                        uint32_t instance_count, uint32_t first_index,
                        int32_t vertex_offset, uint32_t first_instance);
+
+  // Telemetry
+  uint64_t (*get_and_reset_descriptor_writes_avoided)(void *backend_state);
 } VkrRendererBackendInterface;
