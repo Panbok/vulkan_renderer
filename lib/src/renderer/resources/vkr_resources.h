@@ -160,7 +160,7 @@ typedef struct VkrRenderable {
   VkrMaterialHandle material;
   VkrPipelineHandle pipeline;
   Mat4 model;
-  VkrRendererInstanceStateHandle local_state;
+  VkrRendererInstanceStateHandle instance_state;
 } VkrRenderable;
 Array(VkrRenderable);
 

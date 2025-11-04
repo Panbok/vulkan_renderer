@@ -306,7 +306,7 @@ bool8_t vkr_pipeline_registry_update_local_state(
  * @param out_error Output error code
  * @return true on success, false on failure
  */
-bool8_t vkr_pipeline_registry_acquire_local_state(
+bool8_t vkr_pipeline_registry_acquire_instance_state(
     VkrPipelineRegistry *registry, VkrPipelineHandle handle,
     VkrRendererInstanceStateHandle *out_local_state,
     VkrRendererError *out_error);
@@ -319,7 +319,7 @@ bool8_t vkr_pipeline_registry_acquire_local_state(
  * @param out_error Output error code
  * @return true on success, false on failure
  */
-bool8_t vkr_pipeline_registry_release_local_state(
+bool8_t vkr_pipeline_registry_release_instance_state(
     VkrPipelineRegistry *registry, VkrPipelineHandle handle,
     VkrRendererInstanceStateHandle local_state, VkrRendererError *out_error);
 
@@ -478,3 +478,10 @@ void vkr_pipeline_registry_get_stats(VkrPipelineRegistry *registry,
                                      uint32_t *out_total_binds,
                                      uint32_t *out_total_redundant_avoided,
                                      uint32_t *out_total_batched);
+
+/**
+ * @brief Collect backend telemetry metrics (e.g., descriptor writes avoided)
+ * @param registry Pipeline registry
+ */
+void vkr_pipeline_registry_collect_backend_telemetry(
+    VkrPipelineRegistry *registry);

@@ -635,7 +635,7 @@ void vkr_pipeline_registry_mark_global_state_dirty(
   registry->state.global_state_dirty = true_v;
 }
 
-bool8_t vkr_pipeline_registry_acquire_local_state(
+bool8_t vkr_pipeline_registry_acquire_instance_state(
     VkrPipelineRegistry *registry, VkrPipelineHandle handle,
     VkrRendererInstanceStateHandle *out_local_state,
     VkrRendererError *out_error) {
@@ -660,7 +660,7 @@ bool8_t vkr_pipeline_registry_acquire_local_state(
   return true_v;
 }
 
-bool8_t vkr_pipeline_registry_release_local_state(
+bool8_t vkr_pipeline_registry_release_instance_state(
     VkrPipelineRegistry *registry, VkrPipelineHandle handle,
     VkrRendererInstanceStateHandle local_state, VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
@@ -708,8 +708,8 @@ bool8_t vkr_pipeline_registry_update_local_state(
   return true_v;
 }
 
-// todo: need to properly call this to collect telemetry
-vkr_internal void vkr_collect_backend_telemetry(VkrPipelineRegistry *registry) {
+void vkr_pipeline_registry_collect_backend_telemetry(
+    VkrPipelineRegistry *registry) {
   assert_log(registry != NULL, "Registry is NULL");
   uint64_t avoided =
       vkr_renderer_get_and_reset_descriptor_writes_avoided(registry->renderer);

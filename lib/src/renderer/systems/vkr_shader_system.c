@@ -124,8 +124,8 @@ void vkr_shader_system_shutdown(VkrShaderSystem *state) {
                 vkr_pipeline_registry_get_current_pipeline(state->registry);
             if (current.id != 0) {
               VkrRendererError err = VKR_RENDERER_ERROR_NONE;
-              vkr_pipeline_registry_release_local_state(state->registry,
-                                                        current, handle, &err);
+              vkr_pipeline_registry_release_instance_state(
+                  state->registry, current, handle, &err);
             }
           }
         }
@@ -261,7 +261,7 @@ bool8_t vkr_shader_system_use(VkrShaderSystem *state, const char *shader_name) {
     // Tolerant: leave current_shader unset; registry path still works
     state->current_shader_id = 0;
     state->current_shader = NULL;
-    return true_v;
+    return false_v;
   }
 
   state->current_shader_id = id;
@@ -365,8 +365,12 @@ bool8_t vkr_shader_system_sampler_set(VkrShaderSystem *state,
                                       const char *sampler_name,
                                       VkrTextureOpaqueHandle t) {
   assert_log(state != NULL, "State is NULL");
-  assert_log(state->current_shader != NULL, "Current shader is NULL");
   assert_log(sampler_name != NULL, "Sampler name is NULL");
+
+  if (!state->current_shader) {
+    log_error("No shader currently bound");
+    return false_v;
+  }
 
   VkrShader *shader = state->current_shader;
 
@@ -519,7 +523,7 @@ bool8_t vkr_shader_system_bind_instance(VkrShaderSystem *state,
 
     if (!found) {
       log_warn("Instance ID %u not found in current shader", instance_id);
-      return false_v; // Should probably fail here
+      return false_v;
     }
   }
 
@@ -570,7 +574,7 @@ bool8_t vkr_shader_acquire_instance_resources(VkrShaderSystem *state,
 
   VkrRendererError err = VKR_RENDERER_ERROR_NONE;
   VkrRendererInstanceStateHandle backend_id;
-  if (!vkr_pipeline_registry_acquire_local_state(
+  if (!vkr_pipeline_registry_acquire_instance_state(
           state->registry, pipeline_handle, &backend_id, &err)) {
     log_error("Failed to acquire instance resources for shader '%s': %s",
               string8_cstr(&shader->name), vkr_renderer_get_error_string(err));
@@ -618,8 +622,8 @@ bool8_t vkr_shader_release_instance_resources(VkrShaderSystem *state,
 
   VkrRendererError err = VKR_RENDERER_ERROR_NONE;
   VkrRendererInstanceStateHandle state_handle = {.id = instance_id};
-  if (!vkr_pipeline_registry_release_local_state(state->registry, current,
-                                                 state_handle, &err)) {
+  if (!vkr_pipeline_registry_release_instance_state(state->registry, current,
+                                                    state_handle, &err)) {
     log_error("Failed to release instance resources: %s",
               vkr_renderer_get_error_string(err));
     return false_v;

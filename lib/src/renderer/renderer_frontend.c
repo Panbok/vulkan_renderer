@@ -155,9 +155,9 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   // Release per-renderable local renderer state before destroying pipelines
   for (uint32_t i = 0; i < rf->renderable_count; ++i) {
     VkrRenderable *r = array_get_VkrRenderable(&rf->renderables, i);
-    vkr_pipeline_registry_release_local_state(&rf->pipeline_registry,
-                                              r->pipeline, r->local_state,
-                                              &(VkrRendererError){0});
+    vkr_pipeline_registry_release_instance_state(&rf->pipeline_registry,
+                                                 r->pipeline, r->instance_state,
+                                                 &(VkrRendererError){0});
   }
 
   if (rf->world_pipeline.id)
@@ -588,8 +588,8 @@ VkrRendererError vkr_renderer_end_frame(VkrRendererFrontendHandle renderer,
       renderer->backend.end_frame(renderer->backend_state, delta_time);
   renderer->frame_active = false;
 
-  // Optional telemetry
-  (void)vkr_renderer_get_and_reset_descriptor_writes_avoided(renderer);
+  // Collect backend telemetry metrics
+  vkr_pipeline_registry_collect_backend_telemetry(&renderer->pipeline_registry);
 
   return result;
 }
@@ -797,14 +797,14 @@ bool32_t vkr_renderer_default_scene(VkrRendererFrontendHandle renderer) {
                       .material = rf->world_material,
                       .pipeline = rf->world_pipeline,
                       .model = rf->world_model,
-                      .local_state = {0}};
+                      .instance_state = {0}};
   VkrRenderable r1 = {
       .geometry = rf->ui_geometry,
       .material = rf->ui_material,
       .pipeline = rf->ui_pipeline,
       .model = mat4_mul(mat4_translate(vec3_new(200.0f, 200.0f, 0.0f)),
                         mat4_scale(vec3_new(200.0f, 200.0f, 1.0f))),
-      .local_state = {0},
+      .instance_state = {0},
   };
   array_set_VkrRenderable(&rf->renderables, 0, r0);
   array_set_VkrRenderable(&rf->renderables, 1, r1);
@@ -814,9 +814,9 @@ bool32_t vkr_renderer_default_scene(VkrRendererFrontendHandle renderer) {
   for (uint32_t i = 0; i < rf->renderable_count; ++i) {
     VkrRenderable *renderable = array_get_VkrRenderable(&rf->renderables, i);
     VkrRendererError ls_err = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_pipeline_registry_acquire_local_state(
+    if (!vkr_pipeline_registry_acquire_instance_state(
             &rf->pipeline_registry, renderable->pipeline,
-            &renderable->local_state, &ls_err)) {
+            &renderable->instance_state, &ls_err)) {
       log_fatal("Failed to acquire local renderer state for renderable %u", i);
       return false_v;
     }
@@ -840,7 +840,7 @@ void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer) {
 
     // Prepare draw state
     Mat4 model = renderable->model;
-    rf->draw_state.instance_state = renderable->local_state;
+    rf->draw_state.instance_state = renderable->instance_state;
 
     // Resolve pipeline from material's shader_name/pipeline id and geometry
     VkrPipelineHandle resolved = VKR_PIPELINE_HANDLE_INVALID;
@@ -861,13 +861,13 @@ void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer) {
         renderable->pipeline.generation != resolved.generation) {
       if (renderable->pipeline.id != 0) {
         VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
-        vkr_pipeline_registry_release_local_state(
+        vkr_pipeline_registry_release_instance_state(
             &rf->pipeline_registry, renderable->pipeline,
-            renderable->local_state, &rel_err);
+            renderable->instance_state, &rel_err);
       }
       VkrRendererError acq_err = VKR_RENDERER_ERROR_NONE;
-      if (vkr_pipeline_registry_acquire_local_state(
-              &rf->pipeline_registry, resolved, &renderable->local_state,
+      if (vkr_pipeline_registry_acquire_instance_state(
+              &rf->pipeline_registry, resolved, &renderable->instance_state,
               &acq_err)) {
         renderable->pipeline = resolved;
       } else {
@@ -915,7 +915,7 @@ void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer) {
     vkr_material_system_apply_local(&rf->material_system,
                                     &(VkrLocalMaterialState){.model = model});
     vkr_shader_system_bind_instance(&rf->shader_system,
-                                    renderable->local_state.id);
+                                    renderable->instance_state.id);
 
     if (material) {
       VkrPipelineDomain domain = pl ? pl->domain : VKR_PIPELINE_DOMAIN_WORLD;

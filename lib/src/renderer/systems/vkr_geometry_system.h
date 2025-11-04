@@ -195,6 +195,12 @@ vkr_geometry_system_create_default_plane(VkrGeometrySystem *system,
 /**
  * @brief Creates a default 2D plane (2x2 by default) using the
  * POSITION2_TEXCOORD layout. Vertex format: [x, y, u, v].
+ * @param system The geometry system to create the default 2D plane in
+ * @param width The width of the plane
+ * @param height The height of the plane
+ * @param out_error The error output. May be null.
+ * @return Returns a VkrGeometryHandle to the created geometry. Returns an
+ * invalid handle on error (check out_error).
  */
 VkrGeometryHandle
 vkr_geometry_system_create_default_plane2d(VkrGeometrySystem *system,
@@ -203,6 +209,13 @@ vkr_geometry_system_create_default_plane2d(VkrGeometrySystem *system,
 
 /**
  * @brief Retrieves the vertex layout used by a geometry handle.
+ * @param system Owning system instance. Must not be NULL.
+ * @param handle Geometry identifier to query.
+ * @param out_layout Output pointer to receive the vertex layout. Must not be
+ * NULL.
+ * @return Returns true on success and out_layout is populated with the layout.
+ *         Returns false on failure (invalid handle or geometry not found) and
+ *         out_layout remains unchanged.
  */
 bool32_t
 vkr_geometry_system_get_layout(VkrGeometrySystem *system,
