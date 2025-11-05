@@ -16,7 +16,7 @@ struct PushConstantsObject
 };
 
 [[vk::binding(1, 1)]]
-Texture2D<float4> texture;
+Texture2D<float4> diffuse_texture;
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<UniformBufferObject> ubo;
@@ -25,9 +25,9 @@ ConstantBuffer<UniformBufferObject> ubo;
 [[vk::binding(0, 1)]]
 ConstantBuffer<LocalUniformObject> local_ubo;
 
-// Sampler in the same instance set: set 1, binding 2 (after image at binding 1)
-[[vk::binding(2, 1)]]
-SamplerState sampler;
+// Sampler in the same instance set: set 1, binding 1+instance_texture_count (here: 4)
+[[vk::binding(4, 1)]]
+SamplerState diffuse_sampler;
 
 [[vk::push_constant]]
 ConstantBuffer<PushConstantsObject> push_constants;
@@ -35,7 +35,10 @@ ConstantBuffer<PushConstantsObject> push_constants;
 struct VertexInput
 {
     [[vk::location(0)]] float3 position : POSITION;
-    [[vk::location(1)]] float2 texcoord : TEXCOORD;
+    [[vk::location(1)]] float3 normal   : NORMAL;
+    [[vk::location(2)]] float2 texcoord : TEXCOORD;
+    [[vk::location(3)]] float4 color    : COLOR0;
+    [[vk::location(4)]] float4 tangent  : TANGENT;
 };
 
 struct VertexOutput
@@ -62,6 +65,6 @@ VertexOutput vertexMain(VertexInput input)
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target
 {
-    return texture.Sample(sampler, input.texcoord) * local_ubo.diffuse_color;
+    return diffuse_texture.Sample(diffuse_sampler, input.texcoord) * local_ubo.diffuse_color;
 } 
 

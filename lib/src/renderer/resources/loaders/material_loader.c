@@ -368,6 +368,83 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
       scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
 
       out_material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle = handle;
+    } else if (string8_contains_cstr(&key, "specular_texture")) {
+      Scratch scratch = scratch_create(temp_arena);
+      char *texture_path_cstr = (char *)arena_alloc(
+          scratch.arena, value.length + 1, ARENA_MEMORY_TAG_STRING);
+      if (!texture_path_cstr) {
+        log_error("Failed to allocate texture path buffer");
+        continue;
+      }
+      MemCopy(texture_path_cstr, value.str, (size_t)value.length);
+      texture_path_cstr[value.length] = '\0';
+      String8 texture_path = string8_create_from_cstr(
+          (const uint8_t *)texture_path_cstr, value.length);
+
+      log_debug("Material '%s': specular_texture requested: %s",
+                string8_cstr(&name), texture_path_cstr);
+      VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
+      VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
+      if (!vkr_texture_system_load(material_system->texture_system,
+                                   texture_path, &handle, &renderer_error) ||
+          renderer_error != VKR_RENDERER_ERROR_NONE) {
+        String8 error_string = vkr_renderer_get_error_string(renderer_error);
+        log_error("Failed to load texture '%s': %s", texture_path_cstr,
+                  string8_cstr(&error_string));
+      }
+
+      handle =
+          vkr_texture_system_acquire(material_system->texture_system,
+                                     texture_path, true_v, &renderer_error);
+      if (renderer_error != VKR_RENDERER_ERROR_NONE) {
+        String8 error_string = vkr_renderer_get_error_string(renderer_error);
+        log_error("Failed to acquire texture '%s': %s", texture_path_cstr,
+                  string8_cstr(&error_string));
+      }
+
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+
+      out_material->textures[VKR_TEXTURE_SLOT_SPECULAR].handle = handle;
+      out_material->textures[VKR_TEXTURE_SLOT_SPECULAR].enabled = true;
+    } else if (string8_contains_cstr(&key, "norm_texture") ||
+               string8_contains_cstr(&key, "normal_texture")) {
+      Scratch scratch = scratch_create(temp_arena);
+      char *texture_path_cstr = (char *)arena_alloc(
+          scratch.arena, value.length + 1, ARENA_MEMORY_TAG_STRING);
+      if (!texture_path_cstr) {
+        log_error("Failed to allocate texture path buffer");
+        continue;
+      }
+      MemCopy(texture_path_cstr, value.str, (size_t)value.length);
+      texture_path_cstr[value.length] = '\0';
+      String8 texture_path = string8_create_from_cstr(
+          (const uint8_t *)texture_path_cstr, value.length);
+
+      log_debug("Material '%s': normal_texture requested: %s",
+                string8_cstr(&name), texture_path_cstr);
+      VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
+      VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
+      if (!vkr_texture_system_load(material_system->texture_system,
+                                   texture_path, &handle, &renderer_error) ||
+          renderer_error != VKR_RENDERER_ERROR_NONE) {
+        String8 error_string = vkr_renderer_get_error_string(renderer_error);
+        log_error("Failed to load texture '%s': %s", texture_path_cstr,
+                  string8_cstr(&error_string));
+      }
+
+      handle =
+          vkr_texture_system_acquire(material_system->texture_system,
+                                     texture_path, true_v, &renderer_error);
+      if (renderer_error != VKR_RENDERER_ERROR_NONE) {
+        String8 error_string = vkr_renderer_get_error_string(renderer_error);
+        log_error("Failed to acquire texture '%s': %s", texture_path_cstr,
+                  string8_cstr(&error_string));
+      }
+
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+
+      out_material->textures[VKR_TEXTURE_SLOT_NORMAL].handle = handle;
+      out_material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled = true;
     } else if (string8_contains_cstr(&key, "diffuse_color")) {
       Vec4 v;
       if (string8_to_vec4(&value, &v)) {
