@@ -92,7 +92,9 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->texture_system = (VkrTextureSystem){0};
   renderer->material_system = (VkrMaterialSystem){0};
   renderer->camera = (VkrCamera){0};
-  renderer->globals = (VkrGlobalMaterialState){0};
+  renderer->globals = (VkrGlobalMaterialState){
+      .ambient_color = vec4_new(0.25f, 0.25f, 0.25f, 1.0f),
+  };
   renderer->rf_mutex = NULL;
   renderer->world_shader_config = (VkrShaderConfig){0};
   renderer->ui_shader_config = (VkrShaderConfig){0};

@@ -1,4 +1,5 @@
 #include "renderer/systems/vkr_geometry_system.h"
+#include "math/vec.h"
 #include "memory/vkr_arena_allocator.h"
 
 // Convenience for index type bytes
@@ -554,534 +555,252 @@ void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
                             0);
 }
 
+// Helper function to write a vertex to the interleaved vertex buffer
+// Vertex layout: Position (Vec3 + pad), Normal (Vec3 + pad), Texcoord (Vec2),
+// Color (Vec4), Tangent (Vec4), trailing pad (2 floats)
+// Total: 20 floats per vertex
+vkr_internal void vkr_write_vertex(float32_t *verts, uint32_t *offset,
+                                   Vec3 position, Vec3 normal, Vec2 texcoord,
+                                   Vec4 color, Vec4 tangent) {
+  uint32_t w = *offset;
+  // Position (Vec3 + 1 float pad)
+  verts[w++] = position.x;
+  verts[w++] = position.y;
+  verts[w++] = position.z;
+  verts[w++] = 0.0f; // padding
+
+  // Normal (Vec3 + 1 float pad)
+  verts[w++] = normal.x;
+  verts[w++] = normal.y;
+  verts[w++] = normal.z;
+  verts[w++] = 0.0f; // padding
+
+  // Texcoord (Vec2)
+  verts[w++] = texcoord.u;
+  verts[w++] = texcoord.v;
+
+  // Color (Vec4) - zeroed, will be computed later
+  verts[w++] = color.r;
+  verts[w++] = color.g;
+  verts[w++] = color.b;
+  verts[w++] = color.a;
+
+  // Tangent (Vec4) - zeroed, will be computed later
+  verts[w++] = tangent.x;
+  verts[w++] = tangent.y;
+  verts[w++] = tangent.z;
+  verts[w++] = tangent.w;
+
+  // Trailing pad (2 floats)
+  verts[w++] = 0.0f;
+  verts[w++] = 0.0f;
+
+  *offset = w;
+}
+
 VkrGeometryHandle vkr_geometry_system_create_default_cube(
     VkrGeometrySystem *system, float32_t width, float32_t height,
     float32_t depth, VkrRendererError *out_error) {
   assert_log(system != NULL, "Geometry system is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
+  // Calculate half-dimensions for centered cube
   float32_t hw = width * 0.5f;
   float32_t hh = height * 0.5f;
   float32_t hd = depth * 0.5f;
 
+  // Zero vectors for color and tangent (will be computed later)
+  Vec4 zero_color = vec4_zero();
+  Vec4 zero_tangent = vec4_zero();
+
   float32_t verts[24 * 20] = {0};
   uint32_t w = 0;
-  // Helper lambdas are not available in C; push attributes inline
-  // Front (+Z)
-  // v0
-  verts[w++] = -hw;
-  verts[w++] = -hh;
-  verts[w++] = hd;
-  verts[w++] = 0.0f; // position + pad
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f; // normal + pad
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f; // uv
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f; // color
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f; // tangent
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f; // trailing pad
-  // v1
-  verts[w++] = hw;
-  verts[w++] = -hh;
-  verts[w++] = hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v2
-  verts[w++] = hw;
-  verts[w++] = hh;
-  verts[w++] = hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v3
-  verts[w++] = -hw;
-  verts[w++] = hh;
-  verts[w++] = hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
 
-  // Back (-Z)
-  // v4
-  verts[w++] = -hw;
-  verts[w++] = -hh;
-  verts[w++] = -hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = -1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v5
-  verts[w++] = hw;
-  verts[w++] = -hh;
-  verts[w++] = -hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = -1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v6
-  verts[w++] = hw;
-  verts[w++] = hh;
-  verts[w++] = -hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = -1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v7
-  verts[w++] = -hw;
-  verts[w++] = hh;
-  verts[w++] = -hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = -1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
+  // ============================================================================
+  // Front Face (+Z direction, facing toward viewer in right-handed system)
+  // ============================================================================
+  // Normal: (0, 0, 1) - points forward along positive Z-axis
+  // Vertices ordered counter-clockwise when viewed from outside
+  Vec3 front_normal = vec3_new(0.0f, 0.0f, 1.0f);
 
-  // Left (-X)
-  // v8
-  verts[w++] = -hw;
-  verts[w++] = -hh;
-  verts[w++] = -hd;
-  verts[w++] = 0.0f;
-  verts[w++] = -1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v9
-  verts[w++] = -hw;
-  verts[w++] = -hh;
-  verts[w++] = hd;
-  verts[w++] = 0.0f;
-  verts[w++] = -1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v10
-  verts[w++] = -hw;
-  verts[w++] = hh;
-  verts[w++] = hd;
-  verts[w++] = 0.0f;
-  verts[w++] = -1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v11
-  verts[w++] = -hw;
-  verts[w++] = hh;
-  verts[w++] = -hd;
-  verts[w++] = 0.0f;
-  verts[w++] = -1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
+  // v0: Bottom-left corner
+  // Position: (-hw, -hh, hd)
+  // Texcoord: (0, 0) - bottom-left of texture
+  vkr_write_vertex(verts, &w, vec3_new(-hw, -hh, hd), front_normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
 
-  // Right (+X)
-  // v12
-  verts[w++] = hw;
-  verts[w++] = -hh;
-  verts[w++] = -hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v13
-  verts[w++] = hw;
-  verts[w++] = -hh;
-  verts[w++] = hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v14
-  verts[w++] = hw;
-  verts[w++] = hh;
-  verts[w++] = hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v15
-  verts[w++] = hw;
-  verts[w++] = hh;
-  verts[w++] = -hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
+  // v1: Bottom-right corner
+  // Position: (hw, -hh, hd)
+  // Texcoord: (1, 0) - bottom-right of texture
+  vkr_write_vertex(verts, &w, vec3_new(hw, -hh, hd), front_normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
 
-  // Top (+Y)
-  // v16
-  verts[w++] = -hw;
-  verts[w++] = hh;
-  verts[w++] = hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v17
-  verts[w++] = hw;
-  verts[w++] = hh;
-  verts[w++] = hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v18
-  verts[w++] = hw;
-  verts[w++] = hh;
-  verts[w++] = -hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v19
-  verts[w++] = -hw;
-  verts[w++] = hh;
-  verts[w++] = -hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
+  // v2: Top-right corner
+  // Position: (hw, hh, hd)
+  // Texcoord: (1, 1) - top-right of texture
+  vkr_write_vertex(verts, &w, vec3_new(hw, hh, hd), front_normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
 
-  // Bottom (-Y)
-  // v20
-  verts[w++] = -hw;
-  verts[w++] = -hh;
-  verts[w++] = -hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = -1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v21
-  verts[w++] = hw;
-  verts[w++] = -hh;
-  verts[w++] = -hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = -1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v22
-  verts[w++] = hw;
-  verts[w++] = -hh;
-  verts[w++] = hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = -1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  // v23
-  verts[w++] = -hw;
-  verts[w++] = -hh;
-  verts[w++] = hd;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = -1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
+  // v3: Top-left corner
+  // Position: (-hw, hh, hd)
+  // Texcoord: (0, 1) - top-left of texture
+  vkr_write_vertex(verts, &w, vec3_new(-hw, hh, hd), front_normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+
+  // ============================================================================
+  // Back Face (-Z direction, facing away from viewer)
+  // ============================================================================
+  // Normal: (0, 0, -1) - points backward along negative Z-axis
+  // Vertices ordered counter-clockwise when viewed from outside (from back)
+  Vec3 back_normal = vec3_new(0.0f, 0.0f, -1.0f);
+
+  // v4: Bottom-left corner
+  // Position: (-hw, -hh, -hd)
+  // Texcoord: (1, 0) - bottom-right of texture (flipped horizontally)
+  vkr_write_vertex(verts, &w, vec3_new(-hw, -hh, -hd), back_normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+
+  // v5: Bottom-right corner
+  // Position: (hw, -hh, -hd)
+  // Texcoord: (0, 0) - bottom-left of texture (flipped horizontally)
+  vkr_write_vertex(verts, &w, vec3_new(hw, -hh, -hd), back_normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+
+  // v6: Top-right corner
+  // Position: (hw, hh, -hd)
+  // Texcoord: (0, 1) - top-left of texture (flipped horizontally)
+  vkr_write_vertex(verts, &w, vec3_new(hw, hh, -hd), back_normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+
+  // v7: Top-left corner
+  // Position: (-hw, hh, -hd)
+  // Texcoord: (1, 1) - top-right of texture (flipped horizontally)
+  vkr_write_vertex(verts, &w, vec3_new(-hw, hh, -hd), back_normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+
+  // ============================================================================
+  // Left Face (-X direction, facing left)
+  // ============================================================================
+  // Normal: (-1, 0, 0) - points left along negative X-axis
+  // Vertices ordered counter-clockwise when viewed from outside (from left)
+  Vec3 left_normal = vec3_new(-1.0f, 0.0f, 0.0f);
+
+  // v8: Bottom-back corner
+  // Position: (-hw, -hh, -hd)
+  // Texcoord: (0, 0) - bottom-left of texture
+  vkr_write_vertex(verts, &w, vec3_new(-hw, -hh, -hd), left_normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+
+  // v9: Bottom-front corner
+  // Position: (-hw, -hh, hd)
+  // Texcoord: (1, 0) - bottom-right of texture
+  vkr_write_vertex(verts, &w, vec3_new(-hw, -hh, hd), left_normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+
+  // v10: Top-front corner
+  // Position: (-hw, hh, hd)
+  // Texcoord: (1, 1) - top-right of texture
+  vkr_write_vertex(verts, &w, vec3_new(-hw, hh, hd), left_normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+
+  // v11: Top-back corner
+  // Position: (-hw, hh, -hd)
+  // Texcoord: (0, 1) - top-left of texture
+  vkr_write_vertex(verts, &w, vec3_new(-hw, hh, -hd), left_normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+
+  // ============================================================================
+  // Right Face (+X direction, facing right)
+  // ============================================================================
+  // Normal: (1, 0, 0) - points right along positive X-axis
+  // Vertices ordered counter-clockwise when viewed from outside (from right)
+  Vec3 right_normal = vec3_new(1.0f, 0.0f, 0.0f);
+
+  // v12: Bottom-back corner
+  // Position: (hw, -hh, -hd)
+  // Texcoord: (1, 0) - bottom-right of texture (flipped horizontally)
+  vkr_write_vertex(verts, &w, vec3_new(hw, -hh, -hd), right_normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+
+  // v13: Bottom-front corner
+  // Position: (hw, -hh, hd)
+  // Texcoord: (0, 0) - bottom-left of texture (flipped horizontally)
+  vkr_write_vertex(verts, &w, vec3_new(hw, -hh, hd), right_normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+
+  // v14: Top-front corner
+  // Position: (hw, hh, hd)
+  // Texcoord: (0, 1) - top-left of texture (flipped horizontally)
+  vkr_write_vertex(verts, &w, vec3_new(hw, hh, hd), right_normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+
+  // v15: Top-back corner
+  // Position: (hw, hh, -hd)
+  // Texcoord: (1, 1) - top-right of texture (flipped horizontally)
+  vkr_write_vertex(verts, &w, vec3_new(hw, hh, -hd), right_normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+
+  // ============================================================================
+  // Top Face (+Y direction, facing up)
+  // ============================================================================
+  // Normal: (0, 1, 0) - points up along positive Y-axis
+  // Vertices ordered counter-clockwise when viewed from outside (from above)
+  Vec3 top_normal = vec3_new(0.0f, 1.0f, 0.0f);
+
+  // v16: Front-left corner
+  // Position: (-hw, hh, hd)
+  // Texcoord: (0, 0) - bottom-left of texture
+  vkr_write_vertex(verts, &w, vec3_new(-hw, hh, hd), top_normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+
+  // v17: Front-right corner
+  // Position: (hw, hh, hd)
+  // Texcoord: (1, 0) - bottom-right of texture
+  vkr_write_vertex(verts, &w, vec3_new(hw, hh, hd), top_normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+
+  // v18: Back-right corner
+  // Position: (hw, hh, -hd)
+  // Texcoord: (1, 1) - top-right of texture
+  vkr_write_vertex(verts, &w, vec3_new(hw, hh, -hd), top_normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+
+  // v19: Back-left corner
+  // Position: (-hw, hh, -hd)
+  // Texcoord: (0, 1) - top-left of texture
+  vkr_write_vertex(verts, &w, vec3_new(-hw, hh, -hd), top_normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+
+  // ============================================================================
+  // Bottom Face (-Y direction, facing down)
+  // ============================================================================
+  // Normal: (0, -1, 0) - points down along negative Y-axis
+  // Vertices ordered counter-clockwise when viewed from outside (from below)
+  Vec3 bottom_normal = vec3_new(0.0f, -1.0f, 0.0f);
+
+  // v20: Back-left corner
+  // Position: (-hw, -hh, -hd)
+  // Texcoord: (0, 0) - bottom-left of texture
+  vkr_write_vertex(verts, &w, vec3_new(-hw, -hh, -hd), bottom_normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+
+  // v21: Back-right corner
+  // Position: (hw, -hh, -hd)
+  // Texcoord: (1, 0) - bottom-right of texture
+  vkr_write_vertex(verts, &w, vec3_new(hw, -hh, -hd), bottom_normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+
+  // v22: Front-right corner
+  // Position: (hw, -hh, hd)
+  // Texcoord: (1, 1) - top-right of texture
+  vkr_write_vertex(verts, &w, vec3_new(hw, -hh, hd), bottom_normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+
+  // v23: Front-left corner
+  // Position: (-hw, -hh, hd)
+  // Texcoord: (0, 1) - top-left of texture
+  vkr_write_vertex(verts, &w, vec3_new(-hw, -hh, hd), bottom_normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
 
   uint32_t indices[36] = {
       0,  1,  2,  2,  3,  0,  // Front
@@ -1197,7 +916,7 @@ vkr_geometry_system_create_default_plane2d(VkrGeometrySystem *system,
 
   VkrGeometryHandle h = vkr_geometry_system_create_from_interleaved(
       system, GEOMETRY_VERTEX_LAYOUT_POSITION2_TEXCOORD, verts, 4, indices, 6,
-      false_v, string8_lit("Default UI Plane2D"), out_error);
+      false_v, string8_lit("Default Plane 2D"), out_error);
   return h;
 }
 
@@ -1206,6 +925,7 @@ vkr_geometry_system_get_layout(VkrGeometrySystem *system,
                                VkrGeometryHandle handle,
                                VkrGeometryVertexLayoutType *out_layout) {
   assert_log(system != NULL, "Geometry system is NULL");
+  assert_log(handle.id != 0, "Invalid geometry handle");
   assert_log(out_layout != NULL, "Out layout is NULL");
 
   if (handle.id == 0)
@@ -1224,12 +944,9 @@ void vkr_geometry_system_require_layout_stride(
     VkrGeometrySystem *system, VkrGeometryVertexLayoutType layout,
     uint32_t stride_bytes, VkrRendererError *out_error) {
   assert_log(system != NULL, "System is NULL");
+  assert_log(layout < GEOMETRY_VERTEX_LAYOUT_COUNT, "Invalid layout");
   assert_log(out_error != NULL, "Out error is NULL");
-
-  if (layout >= GEOMETRY_VERTEX_LAYOUT_COUNT || stride_bytes == 0) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-    return;
-  }
+  assert_log(stride_bytes > 0, "Stride bytes must be > 0");
 
   VkrGeometryPool *pool = &system->pools[layout];
   if (pool->initialized) {
