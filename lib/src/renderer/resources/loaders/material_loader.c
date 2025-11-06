@@ -62,6 +62,10 @@ vkr_internal VkrRendererError
 vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
                                  Arena *temp_arena, VkrMaterial *out_material);
 
+vkr_internal VkrTextureHandle vkr_load_and_acquire_texture(
+    VkrMaterialSystem *material_system, Arena *temp_arena, String8 *name,
+    String8 value, VkrTextureSlot slot, const char *log_label);
+
 vkr_internal bool8_t vkr_material_loader_can_load(VkrResourceLoader *self,
                                                   String8 name) {
   assert_log(self != NULL, "Self is NULL");
@@ -239,6 +243,54 @@ vkr_material_loader_unload(VkrResourceLoader *self,
   }
 }
 
+vkr_internal VkrTextureHandle vkr_load_and_acquire_texture(
+    VkrMaterialSystem *material_system, Arena *temp_arena, String8 *name,
+    String8 value, VkrTextureSlot slot, const char *log_label) {
+  assert_log(material_system != NULL, "Material system is NULL");
+  assert_log(temp_arena != NULL, "Temp arena is NULL");
+  assert_log(name != NULL, "Name is NULL");
+  assert_log(value.str != NULL, "Value is NULL");
+  assert_log(log_label != NULL, "Log label is NULL");
+
+  Scratch scratch = scratch_create(temp_arena);
+  char *texture_path_cstr = (char *)arena_alloc(scratch.arena, value.length + 1,
+                                                ARENA_MEMORY_TAG_STRING);
+  if (!texture_path_cstr) {
+    log_error("Failed to allocate texture path buffer");
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    return VKR_TEXTURE_HANDLE_INVALID;
+  }
+  MemCopy(texture_path_cstr, value.str, (size_t)value.length);
+  texture_path_cstr[value.length] = '\0';
+  String8 texture_path = string8_create_from_cstr(
+      (const uint8_t *)texture_path_cstr, value.length);
+
+  log_debug("Material '%s': %s requested: %s", string8_cstr(name), log_label,
+            texture_path_cstr);
+
+  VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
+  VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_texture_system_load(material_system->texture_system, texture_path,
+                               &handle, &renderer_error) ||
+      renderer_error != VKR_RENDERER_ERROR_NONE) {
+    String8 error_string = vkr_renderer_get_error_string(renderer_error);
+    log_error("Failed to load texture '%s': %s", texture_path_cstr,
+              string8_cstr(&error_string));
+  }
+
+  handle = vkr_texture_system_acquire(material_system->texture_system,
+                                      texture_path, true_v, &renderer_error);
+  if (renderer_error != VKR_RENDERER_ERROR_NONE) {
+    String8 error_string = vkr_renderer_get_error_string(renderer_error);
+    log_error("Failed to acquire texture '%s': %s", texture_path_cstr,
+              string8_cstr(&error_string));
+    handle = VKR_TEXTURE_HANDLE_INVALID;
+  }
+
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+  return handle;
+}
+
 vkr_internal VkrRendererError
 vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
                                  Arena *temp_arena, VkrMaterial *out_material) {
@@ -332,117 +384,21 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
     string8_trim(&value);
 
     if (string8_contains_cstr(&key, "diffuse_texture")) {
-      Scratch scratch = scratch_create(temp_arena);
-      char *texture_path_cstr = (char *)arena_alloc(
-          scratch.arena, value.length + 1, ARENA_MEMORY_TAG_STRING);
-      if (!texture_path_cstr) {
-        log_error("Failed to allocate texture path buffer");
-        continue;
-      }
-      MemCopy(texture_path_cstr, value.str, (size_t)value.length);
-      texture_path_cstr[value.length] = '\0';
-      String8 texture_path = string8_create_from_cstr(
-          (const uint8_t *)texture_path_cstr, value.length);
-
-      log_debug("Material '%s': diffuse_texture texture requested: %s",
-                string8_cstr(&name), texture_path_cstr);
-      VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
-      VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
-      if (!vkr_texture_system_load(material_system->texture_system,
-                                   texture_path, &handle, &renderer_error) ||
-          renderer_error != VKR_RENDERER_ERROR_NONE) {
-        String8 error_string = vkr_renderer_get_error_string(renderer_error);
-        log_error("Failed to load texture '%s': %s", texture_path_cstr,
-                  string8_cstr(&error_string));
-      }
-
-      handle =
-          vkr_texture_system_acquire(material_system->texture_system,
-                                     texture_path, true_v, &renderer_error);
-      if (renderer_error != VKR_RENDERER_ERROR_NONE) {
-        String8 error_string = vkr_renderer_get_error_string(renderer_error);
-        log_error("Failed to acquire texture '%s': %s", texture_path_cstr,
-                  string8_cstr(&error_string));
-      }
-
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
-
+      VkrTextureHandle handle = vkr_load_and_acquire_texture(
+          material_system, temp_arena, &name, value, VKR_TEXTURE_SLOT_DIFFUSE,
+          "diffuse_texture texture");
       out_material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle = handle;
     } else if (string8_contains_cstr(&key, "specular_texture")) {
-      Scratch scratch = scratch_create(temp_arena);
-      char *texture_path_cstr = (char *)arena_alloc(
-          scratch.arena, value.length + 1, ARENA_MEMORY_TAG_STRING);
-      if (!texture_path_cstr) {
-        log_error("Failed to allocate texture path buffer");
-        continue;
-      }
-      MemCopy(texture_path_cstr, value.str, (size_t)value.length);
-      texture_path_cstr[value.length] = '\0';
-      String8 texture_path = string8_create_from_cstr(
-          (const uint8_t *)texture_path_cstr, value.length);
-
-      log_debug("Material '%s': specular_texture requested: %s",
-                string8_cstr(&name), texture_path_cstr);
-      VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
-      VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
-      if (!vkr_texture_system_load(material_system->texture_system,
-                                   texture_path, &handle, &renderer_error) ||
-          renderer_error != VKR_RENDERER_ERROR_NONE) {
-        String8 error_string = vkr_renderer_get_error_string(renderer_error);
-        log_error("Failed to load texture '%s': %s", texture_path_cstr,
-                  string8_cstr(&error_string));
-      }
-
-      handle =
-          vkr_texture_system_acquire(material_system->texture_system,
-                                     texture_path, true_v, &renderer_error);
-      if (renderer_error != VKR_RENDERER_ERROR_NONE) {
-        String8 error_string = vkr_renderer_get_error_string(renderer_error);
-        log_error("Failed to acquire texture '%s': %s", texture_path_cstr,
-                  string8_cstr(&error_string));
-      }
-
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
-
+      VkrTextureHandle handle = vkr_load_and_acquire_texture(
+          material_system, temp_arena, &name, value, VKR_TEXTURE_SLOT_SPECULAR,
+          "specular_texture");
       out_material->textures[VKR_TEXTURE_SLOT_SPECULAR].handle = handle;
       out_material->textures[VKR_TEXTURE_SLOT_SPECULAR].enabled = true;
     } else if (string8_contains_cstr(&key, "norm_texture") ||
                string8_contains_cstr(&key, "normal_texture")) {
-      Scratch scratch = scratch_create(temp_arena);
-      char *texture_path_cstr = (char *)arena_alloc(
-          scratch.arena, value.length + 1, ARENA_MEMORY_TAG_STRING);
-      if (!texture_path_cstr) {
-        log_error("Failed to allocate texture path buffer");
-        continue;
-      }
-      MemCopy(texture_path_cstr, value.str, (size_t)value.length);
-      texture_path_cstr[value.length] = '\0';
-      String8 texture_path = string8_create_from_cstr(
-          (const uint8_t *)texture_path_cstr, value.length);
-
-      log_debug("Material '%s': normal_texture requested: %s",
-                string8_cstr(&name), texture_path_cstr);
-      VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
-      VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
-      if (!vkr_texture_system_load(material_system->texture_system,
-                                   texture_path, &handle, &renderer_error) ||
-          renderer_error != VKR_RENDERER_ERROR_NONE) {
-        String8 error_string = vkr_renderer_get_error_string(renderer_error);
-        log_error("Failed to load texture '%s': %s", texture_path_cstr,
-                  string8_cstr(&error_string));
-      }
-
-      handle =
-          vkr_texture_system_acquire(material_system->texture_system,
-                                     texture_path, true_v, &renderer_error);
-      if (renderer_error != VKR_RENDERER_ERROR_NONE) {
-        String8 error_string = vkr_renderer_get_error_string(renderer_error);
-        log_error("Failed to acquire texture '%s': %s", texture_path_cstr,
-                  string8_cstr(&error_string));
-      }
-
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
-
+      VkrTextureHandle handle = vkr_load_and_acquire_texture(
+          material_system, temp_arena, &name, value, VKR_TEXTURE_SLOT_NORMAL,
+          "normal_texture");
       out_material->textures[VKR_TEXTURE_SLOT_NORMAL].handle = handle;
       out_material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled = true;
     } else if (string8_contains_cstr(&key, "diffuse_color")) {

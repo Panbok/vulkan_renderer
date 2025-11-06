@@ -16,13 +16,13 @@ vertex_layout=GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD2_COLOR_TANGENT
 # ============================================================================
 # Location assigned in declaration order (0, 1, 2, ...)
 # Offsets are cumulative: vec3=12 bytes, vec2=8 bytes
-# Total stride: 20 bytes per vertex
+# Total stride: 64 bytes per vertex
 
 attribute=vec3,in_position   # Location 0, offset 0,  size 12
-attribute=vec3,in_normal
-attribute=vec2,in_texcoord   # Location 1, offset 12, size 8
-attribute=vec4,in_color
-attribute=vec4,in_tangent
+attribute=vec3,in_normal     # Location 1, offset 12, size 12
+attribute=vec2,in_texcoord   # Location 2, offset 24, size 8
+attribute=vec4,in_color      # Location 4, offset 32, size 16
+attribute=vec4,in_tangent    # Location 5, offset 48, size 16
 
 # ============================================================================
 # Uniforms
