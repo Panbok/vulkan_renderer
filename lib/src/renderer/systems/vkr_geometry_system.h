@@ -167,6 +167,16 @@ void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
 // =============================================================================
 
 /**
+ * @brief Generates tangents for the given vertices
+ * @param verts The vertices to generate tangents for
+ * @param vertex_count The number of vertices
+ */
+void vkr_geometry_system_generate_tangents(float32_t *verts,
+                                           uint32_t vertex_count,
+                                           uint32_t *indices,
+                                           uint32_t index_count);
+
+/**
  * @brief Creates a unit cube (2x2x2 by default) using the POSITION_TEXCOORD
  * layout and set as default geometry. Dimensions are full extents.
  * @param system The geometry system to create the default cube in

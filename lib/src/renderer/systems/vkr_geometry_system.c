@@ -1,6 +1,18 @@
 #include "renderer/systems/vkr_geometry_system.h"
+
 #include "math/vec.h"
 #include "memory/vkr_arena_allocator.h"
+
+// Layout helpers for
+// GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD2_COLOR_TANGENT
+enum {
+  VKR_WORLD_VERTEX_FLOATS = 20,
+  VKR_WORLD_VERTEX_POS_OFFSET = 0,
+  VKR_WORLD_VERTEX_NORMAL_OFFSET = 4,
+  VKR_WORLD_VERTEX_TEXCOORD_OFFSET = 8,
+  VKR_WORLD_VERTEX_COLOR_OFFSET = 10,
+  VKR_WORLD_VERTEX_TANGENT_OFFSET = 14,
+};
 
 // Convenience for index type bytes
 vkr_internal INLINE uint32_t vkr_index_type_size(VkrIndexType type) {
@@ -555,47 +567,119 @@ void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
                             0);
 }
 
+void vkr_geometry_system_generate_tangents(float32_t *verts,
+                                           uint32_t vertex_count,
+                                           uint32_t *indices,
+                                           uint32_t index_count) {
+  assert_log(verts != NULL, "Verts is NULL");
+  assert_log(vertex_count > 0, "Vertex count must be > 0");
+  assert_log(indices != NULL, "Indices is NULL");
+  assert_log(index_count > 0, "Index count must be > 0");
+
+  const uint32_t stride = VKR_WORLD_VERTEX_FLOATS;
+  for (uint32_t i = 0; i < index_count; i += 3) {
+    uint32_t i0 = indices[i];
+    uint32_t i1 = indices[i + 1];
+    uint32_t i2 = indices[i + 2];
+
+    Vec3 v0 =
+        vec3_new(verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_POS_OFFSET],
+                 verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_POS_OFFSET + 1],
+                 verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_POS_OFFSET + 2]);
+    Vec3 v1 =
+        vec3_new(verts[(size_t)i1 * stride + VKR_WORLD_VERTEX_POS_OFFSET],
+                 verts[(size_t)i1 * stride + VKR_WORLD_VERTEX_POS_OFFSET + 1],
+                 verts[(size_t)i1 * stride + VKR_WORLD_VERTEX_POS_OFFSET + 2]);
+    Vec3 v2 =
+        vec3_new(verts[(size_t)i2 * stride + VKR_WORLD_VERTEX_POS_OFFSET],
+                 verts[(size_t)i2 * stride + VKR_WORLD_VERTEX_POS_OFFSET + 1],
+                 verts[(size_t)i2 * stride + VKR_WORLD_VERTEX_POS_OFFSET + 2]);
+
+    Vec3 e1 = vec3_sub(v1, v0);
+    Vec3 e2 = vec3_sub(v2, v0);
+
+    float32_t deltaU1 =
+        verts[(size_t)i1 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET] -
+        verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET];
+    float32_t deltaV1 =
+        verts[(size_t)i1 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET + 1] -
+        verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET + 1];
+
+    float32_t deltaU2 =
+        verts[(size_t)i2 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET] -
+        verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET];
+    float32_t deltaV2 =
+        verts[(size_t)i2 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET + 1] -
+        verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET + 1];
+
+    float32_t dividend = (deltaU1 * deltaV2 - deltaU2 * deltaV1);
+    if (fabsf(dividend) < 1e-7f) {
+      continue;
+    }
+    float32_t fc = 1.0f / dividend;
+
+    Vec3 tangent = vec3_new(fc * (deltaV2 * e1.x - deltaV1 * e2.x),
+                            fc * (deltaV2 * e1.y - deltaV1 * e2.y),
+                            fc * (deltaV2 * e1.z - deltaV1 * e2.z));
+    tangent = vec3_normalize(tangent);
+
+    float32_t sx = deltaU1, sy = deltaU2;
+    float32_t tx = deltaV1, ty = deltaV2;
+    float32_t handedness = ((tx * sy - ty * sx) < 0.0f) ? -1.0f : 1.0f;
+    Vec4 t4 = vec4_from_vec3(tangent, handedness);
+
+    const uint32_t tri_indices[3] = {i0, i1, i2};
+    for (uint32_t j = 0; j < 3; ++j) {
+      size_t base =
+          (size_t)tri_indices[j] * stride + VKR_WORLD_VERTEX_TANGENT_OFFSET;
+      verts[base + 0] = t4.x;
+      verts[base + 1] = t4.y;
+      verts[base + 2] = t4.z;
+      verts[base + 3] = t4.w;
+    }
+  }
+}
+
 // Helper function to write a vertex to the interleaved vertex buffer
-// Vertex layout: Position (Vec3 + pad), Normal (Vec3 + pad), Texcoord (Vec2),
-// Color (Vec4), Tangent (Vec4), trailing pad (2 floats)
-// Total: 20 floats per vertex
+// Vertex layout (20 floats / 80 bytes):
+//   [0..2]   Position.xyz   [3]   pad
+//   [4..6]   Normal.xyz     [7]   pad
+//   [8..9]   Texcoord uv
+//   [10..13] Color rgba
+//   [14..17] Tangent xyzw
+//   [18..19] pad
 vkr_internal void vkr_write_vertex(float32_t *verts, uint32_t *offset,
                                    Vec3 position, Vec3 normal, Vec2 texcoord,
                                    Vec4 color, Vec4 tangent) {
-  uint32_t w = *offset;
-  // Position (Vec3 + 1 float pad)
-  verts[w++] = position.x;
-  verts[w++] = position.y;
-  verts[w++] = position.z;
-  verts[w++] = 0.0f; // padding
+  uint32_t base = *offset;
 
-  // Normal (Vec3 + 1 float pad)
-  verts[w++] = normal.x;
-  verts[w++] = normal.y;
-  verts[w++] = normal.z;
-  verts[w++] = 0.0f; // padding
+  verts[base + VKR_WORLD_VERTEX_POS_OFFSET + 0] = position.x;
+  verts[base + VKR_WORLD_VERTEX_POS_OFFSET + 1] = position.y;
+  verts[base + VKR_WORLD_VERTEX_POS_OFFSET + 2] = position.z;
+  verts[base + VKR_WORLD_VERTEX_POS_OFFSET + 3] = 0.0f;
 
-  // Texcoord (Vec2)
-  verts[w++] = texcoord.u;
-  verts[w++] = texcoord.v;
+  verts[base + VKR_WORLD_VERTEX_NORMAL_OFFSET + 0] = normal.x;
+  verts[base + VKR_WORLD_VERTEX_NORMAL_OFFSET + 1] = normal.y;
+  verts[base + VKR_WORLD_VERTEX_NORMAL_OFFSET + 2] = normal.z;
+  verts[base + VKR_WORLD_VERTEX_NORMAL_OFFSET + 3] = 0.0f;
 
-  // Color (Vec4) - zeroed, will be computed later
-  verts[w++] = color.r;
-  verts[w++] = color.g;
-  verts[w++] = color.b;
-  verts[w++] = color.a;
+  verts[base + VKR_WORLD_VERTEX_TEXCOORD_OFFSET + 0] = texcoord.u;
+  verts[base + VKR_WORLD_VERTEX_TEXCOORD_OFFSET + 1] = texcoord.v;
 
-  // Tangent (Vec4) - zeroed, will be computed later
-  verts[w++] = tangent.x;
-  verts[w++] = tangent.y;
-  verts[w++] = tangent.z;
-  verts[w++] = tangent.w;
+  verts[base + VKR_WORLD_VERTEX_COLOR_OFFSET + 0] = color.r;
+  verts[base + VKR_WORLD_VERTEX_COLOR_OFFSET + 1] = color.g;
+  verts[base + VKR_WORLD_VERTEX_COLOR_OFFSET + 2] = color.b;
+  verts[base + VKR_WORLD_VERTEX_COLOR_OFFSET + 3] = color.a;
 
-  // Trailing pad (2 floats)
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
+  verts[base + VKR_WORLD_VERTEX_TANGENT_OFFSET + 0] = tangent.x;
+  verts[base + VKR_WORLD_VERTEX_TANGENT_OFFSET + 1] = tangent.y;
+  verts[base + VKR_WORLD_VERTEX_TANGENT_OFFSET + 2] = tangent.z;
+  verts[base + VKR_WORLD_VERTEX_TANGENT_OFFSET + 3] = tangent.w;
 
-  *offset = w;
+  verts[base + 18] = 0.0f;
+  verts[base + 19] = 0.0f;
+
+  *offset = base + VKR_WORLD_VERTEX_FLOATS;
 }
 
 VkrGeometryHandle vkr_geometry_system_create_default_cube(
@@ -613,7 +697,7 @@ VkrGeometryHandle vkr_geometry_system_create_default_cube(
   Vec4 zero_color = vec4_zero();
   Vec4 zero_tangent = vec4_zero();
 
-  float32_t verts[24 * 20] = {0};
+  float32_t verts[24 * VKR_WORLD_VERTEX_FLOATS] = {0};
   uint32_t w = 0;
 
   // ============================================================================
@@ -810,6 +894,8 @@ VkrGeometryHandle vkr_geometry_system_create_default_cube(
       16, 17, 18, 18, 19, 16, // Top
       20, 21, 22, 22, 23, 20  // Bottom
   };
+
+  vkr_geometry_system_generate_tangents(verts, 24, indices, 36);
 
   VkrGeometryHandle h = vkr_geometry_system_create_from_interleaved(
       system, GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD2_COLOR_TANGENT,
