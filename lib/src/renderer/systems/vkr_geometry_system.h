@@ -168,10 +168,14 @@ void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
 
 /**
  * @brief Generates tangents for the given vertices
+ * @param allocator The allocator to use for temporary memory
  * @param verts The vertices to generate tangents for
  * @param vertex_count The number of vertices
+ * @param indices The indices to use
+ * @param index_count The number of indices
  */
-void vkr_geometry_system_generate_tangents(float32_t *verts,
+void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,
+                                           float32_t *verts,
                                            uint32_t vertex_count,
                                            uint32_t *indices,
                                            uint32_t index_count);

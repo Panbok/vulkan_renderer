@@ -194,14 +194,12 @@ void vkr_material_system_apply_global(VkrMaterialSystem *system,
   if (domain == VKR_PIPELINE_DOMAIN_UI) {
     vkr_shader_system_uniform_set(system->shader_system, "view",
                                   &global_state->ui_view);
-
     vkr_shader_system_uniform_set(system->shader_system, "projection",
                                   &global_state->ui_projection);
 
   } else {
     vkr_shader_system_uniform_set(system->shader_system, "view",
                                   &global_state->view);
-
     vkr_shader_system_uniform_set(system->shader_system, "projection",
                                   &global_state->projection);
     vkr_shader_system_uniform_set(system->shader_system, "ambient_color",

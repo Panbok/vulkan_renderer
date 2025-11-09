@@ -6,12 +6,15 @@
 // Layout helpers for
 // GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD2_COLOR_TANGENT
 enum {
-  VKR_WORLD_VERTEX_FLOATS = 20,
-  VKR_WORLD_VERTEX_POS_OFFSET = 0,
-  VKR_WORLD_VERTEX_NORMAL_OFFSET = 4,
-  VKR_WORLD_VERTEX_TEXCOORD_OFFSET = 8,
-  VKR_WORLD_VERTEX_COLOR_OFFSET = 10,
-  VKR_WORLD_VERTEX_TANGENT_OFFSET = 14,
+  VKR_WORLD_VERTEX_FLOATS = 20, // total floats per vertex: pos(4) + normal(4) +
+                                // texcoord(2) + color(4) + tangent(4)
+  VKR_WORLD_VERTEX_POS_OFFSET = 0,    // float index of position; vec4, 4 floats
+  VKR_WORLD_VERTEX_NORMAL_OFFSET = 4, // float index of normal; vec4, 4 floats
+  VKR_WORLD_VERTEX_TEXCOORD_OFFSET =
+      8,                              // float index of texcoord; vec2, 2 floats
+  VKR_WORLD_VERTEX_COLOR_OFFSET = 10, // float index of color; vec4, 4 floats
+  VKR_WORLD_VERTEX_TANGENT_OFFSET =
+      14, // float index of tangent; vec4, 4 floats
 };
 
 // Convenience for index type bytes
@@ -567,16 +570,37 @@ void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
                             0);
 }
 
-void vkr_geometry_system_generate_tangents(float32_t *verts,
+void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,
+                                           float32_t *verts,
                                            uint32_t vertex_count,
                                            uint32_t *indices,
                                            uint32_t index_count) {
+  assert_log(allocator != NULL, "Allocator is NULL");
   assert_log(verts != NULL, "Verts is NULL");
   assert_log(vertex_count > 0, "Vertex count must be > 0");
   assert_log(indices != NULL, "Indices is NULL");
   assert_log(index_count > 0, "Index count must be > 0");
 
   const uint32_t stride = VKR_WORLD_VERTEX_FLOATS;
+
+  // Allocate temporary arrays for accumulating tangents and handedness per
+  // vertex
+  Vec3 *tangent_accumulators = (Vec3 *)vkr_allocator_alloc(
+      allocator, vertex_count * sizeof(Vec3), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  assert_log(tangent_accumulators != NULL,
+             "Failed to allocate tangent accumulators");
+
+  float32_t *handedness_accumulators = (float32_t *)vkr_allocator_alloc(
+      allocator, vertex_count * sizeof(float32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  assert_log(handedness_accumulators != NULL,
+             "Failed to allocate handedness accumulators");
+
+  // Initialize accumulators to zero
+  for (uint32_t i = 0; i < vertex_count; ++i) {
+    tangent_accumulators[i] = vec3_zero();
+    handedness_accumulators[i] = 0.0f;
+  }
   for (uint32_t i = 0; i < index_count; i += 3) {
     uint32_t i0 = indices[i];
     uint32_t i1 = indices[i + 1];
@@ -613,7 +637,7 @@ void vkr_geometry_system_generate_tangents(float32_t *verts,
         verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET + 1];
 
     float32_t dividend = (deltaU1 * deltaV2 - deltaU2 * deltaV1);
-    if (fabsf(dividend) < 1e-7f) {
+    if (fabsf(dividend) < VKR_FLOAT_EPSILON) {
       continue;
     }
     float32_t fc = 1.0f / dividend;
@@ -623,21 +647,55 @@ void vkr_geometry_system_generate_tangents(float32_t *verts,
                             fc * (deltaV2 * e1.z - deltaV1 * e2.z));
     tangent = vec3_normalize(tangent);
 
+    // Compute handedness from UV winding
     float32_t sx = deltaU1, sy = deltaU2;
     float32_t tx = deltaV1, ty = deltaV2;
     float32_t handedness = ((tx * sy - ty * sx) < 0.0f) ? -1.0f : 1.0f;
-    Vec4 t4 = vec4_from_vec3(tangent, handedness);
 
-    const uint32_t tri_indices[3] = {i0, i1, i2};
-    for (uint32_t j = 0; j < 3; ++j) {
-      size_t base =
-          (size_t)tri_indices[j] * stride + VKR_WORLD_VERTEX_TANGENT_OFFSET;
-      verts[base + 0] = t4.x;
-      verts[base + 1] = t4.y;
-      verts[base + 2] = t4.z;
-      verts[base + 3] = t4.w;
-    }
+    // Accumulate tangents and handedness for each vertex in this triangle
+    tangent_accumulators[i0] = vec3_add(tangent_accumulators[i0], tangent);
+    tangent_accumulators[i1] = vec3_add(tangent_accumulators[i1], tangent);
+    tangent_accumulators[i2] = vec3_add(tangent_accumulators[i2], tangent);
+    handedness_accumulators[i0] += handedness;
+    handedness_accumulators[i1] += handedness;
+    handedness_accumulators[i2] += handedness;
   }
+
+  // Finalize tangents: orthogonalize against normals and write to vertex buffer
+  for (uint32_t i = 0; i < vertex_count; ++i) {
+    // Read normal from vertex buffer
+    Vec3 normal = vec3_new(
+        verts[(size_t)i * stride + VKR_WORLD_VERTEX_NORMAL_OFFSET],
+        verts[(size_t)i * stride + VKR_WORLD_VERTEX_NORMAL_OFFSET + 1],
+        verts[(size_t)i * stride + VKR_WORLD_VERTEX_NORMAL_OFFSET + 2]);
+
+    // Get accumulated tangent
+    Vec3 tangent = tangent_accumulators[i];
+
+    // Orthogonalize tangent against normal: t = normalize(t - n * dot(n,t))
+    float32_t dot_nt = vec3_dot(normal, tangent);
+    tangent = vec3_sub(tangent, vec3_scale(normal, dot_nt));
+    tangent = vec3_normalize(tangent);
+
+    // Determine final handedness from accumulated values
+    float32_t handedness = (handedness_accumulators[i] >= 0.0f) ? 1.0f : -1.0f;
+
+    // Form Vec4 and write to vertex buffer
+    Vec4 final_tangent = vec3_to_vec4(tangent, handedness);
+    size_t base = (size_t)i * stride + VKR_WORLD_VERTEX_TANGENT_OFFSET;
+    verts[base + 0] = final_tangent.x;
+    verts[base + 1] = final_tangent.y;
+    verts[base + 2] = final_tangent.z;
+    verts[base + 3] = final_tangent.w;
+  }
+
+  // Free temporary accumulator arrays
+  vkr_allocator_free(allocator, tangent_accumulators,
+                     vertex_count * sizeof(Vec3),
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  vkr_allocator_free(allocator, handedness_accumulators,
+                     vertex_count * sizeof(float32_t),
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 }
 
 // Helper function to write a vertex to the interleaved vertex buffer
@@ -895,7 +953,10 @@ VkrGeometryHandle vkr_geometry_system_create_default_cube(
       20, 21, 22, 22, 23, 20  // Bottom
   };
 
-  vkr_geometry_system_generate_tangents(verts, 24, indices, 36);
+  Scratch scratch = scratch_create(system->arena);
+  vkr_geometry_system_generate_tangents(&system->allocator, verts, 24, indices,
+                                        36);
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
 
   VkrGeometryHandle h = vkr_geometry_system_create_from_interleaved(
       system, GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD2_COLOR_TANGENT,

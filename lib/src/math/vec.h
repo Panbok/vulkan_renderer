@@ -800,10 +800,6 @@ static INLINE Vec4 vec4_negate(Vec4 v) {
   return vkr_simd_sub_f32x4(vec4_zero(), v);
 }
 
-static INLINE Vec4 vec4_from_vec3(Vec3 v, float32_t w) {
-  return vec4_new(v.x, v.y, v.z, w);
-}
-
 // =============================================================================
 // IVec2 Operations
 // =============================================================================
