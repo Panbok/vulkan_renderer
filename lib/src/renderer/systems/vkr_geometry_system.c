@@ -672,6 +672,20 @@ void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,
     // Get accumulated tangent
     Vec3 tangent = tangent_accumulators[i];
 
+    // Check if tangent length is below threshold to avoid NaN from
+    // normalization
+    float32_t tangent_len_sq = vec3_length_squared(tangent);
+    if (tangent_len_sq < VKR_FLOAT_EPSILON * VKR_FLOAT_EPSILON) {
+      // Choose stable default perpendicular to normal
+      if (fabsf(normal.x) > 0.9f) {
+        // Normal is nearly along x-axis, use y-axis as tangent
+        tangent = vec3_new(0.0f, 1.0f, 0.0f);
+      } else {
+        // Use x-axis as tangent
+        tangent = vec3_new(1.0f, 0.0f, 0.0f);
+      }
+    }
+
     // Orthogonalize tangent against normal: t = normalize(t - n * dot(n,t))
     float32_t dot_nt = vec3_dot(normal, tangent);
     tangent = vec3_sub(tangent, vec3_scale(normal, dot_nt));
