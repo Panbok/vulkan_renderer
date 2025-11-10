@@ -1,22 +1,22 @@
 #pragma once
 
-#include "core/input.h"
-#include "core/logger.h"
 #include "core/vkr_window.h"
 #include "math/mat.h"
 #include "math/vec.h"
-#include "math/vkr_math.h"
 
 #define VKR_MAX_MOUSE_DELTA 100.0f
 #define VKR_DEFAULT_CAMERA_ZOOM 1.0f
-#define VKR_DEFAULT_CAMERA_SPEED 2.5f
+#define VKR_DEFAULT_CAMERA_SPEED 7.5f
 #define VKR_DEFAULT_CAMERA_SENSITIVITY 0.1f
 #define VKR_DEFAULT_CAMERA_YAW -90.0f
 #define VKR_DEFAULT_CAMERA_PITCH 0.0f
-#define VKR_GAMEPAD_MOVEMENT_DEADZONE 0.1f
-#define VKR_GAMEPAD_ROTATION_SCALE 20.0f
 
-#define VKR_DEFAULT_CAMERA_POSITION vec3_new(0.0f, 0.0f, -5.0f)
+#define VKR_MIN_CAMERA_ZOOM 1.0f
+#define VKR_MAX_CAMERA_ZOOM 45.0f
+#define VKR_MAX_CAMERA_PITCH 89.0f
+#define VKR_MIN_CAMERA_PITCH -89.0f
+
+#define VKR_DEFAULT_CAMERA_POSITION vec3_new(-1.5f, 0.0f, -17.0f)
 #define VKR_DEFAULT_CAMERA_FORWARD vec3_new(0.0f, 0.0f, -1.0f)
 #define VKR_DEFAULT_CAMERA_UP vec3_new(0.0f, 1.0f, 0.0f)
 #define VKR_DEFAULT_CAMERA_RIGHT vec3_new(1.0f, 0.0f, 0.0f)
@@ -32,19 +32,19 @@ typedef enum VkrCameraType {
 } CameraType;
 
 /**
- * @brief 3D camera with input handling and projection support.
+ * @brief 3D camera storing orientation and projection state.
  *
- * Supports both perspective and orthographic projections with mouse look,
- * WASD movement, and mouse wheel zoom. Handles input capture and frame-rate
- * independent movement. Also supports gamepad input with right thumbstick
- * for movement and left thumbstick for camera rotation.
+ * The camera keeps track of position/orientation vectors along with cached view
+ * and projection matrices. Input devices are handled by controller systems that
+ * mutate this data and mark matrices dirty before rendering.
  */
 typedef struct VkrCamera {
-  InputState *input_state;     /**< Input system reference */
-  VkrWindow *window;           /**< Window for input capture and aspect ratio */
-  float32_t target_frame_rate; /**< Target FPS for frame-independent movement */
+  VkrWindow *window; /**< Window for input capture and aspect ratio */
 
   CameraType type; /**< Current projection type */
+
+  Mat4 view;       /**< View matrix */
+  Mat4 projection; /**< Projection matrix */
 
   Vec3 position; /**< Camera world position */
   Vec3 forward;  /**< Forward direction vector */
@@ -63,7 +63,6 @@ typedef struct VkrCamera {
 
   // Perspective projection
   float32_t zoom; /**< Field of view for perspective (degrees) */
-  float32_t previous_wheel_delta; /**< Previous mouse wheel state */
 
   // Orthographic projection
   float32_t left_clip;   /**< Left boundary for orthographic */
@@ -71,34 +70,29 @@ typedef struct VkrCamera {
   float32_t bottom_clip; /**< Bottom boundary for orthographic */
   float32_t top_clip;    /**< Top boundary for orthographic */
 
-  // Gamepad
-  bool8_t should_use_gamepad; /**< When true, uses right thumbstick for movement
-                                 and left thumbstick for camera rotation */
+  bool8_t view_dirty;       /**< Requires view matrix recompute */
+  bool8_t projection_dirty; /**< Requires projection matrix recompute */
+
+  uint32_t cached_window_width;  /**< Last window width used for projection */
+  uint32_t cached_window_height; /**< Last window height used for projection */
 } VkrCamera;
 
 /**
  * @brief Creates a perspective camera with 3D projection.
  * @param camera Camera to initialize
- * @param input_state Input system for handling user input
  * @param window Window for mouse capture and aspect ratio
- * @param target_frame_rate Target FPS for consistent movement speed
  * @param zoom Initial zoom value (affects field of view)
  * @param near_clip Near clipping plane distance
  * @param far_clip Far clipping plane distance
  */
-void vkr_camera_system_perspective_create(VkrCamera *camera,
-                                          InputState *input_state,
-                                          VkrWindow *window,
-                                          float32_t target_frame_rate,
+void vkr_camera_system_perspective_create(VkrCamera *camera, VkrWindow *window,
                                           float32_t zoom, float32_t near_clip,
                                           float32_t far_clip);
 
 /**
  * @brief Creates an orthographic camera with 2D/3D projection.
  * @param camera Camera to initialize
- * @param input_state Input system for handling user input
  * @param window Window for mouse capture
- * @param target_frame_rate Target FPS for consistent movement speed
  * @param left Left boundary of the orthographic volume
  * @param right Right boundary of the orthographic volume
  * @param bottom Bottom boundary of the orthographic volume
@@ -106,24 +100,41 @@ void vkr_camera_system_perspective_create(VkrCamera *camera,
  * @param near_clip Near clipping plane distance
  * @param far_clip Far clipping plane distance
  */
-void vkr_camera_system_orthographic_create(
-    VkrCamera *camera, InputState *input_state, VkrWindow *window,
-    float32_t target_frame_rate, float32_t left, float32_t right,
-    float32_t bottom, float32_t top, float32_t near_clip, float32_t far_clip);
+void vkr_camera_system_orthographic_create(VkrCamera *camera, VkrWindow *window,
+                                           float32_t left, float32_t right,
+                                           float32_t bottom, float32_t top,
+                                           float32_t near_clip,
+                                           float32_t far_clip);
 
 /**
- * @brief Updates camera position and orientation based on input.
- *
- * Handles:
- * - WASD movement (frame-rate independent)
- * - Mouse look (with sensitivity and pitch clamping)
- * - Mouse wheel zoom
- * - TAB key for toggling mouse capture
+ * @brief Translates the camera by the supplied world-space delta.
+ * @param camera Camera to translate
+ * @param delta Delta
+ */
+void vkr_camera_translate(VkrCamera *camera, Vec3 delta);
+
+/**
+ * @brief Adds yaw/pitch deltas (in degrees) and refreshes orientation vectors.
+ * @param camera Camera to rotate
+ * @param yaw_delta Yaw delta
+ * @param pitch_delta Pitch delta
+ */
+void vkr_camera_rotate(VkrCamera *camera, float32_t yaw_delta,
+                       float32_t pitch_delta);
+
+/**
+ * @brief Adjusts zoom (perspective FOV) and marks projection dirty.
+ * @param camera Camera to zoom
+ * @param zoom_delta Zoom delta
+ */
+void vkr_camera_zoom(VkrCamera *camera, float32_t zoom_delta);
+
+/**
+ * @brief Recomputes camera matrices if marked dirty.
  *
  * @param camera Camera to update
- * @param delta_time Time since last frame (seconds)
  */
-void vkr_camera_system_update(VkrCamera *camera, float32_t delta_time);
+void vkr_camera_system_update(VkrCamera *camera);
 
 /**
  * @brief Gets the view matrix for rendering.
