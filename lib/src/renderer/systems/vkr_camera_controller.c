@@ -87,8 +87,7 @@ void vkr_camera_controller_update(VkrCameraController *controller,
   float32_t rotation_speed = (camera->sensitivity > 0.0f)
                                  ? camera->sensitivity
                                  : controller->rotation_speed;
-  float32_t frame_adjusted_sensitivity =
-      rotation_speed * frame_delta * controller->target_frame_rate;
+  float32_t frame_adjusted_sensitivity = rotation_speed * frame_delta;
 
   float32_t yaw_delta =
       controller->frame_yaw_delta * frame_adjusted_sensitivity;
