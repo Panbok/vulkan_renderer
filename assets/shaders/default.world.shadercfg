@@ -36,16 +36,19 @@ attribute=vec4,in_tangent    # Location 5, offset 48, size 16
 uniform=mat4,0,view          # Camera view matrix
 uniform=mat4,0,projection    # Camera projection matrix
 
-# Instance uniforms (descriptor set 1)
-# Updated per material, each material gets its own descriptor set
-uniform=vec4,1,diffuse_color    # Material diffuse color (tint)
-uniform=samp,1,diffuse_texture  # Material diffuse texture (slot 0)
+# Additional per-frame data
 uniform=vec4,0,ambient_color
 uniform=vec3,0,view_position
-uniform=int32,0,mode
-uniform=samp,1,specular_texture
-uniform=samp,1,normal_texture
-uniform=float,1,shininess
+uniform=uint32,0,render_mode
+
+# Instance uniforms (descriptor set 1)
+# Updated per material, each material gets its own descriptor set
+uniform=vec4,1,diffuse_color      # Material diffuse color (tint)
+uniform=vec4,1,specular_color     # Material specular tint
+uniform=float,1,shininess         # Material shininess/exponent
+uniform=samp,1,diffuse_texture    # Material diffuse texture (slot 0)
+uniform=samp,1,specular_texture   # Material specular map   (slot 1)
+uniform=samp,1,normal_texture     # Material normal map     (slot 2)
 
 # Local uniforms (push constants)
 # Updated per draw call (per object in the world)
@@ -64,13 +67,14 @@ uniform=mat4,2,model         # Object model matrix (transform)
 #   → ubo_stride = align_up(128, 256) = 256 bytes
 #
 # Instance UBO (std140):
-#   diffuse_color: offset=0, size=16 (vec4)
-#   → ubo_size = 16 bytes  
-#   → ubo_stride = align_up(16, 256) = 256 bytes
-#   instance_texture_count = 1 (diffuse_texture)
+#   diffuse_color: offset=0,  size=16 (vec4)
+#   specular_color: offset=16, size=16 (vec4)
+#   shininess: offset=32, size=4 (float)
+#   → ubo_size = 36 bytes  
+#   → ubo_stride = align_up(36, 256) = 256 bytes
+#   instance_texture_count = 3 (diffuse/specular/normal)
 #
 # Push Constants:
 #   model: offset=0, size=64 (mat4)
 #   → push_constant_size = 64 bytes
 #   → push_constant_stride = align_up(64, 4) = 64 bytes
-
