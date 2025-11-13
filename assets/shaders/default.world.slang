@@ -123,7 +123,7 @@ VertexDto vertexMain(VertexInput input)
     output.frag_position = float3(mul(push_constants.model, float4(input.position, 1.0)).xyz);
 
     float3x3 model_matrix = float3x3(push_constants.model);
-    output.normal = mul(model_matrix, input.normal);
+    output.normal = normalize(mul(model_matrix, input.normal));
     output.tangent = float4(normalize(mul(model_matrix, input.tangent.xyz)), input.tangent.w);
 
     output.ambient_color = g_ubo.ambient_color;
@@ -159,7 +159,7 @@ float3 compute_normal_from_map(VertexDto input)
 float4 calculate_directional_light(DirectionalLight light, float3 normal,
                                    float3 view_direction, float4 ambient_color,
                                    uint32_t render_mode, float4 diffuse_sample,
-                                   float4 specular_sample)
+                                   float specular_mask)
 {
     float diffuse_factor = max(dot(normal, -light.direction), 0.0f);
     float3 half_direction = normalize(view_direction - light.direction);
@@ -172,13 +172,13 @@ float4 calculate_directional_light(DirectionalLight light, float3 normal,
         float4(light.color.rgb * diffuse_factor, diffuse_sample.a);
     float4 specular =
         float4(light.color.rgb * specular_factor, diffuse_sample.a);
-    specular *= local_ubo.specular_color;
+    specular *= local_ubo.specular_color * specular_mask;
 
     if (render_mode == RENDER_MODE_DEFAULT)
     {
         ambient *= diffuse_sample;
         diffuse *= diffuse_sample;
-        specular *= float4(specular_sample.rgb, diffuse_sample.a);
+        specular.a = diffuse_sample.a;
     }
     else
     {
@@ -191,7 +191,7 @@ float4 calculate_directional_light(DirectionalLight light, float3 normal,
 float4 calculate_point_light(PointLight light, float3 normal,
                              float3 frag_position, float3 view_direction,
                              float4 ambient_color, uint32_t render_mode,
-                             float4 diffuse_sample, float4 specular_sample)
+                             float4 diffuse_sample, float specular_mask)
 {
     float3 light_direction = normalize(light.position - frag_position);
     float diff = max(dot(normal, light_direction), 0.0f);
@@ -213,7 +213,9 @@ float4 calculate_point_light(PointLight light, float3 normal,
     {
         ambient *= diffuse_sample;
         diffuse *= diffuse_sample;
-        specular *= float4(specular_sample.rgb, diffuse_sample.a);
+        specular *= specular_mask;
+        specular *= local_ubo.specular_color;
+        specular.a = diffuse_sample.a;
     }
     else
     {
@@ -237,7 +239,7 @@ float4 fragmentMain(VertexDto input) : SV_Target
     }
 
     float4 diffuse_sample = diffuse_texture.Sample(diffuse_sampler, input.texcoord);
-    float4 specular_sample = specular_texture.Sample(specular_sampler, input.texcoord);
+    float specular_sample = specular_texture.Sample(specular_sampler, input.texcoord).r;
 
     float3 view_direction = normalize(input.view_position - input.frag_position);
 

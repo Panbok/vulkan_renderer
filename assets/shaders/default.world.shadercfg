@@ -58,7 +58,7 @@ uniform=mat4,2,model         # Object model matrix (transform)
 # Computed Layout (for reference, calculated by loader)
 # ============================================================================
 # Attributes:
-#   stride = 20 bytes
+#   stride = 20 floats (80 bytes)
 #
 # Global UBO (std140):
 #   view:       offset=0,  size=64 (mat4)
