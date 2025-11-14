@@ -1,10 +1,9 @@
 /**
  * @file vkr_transform.h
- * @brief Comprehensive collection of transformation utilities
+ * @brief Transformation utilities for 3D objects
  *
- * This file provides a complete set of fast, transformation functions
- * optimized for graphics programming, game development, and general numerical
- * computation.
+ * This file provides transformation functions for graphics programming, game
+ * development, and general numerical computation.
  */
 
 #pragma once
@@ -12,6 +11,8 @@
 #include "mat.h"
 #include "vec.h"
 #include "vkr_quat.h"
+
+#define VKR_TRANSFORM_MAX_DEPTH 64
 
 /**
  * @brief Transformation struct
