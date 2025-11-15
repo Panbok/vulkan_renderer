@@ -17,5 +17,6 @@
 #include "queue_test.h"
 #include "simd_test.h"
 #include "string_test.h"
+#include "transform_test.h"
 #include "vec_test.h"
 #include "vector_test.h"

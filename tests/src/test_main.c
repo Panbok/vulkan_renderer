@@ -39,6 +39,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_quat_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_transform_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_simd_tests();
   printf("\n"); // Add spacing
   all_passed &= run_clock_tests();

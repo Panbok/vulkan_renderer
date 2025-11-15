@@ -1,4 +1,5 @@
 #include "transform_test.h"
+#include "math/vkr_transform.h"
 
 static bool32_t float_equals(float32_t a, float32_t b, float32_t epsilon) {
   return vkr_abs_f32(a - b) < epsilon;
@@ -75,10 +76,9 @@ static void test_transform_local_matrix_and_dirty_flag(void) {
   Mat4 updated = vkr_transform_get_local(&transform);
   assert(transform.is_dirty == false && "get_local should clear dirty flag");
 
-  Mat4 expected =
-      mat4_mul(mat4_translate(transform.position),
-               mat4_mul(vkr_quat_to_mat4(transform.rotation),
-                        mat4_scale(transform.scale)));
+  Mat4 expected = mat4_mul(mat4_translate(transform.position),
+                           mat4_mul(vkr_quat_to_mat4(transform.rotation),
+                                    mat4_scale(transform.scale)));
   assert(mat4_equals(updated, expected, 0.0001f) &&
          "local matrix computation mismatch");
 
@@ -107,9 +107,8 @@ static void test_transform_rotation_normalization(void) {
       vkr_quat_from_axis_angle(vec3_new(1.0f, 0.0f, 0.0f), VKR_QUARTER_PI);
   vkr_transform_rotate(&transform, second_delta);
 
-  VkrQuat expected =
-      vkr_quat_normalize(vkr_quat_mul(normalized_delta,
-                                      vkr_quat_normalize(second_delta)));
+  VkrQuat expected = vkr_quat_normalize(
+      vkr_quat_mul(normalized_delta, vkr_quat_normalize(second_delta)));
   assert(quat_equals(transform.rotation, expected, 0.0001f) &&
          "sequential rotations should compose correctly");
 
@@ -119,17 +118,15 @@ static void test_transform_rotation_normalization(void) {
 static void test_transform_world_with_parent(void) {
   printf("  Running test_transform_world_with_parent...\n");
 
-  VkrTransform parent =
-      vkr_transform_new(vec3_new(2.0f, 0.0f, 0.0f),
-                        vkr_quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f),
-                                                 VKR_HALF_PI),
-                        vec3_one());
+  VkrTransform parent = vkr_transform_new(
+      vec3_new(2.0f, 0.0f, 0.0f),
+      vkr_quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f), VKR_HALF_PI),
+      vec3_one());
 
-  VkrTransform child =
-      vkr_transform_new(vec3_new(0.0f, 1.0f, 0.0f),
-                        vkr_quat_from_axis_angle(vec3_new(1.0f, 0.0f, 0.0f),
-                                                 VKR_QUARTER_PI),
-                        vec3_one());
+  VkrTransform child = vkr_transform_new(
+      vec3_new(0.0f, 1.0f, 0.0f),
+      vkr_quat_from_axis_angle(vec3_new(1.0f, 0.0f, 0.0f), VKR_QUARTER_PI),
+      vec3_one());
 
   child.parent = &parent;
 
