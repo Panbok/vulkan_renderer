@@ -9,7 +9,7 @@ VkrTransform vkr_transform_new(Vec3 position, VkrQuat rotation, Vec3 scale) {
   transform.scale = scale;
   transform.local = mat4_identity();
   transform.parent = NULL;
-  transform.is_dirty = false_v;
+  transform.is_dirty = true_v;
   return transform;
 }
 
