@@ -545,7 +545,7 @@ static INLINE Vec2 vec2_div(Vec2 a, Vec2 b) {
 static INLINE Vec2 vec2_negate(Vec2 v) { return (Vec2){-v.x, -v.y}; }
 
 /**
- * @brief Compares two 2D vectors with a default epsilon of VKR_FLOAT_EPSILON
+ * @brief Compares two 2D vectors with a given epsilon
  * @param a First vector operand
  * @param b Second vector operand
  * @param epsilon Epsilon value for comparison
@@ -565,7 +565,7 @@ static INLINE bool8_t vec2_equal(Vec2 a, Vec2 b, float32_t epsilon) {
  * otherwise
  */
 static INLINE bool8_t vec2_not_equal(Vec2 a, Vec2 b, float32_t epsilon) {
-  return vkr_abs_f32(a.x - b.x) > epsilon && vkr_abs_f32(a.y - b.y) > epsilon;
+  return vkr_abs_f32(a.x - b.x) > epsilon || vkr_abs_f32(a.y - b.y) > epsilon;
 }
 
 // =============================================================================
@@ -854,6 +854,7 @@ static INLINE Vec4 vec4_negate(Vec4 v) {
  * @brief Compares two 4D vectors with a given epsilon
  * @param a First vector operand
  * @param b Second vector operand
+ * @param epsilon Epsilon value for comparison
  * @return True if the vectors are equal within the epsilon, false otherwise
  */
 static INLINE bool8_t vec4_equal(Vec4 a, Vec4 b, float32_t epsilon) {
@@ -865,6 +866,7 @@ static INLINE bool8_t vec4_equal(Vec4 a, Vec4 b, float32_t epsilon) {
  * @brief Compares two 4D vectors with a given epsilon
  * @param a First vector operand
  * @param b Second vector operand
+ * @param epsilon Epsilon value for comparison
  * @return True if the vectors are not equal within the epsilon, false otherwise
  */
 static INLINE bool8_t vec4_not_equal(Vec4 a, Vec4 b, float32_t epsilon) {
