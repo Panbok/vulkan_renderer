@@ -439,6 +439,81 @@ static void test_simd_dot_products(void) {
   printf("  test_simd_dot_products PASSED\n");
 }
 
+static void test_simd_compare(void) {
+  printf("  Running test_simd_compare...\n");
+
+  VKR_SIMD_F32X4 base = vkr_simd_set_f32x4(1.0f, 2.0f, 3.0f, 4.0f);
+  VKR_SIMD_F32X4 identical = vkr_simd_set_f32x4(1.0f, 2.0f, 3.0f, 4.0f);
+  VKR_SIMD_F32X4 far = vkr_simd_set_f32x4(2.0f, 3.0f, 4.0f, 5.0f);
+  VKR_SIMD_F32X4 near = vkr_simd_set_f32x4(1.0005f, 1.9994f, 3.0f, 4.0003f);
+  const float32_t loose_epsilon = 0.001f;
+  const float32_t tight_epsilon = 0.0001f;
+
+  assert(vkr_simd_compare_f32x4(base, identical, VKR_SIMD_COMPARE_MODE_EQUAL,
+                                0.0f) && "Exact equality failed");
+  assert(!vkr_simd_compare_f32x4(base, far, VKR_SIMD_COMPARE_MODE_EQUAL, 0.0f) &&
+         "Equality should fail for different vectors");
+
+  assert(vkr_simd_compare_f32x4(base, far, VKR_SIMD_COMPARE_MODE_NOT_EQUAL,
+                                0.0f) && "Not-equal should detect differences");
+  assert(!vkr_simd_compare_f32x4(base, identical,
+                                 VKR_SIMD_COMPARE_MODE_NOT_EQUAL, 0.0f) &&
+         "Not-equal should pass for identical inputs");
+
+  assert(vkr_simd_compare_f32x4(base, near,
+                                VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON,
+                                loose_epsilon) &&
+         "Equal-epsilon should allow small variations");
+  assert(!vkr_simd_compare_f32x4(
+             base, near, VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON, tight_epsilon) &&
+         "Equal-epsilon should respect tighter tolerances");
+
+  assert(!vkr_simd_compare_f32x4(
+             base, near, VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON,
+             loose_epsilon) && "Not-equal-epsilon should ignore small errors");
+  assert(vkr_simd_compare_f32x4(base, near,
+                                VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON,
+                                tight_epsilon) &&
+         "Not-equal-epsilon should detect larger errors");
+  assert(vkr_simd_compare_f32x4(base, far,
+                                VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON,
+                                loose_epsilon) &&
+         "Not-equal-epsilon should be true for large differences");
+
+  VKR_SIMD_F32X4 abs_a = vkr_simd_set_f32x4(1.0f, 0.0f, 0.0f, 0.0f);
+  VKR_SIMD_F32X4 abs_b = vkr_simd_set_f32x4(1.002f, 0.0f, 0.0f, 0.0f);
+  assert(vkr_simd_compare_f32x4(abs_a, abs_b,
+                                VKR_SIMD_COMPARE_MODE_ABSOLUTE_DIFFERENCE,
+                                0.01f) && "Absolute difference should pass");
+  assert(!vkr_simd_compare_f32x4(abs_a, abs_b,
+                                 VKR_SIMD_COMPARE_MODE_ABSOLUTE_DIFFERENCE,
+                                 0.0001f) &&
+         "Absolute difference should fail for small epsilon");
+
+  VKR_SIMD_F32X4 rel_a = vkr_simd_set_f32x4(1000.0f, 0.0f, 0.0f, 0.0f);
+  VKR_SIMD_F32X4 rel_b = vkr_simd_set_f32x4(1001.0f, 0.0f, 0.0f, 0.0f);
+  assert(vkr_simd_compare_f32x4(rel_a, rel_b,
+                                VKR_SIMD_COMPARE_MODE_RELATIVE_DIFFERENCE,
+                                0.01f) &&
+         "Relative difference should allow proportional error");
+  assert(!vkr_simd_compare_f32x4(
+             rel_a, rel_b, VKR_SIMD_COMPARE_MODE_RELATIVE_DIFFERENCE,
+             0.0001f) && "Relative difference should fail for tight epsilon");
+
+  VKR_SIMD_F32X4 zero = vkr_simd_set1_f32x4(0.0f);
+  VKR_SIMD_F32X4 tiny = vkr_simd_set_f32x4(0.00001f, 0.0f, 0.0f, 0.0f);
+  assert(vkr_simd_compare_f32x4(zero, tiny,
+                                VKR_SIMD_COMPARE_MODE_RELATIVE_DIFFERENCE,
+                                0.0001f) &&
+         "Relative difference should fall back to absolute for zero length");
+  assert(!vkr_simd_compare_f32x4(zero, tiny,
+                                 VKR_SIMD_COMPARE_MODE_RELATIVE_DIFFERENCE,
+                                 0.000001f) &&
+         "Relative difference fallback should still honor epsilon");
+
+  printf("  test_simd_compare PASSED\n");
+}
+
 static void test_simd_shuffle(void) {
   printf("  Running test_simd_shuffle...\n");
 
@@ -694,6 +769,7 @@ bool32_t run_simd_tests(void) {
   test_simd_min_max();
   test_simd_fma();
   test_simd_dot_products();
+  test_simd_compare();
   test_simd_shuffle();
   test_simd_scatter_gather();
   test_simd_scatter_gather_edge_cases();

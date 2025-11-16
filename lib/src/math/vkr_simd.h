@@ -388,6 +388,27 @@ vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_shuffle_f32x4(VKR_SIMD_F32X4 v,
                                                           int32_t x, int32_t y,
                                                           int32_t z, int32_t w);
 
+typedef enum VkrSimdCompareMode {
+  VKR_SIMD_COMPARE_MODE_ABSOLUTE_DIFFERENCE = 0,
+  VKR_SIMD_COMPARE_MODE_RELATIVE_DIFFERENCE = 1,
+  VKR_SIMD_COMPARE_MODE_EQUAL = 2,
+  VKR_SIMD_COMPARE_MODE_NOT_EQUAL = 3,
+  VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON = 4,
+  VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON = 5,
+} VkrSimdCompareMode;
+
+/**
+ * @brief Compares two 4D vectors with a given mode
+ * @param a First vector operand
+ * @param b Second vector operand
+ * @param mode Comparison mode
+ * @return True if the vectors are equal within the mode, false otherwise
+ */
+vkr_internal INLINE bool8_t vkr_simd_compare_f32x4(VKR_SIMD_F32X4 a,
+                                                   VKR_SIMD_F32X4 b,
+                                                   VkrSimdCompareMode mode,
+                                                   float32_t epsilon);
+
 // =============================================================================
 // SIMD Operations for int32_t vectors
 // =============================================================================
@@ -700,7 +721,75 @@ vkr_simd_gather_f32x4(VKR_SIMD_F32X4 v, VKR_SIMD_I32X4 indices) {
   return result;
 }
 
+vkr_internal INLINE bool8_t vkr_simd_compare_f32x4(VKR_SIMD_F32X4 a,
+                                                   VKR_SIMD_F32X4 b,
+                                                   VkrSimdCompareMode mode,
+                                                   float32_t epsilon) {
+  const float32_t abs_epsilon = vkr_abs_f32(epsilon);
+  const float32_t epsilon_sq = abs_epsilon * abs_epsilon;
+
+  switch (mode) {
+  case VKR_SIMD_COMPARE_MODE_ABSOLUTE_DIFFERENCE: {
+    float32x4_t diff = vsubq_f32(a.neon, b.neon);
+    float32_t diff_len_sq = vaddvq_f32(vmulq_f32(diff, diff));
+    return diff_len_sq <= epsilon_sq ? true_v : false_v;
+  }
+  case VKR_SIMD_COMPARE_MODE_RELATIVE_DIFFERENCE: {
+    float32x4_t diff = vsubq_f32(a.neon, b.neon);
+    float32_t diff_len_sq = vaddvq_f32(vmulq_f32(diff, diff));
+    float32_t len_a_sq = vaddvq_f32(vmulq_f32(a.neon, a.neon));
+    float32_t len_b_sq = vaddvq_f32(vmulq_f32(b.neon, b.neon));
+    float32_t max_len_sq = vkr_max_f32(len_a_sq, len_b_sq);
+    if (max_len_sq <= epsilon_sq) {
+      return diff_len_sq <= epsilon_sq ? true_v : false_v;
+    }
+    float32_t threshold = epsilon_sq * max_len_sq;
+    return diff_len_sq <= threshold ? true_v : false_v;
+  }
+  case VKR_SIMD_COMPARE_MODE_EQUAL: {
+    uint32x4_t cmp = vceqq_f32(a.neon, b.neon);
+    uint32_t mask[4];
+    vst1q_u32(mask, cmp);
+    uint32_t all_equal = mask[0] & mask[1] & mask[2] & mask[3];
+    return all_equal == 0xFFFFFFFFu ? true_v : false_v;
+  }
+  case VKR_SIMD_COMPARE_MODE_NOT_EQUAL: {
+    uint32x4_t cmp = vceqq_f32(a.neon, b.neon);
+    uint32_t mask[4];
+    vst1q_u32(mask, cmp);
+    uint32_t combined = mask[0] & mask[1] & mask[2] & mask[3];
+    return combined == 0xFFFFFFFFu ? false_v : true_v;
+  }
+  case VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON: {
+    float32x4_t abs_diff = vabsq_f32(vsubq_f32(a.neon, b.neon));
+    float32x4_t eps_vec = vdupq_n_f32(abs_epsilon);
+    uint32x4_t cmp = vcleq_f32(abs_diff, eps_vec);
+    uint32_t mask[4];
+    vst1q_u32(mask, cmp);
+    uint32_t all_equal = mask[0] & mask[1] & mask[2] & mask[3];
+    return all_equal == 0xFFFFFFFFu ? true_v : false_v;
+  }
+  case VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON: {
+    float32x4_t abs_diff = vabsq_f32(vsubq_f32(a.neon, b.neon));
+    float32x4_t eps_vec = vdupq_n_f32(abs_epsilon);
+    uint32x4_t cmp = vcgtq_f32(abs_diff, eps_vec);
+    uint32_t mask[4];
+    vst1q_u32(mask, cmp);
+    uint32_t any_greater = mask[0] | mask[1] | mask[2] | mask[3];
+    return any_greater ? true_v : false_v;
+  }
+  default:
+    return false_v;
+  }
+}
+
 #elif defined(VKR_SIMD_X86_AVX)
+
+vkr_internal INLINE float32_t vkr_sse_sum_f32x4(__m128 v) {
+  float32_t temp[4];
+  _mm_storeu_ps(temp, v);
+  return temp[0] + temp[1] + temp[2] + temp[3];
+}
 
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_load_f32x4(const float32_t *ptr) {
   VKR_SIMD_F32X4 result;
@@ -917,6 +1006,60 @@ vkr_simd_gather_f32x4(VKR_SIMD_F32X4 v, VKR_SIMD_I32X4 indices) {
   }
   return result;
 }
+
+vkr_internal INLINE bool8_t vkr_simd_compare_f32x4(VKR_SIMD_F32X4 a,
+                                                   VKR_SIMD_F32X4 b,
+                                                   VkrSimdCompareMode mode,
+                                                   float32_t epsilon) {
+  const float32_t abs_epsilon = vkr_abs_f32(epsilon);
+  const float32_t epsilon_sq = abs_epsilon * abs_epsilon;
+
+  switch (mode) {
+  case VKR_SIMD_COMPARE_MODE_ABSOLUTE_DIFFERENCE: {
+    __m128 diff = _mm_sub_ps(a.sse, b.sse);
+    float32_t diff_len_sq = vkr_sse_sum_f32x4(_mm_mul_ps(diff, diff));
+    return diff_len_sq <= epsilon_sq ? true_v : false_v;
+  }
+  case VKR_SIMD_COMPARE_MODE_RELATIVE_DIFFERENCE: {
+    __m128 diff = _mm_sub_ps(a.sse, b.sse);
+    float32_t diff_len_sq = vkr_sse_sum_f32x4(_mm_mul_ps(diff, diff));
+    float32_t len_a_sq = vkr_sse_sum_f32x4(_mm_mul_ps(a.sse, a.sse));
+    float32_t len_b_sq = vkr_sse_sum_f32x4(_mm_mul_ps(b.sse, b.sse));
+    float32_t max_len_sq = vkr_max_f32(len_a_sq, len_b_sq);
+    if (max_len_sq <= epsilon_sq) {
+      return diff_len_sq <= epsilon_sq ? true_v : false_v;
+    }
+    float32_t threshold = epsilon_sq * max_len_sq;
+    return diff_len_sq <= threshold ? true_v : false_v;
+  }
+  case VKR_SIMD_COMPARE_MODE_EQUAL: {
+    int mask = _mm_movemask_ps(_mm_cmpeq_ps(a.sse, b.sse));
+    return mask == 0xF ? true_v : false_v;
+  }
+  case VKR_SIMD_COMPARE_MODE_NOT_EQUAL: {
+    int mask = _mm_movemask_ps(_mm_cmpeq_ps(a.sse, b.sse));
+    return mask == 0xF ? false_v : true_v;
+  }
+  case VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON: {
+    const __m128 sign_mask = _mm_set1_ps(-0.0f);
+    __m128 abs_diff =
+        _mm_andnot_ps(sign_mask, _mm_sub_ps(a.sse, b.sse));
+    __m128 eps_vec = _mm_set1_ps(abs_epsilon);
+    int mask = _mm_movemask_ps(_mm_cmple_ps(abs_diff, eps_vec));
+    return mask == 0xF ? true_v : false_v;
+  }
+  case VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON: {
+    const __m128 sign_mask = _mm_set1_ps(-0.0f);
+    __m128 abs_diff =
+        _mm_andnot_ps(sign_mask, _mm_sub_ps(a.sse, b.sse));
+    __m128 eps_vec = _mm_set1_ps(abs_epsilon);
+    int mask = _mm_movemask_ps(_mm_cmpgt_ps(abs_diff, eps_vec));
+    return mask ? true_v : false_v;
+  }
+  default:
+    return false_v;
+  }
+}
 #else
 // Fallback scalar implementations
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_load_f32x4(const float32_t *ptr) {
@@ -1128,5 +1271,62 @@ vkr_simd_gather_f32x4(VKR_SIMD_F32X4 v, VKR_SIMD_I32X4 indices) {
     }
   }
   return result;
+}
+
+vkr_internal INLINE bool8_t vkr_simd_compare_f32x4(VKR_SIMD_F32X4 a,
+                                                   VKR_SIMD_F32X4 b,
+                                                   VkrSimdCompareMode mode,
+                                                   float32_t epsilon) {
+  const float32_t abs_epsilon = vkr_abs_f32(epsilon);
+  const float32_t epsilon_sq = abs_epsilon * abs_epsilon;
+  const float32_t diff_x = a.x - b.x;
+  const float32_t diff_y = a.y - b.y;
+  const float32_t diff_z = a.z - b.z;
+  const float32_t diff_w = a.w - b.w;
+  const float32_t diff_len_sq =
+      diff_x * diff_x + diff_y * diff_y + diff_z * diff_z + diff_w * diff_w;
+  const float32_t abs_diff_x = vkr_abs_f32(diff_x);
+  const float32_t abs_diff_y = vkr_abs_f32(diff_y);
+  const float32_t abs_diff_z = vkr_abs_f32(diff_z);
+  const float32_t abs_diff_w = vkr_abs_f32(diff_w);
+
+  switch (mode) {
+  case VKR_SIMD_COMPARE_MODE_ABSOLUTE_DIFFERENCE:
+    return diff_len_sq <= epsilon_sq ? true_v : false_v;
+  case VKR_SIMD_COMPARE_MODE_RELATIVE_DIFFERENCE: {
+    const float32_t len_a_sq =
+        a.x * a.x + a.y * a.y + a.z * a.z + a.w * a.w;
+    const float32_t len_b_sq =
+        b.x * b.x + b.y * b.y + b.z * b.z + b.w * b.w;
+    const float32_t max_len_sq = vkr_max_f32(len_a_sq, len_b_sq);
+    if (max_len_sq <= epsilon_sq) {
+      return diff_len_sq <= epsilon_sq ? true_v : false_v;
+    }
+    const float32_t threshold = epsilon_sq * max_len_sq;
+    return diff_len_sq <= threshold ? true_v : false_v;
+  }
+  case VKR_SIMD_COMPARE_MODE_EQUAL:
+    return (diff_x == 0.0f && diff_y == 0.0f && diff_z == 0.0f &&
+            diff_w == 0.0f)
+               ? true_v
+               : false_v;
+  case VKR_SIMD_COMPARE_MODE_NOT_EQUAL:
+    return (diff_x != 0.0f || diff_y != 0.0f || diff_z != 0.0f ||
+            diff_w != 0.0f)
+               ? true_v
+               : false_v;
+  case VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON:
+    return (abs_diff_x <= abs_epsilon && abs_diff_y <= abs_epsilon &&
+            abs_diff_z <= abs_epsilon && abs_diff_w <= abs_epsilon)
+               ? true_v
+               : false_v;
+  case VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON:
+    return (abs_diff_x > abs_epsilon || abs_diff_y > abs_epsilon ||
+            abs_diff_z > abs_epsilon || abs_diff_w > abs_epsilon)
+               ? true_v
+               : false_v;
+  default:
+    return false_v;
+  }
 }
 #endif

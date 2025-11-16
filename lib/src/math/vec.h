@@ -544,6 +544,30 @@ static INLINE Vec2 vec2_div(Vec2 a, Vec2 b) {
  */
 static INLINE Vec2 vec2_negate(Vec2 v) { return (Vec2){-v.x, -v.y}; }
 
+/**
+ * @brief Compares two 2D vectors with a default epsilon of VKR_FLOAT_EPSILON
+ * @param a First vector operand
+ * @param b Second vector operand
+ * @param epsilon Epsilon value for comparison
+ * @return True if the vectors are equal within the epsilon, false
+ * otherwise
+ */
+static INLINE bool8_t vec2_equal(Vec2 a, Vec2 b, float32_t epsilon) {
+  return vkr_abs_f32(a.x - b.x) < epsilon && vkr_abs_f32(a.y - b.y) < epsilon;
+}
+
+/**
+ * @brief Compares two 2D vectors with a given epsilon
+ * @param a First vector operand
+ * @param b Second vector operand
+ * @param epsilon Epsilon value for comparison
+ * @return True if the vectors are not equal within the epsilon, false
+ * otherwise
+ */
+static INLINE bool8_t vec2_not_equal(Vec2 a, Vec2 b, float32_t epsilon) {
+  return vkr_abs_f32(a.x - b.x) > epsilon && vkr_abs_f32(a.y - b.y) > epsilon;
+}
+
 // =============================================================================
 // Vec3 Operations (SIMD-accelerated using Vec4 with W=0)
 // =============================================================================
@@ -679,6 +703,32 @@ static INLINE Vec3 vec3_negate(Vec3 v) {
   return vkr_simd_sub_f32x4(vec3_zero(), v); // W stays 0
 }
 
+/**
+ * @brief Compares two 3D vectors with a given epsilon
+ * @param a First vector operand
+ * @param b Second vector operand
+ * @param epsilon Epsilon value for comparison
+ * @return True if the vectors are equal within the epsilon, false
+ * otherwise
+ */
+static INLINE bool8_t vec3_equal(Vec3 a, Vec3 b, float32_t epsilon) {
+  return vkr_simd_compare_f32x4(a, b, VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON,
+                                epsilon);
+}
+
+/**
+ * @brief Compares two 3D vectors with a given epsilon
+ * @param a First vector operand
+ * @param b Second vector operand
+ * @param epsilon Epsilon value for comparison
+ * @return True if the vectors are not equal within the epsilon, false
+ * otherwise
+ */
+static INLINE bool8_t vec3_not_equal(Vec3 a, Vec3 b, float32_t epsilon) {
+  return vkr_simd_compare_f32x4(a, b, VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON,
+                                epsilon);
+}
+
 // =============================================================================
 // Vec4 Operations (SIMD-optimized)
 // =============================================================================
@@ -798,6 +848,28 @@ static INLINE Vec4 vec4_div(Vec4 a, Vec4 b) { return vkr_simd_div_f32x4(a, b); }
  */
 static INLINE Vec4 vec4_negate(Vec4 v) {
   return vkr_simd_sub_f32x4(vec4_zero(), v);
+}
+
+/**
+ * @brief Compares two 4D vectors with a given epsilon
+ * @param a First vector operand
+ * @param b Second vector operand
+ * @return True if the vectors are equal within the epsilon, false otherwise
+ */
+static INLINE bool8_t vec4_equal(Vec4 a, Vec4 b, float32_t epsilon) {
+  return vkr_simd_compare_f32x4(a, b, VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON,
+                                epsilon);
+}
+
+/**
+ * @brief Compares two 4D vectors with a given epsilon
+ * @param a First vector operand
+ * @param b Second vector operand
+ * @return True if the vectors are not equal within the epsilon, false otherwise
+ */
+static INLINE bool8_t vec4_not_equal(Vec4 a, Vec4 b, float32_t epsilon) {
+  return vkr_simd_compare_f32x4(a, b, VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON,
+                                epsilon);
 }
 
 // =============================================================================

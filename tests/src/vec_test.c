@@ -341,6 +341,33 @@ static void test_vec3_geometric(void) {
   printf("  test_vec3_geometric PASSED\n");
 }
 
+static void test_vec3_comparisons(void) {
+  printf("  Running test_vec3_comparisons...\n");
+
+  Vec3 base = vec3_new(1.0f, 2.0f, 3.0f);
+  Vec3 near = vec3_new(1.0004f, 1.9996f, 3.0003f);
+  Vec3 far = vec3_new(2.0f, 3.0f, 4.0f);
+  const float32_t loose_epsilon = 0.001f;
+  const float32_t tight_epsilon = 0.0001f;
+
+  assert(vec3_equal(base, base, 0.0f) && "vec3_equal should pass for itself");
+  assert(vec3_equal(base, near, loose_epsilon) &&
+         "vec3_equal should allow small differences");
+  assert(!vec3_equal(base, near, tight_epsilon) &&
+         "vec3_equal should fail with strict epsilon");
+
+  assert(!vec3_not_equal(base, base, tight_epsilon) &&
+         "vec3_not_equal should fail for identical vectors");
+  assert(!vec3_not_equal(base, near, loose_epsilon) &&
+         "vec3_not_equal should respect epsilon tolerance");
+  assert(vec3_not_equal(base, near, tight_epsilon) &&
+         "vec3_not_equal should detect differences beyond epsilon");
+  assert(vec3_not_equal(base, far, loose_epsilon) &&
+         "vec3_not_equal should detect large differences");
+
+  printf("  test_vec3_comparisons PASSED\n");
+}
+
 // =============================================================================
 // Vec4 Tests
 // =============================================================================
@@ -531,6 +558,33 @@ static void test_vec4_geometric(void) {
          "vec4_cross3 should match vec3_cross when W=0");
 
   printf("  test_vec4_geometric PASSED\n");
+}
+
+static void test_vec4_comparisons(void) {
+  printf("  Running test_vec4_comparisons...\n");
+
+  Vec4 base = vec4_new(1.0f, 2.0f, 3.0f, 4.0f);
+  Vec4 near = vec4_new(1.0004f, 2.0002f, 2.9996f, 4.0001f);
+  Vec4 far = vec4_new(2.0f, 3.0f, 4.0f, 5.0f);
+  const float32_t loose_epsilon = 0.0015f;
+  const float32_t tight_epsilon = 0.0001f;
+
+  assert(vec4_equal(base, base, 0.0f) && "vec4_equal should match identical");
+  assert(vec4_equal(base, near, loose_epsilon) &&
+         "vec4_equal should allow epsilon");
+  assert(!vec4_equal(base, near, tight_epsilon) &&
+         "vec4_equal should fail when epsilon is too small");
+
+  assert(!vec4_not_equal(base, base, tight_epsilon) &&
+         "vec4_not_equal should fail for identical vectors");
+  assert(!vec4_not_equal(base, near, loose_epsilon) &&
+         "vec4_not_equal should ignore tiny differences");
+  assert(vec4_not_equal(base, near, tight_epsilon) &&
+         "vec4_not_equal should detect differences beyond epsilon");
+  assert(vec4_not_equal(base, far, loose_epsilon) &&
+         "vec4_not_equal should detect large differences");
+
+  printf("  test_vec4_comparisons PASSED\n");
 }
 
 // =============================================================================
@@ -897,11 +951,13 @@ bool32_t run_vec_tests(void) {
   test_vec3_constructors();
   test_vec3_arithmetic();
   test_vec3_geometric();
+  test_vec3_comparisons();
 
   // Vec4 tests
   test_vec4_constructors();
   test_vec4_arithmetic();
   test_vec4_geometric();
+  test_vec4_comparisons();
 
   // Integer vector tests
   test_ivec2_operations();
