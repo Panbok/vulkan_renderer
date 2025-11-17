@@ -12,6 +12,7 @@
 #include "input_test.h"
 #include "mat_test.h"
 #include "math_test.h"
+#include "filesystem_test.h"
 #include "mmemory_test.h"
 #include "quat_test.h"
 #include "queue_test.h"

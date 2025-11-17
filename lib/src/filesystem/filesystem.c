@@ -1,5 +1,11 @@
 #include "filesystem.h"
 
+#include "core/logger.h"
+
+#if defined(PLATFORM_WINDOWS)
+#include <direct.h>
+#endif
+
 FilePath file_path_create(const char *path, Arena *arena, FilePathType type) {
   assert_log(path != NULL, "path is NULL");
   assert_log(arena != NULL, "arena is NULL");
@@ -54,6 +60,98 @@ FileError file_stats(const FilePath *path, FileStats *out_stats) {
   }
 
   return FILE_ERROR_NOT_FOUND;
+}
+
+bool8_t file_create_directory(const char *path) {
+  assert_log(path != NULL, "path is NULL");
+
+  if (path[0] == '\0')
+    return false_v;
+
+  struct stat st = {0};
+  if (stat(path, &st) == 0) {
+    if ((st.st_mode & S_IFDIR) != 0) {
+      return true_v;
+    }
+    log_error("Filesystem: path exists but is not a directory '%s'", path);
+    return false_v;
+  }
+
+#if defined(PLATFORM_WINDOWS)
+  int result = _mkdir(path);
+#else
+  int result = mkdir(path, 0755);
+#endif
+  if (result == 0 || errno == EEXIST) {
+    return true_v;
+  }
+
+  log_error("Filesystem: failed to create directory '%s': %s", path,
+            strerror(errno));
+  return false_v;
+}
+
+bool8_t file_ensure_directory(Arena *arena, const String8 *path) {
+  assert_log(arena != NULL, "arena is NULL");
+  assert_log(path != NULL, "path is NULL");
+  assert_log(path->str != NULL, "path string is NULL");
+  assert_log(path->length > 0, "path length is 0");
+
+  Scratch scratch = scratch_create(arena);
+  char *buffer = (char *)arena_alloc(scratch.arena, path->length + 1,
+                                     ARENA_MEMORY_TAG_STRING);
+  if (!buffer) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    log_error("Filesystem: failed to allocate directory buffer");
+    return false_v;
+  }
+  MemCopy(buffer, path->str, (size_t)path->length);
+  buffer[path->length] = '\0';
+
+#if defined(PLATFORM_WINDOWS)
+  const char sep = '\\';
+#else
+  const char sep = '/';
+#endif
+
+  for (uint64_t i = 0; i < path->length; ++i) {
+    char c = buffer[i];
+    bool8_t is_separator = (c == '/' || c == '\\');
+    if (!is_separator)
+      continue;
+
+    if (i == 0) {
+      buffer[i] = sep;
+      continue;
+    }
+#if defined(PLATFORM_WINDOWS)
+    if (i > 0 && buffer[i - 1] == ':') {
+      buffer[i] = sep;
+      continue;
+    }
+#endif
+
+    char saved = buffer[i];
+    buffer[i] = '\0';
+    if (buffer[0] != '\0') {
+      if (!file_create_directory(buffer)) {
+        buffer[i] = saved;
+        scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+        return false_v;
+      }
+    }
+    buffer[i] = sep;
+  }
+
+  uint64_t final_len = string_length(buffer);
+  if (final_len > 0 &&
+      (buffer[final_len - 1] == '/' || buffer[final_len - 1] == '\\')) {
+    buffer[final_len - 1] = '\0';
+  }
+
+  bool8_t result = file_create_directory(buffer);
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+  return result;
 }
 
 FileError file_open(const FilePath *path, FileMode mode,
@@ -398,6 +496,48 @@ FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
 
   file_close(&shader_handle);
   return FILE_ERROR_NONE;
+}
+
+String8 file_path_get_directory(Arena *arena, String8 path) {
+  assert_log(arena != NULL, "arena is NULL");
+
+  if (!path.str || path.length == 0)
+    return (String8){0};
+  uint64_t last_slash = path.length;
+  for (uint64_t i = path.length; i > 0; --i) {
+    uint8_t ch = path.str[i - 1];
+    if (ch == '/' || ch == '\\') {
+      last_slash = i;
+      break;
+    }
+  }
+  if (last_slash == path.length)
+    return (String8){0};
+  return string8_duplicate(arena,
+                           &(String8){.str = path.str, .length = last_slash});
+}
+
+String8 file_path_join(Arena *arena, String8 dir, String8 file) {
+  assert_log(arena != NULL, "arena is NULL");
+
+  if (!dir.str || dir.length == 0)
+    return string8_duplicate(arena, &file);
+  uint64_t needs_sep =
+      (dir.str[dir.length - 1] == '/' || dir.str[dir.length - 1] == '\\') ? 0
+                                                                          : 1;
+  uint64_t len = dir.length + needs_sep + file.length;
+  uint8_t *buf = arena_alloc(arena, len + 1, ARENA_MEMORY_TAG_STRING);
+  assert_log(buf != NULL, "Failed to allocate join buffer");
+  uint64_t offset = 0;
+  MemCopy(buf, dir.str, dir.length);
+  offset += dir.length;
+  if (needs_sep) {
+    buf[offset++] = '/';
+  }
+  MemCopy(buf + offset, file.str, file.length);
+  offset += file.length;
+  buf[offset] = '\0';
+  return string8_create(buf, offset);
 }
 
 String8 file_get_error_string(FileError error) {

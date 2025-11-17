@@ -2,11 +2,8 @@
 
 #include "containers/bitset.h"
 #include "containers/str.h"
-#include "core/logger.h"
 #include "defines.h"
 #include "memory/arena.h"
-#include "platform/vkr_platform.h"
-#include "vkr_pch.h"
 
 /**
  * @file filesystem.h
@@ -321,6 +318,15 @@ bool8_t file_exists(const FilePath *path);
 FileError file_stats(const FilePath *path, FileStats *out_stats);
 
 /**
+ * @brief Ensures the given directory exists by creating any missing segments.
+ *
+ * @param arena Arena used for temporary copies of the path.
+ * @param path Full path to the directory to ensure.
+ * @return True if the directory exists/was created; false if creation failed.
+ */
+bool8_t file_ensure_directory(Arena *arena, const String8 *path);
+
+/**
  * @brief Reads a single line from a text file.
  *
  * Reads one line from the current position in the file,
@@ -481,6 +487,44 @@ FileError file_read_all(FileHandle *handle, Arena *arena, uint8_t **out_buffer,
  */
 FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
                                  uint8_t **out_data, uint64_t *out_size);
+
+/**
+ * @brief Creates a directory.
+ *
+ * Creates the directory at the given path. If the directory already exists,
+ * this function does nothing.
+ *
+ * @param path The path to the directory to create. Must not be NULL.
+ * @return `true` if the directory was created successfully, `false` otherwise.
+ */
+bool8_t file_create_directory(const char *path);
+
+/**
+ * @brief Extracts the directory portion from a file path.
+ *
+ * Given a file path, returns the directory component (everything up to and
+ * including the last path separator). If no path separator is found, returns
+ * an empty string.
+ *
+ * @param arena Arena to allocate the result string from.
+ * @param path The file path to extract directory from.
+ * @return A new string containing the directory portion, or empty string if
+ * none found.
+ */
+String8 file_path_get_directory(Arena *arena, String8 path);
+
+/**
+ * @brief Joins a directory path and filename into a single path.
+ *
+ * Concatenates the directory and filename with appropriate path separator.
+ * Handles cases where the directory already ends with a separator.
+ *
+ * @param arena Arena to allocate the result string from.
+ * @param dir The directory path.
+ * @param file The filename to append.
+ * @return A new string containing the joined path.
+ */
+String8 file_path_join(Arena *arena, String8 dir, String8 file);
 
 /**
  * @brief Gets the error string for a file error code.
