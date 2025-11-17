@@ -296,7 +296,7 @@ bool8_t vkr_string8_starts_with(const String8 *str, const char *prefix) {
   return MemCompare(str->str, prefix, prefix_len) == 0;
 }
 
-String8 vkr_string8_trim_view(const String8 *str, uint64_t start) {
+String8 vkr_string8_trimmed_suffix(const String8 *str, uint64_t start) {
   assert(str != NULL && "String is NULL");
 
   if (start >= str->length)

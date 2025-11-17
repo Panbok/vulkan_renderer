@@ -99,9 +99,20 @@ String8 string8_duplicate(Arena *arena, const String8 *str);
 
 /**
  * @brief Duplicate a null-terminated C-string.
+ * @details Allocates a new String8 in the arena containing a copy of the input
+ * C-string. The returned String8 is null-terminated (data[length] == '\0') and
+ * has length equal to the number of characters (excluding the null terminator).
+ * The data pointer points to the allocated memory in the arena.
+ * @pre arena must not be NULL (asserts if NULL).
+ * @pre cstr must not be NULL (asserts if NULL). NULL input is not handled
+ * gracefully; the function will abort if cstr is NULL.
  * @param arena The arena to allocate the new string from.
- * @param cstr The C-string to duplicate.
- * @return A new string of 8-bit characters.
+ * @param cstr The C-string to duplicate (must not be NULL).
+ * @return A new String8 with: (1) data pointing to allocated arena memory
+ * containing the copied string, (2) length set to strlen(cstr) (excluding null
+ * terminator), (3) data[length] == '\0' (null-terminated). For an empty string
+ * (""), returns length==0 with data pointing to a single '\0' byte in the
+ * arena.
  */
 String8 vkr_string8_duplicate_cstr(Arena *arena, const char *cstr);
 
@@ -175,18 +186,36 @@ bool8_t vkr_string8_equals_cstr_i(const String8 *str, const char *cstr);
 /**
  * @brief Check if a String8 starts with a given prefix.
  * @param str The String8 to check.
- * @param prefix The prefix to search for.
+ * @param prefix The prefix to search for (must be null-terminated).
  * @return True if the String8 starts with the prefix, false otherwise.
+ * @details
+ * Preconditions and edge cases:
+ * - NULL arguments: If str is NULL or prefix is NULL, the implementation will
+ *   assert in debug builds. Callers should validate pointers before calling.
+ * - Empty prefix: An empty prefix ("") always returns true, regardless of str.
+ * - Empty string: An empty str (str->length == 0) only matches an empty prefix;
+ *   it returns false for any non-empty prefix.
+ * - Null-termination: The prefix parameter must be null-terminated (uses
+ * strlen). The str->str pointer does not need to be null-terminated; the
+ * function relies on str->length to determine how many bytes to compare.
+ * - Invariants: str->length must be consistent with str->str, meaning at least
+ *   str->length valid bytes must be accessible at str->str. If str->str is
+ * NULL, str->length must be 0.
  */
 bool8_t vkr_string8_starts_with(const String8 *str, const char *prefix);
 
 /**
- * @brief Trim a String8 view.
- * @param str The String8 to trim.
- * @param start The start index to trim from.
- * @return A trimmed String8 view.
+ * @brief Create a trimmed suffix view of a String8 starting from the given
+ * index.
+ * @details Creates a view from start to the end of the string, then trims
+ * leading and trailing whitespace. If start >= str->length, returns an empty
+ * view. For arbitrary ranges without trimming, use string8_substring (line
+ * 119).
+ * @param str The String8 to create a suffix view from.
+ * @param start The start byte offset (inclusive).
+ * @return A trimmed String8 view of the suffix.
  */
-String8 vkr_string8_trim_view(const String8 *str, uint64_t start);
+String8 vkr_string8_trimmed_suffix(const String8 *str, uint64_t start);
 
 /**
  * @brief Destroy a string of 8-bit characters.

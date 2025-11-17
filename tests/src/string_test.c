@@ -296,48 +296,45 @@ static void test_vkr_string8_starts_with(void) {
   printf("  test_vkr_string8_starts_with PASSED\n");
 }
 
-static void test_vkr_string8_trim_view(void) {
-  printf("  Running test_vkr_string8_trim_view...\n");
+static void test_vkr_string8_trimmed_suffix(void) {
+  printf("  Running test_vkr_string8_trimmed_suffix...\n");
   setup_suite();
 
   String8 str = string8_lit("  Hello,   World!  ");
 
   // Test trimming from start
-  String8 view1 = vkr_string8_trim_view(&str, 0);
+  String8 view1 = vkr_string8_trimmed_suffix(&str, 0);
   String8 expect1 = string8_lit("Hello,   World!");
   assert(string8_equals(&view1, &expect1));
 
   // Test trimming from middle (after spaces)
-  String8 view2 = vkr_string8_trim_view(&str, 2);
+  String8 view2 = vkr_string8_trimmed_suffix(&str, 2);
   String8 expect2 = string8_lit("Hello,   World!");
   assert(string8_equals(&view2, &expect2));
 
-  // Test trimming from word boundary
-  String8 view3 = vkr_string8_trim_view(&str, 2);
-  assert(string8_equals(&view3, &expect2));
-
   // Test start index beyond string length
-  String8 view4 = vkr_string8_trim_view(&str, 100);
-  assert(view4.length == 0);
-  assert(view4.str == NULL);
+  String8 view3 = vkr_string8_trimmed_suffix(&str, 100);
+  assert(view3.length == 0);
+  assert(view3.str == NULL);
 
   // Test with string that has no leading/trailing spaces from start index
   String8 no_spaces = string8_lit("HelloWorld");
-  String8 view5 = vkr_string8_trim_view(&no_spaces, 0);
+  String8 view5 = vkr_string8_trimmed_suffix(&no_spaces, 0);
   assert(string8_equals(&view5, &no_spaces));
 
   // Test with all spaces
   String8 all_spaces = string8_lit("   ");
-  String8 view6 = vkr_string8_trim_view(&all_spaces, 0);
+  String8 view6 = vkr_string8_trimmed_suffix(&all_spaces, 0);
   assert(view6.length == 0);
+  assert(view6.str == NULL);
 
   // Test trimming from middle of word
-  String8 view7 = vkr_string8_trim_view(&str, 7); // Start at ",   World!  "
+  String8 view7 = vkr_string8_trimmed_suffix(&str, 7); // Start at ",   World! "
   String8 expect7 = string8_lit(",   World!");
   assert(string8_equals(&view7, &expect7));
 
   teardown_suite();
-  printf("  test_vkr_string8_trim_view PASSED\n");
+  printf("  test_vkr_string8_trimmed_suffix PASSED\n");
 }
 
 /////////////////////
@@ -549,7 +546,7 @@ bool32_t run_string_tests(void) {
   test_string8_equals_cstr_i();
   test_vkr_string8_duplicate_cstr();
   test_vkr_string8_starts_with();
-  test_vkr_string8_trim_view();
+  test_vkr_string8_trimmed_suffix();
 
   // CString tests
   test_cstring_equals();
