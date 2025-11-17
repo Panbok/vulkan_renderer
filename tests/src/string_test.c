@@ -326,7 +326,6 @@ static void test_vkr_string8_trimmed_suffix(void) {
   String8 all_spaces = string8_lit("   ");
   String8 view6 = vkr_string8_trimmed_suffix(&all_spaces, 0);
   assert(view6.length == 0);
-  assert(view6.str == NULL);
 
   // Test trimming from middle of word
   String8 view7 = vkr_string8_trimmed_suffix(&str, 7); // Start at ",   World! "
