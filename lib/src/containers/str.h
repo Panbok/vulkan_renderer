@@ -98,6 +98,14 @@ String8 string8_concat(Arena *arena, String8 *str1, String8 *str2);
 String8 string8_duplicate(Arena *arena, const String8 *str);
 
 /**
+ * @brief Duplicate a null-terminated C-string.
+ * @param arena The arena to allocate the new string from.
+ * @param cstr The C-string to duplicate.
+ * @return A new string of 8-bit characters.
+ */
+String8 vkr_string8_duplicate_cstr(Arena *arena, const char *cstr);
+
+/**
  * @brief Get a byte-slice (non-owning) substring of a UTF-8 string.
  * @details Indices are byte offsets; end is exclusive. Returns a view into
  * `str` (no allocation). Preconditions: 0 <= start <= end <= str->length. Note:
@@ -163,6 +171,22 @@ bool8_t vkr_string8_equals_cstr(const String8 *str, const char *cstr);
  * otherwise.
  */
 bool8_t vkr_string8_equals_cstr_i(const String8 *str, const char *cstr);
+
+/**
+ * @brief Check if a String8 starts with a given prefix.
+ * @param str The String8 to check.
+ * @param prefix The prefix to search for.
+ * @return True if the String8 starts with the prefix, false otherwise.
+ */
+bool8_t vkr_string8_starts_with(const String8 *str, const char *prefix);
+
+/**
+ * @brief Trim a String8 view.
+ * @param str The String8 to trim.
+ * @param start The start index to trim from.
+ * @return A trimmed String8 view.
+ */
+String8 vkr_string8_trim_view(const String8 *str, uint64_t start);
 
 /**
  * @brief Destroy a string of 8-bit characters.
@@ -470,3 +494,29 @@ bool8_t string8_to_vec3(const String8 *s, Vec3 *out);
  * @return True if the conversion was successful, false otherwise.
  */
 bool8_t string8_to_vec4(const String8 *s, Vec4 *out);
+
+/**
+ * @brief Extract the stem (filename without extension) from a file path.
+ *
+ * Given a file path, returns the filename component without the extension.
+ * Handles both forward and backward slashes as path separators.
+ *
+ * @param arena Arena to allocate the result string from.
+ * @param path The file path to extract stem from.
+ * @return A new string containing the stem, or empty string if invalid.
+ */
+String8 string8_get_stem(Arena *arena, String8 path);
+
+/**
+ * @brief Split a string by whitespace into tokens.
+ *
+ * Parses the input string and splits it into tokens separated by spaces or
+ * tabs. Stores up to max_tokens in the provided array.
+ *
+ * @param line The string to split.
+ * @param tokens Array to store the resulting tokens.
+ * @param max_tokens Maximum number of tokens to extract.
+ * @return The number of tokens extracted.
+ */
+uint32_t string8_split_whitespace(const String8 *line, String8 *tokens,
+                                  uint32_t max_tokens);

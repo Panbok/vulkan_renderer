@@ -1,6 +1,5 @@
 #include "string_test.h"
 #include "containers/str.h"
-#include <stdarg.h> // Ensure va_list and related macros are available
 
 static Arena *arena = NULL;
 static const uint64_t ARENA_SIZE = MB(1);
@@ -237,6 +236,110 @@ static void test_string8_equals_cstr_i(void) {
   printf("  test_string8_equals_cstr_i PASSED\n");
 }
 
+static void test_vkr_string8_duplicate_cstr(void) {
+  printf("  Running test_vkr_string8_duplicate_cstr...\n");
+  setup_suite();
+
+  // Test normal duplication
+  const char *original = "Hello, World!";
+  String8 dup = vkr_string8_duplicate_cstr(arena, original);
+  assert(dup.length == strlen(original));
+  assert(vkr_string8_equals_cstr(&dup, original));
+
+  // Test empty string duplication
+  const char *empty = "";
+  String8 dup_empty = vkr_string8_duplicate_cstr(arena, empty);
+  assert(dup_empty.length == 0);
+  assert(vkr_string8_equals_cstr(&dup_empty, empty));
+
+  // Test single character
+  const char *single = "A";
+  String8 dup_single = vkr_string8_duplicate_cstr(arena, single);
+  assert(dup_single.length == 1);
+  assert(vkr_string8_equals_cstr(&dup_single, single));
+
+  string8_destroy(&dup);
+  string8_destroy(&dup_empty);
+  string8_destroy(&dup_single);
+  teardown_suite();
+  printf("  test_vkr_string8_duplicate_cstr PASSED\n");
+}
+
+static void test_vkr_string8_starts_with(void) {
+  printf("  Running test_vkr_string8_starts_with...\n");
+  setup_suite();
+
+  String8 str = string8_lit("Hello, World!");
+
+  // Test successful match
+  assert(vkr_string8_starts_with(&str, "Hello"));
+  assert(vkr_string8_starts_with(&str, "H"));
+  assert(vkr_string8_starts_with(&str, "Hello, World!"));
+
+  // Test failed match
+  assert(!vkr_string8_starts_with(&str, "World"));
+  assert(!vkr_string8_starts_with(&str, "hello")); // case sensitive
+  assert(!vkr_string8_starts_with(&str, "Hello, Universe!"));
+
+  // Test prefix longer than string
+  assert(!vkr_string8_starts_with(&str, "Hello, World! Extra"));
+
+  // Test empty prefix
+  assert(vkr_string8_starts_with(&str, ""));
+
+  // Test with empty string
+  String8 empty = {NULL, 0};
+  assert(!vkr_string8_starts_with(&empty, "H"));
+  assert(vkr_string8_starts_with(&empty, ""));
+
+  teardown_suite();
+  printf("  test_vkr_string8_starts_with PASSED\n");
+}
+
+static void test_vkr_string8_trim_view(void) {
+  printf("  Running test_vkr_string8_trim_view...\n");
+  setup_suite();
+
+  String8 str = string8_lit("  Hello,   World!  ");
+
+  // Test trimming from start
+  String8 view1 = vkr_string8_trim_view(&str, 0);
+  String8 expect1 = string8_lit("Hello,   World!");
+  assert(string8_equals(&view1, &expect1));
+
+  // Test trimming from middle (after spaces)
+  String8 view2 = vkr_string8_trim_view(&str, 2);
+  String8 expect2 = string8_lit("Hello,   World!");
+  assert(string8_equals(&view2, &expect2));
+
+  // Test trimming from word boundary
+  String8 view3 = vkr_string8_trim_view(&str, 2);
+  assert(string8_equals(&view3, &expect2));
+
+  // Test start index beyond string length
+  String8 view4 = vkr_string8_trim_view(&str, 100);
+  assert(view4.length == 0);
+  assert(view4.str == NULL);
+
+  // Test with string that has no leading/trailing spaces from start index
+  String8 no_spaces = string8_lit("HelloWorld");
+  String8 view5 = vkr_string8_trim_view(&no_spaces, 0);
+  assert(string8_equals(&view5, &no_spaces));
+
+  // Test with all spaces
+  String8 all_spaces = string8_lit("   ");
+  String8 view6 = vkr_string8_trim_view(&all_spaces, 0);
+  assert(view6.length == 0);
+
+  // Test trimming from middle of word
+  String8 view7 = vkr_string8_trim_view(&str, 7); // Start at ",   World!  "
+  String8 expect7 = string8_lit(",   World!");
+  assert(string8_equals(&view7, &expect7));
+
+  teardown_suite();
+  printf("  test_vkr_string8_trim_view PASSED\n");
+}
+
 /////////////////////
 // CString Tests
 /////////////////////
@@ -444,6 +547,9 @@ bool32_t run_string_tests(void) {
   test_str8_duplicate_empty();
   test_string8_equals_cstr();
   test_string8_equals_cstr_i();
+  test_vkr_string8_duplicate_cstr();
+  test_vkr_string8_starts_with();
+  test_vkr_string8_trim_view();
 
   // CString tests
   test_cstring_equals();

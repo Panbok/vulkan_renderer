@@ -236,6 +236,21 @@ String8 string8_duplicate(Arena *arena, const String8 *str) {
   return result;
 }
 
+String8 vkr_string8_duplicate_cstr(Arena *arena, const char *cstr) {
+  assert(arena != NULL && "Arena is NULL");
+  assert(cstr != NULL && "C string is NULL");
+
+  uint64_t length = (uint64_t)strlen(cstr);
+  String8 result = {NULL, 0};
+  result.str = arena_alloc(arena, length + 1, ARENA_MEMORY_TAG_STRING);
+  assert(result.str != NULL && "Failed to allocate memory");
+
+  MemCopy(result.str, cstr, length);
+  result.str[length] = '\0';
+  result.length = length;
+  return result;
+}
+
 bool8_t vkr_string8_equals_cstr(const String8 *str, const char *cstr) {
   assert(str != NULL && "String is NULL");
   assert(str->str != NULL && "String data is NULL");
@@ -267,6 +282,30 @@ bool8_t vkr_string8_equals_cstr_i(const String8 *str, const char *cstr) {
   }
 
   return true_v;
+}
+
+bool8_t vkr_string8_starts_with(const String8 *str, const char *prefix) {
+  assert(str != NULL && "String is NULL");
+  assert(prefix != NULL && "Prefix is NULL");
+
+  uint64_t prefix_len = (uint64_t)strlen(prefix);
+  if (str->length < prefix_len) {
+    return false_v;
+  }
+
+  return MemCompare(str->str, prefix, prefix_len) == 0;
+}
+
+String8 vkr_string8_trim_view(const String8 *str, uint64_t start) {
+  assert(str != NULL && "String is NULL");
+
+  if (start >= str->length)
+    return (String8){0};
+
+  String8 view = string8_substring(str, start, str->length);
+  string8_trim(&view);
+
+  return view;
 }
 
 /////////////////////
@@ -735,4 +774,51 @@ bool8_t string8_to_vec3(const String8 *s, Vec3 *out) {
 
 bool8_t string8_to_vec4(const String8 *s, Vec4 *out) {
   return string8__parse_as_cstring(s, wrap_string_to_vec4, out);
+}
+
+String8 string8_get_stem(Arena *arena, String8 path) {
+  if (!path.str || path.length == 0)
+    return (String8){0};
+  uint64_t start = 0;
+  for (uint64_t i = path.length; i > 0; --i) {
+    uint8_t ch = path.str[i - 1];
+    if (ch == '/' || ch == '\\') {
+      start = i;
+      break;
+    }
+  }
+  uint64_t end = path.length;
+  for (uint64_t i = path.length; i > start; --i) {
+    if (path.str[i - 1] == '.') {
+      end = i - 1;
+      break;
+    }
+  }
+  if (end <= start)
+    end = path.length;
+  String8 stem = string8_substring(&path, start, end);
+  return string8_duplicate(arena, &stem);
+}
+
+uint32_t string8_split_whitespace(const String8 *line, String8 *tokens,
+                                  uint32_t max_tokens) {
+  if (!line || !line->str || line->length == 0 || max_tokens == 0)
+    return 0;
+  uint32_t count = 0;
+  uint64_t index = 0;
+  while (index < line->length && count < max_tokens) {
+    while (index < line->length &&
+           (line->str[index] == ' ' || line->str[index] == '\t')) {
+      index++;
+    }
+    if (index >= line->length)
+      break;
+    uint64_t start = index;
+    while (index < line->length &&
+           !(line->str[index] == ' ' || line->str[index] == '\t')) {
+      index++;
+    }
+    tokens[count++] = string8_substring(line, start, index);
+  }
+  return count;
 }
