@@ -2,6 +2,7 @@
 
 #include "containers/str.h"
 #include "defines.h"
+#include "filesystem/filesystem.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -130,8 +131,10 @@ vkr_internal void test_file_create_and_ensure_directory(void) {
   String8 create_target =
       string8_create_formatted(arena, "%s%s/create_dir_%u", PROJECT_SOURCE_DIR,
                                FS_TEST_RELATIVE_DIR, id);
-  assert(file_create_directory((const char *)create_target.str) == true_v);
-  assert(file_create_directory((const char *)create_target.str) == true_v);
+  FilePath create_path = {.path = create_target,
+                          .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_create_directory(&create_path) == true_v);
+  assert(file_create_directory(&create_path) == true_v);
   fs_test_remove_dir((const char *)create_target.str);
 
   id = ++g_fs_test_counter;
@@ -159,6 +162,7 @@ vkr_internal void test_file_create_and_ensure_directory(void) {
 vkr_internal void test_file_write_and_read_binary(void) {
   printf("  Running test_file_write_and_read_binary...\n");
   Arena *arena = arena_create(MB(1), MB(1));
+  Arena *read_arena = arena_create(MB(1), MB(1));
 
   uint32_t id = ++g_fs_test_counter;
   char relative_path[256];
@@ -187,28 +191,33 @@ vkr_internal void test_file_write_and_read_binary(void) {
   bitset8_set(&read_mode, FILE_MODE_BINARY);
   assert(file_open(&path, read_mode, &handle) == FILE_ERROR_NONE);
 
-  Arena *read_arena = arena_create(MB(1), MB(1));
-  uint8_t *buffer = NULL;
-  uint64_t bytes_read = 0;
-  assert(file_read_all(&handle, read_arena, &buffer, &bytes_read) ==
-         FILE_ERROR_NONE);
-  assert(bytes_read == sizeof(data));
-  assert(memcmp(buffer, data, sizeof(data)) == 0);
-  arena_destroy(read_arena);
+  {
+    Scratch scratch = scratch_create(read_arena);
+    uint8_t *buffer = NULL;
+    uint64_t bytes_read = 0;
+    assert(file_read_all(&handle, scratch.arena, &buffer, &bytes_read) ==
+           FILE_ERROR_NONE);
+    assert(bytes_read == sizeof(data));
+    assert(memcmp(buffer, data, sizeof(data)) == 0);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_UNKNOWN);
+  }
   file_close(&handle);
 
   assert(file_open(&path, read_mode, &handle) == FILE_ERROR_NONE);
-  Arena *partial_arena = arena_create(MB(1), MB(1));
-  uint8_t *partial_buffer = NULL;
-  uint64_t partial_read = 0;
-  assert(file_read(&handle, partial_arena, 3, &partial_read, &partial_buffer) ==
-         FILE_ERROR_NONE);
-  assert(partial_read == 3);
-  assert(memcmp(partial_buffer, data, 3) == 0);
-  arena_destroy(partial_arena);
+  {
+    Scratch scratch = scratch_create(read_arena);
+    uint8_t *partial_buffer = NULL;
+    uint64_t partial_read = 0;
+    assert(file_read(&handle, scratch.arena, 3, &partial_read,
+                     &partial_buffer) == FILE_ERROR_NONE);
+    assert(partial_read == 3);
+    assert(memcmp(partial_buffer, data, 3) == 0);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_UNKNOWN);
+  }
   file_close(&handle);
 
   fs_test_remove_file((const char *)path.path.str);
+  arena_destroy(read_arena);
   arena_destroy(arena);
   printf("  test_file_write_and_read_binary PASSED\n");
 }
@@ -346,6 +355,7 @@ vkr_internal void test_file_get_error_strings(void) {
 
 bool32_t run_filesystem_tests(void) {
   printf("--- Starting Filesystem Tests ---\n");
+  g_fs_test_counter = 0;
   fs_test_ensure_base_dir();
 
   test_file_path_create();

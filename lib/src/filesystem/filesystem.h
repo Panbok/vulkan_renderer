@@ -320,8 +320,8 @@ FileError file_stats(const FilePath *path, FileStats *out_stats);
 /**
  * @brief Ensures the given directory exists by creating any missing segments.
  *
- * @param arena Arena used for temporary copies of the path.
- * @param path Full path to the directory to ensure.
+ * @param arena Arena used for temporary copies of the path. Must not be NULL.
+ * @param path Full path to the directory to ensure. Must not be NULL.
  * @return True if the directory exists/was created; false if creation failed.
  */
 bool8_t file_ensure_directory(Arena *arena, const String8 *path);
@@ -497,7 +497,7 @@ FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
  * @param path The path to the directory to create. Must not be NULL.
  * @return `true` if the directory was created successfully, `false` otherwise.
  */
-bool8_t file_create_directory(const char *path);
+bool8_t file_create_directory(const FilePath *path);
 
 /**
  * @brief Extracts the directory portion from a file path.
@@ -506,7 +506,8 @@ bool8_t file_create_directory(const char *path);
  * including the last path separator). If no path separator is found, returns
  * an empty string.
  *
- * @param arena Arena to allocate the result string from.
+ * @param arena Arena to allocate the result string from. Must not be
+ * NULL.
  * @param path The file path to extract directory from.
  * @return A new string containing the directory portion, or empty string if
  * none found.
@@ -519,7 +520,7 @@ String8 file_path_get_directory(Arena *arena, String8 path);
  * Concatenates the directory and filename with appropriate path separator.
  * Handles cases where the directory already ends with a separator.
  *
- * @param arena Arena to allocate the result string from.
+ * @param arena Arena to allocate the result string from. Must not be NULL.
  * @param dir The directory path.
  * @param file The filename to append.
  * @return A new string containing the joined path.

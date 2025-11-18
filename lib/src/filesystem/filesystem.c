@@ -62,31 +62,41 @@ FileError file_stats(const FilePath *path, FileStats *out_stats) {
   return FILE_ERROR_NOT_FOUND;
 }
 
-bool8_t file_create_directory(const char *path) {
+bool8_t file_create_directory(const FilePath *path) {
   assert_log(path != NULL, "path is NULL");
 
-  if (path[0] == '\0')
+  const char *path_str = (const char *)path->path.str;
+  if (path_str[0] == '\0')
     return false_v;
 
   struct stat st = {0};
-  if (stat(path, &st) == 0) {
+  if (stat(path_str, &st) == 0) {
     if ((st.st_mode & S_IFDIR) != 0) {
       return true_v;
     }
-    log_error("Filesystem: path exists but is not a directory '%s'", path);
+    log_error("Filesystem: path exists but is not a directory '%s'", path_str);
     return false_v;
   }
 
 #if defined(PLATFORM_WINDOWS)
-  int result = _mkdir(path);
+  int result = _mkdir(path_str);
 #else
-  int result = mkdir(path, 0755);
+  int result = mkdir(path_str, 0755);
 #endif
-  if (result == 0 || errno == EEXIST) {
+  if (result == 0) {
     return true_v;
   }
 
-  log_error("Filesystem: failed to create directory '%s': %s", path,
+  if (errno == EEXIST) {
+    struct stat st_retry = {0};
+    if (stat(path_str, &st_retry) == 0 && (st_retry.st_mode & S_IFDIR) != 0) {
+      return true_v;
+    }
+    log_error("Filesystem: path exists but is not a directory '%s'", path_str);
+    return false_v;
+  }
+
+  log_error("Filesystem: failed to create directory '%s': %s", path_str,
             strerror(errno));
   return false_v;
 }
@@ -134,7 +144,23 @@ bool8_t file_ensure_directory(Arena *arena, const String8 *path) {
     char saved = buffer[i];
     buffer[i] = '\0';
     if (buffer[0] != '\0') {
-      if (!file_create_directory(buffer)) {
+      // Create FilePath from buffer
+      String8 path_str = string8_create_from_cstr((const uint8_t *)buffer,
+                                                  string_length(buffer));
+      FilePathType path_type = FILE_PATH_TYPE_RELATIVE;
+#if defined(PLATFORM_WINDOWS)
+      if (buffer[0] == '/' || buffer[0] == '\\' ||
+          (string_length(buffer) >= 3 && buffer[1] == ':' &&
+           (buffer[2] == '/' || buffer[2] == '\\'))) {
+        path_type = FILE_PATH_TYPE_ABSOLUTE;
+      }
+#else
+      if (buffer[0] == '/') {
+        path_type = FILE_PATH_TYPE_ABSOLUTE;
+      }
+#endif
+      FilePath file_path = {.path = path_str, .type = path_type};
+      if (!file_create_directory(&file_path)) {
         buffer[i] = saved;
         scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
         return false_v;
@@ -144,12 +170,35 @@ bool8_t file_ensure_directory(Arena *arena, const String8 *path) {
   }
 
   uint64_t final_len = string_length(buffer);
-  if (final_len > 0 &&
+  if (final_len > 1 &&
       (buffer[final_len - 1] == '/' || buffer[final_len - 1] == '\\')) {
-    buffer[final_len - 1] = '\0';
+#if defined(PLATFORM_WINDOWS)
+    // Don't strip if it's a drive root like "C:\"
+    if (!(final_len == 3 && buffer[1] == ':')) {
+#endif
+      buffer[final_len - 1] = '\0';
+#if defined(PLATFORM_WINDOWS)
+    }
+#endif
   }
 
-  bool8_t result = file_create_directory(buffer);
+  // Create FilePath from final buffer
+  String8 final_path_str =
+      string8_create_from_cstr((const uint8_t *)buffer, string_length(buffer));
+  FilePathType final_path_type = FILE_PATH_TYPE_RELATIVE;
+#if defined(PLATFORM_WINDOWS)
+  if (buffer[0] == '/' || buffer[0] == '\\' ||
+      (string_length(buffer) >= 3 && buffer[1] == ':' &&
+       (buffer[2] == '/' || buffer[2] == '\\'))) {
+    final_path_type = FILE_PATH_TYPE_ABSOLUTE;
+  }
+#else
+  if (buffer[0] == '/') {
+    final_path_type = FILE_PATH_TYPE_ABSOLUTE;
+  }
+#endif
+  FilePath final_file_path = {.path = final_path_str, .type = final_path_type};
+  bool8_t result = file_create_directory(&final_file_path);
   scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
   return result;
 }
@@ -237,8 +286,8 @@ FileError file_read_line(FileHandle *handle, Arena *arena, Arena *line_arena,
     return FILE_ERROR_INVALID_HANDLE;
   }
 
-  // If the same arena is passed for both, fall back to a scratch copy to avoid
-  // conflicts
+  // If the same arena is passed for both, fall back to a scratch copy to
+  // avoid conflicts
   bool8_t same_arena = (arena == line_arena);
   Scratch scratch = {0};
   Arena *target_arena = line_arena;
@@ -498,6 +547,10 @@ FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
   return FILE_ERROR_NONE;
 }
 
+// Returns the directory portion of the given path including the trailing path
+// separator (e.g. "/foo/bar.txt" -> "/foo/"). Returns an empty String8 if no
+// separator is present. Note: This trailing-separator convention is relied upon
+// by file_path_join so callers and future maintainers understand the contract.
 String8 file_path_get_directory(Arena *arena, String8 path) {
   assert_log(arena != NULL, "arena is NULL");
 
@@ -522,6 +575,11 @@ String8 file_path_join(Arena *arena, String8 dir, String8 file) {
 
   if (!dir.str || dir.length == 0)
     return string8_duplicate(arena, &file);
+#if defined(PLATFORM_WINDOWS)
+  char sep = '\\';
+#else
+  char sep = '/';
+#endif
   uint64_t needs_sep =
       (dir.str[dir.length - 1] == '/' || dir.str[dir.length - 1] == '\\') ? 0
                                                                           : 1;
@@ -532,7 +590,7 @@ String8 file_path_join(Arena *arena, String8 dir, String8 file) {
   MemCopy(buf, dir.str, dir.length);
   offset += dir.length;
   if (needs_sep) {
-    buf[offset++] = '/';
+    buf[offset++] = sep;
   }
   MemCopy(buf + offset, file.str, file.length);
   offset += file.length;
@@ -567,6 +625,8 @@ String8 file_get_error_string(FileError error) {
   case FILE_ERROR_EOF:
     return string8_lit("End of file");
   case FILE_ERROR_COUNT:
+  default:
     return string8_lit("Unknown error");
+    break;
   }
 }
