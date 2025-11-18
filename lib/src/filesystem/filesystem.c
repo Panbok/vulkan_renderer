@@ -21,15 +21,15 @@ FilePath file_path_create(const char *path, Arena *arena, FilePathType type) {
         string_length(PROJECT_SOURCE_DIR) + string_length(path) + 1;
     uint8_t *full_path =
         (uint8_t *)arena_alloc(arena, full_path_len, ARENA_MEMORY_TAG_STRING);
-    snprintf((char *)full_path, full_path_len, "%s%s", PROJECT_SOURCE_DIR,
-             path);
+    string_format((char *)full_path, full_path_len, "%s%s", PROJECT_SOURCE_DIR,
+                  path);
 
     result.path = string8_create(full_path, full_path_len);
   } else {
     uint64_t path_len = string_length(path) + 1;
     uint8_t *path_str =
         (uint8_t *)arena_alloc(arena, path_len, ARENA_MEMORY_TAG_STRING);
-    snprintf((char *)path_str, path_len, "%s", path);
+    string_format((char *)path_str, path_len, "%s", path);
 
     result.path = string8_create(path_str, path_len);
   }
