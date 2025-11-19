@@ -106,7 +106,17 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
 
   char material_name_buf[128] = {0};
   String8 material_name = {0};
-  vkr_get_stable_material_name(material_name_buf, 128, name, &material_name);
+  if (loaded_material.name) {
+    uint64_t parsed_name_length = string_length(loaded_material.name);
+    if (parsed_name_length > 0) {
+      material_name = string8_create_from_cstr(
+          (const uint8_t *)loaded_material.name, parsed_name_length);
+    }
+  }
+
+  if (material_name.length == 0 || material_name.str == NULL) {
+    vkr_get_stable_material_name(material_name_buf, 128, name, &material_name);
+  }
 
   // Check if material already exists
   const char *material_key = (const char *)material_name.str;
@@ -315,8 +325,8 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
   }
 
   char material_name_buf[128] = {0};
-  String8 name = {0};
-  vkr_get_stable_material_name(material_name_buf, 128, path, &name);
+  String8 material_name = {0};
+  vkr_get_stable_material_name(material_name_buf, 128, path, &material_name);
 
   // Initialize material with defaults
   MemZero(out_material, sizeof(*out_material));
@@ -337,6 +347,18 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
   out_material->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = true;
   out_material->textures[VKR_TEXTURE_SLOT_DIFFUSE].slot =
       VKR_TEXTURE_SLOT_DIFFUSE;
+  out_material->textures[VKR_TEXTURE_SLOT_NORMAL].handle =
+      vkr_texture_system_get_default_normal_handle(
+          material_system->texture_system);
+  out_material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled = true;
+  out_material->textures[VKR_TEXTURE_SLOT_NORMAL].slot =
+      VKR_TEXTURE_SLOT_NORMAL;
+  out_material->textures[VKR_TEXTURE_SLOT_SPECULAR].handle =
+      vkr_texture_system_get_default_specular_handle(
+          material_system->texture_system);
+  out_material->textures[VKR_TEXTURE_SLOT_SPECULAR].enabled = true;
+  out_material->textures[VKR_TEXTURE_SLOT_SPECULAR].slot =
+      VKR_TEXTURE_SLOT_SPECULAR;
 
   if (!file_buffer_arena) {
     file_close(&fh);
@@ -383,31 +405,59 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
     string8_trim(&key);
     string8_trim(&value);
 
-    if (string8_contains_cstr(&key, "diffuse_texture")) {
+    if (vkr_string8_equals_cstr_i(&key, "name")) {
+      if (value.length == 0) {
+        log_warn("Material '%s': empty name field ignored",
+                 string8_cstr(&material_name));
+        continue;
+      }
+
+      char *explicit_name = (char *)arena_alloc(temp_arena, value.length + 1,
+                                                ARENA_MEMORY_TAG_STRING);
+      if (!explicit_name) {
+        log_warn("Material '%s': failed to allocate explicit name",
+                 string8_cstr(&material_name));
+        continue;
+      }
+
+      MemCopy(explicit_name, value.str, (size_t)value.length);
+      explicit_name[value.length] = '\0';
+      out_material->name = explicit_name;
+      material_name = string8_create_from_cstr((const uint8_t *)explicit_name,
+                                               value.length);
+
+    } else if (string8_contains_cstr(&key, "diffuse_texture")) {
       VkrTextureHandle handle = vkr_load_and_acquire_texture(
-          material_system, temp_arena, &name, value, VKR_TEXTURE_SLOT_DIFFUSE,
-          "diffuse_texture texture");
-      out_material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle = handle;
+          material_system, temp_arena, &material_name, value,
+          VKR_TEXTURE_SLOT_DIFFUSE, "diffuse_texture texture");
+      if (handle.id != 0) {
+        out_material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle = handle;
+        out_material->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = true;
+      }
     } else if (string8_contains_cstr(&key, "specular_texture")) {
       VkrTextureHandle handle = vkr_load_and_acquire_texture(
-          material_system, temp_arena, &name, value, VKR_TEXTURE_SLOT_SPECULAR,
-          "specular_texture");
-      out_material->textures[VKR_TEXTURE_SLOT_SPECULAR].handle = handle;
-      out_material->textures[VKR_TEXTURE_SLOT_SPECULAR].enabled = true;
+          material_system, temp_arena, &material_name, value,
+          VKR_TEXTURE_SLOT_SPECULAR, "specular_texture");
+      if (handle.id != 0) {
+        out_material->textures[VKR_TEXTURE_SLOT_SPECULAR].handle = handle;
+        out_material->textures[VKR_TEXTURE_SLOT_SPECULAR].enabled = true;
+      }
     } else if (string8_contains_cstr(&key, "norm_texture") ||
                string8_contains_cstr(&key, "normal_texture")) {
       VkrTextureHandle handle = vkr_load_and_acquire_texture(
-          material_system, temp_arena, &name, value, VKR_TEXTURE_SLOT_NORMAL,
-          "normal_texture");
-      out_material->textures[VKR_TEXTURE_SLOT_NORMAL].handle = handle;
-      out_material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled = true;
+          material_system, temp_arena, &material_name, value,
+          VKR_TEXTURE_SLOT_NORMAL, "normal_texture");
+      if (handle.id != 0) {
+        out_material->textures[VKR_TEXTURE_SLOT_NORMAL].handle = handle;
+        out_material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled = true;
+      }
     } else if (string8_contains_cstr(&key, "diffuse_color")) {
       Vec4 v;
       if (string8_to_vec4(&value, &v)) {
         out_material->phong.diffuse_color = v;
       } else {
         log_warn("Material '%s': invalid diffuse_color '%s'",
-                 string8_cstr(&name), string8_cstr(&value));
+                 string8_cstr(&material_name), string8_cstr(&value));
       }
 
     } else if (string8_contains_cstr(&key, "specular_color")) {
@@ -416,7 +466,7 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
         out_material->phong.specular_color = v;
       } else {
         log_warn("Material '%s': invalid specular_color '%s'",
-                 string8_cstr(&name), string8_cstr(&value));
+                 string8_cstr(&material_name), string8_cstr(&value));
       }
 
     } else if (string8_contains_cstr(&key, "shininess")) {
@@ -425,17 +475,17 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
       if (string8_to_f32(&value, &s)) {
         out_material->phong.shininess = s;
       } else {
-        log_warn("Material '%s': invalid shininess '%s'", string8_cstr(&name),
-                 string8_cstr(&value));
+        log_warn("Material '%s': invalid shininess '%s'",
+                 string8_cstr(&material_name), string8_cstr(&value));
       }
 
     } else if (string8_contains_cstr(&key, "emission_color")) {
-      Vec3 v;
-      if (string8_to_vec3(&value, &v)) {
+      Vec4 v;
+      if (string8_to_vec4(&value, &v)) {
         out_material->phong.emission_color = v;
       } else {
         log_warn("Material '%s': invalid emission_color '%s'",
-                 string8_cstr(&name), string8_cstr(&value));
+                 string8_cstr(&material_name), string8_cstr(&value));
       }
 
     } else if (string8_contains_cstr(&key, "shader")) {
@@ -452,7 +502,7 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
         out_material->shader_name = stable;
       } else {
         log_warn("Material '%s': failed to allocate shader name",
-                 string8_cstr(&name));
+                 string8_cstr(&material_name));
       }
     } else if (string8_contains_cstr(&key, "pipeline")) {
       string_trim((char *)value.str);
@@ -460,14 +510,14 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
       if (pipeline_id != VKR_INVALID_ID) {
         out_material->pipeline_id = pipeline_id;
       } else {
-        log_warn("Material '%s': invalid pipeline '%s'", string8_cstr(&name),
-                 string8_cstr(&value));
+        log_warn("Material '%s': invalid pipeline '%s'",
+                 string8_cstr(&material_name), string8_cstr(&value));
         out_material->pipeline_id = VKR_INVALID_ID;
       }
     } else {
       // Unknown keys are ignored for now
       log_debug("Material '%s': ignoring unknown key '%.*s'",
-                string8_cstr(&name), (int)key.length, (char *)key.str);
+                string8_cstr(&material_name), (int)key.length, (char *)key.str);
     }
   }
 

@@ -12,6 +12,7 @@ struct LocalUniformObject
 {
     float4 diffuse_color;
     float4 specular_color;
+    float4 emission_color;
     float shininess;
 };
 
@@ -40,7 +41,7 @@ static const DirectionalLight directional_light = {
 
 // Green light
 static const PointLight point_light_0 = {
-    float3(-1.5, 3.0, -15.5),
+    float3(-1.5, 1.0, -10.5),
     float4(0.0, 1.0, 0.0, 1.0),
     1.0, // Constant
     0.35, // Linear
@@ -49,7 +50,7 @@ static const PointLight point_light_0 = {
 
 // Red light
 static const PointLight point_light_1 = {
-    float3(3.5, 3.0, -15.5),
+    float3(3.5, 1.0, -10.5),
     float4(1.0, 0.0, 0.0, 1.0),
     1.0, // Constant
     0.35, // Linear
@@ -244,10 +245,6 @@ float4 fragmentMain(VertexDto input) : SV_Target
         return float4(abs(normal), 1.0f);
     }
 
-    // TODO: Move this to GlobalUniformBufferObject
-    // Hardcoded ambient light (not pitch black)
-    float4 ambient_override = float4(0.1, 0.1, 0.1, 1.0); 
-
     float4 diffuse_sample = diffuse_texture.Sample(diffuse_sampler, input.texcoord);
     diffuse_sample.rgb = pow(diffuse_sample.rgb, float3(2.2, 2.2, 2.2));
 
@@ -256,19 +253,24 @@ float4 fragmentMain(VertexDto input) : SV_Target
     float3 view_direction = normalize(input.view_position - input.frag_position);
 
     float4 color = calculate_directional_light(directional_light, normal,
-                                               view_direction, ambient_override,
+                                               view_direction, 
+                                               input.ambient_color,
                                                input.render_mode, diffuse_sample,
                                                specular_sample);
 
     color += calculate_point_light(point_light_0, normal, input.frag_position,
-                                   view_direction, ambient_override,
+                                   view_direction, 
+                                   input.ambient_color,
                                    input.render_mode, diffuse_sample,
                                    specular_sample);
                                    
     color += calculate_point_light(point_light_1, normal, input.frag_position,
-                                   view_direction, ambient_override,
+                                   view_direction,
+                                   input.ambient_color,
                                    input.render_mode, diffuse_sample,
                                    specular_sample);
+
+    color += local_ubo.emission_color;
 
     // Reinhard Tone Mapping
     color.rgb = color.rgb / (color.rgb + 1.0f);

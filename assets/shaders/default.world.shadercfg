@@ -44,6 +44,7 @@ uniform=uint32,0,render_mode
 # Updated per material, each material gets its own descriptor set
 uniform=vec4,1,diffuse_color      # Material diffuse color (tint)
 uniform=vec4,1,specular_color     # Material specular tint
+uniform=vec4,1,emission_color     # Material emission self-illumination
 uniform=float,1,shininess         # Material shininess/exponent
 uniform=samp,1,diffuse_texture    # Material diffuse texture (slot 0)
 uniform=samp,1,specular_texture   # Material specular map   (slot 1)

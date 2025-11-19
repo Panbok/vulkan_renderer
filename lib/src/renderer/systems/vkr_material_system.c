@@ -91,8 +91,8 @@ vkr_material_system_create_default(VkrMaterialSystem *system) {
   material->name = "__default";
   material->phong.diffuse_color = vec4_new(1, 1, 1, 1);
   material->phong.specular_color = vec4_new(1, 1, 1, 1);
-  material->phong.shininess = 32.0f;
-  material->phong.emission_color = vec3_new(0, 0, 0);
+  material->phong.emission_color = vec4_new(0, 0, 0, 1.0);
+  material->phong.shininess = 8.0f;
   // Initialize all texture slots disabled
   for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; i++) {
     material->textures[i].slot = (VkrTextureSlot)i;
@@ -185,6 +185,28 @@ void vkr_material_system_release(VkrMaterialSystem *system,
   }
 }
 
+void vkr_material_system_add_ref(VkrMaterialSystem *system,
+                                 VkrMaterialHandle handle) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(handle.id != 0, "Handle is invalid");
+
+  uint32_t idx = handle.id - 1;
+  if (idx >= system->materials.length)
+    return;
+
+  VkrMaterial *material = &system->materials.data[idx];
+  if (material->generation != handle.generation || material->id == 0 ||
+      !material->name)
+    return;
+
+  VkrMaterialEntry *entry = vkr_hash_table_get_VkrMaterialEntry(
+      &system->material_by_name, material->name);
+  if (!entry)
+    return;
+
+  entry->ref_count++;
+}
+
 void vkr_material_system_apply_global(VkrMaterialSystem *system,
                                       VkrGlobalMaterialState *global_state,
                                       VkrPipelineDomain domain) {
@@ -261,6 +283,9 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
     vkr_shader_system_uniform_set(system->shader_system, "shininess",
                                   &material->phong.shininess);
 
+    vkr_shader_system_uniform_set(system->shader_system, "emission_color",
+                                  &material->phong.emission_color);
+
     if (normal_texture) {
       vkr_shader_system_sampler_set(system->shader_system, "normal_texture",
                                     normal_texture->handle);
@@ -279,8 +304,8 @@ void vkr_material_system_apply_local(VkrMaterialSystem *system,
                                 &local_state->model);
 }
 
-const VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
-                                                     VkrMaterialHandle handle) {
+VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
+                                               VkrMaterialHandle handle) {
   if (!system || handle.id == 0)
     return NULL;
   uint32_t index = handle.id - 1;

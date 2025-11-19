@@ -115,6 +115,14 @@ void vkr_material_system_release(VkrMaterialSystem *system,
                                  VkrMaterialHandle handle);
 
 /**
+ * @brief Adds a reference to an already acquired material handle.
+ * @param system The material system managing the handle
+ * @param handle The handle to retain
+ */
+void vkr_material_system_add_ref(VkrMaterialSystem *system,
+                                 VkrMaterialHandle handle);
+
+/**
  * @brief Applies the global material state to the material system
  * @param system The material system to apply the global material state to
  * @param global_state The global material state to apply
@@ -151,5 +159,5 @@ void vkr_material_system_apply_local(VkrMaterialSystem *system,
  * @param handle The handle to the material to get
  * @return A pointer to the material if valid; NULL otherwise.
  */
-const VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
-                                                     VkrMaterialHandle handle);
+VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
+                                               VkrMaterialHandle handle);
