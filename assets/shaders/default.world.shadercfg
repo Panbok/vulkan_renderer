@@ -9,7 +9,6 @@ stages=vertex,fragment
 stagefiles=assets/shaders/default.world.spv
 use_instance=1
 use_local=1
-vertex_layout=GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD2_COLOR_TANGENT
 
 # ============================================================================
 # Vertex Attributes (tightly packed, interleaved)
@@ -58,7 +57,7 @@ uniform=mat4,2,model         # Object model matrix (transform)
 # Computed Layout (for reference, calculated by loader)
 # ============================================================================
 # Attributes:
-#   stride = 20 floats (80 bytes)
+#   stride = 16 floats (64 bytes)
 #
 # Global UBO (std140):
 #   view:       offset=0,  size=64 (mat4)

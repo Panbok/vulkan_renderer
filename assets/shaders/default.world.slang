@@ -35,12 +35,12 @@ struct PointLight
 
 static const DirectionalLight directional_light = {
     float3(-0.57735, -0.57735, -0.57735),
-    float4(0.4, 0.4, 0.4, 1.0)
+    float4(1.0, 1.0, 1.0, 1.0) 
 };
 
 // Green light
 static const PointLight point_light_0 = {
-    float3(-1.5, 0.0, -5.5),
+    float3(-1.5, 3.0, -15.5),
     float4(0.0, 1.0, 0.0, 1.0),
     1.0, // Constant
     0.35, // Linear
@@ -49,7 +49,7 @@ static const PointLight point_light_0 = {
 
 // Red light
 static const PointLight point_light_1 = {
-    float3(3.5, 0.0, -5.5),
+    float3(3.5, 3.0, -15.5),
     float4(1.0, 0.0, 0.0, 1.0),
     1.0, // Constant
     0.35, // Linear
@@ -147,11 +147,18 @@ float3 compute_normal_from_map(VertexDto input)
 {
     float3 normal = input.normal;
     float3 tangent = input.tangent.xyz;
-    tangent = tangent - dot(tangent, normal) * normal;
+    
+    // Re-orthogonalize tangent (Gram-Schmidt)
+    tangent = normalize(tangent - dot(tangent, normal) * normal);
+    
     float3 bitangent = cross(normal, tangent) * input.tangent.w;
     float3x3 tbn = float3x3(tangent, bitangent, normal);
 
     float3 sampled = normal_texture.Sample(normal_sampler, input.texcoord).xyz;
+    
+    // Invert Green Channel for correct OpenGL->DirectX/Vulkan mapping 
+    sampled.y = 1.0 - sampled.y;
+
     sampled = (sampled * 2.0f) - 1.0f;
     return normalize(mul(tbn, sampled));
 }
@@ -204,14 +211,13 @@ float4 calculate_point_light(PointLight light, float3 normal,
         (light.constant + light.linear * distance +
          light.quadratic * (distance * distance));
 
-    float4 ambient = ambient_color.rgba;
+    float4 ambient = float4(0.0, 0.0, 0.0, 0.0); 
     float4 diffuse = light.color * diff;
     float4 specular = light.color * spec;
     specular *= local_ubo.specular_color;
 
     if (render_mode == RENDER_MODE_DEFAULT)
     {
-        ambient *= diffuse_sample;
         diffuse *= diffuse_sample;
         specular *= specular_mask;
         specular *= local_ubo.specular_color;
@@ -238,23 +244,34 @@ float4 fragmentMain(VertexDto input) : SV_Target
         return float4(abs(normal), 1.0f);
     }
 
+    // TODO: Move this to GlobalUniformBufferObject
+    // Hardcoded ambient light (not pitch black)
+    float4 ambient_override = float4(0.1, 0.1, 0.1, 1.0); 
+
     float4 diffuse_sample = diffuse_texture.Sample(diffuse_sampler, input.texcoord);
+    diffuse_sample.rgb = pow(diffuse_sample.rgb, float3(2.2, 2.2, 2.2));
+
     float specular_sample = specular_texture.Sample(specular_sampler, input.texcoord).r;
 
     float3 view_direction = normalize(input.view_position - input.frag_position);
 
     float4 color = calculate_directional_light(directional_light, normal,
-                                               view_direction, input.ambient_color,
+                                               view_direction, ambient_override,
                                                input.render_mode, diffuse_sample,
                                                specular_sample);
 
     color += calculate_point_light(point_light_0, normal, input.frag_position,
-                                   view_direction, input.ambient_color,
+                                   view_direction, ambient_override,
                                    input.render_mode, diffuse_sample,
                                    specular_sample);
+                                   
     color += calculate_point_light(point_light_1, normal, input.frag_position,
-                                   view_direction, input.ambient_color,
+                                   view_direction, ambient_override,
                                    input.render_mode, diffuse_sample,
                                    specular_sample);
+
+    // Reinhard Tone Mapping
+    color.rgb = color.rgb / (color.rgb + 1.0f);
+
     return color;
-} 
+}

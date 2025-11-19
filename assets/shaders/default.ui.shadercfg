@@ -9,7 +9,6 @@ stages=vertex,fragment
 stagefiles=assets/shaders/default.ui.spv
 use_instance=1
 use_local=1
-vertex_layout=GEOMETRY_VERTEX_LAYOUT_POSITION2_TEXCOORD
 
 # ============================================================================
 # Vertex Attributes (2D position + UV coordinates)
@@ -45,4 +44,3 @@ uniform=mat4,2,model         # 2D transform (position, scale, rotation)
 # Push Constants: 64 bytes (same as world shader)
 #
 # Note: Identical uniform layout to world shader allows sharing backend code
-
