@@ -5,6 +5,7 @@
 #include "core/logger.h"
 #include "filesystem/filesystem.h"
 #include "memory/arena.h"
+#include "renderer/vkr_buffer.h"
 
 // =============================================================================
 // Constants
@@ -16,6 +17,7 @@
 #define VKR_SHADER_CONFIG_MAX_TOKEN_LENGTH 64
 #define VKR_SHADER_UBO_ALIGNMENT 256
 #define VKR_SHADER_PUSH_CONSTANT_ALIGNMENT 4
+#define VKR_SHADER_UNIFORM_REGISTER_SIZE 16
 #define VKR_SHADER_CONFIG_MAX_STAGES 8
 
 #define VKR_SHADER_ATTRIBUTE_COUNT_MAX 32
@@ -94,28 +96,115 @@ vkr_attribute_type_size(VkrShaderAttributeType type) {
   }
 }
 
+typedef struct VkrVertexAttributeExpectation {
+  const char *name;
+  VkrShaderAttributeType type;
+  uint32_t offset;
+} VkrVertexAttributeExpectation;
+
+vkr_internal VkrVertexType
+vkr_shader_config_detect_vertex_type(const VkrShaderConfig *cfg) {
+  if (cfg->renderpass_name.length > 0 &&
+      vkr_string8_equals_cstr_i(&cfg->renderpass_name,
+                                "renderpass.default.ui")) {
+    return VKR_VERTEX_TYPE_2D;
+  }
+  for (uint32_t i = 0; i < cfg->attribute_count; ++i) {
+    const VkrShaderAttributeDesc *ad =
+        array_get_VkrShaderAttributeDesc(&cfg->attributes, i);
+    if (ad->type == SHADER_ATTRIBUTE_TYPE_VEC3 ||
+        ad->type == SHADER_ATTRIBUTE_TYPE_VEC4) {
+      return VKR_VERTEX_TYPE_3D;
+    }
+    if (ad->name.str && vkr_string8_equals_cstr_i(&ad->name, "in_normal")) {
+      return VKR_VERTEX_TYPE_3D;
+    }
+  }
+  return VKR_VERTEX_TYPE_2D;
+}
+
+vkr_internal void
+vkr_shader_config_apply_attribute_defaults(VkrShaderConfig *cfg) {
+  cfg->vertex_type = vkr_shader_config_detect_vertex_type(cfg);
+
+  if (cfg->vertex_type == VKR_VERTEX_TYPE_3D) {
+    static const VkrVertexAttributeExpectation expectations[] = {
+        {"in_position", SHADER_ATTRIBUTE_TYPE_VEC3,
+         (uint32_t)offsetof(VkrVertex3d, position)},
+        {"in_normal", SHADER_ATTRIBUTE_TYPE_VEC3,
+         (uint32_t)offsetof(VkrVertex3d, normal)},
+        {"in_texcoord", SHADER_ATTRIBUTE_TYPE_VEC2,
+         (uint32_t)offsetof(VkrVertex3d, texcoord)},
+        {"in_color", SHADER_ATTRIBUTE_TYPE_VEC4,
+         (uint32_t)offsetof(VkrVertex3d, colour)},
+        {"in_tangent", SHADER_ATTRIBUTE_TYPE_VEC4,
+         (uint32_t)offsetof(VkrVertex3d, tangent)},
+    };
+    cfg->attribute_stride = sizeof(VkrVertex3d);
+    for (uint32_t i = 0; i < ArrayCount(expectations); ++i) {
+      const VkrVertexAttributeExpectation *exp = &expectations[i];
+      bool8_t found = false_v;
+      for (uint32_t j = 0; j < cfg->attribute_count; ++j) {
+        VkrShaderAttributeDesc *ad =
+            array_get_VkrShaderAttributeDesc(&cfg->attributes, j);
+        if (vkr_string8_equals_cstr(&ad->name, exp->name)) {
+          ad->offset = exp->offset;
+          found = true_v;
+          break;
+        }
+      }
+      if (!found) {
+        log_warn(
+            "Shader '%s' missing vertex attribute '%s'; defaulting to zero",
+            string8_cstr(&cfg->name), exp->name);
+      }
+    }
+  } else {
+    static const VkrVertexAttributeExpectation expectations[] = {
+        {"in_position", SHADER_ATTRIBUTE_TYPE_VEC2,
+         (uint32_t)offsetof(VkrVertex2d, position)},
+        {"in_texcoord", SHADER_ATTRIBUTE_TYPE_VEC2,
+         (uint32_t)offsetof(VkrVertex2d, texcoord)},
+    };
+    cfg->attribute_stride = sizeof(VkrVertex2d);
+    for (uint32_t i = 0; i < ArrayCount(expectations); ++i) {
+      const VkrVertexAttributeExpectation *exp = &expectations[i];
+      bool8_t found = false_v;
+      for (uint32_t j = 0; j < cfg->attribute_count; ++j) {
+        VkrShaderAttributeDesc *ad =
+            array_get_VkrShaderAttributeDesc(&cfg->attributes, j);
+        if (vkr_string8_equals_cstr(&ad->name, exp->name)) {
+          ad->offset = exp->offset;
+          found = true_v;
+          break;
+        }
+      }
+      if (!found) {
+        log_warn(
+            "Shader '%s' missing vertex attribute '%s'; defaulting to zero",
+            string8_cstr(&cfg->name), exp->name);
+      }
+    }
+  }
+}
+
 vkr_internal INLINE uint64_t vkr_std140_alignment(VkrShaderUniformType type) {
   switch (type) {
   case SHADER_UNIFORM_TYPE_FLOAT32:
-    return sizeof(float32_t);
   case SHADER_UNIFORM_TYPE_INT32:
-    return sizeof(int32_t);
   case SHADER_UNIFORM_TYPE_UINT32:
-    return sizeof(uint32_t);
   case SHADER_UNIFORM_TYPE_FLOAT32_2:
-    return sizeof(Vec2);
   case SHADER_UNIFORM_TYPE_FLOAT32_3:
-    return sizeof(Vec3);
+    return sizeof(float32_t);
   case SHADER_UNIFORM_TYPE_FLOAT32_4:
-    return sizeof(Vec4);
   case SHADER_UNIFORM_TYPE_MATRIX_4:
-    return sizeof(Mat4);
+    return sizeof(float32_t) * 4;
   case SHADER_UNIFORM_TYPE_SAMPLER:
     return 0;
   case SHADER_UNIFORM_TYPE_UNDEFINED:
-    return 4;
+    return sizeof(float32_t);
   }
-  return 4;
+  return sizeof(float32_t);
 }
 
 vkr_internal INLINE uint64_t vkr_uniform_type_size(VkrShaderUniformType type) {
@@ -123,22 +212,39 @@ vkr_internal INLINE uint64_t vkr_uniform_type_size(VkrShaderUniformType type) {
   case SHADER_UNIFORM_TYPE_FLOAT32:
     return sizeof(float32_t);
   case SHADER_UNIFORM_TYPE_FLOAT32_2:
-    return sizeof(Vec2);
+    return sizeof(float32_t) * 2;
   case SHADER_UNIFORM_TYPE_FLOAT32_3:
-    return sizeof(Vec3);
+    return sizeof(float32_t) * 3;
   case SHADER_UNIFORM_TYPE_FLOAT32_4:
-    return sizeof(Vec4);
+    return sizeof(float32_t) * 4;
   case SHADER_UNIFORM_TYPE_INT32:
     return sizeof(int32_t);
   case SHADER_UNIFORM_TYPE_UINT32:
     return sizeof(uint32_t);
   case SHADER_UNIFORM_TYPE_MATRIX_4:
-    return sizeof(Mat4);
+    return sizeof(float32_t) * 16;
   case SHADER_UNIFORM_TYPE_SAMPLER:
   case SHADER_UNIFORM_TYPE_UNDEFINED:
     return 0;
   }
   return 0;
+}
+
+vkr_internal INLINE uint64_t vkr_apply_uniform_register_packing(uint64_t offset,
+                                                                uint64_t size) {
+  const uint64_t reg = VKR_SHADER_UNIFORM_REGISTER_SIZE;
+
+  if (size == 0)
+    return offset;
+
+  if (size > reg)
+    return vkr_align_up_u64(offset, reg);
+
+  uint64_t row_offset = offset % reg;
+  if (row_offset + size > reg)
+    return vkr_align_up_u64(offset, reg);
+
+  return offset;
 }
 
 vkr_internal String8 vkr_create_formatted_error(Arena *arena, const char *fmt,
@@ -198,32 +304,6 @@ vkr_internal VkrShaderStage vkr_parse_shader_stage(const String8 *stage_str) {
   if (vkr_string8_equals_cstr_i(stage_str, "fragment"))
     return VKR_SHADER_STAGE_FRAGMENT;
   return VKR_SHADER_STAGE_COUNT; // Invalid
-}
-
-vkr_internal VkrGeometryVertexLayoutType
-vkr_parse_vertex_layout_type(const String8 *layout_str) {
-  if (vkr_string8_equals_cstr_i(layout_str,
-                                "GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD"))
-    return GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD;
-  if (vkr_string8_equals_cstr_i(layout_str,
-                                "GEOMETRY_VERTEX_LAYOUT_POSITION_COLOR"))
-    return GEOMETRY_VERTEX_LAYOUT_POSITION_COLOR;
-  if (vkr_string8_equals_cstr_i(layout_str,
-                                "GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_COLOR"))
-    return GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_COLOR;
-  if (vkr_string8_equals_cstr_i(
-          layout_str, "GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD"))
-    return GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD;
-  if (vkr_string8_equals_cstr_i(layout_str,
-                                "GEOMETRY_VERTEX_LAYOUT_POSITION2_TEXCOORD"))
-    return GEOMETRY_VERTEX_LAYOUT_POSITION2_TEXCOORD;
-  if (vkr_string8_equals_cstr_i(layout_str, "GEOMETRY_VERTEX_LAYOUT_FULL"))
-    return GEOMETRY_VERTEX_LAYOUT_FULL;
-  if (vkr_string8_equals_cstr_i(
-          layout_str,
-          "GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD2_COLOR_TANGENT"))
-    return GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD2_COLOR_TANGENT;
-  return GEOMETRY_VERTEX_LAYOUT_COUNT;
 }
 
 // =============================================================================
@@ -431,13 +511,17 @@ vkr_internal void vkr_compute_uniform_layout(VkrShaderConfig *cfg) {
     ud->size = (uint32_t)size;
 
     if (ud->scope == VKR_SHADER_SCOPE_GLOBAL) {
-      ud->offset = (uint32_t)vkr_align_up_u64(global_offset, align);
+      uint64_t aligned = vkr_align_up_u64(global_offset, align);
+      aligned = vkr_apply_uniform_register_packing(aligned, size);
+      ud->offset = (uint32_t)aligned;
       ud->location = 0;
-      global_offset = ud->offset + size;
+      global_offset = aligned + size;
     } else if (ud->scope == VKR_SHADER_SCOPE_INSTANCE) {
-      ud->offset = (uint32_t)vkr_align_up_u64(instance_offset, align);
+      uint64_t aligned = vkr_align_up_u64(instance_offset, align);
+      aligned = vkr_apply_uniform_register_packing(aligned, size);
+      ud->offset = (uint32_t)aligned;
       ud->location = 0;
-      instance_offset = ud->offset + size;
+      instance_offset = aligned + size;
     } else if (ud->scope == VKR_SHADER_SCOPE_LOCAL) {
       uint64_t aligned =
           vkr_align_up_u64(local_size, VKR_SHADER_PUSH_CONSTANT_ALIGNMENT);
@@ -447,8 +531,10 @@ vkr_internal void vkr_compute_uniform_layout(VkrShaderConfig *cfg) {
     }
   }
 
-  cfg->global_ubo_size = global_offset;
-  cfg->instance_ubo_size = instance_offset;
+  cfg->global_ubo_size =
+      vkr_align_up_u64(global_offset, VKR_SHADER_UNIFORM_REGISTER_SIZE);
+  cfg->instance_ubo_size =
+      vkr_align_up_u64(instance_offset, VKR_SHADER_UNIFORM_REGISTER_SIZE);
   cfg->push_constant_size = local_size;
 
   cfg->global_ubo_stride =
@@ -697,7 +783,6 @@ vkr_initialize_config(Arena *arena, VkrShaderConfig *config) {
   config->attribute_count = 0;
   config->uniform_count = 0;
   config->stage_count = 0;
-  config->vertex_layout = GEOMETRY_VERTEX_LAYOUT_COUNT; // invalid sentinel
   config->use_instance = 0;
   config->use_local = 0;
   config->name = (String8){0};
@@ -840,14 +925,7 @@ vkr_shader_loader_parse(String8 path, Arena *arena, Arena *scratch_arena,
         out_config->use_local = (uint8_t)use_local;
       }
     } else if (vkr_string8_equals_cstr_i(&key, "vertex_layout")) {
-      VkrGeometryVertexLayoutType layout = vkr_parse_vertex_layout_type(&value);
-      if (layout == GEOMETRY_VERTEX_LAYOUT_COUNT) {
-        line_result = vkr_create_parse_error(
-            arena, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE, parser.line_number, 0,
-            "Unknown vertex_layout: %.*s", value.length, value.str);
-      } else {
-        out_config->vertex_layout = layout;
-      }
+      log_warn("vertex_layout key is deprecated and will be ignored");
     } else if (vkr_string8_equals_cstr_i(&key, "version")) {
       log_debug("Version: %.*s", value.length, value.str);
     } else {
@@ -873,6 +951,7 @@ vkr_shader_loader_parse(String8 path, Arena *arena, Arena *scratch_arena,
 
   // Compute layouts
   vkr_compute_attribute_layout(out_config);
+  vkr_shader_config_apply_attribute_defaults(out_config);
   vkr_compute_uniform_layout(out_config);
 
   return (VkrShaderConfigParseResult){.is_valid = true_v};
@@ -934,12 +1013,12 @@ vkr_shader_config_validate(const VkrShaderConfig *config) {
         .error_message = string8_lit("At least one shader stage is required")};
   }
 
-  if (config->vertex_layout == GEOMETRY_VERTEX_LAYOUT_COUNT) {
+  if (config->vertex_type == VKR_VERTEX_TYPE_UNKNOWN) {
     return (VkrShaderConfigParseResult){
         .is_valid = false_v,
-        .error_type = VKR_SHADER_CONFIG_ERROR_MISSING_REQUIRED_FIELD,
-        .error_message = string8_lit(
-            "vertex_layout is required and must be a valid enum value")};
+        .error_type = VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
+        .error_message =
+            string8_lit("Failed to determine vertex layout for shader")};
   }
 
   return (VkrShaderConfigParseResult){.is_valid = true_v};

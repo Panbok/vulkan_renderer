@@ -1,160 +1,26 @@
 #include "renderer/systems/vkr_geometry_system.h"
 
+#include "containers/str.h"
 #include "math/vec.h"
+#include "math/vkr_math.h"
 #include "memory/vkr_arena_allocator.h"
 
-// Layout helpers for
-// GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD2_COLOR_TANGENT
-enum {
-  VKR_WORLD_VERTEX_FLOATS = 20, // total floats per vertex: pos(4) + normal(4) +
-                                // texcoord(2) + color(4) + tangent(4)
-  VKR_WORLD_VERTEX_POS_OFFSET = 0,    // float index of position; vec4, 4 floats
-  VKR_WORLD_VERTEX_NORMAL_OFFSET = 4, // float index of normal; vec4, 4 floats
-  VKR_WORLD_VERTEX_TEXCOORD_OFFSET =
-      8,                              // float index of texcoord; vec2, 2 floats
-  VKR_WORLD_VERTEX_COLOR_OFFSET = 10, // float index of color; vec4, 4 floats
-  VKR_WORLD_VERTEX_TANGENT_OFFSET =
-      14, // float index of tangent; vec4, 4 floats
-};
-
-// Convenience for index type bytes
-vkr_internal INLINE uint32_t vkr_index_type_size(VkrIndexType type) {
-  switch (type) {
-  case VKR_INDEX_TYPE_UINT16:
-    return 2;
-  case VKR_INDEX_TYPE_UINT32:
-  default:
-    return 4;
-  }
-}
-
-// Lazily initialize a pool for a given layout using defaults
-vkr_internal bool32_t vkr_geometry_pool_init(VkrGeometrySystem *system,
-                                             VkrGeometryVertexLayoutType layout,
-                                             uint32_t vertex_stride_bytes,
-                                             VkrRendererError *out_error) {
+vkr_internal INLINE VkrGeometry *
+vkr_geometry_from_handle(VkrGeometrySystem *system, VkrGeometryHandle handle) {
   assert_log(system != NULL, "System is NULL");
-  assert_log(layout < GEOMETRY_VERTEX_LAYOUT_COUNT, "Invalid layout");
-  assert_log(out_error != NULL, "Out error is NULL");
-  assert_log(vertex_stride_bytes > 0, "Vertex stride bytes must be > 0");
-  assert_log(system->config.default_max_vertices > 0,
-             "Default capacity vertices must be > 0");
-  assert_log(system->config.default_max_indices > 0,
-             "Default capacity indices must be > 0");
 
-  VkrGeometryPool *pool = &system->pools[layout];
-  if (pool->initialized) {
-    *out_error = VKR_RENDERER_ERROR_NONE;
-    return true_v;
-  }
+  if (!system || handle.id == 0)
+    return NULL;
 
-  pool->layout = layout;
-  pool->vertex_stride_bytes = vertex_stride_bytes;
-  pool->capacity_vertices = system->config.default_max_vertices;
-  pool->capacity_indices = system->config.default_max_indices;
+  uint32_t idx = handle.id - 1;
+  if (idx >= system->geometries.length)
+    return NULL;
 
-  VkrRendererError err = VKR_RENDERER_ERROR_NONE;
-  pool->vertex_buffer = vkr_vertex_buffer_create(
-      system->renderer, NULL, pool->vertex_stride_bytes,
-      (uint32_t)pool->capacity_vertices, VKR_VERTEX_INPUT_RATE_VERTEX,
-      string8_lit("GeometrySystem.VertexBuffer"), &err);
-  if (err != VKR_RENDERER_ERROR_NONE) {
-    *out_error = err;
-    return false_v;
-  }
+  VkrGeometry *geometry = array_get_VkrGeometry(&system->geometries, idx);
+  if (geometry->id == 0 || geometry->generation != handle.generation)
+    return NULL;
 
-  pool->index_buffer =
-      vkr_index_buffer_create(system->renderer, NULL, VKR_INDEX_TYPE_UINT32,
-                              (uint32_t)pool->capacity_indices,
-                              string8_lit("GeometrySystem.IndexBuffer"), &err);
-  if (err != VKR_RENDERER_ERROR_NONE) {
-    *out_error = err;
-    return false_v;
-  }
-
-  // Create freelists in BYTES, aligned by stride/element size via allocation
-  // sizes
-  uint64_t vb_total_bytes =
-      pool->capacity_vertices * (uint64_t)pool->vertex_stride_bytes;
-  uint64_t ib_total_bytes =
-      pool->capacity_indices *
-      (uint64_t)vkr_index_type_size(VKR_INDEX_TYPE_UINT32);
-
-  if (vb_total_bytes > UINT32_MAX) {
-    log_error("Vertex buffer size exceeds maximum: %llu bytes", vb_total_bytes);
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
-  }
-
-  // Allocate memory for vertex freelist nodes
-  uint64_t vb_freelist_mem_size =
-      vkr_freelist_calculate_memory_requirement(vb_total_bytes);
-  pool->vertex_freelist_memory =
-      vkr_allocator_alloc(&system->allocator, vb_freelist_mem_size,
-                          VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
-  if (pool->vertex_freelist_memory == NULL) {
-    log_error("Failed to allocate memory for vertex freelist");
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
-  }
-
-  if (!vkr_freelist_create(pool->vertex_freelist_memory, vb_freelist_mem_size,
-                           vb_total_bytes, &pool->vertex_freelist)) {
-    log_error("Failed to create geometry vertex freelist");
-    vkr_allocator_free(&system->allocator, pool->vertex_freelist_memory,
-                       vb_freelist_mem_size, VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
-  }
-
-  // Allocate memory for index freelist nodes
-  uint64_t ib_freelist_mem_size =
-      vkr_freelist_calculate_memory_requirement(ib_total_bytes);
-  pool->index_freelist_memory =
-      vkr_allocator_alloc(&system->allocator, ib_freelist_mem_size,
-                          VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
-  if (pool->index_freelist_memory == NULL) {
-    log_error("Failed to allocate memory for index freelist");
-    vkr_freelist_destroy(&pool->vertex_freelist);
-    vkr_allocator_free(&system->allocator, pool->vertex_freelist_memory,
-                       vb_freelist_mem_size, VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
-  }
-
-  if (!vkr_freelist_create(pool->index_freelist_memory, ib_freelist_mem_size,
-                           ib_total_bytes, &pool->index_freelist)) {
-    log_error("Failed to create geometry index freelist");
-    vkr_freelist_destroy(&pool->vertex_freelist);
-    vkr_allocator_free(&system->allocator, pool->vertex_freelist_memory,
-                       vb_freelist_mem_size, VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
-    vkr_allocator_free(&system->allocator, pool->index_freelist_memory,
-                       ib_freelist_mem_size, VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
-  }
-
-  pool->initialized = true_v;
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return true_v;
-}
-
-vkr_internal INLINE VkrGeometryPool *
-vkr_geometry_get_pool(VkrGeometrySystem *system,
-                      VkrGeometryVertexLayoutType layout,
-                      VkrRendererError *out_error) {
-  assert_log(system != NULL, "System is NULL");
-  assert_log(layout < GEOMETRY_VERTEX_LAYOUT_COUNT, "Invalid layout");
-  assert_log(out_error != NULL, "Out error is NULL");
-
-  VkrGeometryPool *pool = &system->pools[layout];
-  if (pool->initialized) {
-    *out_error = VKR_RENDERER_ERROR_NONE;
-    return pool;
-  }
-  // Pool not yet configured; caller must require a stride first
-  *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-  return NULL;
+  return geometry;
 }
 
 vkr_internal VkrGeometry *geometry_acquire_slot(VkrGeometrySystem *system,
@@ -167,10 +33,10 @@ vkr_internal VkrGeometry *geometry_acquire_slot(VkrGeometrySystem *system,
     system->free_count--;
     VkrGeometry *geometry_slot =
         array_get_VkrGeometry(&system->geometries, slot);
+    MemZero(geometry_slot, sizeof(*geometry_slot));
     geometry_slot->id = slot + 1;
-    geometry_slot->generation = (geometry_slot->generation == 0)
-                                    ? system->generation_counter++
-                                    : (system->generation_counter++);
+    geometry_slot->generation = system->generation_counter++;
+    geometry_slot->pipeline_id = VKR_INVALID_ID;
     *out_handle = (VkrGeometryHandle){.id = geometry_slot->id,
                                       .generation = geometry_slot->generation};
     return geometry_slot;
@@ -180,8 +46,10 @@ vkr_internal VkrGeometry *geometry_acquire_slot(VkrGeometrySystem *system,
     VkrGeometry *geometry_slot =
         array_get_VkrGeometry(&system->geometries, geometry);
     if (geometry_slot->id == 0 && geometry_slot->generation == 0) {
+      MemZero(geometry_slot, sizeof(*geometry_slot));
       geometry_slot->id = geometry + 1;
       geometry_slot->generation = system->generation_counter++;
+      geometry_slot->pipeline_id = VKR_INVALID_ID;
       *out_handle = (VkrGeometryHandle){
           .id = geometry_slot->id, .generation = geometry_slot->generation};
       return geometry_slot;
@@ -189,6 +57,367 @@ vkr_internal VkrGeometry *geometry_acquire_slot(VkrGeometrySystem *system,
   }
 
   return NULL;
+}
+
+vkr_internal INLINE void vkr_write_vertex(VkrVertex3d *vertices, uint32_t index,
+                                          Vec3 position, Vec3 normal,
+                                          Vec2 texcoord, Vec4 color,
+                                          Vec4 tangent) {
+  VkrVertex3d *vertex = &vertices[index];
+  vertex->position = position;
+  vertex->normal = normal;
+  vertex->texcoord = texcoord;
+  vertex->colour = color;
+  vertex->tangent = tangent;
+}
+
+/**
+ * @brief Creates a unit cube (2x2x2 by default) using the POSITION_TEXCOORD
+ * layout and set as default geometry. Dimensions are full extents.
+ * @param system The geometry system to create the default cube in
+ * @param width The width of the cube
+ * @param height The height of the cube
+ * @param depth The depth of the cube
+ * @param name The name of the cube
+ * @param out_error The error output
+ */
+vkr_internal VkrGeometryHandle vkr_geometry_system_create_default_cube(
+    VkrGeometrySystem *system, float32_t width, float32_t height,
+    float32_t depth, const char *name, VkrRendererError *out_error) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  assert_log(name != NULL, "Name is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  // Calculate half-dimensions for centered cube
+  float32_t hw = width * 0.5f;
+  float32_t hh = height * 0.5f;
+  float32_t hd = depth * 0.5f;
+
+  // Zero vectors for color and tangent (will be computed later)
+  Vec4 zero_color = vec4_zero();
+  Vec4 zero_tangent = vec4_zero();
+
+  VkrVertex3d verts[24] = {0};
+  uint32_t w = 0;
+
+  // ============================================================================
+  // Front Face (+Z direction, facing toward viewer in right-handed system)
+  // ============================================================================
+  // Normal: (0, 0, 1) - points forward along positive Z-axis
+  // Vertices ordered counter-clockwise when viewed from outside
+  Vec3 front_normal = vec3_new(0.0f, 0.0f, 1.0f);
+
+  // v0: Bottom-left corner
+  // Position: (-hw, -hh, hd)
+  // Texcoord: (0, 0) - bottom-left of texture
+  vkr_write_vertex(verts, w++, vec3_new(-hw, -hh, hd), front_normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+
+  // v1: Bottom-right corner
+  // Position: (hw, -hh, hd)
+  // Texcoord: (1, 0) - bottom-right of texture
+  vkr_write_vertex(verts, w++, vec3_new(hw, -hh, hd), front_normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+
+  // v2: Top-right corner
+  // Position: (hw, hh, hd)
+  // Texcoord: (1, 1) - top-right of texture
+  vkr_write_vertex(verts, w++, vec3_new(hw, hh, hd), front_normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+
+  // v3: Top-left corner
+  // Position: (-hw, hh, hd)
+  // Texcoord: (0, 1) - top-left of texture
+  vkr_write_vertex(verts, w++, vec3_new(-hw, hh, hd), front_normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+
+  // ============================================================================
+  // Back Face (-Z direction, facing away from viewer)
+  // ============================================================================
+  // Normal: (0, 0, -1) - points backward along negative Z-axis
+  // Vertices ordered counter-clockwise when viewed from outside (from back)
+  Vec3 back_normal = vec3_new(0.0f, 0.0f, -1.0f);
+
+  // v4: Bottom-left corner
+  // Position: (-hw, -hh, -hd)
+  // Texcoord: (1, 0) - bottom-right of texture (flipped horizontally)
+  vkr_write_vertex(verts, w++, vec3_new(-hw, -hh, -hd), back_normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+
+  // v5: Bottom-right corner
+  // Position: (hw, -hh, -hd)
+  // Texcoord: (0, 0) - bottom-left of texture (flipped horizontally)
+  vkr_write_vertex(verts, w++, vec3_new(hw, -hh, -hd), back_normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+
+  // v6: Top-right corner
+  // Position: (hw, hh, -hd)
+  // Texcoord: (0, 1) - top-left of texture (flipped horizontally)
+  vkr_write_vertex(verts, w++, vec3_new(hw, hh, -hd), back_normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+
+  // v7: Top-left corner
+  // Position: (-hw, hh, -hd)
+  // Texcoord: (1, 1) - top-right of texture (flipped horizontally)
+  vkr_write_vertex(verts, w++, vec3_new(-hw, hh, -hd), back_normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+
+  // ============================================================================
+  // Left Face (-X direction, facing left)
+  // ============================================================================
+  // Normal: (-1, 0, 0) - points left along negative X-axis
+  // Vertices ordered counter-clockwise when viewed from outside (from left)
+  Vec3 left_normal = vec3_new(-1.0f, 0.0f, 0.0f);
+
+  // v8: Bottom-back corner
+  // Position: (-hw, -hh, -hd)
+  // Texcoord: (0, 0) - bottom-left of texture
+  vkr_write_vertex(verts, w++, vec3_new(-hw, -hh, -hd), left_normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+
+  // v9: Bottom-front corner
+  // Position: (-hw, -hh, hd)
+  // Texcoord: (1, 0) - bottom-right of texture
+  vkr_write_vertex(verts, w++, vec3_new(-hw, -hh, hd), left_normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+
+  // v10: Top-front corner
+  // Position: (-hw, hh, hd)
+  // Texcoord: (1, 1) - top-right of texture
+  vkr_write_vertex(verts, w++, vec3_new(-hw, hh, hd), left_normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+
+  // v11: Top-back corner
+  // Position: (-hw, hh, -hd)
+  // Texcoord: (0, 1) - top-left of texture
+  vkr_write_vertex(verts, w++, vec3_new(-hw, hh, -hd), left_normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+
+  // ============================================================================
+  // Right Face (+X direction, facing right)
+  // ============================================================================
+  // Normal: (1, 0, 0) - points right along positive X-axis
+  // Vertices ordered counter-clockwise when viewed from outside (from right)
+  Vec3 right_normal = vec3_new(1.0f, 0.0f, 0.0f);
+
+  // v12: Bottom-back corner
+  // Position: (hw, -hh, -hd)
+  // Texcoord: (1, 0) - bottom-right of texture (flipped horizontally)
+  vkr_write_vertex(verts, w++, vec3_new(hw, -hh, -hd), right_normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+
+  // v13: Bottom-front corner
+  // Position: (hw, -hh, hd)
+  // Texcoord: (0, 0) - bottom-left of texture (flipped horizontally)
+  vkr_write_vertex(verts, w++, vec3_new(hw, -hh, hd), right_normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+
+  // v14: Top-front corner
+  // Position: (hw, hh, hd)
+  // Texcoord: (0, 1) - top-left of texture (flipped horizontally)
+  vkr_write_vertex(verts, w++, vec3_new(hw, hh, hd), right_normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+
+  // v15: Top-back corner
+  // Position: (hw, hh, -hd)
+  // Texcoord: (1, 1) - top-right of texture (flipped horizontally)
+  vkr_write_vertex(verts, w++, vec3_new(hw, hh, -hd), right_normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+
+  // ============================================================================
+  // Top Face (+Y direction, facing up)
+  // ============================================================================
+  // Normal: (0, 1, 0) - points up along positive Y-axis
+  // Vertices ordered counter-clockwise when viewed from outside (from above)
+  Vec3 top_normal = vec3_new(0.0f, 1.0f, 0.0f);
+
+  // v16: Front-left corner
+  // Position: (-hw, hh, hd)
+  // Texcoord: (0, 0) - bottom-left of texture
+  vkr_write_vertex(verts, w++, vec3_new(-hw, hh, hd), top_normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+
+  // v17: Front-right corner
+  // Position: (hw, hh, hd)
+  // Texcoord: (1, 0) - bottom-right of texture
+  vkr_write_vertex(verts, w++, vec3_new(hw, hh, hd), top_normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+
+  // v18: Back-right corner
+  // Position: (hw, hh, -hd)
+  // Texcoord: (1, 1) - top-right of texture
+  vkr_write_vertex(verts, w++, vec3_new(hw, hh, -hd), top_normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+
+  // v19: Back-left corner
+  // Position: (-hw, hh, -hd)
+  // Texcoord: (0, 1) - top-left of texture
+  vkr_write_vertex(verts, w++, vec3_new(-hw, hh, -hd), top_normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+
+  // ============================================================================
+  // Bottom Face (-Y direction, facing down)
+  // ============================================================================
+  // Normal: (0, -1, 0) - points down along negative Y-axis
+  // Vertices ordered counter-clockwise when viewed from outside (from below)
+  Vec3 bottom_normal = vec3_new(0.0f, -1.0f, 0.0f);
+
+  // v20: Back-left corner
+  // Position: (-hw, -hh, -hd)
+  // Texcoord: (0, 0) - bottom-left of texture
+  vkr_write_vertex(verts, w++, vec3_new(-hw, -hh, -hd), bottom_normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+
+  // v21: Back-right corner
+  // Position: (hw, -hh, -hd)
+  // Texcoord: (1, 0) - bottom-right of texture
+  vkr_write_vertex(verts, w++, vec3_new(hw, -hh, -hd), bottom_normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+
+  // v22: Front-right corner
+  // Position: (hw, -hh, hd)
+  // Texcoord: (1, 1) - top-right of texture
+  vkr_write_vertex(verts, w++, vec3_new(hw, -hh, hd), bottom_normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+
+  // v23: Front-left corner
+  // Position: (-hw, -hh, hd)
+  // Texcoord: (0, 1) - top-left of texture
+  vkr_write_vertex(verts, w++, vec3_new(-hw, -hh, hd), bottom_normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+
+  // counter-clockwise winding order
+  uint32_t indices[36] = {
+      0,  1,  2,  2,  3,  0,  // Front
+      4,  7,  6,  6,  5,  4,  // Back
+      8,  9,  10, 10, 11, 8,  // Left
+      12, 15, 14, 14, 13, 12, // Right
+      16, 17, 18, 18, 19, 16, // Top
+      20, 21, 22, 22, 23, 20  // Bottom
+  };
+
+  vkr_geometry_system_generate_tangents(&system->allocator, verts, 24, indices,
+                                        36);
+
+  VkrGeometryConfig config = {0};
+  config.vertex_size = sizeof(VkrVertex3d);
+  config.vertex_count = 24;
+  config.vertices = verts;
+  config.index_size = sizeof(uint32_t);
+  config.index_count = 36;
+  config.indices = indices;
+  config.center = vec3_zero();
+  config.min_extents = vec3_new(-hw, -hh, -hd);
+  config.max_extents = vec3_new(hw, hh, hd);
+  string_format(config.name, sizeof(config.name), "Default Cube %s", name);
+
+  return vkr_geometry_system_create(system, &config, false_v, out_error);
+}
+
+/**
+ * @brief Creates a default plane (2x2 by default) using the POSITION_TEXCOORD
+ * layout and set as default geometry. Dimensions are full extents.
+ * @param system The geometry system to create the default plane in
+ * @param width The width of the plane
+ * @param height The height of the plane
+ * @param out_error The error output
+ */
+vkr_internal VkrGeometryHandle vkr_geometry_system_create_default_plane(
+    VkrGeometrySystem *system, float32_t width, float32_t height,
+    VkrRendererError *out_error) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  float32_t hw = width * 0.5f;
+  float32_t hh = height * 0.5f;
+
+  VkrVertex3d verts[4] = {0};
+  Vec3 normal = vec3_new(0.0f, 0.0f, 1.0f);
+  Vec4 zero_color = vec4_zero();
+  Vec4 zero_tangent = vec4_zero();
+
+  vkr_write_vertex(verts, 0, vec3_new(-hw, -hh, 0.0f), normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+  vkr_write_vertex(verts, 1, vec3_new(hw, -hh, 0.0f), normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+  vkr_write_vertex(verts, 2, vec3_new(hw, hh, 0.0f), normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+  vkr_write_vertex(verts, 3, vec3_new(-hw, hh, 0.0f), normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+
+  uint32_t indices[6] = {0, 1, 2, 0, 2, 3};
+
+  vkr_geometry_system_generate_tangents(&system->allocator, verts, 4, indices,
+                                        6);
+
+  VkrGeometryConfig config = {0};
+  config.vertex_size = sizeof(VkrVertex3d);
+  config.vertex_count = 4;
+  config.vertices = verts;
+  config.index_size = sizeof(uint32_t);
+  config.index_count = 6;
+  config.indices = indices;
+  config.center = vec3_zero();
+  config.min_extents = vec3_new(-hw, -hh, 0.0f);
+  config.max_extents = vec3_new(hw, hh, 0.0f);
+  string_format(config.name, sizeof(config.name), "Default Plane");
+
+  return vkr_geometry_system_create(system, &config, false_v, out_error);
+}
+
+/**
+ * @brief Creates a default 2D plane (2x2 by default) using the
+ * POSITION2_TEXCOORD layout. Vertex format: [x, y, u, v].
+ * @param system The geometry system to create the default 2D plane in
+ * @param width The width of the plane
+ * @param height The height of the plane
+ * @param out_error The error output. May be null.
+ * @return Returns a VkrGeometryHandle to the created geometry. Returns an
+ * invalid handle on error (check out_error).
+ */
+vkr_internal VkrGeometryHandle vkr_geometry_system_create_default_plane2d(
+    VkrGeometrySystem *system, float32_t width, float32_t height,
+    VkrRendererError *out_error) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  VkrVertex2d verts[4] = {0};
+  verts[0].position.x = 0.0f; // 0    3
+  verts[0].position.y = 0.0f; //
+  verts[0].texcoord.x = 0.0f; //
+  verts[0].texcoord.y = 0.0f; // 2    1
+
+  verts[1].position.y = height;
+  verts[1].position.x = width;
+  verts[1].texcoord.x = 1.0f;
+  verts[1].texcoord.y = 1.0f;
+
+  verts[2].position.x = 0.0f;
+  verts[2].position.y = height;
+  verts[2].texcoord.x = 0.0f;
+  verts[2].texcoord.y = 1.0f;
+
+  verts[3].position.x = width;
+  verts[3].position.y = 0.0;
+  verts[3].texcoord.x = 1.0f;
+  verts[3].texcoord.y = 0.0f;
+
+  // counter-clockwise winding order
+  uint32_t indices[6] = {2, 1, 0, 3, 0, 1};
+
+  VkrGeometryConfig config = {0};
+  config.vertex_size = sizeof(VkrVertex2d);
+  config.vertex_count = 4;
+  config.vertices = verts;
+  config.index_size = sizeof(uint32_t);
+  config.index_count = 6;
+  config.indices = indices;
+  config.center = vec3_zero();
+  config.min_extents = vec3_new(-width, -height, 0.0f);
+  config.max_extents = vec3_new(width, height, 0.0f);
+  string_format(config.name, sizeof(config.name), "Default Plane 2D");
+
+  return vkr_geometry_system_create(system, &config, false_v, out_error);
 }
 
 bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
@@ -223,16 +452,15 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
   }
 
   system->renderer = renderer;
-  system->max_geometries = config->default_max_geometries;
   system->config = *config;
+  system->max_geometries =
+      (config->max_geometries > 0) ? config->max_geometries : 1024;
 
   system->geometries =
       array_create_VkrGeometry(system->arena, system->max_geometries);
   for (uint32_t geometry = 0; geometry < system->max_geometries; geometry++) {
     VkrGeometry init = {0};
-    init.pipeline_id =
-        VKR_INVALID_ID; // todo: get pipeline id from config and use it
-    // back-end of the renderer instead of object_id on ShaderStateObject
+    init.pipeline_id = VKR_INVALID_ID;
     array_set_VkrGeometry(&system->geometries, geometry, init);
   }
   system->free_ids =
@@ -244,12 +472,12 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
 
   system->generation_counter = 1;
 
-  for (VkrGeometryVertexLayoutType layout_type = 0;
-       layout_type < GEOMETRY_VERTEX_LAYOUT_COUNT; layout_type++) {
-    system->pools[layout_type].initialized = false_v;
-    system->pools[layout_type].layout = layout_type;
-    system->pools[layout_type].vertex_stride_bytes = 0;
-  }
+  system->default_geometry = vkr_geometry_system_create_default_cube(
+      system, 10.0f, 10.0f, 10.0f, "Default Cube", out_error);
+  system->default_plane =
+      vkr_geometry_system_create_default_plane(system, 10.0f, 10.0f, out_error);
+  system->default_plane2d =
+      vkr_geometry_system_create_default_plane2d(system, 2.0f, 2.0f, out_error);
 
   *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
@@ -259,38 +487,16 @@ void vkr_geometry_system_shutdown(VkrGeometrySystem *system) {
   if (!system)
     return;
 
-  // Destroy GPU buffers and freelists per pool
-  for (uint32_t i = 0; i < GEOMETRY_VERTEX_LAYOUT_COUNT; i++) {
-    VkrGeometryPool *pool = &system->pools[i];
-    if (!pool->initialized)
-      continue;
-    vkr_vertex_buffer_destroy(system->renderer, &pool->vertex_buffer);
-    vkr_index_buffer_destroy(system->renderer, &pool->index_buffer);
-
-    // Destroy freelists and free their memory
-    uint64_t vb_total = pool->vertex_freelist.total_size;
-    vkr_freelist_destroy(&pool->vertex_freelist);
-    if (pool->vertex_freelist_memory) {
-      uint64_t vb_freelist_mem_size =
-          vkr_freelist_calculate_memory_requirement(vb_total);
-      vkr_allocator_free(&system->allocator, pool->vertex_freelist_memory,
-                         vb_freelist_mem_size,
-                         VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
-      pool->vertex_freelist_memory = NULL;
+  for (uint32_t i = 0; i < system->geometries.length; ++i) {
+    VkrGeometry *geometry = array_get_VkrGeometry(&system->geometries, i);
+    if (geometry->vertex_buffer.handle) {
+      vkr_vertex_buffer_destroy(system->renderer, &geometry->vertex_buffer);
+      geometry->vertex_buffer.handle = NULL;
     }
-
-    uint64_t ib_total = pool->index_freelist.total_size;
-    vkr_freelist_destroy(&pool->index_freelist);
-    if (pool->index_freelist_memory) {
-      uint64_t ib_freelist_mem_size =
-          vkr_freelist_calculate_memory_requirement(ib_total);
-      vkr_allocator_free(&system->allocator, pool->index_freelist_memory,
-                         ib_freelist_mem_size,
-                         VKR_ALLOCATOR_MEMORY_TAG_FREELIST);
-      pool->index_freelist_memory = NULL;
+    if (geometry->index_buffer.handle) {
+      vkr_index_buffer_destroy(system->renderer, &geometry->index_buffer);
+      geometry->index_buffer.handle = NULL;
     }
-
-    pool->initialized = false_v;
   }
 
   array_destroy_VkrGeometry(&system->geometries);
@@ -304,127 +510,107 @@ void vkr_geometry_system_shutdown(VkrGeometrySystem *system) {
   MemZero(system, sizeof(VkrGeometrySystem));
 }
 
-VkrGeometryHandle vkr_geometry_system_create_from_interleaved(
-    VkrGeometrySystem *system, VkrGeometryVertexLayoutType layout,
-    const void *vertices, uint32_t vertex_count, const uint32_t *indices,
-    uint32_t index_count, bool8_t auto_release, String8 debug_name,
-    VkrRendererError *out_error) {
+vkr_internal VkrGeometryHandle geometry_creation_failure(
+    VkrGeometrySystem *system, VkrGeometry *geom, VkrGeometryHandle handle) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(geom != NULL, "Geometry is NULL");
+
+  if (geom->vertex_buffer.handle) {
+    vkr_vertex_buffer_destroy(system->renderer, &geom->vertex_buffer);
+    geom->vertex_buffer.handle = NULL;
+  }
+
+  if (geom->index_buffer.handle) {
+    vkr_index_buffer_destroy(system->renderer, &geom->index_buffer);
+    geom->index_buffer.handle = NULL;
+  }
+
+  uint32_t slot = (handle.id > 0) ? (handle.id - 1) : 0;
+  geom->id = 0;
+  geom->generation = 0;
+  assert_log(system->free_count < system->free_ids.length,
+             "Geometry free list overflow");
+  system->free_ids.data[system->free_count++] = slot;
+
+  return (VkrGeometryHandle){0};
+}
+
+VkrGeometryHandle vkr_geometry_system_create(VkrGeometrySystem *system,
+                                             const VkrGeometryConfig *config,
+                                             bool8_t auto_release,
+                                             VkrRendererError *out_error) {
   assert_log(system != NULL, "Geometry system is NULL");
-  assert_log(vertices != NULL, "Vertices is NULL");
-  assert_log(indices != NULL, "Indices is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
   VkrGeometryHandle handle = (VkrGeometryHandle){0};
-
-  VkrRendererError err = VKR_RENDERER_ERROR_NONE;
-  VkrGeometryPool *pool = vkr_geometry_get_pool(system, layout, &err);
-  if (!pool || err != VKR_RENDERER_ERROR_NONE) {
-    *out_error = err;
+  if (!config || config->vertex_size == 0 || config->vertex_count == 0 ||
+      config->vertices == NULL) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return handle;
   }
-
-  // Allocate ranges in BYTES from freelists; enforce size multiples of stride
-  uint64_t vb_bytes = (uint64_t)vertex_count * pool->vertex_stride_bytes;
-  uint64_t ib_bytes =
-      (uint64_t)index_count * vkr_index_type_size(pool->index_buffer.type);
-  // Align allocations to stride/element for safety and round up to next power
-  // of 2
-  uint64_t vb_align =
-      1u << (64 - VkrCountLeadingZeros64(pool->vertex_stride_bytes - 1));
-  uint64_t ib_align =
-      1u << (64 - VkrCountLeadingZeros64(
-                      vkr_index_type_size(pool->index_buffer.type) - 1));
-  vb_bytes = AlignPow2(vb_bytes, vb_align);
-  ib_bytes = AlignPow2(ib_bytes, ib_align);
-
-  uint64_t vb_offset_bytes = 0, ib_offset_bytes = 0;
-  if (!vkr_freelist_allocate(&pool->vertex_freelist, vb_bytes,
-                             &vb_offset_bytes)) {
-    log_error("Geometry vertex pool out of space for '%s'",
-              string8_cstr(&debug_name));
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  if (config->index_size == 0 || config->index_count == 0 ||
+      config->indices == NULL) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return handle;
   }
-
-  if (!vkr_freelist_allocate(&pool->index_freelist, ib_bytes,
-                             &ib_offset_bytes)) {
-    // Rollback vertex allocation
-    vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
-    log_error("Geometry index pool out of space for '%s'",
-              string8_cstr(&debug_name));
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return handle;
-  }
-
-  uint32_t first_vertex = vb_offset_bytes / pool->vertex_stride_bytes;
-  uint32_t first_index =
-      ib_offset_bytes / vkr_index_type_size(pool->index_buffer.type);
 
   VkrGeometry *geom = geometry_acquire_slot(system, &handle);
   if (!geom) {
-    // Rollback allocations
-    vkr_freelist_free(&pool->index_freelist, ib_bytes, ib_offset_bytes);
-    vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
-    log_error("No free geometry entries for '%s'", string8_cstr(&debug_name));
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return (VkrGeometryHandle){0};
+    return handle;
   }
 
-  geom->layout = layout;
-  geom->first_vertex = first_vertex;
-  geom->vertex_count = vertex_count;
-  geom->first_index = first_index;
-  geom->index_count = index_count;
+  geom->vertex_size = config->vertex_size;
+  geom->vertex_count = config->vertex_count;
+  geom->index_size = config->index_size;
+  geom->index_count = config->index_count;
+  geom->center = config->center;
+  geom->min_extents = config->min_extents;
+  geom->max_extents = config->max_extents;
 
-  // Upload data to GPU buffers at the allocated offsets
-  err = vkr_renderer_upload_buffer(system->renderer, pool->vertex_buffer.handle,
-                                   vb_offset_bytes, vb_bytes, vertices);
-  if (err != VKR_RENDERER_ERROR_NONE) {
-    log_error("Failed to upload vertices for '%s'", string8_cstr(&debug_name));
-    // Rollback allocations and entry
-    vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
-    vkr_freelist_free(&pool->index_freelist, ib_bytes, ib_offset_bytes);
-    // Return slot to unused state
-    geom->id = 0;
-    *out_error = err;
-    return (VkrGeometryHandle){0};
-  }
-
-  err = vkr_renderer_upload_buffer(system->renderer, pool->index_buffer.handle,
-                                   ib_offset_bytes, ib_bytes, indices);
-  if (err != VKR_RENDERER_ERROR_NONE) {
-    log_error("Failed to upload indices for '%s'", string8_cstr(&debug_name));
-    // Rollback allocations and entry
-    vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
-    vkr_freelist_free(&pool->index_freelist, ib_bytes, ib_offset_bytes);
-    // Return slot to unused state
-    geom->id = 0;
-    *out_error = err;
-    return (VkrGeometryHandle){0};
-  }
-
-  // Register lifetime entry by name (create stable key; synthesize if missing)
-  const char *stable_name = NULL;
-  if (debug_name.str && debug_name.length > 0) {
-    char *name_copy =
-        (char *)vkr_allocator_alloc(&system->allocator, debug_name.length + 1,
-                                    VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    assert_log(name_copy != NULL, "Failed to allocate geometry name");
-    MemCopy(name_copy, debug_name.str, (size_t)debug_name.length);
-    name_copy[debug_name.length] = '\0';
-    stable_name = (const char *)name_copy;
+  if (config->name[0] != '\0') {
+    string_copy(geom->name, config->name);
   } else {
-    char *name_copy = (char *)vkr_allocator_alloc(
-        &system->allocator, 32, VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    assert_log(name_copy != NULL, "Failed to allocate geometry name");
-    int written = snprintf(name_copy, 32, "geom_%u", handle.id);
-    if (written < 0) {
-      MemCopy(name_copy, "geom", 5);
-    }
-    stable_name = (const char *)name_copy;
+    string_format(geom->name, sizeof(geom->name), "geometry_%u", handle.id);
   }
 
-  geom->name = stable_name;
+  if (config->material_name[0] != '\0') {
+    string_copy(geom->material_name, config->material_name);
+  } else {
+    geom->material_name[0] = '\0';
+  }
+
+  String8 debug_name = {0};
+  uint64_t geom_name_length = string_length(geom->name);
+  if (geom_name_length > 0) {
+    debug_name = string8_create((uint8_t *)geom->name, geom_name_length);
+  } else {
+    debug_name = string8_lit("geometry");
+  }
+
+  VkrRendererError err = VKR_RENDERER_ERROR_NONE;
+  geom->vertex_buffer = vkr_vertex_buffer_create(
+      system->renderer, config->vertices, geom->vertex_size, geom->vertex_count,
+      VKR_VERTEX_INPUT_RATE_VERTEX, debug_name, &err);
+  if (err != VKR_RENDERER_ERROR_NONE) {
+    log_error("Failed to create vertex buffer for '%s'", geom->name);
+    *out_error = err;
+    return geometry_creation_failure(system, geom, handle);
+  }
+
+  VkrIndexType index_type = (config->index_size == sizeof(uint16_t))
+                                ? VKR_INDEX_TYPE_UINT16
+                                : VKR_INDEX_TYPE_UINT32;
+  geom->index_buffer =
+      vkr_index_buffer_create(system->renderer, config->indices, index_type,
+                              geom->index_count, debug_name, &err);
+  if (err != VKR_RENDERER_ERROR_NONE) {
+    log_error("Failed to create index buffer for '%s'", geom->name);
+    *out_error = err;
+    return geometry_creation_failure(system, geom, handle);
+  }
+
+  const char *stable_name = geom->name;
   VkrGeometryEntry life_entry = {.id = (handle.id - 1),
                                  .ref_count = 1,
                                  .auto_release = auto_release,
@@ -441,17 +627,11 @@ void vkr_geometry_system_acquire(VkrGeometrySystem *system,
   assert_log(system != NULL, "System is NULL");
   assert_log(handle.id != 0, "Handle is invalid");
 
-  uint32_t idx = handle.id - 1;
-  if (idx >= system->geometries.length)
+  VkrGeometry *geometry = vkr_geometry_from_handle(system, handle);
+  if (!geometry)
     return;
 
-  VkrGeometry *geometry = array_get_VkrGeometry(&system->geometries, idx);
-  if (geometry->generation != handle.generation)
-    return;
-  if (geometry->id == 0)
-    return;
-
-  if (geometry->name) {
+  if (geometry->name[0] != '\0') {
     VkrGeometryEntry *lifetime_entry = vkr_hash_table_get_VkrGeometryEntry(
         &system->geometry_by_name, geometry->name);
     if (lifetime_entry) {
@@ -460,21 +640,65 @@ void vkr_geometry_system_acquire(VkrGeometrySystem *system,
   }
 }
 
+VkrGeometryHandle
+vkr_geometry_system_acquire_by_name(VkrGeometrySystem *system, String8 name,
+                                    bool8_t auto_release,
+                                    VkrRendererError *out_error) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+
+  if (!name.str || name.length == 0) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return VKR_GEOMETRY_HANDLE_INVALID;
+  }
+
+  char lookup_name[GEOMETRY_NAME_MAX_LENGTH] = {0};
+  uint64_t copy_len = (name.length < (GEOMETRY_NAME_MAX_LENGTH - 1))
+                          ? name.length
+                          : (GEOMETRY_NAME_MAX_LENGTH - 1);
+  MemCopy(lookup_name, name.str, (size_t)copy_len);
+  lookup_name[copy_len] = '\0';
+
+  VkrGeometryEntry *entry = vkr_hash_table_get_VkrGeometryEntry(
+      &system->geometry_by_name, lookup_name);
+  if (!entry) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+    return VKR_GEOMETRY_HANDLE_INVALID;
+  }
+
+  if (entry->id >= system->geometries.length) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
+    return VKR_GEOMETRY_HANDLE_INVALID;
+  }
+
+  VkrGeometry *geometry = array_get_VkrGeometry(&system->geometries, entry->id);
+  if (!geometry || geometry->id == 0) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
+    return VKR_GEOMETRY_HANDLE_INVALID;
+  }
+
+  if (entry->ref_count == 0) {
+    entry->auto_release = auto_release;
+  }
+  entry->ref_count++;
+
+  return (VkrGeometryHandle){.id = geometry->id,
+                             .generation = geometry->generation};
+}
+
 void vkr_geometry_system_release(VkrGeometrySystem *system,
                                  VkrGeometryHandle handle) {
   assert_log(system != NULL, "System is NULL");
   assert_log(handle.id != 0, "Handle is invalid");
 
-  uint32_t idx = handle.id - 1;
-  if (idx >= system->geometries.length)
-    return;
-
-  VkrGeometry *geometry = array_get_VkrGeometry(&system->geometries, idx);
-  if (geometry->generation != handle.generation)
+  VkrGeometry *geometry = vkr_geometry_from_handle(system, handle);
+  if (!geometry)
     return;
 
   VkrGeometryEntry *lifetime_entry = NULL;
-  if (geometry->name) {
+  if (geometry->name[0] != '\0') {
     lifetime_entry = vkr_hash_table_get_VkrGeometryEntry(
         &system->geometry_by_name, geometry->name);
   }
@@ -489,42 +713,38 @@ void vkr_geometry_system_release(VkrGeometrySystem *system,
   }
 
   if (should_release) {
-    // Free ranges back to freelists
-    VkrGeometryPool *pool = &system->pools[geometry->layout];
-    uint32_t vb_bytes = geometry->vertex_count * pool->vertex_stride_bytes;
-    uint32_t ib_bytes =
-        geometry->index_count * vkr_index_type_size(pool->index_buffer.type);
-    uint32_t vb_align =
-        1u << (32 - VkrCountLeadingZeros32(pool->vertex_stride_bytes - 1));
-    uint32_t ib_align =
-        1u << (32 - VkrCountLeadingZeros32(
-                        vkr_index_type_size(pool->index_buffer.type) - 1));
-    vb_bytes = (uint32_t)AlignPow2(vb_bytes, vb_align);
-    ib_bytes = (uint32_t)AlignPow2(ib_bytes, ib_align);
-    uint32_t vb_offset_bytes =
-        geometry->first_vertex * pool->vertex_stride_bytes;
-    uint32_t ib_offset_bytes =
-        geometry->first_index * vkr_index_type_size(pool->index_buffer.type);
-    vkr_freelist_free(&pool->vertex_freelist, vb_bytes, vb_offset_bytes);
-    vkr_freelist_free(&pool->index_freelist, ib_bytes, ib_offset_bytes);
+    if (geometry->vertex_buffer.handle) {
+      vkr_vertex_buffer_destroy(system->renderer, &geometry->vertex_buffer);
+      geometry->vertex_buffer.handle = NULL;
+    }
+    if (geometry->index_buffer.handle) {
+      vkr_index_buffer_destroy(system->renderer, &geometry->index_buffer);
+      geometry->index_buffer.handle = NULL;
+    }
 
-    // push to free id stack
+    if (geometry->name[0] != '\0') {
+      vkr_hash_table_remove_VkrGeometryEntry(&system->geometry_by_name,
+                                             geometry->name);
+      geometry->name[0] = '\0';
+    }
+    geometry->material_name[0] = '\0';
+    geometry->vertex_count = 0;
+    geometry->index_count = 0;
+    geometry->vertex_size = 0;
+    geometry->index_size = 0;
+    geometry->id = 0;
+    geometry->generation = 0;
+
+    uint32_t idx = handle.id - 1;
     assert_log(system->free_count < system->free_ids.length,
                "free_ids overflow");
     system->free_ids.data[system->free_count++] = idx;
-
-    // mark slot as empty
-    geometry->id = 0;
-    geometry->first_vertex = 0;
-    geometry->vertex_count = 0;
-    geometry->first_index = 0;
-    geometry->index_count = 0;
-    if (geometry->name) {
-      vkr_hash_table_remove_VkrGeometryEntry(&system->geometry_by_name,
-                                             geometry->name);
-      geometry->name = NULL;
-    }
   }
+}
+
+VkrGeometry *vkr_geometry_system_get_by_handle(VkrGeometrySystem *system,
+                                               VkrGeometryHandle handle) {
+  return vkr_geometry_from_handle(system, handle);
 }
 
 void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
@@ -536,44 +756,35 @@ void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
   assert_log(handle.id != 0, "Handle is invalid");
   assert_log(instance_count > 0, "Instance count must be > 0");
 
-  VkrGeometry *entry = NULL;
-  uint32_t idx = handle.id - 1;
-  if (idx < system->max_geometries) {
-    VkrGeometry *geometry_candidate =
-        array_get_VkrGeometry(&system->geometries, idx);
-    if (geometry_candidate->generation == handle.generation) {
-      entry = geometry_candidate;
-    }
-  }
-  if (!entry)
+  VkrGeometry *geometry = vkr_geometry_from_handle(system, handle);
+  if (!geometry)
     return;
 
-  VkrGeometryPool *pool = &system->pools[entry->layout];
+  if (!geometry->vertex_buffer.handle || !geometry->index_buffer.handle)
+    return;
 
   VkrVertexBufferBinding vbb = {
-      .buffer = pool->vertex_buffer.handle,
+      .buffer = geometry->vertex_buffer.handle,
       .binding = 0,
-      .offset =
-          (uint64_t)entry->first_vertex * (uint64_t)pool->vertex_stride_bytes,
+      .offset = 0,
   };
   vkr_renderer_bind_vertex_buffer(renderer, &vbb);
 
   VkrIndexBufferBinding ibb = {
-      .buffer = pool->index_buffer.handle,
-      .type = VKR_INDEX_TYPE_UINT32,
-      .offset = (uint64_t)entry->first_index *
-                vkr_index_type_size(VKR_INDEX_TYPE_UINT32),
+      .buffer = geometry->index_buffer.handle,
+      .type = geometry->index_buffer.type,
+      .offset = 0,
   };
   vkr_renderer_bind_index_buffer(renderer, &ibb);
 
-  vkr_renderer_draw_indexed(renderer, entry->index_count, instance_count, 0, 0,
-                            0);
+  vkr_renderer_draw_indexed(renderer, geometry->index_count, instance_count, 0,
+                            0, 0);
 }
 
 void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,
-                                           float32_t *verts,
+                                           VkrVertex3d *verts,
                                            uint32_t vertex_count,
-                                           uint32_t *indices,
+                                           const uint32_t *indices,
                                            uint32_t index_count) {
   assert_log(allocator != NULL, "Allocator is NULL");
   assert_log(verts != NULL, "Verts is NULL");
@@ -581,10 +792,6 @@ void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,
   assert_log(indices != NULL, "Indices is NULL");
   assert_log(index_count > 0, "Index count must be > 0");
 
-  const uint32_t stride = VKR_WORLD_VERTEX_FLOATS;
-
-  // Allocate temporary arrays for accumulating tangents and handedness per
-  // vertex
   Vec3 *tangent_accumulators = (Vec3 *)vkr_allocator_alloc(
       allocator, vertex_count * sizeof(Vec3), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   assert_log(tangent_accumulators != NULL,
@@ -596,48 +803,32 @@ void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,
   assert_log(handedness_accumulators != NULL,
              "Failed to allocate handedness accumulators");
 
-  // Initialize accumulators to zero
   for (uint32_t i = 0; i < vertex_count; ++i) {
     tangent_accumulators[i] = vec3_zero();
     handedness_accumulators[i] = 0.0f;
   }
-  for (uint32_t i = 0; i < index_count; i += 3) {
+
+  for (uint32_t i = 0; i + 2 < index_count; i += 3) {
     uint32_t i0 = indices[i];
     uint32_t i1 = indices[i + 1];
     uint32_t i2 = indices[i + 2];
+    if (i0 >= vertex_count || i1 >= vertex_count || i2 >= vertex_count)
+      continue;
 
-    Vec3 v0 =
-        vec3_new(verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_POS_OFFSET],
-                 verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_POS_OFFSET + 1],
-                 verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_POS_OFFSET + 2]);
-    Vec3 v1 =
-        vec3_new(verts[(size_t)i1 * stride + VKR_WORLD_VERTEX_POS_OFFSET],
-                 verts[(size_t)i1 * stride + VKR_WORLD_VERTEX_POS_OFFSET + 1],
-                 verts[(size_t)i1 * stride + VKR_WORLD_VERTEX_POS_OFFSET + 2]);
-    Vec3 v2 =
-        vec3_new(verts[(size_t)i2 * stride + VKR_WORLD_VERTEX_POS_OFFSET],
-                 verts[(size_t)i2 * stride + VKR_WORLD_VERTEX_POS_OFFSET + 1],
-                 verts[(size_t)i2 * stride + VKR_WORLD_VERTEX_POS_OFFSET + 2]);
+    VkrVertex3d *v0 = &verts[i0];
+    VkrVertex3d *v1 = &verts[i1];
+    VkrVertex3d *v2 = &verts[i2];
 
-    Vec3 e1 = vec3_sub(v1, v0);
-    Vec3 e2 = vec3_sub(v2, v0);
+    Vec3 e1 = vec3_sub(v1->position, v0->position);
+    Vec3 e2 = vec3_sub(v2->position, v0->position);
 
-    float32_t deltaU1 =
-        verts[(size_t)i1 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET] -
-        verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET];
-    float32_t deltaV1 =
-        verts[(size_t)i1 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET + 1] -
-        verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET + 1];
-
-    float32_t deltaU2 =
-        verts[(size_t)i2 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET] -
-        verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET];
-    float32_t deltaV2 =
-        verts[(size_t)i2 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET + 1] -
-        verts[(size_t)i0 * stride + VKR_WORLD_VERTEX_TEXCOORD_OFFSET + 1];
+    float32_t deltaU1 = v1->texcoord.u - v0->texcoord.u;
+    float32_t deltaV1 = v1->texcoord.v - v0->texcoord.v;
+    float32_t deltaU2 = v2->texcoord.u - v0->texcoord.u;
+    float32_t deltaV2 = v2->texcoord.v - v0->texcoord.v;
 
     float32_t dividend = (deltaU1 * deltaV2 - deltaU2 * deltaV1);
-    if (fabsf(dividend) < VKR_FLOAT_EPSILON) {
+    if (vkr_abs_f32(dividend) < VKR_FLOAT_EPSILON) {
       continue;
     }
     float32_t fc = 1.0f / dividend;
@@ -647,12 +838,9 @@ void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,
                             fc * (deltaV2 * e1.z - deltaV1 * e2.z));
     tangent = vec3_normalize(tangent);
 
-    // Compute handedness from UV winding
-    float32_t sx = deltaU1, sy = deltaU2;
-    float32_t tx = deltaV1, ty = deltaV2;
-    float32_t handedness = ((tx * sy - ty * sx) < 0.0f) ? -1.0f : 1.0f;
+    float32_t handedness =
+        ((deltaV1 * deltaU2 - deltaV2 * deltaU1) < 0.0f) ? -1.0f : 1.0f;
 
-    // Accumulate tangents and handedness for each vertex in this triangle
     tangent_accumulators[i0] = vec3_add(tangent_accumulators[i0], tangent);
     tangent_accumulators[i1] = vec3_add(tangent_accumulators[i1], tangent);
     tangent_accumulators[i2] = vec3_add(tangent_accumulators[i2], tangent);
@@ -661,49 +849,27 @@ void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,
     handedness_accumulators[i2] += handedness;
   }
 
-  // Finalize tangents: orthogonalize against normals and write to vertex buffer
   for (uint32_t i = 0; i < vertex_count; ++i) {
-    // Read normal from vertex buffer
-    Vec3 normal = vec3_new(
-        verts[(size_t)i * stride + VKR_WORLD_VERTEX_NORMAL_OFFSET],
-        verts[(size_t)i * stride + VKR_WORLD_VERTEX_NORMAL_OFFSET + 1],
-        verts[(size_t)i * stride + VKR_WORLD_VERTEX_NORMAL_OFFSET + 2]);
-
-    // Get accumulated tangent
+    Vec3 normal = verts[i].normal;
     Vec3 tangent = tangent_accumulators[i];
 
-    // Check if tangent length is below threshold to avoid NaN from
-    // normalization
     float32_t tangent_len_sq = vec3_length_squared(tangent);
     if (tangent_len_sq < VKR_FLOAT_EPSILON * VKR_FLOAT_EPSILON) {
-      // Choose stable default perpendicular to normal
-      if (fabsf(normal.x) > 0.9f) {
-        // Normal is nearly along x-axis, use y-axis as tangent
+      if (vkr_abs_f32(normal.x) > 0.9f) {
         tangent = vec3_new(0.0f, 1.0f, 0.0f);
       } else {
-        // Use x-axis as tangent
         tangent = vec3_new(1.0f, 0.0f, 0.0f);
       }
     }
 
-    // Orthogonalize tangent against normal: t = normalize(t - n * dot(n,t))
     float32_t dot_nt = vec3_dot(normal, tangent);
     tangent = vec3_sub(tangent, vec3_scale(normal, dot_nt));
     tangent = vec3_normalize(tangent);
 
-    // Determine final handedness from accumulated values
     float32_t handedness = (handedness_accumulators[i] >= 0.0f) ? 1.0f : -1.0f;
-
-    // Form Vec4 and write to vertex buffer
-    Vec4 final_tangent = vec3_to_vec4(tangent, handedness);
-    size_t base = (size_t)i * stride + VKR_WORLD_VERTEX_TANGENT_OFFSET;
-    verts[base + 0] = final_tangent.x;
-    verts[base + 1] = final_tangent.y;
-    verts[base + 2] = final_tangent.z;
-    verts[base + 3] = final_tangent.w;
+    verts[i].tangent = vec3_to_vec4(tangent, handedness);
   }
 
-  // Free temporary accumulator arrays
   vkr_allocator_free(allocator, tangent_accumulators,
                      vertex_count * sizeof(Vec3),
                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -712,419 +878,91 @@ void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,
                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 }
 
-// Helper function to write a vertex to the interleaved vertex buffer
-// Vertex layout (20 floats / 80 bytes):
-//   [0..2]   Position.xyz   [3]   pad
-//   [4..6]   Normal.xyz     [7]   pad
-//   [8..9]   Texcoord uv
-//   [10..13] Color rgba
-//   [14..17] Tangent xyzw
-//   [18..19] pad
-vkr_internal void vkr_write_vertex(float32_t *verts, uint32_t *offset,
-                                   Vec3 position, Vec3 normal, Vec2 texcoord,
-                                   Vec4 color, Vec4 tangent) {
-  uint32_t base = *offset;
-
-  verts[base + VKR_WORLD_VERTEX_POS_OFFSET + 0] = position.x;
-  verts[base + VKR_WORLD_VERTEX_POS_OFFSET + 1] = position.y;
-  verts[base + VKR_WORLD_VERTEX_POS_OFFSET + 2] = position.z;
-  verts[base + VKR_WORLD_VERTEX_POS_OFFSET + 3] = 0.0f;
-
-  verts[base + VKR_WORLD_VERTEX_NORMAL_OFFSET + 0] = normal.x;
-  verts[base + VKR_WORLD_VERTEX_NORMAL_OFFSET + 1] = normal.y;
-  verts[base + VKR_WORLD_VERTEX_NORMAL_OFFSET + 2] = normal.z;
-  verts[base + VKR_WORLD_VERTEX_NORMAL_OFFSET + 3] = 0.0f;
-
-  verts[base + VKR_WORLD_VERTEX_TEXCOORD_OFFSET + 0] = texcoord.u;
-  verts[base + VKR_WORLD_VERTEX_TEXCOORD_OFFSET + 1] = texcoord.v;
-
-  verts[base + VKR_WORLD_VERTEX_COLOR_OFFSET + 0] = color.r;
-  verts[base + VKR_WORLD_VERTEX_COLOR_OFFSET + 1] = color.g;
-  verts[base + VKR_WORLD_VERTEX_COLOR_OFFSET + 2] = color.b;
-  verts[base + VKR_WORLD_VERTEX_COLOR_OFFSET + 3] = color.a;
-
-  verts[base + VKR_WORLD_VERTEX_TANGENT_OFFSET + 0] = tangent.x;
-  verts[base + VKR_WORLD_VERTEX_TANGENT_OFFSET + 1] = tangent.y;
-  verts[base + VKR_WORLD_VERTEX_TANGENT_OFFSET + 2] = tangent.z;
-  verts[base + VKR_WORLD_VERTEX_TANGENT_OFFSET + 3] = tangent.w;
-
-  verts[base + 18] = 0.0f;
-  verts[base + 19] = 0.0f;
-
-  *offset = base + VKR_WORLD_VERTEX_FLOATS;
+static INLINE bool8_t vkr_vertex3d_equal(const VkrVertex3d *lhs,
+                                         const VkrVertex3d *rhs) {
+  const float32_t epsilon = VKR_FLOAT_EPSILON;
+  return vec3_equal(lhs->position, rhs->position, epsilon) &&
+         vec3_equal(lhs->normal, rhs->normal, epsilon) &&
+         vec2_equal(lhs->texcoord, rhs->texcoord, epsilon) &&
+         vec4_equal(lhs->colour, rhs->colour, epsilon) &&
+         vec4_equal(lhs->tangent, rhs->tangent, epsilon);
 }
 
-VkrGeometryHandle vkr_geometry_system_create_default_cube(
-    VkrGeometrySystem *system, float32_t width, float32_t height,
-    float32_t depth, VkrRendererError *out_error) {
+bool8_t vkr_geometry_system_deduplicate_vertices(
+    VkrGeometrySystem *system, Arena *scratch_arena,
+    const VkrVertex3d *vertices, uint32_t vertex_count, uint32_t *indices,
+    uint32_t index_count, VkrVertex3d **out_vertices,
+    uint32_t *out_vertex_count) {
   assert_log(system != NULL, "Geometry system is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
+  assert_log(scratch_arena != NULL, "Scratch arena is NULL");
+  assert_log(vertices != NULL, "Vertices are NULL");
+  assert_log(indices != NULL, "Indices are NULL");
+  assert_log(out_vertices != NULL, "Out vertices pointer is NULL");
+  assert_log(out_vertex_count != NULL, "Out vertex count pointer is NULL");
 
-  // Calculate half-dimensions for centered cube
-  float32_t hw = width * 0.5f;
-  float32_t hh = height * 0.5f;
-  float32_t hd = depth * 0.5f;
-
-  // Zero vectors for color and tangent (will be computed later)
-  Vec4 zero_color = vec4_zero();
-  Vec4 zero_tangent = vec4_zero();
-
-  float32_t verts[24 * VKR_WORLD_VERTEX_FLOATS] = {0};
-  uint32_t w = 0;
-
-  // ============================================================================
-  // Front Face (+Z direction, facing toward viewer in right-handed system)
-  // ============================================================================
-  // Normal: (0, 0, 1) - points forward along positive Z-axis
-  // Vertices ordered counter-clockwise when viewed from outside
-  Vec3 front_normal = vec3_new(0.0f, 0.0f, 1.0f);
-
-  // v0: Bottom-left corner
-  // Position: (-hw, -hh, hd)
-  // Texcoord: (0, 0) - bottom-left of texture
-  vkr_write_vertex(verts, &w, vec3_new(-hw, -hh, hd), front_normal,
-                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
-
-  // v1: Bottom-right corner
-  // Position: (hw, -hh, hd)
-  // Texcoord: (1, 0) - bottom-right of texture
-  vkr_write_vertex(verts, &w, vec3_new(hw, -hh, hd), front_normal,
-                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
-
-  // v2: Top-right corner
-  // Position: (hw, hh, hd)
-  // Texcoord: (1, 1) - top-right of texture
-  vkr_write_vertex(verts, &w, vec3_new(hw, hh, hd), front_normal,
-                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
-
-  // v3: Top-left corner
-  // Position: (-hw, hh, hd)
-  // Texcoord: (0, 1) - top-left of texture
-  vkr_write_vertex(verts, &w, vec3_new(-hw, hh, hd), front_normal,
-                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
-
-  // ============================================================================
-  // Back Face (-Z direction, facing away from viewer)
-  // ============================================================================
-  // Normal: (0, 0, -1) - points backward along negative Z-axis
-  // Vertices ordered counter-clockwise when viewed from outside (from back)
-  Vec3 back_normal = vec3_new(0.0f, 0.0f, -1.0f);
-
-  // v4: Bottom-left corner
-  // Position: (-hw, -hh, -hd)
-  // Texcoord: (1, 0) - bottom-right of texture (flipped horizontally)
-  vkr_write_vertex(verts, &w, vec3_new(-hw, -hh, -hd), back_normal,
-                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
-
-  // v5: Bottom-right corner
-  // Position: (hw, -hh, -hd)
-  // Texcoord: (0, 0) - bottom-left of texture (flipped horizontally)
-  vkr_write_vertex(verts, &w, vec3_new(hw, -hh, -hd), back_normal,
-                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
-
-  // v6: Top-right corner
-  // Position: (hw, hh, -hd)
-  // Texcoord: (0, 1) - top-left of texture (flipped horizontally)
-  vkr_write_vertex(verts, &w, vec3_new(hw, hh, -hd), back_normal,
-                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
-
-  // v7: Top-left corner
-  // Position: (-hw, hh, -hd)
-  // Texcoord: (1, 1) - top-right of texture (flipped horizontally)
-  vkr_write_vertex(verts, &w, vec3_new(-hw, hh, -hd), back_normal,
-                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
-
-  // ============================================================================
-  // Left Face (-X direction, facing left)
-  // ============================================================================
-  // Normal: (-1, 0, 0) - points left along negative X-axis
-  // Vertices ordered counter-clockwise when viewed from outside (from left)
-  Vec3 left_normal = vec3_new(-1.0f, 0.0f, 0.0f);
-
-  // v8: Bottom-back corner
-  // Position: (-hw, -hh, -hd)
-  // Texcoord: (0, 0) - bottom-left of texture
-  vkr_write_vertex(verts, &w, vec3_new(-hw, -hh, -hd), left_normal,
-                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
-
-  // v9: Bottom-front corner
-  // Position: (-hw, -hh, hd)
-  // Texcoord: (1, 0) - bottom-right of texture
-  vkr_write_vertex(verts, &w, vec3_new(-hw, -hh, hd), left_normal,
-                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
-
-  // v10: Top-front corner
-  // Position: (-hw, hh, hd)
-  // Texcoord: (1, 1) - top-right of texture
-  vkr_write_vertex(verts, &w, vec3_new(-hw, hh, hd), left_normal,
-                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
-
-  // v11: Top-back corner
-  // Position: (-hw, hh, -hd)
-  // Texcoord: (0, 1) - top-left of texture
-  vkr_write_vertex(verts, &w, vec3_new(-hw, hh, -hd), left_normal,
-                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
-
-  // ============================================================================
-  // Right Face (+X direction, facing right)
-  // ============================================================================
-  // Normal: (1, 0, 0) - points right along positive X-axis
-  // Vertices ordered counter-clockwise when viewed from outside (from right)
-  Vec3 right_normal = vec3_new(1.0f, 0.0f, 0.0f);
-
-  // v12: Bottom-back corner
-  // Position: (hw, -hh, -hd)
-  // Texcoord: (1, 0) - bottom-right of texture (flipped horizontally)
-  vkr_write_vertex(verts, &w, vec3_new(hw, -hh, -hd), right_normal,
-                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
-
-  // v13: Bottom-front corner
-  // Position: (hw, -hh, hd)
-  // Texcoord: (0, 0) - bottom-left of texture (flipped horizontally)
-  vkr_write_vertex(verts, &w, vec3_new(hw, -hh, hd), right_normal,
-                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
-
-  // v14: Top-front corner
-  // Position: (hw, hh, hd)
-  // Texcoord: (0, 1) - top-left of texture (flipped horizontally)
-  vkr_write_vertex(verts, &w, vec3_new(hw, hh, hd), right_normal,
-                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
-
-  // v15: Top-back corner
-  // Position: (hw, hh, -hd)
-  // Texcoord: (1, 1) - top-right of texture (flipped horizontally)
-  vkr_write_vertex(verts, &w, vec3_new(hw, hh, -hd), right_normal,
-                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
-
-  // ============================================================================
-  // Top Face (+Y direction, facing up)
-  // ============================================================================
-  // Normal: (0, 1, 0) - points up along positive Y-axis
-  // Vertices ordered counter-clockwise when viewed from outside (from above)
-  Vec3 top_normal = vec3_new(0.0f, 1.0f, 0.0f);
-
-  // v16: Front-left corner
-  // Position: (-hw, hh, hd)
-  // Texcoord: (0, 0) - bottom-left of texture
-  vkr_write_vertex(verts, &w, vec3_new(-hw, hh, hd), top_normal,
-                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
-
-  // v17: Front-right corner
-  // Position: (hw, hh, hd)
-  // Texcoord: (1, 0) - bottom-right of texture
-  vkr_write_vertex(verts, &w, vec3_new(hw, hh, hd), top_normal,
-                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
-
-  // v18: Back-right corner
-  // Position: (hw, hh, -hd)
-  // Texcoord: (1, 1) - top-right of texture
-  vkr_write_vertex(verts, &w, vec3_new(hw, hh, -hd), top_normal,
-                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
-
-  // v19: Back-left corner
-  // Position: (-hw, hh, -hd)
-  // Texcoord: (0, 1) - top-left of texture
-  vkr_write_vertex(verts, &w, vec3_new(-hw, hh, -hd), top_normal,
-                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
-
-  // ============================================================================
-  // Bottom Face (-Y direction, facing down)
-  // ============================================================================
-  // Normal: (0, -1, 0) - points down along negative Y-axis
-  // Vertices ordered counter-clockwise when viewed from outside (from below)
-  Vec3 bottom_normal = vec3_new(0.0f, -1.0f, 0.0f);
-
-  // v20: Back-left corner
-  // Position: (-hw, -hh, -hd)
-  // Texcoord: (0, 0) - bottom-left of texture
-  vkr_write_vertex(verts, &w, vec3_new(-hw, -hh, -hd), bottom_normal,
-                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
-
-  // v21: Back-right corner
-  // Position: (hw, -hh, -hd)
-  // Texcoord: (1, 0) - bottom-right of texture
-  vkr_write_vertex(verts, &w, vec3_new(hw, -hh, -hd), bottom_normal,
-                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
-
-  // v22: Front-right corner
-  // Position: (hw, -hh, hd)
-  // Texcoord: (1, 1) - top-right of texture
-  vkr_write_vertex(verts, &w, vec3_new(hw, -hh, hd), bottom_normal,
-                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
-
-  // v23: Front-left corner
-  // Position: (-hw, -hh, hd)
-  // Texcoord: (0, 1) - top-left of texture
-  vkr_write_vertex(verts, &w, vec3_new(-hw, -hh, hd), bottom_normal,
-                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
-
-  uint32_t indices[36] = {
-      0,  1,  2,  2,  3,  0,  // Front
-      4,  7,  6,  6,  5,  4,  // Back
-      8,  9,  10, 10, 11, 8,  // Left
-      12, 15, 14, 14, 13, 12, // Right
-      16, 17, 18, 18, 19, 16, // Top
-      20, 21, 22, 22, 23, 20  // Bottom
-  };
-
-  Scratch scratch = scratch_create(system->arena);
-  vkr_geometry_system_generate_tangents(&system->allocator, verts, 24, indices,
-                                        36);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-
-  VkrGeometryHandle h = vkr_geometry_system_create_from_interleaved(
-      system, GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD2_COLOR_TANGENT,
-      verts, 24, indices, 36, false_v, string8_lit("Default Cube"), out_error);
-  if (out_error && *out_error == VKR_RENDERER_ERROR_NONE) {
-    system->default_geometry = h;
+  if (vertex_count == 0) {
+    *out_vertices = NULL;
+    *out_vertex_count = 0;
+    return true_v;
   }
 
-  return h;
-}
+  VkrVertex3d *unique =
+      arena_alloc(scratch_arena, (uint64_t)vertex_count * sizeof(VkrVertex3d),
+                  ARENA_MEMORY_TAG_ARRAY);
+  uint32_t *remap =
+      arena_alloc(scratch_arena, (uint64_t)vertex_count * sizeof(uint32_t),
+                  ARENA_MEMORY_TAG_ARRAY);
 
-VkrGeometryHandle
-vkr_geometry_system_create_default_plane(VkrGeometrySystem *system,
-                                         float32_t width, float32_t height,
-                                         VkrRendererError *out_error) {
-  assert_log(system != NULL, "Geometry system is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
-
-  float32_t hw = width * 0.5f;
-  float32_t hh = height * 0.5f;
-
-  float32_t verts[4 * 8] = {0};
-  uint32_t w = 0;
-  verts[w++] = -hw;
-  verts[w++] = -hh;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = hw;
-  verts[w++] = -hh;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = hw;
-  verts[w++] = hh;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = -hw;
-  verts[w++] = hh;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-  verts[w++] = 0.0f;
-
-  // counter-clockwise winding
-  uint32_t indices[6] = {0, 2, 1, 0, 3, 2};
-
-  VkrGeometryHandle h = vkr_geometry_system_create_from_interleaved(
-      system, GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD, verts, 4, indices, 6,
-      false_v, string8_lit("Default Plane"), out_error);
-  if (out_error && *out_error == VKR_RENDERER_ERROR_NONE) {
-    system->default_geometry = h;
+  if (!unique || !remap) {
+    log_error("GeometrySystem: failed to allocate dedup buffers");
+    return false_v;
   }
 
-  return h;
-}
+  uint32_t unique_count = 0;
+  for (uint32_t i = 0; i < vertex_count; ++i) {
+    bool8_t found = false;
+    for (uint32_t j = 0; j < unique_count; ++j) {
+      if (vkr_vertex3d_equal(&vertices[i], &unique[j])) {
+        remap[i] = j;
+        found = true;
+        break;
+      }
+    }
 
-VkrGeometryHandle
-vkr_geometry_system_create_default_plane2d(VkrGeometrySystem *system,
-                                           float32_t width, float32_t height,
-                                           VkrRendererError *out_error) {
-  assert_log(system != NULL, "Geometry system is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
+    if (!found) {
+      unique[unique_count] = vertices[i];
+      remap[i] = unique_count;
+      unique_count++;
+    }
+  }
 
-  float32_t hw = width * 0.5f;
-  float32_t hh = height * 0.5f;
+  for (uint32_t i = 0; i < index_count; ++i) {
+    uint32_t idx = indices[i];
+    assert_log(idx < vertex_count, "Index out of bounds during dedup");
+    indices[i] = remap[idx];
+  }
 
-  // [x, y, u, v]
-  float32_t verts[4 * 4] = {0};
-  uint32_t w = 0;
-  verts[w++] = -hw;  // x
-  verts[w++] = -hh;  // y
-  verts[w++] = 0.0f; // u
-  verts[w++] = 0.0f; // v
+  *out_vertices = unique;
+  *out_vertex_count = unique_count;
 
-  verts[w++] = hw;
-  verts[w++] = -hh;
-  verts[w++] = 1.0f;
-  verts[w++] = 0.0f;
-
-  verts[w++] = hw;
-  verts[w++] = hh;
-  verts[w++] = 1.0f;
-  verts[w++] = 1.0f;
-
-  verts[w++] = -hw;
-  verts[w++] = hh;
-  verts[w++] = 0.0f;
-  verts[w++] = 1.0f;
-
-  uint32_t indices[6] = {0, 2, 1, 0, 3, 2};
-
-  VkrGeometryHandle h = vkr_geometry_system_create_from_interleaved(
-      system, GEOMETRY_VERTEX_LAYOUT_POSITION2_TEXCOORD, verts, 4, indices, 6,
-      false_v, string8_lit("Default Plane 2D"), out_error);
-  return h;
-}
-
-bool32_t
-vkr_geometry_system_get_layout(VkrGeometrySystem *system,
-                               VkrGeometryHandle handle,
-                               VkrGeometryVertexLayoutType *out_layout) {
-  assert_log(system != NULL, "Geometry system is NULL");
-  assert_log(handle.id != 0, "Invalid geometry handle");
-  assert_log(out_layout != NULL, "Out layout is NULL");
-
-  if (handle.id == 0)
-    return false_v;
-  uint32_t idx = handle.id - 1;
-  if (idx >= system->geometries.length)
-    return false_v;
-  VkrGeometry *geom = array_get_VkrGeometry(&system->geometries, idx);
-  if (geom->generation != handle.generation || geom->id == 0)
-    return false_v;
-  *out_layout = geom->layout;
   return true_v;
 }
 
-void vkr_geometry_system_require_layout_stride(
-    VkrGeometrySystem *system, VkrGeometryVertexLayoutType layout,
-    uint32_t stride_bytes, VkrRendererError *out_error) {
-  assert_log(system != NULL, "System is NULL");
-  assert_log(layout < GEOMETRY_VERTEX_LAYOUT_COUNT, "Invalid layout");
-  assert_log(out_error != NULL, "Out error is NULL");
-  assert_log(stride_bytes > 0, "Stride bytes must be > 0");
+VkrGeometryHandle
+vkr_geometry_system_get_default_geometry(VkrGeometrySystem *system) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  return system->default_geometry;
+}
 
-  VkrGeometryPool *pool = &system->pools[layout];
-  if (pool->initialized) {
-    if (pool->vertex_stride_bytes != stride_bytes) {
-      log_error(
-          "Geometry pool for layout %u already initialized with stride %u; "
-          "requested stride %u",
-          (uint32_t)layout, pool->vertex_stride_bytes, stride_bytes);
-      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-      return;
-    }
-    *out_error = VKR_RENDERER_ERROR_NONE;
-    return;
-  }
+VkrGeometryHandle
+vkr_geometry_system_get_default_plane(VkrGeometrySystem *system) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  return system->default_plane;
+}
 
-  // Initialize the pool with the requested stride
-  if (!vkr_geometry_pool_init(system, layout, stride_bytes, out_error)) {
-    return;
-  }
+VkrGeometryHandle vkr_geometry_system_get_default_plane2d(
+
+    VkrGeometrySystem *system) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  return system->default_plane2d;
 }
