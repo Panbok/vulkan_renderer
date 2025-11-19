@@ -112,8 +112,9 @@ vkr_shader_config_detect_vertex_type(const VkrShaderConfig *cfg) {
   for (uint32_t i = 0; i < cfg->attribute_count; ++i) {
     const VkrShaderAttributeDesc *ad =
         array_get_VkrShaderAttributeDesc(&cfg->attributes, i);
-    if (ad->type == SHADER_ATTRIBUTE_TYPE_VEC3 ||
-        ad->type == SHADER_ATTRIBUTE_TYPE_VEC4) {
+    if (vkr_string8_equals_cstr_i(&ad->name, "in_position") &&
+        (ad->type == SHADER_ATTRIBUTE_TYPE_VEC3 ||
+         ad->type == SHADER_ATTRIBUTE_TYPE_VEC4)) {
       return VKR_VERTEX_TYPE_3D;
     }
     if (ad->name.str && vkr_string8_equals_cstr_i(&ad->name, "in_normal")) {
@@ -123,8 +124,7 @@ vkr_shader_config_detect_vertex_type(const VkrShaderConfig *cfg) {
   return VKR_VERTEX_TYPE_2D;
 }
 
-vkr_internal void
-vkr_shader_config_apply_attribute_defaults(VkrShaderConfig *cfg) {
+vkr_internal void vkr_compute_attribute_layout(VkrShaderConfig *cfg) {
   cfg->vertex_type = vkr_shader_config_detect_vertex_type(cfg);
 
   if (cfg->vertex_type == VKR_VERTEX_TYPE_3D) {
@@ -148,15 +148,16 @@ vkr_shader_config_apply_attribute_defaults(VkrShaderConfig *cfg) {
         VkrShaderAttributeDesc *ad =
             array_get_VkrShaderAttributeDesc(&cfg->attributes, j);
         if (vkr_string8_equals_cstr(&ad->name, exp->name)) {
+          ad->location = i;
           ad->offset = exp->offset;
+          ad->size = vkr_attribute_type_size(exp->type);
           found = true_v;
           break;
         }
       }
       if (!found) {
-        log_warn(
-            "Shader '%s' missing vertex attribute '%s'; defaulting to zero",
-            string8_cstr(&cfg->name), exp->name);
+        log_warn("Shader '%s' missing expected vertex attribute '%s'",
+                 string8_cstr(&cfg->name), exp->name);
       }
     }
   } else {
@@ -174,7 +175,9 @@ vkr_shader_config_apply_attribute_defaults(VkrShaderConfig *cfg) {
         VkrShaderAttributeDesc *ad =
             array_get_VkrShaderAttributeDesc(&cfg->attributes, j);
         if (vkr_string8_equals_cstr(&ad->name, exp->name)) {
+          ad->location = i;
           ad->offset = exp->offset;
+          ad->size = vkr_attribute_type_size(exp->type);
           found = true_v;
           break;
         }
@@ -473,19 +476,6 @@ vkr_internal bool8_t vkr_split_csv_values_scratch(Arena *scratch,
 // =============================================================================
 // Layout Computation Functions
 // =============================================================================
-
-vkr_internal void vkr_compute_attribute_layout(VkrShaderConfig *cfg) {
-  uint64_t offset = 0;
-  for (uint64_t i = 0; i < cfg->attribute_count; i++) {
-    VkrShaderAttributeDesc *ad =
-        array_get_VkrShaderAttributeDesc(&cfg->attributes, i);
-    ad->location = (uint32_t)i;
-    ad->offset = (uint32_t)offset;
-    ad->size = vkr_attribute_type_size(ad->type);
-    offset += ad->size;
-  }
-  cfg->attribute_stride = vkr_align_up_u64(offset, 16);
-}
 
 vkr_internal void vkr_compute_uniform_layout(VkrShaderConfig *cfg) {
   uint64_t global_offset = 0, instance_offset = 0, local_size = 0;
@@ -951,7 +941,6 @@ vkr_shader_loader_parse(String8 path, Arena *arena, Arena *scratch_arena,
 
   // Compute layouts
   vkr_compute_attribute_layout(out_config);
-  vkr_shader_config_apply_attribute_defaults(out_config);
   vkr_compute_uniform_layout(out_config);
 
   return (VkrShaderConfigParseResult){.is_valid = true_v};

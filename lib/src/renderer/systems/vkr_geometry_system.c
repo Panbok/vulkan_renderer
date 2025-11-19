@@ -474,10 +474,24 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
 
   system->default_geometry = vkr_geometry_system_create_default_cube(
       system, 10.0f, 10.0f, 10.0f, "Default Cube", out_error);
+  if (system->default_geometry.id == 0) {
+    log_error("Failed to create default cube");
+    return false_v;
+  }
+
   system->default_plane =
       vkr_geometry_system_create_default_plane(system, 10.0f, 10.0f, out_error);
+  if (system->default_plane.id == 0) {
+    log_error("Failed to create default plane");
+    return false_v;
+  }
+
   system->default_plane2d =
       vkr_geometry_system_create_default_plane2d(system, 2.0f, 2.0f, out_error);
+  if (system->default_plane2d.id == 0) {
+    log_error("Failed to create default plane 2D");
+    return false_v;
+  }
 
   *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
