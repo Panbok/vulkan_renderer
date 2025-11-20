@@ -143,14 +143,6 @@ void vkr_allocator_free(VkrAllocator *allocator, void *ptr, uint64_t old_size,
     allocator->stats.total_allocated -= dec;
   }
 
-  if (g_vkr_allocator_stats.tagged_allocs[tag] > 0) {
-    g_vkr_allocator_stats.tagged_allocs[tag]--;
-  }
-
-  if (allocator->stats.tagged_allocs[tag] > 0) {
-    allocator->stats.tagged_allocs[tag]--;
-  }
-
   if (old_size > 0) {
     uint64_t dec =
         vkr_min_u64(g_vkr_allocator_stats.tagged_allocs[tag], old_size);
