@@ -1,5 +1,5 @@
 #include "vulkan_pipeline.h"
-#include "vulkan_renderpass.h"
+#include "vulkan_shaders.h"
 
 bool8_t vulkan_graphics_graphics_pipeline_create(
     VulkanBackendState *state, const VkrGraphicsPipelineDescription *desc,
@@ -283,55 +283,7 @@ void vulkan_graphics_pipeline_bind(VulkanCommandBuffer *command_buffer,
 }
 
 /**
- * @brief Update pipeline state and perform automatic render pass management
- *
- * AUTOMATIC RENDER PASS SWITCHING:
- * This is the CORE of the automatic multi-render pass system. When a pipeline
- * is bound, this function:
- *
- * 1. Extracts the target domain from the pipeline (WORLD, UI, SHADOW, POST)
- * 2. Checks if the target domain differs from the current active domain
- * 3. If different (or no pass active): Ends current pass, starts new pass
- * 4. Re-emits dynamic state (viewport/scissor) after pass switches
- * 5. Updates pipeline state (uniforms, descriptors, push constants)
- *
- * DOMAIN TRANSITION EXAMPLES:
- *
- * Example 1: Frame start (no pass active)
- *   - render_pass_active = false
- *   - Pipeline bound with WORLD domain
- *   - Action: Start WORLD render pass
- *   - Result: WORLD geometry can be rendered
- *
- * Example 2: WORLD → UI transition
- *   - current_render_pass_domain = WORLD
- *   - Pipeline bound with UI domain
- *   - Action: End WORLD pass, start UI pass
- *   - Result: UI elements can be rendered on top of world
- *
- * Example 3: Multiple objects same domain
- *   - current_render_pass_domain = WORLD
- *   - Another pipeline bound with WORLD domain
- *   - Action: No render pass change (same domain)
- *   - Result: Continues rendering in WORLD pass
- *
- * DOMAIN-SPECIFIC BEHAVIORS:
- * - WORLD: Color+Depth cleared, depth testing enabled
- * - UI: Color preserved (LOAD), depth testing disabled, alpha blending enabled
- * - SHADOW: Depth-only, cleared, for shadow map generation
- * - POST: Color-only, for post-processing effects
- *
- * DYNAMIC STATE RE-EMISSION:
- * After a render pass switch, viewport and scissor must be re-emitted because:
- * - vkCmdBeginRenderPass implicitly resets some dynamic state
- * - Viewport/scissor are dynamic state in our pipelines
- * - Re-emission ensures correct rendering after pass transitions
- *
- * PERFORMANCE CONSIDERATIONS:
- * - Domain changes incur a render pass transition cost (GPU state change)
- * - Minimize domain switches by batching draws of the same domain
- * - Example: Draw all WORLD objects, then all UI objects
- *
+ * @brief Update pipeline state
  * @param state Vulkan backend state
  * @param pipeline Pipeline containing domain information
  * @param uniform Global uniform data (view/projection matrices)
@@ -349,63 +301,6 @@ VkrRendererError vulkan_graphics_pipeline_update_state(
   uint32_t image_index = state->image_index;
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, image_index);
-
-  VkrPipelineDomain target_domain = pipeline->desc.domain;
-
-  // ===========================================================================
-  // AUTOMATIC RENDER PASS SWITCHING LOGIC (P14C)
-  // ===========================================================================
-  // Check if we need to switch render passes:
-  // 1. Domain changed (e.g., WORLD → UI)
-  // 2. No render pass is currently active (frame start)
-  //
-  // If either condition is true, perform render pass transition:
-  // - End current pass (if active)
-  // - Start new pass for target domain
-  // - Re-emit dynamic state (viewport/scissor)
-  // ===========================================================================
-  if (state->current_render_pass_domain != target_domain ||
-      !state->render_pass_active) {
-    // End current render pass if one is active
-    if (state->render_pass_active) {
-      vulkan_renderpass_end(command_buffer, state);
-      state->render_pass_active = false;
-      state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
-    }
-
-    // Start the render pass for the target domain
-    VulkanRenderPass *render_pass = state->domain_render_passes[target_domain];
-    VulkanFramebuffer *framebuffer = array_get_VulkanFramebuffer(
-        &state->domain_framebuffers[target_domain], image_index);
-
-    vulkan_renderpass_begin(command_buffer, render_pass, framebuffer->handle);
-    state->current_render_pass_domain = target_domain;
-    state->render_pass_active = true;
-
-    // =========================================================================
-    // CRITICAL: Re-emit dynamic state after render pass switch
-    // =========================================================================
-    // vkCmdBeginRenderPass can invalidate some dynamic state. We use dynamic
-    // viewport and scissor, so we must re-emit them after every pass switch
-    // to ensure correct rendering.
-    // =========================================================================
-    VkViewport viewport = {
-        .x = 0.0f,
-        .y = 0.0f,
-        .width = (float32_t)state->swapchain.extent.width,
-        .height = (float32_t)state->swapchain.extent.height,
-        .minDepth = 0.0f,
-        .maxDepth = 1.0f,
-    };
-
-    VkRect2D scissor = {
-        .offset = {0, 0},
-        .extent = state->swapchain.extent,
-    };
-
-    vkCmdSetViewport(command_buffer->handle, 0, 1, &viewport);
-    vkCmdSetScissor(command_buffer->handle, 0, 1, &scissor);
-  }
 
   if (uniform != NULL) {
     if (!vulkan_shader_update_global_state(state, &pipeline->shader_object,

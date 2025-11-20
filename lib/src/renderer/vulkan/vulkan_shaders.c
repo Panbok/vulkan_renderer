@@ -673,6 +673,13 @@ bool8_t vulkan_shader_acquire_instance(VulkanBackendState *state,
         shader_object
             ->instance_state_free_ids[shader_object->instance_state_free_count];
   } else {
+    if (shader_object->instance_uniform_buffer_count >=
+        VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT) {
+      log_error(
+          "Failed to acquire shader instance: limit (%u) exceeded for shader",
+          VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT);
+      return false_v;
+    }
     *out_object_id = shader_object->instance_uniform_buffer_count;
     shader_object->instance_uniform_buffer_count++;
   }

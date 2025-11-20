@@ -1,20 +1,6 @@
 #pragma once
 
-#include "vulkan_buffer.h"
-#include "vulkan_command.h"
-#include "vulkan_device.h"
-#include "vulkan_fence.h"
-#include "vulkan_framebuffer.h"
-#include "vulkan_instance.h"
-#include "vulkan_pipeline.h"
-#include "vulkan_renderpass.h"
-#include "vulkan_shaders.h"
-#include "vulkan_swapchain.h"
 #include "vulkan_types.h"
-
-#ifndef NDEBUG
-#include "vulkan_debug.h"
-#endif
 
 // Internal function for swapchain recreation (used by swapchain module)
 bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state);
@@ -102,6 +88,11 @@ void renderer_vulkan_draw_indexed(void *backend_state, uint32_t index_count,
                                   uint32_t instance_count, uint32_t first_index,
                                   int32_t vertex_offset,
                                   uint32_t first_instance);
+
+VkrRendererError renderer_vulkan_begin_render_pass(void *backend_state,
+                                                   VkrPipelineDomain domain);
+
+VkrRendererError renderer_vulkan_end_render_pass(void *backend_state);
 
 // Telemetry
 uint64_t

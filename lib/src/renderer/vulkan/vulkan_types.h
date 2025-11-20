@@ -203,7 +203,7 @@ typedef struct VulkanShaderObjectDescriptorState {
   uint32_t *generations;
 } VulkanShaderObjectDescriptorState;
 
-#define VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT 1024
+#define VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT 4096
 typedef struct VulkanShaderObjectInstanceState {
   // Per-frame descriptor sets; length == frame_count
   VkDescriptorSet *descriptor_sets;

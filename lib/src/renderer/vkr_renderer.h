@@ -720,6 +720,11 @@ void vkr_renderer_draw_indexed(VkrRendererFrontendHandle renderer,
                                uint32_t first_index, int32_t vertex_offset,
                                uint32_t first_instance);
 
+void vkr_renderer_begin_render_pass(VkrRendererFrontendHandle renderer,
+                                    VkrPipelineDomain domain);
+
+void vkr_renderer_end_render_pass(VkrRendererFrontendHandle renderer);
+
 VkrRendererError vkr_renderer_end_frame(VkrRendererFrontendHandle renderer,
                                         float64_t delta_time);
 // --- END Frame Lifecycle & Rendering Commands ---
@@ -759,6 +764,11 @@ typedef struct VkrRendererBackendInterface {
   VkrRendererError (*begin_frame)(void *backend_state, float64_t delta_time);
   VkrRendererError (*end_frame)(void *backend_state,
                                 float64_t delta_time); // Includes present
+
+  // --- Render Pass Management ---
+  VkrRendererError (*begin_render_pass)(void *backend_state,
+                                        VkrPipelineDomain domain);
+  VkrRendererError (*end_render_pass)(void *backend_state);
 
   // --- Resource Management ---
   VkrBackendResourceHandle (*buffer_create)(void *backend_state,

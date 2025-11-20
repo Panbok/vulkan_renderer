@@ -1,5 +1,19 @@
 #include "vulkan_backend.h"
 #include "defines.h"
+#include "vulkan_buffer.h"
+#include "vulkan_command.h"
+#include "vulkan_device.h"
+#include "vulkan_fence.h"
+#include "vulkan_framebuffer.h"
+#include "vulkan_instance.h"
+#include "vulkan_pipeline.h"
+#include "vulkan_renderpass.h"
+#include "vulkan_shaders.h"
+#include "vulkan_swapchain.h"
+
+#ifndef NDEBUG
+#include "vulkan_debug.h"
+#endif
 
 // todo: we are having issues with image ghosting when camera moves
 // too fast, need to figure out why (clues VSync/present mode issues)
@@ -169,6 +183,8 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .pipeline_destroy = renderer_vulkan_destroy_pipeline,
       .begin_frame = renderer_vulkan_begin_frame,
       .end_frame = renderer_vulkan_end_frame,
+      .begin_render_pass = renderer_vulkan_begin_render_pass,
+      .end_render_pass = renderer_vulkan_end_render_pass,
       .bind_buffer = renderer_vulkan_bind_buffer,
       .draw = renderer_vulkan_draw,
       .draw_indexed = renderer_vulkan_draw_indexed,
@@ -1312,4 +1328,75 @@ void renderer_vulkan_bind_buffer(void *backend_state,
   }
 
   return;
+}
+
+VkrRendererError renderer_vulkan_begin_render_pass(void *backend_state,
+                                                   VkrPipelineDomain domain) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(domain != VKR_PIPELINE_DOMAIN_COUNT, "Invalid domain");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  if (state->render_pass_active) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
+  uint32_t image_index = state->image_index;
+  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+      &state->graphics_command_buffers, state->image_index);
+  VulkanRenderPass *render_pass = state->domain_render_passes[domain];
+  VulkanFramebuffer *framebuffer = array_get_VulkanFramebuffer(
+      &state->domain_framebuffers[domain], image_index);
+
+  if (!vulkan_renderpass_begin(command_buffer, render_pass,
+                               framebuffer->handle)) {
+    log_fatal("Failed to begin Vulkan render pass");
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
+  state->current_render_pass_domain = domain;
+  state->render_pass_active = true;
+
+  VkViewport viewport = {
+      .x = 0.0f,
+      .y = 0.0f,
+      .width = (float32_t)state->swapchain.extent.width,
+      .height = (float32_t)state->swapchain.extent.height,
+      .minDepth = 0.0f,
+      .maxDepth = 1.0f,
+  };
+
+  VkRect2D scissor = {
+      .offset = {0, 0},
+      .extent = state->swapchain.extent,
+  };
+
+  vkCmdSetViewport(command_buffer->handle, 0, 1, &viewport);
+  vkCmdSetScissor(command_buffer->handle, 0, 1, &scissor);
+
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+VkrRendererError renderer_vulkan_end_render_pass(void *backend_state) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  if (!state->render_pass_active) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
+  uint32_t image_index = state->image_index;
+  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+      &state->graphics_command_buffers, image_index);
+
+  if (!vulkan_renderpass_end(command_buffer, state)) {
+    log_fatal("Failed to end Vulkan render pass");
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
+  state->render_pass_active = false;
+  state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
+
+  return VKR_RENDERER_ERROR_NONE;
 }
