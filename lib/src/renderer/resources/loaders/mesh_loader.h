@@ -8,9 +8,8 @@
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
+#include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_resource_system.h"
-
-struct VkrMeshManager;
 
 typedef struct VkrMeshLoaderSubset {
   VkrGeometryConfig geometry_config;
@@ -34,7 +33,7 @@ typedef struct VkrMeshLoaderContext {
   VkrAllocator allocator;
   VkrGeometrySystem *geometry_system;
   VkrMaterialSystem *material_system;
-  struct VkrMeshManager *mesh_manager;
+  VkrMeshManager *mesh_manager;
 } VkrMeshLoaderContext;
 
 VkrResourceLoader vkr_mesh_loader_create(VkrMeshLoaderContext *context);
