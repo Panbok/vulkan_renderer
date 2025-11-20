@@ -7,6 +7,8 @@
 // todo: in the future we need to clean up arena memory from tags, formating,
 // etc. since all of this will be handled by the allocator system
 
+#include "defines.h"
+
 #pragma once
 
 typedef enum VkrAllocatorMemoryTag {

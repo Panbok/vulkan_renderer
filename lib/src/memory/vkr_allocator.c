@@ -132,41 +132,38 @@ void vkr_allocator_free(VkrAllocator *allocator, void *ptr, uint64_t old_size,
   assert_log(tag < VKR_ALLOCATOR_MEMORY_TAG_MAX,
              "Tag must be less than VKR_ALLOCATOR_MEMORY_TAG_MAX");
 
-  if (allocator->type != VKR_ALLOCATOR_TYPE_ARENA) {
-    g_vkr_allocator_stats.total_frees++;
-    allocator->stats.total_frees++;
+  g_vkr_allocator_stats.total_frees++;
+  allocator->stats.total_frees++;
 
-    if (old_size > 0) {
-      uint64_t dec =
-          vkr_min_u64(g_vkr_allocator_stats.total_allocated, old_size);
-      g_vkr_allocator_stats.total_allocated -= dec;
+  if (old_size > 0) {
+    uint64_t dec = vkr_min_u64(g_vkr_allocator_stats.total_allocated, old_size);
+    g_vkr_allocator_stats.total_allocated -= dec;
 
-      dec = vkr_min_u64(allocator->stats.total_allocated, old_size);
-      allocator->stats.total_allocated -= dec;
-    }
-
-    if (g_vkr_allocator_stats.tagged_allocs[tag] > 0) {
-      g_vkr_allocator_stats.tagged_allocs[tag]--;
-    }
-
-    if (allocator->stats.tagged_allocs[tag] > 0) {
-      allocator->stats.tagged_allocs[tag]--;
-    }
-
-    if (old_size > 0) {
-      uint64_t dec =
-          vkr_min_u64(g_vkr_allocator_stats.tagged_allocs[tag], old_size);
-      g_vkr_allocator_stats.tagged_allocs[tag] -= dec;
-
-      dec = vkr_min_u64(allocator->stats.tagged_allocs[tag], old_size);
-      allocator->stats.tagged_allocs[tag] -= dec;
-    }
-
-    log_debug("Freed (%llu bytes) from allocator - [%s] for tag - [%s]",
-              (unsigned long long)old_size,
-              VkrAllocatorTypeNames[allocator->type],
-              VkrAllocatorMemoryTagNames[tag]);
+    dec = vkr_min_u64(allocator->stats.total_allocated, old_size);
+    allocator->stats.total_allocated -= dec;
   }
+
+  if (g_vkr_allocator_stats.tagged_allocs[tag] > 0) {
+    g_vkr_allocator_stats.tagged_allocs[tag]--;
+  }
+
+  if (allocator->stats.tagged_allocs[tag] > 0) {
+    allocator->stats.tagged_allocs[tag]--;
+  }
+
+  if (old_size > 0) {
+    uint64_t dec =
+        vkr_min_u64(g_vkr_allocator_stats.tagged_allocs[tag], old_size);
+    g_vkr_allocator_stats.tagged_allocs[tag] -= dec;
+
+    dec = vkr_min_u64(allocator->stats.tagged_allocs[tag], old_size);
+    allocator->stats.tagged_allocs[tag] -= dec;
+  }
+
+  log_debug("Freed (%llu bytes) from allocator - [%s] for tag - [%s]",
+            (unsigned long long)old_size,
+            VkrAllocatorTypeNames[allocator->type],
+            VkrAllocatorMemoryTagNames[tag]);
 
   allocator->free(allocator->ctx, ptr, old_size, tag);
 }
