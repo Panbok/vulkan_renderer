@@ -12,7 +12,7 @@ struct LocalUniformObject
 {
     float4 diffuse_color;
     float4 specular_color;
-    float4 emission_color;
+    float3 emission_color;
     float shininess;
 };
 
@@ -270,7 +270,7 @@ float4 fragmentMain(VertexDto input) : SV_Target
                                    input.render_mode, diffuse_sample,
                                    specular_sample);
 
-    color += local_ubo.emission_color;
+    color.rgb += local_ubo.emission_color.rgb;
 
     // Reinhard Tone Mapping
     color.rgb = color.rgb / (color.rgb + 1.0f);

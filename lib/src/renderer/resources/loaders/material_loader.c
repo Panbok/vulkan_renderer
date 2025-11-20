@@ -480,8 +480,8 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
       }
 
     } else if (string8_contains_cstr(&key, "emission_color")) {
-      Vec4 v;
-      if (string8_to_vec4(&value, &v)) {
+      Vec3 v;
+      if (string8_to_vec3(&value, &v)) {
         out_material->phong.emission_color = v;
       } else {
         log_warn("Material '%s': invalid emission_color '%s'",
