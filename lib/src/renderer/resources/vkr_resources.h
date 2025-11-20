@@ -1,10 +1,13 @@
 #pragma once
 
 #include "containers/array.h"
+#include "containers/str.h"
 #include "containers/vkr_hashtable.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
 #include "math/mat.h"
+#include "math/vkr_transform.h"
+#include "renderer/vkr_buffer.h"
 #include "renderer/vkr_renderer.h"
 
 // =============================================================================
@@ -18,37 +21,35 @@ typedef struct VkrGeometryHandle {
 
 #define VKR_GEOMETRY_HANDLE_INVALID                                            \
   (VkrGeometryHandle) { .id = 0, .generation = VKR_INVALID_ID }
-typedef enum VkrGeometryVertexLayoutType {
-  GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD = 0,
-  GEOMETRY_VERTEX_LAYOUT_POSITION_COLOR,
-  GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_COLOR,
-  GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD,
-  GEOMETRY_VERTEX_LAYOUT_POSITION2_TEXCOORD,
-  GEOMETRY_VERTEX_LAYOUT_POSITION_NORMAL_TEXCOORD2_COLOR_TANGENT,
-  GEOMETRY_VERTEX_LAYOUT_FULL,
-  GEOMETRY_VERTEX_LAYOUT_COUNT
-} VkrGeometryVertexLayoutType;
 
-// Describes a geometry instance stored in the geometry system's array.
-// Lifetime is managed separately via VkrGeometryEntry (hash table).
+#define GEOMETRY_NAME_MAX_LENGTH 64
+#define MATERIAL_NAME_MAX_LENGTH 64
+
+typedef enum VkrVertexType {
+  VKR_VERTEX_TYPE_UNKNOWN = 0,
+  VKR_VERTEX_TYPE_3D,
+  VKR_VERTEX_TYPE_2D,
+} VkrVertexType;
+
 typedef struct VkrGeometry {
-  // Stable id (slot index + 1) and generation for handle validation
   uint32_t id;
-  uint32_t pipeline_id; // pipeline family id (world/ui etc.)
+  uint32_t pipeline_id;
   uint32_t generation;
 
-  // Layout used by this geometry
-  VkrGeometryVertexLayoutType layout;
-
-  // Ranges into pooled buffers (indices into vertices/indices, not bytes)
-  uint32_t first_vertex;
+  uint32_t vertex_size;
   uint32_t vertex_count;
-  uint32_t first_index;
+  uint32_t index_size;
   uint32_t index_count;
 
-  // Optional linkage back to lifetime entry (hash key). Stored for convenience
-  // when operating via handle-based APIs.
-  const char *name;
+  VkrVertexBuffer vertex_buffer;
+  VkrIndexBuffer index_buffer;
+
+  Vec3 center;
+  Vec3 min_extents;
+  Vec3 max_extents;
+
+  char name[GEOMETRY_NAME_MAX_LENGTH];
+  char material_name[MATERIAL_NAME_MAX_LENGTH];
 } VkrGeometry;
 Array(VkrGeometry);
 
@@ -150,19 +151,30 @@ typedef struct VkrPipeline {
   VkrPipelineOpaqueHandle backend_handle;
 } VkrPipeline;
 Array(VkrPipeline);
-
 // =============================================================================
-// Renderable (geometry + material + model) - app/scene-side draw unit
+// Mesh/SubMesh - app/scene-side draw units
 // =============================================================================
 
-typedef struct VkrRenderable {
+typedef struct VkrSubMesh {
   VkrGeometryHandle geometry;
   VkrMaterialHandle material;
   VkrPipelineHandle pipeline;
-  Mat4 model;
   VkrRendererInstanceStateHandle instance_state;
-} VkrRenderable;
-Array(VkrRenderable);
+  VkrPipelineDomain pipeline_domain;
+  String8 shader_override;
+  bool8_t pipeline_dirty;
+  bool8_t owns_geometry;
+  bool8_t owns_material;
+  uint64_t last_render_frame;
+} VkrSubMesh;
+Array(VkrSubMesh);
+
+typedef struct VkrMesh {
+  VkrTransform transform;
+  Mat4 model;
+  Array_VkrSubMesh submeshes;
+} VkrMesh;
+Array(VkrMesh);
 
 // =============================================================================
 // Shader resource types (decoupled from systems)
@@ -223,11 +235,11 @@ typedef struct VkrShaderStageFile {
 Array(VkrShaderStageFile);
 
 typedef struct VkrShaderConfig {
-  String8 name;                              // shader.unique name
-  String8 renderpass_name;                   // renderpass key string
-  uint8_t use_instance;                      // enable instance scope (set 1)
-  uint8_t use_local;                         // enable push constants
-  VkrGeometryVertexLayoutType vertex_layout; // explicit geometry vertex layout
+  String8 name;              // shader.unique name
+  String8 renderpass_name;   // renderpass key string
+  uint8_t use_instance;      // enable instance scope (set 1)
+  uint8_t use_local;         // enable push constants
+  VkrVertexType vertex_type; // inferred vertex type
 
   // Stages
   Array_VkrShaderStageFile stages;
