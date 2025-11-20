@@ -1,0 +1,10 @@
+name=Material__47
+diffuse_texture=
+diffuse_color=0.588000,0.588000,0.588000,1.000000
+specular_texture=
+specular_color=0.000000,0.000000,0.000000,1.000000
+norm_texture=
+shininess=10.000000
+emission_color=0.000000,0.000000,0.000000
+shader=shader.default.world
+pipeline=world

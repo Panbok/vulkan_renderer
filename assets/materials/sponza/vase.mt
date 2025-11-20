@@ -1,0 +1,10 @@
+name=vase
+diffuse_texture=assets/textures/vase_dif.tga
+diffuse_color=0.588000,0.588000,0.588000,1.000000
+specular_texture=assets/textures/vase_spec.tga
+specular_color=0.000000,0.000000,0.000000,1.000000
+norm_texture=assets/textures/vase_ddn.tga
+shininess=10.000000
+emission_color=0.000000,0.000000,0.000000
+shader=shader.default.world
+pipeline=world

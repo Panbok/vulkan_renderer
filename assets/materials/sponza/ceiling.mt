@@ -1,0 +1,10 @@
+name=ceiling
+diffuse_texture=assets/textures/sponza_ceiling_a_diff.tga
+diffuse_color=0.588000,0.588000,0.588000,1.000000
+specular_texture=assets/textures/sponza_ceiling_a_spec.tga
+specular_color=0.000000,0.000000,0.000000,1.000000
+norm_texture=assets/textures/sponza_ceiling_a_ddn.tga
+shininess=10.000000
+emission_color=0.000000,0.000000,0.000000
+shader=shader.default.world
+pipeline=world

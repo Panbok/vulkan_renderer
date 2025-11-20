@@ -1,0 +1,10 @@
+name=falc_wreck
+diffuse_texture=assets/textures/falc_wreck_low_DefaultMaterial_AlbedoTransparency.png
+diffuse_color=0.800000,0.800000,0.800000,1.000000
+specular_texture=assets/textures/falc_wreck_low_DefaultMaterial_MetallicSmoothness.png
+specular_color=0.800000,0.800000,0.800000,1.000000
+norm_texture=assets/textures/falc_wreck_low_DefaultMaterial_Normal.png
+shininess=8.000000
+emission_color=0.000000,0.000000,0.000000
+shader=shader.default.world
+pipeline=world

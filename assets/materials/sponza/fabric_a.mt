@@ -1,0 +1,10 @@
+name=fabric_a
+diffuse_texture=assets/textures/sponza_fabric_diff.tga
+diffuse_color=0.588000,0.588000,0.588000,1.000000
+specular_texture=assets/textures/sponza_fabric_spec.tga
+specular_color=0.000000,0.000000,0.000000,1.000000
+norm_texture=assets/textures/sponza_fabric_ddn.tga
+shininess=10.000000
+emission_color=0.000000,0.000000,0.000000
+shader=shader.default.world
+pipeline=world
