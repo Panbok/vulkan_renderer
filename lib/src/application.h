@@ -56,6 +56,7 @@
 #include "memory/arena.h"
 #include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_camera.h"
+#include "renderer/systems/vkr_camera_controller.h"
 #include "renderer/vkr_renderer.h"
 
 /**
@@ -254,6 +255,9 @@ bool8_t application_create(Application *application,
 
   vkr_gamepad_init(&application->gamepad, &application->window.input_state);
   application->renderer.camera = application_init_camera(application);
+  vkr_camera_controller_create(
+      &application->renderer.camera_controller, &application->renderer.camera,
+      (float32_t)application->config->target_frame_rate);
 
   if (!vkr_renderer_systems_initialize(&application->renderer)) {
     log_fatal("Failed to initialize renderer frontend systems");
@@ -409,7 +413,9 @@ void application_start(Application *application) {
 
     application_update(application, delta);
 
-    vkr_camera_system_update(&application->renderer.camera, delta);
+    vkr_camera_controller_update(&application->renderer.camera_controller,
+                                 delta);
+    vkr_camera_system_update(&application->renderer.camera);
 
     // Update world view/projection from camera each frame to reflect movement
     application->renderer.globals.view =
@@ -418,6 +424,13 @@ void application_start(Application *application) {
         vkr_camera_system_get_projection_matrix(&application->renderer.camera);
     application->renderer.globals.view_position =
         application->renderer.camera.position;
+
+    uint32_t mesh_capacity =
+        vkr_mesh_manager_capacity(&application->renderer.mesh_manager);
+    for (uint32_t mesh_index = 0; mesh_index < mesh_capacity; ++mesh_index) {
+      vkr_mesh_manager_update_model(&application->renderer.mesh_manager,
+                                    mesh_index);
+    }
 
     application_draw_frame(application, delta);
 
