@@ -1,11 +1,9 @@
 #pragma once
 
-#include "containers/array.h"
 #include "containers/vkr_hashtable.h"
 #include "defines.h"
 #include "memory/arena.h"
 #include "renderer/resources/vkr_resources.h"
-#include "renderer/systems/vkr_resource_system.h"
 #include "renderer/vkr_renderer.h"
 
 // todo: should we merge this with material system, since
@@ -42,7 +40,9 @@ typedef struct VkrTextureSystem {
   uint32_t generation_counter; // Monotonic generation counter for texture
                                // description generations
 
-  VkrTextureHandle default_texture; // fallback texture
+  VkrTextureHandle default_texture;          // fallback texture
+  VkrTextureHandle default_normal_texture;   // flat normal fallback
+  VkrTextureHandle default_specular_texture; // flat specular fallback
 } VkrTextureSystem;
 
 // =============================================================================
@@ -102,6 +102,15 @@ void vkr_texture_system_release(VkrTextureSystem *system, String8 texture_name);
 void vkr_texture_system_release_by_handle(VkrTextureSystem *system,
                                           VkrTextureHandle handle);
 
+/**
+ * @brief Updates sampler filtering/wrapping for a texture handle.
+ */
+VkrRendererError vkr_texture_system_update_sampler(
+    VkrTextureSystem *system, VkrTextureHandle handle, VkrFilter min_filter,
+    VkrFilter mag_filter, VkrMipFilter mip_filter, bool8_t anisotropy_enable,
+    VkrTextureRepeatMode u_repeat_mode, VkrTextureRepeatMode v_repeat_mode,
+    VkrTextureRepeatMode w_repeat_mode);
+
 // =============================================================================
 // Getters
 // =============================================================================
@@ -138,6 +147,20 @@ VkrTexture *vkr_texture_system_get_default(VkrTextureSystem *system);
  */
 VkrTextureHandle
 vkr_texture_system_get_default_handle(VkrTextureSystem *system);
+
+/**
+ * @brief Gets a handle to the default flat normal map
+ */
+VkrTextureHandle
+vkr_texture_system_get_default_normal_handle(VkrTextureSystem *system);
+
+/**
+ * @brief Gets a handle to the default flat specular map
+ * @param system The texture system to get the default specular texture from
+ * @return The default specular texture handle
+ */
+VkrTextureHandle
+vkr_texture_system_get_default_specular_handle(VkrTextureSystem *system);
 
 // =============================================================================
 // Helpers (used by loaders with direct system access)

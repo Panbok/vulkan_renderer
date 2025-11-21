@@ -1,4 +1,5 @@
 #include "renderer/systems/vkr_texture_system.h"
+#include "renderer/systems/vkr_resource_system.h"
 
 uint32_t vkr_texture_system_find_free_slot(VkrTextureSystem *system) {
   assert_log(system != NULL, "System is NULL");
@@ -32,6 +33,8 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   assert_log(out_system != NULL, "Out system is NULL");
   assert_log(config->max_texture_count > 0,
              "Max texture count must be greater than 0");
+  assert_log(config->max_texture_count >= 2,
+             "Texture system requires at least 2 textures for defaults");
 
   MemZero(out_system, sizeof(*out_system));
 
@@ -72,6 +75,13 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
       .type = VKR_TEXTURE_TYPE_2D,
       .properties = vkr_texture_property_flags_from_bits(
           VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT),
+      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+      .anisotropy_enable = false_v,
       .generation = VKR_INVALID_ID,
   };
 
@@ -127,8 +137,86 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   scratch_destroy(scratch, ARENA_MEMORY_TAG_TEXTURE);
   default_texture->image = NULL;
 
-  // Ensure first free search starts at 1 so index 0 remains the default
-  out_system->next_free_index = 1;
+  // Create a 1x1 flat normal texture for cases where no normal map is provided
+  VkrTexture *default_normal = &out_system->textures.data[1];
+  default_normal->description = (VkrTextureDescription){
+      .width = 1,
+      .height = 1,
+      .channels = 4,
+      .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      .type = VKR_TEXTURE_TYPE_2D,
+      .properties = vkr_texture_property_flags_from_bits(
+          VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT),
+      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+      .anisotropy_enable = false_v,
+      .generation = VKR_INVALID_ID,
+  };
+
+  const uint8_t flat_normal_pixel[4] = {128, 128, 255, 255};
+  VkrRendererError normal_err = VKR_RENDERER_ERROR_NONE;
+  default_normal->handle = vkr_renderer_create_texture(
+      renderer, &default_normal->description, flat_normal_pixel, &normal_err);
+  if (normal_err != VKR_RENDERER_ERROR_NONE) {
+    String8 error_string = vkr_renderer_get_error_string(normal_err);
+    log_error("Failed to create default normal texture: %s",
+              string8_cstr(&error_string));
+    return false_v;
+  }
+
+  default_normal->description.id = 2; // slot 1 -> id 2
+  default_normal->description.generation = out_system->generation_counter++;
+  default_normal->image = NULL;
+  out_system->default_normal_texture =
+      (VkrTextureHandle){.id = default_normal->description.id,
+                         .generation = default_normal->description.generation};
+
+  // Create a 1x1 flat specular texture for cases where no specular map is
+  // provided
+  VkrTexture *default_specular = &out_system->textures.data[2];
+  default_specular->description = (VkrTextureDescription){
+      .width = 1,
+      .height = 1,
+      .channels = 4,
+      .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      .type = VKR_TEXTURE_TYPE_2D,
+      .properties = vkr_texture_property_flags_from_bits(
+          VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT),
+      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+      .anisotropy_enable = false_v,
+      .generation = VKR_INVALID_ID,
+  };
+
+  const uint8_t flat_specular_pixel[4] = {255, 255, 255, 255};
+  VkrRendererError specular_err = VKR_RENDERER_ERROR_NONE;
+  default_specular->handle =
+      vkr_renderer_create_texture(renderer, &default_specular->description,
+                                  flat_specular_pixel, &specular_err);
+  if (specular_err != VKR_RENDERER_ERROR_NONE) {
+    String8 error_string = vkr_renderer_get_error_string(specular_err);
+    log_error("Failed to create default specular texture: %s",
+              string8_cstr(&error_string));
+    return false_v;
+  }
+
+  default_specular->description.id = 3; // slot 2 -> id 3
+  default_specular->description.generation = out_system->generation_counter++;
+  default_specular->image = NULL;
+  out_system->default_specular_texture = (VkrTextureHandle){
+      .id = default_specular->description.id,
+      .generation = default_specular->description.generation};
+
+  // Ensure first free search starts after reserved defaults
+  out_system->next_free_index = 3;
 
   return true_v;
 }
@@ -250,6 +338,35 @@ void vkr_texture_system_release_by_handle(VkrTextureSystem *system,
            handle.id, handle.generation);
 }
 
+VkrRendererError vkr_texture_system_update_sampler(
+    VkrTextureSystem *system, VkrTextureHandle handle, VkrFilter min_filter,
+    VkrFilter mag_filter, VkrMipFilter mip_filter, bool8_t anisotropy_enable,
+    VkrTextureRepeatMode u_repeat_mode, VkrTextureRepeatMode v_repeat_mode,
+    VkrTextureRepeatMode w_repeat_mode) {
+  assert_log(system != NULL, "System is NULL");
+
+  VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
+  if (!texture || !texture->handle) {
+    return VKR_RENDERER_ERROR_INVALID_HANDLE;
+  }
+
+  VkrTextureDescription updated_desc = texture->description;
+  updated_desc.min_filter = min_filter;
+  updated_desc.mag_filter = mag_filter;
+  updated_desc.mip_filter = mip_filter;
+  updated_desc.anisotropy_enable = anisotropy_enable;
+  updated_desc.u_repeat_mode = u_repeat_mode;
+  updated_desc.v_repeat_mode = v_repeat_mode;
+  updated_desc.w_repeat_mode = w_repeat_mode;
+
+  VkrRendererError err = vkr_renderer_update_texture(
+      system->renderer, texture->handle, &updated_desc);
+  if (err == VKR_RENDERER_ERROR_NONE) {
+    texture->description = updated_desc;
+  }
+  return err;
+}
+
 void vkr_texture_destroy(VkrRendererFrontendHandle renderer,
                          VkrTexture *texture) {
   assert_log(renderer != NULL, "Renderer is NULL");
@@ -304,6 +421,18 @@ vkr_texture_system_get_default_handle(VkrTextureSystem *system) {
     return VKR_TEXTURE_HANDLE_INVALID;
   return (VkrTextureHandle){.id = texture->description.id,
                             .generation = texture->description.generation};
+}
+
+VkrTextureHandle
+vkr_texture_system_get_default_normal_handle(VkrTextureSystem *system) {
+  assert_log(system != NULL, "System is NULL");
+  return system->default_normal_texture;
+}
+
+VkrTextureHandle
+vkr_texture_system_get_default_specular_handle(VkrTextureSystem *system) {
+  assert_log(system != NULL, "System is NULL");
+  return system->default_specular_texture;
 }
 
 VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
@@ -380,6 +509,13 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
       .format = format,
       .type = VKR_TEXTURE_TYPE_2D,
       .properties = vkr_texture_property_flags_create(),
+      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter = VKR_MIP_FILTER_LINEAR,
+      .anisotropy_enable = false_v,
       .generation = VKR_INVALID_ID, // Will be set by system
   };
 
