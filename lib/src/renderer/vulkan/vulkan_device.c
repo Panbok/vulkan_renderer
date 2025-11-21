@@ -528,6 +528,9 @@ void vulkan_device_get_information(VulkanBackendState *state,
   vkGetPhysicalDeviceMemoryProperties(state->device.physical_device,
                                       &memory_properties);
 
+  device_information->max_sampler_anisotropy =
+      (float64_t)state->device.properties.limits.maxSamplerAnisotropy;
+
   // Device name
   String8 device_name =
       string8_create_formatted(temp_arena, "%s", properties.deviceName);
