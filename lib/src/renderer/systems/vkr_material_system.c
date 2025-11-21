@@ -1,4 +1,5 @@
 #include "renderer/systems/vkr_material_system.h"
+#include "renderer/systems/vkr_resource_system.h"
 
 bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
                                  VkrTextureSystem *texture_system,
