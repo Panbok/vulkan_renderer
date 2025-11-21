@@ -10,11 +10,14 @@
 // Resource System - Loader registry and generic load/unload dispatch
 // =============================================================================
 
+typedef struct VkrMeshLoaderResult VkrMeshLoaderResult;
+
 typedef enum VkrResourceType {
   VKR_RESOURCE_TYPE_UNKNOWN = 0,
   VKR_RESOURCE_TYPE_TEXTURE,
   VKR_RESOURCE_TYPE_MATERIAL,
   VKR_RESOURCE_TYPE_GEOMETRY,
+  VKR_RESOURCE_TYPE_MESH,
   VKR_RESOURCE_TYPE_CUSTOM,
 } VkrResourceType;
 
@@ -26,6 +29,7 @@ typedef struct VkrResourceHandleInfo {
     VkrTextureHandle texture;
     VkrMaterialHandle material;
     VkrGeometryHandle geometry;
+    VkrMeshLoaderResult *mesh;
     void *custom; // VKR_RESOURCE_TYPE_CUSTOM
   } as;
 } VkrResourceHandleInfo;

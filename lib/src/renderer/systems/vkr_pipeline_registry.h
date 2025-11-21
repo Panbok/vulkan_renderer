@@ -64,11 +64,11 @@ typedef struct VkrPipelineState {
 
 // Batch rendering context
 typedef struct VkrPipelineBatch {
-  VkrPipelineHandle pipeline;      // Pipeline for this batch
-  VkrPipelineDomain domain;        // Domain for this batch
-  Array_VkrRenderable renderables; // Renderables in this batch
-  bool8_t active;                  // Batch is currently active
-  uint32_t renderable_count;       // Number of renderables added
+  VkrPipelineHandle pipeline; // Pipeline for this batch
+  VkrPipelineDomain domain;   // Domain for this batch
+  Array_VkrMesh meshes;       // Meshes in this batch
+  bool8_t active;             // Batch is currently active
+  uint32_t mesh_count;        // Number of meshes added
 } VkrPipelineBatch;
 Array(VkrPipelineBatch);
 
@@ -107,7 +107,7 @@ typedef struct VkrPipelineRegistry {
     uint32_t total_pipelines_created;
     uint32_t total_pipeline_binds;
     uint32_t redundant_binds_avoided;
-    uint32_t total_renderables_batched;
+    uint32_t total_meshes_batched;
     // telemetry
     uint64_t total_global_applies;
     uint64_t total_instance_applies;
@@ -161,7 +161,6 @@ bool8_t vkr_pipeline_registry_create_graphics_pipeline(
  * @param registry Pipeline registry
  * @param config Shader config
  * @param domain Pipeline domain
- * @param vertex_layout Geometry vertex layout
  * @param name Pipeline name for lookup
  * @param out_handle Output pipeline handle
  * @param out_error Output error code
@@ -169,8 +168,8 @@ bool8_t vkr_pipeline_registry_create_graphics_pipeline(
  */
 bool8_t vkr_pipeline_registry_create_from_shader_config(
     VkrPipelineRegistry *registry, const VkrShaderConfig *config,
-    VkrPipelineDomain domain, VkrGeometryVertexLayoutType vertex_layout,
-    String8 name, VkrPipelineHandle *out_handle, VkrRendererError *out_error);
+    VkrPipelineDomain domain, String8 name, VkrPipelineHandle *out_handle,
+    VkrRendererError *out_error);
 
 /**
  * @brief Acquire a pipeline by name (loads if not present and auto-creation
@@ -281,7 +280,7 @@ void vkr_pipeline_registry_mark_global_state_dirty(
     VkrPipelineRegistry *registry);
 
 /**
- * @brief Update local (per-object) state for a specific pipeline
+ * @brief Update instance state for a specific pipeline
  * @param registry Pipeline registry
  * @param handle Pipeline handle
  * @param data Per-object shader state (model, local_state handle)
@@ -289,7 +288,7 @@ void vkr_pipeline_registry_mark_global_state_dirty(
  * @param out_error Output error code
  * @return true on success, false on failure
  */
-bool8_t vkr_pipeline_registry_update_local_state(
+bool8_t vkr_pipeline_registry_update_instance_state(
     VkrPipelineRegistry *registry, VkrPipelineHandle handle,
     const VkrShaderStateObject *data, const VkrRendererMaterialState *material,
     VkrRendererError *out_error);
@@ -330,13 +329,13 @@ bool8_t vkr_pipeline_registry_release_instance_state(
 /**
  * @brief Render a single renderable with automatic pipeline selection
  * @param registry Pipeline registry
- * @param renderable Renderable to render
+ * @param mesh Mesh to render
  * @param global_uniform Global uniform data (view/projection matrices)
  * @param out_error Output error code
  * @return true on success, false on failure
  */
 bool8_t vkr_pipeline_registry_render_renderable(VkrPipelineRegistry *registry,
-                                                const VkrRenderable *renderable,
+                                                const VkrMesh *mesh,
                                                 const void *global_uniform,
                                                 VkrRendererError *out_error);
 
@@ -356,14 +355,14 @@ bool8_t vkr_pipeline_registry_begin_batch(VkrPipelineRegistry *registry,
                                           VkrRendererError *out_error);
 
 /**
- * @brief Add a renderable to the current batch
+ * @brief Add a mesh to the current batch
  * @param registry Pipeline registry
- * @param renderable Renderable to add to batch
+ * @param mesh Mesh to add to batch
  * @param out_error Output error code
  * @return true on success, false on failure
  */
 bool8_t vkr_pipeline_registry_add_to_batch(VkrPipelineRegistry *registry,
-                                           const VkrRenderable *renderable,
+                                           const VkrMesh *mesh,
                                            VkrRendererError *out_error);
 
 /**
@@ -385,16 +384,16 @@ vkr_pipeline_registry_render_current_batch(VkrPipelineRegistry *registry,
 void vkr_pipeline_registry_end_batch(VkrPipelineRegistry *registry);
 
 /**
- * @brief Render multiple renderables with automatic batching optimization
+ * @brief Render multiple meshes with automatic batching optimization
  * @param registry Pipeline registry
- * @param renderables Array of renderables to render
- * @param count Number of renderables
+ * @param meshes Array of meshes to render
+ * @param count Number of meshes
  * @param global_uniform Global uniform data
  * @param out_error Output error code
  * @return true on success, false on failure
  */
 bool8_t vkr_pipeline_registry_render_batch(VkrPipelineRegistry *registry,
-                                           const VkrRenderable *renderables,
+                                           const VkrMesh *meshes,
                                            uint32_t count,
                                            const void *global_uniform,
                                            VkrRendererError *out_error);
@@ -420,15 +419,14 @@ bool8_t vkr_pipeline_registry_get_pipelines_by_domain(
  * @brief Get the best pipeline for a material and geometry combination
  * @param registry Pipeline registry
  * @param material_pipeline_id Material's preferred pipeline ID
- * @param vertex_layout Geometry vertex layout
  * @param out_handle Output pipeline handle
  * @param out_error Output error code
  * @return true on success, false on failure
  */
 bool8_t vkr_pipeline_registry_get_pipeline_for_material(
     VkrPipelineRegistry *registry, const char *shader_name,
-    uint32_t material_pipeline_id, VkrGeometryVertexLayoutType vertex_layout,
-    VkrPipelineHandle *out_handle, VkrRendererError *out_error);
+    uint32_t material_pipeline_id, VkrPipelineHandle *out_handle,
+    VkrRendererError *out_error);
 
 /**
  * @brief Register an additional name (alias) for an existing pipeline handle

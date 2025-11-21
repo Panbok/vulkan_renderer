@@ -252,8 +252,8 @@ bool8_t vkr_pipeline_registry_alias_pipeline_name(VkrPipelineRegistry *registry,
 
 bool8_t vkr_pipeline_registry_create_from_shader_config(
     VkrPipelineRegistry *registry, const VkrShaderConfig *config,
-    VkrPipelineDomain domain, VkrGeometryVertexLayoutType vertex_layout,
-    String8 name, VkrPipelineHandle *out_handle, VkrRendererError *out_error) {
+    VkrPipelineDomain domain, String8 name, VkrPipelineHandle *out_handle,
+    VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(config != NULL, "Config is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
@@ -424,15 +424,18 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
     return false_v;
   }
 
-  // Alias the created pipeline with shader-qualified key for lookups by
-  // material shader name.
   if (config->name.str && config->name.length > 0) {
-    String8 alias = string8_create_formatted(scratch.arena, "%s_%u",
-                                             (const char *)config->name.str,
-                                             (uint32_t)vertex_layout);
     VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
-    vkr_pipeline_registry_alias_pipeline_name(registry, *out_handle, alias,
-                                              &alias_err);
+    vkr_pipeline_registry_alias_pipeline_name(registry, *out_handle,
+                                              config->name, &alias_err);
+  }
+
+  {
+    VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
+    String8 domain_alias =
+        string8_create_formatted(scratch.arena, "p_%u", domain);
+    vkr_pipeline_registry_alias_pipeline_name(registry, *out_handle,
+                                              domain_alias, &alias_err);
   }
 
   scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
@@ -683,7 +686,7 @@ bool8_t vkr_pipeline_registry_release_instance_state(
   return true_v;
 }
 
-bool8_t vkr_pipeline_registry_update_local_state(
+bool8_t vkr_pipeline_registry_update_instance_state(
     VkrPipelineRegistry *registry, VkrPipelineHandle handle,
     const VkrShaderStateObject *data, const VkrRendererMaterialState *material,
     VkrRendererError *out_error) {
@@ -717,11 +720,11 @@ void vkr_pipeline_registry_collect_backend_telemetry(
 }
 
 bool8_t vkr_pipeline_registry_render_renderable(VkrPipelineRegistry *registry,
-                                                const VkrRenderable *renderable,
+                                                const VkrMesh *mesh,
                                                 const void *global_uniform,
                                                 VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
-  assert_log(renderable != NULL, "Renderable is NULL");
+  assert_log(mesh != NULL, "Mesh is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
   *out_error = VKR_RENDERER_ERROR_NONE;
@@ -746,19 +749,19 @@ bool8_t vkr_pipeline_registry_begin_batch(VkrPipelineRegistry *registry,
 
   registry->current_batch.active = true_v;
   registry->current_batch.domain = domain;
-  registry->current_batch.renderables =
-      array_create_VkrRenderable(registry->temp_arena, 1024);
-  registry->current_batch.renderable_count = 0;
+  registry->current_batch.meshes =
+      array_create_VkrMesh(registry->temp_arena, 1024);
+  registry->current_batch.mesh_count = 0;
   *out_error = VKR_RENDERER_ERROR_NONE;
 
   return true_v;
 }
 
 bool8_t vkr_pipeline_registry_add_to_batch(VkrPipelineRegistry *registry,
-                                           const VkrRenderable *renderable,
+                                           const VkrMesh *mesh,
                                            VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
-  assert_log(renderable != NULL, "Renderable is NULL");
+  assert_log(mesh != NULL, "Mesh is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
   if (!registry->current_batch.active) {
@@ -766,14 +769,13 @@ bool8_t vkr_pipeline_registry_add_to_batch(VkrPipelineRegistry *registry,
     return false_v;
   }
 
-  if (registry->current_batch.renderables.length > 0 &&
-      registry->current_batch.renderable_count <
-          registry->current_batch.renderables.length) {
-    array_set_VkrRenderable(&registry->current_batch.renderables,
-                            registry->current_batch.renderable_count,
-                            *renderable);
-    registry->current_batch.renderable_count++;
-    registry->stats.total_renderables_batched++;
+  if (registry->current_batch.meshes.length > 0 &&
+      registry->current_batch.mesh_count <
+          registry->current_batch.meshes.length) {
+    array_set_VkrMesh(&registry->current_batch.meshes,
+                      registry->current_batch.mesh_count, *mesh);
+    registry->current_batch.mesh_count++;
+    registry->stats.total_meshes_batched++;
   }
 
   *out_error = VKR_RENDERER_ERROR_NONE;
@@ -807,13 +809,13 @@ void vkr_pipeline_registry_end_batch(VkrPipelineRegistry *registry) {
 
 // todo: implement batch rendering
 bool8_t vkr_pipeline_registry_render_batch(VkrPipelineRegistry *registry,
-                                           const VkrRenderable *renderables,
+                                           const VkrMesh *meshes,
                                            uint32_t count,
                                            const void *global_uniform,
                                            VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
-  (void)renderables;
+  (void)meshes;
   (void)count;
   if (global_uniform) {
     registry->state.global_state_dirty = false_v;
@@ -840,8 +842,8 @@ bool8_t vkr_pipeline_registry_get_pipelines_by_domain(
 
 bool8_t vkr_pipeline_registry_get_pipeline_for_material(
     VkrPipelineRegistry *registry, const char *shader_name,
-    uint32_t material_pipeline_id, VkrGeometryVertexLayoutType vertex_layout,
-    VkrPipelineHandle *out_handle, VkrRendererError *out_error) {
+    uint32_t material_pipeline_id, VkrPipelineHandle *out_handle,
+    VkrRendererError *out_error) {
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
@@ -856,12 +858,13 @@ bool8_t vkr_pipeline_registry_get_pipeline_for_material(
   // Build pipeline name key: prefer shader_name when provided
   Scratch scratch = scratch_create(registry->temp_arena);
   String8 name = {0};
-  if (shader_name && shader_name[0] != '\0') {
-    name = string8_create_formatted(scratch.arena, "%s_%u", shader_name,
-                                    (uint32_t)vertex_layout);
+  bool8_t shader_name_valid = shader_name && shader_name[0] != '\0' &&
+                              (((uintptr_t)shader_name >> 48) != 0xFFFF);
+
+  if (shader_name_valid) {
+    name = string8_create_formatted(scratch.arena, "%s", shader_name);
   } else {
-    name = string8_create_formatted(scratch.arena, "p_%u_%u", domain,
-                                    (uint32_t)vertex_layout);
+    name = string8_create_formatted(scratch.arena, "p_%u", domain);
   }
 
   // Try to acquire existing
@@ -873,17 +876,21 @@ bool8_t vkr_pipeline_registry_get_pipeline_for_material(
     return true_v;
   }
 
-  // After creating, if shader_name is provided, alias this handle to the
-  // shader-qualified key for quick lookup next time.
-  if (shader_name && shader_name[0] != '\0') {
-    VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
-    String8 alias = string8_create_formatted(
-        scratch.arena, "%s_%u", shader_name, (uint32_t)vertex_layout);
-    vkr_pipeline_registry_alias_pipeline_name(registry, *out_handle, alias,
-                                              &alias_err);
+  // Fallback to domain pipeline key if shader lookup failed
+  String8 fallback = string8_create_formatted(scratch.arena, "p_%u", domain);
+  if (!string8_equals(&fallback, &name)) {
+    if (vkr_pipeline_registry_acquire_by_name(registry, fallback, true_v,
+                                              &found, out_error)) {
+      *out_handle = found;
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+      return true_v;
+    }
   }
+
+  *out_handle = VKR_PIPELINE_HANDLE_INVALID;
+  *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
   scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
-  return true_v;
+  return false_v;
 }
 
 void vkr_pipeline_registry_reset_frame_stats(VkrPipelineRegistry *registry) {
@@ -918,5 +925,5 @@ void vkr_pipeline_registry_get_stats(VkrPipelineRegistry *registry,
   if (out_total_redundant_avoided)
     *out_total_redundant_avoided = registry->stats.redundant_binds_avoided;
   if (out_total_batched)
-    *out_total_batched = registry->stats.total_renderables_batched;
+    *out_total_batched = registry->stats.total_meshes_batched;
 }
