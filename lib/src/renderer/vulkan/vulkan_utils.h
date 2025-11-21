@@ -29,3 +29,6 @@ VkMemoryPropertyFlags
 vulkan_memory_property_flags_to_vk(VkrMemoryPropertyFlags flags);
 
 VkFormat vulkan_image_format_from_texture_format(VkrTextureFormat format);
+
+VkSamplerAddressMode
+vulkan_sampler_address_mode_from_repeat(VkrTextureRepeatMode mode);

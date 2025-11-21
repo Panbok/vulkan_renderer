@@ -270,3 +270,18 @@ VkFormat vulkan_image_format_from_texture_format(VkrTextureFormat format) {
     return VK_FORMAT_UNDEFINED;
   }
 }
+
+VkSamplerAddressMode
+vulkan_sampler_address_mode_from_repeat(VkrTextureRepeatMode mode) {
+  switch (mode) {
+  case VKR_TEXTURE_REPEAT_MODE_MIRRORED_REPEAT:
+    return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+  case VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE:
+    return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  case VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_BORDER:
+    return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+  case VKR_TEXTURE_REPEAT_MODE_REPEAT:
+  default:
+    return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  }
+}
