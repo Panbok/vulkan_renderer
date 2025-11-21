@@ -171,7 +171,7 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
 
   state->is_swapchain_recreation_requested = true;
 
-  renderer_vulkan_wait_idle(state);
+  vkQueueWaitIdle(state->device.graphics_queue);
 
   for (uint32_t i = 0; i < state->swapchain.image_count; ++i) {
     array_set_VulkanFencePtr(&state->images_in_flight, i, NULL);
@@ -1099,6 +1099,58 @@ renderer_vulkan_create_texture(void *backend_state,
         state, &texture->texture.image, image_format, &temp_command_buffer);
     if (!generated_mips) {
       // Fall back to a single mip level if generation failed
+      log_error("Mipmap generation failed, falling back to single mip level. "
+                "Recreating image to avoid memory waste.");
+
+      vulkan_image_destroy(state, &texture->texture.image);
+
+      if (!vulkan_image_create(
+              state, VK_IMAGE_TYPE_2D, desc->width, desc->height, image_format,
+              VK_IMAGE_TILING_OPTIMAL,
+              VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1, VK_IMAGE_VIEW_TYPE_2D,
+              VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
+        log_fatal("Failed to recreate Vulkan image with single mip level");
+        vkEndCommandBuffer(temp_command_buffer.handle);
+        vkFreeCommandBuffers(state->device.logical_device,
+                             state->device.graphics_command_pool, 1,
+                             &temp_command_buffer.handle);
+        vulkan_buffer_destroy(state, &staging_buffer->buffer);
+        scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+        return (VkrBackendResourceHandle){.ptr = NULL};
+      }
+
+      if (!vulkan_image_transition_layout(
+              state, &texture->texture.image, &temp_command_buffer,
+              image_format, VK_IMAGE_LAYOUT_UNDEFINED,
+              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)) {
+        log_fatal("Failed to transition recreated image layout");
+        vkEndCommandBuffer(temp_command_buffer.handle);
+        vkFreeCommandBuffers(state->device.logical_device,
+                             state->device.graphics_command_pool, 1,
+                             &temp_command_buffer.handle);
+        vulkan_image_destroy(state, &texture->texture.image);
+        vulkan_buffer_destroy(state, &staging_buffer->buffer);
+        scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+        return (VkrBackendResourceHandle){.ptr = NULL};
+      }
+
+      if (!vulkan_image_copy_from_buffer(state, &texture->texture.image,
+                                         staging_buffer->buffer.handle,
+                                         &temp_command_buffer)) {
+        log_fatal("Failed to copy buffer to recreated image");
+        vkEndCommandBuffer(temp_command_buffer.handle);
+        vkFreeCommandBuffers(state->device.logical_device,
+                             state->device.graphics_command_pool, 1,
+                             &temp_command_buffer.handle);
+        vulkan_image_destroy(state, &texture->texture.image);
+        vulkan_buffer_destroy(state, &staging_buffer->buffer);
+        scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+        return (VkrBackendResourceHandle){.ptr = NULL};
+      }
+
       texture->texture.image.mip_levels = 1;
       linear_blit_supported = false_v;
     }
@@ -1261,7 +1313,7 @@ renderer_vulkan_update_texture(void *backend_state,
   }
 
   // Ensure no in-flight use of the old sampler before destroying it
-  renderer_vulkan_wait_idle(state);
+  vkQueueWaitIdle(state->device.graphics_queue);
 
   if (texture->texture.sampler != VK_NULL_HANDLE) {
     vkDestroySampler(state->device.logical_device, texture->texture.sampler,

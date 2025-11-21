@@ -33,8 +33,8 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   assert_log(out_system != NULL, "Out system is NULL");
   assert_log(config->max_texture_count > 0,
              "Max texture count must be greater than 0");
-  assert_log(config->max_texture_count >= 2,
-             "Texture system requires at least 2 textures for defaults");
+  assert_log(config->max_texture_count >= 3,
+             "Texture system requires at least 3 textures for defaults");
 
   MemZero(out_system, sizeof(*out_system));
 
@@ -205,6 +205,12 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
     String8 error_string = vkr_renderer_get_error_string(specular_err);
     log_error("Failed to create default specular texture: %s",
               string8_cstr(&error_string));
+    // Clean up the already-created default normal texture
+    vkr_renderer_destroy_texture(renderer, default_normal->handle);
+    default_normal->handle = NULL;
+    default_normal->description.generation = VKR_INVALID_ID;
+    out_system->default_normal_texture.id = VKR_INVALID_ID;
+    out_system->default_normal_texture.generation = VKR_INVALID_ID;
     return false_v;
   }
 
