@@ -2,7 +2,6 @@
 #include "containers/str.h"
 #include "core/logger.h"
 #include "renderer/resources/vkr_resources.h"
-#include "renderer/systems/vkr_geometry_system.h"
 
 vkr_internal uint8_t *vkr_get_staging_buffer_for_scope(VkrShaderSystem *state,
                                                        VkrShaderScope scope) {
@@ -88,7 +87,6 @@ bool8_t vkr_shader_system_initialize(VkrShaderSystem *state,
       array_create_bool8_t(state->arena, cfg.max_shader_count);
   MemZero(state->shaders.data,
           (uint64_t)cfg.max_shader_count * sizeof(VkrShader));
-  state->geometry_system = NULL;
 
   // Initialize staging buffers
   state->instance_state = (VkrShaderStateObject){0};
@@ -168,15 +166,23 @@ bool8_t vkr_shader_system_create(VkrShaderSystem *state,
     return false_v;
   }
 
-  vkr_hash_table_insert_uint32_t(&state->name_to_id,
-                                 (const char *)cfg->name.str, new_id);
+  char *stable_name =
+      arena_alloc(state->arena, cfg->name.length + 1, ARENA_MEMORY_TAG_STRING);
+  if (!stable_name) {
+    log_error("Failed to allocate shader name");
+    return false_v;
+  }
+  MemCopy(stable_name, cfg->name.str, cfg->name.length);
+  stable_name[cfg->name.length] = '\0';
+  vkr_hash_table_insert_uint32_t(&state->name_to_id, stable_name, new_id);
 
   log_debug("Shader created: %s -> id=%u", string8_cstr(&cfg->name), new_id);
 
   VkrShader *shader = array_get_VkrShader(&state->shaders, new_id);
   array_set_bool8_t(&state->active_shaders, new_id, true_v);
 
-  shader->name = cfg->name;
+  shader->name =
+      string8_create((uint8_t *)stable_name, cfg->name.length);
   shader->id = new_id;
   shader->config = cfg;
 
@@ -209,18 +215,6 @@ bool8_t vkr_shader_system_create(VkrShaderSystem *state,
   // Initialize warn-once table for missing uniforms/samplers
   shader->missing_uniform_warnings =
       vkr_hash_table_create_uint8_t(state->arena, 64);
-
-  // Initialize required geometry pool for this shader's vertex layout/stride
-  if (state->geometry_system) {
-    VkrRendererError err = VKR_RENDERER_ERROR_NONE;
-    vkr_geometry_system_require_layout_stride(
-        state->geometry_system, cfg->vertex_layout,
-        (uint32_t)cfg->attribute_stride, &err);
-    if (err != VKR_RENDERER_ERROR_NONE) {
-      log_warn("shader_system: failed to init layout stride for '%s': %s",
-               string8_cstr(&cfg->name), vkr_renderer_get_error_string(err));
-    }
-  }
 
   state->shader_count++;
   return true_v;
@@ -491,9 +485,9 @@ bool8_t vkr_shader_system_apply_instance(VkrShaderSystem *state) {
       shader->config->push_constant_size;
 
   VkrRendererError err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_pipeline_registry_update_local_state(state->registry, current,
-                                                &state->instance_state,
-                                                &state->material_state, &err)) {
+  if (!vkr_pipeline_registry_update_instance_state(
+          state->registry, current, &state->instance_state,
+          &state->material_state, &err)) {
     log_error("shader_system: apply_instance failed: %s",
               vkr_renderer_get_error_string(err));
     return false_v;
@@ -512,21 +506,6 @@ bool8_t vkr_shader_system_bind_instance(VkrShaderSystem *state,
     return false_v;
   }
 
-  if (instance_id != VKR_INVALID_ID) {
-    bool8_t found = false_v;
-    for (uint32_t i = 0; i < state->current_shader->instance_capacity; i++) {
-      if (state->current_shader->instance_ids[i] == instance_id) {
-        found = true_v;
-        break;
-      }
-    }
-
-    if (!found) {
-      log_warn("Instance ID %u not found in current shader", instance_id);
-      return false_v;
-    }
-  }
-
   state->current_shader->bound_instance_id = instance_id;
   return true_v;
 }
@@ -536,13 +515,6 @@ void vkr_shader_system_set_registry(VkrShaderSystem *state,
   if (!state)
     return;
   state->registry = registry;
-}
-
-void vkr_shader_system_set_geometry_system(
-    VkrShaderSystem *state, struct VkrGeometrySystem *geometry_system) {
-  if (!state)
-    return;
-  state->geometry_system = geometry_system;
 }
 
 bool8_t vkr_shader_acquire_instance_resources(VkrShaderSystem *state,

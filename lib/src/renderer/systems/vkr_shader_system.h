@@ -43,7 +43,6 @@ typedef struct VkrShaderSystem {
   uint32_t current_shader_id;
   struct VkrShader *current_shader;
   VkrPipelineRegistry *registry;
-  struct VkrGeometrySystem *geometry_system; // optional: for layout-stride sync
   // Staging buffers for apply calls (dynamic allocation based on shader)
   // Runtime state for uploads
   VkrShaderStateObject instance_state;
@@ -289,5 +288,3 @@ void vkr_shader_system_set_registry(VkrShaderSystem *state,
 /**
  * @brief Set the geometry system for shader-driven layout/stride syncing
  */
-void vkr_shader_system_set_geometry_system(
-    VkrShaderSystem *state, struct VkrGeometrySystem *geometry_system);
