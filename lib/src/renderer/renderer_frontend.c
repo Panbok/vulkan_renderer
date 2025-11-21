@@ -2,27 +2,40 @@
 #include "containers/str.h"
 #include "core/logger.h"
 #include "math/mat.h"
+#include "math/vec.h"
+#include "math/vkr_transform.h"
+#include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/resources/loaders/shader_loader.h"
 #include "renderer/resources/loaders/texture_loader.h"
+#include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vulkan/vulkan_backend.h"
 
-vkr_internal void renderer_frontend_recompute_globals(RendererFrontend *rf) {
+typedef struct VkrRenderMeshEntry {
+  uint32_t index;
+  float depth;
+} VkrRenderMeshEntry;
+
+vkr_internal int vkr_render_mesh_entry_compare(const void *a, const void *b) {
+  const VkrRenderMeshEntry *ea = (const VkrRenderMeshEntry *)a;
+  const VkrRenderMeshEntry *eb = (const VkrRenderMeshEntry *)b;
+  if (ea->depth < eb->depth)
+    return 1;
+  if (ea->depth > eb->depth)
+    return -1;
+  return 0;
+}
+
+vkr_internal void renderer_frontend_recompute_ui_globals(RendererFrontend *rf) {
   assert_log(rf != NULL, "Renderer frontend is NULL");
   assert_log(rf->window != NULL, "Window is NULL");
-
-  rf->globals.view = vkr_camera_system_get_view_matrix(&rf->camera);
-  rf->globals.projection = vkr_camera_system_get_projection_matrix(&rf->camera);
 
   VkrWindowPixelSize sz = vkr_window_get_pixel_size(rf->window);
   rf->globals.ui_view = mat4_identity();
   rf->globals.ui_projection = mat4_ortho(
       0.0f, (float32_t)sz.width, (float32_t)sz.height, 0.0f, -1.0f, 1.0f);
-
-  rf->globals.ambient_color = vec4_new(0.0f, 0.0f, 0.0f, 1.0f);
-  rf->globals.view_position = rf->camera.position;
 }
 
 vkr_internal bool8_t vkr_renderer_on_window_resize(Event *event,
@@ -66,7 +79,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
 
   log_debug("Creating renderer");
 
-  renderer->arena = arena_create(MB(3));
+  renderer->arena = arena_create(MB(6));
   if (!renderer->arena) {
     log_fatal("Failed to create renderer arena!");
     return false_v;
@@ -91,24 +104,22 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->geometry_system = (VkrGeometrySystem){0};
   renderer->texture_system = (VkrTextureSystem){0};
   renderer->material_system = (VkrMaterialSystem){0};
+  renderer->mesh_manager = (VkrMeshManager){0};
   renderer->camera = (VkrCamera){0};
+  renderer->camera_controller = (VkrCameraController){0};
   renderer->globals = (VkrGlobalMaterialState){
-      .ambient_color = vec4_new(0.25f, 0.25f, 0.25f, 1.0f),
+      .ambient_color = vec4_new(0.1, 0.1, 0.1, 1.0),
+      .render_mode = VKR_RENDER_MODE_DEFAULT,
   };
   renderer->rf_mutex = NULL;
   renderer->world_shader_config = (VkrShaderConfig){0};
   renderer->ui_shader_config = (VkrShaderConfig){0};
   renderer->world_pipeline = VKR_PIPELINE_HANDLE_INVALID;
   renderer->ui_pipeline = VKR_PIPELINE_HANDLE_INVALID;
-  renderer->world_model = mat4_identity();
-  renderer->ui_model = mat4_identity();
-  renderer->cube_geometry = VKR_GEOMETRY_HANDLE_INVALID;
-  renderer->ui_geometry = VKR_GEOMETRY_HANDLE_INVALID;
-  renderer->world_material = VKR_MATERIAL_HANDLE_INVALID;
   renderer->ui_material = VKR_MATERIAL_HANDLE_INVALID;
-  renderer->renderables = array_create_VkrRenderable(renderer->arena, 1);
-  renderer->renderable_count = 0;
+  renderer->ui_instance_state = (VkrRendererInstanceStateHandle){0};
   renderer->draw_state = (VkrShaderStateObject){.instance_state = {0}};
+  renderer->frame_number = 0;
 
   // Create renderer mutex and initialize size tracking
   if (!vkr_mutex_create(renderer->arena, &renderer->rf_mutex)) {
@@ -154,12 +165,25 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   // Ensure GPU idle before tearing down
   vkr_renderer_wait_idle(rf);
 
-  // Release per-renderable local renderer state before destroying pipelines
-  for (uint32_t i = 0; i < rf->renderable_count; ++i) {
-    VkrRenderable *r = array_get_VkrRenderable(&rf->renderables, i);
-    vkr_pipeline_registry_release_instance_state(&rf->pipeline_registry,
-                                                 r->pipeline, r->instance_state,
-                                                 &(VkrRendererError){0});
+  // Release per-mesh local renderer state before destroying pipelines
+  uint32_t mesh_capacity = vkr_mesh_manager_capacity(&rf->mesh_manager);
+  for (uint32_t i = 0; i < mesh_capacity; ++i) {
+    VkrMesh *m = vkr_mesh_manager_get(&rf->mesh_manager, i);
+    if (!m)
+      continue;
+    uint32_t submesh_count = vkr_mesh_manager_submesh_count(m);
+    for (uint32_t submesh_index = 0; submesh_index < submesh_count;
+         ++submesh_index) {
+      VkrSubMesh *submesh =
+          vkr_mesh_manager_get_submesh(&rf->mesh_manager, i, submesh_index);
+      if (!submesh || submesh->pipeline.id == 0)
+        continue;
+      vkr_pipeline_registry_release_instance_state(
+          &rf->pipeline_registry, submesh->pipeline, submesh->instance_state,
+          &(VkrRendererError){0});
+      submesh->pipeline = VKR_PIPELINE_HANDLE_INVALID;
+      submesh->instance_state = (VkrRendererInstanceStateHandle){0};
+    }
   }
 
   if (rf->world_pipeline.id)
@@ -172,6 +196,7 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
 
   vkr_shader_system_shutdown(&rf->shader_system);
   vkr_texture_system_shutdown(rf, &rf->texture_system);
+  vkr_mesh_manager_shutdown(&rf->mesh_manager);
   vkr_material_system_shutdown(&rf->material_system);
   vkr_geometry_system_shutdown(&rf->geometry_system);
 
@@ -362,6 +387,19 @@ void vkr_renderer_destroy_texture(VkrRendererFrontendHandle renderer,
   renderer->backend.texture_destroy(renderer->backend_state, handle);
 }
 
+VkrRendererError
+vkr_renderer_update_texture(VkrRendererFrontendHandle renderer,
+                            VkrTextureOpaqueHandle texture,
+                            const VkrTextureDescription *description) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(texture != NULL, "Texture is NULL");
+  assert_log(description != NULL, "Description is NULL");
+
+  VkrBackendResourceHandle handle = {.ptr = (void *)texture};
+  return renderer->backend.texture_update(renderer->backend_state, handle,
+                                          description);
+}
+
 VkrPipelineOpaqueHandle vkr_renderer_create_graphics_pipeline(
     VkrRendererFrontendHandle renderer,
     const VkrGraphicsPipelineDescription *description,
@@ -522,7 +560,7 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
   rf->last_window_width = width;
   rf->last_window_height = height;
 
-  renderer_frontend_recompute_globals(rf);
+  renderer_frontend_recompute_ui_globals(rf);
   vkr_pipeline_registry_mark_global_state_dirty(&rf->pipeline_registry);
 
   if (!vkr_mutex_unlock(rf->rf_mutex)) {
@@ -578,6 +616,25 @@ void vkr_renderer_draw_indexed(VkrRendererFrontendHandle renderer,
                                  first_instance);
 }
 
+VkrRendererError
+vkr_renderer_begin_render_pass(VkrRendererFrontendHandle renderer,
+                               VkrPipelineDomain domain) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(renderer->frame_active,
+             "Begin render pass called outside of frame");
+  assert_log(domain != VKR_PIPELINE_DOMAIN_COUNT, "Invalid domain");
+
+  return renderer->backend.begin_render_pass(renderer->backend_state, domain);
+}
+
+VkrRendererError
+vkr_renderer_end_render_pass(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(renderer->frame_active, "End render pass called outside of frame");
+
+  return renderer->backend.end_render_pass(renderer->backend_state);
+}
+
 VkrRendererError vkr_renderer_end_frame(VkrRendererFrontendHandle renderer,
                                         float64_t delta_time) {
   assert_log(renderer != NULL, "Renderer is NULL");
@@ -620,6 +677,7 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer) {
     log_fatal("Failed to initialize shader system");
     return false_v;
   }
+  // todo: shader sys should accepts pipeline registry as a parameter
   vkr_shader_system_set_registry(&rf->shader_system, &rf->pipeline_registry);
 
   if (!vkr_resource_system_init(rf->arena, rf)) {
@@ -628,12 +686,7 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer) {
   }
 
   VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
-  VkrGeometrySystemConfig geo_cfg = {
-      .default_max_geometries = 1024,
-      .default_max_vertices = 200000,
-      .default_max_indices = 300000,
-      .primary_layout = GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD,
-  };
+  VkrGeometrySystemConfig geo_cfg = {.max_geometries = 200000};
   if (!vkr_geometry_system_init(&rf->geometry_system, rf, &geo_cfg,
                                 &renderer_error)) {
     String8 err_str = vkr_renderer_get_error_string(renderer_error);
@@ -641,10 +694,7 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer) {
               string8_cstr(&err_str));
     return false_v;
   }
-
-  // Shader system can use geometry layout/stride syncing
-  vkr_shader_system_set_geometry_system(&rf->shader_system,
-                                        &rf->geometry_system);
+  log_info("Geometry system max geometries=%u", geo_cfg.max_geometries);
 
   VkrTextureSystemConfig tex_cfg = {.max_texture_count = 1024};
   if (!vkr_texture_system_init(rf, &tex_cfg, &rf->texture_system)) {
@@ -660,15 +710,34 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer) {
     return false_v;
   }
 
+  VkrMeshManagerConfig mesh_cfg = {.max_mesh_count = 1024};
+  if (!vkr_mesh_manager_init(&rf->mesh_manager, &rf->geometry_system,
+                             &rf->material_system, &rf->pipeline_registry,
+                             &mesh_cfg)) {
+    log_fatal("Failed to initialize mesh manager");
+    return false_v;
+  }
+
+  rf->mesh_loader =
+      (VkrMeshLoaderContext){.arena = rf->arena,
+                             .scratch_arena = rf->scratch_arena,
+                             .geometry_system = &rf->geometry_system,
+                             .material_system = &rf->material_system,
+                             .mesh_manager = &rf->mesh_manager};
+  rf->mesh_loader.allocator.ctx = rf->mesh_loader.scratch_arena;
+  vkr_allocator_arena(&rf->mesh_loader.allocator);
+
   vkr_resource_system_register_loader((void *)&rf->texture_system,
                                       vkr_texture_loader_create());
   vkr_resource_system_register_loader((void *)&rf->material_system,
                                       vkr_material_loader_create());
   vkr_resource_system_register_loader((void *)&rf->shader_system,
                                       vkr_shader_loader_create());
+  vkr_resource_system_register_loader((void *)&rf->mesh_loader,
+                                      vkr_mesh_loader_create(&rf->mesh_loader));
 
   // Compute initial cached globals (camera initialized by application)
-  renderer_frontend_recompute_globals(rf);
+  renderer_frontend_recompute_ui_globals(rf);
 
   return true_v;
 }
@@ -677,9 +746,6 @@ bool32_t vkr_renderer_default_scene(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
-
-  rf->world_model = mat4_identity();
-  rf->ui_model = mat4_identity();
 
   // Load shader configs via resource system
   VkrRendererError pipeline_error = VKR_RENDERER_ERROR_NONE;
@@ -713,25 +779,6 @@ bool32_t vkr_renderer_default_scene(VkrRendererFrontendHandle renderer) {
   vkr_shader_system_create(&rf->shader_system, &rf->world_shader_config);
   vkr_shader_system_create(&rf->shader_system, &rf->ui_shader_config);
 
-  // Create default geometries
-  rf->cube_geometry = vkr_geometry_system_create_default_cube(
-      &rf->geometry_system, 2.0f, 2.0f, 2.0f, &pipeline_error);
-  if (pipeline_error != VKR_RENDERER_ERROR_NONE) {
-    String8 err_str = vkr_renderer_get_error_string(pipeline_error);
-    log_fatal("Failed to create default cube geometry: %s",
-              string8_cstr(&err_str));
-    return false_v;
-  }
-
-  rf->ui_geometry = vkr_geometry_system_create_default_plane2d(
-      &rf->geometry_system, 2.0f, 2.0f, &pipeline_error);
-  if (pipeline_error != VKR_RENDERER_ERROR_NONE) {
-    String8 err_str = vkr_renderer_get_error_string(pipeline_error);
-    log_fatal("Failed to create default UI geometry: %s",
-              string8_cstr(&err_str));
-    return false_v;
-  }
-
   // Load default materials via resource system
   VkrResourceHandleInfo default_material_info = {0};
   VkrRendererError material_load_error = VKR_RENDERER_ERROR_NONE;
@@ -760,7 +807,7 @@ bool32_t vkr_renderer_default_scene(VkrRendererFrontendHandle renderer) {
     rf->ui_material = default_ui_material_info.as.material;
   } else {
     String8 error_string = vkr_renderer_get_error_string(material_load_error);
-    log_warn("Failed to load default UI material from "
+    log_warn("Failed to load default UI material from"
              "assets/materials/default.ui.mt; using "
              "built-in default: %s",
              string8_cstr(&error_string));
@@ -770,9 +817,16 @@ bool32_t vkr_renderer_default_scene(VkrRendererFrontendHandle renderer) {
   if (rf->world_pipeline.id == 0 &&
       vkr_pipeline_registry_create_from_shader_config(
           &rf->pipeline_registry, &rf->world_shader_config,
-          VKR_PIPELINE_DOMAIN_WORLD, rf->world_shader_config.vertex_layout,
-          string8_lit("world"), &rf->world_pipeline, &pipeline_error)) {
+          VKR_PIPELINE_DOMAIN_WORLD, string8_lit("world"), &rf->world_pipeline,
+          &pipeline_error)) {
     log_debug("Config-first world pipeline created");
+    if (rf->world_shader_config.name.str &&
+        rf->world_shader_config.name.length > 0) {
+      VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
+      vkr_pipeline_registry_alias_pipeline_name(
+          &rf->pipeline_registry, rf->world_pipeline,
+          rf->world_shader_config.name, &alias_err);
+    }
   } else {
     String8 err_str = vkr_renderer_get_error_string(pipeline_error);
     log_fatal("Config world pipeline failed: %s", string8_cstr(&err_str));
@@ -782,46 +836,175 @@ bool32_t vkr_renderer_default_scene(VkrRendererFrontendHandle renderer) {
   if (rf->ui_pipeline.id == 0 &&
       vkr_pipeline_registry_create_from_shader_config(
           &rf->pipeline_registry, &rf->ui_shader_config, VKR_PIPELINE_DOMAIN_UI,
-          rf->ui_shader_config.vertex_layout, string8_lit("ui"),
-          &rf->ui_pipeline, &pipeline_error)) {
+          string8_lit("ui"), &rf->ui_pipeline, &pipeline_error)) {
     log_debug("Config-first UI pipeline created");
+    if (rf->ui_shader_config.name.str && rf->ui_shader_config.name.length > 0) {
+      VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
+      vkr_pipeline_registry_alias_pipeline_name(
+          &rf->pipeline_registry, rf->ui_pipeline, rf->ui_shader_config.name,
+          &alias_err);
+    }
   } else {
     String8 err_str = vkr_renderer_get_error_string(pipeline_error);
     log_fatal("Config UI pipeline failed: %s", string8_cstr(&err_str));
     return false_v;
   }
 
-  // Build initial renderables
-  rf->renderables = array_create_VkrRenderable(rf->arena, 1024);
-  log_debug("Renderer: initial renderables length=%llu",
-            (uint64_t)rf->renderables.length);
-  VkrRenderable r0 = {.geometry = rf->cube_geometry,
-                      .material = rf->world_material,
-                      .pipeline = rf->world_pipeline,
-                      .model = rf->world_model,
-                      .instance_state = {0}};
-  VkrRenderable r1 = {
-      .geometry = rf->ui_geometry,
-      .material = rf->ui_material,
-      .pipeline = rf->ui_pipeline,
-      .model = mat4_mul(mat4_translate(vec3_new(200.0f, 200.0f, 0.0f)),
-                        mat4_scale(vec3_new(200.0f, 200.0f, 1.0f))),
-      .instance_state = {0},
-  };
-  array_set_VkrRenderable(&rf->renderables, 0, r0);
-  array_set_VkrRenderable(&rf->renderables, 1, r1);
-  rf->renderable_count = 2;
+  // VkrRendererError mesh_error = VKR_RENDERER_ERROR_NONE;
+  // VkrSubMeshDesc cube_submeshes[] = {{
+  //     .geometry =
+  //         vkr_geometry_system_get_default_geometry(&rf->geometry_system),
+  //     .material = rf->world_material,
+  //     .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
+  //     .owns_geometry = true_v,
+  //     .owns_material = true_v,
+  // }};
+  // VkrMeshDesc cube_desc = {
+  //     .transform = vkr_transform_from_position_scale_rotation(
+  //         vec3_new(0.0f, 1.0f, 0.0f), vec3_new(0.15f, 0.15f, 0.15f),
+  //         vkr_quat_identity()),
+  //     .submeshes = cube_submeshes,
+  //     .submesh_count = ArrayCount(cube_submeshes),
+  // };
 
-  // Acquire per-instance local state for each renderable
-  for (uint32_t i = 0; i < rf->renderable_count; ++i) {
-    VkrRenderable *renderable = array_get_VkrRenderable(&rf->renderables, i);
-    VkrRendererError ls_err = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_pipeline_registry_acquire_instance_state(
-            &rf->pipeline_registry, renderable->pipeline,
-            &renderable->instance_state, &ls_err)) {
-      log_fatal("Failed to acquire local renderer state for renderable %u", i);
-      return false_v;
-    }
+  // VkrMesh *cube_mesh_ptr = NULL;
+  // if (!vkr_mesh_manager_create(&rf->mesh_manager, &cube_desc, &mesh_error,
+  //                              &cube_mesh_ptr)) {
+  //   String8 err_str = vkr_renderer_get_error_string(mesh_error);
+  //   log_fatal("Failed to create cube mesh: %s", string8_cstr(&err_str));
+  //   return false_v;
+  // }
+
+  // VkrSubMeshDesc cube2_submeshes[] = {{
+  //     .geometry =
+  //         vkr_geometry_system_get_default_geometry(&rf->geometry_system),
+  //     .material = rf->world_material,
+  //     .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
+  //     .owns_geometry = true_v,
+  //     .owns_material = true_v,
+  // }};
+  // VkrMeshDesc cube_desc_2 = {
+  //     .transform = vkr_transform_from_position_scale_rotation(
+  //         vec3_new(12.0f, 0.0f, 0.0f), vec3_new(0.5f, 0.5f, 0.5f),
+  //         vkr_quat_identity()),
+  //     .submeshes = cube2_submeshes,
+  //     .submesh_count = ArrayCount(cube2_submeshes),
+  // };
+
+  // VkrMesh *cube_mesh_2_ptr = NULL;
+  // if (!vkr_mesh_manager_create(&rf->mesh_manager, &cube_desc_2, &mesh_error,
+  //                              &cube_mesh_2_ptr)) {
+  //   String8 err_str = vkr_renderer_get_error_string(mesh_error);
+  //   log_fatal("Failed to create cube mesh 2: %s", string8_cstr(&err_str));
+  //   return false_v;
+  // }
+  // vkr_transform_set_parent(&cube_mesh_2_ptr->transform,
+  //                          &cube_mesh_ptr->transform);
+
+  // VkrSubMeshDesc cube3_submeshes[] = {{
+  //     .geometry =
+  //         vkr_geometry_system_get_default_geometry(&rf->geometry_system),
+  //     .material = rf->world_material,
+  //     .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
+  //     .owns_geometry = true_v,
+  //     .owns_material = true_v,
+  // }};
+  // VkrMeshDesc cube_desc_3 = {
+  //     .transform = vkr_transform_from_position_scale_rotation(
+  //         vec3_new(10.0f, 0.0f, 0.0f), vec3_new(0.3f, 0.3f, 0.3f),
+  //         vkr_quat_identity()),
+  //     .submeshes = cube3_submeshes,
+  //     .submesh_count = ArrayCount(cube3_submeshes),
+  // };
+
+  // VkrMesh *cube_mesh_3_ptr = NULL;
+  // if (!vkr_mesh_manager_create(&rf->mesh_manager, &cube_desc_3, &mesh_error,
+  //                              &cube_mesh_3_ptr)) {
+  //   String8 err_str = vkr_renderer_get_error_string(mesh_error);
+  //   log_fatal("Failed to create cube mesh 3: %s", string8_cstr(&err_str));
+  //   return false_v;
+  // }
+  // vkr_transform_set_parent(&cube_mesh_3_ptr->transform,
+  //                          &cube_mesh_2_ptr->transform);
+
+  VkrRendererError mesh_load_err = VKR_RENDERER_ERROR_NONE;
+
+  uint32_t falcon_mesh_index = VKR_INVALID_ID;
+  VkrMeshLoadDesc falcon_desc = {
+      .mesh_path = string8_lit("assets/models/falcon.obj"),
+      .transform = vkr_transform_from_position_scale_rotation(
+          vec3_new(0.0f, 0.2f, -15.0f), vec3_new(0.2f, 0.2f, 0.2f),
+          vkr_quat_identity()),
+      .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
+      .shader_override = {0},
+  };
+  if (!vkr_mesh_manager_load(&rf->mesh_manager, &falcon_desc,
+                             &falcon_mesh_index, NULL, &mesh_load_err)) {
+    String8 err = vkr_renderer_get_error_string(mesh_load_err);
+    log_error("Failed to load falcon mesh: %s", string8_cstr(&err));
+  }
+
+  VkrMesh *falcon_mesh =
+      vkr_mesh_manager_get(&rf->mesh_manager, falcon_mesh_index);
+  if (!falcon_mesh) {
+    log_error("Falcon mesh not found");
+    return false_v;
+  }
+
+  VkrSubMeshDesc *falcon_submeshes =
+      arena_alloc(rf->mesh_manager.arena,
+                  sizeof(VkrSubMeshDesc) * falcon_mesh->submeshes.length,
+                  ARENA_MEMORY_TAG_ARRAY);
+  for (uint32_t i = 0; i < falcon_mesh->submeshes.length; i++) {
+    falcon_submeshes[i] = (VkrSubMeshDesc){
+        .geometry = falcon_mesh->submeshes.data[i].geometry,
+        .material = falcon_mesh->submeshes.data[i].material,
+        .pipeline_domain = falcon_mesh->submeshes.data[i].pipeline_domain,
+        .shader_override = falcon_mesh->submeshes.data[i].shader_override,
+        .owns_geometry = falcon_mesh->submeshes.data[i].owns_geometry,
+        .owns_material = falcon_mesh->submeshes.data[i].owns_material,
+    };
+  }
+
+  VkrMeshDesc falcon_desc2 = {
+      .transform = vkr_transform_from_position_scale_rotation(
+          vec3_new(5.0f, 0.2f, -15.0f), vec3_new(0.2f, 0.2f, 0.2f),
+          vkr_quat_identity()),
+      .submeshes = falcon_submeshes,
+      .submesh_count = falcon_mesh->submeshes.length,
+  };
+  if (!vkr_mesh_manager_add(&rf->mesh_manager, &falcon_desc2, NULL,
+                            &mesh_load_err)) {
+    String8 err = vkr_renderer_get_error_string(mesh_load_err);
+    log_error("Failed to add falcon mesh: %s", string8_cstr(&err));
+  }
+
+  VkrMeshLoadDesc sponza_desc = {
+      .mesh_path = string8_lit("assets/models/sponza.obj"),
+      .transform = vkr_transform_from_position_scale_rotation(
+          vec3_new(0.0f, 0.0f, -15.0f), vec3_new(0.0085f, 0.0085f, 0.0085f),
+          vkr_quat_identity()),
+      .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
+      .shader_override = {0},
+  };
+  mesh_load_err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_mesh_manager_load(&rf->mesh_manager, &sponza_desc, NULL, NULL,
+                             &mesh_load_err)) {
+    String8 err = vkr_renderer_get_error_string(mesh_load_err);
+    log_error("Failed to load sponza mesh: %s", string8_cstr(&err));
+  }
+
+  rf->ui_transform = vkr_transform_from_position_scale_rotation(
+      vec3_new(0.0f, 0.0f, 0.0f), vec3_new(150.0f, 150.0f, 1.0f),
+      vkr_quat_identity());
+
+  // Acquire per-instance local state for UI
+  VkrRendererError ui_ls_err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_pipeline_registry_acquire_instance_state(
+          &rf->pipeline_registry, rf->ui_pipeline, &rf->ui_instance_state,
+          &ui_ls_err)) {
+    log_fatal("Failed to acquire local renderer state for UI pipeline");
+    return false_v;
   }
 
   return true_v;
@@ -831,101 +1014,219 @@ void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
   RendererFrontend *rf = (RendererFrontend *)renderer;
 
-  bool8_t world_globals_applied = false_v;
-  bool8_t ui_globals_applied = false_v;
-  for (uint32_t i = 0; i < rf->renderable_count; i++) {
-    VkrRenderable *renderable = array_get_VkrRenderable(&rf->renderables, i);
+  rf->frame_number++;
 
-    // Resolve material via handle
-    const VkrMaterial *material = vkr_material_system_get_by_handle(
-        &rf->material_system, renderable->material);
+  //====================== WORLD START =======================
 
-    // Prepare draw state
-    Mat4 model = renderable->model;
-    rf->draw_state.instance_state = renderable->instance_state;
-
-    // Resolve pipeline from material's shader_name/pipeline id and geometry
-    VkrPipelineHandle resolved = VKR_PIPELINE_HANDLE_INVALID;
-    uint32_t mat_pipeline_id =
-        material ? material->pipeline_id : VKR_INVALID_ID;
-    const char *mat_shader_name = material ? material->shader_name : NULL;
-    VkrGeometryVertexLayoutType geom_layout =
-        GEOMETRY_VERTEX_LAYOUT_POSITION_TEXCOORD;
-    vkr_geometry_system_get_layout(&rf->geometry_system, renderable->geometry,
-                                   &geom_layout);
-    VkrRendererError get_err = VKR_RENDERER_ERROR_NONE;
-    vkr_pipeline_registry_get_pipeline_for_material(
-        &rf->pipeline_registry, mat_shader_name, mat_pipeline_id, geom_layout,
-        &resolved, &get_err);
-
-    // If pipeline changed, reacquire instance state
-    if (renderable->pipeline.id != resolved.id ||
-        renderable->pipeline.generation != resolved.generation) {
-      if (renderable->pipeline.id != 0) {
-        VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
-        vkr_pipeline_registry_release_instance_state(
-            &rf->pipeline_registry, renderable->pipeline,
-            renderable->instance_state, &rel_err);
-      }
-      VkrRendererError acq_err = VKR_RENDERER_ERROR_NONE;
-      if (vkr_pipeline_registry_acquire_instance_state(
-              &rf->pipeline_registry, resolved, &renderable->instance_state,
-              &acq_err)) {
-        renderable->pipeline = resolved;
-      } else {
-        String8 err_str = vkr_renderer_get_error_string(acq_err);
-        log_error("Failed to acquire instance state for resolved pipeline: %s",
-                  string8_cstr(&err_str));
-      }
-    }
-
-    // Ensure shader is selected before binding pipeline
-    if (material && material->shader_name) {
-      vkr_shader_system_use(&rf->shader_system, material->shader_name);
-    }
-
-    // Ensure correct pipeline is bound
-    VkrPipelineHandle current_pipeline =
-        vkr_pipeline_registry_get_current_pipeline(&rf->pipeline_registry);
-    if (current_pipeline.id != resolved.id ||
-        current_pipeline.generation != resolved.generation) {
-      VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
-      vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry, resolved,
-                                          &bind_err);
-    }
-
-    // Apply globals once per domain per frame (after binding pipeline)
-    VkrPipeline *pl = NULL;
-    if (vkr_pipeline_registry_get_pipeline(&rf->pipeline_registry, resolved,
-                                           &pl)) {
-      if (pl->domain == VKR_PIPELINE_DOMAIN_UI) {
-        if (!ui_globals_applied) {
-          vkr_material_system_apply_global(&rf->material_system, &rf->globals,
-                                           VKR_PIPELINE_DOMAIN_UI);
-          ui_globals_applied = true_v;
-        }
-      } else {
-        if (!world_globals_applied) {
-          vkr_material_system_apply_global(&rf->material_system, &rf->globals,
-                                           VKR_PIPELINE_DOMAIN_WORLD);
-          world_globals_applied = true_v;
-        }
-      }
-    }
-
-    // Apply local state (model), bind instance, then instance state
-    vkr_material_system_apply_local(&rf->material_system,
-                                    &(VkrLocalMaterialState){.model = model});
-    vkr_shader_system_bind_instance(&rf->shader_system,
-                                    renderable->instance_state.id);
-
-    if (material) {
-      VkrPipelineDomain domain = pl ? pl->domain : VKR_PIPELINE_DOMAIN_WORLD;
-      vkr_material_system_apply_instance(&rf->material_system, material,
-                                         domain);
-    }
-
-    vkr_geometry_system_render(rf, &rf->geometry_system, renderable->geometry,
-                               1);
+  VkrRendererError begin_err = VKR_RENDERER_ERROR_NONE;
+  begin_err =
+      vkr_renderer_begin_render_pass(renderer, VKR_PIPELINE_DOMAIN_WORLD);
+  if (begin_err != VKR_RENDERER_ERROR_NONE) {
+    String8 err_str = vkr_renderer_get_error_string(begin_err);
+    log_error("Failed to begin world render pass: %s", string8_cstr(&err_str));
+    return;
   }
+
+  uint32_t mesh_capacity = vkr_mesh_manager_capacity(&rf->mesh_manager);
+  bool8_t globals_applied = false_v;
+  for (uint32_t i = 0; i < mesh_capacity; i++) {
+    VkrMesh *mesh = vkr_mesh_manager_get(&rf->mesh_manager, i);
+    if (!mesh)
+      continue;
+
+    Mat4 model = mesh->model;
+    uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
+    if (submesh_count == 0)
+      continue;
+
+    for (uint32_t submesh_index = 0; submesh_index < submesh_count;
+         ++submesh_index) {
+      VkrSubMesh *submesh =
+          vkr_mesh_manager_get_submesh(&rf->mesh_manager, i, submesh_index);
+      if (!submesh)
+        continue;
+
+      VkrMaterial *material = vkr_material_system_get_by_handle(
+          &rf->material_system, submesh->material);
+      const char *material_shader = (material && material->shader_name &&
+                                     material->shader_name[0] != '\0')
+                                        ? material->shader_name
+                                        : "shader.default.world";
+      if (!vkr_shader_system_use(&rf->shader_system, material_shader)) {
+        vkr_shader_system_use(&rf->shader_system, "shader.default.world");
+      }
+
+      uint32_t mat_pipeline_id =
+          (material && material->pipeline_id != VKR_INVALID_ID)
+              ? material->pipeline_id
+              : (uint32_t)submesh->pipeline_domain;
+
+      VkrPipelineHandle resolved = VKR_PIPELINE_HANDLE_INVALID;
+      VkrRendererError get_err = VKR_RENDERER_ERROR_NONE;
+      vkr_pipeline_registry_get_pipeline_for_material(
+          &rf->pipeline_registry, NULL, mat_pipeline_id, &resolved, &get_err);
+
+      VkrRendererError refresh_err = VKR_RENDERER_ERROR_NONE;
+      if (!vkr_mesh_manager_refresh_pipeline(
+              &rf->mesh_manager, i, submesh_index, resolved, &refresh_err)) {
+        String8 err_str = vkr_renderer_get_error_string(refresh_err);
+        log_error("Mesh %u submesh %u failed to refresh pipeline: %s", i,
+                  submesh_index, string8_cstr(&err_str));
+        continue;
+      }
+
+      rf->draw_state.instance_state = submesh->instance_state;
+
+      VkrPipelineHandle current_pipeline =
+          vkr_pipeline_registry_get_current_pipeline(&rf->pipeline_registry);
+      if (current_pipeline.id != resolved.id ||
+          current_pipeline.generation != resolved.generation) {
+        VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
+        vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry, resolved,
+                                            &bind_err);
+      }
+
+      if (!globals_applied) {
+        vkr_material_system_apply_global(&rf->material_system, &rf->globals,
+                                         VKR_PIPELINE_DOMAIN_WORLD);
+        globals_applied = true_v;
+      }
+
+      vkr_material_system_apply_local(&rf->material_system,
+                                      &(VkrLocalMaterialState){.model = model});
+
+      if (material) {
+        vkr_shader_system_bind_instance(&rf->shader_system,
+                                        submesh->instance_state.id);
+
+        bool8_t should_apply_instance =
+            (submesh->last_render_frame != rf->frame_number);
+        if (should_apply_instance) {
+          vkr_material_system_apply_instance(&rf->material_system, material,
+                                             VKR_PIPELINE_DOMAIN_WORLD);
+          submesh->last_render_frame = rf->frame_number;
+        }
+      }
+
+      vkr_geometry_system_render(rf, &rf->geometry_system, submesh->geometry,
+                                 1);
+    }
+  }
+
+  VkrRendererError end_err = VKR_RENDERER_ERROR_NONE;
+  end_err = vkr_renderer_end_render_pass(renderer);
+  if (end_err != VKR_RENDERER_ERROR_NONE) {
+    String8 err_str = vkr_renderer_get_error_string(end_err);
+    log_error("Failed to end world render pass: %s", string8_cstr(&err_str));
+    return;
+  }
+
+  //====================== WORLD END =======================
+
+  //====================== UI START ========================
+
+  begin_err = VKR_RENDERER_ERROR_NONE;
+  begin_err = vkr_renderer_begin_render_pass(renderer, VKR_PIPELINE_DOMAIN_UI);
+  if (begin_err != VKR_RENDERER_ERROR_NONE) {
+    String8 err_str = vkr_renderer_get_error_string(begin_err);
+    log_error("Failed to begin UI render pass: %s", string8_cstr(&err_str));
+    return;
+  }
+
+  // Resolve material via handle
+  VkrMaterial *ui_material =
+      vkr_material_system_get_by_handle(&rf->material_system, rf->ui_material);
+
+  // Prepare draw state
+  rf->draw_state.instance_state = rf->ui_instance_state;
+
+  // Resolve UI pipeline from material's shader_name/pipeline id and geometry
+  VkrPipelineHandle ui_resolved = VKR_PIPELINE_HANDLE_INVALID;
+  VkrRendererError ui_get_err = VKR_RENDERER_ERROR_NONE;
+  uint32_t ui_mat_pipeline_id =
+      ui_material ? ui_material->pipeline_id : VKR_INVALID_ID;
+  const char *ui_shader =
+      (ui_material && ui_material->shader_name && ui_material->shader_name[0])
+          ? ui_material->shader_name
+          : "shader.default.ui";
+  if (!vkr_shader_system_use(&rf->shader_system, ui_shader)) {
+    vkr_shader_system_use(&rf->shader_system, "shader.default.ui");
+  }
+
+  vkr_pipeline_registry_get_pipeline_for_material(&rf->pipeline_registry,
+                                                  ui_shader, ui_mat_pipeline_id,
+                                                  &ui_resolved, &ui_get_err);
+
+  // If pipeline changed, reacquire instance state
+  if (rf->ui_pipeline.id != ui_resolved.id ||
+      rf->ui_pipeline.generation != ui_resolved.generation) {
+    if (rf->ui_pipeline.id != 0) {
+      VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
+      vkr_pipeline_registry_release_instance_state(
+          &rf->pipeline_registry, rf->ui_pipeline, rf->ui_instance_state,
+          &rel_err);
+    }
+    VkrRendererError acq_err = VKR_RENDERER_ERROR_NONE;
+    if (vkr_pipeline_registry_acquire_instance_state(
+            &rf->pipeline_registry, ui_resolved, &rf->ui_instance_state,
+            &acq_err)) {
+      rf->ui_pipeline = ui_resolved;
+    } else {
+      String8 err_str = vkr_renderer_get_error_string(acq_err);
+      log_error("Failed to acquire instance state for resolved pipeline: %s",
+                string8_cstr(&err_str));
+    }
+  }
+
+  // Ensure shader is selected before binding pipeline
+  if (ui_material && ui_material->shader_name) {
+    vkr_shader_system_use(&rf->shader_system, ui_material->shader_name);
+  }
+
+  // Ensure correct pipeline is bound
+  VkrPipelineHandle current_pipeline =
+      vkr_pipeline_registry_get_current_pipeline(&rf->pipeline_registry);
+  if (current_pipeline.id != ui_resolved.id ||
+      current_pipeline.generation != ui_resolved.generation) {
+    VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
+    vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry, ui_resolved,
+                                        &bind_err);
+  }
+
+  vkr_material_system_apply_global(&rf->material_system, &rf->globals,
+                                   VKR_PIPELINE_DOMAIN_UI);
+
+  // Apply local state
+  vkr_material_system_apply_local(
+      &rf->material_system,
+      &(VkrLocalMaterialState){.model =
+                                   vkr_transform_get_world(&rf->ui_transform)});
+
+  if (ui_material) {
+    // Apply instance state if it has changed since last frame (Vulkan
+    // doesn't like applying the same instance state twice)
+    // bool8_t should_apply_instance =
+    //     ui_material->render_frame_number != rf->frame_number;
+    // if (should_apply_instance) {
+    //   ui_material->render_frame_number = rf->frame_number;
+    // }
+    vkr_shader_system_bind_instance(&rf->shader_system,
+                                    rf->ui_instance_state.id);
+    vkr_material_system_apply_instance(&rf->material_system, ui_material,
+                                       VKR_PIPELINE_DOMAIN_UI);
+  }
+
+  vkr_geometry_system_render(
+      rf, &rf->geometry_system,
+      vkr_geometry_system_get_default_plane2d(&rf->geometry_system), 1);
+
+  end_err = VKR_RENDERER_ERROR_NONE;
+  end_err = vkr_renderer_end_render_pass(renderer);
+  if (end_err != VKR_RENDERER_ERROR_NONE) {
+    String8 err_str = vkr_renderer_get_error_string(end_err);
+    log_error("Failed to end UI render pass: %s", string8_cstr(&err_str));
+    return;
+  }
+
+  //====================== UI END ==========================
 }

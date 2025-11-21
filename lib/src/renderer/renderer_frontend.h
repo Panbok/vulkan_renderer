@@ -4,10 +4,13 @@
 #include "core/vkr_threads.h"
 #include "math/mat.h"
 #include "memory/arena.h"
+#include "renderer/resources/loaders/mesh_loader.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_camera.h"
+#include "renderer/systems/vkr_camera_controller.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
+#include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_pipeline_registry.h"
 #include "renderer/systems/vkr_shader_system.h"
 #include "renderer/systems/vkr_texture_system.h"
@@ -31,26 +34,25 @@ struct s_RendererFrontend {
 
   // Camera moved into frontend
   VkrCamera camera;
+  VkrCameraController camera_controller;
 
   // Scene shader configs and pipelines
   VkrShaderConfig world_shader_config;
-  VkrShaderConfig ui_shader_config;
   VkrPipelineHandle world_pipeline;
-  VkrPipelineHandle ui_pipeline;
-
-  // Scene models and geometry
-  Mat4 world_model;
-  Mat4 ui_model;
-  VkrGeometryHandle cube_geometry;
-  VkrGeometryHandle ui_geometry;
 
   // Materials
   VkrMaterialHandle world_material;
-  VkrMaterialHandle ui_material;
 
-  // Renderables
-  Array_VkrRenderable renderables;
-  uint32_t renderable_count;
+  // Meshes
+  VkrMeshManager mesh_manager;
+  VkrMeshLoaderContext mesh_loader;
+
+  // UI
+  VkrRendererInstanceStateHandle ui_instance_state;
+  VkrShaderConfig ui_shader_config;
+  VkrPipelineHandle ui_pipeline;
+  VkrMaterialHandle ui_material;
+  VkrTransform ui_transform;
 
   // Per-draw state
   VkrShaderStateObject draw_state;
@@ -64,6 +66,7 @@ struct s_RendererFrontend {
   VkrMutex rf_mutex;
 
   bool32_t frame_active;
+  uint64_t frame_number;
 };
 
 typedef struct s_RendererFrontend RendererFrontend;
