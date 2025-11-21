@@ -52,6 +52,9 @@ VkrBackendResourceHandle
 renderer_vulkan_create_texture(void *backend_state,
                                const VkrTextureDescription *desc,
                                const void *initial_data);
+VkrRendererError renderer_vulkan_update_texture(
+    void *backend_state, VkrBackendResourceHandle handle,
+    const VkrTextureDescription *desc);
 
 void renderer_vulkan_destroy_texture(void *backend_state,
                                      VkrBackendResourceHandle handle);

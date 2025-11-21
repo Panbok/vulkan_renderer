@@ -18,6 +18,60 @@
 // todo: we are having issues with image ghosting when camera moves
 // too fast, need to figure out why (clues VSync/present mode issues)
 
+vkr_internal uint32_t vulkan_calculate_mip_levels(uint32_t width,
+                                                  uint32_t height) {
+  uint32_t mip_levels = 1;
+  uint32_t max_dim = Max(width, height);
+  while (max_dim > 1) {
+    max_dim >>= 1;
+    mip_levels++;
+  }
+  return mip_levels;
+}
+
+vkr_internal void vulkan_select_filter_modes(
+    const VkrTextureDescription *desc, bool32_t anisotropy_supported,
+    uint32_t mip_levels, VkFilter *out_min_filter, VkFilter *out_mag_filter,
+    VkSamplerMipmapMode *out_mipmap_mode, VkBool32 *out_anisotropy_enable,
+    float32_t *out_max_lod) {
+  VkFilter min_filter = (desc->min_filter == VKR_FILTER_LINEAR)
+                            ? VK_FILTER_LINEAR
+                            : VK_FILTER_NEAREST;
+  VkFilter mag_filter = (desc->mag_filter == VKR_FILTER_LINEAR)
+                            ? VK_FILTER_LINEAR
+                            : VK_FILTER_NEAREST;
+
+  VkSamplerMipmapMode mipmap_mode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  float32_t max_lod = (mip_levels > 0) ? (float32_t)(mip_levels - 1) : 0.0f;
+  switch (desc->mip_filter) {
+  case VKR_MIP_FILTER_NONE:
+    mipmap_mode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    max_lod = 0.0f;
+    break;
+  case VKR_MIP_FILTER_NEAREST:
+    mipmap_mode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    break;
+  case VKR_MIP_FILTER_LINEAR:
+  default:
+    mipmap_mode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    break;
+  }
+
+  VkBool32 anisotropy_enable =
+      (desc->anisotropy_enable && anisotropy_supported) ? VK_TRUE : VK_FALSE;
+
+  if (out_min_filter)
+    *out_min_filter = min_filter;
+  if (out_mag_filter)
+    *out_mag_filter = mag_filter;
+  if (out_mipmap_mode)
+    *out_mipmap_mode = mipmap_mode;
+  if (out_anisotropy_enable)
+    *out_anisotropy_enable = anisotropy_enable;
+  if (out_max_lod)
+    *out_max_lod = max_lod;
+}
+
 vkr_internal bool32_t create_command_buffers(VulkanBackendState *state) {
   Scratch scratch = scratch_create(state->arena);
   state->graphics_command_buffers = array_create_VulkanCommandBuffer(
@@ -175,6 +229,7 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .buffer_update = renderer_vulkan_update_buffer,
       .buffer_upload = renderer_vulkan_upload_buffer,
       .texture_create = renderer_vulkan_create_texture,
+      .texture_update = renderer_vulkan_update_texture,
       .texture_destroy = renderer_vulkan_destroy_texture,
       .graphics_pipeline_create = renderer_vulkan_create_graphics_pipeline,
       .pipeline_update_state = renderer_vulkan_update_pipeline_state,
@@ -582,26 +637,6 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
   vkCmdSetViewport(command_buffer->handle, 0, 1, &viewport);
   vkCmdSetScissor(command_buffer->handle, 0, 1, &scissor);
 
-  // ============================================================================
-  // CRITICAL: DO NOT START ANY RENDER PASS HERE
-  // ============================================================================
-  // Render passes are started automatically in
-  // vulkan_graphics_pipeline_update_state() when the first pipeline is bound.
-  // This enables automatic domain-based multi-pass rendering without
-  // application intervention.
-  //
-  // The automatic system works as follows:
-  // 1. Application binds a pipeline (e.g., WORLD domain)
-  // 2. update_state detects no pass is active (render_pass_active == false)
-  // 3. update_state starts the WORLD render pass automatically
-  // 4. Application binds another pipeline (e.g., UI domain)
-  // 5. update_state detects domain change (WORLD → UI)
-  // 6. update_state ends WORLD pass and starts UI pass automatically
-  // 7. end_frame ends the final active pass (UI)
-  //
-  // This design eliminates manual render pass management from the application.
-  // ============================================================================
-
   state->render_pass_active = false;
   state->current_render_pass_domain =
       VKR_PIPELINE_DOMAIN_COUNT; // Invalid domain (no pass active)
@@ -634,16 +669,6 @@ void renderer_vulkan_draw(void *backend_state, uint32_t vertex_count,
 
 /**
  * @brief End the current rendering frame and submit to GPU
- *
- * AUTOMATIC RENDER PASS MANAGEMENT:
- * This function automatically ends any active render pass before submitting
- * the command buffer to the GPU. This ensures proper cleanup regardless of
- * which domain was last active (WORLD, UI, SHADOW, POST).
- *
- * RENDER PASS CLEANUP:
- * - If a render pass is active: End it and mark as inactive
- * - Reset current_render_pass_domain to invalid state (COUNT)
- * - Prepare for next frame's automatic pass management
  *
  * IMAGE LAYOUT TRANSITIONS:
  * The function handles a critical layout transition case:
@@ -686,17 +711,6 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, state->image_index);
 
-  // ============================================================================
-  // AUTOMATIC RENDER PASS CLEANUP
-  // ============================================================================
-  // End any active render pass before submitting the command buffer.
-  // This handles all domain types (WORLD, UI, SHADOW, POST) uniformly.
-  //
-  // The render_pass_active flag is set by
-  // vulkan_graphics_pipeline_update_state() when a render pass is started
-  // automatically. We reset it here to prepare for the next frame's automatic
-  // pass management cycle.
-  // ============================================================================
   if (state->render_pass_active) {
     if (!vulkan_renderpass_end(command_buffer, state)) {
       log_fatal("Failed to end Vulkan render pass");
@@ -982,6 +996,16 @@ renderer_vulkan_create_texture(void *backend_state,
                             (VkDeviceSize)desc->channels;
 
   VkFormat image_format = vulkan_image_format_from_texture_format(desc->format);
+  VkFormatProperties format_props;
+  vkGetPhysicalDeviceFormatProperties(state->device.physical_device,
+                                      image_format, &format_props);
+  bool32_t linear_blit_supported =
+      (format_props.optimalTilingFeatures &
+       VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+  uint32_t mip_levels =
+      linear_blit_supported
+          ? vulkan_calculate_mip_levels(desc->width, desc->height)
+          : 1;
 
   VkrBufferTypeFlags buffer_type = bitset8_create();
   bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
@@ -1022,8 +1046,9 @@ renderer_vulkan_create_texture(void *backend_state,
           VK_IMAGE_TILING_OPTIMAL,
           VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
               VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1, VK_IMAGE_VIEW_TYPE_2D,
-          VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
+          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mip_levels, 1,
+          VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
+          &texture->texture.image)) {
     log_fatal("Failed to create Vulkan image");
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
@@ -1068,19 +1093,32 @@ renderer_vulkan_create_texture(void *backend_state,
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
-  if (!vulkan_image_transition_layout(
-          state, &texture->texture.image, &temp_command_buffer, image_format,
-          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
-    log_fatal("Failed to transition image layout");
-    vkEndCommandBuffer(temp_command_buffer.handle);
-    vkFreeCommandBuffers(state->device.logical_device,
-                         state->device.graphics_command_pool, 1,
-                         &temp_command_buffer.handle);
-    vulkan_image_destroy(state, &texture->texture.image);
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
+  bool8_t generated_mips = true_v;
+  if (texture->texture.image.mip_levels > 1 && linear_blit_supported) {
+    generated_mips = vulkan_image_generate_mipmaps(
+        state, &texture->texture.image, image_format, &temp_command_buffer);
+    if (!generated_mips) {
+      // Fall back to a single mip level if generation failed
+      texture->texture.image.mip_levels = 1;
+      linear_blit_supported = false_v;
+    }
+  }
+
+  if (texture->texture.image.mip_levels == 1 || !linear_blit_supported) {
+    if (!vulkan_image_transition_layout(
+            state, &texture->texture.image, &temp_command_buffer, image_format,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+      log_fatal("Failed to transition image layout");
+      vkEndCommandBuffer(temp_command_buffer.handle);
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &temp_command_buffer.handle);
+      vulkan_image_destroy(state, &texture->texture.image);
+      vulkan_buffer_destroy(state, &staging_buffer->buffer);
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      return (VkrBackendResourceHandle){.ptr = NULL};
+    }
   }
 
   if (!vulkan_command_buffer_end_single_use(
@@ -1098,30 +1136,40 @@ renderer_vulkan_create_texture(void *backend_state,
                        state->device.graphics_command_pool, 1,
                        &temp_command_buffer.handle);
 
+  VkFilter min_filter = VK_FILTER_LINEAR;
+  VkFilter mag_filter = VK_FILTER_LINEAR;
+  VkSamplerMipmapMode mipmap_mode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  VkBool32 anisotropy_enable = VK_FALSE;
+  float32_t max_lod = (float32_t)(texture->texture.image.mip_levels - 1);
+  vulkan_select_filter_modes(desc, state->device.features.samplerAnisotropy,
+                             texture->texture.image.mip_levels, &min_filter,
+                             &mag_filter, &mipmap_mode, &anisotropy_enable,
+                             &max_lod);
+
   VkSamplerCreateInfo sampler_create_info = {
       .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-      .magFilter = VK_FILTER_LINEAR,
-      .minFilter = VK_FILTER_LINEAR,
-      .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-      .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-      .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
-      .anisotropyEnable = VK_FALSE,
-      .maxAnisotropy = 1.0f,
+      .magFilter = mag_filter,
+      .minFilter = min_filter,
+      .addressModeU =
+          vulkan_sampler_address_mode_from_repeat(desc->u_repeat_mode),
+      .addressModeV =
+          vulkan_sampler_address_mode_from_repeat(desc->v_repeat_mode),
+      .addressModeW =
+          vulkan_sampler_address_mode_from_repeat(desc->w_repeat_mode),
+      .anisotropyEnable = anisotropy_enable,
+      .maxAnisotropy =
+          anisotropy_enable
+              ? state->device.properties.limits.maxSamplerAnisotropy
+              : 1.0f,
       .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
       .unnormalizedCoordinates = VK_FALSE,
       .compareEnable = VK_FALSE,
       .compareOp = VK_COMPARE_OP_ALWAYS,
-      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+      .mipmapMode = mipmap_mode,
       .mipLodBias = 0.0f,
       .minLod = 0.0f,
-      .maxLod = 0.0f,
+      .maxLod = max_lod,
   };
-
-  if (state->device.features.samplerAnisotropy) {
-    sampler_create_info.anisotropyEnable = VK_TRUE;
-    sampler_create_info.maxAnisotropy =
-        state->device.properties.limits.maxSamplerAnisotropy;
-  }
 
   if (vkCreateSampler(state->device.logical_device, &sampler_create_info, NULL,
                       &texture->texture.sampler) != VK_SUCCESS) {
@@ -1148,6 +1196,89 @@ renderer_vulkan_create_texture(void *backend_state,
   scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
 
   return (VkrBackendResourceHandle){.ptr = texture};
+}
+
+VkrRendererError
+renderer_vulkan_update_texture(void *backend_state,
+                               VkrBackendResourceHandle handle,
+                               const VkrTextureDescription *desc) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(handle.ptr != NULL, "Texture handle is NULL");
+  assert_log(desc != NULL, "Texture description is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_TextureHandle *texture = (struct s_TextureHandle *)handle.ptr;
+
+  if (desc->width != texture->description.width ||
+      desc->height != texture->description.height ||
+      desc->channels != texture->description.channels ||
+      desc->format != texture->description.format) {
+    log_error("Texture update rejected: description dimensions or format "
+              "differ from existing texture");
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  VkFilter min_filter = VK_FILTER_LINEAR;
+  VkFilter mag_filter = VK_FILTER_LINEAR;
+  VkSamplerMipmapMode mipmap_mode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  VkBool32 anisotropy_enable = VK_FALSE;
+  float32_t max_lod = (float32_t)(texture->texture.image.mip_levels - 1);
+  vulkan_select_filter_modes(desc, state->device.features.samplerAnisotropy,
+                             texture->texture.image.mip_levels, &min_filter,
+                             &mag_filter, &mipmap_mode, &anisotropy_enable,
+                             &max_lod);
+
+  VkSamplerCreateInfo sampler_create_info = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      .magFilter = mag_filter,
+      .minFilter = min_filter,
+      .addressModeU =
+          vulkan_sampler_address_mode_from_repeat(desc->u_repeat_mode),
+      .addressModeV =
+          vulkan_sampler_address_mode_from_repeat(desc->v_repeat_mode),
+      .addressModeW =
+          vulkan_sampler_address_mode_from_repeat(desc->w_repeat_mode),
+      .anisotropyEnable = anisotropy_enable,
+      .maxAnisotropy =
+          anisotropy_enable
+              ? state->device.properties.limits.maxSamplerAnisotropy
+              : 1.0f,
+      .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+      .unnormalizedCoordinates = VK_FALSE,
+      .compareEnable = VK_FALSE,
+      .compareOp = VK_COMPARE_OP_ALWAYS,
+      .mipmapMode = mipmap_mode,
+      .mipLodBias = 0.0f,
+      .minLod = 0.0f,
+      .maxLod = max_lod,
+  };
+
+  VkSampler new_sampler = VK_NULL_HANDLE;
+  if (vkCreateSampler(state->device.logical_device, &sampler_create_info, NULL,
+                      &new_sampler) != VK_SUCCESS) {
+    log_error("Failed to update Vulkan sampler");
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  // Ensure no in-flight use of the old sampler before destroying it
+  renderer_vulkan_wait_idle(state);
+
+  if (texture->texture.sampler != VK_NULL_HANDLE) {
+    vkDestroySampler(state->device.logical_device, texture->texture.sampler,
+                     NULL);
+  }
+  texture->texture.sampler = new_sampler;
+
+  texture->description.u_repeat_mode = desc->u_repeat_mode;
+  texture->description.v_repeat_mode = desc->v_repeat_mode;
+  texture->description.w_repeat_mode = desc->w_repeat_mode;
+  texture->description.min_filter = desc->min_filter;
+  texture->description.mag_filter = desc->mag_filter;
+  texture->description.mip_filter = desc->mip_filter;
+  texture->description.anisotropy_enable = desc->anisotropy_enable;
+  texture->description.generation++;
+
+  return VKR_RENDERER_ERROR_NONE;
 }
 
 void renderer_vulkan_destroy_texture(void *backend_state,

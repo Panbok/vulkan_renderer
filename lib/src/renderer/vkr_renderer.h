@@ -318,6 +318,7 @@ typedef struct VkrDeviceInformation {
   VkrDeviceTypeFlags device_types;
   VkrDeviceQueueFlags device_queues;
   VkrSamplerFilterFlags sampler_filters;
+  float64_t max_sampler_anisotropy;
 } VkrDeviceInformation;
 
 // ============================================================================
@@ -381,10 +382,8 @@ typedef enum VkrTextureFormat {
 } VkrTextureFormat;
 
 typedef enum VkrTexturePropertyBits {
-  VKR_TEXTURE_PROPERTY_FILTER_LINEAR_BIT = 1 << 0,
-  VKR_TEXTURE_PROPERTY_FILTER_ANISOTROPIC_BIT = 1 << 1,
-  VKR_TEXTURE_PROPERTY_FILTER_MIPMAP_BIT = 1 << 2,
-  VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT = 1 << 3,
+  VKR_TEXTURE_PROPERTY_WRITABLE_BIT = 1 << 0,
+  VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT = 1 << 1,
 } VkrTexturePropertyBits;
 typedef Bitset8 VkrTexturePropertyFlags;
 
@@ -396,16 +395,33 @@ vkr_texture_property_flags_create(void) {
 vkr_internal INLINE VkrTexturePropertyFlags
 vkr_texture_property_flags_from_bits(uint8_t bits) {
   VkrTexturePropertyFlags flags = bitset8_create();
-  if (bits & VKR_TEXTURE_PROPERTY_FILTER_LINEAR_BIT)
-    bitset8_set(&flags, VKR_TEXTURE_PROPERTY_FILTER_LINEAR_BIT);
-  if (bits & VKR_TEXTURE_PROPERTY_FILTER_ANISOTROPIC_BIT)
-    bitset8_set(&flags, VKR_TEXTURE_PROPERTY_FILTER_ANISOTROPIC_BIT);
-  if (bits & VKR_TEXTURE_PROPERTY_FILTER_MIPMAP_BIT)
-    bitset8_set(&flags, VKR_TEXTURE_PROPERTY_FILTER_MIPMAP_BIT);
+  if (bits & VKR_TEXTURE_PROPERTY_WRITABLE_BIT)
+    bitset8_set(&flags, VKR_TEXTURE_PROPERTY_WRITABLE_BIT);
   if (bits & VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT)
     bitset8_set(&flags, VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
   return flags;
 }
+
+typedef enum VkrTextureRepeatMode {
+  VKR_TEXTURE_REPEAT_MODE_REPEAT = 0,
+  VKR_TEXTURE_REPEAT_MODE_MIRRORED_REPEAT = 1,
+  VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE = 2,
+  VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_BORDER = 3,
+  VKR_TEXTURE_REPEAT_MODE_COUNT,
+} VkrTextureRepeatMode;
+
+typedef enum VkrFilter {
+  VKR_FILTER_NEAREST = 0,
+  VKR_FILTER_LINEAR = 1,
+  VKR_FILTER_COUNT,
+} VkrFilter;
+
+typedef enum VkrMipFilter {
+  VKR_MIP_FILTER_NONE = 0,   // sample base level only
+  VKR_MIP_FILTER_NEAREST = 1, // nearest mip selection
+  VKR_MIP_FILTER_LINEAR = 2,  // linear mip interpolation (trilinear)
+  VKR_MIP_FILTER_COUNT,
+} VkrMipFilter;
 
 typedef struct VkrTextureDescription {
   uint32_t id;
@@ -417,6 +433,15 @@ typedef struct VkrTextureDescription {
   VkrTextureType type;
   VkrTextureFormat format;
   VkrTexturePropertyFlags properties;
+
+  VkrTextureRepeatMode u_repeat_mode;
+  VkrTextureRepeatMode v_repeat_mode;
+  VkrTextureRepeatMode w_repeat_mode;
+
+  VkrFilter min_filter;
+  VkrFilter mag_filter;
+  VkrMipFilter mip_filter;
+  bool8_t anisotropy_enable;
 } VkrTextureDescription;
 
 // ----------------------------------------------------------------------------
@@ -627,6 +652,11 @@ vkr_renderer_create_texture(VkrRendererFrontendHandle renderer,
 void vkr_renderer_destroy_texture(VkrRendererFrontendHandle renderer,
                                   VkrTextureOpaqueHandle texture);
 
+VkrRendererError
+vkr_renderer_update_texture(VkrRendererFrontendHandle renderer,
+                            VkrTextureOpaqueHandle texture,
+                            const VkrTextureDescription *description);
+
 void vkr_renderer_destroy_buffer(VkrRendererFrontendHandle renderer,
                                  VkrBufferHandle buffer);
 
@@ -789,6 +819,9 @@ typedef struct VkrRendererBackendInterface {
   VkrBackendResourceHandle (*texture_create)(void *backend_state,
                                              const VkrTextureDescription *desc,
                                              const void *initial_data);
+  VkrRendererError (*texture_update)(void *backend_state,
+                                     VkrBackendResourceHandle handle,
+                                     const VkrTextureDescription *desc);
   void (*texture_destroy)(void *backend_state, VkrBackendResourceHandle handle);
 
   // Pipeline creation uses VertexInputAttributeDescription and
