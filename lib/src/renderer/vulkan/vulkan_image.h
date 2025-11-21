@@ -28,3 +28,7 @@ bool8_t vulkan_image_copy_from_buffer(VulkanBackendState *state,
 bool32_t vulkan_create_image_view(VulkanBackendState *state, VkFormat format,
                                   VkImageViewType view_type, VulkanImage *image,
                                   VkImageAspectFlags aspect_flags);
+
+bool8_t vulkan_image_generate_mipmaps(VulkanBackendState *state,
+                                      VulkanImage *image, VkFormat image_format,
+                                      VulkanCommandBuffer *cmd);

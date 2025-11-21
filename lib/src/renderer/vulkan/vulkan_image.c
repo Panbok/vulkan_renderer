@@ -240,3 +240,124 @@ void vulkan_image_destroy(VulkanBackendState *state, VulkanImage *image) {
 
   log_debug("Destroyed Vulkan image: %p", image->handle);
 }
+
+bool8_t vulkan_image_generate_mipmaps(VulkanBackendState *state,
+                                      VulkanImage *image, VkFormat image_format,
+                                      VulkanCommandBuffer *cmd) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(image != NULL, "Image is NULL");
+  assert_log(cmd != NULL, "Command buffer is NULL");
+
+  if (image->mip_levels <= 1)
+    return true_v;
+
+  VkFormatProperties format_props;
+  vkGetPhysicalDeviceFormatProperties(state->device.physical_device,
+                                      image_format, &format_props);
+  if (!(format_props.optimalTilingFeatures &
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT)) {
+    log_warn("Linear blitting not supported for format; skipping mipmap "
+             "generation");
+    return false_v;
+  }
+
+  int32_t mip_width = (int32_t)image->width;
+  int32_t mip_height = (int32_t)image->height;
+
+  for (uint32_t mip = 1; mip < image->mip_levels; mip++) {
+    VkImageMemoryBarrier barrier_to_src = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image->handle,
+        .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = mip - 1,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = image->array_layers,
+            },
+    };
+
+    vkCmdPipelineBarrier(cmd->handle, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+                         &barrier_to_src);
+
+    VkImageBlit blit = {
+        .srcSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                           .mipLevel = mip - 1,
+                           .baseArrayLayer = 0,
+                           .layerCount = image->array_layers},
+        .srcOffsets = {{0, 0, 0},
+                       {mip_width > 0 ? mip_width : 1,
+                        mip_height > 0 ? mip_height : 1, 1}},
+        .dstSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                           .mipLevel = mip,
+                           .baseArrayLayer = 0,
+                           .layerCount = image->array_layers},
+        .dstOffsets = {{0, 0, 0},
+                       {mip_width > 1 ? mip_width / 2 : 1,
+                        mip_height > 1 ? mip_height / 2 : 1, 1}},
+    };
+
+    vkCmdBlitImage(cmd->handle, image->handle,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image->handle,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                   VK_FILTER_LINEAR);
+
+    VkImageMemoryBarrier barrier_to_read = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image->handle,
+        .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = mip - 1,
+                .levelCount = 1,
+                .baseArrayLayer = 0,
+                .layerCount = image->array_layers,
+            },
+    };
+
+    vkCmdPipelineBarrier(cmd->handle, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0,
+                         NULL, 1, &barrier_to_read);
+
+    if (mip_width > 1)
+      mip_width /= 2;
+    if (mip_height > 1)
+      mip_height /= 2;
+  }
+
+  VkImageMemoryBarrier final_barrier = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = image->handle,
+      .subresourceRange = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                           .baseMipLevel = image->mip_levels - 1,
+                           .levelCount = 1,
+                           .baseArrayLayer = 0,
+                           .layerCount = image->array_layers},
+  };
+
+  vkCmdPipelineBarrier(cmd->handle, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0,
+                       NULL, 1, &final_barrier);
+
+  return true_v;
+}
