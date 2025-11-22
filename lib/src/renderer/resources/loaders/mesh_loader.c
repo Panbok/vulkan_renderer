@@ -20,6 +20,9 @@ Vector(Vec3);
 Vector(VkrVertex3d);
 Vector(VkrMeshLoaderSubset);
 #define DEFAULT_SHADER string8_lit("shader.default.world")
+#define VKR_MESH_CACHE_MAGIC 0x564B4D48u /* 'VKMH' */
+#define VKR_MESH_CACHE_VERSION 1u
+#define VKR_MESH_CACHE_EXT "vkb"
 
 typedef struct VkrMeshLoaderMaterialDef {
   String8 name;
@@ -73,6 +76,416 @@ typedef struct VkrMeshLoaderVertexRef {
   int32_t texcoord;
   int32_t normal;
 } VkrMeshLoaderVertexRef;
+
+typedef struct VkrMeshLoaderBinaryReader {
+  uint8_t *ptr;
+  uint8_t *end;
+} VkrMeshLoaderBinaryReader;
+
+vkr_internal void
+vkr_mesh_loader_builder_init(VkrMeshLoaderSubsetBuilder *builder, Arena *arena);
+vkr_internal String8 vkr_mesh_loader_make_material_dir(Arena *arena,
+                                                       const String8 *stem);
+
+vkr_internal bool8_t vkr_mesh_loader_write_bytes(FileHandle *fh,
+                                                 const void *data,
+                                                 uint64_t size) {
+  uint64_t written = 0;
+  FileError err = file_write(fh, size, (const uint8_t *)data, &written);
+  return err == FILE_ERROR_NONE && written == size;
+}
+
+vkr_internal bool8_t vkr_mesh_loader_write_u32(FileHandle *fh, uint32_t value) {
+  return vkr_mesh_loader_write_bytes(fh, &value, sizeof(uint32_t));
+}
+
+vkr_internal bool8_t vkr_mesh_loader_write_f32(FileHandle *fh,
+                                               float32_t value) {
+  return vkr_mesh_loader_write_bytes(fh, &value, sizeof(float32_t));
+}
+
+vkr_internal bool8_t vkr_mesh_loader_write_vec3(FileHandle *fh, Vec3 value) {
+  return vkr_mesh_loader_write_f32(fh, value.x) &&
+         vkr_mesh_loader_write_f32(fh, value.y) &&
+         vkr_mesh_loader_write_f32(fh, value.z);
+}
+
+vkr_internal bool8_t vkr_mesh_loader_write_string(FileHandle *fh,
+                                                  String8 value) {
+  if (value.length > UINT32_MAX) {
+    return false_v;
+  }
+  if (!vkr_mesh_loader_write_u32(fh, (uint32_t)value.length)) {
+    return false_v;
+  }
+  if (value.length == 0 || !value.str) {
+    return true_v;
+  }
+  return vkr_mesh_loader_write_bytes(fh, value.str, value.length);
+}
+
+vkr_internal bool8_t vkr_mesh_loader_read_bytes(
+    VkrMeshLoaderBinaryReader *reader, uint64_t size, void *out) {
+  if (!reader || reader->ptr + size > reader->end)
+    return false_v;
+  if (out) {
+    MemCopy(out, reader->ptr, size);
+  }
+  reader->ptr += size;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_mesh_loader_read_u32(VkrMeshLoaderBinaryReader *reader,
+                                              uint32_t *out) {
+  return vkr_mesh_loader_read_bytes(reader, sizeof(uint32_t), out);
+}
+
+vkr_internal bool8_t vkr_mesh_loader_read_f32(VkrMeshLoaderBinaryReader *reader,
+                                              float32_t *out) {
+  return vkr_mesh_loader_read_bytes(reader, sizeof(float32_t), out);
+}
+
+vkr_internal bool8_t
+vkr_mesh_loader_read_vec3(VkrMeshLoaderBinaryReader *reader, Vec3 *out) {
+  return vkr_mesh_loader_read_f32(reader, &out->x) &&
+         vkr_mesh_loader_read_f32(reader, &out->y) &&
+         vkr_mesh_loader_read_f32(reader, &out->z);
+}
+
+vkr_internal bool8_t vkr_mesh_loader_read_string(
+    VkrMeshLoaderBinaryReader *reader, Arena *arena, String8 *out) {
+  uint32_t len = 0;
+  if (!vkr_mesh_loader_read_u32(reader, &len))
+    return false_v;
+  if (reader->ptr + len > reader->end)
+    return false_v;
+  String8 view = {
+      .str = reader->ptr,
+      .length = len,
+  };
+  reader->ptr += len;
+  if (out) {
+    *out = string8_duplicate(arena, &view);
+  }
+  return true_v;
+}
+
+vkr_internal String8 vkr_mesh_loader_cache_path(VkrMeshLoaderState *state) {
+  assert_log(state != NULL, "State is NULL");
+  String8 cache_file = string8_create_formatted(
+      state->load_arena, "%.*s.%s", (int32_t)state->obj_stem.length,
+      state->obj_stem.str, VKR_MESH_CACHE_EXT);
+  return file_path_join(state->load_arena, state->obj_dir, cache_file);
+}
+
+vkr_internal VkrMeshLoaderState vkr_mesh_loader_state_create(
+    VkrMeshLoaderContext *context, Arena *load_arena, Arena *temp_arena,
+    Arena *scratch_arena, String8 name, VkrRendererError *out_error) {
+  VkrMeshLoaderState state = {
+      .context = context,
+      .load_arena = load_arena,
+      .temp_arena = temp_arena,
+      .scratch_arena = scratch_arena,
+      .allocator = loader_allocator,
+      .positions = vector_create_Vec3(load_arena),
+      .normals = vector_create_Vec3(load_arena),
+      .texcoords = vector_create_Vec2(load_arena),
+      .subsets = vector_create_VkrMeshLoaderSubset(load_arena),
+      .materials = vector_create_VkrMeshLoaderMaterialDef(load_arena),
+      .obj_path = string8_duplicate(load_arena, &name),
+      .obj_dir = file_path_get_directory(load_arena, name),
+      .obj_stem = string8_get_stem(load_arena, name),
+      .out_error = out_error,
+  };
+  state.material_dir =
+      vkr_mesh_loader_make_material_dir(load_arena, &state.obj_stem);
+  vkr_mesh_loader_builder_init(&state.builder, load_arena);
+  return state;
+}
+
+vkr_internal VkrMaterialHandle vkr_mesh_loader_load_material_from_path(
+    VkrMeshLoaderState *state, String8 material_path) {
+  if (!material_path.str || material_path.length == 0 || !state ||
+      !state->context || !state->context->material_system) {
+    return VKR_MATERIAL_HANDLE_INVALID;
+  }
+
+  // If material is already loaded, just acquire it instead of reloading.
+  String8 mat_name =
+      string8_get_stem(state->load_arena, material_path); // e.g. column_a
+  if (mat_name.str) {
+    VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
+    VkrMaterialHandle existing = vkr_material_system_acquire(
+        state->context->material_system, mat_name, true_v, &acquire_err);
+    if (existing.id != 0) {
+      return existing;
+    }
+  }
+
+  VkrResourceHandleInfo handle_info = {0};
+  VkrRendererError mat_err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MATERIAL, material_path,
+                                state->temp_arena, &handle_info, &mat_err)) {
+    // If the loader rejected because it already exists, try to acquire again.
+    VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
+    VkrMaterialHandle existing = vkr_material_system_acquire(
+        state->context->material_system, mat_name, true_v, &acquire_err);
+    if (existing.id != 0) {
+      return existing;
+    }
+
+    String8 err_str = vkr_renderer_get_error_string(mat_err);
+    log_warn("Failed to load cached material '%.*s': %s",
+             (int32_t)material_path.length, material_path.str,
+             err_str.length > 0 ? (const char *)err_str.str : "unknown");
+    return VKR_MATERIAL_HANDLE_INVALID;
+  }
+
+  VkrMaterialHandle handle = handle_info.as.material;
+  if (handle.id != 0) {
+    vkr_material_system_add_ref(state->context->material_system, handle);
+  }
+  return handle;
+}
+
+vkr_internal bool8_t vkr_mesh_loader_write_binary(VkrMeshLoaderState *state,
+                                                  String8 cache_path) {
+  assert_log(state != NULL, "State is NULL");
+
+  if (state->subsets.length == 0 || !cache_path.str)
+    return false_v;
+
+  String8 cache_dir = file_path_get_directory(state->load_arena, cache_path);
+  if (!file_ensure_directory(state->load_arena, &cache_dir)) {
+    log_warn("Failed to ensure cache directory '%.*s'",
+             (int32_t)cache_dir.length, cache_dir.str);
+    return false_v;
+  }
+
+  FilePath file_path = file_path_create(
+      (const char *)cache_path.str, state->load_arena, FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_WRITE);
+  bitset8_set(&mode, FILE_MODE_TRUNCATE);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+
+  FileHandle fh = {0};
+  FileError ferr = file_open(&file_path, mode, &fh);
+  if (ferr != FILE_ERROR_NONE) {
+    log_warn("Failed to open cache '%s' for write: %s", file_path.path.str,
+             file_get_error_string(ferr).str);
+    return false_v;
+  }
+
+  bool8_t ok = true_v;
+  ok = ok && vkr_mesh_loader_write_u32(&fh, VKR_MESH_CACHE_MAGIC);
+  ok = ok && vkr_mesh_loader_write_u32(&fh, VKR_MESH_CACHE_VERSION);
+  ok = ok && vkr_mesh_loader_write_string(&fh, state->obj_path);
+  ok = ok && vkr_mesh_loader_write_u32(&fh, (uint32_t)state->subsets.length);
+
+  for (uint64_t i = 0; ok && i < state->subsets.length; ++i) {
+    VkrMeshLoaderSubset *subset =
+        vector_get_VkrMeshLoaderSubset(&state->subsets, i);
+    VkrGeometryConfig *cfg = &subset->geometry_config;
+
+    uint64_t name_len = strnlen(cfg->name, GEOMETRY_NAME_MAX_LENGTH);
+    String8 subset_name = {.str = (uint8_t *)cfg->name, .length = name_len};
+    String8 material_str =
+        subset->material_name.str
+            ? subset->material_name
+            : (String8){.str = (uint8_t *)cfg->material_name,
+                        .length = strnlen(cfg->material_name,
+                                          MATERIAL_NAME_MAX_LENGTH)};
+    ok = ok && vkr_mesh_loader_write_string(&fh, subset_name);
+    ok = ok && vkr_mesh_loader_write_string(&fh, material_str);
+    ok = ok && vkr_mesh_loader_write_string(&fh, subset->shader_override);
+    ok = ok && vkr_mesh_loader_write_u32(&fh, subset->pipeline_domain);
+    ok = ok && vkr_mesh_loader_write_u32(&fh, cfg->vertex_size);
+    ok = ok && vkr_mesh_loader_write_u32(&fh, cfg->vertex_count);
+    ok = ok && vkr_mesh_loader_write_u32(&fh, cfg->index_size);
+    ok = ok && vkr_mesh_loader_write_u32(&fh, cfg->index_count);
+    ok = ok && vkr_mesh_loader_write_vec3(&fh, cfg->center);
+    ok = ok && vkr_mesh_loader_write_vec3(&fh, cfg->min_extents);
+    ok = ok && vkr_mesh_loader_write_vec3(&fh, cfg->max_extents);
+
+    uint64_t vertex_bytes =
+        (uint64_t)cfg->vertex_size * (uint64_t)cfg->vertex_count;
+    uint64_t index_bytes =
+        (uint64_t)cfg->index_size * (uint64_t)cfg->index_count;
+
+    ok = ok && vkr_mesh_loader_write_bytes(&fh, (const uint8_t *)cfg->vertices,
+                                           vertex_bytes);
+    ok = ok && vkr_mesh_loader_write_bytes(&fh, (const uint8_t *)cfg->indices,
+                                           index_bytes);
+  }
+
+  file_close(&fh);
+
+  if (ok) {
+    log_debug("Wrote cache '%s'", file_path.path.str);
+  } else {
+    log_warn("Failed writing cache '%s'", file_path.path.str);
+  }
+
+  return ok;
+}
+
+vkr_internal bool8_t vkr_mesh_loader_read_binary(VkrMeshLoaderState *state,
+                                                 String8 cache_path) {
+  assert_log(state != NULL, "State is NULL");
+
+  if (!cache_path.str || cache_path.length == 0)
+    return false_v;
+
+  FilePath file_path = file_path_create(
+      (const char *)cache_path.str, state->load_arena, FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+
+  if (!file_exists(&file_path)) {
+    log_warn("Cache file '%s' not found", cache_path.str);
+    return false_v;
+  }
+
+  FileHandle fh = {0};
+  FileError ferr = file_open(&file_path, mode, &fh);
+  if (ferr != FILE_ERROR_NONE) {
+    return false_v;
+  }
+
+  uint8_t *data = NULL;
+  uint64_t size = 0;
+  FileError read_err = file_read_all(&fh, state->load_arena, &data, &size);
+  file_close(&fh);
+  if (read_err != FILE_ERROR_NONE || !data || size == 0) {
+    return false_v;
+  }
+
+  VkrMeshLoaderBinaryReader reader = {.ptr = data, .end = data + size};
+
+  uint32_t magic = 0, version = 0;
+  if (!vkr_mesh_loader_read_u32(&reader, &magic) ||
+      !vkr_mesh_loader_read_u32(&reader, &version)) {
+    return false_v;
+  }
+
+  if (magic != VKR_MESH_CACHE_MAGIC || version != VKR_MESH_CACHE_VERSION) {
+    return false_v;
+  }
+
+  String8 cached_name = {0};
+  if (!vkr_mesh_loader_read_string(&reader, state->load_arena, &cached_name)) {
+    return false_v;
+  }
+
+  if (!string8_equalsi(&cached_name, &state->obj_path)) {
+    return false_v;
+  }
+
+  uint32_t subset_count = 0;
+  if (!vkr_mesh_loader_read_u32(&reader, &subset_count) || subset_count == 0) {
+    return false_v;
+  }
+
+  for (uint32_t i = 0; i < subset_count; ++i) {
+    String8 subset_name = {0};
+    String8 material_path = {0};
+    String8 shader_override = {0};
+    uint32_t pipeline_domain = 0;
+    uint32_t vertex_stride = 0;
+    uint32_t vertex_count = 0;
+    uint32_t index_size = 0;
+    uint32_t index_count = 0;
+    Vec3 center = vec3_zero();
+    Vec3 min_extents = vec3_zero();
+    Vec3 max_extents = vec3_zero();
+
+    if (!vkr_mesh_loader_read_string(&reader, state->load_arena,
+                                     &subset_name) ||
+        !vkr_mesh_loader_read_string(&reader, state->load_arena,
+                                     &material_path) ||
+        !vkr_mesh_loader_read_string(&reader, state->load_arena,
+                                     &shader_override) ||
+        !vkr_mesh_loader_read_u32(&reader, &pipeline_domain) ||
+        !vkr_mesh_loader_read_u32(&reader, &vertex_stride) ||
+        !vkr_mesh_loader_read_u32(&reader, &vertex_count) ||
+        !vkr_mesh_loader_read_u32(&reader, &index_size) ||
+        !vkr_mesh_loader_read_u32(&reader, &index_count) ||
+        !vkr_mesh_loader_read_vec3(&reader, &center) ||
+        !vkr_mesh_loader_read_vec3(&reader, &min_extents) ||
+        !vkr_mesh_loader_read_vec3(&reader, &max_extents)) {
+      return false_v;
+    }
+
+    if (vertex_stride != sizeof(VkrVertex3d) ||
+        index_size != sizeof(uint32_t) || vertex_count == 0 ||
+        index_count == 0) {
+      return false_v;
+    }
+
+    uint64_t vertex_bytes = (uint64_t)vertex_stride * (uint64_t)vertex_count;
+    uint64_t index_bytes = (uint64_t)index_size * (uint64_t)index_count;
+
+    if (reader.ptr + vertex_bytes + index_bytes > reader.end) {
+      return false_v;
+    }
+
+    VkrVertex3d *vertices = vkr_allocator_alloc(&state->allocator, vertex_bytes,
+                                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    uint32_t *indices = vkr_allocator_alloc(&state->allocator, index_bytes,
+                                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!vertices || !indices) {
+      return false_v;
+    }
+
+    if (!vkr_mesh_loader_read_bytes(&reader, vertex_bytes, vertices) ||
+        !vkr_mesh_loader_read_bytes(&reader, index_bytes, indices)) {
+      return false_v;
+    }
+
+    VkrMeshLoaderSubset subset = {0};
+    subset.geometry_config.vertex_size = vertex_stride;
+    subset.geometry_config.vertex_count = vertex_count;
+    subset.geometry_config.vertices = vertices;
+    subset.geometry_config.index_size = index_size;
+    subset.geometry_config.index_count = index_count;
+    subset.geometry_config.indices = indices;
+    subset.geometry_config.center = center;
+    subset.geometry_config.min_extents = min_extents;
+    subset.geometry_config.max_extents = max_extents;
+
+    if (subset_name.str && subset_name.length > 0) {
+      uint64_t copy_len =
+          vkr_min_u64(subset_name.length, GEOMETRY_NAME_MAX_LENGTH - 1);
+      MemZero(subset.geometry_config.name, GEOMETRY_NAME_MAX_LENGTH);
+      MemCopy(subset.geometry_config.name, subset_name.str, copy_len);
+    }
+
+    if (material_path.str && material_path.length > 0) {
+      uint64_t copy_len =
+          vkr_min_u64(material_path.length, MATERIAL_NAME_MAX_LENGTH - 1);
+      MemZero(subset.geometry_config.material_name, MATERIAL_NAME_MAX_LENGTH);
+      MemCopy(subset.geometry_config.material_name, material_path.str,
+              copy_len);
+    }
+
+    subset.material_name = material_path;
+    subset.pipeline_domain = (VkrPipelineDomain)pipeline_domain;
+    subset.shader_override =
+        shader_override.length > 0
+            ? string8_duplicate(state->load_arena, &shader_override)
+            : (String8){0};
+
+    subset.material_handle =
+        vkr_mesh_loader_load_material_from_path(state, material_path);
+
+    vector_push_VkrMeshLoaderSubset(&state->subsets, subset);
+  }
+
+  log_debug("Cache hit '%s'", file_path.path.str);
+  return true_v;
+}
 
 vkr_internal VkrMeshLoaderVertexRef
 vkr_mesh_loader_parse_vertex_ref(const String8 *token) {
@@ -814,31 +1227,33 @@ vkr_internal bool8_t vkr_mesh_loader_load(VkrResourceLoader *self, String8 name,
 
   loader_scratch = scratch_create(loader_arena);
 
-  VkrMeshLoaderState state = {
-      .context = context,
-      .load_arena = loader_scratch.arena,
-      .temp_arena = temp_arena,
-      .scratch_arena = context->scratch_arena ? context->scratch_arena
-                                              : loader_scratch.arena,
-      .allocator = loader_allocator,
-      .positions = vector_create_Vec3(loader_scratch.arena),
-      .normals = vector_create_Vec3(loader_scratch.arena),
-      .texcoords = vector_create_Vec2(loader_scratch.arena),
-      .subsets = vector_create_VkrMeshLoaderSubset(loader_scratch.arena),
-      .materials = vector_create_VkrMeshLoaderMaterialDef(loader_scratch.arena),
-      .obj_path = string8_duplicate(loader_scratch.arena, &name),
-      .obj_dir = file_path_get_directory(loader_scratch.arena, name),
-      .obj_stem = string8_get_stem(loader_scratch.arena, name),
-      .out_error = out_error,
-  };
-  state.material_dir =
-      vkr_mesh_loader_make_material_dir(loader_scratch.arena, &state.obj_stem);
-  vkr_mesh_loader_builder_init(&state.builder, loader_scratch.arena);
+  VkrMeshLoaderState state = vkr_mesh_loader_state_create(
+      context, loader_scratch.arena, temp_arena,
+      context->scratch_arena ? context->scratch_arena : loader_scratch.arena,
+      name, out_error);
 
-  if (!vkr_mesh_loader_parse_obj(&state)) {
+  bool8_t loaded_from_cache = false_v;
+  bool8_t parsed_from_obj = false_v;
+  String8 cache_path = vkr_mesh_loader_cache_path(&state);
+  if (cache_path.str) {
+    loaded_from_cache = vkr_mesh_loader_read_binary(&state, cache_path);
+  }
+
+  if (!loaded_from_cache) {
     scratch_destroy(loader_scratch, ARENA_MEMORY_TAG_STRUCT);
-    out_handle->as.mesh = NULL;
-    return false_v;
+    loader_scratch = scratch_create(loader_arena);
+    state = vkr_mesh_loader_state_create(
+        context, loader_scratch.arena, temp_arena,
+        context->scratch_arena ? context->scratch_arena : loader_scratch.arena,
+        name, out_error);
+    cache_path = vkr_mesh_loader_cache_path(&state);
+
+    if (!vkr_mesh_loader_parse_obj(&state)) {
+      scratch_destroy(loader_scratch, ARENA_MEMORY_TAG_STRUCT);
+      out_handle->as.mesh = NULL;
+      return false_v;
+    }
+    parsed_from_obj = true_v;
   }
 
   if (state.subsets.length == 0) {
@@ -847,6 +1262,10 @@ vkr_internal bool8_t vkr_mesh_loader_load(VkrResourceLoader *self, String8 name,
     arena_destroy(loader_arena);
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
+  }
+
+  if (parsed_from_obj) {
+    vkr_mesh_loader_write_binary(&state, cache_path);
   }
 
   Array_VkrMeshLoaderSubset subset_array =
