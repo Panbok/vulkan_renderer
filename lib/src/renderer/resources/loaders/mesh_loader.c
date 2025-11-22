@@ -11,6 +11,24 @@
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/systems/vkr_resource_system.h"
 
+// Portable little-endian conversion functions
+vkr_internal uint32_t vkr_host_to_little_u32(uint32_t value) {
+  // Check if system is little-endian
+  const union {
+    uint32_t u32;
+    uint8_t u8[4];
+  } endian_check = {0x01020304};
+  const bool8_t is_little_endian = (endian_check.u8[0] == 0x04);
+
+  if (is_little_endian) {
+    return value;
+  } else {
+    // Byte swap for big-endian systems
+    return ((value & 0xFF000000) >> 24) | ((value & 0x00FF0000) >> 8) |
+           ((value & 0x0000FF00) << 8) | ((value & 0x000000FF) << 24);
+  }
+}
+
 vkr_global Arena *loader_arena = NULL;
 vkr_global VkrAllocator loader_allocator = {0};
 vkr_global Scratch loader_scratch = {0};
@@ -96,12 +114,19 @@ vkr_internal bool8_t vkr_mesh_loader_write_bytes(FileHandle *fh,
 }
 
 vkr_internal bool8_t vkr_mesh_loader_write_u32(FileHandle *fh, uint32_t value) {
-  return vkr_mesh_loader_write_bytes(fh, &value, sizeof(uint32_t));
+  uint32_t little_endian_value = vkr_host_to_little_u32(value);
+  return vkr_mesh_loader_write_bytes(fh, &little_endian_value,
+                                     sizeof(uint32_t));
 }
 
 vkr_internal bool8_t vkr_mesh_loader_write_f32(FileHandle *fh,
                                                float32_t value) {
-  return vkr_mesh_loader_write_bytes(fh, &value, sizeof(float32_t));
+  union {
+    float32_t f32;
+    uint32_t u32;
+  } float_bits = {.f32 = value};
+  uint32_t little_endian_bits = vkr_host_to_little_u32(float_bits.u32);
+  return vkr_mesh_loader_write_bytes(fh, &little_endian_bits, sizeof(uint32_t));
 }
 
 vkr_internal bool8_t vkr_mesh_loader_write_vec3(FileHandle *fh, Vec3 value) {
@@ -137,12 +162,32 @@ vkr_internal bool8_t vkr_mesh_loader_read_bytes(
 
 vkr_internal bool8_t vkr_mesh_loader_read_u32(VkrMeshLoaderBinaryReader *reader,
                                               uint32_t *out) {
-  return vkr_mesh_loader_read_bytes(reader, sizeof(uint32_t), out);
+  uint32_t little_endian_value = 0;
+  if (!vkr_mesh_loader_read_bytes(reader, sizeof(uint32_t),
+                                  &little_endian_value)) {
+    return false_v;
+  }
+  if (out) {
+    *out = vkr_host_to_little_u32(little_endian_value);
+  }
+  return true_v;
 }
 
 vkr_internal bool8_t vkr_mesh_loader_read_f32(VkrMeshLoaderBinaryReader *reader,
                                               float32_t *out) {
-  return vkr_mesh_loader_read_bytes(reader, sizeof(float32_t), out);
+  uint32_t little_endian_bits = 0;
+  if (!vkr_mesh_loader_read_bytes(reader, sizeof(uint32_t),
+                                  &little_endian_bits)) {
+    return false_v;
+  }
+  if (out) {
+    union {
+      uint32_t u32;
+      float32_t f32;
+    } float_bits = {.u32 = vkr_host_to_little_u32(little_endian_bits)};
+    *out = float_bits.f32;
+  }
+  return true_v;
 }
 
 vkr_internal bool8_t
