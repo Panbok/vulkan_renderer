@@ -938,15 +938,20 @@ vkr_shader_loader_parse(String8 path, Arena *arena, Arena *scratch_arena,
   if (!has_name || !has_stages) {
     return vkr_create_parse_error(
         arena, VKR_SHADER_CONFIG_ERROR_MISSING_REQUIRED_FIELD, 0, 0,
-        "Missing required fields: name or stages");
-  }
-
-  if (!has_renderpass) {
-    out_config->renderpass_name = string8_lit("Renderpass.Builtin.World");
+        "Missing required field(s): name and stages are both required");
   }
 
   // Compute layouts
   vkr_compute_attribute_layout(out_config);
+
+  if (!has_renderpass) {
+    if (out_config->vertex_type == VKR_VERTEX_TYPE_2D) {
+      out_config->renderpass_name = string8_lit("Renderpass.Builtin.UI");
+    } else {
+      out_config->renderpass_name = string8_lit("Renderpass.Builtin.World");
+    }
+  }
+
   vkr_compute_uniform_layout(out_config);
 
   return (VkrShaderConfigParseResult){.is_valid = true_v};

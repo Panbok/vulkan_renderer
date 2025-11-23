@@ -409,7 +409,7 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
   // in the backend when present in config.
 
   VkrRenderPassHandle renderpass = NULL;
-  if (config->renderpass_name.length > 0) {
+  if (config->renderpass_name.str && config->renderpass_name.length > 0) {
     renderpass = vkr_renderer_renderpass_get(registry->renderer,
                                              config->renderpass_name);
   }
@@ -417,8 +417,14 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
     String8 fallback = (domain == VKR_PIPELINE_DOMAIN_UI)
                            ? string8_lit("Renderpass.Builtin.UI")
                            : string8_lit("Renderpass.Builtin.World");
-    renderpass =
-        vkr_renderer_renderpass_get(registry->renderer, fallback);
+    renderpass = vkr_renderer_renderpass_get(registry->renderer, fallback);
+  }
+
+  if (!renderpass) {
+    log_error("Failed to acquire renderpass for pipeline creation");
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    return false_v;
   }
 
   VkrGraphicsPipelineDescription desc = {

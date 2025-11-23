@@ -626,8 +626,15 @@ vkr_texture_system_register_external(VkrTextureSystem *system, String8 name,
 
   VkrTextureEntry entry = {
       .index = free_slot_index, .ref_count = 1, .auto_release = false_v};
-  vkr_hash_table_insert_VkrTextureEntry(&system->texture_map, stable_key,
-                                        entry);
+  bool8_t insert_success = vkr_hash_table_insert_VkrTextureEntry(
+      &system->texture_map, stable_key, entry);
+  if (!insert_success) {
+    log_error("Failed to insert external texture '%s' into hash table",
+              stable_key);
+    vkr_renderer_destroy_texture(system->renderer, backend_handle);
+    texture->description.generation = VKR_INVALID_ID;
+    return false_v;
+  }
 
   if (out_handle) {
     *out_handle =

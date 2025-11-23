@@ -80,8 +80,14 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   if (desc->renderpass) {
     struct s_RenderPass *named_pass = (struct s_RenderPass *)desc->renderpass;
     if (named_pass->vk) {
-      viewport_width = named_pass->vk->width;
-      viewport_height = named_pass->vk->height;
+      if (named_pass->vk->width > 0 && named_pass->vk->height > 0) {
+        viewport_width = named_pass->vk->width;
+        viewport_height = named_pass->vk->height;
+      } else {
+        log_warn(
+            "Invalid render pass dimensions (%f x %f), using swapchain extent",
+            named_pass->vk->width, named_pass->vk->height);
+      }
     }
   }
 
@@ -234,7 +240,12 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   VulkanRenderPass *render_pass = state->domain_render_passes[desc->domain];
   if (desc->renderpass) {
     struct s_RenderPass *named_pass = (struct s_RenderPass *)desc->renderpass;
-    render_pass = named_pass->vk;
+    if (named_pass->vk) {
+      render_pass = named_pass->vk;
+    } else {
+      log_error("Render pass is not initialized");
+      return false_v;
+    }
   }
 
   VkGraphicsPipelineCreateInfo pipeline_info = {
