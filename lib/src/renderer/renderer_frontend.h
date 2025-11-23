@@ -2,7 +2,6 @@
 
 #include "core/event.h"
 #include "core/vkr_threads.h"
-#include "math/mat.h"
 #include "memory/arena.h"
 #include "renderer/resources/loaders/mesh_loader.h"
 #include "renderer/resources/vkr_resources.h"
@@ -53,6 +52,12 @@ struct s_RendererFrontend {
   VkrPipelineHandle ui_pipeline;
   VkrMaterialHandle ui_material;
   VkrTransform ui_transform;
+
+  VkrRenderPassHandle world_renderpass;
+  VkrRenderPassHandle ui_renderpass;
+  VkrRenderTargetHandle *world_render_targets;
+  VkrRenderTargetHandle *ui_render_targets;
+  uint32_t render_target_count;
 
   // Per-draw state
   VkrShaderStateObject draw_state;

@@ -110,6 +110,143 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
   return true_v;
 }
 
+bool8_t vulkan_renderpass_create_from_config(
+    VulkanBackendState *state, const VkrRenderPassConfig *cfg,
+    VulkanRenderPass *out_render_pass) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(out_render_pass != NULL, "Out render pass is NULL");
+  assert_log(cfg != NULL, "Config is NULL");
+
+  MemZero(out_render_pass, sizeof(VulkanRenderPass));
+  out_render_pass->state = RENDER_PASS_STATE_NOT_ALLOCATED;
+  out_render_pass->handle = VK_NULL_HANDLE;
+
+  out_render_pass->position = (Vec2){cfg->render_area.x, cfg->render_area.y};
+  out_render_pass->width =
+      (cfg->render_area.z > 0.0f)
+          ? cfg->render_area.z
+          : (float32_t)state->swapchain.extent.width;
+  out_render_pass->height =
+      (cfg->render_area.w > 0.0f)
+          ? cfg->render_area.w
+          : (float32_t)state->swapchain.extent.height;
+  out_render_pass->color = cfg->clear_color;
+  out_render_pass->depth = 1.0f;
+  out_render_pass->stencil = 0;
+  out_render_pass->domain = VKR_PIPELINE_DOMAIN_WORLD;
+
+  bool use_depth = (cfg->clear_flags & (VKR_RENDERPASS_CLEAR_DEPTH |
+                                        VKR_RENDERPASS_CLEAR_STENCIL)) != 0;
+
+  VkAttachmentDescription attachments[2] = {0};
+  VkAttachmentReference color_ref = {
+      .attachment = 0,
+      .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+  };
+
+  VkAttachmentDescription color_attachment = {
+      .format = state->swapchain.format,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .loadOp = (cfg->clear_flags & VKR_RENDERPASS_CLEAR_COLOR)
+                    ? VK_ATTACHMENT_LOAD_OP_CLEAR
+                    : VK_ATTACHMENT_LOAD_OP_LOAD,
+      .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+      .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+      .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .initialLayout = (cfg->prev_name.length > 0)
+                           ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                           : VK_IMAGE_LAYOUT_UNDEFINED,
+      .finalLayout = (cfg->next_name.length > 0)
+                         ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                         : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+  };
+
+  attachments[0] = color_attachment;
+
+  VkAttachmentReference depth_ref = {
+      .attachment = 1,
+      .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+
+  };
+
+  uint32_t attachment_count = 1;
+  if (use_depth) {
+    VkAttachmentDescription depth_attachment = {
+        .format = state->device.depth_format,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = (cfg->clear_flags & VKR_RENDERPASS_CLEAR_DEPTH)
+                      ? VK_ATTACHMENT_LOAD_OP_CLEAR
+                      : VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .stencilLoadOp = (cfg->clear_flags & VKR_RENDERPASS_CLEAR_STENCIL)
+                             ? VK_ATTACHMENT_LOAD_OP_CLEAR
+                             : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    };
+    attachments[attachment_count++] = depth_attachment;
+  }
+
+  VkSubpassDescription subpass = {
+      .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+      .colorAttachmentCount = 1,
+      .pColorAttachments = &color_ref,
+      .pDepthStencilAttachment = use_depth ? &depth_ref : NULL,
+  };
+
+  VkSubpassDependency deps[2] = {
+      {.srcSubpass = VK_SUBPASS_EXTERNAL,
+       .dstSubpass = 0,
+       .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                       (use_depth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+                                  : 0),
+       .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                       (use_depth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+                                  : 0),
+       .srcAccessMask = 0,
+       .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                        (use_depth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                                   : 0),
+       .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT},
+      {.srcSubpass = 0,
+       .dstSubpass = VK_SUBPASS_EXTERNAL,
+       .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                       (use_depth ? VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT
+                                  : 0),
+       .dstStageMask = (cfg->next_name.length > 0)
+                           ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                           : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+       .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                        (use_depth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                                   : 0),
+       .dstAccessMask = (cfg->next_name.length > 0)
+                           ? (VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                              VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT)
+                           : 0,
+       .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT}};
+
+  VkRenderPassCreateInfo render_pass_info = {
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+      .attachmentCount = attachment_count,
+      .pAttachments = attachments,
+      .subpassCount = 1,
+      .pSubpasses = &subpass,
+      .dependencyCount = ArrayCount(deps),
+      .pDependencies = deps,
+  };
+
+  if (vkCreateRenderPass(state->device.logical_device, &render_pass_info,
+                         state->allocator,
+                         &out_render_pass->handle) != VK_SUCCESS) {
+    log_fatal("Failed to create render pass from config");
+    return false_v;
+  }
+
+  out_render_pass->state = RENDER_PASS_STATE_READY;
+  return true_v;
+}
+
 /**
  * @brief Create a domain-specific render pass
  *
@@ -211,6 +348,11 @@ void vulkan_renderpass_destroy(VulkanBackendState *state,
                                VulkanRenderPass *render_pass) {
   assert_log(state != NULL, "State is NULL");
   assert_log(render_pass != NULL, "Render pass is NULL");
+
+  if (render_pass->handle == VK_NULL_HANDLE) {
+    render_pass->state = RENDER_PASS_STATE_NOT_ALLOCATED;
+    return;
+  }
 
   log_debug("Destroying Vulkan render pass");
 

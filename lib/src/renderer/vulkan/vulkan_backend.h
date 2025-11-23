@@ -11,7 +11,8 @@ bool32_t renderer_vulkan_initialize(void **out_backend_state,
                                     VkrRendererBackendType type,
                                     VkrWindow *window, uint32_t initial_width,
                                     uint32_t initial_height,
-                                    VkrDeviceRequirements *device_requirements);
+                                    VkrDeviceRequirements *device_requirements,
+                                    const VkrRendererBackendConfig *config);
 
 void renderer_vulkan_shutdown(void *backend_state);
 
@@ -29,6 +30,25 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
 
 VkrRendererError renderer_vulkan_end_frame(void *backend_state,
                                            float64_t delta_time);
+
+VkrRenderPassHandle
+renderer_vulkan_renderpass_create(void *backend_state,
+                                  const VkrRenderPassConfig *cfg);
+void renderer_vulkan_renderpass_destroy(void *backend_state,
+                                        VkrRenderPassHandle pass);
+VkrRenderPassHandle renderer_vulkan_renderpass_get(void *backend_state,
+                                                   const char *name);
+
+VkrRenderTargetHandle renderer_vulkan_render_target_create(
+    void *backend_state, const VkrRenderTargetDesc *desc,
+    VkrRenderPassHandle pass);
+void renderer_vulkan_render_target_destroy(void *backend_state,
+                                           VkrRenderTargetHandle target);
+
+VkrRendererError renderer_vulkan_begin_render_pass(void *backend_state,
+                                                   VkrRenderPassHandle pass,
+                                                   VkrRenderTargetHandle target);
+VkrRendererError renderer_vulkan_end_render_pass(void *backend_state);
 
 VkrBackendResourceHandle
 renderer_vulkan_create_buffer(void *backend_state,
@@ -100,10 +120,11 @@ void renderer_vulkan_draw_indexed(void *backend_state, uint32_t index_count,
                                   int32_t vertex_offset,
                                   uint32_t first_instance);
 
-VkrRendererError renderer_vulkan_begin_render_pass(void *backend_state,
-                                                   VkrPipelineDomain domain);
-
-VkrRendererError renderer_vulkan_end_render_pass(void *backend_state);
+VkrTextureOpaqueHandle renderer_vulkan_window_attachment_get(void *backend_state,
+                                                             uint32_t image_index);
+VkrTextureOpaqueHandle renderer_vulkan_depth_attachment_get(void *backend_state);
+uint32_t renderer_vulkan_window_attachment_count(void *backend_state);
+uint32_t renderer_vulkan_window_attachment_index(void *backend_state);
 
 // Telemetry
 uint64_t

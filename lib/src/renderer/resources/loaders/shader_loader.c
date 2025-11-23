@@ -106,9 +106,10 @@ vkr_internal VkrVertexType
 vkr_shader_config_detect_vertex_type(const VkrShaderConfig *cfg) {
   if (cfg->renderpass_name.length > 0 &&
       vkr_string8_equals_cstr_i(&cfg->renderpass_name,
-                                "renderpass.default.ui")) {
+                                "Renderpass.Builtin.UI")) {
     return VKR_VERTEX_TYPE_2D;
   }
+
   for (uint32_t i = 0; i < cfg->attribute_count; ++i) {
     const VkrShaderAttributeDesc *ad =
         array_get_VkrShaderAttributeDesc(&cfg->attributes, i);
@@ -121,6 +122,7 @@ vkr_shader_config_detect_vertex_type(const VkrShaderConfig *cfg) {
       return VKR_VERTEX_TYPE_3D;
     }
   }
+
   return VKR_VERTEX_TYPE_2D;
 }
 
@@ -933,10 +935,14 @@ vkr_shader_loader_parse(String8 path, Arena *arena, Arena *scratch_arena,
   file_close(&handle);
 
   // Validate required fields
-  if (!has_name || !has_renderpass || !has_stages) {
+  if (!has_name || !has_stages) {
     return vkr_create_parse_error(
         arena, VKR_SHADER_CONFIG_ERROR_MISSING_REQUIRED_FIELD, 0, 0,
-        "Missing required fields: name, renderpass, or stages");
+        "Missing required fields: name or stages");
+  }
+
+  if (!has_renderpass) {
+    out_config->renderpass_name = string8_lit("Renderpass.Builtin.World");
   }
 
   // Compute layouts

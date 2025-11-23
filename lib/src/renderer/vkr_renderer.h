@@ -61,6 +61,8 @@ typedef struct s_RendererFrontend *VkrRendererFrontendHandle;
 typedef struct s_BufferResource *VkrBufferHandle;
 typedef struct s_Pipeline *VkrPipelineOpaqueHandle;
 typedef struct s_TextureHandle *VkrTextureOpaqueHandle;
+typedef struct s_RenderPass *VkrRenderPassHandle;
+typedef struct s_RenderTarget *VkrRenderTargetHandle;
 
 typedef union {
   void *ptr;
@@ -562,6 +564,30 @@ typedef struct VkrVertexInputBindingDescription {
   VkrVertexInputRate input_rate; // Per-vertex or per-instance
 } VkrVertexInputBindingDescription;
 
+typedef enum VkrRenderPassClearFlags {
+  VKR_RENDERPASS_CLEAR_NONE = 0,
+  VKR_RENDERPASS_CLEAR_COLOR = 1 << 0,
+  VKR_RENDERPASS_CLEAR_DEPTH = 1 << 1,
+  VKR_RENDERPASS_CLEAR_STENCIL = 1 << 2
+} VkrRenderPassClearFlags;
+
+typedef struct VkrRenderPassConfig {
+  String8 name;
+  String8 prev_name;
+  String8 next_name;
+  Vec4 render_area;
+  Vec4 clear_color;
+  uint8_t clear_flags;
+} VkrRenderPassConfig;
+
+typedef struct VkrRenderTargetDesc {
+  bool8_t sync_to_window_size;
+  uint8_t attachment_count;
+  VkrTextureOpaqueHandle *attachments;
+  uint32_t width;
+  uint32_t height;
+} VkrRenderTargetDesc;
+
 typedef enum VkrPipelineDomain {
   VKR_PIPELINE_DOMAIN_WORLD = 0,
   VKR_PIPELINE_DOMAIN_UI = 1,
@@ -584,8 +610,16 @@ typedef struct VkrGraphicsPipelineDescription {
 
   VkrPolygonMode polygon_mode;
 
+  VkrRenderPassHandle renderpass;
   VkrPipelineDomain domain;
 } VkrGraphicsPipelineDescription;
+
+typedef struct VkrRendererBackendConfig {
+  const char *application_name;
+  uint16_t renderpass_count;
+  VkrRenderPassConfig *pass_configs;
+  void (*on_render_target_refresh_required)();
+} VkrRendererBackendConfig;
 
 // ============================================================================
 // Buffer and Vertex/Index Data Structures
@@ -615,6 +649,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
                                  VkrRendererBackendType type, VkrWindow *window,
                                  EventManager *event_manager,
                                  VkrDeviceRequirements *device_requirements,
+                                 const VkrRendererBackendConfig *backend_config,
                                  VkrRendererError *out_error);
 
 bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer);
@@ -749,6 +784,29 @@ VkrRendererError vkr_renderer_upload_buffer(VkrRendererFrontendHandle renderer,
                                             const void *data);
 // --- END Data Update ---
 
+// --- START Render Pass & Target Management ---
+VkrRenderPassHandle vkr_renderer_renderpass_create(
+    VkrRendererFrontendHandle renderer, const VkrRenderPassConfig *cfg);
+void vkr_renderer_renderpass_destroy(VkrRendererFrontendHandle renderer,
+                                     VkrRenderPassHandle pass);
+VkrRenderPassHandle vkr_renderer_renderpass_get(VkrRendererFrontendHandle renderer,
+                                                String8 name);
+
+VkrRenderTargetHandle vkr_renderer_render_target_create(
+    VkrRendererFrontendHandle renderer, const VkrRenderTargetDesc *desc,
+    VkrRenderPassHandle pass);
+void vkr_renderer_render_target_destroy(VkrRendererFrontendHandle renderer,
+                                        VkrRenderTargetHandle target,
+                                        bool8_t free_internal_memory);
+VkrTextureOpaqueHandle
+vkr_renderer_window_attachment_get(VkrRendererFrontendHandle renderer,
+                                   uint32_t image_index);
+VkrTextureOpaqueHandle
+vkr_renderer_depth_attachment_get(VkrRendererFrontendHandle renderer);
+uint32_t vkr_renderer_window_attachment_count(VkrRendererFrontendHandle renderer);
+uint32_t vkr_renderer_window_image_index(VkrRendererFrontendHandle renderer);
+// --- END Render Pass & Target Management ---
+
 // --- START Frame Lifecycle & Rendering Commands ---
 VkrRendererError vkr_renderer_begin_frame(VkrRendererFrontendHandle renderer,
                                           float64_t delta_time);
@@ -775,9 +833,9 @@ void vkr_renderer_draw_indexed(VkrRendererFrontendHandle renderer,
                                uint32_t first_index, int32_t vertex_offset,
                                uint32_t first_instance);
 
-VkrRendererError
-vkr_renderer_begin_render_pass(VkrRendererFrontendHandle renderer,
-                               VkrPipelineDomain domain);
+VkrRendererError vkr_renderer_begin_render_pass(VkrRendererFrontendHandle renderer,
+                                                VkrRenderPassHandle pass,
+                                                VkrRenderTargetHandle target);
 
 VkrRendererError
 vkr_renderer_end_render_pass(VkrRendererFrontendHandle renderer);
@@ -806,7 +864,8 @@ typedef struct VkrRendererBackendInterface {
   bool32_t (*initialize)(
       void **out_backend_state, // Backend allocates and returns its state
       VkrRendererBackendType type, VkrWindow *window, uint32_t initial_width,
-      uint32_t initial_height, VkrDeviceRequirements *device_requirements);
+      uint32_t initial_height, VkrDeviceRequirements *device_requirements,
+      const VkrRendererBackendConfig *backend_config);
   void (*shutdown)(void *backend_state);
   void (*on_resize)(void *backend_state, uint32_t new_width,
                     uint32_t new_height);
@@ -823,9 +882,25 @@ typedef struct VkrRendererBackendInterface {
                                 float64_t delta_time); // Includes present
 
   // --- Render Pass Management ---
+  VkrRenderPassHandle (*renderpass_create)(void *backend_state,
+                                           const VkrRenderPassConfig *cfg);
+  void (*renderpass_destroy)(void *backend_state, VkrRenderPassHandle pass);
+  VkrRenderPassHandle (*renderpass_get)(void *backend_state,
+                                        const char *name);
+  VkrRenderTargetHandle (*render_target_create)(
+      void *backend_state, const VkrRenderTargetDesc *desc,
+      VkrRenderPassHandle pass);
+  void (*render_target_destroy)(void *backend_state,
+                                VkrRenderTargetHandle target);
   VkrRendererError (*begin_render_pass)(void *backend_state,
-                                        VkrPipelineDomain domain);
+                                        VkrRenderPassHandle pass,
+                                        VkrRenderTargetHandle target);
   VkrRendererError (*end_render_pass)(void *backend_state);
+  VkrTextureOpaqueHandle (*window_attachment_get)(void *backend_state,
+                                                  uint32_t image_index);
+  VkrTextureOpaqueHandle (*depth_attachment_get)(void *backend_state);
+  uint32_t (*window_attachment_count_get)(void *backend_state);
+  uint32_t (*window_attachment_index_get)(void *backend_state);
 
   // --- Resource Management ---
   VkrBackendResourceHandle (*buffer_create)(void *backend_state,

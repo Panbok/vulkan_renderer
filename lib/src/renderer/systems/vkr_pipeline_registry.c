@@ -152,6 +152,7 @@ bool8_t vkr_pipeline_registry_create_graphics_pipeline(
 
   pipeline->description = *desc;
   pipeline->domain = desc->domain;
+  pipeline->renderpass = desc->renderpass;
 
   VkrPipelineOpaqueHandle backend = vkr_renderer_create_graphics_pipeline(
       registry->renderer, &pipeline->description, out_error);
@@ -407,6 +408,19 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
   // NOTE: global/instance texture counts are used to build descriptor layouts
   // in the backend when present in config.
 
+  VkrRenderPassHandle renderpass = NULL;
+  if (config->renderpass_name.length > 0) {
+    renderpass = vkr_renderer_renderpass_get(registry->renderer,
+                                             config->renderpass_name);
+  }
+  if (!renderpass) {
+    String8 fallback = (domain == VKR_PIPELINE_DOMAIN_UI)
+                           ? string8_lit("Renderpass.Builtin.UI")
+                           : string8_lit("Renderpass.Builtin.World");
+    renderpass =
+        vkr_renderer_renderpass_get(registry->renderer, fallback);
+  }
+
   VkrGraphicsPipelineDescription desc = {
       .shader_object_description = shader_desc,
       .attribute_count = attr_count,
@@ -415,6 +429,7 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
       .bindings = bindings,
       .topology = VKR_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
       .polygon_mode = VKR_POLYGON_MODE_FILL,
+      .renderpass = renderpass,
       .domain = domain,
   };
 

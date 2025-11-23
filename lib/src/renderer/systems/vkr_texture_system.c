@@ -273,15 +273,26 @@ VkrTextureHandle vkr_texture_system_acquire(VkrTextureSystem *system,
   return VKR_TEXTURE_HANDLE_INVALID;
 }
 
-bool8_t vkr_texture_system_create_writable(
-    VkrTextureSystem *system, String8 name,
-    const VkrTextureDescription *desc, VkrTextureHandle *out_handle,
-    VkrRendererError *out_error) {
+bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
+                                           String8 name,
+                                           const VkrTextureDescription *desc,
+                                           VkrTextureHandle *out_handle,
+                                           VkrRendererError *out_error) {
   assert_log(system != NULL, "System is NULL");
   assert_log(desc != NULL, "Description is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
   if (!name.str) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  // Check for duplicate name before allocating resources
+  const char *texture_key = (const char *)name.str;
+  VkrTextureEntry *existing_entry =
+      vkr_hash_table_get_VkrTextureEntry(&system->texture_map, texture_key);
+  if (existing_entry) {
+    log_error("Texture with name '%s' already exists", texture_key);
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
@@ -325,13 +336,19 @@ bool8_t vkr_texture_system_create_writable(
 
   VkrTextureEntry entry = {
       .index = free_slot_index, .ref_count = 1, .auto_release = false_v};
-  vkr_hash_table_insert_VkrTextureEntry(&system->texture_map, stable_key,
-                                        entry);
+  bool8_t insert_success = vkr_hash_table_insert_VkrTextureEntry(
+      &system->texture_map, stable_key, entry);
+  if (!insert_success) {
+    log_error("Failed to insert texture '%s' into hash table", stable_key);
+    vkr_renderer_destroy_texture(system->renderer, handle);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
 
   if (out_handle) {
-    *out_handle = (VkrTextureHandle){
-        .id = texture->description.id,
-        .generation = texture->description.generation};
+    *out_handle =
+        (VkrTextureHandle){.id = texture->description.id,
+                           .generation = texture->description.generation};
   }
 
   *out_error = VKR_RENDERER_ERROR_NONE;
@@ -490,8 +507,7 @@ VkrRendererError vkr_texture_system_write_region(
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
 
-  uint32_t mip_width =
-      Max(1u, texture->description.width >> region->mip_level);
+  uint32_t mip_width = Max(1u, texture->description.width >> region->mip_level);
   uint32_t mip_height =
       Max(1u, texture->description.height >> region->mip_level);
   if (region->x + region->width > mip_width ||
@@ -499,9 +515,8 @@ VkrRendererError vkr_texture_system_write_region(
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
 
-  uint64_t expected_size =
-      (uint64_t)region->width * (uint64_t)region->height *
-      (uint64_t)texture->description.channels;
+  uint64_t expected_size = (uint64_t)region->width * (uint64_t)region->height *
+                           (uint64_t)texture->description.channels;
   if (size < expected_size) {
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
@@ -512,7 +527,8 @@ VkrRendererError vkr_texture_system_write_region(
 
 bool8_t vkr_texture_system_resize(VkrTextureSystem *system,
                                   VkrTextureHandle handle, uint32_t new_width,
-                                  uint32_t new_height, bool8_t preserve_contents,
+                                  uint32_t new_height,
+                                  bool8_t preserve_contents,
                                   VkrTextureHandle *out_handle,
                                   VkrRendererError *out_error) {
   assert_log(system != NULL, "System is NULL");
@@ -535,9 +551,9 @@ bool8_t vkr_texture_system_resize(VkrTextureSystem *system,
     return false_v;
   }
 
-  VkrRendererError err = vkr_renderer_resize_texture(
-      system->renderer, texture->handle, new_width, new_height,
-      preserve_contents);
+  VkrRendererError err =
+      vkr_renderer_resize_texture(system->renderer, texture->handle, new_width,
+                                  new_height, preserve_contents);
   if (err != VKR_RENDERER_ERROR_NONE) {
     *out_error = err;
     return false_v;
@@ -548,23 +564,42 @@ bool8_t vkr_texture_system_resize(VkrTextureSystem *system,
   texture->description.generation = system->generation_counter++;
 
   if (out_handle) {
-    *out_handle = (VkrTextureHandle){.id = texture->description.id,
-                                     .generation =
-                                         texture->description.generation};
+    *out_handle =
+        (VkrTextureHandle){.id = texture->description.id,
+                           .generation = texture->description.generation};
   }
 
   *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
 }
 
-bool8_t vkr_texture_system_register_external(
-    VkrTextureSystem *system, String8 name,
-    VkrTextureOpaqueHandle backend_handle,
-    const VkrTextureDescription *desc, VkrTextureHandle *out_handle) {
+bool8_t
+vkr_texture_system_register_external(VkrTextureSystem *system, String8 name,
+                                     VkrTextureOpaqueHandle backend_handle,
+                                     const VkrTextureDescription *desc,
+                                     VkrTextureHandle *out_handle) {
   assert_log(system != NULL, "System is NULL");
   assert_log(name.str != NULL, "Name is NULL");
   assert_log(desc != NULL, "Description is NULL");
   assert_log(backend_handle != NULL, "Backend handle is NULL");
+
+  const char *texture_key = (const char *)name.str;
+  VkrTextureEntry *existing_entry =
+      vkr_hash_table_get_VkrTextureEntry(&system->texture_map, texture_key);
+  if (existing_entry) {
+    log_error("Texture with name '%s' is already registered",
+              string8_cstr(&name));
+    return false_v;
+  }
+
+  for (uint32_t i = 0; i < system->textures.length; ++i) {
+    VkrTexture *texture = &system->textures.data[i];
+    if (texture->handle == backend_handle) {
+      log_error("Backend handle is already registered for texture '%s'",
+                string8_cstr(&name));
+      return false_v;
+    }
+  }
 
   uint32_t free_slot_index = vkr_texture_system_find_free_slot(system);
   if (free_slot_index == VKR_INVALID_ID) {
@@ -589,16 +624,15 @@ bool8_t vkr_texture_system_register_external(
   texture->description.generation = system->generation_counter++;
   texture->handle = backend_handle;
 
-  VkrTextureEntry entry = {.index = free_slot_index,
-                           .ref_count = 1,
-                           .auto_release = false_v};
+  VkrTextureEntry entry = {
+      .index = free_slot_index, .ref_count = 1, .auto_release = false_v};
   vkr_hash_table_insert_VkrTextureEntry(&system->texture_map, stable_key,
                                         entry);
 
   if (out_handle) {
-    *out_handle = (VkrTextureHandle){
-        .id = texture->description.id,
-        .generation = texture->description.generation};
+    *out_handle =
+        (VkrTextureHandle){.id = texture->description.id,
+                           .generation = texture->description.generation};
   }
 
   return true_v;

@@ -258,6 +258,26 @@ struct s_TextureHandle {
   VkrTextureDescription description;
 };
 
+struct s_RenderPass {
+  VulkanRenderPass *vk;
+  String8 name;
+  VkrRenderPassConfig cfg;
+};
+
+struct s_RenderTarget {
+  VkFramebuffer handle;
+  uint32_t width, height;
+  bool8_t sync_to_window_size;
+  uint8_t attachment_count;
+  struct s_TextureHandle **attachments;
+};
+
+typedef struct VkrRenderPassEntry {
+  String8 name;
+  struct s_RenderPass *pass;
+} VkrRenderPassEntry;
+Array(VkrRenderPassEntry);
+
 /**
  * @brief Vulkan backend state containing all rendering resources and state
  *
@@ -325,6 +345,8 @@ typedef struct VulkanBackendState {
 
   /** Tracks which domains have been initialized */
   bool8_t domain_initialized[VKR_PIPELINE_DOMAIN_COUNT];
+  Array_VkrRenderPassEntry render_pass_registry;
+  uint32_t render_pass_count;
 
   /**
    * Currently active render pass domain.
@@ -332,6 +354,8 @@ typedef struct VulkanBackendState {
    * Used by automatic switching logic to detect domain changes.
    */
   VkrPipelineDomain current_render_pass_domain;
+
+  struct s_RenderPass *active_named_render_pass;
 
   /**
    * Indicates if a render pass is currently recording.
@@ -349,6 +373,11 @@ typedef struct VulkanBackendState {
    * Set to true when UI or POST domain ends (transitions to PRESENT).
    */
   bool8_t swapchain_image_is_present_ready;
+
+  struct s_TextureHandle **swapchain_image_textures;
+  struct s_TextureHandle *depth_texture;
+
+  void (*on_render_target_refresh_required)();
 
   VkSurfaceKHR surface;
 

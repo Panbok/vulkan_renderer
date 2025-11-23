@@ -1,4 +1,5 @@
 #include "vulkan_backend.h"
+#include "containers/str.h"
 #include "defines.h"
 #include "vulkan_buffer.h"
 #include "vulkan_command.h"
@@ -94,6 +95,10 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
   assert_log(state != NULL, "State not initialized");
 
   for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
+    if (state->domain_initialized[domain]) {
+      continue;
+    }
+
     state->domain_render_passes[domain] = arena_alloc(
         state->arena, sizeof(VulkanRenderPass), ARENA_MEMORY_TAG_RENDERER);
     if (!state->domain_render_passes[domain]) {
@@ -159,6 +164,255 @@ vkr_internal bool32_t create_domain_framebuffers(VulkanBackendState *state) {
   return true;
 }
 
+vkr_internal VkrTextureFormat vulkan_vk_format_to_vkr(VkFormat format) {
+  switch (format) {
+  case VK_FORMAT_B8G8R8A8_SRGB:
+    return VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
+  case VK_FORMAT_B8G8R8A8_UNORM:
+    return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+  case VK_FORMAT_R8G8B8A8_SRGB:
+    return VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
+  default:
+    log_warn("Unmapped VkFormat %d, defaulting to R8G8B8A8_UNORM", format);
+    return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+  }
+}
+
+vkr_internal void
+vulkan_backend_destroy_attachment_wrappers(VulkanBackendState *state) {
+  state->swapchain_image_textures = NULL;
+  state->depth_texture = NULL;
+}
+
+vkr_internal bool32_t
+vulkan_backend_create_attachment_wrappers(VulkanBackendState *state) {
+  assert_log(state != NULL, "State not initialized");
+  assert_log(state->swapchain.image_count > 0, "Swapchain image count is 0");
+
+  uint32_t image_count = state->swapchain.image_count;
+
+  state->swapchain_image_textures = arena_alloc(
+      state->swapchain_arena, sizeof(struct s_TextureHandle *) * image_count,
+      ARENA_MEMORY_TAG_RENDERER);
+  if (!state->swapchain_image_textures) {
+    log_fatal("Failed to allocate swapchain image texture wrappers");
+    return false;
+  }
+
+  for (uint32_t i = 0; i < image_count; ++i) {
+    struct s_TextureHandle *wrapper =
+        arena_alloc(state->swapchain_arena, sizeof(struct s_TextureHandle),
+                    ARENA_MEMORY_TAG_RENDERER);
+    if (!wrapper) {
+      log_fatal("Failed to allocate swapchain image wrapper");
+      return false;
+    }
+    MemZero(wrapper, sizeof(struct s_TextureHandle));
+
+    wrapper->texture.image.handle =
+        *array_get_VkImage(&state->swapchain.images, i);
+    wrapper->texture.image.view =
+        *array_get_VkImageView(&state->swapchain.image_views, i);
+    wrapper->texture.image.width = state->swapchain.extent.width;
+    wrapper->texture.image.height = state->swapchain.extent.height;
+    wrapper->texture.image.mip_levels = 1;
+    wrapper->texture.image.array_layers = 1;
+    wrapper->texture.sampler = VK_NULL_HANDLE;
+
+    wrapper->description.width = state->swapchain.extent.width;
+    wrapper->description.height = state->swapchain.extent.height;
+    wrapper->description.channels = 4;
+    wrapper->description.format =
+        vulkan_vk_format_to_vkr(state->swapchain.format);
+
+    state->swapchain_image_textures[i] = wrapper;
+  }
+
+  struct s_TextureHandle *depth_wrapper =
+      arena_alloc(state->swapchain_arena, sizeof(struct s_TextureHandle),
+                  ARENA_MEMORY_TAG_RENDERER);
+  if (!depth_wrapper) {
+    log_fatal("Failed to allocate depth attachment wrapper");
+    return false;
+  }
+  MemZero(depth_wrapper, sizeof(struct s_TextureHandle));
+  depth_wrapper->texture.image = state->swapchain.depth_attachment;
+  depth_wrapper->texture.sampler = VK_NULL_HANDLE;
+  depth_wrapper->description.width = state->swapchain.extent.width;
+  depth_wrapper->description.height = state->swapchain.extent.height;
+  depth_wrapper->description.channels = 1;
+  depth_wrapper->description.format =
+      (state->device.depth_format == VK_FORMAT_D24_UNORM_S8_UINT)
+          ? VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT
+          : VKR_TEXTURE_FORMAT_D32_SFLOAT;
+
+  state->depth_texture = depth_wrapper;
+
+  return true;
+}
+
+vkr_internal struct s_RenderPass *
+vulkan_backend_renderpass_lookup(VulkanBackendState *state, String8 name) {
+  for (uint32_t i = 0; i < state->render_pass_count; ++i) {
+    VkrRenderPassEntry *entry =
+        array_get_VkrRenderPassEntry(&state->render_pass_registry, i);
+    if (entry->pass && entry->pass->vk &&
+        entry->pass->vk->handle != VK_NULL_HANDLE &&
+        string8_equalsi(&entry->name, &name)) {
+      return entry->pass;
+    }
+  }
+  return NULL;
+}
+
+vkr_internal bool32_t vulkan_backend_renderpass_register(
+    VulkanBackendState *state, struct s_RenderPass *pass) {
+  if (array_is_null_VkrRenderPassEntry(&state->render_pass_registry)) {
+    state->render_pass_registry =
+        array_create_VkrRenderPassEntry(state->arena, 4);
+    state->render_pass_count = 0;
+  }
+
+  uint32_t slot = state->render_pass_count;
+  for (uint32_t i = 0; i < state->render_pass_count; ++i) {
+    VkrRenderPassEntry *entry =
+        array_get_VkrRenderPassEntry(&state->render_pass_registry, i);
+    if (!entry->pass || !entry->pass->vk ||
+        entry->pass->vk->handle == VK_NULL_HANDLE) {
+      slot = i;
+      break;
+    }
+  }
+
+  if (slot >= state->render_pass_registry.length) {
+    log_error("Render pass registry capacity exceeded");
+    return false;
+  }
+
+  VkrRenderPassEntry entry = {.name = pass->name, .pass = pass};
+  array_set_VkrRenderPassEntry(&state->render_pass_registry, slot, entry);
+  if (slot == state->render_pass_count) {
+    state->render_pass_count++;
+  }
+  return true;
+}
+
+vkr_internal struct s_RenderPass *
+vulkan_backend_renderpass_create_internal(VulkanBackendState *state,
+                                          const VkrRenderPassConfig *cfg) {
+  assert_log(cfg != NULL, "Render pass config is NULL");
+
+  struct s_RenderPass *pass =
+      arena_alloc(state->arena, sizeof(*pass), ARENA_MEMORY_TAG_RENDERER);
+  if (!pass) {
+    log_fatal("Failed to allocate render pass wrapper");
+    return NULL;
+  }
+  MemZero(pass, sizeof(*pass));
+
+  pass->cfg = *cfg;
+  pass->name = string8_duplicate(state->arena, &cfg->name);
+
+  pass->vk = arena_alloc(state->arena, sizeof(VulkanRenderPass),
+                         ARENA_MEMORY_TAG_RENDERER);
+  if (!pass->vk) {
+    log_fatal("Failed to allocate Vulkan render pass");
+    return NULL;
+  }
+  MemZero(pass->vk, sizeof(VulkanRenderPass));
+
+  if (!vulkan_renderpass_create_from_config(state, cfg, pass->vk)) {
+    log_error("Failed to create Vulkan render pass from config");
+    return NULL;
+  }
+
+  if (!vulkan_backend_renderpass_register(state, pass)) {
+    return NULL;
+  }
+
+  return pass;
+}
+
+vkr_internal bool32_t vulkan_backend_create_builtin_passes(
+    VulkanBackendState *state, const VkrRendererBackendConfig *backend_config) {
+  uint16_t cfg_count =
+      backend_config ? backend_config->renderpass_count : (uint16_t)0;
+  VkrRenderPassConfig *configs =
+      backend_config ? backend_config->pass_configs : NULL;
+
+  if (!array_is_null_VkrRenderPassEntry(&state->render_pass_registry)) {
+    state->render_pass_count = 0;
+  } else {
+    uint16_t capacity = cfg_count > 0 ? (uint16_t)(cfg_count + 2) : 4;
+    if (capacity < 4) {
+      capacity = 4;
+    }
+    state->render_pass_registry =
+        array_create_VkrRenderPassEntry(state->arena, capacity);
+    state->render_pass_count = 0;
+  }
+
+  if (configs && cfg_count > 0) {
+    for (uint16_t i = 0; i < cfg_count; ++i) {
+      struct s_RenderPass *created =
+          vulkan_backend_renderpass_create_internal(state, &configs[i]);
+      if (!created) {
+        return false;
+      }
+
+      if (vkr_string8_equals_cstr_i(&configs[i].name,
+                                    "renderpass.builtin.world")) {
+        state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD] = created->vk;
+        state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD] = true;
+      } else if (vkr_string8_equals_cstr_i(&configs[i].name,
+                                           "renderpass.builtin.ui")) {
+        state->domain_render_passes[VKR_PIPELINE_DOMAIN_UI] = created->vk;
+        state->domain_initialized[VKR_PIPELINE_DOMAIN_UI] = true;
+      }
+    }
+  }
+
+  if (!state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD]) {
+    VkrRenderPassConfig world_cfg = {
+        .name = string8_lit("Renderpass.Builtin.World"),
+        .prev_name = {0},
+        .next_name = string8_lit("Renderpass.Builtin.UI"),
+        .render_area = (Vec4){0, 0, (float32_t)state->swapchain.extent.width,
+                              (float32_t)state->swapchain.extent.height},
+        .clear_color = (Vec4){0.1f, 0.1f, 0.2f, 1.0f},
+        .clear_flags = VKR_RENDERPASS_CLEAR_COLOR | VKR_RENDERPASS_CLEAR_DEPTH,
+    };
+    struct s_RenderPass *world =
+        vulkan_backend_renderpass_create_internal(state, &world_cfg);
+    if (!world) {
+      return false;
+    }
+    state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD] = world->vk;
+    state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD] = true;
+  }
+
+  if (!state->domain_render_passes[VKR_PIPELINE_DOMAIN_UI]) {
+    VkrRenderPassConfig ui_cfg = {
+        .name = string8_lit("Renderpass.Builtin.UI"),
+        .prev_name = string8_lit("Renderpass.Builtin.World"),
+        .next_name = {0},
+        .render_area = (Vec4){0, 0, (float32_t)state->swapchain.extent.width,
+                              (float32_t)state->swapchain.extent.height},
+        .clear_color = (Vec4){0, 0, 0, 0},
+        .clear_flags = VKR_RENDERPASS_CLEAR_NONE,
+    };
+    struct s_RenderPass *ui =
+        vulkan_backend_renderpass_create_internal(state, &ui_cfg);
+    if (!ui) {
+      return false;
+    }
+    state->domain_render_passes[VKR_PIPELINE_DOMAIN_UI] = ui->vk;
+    state->domain_initialized[VKR_PIPELINE_DOMAIN_UI] = true;
+  }
+
+  return true;
+}
+
 bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
   assert_log(state != NULL, "State not initialized");
   assert_log(state->swapchain.handle != VK_NULL_HANDLE,
@@ -172,6 +426,8 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
   state->is_swapchain_recreation_requested = true;
 
   vkQueueWaitIdle(state->device.graphics_queue);
+
+  vulkan_backend_destroy_attachment_wrappers(state);
 
   for (uint32_t i = 0; i < state->swapchain.image_count; ++i) {
     array_set_VulkanFencePtr(&state->images_in_flight, i, NULL);
@@ -202,6 +458,18 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
     }
   }
 
+  for (uint32_t i = 0; i < state->render_pass_count; ++i) {
+    VkrRenderPassEntry *entry =
+        array_get_VkrRenderPassEntry(&state->render_pass_registry, i);
+    if (entry && entry->pass && entry->pass->vk) {
+      entry->pass->cfg.render_area.z = (float32_t)state->swapchain.extent.width;
+      entry->pass->cfg.render_area.w =
+          (float32_t)state->swapchain.extent.height;
+      entry->pass->vk->width = state->swapchain.extent.width;
+      entry->pass->vk->height = state->swapchain.extent.height;
+    }
+  }
+
   if (!create_domain_framebuffers(state)) {
     log_error("Failed to recreate domain framebuffers");
     return false;
@@ -212,6 +480,16 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
     return false;
   }
 
+  if (!vulkan_backend_create_attachment_wrappers(state)) {
+    log_error("Failed to recreate swapchain attachment wrappers");
+    return false;
+  }
+
+  if (state->on_render_target_refresh_required) {
+    state->on_render_target_refresh_required();
+  }
+
+  state->active_named_render_pass = NULL;
   state->is_swapchain_recreation_requested = false;
 
   return true;
@@ -224,6 +502,19 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .on_resize = renderer_vulkan_on_resize,
       .get_device_information = renderer_vulkan_get_device_information,
       .wait_idle = renderer_vulkan_wait_idle,
+      .begin_frame = renderer_vulkan_begin_frame,
+      .end_frame = renderer_vulkan_end_frame,
+      .renderpass_create = renderer_vulkan_renderpass_create,
+      .renderpass_destroy = renderer_vulkan_renderpass_destroy,
+      .renderpass_get = renderer_vulkan_renderpass_get,
+      .render_target_create = renderer_vulkan_render_target_create,
+      .render_target_destroy = renderer_vulkan_render_target_destroy,
+      .begin_render_pass = renderer_vulkan_begin_render_pass,
+      .end_render_pass = renderer_vulkan_end_render_pass,
+      .window_attachment_get = renderer_vulkan_window_attachment_get,
+      .depth_attachment_get = renderer_vulkan_depth_attachment_get,
+      .window_attachment_count_get = renderer_vulkan_window_attachment_count,
+      .window_attachment_index_get = renderer_vulkan_window_attachment_index,
       .buffer_create = renderer_vulkan_create_buffer,
       .buffer_destroy = renderer_vulkan_destroy_buffer,
       .buffer_update = renderer_vulkan_update_buffer,
@@ -235,13 +526,9 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .texture_destroy = renderer_vulkan_destroy_texture,
       .graphics_pipeline_create = renderer_vulkan_create_graphics_pipeline,
       .pipeline_update_state = renderer_vulkan_update_pipeline_state,
+      .pipeline_destroy = renderer_vulkan_destroy_pipeline,
       .instance_state_acquire = renderer_vulkan_instance_state_acquire,
       .instance_state_release = renderer_vulkan_instance_state_release,
-      .pipeline_destroy = renderer_vulkan_destroy_pipeline,
-      .begin_frame = renderer_vulkan_begin_frame,
-      .end_frame = renderer_vulkan_end_frame,
-      .begin_render_pass = renderer_vulkan_begin_render_pass,
-      .end_render_pass = renderer_vulkan_end_render_pass,
       .bind_buffer = renderer_vulkan_bind_buffer,
       .draw = renderer_vulkan_draw,
       .draw_indexed = renderer_vulkan_draw_indexed,
@@ -262,7 +549,8 @@ bool32_t
 renderer_vulkan_initialize(void **out_backend_state,
                            VkrRendererBackendType type, VkrWindow *window,
                            uint32_t initial_width, uint32_t initial_height,
-                           VkrDeviceRequirements *device_requirements) {
+                           VkrDeviceRequirements *device_requirements,
+                           const VkrRendererBackendConfig *backend_config) {
   assert_log(out_backend_state != NULL, "Out backend state is NULL");
   assert_log(type == VKR_RENDERER_BACKEND_TYPE_VULKAN,
              "Vulkan backend type is required");
@@ -311,9 +599,16 @@ renderer_vulkan_initialize(void **out_backend_state,
   backend_state->window = window;
   backend_state->device_requirements = device_requirements;
   backend_state->descriptor_writes_avoided = 0;
+  backend_state->render_pass_registry = (Array_VkrRenderPassEntry){0};
+  backend_state->render_pass_count = 0;
+  backend_state->swapchain_image_textures = NULL;
+  backend_state->depth_texture = NULL;
+  backend_state->on_render_target_refresh_required =
+      backend_config ? backend_config->on_render_target_refresh_required : NULL;
 
   backend_state->current_render_pass_domain =
       VKR_PIPELINE_DOMAIN_COUNT; // Invalid domain
+  backend_state->active_named_render_pass = NULL;
   backend_state->render_pass_active = false;
   backend_state->active_image_index = 0;
 
@@ -358,6 +653,11 @@ renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
+  if (!vulkan_backend_create_builtin_passes(backend_state, backend_config)) {
+    log_fatal("Failed to create built-in render passes");
+    return false;
+  }
+
   if (!create_domain_render_passes(backend_state)) {
     log_fatal("Failed to create Vulkan domain render passes");
     return false;
@@ -365,6 +665,11 @@ renderer_vulkan_initialize(void **out_backend_state,
 
   if (!create_domain_framebuffers(backend_state)) {
     log_fatal("Failed to create Vulkan domain framebuffers");
+    return false;
+  }
+
+  if (!vulkan_backend_create_attachment_wrappers(backend_state)) {
+    log_fatal("Failed to create swapchain attachment wrappers");
     return false;
   }
 
@@ -495,12 +800,41 @@ void renderer_vulkan_shutdown(void *backend_state) {
     }
   }
 
-  for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
-    if (state->domain_initialized[domain] &&
-        state->domain_render_passes[domain]) {
-      vulkan_renderpass_destroy(state, state->domain_render_passes[domain]);
+  for (uint32_t i = 0; i < state->render_pass_count; ++i) {
+    VkrRenderPassEntry *entry =
+        array_get_VkrRenderPassEntry(&state->render_pass_registry, i);
+    if (entry && entry->pass && entry->pass->vk) {
+      vulkan_renderpass_destroy(state, entry->pass->vk);
     }
   }
+
+  for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
+    if (!state->domain_initialized[domain]) {
+      continue;
+    }
+
+    VulkanRenderPass *domain_pass = state->domain_render_passes[domain];
+    if (!domain_pass) {
+      continue;
+    }
+
+    bool skip_destroy = false;
+    for (uint32_t i = 0; i < state->render_pass_count; ++i) {
+      VkrRenderPassEntry *entry =
+          array_get_VkrRenderPassEntry(&state->render_pass_registry, i);
+      if (entry && entry->pass && entry->pass->vk == domain_pass) {
+        skip_destroy = true;
+        break;
+      }
+    }
+
+    if (!skip_destroy) {
+      vulkan_renderpass_destroy(state, domain_pass);
+    }
+
+    state->domain_render_passes[domain] = NULL;
+  }
+  vulkan_backend_destroy_attachment_wrappers(state);
   vulkan_swapchain_destroy(state);
   vulkan_device_destroy_logical_device(state);
   vulkan_device_release_physical_device(state);
@@ -642,6 +976,7 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
   state->render_pass_active = false;
   state->current_render_pass_domain =
       VKR_PIPELINE_DOMAIN_COUNT; // Invalid domain (no pass active)
+  state->active_named_render_pass = NULL;
 
   return VKR_RENDERER_ERROR_NONE;
 }
@@ -714,12 +1049,11 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
       &state->graphics_command_buffers, state->image_index);
 
   if (state->render_pass_active) {
-    if (!vulkan_renderpass_end(command_buffer, state)) {
-      log_fatal("Failed to end Vulkan render pass");
-      return VKR_RENDERER_ERROR_NONE;
+    VkrRendererError end_err = renderer_vulkan_end_render_pass(state);
+    if (end_err != VKR_RENDERER_ERROR_NONE) {
+      log_fatal("Failed to end active render pass");
+      return end_err;
     }
-    state->render_pass_active = false;
-    state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
   }
 
   // ============================================================================
@@ -1022,8 +1356,8 @@ renderer_vulkan_create_texture(void *backend_state,
   if (initial_data) {
     const VkrBufferDescription staging_buffer_desc = {
         .size = image_size,
-        .usage = vkr_buffer_usage_flags_from_bits(
-            VKR_BUFFER_USAGE_TRANSFER_SRC),
+        .usage =
+            vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
         .memory_properties = vkr_memory_property_flags_from_bits(
             VKR_MEMORY_PROPERTY_HOST_VISIBLE |
             VKR_MEMORY_PROPERTY_HOST_COHERENT),
@@ -1033,9 +1367,8 @@ renderer_vulkan_create_texture(void *backend_state,
 
     scratch = scratch_create(state->temp_arena);
     scratch_valid = true_v;
-    staging_buffer =
-        arena_alloc(scratch.arena, sizeof(struct s_BufferHandle),
-                    ARENA_MEMORY_TAG_RENDERER);
+    staging_buffer = arena_alloc(scratch.arena, sizeof(struct s_BufferHandle),
+                                 ARENA_MEMORY_TAG_RENDERER);
     if (!staging_buffer) {
       log_fatal("Failed to allocate staging buffer");
       if (scratch_valid)
@@ -1414,10 +1747,8 @@ VkrRendererError renderer_vulkan_write_texture(
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
 
-  uint32_t mip_width =
-      Max(1u, texture->texture.image.width >> mip_level);
-  uint32_t mip_height =
-      Max(1u, texture->texture.image.height >> mip_level);
+  uint32_t mip_width = Max(1u, texture->texture.image.width >> mip_level);
+  uint32_t mip_height = Max(1u, texture->texture.image.height >> mip_level);
 
   if (x + width > mip_width || y + height > mip_height) {
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
@@ -1491,22 +1822,21 @@ VkrRendererError renderer_vulkan_write_texture(
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
-  VkBufferImageCopy copy_region = {.bufferOffset = 0,
-                                   .bufferRowLength = 0,
-                                   .bufferImageHeight = 0,
-                                   .imageSubresource = {.aspectMask =
-                                                            VK_IMAGE_ASPECT_COLOR_BIT,
-                                                        .mipLevel = mip_level,
-                                                        .baseArrayLayer =
-                                                            array_layer,
-                                                        .layerCount = 1},
-                                   .imageOffset = {(int32_t)x, (int32_t)y, 0},
-                                   .imageExtent = {width, height, 1}};
+  VkBufferImageCopy copy_region = {
+      .bufferOffset = 0,
+      .bufferRowLength = 0,
+      .bufferImageHeight = 0,
+      .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                           .mipLevel = mip_level,
+                           .baseArrayLayer = array_layer,
+                           .layerCount = 1},
+      .imageOffset = {(int32_t)x, (int32_t)y, 0},
+      .imageExtent = {width, height, 1}};
 
-  vkCmdCopyBufferToImage(
-      temp_command_buffer.handle, staging_buffer->buffer.handle,
-      texture->texture.image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-      &copy_region);
+  vkCmdCopyBufferToImage(temp_command_buffer.handle,
+                         staging_buffer->buffer.handle,
+                         texture->texture.image.handle,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
 
   if (!vulkan_image_transition_layout_range(
           state, &texture->texture.image, &temp_command_buffer, image_format,
@@ -1541,9 +1871,11 @@ VkrRendererError renderer_vulkan_write_texture(
   return VKR_RENDERER_ERROR_NONE;
 }
 
-VkrRendererError renderer_vulkan_resize_texture(
-    void *backend_state, VkrBackendResourceHandle handle, uint32_t new_width,
-    uint32_t new_height, bool8_t preserve_contents) {
+VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
+                                                VkrBackendResourceHandle handle,
+                                                uint32_t new_width,
+                                                uint32_t new_height,
+                                                bool8_t preserve_contents) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(handle.ptr != NULL, "Texture handle is NULL");
 
@@ -1562,10 +1894,9 @@ VkrRendererError renderer_vulkan_resize_texture(
   bool32_t linear_blit_supported =
       (format_props.optimalTilingFeatures &
        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
-  uint32_t mip_levels =
-      linear_blit_supported
-          ? vulkan_calculate_mip_levels(new_width, new_height)
-          : 1;
+  uint32_t mip_levels = linear_blit_supported
+                            ? vulkan_calculate_mip_levels(new_width, new_height)
+                            : 1;
 
   VulkanImage new_image = {0};
   if (!vulkan_image_create(
@@ -1629,32 +1960,25 @@ VkrRendererError renderer_vulkan_resize_texture(
     uint32_t copy_height = Min(texture->texture.image.height, new_height);
 
     if (linear_blit_supported) {
-      VkImageBlit blit = {.srcSubresource = {.aspectMask =
-                                                 VK_IMAGE_ASPECT_COLOR_BIT,
-                                             .mipLevel = 0,
-                                             .baseArrayLayer = 0,
-                                             .layerCount =
-                                                 texture->texture.image
-                                                     .array_layers},
-                          .srcOffsets = {{0, 0, 0},
-                                         {(int32_t)texture->texture.image.width,
-                                          (int32_t)texture->texture.image
-                                              .height,
-                                          1}},
-                          .dstSubresource = {.aspectMask =
-                                                 VK_IMAGE_ASPECT_COLOR_BIT,
-                                             .mipLevel = 0,
-                                             .baseArrayLayer = 0,
-                                             .layerCount =
-                                                 new_image.array_layers},
-                          .dstOffsets = {{0, 0, 0},
-                                         {(int32_t)new_width,
-                                          (int32_t)new_height, 1}}};
+      VkImageBlit blit = {
+          .srcSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .mipLevel = 0,
+                             .baseArrayLayer = 0,
+                             .layerCount = texture->texture.image.array_layers},
+          .srcOffsets = {{0, 0, 0},
+                         {(int32_t)texture->texture.image.width,
+                          (int32_t)texture->texture.image.height, 1}},
+          .dstSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .mipLevel = 0,
+                             .baseArrayLayer = 0,
+                             .layerCount = new_image.array_layers},
+          .dstOffsets = {{0, 0, 0},
+                         {(int32_t)new_width, (int32_t)new_height, 1}}};
 
-      vkCmdBlitImage(
-          temp_command_buffer.handle, texture->texture.image.handle,
-          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, new_image.handle,
-          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+      vkCmdBlitImage(temp_command_buffer.handle, texture->texture.image.handle,
+                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, new_image.handle,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+                     VK_FILTER_LINEAR);
     } else {
       VkImageCopy copy_region = {
           .srcSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -1670,8 +1994,7 @@ VkrRendererError renderer_vulkan_resize_texture(
           .extent = {copy_width, copy_height, 1},
       };
 
-      vkCmdCopyImage(temp_command_buffer.handle,
-                     texture->texture.image.handle,
+      vkCmdCopyImage(temp_command_buffer.handle, texture->texture.image.handle,
                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, new_image.handle,
                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
     }
@@ -1702,8 +2025,8 @@ VkrRendererError renderer_vulkan_resize_texture(
   } else {
     if (!vulkan_image_transition_layout_range(
             state, &new_image, &temp_command_buffer, image_format,
-            VK_IMAGE_LAYOUT_UNDEFINED,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &new_range)) {
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            &new_range)) {
       vkEndCommandBuffer(temp_command_buffer.handle);
       vkFreeCommandBuffers(state->device.logical_device,
                            state->device.graphics_command_pool, 1,
@@ -1739,15 +2062,12 @@ VkrRendererError renderer_vulkan_resize_texture(
       .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
       .magFilter = mag_filter,
       .minFilter = min_filter,
-      .addressModeU =
-          vulkan_sampler_address_mode_from_repeat(
-              texture->description.u_repeat_mode),
-      .addressModeV =
-          vulkan_sampler_address_mode_from_repeat(
-              texture->description.v_repeat_mode),
-      .addressModeW =
-          vulkan_sampler_address_mode_from_repeat(
-              texture->description.w_repeat_mode),
+      .addressModeU = vulkan_sampler_address_mode_from_repeat(
+          texture->description.u_repeat_mode),
+      .addressModeV = vulkan_sampler_address_mode_from_repeat(
+          texture->description.v_repeat_mode),
+      .addressModeW = vulkan_sampler_address_mode_from_repeat(
+          texture->description.w_repeat_mode),
       .anisotropyEnable = anisotropy_enable,
       .maxAnisotropy =
           anisotropy_enable
@@ -1972,73 +2292,331 @@ void renderer_vulkan_bind_buffer(void *backend_state,
   return;
 }
 
-VkrRendererError renderer_vulkan_begin_render_pass(void *backend_state,
-                                                   VkrPipelineDomain domain) {
+VkrRenderPassHandle
+renderer_vulkan_renderpass_create(void *backend_state,
+                                  const VkrRenderPassConfig *cfg) {
   assert_log(backend_state != NULL, "Backend state is NULL");
-  assert_log(domain != VKR_PIPELINE_DOMAIN_COUNT, "Invalid domain");
+  assert_log(cfg != NULL, "Render pass config is NULL");
+  assert_log(cfg->name.length > 0, "Render pass name is empty");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
-
-  if (state->render_pass_active) {
-    return VKR_RENDERER_ERROR_NONE;
+  struct s_RenderPass *existing =
+      vulkan_backend_renderpass_lookup(state, cfg->name);
+  if (existing) {
+    return (VkrRenderPassHandle)existing;
   }
 
-  uint32_t image_index = state->image_index;
+  struct s_RenderPass *created =
+      vulkan_backend_renderpass_create_internal(state, cfg);
+  if (!created) {
+    return NULL;
+  }
+
+  if (vkr_string8_equals_cstr_i(&created->name, "renderpass.builtin.world")) {
+    state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD] = created->vk;
+    state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD] = true;
+  } else if (vkr_string8_equals_cstr_i(&created->name,
+                                       "renderpass.builtin.ui")) {
+    state->domain_render_passes[VKR_PIPELINE_DOMAIN_UI] = created->vk;
+    state->domain_initialized[VKR_PIPELINE_DOMAIN_UI] = true;
+  }
+
+  return (VkrRenderPassHandle)created;
+}
+
+void renderer_vulkan_renderpass_destroy(void *backend_state,
+                                        VkrRenderPassHandle pass_handle) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state || !pass_handle) {
+    return;
+  }
+
+  struct s_RenderPass *pass = (struct s_RenderPass *)pass_handle;
+  vulkan_renderpass_destroy(state, pass->vk);
+  if (state->active_named_render_pass == pass) {
+    state->active_named_render_pass = NULL;
+  }
+
+  for (uint32_t i = 0; i < state->render_pass_count; ++i) {
+    VkrRenderPassEntry *entry =
+        array_get_VkrRenderPassEntry(&state->render_pass_registry, i);
+    if (entry->pass == pass) {
+      entry->pass = NULL;
+      entry->name = (String8){0};
+      break;
+    }
+  }
+
+  for (uint32_t i = 0; i < VKR_PIPELINE_DOMAIN_COUNT; ++i) {
+    if (state->domain_render_passes[i] == pass->vk) {
+      state->domain_render_passes[i] = NULL;
+      state->domain_initialized[i] = false;
+    }
+  }
+}
+
+VkrRenderPassHandle renderer_vulkan_renderpass_get(void *backend_state,
+                                                   const char *name) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state || !name) {
+    return NULL;
+  }
+
+  uint64_t len = strlen(name);
+  String8 lookup = string8_create_from_cstr((const uint8_t *)name, len);
+  struct s_RenderPass *found = vulkan_backend_renderpass_lookup(state, lookup);
+  return (VkrRenderPassHandle)found;
+}
+
+VkrRenderTargetHandle
+renderer_vulkan_render_target_create(void *backend_state,
+                                     const VkrRenderTargetDesc *desc,
+                                     VkrRenderPassHandle pass_handle) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(desc != NULL, "Render target desc is NULL");
+  assert_log(pass_handle != NULL, "Render pass handle is NULL");
+  assert_log(desc->attachments != NULL, "Render target attachments are NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_RenderPass *pass = (struct s_RenderPass *)pass_handle;
+  if (!pass->vk || pass->vk->handle == VK_NULL_HANDLE ||
+      desc->attachment_count == 0) {
+    return NULL;
+  }
+
+  struct s_RenderTarget *target = arena_alloc(
+      state->arena, sizeof(struct s_RenderTarget), ARENA_MEMORY_TAG_RENDERER);
+  if (!target) {
+    log_fatal("Failed to allocate render target");
+    return NULL;
+  }
+  MemZero(target, sizeof(struct s_RenderTarget));
+
+  target->attachment_count = desc->attachment_count;
+  target->sync_to_window_size = desc->sync_to_window_size;
+  target->width =
+      desc->sync_to_window_size ? state->swapchain.extent.width : desc->width;
+  target->height =
+      desc->sync_to_window_size ? state->swapchain.extent.height : desc->height;
+
+  target->attachments = arena_alloc(
+      state->arena, sizeof(struct s_TextureHandle *) * target->attachment_count,
+      ARENA_MEMORY_TAG_RENDERER);
+  if (!target->attachments) {
+    log_fatal("Failed to allocate render target attachments");
+    return NULL;
+  }
+
+  Scratch scratch = scratch_create(state->temp_arena);
+  VkImageView *views = arena_alloc(
+      scratch.arena, sizeof(VkImageView) * (uint64_t)target->attachment_count,
+      ARENA_MEMORY_TAG_ARRAY);
+  if (!views) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    log_fatal("Failed to allocate render target image views");
+    return NULL;
+  }
+
+  for (uint32_t i = 0; i < target->attachment_count; ++i) {
+    struct s_TextureHandle *tex =
+        (struct s_TextureHandle *)desc->attachments[i];
+    if (!tex) {
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      log_error("Render target attachment %u is NULL", i);
+      return NULL;
+    }
+    if (tex->texture.image.view == VK_NULL_HANDLE) {
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      log_error("Render target attachment %u has no image view", i);
+      return NULL;
+    }
+    target->attachments[i] = tex;
+    views[i] = tex->texture.image.view;
+  }
+
+  VkFramebufferCreateInfo fb_info = {
+      .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+      .renderPass = pass->vk->handle,
+      .attachmentCount = target->attachment_count,
+      .pAttachments = views,
+      .width = target->width,
+      .height = target->height,
+      .layers = 1,
+  };
+
+  if (vkCreateFramebuffer(state->device.logical_device, &fb_info,
+                          state->allocator, &target->handle) != VK_SUCCESS) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    log_fatal("Failed to create framebuffer for render target");
+    return NULL;
+  }
+
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  return (VkrRenderTargetHandle)target;
+}
+
+void renderer_vulkan_render_target_destroy(
+    void *backend_state, VkrRenderTargetHandle target_handle) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state || !target_handle) {
+    return;
+  }
+
+  struct s_RenderTarget *target = (struct s_RenderTarget *)target_handle;
+  if (target->handle != VK_NULL_HANDLE) {
+    vkDestroyFramebuffer(state->device.logical_device, target->handle,
+                         state->allocator);
+    target->handle = VK_NULL_HANDLE;
+  }
+  target->attachments = NULL;
+  target->attachment_count = 0;
+}
+
+VkrRendererError
+renderer_vulkan_begin_render_pass(void *backend_state,
+                                  VkrRenderPassHandle pass_handle,
+                                  VkrRenderTargetHandle target_handle) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_RenderPass *pass = (struct s_RenderPass *)pass_handle;
+  struct s_RenderTarget *target = (struct s_RenderTarget *)target_handle;
+
+  if (!pass || !target || !pass->vk || target->handle == VK_NULL_HANDLE) {
+    return VKR_RENDERER_ERROR_INVALID_HANDLE;
+  }
+
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, state->image_index);
-  VulkanRenderPass *render_pass = state->domain_render_passes[domain];
-  VulkanFramebuffer *framebuffer = array_get_VulkanFramebuffer(
-      &state->domain_framebuffers[domain], image_index);
 
-  if (!vulkan_renderpass_begin(command_buffer, render_pass,
-                               framebuffer->handle)) {
-    log_fatal("Failed to begin Vulkan render pass");
-    return VKR_RENDERER_ERROR_NONE;
+  Scratch scratch = scratch_create(state->temp_arena);
+  VkClearValue *clear_values = arena_alloc(
+      scratch.arena, sizeof(VkClearValue) * target->attachment_count,
+      ARENA_MEMORY_TAG_ARRAY);
+  if (!clear_values) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  }
+  MemZero(clear_values,
+          sizeof(VkClearValue) * (uint64_t)target->attachment_count);
+
+  if (target->attachment_count > 0) {
+    clear_values[0].color.float32[0] = pass->cfg.clear_color.r;
+    clear_values[0].color.float32[1] = pass->cfg.clear_color.g;
+    clear_values[0].color.float32[2] = pass->cfg.clear_color.b;
+    clear_values[0].color.float32[3] = pass->cfg.clear_color.a;
   }
 
-  state->current_render_pass_domain = domain;
+  if (target->attachment_count > 1) {
+    clear_values[1].depthStencil.depth = 1.0f;
+    clear_values[1].depthStencil.stencil = 0;
+  }
+
+  float32_t render_width = (pass->cfg.render_area.z > 0.0f)
+                               ? pass->cfg.render_area.z
+                               : (float32_t)target->width;
+  float32_t render_height = (pass->cfg.render_area.w > 0.0f)
+                                ? pass->cfg.render_area.w
+                                : (float32_t)target->height;
+
+  uint32_t extent_w =
+      Max(1u, (uint32_t)Min(render_width, (float32_t)target->width));
+  uint32_t extent_h =
+      Max(1u, (uint32_t)Min(render_height, (float32_t)target->height));
+
+  VkRect2D render_area = {
+      .offset = {(int32_t)Max(0, (int32_t)pass->cfg.render_area.x),
+                 (int32_t)Max(0, (int32_t)pass->cfg.render_area.y)},
+      .extent = {extent_w, extent_h},
+  };
+
+  VkRenderPassBeginInfo begin_info = {
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+      .renderPass = pass->vk->handle,
+      .framebuffer = target->handle,
+      .renderArea = render_area,
+      .clearValueCount = target->attachment_count,
+      .pClearValues = clear_values,
+  };
+
+  vkCmdBeginRenderPass(command_buffer->handle, &begin_info,
+                       VK_SUBPASS_CONTENTS_INLINE);
+
   state->render_pass_active = true;
+  state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
+  state->active_named_render_pass = pass;
 
   VkViewport viewport = {
-      .x = 0.0f,
-      .y = 0.0f,
-      .width = (float32_t)state->swapchain.extent.width,
-      .height = (float32_t)state->swapchain.extent.height,
+      .x = (float32_t)render_area.offset.x,
+      .y = (float32_t)render_area.offset.y,
+      .width = (float32_t)render_area.extent.width,
+      .height = (float32_t)render_area.extent.height,
       .minDepth = 0.0f,
       .maxDepth = 1.0f,
   };
 
-  VkRect2D scissor = {
-      .offset = {0, 0},
-      .extent = state->swapchain.extent,
-  };
-
   vkCmdSetViewport(command_buffer->handle, 0, 1, &viewport);
-  vkCmdSetScissor(command_buffer->handle, 0, 1, &scissor);
+  vkCmdSetScissor(command_buffer->handle, 0, 1, &render_area);
 
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
   return VKR_RENDERER_ERROR_NONE;
 }
 
 VkrRendererError renderer_vulkan_end_render_pass(void *backend_state) {
-  assert_log(backend_state != NULL, "Backend state is NULL");
-
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
-
   if (!state->render_pass_active) {
     return VKR_RENDERER_ERROR_NONE;
   }
 
-  uint32_t image_index = state->image_index;
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, image_index);
+      &state->graphics_command_buffers, state->image_index);
 
-  if (!vulkan_renderpass_end(command_buffer, state)) {
-    log_fatal("Failed to end Vulkan render pass");
-    return VKR_RENDERER_ERROR_NONE;
+  vkCmdEndRenderPass(command_buffer->handle);
+
+  if (state->active_named_render_pass &&
+      state->active_named_render_pass->cfg.next_name.length == 0) {
+    state->swapchain_image_is_present_ready = true;
   }
 
+  state->active_named_render_pass = NULL;
   state->render_pass_active = false;
   state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
-
   return VKR_RENDERER_ERROR_NONE;
+}
+
+VkrTextureOpaqueHandle
+renderer_vulkan_window_attachment_get(void *backend_state,
+                                      uint32_t image_index) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state || !state->swapchain_image_textures ||
+      image_index >= state->swapchain.image_count) {
+    return NULL;
+  }
+
+  return (VkrTextureOpaqueHandle)state->swapchain_image_textures[image_index];
+}
+
+VkrTextureOpaqueHandle
+renderer_vulkan_depth_attachment_get(void *backend_state) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state) {
+    return NULL;
+  }
+  return (VkrTextureOpaqueHandle)state->depth_texture;
+}
+
+uint32_t renderer_vulkan_window_attachment_count(void *backend_state) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state) {
+    return 0;
+  }
+  return state->swapchain.image_count;
+}
+
+uint32_t renderer_vulkan_window_attachment_index(void *backend_state) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state) {
+    return 0;
+  }
+  return state->image_index;
 }

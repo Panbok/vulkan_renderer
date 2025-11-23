@@ -8,6 +8,9 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
                                  Vec2 position, Vec4 color, float32_t w,
                                  float32_t h, float32_t depth,
                                  uint32_t stencil);
+bool8_t vulkan_renderpass_create_from_config(
+    VulkanBackendState *state, const VkrRenderPassConfig *cfg,
+    VulkanRenderPass *out_render_pass);
 
 bool8_t vulkan_renderpass_create_for_domain(VulkanBackendState *state,
                                             VkrPipelineDomain domain,

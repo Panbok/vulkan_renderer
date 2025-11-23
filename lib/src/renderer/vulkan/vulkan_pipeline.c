@@ -75,18 +75,28 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
       .primitiveRestartEnable = VK_FALSE,
   };
 
+  float32_t viewport_width = (float32_t)state->swapchain.extent.width;
+  float32_t viewport_height = (float32_t)state->swapchain.extent.height;
+  if (desc->renderpass) {
+    struct s_RenderPass *named_pass = (struct s_RenderPass *)desc->renderpass;
+    if (named_pass->vk) {
+      viewport_width = named_pass->vk->width;
+      viewport_height = named_pass->vk->height;
+    }
+  }
+
   VkViewport viewport = {
       .x = 0.0f,
       .y = 0.0f,
-      .width = (float32_t)state->swapchain.extent.width,
-      .height = (float32_t)state->swapchain.extent.height,
+      .width = viewport_width,
+      .height = viewport_height,
       .minDepth = 0.0f,
       .maxDepth = 1.0f,
   };
 
   VkRect2D scissor = {
       .offset = {0, 0},
-      .extent = {state->swapchain.extent.width, state->swapchain.extent.height},
+      .extent = {(uint32_t)viewport_width, (uint32_t)viewport_height},
   };
 
   VkPipelineViewportStateCreateInfo viewport_state = {
@@ -222,6 +232,10 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   };
 
   VulkanRenderPass *render_pass = state->domain_render_passes[desc->domain];
+  if (desc->renderpass) {
+    struct s_RenderPass *named_pass = (struct s_RenderPass *)desc->renderpass;
+    render_pass = named_pass->vk;
+  }
 
   VkGraphicsPipelineCreateInfo pipeline_info = {
       .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,

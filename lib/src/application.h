@@ -248,7 +248,7 @@ bool8_t application_create(Application *application,
   if (!vkr_renderer_initialize(
           &application->renderer, VKR_RENDERER_BACKEND_TYPE_VULKAN,
           &application->window, &application->event_manager,
-          &application->config->device_requirements, &renderer_error)) {
+          &application->config->device_requirements, NULL, &renderer_error)) {
     log_fatal("Failed to create renderer!");
     return false_v;
   }

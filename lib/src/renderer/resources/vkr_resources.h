@@ -148,6 +148,7 @@ typedef struct VkrPipeline {
   VkrGraphicsPipelineDescription description;
 
   VkrPipelineDomain domain;
+  VkrRenderPassHandle renderpass;
   VkrPipelineOpaqueHandle backend_handle;
 } VkrPipeline;
 Array(VkrPipeline);

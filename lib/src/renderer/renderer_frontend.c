@@ -18,6 +18,12 @@ typedef struct VkrRenderMeshEntry {
   float depth;
 } VkrRenderMeshEntry;
 
+static RendererFrontend *g_renderer_rt_refresh = NULL;
+
+vkr_internal void
+renderer_frontend_regenerate_render_targets(RendererFrontend *rf);
+vkr_internal void renderer_frontend_on_target_refresh_required(void);
+
 vkr_internal int vkr_render_mesh_entry_compare(const void *a, const void *b) {
   const VkrRenderMeshEntry *ea = (const VkrRenderMeshEntry *)a;
   const VkrRenderMeshEntry *eb = (const VkrRenderMeshEntry *)b;
@@ -66,10 +72,121 @@ vkr_internal bool8_t vkr_renderer_on_window_resize(Event *event,
   return true_v;
 }
 
+vkr_internal void
+renderer_frontend_regenerate_render_targets(RendererFrontend *rf) {
+  assert_log(rf != NULL, "Renderer frontend is NULL");
+
+  uint32_t count = vkr_renderer_window_attachment_count(rf);
+  if (count == 0) {
+    return;
+  }
+
+  if (rf->world_render_targets && rf->render_target_count > 0) {
+    uint32_t old_count = rf->render_target_count;
+    for (uint32_t i = 0; i < old_count; ++i) {
+      if (rf->world_render_targets[i]) {
+        vkr_renderer_render_target_destroy(rf, rf->world_render_targets[i],
+                                           false_v);
+      }
+      if (rf->ui_render_targets && rf->ui_render_targets[i]) {
+        vkr_renderer_render_target_destroy(rf, rf->ui_render_targets[i],
+                                           false_v);
+      }
+    }
+  } else if (rf->ui_render_targets && rf->render_target_count > 0) {
+    uint32_t old_count = rf->render_target_count;
+    for (uint32_t i = 0; i < old_count; ++i) {
+      if (rf->ui_render_targets[i]) {
+        vkr_renderer_render_target_destroy(rf, rf->ui_render_targets[i],
+                                           false_v);
+      }
+    }
+  }
+
+  VkrRenderTargetHandle *world_targets = rf->world_render_targets;
+  VkrRenderTargetHandle *ui_targets = rf->ui_render_targets;
+  if (!world_targets || count > rf->render_target_count) {
+    world_targets = arena_alloc(rf->arena,
+                                sizeof(VkrRenderTargetHandle) * count,
+                                ARENA_MEMORY_TAG_ARRAY);
+  }
+  if (!ui_targets || count > rf->render_target_count) {
+    ui_targets = arena_alloc(rf->arena,
+                             sizeof(VkrRenderTargetHandle) * count,
+                             ARENA_MEMORY_TAG_ARRAY);
+  }
+  rf->world_render_targets = world_targets;
+  rf->ui_render_targets = ui_targets;
+  MemZero(rf->world_render_targets,
+          sizeof(VkrRenderTargetHandle) * (uint64_t)count);
+  MemZero(rf->ui_render_targets,
+          sizeof(VkrRenderTargetHandle) * (uint64_t)count);
+  rf->render_target_count = count;
+
+  if (!rf->world_renderpass) {
+    rf->world_renderpass = vkr_renderer_renderpass_get(
+        rf, string8_lit("Renderpass.Builtin.World"));
+  }
+  if (!rf->ui_renderpass) {
+    rf->ui_renderpass =
+        vkr_renderer_renderpass_get(rf, string8_lit("Renderpass.Builtin.UI"));
+  }
+
+  if (!rf->world_renderpass || !rf->ui_renderpass) {
+    log_error("Render pass handles unavailable; skipping render target build");
+    rf->render_target_count = 0;
+    return;
+  }
+
+  VkrTextureOpaqueHandle depth = vkr_renderer_depth_attachment_get(rf);
+  if (!depth) {
+    log_error("Depth attachment unavailable for render target regeneration");
+    rf->render_target_count = 0;
+    return;
+  }
+
+  for (uint32_t i = 0; i < count; ++i) {
+    VkrTextureOpaqueHandle color =
+        vkr_renderer_window_attachment_get(rf, i);
+
+    VkrTextureOpaqueHandle world_attachments[2] = {color, depth};
+    VkrRenderTargetDesc world_desc = {.sync_to_window_size = true_v,
+                                      .attachment_count = 2,
+                                      .attachments = world_attachments,
+                                      .width = rf->last_window_width,
+                                      .height = rf->last_window_height};
+    rf->world_render_targets[i] =
+        vkr_renderer_render_target_create(rf, &world_desc,
+                                          rf->world_renderpass);
+    if (!rf->world_render_targets[i]) {
+      log_error("Failed to create world render target %u", i);
+    }
+
+    VkrTextureOpaqueHandle ui_attachments[1] = {color};
+    VkrRenderTargetDesc ui_desc = {.sync_to_window_size = true_v,
+                                   .attachment_count = 1,
+                                   .attachments = ui_attachments,
+                                   .width = rf->last_window_width,
+                                   .height = rf->last_window_height};
+    rf->ui_render_targets[i] =
+        vkr_renderer_render_target_create(rf, &ui_desc, rf->ui_renderpass);
+    if (!rf->ui_render_targets[i]) {
+      log_error("Failed to create UI render target %u", i);
+    }
+  }
+}
+
+vkr_internal void renderer_frontend_on_target_refresh_required(void) {
+  if (g_renderer_rt_refresh) {
+    renderer_frontend_regenerate_render_targets(g_renderer_rt_refresh);
+  }
+}
+
 bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
                                  VkrRendererBackendType backend_type,
                                  VkrWindow *window, EventManager *event_manager,
                                  VkrDeviceRequirements *device_requirements,
+                                 const VkrRendererBackendConfig *backend_config,
                                  VkrRendererError *out_error) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(window != NULL, "Window is NULL");
@@ -118,6 +235,11 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->ui_pipeline = VKR_PIPELINE_HANDLE_INVALID;
   renderer->ui_material = VKR_MATERIAL_HANDLE_INVALID;
   renderer->ui_instance_state = (VkrRendererInstanceStateHandle){0};
+  renderer->world_renderpass = NULL;
+  renderer->ui_renderpass = NULL;
+  renderer->world_render_targets = NULL;
+  renderer->ui_render_targets = NULL;
+  renderer->render_target_count = 0;
   renderer->draw_state = (VkrShaderStateObject){.instance_state = {0}};
   renderer->frame_number = 0;
 
@@ -140,12 +262,46 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
 
   uint32_t width = (uint32_t)window->width;
   uint32_t height = (uint32_t)window->height;
+  VkrRenderPassConfig pass_configs[2] = {
+      {.name = string8_lit("Renderpass.Builtin.World"),
+       .prev_name = {0},
+       .next_name = string8_lit("Renderpass.Builtin.UI"),
+       .render_area = (Vec4){0, 0, (float32_t)width, (float32_t)height},
+       .clear_color = (Vec4){0.1f, 0.1f, 0.2f, 1.0f},
+       .clear_flags = VKR_RENDERPASS_CLEAR_COLOR | VKR_RENDERPASS_CLEAR_DEPTH},
+      {.name = string8_lit("Renderpass.Builtin.UI"),
+       .prev_name = string8_lit("Renderpass.Builtin.World"),
+       .next_name = (String8){0},
+       .render_area = (Vec4){0, 0, (float32_t)width, (float32_t)height},
+       .clear_color = (Vec4){0, 0, 0, 0},
+       .clear_flags = VKR_RENDERPASS_CLEAR_NONE}};
+
+  VkrRendererBackendConfig local_backend_config = {
+      .application_name = "vulkan_renderer",
+      .renderpass_count = ArrayCount(pass_configs),
+      .pass_configs = pass_configs,
+      .on_render_target_refresh_required =
+          renderer_frontend_on_target_refresh_required,
+  };
+
+  const VkrRendererBackendConfig *backend_cfg =
+      backend_config ? backend_config : &local_backend_config;
+  g_renderer_rt_refresh = renderer;
+
   if (!renderer->backend.initialize(&renderer->backend_state, backend_type,
-                                    window, width, height,
-                                    device_requirements)) {
+                                    window, width, height, device_requirements,
+                                    backend_cfg)) {
+    g_renderer_rt_refresh = NULL;
     *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
     return false_v;
   }
+
+  renderer->world_renderpass = vkr_renderer_renderpass_get(
+      renderer, string8_lit("Renderpass.Builtin.World"));
+  renderer->ui_renderpass = vkr_renderer_renderpass_get(
+      renderer, string8_lit("Renderpass.Builtin.UI"));
+
+  renderer_frontend_regenerate_render_targets(renderer);
 
   // Subscribe to window resize events internally
   event_manager_subscribe(renderer->event_manager, EVENT_TYPE_WINDOW_RESIZE,
@@ -199,6 +355,31 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   vkr_mesh_manager_shutdown(&rf->mesh_manager);
   vkr_material_system_shutdown(&rf->material_system);
   vkr_geometry_system_shutdown(&rf->geometry_system);
+
+  if (rf->world_render_targets && rf->render_target_count > 0) {
+    for (uint32_t i = 0; i < rf->render_target_count; ++i) {
+      if (rf->world_render_targets[i]) {
+        vkr_renderer_render_target_destroy(renderer,
+                                           rf->world_render_targets[i],
+                                           false_v);
+      }
+      if (rf->ui_render_targets && rf->ui_render_targets[i]) {
+        vkr_renderer_render_target_destroy(renderer, rf->ui_render_targets[i],
+                                           false_v);
+      }
+    }
+  } else if (rf->ui_render_targets && rf->render_target_count > 0) {
+    for (uint32_t i = 0; i < rf->render_target_count; ++i) {
+      if (rf->ui_render_targets[i]) {
+        vkr_renderer_render_target_destroy(renderer, rf->ui_render_targets[i],
+                                           false_v);
+      }
+    }
+  }
+  rf->render_target_count = 0;
+  rf->world_render_targets = NULL;
+  rf->ui_render_targets = NULL;
+  g_renderer_rt_refresh = NULL;
 
   if (renderer->backend_state && renderer->backend.shutdown) {
     renderer->backend.shutdown(renderer->backend_state);
@@ -591,6 +772,127 @@ VkrRendererError vkr_renderer_upload_buffer(VkrRendererFrontendHandle renderer,
   return renderer->backend.buffer_upload(renderer->backend_state, handle,
                                          offset, size, data);
 }
+
+VkrRenderPassHandle vkr_renderer_renderpass_create(
+    VkrRendererFrontendHandle renderer, const VkrRenderPassConfig *cfg) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(cfg != NULL, "Render pass config is NULL");
+  if (!renderer->backend.renderpass_create) {
+    return NULL;
+  }
+  return renderer->backend.renderpass_create(renderer->backend_state, cfg);
+}
+
+void vkr_renderer_renderpass_destroy(VkrRendererFrontendHandle renderer,
+                                     VkrRenderPassHandle pass) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!pass || !renderer->backend.renderpass_destroy) {
+    return;
+  }
+  renderer->backend.renderpass_destroy(renderer->backend_state, pass);
+}
+
+VkrRenderPassHandle vkr_renderer_renderpass_get(VkrRendererFrontendHandle renderer,
+                                                String8 name) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.renderpass_get || name.length == 0) {
+    return NULL;
+  }
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+  Scratch scratch = scratch_create(rf->scratch_arena);
+  char *cstr = arena_alloc(scratch.arena, name.length + 1,
+                           ARENA_MEMORY_TAG_STRING);
+  MemCopy(cstr, name.str, (size_t)name.length);
+  cstr[name.length] = '\0';
+  VkrRenderPassHandle handle =
+      renderer->backend.renderpass_get(renderer->backend_state, cstr);
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+  return handle;
+}
+
+VkrRenderTargetHandle vkr_renderer_render_target_create(
+    VkrRendererFrontendHandle renderer, const VkrRenderTargetDesc *desc,
+    VkrRenderPassHandle pass) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(desc != NULL, "Render target description is NULL");
+  if (!renderer->backend.render_target_create) {
+    return NULL;
+  }
+  return renderer->backend.render_target_create(renderer->backend_state, desc,
+                                                pass);
+}
+
+void vkr_renderer_render_target_destroy(VkrRendererFrontendHandle renderer,
+                                        VkrRenderTargetHandle target,
+                                        bool8_t free_internal_memory) {
+  (void)free_internal_memory;
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!target || !renderer->backend.render_target_destroy) {
+    return;
+  }
+  renderer->backend.render_target_destroy(renderer->backend_state, target);
+}
+
+VkrRendererError vkr_renderer_begin_render_pass(
+    VkrRendererFrontendHandle renderer, VkrRenderPassHandle pass,
+    VkrRenderTargetHandle target) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(renderer->frame_active,
+             "Begin render pass called outside of frame");
+  if (!renderer->backend.begin_render_pass) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+  return renderer->backend.begin_render_pass(renderer->backend_state, pass,
+                                             target);
+}
+
+VkrRendererError
+vkr_renderer_end_render_pass(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(renderer->frame_active, "End render pass called outside of frame");
+  if (!renderer->backend.end_render_pass) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+  return renderer->backend.end_render_pass(renderer->backend_state);
+}
+
+VkrTextureOpaqueHandle
+vkr_renderer_window_attachment_get(VkrRendererFrontendHandle renderer,
+                                   uint32_t image_index) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.window_attachment_get) {
+    return NULL;
+  }
+  return renderer->backend.window_attachment_get(renderer->backend_state,
+                                                 image_index);
+}
+
+VkrTextureOpaqueHandle
+vkr_renderer_depth_attachment_get(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.depth_attachment_get) {
+    return NULL;
+  }
+  return renderer->backend.depth_attachment_get(renderer->backend_state);
+}
+
+uint32_t
+vkr_renderer_window_attachment_count(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.window_attachment_count_get) {
+    return 0;
+  }
+  return renderer->backend.window_attachment_count_get(renderer->backend_state);
+}
+
+uint32_t vkr_renderer_window_image_index(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.window_attachment_index_get) {
+    return 0;
+  }
+  return renderer->backend.window_attachment_index_get(renderer->backend_state);
+}
+
 VkrRendererError vkr_renderer_begin_frame(VkrRendererFrontendHandle renderer,
                                           float64_t delta_time) {
   assert_log(renderer != NULL, "Renderer is NULL");
@@ -679,25 +981,6 @@ void vkr_renderer_draw_indexed(VkrRendererFrontendHandle renderer,
   renderer->backend.draw_indexed(renderer->backend_state, index_count,
                                  instance_count, first_index, vertex_offset,
                                  first_instance);
-}
-
-VkrRendererError
-vkr_renderer_begin_render_pass(VkrRendererFrontendHandle renderer,
-                               VkrPipelineDomain domain) {
-  assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(renderer->frame_active,
-             "Begin render pass called outside of frame");
-  assert_log(domain != VKR_PIPELINE_DOMAIN_COUNT, "Invalid domain");
-
-  return renderer->backend.begin_render_pass(renderer->backend_state, domain);
-}
-
-VkrRendererError
-vkr_renderer_end_render_pass(VkrRendererFrontendHandle renderer) {
-  assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(renderer->frame_active, "End render pass called outside of frame");
-
-  return renderer->backend.end_render_pass(renderer->backend_state);
 }
 
 VkrRendererError vkr_renderer_end_frame(VkrRendererFrontendHandle renderer,
@@ -1191,12 +1474,26 @@ void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer) {
   RendererFrontend *rf = (RendererFrontend *)renderer;
 
   rf->frame_number++;
+  uint32_t image_index = vkr_renderer_window_image_index(renderer);
+  if (!rf->world_renderpass || !rf->ui_renderpass ||
+      !rf->world_render_targets || !rf->ui_render_targets ||
+      image_index >= rf->render_target_count) {
+    log_error("Render targets or render passes unavailable for draw frame");
+    return;
+  }
+
+  VkrRenderTargetHandle world_target = rf->world_render_targets[image_index];
+  VkrRenderTargetHandle ui_target = rf->ui_render_targets[image_index];
+  if (!world_target || !ui_target) {
+    log_error("Render target missing for swapchain image %u", image_index);
+    return;
+  }
 
   //====================== WORLD START =======================
 
   VkrRendererError begin_err = VKR_RENDERER_ERROR_NONE;
-  begin_err =
-      vkr_renderer_begin_render_pass(renderer, VKR_PIPELINE_DOMAIN_WORLD);
+  begin_err = vkr_renderer_begin_render_pass(renderer, rf->world_renderpass,
+                                             world_target);
   if (begin_err != VKR_RENDERER_ERROR_NONE) {
     String8 err_str = vkr_renderer_get_error_string(begin_err);
     log_error("Failed to begin world render pass: %s", string8_cstr(&err_str));
@@ -1302,7 +1599,8 @@ void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer) {
   //====================== UI START ========================
 
   begin_err = VKR_RENDERER_ERROR_NONE;
-  begin_err = vkr_renderer_begin_render_pass(renderer, VKR_PIPELINE_DOMAIN_UI);
+  begin_err =
+      vkr_renderer_begin_render_pass(renderer, rf->ui_renderpass, ui_target);
   if (begin_err != VKR_RENDERER_ERROR_NONE) {
     String8 err_str = vkr_renderer_get_error_string(begin_err);
     log_error("Failed to begin UI render pass: %s", string8_cstr(&err_str));

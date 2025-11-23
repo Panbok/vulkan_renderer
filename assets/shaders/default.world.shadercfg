@@ -4,7 +4,7 @@
 
 version=1.0
 name=shader.default.world
-renderpass=renderpass.default.world
+renderpass=Renderpass.Builtin.World
 stages=vertex,fragment
 stagefiles=assets/shaders/default.world.spv
 use_instance=1
