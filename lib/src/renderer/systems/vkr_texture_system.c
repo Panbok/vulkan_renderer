@@ -273,6 +273,71 @@ VkrTextureHandle vkr_texture_system_acquire(VkrTextureSystem *system,
   return VKR_TEXTURE_HANDLE_INVALID;
 }
 
+bool8_t vkr_texture_system_create_writable(
+    VkrTextureSystem *system, String8 name,
+    const VkrTextureDescription *desc, VkrTextureHandle *out_handle,
+    VkrRendererError *out_error) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(desc != NULL, "Description is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  if (!name.str) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  uint32_t free_slot_index = vkr_texture_system_find_free_slot(system);
+  if (free_slot_index == VKR_INVALID_ID) {
+    log_error("Texture system is full (max=%u)",
+              system->config.max_texture_count);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
+  VkrTextureDescription desc_copy = *desc;
+  bitset8_set(&desc_copy.properties, VKR_TEXTURE_PROPERTY_WRITABLE_BIT);
+  desc_copy.id = free_slot_index + 1;
+  desc_copy.generation = system->generation_counter++;
+
+  VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
+  VkrTextureOpaqueHandle handle = vkr_renderer_create_writable_texture(
+      system->renderer, &desc_copy, &renderer_error);
+  if (renderer_error != VKR_RENDERER_ERROR_NONE || handle == NULL) {
+    *out_error = renderer_error;
+    return false_v;
+  }
+
+  char *stable_key = (char *)arena_alloc(system->arena, name.length + 1,
+                                         ARENA_MEMORY_TAG_STRING);
+  if (!stable_key) {
+    log_error("Failed to allocate key copy for texture map");
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    vkr_renderer_destroy_texture(system->renderer, handle);
+    return false_v;
+  }
+  MemCopy(stable_key, name.str, (size_t)name.length);
+  stable_key[name.length] = '\0';
+
+  VkrTexture *texture = &system->textures.data[free_slot_index];
+  MemZero(texture, sizeof(*texture));
+  texture->description = desc_copy;
+  texture->handle = handle;
+
+  VkrTextureEntry entry = {
+      .index = free_slot_index, .ref_count = 1, .auto_release = false_v};
+  vkr_hash_table_insert_VkrTextureEntry(&system->texture_map, stable_key,
+                                        entry);
+
+  if (out_handle) {
+    *out_handle = (VkrTextureHandle){
+        .id = texture->description.id,
+        .generation = texture->description.generation};
+  }
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return true_v;
+}
+
 void vkr_texture_system_release(VkrTextureSystem *system,
                                 String8 texture_name) {
   assert_log(system != NULL, "System is NULL");
@@ -371,6 +436,172 @@ VkrRendererError vkr_texture_system_update_sampler(
     texture->description = updated_desc;
   }
   return err;
+}
+
+VkrRendererError vkr_texture_system_write(VkrTextureSystem *system,
+                                          VkrTextureHandle handle,
+                                          const void *data, uint64_t size) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(data != NULL, "Data is NULL");
+
+  VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
+  if (!texture || !texture->handle) {
+    return VKR_RENDERER_ERROR_INVALID_HANDLE;
+  }
+
+  if (!bitset8_is_set(&texture->description.properties,
+                      VKR_TEXTURE_PROPERTY_WRITABLE_BIT)) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  uint64_t expected_size = (uint64_t)texture->description.width *
+                           (uint64_t)texture->description.height *
+                           (uint64_t)texture->description.channels;
+  if (size < expected_size) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  return vkr_renderer_write_texture(system->renderer, texture->handle, data,
+                                    size);
+}
+
+VkrRendererError vkr_texture_system_write_region(
+    VkrTextureSystem *system, VkrTextureHandle handle,
+    const VkrTextureWriteRegion *region, const void *data, uint64_t size) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(region != NULL, "Region is NULL");
+  assert_log(data != NULL, "Data is NULL");
+
+  VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
+  if (!texture || !texture->handle) {
+    return VKR_RENDERER_ERROR_INVALID_HANDLE;
+  }
+
+  if (!bitset8_is_set(&texture->description.properties,
+                      VKR_TEXTURE_PROPERTY_WRITABLE_BIT)) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  if (region->mip_level >= 32) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  if (region->width == 0 || region->height == 0) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  uint32_t mip_width =
+      Max(1u, texture->description.width >> region->mip_level);
+  uint32_t mip_height =
+      Max(1u, texture->description.height >> region->mip_level);
+  if (region->x + region->width > mip_width ||
+      region->y + region->height > mip_height) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  uint64_t expected_size =
+      (uint64_t)region->width * (uint64_t)region->height *
+      (uint64_t)texture->description.channels;
+  if (size < expected_size) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  return vkr_renderer_write_texture_region(system->renderer, texture->handle,
+                                           region, data, size);
+}
+
+bool8_t vkr_texture_system_resize(VkrTextureSystem *system,
+                                  VkrTextureHandle handle, uint32_t new_width,
+                                  uint32_t new_height, bool8_t preserve_contents,
+                                  VkrTextureHandle *out_handle,
+                                  VkrRendererError *out_error) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  if (new_width == 0 || new_height == 0) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
+  if (!texture || !texture->handle) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
+    return false_v;
+  }
+
+  if (!bitset8_is_set(&texture->description.properties,
+                      VKR_TEXTURE_PROPERTY_WRITABLE_BIT)) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  VkrRendererError err = vkr_renderer_resize_texture(
+      system->renderer, texture->handle, new_width, new_height,
+      preserve_contents);
+  if (err != VKR_RENDERER_ERROR_NONE) {
+    *out_error = err;
+    return false_v;
+  }
+
+  texture->description.width = new_width;
+  texture->description.height = new_height;
+  texture->description.generation = system->generation_counter++;
+
+  if (out_handle) {
+    *out_handle = (VkrTextureHandle){.id = texture->description.id,
+                                     .generation =
+                                         texture->description.generation};
+  }
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return true_v;
+}
+
+bool8_t vkr_texture_system_register_external(
+    VkrTextureSystem *system, String8 name,
+    VkrTextureOpaqueHandle backend_handle,
+    const VkrTextureDescription *desc, VkrTextureHandle *out_handle) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(name.str != NULL, "Name is NULL");
+  assert_log(desc != NULL, "Description is NULL");
+  assert_log(backend_handle != NULL, "Backend handle is NULL");
+
+  uint32_t free_slot_index = vkr_texture_system_find_free_slot(system);
+  if (free_slot_index == VKR_INVALID_ID) {
+    log_error("Texture system is full (max=%u)",
+              system->config.max_texture_count);
+    return false_v;
+  }
+
+  char *stable_key = (char *)arena_alloc(system->arena, name.length + 1,
+                                         ARENA_MEMORY_TAG_STRING);
+  if (!stable_key) {
+    log_error("Failed to allocate key copy for external texture map");
+    return false_v;
+  }
+  MemCopy(stable_key, name.str, (size_t)name.length);
+  stable_key[name.length] = '\0';
+
+  VkrTexture *texture = &system->textures.data[free_slot_index];
+  MemZero(texture, sizeof(*texture));
+  texture->description = *desc;
+  texture->description.id = free_slot_index + 1;
+  texture->description.generation = system->generation_counter++;
+  texture->handle = backend_handle;
+
+  VkrTextureEntry entry = {.index = free_slot_index,
+                           .ref_count = 1,
+                           .auto_release = false_v};
+  vkr_hash_table_insert_VkrTextureEntry(&system->texture_map, stable_key,
+                                        entry);
+
+  if (out_handle) {
+    *out_handle = (VkrTextureHandle){
+        .id = texture->description.id,
+        .generation = texture->description.generation};
+  }
+
+  return true_v;
 }
 
 void vkr_texture_destroy(VkrRendererFrontendHandle renderer,

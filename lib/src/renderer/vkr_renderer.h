@@ -444,6 +444,15 @@ typedef struct VkrTextureDescription {
   bool8_t anisotropy_enable;
 } VkrTextureDescription;
 
+typedef struct VkrTextureWriteRegion {
+  uint32_t mip_level;
+  uint32_t array_layer;
+  uint32_t x;
+  uint32_t y;
+  uint32_t width;
+  uint32_t height;
+} VkrTextureWriteRegion;
+
 // ----------------------------------------------------------------------------
 // Instance state & material state
 // ----------------------------------------------------------------------------
@@ -648,6 +657,22 @@ vkr_renderer_create_texture(VkrRendererFrontendHandle renderer,
                             const VkrTextureDescription *description,
                             const void *initial_data,
                             VkrRendererError *out_error);
+VkrTextureOpaqueHandle vkr_renderer_create_writable_texture(
+    VkrRendererFrontendHandle renderer, const VkrTextureDescription *desc,
+    VkrRendererError *out_error);
+
+VkrRendererError
+vkr_renderer_write_texture(VkrRendererFrontendHandle renderer,
+                           VkrTextureOpaqueHandle texture, const void *data,
+                           uint64_t size);
+
+VkrRendererError vkr_renderer_write_texture_region(
+    VkrRendererFrontendHandle renderer, VkrTextureOpaqueHandle texture,
+    const VkrTextureWriteRegion *region, const void *data, uint64_t size);
+
+VkrRendererError vkr_renderer_resize_texture(
+    VkrRendererFrontendHandle renderer, VkrTextureOpaqueHandle texture,
+    uint32_t new_width, uint32_t new_height, bool8_t preserve_contents);
 
 void vkr_renderer_destroy_texture(VkrRendererFrontendHandle renderer,
                                   VkrTextureOpaqueHandle texture);
@@ -822,6 +847,14 @@ typedef struct VkrRendererBackendInterface {
   VkrRendererError (*texture_update)(void *backend_state,
                                      VkrBackendResourceHandle handle,
                                      const VkrTextureDescription *desc);
+  VkrRendererError (*texture_write)(void *backend_state,
+                                    VkrBackendResourceHandle handle,
+                                    const VkrTextureWriteRegion *region,
+                                    const void *data, uint64_t size);
+  VkrRendererError (*texture_resize)(void *backend_state,
+                                     VkrBackendResourceHandle handle,
+                                     uint32_t new_width, uint32_t new_height,
+                                     bool8_t preserve_contents);
   void (*texture_destroy)(void *backend_state, VkrBackendResourceHandle handle);
 
   // Pipeline creation uses VertexInputAttributeDescription and

@@ -139,12 +139,32 @@ bool8_t vulkan_image_transition_layout(VulkanBackendState *state,
                                        VkFormat format,
                                        VkImageLayout old_layout,
                                        VkImageLayout new_layout) {
+  return vulkan_image_transition_layout_range(state, image, command_buffer,
+                                              format, old_layout, new_layout,
+                                              NULL);
+}
+
+bool8_t vulkan_image_transition_layout_range(
+    VulkanBackendState *state, VulkanImage *image,
+    VulkanCommandBuffer *command_buffer, VkFormat format,
+    VkImageLayout old_layout, VkImageLayout new_layout,
+    const VkImageSubresourceRange *subresource_range) {
   assert_log(state != NULL, "State is NULL");
   assert_log(image != NULL, "Image is NULL");
   assert_log(command_buffer != NULL, "Command buffer is NULL");
   assert_log(format != VK_FORMAT_UNDEFINED, "Format is undefined");
   assert_log(new_layout != VK_IMAGE_LAYOUT_UNDEFINED,
              "New layout is undefined");
+
+  VkImageSubresourceRange range = subresource_range
+                                      ? *subresource_range
+                                      : (VkImageSubresourceRange){
+                                            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                            .baseMipLevel = 0,
+                                            .levelCount = image->mip_levels,
+                                            .baseArrayLayer = 0,
+                                            .layerCount = image->array_layers,
+                                        };
 
   VkImageMemoryBarrier barrier = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -155,15 +175,7 @@ bool8_t vulkan_image_transition_layout(VulkanBackendState *state,
       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
       .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
       .image = image->handle,
-      .subresourceRange =
-          {
-              // todo: support depth and stencil aspects
-              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-              .baseMipLevel = 0,
-              .levelCount = image->mip_levels,
-              .baseArrayLayer = 0,
-              .layerCount = image->array_layers,
-          },
+      .subresourceRange = range,
   };
 
   VkPipelineStageFlags source_stage;
@@ -186,6 +198,24 @@ bool8_t vulkan_image_transition_layout(VulkanBackendState *state,
     barrier.srcAccessMask = 0;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    destination_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  } else if (old_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+             new_layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+    barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    source_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    destination_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+  } else if (old_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+             new_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+    barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    source_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    destination_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+  } else if (old_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL &&
+             new_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     destination_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
   } else {
     log_fatal("Unsupported layout transition!");

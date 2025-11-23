@@ -230,6 +230,8 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .buffer_upload = renderer_vulkan_upload_buffer,
       .texture_create = renderer_vulkan_create_texture,
       .texture_update = renderer_vulkan_update_texture,
+      .texture_write = renderer_vulkan_write_texture,
+      .texture_resize = renderer_vulkan_resize_texture,
       .texture_destroy = renderer_vulkan_destroy_texture,
       .graphics_pipeline_create = renderer_vulkan_create_graphics_pipeline,
       .pipeline_update_state = renderer_vulkan_update_pipeline_state,
@@ -974,7 +976,10 @@ renderer_vulkan_create_texture(void *backend_state,
                                const void *initial_data) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(desc != NULL, "Texture description is NULL");
-  assert_log(initial_data != NULL, "Initial data is NULL");
+  bool32_t writable =
+      bitset8_is_set(&desc->properties, VKR_TEXTURE_PROPERTY_WRITABLE_BIT);
+  assert_log(initial_data != NULL || writable,
+             "Initial data is NULL and texture is not writable");
 
   log_debug("Creating Vulkan texture");
 
@@ -1010,35 +1015,47 @@ renderer_vulkan_create_texture(void *backend_state,
   VkrBufferTypeFlags buffer_type = bitset8_create();
   bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
 
-  const VkrBufferDescription staging_buffer_desc = {
-      .size = image_size,
-      .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
-      .memory_properties = vkr_memory_property_flags_from_bits(
-          VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
-      .buffer_type = buffer_type,
-      .bind_on_create = true_v,
-  };
+  Scratch scratch = {0};
+  bool8_t scratch_valid = false_v;
+  struct s_BufferHandle *staging_buffer = NULL;
 
-  Scratch scratch = scratch_create(state->temp_arena);
-  struct s_BufferHandle *staging_buffer = arena_alloc(
-      scratch.arena, sizeof(struct s_BufferHandle), ARENA_MEMORY_TAG_RENDERER);
-  if (!staging_buffer) {
-    log_fatal("Failed to allocate staging buffer");
-    return (VkrBackendResourceHandle){.ptr = NULL};
-  }
+  if (initial_data) {
+    const VkrBufferDescription staging_buffer_desc = {
+        .size = image_size,
+        .usage = vkr_buffer_usage_flags_from_bits(
+            VKR_BUFFER_USAGE_TRANSFER_SRC),
+        .memory_properties = vkr_memory_property_flags_from_bits(
+            VKR_MEMORY_PROPERTY_HOST_VISIBLE |
+            VKR_MEMORY_PROPERTY_HOST_COHERENT),
+        .buffer_type = buffer_type,
+        .bind_on_create = true_v,
+    };
 
-  if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
-    log_fatal("Failed to create staging buffer");
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
-  }
+    scratch = scratch_create(state->temp_arena);
+    scratch_valid = true_v;
+    staging_buffer =
+        arena_alloc(scratch.arena, sizeof(struct s_BufferHandle),
+                    ARENA_MEMORY_TAG_RENDERER);
+    if (!staging_buffer) {
+      log_fatal("Failed to allocate staging buffer");
+      if (scratch_valid)
+        scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      return (VkrBackendResourceHandle){.ptr = NULL};
+    }
 
-  if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, image_size, 0,
-                               initial_data)) {
-    log_fatal("Failed to load data into staging buffer");
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
+    if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
+      log_fatal("Failed to create staging buffer");
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      return (VkrBackendResourceHandle){.ptr = NULL};
+    }
+
+    if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, image_size,
+                                 0, initial_data)) {
+      log_fatal("Failed to load data into staging buffer");
+      vulkan_buffer_destroy(state, &staging_buffer->buffer);
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      return (VkrBackendResourceHandle){.ptr = NULL};
+    }
   }
 
   if (!vulkan_image_create(
@@ -1060,115 +1077,146 @@ renderer_vulkan_create_texture(void *backend_state,
           state, &temp_command_buffer)) {
     log_fatal("Failed to allocate and begin single use command buffer");
     vulkan_image_destroy(state, &texture->texture.image);
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    if (staging_buffer)
+      vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    if (scratch_valid)
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
-  if (!vulkan_image_transition_layout(
-          state, &texture->texture.image, &temp_command_buffer, image_format,
-          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)) {
-    log_fatal("Failed to transition image layout");
-    vkEndCommandBuffer(temp_command_buffer.handle);
-    vkFreeCommandBuffers(state->device.logical_device,
-                         state->device.graphics_command_pool, 1,
-                         &temp_command_buffer.handle);
-    vulkan_image_destroy(state, &texture->texture.image);
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
-  }
-
-  if (!vulkan_image_copy_from_buffer(state, &texture->texture.image,
-                                     staging_buffer->buffer.handle,
-                                     &temp_command_buffer)) {
-    log_fatal("Failed to copy buffer to image");
-    vkEndCommandBuffer(temp_command_buffer.handle);
-    vkFreeCommandBuffers(state->device.logical_device,
-                         state->device.graphics_command_pool, 1,
-                         &temp_command_buffer.handle);
-    vulkan_image_destroy(state, &texture->texture.image);
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
-  }
-
-  bool8_t generated_mips = true_v;
-  if (texture->texture.image.mip_levels > 1 && linear_blit_supported) {
-    generated_mips = vulkan_image_generate_mipmaps(
-        state, &texture->texture.image, image_format, &temp_command_buffer);
-    if (!generated_mips) {
-      // Fall back to a single mip level if generation failed
-      log_error("Mipmap generation failed, falling back to single mip level. "
-                "Recreating image to avoid memory waste.");
-
-      vulkan_image_destroy(state, &texture->texture.image);
-
-      if (!vulkan_image_create(
-              state, VK_IMAGE_TYPE_2D, desc->width, desc->height, image_format,
-              VK_IMAGE_TILING_OPTIMAL,
-              VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                  VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1, VK_IMAGE_VIEW_TYPE_2D,
-              VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
-        log_fatal("Failed to recreate Vulkan image with single mip level");
-        vkEndCommandBuffer(temp_command_buffer.handle);
-        vkFreeCommandBuffers(state->device.logical_device,
-                             state->device.graphics_command_pool, 1,
-                             &temp_command_buffer.handle);
-        vulkan_buffer_destroy(state, &staging_buffer->buffer);
-        scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-        return (VkrBackendResourceHandle){.ptr = NULL};
-      }
-
-      if (!vulkan_image_transition_layout(
-              state, &texture->texture.image, &temp_command_buffer,
-              image_format, VK_IMAGE_LAYOUT_UNDEFINED,
-              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)) {
-        log_fatal("Failed to transition recreated image layout");
-        vkEndCommandBuffer(temp_command_buffer.handle);
-        vkFreeCommandBuffers(state->device.logical_device,
-                             state->device.graphics_command_pool, 1,
-                             &temp_command_buffer.handle);
-        vulkan_image_destroy(state, &texture->texture.image);
-        vulkan_buffer_destroy(state, &staging_buffer->buffer);
-        scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-        return (VkrBackendResourceHandle){.ptr = NULL};
-      }
-
-      if (!vulkan_image_copy_from_buffer(state, &texture->texture.image,
-                                         staging_buffer->buffer.handle,
-                                         &temp_command_buffer)) {
-        log_fatal("Failed to copy buffer to recreated image");
-        vkEndCommandBuffer(temp_command_buffer.handle);
-        vkFreeCommandBuffers(state->device.logical_device,
-                             state->device.graphics_command_pool, 1,
-                             &temp_command_buffer.handle);
-        vulkan_image_destroy(state, &texture->texture.image);
-        vulkan_buffer_destroy(state, &staging_buffer->buffer);
-        scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-        return (VkrBackendResourceHandle){.ptr = NULL};
-      }
-
-      texture->texture.image.mip_levels = 1;
-      linear_blit_supported = false_v;
-    }
-  }
-
-  if (texture->texture.image.mip_levels == 1 || !linear_blit_supported) {
+  if (initial_data) {
     if (!vulkan_image_transition_layout(
             state, &texture->texture.image, &temp_command_buffer, image_format,
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)) {
       log_fatal("Failed to transition image layout");
       vkEndCommandBuffer(temp_command_buffer.handle);
       vkFreeCommandBuffers(state->device.logical_device,
                            state->device.graphics_command_pool, 1,
                            &temp_command_buffer.handle);
       vulkan_image_destroy(state, &texture->texture.image);
-      vulkan_buffer_destroy(state, &staging_buffer->buffer);
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      if (staging_buffer)
+        vulkan_buffer_destroy(state, &staging_buffer->buffer);
+      if (scratch_valid)
+        scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      return (VkrBackendResourceHandle){.ptr = NULL};
+    }
+
+    if (!vulkan_image_copy_from_buffer(state, &texture->texture.image,
+                                       staging_buffer->buffer.handle,
+                                       &temp_command_buffer)) {
+      log_fatal("Failed to copy buffer to image");
+      vkEndCommandBuffer(temp_command_buffer.handle);
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &temp_command_buffer.handle);
+      vulkan_image_destroy(state, &texture->texture.image);
+      if (staging_buffer)
+        vulkan_buffer_destroy(state, &staging_buffer->buffer);
+      if (scratch_valid)
+        scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      return (VkrBackendResourceHandle){.ptr = NULL};
+    }
+
+    bool8_t generated_mips = true_v;
+    if (texture->texture.image.mip_levels > 1 && linear_blit_supported) {
+      generated_mips = vulkan_image_generate_mipmaps(
+          state, &texture->texture.image, image_format, &temp_command_buffer);
+      if (!generated_mips) {
+        // Fall back to a single mip level if generation failed
+        log_error("Mipmap generation failed, falling back to single mip level. "
+                  "Recreating image to avoid memory waste.");
+
+        vulkan_image_destroy(state, &texture->texture.image);
+
+        if (!vulkan_image_create(
+                state, VK_IMAGE_TYPE_2D, desc->width, desc->height,
+                image_format, VK_IMAGE_TILING_OPTIMAL,
+                VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                    VK_IMAGE_USAGE_SAMPLED_BIT |
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1,
+                VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
+                &texture->texture.image)) {
+          log_fatal("Failed to recreate Vulkan image with single mip level");
+          vkEndCommandBuffer(temp_command_buffer.handle);
+          vkFreeCommandBuffers(state->device.logical_device,
+                               state->device.graphics_command_pool, 1,
+                               &temp_command_buffer.handle);
+          if (staging_buffer)
+            vulkan_buffer_destroy(state, &staging_buffer->buffer);
+          if (scratch_valid)
+            scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+          return (VkrBackendResourceHandle){.ptr = NULL};
+        }
+
+        if (!vulkan_image_transition_layout(
+                state, &texture->texture.image, &temp_command_buffer,
+                image_format, VK_IMAGE_LAYOUT_UNDEFINED,
+                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)) {
+          log_fatal("Failed to transition recreated image layout");
+          vkEndCommandBuffer(temp_command_buffer.handle);
+          vkFreeCommandBuffers(state->device.logical_device,
+                               state->device.graphics_command_pool, 1,
+                               &temp_command_buffer.handle);
+          vulkan_image_destroy(state, &texture->texture.image);
+          if (staging_buffer)
+            vulkan_buffer_destroy(state, &staging_buffer->buffer);
+          if (scratch_valid)
+            scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+          return (VkrBackendResourceHandle){.ptr = NULL};
+        }
+
+        if (!vulkan_image_copy_from_buffer(state, &texture->texture.image,
+                                           staging_buffer->buffer.handle,
+                                           &temp_command_buffer)) {
+          log_fatal("Failed to copy buffer to recreated image");
+          vkEndCommandBuffer(temp_command_buffer.handle);
+          vkFreeCommandBuffers(state->device.logical_device,
+                               state->device.graphics_command_pool, 1,
+                               &temp_command_buffer.handle);
+          vulkan_image_destroy(state, &texture->texture.image);
+          if (staging_buffer)
+            vulkan_buffer_destroy(state, &staging_buffer->buffer);
+          if (scratch_valid)
+            scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+          return (VkrBackendResourceHandle){.ptr = NULL};
+        }
+
+        texture->texture.image.mip_levels = 1;
+        linear_blit_supported = false_v;
+      }
+    }
+
+    if (texture->texture.image.mip_levels == 1 || !linear_blit_supported) {
+      if (!vulkan_image_transition_layout(
+              state, &texture->texture.image, &temp_command_buffer,
+              image_format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+        log_fatal("Failed to transition image layout");
+        vkEndCommandBuffer(temp_command_buffer.handle);
+        vkFreeCommandBuffers(state->device.logical_device,
+                             state->device.graphics_command_pool, 1,
+                             &temp_command_buffer.handle);
+        vulkan_image_destroy(state, &texture->texture.image);
+        if (staging_buffer)
+          vulkan_buffer_destroy(state, &staging_buffer->buffer);
+        if (scratch_valid)
+          scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+        return (VkrBackendResourceHandle){.ptr = NULL};
+      }
+    }
+  } else {
+    if (!vulkan_image_transition_layout(
+            state, &texture->texture.image, &temp_command_buffer, image_format,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+      log_fatal("Failed to transition writable image layout");
+      vkEndCommandBuffer(temp_command_buffer.handle);
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &temp_command_buffer.handle);
+      vulkan_image_destroy(state, &texture->texture.image);
       return (VkrBackendResourceHandle){.ptr = NULL};
     }
   }
@@ -1179,8 +1227,10 @@ renderer_vulkan_create_texture(void *backend_state,
               ->handle)) {
     log_fatal("Failed to end single use command buffer");
     vulkan_image_destroy(state, &texture->texture.image);
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    if (staging_buffer)
+      vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    if (scratch_valid)
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -1244,8 +1294,10 @@ renderer_vulkan_create_texture(void *backend_state,
   }
   texture->description.generation++;
 
-  vulkan_buffer_destroy(state, &staging_buffer->buffer);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  if (staging_buffer)
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+  if (scratch_valid)
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
 
   return (VkrBackendResourceHandle){.ptr = texture};
 }
@@ -1328,6 +1380,413 @@ renderer_vulkan_update_texture(void *backend_state,
   texture->description.mag_filter = desc->mag_filter;
   texture->description.mip_filter = desc->mip_filter;
   texture->description.anisotropy_enable = desc->anisotropy_enable;
+  texture->description.generation++;
+
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+VkrRendererError renderer_vulkan_write_texture(
+    void *backend_state, VkrBackendResourceHandle handle,
+    const VkrTextureWriteRegion *region, const void *data, uint64_t size) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(handle.ptr != NULL, "Texture handle is NULL");
+  assert_log(data != NULL, "Texture data is NULL");
+  assert_log(size > 0, "Texture data size must be greater than zero");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_TextureHandle *texture = (struct s_TextureHandle *)handle.ptr;
+
+  uint32_t mip_level = region ? region->mip_level : 0;
+  uint32_t array_layer = region ? region->array_layer : 0;
+  uint32_t x = region ? region->x : 0;
+  uint32_t y = region ? region->y : 0;
+  uint32_t width =
+      region ? region->width : (uint32_t)texture->texture.image.width;
+  uint32_t height =
+      region ? region->height : (uint32_t)texture->texture.image.height;
+
+  if (width == 0 || height == 0) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  if (mip_level >= texture->texture.image.mip_levels ||
+      array_layer >= texture->texture.image.array_layers) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  uint32_t mip_width =
+      Max(1u, texture->texture.image.width >> mip_level);
+  uint32_t mip_height =
+      Max(1u, texture->texture.image.height >> mip_level);
+
+  if (x + width > mip_width || y + height > mip_height) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  uint64_t expected_size = (uint64_t)width * (uint64_t)height *
+                           (uint64_t)texture->description.channels;
+  if (size < expected_size) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  VkrBufferTypeFlags buffer_type = bitset8_create();
+  bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
+  const VkrBufferDescription staging_buffer_desc = {
+      .size = size,
+      .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
+      .memory_properties = vkr_memory_property_flags_from_bits(
+          VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
+      .buffer_type = buffer_type,
+      .bind_on_create = true_v,
+  };
+
+  Scratch scratch = scratch_create(state->temp_arena);
+  struct s_BufferHandle *staging_buffer = arena_alloc(
+      scratch.arena, sizeof(struct s_BufferHandle), ARENA_MEMORY_TAG_RENDERER);
+  if (!staging_buffer) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  }
+
+  if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  }
+
+  if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, size, 0,
+                               data)) {
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  VulkanCommandBuffer temp_command_buffer = {0};
+  if (!vulkan_command_buffer_allocate_and_begin_single_use(
+          state, &temp_command_buffer)) {
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  VkImageSubresourceRange subresource_range = {
+      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+      .baseMipLevel = mip_level,
+      .levelCount = 1,
+      .baseArrayLayer = array_layer,
+      .layerCount = 1,
+  };
+
+  VkFormat image_format =
+      vulkan_image_format_from_texture_format(texture->description.format);
+  if (!vulkan_image_transition_layout_range(
+          state, &texture->texture.image, &temp_command_buffer, image_format,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &subresource_range)) {
+    vkEndCommandBuffer(temp_command_buffer.handle);
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1,
+                         &temp_command_buffer.handle);
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  VkBufferImageCopy copy_region = {.bufferOffset = 0,
+                                   .bufferRowLength = 0,
+                                   .bufferImageHeight = 0,
+                                   .imageSubresource = {.aspectMask =
+                                                            VK_IMAGE_ASPECT_COLOR_BIT,
+                                                        .mipLevel = mip_level,
+                                                        .baseArrayLayer =
+                                                            array_layer,
+                                                        .layerCount = 1},
+                                   .imageOffset = {(int32_t)x, (int32_t)y, 0},
+                                   .imageExtent = {width, height, 1}};
+
+  vkCmdCopyBufferToImage(
+      temp_command_buffer.handle, staging_buffer->buffer.handle,
+      texture->texture.image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+      &copy_region);
+
+  if (!vulkan_image_transition_layout_range(
+          state, &texture->texture.image, &temp_command_buffer, image_format,
+          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &subresource_range)) {
+    vkEndCommandBuffer(temp_command_buffer.handle);
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1,
+                         &temp_command_buffer.handle);
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  if (!vulkan_command_buffer_end_single_use(
+          state, &temp_command_buffer, state->device.graphics_queue,
+          array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
+              ->handle)) {
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  vkFreeCommandBuffers(state->device.logical_device,
+                       state->device.graphics_command_pool, 1,
+                       &temp_command_buffer.handle);
+
+  vulkan_buffer_destroy(state, &staging_buffer->buffer);
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+
+  texture->description.generation++;
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+VkrRendererError renderer_vulkan_resize_texture(
+    void *backend_state, VkrBackendResourceHandle handle, uint32_t new_width,
+    uint32_t new_height, bool8_t preserve_contents) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(handle.ptr != NULL, "Texture handle is NULL");
+
+  if (new_width == 0 || new_height == 0) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_TextureHandle *texture = (struct s_TextureHandle *)handle.ptr;
+
+  VkFormat image_format =
+      vulkan_image_format_from_texture_format(texture->description.format);
+  VkFormatProperties format_props;
+  vkGetPhysicalDeviceFormatProperties(state->device.physical_device,
+                                      image_format, &format_props);
+  bool32_t linear_blit_supported =
+      (format_props.optimalTilingFeatures &
+       VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+  uint32_t mip_levels =
+      linear_blit_supported
+          ? vulkan_calculate_mip_levels(new_width, new_height)
+          : 1;
+
+  VulkanImage new_image = {0};
+  if (!vulkan_image_create(
+          state, VK_IMAGE_TYPE_2D, new_width, new_height, image_format,
+          VK_IMAGE_TILING_OPTIMAL,
+          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+              VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mip_levels,
+          texture->texture.image.array_layers, VK_IMAGE_VIEW_TYPE_2D,
+          VK_IMAGE_ASPECT_COLOR_BIT, &new_image)) {
+    return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  }
+
+  VulkanCommandBuffer temp_command_buffer = {0};
+  if (!vulkan_command_buffer_allocate_and_begin_single_use(
+          state, &temp_command_buffer)) {
+    vulkan_image_destroy(state, &new_image);
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  VkImageSubresourceRange new_range = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                                       .baseMipLevel = 0,
+                                       .levelCount = new_image.mip_levels,
+                                       .baseArrayLayer = 0,
+                                       .layerCount = new_image.array_layers};
+
+  if (preserve_contents) {
+    VkImageSubresourceRange old_range = {
+        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .baseMipLevel = 0,
+        .levelCount = texture->texture.image.mip_levels,
+        .baseArrayLayer = 0,
+        .layerCount = texture->texture.image.array_layers,
+    };
+
+    if (!vulkan_image_transition_layout_range(
+            state, &texture->texture.image, &temp_command_buffer, image_format,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, &old_range)) {
+      vkEndCommandBuffer(temp_command_buffer.handle);
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &temp_command_buffer.handle);
+      vulkan_image_destroy(state, &new_image);
+      return VKR_RENDERER_ERROR_DEVICE_ERROR;
+    }
+
+    if (!vulkan_image_transition_layout_range(
+            state, &new_image, &temp_command_buffer, image_format,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            &new_range)) {
+      vkEndCommandBuffer(temp_command_buffer.handle);
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &temp_command_buffer.handle);
+      vulkan_image_destroy(state, &new_image);
+      return VKR_RENDERER_ERROR_DEVICE_ERROR;
+    }
+
+    uint32_t copy_width = Min(texture->texture.image.width, new_width);
+    uint32_t copy_height = Min(texture->texture.image.height, new_height);
+
+    if (linear_blit_supported) {
+      VkImageBlit blit = {.srcSubresource = {.aspectMask =
+                                                 VK_IMAGE_ASPECT_COLOR_BIT,
+                                             .mipLevel = 0,
+                                             .baseArrayLayer = 0,
+                                             .layerCount =
+                                                 texture->texture.image
+                                                     .array_layers},
+                          .srcOffsets = {{0, 0, 0},
+                                         {(int32_t)texture->texture.image.width,
+                                          (int32_t)texture->texture.image
+                                              .height,
+                                          1}},
+                          .dstSubresource = {.aspectMask =
+                                                 VK_IMAGE_ASPECT_COLOR_BIT,
+                                             .mipLevel = 0,
+                                             .baseArrayLayer = 0,
+                                             .layerCount =
+                                                 new_image.array_layers},
+                          .dstOffsets = {{0, 0, 0},
+                                         {(int32_t)new_width,
+                                          (int32_t)new_height, 1}}};
+
+      vkCmdBlitImage(
+          temp_command_buffer.handle, texture->texture.image.handle,
+          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, new_image.handle,
+          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+    } else {
+      VkImageCopy copy_region = {
+          .srcSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .mipLevel = 0,
+                             .baseArrayLayer = 0,
+                             .layerCount = texture->texture.image.array_layers},
+          .srcOffset = {0, 0, 0},
+          .dstSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .mipLevel = 0,
+                             .baseArrayLayer = 0,
+                             .layerCount = new_image.array_layers},
+          .dstOffset = {0, 0, 0},
+          .extent = {copy_width, copy_height, 1},
+      };
+
+      vkCmdCopyImage(temp_command_buffer.handle,
+                     texture->texture.image.handle,
+                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, new_image.handle,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy_region);
+    }
+
+    if (!vulkan_image_transition_layout_range(
+            state, &new_image, &temp_command_buffer, image_format,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &new_range)) {
+      vkEndCommandBuffer(temp_command_buffer.handle);
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &temp_command_buffer.handle);
+      vulkan_image_destroy(state, &new_image);
+      return VKR_RENDERER_ERROR_DEVICE_ERROR;
+    }
+
+    if (!vulkan_image_transition_layout_range(
+            state, &texture->texture.image, &temp_command_buffer, image_format,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &old_range)) {
+      vkEndCommandBuffer(temp_command_buffer.handle);
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &temp_command_buffer.handle);
+      vulkan_image_destroy(state, &new_image);
+      return VKR_RENDERER_ERROR_DEVICE_ERROR;
+    }
+  } else {
+    if (!vulkan_image_transition_layout_range(
+            state, &new_image, &temp_command_buffer, image_format,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &new_range)) {
+      vkEndCommandBuffer(temp_command_buffer.handle);
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &temp_command_buffer.handle);
+      vulkan_image_destroy(state, &new_image);
+      return VKR_RENDERER_ERROR_DEVICE_ERROR;
+    }
+  }
+
+  if (!vulkan_command_buffer_end_single_use(
+          state, &temp_command_buffer, state->device.graphics_queue,
+          array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
+              ->handle)) {
+    vulkan_image_destroy(state, &new_image);
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  vkFreeCommandBuffers(state->device.logical_device,
+                       state->device.graphics_command_pool, 1,
+                       &temp_command_buffer.handle);
+
+  VkFilter min_filter = VK_FILTER_LINEAR;
+  VkFilter mag_filter = VK_FILTER_LINEAR;
+  VkSamplerMipmapMode mipmap_mode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  VkBool32 anisotropy_enable = VK_FALSE;
+  float32_t max_lod = (float32_t)(new_image.mip_levels - 1);
+  vulkan_select_filter_modes(&texture->description,
+                             state->device.features.samplerAnisotropy,
+                             new_image.mip_levels, &min_filter, &mag_filter,
+                             &mipmap_mode, &anisotropy_enable, &max_lod);
+
+  VkSamplerCreateInfo sampler_create_info = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      .magFilter = mag_filter,
+      .minFilter = min_filter,
+      .addressModeU =
+          vulkan_sampler_address_mode_from_repeat(
+              texture->description.u_repeat_mode),
+      .addressModeV =
+          vulkan_sampler_address_mode_from_repeat(
+              texture->description.v_repeat_mode),
+      .addressModeW =
+          vulkan_sampler_address_mode_from_repeat(
+              texture->description.w_repeat_mode),
+      .anisotropyEnable = anisotropy_enable,
+      .maxAnisotropy =
+          anisotropy_enable
+              ? state->device.properties.limits.maxSamplerAnisotropy
+              : 1.0f,
+      .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+      .unnormalizedCoordinates = VK_FALSE,
+      .compareEnable = VK_FALSE,
+      .compareOp = VK_COMPARE_OP_ALWAYS,
+      .mipmapMode = mipmap_mode,
+      .mipLodBias = 0.0f,
+      .minLod = 0.0f,
+      .maxLod = max_lod,
+  };
+
+  VkSampler new_sampler = VK_NULL_HANDLE;
+  if (vkCreateSampler(state->device.logical_device, &sampler_create_info, NULL,
+                      &new_sampler) != VK_SUCCESS) {
+    vulkan_image_destroy(state, &new_image);
+    return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  }
+
+  // Ensure previous operations complete before swapping resources
+  vkQueueWaitIdle(state->device.graphics_queue);
+
+  VulkanImage old_image = texture->texture.image;
+  VkSampler old_sampler = texture->texture.sampler;
+
+  texture->texture.image = new_image;
+  texture->texture.sampler = new_sampler;
+
+  if (old_sampler != VK_NULL_HANDLE) {
+    vkDestroySampler(state->device.logical_device, old_sampler, NULL);
+  }
+
+  vulkan_image_destroy(state, &old_image);
+
+  texture->description.width = new_width;
+  texture->description.height = new_height;
   texture->description.generation++;
 
   return VKR_RENDERER_ERROR_NONE;

@@ -55,6 +55,14 @@ renderer_vulkan_create_texture(void *backend_state,
 VkrRendererError renderer_vulkan_update_texture(
     void *backend_state, VkrBackendResourceHandle handle,
     const VkrTextureDescription *desc);
+VkrRendererError renderer_vulkan_write_texture(
+    void *backend_state, VkrBackendResourceHandle handle,
+    const VkrTextureWriteRegion *region, const void *data, uint64_t size);
+VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
+                                                VkrBackendResourceHandle handle,
+                                                uint32_t new_width,
+                                                uint32_t new_height,
+                                                bool8_t preserve_contents);
 
 void renderer_vulkan_destroy_texture(void *backend_state,
                                      VkrBackendResourceHandle handle);

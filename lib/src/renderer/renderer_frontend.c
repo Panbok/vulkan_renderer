@@ -376,6 +376,71 @@ vkr_renderer_create_texture(VkrRendererFrontendHandle renderer,
   return (VkrTextureOpaqueHandle)handle.ptr;
 }
 
+VkrTextureOpaqueHandle
+vkr_renderer_create_writable_texture(VkrRendererFrontendHandle renderer,
+                                     const VkrTextureDescription *description,
+                                     VkrRendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(description != NULL, "Description is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  VkrTextureDescription desc_copy = *description;
+  bitset8_set(&desc_copy.properties, VKR_TEXTURE_PROPERTY_WRITABLE_BIT);
+
+  VkrBackendResourceHandle handle = renderer->backend.texture_create(
+      renderer->backend_state, &desc_copy, NULL);
+  if (handle.ptr == NULL) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return NULL;
+  }
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return (VkrTextureOpaqueHandle)handle.ptr;
+}
+
+VkrRendererError vkr_renderer_write_texture(VkrRendererFrontendHandle renderer,
+                                            VkrTextureOpaqueHandle texture,
+                                            const void *data, uint64_t size) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(texture != NULL, "Texture is NULL");
+  assert_log(data != NULL, "Data is NULL");
+  assert_log(size > 0, "Size must be greater than 0");
+
+  VkrBackendResourceHandle handle = {.ptr = (void *)texture};
+  return renderer->backend.texture_write(renderer->backend_state, handle, NULL,
+                                         data, size);
+}
+
+VkrRendererError vkr_renderer_write_texture_region(
+    VkrRendererFrontendHandle renderer, VkrTextureOpaqueHandle texture,
+    const VkrTextureWriteRegion *region, const void *data, uint64_t size) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(texture != NULL, "Texture is NULL");
+  assert_log(region != NULL, "Region is NULL");
+  assert_log(data != NULL, "Data is NULL");
+  assert_log(size > 0, "Size must be greater than 0");
+
+  VkrBackendResourceHandle handle = {.ptr = (void *)texture};
+  return renderer->backend.texture_write(renderer->backend_state, handle,
+                                         region, data, size);
+}
+
+VkrRendererError vkr_renderer_resize_texture(VkrRendererFrontendHandle renderer,
+                                             VkrTextureOpaqueHandle texture,
+                                             uint32_t new_width,
+                                             uint32_t new_height,
+                                             bool8_t preserve_contents) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(texture != NULL, "Texture is NULL");
+  assert_log(new_width > 0, "New width must be greater than 0");
+  assert_log(new_height > 0, "New height must be greater than 0");
+
+  VkrBackendResourceHandle handle = {.ptr = (void *)texture};
+  return renderer->backend.texture_resize(renderer->backend_state, handle,
+                                          new_width, new_height,
+                                          preserve_contents);
+}
+
 void vkr_renderer_destroy_texture(VkrRendererFrontendHandle renderer,
                                   VkrTextureOpaqueHandle texture) {
   assert_log(renderer != NULL, "Renderer is NULL");
@@ -812,6 +877,117 @@ bool32_t vkr_renderer_default_scene(VkrRendererFrontendHandle renderer) {
              "built-in default: %s",
              string8_cstr(&error_string));
   }
+
+  // Writable texture example
+  // VkrTextureDescription writable_desc = {
+  //     .width = 128,
+  //     .height = 128,
+  //     .channels = 4,
+  //     .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+  //     .type = VKR_TEXTURE_TYPE_2D,
+  //     .properties = vkr_texture_property_flags_create(),
+  //     .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+  //     .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+  //     .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+  //     .min_filter = VKR_FILTER_LINEAR,
+  //     .mag_filter = VKR_FILTER_LINEAR,
+  //     .mip_filter = VKR_MIP_FILTER_NONE,
+  //     .anisotropy_enable = false_v,
+  //     .generation = VKR_INVALID_ID,
+  // };
+  // VkrTextureHandle ui_runtime_texture = VKR_TEXTURE_HANDLE_INVALID;
+  // VkrRendererError writable_err = VKR_RENDERER_ERROR_NONE;
+  // if (vkr_texture_system_create_writable(
+  //         &rf->texture_system, string8_lit("ui.runtime.writable"),
+  //         &writable_desc, &ui_runtime_texture, &writable_err)) {
+  //   uint64_t pixel_count =
+  //       (uint64_t)writable_desc.width * (uint64_t)writable_desc.height;
+  //   uint64_t buffer_size = pixel_count * (uint64_t)writable_desc.channels;
+
+  //   Scratch tex_scratch = scratch_create(rf->scratch_arena);
+  //   uint8_t *base_pixels =
+  //       arena_alloc(tex_scratch.arena, buffer_size,
+  //       ARENA_MEMORY_TAG_TEXTURE);
+  //   if (base_pixels) {
+  //     for (uint32_t y = 0; y < writable_desc.height; ++y) {
+  //       for (uint32_t x = 0; x < writable_desc.width; ++x) {
+  //         uint32_t idx = (y * writable_desc.width + x) *
+  //         writable_desc.channels; base_pixels[idx + 0] = (uint8_t)((x * 255)
+  //         / writable_desc.width); base_pixels[idx + 1] = (uint8_t)((y * 255)
+  //         / writable_desc.height); base_pixels[idx + 2] = 180;
+  //         base_pixels[idx + 3] = 255;
+  //       }
+  //     }
+
+  //     VkrRendererError write_err = vkr_texture_system_write(
+  //         &rf->texture_system, ui_runtime_texture, base_pixels, buffer_size);
+  //     if (write_err != VKR_RENDERER_ERROR_NONE) {
+  //       String8 err = vkr_renderer_get_error_string(write_err);
+  //       log_warn("Writable UI texture upload failed: %s",
+  //       string8_cstr(&err));
+  //     }
+  //   } else {
+  //     log_warn("Failed to allocate base pixels for writable texture");
+  //   }
+
+  //   const uint32_t block_w = 48;
+  //   const uint32_t block_h = 48;
+  //   uint64_t region_size =
+  //       (uint64_t)block_w * (uint64_t)block_h * writable_desc.channels;
+  //   uint8_t *region_pixels =
+  //       arena_alloc(tex_scratch.arena, region_size,
+  //       ARENA_MEMORY_TAG_TEXTURE);
+  //   if (region_pixels) {
+  //     for (uint32_t i = 0; i < block_w * block_h; ++i) {
+  //       region_pixels[i * writable_desc.channels + 0] = 30;
+  //       region_pixels[i * writable_desc.channels + 1] = 220;
+  //       region_pixels[i * writable_desc.channels + 2] = 120;
+  //       region_pixels[i * writable_desc.channels + 3] = 255;
+  //     }
+
+  //     VkrTextureWriteRegion write_region = {
+  //         .mip_level = 0,
+  //         .array_layer = 0,
+  //         .x = (writable_desc.width - block_w) / 2,
+  //         .y = (writable_desc.height - block_h) / 2,
+  //         .width = block_w,
+  //         .height = block_h,
+  //     };
+
+  //     VkrRendererError region_err = vkr_texture_system_write_region(
+  //         &rf->texture_system, ui_runtime_texture, &write_region,
+  //         region_pixels, region_size);
+  //     if (region_err != VKR_RENDERER_ERROR_NONE) {
+  //       String8 err = vkr_renderer_get_error_string(region_err);
+  //       log_warn("Writable texture region upload failed: %s",
+  //                string8_cstr(&err));
+  //     }
+  //   }
+
+  //   VkrRendererError resize_err = VKR_RENDERER_ERROR_NONE;
+  //   VkrTextureHandle resized_handle = ui_runtime_texture;
+  //   if (vkr_texture_system_resize(&rf->texture_system, ui_runtime_texture,
+  //   192,
+  //                                 128, true_v, &resized_handle, &resize_err))
+  //                                 {
+  //     ui_runtime_texture = resized_handle;
+  //   } else if (resize_err != VKR_RENDERER_ERROR_NONE) {
+  //     String8 err = vkr_renderer_get_error_string(resize_err);
+  //     log_warn("Writable texture resize failed: %s", string8_cstr(&err));
+  //   }
+
+  //   VkrMaterial *ui_mat = vkr_material_system_get_by_handle(
+  //       &rf->material_system, rf->ui_material);
+  //   if (ui_mat) {
+  //     ui_mat->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle = ui_runtime_texture;
+  //     ui_mat->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = true_v;
+  //   }
+
+  //   scratch_destroy(tex_scratch, ARENA_MEMORY_TAG_TEXTURE);
+  // } else {
+  //   String8 err = vkr_renderer_get_error_string(writable_err);
+  //   log_warn("Failed to create writable UI texture: %s", string8_cstr(&err));
+  // }
 
   // Create pipelines from shader configs
   if (rf->world_pipeline.id == 0 &&

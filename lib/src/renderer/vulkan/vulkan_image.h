@@ -20,6 +20,11 @@ bool8_t vulkan_image_transition_layout(VulkanBackendState *state,
                                        VkFormat format,
                                        VkImageLayout old_layout,
                                        VkImageLayout new_layout);
+bool8_t vulkan_image_transition_layout_range(
+    VulkanBackendState *state, VulkanImage *image,
+    VulkanCommandBuffer *command_buffer, VkFormat format,
+    VkImageLayout old_layout, VkImageLayout new_layout,
+    const VkImageSubresourceRange *subresource_range);
 
 bool8_t vulkan_image_copy_from_buffer(VulkanBackendState *state,
                                       VulkanImage *image, VkBuffer buffer,
