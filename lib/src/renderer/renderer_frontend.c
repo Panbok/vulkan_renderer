@@ -69,6 +69,9 @@ vkr_internal bool8_t vkr_renderer_on_window_resize(Event *event,
   }
 
   vkr_renderer_resize(rf, resize->width, resize->height);
+  if (rf->camera_system.cameras.data) {
+    vkr_camera_registry_on_window_resize(&rf->camera_system, rf->window);
+  }
   return true_v;
 }
 
@@ -106,20 +109,31 @@ renderer_frontend_regenerate_render_targets(RendererFrontend *rf) {
   VkrRenderTargetHandle *world_targets = rf->world_render_targets;
   VkrRenderTargetHandle *ui_targets = rf->ui_render_targets;
   if (!world_targets || count > rf->render_target_count) {
-    world_targets = arena_alloc(rf->arena,
-                                sizeof(VkrRenderTargetHandle) * count,
-                                ARENA_MEMORY_TAG_ARRAY);
+    world_targets = (VkrRenderTargetHandle *)arena_alloc(
+        rf->arena, sizeof(VkrRenderTargetHandle) * count,
+        ARENA_MEMORY_TAG_ARRAY);
+    if (!world_targets) {
+      log_error("Failed to allocate world render target array");
+      rf->render_target_count = 0;
+      return;
+    }
+    rf->world_render_targets = world_targets;
   }
   if (!ui_targets || count > rf->render_target_count) {
-    ui_targets = arena_alloc(rf->arena,
-                             sizeof(VkrRenderTargetHandle) * count,
-                             ARENA_MEMORY_TAG_ARRAY);
+    ui_targets = (VkrRenderTargetHandle *)arena_alloc(
+        rf->arena, sizeof(VkrRenderTargetHandle) * count,
+        ARENA_MEMORY_TAG_ARRAY);
+    if (!ui_targets) {
+      log_error("Failed to allocate UI render target array");
+      rf->render_target_count = 0;
+      return;
+    }
   }
-  rf->world_render_targets = world_targets;
   rf->ui_render_targets = ui_targets;
-  MemZero(rf->world_render_targets,
+  world_targets = rf->world_render_targets;
+  MemZero((void *)rf->world_render_targets,
           sizeof(VkrRenderTargetHandle) * (uint64_t)count);
-  MemZero(rf->ui_render_targets,
+  MemZero((void *)rf->ui_render_targets,
           sizeof(VkrRenderTargetHandle) * (uint64_t)count);
   rf->render_target_count = count;
 
@@ -146,8 +160,7 @@ renderer_frontend_regenerate_render_targets(RendererFrontend *rf) {
   }
 
   for (uint32_t i = 0; i < count; ++i) {
-    VkrTextureOpaqueHandle color =
-        vkr_renderer_window_attachment_get(rf, i);
+    VkrTextureOpaqueHandle color = vkr_renderer_window_attachment_get(rf, i);
 
     VkrTextureOpaqueHandle world_attachments[2] = {color, depth};
     VkrRenderTargetDesc world_desc = {.sync_to_window_size = true_v,
@@ -155,11 +168,12 @@ renderer_frontend_regenerate_render_targets(RendererFrontend *rf) {
                                       .attachments = world_attachments,
                                       .width = rf->last_window_width,
                                       .height = rf->last_window_height};
-    rf->world_render_targets[i] =
-        vkr_renderer_render_target_create(rf, &world_desc,
-                                          rf->world_renderpass);
+    rf->world_render_targets[i] = vkr_renderer_render_target_create(
+        rf, &world_desc, rf->world_renderpass);
     if (!rf->world_render_targets[i]) {
       log_error("Failed to create world render target %u", i);
+      rf->render_target_count = 0;
+      return;
     }
 
     VkrTextureOpaqueHandle ui_attachments[1] = {color};
@@ -172,6 +186,8 @@ renderer_frontend_regenerate_render_targets(RendererFrontend *rf) {
         vkr_renderer_render_target_create(rf, &ui_desc, rf->ui_renderpass);
     if (!rf->ui_render_targets[i]) {
       log_error("Failed to create UI render target %u", i);
+      rf->render_target_count = 0;
+      return;
     }
   }
 }
@@ -222,7 +238,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->texture_system = (VkrTextureSystem){0};
   renderer->material_system = (VkrMaterialSystem){0};
   renderer->mesh_manager = (VkrMeshManager){0};
-  renderer->camera = (VkrCamera){0};
+  renderer->active_camera = VKR_CAMERA_HANDLE_INVALID;
   renderer->camera_controller = (VkrCameraController){0};
   renderer->globals = (VkrGlobalMaterialState){
       .ambient_color = vec4_new(0.1, 0.1, 0.1, 1.0),
@@ -303,6 +319,14 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
 
   renderer_frontend_regenerate_render_targets(renderer);
 
+  if (renderer->render_target_count == 0 || !renderer->world_renderpass ||
+      !renderer->ui_renderpass) {
+    log_error("Failed to create render passes or render targets");
+    g_renderer_rt_refresh = NULL;
+    *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
+    return false_v;
+  }
+
   // Subscribe to window resize events internally
   event_manager_subscribe(renderer->event_manager, EVENT_TYPE_WINDOW_RESIZE,
                           vkr_renderer_on_window_resize, renderer);
@@ -355,13 +379,13 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   vkr_mesh_manager_shutdown(&rf->mesh_manager);
   vkr_material_system_shutdown(&rf->material_system);
   vkr_geometry_system_shutdown(&rf->geometry_system);
+  vkr_camera_registry_shutdown(&rf->camera_system);
 
   if (rf->world_render_targets && rf->render_target_count > 0) {
     for (uint32_t i = 0; i < rf->render_target_count; ++i) {
       if (rf->world_render_targets[i]) {
-        vkr_renderer_render_target_destroy(renderer,
-                                           rf->world_render_targets[i],
-                                           false_v);
+        vkr_renderer_render_target_destroy(
+            renderer, rf->world_render_targets[i], false_v);
       }
       if (rf->ui_render_targets && rf->ui_render_targets[i]) {
         vkr_renderer_render_target_destroy(renderer, rf->ui_render_targets[i],
@@ -773,8 +797,9 @@ VkrRendererError vkr_renderer_upload_buffer(VkrRendererFrontendHandle renderer,
                                          offset, size, data);
 }
 
-VkrRenderPassHandle vkr_renderer_renderpass_create(
-    VkrRendererFrontendHandle renderer, const VkrRenderPassConfig *cfg) {
+VkrRenderPassHandle
+vkr_renderer_renderpass_create(VkrRendererFrontendHandle renderer,
+                               const VkrRenderPassConfig *cfg) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(cfg != NULL, "Render pass config is NULL");
   if (!renderer->backend.renderpass_create) {
@@ -792,16 +817,20 @@ void vkr_renderer_renderpass_destroy(VkrRendererFrontendHandle renderer,
   renderer->backend.renderpass_destroy(renderer->backend_state, pass);
 }
 
-VkrRenderPassHandle vkr_renderer_renderpass_get(VkrRendererFrontendHandle renderer,
-                                                String8 name) {
+VkrRenderPassHandle
+vkr_renderer_renderpass_get(VkrRendererFrontendHandle renderer, String8 name) {
   assert_log(renderer != NULL, "Renderer is NULL");
   if (!renderer->backend.renderpass_get || name.length == 0) {
     return NULL;
   }
   RendererFrontend *rf = (RendererFrontend *)renderer;
   Scratch scratch = scratch_create(rf->scratch_arena);
-  char *cstr = arena_alloc(scratch.arena, name.length + 1,
-                           ARENA_MEMORY_TAG_STRING);
+  char *cstr =
+      arena_alloc(scratch.arena, name.length + 1, ARENA_MEMORY_TAG_STRING);
+  if (!cstr) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    return NULL;
+  }
   MemCopy(cstr, name.str, (size_t)name.length);
   cstr[name.length] = '\0';
   VkrRenderPassHandle handle =
@@ -810,9 +839,10 @@ VkrRenderPassHandle vkr_renderer_renderpass_get(VkrRendererFrontendHandle render
   return handle;
 }
 
-VkrRenderTargetHandle vkr_renderer_render_target_create(
-    VkrRendererFrontendHandle renderer, const VkrRenderTargetDesc *desc,
-    VkrRenderPassHandle pass) {
+VkrRenderTargetHandle
+vkr_renderer_render_target_create(VkrRendererFrontendHandle renderer,
+                                  const VkrRenderTargetDesc *desc,
+                                  VkrRenderPassHandle pass) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(desc != NULL, "Render target description is NULL");
   if (!renderer->backend.render_target_create) {
@@ -833,9 +863,10 @@ void vkr_renderer_render_target_destroy(VkrRendererFrontendHandle renderer,
   renderer->backend.render_target_destroy(renderer->backend_state, target);
 }
 
-VkrRendererError vkr_renderer_begin_render_pass(
-    VkrRendererFrontendHandle renderer, VkrRenderPassHandle pass,
-    VkrRenderTargetHandle target) {
+VkrRendererError
+vkr_renderer_begin_render_pass(VkrRendererFrontendHandle renderer,
+                               VkrRenderPassHandle pass,
+                               VkrRenderTargetHandle target) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(renderer->frame_active,
              "Begin render pass called outside of frame");
@@ -1014,6 +1045,21 @@ uint64_t vkr_renderer_get_and_reset_descriptor_writes_avoided(
 bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
   RendererFrontend *rf = (RendererFrontend *)renderer;
+
+  VkrCameraSystemConfig camera_cfg = {.max_camera_count = 24};
+  if (!vkr_camera_registry_init(&camera_cfg, &rf->camera_system)) {
+    log_fatal("Failed to initialize camera system");
+    return false_v;
+  }
+  VkrCameraHandle default_camera = VKR_CAMERA_HANDLE_INVALID;
+  if (!vkr_camera_registry_create_perspective(
+          &rf->camera_system, string8_lit("camera.default"), rf->window, 60.0f,
+          0.1f, 100.0f, &default_camera)) {
+    log_fatal("Failed to create default camera");
+    return false_v;
+  }
+  vkr_camera_registry_set_active(&rf->camera_system, default_camera);
+  rf->active_camera = default_camera;
 
   if (!vkr_pipeline_registry_init(&rf->pipeline_registry, rf, NULL)) {
     log_fatal("Failed to initialize pipeline registry");

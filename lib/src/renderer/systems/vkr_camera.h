@@ -1,8 +1,12 @@
 #pragma once
 
+#include "containers/array.h"
+#include "containers/str.h"
+#include "containers/vkr_hashtable.h"
 #include "core/vkr_window.h"
 #include "math/mat.h"
 #include "math/vec.h"
+#include "memory/arena.h"
 
 #define VKR_MAX_MOUSE_DELTA 100.0f
 #define VKR_DEFAULT_CAMERA_ZOOM 1.0f
@@ -21,6 +25,9 @@
 #define VKR_DEFAULT_CAMERA_UP vec3_new(0.0f, 1.0f, 0.0f)
 #define VKR_DEFAULT_CAMERA_RIGHT vec3_new(1.0f, 0.0f, 0.0f)
 #define VKR_DEFAULT_CAMERA_WORLD_UP vec3_new(0.0f, 1.0f, 0.0f)
+
+#define VKR_CAMERA_SYSTEM_DEFAULT_ARENA_RSV MB(3)
+#define VKR_CAMERA_SYSTEM_DEFAULT_ARENA_CMT MB(1)
 
 /**
  * @brief Camera projection types.
@@ -41,7 +48,8 @@ typedef enum VkrCameraType {
 typedef struct VkrCamera {
   VkrWindow *window; /**< Window for input capture and aspect ratio */
 
-  CameraType type; /**< Current projection type */
+  CameraType type;     /**< Current projection type */
+  uint32_t generation; /**< Handle generation for registry validation */
 
   Mat4 view;       /**< View matrix */
   Mat4 projection; /**< Projection matrix */
@@ -76,6 +84,68 @@ typedef struct VkrCamera {
   uint32_t cached_window_width;  /**< Last window width used for projection */
   uint32_t cached_window_height; /**< Last window height used for projection */
 } VkrCamera;
+Array(VkrCamera);
+
+/**
+ * @brief Camera handle
+ * @param id Camera id
+ * @param generation Camera generation
+ */
+typedef struct VkrCameraHandle {
+  uint32_t id;
+  uint32_t generation;
+} VkrCameraHandle;
+
+/**
+ * @brief Invalid camera handle
+ */
+#define VKR_CAMERA_HANDLE_INVALID                                              \
+  (VkrCameraHandle) { .id = 0, .generation = VKR_INVALID_ID }
+
+/**
+ * @brief Camera entry
+ * @param index Camera index
+ * @param ref_count Camera reference count
+ * @param auto_release Auto release
+ */
+typedef struct VkrCameraEntry {
+  uint32_t index;
+  uint32_t ref_count;
+  bool8_t auto_release;
+} VkrCameraEntry;
+VkrHashTable(VkrCameraEntry);
+
+/**
+ * @brief Camera system configuration
+ * @param max_camera_count Maximum camera count
+ * @param arena_reserve Arena reserve
+ * @param arena_commit Arena commit
+ */
+typedef struct VkrCameraSystemConfig {
+  uint32_t max_camera_count;
+  uint64_t arena_reserve;
+  uint64_t arena_commit;
+} VkrCameraSystemConfig;
+
+/**
+ * @brief Camera system
+ * @param arena Arena
+ * @param cameras Cameras
+ * @param camera_map Camera map
+ * @param next_free_index Next free index
+ * @param generation_counter Generation counter
+ * @param default_camera Default camera
+ * @param active_camera Active camera
+ */
+typedef struct VkrCameraSystem {
+  Arena *arena;
+  Array_VkrCamera cameras;
+  VkrHashTable_VkrCameraEntry camera_map;
+  uint32_t next_free_index;
+  uint32_t generation_counter;
+  VkrCameraHandle default_camera;
+  VkrCameraHandle active_camera;
+} VkrCameraSystem;
 
 /**
  * @brief Creates a perspective camera with 3D projection.
@@ -149,3 +219,167 @@ Mat4 vkr_camera_system_get_view_matrix(const VkrCamera *camera);
  * @return 4x4 projection matrix for transforming view space to clip space
  */
 Mat4 vkr_camera_system_get_projection_matrix(const VkrCamera *camera);
+
+// =============================================================================
+// Camera registry
+// =============================================================================
+
+/**
+ * @brief Initializes the camera system
+ * @param config Camera system configuration
+ * @param out_system Output camera system
+ * @return true on success, false on failure
+ */
+bool8_t vkr_camera_registry_init(const VkrCameraSystemConfig *config,
+                                 VkrCameraSystem *out_system);
+
+/**
+ * @brief Shuts down the camera system
+ * @param system Camera system to shutdown
+ */
+void vkr_camera_registry_shutdown(VkrCameraSystem *system);
+
+/**
+ * @brief Creates a perspective camera
+ * @param system Camera system
+ * @param name Camera name
+ * @param window Window
+ * @param zoom Zoom
+ * @param near_clip Near clip
+ * @param far_clip Far clip
+ * @param out_handle Output camera handle
+ * @return true on success, false on failure
+ */
+bool8_t vkr_camera_registry_create_perspective(
+    VkrCameraSystem *system, String8 name, VkrWindow *window, float32_t zoom,
+    float32_t near_clip, float32_t far_clip, VkrCameraHandle *out_handle);
+
+/**
+ * @brief Creates an orthographic camera
+ * @param system Camera system
+ * @param name Camera name
+ * @param window Window
+ * @param left Left clip
+ * @param right Right clip
+ * @param bottom Bottom clip
+ * @param top Top clip
+ * @param near_clip Near clip
+ * @param far_clip Far clip
+ * @param out_handle Output camera handle
+ * @return true on success, false on failure
+ */
+bool8_t vkr_camera_registry_create_orthographic(
+    VkrCameraSystem *system, String8 name, VkrWindow *window, float32_t left,
+    float32_t right, float32_t bottom, float32_t top, float32_t near_clip,
+    float32_t far_clip, VkrCameraHandle *out_handle);
+
+/**
+ * @brief Acquires a camera by name
+ * @param system Camera system
+ * @param name Camera name
+ * @param auto_release Auto release
+ * @param out_ok Output success flag
+ * @return Camera handle
+ */
+VkrCameraHandle vkr_camera_registry_acquire(VkrCameraSystem *system,
+                                            String8 name, bool8_t auto_release,
+                                            bool8_t *out_ok);
+
+/**
+ * @brief Releases a camera by name
+ * @param system Camera system
+ * @param name Camera name
+ */
+void vkr_camera_registry_release(VkrCameraSystem *system, String8 name);
+
+/**
+ * @brief Releases a camera by handle
+ * @param system Camera system
+ * @param handle Camera handle
+ */
+void vkr_camera_registry_release_by_handle(VkrCameraSystem *system,
+                                           VkrCameraHandle handle);
+
+/**
+ * @brief Updates a camera
+ * @param system Camera system
+ * @param h Camera handle
+ */
+void vkr_camera_registry_update(VkrCameraSystem *system, VkrCameraHandle h);
+
+/**
+ * @brief Updates all cameras
+ * @param system Camera system
+ */
+void vkr_camera_registry_update_all(VkrCameraSystem *system);
+
+/**
+ * @brief Gets the view matrix for a camera
+ * @param system Camera system
+ * @param h Camera handle
+ * @return View matrix
+ */
+Mat4 vkr_camera_registry_get_view(VkrCameraSystem *system, VkrCameraHandle h);
+
+/**
+ * @brief Gets the projection matrix for a camera
+ * @param system Camera system
+ * @param h Camera handle
+ * @return Projection matrix
+ */
+Mat4 vkr_camera_registry_get_projection(VkrCameraSystem *system,
+                                        VkrCameraHandle h);
+
+/**
+ * @brief Sets the active camera
+ * @param system Camera system
+ * @param h Camera handle
+ */
+void vkr_camera_registry_set_active(VkrCameraSystem *system, VkrCameraHandle h);
+
+/**
+ * @brief Gets the active camera
+ * @param system Camera system
+ * @return Active camera handle
+ */
+VkrCameraHandle vkr_camera_registry_get_active(VkrCameraSystem *system);
+
+/**
+ * @brief Gets the active view matrix
+ * @param system Camera system
+ * @return Active view matrix
+ */
+Mat4 vkr_camera_registry_get_active_view(VkrCameraSystem *system);
+
+/**
+ * @brief Gets the active projection matrix
+ * @param system Camera system
+ * @return Active projection matrix
+ */
+Mat4 vkr_camera_registry_get_active_projection(VkrCameraSystem *system);
+
+/**
+ * @brief Called when the window is resized
+ * @param system Camera system
+ * @param window Window
+ */
+void vkr_camera_registry_on_window_resize(VkrCameraSystem *system,
+                                          VkrWindow *window);
+
+/**
+ * @brief Gets a camera by handle
+ * @param system Camera system
+ * @param h Camera handle
+ * @return Camera
+ */
+VkrCamera *vkr_camera_registry_get_by_handle(VkrCameraSystem *system,
+                                             VkrCameraHandle h);
+
+/**
+ * @brief Gets a camera by index
+ * @param system Camera system
+ * @param index Camera index
+ * @return Camera
+ */
+VkrCamera *vkr_camera_registry_get_by_index(VkrCameraSystem *system,
+                                            uint32_t index);

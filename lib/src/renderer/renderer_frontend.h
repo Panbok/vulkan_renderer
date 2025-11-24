@@ -32,7 +32,8 @@ struct s_RendererFrontend {
   VkrMaterialSystem material_system;
 
   // Camera moved into frontend
-  VkrCamera camera;
+  VkrCameraSystem camera_system;
+  VkrCameraHandle active_camera;
   VkrCameraController camera_controller;
 
   // Scene shader configs and pipelines

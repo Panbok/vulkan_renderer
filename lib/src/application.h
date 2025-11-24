@@ -162,13 +162,6 @@ bool8_t application_on_key_event(Event *event, UserData user_data);
 bool8_t application_on_mouse_event(Event *event, UserData user_data);
 
 /**
- * @brief Initializes the camera for the application
- * @param application Pointer to the `Application` structure.
- * @return The initialized camera
- */
-VkrCamera application_init_camera(Application *application);
-
-/**
  * @brief User-defined application update function.
  * This function is called once per frame from within the main application
  * loop
@@ -254,15 +247,23 @@ bool8_t application_create(Application *application,
   }
 
   vkr_gamepad_init(&application->gamepad, &application->window.input_state);
-  application->renderer.camera = application_init_camera(application);
-  vkr_camera_controller_create(
-      &application->renderer.camera_controller, &application->renderer.camera,
-      (float32_t)application->config->target_frame_rate);
 
   if (!vkr_renderer_systems_initialize(&application->renderer)) {
     log_fatal("Failed to initialize renderer frontend systems");
     return false_v;
   }
+
+  VkrCameraHandle active_camera =
+      vkr_camera_registry_get_active(&application->renderer.camera_system);
+  application->renderer.active_camera = active_camera;
+  VkrCamera *camera = vkr_camera_registry_get_by_handle(
+      &application->renderer.camera_system, application->renderer.active_camera);
+  if (!camera) {
+    log_fatal("Failed to retrieve active camera");
+    return false_v;
+  }
+  vkr_camera_controller_create(&application->renderer.camera_controller, camera,
+                               (float32_t)application->config->target_frame_rate);
 
   if (!vkr_renderer_default_scene(&application->renderer)) {
     log_fatal("Failed to bootstrap default scene");
@@ -413,17 +414,31 @@ void application_start(Application *application) {
 
     application_update(application, delta);
 
-    vkr_camera_controller_update(&application->renderer.camera_controller,
-                                 delta);
-    vkr_camera_system_update(&application->renderer.camera);
+    VkrCameraSystem *camera_system = &application->renderer.camera_system;
+    VkrCameraHandle active_camera =
+        vkr_camera_registry_get_active(camera_system);
+    application->renderer.active_camera = active_camera;
+    VkrCamera *camera =
+        vkr_camera_registry_get_by_handle(camera_system, active_camera);
+
+    if (camera) {
+      application->renderer.camera_controller.camera = camera;
+      vkr_camera_controller_update(&application->renderer.camera_controller,
+                                   delta);
+    } else {
+      log_warn("Active camera handle invalid; skipping controller update");
+    }
+
+    vkr_camera_registry_update_all(camera_system);
 
     // Update world view/projection from camera each frame to reflect movement
     application->renderer.globals.view =
-        vkr_camera_system_get_view_matrix(&application->renderer.camera);
+        vkr_camera_registry_get_view(camera_system, active_camera);
     application->renderer.globals.projection =
-        vkr_camera_system_get_projection_matrix(&application->renderer.camera);
-    application->renderer.globals.view_position =
-        application->renderer.camera.position;
+        vkr_camera_registry_get_projection(camera_system, active_camera);
+    if (camera) {
+      application->renderer.globals.view_position = camera->position;
+    }
 
     uint32_t mesh_capacity =
         vkr_mesh_manager_capacity(&application->renderer.mesh_manager);
