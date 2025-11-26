@@ -359,12 +359,13 @@ Mat4 vkr_camera_registry_get_active_view(VkrCameraSystem *system);
 Mat4 vkr_camera_registry_get_active_projection(VkrCameraSystem *system);
 
 /**
- * @brief Called when the window is resized
+ * @brief Resizes all cameras
  * @param system Camera system
- * @param window Window
+ * @param width New window width
+ * @param height New window height
  */
-void vkr_camera_registry_on_window_resize(VkrCameraSystem *system,
-                                          VkrWindow *window);
+void vkr_camera_registry_resize_all(VkrCameraSystem *system, uint32_t width,
+                                    uint32_t height);
 
 /**
  * @brief Gets a camera by handle

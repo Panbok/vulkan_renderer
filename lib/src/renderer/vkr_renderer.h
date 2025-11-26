@@ -419,7 +419,7 @@ typedef enum VkrFilter {
 } VkrFilter;
 
 typedef enum VkrMipFilter {
-  VKR_MIP_FILTER_NONE = 0,   // sample base level only
+  VKR_MIP_FILTER_NONE = 0,    // sample base level only
   VKR_MIP_FILTER_NEAREST = 1, // nearest mip selection
   VKR_MIP_FILTER_LINEAR = 2,  // linear mip interpolation (trilinear)
   VKR_MIP_FILTER_COUNT,
@@ -622,6 +622,52 @@ typedef struct VkrRendererBackendConfig {
 } VkrRendererBackendConfig;
 
 // ============================================================================
+// View / Layer System
+// ============================================================================
+typedef struct VkrLayerHandle {
+  uint32_t id;
+  uint32_t generation;
+} VkrLayerHandle;
+
+#define VKR_LAYER_HANDLE_INVALID ((VkrLayerHandle){0, 0})
+
+typedef struct VkrLayerContext VkrLayerContext; // Opaque to clients
+
+typedef struct VkrLayerRenderInfo {
+  uint32_t image_index;    // Swapchain image index being rendered
+  String8 renderpass_name; // Active renderpass name for this callback
+} VkrLayerRenderInfo;
+
+typedef struct VkrLayerCallbacks {
+  bool32_t (*on_create)(
+      VkrLayerContext *ctx);               // optional, return false on failure
+  void (*on_attach)(VkrLayerContext *ctx); // Optional
+  void (*on_resize)(VkrLayerContext *ctx, uint32_t width, uint32_t height);
+  void (*on_render)(VkrLayerContext *ctx, const VkrLayerRenderInfo *info);
+  void (*on_detach)(VkrLayerContext *ctx);  // Optional
+  void (*on_destroy)(VkrLayerContext *ctx); // Optional
+} VkrLayerCallbacks;
+
+typedef struct VkrLayerPassConfig {
+  String8 renderpass_name; // e.g. "Renderpass.Builtin.World"
+  bool8_t use_swapchain_color;
+  bool8_t use_depth;
+} VkrLayerPassConfig;
+
+typedef struct VkrLayerConfig {
+  String8 name;
+  uint32_t order;
+  uint32_t width;
+  uint32_t height;
+  Mat4 view;
+  Mat4 projection;
+  uint8_t pass_count;
+  VkrLayerPassConfig *passes;
+  VkrLayerCallbacks callbacks;
+  void *user_data;
+} VkrLayerConfig;
+
+// ============================================================================
 // Buffer and Vertex/Index Data Structures
 // ============================================================================
 
@@ -653,9 +699,6 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
                                  VkrRendererError *out_error);
 
 bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer);
-
-// Create default scene (shaders, pipelines, geometries, materials, renderables)
-bool32_t vkr_renderer_default_scene(VkrRendererFrontendHandle renderer);
 
 void vkr_renderer_destroy(VkrRendererFrontendHandle renderer);
 // --- END Initialization and Shutdown ---
@@ -692,22 +735,24 @@ vkr_renderer_create_texture(VkrRendererFrontendHandle renderer,
                             const VkrTextureDescription *description,
                             const void *initial_data,
                             VkrRendererError *out_error);
-VkrTextureOpaqueHandle vkr_renderer_create_writable_texture(
-    VkrRendererFrontendHandle renderer, const VkrTextureDescription *desc,
-    VkrRendererError *out_error);
+VkrTextureOpaqueHandle
+vkr_renderer_create_writable_texture(VkrRendererFrontendHandle renderer,
+                                     const VkrTextureDescription *desc,
+                                     VkrRendererError *out_error);
 
-VkrRendererError
-vkr_renderer_write_texture(VkrRendererFrontendHandle renderer,
-                           VkrTextureOpaqueHandle texture, const void *data,
-                           uint64_t size);
+VkrRendererError vkr_renderer_write_texture(VkrRendererFrontendHandle renderer,
+                                            VkrTextureOpaqueHandle texture,
+                                            const void *data, uint64_t size);
 
 VkrRendererError vkr_renderer_write_texture_region(
     VkrRendererFrontendHandle renderer, VkrTextureOpaqueHandle texture,
     const VkrTextureWriteRegion *region, const void *data, uint64_t size);
 
-VkrRendererError vkr_renderer_resize_texture(
-    VkrRendererFrontendHandle renderer, VkrTextureOpaqueHandle texture,
-    uint32_t new_width, uint32_t new_height, bool8_t preserve_contents);
+VkrRendererError vkr_renderer_resize_texture(VkrRendererFrontendHandle renderer,
+                                             VkrTextureOpaqueHandle texture,
+                                             uint32_t new_width,
+                                             uint32_t new_height,
+                                             bool8_t preserve_contents);
 
 void vkr_renderer_destroy_texture(VkrRendererFrontendHandle renderer,
                                   VkrTextureOpaqueHandle texture);
@@ -785,16 +830,18 @@ VkrRendererError vkr_renderer_upload_buffer(VkrRendererFrontendHandle renderer,
 // --- END Data Update ---
 
 // --- START Render Pass & Target Management ---
-VkrRenderPassHandle vkr_renderer_renderpass_create(
-    VkrRendererFrontendHandle renderer, const VkrRenderPassConfig *cfg);
+VkrRenderPassHandle
+vkr_renderer_renderpass_create(VkrRendererFrontendHandle renderer,
+                               const VkrRenderPassConfig *cfg);
 void vkr_renderer_renderpass_destroy(VkrRendererFrontendHandle renderer,
                                      VkrRenderPassHandle pass);
-VkrRenderPassHandle vkr_renderer_renderpass_get(VkrRendererFrontendHandle renderer,
-                                                String8 name);
+VkrRenderPassHandle
+vkr_renderer_renderpass_get(VkrRendererFrontendHandle renderer, String8 name);
 
-VkrRenderTargetHandle vkr_renderer_render_target_create(
-    VkrRendererFrontendHandle renderer, const VkrRenderTargetDesc *desc,
-    VkrRenderPassHandle pass);
+VkrRenderTargetHandle
+vkr_renderer_render_target_create(VkrRendererFrontendHandle renderer,
+                                  const VkrRenderTargetDesc *desc,
+                                  VkrRenderPassHandle pass);
 void vkr_renderer_render_target_destroy(VkrRendererFrontendHandle renderer,
                                         VkrRenderTargetHandle target,
                                         bool8_t free_internal_memory);
@@ -803,9 +850,30 @@ vkr_renderer_window_attachment_get(VkrRendererFrontendHandle renderer,
                                    uint32_t image_index);
 VkrTextureOpaqueHandle
 vkr_renderer_depth_attachment_get(VkrRendererFrontendHandle renderer);
-uint32_t vkr_renderer_window_attachment_count(VkrRendererFrontendHandle renderer);
+uint32_t
+vkr_renderer_window_attachment_count(VkrRendererFrontendHandle renderer);
 uint32_t vkr_renderer_window_image_index(VkrRendererFrontendHandle renderer);
 // --- END Render Pass & Target Management ---
+
+// --- START View / Layer System ---
+bool32_t vkr_view_system_init(VkrRendererFrontendHandle renderer);
+void vkr_view_system_shutdown(VkrRendererFrontendHandle renderer);
+bool32_t vkr_view_system_register_layer(VkrRendererFrontendHandle renderer,
+                                        const VkrLayerConfig *cfg,
+                                        VkrLayerHandle *out_handle,
+                                        VkrRendererError *out_error);
+void vkr_view_system_unregister_layer(VkrRendererFrontendHandle renderer,
+                                      VkrLayerHandle handle);
+bool32_t vkr_view_system_set_layer_camera(VkrRendererFrontendHandle renderer,
+                                          VkrLayerHandle handle,
+                                          const Mat4 *view,
+                                          const Mat4 *projection);
+void vkr_view_system_on_resize(VkrRendererFrontendHandle renderer,
+                               uint32_t width, uint32_t height);
+void vkr_view_system_rebuild_targets(VkrRendererFrontendHandle renderer);
+void vkr_view_system_draw_all(VkrRendererFrontendHandle renderer,
+                              uint32_t image_index);
+// --- END View / Layer System ---
 
 // --- START Frame Lifecycle & Rendering Commands ---
 VkrRendererError vkr_renderer_begin_frame(VkrRendererFrontendHandle renderer,
@@ -833,9 +901,10 @@ void vkr_renderer_draw_indexed(VkrRendererFrontendHandle renderer,
                                uint32_t first_index, int32_t vertex_offset,
                                uint32_t first_instance);
 
-VkrRendererError vkr_renderer_begin_render_pass(VkrRendererFrontendHandle renderer,
-                                                VkrRenderPassHandle pass,
-                                                VkrRenderTargetHandle target);
+VkrRendererError
+vkr_renderer_begin_render_pass(VkrRendererFrontendHandle renderer,
+                               VkrRenderPassHandle pass,
+                               VkrRenderTargetHandle target);
 
 VkrRendererError
 vkr_renderer_end_render_pass(VkrRendererFrontendHandle renderer);
@@ -885,11 +954,10 @@ typedef struct VkrRendererBackendInterface {
   VkrRenderPassHandle (*renderpass_create)(void *backend_state,
                                            const VkrRenderPassConfig *cfg);
   void (*renderpass_destroy)(void *backend_state, VkrRenderPassHandle pass);
-  VkrRenderPassHandle (*renderpass_get)(void *backend_state,
-                                        const char *name);
-  VkrRenderTargetHandle (*render_target_create)(
-      void *backend_state, const VkrRenderTargetDesc *desc,
-      VkrRenderPassHandle pass);
+  VkrRenderPassHandle (*renderpass_get)(void *backend_state, const char *name);
+  VkrRenderTargetHandle (*render_target_create)(void *backend_state,
+                                                const VkrRenderTargetDesc *desc,
+                                                VkrRenderPassHandle pass);
   void (*render_target_destroy)(void *backend_state,
                                 VkrRenderTargetHandle target);
   VkrRendererError (*begin_render_pass)(void *backend_state,

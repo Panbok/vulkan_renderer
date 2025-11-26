@@ -265,11 +265,6 @@ bool8_t application_create(Application *application,
   vkr_camera_controller_create(&application->renderer.camera_controller, camera,
                                (float32_t)application->config->target_frame_rate);
 
-  if (!vkr_renderer_default_scene(&application->renderer)) {
-    log_fatal("Failed to bootstrap default scene");
-    return false_v;
-  }
-
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_WINDOW_CLOSE,
                           application_on_window_event, NULL);
 

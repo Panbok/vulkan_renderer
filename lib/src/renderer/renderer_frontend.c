@@ -1,48 +1,23 @@
 #include "renderer/renderer_frontend.h"
 #include "containers/str.h"
 #include "core/logger.h"
-#include "math/mat.h"
 #include "math/vec.h"
-#include "math/vkr_transform.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/resources/loaders/shader_loader.h"
 #include "renderer/resources/loaders/texture_loader.h"
+#include "renderer/systems/views/vkr_view_ui.h"
+#include "renderer/systems/views/vkr_view_world.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vulkan/vulkan_backend.h"
-
-typedef struct VkrRenderMeshEntry {
-  uint32_t index;
-  float depth;
-} VkrRenderMeshEntry;
 
 static RendererFrontend *g_renderer_rt_refresh = NULL;
 
 vkr_internal void
 renderer_frontend_regenerate_render_targets(RendererFrontend *rf);
 vkr_internal void renderer_frontend_on_target_refresh_required(void);
-
-vkr_internal int vkr_render_mesh_entry_compare(const void *a, const void *b) {
-  const VkrRenderMeshEntry *ea = (const VkrRenderMeshEntry *)a;
-  const VkrRenderMeshEntry *eb = (const VkrRenderMeshEntry *)b;
-  if (ea->depth < eb->depth)
-    return 1;
-  if (ea->depth > eb->depth)
-    return -1;
-  return 0;
-}
-
-vkr_internal void renderer_frontend_recompute_ui_globals(RendererFrontend *rf) {
-  assert_log(rf != NULL, "Renderer frontend is NULL");
-  assert_log(rf->window != NULL, "Window is NULL");
-
-  VkrWindowPixelSize sz = vkr_window_get_pixel_size(rf->window);
-  rf->globals.ui_view = mat4_identity();
-  rf->globals.ui_projection = mat4_ortho(
-      0.0f, (float32_t)sz.width, (float32_t)sz.height, 0.0f, -1.0f, 1.0f);
-}
 
 vkr_internal bool8_t vkr_renderer_on_window_resize(Event *event,
                                                    UserData user_data) {
@@ -69,9 +44,6 @@ vkr_internal bool8_t vkr_renderer_on_window_resize(Event *event,
   }
 
   vkr_renderer_resize(rf, resize->width, resize->height);
-  if (rf->camera_system.cameras.data) {
-    vkr_camera_registry_on_window_resize(&rf->camera_system, rf->window);
-  }
   return true_v;
 }
 
@@ -79,117 +51,7 @@ vkr_internal void
 renderer_frontend_regenerate_render_targets(RendererFrontend *rf) {
   assert_log(rf != NULL, "Renderer frontend is NULL");
 
-  uint32_t count = vkr_renderer_window_attachment_count(rf);
-  if (count == 0) {
-    return;
-  }
-
-  if (rf->world_render_targets && rf->render_target_count > 0) {
-    uint32_t old_count = rf->render_target_count;
-    for (uint32_t i = 0; i < old_count; ++i) {
-      if (rf->world_render_targets[i]) {
-        vkr_renderer_render_target_destroy(rf, rf->world_render_targets[i],
-                                           false_v);
-      }
-      if (rf->ui_render_targets && rf->ui_render_targets[i]) {
-        vkr_renderer_render_target_destroy(rf, rf->ui_render_targets[i],
-                                           false_v);
-      }
-    }
-  } else if (rf->ui_render_targets && rf->render_target_count > 0) {
-    uint32_t old_count = rf->render_target_count;
-    for (uint32_t i = 0; i < old_count; ++i) {
-      if (rf->ui_render_targets[i]) {
-        vkr_renderer_render_target_destroy(rf, rf->ui_render_targets[i],
-                                           false_v);
-      }
-    }
-  }
-
-  VkrRenderTargetHandle *world_targets = rf->world_render_targets;
-  VkrRenderTargetHandle *ui_targets = rf->ui_render_targets;
-  if (!world_targets || count > rf->render_target_count) {
-    world_targets = (VkrRenderTargetHandle *)arena_alloc(
-        rf->arena, sizeof(VkrRenderTargetHandle) * count,
-        ARENA_MEMORY_TAG_ARRAY);
-    if (!world_targets) {
-      log_error("Failed to allocate world render target array");
-      rf->render_target_count = 0;
-      return;
-    }
-    rf->world_render_targets = world_targets;
-  }
-  if (!ui_targets || count > rf->render_target_count) {
-    ui_targets = (VkrRenderTargetHandle *)arena_alloc(
-        rf->arena, sizeof(VkrRenderTargetHandle) * count,
-        ARENA_MEMORY_TAG_ARRAY);
-    if (!ui_targets) {
-      log_error("Failed to allocate UI render target array");
-      rf->render_target_count = 0;
-      return;
-    }
-  }
-  rf->ui_render_targets = ui_targets;
-  world_targets = rf->world_render_targets;
-  MemZero((void *)rf->world_render_targets,
-          sizeof(VkrRenderTargetHandle) * (uint64_t)count);
-  MemZero((void *)rf->ui_render_targets,
-          sizeof(VkrRenderTargetHandle) * (uint64_t)count);
-  rf->render_target_count = count;
-
-  if (!rf->world_renderpass) {
-    rf->world_renderpass = vkr_renderer_renderpass_get(
-        rf, string8_lit("Renderpass.Builtin.World"));
-  }
-  if (!rf->ui_renderpass) {
-    rf->ui_renderpass =
-        vkr_renderer_renderpass_get(rf, string8_lit("Renderpass.Builtin.UI"));
-  }
-
-  if (!rf->world_renderpass || !rf->ui_renderpass) {
-    log_error("Render pass handles unavailable; skipping render target build");
-    rf->render_target_count = 0;
-    return;
-  }
-
-  VkrTextureOpaqueHandle depth = vkr_renderer_depth_attachment_get(rf);
-  if (!depth) {
-    log_error("Depth attachment unavailable for render target regeneration");
-    rf->render_target_count = 0;
-    return;
-  }
-
-  for (uint32_t i = 0; i < count; ++i) {
-    VkrTextureOpaqueHandle color = vkr_renderer_window_attachment_get(rf, i);
-
-    VkrTextureOpaqueHandle world_attachments[2] = {color, depth};
-    VkrRenderTargetDesc world_desc = {.sync_to_window_size = true_v,
-                                      .attachment_count = 2,
-                                      .attachments = world_attachments,
-                                      .width = rf->last_window_width,
-                                      .height = rf->last_window_height};
-    rf->world_render_targets[i] = vkr_renderer_render_target_create(
-        rf, &world_desc, rf->world_renderpass);
-    if (!rf->world_render_targets[i]) {
-      log_error("Failed to create world render target %u", i);
-      rf->render_target_count = 0;
-      return;
-    }
-
-    VkrTextureOpaqueHandle ui_attachments[1] = {color};
-    VkrRenderTargetDesc ui_desc = {.sync_to_window_size = true_v,
-                                   .attachment_count = 1,
-                                   .attachments = ui_attachments,
-                                   .width = rf->last_window_width,
-                                   .height = rf->last_window_height};
-    rf->ui_render_targets[i] =
-        vkr_renderer_render_target_create(rf, &ui_desc, rf->ui_renderpass);
-    if (!rf->ui_render_targets[i]) {
-      log_error("Failed to create UI render target %u", i);
-      rf->render_target_count = 0;
-      return;
-    }
-  }
+  vkr_view_system_rebuild_targets(rf);
 }
 
 vkr_internal void renderer_frontend_on_target_refresh_required(void) {
@@ -237,7 +99,9 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->geometry_system = (VkrGeometrySystem){0};
   renderer->texture_system = (VkrTextureSystem){0};
   renderer->material_system = (VkrMaterialSystem){0};
+  renderer->view_system = (VkrViewSystem){0};
   renderer->mesh_manager = (VkrMeshManager){0};
+  renderer->camera_system = (VkrCameraSystem){0};
   renderer->active_camera = VKR_CAMERA_HANDLE_INVALID;
   renderer->camera_controller = (VkrCameraController){0};
   renderer->globals = (VkrGlobalMaterialState){
@@ -245,17 +109,8 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
       .render_mode = VKR_RENDER_MODE_DEFAULT,
   };
   renderer->rf_mutex = NULL;
-  renderer->world_shader_config = (VkrShaderConfig){0};
-  renderer->ui_shader_config = (VkrShaderConfig){0};
-  renderer->world_pipeline = VKR_PIPELINE_HANDLE_INVALID;
-  renderer->ui_pipeline = VKR_PIPELINE_HANDLE_INVALID;
-  renderer->ui_material = VKR_MATERIAL_HANDLE_INVALID;
-  renderer->ui_instance_state = (VkrRendererInstanceStateHandle){0};
-  renderer->world_renderpass = NULL;
-  renderer->ui_renderpass = NULL;
-  renderer->world_render_targets = NULL;
-  renderer->ui_render_targets = NULL;
-  renderer->render_target_count = 0;
+  renderer->world_layer = VKR_LAYER_HANDLE_INVALID;
+  renderer->ui_layer = VKR_LAYER_HANDLE_INVALID;
   renderer->draw_state = (VkrShaderStateObject){.instance_state = {0}};
   renderer->frame_number = 0;
 
@@ -312,21 +167,6 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
-  renderer->world_renderpass = vkr_renderer_renderpass_get(
-      renderer, string8_lit("Renderpass.Builtin.World"));
-  renderer->ui_renderpass = vkr_renderer_renderpass_get(
-      renderer, string8_lit("Renderpass.Builtin.UI"));
-
-  renderer_frontend_regenerate_render_targets(renderer);
-
-  if (renderer->render_target_count == 0 || !renderer->world_renderpass ||
-      !renderer->ui_renderpass) {
-    log_error("Failed to create render passes or render targets");
-    g_renderer_rt_refresh = NULL;
-    *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
-    return false_v;
-  }
-
   // Subscribe to window resize events internally
   event_manager_subscribe(renderer->event_manager, EVENT_TYPE_WINDOW_RESIZE,
                           vkr_renderer_on_window_resize, renderer);
@@ -366,12 +206,7 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
     }
   }
 
-  if (rf->world_pipeline.id)
-    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
-                                           rf->world_pipeline);
-  if (rf->ui_pipeline.id)
-    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
-                                           rf->ui_pipeline);
+  vkr_view_system_shutdown(rf);
   vkr_pipeline_registry_shutdown(&rf->pipeline_registry);
 
   vkr_shader_system_shutdown(&rf->shader_system);
@@ -379,30 +214,7 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   vkr_mesh_manager_shutdown(&rf->mesh_manager);
   vkr_material_system_shutdown(&rf->material_system);
   vkr_geometry_system_shutdown(&rf->geometry_system);
-  vkr_camera_registry_shutdown(&rf->camera_system);
 
-  if (rf->world_render_targets && rf->render_target_count > 0) {
-    for (uint32_t i = 0; i < rf->render_target_count; ++i) {
-      if (rf->world_render_targets[i]) {
-        vkr_renderer_render_target_destroy(
-            renderer, rf->world_render_targets[i], false_v);
-      }
-      if (rf->ui_render_targets && rf->ui_render_targets[i]) {
-        vkr_renderer_render_target_destroy(renderer, rf->ui_render_targets[i],
-                                           false_v);
-      }
-    }
-  } else if (rf->ui_render_targets && rf->render_target_count > 0) {
-    for (uint32_t i = 0; i < rf->render_target_count; ++i) {
-      if (rf->ui_render_targets[i]) {
-        vkr_renderer_render_target_destroy(renderer, rf->ui_render_targets[i],
-                                           false_v);
-      }
-    }
-  }
-  rf->render_target_count = 0;
-  rf->world_render_targets = NULL;
-  rf->ui_render_targets = NULL;
   g_renderer_rt_refresh = NULL;
 
   if (renderer->backend_state && renderer->backend.shutdown) {
@@ -827,10 +639,6 @@ vkr_renderer_renderpass_get(VkrRendererFrontendHandle renderer, String8 name) {
   Scratch scratch = scratch_create(rf->scratch_arena);
   char *cstr =
       arena_alloc(scratch.arena, name.length + 1, ARENA_MEMORY_TAG_STRING);
-  if (!cstr) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
-    return NULL;
-  }
   MemCopy(cstr, name.str, (size_t)name.length);
   cstr[name.length] = '\0';
   VkrRenderPassHandle handle =
@@ -949,21 +757,24 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
 
-  // Synchronize resize as it may be called from an event thread
-  vkr_mutex_lock(rf->rf_mutex);
   rf->backend.on_resize(rf->backend_state, width, height);
+
+  if (rf->rf_mutex) {
+    vkr_mutex_lock(rf->rf_mutex);
+  }
   rf->window->width = width;
   rf->window->height = height;
-
   rf->last_window_width = width;
   rf->last_window_height = height;
-
-  renderer_frontend_recompute_ui_globals(rf);
-  vkr_pipeline_registry_mark_global_state_dirty(&rf->pipeline_registry);
-
-  if (!vkr_mutex_unlock(rf->rf_mutex)) {
-    log_error("Failed to unlock renderer mutex");
+  if (rf->rf_mutex) {
+    if (!vkr_mutex_unlock(rf->rf_mutex)) {
+      log_error("Failed to unlock renderer mutex");
+    }
   }
+
+  vkr_view_system_on_resize(renderer, width, height);
+  renderer_frontend_regenerate_render_targets(rf);
+  vkr_pipeline_registry_mark_global_state_dirty(&rf->pipeline_registry);
 }
 
 void vkr_renderer_bind_vertex_buffer(VkrRendererFrontendHandle renderer,
@@ -1130,385 +941,18 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer) {
   vkr_resource_system_register_loader((void *)&rf->mesh_loader,
                                       vkr_mesh_loader_create(&rf->mesh_loader));
 
-  // Compute initial cached globals (camera initialized by application)
-  renderer_frontend_recompute_ui_globals(rf);
-
-  return true_v;
-}
-
-bool32_t vkr_renderer_default_scene(VkrRendererFrontendHandle renderer) {
-  assert_log(renderer != NULL, "Renderer is NULL");
-
-  RendererFrontend *rf = (RendererFrontend *)renderer;
-
-  // Load shader configs via resource system
-  VkrRendererError pipeline_error = VKR_RENDERER_ERROR_NONE;
-
-  VkrResourceHandleInfo world_cfg_info = {0};
-  VkrRendererError shadercfg_err = VKR_RENDERER_ERROR_NONE;
-  if (vkr_resource_system_load_custom(
-          string8_lit("shadercfg"),
-          string8_lit("assets/shaders/default.world.shadercfg"),
-          rf->scratch_arena, &world_cfg_info, &shadercfg_err)) {
-    rf->world_shader_config = *(VkrShaderConfig *)world_cfg_info.as.custom;
-  } else {
-    String8 err = vkr_renderer_get_error_string(shadercfg_err);
-    log_fatal("World shadercfg load failed: %s", string8_cstr(&err));
+  if (!vkr_view_system_init(rf)) {
+    log_fatal("Failed to initialize view system");
     return false_v;
   }
 
-  VkrResourceHandleInfo ui_cfg_info = {0};
-  if (vkr_resource_system_load_custom(
-          string8_lit("shadercfg"),
-          string8_lit("assets/shaders/default.ui.shadercfg"), rf->scratch_arena,
-          &ui_cfg_info, &shadercfg_err)) {
-    rf->ui_shader_config = *(VkrShaderConfig *)ui_cfg_info.as.custom;
-  } else {
-    String8 err = vkr_renderer_get_error_string(shadercfg_err);
-    log_fatal("UI shadercfg load failed: %s", string8_cstr(&err));
+  if (!vkr_view_world_register(rf)) {
+    log_error("Failed to register world view");
     return false_v;
   }
 
-  // Create shaders in shader system
-  vkr_shader_system_create(&rf->shader_system, &rf->world_shader_config);
-  vkr_shader_system_create(&rf->shader_system, &rf->ui_shader_config);
-
-  // Load default materials via resource system
-  VkrResourceHandleInfo default_material_info = {0};
-  VkrRendererError material_load_error = VKR_RENDERER_ERROR_NONE;
-  if (vkr_resource_system_load(VKR_RESOURCE_TYPE_MATERIAL,
-                               string8_lit("assets/materials/default.world.mt"),
-                               rf->scratch_arena, &default_material_info,
-                               &material_load_error)) {
-    log_info("Successfully loaded default material from "
-             "assets/materials/default.world.mt");
-    rf->world_material = default_material_info.as.material;
-  } else {
-    String8 error_string = vkr_renderer_get_error_string(material_load_error);
-    log_warn("Failed to load default material from "
-             "assets/materials/default.world.mt; using "
-             "built-in default: %s",
-             string8_cstr(&error_string));
-  }
-
-  VkrResourceHandleInfo default_ui_material_info = {0};
-  if (vkr_resource_system_load(VKR_RESOURCE_TYPE_MATERIAL,
-                               string8_lit("assets/materials/default.ui.mt"),
-                               rf->scratch_arena, &default_ui_material_info,
-                               &material_load_error)) {
-    log_info("Successfully loaded default UI material from "
-             "assets/materials/default.ui.mt");
-    rf->ui_material = default_ui_material_info.as.material;
-  } else {
-    String8 error_string = vkr_renderer_get_error_string(material_load_error);
-    log_warn("Failed to load default UI material from"
-             "assets/materials/default.ui.mt; using "
-             "built-in default: %s",
-             string8_cstr(&error_string));
-  }
-
-  // Writable texture example
-  // VkrTextureDescription writable_desc = {
-  //     .width = 128,
-  //     .height = 128,
-  //     .channels = 4,
-  //     .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
-  //     .type = VKR_TEXTURE_TYPE_2D,
-  //     .properties = vkr_texture_property_flags_create(),
-  //     .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-  //     .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-  //     .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-  //     .min_filter = VKR_FILTER_LINEAR,
-  //     .mag_filter = VKR_FILTER_LINEAR,
-  //     .mip_filter = VKR_MIP_FILTER_NONE,
-  //     .anisotropy_enable = false_v,
-  //     .generation = VKR_INVALID_ID,
-  // };
-  // VkrTextureHandle ui_runtime_texture = VKR_TEXTURE_HANDLE_INVALID;
-  // VkrRendererError writable_err = VKR_RENDERER_ERROR_NONE;
-  // if (vkr_texture_system_create_writable(
-  //         &rf->texture_system, string8_lit("ui.runtime.writable"),
-  //         &writable_desc, &ui_runtime_texture, &writable_err)) {
-  //   uint64_t pixel_count =
-  //       (uint64_t)writable_desc.width * (uint64_t)writable_desc.height;
-  //   uint64_t buffer_size = pixel_count * (uint64_t)writable_desc.channels;
-
-  //   Scratch tex_scratch = scratch_create(rf->scratch_arena);
-  //   uint8_t *base_pixels =
-  //       arena_alloc(tex_scratch.arena, buffer_size,
-  //       ARENA_MEMORY_TAG_TEXTURE);
-  //   if (base_pixels) {
-  //     for (uint32_t y = 0; y < writable_desc.height; ++y) {
-  //       for (uint32_t x = 0; x < writable_desc.width; ++x) {
-  //         uint32_t idx = (y * writable_desc.width + x) *
-  //         writable_desc.channels; base_pixels[idx + 0] = (uint8_t)((x * 255)
-  //         / writable_desc.width); base_pixels[idx + 1] = (uint8_t)((y * 255)
-  //         / writable_desc.height); base_pixels[idx + 2] = 180;
-  //         base_pixels[idx + 3] = 255;
-  //       }
-  //     }
-
-  //     VkrRendererError write_err = vkr_texture_system_write(
-  //         &rf->texture_system, ui_runtime_texture, base_pixels, buffer_size);
-  //     if (write_err != VKR_RENDERER_ERROR_NONE) {
-  //       String8 err = vkr_renderer_get_error_string(write_err);
-  //       log_warn("Writable UI texture upload failed: %s",
-  //       string8_cstr(&err));
-  //     }
-  //   } else {
-  //     log_warn("Failed to allocate base pixels for writable texture");
-  //   }
-
-  //   const uint32_t block_w = 48;
-  //   const uint32_t block_h = 48;
-  //   uint64_t region_size =
-  //       (uint64_t)block_w * (uint64_t)block_h * writable_desc.channels;
-  //   uint8_t *region_pixels =
-  //       arena_alloc(tex_scratch.arena, region_size,
-  //       ARENA_MEMORY_TAG_TEXTURE);
-  //   if (region_pixels) {
-  //     for (uint32_t i = 0; i < block_w * block_h; ++i) {
-  //       region_pixels[i * writable_desc.channels + 0] = 30;
-  //       region_pixels[i * writable_desc.channels + 1] = 220;
-  //       region_pixels[i * writable_desc.channels + 2] = 120;
-  //       region_pixels[i * writable_desc.channels + 3] = 255;
-  //     }
-
-  //     VkrTextureWriteRegion write_region = {
-  //         .mip_level = 0,
-  //         .array_layer = 0,
-  //         .x = (writable_desc.width - block_w) / 2,
-  //         .y = (writable_desc.height - block_h) / 2,
-  //         .width = block_w,
-  //         .height = block_h,
-  //     };
-
-  //     VkrRendererError region_err = vkr_texture_system_write_region(
-  //         &rf->texture_system, ui_runtime_texture, &write_region,
-  //         region_pixels, region_size);
-  //     if (region_err != VKR_RENDERER_ERROR_NONE) {
-  //       String8 err = vkr_renderer_get_error_string(region_err);
-  //       log_warn("Writable texture region upload failed: %s",
-  //                string8_cstr(&err));
-  //     }
-  //   }
-
-  //   VkrRendererError resize_err = VKR_RENDERER_ERROR_NONE;
-  //   VkrTextureHandle resized_handle = ui_runtime_texture;
-  //   if (vkr_texture_system_resize(&rf->texture_system, ui_runtime_texture,
-  //   192,
-  //                                 128, true_v, &resized_handle, &resize_err))
-  //                                 {
-  //     ui_runtime_texture = resized_handle;
-  //   } else if (resize_err != VKR_RENDERER_ERROR_NONE) {
-  //     String8 err = vkr_renderer_get_error_string(resize_err);
-  //     log_warn("Writable texture resize failed: %s", string8_cstr(&err));
-  //   }
-
-  //   VkrMaterial *ui_mat = vkr_material_system_get_by_handle(
-  //       &rf->material_system, rf->ui_material);
-  //   if (ui_mat) {
-  //     ui_mat->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle = ui_runtime_texture;
-  //     ui_mat->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = true_v;
-  //   }
-
-  //   scratch_destroy(tex_scratch, ARENA_MEMORY_TAG_TEXTURE);
-  // } else {
-  //   String8 err = vkr_renderer_get_error_string(writable_err);
-  //   log_warn("Failed to create writable UI texture: %s", string8_cstr(&err));
-  // }
-
-  // Create pipelines from shader configs
-  if (rf->world_pipeline.id == 0 &&
-      vkr_pipeline_registry_create_from_shader_config(
-          &rf->pipeline_registry, &rf->world_shader_config,
-          VKR_PIPELINE_DOMAIN_WORLD, string8_lit("world"), &rf->world_pipeline,
-          &pipeline_error)) {
-    log_debug("Config-first world pipeline created");
-    if (rf->world_shader_config.name.str &&
-        rf->world_shader_config.name.length > 0) {
-      VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
-      vkr_pipeline_registry_alias_pipeline_name(
-          &rf->pipeline_registry, rf->world_pipeline,
-          rf->world_shader_config.name, &alias_err);
-    }
-  } else {
-    String8 err_str = vkr_renderer_get_error_string(pipeline_error);
-    log_fatal("Config world pipeline failed: %s", string8_cstr(&err_str));
-    return false_v;
-  }
-
-  if (rf->ui_pipeline.id == 0 &&
-      vkr_pipeline_registry_create_from_shader_config(
-          &rf->pipeline_registry, &rf->ui_shader_config, VKR_PIPELINE_DOMAIN_UI,
-          string8_lit("ui"), &rf->ui_pipeline, &pipeline_error)) {
-    log_debug("Config-first UI pipeline created");
-    if (rf->ui_shader_config.name.str && rf->ui_shader_config.name.length > 0) {
-      VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
-      vkr_pipeline_registry_alias_pipeline_name(
-          &rf->pipeline_registry, rf->ui_pipeline, rf->ui_shader_config.name,
-          &alias_err);
-    }
-  } else {
-    String8 err_str = vkr_renderer_get_error_string(pipeline_error);
-    log_fatal("Config UI pipeline failed: %s", string8_cstr(&err_str));
-    return false_v;
-  }
-
-  // VkrRendererError mesh_error = VKR_RENDERER_ERROR_NONE;
-  // VkrSubMeshDesc cube_submeshes[] = {{
-  //     .geometry =
-  //         vkr_geometry_system_get_default_geometry(&rf->geometry_system),
-  //     .material = rf->world_material,
-  //     .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
-  //     .owns_geometry = true_v,
-  //     .owns_material = true_v,
-  // }};
-  // VkrMeshDesc cube_desc = {
-  //     .transform = vkr_transform_from_position_scale_rotation(
-  //         vec3_new(0.0f, 1.0f, 0.0f), vec3_new(0.15f, 0.15f, 0.15f),
-  //         vkr_quat_identity()),
-  //     .submeshes = cube_submeshes,
-  //     .submesh_count = ArrayCount(cube_submeshes),
-  // };
-
-  // VkrMesh *cube_mesh_ptr = NULL;
-  // if (!vkr_mesh_manager_create(&rf->mesh_manager, &cube_desc, &mesh_error,
-  //                              &cube_mesh_ptr)) {
-  //   String8 err_str = vkr_renderer_get_error_string(mesh_error);
-  //   log_fatal("Failed to create cube mesh: %s", string8_cstr(&err_str));
-  //   return false_v;
-  // }
-
-  // VkrSubMeshDesc cube2_submeshes[] = {{
-  //     .geometry =
-  //         vkr_geometry_system_get_default_geometry(&rf->geometry_system),
-  //     .material = rf->world_material,
-  //     .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
-  //     .owns_geometry = true_v,
-  //     .owns_material = true_v,
-  // }};
-  // VkrMeshDesc cube_desc_2 = {
-  //     .transform = vkr_transform_from_position_scale_rotation(
-  //         vec3_new(12.0f, 0.0f, 0.0f), vec3_new(0.5f, 0.5f, 0.5f),
-  //         vkr_quat_identity()),
-  //     .submeshes = cube2_submeshes,
-  //     .submesh_count = ArrayCount(cube2_submeshes),
-  // };
-
-  // VkrMesh *cube_mesh_2_ptr = NULL;
-  // if (!vkr_mesh_manager_create(&rf->mesh_manager, &cube_desc_2, &mesh_error,
-  //                              &cube_mesh_2_ptr)) {
-  //   String8 err_str = vkr_renderer_get_error_string(mesh_error);
-  //   log_fatal("Failed to create cube mesh 2: %s", string8_cstr(&err_str));
-  //   return false_v;
-  // }
-  // vkr_transform_set_parent(&cube_mesh_2_ptr->transform,
-  //                          &cube_mesh_ptr->transform);
-
-  // VkrSubMeshDesc cube3_submeshes[] = {{
-  //     .geometry =
-  //         vkr_geometry_system_get_default_geometry(&rf->geometry_system),
-  //     .material = rf->world_material,
-  //     .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
-  //     .owns_geometry = true_v,
-  //     .owns_material = true_v,
-  // }};
-  // VkrMeshDesc cube_desc_3 = {
-  //     .transform = vkr_transform_from_position_scale_rotation(
-  //         vec3_new(10.0f, 0.0f, 0.0f), vec3_new(0.3f, 0.3f, 0.3f),
-  //         vkr_quat_identity()),
-  //     .submeshes = cube3_submeshes,
-  //     .submesh_count = ArrayCount(cube3_submeshes),
-  // };
-
-  // VkrMesh *cube_mesh_3_ptr = NULL;
-  // if (!vkr_mesh_manager_create(&rf->mesh_manager, &cube_desc_3, &mesh_error,
-  //                              &cube_mesh_3_ptr)) {
-  //   String8 err_str = vkr_renderer_get_error_string(mesh_error);
-  //   log_fatal("Failed to create cube mesh 3: %s", string8_cstr(&err_str));
-  //   return false_v;
-  // }
-  // vkr_transform_set_parent(&cube_mesh_3_ptr->transform,
-  //                          &cube_mesh_2_ptr->transform);
-
-  VkrRendererError mesh_load_err = VKR_RENDERER_ERROR_NONE;
-
-  uint32_t falcon_mesh_index = VKR_INVALID_ID;
-  VkrMeshLoadDesc falcon_desc = {
-      .mesh_path = string8_lit("assets/models/falcon.obj"),
-      .transform = vkr_transform_from_position_scale_rotation(
-          vec3_new(0.0f, 0.2f, -15.0f), vec3_new(0.2f, 0.2f, 0.2f),
-          vkr_quat_identity()),
-      .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
-      .shader_override = {0},
-  };
-  if (!vkr_mesh_manager_load(&rf->mesh_manager, &falcon_desc,
-                             &falcon_mesh_index, NULL, &mesh_load_err)) {
-    String8 err = vkr_renderer_get_error_string(mesh_load_err);
-    log_error("Failed to load falcon mesh: %s", string8_cstr(&err));
-  }
-
-  VkrMesh *falcon_mesh =
-      vkr_mesh_manager_get(&rf->mesh_manager, falcon_mesh_index);
-  if (!falcon_mesh) {
-    log_error("Falcon mesh not found");
-    return false_v;
-  }
-
-  VkrSubMeshDesc *falcon_submeshes =
-      arena_alloc(rf->mesh_manager.arena,
-                  sizeof(VkrSubMeshDesc) * falcon_mesh->submeshes.length,
-                  ARENA_MEMORY_TAG_ARRAY);
-  for (uint32_t i = 0; i < falcon_mesh->submeshes.length; i++) {
-    falcon_submeshes[i] = (VkrSubMeshDesc){
-        .geometry = falcon_mesh->submeshes.data[i].geometry,
-        .material = falcon_mesh->submeshes.data[i].material,
-        .pipeline_domain = falcon_mesh->submeshes.data[i].pipeline_domain,
-        .shader_override = falcon_mesh->submeshes.data[i].shader_override,
-        .owns_geometry = falcon_mesh->submeshes.data[i].owns_geometry,
-        .owns_material = falcon_mesh->submeshes.data[i].owns_material,
-    };
-  }
-
-  VkrMeshDesc falcon_desc2 = {
-      .transform = vkr_transform_from_position_scale_rotation(
-          vec3_new(5.0f, 0.2f, -15.0f), vec3_new(0.2f, 0.2f, 0.2f),
-          vkr_quat_identity()),
-      .submeshes = falcon_submeshes,
-      .submesh_count = falcon_mesh->submeshes.length,
-  };
-  if (!vkr_mesh_manager_add(&rf->mesh_manager, &falcon_desc2, NULL,
-                            &mesh_load_err)) {
-    String8 err = vkr_renderer_get_error_string(mesh_load_err);
-    log_error("Failed to add falcon mesh: %s", string8_cstr(&err));
-  }
-
-  VkrMeshLoadDesc sponza_desc = {
-      .mesh_path = string8_lit("assets/models/sponza.obj"),
-      .transform = vkr_transform_from_position_scale_rotation(
-          vec3_new(0.0f, 0.0f, -15.0f), vec3_new(0.0085f, 0.0085f, 0.0085f),
-          vkr_quat_identity()),
-      .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
-      .shader_override = {0},
-  };
-  mesh_load_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_mesh_manager_load(&rf->mesh_manager, &sponza_desc, NULL, NULL,
-                             &mesh_load_err)) {
-    String8 err = vkr_renderer_get_error_string(mesh_load_err);
-    log_error("Failed to load sponza mesh: %s", string8_cstr(&err));
-  }
-
-  rf->ui_transform = vkr_transform_from_position_scale_rotation(
-      vec3_new(0.0f, 0.0f, 0.0f), vec3_new(150.0f, 150.0f, 1.0f),
-      vkr_quat_identity());
-
-  // Acquire per-instance local state for UI
-  VkrRendererError ui_ls_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_pipeline_registry_acquire_instance_state(
-          &rf->pipeline_registry, rf->ui_pipeline, &rf->ui_instance_state,
-          &ui_ls_err)) {
-    log_fatal("Failed to acquire local renderer state for UI pipeline");
+  if (!vkr_view_ui_register(rf)) {
+    log_error("Failed to register UI view");
     return false_v;
   }
 
@@ -1520,233 +964,12 @@ void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer) {
   RendererFrontend *rf = (RendererFrontend *)renderer;
 
   rf->frame_number++;
+
+  if (!rf->view_system.initialized) {
+    log_error("View system not initialized; skipping draw frame");
+    return;
+  }
+
   uint32_t image_index = vkr_renderer_window_image_index(renderer);
-  if (!rf->world_renderpass || !rf->ui_renderpass ||
-      !rf->world_render_targets || !rf->ui_render_targets ||
-      image_index >= rf->render_target_count) {
-    log_error("Render targets or render passes unavailable for draw frame");
-    return;
-  }
-
-  VkrRenderTargetHandle world_target = rf->world_render_targets[image_index];
-  VkrRenderTargetHandle ui_target = rf->ui_render_targets[image_index];
-  if (!world_target || !ui_target) {
-    log_error("Render target missing for swapchain image %u", image_index);
-    return;
-  }
-
-  //====================== WORLD START =======================
-
-  VkrRendererError begin_err = VKR_RENDERER_ERROR_NONE;
-  begin_err = vkr_renderer_begin_render_pass(renderer, rf->world_renderpass,
-                                             world_target);
-  if (begin_err != VKR_RENDERER_ERROR_NONE) {
-    String8 err_str = vkr_renderer_get_error_string(begin_err);
-    log_error("Failed to begin world render pass: %s", string8_cstr(&err_str));
-    return;
-  }
-
-  uint32_t mesh_capacity = vkr_mesh_manager_capacity(&rf->mesh_manager);
-  bool8_t globals_applied = false_v;
-  for (uint32_t i = 0; i < mesh_capacity; i++) {
-    VkrMesh *mesh = vkr_mesh_manager_get(&rf->mesh_manager, i);
-    if (!mesh)
-      continue;
-
-    Mat4 model = mesh->model;
-    uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
-    if (submesh_count == 0)
-      continue;
-
-    for (uint32_t submesh_index = 0; submesh_index < submesh_count;
-         ++submesh_index) {
-      VkrSubMesh *submesh =
-          vkr_mesh_manager_get_submesh(&rf->mesh_manager, i, submesh_index);
-      if (!submesh)
-        continue;
-
-      VkrMaterial *material = vkr_material_system_get_by_handle(
-          &rf->material_system, submesh->material);
-      const char *material_shader = (material && material->shader_name &&
-                                     material->shader_name[0] != '\0')
-                                        ? material->shader_name
-                                        : "shader.default.world";
-      if (!vkr_shader_system_use(&rf->shader_system, material_shader)) {
-        vkr_shader_system_use(&rf->shader_system, "shader.default.world");
-      }
-
-      uint32_t mat_pipeline_id =
-          (material && material->pipeline_id != VKR_INVALID_ID)
-              ? material->pipeline_id
-              : (uint32_t)submesh->pipeline_domain;
-
-      VkrPipelineHandle resolved = VKR_PIPELINE_HANDLE_INVALID;
-      VkrRendererError get_err = VKR_RENDERER_ERROR_NONE;
-      vkr_pipeline_registry_get_pipeline_for_material(
-          &rf->pipeline_registry, NULL, mat_pipeline_id, &resolved, &get_err);
-
-      VkrRendererError refresh_err = VKR_RENDERER_ERROR_NONE;
-      if (!vkr_mesh_manager_refresh_pipeline(
-              &rf->mesh_manager, i, submesh_index, resolved, &refresh_err)) {
-        String8 err_str = vkr_renderer_get_error_string(refresh_err);
-        log_error("Mesh %u submesh %u failed to refresh pipeline: %s", i,
-                  submesh_index, string8_cstr(&err_str));
-        continue;
-      }
-
-      rf->draw_state.instance_state = submesh->instance_state;
-
-      VkrPipelineHandle current_pipeline =
-          vkr_pipeline_registry_get_current_pipeline(&rf->pipeline_registry);
-      if (current_pipeline.id != resolved.id ||
-          current_pipeline.generation != resolved.generation) {
-        VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
-        vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry, resolved,
-                                            &bind_err);
-      }
-
-      if (!globals_applied) {
-        vkr_material_system_apply_global(&rf->material_system, &rf->globals,
-                                         VKR_PIPELINE_DOMAIN_WORLD);
-        globals_applied = true_v;
-      }
-
-      vkr_material_system_apply_local(&rf->material_system,
-                                      &(VkrLocalMaterialState){.model = model});
-
-      if (material) {
-        vkr_shader_system_bind_instance(&rf->shader_system,
-                                        submesh->instance_state.id);
-
-        bool8_t should_apply_instance =
-            (submesh->last_render_frame != rf->frame_number);
-        if (should_apply_instance) {
-          vkr_material_system_apply_instance(&rf->material_system, material,
-                                             VKR_PIPELINE_DOMAIN_WORLD);
-          submesh->last_render_frame = rf->frame_number;
-        }
-      }
-
-      vkr_geometry_system_render(rf, &rf->geometry_system, submesh->geometry,
-                                 1);
-    }
-  }
-
-  VkrRendererError end_err = VKR_RENDERER_ERROR_NONE;
-  end_err = vkr_renderer_end_render_pass(renderer);
-  if (end_err != VKR_RENDERER_ERROR_NONE) {
-    String8 err_str = vkr_renderer_get_error_string(end_err);
-    log_error("Failed to end world render pass: %s", string8_cstr(&err_str));
-    return;
-  }
-
-  //====================== WORLD END =======================
-
-  //====================== UI START ========================
-
-  begin_err = VKR_RENDERER_ERROR_NONE;
-  begin_err =
-      vkr_renderer_begin_render_pass(renderer, rf->ui_renderpass, ui_target);
-  if (begin_err != VKR_RENDERER_ERROR_NONE) {
-    String8 err_str = vkr_renderer_get_error_string(begin_err);
-    log_error("Failed to begin UI render pass: %s", string8_cstr(&err_str));
-    return;
-  }
-
-  // Resolve material via handle
-  VkrMaterial *ui_material =
-      vkr_material_system_get_by_handle(&rf->material_system, rf->ui_material);
-
-  // Prepare draw state
-  rf->draw_state.instance_state = rf->ui_instance_state;
-
-  // Resolve UI pipeline from material's shader_name/pipeline id and geometry
-  VkrPipelineHandle ui_resolved = VKR_PIPELINE_HANDLE_INVALID;
-  VkrRendererError ui_get_err = VKR_RENDERER_ERROR_NONE;
-  uint32_t ui_mat_pipeline_id =
-      ui_material ? ui_material->pipeline_id : VKR_INVALID_ID;
-  const char *ui_shader =
-      (ui_material && ui_material->shader_name && ui_material->shader_name[0])
-          ? ui_material->shader_name
-          : "shader.default.ui";
-  if (!vkr_shader_system_use(&rf->shader_system, ui_shader)) {
-    vkr_shader_system_use(&rf->shader_system, "shader.default.ui");
-  }
-
-  vkr_pipeline_registry_get_pipeline_for_material(&rf->pipeline_registry,
-                                                  ui_shader, ui_mat_pipeline_id,
-                                                  &ui_resolved, &ui_get_err);
-
-  // If pipeline changed, reacquire instance state
-  if (rf->ui_pipeline.id != ui_resolved.id ||
-      rf->ui_pipeline.generation != ui_resolved.generation) {
-    if (rf->ui_pipeline.id != 0) {
-      VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
-      vkr_pipeline_registry_release_instance_state(
-          &rf->pipeline_registry, rf->ui_pipeline, rf->ui_instance_state,
-          &rel_err);
-    }
-    VkrRendererError acq_err = VKR_RENDERER_ERROR_NONE;
-    if (vkr_pipeline_registry_acquire_instance_state(
-            &rf->pipeline_registry, ui_resolved, &rf->ui_instance_state,
-            &acq_err)) {
-      rf->ui_pipeline = ui_resolved;
-    } else {
-      String8 err_str = vkr_renderer_get_error_string(acq_err);
-      log_error("Failed to acquire instance state for resolved pipeline: %s",
-                string8_cstr(&err_str));
-    }
-  }
-
-  // Ensure shader is selected before binding pipeline
-  if (ui_material && ui_material->shader_name) {
-    vkr_shader_system_use(&rf->shader_system, ui_material->shader_name);
-  }
-
-  // Ensure correct pipeline is bound
-  VkrPipelineHandle current_pipeline =
-      vkr_pipeline_registry_get_current_pipeline(&rf->pipeline_registry);
-  if (current_pipeline.id != ui_resolved.id ||
-      current_pipeline.generation != ui_resolved.generation) {
-    VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
-    vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry, ui_resolved,
-                                        &bind_err);
-  }
-
-  vkr_material_system_apply_global(&rf->material_system, &rf->globals,
-                                   VKR_PIPELINE_DOMAIN_UI);
-
-  // Apply local state
-  vkr_material_system_apply_local(
-      &rf->material_system,
-      &(VkrLocalMaterialState){.model =
-                                   vkr_transform_get_world(&rf->ui_transform)});
-
-  if (ui_material) {
-    // Apply instance state if it has changed since last frame (Vulkan
-    // doesn't like applying the same instance state twice)
-    // bool8_t should_apply_instance =
-    //     ui_material->render_frame_number != rf->frame_number;
-    // if (should_apply_instance) {
-    //   ui_material->render_frame_number = rf->frame_number;
-    // }
-    vkr_shader_system_bind_instance(&rf->shader_system,
-                                    rf->ui_instance_state.id);
-    vkr_material_system_apply_instance(&rf->material_system, ui_material,
-                                       VKR_PIPELINE_DOMAIN_UI);
-  }
-
-  vkr_geometry_system_render(
-      rf, &rf->geometry_system,
-      vkr_geometry_system_get_default_plane2d(&rf->geometry_system), 1);
-
-  end_err = VKR_RENDERER_ERROR_NONE;
-  end_err = vkr_renderer_end_render_pass(renderer);
-  if (end_err != VKR_RENDERER_ERROR_NONE) {
-    String8 err_str = vkr_renderer_get_error_string(end_err);
-    log_error("Failed to end UI render pass: %s", string8_cstr(&err_str));
-    return;
-  }
-
-  //====================== UI END ==========================
+  vkr_view_system_draw_all(renderer, image_index);
 }

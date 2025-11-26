@@ -130,16 +130,6 @@ void vkr_camera_system_update(VkrCamera *camera) {
   assert_log(camera->window != NULL, "Camera window is NULL");
   assert_log(camera->type != VKR_CAMERA_TYPE_NONE, "Camera type is NONE");
 
-  VkrWindowPixelSize window_size = vkr_window_get_pixel_size(camera->window);
-  if (camera->cached_window_width != window_size.width ||
-      camera->cached_window_height != window_size.height) {
-    camera->cached_window_width = window_size.width;
-    camera->cached_window_height = window_size.height;
-    if (camera->type == VKR_CAMERA_TYPE_PERSPECTIVE) {
-      camera->projection_dirty = true_v;
-    }
-  }
-
   if (camera->view_dirty) {
     camera->view = vkr_camera_calculate_view(camera);
     camera->view_dirty = false_v;
@@ -191,13 +181,13 @@ Mat4 vkr_camera_system_get_projection_matrix(const VkrCamera *camera) {
   return camera->projection;
 }
 
-vkr_internal VkrCameraHandle vkr_camera_registry_make_handle(
-    uint32_t slot, uint32_t generation) {
+vkr_internal VkrCameraHandle
+vkr_camera_registry_make_handle(uint32_t slot, uint32_t generation) {
   return (VkrCameraHandle){.id = slot + 1, .generation = generation};
 }
 
-vkr_internal bool8_t
-vkr_camera_registry_handle_equals(VkrCameraHandle a, VkrCameraHandle b) {
+vkr_internal bool8_t vkr_camera_registry_handle_equals(VkrCameraHandle a,
+                                                       VkrCameraHandle b) {
   return a.id == b.id && a.generation == b.generation;
 }
 
@@ -233,8 +223,8 @@ vkr_camera_registry_find_free_slot(VkrCameraSystem *system) {
   return VKR_INVALID_ID;
 }
 
-vkr_internal const char *vkr_camera_registry_store_name(
-    VkrCameraSystem *system, String8 name) {
+vkr_internal const char *vkr_camera_registry_store_name(VkrCameraSystem *system,
+                                                        String8 name) {
   assert_log(system != NULL, "System is NULL");
   assert_log(name.str != NULL, "Name is NULL");
 
@@ -309,8 +299,7 @@ bool8_t vkr_camera_registry_init(const VkrCameraSystemConfig *config,
                               ? config->arena_commit
                               : VKR_CAMERA_SYSTEM_DEFAULT_ARENA_CMT;
 
-  out_system->arena =
-      arena_create(arena_reserve, arena_commit, arena_flags);
+  out_system->arena = arena_create(arena_reserve, arena_commit, arena_flags);
   if (!out_system->arena) {
     log_fatal("Failed to create camera system arena");
     return false_v;
@@ -343,12 +332,9 @@ void vkr_camera_registry_shutdown(VkrCameraSystem *system) {
   MemZero(system, sizeof(*system));
 }
 
-bool8_t vkr_camera_registry_create_perspective(VkrCameraSystem *system,
-                                               String8 name, VkrWindow *window,
-                                               float32_t zoom,
-                                               float32_t near_clip,
-                                               float32_t far_clip,
-                                               VkrCameraHandle *out_handle) {
+bool8_t vkr_camera_registry_create_perspective(
+    VkrCameraSystem *system, String8 name, VkrWindow *window, float32_t zoom,
+    float32_t near_clip, float32_t far_clip, VkrCameraHandle *out_handle) {
   assert_log(system != NULL, "System is NULL");
   assert_log(window != NULL, "Window is NULL");
   assert_log(name.str != NULL, "Name is NULL");
@@ -356,8 +342,8 @@ bool8_t vkr_camera_registry_create_perspective(VkrCameraSystem *system,
 
   *out_handle = VKR_CAMERA_HANDLE_INVALID;
 
-  if (vkr_hash_table_contains_VkrCameraEntry(
-          &system->camera_map, (const char *)name.str)) {
+  if (vkr_hash_table_contains_VkrCameraEntry(&system->camera_map,
+                                             (const char *)name.str)) {
     log_error("Camera '%s' already exists", string8_cstr(&name));
     return false_v;
   }
@@ -380,7 +366,8 @@ bool8_t vkr_camera_registry_create_perspective(VkrCameraSystem *system,
                                        far_clip);
   camera->generation = system->generation_counter++;
 
-  VkrCameraEntry entry = {.index = slot, .ref_count = 0, .auto_release = false_v};
+  VkrCameraEntry entry = {
+      .index = slot, .ref_count = 0, .auto_release = false_v};
   if (!vkr_hash_table_insert_VkrCameraEntry(&system->camera_map, key, entry)) {
     log_error("Failed to insert camera '%s' into registry", key);
     vkr_camera_registry_reset_camera(camera);
@@ -407,8 +394,8 @@ bool8_t vkr_camera_registry_create_orthographic(
 
   *out_handle = VKR_CAMERA_HANDLE_INVALID;
 
-  if (vkr_hash_table_contains_VkrCameraEntry(
-          &system->camera_map, (const char *)name.str)) {
+  if (vkr_hash_table_contains_VkrCameraEntry(&system->camera_map,
+                                             (const char *)name.str)) {
     log_error("Camera '%s' already exists", string8_cstr(&name));
     return false_v;
   }
@@ -431,7 +418,8 @@ bool8_t vkr_camera_registry_create_orthographic(
                                         top, near_clip, far_clip);
   camera->generation = system->generation_counter++;
 
-  VkrCameraEntry entry = {.index = slot, .ref_count = 0, .auto_release = false_v};
+  VkrCameraEntry entry = {
+      .index = slot, .ref_count = 0, .auto_release = false_v};
   if (!vkr_hash_table_insert_VkrCameraEntry(&system->camera_map, key, entry)) {
     log_error("Failed to insert camera '%s' into registry", key);
     vkr_camera_registry_reset_camera(camera);
@@ -514,8 +502,9 @@ void vkr_camera_registry_release_by_handle(VkrCameraSystem *system,
 
   VkrCamera *camera = vkr_camera_registry_get_by_handle(system, handle);
   if (!camera) {
-    log_warn("Attempted to release unknown camera handle (id=%u, generation=%u)",
-             handle.id, handle.generation);
+    log_warn(
+        "Attempted to release unknown camera handle (id=%u, generation=%u)",
+        handle.id, handle.generation);
     return;
   }
 
@@ -610,21 +599,20 @@ Mat4 vkr_camera_registry_get_active_projection(VkrCameraSystem *system) {
   return vkr_camera_registry_get_projection(system, system->active_camera);
 }
 
-void vkr_camera_registry_on_window_resize(VkrCameraSystem *system,
-                                          VkrWindow *window) {
+void vkr_camera_registry_resize_all(VkrCameraSystem *system, uint32_t width,
+                                    uint32_t height) {
   assert_log(system != NULL, "System is NULL");
-  assert_log(window != NULL, "Window is NULL");
 
-  VkrWindowPixelSize window_size = vkr_window_get_pixel_size(window);
   for (uint32_t i = 0; i < system->cameras.length; i++) {
     VkrCamera *camera = &system->cameras.data[i];
     if (camera->generation == VKR_INVALID_ID ||
         camera->type == VKR_CAMERA_TYPE_NONE) {
       continue;
     }
-    if (camera->window == window) {
-      camera->cached_window_width = window_size.width;
-      camera->cached_window_height = window_size.height;
+    if (camera->cached_window_width != width ||
+        camera->cached_window_height != height) {
+      camera->cached_window_width = width;
+      camera->cached_window_height = height;
       camera->projection_dirty = true_v;
     }
   }
