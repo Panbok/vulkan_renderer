@@ -3,6 +3,7 @@
 #include "containers/str.h"
 #include "core/logger.h"
 #include "math/mat.h"
+#include "math/vec.h"
 #include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
@@ -10,13 +11,53 @@
 #include "renderer/systems/vkr_pipeline_registry.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_shader_system.h"
+#include "renderer/systems/vkr_texture_system.h"
 #include "renderer/systems/vkr_view_system.h"
 
 typedef struct VkrViewWorldState {
   VkrShaderConfig shader_config;
   VkrPipelineHandle pipeline;
+  VkrPipelineHandle transparent_pipeline;
   VkrMaterialHandle default_material;
 } VkrViewWorldState;
+
+typedef struct VkrTransparentSubmeshEntry {
+  uint32_t mesh_index;
+  uint32_t submesh_index;
+  float32_t distance_sq; // Squared distance for sorting (avoids sqrt)
+} VkrTransparentSubmeshEntry;
+
+vkr_internal int vkr_transparent_submesh_compare(const void *a, const void *b) {
+  const VkrTransparentSubmeshEntry *entry_a =
+      (const VkrTransparentSubmeshEntry *)a;
+  const VkrTransparentSubmeshEntry *entry_b =
+      (const VkrTransparentSubmeshEntry *)b;
+  // Sort descending (back-to-front): larger distance first
+  if (entry_a->distance_sq > entry_b->distance_sq)
+    return -1;
+  if (entry_a->distance_sq < entry_b->distance_sq)
+    return 1;
+  return 0;
+}
+
+vkr_internal bool8_t vkr_submesh_has_transparency(RendererFrontend *rf,
+                                                  VkrMaterial *material) {
+  if (!material)
+    return false_v;
+
+  VkrMaterialTexture *diffuse_tex =
+      &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
+  if (diffuse_tex->enabled) {
+    VkrTexture *texture = vkr_texture_system_get_by_handle(&rf->texture_system,
+                                                           diffuse_tex->handle);
+    if (texture && bitset8_is_set(&texture->description.properties,
+                                  VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT)) {
+      return true_v;
+    }
+  }
+
+  return false_v;
+}
 
 vkr_internal bool32_t vkr_view_world_on_create(VkrLayerContext *ctx);
 vkr_internal void vkr_view_world_on_attach(VkrLayerContext *ctx);
@@ -110,7 +151,10 @@ vkr_internal bool32_t vkr_view_world_on_create(VkrLayerContext *ctx) {
     return false_v;
   }
 
-  vkr_shader_system_create(&rf->shader_system, &state->shader_config);
+  if (!vkr_shader_system_create(&rf->shader_system, &state->shader_config)) {
+    log_error("Failed to create shader system from config");
+    return false_v;
+  }
 
   VkrRendererError pipeline_error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_pipeline_registry_create_from_shader_config(
@@ -127,6 +171,19 @@ vkr_internal bool32_t vkr_view_world_on_create(VkrLayerContext *ctx) {
     vkr_pipeline_registry_alias_pipeline_name(
         &rf->pipeline_registry, state->pipeline, state->shader_config.name,
         &alias_err);
+  }
+
+  // Create transparent world pipeline (same shader, different domain settings)
+  VkrRendererError transparent_pipeline_error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_pipeline_registry_create_from_shader_config(
+          &rf->pipeline_registry, &state->shader_config,
+          VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT,
+          string8_lit("world_transparent"), &state->transparent_pipeline,
+          &transparent_pipeline_error)) {
+    String8 err_str = vkr_renderer_get_error_string(transparent_pipeline_error);
+    log_error("Config world transparent pipeline failed: %s",
+              string8_cstr(&err_str));
+    return false_v;
   }
 
   VkrResourceHandleInfo default_material_info = {0};
@@ -260,8 +317,8 @@ vkr_internal bool32_t vkr_view_world_on_create(VkrLayerContext *ctx) {
           vkr_geometry_system_get_default_geometry(&rf->geometry_system),
       .material = state->default_material,
       .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
-      .owns_geometry = true_v,
-      .owns_material = true_v,
+      .owns_geometry = false_v,
+      .owns_material = false_v,
   }};
   VkrMeshDesc cube_desc = {
       .transform = vkr_transform_from_position_scale_rotation(
@@ -427,6 +484,83 @@ vkr_internal void vkr_view_world_on_resize(VkrLayerContext *ctx, uint32_t width,
   vkr_camera_registry_resize_all(&rf->camera_system, width, height);
 }
 
+vkr_internal void vkr_view_world_render_submesh(RendererFrontend *rf,
+                                                VkrViewWorldState *state,
+                                                uint32_t mesh_index,
+                                                uint32_t submesh_index,
+                                                VkrPipelineDomain domain,
+                                                bool8_t *globals_applied) {
+  VkrMesh *mesh = vkr_mesh_manager_get(&rf->mesh_manager, mesh_index);
+  if (!mesh)
+    return;
+
+  VkrSubMesh *submesh = vkr_mesh_manager_get_submesh(&rf->mesh_manager,
+                                                     mesh_index, submesh_index);
+  if (!submesh)
+    return;
+
+  Mat4 model = mesh->model;
+
+  VkrMaterial *material = vkr_material_system_get_by_handle(
+      &rf->material_system, submesh->material);
+  const char *material_shader =
+      (material && material->shader_name && material->shader_name[0] != '\0')
+          ? material->shader_name
+          : "shader.default.world";
+  if (!vkr_shader_system_use(&rf->shader_system, material_shader)) {
+    vkr_shader_system_use(&rf->shader_system, "shader.default.world");
+  }
+
+  VkrPipelineHandle resolved = (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT)
+                                   ? state->transparent_pipeline
+                                   : state->pipeline;
+
+  VkrRendererError refresh_err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_mesh_manager_refresh_pipeline(&rf->mesh_manager, mesh_index,
+                                         submesh_index, resolved,
+                                         &refresh_err)) {
+    String8 err_str = vkr_renderer_get_error_string(refresh_err);
+    log_error("Mesh %u submesh %u failed to refresh pipeline: %s", mesh_index,
+              submesh_index, string8_cstr(&err_str));
+    return;
+  }
+
+  rf->draw_state.instance_state = submesh->instance_state;
+
+  VkrPipelineHandle current_pipeline =
+      vkr_pipeline_registry_get_current_pipeline(&rf->pipeline_registry);
+  if (current_pipeline.id != resolved.id ||
+      current_pipeline.generation != resolved.generation) {
+    VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
+    vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry, resolved,
+                                        &bind_err);
+  }
+
+  if (!*globals_applied) {
+    vkr_material_system_apply_global(&rf->material_system, &rf->globals,
+                                     VKR_PIPELINE_DOMAIN_WORLD);
+    *globals_applied = true_v;
+  }
+
+  vkr_material_system_apply_local(&rf->material_system,
+                                  &(VkrLocalMaterialState){.model = model});
+
+  if (material) {
+    vkr_shader_system_bind_instance(&rf->shader_system,
+                                    submesh->instance_state.id);
+
+    bool8_t should_apply_instance =
+        (submesh->last_render_frame != rf->frame_number);
+    if (should_apply_instance) {
+      vkr_material_system_apply_instance(&rf->material_system, material,
+                                         VKR_PIPELINE_DOMAIN_WORLD);
+      submesh->last_render_frame = rf->frame_number;
+    }
+  }
+
+  vkr_geometry_system_render(rf, &rf->geometry_system, submesh->geometry, 1);
+}
+
 vkr_internal void vkr_view_world_on_render(VkrLayerContext *ctx,
                                            const VkrLayerRenderInfo *info) {
   assert_log(ctx != NULL, "Layer context is NULL");
@@ -439,18 +573,49 @@ vkr_internal void vkr_view_world_on_render(VkrLayerContext *ctx,
     return;
   }
 
+  VkrViewWorldState *state =
+      (VkrViewWorldState *)vkr_layer_context_get_user_data(ctx);
+  if (!state) {
+    log_error("World view state is NULL");
+    return;
+  }
+
   uint32_t mesh_capacity = vkr_mesh_manager_capacity(&rf->mesh_manager);
   bool8_t globals_applied = false_v;
+
+  Vec3 camera_pos = rf->globals.view_position;
+
+  Scratch scratch = scratch_create(rf->scratch_arena);
+  uint32_t max_transparent_entries = 0;
 
   for (uint32_t i = 0; i < mesh_capacity; i++) {
     VkrMesh *mesh = vkr_mesh_manager_get(&rf->mesh_manager, i);
     if (!mesh)
       continue;
+    max_transparent_entries += vkr_mesh_manager_submesh_count(mesh);
+  }
 
-    Mat4 model = mesh->model;
+  VkrTransparentSubmeshEntry *transparent_entries = NULL;
+  uint32_t transparent_count = 0;
+
+  if (max_transparent_entries > 0) {
+    transparent_entries = arena_alloc(scratch.arena,
+                                      sizeof(VkrTransparentSubmeshEntry) *
+                                          max_transparent_entries,
+                                      ARENA_MEMORY_TAG_ARRAY);
+  }
+
+  // first pass: render opaque submeshes and collect transparent ones
+  for (uint32_t i = 0; i < mesh_capacity; i++) {
+    VkrMesh *mesh = vkr_mesh_manager_get(&rf->mesh_manager, i);
+    if (!mesh)
+      continue;
+
     uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
     if (submesh_count == 0)
       continue;
+
+    Mat4 mesh_world_pos = vkr_transform_get_world(&mesh->transform);
 
     for (uint32_t submesh_index = 0; submesh_index < submesh_count;
          ++submesh_index) {
@@ -461,70 +626,42 @@ vkr_internal void vkr_view_world_on_render(VkrLayerContext *ctx,
 
       VkrMaterial *material = vkr_material_system_get_by_handle(
           &rf->material_system, submesh->material);
-      const char *material_shader = (material && material->shader_name &&
-                                     material->shader_name[0] != '\0')
-                                        ? material->shader_name
-                                        : "shader.default.world";
-      if (!vkr_shader_system_use(&rf->shader_system, material_shader)) {
-        vkr_shader_system_use(&rf->shader_system, "shader.default.world");
-      }
 
-      uint32_t mat_pipeline_id =
-          (material && material->pipeline_id != VKR_INVALID_ID)
-              ? material->pipeline_id
-              : (uint32_t)submesh->pipeline_domain;
-
-      VkrPipelineHandle resolved = VKR_PIPELINE_HANDLE_INVALID;
-      VkrRendererError get_err = VKR_RENDERER_ERROR_NONE;
-      vkr_pipeline_registry_get_pipeline_for_material(
-          &rf->pipeline_registry, NULL, mat_pipeline_id, &resolved, &get_err);
-
-      VkrRendererError refresh_err = VKR_RENDERER_ERROR_NONE;
-      if (!vkr_mesh_manager_refresh_pipeline(
-              &rf->mesh_manager, i, submesh_index, resolved, &refresh_err)) {
-        String8 err_str = vkr_renderer_get_error_string(refresh_err);
-        log_error("Mesh %u submesh %u failed to refresh pipeline: %s", i,
-                  submesh_index, string8_cstr(&err_str));
-        continue;
-      }
-
-      rf->draw_state.instance_state = submesh->instance_state;
-
-      VkrPipelineHandle current_pipeline =
-          vkr_pipeline_registry_get_current_pipeline(&rf->pipeline_registry);
-      if (current_pipeline.id != resolved.id ||
-          current_pipeline.generation != resolved.generation) {
-        VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
-        vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry, resolved,
-                                            &bind_err);
-      }
-
-      if (!globals_applied) {
-        vkr_material_system_apply_global(&rf->material_system, &rf->globals,
-                                         VKR_PIPELINE_DOMAIN_WORLD);
-        globals_applied = true_v;
-      }
-
-      vkr_material_system_apply_local(&rf->material_system,
-                                      &(VkrLocalMaterialState){.model = model});
-
-      if (material) {
-        vkr_shader_system_bind_instance(&rf->shader_system,
-                                        submesh->instance_state.id);
-
-        bool8_t should_apply_instance =
-            (submesh->last_render_frame != rf->frame_number);
-        if (should_apply_instance) {
-          vkr_material_system_apply_instance(&rf->material_system, material,
-                                             VKR_PIPELINE_DOMAIN_WORLD);
-          submesh->last_render_frame = rf->frame_number;
+      if (vkr_submesh_has_transparency(rf, material)) {
+        if (transparent_entries &&
+            transparent_count < max_transparent_entries) {
+          Vec3 center = mat4_mul_vec3(mesh_world_pos, camera_pos);
+          float32_t diff = vec3_distance(center, camera_pos);
+          transparent_entries[transparent_count++] =
+              (VkrTransparentSubmeshEntry){
+                  .mesh_index = i,
+                  .submesh_index = submesh_index,
+                  .distance_sq = vkr_abs_f32(diff),
+              };
         }
+      } else {
+        vkr_view_world_render_submesh(rf, state, i, submesh_index,
+                                      VKR_PIPELINE_DOMAIN_WORLD,
+                                      &globals_applied);
       }
-
-      vkr_geometry_system_render(rf, &rf->geometry_system, submesh->geometry,
-                                 1);
     }
   }
+
+  // second pass: render transparent submeshes sorted by distance
+  // (back-to-front)
+  if (transparent_count > 0 && transparent_entries) {
+    qsort(transparent_entries, transparent_count,
+          sizeof(VkrTransparentSubmeshEntry), vkr_transparent_submesh_compare);
+
+    for (uint32_t t = 0; t < transparent_count; ++t) {
+      VkrTransparentSubmeshEntry *entry = &transparent_entries[t];
+      vkr_view_world_render_submesh(
+          rf, state, entry->mesh_index, entry->submesh_index,
+          VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT, &globals_applied);
+    }
+  }
+
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
 }
 
 vkr_internal void vkr_view_world_on_detach(VkrLayerContext *ctx) {
@@ -552,8 +689,14 @@ vkr_internal void vkr_view_world_on_destroy(VkrLayerContext *ctx) {
 
   VkrViewWorldState *state =
       (VkrViewWorldState *)vkr_layer_context_get_user_data(ctx);
-  if (state && state->pipeline.id) {
-    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
-                                           state->pipeline);
+  if (state) {
+    if (state->pipeline.id) {
+      vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                             state->pipeline);
+    }
+    if (state->transparent_pipeline.id) {
+      vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                             state->transparent_pipeline);
+    }
   }
 }

@@ -1241,6 +1241,19 @@ static INLINE Vec4 mat4_mul_vec4(Mat4 m, Vec4 v) {
 }
 
 /**
+ * @brief Transforms a 3D vector by a 4x4 matrix
+ * @param m Transformation matrix
+ * @param v 3D vector to transform
+ * @return Transformed vector m * v
+ */
+static INLINE Vec3 mat4_mul_vec3(Mat4 m, Vec3 v) {
+  return vec3_add(
+      vec3_add(vec3_add(vec3_scale(m.cols[0], v.x), vec3_scale(m.cols[1], v.y)),
+               vec3_scale(m.cols[2], v.z)),
+      vec3_scale(m.cols[3], 1.0f));
+}
+
+/**
  * @brief Extracts the forward direction vector from a transformation matrix
  * @param m Transformation matrix (typically model or view matrix)
  * @return Normalized forward direction vector

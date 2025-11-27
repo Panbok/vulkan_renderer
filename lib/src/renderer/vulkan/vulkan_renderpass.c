@@ -110,9 +110,10 @@ bool8_t vulkan_renderpass_create(VulkanBackendState *state,
   return true_v;
 }
 
-bool8_t vulkan_renderpass_create_from_config(
-    VulkanBackendState *state, const VkrRenderPassConfig *cfg,
-    VulkanRenderPass *out_render_pass) {
+bool8_t
+vulkan_renderpass_create_from_config(VulkanBackendState *state,
+                                     const VkrRenderPassConfig *cfg,
+                                     VulkanRenderPass *out_render_pass) {
   assert_log(state != NULL, "State is NULL");
   assert_log(out_render_pass != NULL, "Out render pass is NULL");
   assert_log(cfg != NULL, "Config is NULL");
@@ -122,14 +123,12 @@ bool8_t vulkan_renderpass_create_from_config(
   out_render_pass->handle = VK_NULL_HANDLE;
 
   out_render_pass->position = (Vec2){cfg->render_area.x, cfg->render_area.y};
-  out_render_pass->width =
-      (cfg->render_area.z > 0.0f)
-          ? cfg->render_area.z
-          : (float32_t)state->swapchain.extent.width;
-  out_render_pass->height =
-      (cfg->render_area.w > 0.0f)
-          ? cfg->render_area.w
-          : (float32_t)state->swapchain.extent.height;
+  out_render_pass->width = (cfg->render_area.z > 0.0f)
+                               ? cfg->render_area.z
+                               : (float32_t)state->swapchain.extent.width;
+  out_render_pass->height = (cfg->render_area.w > 0.0f)
+                                ? cfg->render_area.w
+                                : (float32_t)state->swapchain.extent.height;
   out_render_pass->color = cfg->clear_color;
   out_render_pass->depth = 1.0f;
   out_render_pass->stencil = 0;
@@ -198,32 +197,32 @@ bool8_t vulkan_renderpass_create_from_config(
   VkSubpassDependency deps[2] = {
       {.srcSubpass = VK_SUBPASS_EXTERNAL,
        .dstSubpass = 0,
-       .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                       (use_depth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
-                                  : 0),
-       .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                       (use_depth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
-                                  : 0),
+       .srcStageMask =
+           VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+           (use_depth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT : 0),
+       .dstStageMask =
+           VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+           (use_depth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT : 0),
        .srcAccessMask = 0,
-       .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                        (use_depth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
-                                   : 0),
+       .dstAccessMask =
+           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+           (use_depth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0),
        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT},
       {.srcSubpass = 0,
        .dstSubpass = VK_SUBPASS_EXTERNAL,
-       .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                       (use_depth ? VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT
-                                  : 0),
+       .srcStageMask =
+           VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+           (use_depth ? VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT : 0),
        .dstStageMask = (cfg->next_name.length > 0)
                            ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
                            : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-       .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                        (use_depth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
-                                   : 0),
+       .srcAccessMask =
+           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+           (use_depth ? VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT : 0),
        .dstAccessMask = (cfg->next_name.length > 0)
-                           ? (VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
-                              VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT)
-                           : 0,
+                            ? (VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT)
+                            : 0,
        .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT}};
 
   VkRenderPassCreateInfo render_pass_info = {
@@ -323,6 +322,7 @@ bool8_t vulkan_renderpass_create_for_domain(VulkanBackendState *state,
 
   switch (domain) {
   case VKR_PIPELINE_DOMAIN_WORLD:
+  case VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT:
     return vulkan_renderpass_create_world(state, out_render_pass);
 
   case VKR_PIPELINE_DOMAIN_UI:
@@ -374,6 +374,7 @@ bool8_t vulkan_renderpass_begin(VulkanCommandBuffer *command_buffer,
 
   switch (render_pass->domain) {
   case VKR_PIPELINE_DOMAIN_WORLD:
+  case VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT:
     // Color + depth attachments
     clear_values[0].color.float32[0] = render_pass->color.r;
     clear_values[0].color.float32[1] = render_pass->color.g;

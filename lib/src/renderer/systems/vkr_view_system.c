@@ -57,7 +57,13 @@ vkr_internal VkrLayer *vkr_view_system_get_layer(VkrViewSystem *vs,
 
 vkr_internal void vkr_view_system_destroy_pass_targets(RendererFrontend *rf,
                                                        VkrLayerPass *pass) {
-  if (!pass || !pass->render_targets || pass->render_target_count == 0) {
+  assert_log(rf != NULL, "Renderer frontend is NULL");
+
+  if (!pass) {
+    return;
+  }
+
+  if (!pass->render_targets || pass->render_target_count == 0) {
     pass->render_target_count = 0;
     pass->render_targets = NULL;
     return;

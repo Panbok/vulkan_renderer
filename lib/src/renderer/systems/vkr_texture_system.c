@@ -780,13 +780,29 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
     break;
   }
 
+  VkrTexturePropertyFlags props = vkr_texture_property_flags_create();
+
+  bool8_t has_transparency = false;
+  for (uint64_t pixel_index = 0;
+       pixel_index < (uint64_t)width * (uint64_t)height; pixel_index++) {
+    uint8_t a = loaded_image_data[pixel_index * actual_channels + 3];
+    if (a < 255) {
+      has_transparency = true;
+      break;
+    }
+  }
+
+  if (has_transparency) {
+    bitset8_set(&props, VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
+  }
+
   out_texture->description = (VkrTextureDescription){
       .width = (uint32_t)width,
       .height = (uint32_t)height,
       .channels = actual_channels,
       .format = format,
       .type = VKR_TEXTURE_TYPE_2D,
-      .properties = vkr_texture_property_flags_create(),
+      .properties = props,
       .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
       .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
       .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,

@@ -267,6 +267,36 @@ static void test_mat4_vector_extraction(void) {
   printf("  test_mat4_vector_extraction PASSED\n");
 }
 
+static void test_mat4_mul_vec3_translation(void) {
+  printf("  Running test_mat4_mul_vec3_translation...\n");
+
+  Mat4 translate = mat4_translate(vec3_new(-3.5f, 4.0f, 7.0f));
+  Vec3 origin = vec3_zero();
+  Vec3 translated_origin = mat4_mul_vec3(translate, origin);
+  assert(vec3_equals(translated_origin, vec3_new(-3.5f, 4.0f, 7.0f),
+                     VKR_FLOAT_EPSILON) &&
+         "mat4_mul_vec3 translation failed");
+
+  printf("  test_mat4_mul_vec3_translation PASSED\n");
+}
+
+static void test_mat4_mul_vec3_transform(void) {
+  printf("  Running test_mat4_mul_vec3_transform...\n");
+
+  Mat4 transform =
+      mat4_mul(mat4_translate(vec3_new(1.0f, -2.0f, 3.0f)),
+               mat4_mul(mat4_scale(vec3_new(0.5f, 2.0f, 1.5f)),
+                        mat4_euler_rotate_y(vkr_to_radians(90.0f))));
+  Vec3 local_point = vec3_new(5.0f, 0.5f, -1.0f);
+  Vec3 transformed_point = mat4_mul_vec3(transform, local_point);
+  Vec3 expected_point =
+      vec4_to_vec3(mat4_mul_vec4(transform, vec3_to_vec4(local_point, 1.0f)));
+  assert(vec3_equals(transformed_point, expected_point, 0.001f) &&
+         "mat4_mul_vec3 transform failed");
+
+  printf("  test_mat4_mul_vec3_transform PASSED\n");
+}
+
 static void test_mat4_inverse_operations(void) {
   printf("  Running test_mat4_inverse_operations...\n");
 
@@ -465,6 +495,9 @@ bool32_t run_mat_tests(void) {
   // Matrix operation tests
   test_mat4_operations();
   test_mat4_vector_extraction();
+  // Vector transformation (position) helpers
+  test_mat4_mul_vec3_translation();
+  test_mat4_mul_vec3_transform();
 
   // Matrix inverse tests
   test_mat4_inverse_operations();

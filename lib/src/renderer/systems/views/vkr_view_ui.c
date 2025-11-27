@@ -251,10 +251,15 @@ vkr_internal void vkr_view_ui_on_render(VkrLayerContext *ctx,
 
   VkrPipelineHandle current_pipeline =
       vkr_pipeline_registry_get_current_pipeline(&rf->pipeline_registry);
+
+  VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
   if (current_pipeline.id != ui_resolved.id ||
       current_pipeline.generation != ui_resolved.generation) {
-    vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry, ui_resolved,
-                                        &(VkrRendererError){0});
+    if (!vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry,
+                                             ui_resolved, &bind_err)) {
+      log_error("Failed to bind UI pipeline");
+      return;
+    }
   }
 
   vkr_material_system_apply_global(&rf->material_system, &rf->globals,

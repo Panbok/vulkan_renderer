@@ -99,6 +99,10 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
       continue;
     }
 
+    if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT) {
+      continue;
+    }
+
     state->domain_render_passes[domain] = arena_alloc(
         state->arena, sizeof(VulkanRenderPass), ARENA_MEMORY_TAG_RENDERER);
     if (!state->domain_render_passes[domain]) {
@@ -119,6 +123,14 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
     log_debug("Created domain render pass for domain %u", domain);
   }
 
+  if (state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD] &&
+      !state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT]) {
+    state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] =
+        state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD];
+    state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] = true;
+    log_debug("Linked WORLD_TRANSPARENT to WORLD render pass");
+  }
+
   return true;
 }
 
@@ -127,6 +139,10 @@ vkr_internal bool32_t create_domain_framebuffers(VulkanBackendState *state) {
 
   for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
     if (!state->domain_initialized[domain]) {
+      continue;
+    }
+
+    if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT) {
       continue;
     }
 
@@ -160,6 +176,9 @@ vkr_internal bool32_t create_domain_framebuffers(VulkanBackendState *state) {
 
     log_debug("Created domain framebuffers for domain %u", domain);
   }
+
+  state->domain_framebuffers[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] =
+      state->domain_framebuffers[VKR_PIPELINE_DOMAIN_WORLD];
 
   return true;
 }
@@ -791,6 +810,9 @@ void renderer_vulkan_shutdown(void *backend_state) {
 
   for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
     if (state->domain_initialized[domain]) {
+      if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT) {
+        continue;
+      }
       for (uint32_t i = 0; i < state->domain_framebuffers[domain].length; ++i) {
         VulkanFramebuffer *framebuffer =
             array_get_VulkanFramebuffer(&state->domain_framebuffers[domain], i);
@@ -810,6 +832,11 @@ void renderer_vulkan_shutdown(void *backend_state) {
 
   for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
     if (!state->domain_initialized[domain]) {
+      continue;
+    }
+
+    if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT) {
+      state->domain_render_passes[domain] = NULL;
       continue;
     }
 

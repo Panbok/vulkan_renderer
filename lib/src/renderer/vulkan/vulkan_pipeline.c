@@ -182,6 +182,14 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
     depth_stencil_state.depthTestEnable = VK_TRUE;
     depth_stencil_state.depthWriteEnable = VK_TRUE;
     break;
+  case VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT:
+    // Transparent world objects: depth test on (respects opaque occlusion),
+    // depth write off (transparent objects don't occlude each other),
+    // alpha blending on
+    depth_stencil_state.depthTestEnable = VK_TRUE;
+    depth_stencil_state.depthWriteEnable = VK_FALSE;
+    color_blend_attachment_state.blendEnable = VK_TRUE;
+    break;
   default:
     break;
   }

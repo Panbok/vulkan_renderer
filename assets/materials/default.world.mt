@@ -1,6 +1,6 @@
 # Default material (Phong)
 name=default_world
-diffuse_texture=assets/textures/cobblestone.png
+diffuse_texture=assets/textures/transparency-test-diffuse-texture.png
 diffuse_color=1,1,1,1
 specular_texture=assets/textures/cobblestone_SPEC.png
 specular_color=1,1,1,1
