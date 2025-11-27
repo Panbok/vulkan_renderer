@@ -285,3 +285,18 @@ vulkan_sampler_address_mode_from_repeat(VkrTextureRepeatMode mode) {
     return VK_SAMPLER_ADDRESS_MODE_REPEAT;
   }
 }
+
+VkCullModeFlags vulkan_cull_mode_to_vk(VkrCullMode mode) {
+  switch (mode) {
+  case VKR_CULL_MODE_NONE:
+    return VK_CULL_MODE_NONE;
+  case VKR_CULL_MODE_FRONT:
+    return VK_CULL_MODE_FRONT_BIT;
+  case VKR_CULL_MODE_BACK:
+    return VK_CULL_MODE_BACK_BIT;
+  case VKR_CULL_MODE_FRONT_AND_BACK:
+    return VK_CULL_MODE_FRONT_AND_BACK;
+  default:
+    return VK_CULL_MODE_BACK_BIT;
+  }
+}

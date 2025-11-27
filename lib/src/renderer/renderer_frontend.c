@@ -6,6 +6,7 @@
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/resources/loaders/shader_loader.h"
 #include "renderer/resources/loaders/texture_loader.h"
+#include "renderer/systems/views/vkr_view_skybox.h"
 #include "renderer/systems/views/vkr_view_ui.h"
 #include "renderer/systems/views/vkr_view_world.h"
 #include "renderer/systems/vkr_mesh_manager.h"
@@ -110,6 +111,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   };
   renderer->rf_mutex = NULL;
   renderer->world_layer = VKR_LAYER_HANDLE_INVALID;
+  renderer->skybox_layer = VKR_LAYER_HANDLE_INVALID;
   renderer->ui_layer = VKR_LAYER_HANDLE_INVALID;
   renderer->draw_state = (VkrShaderStateObject){.instance_state = {0}};
   renderer->frame_number = 0;
@@ -133,16 +135,28 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
 
   uint32_t width = (uint32_t)window->width;
   uint32_t height = (uint32_t)window->height;
-  VkrRenderPassConfig pass_configs[2] = {
-      {.name = string8_lit("Renderpass.Builtin.World"),
+  VkrRenderPassConfig pass_configs[3] = {
+      // Skybox renders first, clears everything
+      {.name = string8_lit("Renderpass.Builtin.Skybox"),
        .prev_name = {0},
+       .next_name = string8_lit("Renderpass.Builtin.World"),
+       .domain = VKR_PIPELINE_DOMAIN_SKYBOX,
+       .render_area = (Vec4){0, 0, (float32_t)width, (float32_t)height},
+       .clear_color = (Vec4){0.0f, 0.0f, 0.0f, 1.0f},
+       .clear_flags = VKR_RENDERPASS_CLEAR_COLOR | VKR_RENDERPASS_CLEAR_DEPTH},
+      // World loads skybox content, uses depth without clearing
+      {.name = string8_lit("Renderpass.Builtin.World"),
+       .prev_name = string8_lit("Renderpass.Builtin.Skybox"),
        .next_name = string8_lit("Renderpass.Builtin.UI"),
+       .domain = VKR_PIPELINE_DOMAIN_WORLD,
        .render_area = (Vec4){0, 0, (float32_t)width, (float32_t)height},
        .clear_color = (Vec4){0.1f, 0.1f, 0.2f, 1.0f},
-       .clear_flags = VKR_RENDERPASS_CLEAR_COLOR | VKR_RENDERPASS_CLEAR_DEPTH},
+       .clear_flags = VKR_RENDERPASS_USE_DEPTH}, // LOAD color, use depth
+      // UI loads world content, no depth
       {.name = string8_lit("Renderpass.Builtin.UI"),
        .prev_name = string8_lit("Renderpass.Builtin.World"),
        .next_name = (String8){0},
+       .domain = VKR_PIPELINE_DOMAIN_UI,
        .render_area = (Vec4){0, 0, (float32_t)width, (float32_t)height},
        .clear_color = (Vec4){0, 0, 0, 0},
        .clear_flags = VKR_RENDERPASS_CLEAR_NONE}};
@@ -943,6 +957,11 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer) {
 
   if (!vkr_view_system_init(rf)) {
     log_fatal("Failed to initialize view system");
+    return false_v;
+  }
+
+  if (!vkr_view_skybox_register(rf)) {
+    log_error("Failed to register skybox view");
     return false_v;
   }
 

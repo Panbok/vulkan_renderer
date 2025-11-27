@@ -1245,6 +1245,29 @@ static INLINE Vec4 mat4_mul_vec4(Mat4 m, Vec4 v) {
  * @param m Transformation matrix
  * @param v 3D vector to transform
  * @return Transformed vector m * v
+ * @note Treats input Vec3 as a position with implicit w=1.0 (includes
+ * translation)
+ * @note For direction vectors (w=0), use: vec3_new(mat4_mul_vec4(m,
+ * vec4_new(v.x, v.y, v.z, 0.0f)))
+ * @note Does NOT perform perspective division - use mat4_mul_vec4() for
+ * perspective transformations
+ * @note Only suitable for affine transformations (rotation, translation, scale)
+ * @performance O(16) - SIMD-accelerated operations
+ * @example
+ * ```c
+ * // Transform object position by model matrix
+ * Vec3 local_pos = vec3_new(1.0f, 2.0f, 3.0f);
+ * Vec3 world_pos = mat4_mul_vec3(model_matrix, local_pos);
+ *
+ * // INCORRECT: Don't use with perspective matrices (missing perspective
+ * division)
+ * // Vec3 ndc_pos = mat4_mul_vec3(projection_matrix, view_pos);  // Wrong!
+ *
+ * // CORRECT: Use mat4_mul_vec4 for perspective transformations
+ * Vec4 clip_pos = mat4_mul_vec4(projection_matrix, vec4_new(v.x, v.y,
+ * v.z, 1.0f)); Vec3 ndc_pos = vec3_new(clip_pos.x / clip_pos.w, clip_pos.y /
+ * clip_pos.w, clip_pos.z / clip_pos.w);
+ * ```
  */
 static INLINE Vec3 mat4_mul_vec3(Mat4 m, Vec3 v) {
   return vec3_add(

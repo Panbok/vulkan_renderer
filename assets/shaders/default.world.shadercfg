@@ -32,8 +32,8 @@ attribute=vec4,in_tangent    # Location 5, offset 48, size 16
 
 # Global uniforms (descriptor set 0, binding 0 - UBO)
 # Updated once per frame, shared across all materials
-uniform=mat4,0,view          # Camera view matrix
 uniform=mat4,0,projection    # Camera projection matrix
+uniform=mat4,0,view          # Camera view matrix
 
 # Additional per-frame data
 uniform=vec4,0,ambient_color

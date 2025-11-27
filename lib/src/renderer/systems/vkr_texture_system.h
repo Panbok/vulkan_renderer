@@ -282,3 +282,23 @@ uint32_t vkr_texture_system_find_free_slot(VkrTextureSystem *system);
  */
 void vkr_texture_destroy(VkrRendererFrontendHandle renderer,
                          VkrTexture *texture);
+
+/**
+ * @brief Loads a cube map texture from 6 face images.
+ *
+ * Face images are expected to have suffixes: _r, _l, _u, _d, _f, _b
+ * For example, base_path="skybox" and extension="jpg" would load:
+ *   skybox_r.jpg, skybox_l.jpg, skybox_u.jpg, skybox_d.jpg, skybox_f.jpg,
+ * skybox_b.jpg
+ *
+ * @param system The texture system
+ * @param base_path Base path without face suffix (e.g., "assets/textures/skybox")
+ * @param extension File extension without dot (e.g., "jpg")
+ * @param out_handle Output texture handle
+ * @param out_error Output error code
+ * @return true on success, false on failure
+ */
+bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
+                                         String8 base_path, String8 extension,
+                                         VkrTextureHandle *out_handle,
+                                         VkrRendererError *out_error);

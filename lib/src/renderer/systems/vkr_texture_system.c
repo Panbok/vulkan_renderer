@@ -783,12 +783,23 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
   VkrTexturePropertyFlags props = vkr_texture_property_flags_create();
 
   bool8_t has_transparency = false;
-  for (uint64_t pixel_index = 0;
-       pixel_index < (uint64_t)width * (uint64_t)height; pixel_index++) {
-    uint8_t a = loaded_image_data[pixel_index * actual_channels + 3];
-    if (a < 255) {
-      has_transparency = true;
-      break;
+  // for (uint64_t pixel_index = 0;
+  //      pixel_index < (uint64_t)width * (uint64_t)height; pixel_index++) {
+  //   uint8_t a = loaded_image_data[pixel_index * actual_channels + 3];
+  //   if (a < 255) {
+  //     has_transparency = true;
+  //     break;
+  //   }
+  // }
+
+  if (actual_channels == VKR_TEXTURE_RGBA_CHANNELS) {
+    for (uint64_t pixel_index = 0;
+         pixel_index < (uint64_t)width * (uint64_t)height; pixel_index++) {
+      uint8_t a = loaded_image_data[pixel_index * actual_channels + 3];
+      if (a < 255) {
+        has_transparency = true;
+        break;
+      }
     }
   }
 
@@ -922,5 +933,179 @@ bool8_t vkr_texture_system_load(VkrTextureSystem *system, String8 name,
 
   *out_handle = handle;
   *out_error = VKR_RENDERER_ERROR_NONE;
+  return true_v;
+}
+
+bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
+                                         String8 base_path, String8 extension,
+                                         VkrTextureHandle *out_handle,
+                                         VkrRendererError *out_error) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(base_path.str != NULL, "Base path is NULL");
+  assert_log(extension.str != NULL, "Extension is NULL");
+  assert_log(out_handle != NULL, "Out handle is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  // Face suffixes: +X, -X, +Y, -Y, +Z, -Z -> r, l, u, d, f, b
+  static const char *face_suffixes[6] = {"_r", "_l", "_u", "_d", "_f", "_b"};
+
+  Scratch scratch = scratch_create(system->arena);
+
+  // Build full path for first face to get dimensions
+  uint64_t path_buffer_size = base_path.length + 16 + extension.length;
+  char *path_buffer = (char *)arena_alloc(scratch.arena, path_buffer_size,
+                                          ARENA_MEMORY_TAG_STRING);
+  if (!path_buffer) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
+  // Load first face to get dimensions
+  snprintf(path_buffer, path_buffer_size, "%.*s%s.%.*s", (int)base_path.length,
+           base_path.str, face_suffixes[0], (int)extension.length,
+           extension.str);
+
+  stbi_set_flip_vertically_on_load(false); // Cube maps don't flip vertically
+
+  int32_t width, height, channels;
+  uint8_t *first_face = stbi_load(path_buffer, &width, &height, &channels, 4);
+  if (!first_face) {
+    log_error("Failed to load cube map face 0: %s", path_buffer);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  if (width <= 0 || height <= 0 || width != height) {
+    log_error("Cube map faces must be square: %dx%d", width, height);
+    stbi_image_free(first_face);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  uint64_t face_size = (uint64_t)width * (uint64_t)height * 4;
+  uint64_t total_size = face_size * 6;
+
+  // Allocate buffer for all 6 faces
+  uint8_t *cube_data = (uint8_t *)arena_alloc(scratch.arena, total_size,
+                                              ARENA_MEMORY_TAG_TEXTURE);
+  if (!cube_data) {
+    stbi_image_free(first_face);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
+  // Copy first face
+  MemCopy(cube_data, first_face, face_size);
+  stbi_image_free(first_face);
+
+  // Load remaining 5 faces
+  for (uint32_t face = 1; face < 6; face++) {
+    snprintf(path_buffer, path_buffer_size, "%.*s%s.%.*s",
+             (int)base_path.length, base_path.str, face_suffixes[face],
+             (int)extension.length, extension.str);
+
+    int32_t face_width, face_height, face_channels;
+    uint8_t *face_data =
+        stbi_load(path_buffer, &face_width, &face_height, &face_channels, 4);
+    if (!face_data) {
+      log_error("Failed to load cube map face %u: %s", face, path_buffer);
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+      *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+      return false_v;
+    }
+
+    if (face_width != width || face_height != height) {
+      log_error("Cube map face %u has different dimensions: %dx%d vs %dx%d",
+                face, face_width, face_height, width, height);
+      stbi_image_free(face_data);
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      return false_v;
+    }
+
+    MemCopy(cube_data + face * face_size, face_data, face_size);
+    stbi_image_free(face_data);
+  }
+
+  // Create texture description for cube map
+  VkrTextureDescription desc = {
+      .width = (uint32_t)width,
+      .height = (uint32_t)height,
+      .channels = 4,
+      .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      .type = VKR_TEXTURE_TYPE_CUBE_MAP,
+      .properties = vkr_texture_property_flags_create(),
+      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+      .anisotropy_enable = false_v,
+      .generation = VKR_INVALID_ID,
+  };
+
+  // Create the cube map texture via renderer
+  VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
+  VkrTextureOpaqueHandle backend_handle = vkr_renderer_create_texture(
+      system->renderer, &desc, cube_data, &renderer_error);
+
+  if (renderer_error != VKR_RENDERER_ERROR_NONE || !backend_handle) {
+    log_error("Failed to create cube map texture in backend");
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    *out_error = renderer_error;
+    return false_v;
+  }
+
+  // Find free slot in system
+  uint32_t free_slot_index = vkr_texture_system_find_free_slot(system);
+  if (free_slot_index == VKR_INVALID_ID) {
+    log_error("Texture system is full");
+    vkr_renderer_destroy_texture(system->renderer, backend_handle);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
+  // Create stable key for the cube map
+  char *stable_key = (char *)arena_alloc(system->arena, base_path.length + 16,
+                                         ARENA_MEMORY_TAG_STRING);
+  if (!stable_key) {
+    vkr_renderer_destroy_texture(system->renderer, backend_handle);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  snprintf(stable_key, base_path.length + 16, "%.*s_cube",
+           (int)base_path.length, base_path.str);
+
+  // Store texture in system
+  VkrTexture *texture = &system->textures.data[free_slot_index];
+  MemZero(texture, sizeof(VkrTexture));
+  texture->description = desc;
+  texture->description.id = free_slot_index + 1;
+  texture->description.generation = system->generation_counter++;
+  texture->handle = backend_handle;
+  texture->image = NULL; // Data already uploaded
+
+  // Add to hash table
+  VkrTextureEntry new_entry = {
+      .index = free_slot_index, .ref_count = 1, .auto_release = false_v};
+  vkr_hash_table_insert_VkrTextureEntry(&system->texture_map, stable_key,
+                                        new_entry);
+
+  *out_handle =
+      (VkrTextureHandle){.id = texture->description.id,
+                         .generation = texture->description.generation};
+  *out_error = VKR_RENDERER_ERROR_NONE;
+
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+
+  log_debug("Loaded cube map texture: %s (%dx%d)", stable_key, width, height);
+
   return true_v;
 }

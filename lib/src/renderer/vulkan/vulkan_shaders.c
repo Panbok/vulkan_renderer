@@ -393,22 +393,28 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
       out_shader_object->instance_descriptor_set_layout,
   };
 
-  VkrBufferDescription instance_uniform_buffer_desc = {
-      .size = out_shader_object->instance_ubo_stride *
-              VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT,
-      .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_DST |
-                                                VKR_BUFFER_USAGE_TRANSFER_SRC |
-                                                VKR_BUFFER_USAGE_UNIFORM),
-      .memory_properties = vkr_memory_property_flags_from_bits(
-          VKR_MEMORY_PROPERTY_DEVICE_LOCAL | VKR_MEMORY_PROPERTY_HOST_VISIBLE |
-          VKR_MEMORY_PROPERTY_HOST_COHERENT),
-      .buffer_type = buffer_type,
-      .bind_on_create = true_v};
+  if (out_shader_object->instance_ubo_stride > 0) {
+    VkrBufferDescription instance_uniform_buffer_desc = {
+        .size = out_shader_object->instance_ubo_stride *
+                VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT,
+        .usage = vkr_buffer_usage_flags_from_bits(
+            VKR_BUFFER_USAGE_TRANSFER_DST | VKR_BUFFER_USAGE_TRANSFER_SRC |
+            VKR_BUFFER_USAGE_UNIFORM),
+        .memory_properties = vkr_memory_property_flags_from_bits(
+            VKR_MEMORY_PROPERTY_DEVICE_LOCAL |
+            VKR_MEMORY_PROPERTY_HOST_VISIBLE |
+            VKR_MEMORY_PROPERTY_HOST_COHERENT),
+        .buffer_type = buffer_type,
+        .bind_on_create = true_v};
 
-  if (!vulkan_buffer_create(state, &instance_uniform_buffer_desc,
-                            &out_shader_object->instance_uniform_buffer)) {
-    log_fatal("Failed to create Vulkan instance uniform buffer");
-    return false;
+    if (!vulkan_buffer_create(state, &instance_uniform_buffer_desc,
+                              &out_shader_object->instance_uniform_buffer)) {
+      log_fatal("Failed to create Vulkan instance uniform buffer");
+      return false;
+    }
+  } else {
+    MemZero(&out_shader_object->instance_uniform_buffer,
+            sizeof(out_shader_object->instance_uniform_buffer));
   }
 
   // Initialize free list for instance states
@@ -530,43 +536,49 @@ bool8_t vulkan_shader_update_instance(
   uint64_t offset =
       shader_object->instance_ubo_stride * (uint64_t)data->instance_state.id;
 
-  if (!data->instance_ubo_data || data->instance_ubo_size == 0) {
-    log_warn("Instance UBO required but no data provided");
-  } else {
-    uint32_t use = data->instance_ubo_size;
-    if (use > range)
-      use = range;
-    if (!vulkan_buffer_load_data(state,
-                                 &shader_object->instance_uniform_buffer.buffer,
-                                 offset, use, 0, data->instance_ubo_data)) {
-      log_error("Failed to load instance uniform buffer data (raw)");
-      return false;
+  bool8_t has_instance_ubo =
+      shader_object->instance_ubo_stride > 0 &&
+      shader_object->instance_uniform_buffer.buffer.handle != VK_NULL_HANDLE;
+
+  if (has_instance_ubo) {
+    if (!data->instance_ubo_data || data->instance_ubo_size == 0) {
+      log_warn("Instance UBO required but no data provided");
+    } else {
+      uint32_t use = data->instance_ubo_size;
+      if (use > range)
+        use = range;
+      if (!vulkan_buffer_load_data(
+              state, &shader_object->instance_uniform_buffer.buffer, offset,
+              use, 0, data->instance_ubo_data)) {
+        log_error("Failed to load instance uniform buffer data (raw)");
+        return false;
+      }
     }
-  }
 
-  if (instance_state->descriptor_states[descriptor_index]
-          .generations[image_index] == VKR_INVALID_ID) {
-    buffer_infos[descriptor_count] = (VkDescriptorBufferInfo){
-        .buffer = shader_object->instance_uniform_buffer.buffer.handle,
-        .offset = offset,
-        .range = range,
-    };
+    if (instance_state->descriptor_states[descriptor_index]
+            .generations[image_index] == VKR_INVALID_ID) {
+      buffer_infos[descriptor_count] = (VkDescriptorBufferInfo){
+          .buffer = shader_object->instance_uniform_buffer.buffer.handle,
+          .offset = offset,
+          .range = range,
+      };
 
-    descriptor_writes[descriptor_count] = (VkWriteDescriptorSet){
-        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        .dstSet = local_descriptor,
-        .dstBinding = descriptor_index,
-        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        .descriptorCount = 1,
-        .pBufferInfo = &buffer_infos[descriptor_count],
-        .pImageInfo = NULL,
-        .pTexelBufferView = NULL,
-    };
+      descriptor_writes[descriptor_count] = (VkWriteDescriptorSet){
+          .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+          .dstSet = local_descriptor,
+          .dstBinding = descriptor_index,
+          .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+          .descriptorCount = 1,
+          .pBufferInfo = &buffer_infos[descriptor_count],
+          .pImageInfo = NULL,
+          .pTexelBufferView = NULL,
+      };
 
-    descriptor_count++;
+      descriptor_count++;
 
-    instance_state->descriptor_states[descriptor_index]
-        .generations[image_index] = 1;
+      instance_state->descriptor_states[descriptor_index]
+          .generations[image_index] = 1;
+    }
   }
   descriptor_index++;
 

@@ -6,7 +6,7 @@
 
 typedef struct VkrLayerSortEntry {
   VkrLayer *layer;
-  uint32_t order;
+  int32_t order; // Must be signed to handle negative order values
   uint32_t index;
 } VkrLayerSortEntry;
 

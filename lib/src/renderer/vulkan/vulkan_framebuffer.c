@@ -100,6 +100,13 @@ bool32_t vulkan_framebuffer_regenerate_for_domain(
     log_warn("COMPUTE domain doesn't use traditional framebuffers");
     return true;
 
+  case VKR_PIPELINE_DOMAIN_SKYBOX:
+    // Skybox uses color and depth (same as WORLD)
+    attachment_count = 2;
+    use_color = true;
+    use_depth = true;
+    break;
+
   default:
     log_fatal("Unknown pipeline domain: %d", domain);
     return false;

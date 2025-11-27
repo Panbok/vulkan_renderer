@@ -184,6 +184,13 @@ typedef enum VkrPolygonMode {
   VKR_POLYGON_MODE_POINT,
 } VkrPolygonMode;
 
+typedef enum VkrCullMode {
+  VKR_CULL_MODE_NONE = 0,
+  VKR_CULL_MODE_FRONT,
+  VKR_CULL_MODE_BACK,
+  VKR_CULL_MODE_FRONT_AND_BACK,
+} VkrCullMode;
+
 typedef enum VkrBufferUsageBits {
   VKR_BUFFER_USAGE_NONE = 0,
   VKR_BUFFER_USAGE_VERTEX_BUFFER = 1 << 0,
@@ -518,6 +525,24 @@ typedef struct VkrRendererMaterialState {
   uint32_t texture_count;
 } VkrRendererMaterialState;
 
+// =============================================================================
+// Skybox
+// =============================================================================
+typedef struct VkrSkyboxHandle {
+  uint32_t id;
+  uint32_t generation;
+} VkrSkyboxHandle;
+
+#define VKR_SKYBOX_HANDLE_INVALID ((VkrSkyboxHandle){0, 0})
+
+typedef struct VkrSkybox {
+  VkrSkyboxHandle handle;
+  VkrTextureOpaqueHandle cube_map_texture;
+  VkrBackendResourceHandle pipeline;
+  VkrBackendResourceHandle geometry;
+  VkrRendererInstanceStateHandle instance_state;
+} VkrSkybox;
+
 typedef struct VkrShaderModuleDescription {
   VkrShaderStageFlags stages;
   /* Path to the shader file (same path for single file, different paths for
@@ -564,11 +589,25 @@ typedef struct VkrVertexInputBindingDescription {
   VkrVertexInputRate input_rate; // Per-vertex or per-instance
 } VkrVertexInputBindingDescription;
 
+typedef enum VkrPipelineDomain {
+  VKR_PIPELINE_DOMAIN_WORLD = 0,
+  VKR_PIPELINE_DOMAIN_UI = 1,
+  VKR_PIPELINE_DOMAIN_SHADOW = 2,
+  VKR_PIPELINE_DOMAIN_POST = 3,
+  VKR_PIPELINE_DOMAIN_COMPUTE = 4,
+  VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT = 5,
+  VKR_PIPELINE_DOMAIN_SKYBOX = 6,
+
+  VKR_PIPELINE_DOMAIN_COUNT
+} VkrPipelineDomain;
+
 typedef enum VkrRenderPassClearFlags {
   VKR_RENDERPASS_CLEAR_NONE = 0,
   VKR_RENDERPASS_CLEAR_COLOR = 1 << 0,
   VKR_RENDERPASS_CLEAR_DEPTH = 1 << 1,
-  VKR_RENDERPASS_CLEAR_STENCIL = 1 << 2
+  VKR_RENDERPASS_CLEAR_STENCIL = 1 << 2,
+  VKR_RENDERPASS_USE_DEPTH = 1
+                             << 3, // Include depth attachment without clearing
 } VkrRenderPassClearFlags;
 
 typedef struct VkrRenderPassConfig {
@@ -578,6 +617,7 @@ typedef struct VkrRenderPassConfig {
   Vec4 render_area;
   Vec4 clear_color;
   uint8_t clear_flags;
+  VkrPipelineDomain domain;
 } VkrRenderPassConfig;
 
 typedef struct VkrRenderTargetDesc {
@@ -587,17 +627,6 @@ typedef struct VkrRenderTargetDesc {
   uint32_t width;
   uint32_t height;
 } VkrRenderTargetDesc;
-
-typedef enum VkrPipelineDomain {
-  VKR_PIPELINE_DOMAIN_WORLD = 0,
-  VKR_PIPELINE_DOMAIN_UI = 1,
-  VKR_PIPELINE_DOMAIN_SHADOW = 2,
-  VKR_PIPELINE_DOMAIN_POST = 3,
-  VKR_PIPELINE_DOMAIN_COMPUTE = 4,
-  VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT = 5,
-
-  VKR_PIPELINE_DOMAIN_COUNT
-} VkrPipelineDomain;
 
 typedef struct VkrGraphicsPipelineDescription {
   VkrShaderObjectDescription shader_object_description;
@@ -610,6 +639,7 @@ typedef struct VkrGraphicsPipelineDescription {
   VkrPrimitiveTopology topology;
 
   VkrPolygonMode polygon_mode;
+  VkrCullMode cull_mode;
 
   VkrRenderPassHandle renderpass;
   VkrPipelineDomain domain;

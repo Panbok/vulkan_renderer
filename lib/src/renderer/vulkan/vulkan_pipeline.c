@@ -118,7 +118,7 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
       .depthClampEnable = VK_FALSE,
       .rasterizerDiscardEnable = VK_FALSE,
       .polygonMode = vulkan_polygon_mode_to_vk(desc->polygon_mode),
-      .cullMode = VK_CULL_MODE_BACK_BIT,
+      .cullMode = vulkan_cull_mode_to_vk(desc->cull_mode),
       .frontFace = VK_FRONT_FACE_CLOCKWISE,
       .depthBiasEnable = VK_FALSE,
       .depthBiasConstantFactor = 0.0f,
@@ -189,6 +189,14 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
     depth_stencil_state.depthTestEnable = VK_TRUE;
     depth_stencil_state.depthWriteEnable = VK_FALSE;
     color_blend_attachment_state.blendEnable = VK_TRUE;
+    break;
+  case VKR_PIPELINE_DOMAIN_SKYBOX:
+    // Skybox renders first: depth test off (nothing to test against),
+    // depth write off (world geometry should write to depth),
+    // blending off
+    depth_stencil_state.depthTestEnable = VK_FALSE;
+    depth_stencil_state.depthWriteEnable = VK_FALSE;
+    color_blend_attachment_state.blendEnable = VK_FALSE;
     break;
   default:
     break;

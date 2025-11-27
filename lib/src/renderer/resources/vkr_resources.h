@@ -240,6 +240,7 @@ typedef struct VkrShaderConfig {
   String8 renderpass_name;   // renderpass key string
   uint8_t use_instance;      // enable instance scope (set 1)
   uint8_t use_local;         // enable push constants
+  VkrCullMode cull_mode;     // culling mode (default: VKR_CULL_MODE_BACK)
   VkrVertexType vertex_type; // inferred vertex type
 
   // Stages

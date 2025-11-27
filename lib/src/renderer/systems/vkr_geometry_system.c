@@ -75,15 +75,343 @@ vkr_internal INLINE void vkr_write_vertex(VkrVertex3d *vertices, uint32_t index,
  * @brief Creates a unit cube (2x2x2 by default) using the POSITION_TEXCOORD
  * layout and set as default geometry. Dimensions are full extents.
  * @param system The geometry system to create the default cube in
- * @param width The width of the cube
- * @param height The height of the cube
- * @param depth The depth of the cube
- * @param name The name of the cube
  * @param out_error The error output
  */
 vkr_internal VkrGeometryHandle vkr_geometry_system_create_default_cube(
+    VkrGeometrySystem *system, VkrRendererError *out_error) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  return vkr_geometry_system_create_cube(system, 10.0f, 10.0f, 10.0f,
+                                         "Default Cube", out_error);
+}
+
+/**
+ * @brief Creates a default plane (2x2 by default) using the POSITION_TEXCOORD
+ * layout and set as default geometry. Dimensions are full extents.
+ * @param system The geometry system to create the default plane in
+ * @param width The width of the plane
+ * @param height The height of the plane
+ * @param out_error The error output
+ */
+vkr_internal VkrGeometryHandle vkr_geometry_system_create_default_plane(
     VkrGeometrySystem *system, float32_t width, float32_t height,
-    float32_t depth, const char *name, VkrRendererError *out_error) {
+    VkrRendererError *out_error) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  float32_t hw = width * 0.5f;
+  float32_t hh = height * 0.5f;
+
+  VkrVertex3d verts[4] = {0};
+  Vec3 normal = vec3_new(0.0f, 0.0f, 1.0f);
+  Vec4 zero_color = vec4_zero();
+  Vec4 zero_tangent = vec4_zero();
+
+  vkr_write_vertex(verts, 0, vec3_new(-hw, -hh, 0.0f), normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+  vkr_write_vertex(verts, 1, vec3_new(hw, -hh, 0.0f), normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+  vkr_write_vertex(verts, 2, vec3_new(hw, hh, 0.0f), normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
+  vkr_write_vertex(verts, 3, vec3_new(-hw, hh, 0.0f), normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+
+  uint32_t indices[6] = {0, 1, 2, 0, 2, 3};
+
+  vkr_geometry_system_generate_tangents(&system->allocator, verts, 4, indices,
+                                        6);
+
+  VkrGeometryConfig config = {0};
+  config.vertex_size = sizeof(VkrVertex3d);
+  config.vertex_count = 4;
+  config.vertices = verts;
+  config.index_size = sizeof(uint32_t);
+  config.index_count = 6;
+  config.indices = indices;
+  config.center = vec3_zero();
+  config.min_extents = vec3_new(-hw, -hh, 0.0f);
+  config.max_extents = vec3_new(hw, hh, 0.0f);
+  string_format(config.name, sizeof(config.name), "Default Plane");
+
+  return vkr_geometry_system_create(system, &config, false_v, out_error);
+}
+
+/**
+ * @brief Creates a default 2D plane (2x2 by default) using the
+ * POSITION2_TEXCOORD layout. Vertex format: [x, y, u, v].
+ * @param system The geometry system to create the default 2D plane in
+ * @param width The width of the plane
+ * @param height The height of the plane
+ * @param out_error The error output. May be null.
+ * @return Returns a VkrGeometryHandle to the created geometry. Returns an
+ * invalid handle on error (check out_error).
+ */
+vkr_internal VkrGeometryHandle vkr_geometry_system_create_default_plane2d(
+    VkrGeometrySystem *system, float32_t width, float32_t height,
+    VkrRendererError *out_error) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  VkrVertex2d verts[4] = {0};
+  verts[0].position.x = 0.0f; // 0    3
+  verts[0].position.y = 0.0f; //
+  verts[0].texcoord.x = 0.0f; //
+  verts[0].texcoord.y = 0.0f; // 2    1
+
+  verts[1].position.y = height;
+  verts[1].position.x = width;
+  verts[1].texcoord.x = 1.0f;
+  verts[1].texcoord.y = 1.0f;
+
+  verts[2].position.x = 0.0f;
+  verts[2].position.y = height;
+  verts[2].texcoord.x = 0.0f;
+  verts[2].texcoord.y = 1.0f;
+
+  verts[3].position.x = width;
+  verts[3].position.y = 0.0;
+  verts[3].texcoord.x = 1.0f;
+  verts[3].texcoord.y = 0.0f;
+
+  // counter-clockwise winding order
+  uint32_t indices[6] = {2, 1, 0, 3, 0, 1};
+
+  VkrGeometryConfig config = {0};
+  config.vertex_size = sizeof(VkrVertex2d);
+  config.vertex_count = 4;
+  config.vertices = verts;
+  config.index_size = sizeof(uint32_t);
+  config.index_count = 6;
+  config.indices = indices;
+  config.center = vec3_zero();
+  config.min_extents = vec3_new(-width, -height, 0.0f);
+  config.max_extents = vec3_new(width, height, 0.0f);
+  string_format(config.name, sizeof(config.name), "Default Plane 2D");
+
+  return vkr_geometry_system_create(system, &config, false_v, out_error);
+}
+
+bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
+                                  VkrRendererFrontendHandle renderer,
+                                  const VkrGeometrySystemConfig *config,
+                                  VkrRendererError *out_error) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(config != NULL, "Config is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  MemZero(system, sizeof(VkrGeometrySystem));
+
+  // Create internal arena for geometry system
+  // Reserve/commit sizes tuned for geometry metadata and freelist node storage.
+  // This owns CPU-side allocations only.
+
+  ArenaFlags app_arena_flags = bitset8_create();
+  bitset8_set(&app_arena_flags, ARENA_FLAG_LARGE_PAGES);
+  system->arena = arena_create(MB(32), MB(8), app_arena_flags);
+  if (!system->arena) {
+    log_fatal("Failed to create geometry system arena");
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
+  system->allocator.ctx = system->arena;
+  if (!vkr_allocator_arena(&system->allocator)) {
+    log_fatal("Failed to create geometry system allocator");
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
+  system->renderer = renderer;
+  system->config = *config;
+  system->max_geometries =
+      (config->max_geometries > 0) ? config->max_geometries : 1024;
+
+  system->geometries =
+      array_create_VkrGeometry(system->arena, system->max_geometries);
+  for (uint32_t geometry = 0; geometry < system->max_geometries; geometry++) {
+    VkrGeometry init = {0};
+    init.pipeline_id = VKR_INVALID_ID;
+    array_set_VkrGeometry(&system->geometries, geometry, init);
+  }
+  system->free_ids =
+      array_create_uint32_t(system->arena, system->max_geometries);
+  system->free_count = 0;
+
+  system->geometry_by_name = vkr_hash_table_create_VkrGeometryEntry(
+      system->arena, (uint64_t)system->max_geometries * 2);
+
+  system->generation_counter = 1;
+
+  system->default_geometry =
+      vkr_geometry_system_create_default_cube(system, out_error);
+  if (system->default_geometry.id == 0) {
+    log_error("Failed to create default cube");
+    return false_v;
+  }
+
+  system->default_plane =
+      vkr_geometry_system_create_default_plane(system, 10.0f, 10.0f, out_error);
+  if (system->default_plane.id == 0) {
+    log_error("Failed to create default plane");
+    return false_v;
+  }
+
+  system->default_plane2d =
+      vkr_geometry_system_create_default_plane2d(system, 2.0f, 2.0f, out_error);
+  if (system->default_plane2d.id == 0) {
+    log_error("Failed to create default plane 2D");
+    return false_v;
+  }
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return true_v;
+}
+
+void vkr_geometry_system_shutdown(VkrGeometrySystem *system) {
+  if (!system)
+    return;
+
+  for (uint32_t i = 0; i < system->geometries.length; ++i) {
+    VkrGeometry *geometry = array_get_VkrGeometry(&system->geometries, i);
+    if (geometry->vertex_buffer.handle) {
+      vkr_vertex_buffer_destroy(system->renderer, &geometry->vertex_buffer);
+      geometry->vertex_buffer.handle = NULL;
+    }
+    if (geometry->index_buffer.handle) {
+      vkr_index_buffer_destroy(system->renderer, &geometry->index_buffer);
+      geometry->index_buffer.handle = NULL;
+    }
+  }
+
+  array_destroy_VkrGeometry(&system->geometries);
+  array_destroy_uint32_t(&system->free_ids);
+
+  if (system->arena) {
+    arena_destroy(system->arena);
+    system->arena = NULL;
+  }
+
+  MemZero(system, sizeof(VkrGeometrySystem));
+}
+
+vkr_internal VkrGeometryHandle geometry_creation_failure(
+    VkrGeometrySystem *system, VkrGeometry *geom, VkrGeometryHandle handle) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(geom != NULL, "Geometry is NULL");
+
+  if (geom->vertex_buffer.handle) {
+    vkr_vertex_buffer_destroy(system->renderer, &geom->vertex_buffer);
+    geom->vertex_buffer.handle = NULL;
+  }
+
+  if (geom->index_buffer.handle) {
+    vkr_index_buffer_destroy(system->renderer, &geom->index_buffer);
+    geom->index_buffer.handle = NULL;
+  }
+
+  uint32_t slot = (handle.id > 0) ? (handle.id - 1) : 0;
+  geom->id = 0;
+  geom->generation = 0;
+  assert_log(system->free_count < system->free_ids.length,
+             "Geometry free list overflow");
+  system->free_ids.data[system->free_count++] = slot;
+
+  return (VkrGeometryHandle){0};
+}
+
+VkrGeometryHandle vkr_geometry_system_create(VkrGeometrySystem *system,
+                                             const VkrGeometryConfig *config,
+                                             bool8_t auto_release,
+                                             VkrRendererError *out_error) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  VkrGeometryHandle handle = (VkrGeometryHandle){0};
+  if (!config || config->vertex_size == 0 || config->vertex_count == 0 ||
+      config->vertices == NULL) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return handle;
+  }
+  if (config->index_size == 0 || config->index_count == 0 ||
+      config->indices == NULL) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return handle;
+  }
+
+  VkrGeometry *geom = geometry_acquire_slot(system, &handle);
+  if (!geom) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return handle;
+  }
+
+  geom->vertex_size = config->vertex_size;
+  geom->vertex_count = config->vertex_count;
+  geom->index_size = config->index_size;
+  geom->index_count = config->index_count;
+  geom->center = config->center;
+  geom->min_extents = config->min_extents;
+  geom->max_extents = config->max_extents;
+
+  if (config->name[0] != '\0') {
+    string_copy(geom->name, config->name);
+  } else {
+    string_format(geom->name, sizeof(geom->name), "geometry_%u", handle.id);
+  }
+
+  if (config->material_name[0] != '\0') {
+    string_copy(geom->material_name, config->material_name);
+  } else {
+    geom->material_name[0] = '\0';
+  }
+
+  String8 debug_name = {0};
+  uint64_t geom_name_length = string_length(geom->name);
+  if (geom_name_length > 0) {
+    debug_name = string8_create((uint8_t *)geom->name, geom_name_length);
+  } else {
+    debug_name = string8_lit("geometry");
+  }
+
+  VkrRendererError err = VKR_RENDERER_ERROR_NONE;
+  geom->vertex_buffer = vkr_vertex_buffer_create(
+      system->renderer, config->vertices, geom->vertex_size, geom->vertex_count,
+      VKR_VERTEX_INPUT_RATE_VERTEX, debug_name, &err);
+  if (err != VKR_RENDERER_ERROR_NONE) {
+    log_error("Failed to create vertex buffer for '%s'", geom->name);
+    *out_error = err;
+    return geometry_creation_failure(system, geom, handle);
+  }
+
+  VkrIndexType index_type = (config->index_size == sizeof(uint16_t))
+                                ? VKR_INDEX_TYPE_UINT16
+                                : VKR_INDEX_TYPE_UINT32;
+  geom->index_buffer =
+      vkr_index_buffer_create(system->renderer, config->indices, index_type,
+                              geom->index_count, debug_name, &err);
+  if (err != VKR_RENDERER_ERROR_NONE) {
+    log_error("Failed to create index buffer for '%s'", geom->name);
+    *out_error = err;
+    return geometry_creation_failure(system, geom, handle);
+  }
+
+  const char *stable_name = geom->name;
+  VkrGeometryEntry life_entry = {.id = (handle.id - 1),
+                                 .ref_count = 1,
+                                 .auto_release = auto_release,
+                                 .name = stable_name};
+  vkr_hash_table_insert_VkrGeometryEntry(&system->geometry_by_name, stable_name,
+                                         life_entry);
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return handle;
+}
+
+VkrGeometryHandle
+vkr_geometry_system_create_cube(VkrGeometrySystem *system, float32_t width,
+                                float32_t height, float32_t depth,
+                                const char *name, VkrRendererError *out_error) {
   assert_log(system != NULL, "Geometry system is NULL");
   assert_log(name != NULL, "Name is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
@@ -309,331 +637,9 @@ vkr_internal VkrGeometryHandle vkr_geometry_system_create_default_cube(
   config.center = vec3_zero();
   config.min_extents = vec3_new(-hw, -hh, -hd);
   config.max_extents = vec3_new(hw, hh, hd);
-  string_format(config.name, sizeof(config.name), "Default Cube %s", name);
+  string_format(config.name, sizeof(config.name), "%s", name);
 
   return vkr_geometry_system_create(system, &config, false_v, out_error);
-}
-
-/**
- * @brief Creates a default plane (2x2 by default) using the POSITION_TEXCOORD
- * layout and set as default geometry. Dimensions are full extents.
- * @param system The geometry system to create the default plane in
- * @param width The width of the plane
- * @param height The height of the plane
- * @param out_error The error output
- */
-vkr_internal VkrGeometryHandle vkr_geometry_system_create_default_plane(
-    VkrGeometrySystem *system, float32_t width, float32_t height,
-    VkrRendererError *out_error) {
-  assert_log(system != NULL, "Geometry system is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
-
-  float32_t hw = width * 0.5f;
-  float32_t hh = height * 0.5f;
-
-  VkrVertex3d verts[4] = {0};
-  Vec3 normal = vec3_new(0.0f, 0.0f, 1.0f);
-  Vec4 zero_color = vec4_zero();
-  Vec4 zero_tangent = vec4_zero();
-
-  vkr_write_vertex(verts, 0, vec3_new(-hw, -hh, 0.0f), normal,
-                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
-  vkr_write_vertex(verts, 1, vec3_new(hw, -hh, 0.0f), normal,
-                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
-  vkr_write_vertex(verts, 2, vec3_new(hw, hh, 0.0f), normal,
-                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
-  vkr_write_vertex(verts, 3, vec3_new(-hw, hh, 0.0f), normal,
-                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
-
-  uint32_t indices[6] = {0, 1, 2, 0, 2, 3};
-
-  vkr_geometry_system_generate_tangents(&system->allocator, verts, 4, indices,
-                                        6);
-
-  VkrGeometryConfig config = {0};
-  config.vertex_size = sizeof(VkrVertex3d);
-  config.vertex_count = 4;
-  config.vertices = verts;
-  config.index_size = sizeof(uint32_t);
-  config.index_count = 6;
-  config.indices = indices;
-  config.center = vec3_zero();
-  config.min_extents = vec3_new(-hw, -hh, 0.0f);
-  config.max_extents = vec3_new(hw, hh, 0.0f);
-  string_format(config.name, sizeof(config.name), "Default Plane");
-
-  return vkr_geometry_system_create(system, &config, false_v, out_error);
-}
-
-/**
- * @brief Creates a default 2D plane (2x2 by default) using the
- * POSITION2_TEXCOORD layout. Vertex format: [x, y, u, v].
- * @param system The geometry system to create the default 2D plane in
- * @param width The width of the plane
- * @param height The height of the plane
- * @param out_error The error output. May be null.
- * @return Returns a VkrGeometryHandle to the created geometry. Returns an
- * invalid handle on error (check out_error).
- */
-vkr_internal VkrGeometryHandle vkr_geometry_system_create_default_plane2d(
-    VkrGeometrySystem *system, float32_t width, float32_t height,
-    VkrRendererError *out_error) {
-  assert_log(system != NULL, "Geometry system is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
-
-  VkrVertex2d verts[4] = {0};
-  verts[0].position.x = 0.0f; // 0    3
-  verts[0].position.y = 0.0f; //
-  verts[0].texcoord.x = 0.0f; //
-  verts[0].texcoord.y = 0.0f; // 2    1
-
-  verts[1].position.y = height;
-  verts[1].position.x = width;
-  verts[1].texcoord.x = 1.0f;
-  verts[1].texcoord.y = 1.0f;
-
-  verts[2].position.x = 0.0f;
-  verts[2].position.y = height;
-  verts[2].texcoord.x = 0.0f;
-  verts[2].texcoord.y = 1.0f;
-
-  verts[3].position.x = width;
-  verts[3].position.y = 0.0;
-  verts[3].texcoord.x = 1.0f;
-  verts[3].texcoord.y = 0.0f;
-
-  // counter-clockwise winding order
-  uint32_t indices[6] = {2, 1, 0, 3, 0, 1};
-
-  VkrGeometryConfig config = {0};
-  config.vertex_size = sizeof(VkrVertex2d);
-  config.vertex_count = 4;
-  config.vertices = verts;
-  config.index_size = sizeof(uint32_t);
-  config.index_count = 6;
-  config.indices = indices;
-  config.center = vec3_zero();
-  config.min_extents = vec3_new(-width, -height, 0.0f);
-  config.max_extents = vec3_new(width, height, 0.0f);
-  string_format(config.name, sizeof(config.name), "Default Plane 2D");
-
-  return vkr_geometry_system_create(system, &config, false_v, out_error);
-}
-
-bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
-                                  VkrRendererFrontendHandle renderer,
-                                  const VkrGeometrySystemConfig *config,
-                                  VkrRendererError *out_error) {
-  assert_log(system != NULL, "Geometry system is NULL");
-  assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(config != NULL, "Config is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
-
-  MemZero(system, sizeof(VkrGeometrySystem));
-
-  // Create internal arena for geometry system
-  // Reserve/commit sizes tuned for geometry metadata and freelist node storage.
-  // This owns CPU-side allocations only.
-
-  ArenaFlags app_arena_flags = bitset8_create();
-  bitset8_set(&app_arena_flags, ARENA_FLAG_LARGE_PAGES);
-  system->arena = arena_create(MB(32), MB(8), app_arena_flags);
-  if (!system->arena) {
-    log_fatal("Failed to create geometry system arena");
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
-  }
-
-  system->allocator.ctx = system->arena;
-  if (!vkr_allocator_arena(&system->allocator)) {
-    log_fatal("Failed to create geometry system allocator");
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
-  }
-
-  system->renderer = renderer;
-  system->config = *config;
-  system->max_geometries =
-      (config->max_geometries > 0) ? config->max_geometries : 1024;
-
-  system->geometries =
-      array_create_VkrGeometry(system->arena, system->max_geometries);
-  for (uint32_t geometry = 0; geometry < system->max_geometries; geometry++) {
-    VkrGeometry init = {0};
-    init.pipeline_id = VKR_INVALID_ID;
-    array_set_VkrGeometry(&system->geometries, geometry, init);
-  }
-  system->free_ids =
-      array_create_uint32_t(system->arena, system->max_geometries);
-  system->free_count = 0;
-
-  system->geometry_by_name = vkr_hash_table_create_VkrGeometryEntry(
-      system->arena, (uint64_t)system->max_geometries * 2);
-
-  system->generation_counter = 1;
-
-  system->default_geometry = vkr_geometry_system_create_default_cube(
-      system, 10.0f, 10.0f, 10.0f, "Default Cube", out_error);
-  if (system->default_geometry.id == 0) {
-    log_error("Failed to create default cube");
-    return false_v;
-  }
-
-  system->default_plane =
-      vkr_geometry_system_create_default_plane(system, 10.0f, 10.0f, out_error);
-  if (system->default_plane.id == 0) {
-    log_error("Failed to create default plane");
-    return false_v;
-  }
-
-  system->default_plane2d =
-      vkr_geometry_system_create_default_plane2d(system, 2.0f, 2.0f, out_error);
-  if (system->default_plane2d.id == 0) {
-    log_error("Failed to create default plane 2D");
-    return false_v;
-  }
-
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return true_v;
-}
-
-void vkr_geometry_system_shutdown(VkrGeometrySystem *system) {
-  if (!system)
-    return;
-
-  for (uint32_t i = 0; i < system->geometries.length; ++i) {
-    VkrGeometry *geometry = array_get_VkrGeometry(&system->geometries, i);
-    if (geometry->vertex_buffer.handle) {
-      vkr_vertex_buffer_destroy(system->renderer, &geometry->vertex_buffer);
-      geometry->vertex_buffer.handle = NULL;
-    }
-    if (geometry->index_buffer.handle) {
-      vkr_index_buffer_destroy(system->renderer, &geometry->index_buffer);
-      geometry->index_buffer.handle = NULL;
-    }
-  }
-
-  array_destroy_VkrGeometry(&system->geometries);
-  array_destroy_uint32_t(&system->free_ids);
-
-  if (system->arena) {
-    arena_destroy(system->arena);
-    system->arena = NULL;
-  }
-
-  MemZero(system, sizeof(VkrGeometrySystem));
-}
-
-vkr_internal VkrGeometryHandle geometry_creation_failure(
-    VkrGeometrySystem *system, VkrGeometry *geom, VkrGeometryHandle handle) {
-  assert_log(system != NULL, "System is NULL");
-  assert_log(geom != NULL, "Geometry is NULL");
-
-  if (geom->vertex_buffer.handle) {
-    vkr_vertex_buffer_destroy(system->renderer, &geom->vertex_buffer);
-    geom->vertex_buffer.handle = NULL;
-  }
-
-  if (geom->index_buffer.handle) {
-    vkr_index_buffer_destroy(system->renderer, &geom->index_buffer);
-    geom->index_buffer.handle = NULL;
-  }
-
-  uint32_t slot = (handle.id > 0) ? (handle.id - 1) : 0;
-  geom->id = 0;
-  geom->generation = 0;
-  assert_log(system->free_count < system->free_ids.length,
-             "Geometry free list overflow");
-  system->free_ids.data[system->free_count++] = slot;
-
-  return (VkrGeometryHandle){0};
-}
-
-VkrGeometryHandle vkr_geometry_system_create(VkrGeometrySystem *system,
-                                             const VkrGeometryConfig *config,
-                                             bool8_t auto_release,
-                                             VkrRendererError *out_error) {
-  assert_log(system != NULL, "Geometry system is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
-
-  VkrGeometryHandle handle = (VkrGeometryHandle){0};
-  if (!config || config->vertex_size == 0 || config->vertex_count == 0 ||
-      config->vertices == NULL) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-    return handle;
-  }
-  if (config->index_size == 0 || config->index_count == 0 ||
-      config->indices == NULL) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-    return handle;
-  }
-
-  VkrGeometry *geom = geometry_acquire_slot(system, &handle);
-  if (!geom) {
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return handle;
-  }
-
-  geom->vertex_size = config->vertex_size;
-  geom->vertex_count = config->vertex_count;
-  geom->index_size = config->index_size;
-  geom->index_count = config->index_count;
-  geom->center = config->center;
-  geom->min_extents = config->min_extents;
-  geom->max_extents = config->max_extents;
-
-  if (config->name[0] != '\0') {
-    string_copy(geom->name, config->name);
-  } else {
-    string_format(geom->name, sizeof(geom->name), "geometry_%u", handle.id);
-  }
-
-  if (config->material_name[0] != '\0') {
-    string_copy(geom->material_name, config->material_name);
-  } else {
-    geom->material_name[0] = '\0';
-  }
-
-  String8 debug_name = {0};
-  uint64_t geom_name_length = string_length(geom->name);
-  if (geom_name_length > 0) {
-    debug_name = string8_create((uint8_t *)geom->name, geom_name_length);
-  } else {
-    debug_name = string8_lit("geometry");
-  }
-
-  VkrRendererError err = VKR_RENDERER_ERROR_NONE;
-  geom->vertex_buffer = vkr_vertex_buffer_create(
-      system->renderer, config->vertices, geom->vertex_size, geom->vertex_count,
-      VKR_VERTEX_INPUT_RATE_VERTEX, debug_name, &err);
-  if (err != VKR_RENDERER_ERROR_NONE) {
-    log_error("Failed to create vertex buffer for '%s'", geom->name);
-    *out_error = err;
-    return geometry_creation_failure(system, geom, handle);
-  }
-
-  VkrIndexType index_type = (config->index_size == sizeof(uint16_t))
-                                ? VKR_INDEX_TYPE_UINT16
-                                : VKR_INDEX_TYPE_UINT32;
-  geom->index_buffer =
-      vkr_index_buffer_create(system->renderer, config->indices, index_type,
-                              geom->index_count, debug_name, &err);
-  if (err != VKR_RENDERER_ERROR_NONE) {
-    log_error("Failed to create index buffer for '%s'", geom->name);
-    *out_error = err;
-    return geometry_creation_failure(system, geom, handle);
-  }
-
-  const char *stable_name = geom->name;
-  VkrGeometryEntry life_entry = {.id = (handle.id - 1),
-                                 .ref_count = 1,
-                                 .auto_release = auto_release,
-                                 .name = stable_name};
-  vkr_hash_table_insert_VkrGeometryEntry(&system->geometry_by_name, stable_name,
-                                         life_entry);
-
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return handle;
 }
 
 void vkr_geometry_system_acquire(VkrGeometrySystem *system,

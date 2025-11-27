@@ -257,7 +257,8 @@ vkr_internal void vkr_view_ui_on_render(VkrLayerContext *ctx,
       current_pipeline.generation != ui_resolved.generation) {
     if (!vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry,
                                              ui_resolved, &bind_err)) {
-      log_error("Failed to bind UI pipeline");
+      String8 err_str = vkr_renderer_get_error_string(bind_err);
+      log_error("Failed to bind UI pipeline: %s", string8_cstr(&err_str));
       return;
     }
   }

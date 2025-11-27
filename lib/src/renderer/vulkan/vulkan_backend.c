@@ -177,8 +177,10 @@ vkr_internal bool32_t create_domain_framebuffers(VulkanBackendState *state) {
     log_debug("Created domain framebuffers for domain %u", domain);
   }
 
-  state->domain_framebuffers[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] =
-      state->domain_framebuffers[VKR_PIPELINE_DOMAIN_WORLD];
+  if (state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD]) {
+    state->domain_framebuffers[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] =
+        state->domain_framebuffers[VKR_PIPELINE_DOMAIN_WORLD];
+  }
 
   return true;
 }
@@ -387,19 +389,45 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
                                            "renderpass.builtin.ui")) {
         state->domain_render_passes[VKR_PIPELINE_DOMAIN_UI] = created->vk;
         state->domain_initialized[VKR_PIPELINE_DOMAIN_UI] = true;
+      } else if (vkr_string8_equals_cstr_i(&configs[i].name,
+                                           "renderpass.builtin.skybox")) {
+        state->domain_render_passes[VKR_PIPELINE_DOMAIN_SKYBOX] = created->vk;
+        state->domain_initialized[VKR_PIPELINE_DOMAIN_SKYBOX] = true;
       }
     }
+  }
+
+  if (!state->domain_render_passes[VKR_PIPELINE_DOMAIN_SKYBOX]) {
+    VkrRenderPassConfig skybox_cfg = {
+        .name = string8_lit("Renderpass.Builtin.Skybox"),
+        .prev_name = {0},
+        .next_name = string8_lit("Renderpass.Builtin.World"),
+        .domain = VKR_PIPELINE_DOMAIN_SKYBOX,
+        .render_area = (Vec4){0, 0, (float32_t)state->swapchain.extent.width,
+                              (float32_t)state->swapchain.extent.height},
+        .clear_color = (Vec4){1.0f, 0.0f, 1.0f, 1.0f}, // Magenta for debugging
+        .clear_flags = VKR_RENDERPASS_CLEAR_COLOR | VKR_RENDERPASS_CLEAR_DEPTH,
+    };
+    struct s_RenderPass *skybox =
+        vulkan_backend_renderpass_create_internal(state, &skybox_cfg);
+    if (!skybox) {
+      return false;
+    }
+    state->domain_render_passes[VKR_PIPELINE_DOMAIN_SKYBOX] = skybox->vk;
+    state->domain_initialized[VKR_PIPELINE_DOMAIN_SKYBOX] = true;
   }
 
   if (!state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD]) {
     VkrRenderPassConfig world_cfg = {
         .name = string8_lit("Renderpass.Builtin.World"),
-        .prev_name = {0},
+        .prev_name = string8_lit("Renderpass.Builtin.Skybox"),
         .next_name = string8_lit("Renderpass.Builtin.UI"),
+        .domain = VKR_PIPELINE_DOMAIN_WORLD,
         .render_area = (Vec4){0, 0, (float32_t)state->swapchain.extent.width,
                               (float32_t)state->swapchain.extent.height},
         .clear_color = (Vec4){0.1f, 0.1f, 0.2f, 1.0f},
-        .clear_flags = VKR_RENDERPASS_CLEAR_COLOR | VKR_RENDERPASS_CLEAR_DEPTH,
+        .clear_flags = VKR_RENDERPASS_USE_DEPTH, // Use depth without clearing
+                                                 // (skybox already cleared)
     };
     struct s_RenderPass *world =
         vulkan_backend_renderpass_create_internal(state, &world_cfg);
@@ -415,6 +443,7 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
         .name = string8_lit("Renderpass.Builtin.UI"),
         .prev_name = string8_lit("Renderpass.Builtin.World"),
         .next_name = {0},
+        .domain = VKR_PIPELINE_DOMAIN_UI,
         .render_area = (Vec4){0, 0, (float32_t)state->swapchain.extent.width,
                               (float32_t)state->swapchain.extent.height},
         .clear_color = (Vec4){0, 0, 0, 0},
@@ -1200,8 +1229,6 @@ void renderer_vulkan_draw_indexed(void *backend_state, uint32_t index_count,
   assert_log(index_count > 0, "Index count is 0");
   assert_log(instance_count > 0, "Instance count is 0");
 
-  // log_debug("Drawing Vulkan indexed vertices");
-
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
@@ -1331,6 +1358,10 @@ void renderer_vulkan_destroy_buffer(void *backend_state,
   return;
 }
 
+vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
+    VulkanBackendState *state, const VkrTextureDescription *desc,
+    const void *initial_data);
+
 VkrBackendResourceHandle
 renderer_vulkan_create_texture(void *backend_state,
                                const VkrTextureDescription *desc,
@@ -1342,9 +1373,14 @@ renderer_vulkan_create_texture(void *backend_state,
   assert_log(initial_data != NULL || writable,
              "Initial data is NULL and texture is not writable");
 
-  log_debug("Creating Vulkan texture");
-
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  // Branch to cube map creation if type is cube map
+  if (desc->type == VKR_TEXTURE_TYPE_CUBE_MAP) {
+    return renderer_vulkan_create_cube_texture(state, desc, initial_data);
+  }
+
+  log_debug("Creating Vulkan texture");
 
   struct s_TextureHandle *texture = arena_alloc(
       state->arena, sizeof(struct s_TextureHandle), ARENA_MEMORY_TAG_RENDERER);
@@ -1658,6 +1694,206 @@ renderer_vulkan_create_texture(void *backend_state,
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
   if (scratch_valid)
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+
+  return (VkrBackendResourceHandle){.ptr = texture};
+}
+
+vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
+    VulkanBackendState *state, const VkrTextureDescription *desc,
+    const void *initial_data) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(desc != NULL, "Texture description is NULL");
+  assert_log(initial_data != NULL,
+             "Cube map requires initial data for all 6 faces");
+
+  log_debug("Creating Vulkan cube map texture");
+
+  struct s_TextureHandle *texture = arena_alloc(
+      state->arena, sizeof(struct s_TextureHandle), ARENA_MEMORY_TAG_RENDERER);
+  if (!texture) {
+    log_fatal("Failed to allocate cube texture");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  MemZero(texture, sizeof(struct s_TextureHandle));
+  texture->description = *desc;
+
+  // Each face has the same dimensions
+  VkDeviceSize face_size = (VkDeviceSize)desc->width *
+                           (VkDeviceSize)desc->height *
+                           (VkDeviceSize)desc->channels;
+  VkDeviceSize total_size = face_size * 6;
+
+  VkFormat image_format = vulkan_image_format_from_texture_format(desc->format);
+
+  // Cube maps typically don't use mipmaps initially for simplicity
+  uint32_t mip_levels = 1;
+
+  VkrBufferTypeFlags buffer_type = bitset8_create();
+  bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
+
+  Scratch scratch = scratch_create(state->temp_arena);
+  const VkrBufferDescription staging_buffer_desc = {
+      .size = total_size,
+      .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
+      .memory_properties = vkr_memory_property_flags_from_bits(
+          VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
+      .buffer_type = buffer_type,
+      .bind_on_create = true_v,
+  };
+
+  struct s_BufferHandle *staging_buffer = arena_alloc(
+      scratch.arena, sizeof(struct s_BufferHandle), ARENA_MEMORY_TAG_RENDERER);
+  if (!staging_buffer) {
+    log_fatal("Failed to allocate staging buffer");
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
+    log_fatal("Failed to create staging buffer for cube map");
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, total_size, 0,
+                               initial_data)) {
+    log_fatal("Failed to load cube map data into staging buffer");
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  // Create cube map image with 6 array layers
+  if (!vulkan_image_create(state, VK_IMAGE_TYPE_2D, desc->width, desc->height,
+                           image_format, VK_IMAGE_TILING_OPTIMAL,
+                           VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                               VK_IMAGE_USAGE_SAMPLED_BIT,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mip_levels, 6,
+                           VK_IMAGE_VIEW_TYPE_CUBE, VK_IMAGE_ASPECT_COLOR_BIT,
+                           &texture->texture.image)) {
+    log_fatal("Failed to create Vulkan cube map image");
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  VulkanCommandBuffer temp_command_buffer = {0};
+  if (!vulkan_command_buffer_allocate_and_begin_single_use(
+          state, &temp_command_buffer)) {
+    log_fatal("Failed to allocate and begin single use command buffer");
+    vulkan_image_destroy(state, &texture->texture.image);
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  // Transition to transfer destination
+  VkImageSubresourceRange subresource_range = {
+      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+      .baseMipLevel = 0,
+      .levelCount = mip_levels,
+      .baseArrayLayer = 0,
+      .layerCount = 6,
+  };
+
+  if (!vulkan_image_transition_layout_range(
+          state, &texture->texture.image, &temp_command_buffer, image_format,
+          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+          &subresource_range)) {
+    log_fatal("Failed to transition cube map layout");
+    vkEndCommandBuffer(temp_command_buffer.handle);
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1,
+                         &temp_command_buffer.handle);
+    vulkan_image_destroy(state, &texture->texture.image);
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  // Copy each face to its array layer
+  if (!vulkan_image_copy_cube_faces_from_buffer(
+          state, &texture->texture.image, staging_buffer->buffer.handle,
+          &temp_command_buffer, face_size)) {
+    log_fatal("Failed to copy cube map faces");
+    vkEndCommandBuffer(temp_command_buffer.handle);
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1,
+                         &temp_command_buffer.handle);
+    vulkan_image_destroy(state, &texture->texture.image);
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  // Transition to shader read optimal
+  if (!vulkan_image_transition_layout_range(
+          state, &texture->texture.image, &temp_command_buffer, image_format,
+          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &subresource_range)) {
+    log_fatal("Failed to transition cube map to shader read layout");
+    vkEndCommandBuffer(temp_command_buffer.handle);
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1,
+                         &temp_command_buffer.handle);
+    vulkan_image_destroy(state, &texture->texture.image);
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  if (!vulkan_command_buffer_end_single_use(
+          state, &temp_command_buffer, state->device.graphics_queue,
+          array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
+              ->handle)) {
+    log_fatal("Failed to end single use command buffer");
+    vulkan_image_destroy(state, &texture->texture.image);
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  vkFreeCommandBuffers(state->device.logical_device,
+                       state->device.graphics_command_pool, 1,
+                       &temp_command_buffer.handle);
+
+  // Create sampler for cube map (clamp to edge is typical for skyboxes)
+  VkSamplerCreateInfo sampler_create_info = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      .magFilter = VK_FILTER_LINEAR,
+      .minFilter = VK_FILTER_LINEAR,
+      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .anisotropyEnable = VK_FALSE,
+      .maxAnisotropy = 1.0f,
+      .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+      .unnormalizedCoordinates = VK_FALSE,
+      .compareEnable = VK_FALSE,
+      .compareOp = VK_COMPARE_OP_ALWAYS,
+      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+      .mipLodBias = 0.0f,
+      .minLod = 0.0f,
+      .maxLod = 0.0f,
+  };
+
+  if (vkCreateSampler(state->device.logical_device, &sampler_create_info, NULL,
+                      &texture->texture.sampler) != VK_SUCCESS) {
+    log_fatal("Failed to create cube map sampler");
+    vulkan_image_destroy(state, &texture->texture.image);
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  texture->description.generation++;
+
+  vulkan_buffer_destroy(state, &staging_buffer->buffer);
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+
+  log_debug("Created Vulkan cube map texture: %p",
+            texture->texture.image.handle);
 
   return (VkrBackendResourceHandle){.ptr = texture};
 }
@@ -2267,8 +2503,6 @@ void renderer_vulkan_bind_pipeline(void *backend_state,
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(pipeline_handle.ptr != NULL, "Pipeline handle is NULL");
 
-  // log_debug("Binding Vulkan pipeline");
-
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
   struct s_GraphicsPipeline *pipeline =
@@ -2570,7 +2804,7 @@ renderer_vulkan_begin_render_pass(void *backend_state,
                        VK_SUBPASS_CONTENTS_INLINE);
 
   state->render_pass_active = true;
-  state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
+  state->current_render_pass_domain = pass->vk->domain;
   state->active_named_render_pass = pass;
 
   VkViewport viewport = {

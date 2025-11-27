@@ -311,6 +311,18 @@ vkr_internal VkrShaderStage vkr_parse_shader_stage(const String8 *stage_str) {
   return VKR_SHADER_STAGE_COUNT; // Invalid
 }
 
+vkr_internal VkrCullMode vkr_parse_cull_mode(const String8 *cull_str) {
+  if (vkr_string8_equals_cstr_i(cull_str, "none"))
+    return VKR_CULL_MODE_NONE;
+  if (vkr_string8_equals_cstr_i(cull_str, "front"))
+    return VKR_CULL_MODE_FRONT;
+  if (vkr_string8_equals_cstr_i(cull_str, "back"))
+    return VKR_CULL_MODE_BACK;
+  if (vkr_string8_equals_cstr_i(cull_str, "front_and_back"))
+    return VKR_CULL_MODE_FRONT_AND_BACK;
+  return VKR_CULL_MODE_BACK; // Default
+}
+
 // =============================================================================
 // String Processing Functions (Using Scratch Arenas)
 // =============================================================================
@@ -777,6 +789,7 @@ vkr_initialize_config(Arena *arena, VkrShaderConfig *config) {
   config->stage_count = 0;
   config->use_instance = 0;
   config->use_local = 0;
+  config->cull_mode = VKR_CULL_MODE_BACK;
   config->name = (String8){0};
   config->renderpass_name = (String8){0};
 
@@ -916,6 +929,8 @@ vkr_shader_loader_parse(String8 path, Arena *arena, Arena *scratch_arena,
       if (string8_to_u32(&value, &use_local)) {
         out_config->use_local = (uint8_t)use_local;
       }
+    } else if (vkr_string8_equals_cstr_i(&key, "cull_mode")) {
+      out_config->cull_mode = vkr_parse_cull_mode(&value);
     } else if (vkr_string8_equals_cstr_i(&key, "vertex_layout")) {
       log_warn("vertex_layout key is deprecated and will be ignored");
     } else if (vkr_string8_equals_cstr_i(&key, "version")) {

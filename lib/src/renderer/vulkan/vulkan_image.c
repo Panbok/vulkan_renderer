@@ -12,8 +12,14 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
   assert_log(out_image != NULL, "Output image is NULL");
 
   // todo: support configurable depth, sample count, and sharing mode.
+  VkImageCreateFlags create_flags = 0;
+  if (view_type == VK_IMAGE_VIEW_TYPE_CUBE) {
+    create_flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+  }
+
   VkImageCreateInfo image_create_info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .flags = create_flags,
       .imageType = image_type,
       .extent.width = width,
       .extent.height = height,
@@ -253,6 +259,39 @@ bool8_t vulkan_image_copy_from_buffer(VulkanBackendState *state,
 
   vkCmdCopyBufferToImage(command_buffer->handle, buffer, image->handle,
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+  return true_v;
+}
+
+bool8_t vulkan_image_copy_cube_faces_from_buffer(
+    VulkanBackendState *state, VulkanImage *image, VkBuffer buffer,
+    VulkanCommandBuffer *command_buffer, uint64_t face_size) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(image != NULL, "Image is NULL");
+  assert_log(buffer != VK_NULL_HANDLE, "Buffer is NULL");
+  assert_log(command_buffer != NULL, "Command buffer is NULL");
+  assert_log(image->array_layers == 6, "Cube map must have 6 layers");
+
+  VkBufferImageCopy regions[6];
+  for (uint32_t face = 0; face < 6; face++) {
+    regions[face] = (VkBufferImageCopy){
+        .bufferOffset = face * face_size,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel = 0,
+                .baseArrayLayer = face,
+                .layerCount = 1,
+            },
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {image->width, image->height, 1},
+    };
+  }
+
+  vkCmdCopyBufferToImage(command_buffer->handle, buffer, image->handle,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6, regions);
 
   return true_v;
 }

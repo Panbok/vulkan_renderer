@@ -132,16 +132,20 @@ vulkan_renderpass_create_from_config(VulkanBackendState *state,
   out_render_pass->color = cfg->clear_color;
   out_render_pass->depth = 1.0f;
   out_render_pass->stencil = 0;
-  out_render_pass->domain = VKR_PIPELINE_DOMAIN_WORLD;
+  out_render_pass->domain = cfg->domain;
 
-  bool use_depth = (cfg->clear_flags & (VKR_RENDERPASS_CLEAR_DEPTH |
-                                        VKR_RENDERPASS_CLEAR_STENCIL)) != 0;
+  bool use_depth = (cfg->clear_flags &
+                    (VKR_RENDERPASS_CLEAR_DEPTH | VKR_RENDERPASS_CLEAR_STENCIL |
+                     VKR_RENDERPASS_USE_DEPTH)) != 0;
 
   VkAttachmentDescription attachments[2] = {0};
   VkAttachmentReference color_ref = {
       .attachment = 0,
       .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
   };
+
+  bool8_t has_prev_pass = cfg->prev_name.length > 0;
+  bool8_t has_next_pass = cfg->next_name.length > 0;
 
   VkAttachmentDescription color_attachment = {
       .format = state->swapchain.format,
@@ -152,12 +156,10 @@ vulkan_renderpass_create_from_config(VulkanBackendState *state,
       .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
       .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
       .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-      .initialLayout = (cfg->prev_name.length > 0)
-                           ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-                           : VK_IMAGE_LAYOUT_UNDEFINED,
-      .finalLayout = (cfg->next_name.length > 0)
-                         ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
-                         : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+      .initialLayout = has_prev_pass ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                     : VK_IMAGE_LAYOUT_UNDEFINED,
+      .finalLayout = has_next_pass ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                   : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
   };
 
   attachments[0] = color_attachment;
@@ -170,18 +172,23 @@ vulkan_renderpass_create_from_config(VulkanBackendState *state,
 
   uint32_t attachment_count = 1;
   if (use_depth) {
+    // If loading depth (not clearing), initialLayout must not be UNDEFINED
+    bool clear_depth = (cfg->clear_flags & VKR_RENDERPASS_CLEAR_DEPTH) != 0;
+    VkImageLayout depth_initial_layout =
+        clear_depth ? VK_IMAGE_LAYOUT_UNDEFINED
+                    : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
     VkAttachmentDescription depth_attachment = {
         .format = state->device.depth_format,
         .samples = VK_SAMPLE_COUNT_1_BIT,
-        .loadOp = (cfg->clear_flags & VKR_RENDERPASS_CLEAR_DEPTH)
-                      ? VK_ATTACHMENT_LOAD_OP_CLEAR
-                      : VK_ATTACHMENT_LOAD_OP_LOAD,
-        .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .loadOp = clear_depth ? VK_ATTACHMENT_LOAD_OP_CLEAR
+                              : VK_ATTACHMENT_LOAD_OP_LOAD,
+        .storeOp = VK_ATTACHMENT_STORE_OP_STORE, // Store for next pass
         .stencilLoadOp = (cfg->clear_flags & VKR_RENDERPASS_CLEAR_STENCIL)
                              ? VK_ATTACHMENT_LOAD_OP_CLEAR
                              : VK_ATTACHMENT_LOAD_OP_DONT_CARE,
         .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-        .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .initialLayout = depth_initial_layout,
         .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
     attachments[attachment_count++] = depth_attachment;

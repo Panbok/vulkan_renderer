@@ -30,6 +30,10 @@ bool8_t vulkan_image_copy_from_buffer(VulkanBackendState *state,
                                       VulkanImage *image, VkBuffer buffer,
                                       VulkanCommandBuffer *command_buffer);
 
+bool8_t vulkan_image_copy_cube_faces_from_buffer(
+    VulkanBackendState *state, VulkanImage *image, VkBuffer buffer,
+    VulkanCommandBuffer *command_buffer, uint64_t face_size);
+
 bool32_t vulkan_create_image_view(VulkanBackendState *state, VkFormat format,
                                   VkImageViewType view_type, VulkanImage *image,
                                   VkImageAspectFlags aspect_flags);

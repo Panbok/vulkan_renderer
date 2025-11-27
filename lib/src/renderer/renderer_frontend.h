@@ -42,6 +42,7 @@ struct s_RendererFrontend {
   VkrMeshLoaderContext mesh_loader;
 
   VkrLayerHandle world_layer;
+  VkrLayerHandle skybox_layer;
   VkrLayerHandle ui_layer;
 
   // Per-draw state

@@ -435,6 +435,7 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
       .bindings = bindings,
       .topology = VKR_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
       .polygon_mode = VKR_POLYGON_MODE_FILL,
+      .cull_mode = config->cull_mode,
       .renderpass = renderpass,
       .domain = domain,
   };

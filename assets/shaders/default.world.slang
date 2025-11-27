@@ -1,8 +1,8 @@
 // Uniform buffer for MVP matrices
 struct GlobalUniformBufferObject 
 {
-    column_major float4x4 view;
     column_major float4x4 projection;
+    column_major float4x4 view;
     float4 ambient_color;
     float3 view_position;
     uint32_t render_mode;

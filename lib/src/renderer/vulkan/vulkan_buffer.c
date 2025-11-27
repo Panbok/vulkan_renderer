@@ -96,14 +96,16 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
 }
 
 void vulkan_buffer_destroy(VulkanBackendState *state, VulkanBuffer *buffer) {
+  if (buffer->handle == VK_NULL_HANDLE) {
+    return;
+  }
+
   log_debug("Destroying Vulkan buffer: %p", buffer->handle);
 
   vkr_dmemory_allocator_destroy(&buffer->allocator);
 
-  if (buffer->handle != VK_NULL_HANDLE) {
-    vkDestroyBuffer(state->device.logical_device, buffer->handle,
-                    state->allocator);
-  }
+  vkDestroyBuffer(state->device.logical_device, buffer->handle,
+                  state->allocator);
   if (buffer->memory != VK_NULL_HANDLE) {
     vkFreeMemory(state->device.logical_device, buffer->memory,
                  state->allocator);

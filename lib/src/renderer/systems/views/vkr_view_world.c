@@ -24,7 +24,7 @@ typedef struct VkrViewWorldState {
 typedef struct VkrTransparentSubmeshEntry {
   uint32_t mesh_index;
   uint32_t submesh_index;
-  float32_t distance_sq; // Squared distance for sorting (avoids sqrt)
+  float32_t distance;
 } VkrTransparentSubmeshEntry;
 
 vkr_internal int vkr_transparent_submesh_compare(const void *a, const void *b) {
@@ -33,9 +33,9 @@ vkr_internal int vkr_transparent_submesh_compare(const void *a, const void *b) {
   const VkrTransparentSubmeshEntry *entry_b =
       (const VkrTransparentSubmeshEntry *)b;
   // Sort descending (back-to-front): larger distance first
-  if (entry_a->distance_sq > entry_b->distance_sq)
+  if (entry_a->distance > entry_b->distance)
     return -1;
-  if (entry_a->distance_sq < entry_b->distance_sq)
+  if (entry_a->distance < entry_b->distance)
     return 1;
   return 0;
 }
@@ -630,13 +630,15 @@ vkr_internal void vkr_view_world_on_render(VkrLayerContext *ctx,
       if (vkr_submesh_has_transparency(rf, material)) {
         if (transparent_entries &&
             transparent_count < max_transparent_entries) {
-          Vec3 center = mat4_mul_vec3(mesh_world_pos, camera_pos);
-          float32_t diff = vec3_distance(center, camera_pos);
+          Vec3 mesh_pos =
+              vec3_new(mesh_world_pos.elements[12], mesh_world_pos.elements[13],
+                       mesh_world_pos.elements[14]);
+          float32_t diff = vec3_distance(mesh_pos, camera_pos);
           transparent_entries[transparent_count++] =
               (VkrTransparentSubmeshEntry){
                   .mesh_index = i,
                   .submesh_index = submesh_index,
-                  .distance_sq = vkr_abs_f32(diff),
+                  .distance = vkr_abs_f32(diff),
               };
         }
       } else {
