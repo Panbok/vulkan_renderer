@@ -67,11 +67,21 @@ bool32_t vkr_thread_create(VkrAllocator *allocator, VkrThread *thread,
 bool32_t vkr_thread_detach(VkrThread thread);
 
 /**
- * @brief Attempts to cancel a running thread.
+ * @brief Requests cancellation of a running thread. On platforms without
+ * asynchronous cancellation this sets a flag that thread functions should
+ * periodically check and exit cooperatively when set.
  * @param thread VkrThread to cancel.
- * @return true_v on success, false_v on failure.
+ * @return true_v when the cancellation request is recorded, false_v on failure.
  */
 bool32_t vkr_thread_cancel(VkrThread thread);
+
+/**
+ * @brief Checks whether a cancellation request has been issued for the thread.
+ * Call from long-running thread functions to cooperate with cancellation.
+ * @param thread VkrThread to query.
+ * @return true_v if cancellation was requested, false_v otherwise.
+ */
+bool32_t vkr_thread_cancel_requested(VkrThread thread);
 
 /**
  * @brief Checks whether the thread is still active.

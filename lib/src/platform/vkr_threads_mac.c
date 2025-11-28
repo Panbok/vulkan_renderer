@@ -23,9 +23,14 @@ struct s_VkrCondVar {
 };
 
 // Thread entry wrapper that updates bookkeeping when the user function returns.
-static void *vkr_thread_entry(void *param) {
+vkr_internal void *vkr_thread_entry(void *param) {
   VkrThread thread = (VkrThread)param;
   if (thread == NULL || thread->func == NULL) {
+    return NULL;
+  }
+
+  if (thread->cancel_requested) {
+    thread->active = false_v;
     return NULL;
   }
 
@@ -56,8 +61,8 @@ bool32_t vkr_thread_create(VkrAllocator *allocator, VkrThread *thread,
   (*thread)->active = true_v;
   (*thread)->id = 0;
 
-  int32_t result = pthread_create(&(*thread)->handle, NULL, vkr_thread_entry,
-                                  *thread);
+  int32_t result =
+      pthread_create(&(*thread)->handle, NULL, vkr_thread_entry, *thread);
   if (result != 0) {
     vkr_allocator_free(allocator, *thread, sizeof(struct s_VkrThread),
                        VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
@@ -108,6 +113,14 @@ bool32_t vkr_thread_cancel(VkrThread thread) {
   }
 
   return false_v;
+}
+
+bool32_t vkr_thread_cancel_requested(VkrThread thread) {
+  if (thread == NULL) {
+    return false_v;
+  }
+
+  return thread->cancel_requested;
 }
 
 bool32_t vkr_thread_is_active(VkrThread thread) {
@@ -239,12 +252,15 @@ bool32_t vkr_mutex_destroy(VkrAllocator *allocator, VkrMutex *mutex) {
   }
 
   int32_t result = pthread_mutex_destroy(&(*mutex)->mutex);
+  if (result != 0) {
+    return false_v;
+  }
 
   MemZero(*mutex, sizeof(struct s_VkrMutex));
   vkr_allocator_free(allocator, *mutex, sizeof(struct s_VkrMutex),
                      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   *mutex = NULL;
-  return result == 0;
+  return true_v;
 }
 
 bool32_t vkr_cond_create(VkrAllocator *allocator, VkrCondVar *cond) {
@@ -294,11 +310,14 @@ bool32_t vkr_cond_destroy(VkrAllocator *allocator, VkrCondVar *cond) {
   }
 
   int32_t result = pthread_cond_destroy(&(*cond)->cond);
+  if (result != 0) {
+    return false_v;
+  }
 
   MemZero(*cond, sizeof(struct s_VkrCondVar));
   vkr_allocator_free(allocator, *cond, sizeof(struct s_VkrCondVar),
                      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   *cond = NULL;
-  return result == 0;
+  return true_v;
 }
 #endif

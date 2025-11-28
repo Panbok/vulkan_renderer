@@ -107,6 +107,7 @@ void event_manager_create(EventManager *manager) {
   manager->arena = arena_create(MB(1), MB(1));
   manager->allocator = (VkrAllocator){.ctx = manager->arena};
   if (!vkr_allocator_arena(&manager->allocator)) {
+    arena_destroy(manager->arena);
     log_fatal("Failed to initialize event manager allocator.");
     return;
   }

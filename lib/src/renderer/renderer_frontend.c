@@ -83,6 +83,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
 
   renderer->allocator = (VkrAllocator){.ctx = renderer->arena};
   if (!vkr_allocator_arena(&renderer->allocator)) {
+    arena_destroy(renderer->arena);
     log_fatal("Failed to initialize renderer allocator!");
     return false_v;
   }

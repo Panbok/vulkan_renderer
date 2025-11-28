@@ -22,15 +22,26 @@ struct s_VkrCondVar {
   CONDITION_VARIABLE variable;
 };
 
+// Atomically read the thread's active flag.
+vkr_internal inline LONG thread_active_read(VkrThread thread) {
+  return InterlockedCompareExchange((volatile LONG *)&thread->active, 0, 0);
+}
+
 // Windows thread wrapper to handle signature differences and bookkeeping.
-static DWORD WINAPI thread_wrapper(LPVOID param) {
+vkr_internal DWORD WINAPI thread_wrapper(LPVOID param) {
   VkrThread thread = (VkrThread)param;
   if (thread == NULL || thread->func == NULL) {
     return 0;
   }
 
+  // Exit early if a cancellation request was issued before the thread ran.
+  if (thread->cancel_requested) {
+    InterlockedExchange((volatile LONG *)&thread->active, false_v);
+    return 0;
+  }
+
   thread->result = thread->func(thread->arg);
-  thread->active = false_v;
+  InterlockedExchange((volatile LONG *)&thread->active, false_v);
   return 0;
 }
 
@@ -87,31 +98,35 @@ bool32_t vkr_thread_detach(VkrThread thread) {
 }
 
 bool32_t vkr_thread_cancel(VkrThread thread) {
-  if (thread == NULL || thread->handle == NULL) {
+  if (thread == NULL) {
     return false_v;
   }
 
-  BOOL terminated = TerminateThread(thread->handle, 1);
-  if (terminated) {
-    WaitForSingleObject(thread->handle, INFINITE);
-    CloseHandle(thread->handle);
-    thread->handle = NULL;
-    thread->cancel_requested = true_v;
-    thread->active = false_v;
-    thread->joined = true_v;
-    return true_v;
+  // Cooperative cancellation: thread function must check this flag and exit.
+  thread->cancel_requested = true_v;
+  return true_v;
+}
+
+bool32_t vkr_thread_cancel_requested(VkrThread thread) {
+  if (thread == NULL) {
+    return false_v;
   }
 
-  return false_v;
+  return thread->cancel_requested;
 }
 
 bool32_t vkr_thread_is_active(VkrThread thread) {
-  if (thread == NULL || !thread->active) {
+  if (thread == NULL) {
+    return false_v;
+  }
+
+  LONG active = thread_active_read(thread);
+  if (active == 0) {
     return false_v;
   }
 
   if (thread->handle == NULL) {
-    return thread->active;
+    return active != 0;
   }
 
   DWORD result = WaitForSingleObject(thread->handle, 0);
@@ -119,7 +134,7 @@ bool32_t vkr_thread_is_active(VkrThread thread) {
     return true_v;
   }
 
-  thread->active = false_v;
+  InterlockedExchange((volatile LONG *)&thread->active, false_v);
   return false_v;
 }
 
@@ -148,14 +163,15 @@ VkrThreadId vkr_thread_current_id(void) {
 }
 
 bool32_t vkr_thread_join(VkrThread thread) {
-  if (thread == NULL || thread->joined || thread->handle == NULL) {
+  if (thread == NULL || thread->joined || thread->detached ||
+      thread->handle == NULL) {
     return false_v;
   }
 
   DWORD result = WaitForSingleObject(thread->handle, INFINITE);
   if (result == WAIT_OBJECT_0) {
     thread->joined = true_v;
-    thread->active = false_v;
+    InterlockedExchange((volatile LONG *)&thread->active, false_v);
     CloseHandle(thread->handle);
     thread->handle = NULL;
     return true_v;

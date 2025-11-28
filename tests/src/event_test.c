@@ -370,6 +370,8 @@ static void test_queue_full(void) {
 
   // Now reinitialize queue and mutex manually without a thread
   manager.running = false;
+  vkr_mutex_destroy(&manager.allocator, &manager.mutex);
+  vkr_cond_destroy(&manager.allocator, &manager.cond);
   vkr_mutex_create(&manager.allocator, &manager.mutex);
   vkr_cond_create(&manager.allocator, &manager.cond);
 
