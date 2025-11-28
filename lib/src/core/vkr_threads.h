@@ -4,13 +4,13 @@
  * threads, mutexes, and condition variables.
  *
  * This system provides a common C API for threading operations across different
- * platforms. It uses arena-based memory allocation for thread, mutex, and
- * condition variable structures.
+ * platforms. It uses the allocator interface for thread, mutex, and condition
+ * variable structures.
  *
  * Key Features:
  * - **Platform Abstraction:** Common API with platform-specific implementations
- * - **Arena Memory Management:** All structures are allocated from provided
- * arenas
+ * - **Allocator-backed Memory:** All structures are allocated from provided
+ *   allocators
  * - **VkrThread Management:** Create, join, and destroy threads with custom
  * functions
  * - **Synchronization:** Mutexes and condition variables for thread
@@ -19,19 +19,18 @@
  * Architecture:
  * - **Opaque Types:** VkrThread, VkrMutex, and VkrCondVar are opaque pointers
  * to platform-specific structures
- * - **Arena Allocation:** All structures are allocated from arenas for
- * efficient bulk deallocation
+ * - **Allocator Allocation:** All structures are allocated from allocators for
+ * flexible memory management
  * - **Error Handling:** All functions return bool32_t indicating
  * success/failure
  */
 #pragma once
 
 #include "defines.h"
-#include "memory/arena.h"
+#include "memory/vkr_allocator.h"
 
-// NOTE; We should think about re-working the current threading system. So
-// that each thread has its own arena and threads communicate with each other
-// by copying data between arenas.
+// NOTE: Consider giving each thread its own allocator if arena isolation is
+// required between workers.
 
 /**
  * @brief Function pointer type for thread entry points.
@@ -42,6 +41,8 @@ typedef void *(*VkrThreadFunc)(void *);
 
 /** @brief Opaque thread handle. */
 typedef struct s_VkrThread *VkrThread;
+/** @brief Platform thread identifier. */
+typedef uint64_t VkrThreadId;
 /** @brief Opaque mutex handle. */
 typedef struct s_VkrMutex *VkrMutex;
 /** @brief Opaque condition variable handle. */
@@ -49,14 +50,54 @@ typedef struct s_VkrCondVar *VkrCondVar;
 
 /**
  * @brief Creates a new thread.
- * @param arena Arena to allocate thread structure from.
+ * @param allocator Allocator to back the thread structure.
  * @param thread Pointer to receive the created thread handle.
  * @param func Function to execute in the new thread.
  * @param arg Argument to pass to the thread function.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_thread_create(Arena *arena, VkrThread *thread, VkrThreadFunc func,
-                           void *arg);
+bool32_t vkr_thread_create(VkrAllocator *allocator, VkrThread *thread,
+                           VkrThreadFunc func, void *arg);
+
+/**
+ * @brief Detaches a thread so resources are reclaimed automatically on exit.
+ * @param thread VkrThread to detach.
+ * @return true_v on success, false_v on failure.
+ */
+bool32_t vkr_thread_detach(VkrThread thread);
+
+/**
+ * @brief Attempts to cancel a running thread.
+ * @param thread VkrThread to cancel.
+ * @return true_v on success, false_v on failure.
+ */
+bool32_t vkr_thread_cancel(VkrThread thread);
+
+/**
+ * @brief Checks whether the thread is still active.
+ * @param thread VkrThread to query.
+ * @return true_v if active, false_v otherwise.
+ */
+bool32_t vkr_thread_is_active(VkrThread thread);
+
+/**
+ * @brief Sleeps the calling thread for the given duration.
+ * @param milliseconds Duration to sleep in milliseconds.
+ */
+void vkr_thread_sleep(uint64_t milliseconds);
+
+/**
+ * @brief Retrieves the id of the provided thread handle.
+ * @param thread VkrThread to query.
+ * @return Thread id on success, 0 on failure.
+ */
+VkrThreadId vkr_thread_get_id(VkrThread thread);
+
+/**
+ * @brief Retrieves the id of the calling thread.
+ * @return Thread id.
+ */
+VkrThreadId vkr_thread_current_id(void);
 
 /**
  * @brief Waits for a thread to complete execution.
@@ -67,19 +108,19 @@ bool32_t vkr_thread_join(VkrThread thread);
 
 /**
  * @brief Destroys a thread and releases its resources.
- * @param arena Arena that was used to create the thread.
+ * @param allocator Allocator that was used to create the thread.
  * @param thread VkrThread to destroy.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_thread_destroy(Arena *arena, VkrThread *thread);
+bool32_t vkr_thread_destroy(VkrAllocator *allocator, VkrThread *thread);
 
 /**
  * @brief Creates a new mutex.
- * @param arena Arena to allocate mutex structure from.
+ * @param allocator Allocator to back the mutex structure.
  * @param mutex Pointer to receive the created mutex handle.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_mutex_create(Arena *arena, VkrMutex *mutex);
+bool32_t vkr_mutex_create(VkrAllocator *allocator, VkrMutex *mutex);
 
 /**
  * @brief Locks a mutex, blocking if already locked.
@@ -97,19 +138,19 @@ bool32_t vkr_mutex_unlock(VkrMutex mutex);
 
 /**
  * @brief Destroys a mutex and releases its resources.
- * @param arena Arena that was used to create the mutex.
+ * @param allocator Allocator that was used to create the mutex.
  * @param mutex VkrMutex to destroy.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_mutex_destroy(Arena *arena, VkrMutex *mutex);
+bool32_t vkr_mutex_destroy(VkrAllocator *allocator, VkrMutex *mutex);
 
 /**
  * @brief Creates a new condition variable.
- * @param arena Arena to allocate condition variable structure from.
+ * @param allocator Allocator to back the condition variable structure.
  * @param cond Pointer to receive the created condition variable handle.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_cond_create(Arena *arena, VkrCondVar *cond);
+bool32_t vkr_cond_create(VkrAllocator *allocator, VkrCondVar *cond);
 
 /**
  * @brief Waits on a condition variable, atomically releasing the mutex.
@@ -128,8 +169,8 @@ bool32_t vkr_cond_signal(VkrCondVar cond);
 
 /**
  * @brief Destroys a condition variable and releases its resources.
- * @param arena Arena that was used to create the condition variable.
+ * @param allocator Allocator that was used to create the condition variable.
  * @param cond Condition variable to destroy.
  * @return true_v on success, false_v on failure.
  */
-bool32_t vkr_cond_destroy(Arena *arena, VkrCondVar *cond);
+bool32_t vkr_cond_destroy(VkrAllocator *allocator, VkrCondVar *cond);

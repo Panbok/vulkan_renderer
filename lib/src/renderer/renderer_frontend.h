@@ -18,6 +18,7 @@
 struct s_RendererFrontend {
   Arena *arena;
   Arena *scratch_arena;
+  VkrAllocator allocator;
   VkrWindow *window;
   EventManager *event_manager;
   void *backend_state;

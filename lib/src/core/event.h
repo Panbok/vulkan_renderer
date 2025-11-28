@@ -58,6 +58,7 @@
 #include "containers/vector.h"
 #include "core/vkr_threads.h"
 #include "defines.h"
+#include "memory/arena.h"
 #include "platform/vkr_platform.h"
 #include "vkr_event_data_buffer.h"
 #include "vkr_pch.h"
@@ -153,6 +154,8 @@ Array(EventCallbackData);
 typedef struct EventManager {
   Arena *arena;      /**< Arena used for internal allocations (e.g., callback
                       vectors, event data ring buffer). */
+  VkrAllocator allocator; /**< Allocator backed by arena, used for threading
+                             primitives. */
   Queue_Event queue; /**< The queue holding dispatched events awaiting
                       processing. */
   Vector_EventCallbackData

@@ -1,9 +1,11 @@
 #include "event_test.h"
+#include "memory/vkr_arena_allocator.h"
 
 #define THREAD_COUNT 4
 #define EVENTS_PER_THREAD 50
 
 static Arena *arena = NULL;
+static VkrAllocator test_allocator = {0};
 static const uint64_t ARENA_SIZE = 1024 * 1024; // 1MB
 
 typedef struct TestEventData {
@@ -197,7 +199,11 @@ static void *dispatch_thread(void *arg) {
 }
 
 // Setup function called before each test function in this suite
-static void setup_suite(void) { arena = arena_create(ARENA_SIZE, ARENA_SIZE); }
+static void setup_suite(void) {
+  arena = arena_create(ARENA_SIZE, ARENA_SIZE);
+  test_allocator = (VkrAllocator){.ctx = arena};
+  vkr_allocator_arena(&test_allocator);
+}
 
 // Teardown function called after each test function in this suite
 static void teardown_suite(void) {
@@ -205,6 +211,7 @@ static void teardown_suite(void) {
     arena_destroy(arena);
     arena = NULL;
   }
+  test_allocator = (VkrAllocator){0};
 }
 
 // Test event manager creation and destruction
@@ -363,8 +370,8 @@ static void test_queue_full(void) {
 
   // Now reinitialize queue and mutex manually without a thread
   manager.running = false;
-  vkr_mutex_create(manager.arena, &manager.mutex);
-  vkr_cond_create(manager.arena, &manager.cond);
+  vkr_mutex_create(&manager.allocator, &manager.mutex);
+  vkr_cond_create(&manager.allocator, &manager.cond);
 
   // Fill the queue
   bool32_t queue_full = false;
@@ -392,8 +399,8 @@ static void test_queue_full(void) {
   assert(queue_full && "Queue should become full after many events");
 
   // Manually clean up resources
-  vkr_mutex_destroy(manager.arena, &manager.mutex);
-  vkr_cond_destroy(manager.arena, &manager.cond);
+  vkr_mutex_destroy(&manager.allocator, &manager.mutex);
+  vkr_cond_destroy(&manager.allocator, &manager.cond);
 
   for (uint16_t i = 0; i < EVENT_TYPE_MAX; i++) {
     if (manager.callbacks[i].data != NULL) {
@@ -505,7 +512,7 @@ static void test_concurrent_dispatch(void) {
 
   // Reset counter
   processed_count = 0;
-  vkr_mutex_create(arena, &count_mutex);
+  vkr_mutex_create(&test_allocator, &count_mutex);
 
   event_manager_subscribe(&manager, EVENT_TYPE_KEY_PRESS, counting_callback,
                           NULL);
@@ -518,7 +525,8 @@ static void test_concurrent_dispatch(void) {
     thread_data[i].manager = &manager;
     thread_data[i].arena = arena;
     thread_data[i].thread_id = i;
-    vkr_thread_create(arena, &threads[i], dispatch_thread, &thread_data[i]);
+    vkr_thread_create(&test_allocator, &threads[i], dispatch_thread,
+                      &thread_data[i]);
   }
 
   // Wait for all threads to complete
@@ -535,7 +543,7 @@ static void test_concurrent_dispatch(void) {
          "All events from all threads should be processed");
   vkr_mutex_unlock(count_mutex);
 
-  vkr_mutex_destroy(arena, &count_mutex);
+  vkr_mutex_destroy(&test_allocator, &count_mutex);
   event_manager_destroy(&manager);
   teardown_suite();
   printf("  test_concurrent_dispatch PASSED\n");

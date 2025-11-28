@@ -54,6 +54,7 @@
 #include "core/vkr_window.h"
 #include "defines.h"
 #include "memory/arena.h"
+#include "memory/vkr_arena_allocator.h"
 #include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_camera.h"
 #include "renderer/systems/vkr_camera_controller.h"
@@ -103,6 +104,8 @@ typedef struct Application {
   Arena *app_arena; /**< Main memory arena for general application use (e.g.,
                        game entities, state). */
   Arena *log_arena; /**< Memory arena dedicated to the logging system. */
+  VkrAllocator app_allocator; /**< Allocator backed by `app_arena` for thread
+                                 primitives and other systems. */
   EventManager event_manager; /**< Manages event dispatch and subscriptions. */
   VkrWindow window;           /**< Represents the application window. */
   ApplicationConfig *config;  /**< Pointer to the configuration used to create
@@ -215,6 +218,12 @@ bool8_t application_create(Application *application,
     return false_v;
   }
 
+  application->app_allocator = (VkrAllocator){.ctx = application->app_arena};
+  if (!vkr_allocator_arena(&application->app_allocator)) {
+    log_fatal("Failed to initialize app allocator!");
+    return false_v;
+  }
+
   ArenaFlags log_arena_flags = bitset8_create();
   bitset8_set(&log_arena_flags, ARENA_FLAG_LARGE_PAGES);
   application->log_arena = arena_create(MB(5), MB(5), log_arena_flags);
@@ -232,7 +241,7 @@ bool8_t application_create(Application *application,
                     config->title, config->x, config->y, config->width,
                     config->height);
   application->clock = vkr_clock_create();
-  if (!vkr_mutex_create(application->app_arena, &application->app_mutex)) {
+  if (!vkr_mutex_create(&application->app_allocator, &application->app_mutex)) {
     log_fatal("Failed to create application mutex!");
     return false_v;
   }
@@ -546,7 +555,7 @@ void application_shutdown(Application *application) {
   vkr_renderer_destroy(&application->renderer);
   vkr_window_destroy(&application->window);
   event_manager_destroy(&application->event_manager);
-  vkr_mutex_destroy(application->app_arena, &application->app_mutex);
+  vkr_mutex_destroy(&application->app_allocator, &application->app_mutex);
   vkr_gamepad_shutdown(&application->gamepad);
 
   vkr_platform_shutdown();

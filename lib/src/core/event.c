@@ -1,4 +1,5 @@
 #include "event.h"
+#include "memory/vkr_arena_allocator.h"
 
 static bool8_t event_callback_equals(EventCallbackData *current_value,
                                      EventCallbackData *value) {
@@ -104,6 +105,11 @@ void event_manager_create(EventManager *manager) {
   assert_log(manager != NULL, "Manager is NULL");
 
   manager->arena = arena_create(MB(1), MB(1));
+  manager->allocator = (VkrAllocator){.ctx = manager->arena};
+  if (!vkr_allocator_arena(&manager->allocator)) {
+    log_fatal("Failed to initialize event manager allocator.");
+    return;
+  }
   MemZero(manager->callbacks, sizeof(manager->callbacks));
   manager->queue =
       queue_create_Event(manager->arena, DEFAULT_EVENT_QUEUE_CAPACITY);
@@ -115,11 +121,11 @@ void event_manager_create(EventManager *manager) {
     return;
   }
 
-  vkr_mutex_create(manager->arena, &manager->mutex);
-  vkr_cond_create(manager->arena, &manager->cond);
+  vkr_mutex_create(&manager->allocator, &manager->mutex);
+  vkr_cond_create(&manager->allocator, &manager->cond);
   manager->running = true;
 
-  vkr_thread_create(manager->arena, &manager->thread, events_processor,
+  vkr_thread_create(&manager->allocator, &manager->thread, events_processor,
                     manager);
 }
 
@@ -131,8 +137,9 @@ void event_manager_destroy(EventManager *manager) {
   vkr_cond_signal(manager->cond);
 
   vkr_thread_join(manager->thread);
-  vkr_mutex_destroy(manager->arena, &manager->mutex);
-  vkr_cond_destroy(manager->arena, &manager->cond);
+  vkr_thread_destroy(&manager->allocator, &manager->thread);
+  vkr_mutex_destroy(&manager->allocator, &manager->mutex);
+  vkr_cond_destroy(&manager->allocator, &manager->cond);
 
   for (uint32_t i = 0; i < EVENT_TYPE_MAX; i++) {
     vector_destroy_EventCallbackData(&manager->callbacks[i]);

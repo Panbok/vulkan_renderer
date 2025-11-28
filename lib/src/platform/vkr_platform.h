@@ -15,6 +15,8 @@ uint64_t vkr_platform_get_page_size();
 
 uint64_t vkr_platform_get_large_page_size();
 
+uint32_t vkr_platform_get_logical_core_count(void);
+
 void vkr_platform_sleep(uint64_t milliseconds);
 
 float64_t vkr_platform_get_absolute_time();

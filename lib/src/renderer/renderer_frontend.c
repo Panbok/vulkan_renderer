@@ -81,6 +81,12 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
+  renderer->allocator = (VkrAllocator){.ctx = renderer->arena};
+  if (!vkr_allocator_arena(&renderer->allocator)) {
+    log_fatal("Failed to initialize renderer allocator!");
+    return false_v;
+  }
+
   renderer->scratch_arena = arena_create(MB(1), KB(8));
   if (!renderer->scratch_arena) {
     log_fatal("Failed to create scratch_arena!");
@@ -117,7 +123,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->frame_number = 0;
 
   // Create renderer mutex and initialize size tracking
-  if (!vkr_mutex_create(renderer->arena, &renderer->rf_mutex)) {
+  if (!vkr_mutex_create(&renderer->allocator, &renderer->rf_mutex)) {
     log_fatal("Failed to create renderer mutex!");
     return false_v;
   }
@@ -236,7 +242,7 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   }
 
   if (rf->rf_mutex) {
-    vkr_mutex_destroy(renderer->arena, &rf->rf_mutex);
+    vkr_mutex_destroy(&rf->allocator, &rf->rf_mutex);
   }
 
   arena_destroy(renderer->arena);

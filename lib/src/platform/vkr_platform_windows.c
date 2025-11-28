@@ -48,6 +48,19 @@ uint64_t vkr_platform_get_page_size() {
 
 uint64_t vkr_platform_get_large_page_size() { return GetLargePageMinimum(); }
 
+uint32_t vkr_platform_get_logical_core_count(void) {
+  DWORD count = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+  if (count == 0) {
+    count = GetMaximumProcessorCount(ALL_PROCESSOR_GROUPS);
+  }
+
+  if (count == 0) {
+    count = 1;
+  }
+
+  return (uint32_t)count;
+}
+
 void vkr_platform_sleep(uint64_t ms) {
   if (ms == 0) {
     return;

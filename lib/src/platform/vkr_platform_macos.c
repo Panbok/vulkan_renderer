@@ -60,6 +60,25 @@ uint64_t vkr_platform_get_large_page_size() {
   return large_page_size;
 }
 
+uint32_t vkr_platform_get_logical_core_count(void) {
+  uint32_t cores = 0;
+  size_t size_len = sizeof(cores);
+
+  if (sysctlbyname("hw.logicalcpu_max", &cores, &size_len, NULL, 0) != 0 ||
+      cores == 0) {
+    long active = sysconf(_SC_NPROCESSORS_ONLN);
+    if (active > 0) {
+      cores = (uint32_t)active;
+    }
+  }
+
+  if (cores == 0) {
+    cores = 1;
+  }
+
+  return cores;
+}
+
 void vkr_platform_sleep(uint64_t ms) {
 #if _POSIX_C_SOURCE >= 199309L
   struct timespec ts;
