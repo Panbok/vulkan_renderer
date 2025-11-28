@@ -14,6 +14,12 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
   // todo: support configurable depth, sample count, and sharing mode.
   VkImageCreateFlags create_flags = 0;
   if (view_type == VK_IMAGE_VIEW_TYPE_CUBE) {
+    if (array_layers % 6 != 0) {
+      log_fatal(
+          "Cube map images require array_layers to be a multiple of 6, got %u",
+          array_layers);
+      return false_v;
+    }
     create_flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
   }
 
@@ -145,9 +151,8 @@ bool8_t vulkan_image_transition_layout(VulkanBackendState *state,
                                        VkFormat format,
                                        VkImageLayout old_layout,
                                        VkImageLayout new_layout) {
-  return vulkan_image_transition_layout_range(state, image, command_buffer,
-                                              format, old_layout, new_layout,
-                                              NULL);
+  return vulkan_image_transition_layout_range(
+      state, image, command_buffer, format, old_layout, new_layout, NULL);
 }
 
 bool8_t vulkan_image_transition_layout_range(
@@ -162,15 +167,15 @@ bool8_t vulkan_image_transition_layout_range(
   assert_log(new_layout != VK_IMAGE_LAYOUT_UNDEFINED,
              "New layout is undefined");
 
-  VkImageSubresourceRange range = subresource_range
-                                      ? *subresource_range
-                                      : (VkImageSubresourceRange){
-                                            .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                                            .baseMipLevel = 0,
-                                            .levelCount = image->mip_levels,
-                                            .baseArrayLayer = 0,
-                                            .layerCount = image->array_layers,
-                                        };
+  VkImageSubresourceRange range =
+      subresource_range ? *subresource_range
+                        : (VkImageSubresourceRange){
+                              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                              .baseMipLevel = 0,
+                              .levelCount = image->mip_levels,
+                              .baseArrayLayer = 0,
+                              .layerCount = image->array_layers,
+                          };
 
   VkImageMemoryBarrier barrier = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -271,6 +276,7 @@ bool8_t vulkan_image_copy_cube_faces_from_buffer(
   assert_log(buffer != VK_NULL_HANDLE, "Buffer is NULL");
   assert_log(command_buffer != NULL, "Command buffer is NULL");
   assert_log(image->array_layers == 6, "Cube map must have 6 layers");
+  assert_log(face_size > 0, "Face size must be greater than 0");
 
   VkBufferImageCopy regions[6];
   for (uint32_t face = 0; face < 6; face++) {

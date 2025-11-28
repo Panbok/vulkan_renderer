@@ -61,8 +61,8 @@ uniform=mat4,2,model         # Object model matrix (transform)
 #   stride = 16 floats (64 bytes)
 #
 # Global UBO (std140):
-#   view:       offset=0,  size=64 (mat4)
-#   projection: offset=64, size=64 (mat4)
+#   projection: offset=0,  size=64 (mat4)
+#   view:       offset=64, size=64 (mat4)
 #   → ubo_size = 128 bytes
 #   → ubo_stride = align_up(128, 256) = 256 bytes
 #

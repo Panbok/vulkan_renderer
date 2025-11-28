@@ -175,15 +175,17 @@ vulkan_renderpass_create_from_config(VulkanBackendState *state,
     // If loading depth (not clearing), initialLayout must not be UNDEFINED
     bool clear_depth = (cfg->clear_flags & VKR_RENDERPASS_CLEAR_DEPTH) != 0;
     VkImageLayout depth_initial_layout =
-        clear_depth ? VK_IMAGE_LAYOUT_UNDEFINED
-                    : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        (clear_depth || !has_prev_pass)
+            ? VK_IMAGE_LAYOUT_UNDEFINED
+            : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     VkAttachmentDescription depth_attachment = {
         .format = state->device.depth_format,
         .samples = VK_SAMPLE_COUNT_1_BIT,
         .loadOp = clear_depth ? VK_ATTACHMENT_LOAD_OP_CLEAR
                               : VK_ATTACHMENT_LOAD_OP_LOAD,
-        .storeOp = VK_ATTACHMENT_STORE_OP_STORE, // Store for next pass
+        .storeOp = has_next_pass ? VK_ATTACHMENT_STORE_OP_STORE
+                                 : VK_ATTACHMENT_STORE_OP_DONT_CARE,
         .stencilLoadOp = (cfg->clear_flags & VKR_RENDERPASS_CLEAR_STENCIL)
                              ? VK_ATTACHMENT_LOAD_OP_CLEAR
                              : VK_ATTACHMENT_LOAD_OP_DONT_CARE,

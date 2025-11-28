@@ -977,8 +977,10 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
     return false_v;
   }
 
-  if (width <= 0 || height <= 0 || width != height) {
-    log_error("Cube map faces must be square: %dx%d", width, height);
+  if (width <= 0 || height <= 0 || width != height ||
+      width > VKR_TEXTURE_MAX_DIMENSION) {
+    log_error("Cube map faces must be square and within max dimension: %dx%d",
+              width, height);
     stbi_image_free(first_face);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
@@ -1095,8 +1097,16 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
   // Add to hash table
   VkrTextureEntry new_entry = {
       .index = free_slot_index, .ref_count = 1, .auto_release = false_v};
-  vkr_hash_table_insert_VkrTextureEntry(&system->texture_map, stable_key,
-                                        new_entry);
+  bool8_t insert_success = vkr_hash_table_insert_VkrTextureEntry(
+      &system->texture_map, stable_key, new_entry);
+  if (!insert_success) {
+    log_error("Failed to insert cube map '%s' into hash table", stable_key);
+    vkr_renderer_destroy_texture(system->renderer, backend_handle);
+    texture->description.generation = VKR_INVALID_ID;
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
 
   *out_handle =
       (VkrTextureHandle){.id = texture->description.id,

@@ -30,6 +30,9 @@ vkr_internal void vkr_view_skybox_on_render(VkrLayerContext *ctx,
 vkr_internal void vkr_view_skybox_on_detach(VkrLayerContext *ctx);
 vkr_internal void vkr_view_skybox_on_destroy(VkrLayerContext *ctx);
 
+vkr_internal void vkr_view_skybox_cleanup_resources(RendererFrontend *rf,
+                                                    VkrViewSkyboxState *state);
+
 bool32_t vkr_view_skybox_register(RendererFrontend *rf) {
   assert_log(rf != NULL, "Renderer frontend is NULL");
 
@@ -130,7 +133,7 @@ vkr_internal bool32_t vkr_view_skybox_on_create(VkrLayerContext *ctx) {
   // Create shader in the shader system
   if (!vkr_shader_system_create(&rf->shader_system, &state->shader_config)) {
     log_error("Failed to create skybox shader from config");
-    return false_v;
+    goto cleanup;
   }
 
   // Create skybox pipeline
@@ -141,7 +144,7 @@ vkr_internal bool32_t vkr_view_skybox_on_create(VkrLayerContext *ctx) {
           &pipeline_error)) {
     String8 err_str = vkr_renderer_get_error_string(pipeline_error);
     log_error("Skybox pipeline creation failed: %s", string8_cstr(&err_str));
-    return false_v;
+    goto cleanup;
   }
 
   VkrRendererError geom_err = VKR_RENDERER_ERROR_NONE;
@@ -151,7 +154,7 @@ vkr_internal bool32_t vkr_view_skybox_on_create(VkrLayerContext *ctx) {
     String8 err_str = vkr_renderer_get_error_string(geom_err);
     log_error("Skybox cube geometry creation failed: %s",
               string8_cstr(&err_str));
-    return false_v;
+    goto cleanup;
   }
 
   // Load cube map texture
@@ -162,7 +165,7 @@ vkr_internal bool32_t vkr_view_skybox_on_create(VkrLayerContext *ctx) {
     String8 err_str = vkr_renderer_get_error_string(tex_err);
     log_error("Skybox cube map texture load failed: %s",
               string8_cstr(&err_str));
-    return false_v;
+    goto cleanup;
   }
 
   // Acquire instance state for the skybox pipeline
@@ -173,12 +176,16 @@ vkr_internal bool32_t vkr_view_skybox_on_create(VkrLayerContext *ctx) {
     String8 err_str = vkr_renderer_get_error_string(instance_err);
     log_error("Failed to acquire skybox pipeline instance state: %s",
               string8_cstr(&err_str));
-    return false_v;
+    goto cleanup;
   }
 
   state->initialized = true_v;
   log_info("Skybox view created successfully");
   return true_v;
+
+cleanup:
+  vkr_view_skybox_cleanup_resources(rf, state);
+  return false_v;
 }
 
 vkr_internal void vkr_view_skybox_on_attach(VkrLayerContext *ctx) { (void)ctx; }
@@ -268,6 +275,40 @@ vkr_internal void vkr_view_skybox_on_render(VkrLayerContext *ctx,
 }
 
 vkr_internal void vkr_view_skybox_on_detach(VkrLayerContext *ctx) { (void)ctx; }
+
+vkr_internal void vkr_view_skybox_cleanup_resources(RendererFrontend *rf,
+                                                    VkrViewSkyboxState *state) {
+  if (!rf || !state) {
+    return;
+  }
+
+  if (state->instance_state.id != 0 && state->pipeline.id != 0) {
+    VkrRendererError release_err = VKR_RENDERER_ERROR_NONE;
+    vkr_pipeline_registry_release_instance_state(
+        &rf->pipeline_registry, state->pipeline, state->instance_state,
+        &release_err);
+    state->instance_state = (VkrRendererInstanceStateHandle){0};
+  }
+
+  if (state->cube_geometry.id != 0) {
+    vkr_geometry_system_release(&rf->geometry_system, state->cube_geometry);
+    state->cube_geometry = (VkrGeometryHandle){0};
+  }
+
+  if (state->cube_map_texture.id != 0) {
+    vkr_texture_system_release_by_handle(&rf->texture_system,
+                                         state->cube_map_texture);
+    state->cube_map_texture = (VkrTextureHandle){0};
+  }
+
+  if (state->pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           state->pipeline);
+    state->pipeline = (VkrPipelineHandle){0};
+  }
+
+  state->initialized = false_v;
+}
 
 vkr_internal void vkr_view_skybox_on_destroy(VkrLayerContext *ctx) {
   assert_log(ctx != NULL, "Layer context is NULL");
