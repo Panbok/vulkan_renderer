@@ -13,6 +13,8 @@ int main(int argc, char **argv) {
   bool32_t all_passed = true;
 
   // Run all tests
+  all_passed &= run_atomic_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_arena_tests();
   printf("\n"); // Add spacing
   all_passed &= run_array_tests();

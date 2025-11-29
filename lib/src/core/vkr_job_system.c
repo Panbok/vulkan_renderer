@@ -219,6 +219,8 @@ vkr_internal void job_worker_complete(VkrJobSystem *system, VkrJobSlot *slot,
   slot->handle.generation++;
   system->free_stack[system->free_top++] = handle.id - 1;
   job_slot_reset(system, slot);
+  // Signal waiting submitters that a slot is available
+  vkr_cond_signal(system->slots_avail);
   vkr_mutex_unlock(system->mutex);
 }
 
@@ -278,8 +280,10 @@ VkrJobSystemConfig vkr_job_system_config_default() {
     cfg.worker_count = 1;
   }
 
-  cfg.max_jobs = 1024;
-  cfg.queue_capacity = 1024;
+  // With texture deduplication in place, we no longer need to limit jobs
+  // to avoid sampler overflow. Use higher values for better parallelism.
+  cfg.max_jobs = 4096;
+  cfg.queue_capacity = 4096;
   cfg.arena_rsv_size = MB(8);
   cfg.arena_cmt_size = MB(2);
   cfg.worker_type_mask_default = vkr_job_type_mask_all();
@@ -305,6 +309,8 @@ bool8_t vkr_job_system_init(const VkrJobSystemConfig *config,
   out_system->allocator = (VkrAllocator){.ctx = out_system->arena};
   if (!vkr_allocator_arena(&out_system->allocator)) {
     log_error("Failed to initialize job system allocator");
+    arena_destroy(out_system->arena);
+    MemZero(out_system, sizeof(VkrJobSystem));
     return false_v;
   }
 
@@ -345,7 +351,8 @@ bool8_t vkr_job_system_init(const VkrJobSystemConfig *config,
   out_system->running = true_v;
 
   if (!vkr_mutex_create(&out_system->allocator, &out_system->mutex) ||
-      !vkr_cond_create(&out_system->allocator, &out_system->cond)) {
+      !vkr_cond_create(&out_system->allocator, &out_system->cond) ||
+      !vkr_cond_create(&out_system->allocator, &out_system->slots_avail)) {
     log_error("Failed to create job system synchronization primitives");
     return false_v;
   }
@@ -364,7 +371,7 @@ bool8_t vkr_job_system_init(const VkrJobSystemConfig *config,
     worker->system = out_system;
     worker->index = i;
     worker->type_mask = config->worker_type_mask_default;
-    worker->arena = arena_create(KB(256), KB(256));
+    worker->arena = arena_create(MB(32), MB(32));
     worker->allocator = (VkrAllocator){.ctx = worker->arena};
     vkr_allocator_arena(&worker->allocator);
 
@@ -388,6 +395,7 @@ void vkr_job_system_shutdown(VkrJobSystem *system) {
   system->running = false_v;
   vkr_mutex_unlock(system->mutex);
   vkr_cond_broadcast(system->cond);
+  vkr_cond_broadcast(system->slots_avail); // Wake up any waiting submitters
 
   for (uint32_t i = 0; i < system->worker_count; i++) {
     VkrJobWorker *worker = &system->workers[i];
@@ -406,6 +414,9 @@ void vkr_job_system_shutdown(VkrJobSystem *system) {
                        VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   }
 
+  if (system->slots_avail) {
+    vkr_cond_destroy(&system->allocator, &system->slots_avail);
+  }
   if (system->cond) {
     vkr_cond_destroy(&system->allocator, &system->cond);
   }
@@ -445,9 +456,13 @@ bool8_t vkr_job_submit(VkrJobSystem *system, const VkrJobDesc *desc,
   assert_log(desc != NULL, "JobDesc is NULL");
 
   vkr_mutex_lock(system->mutex);
-  if (system->free_top == 0) {
+
+  while (system->free_top == 0 && system->running) {
+    vkr_cond_wait(system->slots_avail, system->mutex);
+  }
+
+  if (!system->running) {
     vkr_mutex_unlock(system->mutex);
-    log_error("No free slots available for job submission");
     return false_v;
   }
 
@@ -506,7 +521,6 @@ bool8_t vkr_job_submit(VkrJobSystem *system, const VkrJobDesc *desc,
     }
   } else {
     slot->payload_size = 0;
-    slot->payload = NULL;
   }
 
   bool8_t should_enqueue =
@@ -522,11 +536,6 @@ bool8_t vkr_job_submit(VkrJobSystem *system, const VkrJobDesc *desc,
     }
   }
   VkrJobHandle handle = slot->handle;
-  log_debug("Job submitted: id=%u gen=%u prio=%d mask=0x%02X deps=%u "
-            "defer=%d payload=%u",
-            handle.id, handle.generation, slot->priority,
-            bitset8_get_value(&slot->type_mask), slot->remaining_dependencies,
-            slot->defer_enqueue, slot->payload_size);
   if (out_handle) {
     *out_handle = handle;
   }

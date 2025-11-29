@@ -1,3 +1,4 @@
+#include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
 #include "platform/vkr_platform.h"
 
@@ -9,8 +10,8 @@ struct s_VkrThread {
   void *result;
   bool32_t joined;
   bool32_t detached;
-  _Atomic bool32_t cancel_requested;
-  bool32_t active;
+  VkrAtomicBool cancel_requested;
+  VkrAtomicBool active;
   VkrThreadId id;
 };
 
@@ -29,15 +30,16 @@ vkr_internal void *vkr_thread_entry(void *param) {
     return NULL;
   }
 
-  if (atomic_load_explicit(&thread->cancel_requested, memory_order_acquire)) {
-    thread->active = false_v;
+  if (vkr_atomic_bool_load(&thread->cancel_requested,
+                           VKR_MEMORY_ORDER_ACQUIRE)) {
+    vkr_atomic_bool_store(&thread->active, false_v, VKR_MEMORY_ORDER_RELEASE);
     thread->result = NULL;
     return NULL;
   }
 
   void *result = thread->func(thread->arg);
   thread->result = result;
-  thread->active = false_v;
+  vkr_atomic_bool_store(&thread->active, false_v, VKR_MEMORY_ORDER_RELEASE);
   return result;
 }
 
@@ -58,8 +60,9 @@ bool32_t vkr_thread_create(VkrAllocator *allocator, VkrThread *thread,
   (*thread)->arg = arg;
   (*thread)->joined = false_v;
   (*thread)->detached = false_v;
-  (*thread)->cancel_requested = false_v;
-  (*thread)->active = true_v;
+  vkr_atomic_bool_store(&(*thread)->cancel_requested, false_v,
+                        VKR_MEMORY_ORDER_RELAXED);
+  vkr_atomic_bool_store(&(*thread)->active, true_v, VKR_MEMORY_ORDER_RELAXED);
   (*thread)->id = 0;
 
   int32_t result =
@@ -100,17 +103,18 @@ bool32_t vkr_thread_cancel(VkrThread thread) {
 
   int result = pthread_cancel(thread->handle);
   if (result == 0) {
-    thread->cancel_requested = true_v;
+    vkr_atomic_bool_store(&thread->cancel_requested, true_v,
+                          VKR_MEMORY_ORDER_RELEASE);
     if (!thread->detached && !thread->joined) {
       pthread_join(thread->handle, &thread->result);
       thread->joined = true_v;
     }
-    thread->active = false_v;
+    vkr_atomic_bool_store(&thread->active, false_v, VKR_MEMORY_ORDER_RELEASE);
     return true_v;
   }
 
   if (result == ESRCH) {
-    thread->active = false_v;
+    vkr_atomic_bool_store(&thread->active, false_v, VKR_MEMORY_ORDER_RELEASE);
   }
 
   return false_v;
@@ -121,11 +125,13 @@ bool32_t vkr_thread_cancel_requested(VkrThread thread) {
     return false_v;
   }
 
-  return atomic_load_explicit(&thread->cancel_requested, memory_order_acquire);
+  return vkr_atomic_bool_load(&thread->cancel_requested,
+                              VKR_MEMORY_ORDER_ACQUIRE);
 }
 
 bool32_t vkr_thread_is_active(VkrThread thread) {
-  if (thread == NULL || !thread->active) {
+  if (thread == NULL ||
+      !vkr_atomic_bool_load(&thread->active, VKR_MEMORY_ORDER_ACQUIRE)) {
     return false_v;
   }
 
@@ -134,7 +140,7 @@ bool32_t vkr_thread_is_active(VkrThread thread) {
     return true_v;
   }
 
-  thread->active = false_v;
+  vkr_atomic_bool_store(&thread->active, false_v, VKR_MEMORY_ORDER_RELEASE);
   return false_v;
 }
 
@@ -174,7 +180,7 @@ bool32_t vkr_thread_join(VkrThread thread) {
   int32_t result = pthread_join(thread->handle, &thread->result);
   if (result == 0) {
     thread->joined = true_v;
-    thread->active = false_v;
+    vkr_atomic_bool_store(&thread->active, false_v, VKR_MEMORY_ORDER_RELEASE);
     return true_v;
   }
   return false_v;

@@ -119,6 +119,8 @@ void event_manager_create(EventManager *manager) {
   if (!vkr_event_data_buffer_create(manager->arena,
                                     DEFAULT_EVENT_DATA_RING_BUFFER_CAPACITY,
                                     &manager->event_data_buf)) {
+    queue_destroy_Event(&manager->queue);
+    arena_destroy(manager->arena);
     log_fatal("Failed to create event data buffer for EventManager.");
     return;
   }

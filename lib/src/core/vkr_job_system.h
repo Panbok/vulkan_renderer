@@ -1,5 +1,5 @@
 /**
- * @file job_system.h
+ * @file vkr_job_system.h
  * @brief Lightweight prioritized job system with type-masked workers.
  *
  * Features:
@@ -101,6 +101,7 @@ typedef struct VkrJobSystem {
   VkrAllocator allocator;
   VkrMutex mutex;
   VkrCondVar cond;
+  VkrCondVar slots_avail;
   bool32_t running;
 
   uint32_t worker_count;

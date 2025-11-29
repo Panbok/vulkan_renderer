@@ -218,7 +218,7 @@ vkr_internal INLINE float64_t vkr_min_f64(float64_t a, float64_t b) {
 }
 
 /**
- * @brief Returns the minimum of two int32_t values
+ * @brief Returns the minimum of two uint32_t values
  * @param a First value to compare
  * @param b Second value to compare
  * @return The smaller of the two input values

@@ -93,6 +93,7 @@ typedef enum EventType {
   EVENT_TYPE_APPLICATION_SHUTDOWN = 13,
   EVENT_TYPE_APPLICATION_RESUME = 14,
   EVENT_TYPE_APPLICATION_STOP = 15,
+  EVENT_TYPE_LOAD_WORLD_MESHES = 16, /**< Trigger loading of world meshes. */
   EVENT_TYPE_MAX = 16384, /**< Maximum number of event types allowed. */
 } EventType;
 

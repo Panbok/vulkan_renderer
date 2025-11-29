@@ -1,3 +1,4 @@
+#include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
 #include "platform/vkr_platform.h"
 
@@ -9,8 +10,8 @@ struct s_VkrThread {
   void *result;
   bool32_t joined;
   bool32_t detached;
-  volatile LONG cancel_requested;
-  bool32_t active;
+  VkrAtomicBool cancel_requested;
+  VkrAtomicBool active;
   VkrThreadId id;
 };
 
@@ -23,8 +24,8 @@ struct s_VkrCondVar {
 };
 
 // Atomically read the thread's active flag.
-vkr_internal inline LONG thread_active_read(VkrThread thread) {
-  return InterlockedCompareExchange(&thread->active, 0, 0);
+vkr_internal inline bool32_t thread_active_read(VkrThread thread) {
+  return vkr_atomic_bool_load(&thread->active, VKR_MEMORY_ORDER_ACQUIRE);
 }
 
 // Windows thread wrapper to handle signature differences and bookkeeping.
@@ -35,13 +36,13 @@ vkr_internal DWORD WINAPI thread_wrapper(LPVOID param) {
   }
 
   // Exit early if a cancellation request was issued before the thread ran.
-  if (InterlockedCompareExchange(&thread->cancel_requested, 0, 0)) {
-    InterlockedExchange(&thread->active, false_v);
+  if (vkr_atomic_bool_load(&thread->cancel_requested, VKR_MEMORY_ORDER_ACQUIRE)) {
+    vkr_atomic_bool_store(&thread->active, false_v, VKR_MEMORY_ORDER_RELEASE);
     return 0;
   }
 
   thread->result = thread->func(thread->arg);
-  InterlockedExchange(&thread->active, false_v);
+  vkr_atomic_bool_store(&thread->active, false_v, VKR_MEMORY_ORDER_RELEASE);
   return 0;
 }
 
@@ -64,8 +65,9 @@ bool32_t vkr_thread_create(VkrAllocator *allocator, VkrThread *thread,
   (*thread)->result = NULL;
   (*thread)->joined = false_v;
   (*thread)->detached = false_v;
-  (*thread)->cancel_requested = false_v;
-  (*thread)->active = true_v;
+  vkr_atomic_bool_store(&(*thread)->cancel_requested, false_v,
+                        VKR_MEMORY_ORDER_RELAXED);
+  vkr_atomic_bool_store(&(*thread)->active, true_v, VKR_MEMORY_ORDER_RELAXED);
   (*thread)->id = 0;
 
   (*thread)->handle = CreateThread(NULL, 0, thread_wrapper, *thread, 0, NULL);
@@ -103,7 +105,8 @@ bool32_t vkr_thread_cancel(VkrThread thread) {
   }
 
   // Cooperative cancellation: thread function must check this flag and exit.
-  InterlockedExchange(&thread->cancel_requested, true_v);
+  vkr_atomic_bool_store(&thread->cancel_requested, true_v,
+                        VKR_MEMORY_ORDER_RELEASE);
   return true_v;
 }
 
@@ -112,7 +115,8 @@ bool32_t vkr_thread_cancel_requested(VkrThread thread) {
     return false_v;
   }
 
-  return InterlockedCompareExchange(&thread->cancel_requested, 0, 0) != 0;
+  return vkr_atomic_bool_load(&thread->cancel_requested,
+                              VKR_MEMORY_ORDER_ACQUIRE) != 0;
 }
 
 bool32_t vkr_thread_is_active(VkrThread thread) {
@@ -120,8 +124,8 @@ bool32_t vkr_thread_is_active(VkrThread thread) {
     return false_v;
   }
 
-  LONG active = thread_active_read(thread);
-  if (active == 0) {
+  bool32_t active = thread_active_read(thread);
+  if (!active) {
     return false_v;
   }
 
@@ -134,7 +138,7 @@ bool32_t vkr_thread_is_active(VkrThread thread) {
     return true_v;
   }
 
-  InterlockedExchange(&thread->active, false_v);
+  vkr_atomic_bool_store(&thread->active, false_v, VKR_MEMORY_ORDER_RELEASE);
   return false_v;
 }
 
@@ -171,7 +175,7 @@ bool32_t vkr_thread_join(VkrThread thread) {
   DWORD result = WaitForSingleObject(thread->handle, INFINITE);
   if (result == WAIT_OBJECT_0) {
     thread->joined = true_v;
-    InterlockedExchange(&thread->active, false_v);
+    vkr_atomic_bool_store(&thread->active, false_v, VKR_MEMORY_ORDER_RELEASE);
     CloseHandle(thread->handle);
     thread->handle = NULL;
     return true_v;

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "atomic_test.h"
 #include "arena_test.h"
 #include "array_test.h"
 #include "bitset_test.h"
