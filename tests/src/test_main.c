@@ -27,6 +27,10 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_event_data_buffer_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_threads_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_job_system_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_input_tests();
   printf("\n"); // Add spacing
   all_passed &= run_event_tests();

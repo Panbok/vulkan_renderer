@@ -55,6 +55,36 @@ static void test_basic_math_operations(void) {
   assert(float_equals(vkr_min_f32(1.0f, 1.0f), 1.0f, VKR_FLOAT_EPSILON) &&
          "vkr_min_f32 failed for equal values");
 
+  // Test vkr_min_i32
+  assert(vkr_min_i32(5, 3) == 3 && "vkr_min_i32 failed for 5, 3");
+  assert(vkr_min_i32(-2, -5) == -5 && "vkr_min_i32 failed for negative values");
+  assert(vkr_min_i32(1, 1) == 1 && "vkr_min_i32 failed for equal values");
+
+  // Test vkr_max_i32
+  assert(vkr_max_i32(5, 3) == 5 && "vkr_max_i32 failed for 5, 3");
+  assert(vkr_max_i32(-2, -5) == -2 && "vkr_max_i32 failed for negative values");
+  assert(vkr_max_i32(1, 1) == 1 && "vkr_max_i32 failed for equal values");
+
+  // Test vkr_min_u32
+  assert(vkr_min_u32(5, 3) == 3 && "vkr_min_u32 failed for 5, 3");
+  assert(vkr_min_u32(2, 5) == 2 && "vkr_min_u32 failed for 2, 5");
+  assert(vkr_min_u32(1, 1) == 1 && "vkr_min_u32 failed for equal values");
+
+  // Test vkr_max_u32
+  assert(vkr_max_u32(5, 3) == 5 && "vkr_max_u32 failed for 5, 3");
+  assert(vkr_max_u32(2, 5) == 5 && "vkr_max_u32 failed for 2, 5");
+  assert(vkr_max_u32(1, 1) == 1 && "vkr_max_u32 failed for equal values");
+
+  // Test vkr_min_u64
+  assert(vkr_min_u64(5, 3) == 3 && "vkr_min_u64 failed for 5, 3");
+  assert(vkr_min_u64(2, 5) == 2 && "vkr_min_u64 failed for 2, 5");
+  assert(vkr_min_u64(1, 1) == 1 && "vkr_min_u64 failed for equal values");
+
+  // Test vkr_max_u64
+  assert(vkr_max_u64(5, 3) == 5 && "vkr_max_u64 failed for 5, 3");
+  assert(vkr_max_u64(2, 5) == 5 && "vkr_max_u64 failed for 2, 5");
+  assert(vkr_max_u64(1, 1) == 1 && "vkr_max_u64 failed for equal values");
+
   // Test vkr_max_f32
   assert(float_equals(vkr_max_f32(5.0f, 3.0f), 5.0f, VKR_FLOAT_EPSILON) &&
          "vkr_max_f32 failed for 5.0, 3.0");

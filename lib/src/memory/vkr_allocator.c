@@ -13,6 +13,8 @@ const char *VkrAllocatorTypeNames[VKR_ALLOCATOR_TYPE_MAX] = {
     "UNKNOWN",
 };
 
+// todo: use define to enable/disable logging
+
 vkr_global VkrAllocatorStatistics g_vkr_allocator_stats = {0};
 
 vkr_internal INLINE uint32_t
@@ -116,10 +118,10 @@ void *_vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
   allocator->stats.tagged_allocs[tag] += size;
   allocator->stats.total_allocated += size;
 
-  log_debug("Allocated (%llu bytes) from allocator - [%s] for tag - [%s] at "
-            "line - [%u] in file - [%s]",
-            (uint64_t)size, VkrAllocatorTypeNames[allocator->type],
-            VkrAllocatorMemoryTagNames[tag], alloc_line, alloc_file);
+  // log_debug("Allocated (%llu bytes) from allocator - [%s] for tag - [%s] at "
+  //           "line - [%u] in file - [%s]",
+  //           (uint64_t)size, VkrAllocatorTypeNames[allocator->type],
+  //           VkrAllocatorMemoryTagNames[tag], alloc_line, alloc_file);
 
   return allocator->alloc(allocator->ctx, size, tag);
 }
@@ -152,10 +154,10 @@ void vkr_allocator_free(VkrAllocator *allocator, void *ptr, uint64_t old_size,
     allocator->stats.tagged_allocs[tag] -= dec;
   }
 
-  log_debug("Freed (%llu bytes) from allocator - [%s] for tag - [%s]",
-            (unsigned long long)old_size,
-            VkrAllocatorTypeNames[allocator->type],
-            VkrAllocatorMemoryTagNames[tag]);
+  // log_debug("Freed (%llu bytes) from allocator - [%s] for tag - [%s]",
+  //           (unsigned long long)old_size,
+  //           VkrAllocatorTypeNames[allocator->type],
+  //           VkrAllocatorMemoryTagNames[tag]);
 
   allocator->free(allocator->ctx, ptr, old_size, tag);
 }
@@ -212,7 +214,6 @@ void vkr_allocator_set(VkrAllocator *allocator, void *ptr, uint32_t value,
   MemSet(ptr, value, size);
 
   g_vkr_allocator_stats.total_sets++;
-
   if (allocator) {
     allocator->stats.total_sets++;
   }
@@ -227,7 +228,6 @@ void vkr_allocator_zero(VkrAllocator *allocator, void *ptr, uint64_t size) {
   MemZero(ptr, size);
 
   g_vkr_allocator_stats.total_zeros++;
-
   if (allocator) {
     allocator->stats.total_zeros++;
   }
@@ -244,7 +244,6 @@ void vkr_allocator_copy(VkrAllocator *allocator, void *dst, const void *src,
   MemCopy(dst, src, size);
 
   g_vkr_allocator_stats.total_copies++;
-
   if (allocator) {
     allocator->stats.total_copies++;
   }

@@ -50,6 +50,7 @@
 #include "core/logger.h"
 #include "core/vkr_clock.h"
 #include "core/vkr_gamepad.h"
+#include "core/vkr_job_system.h"
 #include "core/vkr_threads.h"
 #include "core/vkr_window.h"
 #include "defines.h"
@@ -121,6 +122,8 @@ typedef struct Application {
   VkrMutex app_mutex;        /**< Mutex for application state. */
 
   VkrGamepad gamepad; /**< The gamepad system for the application. */
+
+  VkrJobSystem job_system; /**< Engine-wide job system. */
 
 } Application;
 
@@ -246,6 +249,13 @@ bool8_t application_create(Application *application,
     return false_v;
   }
 
+  // Initialize engine-wide job system
+  VkrJobSystemConfig job_cfg = vkr_job_system_config_default();
+  if (!vkr_job_system_init(&job_cfg, &application->job_system)) {
+    log_fatal("Failed to initialize job system");
+    return false_v;
+  }
+
   VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_renderer_initialize(
           &application->renderer, VKR_RENDERER_BACKEND_TYPE_VULKAN,
@@ -265,14 +275,16 @@ bool8_t application_create(Application *application,
   VkrCameraHandle active_camera =
       vkr_camera_registry_get_active(&application->renderer.camera_system);
   application->renderer.active_camera = active_camera;
-  VkrCamera *camera = vkr_camera_registry_get_by_handle(
-      &application->renderer.camera_system, application->renderer.active_camera);
+  VkrCamera *camera =
+      vkr_camera_registry_get_by_handle(&application->renderer.camera_system,
+                                        application->renderer.active_camera);
   if (!camera) {
     log_fatal("Failed to retrieve active camera");
     return false_v;
   }
-  vkr_camera_controller_create(&application->renderer.camera_controller, camera,
-                               (float32_t)application->config->target_frame_rate);
+  vkr_camera_controller_create(
+      &application->renderer.camera_controller, camera,
+      (float32_t)application->config->target_frame_rate);
 
   event_manager_subscribe(&application->event_manager, EVENT_TYPE_WINDOW_CLOSE,
                           application_on_window_event, NULL);
@@ -557,6 +569,8 @@ void application_shutdown(Application *application) {
   event_manager_destroy(&application->event_manager);
   vkr_mutex_destroy(&application->app_allocator, &application->app_mutex);
   vkr_gamepad_shutdown(&application->gamepad);
+
+  vkr_job_system_shutdown(&application->job_system);
 
   vkr_platform_shutdown();
 

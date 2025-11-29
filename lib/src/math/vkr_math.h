@@ -218,6 +218,66 @@ vkr_internal INLINE float64_t vkr_min_f64(float64_t a, float64_t b) {
 }
 
 /**
+ * @brief Returns the minimum of two int32_t values
+ * @param a First value to compare
+ * @param b Second value to compare
+ * @return The smaller of the two input values
+ */
+vkr_internal INLINE uint32_t vkr_min_u32(uint32_t a, uint32_t b) {
+  return (a < b) ? a : b;
+}
+
+/**
+ * @brief Returns the maximum of two uint32_t values
+ * @param a First value to compare
+ * @param b Second value to compare
+ * @return The larger of the two input values
+ */
+vkr_internal INLINE uint32_t vkr_max_u32(uint32_t a, uint32_t b) {
+  return (a > b) ? a : b;
+}
+
+/**
+ * @brief Returns the minimum of two int32_t values
+ * @param a First value to compare
+ * @param b Second value to compare
+ * @return The smaller of the two input values
+ */
+vkr_internal INLINE int32_t vkr_min_i32(int32_t a, int32_t b) {
+  return (a < b) ? a : b;
+}
+
+/**
+ * @brief Returns the minimum of two int64_t values
+ * @param a First value to compare
+ * @param b Second value to compare
+ * @return The smaller of the two input values
+ */
+vkr_internal INLINE int64_t vkr_min_i64(int64_t a, int64_t b) {
+  return (a < b) ? a : b;
+}
+
+/**
+ * @brief Returns the maximum of two int32_t values
+ * @param a First value to compare
+ * @param b Second value to compare
+ * @return The larger of the two input values
+ */
+vkr_internal INLINE int32_t vkr_max_i32(int32_t a, int32_t b) {
+  return (a > b) ? a : b;
+}
+
+/**
+ * @brief Returns the maximum of two int64_t values
+ * @param a First value to compare
+ * @param b Second value to compare
+ * @return The larger of the two input values
+ */
+vkr_internal INLINE int64_t vkr_max_i64(int64_t a, int64_t b) {
+  return (a > b) ? a : b;
+}
+
+/**
  * @brief Returns the minimum of two uint64_t values
  * @param a First value to compare
  * @param b Second value to compare
@@ -225,6 +285,16 @@ vkr_internal INLINE float64_t vkr_min_f64(float64_t a, float64_t b) {
  */
 vkr_internal INLINE uint64_t vkr_min_u64(uint64_t a, uint64_t b) {
   return (a < b) ? a : b;
+}
+
+/**
+ * @brief Returns the maximum of two uint64_t values
+ * @param a First value to compare
+ * @param b Second value to compare
+ * @return The larger of the two input values
+ */
+vkr_internal INLINE uint64_t vkr_max_u64(uint64_t a, uint64_t b) {
+  return (a > b) ? a : b;
 }
 
 /**

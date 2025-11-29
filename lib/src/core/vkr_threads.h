@@ -178,6 +178,13 @@ bool32_t vkr_cond_wait(VkrCondVar cond, VkrMutex mutex);
 bool32_t vkr_cond_signal(VkrCondVar cond);
 
 /**
+ * @brief Broadcasts a condition variable, waking all waiting threads.
+ * @param cond Condition variable to broadcast.
+ * @return true_v on success, false_v on failure.
+ */
+bool32_t vkr_cond_broadcast(VkrCondVar cond);
+
+/**
  * @brief Destroys a condition variable and releases its resources.
  * @param allocator Allocator that was used to create the condition variable.
  * @param cond Condition variable to destroy.

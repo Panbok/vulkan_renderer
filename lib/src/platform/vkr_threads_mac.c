@@ -9,7 +9,7 @@ struct s_VkrThread {
   void *result;
   bool32_t joined;
   bool32_t detached;
-  bool32_t cancel_requested;
+  _Atomic bool32_t cancel_requested;
   bool32_t active;
   VkrThreadId id;
 };
@@ -29,8 +29,9 @@ vkr_internal void *vkr_thread_entry(void *param) {
     return NULL;
   }
 
-  if (thread->cancel_requested) {
+  if (atomic_load_explicit(&thread->cancel_requested, memory_order_acquire)) {
     thread->active = false_v;
+    thread->result = NULL;
     return NULL;
   }
 
@@ -120,7 +121,7 @@ bool32_t vkr_thread_cancel_requested(VkrThread thread) {
     return false_v;
   }
 
-  return thread->cancel_requested;
+  return atomic_load_explicit(&thread->cancel_requested, memory_order_acquire);
 }
 
 bool32_t vkr_thread_is_active(VkrThread thread) {
@@ -251,16 +252,17 @@ bool32_t vkr_mutex_destroy(VkrAllocator *allocator, VkrMutex *mutex) {
     return false_v;
   }
 
+  bool32_t success = true_v;
   int32_t result = pthread_mutex_destroy(&(*mutex)->mutex);
   if (result != 0) {
-    return false_v;
+    success = false_v;
   }
 
   MemZero(*mutex, sizeof(struct s_VkrMutex));
   vkr_allocator_free(allocator, *mutex, sizeof(struct s_VkrMutex),
                      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   *mutex = NULL;
-  return true_v;
+  return success;
 }
 
 bool32_t vkr_cond_create(VkrAllocator *allocator, VkrCondVar *cond) {
@@ -301,6 +303,15 @@ bool32_t vkr_cond_signal(VkrCondVar cond) {
   }
 
   int32_t result = pthread_cond_signal(&cond->cond);
+  return result == 0;
+}
+
+bool32_t vkr_cond_broadcast(VkrCondVar cond) {
+  if (cond == NULL) {
+    return false_v;
+  }
+
+  int32_t result = pthread_cond_broadcast(&cond->cond);
   return result == 0;
 }
 
