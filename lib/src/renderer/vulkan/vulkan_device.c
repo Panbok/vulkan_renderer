@@ -735,11 +735,19 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
 
   QueueFamilyIndex *graphics_index =
       array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_GRAPHICS);
+  QueueFamilyIndex *transfer_index =
+      array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_TRANSFER);
 
   VkCommandPoolCreateInfo pool_info = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
       .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
       .queueFamilyIndex = graphics_index->index,
+  };
+
+  VkCommandPoolCreateInfo transfer_pool_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+      .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+      .queueFamilyIndex = transfer_index->index,
   };
 
   array_destroy_QueueFamilyIndex(&indices);
@@ -785,8 +793,21 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
     return false_v;
   }
 
-  log_debug("Created Vulkan command pool: %p",
+  log_debug("Created Vulkan graphics command pool: %p",
             state->device.graphics_command_pool);
+
+  // Create transfer command pool for async uploads
+  if (vkCreateCommandPool(state->device.logical_device, &transfer_pool_info,
+                          state->allocator,
+                          &state->device.transfer_command_pool) != VK_SUCCESS) {
+    log_fatal("Failed to create Vulkan transfer command pool");
+    vkDestroyCommandPool(state->device.logical_device,
+                         state->device.graphics_command_pool, state->allocator);
+    return false_v;
+  }
+
+  log_debug("Created Vulkan transfer command pool: %p",
+            state->device.transfer_command_pool);
 
   vkGetDeviceQueue(state->device.logical_device,
                    array_get_VkDeviceQueueCreateInfo(&queue_create_infos,
@@ -809,6 +830,12 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
 
   log_debug("Graphics queue: %p", state->device.graphics_queue);
   log_debug("Present queue: %p", state->device.present_queue);
+  log_debug("Transfer queue: %p (family %d, dedicated: %s)",
+            state->device.transfer_queue, state->device.transfer_queue_index,
+            (state->device.transfer_queue_index !=
+             state->device.graphics_queue_index)
+                ? "yes"
+                : "no");
 
   return true;
 }
@@ -816,7 +843,13 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
 void vulkan_device_destroy_logical_device(VulkanBackendState *state) {
   assert_log(state != NULL, "State is NULL");
 
-  log_debug("Destroying logical device and command pool");
+  log_debug("Destroying logical device and command pools");
+
+  if (state->device.transfer_command_pool != VK_NULL_HANDLE) {
+    vkDestroyCommandPool(state->device.logical_device,
+                         state->device.transfer_command_pool, state->allocator);
+    state->device.transfer_command_pool = VK_NULL_HANDLE;
+  }
 
   vkDestroyCommandPool(state->device.logical_device,
                        state->device.graphics_command_pool, state->allocator);

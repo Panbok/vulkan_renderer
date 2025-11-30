@@ -1,4 +1,5 @@
 #include "vulkan_image.h"
+#include "vulkan_fence.h"
 
 bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
                              uint32_t width, uint32_t height, VkFormat format,
@@ -105,7 +106,7 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
     }
   }
 
-  log_debug("Created Vulkan image: %p", out_image->handle);
+  // log_debug("Created Vulkan image: %p", out_image->handle);
   return true;
 }
 
@@ -140,7 +141,7 @@ bool32_t vulkan_create_image_view(VulkanBackendState *state, VkFormat format,
     return false;
   }
 
-  log_debug("Created Vulkan image view: %p", image->view);
+  // log_debug("Created Vulkan image view: %p", image->view);
 
   return true;
 }
@@ -303,7 +304,7 @@ bool8_t vulkan_image_copy_cube_faces_from_buffer(
 }
 
 void vulkan_image_destroy(VulkanBackendState *state, VulkanImage *image) {
-  log_debug("Destroying Vulkan image: %p", image->handle);
+  // log_debug("Destroying Vulkan image: %p", image->handle);
 
   if (image->view != VK_NULL_HANDLE) {
     vkDestroyImageView(state->device.logical_device, image->view,
@@ -313,7 +314,7 @@ void vulkan_image_destroy(VulkanBackendState *state, VulkanImage *image) {
   vkDestroyImage(state->device.logical_device, image->handle, state->allocator);
   vkFreeMemory(state->device.logical_device, image->memory, state->allocator);
 
-  log_debug("Destroyed Vulkan image: %p", image->handle);
+  // log_debug("Destroyed Vulkan image: %p", image->handle);
 }
 
 bool8_t vulkan_image_generate_mipmaps(VulkanBackendState *state,
@@ -433,6 +434,808 @@ bool8_t vulkan_image_generate_mipmaps(VulkanBackendState *state,
   vkCmdPipelineBarrier(cmd->handle, VK_PIPELINE_STAGE_TRANSFER_BIT,
                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0,
                        NULL, 1, &final_barrier);
+
+  return true_v;
+}
+
+bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
+                                         VulkanImage *image,
+                                         VkBuffer staging_buffer,
+                                         VkFormat image_format,
+                                         bool8_t generate_mipmaps) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(image != NULL, "Image is NULL");
+  assert_log(staging_buffer != VK_NULL_HANDLE, "Staging buffer is NULL");
+
+  bool8_t use_transfer_queue = (state->device.transfer_queue_index !=
+                                state->device.graphics_queue_index);
+
+  VkCommandPool transfer_pool = use_transfer_queue
+                                    ? state->device.transfer_command_pool
+                                    : state->device.graphics_command_pool;
+  VkQueue transfer_queue = use_transfer_queue ? state->device.transfer_queue
+                                              : state->device.graphics_queue;
+
+  // ========== PHASE 1: Transfer base level via transfer queue ==========
+  VkCommandBufferAllocateInfo transfer_alloc = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+      .commandPool = transfer_pool,
+      .commandBufferCount = 1,
+  };
+
+  VkCommandBuffer transfer_cmd;
+  if (vkAllocateCommandBuffers(state->device.logical_device, &transfer_alloc,
+                               &transfer_cmd) != VK_SUCCESS) {
+    log_error("Failed to allocate transfer command buffer");
+    return false_v;
+  }
+
+  VkCommandBufferBeginInfo begin_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+  };
+
+  if (vkBeginCommandBuffer(transfer_cmd, &begin_info) != VK_SUCCESS) {
+    vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1,
+                         &transfer_cmd);
+    return false_v;
+  }
+
+  // Transition to TRANSFER_DST
+  VkImageMemoryBarrier barrier_to_dst = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = 0,
+      .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = image->handle,
+      .subresourceRange =
+          {
+              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+              .baseMipLevel = 0,
+              .levelCount = image->mip_levels,
+              .baseArrayLayer = 0,
+              .layerCount = image->array_layers,
+          },
+  };
+
+  vkCmdPipelineBarrier(transfer_cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+                       &barrier_to_dst);
+
+  // Copy base level
+  VkBufferImageCopy region = {
+      .bufferOffset = 0,
+      .bufferRowLength = 0,
+      .bufferImageHeight = 0,
+      .imageSubresource =
+          {
+              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+              .mipLevel = 0,
+              .baseArrayLayer = 0,
+              .layerCount = image->array_layers,
+          },
+      .imageOffset = {0, 0, 0},
+      .imageExtent = {image->width, image->height, 1},
+  };
+
+  vkCmdCopyBufferToImage(transfer_cmd, staging_buffer, image->handle,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+  // If not generating mipmaps and same queue family, transition directly
+  if (!generate_mipmaps && !use_transfer_queue) {
+    VkImageMemoryBarrier barrier_to_read = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image->handle,
+        .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = image->mip_levels,
+                .baseArrayLayer = 0,
+                .layerCount = image->array_layers,
+            },
+    };
+
+    vkCmdPipelineBarrier(transfer_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0,
+                         NULL, 1, &barrier_to_read);
+  } else if (use_transfer_queue) {
+    // Release ownership to graphics queue family
+    VkImageMemoryBarrier release_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = 0,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = (uint32_t)state->device.transfer_queue_index,
+        .dstQueueFamilyIndex = (uint32_t)state->device.graphics_queue_index,
+        .image = image->handle,
+        .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = image->mip_levels,
+                .baseArrayLayer = 0,
+                .layerCount = image->array_layers,
+            },
+    };
+
+    vkCmdPipelineBarrier(transfer_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0,
+                         NULL, 1, &release_barrier);
+  }
+
+  if (vkEndCommandBuffer(transfer_cmd) != VK_SUCCESS) {
+    vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1,
+                         &transfer_cmd);
+    return false_v;
+  }
+
+  // Submit transfer phase
+  VulkanFence transfer_fence;
+  vulkan_fence_create(state, false_v, &transfer_fence);
+
+  VkSubmitInfo transfer_submit = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &transfer_cmd,
+  };
+
+  if (vkQueueSubmit(transfer_queue, 1, &transfer_submit,
+                    transfer_fence.handle) != VK_SUCCESS) {
+    vulkan_fence_destroy(state, &transfer_fence);
+    vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1,
+                         &transfer_cmd);
+    return false_v;
+  }
+
+  vulkan_fence_wait(state, UINT64_MAX, &transfer_fence);
+  vkQueueWaitIdle(transfer_queue);
+  vulkan_fence_destroy(state, &transfer_fence);
+  vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1,
+                       &transfer_cmd);
+
+  // If no mipmaps and same queue, we're done
+  if (!generate_mipmaps && !use_transfer_queue) {
+    return true_v;
+  }
+
+  // ========== PHASE 2: Graphics queue for mipmaps/ownership ==========
+  VkCommandBuffer graphics_cmd;
+  VkCommandBufferAllocateInfo graphics_alloc = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+      .commandPool = state->device.graphics_command_pool,
+      .commandBufferCount = 1,
+  };
+
+  if (vkAllocateCommandBuffers(state->device.logical_device, &graphics_alloc,
+                               &graphics_cmd) != VK_SUCCESS) {
+    return false_v;
+  }
+
+  if (vkBeginCommandBuffer(graphics_cmd, &begin_info) != VK_SUCCESS) {
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1, &graphics_cmd);
+    return false_v;
+  }
+
+  // If different queue families, acquire ownership
+  if (use_transfer_queue) {
+    VkImageMemoryBarrier acquire_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = 0,
+        .dstAccessMask = generate_mipmaps ? VK_ACCESS_TRANSFER_READ_BIT
+                                          : VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = generate_mipmaps
+                         ? VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                         : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = (uint32_t)state->device.transfer_queue_index,
+        .dstQueueFamilyIndex = (uint32_t)state->device.graphics_queue_index,
+        .image = image->handle,
+        .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = image->mip_levels,
+                .baseArrayLayer = 0,
+                .layerCount = image->array_layers,
+            },
+    };
+
+    vkCmdPipelineBarrier(graphics_cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         generate_mipmaps
+                             ? VK_PIPELINE_STAGE_TRANSFER_BIT
+                             : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 0, NULL, 0, NULL, 1, &acquire_barrier);
+  }
+
+  // Generate mipmaps if needed
+  if (generate_mipmaps && image->mip_levels > 1) {
+    // Wrap graphics_cmd in VulkanCommandBuffer for mipmap generation
+    VulkanCommandBuffer wrapped_cmd = {.handle = graphics_cmd};
+
+    // vulkan_image_generate_mipmaps handles all the mip level transitions
+    // and ends with SHADER_READ_ONLY_OPTIMAL
+    if (!vulkan_image_generate_mipmaps(state, image, image_format,
+                                       &wrapped_cmd)) {
+      log_warn("Mipmap generation failed, falling back to single level");
+      // Transition to shader read if mipmaps failed
+      VkImageMemoryBarrier final_barrier = {
+          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+          .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+          .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+          .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+          .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+          .image = image->handle,
+          .subresourceRange =
+              {
+                  .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                  .baseMipLevel = 0,
+                  .levelCount = image->mip_levels,
+                  .baseArrayLayer = 0,
+                  .layerCount = image->array_layers,
+              },
+      };
+
+      vkCmdPipelineBarrier(graphics_cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0,
+                           NULL, 1, &final_barrier);
+    }
+  } else if (!generate_mipmaps && use_transfer_queue) {
+    // Already transitioned in acquire barrier above
+  }
+
+  if (vkEndCommandBuffer(graphics_cmd) != VK_SUCCESS) {
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1, &graphics_cmd);
+    return false_v;
+  }
+
+  VulkanFence graphics_fence;
+  vulkan_fence_create(state, false_v, &graphics_fence);
+
+  VkSubmitInfo graphics_submit = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &graphics_cmd,
+  };
+
+  if (vkQueueSubmit(state->device.graphics_queue, 1, &graphics_submit,
+                    graphics_fence.handle) != VK_SUCCESS) {
+    vulkan_fence_destroy(state, &graphics_fence);
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1, &graphics_cmd);
+    return false_v;
+  }
+
+  vulkan_fence_wait(state, UINT64_MAX, &graphics_fence);
+  vkQueueWaitIdle(state->device.graphics_queue);
+  vulkan_fence_destroy(state, &graphics_fence);
+  vkFreeCommandBuffers(state->device.logical_device,
+                       state->device.graphics_command_pool, 1, &graphics_cmd);
+
+  return true_v;
+}
+
+bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
+                                              VulkanImage *image,
+                                              VkBuffer staging_buffer,
+                                              VkFormat image_format,
+                                              uint64_t face_size) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(image != NULL, "Image is NULL");
+  assert_log(staging_buffer != VK_NULL_HANDLE, "Staging buffer is NULL");
+  assert_log(image->array_layers == 6, "Cube map must have 6 layers");
+
+  bool8_t use_transfer_queue = (state->device.transfer_queue_index !=
+                                state->device.graphics_queue_index);
+
+  VkCommandPool transfer_pool = use_transfer_queue
+                                    ? state->device.transfer_command_pool
+                                    : state->device.graphics_command_pool;
+  VkQueue transfer_queue = use_transfer_queue ? state->device.transfer_queue
+                                              : state->device.graphics_queue;
+
+  VkCommandBufferAllocateInfo alloc_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+      .commandPool = transfer_pool,
+      .commandBufferCount = 1,
+  };
+
+  VkCommandBuffer cmd;
+  if (vkAllocateCommandBuffers(state->device.logical_device, &alloc_info,
+                               &cmd) != VK_SUCCESS) {
+    log_error("Failed to allocate cube map transfer command buffer");
+    return false_v;
+  }
+
+  VkCommandBufferBeginInfo begin_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+  };
+
+  if (vkBeginCommandBuffer(cmd, &begin_info) != VK_SUCCESS) {
+    vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1, &cmd);
+    return false_v;
+  }
+
+  // Transition all 6 faces to TRANSFER_DST
+  VkImageMemoryBarrier barrier_to_dst = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = 0,
+      .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = image->handle,
+      .subresourceRange =
+          {
+              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+              .baseMipLevel = 0,
+              .levelCount = image->mip_levels,
+              .baseArrayLayer = 0,
+              .layerCount = 6,
+          },
+  };
+
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+                       &barrier_to_dst);
+
+  // Copy each face to its array layer
+  VkBufferImageCopy regions[6];
+  for (uint32_t face = 0; face < 6; face++) {
+    regions[face] = (VkBufferImageCopy){
+        .bufferOffset = face * face_size,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel = 0,
+                .baseArrayLayer = face,
+                .layerCount = 1,
+            },
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {image->width, image->height, 1},
+    };
+  }
+
+  vkCmdCopyBufferToImage(cmd, staging_buffer, image->handle,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6, regions);
+
+  // Transition to shader read (handle queue ownership if needed)
+  if (!use_transfer_queue) {
+    VkImageMemoryBarrier barrier_to_read = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image->handle,
+        .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = image->mip_levels,
+                .baseArrayLayer = 0,
+                .layerCount = 6,
+            },
+    };
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0,
+                         NULL, 1, &barrier_to_read);
+  } else {
+    // Release ownership to graphics queue family
+    VkImageMemoryBarrier release_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = 0,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = (uint32_t)state->device.transfer_queue_index,
+        .dstQueueFamilyIndex = (uint32_t)state->device.graphics_queue_index,
+        .image = image->handle,
+        .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = image->mip_levels,
+                .baseArrayLayer = 0,
+                .layerCount = 6,
+            },
+    };
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0,
+                         NULL, 1, &release_barrier);
+  }
+
+  if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+    vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1, &cmd);
+    return false_v;
+  }
+
+  VulkanFence fence;
+  vulkan_fence_create(state, false_v, &fence);
+
+  VkSubmitInfo submit_info = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &cmd,
+  };
+
+  if (vkQueueSubmit(transfer_queue, 1, &submit_info, fence.handle) !=
+      VK_SUCCESS) {
+    vulkan_fence_destroy(state, &fence);
+    vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1, &cmd);
+    return false_v;
+  }
+
+  vulkan_fence_wait(state, UINT64_MAX, &fence);
+  vkQueueWaitIdle(transfer_queue);
+  vulkan_fence_destroy(state, &fence);
+  vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1, &cmd);
+
+  // If different queue families, acquire ownership on graphics queue
+  if (use_transfer_queue) {
+    VkCommandBuffer graphics_cmd;
+    VkCommandBufferAllocateInfo graphics_alloc = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandPool = state->device.graphics_command_pool,
+        .commandBufferCount = 1,
+    };
+
+    if (vkAllocateCommandBuffers(state->device.logical_device, &graphics_alloc,
+                                 &graphics_cmd) != VK_SUCCESS) {
+      return false_v;
+    }
+
+    if (vkBeginCommandBuffer(graphics_cmd, &begin_info) != VK_SUCCESS) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+      return false_v;
+    }
+
+    VkImageMemoryBarrier acquire_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = (uint32_t)state->device.transfer_queue_index,
+        .dstQueueFamilyIndex = (uint32_t)state->device.graphics_queue_index,
+        .image = image->handle,
+        .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = image->mip_levels,
+                .baseArrayLayer = 0,
+                .layerCount = 6,
+            },
+    };
+
+    vkCmdPipelineBarrier(graphics_cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0,
+                         NULL, 1, &acquire_barrier);
+
+    if (vkEndCommandBuffer(graphics_cmd) != VK_SUCCESS) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+      return false_v;
+    }
+
+    VulkanFence graphics_fence;
+    vulkan_fence_create(state, false_v, &graphics_fence);
+
+    VkSubmitInfo graphics_submit = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &graphics_cmd,
+    };
+
+    if (vkQueueSubmit(state->device.graphics_queue, 1, &graphics_submit,
+                      graphics_fence.handle) != VK_SUCCESS) {
+      vulkan_fence_destroy(state, &graphics_fence);
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+      return false_v;
+    }
+
+    vulkan_fence_wait(state, UINT64_MAX, &graphics_fence);
+    vkQueueWaitIdle(state->device.graphics_queue);
+    vulkan_fence_destroy(state, &graphics_fence);
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1, &graphics_cmd);
+  }
+
+  return true_v;
+}
+
+bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
+                                         VulkanImage *image,
+                                         VkBuffer staging_buffer,
+                                         VkFormat image_format) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(image != NULL, "Image is NULL");
+  assert_log(staging_buffer != VK_NULL_HANDLE, "Staging buffer is NULL");
+
+  // Use transfer queue if it's a dedicated queue (different family from
+  // graphics), otherwise fall back to graphics queue for simplicity
+  bool8_t use_transfer_queue = (state->device.transfer_queue_index !=
+                                state->device.graphics_queue_index);
+
+  VkCommandPool command_pool = use_transfer_queue
+                                   ? state->device.transfer_command_pool
+                                   : state->device.graphics_command_pool;
+  VkQueue queue = use_transfer_queue ? state->device.transfer_queue
+                                     : state->device.graphics_queue;
+
+  // Allocate command buffer
+  VkCommandBufferAllocateInfo alloc_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+      .commandPool = command_pool,
+      .commandBufferCount = 1,
+  };
+
+  VkCommandBuffer cmd;
+  if (vkAllocateCommandBuffers(state->device.logical_device, &alloc_info,
+                               &cmd) != VK_SUCCESS) {
+    log_error("Failed to allocate transfer command buffer");
+    return false_v;
+  }
+
+  VkCommandBufferBeginInfo begin_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+  };
+
+  if (vkBeginCommandBuffer(cmd, &begin_info) != VK_SUCCESS) {
+    log_error("Failed to begin transfer command buffer");
+    vkFreeCommandBuffers(state->device.logical_device, command_pool, 1, &cmd);
+    return false_v;
+  }
+
+  // Transition image to TRANSFER_DST_OPTIMAL
+  VkImageMemoryBarrier barrier_to_dst = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = 0,
+      .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = image->handle,
+      .subresourceRange =
+          {
+              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+              .baseMipLevel = 0,
+              .levelCount = image->mip_levels,
+              .baseArrayLayer = 0,
+              .layerCount = image->array_layers,
+          },
+  };
+
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1,
+                       &barrier_to_dst);
+
+  // Copy buffer to image
+  VkBufferImageCopy region = {
+      .bufferOffset = 0,
+      .bufferRowLength = 0,
+      .bufferImageHeight = 0,
+      .imageSubresource =
+          {
+              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+              .mipLevel = 0,
+              .baseArrayLayer = 0,
+              .layerCount = image->array_layers,
+          },
+      .imageOffset = {0, 0, 0},
+      .imageExtent = {image->width, image->height, 1},
+  };
+
+  vkCmdCopyBufferToImage(cmd, staging_buffer, image->handle,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+  // Handle layout transition / queue ownership
+  if (!use_transfer_queue) {
+    // Same queue family - transition directly to shader read
+    VkImageMemoryBarrier barrier_to_read = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image->handle,
+        .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = image->mip_levels,
+                .baseArrayLayer = 0,
+                .layerCount = image->array_layers,
+            },
+    };
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0,
+                         NULL, 1, &barrier_to_read);
+  } else {
+    // Different queue family - release ownership to graphics queue
+    VkImageMemoryBarrier release_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+        .dstAccessMask = 0,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = (uint32_t)state->device.transfer_queue_index,
+        .dstQueueFamilyIndex = (uint32_t)state->device.graphics_queue_index,
+        .image = image->handle,
+        .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = image->mip_levels,
+                .baseArrayLayer = 0,
+                .layerCount = image->array_layers,
+            },
+    };
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0,
+                         NULL, 1, &release_barrier);
+  }
+
+  if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+    log_error("Failed to end transfer command buffer");
+    vkFreeCommandBuffers(state->device.logical_device, command_pool, 1, &cmd);
+    return false_v;
+  }
+
+  // Create fence for synchronization
+  VulkanFence fence;
+  vulkan_fence_create(state, false_v, &fence);
+  if (fence.handle == VK_NULL_HANDLE) {
+    log_error("Failed to create transfer fence");
+    vkFreeCommandBuffers(state->device.logical_device, command_pool, 1, &cmd);
+    return false_v;
+  }
+
+  // Submit to transfer queue
+  VkSubmitInfo submit_info = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = 1,
+      .pCommandBuffers = &cmd,
+  };
+
+  if (vkQueueSubmit(queue, 1, &submit_info, fence.handle) != VK_SUCCESS) {
+    log_error("Failed to submit transfer command buffer");
+    vulkan_fence_destroy(state, &fence);
+    vkFreeCommandBuffers(state->device.logical_device, command_pool, 1, &cmd);
+    return false_v;
+  }
+
+  // Wait for transfer to complete
+  if (!vulkan_fence_wait(state, UINT64_MAX, &fence)) {
+    log_error("Failed to wait for transfer fence");
+    vulkan_fence_destroy(state, &fence);
+    vkFreeCommandBuffers(state->device.logical_device, command_pool, 1, &cmd);
+    return false_v;
+  }
+
+  vkQueueWaitIdle(queue);
+  vulkan_fence_destroy(state, &fence);
+  vkFreeCommandBuffers(state->device.logical_device, command_pool, 1, &cmd);
+
+  // If using dedicated transfer queue, need to acquire on graphics queue
+  // and transition to shader read
+  if (use_transfer_queue) {
+    VkCommandBuffer graphics_cmd;
+    VkCommandBufferAllocateInfo graphics_alloc = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandPool = state->device.graphics_command_pool,
+        .commandBufferCount = 1,
+    };
+
+    if (vkAllocateCommandBuffers(state->device.logical_device, &graphics_alloc,
+                                 &graphics_cmd) != VK_SUCCESS) {
+      log_error("Failed to allocate graphics command buffer for ownership "
+                "transfer");
+      return false_v;
+    }
+
+    if (vkBeginCommandBuffer(graphics_cmd, &begin_info) != VK_SUCCESS) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+      return false_v;
+    }
+
+    // Acquire ownership and transition to shader read
+    VkImageMemoryBarrier acquire_barrier = {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = 0,
+        .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+        .srcQueueFamilyIndex = (uint32_t)state->device.transfer_queue_index,
+        .dstQueueFamilyIndex = (uint32_t)state->device.graphics_queue_index,
+        .image = image->handle,
+        .subresourceRange =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .baseMipLevel = 0,
+                .levelCount = image->mip_levels,
+                .baseArrayLayer = 0,
+                .layerCount = image->array_layers,
+            },
+    };
+
+    vkCmdPipelineBarrier(graphics_cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0,
+                         NULL, 1, &acquire_barrier);
+
+    if (vkEndCommandBuffer(graphics_cmd) != VK_SUCCESS) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+      return false_v;
+    }
+
+    VulkanFence graphics_fence;
+    vulkan_fence_create(state, false_v, &graphics_fence);
+
+    VkSubmitInfo graphics_submit = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &graphics_cmd,
+    };
+
+    if (vkQueueSubmit(state->device.graphics_queue, 1, &graphics_submit,
+                      graphics_fence.handle) != VK_SUCCESS) {
+      vulkan_fence_destroy(state, &graphics_fence);
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+      return false_v;
+    }
+
+    vulkan_fence_wait(state, UINT64_MAX, &graphics_fence);
+    vkQueueWaitIdle(state->device.graphics_queue);
+    vulkan_fence_destroy(state, &graphics_fence);
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1, &graphics_cmd);
+  }
 
   return true_v;
 }

@@ -57,7 +57,7 @@ bool8_t vulkan_shader_module_create(
   *out_shader = shader_module;
   *out_stage = stage_info;
 
-  log_debug("Shader module created: %p", out_shader);
+  // log_debug("Shader module created: %p", out_shader);
 
   return true;
 }
@@ -65,7 +65,7 @@ bool8_t vulkan_shader_module_create(
 void vulkan_shader_module_destroy(VulkanBackendState *state,
                                   VkShaderModule shader) {
   if (shader != VK_NULL_HANDLE) {
-    log_debug("Destroying shader module: %p", shader);
+    // log_debug("Destroying shader module: %p", shader);
 
     vkDestroyShaderModule(state->device.logical_device, shader,
                           state->allocator);
@@ -279,8 +279,8 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
 
   scratch_destroy(scratch_global, ARENA_MEMORY_TAG_ARRAY);
 
-  log_debug("Created Vulkan global descriptor pool: %p",
-            out_shader_object->global_descriptor_pool);
+  // log_debug("Created Vulkan global descriptor pool: %p",
+  //           out_shader_object->global_descriptor_pool);
 
   VkrBufferTypeFlags buffer_type = bitset8_create();
   bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);

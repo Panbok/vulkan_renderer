@@ -66,7 +66,7 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
     // per-buffer fences
   }
 
-  log_debug("Created Vulkan buffer: %p", out_buffer->buffer.handle);
+  // log_debug("Created Vulkan buffer: %p", out_buffer->buffer.handle);
 
   // Initialize offset allocator for sub-allocations
   // Create dmemory for offset tracking (manages virtual address space, not real
@@ -100,7 +100,7 @@ void vulkan_buffer_destroy(VulkanBackendState *state, VulkanBuffer *buffer) {
     return;
   }
 
-  log_debug("Destroying Vulkan buffer: %p", buffer->handle);
+  // log_debug("Destroying Vulkan buffer: %p", buffer->handle);
 
   vkr_dmemory_allocator_destroy(&buffer->allocator);
 
@@ -137,8 +137,8 @@ bool8_t vulkan_buffer_resize(VulkanBackendState *state, uint64_t new_size,
   assert_log(new_size > buffer->total_size,
              "New size must be greater than current size");
 
-  log_debug("Resizing buffer from %llu to %llu bytes",
-            (uint64_t)buffer->total_size, (uint64_t)new_size);
+  // log_debug("Resizing buffer from %llu to %llu bytes",
+  //           (uint64_t)buffer->total_size, (uint64_t)new_size);
 
   VkBufferCreateInfo buffer_info = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -211,7 +211,7 @@ bool8_t vulkan_buffer_resize(VulkanBackendState *state, uint64_t new_size,
   buffer->memory = new_memory;
   buffer->total_size = new_size;
 
-  log_debug("Buffer resized successfully to %llu bytes", (uint64_t)new_size);
+  // log_debug("Buffer resized successfully to %llu bytes", (uint64_t)new_size);
 
   return true_v;
 }
@@ -362,8 +362,8 @@ void vulkan_buffer_bind_vertex_buffers(VulkanBackendState *state,
   vkCmdBindVertexBuffers(command_buffer->handle, first_binding, buffer_count,
                          buffers, offsets);
 
-  log_debug("Bound %u vertex buffers starting at binding %u", buffer_count,
-            first_binding);
+  // log_debug("Bound %u vertex buffers starting at binding %u", buffer_count,
+  //           first_binding);
 }
 
 void vulkan_buffer_bind_vertex_buffer(VulkanBackendState *state,
@@ -415,8 +415,8 @@ bool8_t vulkan_buffer_allocate(VulkanBackendState *state, VulkanBuffer *buffer,
   uintptr_t allocated = (uintptr_t)ptr;
   *out_offset = (uint64_t)(allocated - base);
 
-  log_debug("Allocated %llu bytes at offset %llu in buffer", (uint64_t)size,
-            (uint64_t)*out_offset);
+  // log_debug("Allocated %llu bytes at offset %llu in buffer", (uint64_t)size,
+  //           (uint64_t)*out_offset);
 
   return true_v;
 }

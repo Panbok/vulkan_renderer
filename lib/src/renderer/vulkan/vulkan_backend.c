@@ -120,7 +120,7 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
     }
 
     state->domain_initialized[domain] = true;
-    log_debug("Created domain render pass for domain %u", domain);
+    // log_debug("Created domain render pass for domain %u", domain);
   }
 
   if (state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD] &&
@@ -128,7 +128,7 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
     state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] =
         state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD];
     state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] = true;
-    log_debug("Linked WORLD_TRANSPARENT to WORLD render pass");
+    // log_debug("Linked WORLD_TRANSPARENT to WORLD render pass");
   }
 
   return true;
@@ -174,7 +174,7 @@ vkr_internal bool32_t create_domain_framebuffers(VulkanBackendState *state) {
       return false;
     }
 
-    log_debug("Created domain framebuffers for domain %u", domain);
+    // log_debug("Created domain framebuffers for domain %u", domain);
   }
 
   if (state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD]) {
@@ -467,7 +467,7 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
              "Swapchain not initialized");
 
   if (state->is_swapchain_recreation_requested) {
-    log_debug("Swapchain recreation was already requested");
+    // log_debug("Swapchain recreation was already requested");
     return false;
   }
 
@@ -607,7 +607,7 @@ renderer_vulkan_initialize(void **out_backend_state,
   assert_log(initial_height > 0, "Initial height is 0");
   assert_log(device_requirements != NULL, "Device requirements is NULL");
 
-  log_debug("Initializing Vulkan backend");
+  // log_debug("Initializing Vulkan backend");
 
   ArenaFlags temp_arena_flags = bitset8_create();
   Arena *temp_arena = arena_create(MB(4), KB(64), temp_arena_flags);
@@ -800,7 +800,7 @@ void renderer_vulkan_get_device_information(
 }
 
 void renderer_vulkan_shutdown(void *backend_state) {
-  log_debug("Shutting down Vulkan backend");
+  // log_debug("Shutting down Vulkan backend");
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
   // Ensure all GPU work is complete before destroying any resources
@@ -907,12 +907,12 @@ void renderer_vulkan_shutdown(void *backend_state) {
 
 void renderer_vulkan_on_resize(void *backend_state, uint32_t new_width,
                                uint32_t new_height) {
-  log_debug("Resizing Vulkan backend to %d x %d", new_width, new_height);
+  // log_debug("Resizing Vulkan backend to %d x %d", new_width, new_height);
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
   if (state->is_swapchain_recreation_requested) {
-    log_debug("Swapchain recreation was already requested");
+    // log_debug("Swapchain recreation was already requested");
     return;
   }
 
@@ -1244,7 +1244,7 @@ VkrBackendResourceHandle
 renderer_vulkan_create_buffer(void *backend_state,
                               const VkrBufferDescription *desc,
                               const void *initial_data) {
-  log_debug("Creating Vulkan buffer");
+  // log_debug("Creating Vulkan buffer");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
@@ -1283,7 +1283,7 @@ VkrRendererError renderer_vulkan_update_buffer(void *backend_state,
                                                VkrBackendResourceHandle handle,
                                                uint64_t offset, uint64_t size,
                                                const void *data) {
-  log_debug("Updating Vulkan buffer");
+  // log_debug("Updating Vulkan buffer");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
@@ -1299,7 +1299,7 @@ VkrRendererError renderer_vulkan_upload_buffer(void *backend_state,
                                                VkrBackendResourceHandle handle,
                                                uint64_t offset, uint64_t size,
                                                const void *data) {
-  log_debug("Uploading Vulkan buffer");
+  // log_debug("Uploading Vulkan buffer");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
@@ -1349,7 +1349,7 @@ VkrRendererError renderer_vulkan_upload_buffer(void *backend_state,
 
 void renderer_vulkan_destroy_buffer(void *backend_state,
                                     VkrBackendResourceHandle handle) {
-  log_debug("Destroying Vulkan buffer");
+  // log_debug("Destroying Vulkan buffer");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
@@ -1380,7 +1380,7 @@ renderer_vulkan_create_texture(void *backend_state,
     return renderer_vulkan_create_cube_texture(state, desc, initial_data);
   }
 
-  log_debug("Creating Vulkan texture");
+  // log_debug("Creating Vulkan texture");
 
   struct s_TextureHandle *texture = arena_alloc(
       state->arena, sizeof(struct s_TextureHandle), ARENA_MEMORY_TAG_RENDERER);
@@ -1463,16 +1463,6 @@ renderer_vulkan_create_texture(void *backend_state,
           VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
           &texture->texture.image)) {
     log_fatal("Failed to create Vulkan image");
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
-  }
-
-  VulkanCommandBuffer temp_command_buffer = {0};
-  if (!vulkan_command_buffer_allocate_and_begin_single_use(
-          state, &temp_command_buffer)) {
-    log_fatal("Failed to allocate and begin single use command buffer");
-    vulkan_image_destroy(state, &texture->texture.image);
     if (staging_buffer)
       vulkan_buffer_destroy(state, &staging_buffer->buffer);
     if (scratch_valid)
@@ -1481,128 +1471,31 @@ renderer_vulkan_create_texture(void *backend_state,
   }
 
   if (initial_data) {
-    if (!vulkan_image_transition_layout(
-            state, &texture->texture.image, &temp_command_buffer, image_format,
-            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)) {
-      log_fatal("Failed to transition image layout");
-      vkEndCommandBuffer(temp_command_buffer.handle);
-      vkFreeCommandBuffers(state->device.logical_device,
-                           state->device.graphics_command_pool, 1,
-                           &temp_command_buffer.handle);
+    // Use two-phase upload: transfer queue for base level, graphics for mipmaps
+    bool8_t generate_mipmaps =
+        (texture->texture.image.mip_levels > 1) && linear_blit_supported;
+
+    if (!vulkan_image_upload_with_mipmaps(state, &texture->texture.image,
+                                          staging_buffer->buffer.handle,
+                                          image_format, generate_mipmaps)) {
+      log_fatal("Failed to upload texture via transfer queue");
       vulkan_image_destroy(state, &texture->texture.image);
       if (staging_buffer)
         vulkan_buffer_destroy(state, &staging_buffer->buffer);
       if (scratch_valid)
         scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
       return (VkrBackendResourceHandle){.ptr = NULL};
-    }
-
-    if (!vulkan_image_copy_from_buffer(state, &texture->texture.image,
-                                       staging_buffer->buffer.handle,
-                                       &temp_command_buffer)) {
-      log_fatal("Failed to copy buffer to image");
-      vkEndCommandBuffer(temp_command_buffer.handle);
-      vkFreeCommandBuffers(state->device.logical_device,
-                           state->device.graphics_command_pool, 1,
-                           &temp_command_buffer.handle);
-      vulkan_image_destroy(state, &texture->texture.image);
-      if (staging_buffer)
-        vulkan_buffer_destroy(state, &staging_buffer->buffer);
-      if (scratch_valid)
-        scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-      return (VkrBackendResourceHandle){.ptr = NULL};
-    }
-
-    bool8_t generated_mips = true_v;
-    if (texture->texture.image.mip_levels > 1 && linear_blit_supported) {
-      generated_mips = vulkan_image_generate_mipmaps(
-          state, &texture->texture.image, image_format, &temp_command_buffer);
-      if (!generated_mips) {
-        // Fall back to a single mip level if generation failed
-        log_error("Mipmap generation failed, falling back to single mip level. "
-                  "Recreating image to avoid memory waste.");
-
-        vulkan_image_destroy(state, &texture->texture.image);
-
-        if (!vulkan_image_create(
-                state, VK_IMAGE_TYPE_2D, desc->width, desc->height,
-                image_format, VK_IMAGE_TILING_OPTIMAL,
-                VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                    VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                    VK_IMAGE_USAGE_SAMPLED_BIT |
-                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1,
-                VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
-                &texture->texture.image)) {
-          log_fatal("Failed to recreate Vulkan image with single mip level");
-          vkEndCommandBuffer(temp_command_buffer.handle);
-          vkFreeCommandBuffers(state->device.logical_device,
-                               state->device.graphics_command_pool, 1,
-                               &temp_command_buffer.handle);
-          if (staging_buffer)
-            vulkan_buffer_destroy(state, &staging_buffer->buffer);
-          if (scratch_valid)
-            scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-          return (VkrBackendResourceHandle){.ptr = NULL};
-        }
-
-        if (!vulkan_image_transition_layout(
-                state, &texture->texture.image, &temp_command_buffer,
-                image_format, VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)) {
-          log_fatal("Failed to transition recreated image layout");
-          vkEndCommandBuffer(temp_command_buffer.handle);
-          vkFreeCommandBuffers(state->device.logical_device,
-                               state->device.graphics_command_pool, 1,
-                               &temp_command_buffer.handle);
-          vulkan_image_destroy(state, &texture->texture.image);
-          if (staging_buffer)
-            vulkan_buffer_destroy(state, &staging_buffer->buffer);
-          if (scratch_valid)
-            scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-          return (VkrBackendResourceHandle){.ptr = NULL};
-        }
-
-        if (!vulkan_image_copy_from_buffer(state, &texture->texture.image,
-                                           staging_buffer->buffer.handle,
-                                           &temp_command_buffer)) {
-          log_fatal("Failed to copy buffer to recreated image");
-          vkEndCommandBuffer(temp_command_buffer.handle);
-          vkFreeCommandBuffers(state->device.logical_device,
-                               state->device.graphics_command_pool, 1,
-                               &temp_command_buffer.handle);
-          vulkan_image_destroy(state, &texture->texture.image);
-          if (staging_buffer)
-            vulkan_buffer_destroy(state, &staging_buffer->buffer);
-          if (scratch_valid)
-            scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-          return (VkrBackendResourceHandle){.ptr = NULL};
-        }
-
-        texture->texture.image.mip_levels = 1;
-        linear_blit_supported = false_v;
-      }
-    }
-
-    if (texture->texture.image.mip_levels == 1 || !linear_blit_supported) {
-      if (!vulkan_image_transition_layout(
-              state, &texture->texture.image, &temp_command_buffer,
-              image_format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
-        log_fatal("Failed to transition image layout");
-        vkEndCommandBuffer(temp_command_buffer.handle);
-        vkFreeCommandBuffers(state->device.logical_device,
-                             state->device.graphics_command_pool, 1,
-                             &temp_command_buffer.handle);
-        vulkan_image_destroy(state, &texture->texture.image);
-        if (staging_buffer)
-          vulkan_buffer_destroy(state, &staging_buffer->buffer);
-        if (scratch_valid)
-          scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-        return (VkrBackendResourceHandle){.ptr = NULL};
-      }
     }
   } else {
+    // Writable texture - just transition layout on graphics queue
+    VulkanCommandBuffer temp_command_buffer = {0};
+    if (!vulkan_command_buffer_allocate_and_begin_single_use(
+            state, &temp_command_buffer)) {
+      log_fatal("Failed to allocate command buffer for writable texture");
+      vulkan_image_destroy(state, &texture->texture.image);
+      return (VkrBackendResourceHandle){.ptr = NULL};
+    }
+
     if (!vulkan_image_transition_layout(
             state, &texture->texture.image, &temp_command_buffer, image_format,
             VK_IMAGE_LAYOUT_UNDEFINED,
@@ -1615,24 +1508,21 @@ renderer_vulkan_create_texture(void *backend_state,
       vulkan_image_destroy(state, &texture->texture.image);
       return (VkrBackendResourceHandle){.ptr = NULL};
     }
-  }
 
-  if (!vulkan_command_buffer_end_single_use(
-          state, &temp_command_buffer, state->device.graphics_queue,
-          array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
-              ->handle)) {
-    log_fatal("Failed to end single use command buffer");
-    vulkan_image_destroy(state, &texture->texture.image);
-    if (staging_buffer)
-      vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    if (scratch_valid)
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
-  }
+    if (!vulkan_command_buffer_end_single_use(
+            state, &temp_command_buffer, state->device.graphics_queue,
+            array_get_VulkanFence(&state->in_flight_fences,
+                                  state->current_frame)
+                ->handle)) {
+      log_fatal("Failed to end single use command buffer");
+      vulkan_image_destroy(state, &texture->texture.image);
+      return (VkrBackendResourceHandle){.ptr = NULL};
+    }
 
-  vkFreeCommandBuffers(state->device.logical_device,
-                       state->device.graphics_command_pool, 1,
-                       &temp_command_buffer.handle);
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1,
+                         &temp_command_buffer.handle);
+  }
 
   VkFilter min_filter = VK_FILTER_LINEAR;
   VkFilter mag_filter = VK_FILTER_LINEAR;
@@ -1644,37 +1534,39 @@ renderer_vulkan_create_texture(void *backend_state,
                              &mag_filter, &mipmap_mode, &anisotropy_enable,
                              &max_lod);
 
-  VkSamplerCreateInfo sampler_create_info = {
+  // Create sampler
+  VkSamplerCreateInfo sampler_info = {
       .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
       .magFilter = mag_filter,
       .minFilter = min_filter,
+      .mipmapMode = mipmap_mode,
       .addressModeU =
           vulkan_sampler_address_mode_from_repeat(desc->u_repeat_mode),
       .addressModeV =
           vulkan_sampler_address_mode_from_repeat(desc->v_repeat_mode),
       .addressModeW =
           vulkan_sampler_address_mode_from_repeat(desc->w_repeat_mode),
+      .mipLodBias = 0.0f,
       .anisotropyEnable = anisotropy_enable,
-      .maxAnisotropy =
-          anisotropy_enable
-              ? state->device.properties.limits.maxSamplerAnisotropy
-              : 1.0f,
-      .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-      .unnormalizedCoordinates = VK_FALSE,
+      .maxAnisotropy = anisotropy_enable
+                           ? state->device.properties.limits.maxSamplerAnisotropy
+                           : 1.0f,
       .compareEnable = VK_FALSE,
       .compareOp = VK_COMPARE_OP_ALWAYS,
-      .mipmapMode = mipmap_mode,
-      .mipLodBias = 0.0f,
       .minLod = 0.0f,
       .maxLod = max_lod,
+      .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+      .unnormalizedCoordinates = VK_FALSE,
   };
 
-  if (vkCreateSampler(state->device.logical_device, &sampler_create_info, NULL,
+  if (vkCreateSampler(state->device.logical_device, &sampler_info, NULL,
                       &texture->texture.sampler) != VK_SUCCESS) {
-    log_fatal("Failed to create Vulkan sampler");
+    log_fatal("Failed to create texture sampler");
     vulkan_image_destroy(state, &texture->texture.image);
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    if (staging_buffer)
+      vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    if (scratch_valid)
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -1706,7 +1598,7 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
   assert_log(initial_data != NULL,
              "Cube map requires initial data for all 6 faces");
 
-  log_debug("Creating Vulkan cube map texture");
+  // log_debug("Creating Vulkan cube map texture");
 
   struct s_TextureHandle *texture = arena_alloc(
       state->arena, sizeof(struct s_TextureHandle), ARENA_MEMORY_TAG_RENDERER);
@@ -1778,107 +1670,38 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
-  VulkanCommandBuffer temp_command_buffer = {0};
-  if (!vulkan_command_buffer_allocate_and_begin_single_use(
-          state, &temp_command_buffer)) {
-    log_fatal("Failed to allocate and begin single use command buffer");
+  // Upload cube map faces via transfer queue
+  if (!vulkan_image_upload_cube_via_transfer(state, &texture->texture.image,
+                                             staging_buffer->buffer.handle,
+                                             image_format, face_size)) {
+    log_fatal("Failed to upload cube map via transfer queue");
     vulkan_image_destroy(state, &texture->texture.image);
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
-
-  // Transition to transfer destination
-  VkImageSubresourceRange subresource_range = {
-      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-      .baseMipLevel = 0,
-      .levelCount = mip_levels,
-      .baseArrayLayer = 0,
-      .layerCount = 6,
-  };
-
-  if (!vulkan_image_transition_layout_range(
-          state, &texture->texture.image, &temp_command_buffer, image_format,
-          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-          &subresource_range)) {
-    log_fatal("Failed to transition cube map layout");
-    vkEndCommandBuffer(temp_command_buffer.handle);
-    vkFreeCommandBuffers(state->device.logical_device,
-                         state->device.graphics_command_pool, 1,
-                         &temp_command_buffer.handle);
-    vulkan_image_destroy(state, &texture->texture.image);
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
-  }
-
-  // Copy each face to its array layer
-  if (!vulkan_image_copy_cube_faces_from_buffer(
-          state, &texture->texture.image, staging_buffer->buffer.handle,
-          &temp_command_buffer, face_size)) {
-    log_fatal("Failed to copy cube map faces");
-    vkEndCommandBuffer(temp_command_buffer.handle);
-    vkFreeCommandBuffers(state->device.logical_device,
-                         state->device.graphics_command_pool, 1,
-                         &temp_command_buffer.handle);
-    vulkan_image_destroy(state, &texture->texture.image);
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
-  }
-
-  // Transition to shader read optimal
-  if (!vulkan_image_transition_layout_range(
-          state, &texture->texture.image, &temp_command_buffer, image_format,
-          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &subresource_range)) {
-    log_fatal("Failed to transition cube map to shader read layout");
-    vkEndCommandBuffer(temp_command_buffer.handle);
-    vkFreeCommandBuffers(state->device.logical_device,
-                         state->device.graphics_command_pool, 1,
-                         &temp_command_buffer.handle);
-    vulkan_image_destroy(state, &texture->texture.image);
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
-  }
-
-  if (!vulkan_command_buffer_end_single_use(
-          state, &temp_command_buffer, state->device.graphics_queue,
-          array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
-              ->handle)) {
-    log_fatal("Failed to end single use command buffer");
-    vulkan_image_destroy(state, &texture->texture.image);
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
-  }
-
-  vkFreeCommandBuffers(state->device.logical_device,
-                       state->device.graphics_command_pool, 1,
-                       &temp_command_buffer.handle);
 
   // Create sampler for cube map (clamp to edge is typical for skyboxes)
-  VkSamplerCreateInfo sampler_create_info = {
+  VkSamplerCreateInfo sampler_info = {
       .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
       .magFilter = VK_FILTER_LINEAR,
       .minFilter = VK_FILTER_LINEAR,
+      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
       .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
       .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
       .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .mipLodBias = 0.0f,
       .anisotropyEnable = VK_FALSE,
       .maxAnisotropy = 1.0f,
-      .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-      .unnormalizedCoordinates = VK_FALSE,
       .compareEnable = VK_FALSE,
       .compareOp = VK_COMPARE_OP_ALWAYS,
-      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-      .mipLodBias = 0.0f,
       .minLod = 0.0f,
       .maxLod = 0.0f,
+      .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+      .unnormalizedCoordinates = VK_FALSE,
   };
 
-  if (vkCreateSampler(state->device.logical_device, &sampler_create_info, NULL,
+  if (vkCreateSampler(state->device.logical_device, &sampler_info, NULL,
                       &texture->texture.sampler) != VK_SUCCESS) {
     log_fatal("Failed to create cube map sampler");
     vulkan_image_destroy(state, &texture->texture.image);
@@ -1892,8 +1715,8 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
   vulkan_buffer_destroy(state, &staging_buffer->buffer);
   scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
 
-  log_debug("Created Vulkan cube map texture: %p",
-            texture->texture.image.handle);
+  // log_debug("Created Vulkan cube map texture: %p",
+  //           texture->texture.image.handle);
 
   return (VkrBackendResourceHandle){.ptr = texture};
 }
@@ -1928,45 +1751,43 @@ renderer_vulkan_update_texture(void *backend_state,
                              &mag_filter, &mipmap_mode, &anisotropy_enable,
                              &max_lod);
 
-  VkSamplerCreateInfo sampler_create_info = {
+  // Create new sampler for texture update
+  VkSamplerCreateInfo sampler_info = {
       .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
       .magFilter = mag_filter,
       .minFilter = min_filter,
+      .mipmapMode = mipmap_mode,
       .addressModeU =
           vulkan_sampler_address_mode_from_repeat(desc->u_repeat_mode),
       .addressModeV =
           vulkan_sampler_address_mode_from_repeat(desc->v_repeat_mode),
       .addressModeW =
           vulkan_sampler_address_mode_from_repeat(desc->w_repeat_mode),
+      .mipLodBias = 0.0f,
       .anisotropyEnable = anisotropy_enable,
-      .maxAnisotropy =
-          anisotropy_enable
-              ? state->device.properties.limits.maxSamplerAnisotropy
-              : 1.0f,
-      .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-      .unnormalizedCoordinates = VK_FALSE,
+      .maxAnisotropy = anisotropy_enable
+                           ? state->device.properties.limits.maxSamplerAnisotropy
+                           : 1.0f,
       .compareEnable = VK_FALSE,
       .compareOp = VK_COMPARE_OP_ALWAYS,
-      .mipmapMode = mipmap_mode,
-      .mipLodBias = 0.0f,
       .minLod = 0.0f,
       .maxLod = max_lod,
+      .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+      .unnormalizedCoordinates = VK_FALSE,
   };
 
-  VkSampler new_sampler = VK_NULL_HANDLE;
-  if (vkCreateSampler(state->device.logical_device, &sampler_create_info, NULL,
+  VkSampler new_sampler;
+  if (vkCreateSampler(state->device.logical_device, &sampler_info, NULL,
                       &new_sampler) != VK_SUCCESS) {
-    log_error("Failed to update Vulkan sampler");
+    log_error("Failed to create sampler for texture update");
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
-  // Ensure no in-flight use of the old sampler before destroying it
+  // Ensure no in-flight use of the old sampler before switching
   vkQueueWaitIdle(state->device.graphics_queue);
 
-  if (texture->texture.sampler != VK_NULL_HANDLE) {
-    vkDestroySampler(state->device.logical_device, texture->texture.sampler,
-                     NULL);
-  }
+  // Destroy old sampler and use new one
+  vkDestroySampler(state->device.logical_device, texture->texture.sampler, NULL);
   texture->texture.sampler = new_sampler;
 
   texture->description.u_repeat_mode = desc->u_repeat_mode;
@@ -2321,33 +2142,33 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
                              new_image.mip_levels, &min_filter, &mag_filter,
                              &mipmap_mode, &anisotropy_enable, &max_lod);
 
-  VkSamplerCreateInfo sampler_create_info = {
+  // Create new sampler for resized texture
+  VkSamplerCreateInfo sampler_info = {
       .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
       .magFilter = mag_filter,
       .minFilter = min_filter,
+      .mipmapMode = mipmap_mode,
       .addressModeU = vulkan_sampler_address_mode_from_repeat(
           texture->description.u_repeat_mode),
       .addressModeV = vulkan_sampler_address_mode_from_repeat(
           texture->description.v_repeat_mode),
       .addressModeW = vulkan_sampler_address_mode_from_repeat(
           texture->description.w_repeat_mode),
+      .mipLodBias = 0.0f,
       .anisotropyEnable = anisotropy_enable,
-      .maxAnisotropy =
-          anisotropy_enable
-              ? state->device.properties.limits.maxSamplerAnisotropy
-              : 1.0f,
-      .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
-      .unnormalizedCoordinates = VK_FALSE,
+      .maxAnisotropy = anisotropy_enable
+                           ? state->device.properties.limits.maxSamplerAnisotropy
+                           : 1.0f,
       .compareEnable = VK_FALSE,
       .compareOp = VK_COMPARE_OP_ALWAYS,
-      .mipmapMode = mipmap_mode,
-      .mipLodBias = 0.0f,
       .minLod = 0.0f,
       .maxLod = max_lod,
+      .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+      .unnormalizedCoordinates = VK_FALSE,
   };
 
-  VkSampler new_sampler = VK_NULL_HANDLE;
-  if (vkCreateSampler(state->device.logical_device, &sampler_create_info, NULL,
+  VkSampler new_sampler;
+  if (vkCreateSampler(state->device.logical_device, &sampler_info, NULL,
                       &new_sampler) != VK_SUCCESS) {
     vulkan_image_destroy(state, &new_image);
     return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
@@ -2362,9 +2183,8 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
   texture->texture.image = new_image;
   texture->texture.sampler = new_sampler;
 
-  if (old_sampler != VK_NULL_HANDLE) {
-    vkDestroySampler(state->device.logical_device, old_sampler, NULL);
-  }
+  // Destroy old sampler
+  vkDestroySampler(state->device.logical_device, old_sampler, NULL);
 
   vulkan_image_destroy(state, &old_image);
 
@@ -2380,7 +2200,7 @@ void renderer_vulkan_destroy_texture(void *backend_state,
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(handle.ptr != NULL, "Handle is NULL");
 
-  log_debug("Destroying Vulkan texture");
+  // log_debug("Destroying Vulkan texture");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   struct s_TextureHandle *texture = (struct s_TextureHandle *)handle.ptr;
@@ -2391,9 +2211,9 @@ void renderer_vulkan_destroy_texture(void *backend_state,
   }
 
   vulkan_image_destroy(state, &texture->texture.image);
-  vkDestroySampler(state->device.logical_device, texture->texture.sampler,
-                   NULL);
 
+  // Destroy the sampler
+  vkDestroySampler(state->device.logical_device, texture->texture.sampler, NULL);
   texture->texture.sampler = VK_NULL_HANDLE;
   return;
 }
@@ -2403,7 +2223,7 @@ VkrBackendResourceHandle renderer_vulkan_create_graphics_pipeline(
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(desc != NULL, "Pipeline description is NULL");
 
-  log_debug("Creating Vulkan pipeline");
+  // log_debug("Creating Vulkan pipeline");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
@@ -2487,7 +2307,7 @@ void renderer_vulkan_destroy_pipeline(void *backend_state,
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(handle.ptr != NULL, "Handle is NULL");
 
-  log_debug("Destroying Vulkan pipeline");
+  // log_debug("Destroying Vulkan pipeline");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 

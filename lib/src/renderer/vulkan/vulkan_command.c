@@ -21,7 +21,7 @@ vulkan_command_buffer_allocate(VulkanBackendState *state,
 
   out_command_buffer->state = COMMAND_BUFFER_STATE_READY;
 
-  log_debug("Created Vulkan command buffer: %p", out_command_buffer->handle);
+  // log_debug("Created Vulkan command buffer: %p", out_command_buffer->handle);
 
   return true_v;
 }
@@ -31,7 +31,7 @@ void vulkan_command_buffer_free(VulkanBackendState *state,
   assert_log(state != NULL, "State is NULL");
   assert_log(command_buffer != NULL, "Command buffer is NULL");
 
-  log_debug("Destroying Vulkan command buffer");
+  // log_debug("Destroying Vulkan command buffer");
 
   vkFreeCommandBuffers(state->device.logical_device,
                        state->device.graphics_command_pool, 1,

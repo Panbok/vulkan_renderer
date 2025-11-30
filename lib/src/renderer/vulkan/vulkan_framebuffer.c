@@ -33,7 +33,7 @@ bool8_t vulkan_framebuffer_create(VulkanBackendState *state,
   out_framebuffer->handle = framebuffer;
   out_framebuffer->renderpass = renderpass;
 
-  log_debug("Created Vulkan framebuffer: %p", framebuffer);
+  // log_debug("Created Vulkan framebuffer: %p", framebuffer);
 
   return true_v;
 }
@@ -47,7 +47,7 @@ void vulkan_framebuffer_destroy(VulkanBackendState *state,
     return;
   }
 
-  log_debug("Destroy Vulkan framebuffer: %p", framebuffer->handle);
+  // log_debug("Destroy Vulkan framebuffer: %p", framebuffer->handle);
 
   if (framebuffer->attachments.length > 0) {
     array_destroy_VkImageView(&framebuffer->attachments);
@@ -141,7 +141,7 @@ bool32_t vulkan_framebuffer_regenerate_for_domain(
     }
   }
 
-  log_debug("Created framebuffers for domain %d with %d attachments", domain,
-            attachment_count);
+  // log_debug("Created framebuffers for domain %d with %d attachments", domain,
+  //           attachment_count);
   return true;
 }

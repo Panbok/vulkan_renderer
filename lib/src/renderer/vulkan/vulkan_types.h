@@ -146,6 +146,7 @@ typedef struct VulkanDevice {
   VkPhysicalDevice physical_device;
   VkDevice logical_device;
   VkCommandPool graphics_command_pool;
+  VkCommandPool transfer_command_pool;
 
   VulkanSwapchainDetails swapchain_details;
 
