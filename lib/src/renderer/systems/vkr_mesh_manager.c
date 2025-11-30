@@ -228,6 +228,9 @@ bool8_t vkr_mesh_manager_create(VkrMeshManager *manager,
   vkr_mesh_manager_update_model(manager, index);
 
   VkrMesh *mesh = vkr_mesh_manager_get(manager, index);
+  if (!mesh) {
+    return false_v;
+  }
 
   if (out_mesh) {
     *out_mesh = mesh;
@@ -359,13 +362,15 @@ bool8_t vkr_mesh_manager_load(VkrMeshManager *manager,
   if (out_first_index) {
     *out_first_index = mesh_index;
   }
+
   if (out_mesh_count) {
     // Get the mesh to find how many subsets it has
     VkrMesh *mesh = vkr_mesh_manager_get(manager, mesh_index);
     if (mesh) {
       *out_mesh_count = vkr_mesh_manager_submesh_count(mesh);
     } else {
-      *out_mesh_count = 1;
+      log_error("Loaded mesh %u cannot be retrieved", mesh_index);
+      *out_mesh_count = 0;
     }
   }
   return true_v;
@@ -376,6 +381,9 @@ vkr_internal bool8_t vkr_mesh_manager_process_batch_result(
     VkrMeshManager *manager, VkrMeshBatchResult *batch_result,
     const VkrMeshLoadDesc *desc, uint32_t *out_index,
     VkrRendererError *out_error) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(desc != NULL, "Desc is NULL");
+
   if (!batch_result || !batch_result->success || !batch_result->result) {
     if (out_error) {
       *out_error = batch_result ? batch_result->error

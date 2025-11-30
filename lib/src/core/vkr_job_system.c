@@ -88,8 +88,25 @@ vkr_internal bool8_t job_system_register_dependency_locked(
     return false_v;
   }
 
-  VkrJobSlot *parent = job_system_get_slot(system, dependency);
-  if (!parent || parent == child) {
+  if (!job_handle_is_valid(dependency)) {
+    return false_v;
+  }
+
+  uint32_t idx = dependency.id - 1;
+  if (idx >= system->max_jobs) {
+    return false_v;
+  }
+
+  VkrJobSlot *parent = &system->slots[idx];
+  if (parent->handle.generation > dependency.generation) {
+    return true_v;
+  }
+
+  if (parent->handle.generation != dependency.generation) {
+    return false_v;
+  }
+
+  if (parent == child) {
     return false_v;
   }
 
@@ -221,6 +238,8 @@ vkr_internal void job_worker_complete(VkrJobSystem *system, VkrJobSlot *slot,
   job_slot_reset(system, slot);
   // Signal waiting submitters that a slot is available
   vkr_cond_signal(system->slots_avail);
+  // Wake any waiters so they see the generation has changed (job fully done)
+  vkr_cond_broadcast(system->cond);
   vkr_mutex_unlock(system->mutex);
 }
 
@@ -620,13 +639,12 @@ bool8_t vkr_job_wait(VkrJobSystem *system, VkrJobHandle handle) {
     return true_v;
   }
 
-  while (slot->state != JOB_STATE_COMPLETED &&
-         slot->handle.generation == handle.generation) {
+  // Wait for the slot to be recycled (generation changes after callbacks run).
+  // This ensures the job AND its callbacks have fully completed.
+  while (slot->handle.generation == handle.generation) {
     vkr_cond_wait(system->cond, system->mutex);
   }
-  bool8_t finished = (slot->state == JOB_STATE_COMPLETED &&
-                      slot->handle.generation == handle.generation) ||
-                     (slot->handle.generation != handle.generation);
+
   vkr_mutex_unlock(system->mutex);
-  return finished;
+  return true_v;
 }

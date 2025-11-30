@@ -475,8 +475,6 @@ vkr_internal bool32_t vkr_view_world_on_create(VkrLayerContext *ctx) {
   vkr_transform_set_parent(&cube_mesh_3_ptr->transform,
                            &cube_mesh_2_ptr->transform);
 
-  vkr_view_world_load_demo_meshes(rf, state);
-
   event_manager_subscribe(rf->event_manager, EVENT_TYPE_LOAD_WORLD_MESHES,
                           vkr_view_world_on_load_meshes_event, state);
 
@@ -609,10 +607,10 @@ vkr_internal void vkr_view_world_on_render(VkrLayerContext *ctx,
     return;
   }
 
-  // if (state->world_meshes_state == VKR_WORLD_MESHES_LOADING_STATE_LOADING) {
-  //   state->world_meshes_state = VKR_WORLD_MESHES_LOADING_STATE_LOADED;
-  //   vkr_view_world_load_demo_meshes(rf, state);
-  // }
+  if (state->world_meshes_state == VKR_WORLD_MESHES_LOADING_STATE_LOADING) {
+    state->world_meshes_state = VKR_WORLD_MESHES_LOADING_STATE_LOADED;
+    vkr_view_world_load_demo_meshes(rf, state);
+  }
 
   uint32_t mesh_capacity = vkr_mesh_manager_capacity(&rf->mesh_manager);
   bool8_t globals_applied = false_v;
