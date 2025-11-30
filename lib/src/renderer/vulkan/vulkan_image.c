@@ -456,7 +456,29 @@ bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
   VkQueue transfer_queue = use_transfer_queue ? state->device.transfer_queue
                                               : state->device.graphics_queue;
 
-  // ========== PHASE 1: Transfer base level via transfer queue ==========
+  // Pre-allocate graphics command buffer before transfer work to ensure we can
+  // complete the queue ownership transfer. This prevents leaving the image in
+  // an undefined state if graphics cmd allocation fails after transfer
+  // completes.
+  VkCommandBuffer graphics_cmd = VK_NULL_HANDLE;
+  bool8_t need_graphics_phase = use_transfer_queue || generate_mipmaps;
+  if (need_graphics_phase) {
+    VkCommandBufferAllocateInfo graphics_alloc = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandPool = state->device.graphics_command_pool,
+        .commandBufferCount = 1,
+    };
+
+    if (vkAllocateCommandBuffers(state->device.logical_device, &graphics_alloc,
+                                 &graphics_cmd) != VK_SUCCESS) {
+      log_error("Failed to pre-allocate graphics command buffer for image "
+                "upload");
+      return false_v;
+    }
+  }
+
+  // Transfer base level via transfer queue
   VkCommandBufferAllocateInfo transfer_alloc = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
       .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
@@ -468,6 +490,11 @@ bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
   if (vkAllocateCommandBuffers(state->device.logical_device, &transfer_alloc,
                                &transfer_cmd) != VK_SUCCESS) {
     log_error("Failed to allocate transfer command buffer");
+    if (graphics_cmd != VK_NULL_HANDLE) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+    }
     return false_v;
   }
 
@@ -479,6 +506,11 @@ bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
   if (vkBeginCommandBuffer(transfer_cmd, &begin_info) != VK_SUCCESS) {
     vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1,
                          &transfer_cmd);
+    if (graphics_cmd != VK_NULL_HANDLE) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+    }
     return false_v;
   }
 
@@ -578,6 +610,11 @@ bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
   if (vkEndCommandBuffer(transfer_cmd) != VK_SUCCESS) {
     vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1,
                          &transfer_cmd);
+    if (graphics_cmd != VK_NULL_HANDLE) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+    }
     return false_v;
   }
 
@@ -596,6 +633,11 @@ bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
     vulkan_fence_destroy(state, &transfer_fence);
     vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1,
                          &transfer_cmd);
+    if (graphics_cmd != VK_NULL_HANDLE) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+    }
     return false_v;
   }
 
@@ -606,27 +648,16 @@ bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
                        &transfer_cmd);
 
   // If no mipmaps and same queue, we're done
-  if (!generate_mipmaps && !use_transfer_queue) {
+  if (!need_graphics_phase) {
     return true_v;
   }
 
-  // ========== PHASE 2: Graphics queue for mipmaps/ownership ==========
-  VkCommandBuffer graphics_cmd;
-  VkCommandBufferAllocateInfo graphics_alloc = {
-      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-      .commandPool = state->device.graphics_command_pool,
-      .commandBufferCount = 1,
-  };
-
-  if (vkAllocateCommandBuffers(state->device.logical_device, &graphics_alloc,
-                               &graphics_cmd) != VK_SUCCESS) {
-    return false_v;
-  }
-
+  // Graphics queue for mipmaps/ownership - use pre-allocated command buffer
   if (vkBeginCommandBuffer(graphics_cmd, &begin_info) != VK_SUCCESS) {
     vkFreeCommandBuffers(state->device.logical_device,
                          state->device.graphics_command_pool, 1, &graphics_cmd);
+    log_error("Failed to begin graphics command buffer; image ownership may be "
+              "inconsistent");
     return false_v;
   }
 
@@ -750,6 +781,27 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
   VkQueue transfer_queue = use_transfer_queue ? state->device.transfer_queue
                                               : state->device.graphics_queue;
 
+  // Pre-allocate graphics command buffer before transfer work to ensure we can
+  // complete the queue ownership transfer. This prevents leaving the image in
+  // an undefined state if graphics cmd allocation fails after transfer
+  // completes.
+  VkCommandBuffer graphics_cmd = VK_NULL_HANDLE;
+  if (use_transfer_queue) {
+    VkCommandBufferAllocateInfo graphics_alloc = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandPool = state->device.graphics_command_pool,
+        .commandBufferCount = 1,
+    };
+
+    if (vkAllocateCommandBuffers(state->device.logical_device, &graphics_alloc,
+                                 &graphics_cmd) != VK_SUCCESS) {
+      log_error("Failed to pre-allocate graphics command buffer for cube map "
+                "upload");
+      return false_v;
+    }
+  }
+
   VkCommandBufferAllocateInfo alloc_info = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
       .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
@@ -761,6 +813,11 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
   if (vkAllocateCommandBuffers(state->device.logical_device, &alloc_info,
                                &cmd) != VK_SUCCESS) {
     log_error("Failed to allocate cube map transfer command buffer");
+    if (graphics_cmd != VK_NULL_HANDLE) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+    }
     return false_v;
   }
 
@@ -771,6 +828,11 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
 
   if (vkBeginCommandBuffer(cmd, &begin_info) != VK_SUCCESS) {
     vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1, &cmd);
+    if (graphics_cmd != VK_NULL_HANDLE) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+    }
     return false_v;
   }
 
@@ -872,6 +934,11 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
 
   if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
     vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1, &cmd);
+    if (graphics_cmd != VK_NULL_HANDLE) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+    }
     return false_v;
   }
 
@@ -888,6 +955,11 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
       VK_SUCCESS) {
     vulkan_fence_destroy(state, &fence);
     vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1, &cmd);
+    if (graphics_cmd != VK_NULL_HANDLE) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+    }
     return false_v;
   }
 
@@ -896,25 +968,15 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
   vulkan_fence_destroy(state, &fence);
   vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1, &cmd);
 
-  // If different queue families, acquire ownership on graphics queue
+  // If different queue families, acquire ownership on graphics queue using
+  // pre-allocated command buffer
   if (use_transfer_queue) {
-    VkCommandBuffer graphics_cmd;
-    VkCommandBufferAllocateInfo graphics_alloc = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandPool = state->device.graphics_command_pool,
-        .commandBufferCount = 1,
-    };
-
-    if (vkAllocateCommandBuffers(state->device.logical_device, &graphics_alloc,
-                                 &graphics_cmd) != VK_SUCCESS) {
-      return false_v;
-    }
-
     if (vkBeginCommandBuffer(graphics_cmd, &begin_info) != VK_SUCCESS) {
       vkFreeCommandBuffers(state->device.logical_device,
                            state->device.graphics_command_pool, 1,
                            &graphics_cmd);
+      log_error("Failed to begin graphics command buffer; image ownership may "
+                "be inconsistent");
       return false_v;
     }
 
@@ -995,6 +1057,27 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
   VkQueue queue = use_transfer_queue ? state->device.transfer_queue
                                      : state->device.graphics_queue;
 
+  // Pre-allocate graphics command buffer before transfer work to ensure we can
+  // complete the queue ownership transfer. This prevents leaving the image in
+  // an undefined state if graphics cmd allocation fails after transfer
+  // completes.
+  VkCommandBuffer graphics_cmd = VK_NULL_HANDLE;
+  if (use_transfer_queue) {
+    VkCommandBufferAllocateInfo graphics_alloc = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandPool = state->device.graphics_command_pool,
+        .commandBufferCount = 1,
+    };
+
+    if (vkAllocateCommandBuffers(state->device.logical_device, &graphics_alloc,
+                                 &graphics_cmd) != VK_SUCCESS) {
+      log_error("Failed to pre-allocate graphics command buffer for image "
+                "upload");
+      return false_v;
+    }
+  }
+
   // Allocate command buffer
   VkCommandBufferAllocateInfo alloc_info = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
@@ -1007,6 +1090,11 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
   if (vkAllocateCommandBuffers(state->device.logical_device, &alloc_info,
                                &cmd) != VK_SUCCESS) {
     log_error("Failed to allocate transfer command buffer");
+    if (graphics_cmd != VK_NULL_HANDLE) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+    }
     return false_v;
   }
 
@@ -1018,6 +1106,11 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
   if (vkBeginCommandBuffer(cmd, &begin_info) != VK_SUCCESS) {
     log_error("Failed to begin transfer command buffer");
     vkFreeCommandBuffers(state->device.logical_device, command_pool, 1, &cmd);
+    if (graphics_cmd != VK_NULL_HANDLE) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+    }
     return false_v;
   }
 
@@ -1118,6 +1211,11 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
   if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
     log_error("Failed to end transfer command buffer");
     vkFreeCommandBuffers(state->device.logical_device, command_pool, 1, &cmd);
+    if (graphics_cmd != VK_NULL_HANDLE) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+    }
     return false_v;
   }
 
@@ -1127,6 +1225,11 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
   if (fence.handle == VK_NULL_HANDLE) {
     log_error("Failed to create transfer fence");
     vkFreeCommandBuffers(state->device.logical_device, command_pool, 1, &cmd);
+    if (graphics_cmd != VK_NULL_HANDLE) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+    }
     return false_v;
   }
 
@@ -1141,6 +1244,11 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
     log_error("Failed to submit transfer command buffer");
     vulkan_fence_destroy(state, &fence);
     vkFreeCommandBuffers(state->device.logical_device, command_pool, 1, &cmd);
+    if (graphics_cmd != VK_NULL_HANDLE) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+    }
     return false_v;
   }
 
@@ -1149,6 +1257,11 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
     log_error("Failed to wait for transfer fence");
     vulkan_fence_destroy(state, &fence);
     vkFreeCommandBuffers(state->device.logical_device, command_pool, 1, &cmd);
+    if (graphics_cmd != VK_NULL_HANDLE) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &graphics_cmd);
+    }
     return false_v;
   }
 
@@ -1157,27 +1270,14 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
   vkFreeCommandBuffers(state->device.logical_device, command_pool, 1, &cmd);
 
   // If using dedicated transfer queue, need to acquire on graphics queue
-  // and transition to shader read
+  // and transition to shader read using pre-allocated command buffer
   if (use_transfer_queue) {
-    VkCommandBuffer graphics_cmd;
-    VkCommandBufferAllocateInfo graphics_alloc = {
-        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandPool = state->device.graphics_command_pool,
-        .commandBufferCount = 1,
-    };
-
-    if (vkAllocateCommandBuffers(state->device.logical_device, &graphics_alloc,
-                                 &graphics_cmd) != VK_SUCCESS) {
-      log_error("Failed to allocate graphics command buffer for ownership "
-                "transfer");
-      return false_v;
-    }
-
     if (vkBeginCommandBuffer(graphics_cmd, &begin_info) != VK_SUCCESS) {
       vkFreeCommandBuffers(state->device.logical_device,
                            state->device.graphics_command_pool, 1,
                            &graphics_cmd);
+      log_error("Failed to begin graphics command buffer; image ownership may "
+                "be inconsistent");
       return false_v;
     }
 

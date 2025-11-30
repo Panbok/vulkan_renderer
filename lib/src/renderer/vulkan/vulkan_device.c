@@ -803,6 +803,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
     log_fatal("Failed to create Vulkan transfer command pool");
     vkDestroyCommandPool(state->device.logical_device,
                          state->device.graphics_command_pool, state->allocator);
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
     return false_v;
   }
 
@@ -830,12 +831,12 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
 
   log_debug("Graphics queue: %p", state->device.graphics_queue);
   log_debug("Present queue: %p", state->device.present_queue);
-  log_debug("Transfer queue: %p (family %d, dedicated: %s)",
-            state->device.transfer_queue, state->device.transfer_queue_index,
-            (state->device.transfer_queue_index !=
-             state->device.graphics_queue_index)
-                ? "yes"
-                : "no");
+  log_debug(
+      "Transfer queue: %p (family %d, dedicated: %s)",
+      state->device.transfer_queue, state->device.transfer_queue_index,
+      (state->device.transfer_queue_index != state->device.graphics_queue_index)
+          ? "yes"
+          : "no");
 
   return true;
 }
