@@ -19,9 +19,10 @@ set tmpfile=%TEMP%\test_output_%RANDOM%.txt
 
 for /L %%i in (1,1,50) do (
     build\tests\vulkan_renderer_tester.exe > "!tmpfile!" 2>&1
-    if errorlevel 1 (
+    set exitcode=!errorlevel!
+    if !exitcode! neq 0 (
         set /a failed+=1
-        echo Run %%i: FAILED ^(exit code: !errorlevel!^)
+        cho Run %%i: FAILED ^(exit code: !exitcode!^)
         echo --- Output ---
         type "!tmpfile!" | more /E +0
         echo --------------
