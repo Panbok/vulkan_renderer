@@ -719,9 +719,8 @@ bool8_t vkr_material_loader_parse_file(Arena *arena, String8 path,
         out_data->shader_name[trimmed_len] = '\0';
       }
     } else if (string8_contains_cstr(&key, "pipeline")) {
-      string_trim((char *)value.str);
-      out_data->pipeline_id =
-          vkr_get_pipeline_id_from_string((char *)value.str);
+      char *trimmed = string_trim((char *)value.str);
+      out_data->pipeline_id = vkr_get_pipeline_id_from_string(trimmed);
     }
   }
 
@@ -915,7 +914,7 @@ uint32_t vkr_material_loader_load_batch(VkrMaterialBatchContext *context,
       Scratch parse_scratch = scratch_create(scratch.arena);
       vkr_material_loader_parse_file(parse_scratch.arena, material_paths[i],
                                      &parsed_data[i]);
-      scratch_destroy(parse_scratch, ARENA_MEMORY_TAG_STRING);
+      scratch_destroy(parse_scratch, ARENA_MEMORY_TAG_ARRAY);
     }
   }
 

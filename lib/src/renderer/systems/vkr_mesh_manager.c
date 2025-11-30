@@ -229,6 +229,7 @@ bool8_t vkr_mesh_manager_create(VkrMeshManager *manager,
 
   VkrMesh *mesh = vkr_mesh_manager_get(manager, index);
   if (!mesh) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
     return false_v;
   }
 

@@ -1107,7 +1107,7 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
   uint32_t already_loaded = 0;
   uint32_t unique_in_batch = 0;
   for (uint32_t i = 0; i < count; i++) {
-    first_occurrence[i] = i;  // Default: each is its own first occurrence
+    first_occurrence[i] = i; // Default: each is its own first occurrence
 
     if (!paths[i].str || paths[i].length == 0) {
       continue;
@@ -1120,9 +1120,9 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
     if (entry) {
       // Already loaded - just return the existing handle
       VkrTexture *texture = &system->textures.data[entry->index];
-      out_handles[i] = (VkrTextureHandle){
-          .id = texture->description.id,
-          .generation = texture->description.generation};
+      out_handles[i] =
+          (VkrTextureHandle){.id = texture->description.id,
+                             .generation = texture->description.generation};
       out_errors[i] = VKR_RENDERER_ERROR_NONE;
       already_loaded++;
       continue;
@@ -1154,13 +1154,15 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
     }
   }
 
-  log_debug("Texture batch: %u paths, %u already loaded, %u unique need loading",
-            count, already_loaded, need_loading);
+  log_debug(
+      "Texture batch: %u paths, %u already loaded, %u unique need loading",
+      count, already_loaded, need_loading);
 
   if (need_loading == 0) {
     // Copy handles from first occurrence to duplicates
     for (uint32_t i = 0; i < count; i++) {
-      if (first_occurrence[i] != i && out_handles[first_occurrence[i]].id != 0) {
+      if (first_occurrence[i] != i &&
+          out_handles[first_occurrence[i]].id != 0) {
         out_handles[i] = out_handles[first_occurrence[i]];
       }
     }
@@ -1189,7 +1191,8 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
     }
     // Copy handles to duplicates
     for (uint32_t i = 0; i < count; i++) {
-      if (first_occurrence[i] != i && out_handles[first_occurrence[i]].id != 0) {
+      if (first_occurrence[i] != i &&
+          out_handles[first_occurrence[i]].id != 0) {
         out_handles[i] = out_handles[first_occurrence[i]];
       }
     }
@@ -1220,14 +1223,28 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
       if (!paths[i].str || paths[i].length == 0) {
         continue;
       }
+
       if (out_handles[i].id != 0) {
         continue; // Already loaded above
       }
+
+      if (first_occurrence[i] != i) {
+        continue;
+      }
+
       if (vkr_texture_system_load(system, paths[i], &out_handles[i],
                                   &out_errors[i])) {
         loaded++;
       }
     }
+
+    for (uint32_t i = 0; i < count; i++) {
+      if (first_occurrence[i] != i &&
+          out_handles[first_occurrence[i]].id != 0) {
+        out_handles[i] = out_handles[first_occurrence[i]];
+      }
+    }
+
     return loaded;
   }
 
@@ -1310,8 +1327,8 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
     int32_t height = results[i].height;
     int32_t original_channels = results[i].original_channels;
 
-    // Check if this texture was already loaded by earlier iteration in this batch
-    // BEFORE doing GPU upload to avoid wasting GPU resources
+    // Check if this texture was already loaded by earlier iteration in this
+    // batch BEFORE doing GPU upload to avoid wasting GPU resources
     const char *check_key = (const char *)paths[i].str;
     VkrTextureEntry *existing =
         vkr_hash_table_get_VkrTextureEntry(&system->texture_map, check_key);
@@ -1331,7 +1348,8 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
     VkrTextureFormat format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
 
     // Fast transparency check: sample a few pixels instead of scanning all
-    // Check corners and center - if any has alpha < 255, mark as potentially transparent
+    // Check corners and center - if any has alpha < 255, mark as potentially
+    // transparent
     VkrTexturePropertyFlags props = vkr_texture_property_flags_create();
     bool8_t has_transparency = false_v;
     if (original_channels == 4) {
