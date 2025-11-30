@@ -4,6 +4,15 @@
 
 vkr_global const char *mt_ext = "mt";
 
+// =============================================================================
+// Job payload for parallel material file parsing
+// =============================================================================
+
+typedef struct VkrMaterialParseJobPayload {
+  char file_path[VKR_MATERIAL_PATH_MAX];
+  VkrParsedMaterialData *result;
+} VkrMaterialParseJobPayload;
+
 /**
  * @brief Arena for storing file buffer. Loaders are never unloaded, so we can
  * reuse the same arena for all loaders.
@@ -61,10 +70,6 @@ vkr_internal uint32_t vkr_get_pipeline_id_from_string(char *value) {
 vkr_internal VkrRendererError
 vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
                                  Arena *temp_arena, VkrMaterial *out_material);
-
-vkr_internal VkrTextureHandle vkr_load_and_acquire_texture(
-    VkrMaterialSystem *material_system, Arena *temp_arena, String8 *name,
-    String8 value, VkrTextureSlot slot, const char *log_label);
 
 vkr_internal bool8_t vkr_material_loader_can_load(VkrResourceLoader *self,
                                                   String8 name) {
@@ -253,52 +258,73 @@ vkr_material_loader_unload(VkrResourceLoader *self,
   }
 }
 
-vkr_internal VkrTextureHandle vkr_load_and_acquire_texture(
-    VkrMaterialSystem *material_system, Arena *temp_arena, String8 *name,
-    String8 value, VkrTextureSlot slot, const char *log_label) {
-  assert_log(material_system != NULL, "Material system is NULL");
-  assert_log(temp_arena != NULL, "Temp arena is NULL");
-  assert_log(name != NULL, "Name is NULL");
-  assert_log(value.str != NULL, "Value is NULL");
-  assert_log(log_label != NULL, "Log label is NULL");
+// Structure to hold pending texture paths for batch loading
+typedef struct VkrMaterialTexturePaths {
+  String8 diffuse;
+  String8 specular;
+  String8 normal;
+} VkrMaterialTexturePaths;
 
-  Scratch scratch = scratch_create(temp_arena);
-  char *texture_path_cstr = (char *)arena_alloc(scratch.arena, value.length + 1,
-                                                ARENA_MEMORY_TAG_STRING);
-  if (!texture_path_cstr) {
-    log_error("Failed to allocate texture path buffer");
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
-    return VKR_TEXTURE_HANDLE_INVALID;
+vkr_internal void vkr_material_batch_load_textures(
+    VkrMaterialSystem *material_system, Arena *temp_arena,
+    const VkrMaterialTexturePaths *paths, VkrMaterial *out_material) {
+  // Count valid texture paths
+  uint32_t count = 0;
+  String8 batch_paths[3];
+  VkrTextureSlot batch_slots[3];
+
+  if (paths->diffuse.str && paths->diffuse.length > 0) {
+    batch_paths[count] = paths->diffuse;
+    batch_slots[count] = VKR_TEXTURE_SLOT_DIFFUSE;
+    count++;
   }
-  MemCopy(texture_path_cstr, value.str, (size_t)value.length);
-  texture_path_cstr[value.length] = '\0';
-  String8 texture_path = string8_create_from_cstr(
-      (const uint8_t *)texture_path_cstr, value.length);
-
-  log_debug("Material '%s': %s requested: %s", string8_cstr(name), log_label,
-            texture_path_cstr);
-
-  VkrTextureHandle handle = VKR_TEXTURE_HANDLE_INVALID;
-  VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_texture_system_load(material_system->texture_system, texture_path,
-                               &handle, &renderer_error) ||
-      renderer_error != VKR_RENDERER_ERROR_NONE) {
-    String8 error_string = vkr_renderer_get_error_string(renderer_error);
-    log_error("Failed to load texture '%s': %s", texture_path_cstr,
-              string8_cstr(&error_string));
+  if (paths->specular.str && paths->specular.length > 0) {
+    batch_paths[count] = paths->specular;
+    batch_slots[count] = VKR_TEXTURE_SLOT_SPECULAR;
+    count++;
+  }
+  if (paths->normal.str && paths->normal.length > 0) {
+    batch_paths[count] = paths->normal;
+    batch_slots[count] = VKR_TEXTURE_SLOT_NORMAL;
+    count++;
   }
 
-  handle = vkr_texture_system_acquire(material_system->texture_system,
-                                      texture_path, true_v, &renderer_error);
-  if (renderer_error != VKR_RENDERER_ERROR_NONE) {
-    String8 error_string = vkr_renderer_get_error_string(renderer_error);
-    log_error("Failed to acquire texture '%s': %s", texture_path_cstr,
-              string8_cstr(&error_string));
-    handle = VKR_TEXTURE_HANDLE_INVALID;
+  if (count == 0) {
+    return;
   }
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
-  return handle;
+  VkrTextureHandle handles[3] = {VKR_TEXTURE_HANDLE_INVALID,
+                                 VKR_TEXTURE_HANDLE_INVALID,
+                                 VKR_TEXTURE_HANDLE_INVALID};
+  VkrRendererError errors[3] = {VKR_RENDERER_ERROR_NONE,
+                                VKR_RENDERER_ERROR_NONE,
+                                VKR_RENDERER_ERROR_NONE};
+
+  // Batch load all textures in parallel
+  uint32_t loaded = vkr_texture_system_load_batch(
+      material_system->texture_system, batch_paths, count, handles, errors);
+
+  log_debug("Material batch loaded %u/%u textures", loaded, count);
+
+  // Acquire and assign handles
+  for (uint32_t i = 0; i < count; i++) {
+    VkrTextureSlot slot = batch_slots[i];
+
+    if (handles[i].id != 0) {
+      VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
+      VkrTextureHandle acquired =
+          vkr_texture_system_acquire(material_system->texture_system,
+                                     batch_paths[i], true_v, &acquire_err);
+      if (acquired.id != 0) {
+        out_material->textures[slot].handle = acquired;
+        out_material->textures[slot].enabled = true;
+      }
+    } else if (errors[i] != VKR_RENDERER_ERROR_NONE) {
+      String8 err_str = vkr_renderer_get_error_string(errors[i]);
+      log_warn("Failed to load texture slot %u: %.*s", slot,
+               (int)err_str.length, err_str.str);
+    }
+  }
 }
 
 vkr_internal VkrRendererError
@@ -365,6 +391,9 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
     return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
   }
 
+  // Collect texture paths for batch loading
+  VkrMaterialTexturePaths texture_paths = {0};
+
   while (true) {
     String8 line = {0};
     FileError le =
@@ -427,29 +456,20 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
                                                value.length);
 
     } else if (string8_contains_cstr(&key, "diffuse_texture")) {
-      VkrTextureHandle handle = vkr_load_and_acquire_texture(
-          material_system, temp_arena, &material_name, value,
-          VKR_TEXTURE_SLOT_DIFFUSE, "diffuse_texture texture");
-      if (handle.id != 0) {
-        out_material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle = handle;
-        out_material->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = true;
+      // Collect path for batch loading
+      if (value.length > 0) {
+        texture_paths.diffuse = string8_duplicate(temp_arena, &value);
       }
     } else if (string8_contains_cstr(&key, "specular_texture")) {
-      VkrTextureHandle handle = vkr_load_and_acquire_texture(
-          material_system, temp_arena, &material_name, value,
-          VKR_TEXTURE_SLOT_SPECULAR, "specular_texture");
-      if (handle.id != 0) {
-        out_material->textures[VKR_TEXTURE_SLOT_SPECULAR].handle = handle;
-        out_material->textures[VKR_TEXTURE_SLOT_SPECULAR].enabled = true;
+      // Collect path for batch loading
+      if (value.length > 0) {
+        texture_paths.specular = string8_duplicate(temp_arena, &value);
       }
     } else if (string8_contains_cstr(&key, "norm_texture") ||
                string8_contains_cstr(&key, "normal_texture")) {
-      VkrTextureHandle handle = vkr_load_and_acquire_texture(
-          material_system, temp_arena, &material_name, value,
-          VKR_TEXTURE_SLOT_NORMAL, "normal_texture");
-      if (handle.id != 0) {
-        out_material->textures[VKR_TEXTURE_SLOT_NORMAL].handle = handle;
-        out_material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled = true;
+      // Collect path for batch loading
+      if (value.length > 0) {
+        texture_paths.normal = string8_duplicate(temp_arena, &value);
       }
     } else if (string8_contains_cstr(&key, "diffuse_color")) {
       Vec4 v;
@@ -523,6 +543,10 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
 
   file_close(&fh);
 
+  // Batch load all collected textures in parallel
+  vkr_material_batch_load_textures(material_system, temp_arena, &texture_paths,
+                                   out_material);
+
   return VKR_RENDERER_ERROR_NONE;
 }
 
@@ -539,4 +563,579 @@ VkrResourceLoader vkr_material_loader_create(void) {
   }
 
   return loader;
+}
+
+// =============================================================================
+// Batch Material Loading Implementation
+// =============================================================================
+
+bool8_t vkr_material_loader_parse_file(Arena *arena, String8 path,
+                                       VkrParsedMaterialData *out_data) {
+  assert_log(arena != NULL, "Arena is NULL");
+  assert_log(path.str != NULL, "Path is NULL");
+  assert_log(out_data != NULL, "Out data is NULL");
+
+  MemZero(out_data, sizeof(*out_data));
+  out_data->parse_success = false_v;
+  out_data->parse_error = VKR_RENDERER_ERROR_NONE;
+
+  // Default values
+  out_data->phong.diffuse_color = vec4_new(1, 1, 1, 1);
+  out_data->phong.specular_color = vec4_new(1, 1, 1, 1);
+  out_data->phong.shininess = 32.0f;
+  out_data->phong.emission_color = vec3_new(0, 0, 0);
+  out_data->pipeline_id = VKR_INVALID_ID;
+
+  // Extract name from path
+  const char *cpath = (const char *)path.str;
+  const char *last_slash = strrchr(cpath, '/');
+  const char *fname = last_slash ? last_slash + 1 : cpath;
+  const char *dot = strrchr(fname, '.');
+  if (dot && (size_t)(dot - fname) < sizeof(out_data->name)) {
+    MemCopy(out_data->name, fname, (size_t)(dot - fname));
+    out_data->name[dot - fname] = '\0';
+  } else {
+    size_t flen = string_length(fname);
+    size_t copy_len =
+        flen < sizeof(out_data->name) - 1 ? flen : sizeof(out_data->name) - 1;
+    MemCopy(out_data->name, fname, copy_len);
+    out_data->name[copy_len] = '\0';
+  }
+
+  // Open file
+  FilePath fp =
+      file_path_create((const char *)path.str, arena, FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  FileHandle fh = {0};
+  FileError fe = file_open(&fp, mode, &fh);
+  if (fe != FILE_ERROR_NONE) {
+    out_data->parse_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  // Read entire file
+  String8 file_content = {0};
+  FileError read_err = file_read_string(&fh, arena, &file_content);
+  file_close(&fh);
+
+  if (read_err != FILE_ERROR_NONE) {
+    out_data->parse_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  // Parse line by line
+  uint64_t offset = 0;
+  while (offset < file_content.length) {
+    // Find line end
+    uint64_t line_end = offset;
+    while (line_end < file_content.length &&
+           file_content.str[line_end] != '\n' &&
+           file_content.str[line_end] != '\r') {
+      line_end++;
+    }
+
+    String8 line = string8_substring(&file_content, offset, line_end);
+
+    // Skip to next line
+    offset = line_end;
+    while (offset < file_content.length && (file_content.str[offset] == '\n' ||
+                                            file_content.str[offset] == '\r')) {
+      offset++;
+    }
+
+    string8_trim(&line);
+    if (line.length == 0 || line.str[0] == '#') {
+      continue;
+    }
+
+    // Find '='
+    uint64_t eq = 0;
+    bool found = false;
+    for (uint64_t ch = 0; ch < line.length; ch++) {
+      if (line.str[ch] == '=') {
+        eq = ch;
+        found = true;
+        break;
+      }
+    }
+
+    if (!found || eq == 0 || eq + 1 >= line.length) {
+      continue;
+    }
+
+    String8 key = string8_substring(&line, 0, eq);
+    String8 value = string8_substring(&line, eq + 1, line.length);
+    string8_trim(&key);
+    string8_trim(&value);
+
+    if (vkr_string8_equals_cstr_i(&key, "name")) {
+      if (value.length > 0 && value.length < sizeof(out_data->name)) {
+        MemCopy(out_data->name, value.str, (size_t)value.length);
+        out_data->name[value.length] = '\0';
+      }
+    } else if (string8_contains_cstr(&key, "diffuse_texture")) {
+      if (value.length > 0 && value.length < VKR_MATERIAL_PATH_MAX) {
+        MemCopy(out_data->diffuse_path, value.str, (size_t)value.length);
+        out_data->diffuse_path[value.length] = '\0';
+      }
+    } else if (string8_contains_cstr(&key, "specular_texture")) {
+      if (value.length > 0 && value.length < VKR_MATERIAL_PATH_MAX) {
+        MemCopy(out_data->specular_path, value.str, (size_t)value.length);
+        out_data->specular_path[value.length] = '\0';
+      }
+    } else if (string8_contains_cstr(&key, "norm_texture") ||
+               string8_contains_cstr(&key, "normal_texture")) {
+      if (value.length > 0 && value.length < VKR_MATERIAL_PATH_MAX) {
+        MemCopy(out_data->normal_path, value.str, (size_t)value.length);
+        out_data->normal_path[value.length] = '\0';
+      }
+    } else if (string8_contains_cstr(&key, "diffuse_color")) {
+      Vec4 v;
+      if (string8_to_vec4(&value, &v)) {
+        out_data->phong.diffuse_color = v;
+      }
+    } else if (string8_contains_cstr(&key, "specular_color")) {
+      Vec4 v;
+      if (string8_to_vec4(&value, &v)) {
+        out_data->phong.specular_color = v;
+      }
+    } else if (string8_contains_cstr(&key, "shininess")) {
+      float32_t s = 0.0f;
+      if (string8_to_f32(&value, &s)) {
+        out_data->phong.shininess = s;
+      }
+    } else if (string8_contains_cstr(&key, "emission_color")) {
+      Vec3 v;
+      if (string8_to_vec3(&value, &v)) {
+        out_data->phong.emission_color = v;
+      }
+    } else if (string8_contains_cstr(&key, "shader")) {
+      char *trimmed = (char *)value.str;
+      trimmed = string_trim(trimmed);
+      uint32_t trimmed_len = (uint32_t)string_length(trimmed);
+      if (trimmed_len > 0 && trimmed_len < sizeof(out_data->shader_name)) {
+        MemCopy(out_data->shader_name, trimmed, (size_t)trimmed_len);
+        out_data->shader_name[trimmed_len] = '\0';
+      }
+    } else if (string8_contains_cstr(&key, "pipeline")) {
+      string_trim((char *)value.str);
+      out_data->pipeline_id =
+          vkr_get_pipeline_id_from_string((char *)value.str);
+    }
+  }
+
+  out_data->parse_success = true_v;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_material_parse_job_run(VkrJobContext *ctx,
+                                                void *payload) {
+  VkrMaterialParseJobPayload *job = (VkrMaterialParseJobPayload *)payload;
+  // Use the job context's thread-local scratch arena for internal allocations
+  String8 path = string8_create_from_cstr((const uint8_t *)job->file_path,
+                                          string_length(job->file_path));
+  return vkr_material_loader_parse_file(ctx->scratch.arena, path, job->result);
+}
+
+uint32_t vkr_material_loader_load_batch(VkrMaterialBatchContext *context,
+                                        const String8 *material_paths,
+                                        uint32_t count,
+                                        VkrMaterialHandle *out_handles,
+                                        VkrRendererError *out_errors) {
+  assert_log(context != NULL, "Context is NULL");
+  assert_log(context->material_system != NULL, "Material system is NULL");
+  assert_log(material_paths != NULL, "Material paths is NULL");
+  assert_log(out_handles != NULL, "Out handles is NULL");
+  assert_log(out_errors != NULL, "Out errors is NULL");
+
+  if (count == 0) {
+    return 0;
+  }
+
+  VkrMaterialSystem *mat_sys = context->material_system;
+  VkrJobSystem *job_sys = context->job_system;
+  Arena *arena = context->arena;
+
+  // Initialize outputs
+  for (uint32_t i = 0; i < count; i++) {
+    out_handles[i] = VKR_MATERIAL_HANDLE_INVALID;
+    out_errors[i] = VKR_RENDERER_ERROR_NONE;
+  }
+
+  // Allocate arrays for parsed data and job handles
+  Scratch scratch = scratch_create(arena);
+
+  VkrParsedMaterialData *parsed_data =
+      arena_alloc(scratch.arena, sizeof(VkrParsedMaterialData) * count,
+                  ARENA_MEMORY_TAG_ARRAY);
+  VkrJobHandle *job_handles = arena_alloc(
+      scratch.arena, sizeof(VkrJobHandle) * count, ARENA_MEMORY_TAG_ARRAY);
+  VkrMaterialParseJobPayload *payloads =
+      arena_alloc(scratch.arena, sizeof(VkrMaterialParseJobPayload) * count,
+                  ARENA_MEMORY_TAG_ARRAY);
+  bool8_t *job_submitted = arena_alloc(scratch.arena, sizeof(bool8_t) * count,
+                                       ARENA_MEMORY_TAG_ARRAY);
+
+  if (!parsed_data || !job_handles || !payloads || !job_submitted) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    for (uint32_t i = 0; i < count; i++) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+    return 0;
+  }
+
+  // Initialize parsed data and deduplication mapping
+  // first_occurrence[i] = index of first occurrence of this material path, or i
+  // if unique
+  uint32_t *first_occurrence = arena_alloc(
+      scratch.arena, sizeof(uint32_t) * count, ARENA_MEMORY_TAG_ARRAY);
+  if (!first_occurrence) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    for (uint32_t i = 0; i < count; i++) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+    return 0;
+  }
+
+  for (uint32_t i = 0; i < count; i++) {
+    MemZero(&parsed_data[i], sizeof(VkrParsedMaterialData));
+    job_submitted[i] = false_v;
+    first_occurrence[i] = i; // Default: each is its own first occurrence
+  }
+
+  // Deduplicate material paths within the batch
+  uint32_t unique_count = 0;
+  for (uint32_t i = 0; i < count; i++) {
+    if (!material_paths[i].str || material_paths[i].length == 0) {
+      continue;
+    }
+
+    // Check if this path appeared earlier in the batch
+    bool8_t is_duplicate = false_v;
+    for (uint32_t j = 0; j < i; j++) {
+      if (!material_paths[j].str || material_paths[j].length == 0) {
+        continue;
+      }
+      if (string8_equalsi(&material_paths[i], &material_paths[j])) {
+        first_occurrence[i] = first_occurrence[j];
+        is_duplicate = true_v;
+        break;
+      }
+    }
+    if (!is_duplicate) {
+      unique_count++;
+    }
+  }
+
+  log_debug("Material batch: %u paths, %u unique", count, unique_count);
+
+  // Submit parse jobs only for unique material paths
+  if (job_sys) {
+    Bitset8 type_mask = bitset8_create();
+    bitset8_set(&type_mask, VKR_JOB_TYPE_RESOURCE);
+
+    for (uint32_t i = 0; i < count; i++) {
+      if (!material_paths[i].str || material_paths[i].length == 0) {
+        continue;
+      }
+
+      // Skip duplicates - they'll get their handle from first occurrence later
+      if (first_occurrence[i] != i) {
+        continue;
+      }
+
+      String8 mat_name = string8_get_stem(scratch.arena, material_paths[i]);
+      if (mat_name.str) {
+        VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
+        VkrMaterialHandle existing = vkr_material_system_acquire(
+            mat_sys, mat_name, true_v, &acquire_err);
+        if (existing.id != 0) {
+          out_handles[i] = existing;
+          continue;
+        }
+      }
+
+      // Copy path to fixed buffer in payload (thread-safe)
+      MemZero(&payloads[i], sizeof(VkrMaterialParseJobPayload));
+      uint64_t path_len = material_paths[i].length < VKR_MATERIAL_PATH_MAX - 1
+                              ? material_paths[i].length
+                              : VKR_MATERIAL_PATH_MAX - 1;
+      MemCopy(payloads[i].file_path, material_paths[i].str, (size_t)path_len);
+      payloads[i].file_path[path_len] = '\0';
+      payloads[i].result = &parsed_data[i];
+
+      VkrJobDesc job_desc = {
+          .priority = VKR_JOB_PRIORITY_NORMAL,
+          .type_mask = type_mask,
+          .run = vkr_material_parse_job_run,
+          .on_success = NULL,
+          .on_failure = NULL,
+          .payload = &payloads[i],
+          .payload_size = sizeof(VkrMaterialParseJobPayload),
+          .dependencies = NULL,
+          .dependency_count = 0,
+          .defer_enqueue = false_v,
+      };
+
+      if (vkr_job_submit(job_sys, &job_desc, &job_handles[i])) {
+        job_submitted[i] = true_v;
+      }
+    }
+
+    // Wait for all parse jobs to complete
+    for (uint32_t i = 0; i < count; i++) {
+      if (job_submitted[i]) {
+        vkr_job_wait(job_sys, job_handles[i]);
+      }
+    }
+  } else {
+    // Synchronous fallback - each parse uses its own scratch
+    for (uint32_t i = 0; i < count; i++) {
+      if (!material_paths[i].str || material_paths[i].length == 0) {
+        continue;
+      }
+
+      // Skip duplicates
+      if (first_occurrence[i] != i) {
+        continue;
+      }
+
+      String8 mat_name = string8_get_stem(scratch.arena, material_paths[i]);
+      if (mat_name.str) {
+        VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
+        VkrMaterialHandle existing = vkr_material_system_acquire(
+            mat_sys, mat_name, true_v, &acquire_err);
+        if (existing.id != 0) {
+          out_handles[i] = existing;
+          continue;
+        }
+      }
+
+      Scratch parse_scratch = scratch_create(scratch.arena);
+      vkr_material_loader_parse_file(parse_scratch.arena, material_paths[i],
+                                     &parsed_data[i]);
+      scratch_destroy(parse_scratch, ARENA_MEMORY_TAG_STRING);
+    }
+  }
+
+  // Copy handles from first occurrence to duplicates
+  for (uint32_t i = 0; i < count; i++) {
+    if (first_occurrence[i] != i && out_handles[first_occurrence[i]].id != 0) {
+      out_handles[i] = out_handles[first_occurrence[i]];
+    }
+  }
+
+  // Collect ALL texture paths from all parsed materials
+  uint32_t total_textures = 0;
+  for (uint32_t i = 0; i < count; i++) {
+    if (out_handles[i].id != 0)
+      continue; // Already loaded
+    if (!parsed_data[i].parse_success)
+      continue;
+
+    if (parsed_data[i].diffuse_path[0] != '\0')
+      total_textures++;
+    if (parsed_data[i].specular_path[0] != '\0')
+      total_textures++;
+    if (parsed_data[i].normal_path[0] != '\0')
+      total_textures++;
+  }
+
+  String8 *texture_paths = NULL;
+  VkrTextureHandle *texture_handles = NULL;
+  VkrRendererError *texture_errors = NULL;
+  uint32_t *texture_material_index =
+      NULL;                      // Which material this texture belongs to
+  uint32_t *texture_slot = NULL; // Which slot (diffuse/spec/normal)
+
+  if (total_textures > 0) {
+    texture_paths = arena_alloc(scratch.arena, sizeof(String8) * total_textures,
+                                ARENA_MEMORY_TAG_ARRAY);
+    texture_handles =
+        arena_alloc(scratch.arena, sizeof(VkrTextureHandle) * total_textures,
+                    ARENA_MEMORY_TAG_ARRAY);
+    texture_errors =
+        arena_alloc(scratch.arena, sizeof(VkrRendererError) * total_textures,
+                    ARENA_MEMORY_TAG_ARRAY);
+    texture_material_index =
+        arena_alloc(scratch.arena, sizeof(uint32_t) * total_textures,
+                    ARENA_MEMORY_TAG_ARRAY);
+    texture_slot = arena_alloc(scratch.arena, sizeof(uint32_t) * total_textures,
+                               ARENA_MEMORY_TAG_ARRAY);
+
+    if (!texture_paths || !texture_handles || !texture_errors ||
+        !texture_material_index || !texture_slot) {
+      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      for (uint32_t i = 0; i < count; i++) {
+        if (out_handles[i].id == 0) {
+          out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+        }
+      }
+      return 0;
+    }
+
+    // Collect all texture paths (convert fixed buffers to String8)
+    uint32_t tex_idx = 0;
+    for (uint32_t i = 0; i < count; i++) {
+      if (out_handles[i].id != 0)
+        continue;
+      if (!parsed_data[i].parse_success)
+        continue;
+
+      if (parsed_data[i].diffuse_path[0] != '\0') {
+        texture_paths[tex_idx] = string8_create_from_cstr(
+            (const uint8_t *)parsed_data[i].diffuse_path,
+            string_length(parsed_data[i].diffuse_path));
+        texture_material_index[tex_idx] = i;
+        texture_slot[tex_idx] = VKR_TEXTURE_SLOT_DIFFUSE;
+        tex_idx++;
+      }
+      if (parsed_data[i].specular_path[0] != '\0') {
+        texture_paths[tex_idx] = string8_create_from_cstr(
+            (const uint8_t *)parsed_data[i].specular_path,
+            string_length(parsed_data[i].specular_path));
+        texture_material_index[tex_idx] = i;
+        texture_slot[tex_idx] = VKR_TEXTURE_SLOT_SPECULAR;
+        tex_idx++;
+      }
+      if (parsed_data[i].normal_path[0] != '\0') {
+        texture_paths[tex_idx] = string8_create_from_cstr(
+            (const uint8_t *)parsed_data[i].normal_path,
+            string_length(parsed_data[i].normal_path));
+        texture_material_index[tex_idx] = i;
+        texture_slot[tex_idx] = VKR_TEXTURE_SLOT_NORMAL;
+        tex_idx++;
+      }
+    }
+
+    uint32_t textures_loaded = vkr_texture_system_load_batch(
+        mat_sys->texture_system, texture_paths, total_textures, texture_handles,
+        texture_errors);
+
+    log_debug("Material batch loaded %u/%u textures for %u materials",
+              textures_loaded, total_textures, count);
+  }
+
+  // Create materials and assign texture handles
+  uint32_t loaded = 0;
+  for (uint32_t i = 0; i < count; i++) {
+    if (out_handles[i].id != 0) {
+      loaded++; // Already existed
+      continue;
+    }
+
+    if (!parsed_data[i].parse_success) {
+      out_errors[i] = parsed_data[i].parse_error;
+      continue;
+    }
+
+    uint32_t slot = VKR_INVALID_ID;
+    if (mat_sys->free_count > 0) {
+      slot = mat_sys->free_ids.data[mat_sys->free_count - 1];
+      mat_sys->free_count--;
+    } else {
+      slot = mat_sys->next_free_index;
+      while (slot < mat_sys->materials.length &&
+             mat_sys->materials.data[slot].id != 0) {
+        slot++;
+      }
+      if (slot >= mat_sys->materials.length) {
+        out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+        continue;
+      }
+      mat_sys->next_free_index = slot + 1;
+    }
+
+    size_t name_len = string_length(parsed_data[i].name);
+    char *stable_name =
+        arena_alloc(mat_sys->arena, name_len + 1, ARENA_MEMORY_TAG_STRING);
+    if (!stable_name) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      continue;
+    }
+    MemCopy(stable_name, parsed_data[i].name, name_len);
+    stable_name[name_len] = '\0';
+
+    VkrMaterial *material = &mat_sys->materials.data[slot];
+    MemZero(material, sizeof(VkrMaterial));
+    material->id = slot + 1;
+    material->generation = mat_sys->generation_counter++;
+    material->name = stable_name;
+    material->pipeline_id = parsed_data[i].pipeline_id;
+    material->phong = parsed_data[i].phong;
+
+    if (parsed_data[i].shader_name[0] != '\0') {
+      size_t shader_len = string_length(parsed_data[i].shader_name);
+      char *stable_shader =
+          arena_alloc(mat_sys->arena, shader_len + 1, ARENA_MEMORY_TAG_STRING);
+      if (stable_shader) {
+        MemCopy(stable_shader, parsed_data[i].shader_name, shader_len);
+        stable_shader[shader_len] = '\0';
+        material->shader_name = stable_shader;
+      }
+    }
+
+    for (uint32_t tex_slot = 0; tex_slot < VKR_TEXTURE_SLOT_COUNT; tex_slot++) {
+      material->textures[tex_slot].slot = (VkrTextureSlot)tex_slot;
+      material->textures[tex_slot].handle = VKR_TEXTURE_HANDLE_INVALID;
+      material->textures[tex_slot].enabled = false;
+    }
+
+    material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle =
+        vkr_texture_system_get_default_handle(mat_sys->texture_system);
+    material->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = true;
+    material->textures[VKR_TEXTURE_SLOT_NORMAL].handle =
+        vkr_texture_system_get_default_normal_handle(mat_sys->texture_system);
+    material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled = true;
+    material->textures[VKR_TEXTURE_SLOT_SPECULAR].handle =
+        vkr_texture_system_get_default_specular_handle(mat_sys->texture_system);
+    material->textures[VKR_TEXTURE_SLOT_SPECULAR].enabled = true;
+
+    // Find and assign batch-loaded textures for this material
+    for (uint32_t t = 0; t < total_textures; t++) {
+      if (texture_material_index[t] == i && texture_handles[t].id != 0) {
+        VkrTextureSlot slot_type = (VkrTextureSlot)texture_slot[t];
+        VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
+        VkrTextureHandle acquired = vkr_texture_system_acquire(
+            mat_sys->texture_system, texture_paths[t], true_v, &acquire_err);
+        if (acquired.id != 0) {
+          material->textures[slot_type].handle = acquired;
+          material->textures[slot_type].enabled = true;
+        }
+      }
+    }
+
+    VkrMaterialEntry new_entry = {
+        .id = slot,
+        .ref_count = 0,
+        .auto_release = true_v,
+        .name = stable_name,
+    };
+    vkr_hash_table_insert_VkrMaterialEntry(&mat_sys->material_by_name,
+                                           stable_name, new_entry);
+
+    out_handles[i] = (VkrMaterialHandle){
+        .id = material->id,
+        .generation = material->generation,
+    };
+    out_errors[i] = VKR_RENDERER_ERROR_NONE;
+    loaded++;
+  }
+
+  for (uint32_t i = 0; i < count; i++) {
+    if (first_occurrence[i] != i) {
+      uint32_t first = first_occurrence[i];
+      if (out_handles[first].id != 0) {
+        out_handles[i] = out_handles[first];
+        out_errors[i] = VKR_RENDERER_ERROR_NONE;
+        // Note: we don't increment loaded here since these are duplicates
+      }
+    }
+  }
+
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  log_debug("Material batch completed: %u/%u materials loaded (from %u unique)",
+            loaded, count, unique_count);
+  return loaded;
 }

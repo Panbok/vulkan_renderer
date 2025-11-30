@@ -1,5 +1,8 @@
 #include "renderer/systems/vkr_texture_system.h"
+#include "filesystem/filesystem.h"
 #include "renderer/systems/vkr_resource_system.h"
+
+#include "stb_image.h"
 
 uint32_t vkr_texture_system_find_free_slot(VkrTextureSystem *system) {
   assert_log(system != NULL, "System is NULL");
@@ -27,6 +30,7 @@ uint32_t vkr_texture_system_find_free_slot(VkrTextureSystem *system) {
 
 bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
                                 const VkrTextureSystemConfig *config,
+                                VkrJobSystem *job_system,
                                 VkrTextureSystem *out_system) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(config != NULL, "Config is NULL");
@@ -50,6 +54,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
 
   out_system->renderer = renderer;
   out_system->config = *config;
+  out_system->job_system = job_system;
   out_system->textures =
       array_create_VkrTexture(out_system->arena, config->max_texture_count);
   out_system->texture_map = vkr_hash_table_create_VkrTextureEntry(
@@ -713,6 +718,110 @@ vkr_texture_system_get_default_specular_handle(VkrTextureSystem *system) {
   return system->default_specular_texture;
 }
 
+// =============================================================================
+// Async Texture Loading Job Support
+// =============================================================================
+
+// Output structure that the job writes to (caller-owned memory)
+typedef struct VkrTextureDecodeResult {
+  uint8_t *decoded_pixels;
+  int32_t width;
+  int32_t height;
+  int32_t original_channels;
+  VkrRendererError error;
+  bool8_t success;
+} VkrTextureDecodeResult;
+
+typedef struct VkrTextureDecodeJobPayload {
+  // Input (copied by job system)
+  String8 file_path;
+  uint32_t desired_channels;
+  bool8_t flip_vertical;
+
+  // Output pointer (points to caller's memory, job writes here)
+  VkrTextureDecodeResult *result;
+} VkrTextureDecodeJobPayload;
+
+vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
+                                                void *payload) {
+  VkrTextureDecodeJobPayload *job = (VkrTextureDecodeJobPayload *)payload;
+  VkrTextureDecodeResult *result = job->result;
+
+  result->success = false_v;
+  result->error = VKR_RENDERER_ERROR_NONE;
+  result->decoded_pixels = NULL;
+
+  // Create null-terminated path for file operations
+  uint64_t path_len = job->file_path.length;
+  char *path_cstr =
+      arena_alloc(ctx->scratch.arena, path_len + 1, ARENA_MEMORY_TAG_STRING);
+  if (!path_cstr) {
+    result->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  MemCopy(path_cstr, job->file_path.str, path_len);
+  path_cstr[path_len] = '\0';
+
+  // Open and read file to memory
+  FilePath fp =
+      file_path_create(path_cstr, ctx->scratch.arena, FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+
+  FileHandle fh = {0};
+  FileError ferr = file_open(&fp, mode, &fh);
+  if (ferr != FILE_ERROR_NONE) {
+    log_error("Failed to open texture file: %s", path_cstr);
+    result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  uint8_t *file_data = NULL;
+  uint64_t file_size = 0;
+  FileError read_err =
+      file_read_all(&fh, ctx->scratch.arena, &file_data, &file_size);
+  file_close(&fh);
+
+  if (read_err != FILE_ERROR_NONE || !file_data || file_size == 0) {
+    log_error("Failed to read texture file: %s", path_cstr);
+    result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  // Set thread-local flip setting
+  stbi_set_flip_vertically_on_load_thread(job->flip_vertical ? 1 : 0);
+
+  // Decode image from memory
+  int32_t stbi_requested = (job->desired_channels <= VKR_TEXTURE_RGBA_CHANNELS)
+                               ? (int32_t)job->desired_channels
+                               : 0;
+
+  result->decoded_pixels = stbi_load_from_memory(
+      file_data, (int)file_size, &result->width, &result->height,
+      &result->original_channels, stbi_requested);
+
+  if (!result->decoded_pixels) {
+    const char *reason = stbi_failure_reason();
+    log_error("Failed to decode texture '%s': %s", path_cstr,
+              reason ? reason : "unknown");
+    result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  if (result->width <= 0 || result->height <= 0 ||
+      result->width > VKR_TEXTURE_MAX_DIMENSION ||
+      result->height > VKR_TEXTURE_MAX_DIMENSION) {
+    stbi_image_free(result->decoded_pixels);
+    result->decoded_pixels = NULL;
+    result->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  result->success = true_v;
+  return true_v;
+}
+
 VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
                                                    String8 file_path,
                                                    uint32_t desired_channels,
@@ -721,40 +830,80 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
   assert_log(out_texture != NULL, "Out texture is NULL");
   assert_log(file_path.str != NULL, "Path is NULL");
 
-  // Ensure a NUL-terminated copy of the path (String8 is not NUL-terminated)
-  Scratch c_string_scratch = scratch_create(system->arena);
+  // Store file path for the texture
+  Scratch path_scratch = scratch_create(system->arena);
   char *c_string_path = (char *)arena_alloc(
-      c_string_scratch.arena, file_path.length + 1, ARENA_MEMORY_TAG_STRING);
+      path_scratch.arena, file_path.length + 1, ARENA_MEMORY_TAG_STRING);
   assert_log(c_string_path != NULL,
              "Failed to allocate path buffer for texture load");
   MemCopy(c_string_path, file_path.str, (size_t)file_path.length);
   c_string_path[file_path.length] = '\0';
   out_texture->file_path =
       file_path_create(c_string_path, system->arena, FILE_PATH_TYPE_RELATIVE);
-  scratch_destroy(c_string_scratch, ARENA_MEMORY_TAG_STRING);
+  scratch_destroy(path_scratch, ARENA_MEMORY_TAG_STRING);
 
-  // todo: this should be toggle only once on application startup
-  stbi_set_flip_vertically_on_load(true);
+  // Result struct on caller's stack - job writes directly here via pointer
+  VkrTextureDecodeResult decode_result = {
+      .decoded_pixels = NULL,
+      .width = 0,
+      .height = 0,
+      .original_channels = 0,
+      .error = VKR_RENDERER_ERROR_NONE,
+      .success = false_v,
+  };
 
-  int32_t width, height, original_channels;
-  int32_t stbi_requested_components =
-      (desired_channels <= VKR_TEXTURE_RGBA_CHANNELS) ? (int)desired_channels
-                                                      : 0;
-  uint8_t *loaded_image_data =
-      stbi_load((char *)out_texture->file_path.path.str, &width, &height,
-                &original_channels, stbi_requested_components);
-  if (!loaded_image_data) {
-    const char *failure_reason = stbi_failure_reason();
-    log_error("Failed to load texture: %s",
-              failure_reason ? failure_reason : "unknown");
-    return VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+  // Prepare decode job payload with pointer to result
+  VkrTextureDecodeJobPayload job_payload = {
+      .file_path = file_path,
+      .desired_channels = desired_channels,
+      .flip_vertical = true_v,
+      .result = &decode_result,
+  };
+
+  // If job system is available, run decode on worker thread
+  if (system->job_system) {
+    Bitset8 type_mask = bitset8_create();
+    bitset8_set(&type_mask, VKR_JOB_TYPE_RESOURCE);
+
+    VkrJobDesc job_desc = {
+        .priority = VKR_JOB_PRIORITY_NORMAL,
+        .type_mask = type_mask,
+        .run = vkr_texture_decode_job_run,
+        .on_success = NULL,
+        .on_failure = NULL,
+        .payload = &job_payload,
+        .payload_size = sizeof(job_payload),
+        .dependencies = NULL,
+        .dependency_count = 0,
+        .defer_enqueue = false_v,
+    };
+
+    VkrJobHandle job_handle = {0};
+    if (vkr_job_submit(system->job_system, &job_desc, &job_handle)) {
+      vkr_job_wait(system->job_system, job_handle);
+    }
+  } else {
+    // Fallback: run synchronously using a fake context
+    Scratch sync_scratch = scratch_create(system->arena);
+    VkrJobContext fake_ctx = {
+        .system = NULL,
+        .worker_index = 0,
+        .thread_id = 0,
+        .worker_arena = sync_scratch.arena,
+        .scratch = sync_scratch,
+    };
+    vkr_texture_decode_job_run(&fake_ctx, &job_payload);
+    scratch_destroy(sync_scratch, ARENA_MEMORY_TAG_STRUCT);
   }
 
-  if (width <= 0 || height <= 0 || width > VKR_TEXTURE_MAX_DIMENSION ||
-      height > VKR_TEXTURE_MAX_DIMENSION) {
-    stbi_image_free(loaded_image_data);
-    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  if (!decode_result.success || !decode_result.decoded_pixels) {
+    return decode_result.error;
   }
+
+  uint8_t *loaded_image_data = decode_result.decoded_pixels;
+  int32_t width = decode_result.width;
+  int32_t height = decode_result.height;
+  int32_t original_channels = decode_result.original_channels;
 
   uint32_t actual_channels =
       desired_channels > 0 ? desired_channels : (uint32_t)original_channels;
@@ -782,22 +931,13 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
 
   VkrTexturePropertyFlags props = vkr_texture_property_flags_create();
 
-  bool8_t has_transparency = false;
-  // for (uint64_t pixel_index = 0;
-  //      pixel_index < (uint64_t)width * (uint64_t)height; pixel_index++) {
-  //   uint8_t a = loaded_image_data[pixel_index * actual_channels + 3];
-  //   if (a < 255) {
-  //     has_transparency = true;
-  //     break;
-  //   }
-  // }
-
+  bool8_t has_transparency = false_v;
   if (actual_channels == VKR_TEXTURE_RGBA_CHANNELS) {
     for (uint64_t pixel_index = 0;
          pixel_index < (uint64_t)width * (uint64_t)height; pixel_index++) {
       uint8_t a = loaded_image_data[pixel_index * actual_channels + 3];
       if (a < 255) {
-        has_transparency = true;
+        has_transparency = true_v;
         break;
       }
     }
@@ -821,14 +961,13 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
       .mag_filter = VKR_FILTER_LINEAR,
       .mip_filter = VKR_MIP_FILTER_LINEAR,
       .anisotropy_enable = false_v,
-      .generation = VKR_INVALID_ID, // Will be set by system
+      .generation = VKR_INVALID_ID,
   };
 
   uint32_t loaded_channels =
       desired_channels > 0 ? desired_channels : (uint32_t)original_channels;
   uint64_t loaded_image_size =
       (uint64_t)width * (uint64_t)height * (uint64_t)loaded_channels;
-
   uint64_t final_image_size =
       (uint64_t)width * (uint64_t)height * (uint64_t)actual_channels;
 
@@ -845,16 +984,12 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
       actual_channels == VKR_TEXTURE_RGBA_CHANNELS) {
     for (uint32_t pixel_index = 0;
          pixel_index < (uint32_t)width * (uint32_t)height; pixel_index++) {
-      uint32_t source_pixel_index = pixel_index * VKR_TEXTURE_RGB_CHANNELS;
-      uint32_t destination_pixel_index =
-          pixel_index * VKR_TEXTURE_RGBA_CHANNELS;
-      out_texture->image[destination_pixel_index + 0] =
-          loaded_image_data[source_pixel_index + 0];
-      out_texture->image[destination_pixel_index + 1] =
-          loaded_image_data[source_pixel_index + 1];
-      out_texture->image[destination_pixel_index + 2] =
-          loaded_image_data[source_pixel_index + 2];
-      out_texture->image[destination_pixel_index + 3] = 255;
+      uint32_t src_idx = pixel_index * VKR_TEXTURE_RGB_CHANNELS;
+      uint32_t dst_idx = pixel_index * VKR_TEXTURE_RGBA_CHANNELS;
+      out_texture->image[dst_idx + 0] = loaded_image_data[src_idx + 0];
+      out_texture->image[dst_idx + 1] = loaded_image_data[src_idx + 1];
+      out_texture->image[dst_idx + 2] = loaded_image_data[src_idx + 2];
+      out_texture->image[dst_idx + 3] = 255;
     }
   } else {
     MemCopy(out_texture->image, loaded_image_data, (size_t)loaded_image_size);
@@ -862,12 +997,12 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
 
   stbi_image_free(loaded_image_data);
 
+  // GPU upload happens on calling thread (synchronized)
   VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
   out_texture->handle =
       vkr_renderer_create_texture(system->renderer, &out_texture->description,
                                   out_texture->image, &renderer_error);
 
-  // Free CPU-side pixels after upload
   scratch_destroy(image_scratch, ARENA_MEMORY_TAG_TEXTURE);
   out_texture->image = NULL;
   return renderer_error;
@@ -936,6 +1071,404 @@ bool8_t vkr_texture_system_load(VkrTextureSystem *system, String8 name,
   return true_v;
 }
 
+uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
+                                       const String8 *paths, uint32_t count,
+                                       VkrTextureHandle *out_handles,
+                                       VkrRendererError *out_errors) {
+  assert_log(system != NULL, "System is NULL");
+  assert_log(paths != NULL, "Paths is NULL");
+  assert_log(out_handles != NULL, "Out handles is NULL");
+  assert_log(out_errors != NULL, "Out errors is NULL");
+
+  if (count == 0) {
+    return 0;
+  }
+
+  // Initialize outputs
+  for (uint32_t i = 0; i < count; i++) {
+    out_handles[i] = VKR_TEXTURE_HANDLE_INVALID;
+    out_errors[i] = VKR_RENDERER_ERROR_NONE;
+  }
+
+  // Allocate scratch for deduplication mapping
+  Scratch dedup_scratch = scratch_create(system->arena);
+  uint32_t *first_occurrence = arena_alloc(
+      dedup_scratch.arena, sizeof(uint32_t) * count, ARENA_MEMORY_TAG_ARRAY);
+  if (!first_occurrence) {
+    scratch_destroy(dedup_scratch, ARENA_MEMORY_TAG_ARRAY);
+    for (uint32_t i = 0; i < count; i++) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+    return 0;
+  }
+
+  // DEDUPLICATION: First check which textures are already loaded
+  // and which need to be loaded. Also track duplicates within the batch.
+  uint32_t already_loaded = 0;
+  uint32_t unique_in_batch = 0;
+  for (uint32_t i = 0; i < count; i++) {
+    first_occurrence[i] = i;  // Default: each is its own first occurrence
+
+    if (!paths[i].str || paths[i].length == 0) {
+      continue;
+    }
+
+    // Check if this texture is already loaded in the system
+    const char *texture_key = (const char *)paths[i].str;
+    VkrTextureEntry *entry =
+        vkr_hash_table_get_VkrTextureEntry(&system->texture_map, texture_key);
+    if (entry) {
+      // Already loaded - just return the existing handle
+      VkrTexture *texture = &system->textures.data[entry->index];
+      out_handles[i] = (VkrTextureHandle){
+          .id = texture->description.id,
+          .generation = texture->description.generation};
+      out_errors[i] = VKR_RENDERER_ERROR_NONE;
+      already_loaded++;
+      continue;
+    }
+
+    // Check for duplicate within the batch (earlier occurrence)
+    bool8_t is_duplicate = false_v;
+    for (uint32_t j = 0; j < i; j++) {
+      if (!paths[j].str || paths[j].length == 0) {
+        continue;
+      }
+      if (string8_equalsi(&paths[i], &paths[j])) {
+        first_occurrence[i] = first_occurrence[j];
+        is_duplicate = true_v;
+        break;
+      }
+    }
+    if (!is_duplicate) {
+      unique_in_batch++;
+    }
+  }
+
+  // Count how many textures still need loading (only unique ones)
+  uint32_t need_loading = 0;
+  for (uint32_t i = 0; i < count; i++) {
+    if (paths[i].str && paths[i].length > 0 && out_handles[i].id == 0 &&
+        first_occurrence[i] == i) {
+      need_loading++;
+    }
+  }
+
+  log_debug("Texture batch: %u paths, %u already loaded, %u unique need loading",
+            count, already_loaded, need_loading);
+
+  if (need_loading == 0) {
+    // Copy handles from first occurrence to duplicates
+    for (uint32_t i = 0; i < count; i++) {
+      if (first_occurrence[i] != i && out_handles[first_occurrence[i]].id != 0) {
+        out_handles[i] = out_handles[first_occurrence[i]];
+      }
+    }
+    scratch_destroy(dedup_scratch, ARENA_MEMORY_TAG_ARRAY);
+    return already_loaded;
+  }
+
+  // If no job system, fall back to sequential loading
+  if (!system->job_system) {
+    uint32_t loaded = already_loaded;
+    for (uint32_t i = 0; i < count; i++) {
+      if (!paths[i].str || paths[i].length == 0) {
+        continue;
+      }
+      if (out_handles[i].id != 0) {
+        continue; // Already loaded above
+      }
+      // Skip duplicates within batch
+      if (first_occurrence[i] != i) {
+        continue;
+      }
+      if (vkr_texture_system_load(system, paths[i], &out_handles[i],
+                                  &out_errors[i])) {
+        loaded++;
+      }
+    }
+    // Copy handles to duplicates
+    for (uint32_t i = 0; i < count; i++) {
+      if (first_occurrence[i] != i && out_handles[first_occurrence[i]].id != 0) {
+        out_handles[i] = out_handles[first_occurrence[i]];
+      }
+    }
+    scratch_destroy(dedup_scratch, ARENA_MEMORY_TAG_ARRAY);
+    return loaded;
+  }
+
+  // Allocate arrays for job handles and results
+  Scratch scratch = scratch_create(system->arena);
+
+  VkrJobHandle *job_handles = arena_alloc(
+      scratch.arena, sizeof(VkrJobHandle) * count, ARENA_MEMORY_TAG_ARRAY);
+  VkrTextureDecodeResult *results =
+      arena_alloc(scratch.arena, sizeof(VkrTextureDecodeResult) * count,
+                  ARENA_MEMORY_TAG_ARRAY);
+  VkrTextureDecodeJobPayload *payloads =
+      arena_alloc(scratch.arena, sizeof(VkrTextureDecodeJobPayload) * count,
+                  ARENA_MEMORY_TAG_ARRAY);
+  bool8_t *job_submitted = arena_alloc(scratch.arena, sizeof(bool8_t) * count,
+                                       ARENA_MEMORY_TAG_ARRAY);
+
+  if (!job_handles || !results || !payloads || !job_submitted) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    scratch_destroy(dedup_scratch, ARENA_MEMORY_TAG_ARRAY);
+    // Fall back to sequential
+    uint32_t loaded = already_loaded;
+    for (uint32_t i = 0; i < count; i++) {
+      if (!paths[i].str || paths[i].length == 0) {
+        continue;
+      }
+      if (out_handles[i].id != 0) {
+        continue; // Already loaded above
+      }
+      if (vkr_texture_system_load(system, paths[i], &out_handles[i],
+                                  &out_errors[i])) {
+        loaded++;
+      }
+    }
+    return loaded;
+  }
+
+  // Initialize and submit decode jobs ONLY for unique textures not yet loaded
+  Bitset8 type_mask = bitset8_create();
+  bitset8_set(&type_mask, VKR_JOB_TYPE_RESOURCE);
+
+  for (uint32_t i = 0; i < count; i++) {
+    job_submitted[i] = false_v;
+    results[i] = (VkrTextureDecodeResult){
+        .decoded_pixels = NULL,
+        .width = 0,
+        .height = 0,
+        .original_channels = 0,
+        .error = VKR_RENDERER_ERROR_NONE,
+        .success = false_v,
+    };
+
+    if (!paths[i].str || paths[i].length == 0) {
+      continue;
+    }
+
+    // Skip textures that were already loaded (deduplication above)
+    if (out_handles[i].id != 0) {
+      continue;
+    }
+
+    // Skip duplicates within batch - only decode first occurrence
+    if (first_occurrence[i] != i) {
+      continue;
+    }
+
+    payloads[i] = (VkrTextureDecodeJobPayload){
+        .file_path = paths[i],
+        .desired_channels = VKR_TEXTURE_RGBA_CHANNELS,
+        .flip_vertical = true_v,
+        .result = &results[i],
+    };
+
+    VkrJobDesc job_desc = {
+        .priority = VKR_JOB_PRIORITY_NORMAL,
+        .type_mask = type_mask,
+        .run = vkr_texture_decode_job_run,
+        .on_success = NULL,
+        .on_failure = NULL,
+        .payload = &payloads[i],
+        .payload_size = sizeof(VkrTextureDecodeJobPayload),
+        .dependencies = NULL,
+        .dependency_count = 0,
+        .defer_enqueue = false_v,
+    };
+
+    if (vkr_job_submit(system->job_system, &job_desc, &job_handles[i])) {
+      job_submitted[i] = true_v;
+    }
+  }
+
+  // Wait for all jobs to complete
+  for (uint32_t i = 0; i < count; i++) {
+    if (job_submitted[i]) {
+      vkr_job_wait(system->job_system, job_handles[i]);
+    }
+  }
+
+  // Process results and do GPU uploads
+  uint32_t loaded = 0;
+  for (uint32_t i = 0; i < count; i++) {
+    if (!paths[i].str || paths[i].length == 0) {
+      continue;
+    }
+
+    if (!results[i].success || !results[i].decoded_pixels) {
+      out_errors[i] = results[i].error;
+      continue;
+    }
+
+    // Process decoded data and upload to GPU
+    uint8_t *loaded_image_data = results[i].decoded_pixels;
+    int32_t width = results[i].width;
+    int32_t height = results[i].height;
+    int32_t original_channels = results[i].original_channels;
+
+    // Check if this texture was already loaded by earlier iteration in this batch
+    // BEFORE doing GPU upload to avoid wasting GPU resources
+    const char *check_key = (const char *)paths[i].str;
+    VkrTextureEntry *existing =
+        vkr_hash_table_get_VkrTextureEntry(&system->texture_map, check_key);
+    if (existing) {
+      // Already loaded - just return the existing handle, free decoded data
+      stbi_image_free(loaded_image_data);
+      results[i].decoded_pixels = NULL;
+      VkrTexture *tex = &system->textures.data[existing->index];
+      out_handles[i] = (VkrTextureHandle){
+          .id = tex->description.id, .generation = tex->description.generation};
+      out_errors[i] = VKR_RENDERER_ERROR_NONE;
+      loaded++;
+      continue;
+    }
+
+    uint32_t actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
+    VkrTextureFormat format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+
+    // Fast transparency check: sample a few pixels instead of scanning all
+    // Check corners and center - if any has alpha < 255, mark as potentially transparent
+    VkrTexturePropertyFlags props = vkr_texture_property_flags_create();
+    bool8_t has_transparency = false_v;
+    if (original_channels == 4) {
+      // Only check if source had alpha channel
+      uint64_t pixel_count = (uint64_t)width * (uint64_t)height;
+      // Sample up to 64 evenly distributed pixels
+      uint64_t step = pixel_count > 64 ? pixel_count / 64 : 1;
+      for (uint64_t px = 0; px < pixel_count; px += step) {
+        if (loaded_image_data[px * actual_channels + 3] < 255) {
+          has_transparency = true_v;
+          break;
+        }
+      }
+    }
+    if (has_transparency) {
+      bitset8_set(&props, VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
+    }
+
+    VkrTextureDescription desc = {
+        .width = (uint32_t)width,
+        .height = (uint32_t)height,
+        .channels = actual_channels,
+        .format = format,
+        .type = VKR_TEXTURE_TYPE_2D,
+        .properties = props,
+        .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+        .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+        .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+        .min_filter = VKR_FILTER_LINEAR,
+        .mag_filter = VKR_FILTER_LINEAR,
+        .mip_filter = VKR_MIP_FILTER_LINEAR,
+        .anisotropy_enable = false_v,
+        .generation = VKR_INVALID_ID,
+    };
+
+    // GPU upload
+    VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
+    VkrTextureOpaqueHandle gpu_handle = vkr_renderer_create_texture(
+        system->renderer, &desc, loaded_image_data, &renderer_error);
+
+    stbi_image_free(loaded_image_data);
+    results[i].decoded_pixels = NULL;
+
+    if (renderer_error != VKR_RENDERER_ERROR_NONE || !gpu_handle) {
+      out_errors[i] = renderer_error;
+      continue;
+    }
+
+    // Find free slot and register texture
+    uint32_t free_slot_index = vkr_texture_system_find_free_slot(system);
+    if (free_slot_index == VKR_INVALID_ID) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      vkr_renderer_destroy_texture(system->renderer, gpu_handle);
+      continue;
+    }
+
+    // Store stable key
+    char *stable_key = (char *)arena_alloc(system->arena, paths[i].length + 1,
+                                           ARENA_MEMORY_TAG_STRING);
+    if (!stable_key) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      vkr_renderer_destroy_texture(system->renderer, gpu_handle);
+      continue;
+    }
+    MemCopy(stable_key, paths[i].str, (size_t)paths[i].length);
+    stable_key[paths[i].length] = '\0';
+
+    // Setup texture in system
+    VkrTexture *texture = &system->textures.data[free_slot_index];
+    MemZero(texture, sizeof(VkrTexture));
+    texture->description = desc;
+    texture->description.id = free_slot_index + 1;
+    texture->description.generation = system->generation_counter++;
+    texture->handle = gpu_handle;
+
+    // Add to hash table
+    VkrTextureEntry new_entry = {
+        .index = free_slot_index, .ref_count = 0, .auto_release = true_v};
+    vkr_hash_table_insert_VkrTextureEntry(&system->texture_map, stable_key,
+                                          new_entry);
+
+    out_handles[i] =
+        (VkrTextureHandle){.id = texture->description.id,
+                           .generation = texture->description.generation};
+    out_errors[i] = VKR_RENDERER_ERROR_NONE;
+    loaded++;
+  }
+
+  // Copy handles from first occurrence to all duplicates
+  for (uint32_t i = 0; i < count; i++) {
+    if (first_occurrence[i] != i) {
+      uint32_t first = first_occurrence[i];
+      if (out_handles[first].id != 0) {
+        out_handles[i] = out_handles[first];
+        out_errors[i] = VKR_RENDERER_ERROR_NONE;
+      }
+    }
+  }
+
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  scratch_destroy(dedup_scratch, ARENA_MEMORY_TAG_ARRAY);
+  return loaded + already_loaded;
+}
+
+// Helper to load a single cube face from memory
+vkr_internal uint8_t *vkr_texture_load_cube_face(Arena *arena, const char *path,
+                                                 int32_t *out_width,
+                                                 int32_t *out_height) {
+  FilePath fp = file_path_create(path, arena, FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+
+  FileHandle fh = {0};
+  FileError ferr = file_open(&fp, mode, &fh);
+  if (ferr != FILE_ERROR_NONE) {
+    return NULL;
+  }
+
+  uint8_t *file_data = NULL;
+  uint64_t file_size = 0;
+  FileError read_err = file_read_all(&fh, arena, &file_data, &file_size);
+  file_close(&fh);
+
+  if (read_err != FILE_ERROR_NONE || !file_data || file_size == 0) {
+    return NULL;
+  }
+
+  // Cube maps don't flip vertically
+  stbi_set_flip_vertically_on_load_thread(0);
+
+  int32_t channels = 0;
+  uint8_t *pixels = stbi_load_from_memory(file_data, (int)file_size, out_width,
+                                          out_height, &channels, 4);
+  return pixels;
+}
+
 bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
                                          String8 base_path, String8 extension,
                                          VkrTextureHandle *out_handle,
@@ -966,10 +1499,9 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
            base_path.str, face_suffixes[0], (int)extension.length,
            extension.str);
 
-  stbi_set_flip_vertically_on_load(false); // Cube maps don't flip vertically
-
-  int32_t width, height, channels;
-  uint8_t *first_face = stbi_load(path_buffer, &width, &height, &channels, 4);
+  int32_t width = 0, height = 0;
+  uint8_t *first_face =
+      vkr_texture_load_cube_face(scratch.arena, path_buffer, &width, &height);
   if (!first_face) {
     log_error("Failed to load cube map face 0: %s", path_buffer);
     scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
@@ -1010,9 +1542,9 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
              (int)base_path.length, base_path.str, face_suffixes[face],
              (int)extension.length, extension.str);
 
-    int32_t face_width, face_height, face_channels;
-    uint8_t *face_data =
-        stbi_load(path_buffer, &face_width, &face_height, &face_channels, 4);
+    int32_t face_width = 0, face_height = 0;
+    uint8_t *face_data = vkr_texture_load_cube_face(scratch.arena, path_buffer,
+                                                    &face_width, &face_height);
     if (!face_data) {
       log_error("Failed to load cube map face %u: %s", face, path_buffer);
       scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);

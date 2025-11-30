@@ -15,7 +15,7 @@ VkrVertexBuffer vkr_vertex_buffer_create(VkrRendererFrontendHandle renderer,
   assert_log(stride > 0, "Stride must be > 0");
   assert_log(vertex_count > 0, "Vertex count must be > 0");
 
-  log_debug("Creating vertex buffer");
+  // log_debug("Creating vertex buffer");
 
   VkrVertexBuffer vertex_buffer = {0};
   vertex_buffer.stride = stride;
@@ -32,9 +32,9 @@ VkrVertexBuffer vkr_vertex_buffer_create(VkrRendererFrontendHandle renderer,
     return vertex_buffer;
   }
 
-  log_debug("Created vertex buffer '%s': %u vertices, stride %u, %llu bytes",
-            string8_cstr(&debug_name), vertex_count, stride,
-            vertex_buffer.size_bytes);
+  // log_debug("Created vertex buffer '%s': %u vertices, stride %u, %llu bytes",
+  //           string8_cstr(&debug_name), vertex_count, stride,
+  //           vertex_buffer.size_bytes);
 
   return vertex_buffer;
 }
@@ -64,10 +64,10 @@ VkrIndexBuffer vkr_index_buffer_create(VkrRendererFrontendHandle renderer,
     return index_buffer;
   }
 
-  log_debug("Created index buffer '%s': %u indices, type %s, %llu bytes",
-            string8_cstr(&debug_name), index_count,
-            (type == VKR_INDEX_TYPE_UINT16) ? "uint16" : "uint32",
-            index_buffer.size_bytes);
+  // log_debug("Created index buffer '%s': %u indices, type %s, %llu bytes",
+  //           string8_cstr(&debug_name), index_count,
+  //           (type == VKR_INDEX_TYPE_UINT16) ? "uint16" : "uint32",
+  //           index_buffer.size_bytes);
 
   return index_buffer;
 }
@@ -111,9 +111,9 @@ vkr_uniform_buffer_create(VkrRendererFrontendHandle renderer, const void *data,
     return uniform_buffer;
   }
 
-  log_debug("Created uniform buffer '%s': binding %u, %llu bytes, %s",
-            string8_cstr(&debug_name), binding, size_bytes,
-            dynamic ? "dynamic" : "static");
+  // log_debug("Created uniform buffer '%s': binding %u, %llu bytes, %s",
+  //           string8_cstr(&debug_name), binding, size_bytes,
+  //           dynamic ? "dynamic" : "static");
 
   return uniform_buffer;
 }
@@ -225,8 +225,8 @@ void vkr_vertex_buffer_destroy(VkrRendererFrontendHandle renderer,
   assert_log(vertex_buffer != NULL, "Vertex buffer is NULL");
 
   if (vertex_buffer->handle != NULL) {
-    log_debug("Destroying vertex buffer '%s'",
-              string8_cstr(&vertex_buffer->debug_name));
+    // log_debug("Destroying vertex buffer '%s'",
+    //           string8_cstr(&vertex_buffer->debug_name));
     vkr_renderer_destroy_buffer(renderer, vertex_buffer->handle);
     vertex_buffer->handle = NULL;
   }
@@ -240,8 +240,8 @@ void vkr_index_buffer_destroy(VkrRendererFrontendHandle renderer,
   assert_log(index_buffer != NULL, "Index buffer is NULL");
 
   if (index_buffer->handle != NULL) {
-    log_debug("Destroying index buffer '%s'",
-              string8_cstr(&index_buffer->debug_name));
+    // log_debug("Destroying index buffer '%s'",
+    //           string8_cstr(&index_buffer->debug_name));
     vkr_renderer_destroy_buffer(renderer, index_buffer->handle);
     index_buffer->handle = NULL;
   }
@@ -255,8 +255,8 @@ void vkr_uniform_buffer_destroy(VkrRendererFrontendHandle renderer,
   assert_log(uniform_buffer != NULL, "Uniform buffer is NULL");
 
   if (uniform_buffer->handle != NULL) {
-    log_debug("Destroying uniform buffer '%s'",
-              string8_cstr(&uniform_buffer->debug_name));
+    // log_debug("Destroying uniform buffer '%s'",
+    //           string8_cstr(&uniform_buffer->debug_name));
     vkr_renderer_destroy_buffer(renderer, uniform_buffer->handle);
     uniform_buffer->handle = NULL;
   }

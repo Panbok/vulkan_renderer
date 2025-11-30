@@ -288,7 +288,7 @@ void vkr_allocator_set(VkrAllocator *allocator, void *ptr, uint32_t value,
   }
 
 #if VKR_ALLOCATOR_ENABLE_LOGGING
-  log_debug("Set (%llu bytes) from allocator - [%s]", (unsigned long long)size,
+  log_debug("Set (%llu bytes) from allocator - [%s]", (uint64_t)size,
             VkrAllocatorTypeNames[allocator->type]);
 #endif
 }
@@ -305,8 +305,8 @@ void vkr_allocator_zero(VkrAllocator *allocator, void *ptr, uint64_t size) {
   }
 
 #if VKR_ALLOCATOR_ENABLE_LOGGING
-  log_debug("Zeroed (%llu bytes) from allocator - [%s]",
-            (unsigned long long)size, VkrAllocatorTypeNames[allocator->type]);
+  log_debug("Zeroed (%llu bytes) from allocator - [%s]", (uint64_t)size,
+            VkrAllocatorTypeNames[allocator->type]);
 #endif
 }
 

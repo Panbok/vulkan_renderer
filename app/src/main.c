@@ -54,6 +54,8 @@ typedef struct State {
   uint32_t filter_mode_index;
   bool8_t anisotropy_supported;
   VkrDeviceInformation device_information;
+
+  EventManager *event_manager; // For dispatching events
 } State;
 
 vkr_global State *state = NULL;
@@ -268,8 +270,7 @@ void application_update(Application *application, float64_t delta) {
   }
   vkr_local_persist int log_fps_counter = 0;
   VkrCameraSystem *camera_system = &application->renderer.camera_system;
-  VkrCameraHandle active_camera =
-      vkr_camera_registry_get_active(camera_system);
+  VkrCameraHandle active_camera = vkr_camera_registry_get_active(camera_system);
   application->renderer.active_camera = active_camera;
   VkrCamera *camera =
       vkr_camera_registry_get_by_handle(camera_system, active_camera);
@@ -355,6 +356,14 @@ void application_update(Application *application, float64_t delta) {
                         VKR_RENDER_MODE_COUNT);
     log_debug("RENDER MODE: %d", application->renderer.globals.render_mode);
   }
+
+  // L key: Load world meshes (falcon + sponza)
+  if (input_is_key_up(state->input_state, KEY_L) &&
+      input_was_key_down(state->input_state, KEY_L)) {
+    log_info("Loading world meshes...");
+    event_manager_dispatch(state->event_manager,
+                           (Event){.type = EVENT_TYPE_LOAD_WORLD_MESHES});
+  }
 }
 
 // todo: should look into using DLLs in debug builds for hot reload
@@ -401,6 +410,7 @@ int main(int argc, char **argv) {
   state->previous_wheel_delta = initial_wheel_delta;
   state->app_arena = application.app_arena;
   state->event_arena = application.event_manager.arena;
+  state->event_manager = &application.event_manager;
 
   Scratch scratch = scratch_create(application.app_arena);
   vkr_renderer_get_device_information(

@@ -1,9 +1,11 @@
 #include "renderer/systems/views/vkr_view_world.h"
 
 #include "containers/str.h"
+#include "core/event.h"
 #include "core/logger.h"
 #include "math/mat.h"
 #include "math/vec.h"
+#include "platform/vkr_platform.h"
 #include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
@@ -14,12 +16,97 @@
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/systems/vkr_view_system.h"
 
+typedef enum VkrWorldMeshesLoadingState {
+  VKR_WORLD_MESHES_LOADING_STATE_NOT_LOADED = 0,
+  VKR_WORLD_MESHES_LOADING_STATE_LOADING = 1,
+  VKR_WORLD_MESHES_LOADING_STATE_LOADED = 2,
+} VkrWorldMeshesLoadingState;
+
 typedef struct VkrViewWorldState {
   VkrShaderConfig shader_config;
   VkrPipelineHandle pipeline;
   VkrPipelineHandle transparent_pipeline;
   VkrMaterialHandle default_material;
+  volatile VkrWorldMeshesLoadingState world_meshes_state;
 } VkrViewWorldState;
+
+vkr_internal bool8_t vkr_view_world_on_load_meshes_event(Event *event,
+                                                         UserData user_data) {
+  assert_log(event != NULL, "Event is NULL");
+  assert_log(user_data != NULL, "User data is NULL");
+
+  VkrViewWorldState *state = (VkrViewWorldState *)user_data;
+
+  if (state->world_meshes_state == VKR_WORLD_MESHES_LOADING_STATE_LOADING) {
+    log_warn("World meshes are loading...");
+    return true_v;
+  }
+
+  if (state->world_meshes_state == VKR_WORLD_MESHES_LOADING_STATE_LOADED) {
+    log_warn("World meshes are already loaded");
+    return true_v;
+  }
+
+  state->world_meshes_state = VKR_WORLD_MESHES_LOADING_STATE_LOADING;
+
+  return true_v;
+}
+
+vkr_internal void vkr_view_world_load_demo_meshes(RendererFrontend *rf,
+                                                  VkrViewWorldState *state) {
+  float64_t start_time = vkr_platform_get_absolute_time();
+  log_info("[%.3fs] Starting world meshes batch load...", start_time);
+
+  // Define all meshes to load
+  VkrMeshLoadDesc mesh_descs[] = {
+      {
+          .mesh_path = string8_lit("assets/models/falcon.obj"),
+          .transform = vkr_transform_from_position_scale_rotation(
+              vec3_new(0.0f, 0.2f, -15.0f), vec3_new(0.2f, 0.2f, 0.2f),
+              vkr_quat_identity()),
+          .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
+          .shader_override = {0},
+      },
+      {
+          .mesh_path = string8_lit("assets/models/sponza.obj"),
+          .transform = vkr_transform_from_position_scale_rotation(
+              vec3_new(0.0f, 0.0f, -15.0f), vec3_new(0.0085f, 0.0085f, 0.0085f),
+              vkr_quat_identity()),
+          .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
+          .shader_override = {0},
+      },
+  };
+
+  uint32_t mesh_count = ArrayCount(mesh_descs);
+  uint32_t mesh_indices[2] = {VKR_INVALID_ID, VKR_INVALID_ID};
+  VkrRendererError mesh_errors[2] = {VKR_RENDERER_ERROR_NONE,
+                                     VKR_RENDERER_ERROR_NONE};
+
+  // Batch load all meshes with parallel I/O, material, and texture loading
+  uint32_t loaded = vkr_mesh_manager_load_batch(
+      &rf->mesh_manager, mesh_descs, mesh_count, mesh_indices, mesh_errors);
+
+  float64_t end_time = vkr_platform_get_absolute_time();
+  float64_t elapsed_ms = (end_time - start_time) * 1000.0;
+
+  // Report results
+  const char *mesh_names[] = {"falcon", "sponza"};
+  for (uint32_t i = 0; i < mesh_count; i++) {
+    if (mesh_indices[i] != VKR_INVALID_ID) {
+      log_info("Loaded %s mesh at index %u", mesh_names[i], mesh_indices[i]);
+    } else {
+      String8 err = vkr_renderer_get_error_string(mesh_errors[i]);
+      log_error("Failed to load %s mesh: %s", mesh_names[i],
+                string8_cstr(&err));
+    }
+  }
+
+  log_info("[%.3fs] World meshes batch load complete: %u/%u meshes loaded in "
+           "%.2f ms",
+           end_time, loaded, mesh_count, elapsed_ms);
+
+  state->world_meshes_state = VKR_WORLD_MESHES_LOADING_STATE_LOADED;
+}
 
 typedef struct VkrTransparentSubmeshEntry {
   uint32_t mesh_index;
@@ -388,71 +475,13 @@ vkr_internal bool32_t vkr_view_world_on_create(VkrLayerContext *ctx) {
   vkr_transform_set_parent(&cube_mesh_3_ptr->transform,
                            &cube_mesh_2_ptr->transform);
 
-  // Load demo meshes
-  VkrRendererError mesh_load_err = VKR_RENDERER_ERROR_NONE;
-  uint32_t falcon_mesh_index = VKR_INVALID_ID;
-  VkrMeshLoadDesc falcon_desc = {
-      .mesh_path = string8_lit("assets/models/falcon.obj"),
-      .transform = vkr_transform_from_position_scale_rotation(
-          vec3_new(0.0f, 0.2f, -15.0f), vec3_new(0.2f, 0.2f, 0.2f),
-          vkr_quat_identity()),
-      .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
-      .shader_override = {0},
-  };
-  if (!vkr_mesh_manager_load(&rf->mesh_manager, &falcon_desc,
-                             &falcon_mesh_index, NULL, &mesh_load_err)) {
-    String8 err = vkr_renderer_get_error_string(mesh_load_err);
-    log_error("Failed to load falcon mesh: %s", string8_cstr(&err));
-  } else {
-    VkrMesh *falcon_mesh =
-        vkr_mesh_manager_get(&rf->mesh_manager, falcon_mesh_index);
-    if (falcon_mesh) {
-      VkrSubMeshDesc *falcon_submeshes =
-          arena_alloc(rf->mesh_manager.arena,
-                      sizeof(VkrSubMeshDesc) * falcon_mesh->submeshes.length,
-                      ARENA_MEMORY_TAG_ARRAY);
-      if (falcon_submeshes) {
-        for (uint32_t i = 0; i < falcon_mesh->submeshes.length; i++) {
-          falcon_submeshes[i] = (VkrSubMeshDesc){
-              .geometry = falcon_mesh->submeshes.data[i].geometry,
-              .material = falcon_mesh->submeshes.data[i].material,
-              .pipeline_domain = falcon_mesh->submeshes.data[i].pipeline_domain,
-              .shader_override = falcon_mesh->submeshes.data[i].shader_override,
-              .owns_geometry = falcon_mesh->submeshes.data[i].owns_geometry,
-              .owns_material = falcon_mesh->submeshes.data[i].owns_material,
-          };
-        }
+  vkr_view_world_load_demo_meshes(rf, state);
 
-        VkrMeshDesc falcon_desc2 = {
-            .transform = vkr_transform_from_position_scale_rotation(
-                vec3_new(5.0f, 0.2f, -15.0f), vec3_new(0.2f, 0.2f, 0.2f),
-                vkr_quat_identity()),
-            .submeshes = falcon_submeshes,
-            .submesh_count = falcon_mesh->submeshes.length,
-        };
-        if (!vkr_mesh_manager_add(&rf->mesh_manager, &falcon_desc2, NULL,
-                                  &mesh_load_err)) {
-          String8 err = vkr_renderer_get_error_string(mesh_load_err);
-          log_error("Failed to add falcon mesh clone: %s", string8_cstr(&err));
-        }
-      }
-    }
-  }
+  event_manager_subscribe(rf->event_manager, EVENT_TYPE_LOAD_WORLD_MESHES,
+                          vkr_view_world_on_load_meshes_event, state);
 
-  VkrMeshLoadDesc sponza_desc = {
-      .mesh_path = string8_lit("assets/models/sponza.obj"),
-      .transform = vkr_transform_from_position_scale_rotation(
-          vec3_new(0.0f, 0.0f, -15.0f), vec3_new(0.0085f, 0.0085f, 0.0085f),
-          vkr_quat_identity()),
-      .pipeline_domain = VKR_PIPELINE_DOMAIN_WORLD,
-      .shader_override = {0},
-  };
-  mesh_load_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_mesh_manager_load(&rf->mesh_manager, &sponza_desc, NULL, NULL,
-                             &mesh_load_err)) {
-    String8 err = vkr_renderer_get_error_string(mesh_load_err);
-    log_error("Failed to load sponza mesh: %s", string8_cstr(&err));
-  }
+  log_info(
+      "World view initialized. Press 'L' to load falcon and sponza meshes.");
 
   return true_v;
 }
@@ -491,7 +520,7 @@ vkr_internal void vkr_view_world_render_submesh(RendererFrontend *rf,
                                                 VkrPipelineDomain domain,
                                                 bool8_t *globals_applied) {
   VkrMesh *mesh = vkr_mesh_manager_get(&rf->mesh_manager, mesh_index);
-  if (!mesh)
+  if (!mesh || mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED)
     return;
 
   VkrSubMesh *submesh = vkr_mesh_manager_get_submesh(&rf->mesh_manager,
@@ -579,6 +608,11 @@ vkr_internal void vkr_view_world_on_render(VkrLayerContext *ctx,
     log_error("World view state is NULL");
     return;
   }
+
+  // if (state->world_meshes_state == VKR_WORLD_MESHES_LOADING_STATE_LOADING) {
+  //   state->world_meshes_state = VKR_WORLD_MESHES_LOADING_STATE_LOADED;
+  //   vkr_view_world_load_demo_meshes(rf, state);
+  // }
 
   uint32_t mesh_capacity = vkr_mesh_manager_capacity(&rf->mesh_manager);
   bool8_t globals_applied = false_v;
@@ -688,6 +722,9 @@ vkr_internal void vkr_view_world_on_destroy(VkrLayerContext *ctx) {
     log_error("Renderer frontend is NULL");
     return;
   }
+
+  event_manager_unsubscribe(rf->event_manager, EVENT_TYPE_LOAD_WORLD_MESHES,
+                            vkr_view_world_on_load_meshes_event);
 
   VkrViewWorldState *state =
       (VkrViewWorldState *)vkr_layer_context_get_user_data(ctx);

@@ -249,7 +249,6 @@ bool8_t application_create(Application *application,
     return false_v;
   }
 
-  // Initialize engine-wide job system
   VkrJobSystemConfig job_cfg = vkr_job_system_config_default();
   if (!vkr_job_system_init(&job_cfg, &application->job_system)) {
     log_fatal("Failed to initialize job system");
@@ -267,7 +266,8 @@ bool8_t application_create(Application *application,
 
   vkr_gamepad_init(&application->gamepad, &application->window.input_state);
 
-  if (!vkr_renderer_systems_initialize(&application->renderer)) {
+  if (!vkr_renderer_systems_initialize(&application->renderer,
+                                       &application->job_system)) {
     log_fatal("Failed to initialize renderer frontend systems");
     return false_v;
   }

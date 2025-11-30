@@ -2,6 +2,7 @@
 
 #include "containers/bitset.h"
 #include "core/event.h"
+#include "core/vkr_job_system.h"
 #include "core/vkr_window.h"
 #include "defines.h"
 #include "math/mat.h"
@@ -729,7 +730,8 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
                                  const VkrRendererBackendConfig *backend_config,
                                  VkrRendererError *out_error);
 
-bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer);
+bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
+                                         VkrJobSystem *job_system);
 
 void vkr_renderer_destroy(VkrRendererFrontendHandle renderer);
 // --- END Initialization and Shutdown ---

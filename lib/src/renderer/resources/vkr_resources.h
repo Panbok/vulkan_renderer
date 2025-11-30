@@ -156,6 +156,11 @@ Array(VkrPipeline);
 // Mesh/SubMesh - app/scene-side draw units
 // =============================================================================
 
+typedef enum VkrMeshLoadingState {
+  VKR_MESH_LOADING_STATE_NOT_LOADED = 0,
+  VKR_MESH_LOADING_STATE_LOADED = 1,
+} VkrMeshLoadingState;
+
 typedef struct VkrSubMesh {
   VkrGeometryHandle geometry;
   VkrMaterialHandle material;
@@ -174,6 +179,7 @@ typedef struct VkrMesh {
   VkrTransform transform;
   Mat4 model;
   Array_VkrSubMesh submeshes;
+  VkrMeshLoadingState loading_state;
 } VkrMesh;
 Array(VkrMesh);
 

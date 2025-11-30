@@ -908,6 +908,32 @@ static INLINE bool8_t vkr_vertex3d_equal(const VkrVertex3d *lhs,
          vec4_equal(lhs->tangent, rhs->tangent, epsilon);
 }
 
+// Simple spatial hash for vertex deduplication - O(n) instead of O(n²)
+vkr_internal uint32_t vkr_vertex_hash(const VkrVertex3d *v) {
+  // Quantize position to grid cells for hashing
+  const float32_t scale = 1000.0f; // 0.001 unit precision
+  int32_t px = (int32_t)(v->position.x * scale);
+  int32_t py = (int32_t)(v->position.y * scale);
+  int32_t pz = (int32_t)(v->position.z * scale);
+  int32_t nx = (int32_t)(v->normal.x * 100.0f);
+  int32_t ny = (int32_t)(v->normal.y * 100.0f);
+  int32_t nz = (int32_t)(v->normal.z * 100.0f);
+  int32_t tu = (int32_t)(v->texcoord.u * 10000.0f);
+  int32_t tv = (int32_t)(v->texcoord.v * 10000.0f);
+
+  // FNV-1a hash
+  uint32_t hash = 2166136261u;
+  hash ^= (uint32_t)px; hash *= 16777619u;
+  hash ^= (uint32_t)py; hash *= 16777619u;
+  hash ^= (uint32_t)pz; hash *= 16777619u;
+  hash ^= (uint32_t)nx; hash *= 16777619u;
+  hash ^= (uint32_t)ny; hash *= 16777619u;
+  hash ^= (uint32_t)nz; hash *= 16777619u;
+  hash ^= (uint32_t)tu; hash *= 16777619u;
+  hash ^= (uint32_t)tv; hash *= 16777619u;
+  return hash;
+}
+
 bool8_t vkr_geometry_system_deduplicate_vertices(
     VkrGeometrySystem *system, Arena *scratch_arena,
     const VkrVertex3d *vertices, uint32_t vertex_count, uint32_t *indices,
@@ -926,6 +952,15 @@ bool8_t vkr_geometry_system_deduplicate_vertices(
     return true_v;
   }
 
+  // Use a hash table for O(n) deduplication instead of O(n²)
+  // Hash table size should be ~2x vertex count for good performance
+  uint32_t table_size = vertex_count * 2;
+  if (table_size < 1024) table_size = 1024;
+
+  // Each bucket stores: vertex index in unique array, or UINT32_MAX if empty
+  uint32_t *hash_table =
+      arena_alloc(scratch_arena, (uint64_t)table_size * sizeof(uint32_t),
+                  ARENA_MEMORY_TAG_ARRAY);
   VkrVertex3d *unique =
       arena_alloc(scratch_arena, (uint64_t)vertex_count * sizeof(VkrVertex3d),
                   ARENA_MEMORY_TAG_ARRAY);
@@ -933,26 +968,49 @@ bool8_t vkr_geometry_system_deduplicate_vertices(
       arena_alloc(scratch_arena, (uint64_t)vertex_count * sizeof(uint32_t),
                   ARENA_MEMORY_TAG_ARRAY);
 
-  if (!unique || !remap) {
+  if (!hash_table || !unique || !remap) {
     log_error("GeometrySystem: failed to allocate dedup buffers");
     return false_v;
   }
 
+  // Initialize hash table to empty
+  for (uint32_t i = 0; i < table_size; ++i) {
+    hash_table[i] = UINT32_MAX;
+  }
+
   uint32_t unique_count = 0;
   for (uint32_t i = 0; i < vertex_count; ++i) {
+    uint32_t hash = vkr_vertex_hash(&vertices[i]);
+    uint32_t bucket = hash % table_size;
+
+    // Linear probing to find matching vertex or empty slot
     bool8_t found = false;
-    for (uint32_t j = 0; j < unique_count; ++j) {
-      if (vkr_vertex3d_equal(&vertices[i], &unique[j])) {
-        remap[i] = j;
+    for (uint32_t probe = 0; probe < table_size; ++probe) {
+      uint32_t idx = (bucket + probe) % table_size;
+
+      if (hash_table[idx] == UINT32_MAX) {
+        // Empty slot - add new unique vertex
+        hash_table[idx] = unique_count;
+        unique[unique_count] = vertices[i];
+        remap[i] = unique_count;
+        unique_count++;
+        found = true;
+        break;
+      }
+
+      // Check if this is a matching vertex
+      uint32_t existing_idx = hash_table[idx];
+      if (vkr_vertex3d_equal(&vertices[i], &unique[existing_idx])) {
+        remap[i] = existing_idx;
         found = true;
         break;
       }
     }
 
     if (!found) {
-      unique[unique_count] = vertices[i];
-      remap[i] = unique_count;
-      unique_count++;
+      // Hash table full (shouldn't happen with 2x size)
+      log_error("GeometrySystem: hash table overflow during dedup");
+      return false_v;
     }
   }
 

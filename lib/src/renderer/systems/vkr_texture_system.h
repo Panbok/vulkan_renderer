@@ -1,6 +1,7 @@
 #pragma once
 
 #include "containers/vkr_hashtable.h"
+#include "core/vkr_job_system.h"
 #include "defines.h"
 #include "memory/arena.h"
 #include "renderer/resources/vkr_resources.h"
@@ -43,6 +44,8 @@ typedef struct VkrTextureSystem {
   VkrTextureHandle default_texture;          // fallback texture
   VkrTextureHandle default_normal_texture;   // flat normal fallback
   VkrTextureHandle default_specular_texture; // flat specular fallback
+
+  VkrJobSystem *job_system; // For async texture loading
 } VkrTextureSystem;
 
 // =============================================================================
@@ -53,11 +56,14 @@ typedef struct VkrTextureSystem {
  * @brief Initializes the texture system
  * @param renderer The renderer to use
  * @param config The configuration for the texture system
+ * @param job_system The job system for async loading (can be NULL for sync
+ * only)
  * @param out_system The initialized texture system (output)
  * @return true on success, false on failure
  */
 bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
                                 const VkrTextureSystemConfig *config,
+                                VkrJobSystem *job_system,
                                 VkrTextureSystem *out_system);
 
 /**
@@ -267,6 +273,26 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *self,
 bool8_t vkr_texture_system_load(VkrTextureSystem *system, String8 name,
                                 VkrTextureHandle *out_handle,
                                 VkrRendererError *out_error);
+
+/**
+ * @brief Loads multiple textures in parallel using the job system.
+ *
+ * Submits all texture decode jobs at once, waits for all to complete,
+ * then does GPU uploads. Much faster than loading textures one by one.
+ *
+ * @param system The texture system
+ * @param paths Array of texture file paths to load
+ * @param count Number of textures to load
+ * @param out_handles Array to receive texture handles (must have 'count'
+ * elements)
+ * @param out_errors Array to receive per-texture errors (must have 'count'
+ * elements)
+ * @return Number of textures successfully loaded
+ */
+uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
+                                       const String8 *paths, uint32_t count,
+                                       VkrTextureHandle *out_handles,
+                                       VkrRendererError *out_errors);
 
 /**
  * @brief Finds a free slot in the texture system

@@ -5,6 +5,7 @@
 #include "defines.h"
 #include "math/vkr_transform.h"
 #include "renderer/resources/loaders/mesh_loader.h"
+#include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_resource_system.h"
 
 vkr_internal bool8_t vkr_mesh_manager_resolve_geometry(
@@ -226,9 +227,13 @@ bool8_t vkr_mesh_manager_create(VkrMeshManager *manager,
 
   vkr_mesh_manager_update_model(manager, index);
 
+  VkrMesh *mesh = vkr_mesh_manager_get(manager, index);
+
   if (out_mesh) {
-    *out_mesh = vkr_mesh_manager_get(manager, index);
+    *out_mesh = mesh;
   }
+
+  mesh->loading_state = VKR_MESH_LOADING_STATE_LOADED;
 
   return true_v;
 }
@@ -340,30 +345,55 @@ bool8_t vkr_mesh_manager_load(VkrMeshManager *manager,
   assert_log(desc != NULL, "Mesh load desc is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  if (!desc->mesh_path.str || desc->mesh_path.length == 0) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  // Use batch loader with count=1 for consistency
+  uint32_t mesh_index = VKR_INVALID_ID;
+  VkrRendererError err = VKR_RENDERER_ERROR_NONE;
+  uint32_t loaded =
+      vkr_mesh_manager_load_batch(manager, desc, 1, &mesh_index, &err);
+
+  *out_error = err;
+  if (loaded == 0 || mesh_index == VKR_INVALID_ID) {
     return false_v;
   }
 
-  VkrResourceHandleInfo info = {0};
-  VkrRendererError load_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, desc->mesh_path,
-                                manager->scratch_arena, &info, &load_err)) {
-    *out_error = load_err;
+  if (out_first_index) {
+    *out_first_index = mesh_index;
+  }
+  if (out_mesh_count) {
+    // Get the mesh to find how many subsets it has
+    VkrMesh *mesh = vkr_mesh_manager_get(manager, mesh_index);
+    if (mesh) {
+      *out_mesh_count = vkr_mesh_manager_submesh_count(mesh);
+    } else {
+      *out_mesh_count = 1;
+    }
+  }
+  return true_v;
+}
+
+// Internal function to process batch results and create mesh entries
+vkr_internal bool8_t vkr_mesh_manager_process_batch_result(
+    VkrMeshManager *manager, VkrMeshBatchResult *batch_result,
+    const VkrMeshLoadDesc *desc, uint32_t *out_index,
+    VkrRendererError *out_error) {
+  if (!batch_result || !batch_result->success || !batch_result->result) {
+    if (out_error) {
+      *out_error = batch_result ? batch_result->error
+                                : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
     return false_v;
   }
 
-  bool8_t result = false_v;
-  VkrMeshLoaderResult *mesh_result = info.as.mesh;
+  VkrMeshLoaderResult *mesh_result = batch_result->result;
 
   // Validate mesh result
-  if (!mesh_result || mesh_result->subsets.length == 0 ||
-      !mesh_result->subsets.data) {
+  if (mesh_result->subsets.length == 0 || !mesh_result->subsets.data) {
     log_error("MeshManager: mesh '%.*s' returned no subsets",
               (int)desc->mesh_path.length, desc->mesh_path.str);
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    vkr_resource_system_unload(&info, desc->mesh_path);
-    return result;
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
+    return false_v;
   }
 
   uint32_t subset_count = (uint32_t)mesh_result->subsets.length;
@@ -374,9 +404,10 @@ bool8_t vkr_mesh_manager_load(VkrMeshManager *manager,
 
   if (!sub_descs) {
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    vkr_resource_system_unload(&info, desc->mesh_path);
-    return result;
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+    return false_v;
   }
 
   MemZero(sub_descs, (uint64_t)subset_count * sizeof(VkrSubMeshDesc));
@@ -389,7 +420,9 @@ bool8_t vkr_mesh_manager_load(VkrMeshManager *manager,
     VkrMeshLoaderSubset *subset =
         array_get_VkrMeshLoaderSubset(&mesh_result->subsets, i);
     if (!subset) {
-      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      if (out_error) {
+        *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      }
       subsets_success = false_v;
       break;
     }
@@ -398,7 +431,9 @@ bool8_t vkr_mesh_manager_load(VkrMeshManager *manager,
     VkrGeometryHandle geometry = vkr_geometry_system_create(
         manager->geometry_system, &subset->geometry_config, true_v, &geo_err);
     if (geometry.id == 0) {
-      *out_error = geo_err;
+      if (out_error) {
+        *out_error = geo_err;
+      }
       subsets_success = false_v;
       break;
     }
@@ -445,8 +480,7 @@ bool8_t vkr_mesh_manager_load(VkrMeshManager *manager,
       }
     }
     scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    vkr_resource_system_unload(&info, desc->mesh_path);
-    return result;
+    return false_v;
   }
 
   // All subsets built successfully, create the mesh
@@ -457,12 +491,12 @@ bool8_t vkr_mesh_manager_load(VkrMeshManager *manager,
   };
 
   uint32_t mesh_index = VKR_INVALID_ID;
+  bool8_t result = false_v;
   if (vkr_mesh_manager_add(manager, &mesh_desc, &mesh_index, out_error)) {
     vkr_mesh_manager_update_model(manager, mesh_index);
-    if (out_first_index)
-      *out_first_index = mesh_index;
-    if (out_mesh_count)
-      *out_mesh_count = 1;
+    if (out_index) {
+      *out_index = mesh_index;
+    }
     result = true_v;
   }
 
@@ -475,15 +509,17 @@ bool8_t vkr_mesh_manager_load(VkrMeshManager *manager,
   }
 
   scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-  vkr_resource_system_unload(&info, desc->mesh_path);
 
-  // Set final error status
-  if (!result && *out_error == VKR_RENDERER_ERROR_NONE) {
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-  }
   if (result) {
-    *out_error = VKR_RENDERER_ERROR_NONE;
+    VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, mesh_index);
+    if (mesh) {
+      mesh->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+    }
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_NONE;
+    }
   }
+
   return result;
 }
 
@@ -679,4 +715,104 @@ VkrSubMesh *vkr_mesh_manager_get_submesh(VkrMeshManager *manager,
     return NULL;
 
   return array_get_VkrSubMesh(&mesh->submeshes, submesh_index);
+}
+
+void vkr_mesh_manager_set_loader_context(VkrMeshManager *manager,
+                                         VkrMeshLoaderContext *context) {
+  assert_log(manager != NULL, "Manager is NULL");
+  manager->loader_context = context;
+}
+
+uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
+                                     const VkrMeshLoadDesc *descs,
+                                     uint32_t count, uint32_t *out_indices,
+                                     VkrRendererError *out_errors) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(descs != NULL, "Descs is NULL");
+
+  if (count == 0) {
+    return 0;
+  }
+
+  // Initialize outputs
+  if (out_indices) {
+    for (uint32_t i = 0; i < count; i++) {
+      out_indices[i] = VKR_INVALID_ID;
+    }
+  }
+  if (out_errors) {
+    for (uint32_t i = 0; i < count; i++) {
+      out_errors[i] = VKR_RENDERER_ERROR_NONE;
+    }
+  }
+
+  // Batch loading requires loader_context
+  if (!manager->loader_context) {
+    log_error("MeshManager: loader_context not set, cannot load meshes");
+    if (out_errors) {
+      for (uint32_t i = 0; i < count; i++) {
+        out_errors[i] = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      }
+    }
+    return 0;
+  }
+
+  // Collect mesh paths
+  Scratch scratch = scratch_create(manager->scratch_arena);
+
+  String8 *mesh_paths = arena_alloc(scratch.arena, sizeof(String8) * count,
+                                    ARENA_MEMORY_TAG_ARRAY);
+  VkrMeshBatchResult *batch_results =
+      arena_alloc(scratch.arena, sizeof(VkrMeshBatchResult) * count,
+                  ARENA_MEMORY_TAG_ARRAY);
+
+  if (!mesh_paths || !batch_results) {
+    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    if (out_errors) {
+      for (uint32_t i = 0; i < count; i++) {
+        out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      }
+    }
+    return 0;
+  }
+
+  for (uint32_t i = 0; i < count; i++) {
+    mesh_paths[i] = descs[i].mesh_path;
+  }
+
+  // Batch load all meshes
+  uint32_t meshes_loaded = vkr_mesh_loader_load_batch(
+      manager->loader_context, mesh_paths, count, scratch.arena, batch_results);
+
+  log_debug("Mesh manager batch: %u/%u meshes loaded from files", meshes_loaded,
+            count);
+
+  // Create mesh entries for each successfully loaded result
+  uint32_t entries_created = 0;
+  for (uint32_t i = 0; i < count; i++) {
+    uint32_t mesh_index = VKR_INVALID_ID;
+    VkrRendererError err = VKR_RENDERER_ERROR_NONE;
+
+    if (vkr_mesh_manager_process_batch_result(manager, &batch_results[i],
+                                              &descs[i], &mesh_index, &err)) {
+      if (out_indices) {
+        out_indices[i] = mesh_index;
+      }
+      entries_created++;
+    }
+
+    if (out_errors) {
+      out_errors[i] = err;
+    }
+  }
+
+  // Free batch results (the arenas are freed with
+  // vkr_mesh_loader_free_batch_results)
+  vkr_mesh_loader_free_batch_results(batch_results, count);
+
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+
+  log_debug("Mesh manager batch complete: %u/%u mesh entries created",
+            entries_created, count);
+  return entries_created;
 }

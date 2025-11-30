@@ -72,6 +72,9 @@ typedef struct VkrMeshDesc {
   uint32_t submesh_count;
 } VkrMeshDesc;
 
+// Forward declaration
+typedef struct VkrMeshLoaderContext VkrMeshLoaderContext;
+
 /**
  * @brief Manager for the mesh system.
  * @param arena The arena to use for the mesh manager.
@@ -89,6 +92,7 @@ typedef struct VkrMeshManager {
   VkrGeometrySystem *geometry_system;
   VkrMaterialSystem *material_system;
   VkrPipelineRegistry *pipeline_registry;
+  VkrMeshLoaderContext *loader_context; // For batch loading
   VkrMeshManagerConfig config;
   Array_VkrMesh meshes;
   Array_uint32_t free_indices;
@@ -152,6 +156,33 @@ bool8_t vkr_mesh_manager_load(VkrMeshManager *manager,
                               uint32_t *out_first_index,
                               uint32_t *out_mesh_count,
                               VkrRendererError *out_error);
+
+/**
+ * @brief Batch load multiple meshes with parallel file I/O and material
+ * loading.
+ *
+ * This function loads all meshes in parallel, batch loads all materials
+ * and textures across all meshes, then creates the mesh entries.
+ *
+ * @param manager The mesh manager to load the meshes into.
+ * @param descs Array of mesh load descriptors.
+ * @param count Number of meshes to load.
+ * @param out_indices Optional array to receive mesh indices (size = count).
+ * @param out_errors Optional array to receive per-mesh errors (size = count).
+ * @return Number of meshes successfully loaded.
+ */
+uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
+                                     const VkrMeshLoadDesc *descs,
+                                     uint32_t count, uint32_t *out_indices,
+                                     VkrRendererError *out_errors);
+
+/**
+ * @brief Sets the mesh loader context for batch loading operations.
+ * @param manager The mesh manager.
+ * @param context The mesh loader context.
+ */
+void vkr_mesh_manager_set_loader_context(VkrMeshManager *manager,
+                                         VkrMeshLoaderContext *context);
 
 /**
  * @brief Removes a mesh by index.

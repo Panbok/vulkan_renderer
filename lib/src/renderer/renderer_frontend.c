@@ -39,8 +39,8 @@ vkr_internal bool8_t vkr_renderer_on_window_resize(Event *event,
   }
 
   if (resize->width == 0 || resize->height == 0) {
-    log_debug("Skipping resize with zero dimensions: %ux%u", resize->width,
-              resize->height);
+    // log_debug("Skipping resize with zero dimensions: %ux%u", resize->width,
+    //           resize->height);
     return true_v;
   }
 
@@ -73,7 +73,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   assert_log(out_error != NULL, "Out error is NULL");
   assert_log(device_requirements != NULL, "Device requirements is NULL");
 
-  log_debug("Creating renderer");
+  // log_debug("Creating renderer");
 
   renderer->arena = arena_create(MB(6));
   if (!renderer->arena) {
@@ -199,7 +199,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
 void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
 
-  log_debug("Destroying renderer");
+  // log_debug("Destroying renderer");
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
 
@@ -327,7 +327,7 @@ VkrBufferHandle vkr_renderer_create_buffer(
   assert_log(description != NULL, "Description is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  log_debug("Creating buffer");
+  // log_debug("Creating buffer");
 
   VkrBackendResourceHandle handle = renderer->backend.buffer_create(
       renderer->backend_state, description, initial_data);
@@ -386,7 +386,7 @@ void vkr_renderer_destroy_buffer(VkrRendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(buffer != NULL, "Buffer is NULL");
 
-  log_debug("Destroying buffer");
+  // log_debug("Destroying buffer");
 
   VkrBackendResourceHandle handle = {.ptr = (void *)buffer};
   renderer->backend.buffer_destroy(renderer->backend_state, handle);
@@ -401,7 +401,7 @@ vkr_renderer_create_texture(VkrRendererFrontendHandle renderer,
   assert_log(description != NULL, "Description is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  log_debug("Creating texture");
+  // log_debug("Creating texture");
 
   VkrBackendResourceHandle handle = renderer->backend.texture_create(
       renderer->backend_state, description, initial_data);
@@ -484,7 +484,7 @@ void vkr_renderer_destroy_texture(VkrRendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(texture != NULL, "Texture is NULL");
 
-  log_debug("Destroying texture");
+  // log_debug("Destroying texture");
 
   VkrBackendResourceHandle handle = {.ptr = (void *)texture};
   renderer->backend.texture_destroy(renderer->backend_state, handle);
@@ -511,7 +511,7 @@ VkrPipelineOpaqueHandle vkr_renderer_create_graphics_pipeline(
   assert_log(description != NULL, "Description is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  log_debug("Creating pipeline");
+  // log_debug("Creating pipeline");
 
   VkrBackendResourceHandle handle = renderer->backend.graphics_pipeline_create(
       renderer->backend_state, description);
@@ -592,7 +592,7 @@ void vkr_renderer_destroy_pipeline(VkrRendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
 
-  log_debug("Destroying pipeline");
+  // log_debug("Destroying pipeline");
 
   // Wait for GPU to be idle to ensure no command buffers are still using this
   // pipeline
@@ -609,7 +609,7 @@ VkrRendererError vkr_renderer_update_buffer(VkrRendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(buffer != NULL, "Buffer is NULL");
 
-  log_debug("Updating buffer");
+  // log_debug("Updating buffer");
 
   VkrBackendResourceHandle handle = {.ptr = (void *)buffer};
   return renderer->backend.buffer_update(renderer->backend_state, handle,
@@ -623,7 +623,7 @@ VkrRendererError vkr_renderer_upload_buffer(VkrRendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(buffer != NULL, "Buffer is NULL");
 
-  log_debug("Uploading buffer");
+  // log_debug("Uploading buffer");
 
   VkrBackendResourceHandle handle = {.ptr = (void *)buffer};
   return renderer->backend.buffer_upload(renderer->backend_state, handle,
@@ -774,7 +774,7 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
                          uint32_t height) {
   assert_log(renderer != NULL, "Renderer is NULL");
 
-  log_debug("Resizing renderer to %d %d", width, height);
+  // log_debug("Resizing renderer to %d %d", width, height);
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
 
@@ -874,7 +874,8 @@ uint64_t vkr_renderer_get_and_reset_descriptor_writes_avoided(
       renderer->backend_state);
 }
 
-bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer) {
+bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
+                                         VkrJobSystem *job_system) {
   assert_log(renderer != NULL, "Renderer is NULL");
   RendererFrontend *rf = (RendererFrontend *)renderer;
 
@@ -923,7 +924,7 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer) {
   log_info("Geometry system max geometries=%u", geo_cfg.max_geometries);
 
   VkrTextureSystemConfig tex_cfg = {.max_texture_count = 1024};
-  if (!vkr_texture_system_init(rf, &tex_cfg, &rf->texture_system)) {
+  if (!vkr_texture_system_init(rf, &tex_cfg, job_system, &rf->texture_system)) {
     log_fatal("Failed to initialize texture system");
     return false_v;
   }
@@ -949,9 +950,12 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer) {
                              .scratch_arena = rf->scratch_arena,
                              .geometry_system = &rf->geometry_system,
                              .material_system = &rf->material_system,
-                             .mesh_manager = &rf->mesh_manager};
+                             .mesh_manager = &rf->mesh_manager,
+                             .job_system = job_system};
   rf->mesh_loader.allocator.ctx = rf->mesh_loader.scratch_arena;
   vkr_allocator_arena(&rf->mesh_loader.allocator);
+
+  vkr_mesh_manager_set_loader_context(&rf->mesh_manager, &rf->mesh_loader);
 
   vkr_resource_system_register_loader((void *)&rf->texture_system,
                                       vkr_texture_loader_create());
