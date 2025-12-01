@@ -46,7 +46,7 @@ static void test_array_set_get_int(void) {
   setup_suite();
 
   const uint64_t length = 5;
-  // Correctly pass the arena pointer
+  // Correctly pass the allocator pointer
   Array_uint32_t arr = array_create_uint32_t(&allocator, length);
 
   for (uint64_t i = 0; i < length; ++i) {

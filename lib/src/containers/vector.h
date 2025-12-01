@@ -66,9 +66,9 @@ typedef struct VectorFindResult {
   struct Vector_##name;                                                        \
   typedef struct Vector_##name {                                               \
     VkrAllocator *allocator; /**< Allocator used for memory allocation */      \
-    uint64_t capacity; /**< Current allocated capacity of the vector */        \
-    uint64_t length;   /**< Current number of elements in the vector */        \
-    type *data;        /**< Pointer to the contiguous vector storage */        \
+    uint64_t capacity;       /**< Current allocated capacity of the vector */  \
+    uint64_t length;         /**< Current number of elements in the vector */  \
+    type *data;              /**< Pointer to the contiguous vector storage */  \
   } Vector_##name;                                                             \
   /**                                                                          \
    * @brief Creates a new vector with default capacity                         \
@@ -78,9 +78,9 @@ typedef struct VectorFindResult {
   static inline Vector_##name vector_create_##name(VkrAllocator *allocator) {  \
     assert_log(allocator != NULL, "Allocator is NULL");                        \
                                                                                \
-    type *buf = vkr_allocator_alloc(                                           \
-        allocator, DEFAULT_VECTOR_CAPACITY * sizeof(type),                     \
-        VKR_ALLOCATOR_MEMORY_TAG_VECTOR);                                      \
+    type *buf =                                                                \
+        vkr_allocator_alloc(allocator, DEFAULT_VECTOR_CAPACITY * sizeof(type), \
+                            VKR_ALLOCATOR_MEMORY_TAG_VECTOR);                  \
     assert_log(buf != NULL, "alloc failed in vector_create");                  \
     Vector_##name vector = {allocator, DEFAULT_VECTOR_CAPACITY, 0, buf};       \
     return vector;                                                             \
@@ -95,10 +95,10 @@ typedef struct VectorFindResult {
       VkrAllocator *allocator, uint64_t capacity) {                            \
     assert_log(allocator != NULL, "Allocator is NULL");                        \
     assert_log(capacity > 0, "Capacity is 0");                                 \
-    Vector_##name vector = {allocator, capacity, 0,                            \
-                            vkr_allocator_alloc(allocator,                     \
-                                                capacity * sizeof(type),       \
-                                                VKR_ALLOCATOR_MEMORY_TAG_VECTOR)}; \
+    type *buf = vkr_allocator_alloc(allocator, capacity * sizeof(type),        \
+                                    VKR_ALLOCATOR_MEMORY_TAG_VECTOR);          \
+    assert_log(buf != NULL, "alloc failed in vector_create_with_capacity");    \
+    Vector_##name vector = {allocator, capacity, 0, buf};                      \
     return vector;                                                             \
   }                                                                            \
   /**                                                                          \

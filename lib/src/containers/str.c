@@ -25,8 +25,6 @@ String8 string8_create_formatted_v(VkrAllocator *allocator, const char *fmt,
                                    va_list args) {
   assert(allocator != NULL && "Allocator is NULL");
   assert(fmt != NULL && "Format string is NULL");
-  assert(args != NULL && "Arguments are NULL");
-
   va_list args_copy;
   va_copy(args_copy, args);
 
