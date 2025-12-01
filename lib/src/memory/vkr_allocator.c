@@ -11,6 +11,7 @@ const char *VkrAllocatorMemoryTagNames[VKR_ALLOCATOR_MEMORY_TAG_MAX] = {
 const char *VkrAllocatorTypeNames[VKR_ALLOCATOR_TYPE_MAX] = {
     "ARENA",
     "MMEMORY",
+    "DMEMORY",
     "UNKNOWN",
 };
 
@@ -28,6 +29,12 @@ typedef struct VkrAllocatorStatisticsAtomic {
 
   VkrAtomicUint64 total_allocated;
   VkrAtomicUint64 tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_MAX];
+
+  // Scope/temporary allocation tracking
+  VkrAtomicUint64 total_scopes_created;
+  VkrAtomicUint64 total_scopes_destroyed;
+  VkrAtomicUint64 total_temp_bytes;
+  VkrAtomicUint64 peak_temp_bytes;
 } VkrAllocatorStatisticsAtomic;
 
 vkr_global VkrAllocatorStatisticsAtomic g_vkr_allocator_stats = {0};
@@ -69,6 +76,16 @@ vkr_allocator_stats_snapshot(const VkrAllocatorStatisticsAtomic *src) {
     stats.tagged_allocs[i] = vkr_atomic_uint64_load(&src->tagged_allocs[i],
                                                     VKR_MEMORY_ORDER_ACQUIRE);
   }
+
+  // Scope tracking
+  stats.total_scopes_created = vkr_atomic_uint64_load(
+      &src->total_scopes_created, VKR_MEMORY_ORDER_ACQUIRE);
+  stats.total_scopes_destroyed = vkr_atomic_uint64_load(
+      &src->total_scopes_destroyed, VKR_MEMORY_ORDER_ACQUIRE);
+  stats.total_temp_bytes =
+      vkr_atomic_uint64_load(&src->total_temp_bytes, VKR_MEMORY_ORDER_ACQUIRE);
+  stats.peak_temp_bytes =
+      vkr_atomic_uint64_load(&src->peak_temp_bytes, VKR_MEMORY_ORDER_ACQUIRE);
 
   return stats;
 }
@@ -157,6 +174,12 @@ void *_vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
                            VkrAllocatorMemoryTag tag, uint32_t alloc_line,
                            const char *alloc_file) {
   assert_log(allocator != NULL, "Allocator must not be NULL");
+  if (allocator->alloc == NULL) {
+    log_fatal(
+        "Allocator->alloc must be set (requested at %s:%u, ctx=%p, type=%u)",
+        alloc_file ? alloc_file : "<unknown>", alloc_line, allocator->ctx,
+        allocator->type);
+  }
   assert_log(allocator->alloc != NULL, "Allocator->alloc must be set");
   assert_log(size > 0, "Size must be greater than 0");
   assert_log(tag < VKR_ALLOCATOR_MEMORY_TAG_MAX,
@@ -177,6 +200,34 @@ void *_vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
   allocator->stats.tagged_allocs[tag] += size;
   allocator->stats.total_allocated += size;
 
+  // Track temp allocations when inside a scope
+  if (allocator->scope_depth > 0) {
+    allocator->scope_bytes_allocated += size;
+    allocator->stats.total_temp_bytes += size;
+
+    // Update peak if needed
+    if (allocator->scope_bytes_allocated > allocator->stats.peak_temp_bytes) {
+      allocator->stats.peak_temp_bytes = allocator->scope_bytes_allocated;
+    }
+
+    // Global temp tracking
+    vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_temp_bytes, size,
+                                VKR_MEMORY_ORDER_RELAXED);
+
+    // Update global peak (CAS loop for thread safety)
+    uint64_t new_total = vkr_atomic_uint64_load(
+        &g_vkr_allocator_stats.total_temp_bytes, VKR_MEMORY_ORDER_RELAXED);
+    uint64_t current_peak = vkr_atomic_uint64_load(
+        &g_vkr_allocator_stats.peak_temp_bytes, VKR_MEMORY_ORDER_RELAXED);
+    while (new_total > current_peak) {
+      if (vkr_atomic_uint64_compare_exchange(
+              &g_vkr_allocator_stats.peak_temp_bytes, &current_peak, new_total,
+              VKR_MEMORY_ORDER_RELAXED, VKR_MEMORY_ORDER_RELAXED)) {
+        break;
+      }
+    }
+  }
+
 #if VKR_ALLOCATOR_ENABLE_LOGGING
   log_debug("Allocated (%llu bytes) from allocator - [%s] for tag - [%s] at "
             "line - [%u] in file - [%s]",
@@ -194,6 +245,10 @@ void vkr_allocator_free(VkrAllocator *allocator, void *ptr, uint64_t old_size,
   assert_log(ptr != NULL, "Pointer must not be NULL");
   assert_log(tag < VKR_ALLOCATOR_MEMORY_TAG_MAX,
              "Tag must be less than VKR_ALLOCATOR_MEMORY_TAG_MAX");
+
+  if (allocator->type == VKR_ALLOCATOR_TYPE_ARENA) {
+    return;
+  }
 
   vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_frees, 1,
                               VKR_MEMORY_ORDER_RELAXED);
@@ -288,8 +343,10 @@ void vkr_allocator_set(VkrAllocator *allocator, void *ptr, uint32_t value,
   }
 
 #if VKR_ALLOCATOR_ENABLE_LOGGING
-  log_debug("Set (%llu bytes) from allocator - [%s]", (uint64_t)size,
-            VkrAllocatorTypeNames[allocator->type]);
+  if (allocator) {
+    log_debug("Set (%llu bytes) from allocator - [%s]", (uint64_t)size,
+              VkrAllocatorTypeNames[allocator->type]);
+  }
 #endif
 }
 
@@ -305,8 +362,10 @@ void vkr_allocator_zero(VkrAllocator *allocator, void *ptr, uint64_t size) {
   }
 
 #if VKR_ALLOCATOR_ENABLE_LOGGING
-  log_debug("Zeroed (%llu bytes) from allocator - [%s]", (uint64_t)size,
-            VkrAllocatorTypeNames[allocator->type]);
+  if (allocator) {
+    log_debug("Zeroed (%llu bytes) from allocator - [%s]", (uint64_t)size,
+              VkrAllocatorTypeNames[allocator->type]);
+  }
 #endif
 }
 
@@ -350,4 +409,123 @@ char *vkr_allocator_print_global_statistics(VkrAllocator *allocator) {
   VkrAllocatorStatistics snapshot =
       vkr_allocator_stats_snapshot(&g_vkr_allocator_stats);
   return vkr_allocator_format_statistics(allocator, &snapshot);
+}
+
+// =============================================================================
+// Scope-based Temporary Allocation API
+// =============================================================================
+
+bool8_t vkr_allocator_supports_scopes(const VkrAllocator *allocator) {
+  if (allocator == NULL) {
+    return false_v;
+  }
+  return allocator->supports_scopes;
+}
+
+VkrAllocatorScope vkr_allocator_begin_scope(VkrAllocator *allocator) {
+  VkrAllocatorScope scope = {0};
+
+  if (allocator == NULL || !allocator->supports_scopes ||
+      allocator->begin_scope == NULL) {
+    return scope;
+  }
+
+  // Call allocator-specific begin_scope
+  scope = allocator->begin_scope(allocator->ctx);
+  scope.allocator = allocator;
+  scope.total_allocated_at_start = allocator->stats.total_allocated;
+
+  // Update scope tracking
+  allocator->scope_depth++;
+  allocator->stats.total_scopes_created++;
+
+  // Global stats
+  vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_scopes_created, 1,
+                              VKR_MEMORY_ORDER_RELAXED);
+
+#if VKR_ALLOCATOR_ENABLE_LOGGING
+  log_debug("Begin scope (depth=%u) on allocator [%s]", allocator->scope_depth,
+            VkrAllocatorTypeNames[allocator->type]);
+#endif
+
+  return scope;
+}
+
+void vkr_allocator_end_scope(VkrAllocatorScope *scope,
+                             VkrAllocatorMemoryTag tag) {
+  if (scope == NULL || scope->allocator == NULL) {
+    return;
+  }
+
+  VkrAllocator *allocator = scope->allocator;
+
+  if (!allocator->supports_scopes || allocator->end_scope == NULL) {
+    return;
+  }
+
+  if (allocator->scope_depth == 0) {
+    assert_log(false, "end_scope called without matching begin_scope");
+    return;
+  }
+
+  // Calculate bytes allocated in this scope
+  uint64_t bytes_in_scope = 0;
+  if (allocator->stats.total_allocated > scope->total_allocated_at_start) {
+    bytes_in_scope =
+        allocator->stats.total_allocated - scope->total_allocated_at_start;
+  }
+
+#if VKR_ALLOCATOR_ENABLE_LOGGING
+  log_debug("End scope (depth=%u, bytes=%llu) on allocator [%s]",
+            allocator->scope_depth, (unsigned long long)bytes_in_scope,
+            VkrAllocatorTypeNames[allocator->type]);
+#endif
+
+  // Call allocator-specific end_scope (e.g., scratch_destroy for arena)
+  allocator->end_scope(allocator->ctx, scope, tag);
+
+  // Update scope tracking
+  allocator->scope_depth--;
+  if (allocator->scope_depth == 0) {
+    // Reset scope bytes when exiting all scopes
+    allocator->scope_bytes_allocated = 0;
+  } else {
+    // Subtract bytes that were in this scope from running total
+    if (allocator->scope_bytes_allocated >= bytes_in_scope) {
+      allocator->scope_bytes_allocated -= bytes_in_scope;
+    } else {
+      allocator->scope_bytes_allocated = 0;
+    }
+  }
+
+  allocator->stats.total_scopes_destroyed++;
+
+  // Global stats
+  vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_scopes_destroyed, 1,
+                              VKR_MEMORY_ORDER_RELAXED);
+
+  // Clear the scope handle
+  scope->allocator = NULL;
+  scope->scope_data = NULL;
+}
+
+bool8_t vkr_allocator_scope_is_valid(const VkrAllocatorScope *scope) {
+  if (scope == NULL) {
+    return false_v;
+  }
+  return scope->allocator != NULL;
+}
+
+bool8_t vkr_allocator_in_scope(const VkrAllocator *allocator) {
+  if (allocator == NULL) {
+    return false_v;
+  }
+  return allocator->scope_depth > 0;
+}
+
+uint32_t vkr_allocator_scope_depth(const VkrAllocator *allocator) {
+  if (allocator == NULL) {
+    return 0;
+  }
+  return allocator->scope_depth;
 }

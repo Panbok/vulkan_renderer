@@ -50,15 +50,45 @@ typedef struct VkrAllocatorStatistics {
 
   uint64_t total_allocated;
   uint64_t tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_MAX];
+
+  // Scope/temporary allocation tracking
+  uint64_t total_scopes_created;
+  uint64_t total_scopes_destroyed;
+  uint64_t total_temp_bytes;  // Total bytes ever allocated within scopes
+  uint64_t peak_temp_bytes;   // High-water mark for temp allocations
 } VkrAllocatorStatistics;
+
+// Forward declaration
+typedef struct VkrAllocator VkrAllocator;
+
+/**
+ * @brief Handle representing a temporary allocation scope.
+ *
+ * Caller creates a scope, calls functions that allocate, then destroys the
+ * scope. Functions being called don't need to know about the scope - they
+ * just allocate normally via vkr_allocator_alloc().
+ *
+ * For arena allocators, this maps directly to scratch (position save/restore).
+ * For other allocators, this can track allocations for bulk free.
+ */
+typedef struct VkrAllocatorScope {
+  VkrAllocator *allocator;
+  void *scope_data;         // Allocator-specific (e.g., Scratch* for arena)
+  uint64_t bytes_at_start;  // Bytes allocated when scope was created
+  uint64_t total_allocated_at_start; // Allocator stats snapshot at scope start
+} VkrAllocatorScope;
 
 /**
  * @brief Abstract interface that every allocator must implement.
  */
-typedef struct VkrAllocator {
+struct VkrAllocator {
   VkrAllocatorType type;
   VkrAllocatorStatistics stats;
-  void *ctx; // allocator-specific state, e.g., Arena*
+  void *ctx;  // allocator-specific state, e.g., Arena*
+
+  // Internal scope state
+  uint32_t scope_depth;           // How many scopes deep we are (0 = none)
+  uint64_t scope_bytes_allocated; // Bytes allocated in current scope stack
 
   // Allocate size bytes. Alignment can be handled inside if you prefer.
   void *(*alloc)(void *ctx, uint64_t size, VkrAllocatorMemoryTag tag);
@@ -70,7 +100,14 @@ typedef struct VkrAllocator {
   // Reallocate: returns new pointer. For arenas: alloc+copy+leave old as-is.
   void *(*realloc)(void *ctx, void *ptr, uint64_t old_size, uint64_t new_size,
                    VkrAllocatorMemoryTag tag);
-} VkrAllocator;
+
+  // Optional: Scope-based temporary allocation support.
+  VkrAllocatorScope (*begin_scope)(void *ctx);
+  void (*end_scope)(void *ctx, VkrAllocatorScope *scope,
+                    VkrAllocatorMemoryTag tag);
+
+  bool8_t supports_scopes;
+};
 
 /**
  * @brief Allocates memory from the allocator.
@@ -169,3 +206,62 @@ VkrAllocatorStatistics vkr_allocator_get_global_statistics();
  * with vkr_allocator_free. Returns NULL on allocation failure.
  */
 char *vkr_allocator_print_global_statistics(VkrAllocator *allocator);
+
+// =============================================================================
+// Scope-based Temporary Allocation API
+// =============================================================================
+
+/**
+ * @brief Checks if the allocator supports scoped allocations.
+ * @param allocator The allocator to check.
+ * @return true if scopes are supported, false otherwise.
+ */
+bool8_t vkr_allocator_supports_scopes(const VkrAllocator *allocator);
+
+/**
+ * @brief Begins a temporary allocation scope.
+ *
+ * After this call, all allocations via vkr_allocator_alloc() are tracked as
+ * temporary. Functions being called don't need any modification - they allocate
+ * normally. The caller controls whether allocations are temporary by wrapping
+ * calls in begin_scope/end_scope.
+ *
+ * @param allocator The allocator to create a scope on.
+ * @return Scope handle for ending the scope later. Check with
+ *         vkr_allocator_scope_is_valid() if the allocator supports scopes.
+ */
+VkrAllocatorScope vkr_allocator_begin_scope(VkrAllocator *allocator);
+
+/**
+ * @brief Ends a temporary allocation scope.
+ *
+ * For arena allocators: resets to saved position (like scratch_destroy).
+ * For other allocators: may free tracked allocations.
+ * Updates temp statistics.
+ *
+ * @param scope The scope to end.
+ * @param tag Memory tag for statistics adjustment.
+ */
+void vkr_allocator_end_scope(VkrAllocatorScope *scope,
+                             VkrAllocatorMemoryTag tag);
+
+/**
+ * @brief Checks if a scope handle is valid.
+ * @param scope The scope to check.
+ * @return true if the scope is valid, false otherwise.
+ */
+bool8_t vkr_allocator_scope_is_valid(const VkrAllocatorScope *scope);
+
+/**
+ * @brief Checks if allocator currently has active scopes.
+ * @param allocator The allocator to check.
+ * @return true if there are active scopes, false otherwise.
+ */
+bool8_t vkr_allocator_in_scope(const VkrAllocator *allocator);
+
+/**
+ * @brief Gets the current scope nesting depth.
+ * @param allocator The allocator to check.
+ * @return Current scope depth (0 = no active scope).
+ */
+uint32_t vkr_allocator_scope_depth(const VkrAllocator *allocator);

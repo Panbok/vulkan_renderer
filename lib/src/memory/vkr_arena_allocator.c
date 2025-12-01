@@ -45,6 +45,24 @@ vkr_internal INLINE void *arena_realloc_cb(void *ctx, void *ptr,
   return p;
 }
 
+vkr_internal VkrAllocatorScope arena_begin_scope_cb(void *ctx) {
+  Arena *arena = (Arena *)ctx;
+  Scratch scratch = scratch_create(arena);
+
+  return (VkrAllocatorScope){
+      .allocator = NULL,
+      .scope_data = NULL,
+      .bytes_at_start = scratch.pos,
+  };
+}
+
+vkr_internal void arena_end_scope_cb(void *ctx, VkrAllocatorScope *scope,
+                                     VkrAllocatorMemoryTag tag) {
+  Arena *arena = (Arena *)ctx;
+  Scratch scratch = {.arena = arena, .pos = scope->bytes_at_start};
+  scratch_destroy(scratch, to_arena_tag(tag));
+}
+
 bool8_t vkr_allocator_arena(VkrAllocator *out_allocator) {
   assert_log(out_allocator != NULL, "out_allocator must not be NULL");
 
@@ -58,6 +76,13 @@ bool8_t vkr_allocator_arena(VkrAllocator *out_allocator) {
   out_allocator->alloc = arena_alloc_cb;
   out_allocator->free = arena_free_cb;
   out_allocator->realloc = arena_realloc_cb;
+
+  // Scope support via scratch
+  out_allocator->scope_depth = 0;
+  out_allocator->scope_bytes_allocated = 0;
+  out_allocator->begin_scope = arena_begin_scope_cb;
+  out_allocator->end_scope = arena_end_scope_cb;
+  out_allocator->supports_scopes = true_v;
 
   return true_v;
 }
