@@ -1,16 +1,23 @@
 #include "array_test.h"
+#include "memory/vkr_arena_allocator.h"
 
 static Arena *arena = NULL;
+static VkrAllocator allocator = {0};
 static const uint64_t ARENA_SIZE = 1024 * 1024; // 1MB
 
 // Setup function called before each test function in this suite
-static void setup_suite(void) { arena = arena_create(ARENA_SIZE); }
+static void setup_suite(void) {
+  arena = arena_create(ARENA_SIZE);
+  allocator = (VkrAllocator){.ctx = arena};
+  vkr_allocator_arena(&allocator);
+}
 
 // Teardown function called after each test function in this suite
 static void teardown_suite(void) {
   if (arena) {
     arena_destroy(arena);
     arena = NULL;
+    allocator = (VkrAllocator){0};
   }
 }
 
@@ -19,15 +26,15 @@ static void test_array_create_int(void) {
   setup_suite();
 
   const uint64_t length = 10;
-  Array_uint32_t arr = array_create_uint32_t(arena, length);
+  Array_uint32_t arr = array_create_uint32_t(&allocator, length);
 
-  assert(arr.arena == arena && "Arena pointer mismatch");
+  assert(arr.allocator == &allocator && "Allocator pointer mismatch");
   assert(arr.length == length && "Length mismatch");
   assert(arr.data != NULL && "Data is NULL");
 
   array_destroy_uint32_t(&arr);
   assert(arr.data == NULL && "Data not NULL after destroy");
-  assert(arr.arena == NULL && "Arena not NULL after destroy");
+  assert(arr.allocator == NULL && "Allocator not NULL after destroy");
   assert(arr.length == 0 && "Length not 0 after destroy");
 
   teardown_suite();
@@ -40,7 +47,7 @@ static void test_array_set_get_int(void) {
 
   const uint64_t length = 5;
   // Correctly pass the arena pointer
-  Array_uint32_t arr = array_create_uint32_t(arena, length);
+  Array_uint32_t arr = array_create_uint32_t(&allocator, length);
 
   for (uint64_t i = 0; i < length; ++i) {
     array_set_uint32_t(&arr, i, (uint32_t)(i * i));
@@ -69,7 +76,7 @@ static void test_array_is_null(void) {
 
   // Test 2: Properly created array should not be null
   const uint64_t length = 5;
-  Array_uint32_t arr = array_create_uint32_t(arena, length);
+  Array_uint32_t arr = array_create_uint32_t(&allocator, length);
   assert(array_is_null_uint32_t(&arr) == false &&
          "Created array should not be null");
 
@@ -87,14 +94,14 @@ static void test_array_is_empty(void) {
   setup_suite();
 
   // Test 1: Array with length 0 should be empty
-  Array_uint32_t zero_length_arr = array_create_uint32_t(arena, 1);
+  Array_uint32_t zero_length_arr = array_create_uint32_t(&allocator, 1);
   // Manually set length to 0 to test the empty condition
   zero_length_arr.length = 0;
   assert(array_is_empty_uint32_t(&zero_length_arr) == true &&
          "Array with length 0 should be empty");
 
   // Test 2: Array with length > 0 should not be empty
-  Array_uint32_t arr = array_create_uint32_t(arena, 5);
+  Array_uint32_t arr = array_create_uint32_t(&allocator, 5);
   assert(array_is_empty_uint32_t(&arr) == false &&
          "Array with length > 0 should not be empty");
 
@@ -123,7 +130,7 @@ static void test_array_null_vs_empty_semantics(void) {
          "Uninitialized array should be empty (length 0)");
 
   // Case 2: Created array with length > 0
-  Array_uint32_t normal_arr = array_create_uint32_t(arena, 3);
+  Array_uint32_t normal_arr = array_create_uint32_t(&allocator, 3);
   assert(array_is_null_uint32_t(&normal_arr) == false &&
          "Created array should not be null");
   assert(array_is_empty_uint32_t(&normal_arr) == false &&

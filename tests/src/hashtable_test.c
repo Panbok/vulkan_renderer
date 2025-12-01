@@ -1,12 +1,16 @@
 #include "hashtable_test.h"
+#include "memory/vkr_arena_allocator.h"
 
 static Arena *arena = NULL;
+static VkrAllocator allocator = {0};
 static const uint64_t ARENA_SIZE = MB(1);
 
 // Setup function called before each test function in this suite
 static void setup_suite(void) {
   arena = arena_create(ARENA_SIZE, ARENA_SIZE);
   assert(arena && "arena_create failed");
+  allocator = (VkrAllocator){.ctx = arena};
+  vkr_allocator_arena(&allocator);
 }
 
 // Teardown function called after each test function in this suite
@@ -14,6 +18,7 @@ static void teardown_suite(void) {
   if (arena) {
     arena_destroy(arena);
     arena = NULL;
+    allocator = (VkrAllocator){0};
   }
 }
 
@@ -24,10 +29,11 @@ static void teardown_suite(void) {
 static void test_hash_table_create(void) {
   printf("  Running test_hash_table_create...\n");
   setup_suite();
-  VkrHashTable_uint8_t table = vkr_hash_table_create_uint8_t(arena, 10);
+  VkrHashTable_uint8_t table = vkr_hash_table_create_uint8_t(&allocator, 10);
   assert(table.capacity == 10 && "Hash table capacity is not 10");
   assert(table.size == 0 && "Hash table size is not 0");
   assert(table.entries != NULL && "Hash table entries is NULL");
+  vkr_hash_table_destroy_uint8_t(&table);
   teardown_suite();
   printf("  test_hash_table_create PASSED\n");
 }
@@ -36,7 +42,7 @@ static void test_hash_table_insert_get_contains_remove(void) {
   printf("  Running test_hash_table_insert_get_contains_remove...\n");
   setup_suite();
 
-  VkrHashTable_uint8_t table = vkr_hash_table_create_uint8_t(arena, 8);
+  VkrHashTable_uint8_t table = vkr_hash_table_create_uint8_t(&allocator, 8);
 
   // Insert a few keys
   assert(vkr_hash_table_insert_uint8_t(&table, "alpha", 11));
@@ -70,6 +76,7 @@ static void test_hash_table_insert_get_contains_remove(void) {
   // Removing non-existent should fail
   assert(!vkr_hash_table_remove_uint8_t(&table, "does-not-exist"));
 
+  vkr_hash_table_destroy_uint8_t(&table);
   teardown_suite();
   printf("  test_hash_table_insert_get_contains_remove PASSED\n");
 }
@@ -78,7 +85,7 @@ static void test_hash_table_reset_and_empty(void) {
   printf("  Running test_hash_table_reset_and_empty...\n");
   setup_suite();
 
-  VkrHashTable_uint8_t table = vkr_hash_table_create_uint8_t(arena, 4);
+  VkrHashTable_uint8_t table = vkr_hash_table_create_uint8_t(&allocator, 4);
   assert(vkr_hash_table_is_empty_uint8_t(&table));
   assert(vkr_hash_table_insert_uint8_t(&table, "k1", 1));
   assert(vkr_hash_table_insert_uint8_t(&table, "k2", 2));
@@ -89,6 +96,7 @@ static void test_hash_table_reset_and_empty(void) {
   assert(vkr_hash_table_get_uint8_t(&table, "k1") == NULL);
   assert(vkr_hash_table_get_uint8_t(&table, "k2") == NULL);
 
+  vkr_hash_table_destroy_uint8_t(&table);
   teardown_suite();
   printf("  test_hash_table_reset_and_empty PASSED\n");
 }
@@ -97,7 +105,7 @@ static void test_hash_table_collision_linear_probing(void) {
   printf("  Running test_hash_table_collision_linear_probing...\n");
   setup_suite();
 
-  VkrHashTable_uint8_t table = vkr_hash_table_create_uint8_t(arena, 4);
+  VkrHashTable_uint8_t table = vkr_hash_table_create_uint8_t(&allocator, 4);
 
   const char *candidates[] = {
       "a",  "b",  "c",  "d",  "e",  "f",  "g",  "h",  "i",  "j",  "k",
@@ -132,6 +140,7 @@ static void test_hash_table_collision_linear_probing(void) {
   assert(*vkr_hash_table_get_uint8_t(&table, k1) == 1);
   assert(*vkr_hash_table_get_uint8_t(&table, k2) == 2);
 
+  vkr_hash_table_destroy_uint8_t(&table);
   teardown_suite();
   printf("  test_hash_table_collision_linear_probing PASSED\n");
 }
@@ -140,7 +149,7 @@ static void test_hash_table_resize_behavior(void) {
   printf("  Running test_hash_table_resize_behavior...\n");
   setup_suite();
 
-  VkrHashTable_uint8_t table = vkr_hash_table_create_uint8_t(arena, 4);
+  VkrHashTable_uint8_t table = vkr_hash_table_create_uint8_t(&allocator, 4);
 
   assert(vkr_hash_table_insert_uint8_t(&table, "k1", 1));
   assert(vkr_hash_table_insert_uint8_t(&table, "k2", 2));
@@ -159,6 +168,7 @@ static void test_hash_table_resize_behavior(void) {
   assert(*vkr_hash_table_get_uint8_t(&table, "k3") == 3);
   assert(*vkr_hash_table_get_uint8_t(&table, "k4") == 4);
 
+  vkr_hash_table_destroy_uint8_t(&table);
   teardown_suite();
   printf("  test_hash_table_resize_behavior PASSED\n");
 }
@@ -167,7 +177,7 @@ static void test_hash_table_update_and_remove_reuse(void) {
   printf("  Running test_hash_table_update_and_remove_reuse...\n");
   setup_suite();
 
-  VkrHashTable_uint8_t table = vkr_hash_table_create_uint8_t(arena, 4);
+  VkrHashTable_uint8_t table = vkr_hash_table_create_uint8_t(&allocator, 4);
 
   assert(vkr_hash_table_insert_uint8_t(&table, "alpha", 1));
   assert(table.size == 1);
@@ -190,6 +200,7 @@ static void test_hash_table_update_and_remove_reuse(void) {
   assert(vkr_hash_table_contains_uint8_t(&table, "alpha"));
   assert(*vkr_hash_table_get_uint8_t(&table, "alpha") == 4);
 
+  vkr_hash_table_destroy_uint8_t(&table);
   teardown_suite();
   printf("  test_hash_table_update_and_remove_reuse PASSED\n");
 }

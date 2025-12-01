@@ -3,14 +3,14 @@
  * @brief Fixed-size array implementation
  *
  * This file provides a generic, type-safe fixed-size array implementation using
- * the C preprocessor. Arrays are allocated from an arena allocator and provide
+ * the C preprocessor. Arrays are allocated from an allocator and provide
  * efficient O(1) access operations with bounds checking.
  *
  * Memory Layout:
  * An array consists of a metadata structure and a contiguous block of elements:
  *
  * +---------------------+ <-- Array_TYPE structure
- * | Arena *arena        |     (Pointer to the arena allocator used for memory)
+ * | VkrAllocator *alloc |     (Allocator used for memory)
  * | uint64_t length       |     (Number of elements in the array)
  * | TYPE *data          | --> Points to contiguous memory block of length *
  * | sizeof(TYPE)        |     (Size of each element in the array)
@@ -33,10 +33,9 @@
 
 #pragma once
 
-#include "containers/str.h"
 #include "core/logger.h"
 #include "defines.h"
-#include "memory/arena.h"
+#include "memory/vkr_allocator.h"
 
 #define ArrayConstructor(type, name)                                           \
   /**                                                                          \
@@ -45,26 +44,26 @@
    */                                                                          \
   struct Array_##name;                                                         \
   typedef struct Array_##name {                                                \
-    Arena *arena;    /**< Arena allocator used for memory allocation */        \
-    uint64_t length; /**< Number of elements in the array */                   \
-    type *data;      /**< Pointer to the contiguous array storage */           \
+    VkrAllocator *allocator; /**< Allocator used for memory allocation */      \
+    uint64_t length;        /**< Number of elements in the array */            \
+    type *data;             /**< Pointer to the contiguous array storage */    \
   } Array_##name;                                                              \
                                                                                \
   /**                                                                          \
    * @brief Creates a new array with the specified length                      \
-   * @param arena Arena allocator to use for memory allocation                 \
+   * @param allocator Allocator to use for memory allocation                   \
    * @param length Number of elements to allocate in the array                 \
    * @return Initialized Array_##name structure                                \
    */                                                                          \
-  static inline Array_##name array_create_##name(Arena *arena,                 \
+  static inline Array_##name array_create_##name(VkrAllocator *allocator,      \
                                                  const uint64_t length) {      \
-    assert_log(arena != NULL, "Arena is NULL");                                \
+    assert_log(allocator != NULL, "Allocator is NULL");                        \
     assert_log(length > 0, "Length is 0");                                     \
                                                                                \
-    type *buf =                                                                \
-        arena_alloc(arena, length * sizeof(type), ARENA_MEMORY_TAG_ARRAY);     \
-    assert_log(buf != NULL, "arena_alloc failed for array_create");            \
-    Array_##name array = {arena, buf ? length : 0, buf};                       \
+    type *buf = vkr_allocator_alloc(allocator, length * sizeof(type),          \
+                                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY);           \
+    assert_log(buf != NULL, "allocator alloc failed for array_create");        \
+    Array_##name array = {allocator, buf ? length : 0, buf};                   \
     return array;                                                              \
   }                                                                            \
                                                                                \
@@ -98,12 +97,16 @@
   /**                                                                          \
    * @brief Marks the array as destroyed, sets all members to NULL/0           \
    * @param array Pointer to the array                                         \
-   * @note This does not deallocate memory, as that's managed by the arena     \
    */                                                                          \
   static inline void array_destroy_##name(Array_##name *array) {               \
     assert_log(array != NULL, "Array is NULL");                                \
+    if (array->allocator && array->data) {                                     \
+      vkr_allocator_free(array->allocator, array->data,                        \
+                         array->length * sizeof(type),                         \
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);                      \
+    }                                                                          \
     array->data = NULL;                                                        \
-    array->arena = NULL;                                                       \
+    array->allocator = NULL;                                                   \
     array->length = 0;                                                         \
   }                                                                            \
   /**                                                                          \

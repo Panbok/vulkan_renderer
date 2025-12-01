@@ -1,16 +1,23 @@
 #include "queue_test.h"
+#include "memory/vkr_arena_allocator.h"
 
 static Arena *arena = NULL;
+static VkrAllocator allocator = {0};
 static const uint64_t ARENA_SIZE = 1024 * 1024; // 1MB
 
 // Setup function called before each test function in this suite
-static void setup_suite(void) { arena = arena_create(ARENA_SIZE); }
+static void setup_suite(void) {
+  arena = arena_create(ARENA_SIZE);
+  allocator = (VkrAllocator){.ctx = arena};
+  vkr_allocator_arena(&allocator);
+}
 
 // Teardown function called after each test function in this suite
 static void teardown_suite(void) {
   if (arena) {
     arena_destroy(arena);
     arena = NULL;
+    allocator = (VkrAllocator){0};
   }
 }
 
@@ -19,9 +26,9 @@ static void test_queue_create_uint32_t(void) {
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(&allocator, capacity);
 
-  assert(queue.arena == arena && "Arena pointer mismatch");
+  assert(queue.allocator == &allocator && "Allocator pointer mismatch");
   assert(queue.capacity == capacity && "Capacity mismatch");
   assert(queue.size == 0 && "Size mismatch");
   assert(queue.data != NULL && "Data pointer mismatch");
@@ -37,7 +44,7 @@ static void test_queue_enqueue_uint32_t(void) {
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(&allocator, capacity);
 
   for (uint64_t i = 0; i < capacity; ++i) {
     assert(queue_enqueue_uint32_t(&queue, i) && "Enqueue failed");
@@ -56,7 +63,7 @@ static void test_queue_dequeue_uint32_t(void) {
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(&allocator, capacity);
 
   for (uint64_t i = 0; i < capacity; ++i) {
     assert(queue_enqueue_uint32_t(&queue, i) && "Enqueue failed");
@@ -79,7 +86,7 @@ static void test_queue_is_empty_uint32_t(void) {
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(&allocator, capacity);
 
   assert(queue_is_empty_uint32_t(&queue) && "Queue should be empty");
 
@@ -94,7 +101,7 @@ static void test_queue_is_full_uint32_t(void) {
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(&allocator, capacity);
 
   for (uint64_t i = 0; i < capacity; ++i) {
     assert(queue_enqueue_uint32_t(&queue, i) && "Enqueue failed");
@@ -113,7 +120,7 @@ static void test_queue_peek_uint32_t(void) {
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(&allocator, capacity);
 
   for (uint64_t i = 0; i < capacity; ++i) {
     assert(queue_enqueue_uint32_t(&queue, i) && "Enqueue failed");
@@ -132,7 +139,7 @@ static void test_queue_clear_uint32_t(void) {
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(&allocator, capacity);
 
   for (uint64_t i = 0; i < capacity; ++i) {
     assert(queue_enqueue_uint32_t(&queue, i) && "Enqueue failed");
@@ -153,11 +160,11 @@ static void test_queue_destroy_uint32_t(void) {
   setup_suite();
 
   const uint64_t capacity = 10;
-  Queue_uint32_t queue = queue_create_uint32_t(arena, capacity);
+  Queue_uint32_t queue = queue_create_uint32_t(&allocator, capacity);
 
   queue_destroy_uint32_t(&queue);
 
-  assert(queue.arena == NULL && "Arena pointer should be NULL");
+  assert(queue.allocator == NULL && "Allocator pointer should be NULL");
   assert(queue.capacity == 0 && "Capacity should be 0");
   assert(queue.size == 0 && "Size should be 0");
   assert(queue.data == NULL && "Data pointer should be NULL");

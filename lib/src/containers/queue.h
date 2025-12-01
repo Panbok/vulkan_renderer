@@ -39,9 +39,9 @@
 
 #pragma once
 
+#include "containers/str.h"
 #include "core/logger.h"
-#include "platform/vkr_platform.h"
-#include "vkr_pch.h"
+#include "memory/vkr_allocator.h"
 
 #define QueueConstruct(type, name)                                             \
   /**                                                                          \
@@ -50,7 +50,7 @@
    */                                                                          \
   struct Queue_##name;                                                         \
   typedef struct Queue_##name {                                                \
-    Arena *arena;      /**< Arena allocator used for memory allocation */      \
+    VkrAllocator *allocator; /**< Allocator used for memory allocation */      \
     uint64_t capacity; /**< Maximum number of elements the queue can hold */   \
     uint64_t size;     /**< Current number of elements in the queue */         \
     uint64_t tail;     /**< Index where the next element will be inserted */   \
@@ -63,14 +63,14 @@
    * @param capacity Maximum number of elements the queue can hold             \
    * @return Initialized Queue_##name structure                                \
    */                                                                          \
-  static inline Queue_##name queue_create_##name(Arena *arena,                 \
+  static inline Queue_##name queue_create_##name(VkrAllocator *allocator,      \
                                                  uint64_t capacity) {          \
-    assert_log(arena != NULL, "Arena is NULL");                                \
+    assert_log(allocator != NULL, "Allocator is NULL");                        \
     assert_log(capacity > 0, "Capacity is 0");                                 \
-    type *buf =                                                                \
-        arena_alloc(arena, capacity * sizeof(type), ARENA_MEMORY_TAG_QUEUE);   \
-    assert_log(buf != NULL, "arena_alloc failed in queue_create");             \
-    Queue_##name queue = {arena, capacity, 0, 0, 0, buf};                      \
+    type *buf = vkr_allocator_alloc(allocator, capacity * sizeof(type),        \
+                                    VKR_ALLOCATOR_MEMORY_TAG_QUEUE);           \
+    assert_log(buf != NULL, "alloc failed in queue_create");                   \
+    Queue_##name queue = {allocator, capacity, 0, 0, 0, buf};                  \
     return queue;                                                              \
   }                                                                            \
   /**                                                                          \
@@ -156,8 +156,13 @@
    */                                                                          \
   static inline void queue_destroy_##name(Queue_##name *q) {                   \
     assert_log(q != NULL, "Queue is NULL");                                    \
+    if (q->data) {                                                             \
+      vkr_allocator_free(q->allocator, q->data,                                \
+                         q->capacity * sizeof(type),                          \
+                         VKR_ALLOCATOR_MEMORY_TAG_QUEUE);                      \
+    }                                                                          \
     q->data = NULL;                                                            \
-    q->arena = NULL;                                                           \
+    q->allocator = NULL;                                                       \
     q->capacity = 0;                                                           \
     q->size = 0;                                                               \
     q->head = 0;                                                               \
@@ -165,3 +170,9 @@
   }
 
 #define Queue(type) QueueConstruct(type, type)
+
+Queue(uint8_t);
+Queue(uint32_t);
+Queue(uint64_t);
+Queue(bool8_t);
+Queue(String8);

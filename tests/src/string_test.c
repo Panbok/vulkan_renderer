@@ -1,26 +1,33 @@
 #include "string_test.h"
 #include "containers/str.h"
+#include "memory/vkr_arena_allocator.h"
 
 static Arena *arena = NULL;
+static VkrAllocator allocator = {0};
 static const uint64_t ARENA_SIZE = MB(1);
 
 // Setup function called before each test function in this suite
-static void setup_suite(void) { arena = arena_create(ARENA_SIZE, ARENA_SIZE); }
+static void setup_suite(void) {
+  arena = arena_create(ARENA_SIZE, ARENA_SIZE);
+  allocator = (VkrAllocator){.ctx = arena};
+  vkr_allocator_arena(&allocator);
+}
 
 // Teardown function called after each test function in this suite
 static void teardown_suite(void) {
   if (arena) {
     arena_destroy(arena);
     arena = NULL;
+    allocator = (VkrAllocator){0};
   }
 }
 
 // Helper function to correctly call string8_create_formatted_v for testing
-static String8 invoke_test_string8_create_formatted_v(Arena *test_arena,
+static String8 invoke_test_string8_create_formatted_v(VkrAllocator *test_alloc,
                                                       const char *fmt, ...) {
   va_list args;
   va_start(args, fmt);
-  String8 result = string8_create_formatted_v(test_arena, fmt, args);
+  String8 result = string8_create_formatted_v(test_alloc, fmt, args);
   va_end(args);
   return result;
 }
@@ -53,7 +60,7 @@ static void test_str8_create_formatted(void) {
   printf("  Running test_str8_create_formatted...\n");
   setup_suite();
 
-  String8 str = string8_create_formatted(arena, "Hello, %s!", "World");
+  String8 str = string8_create_formatted(&allocator, "Hello, %s!", "World");
   assert(str.length == 13 && "String length is not 13");
   assert(strcmp((char *)str.str, "Hello, World!") == 0 &&
          "String is not 'Hello, World!'");
@@ -69,7 +76,7 @@ static void test_str8_create_formatted_v(void) {
 
   // Corrected call using the helper:
   String8 str =
-      invoke_test_string8_create_formatted_v(arena, "Hello, %s!", "World");
+      invoke_test_string8_create_formatted_v(&allocator, "Hello, %s!", "World");
   assert(str.length == 13 && "String length is not 13");
   assert(strcmp((char *)str.str, "Hello, World!") == 0 &&
          "String is not 'Hello, World!'");
@@ -83,7 +90,7 @@ static void test_str8_cstr(void) {
   printf("  Running test_str8_cstr...\n");
   setup_suite();
 
-  String8 str = string8_create_formatted(arena, "Hello, %s!", "World");
+  String8 str = string8_create_formatted(&allocator, "Hello, %s!", "World");
   const char *cstr = string8_cstr(&str);
   assert(strcmp(cstr, "Hello, World!") == 0 && "String is not 'Hello, World!'");
 
@@ -96,9 +103,9 @@ static void test_str8_concat(void) {
   printf("  Running test_str8_concat...\n");
   setup_suite();
 
-  String8 str1 = string8_create_formatted(arena, "Hello, ");
-  String8 str2 = string8_create_formatted(arena, "World!");
-  String8 str = string8_concat(arena, &str1, &str2);
+  String8 str1 = string8_create_formatted(&allocator, "Hello, ");
+  String8 str2 = string8_create_formatted(&allocator, "World!");
+  String8 str = string8_concat(&allocator, &str1, &str2);
   assert(str.length == 13 && "String length is not 13");
   assert(strcmp((char *)str.str, "Hello, World!") == 0 &&
          "String is not 'Hello, World!'");
@@ -206,7 +213,7 @@ static void test_str8_duplicate(void) {
   printf("  Running test_str8_duplicate...\n");
   setup_suite();
   String8 str = string8_lit("Hello, World!");
-  String8 dup = string8_duplicate(arena, &str);
+  String8 dup = string8_duplicate(&allocator, &str);
   assert(string8_equals(&dup, &str));
   teardown_suite();
   printf("  test_str8_duplicate PASSED\n");
@@ -216,7 +223,7 @@ static void test_str8_duplicate_empty(void) {
   printf("  Running test_str8_duplicate_empty...\n");
   setup_suite();
   String8 str = {NULL, 0};
-  String8 dup = string8_duplicate(arena, &str);
+  String8 dup = string8_duplicate(&allocator, &str);
   assert(string8_equals(&dup, &str));
   teardown_suite();
   printf("  test_str8_duplicate_empty PASSED\n");
@@ -242,19 +249,19 @@ static void test_vkr_string8_duplicate_cstr(void) {
 
   // Test normal duplication
   const char *original = "Hello, World!";
-  String8 dup = vkr_string8_duplicate_cstr(arena, original);
+  String8 dup = vkr_string8_duplicate_cstr(&allocator, original);
   assert(dup.length == strlen(original));
   assert(vkr_string8_equals_cstr(&dup, original));
 
   // Test empty string duplication
   const char *empty = "";
-  String8 dup_empty = vkr_string8_duplicate_cstr(arena, empty);
+  String8 dup_empty = vkr_string8_duplicate_cstr(&allocator, empty);
   assert(dup_empty.length == 0);
   assert(vkr_string8_equals_cstr(&dup_empty, empty));
 
   // Test single character
   const char *single = "A";
-  String8 dup_single = vkr_string8_duplicate_cstr(arena, single);
+  String8 dup_single = vkr_string8_duplicate_cstr(&allocator, single);
   assert(dup_single.length == 1);
   assert(vkr_string8_equals_cstr(&dup_single, single));
 
@@ -395,13 +402,13 @@ static void test_cstring_substring(void) {
   setup_suite();
 
   const char *src = "Hello, World!";
-  char *mid = string_substring(arena, src, 7, 5);
+  char *mid = string_substring(&allocator, src, 7, 5);
   assert(strcmp(mid, "World") == 0);
 
-  char *clamped = string_substring(arena, src, 7, 100);
+  char *clamped = string_substring(&allocator, src, 7, 100);
   assert(strcmp(clamped, "World!") == 0);
 
-  char *empty = string_substring(arena, src, 100, 10);
+  char *empty = string_substring(&allocator, src, 100, 10);
   assert(strcmp(empty, "") == 0);
 
   teardown_suite();

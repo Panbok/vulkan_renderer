@@ -1,19 +1,26 @@
 #include "vector_test.h"
+#include "memory/vkr_arena_allocator.h"
 
 // Instantiate Vector for a specific type for testing
 Vector(float);
 
 static Arena *arena = NULL;
+static VkrAllocator allocator = {0};
 static const uint64_t ARENA_SIZE = 1024 * 1024; // 1MB
 
 // Setup function called before each test function in this suite
-static void setup_suite(void) { arena = arena_create(ARENA_SIZE); }
+static void setup_suite(void) {
+  arena = arena_create(ARENA_SIZE);
+  allocator = (VkrAllocator){.ctx = arena};
+  vkr_allocator_arena(&allocator);
+}
 
 // Teardown function called after each test function in this suite
 static void teardown_suite(void) {
   if (arena) {
     arena_destroy(arena);
     arena = NULL;
+    allocator = (VkrAllocator){0};
   }
 }
 
@@ -21,9 +28,9 @@ static void test_vector_create_float(void) {
   printf("  Running test_vector_create_float...\n");
   setup_suite();
 
-  Vector_float vec = vector_create_float(arena);
+  Vector_float vec = vector_create_float(&allocator);
 
-  assert(vec.arena == arena && "Arena pointer mismatch");
+  assert(vec.allocator == &allocator && "Allocator pointer mismatch");
   assert(vec.capacity == DEFAULT_VECTOR_CAPACITY &&
          "Default capacity mismatch");
   assert(vec.length == 0 && "Initial length non-zero");
@@ -31,7 +38,7 @@ static void test_vector_create_float(void) {
 
   vector_destroy_float(&vec);
   assert(vec.data == NULL && "Data not NULL after destroy");
-  assert(vec.arena == NULL && "Arena not NULL after destroy");
+  assert(vec.allocator == NULL && "Allocator not NULL after destroy");
   assert(vec.length == 0 && "Length not 0 after destroy");
   assert(vec.capacity == 0 && "Capacity not 0 after destroy");
 
@@ -44,9 +51,10 @@ static void test_vector_create_with_capacity_float(void) {
   setup_suite();
 
   const uint64_t initial_capacity = 5;
-  Vector_float vec = vector_create_float_with_capacity(arena, initial_capacity);
+  Vector_float vec =
+      vector_create_float_with_capacity(&allocator, initial_capacity);
 
-  assert(vec.arena == arena && "Arena pointer mismatch");
+  assert(vec.allocator == &allocator && "Allocator pointer mismatch");
   assert(vec.capacity == initial_capacity && "Capacity mismatch");
   assert(vec.length == 0 && "Initial length non-zero");
   assert(vec.data != NULL && "Data is NULL");
@@ -61,7 +69,7 @@ static void test_vector_push_pop_float(void) {
   printf("  Running test_vector_push_pop_float...\n");
   setup_suite();
 
-  Vector_float vec = vector_create_float(arena);
+  Vector_float vec = vector_create_float(&allocator);
 
   vector_push_float(&vec, 1.0f);
   vector_push_float(&vec, 2.5f);
@@ -91,7 +99,7 @@ static void test_vector_get_set_float(void) {
   printf("  Running test_vector_get_set_float...\n");
   setup_suite();
 
-  Vector_float vec = vector_create_float(arena);
+  Vector_float vec = vector_create_float(&allocator);
   vector_push_float(&vec, 10.0f);
   vector_push_float(&vec, 20.0f);
 
@@ -115,7 +123,8 @@ static void test_vector_resize_float(void) {
   setup_suite();
 
   const uint64_t initial_capacity = 2;
-  Vector_float vec = vector_create_float_with_capacity(arena, initial_capacity);
+  Vector_float vec =
+      vector_create_float_with_capacity(&allocator, initial_capacity);
 
   vector_push_float(&vec, 1.0f);
   vector_push_float(&vec, 2.0f);
@@ -144,7 +153,7 @@ static void test_vector_clear_float(void) {
   printf("  Running test_vector_clear_float...\n");
   setup_suite();
 
-  Vector_float vec = vector_create_float(arena);
+  Vector_float vec = vector_create_float(&allocator);
   vector_push_float(&vec, 1.0f);
   vector_push_float(&vec, 2.0f);
   assert(vec.length == 2 && "Length before clear mismatch");
@@ -166,7 +175,7 @@ static void test_vector_pop_at_float(void) {
   printf("  Running test_vector_pop_at_float...\n");
   setup_suite();
 
-  Vector_float vec = vector_create_float(arena);
+  Vector_float vec = vector_create_float(&allocator);
   vector_push_float(&vec, 1.0f);
   vector_push_float(&vec, 2.0f);
   vector_push_float(&vec, 3.0f);
@@ -220,7 +229,7 @@ static void test_vector_find_float(void) {
   printf("  Running test_vector_find_float...\n");
   setup_suite();
 
-  Vector_float vec = vector_create_float(arena);
+  Vector_float vec = vector_create_float(&allocator);
   vector_push_float(&vec, 1.0f);
   vector_push_float(&vec, 2.0f);
   vector_push_float(&vec, 3.0f);
@@ -244,7 +253,7 @@ static void test_vector_find_with_custom_callbacks(void) {
   printf("  Running test_vector_find_with_custom_callbacks...\n");
   setup_suite();
 
-  Vector_float vec = vector_create_float(arena);
+  Vector_float vec = vector_create_float(&allocator);
   vector_push_float(&vec, 1.0f);
   vector_push_float(&vec, 2.005f); // Slightly off from 2.0
   vector_push_float(&vec, 3.0f);
@@ -282,7 +291,7 @@ static void test_vector_find_edge_cases(void) {
   setup_suite();
 
   // Test with empty vector
-  Vector_float empty_vec = vector_create_float(arena);
+  Vector_float empty_vec = vector_create_float(&allocator);
   float val = 1.0f;
   VectorFindResult res = vector_find_float(&empty_vec, &val, float_equals);
   assert(!res.found && "Find in empty vector should return not found");

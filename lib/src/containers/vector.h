@@ -11,7 +11,7 @@
  * A vector consists of a metadata structure and a contiguous block of elements:
  *
  * +---------------------+ <-- Vector_TYPE structure
- * | Arena *arena        |     (Pointer to the arena allocator used for memory)
+ * | VkrAllocator *alloc |     (Allocator used for memory)
  * | uint64_t capacity     |     (Current allocated capacity of the vector)
  * | uint64_t length       |     (Current number of elements in the vector)
  * | TYPE *data          | --> Points to contiguous memory block of capacity *
@@ -40,14 +40,14 @@
  * 3. Access elements with vector_get_TYPE()
  * 4. Modify elements with vector_set_TYPE()
  * 5. Remove the last element with vector_pop_TYPE()
- * 6. When done, optionally call vector_destroy_TYPE() to clean up metadata
+ * 6. When done, call vector_destroy_TYPE() to clean up (frees buffer)
  */
 
 #pragma once
 
+#include "containers/str.h"
 #include "core/logger.h"
-#include "memory/arena.h"
-#include "vkr_pch.h"
+#include "memory/vkr_allocator.h"
 
 #define DEFAULT_VECTOR_CAPACITY 16
 #define DEFAULT_VECTOR_RESIZE_FACTOR 2
@@ -65,38 +65,40 @@ typedef struct VectorFindResult {
    */                                                                          \
   struct Vector_##name;                                                        \
   typedef struct Vector_##name {                                               \
-    Arena *arena;      /**< Arena allocator used for memory allocation */      \
+    VkrAllocator *allocator; /**< Allocator used for memory allocation */      \
     uint64_t capacity; /**< Current allocated capacity of the vector */        \
     uint64_t length;   /**< Current number of elements in the vector */        \
     type *data;        /**< Pointer to the contiguous vector storage */        \
   } Vector_##name;                                                             \
   /**                                                                          \
    * @brief Creates a new vector with default capacity                         \
-   * @param arena Arena allocator to use for memory allocation                 \
+   * @param allocator Allocator to use for memory allocation                   \
    * @return Initialized Vector_##name structure with DEFAULT_VECTOR_CAPACITY  \
    */                                                                          \
-  static inline Vector_##name vector_create_##name(Arena *arena) {             \
-    assert_log(arena != NULL, "Arena is NULL");                                \
+  static inline Vector_##name vector_create_##name(VkrAllocator *allocator) {  \
+    assert_log(allocator != NULL, "Allocator is NULL");                        \
                                                                                \
-    type *buf = arena_alloc(arena, DEFAULT_VECTOR_CAPACITY * sizeof(type),     \
-                            ARENA_MEMORY_TAG_VECTOR);                          \
-    assert_log(buf != NULL, "arena_alloc failed in vector_create");            \
-    Vector_##name vector = {arena, DEFAULT_VECTOR_CAPACITY, 0, buf};           \
+    type *buf = vkr_allocator_alloc(                                           \
+        allocator, DEFAULT_VECTOR_CAPACITY * sizeof(type),                     \
+        VKR_ALLOCATOR_MEMORY_TAG_VECTOR);                                      \
+    assert_log(buf != NULL, "alloc failed in vector_create");                  \
+    Vector_##name vector = {allocator, DEFAULT_VECTOR_CAPACITY, 0, buf};       \
     return vector;                                                             \
   }                                                                            \
   /**                                                                          \
    * @brief Creates a new vector with specified capacity                       \
-   * @param arena Arena allocator to use for memory allocation                 \
+   * @param allocator Allocator to use for memory allocation                   \
    * @param capacity Initial capacity of the vector                            \
    * @return Initialized Vector_##name structure with the specified capacity   \
    */                                                                          \
   static inline Vector_##name vector_create_##name##_with_capacity(            \
-      Arena *arena, uint64_t capacity) {                                       \
-    assert_log(arena != NULL, "Arena is NULL");                                \
+      VkrAllocator *allocator, uint64_t capacity) {                            \
+    assert_log(allocator != NULL, "Allocator is NULL");                        \
     assert_log(capacity > 0, "Capacity is 0");                                 \
-    Vector_##name vector = {                                                   \
-        arena, capacity, 0,                                                    \
-        arena_alloc(arena, capacity * sizeof(type), ARENA_MEMORY_TAG_VECTOR)}; \
+    Vector_##name vector = {allocator, capacity, 0,                            \
+                            vkr_allocator_alloc(allocator,                     \
+                                                capacity * sizeof(type),       \
+                                                VKR_ALLOCATOR_MEMORY_TAG_VECTOR)}; \
     return vector;                                                             \
   }                                                                            \
   /**                                                                          \
@@ -108,18 +110,15 @@ typedef struct VectorFindResult {
    */                                                                          \
   static inline type *vector_resize_##name(Vector_##name *vector) {            \
     assert_log(vector != NULL, "Vector is NULL");                              \
-    assert_log(vector->arena != NULL, "Arena is NULL");                        \
+    assert_log(vector->allocator != NULL, "Allocator is NULL");                \
                                                                                \
     uint64_t target_capacity =                                                 \
         vector->capacity * DEFAULT_VECTOR_RESIZE_FACTOR;                       \
     uint64_t allocation_size = target_capacity * sizeof(type);                 \
-    type *new_data =                                                           \
-        arena_alloc(vector->arena, allocation_size, ARENA_MEMORY_TAG_VECTOR);  \
+    type *new_data = vkr_allocator_realloc(                                    \
+        vector->allocator, vector->data, vector->capacity * sizeof(type),      \
+        allocation_size, VKR_ALLOCATOR_MEMORY_TAG_VECTOR);                     \
     assert_log(new_data != NULL, "Failed to allocate memory");                 \
-                                                                               \
-    if (vector->data != NULL && vector->length > 0) {                          \
-      MemCopy(new_data, vector->data, vector->length * sizeof(type));          \
-    }                                                                          \
                                                                                \
     vector->data = new_data;                                                   \
     vector->capacity = target_capacity;                                        \
@@ -133,7 +132,7 @@ typedef struct VectorFindResult {
    */                                                                          \
   static inline void vector_push_##name(Vector_##name *vector, type value) {   \
     assert_log(vector != NULL, "Vector is NULL");                              \
-    assert_log(vector->arena != NULL, "Arena is NULL");                        \
+    assert_log(vector->allocator != NULL, "Allocator is NULL");                \
     if (vector->length == vector->capacity) {                                  \
       vector_resize_##name(vector);                                            \
     }                                                                          \
@@ -148,7 +147,7 @@ typedef struct VectorFindResult {
    */                                                                          \
   static inline type vector_pop_##name(Vector_##name *vector) {                \
     assert_log(vector != NULL, "Vector is NULL");                              \
-    assert_log(vector->arena != NULL, "Arena is NULL");                        \
+    assert_log(vector->allocator != NULL, "Allocator is NULL");                \
     assert_log(vector->length > 0, "Vector is empty");                         \
     return (vector->data[--vector->length]);                                   \
   }                                                                            \
@@ -163,7 +162,7 @@ typedef struct VectorFindResult {
   static inline type *vector_pop_at_##name(Vector_##name *vector,              \
                                            uint64_t index, type *dest) {       \
     assert_log(vector != NULL, "Vector is NULL");                              \
-    assert_log(vector->arena != NULL, "Arena is NULL");                        \
+    assert_log(vector->allocator != NULL, "Allocator is NULL");                \
     assert_log(index < vector->length, "Index is out of bounds");              \
     uint64_t length = vector->length;                                          \
     uint64_t stride = sizeof(type);                                            \
@@ -192,7 +191,7 @@ typedef struct VectorFindResult {
       const Vector_##name *vector, type *value,                                \
       VectorFindCallback_##name callback) {                                    \
     assert_log(vector != NULL, "Vector is NULL");                              \
-    assert_log(vector->arena != NULL, "Arena is NULL");                        \
+    assert_log(vector->allocator != NULL, "Allocator is NULL");                \
     assert_log(callback != NULL, "Callback is NULL");                          \
     for (uint64_t i = 0; i < vector->length; i++) {                            \
       if (callback(&vector->data[i], value)) {                                 \
@@ -209,7 +208,7 @@ typedef struct VectorFindResult {
    */                                                                          \
   static inline void vector_clear_##name(Vector_##name *vector) {              \
     assert_log(vector != NULL, "Vector is NULL");                              \
-    assert_log(vector->arena != NULL, "Arena is NULL");                        \
+    assert_log(vector->allocator != NULL, "Allocator is NULL");                \
     vector->length = 0;                                                        \
   }                                                                            \
   /**                                                                          \
@@ -222,7 +221,7 @@ typedef struct VectorFindResult {
   static inline void vector_set_##name(Vector_##name *vector, uint64_t index,  \
                                        type value) {                           \
     assert_log(vector != NULL, "Vector is NULL");                              \
-    assert_log(vector->arena != NULL, "Arena is NULL");                        \
+    assert_log(vector->allocator != NULL, "Allocator is NULL");                \
     assert_log(index < vector->length, "Index is out of bounds");              \
     vector->data[index] = value;                                               \
   }                                                                            \
@@ -236,7 +235,7 @@ typedef struct VectorFindResult {
   static inline type *vector_get_##name(const Vector_##name *vector,           \
                                         uint64_t index) {                      \
     assert_log(vector != NULL, "Vector is NULL");                              \
-    assert_log(vector->arena != NULL, "Arena is NULL");                        \
+    assert_log(vector->allocator != NULL, "Allocator is NULL");                \
     assert_log(index < vector->length, "Index is out of bounds");              \
     return (type *)(vector->data + index);                                     \
   }                                                                            \
@@ -247,8 +246,13 @@ typedef struct VectorFindResult {
    */                                                                          \
   static inline void vector_destroy_##name(Vector_##name *vector) {            \
     assert_log(vector != NULL, "Vector is NULL");                              \
+    if (vector->data) {                                                        \
+      vkr_allocator_free(vector->allocator, vector->data,                      \
+                         vector->capacity * sizeof(type),                      \
+                         VKR_ALLOCATOR_MEMORY_TAG_VECTOR);                     \
+    }                                                                          \
     vector->data = NULL;                                                       \
-    vector->arena = NULL;                                                      \
+    vector->allocator = NULL;                                                  \
     vector->capacity = 0;                                                      \
     vector->length = 0;                                                        \
   }
@@ -260,3 +264,5 @@ Vector(uint32_t);
 Vector(uint64_t);
 Vector(float32_t);
 Vector(float64_t);
+Vector(bool8_t);
+Vector(String8);

@@ -1,5 +1,4 @@
 #include "str.h"
-
 /////////////////////
 // String8
 /////////////////////
@@ -22,9 +21,9 @@ String8 string8_create_from_cstr(const uint8_t *data, uint64_t length) {
   return str;
 }
 
-String8 string8_create_formatted_v(Arena *arena, const char *fmt,
+String8 string8_create_formatted_v(VkrAllocator *allocator, const char *fmt,
                                    va_list args) {
-  assert(arena != NULL && "Arena is NULL");
+  assert(allocator != NULL && "Allocator is NULL");
   assert(fmt != NULL && "Format string is NULL");
   assert(args != NULL && "Arguments are NULL");
 
@@ -40,7 +39,8 @@ String8 string8_create_formatted_v(Arena *arena, const char *fmt,
   assert(required_size >= 0 && "Failed to format string");
 
   uint64_t buffer_size = (uint64_t)required_size + 1;
-  uint8_t *buffer = arena_alloc(arena, buffer_size, ARENA_MEMORY_TAG_STRING);
+  uint8_t *buffer = vkr_allocator_alloc(allocator, buffer_size,
+                                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
 
   assert(buffer != NULL && "Failed to allocate buffer");
 
@@ -49,13 +49,14 @@ String8 string8_create_formatted_v(Arena *arena, const char *fmt,
   return string8_create(buffer, (uint64_t)required_size);
 }
 
-String8 string8_create_formatted(Arena *arena, const char *fmt, ...) {
-  assert(arena != NULL && "Arena is NULL");
+String8 string8_create_formatted(VkrAllocator *allocator, const char *fmt,
+                                 ...) {
+  assert(allocator != NULL && "Allocator is NULL");
   assert(fmt != NULL && "Format string is NULL");
 
   va_list args;
   va_start(args, fmt);
-  String8 result = string8_create_formatted_v(arena, fmt, args);
+  String8 result = string8_create_formatted_v(allocator, fmt, args);
   va_end(args);
   return result;
 }
@@ -201,15 +202,16 @@ void string8_destroy(String8 *str) {
   str->length = 0;
 }
 
-String8 string8_concat(Arena *arena, String8 *str1, String8 *str2) {
-  assert(arena != NULL && "Arena is NULL");
+String8 string8_concat(VkrAllocator *allocator, String8 *str1, String8 *str2) {
+  assert(allocator != NULL && "Allocator is NULL");
   assert(str1 != NULL && "String1 is NULL");
   assert(str2 != NULL && "String2 is NULL");
 
   String8 str = {NULL, 0};
 
   str.length = str1->length + str2->length;
-  str.str = arena_alloc(arena, str.length + 1, ARENA_MEMORY_TAG_STRING);
+  str.str = vkr_allocator_alloc(allocator, str.length + 1,
+                                VKR_ALLOCATOR_MEMORY_TAG_STRING);
 
   MemCopy(str.str, str1->str, str1->length);
   MemCopy(str.str + str1->length, str2->str, str2->length);
@@ -218,8 +220,8 @@ String8 string8_concat(Arena *arena, String8 *str1, String8 *str2) {
   return str;
 }
 
-String8 string8_duplicate(Arena *arena, const String8 *str) {
-  assert(arena != NULL && "Arena is NULL");
+String8 string8_duplicate(VkrAllocator *allocator, const String8 *str) {
+  assert(allocator != NULL && "Allocator is NULL");
   assert(str != NULL && "String is NULL");
 
   if (!str->str || str->length == 0) {
@@ -228,7 +230,8 @@ String8 string8_duplicate(Arena *arena, const String8 *str) {
   }
 
   String8 result = {NULL, 0};
-  result.str = arena_alloc(arena, str->length + 1, ARENA_MEMORY_TAG_STRING);
+  result.str = vkr_allocator_alloc(allocator, str->length + 1,
+                                   VKR_ALLOCATOR_MEMORY_TAG_STRING);
   assert(result.str != NULL && "Failed to allocate memory");
   MemCopy(result.str, str->str, str->length);
   result.str[str->length] = '\0';
@@ -236,13 +239,14 @@ String8 string8_duplicate(Arena *arena, const String8 *str) {
   return result;
 }
 
-String8 vkr_string8_duplicate_cstr(Arena *arena, const char *cstr) {
-  assert(arena != NULL && "Arena is NULL");
+String8 vkr_string8_duplicate_cstr(VkrAllocator *allocator, const char *cstr) {
+  assert(allocator != NULL && "Allocator is NULL");
   assert(cstr != NULL && "C string is NULL");
 
   uint64_t length = (uint64_t)strlen(cstr);
   String8 result = {NULL, 0};
-  result.str = arena_alloc(arena, length + 1, ARENA_MEMORY_TAG_STRING);
+  result.str = vkr_allocator_alloc(allocator, length + 1,
+                                   VKR_ALLOCATOR_MEMORY_TAG_STRING);
   assert(result.str != NULL && "Failed to allocate memory");
 
   MemCopy(result.str, cstr, length);
@@ -351,15 +355,17 @@ bool8_t string_contains(const char *str, const char *substring) {
   return strstr(str, substring) != NULL;
 }
 
-char *string_substring(Arena *arena, const char *str, int32_t start,
+char *string_substring(VkrAllocator *allocator, const char *str, int32_t start,
                        int32_t length) {
+  assert(allocator != NULL && "Allocator is NULL");
   assert(str != NULL && "String is NULL");
   assert(start >= 0 && "Start is negative");
   assert(length >= 0 && "Length is negative");
 
   uint64_t src_len = string_length(str);
   if ((uint64_t)start >= src_len) {
-    char *out = (char *)arena_alloc(arena, 1, ARENA_MEMORY_TAG_STRING);
+    char *out = (char *)vkr_allocator_alloc(allocator, 1,
+                                            VKR_ALLOCATOR_MEMORY_TAG_STRING);
     assert(out != NULL && "Allocation failed");
     out[0] = '\0';
     return out;
@@ -371,8 +377,8 @@ char *string_substring(Arena *arena, const char *str, int32_t start,
     count = max_available;
   }
 
-  char *out =
-      (char *)arena_alloc(arena, (size_t)count + 1, ARENA_MEMORY_TAG_STRING);
+  char *out = (char *)vkr_allocator_alloc(allocator, (size_t)count + 1,
+                                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
   assert(out != NULL && "Allocation failed");
   if (count > 0) {
     MemCopy(out, str + start, (size_t)count);
@@ -776,7 +782,8 @@ bool8_t string8_to_vec4(const String8 *s, Vec4 *out) {
   return string8__parse_as_cstring(s, wrap_string_to_vec4, out);
 }
 
-String8 string8_get_stem(Arena *arena, String8 path) {
+String8 string8_get_stem(VkrAllocator *allocator, String8 path) {
+  assert(allocator != NULL && "Allocator is NULL");
   if (!path.str || path.length == 0)
     return (String8){0};
   uint64_t start = 0;
@@ -797,7 +804,7 @@ String8 string8_get_stem(Arena *arena, String8 path) {
   if (end <= start)
     end = path.length;
   String8 stem = string8_substring(&path, start, end);
-  return string8_duplicate(arena, &stem);
+  return string8_duplicate(allocator, &stem);
 }
 
 uint32_t string8_split_whitespace(const String8 *line, String8 *tokens,

@@ -3,6 +3,7 @@
 #include "containers/str.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
+#include "memory/vkr_arena_allocator.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -76,20 +77,22 @@ vkr_internal void fs_test_remove_dir(const char *path) {
 vkr_internal void test_file_path_create(void) {
   printf("  Running test_file_path_create...\n");
   Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
 
-  FilePath relative =
-      file_path_create("tests/src/test_main.c", arena, FILE_PATH_TYPE_RELATIVE);
+  FilePath relative = file_path_create("tests/src/test_main.c", &allocator,
+                                       FILE_PATH_TYPE_RELATIVE);
   String8 relative_expected = string8_create_formatted(
-      arena, "%s%s", PROJECT_SOURCE_DIR, "tests/src/test_main.c");
+      &allocator, "%s%s", PROJECT_SOURCE_DIR, "tests/src/test_main.c");
   assert(relative.type == FILE_PATH_TYPE_RELATIVE);
   assert(strcmp((const char *)relative.path.str,
                 (const char *)relative_expected.str) == 0);
 
   String8 absolute_input = string8_create_formatted(
-      arena, "%s%s/absolute_target_%u.bin", PROJECT_SOURCE_DIR,
+      &allocator, "%s%s/absolute_target_%u.bin", PROJECT_SOURCE_DIR,
       FS_TEST_RELATIVE_DIR, ++g_fs_test_counter);
-  FilePath absolute = file_path_create((const char *)absolute_input.str, arena,
-                                       FILE_PATH_TYPE_ABSOLUTE);
+  FilePath absolute = file_path_create((const char *)absolute_input.str,
+                                       &allocator, FILE_PATH_TYPE_ABSOLUTE);
   assert(absolute.type == FILE_PATH_TYPE_ABSOLUTE);
   assert(strcmp((const char *)absolute.path.str,
                 (const char *)absolute_input.str) == 0);
@@ -101,9 +104,11 @@ vkr_internal void test_file_path_create(void) {
 vkr_internal void test_file_exists_and_stats(void) {
   printf("  Running test_file_exists_and_stats...\n");
   Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
 
-  FilePath existing =
-      file_path_create("tests/src/test_main.c", arena, FILE_PATH_TYPE_RELATIVE);
+  FilePath existing = file_path_create("tests/src/test_main.c", &allocator,
+                                       FILE_PATH_TYPE_RELATIVE);
   assert(file_exists(&existing) == true_v);
   FileStats stats = {0};
   assert(file_stats(&existing, &stats) == FILE_ERROR_NONE);
@@ -114,7 +119,7 @@ vkr_internal void test_file_exists_and_stats(void) {
   snprintf(missing_relative, sizeof(missing_relative), "%s/missing_%u.txt",
            FS_TEST_RELATIVE_DIR, id);
   FilePath missing =
-      file_path_create(missing_relative, arena, FILE_PATH_TYPE_RELATIVE);
+      file_path_create(missing_relative, &allocator, FILE_PATH_TYPE_RELATIVE);
   fs_test_remove_file((const char *)missing.path.str);
   assert(file_exists(&missing) == false_v);
   assert(file_stats(&missing, &stats) == FILE_ERROR_NOT_FOUND);
@@ -126,10 +131,13 @@ vkr_internal void test_file_exists_and_stats(void) {
 vkr_internal void test_file_create_and_ensure_directory(void) {
   printf("  Running test_file_create_and_ensure_directory...\n");
   Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
 
   uint32_t id = ++g_fs_test_counter;
   String8 create_target =
-      string8_create_formatted(arena, "%s%s/create_dir_%u", PROJECT_SOURCE_DIR,
+      string8_create_formatted(&allocator, "%s%s/create_dir_%u",
+                               PROJECT_SOURCE_DIR,
                                FS_TEST_RELATIVE_DIR, id);
   FilePath create_path = {.path = create_target,
                           .type = FILE_PATH_TYPE_ABSOLUTE};
@@ -139,17 +147,17 @@ vkr_internal void test_file_create_and_ensure_directory(void) {
 
   id = ++g_fs_test_counter;
   String8 ensure_deep =
-      string8_create_formatted(arena, "%s%s/ensure_dir_%u/inner/deeper",
+      string8_create_formatted(&allocator, "%s%s/ensure_dir_%u/inner/deeper",
                                PROJECT_SOURCE_DIR, FS_TEST_RELATIVE_DIR, id);
-  bool8_t ensured = file_ensure_directory(arena, &ensure_deep);
+  bool8_t ensured = file_ensure_directory(&allocator, &ensure_deep);
   assert(ensured == true_v);
 
   String8 ensure_inner =
-      string8_create_formatted(arena, "%s%s/ensure_dir_%u/inner",
+      string8_create_formatted(&allocator, "%s%s/ensure_dir_%u/inner",
                                PROJECT_SOURCE_DIR, FS_TEST_RELATIVE_DIR, id);
   String8 ensure_root =
-      string8_create_formatted(arena, "%s%s/ensure_dir_%u", PROJECT_SOURCE_DIR,
-                               FS_TEST_RELATIVE_DIR, id);
+      string8_create_formatted(&allocator, "%s%s/ensure_dir_%u",
+                               PROJECT_SOURCE_DIR, FS_TEST_RELATIVE_DIR, id);
 
   fs_test_remove_dir((const char *)ensure_deep.str);
   fs_test_remove_dir((const char *)ensure_inner.str);
@@ -163,13 +171,17 @@ vkr_internal void test_file_write_and_read_binary(void) {
   printf("  Running test_file_write_and_read_binary...\n");
   Arena *arena = arena_create(MB(1), MB(1));
   Arena *read_arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
+  VkrAllocator read_allocator = {.ctx = read_arena};
+  vkr_allocator_arena(&read_allocator);
 
   uint32_t id = ++g_fs_test_counter;
   char relative_path[256];
   snprintf(relative_path, sizeof(relative_path), "%s/io_binary_%u.bin",
            FS_TEST_RELATIVE_DIR, id);
   FilePath path =
-      file_path_create(relative_path, arena, FILE_PATH_TYPE_RELATIVE);
+      file_path_create(relative_path, &allocator, FILE_PATH_TYPE_RELATIVE);
 
   FileMode write_mode = bitset8_create();
   bitset8_set(&write_mode, FILE_MODE_WRITE);
@@ -192,27 +204,31 @@ vkr_internal void test_file_write_and_read_binary(void) {
   assert(file_open(&path, read_mode, &handle) == FILE_ERROR_NONE);
 
   {
-    Scratch scratch = scratch_create(read_arena);
+    VkrAllocator temp_alloc = {.ctx = read_arena};
+    vkr_allocator_arena(&temp_alloc);
+    VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&temp_alloc);
     uint8_t *buffer = NULL;
     uint64_t bytes_read = 0;
-    assert(file_read_all(&handle, scratch.arena, &buffer, &bytes_read) ==
+    assert(file_read_all(&handle, &temp_alloc, &buffer, &bytes_read) ==
            FILE_ERROR_NONE);
     assert(bytes_read == sizeof(data));
     assert(memcmp(buffer, data, sizeof(data)) == 0);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_UNKNOWN);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
   }
   file_close(&handle);
 
   assert(file_open(&path, read_mode, &handle) == FILE_ERROR_NONE);
   {
-    Scratch scratch = scratch_create(read_arena);
+    VkrAllocator temp_alloc = {.ctx = read_arena};
+    vkr_allocator_arena(&temp_alloc);
+    VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&temp_alloc);
     uint8_t *partial_buffer = NULL;
     uint64_t partial_read = 0;
-    assert(file_read(&handle, scratch.arena, 3, &partial_read,
+    assert(file_read(&handle, &temp_alloc, 3, &partial_read,
                      &partial_buffer) == FILE_ERROR_NONE);
     assert(partial_read == 3);
     assert(memcmp(partial_buffer, data, 3) == 0);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_UNKNOWN);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
   }
   file_close(&handle);
 
@@ -225,13 +241,15 @@ vkr_internal void test_file_write_and_read_binary(void) {
 vkr_internal void test_file_read_line_and_write_line(void) {
   printf("  Running test_file_read_line_and_write_line...\n");
   Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
 
   uint32_t id = ++g_fs_test_counter;
   char relative_path[256];
   snprintf(relative_path, sizeof(relative_path), "%s/text_lines_%u.txt",
            FS_TEST_RELATIVE_DIR, id);
   FilePath path =
-      file_path_create(relative_path, arena, FILE_PATH_TYPE_RELATIVE);
+      file_path_create(relative_path, &allocator, FILE_PATH_TYPE_RELATIVE);
 
   FileMode write_mode = bitset8_create();
   bitset8_set(&write_mode, FILE_MODE_WRITE);
@@ -251,21 +269,28 @@ vkr_internal void test_file_read_line_and_write_line(void) {
   assert(file_open(&path, read_mode, &handle) == FILE_ERROR_NONE);
 
   Arena *line_arena = arena_create(MB(1), MB(1));
+  VkrAllocator line_allocator = {.ctx = line_arena};
+  vkr_allocator_arena(&line_allocator);
   String8 line = {0};
-  assert(file_read_line(&handle, line_arena, line_arena, 64, &line) ==
+  assert(file_read_line(&handle, &line_allocator, &line_allocator, 64, &line) ==
          FILE_ERROR_NONE);
   assert(strcmp((const char *)line.str, "alpha\n") == 0);
 
   Arena *another_arena = arena_create(MB(1), MB(1));
-  assert(file_read_line(&handle, another_arena, line_arena, 64, &line) ==
+  VkrAllocator another_allocator = {.ctx = another_arena};
+  vkr_allocator_arena(&another_allocator);
+  assert(file_read_line(&handle, &another_allocator, &line_allocator, 64,
+                        &line) ==
          FILE_ERROR_NONE);
   assert(strcmp((const char *)line.str, "beta\n") == 0);
 
-  assert(file_read_line(&handle, line_arena, another_arena, 64, &line) ==
+  assert(file_read_line(&handle, &line_allocator, &another_allocator, 64,
+                        &line) ==
          FILE_ERROR_NONE);
   assert(strcmp((const char *)line.str, "gamma\n") == 0);
 
-  assert(file_read_line(&handle, line_arena, another_arena, 64, &line) ==
+  assert(file_read_line(&handle, &line_allocator, &another_allocator, 64,
+                        &line) ==
              FILE_ERROR_EOF &&
          "Expected EOF after last line");
 
@@ -275,7 +300,8 @@ vkr_internal void test_file_read_line_and_write_line(void) {
 
   assert(file_open(&path, read_mode, &handle) == FILE_ERROR_NONE);
   String8 file_contents = {0};
-  assert(file_read_string(&handle, arena, &file_contents) == FILE_ERROR_NONE);
+  assert(file_read_string(&handle, &allocator, &file_contents) ==
+         FILE_ERROR_NONE);
   assert(strcmp((const char *)file_contents.str, "alpha\nbeta\ngamma\n") == 0);
   file_close(&handle);
 
@@ -287,13 +313,15 @@ vkr_internal void test_file_read_line_and_write_line(void) {
 vkr_internal void test_file_load_spirv_shader(void) {
   printf("  Running test_file_load_spirv_shader...\n");
   Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
 
   uint32_t id = ++g_fs_test_counter;
   char relative_path[256];
   snprintf(relative_path, sizeof(relative_path), "%s/spirv_shader_%u.spv",
            FS_TEST_RELATIVE_DIR, id);
   FilePath path =
-      file_path_create(relative_path, arena, FILE_PATH_TYPE_RELATIVE);
+      file_path_create(relative_path, &allocator, FILE_PATH_TYPE_RELATIVE);
 
   FileMode write_mode = bitset8_create();
   bitset8_set(&write_mode, FILE_MODE_WRITE);
@@ -311,9 +339,11 @@ vkr_internal void test_file_load_spirv_shader(void) {
   file_close(&handle);
 
   Arena *shader_arena = arena_create(MB(1), MB(1));
+  VkrAllocator shader_allocator = {.ctx = shader_arena};
+  vkr_allocator_arena(&shader_allocator);
   uint8_t *shader_data = NULL;
   uint64_t shader_size = 0;
-  assert(file_load_spirv_shader(&path, shader_arena, &shader_data,
+  assert(file_load_spirv_shader(&path, &shader_allocator, &shader_data,
                                 &shader_size) == FILE_ERROR_NONE);
   assert(shader_size == sizeof(spirv_words));
   assert(((uint32_t *)shader_data)[0] == 0x07230203);
@@ -327,15 +357,17 @@ vkr_internal void test_file_load_spirv_shader(void) {
 vkr_internal void test_file_path_helpers(void) {
   printf("  Running test_file_path_helpers...\n");
   Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
 
   String8 sample = string8_lit("/tmp/assets/output.bin");
-  String8 dir = file_path_get_directory(arena, sample);
+  String8 dir = file_path_get_directory(&allocator, sample);
   assert(dir.length == string_length("/tmp/assets/"));
   assert(strncmp((const char *)dir.str, "/tmp/assets/",
                  string_length("/tmp/assets/")) == 0);
 
   String8 filename = string8_lit("shader.spv");
-  String8 joined = file_path_join(arena, dir, filename);
+  String8 joined = file_path_join(&allocator, dir, filename);
   assert(strcmp((const char *)joined.str, "/tmp/assets/shader.spv") == 0);
 
   arena_destroy(arena);
