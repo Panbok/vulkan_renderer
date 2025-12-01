@@ -54,8 +54,8 @@ typedef struct VkrAllocatorStatistics {
   // Scope/temporary allocation tracking
   uint64_t total_scopes_created;
   uint64_t total_scopes_destroyed;
-  uint64_t total_temp_bytes;  // Total bytes ever allocated within scopes
-  uint64_t peak_temp_bytes;   // High-water mark for temp allocations
+  uint64_t total_temp_bytes; // Current bytes allocated within active scopes
+  uint64_t peak_temp_bytes;  // High-water mark for concurrent temp allocations
 } VkrAllocatorStatistics;
 
 // Forward declaration
@@ -73,18 +73,23 @@ typedef struct VkrAllocator VkrAllocator;
  */
 typedef struct VkrAllocatorScope {
   VkrAllocator *allocator;
-  void *scope_data;         // Allocator-specific (e.g., Scratch* for arena)
-  uint64_t bytes_at_start;  // Bytes allocated when scope was created
+  void *scope_data;        // Allocator-specific (e.g., Scratch* for arena)
+  uint64_t bytes_at_start; // Bytes allocated when scope was created
   uint64_t total_allocated_at_start; // Allocator stats snapshot at scope start
 } VkrAllocatorScope;
 
 /**
  * @brief Abstract interface that every allocator must implement.
+ *
+ * @note Thread Safety: Individual VkrAllocator instances are NOT thread-safe.
+ *       Each allocator should be used from a single thread, or callers must
+ *       provide external synchronization. The global statistics
+ *       (vkr_allocator_get_global_statistics) are thread-safe via atomics.
  */
 struct VkrAllocator {
   VkrAllocatorType type;
   VkrAllocatorStatistics stats;
-  void *ctx;  // allocator-specific state, e.g., Arena*
+  void *ctx; // allocator-specific state, e.g., Arena*
 
   // Internal scope state
   uint32_t scope_depth;           // How many scopes deep we are (0 = none)
@@ -102,8 +107,11 @@ struct VkrAllocator {
                    VkrAllocatorMemoryTag tag);
 
   // Optional: Scope-based temporary allocation support.
-  VkrAllocatorScope (*begin_scope)(void *ctx);
-  void (*end_scope)(void *ctx, VkrAllocatorScope *scope,
+  // These callbacks receive the full VkrAllocator* so they can update
+  // scope_depth and scope_bytes_allocated. The allocator's ctx is accessible
+  // via allocator->ctx.
+  VkrAllocatorScope (*begin_scope)(struct VkrAllocator *allocator);
+  void (*end_scope)(struct VkrAllocator *allocator, VkrAllocatorScope *scope,
                     VkrAllocatorMemoryTag tag);
 
   bool8_t supports_scopes;
@@ -227,8 +235,11 @@ bool8_t vkr_allocator_supports_scopes(const VkrAllocator *allocator);
  * calls in begin_scope/end_scope.
  *
  * @param allocator The allocator to create a scope on.
- * @return Scope handle for ending the scope later. Check with
- *         vkr_allocator_scope_is_valid() if the allocator supports scopes.
+ * @return Scope handle for ending the scope later.
+ *
+ * @note Check with vkr_allocator_supports_scopes() before calling this function.
+ *       After this call, use vkr_allocator_scope_is_valid() to verify the
+ *       returned scope handle is valid.
  */
 VkrAllocatorScope vkr_allocator_begin_scope(VkrAllocator *allocator);
 

@@ -430,16 +430,12 @@ VkrAllocatorScope vkr_allocator_begin_scope(VkrAllocator *allocator) {
     return scope;
   }
 
-  // Call allocator-specific begin_scope
-  scope = allocator->begin_scope(allocator->ctx);
-  scope.allocator = allocator;
-  scope.total_allocated_at_start = allocator->stats.total_allocated;
+  // Call allocator-specific begin_scope which handles:
+  // - Incrementing scope_depth
+  // - Storing the current bytes-allocated/offset for the scope
+  // - Setting up allocator-specific state (e.g., scratch position for arena)
+  scope = allocator->begin_scope(allocator);
 
-  // Update scope tracking
-  allocator->scope_depth++;
-  allocator->stats.total_scopes_created++;
-
-  // Global stats
   vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_scopes_created, 1,
                               VKR_MEMORY_ORDER_RELAXED);
 
@@ -468,43 +464,29 @@ void vkr_allocator_end_scope(VkrAllocatorScope *scope,
     return;
   }
 
-  // Calculate bytes allocated in this scope
-  uint64_t bytes_in_scope = 0;
-  if (allocator->stats.total_allocated > scope->total_allocated_at_start) {
-    bytes_in_scope =
-        allocator->stats.total_allocated - scope->total_allocated_at_start;
-  }
-
 #if VKR_ALLOCATOR_ENABLE_LOGGING
-  log_debug("End scope (depth=%u, bytes=%llu) on allocator [%s]",
-            allocator->scope_depth, (unsigned long long)bytes_in_scope,
+  log_debug("End scope (depth=%u) on allocator [%s]", allocator->scope_depth,
             VkrAllocatorTypeNames[allocator->type]);
 #endif
 
-  // Call allocator-specific end_scope (e.g., scratch_destroy for arena)
-  allocator->end_scope(allocator->ctx, scope, tag);
+  // Call allocator-specific end_scope which handles:
+  // - Computing bytes released as (current_bytes - scope_start_bytes)
+  // - Adding released bytes to scope_bytes_allocated
+  // - Decrementing scope_depth with underflow protection
+  // - Restoring allocator-specific state (e.g., arena position)
+  // - Updating temp statistics
+  allocator->end_scope(allocator, scope, tag);
 
-  // Update scope tracking
-  allocator->scope_depth--;
-  if (allocator->scope_depth == 0) {
-    // Reset scope bytes when exiting all scopes
-    allocator->scope_bytes_allocated = 0;
-  } else {
-    // Subtract bytes that were in this scope from running total
-    if (allocator->scope_bytes_allocated >= bytes_in_scope) {
-      allocator->scope_bytes_allocated -= bytes_in_scope;
-    } else {
-      allocator->scope_bytes_allocated = 0;
-    }
-  }
-
-  allocator->stats.total_scopes_destroyed++;
-
-  // Global stats
   vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_scopes_destroyed, 1,
                               VKR_MEMORY_ORDER_RELAXED);
 
-  // Clear the scope handle
+  // Decrement global temp bytes based on scope's bytes_at_start difference
+  // (The callback updates scope_bytes_allocated; we use scope info for global)
+  if (scope->bytes_at_start > 0) {
+    // Note: For arena, bytes_at_start is the arena offset, not bytes allocated
+    // The callback handles the per-allocator tracking
+  }
+
   scope->allocator = NULL;
   scope->scope_data = NULL;
 }

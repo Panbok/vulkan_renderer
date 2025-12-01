@@ -45,22 +45,64 @@ vkr_internal INLINE void *arena_realloc_cb(void *ctx, void *ptr,
   return p;
 }
 
-vkr_internal VkrAllocatorScope arena_begin_scope_cb(void *ctx) {
-  Arena *arena = (Arena *)ctx;
+vkr_internal VkrAllocatorScope arena_begin_scope_cb(VkrAllocator *allocator) {
+  assert_log(allocator != NULL, "Allocator must not be NULL");
+  assert_log(allocator->ctx != NULL,
+             "Allocator context (Arena) must not be NULL");
+
+  Arena *arena = (Arena *)allocator->ctx;
   Scratch scratch = scratch_create(arena);
 
+  allocator->scope_depth++;
+  allocator->stats.total_scopes_created++;
+
   return (VkrAllocatorScope){
-      .allocator = NULL,
+      .allocator = allocator,
       .scope_data = NULL,
       .bytes_at_start = scratch.pos,
+      .total_allocated_at_start = allocator->stats.total_allocated,
   };
 }
 
-vkr_internal void arena_end_scope_cb(void *ctx, VkrAllocatorScope *scope,
+vkr_internal void arena_end_scope_cb(VkrAllocator *allocator,
+                                     VkrAllocatorScope *scope,
                                      VkrAllocatorMemoryTag tag) {
-  Arena *arena = (Arena *)ctx;
+  assert_log(allocator != NULL, "Allocator must not be NULL");
+  assert_log(allocator->ctx != NULL,
+             "Allocator context (Arena) must not be NULL");
+  assert_log(scope != NULL, "Scope must not be NULL");
+
+  if (allocator->scope_depth == 0) {
+    log_error("arena_end_scope_cb called without matching begin_scope");
+    return;
+  }
+
+  Arena *arena = (Arena *)allocator->ctx;
+
+  // Compute bytes released as (current_bytes - scope_start_bytes)
+  uint64_t bytes_released = 0;
+  if (allocator->stats.total_allocated > scope->total_allocated_at_start) {
+    bytes_released =
+        allocator->stats.total_allocated - scope->total_allocated_at_start;
+  }
+
+  // Add released bytes to scope_bytes_allocated (tracks cumulative scope
+  // allocations)
+  allocator->scope_bytes_allocated += bytes_released;
+
   Scratch scratch = {.arena = arena, .pos = scope->bytes_at_start};
   scratch_destroy(scratch, to_arena_tag(tag));
+
+  allocator->scope_depth--;
+  if (bytes_released > 0) {
+    if (allocator->stats.total_temp_bytes >= bytes_released) {
+      allocator->stats.total_temp_bytes -= bytes_released;
+    } else {
+      allocator->stats.total_temp_bytes = 0;
+    }
+  }
+
+  allocator->stats.total_scopes_destroyed++;
 }
 
 bool8_t vkr_allocator_arena(VkrAllocator *out_allocator) {
@@ -77,7 +119,6 @@ bool8_t vkr_allocator_arena(VkrAllocator *out_allocator) {
   out_allocator->free = arena_free_cb;
   out_allocator->realloc = arena_realloc_cb;
 
-  // Scope support via scratch
   out_allocator->scope_depth = 0;
   out_allocator->scope_bytes_allocated = 0;
   out_allocator->begin_scope = arena_begin_scope_cb;
