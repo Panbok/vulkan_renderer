@@ -74,25 +74,27 @@ vkr_internal void vulkan_select_filter_modes(
 }
 
 vkr_internal bool32_t create_command_buffers(VulkanBackendState *state) {
-  Scratch scratch = scratch_create(state->arena);
+  VkrAllocator scratch_alloc = {.ctx = state->arena};
+  vkr_allocator_arena(&scratch_alloc);
   state->graphics_command_buffers = array_create_VulkanCommandBuffer(
-      scratch.arena, state->swapchain.images.length);
+      &scratch_alloc, state->swapchain.images.length);
+  state->graphics_command_buffers.allocator = NULL; // arena owns memory
   for (uint32_t i = 0; i < state->swapchain.images.length; i++) {
     VulkanCommandBuffer *command_buffer =
         array_get_VulkanCommandBuffer(&state->graphics_command_buffers, i);
     if (!vulkan_command_buffer_allocate(state, command_buffer)) {
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
       array_destroy_VulkanCommandBuffer(&state->graphics_command_buffers);
       log_fatal("Failed to create Vulkan command buffer");
       return false;
     }
   }
-
   return true;
 }
 
 vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
   assert_log(state != NULL, "State not initialized");
+  VkrAllocator arena_alloc = {.ctx = state->arena};
+  vkr_allocator_arena(&arena_alloc);
 
   for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
     if (state->domain_initialized[domain]) {
@@ -103,8 +105,9 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
       continue;
     }
 
-    state->domain_render_passes[domain] = arena_alloc(
-        state->arena, sizeof(VulkanRenderPass), ARENA_MEMORY_TAG_RENDERER);
+    state->domain_render_passes[domain] =
+        vkr_allocator_alloc(&arena_alloc, sizeof(VulkanRenderPass),
+                            VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     if (!state->domain_render_passes[domain]) {
       log_fatal("Failed to allocate domain render pass for domain %u", domain);
       return false;
@@ -137,6 +140,9 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
 vkr_internal bool32_t create_domain_framebuffers(VulkanBackendState *state) {
   assert_log(state != NULL, "State not initialized");
 
+  VkrAllocator swap_alloc = {.ctx = state->swapchain_arena};
+  vkr_allocator_arena(&swap_alloc);
+
   for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
     if (!state->domain_initialized[domain]) {
       continue;
@@ -156,7 +162,8 @@ vkr_internal bool32_t create_domain_framebuffers(VulkanBackendState *state) {
     }
 
     state->domain_framebuffers[domain] = array_create_VulkanFramebuffer(
-        state->swapchain_arena, state->swapchain.images.length);
+        &swap_alloc, state->swapchain.images.length);
+    state->domain_framebuffers[domain].allocator = NULL;
 
     for (uint32_t i = 0; i < state->swapchain.images.length; i++) {
       array_set_VulkanFramebuffer(&state->domain_framebuffers[domain], i,
@@ -212,9 +219,12 @@ vulkan_backend_create_attachment_wrappers(VulkanBackendState *state) {
 
   uint32_t image_count = state->swapchain.image_count;
 
-  state->swapchain_image_textures = arena_alloc(
-      state->swapchain_arena, sizeof(struct s_TextureHandle *) * image_count,
-      ARENA_MEMORY_TAG_RENDERER);
+  VkrAllocator swap_alloc = {.ctx = state->swapchain_arena};
+  vkr_allocator_arena(&swap_alloc);
+
+  state->swapchain_image_textures = vkr_allocator_alloc(
+      &swap_alloc, sizeof(struct s_TextureHandle *) * image_count,
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!state->swapchain_image_textures) {
     log_fatal("Failed to allocate swapchain image texture wrappers");
     return false;
@@ -222,8 +232,8 @@ vulkan_backend_create_attachment_wrappers(VulkanBackendState *state) {
 
   for (uint32_t i = 0; i < image_count; ++i) {
     struct s_TextureHandle *wrapper =
-        arena_alloc(state->swapchain_arena, sizeof(struct s_TextureHandle),
-                    ARENA_MEMORY_TAG_RENDERER);
+        vkr_allocator_alloc(&swap_alloc, sizeof(struct s_TextureHandle),
+                            VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     if (!wrapper) {
       log_fatal("Failed to allocate swapchain image wrapper");
       return false;
@@ -250,8 +260,8 @@ vulkan_backend_create_attachment_wrappers(VulkanBackendState *state) {
   }
 
   struct s_TextureHandle *depth_wrapper =
-      arena_alloc(state->swapchain_arena, sizeof(struct s_TextureHandle),
-                  ARENA_MEMORY_TAG_RENDERER);
+      vkr_allocator_alloc(&swap_alloc, sizeof(struct s_TextureHandle),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!depth_wrapper) {
     log_fatal("Failed to allocate depth attachment wrapper");
     return false;
@@ -288,9 +298,12 @@ vulkan_backend_renderpass_lookup(VulkanBackendState *state, String8 name) {
 
 vkr_internal bool32_t vulkan_backend_renderpass_register(
     VulkanBackendState *state, struct s_RenderPass *pass) {
+  VkrAllocator arena_alloc = {.ctx = state->arena};
+  vkr_allocator_arena(&arena_alloc);
+
   if (array_is_null_VkrRenderPassEntry(&state->render_pass_registry)) {
     state->render_pass_registry =
-        array_create_VkrRenderPassEntry(state->arena, 4);
+        array_create_VkrRenderPassEntry(&arena_alloc, 4);
     state->render_pass_count = 0;
   }
 
@@ -323,8 +336,11 @@ vulkan_backend_renderpass_create_internal(VulkanBackendState *state,
                                           const VkrRenderPassConfig *cfg) {
   assert_log(cfg != NULL, "Render pass config is NULL");
 
-  struct s_RenderPass *pass =
-      arena_alloc(state->arena, sizeof(*pass), ARENA_MEMORY_TAG_RENDERER);
+  VkrAllocator arena_alloc = {.ctx = state->arena};
+  vkr_allocator_arena(&arena_alloc);
+
+  struct s_RenderPass *pass = vkr_allocator_alloc(
+      &arena_alloc, sizeof(*pass), VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!pass) {
     log_fatal("Failed to allocate render pass wrapper");
     return NULL;
@@ -332,10 +348,10 @@ vulkan_backend_renderpass_create_internal(VulkanBackendState *state,
   MemZero(pass, sizeof(*pass));
 
   pass->cfg = *cfg;
-  pass->name = string8_duplicate(state->arena, &cfg->name);
+  pass->name = string8_duplicate(&arena_alloc, &cfg->name);
 
-  pass->vk = arena_alloc(state->arena, sizeof(VulkanRenderPass),
-                         ARENA_MEMORY_TAG_RENDERER);
+  pass->vk = vkr_allocator_alloc(&arena_alloc, sizeof(VulkanRenderPass),
+                                 VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!pass->vk) {
     log_fatal("Failed to allocate Vulkan render pass");
     return NULL;
@@ -356,6 +372,9 @@ vulkan_backend_renderpass_create_internal(VulkanBackendState *state,
 
 vkr_internal bool32_t vulkan_backend_create_builtin_passes(
     VulkanBackendState *state, const VkrRendererBackendConfig *backend_config) {
+  VkrAllocator arena_alloc = {.ctx = state->arena};
+  vkr_allocator_arena(&arena_alloc);
+
   uint16_t cfg_count =
       backend_config ? backend_config->renderpass_count : (uint16_t)0;
   VkrRenderPassConfig *configs =
@@ -369,7 +388,7 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
       capacity = 4;
     }
     state->render_pass_registry =
-        array_create_VkrRenderPassEntry(state->arena, capacity);
+        array_create_VkrRenderPassEntry(&arena_alloc, capacity);
     state->render_pass_count = 0;
   }
 
@@ -631,8 +650,12 @@ renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
+  VkrAllocator arena_alloc = {.ctx = arena};
+  vkr_allocator_arena(&arena_alloc);
+
   VulkanBackendState *backend_state =
-      arena_alloc(arena, sizeof(VulkanBackendState), ARENA_MEMORY_TAG_RENDERER);
+      vkr_allocator_alloc(&arena_alloc, sizeof(VulkanBackendState),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!backend_state) {
     log_fatal("Failed to allocate backend state");
     arena_destroy(arena);
@@ -721,8 +744,11 @@ renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
+  VkrAllocator swap_alloc = {.ctx = backend_state->swapchain_arena};
+  vkr_allocator_arena(&swap_alloc);
   backend_state->swapchain.framebuffers = array_create_VulkanFramebuffer(
-      backend_state->swapchain_arena, backend_state->swapchain.images.length);
+      &swap_alloc, backend_state->swapchain.images.length);
+  backend_state->swapchain.framebuffers.allocator = NULL;
   for (uint32_t i = 0; i < backend_state->swapchain.images.length; i++) {
     array_set_VulkanFramebuffer(&backend_state->swapchain.framebuffers, i,
                                 (VulkanFramebuffer){
@@ -737,12 +763,17 @@ renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
+  VkrAllocator semaphore_alloc = {.ctx = backend_state->arena};
+  vkr_allocator_arena(&semaphore_alloc);
   backend_state->image_available_semaphores = array_create_VkSemaphore(
-      backend_state->arena, backend_state->swapchain.max_in_flight_frames);
+      &semaphore_alloc, backend_state->swapchain.max_in_flight_frames);
+  backend_state->image_available_semaphores.allocator = NULL;
   backend_state->queue_complete_semaphores = array_create_VkSemaphore(
-      backend_state->arena, backend_state->swapchain.image_count);
+      &semaphore_alloc, backend_state->swapchain.image_count);
+  backend_state->queue_complete_semaphores.allocator = NULL;
   backend_state->in_flight_fences = array_create_VulkanFence(
-      backend_state->arena, backend_state->swapchain.max_in_flight_frames);
+      &semaphore_alloc, backend_state->swapchain.max_in_flight_frames);
+  backend_state->in_flight_fences.allocator = NULL;
   for (uint32_t i = 0; i < backend_state->swapchain.max_in_flight_frames; i++) {
     VkSemaphoreCreateInfo semaphore_info = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -781,7 +812,8 @@ renderer_vulkan_initialize(void **out_backend_state,
   }
 
   backend_state->images_in_flight = array_create_VulkanFencePtr(
-      backend_state->arena, backend_state->swapchain.image_count);
+      &arena_alloc, backend_state->swapchain.image_count);
+  backend_state->images_in_flight.allocator = NULL;
   for (uint32_t i = 0; i < backend_state->swapchain.image_count; i++) {
     array_set_VulkanFencePtr(&backend_state->images_in_flight, i, NULL);
   }
@@ -1248,8 +1280,12 @@ renderer_vulkan_create_buffer(void *backend_state,
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
-  struct s_BufferHandle *buffer = arena_alloc(
-      state->arena, sizeof(struct s_BufferHandle), ARENA_MEMORY_TAG_RENDERER);
+  VkrAllocator arena_alloc = {.ctx = state->arena};
+  vkr_allocator_arena(&arena_alloc);
+
+  struct s_BufferHandle *buffer =
+      vkr_allocator_alloc(&arena_alloc, sizeof(struct s_BufferHandle),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!buffer) {
     log_fatal("Failed to allocate buffer");
     return (VkrBackendResourceHandle){.ptr = NULL};
@@ -1304,7 +1340,6 @@ VkrRendererError renderer_vulkan_upload_buffer(void *backend_state,
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
 
-  Scratch scratch = scratch_create(state->temp_arena);
   // Create a host-visible staging buffer to upload to. Mark it as the source
   // of the transfer.
   VkrBufferTypeFlags buffer_type = bitset8_create();
@@ -1317,18 +1352,25 @@ VkrRendererError renderer_vulkan_upload_buffer(void *backend_state,
       .buffer_type = buffer_type,
       .bind_on_create = true_v,
   };
-  struct s_BufferHandle *staging_buffer = arena_alloc(
-      scratch.arena, sizeof(struct s_BufferHandle), ARENA_MEMORY_TAG_RENDERER);
+  VkrAllocator scratch_alloc = {.ctx = state->temp_arena};
+  vkr_allocator_arena(&scratch_alloc);
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&scratch_alloc);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+  struct s_BufferHandle *staging_buffer =
+      vkr_allocator_alloc(&scratch_alloc, sizeof(struct s_BufferHandle),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
 
   if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     log_fatal("Failed to create staging buffer");
     return VKR_RENDERER_ERROR_NONE;
   }
 
   if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, size, 0,
                                data)) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     log_fatal("Failed to load data into staging buffer");
     return VKR_RENDERER_ERROR_NONE;
   }
@@ -1336,13 +1378,13 @@ VkrRendererError renderer_vulkan_upload_buffer(void *backend_state,
   if (!vulkan_buffer_copy_to(state, &staging_buffer->buffer,
                              staging_buffer->buffer.handle, 0,
                              buffer->buffer.handle, offset, size)) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     log_fatal("Failed to copy Vulkan buffer");
     return VKR_RENDERER_ERROR_NONE;
   }
 
   vulkan_buffer_destroy(state, &staging_buffer->buffer);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   return VKR_RENDERER_ERROR_NONE;
 }
@@ -1382,8 +1424,12 @@ renderer_vulkan_create_texture(void *backend_state,
 
   // log_debug("Creating Vulkan texture");
 
-  struct s_TextureHandle *texture = arena_alloc(
-      state->arena, sizeof(struct s_TextureHandle), ARENA_MEMORY_TAG_RENDERER);
+  VkrAllocator arena_alloc = {.ctx = state->arena};
+  vkr_allocator_arena(&arena_alloc);
+
+  struct s_TextureHandle *texture =
+      vkr_allocator_alloc(&arena_alloc, sizeof(struct s_TextureHandle),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!texture) {
     log_fatal("Failed to allocate texture");
     return (VkrBackendResourceHandle){.ptr = NULL};
@@ -1412,8 +1458,8 @@ renderer_vulkan_create_texture(void *backend_state,
   VkrBufferTypeFlags buffer_type = bitset8_create();
   bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
 
-  Scratch scratch = {0};
-  bool8_t scratch_valid = false_v;
+  VkrAllocator scratch_alloc = {0};
+  VkrAllocatorScope scratch_scope = {0};
   struct s_BufferHandle *staging_buffer = NULL;
 
   if (initial_data) {
@@ -1428,20 +1474,24 @@ renderer_vulkan_create_texture(void *backend_state,
         .bind_on_create = true_v,
     };
 
-    scratch = scratch_create(state->temp_arena);
-    scratch_valid = true_v;
-    staging_buffer = arena_alloc(scratch.arena, sizeof(struct s_BufferHandle),
-                                 ARENA_MEMORY_TAG_RENDERER);
+    scratch_alloc = (VkrAllocator){.ctx = state->temp_arena};
+    vkr_allocator_arena(&scratch_alloc);
+    scratch_scope = vkr_allocator_begin_scope(&scratch_alloc);
+    if (!vkr_allocator_scope_is_valid(&scratch_scope)) {
+      return (VkrBackendResourceHandle){.ptr = NULL};
+    }
+    staging_buffer =
+        vkr_allocator_alloc(&scratch_alloc, sizeof(struct s_BufferHandle),
+                            VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     if (!staging_buffer) {
       log_fatal("Failed to allocate staging buffer");
-      if (scratch_valid)
-        scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       return (VkrBackendResourceHandle){.ptr = NULL};
     }
 
     if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
       log_fatal("Failed to create staging buffer");
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       return (VkrBackendResourceHandle){.ptr = NULL};
     }
 
@@ -1449,7 +1499,7 @@ renderer_vulkan_create_texture(void *backend_state,
                                  0, initial_data)) {
       log_fatal("Failed to load data into staging buffer");
       vulkan_buffer_destroy(state, &staging_buffer->buffer);
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       return (VkrBackendResourceHandle){.ptr = NULL};
     }
   }
@@ -1465,8 +1515,8 @@ renderer_vulkan_create_texture(void *backend_state,
     log_fatal("Failed to create Vulkan image");
     if (staging_buffer)
       vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    if (scratch_valid)
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    if (vkr_allocator_scope_is_valid(&scratch_scope))
+      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -1482,8 +1532,8 @@ renderer_vulkan_create_texture(void *backend_state,
       vulkan_image_destroy(state, &texture->texture.image);
       if (staging_buffer)
         vulkan_buffer_destroy(state, &staging_buffer->buffer);
-      if (scratch_valid)
-        scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      if (vkr_allocator_scope_is_valid(&scratch_scope))
+        vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       return (VkrBackendResourceHandle){.ptr = NULL};
     }
   } else {
@@ -1548,9 +1598,10 @@ renderer_vulkan_create_texture(void *backend_state,
           vulkan_sampler_address_mode_from_repeat(desc->w_repeat_mode),
       .mipLodBias = 0.0f,
       .anisotropyEnable = anisotropy_enable,
-      .maxAnisotropy = anisotropy_enable
-                           ? state->device.properties.limits.maxSamplerAnisotropy
-                           : 1.0f,
+      .maxAnisotropy =
+          anisotropy_enable
+              ? state->device.properties.limits.maxSamplerAnisotropy
+              : 1.0f,
       .compareEnable = VK_FALSE,
       .compareOp = VK_COMPARE_OP_ALWAYS,
       .minLod = 0.0f,
@@ -1565,8 +1616,8 @@ renderer_vulkan_create_texture(void *backend_state,
     vulkan_image_destroy(state, &texture->texture.image);
     if (staging_buffer)
       vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    if (scratch_valid)
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    if (vkr_allocator_scope_is_valid(&scratch_scope))
+      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -1584,8 +1635,8 @@ renderer_vulkan_create_texture(void *backend_state,
 
   if (staging_buffer)
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
-  if (scratch_valid)
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  if (vkr_allocator_scope_is_valid(&scratch_scope))
+    vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   return (VkrBackendResourceHandle){.ptr = texture};
 }
@@ -1600,8 +1651,12 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
 
   // log_debug("Creating Vulkan cube map texture");
 
-  struct s_TextureHandle *texture = arena_alloc(
-      state->arena, sizeof(struct s_TextureHandle), ARENA_MEMORY_TAG_RENDERER);
+  VkrAllocator arena_alloc = {.ctx = state->arena};
+  vkr_allocator_arena(&arena_alloc);
+
+  struct s_TextureHandle *texture =
+      vkr_allocator_alloc(&arena_alloc, sizeof(struct s_TextureHandle),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!texture) {
     log_fatal("Failed to allocate cube texture");
     return (VkrBackendResourceHandle){.ptr = NULL};
@@ -1624,7 +1679,6 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
   VkrBufferTypeFlags buffer_type = bitset8_create();
   bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
 
-  Scratch scratch = scratch_create(state->temp_arena);
   const VkrBufferDescription staging_buffer_desc = {
       .size = total_size,
       .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
@@ -1634,17 +1688,24 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
       .bind_on_create = true_v,
   };
 
-  struct s_BufferHandle *staging_buffer = arena_alloc(
-      scratch.arena, sizeof(struct s_BufferHandle), ARENA_MEMORY_TAG_RENDERER);
+  VkrAllocator scratch_alloc = {.ctx = state->temp_arena};
+  vkr_allocator_arena(&scratch_alloc);
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&scratch_alloc);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+  struct s_BufferHandle *staging_buffer =
+      vkr_allocator_alloc(&scratch_alloc, sizeof(struct s_BufferHandle),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!staging_buffer) {
     log_fatal("Failed to allocate staging buffer");
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
     log_fatal("Failed to create staging buffer for cube map");
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -1652,7 +1713,7 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
                                initial_data)) {
     log_fatal("Failed to load cube map data into staging buffer");
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -1666,7 +1727,7 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
                            &texture->texture.image)) {
     log_fatal("Failed to create Vulkan cube map image");
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -1677,7 +1738,7 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
     log_fatal("Failed to upload cube map via transfer queue");
     vulkan_image_destroy(state, &texture->texture.image);
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -1706,14 +1767,14 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
     log_fatal("Failed to create cube map sampler");
     vulkan_image_destroy(state, &texture->texture.image);
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   texture->description.generation++;
 
   vulkan_buffer_destroy(state, &staging_buffer->buffer);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   // log_debug("Created Vulkan cube map texture: %p",
   //           texture->texture.image.handle);
@@ -1765,9 +1826,10 @@ renderer_vulkan_update_texture(void *backend_state,
           vulkan_sampler_address_mode_from_repeat(desc->w_repeat_mode),
       .mipLodBias = 0.0f,
       .anisotropyEnable = anisotropy_enable,
-      .maxAnisotropy = anisotropy_enable
-                           ? state->device.properties.limits.maxSamplerAnisotropy
-                           : 1.0f,
+      .maxAnisotropy =
+          anisotropy_enable
+              ? state->device.properties.limits.maxSamplerAnisotropy
+              : 1.0f,
       .compareEnable = VK_FALSE,
       .compareOp = VK_COMPARE_OP_ALWAYS,
       .minLod = 0.0f,
@@ -1787,7 +1849,8 @@ renderer_vulkan_update_texture(void *backend_state,
   vkQueueWaitIdle(state->device.graphics_queue);
 
   // Destroy old sampler and use new one
-  vkDestroySampler(state->device.logical_device, texture->texture.sampler, NULL);
+  vkDestroySampler(state->device.logical_device, texture->texture.sampler,
+                   NULL);
   texture->texture.sampler = new_sampler;
 
   texture->description.u_repeat_mode = desc->u_repeat_mode;
@@ -1855,23 +1918,29 @@ VkrRendererError renderer_vulkan_write_texture(
       .bind_on_create = true_v,
   };
 
-  Scratch scratch = scratch_create(state->temp_arena);
-  struct s_BufferHandle *staging_buffer = arena_alloc(
-      scratch.arena, sizeof(struct s_BufferHandle), ARENA_MEMORY_TAG_RENDERER);
+  VkrAllocator scratch_alloc = {.ctx = state->temp_arena};
+  vkr_allocator_arena(&scratch_alloc);
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&scratch_alloc);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  }
+  struct s_BufferHandle *staging_buffer =
+      vkr_allocator_alloc(&scratch_alloc, sizeof(struct s_BufferHandle),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!staging_buffer) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
   }
 
   if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   }
 
   if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, size, 0,
                                data)) {
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
@@ -1879,7 +1948,7 @@ VkrRendererError renderer_vulkan_write_texture(
   if (!vulkan_command_buffer_allocate_and_begin_single_use(
           state, &temp_command_buffer)) {
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
@@ -1902,7 +1971,7 @@ VkrRendererError renderer_vulkan_write_texture(
                          state->device.graphics_command_pool, 1,
                          &temp_command_buffer.handle);
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
@@ -1931,7 +2000,7 @@ VkrRendererError renderer_vulkan_write_texture(
                          state->device.graphics_command_pool, 1,
                          &temp_command_buffer.handle);
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
@@ -1940,7 +2009,7 @@ VkrRendererError renderer_vulkan_write_texture(
           array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
               ->handle)) {
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
@@ -1949,7 +2018,7 @@ VkrRendererError renderer_vulkan_write_texture(
                        &temp_command_buffer.handle);
 
   vulkan_buffer_destroy(state, &staging_buffer->buffer);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   texture->description.generation++;
   return VKR_RENDERER_ERROR_NONE;
@@ -2156,9 +2225,10 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
           texture->description.w_repeat_mode),
       .mipLodBias = 0.0f,
       .anisotropyEnable = anisotropy_enable,
-      .maxAnisotropy = anisotropy_enable
-                           ? state->device.properties.limits.maxSamplerAnisotropy
-                           : 1.0f,
+      .maxAnisotropy =
+          anisotropy_enable
+              ? state->device.properties.limits.maxSamplerAnisotropy
+              : 1.0f,
       .compareEnable = VK_FALSE,
       .compareOp = VK_COMPARE_OP_ALWAYS,
       .minLod = 0.0f,
@@ -2213,7 +2283,8 @@ void renderer_vulkan_destroy_texture(void *backend_state,
   vulkan_image_destroy(state, &texture->texture.image);
 
   // Destroy the sampler
-  vkDestroySampler(state->device.logical_device, texture->texture.sampler, NULL);
+  vkDestroySampler(state->device.logical_device, texture->texture.sampler,
+                   NULL);
   texture->texture.sampler = VK_NULL_HANDLE;
   return;
 }
@@ -2227,9 +2298,12 @@ VkrBackendResourceHandle renderer_vulkan_create_graphics_pipeline(
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
+  VkrAllocator arena_alloc = {.ctx = state->arena};
+  vkr_allocator_arena(&arena_alloc);
+
   struct s_GraphicsPipeline *pipeline =
-      arena_alloc(state->arena, sizeof(struct s_GraphicsPipeline),
-                  ARENA_MEMORY_TAG_RENDERER);
+      vkr_allocator_alloc(&arena_alloc, sizeof(struct s_GraphicsPipeline),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!pipeline) {
     log_fatal("Failed to allocate pipeline");
     return (VkrBackendResourceHandle){.ptr = NULL};
@@ -2465,8 +2539,12 @@ renderer_vulkan_render_target_create(void *backend_state,
     return NULL;
   }
 
-  struct s_RenderTarget *target = arena_alloc(
-      state->arena, sizeof(struct s_RenderTarget), ARENA_MEMORY_TAG_RENDERER);
+  VkrAllocator arena_alloc = {.ctx = state->arena};
+  vkr_allocator_arena(&arena_alloc);
+
+  struct s_RenderTarget *target =
+      vkr_allocator_alloc(&arena_alloc, sizeof(struct s_RenderTarget),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!target) {
     log_fatal("Failed to allocate render target");
     return NULL;
@@ -2480,20 +2558,27 @@ renderer_vulkan_render_target_create(void *backend_state,
   target->height =
       desc->sync_to_window_size ? state->swapchain.extent.height : desc->height;
 
-  target->attachments = arena_alloc(
-      state->arena, sizeof(struct s_TextureHandle *) * target->attachment_count,
-      ARENA_MEMORY_TAG_RENDERER);
+  target->attachments = vkr_allocator_alloc(
+      &arena_alloc, sizeof(struct s_TextureHandle *) * target->attachment_count,
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!target->attachments) {
     log_fatal("Failed to allocate render target attachments");
     return NULL;
   }
 
-  Scratch scratch = scratch_create(state->temp_arena);
-  VkImageView *views = arena_alloc(
-      scratch.arena, sizeof(VkImageView) * (uint64_t)target->attachment_count,
-      ARENA_MEMORY_TAG_ARRAY);
+  VkrAllocator temp_alloc = {.ctx = state->temp_arena};
+  vkr_allocator_arena(&temp_alloc);
+  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&temp_alloc);
+  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
+    log_fatal("Failed to acquire temporary allocator scope for render target");
+    return NULL;
+  }
+
+  VkImageView *views = vkr_allocator_alloc(
+      &temp_alloc, sizeof(VkImageView) * (uint64_t)target->attachment_count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!views) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     log_fatal("Failed to allocate render target image views");
     return NULL;
   }
@@ -2502,12 +2587,12 @@ renderer_vulkan_render_target_create(void *backend_state,
     struct s_TextureHandle *tex =
         (struct s_TextureHandle *)desc->attachments[i];
     if (!tex) {
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       log_error("Render target attachment %u is NULL", i);
       return NULL;
     }
     if (tex->texture.image.view == VK_NULL_HANDLE) {
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       log_error("Render target attachment %u has no image view", i);
       return NULL;
     }
@@ -2527,12 +2612,12 @@ renderer_vulkan_render_target_create(void *backend_state,
 
   if (vkCreateFramebuffer(state->device.logical_device, &fb_info,
                           state->allocator, &target->handle) != VK_SUCCESS) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     log_fatal("Failed to create framebuffer for render target");
     return NULL;
   }
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   return (VkrRenderTargetHandle)target;
 }
 
@@ -2570,12 +2655,17 @@ renderer_vulkan_begin_render_pass(void *backend_state,
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, state->image_index);
 
-  Scratch scratch = scratch_create(state->temp_arena);
-  VkClearValue *clear_values = arena_alloc(
-      scratch.arena, sizeof(VkClearValue) * target->attachment_count,
-      ARENA_MEMORY_TAG_ARRAY);
+  VkrAllocator temp_alloc = {.ctx = state->temp_arena};
+  vkr_allocator_arena(&temp_alloc);
+  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&temp_alloc);
+  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
+    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  }
+  VkClearValue *clear_values = vkr_allocator_alloc(
+      &temp_alloc, sizeof(VkClearValue) * target->attachment_count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!clear_values) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
   }
   MemZero(clear_values,
@@ -2639,7 +2729,7 @@ renderer_vulkan_begin_render_pass(void *backend_state,
   vkCmdSetViewport(command_buffer->handle, 0, 1, &viewport);
   vkCmdSetScissor(command_buffer->handle, 0, 1, &render_area);
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   return VKR_RENDERER_ERROR_NONE;
 }
 

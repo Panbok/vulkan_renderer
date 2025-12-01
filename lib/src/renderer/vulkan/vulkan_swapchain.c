@@ -47,11 +47,14 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
   Array_QueueFamilyIndex indices =
       find_queue_family_indices(state, state->device.physical_device);
   if (indices.length > 1) {
-    // we are fine with alloc temp arena for indicies, Vulkan will copy indices
-    // to device memory once the swapchain is created
-    Scratch scratch = scratch_create(state->temp_arena);
+    VkrAllocator scratch_alloc = {.ctx = state->temp_arena};
+    vkr_allocator_arena(&scratch_alloc);
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(&scratch_alloc);
+    if (!vkr_allocator_scope_is_valid(&scope)) {
+      return false;
+    }
     Array_uint32_t queue_family_indices =
-        array_create_uint32_t(scratch.arena, indices.length);
+        array_create_uint32_t(&scratch_alloc, indices.length);
     for (uint32_t i = 0; i < indices.length; i++) {
       QueueFamilyIndex *index = array_get_QueueFamilyIndex(&indices, i);
       array_set_uint32_t(&queue_family_indices, i, index->index);
@@ -61,7 +64,7 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
     create_info.queueFamilyIndexCount = indices.length;
     create_info.pQueueFamilyIndices = queue_family_indices.data;
 
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   } else {
     create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
   }
@@ -81,8 +84,12 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
     return false;
   }
 
+  VkrAllocator swap_alloc = {.ctx = state->swapchain_arena};
+  vkr_allocator_arena(&swap_alloc);
+
   state->swapchain.images =
-      array_create_VkImage(state->swapchain_arena, image_count);
+      array_create_VkImage(&swap_alloc, image_count);
+  state->swapchain.images.allocator = NULL; // arena-owned
   vkGetSwapchainImagesKHR(state->device.logical_device, state->swapchain.handle,
                           &image_count, state->swapchain.images.data);
 
@@ -90,7 +97,8 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
   state->swapchain.extent = extent;
 
   state->swapchain.image_views =
-      array_create_VkImageView(state->swapchain_arena, image_count);
+      array_create_VkImageView(&swap_alloc, image_count);
+  state->swapchain.image_views.allocator = NULL; // arena-owned
   for (uint32_t i = 0; i < image_count; i++) {
     VkImageViewCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
