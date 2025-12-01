@@ -492,27 +492,53 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
 
   state->is_swapchain_recreation_requested = true;
 
+  // Store old image count BEFORE recreation for proper cleanup
+  uint32_t old_image_count = state->swapchain.image_count;
+
+  // Wait for GPU to finish all pending work
   vkQueueWaitIdle(state->device.graphics_queue);
 
-  vulkan_backend_destroy_attachment_wrappers(state);
-
-  for (uint32_t i = 0; i < state->swapchain.image_count; ++i) {
-    array_set_VulkanFencePtr(&state->images_in_flight, i, NULL);
-  }
-
+  // Attempt swapchain recreation FIRST
+  // If this fails (e.g., window minimized), we don't destroy anything
+  // and the old swapchain remains valid
   if (!vulkan_swapchain_recreate(state)) {
-    log_error("Failed to recreate swapchain");
+    log_warn("Swapchain recreation skipped or failed, keeping old swapchain");
+    state->is_swapchain_recreation_requested = false;
     return false;
   }
 
-  for (uint32_t i = 0; i < state->swapchain.image_count; ++i) {
+  // Swapchain recreation succeeded - now clean up old resources and create new
+  // ones
+  vulkan_backend_destroy_attachment_wrappers(state);
+
+  // Clear images_in_flight using OLD count
+  for (uint32_t i = 0; i < old_image_count; ++i) {
+    array_set_VulkanFencePtr(&state->images_in_flight, i, NULL);
+  }
+
+  // Free command buffers and framebuffers using OLD count
+  for (uint32_t i = 0; i < old_image_count; ++i) {
     vulkan_command_buffer_free(state, array_get_VulkanCommandBuffer(
                                           &state->graphics_command_buffers, i));
   }
 
-  for (uint32_t i = 0; i < state->swapchain.image_count; ++i) {
+  for (uint32_t i = 0; i < old_image_count; ++i) {
     vulkan_framebuffer_destroy(
         state, array_get_VulkanFramebuffer(&state->swapchain.framebuffers, i));
+  }
+
+  // Resize images_in_flight array if needed for new image count
+  if (state->swapchain.image_count != old_image_count) {
+
+    VkrAllocator fences_alloc = {.ctx = state->arena};
+    vkr_allocator_arena(&fences_alloc);
+    // Recreate the images_in_flight array with the new size
+    state->images_in_flight = array_create_VulkanFencePtr(
+        &fences_alloc, state->swapchain.image_count);
+    state->images_in_flight.allocator = NULL; // arena-owned
+    for (uint32_t i = 0; i < state->swapchain.image_count; ++i) {
+      array_set_VulkanFencePtr(&state->images_in_flight, i, NULL);
+    }
   }
 
   for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
@@ -556,8 +582,17 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
     state->on_render_target_refresh_required();
   }
 
+  // Ensure current_frame is within bounds of new max_in_flight_frames
+  if (state->current_frame >= state->swapchain.max_in_flight_frames) {
+    state->current_frame = 0;
+  }
+
   state->active_named_render_pass = NULL;
   state->is_swapchain_recreation_requested = false;
+
+  log_debug("Swapchain recreation complete: %u images, %u in-flight frames",
+            state->swapchain.image_count,
+            state->swapchain.max_in_flight_frames);
 
   return true;
 }
