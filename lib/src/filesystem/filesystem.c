@@ -6,9 +6,10 @@
 #include <direct.h>
 #endif
 
-FilePath file_path_create(const char *path, Arena *arena, FilePathType type) {
+FilePath file_path_create(const char *path, VkrAllocator *allocator,
+                          FilePathType type) {
   assert_log(path != NULL, "path is NULL");
-  assert_log(arena != NULL, "arena is NULL");
+  assert_log(allocator != NULL, "allocator is NULL");
   assert_log(string_length(path) > 0, "path is empty");
   assert_log(type == FILE_PATH_TYPE_RELATIVE || type == FILE_PATH_TYPE_ABSOLUTE,
              "invalid file path type");
@@ -19,16 +20,16 @@ FilePath file_path_create(const char *path, Arena *arena, FilePathType type) {
     assert_log(PROJECT_SOURCE_DIR != NULL, "PROJECT_SOURCE_DIR is NULL");
     uint64_t full_path_len =
         string_length(PROJECT_SOURCE_DIR) + string_length(path) + 1;
-    uint8_t *full_path =
-        (uint8_t *)arena_alloc(arena, full_path_len, ARENA_MEMORY_TAG_STRING);
+    uint8_t *full_path = (uint8_t *)vkr_allocator_alloc(
+        allocator, full_path_len, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     string_format((char *)full_path, full_path_len, "%s%s", PROJECT_SOURCE_DIR,
                   path);
 
     result.path = string8_create(full_path, full_path_len);
   } else {
     uint64_t path_len = string_length(path) + 1;
-    uint8_t *path_str =
-        (uint8_t *)arena_alloc(arena, path_len, ARENA_MEMORY_TAG_STRING);
+    uint8_t *path_str = (uint8_t *)vkr_allocator_alloc(
+        allocator, path_len, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     string_format((char *)path_str, path_len, "%s", path);
 
     result.path = string8_create(path_str, path_len);
@@ -101,17 +102,22 @@ bool8_t file_create_directory(const FilePath *path) {
   return false_v;
 }
 
-bool8_t file_ensure_directory(Arena *arena, const String8 *path) {
-  assert_log(arena != NULL, "arena is NULL");
+bool8_t file_ensure_directory(VkrAllocator *allocator, const String8 *path) {
+  assert_log(allocator != NULL, "allocator is NULL");
   assert_log(path != NULL, "path is NULL");
   assert_log(path->str != NULL, "path string is NULL");
   assert_log(path->length > 0, "path length is 0");
 
-  Scratch scratch = scratch_create(arena);
-  char *buffer = (char *)arena_alloc(scratch.arena, path->length + 1,
-                                     ARENA_MEMORY_TAG_STRING);
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(allocator);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    log_error("Filesystem: failed to begin temp scope for directory buffer");
+    return false_v;
+  }
+
+  char *buffer = (char *)vkr_allocator_alloc(allocator, path->length + 1,
+                                             VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!buffer) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     log_error("Filesystem: failed to allocate directory buffer");
     return false_v;
   }
@@ -162,7 +168,7 @@ bool8_t file_ensure_directory(Arena *arena, const String8 *path) {
       FilePath file_path = {.path = path_str, .type = path_type};
       if (!file_create_directory(&file_path)) {
         buffer[i] = saved;
-        scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
         return false_v;
       }
     }
@@ -199,7 +205,7 @@ bool8_t file_ensure_directory(Arena *arena, const String8 *path) {
 #endif
   FilePath final_file_path = {.path = final_path_str, .type = final_path_type};
   bool8_t result = file_create_directory(&final_file_path);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   return result;
 }
 
@@ -277,8 +283,9 @@ void file_close(FileHandle *handle) {
   }
 }
 
-FileError file_read_line(FileHandle *handle, Arena *arena, Arena *line_arena,
-                         uint64_t max_line_length, String8 *out_line) {
+FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
+                         VkrAllocator *line_allocator, uint64_t max_line_length,
+                         String8 *out_line) {
   assert(handle != NULL && "File handle is NULL");
   assert(out_line != NULL && "Out line is NULL");
 
@@ -286,23 +293,13 @@ FileError file_read_line(FileHandle *handle, Arena *arena, Arena *line_arena,
     return FILE_ERROR_INVALID_HANDLE;
   }
 
-  // If the same arena is passed for both, fall back to a scratch copy to
-  // avoid conflicts
-  bool8_t same_arena = (arena == line_arena);
-  Scratch scratch = {0};
-  Arena *target_arena = line_arena;
-  if (same_arena) {
-    scratch = scratch_create(arena);
-    target_arena = scratch.arena;
-  }
+  VkrAllocator *target_alloc = line_allocator ? line_allocator : allocator;
+  assert_log(target_alloc != NULL, "line allocator is NULL");
 
-  // Read into a temporary dynamic buffer
   uint64_t capacity = max_line_length + 1; // include terminator
-  uint8_t *buf =
-      (uint8_t *)arena_alloc(target_arena, capacity, ARENA_MEMORY_TAG_STRING);
+  uint8_t *buf = (uint8_t *)vkr_allocator_alloc(
+      target_alloc, capacity, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!buf) {
-    if (same_arena)
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
     return FILE_ERROR_IO_ERROR;
   }
 
@@ -318,27 +315,12 @@ FileError file_read_line(FileHandle *handle, Arena *arena, Arena *line_arena,
   }
 
   if (len == 0 && ch == EOF) {
-    if (same_arena)
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
     return FILE_ERROR_EOF;
   }
 
   buf[len] = '\0';
 
-  // If we used scratch (same_arena), duplicate into the provided arena
-  if (same_arena) {
-    uint8_t *dup =
-        (uint8_t *)arena_alloc(arena, len + 1, ARENA_MEMORY_TAG_STRING);
-    if (!dup) {
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
-      return FILE_ERROR_IO_ERROR;
-    }
-    MemCopy(dup, buf, len + 1);
-    *out_line = (String8){.str = dup, .length = len};
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
-  } else {
-    *out_line = (String8){.str = buf, .length = len};
-  }
+  *out_line = (String8){.str = buf, .length = len};
 
   return FILE_ERROR_NONE;
 }
@@ -371,15 +353,16 @@ FileError file_write_line(FileHandle *handle, const String8 *text) {
   return FILE_ERROR_INVALID_HANDLE;
 }
 
-FileError file_read(FileHandle *handle, Arena *arena, uint64_t size,
+FileError file_read(FileHandle *handle, VkrAllocator *allocator, uint64_t size,
                     uint64_t *bytes_read, uint8_t **out_buffer) {
   assert_log(handle != NULL, "handle is NULL");
-  assert_log(arena != NULL, "arena is NULL");
+  assert_log(allocator != NULL, "allocator is NULL");
   assert_log(bytes_read != NULL, "bytes_read is NULL");
   assert_log(out_buffer != NULL, "out_buffer is NULL");
 
   if (handle->handle && size > 0) {
-    *out_buffer = (uint8_t *)arena_alloc(arena, size, ARENA_MEMORY_TAG_FILE);
+    *out_buffer = (uint8_t *)vkr_allocator_alloc(allocator, size,
+                                                 VKR_ALLOCATOR_MEMORY_TAG_FILE);
     *bytes_read = fread(*out_buffer, 1, size, (FILE *)handle->handle);
     if (*bytes_read != size && !feof((FILE *)handle->handle)) {
       return FILE_ERROR_IO_ERROR;
@@ -391,24 +374,24 @@ FileError file_read(FileHandle *handle, Arena *arena, uint64_t size,
   return FILE_ERROR_INVALID_HANDLE;
 }
 
-FileError file_read_string(FileHandle *handle, Arena *arena,
+FileError file_read_string(FileHandle *handle, VkrAllocator *allocator,
                            String8 *out_data) {
   assert_log(handle != NULL, "handle is NULL");
-  assert_log(arena != NULL, "arena is NULL");
+  assert_log(allocator != NULL, "allocator is NULL");
   assert_log(out_data != NULL, "out_data is NULL");
 
   if (handle->handle) {
     uint8_t *buffer = NULL;
     uint64_t bytes_read = 0;
 
-    FileError error = file_read_all(handle, arena, &buffer, &bytes_read);
+    FileError error = file_read_all(handle, allocator, &buffer, &bytes_read);
     if (error != FILE_ERROR_NONE) {
       return error;
     }
 
     // Allocate space for string + null terminator
-    out_data->str =
-        (uint8_t *)arena_alloc(arena, bytes_read + 1, ARENA_MEMORY_TAG_STRING);
+    out_data->str = (uint8_t *)vkr_allocator_alloc(
+        allocator, bytes_read + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     MemCopy(out_data->str, buffer, bytes_read);
     out_data->str[bytes_read] = '\0';
     out_data->length = bytes_read;
@@ -419,10 +402,10 @@ FileError file_read_string(FileHandle *handle, Arena *arena,
   return FILE_ERROR_INVALID_HANDLE;
 }
 
-FileError file_read_all(FileHandle *handle, Arena *arena, uint8_t **out_buffer,
-                        uint64_t *bytes_read) {
+FileError file_read_all(FileHandle *handle, VkrAllocator *allocator,
+                        uint8_t **out_buffer, uint64_t *bytes_read) {
   assert_log(handle != NULL, "handle is NULL");
-  assert_log(arena != NULL, "arena is NULL");
+  assert_log(allocator != NULL, "allocator is NULL");
   assert_log(out_buffer != NULL, "out_buffer is NULL");
   assert_log(bytes_read != NULL, "bytes_read is NULL");
 
@@ -447,8 +430,8 @@ FileError file_read_all(FileHandle *handle, Arena *arena, uint8_t **out_buffer,
       return FILE_ERROR_IO_ERROR;
     }
 
-    *out_buffer =
-        (uint8_t *)arena_alloc(arena, file_size, ARENA_MEMORY_TAG_FILE);
+    *out_buffer = (uint8_t *)vkr_allocator_alloc(allocator, file_size,
+                                                 VKR_ALLOCATOR_MEMORY_TAG_FILE);
     *bytes_read = fread(*out_buffer, 1, file_size, (FILE *)handle->handle);
 
     if (*bytes_read != file_size && !feof((FILE *)handle->handle)) {
@@ -480,10 +463,10 @@ FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
   return FILE_ERROR_INVALID_HANDLE;
 }
 
-FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
+FileError file_load_spirv_shader(const FilePath *path, VkrAllocator *allocator,
                                  uint8_t **shader_data, uint64_t *shader_size) {
   assert_log(path != NULL, "path is NULL");
-  assert_log(arena != NULL, "arena is NULL");
+  assert_log(allocator != NULL, "allocator is NULL");
   assert_log(shader_data != NULL, "shader_data is NULL");
   assert_log(shader_size != NULL, "shader_size is NULL");
 
@@ -498,7 +481,8 @@ FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
     return file_error;
   }
 
-  file_error = file_read_all(&shader_handle, arena, shader_data, shader_size);
+  file_error =
+      file_read_all(&shader_handle, allocator, shader_data, shader_size);
   if (file_error != FILE_ERROR_NONE) {
     file_close(&shader_handle);
     log_error("Failed to read shader file: %s",
@@ -515,8 +499,8 @@ FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
   // Ensure 4-byte alignment for SPIR-V data
   if ((uintptr_t)(*shader_data) % 4 != 0) {
     log_warn("Shader data not 4-byte aligned, copying to aligned buffer");
-    uint8_t *aligned_data =
-        (uint8_t *)arena_alloc(arena, *shader_size, ARENA_MEMORY_TAG_RENDERER);
+    uint8_t *aligned_data = (uint8_t *)vkr_allocator_alloc(
+        allocator, *shader_size, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     // Ensure the new allocation is 4-byte aligned
     if ((uintptr_t)aligned_data % 4 != 0) {
       file_close(&shader_handle);
@@ -551,8 +535,8 @@ FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
 // separator (e.g. "/foo/bar.txt" -> "/foo/"). Returns an empty String8 if no
 // separator is present. Note: This trailing-separator convention is relied upon
 // by file_path_join so callers and future maintainers understand the contract.
-String8 file_path_get_directory(Arena *arena, String8 path) {
-  assert_log(arena != NULL, "arena is NULL");
+String8 file_path_get_directory(VkrAllocator *allocator, String8 path) {
+  assert_log(allocator != NULL, "allocator is NULL");
 
   if (!path.str || path.length == 0)
     return (String8){0};
@@ -566,15 +550,15 @@ String8 file_path_get_directory(Arena *arena, String8 path) {
   }
   if (last_slash == path.length)
     return (String8){0};
-  return string8_duplicate(arena,
+  return string8_duplicate(allocator,
                            &(String8){.str = path.str, .length = last_slash});
 }
 
-String8 file_path_join(Arena *arena, String8 dir, String8 file) {
-  assert_log(arena != NULL, "arena is NULL");
+String8 file_path_join(VkrAllocator *allocator, String8 dir, String8 file) {
+  assert_log(allocator != NULL, "allocator is NULL");
 
   if (!dir.str || dir.length == 0)
-    return string8_duplicate(arena, &file);
+    return string8_duplicate(allocator, &file);
 #if defined(PLATFORM_WINDOWS)
   char sep = '\\';
 #else
@@ -584,7 +568,8 @@ String8 file_path_join(Arena *arena, String8 dir, String8 file) {
       (dir.str[dir.length - 1] == '/' || dir.str[dir.length - 1] == '\\') ? 0
                                                                           : 1;
   uint64_t len = dir.length + needs_sep + file.length;
-  uint8_t *buf = arena_alloc(arena, len + 1, ARENA_MEMORY_TAG_STRING);
+  uint8_t *buf =
+      vkr_allocator_alloc(allocator, len + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   assert_log(buf != NULL, "Failed to allocate join buffer");
   uint64_t offset = 0;
   MemCopy(buf, dir.str, dir.length);

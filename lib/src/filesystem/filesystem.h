@@ -3,7 +3,7 @@
 #include "containers/bitset.h"
 #include "containers/str.h"
 #include "defines.h"
-#include "memory/arena.h"
+#include "memory/vkr_allocator.h"
 
 /**
  * @file filesystem.h
@@ -72,7 +72,8 @@
  *
  * @example Basic Usage:
  * ```c
- * Arena *arena = arena_create();
+ * VkrAllocator allocator = {.ctx = arena};
+ * vkr_allocator_arena(&allocator);
  *
  * // Create file path
  * FilePath path = file_path_create("data.txt", FILE_PATH_TYPE_RELATIVE);
@@ -238,11 +239,12 @@ typedef struct FileStats {
  *
  * @param path The file path as a null-terminated string. Must not be NULL or
  * empty.
- * @param arena Arena to allocate the file path from. Must not be NULL.
+ * @param allocator Allocator to allocate the file path from. Must not be NULL.
  * @param type Whether the path is relative or absolute.
  * @return A new `FilePath` structure containing the path information.
  */
-FilePath file_path_create(const char *path, Arena *arena, FilePathType type);
+FilePath file_path_create(const char *path, VkrAllocator *allocator,
+                          FilePathType type);
 
 /**
  * @brief Opens a file with the specified mode flags.
@@ -320,11 +322,12 @@ FileError file_stats(const FilePath *path, FileStats *out_stats);
 /**
  * @brief Ensures the given directory exists by creating any missing segments.
  *
- * @param arena Arena used for temporary copies of the path. Must not be NULL.
+ * @param allocator Allocator used for temporary copies of the path. Must not be
+ * NULL.
  * @param path Full path to the directory to ensure. Must not be NULL.
  * @return True if the directory exists/was created; false if creation failed.
  */
-bool8_t file_ensure_directory(Arena *arena, const String8 *path);
+bool8_t file_ensure_directory(VkrAllocator *allocator, const String8 *path);
 
 /**
  * @brief Reads a single line from a text file.
@@ -337,9 +340,9 @@ bool8_t file_ensure_directory(Arena *arena, const String8 *path);
  *
  * @param handle Pointer to an open file handle. Must not be
  * NULL.
- * @param arena Arena to allocate the line string from. Must
- * not be NULL.
- * @param line_arena Arena to allocate the line string from. Must
+ * @param allocator Allocator to allocate the line string from. Must
+ *   not be NULL.
+ * @param line_allocator Allocator to allocate the line string from. Must
  *   not be NULL.
  * @param max_line_length Maximum length of the line to read. Must be greater
  *   than 0.
@@ -351,8 +354,9 @@ bool8_t file_ensure_directory(Arena *arena, const String8 *path);
  * @note The maximum line length is 32,000 characters.
  * Longer lines will be truncated.
  */
-FileError file_read_line(FileHandle *handle, Arena *arena, Arena *line_arena,
-                         uint64_t max_line_length, String8 *out_line);
+FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
+                         VkrAllocator *line_allocator, uint64_t max_line_length,
+                         String8 *out_line);
 
 /**
  * @brief Writes a line of text to a file.
@@ -383,7 +387,7 @@ FileError file_write_line(FileHandle *handle, const String8 *text);
  *
  * @param handle Pointer to an open file handle with read
  * permissions. Must not be NULL.
- * @param arena Arena to allocate the read buffer from. Must
+ * @param allocator Allocator to allocate the read buffer from. Must
  * not be NULL.
  * @param size Number of bytes to read. Must be greater than
  * 0.
@@ -396,7 +400,7 @@ FileError file_write_line(FileHandle *handle, const String8 *text);
  * `FILE_ERROR_IO_ERROR` on read failure, or another error
  * code.
  */
-FileError file_read(FileHandle *handle, Arena *arena, uint64_t size,
+FileError file_read(FileHandle *handle, VkrAllocator *allocator, uint64_t size,
                     uint64_t *bytes_read, uint8_t **out_buffer);
 
 /**
@@ -432,7 +436,7 @@ FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
  *
  * @param handle Pointer to an open file handle with read
  * permissions. Must not be NULL.
- * @param arena Arena to allocate the string from. Must not
+ * @param allocator Allocator to allocate the string from. Must not
  * be NULL.
  * @param out_data Pointer to store the file contents as a
  * `String8`. Must not be NULL.
@@ -444,7 +448,8 @@ FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
  * @note The returned string includes a null terminator for
  * C compatibility.
  */
-FileError file_read_string(FileHandle *handle, Arena *arena, String8 *out_data);
+FileError file_read_string(FileHandle *handle, VkrAllocator *allocator,
+                           String8 *out_data);
 
 /**
  * @brief Reads all remaining data from a file.
@@ -456,7 +461,7 @@ FileError file_read_string(FileHandle *handle, Arena *arena, String8 *out_data);
  *
  * @param handle Pointer to an open file handle with read
  * permissions. Must not be NULL.
- * @param arena Arena to allocate the read buffer from. Must
+ * @param allocator Allocator to allocate the read buffer from. Must
  * not be NULL.
  * @param out_buffer Pointer to store the allocated buffer
  * containing the data. Must not be NULL.
@@ -470,14 +475,14 @@ FileError file_read_string(FileHandle *handle, Arena *arena, String8 *out_data);
  * @note Uses `ftello`/`fseeko` for large file support
  * (>2GB).
  */
-FileError file_read_all(FileHandle *handle, Arena *arena, uint8_t **out_buffer,
-                        uint64_t *bytes_read);
+FileError file_read_all(FileHandle *handle, VkrAllocator *allocator,
+                        uint8_t **out_buffer, uint64_t *bytes_read);
 
 /**
  * @brief Loads a SPIR-V shader from a file.
  *
  * @param path The file path to load the shader from.
- * @param arena The arena to allocate the shader from.
+ * @param allocator The allocator to allocate the shader from.
  * @param out_data Pointer to store the allocated shader data buffer.
  * @param out_size Pointer to store the size of the loaded shader data.
  * @return `FILE_ERROR_NONE` on success,
@@ -485,7 +490,7 @@ FileError file_read_all(FileHandle *handle, Arena *arena, uint8_t **out_buffer,
  * `FILE_ERROR_IO_ERROR` on read failure, or another error
  * code.
  */
-FileError file_load_spirv_shader(const FilePath *path, Arena *arena,
+FileError file_load_spirv_shader(const FilePath *path, VkrAllocator *allocator,
                                  uint8_t **out_data, uint64_t *out_size);
 
 /**
@@ -506,13 +511,13 @@ bool8_t file_create_directory(const FilePath *path);
  * including the last path separator). If no path separator is found, returns
  * an empty string.
  *
- * @param arena Arena to allocate the result string from. Must not be
+ * @param allocator Allocator to allocate the result string from. Must not be
  * NULL.
  * @param path The file path to extract directory from.
  * @return A new string containing the directory portion, or empty string if
  * none found.
  */
-String8 file_path_get_directory(Arena *arena, String8 path);
+String8 file_path_get_directory(VkrAllocator *allocator, String8 path);
 
 /**
  * @brief Joins a directory path and filename into a single path.
@@ -520,12 +525,13 @@ String8 file_path_get_directory(Arena *arena, String8 path);
  * Concatenates the directory and filename with appropriate path separator.
  * Handles cases where the directory already ends with a separator.
  *
- * @param arena Arena to allocate the result string from. Must not be NULL.
+ * @param allocator Allocator to allocate the result string from. Must not be
+ * NULL.
  * @param dir The directory path.
  * @param file The filename to append.
  * @return A new string containing the joined path.
  */
-String8 file_path_join(Arena *arena, String8 dir, String8 file);
+String8 file_path_join(VkrAllocator *allocator, String8 dir, String8 file);
 
 /**
  * @brief Gets the error string for a file error code.
