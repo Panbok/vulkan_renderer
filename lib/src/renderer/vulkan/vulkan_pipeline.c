@@ -29,6 +29,7 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
 
   VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
   if (!vkr_allocator_scope_is_valid(&scope)) {
+    log_error("Failed to create valid allocator scope");
     return false_v;
   }
 

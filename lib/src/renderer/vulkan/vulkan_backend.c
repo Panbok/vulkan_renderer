@@ -2573,7 +2573,8 @@ renderer_vulkan_render_target_create(void *backend_state,
   }
 
   VkImageView *views = vkr_allocator_alloc(
-      &state->alloc, sizeof(VkImageView) * (uint64_t)target->attachment_count,
+      &state->temp_scope,
+      sizeof(VkImageView) * (uint64_t)target->attachment_count,
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!views) {
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);

@@ -100,6 +100,8 @@ static uint32_t score_device(VulkanBackendState *state,
   }
 
   if (properties.apiVersion < VK_API_VERSION_1_2) {
+    array_destroy_VkSurfaceFormatKHR(&swapchain_details.formats);
+    array_destroy_VkPresentModeKHR(&swapchain_details.present_modes);
     array_destroy_QueueFamilyIndex(&indices);
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
@@ -417,9 +419,8 @@ void vulkan_device_query_swapchain_details(VulkanBackendState *state,
   vkGetPhysicalDeviceSurfacePresentModesKHR(device, state->surface,
                                             &present_mode_count, NULL);
   if (present_mode_count != 0) {
-    details->present_modes =
-        array_create_VkPresentModeKHR(&state->swapchain_alloc,
-                                      present_mode_count);
+    details->present_modes = array_create_VkPresentModeKHR(
+        &state->swapchain_alloc, present_mode_count);
     vkGetPhysicalDeviceSurfacePresentModesKHR(device, state->surface,
                                               &present_mode_count,
                                               details->present_modes.data);

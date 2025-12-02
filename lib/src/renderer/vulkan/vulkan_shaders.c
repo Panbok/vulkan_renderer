@@ -134,8 +134,8 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
 
     uint8_t *shader_data = NULL;
     uint64_t shader_size = 0;
-    FileError file_error = file_load_spirv_shader(&path, arena_alloc,
-                                                  &shader_data, &shader_size);
+    FileError file_error =
+        file_load_spirv_shader(&path, arena_alloc, &shader_data, &shader_size);
     if (file_error != FILE_ERROR_NONE) {
       log_fatal("Failed to load shader: %s", file_get_error_string(file_error));
       return false_v;
@@ -176,8 +176,8 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
 
       uint8_t *shader_data = NULL;
       uint64_t shader_size = 0;
-      FileError file_error = file_load_spirv_shader(
-          &path, arena_alloc, &shader_data, &shader_size);
+      FileError file_error = file_load_spirv_shader(&path, arena_alloc,
+                                                    &shader_data, &shader_size);
       if (file_error != FILE_ERROR_NONE) {
         log_fatal("Failed to load shader: %s",
                   file_get_error_string(file_error));
@@ -248,8 +248,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   }
 
   // Allocate per-frame global descriptor sets
-  VkrAllocatorScope temp_scope =
-      vkr_allocator_begin_scope(&state->temp_scope);
+  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&state->temp_scope);
   if (!vkr_allocator_scope_is_valid(&temp_scope)) {
     log_fatal("Failed to acquire temporary allocator for descriptor sets");
     return false;
@@ -272,10 +271,15 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
       .pSetLayouts = global_descriptor_layouts,
   };
 
-  out_shader_object->global_descriptor_sets = (VkDescriptorSet *)vkr_allocator_alloc(
-      arena_alloc,
-      sizeof(VkDescriptorSet) * out_shader_object->frame_count,
-      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  out_shader_object->global_descriptor_sets =
+      (VkDescriptorSet *)vkr_allocator_alloc(
+          arena_alloc, sizeof(VkDescriptorSet) * out_shader_object->frame_count,
+          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (out_shader_object->global_descriptor_sets == NULL) {
+    log_fatal("Failed to allocate global descriptor sets array");
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return false;
+  }
 
   if (vkAllocateDescriptorSets(
           state->device.logical_device, &global_descriptor_set_allocate_info,
@@ -749,8 +753,7 @@ bool8_t vulkan_shader_acquire_instance(VulkanBackendState *state,
       arena_alloc, sizeof(VkDescriptorSet) * shader_object->frame_count,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
 
-  VkrAllocatorScope temp_scope =
-      vkr_allocator_begin_scope(&state->temp_scope);
+  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&state->temp_scope);
   if (!vkr_allocator_scope_is_valid(&temp_scope)) {
     log_error("Failed to acquire temporary allocator for descriptor sets");
     return false;
@@ -759,6 +762,12 @@ bool8_t vulkan_shader_acquire_instance(VulkanBackendState *state,
       &state->temp_scope,
       sizeof(VkDescriptorSetLayout) * shader_object->frame_count,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (layouts == NULL) {
+    log_error("Failed to allocate temporary descriptor layouts");
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return false;
+  }
+
   for (uint32_t i = 0; i < shader_object->frame_count; i++) {
     layouts[i] = shader_object->instance_descriptor_set_layout;
   }
