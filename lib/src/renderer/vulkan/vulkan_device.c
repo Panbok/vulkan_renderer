@@ -1,6 +1,8 @@
 #include "vulkan_device.h"
 #include "containers/bitset.h"
+#include "containers/str.h"
 #include "defines.h"
+#include "memory/vkr_arena_allocator.h"
 #include "renderer/vulkan/vulkan_types.h"
 #include "vulkan_utils.h"
 
@@ -9,9 +11,12 @@ static bool32_t has_required_extensions(VulkanBackendState *state,
   uint32_t extension_count = 0;
   vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count, NULL);
 
-  Scratch scratch = scratch_create(state->temp_arena);
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    return false;
+  }
   Array_VkExtensionProperties available_extensions =
-      array_create_VkExtensionProperties(scratch.arena, extension_count);
+      array_create_VkExtensionProperties(&state->temp_scope, extension_count);
   vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count,
                                        available_extensions.data);
 
@@ -32,13 +37,13 @@ static bool32_t has_required_extensions(VulkanBackendState *state,
 
     if (!extension_found) {
       array_destroy_VkExtensionProperties(&available_extensions);
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
       return false;
     }
   }
 
   array_destroy_VkExtensionProperties(&available_extensions);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
 
   return true;
 }
@@ -59,7 +64,10 @@ static uint32_t score_device(VulkanBackendState *state,
     return 0;
   }
 
-  Scratch scratch = scratch_create(state->temp_arena);
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    return 0;
+  }
   Array_QueueFamilyIndex indices = find_queue_family_indices(state, device);
 
   QueueFamilyIndex *graphics_index =
@@ -74,7 +82,7 @@ static uint32_t score_device(VulkanBackendState *state,
 
   if (!has_required_queues) {
     array_destroy_QueueFamilyIndex(&indices);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
 
@@ -87,13 +95,13 @@ static uint32_t score_device(VulkanBackendState *state,
   if (array_is_null_VkSurfaceFormatKHR(&swapchain_details.formats) ||
       array_is_null_VkPresentModeKHR(&swapchain_details.present_modes)) {
     array_destroy_QueueFamilyIndex(&indices);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
 
   if (properties.apiVersion < VK_API_VERSION_1_2) {
     array_destroy_QueueFamilyIndex(&indices);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
 
@@ -104,7 +112,7 @@ static uint32_t score_device(VulkanBackendState *state,
     array_destroy_VkSurfaceFormatKHR(&swapchain_details.formats);
     array_destroy_VkPresentModeKHR(&swapchain_details.present_modes);
     array_destroy_QueueFamilyIndex(&indices);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
 
@@ -112,7 +120,7 @@ static uint32_t score_device(VulkanBackendState *state,
                      VKR_SHADER_STAGE_TESSELLATION_CONTROL_BIT) &&
       !deviceFeatures.tessellationShader) {
     array_destroy_QueueFamilyIndex(&indices);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
 
@@ -120,7 +128,7 @@ static uint32_t score_device(VulkanBackendState *state,
                      VKR_SHADER_STAGE_TESSELLATION_EVALUATION_BIT) &&
       !deviceFeatures.tessellationShader) {
     array_destroy_QueueFamilyIndex(&indices);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
 
@@ -128,7 +136,8 @@ static uint32_t score_device(VulkanBackendState *state,
   vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, NULL);
 
   Array_VkQueueFamilyProperties queue_families =
-      array_create_VkQueueFamilyProperties(scratch.arena, queue_family_count);
+      array_create_VkQueueFamilyProperties(&state->temp_scope,
+                                           queue_family_count);
   vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count,
                                            queue_families.data);
 
@@ -179,7 +188,7 @@ static uint32_t score_device(VulkanBackendState *state,
       !has_required_transfer || !has_required_sparse ||
       !has_required_protected || !has_required_present) {
     array_destroy_QueueFamilyIndex(&indices);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
 
@@ -187,7 +196,7 @@ static uint32_t score_device(VulkanBackendState *state,
                      VKR_SAMPLER_FILTER_ANISOTROPIC_BIT) &&
       !deviceFeatures.samplerAnisotropy) {
     array_destroy_QueueFamilyIndex(&indices);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
 
@@ -266,7 +275,7 @@ static uint32_t score_device(VulkanBackendState *state,
                                            NULL);
 
   Array_VkQueueFamilyProperties bonus_queue_families =
-      array_create_VkQueueFamilyProperties(scratch.arena,
+      array_create_VkQueueFamilyProperties(&state->temp_scope,
                                            bonus_queue_family_count);
   vkGetPhysicalDeviceQueueFamilyProperties(device, &bonus_queue_family_count,
                                            bonus_queue_families.data);
@@ -293,7 +302,7 @@ static uint32_t score_device(VulkanBackendState *state,
   }
 
   array_destroy_QueueFamilyIndex(&indices);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
 
   return score;
 }
@@ -399,7 +408,7 @@ void vulkan_device_query_swapchain_details(VulkanBackendState *state,
                                        NULL);
   if (format_count != 0) {
     details->formats =
-        array_create_VkSurfaceFormatKHR(state->swapchain_arena, format_count);
+        array_create_VkSurfaceFormatKHR(&state->swapchain_alloc, format_count);
     vkGetPhysicalDeviceSurfaceFormatsKHR(device, state->surface, &format_count,
                                          details->formats.data);
   }
@@ -408,8 +417,9 @@ void vulkan_device_query_swapchain_details(VulkanBackendState *state,
   vkGetPhysicalDeviceSurfacePresentModesKHR(device, state->surface,
                                             &present_mode_count, NULL);
   if (present_mode_count != 0) {
-    details->present_modes = array_create_VkPresentModeKHR(
-        state->swapchain_arena, present_mode_count);
+    details->present_modes =
+        array_create_VkPresentModeKHR(&state->swapchain_alloc,
+                                      present_mode_count);
     vkGetPhysicalDeviceSurfacePresentModesKHR(device, state->surface,
                                               &present_mode_count,
                                               details->present_modes.data);
@@ -477,9 +487,13 @@ bool32_t vulkan_device_pick_physical_device(VulkanBackendState *state) {
     return false;
   }
 
-  Scratch scratch = scratch_create(state->temp_arena);
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    log_fatal("Failed to allocate temp scope for physical devices");
+    return false;
+  }
   Array_VkPhysicalDevice physical_devices =
-      array_create_VkPhysicalDevice(scratch.arena, device_count);
+      array_create_VkPhysicalDevice(&state->temp_scope, device_count);
   vkEnumeratePhysicalDevices(state->instance, &device_count,
                              physical_devices.data);
 
@@ -487,7 +501,7 @@ bool32_t vulkan_device_pick_physical_device(VulkanBackendState *state) {
       pick_suitable_device(state, &physical_devices);
   if (state->device.physical_device == VK_NULL_HANDLE) {
     array_destroy_VkPhysicalDevice(&physical_devices);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     log_fatal("No suitable Vulkan physical device found");
     return false;
   }
@@ -501,7 +515,7 @@ bool32_t vulkan_device_pick_physical_device(VulkanBackendState *state) {
                                       &state->device.memory);
 
   array_destroy_VkPhysicalDevice(&physical_devices);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
 
   log_debug("Physical device acquired with handle: %p",
             state->device.physical_device);
@@ -516,7 +530,7 @@ void vulkan_device_get_information(VulkanBackendState *state,
   assert_log(state->device.physical_device != VK_NULL_HANDLE,
              "Physical device was not acquired");
   assert_log(device_information != NULL, "Device information is NULL");
-  assert_log(temp_arena != NULL, "Temp arena is NULL");
+  (void)temp_arena;
 
   VkPhysicalDeviceProperties properties;
   vkGetPhysicalDeviceProperties(state->device.physical_device, &properties);
@@ -531,9 +545,12 @@ void vulkan_device_get_information(VulkanBackendState *state,
   device_information->max_sampler_anisotropy =
       (float64_t)state->device.properties.limits.maxSamplerAnisotropy;
 
+  VkrAllocator *temp_alloc = &state->temp_scope;
+  VkrAllocator *arena_alloc = &state->alloc;
+
   // Device name
   String8 device_name =
-      string8_create_formatted(temp_arena, "%s", properties.deviceName);
+      string8_create_formatted(temp_alloc, "%s", properties.deviceName);
 
   // Vendor name based on vendor ID
   String8 vendor_name;
@@ -557,7 +574,7 @@ void vulkan_device_get_information(VulkanBackendState *state,
     vendor_name = string8_lit("ImgTec");
     break;
   default: {
-    vendor_name = string8_create_formatted(temp_arena, "Unknown (0x%X)",
+    vendor_name = string8_create_formatted(temp_alloc, "Unknown (0x%X)",
                                            properties.vendorID);
     break;
   }
@@ -570,19 +587,19 @@ void vulkan_device_get_information(VulkanBackendState *state,
     uint32_t minor = (properties.driverVersion >> 14) & 0xFF;
     uint32_t secondary = (properties.driverVersion >> 6) & 0xFF;
     uint32_t tertiary = properties.driverVersion & 0x3F;
-    driver_version = string8_create_formatted(temp_arena, "%u.%u.%u.%u", major,
+    driver_version = string8_create_formatted(temp_alloc, "%u.%u.%u.%u", major,
                                               minor, secondary, tertiary);
   } else if (properties.vendorID == 0x8086) { // Intel
     uint32_t major = properties.driverVersion >> 14;
     uint32_t minor = properties.driverVersion & 0x3FFF;
     driver_version =
-        string8_create_formatted(temp_arena, "%u.%u", major, minor);
+        string8_create_formatted(temp_alloc, "%u.%u", major, minor);
   } else { // AMD and others - use standard Vulkan version format
     uint32_t major = VK_VERSION_MAJOR(properties.driverVersion);
     uint32_t minor = VK_VERSION_MINOR(properties.driverVersion);
     uint32_t patch = VK_VERSION_PATCH(properties.driverVersion);
     driver_version =
-        string8_create_formatted(temp_arena, "%u.%u.%u", major, minor, patch);
+        string8_create_formatted(temp_alloc, "%u.%u.%u", major, minor, patch);
   }
 
   // API version
@@ -590,7 +607,7 @@ void vulkan_device_get_information(VulkanBackendState *state,
   uint32_t api_minor = VK_VERSION_MINOR(properties.apiVersion);
   uint32_t api_patch = VK_VERSION_PATCH(properties.apiVersion);
   String8 api_version = string8_create_formatted(
-      temp_arena, "%u.%u.%u", api_major, api_minor, api_patch);
+      temp_alloc, "%u.%u.%u", api_major, api_minor, api_patch);
 
   // Memory information
   uint64_t vram_size = 0;
@@ -636,7 +653,7 @@ void vulkan_device_get_information(VulkanBackendState *state,
                                            &queue_family_count, NULL);
 
   Array_VkQueueFamilyProperties queue_families =
-      array_create_VkQueueFamilyProperties(temp_arena, queue_family_count);
+      array_create_VkQueueFamilyProperties(temp_alloc, queue_family_count);
   vkGetPhysicalDeviceQueueFamilyProperties(
       state->device.physical_device, &queue_family_count, queue_families.data);
 
@@ -680,13 +697,13 @@ void vulkan_device_get_information(VulkanBackendState *state,
   array_destroy_VkQueueFamilyProperties(&queue_families);
 
   String8 persistent_device_name = string8_create_formatted(
-      state->arena, "%.*s", (int)device_name.length, device_name.str);
+      arena_alloc, "%.*s", (int)device_name.length, device_name.str);
   String8 persistent_vendor_name = string8_create_formatted(
-      state->arena, "%.*s", (int)vendor_name.length, vendor_name.str);
+      arena_alloc, "%.*s", (int)vendor_name.length, vendor_name.str);
   String8 persistent_driver_version = string8_create_formatted(
-      state->arena, "%.*s", (int)driver_version.length, driver_version.str);
+      arena_alloc, "%.*s", (int)driver_version.length, driver_version.str);
   String8 persistent_api_version = string8_create_formatted(
-      state->arena, "%.*s", (int)api_version.length, api_version.str);
+      arena_alloc, "%.*s", (int)api_version.length, api_version.str);
 
   device_information->device_name = persistent_device_name;
   device_information->vendor_name = persistent_vendor_name;
@@ -713,12 +730,16 @@ void vulkan_device_release_physical_device(VulkanBackendState *state) {
 bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
   assert_log(state != NULL, "State is NULL");
 
-  Scratch scratch = scratch_create(state->temp_arena);
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    log_fatal("Failed to create temp scope for logical device");
+    return false;
+  }
   Array_QueueFamilyIndex indices = {0};
   vulkan_device_query_queue_indices(state, &indices);
 
   Array_VkDeviceQueueCreateInfo queue_create_infos =
-      array_create_VkDeviceQueueCreateInfo(scratch.arena, indices.length);
+      array_create_VkDeviceQueueCreateInfo(&state->temp_scope, indices.length);
 
   static const float32_t queue_priority = 1.0f;
   for (uint32_t i = 0; i < indices.length; i++) {
@@ -777,7 +798,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
   VkDevice device;
   if (vkCreateDevice(state->device.physical_device, &device_create_info,
                      state->allocator, &device) != VK_SUCCESS) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     log_fatal("Failed to create logical device");
     return false;
   }
@@ -803,7 +824,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
     log_fatal("Failed to create Vulkan transfer command pool");
     vkDestroyCommandPool(state->device.logical_device,
                          state->device.graphics_command_pool, state->allocator);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return false_v;
   }
 
@@ -827,7 +848,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
                    0, &state->device.transfer_queue);
 
   array_destroy_VkDeviceQueueCreateInfo(&queue_create_infos);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
 
   log_debug("Graphics queue: %p", state->device.graphics_queue);
   log_debug("Present queue: %p", state->device.present_queue);

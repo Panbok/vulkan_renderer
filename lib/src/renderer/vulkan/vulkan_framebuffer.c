@@ -117,7 +117,8 @@ bool32_t vulkan_framebuffer_regenerate_for_domain(
         array_get_VulkanFramebuffer(framebuffers, i);
 
     framebuffer->attachments =
-        array_create_VkImageView(state->swapchain_arena, attachment_count);
+        array_create_VkImageView(&state->swapchain_alloc, attachment_count);
+    framebuffer->attachments.allocator = NULL; // arena-owned memory
 
     uint32_t attachment_index = 0;
 

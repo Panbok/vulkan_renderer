@@ -27,12 +27,15 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
       .pDynamicStates = dynamic_states,
   };
 
-  Scratch scratch = scratch_create(state->temp_arena);
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    return false_v;
+  }
 
   Array_VkVertexInputBindingDescription bindings = {0};
   if (desc->binding_count > 0) {
     bindings = array_create_VkVertexInputBindingDescription(
-        scratch.arena, desc->binding_count);
+        &state->temp_scope, desc->binding_count);
     for (uint32_t i = 0; i < desc->binding_count; i++) {
       VkVertexInputBindingDescription binding = {
           .binding = desc->bindings[i].binding,
@@ -49,7 +52,7 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   Array_VkVertexInputAttributeDescription attributes = {0};
   if (desc->attribute_count > 0) {
     attributes = array_create_VkVertexInputAttributeDescription(
-        scratch.arena, desc->attribute_count);
+        &state->temp_scope, desc->attribute_count);
     for (uint32_t i = 0; i < desc->attribute_count; i++) {
       VkVertexInputAttributeDescription attribute = {
           .location = desc->attributes[i].location,
@@ -305,7 +308,7 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
     array_destroy_VkVertexInputAttributeDescription(&attributes);
   }
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
 
   out_pipeline->pipeline = pipeline;
 

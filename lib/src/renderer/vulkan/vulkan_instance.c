@@ -9,7 +9,7 @@ static bool32_t check_validation_layer_support(VulkanBackendState *state,
   vkEnumerateInstanceLayerProperties(&available_layer_count, NULL);
 
   Array_VkLayerProperties layer_properties =
-      array_create_VkLayerProperties(state->temp_arena, available_layer_count);
+      array_create_VkLayerProperties(&state->temp_scope, available_layer_count);
   vkEnumerateInstanceLayerProperties(&available_layer_count,
                                      layer_properties.data);
 

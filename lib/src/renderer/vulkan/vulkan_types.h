@@ -306,8 +306,11 @@ Array(VkrRenderPassEntry);
  */
 typedef struct VulkanBackendState {
   Arena *arena;
+  VkrAllocator alloc;
   Arena *temp_arena;
+  VkrAllocator temp_scope;
   Arena *swapchain_arena;
+  VkrAllocator swapchain_alloc;
   VkrWindow *window;
   VkrDeviceRequirements *device_requirements;
 

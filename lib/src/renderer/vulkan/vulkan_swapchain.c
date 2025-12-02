@@ -47,14 +47,12 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
   Array_QueueFamilyIndex indices =
       find_queue_family_indices(state, state->device.physical_device);
   if (indices.length > 1) {
-    VkrAllocator scratch_alloc = {.ctx = state->temp_arena};
-    vkr_allocator_arena(&scratch_alloc);
-    VkrAllocatorScope scope = vkr_allocator_begin_scope(&scratch_alloc);
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
     if (!vkr_allocator_scope_is_valid(&scope)) {
       return false;
     }
     Array_uint32_t queue_family_indices =
-        array_create_uint32_t(&scratch_alloc, indices.length);
+        array_create_uint32_t(&state->temp_scope, indices.length);
     for (uint32_t i = 0; i < indices.length; i++) {
       QueueFamilyIndex *index = array_get_QueueFamilyIndex(&indices, i);
       array_set_uint32_t(&queue_family_indices, i, index->index);
@@ -84,10 +82,8 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
     return false;
   }
 
-  VkrAllocator swap_alloc = {.ctx = state->swapchain_arena};
-  vkr_allocator_arena(&swap_alloc);
-
-  state->swapchain.images = array_create_VkImage(&swap_alloc, image_count);
+  state->swapchain.images =
+      array_create_VkImage(&state->swapchain_alloc, image_count);
   state->swapchain.images.allocator = NULL; // arena-owned
   vkGetSwapchainImagesKHR(state->device.logical_device, state->swapchain.handle,
                           &image_count, state->swapchain.images.data);
@@ -96,7 +92,7 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
   state->swapchain.extent = extent;
 
   state->swapchain.image_views =
-      array_create_VkImageView(&swap_alloc, image_count);
+      array_create_VkImageView(&state->swapchain_alloc, image_count);
   state->swapchain.image_views.allocator = NULL; // arena-owned
   for (uint32_t i = 0; i < image_count; i++) {
     VkImageViewCreateInfo create_info = {
@@ -201,14 +197,12 @@ vkr_internal bool32_t vulkan_swapchain_create_with_old(
   Array_QueueFamilyIndex indices =
       find_queue_family_indices(state, state->device.physical_device);
   if (indices.length > 1) {
-    VkrAllocator scratch_alloc = {.ctx = state->temp_arena};
-    vkr_allocator_arena(&scratch_alloc);
-    VkrAllocatorScope scope = vkr_allocator_begin_scope(&scratch_alloc);
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
     if (!vkr_allocator_scope_is_valid(&scope)) {
       return false;
     }
     Array_uint32_t queue_family_indices =
-        array_create_uint32_t(&scratch_alloc, indices.length);
+        array_create_uint32_t(&state->temp_scope, indices.length);
     for (uint32_t i = 0; i < indices.length; i++) {
       QueueFamilyIndex *index = array_get_QueueFamilyIndex(&indices, i);
       array_set_uint32_t(&queue_family_indices, i, index->index);
@@ -259,10 +253,8 @@ vkr_internal bool32_t vulkan_swapchain_create_with_old(
     return false;
   }
 
-  VkrAllocator swap_alloc = {.ctx = state->swapchain_arena};
-  vkr_allocator_arena(&swap_alloc);
-
-  state->swapchain.images = array_create_VkImage(&swap_alloc, image_count);
+  state->swapchain.images =
+      array_create_VkImage(&state->swapchain_alloc, image_count);
   state->swapchain.images.allocator = NULL; // arena-owned
   vkGetSwapchainImagesKHR(state->device.logical_device, state->swapchain.handle,
                           &image_count, state->swapchain.images.data);
@@ -271,7 +263,7 @@ vkr_internal bool32_t vulkan_swapchain_create_with_old(
   state->swapchain.extent = extent;
 
   state->swapchain.image_views =
-      array_create_VkImageView(&swap_alloc, image_count);
+      array_create_VkImageView(&state->swapchain_alloc, image_count);
   state->swapchain.image_views.allocator = NULL; // arena-owned
   for (uint32_t i = 0; i < image_count; i++) {
     VkImageViewCreateInfo view_create_info = {

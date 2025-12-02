@@ -40,7 +40,10 @@ vulkan_shader_stage_to_vk(VkrShaderStageFlags stage) {
 Array_QueueFamilyIndex find_queue_family_indices(VulkanBackendState *state,
                                                  VkPhysicalDevice device) {
   Array_QueueFamilyIndex indices =
-      array_create_QueueFamilyIndex(state->temp_arena, QUEUE_FAMILY_TYPE_COUNT);
+      array_create_QueueFamilyIndex(&state->temp_scope,
+                                    QUEUE_FAMILY_TYPE_COUNT);
+  // Do not store the stack allocator pointer; arena lifetime covers data.
+  indices.allocator = NULL;
   for (uint32_t i = 0; i < QUEUE_FAMILY_TYPE_COUNT; i++) {
     QueueFamilyIndex invalid_index = {
         .index = 0, .type = i, .is_present = false};
@@ -53,10 +56,14 @@ Array_QueueFamilyIndex find_queue_family_indices(VulkanBackendState *state,
     return indices;
   }
 
-  Scratch scratch = scratch_create(state->temp_arena);
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    return indices;
+  }
   Array_VkQueueFamilyProperties queue_family_properties =
-      array_create_VkQueueFamilyProperties(state->temp_arena,
+      array_create_VkQueueFamilyProperties(&state->temp_scope,
                                            queue_family_count);
+  queue_family_properties.allocator = NULL;
   vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count,
                                            queue_family_properties.data);
 
@@ -109,7 +116,7 @@ Array_QueueFamilyIndex find_queue_family_indices(VulkanBackendState *state,
   }
 
   array_destroy_VkQueueFamilyProperties(&queue_family_properties);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
 
   return indices;
 }
