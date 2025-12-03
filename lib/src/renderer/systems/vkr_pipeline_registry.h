@@ -19,20 +19,12 @@
 typedef struct VkrPipelineRegistryConfig {
   uint32_t max_pipeline_count;
   uint32_t max_pipelines_per_domain;
-  bool8_t enable_pipeline_caching;   // Cache pipeline state to avoid redundant
-                                     // bindings
-  bool8_t enable_batch_optimization; // Enable automatic batching by
-                                     // material/pipeline
-  bool8_t enable_auto_pipeline_creation; // Auto-create pipelines from
-                                         // material+geometry combinations
 } VkrPipelineRegistryConfig;
 
 #define VKR_PIPELINE_REGISTRY_CONFIG_DEFAULT                                   \
   (VkrPipelineRegistryConfig) {                                                \
     .max_pipeline_count = VKR_MAX_PIPELINE_COUNT,                              \
     .max_pipelines_per_domain = VKR_MAX_PIPELINES_PER_DOMAIN,                  \
-    .enable_pipeline_caching = true, .enable_batch_optimization = true,        \
-    .enable_auto_pipeline_creation = true                                      \
   }
 
 // =============================================================================
@@ -62,21 +54,12 @@ typedef struct VkrPipelineState {
   uint32_t frame_redundant_binds_avoided; // Redundant binds avoided this frame
 } VkrPipelineState;
 
-// Batch rendering context
-typedef struct VkrPipelineBatch {
-  VkrPipelineHandle pipeline; // Pipeline for this batch
-  VkrPipelineDomain domain;   // Domain for this batch
-  Array_VkrMesh meshes;       // Meshes in this batch
-  bool8_t active;             // Batch is currently active
-  uint32_t mesh_count;        // Number of meshes added
-} VkrPipelineBatch;
-Array(VkrPipelineBatch);
-
 typedef struct VkrPipelineRegistry {
   // Core configuration and memory management
-  Arena *pipeline_arena; // Persistent allocations
-  Arena *temp_arena;     // Temporary allocations during operations
-  VkrAllocator temp_allocator;
+  Arena *pipeline_arena;       // Persistent allocations
+  Arena *temp_arena;           // Temporary allocations during operations
+  VkrAllocator allocator;      // persistent allocator wrapping pipeline_arena
+  VkrAllocator temp_allocator; // scratch allocator wrapping temp_arena
   VkrPipelineRegistryConfig config;
 
   // Renderer integration
@@ -97,10 +80,6 @@ typedef struct VkrPipelineRegistry {
 
   // Pipeline state tracking and optimization
   VkrPipelineState state;
-
-  // Batch rendering support
-  VkrPipelineBatch current_batch;
-  Array_VkrPipelineBatch pending_batches;
 
   // Statistics and profiling
   struct {
@@ -338,65 +317,6 @@ bool8_t vkr_pipeline_registry_render_renderable(VkrPipelineRegistry *registry,
                                                 const VkrMesh *mesh,
                                                 const void *global_uniform,
                                                 VkrRendererError *out_error);
-
-// =============================================================================
-// Batch Rendering Interface
-// =============================================================================
-
-/**
- * @brief Begin a batch for a specific pipeline domain
- * @param registry Pipeline registry
- * @param domain Pipeline domain to batch
- * @param out_error Output error code
- * @return true on success, false on failure
- */
-bool8_t vkr_pipeline_registry_begin_batch(VkrPipelineRegistry *registry,
-                                          VkrPipelineDomain domain,
-                                          VkrRendererError *out_error);
-
-/**
- * @brief Add a mesh to the current batch
- * @param registry Pipeline registry
- * @param mesh Mesh to add to batch
- * @param out_error Output error code
- * @return true on success, false on failure
- */
-bool8_t vkr_pipeline_registry_add_to_batch(VkrPipelineRegistry *registry,
-                                           const VkrMesh *mesh,
-                                           VkrRendererError *out_error);
-
-/**
- * @brief Render the current batch with optimal state management
- * @param registry Pipeline registry
- * @param global_uniform Global uniform data
- * @param out_error Output error code
- * @return true on success, false on failure
- */
-bool8_t
-vkr_pipeline_registry_render_current_batch(VkrPipelineRegistry *registry,
-                                           const void *global_uniform,
-                                           VkrRendererError *out_error);
-
-/**
- * @brief End the current batch and reset batch state
- * @param registry Pipeline registry
- */
-void vkr_pipeline_registry_end_batch(VkrPipelineRegistry *registry);
-
-/**
- * @brief Render multiple meshes with automatic batching optimization
- * @param registry Pipeline registry
- * @param meshes Array of meshes to render
- * @param count Number of meshes
- * @param global_uniform Global uniform data
- * @param out_error Output error code
- * @return true on success, false on failure
- */
-bool8_t vkr_pipeline_registry_render_batch(VkrPipelineRegistry *registry,
-                                           const VkrMesh *meshes,
-                                           uint32_t count,
-                                           const void *global_uniform,
-                                           VkrRendererError *out_error);
 
 // =============================================================================
 // Domain and Query Interface
