@@ -789,6 +789,8 @@ static void test_data_lifetime_original_freed(void) {
   if (!vkr_allocator_scope_is_valid(&scratch_scope)) {
     log_error("Failed to acquire temporary scope for "
               "test_data_lifetime_original_freed");
+    event_manager_destroy(&manager);
+    teardown_suite();
     return;
   }
   TestEventData *original_data_on_scratch = vkr_allocator_alloc(
