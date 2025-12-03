@@ -368,8 +368,8 @@ bool8_t vkr_job_system_init(const VkrJobSystemConfig *config,
   out_system->free_top = config->max_jobs;
 
   for (uint32_t p = 0; p < VKR_JOB_PRIORITY_MAX; p++) {
-    out_system->queues[p] = queue_create_VkrJobHandle(
-        &out_system->allocator, config->queue_capacity);
+    out_system->queues[p] = queue_create_VkrJobHandle(&out_system->allocator,
+                                                      config->queue_capacity);
   }
 
   out_system->running = true_v;
@@ -406,6 +406,8 @@ bool8_t vkr_job_system_init(const VkrJobSystemConfig *config,
       return false_v;
     }
   }
+
+  log_debug("Job system initialized with %u workers", config->worker_count);
 
   return true_v;
 }
