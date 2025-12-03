@@ -1,14 +1,15 @@
 #include "vkr_event_data_buffer.h"
 
-bool8_t vkr_event_data_buffer_create(Arena *owner_arena, uint64_t capacity,
+bool8_t vkr_event_data_buffer_create(VkrAllocator *allocator, uint64_t capacity,
                                      VkrEventDataBuffer *out_edb) {
-  assert_log(owner_arena != NULL, "Owner arena cannot be NULL.");
+  assert_log(allocator != NULL, "Allocator cannot be NULL.");
   assert_log(out_edb != NULL, "Output VkrEventDataBuffer cannot be NULL.");
   assert_log(capacity > 0, "Capacity must be greater than 0.");
 
-  out_edb->arena = owner_arena;
+  out_edb->allocator = allocator;
   out_edb->capacity = capacity;
-  out_edb->buffer = arena_alloc(owner_arena, capacity, ARENA_MEMORY_TAG_BUFFER);
+  out_edb->buffer = vkr_allocator_alloc(allocator, capacity,
+                                        VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
 
   if (out_edb->buffer == NULL) {
     log_error(
@@ -26,8 +27,12 @@ bool8_t vkr_event_data_buffer_create(Arena *owner_arena, uint64_t capacity,
 
 void vkr_event_data_buffer_destroy(VkrEventDataBuffer *edb) {
   assert_log(edb != NULL, "EventDataBuffer cannot be NULL.");
+  if (edb->buffer && edb->allocator && edb->allocator->free) {
+    vkr_allocator_free(edb->allocator, edb->buffer, edb->capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  }
   edb->buffer = NULL;
-  edb->arena = NULL;
+  edb->allocator = NULL;
   edb->capacity = 0;
   edb->head = 0;
   edb->tail = 0;

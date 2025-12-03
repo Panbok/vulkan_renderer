@@ -783,9 +783,20 @@ static void test_data_lifetime_original_freed(void) {
                           lifetime_check_callback, NULL);
 
   // Create a temporary scratch arena for the original data
-  Scratch scratch = scratch_create(arena);
-  TestEventData *original_data_on_scratch = arena_alloc(
-      scratch.arena, sizeof(TestEventData), ARENA_MEMORY_TAG_UNKNOWN);
+  VkrAllocator scratch_alloc = {.ctx = arena};
+  vkr_allocator_arena(&scratch_alloc);
+  VkrAllocatorScope scratch_scope = vkr_allocator_begin_scope(&scratch_alloc);
+  if (!vkr_allocator_scope_is_valid(&scratch_scope)) {
+    log_error("Failed to acquire temporary scope for "
+              "test_data_lifetime_original_freed");
+    return;
+  }
+  TestEventData *original_data_on_scratch = vkr_allocator_alloc(
+      &scratch_alloc, sizeof(TestEventData), VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
+  if (!original_data_on_scratch) {
+    log_error("Failed to allocate original data on scratch");
+    return;
+  }
   original_data_on_scratch->value = 12345; // Magic value
   original_data_on_scratch->processed = false;
 
@@ -795,7 +806,7 @@ static void test_data_lifetime_original_freed(void) {
   event_manager_dispatch(&manager, event);
 
   // Destroy the scratch arena, freeing the original_data_on_scratch
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_UNKNOWN);
+  vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
   // original_data_on_scratch is now a dangling pointer / points to freed memory
 
   vkr_platform_sleep(100);

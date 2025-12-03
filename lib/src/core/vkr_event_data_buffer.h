@@ -2,7 +2,7 @@
 
 #include "defines.h"
 #include "logger.h"
-#include "memory/arena.h"
+#include "memory/vkr_allocator.h"
 #include "platform/vkr_platform.h"
 #include "vkr_pch.h"
 
@@ -17,8 +17,7 @@
  * handled externally (e.g., by VkrEventManager's mutex).
  */
 typedef struct VkrEventDataBuffer {
-  Arena *arena;      /**< Arena from which this buffer's memory is allocated
-                        (optional, for context). */
+  VkrAllocator *allocator; /**< Allocator used for the internal buffer. */
   uint8_t *buffer;   /**< The contiguous memory block for the ring buffer. */
   uint64_t capacity; /**< Total capacity of the buffer in bytes. */
   uint64_t head;     /**< Read position (start of the oldest data block). */
@@ -41,7 +40,7 @@ typedef struct VkrEventDataBuffer {
  * @return true if creation was successful, false otherwise (e.g., allocation
  * failure).
  */
-bool8_t vkr_event_data_buffer_create(Arena *owner_arena, uint64_t capacity,
+bool8_t vkr_event_data_buffer_create(VkrAllocator *allocator, uint64_t capacity,
                                      VkrEventDataBuffer *out_edb);
 
 /**

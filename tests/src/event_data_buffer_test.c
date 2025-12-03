@@ -1,6 +1,8 @@
 #include "event_data_buffer_test.h"
+#include "memory/vkr_arena_allocator.h"
 
 static Arena *arena = NULL;
+static VkrAllocator allocator = {0};
 static const uint64_t DEFAULT_TEST_BUFFER_CAPACITY =
     256; // Small capacity for easier testing
 
@@ -28,6 +30,8 @@ static bool8_t verify_test_data(const void *src, uint64_t size,
 static void setup_test(void) {
   arena = arena_create(MB(1), MB(1));
   assert(arena != NULL);
+  allocator = (VkrAllocator){.ctx = arena};
+  vkr_allocator_arena(&allocator);
 }
 
 // Teardown function called after each test function in this suite
@@ -36,6 +40,7 @@ static void teardown_test(void) {
     arena_destroy(arena);
     arena = NULL;
   }
+  allocator = (VkrAllocator){0};
 }
 
 void test_event_data_buffer_create_destroy(void) {
@@ -43,9 +48,9 @@ void test_event_data_buffer_create_destroy(void) {
   setup_test();
   VkrEventDataBuffer edb;
   bool8_t created =
-      vkr_event_data_buffer_create(arena, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
+      vkr_event_data_buffer_create(&allocator, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
   assert(created && "EventDataBuffer creation failed");
-  assert(edb.arena == arena && "Arena pointer mismatch");
+  assert(edb.allocator == &allocator && "Allocator pointer mismatch");
   assert(edb.buffer != NULL && "Buffer pointer is NULL");
   assert(edb.capacity == DEFAULT_TEST_BUFFER_CAPACITY && "Capacity mismatch");
   assert(edb.head == 0 && "Initial head non-zero");
@@ -56,7 +61,7 @@ void test_event_data_buffer_create_destroy(void) {
 
   vkr_event_data_buffer_destroy(&edb);
   assert(edb.buffer == NULL && "Buffer not NULL after destroy");
-  assert(edb.arena == NULL && "Arena not NULL after destroy");
+  assert(edb.allocator == NULL && "Allocator not NULL after destroy");
   assert(edb.capacity == 0 && "Capacity not zero after destroy");
   teardown_test();
   printf("    test_event_data_buffer_create_destroy PASSED\n");
@@ -66,7 +71,7 @@ void test_event_data_buffer_alloc_simple(void) {
   printf("    Running test_event_data_buffer_alloc_simple...\n");
   setup_test();
   VkrEventDataBuffer edb;
-  vkr_event_data_buffer_create(arena, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
+  vkr_event_data_buffer_create(&allocator, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
 
   void *payload_ptr = NULL;
   uint64_t payload_size = 10;
@@ -101,7 +106,7 @@ void test_event_data_buffer_alloc_zero_size(void) {
   printf("    Running test_event_data_buffer_alloc_zero_size...\n");
   setup_test();
   VkrEventDataBuffer edb;
-  vkr_event_data_buffer_create(arena, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
+  vkr_event_data_buffer_create(&allocator, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
   void *payload_ptr = NULL;
   bool8_t allocated = vkr_event_data_buffer_alloc(&edb, 0, &payload_ptr);
   assert(allocated && "Allocation of zero size failed");
@@ -119,7 +124,7 @@ void test_event_data_buffer_alloc_full(void) {
   setup_test();
   VkrEventDataBuffer edb;
   uint64_t small_cap = 20; // sizeof(header) + 12
-  vkr_event_data_buffer_create(arena, small_cap, &edb);
+  vkr_event_data_buffer_create(&allocator, small_cap, &edb);
   void *ptr1 = NULL;
   uint64_t size1 = 10; // needs sizeof(header) + 10
   assert(vkr_event_data_buffer_alloc(&edb, size1, &ptr1) &&
@@ -145,7 +150,7 @@ void test_event_data_buffer_alloc_wrap_around(void) {
   setup_test();
   VkrEventDataBuffer edb;
   uint64_t cap = 50; // header + 10, header + 10, header + X
-  vkr_event_data_buffer_create(arena, cap, &edb);
+  vkr_event_data_buffer_create(&allocator, cap, &edb);
   void *ptr1, *ptr2, *ptr3;
   uint64_t size1 = 10; // uses 18 (assuming header 8)
   uint64_t size2 = 10; // uses 18. total 36. tail at 36. head at 0.
@@ -164,7 +169,7 @@ void test_event_data_buffer_alloc_wrap_around(void) {
                      // wrap-around test tricky. Let's fill more first.
 
   vkr_event_data_buffer_destroy(&edb); // Reset EDB for clearer test
-  vkr_event_data_buffer_create(arena, cap, &edb);
+  vkr_event_data_buffer_create(&allocator, cap, &edb);
 
   // Alloc 1 (size 10, block 18) -> tail=18, fill=18
   assert(vkr_event_data_buffer_alloc(&edb, size1, &ptr1));
@@ -202,7 +207,7 @@ void test_event_data_buffer_alloc_fragmented(void) {
   setup_test();
   VkrEventDataBuffer edb;
   uint64_t cap = 60; // Enough for a few blocks
-  vkr_event_data_buffer_create(arena, cap, &edb);
+  vkr_event_data_buffer_create(&allocator, cap, &edb);
   void *p1, *p2, *p3, *p4;
   // Alloc 1 (10 -> block 18) -> tail 18, fill 18
   assert(vkr_event_data_buffer_alloc(&edb, 10, &p1));
@@ -236,7 +241,7 @@ void test_event_data_buffer_free_simple(void) {
   printf("    Running test_event_data_buffer_free_simple...\n");
   setup_test();
   VkrEventDataBuffer edb;
-  vkr_event_data_buffer_create(arena, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
+  vkr_event_data_buffer_create(&allocator, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
   void *ptr = NULL;
   uint64_t size = 20;
   assert(vkr_event_data_buffer_alloc(&edb, size, &ptr));
@@ -257,7 +262,7 @@ void test_event_data_buffer_free_empty_buffer(void) {
   printf("    Running test_event_data_buffer_free_empty_buffer...\n");
   setup_test();
   VkrEventDataBuffer edb;
-  vkr_event_data_buffer_create(arena, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
+  vkr_event_data_buffer_create(&allocator, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
   // Try to free from an actually empty buffer
   assert(vkr_event_data_buffer_free(&edb, 10) &&
          "Free on empty buffer should return true (no-op)");
@@ -289,7 +294,7 @@ void test_event_data_buffer_free_consistency_checks(void) {
   // event_data_buffer_free *should* return false for these.
   setup_test();
   VkrEventDataBuffer edb;
-  vkr_event_data_buffer_create(arena, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
+  vkr_event_data_buffer_create(&allocator, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
   void *ptr;
   uint64_t actual_size = 10;
   uint64_t wrong_size = 5;
@@ -315,7 +320,7 @@ void test_event_data_buffer_multiple_alloc_free(void) {
   printf("    Running test_event_data_buffer_multiple_alloc_free...\n");
   setup_test();
   VkrEventDataBuffer edb;
-  vkr_event_data_buffer_create(arena, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
+  vkr_event_data_buffer_create(&allocator, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
   void *p1, *p2, *p3;
   uint64_t s1 = 10, s2 = 20, s3 = 15;
   uint64_t bs1 = sizeof(uint64_t) + s1, bs2 = sizeof(uint64_t) + s2,
@@ -353,7 +358,7 @@ void test_event_data_buffer_rollback_simple(void) {
   printf("    Running test_event_data_buffer_rollback_simple...\n");
   setup_test();
   VkrEventDataBuffer edb;
-  vkr_event_data_buffer_create(arena, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
+  vkr_event_data_buffer_create(&allocator, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
   void *p1;
   uint64_t s1 = 10;
   uint64_t bs1 = sizeof(uint64_t) + s1;
@@ -375,7 +380,7 @@ void test_event_data_buffer_rollback_to_empty(void) {
   printf("    Running test_event_data_buffer_rollback_to_empty...\n");
   setup_test();
   VkrEventDataBuffer edb;
-  vkr_event_data_buffer_create(arena, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
+  vkr_event_data_buffer_create(&allocator, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
   void *p1;
   uint64_t s1 = 10;
   uint64_t bs1 = sizeof(uint64_t) + s1;
@@ -409,7 +414,7 @@ void test_event_data_buffer_rollback_to_empty(void) {
   // test_event_data_buffer_rollback_simple if we want to empty it. Let's make
   // it about rolling back the *actual* last one, which was p1 if we adjust.
   vkr_event_data_buffer_destroy(&edb);
-  vkr_event_data_buffer_create(arena, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
+  vkr_event_data_buffer_create(&allocator, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
   assert(vkr_event_data_buffer_alloc(&edb, s1,
                                      &p1)); // Sets last_alloc_block_size to bs1
   vkr_event_data_buffer_rollback_last_alloc(&edb); // Rollback p1
@@ -423,7 +428,7 @@ void test_event_data_buffer_rollback_no_alloc(void) {
   printf("    Running test_event_data_buffer_rollback_no_alloc...\n");
   setup_test();
   VkrEventDataBuffer edb;
-  vkr_event_data_buffer_create(arena, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
+  vkr_event_data_buffer_create(&allocator, DEFAULT_TEST_BUFFER_CAPACITY, &edb);
   vkr_event_data_buffer_rollback_last_alloc(&edb);
   assert(edb.fill == 0 && edb.tail == 0 && edb.head == 0 &&
          edb.last_alloc_block_size == 0);
@@ -437,7 +442,7 @@ void test_event_data_buffer_complex_interleave(void) {
   VkrEventDataBuffer edb;
   // Capacity: 100. Header size assumed 8.
   // Block sizes: s1(10)=18, s2(20)=28, s3(5)=13, s4(15)=23, s5(25)=33
-  vkr_event_data_buffer_create(arena, 100, &edb);
+  vkr_event_data_buffer_create(&allocator, 100, &edb);
   void *p1, *p2, *p3, *p4, *p5;
   uint64_t s1 = 10, s2 = 20, s3 = 5, s4 = 15, s5 = 25;
   uint64_t bs1 = 18, bs2 = 28, bs3 = 13, bs4 = 23, bs5 = 33;

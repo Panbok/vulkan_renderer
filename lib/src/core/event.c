@@ -25,6 +25,8 @@ static bool8_t event_callback_equals(EventCallbackData *current_value,
 static void *events_processor(void *arg) {
   EventManager *manager = (EventManager *)arg;
   Arena *local_thread_arena = arena_create(KB(4), KB(4));
+  VkrAllocator thread_allocator = manager->allocator;
+  thread_allocator.ctx = local_thread_arena;
   bool32_t should_run = true;
 
   while (should_run) {
@@ -62,27 +64,33 @@ static void *events_processor(void *arg) {
       continue;
     }
 
-    Scratch scratch = scratch_create(local_thread_arena);
     Vector_EventCallbackData *callbacks_vec = &manager->callbacks[event.type];
     uint16_t subs_count = callbacks_vec->length;
 
     if (subs_count == 0) {
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_VECTOR);
       vkr_mutex_unlock(manager->mutex);
       continue;
     }
 
-    Array_EventCallbackData local_callbacks_copy =
-        array_create_EventCallbackData(scratch.arena, subs_count);
-    if (callbacks_vec->data != NULL && local_callbacks_copy.data != NULL) {
-      MemCopy(local_callbacks_copy.data, callbacks_vec->data,
-              subs_count * sizeof(EventCallbackData));
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(&thread_allocator);
+    if (!vkr_allocator_scope_is_valid(&scope)) {
+      vkr_mutex_unlock(manager->mutex);
+      continue;
+    }
+
+    EventCallbackData *local_callbacks_copy = vkr_allocator_alloc(
+        &thread_allocator, (uint64_t)subs_count * sizeof(EventCallbackData),
+        VKR_ALLOCATOR_MEMORY_TAG_VECTOR);
+
+    if (callbacks_vec->data != NULL && local_callbacks_copy != NULL) {
+      MemCopy(local_callbacks_copy, callbacks_vec->data,
+              (size_t)subs_count * sizeof(EventCallbackData));
       vkr_mutex_unlock(manager->mutex);
 
       for (uint16_t i = 0; i < subs_count; i++) {
-        if (local_callbacks_copy.data[i].callback != NULL) {
-          local_callbacks_copy.data[i].callback(
-              &event, local_callbacks_copy.data[i].user_data);
+        if (local_callbacks_copy[i].callback != NULL) {
+          local_callbacks_copy[i].callback(&event,
+                                           local_callbacks_copy[i].user_data);
         }
       }
 
@@ -93,8 +101,7 @@ static void *events_processor(void *arg) {
       vkr_mutex_unlock(manager->mutex);
     }
 
-    array_destroy_EventCallbackData(&local_callbacks_copy);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_VECTOR);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_VECTOR);
   }
 
   arena_destroy(local_thread_arena);
@@ -114,9 +121,9 @@ void event_manager_create(EventManager *manager) {
   }
   MemZero(manager->callbacks, sizeof(manager->callbacks));
   manager->queue =
-      queue_create_Event(manager->arena, DEFAULT_EVENT_QUEUE_CAPACITY);
+      queue_create_Event(&manager->allocator, DEFAULT_EVENT_QUEUE_CAPACITY);
 
-  if (!vkr_event_data_buffer_create(manager->arena,
+  if (!vkr_event_data_buffer_create(&manager->allocator,
                                     DEFAULT_EVENT_DATA_RING_BUFFER_CAPACITY,
                                     &manager->event_data_buf)) {
     queue_destroy_Event(&manager->queue);
@@ -163,7 +170,8 @@ void event_manager_subscribe(EventManager *manager, EventType type,
   vkr_mutex_lock(manager->mutex);
 
   if (manager->callbacks[type].data == NULL) {
-    manager->callbacks[type] = vector_create_EventCallbackData(manager->arena);
+    manager->callbacks[type] =
+        vector_create_EventCallbackData(&manager->allocator);
   }
 
   uint16_t subs_count = manager->callbacks[type].length;
