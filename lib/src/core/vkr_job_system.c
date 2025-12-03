@@ -269,12 +269,17 @@ vkr_internal void *job_worker_thread(void *param) {
     }
     vkr_mutex_unlock(system->mutex);
 
-    Scratch scratch = scratch_create(worker->arena);
+    VkrAllocator *scratch_alloc = &worker->allocator;
+    VkrAllocatorScope scope = vkr_allocator_begin_scope(scratch_alloc);
+    if (!vkr_allocator_scope_is_valid(&scope)) {
+      job_worker_complete(system, slot, handle, &(VkrJobContext){0}, false_v);
+      continue;
+    }
     VkrJobContext ctx = {.system = system,
                          .worker_index = worker->index,
                          .thread_id = vkr_thread_current_id(),
-                         .worker_arena = worker->arena,
-                         .scratch = scratch};
+                         .allocator = scratch_alloc,
+                         .scope = scope};
 
     bool8_t success = false_v;
     if (slot->run) {
@@ -282,7 +287,7 @@ vkr_internal void *job_worker_thread(void *param) {
     }
 
     job_worker_complete(system, slot, handle, &ctx, success);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRUCT);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   }
 
   return NULL;
@@ -356,15 +361,15 @@ bool8_t vkr_job_system_init(const VkrJobSystemConfig *config,
         .payload_capacity = 0,
         .remaining_dependencies = 0,
         .defer_enqueue = false_v,
-        .dependents = vector_create_VkrJobHandle(out_system->arena),
+        .dependents = vector_create_VkrJobHandle(&out_system->allocator),
     };
     out_system->free_stack[i] = config->max_jobs - i - 1;
   }
   out_system->free_top = config->max_jobs;
 
   for (uint32_t p = 0; p < VKR_JOB_PRIORITY_MAX; p++) {
-    out_system->queues[p] =
-        queue_create_VkrJobHandle(out_system->arena, config->queue_capacity);
+    out_system->queues[p] = queue_create_VkrJobHandle(
+        &out_system->allocator, config->queue_capacity);
   }
 
   out_system->running = true_v;

@@ -18,6 +18,7 @@
 #include "containers/queue.h"
 #include "containers/vector.h"
 #include "core/vkr_threads.h"
+#include "memory/vkr_allocator.h"
 #include "defines.h"
 #include "memory/arena.h"
 
@@ -58,8 +59,8 @@ typedef struct VkrJobContext {
   struct VkrJobSystem *system;
   uint32_t worker_index;
   VkrThreadId thread_id;
-  Arena *worker_arena;
-  Scratch scratch;
+  VkrAllocator *allocator;       /**< Temporary allocator for the job */
+  VkrAllocatorScope scope;       /**< Scope controlling temp allocations */
 } VkrJobContext;
 
 typedef bool8_t (*VkrJobRunFn)(VkrJobContext *ctx, void *payload);
