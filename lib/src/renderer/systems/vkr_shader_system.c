@@ -81,10 +81,11 @@ bool8_t vkr_shader_system_initialize(VkrShaderSystem *state,
   state->shader_count = 0;
   state->current_shader_id = 0;
   state->current_shader = NULL;
-  state->name_to_id = vkr_hash_table_create_uint32_t(state->arena, 128);
-  state->shaders = array_create_VkrShader(state->arena, cfg.max_shader_count);
+  state->name_to_id = vkr_hash_table_create_uint32_t(&state->allocator, 128);
+  state->shaders =
+      array_create_VkrShader(&state->allocator, cfg.max_shader_count);
   state->active_shaders =
-      array_create_bool8_t(state->arena, cfg.max_shader_count);
+      array_create_bool8_t(&state->allocator, cfg.max_shader_count);
   MemZero(state->shaders.data,
           (uint64_t)cfg.max_shader_count * sizeof(VkrShader));
 
@@ -166,8 +167,9 @@ bool8_t vkr_shader_system_create(VkrShaderSystem *state,
     return false_v;
   }
 
-  char *stable_name =
-      arena_alloc(state->arena, cfg->name.length + 1, ARENA_MEMORY_TAG_STRING);
+  char *stable_name = vkr_allocator_alloc(&state->allocator,
+                                          cfg->name.length + 1,
+                                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stable_name) {
     log_error("Failed to allocate shader name");
     return false_v;
@@ -214,7 +216,7 @@ bool8_t vkr_shader_system_create(VkrShaderSystem *state,
 
   // Initialize warn-once table for missing uniforms/samplers
   shader->missing_uniform_warnings =
-      vkr_hash_table_create_uint8_t(state->arena, 64);
+      vkr_hash_table_create_uint8_t(&state->allocator, 64);
 
   state->shader_count++;
   return true_v;
