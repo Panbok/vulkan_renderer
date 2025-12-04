@@ -368,6 +368,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
       &out_system->allocator, image_size, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   if (!default_texture->image) {
     log_error("Failed to allocate memory for default texture");
+    vkr_allocator_end_scope(&image_scope, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
     return false_v;
   }
   MemSet(default_texture->image, 255, image_size);
