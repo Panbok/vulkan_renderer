@@ -30,7 +30,8 @@ typedef struct VkrTextureSystemConfig {
 
 typedef struct VkrTextureSystem {
   VkrRendererFrontendHandle renderer;
-  Arena *arena; // internal arena owned by the system
+  Arena *arena;           // internal arena owned by the system
+  VkrAllocator allocator; // persistent allocator wrapping arena
   VkrTextureSystemConfig config;
 
   Array_VkrTexture textures; // contiguous array of textures
@@ -318,7 +319,8 @@ void vkr_texture_destroy(VkrRendererFrontendHandle renderer,
  * skybox_b.jpg
  *
  * @param system The texture system
- * @param base_path Base path without face suffix (e.g., "assets/textures/skybox")
+ * @param base_path Base path without face suffix (e.g.,
+ * "assets/textures/skybox")
  * @param extension File extension without dot (e.g., "jpg")
  * @param out_handle Output texture handle
  * @param out_error Output error code

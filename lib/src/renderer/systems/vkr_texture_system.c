@@ -1,8 +1,270 @@
 #include "renderer/systems/vkr_texture_system.h"
 #include "filesystem/filesystem.h"
+#include "memory/vkr_arena_allocator.h"
 #include "renderer/systems/vkr_resource_system.h"
 
 #include "stb_image.h"
+
+// =============================================================================
+// Texture Cache Format
+// =============================================================================
+// Binary cache format for decoded textures to skip stb_image decoding on
+// subsequent loads. Cache files are stored alongside source files with .vkt
+// extension.
+
+#define VKR_TEXTURE_CACHE_MAGIC 0x564B5448u /* 'VKTH' in little-endian */
+#define VKR_TEXTURE_CACHE_VERSION 2u        /* Bump when format changes */
+#define VKR_TEXTURE_CACHE_EXT ".vkt"
+
+/**
+ * @brief Header for the texture cache file
+ * @param magic The magic number for the cache file
+ * @param version The version of the cache file
+ * @param source_mtime The modification time of the source file
+ * @param width The width of the texture
+ * @param height The height of the texture
+ * @param channels The number of channels in the texture
+ */
+typedef struct VkrTextureCacheHeader {
+  uint32_t magic;
+  uint32_t version;
+  uint64_t source_mtime; // Source file modification time for invalidation
+  uint32_t width;
+  uint32_t height;
+  uint32_t channels; // Always 4 (RGBA) after processing
+  uint32_t format;   // VkrTextureFormat enum value
+  uint8_t has_transparency;
+  uint8_t padding[3];
+  // Followed by: width * height * channels bytes of raw pixel data
+} VkrTextureCacheHeader;
+
+/**
+ * @brief Converts a 32-bit value from host endianness to little endian
+ * @param value The value to convert
+ * @return The converted value
+ */
+vkr_internal uint32_t vkr_texture_host_to_little_u32(uint32_t value) {
+  const union {
+    uint32_t u32;
+    uint8_t u8[4];
+  } endian_check = {0x01020304};
+  const bool8_t is_little_endian = (endian_check.u8[0] == 0x04);
+
+  if (is_little_endian) {
+    return value;
+  } else {
+    return ((value & 0xFF000000) >> 24) | ((value & 0x00FF0000) >> 8) |
+           ((value & 0x0000FF00) << 8) | ((value & 0x000000FF) << 24);
+  }
+}
+
+/**
+ * @brief Converts a 64-bit value from host endianness to little endian
+ * @param value The value to convert
+ * @return The converted value
+ */
+vkr_internal uint64_t vkr_texture_host_to_little_u64(uint64_t value) {
+  const union {
+    uint32_t u32;
+    uint8_t u8[4];
+  } endian_check = {0x01020304};
+  const bool8_t is_little_endian = (endian_check.u8[0] == 0x04);
+
+  if (is_little_endian) {
+    return value;
+  } else {
+    return ((value & 0xFF00000000000000ULL) >> 56) |
+           ((value & 0x00FF000000000000ULL) >> 40) |
+           ((value & 0x0000FF0000000000ULL) >> 24) |
+           ((value & 0x000000FF00000000ULL) >> 8) |
+           ((value & 0x00000000FF000000ULL) << 8) |
+           ((value & 0x0000000000FF0000ULL) << 24) |
+           ((value & 0x000000000000FF00ULL) << 40) |
+           ((value & 0x00000000000000FFULL) << 56);
+  }
+}
+
+// Generate cache path from source path (e.g., "textures/foo.png" ->
+// "textures/foo.png.vkt")
+vkr_internal String8 vkr_texture_cache_path(VkrAllocator *allocator,
+                                            String8 source_path) {
+  assert_log(allocator != NULL, "Allocator is NULL");
+  return string8_create_formatted(allocator, "%.*s%s",
+                                  (int32_t)source_path.length, source_path.str,
+                                  VKR_TEXTURE_CACHE_EXT);
+}
+
+/**
+ * @brief Writes decoded texture data to cache file
+ * @param allocator The allocator to use
+ * @param cache_path The path to the cache file
+ * @param source_mtime The modification time of the source file
+ * @param width The width of the texture
+ * @param height The height of the texture
+ * @param channels The number of channels in the texture
+ * @param format The format of the texture
+ * @param has_transparency Whether the texture has transparency
+ * @param pixel_data The pixel data of the texture
+ * @return true on success, false on failure
+ */
+vkr_internal bool8_t vkr_texture_cache_write(
+    VkrAllocator *allocator, String8 cache_path, uint64_t source_mtime,
+    uint32_t width, uint32_t height, uint32_t channels, VkrTextureFormat format,
+    bool8_t has_transparency, const uint8_t *pixel_data) {
+  assert_log(allocator != NULL, "Allocator is NULL");
+
+  if (!cache_path.str || !pixel_data) {
+    return false_v;
+  }
+
+  FilePath fp = file_path_create((const char *)cache_path.str, allocator,
+                                 FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_WRITE);
+  bitset8_set(&mode, FILE_MODE_TRUNCATE);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+
+  FileHandle fh = {0};
+  FileError ferr = file_open(&fp, mode, &fh);
+  if (ferr != FILE_ERROR_NONE) {
+    return false_v;
+  }
+
+  VkrTextureCacheHeader header = {
+      .magic = vkr_texture_host_to_little_u32(VKR_TEXTURE_CACHE_MAGIC),
+      .version = vkr_texture_host_to_little_u32(VKR_TEXTURE_CACHE_VERSION),
+      .source_mtime = vkr_texture_host_to_little_u64(source_mtime),
+      .width = vkr_texture_host_to_little_u32(width),
+      .height = vkr_texture_host_to_little_u32(height),
+      .channels = vkr_texture_host_to_little_u32(channels),
+      .format = vkr_texture_host_to_little_u32((uint32_t)format),
+      .has_transparency = has_transparency ? 1 : 0,
+      .padding = {0, 0, 0},
+  };
+
+  uint64_t written = 0;
+  FileError write_err =
+      file_write(&fh, sizeof(header), (const uint8_t *)&header, &written);
+  if (write_err != FILE_ERROR_NONE || written != sizeof(header)) {
+    file_close(&fh);
+    return false_v;
+  }
+
+  uint64_t pixel_size = (uint64_t)width * (uint64_t)height * (uint64_t)channels;
+  write_err = file_write(&fh, pixel_size, pixel_data, &written);
+  file_close(&fh);
+
+  if (write_err != FILE_ERROR_NONE || written != pixel_size) {
+    return false_v;
+  }
+
+  return true_v;
+}
+
+/**
+ * @brief Reads texture from cache file. Returns allocated pixel data on
+ * success. Caller must free with stbi_image_free() for consistency with decode
+ * path.
+ * @param allocator The allocator to use
+ * @param cache_path The path to the cache file
+ * @param source_mtime The modification time of the source file
+ * @param out_width The width of the texture
+ * @param out_height The height of the texture
+ * @param out_channels The number of channels in the texture
+ */
+vkr_internal bool8_t vkr_texture_cache_read(
+    VkrAllocator *allocator, String8 cache_path, uint64_t source_mtime,
+    uint32_t *out_width, uint32_t *out_height, uint32_t *out_channels,
+    VkrTextureFormat *out_format, bool8_t *out_has_transparency,
+    uint8_t **out_pixel_data) {
+  assert_log(allocator != NULL, "Allocator is NULL");
+
+  if (!cache_path.str || !out_pixel_data) {
+    return false_v;
+  }
+
+  FilePath fp = file_path_create((const char *)cache_path.str, allocator,
+                                 FILE_PATH_TYPE_RELATIVE);
+
+  if (!file_exists(&fp)) {
+    return false_v;
+  }
+
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+
+  FileHandle fh = {0};
+  FileError ferr = file_open(&fp, mode, &fh);
+  if (ferr != FILE_ERROR_NONE) {
+    return false_v;
+  }
+
+  uint64_t bytes_read = 0;
+  uint8_t *header_buf = NULL;
+  FileError read_err = file_read(&fh, allocator, sizeof(VkrTextureCacheHeader),
+                                 &bytes_read, &header_buf);
+  if (read_err != FILE_ERROR_NONE ||
+      bytes_read != sizeof(VkrTextureCacheHeader) || !header_buf) {
+    file_close(&fh);
+    return false_v;
+  }
+  VkrTextureCacheHeader header;
+  MemCopy(&header, header_buf, sizeof(header));
+
+  uint32_t magic = vkr_texture_host_to_little_u32(header.magic);
+  uint32_t version = vkr_texture_host_to_little_u32(header.version);
+  uint64_t cached_mtime = vkr_texture_host_to_little_u64(header.source_mtime);
+
+  if (magic != VKR_TEXTURE_CACHE_MAGIC ||
+      version != VKR_TEXTURE_CACHE_VERSION) {
+    file_close(&fh);
+    return false_v;
+  }
+
+  if (cached_mtime != source_mtime) {
+    file_close(&fh);
+    return false_v;
+  }
+
+  uint32_t width = vkr_texture_host_to_little_u32(header.width);
+  uint32_t height = vkr_texture_host_to_little_u32(header.height);
+  uint32_t channels = vkr_texture_host_to_little_u32(header.channels);
+  uint32_t format = vkr_texture_host_to_little_u32(header.format);
+
+  if (width == 0 || height == 0 || width > VKR_TEXTURE_MAX_DIMENSION ||
+      height > VKR_TEXTURE_MAX_DIMENSION || channels == 0 || channels > 4) {
+    file_close(&fh);
+    return false_v;
+  }
+
+  uint64_t pixel_size = (uint64_t)width * (uint64_t)height * (uint64_t)channels;
+
+  uint8_t *temp_pixels = NULL;
+  read_err = file_read(&fh, allocator, pixel_size, &bytes_read, &temp_pixels);
+  file_close(&fh);
+
+  if (read_err != FILE_ERROR_NONE || bytes_read != pixel_size || !temp_pixels) {
+    return false_v;
+  }
+
+  // Allocate using malloc so caller can free with stbi_image_free (which uses
+  // free)
+  uint8_t *pixels = (uint8_t *)malloc((size_t)pixel_size);
+  if (!pixels) {
+    return false_v;
+  }
+  MemCopy(pixels, temp_pixels, (size_t)pixel_size);
+
+  *out_width = width;
+  *out_height = height;
+  *out_channels = channels;
+  *out_format = (VkrTextureFormat)format;
+  *out_has_transparency = header.has_transparency != 0;
+  *out_pixel_data = pixels;
+
+  return true_v;
+}
 
 uint32_t vkr_texture_system_find_free_slot(VkrTextureSystem *system) {
   assert_log(system != NULL, "System is NULL");
@@ -55,10 +317,12 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   out_system->renderer = renderer;
   out_system->config = *config;
   out_system->job_system = job_system;
-  out_system->textures =
-      array_create_VkrTexture(out_system->arena, config->max_texture_count);
+  out_system->allocator = (VkrAllocator){.ctx = out_system->arena};
+  vkr_allocator_arena(&out_system->allocator);
+  out_system->textures = array_create_VkrTexture(&out_system->allocator,
+                                                 config->max_texture_count);
   out_system->texture_map = vkr_hash_table_create_VkrTextureEntry(
-      out_system->arena, ((uint64_t)config->max_texture_count) * 2ULL);
+      &out_system->allocator, ((uint64_t)config->max_texture_count) * 2ULL);
   out_system->next_free_index = 0;
   out_system->generation_counter = 1;
 
@@ -93,9 +357,15 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   uint64_t image_size = (uint64_t)default_texture->description.width *
                         (uint64_t)default_texture->description.height *
                         (uint64_t)default_texture->description.channels;
-  Scratch scratch = scratch_create(out_system->arena);
-  default_texture->image =
-      arena_alloc(scratch.arena, image_size, ARENA_MEMORY_TAG_TEXTURE);
+
+  VkrAllocatorScope image_scope =
+      vkr_allocator_begin_scope(&out_system->allocator);
+  if (!vkr_allocator_scope_is_valid(&image_scope)) {
+    log_error("Failed to allocate memory for default texture");
+    return false_v;
+  }
+  default_texture->image = vkr_allocator_alloc(
+      &out_system->allocator, image_size, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   if (!default_texture->image) {
     log_error("Failed to allocate memory for default texture");
     return false_v;
@@ -126,7 +396,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
     String8 error_string = vkr_renderer_get_error_string(renderer_error);
     log_error("Failed to create default checkerboard texture: %s",
               string8_cstr(&error_string));
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_TEXTURE);
+    vkr_allocator_end_scope(&image_scope, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
     return false_v;
   }
 
@@ -138,8 +408,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
       (VkrTextureHandle){.id = default_texture->description.id,
                          .generation = default_texture->description.generation};
 
-  // Free CPU-side pixels after upload
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_TEXTURE);
+  vkr_allocator_end_scope(&image_scope, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   default_texture->image = NULL;
 
   // Create a 1x1 flat normal texture for cases where no normal map is provided
@@ -323,8 +592,8 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
     return false_v;
   }
 
-  char *stable_key = (char *)arena_alloc(system->arena, name.length + 1,
-                                         ARENA_MEMORY_TAG_STRING);
+  char *stable_key = (char *)vkr_allocator_alloc(
+      &system->allocator, name.length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stable_key) {
     log_error("Failed to allocate key copy for texture map");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -426,9 +695,6 @@ void vkr_texture_system_release_by_handle(VkrTextureSystem *system,
       }
     }
   }
-
-  log_warn("Attempted to release unknown texture handle (id=%u, generation=%u)",
-           handle.id, handle.generation);
 }
 
 VkrRendererError vkr_texture_system_update_sampler(
@@ -613,8 +879,8 @@ vkr_texture_system_register_external(VkrTextureSystem *system, String8 name,
     return false_v;
   }
 
-  char *stable_key = (char *)arena_alloc(system->arena, name.length + 1,
-                                         ARENA_MEMORY_TAG_STRING);
+  char *stable_key = (char *)vkr_allocator_alloc(
+      &system->allocator, name.length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stable_key) {
     log_error("Failed to allocate key copy for external texture map");
     return false_v;
@@ -722,39 +988,72 @@ vkr_texture_system_get_default_specular_handle(VkrTextureSystem *system) {
 // Async Texture Loading Job Support
 // =============================================================================
 
-// Output structure that the job writes to (caller-owned memory)
+/**
+ * @brief Output structure that the job writes to (caller-owned memory)
+ * @note Decoded pixels are owned by stbi and must be freed with stbi_image_free
+ * @param decoded_pixels The decoded pixels
+ * @param width The width of the texture
+ * @param height The height of the texture
+ * @param original_channels The number of channels in the original texture
+ * @param format The format of the texture (Set when loaded from cache)
+ * @param has_transparency Whether the texture has transparency (Set when loaded
+ * from cache)
+ * @param loaded_from_cache True if loaded from .vkt cache
+ * @param error The error code
+ * @param success True if the texture was loaded successfully
+ */
 typedef struct VkrTextureDecodeResult {
   uint8_t *decoded_pixels;
   int32_t width;
   int32_t height;
   int32_t original_channels;
+  VkrTextureFormat format;
+  bool8_t has_transparency;
+  bool8_t loaded_from_cache;
   VkrRendererError error;
   bool8_t success;
 } VkrTextureDecodeResult;
 
+/**
+ * @brief Payload for the texture decoding job
+ * @param file_path The path to the texture file
+ * @param desired_channels The number of channels to request from the texture
+ * @param flip_vertical Whether to flip the texture vertically
+ * @param result The result of the texture decoding
+ */
 typedef struct VkrTextureDecodeJobPayload {
-  // Input (copied by job system)
   String8 file_path;
   uint32_t desired_channels;
   bool8_t flip_vertical;
 
-  // Output pointer (points to caller's memory, job writes here)
   VkrTextureDecodeResult *result;
 } VkrTextureDecodeJobPayload;
 
+/**
+ * @brief Runs the texture decoding job
+ * @param ctx The job context
+ * @param payload The payload for the job
+ * @return True if the job ran successfully, false otherwise
+ */
 vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
                                                 void *payload) {
+  assert_log(ctx != NULL, "Job context is NULL");
+  assert_log(payload != NULL, "Payload is NULL");
+
   VkrTextureDecodeJobPayload *job = (VkrTextureDecodeJobPayload *)payload;
   VkrTextureDecodeResult *result = job->result;
+  VkrAllocator *scratch_allocator = ctx->allocator;
+  assert_log(scratch_allocator != NULL, "Job allocator is NULL");
 
   result->success = false_v;
   result->error = VKR_RENDERER_ERROR_NONE;
   result->decoded_pixels = NULL;
+  result->loaded_from_cache = false_v;
 
   // Create null-terminated path for file operations
   uint64_t path_len = job->file_path.length;
-  char *path_cstr =
-      arena_alloc(ctx->scratch.arena, path_len + 1, ARENA_MEMORY_TAG_STRING);
+  char *path_cstr = vkr_allocator_alloc(scratch_allocator, path_len + 1,
+                                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!path_cstr) {
     result->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
@@ -762,15 +1061,45 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
   MemCopy(path_cstr, job->file_path.str, path_len);
   path_cstr[path_len] = '\0';
 
-  // Open and read file to memory
-  FilePath fp =
-      file_path_create(path_cstr, ctx->scratch.arena, FILE_PATH_TYPE_RELATIVE);
+  FilePath source_fp =
+      file_path_create(path_cstr, scratch_allocator, FILE_PATH_TYPE_RELATIVE);
+  FileStats source_stats = {0};
+  FileError stats_err = file_stats(&source_fp, &source_stats);
+  if (stats_err != FILE_ERROR_NONE) {
+    log_error("Failed to stat texture file: %s", path_cstr);
+    result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  String8 cache_path =
+      vkr_texture_cache_path(scratch_allocator, job->file_path);
+  uint32_t cached_width = 0, cached_height = 0, cached_channels = 0;
+  VkrTextureFormat cached_format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+  bool8_t cached_transparency = false_v;
+  uint8_t *cached_pixels = NULL;
+
+  if (vkr_texture_cache_read(scratch_allocator, cache_path,
+                             source_stats.last_modified, &cached_width,
+                             &cached_height, &cached_channels, &cached_format,
+                             &cached_transparency, &cached_pixels)) {
+    result->decoded_pixels = cached_pixels;
+    result->width = (int32_t)cached_width;
+    result->height = (int32_t)cached_height;
+    result->original_channels = (int32_t)cached_channels;
+    result->format = cached_format;
+    result->has_transparency = cached_transparency;
+    result->loaded_from_cache = true_v;
+    result->success = true_v;
+    return true_v;
+  }
+
+  // Cache miss - decode from source file
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);
 
   FileHandle fh = {0};
-  FileError ferr = file_open(&fp, mode, &fh);
+  FileError ferr = file_open(&source_fp, mode, &fh);
   if (ferr != FILE_ERROR_NONE) {
     log_error("Failed to open texture file: %s", path_cstr);
     result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
@@ -780,7 +1109,7 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
   uint8_t *file_data = NULL;
   uint64_t file_size = 0;
   FileError read_err =
-      file_read_all(&fh, ctx->scratch.arena, &file_data, &file_size);
+      file_read_all(&fh, scratch_allocator, &file_data, &file_size);
   file_close(&fh);
 
   if (read_err != FILE_ERROR_NONE || !file_data || file_size == 0) {
@@ -789,13 +1118,10 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
     return false_v;
   }
 
-  // Set thread-local flip setting
   stbi_set_flip_vertically_on_load_thread(job->flip_vertical ? 1 : 0);
 
-  // Decode image from memory
-  int32_t stbi_requested = (job->desired_channels <= VKR_TEXTURE_RGBA_CHANNELS)
-                               ? (int32_t)job->desired_channels
-                               : 0;
+  // Decode image from memory - always request RGBA for consistency
+  int32_t stbi_requested = VKR_TEXTURE_RGBA_CHANNELS;
 
   result->decoded_pixels = stbi_load_from_memory(
       file_data, (int)file_size, &result->width, &result->height,
@@ -818,6 +1144,25 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
     return false_v;
   }
 
+  result->format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+  result->has_transparency = false_v;
+
+  // Check for transparency (sample pixels for performance)
+  uint64_t pixel_count = (uint64_t)result->width * (uint64_t)result->height;
+  uint64_t step = pixel_count > 64 ? pixel_count / 64 : 1;
+  for (uint64_t px = 0; px < pixel_count; px += step) {
+    if (result->decoded_pixels[px * 4 + 3] < 255) {
+      result->has_transparency = true_v;
+      break;
+    }
+  }
+
+  vkr_texture_cache_write(scratch_allocator, cache_path,
+                          source_stats.last_modified, (uint32_t)result->width,
+                          (uint32_t)result->height, VKR_TEXTURE_RGBA_CHANNELS,
+                          result->format, result->has_transparency,
+                          result->decoded_pixels);
+
   result->success = true_v;
   return true_v;
 }
@@ -830,19 +1175,22 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
   assert_log(out_texture != NULL, "Out texture is NULL");
   assert_log(file_path.str != NULL, "Path is NULL");
 
-  // Store file path for the texture
-  Scratch path_scratch = scratch_create(system->arena);
-  char *c_string_path = (char *)arena_alloc(
-      path_scratch.arena, file_path.length + 1, ARENA_MEMORY_TAG_STRING);
+  VkrAllocatorScope path_scope = vkr_allocator_begin_scope(&system->allocator);
+  if (!vkr_allocator_scope_is_valid(&path_scope)) {
+    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  }
+
+  char *c_string_path =
+      (char *)vkr_allocator_alloc(&system->allocator, file_path.length + 1,
+                                  VKR_ALLOCATOR_MEMORY_TAG_STRING);
   assert_log(c_string_path != NULL,
              "Failed to allocate path buffer for texture load");
   MemCopy(c_string_path, file_path.str, (size_t)file_path.length);
   c_string_path[file_path.length] = '\0';
-  out_texture->file_path =
-      file_path_create(c_string_path, system->arena, FILE_PATH_TYPE_RELATIVE);
-  scratch_destroy(path_scratch, ARENA_MEMORY_TAG_STRING);
+  out_texture->file_path = file_path_create(c_string_path, &system->allocator,
+                                            FILE_PATH_TYPE_RELATIVE);
+  vkr_allocator_end_scope(&path_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
 
-  // Result struct on caller's stack - job writes directly here via pointer
   VkrTextureDecodeResult decode_result = {
       .decoded_pixels = NULL,
       .width = 0,
@@ -852,7 +1200,6 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
       .success = false_v,
   };
 
-  // Prepare decode job payload with pointer to result
   VkrTextureDecodeJobPayload job_payload = {
       .file_path = file_path,
       .desired_channels = desired_channels,
@@ -860,7 +1207,6 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
       .result = &decode_result,
   };
 
-  // If job system is available, run decode on worker thread
   if (system->job_system) {
     Bitset8 type_mask = bitset8_create();
     bitset8_set(&type_mask, VKR_JOB_TYPE_RESOURCE);
@@ -884,16 +1230,15 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
     }
   } else {
     // Fallback: run synchronously using a fake context
-    Scratch sync_scratch = scratch_create(system->arena);
-    VkrJobContext fake_ctx = {
-        .system = NULL,
-        .worker_index = 0,
-        .thread_id = 0,
-        .worker_arena = sync_scratch.arena,
-        .scratch = sync_scratch,
-    };
+    VkrAllocatorScope sync_scope =
+        vkr_allocator_begin_scope(&system->allocator);
+    VkrJobContext fake_ctx = {.system = NULL,
+                              .worker_index = 0,
+                              .thread_id = 0,
+                              .allocator = &system->allocator,
+                              .scope = sync_scope};
     vkr_texture_decode_job_run(&fake_ctx, &job_payload);
-    scratch_destroy(sync_scratch, ARENA_MEMORY_TAG_STRUCT);
+    vkr_allocator_end_scope(&sync_scope, VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   }
 
   if (!decode_result.success || !decode_result.decoded_pixels) {
@@ -971,12 +1316,16 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
   uint64_t final_image_size =
       (uint64_t)width * (uint64_t)height * (uint64_t)actual_channels;
 
-  Scratch image_scratch = scratch_create(system->arena);
-  out_texture->image = arena_alloc(image_scratch.arena, final_image_size,
-                                   ARENA_MEMORY_TAG_TEXTURE);
+  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&system->allocator);
+  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
+    stbi_image_free(loaded_image_data);
+    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  }
+  out_texture->image = vkr_allocator_alloc(&system->allocator, final_image_size,
+                                           VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   if (!out_texture->image) {
     stbi_image_free(loaded_image_data);
-    scratch_destroy(image_scratch, ARENA_MEMORY_TAG_TEXTURE);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
     return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
   }
 
@@ -1003,7 +1352,7 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
       vkr_renderer_create_texture(system->renderer, &out_texture->description,
                                   out_texture->image, &renderer_error);
 
-  scratch_destroy(image_scratch, ARENA_MEMORY_TAG_TEXTURE);
+  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   out_texture->image = NULL;
   return renderer_error;
 }
@@ -1035,9 +1384,8 @@ bool8_t vkr_texture_system_load(VkrTextureSystem *system, String8 name,
     return false_v;
   }
 
-  // Store stable copy of key in system arena
-  char *stable_key = (char *)arena_alloc(system->arena, name.length + 1,
-                                         ARENA_MEMORY_TAG_STRING);
+  char *stable_key = (char *)vkr_allocator_alloc(
+      &system->allocator, name.length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stable_key) {
     log_error("Failed to allocate key copy for texture map");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -1091,11 +1439,18 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
   }
 
   // Allocate scratch for deduplication mapping
-  Scratch dedup_scratch = scratch_create(system->arena);
-  uint32_t *first_occurrence = arena_alloc(
-      dedup_scratch.arena, sizeof(uint32_t) * count, ARENA_MEMORY_TAG_ARRAY);
+  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&system->allocator);
+  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
+    for (uint32_t i = 0; i < count; i++) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+    return 0;
+  }
+  uint32_t *first_occurrence =
+      vkr_allocator_alloc(&system->allocator, sizeof(uint32_t) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!first_occurrence) {
-    scratch_destroy(dedup_scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     for (uint32_t i = 0; i < count; i++) {
       out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     }
@@ -1166,7 +1521,7 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
         out_handles[i] = out_handles[first_occurrence[i]];
       }
     }
-    scratch_destroy(dedup_scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return already_loaded;
   }
 
@@ -1196,27 +1551,35 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
         out_handles[i] = out_handles[first_occurrence[i]];
       }
     }
-    scratch_destroy(dedup_scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return loaded;
   }
 
-  // Allocate arrays for job handles and results
-  Scratch scratch = scratch_create(system->arena);
-
-  VkrJobHandle *job_handles = arena_alloc(
-      scratch.arena, sizeof(VkrJobHandle) * count, ARENA_MEMORY_TAG_ARRAY);
-  VkrTextureDecodeResult *results =
-      arena_alloc(scratch.arena, sizeof(VkrTextureDecodeResult) * count,
-                  ARENA_MEMORY_TAG_ARRAY);
-  VkrTextureDecodeJobPayload *payloads =
-      arena_alloc(scratch.arena, sizeof(VkrTextureDecodeJobPayload) * count,
-                  ARENA_MEMORY_TAG_ARRAY);
-  bool8_t *job_submitted = arena_alloc(scratch.arena, sizeof(bool8_t) * count,
-                                       ARENA_MEMORY_TAG_ARRAY);
+  // Allocate arrays for job handles and results (temp scope)
+  VkrAllocatorScope decode_scope =
+      vkr_allocator_begin_scope(&system->allocator);
+  if (!vkr_allocator_scope_is_valid(&decode_scope)) {
+    for (uint32_t i = 0; i < count; i++) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return 0;
+  }
+  VkrJobHandle *job_handles =
+      vkr_allocator_alloc(&system->allocator, sizeof(VkrJobHandle) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrTextureDecodeResult *results = vkr_allocator_alloc(
+      &system->allocator, sizeof(VkrTextureDecodeResult) * count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrTextureDecodeJobPayload *payloads = vkr_allocator_alloc(
+      &system->allocator, sizeof(VkrTextureDecodeJobPayload) * count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  bool8_t *job_submitted =
+      vkr_allocator_alloc(&system->allocator, sizeof(bool8_t) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   if (!job_handles || !results || !payloads || !job_submitted) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-    scratch_destroy(dedup_scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     // Fall back to sequential
     uint32_t loaded = already_loaded;
     for (uint32_t i = 0; i < count; i++) {
@@ -1259,6 +1622,9 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
         .width = 0,
         .height = 0,
         .original_channels = 0,
+        .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+        .has_transparency = false_v,
+        .loaded_from_cache = false_v,
         .error = VKR_RENDERER_ERROR_NONE,
         .success = false_v,
     };
@@ -1309,7 +1675,7 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
     }
   }
 
-  // Process results and do GPU uploads
+  // Process results and do GPU uploads on main thread
   uint32_t loaded = 0;
   for (uint32_t i = 0; i < count; i++) {
     if (!paths[i].str || paths[i].length == 0) {
@@ -1325,7 +1691,6 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
     uint8_t *loaded_image_data = results[i].decoded_pixels;
     int32_t width = results[i].width;
     int32_t height = results[i].height;
-    int32_t original_channels = results[i].original_channels;
 
     // Check if this texture was already loaded by earlier iteration in this
     // batch BEFORE doing GPU upload to avoid wasting GPU resources
@@ -1344,26 +1709,12 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
       continue;
     }
 
+    // Use cached format/transparency if available, otherwise use defaults
     uint32_t actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
-    VkrTextureFormat format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+    VkrTextureFormat format = results[i].format;
+    bool8_t has_transparency = results[i].has_transparency;
 
-    // Fast transparency check: sample a few pixels instead of scanning all
-    // Check corners and center - if any has alpha < 255, mark as potentially
-    // transparent
     VkrTexturePropertyFlags props = vkr_texture_property_flags_create();
-    bool8_t has_transparency = false_v;
-    if (original_channels == 4) {
-      // Only check if source had alpha channel
-      uint64_t pixel_count = (uint64_t)width * (uint64_t)height;
-      // Sample up to 64 evenly distributed pixels
-      uint64_t step = pixel_count > 64 ? pixel_count / 64 : 1;
-      for (uint64_t px = 0; px < pixel_count; px += step) {
-        if (loaded_image_data[px * actual_channels + 3] < 255) {
-          has_transparency = true_v;
-          break;
-        }
-      }
-    }
     if (has_transparency) {
       bitset8_set(&props, VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
     }
@@ -1385,7 +1736,7 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
         .generation = VKR_INVALID_ID,
     };
 
-    // GPU upload
+    // GPU upload on main thread
     VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
     VkrTextureOpaqueHandle gpu_handle = vkr_renderer_create_texture(
         system->renderer, &desc, loaded_image_data, &renderer_error);
@@ -1407,8 +1758,9 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
     }
 
     // Store stable key
-    char *stable_key = (char *)arena_alloc(system->arena, paths[i].length + 1,
-                                           ARENA_MEMORY_TAG_STRING);
+    char *stable_key =
+        (char *)vkr_allocator_alloc(&system->allocator, paths[i].length + 1,
+                                    VKR_ALLOCATOR_MEMORY_TAG_STRING);
     if (!stable_key) {
       out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       vkr_renderer_destroy_texture(system->renderer, gpu_handle);
@@ -1449,16 +1801,22 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
     }
   }
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
-  scratch_destroy(dedup_scratch, ARENA_MEMORY_TAG_ARRAY);
+  vkr_allocator_end_scope(&decode_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   return loaded + already_loaded;
 }
 
 // Helper to load a single cube face from memory
-vkr_internal uint8_t *vkr_texture_load_cube_face(Arena *arena, const char *path,
+vkr_internal uint8_t *vkr_texture_load_cube_face(VkrAllocator *allocator,
+                                                 const char *path,
                                                  int32_t *out_width,
                                                  int32_t *out_height) {
-  FilePath fp = file_path_create(path, arena, FILE_PATH_TYPE_RELATIVE);
+  assert_log(allocator != NULL, "Allocator is NULL");
+  assert_log(path != NULL, "Path is NULL");
+  assert_log(out_width != NULL, "Out width is NULL");
+  assert_log(out_height != NULL, "Out height is NULL");
+
+  FilePath fp = file_path_create(path, allocator, FILE_PATH_TYPE_RELATIVE);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);
@@ -1471,7 +1829,7 @@ vkr_internal uint8_t *vkr_texture_load_cube_face(Arena *arena, const char *path,
 
   uint8_t *file_data = NULL;
   uint64_t file_size = 0;
-  FileError read_err = file_read_all(&fh, arena, &file_data, &file_size);
+  FileError read_err = file_read_all(&fh, allocator, &file_data, &file_size);
   file_close(&fh);
 
   if (read_err != FILE_ERROR_NONE || !file_data || file_size == 0) {
@@ -1500,14 +1858,19 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
   // Face suffixes: +X, -X, +Y, -Y, +Z, -Z -> r, l, u, d, f, b
   static const char *face_suffixes[6] = {"_r", "_l", "_u", "_d", "_f", "_b"};
 
-  Scratch scratch = scratch_create(system->arena);
+  VkrAllocator *temp_alloc = &system->allocator;
+  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(temp_alloc);
+  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
 
   // Build full path for first face to get dimensions
   uint64_t path_buffer_size = base_path.length + 16 + extension.length;
-  char *path_buffer = (char *)arena_alloc(scratch.arena, path_buffer_size,
-                                          ARENA_MEMORY_TAG_STRING);
+  char *path_buffer = (char *)vkr_allocator_alloc(
+      temp_alloc, path_buffer_size, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!path_buffer) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
@@ -1519,10 +1882,10 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
 
   int32_t width = 0, height = 0;
   uint8_t *first_face =
-      vkr_texture_load_cube_face(scratch.arena, path_buffer, &width, &height);
+      vkr_texture_load_cube_face(temp_alloc, path_buffer, &width, &height);
   if (!first_face) {
     log_error("Failed to load cube map face 0: %s", path_buffer);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
     return false_v;
   }
@@ -1532,7 +1895,7 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
     log_error("Cube map faces must be square and within max dimension: %dx%d",
               width, height);
     stbi_image_free(first_face);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
@@ -1541,11 +1904,11 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
   uint64_t total_size = face_size * 6;
 
   // Allocate buffer for all 6 faces
-  uint8_t *cube_data = (uint8_t *)arena_alloc(scratch.arena, total_size,
-                                              ARENA_MEMORY_TAG_TEXTURE);
+  uint8_t *cube_data = (uint8_t *)vkr_allocator_alloc(
+      temp_alloc, total_size, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   if (!cube_data) {
     stbi_image_free(first_face);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
@@ -1561,11 +1924,11 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
              (int)extension.length, extension.str);
 
     int32_t face_width = 0, face_height = 0;
-    uint8_t *face_data = vkr_texture_load_cube_face(scratch.arena, path_buffer,
+    uint8_t *face_data = vkr_texture_load_cube_face(temp_alloc, path_buffer,
                                                     &face_width, &face_height);
     if (!face_data) {
       log_error("Failed to load cube map face %u: %s", face, path_buffer);
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
       return false_v;
     }
@@ -1574,7 +1937,7 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
       log_error("Cube map face %u has different dimensions: %dx%d vs %dx%d",
                 face, face_width, face_height, width, height);
       stbi_image_free(face_data);
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
       return false_v;
     }
@@ -1608,7 +1971,7 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
 
   if (renderer_error != VKR_RENDERER_ERROR_NONE || !backend_handle) {
     log_error("Failed to create cube map texture in backend");
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     *out_error = renderer_error;
     return false_v;
   }
@@ -1618,17 +1981,18 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
   if (free_slot_index == VKR_INVALID_ID) {
     log_error("Texture system is full");
     vkr_renderer_destroy_texture(system->renderer, backend_handle);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
 
   // Create stable key for the cube map
-  char *stable_key = (char *)arena_alloc(system->arena, base_path.length + 16,
-                                         ARENA_MEMORY_TAG_STRING);
+  char *stable_key =
+      (char *)vkr_allocator_alloc(&system->allocator, base_path.length + 16,
+                                  VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stable_key) {
     vkr_renderer_destroy_texture(system->renderer, backend_handle);
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
@@ -1653,7 +2017,7 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
     log_error("Failed to insert cube map '%s' into hash table", stable_key);
     vkr_renderer_destroy_texture(system->renderer, backend_handle);
     texture->description.generation = VKR_INVALID_ID;
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
@@ -1663,7 +2027,7 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
                          .generation = texture->description.generation};
   *out_error = VKR_RENDERER_ERROR_NONE;
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
 
   log_debug("Loaded cube map texture: %s (%dx%d)", stable_key, width, height);
 
