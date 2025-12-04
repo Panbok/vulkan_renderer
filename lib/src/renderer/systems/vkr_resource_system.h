@@ -1,8 +1,8 @@
 #pragma once
 
 #include "containers/str.h"
+#include "core/vkr_job_system.h"
 #include "defines.h"
-#include "memory/arena.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/vkr_renderer.h"
 
@@ -59,13 +59,13 @@ struct VkrResourceLoader {
    * @brief Callback to load the resource
    * @param self The loader
    * @param name The name of the resource
-   * @param temp_arena The temporary arena
+   * @param temp_alloc The temporary allocator
    * @param out_handle The output handle
    * @param out_error The output error
    * @return True if the resource was loaded, false otherwise
    */
-  bool8_t (*load)(VkrResourceLoader *self, String8 name, Arena *temp_arena,
-                  VkrResourceHandleInfo *out_handle,
+  bool8_t (*load)(VkrResourceLoader *self, String8 name,
+                  VkrAllocator *temp_alloc, VkrResourceHandleInfo *out_handle,
                   VkrRendererError *out_error);
 
   /**
@@ -76,6 +76,21 @@ struct VkrResourceLoader {
    */
   void (*unload)(VkrResourceLoader *self, const VkrResourceHandleInfo *handle,
                  String8 name);
+
+  /**
+   * @brief Callback to batch load multiple resources in parallel
+   * @param self The loader
+   * @param paths Array of resource paths to load
+   * @param count Number of resources to load
+   * @param temp_alloc Temporary allocator for intermediate allocations
+   * @param out_handles Output array of handle info (size = count)
+   * @param out_errors Output array of errors (size = count)
+   * @return Number of successfully loaded resources
+   */
+  uint32_t (*batch_load)(VkrResourceLoader *self, const String8 *paths,
+                         uint32_t count, VkrAllocator *temp_alloc,
+                         VkrResourceHandleInfo *out_handles,
+                         VkrRendererError *out_errors);
 };
 
 // =============================================================================
@@ -84,12 +99,14 @@ struct VkrResourceLoader {
 
 /**
  * @brief Initializes the resource system
- * @param arena The arena to use
+ * @param allocator The allocator to use
  * @param renderer The renderer to use
+ * @param job_system The job system to use for parallel loading (can be NULL)
  * @return True if the resource system was initialized, false otherwise
  */
-bool8_t vkr_resource_system_init(Arena *arena,
-                                 VkrRendererFrontendHandle renderer);
+bool8_t vkr_resource_system_init(VkrAllocator *allocator,
+                                 VkrRendererFrontendHandle renderer,
+                                 VkrJobSystem *job_system);
 
 /**
  * @brief Registers a resource loader
@@ -109,13 +126,13 @@ bool8_t vkr_resource_system_register_loader(void *resource_system,
  * @brief Loads a resource using a loader for the given type
  * @param type The type of the resource to load
  * @param name The name of the resource to load
- * @param temp_arena The temporary arena to use
+ * @param temp_alloc The temporary allocator to use
  * @param out_info The output info
  * @param out_error The output error
  * @return True if the resource was loaded, false otherwise
  */
 bool8_t vkr_resource_system_load(VkrResourceType type, String8 name,
-                                 Arena *temp_arena,
+                                 VkrAllocator *temp_alloc,
                                  VkrResourceHandleInfo *out_info,
                                  VkrRendererError *out_error);
 
@@ -123,13 +140,13 @@ bool8_t vkr_resource_system_load(VkrResourceType type, String8 name,
  * @brief Loads a resource using a custom type tag
  * @param custom_type The custom type tag to use
  * @param name The name of the resource to load
- * @param temp_arena The temporary arena to use
+ * @param temp_alloc The temporary allocator to use
  * @param out_info The output info
  * @param out_error The output error
  * @return True if the resource was loaded, false otherwise
  */
 bool8_t vkr_resource_system_load_custom(String8 custom_type, String8 name,
-                                        Arena *temp_arena,
+                                        VkrAllocator *temp_alloc,
                                         VkrResourceHandleInfo *out_info,
                                         VkrRendererError *out_error);
 
@@ -140,6 +157,25 @@ bool8_t vkr_resource_system_load_custom(String8 custom_type, String8 name,
  */
 void vkr_resource_system_unload(const VkrResourceHandleInfo *info,
                                 String8 name);
+
+/**
+ * @brief Batch loads multiple resources of the same type in parallel
+ * @param type The type of resources to load
+ * @param paths Array of resource paths to load
+ * @param count Number of resources to load
+ * @param temp_alloc Temporary allocator for intermediate allocations
+ * @param out_handles Output array of handle info (size = count)
+ * @param out_errors Output array of errors (size = count)
+ * @return Number of successfully loaded resources
+ *
+ * @note If the loader has a batch_load callback, it will be used for parallel
+ *       loading. Otherwise, falls back to sequential load calls.
+ */
+uint32_t vkr_resource_system_load_batch(VkrResourceType type,
+                                        const String8 *paths, uint32_t count,
+                                        VkrAllocator *temp_alloc,
+                                        VkrResourceHandleInfo *out_handles,
+                                        VkrRendererError *out_errors);
 
 // =============================================================================
 // Getters
@@ -152,3 +188,9 @@ void vkr_resource_system_unload(const VkrResourceHandleInfo *info,
  * @return The loader id
  */
 uint32_t vkr_resource_system_get_loader_id(VkrResourceType type, String8 name);
+
+/**
+ * @brief Gets the job system used by the resource system
+ * @return The job system, or NULL if not set
+ */
+VkrJobSystem *vkr_resource_system_get_job_system();

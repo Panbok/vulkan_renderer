@@ -1,8 +1,10 @@
 #include "renderer/systems/vkr_resource_system.h"
+#include "memory/vkr_allocator.h"
 
 struct VkrResourceSystem {
-  Arena *arena; // persistent storage for keys/entries
+  VkrAllocator *allocator;
   VkrRendererFrontendHandle renderer;
+  VkrJobSystem *job_system;
 
   // Registered loaders
   VkrResourceLoader *loaders;
@@ -15,14 +17,14 @@ struct VkrResourceSystem {
  */
 vkr_global VkrResourceSystem *vkr_resource_system = NULL;
 
-bool8_t vkr_resource_system_init(Arena *arena,
-                                 VkrRendererFrontendHandle renderer) {
-  assert_log(arena != NULL, "Arena is NULL");
+bool8_t vkr_resource_system_init(VkrAllocator *allocator,
+                                 VkrRendererFrontendHandle renderer,
+                                 VkrJobSystem *job_system) {
+  assert_log(allocator != NULL, "Allocator is NULL");
   assert_log(renderer != NULL, "Renderer is NULL");
 
   if (vkr_resource_system) {
-    if (vkr_resource_system->arena != arena ||
-        vkr_resource_system->renderer != renderer) {
+    if (vkr_resource_system->renderer != renderer) {
       log_error(
           "Resource system already initialized with different parameters");
       return false_v;
@@ -32,8 +34,8 @@ bool8_t vkr_resource_system_init(Arena *arena,
     return true_v;
   }
 
-  vkr_resource_system =
-      arena_alloc(arena, sizeof(VkrResourceSystem), ARENA_MEMORY_TAG_RENDERER);
+  vkr_resource_system = vkr_allocator_alloc(
+      allocator, sizeof(VkrResourceSystem), VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!vkr_resource_system) {
     log_fatal("Failed to allocate resource system");
     return false_v;
@@ -41,15 +43,16 @@ bool8_t vkr_resource_system_init(Arena *arena,
 
   MemZero(vkr_resource_system, sizeof(*vkr_resource_system));
 
-  vkr_resource_system->arena = arena;
   vkr_resource_system->renderer = renderer;
+  vkr_resource_system->allocator = allocator;
+  vkr_resource_system->job_system = job_system;
 
   vkr_resource_system->loader_capacity =
       16; // todo: this needs to be a part of the config file
-  vkr_resource_system->loaders = arena_alloc(
-      vkr_resource_system->arena,
+  vkr_resource_system->loaders = vkr_allocator_alloc(
+      vkr_resource_system->allocator,
       sizeof(VkrResourceLoader) * vkr_resource_system->loader_capacity,
-      ARENA_MEMORY_TAG_RENDERER);
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   assert_log(vkr_resource_system->loaders != NULL,
              "Failed to allocate loaders array");
   vkr_resource_system->loader_count =
@@ -71,9 +74,10 @@ bool8_t vkr_resource_system_register_loader(void *resource_system,
   if (vkr_resource_system->loader_count >=
       vkr_resource_system->loader_capacity) {
     uint32_t new_capacity = vkr_resource_system->loader_capacity * 2;
-    VkrResourceLoader *new_mem = arena_alloc(
-        vkr_resource_system->arena, sizeof(VkrResourceLoader) * new_capacity,
-        ARENA_MEMORY_TAG_RENDERER);
+    VkrResourceLoader *new_mem =
+        vkr_allocator_alloc(vkr_resource_system->allocator,
+                            sizeof(VkrResourceLoader) * new_capacity,
+                            VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     assert_log(new_mem != NULL, "Failed to grow loaders array");
     MemCopy(new_mem, vkr_resource_system->loaders,
             sizeof(VkrResourceLoader) * vkr_resource_system->loader_count);
@@ -93,7 +97,7 @@ bool8_t vkr_resource_system_register_loader(void *resource_system,
 }
 
 bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
-                                 Arena *temp_arena,
+                                 VkrAllocator *temp_alloc,
                                  VkrResourceHandleInfo *out_info,
                                  VkrRendererError *out_error) {
   assert_log(vkr_resource_system != NULL, "Resource system is NULL");
@@ -119,7 +123,7 @@ bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
 
       VkrResourceHandleInfo loaded_info = {0};
       if (loader->load &&
-          loader->load(loader, path, temp_arena, &loaded_info, out_error)) {
+          loader->load(loader, path, temp_alloc, &loaded_info, out_error)) {
         loaded_info.loader_id = loader->id;
         *out_info = loaded_info;
         return true_v;
@@ -133,7 +137,7 @@ bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
 }
 
 bool8_t vkr_resource_system_load_custom(String8 custom_type, String8 path,
-                                        Arena *temp_arena,
+                                        VkrAllocator *temp_alloc,
                                         VkrResourceHandleInfo *out_info,
                                         VkrRendererError *out_error) {
   assert_log(vkr_resource_system != NULL, "Resource system is NULL");
@@ -154,7 +158,7 @@ bool8_t vkr_resource_system_load_custom(String8 custom_type, String8 path,
         continue;
       VkrResourceHandleInfo loaded_info = {0};
       if (loader->load &&
-          loader->load(loader, path, temp_arena, &loaded_info, out_error)) {
+          loader->load(loader, path, temp_alloc, &loaded_info, out_error)) {
         *out_info = loaded_info;
         return true_v;
       }
@@ -207,4 +211,69 @@ uint32_t vkr_resource_system_get_loader_id(VkrResourceType type, String8 name) {
   }
 
   return VKR_INVALID_ID;
+}
+
+VkrJobSystem *vkr_resource_system_get_job_system(void) {
+  if (!vkr_resource_system) {
+    return NULL;
+  }
+  return vkr_resource_system->job_system;
+}
+
+uint32_t vkr_resource_system_load_batch(VkrResourceType type,
+                                        const String8 *paths, uint32_t count,
+                                        VkrAllocator *temp_alloc,
+                                        VkrResourceHandleInfo *out_handles,
+                                        VkrRendererError *out_errors) {
+  assert_log(vkr_resource_system != NULL, "Resource system is NULL");
+  assert_log(paths != NULL, "Paths is NULL");
+  assert_log(out_handles != NULL, "Out handles is NULL");
+  assert_log(out_errors != NULL, "Out errors is NULL");
+
+  if (count == 0) {
+    return 0;
+  }
+
+  for (uint32_t i = 0; i < count; i++) {
+    out_handles[i].type = VKR_RESOURCE_TYPE_UNKNOWN;
+    out_handles[i].loader_id = VKR_INVALID_ID;
+    out_errors[i] = VKR_RENDERER_ERROR_NONE;
+  }
+
+  VkrResourceLoader *batch_loader = NULL;
+  for (uint32_t loader_idx = 0; loader_idx < vkr_resource_system->loader_count;
+       loader_idx++) {
+    VkrResourceLoader *loader = &vkr_resource_system->loaders[loader_idx];
+    if (loader->type == type && loader->batch_load) {
+      batch_loader = loader;
+      break;
+    }
+  }
+
+  if (batch_loader) {
+    uint32_t loaded = batch_loader->batch_load(
+        batch_loader, paths, count, temp_alloc, out_handles, out_errors);
+    for (uint32_t i = 0; i < count; i++) {
+      if (out_handles[i].type != VKR_RESOURCE_TYPE_UNKNOWN) {
+        out_handles[i].loader_id = batch_loader->id;
+      }
+    }
+    return loaded;
+  }
+
+  // Fallback: sequential loading using single-item load
+  uint32_t loaded_count = 0;
+  for (uint32_t i = 0; i < count; i++) {
+    if (!paths[i].str || paths[i].length == 0) {
+      out_errors[i] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      continue;
+    }
+
+    if (vkr_resource_system_load(type, paths[i], temp_alloc, &out_handles[i],
+                                 &out_errors[i])) {
+      loaded_count++;
+    }
+  }
+
+  return loaded_count;
 }
