@@ -1175,21 +1175,16 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
   assert_log(out_texture != NULL, "Out texture is NULL");
   assert_log(file_path.str != NULL, "Path is NULL");
 
-  VkrAllocatorScope path_scope = vkr_allocator_begin_scope(&system->allocator);
-  if (!vkr_allocator_scope_is_valid(&path_scope)) {
-    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-  }
-
   char *c_string_path =
       (char *)vkr_allocator_alloc(&system->allocator, file_path.length + 1,
                                   VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  assert_log(c_string_path != NULL,
-             "Failed to allocate path buffer for texture load");
+  if (!c_string_path) {
+    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+  }
   MemCopy(c_string_path, file_path.str, (size_t)file_path.length);
   c_string_path[file_path.length] = '\0';
   out_texture->file_path = file_path_create(c_string_path, &system->allocator,
                                             FILE_PATH_TYPE_RELATIVE);
-  vkr_allocator_end_scope(&path_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
 
   VkrTextureDecodeResult decode_result = {
       .decoded_pixels = NULL,
@@ -1579,6 +1574,7 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   if (!job_handles || !results || !payloads || !job_submitted) {
+    vkr_allocator_end_scope(&decode_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     // Fall back to sequential
     uint32_t loaded = already_loaded;

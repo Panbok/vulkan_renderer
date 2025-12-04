@@ -222,7 +222,7 @@ void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,
  * @return True if deduplication succeeded; false otherwise.
  */
 bool8_t vkr_geometry_system_deduplicate_vertices(
-    VkrGeometrySystem *system, Arena *scratch_arena,
+    VkrGeometrySystem *system, VkrAllocator *scratch_alloc,
     const VkrVertex3d *vertices, uint32_t vertex_count, uint32_t *indices,
     uint32_t index_count, VkrVertex3d **out_vertices,
     uint32_t *out_vertex_count);

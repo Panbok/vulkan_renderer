@@ -229,18 +229,18 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
       (config->max_geometries > 0) ? config->max_geometries : 1024;
 
   system->geometries =
-      array_create_VkrGeometry(system->arena, system->max_geometries);
+      array_create_VkrGeometry(&system->allocator, system->max_geometries);
   for (uint32_t geometry = 0; geometry < system->max_geometries; geometry++) {
     VkrGeometry init = {0};
     init.pipeline_id = VKR_INVALID_ID;
     array_set_VkrGeometry(&system->geometries, geometry, init);
   }
   system->free_ids =
-      array_create_uint32_t(system->arena, system->max_geometries);
+      array_create_uint32_t(&system->allocator, system->max_geometries);
   system->free_count = 0;
 
   system->geometry_by_name = vkr_hash_table_create_VkrGeometryEntry(
-      system->arena, (uint64_t)system->max_geometries * 2);
+      &system->allocator, (uint64_t)system->max_geometries * 2);
 
   system->generation_counter = 1;
 
@@ -935,12 +935,12 @@ vkr_internal uint32_t vkr_vertex_hash(const VkrVertex3d *v) {
 }
 
 bool8_t vkr_geometry_system_deduplicate_vertices(
-    VkrGeometrySystem *system, Arena *scratch_arena,
+    VkrGeometrySystem *system, VkrAllocator *scratch_alloc,
     const VkrVertex3d *vertices, uint32_t vertex_count, uint32_t *indices,
     uint32_t index_count, VkrVertex3d **out_vertices,
     uint32_t *out_vertex_count) {
   assert_log(system != NULL, "Geometry system is NULL");
-  assert_log(scratch_arena != NULL, "Scratch arena is NULL");
+  assert_log(scratch_alloc != NULL, "Scratch allocator is NULL");
   assert_log(vertices != NULL, "Vertices are NULL");
   assert_log(indices != NULL, "Indices are NULL");
   assert_log(out_vertices != NULL, "Out vertices pointer is NULL");
@@ -958,15 +958,15 @@ bool8_t vkr_geometry_system_deduplicate_vertices(
   if (table_size < 1024) table_size = 1024;
 
   // Each bucket stores: vertex index in unique array, or UINT32_MAX if empty
-  uint32_t *hash_table =
-      arena_alloc(scratch_arena, (uint64_t)table_size * sizeof(uint32_t),
-                  ARENA_MEMORY_TAG_ARRAY);
-  VkrVertex3d *unique =
-      arena_alloc(scratch_arena, (uint64_t)vertex_count * sizeof(VkrVertex3d),
-                  ARENA_MEMORY_TAG_ARRAY);
-  uint32_t *remap =
-      arena_alloc(scratch_arena, (uint64_t)vertex_count * sizeof(uint32_t),
-                  ARENA_MEMORY_TAG_ARRAY);
+  uint32_t *hash_table = vkr_allocator_alloc(
+      scratch_alloc, (uint64_t)table_size * sizeof(uint32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrVertex3d *unique = vkr_allocator_alloc(
+      scratch_alloc, (uint64_t)vertex_count * sizeof(VkrVertex3d),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *remap = vkr_allocator_alloc(
+      scratch_alloc, (uint64_t)vertex_count * sizeof(uint32_t),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   if (!hash_table || !unique || !remap) {
     log_error("GeometrySystem: failed to allocate dedup buffers");
