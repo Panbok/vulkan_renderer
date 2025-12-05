@@ -159,6 +159,7 @@ bool8_t vkr_resource_system_load_custom(String8 custom_type, String8 path,
       VkrResourceHandleInfo loaded_info = {0};
       if (loader->load &&
           loader->load(loader, path, temp_alloc, &loaded_info, out_error)) {
+        loaded_info.loader_id = loader->id;
         *out_info = loaded_info;
         return true_v;
       }
