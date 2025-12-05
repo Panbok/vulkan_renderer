@@ -2,22 +2,54 @@
 #include "containers/str.h"
 #include "renderer/systems/vkr_material_system.h"
 
-vkr_global const char *mt_ext = "mt";
+#define VKR_MATERIAL_EXTENSION "mt"
 
-// =============================================================================
-// Job payload for parallel material file parsing
-// =============================================================================
+/**
+ * @brief Maximum path length for texture paths in parsed material data.
+ */
+#define VKR_MATERIAL_PATH_MAX 512
 
+/**
+ * @brief Context for batch material loading operations.
+ */
+typedef struct VkrMaterialBatchContext {
+  struct VkrMaterialSystem *material_system;
+  VkrJobSystem *job_system;
+  VkrAllocator *allocator;
+  VkrAllocator *temp_allocator;
+} VkrMaterialBatchContext;
+
+/**
+ * @brief Parsed material data before textures are loaded.
+ * Used for batch loading to separate parsing from GPU upload.
+ */
+typedef struct VkrParsedMaterialData {
+  char name[128];
+  char shader_name[128];
+  uint32_t pipeline_id;
+  VkrPhongProperties phong;
+
+  // Texture paths as fixed buffers (thread-safe for parallel parsing)
+  char diffuse_path[VKR_MATERIAL_PATH_MAX];
+  char specular_path[VKR_MATERIAL_PATH_MAX];
+  char normal_path[VKR_MATERIAL_PATH_MAX];
+
+  bool8_t parse_success;
+  VkrRendererError parse_error;
+} VkrParsedMaterialData;
+
+/**
+ * @brief Job payload for parallel material file parsing.
+ */
 typedef struct VkrMaterialParseJobPayload {
   char file_path[VKR_MATERIAL_PATH_MAX];
   VkrParsedMaterialData *result;
 } VkrMaterialParseJobPayload;
 
-/**
- * @brief Arena for storing file buffer. Loaders are never unloaded, so we can
- * reuse the same arena for all loaders.
- */
-vkr_global Arena *file_buffer_arena = NULL;
+vkr_internal uint32_t vkr_material_loader_load_batch(
+    VkrMaterialBatchContext *context, const String8 *material_paths,
+    uint32_t count, VkrMaterialHandle *out_handles,
+    VkrRendererError *out_errors);
 
 vkr_internal void vkr_get_stable_material_name(char *material_name_buf,
                                                size_t material_name_buf_size,
@@ -67,9 +99,9 @@ vkr_internal uint32_t vkr_get_pipeline_id_from_string(char *value) {
 }
 
 // Forward declarations
-vkr_internal VkrRendererError
-vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
-                                 Arena *temp_arena, VkrMaterial *out_material);
+vkr_internal VkrRendererError vkr_material_loader_load_from_mt(
+    VkrResourceLoader *self, String8 path, VkrAllocator *temp_alloc,
+    VkrMaterial *out_material);
 
 vkr_internal bool8_t vkr_material_loader_can_load(VkrResourceLoader *self,
                                                   String8 name) {
@@ -80,8 +112,9 @@ vkr_internal bool8_t vkr_material_loader_can_load(VkrResourceLoader *self,
   for (uint64_t ch = name.length; ch > 0; ch--) {
     if (s[ch - 1] == '.') {
       String8 ext = string8_substring(&name, ch, name.length);
-      String8 mt = string8_create_from_cstr((const uint8_t *)mt_ext,
-                                            string_length(mt_ext));
+      String8 mt =
+          string8_create_from_cstr((const uint8_t *)VKR_MATERIAL_EXTENSION,
+                                   string_length(VKR_MATERIAL_EXTENSION));
       return string8_equalsi(&ext, &mt);
     }
   }
@@ -90,12 +123,13 @@ vkr_internal bool8_t vkr_material_loader_can_load(VkrResourceLoader *self,
 }
 
 vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
-                                              String8 name, Arena *temp_arena,
+                                              String8 name,
+                                              VkrAllocator *temp_alloc,
                                               VkrResourceHandleInfo *out_handle,
                                               VkrRendererError *out_error) {
   assert_log(self != NULL, "Self is NULL");
   assert_log(name.str != NULL, "Name is NULL");
-  assert_log(temp_arena != NULL, "Temp arena is NULL");
+  assert_log(temp_alloc != NULL, "Temp arena is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
@@ -103,7 +137,7 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
 
   // Load material from .mt file
   VkrMaterial loaded_material = {0};
-  *out_error = vkr_material_loader_load_from_mt(self, name, temp_arena,
+  *out_error = vkr_material_loader_load_from_mt(self, name, temp_alloc,
                                                 &loaded_material);
   if (*out_error != VKR_RENDERER_ERROR_NONE) {
     return false_v;
@@ -153,8 +187,9 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
   }
 
   // Store stable copy of key in system arena
-  char *stable_name = arena_alloc(system->arena, material_name.length + 1,
-                                  ARENA_MEMORY_TAG_STRING);
+  char *stable_name =
+      vkr_allocator_alloc(&system->allocator, material_name.length + 1,
+                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stable_name) {
     log_error("Failed to allocate name for material");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -266,7 +301,7 @@ typedef struct VkrMaterialTexturePaths {
 } VkrMaterialTexturePaths;
 
 vkr_internal void vkr_material_batch_load_textures(
-    VkrMaterialSystem *material_system, Arena *temp_arena,
+    VkrMaterialSystem *material_system, VkrAllocator *temp_alloc,
     const VkrMaterialTexturePaths *paths, VkrMaterial *out_material) {
   // Count valid texture paths
   uint32_t count = 0;
@@ -327,18 +362,18 @@ vkr_internal void vkr_material_batch_load_textures(
   }
 }
 
-vkr_internal VkrRendererError
-vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
-                                 Arena *temp_arena, VkrMaterial *out_material) {
+vkr_internal VkrRendererError vkr_material_loader_load_from_mt(
+    VkrResourceLoader *self, String8 path, VkrAllocator *temp_alloc,
+    VkrMaterial *out_material) {
   assert_log(self != NULL, "Self is NULL");
   assert_log(path.str != NULL, "Path is NULL");
-  assert_log(temp_arena != NULL, "Temp arena is NULL");
+  assert_log(temp_alloc != NULL, "Temp arena is NULL");
   assert_log(out_material != NULL, "Out material is NULL");
 
   VkrMaterialSystem *material_system =
       (VkrMaterialSystem *)self->resource_system;
-
-  FilePath fp = file_path_create((const char *)path.str, temp_arena,
+  ;
+  FilePath fp = file_path_create((const char *)path.str, temp_alloc,
                                  FILE_PATH_TYPE_RELATIVE);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
@@ -386,18 +421,12 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
   out_material->textures[VKR_TEXTURE_SLOT_SPECULAR].slot =
       VKR_TEXTURE_SLOT_SPECULAR;
 
-  if (!file_buffer_arena) {
-    file_close(&fh);
-    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-  }
-
   // Collect texture paths for batch loading
   VkrMaterialTexturePaths texture_paths = {0};
 
   while (true) {
     String8 line = {0};
-    FileError le =
-        file_read_line(&fh, file_buffer_arena, temp_arena, 32000, &line);
+    FileError le = file_read_line(&fh, temp_alloc, temp_alloc, 32000, &line);
     if (le == FILE_ERROR_EOF) {
       log_debug("Reached end of material file '%s'", (char *)path.str);
       break;
@@ -441,8 +470,8 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
         continue;
       }
 
-      char *explicit_name = (char *)arena_alloc(temp_arena, value.length + 1,
-                                                ARENA_MEMORY_TAG_STRING);
+      char *explicit_name = (char *)vkr_allocator_alloc(
+          temp_alloc, value.length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       if (!explicit_name) {
         log_warn("Material '%s': failed to allocate explicit name",
                  string8_cstr(&material_name));
@@ -458,18 +487,18 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
     } else if (string8_contains_cstr(&key, "diffuse_texture")) {
       // Collect path for batch loading
       if (value.length > 0) {
-        texture_paths.diffuse = string8_duplicate(temp_arena, &value);
+        texture_paths.diffuse = string8_duplicate(temp_alloc, &value);
       }
     } else if (string8_contains_cstr(&key, "specular_texture")) {
       // Collect path for batch loading
       if (value.length > 0) {
-        texture_paths.specular = string8_duplicate(temp_arena, &value);
+        texture_paths.specular = string8_duplicate(temp_alloc, &value);
       }
     } else if (string8_contains_cstr(&key, "norm_texture") ||
                string8_contains_cstr(&key, "normal_texture")) {
       // Collect path for batch loading
       if (value.length > 0) {
-        texture_paths.normal = string8_duplicate(temp_arena, &value);
+        texture_paths.normal = string8_duplicate(temp_alloc, &value);
       }
     } else if (string8_contains_cstr(&key, "diffuse_color")) {
       Vec4 v;
@@ -514,8 +543,10 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
       char *trimmed = (char *)value.str;
       trimmed = string_trim(trimmed);
       uint32_t trimmed_len = (uint32_t)string_length(trimmed);
-      char *stable = (char *)arena_alloc(
-          material_system->arena, trimmed_len + 1, ARENA_MEMORY_TAG_STRING);
+      VkrAllocator mat_alloc = {.ctx = material_system->arena};
+      vkr_allocator_arena(&mat_alloc);
+      char *stable = (char *)vkr_allocator_alloc(
+          &mat_alloc, trimmed_len + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       if (stable) {
         MemCopy(stable, trimmed, (size_t)trimmed_len);
         stable[trimmed_len] = '\0';
@@ -544,10 +575,65 @@ vkr_material_loader_load_from_mt(VkrResourceLoader *self, String8 path,
   file_close(&fh);
 
   // Batch load all collected textures in parallel
-  vkr_material_batch_load_textures(material_system, temp_arena, &texture_paths,
+  vkr_material_batch_load_textures(material_system, temp_alloc, &texture_paths,
                                    out_material);
 
   return VKR_RENDERER_ERROR_NONE;
+}
+
+// Batch load callback - uses job system from resource system for parallel
+// loading
+vkr_internal uint32_t vkr_material_loader_batch_load_callback(
+    VkrResourceLoader *self, const String8 *paths, uint32_t count,
+    VkrAllocator *temp_alloc, VkrResourceHandleInfo *out_handles,
+    VkrRendererError *out_errors) {
+  assert_log(self != NULL, "Self is NULL");
+  assert_log(paths != NULL, "Paths is NULL");
+  assert_log(out_handles != NULL, "Out handles is NULL");
+  assert_log(out_errors != NULL, "Out errors is NULL");
+
+  // Initialize outputs
+  for (uint32_t i = 0; i < count; i++) {
+    out_handles[i].type = VKR_RESOURCE_TYPE_UNKNOWN;
+    out_handles[i].loader_id = VKR_INVALID_ID;
+    out_errors[i] = VKR_RENDERER_ERROR_NONE;
+  }
+
+  // Get job system from resource system for parallel loading
+  VkrJobSystem *job_system = vkr_resource_system_get_job_system();
+
+  // Allocate material handles array for vkr_material_loader_load_batch
+  VkrMaterialHandle *material_handles =
+      vkr_allocator_alloc(temp_alloc, sizeof(VkrMaterialHandle) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!material_handles) {
+    for (uint32_t i = 0; i < count; i++) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+    return 0;
+  }
+
+  // Use parallel batch loading
+  VkrMaterialBatchContext batch_ctx = {
+      .material_system = (struct VkrMaterialSystem *)self->resource_system,
+      .job_system = job_system,
+      .allocator = temp_alloc,
+      .temp_allocator = temp_alloc,
+  };
+
+  uint32_t loaded_count = vkr_material_loader_load_batch(
+      &batch_ctx, paths, count, material_handles, out_errors);
+
+  // Convert material handles to resource handle infos
+  for (uint32_t i = 0; i < count; i++) {
+    if (material_handles[i].id != 0) {
+      out_handles[i].type = VKR_RESOURCE_TYPE_MATERIAL;
+      out_handles[i].loader_id = self->id;
+      out_handles[i].as.material = material_handles[i];
+    }
+  }
+
+  return loaded_count;
 }
 
 VkrResourceLoader vkr_material_loader_create(void) {
@@ -556,12 +642,7 @@ VkrResourceLoader vkr_material_loader_create(void) {
   loader.can_load = vkr_material_loader_can_load;
   loader.load = vkr_material_loader_load;
   loader.unload = vkr_material_loader_unload;
-
-  file_buffer_arena = arena_create(KB(64), KB(64));
-  if (!file_buffer_arena) {
-    log_fatal("Failed to create file buffer arena for material loader");
-  }
-
+  loader.batch_load = vkr_material_loader_batch_load_callback;
   return loader;
 }
 
@@ -569,9 +650,9 @@ VkrResourceLoader vkr_material_loader_create(void) {
 // Batch Material Loading Implementation
 // =============================================================================
 
-bool8_t vkr_material_loader_parse_file(Arena *arena, String8 path,
-                                       VkrParsedMaterialData *out_data) {
-  assert_log(arena != NULL, "Arena is NULL");
+vkr_internal bool8_t vkr_material_loader_parse_file(
+    VkrAllocator *allocator, String8 path, VkrParsedMaterialData *out_data) {
+  assert_log(allocator != NULL, "Allocator is NULL");
   assert_log(path.str != NULL, "Path is NULL");
   assert_log(out_data != NULL, "Out data is NULL");
 
@@ -603,8 +684,8 @@ bool8_t vkr_material_loader_parse_file(Arena *arena, String8 path,
   }
 
   // Open file
-  FilePath fp =
-      file_path_create((const char *)path.str, arena, FILE_PATH_TYPE_RELATIVE);
+  FilePath fp = file_path_create((const char *)path.str, allocator,
+                                 FILE_PATH_TYPE_RELATIVE);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   FileHandle fh = {0};
@@ -616,7 +697,7 @@ bool8_t vkr_material_loader_parse_file(Arena *arena, String8 path,
 
   // Read entire file
   String8 file_content = {0};
-  FileError read_err = file_read_string(&fh, arena, &file_content);
+  FileError read_err = file_read_string(&fh, allocator, &file_content);
   file_close(&fh);
 
   if (read_err != FILE_ERROR_NONE) {
@@ -734,14 +815,13 @@ vkr_internal bool8_t vkr_material_parse_job_run(VkrJobContext *ctx,
   // Use the job context's thread-local scratch arena for internal allocations
   String8 path = string8_create_from_cstr((const uint8_t *)job->file_path,
                                           string_length(job->file_path));
-  return vkr_material_loader_parse_file(ctx->scratch.arena, path, job->result);
+  return vkr_material_loader_parse_file(ctx->allocator, path, job->result);
 }
 
-uint32_t vkr_material_loader_load_batch(VkrMaterialBatchContext *context,
-                                        const String8 *material_paths,
-                                        uint32_t count,
-                                        VkrMaterialHandle *out_handles,
-                                        VkrRendererError *out_errors) {
+vkr_internal uint32_t vkr_material_loader_load_batch(
+    VkrMaterialBatchContext *context, const String8 *material_paths,
+    uint32_t count, VkrMaterialHandle *out_handles,
+    VkrRendererError *out_errors) {
   assert_log(context != NULL, "Context is NULL");
   assert_log(context->material_system != NULL, "Material system is NULL");
   assert_log(material_paths != NULL, "Material paths is NULL");
@@ -754,7 +834,14 @@ uint32_t vkr_material_loader_load_batch(VkrMaterialBatchContext *context,
 
   VkrMaterialSystem *mat_sys = context->material_system;
   VkrJobSystem *job_sys = context->job_system;
-  Arena *arena = context->arena;
+  VkrAllocatorScope scratch_scope =
+      vkr_allocator_begin_scope(context->temp_allocator);
+  if (!vkr_allocator_scope_is_valid(&scratch_scope)) {
+    for (uint32_t i = 0; i < count; i++) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+    return 0;
+  }
 
   // Initialize outputs
   for (uint32_t i = 0; i < count; i++) {
@@ -763,37 +850,38 @@ uint32_t vkr_material_loader_load_batch(VkrMaterialBatchContext *context,
   }
 
   // Allocate arrays for parsed data and job handles
-  Scratch scratch = scratch_create(arena);
-
-  VkrParsedMaterialData *parsed_data =
-      arena_alloc(scratch.arena, sizeof(VkrParsedMaterialData) * count,
-                  ARENA_MEMORY_TAG_ARRAY);
-  VkrJobHandle *job_handles = arena_alloc(
-      scratch.arena, sizeof(VkrJobHandle) * count, ARENA_MEMORY_TAG_ARRAY);
-  VkrMaterialParseJobPayload *payloads =
-      arena_alloc(scratch.arena, sizeof(VkrMaterialParseJobPayload) * count,
-                  ARENA_MEMORY_TAG_ARRAY);
-  bool8_t *job_submitted = arena_alloc(scratch.arena, sizeof(bool8_t) * count,
-                                       ARENA_MEMORY_TAG_ARRAY);
+  VkrParsedMaterialData *parsed_data = vkr_allocator_alloc(
+      context->temp_allocator, sizeof(VkrParsedMaterialData) * count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrJobHandle *job_handles =
+      vkr_allocator_alloc(context->temp_allocator, sizeof(VkrJobHandle) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrMaterialParseJobPayload *payloads = vkr_allocator_alloc(
+      context->temp_allocator, sizeof(VkrMaterialParseJobPayload) * count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  bool8_t *job_submitted =
+      vkr_allocator_alloc(context->temp_allocator, sizeof(bool8_t) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   if (!parsed_data || !job_handles || !payloads || !job_submitted) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
     for (uint32_t i = 0; i < count; i++) {
       out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     }
+    vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return 0;
   }
 
   // Initialize parsed data and deduplication mapping
   // first_occurrence[i] = index of first occurrence of this material path, or i
   // if unique
-  uint32_t *first_occurrence = arena_alloc(
-      scratch.arena, sizeof(uint32_t) * count, ARENA_MEMORY_TAG_ARRAY);
+  uint32_t *first_occurrence =
+      vkr_allocator_alloc(context->temp_allocator, sizeof(uint32_t) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!first_occurrence) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
     for (uint32_t i = 0; i < count; i++) {
       out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     }
+    vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return 0;
   }
 
@@ -844,7 +932,8 @@ uint32_t vkr_material_loader_load_batch(VkrMaterialBatchContext *context,
         continue;
       }
 
-      String8 mat_name = string8_get_stem(scratch.arena, material_paths[i]);
+      String8 mat_name =
+          string8_get_stem(context->temp_allocator, material_paths[i]);
       if (mat_name.str) {
         VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
         VkrMaterialHandle existing = vkr_material_system_acquire(
@@ -900,21 +989,15 @@ uint32_t vkr_material_loader_load_batch(VkrMaterialBatchContext *context,
         continue;
       }
 
-      String8 mat_name = string8_get_stem(scratch.arena, material_paths[i]);
-      if (mat_name.str) {
-        VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
-        VkrMaterialHandle existing = vkr_material_system_acquire(
-            mat_sys, mat_name, true_v, &acquire_err);
-        if (existing.id != 0) {
-          out_handles[i] = existing;
-          continue;
-        }
+      VkrAllocatorScope parse_scope =
+          vkr_allocator_begin_scope(context->temp_allocator);
+      if (!vkr_allocator_scope_is_valid(&parse_scope)) {
+        out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+        continue;
       }
-
-      Scratch parse_scratch = scratch_create(scratch.arena);
-      vkr_material_loader_parse_file(parse_scratch.arena, material_paths[i],
+      vkr_material_loader_parse_file(context->temp_allocator, material_paths[i],
                                      &parsed_data[i]);
-      scratch_destroy(parse_scratch, ARENA_MEMORY_TAG_ARRAY);
+      vkr_allocator_end_scope(&parse_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     }
   }
 
@@ -949,28 +1032,30 @@ uint32_t vkr_material_loader_load_batch(VkrMaterialBatchContext *context,
   uint32_t *texture_slot = NULL; // Which slot (diffuse/spec/normal)
 
   if (total_textures > 0) {
-    texture_paths = arena_alloc(scratch.arena, sizeof(String8) * total_textures,
-                                ARENA_MEMORY_TAG_ARRAY);
-    texture_handles =
-        arena_alloc(scratch.arena, sizeof(VkrTextureHandle) * total_textures,
-                    ARENA_MEMORY_TAG_ARRAY);
-    texture_errors =
-        arena_alloc(scratch.arena, sizeof(VkrRendererError) * total_textures,
-                    ARENA_MEMORY_TAG_ARRAY);
-    texture_material_index =
-        arena_alloc(scratch.arena, sizeof(uint32_t) * total_textures,
-                    ARENA_MEMORY_TAG_ARRAY);
-    texture_slot = arena_alloc(scratch.arena, sizeof(uint32_t) * total_textures,
-                               ARENA_MEMORY_TAG_ARRAY);
+    texture_paths = vkr_allocator_alloc(context->temp_allocator,
+                                        sizeof(String8) * total_textures,
+                                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    texture_handles = vkr_allocator_alloc(
+        context->temp_allocator, sizeof(VkrTextureHandle) * total_textures,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    texture_errors = vkr_allocator_alloc(
+        context->temp_allocator, sizeof(VkrRendererError) * total_textures,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    texture_material_index = vkr_allocator_alloc(
+        context->temp_allocator, sizeof(uint32_t) * total_textures,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    texture_slot = vkr_allocator_alloc(context->temp_allocator,
+                                       sizeof(uint32_t) * total_textures,
+                                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
     if (!texture_paths || !texture_handles || !texture_errors ||
         !texture_material_index || !texture_slot) {
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
       for (uint32_t i = 0; i < count; i++) {
         if (out_handles[i].id == 0) {
           out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
         }
       }
+      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       return 0;
     }
 
@@ -1047,8 +1132,10 @@ uint32_t vkr_material_loader_load_batch(VkrMaterialBatchContext *context,
     }
 
     size_t name_len = string_length(parsed_data[i].name);
-    char *stable_name =
-        arena_alloc(mat_sys->arena, name_len + 1, ARENA_MEMORY_TAG_STRING);
+    VkrAllocator mat_alloc = {.ctx = mat_sys->arena};
+    vkr_allocator_arena(&mat_alloc);
+    char *stable_name = vkr_allocator_alloc(&mat_alloc, name_len + 1,
+                                            VKR_ALLOCATOR_MEMORY_TAG_STRING);
     if (!stable_name) {
       out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       continue;
@@ -1066,8 +1153,8 @@ uint32_t vkr_material_loader_load_batch(VkrMaterialBatchContext *context,
 
     if (parsed_data[i].shader_name[0] != '\0') {
       size_t shader_len = string_length(parsed_data[i].shader_name);
-      char *stable_shader =
-          arena_alloc(mat_sys->arena, shader_len + 1, ARENA_MEMORY_TAG_STRING);
+      char *stable_shader = vkr_allocator_alloc(
+          &mat_alloc, shader_len + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       if (stable_shader) {
         MemCopy(stable_shader, parsed_data[i].shader_name, shader_len);
         stable_shader[shader_len] = '\0';
@@ -1133,7 +1220,7 @@ uint32_t vkr_material_loader_load_batch(VkrMaterialBatchContext *context,
     }
   }
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   log_debug("Material batch completed: %u/%u materials loaded (from %u unique)",
             loaded, count, unique_count);
   return loaded;

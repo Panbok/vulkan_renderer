@@ -1,4 +1,5 @@
 #include "renderer/resources/loaders/texture_loader.h"
+#include "memory/vkr_allocator.h"
 #include "renderer/systems/vkr_texture_system.h"
 
 #include "stb_image.h"
@@ -43,12 +44,13 @@ vkr_internal bool8_t vkr_texture_loader_can_load(VkrResourceLoader *self,
 }
 
 vkr_internal bool8_t vkr_texture_loader_load(VkrResourceLoader *self,
-                                             String8 name, Arena *temp_arena,
+                                             String8 name,
+                                             VkrAllocator *temp_alloc,
                                              VkrResourceHandleInfo *out_handle,
                                              VkrRendererError *out_error) {
   assert_log(self != NULL, "Self is NULL");
   assert_log(name.str != NULL, "Name is NULL");
-  assert_log(temp_arena != NULL, "Temp arena is NULL");
+  assert_log(temp_alloc != NULL, "Temp alloc is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 

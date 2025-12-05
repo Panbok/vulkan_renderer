@@ -1,10 +1,10 @@
 #include "renderer/resources/loaders/shader_loader.h"
+#include "memory/vkr_allocator.h"
 #include "renderer/systems/vkr_shader_system.h"
 
 #include "containers/str.h"
 #include "core/logger.h"
 #include "filesystem/filesystem.h"
-#include "memory/arena.h"
 #include "renderer/vkr_buffer.h"
 
 // =============================================================================
@@ -23,7 +23,7 @@
 #define VKR_SHADER_ATTRIBUTE_COUNT_MAX 32
 #define VKR_SHADER_UNIFORM_COUNT_MAX 64
 
-// Scratch arena sizes for parsing operations
+// Temporary allocator sizes for parsing operations
 #define VKR_SHADER_PARSER_SCRATCH_SIZE MB(1)
 #define VKR_SHADER_PARSER_LINE_SCRATCH_SIZE KB(8)
 
@@ -48,7 +48,7 @@ typedef enum VkrShaderConfigErrorType {
 typedef struct VkrShaderConfigParseResult {
   bool8_t is_valid;
   VkrShaderConfigErrorType error_type;
-  String8 error_message;  // Arena-allocated detailed error message
+  String8 error_message;  // Allocator-allocated detailed error message
   uint64_t line_number;   // 0 if not line-specific
   uint64_t column_number; // 0 if not column-specific
 } VkrShaderConfigParseResult;
@@ -58,8 +58,9 @@ typedef struct VkrShaderConfigParseResult {
 // =============================================================================
 
 typedef struct VkrShaderConfigParser {
-  Arena *arena;         // Main arena for persistent data
-  Arena *scratch_arena; // Scratch arena for temporary allocations
+  VkrAllocator *allocator; // Main allocator for persistent data
+  VkrAllocator
+      *scratch_allocator; // Scratch allocator for temporary allocations
   String8 current_line;
   uint64_t line_number;
   uint64_t column_number;
@@ -252,11 +253,11 @@ vkr_internal INLINE uint64_t vkr_apply_uniform_register_packing(uint64_t offset,
   return offset;
 }
 
-vkr_internal String8 vkr_create_formatted_error(Arena *arena, const char *fmt,
-                                                ...) {
+vkr_internal String8 vkr_create_formatted_error(VkrAllocator *allocator,
+                                                const char *fmt, ...) {
   va_list args;
   va_start(args, fmt);
-  String8 result = string8_create_formatted_v(arena, fmt, args);
+  String8 result = string8_create_formatted_v(allocator, fmt, args);
   va_end(args);
   return result;
 }
@@ -324,10 +325,10 @@ vkr_internal VkrCullMode vkr_parse_cull_mode(const String8 *cull_str) {
 }
 
 // =============================================================================
-// String Processing Functions (Using Scratch Arenas)
+// String Processing Functions (Using Temporary Allocators)
 // =============================================================================
 
-vkr_internal String8 vkr_trim_string8_scratch(Arena *scratch,
+vkr_internal String8 vkr_trim_string8_scratch(VkrAllocator *allocator,
                                               const String8 *str) {
   if (!str || !str->str || str->length == 0) {
     return (String8){NULL, 0};
@@ -360,8 +361,8 @@ vkr_internal String8 vkr_trim_string8_scratch(Arena *scratch,
 
   // Create trimmed copy in scratch arena
   uint64_t trimmed_length = end - start;
-  uint8_t *trimmed_data = (uint8_t *)arena_alloc(scratch, trimmed_length + 1,
-                                                 ARENA_MEMORY_TAG_STRING);
+  uint8_t *trimmed_data = (uint8_t *)vkr_allocator_alloc(
+      allocator, trimmed_length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!trimmed_data) {
     return (String8){NULL, 0};
   }
@@ -372,7 +373,7 @@ vkr_internal String8 vkr_trim_string8_scratch(Arena *scratch,
   return (String8){trimmed_data, trimmed_length};
 }
 
-vkr_internal String8 vkr_strip_comments_scratch(Arena *scratch,
+vkr_internal String8 vkr_strip_comments_scratch(VkrAllocator *allocator,
                                                 const String8 *str) {
   if (!str || !str->str || str->length == 0) {
     return (String8){NULL, 0};
@@ -398,8 +399,8 @@ vkr_internal String8 vkr_strip_comments_scratch(Arena *scratch,
   }
 
   // Create stripped copy in scratch arena
-  uint8_t *stripped_data =
-      (uint8_t *)arena_alloc(scratch, comment_pos + 1, ARENA_MEMORY_TAG_STRING);
+  uint8_t *stripped_data = (uint8_t *)vkr_allocator_alloc(
+      allocator, comment_pos + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stripped_data) {
     return (String8){NULL, 0};
   }
@@ -410,7 +411,7 @@ vkr_internal String8 vkr_strip_comments_scratch(Arena *scratch,
   return (String8){stripped_data, comment_pos};
 }
 
-vkr_internal bool8_t vkr_split_key_value_scratch(Arena *scratch,
+vkr_internal bool8_t vkr_split_key_value_scratch(VkrAllocator *scratch,
                                                  const String8 *line,
                                                  String8 *out_key,
                                                  String8 *out_value) {
@@ -456,7 +457,7 @@ vkr_internal bool8_t vkr_split_key_value_scratch(Arena *scratch,
   return true_v;
 }
 
-vkr_internal bool8_t vkr_split_csv_values_scratch(Arena *scratch,
+vkr_internal bool8_t vkr_split_csv_values_scratch(VkrAllocator *scratch,
                                                   const String8 *csv_str,
                                                   String8 *out_values,
                                                   uint32_t max_values,
@@ -557,8 +558,8 @@ vkr_internal void vkr_compute_uniform_layout(VkrShaderConfig *cfg) {
 // =============================================================================
 
 vkr_internal VkrShaderConfigParseResult vkr_create_parse_error(
-    Arena *arena, VkrShaderConfigErrorType error_type, uint64_t line_number,
-    uint64_t column_number, const char *fmt, ...) {
+    VkrAllocator *arena_alloc, VkrShaderConfigErrorType error_type,
+    uint64_t line_number, uint64_t column_number, const char *fmt, ...) {
 
   VkrShaderConfigParseResult result = {0};
   result.is_valid = false_v;
@@ -568,7 +569,7 @@ vkr_internal VkrShaderConfigParseResult vkr_create_parse_error(
 
   va_list args;
   va_start(args, fmt);
-  result.error_message = string8_create_formatted_v(arena, fmt, args);
+  result.error_message = string8_create_formatted_v(arena_alloc, fmt, args);
   va_end(args);
 
   return result;
@@ -578,40 +579,46 @@ vkr_internal VkrShaderConfigParseResult
 vkr_parse_attribute_line(VkrShaderConfigParser *parser, const String8 *value,
                          VkrShaderConfig *config) {
 
-  Scratch scratch = scratch_create(parser->scratch_arena);
+  VkrAllocatorScope temp_scope =
+      vkr_allocator_begin_scope(parser->scratch_allocator);
+  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
+    return vkr_create_parse_error(
+        parser->allocator, VKR_SHADER_CONFIG_ERROR_MEMORY_ALLOCATION,
+        parser->line_number, 0, "Failed to allocate scratch scope");
+  }
 
   String8 tokens[3];
   uint32_t token_count;
 
-  if (!vkr_split_csv_values_scratch(scratch.arena, value, tokens, 3,
+  if (!vkr_split_csv_values_scratch(parser->scratch_allocator, value, tokens, 3,
                                     &token_count) ||
       token_count != 2) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return vkr_create_parse_error(
-        parser->arena, VKR_SHADER_CONFIG_ERROR_INVALID_FORMAT,
+        parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_FORMAT,
         parser->line_number, 0, "Attribute line must have format: type,name");
   }
 
   VkrShaderAttributeType type = vkr_parse_attribute_type(&tokens[0]);
   if (type == SHADER_ATTRIBUTE_TYPE_UNDEFINED) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return vkr_create_parse_error(
-        parser->arena, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
+        parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
         parser->line_number, 0, "Unknown attribute type: %.*s",
         tokens[0].length, tokens[0].str);
   }
 
   if (config->attribute_count >= config->attributes.length) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return vkr_create_parse_error(
-        parser->arena, VKR_SHADER_CONFIG_ERROR_BUFFER_OVERFLOW,
+        parser->allocator, VKR_SHADER_CONFIG_ERROR_BUFFER_OVERFLOW,
         parser->line_number, 0, "Too many attributes defined");
   }
 
   VkrShaderAttributeDesc attr = {0};
   attr.type = type;
   // Store the name in the main arena for persistence
-  attr.name = string8_duplicate(parser->arena, &tokens[1]);
+  attr.name = string8_duplicate(parser->allocator, &tokens[1]);
 
   array_set_VkrShaderAttributeDesc(&config->attributes, config->attribute_count,
                                    attr);
@@ -620,7 +627,7 @@ vkr_parse_attribute_line(VkrShaderConfigParser *parser, const String8 *value,
                                  config->attribute_count);
   config->attribute_count++;
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   return (VkrShaderConfigParseResult){.is_valid = true_v};
 }
 
@@ -628,26 +635,32 @@ vkr_internal VkrShaderConfigParseResult
 vkr_parse_uniform_line(VkrShaderConfigParser *parser, const String8 *value,
                        VkrShaderConfig *config) {
 
-  Scratch scratch = scratch_create(parser->scratch_arena);
+  VkrAllocatorScope temp_scope =
+      vkr_allocator_begin_scope(parser->scratch_allocator);
+  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
+    return vkr_create_parse_error(
+        parser->allocator, VKR_SHADER_CONFIG_ERROR_MEMORY_ALLOCATION,
+        parser->line_number, 0, "Failed to allocate scratch scope");
+  }
 
   String8 tokens[4];
   uint32_t token_count;
 
-  if (!vkr_split_csv_values_scratch(scratch.arena, value, tokens, 4,
+  if (!vkr_split_csv_values_scratch(parser->scratch_allocator, value, tokens, 4,
                                     &token_count) ||
       token_count != 3) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return vkr_create_parse_error(
-        parser->arena, VKR_SHADER_CONFIG_ERROR_INVALID_FORMAT,
+        parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_FORMAT,
         parser->line_number, 0,
         "Uniform line must have format: type,scope,name");
   }
 
   VkrShaderUniformType type = vkr_parse_uniform_type(&tokens[0]);
   if (type == SHADER_UNIFORM_TYPE_UNDEFINED) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return vkr_create_parse_error(
-        parser->arena, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
+        parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
         parser->line_number, 0, "Unknown uniform type: %.*s", tokens[0].length,
         tokens[0].str);
   }
@@ -655,17 +668,17 @@ vkr_parse_uniform_line(VkrShaderConfigParser *parser, const String8 *value,
   uint32_t scope_val;
   if (!string8_to_u32(&tokens[1], &scope_val) ||
       scope_val > VKR_SHADER_SCOPE_LOCAL) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return vkr_create_parse_error(
-        parser->arena, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
+        parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
         parser->line_number, 0, "Invalid uniform scope: %.*s", tokens[1].length,
         tokens[1].str);
   }
 
   if (config->uniform_count >= config->uniforms.length) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return vkr_create_parse_error(
-        parser->arena, VKR_SHADER_CONFIG_ERROR_BUFFER_OVERFLOW,
+        parser->allocator, VKR_SHADER_CONFIG_ERROR_BUFFER_OVERFLOW,
         parser->line_number, 0, "Too many uniforms defined");
   }
 
@@ -673,7 +686,7 @@ vkr_parse_uniform_line(VkrShaderConfigParser *parser, const String8 *value,
   uniform.type = type;
   uniform.scope = (VkrShaderScope)scope_val;
   // Store the name in the main arena for persistence
-  uniform.name = string8_duplicate(parser->arena, &tokens[2]);
+  uniform.name = string8_duplicate(parser->allocator, &tokens[2]);
 
   array_set_VkrShaderUniformDesc(&config->uniforms, config->uniform_count,
                                  uniform);
@@ -682,7 +695,7 @@ vkr_parse_uniform_line(VkrShaderConfigParser *parser, const String8 *value,
                                  config->uniform_count);
   config->uniform_count++;
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   return (VkrShaderConfigParseResult){.is_valid = true_v};
 }
 
@@ -690,17 +703,23 @@ vkr_internal VkrShaderConfigParseResult
 vkr_parse_stages_line(VkrShaderConfigParser *parser, const String8 *value,
                       VkrShaderConfig *config) {
 
-  Scratch scratch = scratch_create(parser->scratch_arena);
+  VkrAllocatorScope temp_scope =
+      vkr_allocator_begin_scope(parser->scratch_allocator);
+  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
+    return vkr_create_parse_error(
+        parser->allocator, VKR_SHADER_CONFIG_ERROR_MEMORY_ALLOCATION,
+        parser->line_number, 0, "Failed to allocate scratch scope");
+  }
 
   String8 tokens[VKR_SHADER_CONFIG_MAX_STAGES];
   uint32_t token_count;
 
-  if (!vkr_split_csv_values_scratch(scratch.arena, value, tokens,
+  if (!vkr_split_csv_values_scratch(parser->scratch_allocator, value, tokens,
                                     VKR_SHADER_CONFIG_MAX_STAGES,
                                     &token_count)) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return vkr_create_parse_error(
-        parser->arena, VKR_SHADER_CONFIG_ERROR_PARSE_FAILED,
+        parser->allocator, VKR_SHADER_CONFIG_ERROR_PARSE_FAILED,
         parser->line_number, 0, "Failed to parse stages list");
   }
 
@@ -708,9 +727,9 @@ vkr_parse_stages_line(VkrShaderConfigParser *parser, const String8 *value,
        i < token_count && config->stage_count < config->stages.length; i++) {
     VkrShaderStage stage = vkr_parse_shader_stage(&tokens[i]);
     if (stage == VKR_SHADER_STAGE_COUNT) {
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       return vkr_create_parse_error(
-          parser->arena, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
+          parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
           parser->line_number, 0, "Unknown shader stage: %.*s",
           tokens[i].length, tokens[i].str);
     }
@@ -726,7 +745,7 @@ vkr_parse_stages_line(VkrShaderConfigParser *parser, const String8 *value,
     config->stage_count++;
   }
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   return (VkrShaderConfigParseResult){.is_valid = true_v};
 }
 
@@ -734,23 +753,29 @@ vkr_internal VkrShaderConfigParseResult
 vkr_parse_stage_files_line(VkrShaderConfigParser *parser, const String8 *value,
                            VkrShaderConfig *config) {
 
-  Scratch scratch = scratch_create(parser->scratch_arena);
+  VkrAllocatorScope temp_scope =
+      vkr_allocator_begin_scope(parser->scratch_allocator);
+  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
+    return vkr_create_parse_error(
+        parser->allocator, VKR_SHADER_CONFIG_ERROR_MEMORY_ALLOCATION,
+        parser->line_number, 0, "Failed to allocate scratch scope");
+  }
 
   String8 tokens[VKR_SHADER_CONFIG_MAX_STAGES];
   uint32_t token_count;
 
-  if (!vkr_split_csv_values_scratch(scratch.arena, value, tokens,
+  if (!vkr_split_csv_values_scratch(parser->scratch_allocator, value, tokens,
                                     VKR_SHADER_CONFIG_MAX_STAGES,
                                     &token_count)) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return vkr_create_parse_error(
-        parser->arena, VKR_SHADER_CONFIG_ERROR_PARSE_FAILED,
+        parser->allocator, VKR_SHADER_CONFIG_ERROR_PARSE_FAILED,
         parser->line_number, 0, "Failed to parse stage files list");
   }
 
   if (token_count == 1) {
     // Single file for all stages - store in main arena
-    String8 filename = string8_duplicate(parser->arena, &tokens[0]);
+    String8 filename = string8_duplicate(parser->allocator, &tokens[0]);
     for (uint32_t i = 0; i < config->stage_count; i++) {
       VkrShaderStageFile *stage_file =
           array_get_VkrShaderStageFile(&config->stages, i);
@@ -763,26 +788,27 @@ vkr_parse_stage_files_line(VkrShaderConfigParser *parser, const String8 *value,
     for (uint32_t i = 0; i < files_to_assign; i++) {
       VkrShaderStageFile *stage_file =
           array_get_VkrShaderStageFile(&config->stages, i);
-      stage_file->filename = string8_duplicate(parser->arena, &tokens[i]);
+      stage_file->filename = string8_duplicate(parser->allocator, &tokens[i]);
     }
   }
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   return (VkrShaderConfigParseResult){.is_valid = true_v};
 }
 
 vkr_internal VkrShaderConfigParseResult
-vkr_initialize_config(Arena *arena, VkrShaderConfig *config) {
+vkr_initialize_config(VkrAllocator *config_alloc, VkrShaderConfig *config) {
+
   config->attributes = array_create_VkrShaderAttributeDesc(
-      arena, VKR_SHADER_ATTRIBUTE_COUNT_MAX);
-  config->uniforms =
-      array_create_VkrShaderUniformDesc(arena, VKR_SHADER_UNIFORM_COUNT_MAX);
-  config->uniform_name_to_index =
-      vkr_hash_table_create_uint32_t(arena, VKR_SHADER_UNIFORM_COUNT_MAX);
-  config->attribute_name_to_index =
-      vkr_hash_table_create_uint32_t(arena, VKR_SHADER_ATTRIBUTE_COUNT_MAX);
+      config_alloc, VKR_SHADER_ATTRIBUTE_COUNT_MAX);
+  config->uniforms = array_create_VkrShaderUniformDesc(
+      config_alloc, VKR_SHADER_UNIFORM_COUNT_MAX);
+  config->uniform_name_to_index = vkr_hash_table_create_uint32_t(
+      config_alloc, VKR_SHADER_UNIFORM_COUNT_MAX);
+  config->attribute_name_to_index = vkr_hash_table_create_uint32_t(
+      config_alloc, VKR_SHADER_ATTRIBUTE_COUNT_MAX);
   config->stages =
-      array_create_VkrShaderStageFile(arena, VKR_SHADER_STAGE_COUNT);
+      array_create_VkrShaderStageFile(config_alloc, VKR_SHADER_STAGE_COUNT);
 
   config->attribute_count = 0;
   config->uniform_count = 0;
@@ -796,52 +822,58 @@ vkr_initialize_config(Arena *arena, VkrShaderConfig *config) {
   return (VkrShaderConfigParseResult){.is_valid = true_v};
 }
 
-vkr_internal VkrShaderConfigParseResult
-vkr_shader_loader_parse(String8 path, Arena *arena, Arena *scratch_arena,
-                        VkrShaderConfig *out_config) {
+vkr_internal VkrShaderConfigParseResult vkr_shader_loader_parse(
+    String8 path, VkrAllocator *allocator, VkrAllocator *scratch_alloc,
+    VkrShaderConfig *out_config) {
+  assert_log(allocator != NULL, "Allocator is NULL");
+  assert_log(scratch_alloc != NULL, "Scratch alloc is NULL");
+  assert_log(out_config != NULL, "Out config is NULL");
+
   if (!path.str || path.length == 0) {
-    return vkr_create_parse_error(arena, VKR_SHADER_CONFIG_ERROR_INVALID_FORMAT,
-                                  0, 0, "Invalid file path");
+    return vkr_create_parse_error(allocator,
+                                  VKR_SHADER_CONFIG_ERROR_INVALID_FORMAT, 0, 0,
+                                  "Invalid file path");
   }
 
-  if (!arena || !out_config) {
-    return vkr_create_parse_error(arena, VKR_SHADER_CONFIG_ERROR_INVALID_FORMAT,
-                                  0, 0, "Invalid parameters");
+  if (!allocator || !out_config) {
+    return vkr_create_parse_error(allocator,
+                                  VKR_SHADER_CONFIG_ERROR_INVALID_FORMAT, 0, 0,
+                                  "Invalid parameters");
   }
 
-  if (!scratch_arena) {
-    return vkr_create_parse_error(arena,
+  if (!scratch_alloc) {
+    return vkr_create_parse_error(allocator,
                                   VKR_SHADER_CONFIG_ERROR_MEMORY_ALLOCATION, 0,
                                   0, "Failed to create scratch arena");
   }
 
   // Initialize configuration
   VkrShaderConfigParseResult init_result =
-      vkr_initialize_config(arena, out_config);
+      vkr_initialize_config(allocator, out_config);
   if (!init_result.is_valid) {
     return init_result;
   }
 
   // Create parser context
   VkrShaderConfigParser parser = {0};
-  parser.arena = arena;
-  parser.scratch_arena = scratch_arena;
+  parser.allocator = allocator;
+  parser.scratch_allocator = scratch_alloc;
   parser.line_number = 0;
   parser.column_number = 0;
   parser.file_path = path;
 
   // Open file
-  FilePath fp =
-      file_path_create((const char *)path.str, arena, FILE_PATH_TYPE_RELATIVE);
+  FilePath fp = file_path_create((const char *)path.str, parser.allocator,
+                                 FILE_PATH_TYPE_RELATIVE);
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   FileHandle handle = {0};
   FileError fe = file_open(&fp, mode, &handle);
 
   if (fe != FILE_ERROR_NONE) {
-    return vkr_create_parse_error(arena, VKR_SHADER_CONFIG_ERROR_FILE_NOT_FOUND,
-                                  0, 0, "Failed to open shader config file: %s",
-                                  path.str);
+    return vkr_create_parse_error(
+        parser.allocator, VKR_SHADER_CONFIG_ERROR_FILE_NOT_FOUND, 0, 0,
+        "Failed to open shader config file: %s", path.str);
   }
 
   // Required fields tracking
@@ -851,45 +883,50 @@ vkr_shader_loader_parse(String8 path, Arena *arena, Arena *scratch_arena,
 
   // Parse file line by line
   while (true) {
-    // Create a line-level scratch for temporary line processing
-    Scratch line_scratch = scratch_create(scratch_arena);
+    // Create a line-level scope for temporary line processing
+    VkrAllocatorScope line_scope = vkr_allocator_begin_scope(scratch_alloc);
+    if (!vkr_allocator_scope_is_valid(&line_scope)) {
+      file_close(&handle);
+      return vkr_create_parse_error(
+          parser.allocator, VKR_SHADER_CONFIG_ERROR_MEMORY_ALLOCATION,
+          parser.line_number, 0, "Failed to allocate line scope");
+    }
 
     String8 raw_line = {0};
-    fe = file_read_line(&handle, line_scratch.arena, line_scratch.arena,
+    fe = file_read_line(&handle, scratch_alloc, scratch_alloc,
                         VKR_SHADER_CONFIG_MAX_LINE_LENGTH, &raw_line);
 
     if (fe == FILE_ERROR_EOF) {
-      scratch_destroy(line_scratch, ARENA_MEMORY_TAG_STRING);
+      vkr_allocator_end_scope(&line_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       break;
     }
 
     if (fe != FILE_ERROR_NONE) {
-      scratch_destroy(line_scratch, ARENA_MEMORY_TAG_STRING);
+      vkr_allocator_end_scope(&line_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       file_close(&handle);
       return vkr_create_parse_error(
-          arena, VKR_SHADER_CONFIG_ERROR_FILE_READ_FAILED, parser.line_number,
-          0, "Failed to read line from file");
+          parser.allocator, VKR_SHADER_CONFIG_ERROR_FILE_READ_FAILED,
+          parser.line_number, 0, "Failed to read line from file");
     }
 
     parser.line_number++;
     parser.current_line = raw_line;
 
     // Skip empty lines and comments
-    String8 trimmed_line =
-        vkr_trim_string8_scratch(line_scratch.arena, &raw_line);
+    String8 trimmed_line = vkr_trim_string8_scratch(scratch_alloc, &raw_line);
     if (trimmed_line.length == 0 || trimmed_line.str[0] == '#' ||
         trimmed_line.str[0] == ';') {
-      scratch_destroy(line_scratch, ARENA_MEMORY_TAG_STRING);
+      vkr_allocator_end_scope(&line_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       continue;
     }
 
     // Parse key=value using line scratch
     String8 key, value;
-    if (!vkr_split_key_value_scratch(line_scratch.arena, &trimmed_line, &key,
+    if (!vkr_split_key_value_scratch(scratch_alloc, &trimmed_line, &key,
                                      &value)) {
       log_warn("Malformed key=value line %u: %.*s", parser.line_number,
                trimmed_line.length, trimmed_line.str);
-      scratch_destroy(line_scratch, ARENA_MEMORY_TAG_STRING);
+      vkr_allocator_end_scope(&line_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       continue; // Skip malformed lines
     }
 
@@ -899,14 +936,14 @@ vkr_shader_loader_parse(String8 path, Arena *arena, Arena *scratch_arena,
     if (vkr_string8_equals_cstr_i(&key, "name")) {
       if (value.length > VKR_SHADER_NAME_MAX_LENGTH) {
         line_result = vkr_create_parse_error(
-            arena, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE, parser.line_number, 0,
-            "Shader name too long");
+            parser.allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
+            parser.line_number, 0, "Shader name too long");
       } else {
-        out_config->name = string8_duplicate(arena, &value);
+        out_config->name = string8_duplicate(parser.allocator, &value);
         has_name = true_v;
       }
     } else if (vkr_string8_equals_cstr_i(&key, "renderpass")) {
-      out_config->renderpass_name = string8_duplicate(arena, &value);
+      out_config->renderpass_name = string8_duplicate(parser.allocator, &value);
       has_renderpass = true_v;
     } else if (vkr_string8_equals_cstr_i(&key, "stages")) {
       line_result = vkr_parse_stages_line(&parser, &value, out_config);
@@ -939,7 +976,7 @@ vkr_shader_loader_parse(String8 path, Arena *arena, Arena *scratch_arena,
       log_warn("Unknown key: %.*s", key.length, key.str);
     }
 
-    scratch_destroy(line_scratch, ARENA_MEMORY_TAG_STRING);
+    vkr_allocator_end_scope(&line_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
 
     if (!line_result.is_valid) {
       file_close(&handle);
@@ -952,7 +989,7 @@ vkr_shader_loader_parse(String8 path, Arena *arena, Arena *scratch_arena,
   // Validate required fields
   if (!has_name || !has_stages) {
     return vkr_create_parse_error(
-        arena, VKR_SHADER_CONFIG_ERROR_MISSING_REQUIRED_FIELD, 0, 0,
+        parser.allocator, VKR_SHADER_CONFIG_ERROR_MISSING_REQUIRED_FIELD, 0, 0,
         "Missing required field(s): name and stages are both required");
   }
 
@@ -1061,12 +1098,13 @@ vkr_internal bool8_t vkr_shader_loader_can_load(VkrResourceLoader *self,
 }
 
 vkr_internal bool8_t vkr_shader_loader_load(VkrResourceLoader *self,
-                                            String8 name, Arena *temp_arena,
+                                            String8 name,
+                                            VkrAllocator *temp_alloc,
                                             VkrResourceHandleInfo *out_handle,
                                             VkrRendererError *out_error) {
   assert_log(self != NULL, "Self is NULL");
   assert_log(name.str != NULL, "Name is NULL");
-  assert_log(temp_arena != NULL, "Temp arena is NULL");
+  assert_log(temp_alloc != NULL, "Temp alloc is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
@@ -1074,8 +1112,9 @@ vkr_internal bool8_t vkr_shader_loader_load(VkrResourceLoader *self,
   assert_log(shader_system != NULL, "Shader system is NULL");
   assert_log(shader_system->arena != NULL, "Shader system arena is NULL");
 
-  VkrShaderConfig *cfg = arena_alloc(
-      shader_system->arena, sizeof(VkrShaderConfig), ARENA_MEMORY_TAG_RENDERER);
+  VkrShaderConfig *cfg =
+      vkr_allocator_alloc(&shader_system->allocator, sizeof(VkrShaderConfig),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!cfg) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
@@ -1083,7 +1122,7 @@ vkr_internal bool8_t vkr_shader_loader_load(VkrResourceLoader *self,
   MemZero(cfg, sizeof(*cfg));
 
   VkrShaderConfigParseResult parse_result =
-      vkr_shader_loader_parse(name, shader_system->arena, temp_arena, cfg);
+      vkr_shader_loader_parse(name, &shader_system->allocator, temp_alloc, cfg);
   if (!parse_result.is_valid) {
     const char *err_str =
         vkr_shader_config_error_string(parse_result.error_type);
