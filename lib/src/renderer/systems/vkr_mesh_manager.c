@@ -261,6 +261,10 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
 
   Array_VkrSubMesh submesh_array =
       array_create_VkrSubMesh(&manager->allocator, desc->submesh_count);
+  if (!submesh_array.data) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
   MemZero(submesh_array.data,
           submesh_array.length * sizeof(*submesh_array.data));
 
