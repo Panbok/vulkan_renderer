@@ -6,6 +6,7 @@
 #include "core/vkr_window.h"
 #include "math/mat.h"
 #include "math/vec.h"
+#include "memory/vkr_allocator.h"
 #include "memory/arena.h"
 
 #define VKR_MAX_MOUSE_DELTA 100.0f
@@ -139,6 +140,7 @@ typedef struct VkrCameraSystemConfig {
  */
 typedef struct VkrCameraSystem {
   Arena *arena;
+  VkrAllocator allocator;
   Array_VkrCamera cameras;
   VkrHashTable_VkrCameraEntry camera_map;
   uint32_t next_free_index;

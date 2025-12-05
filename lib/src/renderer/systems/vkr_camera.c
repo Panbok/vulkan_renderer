@@ -1,4 +1,5 @@
 #include "vkr_camera.h"
+#include "memory/vkr_arena_allocator.h"
 
 vkr_internal Mat4 vkr_camera_calculate_view(const VkrCamera *camera) {
   return mat4_look_at(camera->position,
@@ -228,8 +229,8 @@ vkr_internal const char *vkr_camera_registry_store_name(VkrCameraSystem *system,
   assert_log(system != NULL, "System is NULL");
   assert_log(name.str != NULL, "Name is NULL");
 
-  char *key = (char *)arena_alloc(system->arena, name.length + 1,
-                                  ARENA_MEMORY_TAG_STRING);
+  char *key = (char *)vkr_allocator_alloc(&system->allocator, name.length + 1,
+                                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!key) {
     return NULL;
   }
@@ -305,10 +306,13 @@ bool8_t vkr_camera_registry_init(const VkrCameraSystemConfig *config,
     return false_v;
   }
 
+  out_system->allocator = (VkrAllocator){.ctx = out_system->arena};
+  vkr_allocator_arena(&out_system->allocator);
+
   out_system->cameras =
-      array_create_VkrCamera(out_system->arena, config->max_camera_count);
+      array_create_VkrCamera(&out_system->allocator, config->max_camera_count);
   out_system->camera_map = vkr_hash_table_create_VkrCameraEntry(
-      out_system->arena, ((uint64_t)config->max_camera_count) * 2ULL);
+      &out_system->allocator, ((uint64_t)config->max_camera_count) * 2ULL);
 
   out_system->next_free_index = 0;
   out_system->generation_counter = 1;
