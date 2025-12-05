@@ -129,7 +129,7 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
                                               VkrRendererError *out_error) {
   assert_log(self != NULL, "Self is NULL");
   assert_log(name.str != NULL, "Name is NULL");
-  assert_log(temp_alloc != NULL, "Temp arena is NULL");
+  assert_log(temp_alloc != NULL, "Temp allocator is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
@@ -367,12 +367,12 @@ vkr_internal VkrRendererError vkr_material_loader_load_from_mt(
     VkrMaterial *out_material) {
   assert_log(self != NULL, "Self is NULL");
   assert_log(path.str != NULL, "Path is NULL");
-  assert_log(temp_alloc != NULL, "Temp arena is NULL");
+  assert_log(temp_alloc != NULL, "Temp allocator is NULL");
   assert_log(out_material != NULL, "Out material is NULL");
 
   VkrMaterialSystem *material_system =
       (VkrMaterialSystem *)self->resource_system;
-  ;
+
   FilePath fp = file_path_create((const char *)path.str, temp_alloc,
                                  FILE_PATH_TYPE_RELATIVE);
   FileMode mode = bitset8_create();

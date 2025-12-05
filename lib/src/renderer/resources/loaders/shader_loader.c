@@ -1110,7 +1110,6 @@ vkr_internal bool8_t vkr_shader_loader_load(VkrResourceLoader *self,
 
   VkrShaderSystem *shader_system = (VkrShaderSystem *)self->resource_system;
   assert_log(shader_system != NULL, "Shader system is NULL");
-  assert_log(shader_system->arena != NULL, "Shader system arena is NULL");
 
   VkrShaderConfig *cfg =
       vkr_allocator_alloc(&shader_system->allocator, sizeof(VkrShaderConfig),
