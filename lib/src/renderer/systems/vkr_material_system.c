@@ -18,36 +18,27 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   system->arena =
       arena_create(VKR_MATERIAL_SYSTEM_DEFAULT_ARENA_RSV,
                    VKR_MATERIAL_SYSTEM_DEFAULT_ARENA_CMT, app_arena_flags);
-  system->temp_arena =
-      arena_create(KB(64), KB(64)); // small temp arena for parsing
-  if (!system->arena || !system->temp_arena) {
-    log_fatal("Failed to create material system arenas");
-    if (system->arena)
-      arena_destroy(system->arena);
-    if (system->temp_arena)
-      arena_destroy(system->temp_arena);
-    return false_v;
-  }
+  system->allocator = (VkrAllocator){.ctx = system->arena};
+  vkr_allocator_arena(&system->allocator);
 
   system->texture_system = texture_system;
   system->shader_system = shader_system;
   system->config = *config;
   system->materials =
-      array_create_VkrMaterial(system->arena, config->max_material_count);
+      array_create_VkrMaterial(&system->allocator, config->max_material_count);
 
   uint64_t hash_size = ((uint64_t)config->max_material_count) * 2ULL;
   if (hash_size > UINT32_MAX) {
     log_fatal("Hash table size overflow for max_material_count %u",
               config->max_material_count);
     arena_destroy(system->arena);
-    arena_destroy(system->temp_arena);
     return false_v;
   }
   system->material_by_name =
-      vkr_hash_table_create_VkrMaterialEntry(system->arena, hash_size);
+      vkr_hash_table_create_VkrMaterialEntry(&system->allocator, hash_size);
 
   system->free_ids =
-      array_create_uint32_t(system->arena, config->max_material_count);
+      array_create_uint32_t(&system->allocator, config->max_material_count);
   system->free_count = 0;
   system->next_free_index = 0;
   system->generation_counter = 1;
@@ -77,8 +68,6 @@ void vkr_material_system_shutdown(VkrMaterialSystem *system) {
   array_destroy_uint32_t(&system->free_ids);
   if (system->arena)
     arena_destroy(system->arena);
-  if (system->temp_arena)
-    arena_destroy(system->temp_arena);
   MemZero(system, sizeof(*system));
 }
 
@@ -139,9 +128,6 @@ VkrMaterialHandle vkr_material_system_acquire(VkrMaterialSystem *system,
     return (VkrMaterialHandle){.id = m->id, .generation = m->generation};
   }
 
-  // Material not loaded - return error
-  log_warn("Material '%s' not yet loaded, use resource system to load first",
-           string8_cstr(&name));
   *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
   return (VkrMaterialHandle){.id = 0, .generation = 0};
 }

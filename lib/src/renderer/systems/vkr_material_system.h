@@ -34,8 +34,8 @@ VkrHashTable(VkrMaterialEntry);
 
 typedef struct VkrMaterialSystem {
   // Internal arenas owned by the material system
-  Arena *arena;      // persistent allocations (materials, names, maps)
-  Arena *temp_arena; // temporary allocations during parsing/loading
+  Arena *arena;           // persistent allocations (materials, names, maps)
+  VkrAllocator allocator; // persistent allocator wrapping arena
   VkrMaterialSystemConfig config;
 
   Array_VkrMaterial materials;                    // contiguous array
