@@ -11,6 +11,7 @@
 #include "containers/str.h"
 #include "defines.h"
 #include "math/vkr_transform.h"
+#include "memory/vkr_allocator.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
@@ -89,6 +90,8 @@ typedef struct VkrMeshLoaderContext VkrMeshLoaderContext;
 typedef struct VkrMeshManager {
   Arena *arena;
   Arena *scratch_arena;
+  VkrAllocator allocator;
+  VkrAllocator scratch_allocator;
   VkrGeometrySystem *geometry_system;
   VkrMaterialSystem *material_system;
   VkrPipelineRegistry *pipeline_registry;
@@ -175,14 +178,6 @@ uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
                                      const VkrMeshLoadDesc *descs,
                                      uint32_t count, uint32_t *out_indices,
                                      VkrRendererError *out_errors);
-
-/**
- * @brief Sets the mesh loader context for batch loading operations.
- * @param manager The mesh manager.
- * @param context The mesh loader context.
- */
-void vkr_mesh_manager_set_loader_context(VkrMeshManager *manager,
-                                         VkrMeshLoaderContext *context);
 
 /**
  * @brief Removes a mesh by index.

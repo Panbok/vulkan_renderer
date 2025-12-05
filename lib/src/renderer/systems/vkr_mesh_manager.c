@@ -4,6 +4,7 @@
 #include "core/logger.h"
 #include "defines.h"
 #include "math/vkr_transform.h"
+#include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/loaders/mesh_loader.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_resource_system.h"
@@ -174,10 +175,15 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
     manager->config.max_mesh_count = 1;
   }
 
+  manager->allocator.ctx = manager->arena;
+  vkr_allocator_arena(&manager->allocator);
+  manager->scratch_allocator.ctx = manager->scratch_arena;
+  vkr_allocator_arena(&manager->scratch_allocator);
+
   manager->meshes =
-      array_create_VkrMesh(manager->arena, manager->config.max_mesh_count);
-  manager->free_indices =
-      array_create_uint32_t(manager->arena, manager->config.max_mesh_count);
+      array_create_VkrMesh(&manager->allocator, manager->config.max_mesh_count);
+  manager->free_indices = array_create_uint32_t(&manager->allocator,
+                                                manager->config.max_mesh_count);
   manager->free_count = 0;
   manager->mesh_count = 0;
   manager->next_free_index = 0;
@@ -254,7 +260,7 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
   }
 
   Array_VkrSubMesh submesh_array =
-      array_create_VkrSubMesh(manager->arena, desc->submesh_count);
+      array_create_VkrSubMesh(&manager->allocator, desc->submesh_count);
   MemZero(submesh_array.data,
           submesh_array.length * sizeof(*submesh_array.data));
 
@@ -295,7 +301,7 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
                                ? sub_desc->pipeline_domain
                                : VKR_PIPELINE_DOMAIN_WORLD,
         .shader_override =
-            string8_duplicate(manager->arena, &sub_desc->shader_override),
+            string8_duplicate(&manager->allocator, &sub_desc->shader_override),
         .pipeline_dirty = true_v,
         .owns_geometry = owns_geometry,
         .owns_material = owns_material,
@@ -377,23 +383,24 @@ bool8_t vkr_mesh_manager_load(VkrMeshManager *manager,
   return true_v;
 }
 
-// Internal function to process batch results and create mesh entries
-vkr_internal bool8_t vkr_mesh_manager_process_batch_result(
-    VkrMeshManager *manager, VkrMeshBatchResult *batch_result,
-    const VkrMeshLoadDesc *desc, uint32_t *out_index,
+vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
+    VkrMeshManager *manager, const VkrResourceHandleInfo *handle_info,
+    VkrRendererError error, const VkrMeshLoadDesc *desc, uint32_t *out_index,
     VkrRendererError *out_error) {
   assert_log(manager != NULL, "Manager is NULL");
   assert_log(desc != NULL, "Desc is NULL");
 
-  if (!batch_result || !batch_result->success || !batch_result->result) {
+  if (!handle_info || handle_info->type != VKR_RESOURCE_TYPE_MESH ||
+      !handle_info->as.mesh) {
     if (out_error) {
-      *out_error = batch_result ? batch_result->error
-                                : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      *out_error = error != VKR_RENDERER_ERROR_NONE
+                       ? error
+                       : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     }
     return false_v;
   }
 
-  VkrMeshLoaderResult *mesh_result = batch_result->result;
+  VkrMeshLoaderResult *mesh_result = handle_info->as.mesh;
 
   // Validate mesh result
   if (mesh_result->subsets.length == 0 || !mesh_result->subsets.data) {
@@ -406,16 +413,24 @@ vkr_internal bool8_t vkr_mesh_manager_process_batch_result(
   }
 
   uint32_t subset_count = (uint32_t)mesh_result->subsets.length;
-  Scratch scratch = scratch_create(manager->scratch_arena);
-  VkrSubMeshDesc *sub_descs = arena_alloc(
-      scratch.arena, (uint64_t)subset_count * sizeof(VkrSubMeshDesc),
-      ARENA_MEMORY_TAG_ARRAY);
-
-  if (!sub_descs) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  VkrAllocator *scratch_allocator = &manager->scratch_allocator;
+  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(scratch_allocator);
+  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
     if (out_error) {
       *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     }
+    return false_v;
+  }
+
+  VkrSubMeshDesc *sub_descs = vkr_allocator_alloc(
+      scratch_allocator, (uint64_t)subset_count * sizeof(VkrSubMeshDesc),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  if (!sub_descs) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return false_v;
   }
 
@@ -466,7 +481,7 @@ vkr_internal bool8_t vkr_mesh_manager_process_batch_result(
     String8 shader_override_copy = {0};
     if (shader_override.str && shader_override.length > 0) {
       shader_override_copy =
-          string8_duplicate(manager->arena, &shader_override);
+          string8_duplicate(&manager->allocator, &shader_override);
     }
 
     sub_descs[built_count++] = (VkrSubMeshDesc){
@@ -488,7 +503,7 @@ vkr_internal bool8_t vkr_mesh_manager_process_batch_result(
                                     sub_descs[i].geometry);
       }
     }
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return false_v;
   }
 
@@ -517,7 +532,7 @@ vkr_internal bool8_t vkr_mesh_manager_process_batch_result(
     }
   }
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   if (result) {
     VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, mesh_index);
@@ -726,12 +741,6 @@ VkrSubMesh *vkr_mesh_manager_get_submesh(VkrMeshManager *manager,
   return array_get_VkrSubMesh(&mesh->submeshes, submesh_index);
 }
 
-void vkr_mesh_manager_set_loader_context(VkrMeshManager *manager,
-                                         VkrMeshLoaderContext *context) {
-  assert_log(manager != NULL, "Manager is NULL");
-  manager->loader_context = context;
-}
-
 uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
                                      const VkrMeshLoadDesc *descs,
                                      uint32_t count, uint32_t *out_indices,
@@ -755,28 +764,9 @@ uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
     }
   }
 
-  // Batch loading requires loader_context
-  if (!manager->loader_context) {
-    log_error("MeshManager: loader_context not set, cannot load meshes");
-    if (out_errors) {
-      for (uint32_t i = 0; i < count; i++) {
-        out_errors[i] = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-      }
-    }
-    return 0;
-  }
-
-  // Collect mesh paths
-  Scratch scratch = scratch_create(manager->scratch_arena);
-
-  String8 *mesh_paths = arena_alloc(scratch.arena, sizeof(String8) * count,
-                                    ARENA_MEMORY_TAG_ARRAY);
-  VkrMeshBatchResult *batch_results =
-      arena_alloc(scratch.arena, sizeof(VkrMeshBatchResult) * count,
-                  ARENA_MEMORY_TAG_ARRAY);
-
-  if (!mesh_paths || !batch_results) {
-    scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  VkrAllocator *scratch_allocator = &manager->scratch_allocator;
+  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(scratch_allocator);
+  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
     if (out_errors) {
       for (uint32_t i = 0; i < count; i++) {
         out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -785,13 +775,34 @@ uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
     return 0;
   }
 
+  String8 *mesh_paths =
+      vkr_allocator_alloc(scratch_allocator, sizeof(String8) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrResourceHandleInfo *handle_infos = vkr_allocator_alloc(
+      scratch_allocator, sizeof(VkrResourceHandleInfo) * count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrRendererError *load_errors =
+      vkr_allocator_alloc(scratch_allocator, sizeof(VkrRendererError) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  if (!mesh_paths || !handle_infos || !load_errors) {
+    if (out_errors) {
+      for (uint32_t i = 0; i < count; i++) {
+        out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      }
+    }
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return 0;
+  }
+
   for (uint32_t i = 0; i < count; i++) {
     mesh_paths[i] = descs[i].mesh_path;
   }
 
-  // Batch load all meshes
-  uint32_t meshes_loaded = vkr_mesh_loader_load_batch(
-      manager->loader_context, mesh_paths, count, scratch.arena, batch_results);
+  // Batch load all meshes via resource system
+  uint32_t meshes_loaded = vkr_resource_system_load_batch(
+      VKR_RESOURCE_TYPE_MESH, mesh_paths, count, scratch_allocator,
+      handle_infos, load_errors);
 
   log_debug("Mesh manager batch: %u/%u meshes loaded from files", meshes_loaded,
             count);
@@ -802,8 +813,9 @@ uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
     uint32_t mesh_index = VKR_INVALID_ID;
     VkrRendererError err = VKR_RENDERER_ERROR_NONE;
 
-    if (vkr_mesh_manager_process_batch_result(manager, &batch_results[i],
-                                              &descs[i], &mesh_index, &err)) {
+    if (vkr_mesh_manager_process_resource_handle(manager, &handle_infos[i],
+                                                 load_errors[i], &descs[i],
+                                                 &mesh_index, &err)) {
       if (out_indices) {
         out_indices[i] = mesh_index;
       }
@@ -815,11 +827,15 @@ uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
     }
   }
 
-  // Free batch results (the arenas are freed with
-  // vkr_mesh_loader_free_batch_results)
-  vkr_mesh_loader_free_batch_results(batch_results, count);
+  // Unload mesh resources (cleanup is handled by resource system)
+  for (uint32_t i = 0; i < count; i++) {
+    if (handle_infos[i].type == VKR_RESOURCE_TYPE_MESH &&
+        handle_infos[i].as.mesh) {
+      vkr_resource_system_unload(&handle_infos[i], mesh_paths[i]);
+    }
+  }
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   log_debug("Mesh manager batch complete: %u/%u mesh entries created",
             entries_created, count);
