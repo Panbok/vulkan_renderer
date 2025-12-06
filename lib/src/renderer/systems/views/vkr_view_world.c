@@ -16,41 +16,12 @@
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/systems/vkr_view_system.h"
 
-typedef enum VkrWorldMeshesLoadingState {
-  VKR_WORLD_MESHES_LOADING_STATE_NOT_LOADED = 0,
-  VKR_WORLD_MESHES_LOADING_STATE_LOADING = 1,
-  VKR_WORLD_MESHES_LOADING_STATE_LOADED = 2,
-} VkrWorldMeshesLoadingState;
-
 typedef struct VkrViewWorldState {
   VkrShaderConfig shader_config;
   VkrPipelineHandle pipeline;
   VkrPipelineHandle transparent_pipeline;
   VkrMaterialHandle default_material;
-  volatile VkrWorldMeshesLoadingState world_meshes_state;
 } VkrViewWorldState;
-
-vkr_internal bool8_t vkr_view_world_on_load_meshes_event(Event *event,
-                                                         UserData user_data) {
-  assert_log(event != NULL, "Event is NULL");
-  assert_log(user_data != NULL, "User data is NULL");
-
-  VkrViewWorldState *state = (VkrViewWorldState *)user_data;
-
-  if (state->world_meshes_state == VKR_WORLD_MESHES_LOADING_STATE_LOADING) {
-    log_warn("World meshes are loading...");
-    return true_v;
-  }
-
-  if (state->world_meshes_state == VKR_WORLD_MESHES_LOADING_STATE_LOADED) {
-    log_warn("World meshes are already loaded");
-    return true_v;
-  }
-
-  state->world_meshes_state = VKR_WORLD_MESHES_LOADING_STATE_LOADING;
-
-  return true_v;
-}
 
 vkr_internal void vkr_view_world_load_demo_meshes(RendererFrontend *rf,
                                                   VkrViewWorldState *state) {
@@ -93,7 +64,7 @@ vkr_internal void vkr_view_world_load_demo_meshes(RendererFrontend *rf,
   const char *mesh_names[] = {"falcon", "sponza"};
   for (uint32_t i = 0; i < mesh_count; i++) {
     if (mesh_indices[i] != VKR_INVALID_ID) {
-      log_info("Loaded %s mesh at index %u", mesh_names[i], mesh_indices[i]);
+      log_debug("Loaded %s mesh at index %u", mesh_names[i], mesh_indices[i]);
     } else {
       String8 err = vkr_renderer_get_error_string(mesh_errors[i]);
       log_error("Failed to load %s mesh: %s", mesh_names[i],
@@ -104,8 +75,6 @@ vkr_internal void vkr_view_world_load_demo_meshes(RendererFrontend *rf,
   log_info("[%.3fs] World meshes batch load complete: %u/%u meshes loaded in "
            "%.2f ms",
            end_time, loaded, mesh_count, elapsed_ms);
-
-  state->world_meshes_state = VKR_WORLD_MESHES_LOADING_STATE_LOADED;
 }
 
 typedef struct VkrTransparentSubmeshEntry {
@@ -173,8 +142,9 @@ bool32_t vkr_view_world_register(RendererFrontend *rf) {
       .use_depth = true_v,
   }};
 
-  VkrViewWorldState *state = arena_alloc(rf->arena, sizeof(VkrViewWorldState),
-                                         ARENA_MEMORY_TAG_STRUCT);
+  VkrViewWorldState *state =
+      vkr_allocator_alloc(&rf->allocator, sizeof(VkrViewWorldState),
+                          VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   if (!state) {
     log_error("Failed to allocate world view state");
     return false_v;
@@ -230,7 +200,7 @@ vkr_internal bool32_t vkr_view_world_on_create(VkrLayerContext *ctx) {
   if (vkr_resource_system_load_custom(
           string8_lit("shadercfg"),
           string8_lit("assets/shaders/default.world.shadercfg"),
-          rf->scratch_arena, &world_cfg_info, &shadercfg_err)) {
+          &rf->scratch_allocator, &world_cfg_info, &shadercfg_err)) {
     state->shader_config = *(VkrShaderConfig *)world_cfg_info.as.custom;
   } else {
     String8 err = vkr_renderer_get_error_string(shadercfg_err);
@@ -277,7 +247,7 @@ vkr_internal bool32_t vkr_view_world_on_create(VkrLayerContext *ctx) {
   VkrRendererError material_load_error = VKR_RENDERER_ERROR_NONE;
   if (vkr_resource_system_load(VKR_RESOURCE_TYPE_MATERIAL,
                                string8_lit("assets/materials/default.world.mt"),
-                               rf->scratch_arena, &default_material_info,
+                               &rf->scratch_allocator, &default_material_info,
                                &material_load_error)) {
     state->default_material = default_material_info.as.material;
   } else {
@@ -475,11 +445,9 @@ vkr_internal bool32_t vkr_view_world_on_create(VkrLayerContext *ctx) {
   vkr_transform_set_parent(&cube_mesh_3_ptr->transform,
                            &cube_mesh_2_ptr->transform);
 
-  event_manager_subscribe(rf->event_manager, EVENT_TYPE_LOAD_WORLD_MESHES,
-                          vkr_view_world_on_load_meshes_event, state);
+  vkr_view_world_load_demo_meshes(rf, state);
 
-  log_info(
-      "World view initialized. Press 'L' to load falcon and sponza meshes.");
+  log_debug("World view initialized.");
 
   return true_v;
 }
@@ -607,17 +575,17 @@ vkr_internal void vkr_view_world_on_render(VkrLayerContext *ctx,
     return;
   }
 
-  if (state->world_meshes_state == VKR_WORLD_MESHES_LOADING_STATE_LOADING) {
-    state->world_meshes_state = VKR_WORLD_MESHES_LOADING_STATE_LOADED;
-    vkr_view_world_load_demo_meshes(rf, state);
-  }
-
   uint32_t mesh_capacity = vkr_mesh_manager_capacity(&rf->mesh_manager);
   bool8_t globals_applied = false_v;
 
   Vec3 camera_pos = rf->globals.view_position;
 
-  Scratch scratch = scratch_create(rf->scratch_arena);
+  VkrAllocator *temp_alloc = &rf->allocator;
+  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(temp_alloc);
+  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
+    log_error("World view: failed to acquire temp scope");
+    return;
+  }
   uint32_t max_transparent_entries = 0;
 
   for (uint32_t i = 0; i < mesh_capacity; i++) {
@@ -631,10 +599,10 @@ vkr_internal void vkr_view_world_on_render(VkrLayerContext *ctx,
   uint32_t transparent_count = 0;
 
   if (max_transparent_entries > 0) {
-    transparent_entries = arena_alloc(scratch.arena,
-                                      sizeof(VkrTransparentSubmeshEntry) *
-                                          max_transparent_entries,
-                                      ARENA_MEMORY_TAG_ARRAY);
+    transparent_entries = vkr_allocator_alloc(
+        temp_alloc,
+        sizeof(VkrTransparentSubmeshEntry) * max_transparent_entries,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
 
   // first pass: render opaque submeshes and collect transparent ones
@@ -695,7 +663,7 @@ vkr_internal void vkr_view_world_on_render(VkrLayerContext *ctx,
     }
   }
 
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 }
 
 vkr_internal void vkr_view_world_on_detach(VkrLayerContext *ctx) {
@@ -720,9 +688,6 @@ vkr_internal void vkr_view_world_on_destroy(VkrLayerContext *ctx) {
     log_error("Renderer frontend is NULL");
     return;
   }
-
-  event_manager_unsubscribe(rf->event_manager, EVENT_TYPE_LOAD_WORLD_MESHES,
-                            vkr_view_world_on_load_meshes_event);
 
   VkrViewWorldState *state =
       (VkrViewWorldState *)vkr_layer_context_get_user_data(ctx);

@@ -75,6 +75,10 @@ vkr_internal void vkr_view_system_destroy_pass_targets(RendererFrontend *rf,
     }
   }
 
+  vkr_allocator_free(&rf->view_system.allocator, pass->render_targets,
+                     sizeof(VkrRenderTargetHandle) *
+                         (uint64_t)pass->render_target_count,
+                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   pass->render_target_count = 0;
   pass->render_targets = NULL;
 }
@@ -116,14 +120,15 @@ vkr_internal void vkr_view_system_destroy_layer(RendererFrontend *rf,
 vkr_internal void vkr_view_system_copy_passes(VkrViewSystem *vs,
                                               VkrLayer *layer,
                                               const VkrLayerConfig *cfg) {
-  layer->passes = array_create_VkrLayerPass(vs->arena, layer->pass_count);
+  layer->passes = array_create_VkrLayerPass(&vs->allocator, layer->pass_count);
   MemZero(layer->passes.data,
           sizeof(VkrLayerPass) * (uint64_t)layer->pass_count);
 
   for (uint32_t i = 0; i < layer->pass_count; ++i) {
     VkrLayerPass *dst = array_get_VkrLayerPass(&layer->passes, i);
     const VkrLayerPassConfig *src = &cfg->passes[i];
-    dst->renderpass_name = string8_duplicate(vs->arena, &src->renderpass_name);
+    dst->renderpass_name =
+        string8_duplicate(&vs->allocator, &src->renderpass_name);
     dst->use_depth = src->use_depth;
     dst->use_swapchain_color = src->use_swapchain_color;
   }
@@ -160,21 +165,26 @@ vkr_internal void vkr_view_system_rebuild_sorted(VkrViewSystem *vs) {
     return;
   }
 
-  Scratch scratch = {0};
-  VkrLayerSortEntry *entries = NULL;
+  VkrAllocator temp_alloc = {0};
+  VkrAllocatorScope temp_scope = {0};
+  VkrAllocator *entry_alloc = &vs->allocator;
+  bool use_scope = false;
   if (rf && rf->scratch_arena) {
-    scratch = scratch_create(rf->scratch_arena);
-    entries = (VkrLayerSortEntry *)vkr_allocator_alloc(
-        &vs->allocator, sizeof(VkrLayerSortEntry) * vs->layers.length,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    temp_alloc = rf->allocator;
+    temp_scope = vkr_allocator_begin_scope(&temp_alloc);
+    if (vkr_allocator_scope_is_valid(&temp_scope)) {
+      entry_alloc = &temp_alloc;
+      use_scope = true;
+    }
   }
+
+  VkrLayerSortEntry *entries = (VkrLayerSortEntry *)vkr_allocator_alloc(
+      entry_alloc, sizeof(VkrLayerSortEntry) * vs->layers.length,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!entries) {
     log_error("Failed to allocate scratch entries for view sorting");
-    if (scratch.arena) {
-      vkr_allocator_free(&vs->allocator, entries,
-                         sizeof(VkrLayerSortEntry) * vs->layers.length,
-                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+    if (use_scope) {
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     }
     return;
   }
@@ -198,10 +208,13 @@ vkr_internal void vkr_view_system_rebuild_sorted(VkrViewSystem *vs) {
   vs->sorted_count = sorted_count;
   vs->order_dirty = false_v;
 
-  vkr_allocator_free(&vs->allocator, entries,
-                     sizeof(VkrLayerSortEntry) * vs->layers.length,
-                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_ARRAY);
+  if (use_scope) {
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  } else {
+    vkr_allocator_free(&vs->allocator, entries,
+                       sizeof(VkrLayerSortEntry) * vs->layers.length,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
 }
 
 bool32_t vkr_view_system_init(VkrRendererFrontendHandle renderer) {
@@ -229,7 +242,7 @@ bool32_t vkr_view_system_init(VkrRendererFrontendHandle renderer) {
   vs->sorted_count = 0;
   vs->order_dirty = true_v;
 
-  vs->layers = array_create_VkrLayer(vs->arena, vs->layer_capacity);
+  vs->layers = array_create_VkrLayer(&vs->allocator, vs->layer_capacity);
   MemZero(vs->layers.data, sizeof(VkrLayer) * vs->layers.length);
 
   vs->initialized = true_v;
@@ -329,7 +342,7 @@ bool32_t vkr_view_system_register_layer(VkrRendererFrontendHandle renderer,
   slot->callbacks = cfg->callbacks;
   slot->user_data = cfg->user_data;
   slot->pass_count = cfg->pass_count;
-  slot->name = string8_duplicate(vs->arena, &cfg->name);
+  slot->name = string8_duplicate(&vs->allocator, &cfg->name);
 
   vkr_view_system_copy_passes(vs, slot, cfg);
 

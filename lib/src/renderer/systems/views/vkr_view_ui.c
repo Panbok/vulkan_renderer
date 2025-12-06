@@ -47,8 +47,8 @@ bool32_t vkr_view_ui_register(RendererFrontend *rf) {
       .use_depth = false_v,
   }};
 
-  VkrViewUIState *state =
-      arena_alloc(rf->arena, sizeof(VkrViewUIState), ARENA_MEMORY_TAG_STRUCT);
+  VkrViewUIState *state = vkr_allocator_alloc(
+      &rf->allocator, sizeof(VkrViewUIState), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   if (!state) {
     log_error("Failed to allocate UI view state");
     return false_v;
@@ -104,8 +104,8 @@ vkr_internal bool32_t vkr_view_ui_on_create(VkrLayerContext *ctx) {
   VkrRendererError shadercfg_err = VKR_RENDERER_ERROR_NONE;
   if (vkr_resource_system_load_custom(
           string8_lit("shadercfg"),
-          string8_lit("assets/shaders/default.ui.shadercfg"), rf->scratch_arena,
-          &ui_cfg_info, &shadercfg_err)) {
+          string8_lit("assets/shaders/default.ui.shadercfg"),
+          &rf->scratch_allocator, &ui_cfg_info, &shadercfg_err)) {
     state->shader_config = *(VkrShaderConfig *)ui_cfg_info.as.custom;
   } else {
     String8 err = vkr_renderer_get_error_string(shadercfg_err);
@@ -132,10 +132,10 @@ vkr_internal bool32_t vkr_view_ui_on_create(VkrLayerContext *ctx) {
 
   VkrResourceHandleInfo default_ui_material_info = {0};
   VkrRendererError material_load_error = VKR_RENDERER_ERROR_NONE;
-  if (vkr_resource_system_load(VKR_RESOURCE_TYPE_MATERIAL,
-                               string8_lit("assets/materials/default.ui.mt"),
-                               rf->scratch_arena, &default_ui_material_info,
-                               &material_load_error)) {
+  if (vkr_resource_system_load(
+          VKR_RESOURCE_TYPE_MATERIAL,
+          string8_lit("assets/materials/default.ui.mt"), &rf->scratch_allocator,
+          &default_ui_material_info, &material_load_error)) {
     state->material = default_ui_material_info.as.material;
   } else {
     String8 error_string = vkr_renderer_get_error_string(material_load_error);

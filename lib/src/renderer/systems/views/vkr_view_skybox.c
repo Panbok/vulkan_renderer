@@ -52,8 +52,9 @@ bool32_t vkr_view_skybox_register(RendererFrontend *rf) {
       .use_depth = true_v,
   }};
 
-  VkrViewSkyboxState *state = arena_alloc(rf->arena, sizeof(VkrViewSkyboxState),
-                                          ARENA_MEMORY_TAG_STRUCT);
+  VkrViewSkyboxState *state =
+      vkr_allocator_alloc(&rf->allocator, sizeof(VkrViewSkyboxState),
+                          VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   if (!state) {
     log_error("Failed to allocate skybox view state");
     return false_v;
@@ -86,7 +87,7 @@ bool32_t vkr_view_skybox_register(RendererFrontend *rf) {
     return false_v;
   }
 
-  log_info("Skybox view registered successfully");
+  log_debug("Skybox view registered successfully");
   return true_v;
 }
 
@@ -122,7 +123,7 @@ vkr_internal bool32_t vkr_view_skybox_on_create(VkrLayerContext *ctx) {
   if (vkr_resource_system_load_custom(
           string8_lit("shadercfg"),
           string8_lit("assets/shaders/default.skybox.shadercfg"),
-          rf->scratch_arena, &skybox_cfg_info, &shadercfg_err)) {
+          &rf->scratch_allocator, &skybox_cfg_info, &shadercfg_err)) {
     state->shader_config = *(VkrShaderConfig *)skybox_cfg_info.as.custom;
   } else {
     String8 err = vkr_renderer_get_error_string(shadercfg_err);
@@ -180,7 +181,7 @@ vkr_internal bool32_t vkr_view_skybox_on_create(VkrLayerContext *ctx) {
   }
 
   state->initialized = true_v;
-  log_info("Skybox view created successfully");
+  log_debug("Skybox view created successfully");
   return true_v;
 
 cleanup:
@@ -351,5 +352,5 @@ vkr_internal void vkr_view_skybox_on_destroy(VkrLayerContext *ctx) {
   }
 
   state->initialized = false_v;
-  log_info("Skybox view destroyed");
+  log_debug("Skybox view destroyed");
 }
