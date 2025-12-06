@@ -8,6 +8,7 @@
 #include "math/vkr_math.h"
 #include "math/vkr_quat.h"
 #include "memory/arena.h"
+#include "memory/vkr_allocator.h"
 #include "renderer/systems/vkr_camera_controller.h"
 #include "renderer/vkr_renderer.h"
 
@@ -262,31 +263,33 @@ static void application_handle_input(Application *application,
 }
 
 void application_update(Application *application, float64_t delta) {
-  double fps_value = 0.0;
-  if (delta > 0.000001) {
-    fps_value = 1.0 / delta;
-  } else {
-    fps_value = 1.0 / application->config->target_frame_rate;
-  }
-  vkr_local_persist int log_fps_counter = 0;
-  VkrCameraSystem *camera_system = &application->renderer.camera_system;
-  VkrCameraHandle active_camera = vkr_camera_registry_get_active(camera_system);
-  application->renderer.active_camera = active_camera;
-  VkrCamera *camera =
-      vkr_camera_registry_get_by_handle(camera_system, active_camera);
-  application->renderer.camera_controller.camera = camera;
+  // double fps_value = 0.0;
+  // if (delta > 0.000001) {
+  //   fps_value = 1.0 / delta;
+  // } else {
+  //   fps_value = 1.0 / application->config->target_frame_rate;
+  // }
+  // vkr_local_persist int log_fps_counter = 0;
+  // VkrCameraSystem *camera_system = &application->renderer.camera_system;
+  // VkrCameraHandle active_camera =
+  // vkr_camera_registry_get_active(camera_system);
+  // application->renderer.active_camera = active_camera;
+  // VkrCamera *camera =
+  //     vkr_camera_registry_get_by_handle(camera_system, active_camera);
+  // application->renderer.camera_controller.camera = camera;
 
-  if (++log_fps_counter % 60 == 0) { // Log every 60 mouse moves to avoid spam
-    log_debug("CALCULATED FPS VALUE: %f, DELTA WAS: %f", fps_value, delta);
-    if (camera) {
-      log_debug("CAMERA POSITION: %f, %f, %f", camera->position.x,
-                camera->position.y, camera->position.z);
-      log_debug("CAMERA FORWARD: %f, %f, %f", camera->forward.x,
-                camera->forward.y, camera->forward.z);
-    } else {
-      log_debug("CAMERA INVALID");
-    }
-  }
+  // if (++log_fps_counter % 60 == 0) { // Log every 60 mouse moves to avoid
+  // spam
+  //   log_debug("CALCULATED FPS VALUE: %f, DELTA WAS: %f", fps_value, delta);
+  //   if (camera) {
+  //     log_debug("CAMERA POSITION: %f, %f, %f", camera->position.x,
+  //               camera->position.y, camera->position.z);
+  //     log_debug("CAMERA FORWARD: %f, %f, %f", camera->forward.x,
+  //               camera->forward.y, camera->forward.z);
+  //   } else {
+  //     log_debug("CAMERA INVALID");
+  //   }
+  // }
 
   // VkrQuat q =
   //     vkr_quat_from_axis_angle(vec3_new(0.0f, 1.0f, 0.0f), 0.5f * delta);
@@ -314,14 +317,16 @@ void application_update(Application *application, float64_t delta) {
 
   if (input_is_key_up(state->input_state, KEY_M) &&
       input_was_key_down(state->input_state, KEY_M)) {
-    Scratch scratch_stats = scratch_create(state->stats_arena);
-    char *arena_stats =
-        arena_format_statistics(state->app_arena, scratch_stats.arena);
-    char *event_stats =
-        arena_format_statistics(state->event_arena, scratch_stats.arena);
-    log_debug("Application arena stats:\n%s", arena_stats);
-    log_debug("Event arena stats:\n%s", event_stats);
-    scratch_destroy(scratch_stats, ARENA_MEMORY_TAG_STRING);
+    VkrAllocatorScope stats_scope =
+        vkr_allocator_begin_scope(&application->app_allocator);
+    if (!vkr_allocator_scope_is_valid(&stats_scope)) {
+      log_error("Failed to create allocator stats scope");
+      return;
+    }
+    char *allocator_stats =
+        vkr_allocator_print_global_statistics(&application->app_allocator);
+    log_debug("Global allocator stats:\n%s", allocator_stats);
+    vkr_allocator_end_scope(&stats_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   }
 
   // if (input_is_key_up(state->input_state, KEY_NUMPAD1) &&
@@ -355,14 +360,6 @@ void application_update(Application *application, float64_t delta) {
                          1) %
                         VKR_RENDER_MODE_COUNT);
     log_debug("RENDER MODE: %d", application->renderer.globals.render_mode);
-  }
-
-  // L key: Load world meshes (falcon + sponza)
-  if (input_is_key_up(state->input_state, KEY_L) &&
-      input_was_key_down(state->input_state, KEY_L)) {
-    log_info("Loading world meshes...");
-    event_manager_dispatch(state->event_manager,
-                           (Event){.type = EVENT_TYPE_LOAD_WORLD_MESHES});
   }
 }
 
@@ -398,11 +395,11 @@ int main(int argc, char **argv) {
   state = arena_alloc(application.app_arena, sizeof(State),
                       ARENA_MEMORY_TAG_STRUCT);
   state->stats_arena = arena_create(KB(1), KB(1));
-  state->entities = array_create_uint16_t(application.app_arena, ENTITY_COUNT);
-  state->player_position_x =
-      array_create_float64_t(application.app_arena, ENTITY_COUNT);
-  state->player_position_y =
-      array_create_float64_t(application.app_arena, ENTITY_COUNT);
+  VkrAllocator app_alloc = {.ctx = application.app_arena};
+  vkr_allocator_arena(&app_alloc);
+  state->entities = array_create_uint16_t(&app_alloc, ENTITY_COUNT);
+  state->player_position_x = array_create_float64_t(&app_alloc, ENTITY_COUNT);
+  state->player_position_y = array_create_float64_t(&app_alloc, ENTITY_COUNT);
   state->input_state = &application.window.input_state;
   state->use_gamepad = false_v;
   int8_t initial_wheel_delta = 0;
