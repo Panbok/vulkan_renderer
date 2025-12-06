@@ -76,6 +76,8 @@ typedef struct VkrAllocatorScope {
   void *scope_data;        // Allocator-specific (e.g., Scratch* for arena)
   uint64_t bytes_at_start; // Bytes allocated when scope was created
   uint64_t total_allocated_at_start; // Allocator stats snapshot at scope start
+  uint64_t tagged_allocs_at_start[VKR_ALLOCATOR_MEMORY_TAG_MAX];
+  bool8_t tags_snapshot_valid;
 } VkrAllocatorScope;
 
 /**
@@ -98,9 +100,17 @@ struct VkrAllocator {
   // Allocate size bytes. Alignment can be handled inside if you prefer.
   void *(*alloc)(void *ctx, uint64_t size, VkrAllocatorMemoryTag tag);
 
+  // Allocate size bytes with a specific alignment.
+  void *(*alloc_aligned)(void *ctx, uint64_t size, uint64_t alignment,
+                         VkrAllocatorMemoryTag tag);
+
   // Free with known old_size. For arenas, this can be a no-op.
   void (*free)(void *ctx, void *ptr, uint64_t old_size,
                VkrAllocatorMemoryTag tag);
+
+  // Free with known old_size and alignment. For arenas, this can be a no-op.
+  void (*free_aligned)(void *ctx, void *ptr, uint64_t old_size,
+                       uint64_t alignment, VkrAllocatorMemoryTag tag);
 
   // Reallocate: returns new pointer. For arenas: alloc+copy+leave old as-is.
   void *(*realloc)(void *ctx, void *ptr, uint64_t old_size, uint64_t new_size,
@@ -130,8 +140,27 @@ void *_vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
                            VkrAllocatorMemoryTag tag, uint32_t alloc_line,
                            const char *alloc_file);
 
+/**
+ * @brief Allocates memory from the allocator with a specific alignment.
+ * @param allocator The allocator to use.
+ * @param size The size of the memory to allocate.
+ * @param alignment The alignment to use for the allocation.
+ * @param tag The tag to associate with the allocation.
+ * @param alloc_line The line number of the allocation.
+ * @param alloc_file The file name of the allocation.
+ * @return Pointer to the allocated memory, or NULL on failure.
+ */
+void *_vkr_allocator_alloc_aligned(VkrAllocator *allocator, uint64_t size,
+                                   uint64_t alignment,
+                                   VkrAllocatorMemoryTag tag,
+                                   uint32_t alloc_line, const char *alloc_file);
+
 #define vkr_allocator_alloc(allocator, size, tag)                              \
   _vkr_allocator_alloc(allocator, size, tag, __LINE__, __FILE__)
+
+#define vkr_allocator_alloc_aligned(allocator, size, alignment, tag)           \
+  _vkr_allocator_alloc_aligned(allocator, size, alignment, tag, __LINE__,      \
+                               __FILE__)
 
 /**
  * @brief Frees memory from the allocator.
@@ -144,6 +173,17 @@ void *_vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
  */
 void vkr_allocator_free(VkrAllocator *allocator, void *ptr, uint64_t old_size,
                         VkrAllocatorMemoryTag tag);
+/**
+ * @brief Frees memory from the allocator with a specific alignment.
+ * @param allocator The allocator to use.
+ * @param ptr The pointer to the memory to free.
+ * @param old_size The size of the memory to free.
+ * @param alignment The alignment to use for the free.
+ * @param tag The tag to associate with the allocation.
+ */
+void vkr_allocator_free_aligned(VkrAllocator *allocator, void *ptr,
+                                uint64_t old_size, uint64_t alignment,
+                                VkrAllocatorMemoryTag tag);
 
 /**
  * @brief Reallocates memory from the allocator.
@@ -237,8 +277,8 @@ bool8_t vkr_allocator_supports_scopes(const VkrAllocator *allocator);
  * @param allocator The allocator to create a scope on.
  * @return Scope handle for ending the scope later.
  *
- * @note Check with vkr_allocator_supports_scopes() before calling this function.
- *       After this call, use vkr_allocator_scope_is_valid() to verify the
+ * @note Check with vkr_allocator_supports_scopes() before calling this
+ * function. After this call, use vkr_allocator_scope_is_valid() to verify the
  *       returned scope handle is valid.
  */
 VkrAllocatorScope vkr_allocator_begin_scope(VkrAllocator *allocator);
