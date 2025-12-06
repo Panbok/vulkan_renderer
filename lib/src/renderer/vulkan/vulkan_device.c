@@ -68,20 +68,21 @@ static uint32_t score_device(VulkanBackendState *state,
   if (!vkr_allocator_scope_is_valid(&scope)) {
     return 0;
   }
-  Array_QueueFamilyIndex indices = find_queue_family_indices(state, device);
+  QueueFamilyIndexResult indices = find_queue_family_indices(state, device);
+  Array_QueueFamilyIndex indices_view = {
+      .allocator = NULL, .length = indices.length, .data = indices.indices};
 
   QueueFamilyIndex *graphics_index =
-      array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_GRAPHICS);
+      array_get_QueueFamilyIndex(&indices_view, QUEUE_FAMILY_TYPE_GRAPHICS);
   QueueFamilyIndex *present_index =
-      array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_PRESENT);
+      array_get_QueueFamilyIndex(&indices_view, QUEUE_FAMILY_TYPE_PRESENT);
   QueueFamilyIndex *transfer_index =
-      array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_TRANSFER);
+      array_get_QueueFamilyIndex(&indices_view, QUEUE_FAMILY_TYPE_TRANSFER);
   const bool32_t has_required_queues = graphics_index->is_present &&
                                        present_index->is_present &&
                                        transfer_index->is_present;
 
   if (!has_required_queues) {
-    array_destroy_QueueFamilyIndex(&indices);
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
@@ -94,7 +95,6 @@ static uint32_t score_device(VulkanBackendState *state,
 
   if (array_is_null_VkSurfaceFormatKHR(&swapchain_details.formats) ||
       array_is_null_VkPresentModeKHR(&swapchain_details.present_modes)) {
-    array_destroy_QueueFamilyIndex(&indices);
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
@@ -102,7 +102,6 @@ static uint32_t score_device(VulkanBackendState *state,
   if (properties.apiVersion < VK_API_VERSION_1_2) {
     array_destroy_VkSurfaceFormatKHR(&swapchain_details.formats);
     array_destroy_VkPresentModeKHR(&swapchain_details.present_modes);
-    array_destroy_QueueFamilyIndex(&indices);
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
@@ -113,7 +112,6 @@ static uint32_t score_device(VulkanBackendState *state,
       !deviceFeatures.geometryShader) {
     array_destroy_VkSurfaceFormatKHR(&swapchain_details.formats);
     array_destroy_VkPresentModeKHR(&swapchain_details.present_modes);
-    array_destroy_QueueFamilyIndex(&indices);
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
@@ -121,7 +119,6 @@ static uint32_t score_device(VulkanBackendState *state,
   if (bitset8_is_set(&req->supported_stages,
                      VKR_SHADER_STAGE_TESSELLATION_CONTROL_BIT) &&
       !deviceFeatures.tessellationShader) {
-    array_destroy_QueueFamilyIndex(&indices);
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
@@ -129,7 +126,6 @@ static uint32_t score_device(VulkanBackendState *state,
   if (bitset8_is_set(&req->supported_stages,
                      VKR_SHADER_STAGE_TESSELLATION_EVALUATION_BIT) &&
       !deviceFeatures.tessellationShader) {
-    array_destroy_QueueFamilyIndex(&indices);
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
@@ -180,7 +176,7 @@ static uint32_t score_device(VulkanBackendState *state,
   // Check present support separately (surface-dependent)
   if (bitset8_is_set(&req->supported_queues, VKR_DEVICE_QUEUE_PRESENT_BIT)) {
     QueueFamilyIndex *present_index =
-        array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_PRESENT);
+        array_get_QueueFamilyIndex(&indices_view, QUEUE_FAMILY_TYPE_PRESENT);
     has_required_present = present_index->is_present;
   }
 
@@ -189,7 +185,6 @@ static uint32_t score_device(VulkanBackendState *state,
   if (!has_required_graphics || !has_required_compute ||
       !has_required_transfer || !has_required_sparse ||
       !has_required_protected || !has_required_present) {
-    array_destroy_QueueFamilyIndex(&indices);
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
@@ -197,7 +192,6 @@ static uint32_t score_device(VulkanBackendState *state,
   if (bitset8_is_set(&req->supported_sampler_filters,
                      VKR_SAMPLER_FILTER_ANISOTROPIC_BIT) &&
       !deviceFeatures.samplerAnisotropy) {
-    array_destroy_QueueFamilyIndex(&indices);
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return 0;
   }
@@ -303,7 +297,6 @@ static uint32_t score_device(VulkanBackendState *state,
     score += 15;
   }
 
-  array_destroy_QueueFamilyIndex(&indices);
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
 
   return score;
@@ -456,19 +449,18 @@ bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
 }
 
 void vulkan_device_query_queue_indices(VulkanBackendState *state,
-                                       Array_QueueFamilyIndex *indices) {
+                                       QueueFamilyIndexResult *indices) {
   assert_log(state != NULL, "State is NULL");
   assert_log(state->device.physical_device != VK_NULL_HANDLE,
              "Physical device was not acquired");
 
-  *indices = find_queue_family_indices(state, state->device.physical_device);
+  QueueFamilyIndexResult res =
+      find_queue_family_indices(state, state->device.physical_device);
+  *indices = res;
 
-  QueueFamilyIndex *graphics_index =
-      array_get_QueueFamilyIndex(indices, QUEUE_FAMILY_TYPE_GRAPHICS);
-  QueueFamilyIndex *present_index =
-      array_get_QueueFamilyIndex(indices, QUEUE_FAMILY_TYPE_PRESENT);
-  QueueFamilyIndex *transfer_index =
-      array_get_QueueFamilyIndex(indices, QUEUE_FAMILY_TYPE_TRANSFER);
+  QueueFamilyIndex *graphics_index = &res.indices[QUEUE_FAMILY_TYPE_GRAPHICS];
+  QueueFamilyIndex *present_index = &res.indices[QUEUE_FAMILY_TYPE_PRESENT];
+  QueueFamilyIndex *transfer_index = &res.indices[QUEUE_FAMILY_TYPE_TRANSFER];
 
   state->device.graphics_queue_index = graphics_index->index;
   state->device.present_queue_index = present_index->index;
@@ -645,8 +637,11 @@ void vulkan_device_get_information(VulkanBackendState *state,
   }
 
   // Queue family capabilities
-  Array_QueueFamilyIndex queue_indices =
+  QueueFamilyIndexResult queue_indices =
       find_queue_family_indices(state, state->device.physical_device);
+  Array_QueueFamilyIndex queue_indices_view = {.allocator = NULL,
+                                               .length = queue_indices.length,
+                                               .data = queue_indices.indices};
   VkrDeviceQueueFlags device_queues = bitset8_create();
 
   uint32_t queue_family_count = 0;
@@ -680,8 +675,8 @@ void vulkan_device_get_information(VulkanBackendState *state,
   }
 
   // Check for present support (this is surface-dependent)
-  QueueFamilyIndex *present_index =
-      array_get_QueueFamilyIndex(&queue_indices, QUEUE_FAMILY_TYPE_PRESENT);
+  QueueFamilyIndex *present_index = array_get_QueueFamilyIndex(
+      &queue_indices_view, QUEUE_FAMILY_TYPE_PRESENT);
   if (present_index->is_present) {
     bitset8_set(&device_queues, VKR_DEVICE_QUEUE_PRESENT_BIT);
   }
@@ -694,7 +689,6 @@ void vulkan_device_get_information(VulkanBackendState *state,
   // Linear filtering is almost universally supported
   bitset8_set(&sampler_filters, VKR_SAMPLER_FILTER_LINEAR_BIT);
 
-  array_destroy_QueueFamilyIndex(&queue_indices);
   array_destroy_VkQueueFamilyProperties(&queue_families);
 
   String8 persistent_device_name = string8_create_formatted(
@@ -736,15 +730,17 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
     log_fatal("Failed to create temp scope for logical device");
     return false;
   }
-  Array_QueueFamilyIndex indices = {0};
+  QueueFamilyIndexResult indices = {0};
   vulkan_device_query_queue_indices(state, &indices);
+  Array_QueueFamilyIndex indices_view = {
+      .allocator = NULL, .length = indices.length, .data = indices.indices};
 
   Array_VkDeviceQueueCreateInfo queue_create_infos =
       array_create_VkDeviceQueueCreateInfo(&state->temp_scope, indices.length);
 
   static const float32_t queue_priority = 1.0f;
   for (uint32_t i = 0; i < indices.length; i++) {
-    QueueFamilyIndex *index = array_get_QueueFamilyIndex(&indices, i);
+    QueueFamilyIndex *index = array_get_QueueFamilyIndex(&indices_view, i);
     VkDeviceQueueCreateInfo queue_create_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
         .queueFamilyIndex = index->index,
@@ -756,9 +752,9 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
   }
 
   QueueFamilyIndex *graphics_index =
-      array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_GRAPHICS);
+      array_get_QueueFamilyIndex(&indices_view, QUEUE_FAMILY_TYPE_GRAPHICS);
   QueueFamilyIndex *transfer_index =
-      array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_TRANSFER);
+      array_get_QueueFamilyIndex(&indices_view, QUEUE_FAMILY_TYPE_TRANSFER);
 
   VkCommandPoolCreateInfo pool_info = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -771,8 +767,6 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
       .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
       .queueFamilyIndex = transfer_index->index,
   };
-
-  array_destroy_QueueFamilyIndex(&indices);
 
   VkPhysicalDeviceFeatures device_features = {
       .tessellationShader = VK_TRUE,

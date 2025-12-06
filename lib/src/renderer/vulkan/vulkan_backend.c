@@ -76,7 +76,6 @@ vkr_internal void vulkan_select_filter_modes(
 vkr_internal bool32_t create_command_buffers(VulkanBackendState *state) {
   state->graphics_command_buffers = array_create_VulkanCommandBuffer(
       &state->alloc, state->swapchain.images.length);
-  state->graphics_command_buffers.allocator = NULL; // arena owns memory
   for (uint32_t i = 0; i < state->swapchain.images.length; i++) {
     VulkanCommandBuffer *command_buffer =
         array_get_VulkanCommandBuffer(&state->graphics_command_buffers, i);
@@ -156,7 +155,6 @@ vkr_internal bool32_t create_domain_framebuffers(VulkanBackendState *state) {
 
     state->domain_framebuffers[domain] = array_create_VulkanFramebuffer(
         &state->swapchain_alloc, state->swapchain.images.length);
-    state->domain_framebuffers[domain].allocator = NULL;
 
     for (uint32_t i = 0; i < state->swapchain.images.length; i++) {
       array_set_VulkanFramebuffer(&state->domain_framebuffers[domain], i,
@@ -200,9 +198,38 @@ vkr_internal VkrTextureFormat vulkan_vk_format_to_vkr(VkFormat format) {
 }
 
 vkr_internal void
-vulkan_backend_destroy_attachment_wrappers(VulkanBackendState *state) {
-  state->swapchain_image_textures = NULL;
-  state->depth_texture = NULL;
+vulkan_backend_destroy_attachment_wrappers(VulkanBackendState *state,
+                                           uint32_t image_count) {
+  if (!state) {
+    return;
+  }
+
+  if (image_count == 0) {
+    image_count = state->swapchain.image_count;
+  }
+
+  if (state->swapchain_image_textures) {
+    for (uint32_t i = 0; i < image_count; ++i) {
+      struct s_TextureHandle *wrapper = state->swapchain_image_textures[i];
+      if (wrapper) {
+        vkr_allocator_free(&state->swapchain_alloc, wrapper,
+                           sizeof(struct s_TextureHandle),
+                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      }
+    }
+
+    vkr_allocator_free(&state->swapchain_alloc, state->swapchain_image_textures,
+                       sizeof(struct s_TextureHandle *) * image_count,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    state->swapchain_image_textures = NULL;
+  }
+
+  if (state->depth_texture) {
+    vkr_allocator_free(&state->swapchain_alloc, state->depth_texture,
+                       sizeof(struct s_TextureHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    state->depth_texture = NULL;
+  }
 }
 
 vkr_internal bool32_t
@@ -286,8 +313,8 @@ vulkan_backend_renderpass_lookup(VulkanBackendState *state, String8 name) {
   return NULL;
 }
 
-vkr_internal bool32_t vulkan_backend_renderpass_register(
-    VulkanBackendState *state, struct s_RenderPass *pass) {
+  vkr_internal bool32_t vulkan_backend_renderpass_register(
+      VulkanBackendState *state, struct s_RenderPass *pass) {
   assert_log(state != NULL, "State not initialized");
   assert_log(pass != NULL, "Pass is NULL");
 
@@ -497,7 +524,7 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
 
   // Swapchain recreation succeeded - now clean up old resources and create new
   // ones
-  vulkan_backend_destroy_attachment_wrappers(state);
+  vulkan_backend_destroy_attachment_wrappers(state, old_image_count);
 
   // Clear images_in_flight using OLD count
   for (uint32_t i = 0; i < old_image_count; ++i) {
@@ -509,18 +536,92 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
     vulkan_command_buffer_free(state, array_get_VulkanCommandBuffer(
                                           &state->graphics_command_buffers, i));
   }
+  if (state->graphics_command_buffers.data) {
+    array_destroy_VulkanCommandBuffer(&state->graphics_command_buffers);
+  }
 
-  for (uint32_t i = 0; i < old_image_count; ++i) {
+  uint32_t old_framebuffer_count = state->swapchain.framebuffers.length;
+  for (uint32_t i = 0; i < old_framebuffer_count; ++i) {
     vulkan_framebuffer_destroy(
         state, array_get_VulkanFramebuffer(&state->swapchain.framebuffers, i));
+  }
+  if (state->swapchain.framebuffers.data && old_framebuffer_count > 0) {
+    array_destroy_VulkanFramebuffer(&state->swapchain.framebuffers);
+  }
+
+  // Destroy old sync objects (counts may change with new swapchain)
+  // Ensure nothing is using them anymore.
+  vkDeviceWaitIdle(state->device.logical_device);
+
+  for (uint32_t i = 0; i < state->image_available_semaphores.length; ++i) {
+    vkDestroySemaphore(state->device.logical_device,
+                       *array_get_VkSemaphore(&state->image_available_semaphores,
+                                              i),
+                       state->allocator);
+  }
+  for (uint32_t i = 0; i < state->queue_complete_semaphores.length; ++i) {
+    vkDestroySemaphore(state->device.logical_device,
+                       *array_get_VkSemaphore(&state->queue_complete_semaphores,
+                                              i),
+                       state->allocator);
+  }
+  for (uint32_t i = 0; i < state->in_flight_fences.length; ++i) {
+    vulkan_fence_destroy(
+        state, array_get_VulkanFence(&state->in_flight_fences, i));
+  }
+
+  array_destroy_VkSemaphore(&state->image_available_semaphores);
+  array_destroy_VkSemaphore(&state->queue_complete_semaphores);
+  array_destroy_VulkanFence(&state->in_flight_fences);
+
+  // Recreate sync objects with new sizes
+  state->image_available_semaphores = array_create_VkSemaphore(
+      &state->alloc, state->swapchain.max_in_flight_frames);
+
+  state->queue_complete_semaphores = array_create_VkSemaphore(
+      &state->alloc, state->swapchain.image_count);
+
+  state->in_flight_fences = array_create_VulkanFence(
+      &state->alloc, state->swapchain.max_in_flight_frames);
+
+  for (uint32_t i = 0; i < state->swapchain.max_in_flight_frames; i++) {
+    VkSemaphoreCreateInfo semaphore_info = {.sType =
+                                                VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    if (vkCreateSemaphore(state->device.logical_device, &semaphore_info,
+                          state->allocator,
+                          array_get_VkSemaphore(
+                              &state->image_available_semaphores, i)) !=
+        VK_SUCCESS) {
+      log_fatal("Failed to create image available semaphore during resize");
+      return false;
+    }
+
+    // Create signaled fence so first frame can wait safely.
+    vulkan_fence_create(
+        state, true_v, array_get_VulkanFence(&state->in_flight_fences, i));
+  }
+
+  for (uint32_t i = 0; i < state->swapchain.image_count; i++) {
+    VkSemaphoreCreateInfo semaphore_info = {.sType =
+                                                VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    if (vkCreateSemaphore(state->device.logical_device, &semaphore_info,
+                          state->allocator,
+                          array_get_VkSemaphore(
+                              &state->queue_complete_semaphores, i)) !=
+        VK_SUCCESS) {
+      log_fatal("Failed to create queue complete semaphore during resize");
+      return false;
+    }
   }
 
   // Resize images_in_flight array if needed for new image count
   if (state->swapchain.image_count != old_image_count) {
+    if (state->images_in_flight.data) {
+      array_destroy_VulkanFencePtr(&state->images_in_flight);
+    }
     // Recreate the images_in_flight array with the new size
     state->images_in_flight = array_create_VulkanFencePtr(
         &state->alloc, state->swapchain.image_count);
-    state->images_in_flight.allocator = NULL; // arena-owned
     for (uint32_t i = 0; i < state->swapchain.image_count; ++i) {
       array_set_VulkanFencePtr(&state->images_in_flight, i, NULL);
     }
@@ -561,6 +662,17 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
   if (!vulkan_backend_create_attachment_wrappers(state)) {
     log_error("Failed to recreate swapchain attachment wrappers");
     return false;
+  }
+
+  state->swapchain.framebuffers = array_create_VulkanFramebuffer(
+      &state->swapchain_alloc, state->swapchain.images.length);
+  for (uint32_t i = 0; i < state->swapchain.framebuffers.length; ++i) {
+    array_set_VulkanFramebuffer(&state->swapchain.framebuffers, i,
+                                (VulkanFramebuffer){
+                                    .handle = VK_NULL_HANDLE,
+                                    .attachments = {0},
+                                    .renderpass = VK_NULL_HANDLE,
+                                });
   }
 
   if (state->on_render_target_refresh_required) {
@@ -774,7 +886,6 @@ renderer_vulkan_initialize(void **out_backend_state,
 
   backend_state->swapchain.framebuffers = array_create_VulkanFramebuffer(
       &backend_state->swapchain_alloc, backend_state->swapchain.images.length);
-  backend_state->swapchain.framebuffers.allocator = NULL;
   for (uint32_t i = 0; i < backend_state->swapchain.images.length; i++) {
     array_set_VulkanFramebuffer(&backend_state->swapchain.framebuffers, i,
                                 (VulkanFramebuffer){
@@ -790,13 +901,10 @@ renderer_vulkan_initialize(void **out_backend_state,
   }
   backend_state->image_available_semaphores = array_create_VkSemaphore(
       &backend_state->alloc, backend_state->swapchain.max_in_flight_frames);
-  backend_state->image_available_semaphores.allocator = NULL;
   backend_state->queue_complete_semaphores = array_create_VkSemaphore(
       &backend_state->alloc, backend_state->swapchain.image_count);
-  backend_state->queue_complete_semaphores.allocator = NULL;
   backend_state->in_flight_fences = array_create_VulkanFence(
       &backend_state->alloc, backend_state->swapchain.max_in_flight_frames);
-  backend_state->in_flight_fences.allocator = NULL;
   for (uint32_t i = 0; i < backend_state->swapchain.max_in_flight_frames; i++) {
     VkSemaphoreCreateInfo semaphore_info = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
@@ -836,7 +944,6 @@ renderer_vulkan_initialize(void **out_backend_state,
 
   backend_state->images_in_flight = array_create_VulkanFencePtr(
       &backend_state->alloc, backend_state->swapchain.image_count);
-  backend_state->images_in_flight.allocator = NULL;
   for (uint32_t i = 0; i < backend_state->swapchain.image_count; i++) {
     array_set_VulkanFencePtr(&backend_state->images_in_flight, i, NULL);
   }
@@ -945,7 +1052,7 @@ void renderer_vulkan_shutdown(void *backend_state) {
 
     state->domain_render_passes[domain] = NULL;
   }
-  vulkan_backend_destroy_attachment_wrappers(state);
+  vulkan_backend_destroy_attachment_wrappers(state, state->swapchain.image_count);
   vulkan_swapchain_destroy(state);
   vulkan_device_destroy_logical_device(state);
   vulkan_device_release_physical_device(state);
@@ -2633,7 +2740,13 @@ void renderer_vulkan_render_target_destroy(
                          state->allocator);
     target->handle = VK_NULL_HANDLE;
   }
-  target->attachments = NULL;
+  if (target->attachments) {
+    vkr_allocator_free(&state->alloc, target->attachments,
+                       sizeof(struct s_TextureHandle *) *
+                           target->attachment_count,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    target->attachments = NULL;
+  }
   target->attachment_count = 0;
 }
 
@@ -2659,7 +2772,7 @@ renderer_vulkan_begin_render_pass(void *backend_state,
     return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
   }
   VkClearValue *clear_values = vkr_allocator_alloc(
-      &state->alloc, sizeof(VkClearValue) * target->attachment_count,
+      &state->temp_scope, sizeof(VkClearValue) * target->attachment_count,
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!clear_values) {
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);

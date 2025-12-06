@@ -7,10 +7,15 @@ typedef struct VulkanShaderStageFlagResult {
   bool8_t is_valid;
 } VulkanShaderStageFlagResult;
 
+typedef struct QueueFamilyIndexResult {
+  QueueFamilyIndex indices[QUEUE_FAMILY_TYPE_COUNT];
+  uint32_t length;
+} QueueFamilyIndexResult;
+
 VulkanShaderStageFlagResult
 vulkan_shader_stage_to_vk(VkrShaderStageFlags stage);
 
-Array_QueueFamilyIndex find_queue_family_indices(VulkanBackendState *state,
+QueueFamilyIndexResult find_queue_family_indices(VulkanBackendState *state,
                                                  VkPhysicalDevice device);
 
 int32_t find_memory_index(VkPhysicalDevice device, uint32_t type_filter,

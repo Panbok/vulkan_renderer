@@ -37,43 +37,36 @@ vulkan_shader_stage_to_vk(VkrShaderStageFlags stage) {
   return (VulkanShaderStageFlagResult){.flag = result, .is_valid = true};
 }
 
-Array_QueueFamilyIndex find_queue_family_indices(VulkanBackendState *state,
+QueueFamilyIndexResult find_queue_family_indices(VulkanBackendState *state,
                                                  VkPhysicalDevice device) {
-  Array_QueueFamilyIndex indices =
-      array_create_QueueFamilyIndex(&state->temp_scope,
-                                    QUEUE_FAMILY_TYPE_COUNT);
-  // Do not store the stack allocator pointer; arena lifetime covers data.
-  indices.allocator = NULL;
+  QueueFamilyIndexResult result = {0};
+  result.length = QUEUE_FAMILY_TYPE_COUNT;
   for (uint32_t i = 0; i < QUEUE_FAMILY_TYPE_COUNT; i++) {
-    QueueFamilyIndex invalid_index = {
+    result.indices[i] = (QueueFamilyIndex){
         .index = 0, .type = i, .is_present = false};
-    array_set_QueueFamilyIndex(&indices, i, invalid_index);
   }
 
   uint32_t queue_family_count = 0;
   vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count, NULL);
   if (queue_family_count == 0) {
-    return indices;
+    return result;
   }
 
   VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
   if (!vkr_allocator_scope_is_valid(&scope)) {
-    return indices;
+    return result;
   }
+
   Array_VkQueueFamilyProperties queue_family_properties =
       array_create_VkQueueFamilyProperties(&state->temp_scope,
                                            queue_family_count);
-  queue_family_properties.allocator = NULL;
   vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count,
                                            queue_family_properties.data);
 
   for (uint32_t i = 0; i < queue_family_count; i++) {
-    QueueFamilyIndex *graphics_index =
-        array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_GRAPHICS);
-    QueueFamilyIndex *present_index =
-        array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_PRESENT);
-    QueueFamilyIndex *transfer_index =
-        array_get_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_TRANSFER);
+    QueueFamilyIndex *graphics_index = &result.indices[QUEUE_FAMILY_TYPE_GRAPHICS];
+    QueueFamilyIndex *present_index = &result.indices[QUEUE_FAMILY_TYPE_PRESENT];
+    QueueFamilyIndex *transfer_index = &result.indices[QUEUE_FAMILY_TYPE_TRANSFER];
 
     if (graphics_index->is_present && present_index->is_present &&
         transfer_index->is_present) {
@@ -87,10 +80,7 @@ Array_QueueFamilyIndex find_queue_family_indices(VulkanBackendState *state,
         !graphics_index->is_present) {
       QueueFamilyIndex index = {
           .index = i, .type = QUEUE_FAMILY_TYPE_GRAPHICS, .is_present = true};
-      array_set_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_GRAPHICS, index);
-
-      // it's ok to continue here, we need unique indices for graphics and
-      // present queues
+      result.indices[QUEUE_FAMILY_TYPE_GRAPHICS] = index;
       continue;
     }
 
@@ -100,10 +90,7 @@ Array_QueueFamilyIndex find_queue_family_indices(VulkanBackendState *state,
     if (presentSupport && !present_index->is_present) {
       QueueFamilyIndex index = {
           .index = i, .type = QUEUE_FAMILY_TYPE_PRESENT, .is_present = true};
-      array_set_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_PRESENT, index);
-
-      // it's ok to continue here, we need unique indices for present and
-      // graphics queues
+      result.indices[QUEUE_FAMILY_TYPE_PRESENT] = index;
       continue;
     }
 
@@ -111,14 +98,13 @@ Array_QueueFamilyIndex find_queue_family_indices(VulkanBackendState *state,
         !transfer_index->is_present) {
       QueueFamilyIndex index = {
           .index = i, .type = QUEUE_FAMILY_TYPE_TRANSFER, .is_present = true};
-      array_set_QueueFamilyIndex(&indices, QUEUE_FAMILY_TYPE_TRANSFER, index);
+      result.indices[QUEUE_FAMILY_TYPE_TRANSFER] = index;
     }
   }
 
   array_destroy_VkQueueFamilyProperties(&queue_family_properties);
-  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-
-  return indices;
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return result;
 }
 
 int32_t find_memory_index(VkPhysicalDevice device, uint32_t type_filter,

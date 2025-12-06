@@ -19,7 +19,7 @@ void vulkan_device_get_information(VulkanBackendState *state,
                                    Arena *temp_arena);
 
 void vulkan_device_query_queue_indices(VulkanBackendState *state,
-                                       Array_QueueFamilyIndex *indicies);
+                                       QueueFamilyIndexResult *indices);
 
 bool32_t vulkan_device_check_depth_format(VulkanDevice *device);
 

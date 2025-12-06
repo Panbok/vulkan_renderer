@@ -44,7 +44,7 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
       .oldSwapchain = VK_NULL_HANDLE,
   };
 
-  Array_QueueFamilyIndex indices =
+  QueueFamilyIndexResult indices =
       find_queue_family_indices(state, state->device.physical_device);
   if (indices.length > 1) {
     VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
@@ -54,7 +54,7 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
     Array_uint32_t queue_family_indices =
         array_create_uint32_t(&state->temp_scope, indices.length);
     for (uint32_t i = 0; i < indices.length; i++) {
-      QueueFamilyIndex *index = array_get_QueueFamilyIndex(&indices, i);
+      QueueFamilyIndex *index = &indices.indices[i];
       array_set_uint32_t(&queue_family_indices, i, index->index);
     }
 
@@ -84,7 +84,6 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
 
   state->swapchain.images =
       array_create_VkImage(&state->swapchain_alloc, image_count);
-  state->swapchain.images.allocator = NULL; // arena-owned
   vkGetSwapchainImagesKHR(state->device.logical_device, state->swapchain.handle,
                           &image_count, state->swapchain.images.data);
 
@@ -93,7 +92,6 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
 
   state->swapchain.image_views =
       array_create_VkImageView(&state->swapchain_alloc, image_count);
-  state->swapchain.image_views.allocator = NULL; // arena-owned
   for (uint32_t i = 0; i < image_count; i++) {
     VkImageViewCreateInfo create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
@@ -194,7 +192,7 @@ vkr_internal bool32_t vulkan_swapchain_create_with_old(
       .oldSwapchain = old_swapchain, // Pass old swapchain for smooth transition
   };
 
-  Array_QueueFamilyIndex indices =
+  QueueFamilyIndexResult indices =
       find_queue_family_indices(state, state->device.physical_device);
   if (indices.length > 1) {
     VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
@@ -204,7 +202,7 @@ vkr_internal bool32_t vulkan_swapchain_create_with_old(
     Array_uint32_t queue_family_indices =
         array_create_uint32_t(&state->temp_scope, indices.length);
     for (uint32_t i = 0; i < indices.length; i++) {
-      QueueFamilyIndex *index = array_get_QueueFamilyIndex(&indices, i);
+      QueueFamilyIndex *index = &indices.indices[i];
       array_set_uint32_t(&queue_family_indices, i, index->index);
     }
 
@@ -255,7 +253,6 @@ vkr_internal bool32_t vulkan_swapchain_create_with_old(
 
   state->swapchain.images =
       array_create_VkImage(&state->swapchain_alloc, image_count);
-  state->swapchain.images.allocator = NULL; // arena-owned
   vkGetSwapchainImagesKHR(state->device.logical_device, state->swapchain.handle,
                           &image_count, state->swapchain.images.data);
 
@@ -264,7 +261,6 @@ vkr_internal bool32_t vulkan_swapchain_create_with_old(
 
   state->swapchain.image_views =
       array_create_VkImageView(&state->swapchain_alloc, image_count);
-  state->swapchain.image_views.allocator = NULL; // arena-owned
   for (uint32_t i = 0; i < image_count; i++) {
     VkImageViewCreateInfo view_create_info = {
         .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
