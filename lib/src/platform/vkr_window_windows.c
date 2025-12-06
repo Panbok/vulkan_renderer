@@ -152,7 +152,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   event_manager_dispatch(event_manager,
                          (Event){.type = EVENT_TYPE_WINDOW_INIT});
 
-  log_info("Window created successfully");
+  log_debug("Window created successfully");
   return true_v;
 }
 

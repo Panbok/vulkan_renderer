@@ -94,6 +94,13 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
+  renderer->scratch_allocator = (VkrAllocator){.ctx = renderer->scratch_arena};
+  if (!vkr_allocator_arena(&renderer->scratch_allocator)) {
+    arena_destroy(renderer->scratch_arena);
+    log_fatal("Failed to initialize scratch allocator!");
+    return false_v;
+  }
+
   // Initialize struct in-place
   renderer->backend_type = backend_type;
   renderer->window = window;
@@ -657,14 +664,17 @@ vkr_renderer_renderpass_get(VkrRendererFrontendHandle renderer, String8 name) {
     return NULL;
   }
   RendererFrontend *rf = (RendererFrontend *)renderer;
-  Scratch scratch = scratch_create(rf->scratch_arena);
-  char *cstr =
-      arena_alloc(scratch.arena, name.length + 1, ARENA_MEMORY_TAG_STRING);
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&rf->allocator);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    return NULL;
+  }
+  char *cstr = vkr_allocator_alloc(&rf->allocator, name.length + 1,
+                                   VKR_ALLOCATOR_MEMORY_TAG_STRING);
   MemCopy(cstr, name.str, (size_t)name.length);
   cstr[name.length] = '\0';
   VkrRenderPassHandle handle =
       renderer->backend.renderpass_get(renderer->backend_state, cstr);
-  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   return handle;
 }
 
@@ -907,7 +917,7 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   // todo: shader sys should accepts pipeline registry as a parameter
   vkr_shader_system_set_registry(&rf->shader_system, &rf->pipeline_registry);
 
-  if (!vkr_resource_system_init(rf->arena, rf)) {
+  if (!vkr_resource_system_init(&rf->allocator, rf, job_system)) {
     log_fatal("Failed to initialize resource system");
     return false_v;
   }
@@ -921,7 +931,7 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
               string8_cstr(&err_str));
     return false_v;
   }
-  log_info("Geometry system max geometries=%u", geo_cfg.max_geometries);
+  log_debug("Geometry system max geometries=%u", geo_cfg.max_geometries);
 
   VkrTextureSystemConfig tex_cfg = {.max_texture_count = 1024};
   if (!vkr_texture_system_init(rf, &tex_cfg, job_system, &rf->texture_system)) {
@@ -954,8 +964,6 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
                              .job_system = job_system};
   rf->mesh_loader.allocator.ctx = rf->mesh_loader.scratch_arena;
   vkr_allocator_arena(&rf->mesh_loader.allocator);
-
-  vkr_mesh_manager_set_loader_context(&rf->mesh_manager, &rf->mesh_loader);
 
   vkr_resource_system_register_loader((void *)&rf->texture_system,
                                       vkr_texture_loader_create());
