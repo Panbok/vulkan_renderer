@@ -661,15 +661,8 @@ VkrWorld *vkr_entity_create_world(const VkrWorldCreateInfo *info) {
   if (!vkr_entity_dir_init(world, info->initial_entities))
     return NULL;
 
-  if (world->alloc->type != VKR_ALLOCATOR_TYPE_ARENA) {
-    log_error("Allocator is not an arena");
-    return NULL;
-  }
-
-  // Archetype table (likely arena-backed via allocator->ctx)
-  Arena *arena = (Arena *)world->alloc->ctx;
   world->arch_table = vkr_hash_table_create_VkrArchetype(
-      arena, info->initial_archetypes ? info->initial_archetypes : 16u);
+      world->alloc, info->initial_archetypes ? info->initial_archetypes : 16u);
 
   world->arch_list = NULL;
   world->arch_capacity = 0u;
