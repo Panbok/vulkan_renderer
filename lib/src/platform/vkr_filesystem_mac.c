@@ -61,6 +61,8 @@ String8 file_path_get_directory(VkrAllocator *allocator, String8 path) {
 String8 file_path_join(VkrAllocator *allocator, String8 dir, String8 file) {
   if (!dir.str || dir.length == 0)
     return fs_string_duplicate(allocator, &file);
+  if (!file.str || file.length == 0)
+    return fs_string_duplicate(allocator, &dir);
   bool8_t needs_sep = (dir.str[dir.length - 1] != '/');
   uint64_t len = dir.length + (needs_sep ? 1 : 0) + file.length;
   uint8_t *buf =
@@ -241,6 +243,10 @@ FileError file_read_all(FileHandle *handle, VkrAllocator *allocator,
   uint64_t size = (uint64_t)st.st_size;
   off_t current_pos = lseek(fd, 0, SEEK_CUR);
 
+  if (current_pos < 0 || (uint64_t)current_pos > size) {
+    return FILE_ERROR_IO_ERROR;
+  }
+
   *out_buffer = vkr_allocator_alloc(allocator, size - current_pos,
                                     VKR_ALLOCATOR_MEMORY_TAG_FILE);
   ssize_t read_res = read(fd, *out_buffer, size - current_pos);
@@ -324,8 +330,9 @@ FileError file_read_string(FileHandle *handle, VkrAllocator *allocator,
                            String8 *out_data) {
   uint8_t *buffer = NULL;
   uint64_t bytes_read = 0;
-  if (file_read_all(handle, allocator, &buffer, &bytes_read) != FILE_ERROR_NONE)
-    return FILE_ERROR_IO_ERROR;
+  FileError err = file_read_all(handle, allocator, &buffer, &bytes_read);
+  if (err != FILE_ERROR_NONE)
+    return err;
 
   uint8_t *str_buf = vkr_allocator_alloc(allocator, bytes_read + 1,
                                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
@@ -380,9 +387,12 @@ FileError file_load_spirv_shader(const FilePath *path, VkrAllocator *allocator,
   file_close(&handle);
 
   if ((uintptr_t)(*out_data) % 4 != 0) {
+    uint8_t *old_buffer = *out_data;
     uint8_t *aligned = vkr_allocator_alloc(allocator, *out_size,
                                            VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     MemCopy(aligned, *out_data, *out_size);
+    vkr_allocator_free(allocator, old_buffer, *out_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_FILE);
     *out_data = aligned;
   }
   return err;

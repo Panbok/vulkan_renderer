@@ -248,10 +248,21 @@ void file_close(FileHandle *handle) {
 
 FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
                      uint64_t *bytes_written) {
-  DWORD written = 0;
-  if (!WriteFile((HANDLE)handle->handle, buffer, (DWORD)size, &written, NULL))
-    return FILE_ERROR_IO_ERROR;
-  *bytes_written = (uint64_t)written;
+  *bytes_written = 0;
+  const uint8_t *current = buffer;
+  uint64_t remaining = size;
+
+  while (remaining > 0) {
+    DWORD chunk = (DWORD)(remaining > 0xFFFFFFFF ? 0xFFFFFFFF : remaining);
+    DWORD written = 0;
+    if (!WriteFile((HANDLE)handle->handle, current, chunk, &written, NULL))
+      return FILE_ERROR_IO_ERROR;
+    *bytes_written += written;
+    if (written < chunk)
+      break; // Partial write
+    current += written;
+    remaining -= written;
+  }
   return FILE_ERROR_NONE;
 }
 
@@ -259,11 +270,21 @@ FileError file_read(FileHandle *handle, VkrAllocator *allocator, uint64_t size,
                     uint64_t *bytes_read, uint8_t **out_buffer) {
   *out_buffer =
       vkr_allocator_alloc(allocator, size, VKR_ALLOCATOR_MEMORY_TAG_FILE);
-  DWORD read_len = 0;
-  if (!ReadFile((HANDLE)handle->handle, *out_buffer, (DWORD)size, &read_len,
-                NULL))
-    return FILE_ERROR_IO_ERROR;
-  *bytes_read = (uint64_t)read_len;
+  *bytes_read = 0;
+  uint8_t *current = *out_buffer;
+  uint64_t remaining = size;
+
+  while (remaining > 0) {
+    DWORD chunk = (DWORD)(remaining > 0xFFFFFFFF ? 0xFFFFFFFF : remaining);
+    DWORD read_len = 0;
+    if (!ReadFile((HANDLE)handle->handle, current, chunk, &read_len, NULL))
+      return FILE_ERROR_IO_ERROR;
+    *bytes_read += read_len;
+    if (read_len < chunk)
+      break; // EOF or partial read
+    current += read_len;
+    remaining -= read_len;
+  }
   return FILE_ERROR_NONE;
 }
 
@@ -282,11 +303,21 @@ FileError file_read_all(FileHandle *handle, VkrAllocator *allocator,
   *out_buffer = vkr_allocator_alloc(allocator, bytesToRead,
                                     VKR_ALLOCATOR_MEMORY_TAG_FILE);
 
-  DWORD read_len = 0;
-  if (!ReadFile(hFile, *out_buffer, (DWORD)bytesToRead, &read_len, NULL))
-    return FILE_ERROR_IO_ERROR;
+  *bytes_read = 0;
+  uint8_t *current = *out_buffer;
+  uint64_t remaining = bytesToRead;
 
-  *bytes_read = (uint64_t)read_len;
+  while (remaining > 0) {
+    DWORD chunk = (DWORD)(remaining > 0xFFFFFFFF ? 0xFFFFFFFF : remaining);
+    DWORD read_len = 0;
+    if (!ReadFile(hFile, current, chunk, &read_len, NULL))
+      return FILE_ERROR_IO_ERROR;
+    *bytes_read += read_len;
+    if (read_len < chunk)
+      break;
+    current += read_len;
+    remaining -= read_len;
+  }
   return FILE_ERROR_NONE;
 }
 
