@@ -11,6 +11,10 @@
 
 #pragma once
 
+// Forward declaration to avoid including vkr_threads.h (which depends on this
+// header).
+typedef struct s_VkrMutex *VkrMutex;
+
 typedef enum VkrAllocatorMemoryTag {
   VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN,
   VKR_ALLOCATOR_MEMORY_TAG_ARRAY,
@@ -30,7 +34,7 @@ typedef enum VkrAllocatorMemoryTag {
 
 typedef enum VkrAllocatorType {
   VKR_ALLOCATOR_TYPE_ARENA,
-  VKR_ALLOCATOR_TYPE_MMEMORY,
+  VKR_ALLOCATOR_TYPE_POOL,
   VKR_ALLOCATOR_TYPE_DMEMORY,
   VKR_ALLOCATOR_TYPE_UNKNOWN,
 
@@ -162,6 +166,21 @@ void *_vkr_allocator_alloc_aligned(VkrAllocator *allocator, uint64_t size,
   _vkr_allocator_alloc_aligned(allocator, size, alignment, tag, __LINE__,      \
                                __FILE__)
 
+void *_vkr_allocator_alloc_ts(VkrAllocator *allocator, uint64_t size,
+                              VkrAllocatorMemoryTag tag, VkrMutex mutex,
+                              uint32_t alloc_line, const char *alloc_file);
+void *_vkr_allocator_alloc_aligned_ts(VkrAllocator *allocator, uint64_t size,
+                                      uint64_t alignment,
+                                      VkrAllocatorMemoryTag tag, VkrMutex mutex,
+                                      uint32_t alloc_line,
+                                      const char *alloc_file);
+#define vkr_allocator_alloc_ts(allocator, size, tag, mutex)                    \
+  _vkr_allocator_alloc_ts(allocator, size, tag, mutex, __LINE__, __FILE__)
+#define vkr_allocator_alloc_aligned_ts(allocator, size, alignment, tag,        \
+                                       mutex)                                  \
+  _vkr_allocator_alloc_aligned_ts(allocator, size, alignment, tag, mutex,      \
+                                  __LINE__, __FILE__)
+
 /**
  * @brief Frees memory from the allocator.
  * @param allocator The allocator to use.
@@ -173,6 +192,8 @@ void *_vkr_allocator_alloc_aligned(VkrAllocator *allocator, uint64_t size,
  */
 void vkr_allocator_free(VkrAllocator *allocator, void *ptr, uint64_t old_size,
                         VkrAllocatorMemoryTag tag);
+void vkr_allocator_free_ts(VkrAllocator *allocator, void *ptr, uint64_t old_size,
+                           VkrAllocatorMemoryTag tag, VkrMutex mutex);
 /**
  * @brief Frees memory from the allocator with a specific alignment.
  * @param allocator The allocator to use.
@@ -184,6 +205,9 @@ void vkr_allocator_free(VkrAllocator *allocator, void *ptr, uint64_t old_size,
 void vkr_allocator_free_aligned(VkrAllocator *allocator, void *ptr,
                                 uint64_t old_size, uint64_t alignment,
                                 VkrAllocatorMemoryTag tag);
+void vkr_allocator_free_aligned_ts(VkrAllocator *allocator, void *ptr,
+                                   uint64_t old_size, uint64_t alignment,
+                                   VkrAllocatorMemoryTag tag, VkrMutex mutex);
 
 /**
  * @brief Reallocates memory from the allocator.
@@ -196,6 +220,9 @@ void vkr_allocator_free_aligned(VkrAllocator *allocator, void *ptr,
 void *vkr_allocator_realloc(VkrAllocator *allocator, void *ptr,
                             uint64_t old_size, uint64_t new_size,
                             VkrAllocatorMemoryTag tag);
+void *vkr_allocator_realloc_ts(VkrAllocator *allocator, void *ptr,
+                               uint64_t old_size, uint64_t new_size,
+                               VkrAllocatorMemoryTag tag, VkrMutex mutex);
 
 /**
  * @brief Sets the memory.

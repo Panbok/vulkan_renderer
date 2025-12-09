@@ -1,6 +1,7 @@
 #include "vkr_allocator.h"
 #include "core/logger.h"
 #include "core/vkr_atomic.h"
+#include "core/vkr_threads.h"
 #include "defines.h"
 
 const char *VkrAllocatorMemoryTagNames[VKR_ALLOCATOR_MEMORY_TAG_MAX] = {
@@ -10,7 +11,7 @@ const char *VkrAllocatorMemoryTagNames[VKR_ALLOCATOR_MEMORY_TAG_MAX] = {
 
 const char *VkrAllocatorTypeNames[VKR_ALLOCATOR_TYPE_MAX] = {
     "ARENA",
-    "MMEMORY",
+    "POOL",
     "DMEMORY",
     "UNKNOWN",
 };
@@ -38,6 +39,29 @@ typedef struct VkrAllocatorStatisticsAtomic {
 } VkrAllocatorStatisticsAtomic;
 
 vkr_global VkrAllocatorStatisticsAtomic g_vkr_allocator_stats = {0};
+
+vkr_internal INLINE bool8_t vkr_allocator_lock(VkrMutex mutex) {
+  if (mutex == NULL) {
+    return true_v;
+  }
+
+  if (!vkr_mutex_lock(mutex)) {
+    log_error("Failed to lock allocator mutex");
+    return false_v;
+  }
+
+  return true_v;
+}
+
+vkr_internal INLINE void vkr_allocator_unlock(VkrMutex mutex) {
+  if (mutex == NULL) {
+    return;
+  }
+
+  if (!vkr_mutex_unlock(mutex)) {
+    log_error("Failed to unlock allocator mutex");
+  }
+}
 
 vkr_internal INLINE void vkr_atomic_uint64_sub_saturate(VkrAtomicUint64 *obj,
                                                         uint64_t dec) {
@@ -241,7 +265,8 @@ void *_vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
 void *_vkr_allocator_alloc_aligned(VkrAllocator *allocator, uint64_t size,
                                    uint64_t alignment,
                                    VkrAllocatorMemoryTag tag,
-                                   uint32_t alloc_line, const char *alloc_file) {
+                                   uint32_t alloc_line,
+                                   const char *alloc_file) {
   assert_log(allocator != NULL, "Allocator must not be NULL");
   if (allocator->alloc_aligned == NULL) {
     log_fatal("Allocator->alloc_aligned must be set (requested at %s:%u, "
@@ -297,11 +322,38 @@ void *_vkr_allocator_alloc_aligned(VkrAllocator *allocator, uint64_t size,
   log_debug(
       "Allocated (%llu bytes) aligned (%llu) from allocator - [%s] for tag - "
       "[%s] at line - [%u] in file - [%s]",
-      (uint64_t)size, (uint64_t)alignment, VkrAllocatorTypeNames[allocator->type],
-      VkrAllocatorMemoryTagNames[tag], alloc_line, alloc_file);
+      (uint64_t)size, (uint64_t)alignment,
+      VkrAllocatorTypeNames[allocator->type], VkrAllocatorMemoryTagNames[tag],
+      alloc_line, alloc_file);
 #endif
 
   return allocator->alloc_aligned(allocator->ctx, size, alignment, tag);
+}
+
+void *_vkr_allocator_alloc_ts(VkrAllocator *allocator, uint64_t size,
+                              VkrAllocatorMemoryTag tag, VkrMutex mutex,
+                              uint32_t alloc_line, const char *alloc_file) {
+  if (!vkr_allocator_lock(mutex)) {
+    return NULL;
+  }
+  void *ptr =
+      _vkr_allocator_alloc(allocator, size, tag, alloc_line, alloc_file);
+  vkr_allocator_unlock(mutex);
+  return ptr;
+}
+
+void *_vkr_allocator_alloc_aligned_ts(VkrAllocator *allocator, uint64_t size,
+                                      uint64_t alignment,
+                                      VkrAllocatorMemoryTag tag, VkrMutex mutex,
+                                      uint32_t alloc_line,
+                                      const char *alloc_file) {
+  if (!vkr_allocator_lock(mutex)) {
+    return NULL;
+  }
+  void *ptr = _vkr_allocator_alloc_aligned(allocator, size, alignment, tag,
+                                           alloc_line, alloc_file);
+  vkr_allocator_unlock(mutex);
+  return ptr;
 }
 
 void vkr_allocator_free(VkrAllocator *allocator, void *ptr, uint64_t old_size,
@@ -377,11 +429,29 @@ void vkr_allocator_free_aligned(VkrAllocator *allocator, void *ptr,
   log_debug(
       "Freed (%llu bytes) aligned (%llu) from allocator - [%s] for tag - [%s]",
       (unsigned long long)old_size, (unsigned long long)alignment,
-      VkrAllocatorTypeNames[allocator->type],
-      VkrAllocatorMemoryTagNames[tag]);
+      VkrAllocatorTypeNames[allocator->type], VkrAllocatorMemoryTagNames[tag]);
 #endif
 
   allocator->free_aligned(allocator->ctx, ptr, old_size, alignment, tag);
+}
+
+void vkr_allocator_free_ts(VkrAllocator *allocator, void *ptr, uint64_t old_size,
+                           VkrAllocatorMemoryTag tag, VkrMutex mutex) {
+  if (!vkr_allocator_lock(mutex)) {
+    return;
+  }
+  vkr_allocator_free(allocator, ptr, old_size, tag);
+  vkr_allocator_unlock(mutex);
+}
+
+void vkr_allocator_free_aligned_ts(VkrAllocator *allocator, void *ptr,
+                                   uint64_t old_size, uint64_t alignment,
+                                   VkrAllocatorMemoryTag tag, VkrMutex mutex) {
+  if (!vkr_allocator_lock(mutex)) {
+    return;
+  }
+  vkr_allocator_free_aligned(allocator, ptr, old_size, alignment, tag);
+  vkr_allocator_unlock(mutex);
 }
 
 void *vkr_allocator_realloc(VkrAllocator *allocator, void *ptr,
@@ -432,6 +502,18 @@ void *vkr_allocator_realloc(VkrAllocator *allocator, void *ptr,
   }
 
   return allocator->realloc(allocator->ctx, ptr, old_size, new_size, tag);
+}
+
+void *vkr_allocator_realloc_ts(VkrAllocator *allocator, void *ptr,
+                               uint64_t old_size, uint64_t new_size,
+                               VkrAllocatorMemoryTag tag, VkrMutex mutex) {
+  if (!vkr_allocator_lock(mutex)) {
+    return NULL;
+  }
+  void *result =
+      vkr_allocator_realloc(allocator, ptr, old_size, new_size, tag);
+  vkr_allocator_unlock(mutex);
+  return result;
 }
 
 void vkr_allocator_set(VkrAllocator *allocator, void *ptr, uint32_t value,
@@ -572,9 +654,10 @@ void vkr_allocator_end_scope(VkrAllocatorScope *scope,
   uint64_t total_released = 0;
   if (scope->tags_snapshot_valid) {
     for (uint32_t i = 0; i < VKR_ALLOCATOR_MEMORY_TAG_MAX; ++i) {
-      if (allocator->stats.tagged_allocs[i] > scope->tagged_allocs_at_start[i]) {
-        uint64_t released =
-            allocator->stats.tagged_allocs[i] - scope->tagged_allocs_at_start[i];
+      if (allocator->stats.tagged_allocs[i] >
+          scope->tagged_allocs_at_start[i]) {
+        uint64_t released = allocator->stats.tagged_allocs[i] -
+                            scope->tagged_allocs_at_start[i];
         tag_released[i] = released;
         total_released += released;
       }
@@ -627,7 +710,8 @@ void vkr_allocator_end_scope(VkrAllocatorScope *scope,
     }
 
     // Totals
-    uint64_t dec = vkr_min_u64(allocator->stats.total_allocated, total_released);
+    uint64_t dec =
+        vkr_min_u64(allocator->stats.total_allocated, total_released);
     allocator->stats.total_allocated -= dec;
     vkr_atomic_uint64_sub_saturate(&g_vkr_allocator_stats.total_allocated,
                                    total_released);
