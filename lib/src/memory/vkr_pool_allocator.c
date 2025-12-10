@@ -68,6 +68,7 @@ vkr_internal INLINE void vkr_pool_free_cb(void *ctx, void *ptr,
   if (old_size > pool->chunk_size) {
     log_error("Free size (%llu) exceeds pool chunk size (%llu)",
               (uint64_t)old_size, (uint64_t)pool->chunk_size);
+    return;
   }
 
   if (!vkr_pool_free(pool, ptr)) {

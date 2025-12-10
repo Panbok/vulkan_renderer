@@ -2,8 +2,9 @@
 #include "core/logger.h"
 #include "platform/vkr_platform.h"
 
-vkr_internal INLINE bool8_t
-vkr_align_pow2_safe(uint64_t value, uint64_t alignment, uint64_t *out_value) {
+vkr_internal INLINE bool8_t vkr_align_pow2_safe(uint64_t value,
+                                                uint64_t alignment,
+                                                uint64_t *out_value) {
   assert_log(out_value != NULL, "out_value must not be NULL");
   assert_log(alignment > 0, "alignment must be greater than 0");
   assert_log((alignment & (alignment - 1)) == 0,
@@ -89,8 +90,7 @@ bool8_t vkr_pool_create(uint64_t chunk_size, uint32_t chunk_count,
     return false_v;
   }
 
-  uint64_t freelist_size =
-      vkr_freelist_calculate_memory_requirement(pool_size);
+  uint64_t freelist_size = vkr_freelist_calculate_memory_requirement(pool_size);
   uint64_t freelist_reserve_size = 0;
   if (!vkr_align_pow2_safe(freelist_size, page_size, &freelist_reserve_size)) {
     vkr_platform_mem_release(memory, reserve_size);
@@ -116,7 +116,9 @@ bool8_t vkr_pool_create(uint64_t chunk_size, uint32_t chunk_count,
   if (!vkr_freelist_create(freelist_memory, freelist_reserve_size, pool_size,
                            &out_pool->freelist)) {
     log_error("Failed to initialize freelist for pool");
+    vkr_platform_mem_decommit(freelist_memory, freelist_reserve_size);
     vkr_platform_mem_release(freelist_memory, freelist_reserve_size);
+    vkr_platform_mem_decommit(memory, reserve_size);
     vkr_platform_mem_release(memory, reserve_size);
     return false_v;
   }
