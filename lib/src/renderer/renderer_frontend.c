@@ -253,6 +253,11 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
     vkr_mutex_destroy(&rf->allocator, &rf->rf_mutex);
   }
 
+  // Destroy mesh arena pool
+  if (rf->mesh_arena_pool.initialized) {
+    vkr_arena_pool_destroy(&rf->allocator, &rf->mesh_arena_pool);
+  }
+
   arena_destroy(renderer->arena);
   arena_destroy(renderer->scratch_arena);
 }
@@ -955,13 +960,24 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
+  // Create arena pool for mesh loading
+  // Use worker_count + 4 chunks to allow for some buffer
+  uint32_t pool_chunk_count = job_system ? job_system->worker_count + 4
+                                         : 8; // Default to 8 if no job system
+  if (!vkr_arena_pool_create(MB(6), pool_chunk_count, &rf->allocator,
+                             &rf->mesh_arena_pool)) {
+    log_fatal("Failed to create mesh arena pool");
+    return false_v;
+  }
+
   rf->mesh_loader =
       (VkrMeshLoaderContext){.arena = rf->arena,
                              .scratch_arena = rf->scratch_arena,
                              .geometry_system = &rf->geometry_system,
                              .material_system = &rf->material_system,
                              .mesh_manager = &rf->mesh_manager,
-                             .job_system = job_system};
+                             .job_system = job_system,
+                             .arena_pool = &rf->mesh_arena_pool};
   rf->mesh_loader.allocator.ctx = rf->mesh_loader.scratch_arena;
   vkr_allocator_arena(&rf->mesh_loader.allocator);
 

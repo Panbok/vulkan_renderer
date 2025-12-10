@@ -42,6 +42,7 @@ struct s_RendererFrontend {
   // Meshes
   VkrMeshManager mesh_manager;
   VkrMeshLoaderContext mesh_loader;
+  VkrArenaPool mesh_arena_pool;
 
   VkrLayerHandle world_layer;
   VkrLayerHandle skybox_layer;
