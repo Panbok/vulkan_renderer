@@ -1312,6 +1312,8 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   Arena **result_arenas = (Arena **)vkr_allocator_alloc(
       temp_alloc, sizeof(Arena *) * count, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  void **pool_chunks = (void **)vkr_allocator_alloc(
+      temp_alloc, sizeof(void *) * count, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   VkrAllocator *result_allocators = vkr_allocator_alloc(
       temp_alloc, sizeof(VkrAllocator) * count, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   VkrRendererError *errors =
@@ -1327,8 +1329,8 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
   bool8_t *job_submitted = vkr_allocator_alloc(
       temp_alloc, sizeof(bool8_t) * count, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
-  if (!results || !result_arenas || !result_allocators || !errors || !success ||
-      !job_handles || !payloads || !job_submitted) {
+  if (!results || !result_arenas || !pool_chunks || !result_allocators ||
+      !errors || !success || !job_handles || !payloads || !job_submitted) {
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     for (uint32_t i = 0; i < count; i++) {
       out_results[i].error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -1336,16 +1338,24 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
     return 0;
   }
 
-  // Initialize per-mesh data with individual arenas (thread-safe)
+  // Arena pool is required for mesh loading
+  VkrArenaPool *arena_pool = context->arena_pool;
+  if (!arena_pool || !arena_pool->initialized) {
+    log_error("Mesh loader requires arena_pool to be initialized");
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    for (uint32_t i = 0; i < count; i++) {
+      out_results[i].error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
+    }
+    return 0;
+  }
+
   for (uint32_t i = 0; i < count; i++) {
-    // Create per-job arena for thread-safe allocation
-    // todo: this should be re-worked, to have a pool of arenas for the job
-    // system or make arena accept an initial buffer
-    result_arenas[i] = arena_create(MB(6));
-    if (!result_arenas[i]) {
-      // Clean up already created arenas
+    pool_chunks[i] = vkr_arena_pool_acquire(arena_pool);
+    if (!pool_chunks[i]) {
+      log_error("Arena pool exhausted at mesh %u/%u", i, count);
       for (uint32_t k = 0; k < i; k++) {
         arena_destroy(result_arenas[k]);
+        vkr_arena_pool_release(arena_pool, pool_chunks[k]);
       }
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       for (uint32_t k = 0; k < count; k++) {
@@ -1353,6 +1363,22 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
       }
       return 0;
     }
+
+    result_arenas[i] =
+        arena_create_from_buffer(pool_chunks[i], arena_pool->chunk_size);
+    if (!result_arenas[i]) {
+      vkr_arena_pool_release(arena_pool, pool_chunks[i]);
+      for (uint32_t k = 0; k < i; k++) {
+        arena_destroy(result_arenas[k]);
+        vkr_arena_pool_release(arena_pool, pool_chunks[k]);
+      }
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      for (uint32_t k = 0; k < count; k++) {
+        out_results[k].error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      }
+      return 0;
+    }
+
     result_allocators[i].ctx = result_arenas[i];
     vkr_allocator_arena(&result_allocators[i]);
 
@@ -1362,6 +1388,7 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
     if (!results[i]) {
       for (uint32_t k = 0; k <= i; k++) {
         arena_destroy(result_arenas[k]);
+        vkr_arena_pool_release(arena_pool, pool_chunks[k]);
       }
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       for (uint32_t k = 0; k < count; k++) {
@@ -1370,7 +1397,8 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
       return 0;
     }
     MemZero(results[i], sizeof(VkrMeshLoaderResult));
-    results[i]->arena = result_arenas[i]; // Store arena for cleanup
+    results[i]->arena = result_arenas[i];
+    results[i]->pool_chunk = pool_chunks[i];
 
     errors[i] = VKR_RENDERER_ERROR_NONE;
     success[i] = false_v;
@@ -1638,9 +1666,14 @@ vkr_internal void vkr_mesh_loader_unload(VkrResourceLoader *self,
     }
   }
 
-  // Free the result arena (this frees all mesh data)
+  void *pool_chunk = result->pool_chunk;
+
   if (result->arena) {
     arena_destroy(result->arena);
+  }
+
+  if (pool_chunk) {
+    vkr_arena_pool_release(context->arena_pool, pool_chunk);
   }
 }
 

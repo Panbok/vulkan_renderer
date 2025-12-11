@@ -6,6 +6,7 @@
 #include "math/vkr_transform.h"
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
+#include "memory/vkr_arena_pool.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
@@ -26,7 +27,9 @@ typedef struct VkrMeshLoaderSubset {
 Array(VkrMeshLoaderSubset);
 
 typedef struct VkrMeshLoaderResult {
-  Arena *arena;
+  Arena *arena;     /**< Buffer-backed arena for mesh data */
+  void *pool_chunk; /**< Chunk pointer for returning to pool (NULL if not
+                       pooled) */
   String8 source_path;
   VkrTransform root_transform;
   Array_VkrMeshLoaderSubset subsets;
@@ -39,7 +42,8 @@ typedef struct VkrMeshLoaderContext {
   VkrGeometrySystem *geometry_system;
   VkrMaterialSystem *material_system;
   VkrMeshManager *mesh_manager;
-  VkrJobSystem *job_system; // For async mesh loading
+  VkrJobSystem *job_system; /**< For async mesh loading */
+  VkrArenaPool *arena_pool; /**< Pool for mesh loading arenas (optional) */
 } VkrMeshLoaderContext;
 
 // =============================================================================
