@@ -11,6 +11,28 @@
 
 #pragma once
 
+/**
+ * @brief Define VKR_ALLOCATOR_DISABLE_STATS to disable atomic statistics
+ * tracking on every allocation. This can significantly improve performance
+ * in release builds where detailed memory tracking is not needed.
+ *
+ * When disabled:
+ * - Global atomic counters are not updated on alloc/free/realloc
+ * - Per-allocator stats are still updated (non-atomic, per-allocator)
+ * - vkr_allocator_report() becomes a no-op
+ */
+#ifndef VKR_ALLOCATOR_DISABLE_STATS
+#define VKR_ALLOCATOR_DISABLE_STATS 0
+#endif
+
+/**
+ * @brief Define VKR_ALLOCATOR_ENABLE_LOGGING to enable logging of every
+ * allocation. This can significantly degrade performance in release builds.
+ */
+#ifndef VKR_ALLOCATOR_ENABLE_LOGGING
+#define VKR_ALLOCATOR_ENABLE_LOGGING 0
+#endif
+
 // Forward declaration to avoid including vkr_threads.h (which depends on this
 // header).
 typedef struct s_VkrMutex *VkrMutex;
@@ -28,6 +50,8 @@ typedef enum VkrAllocatorMemoryTag {
   VKR_ALLOCATOR_MEMORY_TAG_TEXTURE,
   VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE,
   VKR_ALLOCATOR_MEMORY_TAG_FREELIST,
+  VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
+  VKR_ALLOCATOR_MEMORY_TAG_GPU,
 
   VKR_ALLOCATOR_MEMORY_TAG_MAX,
 } VkrAllocatorMemoryTag;
@@ -120,6 +144,12 @@ struct VkrAllocator {
   void *(*realloc)(void *ctx, void *ptr, uint64_t old_size, uint64_t new_size,
                    VkrAllocatorMemoryTag tag);
 
+  // Reallocate with alignment. For allocators that can't resize in-place,
+  // this may perform alloc+copy+free_aligned internally.
+  void *(*realloc_aligned)(void *ctx, void *ptr, uint64_t old_size,
+                           uint64_t new_size, uint64_t alignment,
+                           VkrAllocatorMemoryTag tag);
+
   // Optional: Scope-based temporary allocation support.
   // These callbacks receive the full VkrAllocator* so they can update
   // scope_depth and scope_bytes_allocated. The allocator's ctx is accessible
@@ -176,8 +206,7 @@ void *_vkr_allocator_alloc_aligned_ts(VkrAllocator *allocator, uint64_t size,
                                       const char *alloc_file);
 #define vkr_allocator_alloc_ts(allocator, size, tag, mutex)                    \
   _vkr_allocator_alloc_ts(allocator, size, tag, mutex, __LINE__, __FILE__)
-#define vkr_allocator_alloc_aligned_ts(allocator, size, alignment, tag,        \
-                                       mutex)                                  \
+#define vkr_allocator_alloc_aligned_ts(allocator, size, alignment, tag, mutex) \
   _vkr_allocator_alloc_aligned_ts(allocator, size, alignment, tag, mutex,      \
                                   __LINE__, __FILE__)
 
@@ -192,8 +221,9 @@ void *_vkr_allocator_alloc_aligned_ts(VkrAllocator *allocator, uint64_t size,
  */
 void vkr_allocator_free(VkrAllocator *allocator, void *ptr, uint64_t old_size,
                         VkrAllocatorMemoryTag tag);
-void vkr_allocator_free_ts(VkrAllocator *allocator, void *ptr, uint64_t old_size,
-                           VkrAllocatorMemoryTag tag, VkrMutex mutex);
+void vkr_allocator_free_ts(VkrAllocator *allocator, void *ptr,
+                           uint64_t old_size, VkrAllocatorMemoryTag tag,
+                           VkrMutex mutex);
 /**
  * @brief Frees memory from the allocator with a specific alignment.
  * @param allocator The allocator to use.
@@ -281,6 +311,35 @@ VkrAllocatorStatistics vkr_allocator_get_global_statistics();
  * with vkr_allocator_free. Returns NULL on allocation failure.
  */
 char *vkr_allocator_print_global_statistics(VkrAllocator *allocator);
+
+/**
+ * @brief Reports externally allocated/freed memory to allocator statistics.
+ *
+ * @param allocator Allocator whose local stats should be updated (NULL to
+ * update global stats only)
+ * @param size Size of the allocation/free (in bytes)
+ * @param tag Memory tag to update
+ * @param is_allocation true_v to add bytes, false_v to subtract (saturates at
+ * zero)
+ */
+void vkr_allocator_report(VkrAllocator *allocator, uint64_t size,
+                          VkrAllocatorMemoryTag tag, bool8_t is_allocation);
+
+/**
+ * @brief Reallocates memory with a specific alignment.
+ *
+ * Falls back to alloc+copy+free_aligned when the allocator does not provide
+ * an aligned realloc implementation.
+ */
+void *vkr_allocator_realloc_aligned(VkrAllocator *allocator, void *ptr,
+                                    uint64_t old_size, uint64_t new_size,
+                                    uint64_t alignment,
+                                    VkrAllocatorMemoryTag tag);
+void *vkr_allocator_realloc_aligned_ts(VkrAllocator *allocator, void *ptr,
+                                       uint64_t old_size, uint64_t new_size,
+                                       uint64_t alignment,
+                                       VkrAllocatorMemoryTag tag,
+                                       VkrMutex mutex);
 
 // =============================================================================
 // Scope-based Temporary Allocation API

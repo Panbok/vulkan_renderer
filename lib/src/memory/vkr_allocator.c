@@ -5,9 +5,9 @@
 #include "defines.h"
 
 const char *VkrAllocatorMemoryTagNames[VKR_ALLOCATOR_MEMORY_TAG_MAX] = {
-    "UNKNOWN", "ARRAY",    "STRING", "VECTOR",  "QUEUE",      "STRUCT",
-    "BUFFER",  "RENDERER", "FILE",   "TEXTURE", "HASH_TABLE", "FREELIST",
-};
+    "UNKNOWN",    "ARRAY",    "STRING",   "VECTOR", "QUEUE",
+    "STRUCT",     "BUFFER",   "RENDERER", "FILE",   "TEXTURE",
+    "HASH_TABLE", "FREELIST", "VULKAN",   "GPU"};
 
 const char *VkrAllocatorTypeNames[VKR_ALLOCATOR_TYPE_MAX] = {
     "ARENA",
@@ -15,10 +15,6 @@ const char *VkrAllocatorTypeNames[VKR_ALLOCATOR_TYPE_MAX] = {
     "DMEMORY",
     "UNKNOWN",
 };
-
-#ifndef VKR_ALLOCATOR_ENABLE_LOGGING
-#define VKR_ALLOCATOR_ENABLE_LOGGING 0
-#endif
 
 typedef struct VkrAllocatorStatisticsAtomic {
   VkrAtomicUint64 total_allocs;
@@ -59,7 +55,7 @@ vkr_internal INLINE void vkr_allocator_unlock(VkrMutex mutex) {
   }
 
   if (!vkr_mutex_unlock(mutex)) {
-    log_error("Failed to unlock allocator mutex");
+    log_fatal("Failed to unlock allocator mutex");
   }
 }
 
@@ -211,6 +207,7 @@ void *_vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
   assert_log(alloc_line > 0, "Alloc line must be greater than 0");
   assert_log(alloc_file != NULL, "Alloc file must not be NULL");
 
+#if !VKR_ALLOCATOR_DISABLE_STATS
   // Global counters
   vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_allocs, 1,
                               VKR_MEMORY_ORDER_RELAXED);
@@ -251,12 +248,13 @@ void *_vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
       }
     }
   }
+#endif // !VKR_ALLOCATOR_DISABLE_STATS
 
 #if VKR_ALLOCATOR_ENABLE_LOGGING
-  log_debug("Allocated (%llu bytes) from allocator - [%s] for tag - [%s] at "
-            "line - [%u] in file - [%s]",
-            (uint64_t)size, VkrAllocatorTypeNames[allocator->type],
-            VkrAllocatorMemoryTagNames[tag], alloc_line, alloc_file);
+  log_info("Allocated (%llu bytes) from allocator - [%s] for tag - [%s] at "
+           "line - [%u] in file - [%s]",
+           (uint64_t)size, VkrAllocatorTypeNames[allocator->type],
+           VkrAllocatorMemoryTagNames[tag], alloc_line, alloc_file);
 #endif
 
   return allocator->alloc(allocator->ctx, size, tag);
@@ -283,6 +281,7 @@ void *_vkr_allocator_alloc_aligned(VkrAllocator *allocator, uint64_t size,
   assert_log(alloc_line > 0, "Alloc line must be greater than 0");
   assert_log(alloc_file != NULL, "Alloc file must not be NULL");
 
+#if !VKR_ALLOCATOR_DISABLE_STATS
   vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_allocs, 1,
                               VKR_MEMORY_ORDER_RELAXED);
   vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.tagged_allocs[tag], size,
@@ -317,9 +316,10 @@ void *_vkr_allocator_alloc_aligned(VkrAllocator *allocator, uint64_t size,
       }
     }
   }
+#endif // !VKR_ALLOCATOR_DISABLE_STATS
 
 #if VKR_ALLOCATOR_ENABLE_LOGGING
-  log_debug(
+  log_info(
       "Allocated (%llu bytes) aligned (%llu) from allocator - [%s] for tag - "
       "[%s] at line - [%u] in file - [%s]",
       (uint64_t)size, (uint64_t)alignment,
@@ -364,6 +364,7 @@ void vkr_allocator_free(VkrAllocator *allocator, void *ptr, uint64_t old_size,
   assert_log(tag < VKR_ALLOCATOR_MEMORY_TAG_MAX,
              "Tag must be less than VKR_ALLOCATOR_MEMORY_TAG_MAX");
 
+#if !VKR_ALLOCATOR_DISABLE_STATS
   vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_frees, 1,
                               VKR_MEMORY_ORDER_RELAXED);
   allocator->stats.total_frees++;
@@ -383,12 +384,12 @@ void vkr_allocator_free(VkrAllocator *allocator, void *ptr, uint64_t old_size,
     uint64_t dec = vkr_min_u64(allocator->stats.tagged_allocs[tag], old_size);
     allocator->stats.tagged_allocs[tag] -= dec;
   }
+#endif // !VKR_ALLOCATOR_DISABLE_STATS
 
 #if VKR_ALLOCATOR_ENABLE_LOGGING
-  log_debug("Freed (%llu bytes) from allocator - [%s] for tag - [%s]",
-            (unsigned long long)old_size,
-            VkrAllocatorTypeNames[allocator->type],
-            VkrAllocatorMemoryTagNames[tag]);
+  log_info("Freed (%llu bytes) from allocator - [%s] for tag - [%s]",
+           (unsigned long long)old_size, VkrAllocatorTypeNames[allocator->type],
+           VkrAllocatorMemoryTagNames[tag]);
 #endif
 
   allocator->free(allocator->ctx, ptr, old_size, tag);
@@ -405,6 +406,7 @@ void vkr_allocator_free_aligned(VkrAllocator *allocator, void *ptr,
   assert_log(tag < VKR_ALLOCATOR_MEMORY_TAG_MAX,
              "Tag must be less than VKR_ALLOCATOR_MEMORY_TAG_MAX");
 
+#if !VKR_ALLOCATOR_DISABLE_STATS
   vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_frees, 1,
                               VKR_MEMORY_ORDER_RELAXED);
   allocator->stats.total_frees++;
@@ -424,9 +426,10 @@ void vkr_allocator_free_aligned(VkrAllocator *allocator, void *ptr,
     uint64_t dec = vkr_min_u64(allocator->stats.tagged_allocs[tag], old_size);
     allocator->stats.tagged_allocs[tag] -= dec;
   }
+#endif // !VKR_ALLOCATOR_DISABLE_STATS
 
 #if VKR_ALLOCATOR_ENABLE_LOGGING
-  log_debug(
+  log_info(
       "Freed (%llu bytes) aligned (%llu) from allocator - [%s] for tag - [%s]",
       (unsigned long long)old_size, (unsigned long long)alignment,
       VkrAllocatorTypeNames[allocator->type], VkrAllocatorMemoryTagNames[tag]);
@@ -435,8 +438,9 @@ void vkr_allocator_free_aligned(VkrAllocator *allocator, void *ptr,
   allocator->free_aligned(allocator->ctx, ptr, old_size, alignment, tag);
 }
 
-void vkr_allocator_free_ts(VkrAllocator *allocator, void *ptr, uint64_t old_size,
-                           VkrAllocatorMemoryTag tag, VkrMutex mutex) {
+void vkr_allocator_free_ts(VkrAllocator *allocator, void *ptr,
+                           uint64_t old_size, VkrAllocatorMemoryTag tag,
+                           VkrMutex mutex) {
   if (!vkr_allocator_lock(mutex)) {
     return;
   }
@@ -463,21 +467,23 @@ void *vkr_allocator_realloc(VkrAllocator *allocator, void *ptr,
   assert_log(tag < VKR_ALLOCATOR_MEMORY_TAG_MAX,
              "Tag must be less than VKR_ALLOCATOR_MEMORY_TAG_MAX");
 
+#if !VKR_ALLOCATOR_DISABLE_STATS
   vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_reallocs, 1,
                               VKR_MEMORY_ORDER_RELAXED);
   allocator->stats.total_reallocs++;
+#endif // !VKR_ALLOCATOR_DISABLE_STATS
 
 #if VKR_ALLOCATOR_ENABLE_LOGGING
-  log_debug("Reallocated (%llu bytes) from allocator - [%s] for tag - [%s]",
-            (unsigned long long)old_size,
-            VkrAllocatorTypeNames[allocator->type],
-            VkrAllocatorMemoryTagNames[tag]);
+  log_info("Reallocated (%llu bytes) from allocator - [%s] for tag - [%s]",
+           (unsigned long long)old_size, VkrAllocatorTypeNames[allocator->type],
+           VkrAllocatorMemoryTagNames[tag]);
 #endif
 
   if (old_size <= 0) {
     return allocator->realloc(allocator->ctx, ptr, old_size, new_size, tag);
   }
 
+#if !VKR_ALLOCATOR_DISABLE_STATS
   if (new_size >= old_size) {
     uint64_t delta = new_size - old_size;
     vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_allocated, delta,
@@ -500,6 +506,7 @@ void *vkr_allocator_realloc(VkrAllocator *allocator, void *ptr,
     dec = vkr_min_u64(allocator->stats.tagged_allocs[tag], delta);
     allocator->stats.tagged_allocs[tag] -= dec;
   }
+#endif // !VKR_ALLOCATOR_DISABLE_STATS
 
   return allocator->realloc(allocator->ctx, ptr, old_size, new_size, tag);
 }
@@ -510,8 +517,74 @@ void *vkr_allocator_realloc_ts(VkrAllocator *allocator, void *ptr,
   if (!vkr_allocator_lock(mutex)) {
     return NULL;
   }
-  void *result =
-      vkr_allocator_realloc(allocator, ptr, old_size, new_size, tag);
+  void *result = vkr_allocator_realloc(allocator, ptr, old_size, new_size, tag);
+  vkr_allocator_unlock(mutex);
+  return result;
+}
+
+void *vkr_allocator_realloc_aligned(VkrAllocator *allocator, void *ptr,
+                                    uint64_t old_size, uint64_t new_size,
+                                    uint64_t alignment,
+                                    VkrAllocatorMemoryTag tag) {
+  assert_log(allocator != NULL, "Allocator must not be NULL");
+  assert_log(alignment > 0, "Alignment must be greater than 0");
+  assert_log(new_size > 0 || ptr != NULL,
+             "Either new_size must be > 0 or ptr must be non-NULL");
+  assert_log(tag < VKR_ALLOCATOR_MEMORY_TAG_MAX,
+             "Tag must be less than VKR_ALLOCATOR_MEMORY_TAG_MAX");
+  assert_log(allocator->realloc_aligned != NULL,
+             "Allocator->realloc_aligned must be set");
+
+#if !VKR_ALLOCATOR_DISABLE_STATS
+  vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_reallocs, 1,
+                              VKR_MEMORY_ORDER_RELAXED);
+  allocator->stats.total_reallocs++;
+#endif // !VKR_ALLOCATOR_DISABLE_STATS
+
+  if (old_size <= 0) {
+    return allocator->realloc_aligned(allocator->ctx, ptr, old_size, new_size,
+                                      alignment, tag);
+  }
+
+#if !VKR_ALLOCATOR_DISABLE_STATS
+  if (new_size >= old_size) {
+    uint64_t delta = new_size - old_size;
+    vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_allocated, delta,
+                                VKR_MEMORY_ORDER_RELAXED);
+    vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.tagged_allocs[tag],
+                                delta, VKR_MEMORY_ORDER_RELAXED);
+    allocator->stats.total_allocated += delta;
+    allocator->stats.tagged_allocs[tag] += delta;
+  } else {
+    uint64_t delta = old_size - new_size;
+    vkr_atomic_uint64_sub_saturate(&g_vkr_allocator_stats.total_allocated,
+                                   delta);
+
+    vkr_atomic_uint64_sub_saturate(&g_vkr_allocator_stats.tagged_allocs[tag],
+                                   delta);
+
+    uint64_t dec = vkr_min_u64(allocator->stats.total_allocated, delta);
+    allocator->stats.total_allocated -= dec;
+
+    dec = vkr_min_u64(allocator->stats.tagged_allocs[tag], delta);
+    allocator->stats.tagged_allocs[tag] -= dec;
+  }
+#endif // !VKR_ALLOCATOR_DISABLE_STATS
+
+  return allocator->realloc_aligned(allocator->ctx, ptr, old_size, new_size,
+                                    alignment, tag);
+}
+
+void *vkr_allocator_realloc_aligned_ts(VkrAllocator *allocator, void *ptr,
+                                       uint64_t old_size, uint64_t new_size,
+                                       uint64_t alignment,
+                                       VkrAllocatorMemoryTag tag,
+                                       VkrMutex mutex) {
+  if (!vkr_allocator_lock(mutex)) {
+    return NULL;
+  }
+  void *result = vkr_allocator_realloc_aligned(allocator, ptr, old_size,
+                                               new_size, alignment, tag);
   vkr_allocator_unlock(mutex);
   return result;
 }
@@ -522,16 +595,18 @@ void vkr_allocator_set(VkrAllocator *allocator, void *ptr, uint32_t value,
 
   MemSet(ptr, value, size);
 
+#if !VKR_ALLOCATOR_DISABLE_STATS
   vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_sets, 1,
                               VKR_MEMORY_ORDER_RELAXED);
   if (allocator) {
     allocator->stats.total_sets++;
   }
+#endif // !VKR_ALLOCATOR_DISABLE_STATS
 
 #if VKR_ALLOCATOR_ENABLE_LOGGING
   if (allocator) {
-    log_debug("Set (%llu bytes) from allocator - [%s]", (uint64_t)size,
-              VkrAllocatorTypeNames[allocator->type]);
+    log_info("Set (%llu bytes) from allocator - [%s]", (uint64_t)size,
+             VkrAllocatorTypeNames[allocator->type]);
   }
 #endif
 }
@@ -541,16 +616,18 @@ void vkr_allocator_zero(VkrAllocator *allocator, void *ptr, uint64_t size) {
 
   MemZero(ptr, size);
 
+#if !VKR_ALLOCATOR_DISABLE_STATS
   vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_zeros, 1,
                               VKR_MEMORY_ORDER_RELAXED);
   if (allocator) {
     allocator->stats.total_zeros++;
   }
+#endif // !VKR_ALLOCATOR_DISABLE_STATS
 
 #if VKR_ALLOCATOR_ENABLE_LOGGING
   if (allocator) {
-    log_debug("Zeroed (%llu bytes) from allocator - [%s]", (uint64_t)size,
-              VkrAllocatorTypeNames[allocator->type]);
+    log_info("Zeroed (%llu bytes) from allocator - [%s]", (uint64_t)size,
+             VkrAllocatorTypeNames[allocator->type]);
   }
 #endif
 }
@@ -562,15 +639,17 @@ void vkr_allocator_copy(VkrAllocator *allocator, void *dst, const void *src,
 
   MemCopy(dst, src, size);
 
+#if !VKR_ALLOCATOR_DISABLE_STATS
   vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_copies, 1,
                               VKR_MEMORY_ORDER_RELAXED);
   if (allocator) {
     allocator->stats.total_copies++;
   }
+#endif // !VKR_ALLOCATOR_DISABLE_STATS
 
 #if VKR_ALLOCATOR_ENABLE_LOGGING
-  log_debug("Copied (%llu bytes) from allocator - [%s]",
-            (unsigned long long)size, VkrAllocatorTypeNames[allocator->type]);
+  log_info("Copied (%llu bytes) from allocator - [%s]",
+           (unsigned long long)size, VkrAllocatorTypeNames[allocator->type]);
 #endif
 }
 
@@ -595,6 +674,57 @@ char *vkr_allocator_print_global_statistics(VkrAllocator *allocator) {
   VkrAllocatorStatistics snapshot =
       vkr_allocator_stats_snapshot(&g_vkr_allocator_stats);
   return vkr_allocator_format_statistics(allocator, &snapshot);
+}
+
+void vkr_allocator_report(VkrAllocator *allocator, uint64_t size,
+                          VkrAllocatorMemoryTag tag, bool8_t is_allocation) {
+#if VKR_ALLOCATOR_DISABLE_STATS
+  (void)allocator;
+  (void)size;
+  (void)tag;
+  (void)is_allocation;
+  return;
+#else
+  assert_log(tag < VKR_ALLOCATOR_MEMORY_TAG_MAX,
+             "Tag must be less than VKR_ALLOCATOR_MEMORY_TAG_MAX");
+  if (size == 0) {
+    return;
+  }
+
+  if (is_allocation) {
+    uint64_t inc = size;
+    vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_allocs, 1,
+                                VKR_MEMORY_ORDER_RELAXED);
+    vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_allocated, inc,
+                                VKR_MEMORY_ORDER_RELAXED);
+    vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.tagged_allocs[tag], inc,
+                                VKR_MEMORY_ORDER_RELAXED);
+
+    if (allocator) {
+      allocator->stats.total_allocs++;
+      allocator->stats.total_allocated += inc;
+      allocator->stats.tagged_allocs[tag] += inc;
+    }
+    return;
+  }
+
+  uint64_t dec = size;
+  vkr_atomic_uint64_fetch_add(&g_vkr_allocator_stats.total_frees, 1,
+                              VKR_MEMORY_ORDER_RELAXED);
+  vkr_atomic_uint64_sub_saturate(&g_vkr_allocator_stats.total_allocated, dec);
+  vkr_atomic_uint64_sub_saturate(&g_vkr_allocator_stats.tagged_allocs[tag],
+                                 dec);
+
+  if (allocator) {
+    uint64_t local_dec = vkr_min_u64(allocator->stats.total_allocated, dec);
+    allocator->stats.total_allocated -= local_dec;
+
+    local_dec = vkr_min_u64(allocator->stats.tagged_allocs[tag], dec);
+    allocator->stats.tagged_allocs[tag] -= local_dec;
+
+    allocator->stats.total_frees++;
+  }
+#endif // VKR_ALLOCATOR_DISABLE_STATS
 }
 
 // =============================================================================
@@ -626,8 +756,8 @@ VkrAllocatorScope vkr_allocator_begin_scope(VkrAllocator *allocator) {
                               VKR_MEMORY_ORDER_RELAXED);
 
 #if VKR_ALLOCATOR_ENABLE_LOGGING
-  log_debug("Begin scope (depth=%u) on allocator [%s]", allocator->scope_depth,
-            VkrAllocatorTypeNames[allocator->type]);
+  log_info("Begin scope (depth=%u) on allocator [%s]", allocator->scope_depth,
+           VkrAllocatorTypeNames[allocator->type]);
 #endif
 
   return scope;
@@ -674,8 +804,8 @@ void vkr_allocator_end_scope(VkrAllocatorScope *scope,
   }
 
 #if VKR_ALLOCATOR_ENABLE_LOGGING
-  log_debug("End scope (depth=%u) on allocator [%s]", allocator->scope_depth,
-            VkrAllocatorTypeNames[allocator->type]);
+  log_info("End scope (depth=%u) on allocator [%s]", allocator->scope_depth,
+           VkrAllocatorTypeNames[allocator->type]);
 #endif
 
   uint64_t bytes_released = 0;
