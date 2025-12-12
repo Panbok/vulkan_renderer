@@ -58,6 +58,12 @@ target_compile_definitions(renderer_lib PRIVATE
     $<$<CONFIG:RelWithDebInfo>:ASSERT_LOG=0>
     $<$<CONFIG:Debug>:LOG_LEVEL=4>
     $<$<CONFIG:Debug>:ASSERT_LOG=1>
+    $<$<CONFIG:Release>:VKR_ALLOCATOR_DISABLE_STATS=1>
+    $<$<CONFIG:RelWithDebInfo>:VKR_ALLOCATOR_DISABLE_STATS=1>
+    $<$<CONFIG:Debug>:VKR_ALLOCATOR_DISABLE_STATS=0>
+    $<$<CONFIG:Release>:VKR_ALLOCATOR_ENABLE_LOGGING=0>
+    $<$<CONFIG:RelWithDebInfo>:VKR_ALLOCATOR_ENABLE_LOGGING=0>
+    $<$<CONFIG:Debug>:VKR_ALLOCATOR_ENABLE_LOGGING=0>
 )
 
 target_precompile_headers(renderer_lib PRIVATE src/vkr_pch.h)
