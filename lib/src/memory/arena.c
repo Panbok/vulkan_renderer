@@ -72,15 +72,92 @@ Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size,
   arena->prev = NULL;
   arena->free_size = 0;
   arena->free_last = NULL;
+  arena->min_bound = (uintptr_t)arena;
+  arena->max_bound = (uintptr_t)arena + s_rsv_size;
+  arena->owns_memory = true_v;
+  return arena;
+}
+
+Arena *arena_create_from_buffer(void *buffer, uint64_t size) {
+  if (buffer == NULL) {
+    assert(0 && "Buffer must not be NULL");
+    return NULL;
+  }
+
+  if (size < ARENA_HEADER_SIZE + MaxAlign()) {
+    assert(0 && "Buffer too small for arena header");
+    return NULL;
+  }
+
+  // Ensure buffer is properly aligned
+  if ((uintptr_t)buffer % MaxAlign() != 0) {
+    assert(0 && "Buffer must be aligned to MaxAlign()");
+    return NULL;
+  }
+
+  Arena *arena = (Arena *)buffer;
+  MemZero(arena, sizeof(Arena));
+  MemZero(arena->tags, sizeof(arena->tags));
+
+  uint64_t page_size = vkr_platform_get_page_size();
+
+  arena->current = arena;
+  arena->rsv_size = size; // Store original buffer size
+  arena->cmt_size = size; // Buffer is fully "committed"
+  arena->page_size = page_size;
+  arena->base_pos = 0;
+  arena->pos = ARENA_HEADER_SIZE;
+  arena->cmt = size; // Entire buffer is usable
+  arena->rsv = size; // Entire buffer is available
+  arena->prev = NULL;
+  arena->free_size = 0;
+  arena->free_last = NULL;
+  arena->min_bound = (uintptr_t)arena;
+  arena->max_bound = (uintptr_t)arena + size;
+  arena->owns_memory = false_v; // Caller owns the buffer
+
   return arena;
 }
 
 void arena_destroy(Arena *arena) {
+  if (arena == NULL) {
+    return;
+  }
+
+  bool8_t arena_owns_memory = arena->owns_memory;
+
+  for (Arena *free_block = arena->free_last, *prev = NULL; free_block != NULL;
+       free_block = prev) {
+    prev = free_block->prev;
+    if (free_block->owns_memory) {
+      vkr_platform_mem_release(free_block, free_block->rsv);
+    }
+  }
+
   for (Arena *current = arena->current, *prev = NULL; current != NULL;
        current = prev) {
     prev = current->prev;
-    vkr_platform_mem_release(current, current->rsv);
+    if (current->owns_memory) {
+      vkr_platform_mem_release(current, current->rsv);
+    }
   }
+
+  // For buffer-backed arenas, zero out the struct so it's safe to reuse
+  // (this is safe because we saved the flag and buffer-backed arenas don't
+  // release their own memory)
+  if (!arena_owns_memory) {
+    MemZero(arena, sizeof(Arena));
+  }
+}
+
+bool8_t arena_owns_ptr(Arena *arena, void *ptr) {
+  if (!arena || !ptr) {
+    return false_v;
+  }
+
+  // O(1) bounds check using cached min/max bounds
+  uintptr_t p = (uintptr_t)ptr;
+  return p >= arena->min_bound && p < arena->max_bound;
 }
 
 /**
@@ -109,11 +186,30 @@ void arena_destroy(Arena *arena) {
  * 5. **Failure:** If memory cannot be reserved or committed, the program exits
  * (or could return NULL).
  */
-void *arena_alloc(Arena *arena, uint64_t size, ArenaMemoryTag tag) {
+vkr_internal INLINE void *arena_alloc_internal_aligned(Arena *arena,
+                                                       uint64_t size,
+                                                       uint64_t alignment,
+                                                       ArenaMemoryTag tag) {
+  assert(arena != NULL);
+  if (alignment == 0) {
+    alignment = MaxAlign();
+  }
+
+  // Alignment must be a power of two for AlignPow2 to work correctly.
+  assert((alignment & (alignment - 1)) == 0 &&
+         "Alignment must be a power of two");
+
+  uint64_t eff_alignment = alignment;
+  if (eff_alignment < MaxAlign()) {
+    eff_alignment = MaxAlign();
+  }
+
   Arena *current = arena->current;
 
-  uint64_t pos_pre = AlignPow2(current->pos, MaxAlign());
+  uint64_t pos_pre = AlignPow2(current->pos, eff_alignment);
   uint64_t pos_post = pos_pre + size;
+  uint64_t required_block_size =
+      AlignPow2(ARENA_HEADER_SIZE, eff_alignment) + size;
 
   if (current->rsv < pos_post) {
     Arena *new_block = NULL;
@@ -121,7 +217,7 @@ void *arena_alloc(Arena *arena, uint64_t size, ArenaMemoryTag tag) {
     Arena *prev_block = NULL;
     for (new_block = arena->free_last, prev_block = NULL; new_block != NULL;
          prev_block = new_block, new_block = new_block->prev) {
-      if (new_block->rsv >= AlignPow2(size, MaxAlign())) {
+      if (new_block->rsv >= required_block_size) {
         if (prev_block) {
           prev_block->prev = new_block->prev;
         } else {
@@ -136,9 +232,10 @@ void *arena_alloc(Arena *arena, uint64_t size, ArenaMemoryTag tag) {
     if (new_block == NULL) {
       uint64_t s_rsv_size = current->rsv_size;
       uint64_t s_cmt_size = current->cmt_size;
-      if (size > s_rsv_size) {
-        s_rsv_size = AlignPow2(size, MaxAlign());
-        s_cmt_size = AlignPow2(size, MaxAlign());
+      uint64_t payload_needed = size + eff_alignment;
+      if (payload_needed > s_rsv_size) {
+        s_rsv_size = AlignPow2(payload_needed, eff_alignment);
+        s_cmt_size = AlignPow2(payload_needed, eff_alignment);
       }
 
       // Determine flags based on the original arena's page size
@@ -155,8 +252,18 @@ void *arena_alloc(Arena *arena, uint64_t size, ArenaMemoryTag tag) {
     new_block->base_pos = current->base_pos + current->rsv;
     SingleListAppend(arena->current, new_block, prev);
 
+    // Update bounds for O(1) arena_owns_ptr
+    uintptr_t block_start = (uintptr_t)new_block;
+    uintptr_t block_end = block_start + new_block->rsv;
+    if (block_start < arena->min_bound) {
+      arena->min_bound = block_start;
+    }
+    if (block_end > arena->max_bound) {
+      arena->max_bound = block_end;
+    }
+
     current = new_block;
-    pos_pre = AlignPow2(current->pos, MaxAlign());
+    pos_pre = AlignPow2(current->pos, eff_alignment);
     pos_post = pos_pre + size;
   }
 
@@ -196,6 +303,15 @@ void *arena_alloc(Arena *arena, uint64_t size, ArenaMemoryTag tag) {
   }
 
   return result;
+}
+
+void *arena_alloc(Arena *arena, uint64_t size, ArenaMemoryTag tag) {
+  return arena_alloc_internal_aligned(arena, size, MaxAlign(), tag);
+}
+
+void *arena_alloc_aligned(Arena *arena, uint64_t size, uint64_t alignment,
+                          ArenaMemoryTag tag) {
+  return arena_alloc_internal_aligned(arena, size, alignment, tag);
 }
 
 uint64_t arena_pos(Arena *arena) {

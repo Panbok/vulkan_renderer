@@ -789,6 +789,41 @@ static void test_arena_alignment() {
   printf("  test_arena_alignment PASSED\n");
 }
 
+static void test_arena_alloc_aligned_custom() {
+  printf("  Running test_arena_alloc_aligned_custom...\n");
+
+  const uint64_t alignment = 256;
+  const uint64_t size_small = 128;
+
+  Arena *arena = arena_create(KB(4), KB(4));
+  Arena *first_block = arena->current;
+
+  uint64_t tags_before = arena->tags[ARENA_MEMORY_TAG_BUFFER].size;
+
+  void *ptr1 = arena_alloc_aligned(arena, size_small, alignment,
+                                   ARENA_MEMORY_TAG_BUFFER);
+  assert(ptr1 != NULL && "Aligned allocation failed");
+  assert(((uintptr_t)ptr1 % alignment) == 0 &&
+         "Returned pointer is not properly aligned");
+
+  // Force allocation of a larger block to ensure cross-block alignment.
+  uint64_t big_size = arena->current->rsv + alignment;
+  void *ptr2 =
+      arena_alloc_aligned(arena, big_size, alignment, ARENA_MEMORY_TAG_BUFFER);
+  assert(ptr2 != NULL && "Large aligned allocation failed");
+  assert(((uintptr_t)ptr2 % alignment) == 0 &&
+         "Large aligned pointer is not properly aligned");
+  assert(arena->current != first_block &&
+         "Large aligned allocation did not advance to a new block");
+
+  assert(arena->tags[ARENA_MEMORY_TAG_BUFFER].size ==
+             tags_before + size_small + big_size &&
+         "Arena tag tracking incorrect for aligned allocations");
+
+  arena_destroy(arena);
+  printf("  test_arena_alloc_aligned_custom PASSED\n");
+}
+
 static void test_arena_tagging_and_statistics() {
   printf("  Running test_arena_tagging_and_statistics...\n");
   Arena *arena = arena_create(KB(256), KB(64)); // Main arena for stats
@@ -1326,6 +1361,213 @@ static void test_arena_large_pages_mixed_usage() {
   printf("  test_arena_large_pages_mixed_usage PASSED\n");
 }
 
+// =============================================================================
+// Buffer-Backed Arena Tests
+// =============================================================================
+
+static void test_arena_from_buffer_creation() {
+  printf("  Running test_arena_from_buffer_creation...\n");
+
+  // Allocate a buffer using platform memory
+  uint64_t buffer_size = KB(64);
+  void *buffer = vkr_platform_mem_reserve(buffer_size);
+  assert(buffer != NULL && "Failed to reserve memory for buffer test");
+  assert(vkr_platform_mem_commit(buffer, buffer_size) &&
+         "Failed to commit memory for buffer test");
+
+  // Create arena from buffer
+  Arena *arena = arena_create_from_buffer(buffer, buffer_size);
+  assert(arena != NULL && "Buffer arena creation failed");
+  assert((void *)arena == buffer && "Arena should be at buffer start");
+  assert(arena->current == arena && "Initial current pointer incorrect");
+  assert(arena->prev == NULL && "Initial prev pointer incorrect");
+  assert(arena->owns_memory == false_v && "Buffer arena should not own memory");
+  assert(arena->rsv == buffer_size && "Buffer arena rsv incorrect");
+  assert(arena->cmt == buffer_size && "Buffer arena cmt incorrect");
+  assert(arena->pos == get_initial_pos() && "Initial position incorrect");
+
+  // Destroy arena (should not release memory since it doesn't own it)
+  arena_destroy(arena);
+
+  // Buffer should still be usable (we can write to it)
+  memset(buffer, 0xAA, 100);
+  assert(*(unsigned char *)buffer == 0xAA &&
+         "Buffer corrupted after arena destroy");
+
+  // Clean up the buffer manually
+  vkr_platform_mem_release(buffer, buffer_size);
+
+  printf("  test_arena_from_buffer_creation PASSED\n");
+}
+
+static void test_arena_from_buffer_allocation() {
+  printf("  Running test_arena_from_buffer_allocation...\n");
+
+  uint64_t buffer_size = KB(64);
+  void *buffer = vkr_platform_mem_reserve(buffer_size);
+  assert(buffer && vkr_platform_mem_commit(buffer, buffer_size));
+
+  Arena *arena = arena_create_from_buffer(buffer, buffer_size);
+  assert(arena != NULL);
+
+  uint64_t initial_pos = arena_pos(arena);
+
+  // Test basic allocations
+  uint64_t alloc_size1 = 256;
+  void *ptr1 = arena_alloc(arena, alloc_size1, ARENA_MEMORY_TAG_ARRAY);
+  assert(ptr1 != NULL && "Buffer arena allocation 1 failed");
+  assert((uintptr_t)ptr1 % MaxAlign() == 0 && "Pointer not aligned");
+  memset(ptr1, 0xAA, alloc_size1);
+
+  uint64_t pos_after_alloc1 = arena_pos(arena);
+  assert(pos_after_alloc1 >= initial_pos + alloc_size1);
+
+  uint64_t alloc_size2 = 512;
+  void *ptr2 = arena_alloc(arena, alloc_size2, ARENA_MEMORY_TAG_STRING);
+  assert(ptr2 != NULL && "Buffer arena allocation 2 failed");
+  assert((uintptr_t)ptr2 % MaxAlign() == 0 && "Pointer 2 not aligned");
+  memset(ptr2, 0xBB, alloc_size2);
+
+  // Verify data integrity
+  assert(*(unsigned char *)ptr1 == 0xAA && "Data 1 corrupted");
+  assert(*(unsigned char *)ptr2 == 0xBB && "Data 2 corrupted");
+
+  // Test tags work correctly
+  assert(arena->tags[ARENA_MEMORY_TAG_ARRAY].size == alloc_size1 &&
+         "Array tag incorrect");
+  assert(arena->tags[ARENA_MEMORY_TAG_STRING].size == alloc_size2 &&
+         "String tag incorrect");
+
+  arena_destroy(arena);
+  vkr_platform_mem_release(buffer, buffer_size);
+
+  printf("  test_arena_from_buffer_allocation PASSED\n");
+}
+
+static void test_arena_from_buffer_reset_and_scratch() {
+  printf("  Running test_arena_from_buffer_reset_and_scratch...\n");
+
+  uint64_t buffer_size = KB(64);
+  void *buffer = vkr_platform_mem_reserve(buffer_size);
+  assert(buffer && vkr_platform_mem_commit(buffer, buffer_size));
+
+  Arena *arena = arena_create_from_buffer(buffer, buffer_size);
+  uint64_t initial_pos = arena_pos(arena);
+
+  // Test reset
+  void *p1 = arena_alloc(arena, 100, ARENA_MEMORY_TAG_UNKNOWN);
+  uint64_t pos1 = arena_pos(arena);
+  void *p2 = arena_alloc(arena, 200, ARENA_MEMORY_TAG_UNKNOWN);
+  uint64_t pos2 = arena_pos(arena);
+  assert(p1 && p2);
+
+  arena_reset_to(arena, pos1, ARENA_MEMORY_TAG_UNKNOWN);
+  assert(arena_pos(arena) == pos1 && "Reset to pos1 failed");
+
+  arena_clear(arena, ARENA_MEMORY_TAG_UNKNOWN);
+  assert(arena_pos(arena) == initial_pos && "Clear failed");
+
+  // Test scratch
+  Scratch scratch = scratch_create(arena);
+  assert(scratch.pos == initial_pos);
+
+  arena_alloc(arena, 50, ARENA_MEMORY_TAG_UNKNOWN);
+  arena_alloc(arena, 100, ARENA_MEMORY_TAG_UNKNOWN);
+  assert(arena_pos(arena) > initial_pos);
+
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_UNKNOWN);
+  assert(arena_pos(arena) == initial_pos && "Scratch destroy failed");
+
+  // Ensure arena is still usable
+  void *p_after = arena_alloc(arena, 75, ARENA_MEMORY_TAG_UNKNOWN);
+  assert(p_after != NULL && "Allocation after scratch failed");
+
+  arena_destroy(arena);
+  vkr_platform_mem_release(buffer, buffer_size);
+
+  printf("  test_arena_from_buffer_reset_and_scratch PASSED\n");
+}
+
+static void test_arena_from_buffer_reuse() {
+  printf("  Running test_arena_from_buffer_reuse...\n");
+
+  // This test simulates the pool scenario: reusing the same buffer for
+  // multiple arena lifecycles
+
+  uint64_t buffer_size = KB(64);
+  void *buffer = vkr_platform_mem_reserve(buffer_size);
+  assert(buffer && vkr_platform_mem_commit(buffer, buffer_size));
+
+  // First lifecycle
+  Arena *arena1 = arena_create_from_buffer(buffer, buffer_size);
+  assert(arena1 != NULL);
+
+  void *p1 = arena_alloc(arena1, 256, ARENA_MEMORY_TAG_ARRAY);
+  assert(p1 != NULL);
+  memset(p1, 0x11, 256);
+
+  arena_destroy(arena1);
+
+  // Second lifecycle - reuse the same buffer
+  Arena *arena2 = arena_create_from_buffer(buffer, buffer_size);
+  assert(arena2 != NULL);
+  assert((void *)arena2 == buffer && "Arena2 should be at same buffer address");
+  assert(arena2->pos == get_initial_pos() && "Arena2 position should be reset");
+  assert(arena2->tags[ARENA_MEMORY_TAG_ARRAY].size == 0 &&
+         "Arena2 tags should be reset");
+
+  void *p2 = arena_alloc(arena2, 512, ARENA_MEMORY_TAG_STRING);
+  assert(p2 != NULL);
+  memset(p2, 0x22, 512);
+
+  arena_destroy(arena2);
+
+  // Third lifecycle
+  Arena *arena3 = arena_create_from_buffer(buffer, buffer_size);
+  assert(arena3 != NULL);
+
+  void *p3 = arena_alloc(arena3, 128, ARENA_MEMORY_TAG_BUFFER);
+  assert(p3 != NULL);
+  memset(p3, 0x33, 128);
+
+  arena_destroy(arena3);
+
+  // Clean up
+  vkr_platform_mem_release(buffer, buffer_size);
+
+  printf("  test_arena_from_buffer_reuse PASSED\n");
+}
+
+static void test_arena_from_buffer_ownership_flag() {
+  printf("  Running test_arena_from_buffer_ownership_flag...\n");
+
+  // Test that regular arena has owns_memory = true
+  Arena *regular_arena = arena_create();
+  assert(regular_arena != NULL);
+  assert(regular_arena->owns_memory == true_v &&
+         "Regular arena should own memory");
+  arena_destroy(regular_arena);
+
+  // Test that buffer arena has owns_memory = false
+  uint64_t buffer_size = KB(16);
+  void *buffer = vkr_platform_mem_reserve(buffer_size);
+  assert(buffer && vkr_platform_mem_commit(buffer, buffer_size));
+
+  Arena *buffer_arena = arena_create_from_buffer(buffer, buffer_size);
+  assert(buffer_arena != NULL);
+  assert(buffer_arena->owns_memory == false_v &&
+         "Buffer arena should not own memory");
+  arena_destroy(buffer_arena);
+
+  // Verify buffer is still valid after destroy
+  memset(buffer, 0xFF, 100);
+  assert(*(unsigned char *)buffer == 0xFF && "Buffer should still be valid");
+
+  vkr_platform_mem_release(buffer, buffer_size);
+
+  printf("  test_arena_from_buffer_ownership_flag PASSED\n");
+}
+
 // --- Test Runner ---
 bool32_t run_arena_tests() {
   printf("--- Starting Arena Tests ---\n");
@@ -1338,6 +1580,7 @@ bool32_t run_arena_tests() {
   test_arena_clear();
   test_arena_scratch();
   test_arena_alignment();
+  test_arena_alloc_aligned_custom();
   test_arena_tagging_and_statistics();
 
   // Add large page tests
@@ -1348,6 +1591,13 @@ bool32_t run_arena_tests() {
   test_arena_large_pages_reset_and_scratch();
   test_arena_large_pages_statistics();
   test_arena_large_pages_mixed_usage();
+
+  // Buffer-backed arena tests
+  test_arena_from_buffer_creation();
+  test_arena_from_buffer_allocation();
+  test_arena_from_buffer_reset_and_scratch();
+  test_arena_from_buffer_reuse();
+  test_arena_from_buffer_ownership_flag();
 
   printf("--- Arena Tests Completed ---\n");
   return true;

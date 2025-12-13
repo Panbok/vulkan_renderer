@@ -103,13 +103,16 @@ typedef enum ArenaMemoryTag {
   ARENA_MEMORY_TAG_TEXTURE,
   ARENA_MEMORY_TAG_HASH_TABLE,
   ARENA_MEMORY_TAG_FREELIST,
+  ARENA_MEMORY_TAG_VULKAN,
+  ARENA_MEMORY_TAG_GPU,
 
   ARENA_MEMORY_TAG_MAX,
 } ArenaMemoryTag;
 
 static const char *ArenaMemoryTagNames[ARENA_MEMORY_TAG_MAX] = {
-    "UNKNOWN", "ARRAY",    "STRING", "VECTOR",  "QUEUE",      "STRUCT",
-    "BUFFER",  "RENDERER", "FILE",   "TEXTURE", "HASH_TABLE", "FREELIST",
+    "UNKNOWN",    "ARRAY",    "STRING",   "VECTOR", "QUEUE",
+    "STRUCT",     "BUFFER",   "RENDERER", "FILE",   "TEXTURE",
+    "HASH_TABLE", "FREELIST", "VULKAN",   "GPU",
 };
 
 typedef Bitset8 ArenaFlags;
@@ -153,6 +156,14 @@ typedef struct Arena {
                        free list. Only valid in the *first* block's header. */
   Arena *free_last;   /**< Pointer to the last block added to the free list
                          (LIFO). Only valid in the *first* block's header. */
+  uintptr_t
+      min_bound; /**< Minimum address across all blocks (for O(1) ownership
+                    check). Only valid in the *first* block's header. */
+  uintptr_t
+      max_bound; /**< Maximum address across all blocks (for O(1) ownership
+                    check). Only valid in the *first* block's header. */
+  bool8_t owns_memory; /**< If true, arena_destroy releases memory. If false
+                          (buffer-backed), caller is responsible for memory. */
   ArenaMemoryTagInfo
       tags[ARENA_MEMORY_TAG_MAX]; /**< Array storing memory usage statistics for
                                each `ArenaMemoryTag`. Each element tracks the
@@ -219,12 +230,22 @@ Arena *arena_create_internal(uint64_t rsv_size, uint64_t cmt_size,
   arena_create_DISPATCH(ARENA_NARGS(__VA_ARGS__), ##__VA_ARGS__)
 
 /**
- * @brief Destroys an arena and releases all associated memory blocks.
- * Iterates through all blocks linked from `arena->current` and releases
- * their reserved memory. Also releases memory held in the free list.
- * @param arena Pointer to the first block of the arena to destroy.
+ * @brief Creates an arena from a pre-allocated buffer.
+ *
+ * The Arena struct is embedded at the beginning of the provided buffer.
+ * The arena does NOT own the memory and will not release it on destroy.
+ * Use this for pool-backed arenas where the buffer lifecycle is managed
+ * externally.
+ *
+ * @param buffer Pointer to the pre-allocated buffer. Must be at least
+ *               `ARENA_HEADER_SIZE` bytes and properly aligned.
+ * @param size   Total size of the buffer in bytes.
+ * @return Pointer to the initialized Arena (same address as buffer), or NULL on
+ *         failure.
  */
+Arena *arena_create_from_buffer(void *buffer, uint64_t size);
 void arena_destroy(Arena *arena);
+bool8_t arena_owns_ptr(Arena *arena, void *ptr);
 
 /**
  * @brief Allocates memory from the arena.
@@ -241,6 +262,17 @@ void arena_destroy(Arena *arena);
  * typically exits).
  */
 void *arena_alloc(Arena *arena, uint64_t size, ArenaMemoryTag tag);
+
+/**
+ * @brief Allocates memory from the arena with a specific alignment.
+ * @param arena Pointer to the arena.
+ * @param size Number of bytes to allocate.
+ * @param alignment The alignment to use for the allocation.
+ * @param tag The memory tag to associate with this allocation for statistics
+ * tracking.
+ */
+void *arena_alloc_aligned(Arena *arena, uint64_t size, uint64_t alignment,
+                          ArenaMemoryTag tag);
 
 /**
  * @brief Gets the current absolute position (high-water mark) in the arena.
