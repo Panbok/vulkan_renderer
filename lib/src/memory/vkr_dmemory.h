@@ -57,13 +57,45 @@ void vkr_dmemory_destroy(VkrDMemory *dmemory);
 void *vkr_dmemory_alloc(VkrDMemory *dmemory, uint64_t size);
 
 /**
+ * @brief Allocates memory from the dmemory allocator with a specific alignment
+ * @param dmemory The dmemory to allocate from
+ * @param size Size of memory to allocate
+ * @param alignment The alignment to use for the allocation
+ * @return Pointer to allocated memory, or NULL on failure
+ */
+void *vkr_dmemory_alloc_aligned(VkrDMemory *dmemory, uint64_t size,
+                                uint64_t alignment);
+
+/**
  * @brief Frees memory back to the dmemory allocator
  * @param dmemory The dmemory to free to
  * @param ptr Pointer to memory to free
- * @param size Size of memory to free
+ * @param size Optional size of memory to free (0 = use stored header)
  * @return true if successful, false otherwise
  */
 bool8_t vkr_dmemory_free(VkrDMemory *dmemory, void *ptr, uint64_t size);
+
+/**
+ * @brief Frees memory back to the dmemory allocator with a specific alignment
+ * @param dmemory The dmemory to free to
+ * @param ptr Pointer to memory to free
+ * @param size Optional size of memory to free (0 = use stored header)
+ * @param alignment Optional alignment used for the allocation
+ * @return true if successful, false otherwise
+ */
+bool8_t vkr_dmemory_free_aligned(VkrDMemory *dmemory, void *ptr, uint64_t size,
+                                 uint64_t alignment);
+
+/**
+ * @brief Reallocates memory using the dmemory allocator
+ * @param dmemory The dmemory to allocate from
+ * @param ptr Existing allocation, or NULL to allocate new
+ * @param new_size New requested size (0 frees the block)
+ * @param alignment Optional alignment (0 = use stored alignment)
+ * @return Pointer to reallocated memory, or NULL on failure
+ */
+void *vkr_dmemory_realloc(VkrDMemory *dmemory, void *ptr, uint64_t new_size,
+                          uint64_t alignment);
 
 /**
  * @brief Gets the total free space in the dmemory allocator
@@ -83,3 +115,9 @@ uint64_t vkr_dmemory_get_free_space(VkrDMemory *dmemory);
  * committed.
  */
 bool8_t vkr_dmemory_resize(VkrDMemory *dmemory, uint64_t new_total_size);
+
+/**
+ * @brief Checks whether a pointer lies within the reserved range of the
+ * dmemory allocator.
+ */
+bool8_t vkr_dmemory_owns_ptr(const VkrDMemory *dmemory, void *ptr);
