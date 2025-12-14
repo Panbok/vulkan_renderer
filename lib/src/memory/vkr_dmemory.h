@@ -119,5 +119,8 @@ bool8_t vkr_dmemory_resize(VkrDMemory *dmemory, uint64_t new_total_size);
 /**
  * @brief Checks whether a pointer lies within the reserved range of the
  * dmemory allocator.
+ * @param dmemory The dmemory to check ownership of
+ * @param ptr The pointer to check
+ * @return true if the pointer is within the reserved range, false otherwise
  */
 bool8_t vkr_dmemory_owns_ptr(const VkrDMemory *dmemory, void *ptr);
