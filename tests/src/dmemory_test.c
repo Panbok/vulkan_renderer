@@ -214,6 +214,71 @@ static void test_dmemory_upfront_commit(void) {
   printf("  test_dmemory_upfront_commit PASSED\n");
 }
 
+static void test_dmemory_aligned_allocations(void) {
+  printf("  Running test_dmemory_aligned_allocations...\n");
+
+  VkrDMemory dmemory;
+  const uint64_t TOTAL_SIZE = MB(1);
+  const uint64_t RESERVE_SIZE = MB(2);
+  const uint64_t ALIGNMENT = 256;
+  const uint64_t SIZE = KB(2);
+
+  assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
+
+  uint64_t free_before = vkr_dmemory_get_free_space(&dmemory);
+
+  void *ptr = vkr_dmemory_alloc_aligned(&dmemory, SIZE, ALIGNMENT);
+  assert(ptr != NULL);
+  assert(((uintptr_t)ptr % ALIGNMENT) == 0 &&
+         "Aligned allocation did not respect requested alignment");
+
+  memset(ptr, 0xDD, SIZE);
+  uint8_t *bytes = (uint8_t *)ptr;
+  for (uint32_t i = 0; i < SIZE; ++i) {
+    assert(bytes[i] == 0xDD);
+  }
+
+  uint64_t free_after_alloc = vkr_dmemory_get_free_space(&dmemory);
+  assert(free_after_alloc < free_before &&
+         "Free space did not decrease after aligned alloc");
+
+  assert(vkr_dmemory_free_aligned(&dmemory, ptr, SIZE, ALIGNMENT));
+
+  uint64_t free_after_free = vkr_dmemory_get_free_space(&dmemory);
+  assert(free_after_free == free_before &&
+         "Free space did not return after aligned free");
+
+  vkr_dmemory_destroy(&dmemory);
+  printf("  test_dmemory_aligned_allocations PASSED\n");
+}
+
+static void test_dmemory_header_driven_frees(void) {
+  printf("  Running test_dmemory_header_driven_frees...\n");
+
+  VkrDMemory dmemory;
+  const uint64_t TOTAL_SIZE = MB(1);
+  const uint64_t RESERVE_SIZE = MB(2);
+
+  assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
+
+  uint64_t free_before = vkr_dmemory_get_free_space(&dmemory);
+
+  void *ptr = vkr_dmemory_alloc(&dmemory, KB(4));
+  assert(ptr != NULL);
+
+  void *aligned_ptr = vkr_dmemory_alloc_aligned(&dmemory, KB(4), 128);
+  assert(aligned_ptr != NULL && ((uintptr_t)aligned_ptr % 128) == 0);
+
+  assert(vkr_dmemory_free(&dmemory, ptr, 0));
+  assert(vkr_dmemory_free_aligned(&dmemory, aligned_ptr, 0, 0));
+
+  uint64_t free_after = vkr_dmemory_get_free_space(&dmemory);
+  assert(free_after == free_before);
+
+  vkr_dmemory_destroy(&dmemory);
+  printf("  test_dmemory_header_driven_frees PASSED\n");
+}
+
 static void test_dmemory_free_pattern(void) {
   printf("  Running test_dmemory_free_pattern...\n");
 
@@ -330,9 +395,16 @@ static void test_dmemory_boundary_conditions(void) {
   void *ptr1 = vkr_dmemory_alloc(&dmemory, 1);
   assert(ptr1 != NULL);
 
-  // Test maximum possible allocation
+  // Test maximum possible allocation by trying until success
   uint64_t remaining = vkr_dmemory_get_free_space(&dmemory);
-  void *ptr2 = vkr_dmemory_alloc(&dmemory, (uint32_t)remaining);
+  void *ptr2 = NULL;
+  uint64_t request = remaining;
+  while (request > 0 && ptr2 == NULL) {
+    ptr2 = vkr_dmemory_alloc(&dmemory, (uint32_t)request);
+    if (ptr2 == NULL) {
+      --request;
+    }
+  }
   assert(ptr2 != NULL);
 
   // Should be out of memory now
@@ -340,13 +412,50 @@ static void test_dmemory_boundary_conditions(void) {
   assert(ptr3 == NULL);
 
   // Free and verify
-  vkr_dmemory_free(&dmemory, ptr1, 1);
-  vkr_dmemory_free(&dmemory, ptr2, (uint32_t)remaining);
+  vkr_dmemory_free(&dmemory, ptr1, 0);
+  vkr_dmemory_free(&dmemory, ptr2, 0);
 
   assert(vkr_dmemory_get_free_space(&dmemory) == dmemory.total_size);
 
   vkr_dmemory_destroy(&dmemory);
   printf("  test_dmemory_boundary_conditions PASSED\n");
+}
+
+static void test_dmemory_realloc_preserves_data(void) {
+  printf("  Running test_dmemory_realloc_preserves_data...\n");
+
+  VkrDMemory dmemory;
+  const uint64_t TOTAL_SIZE = MB(1);
+  const uint64_t RESERVE_SIZE = MB(2);
+
+  assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
+
+  const uint64_t initial_size = KB(2);
+  const uint64_t grow_size = KB(6);
+  const uint64_t shrink_size = KB(1);
+  const uint8_t pattern = 0xAC;
+
+  void *ptr = vkr_dmemory_alloc_aligned(&dmemory, initial_size, 64);
+  assert(ptr != NULL);
+  memset(ptr, pattern, initial_size);
+
+  void *grown = vkr_dmemory_realloc(&dmemory, ptr, grow_size, 0);
+  assert(grown != NULL);
+  for (uint32_t i = 0; i < initial_size; ++i) {
+    assert(((uint8_t *)grown)[i] == pattern);
+  }
+
+  void *shrunk = vkr_dmemory_realloc(&dmemory, grown, shrink_size, 0);
+  assert(shrunk != NULL);
+  for (uint32_t i = 0; i < shrink_size; ++i) {
+    assert(((uint8_t *)shrunk)[i] == pattern);
+  }
+
+  assert(vkr_dmemory_free(&dmemory, shrunk, 0));
+  assert(vkr_dmemory_get_free_space(&dmemory) == dmemory.total_size);
+
+  vkr_dmemory_destroy(&dmemory);
+  printf("  test_dmemory_realloc_preserves_data PASSED\n");
 }
 
 static void test_dmemory_write_read_integrity(void) {
@@ -549,10 +658,13 @@ bool32_t run_dmemory_tests(void) {
   test_dmemory_free_and_realloc();
   test_dmemory_out_of_memory();
   test_dmemory_upfront_commit();
+  test_dmemory_aligned_allocations();
+  test_dmemory_header_driven_frees();
   test_dmemory_free_pattern();
   test_dmemory_invalid_free();
   test_dmemory_fragmentation();
   test_dmemory_boundary_conditions();
+  test_dmemory_realloc_preserves_data();
   test_dmemory_write_read_integrity();
 
   // Resize tests
