@@ -1,5 +1,6 @@
 #pragma once
 
+#include "allocator_test.h"
 #include "atomic_test.h"
 #include "arena_test.h"
 #include "array_test.h"
@@ -15,11 +16,12 @@
 #include "mat_test.h"
 #include "math_test.h"
 #include "filesystem_test.h"
-#include "mmemory_test.h"
+#include "pool_test.h"
 #include "quat_test.h"
 #include "queue_test.h"
 #include "simd_test.h"
 #include "string_test.h"
+#include "text_test.h"
 #include "threads_test.h"
 #include "transform_test.h"
 #include "vec_test.h"

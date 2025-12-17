@@ -13,6 +13,8 @@ int main(int argc, char **argv) {
   bool32_t all_passed = true;
 
   // Run all tests
+  all_passed &= run_allocator_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_atomic_tests();
   printf("\n"); // Add spacing
   all_passed &= run_arena_tests();
@@ -24,8 +26,6 @@ int main(int argc, char **argv) {
   all_passed &= run_queue_tests();
   printf("\n"); // Add spacing
   all_passed &= run_bitset_tests();
-  printf("\n"); // Add spacing
-  all_passed &= run_mmemory_tests();
   printf("\n"); // Add spacing
   all_passed &= run_event_data_buffer_tests();
   printf("\n"); // Add spacing
@@ -53,11 +53,15 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_string_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_text_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_filesystem_tests();
   printf("\n"); // Add spacing
   all_passed &= run_hashtable_tests();
   printf("\n"); // Add spacing
   all_passed &= run_freelist_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_pool_tests();
   printf("\n"); // Add spacing
   all_passed &= run_dmemory_tests();
 
