@@ -1,6 +1,5 @@
 #pragma once
 
-#include "core/vkr_atomic.h"
 #include "defines.h"
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
@@ -31,8 +30,8 @@ typedef struct VulkanAllocator {
 
   // Reference count for active arena (command-scope) allocations.
   // Arena is only cleared when this drops to zero, preventing use-after-free
-  // when multiple command-scope allocations coexist. Atomic for thread-safety.
-  VkrAtomicUint32 arena_alloc_count;
+  // when multiple command-scope allocations coexist. Protected by mutex.
+  uint32_t arena_alloc_count;
 
   // Vulkan-facing callbacks; pUserData points back to this struct.
   VkAllocationCallbacks callbacks;
