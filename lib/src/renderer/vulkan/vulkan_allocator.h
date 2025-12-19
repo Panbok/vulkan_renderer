@@ -1,5 +1,6 @@
 #pragma once
 
+#include "core/vkr_atomic.h"
 #include "defines.h"
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
@@ -27,6 +28,11 @@ typedef struct VulkanAllocator {
   VkrDMemory dmemory;
   Arena *arena;
   VkrMutex mutex;
+
+  // Reference count for active arena (command-scope) allocations.
+  // Arena is only cleared when this drops to zero, preventing use-after-free
+  // when multiple command-scope allocations coexist. Atomic for thread-safety.
+  VkrAtomicUint32 arena_alloc_count;
 
   // Vulkan-facing callbacks; pUserData points back to this struct.
   VkAllocationCallbacks callbacks;
@@ -63,5 +69,12 @@ void vulkan_allocator_destroy(VkrAllocator *host_allocator,
  */
 VkAllocationCallbacks *vulkan_allocator_callbacks(VulkanAllocator *allocator);
 
+/**
+ * @brief Identify the allocation source for a given pointer.
+ *
+ * @param allocator Target VulkanAllocator.
+ * @param ptr Pointer to check against known allocation sources.
+ * @return The allocation source (DMEMORY, ARENA, or UNKNOWN).
+ */
 VulkanAllocationSource
 vulkan_allocator_source_from_ptr(VulkanAllocator *allocator, void *ptr);

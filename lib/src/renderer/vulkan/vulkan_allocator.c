@@ -1,5 +1,6 @@
 #include "vulkan_allocator.h"
 #include "core/logger.h"
+#include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
 #include "memory/arena.h"
 
@@ -37,9 +38,14 @@ vulkan_allocator_allocate(void *pUserData, size_t size, size_t alignment,
 
   uint64_t eff_alignment = vulkan_allocator_effective_alignment(alignment);
   VkrAllocator *target = vulkan_allocator_select(allocator, scope);
-  return vkr_allocator_alloc_aligned_ts(target, (uint64_t)size, eff_alignment,
-                                        VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
-                                        allocator->mutex);
+  void *result = vkr_allocator_alloc_aligned_ts(
+      target, (uint64_t)size, eff_alignment, VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
+      allocator->mutex);
+  if (result != NULL && scope == VK_SYSTEM_ALLOCATION_SCOPE_COMMAND) {
+    vkr_atomic_uint32_fetch_add(&allocator->arena_alloc_count, 1,
+                                VKR_MEMORY_ORDER_ACQ_REL);
+  }
+  return result;
 }
 
 vkr_internal VKAPI_PTR void *
@@ -61,7 +67,12 @@ vulkan_allocator_reallocate(void *pUserData, void *pOriginal, size_t size,
       vkr_allocator_free_ts(target, pOriginal, 0,
                             VKR_ALLOCATOR_MEMORY_TAG_VULKAN, allocator->mutex);
       if (src == VULKAN_ALLOCATION_SOURCE_ARENA) {
-        arena_clear(allocator->arena, ARENA_MEMORY_TAG_VULKAN);
+        // fetch_sub returns previous value; if it was 1, new value is 0.
+        uint32_t prev_count = vkr_atomic_uint32_fetch_sub(
+            &allocator->arena_alloc_count, 1, VKR_MEMORY_ORDER_ACQ_REL);
+        if (prev_count == 1) {
+          arena_clear(allocator->arena, ARENA_MEMORY_TAG_VULKAN);
+        }
       }
     }
     return NULL;
@@ -70,9 +81,14 @@ vulkan_allocator_reallocate(void *pUserData, void *pOriginal, size_t size,
   uint64_t eff_alignment = vulkan_allocator_effective_alignment(alignment);
   if (pOriginal == NULL) {
     VkrAllocator *target = vulkan_allocator_select(allocator, scope);
-    return vkr_allocator_alloc_aligned_ts(target, (uint64_t)size, eff_alignment,
-                                          VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
-                                          allocator->mutex);
+    void *result = vkr_allocator_alloc_aligned_ts(
+        target, (uint64_t)size, eff_alignment, VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
+        allocator->mutex);
+    if (result != NULL && scope == VK_SYSTEM_ALLOCATION_SCOPE_COMMAND) {
+      vkr_atomic_uint32_fetch_add(&allocator->arena_alloc_count, 1,
+                                  VKR_MEMORY_ORDER_ACQ_REL);
+    }
+    return result;
   }
 
   VulkanAllocationSource src =
@@ -100,7 +116,12 @@ vkr_internal VKAPI_PTR void vulkan_allocator_free(void *pUserData,
   vkr_allocator_free_ts(target, pMemory, 0, VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
                         allocator->mutex);
   if (src == VULKAN_ALLOCATION_SOURCE_ARENA) {
-    arena_clear(allocator->arena, ARENA_MEMORY_TAG_VULKAN);
+    // fetch_sub returns previous value; if it was 1, new value is 0.
+    uint32_t prev_count = vkr_atomic_uint32_fetch_sub(
+        &allocator->arena_alloc_count, 1, VKR_MEMORY_ORDER_ACQ_REL);
+    if (prev_count == 1) {
+      arena_clear(allocator->arena, ARENA_MEMORY_TAG_VULKAN);
+    }
   }
 }
 
