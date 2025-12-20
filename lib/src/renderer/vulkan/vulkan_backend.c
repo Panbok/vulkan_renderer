@@ -830,7 +830,15 @@ renderer_vulkan_initialize(void **out_backend_state,
   }
 
   *out_backend_state = backend_state;
-  backend_state->allocator = VK_NULL_HANDLE;
+  if (!vulkan_allocator_create(&backend_state->alloc,
+                               &backend_state->vk_allocator,
+                               VKR_VULKAN_ALLOCATOR_COMMIT_SIZE,
+                               VKR_VULKAN_ALLOCATOR_RESERVE_SIZE)) {
+    log_fatal("Failed to create Vulkan allocator");
+    return false;
+  }
+  backend_state->allocator =
+      vulkan_allocator_callbacks(&backend_state->vk_allocator);
 
   if (!vulkan_instance_create(backend_state, window)) {
     log_fatal("Failed to create Vulkan instance");
@@ -1061,6 +1069,8 @@ void renderer_vulkan_shutdown(void *backend_state) {
   vulkan_debug_destroy_debug_messenger(state);
 #endif
   vulkan_instance_destroy(state);
+  vulkan_allocator_destroy(&state->alloc, &state->vk_allocator);
+  state->allocator = NULL;
   arena_destroy(state->swapchain_arena);
   arena_destroy(state->temp_arena);
   arena_destroy(state->arena);
@@ -1729,7 +1739,8 @@ renderer_vulkan_create_texture(void *backend_state,
       .unnormalizedCoordinates = VK_FALSE,
   };
 
-  if (vkCreateSampler(state->device.logical_device, &sampler_info, NULL,
+  if (vkCreateSampler(state->device.logical_device, &sampler_info,
+                      state->allocator,
                       &texture->texture.sampler) != VK_SUCCESS) {
     log_fatal("Failed to create texture sampler");
     vulkan_image_destroy(state, &texture->texture.image);
@@ -1876,7 +1887,8 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
       .unnormalizedCoordinates = VK_FALSE,
   };
 
-  if (vkCreateSampler(state->device.logical_device, &sampler_info, NULL,
+  if (vkCreateSampler(state->device.logical_device, &sampler_info,
+                      state->allocator,
                       &texture->texture.sampler) != VK_SUCCESS) {
     log_fatal("Failed to create cube map sampler");
     vulkan_image_destroy(state, &texture->texture.image);
@@ -1953,7 +1965,8 @@ renderer_vulkan_update_texture(void *backend_state,
   };
 
   VkSampler new_sampler;
-  if (vkCreateSampler(state->device.logical_device, &sampler_info, NULL,
+  if (vkCreateSampler(state->device.logical_device, &sampler_info,
+                      state->allocator,
                       &new_sampler) != VK_SUCCESS) {
     log_error("Failed to create sampler for texture update");
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
@@ -1964,7 +1977,7 @@ renderer_vulkan_update_texture(void *backend_state,
 
   // Destroy old sampler and use new one
   vkDestroySampler(state->device.logical_device, texture->texture.sampler,
-                   NULL);
+                   state->allocator);
   texture->texture.sampler = new_sampler;
 
   texture->description.u_repeat_mode = desc->u_repeat_mode;
@@ -2350,7 +2363,8 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
   };
 
   VkSampler new_sampler;
-  if (vkCreateSampler(state->device.logical_device, &sampler_info, NULL,
+  if (vkCreateSampler(state->device.logical_device, &sampler_info,
+                      state->allocator,
                       &new_sampler) != VK_SUCCESS) {
     vulkan_image_destroy(state, &new_image);
     return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
@@ -2366,7 +2380,8 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
   texture->texture.sampler = new_sampler;
 
   // Destroy old sampler
-  vkDestroySampler(state->device.logical_device, old_sampler, NULL);
+  vkDestroySampler(state->device.logical_device, old_sampler,
+                   state->allocator);
 
   vulkan_image_destroy(state, &old_image);
 
@@ -2396,7 +2411,7 @@ void renderer_vulkan_destroy_texture(void *backend_state,
 
   // Destroy the sampler
   vkDestroySampler(state->device.logical_device, texture->texture.sampler,
-                   NULL);
+                   state->allocator);
   texture->texture.sampler = VK_NULL_HANDLE;
   return;
 }

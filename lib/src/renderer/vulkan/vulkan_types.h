@@ -16,6 +16,7 @@
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_dmemory.h"
 #include "renderer/vkr_renderer.h"
+#include "vulkan_allocator.h"
 
 // todo: make this configurable
 #define BUFFERING_FRAMES 3
@@ -65,6 +66,7 @@ typedef struct VulkanBuffer {
   VkDeviceMemory memory;
   VkBufferUsageFlagBits usage;
   uint64_t total_size;
+  uint64_t allocation_size;
 
   bool8_t is_locked;
 
@@ -314,6 +316,7 @@ typedef struct VulkanBackendState {
   VkrWindow *window;
   VkrDeviceRequirements *device_requirements;
 
+  VulkanAllocator vk_allocator;
   VkAllocationCallbacks *allocator;
 
   bool8_t is_swapchain_recreation_requested;

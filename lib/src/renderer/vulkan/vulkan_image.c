@@ -56,6 +56,10 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
   VkMemoryRequirements memory_requirements;
   vkGetImageMemoryRequirements(state->device.logical_device, out_image->handle,
                                &memory_requirements);
+  VkrAllocatorMemoryTag alloc_tag =
+      (memory_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+          ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+          : VKR_ALLOCATOR_MEMORY_TAG_VULKAN;
 
   int32_t memory_type =
       find_memory_index(state->device.physical_device,
@@ -82,10 +86,14 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
                    state->allocator);
     return false;
   }
+  vkr_allocator_report(&state->alloc, memory_requirements.size, alloc_tag,
+                       true_v);
 
   if (vkBindImageMemory(state->device.logical_device, out_image->handle,
                         out_image->memory, 0) != VK_SUCCESS) {
     log_error("Failed to bind memory");
+    vkr_allocator_report(&state->alloc, memory_requirements.size, alloc_tag,
+                         false_v);
     vkFreeMemory(state->device.logical_device, out_image->memory,
                  state->allocator);
     vkDestroyImage(state->device.logical_device, out_image->handle,
@@ -98,6 +106,8 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
     if (!vulkan_create_image_view(state, format, view_type, out_image,
                                   view_aspect_flags)) {
       log_error("Failed to create image view");
+      vkr_allocator_report(&state->alloc, memory_requirements.size, alloc_tag,
+                           false_v);
       vkFreeMemory(state->device.logical_device, out_image->memory,
                    state->allocator);
       vkDestroyImage(state->device.logical_device, out_image->handle,

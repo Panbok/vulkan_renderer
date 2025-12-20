@@ -45,8 +45,8 @@ bool8_t vulkan_platform_create_surface(VulkanBackendState *state) {
       .pLayer = metal_layer,
   };
 
-  VkResult result = vkCreateMetalSurfaceEXT(state->instance, &create_info, NULL,
-                                            &state->surface);
+  VkResult result = vkCreateMetalSurfaceEXT(state->instance, &create_info,
+                                            state->allocator, &state->surface);
   if (result != VK_SUCCESS) {
     log_fatal("Failed to create Metal surface");
     return false;
@@ -63,6 +63,6 @@ void vulkan_platform_destroy_surface(VulkanBackendState *state) {
   assert_log(state->surface != VK_NULL_HANDLE, "Surface is not set");
 
   log_debug("Destroying Vulkan surface");
-  vkDestroySurfaceKHR(state->instance, state->surface, NULL);
+  vkDestroySurfaceKHR(state->instance, state->surface, state->allocator);
 }
 #endif
