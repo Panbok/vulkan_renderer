@@ -313,8 +313,8 @@ vulkan_backend_renderpass_lookup(VulkanBackendState *state, String8 name) {
   return NULL;
 }
 
-  vkr_internal bool32_t vulkan_backend_renderpass_register(
-      VulkanBackendState *state, struct s_RenderPass *pass) {
+vkr_internal bool32_t vulkan_backend_renderpass_register(
+    VulkanBackendState *state, struct s_RenderPass *pass) {
   assert_log(state != NULL, "State not initialized");
   assert_log(pass != NULL, "Pass is NULL");
 
@@ -554,20 +554,20 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
   vkDeviceWaitIdle(state->device.logical_device);
 
   for (uint32_t i = 0; i < state->image_available_semaphores.length; ++i) {
-    vkDestroySemaphore(state->device.logical_device,
-                       *array_get_VkSemaphore(&state->image_available_semaphores,
-                                              i),
-                       state->allocator);
+    vkDestroySemaphore(
+        state->device.logical_device,
+        *array_get_VkSemaphore(&state->image_available_semaphores, i),
+        state->allocator);
   }
   for (uint32_t i = 0; i < state->queue_complete_semaphores.length; ++i) {
-    vkDestroySemaphore(state->device.logical_device,
-                       *array_get_VkSemaphore(&state->queue_complete_semaphores,
-                                              i),
-                       state->allocator);
+    vkDestroySemaphore(
+        state->device.logical_device,
+        *array_get_VkSemaphore(&state->queue_complete_semaphores, i),
+        state->allocator);
   }
   for (uint32_t i = 0; i < state->in_flight_fences.length; ++i) {
-    vulkan_fence_destroy(
-        state, array_get_VulkanFence(&state->in_flight_fences, i));
+    vulkan_fence_destroy(state,
+                         array_get_VulkanFence(&state->in_flight_fences, i));
   }
 
   array_destroy_VkSemaphore(&state->image_available_semaphores);
@@ -578,36 +578,34 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
   state->image_available_semaphores = array_create_VkSemaphore(
       &state->alloc, state->swapchain.max_in_flight_frames);
 
-  state->queue_complete_semaphores = array_create_VkSemaphore(
-      &state->alloc, state->swapchain.image_count);
+  state->queue_complete_semaphores =
+      array_create_VkSemaphore(&state->alloc, state->swapchain.image_count);
 
   state->in_flight_fences = array_create_VulkanFence(
       &state->alloc, state->swapchain.max_in_flight_frames);
 
   for (uint32_t i = 0; i < state->swapchain.max_in_flight_frames; i++) {
-    VkSemaphoreCreateInfo semaphore_info = {.sType =
-                                                VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    if (vkCreateSemaphore(state->device.logical_device, &semaphore_info,
-                          state->allocator,
-                          array_get_VkSemaphore(
-                              &state->image_available_semaphores, i)) !=
+    VkSemaphoreCreateInfo semaphore_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    if (vkCreateSemaphore(
+            state->device.logical_device, &semaphore_info, state->allocator,
+            array_get_VkSemaphore(&state->image_available_semaphores, i)) !=
         VK_SUCCESS) {
       log_fatal("Failed to create image available semaphore during resize");
       return false;
     }
 
     // Create signaled fence so first frame can wait safely.
-    vulkan_fence_create(
-        state, true_v, array_get_VulkanFence(&state->in_flight_fences, i));
+    vulkan_fence_create(state, true_v,
+                        array_get_VulkanFence(&state->in_flight_fences, i));
   }
 
   for (uint32_t i = 0; i < state->swapchain.image_count; i++) {
-    VkSemaphoreCreateInfo semaphore_info = {.sType =
-                                                VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    if (vkCreateSemaphore(state->device.logical_device, &semaphore_info,
-                          state->allocator,
-                          array_get_VkSemaphore(
-                              &state->queue_complete_semaphores, i)) !=
+    VkSemaphoreCreateInfo semaphore_info = {
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+    if (vkCreateSemaphore(
+            state->device.logical_device, &semaphore_info, state->allocator,
+            array_get_VkSemaphore(&state->queue_complete_semaphores, i)) !=
         VK_SUCCESS) {
       log_fatal("Failed to create queue complete semaphore during resize");
       return false;
@@ -1060,7 +1058,8 @@ void renderer_vulkan_shutdown(void *backend_state) {
 
     state->domain_render_passes[domain] = NULL;
   }
-  vulkan_backend_destroy_attachment_wrappers(state, state->swapchain.image_count);
+  vulkan_backend_destroy_attachment_wrappers(state,
+                                             state->swapchain.image_count);
   vulkan_swapchain_destroy(state);
   vulkan_device_destroy_logical_device(state);
   vulkan_device_release_physical_device(state);
@@ -1966,8 +1965,7 @@ renderer_vulkan_update_texture(void *backend_state,
 
   VkSampler new_sampler;
   if (vkCreateSampler(state->device.logical_device, &sampler_info,
-                      state->allocator,
-                      &new_sampler) != VK_SUCCESS) {
+                      state->allocator, &new_sampler) != VK_SUCCESS) {
     log_error("Failed to create sampler for texture update");
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
@@ -2364,8 +2362,7 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
 
   VkSampler new_sampler;
   if (vkCreateSampler(state->device.logical_device, &sampler_info,
-                      state->allocator,
-                      &new_sampler) != VK_SUCCESS) {
+                      state->allocator, &new_sampler) != VK_SUCCESS) {
     vulkan_image_destroy(state, &new_image);
     return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   }
@@ -2380,8 +2377,7 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
   texture->texture.sampler = new_sampler;
 
   // Destroy old sampler
-  vkDestroySampler(state->device.logical_device, old_sampler,
-                   state->allocator);
+  vkDestroySampler(state->device.logical_device, old_sampler, state->allocator);
 
   vulkan_image_destroy(state, &old_image);
 
