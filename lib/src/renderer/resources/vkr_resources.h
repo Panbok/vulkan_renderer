@@ -64,6 +64,7 @@ typedef struct VkrTextureHandle {
   uint32_t id;
   uint32_t generation;
 } VkrTextureHandle;
+Array(VkrTextureHandle);
 
 #define VKR_TEXTURE_MAX_DIMENSION 16384
 #define VKR_TEXTURE_RGBA_CHANNELS 4
@@ -309,3 +310,122 @@ Array(VkrShader);
    .max_uniform_count = 32,                                                    \
    .max_global_textures = 8,                                                   \
    .max_instance_textures = 8}
+
+// =============================================================================
+// Font resource types (decoupled from systems)
+// =============================================================================
+
+/**
+ * @brief A font handle.
+ * @param id The font id.
+ * @param generation The font generation.
+ */
+typedef struct VkrFontHandle {
+  uint32_t id;         // The font id.
+  uint32_t generation; // The font generation.
+} VkrFontHandle;
+
+#define VKR_FONT_HANDLE_INVALID                                                \
+  (VkrFontHandle) { .id = 0, .generation = VKR_INVALID_ID }
+
+/**
+ * @brief A font glyph.
+ * @param codepoint The codepoint of the glyph.
+ * @param x The x position of the glyph.
+ * @param y The y position of the glyph.
+ * @param width The width of the glyph.
+ * @param height The height of the glyph.
+ * @param x_offset The x offset of the glyph.
+ * @param y_offset The y offset of the glyph.
+ * @param x_advance The x advance of the glyph.
+ * @param page_id The page id of the glyph.
+ */
+typedef struct VkrFontGlyph {
+  uint32_t codepoint; // The codepoint of the glyph.
+  uint16_t x;         // The x position of the glyph.
+  uint16_t y;         // The y position of the glyph.
+  uint16_t width;     // The width of the glyph.
+  uint16_t height;    // The height of the glyph.
+  int16_t x_offset;   // The x offset of the glyph.
+  int16_t y_offset;   // The y offset of the glyph.
+  int16_t x_advance;  // The x advance of the glyph.
+  uint8_t page_id;    // The page id of the glyph.
+} VkrFontGlyph;
+Array(VkrFontGlyph);
+
+/**
+ * @brief A font kerning.
+ * @param codepoint_0 The first codepoint.
+ * @param codepoint_1 The second codepoint.
+ * @param amount The kerning amount.
+ */
+typedef struct VkrFontKerning {
+  uint32_t codepoint_0; // The first codepoint.
+  uint32_t codepoint_1; // The second codepoint.
+  int16_t amount;       // The kerning amount.
+} VkrFontKerning;
+Array(VkrFontKerning);
+
+/**
+ * @brief A font type.
+ * @param VKR_FONT_TYPE_BITMAP The bitmap font type.
+ * @param VKR_FONT_TYPE_SYSTEM The system font type.
+ */
+typedef enum VkrFontType {
+  VKR_FONT_TYPE_BITMAP, // The bitmap font type.
+  VKR_FONT_TYPE_SYSTEM  // The system font type.
+} VkrFontType;
+
+/**
+ * @brief A font.
+ * @param id The font id.
+ * @param generation The font generation.
+ * @param type The font type.
+ * @param face The font face.
+ * @param size The font size.
+ * @param page_count The number of texture pages.
+ * @param atlas The primary atlas texture handle (page 0).
+ * @param atlas_pages The per-page atlas handles (indexed by page id).
+ */
+typedef struct VkrFont {
+  uint32_t id;          // The font id.
+  uint32_t generation;  // The font generation.
+  VkrFontType type;     // The font type.
+  char face[256];       // The font face.
+  uint32_t size;        // The font size.
+  int32_t line_height;  // The line height.
+  int32_t baseline;     // The baseline.
+  int32_t ascent;       // Distance from baseline to top of tallest glyph
+  int32_t descent;      // Distance from baseline to bottom (typically negative)
+  int32_t atlas_size_x; // The atlas size x.
+  int32_t atlas_size_y; // The atlas size y.
+  uint32_t page_count;                // Number of texture pages.
+  VkrTextureHandle atlas;             // Page 0 atlas handle (legacy).
+  Array_VkrTextureHandle atlas_pages; // Page handles, indexed by page id.
+  VkrHashTable_uint32_t glyph_indices; // Codepoint -> glyph index lookup.
+  Array_VkrFontGlyph glyphs;          // The font glyphs.
+  Array_VkrFontKerning kernings;      // The font kernings.
+  float32_t tab_x_advance;            // The tab x advance.
+} VkrFont;
+
+/**
+ * @brief A bitmap font page.
+ * @param id The page id.
+ * @param file The page file.
+ */
+typedef struct VkrBitmapFontPage {
+  uint8_t id;     // The page id.
+  char file[256]; // The page file.
+} VkrBitmapFontPage;
+Array(VkrBitmapFontPage);
+
+/**
+ * @brief A bitmap font resource data.
+ * @param font_id The font id.
+ * @param pages The pages.
+ */
+typedef struct VkrBitmapFontResourceData {
+  uint32_t font_id;              // The font id.
+  Array_VkrBitmapFontPage pages; // The pages.
+} VkrBitmapFontResourceData;
+Array(VkrBitmapFontResourceData);
