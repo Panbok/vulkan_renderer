@@ -6,6 +6,8 @@
 #include "defines.h"
 #include "memory/vkr_allocator.h"
 
+#define VKR_TEXT_DEFAULT_FONT_SIZE 16.0f
+
 /////////////////////
 // UTF-8 helpers
 /////////////////////
@@ -67,24 +69,32 @@ VkrCodepoint vkr_utf8_decode(const uint8_t *bytes, uint64_t max_bytes) {
   return (VkrCodepoint){0, 0};
 }
 
-uint8_t vkr_utf8_encode(uint32_t codepoint, uint8_t *out) {
+uint8_t vkr_utf8_encode(uint32_t codepoint, uint8_t *out, uint64_t max_bytes) {
   if (out == NULL || VKR_UTF8_IS_INVALID_CODEPOINT(codepoint)) {
     return 0;
   }
 
   if (codepoint <= 0x7F) {
+    if (max_bytes < 1)
+      return 0;
     out[0] = (uint8_t)codepoint;
     return 1;
   } else if (codepoint <= 0x7FF) {
+    if (max_bytes < 2)
+      return 0;
     out[0] = 0xC0 | (uint8_t)(codepoint >> 6);
     out[1] = 0x80 | (uint8_t)(codepoint & 0x3F);
     return 2;
   } else if (codepoint <= 0xFFFF) {
+    if (max_bytes < 3)
+      return 0;
     out[0] = 0xE0 | (uint8_t)(codepoint >> 12);
     out[1] = 0x80 | (uint8_t)((codepoint >> 6) & 0x3F);
     out[2] = 0x80 | (uint8_t)(codepoint & 0x3F);
     return 3;
   } else if (codepoint <= 0x10FFFF) {
+    if (max_bytes < 4)
+      return 0;
     out[0] = 0xF0 | (uint8_t)(codepoint >> 18);
     out[1] = 0x80 | (uint8_t)((codepoint >> 12) & 0x3F);
     out[2] = 0x80 | (uint8_t)((codepoint >> 6) & 0x3F);
@@ -199,7 +209,7 @@ vkr_internal float32_t vkr_text_resolve_font_size(const VkrTextStyle *style,
   if (font != NULL && font->size > 0) {
     return (float32_t)font->size;
   }
-  return style->font_size;
+  return VKR_TEXT_DEFAULT_FONT_SIZE;
 }
 
 vkr_internal float32_t vkr_text_font_scale_for_size(const VkrFont *font,
@@ -267,8 +277,7 @@ vkr_internal void vkr_text_compute_metrics(const VkrTextStyle *style,
   }
 }
 
-vkr_internal bool8_t vkr_text_codepoint_key(char *buffer,
-                                            uint64_t buffer_size,
+vkr_internal bool8_t vkr_text_codepoint_key(char *buffer, uint64_t buffer_size,
                                             uint32_t codepoint) {
   if (buffer == NULL || buffer_size == 0) {
     return false_v;
@@ -791,8 +800,7 @@ VkrTextLayout vkr_text_layout_compute(VkrAllocator *allocator,
 
     uint8_t page_id = 0;
     if (font != NULL) {
-      const VkrFontGlyph *font_glyph =
-          vkr_text_font_find_glyph(font, cp.value);
+      const VkrFontGlyph *font_glyph = vkr_text_font_find_glyph(font, cp.value);
       if (font_glyph != NULL) {
         page_id = font_glyph->page_id;
       }

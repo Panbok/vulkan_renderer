@@ -49,9 +49,10 @@ VkrCodepoint vkr_utf8_decode(const uint8_t *bytes, uint64_t max_bytes);
  * @brief Encodes a codepoint into a UTF-8 encoded string.
  * @param codepoint The codepoint to encode.
  * @param out The output buffer to write the encoded string to.
+ * @param max_bytes The maximum number of bytes available in the output buffer.
  * @return The number of bytes written to the output buffer.
  */
-uint8_t vkr_utf8_encode(uint32_t codepoint, uint8_t *out);
+uint8_t vkr_utf8_encode(uint32_t codepoint, uint8_t *out, uint64_t max_bytes);
 
 /**
  * @brief Begins iterating over a UTF-8 encoded string.
