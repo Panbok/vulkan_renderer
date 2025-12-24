@@ -28,6 +28,15 @@ typedef struct VkrVertex2d {
   Vec2 texcoord; /**< Texture coordinate (UV). */
 } VkrVertex2d;
 
+/**
+ * @brief Represents a single vertex in 2D space for text rendering.
+ */
+typedef struct VkrTextVertex {
+  Vec2 position; // Screen position
+  Vec2 texcoord; // Atlas UV
+  Vec4 color;    // Per-vertex color (from style)
+} VkrTextVertex;
+
 // =============================================================================
 // Generic Buffer Wrappers
 // =============================================================================
@@ -43,6 +52,7 @@ typedef struct VkrVertexBuffer {
   uint32_t stride;               // Size of one vertex in bytes
   uint32_t vertex_count;         // Number of vertices in this buffer
   VkrVertexInputRate input_rate; // Per-vertex or per-instance
+  bool8_t is_dynamic;            // HOST_VISIBLE for frequent updates
 
   // Optional metadata
   String8 debug_name;  // For debugging/profiling
@@ -58,6 +68,7 @@ typedef struct VkrIndexBuffer {
   VkrBufferHandle handle;
   VkrIndexType type;    // uint16 or uint32
   uint32_t index_count; // Number of indices
+  bool8_t is_dynamic;   // HOST_VISIBLE for frequent updates
 
   // Optional metadata
   String8 debug_name;  // For debugging/profiling
@@ -85,7 +96,7 @@ Array(VkrUniformBuffer);
 // =============================================================================
 
 /**
- * @brief Creates a vertex buffer from raw vertex data
+ * @brief Creates a vertex buffer from raw vertex data (device-local memory)
  * @param renderer Renderer instance
  * @param data Vertex data
  * @param stride Size of one vertex
@@ -103,9 +114,30 @@ VkrVertexBuffer vkr_vertex_buffer_create(VkrRendererFrontendHandle renderer,
                                          VkrRendererError *out_error);
 
 /**
- * @brief Creates an index buffer from index data
+ * @brief Creates a dynamic vertex buffer (host-visible memory for frequent updates)
+ *
+ * Use this for buffers that are updated frequently (e.g., UI text, particles).
+ * Updates are direct memory writes without GPU synchronization.
+ *
  * @param renderer Renderer instance
- * @param arena Memory allocator
+ * @param data Vertex data (can be NULL for uninitialized buffer)
+ * @param stride Size of one vertex
+ * @param vertex_count Number of vertices
+ * @param input_rate Per-vertex or per-instance
+ * @param debug_name Optional debug name
+ * @param out_error Error output
+ * @return Created VkrVertexBuffer with is_dynamic=true
+ */
+VkrVertexBuffer vkr_vertex_buffer_create_dynamic(VkrRendererFrontendHandle renderer,
+                                                 const void *data, uint32_t stride,
+                                                 uint32_t vertex_count,
+                                                 VkrVertexInputRate input_rate,
+                                                 String8 debug_name,
+                                                 VkrRendererError *out_error);
+
+/**
+ * @brief Creates an index buffer from index data (device-local memory)
+ * @param renderer Renderer instance
  * @param data Index data
  * @param type Index type (uint16/uint32)
  * @param index_count Number of indices
@@ -117,6 +149,26 @@ VkrIndexBuffer vkr_index_buffer_create(VkrRendererFrontendHandle renderer,
                                        const void *data, VkrIndexType type,
                                        uint32_t index_count, String8 debug_name,
                                        VkrRendererError *out_error);
+
+/**
+ * @brief Creates a dynamic index buffer (host-visible memory for frequent updates)
+ *
+ * Use this for buffers that are updated frequently (e.g., UI text, particles).
+ * Updates are direct memory writes without GPU synchronization.
+ *
+ * @param renderer Renderer instance
+ * @param data Index data (can be NULL for uninitialized buffer)
+ * @param type Index type (uint16/uint32)
+ * @param index_count Number of indices
+ * @param debug_name Optional debug name
+ * @param out_error Error output
+ * @return Created VkrIndexBuffer with is_dynamic=true
+ */
+VkrIndexBuffer vkr_index_buffer_create_dynamic(VkrRendererFrontendHandle renderer,
+                                               const void *data, VkrIndexType type,
+                                               uint32_t index_count,
+                                               String8 debug_name,
+                                               VkrRendererError *out_error);
 
 /**
  * @brief Creates a uniform buffer
