@@ -1,8 +1,75 @@
 #include "vkr_buffer.h"
+#include "defines.h"
 
 // =============================================================================
 // Buffer Creation Functions
 // =============================================================================
+
+vkr_internal VkrVertexBuffer vkr_vertex_buffer_create_internal(
+    VkrRendererFrontendHandle renderer, const void *data, uint32_t stride,
+    uint32_t vertex_count, VkrVertexInputRate input_rate, String8 debug_name,
+    bool32_t is_dynamic, VkrRendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+  assert_log(stride > 0, "Stride must be > 0");
+  assert_log(vertex_count > 0, "Vertex count must be > 0");
+
+  VkrVertexBuffer vertex_buffer = {0};
+  vertex_buffer.stride = stride;
+  vertex_buffer.vertex_count = vertex_count;
+  vertex_buffer.input_rate = input_rate;
+  vertex_buffer.debug_name = debug_name;
+  vertex_buffer.size_bytes = (uint64_t)stride * vertex_count;
+  vertex_buffer.is_dynamic = is_dynamic;
+
+  vertex_buffer.handle =
+      is_dynamic ? vkr_renderer_create_vertex_buffer_dynamic(
+                       renderer, vertex_buffer.size_bytes, data, out_error)
+                 : vkr_renderer_create_vertex_buffer(
+                       renderer, vertex_buffer.size_bytes, data, out_error);
+
+  if (*out_error != VKR_RENDERER_ERROR_NONE) {
+    log_error("Failed to create %s vertex buffer: %s",
+              is_dynamic ? "dynamic" : "", string8_cstr(&debug_name));
+    return vertex_buffer;
+  }
+
+  return vertex_buffer;
+}
+
+vkr_internal VkrIndexBuffer vkr_index_buffer_create_internal(
+    VkrRendererFrontendHandle renderer, const void *data, VkrIndexType type,
+    uint32_t index_count, String8 debug_name, bool32_t is_dynamic,
+    VkrRendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+  assert_log(index_count > 0, "Index count must be > 0");
+
+  VkrIndexBuffer index_buffer = {0};
+  index_buffer.type = type;
+  index_buffer.index_count = index_count;
+  index_buffer.debug_name = debug_name;
+  index_buffer.is_dynamic = is_dynamic;
+  index_buffer.size_bytes =
+      (uint64_t)(type == VKR_INDEX_TYPE_UINT16 ? sizeof(uint16_t)
+                                               : sizeof(uint32_t)) *
+      index_count;
+
+  index_buffer.handle =
+      is_dynamic
+          ? vkr_renderer_create_index_buffer_dynamic(
+                renderer, index_buffer.size_bytes, type, data, out_error)
+          : vkr_renderer_create_index_buffer(renderer, index_buffer.size_bytes,
+                                             type, data, out_error);
+
+  if (*out_error != VKR_RENDERER_ERROR_NONE) {
+    log_error("Failed to create %s index buffer: %s",
+              is_dynamic ? "dynamic" : "", string8_cstr(&debug_name));
+    return index_buffer;
+  }
+
+  return index_buffer;
+}
 
 VkrVertexBuffer vkr_vertex_buffer_create(VkrRendererFrontendHandle renderer,
                                          const void *data, uint32_t stride,
@@ -15,23 +82,9 @@ VkrVertexBuffer vkr_vertex_buffer_create(VkrRendererFrontendHandle renderer,
   assert_log(stride > 0, "Stride must be > 0");
   assert_log(vertex_count > 0, "Vertex count must be > 0");
 
-  VkrVertexBuffer vertex_buffer = {0};
-  vertex_buffer.stride = stride;
-  vertex_buffer.vertex_count = vertex_count;
-  vertex_buffer.input_rate = input_rate;
-  vertex_buffer.debug_name = debug_name;
-  vertex_buffer.size_bytes = (uint64_t)stride * vertex_count;
-  vertex_buffer.is_dynamic = false_v;
-
-  vertex_buffer.handle = vkr_renderer_create_vertex_buffer(
-      renderer, vertex_buffer.size_bytes, data, out_error);
-
-  if (*out_error != VKR_RENDERER_ERROR_NONE) {
-    log_error("Failed to create vertex buffer: %s", string8_cstr(&debug_name));
-    return vertex_buffer;
-  }
-
-  return vertex_buffer;
+  return vkr_vertex_buffer_create_internal(renderer, data, stride, vertex_count,
+                                           input_rate, debug_name, false_v,
+                                           out_error);
 }
 
 VkrVertexBuffer vkr_vertex_buffer_create_dynamic(
@@ -43,24 +96,9 @@ VkrVertexBuffer vkr_vertex_buffer_create_dynamic(
   assert_log(stride > 0, "Stride must be > 0");
   assert_log(vertex_count > 0, "Vertex count must be > 0");
 
-  VkrVertexBuffer vertex_buffer = {0};
-  vertex_buffer.stride = stride;
-  vertex_buffer.vertex_count = vertex_count;
-  vertex_buffer.input_rate = input_rate;
-  vertex_buffer.debug_name = debug_name;
-  vertex_buffer.size_bytes = (uint64_t)stride * vertex_count;
-  vertex_buffer.is_dynamic = true_v;
-
-  vertex_buffer.handle = vkr_renderer_create_vertex_buffer_dynamic(
-      renderer, vertex_buffer.size_bytes, data, out_error);
-
-  if (*out_error != VKR_RENDERER_ERROR_NONE) {
-    log_error("Failed to create dynamic vertex buffer: %s",
-              string8_cstr(&debug_name));
-    return vertex_buffer;
-  }
-
-  return vertex_buffer;
+  return vkr_vertex_buffer_create_internal(renderer, data, stride, vertex_count,
+                                           input_rate, debug_name, true_v,
+                                           out_error);
 }
 
 VkrIndexBuffer vkr_index_buffer_create(VkrRendererFrontendHandle renderer,
@@ -71,25 +109,8 @@ VkrIndexBuffer vkr_index_buffer_create(VkrRendererFrontendHandle renderer,
   assert_log(out_error != NULL, "Out error is NULL");
   assert_log(index_count > 0, "Index count must be > 0");
 
-  VkrIndexBuffer index_buffer = {0};
-  index_buffer.type = type;
-  index_buffer.index_count = index_count;
-  index_buffer.debug_name = debug_name;
-  index_buffer.is_dynamic = false_v;
-
-  uint32_t index_size =
-      (type == VKR_INDEX_TYPE_UINT16) ? sizeof(uint16_t) : sizeof(uint32_t);
-  index_buffer.size_bytes = (uint64_t)index_size * index_count;
-
-  index_buffer.handle = vkr_renderer_create_index_buffer(
-      renderer, index_buffer.size_bytes, type, data, out_error);
-
-  if (*out_error != VKR_RENDERER_ERROR_NONE) {
-    log_error("Failed to create index buffer: %s", string8_cstr(&debug_name));
-    return index_buffer;
-  }
-
-  return index_buffer;
+  return vkr_index_buffer_create_internal(renderer, data, type, index_count,
+                                          debug_name, false_v, out_error);
 }
 
 VkrIndexBuffer vkr_index_buffer_create_dynamic(
@@ -99,26 +120,8 @@ VkrIndexBuffer vkr_index_buffer_create_dynamic(
   assert_log(out_error != NULL, "Out error is NULL");
   assert_log(index_count > 0, "Index count must be > 0");
 
-  VkrIndexBuffer index_buffer = {0};
-  index_buffer.type = type;
-  index_buffer.index_count = index_count;
-  index_buffer.debug_name = debug_name;
-  index_buffer.is_dynamic = true_v;
-
-  uint32_t index_size =
-      (type == VKR_INDEX_TYPE_UINT16) ? sizeof(uint16_t) : sizeof(uint32_t);
-  index_buffer.size_bytes = (uint64_t)index_size * index_count;
-
-  index_buffer.handle = vkr_renderer_create_index_buffer_dynamic(
-      renderer, index_buffer.size_bytes, type, data, out_error);
-
-  if (*out_error != VKR_RENDERER_ERROR_NONE) {
-    log_error("Failed to create dynamic index buffer: %s",
-              string8_cstr(&debug_name));
-    return index_buffer;
-  }
-
-  return index_buffer;
+  return vkr_index_buffer_create_internal(renderer, data, type, index_count,
+                                          debug_name, true_v, out_error);
 }
 
 VkrUniformBuffer
@@ -159,10 +162,6 @@ vkr_uniform_buffer_create(VkrRendererFrontendHandle renderer, const void *data,
     log_error("Failed to create uniform buffer: %s", string8_cstr(&debug_name));
     return uniform_buffer;
   }
-
-  // log_debug("Created uniform buffer '%s': binding %u, %llu bytes, %s",
-  //           string8_cstr(&debug_name), binding, size_bytes,
-  //           dynamic ? "dynamic" : "static");
 
   return uniform_buffer;
 }
@@ -290,8 +289,6 @@ void vkr_vertex_buffer_destroy(VkrRendererFrontendHandle renderer,
   assert_log(vertex_buffer != NULL, "Vertex buffer is NULL");
 
   if (vertex_buffer->handle != NULL) {
-    // log_debug("Destroying vertex buffer '%s'",
-    //           string8_cstr(&vertex_buffer->debug_name));
     vkr_renderer_destroy_buffer(renderer, vertex_buffer->handle);
     vertex_buffer->handle = NULL;
   }
@@ -305,8 +302,6 @@ void vkr_index_buffer_destroy(VkrRendererFrontendHandle renderer,
   assert_log(index_buffer != NULL, "Index buffer is NULL");
 
   if (index_buffer->handle != NULL) {
-    // log_debug("Destroying index buffer '%s'",
-    //           string8_cstr(&index_buffer->debug_name));
     vkr_renderer_destroy_buffer(renderer, index_buffer->handle);
     index_buffer->handle = NULL;
   }
@@ -320,8 +315,6 @@ void vkr_uniform_buffer_destroy(VkrRendererFrontendHandle renderer,
   assert_log(uniform_buffer != NULL, "Uniform buffer is NULL");
 
   if (uniform_buffer->handle != NULL) {
-    // log_debug("Destroying uniform buffer '%s'",
-    //           string8_cstr(&uniform_buffer->debug_name));
     vkr_renderer_destroy_buffer(renderer, uniform_buffer->handle);
     uniform_buffer->handle = NULL;
   }
