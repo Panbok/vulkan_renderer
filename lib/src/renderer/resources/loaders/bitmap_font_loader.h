@@ -16,7 +16,7 @@ typedef struct VkrBitmapFontLoaderContext {
 } VkrBitmapFontLoaderContext;
 
 typedef struct VkrBitmapFontLoaderResult {
-  Arena *arena; /**< Arena backing the font data (owned by result) */
+  Arena *arena;     /**< Arena backing the font data (owned by result) */
   void *pool_chunk; /**< Pool chunk (NULL if not pooled) */
   VkrAllocator allocator;
   VkrFont font;
@@ -36,8 +36,9 @@ typedef struct VkrBitmapFontLoaderResult {
  * system. Use vkr_resource_system_load() for single fonts and
  * vkr_resource_system_load_batch() for parallel batch loading.
  *
- * @param context The font loader context (stored as resource_system pointer)
+ * @param context The font loader context (must remain valid for the lifetime of
+ * the loader, or NULL for default behavior)
  * @return The configured resource loader for bitmap fonts
  */
-VkrResourceLoader vkr_bitmap_font_loader_create(
-    VkrBitmapFontLoaderContext *context);
+VkrResourceLoader
+vkr_bitmap_font_loader_create(const VkrBitmapFontLoaderContext *context);

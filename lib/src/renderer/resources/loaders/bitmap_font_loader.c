@@ -60,14 +60,20 @@ vkr_internal void
 vkr_bitmap_font_reserve_kernings(VkrBitmapFontParseState *state,
                                  uint32_t count);
 
-vkr_internal uint32_t vkr_bitmap_font_host_to_little_u32(uint32_t value) {
-  const union {
-    uint32_t u32;
-    uint8_t u8[4];
-  } endian_check = {0x01020304};
-  const bool8_t is_little_endian = (endian_check.u8[0] == 0x04);
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
+vkr_global const bool8_t vkr_bitmap_font_is_little_endian =
+    (__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__);
+#else
+vkr_global const union {
+  uint32_t u32;
+  uint8_t u8[4];
+} vkr_bitmap_font_endian_check = {0x01020304};
+vkr_global const bool8_t vkr_bitmap_font_is_little_endian =
+    (vkr_bitmap_font_endian_check.u8[0] == 0x04);
+#endif
 
-  if (is_little_endian) {
+vkr_internal uint32_t vkr_bitmap_font_host_to_little_u32(uint32_t value) {
+  if (vkr_bitmap_font_is_little_endian) {
     return value;
   }
 
@@ -76,13 +82,7 @@ vkr_internal uint32_t vkr_bitmap_font_host_to_little_u32(uint32_t value) {
 }
 
 vkr_internal uint16_t vkr_bitmap_font_host_to_little_u16(uint16_t value) {
-  const union {
-    uint16_t u16;
-    uint8_t u8[2];
-  } endian_check = {0x0102};
-  const bool8_t is_little_endian = (endian_check.u8[0] == 0x02);
-
-  if (is_little_endian) {
+  if (vkr_bitmap_font_is_little_endian) {
     return value;
   }
 
@@ -401,6 +401,8 @@ vkr_internal bool8_t vkr_bitmap_font_cache_read(VkrBitmapFontParseState *state,
   return true_v;
 }
 
+// todo: consider doing temp writes to a temp file and then renaming to the
+// final path via atomic rename operation
 vkr_internal bool8_t
 vkr_bitmap_font_cache_write(VkrAllocator *allocator, String8 cache_path,
                             const VkrBitmapFontParseState *state) {
@@ -775,13 +777,6 @@ vkr_internal bool8_t vkr_bitmap_font_parse_char(VkrBitmapFontParseState *state,
       !vkr_bitmap_font_parse_int(line, "xadvance", &x_advance) ||
       !vkr_bitmap_font_parse_int(line, "page", &page_id)) {
     log_error("BitmapFontLoader: malformed char line");
-    vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_INVALID_PARAMETER);
-    return false_v;
-  }
-
-  if (x < 0 || y < 0 || width < 0 || height < 0 || page_id < 0 ||
-      page_id > 255) {
-    log_error("BitmapFontLoader: invalid glyph metrics");
     vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_INVALID_PARAMETER);
     return false_v;
   }
@@ -1472,7 +1467,7 @@ vkr_internal uint32_t vkr_bitmap_font_loader_batch_load(
 }
 
 VkrResourceLoader
-vkr_bitmap_font_loader_create(VkrBitmapFontLoaderContext *context) {
+vkr_bitmap_font_loader_create(const VkrBitmapFontLoaderContext *context) {
   VkrResourceLoader loader = {0};
   loader.type = VKR_RESOURCE_TYPE_BITMAP_FONT;
   loader.resource_system = context;
