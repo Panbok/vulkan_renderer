@@ -65,6 +65,7 @@ void vkr_json_skip_whitespace(VkrJsonReader *reader);
  * @brief Skips to a specific character.
  * @param reader The reader
  * @param target Character to skip to
+ * @note If target is not found, reader advances to end of buffer
  */
 void vkr_json_skip_to(VkrJsonReader *reader, uint8_t target);
 
@@ -134,6 +135,11 @@ bool8_t vkr_json_parse_int(VkrJsonReader *reader, int32_t *out_value);
  * Returns a view into the original buffer (not copied).
  * The string does NOT include quotes.
  *
+ * @note The function returns a view into the raw JSON data with escape
+ * sequences intact. For example, parsing "hello\nworld" returns a 12-character
+ * string containing the literal backslash and 'n' characters, not a newline.
+ * Callers must manually unescape the string.
+ *
  * @param reader The reader
  * @param out_value Output string (points into original buffer)
  * @return true if parsed successfully
@@ -163,6 +169,16 @@ bool8_t vkr_json_get_float(VkrJsonReader *reader, const char *field_name,
                            float32_t *out_value);
 
 /**
+ * @brief Finds a field and parses its double value.
+ * @param reader The reader
+ * @param field_name Name of the field
+ * @param out_value Output value
+ * @return true if field found and parsed
+ */
+bool8_t vkr_json_get_double(VkrJsonReader *reader, const char *field_name,
+                            float64_t *out_value);
+
+/**
  * @brief Finds a field and parses its integer value.
  * @param reader The reader
  * @param field_name Name of the field
@@ -181,3 +197,13 @@ bool8_t vkr_json_get_int(VkrJsonReader *reader, const char *field_name,
  */
 bool8_t vkr_json_get_string(VkrJsonReader *reader, const char *field_name,
                             String8 *out_value);
+
+/**
+ * @brief Finds a field and parses its boolean value.
+ * @param reader The reader
+ * @param field_name Name of the field
+ * @param out_value Output value
+ * @return true if field found and parsed
+ */
+bool8_t vkr_json_get_bool(VkrJsonReader *reader, const char *field_name,
+                          bool8_t *out_value);
