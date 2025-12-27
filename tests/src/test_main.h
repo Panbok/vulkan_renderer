@@ -12,6 +12,7 @@
 #include "freelist_test.h"
 #include "hashtable_test.h"
 #include "input_test.h"
+#include "json_test.h"
 #include "job_system_test.h"
 #include "mat_test.h"
 #include "math_test.h"
