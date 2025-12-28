@@ -99,6 +99,25 @@ float64_t vkr_platform_get_absolute_time() {
   return (float64_t)now.QuadPart * clock_frequency;
 }
 
+VkrTime vkr_platform_get_local_time() {
+  time_t raw_time;
+  time(&raw_time);
+  struct tm *time_info = localtime(&raw_time);
+  return (VkrTime){
+      .seconds = time_info->tm_sec,
+      .minutes = time_info->tm_min,
+      .hours = time_info->tm_hour,
+      .day = time_info->tm_mday,
+      .month = time_info->tm_mon,
+      .year = time_info->tm_year,
+      .weekday = time_info->tm_wday,
+      .year_day = time_info->tm_yday,
+      .is_dst = time_info->tm_isdst,
+      .gmtoff = time_info->tm_gmtoff,
+      .timezone_name = time_info->tm_zone,
+  };
+}
+
 void vkr_platform_console_write(const char *message, uint8_t colour) {
   HANDLE console_handle = GetStdHandle(STD_OUTPUT_HANDLE);
   if (console_handle == INVALID_HANDLE_VALUE) {

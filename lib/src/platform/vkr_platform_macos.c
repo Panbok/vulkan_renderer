@@ -1,5 +1,4 @@
 #include "vkr_platform.h"
-#include <stdint.h>
 
 #if defined(PLATFORM_APPLE)
 
@@ -80,17 +79,44 @@ uint32_t vkr_platform_get_logical_core_count(void) {
 }
 
 void vkr_platform_sleep(uint64_t ms) {
+  if (ms == 0) {
+    return;
+  }
+
+  // For very short sleeps (<= 2ms), use spin-wait to avoid scheduler latency
+  if (ms <= 2) {
+    float64_t start_time = vkr_platform_get_absolute_time();
+    float64_t target_time = start_time + (ms * 0.001);
+
+    while (vkr_platform_get_absolute_time() < target_time) {
+      // Yield to other threads occasionally
+      sched_yield();
+    }
+    return;
+  }
+
+  // For longer sleeps, sleep for most of the duration then spin-wait the rest
+  // This prevents oversleeping which causes missed vsync windows
+  uint64_t sleep_ms = ms - 2; // Sleep for all but last 2ms
+
 #if _POSIX_C_SOURCE >= 199309L
   struct timespec ts;
-  ts.tv_sec = ms / 1000;
-  ts.tv_nsec = (ms % 1000) * 1000 * 1000;
+  ts.tv_sec = sleep_ms / 1000;
+  ts.tv_nsec = (sleep_ms % 1000) * 1000 * 1000;
   nanosleep(&ts, 0);
 #else
-  if (ms >= 1000) {
-    sleep(ms / 1000);
+  if (sleep_ms >= 1000) {
+    sleep(sleep_ms / 1000);
   }
-  usleep((ms % 1000) * 1000);
+  usleep((sleep_ms % 1000) * 1000);
 #endif
+
+  // Spin-wait for the remaining time to hit the exact target
+  float64_t target_time =
+      vkr_platform_get_absolute_time() + (2.0 * 0.001); // 2ms remaining
+  while (vkr_platform_get_absolute_time() < target_time) {
+    sched_yield();
+  }
 }
 
 float64_t vkr_platform_get_absolute_time() {
@@ -98,6 +124,25 @@ float64_t vkr_platform_get_absolute_time() {
   uint64_t mach_now = mach_absolute_time();
   return (float64_t)(mach_now * timebase_info.numer) /
          (timebase_info.denom * 1e9);
+}
+
+VkrTime vkr_platform_get_local_time() {
+  time_t raw_time;
+  time(&raw_time);
+  struct tm *time_info = localtime(&raw_time);
+  return (VkrTime){
+      .seconds = time_info->tm_sec,
+      .minutes = time_info->tm_min,
+      .hours = time_info->tm_hour,
+      .day = time_info->tm_mday,
+      .month = time_info->tm_mon,
+      .year = time_info->tm_year,
+      .weekday = time_info->tm_wday,
+      .year_day = time_info->tm_yday,
+      .is_dst = time_info->tm_isdst,
+      .gmtoff = time_info->tm_gmtoff,
+      .timezone_name = time_info->tm_zone,
+  };
 }
 
 void vkr_platform_console_write(const char *message, uint8_t colour) {
