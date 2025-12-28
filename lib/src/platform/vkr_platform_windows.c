@@ -100,22 +100,42 @@ float64_t vkr_platform_get_absolute_time() {
 }
 
 VkrTime vkr_platform_get_local_time() {
+  VkrTime result = {0};
+
   time_t raw_time;
   time(&raw_time);
-  struct tm *time_info = localtime(&raw_time);
-  return (VkrTime){
-      .seconds = time_info->tm_sec,
-      .minutes = time_info->tm_min,
-      .hours = time_info->tm_hour,
-      .day = time_info->tm_mday,
-      .month = time_info->tm_mon,
-      .year = time_info->tm_year,
-      .weekday = time_info->tm_wday,
-      .year_day = time_info->tm_yday,
-      .is_dst = time_info->tm_isdst,
-      .gmtoff = time_info->tm_gmtoff,
-      .timezone_name = time_info->tm_zone,
-  };
+
+  struct tm time_info;
+  if (localtime_s(&time_info, &raw_time) != 0) {
+    return result;
+  }
+
+  long timezone_sec = 0;
+  _get_timezone(&timezone_sec);
+
+  int32_t gmtoff = -(int32_t)timezone_sec;
+
+  if (time_info.tm_isdst > 0) {
+    long dst_bias_sec = 0;
+    _get_dstbias(&dst_bias_sec);
+    gmtoff -= (int32_t)dst_bias_sec;
+  }
+
+  int tz_index = (time_info.tm_isdst > 0) ? 1 : 0;
+  result.timezone_name = _tzname[tz_index];
+
+  result.seconds = time_info.tm_sec;
+  result.minutes = time_info.tm_min;
+  result.hours = time_info.tm_hour;
+  result.day = time_info.tm_mday;
+  result.month = time_info.tm_mon;
+  result.year = time_info.tm_year;
+  result.weekday = time_info.tm_wday;
+  result.year_day = time_info.tm_yday;
+  result.is_dst = time_info.tm_isdst;
+  result.gmtoff = gmtoff;
+
+  return result;
 }
 
 void vkr_platform_console_write(const char *message, uint8_t colour) {

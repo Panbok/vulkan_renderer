@@ -83,13 +83,11 @@ void vkr_platform_sleep(uint64_t ms) {
     return;
   }
 
-  // For very short sleeps (<= 2ms), use spin-wait to avoid scheduler latency
   if (ms <= 2) {
     float64_t start_time = vkr_platform_get_absolute_time();
     float64_t target_time = start_time + (ms * 0.001);
 
     while (vkr_platform_get_absolute_time() < target_time) {
-      // Yield to other threads occasionally
       sched_yield();
     }
     return;
@@ -111,9 +109,7 @@ void vkr_platform_sleep(uint64_t ms) {
   usleep((sleep_ms % 1000) * 1000);
 #endif
 
-  // Spin-wait for the remaining time to hit the exact target
-  float64_t target_time =
-      vkr_platform_get_absolute_time() + (2.0 * 0.001); // 2ms remaining
+  float64_t target_time = vkr_platform_get_absolute_time() + (2.0 * 0.001);
   while (vkr_platform_get_absolute_time() < target_time) {
     sched_yield();
   }
