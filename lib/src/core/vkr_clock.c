@@ -36,6 +36,10 @@ bool8_t vkr_clock_interval_elapsed(VkrClock *clock,
   assert_log(clock != NULL, "Clock is NULL");
   assert_log(interval_seconds > 0.0, "Interval must be > 0");
 
+  if (clock->start_time <= 0.0) {
+    return false_v;
+  }
+
   vkr_clock_update(clock);
   if (clock->elapsed >= interval_seconds) {
     clock->start_time += clock->elapsed;

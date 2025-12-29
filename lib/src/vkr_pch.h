@@ -1,6 +1,6 @@
 #pragma once
 
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) && !defined(NDEBUG)
 #define _CRT_SECURE_NO_WARNINGS
 #endif
 
@@ -8,7 +8,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
-#include <sched.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -41,6 +40,7 @@
 #include <io.h>
 #include <timeapi.h>
 #include <Xinput.h>
+#include <sched.h>
 #pragma comment(lib, "winmm.lib")
 #endif
 // clang-format on
