@@ -5,7 +5,7 @@ void vkr_camera_controller_create(VkrCameraController *controller,
                                   float32_t target_frame_rate) {
   assert_log(controller != NULL, "Camera controller is NULL");
   assert_log(camera != NULL, "Camera is NULL");
-  assert_log(target_frame_rate > 0.0f, "Target frame rate must be positive");
+  // assert_log(target_frame_rate > 0.0f, "Target frame rate must be positive");
 
   controller->camera = camera;
   controller->target_frame_rate = target_frame_rate;

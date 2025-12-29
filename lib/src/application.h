@@ -202,7 +202,6 @@ bool8_t application_create(Application *application,
   assert(config->app_arena_size > 0 && "Application arena size is 0");
   assert(config->width > 0 && "Application width is less than 0");
   assert(config->height > 0 && "Application height is less than 0");
-  assert(config->target_frame_rate > 0 && "Application target frame rate is 0");
 
   if (!vkr_platform_init()) {
     log_fatal("Failed to initialize platform!");
@@ -259,7 +258,8 @@ bool8_t application_create(Application *application,
   if (!vkr_renderer_initialize(
           &application->renderer, VKR_RENDERER_BACKEND_TYPE_VULKAN,
           &application->window, &application->event_manager,
-          &application->config->device_requirements, NULL, &renderer_error)) {
+          &application->config->device_requirements, NULL,
+          application->config->target_frame_rate, &renderer_error)) {
     log_fatal("Failed to create renderer!");
     return false_v;
   }
@@ -356,7 +356,7 @@ void application_draw_frame(Application *application, float64_t delta) {
     return;
   }
 
-  vkr_renderer_draw_frame(&application->renderer);
+  vkr_renderer_draw_frame(&application->renderer, delta);
 
   if (vkr_renderer_end_frame(&application->renderer, delta) !=
       VKR_RENDERER_ERROR_NONE) {
@@ -393,8 +393,11 @@ void application_start(Application *application) {
   vkr_clock_update(&application->clock);
   application->last_frame_time = application->clock.elapsed;
 
-  const float64_t target_frame_seconds =
-      1.0 / application->config->target_frame_rate;
+  float64_t target_frame_seconds = 0.0;
+  if (application->config->target_frame_rate > 0) {
+    target_frame_seconds =
+        1.0 / (float64_t)application->config->target_frame_rate;
+  }
 
   bool8_t running = true_v;
   while (
@@ -403,11 +406,16 @@ void application_start(Application *application) {
       bitset8_is_set(&application->app_flags, APPLICATION_FLAG_INITIALIZED)) {
 
     vkr_clock_update(&application->clock);
-    float64_t current_frame_time = application->clock.elapsed;
-    float64_t delta = current_frame_time - application->last_frame_time;
 
-    // If delta is zero or negative (e.g., first frame or timer issue), use a
-    // default fixed delta.
+    float64_t current_absolute_time = vkr_platform_get_absolute_time();
+    float64_t current_total_time = application->clock.elapsed;
+
+    float64_t delta = current_total_time - application->last_frame_time;
+
+    if (delta > 0.1f) {
+      delta = 0.1f;
+    }
+
     if (delta <= 0.0) {
       delta = target_frame_seconds;
     }
@@ -417,16 +425,12 @@ void application_start(Application *application) {
 
     if (!running ||
         bitset8_is_set(&application->app_flags, APPLICATION_FLAG_SUSPENDED)) {
-      application->last_frame_time =
-          current_frame_time; // Update time before potentially skipping frame
-                              // logic
+      application->last_frame_time = current_total_time;
       if (!running) {
         break;
       }
       continue;
     }
-
-    float64_t frame_processing_start_time = vkr_platform_get_absolute_time();
 
     application_update(application, delta);
 
@@ -465,25 +469,27 @@ void application_start(Application *application) {
 
     application_draw_frame(application, delta);
 
-    // Frame limiting / yielding CPU
-    float64_t frame_processing_end_time = vkr_platform_get_absolute_time();
-    float64_t frame_elapsed_processing_time =
-        frame_processing_end_time - frame_processing_start_time;
-    float64_t remaining_seconds_in_frame =
-        target_frame_seconds - frame_elapsed_processing_time;
+    if (application->config->target_frame_rate > 0) {
+      // Frame limiting / yielding CPU
+      float64_t frame_end_time = vkr_platform_get_absolute_time();
+      float64_t frame_elapsed_work_time =
+          frame_end_time - current_absolute_time;
 
-    if (remaining_seconds_in_frame > 0.0) {
-      uint64_t remaining_ms = (uint64_t)(remaining_seconds_in_frame * 1000.0);
-      if (remaining_ms > 0) {
-        // Consider a flag to enable/disable this sleep for debugging or
-        // specific needs
-        vkr_platform_sleep(remaining_ms);
+      float64_t remaining_seconds =
+          target_frame_seconds - frame_elapsed_work_time;
+
+      if (remaining_seconds > 0.0) {
+        uint64_t remaining_ms = (uint64_t)(remaining_seconds * 1000.0);
+
+        if (remaining_ms > 0) {
+          vkr_platform_sleep(remaining_ms);
+        }
       }
     }
 
-    input_update(&application->window.input_state);
+    application->last_frame_time = current_total_time;
 
-    application->last_frame_time = current_frame_time;
+    input_update(&application->window.input_state);
   }
 }
 

@@ -66,6 +66,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
                                  VkrWindow *window, EventManager *event_manager,
                                  VkrDeviceRequirements *device_requirements,
                                  const VkrRendererBackendConfig *backend_config,
+                                 uint64_t target_frame_rate,
                                  VkrRendererError *out_error) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(window != NULL, "Window is NULL");
@@ -129,6 +130,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->ui_layer = VKR_LAYER_HANDLE_INVALID;
   renderer->draw_state = (VkrShaderStateObject){.instance_state = {0}};
   renderer->frame_number = 0;
+  renderer->target_frame_rate = target_frame_rate;
 
   // Create renderer mutex and initialize size tracking
   if (!vkr_mutex_create(&renderer->allocator, &renderer->rf_mutex)) {
@@ -240,6 +242,7 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   vkr_shader_system_shutdown(&rf->shader_system);
   vkr_texture_system_shutdown(rf, &rf->texture_system);
   vkr_mesh_manager_shutdown(&rf->mesh_manager);
+  vkr_font_system_shutdown(&rf->font_system);
   vkr_material_system_shutdown(&rf->material_system);
   vkr_geometry_system_shutdown(&rf->geometry_system);
 
@@ -256,6 +259,15 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   // Destroy mesh arena pool
   if (rf->mesh_arena_pool.initialized) {
     vkr_arena_pool_destroy(&rf->allocator, &rf->mesh_arena_pool);
+  }
+  if (rf->bitmap_font_arena_pool.initialized) {
+    vkr_arena_pool_destroy(&rf->allocator, &rf->bitmap_font_arena_pool);
+  }
+  if (rf->system_font_arena_pool.initialized) {
+    vkr_arena_pool_destroy(&rf->allocator, &rf->system_font_arena_pool);
+  }
+  if (rf->mtsdf_font_arena_pool.initialized) {
+    vkr_arena_pool_destroy(&rf->allocator, &rf->mtsdf_font_arena_pool);
   }
 
   arena_destroy(renderer->arena);
@@ -304,6 +316,12 @@ String8 vkr_renderer_get_error_string(VkrRendererError error) {
 VkrWindow *vkr_renderer_get_window(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
   return renderer->window;
+}
+
+uint64_t
+vkr_renderer_get_target_frame_rate(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  return renderer->target_frame_rate;
 }
 
 VkrRendererBackendType
@@ -387,6 +405,42 @@ VkrBufferHandle vkr_renderer_create_index_buffer(
       .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_INDEX_BUFFER |
                                                 VKR_BUFFER_USAGE_TRANSFER_DST |
                                                 VKR_BUFFER_USAGE_TRANSFER_SRC),
+      .bind_on_create = true_v,
+      .buffer_type = buffer_type};
+
+  return vkr_renderer_create_buffer(renderer, &desc, initial_data, out_error);
+}
+
+VkrBufferHandle vkr_renderer_create_vertex_buffer_dynamic(
+    VkrRendererFrontendHandle renderer, uint64_t size, const void *initial_data,
+    VkrRendererError *out_error) {
+  VkrBufferTypeFlags buffer_type = bitset8_create();
+  bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
+  VkrBufferDescription desc = {
+      .size = size,
+      .memory_properties = vkr_memory_property_flags_from_bits(
+          VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
+      .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_VERTEX_BUFFER |
+                                                VKR_BUFFER_USAGE_TRANSFER_DST),
+      .bind_on_create = true_v,
+      .buffer_type = buffer_type};
+
+  return vkr_renderer_create_buffer(renderer, &desc, initial_data, out_error);
+}
+
+VkrBufferHandle vkr_renderer_create_index_buffer_dynamic(
+    VkrRendererFrontendHandle renderer, uint64_t size, VkrIndexType type,
+    const void *initial_data, VkrRendererError *out_error) {
+  (void)type; // Suppress unused parameter warning
+
+  VkrBufferTypeFlags buffer_type = bitset8_create();
+  bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
+  VkrBufferDescription desc = {
+      .size = size,
+      .memory_properties = vkr_memory_property_flags_from_bits(
+          VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
+      .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_INDEX_BUFFER |
+                                                VKR_BUFFER_USAGE_TRANSFER_DST),
       .bind_on_create = true_v,
       .buffer_type = buffer_type};
 
@@ -981,6 +1035,39 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   rf->mesh_loader.allocator.ctx = rf->mesh_loader.scratch_arena;
   vkr_allocator_arena(&rf->mesh_loader.allocator);
 
+  if (!vkr_arena_pool_create(MB(6), pool_chunk_count, &rf->allocator,
+                             &rf->bitmap_font_arena_pool)) {
+    log_fatal("Failed to create bitmap font arena pool");
+    return false_v;
+  }
+
+  rf->bitmap_font_loader = (VkrBitmapFontLoaderContext){
+      .job_system = job_system, .arena_pool = &rf->bitmap_font_arena_pool};
+
+  if (!vkr_arena_pool_create(MB(6), pool_chunk_count, &rf->allocator,
+                             &rf->system_font_arena_pool)) {
+    log_fatal("Failed to create system font arena pool");
+    return false_v;
+  }
+
+  rf->system_font_loader = (VkrSystemFontLoaderContext){
+      .job_system = job_system,
+      .arena_pool = &rf->system_font_arena_pool,
+      .texture_system = &rf->texture_system,
+  };
+
+  if (!vkr_arena_pool_create(MB(6), pool_chunk_count, &rf->allocator,
+                             &rf->mtsdf_font_arena_pool)) {
+    log_fatal("Failed to create mtsdf font arena pool");
+    return false_v;
+  }
+
+  rf->mtsdf_font_loader = (VkrMtsdfFontLoaderContext){
+      .job_system = job_system,
+      .arena_pool = &rf->mtsdf_font_arena_pool,
+      .texture_system = &rf->texture_system,
+  };
+
   vkr_resource_system_register_loader((void *)&rf->texture_system,
                                       vkr_texture_loader_create());
   vkr_resource_system_register_loader((void *)&rf->material_system,
@@ -989,6 +1076,28 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
                                       vkr_shader_loader_create());
   vkr_resource_system_register_loader((void *)&rf->mesh_loader,
                                       vkr_mesh_loader_create(&rf->mesh_loader));
+  vkr_resource_system_register_loader(
+      (void *)&rf->bitmap_font_loader,
+      vkr_bitmap_font_loader_create(&rf->bitmap_font_loader));
+  vkr_resource_system_register_loader(
+      (void *)&rf->system_font_loader,
+      vkr_system_font_loader_create(&rf->system_font_loader));
+  vkr_resource_system_register_loader(
+      (void *)&rf->mtsdf_font_loader,
+      vkr_mtsdf_font_loader_create(&rf->mtsdf_font_loader));
+
+  VkrFontSystemConfig font_cfg = {
+      .max_system_font_count = 16,
+      .max_bitmap_font_count = 16,
+      .max_mtsdf_font_count = 16,
+  };
+
+  VkrRendererError font_sys_err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_font_system_init(&rf->font_system, rf, &font_cfg, &font_sys_err)) {
+    String8 err_str = vkr_renderer_get_error_string(font_sys_err);
+    log_error("Failed to initialize font system: %s", string8_cstr(&err_str));
+    return false_v;
+  }
 
   if (!vkr_view_system_init(rf)) {
     log_fatal("Failed to initialize view system");
@@ -1013,7 +1122,8 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   return true_v;
 }
 
-void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer) {
+void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer,
+                             float64_t delta_time) {
   assert_log(renderer != NULL, "Renderer is NULL");
   RendererFrontend *rf = (RendererFrontend *)renderer;
 
@@ -1025,5 +1135,5 @@ void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer) {
   }
 
   uint32_t image_index = vkr_renderer_window_image_index(renderer);
-  vkr_view_system_draw_all(renderer, image_index);
+  vkr_view_system_draw_all(renderer, delta_time, image_index);
 }

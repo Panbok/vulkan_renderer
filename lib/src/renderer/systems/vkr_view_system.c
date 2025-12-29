@@ -570,7 +570,7 @@ void vkr_view_system_rebuild_targets(VkrRendererFrontendHandle renderer) {
 }
 
 void vkr_view_system_draw_all(VkrRendererFrontendHandle renderer,
-                              uint32_t image_index) {
+                              float64_t delta_time, uint32_t image_index) {
   assert_log(renderer != NULL, "Renderer is NULL");
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
@@ -608,6 +608,7 @@ void vkr_view_system_draw_all(VkrRendererFrontendHandle renderer,
 
       VkrLayerContext ctx = vkr_view_system_make_context(vs, layer, pass);
       VkrLayerRenderInfo info = {.image_index = image_index,
+                                 .delta_time = delta_time,
                                  .renderpass_name = pass->renderpass_name};
 
       VkrRendererError begin_err = vkr_renderer_begin_render_pass(

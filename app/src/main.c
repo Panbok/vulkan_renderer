@@ -374,7 +374,7 @@ int main(int argc, char **argv) {
   config.width = 800;
   config.height = 600;
   config.app_arena_size = MB(1);
-  config.target_frame_rate = 60;
+  config.target_frame_rate = 0;
   config.device_requirements = (VkrDeviceRequirements){
       .supported_stages =
           VKR_SHADER_STAGE_VERTEX_BIT | VKR_SHADER_STAGE_FRAGMENT_BIT,

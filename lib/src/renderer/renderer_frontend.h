@@ -3,9 +3,13 @@
 #include "core/event.h"
 #include "core/vkr_threads.h"
 #include "memory/arena.h"
+#include "renderer/resources/loaders/bitmap_font_loader.h"
+#include "renderer/resources/loaders/mtsdf_font_loader.h"
 #include "renderer/resources/loaders/mesh_loader.h"
+#include "renderer/resources/loaders/system_font_loader.h"
 #include "renderer/systems/vkr_camera.h"
 #include "renderer/systems/vkr_camera_controller.h"
+#include "renderer/systems/vkr_font_system.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
@@ -33,6 +37,7 @@ struct s_RendererFrontend {
   VkrTextureSystem texture_system;
   VkrMaterialSystem material_system;
   VkrViewSystem view_system;
+  VkrFontSystem font_system;
 
   // Camera moved into frontend
   VkrCameraSystem camera_system;
@@ -43,6 +48,18 @@ struct s_RendererFrontend {
   VkrMeshManager mesh_manager;
   VkrMeshLoaderContext mesh_loader;
   VkrArenaPool mesh_arena_pool;
+
+  // Bitmap fonts
+  VkrBitmapFontLoaderContext bitmap_font_loader;
+  VkrArenaPool bitmap_font_arena_pool;
+
+  // System fonts
+  VkrSystemFontLoaderContext system_font_loader;
+  VkrArenaPool system_font_arena_pool;
+
+  // MTSDF fonts
+  VkrMtsdfFontLoaderContext mtsdf_font_loader;
+  VkrArenaPool mtsdf_font_arena_pool;
 
   VkrLayerHandle world_layer;
   VkrLayerHandle skybox_layer;
@@ -61,6 +78,8 @@ struct s_RendererFrontend {
 
   bool32_t frame_active;
   uint64_t frame_number;
+
+  uint64_t target_frame_rate;
 };
 
 typedef struct s_RendererFrontend RendererFrontend;

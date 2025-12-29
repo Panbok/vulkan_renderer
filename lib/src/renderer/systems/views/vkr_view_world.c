@@ -1,12 +1,16 @@
 #include "renderer/systems/views/vkr_view_world.h"
 
 #include "containers/str.h"
-#include "core/event.h"
 #include "core/logger.h"
+#include "core/vkr_clock.h"
 #include "math/mat.h"
 #include "math/vec.h"
+#include "math/vkr_math.h"
+#include "math/vkr_quat.h"
 #include "platform/vkr_platform.h"
 #include "renderer/renderer_frontend.h"
+#include "renderer/resources/world/vkr_text_3d.h"
+#include "renderer/systems/vkr_font_system.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
@@ -16,11 +20,20 @@
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/systems/vkr_view_system.h"
 
+#define VKR_TIME_UPDATE_INTERVAL 0.25 // Update time display every 0.25 seconds
+
 typedef struct VkrViewWorldState {
   VkrShaderConfig shader_config;
+  VkrShaderConfig text_shader_config;
   VkrPipelineHandle pipeline;
   VkrPipelineHandle transparent_pipeline;
+  VkrPipelineHandle text_pipeline;
   VkrMaterialHandle default_material;
+  VkrText3D text_3d;
+  VkrFontHandle text_3d_font;
+
+  // Time tracking
+  VkrClock time_update_clock;
 } VkrViewWorldState;
 
 vkr_internal void vkr_view_world_load_demo_meshes(RendererFrontend *rf,
@@ -150,6 +163,7 @@ bool32_t vkr_view_world_register(RendererFrontend *rf) {
     return false_v;
   }
   MemZero(state, sizeof(*state));
+  state->time_update_clock = vkr_clock_create();
 
   VkrLayerConfig world_cfg = {
       .name = string8_lit("Layer.World"),
@@ -243,6 +257,41 @@ vkr_internal bool32_t vkr_view_world_on_create(VkrLayerContext *ctx) {
     return false_v;
   }
 
+  VkrResourceHandleInfo text_cfg_info = {0};
+  VkrRendererError text_shadercfg_err = VKR_RENDERER_ERROR_NONE;
+  if (vkr_resource_system_load_custom(
+          string8_lit("shadercfg"),
+          string8_lit("assets/shaders/default.world_text.shadercfg"),
+          &rf->scratch_allocator, &text_cfg_info, &text_shadercfg_err)) {
+    state->text_shader_config = *(VkrShaderConfig *)text_cfg_info.as.custom;
+  } else {
+    String8 err = vkr_renderer_get_error_string(text_shadercfg_err);
+    log_error("World text shadercfg load failed: %s", string8_cstr(&err));
+    return false_v;
+  }
+
+  vkr_shader_system_create(&rf->shader_system, &state->text_shader_config);
+
+  // Create text pipeline with culling disabled and depth-tested blending.
+  VkrShaderConfig text_shader_config = state->text_shader_config;
+  text_shader_config.cull_mode = VKR_CULL_MODE_NONE;
+  VkrRendererError text_pipeline_error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_pipeline_registry_create_from_shader_config(
+          &rf->pipeline_registry, &text_shader_config,
+          VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT, string8_lit("world_text_3d"),
+          &state->text_pipeline, &text_pipeline_error)) {
+    String8 err_str = vkr_renderer_get_error_string(text_pipeline_error);
+    log_warn("Config world text pipeline failed: %s", string8_cstr(&err_str));
+    state->text_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+
+  if (text_shader_config.name.str && text_shader_config.name.length > 0) {
+    VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
+    vkr_pipeline_registry_alias_pipeline_name(
+        &rf->pipeline_registry, state->text_pipeline, text_shader_config.name,
+        &alias_err);
+  }
+
   VkrResourceHandleInfo default_material_info = {0};
   VkrRendererError material_load_error = VKR_RENDERER_ERROR_NONE;
   if (vkr_resource_system_load(VKR_RESOURCE_TYPE_MATERIAL,
@@ -256,117 +305,6 @@ vkr_internal bool32_t vkr_view_world_on_create(VkrLayerContext *ctx) {
         "Failed to load default world material; using built-in default: %s",
         string8_cstr(&error_string));
   }
-
-  // Writable texture example
-  // VkrTextureDescription writable_desc = {
-  //     .width = 128,
-  //     .height = 128,
-  //     .channels = 4,
-  //     .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
-  //     .type = VKR_TEXTURE_TYPE_2D,
-  //     .properties = vkr_texture_property_flags_create(),
-  //     .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-  //     .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-  //     .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
-  //     .min_filter = VKR_FILTER_LINEAR,
-  //     .mag_filter = VKR_FILTER_LINEAR,
-  //     .mip_filter = VKR_MIP_FILTER_NONE,
-  //     .anisotropy_enable = false_v,
-  //     .generation = VKR_INVALID_ID,
-  // };
-  // VkrTextureHandle ui_runtime_texture = VKR_TEXTURE_HANDLE_INVALID;
-  // VkrRendererError writable_err = VKR_RENDERER_ERROR_NONE;
-  // if (vkr_texture_system_create_writable(
-  //         &rf->texture_system, string8_lit("ui.runtime.writable"),
-  //         &writable_desc, &ui_runtime_texture, &writable_err)) {
-  //   uint64_t pixel_count =
-  //       (uint64_t)writable_desc.width * (uint64_t)writable_desc.height;
-  //   uint64_t buffer_size = pixel_count * (uint64_t)writable_desc.channels;
-
-  //   Scratch tex_scratch = scratch_create(rf->scratch_arena);
-  //   uint8_t *base_pixels =
-  //       arena_alloc(tex_scratch.arena, buffer_size,
-  //       ARENA_MEMORY_TAG_TEXTURE);
-  //   if (base_pixels) {
-  //     for (uint32_t y = 0; y < writable_desc.height; ++y) {
-  //       for (uint32_t x = 0; x < writable_desc.width; ++x) {
-  //         uint32_t idx = (y * writable_desc.width + x) *
-  //         writable_desc.channels; base_pixels[idx + 0] = (uint8_t)((x * 255)
-  //         / writable_desc.width); base_pixels[idx + 1] = (uint8_t)((y * 255)
-  //         / writable_desc.height); base_pixels[idx + 2] = 180;
-  //         base_pixels[idx + 3] = 255;
-  //       }
-  //     }
-
-  //     VkrRendererError write_err = vkr_texture_system_write(
-  //         &rf->texture_system, ui_runtime_texture, base_pixels, buffer_size);
-  //     if (write_err != VKR_RENDERER_ERROR_NONE) {
-  //       String8 err = vkr_renderer_get_error_string(write_err);
-  //       log_warn("Writable UI texture upload failed: %s",
-  //       string8_cstr(&err));
-  //     }
-  //   } else {
-  //     log_warn("Failed to allocate base pixels for writable texture");
-  //   }
-
-  //   const uint32_t block_w = 48;
-  //   const uint32_t block_h = 48;
-  //   uint64_t region_size =
-  //       (uint64_t)block_w * (uint64_t)block_h * writable_desc.channels;
-  //   uint8_t *region_pixels =
-  //       arena_alloc(tex_scratch.arena, region_size,
-  //       ARENA_MEMORY_TAG_TEXTURE);
-  //   if (region_pixels) {
-  //     for (uint32_t i = 0; i < block_w * block_h; ++i) {
-  //       region_pixels[i * writable_desc.channels + 0] = 30;
-  //       region_pixels[i * writable_desc.channels + 1] = 220;
-  //       region_pixels[i * writable_desc.channels + 2] = 120;
-  //       region_pixels[i * writable_desc.channels + 3] = 255;
-  //     }
-
-  //     VkrTextureWriteRegion write_region = {
-  //         .mip_level = 0,
-  //         .array_layer = 0,
-  //         .x = (writable_desc.width - block_w) / 2,
-  //         .y = (writable_desc.height - block_h) / 2,
-  //         .width = block_w,
-  //         .height = block_h,
-  //     };
-
-  //     VkrRendererError region_err = vkr_texture_system_write_region(
-  //         &rf->texture_system, ui_runtime_texture, &write_region,
-  //         region_pixels, region_size);
-  //     if (region_err != VKR_RENDERER_ERROR_NONE) {
-  //       String8 err = vkr_renderer_get_error_string(region_err);
-  //       log_warn("Writable texture region upload failed: %s",
-  //                string8_cstr(&err));
-  //     }
-  //   }
-
-  //   VkrRendererError resize_err = VKR_RENDERER_ERROR_NONE;
-  //   VkrTextureHandle resized_handle = ui_runtime_texture;
-  //   if (vkr_texture_system_resize(&rf->texture_system, ui_runtime_texture,
-  //   192,
-  //                                 128, true_v, &resized_handle, &resize_err))
-  //                                 {
-  //     ui_runtime_texture = resized_handle;
-  //   } else if (resize_err != VKR_RENDERER_ERROR_NONE) {
-  //     String8 err = vkr_renderer_get_error_string(resize_err);
-  //     log_warn("Writable texture resize failed: %s", string8_cstr(&err));
-  //   }
-
-  //   VkrMaterial *ui_mat = vkr_material_system_get_by_handle(
-  //       &rf->material_system, rf->ui_material);
-  //   if (ui_mat) {
-  //     ui_mat->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle = ui_runtime_texture;
-  //     ui_mat->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = true_v;
-  //   }
-
-  //   scratch_destroy(tex_scratch, ARENA_MEMORY_TAG_TEXTURE);
-  // } else {
-  //   String8 err = vkr_renderer_get_error_string(writable_err);
-  //   log_warn("Failed to create writable UI texture: %s", string8_cstr(&err));
-  // }
 
   VkrRendererError mesh_error = VKR_RENDERER_ERROR_NONE;
   VkrSubMeshDesc cube_submeshes[] = {{
@@ -446,6 +384,51 @@ vkr_internal bool32_t vkr_view_world_on_create(VkrLayerContext *ctx) {
                            &cube_mesh_2_ptr->transform);
 
   vkr_view_world_load_demo_meshes(rf, state);
+
+  String8 text_font_name = string8_lit("UbuntuMono-3d");
+  String8 text_font_cfg = string8_lit("assets/fonts/UbuntuMono-3d.fontcfg");
+  VkrRendererError font_err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_font_system_load_from_file(&rf->font_system, text_font_name,
+                                      text_font_cfg, &font_err)) {
+    String8 err = vkr_renderer_get_error_string(font_err);
+    log_error("Failed to load 3D font: %s", string8_cstr(&err));
+  }
+
+  state->text_3d_font = vkr_font_system_acquire(
+      &rf->font_system, text_font_name, true_v, &font_err);
+  if (state->text_3d_font.id == 0) {
+    String8 err = vkr_renderer_get_error_string(font_err);
+    log_error("Failed to acquire 3D font: %s", string8_cstr(&err));
+  } else {
+    vkr_clock_start(&state->time_update_clock);
+
+    VkrTime time = vkr_platform_get_local_time();
+
+    VkrText3DConfig text_cfg = VKR_TEXT_3D_CONFIG_DEFAULT;
+    text_cfg.text =
+        string8_create_formatted(&rf->scratch_allocator, "%02d:%02d:%02d",
+                                 time.hours, time.minutes, time.seconds);
+    text_cfg.font = state->text_3d_font;
+    text_cfg.font_size = 64.0f;
+    text_cfg.color = vec4_new(1.0f, 0.95f, 0.85f, 1.0f);
+    text_cfg.texture_width = 1024;
+    text_cfg.texture_height = 256;
+    text_cfg.pipeline = state->text_pipeline;
+
+    VkrRendererError text_err = VKR_RENDERER_ERROR_NONE;
+    if (vkr_text_3d_create(&state->text_3d, rf, &rf->font_system,
+                           &rf->allocator, &text_cfg, &text_err)) {
+      VkrQuat rot =
+          vkr_quat_from_euler(vkr_to_radians(180.0f), vkr_to_radians(90.0f),
+                              vkr_to_radians(-180.0f));
+      VkrTransform text_transform = vkr_transform_from_position_scale_rotation(
+          vec3_new(7.0f, 3.0f, -11.5f), vec3_new(8.0f, 8.0f, 1.0f), rot);
+      vkr_text_3d_set_transform(&state->text_3d, text_transform);
+    } else {
+      String8 err = vkr_renderer_get_error_string(text_err);
+      log_error("Failed to create 3D text: %s", string8_cstr(&err));
+    }
+  }
 
   log_debug("World view initialized.");
 
@@ -663,6 +646,21 @@ vkr_internal void vkr_view_world_on_render(VkrLayerContext *ctx,
     }
   }
 
+  if (vkr_clock_interval_elapsed(&state->time_update_clock,
+                                 VKR_TIME_UPDATE_INTERVAL)) {
+    VkrTime time = vkr_platform_get_local_time();
+
+    String8 time_text = string8_create_formatted(
+        temp_alloc, "%02d:%02d:%02d", time.hours, time.minutes, time.seconds);
+    if (time_text.length > 0) {
+      vkr_text_3d_set_text(&state->text_3d, time_text);
+    }
+  }
+
+  if (state->text_3d.initialized) {
+    vkr_text_3d_draw(&state->text_3d, rf);
+  }
+
   vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 }
 
@@ -692,6 +690,13 @@ vkr_internal void vkr_view_world_on_destroy(VkrLayerContext *ctx) {
   VkrViewWorldState *state =
       (VkrViewWorldState *)vkr_layer_context_get_user_data(ctx);
   if (state) {
+    if (state->text_3d.initialized) {
+      vkr_text_3d_destroy(&state->text_3d);
+    }
+    if (state->text_3d_font.id != 0) {
+      vkr_font_system_release_by_handle(&rf->font_system, state->text_3d_font);
+      state->text_3d_font = VKR_FONT_HANDLE_INVALID;
+    }
     if (state->pipeline.id) {
       vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
                                              state->pipeline);
@@ -699,6 +704,10 @@ vkr_internal void vkr_view_world_on_destroy(VkrLayerContext *ctx) {
     if (state->transparent_pipeline.id) {
       vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
                                              state->transparent_pipeline);
+    }
+    if (state->text_pipeline.id) {
+      vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                             state->text_pipeline);
     }
   }
 }

@@ -1,10 +1,16 @@
 #include "renderer/systems/views/vkr_view_ui.h"
 
+#include <stdio.h>
+
 #include "containers/str.h"
 #include "core/logger.h"
+#include "core/vkr_clock.h"
 #include "math/mat.h"
 #include "math/vkr_transform.h"
+#include "memory/vkr_allocator.h"
 #include "renderer/renderer_frontend.h"
+#include "renderer/resources/ui/vkr_ui_text.h"
+#include "renderer/systems/vkr_font_system.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_pipeline_registry.h"
@@ -12,12 +18,34 @@
 #include "renderer/systems/vkr_shader_system.h"
 #include "renderer/systems/vkr_view_system.h"
 
+#define VKR_FPS_UPDATE_INTERVAL 0.25 // Update FPS display every 0.25 seconds
+#define VKR_FPS_DELTA_MIN 0.000001   // Minimum delta for FPS calculation
+#define VKR_UI_TEXT_PADDING 16.0f
+
 typedef struct VkrViewUIState {
+  VkrAllocator temp_allocator;
+  Arena *temp_arena;
+
+  // UI rendering
   VkrShaderConfig shader_config;
   VkrPipelineHandle pipeline;
   VkrMaterialHandle material;
   VkrRendererInstanceStateHandle instance_state;
   VkrTransform transform;
+
+  // Text rendering
+  VkrShaderConfig text_shader_config;
+  VkrPipelineHandle text_pipeline;
+
+  // FPS tracking
+  VkrUiText fps_text;
+  VkrClock fps_update_clock;
+  float64_t current_fps;
+  float64_t current_frametime;
+  float64_t accumulated_time;
+  uint32_t frame_count;
+  uint32_t screen_width;
+  uint32_t screen_height;
 } VkrViewUIState;
 
 vkr_internal bool32_t vkr_view_ui_on_create(VkrLayerContext *ctx);
@@ -55,6 +83,20 @@ bool32_t vkr_view_ui_register(RendererFrontend *rf) {
   }
   MemZero(state, sizeof(*state));
   state->transform = vkr_transform_identity();
+  state->text_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  state->fps_update_clock = vkr_clock_create();
+  state->current_fps = 0.0;
+
+  state->temp_arena = arena_create(KB(64), KB(64));
+  if (!state->temp_arena) {
+    log_error("Failed to create temp arena");
+    return false_v;
+  }
+  state->temp_allocator = (VkrAllocator){.ctx = state->temp_arena};
+  if (!vkr_allocator_arena(&state->temp_allocator)) {
+    log_error("Failed to create temp allocator");
+    return false_v;
+  }
 
   VkrLayerConfig ui_cfg = {
       .name = string8_lit("Layer.UI"),
@@ -157,6 +199,56 @@ vkr_internal bool32_t vkr_view_ui_on_create(VkrLayerContext *ctx) {
     return false_v;
   }
 
+  VkrResourceHandleInfo text_cfg_info = {0};
+  VkrRendererError text_shadercfg_err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_resource_system_load_custom(
+          string8_lit("shadercfg"),
+          string8_lit("assets/shaders/default.text.shadercfg"),
+          &rf->scratch_allocator, &text_cfg_info, &text_shadercfg_err)) {
+    String8 err = vkr_renderer_get_error_string(text_shadercfg_err);
+    log_error("Text shadercfg load failed: %s", string8_cstr(&err));
+    return false_v;
+  }
+
+  state->text_shader_config = *(VkrShaderConfig *)text_cfg_info.as.custom;
+  vkr_shader_system_create(&rf->shader_system, &state->text_shader_config);
+
+  VkrRendererError text_pipeline_error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_pipeline_registry_create_from_shader_config(
+          &rf->pipeline_registry, &state->text_shader_config,
+          VKR_PIPELINE_DOMAIN_UI, string8_lit("ui_text"), &state->text_pipeline,
+          &text_pipeline_error)) {
+    String8 err_str = vkr_renderer_get_error_string(text_pipeline_error);
+    log_error("Config text pipeline failed: %s", string8_cstr(&err_str));
+    return false_v;
+  }
+
+  if (state->text_shader_config.name.str &&
+      state->text_shader_config.name.length > 0) {
+    VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
+    vkr_pipeline_registry_alias_pipeline_name(
+        &rf->pipeline_registry, state->text_pipeline,
+        state->text_shader_config.name, &alias_err);
+  }
+
+  VkrFont *font = vkr_font_system_get_default_mtsdf_font(&rf->font_system);
+
+  VkrUiTextConfig text_config = VKR_UI_TEXT_CONFIG_DEFAULT;
+  text_config.font = rf->font_system.default_mtsdf_font_handle;
+  text_config.font_size = (float32_t)font->size * 2.0f; // 2x native size
+  text_config.color = (Vec4){1.0f, 1.0f, 1.0f, 1.0f};   // White
+
+  VkrRendererError text_create_err = VKR_RENDERER_ERROR_NONE;
+  if (vkr_ui_text_create(rf, &rf->allocator, &rf->font_system,
+                         state->text_pipeline,
+                         string8_lit("FPS: 0.0\nFrametime: 0.0"), &text_config,
+                         &state->fps_text, &text_create_err)) {
+    vkr_clock_start(&state->fps_update_clock);
+  } else {
+    String8 err_str = vkr_renderer_get_error_string(text_create_err);
+    log_error("Failed to create UI text: %s", string8_cstr(&err_str));
+  }
+
   return true_v;
 }
 
@@ -191,11 +283,25 @@ vkr_internal void vkr_view_ui_on_resize(VkrLayerContext *ctx, uint32_t width,
 
   vkr_layer_context_set_camera(ctx, &rf->globals.ui_view,
                                &rf->globals.ui_projection);
+
+  VkrViewUIState *state =
+      (VkrViewUIState *)vkr_layer_context_get_user_data(ctx);
+  if (state) {
+    state->screen_width = width;
+    state->screen_height = height;
+    VkrTextBounds bounds = vkr_ui_text_get_bounds(&state->fps_text);
+    // Position at top-right corner (Y=0 is bottom, Y=height is top)
+    float32_t x = (float32_t)width - bounds.size.x - VKR_UI_TEXT_PADDING;
+    if (x < 0.0f) {
+      x = 0.0f;
+    }
+    float32_t y = (float32_t)height - bounds.size.y - VKR_UI_TEXT_PADDING;
+    vkr_ui_text_set_position(&state->fps_text, vec2_new(x, y));
+  }
 }
 
 vkr_internal void vkr_view_ui_on_render(VkrLayerContext *ctx,
                                         const VkrLayerRenderInfo *info) {
-  (void)info;
   RendererFrontend *rf =
       (RendererFrontend *)vkr_layer_context_get_renderer(ctx);
   if (!rf) {
@@ -281,6 +387,51 @@ vkr_internal void vkr_view_ui_on_render(VkrLayerContext *ctx,
   vkr_geometry_system_render(
       rf, &rf->geometry_system,
       vkr_geometry_system_get_default_plane2d(&rf->geometry_system), 1);
+
+  // === FPS/Frametime Calculation ===
+  float64_t delta = info->delta_time;
+
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_allocator);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    log_error("Failed to create temp allocator scope");
+    return;
+  }
+
+  state->accumulated_time += delta;
+  state->frame_count++;
+
+  if (vkr_clock_interval_elapsed(&state->fps_update_clock,
+                                 VKR_FPS_UPDATE_INTERVAL)) {
+    if (state->accumulated_time > 0.0 && state->frame_count > 0) {
+      state->current_fps =
+          (float64_t)state->frame_count / state->accumulated_time;
+      state->current_frametime =
+          state->accumulated_time / (float64_t)state->frame_count;
+    }
+    String8 fps_text = string8_create_formatted(
+        &state->temp_allocator, "FPS: %.1f\nFrametime: %.2f ms",
+        state->current_fps, state->current_frametime * 1000.0);
+    if (fps_text.length > 0) {
+      vkr_ui_text_set_content(&state->fps_text, fps_text);
+    }
+
+    state->accumulated_time = 0.0;
+    state->frame_count = 0;
+
+    VkrTextBounds bounds = vkr_ui_text_get_bounds(&state->fps_text);
+    float32_t x =
+        (float32_t)state->screen_width - bounds.size.x - VKR_UI_TEXT_PADDING;
+    if (x < 0.0f) {
+      x = 0.0f;
+    }
+    // Y=0 is bottom, Y=height is top in this coordinate system
+    float32_t y =
+        (float32_t)state->screen_height - bounds.size.y - VKR_UI_TEXT_PADDING;
+    vkr_ui_text_set_position(&state->fps_text, vec2_new(x, y));
+  }
+
+  vkr_ui_text_draw(&state->fps_text);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
 }
 
 vkr_internal void vkr_view_ui_on_detach(VkrLayerContext *ctx) {
@@ -312,8 +463,19 @@ vkr_internal void vkr_view_ui_on_destroy(VkrLayerContext *ctx) {
         &(VkrRendererError){0});
   }
 
+  vkr_ui_text_destroy(&state->fps_text);
+
+  if (state->text_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           state->text_pipeline);
+  }
+
   if (state->pipeline.id != 0) {
     vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
                                            state->pipeline);
+  }
+
+  if (state->temp_arena) {
+    arena_destroy(state->temp_arena);
   }
 }

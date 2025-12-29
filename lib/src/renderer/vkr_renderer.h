@@ -667,6 +667,7 @@ typedef struct VkrLayerContext VkrLayerContext; // Opaque to clients
 
 typedef struct VkrLayerRenderInfo {
   uint32_t image_index;    // Swapchain image index being rendered
+  float64_t delta_time;    // Delta time since last frame
   String8 renderpass_name; // Active renderpass name for this callback
 } VkrLayerRenderInfo;
 
@@ -728,6 +729,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
                                  EventManager *event_manager,
                                  VkrDeviceRequirements *device_requirements,
                                  const VkrRendererBackendConfig *backend_config,
+                                 uint64_t target_frame_rate,
                                  VkrRendererError *out_error);
 
 bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
@@ -746,6 +748,7 @@ VkrRendererError vkr_renderer_wait_idle(VkrRendererFrontendHandle renderer);
 void vkr_renderer_get_device_information(
     VkrRendererFrontendHandle renderer,
     VkrDeviceInformation *device_information, Arena *temp_arena);
+uint64_t vkr_renderer_get_target_frame_rate(VkrRendererFrontendHandle renderer);
 // --- END Utility ---
 
 // --- START Resource Management ---
@@ -760,6 +763,15 @@ vkr_renderer_create_vertex_buffer(VkrRendererFrontendHandle renderer,
                                   VkrRendererError *out_error);
 
 VkrBufferHandle vkr_renderer_create_index_buffer(
+    VkrRendererFrontendHandle renderer, uint64_t size, VkrIndexType type,
+    const void *initial_data, VkrRendererError *out_error);
+
+// Dynamic buffer creation (HOST_VISIBLE memory for frequent updates)
+VkrBufferHandle vkr_renderer_create_vertex_buffer_dynamic(
+    VkrRendererFrontendHandle renderer, uint64_t size, const void *initial_data,
+    VkrRendererError *out_error);
+
+VkrBufferHandle vkr_renderer_create_index_buffer_dynamic(
     VkrRendererFrontendHandle renderer, uint64_t size, VkrIndexType type,
     const void *initial_data, VkrRendererError *out_error);
 
@@ -905,7 +917,7 @@ void vkr_view_system_on_resize(VkrRendererFrontendHandle renderer,
                                uint32_t width, uint32_t height);
 void vkr_view_system_rebuild_targets(VkrRendererFrontendHandle renderer);
 void vkr_view_system_draw_all(VkrRendererFrontendHandle renderer,
-                              uint32_t image_index);
+                              float64_t delta_time, uint32_t image_index);
 // --- END View / Layer System ---
 
 // --- START Frame Lifecycle & Rendering Commands ---
@@ -923,7 +935,8 @@ void vkr_renderer_bind_index_buffer(VkrRendererFrontendHandle renderer,
                                     const VkrIndexBufferBinding *binding);
 
 // High-level draw of current scene graph (uses configured systems)
-void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer);
+void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer,
+                             float64_t delta_time);
 
 void vkr_renderer_draw(VkrRendererFrontendHandle renderer,
                        uint32_t vertex_count, uint32_t instance_count,
