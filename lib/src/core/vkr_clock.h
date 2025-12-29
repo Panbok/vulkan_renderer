@@ -35,3 +35,12 @@ void vkr_clock_start(VkrClock *clock);
  * @param clock VkrClock instance.
  */
 void vkr_clock_stop(VkrClock *clock);
+
+/**
+ * @brief Checks if an interval has elapsed and resets the clock when it does.
+ * @param clock VkrClock instance.
+ * @param interval_seconds Interval in seconds.
+ * @return `true_v` if the interval elapsed, `false_v` otherwise.
+ */
+bool8_t vkr_clock_interval_elapsed(VkrClock *clock,
+                                   float64_t interval_seconds);

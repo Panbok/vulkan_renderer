@@ -30,3 +30,18 @@ void vkr_clock_stop(VkrClock *clock) {
 
   clock->start_time = 0.0;
 }
+
+bool8_t vkr_clock_interval_elapsed(VkrClock *clock,
+                                   float64_t interval_seconds) {
+  assert_log(clock != NULL, "Clock is NULL");
+  assert_log(interval_seconds > 0.0, "Interval must be > 0");
+
+  vkr_clock_update(clock);
+  if (clock->elapsed >= interval_seconds) {
+    clock->start_time += clock->elapsed;
+    clock->elapsed = 0.0;
+    return true_v;
+  }
+
+  return false_v;
+}

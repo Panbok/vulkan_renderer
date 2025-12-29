@@ -359,6 +359,16 @@ vkr_internal INLINE float32_t vkr_abs_f32(float32_t value) {
 }
 
 /**
+ * @brief Returns the absolute value of a float64_t value
+ * @param value Input value
+ * @return Non-negative absolute value of the input
+ * @note Uses the optimized fabs() function from math.h
+ */
+vkr_internal INLINE float64_t vkr_abs_f64(float64_t value) {
+  return fabs(value);
+}
+
+/**
  * @brief Returns the sign of a float32_t value
  * @param value Input value
  * @return 1.0f if value >= 0, -1.0f if value < 0
