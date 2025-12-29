@@ -1,5 +1,8 @@
 .cache
+.cursor
+.traces
 build
+build_xcode
 build_release
 build_release_info
 

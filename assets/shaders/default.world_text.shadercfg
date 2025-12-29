@@ -1,0 +1,35 @@
+# Default World Text Shader Configuration
+# This shader is used for rendering world-space text with per-vertex color.
+
+version=1.0
+name=shader.default.world_text
+renderpass=Renderpass.Builtin.World
+stages=vertex,fragment
+stagefiles=assets/shaders/default.text.spv
+use_instance=1
+use_local=1
+
+# ============================================================================
+# Vertex Attributes (VkrTextVertex layout)
+# ============================================================================
+attribute=vec2,in_position   # Location 0, offset 0,  size 8
+attribute=vec2,in_texcoord   # Location 1, offset 8,  size 8
+attribute=vec4,in_color      # Location 2, offset 16, size 16
+# Total stride: 32 bytes per vertex
+
+# ============================================================================
+# Uniforms
+# ============================================================================
+
+# Global uniforms (perspective projection for world)
+uniform=mat4,0,projection
+uniform=mat4,0,view
+
+# Instance uniforms (diffuse tint + font atlas)
+uniform=vec4,1,diffuse_color
+uniform=float,1,screen_px_range
+uniform=float,1,font_mode
+uniform=samp,1,diffuse_texture
+
+# Local uniforms (per text transform)
+uniform=mat4,2,model
