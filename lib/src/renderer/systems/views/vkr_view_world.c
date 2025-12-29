@@ -270,7 +270,11 @@ vkr_internal bool32_t vkr_view_world_on_create(VkrLayerContext *ctx) {
     return false_v;
   }
 
-  vkr_shader_system_create(&rf->shader_system, &state->text_shader_config);
+  if (!vkr_shader_system_create(&rf->shader_system,
+                                &state->text_shader_config)) {
+    log_error("Failed to create text shader system");
+    return false_v;
+  }
 
   // Create text pipeline with culling disabled and depth-tested blending.
   VkrShaderConfig text_shader_config = state->text_shader_config;
@@ -285,7 +289,8 @@ vkr_internal bool32_t vkr_view_world_on_create(VkrLayerContext *ctx) {
     state->text_pipeline = VKR_PIPELINE_HANDLE_INVALID;
   }
 
-  if (text_shader_config.name.str && text_shader_config.name.length > 0) {
+  if (state->text_pipeline.id != VKR_PIPELINE_HANDLE_INVALID.id &&
+      text_shader_config.name.str && text_shader_config.name.length > 0) {
     VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
     vkr_pipeline_registry_alias_pipeline_name(
         &rf->pipeline_registry, state->text_pipeline, text_shader_config.name,

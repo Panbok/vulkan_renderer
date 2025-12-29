@@ -417,7 +417,7 @@ void application_start(Application *application) {
     }
 
     if (delta <= 0.0) {
-      delta = target_frame_seconds;
+      delta = target_frame_seconds > 0.0 ? target_frame_seconds : (1.0 / 60.0);
     }
 
     running = vkr_window_update(&application->window);
