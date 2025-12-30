@@ -11,6 +11,7 @@
 // =============================================================================
 
 #define VKR_SYSTEM_FONT_DEFAULT_SIZE 32
+#define VKR_SYSTEM_FONT_DEFAULT_INDEX 0
 #define VKR_SYSTEM_FONT_MIN_SIZE 8
 #define VKR_SYSTEM_FONT_MAX_SIZE 128
 #define VKR_SYSTEM_FONT_DEFAULT_ATLAS_SIZE 1024

@@ -25,6 +25,7 @@ typedef struct VkrSystemFontParseState {
   int32_t line_height;
 
   uint32_t font_size;
+  uint32_t font_index;
   uint32_t atlas_width;
   uint32_t atlas_height;
 
@@ -41,6 +42,7 @@ typedef struct VkrSystemFontRequest {
   String8 file_path;
   String8 query;
   uint32_t size;
+  uint32_t font_index;
 } VkrSystemFontRequest;
 
 vkr_internal String8 vkr_system_font_strip_query(String8 name,
@@ -66,6 +68,7 @@ vkr_internal VkrSystemFontRequest vkr_system_font_parse_request(String8 name) {
   String8 base_path = vkr_system_font_strip_query(name, &query);
 
   uint32_t size = VKR_SYSTEM_FONT_DEFAULT_SIZE;
+  uint32_t font_index = VKR_SYSTEM_FONT_DEFAULT_INDEX;
   uint64_t start = 0;
   while (start < query.length) {
     uint64_t end = start;
@@ -86,11 +89,16 @@ vkr_internal VkrSystemFontRequest vkr_system_font_parse_request(String8 name) {
       String8 key = string8_substring(&param, 0, eq_pos);
       String8 value = string8_substring(&param, eq_pos + 1, param.length);
       String8 key_size = string8_lit("size");
+      String8 key_index = string8_lit("index");
       if (string8_equalsi(&key, &key_size)) {
         int32_t parsed = 0;
         if (string8_to_i32(&value, &parsed) && parsed > 0) {
           size = (uint32_t)parsed;
-          break;
+        }
+      } else if (string8_equalsi(&key, &key_index)) {
+        int32_t parsed = 0;
+        if (string8_to_i32(&value, &parsed) && parsed >= 0) {
+          font_index = (uint32_t)parsed;
         }
       }
     }
@@ -102,6 +110,7 @@ vkr_internal VkrSystemFontRequest vkr_system_font_parse_request(String8 name) {
       .file_path = base_path,
       .query = query,
       .size = size,
+      .font_index = font_index,
   };
 }
 
@@ -149,9 +158,11 @@ vkr_internal bool8_t
 vkr_system_font_init_stbtt(VkrSystemFontParseState *state) {
   assert_log(state != NULL, "State is NULL");
 
-  int32_t font_offset = stbtt_GetFontOffsetForIndex(state->font_data, 0);
+  int32_t font_offset =
+      stbtt_GetFontOffsetForIndex(state->font_data, (int32_t)state->font_index);
   if (font_offset < 0) {
-    log_error("SystemFontLoader: invalid font file or index");
+    log_error("SystemFontLoader: invalid font file or index %u",
+              state->font_index);
     *state->out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
@@ -329,9 +340,9 @@ vkr_internal bool8_t vkr_system_font_create_atlas_texture(
   }
 
   String8 tex_name = string8_create_formatted(
-      state->load_allocator, "system_font_atlas_%ux%u_%.*s_%u",
+      state->load_allocator, "system_font_atlas_%ux%u_%.*s_%u_idx%u",
       state->atlas_width, state->atlas_height, (int32_t)face.length, face.str,
-      state->font_size);
+      state->font_size, state->font_index);
 
   VkrRendererError tex_error = VKR_RENDERER_ERROR_NONE;
   VkrTextureOpaqueHandle backend_handle = vkr_renderer_create_texture(
@@ -557,8 +568,10 @@ vkr_internal bool8_t vkr_system_font_loader_can_load(VkrResourceLoader *self,
     if (base_path.str[i - 1] == '.') {
       String8 ext = string8_substring(&base_path, i, base_path.length);
       String8 ttf = string8_lit("ttf");
+      String8 ttc = string8_lit("ttc");
       String8 otf = string8_lit("otf");
-      return string8_equalsi(&ext, &ttf) || string8_equalsi(&ext, &otf);
+      return string8_equalsi(&ext, &ttf) || string8_equalsi(&ext, &ttc) ||
+             string8_equalsi(&ext, &otf);
     }
   }
   return false_v;
@@ -630,6 +643,7 @@ vkr_internal bool8_t vkr_system_font_loader_load(
       .temp_allocator = temp_alloc,
       .font_size = Clamp(request.size, VKR_SYSTEM_FONT_MIN_SIZE,
                          VKR_SYSTEM_FONT_MAX_SIZE),
+      .font_index = request.font_index,
       .atlas_width = VKR_SYSTEM_FONT_DEFAULT_ATLAS_SIZE,
       .atlas_height = VKR_SYSTEM_FONT_DEFAULT_ATLAS_SIZE,
       .out_error = out_error,
