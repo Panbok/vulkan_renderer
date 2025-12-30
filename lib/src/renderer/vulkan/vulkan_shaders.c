@@ -281,6 +281,20 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
     return false;
   }
 
+  out_shader_object->global_descriptor_generations =
+      vkr_allocator_alloc(arena_alloc,
+                          sizeof(uint32_t) * out_shader_object->frame_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (out_shader_object->global_descriptor_generations == NULL) {
+    log_fatal("Failed to allocate global descriptor generation tracking");
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return false;
+  }
+
+  for (uint32_t i = 0; i < out_shader_object->frame_count; i++) {
+    out_shader_object->global_descriptor_generations[i] = VKR_INVALID_ID;
+  }
+
   if (vkAllocateDescriptorSets(
           state->device.logical_device, &global_descriptor_set_allocate_info,
           (VkDescriptorSet *)out_shader_object->global_descriptor_sets) !=
@@ -472,13 +486,6 @@ bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
   uint32_t image_index = state->image_index;
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, image_index);
-  VkDescriptorSet global_descriptor =
-      shader_object->global_descriptor_sets[image_index];
-
-  vkCmdBindDescriptorSets(command_buffer->handle,
-                          VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0,
-                          1, &global_descriptor, 0, 0);
-
   uint64_t global_offset =
       shader_object->global_ubo_stride * (uint64_t)image_index;
   if (!vulkan_buffer_load_data(
@@ -488,26 +495,37 @@ bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
     return false;
   }
 
-  VkDescriptorBufferInfo buffer_info = {
-      .buffer = shader_object->global_uniform_buffer.buffer.handle,
-      .offset = global_offset,
-      .range = shader_object->global_ubo_size,
-  };
+  if (shader_object->global_descriptor_generations &&
+      shader_object->global_descriptor_generations[image_index] ==
+          VKR_INVALID_ID) {
+    VkDescriptorBufferInfo buffer_info = {
+        .buffer = shader_object->global_uniform_buffer.buffer.handle,
+        .offset = global_offset,
+        .range = shader_object->global_ubo_size,
+    };
 
-  VkWriteDescriptorSet descriptor_write = {
-      .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-      .dstSet = shader_object->global_descriptor_sets[image_index],
-      .dstBinding = 0,
-      .dstArrayElement = 0,
-      .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-      .descriptorCount = 1,
-      .pBufferInfo = &buffer_info,
-      .pImageInfo = NULL,
-      .pTexelBufferView = NULL,
-  };
+    VkWriteDescriptorSet descriptor_write = {
+        .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = shader_object->global_descriptor_sets[image_index],
+        .dstBinding = 0,
+        .dstArrayElement = 0,
+        .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        .descriptorCount = 1,
+        .pBufferInfo = &buffer_info,
+        .pImageInfo = NULL,
+        .pTexelBufferView = NULL,
+    };
 
-  vkUpdateDescriptorSets(state->device.logical_device, 1, &descriptor_write, 0,
-                         NULL);
+    vkUpdateDescriptorSets(state->device.logical_device, 1, &descriptor_write,
+                           0, NULL);
+    shader_object->global_descriptor_generations[image_index] = 1;
+  }
+
+  VkDescriptorSet global_descriptor =
+      shader_object->global_descriptor_sets[image_index];
+  vkCmdBindDescriptorSets(command_buffer->handle,
+                          VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0,
+                          1, &global_descriptor, 0, 0);
 
   return true_v;
 }

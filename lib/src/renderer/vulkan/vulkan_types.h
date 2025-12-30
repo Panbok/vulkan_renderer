@@ -225,6 +225,7 @@ typedef struct VulkanShaderObject {
   VkDescriptorPool global_descriptor_pool;
   // Per-frame global descriptor sets; length == frame_count
   VkDescriptorSet *global_descriptor_sets;
+  uint32_t *global_descriptor_generations;
   VkDescriptorSetLayout global_descriptor_set_layout;
   VkDescriptorSetLayoutBinding global_descriptor_set_layout_binding;
   struct s_BufferHandle global_uniform_buffer;
