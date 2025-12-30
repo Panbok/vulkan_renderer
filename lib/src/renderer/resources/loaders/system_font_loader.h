@@ -34,9 +34,10 @@ typedef struct VkrTextureSystem VkrTextureSystem;
  * @param texture_system The texture system.
  */
 typedef struct VkrSystemFontLoaderContext {
-  VkrJobSystem *job_system;          /**< Optional job system for batch loading */
-  VkrArenaPool *arena_pool;          /**< Optional arena pool for result allocations */
-  VkrTextureSystem *texture_system; /**< Texture system for atlas registration */
+  VkrJobSystem *job_system; /**< Optional job system for batch loading */
+  VkrArenaPool *arena_pool; /**< Optional arena pool for result allocations */
+  VkrTextureSystem
+      *texture_system; /**< Texture system for atlas registration */
 } VkrSystemFontLoaderContext;
 
 /**
@@ -46,6 +47,7 @@ typedef struct VkrSystemFontLoaderContext {
  * @param allocator The allocator.
  * @param font The font.
  * @param pages The pages.
+ * @param atlas_texture_name The name of the atlas texture.
  * @param success The success flag.
  * @param error The error.
  */
@@ -70,7 +72,8 @@ typedef struct VkrSystemFontLoaderResult {
  * system. Use vkr_resource_system_load() for single fonts and
  * vkr_resource_system_load_batch() for parallel batch loading.
  *
- * @param context The font loader context (stored as resource_system pointer)
+ * @param context The font loader context (pointer is stored; must remain valid
+ * for loader lifetime)
  * @return The configured resource loader for system fonts
  */
 VkrResourceLoader

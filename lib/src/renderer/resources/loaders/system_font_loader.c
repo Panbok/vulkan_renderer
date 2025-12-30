@@ -451,10 +451,11 @@ vkr_internal bool8_t vkr_system_font_build_result(
                                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (cpu_rgba) {
     for (uint32_t y = 0; y < state->atlas_height; ++y) {
-      uint32_t row = y * state->atlas_width;
+      uint32_t src_row = y * state->atlas_width;
+      uint32_t dst_row = (state->atlas_height - 1 - y) * state->atlas_width;
       for (uint32_t x = 0; x < state->atlas_width; ++x) {
-        uint8_t alpha = state->atlas_bitmap[row + x];
-        uint64_t idx = ((uint64_t)row + x) * VKR_TEXTURE_RGBA_CHANNELS;
+        uint8_t alpha = state->atlas_bitmap[src_row + x];
+        uint64_t idx = ((uint64_t)dst_row + x) * VKR_TEXTURE_RGBA_CHANNELS;
         cpu_rgba[idx + 0] = 255;
         cpu_rgba[idx + 1] = 255;
         cpu_rgba[idx + 2] = 255;
@@ -483,7 +484,8 @@ vkr_internal bool8_t vkr_system_font_remove_atlas_by_entry(
     return false_v;
   }
 
-  if (texture_index == system->default_texture.id - 1) {
+  if (system->default_texture.id > 0 &&
+      texture_index == system->default_texture.id - 1) {
     log_warn("SystemFontLoader: refusing to remove default texture");
     return false_v;
   }
