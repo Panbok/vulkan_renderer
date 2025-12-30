@@ -44,7 +44,15 @@ vkr_internal bool8_t vkr_renderer_on_window_resize(Event *event,
     return true_v;
   }
 
-  vkr_renderer_resize(rf, resize->width, resize->height);
+  if (rf->rf_mutex) {
+    vkr_mutex_lock(rf->rf_mutex);
+  }
+  rf->pending_resize_width = resize->width;
+  rf->pending_resize_height = resize->height;
+  rf->resize_pending = true_v;
+  if (rf->rf_mutex) {
+    vkr_mutex_unlock(rf->rf_mutex);
+  }
   return true_v;
 }
 
@@ -131,6 +139,9 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->draw_state = (VkrShaderStateObject){.instance_state = {0}};
   renderer->frame_number = 0;
   renderer->target_frame_rate = target_frame_rate;
+  renderer->resize_pending = false_v;
+  renderer->pending_resize_width = 0;
+  renderer->pending_resize_height = 0;
 
   // Create renderer mutex and initialize size tracking
   if (!vkr_mutex_create(&renderer->allocator, &renderer->rf_mutex)) {

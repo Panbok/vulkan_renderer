@@ -80,6 +80,10 @@ struct s_RendererFrontend {
   uint64_t frame_number;
 
   uint64_t target_frame_rate;
+
+  bool8_t resize_pending;
+  uint32_t pending_resize_width;
+  uint32_t pending_resize_height;
 };
 
 typedef struct s_RendererFrontend RendererFrontend;
