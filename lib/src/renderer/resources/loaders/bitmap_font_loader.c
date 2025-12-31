@@ -535,6 +535,9 @@ vkr_internal VkrBitmapFontParseState vkr_bitmap_font_parse_state_create(
       .pages = {0},
       .glyphs = {0},
       .kernings = {0},
+      .atlas_cpu_data = NULL,
+      .atlas_cpu_size = 0,
+      .atlas_cpu_channels = 0,
       .out_error = out_error,
   };
 
@@ -1097,66 +1100,82 @@ vkr_internal bool8_t vkr_bitmap_font_load_atlas(
 
   *out_atlas = primary;
 
-  if (state->atlas_cpu_data == NULL) {
-    const VkrBitmapFontPage *page = &out_pages->data[primary_page];
-    if (page->file[0] != '\0') {
-      char path_buffer[512];
-      int32_t written = snprintf(path_buffer, sizeof(path_buffer),
-                                 "assets/textures/%s", page->file);
-      if (written > 0 && written < (int32_t)sizeof(path_buffer)) {
-        FilePath fp =
-            file_path_create(path_buffer, temp_alloc, FILE_PATH_TYPE_RELATIVE);
-        FileMode mode = bitset8_create();
-        bitset8_set(&mode, FILE_MODE_READ);
-        bitset8_set(&mode, FILE_MODE_BINARY);
-
-        FileHandle fh = {0};
-        FileError ferr = file_open(&fp, mode, &fh);
-        if (ferr != FILE_ERROR_NONE) {
-          log_warn("BitmapFontLoader: failed to open atlas '%s' for CPU copy",
-                   path_buffer);
-        } else {
-          uint8_t *file_data = NULL;
-          uint64_t file_size = 0;
-          ferr = file_read_all(&fh, temp_alloc, &file_data, &file_size);
-          file_close(&fh);
-
-          if (ferr != FILE_ERROR_NONE || !file_data || file_size == 0) {
-            log_warn("BitmapFontLoader: failed to read atlas '%s' for CPU copy",
-                     path_buffer);
-          } else {
-            stbi_set_flip_vertically_on_load_thread(0);
-            int32_t width = 0;
-            int32_t height = 0;
-            int32_t channels = 0;
-            uint8_t *pixels = stbi_load_from_memory(
-                file_data, (int32_t)file_size, &width, &height, &channels,
-                VKR_TEXTURE_RGBA_CHANNELS);
-            if (pixels) {
-              uint64_t size = (uint64_t)width * (uint64_t)height *
-                              VKR_TEXTURE_RGBA_CHANNELS;
-              uint8_t *copy = vkr_allocator_alloc(
-                  state->load_allocator, size, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-              if (copy) {
-                MemCopy(copy, pixels, (size_t)size);
-                state->atlas_cpu_data = copy;
-                state->atlas_cpu_size = size;
-                state->atlas_cpu_channels = VKR_TEXTURE_RGBA_CHANNELS;
-              } else {
-                log_warn("BitmapFontLoader: failed to allocate CPU atlas copy");
-              }
-              stbi_image_free(pixels);
-            } else {
-              log_warn(
-                  "BitmapFontLoader: failed to decode atlas '%s' for CPU copy",
-                  path_buffer);
-            }
-          }
-        }
-      }
-    }
+  if (state->atlas_cpu_data != NULL) {
+    log_warn("BitmapFontLoader: atlas CPU data is already loaded");
+    return true_v;
   }
 
+  const VkrBitmapFontPage *page = &out_pages->data[primary_page];
+  if (page->file[0] == '\0') {
+    log_warn("BitmapFontLoader: primary page file is empty");
+    return true_v;
+  }
+
+  char path_buffer[512];
+  int32_t written = snprintf(path_buffer, sizeof(path_buffer),
+                             "assets/textures/%s", page->file);
+  if (written <= 0 && written >= (int32_t)sizeof(path_buffer)) {
+    log_warn("BitmapFontLoader: page path too long; skipping load");
+    return true_v;
+  }
+
+  FilePath fp =
+      file_path_create(path_buffer, temp_alloc, FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+
+  FileHandle fh = {0};
+  FileError ferr = file_open(&fp, mode, &fh);
+  if (ferr != FILE_ERROR_NONE) {
+    log_warn("BitmapFontLoader: failed to open atlas '%s' for CPU copy",
+             path_buffer);
+    vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_INVALID_PARAMETER);
+    return false_v;
+  }
+
+  uint8_t *file_data = NULL;
+  uint64_t file_size = 0;
+  ferr = file_read_all(&fh, temp_alloc, &file_data, &file_size);
+  file_close(&fh);
+
+  if (ferr != FILE_ERROR_NONE || !file_data || file_size == 0) {
+    log_warn("BitmapFontLoader: failed to read atlas '%s' for CPU copy",
+             path_buffer);
+    vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_INVALID_PARAMETER);
+    return false_v;
+  }
+
+  stbi_set_flip_vertically_on_load_thread(0);
+  int32_t width = 0;
+  int32_t height = 0;
+  int32_t channels = 0;
+  uint8_t *pixels =
+      stbi_load_from_memory(file_data, (int32_t)file_size, &width, &height,
+                            &channels, VKR_TEXTURE_RGBA_CHANNELS);
+  if (!pixels) {
+    log_warn("BitmapFontLoader: failed to decode atlas '%s' for CPU copy",
+             path_buffer);
+    vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_INVALID_PARAMETER);
+    return false_v;
+  }
+
+  uint64_t size =
+      (uint64_t)width * (uint64_t)height * VKR_TEXTURE_RGBA_CHANNELS;
+  uint8_t *copy = vkr_allocator_alloc(state->load_allocator, size,
+                                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (copy) {
+    MemCopy(copy, pixels, (size_t)size);
+    state->atlas_cpu_data = copy;
+    state->atlas_cpu_size = size;
+    state->atlas_cpu_channels = VKR_TEXTURE_RGBA_CHANNELS;
+  } else {
+    log_warn("BitmapFontLoader: failed to allocate CPU atlas copy");
+    vkr_bitmap_font_set_error(state, VKR_RENDERER_ERROR_OUT_OF_MEMORY);
+    return false_v;
+  }
+
+  stbi_image_free(pixels);
   return true_v;
 }
 
@@ -1473,6 +1492,14 @@ vkr_bitmap_font_loader_unload(VkrResourceLoader *self,
   VkrFont *font = &result->font;
   if (result->pages.data && font->atlas_pages.data) {
     vkr_bitmap_font_unload_pages(&result->pages, &font->atlas_pages);
+  }
+
+  if (font->atlas_cpu_data) {
+    vkr_allocator_free(&result->allocator, font->atlas_cpu_data,
+                       font->atlas_cpu_size, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    font->atlas_cpu_data = NULL;
+    font->atlas_cpu_size = 0;
+    font->atlas_cpu_channels = 0;
   }
 
   if (font->glyph_indices.entries) {
