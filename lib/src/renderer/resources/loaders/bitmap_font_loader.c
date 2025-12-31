@@ -9,10 +9,6 @@
 #include "memory/vkr_arena_pool.h"
 #include "renderer/systems/vkr_resource_system.h"
 
-Vector(VkrBitmapFontPage);
-Vector(VkrFontGlyph);
-Vector(VkrFontKerning);
-
 #define VKR_FONT_CACHE_MAGIC 0x564B4654u /* 'VKFT' */
 #define VKR_FONT_CACHE_VERSION 1u
 #define VKR_FONT_CACHE_EXT ".vkf"
@@ -41,6 +37,10 @@ typedef struct VkrBitmapFontParseState {
   Vector_VkrBitmapFontPage pages;
   Vector_VkrFontGlyph glyphs;
   Vector_VkrFontKerning kernings;
+
+  uint8_t *atlas_cpu_data;
+  uint64_t atlas_cpu_size;
+  uint32_t atlas_cpu_channels;
 
   VkrRendererError *out_error;
 } VkrBitmapFontParseState;
@@ -1096,6 +1096,67 @@ vkr_internal bool8_t vkr_bitmap_font_load_atlas(
   }
 
   *out_atlas = primary;
+
+  if (state->atlas_cpu_data == NULL) {
+    const VkrBitmapFontPage *page = &out_pages->data[primary_page];
+    if (page->file[0] != '\0') {
+      char path_buffer[512];
+      int32_t written = snprintf(path_buffer, sizeof(path_buffer),
+                                 "assets/textures/%s", page->file);
+      if (written > 0 && written < (int32_t)sizeof(path_buffer)) {
+        FilePath fp =
+            file_path_create(path_buffer, temp_alloc, FILE_PATH_TYPE_RELATIVE);
+        FileMode mode = bitset8_create();
+        bitset8_set(&mode, FILE_MODE_READ);
+        bitset8_set(&mode, FILE_MODE_BINARY);
+
+        FileHandle fh = {0};
+        FileError ferr = file_open(&fp, mode, &fh);
+        if (ferr != FILE_ERROR_NONE) {
+          log_warn("BitmapFontLoader: failed to open atlas '%s' for CPU copy",
+                   path_buffer);
+        } else {
+          uint8_t *file_data = NULL;
+          uint64_t file_size = 0;
+          ferr = file_read_all(&fh, temp_alloc, &file_data, &file_size);
+          file_close(&fh);
+
+          if (ferr != FILE_ERROR_NONE || !file_data || file_size == 0) {
+            log_warn("BitmapFontLoader: failed to read atlas '%s' for CPU copy",
+                     path_buffer);
+          } else {
+            stbi_set_flip_vertically_on_load_thread(0);
+            int32_t width = 0;
+            int32_t height = 0;
+            int32_t channels = 0;
+            uint8_t *pixels = stbi_load_from_memory(
+                file_data, (int32_t)file_size, &width, &height, &channels,
+                VKR_TEXTURE_RGBA_CHANNELS);
+            if (pixels) {
+              uint64_t size = (uint64_t)width * (uint64_t)height *
+                              VKR_TEXTURE_RGBA_CHANNELS;
+              uint8_t *copy = vkr_allocator_alloc(
+                  state->load_allocator, size, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+              if (copy) {
+                MemCopy(copy, pixels, (size_t)size);
+                state->atlas_cpu_data = copy;
+                state->atlas_cpu_size = size;
+                state->atlas_cpu_channels = VKR_TEXTURE_RGBA_CHANNELS;
+              } else {
+                log_warn("BitmapFontLoader: failed to allocate CPU atlas copy");
+              }
+              stbi_image_free(pixels);
+            } else {
+              log_warn(
+                  "BitmapFontLoader: failed to decode atlas '%s' for CPU copy",
+                  path_buffer);
+            }
+          }
+        }
+      }
+    }
+  }
+
   return true_v;
 }
 
@@ -1122,6 +1183,10 @@ vkr_internal bool8_t vkr_bitmap_font_build_result(
   if (atlas_pages && atlas_pages->data) {
     out_font->atlas_pages = *atlas_pages;
   }
+
+  out_font->atlas_cpu_data = state->atlas_cpu_data;
+  out_font->atlas_cpu_size = state->atlas_cpu_size;
+  out_font->atlas_cpu_channels = state->atlas_cpu_channels;
 
   if (state->face_name.str && state->face_name.length > 0) {
     uint64_t copy_len = state->face_name.length;

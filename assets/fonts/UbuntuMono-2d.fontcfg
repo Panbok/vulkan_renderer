@@ -6,4 +6,4 @@ atlas=../textures/Ubuntu-2d.png
 # somewhat unpredictable, if even provided in the first place.
 face=Ubunto Mono
 type=mtsdf
-size=24
+size=18
