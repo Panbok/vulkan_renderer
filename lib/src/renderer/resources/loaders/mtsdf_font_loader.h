@@ -26,7 +26,8 @@ typedef struct VkrTextureSystem VkrTextureSystem;
 typedef struct VkrMtsdfFontMetadata {
   // Atlas info
   float32_t distance_range; // SDF distance range (for shader)
-  float32_t em_size;        // Size used to generate atlas
+  float32_t em_size;        // EM size used to generate atlas
+  float32_t size;           // Size of the font in pixels
   uint32_t atlas_width;
   uint32_t atlas_height;
   bool8_t y_origin_bottom; // true if yOrigin = "bottom"

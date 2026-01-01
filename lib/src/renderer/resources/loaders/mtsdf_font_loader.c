@@ -186,29 +186,42 @@ vkr_internal bool8_t vkr_mtsdf_parse_atlas(VkrJsonReader *reader,
 
   reader->pos = atlas_start;
   if (vkr_json_find_field(reader, "size")) {
-    vkr_json_parse_float(reader, &metadata->em_size);
+    vkr_json_parse_float(reader, &metadata->size);
+    if (metadata->size <= 0.0f) {
+      log_error("MtsdfFontLoader: invalid font size: %f", metadata->size);
+      return false_v;
+    }
   }
 
   reader->pos = atlas_start;
   if (vkr_json_find_field(reader, "width")) {
     int32_t w = 0;
+    vkr_json_parse_int(reader, &w);
     if (w <= 0) {
       log_error("MtsdfFontLoader: invalid atlas width: %d", w);
       return false_v;
     }
-    vkr_json_parse_int(reader, &w);
     metadata->atlas_width = (uint32_t)w;
   }
 
   reader->pos = atlas_start;
   if (vkr_json_find_field(reader, "height")) {
     int32_t h = 0;
+    vkr_json_parse_int(reader, &h);
     if (h <= 0) {
       log_error("MtsdfFontLoader: invalid atlas height: %d", h);
       return false_v;
     }
-    vkr_json_parse_int(reader, &h);
     metadata->atlas_height = (uint32_t)h;
+  }
+
+  reader->pos = atlas_start;
+  if (vkr_json_find_field(reader, "emSize")) {
+    vkr_json_parse_float(reader, &metadata->em_size);
+    if (metadata->em_size <= 0.0f) {
+      log_error("MtsdfFontLoader: invalid em size: %f", metadata->em_size);
+      return false_v;
+    }
   }
 
   reader->pos = atlas_start;
