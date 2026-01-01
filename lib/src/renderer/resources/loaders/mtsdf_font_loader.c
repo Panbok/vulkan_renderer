@@ -192,6 +192,10 @@ vkr_internal bool8_t vkr_mtsdf_parse_atlas(VkrJsonReader *reader,
   reader->pos = atlas_start;
   if (vkr_json_find_field(reader, "width")) {
     int32_t w = 0;
+    if (w <= 0) {
+      log_error("MtsdfFontLoader: invalid atlas width: %d", w);
+      return false_v;
+    }
     vkr_json_parse_int(reader, &w);
     metadata->atlas_width = (uint32_t)w;
   }
@@ -199,6 +203,10 @@ vkr_internal bool8_t vkr_mtsdf_parse_atlas(VkrJsonReader *reader,
   reader->pos = atlas_start;
   if (vkr_json_find_field(reader, "height")) {
     int32_t h = 0;
+    if (h <= 0) {
+      log_error("MtsdfFontLoader: invalid atlas height: %d", h);
+      return false_v;
+    }
     vkr_json_parse_int(reader, &h);
     metadata->atlas_height = (uint32_t)h;
   }
@@ -322,6 +330,10 @@ vkr_internal bool8_t vkr_mtsdf_parse_glyphs(VkrJsonReader *reader,
     if (vkr_json_find_field(&glyph_reader, "unicode")) {
       int32_t unicode = 0;
       vkr_json_parse_int(&glyph_reader, &unicode);
+      if (unicode < 0 || unicode > 0x10FFFF) {
+        log_warn("MtsdfFontLoader: invalid unicode value: %d", unicode);
+        continue;
+      }
       glyph.unicode = (uint32_t)unicode;
     } else {
       continue;
@@ -375,7 +387,7 @@ vkr_internal bool8_t vkr_mtsdf_build_font(VkrMtsdfFontMetadata *metadata,
 
   vkr_mtsdf_font_copy_face(out_font, face_name);
 
-  float32_t scale = target_size;
+  float32_t scale = target_size / metadata->em_size;
 
   float32_t line_height = metadata->line_height * scale;
   float32_t ascent = metadata->ascender * scale;
