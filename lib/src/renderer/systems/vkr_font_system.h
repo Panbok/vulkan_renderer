@@ -17,11 +17,11 @@
  * @param resource The loader resource handle/result for unloading.
  */
 typedef struct VkrFontSystemEntry {
+  void *resource;       // Loader-specific handle/result (e.g., bitmap font).
   uint32_t index;       // The index into the fonts array.
   uint32_t ref_count;   // The reference count.
-  bool8_t auto_release; // The auto release flag.
   uint32_t loader_id;   // Loader id associated with this font resource.
-  void *resource;       // Loader-specific handle/result (e.g., bitmap font).
+  bool8_t auto_release; // The auto release flag.
 } VkrFontSystemEntry;
 VkrHashTable(VkrFontSystemEntry);
 
@@ -29,6 +29,7 @@ VkrHashTable(VkrFontSystemEntry);
  * @brief A font system config.
  * @param max_system_font_count The maximum number of system fonts.
  * @param max_bitmap_font_count The maximum number of bitmap fonts.
+ * @param max_mtsdf_font_count The maximum number of mtsdf fonts.
  */
 typedef struct VkrFontSystemConfig {
   uint32_t max_system_font_count; // The maximum number of system fonts.
@@ -126,6 +127,7 @@ void vkr_font_system_shutdown(VkrFontSystem *system);
  * @param name The name of the font.
  * @param auto_release The auto release flag.
  * @param out_error The error output.
+ * @return A valid font handle on success, or an invalid handle on failure.
  */
 VkrFontHandle vkr_font_system_acquire(VkrFontSystem *system, String8 name,
                                       bool8_t auto_release,
@@ -134,7 +136,7 @@ VkrFontHandle vkr_font_system_acquire(VkrFontSystem *system, String8 name,
 /**
  * @brief Releases a font by handle.
  * @param system The font system.
- * @param String8 name The name of the font.
+ * @param name The name of the font.
  */
 void vkr_font_system_release(VkrFontSystem *system, String8 name);
 
@@ -142,6 +144,8 @@ void vkr_font_system_release(VkrFontSystem *system, String8 name);
  * @brief Releases a font by handle.
  * @param system The font system.
  * @param handle The handle of the font.
+ * @return The same handle with incremented reference count, or invalid handle
+ * on failure.
  */
 void vkr_font_system_release_by_handle(VkrFontSystem *system,
                                        VkrFontHandle handle);

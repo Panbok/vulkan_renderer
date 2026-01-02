@@ -603,6 +603,7 @@ bool8_t vkr_font_system_init(VkrFontSystem *system,
   system->fonts = array_create_VkrFont(&system->allocator, max_fonts);
   if (!system->fonts.data) {
     log_fatal("Failed to allocate fonts array");
+    arena_destroy(system->temp_arena);
     arena_destroy(system->arena);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
@@ -1148,6 +1149,10 @@ uint32_t vkr_font_system_load_batch(VkrFontSystem *system, const String8 *names,
       VkrFontSystemEntry *entry = vkr_hash_table_get_VkrFontSystemEntry(
           &system->font_map, (const char *)names[i].str);
       if (entry) {
+        if (entry->index >= system->fonts.length) {
+          out_errors[i] = VKR_RENDERER_ERROR_INVALID_HANDLE;
+          continue;
+        }
         VkrFont *font = &system->fonts.data[entry->index];
         out_handles[i] =
             (VkrFontHandle){.id = font->id, .generation = font->generation};
@@ -1274,7 +1279,7 @@ VkrFont *vkr_font_system_get_by_handle(VkrFontSystem *system,
                                        VkrFontHandle handle) {
   assert_log(system != NULL, "System is NULL");
 
-  if (handle.id == VKR_INVALID_ID) {
+  if (handle.id == 0 || handle.id == VKR_INVALID_ID) {
     return NULL;
   }
 

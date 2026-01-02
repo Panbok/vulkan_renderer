@@ -131,6 +131,5 @@ void vkr_text_3d_update(VkrText3D *text_3d);
 /**
  * @brief Draws the text 3D instance.
  * @param text_3d The text 3D instance.
- * @param renderer The renderer frontend handle.
  */
-void vkr_text_3d_draw(VkrText3D *text_3d, VkrRendererFrontendHandle renderer);
+void vkr_text_3d_draw(VkrText3D *text_3d);

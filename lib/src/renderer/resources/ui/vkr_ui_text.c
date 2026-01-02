@@ -115,11 +115,27 @@ vkr_internal bool8_t vkr_ui_text_generate_buffers(VkrUiText *text) {
     return false_v;
   }
 
+  if (text->layout.glyphs.length > UINT32_MAX) {
+    log_error("Glyph count exceeds maximum supported: %llu",
+              text->layout.glyphs.length);
+    return false_v;
+  }
+
   uint32_t glyph_count = (uint32_t)text->layout.glyphs.length;
   if (glyph_count == 0) {
     text->render.quad_count = 0;
     text->buffers_dirty = false_v;
     return true_v;
+  }
+
+  if (glyph_count > UINT32_MAX / VKR_UI_TEXT_QUAD_COUNT) {
+    log_error("Glyph count too large for vertex buffer: %u", glyph_count);
+    return false_v;
+  }
+
+  if (glyph_count > UINT32_MAX / VKR_UI_TEXT_INDEX_COUNT) {
+    log_error("Glyph count too large for index buffer: %u", glyph_count);
+    return false_v;
   }
 
   uint32_t required_vertex_count = glyph_count * VKR_UI_TEXT_QUAD_COUNT;
