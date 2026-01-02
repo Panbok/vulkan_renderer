@@ -47,6 +47,7 @@ typedef struct VkrLayerPass {
   VkrRenderTargetHandle *render_targets;
   uint32_t render_target_count;
   VkrTextureOpaqueHandle *custom_color_attachments;
+  uint32_t custom_color_attachment_count;
   VkrTextureLayout *custom_color_layouts;
 } VkrLayerPass;
 Array(VkrLayerPass);

@@ -1,6 +1,7 @@
 #include "renderer/systems/vkr_view_system.h"
 
 #include "core/logger.h"
+#include "defines.h"
 #include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_layer_messages.h"
 #include "renderer/systems/vkr_pipeline_registry.h"
@@ -122,13 +123,11 @@ vkr_internal void vkr_view_system_destroy_layer(RendererFrontend *rf,
   assert_log(rf != NULL, "Renderer frontend is NULL");
   assert_log(layer != NULL, "Layer is NULL");
 
-  if (rf) {
-    VkrViewSystem *vs = &rf->view_system;
-    if (vs->modal_focus_layer.id != 0 &&
-        vs->modal_focus_layer.id == layer->handle.id &&
-        vs->modal_focus_layer.generation == layer->handle.generation) {
-      vs->modal_focus_layer = VKR_LAYER_HANDLE_INVALID;
-    }
+  VkrViewSystem *vs = &rf->view_system;
+  if (vs->modal_focus_layer.id != 0 &&
+      vs->modal_focus_layer.id == layer->handle.id &&
+      vs->modal_focus_layer.generation == layer->handle.generation) {
+    vs->modal_focus_layer = VKR_LAYER_HANDLE_INVALID;
   }
 
   // Invoke detach callback before tearing down resources
@@ -412,7 +411,7 @@ bool32_t vkr_view_system_register_layer(VkrRendererFrontendHandle renderer,
   slot->user_data = cfg->user_data;
   slot->pass_count = cfg->pass_count;
   slot->name = string8_duplicate(&vs->allocator, &cfg->name);
-  slot->enabled = cfg->enabled ? cfg->enabled : true_v;
+  slot->enabled = cfg->enabled;
   slot->flags = cfg->flags;
   slot->behavior_count = 0;
   slot->behaviors = (Array_VkrLayerBehaviorSlot){0};
@@ -698,9 +697,11 @@ void vkr_view_system_draw_all(VkrRendererFrontendHandle renderer,
         continue;
       }
 
-      bool8_t has_custom_color =
-          pass->use_custom_render_targets && pass->custom_color_attachments &&
-          pass->custom_color_layouts && image_index < pass->render_target_count;
+      bool8_t has_custom_color = pass->use_custom_render_targets &&
+                                 pass->custom_color_attachment_count > 0 &&
+                                 pass->custom_color_attachments &&
+                                 pass->custom_color_layouts &&
+                                 image_index < pass->render_target_count;
       if (has_custom_color) {
         VkrTextureOpaqueHandle color_tex =
             pass->custom_color_attachments[image_index];
@@ -1310,6 +1311,7 @@ uint32_t vkr_layer_context_get_render_target_count(const VkrLayerContext *ctx) {
   assert_log(ctx->pass->render_targets != NULL, "Render targets are NULL");
   return ctx->pass->render_target_count;
 }
+
 uint32_t vkr_layer_context_get_pass_index(const VkrLayerContext *ctx) {
   assert_log(ctx != NULL, "Layer context is NULL");
   assert_log(ctx->layer != NULL, "Layer is NULL");
