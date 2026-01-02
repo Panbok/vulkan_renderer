@@ -352,6 +352,7 @@ typedef struct VkrFontGlyph {
   uint8_t page_id;    // The page id of the glyph.
 } VkrFontGlyph;
 Array(VkrFontGlyph);
+Vector(VkrFontGlyph);
 
 /**
  * @brief A font kerning.
@@ -365,15 +366,43 @@ typedef struct VkrFontKerning {
   int16_t amount;       // The kerning amount.
 } VkrFontKerning;
 Array(VkrFontKerning);
+Vector(VkrFontKerning);
+
+/**
+ * @brief MTSDF glyph data (normalized coordinates).
+ */
+typedef struct VkrMtsdfGlyph {
+  uint32_t unicode;
+  float32_t advance; // Normalized advance
+
+  // Plane bounds (normalized quad in EM space)
+  float32_t plane_left;
+  float32_t plane_bottom;
+  float32_t plane_right;
+  float32_t plane_top;
+
+  // Atlas bounds (pixel coordinates in atlas)
+  float32_t atlas_left;
+  float32_t atlas_bottom;
+  float32_t atlas_right;
+  float32_t atlas_top;
+
+  bool8_t has_geometry; // false for space-like glyphs
+} VkrMtsdfGlyph;
+Array(VkrMtsdfGlyph);
+Vector(VkrMtsdfGlyph);
 
 /**
  * @brief A font type.
  * @param VKR_FONT_TYPE_BITMAP The bitmap font type.
  * @param VKR_FONT_TYPE_SYSTEM The system font type.
+ * @param VKR_FONT_TYPE_MTSDF The MTSDF (multi-channel signed distance field)
+ * font type.
  */
 typedef enum VkrFontType {
   VKR_FONT_TYPE_BITMAP, // The bitmap font type.
-  VKR_FONT_TYPE_SYSTEM  // The system font type.
+  VKR_FONT_TYPE_SYSTEM, // The system font type.
+  VKR_FONT_TYPE_MTSDF   // The MTSDF font type.
 } VkrFontType;
 
 /**
@@ -399,14 +428,21 @@ typedef struct VkrFont {
   int32_t descent;      // Distance from baseline to bottom (typically negative)
   int32_t atlas_size_x; // The atlas size x.
   int32_t atlas_size_y; // The atlas size y.
-  uint32_t page_count;                // Number of texture pages.
-  VkrTextureHandle atlas;             // Page 0 atlas handle (legacy).
-  Array_VkrTextureHandle atlas_pages; // Page handles, indexed by page id.
+  uint32_t page_count;  // Number of texture pages.
+  VkrTextureHandle atlas;              // Page 0 atlas handle.
+  Array_VkrTextureHandle atlas_pages;  // Page handles, indexed by page id.
+  uint8_t *atlas_cpu_data;             // Optional CPU copy of atlas pixels.
+  uint64_t atlas_cpu_size;             // Size of atlas_cpu_data in bytes.
+  uint32_t atlas_cpu_channels;         // Channel count for atlas_cpu_data.
   VkrHashTable_uint32_t glyph_indices; // Codepoint -> glyph index lookup.
-  Array_VkrFontGlyph glyphs;          // The font glyphs.
-  Array_VkrFontKerning kernings;      // The font kernings.
-  float32_t tab_x_advance;            // The tab x advance.
+  Array_VkrFontGlyph glyphs;           // The font glyphs.
+  Array_VkrFontKerning kernings;       // The font kernings.
+  float32_t tab_x_advance;             // The tab x advance.
+  Array_VkrMtsdfGlyph mtsdf_glyphs;    // MTSDF glyph metadata (if any).
+  float32_t sdf_distance_range;        // MTSDF distance range for shader.
+  float32_t em_size;                   // MTSDF EM size used for atlas.
 } VkrFont;
+Array(VkrFont);
 
 /**
  * @brief A bitmap font page.
@@ -418,6 +454,7 @@ typedef struct VkrBitmapFontPage {
   char file[256]; // The page file.
 } VkrBitmapFontPage;
 Array(VkrBitmapFontPage);
+Vector(VkrBitmapFontPage);
 
 /**
  * @brief A bitmap font resource data.
@@ -429,3 +466,9 @@ typedef struct VkrBitmapFontResourceData {
   Array_VkrBitmapFontPage pages; // The pages.
 } VkrBitmapFontResourceData;
 Array(VkrBitmapFontResourceData);
+
+typedef struct VkrSystemFontResourceData {
+  uint32_t font_id; // The font id.
+  char file[256];   // The page file.
+} VkrSystemFontResourceData;
+Array(VkrSystemFontResourceData);
