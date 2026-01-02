@@ -1,6 +1,5 @@
 #include "vulkan_shaders.h"
 #include "filesystem/filesystem.h"
-#include "memory/vkr_arena_allocator.h"
 
 bool8_t vulkan_shader_module_create(
     VulkanBackendState *state, VkrShaderStageFlags stage, const uint64_t size,
@@ -281,10 +280,9 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
     return false;
   }
 
-  out_shader_object->global_descriptor_generations =
-      vkr_allocator_alloc(arena_alloc,
-                          sizeof(uint32_t) * out_shader_object->frame_count,
-                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  out_shader_object->global_descriptor_generations = vkr_allocator_alloc(
+      arena_alloc, sizeof(uint32_t) * out_shader_object->frame_count,
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (out_shader_object->global_descriptor_generations == NULL) {
     log_fatal("Failed to allocate global descriptor generation tracking");
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -405,16 +403,20 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
         .descriptorCount = VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT,
     };
   }
-  instance_pool_size[pool_size_count++] = (VkDescriptorPoolSize){
-      .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-      .descriptorCount =
-          VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT * instance_sampler_count,
-  };
-  instance_pool_size[pool_size_count++] = (VkDescriptorPoolSize){
-      .type = VK_DESCRIPTOR_TYPE_SAMPLER,
-      .descriptorCount =
-          VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT * instance_sampler_count,
-  };
+  // Only add sampler pool sizes if we have instance textures (descriptorCount
+  // must be > 0)
+  if (instance_sampler_count > 0) {
+    instance_pool_size[pool_size_count++] = (VkDescriptorPoolSize){
+        .type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .descriptorCount =
+            VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT * instance_sampler_count,
+    };
+    instance_pool_size[pool_size_count++] = (VkDescriptorPoolSize){
+        .type = VK_DESCRIPTOR_TYPE_SAMPLER,
+        .descriptorCount =
+            VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT * instance_sampler_count,
+    };
+  }
 
   VkDescriptorPoolCreateInfo instance_descriptor_pool_create_info = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -554,6 +556,11 @@ bool8_t vulkan_shader_update_instance(
                          VK_SHADER_STAGE_VERTEX_BIT, 0, use,
                          data->push_constants_data);
     }
+  }
+
+  // If no valid instance state, push constants were sufficient
+  if (data->instance_state.id == VKR_INVALID_ID) {
+    return true;
   }
 
   VulkanShaderObjectInstanceState *instance_state =

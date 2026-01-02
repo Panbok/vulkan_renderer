@@ -6,6 +6,7 @@
 #include "vulkan_device.h"
 #include "vulkan_fence.h"
 #include "vulkan_framebuffer.h"
+#include "vulkan_image.h"
 #include "vulkan_instance.h"
 #include "vulkan_pipeline.h"
 #include "vulkan_renderpass.h"
@@ -71,6 +72,62 @@ vkr_internal void vulkan_select_filter_modes(
     *out_anisotropy_enable = anisotropy_enable;
   if (out_max_lod)
     *out_max_lod = max_lod;
+}
+
+vkr_internal bool8_t vulkan_texture_format_is_depth(VkrTextureFormat format) {
+  switch (format) {
+  case VKR_TEXTURE_FORMAT_D32_SFLOAT:
+  case VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT:
+    return true_v;
+  default:
+    return false_v;
+  }
+}
+
+vkr_internal uint32_t
+vulkan_texture_format_channel_count(VkrTextureFormat format) {
+  switch (format) {
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM:
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB:
+  case VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM:
+  case VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB:
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_UINT:
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_SNORM:
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_SINT:
+    return 4;
+  case VKR_TEXTURE_FORMAT_R8G8_UNORM:
+    return 2;
+  case VKR_TEXTURE_FORMAT_R8_UNORM:
+  case VKR_TEXTURE_FORMAT_R16_SFLOAT:
+  case VKR_TEXTURE_FORMAT_R32_SFLOAT:
+  case VKR_TEXTURE_FORMAT_R32_UINT:
+  case VKR_TEXTURE_FORMAT_D32_SFLOAT:
+  case VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT:
+    return 1;
+  default:
+    return 1;
+  }
+}
+
+vkr_internal VkImageLayout
+vulkan_texture_layout_to_vk(VkrTextureLayout layout) {
+  switch (layout) {
+  case VKR_TEXTURE_LAYOUT_UNDEFINED:
+    return VK_IMAGE_LAYOUT_UNDEFINED;
+  case VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY:
+    return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  case VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT:
+    return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  case VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT:
+    return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  case VKR_TEXTURE_LAYOUT_TRANSFER_SRC:
+    return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  case VKR_TEXTURE_LAYOUT_TRANSFER_DST:
+    return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  default:
+    log_error("Unsupported texture layout: %d", layout);
+    return VK_IMAGE_LAYOUT_UNDEFINED;
+  }
 }
 
 vkr_internal bool32_t create_command_buffers(VulkanBackendState *state) {
@@ -186,11 +243,19 @@ vkr_internal bool32_t create_domain_framebuffers(VulkanBackendState *state) {
 vkr_internal VkrTextureFormat vulkan_vk_format_to_vkr(VkFormat format) {
   switch (format) {
   case VK_FORMAT_B8G8R8A8_SRGB:
-    return VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
+    return VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB;
   case VK_FORMAT_B8G8R8A8_UNORM:
-    return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+    return VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM;
   case VK_FORMAT_R8G8B8A8_SRGB:
     return VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
+  case VK_FORMAT_R8G8B8A8_UNORM:
+    return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+  case VK_FORMAT_R32_UINT:
+    return VKR_TEXTURE_FORMAT_R32_UINT;
+  case VK_FORMAT_D32_SFLOAT:
+    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  case VK_FORMAT_D24_UNORM_S8_UINT:
+    return VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT;
   default:
     log_warn("Unmapped VkFormat %d, defaulting to R8G8B8A8_UNORM", format);
     return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
@@ -336,8 +401,18 @@ vkr_internal bool32_t vulkan_backend_renderpass_register(
   }
 
   if (slot >= state->render_pass_registry.length) {
-    log_error("Render pass registry capacity exceeded");
-    return false;
+    uint64_t old_length = state->render_pass_registry.length;
+    uint64_t min_length = (uint64_t)slot + 1;
+    uint64_t new_length = Max(old_length * 2, min_length);
+    Array_VkrRenderPassEntry new_registry =
+        array_create_VkrRenderPassEntry(&state->alloc, new_length);
+    MemZero(new_registry.data,
+            sizeof(VkrRenderPassEntry) * (uint64_t)new_registry.length);
+    for (uint64_t i = 0; i < old_length; ++i) {
+      new_registry.data[i] = state->render_pass_registry.data[i];
+    }
+    array_destroy_VkrRenderPassEntry(&state->render_pass_registry);
+    state->render_pass_registry = new_registry;
   }
 
   VkrRenderPassEntry entry = {.name = pass->name, .pass = pass};
@@ -490,6 +565,27 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
     }
     state->domain_render_passes[VKR_PIPELINE_DOMAIN_UI] = ui->vk;
     state->domain_initialized[VKR_PIPELINE_DOMAIN_UI] = true;
+  }
+
+  // Create PICKING render pass (R32_UINT for object IDs)
+  if (!state->domain_render_passes[VKR_PIPELINE_DOMAIN_PICKING]) {
+    VkrRenderPassConfig picking_cfg = {
+        .name = string8_lit("Renderpass.Builtin.Picking"),
+        .prev_name = {0},
+        .next_name = {0},
+        .domain = VKR_PIPELINE_DOMAIN_PICKING,
+        .render_area = (Vec4){0, 0, (float32_t)state->swapchain.extent.width,
+                              (float32_t)state->swapchain.extent.height},
+        .clear_color = (Vec4){0, 0, 0, 0}, // 0 = no object
+        .clear_flags = VKR_RENDERPASS_CLEAR_COLOR | VKR_RENDERPASS_CLEAR_DEPTH,
+    };
+    struct s_RenderPass *picking =
+        vulkan_backend_renderpass_create_internal(state, &picking_cfg);
+    if (!picking) {
+      return false;
+    }
+    state->domain_render_passes[VKR_PIPELINE_DOMAIN_PICKING] = picking->vk;
+    state->domain_initialized[VKR_PIPELINE_DOMAIN_PICKING] = true;
   }
 
   return true;
@@ -717,6 +813,10 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .buffer_update = renderer_vulkan_update_buffer,
       .buffer_upload = renderer_vulkan_upload_buffer,
       .texture_create = renderer_vulkan_create_texture,
+      .render_target_texture_create =
+          renderer_vulkan_create_render_target_texture,
+      .depth_attachment_create = renderer_vulkan_create_depth_attachment,
+      .texture_transition_layout = renderer_vulkan_transition_texture_layout,
       .texture_update = renderer_vulkan_update_texture,
       .texture_write = renderer_vulkan_write_texture,
       .texture_resize = renderer_vulkan_resize_texture,
@@ -727,10 +827,17 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .instance_state_acquire = renderer_vulkan_instance_state_acquire,
       .instance_state_release = renderer_vulkan_instance_state_release,
       .bind_buffer = renderer_vulkan_bind_buffer,
+      .set_viewport = renderer_vulkan_set_viewport,
+      .set_scissor = renderer_vulkan_set_scissor,
       .draw = renderer_vulkan_draw,
       .draw_indexed = renderer_vulkan_draw_indexed,
       .get_and_reset_descriptor_writes_avoided =
           renderer_vulkan_get_and_reset_descriptor_writes_avoided,
+      .readback_ring_init = renderer_vulkan_readback_ring_init,
+      .readback_ring_shutdown = renderer_vulkan_readback_ring_shutdown,
+      .request_pixel_readback = renderer_vulkan_request_pixel_readback,
+      .get_pixel_readback_result = renderer_vulkan_get_pixel_readback_result,
+      .update_readback_ring = renderer_vulkan_update_readback_ring,
   };
 }
 uint64_t
@@ -974,6 +1081,9 @@ void renderer_vulkan_shutdown(void *backend_state) {
   // Ensure all GPU work is complete before destroying any resources
   vkDeviceWaitIdle(state->device.logical_device);
 
+  // Ensure pixel readback ring resources are destroyed before device teardown.
+  renderer_vulkan_readback_ring_shutdown(state);
+
   // Free command buffers first to release references to pipelines
   for (uint32_t i = 0; i < state->graphics_command_buffers.length; i++) {
     vulkan_command_buffer_free(state, array_get_VulkanCommandBuffer(
@@ -1182,6 +1292,7 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
     log_fatal("Failed to begin Vulkan command buffer");
     return VKR_RENDERER_ERROR_NONE;
   }
+  state->frame_active = true_v;
 
   VkViewport viewport = {
       .x = 0.0f,
@@ -1271,6 +1382,7 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
   // log_debug("Ending Vulkan frame");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  state->frame_active = false_v;
 
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, state->image_index);
@@ -1379,6 +1491,14 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
   }
 
   vulkan_command_buffer_update_submitted(command_buffer);
+
+  // Monotonic submit counter used for async readback submission tracking.
+  state->submit_serial++;
+
+  // Advance frame counter for triple-buffering synchronization.
+  // Must happen after queue submit so readback fence checks can detect completion.
+  state->current_frame =
+      (state->current_frame + 1) % state->swapchain.max_in_flight_frames;
 
   if (!vulkan_swapchain_present(
           state,
@@ -1532,6 +1652,255 @@ void renderer_vulkan_destroy_buffer(void *backend_state,
   vulkan_buffer_destroy(state, &buffer->buffer);
 
   return;
+}
+
+VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
+    void *backend_state, const VkrRenderTargetTextureDesc *desc) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(desc != NULL, "Render target texture desc is NULL");
+
+  if (desc->width == 0 || desc->height == 0) {
+    log_error("Render target texture dimensions must be greater than zero");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  if (vulkan_texture_format_is_depth(desc->format)) {
+    log_error("Render target texture format must be a color format");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  VkFormat image_format = vulkan_image_format_from_texture_format(desc->format);
+
+  VkrTextureUsageFlags usage_flags = desc->usage;
+  if (bitset8_get_value(&usage_flags) == 0) {
+    usage_flags = vkr_texture_usage_flags_from_bits(
+        VKR_TEXTURE_USAGE_COLOR_ATTACHMENT | VKR_TEXTURE_USAGE_SAMPLED);
+  }
+  if (bitset8_is_set(&usage_flags,
+                     VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT)) {
+    log_error("Render target texture usage includes depth/stencil attachment");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  VkImageUsageFlags usage = vulkan_image_usage_from_texture_usage(usage_flags);
+  if ((usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) == 0) {
+    log_warn("Render target texture missing COLOR_ATTACHMENT usage; adding it");
+    usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  }
+
+  struct s_TextureHandle *texture =
+      vkr_allocator_alloc(&state->alloc, sizeof(struct s_TextureHandle),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (!texture) {
+    log_fatal("Failed to allocate render target texture");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  MemZero(texture, sizeof(struct s_TextureHandle));
+
+  if (!vulkan_image_create(state, VK_IMAGE_TYPE_2D, desc->width, desc->height,
+                           image_format, VK_IMAGE_TILING_OPTIMAL, usage,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1,
+                           VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
+                           &texture->texture.image)) {
+    log_fatal("Failed to create render target image");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  texture->texture.sampler = VK_NULL_HANDLE;
+  if (bitset8_is_set(&usage_flags, VKR_TEXTURE_USAGE_SAMPLED)) {
+    VkSamplerCreateInfo sampler_info = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = VK_FILTER_LINEAR,
+        .minFilter = VK_FILTER_LINEAR,
+        .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+        .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+        .mipLodBias = 0.0f,
+        .anisotropyEnable = VK_FALSE,
+        .maxAnisotropy = 1.0f,
+        .compareEnable = VK_FALSE,
+        .compareOp = VK_COMPARE_OP_ALWAYS,
+        .minLod = 0.0f,
+        .maxLod = 0.0f,
+        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+        .unnormalizedCoordinates = VK_FALSE,
+    };
+
+    if (vkCreateSampler(state->device.logical_device, &sampler_info,
+                        state->allocator,
+                        &texture->texture.sampler) != VK_SUCCESS) {
+      log_fatal("Failed to create render target sampler");
+      vulkan_image_destroy(state, &texture->texture.image);
+      return (VkrBackendResourceHandle){.ptr = NULL};
+    }
+  }
+
+  texture->description = (VkrTextureDescription){
+      .width = desc->width,
+      .height = desc->height,
+      .channels = vulkan_texture_format_channel_count(desc->format),
+      .type = VKR_TEXTURE_TYPE_2D,
+      .format = desc->format,
+      .properties = vkr_texture_property_flags_create(),
+      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+      .anisotropy_enable = false_v,
+      .generation = 1,
+  };
+
+  if (texture->description.channels == 4) {
+    bitset8_set(&texture->description.properties,
+                VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
+  }
+
+  return (VkrBackendResourceHandle){.ptr = texture};
+}
+
+VkrBackendResourceHandle
+renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
+                                        uint32_t height) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+
+  if (width == 0 || height == 0) {
+    log_error("Depth attachment dimensions must be greater than zero");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  VkFormat depth_format = state->device.depth_format;
+  VkrTextureFormat vkr_format = vulkan_vk_format_to_vkr(depth_format);
+  if (!vulkan_texture_format_is_depth(vkr_format)) {
+    log_error("Unsupported depth format for depth attachment");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  struct s_TextureHandle *texture =
+      vkr_allocator_alloc(&state->alloc, sizeof(struct s_TextureHandle),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (!texture) {
+    log_fatal("Failed to allocate depth attachment texture");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  MemZero(texture, sizeof(struct s_TextureHandle));
+
+  if (!vulkan_image_create(
+          state, VK_IMAGE_TYPE_2D, width, height, depth_format,
+          VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1, VK_IMAGE_VIEW_TYPE_2D,
+          VK_IMAGE_ASPECT_DEPTH_BIT, &texture->texture.image)) {
+    log_fatal("Failed to create depth attachment image");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  texture->texture.sampler = VK_NULL_HANDLE;
+  texture->description = (VkrTextureDescription){
+      .width = width,
+      .height = height,
+      .channels = 1,
+      .type = VKR_TEXTURE_TYPE_2D,
+      .format = vkr_format,
+      .properties = vkr_texture_property_flags_create(),
+      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+      .anisotropy_enable = false_v,
+      .generation = 1,
+  };
+
+  return (VkrBackendResourceHandle){.ptr = texture};
+}
+
+VkrRendererError renderer_vulkan_transition_texture_layout(
+    void *backend_state, VkrBackendResourceHandle handle,
+    VkrTextureLayout old_layout, VkrTextureLayout new_layout) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(handle.ptr != NULL, "Texture handle is NULL");
+
+  if (old_layout == new_layout) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+  if (new_layout == VKR_TEXTURE_LAYOUT_UNDEFINED) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_TextureHandle *texture = (struct s_TextureHandle *)handle.ptr;
+
+  VkImageLayout vk_old = vulkan_texture_layout_to_vk(old_layout);
+  VkImageLayout vk_new = vulkan_texture_layout_to_vk(new_layout);
+  if (vk_old == VK_IMAGE_LAYOUT_UNDEFINED &&
+      vk_new == VK_IMAGE_LAYOUT_UNDEFINED) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+  if (vulkan_texture_format_is_depth(texture->description.format)) {
+    aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+    if (texture->description.format == VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT) {
+      aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+    }
+  }
+
+  VkImageSubresourceRange range = {
+      .aspectMask = aspect,
+      .baseMipLevel = 0,
+      .levelCount = texture->texture.image.mip_levels,
+      .baseArrayLayer = 0,
+      .layerCount = texture->texture.image.array_layers,
+  };
+
+  VkFormat image_format =
+      vulkan_image_format_from_texture_format(texture->description.format);
+  if (state->frame_active) {
+    if (state->render_pass_active) {
+      log_error("Cannot transition texture layout during active render pass");
+      return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+    }
+    if (state->image_index >= state->graphics_command_buffers.length) {
+      return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+    }
+    VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+        &state->graphics_command_buffers, state->image_index);
+    if (!vulkan_image_transition_layout_range(state, &texture->texture.image,
+                                              command_buffer, image_format,
+                                              vk_old, vk_new, &range)) {
+      return VKR_RENDERER_ERROR_DEVICE_ERROR;
+    }
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
+  VulkanCommandBuffer temp_command_buffer = {0};
+  if (!vulkan_command_buffer_allocate_and_begin_single_use(
+          state, &temp_command_buffer)) {
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  if (!vulkan_image_transition_layout_range(state, &texture->texture.image,
+                                            &temp_command_buffer, image_format,
+                                            vk_old, vk_new, &range)) {
+    vulkan_command_buffer_free(state, &temp_command_buffer);
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  if (!vulkan_command_buffer_end_single_use(
+          state, &temp_command_buffer, state->device.graphics_queue,
+          array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
+              ->handle)) {
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  return VKR_RENDERER_ERROR_NONE;
 }
 
 vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
@@ -2170,9 +2539,13 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
   bool32_t linear_blit_supported =
       (format_props.optimalTilingFeatures &
        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
-  uint32_t mip_levels = linear_blit_supported
-                            ? vulkan_calculate_mip_levels(new_width, new_height)
+  uint32_t max_mip_levels =
+      linear_blit_supported ? vulkan_calculate_mip_levels(new_width, new_height)
                             : 1;
+  uint32_t mip_levels =
+      (texture->description.mip_filter == VKR_MIP_FILTER_NONE)
+          ? 1
+          : Min(texture->texture.image.mip_levels, max_mip_levels);
 
   VulkanImage new_image = {0};
   if (!vulkan_image_create(
@@ -2567,6 +2940,46 @@ void renderer_vulkan_bind_buffer(void *backend_state,
   return;
 }
 
+void renderer_vulkan_set_viewport(void *backend_state,
+                                  const VkrViewport *viewport) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(viewport != NULL, "Viewport is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+      &state->graphics_command_buffers, state->image_index);
+
+  VkViewport vk_viewport = {
+      .x = viewport->x,
+      .y = viewport->y,
+      .width = viewport->width,
+      .height = viewport->height,
+      .minDepth = viewport->min_depth,
+      .maxDepth = viewport->max_depth,
+  };
+
+  vkCmdSetViewport(command_buffer->handle, 0, 1, &vk_viewport);
+}
+
+void renderer_vulkan_set_scissor(void *backend_state,
+                                 const VkrScissor *scissor) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(scissor != NULL, "Scissor is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+      &state->graphics_command_buffers, state->image_index);
+
+  VkRect2D vk_scissor = {
+      .offset = {scissor->x, scissor->y},
+      .extent = {scissor->width, scissor->height},
+  };
+
+  vkCmdSetScissor(command_buffer->handle, 0, 1, &vk_scissor);
+}
+
 VkrRenderPassHandle
 renderer_vulkan_renderpass_create(void *backend_state,
                                   const VkrRenderPassConfig *cfg) {
@@ -2594,6 +3007,10 @@ renderer_vulkan_renderpass_create(void *backend_state,
                                        "renderpass.builtin.ui")) {
     state->domain_render_passes[VKR_PIPELINE_DOMAIN_UI] = created->vk;
     state->domain_initialized[VKR_PIPELINE_DOMAIN_UI] = true;
+  } else if (vkr_string8_equals_cstr_i(&created->name,
+                                       "renderpass.builtin.picking")) {
+    state->domain_render_passes[VKR_PIPELINE_DOMAIN_PICKING] = created->vk;
+    state->domain_initialized[VKR_PIPELINE_DOMAIN_PICKING] = true;
   }
 
   return (VkrRenderPassHandle)created;
@@ -2911,4 +3328,392 @@ uint32_t renderer_vulkan_window_attachment_index(void *backend_state) {
     return 0;
   }
   return state->image_index;
+}
+
+vkr_internal bool8_t vulkan_create_readback_buffer(VulkanBackendState *state,
+                                                   uint64_t size,
+                                                   VulkanBuffer *out_buffer) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(out_buffer != NULL, "Out buffer is NULL");
+
+  MemZero(out_buffer, sizeof(VulkanBuffer));
+  out_buffer->total_size = size;
+  out_buffer->usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+
+  VkBufferCreateInfo buffer_info = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+      .size = size,
+      .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+  };
+
+  if (vkCreateBuffer(state->device.logical_device, &buffer_info,
+                     state->allocator, &out_buffer->handle) != VK_SUCCESS) {
+    log_error("Failed to create readback buffer");
+    return false_v;
+  }
+
+  VkMemoryRequirements memory_requirements;
+  vkGetBufferMemoryRequirements(state->device.logical_device,
+                                out_buffer->handle, &memory_requirements);
+  out_buffer->allocation_size = memory_requirements.size;
+
+  // Try HOST_VISIBLE + HOST_CACHED first, fall back to HOST_VISIBLE + COHERENT
+  VkMemoryPropertyFlags desired_flags =
+      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
+  out_buffer->memory_index =
+      find_memory_index(state->device.physical_device,
+                        memory_requirements.memoryTypeBits, desired_flags);
+
+  if (out_buffer->memory_index == -1) {
+    // Fall back to HOST_VISIBLE + COHERENT
+    desired_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    out_buffer->memory_index =
+        find_memory_index(state->device.physical_device,
+                          memory_requirements.memoryTypeBits, desired_flags);
+  }
+
+  if (out_buffer->memory_index == -1) {
+    log_error("Failed to find suitable memory type for readback buffer");
+    vkDestroyBuffer(state->device.logical_device, out_buffer->handle,
+                    state->allocator);
+    out_buffer->handle = VK_NULL_HANDLE;
+    return false_v;
+  }
+
+  VkPhysicalDeviceMemoryProperties mem_props;
+  vkGetPhysicalDeviceMemoryProperties(state->device.physical_device,
+                                      &mem_props);
+  out_buffer->memory_property_flags =
+      mem_props.memoryTypes[out_buffer->memory_index].propertyFlags;
+
+  VkMemoryAllocateInfo alloc_info = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+      .allocationSize = memory_requirements.size,
+      .memoryTypeIndex = (uint32_t)out_buffer->memory_index,
+  };
+
+  if (vkAllocateMemory(state->device.logical_device, &alloc_info,
+                       state->allocator, &out_buffer->memory) != VK_SUCCESS) {
+    log_error("Failed to allocate memory for readback buffer");
+    vkDestroyBuffer(state->device.logical_device, out_buffer->handle,
+                    state->allocator);
+    out_buffer->handle = VK_NULL_HANDLE;
+    return false_v;
+  }
+
+  vkr_allocator_report(&state->alloc, out_buffer->allocation_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_VULKAN, true_v);
+
+  if (vkBindBufferMemory(state->device.logical_device, out_buffer->handle,
+                         out_buffer->memory, 0) != VK_SUCCESS) {
+    log_error("Failed to bind readback buffer memory");
+    vkFreeMemory(state->device.logical_device, out_buffer->memory,
+                 state->allocator);
+    vkDestroyBuffer(state->device.logical_device, out_buffer->handle,
+                    state->allocator);
+    out_buffer->handle = VK_NULL_HANDLE;
+    out_buffer->memory = VK_NULL_HANDLE;
+    return false_v;
+  }
+
+  return true_v;
+}
+
+vkr_internal void vulkan_destroy_readback_buffer(VulkanBackendState *state,
+                                                 VulkanBuffer *buffer) {
+  if (buffer->handle == VK_NULL_HANDLE) {
+    return;
+  }
+
+  vkDestroyBuffer(state->device.logical_device, buffer->handle,
+                  state->allocator);
+  if (buffer->memory != VK_NULL_HANDLE) {
+    if (buffer->allocation_size > 0) {
+      vkr_allocator_report(&state->alloc, buffer->allocation_size,
+                           VKR_ALLOCATOR_MEMORY_TAG_VULKAN, false_v);
+    }
+    vkFreeMemory(state->device.logical_device, buffer->memory,
+                 state->allocator);
+  }
+
+  buffer->handle = VK_NULL_HANDLE;
+  buffer->memory = VK_NULL_HANDLE;
+}
+
+VkrRendererError renderer_vulkan_readback_ring_init(void *backend_state) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  VulkanReadbackRing *ring = &state->readback_ring;
+  if (ring->initialized) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
+  // Initialize each readback slot with a small buffer for single pixel readback
+  // Size: 8 bytes (supports up to R32G32_UINT which is 8 bytes per pixel)
+  const uint64_t slot_buffer_size = 8;
+
+  for (uint32_t i = 0; i < VKR_READBACK_RING_SIZE; i++) {
+    VulkanReadbackSlot *slot = &ring->slots[i];
+
+    if (!vulkan_create_readback_buffer(state, slot_buffer_size,
+                                       &slot->buffer)) {
+      log_error("Failed to create readback buffer for slot %u", i);
+      for (uint32_t j = 0; j < i; j++) {
+        vulkan_destroy_readback_buffer(state, &ring->slots[j].buffer);
+        vulkan_fence_destroy(state, &ring->slots[j].fence);
+      }
+      return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
+
+    vulkan_fence_create(state, true_v, &slot->fence); // Start signaled
+    if (slot->fence.handle == VK_NULL_HANDLE) {
+      log_error("Failed to create fence for readback slot %u", i);
+      vulkan_destroy_readback_buffer(state, &slot->buffer);
+      for (uint32_t j = 0; j < i; j++) {
+        vulkan_destroy_readback_buffer(state, &ring->slots[j].buffer);
+        vulkan_fence_destroy(state, &ring->slots[j].fence);
+      }
+      return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
+
+    slot->is_coherent = (slot->buffer.memory_property_flags &
+                         VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0;
+    slot->state = VULKAN_READBACK_SLOT_IDLE;
+    slot->pixel_size = 4; // Default R32_UINT
+  }
+
+  ring->write_index = 0;
+  ring->read_index = 0;
+  ring->pending_count = 0;
+  ring->initialized = true_v;
+
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+void renderer_vulkan_readback_ring_shutdown(void *backend_state) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  VulkanReadbackRing *ring = &state->readback_ring;
+  if (!ring->initialized) {
+    return;
+  }
+
+  for (uint32_t i = 0; i < VKR_READBACK_RING_SIZE; i++) {
+    VulkanReadbackSlot *slot = &ring->slots[i];
+    if (slot->state == VULKAN_READBACK_SLOT_PENDING) {
+      vulkan_fence_wait(state, UINT64_MAX, &slot->fence);
+    }
+    vulkan_destroy_readback_buffer(state, &slot->buffer);
+    vulkan_fence_destroy(state, &slot->fence);
+  }
+
+  MemZero(ring, sizeof(VulkanReadbackRing));
+}
+
+VkrRendererError
+renderer_vulkan_request_pixel_readback(void *backend_state,
+                                       VkrBackendResourceHandle texture,
+                                       uint32_t x, uint32_t y) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(texture.ptr != NULL, "Texture is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  VulkanReadbackRing *ring = &state->readback_ring;
+
+  if (!ring->initialized) {
+    VkrRendererError err = renderer_vulkan_readback_ring_init(backend_state);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      return err;
+    }
+  }
+
+  VulkanReadbackSlot *slot = &ring->slots[ring->write_index];
+
+  // If slot is still pending from a previous request, wait for the frame's
+  // in_flight fence to ensure the GPU has finished with the buffer
+  if (slot->state == VULKAN_READBACK_SLOT_PENDING) {
+    uint32_t fence_idx =
+        slot->request_frame % state->swapchain.max_in_flight_frames;
+    VulkanFence *fence =
+        array_get_VulkanFence(&state->in_flight_fences, fence_idx);
+    vulkan_fence_wait(state, UINT64_MAX, fence);
+    slot->state = VULKAN_READBACK_SLOT_IDLE;
+    ring->pending_count--;
+  }
+
+  struct s_TextureHandle *tex = (struct s_TextureHandle *)texture.ptr;
+
+  if (x >= tex->texture.image.width || y >= tex->texture.image.height) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  VulkanCommandBuffer *cmd = array_get_VulkanCommandBuffer(
+      &state->graphics_command_buffers, state->image_index);
+
+  vulkan_image_copy_to_buffer(state, &tex->texture.image, slot->buffer.handle,
+                              0, x, y, 1, 1, cmd);
+
+  VkBufferMemoryBarrier buffer_barrier = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+      .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .dstAccessMask = VK_ACCESS_HOST_READ_BIT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = slot->buffer.handle,
+      .offset = 0,
+      .size = VK_WHOLE_SIZE,
+  };
+
+  vkCmdPipelineBarrier(cmd->handle, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1,
+                       &buffer_barrier, 0, NULL);
+
+  slot->requested_x = x;
+  slot->requested_y = y;
+  slot->width = 1;
+  slot->height = 1;
+  slot->pixel_size = 4; // R32_UINT
+  slot->request_frame = state->current_frame;
+  slot->request_submit_serial = state->submit_serial;
+  slot->state = VULKAN_READBACK_SLOT_PENDING;
+
+  ring->write_index = (ring->write_index + 1) % VKR_READBACK_RING_SIZE;
+  ring->pending_count++;
+
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+VkrRendererError
+renderer_vulkan_get_pixel_readback_result(void *backend_state,
+                                          VkrPixelReadbackResult *result) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(result != NULL, "Result is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  VulkanReadbackRing *ring = &state->readback_ring;
+
+  result->status = VKR_READBACK_STATUS_IDLE;
+  result->valid = false_v;
+  result->data = 0;
+
+  if (!ring->initialized || ring->pending_count == 0) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
+  VulkanReadbackSlot *slot = &ring->slots[ring->read_index];
+  if (slot->state == VULKAN_READBACK_SLOT_IDLE) {
+    for (uint32_t i = 0; i < VKR_READBACK_RING_SIZE; i++) {
+      uint32_t idx = (ring->read_index + i) % VKR_READBACK_RING_SIZE;
+      if (ring->slots[idx].state != VULKAN_READBACK_SLOT_IDLE) {
+        slot = &ring->slots[idx];
+        ring->read_index = idx;
+        break;
+      }
+    }
+  }
+
+  if (slot->state == VULKAN_READBACK_SLOT_PENDING) {
+    // Check if the frame that recorded the readback has been submitted.
+    // IMPORTANT: current_frame wraps (0..max_in_flight_frames-1), so it can't be
+    // used to determine submission ordering. Use a monotonic submit serial
+    // instead.
+    if (state->submit_serial > slot->request_submit_serial) {
+      uint32_t fence_idx =
+          slot->request_frame % state->swapchain.max_in_flight_frames;
+      VulkanFence *fence =
+          array_get_VulkanFence(&state->in_flight_fences, fence_idx);
+      VkResult fence_result =
+          vkGetFenceStatus(state->device.logical_device, fence->handle);
+      if (fence_result == VK_SUCCESS) {
+        slot->state = VULKAN_READBACK_SLOT_READY;
+      } else if (fence_result == VK_NOT_READY) {
+        result->status = VKR_READBACK_STATUS_PENDING;
+        result->x = slot->requested_x;
+        result->y = slot->requested_y;
+        return VKR_RENDERER_ERROR_NONE;
+      } else {
+        result->status = VKR_READBACK_STATUS_ERROR;
+        return VKR_RENDERER_ERROR_DEVICE_ERROR;
+      }
+    } else {
+      // Frame not yet submitted
+      result->status = VKR_READBACK_STATUS_PENDING;
+      result->x = slot->requested_x;
+      result->y = slot->requested_y;
+      return VKR_RENDERER_ERROR_NONE;
+    }
+  }
+
+  if (slot->state == VULKAN_READBACK_SLOT_READY) {
+    void *mapped_data =
+        vulkan_buffer_lock_memory(state, &slot->buffer, 0, slot->pixel_size, 0);
+    if (!mapped_data) {
+      result->status = VKR_READBACK_STATUS_ERROR;
+      return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+
+    if (!slot->is_coherent) {
+      VkMappedMemoryRange range = {
+          .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+          .memory = slot->buffer.memory,
+          .offset = 0,
+          .size = VK_WHOLE_SIZE,
+      };
+      vkInvalidateMappedMemoryRanges(state->device.logical_device, 1, &range);
+    }
+
+    MemCopy(&result->data, mapped_data, sizeof(uint32_t));
+
+    vulkan_buffer_unlock_memory(state, &slot->buffer);
+
+    result->status = VKR_READBACK_STATUS_READY;
+    result->x = slot->requested_x;
+    result->y = slot->requested_y;
+    result->valid = true_v;
+
+    slot->state = VULKAN_READBACK_SLOT_IDLE;
+    ring->read_index = (ring->read_index + 1) % VKR_READBACK_RING_SIZE;
+    ring->pending_count--;
+  }
+
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+void renderer_vulkan_update_readback_ring(void *backend_state) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  VulkanReadbackRing *ring = &state->readback_ring;
+  if (!ring->initialized || ring->pending_count == 0) {
+    return;
+  }
+
+  for (uint32_t i = 0; i < VKR_READBACK_RING_SIZE; i++) {
+    VulkanReadbackSlot *slot = &ring->slots[i];
+    if (slot->state == VULKAN_READBACK_SLOT_PENDING) {
+      // The readback was recorded into the command buffer for request_frame.
+      // That frame's fence is at index (request_frame % max_in_flight_frames).
+      // We can check if the frame has been submitted and completed.
+      if (state->submit_serial > slot->request_submit_serial) {
+        // Frame has been submitted, check the in_flight fence
+        uint32_t fence_idx =
+            slot->request_frame % state->swapchain.max_in_flight_frames;
+        VulkanFence *fence =
+            array_get_VulkanFence(&state->in_flight_fences, fence_idx);
+        VkResult fence_result =
+            vkGetFenceStatus(state->device.logical_device, fence->handle);
+        if (fence_result == VK_SUCCESS) {
+          slot->state = VULKAN_READBACK_SLOT_READY;
+          // pending_count is decremented when result is consumed (IDLE)
+        }
+      }
+    }
+  }
 }

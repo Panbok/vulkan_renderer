@@ -95,6 +95,7 @@ typedef struct VulkanRenderPass {
 
   Vec2 position;
   Vec4 color;
+  uint32_t clear_color_uint; // Integer clear color (for R32_UINT picking)
 
   float32_t width, height;
 
@@ -282,24 +283,43 @@ typedef struct VkrRenderPassEntry {
 } VkrRenderPassEntry;
 Array(VkrRenderPassEntry);
 
+// ============================================================================
+// Pixel Readback System (for picking and screenshots)
+// ============================================================================
+
+#define VKR_READBACK_RING_SIZE 3 // Number of readback slots in flight
+
+typedef enum VulkanReadbackSlotState {
+  VULKAN_READBACK_SLOT_IDLE = 0, // Available for use
+  VULKAN_READBACK_SLOT_PENDING,  // Copy command submitted, waiting for GPU
+  VULKAN_READBACK_SLOT_READY,    // GPU done, data ready for CPU read
+} VulkanReadbackSlotState;
+
+typedef struct VulkanReadbackSlot {
+  VulkanBuffer buffer;            // HOST_VISIBLE buffer for readback
+  VulkanFence fence;              // Fence to track completion (legacy, unused)
+  VulkanReadbackSlotState state;  // Current slot state
+  uint32_t requested_x;           // Requested pixel X coordinate
+  uint32_t requested_y;           // Requested pixel Y coordinate
+  uint32_t width;                 // Width of copied region
+  uint32_t height;                // Height of copied region
+  uint32_t pixel_size;            // Size per pixel (e.g., 4 for R32_UINT)
+  bool8_t is_coherent;            // True if memory is HOST_COHERENT
+  uint32_t request_frame;         // Frame index when readback was requested
+  uint64_t request_submit_serial; // Monotonic submit serial at request time
+} VulkanReadbackSlot;
+
+typedef struct VulkanReadbackRing {
+  VulkanReadbackSlot slots[VKR_READBACK_RING_SIZE];
+  uint32_t write_index;   // Next slot to use for requests
+  uint32_t read_index;    // Oldest pending slot to check
+  uint32_t pending_count; // Number of slots in PENDING state
+  bool8_t initialized;    // True if ring has been initialized
+} VulkanReadbackRing;
+
 /**
  * @brief Vulkan backend state containing all rendering resources and state
  *
- * This structure manages the entire Vulkan rendering pipeline including the
- * automatic multi-render pass system (P14 implementation). Key features:
- *
- * MULTI-RENDER PASS SYSTEM (P14):
- * - Domain-based render passes allow automatic switching between rendering
- *   contexts (WORLD, UI, SHADOW, POST, COMPUTE)
- * - Render passes are started/stopped automatically based on pipeline domain
- * - No explicit render pass management required by application code
- *
- * RENDER PASS LIFECYCLE:
- * 1. begin_frame: Does NOT start any render pass (state.render_pass_active =
- * false)
- * 2. pipeline bind: Automatically starts domain-specific render pass if needed
- * 3. pipeline domain change: Automatically ends current pass, starts new pass
- * 4. end_frame: Automatically ends any active render pass
  *
  * DOMAIN CONFIGURATIONS:
  * - WORLD: Color+Depth, finalLayout=COLOR_ATTACHMENT_OPTIMAL (chains to UI)
@@ -323,6 +343,7 @@ typedef struct VulkanBackendState {
   bool8_t is_swapchain_recreation_requested;
 
   float64_t frame_delta;
+  uint64_t submit_serial;
   uint32_t current_frame;
   uint32_t image_index;
 
@@ -372,6 +393,7 @@ typedef struct VulkanBackendState {
    * - Set to false in end_frame after ending any active pass
    */
   bool8_t render_pass_active;
+  bool8_t frame_active;
 
   uint32_t active_image_index;
 
@@ -398,4 +420,7 @@ typedef struct VulkanBackendState {
 
   Array_VulkanCommandBuffer graphics_command_buffers;
   uint64_t descriptor_writes_avoided; // telemetry
+
+  // Pixel readback system for picking and screenshots
+  VulkanReadbackRing readback_ring;
 } VulkanBackendState;

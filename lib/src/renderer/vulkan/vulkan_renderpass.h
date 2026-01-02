@@ -28,6 +28,9 @@ bool8_t vulkan_renderpass_create_shadow(VulkanBackendState *state,
 bool8_t vulkan_renderpass_create_post(VulkanBackendState *state,
                                       VulkanRenderPass *out_render_pass);
 
+bool8_t vulkan_renderpass_create_picking(VulkanBackendState *state,
+                                         VulkanRenderPass *out_render_pass);
+
 void vulkan_renderpass_destroy(VulkanBackendState *state,
                                VulkanRenderPass *render_pass);
 

@@ -118,6 +118,12 @@ vulkan_renderpass_create_from_config(VulkanBackendState *state,
   assert_log(out_render_pass != NULL, "Out render pass is NULL");
   assert_log(cfg != NULL, "Config is NULL");
 
+  // PICKING domain requires special handling (R32_UINT format for object IDs)
+  if (cfg->domain == VKR_PIPELINE_DOMAIN_PICKING) {
+    return vulkan_renderpass_create_for_domain(state, cfg->domain,
+                                               out_render_pass);
+  }
+
   MemZero(out_render_pass, sizeof(VulkanRenderPass));
   out_render_pass->state = RENDER_PASS_STATE_NOT_ALLOCATED;
   out_render_pass->handle = VK_NULL_HANDLE;
@@ -347,6 +353,14 @@ bool8_t vulkan_renderpass_create_for_domain(VulkanBackendState *state,
     log_warn("Compute domain doesn't use traditional render passes");
     return true;
 
+  case VKR_PIPELINE_DOMAIN_SKYBOX:
+    // Skybox uses same pass as world (color + depth)
+    return vulkan_renderpass_create_world(state, out_render_pass);
+
+  case VKR_PIPELINE_DOMAIN_PICKING:
+    // Picking render pass uses R32_UINT color attachment for object IDs
+    return vulkan_renderpass_create_picking(state, out_render_pass);
+
   default:
     log_fatal("Unknown pipeline domain: %d", domain);
     return false;
@@ -414,6 +428,28 @@ bool8_t vulkan_renderpass_begin(VulkanCommandBuffer *command_buffer,
   case VKR_PIPELINE_DOMAIN_COMPUTE:
     log_warn("COMPUTE domain doesn't use traditional render pass begin");
     return true_v;
+
+  case VKR_PIPELINE_DOMAIN_SKYBOX:
+    // Skybox uses same as world (color + depth)
+    clear_values[0].color.float32[0] = render_pass->color.r;
+    clear_values[0].color.float32[1] = render_pass->color.g;
+    clear_values[0].color.float32[2] = render_pass->color.b;
+    clear_values[0].color.float32[3] = render_pass->color.a;
+    clear_values[1].depthStencil.depth = render_pass->depth;
+    clear_values[1].depthStencil.stencil = render_pass->stencil;
+    clear_value_count = 2;
+    break;
+
+  case VKR_PIPELINE_DOMAIN_PICKING:
+    // Integer color (R32_UINT) + depth attachments
+    clear_values[0].color.uint32[0] = render_pass->clear_color_uint;
+    clear_values[0].color.uint32[1] = 0;
+    clear_values[0].color.uint32[2] = 0;
+    clear_values[0].color.uint32[3] = 0;
+    clear_values[1].depthStencil.depth = render_pass->depth;
+    clear_values[1].depthStencil.stencil = render_pass->stencil;
+    clear_value_count = 2;
+    break;
 
   default:
     log_fatal("Unknown render pass domain: %d", render_pass->domain);
@@ -898,5 +934,129 @@ bool8_t vulkan_renderpass_create_post(VulkanBackendState *state,
 
   out_render_pass->state = RENDER_PASS_STATE_READY;
   log_debug("Created POST domain render pass: %p", out_render_pass->handle);
+  return true;
+}
+
+/**
+ * @brief Create render pass for PICKING domain (object ID selection)
+ *
+ * PICKING DOMAIN SPECIFICATION:
+ * This render pass is used for pixel-perfect object selection. It renders
+ * the scene with each object output as a unique object ID (uint32) instead
+ * of color. The resulting texture can be read back to determine which object
+ * is under a given pixel.
+ *
+ * ATTACHMENT CONFIGURATION:
+ * - Color Attachment (R32_UINT):
+ *   - Format: VK_FORMAT_R32_UINT (32-bit unsigned integer)
+ *   - Load Op: CLEAR (clear to 0 = no object)
+ *   - Store Op: STORE (must preserve for readback)
+ *   - Initial Layout: UNDEFINED
+ *   - Final Layout: TRANSFER_SRC_OPTIMAL (for vkCmdCopyImageToBuffer)
+ *
+ * - Depth Attachment:
+ *   - Format: Device depth format
+ *   - Load Op: CLEAR (fresh depth buffer)
+ *   - Store Op: DONT_CARE (not needed after picking)
+ *   - Initial Layout: UNDEFINED
+ *   - Final Layout: DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+ *
+ * @param state Vulkan backend state
+ * @param out_render_pass Output render pass object
+ * @return true on success, false on failure
+ */
+bool8_t vulkan_renderpass_create_picking(VulkanBackendState *state,
+                                         VulkanRenderPass *out_render_pass) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(out_render_pass != NULL, "Out render pass is NULL");
+
+  VkAttachmentDescription attachments[2] = {0};
+
+  // Color attachment (R32_UINT for object IDs)
+  attachments[0] = (VkAttachmentDescription){
+      .format = VK_FORMAT_R32_UINT,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+      .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+      .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+      .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+  };
+
+  // Depth attachment
+  attachments[1] = (VkAttachmentDescription){
+      .format = state->device.depth_format,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+      .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+      .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+  };
+
+  VkAttachmentReference color_ref = {
+      .attachment = 0,
+      .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+  };
+
+  VkAttachmentReference depth_ref = {
+      .attachment = 1,
+      .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+  };
+
+  VkSubpassDescription subpass = {
+      .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+      .colorAttachmentCount = 1,
+      .pColorAttachments = &color_ref,
+      .pDepthStencilAttachment = &depth_ref,
+  };
+
+  VkSubpassDependency dependencies[2] = {
+      // External → subpass 0 (start of render pass)
+      {
+          .srcSubpass = VK_SUBPASS_EXTERNAL,
+          .dstSubpass = 0,
+          .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+          .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+                          VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+          .srcAccessMask = 0,
+          .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+                           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+          .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+      },
+      // subpass 0 → external (end of render pass, transition for readback)
+      {
+          .srcSubpass = 0,
+          .dstSubpass = VK_SUBPASS_EXTERNAL,
+          .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+          .dstStageMask = VK_PIPELINE_STAGE_TRANSFER_BIT,
+          .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+          .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+          .dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+      }};
+
+  VkRenderPassCreateInfo create_info = {
+      .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+      .attachmentCount = 2,
+      .pAttachments = attachments,
+      .subpassCount = 1,
+      .pSubpasses = &subpass,
+      .dependencyCount = 2,
+      .pDependencies = dependencies,
+  };
+
+  if (vkCreateRenderPass(state->device.logical_device, &create_info,
+                         state->allocator,
+                         &out_render_pass->handle) != VK_SUCCESS) {
+    log_fatal("Failed to create PICKING domain render pass");
+    return false;
+  }
+
+  out_render_pass->state = RENDER_PASS_STATE_READY;
+  out_render_pass->clear_color_uint = 0; // 0 = no object
+  log_debug("Created PICKING domain render pass: %p", out_render_pass->handle);
   return true;
 }

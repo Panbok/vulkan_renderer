@@ -72,6 +72,14 @@ VkrBackendResourceHandle
 renderer_vulkan_create_texture(void *backend_state,
                                const VkrTextureDescription *desc,
                                const void *initial_data);
+VkrBackendResourceHandle
+renderer_vulkan_create_render_target_texture(
+    void *backend_state, const VkrRenderTargetTextureDesc *desc);
+VkrBackendResourceHandle renderer_vulkan_create_depth_attachment(
+    void *backend_state, uint32_t width, uint32_t height);
+VkrRendererError renderer_vulkan_transition_texture_layout(
+    void *backend_state, VkrBackendResourceHandle handle,
+    VkrTextureLayout old_layout, VkrTextureLayout new_layout);
 VkrRendererError renderer_vulkan_update_texture(
     void *backend_state, VkrBackendResourceHandle handle,
     const VkrTextureDescription *desc);
@@ -111,6 +119,12 @@ void renderer_vulkan_bind_buffer(void *backend_state,
                                  VkrBackendResourceHandle buffer_handle,
                                  uint64_t offset);
 
+void renderer_vulkan_set_viewport(void *backend_state,
+                                  const VkrViewport *viewport);
+
+void renderer_vulkan_set_scissor(void *backend_state,
+                                 const VkrScissor *scissor);
+
 void renderer_vulkan_draw(void *backend_state, uint32_t vertex_count,
                           uint32_t instance_count, uint32_t first_vertex,
                           uint32_t first_instance);
@@ -129,3 +143,14 @@ uint32_t renderer_vulkan_window_attachment_index(void *backend_state);
 // Telemetry
 uint64_t
 renderer_vulkan_get_and_reset_descriptor_writes_avoided(void *backend_state);
+
+// --- Pixel Readback API ---
+VkrRendererError renderer_vulkan_readback_ring_init(void *backend_state);
+void renderer_vulkan_readback_ring_shutdown(void *backend_state);
+VkrRendererError renderer_vulkan_request_pixel_readback(
+    void *backend_state, VkrBackendResourceHandle texture, uint32_t x,
+    uint32_t y);
+VkrRendererError
+renderer_vulkan_get_pixel_readback_result(void *backend_state,
+                                          VkrPixelReadbackResult *result);
+void renderer_vulkan_update_readback_ring(void *backend_state);

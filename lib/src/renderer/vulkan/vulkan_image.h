@@ -96,3 +96,51 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
                                               VkBuffer staging_buffer,
                                               VkFormat image_format,
                                               uint64_t face_size);
+
+/**
+ * @brief Copy a region of an image to a buffer.
+ *
+ * Used for pixel readback (e.g., object picking). The image must be in
+ * TRANSFER_SRC_OPTIMAL layout before calling this function.
+ *
+ * @param state The Vulkan backend state
+ * @param image The source image
+ * @param buffer The destination buffer (should be HOST_VISIBLE)
+ * @param buffer_offset Offset into the destination buffer
+ * @param x X coordinate of the region to copy (in pixels)
+ * @param y Y coordinate of the region to copy (in pixels)
+ * @param width Width of the region to copy (in pixels)
+ * @param height Height of the region to copy (in pixels)
+ * @param command_buffer The command buffer to record the copy command
+ * @return true on success, false on failure
+ */
+bool8_t vulkan_image_copy_to_buffer(VulkanBackendState *state,
+                                    VulkanImage *image, VkBuffer buffer,
+                                    uint64_t buffer_offset, uint32_t x,
+                                    uint32_t y, uint32_t width, uint32_t height,
+                                    VulkanCommandBuffer *command_buffer);
+
+/**
+ * @brief Copy a region of an image to a buffer with specified aspect flags.
+ *
+ * Extended version that allows specifying the image aspect (color, depth, etc).
+ *
+ * @param state The Vulkan backend state
+ * @param image The source image
+ * @param buffer The destination buffer (should be HOST_VISIBLE)
+ * @param buffer_offset Offset into the destination buffer
+ * @param x X coordinate of the region to copy (in pixels)
+ * @param y Y coordinate of the region to copy (in pixels)
+ * @param width Width of the region to copy (in pixels)
+ * @param height Height of the region to copy (in pixels)
+ * @param aspect_flags The image aspect flags (e.g., VK_IMAGE_ASPECT_COLOR_BIT)
+ * @param command_buffer The command buffer to record the copy command
+ * @return true on success, false on failure
+ */
+bool8_t vulkan_image_copy_to_buffer_ex(VulkanBackendState *state,
+                                       VulkanImage *image, VkBuffer buffer,
+                                       uint64_t buffer_offset, uint32_t x,
+                                       uint32_t y, uint32_t width,
+                                       uint32_t height,
+                                       VkImageAspectFlags aspect_flags,
+                                       VulkanCommandBuffer *command_buffer);

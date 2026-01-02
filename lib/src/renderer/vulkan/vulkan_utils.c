@@ -218,6 +218,38 @@ VkBufferUsageFlags vulkan_buffer_usage_to_vk(VkrBufferUsageFlags usage) {
   return vk_usage;
 }
 
+VkImageUsageFlags
+vulkan_image_usage_from_texture_usage(VkrTextureUsageFlags usage) {
+  VkImageUsageFlags vk_usage = 0;
+
+  if (bitset8_is_set(&usage, VKR_TEXTURE_USAGE_SAMPLED)) {
+    vk_usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
+  }
+
+  if (bitset8_is_set(&usage, VKR_TEXTURE_USAGE_COLOR_ATTACHMENT)) {
+    vk_usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  }
+
+  if (bitset8_is_set(&usage, VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT)) {
+    vk_usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+  }
+
+  if (bitset8_is_set(&usage, VKR_TEXTURE_USAGE_TRANSFER_SRC)) {
+    vk_usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  }
+
+  if (bitset8_is_set(&usage, VKR_TEXTURE_USAGE_TRANSFER_DST)) {
+    vk_usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  }
+
+  if (vk_usage == 0) {
+    log_fatal("Invalid texture usage: no valid flags set");
+    return VK_IMAGE_USAGE_SAMPLED_BIT;
+  }
+
+  return vk_usage;
+}
+
 VkMemoryPropertyFlags
 vulkan_memory_property_flags_to_vk(VkrMemoryPropertyFlags flags) {
   VkMemoryPropertyFlags vk_flags = 0;
@@ -252,12 +284,30 @@ VkFormat vulkan_image_format_from_texture_format(VkrTextureFormat format) {
     return VK_FORMAT_R8G8B8A8_UNORM;
   case VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB:
     return VK_FORMAT_R8G8B8A8_SRGB;
+  case VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM:
+    return VK_FORMAT_B8G8R8A8_UNORM;
+  case VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB:
+    return VK_FORMAT_B8G8R8A8_SRGB;
   case VKR_TEXTURE_FORMAT_R8G8B8A8_UINT:
     return VK_FORMAT_R8G8B8A8_UINT;
   case VKR_TEXTURE_FORMAT_R8G8B8A8_SNORM:
     return VK_FORMAT_R8G8B8A8_SNORM;
   case VKR_TEXTURE_FORMAT_R8G8B8A8_SINT:
     return VK_FORMAT_R8G8B8A8_SINT;
+  case VKR_TEXTURE_FORMAT_R8_UNORM:
+    return VK_FORMAT_R8_UNORM;
+  case VKR_TEXTURE_FORMAT_R16_SFLOAT:
+    return VK_FORMAT_R16_SFLOAT;
+  case VKR_TEXTURE_FORMAT_R32_SFLOAT:
+    return VK_FORMAT_R32_SFLOAT;
+  case VKR_TEXTURE_FORMAT_R32_UINT:
+    return VK_FORMAT_R32_UINT;
+  case VKR_TEXTURE_FORMAT_R8G8_UNORM:
+    return VK_FORMAT_R8G8_UNORM;
+  case VKR_TEXTURE_FORMAT_D32_SFLOAT:
+    return VK_FORMAT_D32_SFLOAT;
+  case VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT:
+    return VK_FORMAT_D24_UNORM_S8_UINT;
   default:
     log_fatal("Invalid texture format: %d", format);
     return VK_FORMAT_UNDEFINED;
