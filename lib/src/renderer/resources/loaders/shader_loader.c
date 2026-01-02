@@ -103,6 +103,31 @@ typedef struct VkrVertexAttributeExpectation {
   uint32_t offset;
 } VkrVertexAttributeExpectation;
 
+vkr_internal void vkr_apply_attribute_expectations(
+    VkrShaderConfig *cfg, const VkrVertexAttributeExpectation *expectations,
+    uint32_t expectation_count, uint32_t stride) {
+  cfg->attribute_stride = stride;
+  for (uint32_t i = 0; i < expectation_count; ++i) {
+    const VkrVertexAttributeExpectation *exp = &expectations[i];
+    bool8_t found = false_v;
+    for (uint32_t j = 0; j < cfg->attribute_count; ++j) {
+      VkrShaderAttributeDesc *ad =
+          array_get_VkrShaderAttributeDesc(&cfg->attributes, j);
+      if (vkr_string8_equals_cstr(&ad->name, exp->name)) {
+        ad->location = i;
+        ad->offset = exp->offset;
+        ad->size = vkr_attribute_type_size(exp->type);
+        found = true_v;
+        break;
+      }
+    }
+    if (!found) {
+      log_warn("Shader '%s' missing vertex attribute '%s'; defaulting to zero",
+               string8_cstr(&cfg->name), exp->name);
+    }
+  }
+}
+
 vkr_internal VkrVertexType
 vkr_shader_config_detect_vertex_type(const VkrShaderConfig *cfg) {
   if (cfg->renderpass_name.length > 0 &&
@@ -183,27 +208,9 @@ vkr_internal void vkr_compute_attribute_layout(VkrShaderConfig *cfg) {
           {"in_color", SHADER_ATTRIBUTE_TYPE_VEC4,
            (uint32_t)offsetof(VkrTextVertex, color)},
       };
-      cfg->attribute_stride = sizeof(VkrTextVertex);
-      for (uint32_t i = 0; i < ArrayCount(expectations); ++i) {
-        const VkrVertexAttributeExpectation *exp = &expectations[i];
-        bool8_t found = false_v;
-        for (uint32_t j = 0; j < cfg->attribute_count; ++j) {
-          VkrShaderAttributeDesc *ad =
-              array_get_VkrShaderAttributeDesc(&cfg->attributes, j);
-          if (vkr_string8_equals_cstr(&ad->name, exp->name)) {
-            ad->location = i;
-            ad->offset = exp->offset;
-            ad->size = vkr_attribute_type_size(exp->type);
-            found = true_v;
-            break;
-          }
-        }
-        if (!found) {
-          log_warn(
-              "Shader '%s' missing vertex attribute '%s'; defaulting to zero",
-              string8_cstr(&cfg->name), exp->name);
-        }
-      }
+      vkr_apply_attribute_expectations(cfg, expectations,
+                                       (uint32_t)ArrayCount(expectations),
+                                       sizeof(VkrTextVertex));
     } else {
       static const VkrVertexAttributeExpectation expectations[] = {
           {"in_position", SHADER_ATTRIBUTE_TYPE_VEC2,
@@ -211,27 +218,9 @@ vkr_internal void vkr_compute_attribute_layout(VkrShaderConfig *cfg) {
           {"in_texcoord", SHADER_ATTRIBUTE_TYPE_VEC2,
            (uint32_t)offsetof(VkrVertex2d, texcoord)},
       };
-      cfg->attribute_stride = sizeof(VkrVertex2d);
-      for (uint32_t i = 0; i < ArrayCount(expectations); ++i) {
-        const VkrVertexAttributeExpectation *exp = &expectations[i];
-        bool8_t found = false_v;
-        for (uint32_t j = 0; j < cfg->attribute_count; ++j) {
-          VkrShaderAttributeDesc *ad =
-              array_get_VkrShaderAttributeDesc(&cfg->attributes, j);
-          if (vkr_string8_equals_cstr(&ad->name, exp->name)) {
-            ad->location = i;
-            ad->offset = exp->offset;
-            ad->size = vkr_attribute_type_size(exp->type);
-            found = true_v;
-            break;
-          }
-        }
-        if (!found) {
-          log_warn(
-              "Shader '%s' missing vertex attribute '%s'; defaulting to zero",
-              string8_cstr(&cfg->name), exp->name);
-        }
-      }
+      vkr_apply_attribute_expectations(cfg, expectations,
+                                       (uint32_t)ArrayCount(expectations),
+                                       sizeof(VkrVertex2d));
     }
   }
 }
