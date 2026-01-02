@@ -287,7 +287,8 @@ Array(VkrRenderPassEntry);
 // Pixel Readback System (for picking and screenshots)
 // ============================================================================
 
-#define VKR_READBACK_RING_SIZE 3 // Number of readback slots in flight
+#define VKR_READBACK_RING_SIZE                                                 \
+  BUFFERING_FRAMES // Number of readback slots in flight
 
 typedef enum VulkanReadbackSlotState {
   VULKAN_READBACK_SLOT_IDLE = 0, // Available for use
@@ -297,7 +298,7 @@ typedef enum VulkanReadbackSlotState {
 
 typedef struct VulkanReadbackSlot {
   VulkanBuffer buffer;            // HOST_VISIBLE buffer for readback
-  VulkanFence fence;              // Fence to track completion (legacy, unused)
+  VulkanFence fence;              // Fence to track completion
   VulkanReadbackSlotState state;  // Current slot state
   uint32_t requested_x;           // Requested pixel X coordinate
   uint32_t requested_y;           // Requested pixel Y coordinate

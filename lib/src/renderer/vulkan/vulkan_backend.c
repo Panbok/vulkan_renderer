@@ -1382,7 +1382,6 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
   // log_debug("Ending Vulkan frame");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  state->frame_active = false_v;
 
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, state->image_index);
@@ -1447,6 +1446,8 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
     return VKR_RENDERER_ERROR_NONE;
   }
 
+  state->frame_active = false_v;
+
   // Make sure the previous frame is not using this image (i.e. its fence is
   // being waited on)
   VulkanFencePtr *image_fence =
@@ -1496,7 +1497,8 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
   state->submit_serial++;
 
   // Advance frame counter for triple-buffering synchronization.
-  // Must happen after queue submit so readback fence checks can detect completion.
+  // Must happen after queue submit so readback fence checks can detect
+  // completion.
   state->current_frame =
       (state->current_frame + 1) % state->swapchain.max_in_flight_frames;
 
@@ -1755,7 +1757,10 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
       .generation = 1,
   };
 
-  if (texture->description.channels == 4) {
+  // Only set transparency for non-integer color formats
+  if (texture->description.channels == 4 &&
+      desc->format != VKR_TEXTURE_FORMAT_R8G8B8A8_UINT &&
+      desc->format != VKR_TEXTURE_FORMAT_R8G8B8A8_SINT) {
     bitset8_set(&texture->description.properties,
                 VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
   }
@@ -2946,6 +2951,10 @@ void renderer_vulkan_set_viewport(void *backend_state,
   assert_log(viewport != NULL, "Viewport is NULL");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state->frame_active) {
+    log_warn("set_viewport called outside active frame");
+    return;
+  }
 
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, state->image_index);
@@ -3620,8 +3629,8 @@ renderer_vulkan_get_pixel_readback_result(void *backend_state,
 
   if (slot->state == VULKAN_READBACK_SLOT_PENDING) {
     // Check if the frame that recorded the readback has been submitted.
-    // IMPORTANT: current_frame wraps (0..max_in_flight_frames-1), so it can't be
-    // used to determine submission ordering. Use a monotonic submit serial
+    // IMPORTANT: current_frame wraps (0..max_in_flight_frames-1), so it can't
+    // be used to determine submission ordering. Use a monotonic submit serial
     // instead.
     if (state->submit_serial > slot->request_submit_serial) {
       uint32_t fence_idx =

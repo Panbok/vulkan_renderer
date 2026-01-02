@@ -102,17 +102,27 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
  *
  * Used for pixel readback (e.g., object picking). The image must be in
  * TRANSFER_SRC_OPTIMAL layout before calling this function.
+ * Copies from mip level 0, array layer 0.
+ *
+ * This function uses VK_IMAGE_ASPECT_COLOR_BIT by default. For depth/stencil
+ * images or other aspect flags, use vulkan_image_copy_to_buffer_ex instead.
  *
  * @param state The Vulkan backend state
  * @param image The source image
- * @param buffer The destination buffer (should be HOST_VISIBLE)
+ * @param buffer The destination buffer (must be HOST_VISIBLE for readback)
  * @param buffer_offset Offset into the destination buffer
  * @param x X coordinate of the region to copy (in pixels)
  * @param y Y coordinate of the region to copy (in pixels)
  * @param width Width of the region to copy (in pixels)
  * @param height Height of the region to copy (in pixels)
- * @param command_buffer The command buffer to record the copy command
+ * @param command_buffer The command buffer to record the copy command (must be
+ * in recording state)
  * @return true on success, false on failure
+ *
+ * @note All coordinates and dimensions are in pixels. The function validates
+ * that the region does not exceed image bounds (x + width <= image->width,
+ * y + height <= image->height). Use vulkan_image_copy_to_buffer_ex when you
+ * need to specify a different image aspect (e.g., depth or stencil).
  */
 bool8_t vulkan_image_copy_to_buffer(VulkanBackendState *state,
                                     VulkanImage *image, VkBuffer buffer,
@@ -124,18 +134,28 @@ bool8_t vulkan_image_copy_to_buffer(VulkanBackendState *state,
  * @brief Copy a region of an image to a buffer with specified aspect flags.
  *
  * Extended version that allows specifying the image aspect (color, depth, etc).
+ * The image must be in TRANSFER_SRC_OPTIMAL layout before calling this
+ * function. Copies from mip level 0, array layer 0.
  *
  * @param state The Vulkan backend state
  * @param image The source image
- * @param buffer The destination buffer (should be HOST_VISIBLE)
+ * @param buffer The destination buffer (must be HOST_VISIBLE for readback)
  * @param buffer_offset Offset into the destination buffer
  * @param x X coordinate of the region to copy (in pixels)
  * @param y Y coordinate of the region to copy (in pixels)
  * @param width Width of the region to copy (in pixels)
  * @param height Height of the region to copy (in pixels)
- * @param aspect_flags The image aspect flags (e.g., VK_IMAGE_ASPECT_COLOR_BIT)
- * @param command_buffer The command buffer to record the copy command
+ * @param aspect_flags The image aspect flags (e.g., VK_IMAGE_ASPECT_COLOR_BIT,
+ * VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_ASPECT_STENCIL_BIT)
+ * @param command_buffer The command buffer to record the copy command (must be
+ * in recording state)
  * @return true on success, false on failure
+ *
+ * @note All coordinates and dimensions are in pixels. The function validates
+ * that the region does not exceed image bounds (x + width <= image->width,
+ * y + height <= image->height). Use this function instead of
+ * vulkan_image_copy_to_buffer when you need to copy depth/stencil data or
+ * specify a different image aspect.
  */
 bool8_t vulkan_image_copy_to_buffer_ex(VulkanBackendState *state,
                                        VulkanImage *image, VkBuffer buffer,

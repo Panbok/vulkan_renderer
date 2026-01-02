@@ -120,6 +120,7 @@ vulkan_renderpass_create_from_config(VulkanBackendState *state,
 
   // PICKING domain requires special handling (R32_UINT format for object IDs)
   if (cfg->domain == VKR_PIPELINE_DOMAIN_PICKING) {
+    MemZero(out_render_pass, sizeof(VulkanRenderPass));
     return vulkan_renderpass_create_for_domain(state, cfg->domain,
                                                out_render_pass);
   }
@@ -338,6 +339,7 @@ bool8_t vulkan_renderpass_create_for_domain(VulkanBackendState *state,
   switch (domain) {
   case VKR_PIPELINE_DOMAIN_WORLD:
   case VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT:
+  case VKR_PIPELINE_DOMAIN_SKYBOX:
     return vulkan_renderpass_create_world(state, out_render_pass);
 
   case VKR_PIPELINE_DOMAIN_UI:
@@ -352,10 +354,6 @@ bool8_t vulkan_renderpass_create_for_domain(VulkanBackendState *state,
   case VKR_PIPELINE_DOMAIN_COMPUTE:
     log_warn("Compute domain doesn't use traditional render passes");
     return true;
-
-  case VKR_PIPELINE_DOMAIN_SKYBOX:
-    // Skybox uses same pass as world (color + depth)
-    return vulkan_renderpass_create_world(state, out_render_pass);
 
   case VKR_PIPELINE_DOMAIN_PICKING:
     // Picking render pass uses R32_UINT color attachment for object IDs
