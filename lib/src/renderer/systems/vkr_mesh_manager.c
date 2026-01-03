@@ -3,11 +3,95 @@
 #include "containers/str.h"
 #include "core/logger.h"
 #include "defines.h"
+#include "math/mat.h"
+#include "math/vec.h"
+#include "math/vkr_math.h"
 #include "math/vkr_transform.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/loaders/mesh_loader.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_resource_system.h"
+
+/**
+ * @brief Compute bounding sphere for a mesh from its submesh geometries.
+ * Unions all geometry AABBs then computes enclosing sphere.
+ */
+vkr_internal void vkr_mesh_compute_local_bounds(VkrMesh *mesh,
+                                                VkrGeometrySystem *geo_system) {
+  if (!mesh || mesh->submeshes.length == 0) {
+    mesh->bounds_valid = false_v;
+    return;
+  }
+
+  // Initialize union AABB with first valid geometry
+  Vec3 union_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
+  Vec3 union_max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
+  bool8_t has_valid_geometry = false_v;
+
+  for (uint32_t i = 0; i < mesh->submeshes.length; i++) {
+    VkrSubMesh *submesh = array_get_VkrSubMesh(&mesh->submeshes, i);
+    if (!submesh || submesh->geometry.id == 0) {
+      continue;
+    }
+
+    VkrGeometry *geo =
+        vkr_geometry_system_get_by_handle(geo_system, submesh->geometry);
+    if (!geo) {
+      continue;
+    }
+
+    // Geometry stores center + min/max extents (relative to center)
+    Vec3 geo_min = vec3_add(geo->center, geo->min_extents);
+    Vec3 geo_max = vec3_add(geo->center, geo->max_extents);
+
+    // Union with current bounds
+    union_min.x = vkr_min_f32(union_min.x, geo_min.x);
+    union_min.y = vkr_min_f32(union_min.y, geo_min.y);
+    union_min.z = vkr_min_f32(union_min.z, geo_min.z);
+    union_max.x = vkr_max_f32(union_max.x, geo_max.x);
+    union_max.y = vkr_max_f32(union_max.y, geo_max.y);
+    union_max.z = vkr_max_f32(union_max.z, geo_max.z);
+
+    has_valid_geometry = true_v;
+  }
+
+  if (!has_valid_geometry) {
+    mesh->bounds_valid = false_v;
+    return;
+  }
+
+  // Compute bounding sphere from AABB
+  mesh->bounds_local_center = vec3_scale(vec3_add(union_min, union_max), 0.5f);
+  Vec3 half_extents = vec3_scale(vec3_sub(union_max, union_min), 0.5f);
+  mesh->bounds_local_radius = vec3_length(half_extents);
+  mesh->bounds_valid = true_v;
+}
+
+/**
+ * @brief Update world-space bounding sphere from local bounds and model matrix.
+ * Handles non-uniform scale conservatively using max scale factor.
+ */
+vkr_internal void vkr_mesh_update_world_bounds(VkrMesh *mesh) {
+  if (!mesh->bounds_valid) {
+    return;
+  }
+
+  // Transform center to world space
+  mesh->bounds_world_center =
+      mat4_mul_vec3(mesh->model, mesh->bounds_local_center);
+
+  // Compute max scale factor from matrix columns (handles non-uniform scale)
+  Vec3 col0 = vec3_new(mesh->model.m00, mesh->model.m10, mesh->model.m20);
+  Vec3 col1 = vec3_new(mesh->model.m01, mesh->model.m11, mesh->model.m21);
+  Vec3 col2 = vec3_new(mesh->model.m02, mesh->model.m12, mesh->model.m22);
+
+  float32_t sx = vec3_length(col0);
+  float32_t sy = vec3_length(col1);
+  float32_t sz = vec3_length(col2);
+  float32_t max_scale = vkr_max_f32(vkr_max_f32(sx, sy), sz);
+
+  mesh->bounds_world_radius = mesh->bounds_local_radius * max_scale;
+}
 
 vkr_internal bool8_t vkr_mesh_manager_resolve_geometry(
     VkrMeshManager *manager, const VkrSubMeshDesc *desc,
@@ -323,6 +407,9 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
   new_mesh.transform = desc->transform;
   new_mesh.model = vkr_transform_get_world(&new_mesh.transform);
   new_mesh.submeshes = submesh_array;
+
+  vkr_mesh_compute_local_bounds(&new_mesh, manager->geometry_system);
+  vkr_mesh_update_world_bounds(&new_mesh);
 
   uint32_t slot = VKR_INVALID_ID;
   if (manager->free_count > 0) {
@@ -714,6 +801,9 @@ void vkr_mesh_manager_update_model(VkrMeshManager *manager, uint32_t index) {
     return;
 
   mesh->model = vkr_transform_get_world(&mesh->transform);
+
+  vkr_mesh_update_world_bounds(mesh);
+
   for (uint32_t submesh_index = 0; submesh_index < mesh->submeshes.length;
        ++submesh_index) {
     VkrSubMesh *submesh = array_get_VkrSubMesh(&mesh->submeshes, submesh_index);
