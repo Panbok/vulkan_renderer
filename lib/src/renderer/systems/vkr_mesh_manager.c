@@ -18,7 +18,10 @@
  */
 vkr_internal void vkr_mesh_compute_local_bounds(VkrMesh *mesh,
                                                 VkrGeometrySystem *geo_system) {
-  if (!mesh || mesh->submeshes.length == 0) {
+  if (!mesh)
+    return;
+
+  if (mesh->submeshes.length == 0) {
     mesh->bounds_valid = false_v;
     return;
   }

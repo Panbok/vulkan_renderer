@@ -184,6 +184,13 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
     picking_destroy_attachments(rf, ctx);
     return false_v;
   }
+
+  if (!cfg_info.as.custom) {
+    log_error("Shader config returned null custom data");
+    picking_destroy_attachments(rf, ctx);
+    return false_v;
+  }
+
   ctx->shader_config = *(VkrShaderConfig *)cfg_info.as.custom;
 
   if (!vkr_shader_system_create(&rf->shader_system, &ctx->shader_config)) {
@@ -199,6 +206,7 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
           &ctx->picking_pipeline, &pipeline_err)) {
     String8 err_str = vkr_renderer_get_error_string(pipeline_err);
     log_error("Failed to create picking pipeline: %s", string8_cstr(&err_str));
+    vkr_shader_system_delete(&rf->shader_system, "picking");
     picking_destroy_attachments(rf, ctx);
     return false_v;
   }
@@ -402,6 +410,7 @@ VkrPickResult vkr_picking_get_result(struct s_RendererFrontend *renderer,
     return result;
   }
 
+  // Cache the result for the next call
   result.object_id = ctx->result_object_id;
   result.hit = (ctx->result_object_id > 0);
 

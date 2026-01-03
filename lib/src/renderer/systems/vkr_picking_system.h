@@ -37,10 +37,10 @@ struct VkrMeshManager;
  * @brief State machine for picking request lifecycle.
  */
 typedef enum VkrPickingState {
-  VKR_PICKING_STATE_IDLE = 0,       /**< No pick in progress */
-  VKR_PICKING_STATE_RENDER_PENDING, /**< Pick requested, needs render pass */
+  VKR_PICKING_STATE_IDLE = 0,         /**< No pick in progress */
+  VKR_PICKING_STATE_RENDER_PENDING,   /**< Pick requested, needs render pass */
   VKR_PICKING_STATE_READBACK_PENDING, /**< Rendered, GPU readback in flight */
-  VKR_PICKING_STATE_RESULT_READY,   /**< Result available */
+  VKR_PICKING_STATE_RESULT_READY,     /**< Result available */
 } VkrPickingState;
 
 /**
@@ -114,6 +114,13 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
  * Call when the viewport dimensions change. Destroys and recreates the
  * picking attachments at the new size.
  *
+ * If a pick is in progress, this function waits for the GPU to become idle
+ * (completing any pending readback) before destroying attachments, then
+ * recreates them at the new size. The picking state is not reset, so callers
+ * should check for results via vkr_picking_get_result() before resizing, or
+ * call vkr_picking_cancel() to explicitly reset the state if the pending pick
+ * should be discarded.
+ *
  * @param renderer The renderer frontend
  * @param ctx Picking context
  * @param new_width New render target width
@@ -133,9 +140,16 @@ void vkr_picking_resize(struct s_RendererFrontend *renderer,
  * Only one pick can be in flight at a time. If a pick is already pending,
  * this call is ignored.
  *
+ * Out-of-bounds coordinates (target_x >= width or target_y >= height) are
+ * rejected: the request is ignored, a warning is logged, and no pick is
+ * initiated. Valid coordinates must be in the range [0, width-1] for target_x
+ * and [0, height-1] for target_y.
+ *
  * @param ctx Picking context
- * @param target_x X coordinate in render target pixels
- * @param target_y Y coordinate in render target pixels
+ * @param target_x X coordinate in render target pixels (must be in [0,
+ * width-1])
+ * @param target_y Y coordinate in render target pixels (must be in [0,
+ * height-1])
  */
 void vkr_picking_request(VkrPickingContext *ctx, uint32_t target_x,
                          uint32_t target_y);
@@ -202,4 +216,3 @@ void vkr_picking_cancel(VkrPickingContext *ctx);
  */
 void vkr_picking_shutdown(struct s_RendererFrontend *renderer,
                           VkrPickingContext *ctx);
-
