@@ -1,0 +1,32 @@
+# Picking Shader Configuration
+# This shader outputs object IDs for pixel-perfect object selection.
+# The fragment shader outputs a uint32 object_id to an R32_UINT render target.
+
+version=1.0
+name=shader.picking
+renderpass=Renderpass.Builtin.Picking
+stages=vertex,fragment
+stagefiles=assets/shaders/picking.spv
+use_instance=0
+use_local=1
+
+# ============================================================================
+# Vertex Attributes (same layout as world shader for geometry compatibility)
+# ============================================================================
+attribute=vec3,in_position
+attribute=vec3,in_normal
+attribute=vec2,in_texcoord
+attribute=vec4,in_color
+attribute=vec4,in_tangent
+
+# ============================================================================
+# Uniforms
+# ============================================================================
+
+# Global uniforms (descriptor set 0) - projection and view matrices only
+uniform=mat4,0,projection
+uniform=mat4,0,view
+
+# Local uniforms (push constants) - model matrix and object ID
+uniform=mat4,2,model
+uniform=uint32,2,object_id
