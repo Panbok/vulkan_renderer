@@ -34,19 +34,21 @@ vkr_internal bool8_t vkr_texture_loader_can_load(VkrResourceLoader *self,
 
   String8 base_name = vkr_texture_loader_strip_query(name);
   const uint8_t *extension_chars = base_name.str;
+
+  String8 png = string8_create_from_cstr((const uint8_t *)png_ext,
+                                         string_length(png_ext));
+  String8 jpg = string8_create_from_cstr((const uint8_t *)jpg_ext,
+                                         string_length(jpg_ext));
+  String8 jpeg = string8_create_from_cstr((const uint8_t *)jpeg_ext,
+                                          string_length(jpeg_ext));
+  String8 bmp = string8_create_from_cstr((const uint8_t *)bmp_ext,
+                                         string_length(bmp_ext));
+  String8 tga = string8_create_from_cstr((const uint8_t *)tga_ext,
+                                         string_length(tga_ext));
+
   for (uint64_t ext_length = base_name.length; ext_length > 0; ext_length--) {
     if (extension_chars[ext_length - 1] == '.') {
       String8 ext = string8_substring(&base_name, ext_length, base_name.length);
-      String8 png = string8_create_from_cstr((const uint8_t *)png_ext,
-                                             string_length(png_ext));
-      String8 jpg = string8_create_from_cstr((const uint8_t *)jpg_ext,
-                                             string_length(jpg_ext));
-      String8 jpeg = string8_create_from_cstr((const uint8_t *)jpeg_ext,
-                                              string_length(jpeg_ext));
-      String8 bmp = string8_create_from_cstr((const uint8_t *)bmp_ext,
-                                             string_length(bmp_ext));
-      String8 tga = string8_create_from_cstr((const uint8_t *)tga_ext,
-                                             string_length(tga_ext));
       return string8_equalsi(&ext, &png) || string8_equalsi(&ext, &jpg) ||
              string8_equalsi(&ext, &jpeg) || string8_equalsi(&ext, &bmp) ||
              string8_equalsi(&ext, &tga);

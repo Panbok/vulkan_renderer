@@ -511,6 +511,12 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   out_system->cache_guard->inflight =
       vkr_hash_table_create_VkrTextureCacheWriteEntry(&out_system->allocator,
                                                       guard_capacity);
+  if (!out_system->cache_guard->inflight.entries) {
+    log_error("Failed to create texture cache write guard hash table");
+    vkr_mutex_destroy(&out_system->allocator, &out_system->cache_guard->mutex);
+    return false_v;
+  }
+
   out_system->next_free_index = 0;
   out_system->generation_counter = 1;
 
