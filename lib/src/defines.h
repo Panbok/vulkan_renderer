@@ -27,6 +27,20 @@
 #define MaxAlign() 16 // Most modern platforms use 16-byte max alignment
 #endif
 
+// =============================================================================
+// SIMD Alignment and Attributes
+// =============================================================================
+
+/**
+ * @brief Alignment attribute for optimal SIMD performance.
+ * Ensures 16-byte alignment required by most SIMD instruction sets.
+ */
+#if defined(_MSC_VER)
+#define VKR_SIMD_ALIGN __declspec(align(16))
+#else
+#define VKR_SIMD_ALIGN __attribute__((aligned(16)))
+#endif
+
 #define Min(A, B) (((A) < (B)) ? (A) : (B))
 #define Max(A, B) (((A) > (B)) ? (A) : (B))
 #define ClampTop(A, X) Min(A, X)

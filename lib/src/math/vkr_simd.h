@@ -79,20 +79,6 @@
 #include "vkr_pch.h"
 
 // =============================================================================
-// SIMD Alignment and Attributes
-// =============================================================================
-
-/**
- * @brief Alignment attribute for optimal SIMD performance.
- * Ensures 16-byte alignment required by most SIMD instruction sets.
- */
-#if defined(_MSC_VER)
-#define VKR_SIMD_ALIGN __declspec(align(16))
-#else
-#define VKR_SIMD_ALIGN __attribute__((aligned(16)))
-#endif
-
-// =============================================================================
 // SIMD Type Definitions
 // =============================================================================
 
@@ -1042,16 +1028,14 @@ vkr_internal INLINE bool8_t vkr_simd_compare_f32x4(VKR_SIMD_F32X4 a,
   }
   case VKR_SIMD_COMPARE_MODE_EQUAL_EPSILON: {
     const __m128 sign_mask = _mm_set1_ps(-0.0f);
-    __m128 abs_diff =
-        _mm_andnot_ps(sign_mask, _mm_sub_ps(a.sse, b.sse));
+    __m128 abs_diff = _mm_andnot_ps(sign_mask, _mm_sub_ps(a.sse, b.sse));
     __m128 eps_vec = _mm_set1_ps(abs_epsilon);
     int mask = _mm_movemask_ps(_mm_cmple_ps(abs_diff, eps_vec));
     return mask == 0xF ? true_v : false_v;
   }
   case VKR_SIMD_COMPARE_MODE_NOT_EQUAL_EPSILON: {
     const __m128 sign_mask = _mm_set1_ps(-0.0f);
-    __m128 abs_diff =
-        _mm_andnot_ps(sign_mask, _mm_sub_ps(a.sse, b.sse));
+    __m128 abs_diff = _mm_andnot_ps(sign_mask, _mm_sub_ps(a.sse, b.sse));
     __m128 eps_vec = _mm_set1_ps(abs_epsilon);
     int mask = _mm_movemask_ps(_mm_cmpgt_ps(abs_diff, eps_vec));
     return mask ? true_v : false_v;
@@ -1294,10 +1278,8 @@ vkr_internal INLINE bool8_t vkr_simd_compare_f32x4(VKR_SIMD_F32X4 a,
   case VKR_SIMD_COMPARE_MODE_ABSOLUTE_DIFFERENCE:
     return diff_len_sq <= epsilon_sq ? true_v : false_v;
   case VKR_SIMD_COMPARE_MODE_RELATIVE_DIFFERENCE: {
-    const float32_t len_a_sq =
-        a.x * a.x + a.y * a.y + a.z * a.z + a.w * a.w;
-    const float32_t len_b_sq =
-        b.x * b.x + b.y * b.y + b.z * b.z + b.w * b.w;
+    const float32_t len_a_sq = a.x * a.x + a.y * a.y + a.z * a.z + a.w * a.w;
+    const float32_t len_b_sq = b.x * b.x + b.y * b.y + b.z * b.z + b.w * b.w;
     const float32_t max_len_sq = vkr_max_f32(len_a_sq, len_b_sq);
     if (max_len_sq <= epsilon_sq) {
       return diff_len_sq <= epsilon_sq ? true_v : false_v;
