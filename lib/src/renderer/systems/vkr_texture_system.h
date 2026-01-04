@@ -47,6 +47,7 @@ typedef struct VkrTextureSystem {
   VkrTextureHandle default_specular_texture; // flat specular fallback
 
   VkrJobSystem *job_system; // For async texture loading
+  struct VkrTextureCacheWriteGuard *cache_guard; // Internal cache write guard
 } VkrTextureSystem;
 
 // =============================================================================

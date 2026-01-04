@@ -10,6 +10,18 @@ vkr_global const char *jpeg_ext = "jpeg";
 vkr_global const char *bmp_ext = "bmp";
 vkr_global const char *tga_ext = "tga";
 
+/**
+ * @brief Strip query parameters from a texture name for extension checks.
+ */
+vkr_internal String8 vkr_texture_loader_strip_query(String8 name) {
+  for (uint64_t i = 0; i < name.length; ++i) {
+    if (name.str[i] == '?') {
+      return string8_substring(&name, 0, i);
+    }
+  }
+  return name;
+}
+
 // Forward declarations
 vkr_internal VkrRendererError vkr_texture_loader_load_from_file(
     VkrResourceLoader *self, String8 file_path, uint32_t desired_channels,
@@ -20,10 +32,11 @@ vkr_internal bool8_t vkr_texture_loader_can_load(VkrResourceLoader *self,
   assert_log(self != NULL, "Self is NULL");
   assert_log(name.str != NULL, "Name is NULL");
 
-  const uint8_t *extension_chars = name.str;
-  for (uint64_t ext_length = name.length; ext_length > 0; ext_length--) {
+  String8 base_name = vkr_texture_loader_strip_query(name);
+  const uint8_t *extension_chars = base_name.str;
+  for (uint64_t ext_length = base_name.length; ext_length > 0; ext_length--) {
     if (extension_chars[ext_length - 1] == '.') {
-      String8 ext = string8_substring(&name, ext_length, name.length);
+      String8 ext = string8_substring(&base_name, ext_length, base_name.length);
       String8 png = string8_create_from_cstr((const uint8_t *)png_ext,
                                              string_length(png_ext));
       String8 jpg = string8_create_from_cstr((const uint8_t *)jpg_ext,

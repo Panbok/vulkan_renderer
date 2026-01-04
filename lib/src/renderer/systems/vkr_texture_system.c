@@ -1,4 +1,6 @@
 #include "renderer/systems/vkr_texture_system.h"
+#include "core/vkr_threads.h"
+#include "defines.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/systems/vkr_resource_system.h"
@@ -13,17 +15,19 @@
 // extension.
 
 #define VKR_TEXTURE_CACHE_MAGIC 0x564B5448u /* 'VKTH' in little-endian */
-#define VKR_TEXTURE_CACHE_VERSION 2u        /* Bump when format changes */
+#define VKR_TEXTURE_CACHE_VERSION 3u        /* Bump when format changes */
 #define VKR_TEXTURE_CACHE_EXT ".vkt"
 
 /**
  * @brief Header for the texture cache file
+ * @note Cache stores raw RGBA bytes; color space is selected at upload time.
  * @param magic The magic number for the cache file
  * @param version The version of the cache file
  * @param source_mtime The modification time of the source file
  * @param width The width of the texture
  * @param height The height of the texture
  * @param channels The number of channels in the texture
+ * @param has_transparency Whether any alpha value is not fully opaque
  */
 typedef struct VkrTextureCacheHeader {
   uint32_t magic;
@@ -32,7 +36,6 @@ typedef struct VkrTextureCacheHeader {
   uint32_t width;
   uint32_t height;
   uint32_t channels; // Always 4 (RGBA) after processing
-  uint32_t format;   // VkrTextureFormat enum value
   uint8_t has_transparency;
   uint8_t padding[3];
   // Followed by: width * height * channels bytes of raw pixel data
@@ -94,6 +97,175 @@ vkr_internal String8 vkr_texture_cache_path(VkrAllocator *allocator,
                                   VKR_TEXTURE_CACHE_EXT);
 }
 
+typedef struct VkrTextureCacheWriteEntry {
+  uint8_t active;
+} VkrTextureCacheWriteEntry;
+VkrHashTable(VkrTextureCacheWriteEntry);
+
+typedef struct VkrTextureCacheWriteGuard {
+  VkrMutex mutex;
+  VkrHashTable_VkrTextureCacheWriteEntry inflight;
+} VkrTextureCacheWriteGuard;
+
+vkr_internal bool8_t vkr_texture_cache_guard_try_acquire(
+    VkrTextureCacheWriteGuard *guard, const char *key) {
+  if (!guard || !key) {
+    return true_v;
+  }
+
+  if (!vkr_mutex_lock(guard->mutex)) {
+    return false_v;
+  }
+
+  if (vkr_hash_table_contains_VkrTextureCacheWriteEntry(&guard->inflight,
+                                                        key)) {
+    vkr_mutex_unlock(guard->mutex);
+    return false_v;
+  }
+
+  VkrTextureCacheWriteEntry entry = {.active = 1};
+  bool8_t inserted = vkr_hash_table_insert_VkrTextureCacheWriteEntry(
+      &guard->inflight, key, entry);
+  vkr_mutex_unlock(guard->mutex);
+  return inserted;
+}
+
+vkr_internal void
+vkr_texture_cache_guard_release(VkrTextureCacheWriteGuard *guard,
+                                const char *key) {
+  if (!guard || !key) {
+    return;
+  }
+
+  if (!vkr_mutex_lock(guard->mutex)) {
+    return;
+  }
+
+  vkr_hash_table_remove_VkrTextureCacheWriteEntry(&guard->inflight, key);
+  vkr_mutex_unlock(guard->mutex);
+}
+
+/**
+ * @brief Desired sampling color space for a texture request.
+ */
+typedef enum VkrTextureColorSpace {
+  VKR_TEXTURE_COLORSPACE_LINEAR = 0,
+  VKR_TEXTURE_COLORSPACE_SRGB = 1,
+} VkrTextureColorSpace;
+
+/**
+ * @brief Parsed texture request with base path and requested color space.
+ */
+typedef struct VkrTextureRequest {
+  String8 base_path;
+  String8 query;
+  VkrTextureColorSpace colorspace;
+} VkrTextureRequest;
+
+/**
+ * @brief Strip the query portion from a texture name.
+ * @param name The requested texture name (may include a query).
+ * @param out_query Optional output for the query substring (without '?').
+ * @return The base path without any query parameters.
+ */
+vkr_internal String8 vkr_texture_strip_query(String8 name, String8 *out_query) {
+  for (uint64_t i = 0; i < name.length; ++i) {
+    if (name.str[i] == '?') {
+      if (out_query) {
+        *out_query = string8_substring(&name, i + 1, name.length);
+      }
+      return string8_substring(&name, 0, i);
+    }
+  }
+
+  if (out_query) {
+    *out_query = (String8){0};
+  }
+
+  return name;
+}
+
+/**
+ * @brief Parse a texture request into a base path and desired color space.
+ * @note Only the `cs` query parameter is consumed; others are ignored.
+ * @note Unknown `cs` values log once and default to linear.
+ */
+vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
+  String8 query = {0};
+  String8 base_path = vkr_texture_strip_query(name, &query);
+  VkrTextureColorSpace colorspace = VKR_TEXTURE_COLORSPACE_LINEAR;
+
+  vkr_local_persist bool8_t warned_unknown = false_v;
+
+  uint64_t start = 0;
+  while (start < query.length) {
+    uint64_t end = start;
+    while (end < query.length && query.str[end] != '&') {
+      end++;
+    }
+
+    String8 param = string8_substring(&query, start, end);
+    uint64_t eq_pos = UINT64_MAX;
+    for (uint64_t i = 0; i < param.length; ++i) {
+      if (param.str[i] == '=') {
+        eq_pos = i;
+        break;
+      }
+    }
+
+    if (eq_pos != UINT64_MAX && eq_pos > 0 && eq_pos + 1 < param.length) {
+      String8 key = string8_substring(&param, 0, eq_pos);
+      String8 value = string8_substring(&param, eq_pos + 1, param.length);
+      String8 key_cs = string8_lit("cs");
+      if (string8_equalsi(&key, &key_cs)) {
+        String8 val_srgb = string8_lit("srgb");
+        String8 val_linear = string8_lit("linear");
+        if (string8_equalsi(&value, &val_srgb)) {
+          colorspace = VKR_TEXTURE_COLORSPACE_SRGB;
+        } else if (string8_equalsi(&value, &val_linear)) {
+          colorspace = VKR_TEXTURE_COLORSPACE_LINEAR;
+        } else if (!warned_unknown) {
+          log_warn("Texture request has unknown colorspace '%.*s'; defaulting "
+                   "to linear",
+                   (int32_t)value.length, value.str);
+          warned_unknown = true_v;
+          colorspace = VKR_TEXTURE_COLORSPACE_LINEAR;
+        }
+      }
+    }
+
+    start = end + 1;
+  }
+
+  return (VkrTextureRequest){
+      .base_path = base_path,
+      .query = query,
+      .colorspace = colorspace,
+  };
+}
+
+/**
+ * @brief Choose a GPU format based on channel count and color space.
+ * @note sRGB applies only to 4-channel color textures; single/dual channels
+ * stay linear.
+ */
+vkr_internal VkrTextureFormat vkr_texture_format_from_channels(
+    uint32_t channels, VkrTextureColorSpace colorspace) {
+  switch (channels) {
+  case VKR_TEXTURE_R_CHANNELS:
+    return VKR_TEXTURE_FORMAT_R8_UNORM;
+  case VKR_TEXTURE_RG_CHANNELS:
+    return VKR_TEXTURE_FORMAT_R8G8_UNORM;
+  case VKR_TEXTURE_RGB_CHANNELS:
+  case VKR_TEXTURE_RGBA_CHANNELS:
+    return colorspace == VKR_TEXTURE_COLORSPACE_SRGB
+               ? VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB
+               : VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+  default:
+    return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+  }
+}
+
 /**
  * @brief Writes decoded texture data to cache file
  * @param allocator The allocator to use
@@ -102,14 +274,13 @@ vkr_internal String8 vkr_texture_cache_path(VkrAllocator *allocator,
  * @param width The width of the texture
  * @param height The height of the texture
  * @param channels The number of channels in the texture
- * @param format The format of the texture
  * @param has_transparency Whether the texture has transparency
  * @param pixel_data The pixel data of the texture
  * @return true on success, false on failure
  */
 vkr_internal bool8_t vkr_texture_cache_write(
     VkrAllocator *allocator, String8 cache_path, uint64_t source_mtime,
-    uint32_t width, uint32_t height, uint32_t channels, VkrTextureFormat format,
+    uint32_t width, uint32_t height, uint32_t channels,
     bool8_t has_transparency, const uint8_t *pixel_data) {
   assert_log(allocator != NULL, "Allocator is NULL");
 
@@ -137,7 +308,6 @@ vkr_internal bool8_t vkr_texture_cache_write(
       .width = vkr_texture_host_to_little_u32(width),
       .height = vkr_texture_host_to_little_u32(height),
       .channels = vkr_texture_host_to_little_u32(channels),
-      .format = vkr_texture_host_to_little_u32((uint32_t)format),
       .has_transparency = has_transparency ? 1 : 0,
       .padding = {0, 0, 0},
   };
@@ -171,12 +341,12 @@ vkr_internal bool8_t vkr_texture_cache_write(
  * @param out_width The width of the texture
  * @param out_height The height of the texture
  * @param out_channels The number of channels in the texture
+ * @param out_has_transparency Whether any alpha value is not fully opaque
  */
 vkr_internal bool8_t vkr_texture_cache_read(
     VkrAllocator *allocator, String8 cache_path, uint64_t source_mtime,
     uint32_t *out_width, uint32_t *out_height, uint32_t *out_channels,
-    VkrTextureFormat *out_format, bool8_t *out_has_transparency,
-    uint8_t **out_pixel_data) {
+    bool8_t *out_has_transparency, uint8_t **out_pixel_data) {
   assert_log(allocator != NULL, "Allocator is NULL");
 
   if (!cache_path.str || !out_pixel_data) {
@@ -230,8 +400,6 @@ vkr_internal bool8_t vkr_texture_cache_read(
   uint32_t width = vkr_texture_host_to_little_u32(header.width);
   uint32_t height = vkr_texture_host_to_little_u32(header.height);
   uint32_t channels = vkr_texture_host_to_little_u32(header.channels);
-  uint32_t format = vkr_texture_host_to_little_u32(header.format);
-
   if (width == 0 || height == 0 || width > VKR_TEXTURE_MAX_DIMENSION ||
       height > VKR_TEXTURE_MAX_DIMENSION || channels == 0 || channels > 4) {
     file_close(&fh);
@@ -259,7 +427,6 @@ vkr_internal bool8_t vkr_texture_cache_read(
   *out_width = width;
   *out_height = height;
   *out_channels = channels;
-  *out_format = (VkrTextureFormat)format;
   *out_has_transparency = header.has_transparency != 0;
   *out_pixel_data = pixels;
 
@@ -323,6 +490,27 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
                                                  config->max_texture_count);
   out_system->texture_map = vkr_hash_table_create_VkrTextureEntry(
       &out_system->allocator, ((uint64_t)config->max_texture_count) * 2ULL);
+  out_system->cache_guard =
+      (struct VkrTextureCacheWriteGuard *)vkr_allocator_alloc(
+          &out_system->allocator, sizeof(VkrTextureCacheWriteGuard),
+          VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  if (!out_system->cache_guard) {
+    log_error("Failed to allocate texture cache write guard");
+    return false_v;
+  }
+
+  MemZero(out_system->cache_guard, sizeof(VkrTextureCacheWriteGuard));
+  if (!vkr_mutex_create(&out_system->allocator,
+                        &out_system->cache_guard->mutex)) {
+    log_error("Failed to create texture cache write guard mutex");
+    return false_v;
+  }
+
+  uint64_t guard_capacity =
+      Max(16ULL, (uint64_t)config->max_texture_count * 2ULL);
+  out_system->cache_guard->inflight =
+      vkr_hash_table_create_VkrTextureCacheWriteEntry(&out_system->allocator,
+                                                      guard_capacity);
   out_system->next_free_index = 0;
   out_system->generation_counter = 1;
 
@@ -515,6 +703,13 @@ void vkr_texture_system_shutdown(VkrRendererFrontendHandle renderer,
     }
   }
 
+  if (system->cache_guard) {
+    vkr_hash_table_destroy_VkrTextureCacheWriteEntry(
+        &system->cache_guard->inflight);
+    vkr_mutex_destroy(&system->allocator, &system->cache_guard->mutex);
+    system->cache_guard = NULL;
+  }
+
   array_destroy_VkrTexture(&system->textures);
   arena_destroy(system->arena);
   MemZero(system, sizeof(*system));
@@ -679,20 +874,25 @@ void vkr_texture_system_release_by_handle(VkrTextureSystem *system,
   for (uint64_t i = 0; i < system->texture_map.capacity; i++) {
 
     VkrHashEntry_VkrTextureEntry *entry = &system->texture_map.entries[i];
-    if (entry->occupied == VKR_OCCUPIED) {
+    if (entry->occupied != VKR_OCCUPIED) {
+      continue;
+    }
 
-      uint32_t texture_index = entry->value.index;
-      if (texture_index < system->textures.length) {
+    uint32_t texture_index = entry->value.index;
 
-        VkrTexture *texture = &system->textures.data[texture_index];
-        if (texture->description.id == handle.id &&
-            texture->description.generation == handle.generation) {
+    if (texture_index < system->textures.length) {
+      VkrTexture *texture = &system->textures.data[texture_index];
+      uint64_t key_length = string_length(entry->key);
+      if (key_length == 0) {
+        continue;
+      }
 
-          String8 texture_name = string8_create_from_cstr(
-              (const uint8_t *)entry->key, strlen(entry->key));
-          vkr_texture_system_release(system, texture_name);
-          return;
-        }
+      if (texture->description.id == handle.id &&
+          texture->description.generation == handle.generation) {
+        String8 texture_name =
+            string8_create_from_cstr((const uint8_t *)entry->key, key_length);
+        vkr_texture_system_release(system, texture_name);
+        return;
       }
     }
   }
@@ -996,7 +1196,6 @@ vkr_texture_system_get_default_specular_handle(VkrTextureSystem *system) {
  * @param width The width of the texture
  * @param height The height of the texture
  * @param original_channels The number of channels in the original texture
- * @param format The format of the texture (Set when loaded from cache)
  * @param has_transparency Whether the texture has transparency (Set when loaded
  * from cache)
  * @param loaded_from_cache True if loaded from .vkt cache
@@ -1008,7 +1207,6 @@ typedef struct VkrTextureDecodeResult {
   int32_t width;
   int32_t height;
   int32_t original_channels;
-  VkrTextureFormat format;
   bool8_t has_transparency;
   bool8_t loaded_from_cache;
   VkrRendererError error;
@@ -1020,12 +1218,14 @@ typedef struct VkrTextureDecodeResult {
  * @param file_path The path to the texture file
  * @param desired_channels The number of channels to request from the texture
  * @param flip_vertical Whether to flip the texture vertically
+ * @param system The texture system owning the cache guard
  * @param result The result of the texture decoding
  */
 typedef struct VkrTextureDecodeJobPayload {
   String8 file_path;
   uint32_t desired_channels;
   bool8_t flip_vertical;
+  VkrTextureSystem *system;
 
   VkrTextureDecodeResult *result;
 } VkrTextureDecodeJobPayload;
@@ -1075,19 +1275,17 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
   String8 cache_path =
       vkr_texture_cache_path(scratch_allocator, job->file_path);
   uint32_t cached_width = 0, cached_height = 0, cached_channels = 0;
-  VkrTextureFormat cached_format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
   bool8_t cached_transparency = false_v;
   uint8_t *cached_pixels = NULL;
 
   if (vkr_texture_cache_read(scratch_allocator, cache_path,
                              source_stats.last_modified, &cached_width,
-                             &cached_height, &cached_channels, &cached_format,
+                             &cached_height, &cached_channels,
                              &cached_transparency, &cached_pixels)) {
     result->decoded_pixels = cached_pixels;
     result->width = (int32_t)cached_width;
     result->height = (int32_t)cached_height;
     result->original_channels = (int32_t)cached_channels;
-    result->format = cached_format;
     result->has_transparency = cached_transparency;
     result->loaded_from_cache = true_v;
     result->success = true_v;
@@ -1145,7 +1343,6 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
     return false_v;
   }
 
-  result->format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
   result->has_transparency = false_v;
 
   // Check for transparency (sample pixels for performance)
@@ -1158,11 +1355,23 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
     }
   }
 
-  vkr_texture_cache_write(scratch_allocator, cache_path,
-                          source_stats.last_modified, (uint32_t)result->width,
-                          (uint32_t)result->height, VKR_TEXTURE_RGBA_CHANNELS,
-                          result->format, result->has_transparency,
-                          result->decoded_pixels);
+  VkrTextureCacheWriteGuard *cache_guard =
+      job->system ? job->system->cache_guard : NULL;
+  bool8_t cache_lock_acquired = true_v;
+  if (cache_guard) {
+    cache_lock_acquired =
+        vkr_texture_cache_guard_try_acquire(cache_guard, path_cstr);
+  }
+
+  if (cache_lock_acquired) {
+    vkr_texture_cache_write(scratch_allocator, cache_path,
+                            source_stats.last_modified, (uint32_t)result->width,
+                            (uint32_t)result->height, VKR_TEXTURE_RGBA_CHANNELS,
+                            result->has_transparency, result->decoded_pixels);
+    if (cache_guard) {
+      vkr_texture_cache_guard_release(cache_guard, path_cstr);
+    }
+  }
 
   result->success = true_v;
   return true_v;
@@ -1176,14 +1385,17 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
   assert_log(out_texture != NULL, "Out texture is NULL");
   assert_log(file_path.str != NULL, "Path is NULL");
 
+  VkrTextureRequest request = vkr_texture_parse_request(file_path);
+  String8 base_path = request.base_path;
+
   char *c_string_path =
-      (char *)vkr_allocator_alloc(&system->allocator, file_path.length + 1,
+      (char *)vkr_allocator_alloc(&system->allocator, base_path.length + 1,
                                   VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!c_string_path) {
     return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
   }
-  MemCopy(c_string_path, file_path.str, (size_t)file_path.length);
-  c_string_path[file_path.length] = '\0';
+  MemCopy(c_string_path, base_path.str, (size_t)base_path.length);
+  c_string_path[base_path.length] = '\0';
   out_texture->file_path = file_path_create(c_string_path, &system->allocator,
                                             FILE_PATH_TYPE_RELATIVE);
 
@@ -1197,9 +1409,10 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
   };
 
   VkrTextureDecodeJobPayload job_payload = {
-      .file_path = file_path,
+      .file_path = base_path,
       .desired_channels = desired_channels,
       .flip_vertical = true_v,
+      .system = system,
       .result = &decode_result,
   };
 
@@ -1249,26 +1462,22 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
   uint32_t actual_channels =
       desired_channels > 0 ? desired_channels : (uint32_t)original_channels;
 
-  VkrTextureFormat format;
   switch (actual_channels) {
   case VKR_TEXTURE_R_CHANNELS:
-    format = VKR_TEXTURE_FORMAT_R8_UNORM;
-    break;
   case VKR_TEXTURE_RG_CHANNELS:
-    format = VKR_TEXTURE_FORMAT_R8G8_UNORM;
-    break;
   case VKR_TEXTURE_RGB_CHANNELS:
-    format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
-    actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
-    break;
   case VKR_TEXTURE_RGBA_CHANNELS:
-    format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
     break;
   default:
-    format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
     actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
     break;
   }
+  if (actual_channels == VKR_TEXTURE_RGB_CHANNELS) {
+    actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
+  }
+
+  VkrTextureFormat format =
+      vkr_texture_format_from_channels(actual_channels, request.colorspace);
 
   VkrTexturePropertyFlags props = vkr_texture_property_flags_create();
 
@@ -1445,7 +1654,10 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
   uint32_t *first_occurrence =
       vkr_allocator_alloc(&system->allocator, sizeof(uint32_t) * count,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!first_occurrence) {
+  VkrTextureRequest *requests =
+      vkr_allocator_alloc(&system->allocator, sizeof(VkrTextureRequest) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!first_occurrence || !requests) {
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     for (uint32_t i = 0; i < count; i++) {
       out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -1461,8 +1673,11 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
     first_occurrence[i] = i; // Default: each is its own first occurrence
 
     if (!paths[i].str || paths[i].length == 0) {
+      requests[i] = (VkrTextureRequest){0};
       continue;
     }
+
+    requests[i] = vkr_texture_parse_request(paths[i]);
 
     // Check if this texture is already loaded in the system
     const char *texture_key = (const char *)paths[i].str;
@@ -1619,7 +1834,6 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
         .width = 0,
         .height = 0,
         .original_channels = 0,
-        .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
         .has_transparency = false_v,
         .loaded_from_cache = false_v,
         .error = VKR_RENDERER_ERROR_NONE,
@@ -1641,9 +1855,10 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
     }
 
     payloads[i] = (VkrTextureDecodeJobPayload){
-        .file_path = paths[i],
+        .file_path = requests[i].base_path,
         .desired_channels = VKR_TEXTURE_RGBA_CHANNELS,
         .flip_vertical = true_v,
+        .system = system,
         .result = &results[i],
     };
 
@@ -1708,7 +1923,8 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
 
     // Use cached format/transparency if available, otherwise use defaults
     uint32_t actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
-    VkrTextureFormat format = results[i].format;
+    VkrTextureFormat format = vkr_texture_format_from_channels(
+        actual_channels, requests[i].colorspace);
     bool8_t has_transparency = results[i].has_transparency;
 
     VkrTexturePropertyFlags props = vkr_texture_property_flags_create();
