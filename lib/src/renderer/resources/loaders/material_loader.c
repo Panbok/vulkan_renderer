@@ -10,6 +10,14 @@
 #define VKR_MATERIAL_PATH_MAX 512
 
 /**
+ * @brief Intended sampling color space for material textures.
+ */
+typedef enum VkrMaterialTextureColorSpace {
+  VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR = 0,
+  VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB = 1,
+} VkrMaterialTextureColorSpace;
+
+/**
  * @brief Context for batch material loading operations.
  */
 typedef struct VkrMaterialBatchContext {
@@ -33,6 +41,9 @@ typedef struct VkrParsedMaterialData {
   char diffuse_path[VKR_MATERIAL_PATH_MAX];
   char specular_path[VKR_MATERIAL_PATH_MAX];
   char normal_path[VKR_MATERIAL_PATH_MAX];
+  VkrMaterialTextureColorSpace diffuse_colorspace;
+  VkrMaterialTextureColorSpace specular_colorspace;
+  VkrMaterialTextureColorSpace normal_colorspace;
 
   bool8_t parse_success;
   VkrRendererError parse_error;
@@ -120,6 +131,153 @@ vkr_internal bool8_t vkr_material_loader_can_load(VkrResourceLoader *self,
   }
 
   return false_v;
+}
+
+vkr_internal const char *
+vkr_material_colorspace_to_string(VkrMaterialTextureColorSpace colorspace) {
+  return colorspace == VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB ? "srgb" : "linear";
+}
+
+/**
+ * @brief Strip the query portion from a texture path.
+ * @param path The full path, potentially containing a query.
+ * @param out_query Optional output for the query substring (without '?').
+ * @return Base path without query parameters.
+ */
+vkr_internal String8 vkr_material_strip_query(String8 path,
+                                              String8 *out_query) {
+  for (uint64_t i = 0; i < path.length; ++i) {
+    if (path.str[i] == '?') {
+      if (out_query) {
+        *out_query = string8_substring(&path, i + 1, path.length);
+      }
+      return string8_substring(&path, 0, i);
+    }
+  }
+
+  if (out_query) {
+    *out_query = (String8){0};
+  }
+
+  return path;
+}
+
+/**
+ * @brief Parse colorspace tokens ("srgb"/"linear") from material values.
+ */
+vkr_internal bool8_t vkr_material_parse_colorspace_value(
+    String8 value, VkrMaterialTextureColorSpace *out_colorspace) {
+  assert_log(out_colorspace != NULL, "Out colorspace is NULL");
+
+  String8 val_srgb = string8_lit("srgb");
+  String8 val_linear = string8_lit("linear");
+  if (string8_equalsi(&value, &val_srgb)) {
+    *out_colorspace = VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB;
+    return true_v;
+  }
+  if (string8_equalsi(&value, &val_linear)) {
+    *out_colorspace = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+    return true_v;
+  }
+
+  return false_v;
+}
+
+/**
+ * @brief Find a `cs` parameter inside a query string.
+ * @note Returns true if a `cs` key exists, even if the value is unknown.
+ */
+vkr_internal bool8_t vkr_material_query_get_colorspace(
+    String8 query, VkrMaterialTextureColorSpace *out_colorspace,
+    bool8_t *out_known) {
+  assert_log(out_colorspace != NULL, "Out colorspace is NULL");
+
+  bool8_t has_cs = false_v;
+  bool8_t known = false_v;
+  VkrMaterialTextureColorSpace parsed = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+
+  uint64_t start = 0;
+  while (start < query.length) {
+    uint64_t end = start;
+    while (end < query.length && query.str[end] != '&') {
+      end++;
+    }
+
+    String8 param = string8_substring(&query, start, end);
+    uint64_t eq_pos = UINT64_MAX;
+    for (uint64_t i = 0; i < param.length; ++i) {
+      if (param.str[i] == '=') {
+        eq_pos = i;
+        break;
+      }
+    }
+
+    if (eq_pos != UINT64_MAX && eq_pos > 0 && eq_pos + 1 < param.length) {
+      String8 key = string8_substring(&param, 0, eq_pos);
+      String8 value = string8_substring(&param, eq_pos + 1, param.length);
+      String8 key_cs = string8_lit("cs");
+      if (string8_equalsi(&key, &key_cs)) {
+        has_cs = true_v;
+        if (vkr_material_parse_colorspace_value(value, &parsed)) {
+          known = true_v;
+        } else {
+          parsed = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+          known = false_v;
+        }
+      }
+    }
+
+    start = end + 1;
+  }
+
+  *out_colorspace = parsed;
+  if (out_known) {
+    *out_known = known;
+  }
+  return has_cs;
+}
+
+/**
+ * @brief Append a colorspace query to a texture path when requested.
+ * @note If the path already has a `cs` parameter, it is treated as an override.
+ */
+vkr_internal String8
+vkr_material_apply_colorspace(VkrAllocator *allocator, String8 path,
+                              VkrMaterialTextureColorSpace colorspace,
+                              String8 material_name, const char *slot_name) {
+  if (!path.str || path.length == 0) {
+    return path;
+  }
+
+  String8 query = {0};
+  String8 base_path = vkr_material_strip_query(path, &query);
+  bool8_t has_query = base_path.length != path.length;
+  VkrMaterialTextureColorSpace parsed = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+  bool8_t known = false_v;
+  bool8_t has_cs = vkr_material_query_get_colorspace(query, &parsed, &known);
+
+  if (has_cs) {
+    if (known && parsed != colorspace) {
+      log_warn(
+          "Material '%.*s': %s_colorspace=%s conflicts with path override %s",
+          (int32_t)material_name.length, material_name.str, slot_name,
+          vkr_material_colorspace_to_string(colorspace),
+          vkr_material_colorspace_to_string(parsed));
+    }
+    return path;
+  }
+
+  if (colorspace != VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB) {
+    return path;
+  }
+
+  if (!allocator) {
+    return path;
+  }
+
+  return string8_create_formatted(allocator,
+                                  has_query ? "%.*s&cs=srgb" : "%.*s?cs=srgb",
+                                  (int32_t)path.length, path.str);
 }
 
 vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
@@ -298,6 +456,9 @@ typedef struct VkrMaterialTexturePaths {
   String8 diffuse;
   String8 specular;
   String8 normal;
+  VkrMaterialTextureColorSpace diffuse_colorspace;
+  VkrMaterialTextureColorSpace specular_colorspace;
+  VkrMaterialTextureColorSpace normal_colorspace;
 } VkrMaterialTexturePaths;
 
 vkr_internal void vkr_material_batch_load_textures(
@@ -500,6 +661,40 @@ vkr_internal VkrRendererError vkr_material_loader_load_from_mt(
       if (value.length > 0) {
         texture_paths.normal = string8_duplicate(temp_alloc, &value);
       }
+    } else if (string8_contains_cstr(&key, "diffuse_colorspace")) {
+      VkrMaterialTextureColorSpace parsed =
+          VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+      if (vkr_material_parse_colorspace_value(value, &parsed)) {
+        texture_paths.diffuse_colorspace = parsed;
+      } else {
+        log_warn("Material '%s': invalid diffuse_colorspace '%s'",
+                 string8_cstr(&material_name), string8_cstr(&value));
+        texture_paths.diffuse_colorspace =
+            VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+      }
+    } else if (string8_contains_cstr(&key, "specular_colorspace")) {
+      VkrMaterialTextureColorSpace parsed =
+          VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+      if (vkr_material_parse_colorspace_value(value, &parsed)) {
+        texture_paths.specular_colorspace = parsed;
+      } else {
+        log_warn("Material '%s': invalid specular_colorspace '%s'",
+                 string8_cstr(&material_name), string8_cstr(&value));
+        texture_paths.specular_colorspace =
+            VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+      }
+    } else if (string8_contains_cstr(&key, "norm_colorspace") ||
+               string8_contains_cstr(&key, "normal_colorspace")) {
+      VkrMaterialTextureColorSpace parsed =
+          VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+      if (vkr_material_parse_colorspace_value(value, &parsed)) {
+        texture_paths.normal_colorspace = parsed;
+      } else {
+        log_warn("Material '%s': invalid normal_colorspace '%s'",
+                 string8_cstr(&material_name), string8_cstr(&value));
+        texture_paths.normal_colorspace =
+            VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+      }
     } else if (string8_contains_cstr(&key, "diffuse_color")) {
       Vec4 v;
       if (string8_to_vec4(&value, &v)) {
@@ -573,6 +768,16 @@ vkr_internal VkrRendererError vkr_material_loader_load_from_mt(
   }
 
   file_close(&fh);
+
+  texture_paths.diffuse = vkr_material_apply_colorspace(
+      temp_alloc, texture_paths.diffuse, texture_paths.diffuse_colorspace,
+      material_name, "diffuse");
+  texture_paths.specular = vkr_material_apply_colorspace(
+      temp_alloc, texture_paths.specular, texture_paths.specular_colorspace,
+      material_name, "specular");
+  texture_paths.normal = vkr_material_apply_colorspace(
+      temp_alloc, texture_paths.normal, texture_paths.normal_colorspace,
+      material_name, "normal");
 
   // Batch load all collected textures in parallel
   vkr_material_batch_load_textures(material_system, temp_alloc, &texture_paths,
@@ -666,6 +871,9 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
   out_data->phong.shininess = 32.0f;
   out_data->phong.emission_color = vec3_new(0, 0, 0);
   out_data->pipeline_id = VKR_INVALID_ID;
+  out_data->diffuse_colorspace = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+  out_data->specular_colorspace = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+  out_data->normal_colorspace = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
 
   // Extract name from path
   const char *cpath = (const char *)path.str;
@@ -770,6 +978,37 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
       if (value.length > 0 && value.length < VKR_MATERIAL_PATH_MAX) {
         MemCopy(out_data->normal_path, value.str, (size_t)value.length);
         out_data->normal_path[value.length] = '\0';
+      }
+    } else if (string8_contains_cstr(&key, "diffuse_colorspace")) {
+      VkrMaterialTextureColorSpace parsed =
+          VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+      if (vkr_material_parse_colorspace_value(value, &parsed)) {
+        out_data->diffuse_colorspace = parsed;
+      } else {
+        log_warn("Material '%s': invalid diffuse_colorspace '%s'",
+                 out_data->name, string8_cstr(&value));
+        out_data->diffuse_colorspace = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+      }
+    } else if (string8_contains_cstr(&key, "specular_colorspace")) {
+      VkrMaterialTextureColorSpace parsed =
+          VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+      if (vkr_material_parse_colorspace_value(value, &parsed)) {
+        out_data->specular_colorspace = parsed;
+      } else {
+        log_warn("Material '%s': invalid specular_colorspace '%s'",
+                 out_data->name, string8_cstr(&value));
+        out_data->specular_colorspace = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+      }
+    } else if (string8_contains_cstr(&key, "norm_colorspace") ||
+               string8_contains_cstr(&key, "normal_colorspace")) {
+      VkrMaterialTextureColorSpace parsed =
+          VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
+      if (vkr_material_parse_colorspace_value(value, &parsed)) {
+        out_data->normal_colorspace = parsed;
+      } else {
+        log_warn("Material '%s': invalid normal_colorspace '%s'",
+                 out_data->name, string8_cstr(&value));
+        out_data->normal_colorspace = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
       }
     } else if (string8_contains_cstr(&key, "diffuse_color")) {
       Vec4 v;
@@ -1067,26 +1306,39 @@ vkr_internal uint32_t vkr_material_loader_load_batch(
       if (!parsed_data[i].parse_success)
         continue;
 
+      String8 material_name =
+          string8_create_from_cstr((const uint8_t *)parsed_data[i].name,
+                                   string_length(parsed_data[i].name));
+
       if (parsed_data[i].diffuse_path[0] != '\0') {
-        texture_paths[tex_idx] = string8_create_from_cstr(
+        String8 raw_path = string8_create_from_cstr(
             (const uint8_t *)parsed_data[i].diffuse_path,
             string_length(parsed_data[i].diffuse_path));
+        texture_paths[tex_idx] = vkr_material_apply_colorspace(
+            context->temp_allocator, raw_path,
+            parsed_data[i].diffuse_colorspace, material_name, "diffuse");
         texture_material_index[tex_idx] = i;
         texture_slot[tex_idx] = VKR_TEXTURE_SLOT_DIFFUSE;
         tex_idx++;
       }
       if (parsed_data[i].specular_path[0] != '\0') {
-        texture_paths[tex_idx] = string8_create_from_cstr(
+        String8 raw_path = string8_create_from_cstr(
             (const uint8_t *)parsed_data[i].specular_path,
             string_length(parsed_data[i].specular_path));
+        texture_paths[tex_idx] = vkr_material_apply_colorspace(
+            context->temp_allocator, raw_path,
+            parsed_data[i].specular_colorspace, material_name, "specular");
         texture_material_index[tex_idx] = i;
         texture_slot[tex_idx] = VKR_TEXTURE_SLOT_SPECULAR;
         tex_idx++;
       }
       if (parsed_data[i].normal_path[0] != '\0') {
-        texture_paths[tex_idx] = string8_create_from_cstr(
+        String8 raw_path = string8_create_from_cstr(
             (const uint8_t *)parsed_data[i].normal_path,
             string_length(parsed_data[i].normal_path));
+        texture_paths[tex_idx] = vkr_material_apply_colorspace(
+            context->temp_allocator, raw_path, parsed_data[i].normal_colorspace,
+            material_name, "normal");
         texture_material_index[tex_idx] = i;
         texture_slot[tex_idx] = VKR_TEXTURE_SLOT_NORMAL;
         tex_idx++;
