@@ -246,7 +246,6 @@ float4 fragmentMain(VertexDto input) : SV_Target
     }
 
     float4 diffuse_sample = diffuse_texture.Sample(diffuse_sampler, input.texcoord);
-    diffuse_sample.rgb = pow(diffuse_sample.rgb, float3(2.2, 2.2, 2.2));
 
     float specular_sample = specular_texture.Sample(specular_sampler, input.texcoord).r;
 

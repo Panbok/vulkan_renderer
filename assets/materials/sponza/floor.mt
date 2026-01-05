@@ -1,9 +1,12 @@
 name=floor
 diffuse_texture=assets/textures/sponza_floor_a_diff.tga
+diffuse_colorspace=srgb
 diffuse_color=0.588000,0.588000,0.588000,1.000000
 specular_texture=assets/textures/sponza_floor_a_spec.tga
+specular_colorspace=linear
 specular_color=0.000000,0.000000,0.000000,1.000000
 norm_texture=assets/textures/sponza_floor_a_ddn.tga
+normal_colorspace=linear
 shininess=10.000000
 emission_color=0.000000,0.000000,0.000000
 shader=shader.default.world

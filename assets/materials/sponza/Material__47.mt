@@ -1,9 +1,12 @@
 name=Material__47
 diffuse_texture=
+diffuse_colorspace=srgb
 diffuse_color=0.588000,0.588000,0.588000,1.000000
 specular_texture=
+specular_colorspace=linear
 specular_color=0.000000,0.000000,0.000000,1.000000
 norm_texture=
+normal_colorspace=linear
 shininess=10.000000
 emission_color=0.000000,0.000000,0.000000
 shader=shader.default.world
