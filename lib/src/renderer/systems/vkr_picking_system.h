@@ -5,7 +5,7 @@
  * This module provides GPU-accelerated object picking by rendering the scene
  * with a specialized shader that outputs object IDs to an R32_UINT render
  * target. Clicking in the viewport triggers an async pixel readback to
- * determine which object (mesh) was selected.
+ * determine which object was selected.
  *
  * Usage workflow:
  * 1. Call vkr_picking_init() during renderer setup
@@ -17,8 +17,8 @@
  * 5. Call vkr_picking_get_result() to poll for the result
  * 6. Call vkr_picking_shutdown() during cleanup
  *
- * The picking result provides a mesh index (object_id - 1) which can be used
- * with vkr_mesh_manager_get() to retrieve the selected mesh.
+ * The picking result provides an encoded object_id which can be decoded via
+ * vkr_picking_decode_id() and mapped to scene or UI/world text IDs.
  */
 #pragma once
 
@@ -57,8 +57,24 @@ typedef struct VkrPickingContext {
   VkrTextureOpaqueHandle picking_depth;   /**< Depth attachment */
   VkrRenderPassHandle picking_pass;       /**< Picking render pass */
   VkrRenderTargetHandle picking_target;   /**< Render target */
-  VkrPipelineHandle picking_pipeline;     /**< Picking shader pipeline */
-  VkrShaderConfig shader_config;          /**< Cached shader configuration */
+  VkrPipelineHandle picking_pipeline;     /**< Picking mesh pipeline */
+  VkrRendererInstanceStateHandle
+      mesh_instance_state; /**< Shared instance state for mesh samplers. */
+  VkrPipelineHandle
+      picking_transparent_pipeline; /**< Picking mesh pipeline (no depth write)
+                                       for transparent submeshes. */
+  VkrRendererInstanceStateHandle mesh_transparent_instance_state; /**< Instance
+                                                                     state for
+                                                                     transparent
+                                                                     pipeline
+                                                                     samplers.
+                                                                   */
+  VkrShaderConfig shader_config;           /**< Cached mesh shader config */
+  VkrPipelineHandle picking_text_pipeline; /**< Picking text pipeline */
+  VkrPipelineHandle
+      picking_world_text_pipeline;    /**< Picking text pipeline for WORLD text
+                                         (depth-tested, no depth write). */
+  VkrShaderConfig text_shader_config; /**< Cached text shader config */
 
   // -------------------------------------------------------------------------
   // Target dimensions
@@ -84,7 +100,7 @@ typedef struct VkrPickingContext {
  * @brief Result of a picking operation.
  */
 typedef struct VkrPickResult {
-  uint32_t object_id; /**< Object ID (0 = no hit, otherwise mesh_index + 1) */
+  uint32_t object_id; /**< Encoded object ID (0 = no hit) */
   bool8_t hit;        /**< True if an object was hit */
 } VkrPickResult;
 

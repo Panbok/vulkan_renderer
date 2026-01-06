@@ -4,20 +4,55 @@
  * selection.
  */
 
-#include "vkr_picking_system.h"
+#include <stdlib.h>
+
 #include "core/logger.h"
 #include "defines.h"
+#include "math/vec.h"
 #include "renderer/renderer_frontend.h"
+#include "renderer/systems/views/vkr_view_ui.h"
+#include "renderer/systems/views/vkr_view_world.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_pipeline_registry.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_shader_system.h"
+#include "vkr_picking_ids.h"
+#include "vkr_picking_system.h"
+
+/**
+ * @brief Alpha test threshold for transparency-aware picking.
+ *
+ * Picking resolves to a single object ID per pixel. For cutout textures (alpha
+ * = 0 background), sampling alpha prevents "invisible" texels from occluding
+ * geometry/text behind them.
+ */
+#define VKR_PICKING_ALPHA_CUTOFF 0.1f
 
 // ============================================================================
 // Internal helpers
 // ============================================================================
+
+typedef struct VkrPickingTransparentSubmeshEntry {
+  uint32_t mesh_index;
+  uint32_t submesh_index;
+  float32_t distance;
+} VkrPickingTransparentSubmeshEntry;
+
+vkr_internal int vkr_picking_transparent_submesh_compare(const void *a,
+                                                         const void *b) {
+  const VkrPickingTransparentSubmeshEntry *entry_a =
+      (const VkrPickingTransparentSubmeshEntry *)a;
+  const VkrPickingTransparentSubmeshEntry *entry_b =
+      (const VkrPickingTransparentSubmeshEntry *)b;
+
+  if (entry_a->distance > entry_b->distance)
+    return -1;
+  if (entry_a->distance < entry_b->distance)
+    return 1;
+  return 0;
+}
 
 /**
  * @brief Create picking attachments (color texture + depth buffer).
@@ -94,6 +129,35 @@ vkr_internal void picking_destroy_attachments(RendererFrontend *rf,
   }
 }
 
+vkr_internal void picking_release_pipeline(RendererFrontend *rf,
+                                           VkrPipelineHandle *pipeline) {
+  if (!rf || !pipeline || pipeline->id == 0) {
+    return;
+  }
+
+  vkr_pipeline_registry_release(&rf->pipeline_registry, *pipeline);
+  *pipeline = VKR_PIPELINE_HANDLE_INVALID;
+}
+
+vkr_internal void
+picking_release_instance_state(RendererFrontend *rf, VkrPipelineHandle pipeline,
+                               VkrRendererInstanceStateHandle *instance_state) {
+  if (!rf || !instance_state || pipeline.id == 0 ||
+      instance_state->id == VKR_INVALID_ID) {
+    return;
+  }
+
+  VkrRendererError err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_pipeline_registry_release_instance_state(
+          &rf->pipeline_registry, pipeline, *instance_state, &err)) {
+    String8 err_str = vkr_renderer_get_error_string(err);
+    log_warn("Failed to release picking instance state: %s",
+             string8_cstr(&err_str));
+  }
+
+  instance_state->id = VKR_INVALID_ID;
+}
+
 /**
  * @brief Create picking render target using existing pass.
  */
@@ -139,6 +203,8 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
   MemZero(ctx, sizeof(VkrPickingContext));
+  ctx->mesh_instance_state.id = VKR_INVALID_ID;
+  ctx->mesh_transparent_instance_state.id = VKR_INVALID_ID;
 
   if (width == 0 || height == 0) {
     log_error("Invalid picking dimensions: %ux%u", width, height);
@@ -206,7 +272,7 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
           &ctx->picking_pipeline, &pipeline_err)) {
     String8 err_str = vkr_renderer_get_error_string(pipeline_err);
     log_error("Failed to create picking pipeline: %s", string8_cstr(&err_str));
-    vkr_shader_system_delete(&rf->shader_system, "picking");
+    vkr_shader_system_delete(&rf->shader_system, "shader.picking");
     picking_destroy_attachments(rf, ctx);
     return false_v;
   }
@@ -216,6 +282,163 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
     vkr_pipeline_registry_alias_pipeline_name(
         &rf->pipeline_registry, ctx->picking_pipeline, ctx->shader_config.name,
         &alias_err);
+  }
+
+  if (ctx->shader_config.instance_texture_count > 0) {
+    VkrRendererError instance_err = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_pipeline_registry_acquire_instance_state(
+            &rf->pipeline_registry, ctx->picking_pipeline,
+            &ctx->mesh_instance_state, &instance_err)) {
+      String8 err_str = vkr_renderer_get_error_string(instance_err);
+      log_error("Failed to acquire picking instance state: %s",
+                string8_cstr(&err_str));
+      picking_release_pipeline(rf, &ctx->picking_pipeline);
+      vkr_shader_system_delete(&rf->shader_system, "shader.picking");
+      picking_destroy_attachments(rf, ctx);
+      return false_v;
+    }
+  }
+
+  // Create a transparent picking pipeline variant (depth-tested, depth-write
+  // off) to match the visible render path for transparent submeshes and avoid
+  // falsely occluding world text behind them.
+  {
+    VkrShaderConfig transparent_cfg = ctx->shader_config;
+    transparent_cfg.name = (String8){0};
+
+    VkrRendererError transparent_err = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_pipeline_registry_create_from_shader_config(
+            &rf->pipeline_registry, &transparent_cfg,
+            VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT,
+            string8_lit("picking_transparent"),
+            &ctx->picking_transparent_pipeline, &transparent_err)) {
+      String8 err_str = vkr_renderer_get_error_string(transparent_err);
+      log_warn("Failed to create transparent picking pipeline: %s",
+               string8_cstr(&err_str));
+      ctx->picking_transparent_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+    } else if (ctx->shader_config.instance_texture_count > 0) {
+      VkrRendererError transparent_instance_err = VKR_RENDERER_ERROR_NONE;
+      if (!vkr_pipeline_registry_acquire_instance_state(
+              &rf->pipeline_registry, ctx->picking_transparent_pipeline,
+              &ctx->mesh_transparent_instance_state,
+              &transparent_instance_err)) {
+        String8 err_str =
+            vkr_renderer_get_error_string(transparent_instance_err);
+        log_warn("Failed to acquire transparent picking instance state: %s",
+                 string8_cstr(&err_str));
+        picking_release_pipeline(rf, &ctx->picking_transparent_pipeline);
+        ctx->mesh_transparent_instance_state.id = VKR_INVALID_ID;
+      }
+    }
+  }
+
+  VkrResourceHandleInfo text_cfg_info = {0};
+  VkrRendererError text_cfg_err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_resource_system_load_custom(
+          string8_lit("shadercfg"),
+          string8_lit("assets/shaders/picking_text.shadercfg"),
+          &rf->scratch_allocator, &text_cfg_info, &text_cfg_err)) {
+    String8 err_str = vkr_renderer_get_error_string(text_cfg_err);
+    log_error("Failed to load picking text shader config: %s",
+              string8_cstr(&err_str));
+    picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
+                                   &ctx->mesh_transparent_instance_state);
+    picking_release_pipeline(rf, &ctx->picking_transparent_pipeline);
+    picking_release_instance_state(rf, ctx->picking_pipeline,
+                                   &ctx->mesh_instance_state);
+    picking_release_pipeline(rf, &ctx->picking_pipeline);
+    vkr_shader_system_delete(&rf->shader_system, "shader.picking");
+    picking_destroy_attachments(rf, ctx);
+    return false_v;
+  }
+
+  if (!text_cfg_info.as.custom) {
+    log_error("Picking text shader config returned null custom data");
+    picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
+                                   &ctx->mesh_transparent_instance_state);
+    picking_release_pipeline(rf, &ctx->picking_transparent_pipeline);
+    picking_release_instance_state(rf, ctx->picking_pipeline,
+                                   &ctx->mesh_instance_state);
+    picking_release_pipeline(rf, &ctx->picking_pipeline);
+    vkr_shader_system_delete(&rf->shader_system, "shader.picking");
+    picking_destroy_attachments(rf, ctx);
+    return false_v;
+  }
+
+  ctx->text_shader_config = *(VkrShaderConfig *)text_cfg_info.as.custom;
+
+  if (!vkr_shader_system_create(&rf->shader_system, &ctx->text_shader_config)) {
+    log_error("Failed to create picking text shader in shader system");
+    picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
+                                   &ctx->mesh_transparent_instance_state);
+    picking_release_pipeline(rf, &ctx->picking_transparent_pipeline);
+    picking_release_instance_state(rf, ctx->picking_pipeline,
+                                   &ctx->mesh_instance_state);
+    picking_release_pipeline(rf, &ctx->picking_pipeline);
+    vkr_shader_system_delete(&rf->shader_system, "shader.picking");
+    picking_destroy_attachments(rf, ctx);
+    return false_v;
+  }
+
+  VkrShaderConfig text_shader_config = ctx->text_shader_config;
+  text_shader_config.cull_mode = VKR_CULL_MODE_NONE;
+
+  VkrRendererError text_pipeline_err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_pipeline_registry_create_from_shader_config(
+          &rf->pipeline_registry, &text_shader_config,
+          // Text picking should behave like an overlay: draw last and always
+          // win the ID buffer regardless of depth.
+          VKR_PIPELINE_DOMAIN_POST, string8_lit("picking_text"),
+          &ctx->picking_text_pipeline, &text_pipeline_err)) {
+    String8 err_str = vkr_renderer_get_error_string(text_pipeline_err);
+    log_error("Failed to create picking text pipeline: %s",
+              string8_cstr(&err_str));
+    vkr_shader_system_delete(&rf->shader_system, "shader.picking_text");
+    picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
+                                   &ctx->mesh_transparent_instance_state);
+    picking_release_pipeline(rf, &ctx->picking_transparent_pipeline);
+    picking_release_instance_state(rf, ctx->picking_pipeline,
+                                   &ctx->mesh_instance_state);
+    picking_release_pipeline(rf, &ctx->picking_pipeline);
+    vkr_shader_system_delete(&rf->shader_system, "shader.picking");
+    picking_destroy_attachments(rf, ctx);
+    return false_v;
+  }
+
+  // Create a WORLD text picking pipeline variant (depth-tested, depth-write
+  // off) so world text picking respects the scene depth buffer.
+  {
+    VkrShaderConfig world_text_cfg = text_shader_config;
+    world_text_cfg.name = (String8){0};
+    VkrRendererError world_text_pipeline_err = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_pipeline_registry_create_from_shader_config(
+            &rf->pipeline_registry, &world_text_cfg,
+            VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT,
+            string8_lit("picking_world_text"),
+            &ctx->picking_world_text_pipeline, &world_text_pipeline_err)) {
+      String8 err_str = vkr_renderer_get_error_string(world_text_pipeline_err);
+      log_error("Failed to create world picking text pipeline: %s",
+                string8_cstr(&err_str));
+      picking_release_pipeline(rf, &ctx->picking_text_pipeline);
+      vkr_shader_system_delete(&rf->shader_system, "shader.picking_text");
+      picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
+                                     &ctx->mesh_transparent_instance_state);
+      picking_release_pipeline(rf, &ctx->picking_transparent_pipeline);
+      picking_release_instance_state(rf, ctx->picking_pipeline,
+                                     &ctx->mesh_instance_state);
+      picking_release_pipeline(rf, &ctx->picking_pipeline);
+      vkr_shader_system_delete(&rf->shader_system, "shader.picking");
+      picking_destroy_attachments(rf, ctx);
+      return false_v;
+    }
+  }
+
+  if (ctx->text_shader_config.name.str &&
+      ctx->text_shader_config.name.length > 0) {
+    VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
+    vkr_pipeline_registry_alias_pipeline_name(
+        &rf->pipeline_registry, ctx->picking_text_pipeline,
+        ctx->text_shader_config.name, &alias_err);
   }
 
   ctx->state = VKR_PICKING_STATE_IDLE;
@@ -342,11 +565,61 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
   vkr_material_system_apply_global(&rf->material_system, &rf->globals,
                                    VKR_PIPELINE_DOMAIN_PICKING);
 
+  const bool8_t can_alpha_test =
+      (ctx->mesh_instance_state.id != VKR_INVALID_ID) ? true_v : false_v;
+  if (can_alpha_test) {
+    vkr_shader_system_bind_instance(&rf->shader_system,
+                                    ctx->mesh_instance_state.id);
+  }
+
+  VkrTextureOpaqueHandle fallback_texture = NULL;
+  VkrTexture *default_texture =
+      vkr_texture_system_get_default(&rf->texture_system);
+  if (default_texture) {
+    fallback_texture = default_texture->handle;
+  }
+
   uint32_t mesh_capacity = vkr_mesh_manager_capacity(mesh_manager);
+  Vec3 camera_pos = rf->globals.view_position;
+
+  const bool8_t has_transparent_pipeline =
+      (ctx->picking_transparent_pipeline.id != 0 &&
+       ctx->mesh_transparent_instance_state.id != VKR_INVALID_ID)
+          ? true_v
+          : false_v;
+
+  VkrPickingTransparentSubmeshEntry *transparent_entries = NULL;
+  uint32_t transparent_count = 0;
+  uint32_t max_transparent_entries = 0;
+
+  VkrAllocatorScope temp_scope = {0};
+  if (has_transparent_pipeline) {
+    VkrAllocator *temp_alloc = &rf->allocator;
+    temp_scope = vkr_allocator_begin_scope(temp_alloc);
+    if (vkr_allocator_scope_is_valid(&temp_scope)) {
+      for (uint32_t mesh_index = 0; mesh_index < mesh_capacity; mesh_index++) {
+        VkrMesh *mesh = vkr_mesh_manager_get(mesh_manager, mesh_index);
+        if (!mesh || !mesh->visible) {
+          continue;
+        }
+        max_transparent_entries += vkr_mesh_manager_submesh_count(mesh);
+      }
+
+      if (max_transparent_entries > 0) {
+        transparent_entries = vkr_allocator_alloc(
+            temp_alloc,
+            sizeof(VkrPickingTransparentSubmeshEntry) * max_transparent_entries,
+            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+    }
+  }
 
   for (uint32_t mesh_index = 0; mesh_index < mesh_capacity; mesh_index++) {
     VkrMesh *mesh = vkr_mesh_manager_get(mesh_manager, mesh_index);
     if (!mesh) {
+      continue;
+    }
+    if (!mesh->visible) {
       continue;
     }
 
@@ -355,7 +628,11 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
       continue;
     }
 
-    Mat4 model = vkr_transform_get_world(&mesh->transform);
+    Mat4 model = mesh->model;
+    uint32_t object_id =
+        mesh->render_id
+            ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, mesh->render_id)
+            : 0;
 
     for (uint32_t submesh_index = 0; submesh_index < submesh_count;
          submesh_index++) {
@@ -365,18 +642,160 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
         continue;
       }
 
-      vkr_material_system_apply_local(
-          &rf->material_system,
-          &(VkrLocalMaterialState){
-              .model = model,
-              .object_id = mesh_index + 1, // 0 = background
-          });
+      VkrTextureOpaqueHandle diffuse_texture_handle = fallback_texture;
+      float32_t alpha_cutoff = 0.0f;
+      bool8_t has_transparency = false_v;
 
-      vkr_shader_system_apply_instance(&rf->shader_system);
+      if (submesh->material.id != 0) {
+        VkrMaterial *material = vkr_material_system_get_by_handle(
+            &rf->material_system, submesh->material);
+        if (material) {
+          VkrMaterialTexture *diffuse_tex =
+              &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
+          if (diffuse_tex->enabled && diffuse_tex->handle.id != 0) {
+            VkrTexture *texture = vkr_texture_system_get_by_handle(
+                &rf->texture_system, diffuse_tex->handle);
+            if (texture && texture->handle) {
+              diffuse_texture_handle = texture->handle;
+              has_transparency =
+                  bitset8_is_set(&texture->description.properties,
+                                 VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
+              if (can_alpha_test && has_transparency) {
+                alpha_cutoff = VKR_PICKING_ALPHA_CUTOFF;
+              }
+            }
+          }
+        }
+      }
+
+      if (has_transparent_pipeline && has_transparency && transparent_entries &&
+          transparent_count < max_transparent_entries) {
+        Vec3 mesh_pos = vec3_new(model.elements[12], model.elements[13],
+                                 model.elements[14]);
+        float32_t distance = vec3_distance(mesh_pos, camera_pos);
+        transparent_entries[transparent_count++] =
+            (VkrPickingTransparentSubmeshEntry){
+                .mesh_index = mesh_index,
+                .submesh_index = submesh_index,
+                .distance = distance,
+            };
+        continue;
+      }
+
+      vkr_material_system_apply_local(
+          &rf->material_system, &(VkrLocalMaterialState){
+                                    .model = model,
+                                    .object_id = object_id, // 0 = background
+                                });
+
+      vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
+                                    &alpha_cutoff);
+
+      if (can_alpha_test && diffuse_texture_handle) {
+        vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
+                                      diffuse_texture_handle);
+      }
+
+      if (!vkr_shader_system_apply_instance(&rf->shader_system)) {
+        continue;
+      }
 
       vkr_geometry_system_render(rf, &rf->geometry_system, submesh->geometry,
                                  1);
     }
+  }
+
+  if (has_transparent_pipeline && transparent_entries &&
+      transparent_count > 0) {
+    qsort(transparent_entries, transparent_count,
+          sizeof(VkrPickingTransparentSubmeshEntry),
+          vkr_picking_transparent_submesh_compare);
+
+    VkrRendererError transparent_bind_err = VKR_RENDERER_ERROR_NONE;
+    vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry,
+                                        ctx->picking_transparent_pipeline,
+                                        &transparent_bind_err);
+    if (transparent_bind_err == VKR_RENDERER_ERROR_NONE) {
+      vkr_material_system_apply_global(&rf->material_system, &rf->globals,
+                                       VKR_PIPELINE_DOMAIN_PICKING);
+
+      vkr_shader_system_bind_instance(&rf->shader_system,
+                                      ctx->mesh_transparent_instance_state.id);
+
+      for (uint32_t t = 0; t < transparent_count; ++t) {
+        VkrPickingTransparentSubmeshEntry *entry = &transparent_entries[t];
+        VkrMesh *mesh = vkr_mesh_manager_get(mesh_manager, entry->mesh_index);
+        if (!mesh || !mesh->visible) {
+          continue;
+        }
+
+        VkrSubMesh *submesh = vkr_mesh_manager_get_submesh(
+            mesh_manager, entry->mesh_index, entry->submesh_index);
+        if (!submesh) {
+          continue;
+        }
+
+        Mat4 model = mesh->model;
+        uint32_t object_id =
+            mesh->render_id ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE,
+                                                    mesh->render_id)
+                            : 0;
+
+        VkrTextureOpaqueHandle diffuse_texture_handle = fallback_texture;
+        float32_t alpha_cutoff = 0.0f;
+
+        if (submesh->material.id != 0) {
+          VkrMaterial *material = vkr_material_system_get_by_handle(
+              &rf->material_system, submesh->material);
+          if (material) {
+            VkrMaterialTexture *diffuse_tex =
+                &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
+            if (diffuse_tex->enabled && diffuse_tex->handle.id != 0) {
+              VkrTexture *texture = vkr_texture_system_get_by_handle(
+                  &rf->texture_system, diffuse_tex->handle);
+              if (texture && texture->handle) {
+                diffuse_texture_handle = texture->handle;
+                if (bitset8_is_set(&texture->description.properties,
+                                   VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT)) {
+                  alpha_cutoff = VKR_PICKING_ALPHA_CUTOFF;
+                }
+              }
+            }
+          }
+        }
+
+        vkr_material_system_apply_local(
+            &rf->material_system, &(VkrLocalMaterialState){
+                                      .model = model,
+                                      .object_id = object_id, // 0 = background
+                                  });
+
+        vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
+                                      &alpha_cutoff);
+
+        if (diffuse_texture_handle) {
+          vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
+                                        diffuse_texture_handle);
+        }
+
+        if (!vkr_shader_system_apply_instance(&rf->shader_system)) {
+          continue;
+        }
+
+        vkr_geometry_system_render(rf, &rf->geometry_system, submesh->geometry,
+                                   1);
+      }
+    }
+
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  } else if (vkr_allocator_scope_is_valid(&temp_scope)) {
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
+  if (ctx->picking_text_pipeline.id != 0) {
+    // Draw WORLD picking text first (depth-tested), then UI picking text last.
+    vkr_view_world_render_picking_text(rf, ctx->picking_world_text_pipeline);
+    vkr_view_ui_render_picking_text(rf, ctx->picking_text_pipeline);
   }
 
   VkrRendererError end_err = vkr_renderer_end_render_pass(rf);
@@ -499,10 +918,33 @@ void vkr_picking_shutdown(struct s_RendererFrontend *renderer,
     return;
   }
 
+  picking_release_instance_state(rf, ctx->picking_pipeline,
+                                 &ctx->mesh_instance_state);
+  picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
+                                 &ctx->mesh_transparent_instance_state);
+
   if (ctx->picking_pipeline.id != 0) {
     vkr_pipeline_registry_release(&rf->pipeline_registry,
                                   ctx->picking_pipeline);
     ctx->picking_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+
+  if (ctx->picking_transparent_pipeline.id != 0) {
+    vkr_pipeline_registry_release(&rf->pipeline_registry,
+                                  ctx->picking_transparent_pipeline);
+    ctx->picking_transparent_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+
+  if (ctx->picking_text_pipeline.id != 0) {
+    vkr_pipeline_registry_release(&rf->pipeline_registry,
+                                  ctx->picking_text_pipeline);
+    ctx->picking_text_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+
+  if (ctx->picking_world_text_pipeline.id != 0) {
+    vkr_pipeline_registry_release(&rf->pipeline_registry,
+                                  ctx->picking_world_text_pipeline);
+    ctx->picking_world_text_pipeline = VKR_PIPELINE_HANDLE_INVALID;
   }
 
   picking_destroy_attachments(rf, ctx);
