@@ -22,17 +22,20 @@ typedef struct VkrPickingDecodedId {
   bool8_t valid;
 } VkrPickingDecodedId;
 
-#define VKR_PICKING_ID_KIND_BITS  2u
+#define VKR_PICKING_ID_KIND_BITS 2u
 #define VKR_PICKING_ID_KIND_SHIFT (32u - VKR_PICKING_ID_KIND_BITS)
-#define VKR_PICKING_ID_KIND_MASK  (0x3u << VKR_PICKING_ID_KIND_SHIFT)
+#define VKR_PICKING_ID_KIND_MASK (0x3u << VKR_PICKING_ID_KIND_SHIFT)
 #define VKR_PICKING_ID_VALUE_MASK ((1u << VKR_PICKING_ID_KIND_SHIFT) - 1u)
-#define VKR_PICKING_ID_MAX_VALUE  (VKR_PICKING_ID_VALUE_MASK - 1u)
+// MAX_VALUE is one less than VALUE_MASK because encoding adds 1 to reserve 0 as
+// invalid
+#define VKR_PICKING_ID_MAX_VALUE (VKR_PICKING_ID_VALUE_MASK - 1u)
 
 static inline uint32_t vkr_picking_encode_id(VkrPickingIdKind kind,
                                              uint32_t value) {
   if (value > VKR_PICKING_ID_MAX_VALUE) {
     return 0;
   }
+  // Add 1 to value to reserve payload 0 as invalid
   return ((uint32_t)kind << VKR_PICKING_ID_KIND_SHIFT) | (value + 1u);
 }
 
@@ -53,6 +56,7 @@ static inline VkrPickingDecodedId vkr_picking_decode_id(uint32_t object_id) {
 
   decoded.kind = (VkrPickingIdKind)((object_id & VKR_PICKING_ID_KIND_MASK) >>
                                     VKR_PICKING_ID_KIND_SHIFT);
+  // Subtract 1 to recover original value (inverse of encoder's +1)
   decoded.value = payload - 1u;
   decoded.valid = true_v;
   return decoded;

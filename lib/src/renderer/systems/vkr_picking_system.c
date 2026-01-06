@@ -195,6 +195,69 @@ vkr_internal bool8_t picking_create_render_target(RendererFrontend *rf,
 // Public API
 // ============================================================================
 
+/**
+ * @brief Prepare and apply per-submesh material state for picking.
+ *
+ * Resolves diffuse texture and alpha cutoff, applies local material state,
+ * sets shader uniforms/samplers and applies the shader instance.
+ *
+ * Returns true when the shader instance was applied successfully and the
+ * caller can proceed with geometry rendering.
+ */
+vkr_internal bool8_t picking_render_submesh(
+    RendererFrontend *rf, VkrMesh *mesh, VkrSubMesh *submesh,
+    VkrTextureOpaqueHandle fallback_texture, bool8_t can_alpha_test) {
+  if (!rf || !mesh || !submesh) {
+    return false_v;
+  }
+
+  Mat4 model = mesh->model;
+  uint32_t object_id =
+      mesh->render_id
+          ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, mesh->render_id)
+          : 0;
+
+  VkrTextureOpaqueHandle diffuse_texture_handle = fallback_texture;
+  float32_t alpha_cutoff = 0.0f;
+
+  if (submesh->material.id != 0) {
+    VkrMaterial *material = vkr_material_system_get_by_handle(
+        &rf->material_system, submesh->material);
+    if (material) {
+      VkrMaterialTexture *diffuse_tex =
+          &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
+      if (diffuse_tex->enabled && diffuse_tex->handle.id != 0) {
+        VkrTexture *texture = vkr_texture_system_get_by_handle(
+            &rf->texture_system, diffuse_tex->handle);
+        if (texture && texture->handle) {
+          diffuse_texture_handle = texture->handle;
+          if (can_alpha_test &&
+              bitset8_is_set(&texture->description.properties,
+                             VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT)) {
+            alpha_cutoff = VKR_PICKING_ALPHA_CUTOFF;
+          }
+        }
+      }
+    }
+  }
+
+  vkr_material_system_apply_local(&rf->material_system,
+                                  &(VkrLocalMaterialState){
+                                      .model = model,
+                                      .object_id = object_id, // 0 = background
+                                  });
+
+  vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
+                                &alpha_cutoff);
+
+  if (can_alpha_test && diffuse_texture_handle) {
+    vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
+                                  diffuse_texture_handle);
+  }
+
+  return vkr_shader_system_apply_instance(&rf->shader_system);
+}
+
 bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
                          VkrPickingContext *ctx, uint32_t width,
                          uint32_t height) {
@@ -642,8 +705,6 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
         continue;
       }
 
-      VkrTextureOpaqueHandle diffuse_texture_handle = fallback_texture;
-      float32_t alpha_cutoff = 0.0f;
       bool8_t has_transparency = false_v;
 
       if (submesh->material.id != 0) {
@@ -656,13 +717,9 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
             VkrTexture *texture = vkr_texture_system_get_by_handle(
                 &rf->texture_system, diffuse_tex->handle);
             if (texture && texture->handle) {
-              diffuse_texture_handle = texture->handle;
               has_transparency =
                   bitset8_is_set(&texture->description.properties,
                                  VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
-              if (can_alpha_test && has_transparency) {
-                alpha_cutoff = VKR_PICKING_ALPHA_CUTOFF;
-              }
             }
           }
         }
@@ -682,21 +739,8 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
         continue;
       }
 
-      vkr_material_system_apply_local(
-          &rf->material_system, &(VkrLocalMaterialState){
-                                    .model = model,
-                                    .object_id = object_id, // 0 = background
-                                });
-
-      vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
-                                    &alpha_cutoff);
-
-      if (can_alpha_test && diffuse_texture_handle) {
-        vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
-                                      diffuse_texture_handle);
-      }
-
-      if (!vkr_shader_system_apply_instance(&rf->shader_system)) {
+      if (!picking_render_submesh(rf, mesh, submesh, fallback_texture,
+                                  can_alpha_test)) {
         continue;
       }
 
@@ -735,50 +779,8 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
           continue;
         }
 
-        Mat4 model = mesh->model;
-        uint32_t object_id =
-            mesh->render_id ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE,
-                                                    mesh->render_id)
-                            : 0;
-
-        VkrTextureOpaqueHandle diffuse_texture_handle = fallback_texture;
-        float32_t alpha_cutoff = 0.0f;
-
-        if (submesh->material.id != 0) {
-          VkrMaterial *material = vkr_material_system_get_by_handle(
-              &rf->material_system, submesh->material);
-          if (material) {
-            VkrMaterialTexture *diffuse_tex =
-                &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
-            if (diffuse_tex->enabled && diffuse_tex->handle.id != 0) {
-              VkrTexture *texture = vkr_texture_system_get_by_handle(
-                  &rf->texture_system, diffuse_tex->handle);
-              if (texture && texture->handle) {
-                diffuse_texture_handle = texture->handle;
-                if (bitset8_is_set(&texture->description.properties,
-                                   VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT)) {
-                  alpha_cutoff = VKR_PICKING_ALPHA_CUTOFF;
-                }
-              }
-            }
-          }
-        }
-
-        vkr_material_system_apply_local(
-            &rf->material_system, &(VkrLocalMaterialState){
-                                      .model = model,
-                                      .object_id = object_id, // 0 = background
-                                  });
-
-        vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
-                                      &alpha_cutoff);
-
-        if (diffuse_texture_handle) {
-          vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
-                                        diffuse_texture_handle);
-        }
-
-        if (!vkr_shader_system_apply_instance(&rf->shader_system)) {
+        if (!picking_render_submesh(rf, mesh, submesh, fallback_texture,
+                                    true_v)) {
           continue;
         }
 
@@ -792,7 +794,8 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
 
-  if (ctx->picking_text_pipeline.id != 0) {
+  if (ctx->picking_text_pipeline.id != 0 &&
+      ctx->picking_world_text_pipeline.id != 0) {
     // Draw WORLD picking text first (depth-tested), then UI picking text last.
     vkr_view_world_render_picking_text(rf, ctx->picking_world_text_pipeline);
     vkr_view_ui_render_picking_text(rf, ctx->picking_text_pipeline);
