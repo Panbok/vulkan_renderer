@@ -43,8 +43,9 @@
  * 3. Register callbacks for specific event types using
  *    `event_manager_subscribe`.
  * 4. Dispatch events from any thread using `event_manager_dispatch`. The `data`
- *    pointer within the dispatched `Event` must remain valid until all callbacks
- *    have processed it (caller manages `data` lifetime).
+ *    pointer within the dispatched `Event` is copied by the event system when
+ *    `data_size` is greater than zero. Callbacks receive a stable copy that
+ *    remains valid for the duration of the callback execution.
  * 5. Optionally, unregister callbacks using `event_manager_unsubscribe`.
  * 6. When done, destroy the manager using `event_manager_destroy` to signal the
  *    worker thread, wait for it to finish, and clean up resources.
@@ -59,9 +60,7 @@
 #include "core/vkr_threads.h"
 #include "defines.h"
 #include "memory/arena.h"
-#include "platform/vkr_platform.h"
 #include "vkr_event_data_buffer.h"
-#include "vkr_pch.h"
 
 // TODO: Explore possibility of re-writing this into event loop system, like
 // Node.js, where events are processed in a loop, and the event manager is
@@ -103,12 +102,10 @@ typedef enum EventType {
 typedef struct Event {
   EventType type; /**< The type of the event, used to determine which callbacks
                    to invoke. */
-  void *data;     /**< Pointer to event-specific data. If an event is dispatched
-                     via `event_manager_dispatch` and `data_size` is greater than
-                     zero, this will point to a copy of the original data, managed
-                     by the event system within its arena. Otherwise, its meaning
-                     and lifetime depend on how the event was created and
-                     processed. */
+  void *data;     /**< Pointer to event-specific data. If dispatched via
+                     `event_manager_dispatch` with `data_size > 0`, callbacks
+                     receive a stable copy valid for the duration of the
+                     callback execution. */
   uint64_t data_size; /**< The size of the data pointed to by `data`, if it's
                          to be copied by `event_manager_dispatch`. If zero,
                          no data is copied, and `data` may be NULL or used
@@ -153,12 +150,12 @@ Array(EventCallbackData);
  * thread.
  */
 typedef struct EventManager {
-  Arena *arena;      /**< Arena used for internal allocations (e.g., callback
-                      vectors, event data ring buffer). */
+  Arena *arena; /**< Arena used for internal allocations (e.g., callback
+                 vectors, event data ring buffer). */
   VkrAllocator allocator; /**< Allocator backed by arena, used for threading
                              primitives. */
-  Queue_Event queue; /**< The queue holding dispatched events awaiting
-                      processing. */
+  Queue_Event queue;      /**< The queue holding dispatched events awaiting
+                           processing. */
   Vector_EventCallbackData
       callbacks[EVENT_TYPE_MAX]; /**< Array of vectors, indexed by EventType,
                                     storing registered callbacks. */

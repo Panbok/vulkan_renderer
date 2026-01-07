@@ -24,14 +24,16 @@ static bool8_t event_callback_equals(EventCallbackData *current_value,
  */
 static void *events_processor(void *arg) {
   EventManager *manager = (EventManager *)arg;
-  Arena *local_thread_arena = arena_create(KB(4), KB(4));
+  Arena *local_thread_arena = arena_create(KB(64), KB(64));
   VkrAllocator thread_allocator = manager->allocator;
   thread_allocator.ctx = local_thread_arena;
   bool32_t should_run = true;
 
   while (should_run) {
     Event event;
+    Event local_event;
     bool32_t event_dequeued = false;
+    bool8_t payload_pending_free = false_v;
 
     vkr_mutex_lock(manager->mutex);
 
@@ -44,12 +46,7 @@ static void *events_processor(void *arg) {
     if (!queue_is_empty_Event(&manager->queue)) {
       event_dequeued = queue_dequeue_Event(&manager->queue, &event);
       if (event_dequeued && event.data_size > 0 && event.data != NULL) {
-        if (!vkr_event_data_buffer_free(&manager->event_data_buf,
-                                        event.data_size)) {
-          log_error("Events_processor: Failed to free data for event type %d, "
-                    "size %llu from event data buffer.",
-                    event.type, event.data_size);
-        }
+        payload_pending_free = true_v;
       }
     }
 
@@ -60,6 +57,14 @@ static void *events_processor(void *arg) {
 
     if (event.type >= EVENT_TYPE_MAX) {
       log_warn("Processed event with invalid type: %u", event.type);
+      if (payload_pending_free) {
+        if (!vkr_event_data_buffer_free(&manager->event_data_buf,
+                                        event.data_size)) {
+          log_error("Events_processor: Failed to free data for event type %d, "
+                    "size %llu from event data buffer.",
+                    event.type, event.data_size);
+        }
+      }
       vkr_mutex_unlock(manager->mutex);
       continue;
     }
@@ -68,14 +73,60 @@ static void *events_processor(void *arg) {
     uint16_t subs_count = callbacks_vec->length;
 
     if (subs_count == 0) {
+      if (payload_pending_free) {
+        if (!vkr_event_data_buffer_free(&manager->event_data_buf,
+                                        event.data_size)) {
+          log_error("Events_processor: Failed to free data for event type %d, "
+                    "size %llu from event data buffer.",
+                    event.type, event.data_size);
+        }
+      }
       vkr_mutex_unlock(manager->mutex);
       continue;
     }
 
     VkrAllocatorScope scope = vkr_allocator_begin_scope(&thread_allocator);
     if (!vkr_allocator_scope_is_valid(&scope)) {
+      if (payload_pending_free) {
+        if (!vkr_event_data_buffer_free(&manager->event_data_buf,
+                                        event.data_size)) {
+          log_error("Events_processor: Failed to free data for event type %d, "
+                    "size %llu from event data buffer.",
+                    event.type, event.data_size);
+        }
+      }
       vkr_mutex_unlock(manager->mutex);
       continue;
+    }
+
+    local_event = event;
+    if (payload_pending_free) {
+      void *payload_copy = vkr_allocator_alloc(
+          &thread_allocator, event.data_size, VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+      if (!payload_copy) {
+        log_error("Events_processor: Failed to allocate %llu bytes for event "
+                  "type %d payload copy.",
+                  event.data_size, event.type);
+        if (!vkr_event_data_buffer_free(&manager->event_data_buf,
+                                        event.data_size)) {
+          log_error("Events_processor: Failed to free data for event type %d, "
+                    "size %llu from event data buffer.",
+                    event.type, event.data_size);
+        }
+        vkr_mutex_unlock(manager->mutex);
+        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+        continue;
+      }
+
+      MemCopy(payload_copy, event.data, event.data_size);
+      local_event.data = payload_copy;
+
+      if (!vkr_event_data_buffer_free(&manager->event_data_buf,
+                                      event.data_size)) {
+        log_error("Events_processor: Failed to free data for event type %d, "
+                  "size %llu from event data buffer.",
+                  event.type, event.data_size);
+      }
     }
 
     EventCallbackData *local_callbacks_copy = vkr_allocator_alloc(
@@ -89,7 +140,7 @@ static void *events_processor(void *arg) {
 
       for (uint16_t i = 0; i < subs_count; i++) {
         if (local_callbacks_copy[i].callback != NULL) {
-          local_callbacks_copy[i].callback(&event,
+          local_callbacks_copy[i].callback(&local_event,
                                            local_callbacks_copy[i].user_data);
         }
       }
