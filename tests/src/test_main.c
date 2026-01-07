@@ -66,6 +66,8 @@ int main(int argc, char **argv) {
   all_passed &= run_pool_tests();
   printf("\n"); // Add spacing
   all_passed &= run_dmemory_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_entity_tests();
 
   vkr_platform_shutdown();
 
