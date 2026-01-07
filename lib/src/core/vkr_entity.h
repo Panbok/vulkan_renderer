@@ -141,7 +141,28 @@ VkrHashTableConstructor(struct VkrArchetype *, VkrArchetypePtr);
  * @brief World
  */
 typedef struct VkrWorld {
-  VkrAllocator *alloc;
+  VkrAllocator *alloc; // Main allocator for all persistent ECS allocations
+  /**
+   * @brief Optional scratch allocator for fast, short-lived temporary
+   * allocations.
+   *
+   * Set this when you need a fast allocator optimized for transient or
+   * per-frame allocations (e.g., temporary CPU/GPU upload buffers, staging
+   * memory, temporary strings during archetype lookups, per-operation component
+   * type arrays).
+   *
+   * If NULL, the system gracefully falls back to using `alloc` for all
+   * allocations. The fallback behavior automatically handles both cases:
+   * - When `scratch_alloc` is provided and differs from `alloc`, temporary
+   * allocations use scoped allocations for automatic cleanup
+   * - When `scratch_alloc` is NULL or matches `alloc`, temporary allocations
+   * use manual free calls
+   *
+   * Use `scratch_alloc` for allocations with short lifetimes (single operation
+   * or frame) that benefit from arena-style allocation or scope-based cleanup.
+   * Use `alloc` for allocations that persist for the lifetime of the world
+   * (archetypes, entity directory, component registry).
+   */
   VkrAllocator *scratch_alloc;
   uint16_t world_id;
 
@@ -165,9 +186,30 @@ typedef struct VkrWorld {
  * @brief World create info
  */
 typedef struct VkrWorldCreateInfo {
-  VkrAllocator *alloc; // allocator for all ECS allocations
-  VkrAllocator *scratch_alloc; // optional scratch allocator
-  uint16_t world_id;   // world id to embed in VkrEntityId (0 if single world)
+  VkrAllocator *alloc; // allocator for all persistent ECS allocations
+  /**
+   * @brief Optional scratch allocator for fast, short-lived temporary
+   * allocations.
+   *
+   * Set this when you need a fast allocator optimized for transient or
+   * per-frame allocations (e.g., temporary CPU/GPU upload buffers, staging
+   * memory, temporary strings during archetype lookups, per-operation component
+   * type arrays).
+   *
+   * If NULL, the system gracefully falls back to using `alloc` for all
+   * allocations. The fallback behavior automatically handles both cases:
+   * - When `scratch_alloc` is provided and differs from `alloc`, temporary
+   * allocations use scoped allocations for automatic cleanup
+   * - When `scratch_alloc` is NULL or matches `alloc`, temporary allocations
+   * use manual free calls
+   *
+   * Use `scratch_alloc` for allocations with short lifetimes (single operation
+   * or frame) that benefit from arena-style allocation or scope-based cleanup.
+   * Use `alloc` for allocations that persist for the lifetime of the world
+   * (archetypes, entity directory, component registry).
+   */
+  VkrAllocator *scratch_alloc;
+  uint16_t world_id; // world id to embed in VkrEntityId (0 if single world)
   // Optional initial capacities
   uint32_t initial_entities;   // e.g. 1024 (0 -> default)
   uint32_t initial_components; // e.g. 64 (0 -> default)
@@ -201,8 +243,12 @@ void vkr_entity_destroy_world(VkrWorld *world);
  * @param name Component name
  * @param size Component size
  * @param align Component alignment
- * @return Component type ID
- * @note Returns VKR_COMPONENT_TYPE_INVALID if name is already registered.
+ * @return Component type ID, or VKR_COMPONENT_TYPE_INVALID if name is already
+ * registered
+ * @note Returns VKR_COMPONENT_TYPE_INVALID when the name is already registered.
+ *       For get-or-create behavior (register if missing, return existing if
+ * present), use vkr_entity_register_component_once instead.
+ * @see vkr_entity_register_component_once, vkr_entity_find_component
  */
 VkrComponentTypeId vkr_entity_register_component(VkrWorld *world,
                                                  const char *name,
@@ -213,9 +259,12 @@ VkrComponentTypeId vkr_entity_register_component(VkrWorld *world,
  * @param name Component name
  * @param size Component size
  * @param align Component alignment
- * @return Component type ID
- * @note If name is registered with a different size/alignment, returns
- * VKR_COMPONENT_TYPE_INVALID.
+ * @return Component type ID, or VKR_COMPONENT_TYPE_INVALID if size/align
+ * mismatch
+ * @note Returns an existing component ID when the name is already registered
+ * with matching size and alignment. Returns VKR_COMPONENT_TYPE_INVALID only
+ * when the name exists but size/align differ (indicating a conflict).
+ * @see vkr_entity_register_component, vkr_entity_find_component
  */
 VkrComponentTypeId vkr_entity_register_component_once(VkrWorld *world,
                                                       const char *name,
@@ -355,21 +404,104 @@ typedef struct VkrQuery {
 
 /**
  * @brief Compiled query snapshot of matching archetypes.
- * @note Recompile after new archetypes are introduced.
+ *
+ * Compiled queries cache a snapshot of archetypes that match the query criteria
+ * at compile time. This provides fast iteration but becomes stale when new
+ * archetypes are created in the world.
+ *
+ * **Invalidation:** A compiled query becomes invalid (stale) when:
+ * - New archetypes are created via `vkr_entity_archetype_get_or_create()` or
+ *   when entities are created with new component combinations
+ * - The world's archetype count increases
+ *
+ * **When to recompile:**
+ * - After creating entities with new component combinations
+ * - After adding components to entities that create new archetypes
+ * - Before using a compiled query if archetypes may have been created since
+ *   the last compilation
+ *
+ * **When to use compiled vs non-compiled queries:**
+ * - Use compiled queries (`vkr_entity_query_compile` +
+ * `vkr_entity_query_compiled_each_chunk`) when the query is executed frequently
+ * (e.g., every frame) and archetypes are stable (e.g., after initial scene
+ * load).
+ * - Use non-compiled queries (`vkr_entity_query_each_chunk`) when:
+ *   - Archetypes are frequently created/destroyed
+ *   - The query is executed infrequently
+ *   - You want to avoid manual recompilation tracking
+ *
+ * **Lifecycle:**
+ * - Compile with `vkr_entity_query_compile()` after building the query
+ * - Use `vkr_entity_query_compiled_each_chunk()` to iterate
+ * - Destroy with `vkr_entity_query_compiled_destroy()` when done
+ * - Recompile if archetypes may have changed
+ *
+ * **Example:**
+ * ```c
+ * // Build query
+ * VkrQuery query;
+ * VkrComponentTypeId include[] = {TRANSFORM_TYPE, RENDER_TYPE};
+ * vkr_entity_query_build(world, include, 2, NULL, 0, &query);
+ *
+ * // Compile once after scene load (when archetypes are stable)
+ * VkrQueryCompiled compiled;
+ * if (!vkr_entity_query_compile(world, &query, allocator, &compiled)) {
+ *   // handle error
+ * }
+ *
+ * // Use compiled query in hot path (e.g., render loop)
+ * vkr_entity_query_compiled_each_chunk(&compiled, render_chunk_fn, user);
+ *
+ * // If new archetypes are created, recompile:
+ * vkr_entity_query_compiled_destroy(allocator, &compiled);
+ * vkr_entity_query_compile(world, &query, allocator, &compiled);
+ *
+ * // Cleanup
+ * vkr_entity_query_compiled_destroy(allocator, &compiled);
+ * ```
+ *
+ * @note In debug builds, `vkr_entity_query_compiled_each_chunk()` asserts if
+ * the query appears stale (world's archetype count increased since
+ * compilation).
  */
 typedef struct VkrQueryCompiled {
   VkrArchetype **archetypes;
   uint32_t archetype_count;
+#ifdef VKR_DEBUG
+  uint32_t world_arch_count_at_compile; ///< Debug: world's archetype count at
+                                        ///< compile time
+#endif
 } VkrQueryCompiled;
 
 /**
- * @brief Build a query
+ * @brief Build a query from component type signatures.
+ *
+ * Constructs a query that matches entities with the specified include/exclude
+ * component signatures. The query can be used directly with
+ * `vkr_entity_query_each_chunk()` or compiled for repeated use with
+ * `vkr_entity_query_compile()`.
+ *
+ * **Query invalidation:** Built queries (`VkrQuery`) are not invalidated by
+ * archetype changes; they are evaluated dynamically. However, compiled queries
+ * (`VkrQueryCompiled`) become stale when new archetypes are created and must
+ * be recompiled.
+ *
  * @param world World to build the query in
- * @param include_types Types to include
+ * @param include_types Component types that entities must have (all required)
  * @param include_count Number of include types
- * @param exclude_types Types to exclude
+ * @param exclude_types Component types that entities must not have (any
+ * excluded)
  * @param exclude_count Number of exclude types
- * @param out_query Query to build
+ * @param out_query Output query structure
+ *
+ * @example
+ * ```c
+ * // Query entities with Transform and Render components, but not Hidden
+ * VkrQuery query;
+ * VkrComponentTypeId include[] = {TRANSFORM_TYPE, RENDER_TYPE};
+ * VkrComponentTypeId exclude[] = {HIDDEN_TYPE};
+ * vkr_entity_query_build(world, include, 2, exclude, 1, &query);
+ * ```
  */
 void vkr_entity_query_build(VkrWorld *world,
                             const VkrComponentTypeId *include_types,
@@ -379,7 +511,61 @@ void vkr_entity_query_build(VkrWorld *world,
 
 /**
  * @brief Compile a query into a snapshot of matching archetypes.
- * @note Recompile after new archetypes are introduced.
+ *
+ * Creates a compiled query that caches the list of archetypes matching the
+ * query criteria at the time of compilation. This snapshot becomes stale when
+ * new archetypes are created in the world.
+ *
+ * **Invalidation requirements:**
+ * - The compiled query becomes invalid when `world->arch_count` increases
+ *   (new archetypes are created).
+ * - You must recompile after:
+ *   - Creating entities with new component combinations
+ *   - Adding components that create new archetypes
+ *   - Any operation that calls `vkr_entity_archetype_get_or_create()` with
+ *     a new signature
+ *
+ * **When to compile:**
+ * - After initial scene/entity setup when archetypes are stable
+ * - After batch entity creation operations
+ * - Before using in hot paths (e.g., render loops) where archetypes won't
+ * change
+ *
+ * **Memory management:**
+ * - The compiled query allocates memory for the archetype pointer array
+ * - Use `vkr_entity_query_compiled_destroy()` to free the memory
+ * - The allocator must outlive the compiled query's usage
+ *
+ * @param world World to compile the query against
+ * @param query Query to compile (built with `vkr_entity_query_build()`)
+ * @param allocator Allocator for the archetype array (must persist until
+ * destroy)
+ * @param out_query Output compiled query (must be destroyed when done)
+ * @return `true_v` on success, `false_v` on allocation failure
+ *
+ * @example
+ * ```c
+ * VkrQuery query;
+ * vkr_entity_query_build(world, include_types, include_count, NULL, 0, &query);
+ *
+ * VkrQueryCompiled compiled;
+ * if (!vkr_entity_query_compile(world, &query, allocator, &compiled)) {
+ *   log_error("Failed to compile query");
+ *   return;
+ * }
+ *
+ * // Use compiled query...
+ * vkr_entity_query_compiled_each_chunk(&compiled, fn, user);
+ *
+ * // Recompile if archetypes changed:
+ * if (archetypes_may_have_changed) {
+ *   vkr_entity_query_compiled_destroy(allocator, &compiled);
+ *   vkr_entity_query_compile(world, &query, allocator, &compiled);
+ * }
+ *
+ * // Cleanup
+ * vkr_entity_query_compiled_destroy(allocator, &compiled);
+ * ```
  */
 bool8_t vkr_entity_query_compile(VkrWorld *world, const VkrQuery *query,
                                  VkrAllocator *allocator,
@@ -387,22 +573,115 @@ bool8_t vkr_entity_query_compile(VkrWorld *world, const VkrQuery *query,
 
 /**
  * @brief Destroy a compiled query and free its archetype list.
+ *
+ * Frees the memory allocated by `vkr_entity_query_compile()` for the archetype
+ * pointer array. The query structure is zeroed after destruction.
+ *
+ * **Lifecycle:** Always pair `vkr_entity_query_compile()` with a matching
+ * `vkr_entity_query_compiled_destroy()` call to avoid memory leaks.
+ *
+ * @param allocator Allocator used to create the compiled query
+ * @param query Compiled query to destroy (can be NULL, safe to call multiple
+ * times)
+ *
+ * @example
+ * ```c
+ * VkrQueryCompiled compiled;
+ * vkr_entity_query_compile(world, &query, allocator, &compiled);
+ * // ... use compiled query ...
+ * vkr_entity_query_compiled_destroy(allocator, &compiled);
+ * ```
  */
 void vkr_entity_query_compiled_destroy(VkrAllocator *allocator,
                                        VkrQueryCompiled *query);
 
 /**
  * @brief Iterate over all chunks in a compiled query.
+ *
+ * Iterates through all chunks in the archetypes cached by the compiled query.
+ * This is faster than `vkr_entity_query_each_chunk()` because it avoids
+ * re-evaluating the query against all archetypes each time.
+ *
+ * **Staleness detection:** In debug builds, this function asserts if the
+ * compiled query appears stale (world's archetype count increased since
+ * compilation). In release builds, stale queries may silently miss new
+ * archetypes.
+ *
+ * **When to use:** Use compiled queries when:
+ * - The query is executed frequently (e.g., every frame in render loops)
+ * - Archetypes are stable (e.g., after initial scene load)
+ * - You can track when to recompile (after entity creation operations)
+ *
+ * **When to prefer non-compiled:** Use `vkr_entity_query_each_chunk()` when:
+ * - Archetypes change frequently
+ * - The query is executed infrequently
+ * - You want automatic up-to-date results without manual recompilation
+ *
+ * @param query Compiled query to iterate (must be valid and not stale)
+ * @param fn Callback function called for each matching chunk
+ * @param user User data passed to the callback
+ *
+ * @example
+ * ```c
+ * void render_chunk(const VkrArchetype *arch, VkrChunk *chunk, void *user) {
+ *   Transform *transforms = vkr_entity_chunk_column(chunk, TRANSFORM_TYPE);
+ *   Render *renders = vkr_entity_chunk_column(chunk, RENDER_TYPE);
+ *   uint32_t count = vkr_entity_chunk_count(chunk);
+ *   for (uint32_t i = 0; i < count; ++i) {
+ *     // render entity...
+ *   }
+ * }
+ *
+ * VkrQueryCompiled compiled;
+ * vkr_entity_query_compile(world, &query, allocator, &compiled);
+ * vkr_entity_query_compiled_each_chunk(&compiled, render_chunk, NULL);
+ * ```
  */
 void vkr_entity_query_compiled_each_chunk(const VkrQueryCompiled *query,
                                           VkrChunkFn fn, void *user);
 
 /**
- * @brief Query each chunk
+ * @brief Query each chunk matching the query criteria (non-compiled path).
+ *
+ * Iterates through all chunks in the world that match the query, evaluating
+ * the query dynamically against all archetypes. This always returns up-to-date
+ * results but is slower than compiled queries for repeated iterations.
+ *
+ * **Advantages over compiled queries:**
+ * - Always up-to-date (no staleness concerns)
+ * - No manual recompilation needed
+ * - Simpler lifecycle (no compile/destroy calls)
+ *
+ * **When to use:**
+ * - Archetypes change frequently
+ * - Query is executed infrequently
+ * - You want to avoid tracking when to recompile
+ * - One-off queries or queries in non-hot paths
+ *
+ * **When to prefer compiled queries:** Use `vkr_entity_query_compile()` +
+ * `vkr_entity_query_compiled_each_chunk()` when:
+ * - Query is executed every frame or in hot paths
+ * - Archetypes are stable after initial setup
+ * - Performance is critical
+ *
  * @param world World to query the chunks in
- * @param query Query to use
- * @param fn Function to call for each chunk
- * @param user User data
+ * @param query Query to evaluate (built with `vkr_entity_query_build()`)
+ * @param fn Function to call for each matching chunk
+ * @param user User data passed to the callback
+ *
+ * @example
+ * ```c
+ * VkrQuery query;
+ * VkrComponentTypeId include[] = {TRANSFORM_TYPE, RENDER_TYPE};
+ * vkr_entity_query_build(world, include, 2, NULL, 0, &query);
+ *
+ * void process_chunk(const VkrArchetype *arch, VkrChunk *chunk, void *user) {
+ *   // process entities in chunk...
+ * }
+ *
+ * // Always up-to-date, no recompilation needed
+ * vkr_entity_query_each_chunk(world, &query, process_chunk, NULL);
+ * ```
  */
 void vkr_entity_query_each_chunk(VkrWorld *world, const VkrQuery *query,
                                  VkrChunkFn fn, void *user);

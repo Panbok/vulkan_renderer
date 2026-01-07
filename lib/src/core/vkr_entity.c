@@ -12,7 +12,7 @@
 #define VKR_ENTITY_SIGNATURE_TYPE_BIT(typeId) (typeId & 63u) // %64
 #define VKR_ENTITY_COMP_INITIAL_CAPACITY 64u
 #define VKR_ENTITY_ARCH_KEY_SIZE 3
-#define VKR_ENTITY_TYPE_TO_COL_INVALID 0xFF
+#define VKR_ENTITY_TYPE_TO_COL_INVALID ((uint16_t)0xFFFFu)
 #define VKR_ENTITY_ARCH_INITIAL_CAPACITY 16u
 
 // ----------------------
@@ -507,6 +507,71 @@ vkr_entity_arch_key_build(VkrWorld *world, const VkrComponentTypeId *types,
   return vkr_entity_arch_key_build_alloc(world->alloc, types, n);
 }
 
+/**
+ * @brief RAII-style helper for scratch-allocated archetype keys.
+ * Manages scope creation and cleanup for temporary key allocations.
+ */
+typedef struct VkrScratchKey {
+  const char *key;
+  VkrAllocatorScope scope;
+  bool8_t is_scoped;
+  VkrAllocator *allocator;
+} VkrScratchKey;
+
+/**
+ * @brief Acquires a scratch-allocated archetype key with proper scope
+ * management.
+ * @param world The world to get allocators from.
+ * @param types Component type IDs array.
+ * @param n Number of component types.
+ * @return VkrScratchKey struct with key and cleanup state. key is NULL on
+ * failure.
+ */
+vkr_internal INLINE VkrScratchKey vkr_scratch_key_acquire(
+    VkrWorld *world, const VkrComponentTypeId *types, uint32_t n) {
+  VkrScratchKey result = {0};
+  assert_log(world, "World must not be NULL");
+
+  VkrAllocator *scratch_alloc =
+      world->scratch_alloc ? world->scratch_alloc : world->alloc;
+  // Never open a scope on world->alloc (persistent allocator). If callers use
+  // an outer scope on the same allocator, any persistent allocations created
+  // while the scope is active can be reclaimed by scope reset.
+  if (world->scratch_alloc && world->scratch_alloc != world->alloc) {
+    result.scope = vkr_allocator_begin_scope(scratch_alloc);
+    result.is_scoped = vkr_allocator_scope_is_valid(&result.scope);
+  }
+
+  result.allocator = scratch_alloc;
+  result.key = vkr_entity_arch_key_build_alloc(scratch_alloc, types, n);
+  if (!result.key && result.is_scoped) {
+    vkr_allocator_end_scope(&result.scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    result.is_scoped = false_v;
+  }
+
+  return result;
+}
+
+/**
+ * @brief Releases a scratch-allocated archetype key, cleaning up scope or
+ * freeing memory.
+ * @param key The scratch key to release.
+ */
+vkr_internal INLINE void vkr_scratch_key_release(VkrScratchKey *key) {
+  if (!key || !key->key)
+    return;
+
+  if (key->is_scoped) {
+    vkr_allocator_end_scope(&key->scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  } else {
+    vkr_allocator_free(key->allocator, (void *)key->key,
+                       string_length(key->key) + 1ull,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+  key->key = NULL;
+  key->is_scoped = false_v;
+}
+
 // ----------------------
 // Chunk layout & archetypes
 // ----------------------
@@ -812,48 +877,20 @@ vkr_entity_archetype_get_or_create(VkrWorld *world, VkrComponentTypeId *types,
   if (n > 1)
     vkr_entity_sort_types(types, n);
 
-  VkrAllocator *scratch_alloc =
-      world->scratch_alloc ? world->scratch_alloc : world->alloc;
-  // Never open a scope on world->alloc (persistent allocator). If callers use
-  // an outer scope on the same allocator, any persistent allocations created
-  // while the scope is active can be reclaimed by scope reset.
-  VkrAllocatorScope scratch_scope = (VkrAllocatorScope){0};
-  bool8_t scratch_scoped = false_v;
-  if (world->scratch_alloc && world->scratch_alloc != world->alloc) {
-    scratch_scope = vkr_allocator_begin_scope(scratch_alloc);
-    scratch_scoped = vkr_allocator_scope_is_valid(&scratch_scope);
-  }
-
   // Build temporary key string for lookup.
-  const char *tmp_key =
-      vkr_entity_arch_key_build_alloc(scratch_alloc, types, n);
-  if (!tmp_key) {
-    if (scratch_scoped) {
-      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    }
+  VkrScratchKey scratch_key = vkr_scratch_key_acquire(world, types, n);
+  if (!scratch_key.key) {
     return NULL;
   }
 
   VkrArchetype **found =
-      vkr_hash_table_get_VkrArchetypePtr(&world->arch_table, tmp_key);
+      vkr_hash_table_get_VkrArchetypePtr(&world->arch_table, scratch_key.key);
   if (found) {
-    if (scratch_scoped) {
-      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    } else {
-      vkr_allocator_free(scratch_alloc, (void *)tmp_key,
-                         string_length(tmp_key) + 1ull,
-                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    }
+    vkr_scratch_key_release(&scratch_key);
     return *found;
   }
 
-  if (scratch_scoped) {
-    vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  } else {
-    vkr_allocator_free(scratch_alloc, (void *)tmp_key,
-                       string_length(tmp_key) + 1ull,
-                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  }
+  vkr_scratch_key_release(&scratch_key);
 
   VkrArchetype *archetype = vkr_entity_archetype_create(world, types, n);
   if (!archetype)
@@ -1162,6 +1199,64 @@ VkrEntityId vkr_entity_create_entity_with_components(
     inits[i].data = init_data ? init_data[i] : NULL;
   }
 
+  // Debug-only check: detect duplicate component types before coalescing
+#if ASSERT_LOG
+  // Track which types we've already reported to avoid duplicate messages
+  bool8_t reported[VKR_ECS_MAX_COMPONENTS] = {0};
+  for (uint32_t i = 0; i < count; ++i) {
+    VkrComponentTypeId type = types[i];
+    if (type >= VKR_ECS_MAX_COMPONENTS || reported[type])
+      continue;
+
+    // Find all occurrences of this type
+    uint32_t dup_indices[32];
+    uint32_t dup_count = 0;
+    for (uint32_t j = 0; j < count && dup_count < ArrayCount(dup_indices);
+         ++j) {
+      if (types[j] == type) {
+        dup_indices[dup_count++] = j;
+      }
+    }
+
+    // If found more than once, report it
+    if (dup_count > 1) {
+      if (dup_count == 2) {
+        log_warn("vkr_entity_create_entity_with_components: duplicate "
+                 "VkrComponentTypeId %u found at indices %u and %u (total "
+                 "count=%u). "
+                 "The first non-NULL init_data will be kept.",
+                 (uint32_t)type, dup_indices[0], dup_indices[1], count);
+        assert_log(false, "Duplicate component type detected in "
+                          "vkr_entity_create_entity_with_components");
+      } else {
+        // Multiple duplicates - build indices string
+        char indices_str[256] = {0};
+        char *p = indices_str;
+        for (uint32_t k = 0; k < dup_count && k < 10 && p < indices_str + 240;
+             ++k) {
+          if (k > 0)
+            *p++ = ',';
+          p = vkr_write_u32_dec(p, dup_indices[k]);
+        }
+        if (dup_count > 10) {
+          *p++ = '.';
+          *p++ = '.';
+          *p++ = '.';
+        }
+        *p = '\0';
+        log_warn(
+            "vkr_entity_create_entity_with_components: duplicate "
+            "VkrComponentTypeId %u found at indices [%s] (total count=%u, %u "
+            "occurrences). The first non-NULL init_data will be kept.",
+            (uint32_t)type, indices_str, count, dup_count);
+        assert_log(false, "Duplicate component type detected in "
+                          "vkr_entity_create_entity_with_components");
+      }
+      reported[type] = true_v;
+    }
+  }
+#endif
+
   vkr_entity_sort_component_inits(inits, count);
 
   uint32_t unique_count = 0;
@@ -1360,7 +1455,7 @@ vkr_internal INLINE int32_t vkr_entity_arch_find_col(
   assert_log(type < VKR_ECS_MAX_COMPONENTS, "Type out of range");
 
   uint16_t col = archetype->type_to_col[type];
-  int32_t result = (col == VKR_COMPONENT_TYPE_INVALID) ? -1 : (int32_t)col;
+  int32_t result = (col == VKR_ENTITY_TYPE_TO_COL_INVALID) ? -1 : (int32_t)col;
   // Debug: suspicious if archetype has 0 components but we found a column
   if (archetype->comp_count == 0 && result >= 0) {
     log_error("BUG: arch_find_col returned %d for type %u in archetype %p with "
@@ -1681,6 +1776,9 @@ bool8_t vkr_entity_query_compile(VkrWorld *world, const VkrQuery *query,
 
   out_query->archetypes = NULL;
   out_query->archetype_count = 0;
+#ifdef VKR_DEBUG
+  out_query->world_arch_count_at_compile = 0;
+#endif
 
   uint32_t match_count = 0;
   for (uint32_t ai = 0; ai < world->arch_count; ++ai) {
@@ -1692,8 +1790,12 @@ bool8_t vkr_entity_query_compile(VkrWorld *world, const VkrQuery *query,
     match_count++;
   }
 
-  if (match_count == 0)
+  if (match_count == 0) {
+#ifdef VKR_DEBUG
+    out_query->world_arch_count_at_compile = world->arch_count;
+#endif
     return true_v;
+  }
 
   VkrArchetype **matches = (VkrArchetype **)vkr_allocator_alloc(
       allocator, match_count * sizeof(VkrArchetype *),
@@ -1713,6 +1815,9 @@ bool8_t vkr_entity_query_compile(VkrWorld *world, const VkrQuery *query,
 
   out_query->archetypes = matches;
   out_query->archetype_count = match_count;
+#ifdef VKR_DEBUG
+  out_query->world_arch_count_at_compile = world->arch_count;
+#endif
   return true_v;
 }
 
@@ -1727,12 +1832,31 @@ void vkr_entity_query_compiled_destroy(VkrAllocator *allocator,
   }
   query->archetypes = NULL;
   query->archetype_count = 0;
+#ifdef VKR_DEBUG
+  query->world_arch_count_at_compile = 0;
+#endif
 }
 
 void vkr_entity_query_compiled_each_chunk(const VkrQueryCompiled *query,
                                           VkrChunkFn fn, void *user) {
   assert_log(query, "Query must not be NULL");
   assert_log(fn, "Callback must not be NULL");
+
+#ifdef VKR_DEBUG
+  // Debug check: detect stale compiled queries
+  // A query is stale if the world's archetype count increased since compilation
+  if (query->archetype_count > 0 && query->archetypes[0]) {
+    const VkrWorld *world = query->archetypes[0]->world;
+    if (world && world->arch_count > query->world_arch_count_at_compile) {
+      assert_log(
+          false_v,
+          "Compiled query is stale: world archetype count increased "
+          "from %u to %u since compilation. Call vkr_entity_query_compile() "
+          "to update the query.",
+          query->world_arch_count_at_compile, world->arch_count);
+    }
+  }
+#endif
 
   for (uint32_t ai = 0; ai < query->archetype_count; ++ai) {
     VkrArchetype *archetype = query->archetypes[ai];
