@@ -1456,12 +1456,6 @@ vkr_internal INLINE int32_t vkr_entity_arch_find_col(
 
   uint16_t col = archetype->type_to_col[type];
   int32_t result = (col == VKR_ENTITY_TYPE_TO_COL_INVALID) ? -1 : (int32_t)col;
-  // Debug: suspicious if archetype has 0 components but we found a column
-  if (archetype->comp_count == 0 && result >= 0) {
-    log_error("BUG: arch_find_col returned %d for type %u in archetype %p with "
-              "0 components (type_to_col[%u]=%u)",
-              result, type, (void *)archetype, type, col);
-  }
   return result;
 }
 
