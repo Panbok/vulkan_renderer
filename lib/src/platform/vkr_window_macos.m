@@ -71,6 +71,10 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 - (void)windowDidResize:(NSNotification *)notification {
   const NSRect contentRect = [state->view frame];
   const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
+
+  // Update Metal layer drawable size for Retina displays
+  [state->layer setDrawableSize:framebufferRect.size];
+
   VkrWindowResizeEventData resize_data = {
       .width = (uint32_t)framebufferRect.size.width,
       .height = (uint32_t)framebufferRect.size.height};
@@ -515,11 +519,20 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
       return false_v;
     }
 
+    // Configure for Retina displays - use full physical pixel resolution
+    CGFloat backingScale = [[NSScreen mainScreen] backingScaleFactor];
+    [state->layer setContentsScale:backingScale];
+
     // View creation
     state->view = [[ContentView alloc] initWithWindow:state->window
                                                 state:state];
     [state->view setLayer:state->layer];
     [state->view setWantsLayer:YES];
+
+    // Set initial drawable size for Retina displays
+    const NSRect contentRect = [state->window contentRectForFrameRect:[state->window frame]];
+    const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
+    [state->layer setDrawableSize:framebufferRect.size];
 
     // Setting window properties
     [state->window setLevel:NSNormalWindowLevel];
