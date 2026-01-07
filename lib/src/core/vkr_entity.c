@@ -1,29 +1,23 @@
 #include "core/vkr_entity.h"
+#include "containers/str.h"
 #include "defines.h"
-#include <string.h> // for strlen
+#include "math/vkr_math.h"
+
+#define VKR_ENTITY_DIR_INITIAL_CAPACITY 1024u
+#define VKR_ENTITY_DIR_GROW_FACTOR 2u
+#define VKR_ENTITY_DIR_GROW_MIN_CAPACITY 8u
+#define VKR_ENTITY_SIGNATURE_TYPE_WORD(typeId) (typeId >> 6) // /64
+#define VKR_ENTITY_SIGNATURE_TYPE_SHIFT(typeId)                                \
+  (1ull << VKR_ENTITY_SIGNATURE_TYPE_BIT(typeId))            // unsigned shift
+#define VKR_ENTITY_SIGNATURE_TYPE_BIT(typeId) (typeId & 63u) // %64
+#define VKR_ENTITY_COMP_INITIAL_CAPACITY 64u
+#define VKR_ENTITY_ARCH_KEY_SIZE 3
+#define VKR_ENTITY_TYPE_TO_COL_INVALID 0xFF
+#define VKR_ENTITY_ARCH_INITIAL_CAPACITY 16u
 
 // ----------------------
 // Small helpers
 // ----------------------
-
-vkr_internal INLINE VkrEntityFlags vkr_entity_flags_create() {
-  return bitset8_create();
-}
-
-vkr_internal INLINE VkrEntityFlags vkr_entity_flags_from_bits(uint8_t bits) {
-  VkrEntityFlags flags = bitset8_create();
-  if (bits & VKR_ENTITY_FLAG_VISIBLE)
-    bitset8_set(&flags, VKR_ENTITY_FLAG_VISIBLE);
-  if (bits & VKR_ENTITY_FLAG_STATIC)
-    bitset8_set(&flags, VKR_ENTITY_FLAG_STATIC);
-  if (bits & VKR_ENTITY_FLAG_DISABLED)
-    bitset8_set(&flags, VKR_ENTITY_FLAG_DISABLED);
-  if (bits & VKR_ENTITY_FLAG_PENDING_DESTROY)
-    bitset8_set(&flags, VKR_ENTITY_FLAG_PENDING_DESTROY);
-  if (bits & VKR_ENTITY_FLAG_DIRTY_XFORM)
-    bitset8_set(&flags, VKR_ENTITY_FLAG_DIRTY_XFORM);
-  return flags;
-}
 
 vkr_internal INLINE VkrEntityId vkr_entity_id_make(uint32_t index,
                                                    uint16_t generation,
@@ -33,6 +27,37 @@ vkr_internal INLINE VkrEntityId vkr_entity_id_make(uint32_t index,
   id.parts.generation = generation;
   id.parts.world = world;
   return id;
+}
+
+vkr_internal INLINE uint64_t vkr_entity_align_up_u64(uint64_t value,
+                                                     uint32_t alignment) {
+  assert_log(alignment != 0u && (alignment & (alignment - 1u)) == 0u,
+             "Alignment must be power-of-two");
+  uint64_t mask = (uint64_t)alignment - 1u;
+  return (value + mask) & ~mask;
+}
+
+vkr_internal INLINE bool8_t vkr_entity_validate_id(const VkrWorld *world,
+                                                   VkrEntityId id) {
+  if (!world || id.u64 == 0) {
+    return false_v;
+  }
+
+  if (id.parts.world != world->world_id) {
+    return false_v;
+  }
+
+  if (id.parts.index >= world->dir.capacity) {
+    return false_v;
+  }
+
+  return world->dir.generations[id.parts.index] == id.parts.generation;
+}
+
+vkr_internal INLINE bool8_t vkr_entity_validate_type(const VkrWorld *world,
+                                                     VkrComponentTypeId type) {
+  return world && type != VKR_COMPONENT_TYPE_INVALID &&
+         type < world->comp_count;
 }
 
 vkr_internal INLINE void vkr_entity_sig_clear(VkrSignature *signature) {
@@ -45,17 +70,17 @@ vkr_internal INLINE void vkr_entity_sig_set(VkrSignature *signature,
                                             VkrComponentTypeId typeId) {
   assert_log(signature, "Signature must not be NULL");
   assert_log(typeId < VKR_ECS_MAX_COMPONENTS, "Component id out of range");
-  uint32_t word = typeId >> 6;          // /64
-  uint32_t bit = typeId & 63u;          // %64
-  signature->bits[word] |= 1ull << bit; // unsigned shift
+  signature->bits[VKR_ENTITY_SIGNATURE_TYPE_WORD(typeId)] |=
+      VKR_ENTITY_SIGNATURE_TYPE_SHIFT(typeId);
 }
 
 vkr_internal INLINE bool32_t vkr_entity_sig_has(const VkrSignature *signature,
                                                 VkrComponentTypeId typeId) {
   assert_log(typeId < VKR_ECS_MAX_COMPONENTS, "Component id out of range");
-  uint32_t word = typeId >> 6;
-  uint32_t bit = typeId & 63u;
-  return (signature->bits[word] & (1ull << bit)) != 0ull ? true_v : false_v;
+  return (signature->bits[VKR_ENTITY_SIGNATURE_TYPE_WORD(typeId)] &
+          VKR_ENTITY_SIGNATURE_TYPE_SHIFT(typeId)) != 0ull
+             ? true_v
+             : false_v;
 }
 
 vkr_internal INLINE bool32_t vkr_entity_sig_contains(const VkrSignature *sigA,
@@ -126,9 +151,10 @@ vkr_internal INLINE bool32_t vkr_entity_ensure_capacity_ptr(void ***arr,
   if (*cap >= need)
     return true_v;
 
-  uint32_t new_cap = (*cap == 0) ? 8u : (*cap * 2u);
+  uint32_t new_cap = (*cap == 0) ? VKR_ENTITY_DIR_GROW_MIN_CAPACITY
+                                 : (*cap * VKR_ENTITY_DIR_GROW_FACTOR);
   while (new_cap < need)
-    new_cap *= 2u;
+    new_cap *= VKR_ENTITY_DIR_GROW_FACTOR;
 
   void **new_data = NULL;
   if (*cap == 0 || *arr == NULL) {
@@ -159,9 +185,10 @@ vkr_internal INLINE bool32_t vkr_entity_ensure_capacity_u32(uint32_t **arr,
   if (*cap >= need)
     return true_v;
 
-  uint32_t new_cap = (*cap == 0) ? 8u : (*cap * 2u);
+  uint32_t new_cap = (*cap == 0) ? VKR_ENTITY_DIR_GROW_MIN_CAPACITY
+                                 : (*cap * VKR_ENTITY_DIR_GROW_FACTOR);
   while (new_cap < need)
-    new_cap *= 2u;
+    new_cap *= VKR_ENTITY_DIR_GROW_FACTOR;
 
   uint32_t *new_data = NULL;
   if (*cap == 0 || *arr == NULL) {
@@ -192,9 +219,10 @@ vkr_internal INLINE bool32_t vkr_entity_ensure_capacity_u16(uint16_t **arr,
   if (*cap >= need)
     return true_v;
 
-  uint32_t new_cap = (*cap == 0) ? 8u : (*cap * 2u);
+  uint32_t new_cap = (*cap == 0) ? VKR_ENTITY_DIR_GROW_MIN_CAPACITY
+                                 : (*cap * VKR_ENTITY_DIR_GROW_FACTOR);
   while (new_cap < need)
-    new_cap *= 2u;
+    new_cap *= VKR_ENTITY_DIR_GROW_FACTOR;
 
   uint16_t *new_data = NULL;
   if (*cap == 0 || *arr == NULL) {
@@ -222,7 +250,7 @@ vkr_internal INLINE bool32_t vkr_entity_dir_init(VkrWorld *world,
   assert_log(world, "World must not be NULL");
 
   VkrEntityDir *dir = &world->dir;
-  dir->capacity = initial ? initial : 1024u;
+  dir->capacity = initial ? initial : VKR_ENTITY_DIR_INITIAL_CAPACITY;
   dir->living = 0;
   dir->free_count = 0;
   dir->free_capacity = 0;
@@ -247,19 +275,39 @@ vkr_internal INLINE void vkr_entity_dir_grow(VkrWorld *world) {
 
   VkrEntityDir *dir = &world->dir;
   uint32_t old_cap = dir->capacity;
-  uint32_t new_cap = old_cap * 2u;
+  uint32_t new_cap = old_cap * VKR_ENTITY_DIR_GROW_FACTOR;
 
-  dir->records = vkr_entity_realloc(
-      world, dir->records, old_cap * sizeof(VkrEntityRecord),
-      new_cap * sizeof(VkrEntityRecord), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  dir->generations = vkr_entity_realloc(
-      world, dir->generations, old_cap * sizeof(uint16_t),
-      new_cap * sizeof(uint16_t), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrEntityRecord *new_records = vkr_entity_alloc(
+      world, new_cap * sizeof(VkrEntityRecord), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint16_t *new_generations = vkr_entity_alloc(
+      world, new_cap * sizeof(uint16_t), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!new_records || !new_generations) {
+    if (new_records) {
+      vkr_entity_free(world, new_records, new_cap * sizeof(VkrEntityRecord),
+                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
 
-  MemZero(dir->records + old_cap,
-          (new_cap - old_cap) * sizeof(VkrEntityRecord));
-  MemZero(dir->generations + old_cap, (new_cap - old_cap) * sizeof(uint16_t));
+    if (new_generations) {
+      vkr_entity_free(world, new_generations, new_cap * sizeof(uint16_t),
+                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
 
+    log_error("Failed to grow entity directory");
+    return;
+  }
+
+  MemCopy(new_records, dir->records, old_cap * sizeof(VkrEntityRecord));
+  MemCopy(new_generations, dir->generations, old_cap * sizeof(uint16_t));
+  MemZero(new_records + old_cap, (new_cap - old_cap) * sizeof(VkrEntityRecord));
+  MemZero(new_generations + old_cap, (new_cap - old_cap) * sizeof(uint16_t));
+
+  vkr_entity_free(world, dir->records, old_cap * sizeof(VkrEntityRecord),
+                  VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  vkr_entity_free(world, dir->generations, old_cap * sizeof(uint16_t),
+                  VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  dir->records = new_records;
+  dir->generations = new_generations;
   dir->capacity = new_cap;
 }
 
@@ -274,6 +322,10 @@ vkr_internal INLINE uint32_t vkr_entity_dir_alloc_index(VkrWorld *world) {
 
   if (dir->living >= dir->capacity) {
     vkr_entity_dir_grow(world);
+    if (dir->living >= dir->capacity) {
+      log_error("Entity directory full");
+      return VKR_INVALID_ID;
+    }
   }
 
   return dir->living++;
@@ -285,8 +337,12 @@ vkr_internal INLINE void vkr_entity_dir_free_index(VkrWorld *world,
   assert_log(idx < world->dir.capacity, "Index out of bounds");
 
   VkrEntityDir *dir = &world->dir;
-  vkr_entity_ensure_capacity_u32(&dir->free_indices, &dir->free_capacity,
-                                 dir->free_count + 1, world);
+  if (!vkr_entity_ensure_capacity_u32(&dir->free_indices, &dir->free_capacity,
+                                      dir->free_count + 1, world)) {
+    log_error("Failed to grow entity free list");
+    return;
+  }
+
   dir->free_indices[dir->free_count++] = idx;
 }
 
@@ -295,7 +351,7 @@ vkr_internal INLINE bool32_t vkr_entity_comps_init(VkrWorld *world,
   assert_log(world, "World must not be NULL");
 
   world->comp_count = 0;
-  world->comp_capacity = (initial ? initial : 64u);
+  world->comp_capacity = (initial ? initial : VKR_ENTITY_COMP_INITIAL_CAPACITY);
   world->components =
       vkr_entity_alloc(world, world->comp_capacity * sizeof(VkrComponentInfo),
                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -321,7 +377,7 @@ vkr_internal INLINE VkrComponentTypeId vkr_entity_comps_add(VkrWorld *world,
 
   if (world->comp_count >= world->comp_capacity) {
     uint32_t old = world->comp_capacity;
-    uint32_t neu = old * 2u;
+    uint32_t neu = old * VKR_ENTITY_DIR_GROW_FACTOR;
     VkrComponentInfo *new_components = vkr_entity_realloc(
         world, world->components, old * sizeof(VkrComponentInfo),
         neu * sizeof(VkrComponentInfo), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -334,8 +390,23 @@ vkr_internal INLINE VkrComponentTypeId vkr_entity_comps_add(VkrWorld *world,
   }
 
   VkrComponentTypeId id = (VkrComponentTypeId)world->comp_count;
-  world->components[world->comp_count++] =
-      (VkrComponentInfo){.name = name, .size = size, .align = align};
+  uint64_t name_len = string_length(name) + 1;
+  char *name_copy = (char *)vkr_entity_alloc(world, name_len,
+                                             VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!name_copy)
+    return VKR_COMPONENT_TYPE_INVALID;
+  MemCopy(name_copy, name, name_len);
+
+  if (!vkr_hash_table_insert_uint16_t(&world->component_name_to_id, name_copy,
+                                      id)) {
+    vkr_entity_free(world, name_copy, name_len,
+                    VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    return VKR_COMPONENT_TYPE_INVALID;
+  }
+
+  world->components[id] =
+      (VkrComponentInfo){.name = name_copy, .size = size, .align = align};
+  world->comp_count++;
 
   return id;
 }
@@ -361,17 +432,37 @@ vkr_internal INLINE void vkr_entity_sort_types(VkrComponentTypeId *types,
   }
 }
 
+typedef struct VkrEntityComponentInit {
+  VkrComponentTypeId type;
+  const void *data;
+} VkrEntityComponentInit;
+
+vkr_internal INLINE void
+vkr_entity_sort_component_inits(VkrEntityComponentInit *inits, uint32_t n) {
+  if (n <= 1)
+    return;
+  assert_log(inits, "Inits must not be NULL");
+  for (uint32_t i = 1; i < n; ++i) {
+    VkrEntityComponentInit key = inits[i];
+    int32_t j = (int32_t)i - 1;
+    while (j >= 0 && inits[j].type > key.type) {
+      inits[j + 1] = inits[j];
+      --j;
+    }
+    inits[j + 1] = key;
+  }
+}
+
 // Build canonical key string for archetype: "N: t0,t1,t2" or "0:" for empty
 vkr_internal INLINE const char *
-vkr_entity_arch_key_build(VkrWorld *world, const VkrComponentTypeId *types,
-                          uint32_t n) {
-  assert_log(world, "World must not be NULL");
+vkr_entity_arch_key_build_alloc(VkrAllocator *allocator,
+                                const VkrComponentTypeId *types, uint32_t n) {
+  assert_log(allocator, "Allocator must not be NULL");
   assert_log(n == 0 || types, "Types must not be NULL when n > 0");
 
   if (n == 0) {
-    // "0:" (2 chars + null)
-    char *s =
-        (char *)vkr_entity_alloc(world, 3, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    char *s = (char *)vkr_allocator_alloc(allocator, VKR_ENTITY_ARCH_KEY_SIZE,
+                                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
     if (!s)
       return NULL;
     s[0] = '0';
@@ -382,18 +473,16 @@ vkr_entity_arch_key_build(VkrWorld *world, const VkrComponentTypeId *types,
 
   uint32_t len = 0;
   uint32_t n_digits = vkr_dec_digits_u32(n);
-  // "N: " prefix
   len += n_digits + 2; // ':' and ' '
-  // components and commas
   for (uint32_t i = 0; i < n; ++i) {
     len += vkr_dec_digits_u32((uint32_t)types[i]);
     if (i + 1 < n)
-      len += 1; // comma
+      len += 1;
   }
-  len += 1; // null terminator
+  len += 1;
 
-  char *s =
-      (char *)vkr_entity_alloc(world, len, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  char *s = (char *)vkr_allocator_alloc(allocator, len,
+                                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!s)
     return NULL;
 
@@ -406,8 +495,16 @@ vkr_entity_arch_key_build(VkrWorld *world, const VkrComponentTypeId *types,
     if (i + 1 < n)
       *p++ = ',';
   }
+
   *p = '\0';
   return s;
+}
+
+vkr_internal INLINE const char *
+vkr_entity_arch_key_build(VkrWorld *world, const VkrComponentTypeId *types,
+                          uint32_t n) {
+  assert_log(world, "World must not be NULL");
+  return vkr_entity_arch_key_build_alloc(world->alloc, types, n);
 }
 
 // ----------------------
@@ -440,10 +537,10 @@ vkr_internal INLINE uint32_t vkr_entity_compute_chunk_capacity(
   for (;;) {
     uint64_t used = 0;
     // entity column (align to 8)
-    used = vkr_ceil_div_u32((uint32_t)used, (uint32_t)AlignOf(VkrEntityId));
+    used = vkr_entity_align_up_u64(used, (uint32_t)AlignOf(VkrEntityId));
     used += (uint64_t)cap * sizeof(VkrEntityId);
     for (uint32_t comp = 0; comp < comp_count; ++comp) {
-      used = vkr_ceil_div_u32((uint32_t)used, aligns[comp]);
+      used = vkr_entity_align_up_u64(used, aligns[comp]);
       used += (uint64_t)cap * sizes[comp];
     }
     if (used <= VKR_ECS_CHUNK_SIZE)
@@ -454,6 +551,27 @@ vkr_internal INLINE uint32_t vkr_entity_compute_chunk_capacity(
   }
 
   return cap;
+}
+
+vkr_internal INLINE void
+vkr_entity_validate_archetype_layout(const VkrArchetype *archetype) {
+  assert_log(archetype, "Archetype must not be NULL");
+
+  uint32_t cap = archetype->chunk_capacity;
+  uint32_t end = 0;
+  assert_log((archetype->ents_offset % AlignOf(VkrEntityId)) == 0,
+             "Entity column misaligned");
+
+  end = archetype->ents_offset + cap * (uint32_t)sizeof(VkrEntityId);
+  for (uint32_t comp = 0; comp < archetype->comp_count; ++comp) {
+    uint32_t offset = archetype->col_offsets[comp];
+    uint32_t align = archetype->aligns[comp];
+    assert_log((offset % align) == 0, "Component column misaligned");
+    assert_log(offset >= end, "Component column overlaps previous");
+    end = offset + cap * archetype->sizes[comp];
+  }
+
+  assert_log(end <= VKR_ECS_CHUNK_SIZE, "Chunk layout exceeds chunk size");
 }
 
 vkr_internal INLINE VkrArchetype *
@@ -468,6 +586,8 @@ vkr_entity_archetype_create(VkrWorld *world, const VkrComponentTypeId *types,
     return NULL;
 
   MemZero(archetype, sizeof(*archetype));
+  MemSet(archetype->type_to_col, VKR_ENTITY_TYPE_TO_COL_INVALID,
+         sizeof(archetype->type_to_col));
   archetype->world = world;
   vkr_entity_sig_clear(&archetype->sig);
   archetype->comp_count = n;
@@ -482,16 +602,41 @@ vkr_entity_archetype_create(VkrWorld *world, const VkrComponentTypeId *types,
     archetype->col_offsets = vkr_entity_alloc(world, n * sizeof(uint32_t),
                                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     if (!archetype->types || !archetype->sizes || !archetype->aligns ||
-        !archetype->col_offsets)
+        !archetype->col_offsets) {
+      if (archetype->types) {
+        vkr_entity_free(world, archetype->types, n * sizeof(VkrComponentTypeId),
+                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+
+      if (archetype->sizes) {
+        vkr_entity_free(world, archetype->sizes, n * sizeof(uint32_t),
+                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+
+      if (archetype->aligns) {
+        vkr_entity_free(world, archetype->aligns, n * sizeof(uint32_t),
+                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+
+      if (archetype->col_offsets) {
+        vkr_entity_free(world, archetype->col_offsets, n * sizeof(uint32_t),
+                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+
+      vkr_entity_free(world, archetype, sizeof(VkrArchetype),
+                      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
       return NULL;
+    }
 
     for (uint32_t typeIdx = 0; typeIdx < n; ++typeIdx) {
       VkrComponentTypeId typeId = types[typeIdx];
+      assert_log(typeId < world->comp_count, "Component type out of range");
       archetype->types[typeIdx] = typeId;
       vkr_entity_sig_set(&archetype->sig, typeId);
       const VkrComponentInfo *ci = &world->components[typeId];
       archetype->sizes[typeIdx] = ci->size;
       archetype->aligns[typeIdx] = ci->align;
+      archetype->type_to_col[typeId] = (uint16_t)typeIdx;
     }
   } else {
     archetype->types = NULL;
@@ -506,19 +651,45 @@ vkr_entity_archetype_create(VkrWorld *world, const VkrComponentTypeId *types,
   archetype->chunk_capacity = cap;
 
   uint32_t off = 0;
-  off = vkr_ceil_div_u32(off, (uint32_t)AlignOf(VkrEntityId));
+  off = (uint32_t)vkr_entity_align_up_u64(off, (uint32_t)AlignOf(VkrEntityId));
   archetype->ents_offset = off;
   off += cap * (uint32_t)sizeof(VkrEntityId);
 
   for (uint32_t comp = 0; comp < archetype->comp_count; ++comp) {
-    off = vkr_ceil_div_u32(off, archetype->aligns[comp]);
+    off = (uint32_t)vkr_entity_align_up_u64(off, archetype->aligns[comp]);
     archetype->col_offsets[comp] = off;
     off += cap * archetype->sizes[comp];
   }
 
   archetype->chunks = NULL;
   archetype->key = vkr_entity_arch_key_build(world, types, n);
+  if (!archetype->key) {
+    if (archetype->types) {
+      vkr_entity_free(world, archetype->types, n * sizeof(VkrComponentTypeId),
+                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
 
+    if (archetype->sizes) {
+      vkr_entity_free(world, archetype->sizes, n * sizeof(uint32_t),
+                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+
+    if (archetype->aligns) {
+      vkr_entity_free(world, archetype->aligns, n * sizeof(uint32_t),
+                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+
+    if (archetype->col_offsets) {
+      vkr_entity_free(world, archetype->col_offsets, n * sizeof(uint32_t),
+                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+
+    vkr_entity_free(world, archetype, sizeof(VkrArchetype),
+                    VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+    return NULL;
+  }
+
+  vkr_entity_validate_archetype_layout(archetype);
   return archetype;
 }
 
@@ -540,8 +711,11 @@ vkr_internal INLINE VkrChunk *vkr_entity_chunk_create(VkrWorld *world,
   chunk->arch = archetype;
   chunk->data = vkr_entity_alloc(world, VKR_ECS_CHUNK_SIZE,
                                  VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
-  if (!chunk->data)
+  if (!chunk->data) {
+    vkr_entity_free(world, chunk, chunk_struct_sz,
+                    VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
     return NULL;
+  }
 
   chunk->capacity = archetype->chunk_capacity;
   chunk->count = 0;
@@ -563,8 +737,9 @@ vkr_entity_archetype_acquire_chunk(VkrWorld *world, VkrArchetype *archetype) {
   assert_log(archetype, "Archetype must not be NULL");
 
   for (VkrChunk *chunk = archetype->chunks; chunk; chunk = chunk->next) {
-    if (chunk->count < chunk->capacity)
+    if (chunk->count < chunk->capacity) {
       return chunk;
+    }
   }
 
   VkrChunk *new_chunk = vkr_entity_chunk_create(world, archetype);
@@ -578,6 +753,56 @@ vkr_entity_archetype_acquire_chunk(VkrWorld *world, VkrArchetype *archetype) {
   return new_chunk;
 }
 
+vkr_internal INLINE void vkr_entity_archetype_destroy(VkrWorld *world,
+                                                      VkrArchetype *arch) {
+  if (!world || !arch)
+    return;
+
+  VkrChunk *chunk = arch->chunks;
+  while (chunk) {
+    VkrChunk *next = chunk->next;
+    if (chunk->data) {
+      vkr_entity_free(world, chunk->data, VKR_ECS_CHUNK_SIZE,
+                      VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+    }
+    uint64_t chunk_struct_sz =
+        sizeof(VkrChunk) + (uint64_t)arch->comp_count * sizeof(void *);
+    vkr_entity_free(world, chunk, chunk_struct_sz,
+                    VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+    chunk = next;
+  }
+
+  if (arch->types && arch->comp_count > 0) {
+    vkr_entity_free(world, arch->types,
+                    arch->comp_count * sizeof(VkrComponentTypeId),
+                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
+  if (arch->sizes && arch->comp_count > 0) {
+    vkr_entity_free(world, arch->sizes, arch->comp_count * sizeof(uint32_t),
+                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
+  if (arch->aligns && arch->comp_count > 0) {
+    vkr_entity_free(world, arch->aligns, arch->comp_count * sizeof(uint32_t),
+                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
+  if (arch->col_offsets && arch->comp_count > 0) {
+    vkr_entity_free(world, arch->col_offsets,
+                    arch->comp_count * sizeof(uint32_t),
+                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
+  if (arch->key) {
+    vkr_entity_free(world, (void *)arch->key, (string_length(arch->key) + 1ull),
+                    VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+
+  vkr_entity_free(world, arch, sizeof(VkrArchetype),
+                  VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+}
+
 vkr_internal INLINE VkrArchetype *
 vkr_entity_archetype_get_or_create(VkrWorld *world, VkrComponentTypeId *types,
                                    uint32_t n) {
@@ -587,31 +812,52 @@ vkr_entity_archetype_get_or_create(VkrWorld *world, VkrComponentTypeId *types,
   if (n > 1)
     vkr_entity_sort_types(types, n);
 
-  // Build temporary key string for lookup; free it after lookup.
-  const char *tmp_key = vkr_entity_arch_key_build(world, types, n);
-  if (!tmp_key)
-    return NULL;
-
-  VkrArchetype *found =
-      vkr_hash_table_get_VkrArchetype(&world->arch_table, tmp_key);
-  if (found) {
-    // Free temporary key string
-    vkr_entity_free(world, (void *)tmp_key, (uint64_t)(strlen(tmp_key) + 1),
-                    VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    return found;
+  VkrAllocator *scratch_alloc =
+      world->scratch_alloc ? world->scratch_alloc : world->alloc;
+  // Never open a scope on world->alloc (persistent allocator). If callers use
+  // an outer scope on the same allocator, any persistent allocations created
+  // while the scope is active can be reclaimed by scope reset.
+  VkrAllocatorScope scratch_scope = (VkrAllocatorScope){0};
+  bool8_t scratch_scoped = false_v;
+  if (world->scratch_alloc && world->scratch_alloc != world->alloc) {
+    scratch_scope = vkr_allocator_begin_scope(scratch_alloc);
+    scratch_scoped = vkr_allocator_scope_is_valid(&scratch_scope);
   }
 
-  // Not found; free the temp key and create the archetype (which builds its own
-  // key)
-  vkr_entity_free(world, (void *)tmp_key, (uint64_t)(strlen(tmp_key) + 1),
-                  VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  // Build temporary key string for lookup.
+  const char *tmp_key =
+      vkr_entity_arch_key_build_alloc(scratch_alloc, types, n);
+  if (!tmp_key) {
+    if (scratch_scoped) {
+      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    }
+    return NULL;
+  }
+
+  VkrArchetype **found =
+      vkr_hash_table_get_VkrArchetypePtr(&world->arch_table, tmp_key);
+  if (found) {
+    if (scratch_scoped) {
+      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    } else {
+      vkr_allocator_free(scratch_alloc, (void *)tmp_key,
+                         string_length(tmp_key) + 1ull,
+                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    }
+    return *found;
+  }
+
+  if (scratch_scoped) {
+    vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  } else {
+    vkr_allocator_free(scratch_alloc, (void *)tmp_key,
+                       string_length(tmp_key) + 1ull,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
 
   VkrArchetype *archetype = vkr_entity_archetype_create(world, types, n);
   if (!archetype)
     return NULL;
-
-  vkr_hash_table_insert_VkrArchetype(&world->arch_table, archetype->key,
-                                     *archetype);
 
   // Ensure in arch_list (pointers)
   if (world->arch_count >= world->arch_capacity) {
@@ -621,19 +867,30 @@ vkr_entity_archetype_get_or_create(VkrWorld *world, VkrComponentTypeId *types,
     if (world->arch_list == NULL) {
       world->arch_list = (VkrArchetype **)vkr_entity_alloc(
           world, neu * sizeof(VkrArchetype *), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      if (!world->arch_list)
-        return archetype;
+      if (!world->arch_list) {
+        vkr_entity_archetype_destroy(world, archetype);
+        return NULL;
+      }
       world->arch_capacity = neu;
     } else {
       VkrArchetype **new_list = (VkrArchetype **)vkr_entity_realloc(
           world, (void *)world->arch_list,
           world->arch_capacity * sizeof(VkrArchetype *),
           neu * sizeof(VkrArchetype *), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      if (!new_list)
-        return archetype;
+      if (!new_list) {
+        vkr_entity_archetype_destroy(world, archetype);
+        return NULL;
+      }
       world->arch_list = new_list;
       world->arch_capacity = neu;
     }
+  }
+
+  if (!vkr_hash_table_insert_VkrArchetypePtr(&world->arch_table, archetype->key,
+                                             archetype)) {
+    log_error("Failed to insert archetype into hash table");
+    vkr_entity_archetype_destroy(world, archetype);
+    return NULL;
   }
 
   world->arch_list[world->arch_count++] = archetype;
@@ -654,24 +911,39 @@ VkrWorld *vkr_entity_create_world(const VkrWorldCreateInfo *info) {
 
   MemZero(world, sizeof(*world));
   world->alloc = info->alloc;
+  world->scratch_alloc = info->scratch_alloc;
   world->world_id = info->world_id;
 
   if (!vkr_entity_comps_init(world, info->initial_components))
-    return NULL;
+    goto world_fail;
   if (!vkr_entity_dir_init(world, info->initial_entities))
-    return NULL;
+    goto world_fail;
 
-  world->arch_table = vkr_hash_table_create_VkrArchetype(
-      world->alloc, info->initial_archetypes ? info->initial_archetypes : 16u);
+  uint32_t comp_cap = info->initial_components
+                          ? info->initial_components
+                          : VKR_ENTITY_COMP_INITIAL_CAPACITY;
+  world->component_name_to_id =
+      vkr_hash_table_create_uint16_t(world->alloc, comp_cap);
+
+  world->arch_table = vkr_hash_table_create_VkrArchetypePtr(
+      world->alloc, info->initial_archetypes
+                        ? info->initial_archetypes
+                        : VKR_ENTITY_ARCH_INITIAL_CAPACITY);
 
   world->arch_list = NULL;
   world->arch_capacity = 0u;
   world->arch_count = 0u;
 
   // Ensure EMPTY archetype exists
-  (void)vkr_entity_archetype_get_or_create(world, NULL, 0);
+  if (!vkr_entity_archetype_get_or_create(world, NULL, 0)) {
+    goto world_fail;
+  }
 
   return world;
+
+world_fail:
+  vkr_entity_destroy_world(world);
+  return NULL;
 }
 
 void vkr_entity_destroy_world(VkrWorld *world) {
@@ -683,49 +955,7 @@ void vkr_entity_destroy_world(VkrWorld *world) {
     VkrArchetype *arch = world->arch_list[i];
     if (!arch)
       continue;
-
-    // Free chunks
-    VkrChunk *chunk = arch->chunks;
-    while (chunk) {
-      VkrChunk *next = chunk->next;
-      if (chunk->data) {
-        vkr_entity_free(world, chunk->data, VKR_ECS_CHUNK_SIZE,
-                        VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
-      }
-      uint64_t chunk_struct_sz =
-          sizeof(VkrChunk) + (uint64_t)arch->comp_count * sizeof(void *);
-      vkr_entity_free(world, chunk, chunk_struct_sz,
-                      VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
-      chunk = next;
-    }
-
-    // Free archetype arrays
-    if (arch->types && arch->comp_count > 0) {
-      vkr_entity_free(world, arch->types,
-                      arch->comp_count * sizeof(VkrComponentTypeId),
-                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    }
-    if (arch->sizes && arch->comp_count > 0) {
-      vkr_entity_free(world, arch->sizes, arch->comp_count * sizeof(uint32_t),
-                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    }
-    if (arch->aligns && arch->comp_count > 0) {
-      vkr_entity_free(world, arch->aligns, arch->comp_count * sizeof(uint32_t),
-                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    }
-    if (arch->col_offsets && arch->comp_count > 0) {
-      vkr_entity_free(world, arch->col_offsets,
-                      arch->comp_count * sizeof(uint32_t),
-                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    }
-    if (arch->key) {
-      vkr_entity_free(world, (void *)arch->key,
-                      (uint64_t)(strlen(arch->key) + 1),
-                      VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    }
-
-    vkr_entity_free(world, arch, sizeof(VkrArchetype),
-                    VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+    vkr_entity_archetype_destroy(world, arch);
   }
 
   // Free arch_list
@@ -737,6 +967,13 @@ void vkr_entity_destroy_world(VkrWorld *world) {
 
   // Free component registry
   if (world->components && world->comp_capacity) {
+    for (uint32_t i = 0; i < world->comp_count; ++i) {
+      if (world->components[i].name) {
+        vkr_entity_free(world, (void *)world->components[i].name,
+                        string_length(world->components[i].name) + 1ull,
+                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      }
+    }
     vkr_entity_free(world, world->components,
                     world->comp_capacity * sizeof(VkrComponentInfo),
                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -748,16 +985,21 @@ void vkr_entity_destroy_world(VkrWorld *world) {
                     world->dir.capacity * sizeof(VkrEntityRecord),
                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
+
   if (world->dir.generations && world->dir.capacity) {
     vkr_entity_free(world, world->dir.generations,
                     world->dir.capacity * sizeof(uint16_t),
                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
+
   if (world->dir.free_indices && world->dir.free_capacity) {
     vkr_entity_free(world, world->dir.free_indices,
                     world->dir.free_capacity * sizeof(uint32_t),
                     VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
+
+  vkr_hash_table_destroy_uint16_t(&world->component_name_to_id);
+  vkr_hash_table_destroy_VkrArchetypePtr(&world->arch_table);
 
   // If using arena, frees above are no-ops. Finally free the world struct.
   vkr_entity_free(world, world, sizeof(VkrWorld),
@@ -777,7 +1019,50 @@ VkrComponentTypeId vkr_entity_register_component(VkrWorld *world,
   assert_log(size > 0, "Size must be greater than 0");
   assert_log(align > 0 && (align & (align - 1)) == 0,
              "Align must be power-of-two");
+  if (vkr_hash_table_get_uint16_t(&world->component_name_to_id, name)) {
+    log_error("Component '%s' already registered", name);
+    return VKR_COMPONENT_TYPE_INVALID;
+  }
+
   return vkr_entity_comps_add(world, name, size, align);
+}
+
+VkrComponentTypeId vkr_entity_register_component_once(VkrWorld *world,
+                                                      const char *name,
+                                                      uint32_t size,
+                                                      uint32_t align) {
+  assert_log(world, "World must not be NULL");
+  assert_log(name, "Name must not be NULL");
+  assert_log(size > 0, "Size must be greater than 0");
+  assert_log(align > 0 && (align & (align - 1)) == 0,
+             "Align must be power-of-two");
+
+  uint16_t *found =
+      vkr_hash_table_get_uint16_t(&world->component_name_to_id, name);
+  if (found) {
+    VkrComponentTypeId id = (VkrComponentTypeId)*found;
+    if (id < world->comp_count) {
+      const VkrComponentInfo *info = &world->components[id];
+      if (info->size != size || info->align != align) {
+        log_error("Component '%s' registered with mismatched layout", name);
+        return VKR_COMPONENT_TYPE_INVALID;
+      }
+    }
+
+    return id;
+  }
+
+  return vkr_entity_comps_add(world, name, size, align);
+}
+
+VkrComponentTypeId vkr_entity_find_component(const VkrWorld *world,
+                                             const char *name) {
+  assert_log(world, "World must not be NULL");
+  assert_log(name, "Name must not be NULL");
+
+  uint16_t *found =
+      vkr_hash_table_get_uint16_t(&world->component_name_to_id, name);
+  return found ? (VkrComponentTypeId)*found : VKR_COMPONENT_TYPE_INVALID;
 }
 
 const VkrComponentInfo *vkr_entity_get_component_info(const VkrWorld *world,
@@ -785,7 +1070,7 @@ const VkrComponentInfo *vkr_entity_get_component_info(const VkrWorld *world,
   assert_log(world, "World must not be NULL");
   assert_log(type < VKR_ECS_MAX_COMPONENTS, "Component id out of range");
 
-  if (type == VKR_COMPONENT_TYPE_INVALID || type >= world->comp_count)
+  if (!vkr_entity_validate_type(world, type))
     return NULL;
 
   return &world->components[type];
@@ -800,6 +1085,9 @@ VkrEntityId vkr_entity_create_entity(VkrWorld *world) {
 
   // Allocate index
   uint32_t idx = vkr_entity_dir_alloc_index(world);
+  if (idx == VKR_INVALID_ID) {
+    return VKR_ENTITY_ID_INVALID;
+  }
 
   // Bump generation on create to avoid u64 == 0 and ensure uniqueness
   uint16_t gen = (uint16_t)(world->dir.generations[idx] + 1u);
@@ -812,25 +1100,207 @@ VkrEntityId vkr_entity_create_entity(VkrWorld *world) {
   // Insert into EMPTY archetype
   VkrArchetype *empty = vkr_entity_archetype_get_or_create(world, NULL, 0);
   VkrChunk *chunk = vkr_entity_archetype_acquire_chunk(world, empty);
-  assert_log(chunk != NULL, "Failed to acquire chunk");
+  if (!chunk) {
+    vkr_entity_dir_free_index(world, idx);
+    return VKR_ENTITY_ID_INVALID;
+  }
 
   uint32_t slot = chunk->count++;
   chunk->ents[slot] = id;
 
   world->dir.records[idx] = (VkrEntityRecord){.chunk = chunk, .slot = slot};
+  return id;
+}
+
+VkrEntityId vkr_entity_create_entity_with_components(
+    VkrWorld *world, const VkrComponentTypeId *types,
+    const void *const *init_data, uint32_t count) {
+  assert_log(world, "World must not be NULL");
+  assert_log(types || count == 0, "Types must not be NULL when count > 0");
+
+  if (count == 0 || !types) {
+    return vkr_entity_create_entity(world);
+  }
+
+  VkrAllocator *scratch_alloc =
+      world->scratch_alloc ? world->scratch_alloc : world->alloc;
+  // Scope must not run on world->alloc; otherwise it can reclaim
+  // archetypes/chunks.
+  VkrAllocatorScope scratch_scope = (VkrAllocatorScope){0};
+  bool8_t scratch_scoped = false_v;
+  if (world->scratch_alloc && world->scratch_alloc != world->alloc) {
+    scratch_scope = vkr_allocator_begin_scope(scratch_alloc);
+    scratch_scoped = vkr_allocator_scope_is_valid(&scratch_scope);
+  }
+
+  VkrEntityComponentInit stack_inits[64];
+  VkrEntityComponentInit *inits = stack_inits;
+  if (count > ArrayCount(stack_inits)) {
+    inits = vkr_allocator_alloc(scratch_alloc,
+                                count * sizeof(VkrEntityComponentInit),
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!inits) {
+      if (scratch_scoped) {
+        vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+      return VKR_ENTITY_ID_INVALID;
+    }
+  }
+
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!vkr_entity_validate_type(world, types[i])) {
+      if (!scratch_scoped && inits != stack_inits) {
+        vkr_allocator_free(scratch_alloc, inits,
+                           count * sizeof(VkrEntityComponentInit),
+                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      } else if (scratch_scoped) {
+        vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+      return VKR_ENTITY_ID_INVALID;
+    }
+    inits[i].type = types[i];
+    inits[i].data = init_data ? init_data[i] : NULL;
+  }
+
+  vkr_entity_sort_component_inits(inits, count);
+
+  uint32_t unique_count = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (unique_count == 0 || inits[i].type != inits[unique_count - 1].type) {
+      inits[unique_count++] = inits[i];
+    } else if (!inits[unique_count - 1].data && inits[i].data) {
+      inits[unique_count - 1].data = inits[i].data;
+    }
+  }
+
+  VkrComponentTypeId stack_types[64];
+  VkrComponentTypeId *sorted_types = stack_types;
+  if (unique_count > ArrayCount(stack_types)) {
+    sorted_types = vkr_allocator_alloc(
+        scratch_alloc, unique_count * sizeof(VkrComponentTypeId),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!sorted_types) {
+      if (!scratch_scoped && inits != stack_inits) {
+        vkr_allocator_free(scratch_alloc, inits,
+                           count * sizeof(VkrEntityComponentInit),
+                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      } else if (scratch_scoped) {
+        vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+      return VKR_ENTITY_ID_INVALID;
+    }
+  }
+
+  for (uint32_t i = 0; i < unique_count; ++i) {
+    sorted_types[i] = inits[i].type;
+  }
+
+  VkrArchetype *archetype =
+      vkr_entity_archetype_get_or_create(world, sorted_types, unique_count);
+  if (!archetype) {
+    if (!scratch_scoped) {
+      if (inits != stack_inits) {
+        vkr_allocator_free(scratch_alloc, inits,
+                           count * sizeof(VkrEntityComponentInit),
+                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+      if (sorted_types != stack_types) {
+        vkr_allocator_free(scratch_alloc, sorted_types,
+                           unique_count * sizeof(VkrComponentTypeId),
+                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+    } else {
+      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+
+    return VKR_ENTITY_ID_INVALID;
+  }
+
+  uint32_t idx = vkr_entity_dir_alloc_index(world);
+  if (idx == VKR_INVALID_ID) {
+    if (scratch_scoped) {
+      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    } else {
+      if (inits != stack_inits) {
+        vkr_allocator_free(scratch_alloc, inits,
+                           count * sizeof(VkrEntityComponentInit),
+                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+      if (sorted_types != stack_types) {
+        vkr_allocator_free(scratch_alloc, sorted_types,
+                           unique_count * sizeof(VkrComponentTypeId),
+                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+    }
+
+    return VKR_ENTITY_ID_INVALID;
+  }
+
+  uint16_t gen = (uint16_t)(world->dir.generations[idx] + 1u);
+  if (gen == 0)
+    gen = 1u;
+  world->dir.generations[idx] = gen;
+  VkrEntityId id = vkr_entity_id_make(idx, gen, world->world_id);
+
+  VkrChunk *chunk = vkr_entity_archetype_acquire_chunk(world, archetype);
+  if (!chunk) {
+    vkr_entity_dir_free_index(world, idx);
+    if (!scratch_scoped) {
+      if (inits != stack_inits) {
+        vkr_allocator_free(scratch_alloc, inits,
+                           count * sizeof(VkrEntityComponentInit),
+                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+
+      if (sorted_types != stack_types) {
+        vkr_allocator_free(scratch_alloc, sorted_types,
+                           unique_count * sizeof(VkrComponentTypeId),
+                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+    } else {
+      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+
+    return VKR_ENTITY_ID_INVALID;
+  }
+
+  uint32_t slot = chunk->count++;
+  chunk->ents[slot] = id;
+  for (uint32_t comp = 0; comp < archetype->comp_count; ++comp) {
+    uint8_t *dst_col = (uint8_t *)chunk->columns[comp];
+    uint32_t size = archetype->sizes[comp];
+    const void *src = inits[comp].data;
+    if (src) {
+      MemCopy(dst_col + (size_t)size * slot, src, size);
+    } else {
+      MemZero(dst_col + (size_t)size * slot, size);
+    }
+  }
+
+  world->dir.records[idx] = (VkrEntityRecord){.chunk = chunk, .slot = slot};
+
+  if (scratch_scoped) {
+    vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  } else {
+    if (inits != stack_inits) {
+      vkr_allocator_free(scratch_alloc, inits,
+                         count * sizeof(VkrEntityComponentInit),
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+
+    if (sorted_types != stack_types) {
+      vkr_allocator_free(scratch_alloc, sorted_types,
+                         unique_count * sizeof(VkrComponentTypeId),
+                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+  }
 
   return id;
 }
 
 bool8_t vkr_entity_is_alive(const VkrWorld *world, VkrEntityId id) {
   assert_log(world, "World must not be NULL");
-  assert_log(id.parts.index < world->dir.capacity, "Index out of range");
-
-  uint32_t idx = id.parts.index;
-  if (idx >= world->dir.capacity)
-    return false_v;
-
-  return world->dir.generations[idx] == id.parts.generation ? true_v : false_v;
+  return vkr_entity_validate_id(world, id);
 }
 
 vkr_internal INLINE void
@@ -860,9 +1330,7 @@ vkr_entity_chunk_swap_remove(VkrWorld *world, VkrChunk *chunk, uint32_t slot) {
 
 bool8_t vkr_entity_destroy_entity(VkrWorld *world, VkrEntityId id) {
   assert_log(world, "World must not be NULL");
-  assert_log(id.parts.index < world->dir.capacity, "Index out of range");
-
-  if (!vkr_entity_is_alive(world, id))
+  if (!vkr_entity_validate_id(world, id))
     return false_v;
 
   uint32_t idx = id.parts.index;
@@ -889,21 +1357,17 @@ bool8_t vkr_entity_destroy_entity(VkrWorld *world, VkrEntityId id) {
 vkr_internal INLINE int32_t vkr_entity_arch_find_col(
     const VkrArchetype *archetype, VkrComponentTypeId type) {
   assert_log(archetype, "Archetype must not be NULL");
-  assert_log(type < VKR_COMPONENT_TYPE_INVALID, "Type out of range");
+  assert_log(type < VKR_ECS_MAX_COMPONENTS, "Type out of range");
 
-  // types[] are sorted ascending; binary search optional.
-  int32_t lo = 0, hi = (int32_t)archetype->comp_count - 1;
-  while (lo <= hi) {
-    int32_t mid = (lo + hi) / 2;
-    if (archetype->types[mid] == type)
-      return mid;
-    if (archetype->types[mid] < type)
-      lo = mid + 1;
-    else
-      hi = mid - 1;
+  uint16_t col = archetype->type_to_col[type];
+  int32_t result = (col == VKR_COMPONENT_TYPE_INVALID) ? -1 : (int32_t)col;
+  // Debug: suspicious if archetype has 0 components but we found a column
+  if (archetype->comp_count == 0 && result >= 0) {
+    log_error("BUG: arch_find_col returned %d for type %u in archetype %p with "
+              "0 components (type_to_col[%u]=%u)",
+              result, type, (void *)archetype, type, col);
   }
-
-  return -1;
+  return result;
 }
 
 // Move entity from src archetype to dst archetype (add/remove component)
@@ -914,7 +1378,7 @@ vkr_internal INLINE bool32_t vkr_entity_move_entity(
   assert_log(id.parts.index < world->dir.capacity, "Index out of range");
   assert_log(dst, "Destination archetype must not be NULL");
   assert_log(added_type == VKR_COMPONENT_TYPE_INVALID ||
-                 added_type < VKR_COMPONENT_TYPE_INVALID,
+                 added_type < world->comp_count,
              "Added type out of range");
 
   uint32_t idx = id.parts.index;
@@ -970,37 +1434,73 @@ bool8_t vkr_entity_add_component(VkrWorld *world, VkrEntityId id,
                                  VkrComponentTypeId type,
                                  const void *init_data) {
   assert_log(world, "World must not be NULL");
-  assert_log(id.parts.index < world->dir.capacity, "Index out of range");
-  assert_log(type < VKR_COMPONENT_TYPE_INVALID, "Type out of range");
 
-  if (!vkr_entity_is_alive(world, id))
+  if (!vkr_entity_validate_id(world, id)) {
+    log_error("add_component: invalid entity id (index=%u, gen=%u)",
+              id.parts.index, id.parts.generation);
     return false_v;
+  }
+
+  if (!vkr_entity_validate_type(world, type)) {
+    log_error("add_component: invalid type %u (world comp_count=%u)", type,
+              world->comp_count);
+    return false_v;
+  }
 
   uint32_t idx = id.parts.index;
   VkrEntityRecord rec = world->dir.records[idx];
   VkrChunk *chunk = rec.chunk;
   VkrArchetype *archetype = chunk->arch;
 
-  if (vkr_entity_arch_find_col(archetype, type) >= 0)
+  int32_t existing_col = vkr_entity_arch_find_col(archetype, type);
+  if (existing_col >= 0) {
+    log_warn("add_component: entity already has type %u at col %d (archetype "
+             "has %u components)",
+             type, existing_col, archetype->comp_count);
     return true_v; // already has it
+  }
 
   // Build dst types = src types + type
   uint32_t comp_count = archetype->comp_count + 1u;
+  VkrAllocator *scratch_alloc =
+      world->scratch_alloc ? world->scratch_alloc : world->alloc;
+  // Scope must not run on world->alloc; otherwise it can reclaim
+  // archetypes/chunks.
+  VkrAllocatorScope scratch_scope = (VkrAllocatorScope){0};
+  bool8_t scratch_scoped = false_v;
+  if (world->scratch_alloc && world->scratch_alloc != world->alloc) {
+    scratch_scope = vkr_allocator_begin_scope(scratch_alloc);
+    scratch_scoped = vkr_allocator_scope_is_valid(&scratch_scope);
+  }
   VkrComponentTypeId stack_types[64];
   VkrComponentTypeId *dst_types =
       (comp_count <= 64)
           ? stack_types
-          : vkr_entity_alloc(world, comp_count * sizeof(VkrComponentTypeId),
-                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+          : vkr_allocator_alloc(scratch_alloc,
+                                comp_count * sizeof(VkrComponentTypeId),
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!dst_types) {
+    if (scratch_scoped) {
+      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+
+    return false_v;
+  }
+
   for (uint32_t comp = 0; comp < archetype->comp_count; ++comp)
     dst_types[comp] = archetype->types[comp];
   dst_types[archetype->comp_count] = type;
 
   VkrArchetype *dst =
       vkr_entity_archetype_get_or_create(world, dst_types, comp_count);
-  if (dst_types != stack_types)
-    vkr_entity_free(world, dst_types, comp_count * sizeof(VkrComponentTypeId),
-                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (scratch_scoped) {
+    vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  } else if (dst_types != stack_types) {
+    vkr_allocator_free(scratch_alloc, dst_types,
+                       comp_count * sizeof(VkrComponentTypeId),
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
   if (!dst)
     return false_v;
 
@@ -1010,10 +1510,9 @@ bool8_t vkr_entity_add_component(VkrWorld *world, VkrEntityId id,
 bool8_t vkr_entity_remove_component(VkrWorld *world, VkrEntityId id,
                                     VkrComponentTypeId type) {
   assert_log(world, "World must not be NULL");
-  assert_log(id.parts.index < world->dir.capacity, "Index out of range");
-  assert_log(type < VKR_COMPONENT_TYPE_INVALID, "Type out of range");
-
-  if (!vkr_entity_is_alive(world, id))
+  if (!vkr_entity_validate_id(world, id))
+    return false_v;
+  if (!vkr_entity_validate_type(world, type))
     return false_v;
 
   uint32_t idx = id.parts.index;
@@ -1027,12 +1526,29 @@ bool8_t vkr_entity_remove_component(VkrWorld *world, VkrEntityId id,
 
   // Build dst types = src types without 'type'
   uint32_t comp_count = archetype->comp_count - 1u;
+  VkrAllocator *scratch_alloc =
+      world->scratch_alloc ? world->scratch_alloc : world->alloc;
+  // Scope must not run on world->alloc; otherwise it can reclaim
+  // archetypes/chunks.
+  VkrAllocatorScope scratch_scope = (VkrAllocatorScope){0};
+  bool8_t scratch_scoped = false_v;
+  if (world->scratch_alloc && world->scratch_alloc != world->alloc) {
+    scratch_scope = vkr_allocator_begin_scope(scratch_alloc);
+    scratch_scoped = vkr_allocator_scope_is_valid(&scratch_scope);
+  }
   VkrComponentTypeId stack_types[64];
   VkrComponentTypeId *dst_types =
       (comp_count <= 64)
           ? stack_types
-          : vkr_entity_alloc(world, comp_count * sizeof(VkrComponentTypeId),
-                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+          : vkr_allocator_alloc(scratch_alloc,
+                                comp_count * sizeof(VkrComponentTypeId),
+                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!dst_types) {
+    if (scratch_scoped) {
+      vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    }
+    return false_v;
+  }
   uint32_t j = 0;
   for (uint32_t comp = 0; comp < archetype->comp_count; ++comp) {
     if (archetype->types[comp] != type)
@@ -1041,9 +1557,13 @@ bool8_t vkr_entity_remove_component(VkrWorld *world, VkrEntityId id,
 
   VkrArchetype *dst =
       vkr_entity_archetype_get_or_create(world, dst_types, comp_count);
-  if (dst_types != stack_types)
-    vkr_entity_free(world, dst_types, comp_count * sizeof(VkrComponentTypeId),
-                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (scratch_scoped) {
+    vkr_allocator_end_scope(&scratch_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  } else if (dst_types != stack_types) {
+    vkr_allocator_free(scratch_alloc, dst_types,
+                       comp_count * sizeof(VkrComponentTypeId),
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
   if (!dst)
     return false_v;
 
@@ -1054,10 +1574,9 @@ bool8_t vkr_entity_remove_component(VkrWorld *world, VkrEntityId id,
 void *vkr_entity_get_component_mut(VkrWorld *world, VkrEntityId id,
                                    VkrComponentTypeId type) {
   assert_log(world, "World must not be NULL");
-  assert_log(id.parts.index < world->dir.capacity, "Index out of range");
-  assert_log(type < VKR_COMPONENT_TYPE_INVALID, "Type out of range");
-
-  if (!vkr_entity_is_alive(world, id))
+  if (!vkr_entity_validate_id(world, id))
+    return NULL;
+  if (!vkr_entity_validate_type(world, type))
     return NULL;
 
   VkrEntityRecord rec = world->dir.records[id.parts.index];
@@ -1067,24 +1586,28 @@ void *vkr_entity_get_component_mut(VkrWorld *world, VkrEntityId id,
     return NULL;
 
   uint8_t *col = (uint8_t *)rec.chunk->columns[col_i];
+  if (!col) {
+    log_error(
+        "NULL column at index %d for type %u in archetype with %u components",
+        col_i, type, archetype->comp_count);
+    return NULL;
+  }
   return (void *)(col + (size_t)archetype->sizes[col_i] * rec.slot);
 }
 
 const void *vkr_entity_get_component(const VkrWorld *world, VkrEntityId id,
                                      VkrComponentTypeId type) {
   assert_log(world, "World must not be NULL");
-  assert_log(id.parts.index < world->dir.capacity, "Index out of range");
-  assert_log(type < VKR_COMPONENT_TYPE_INVALID, "Type out of range");
   return vkr_entity_get_component_mut((VkrWorld *)world, id, type);
 }
 
 bool8_t vkr_entity_has_component(const VkrWorld *world, VkrEntityId id,
                                  VkrComponentTypeId type) {
   assert_log(world, "World must not be NULL");
-  assert_log(id.parts.index < world->dir.capacity, "Index out of range");
-  assert_log(type < VKR_COMPONENT_TYPE_INVALID, "Type out of range");
 
-  if (!vkr_entity_is_alive(world, id))
+  if (!vkr_entity_validate_id(world, id))
+    return false_v;
+  if (!vkr_entity_validate_type(world, type))
     return false_v;
 
   const VkrEntityRecord record = world->dir.records[id.parts.index];
@@ -1111,10 +1634,21 @@ void vkr_entity_query_build(VkrWorld *world,
 
   vkr_entity_sig_clear(&out_query->include);
   vkr_entity_sig_clear(&out_query->exclude);
-  for (uint32_t comp = 0; comp < include_count; ++comp)
+  for (uint32_t comp = 0; comp < include_count; ++comp) {
+    if (!vkr_entity_validate_type(world, include_types[comp])) {
+      log_error("Invalid include component type: %u", include_types[comp]);
+      continue;
+    }
     vkr_entity_sig_set(&out_query->include, include_types[comp]);
-  for (uint32_t comp = 0; comp < exclude_count; ++comp)
+  }
+
+  for (uint32_t comp = 0; comp < exclude_count; ++comp) {
+    if (!vkr_entity_validate_type(world, exclude_types[comp])) {
+      log_error("Invalid exclude component type: %u", exclude_types[comp]);
+      continue;
+    }
     vkr_entity_sig_set(&out_query->exclude, exclude_types[comp]);
+  }
 }
 
 void vkr_entity_query_each_chunk(VkrWorld *world, const VkrQuery *query,
@@ -1128,6 +1662,81 @@ void vkr_entity_query_each_chunk(VkrWorld *world, const VkrQuery *query,
     if (!vkr_entity_sig_contains(&archetype->sig, &query->include))
       continue;
     if (vkr_entity_sig_intersects(&archetype->sig, &query->exclude))
+      continue;
+    for (VkrChunk *chunk = archetype->chunks; chunk; chunk = chunk->next) {
+      if (chunk->count == 0)
+        continue;
+      fn(archetype, chunk, user);
+    }
+  }
+}
+
+bool8_t vkr_entity_query_compile(VkrWorld *world, const VkrQuery *query,
+                                 VkrAllocator *allocator,
+                                 VkrQueryCompiled *out_query) {
+  assert_log(world, "World must not be NULL");
+  assert_log(query, "Query must not be NULL");
+  assert_log(allocator, "Allocator must not be NULL");
+  assert_log(out_query, "Output query must not be NULL");
+
+  out_query->archetypes = NULL;
+  out_query->archetype_count = 0;
+
+  uint32_t match_count = 0;
+  for (uint32_t ai = 0; ai < world->arch_count; ++ai) {
+    VkrArchetype *archetype = world->arch_list[ai];
+    if (!vkr_entity_sig_contains(&archetype->sig, &query->include))
+      continue;
+    if (vkr_entity_sig_intersects(&archetype->sig, &query->exclude))
+      continue;
+    match_count++;
+  }
+
+  if (match_count == 0)
+    return true_v;
+
+  VkrArchetype **matches = (VkrArchetype **)vkr_allocator_alloc(
+      allocator, match_count * sizeof(VkrArchetype *),
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!matches)
+    return false_v;
+
+  uint32_t idx = 0;
+  for (uint32_t ai = 0; ai < world->arch_count; ++ai) {
+    VkrArchetype *archetype = world->arch_list[ai];
+    if (!vkr_entity_sig_contains(&archetype->sig, &query->include))
+      continue;
+    if (vkr_entity_sig_intersects(&archetype->sig, &query->exclude))
+      continue;
+    matches[idx++] = archetype;
+  }
+
+  out_query->archetypes = matches;
+  out_query->archetype_count = match_count;
+  return true_v;
+}
+
+void vkr_entity_query_compiled_destroy(VkrAllocator *allocator,
+                                       VkrQueryCompiled *query) {
+  if (!query || !allocator)
+    return;
+  if (query->archetypes) {
+    vkr_allocator_free(allocator, (void *)query->archetypes,
+                       query->archetype_count * sizeof(VkrArchetype *),
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  query->archetypes = NULL;
+  query->archetype_count = 0;
+}
+
+void vkr_entity_query_compiled_each_chunk(const VkrQueryCompiled *query,
+                                          VkrChunkFn fn, void *user) {
+  assert_log(query, "Query must not be NULL");
+  assert_log(fn, "Callback must not be NULL");
+
+  for (uint32_t ai = 0; ai < query->archetype_count; ++ai) {
+    VkrArchetype *archetype = query->archetypes[ai];
+    if (!archetype)
       continue;
     for (VkrChunk *chunk = archetype->chunks; chunk; chunk = chunk->next) {
       if (chunk->count == 0)
@@ -1153,7 +1762,8 @@ VkrEntityId *vkr_entity_chunk_entities(VkrChunk *chunk) {
 
 void *vkr_entity_chunk_column(VkrChunk *chunk, VkrComponentTypeId type) {
   assert_log(chunk, "Chunk must not be NULL");
-  assert_log(type < VKR_COMPONENT_TYPE_INVALID, "Type out of range");
+  if (!vkr_entity_validate_type(chunk->arch->world, type))
+    return NULL;
 
   int32_t col_i = vkr_entity_arch_find_col(chunk->arch, type);
   if (col_i < 0)
@@ -1164,7 +1774,8 @@ void *vkr_entity_chunk_column(VkrChunk *chunk, VkrComponentTypeId type) {
 const void *vkr_entity_chunk_column_const(const VkrChunk *chunk,
                                           VkrComponentTypeId type) {
   assert_log(chunk, "Chunk must not be NULL");
-  assert_log(type < VKR_COMPONENT_TYPE_INVALID, "Type out of range");
+  if (!vkr_entity_validate_type(chunk->arch->world, type))
+    return NULL;
 
   int32_t col_i = vkr_entity_arch_find_col(chunk->arch, type);
   if (col_i < 0)

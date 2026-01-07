@@ -127,6 +127,7 @@ typedef struct VkrArchetype {
   uint32_t *sizes;           // cached from registry
   uint32_t *aligns;          // cached from registry
   uint32_t *col_offsets;     // [comp_count] offset within chunk->data
+  uint16_t type_to_col[VKR_ECS_MAX_COMPONENTS]; // 0xFFFF = not present
 
   uint32_t ents_offset; // offset to entity-id column
   uint32_t chunk_capacity;
@@ -134,22 +135,24 @@ typedef struct VkrArchetype {
   VkrChunk *chunks; // singly-linked list
   const char *key;  // canonical string (lives in allocator)
 } VkrArchetype;
-VkrHashTable(VkrArchetype);
+VkrHashTableConstructor(struct VkrArchetype *, VkrArchetypePtr);
 
 /**
  * @brief World
  */
 typedef struct VkrWorld {
   VkrAllocator *alloc;
+  VkrAllocator *scratch_alloc;
   uint16_t world_id;
 
   // Component registry
   VkrComponentInfo *components;
   uint32_t comp_count;
   uint32_t comp_capacity;
+  VkrHashTable_uint16_t component_name_to_id;
 
   // Archetype registry (string key -> archetype)
-  VkrHashTable_VkrArchetype arch_table;
+  VkrHashTable_VkrArchetypePtr arch_table;
   VkrArchetype **arch_list; // pointers to archetypes
   uint32_t arch_count;
   uint32_t arch_capacity;
@@ -163,6 +166,7 @@ typedef struct VkrWorld {
  */
 typedef struct VkrWorldCreateInfo {
   VkrAllocator *alloc; // allocator for all ECS allocations
+  VkrAllocator *scratch_alloc; // optional scratch allocator
   uint16_t world_id;   // world id to embed in VkrEntityId (0 if single world)
   // Optional initial capacities
   uint32_t initial_entities;   // e.g. 1024 (0 -> default)
@@ -198,10 +202,33 @@ void vkr_entity_destroy_world(VkrWorld *world);
  * @param size Component size
  * @param align Component alignment
  * @return Component type ID
+ * @note Returns VKR_COMPONENT_TYPE_INVALID if name is already registered.
  */
 VkrComponentTypeId vkr_entity_register_component(VkrWorld *world,
                                                  const char *name,
                                                  uint32_t size, uint32_t align);
+/**
+ * @brief Register component if missing and return its id.
+ * @param world World to register the component in
+ * @param name Component name
+ * @param size Component size
+ * @param align Component alignment
+ * @return Component type ID
+ * @note If name is registered with a different size/alignment, returns
+ * VKR_COMPONENT_TYPE_INVALID.
+ */
+VkrComponentTypeId vkr_entity_register_component_once(VkrWorld *world,
+                                                      const char *name,
+                                                      uint32_t size,
+                                                      uint32_t align);
+/**
+ * @brief Find a component id by name.
+ * @param world World to search in
+ * @param name Component name
+ * @return Component id or VKR_COMPONENT_TYPE_INVALID if not found.
+ */
+VkrComponentTypeId vkr_entity_find_component(const VkrWorld *world,
+                                             const char *name);
 
 /**
  * @brief Get component info
@@ -222,6 +249,19 @@ const VkrComponentInfo *vkr_entity_get_component_info(const VkrWorld *world,
  * @return Entity ID
  */
 VkrEntityId vkr_entity_create_entity(VkrWorld *world);
+/**
+ * @brief Create a new entity with a component set.
+ * @param world World to create the entity in
+ * @param types Component type IDs
+ * @param init_data Optional per-component init data (can be NULL)
+ * @param count Number of component types
+ * @return Entity ID
+ * @note Duplicate component types are coalesced; the first non-NULL init data
+ * is kept.
+ */
+VkrEntityId vkr_entity_create_entity_with_components(
+    VkrWorld *world, const VkrComponentTypeId *types,
+    const void *const *init_data, uint32_t count);
 
 /**
  * @brief Destroy an entity
@@ -299,10 +339,28 @@ bool8_t vkr_entity_has_component(const VkrWorld *world, VkrEntityId id,
 // Query API
 // ================================
 
+/**
+ * @brief Chunk function
+ * @param arch Archetype
+ * @param chunk Chunk
+ * @param user User data
+ */
+typedef void (*VkrChunkFn)(const VkrArchetype *arch, VkrChunk *chunk,
+                           void *user);
+
 typedef struct VkrQuery {
   VkrSignature include;
   VkrSignature exclude;
 } VkrQuery;
+
+/**
+ * @brief Compiled query snapshot of matching archetypes.
+ * @note Recompile after new archetypes are introduced.
+ */
+typedef struct VkrQueryCompiled {
+  VkrArchetype **archetypes;
+  uint32_t archetype_count;
+} VkrQueryCompiled;
 
 /**
  * @brief Build a query
@@ -320,13 +378,24 @@ void vkr_entity_query_build(VkrWorld *world,
                             uint32_t exclude_count, VkrQuery *out_query);
 
 /**
- * @brief Chunk function
- * @param arch Archetype
- * @param chunk Chunk
- * @param user User data
+ * @brief Compile a query into a snapshot of matching archetypes.
+ * @note Recompile after new archetypes are introduced.
  */
-typedef void (*VkrChunkFn)(const VkrArchetype *arch, VkrChunk *chunk,
-                           void *user);
+bool8_t vkr_entity_query_compile(VkrWorld *world, const VkrQuery *query,
+                                 VkrAllocator *allocator,
+                                 VkrQueryCompiled *out_query);
+
+/**
+ * @brief Destroy a compiled query and free its archetype list.
+ */
+void vkr_entity_query_compiled_destroy(VkrAllocator *allocator,
+                                       VkrQueryCompiled *query);
+
+/**
+ * @brief Iterate over all chunks in a compiled query.
+ */
+void vkr_entity_query_compiled_each_chunk(const VkrQueryCompiled *query,
+                                          VkrChunkFn fn, void *user);
 
 /**
  * @brief Query each chunk
