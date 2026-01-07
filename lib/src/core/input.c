@@ -68,6 +68,16 @@ bool8_t input_was_key_up(InputState *input_state, Keys key) {
   return !input_state->previous_keys.keys[key];
 }
 
+bool8_t input_key_just_pressed(const InputState *input_state, Keys key) {
+  return input_is_key_down((InputState *)input_state, key) &&
+         input_was_key_up((InputState *)input_state, key);
+}
+
+bool8_t input_key_just_released(const InputState *input_state, Keys key) {
+  return input_is_key_up((InputState *)input_state, key) &&
+         input_was_key_down((InputState *)input_state, key);
+}
+
 bool8_t input_is_button_down(InputState *input_state, Buttons button) {
   return input_state->current_buttons.buttons[button];
 }
@@ -82,6 +92,18 @@ bool8_t input_was_button_down(InputState *input_state, Buttons button) {
 
 bool8_t input_was_button_up(InputState *input_state, Buttons button) {
   return !input_state->previous_buttons.buttons[button];
+}
+
+bool8_t input_button_just_pressed(const InputState *input_state,
+                                  Buttons button) {
+  return input_is_button_down((InputState *)input_state, button) &&
+         input_was_button_up((InputState *)input_state, button);
+}
+
+bool8_t input_button_just_released(const InputState *input_state,
+                                   Buttons button) {
+  return input_is_button_up((InputState *)input_state, button) &&
+         input_was_button_down((InputState *)input_state, button);
 }
 
 void input_process_key(InputState *input_state, Keys key, bool8_t pressed) {
@@ -167,6 +189,19 @@ void input_get_previous_mouse_position(InputState *input_state, int32_t *x,
                                        int32_t *y) {
   *x = input_state->previous_buttons.x;
   *y = input_state->previous_buttons.y;
+}
+
+void input_get_mouse_delta(const InputState *input_state, int32_t *dx,
+                           int32_t *dy) {
+  int32_t current_x = 0;
+  int32_t current_y = 0;
+  int32_t previous_x = 0;
+  int32_t previous_y = 0;
+  input_get_mouse_position((InputState *)input_state, &current_x, &current_y);
+  input_get_previous_mouse_position((InputState *)input_state, &previous_x,
+                                    &previous_y);
+  *dx = current_x - previous_x;
+  *dy = current_y - previous_y;
 }
 
 void input_get_mouse_wheel(InputState *input_state, int8_t *delta) {

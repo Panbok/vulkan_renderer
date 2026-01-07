@@ -427,6 +427,24 @@ bool8_t input_was_key_down(InputState *input_state, Keys key);
 bool8_t input_was_key_up(InputState *input_state, Keys key);
 
 /**
+ * @brief Checks if a key was just pressed this frame.
+ * Requires `input_update()` to have been called to update previous states.
+ * @param input_state Pointer to the `InputState` to query.
+ * @param key The `Keys` identifier of the key to check.
+ * @return `true` if the key transitioned from up to down this frame.
+ */
+bool8_t input_key_just_pressed(const InputState *input_state, Keys key);
+
+/**
+ * @brief Checks if a key was just released this frame.
+ * Requires `input_update()` to have been called to update previous states.
+ * @param input_state Pointer to the `InputState` to query.
+ * @param key The `Keys` identifier of the key to check.
+ * @return `true` if the key transitioned from down to up this frame.
+ */
+bool8_t input_key_just_released(const InputState *input_state, Keys key);
+
+/**
  * @brief Processes a keyboard key event.
  * Called by the platform layer when a key is pressed or released.
  * Updates the internal current key state and dispatches a
@@ -475,6 +493,26 @@ bool8_t input_was_button_down(InputState *input_state, Buttons button);
 bool8_t input_was_button_up(InputState *input_state, Buttons button);
 
 /**
+ * @brief Checks if a mouse button was just pressed this frame.
+ * Requires `input_update()` to have been called to update previous states.
+ * @param input_state Pointer to the `InputState` to query.
+ * @param button The `Buttons` identifier of the mouse button to check.
+ * @return `true` if the button transitioned from up to down this frame.
+ */
+bool8_t input_button_just_pressed(const InputState *input_state,
+                                  Buttons button);
+
+/**
+ * @brief Checks if a mouse button was just released this frame.
+ * Requires `input_update()` to have been called to update previous states.
+ * @param input_state Pointer to the `InputState` to query.
+ * @param button The `Buttons` identifier of the mouse button to check.
+ * @return `true` if the button transitioned from down to up this frame.
+ */
+bool8_t input_button_just_released(const InputState *input_state,
+                                   Buttons button);
+
+/**
  * @brief Retrieves the current mouse cursor position.
  * @param input_state Pointer to the `InputState` to query.
  * @param[out] x Pointer to store the current X-coordinate of the mouse.
@@ -491,6 +529,16 @@ void input_get_mouse_position(InputState *input_state, int32_t *x, int32_t *y);
  */
 void input_get_previous_mouse_position(InputState *input_state, int32_t *x,
                                        int32_t *y);
+
+/**
+ * @brief Retrieves the mouse delta since the previous frame.
+ * Requires `input_update()` to have been called to update previous states.
+ * @param input_state Pointer to the `InputState` to query.
+ * @param[out] dx Pointer to store delta X.
+ * @param[out] dy Pointer to store delta Y.
+ */
+void input_get_mouse_delta(const InputState *input_state, int32_t *dx,
+                           int32_t *dy);
 
 /**
  * @brief Retrieves the last processed mouse wheel delta.
