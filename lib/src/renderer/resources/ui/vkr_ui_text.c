@@ -14,6 +14,69 @@
 #define VKR_UI_TEXT_VERTEX_GROWTH_COUNT 64
 #define VKR_UI_TEXT_INDEX_GROWTH_COUNT 96
 
+#define VKR_UI_TEXT_BUFFER_RETIRE_FRAMES 3
+
+vkr_internal void vkr_ui_text_collect_retired_buffers(VkrUiText *text,
+                                                      uint64_t current_frame) {
+  assert_log(text != NULL, "Text is NULL");
+
+  for (uint32_t i = 0; i < VKR_UI_TEXT_MAX_RETIRED_BUFFER_SETS; ++i) {
+    VkrUiTextRetiredBufferSet *slot = &text->retired_buffers[i];
+    if (slot->vertex_buffer.handle == NULL &&
+        slot->index_buffer.handle == NULL) {
+      continue;
+    }
+
+    if (current_frame < slot->retire_after_frame) {
+      continue;
+    }
+
+    if (slot->vertex_buffer.handle) {
+      vkr_vertex_buffer_destroy(text->renderer, &slot->vertex_buffer);
+    }
+    if (slot->index_buffer.handle) {
+      vkr_index_buffer_destroy(text->renderer, &slot->index_buffer);
+    }
+
+    MemZero(slot, sizeof(*slot));
+  }
+}
+
+vkr_internal void vkr_ui_text_retire_buffers(VkrUiText *text,
+                                             VkrVertexBuffer vertex_buffer,
+                                             VkrIndexBuffer index_buffer,
+                                             uint64_t current_frame) {
+  assert_log(text != NULL, "Text is NULL");
+  assert_log(vertex_buffer.handle != NULL || index_buffer.handle != NULL,
+             "Vertex or index buffer is NULL");
+
+  uint64_t retire_after_frame =
+      current_frame + VKR_UI_TEXT_BUFFER_RETIRE_FRAMES;
+
+  for (uint32_t i = 0; i < VKR_UI_TEXT_MAX_RETIRED_BUFFER_SETS; ++i) {
+    VkrUiTextRetiredBufferSet *slot = &text->retired_buffers[i];
+    if (slot->vertex_buffer.handle != NULL ||
+        slot->index_buffer.handle != NULL) {
+      continue;
+    }
+
+    slot->vertex_buffer = vertex_buffer;
+    slot->index_buffer = index_buffer;
+    slot->retire_after_frame = retire_after_frame;
+    return;
+  }
+
+  // Edge case: too many pending resizes without enough frames progressing to
+  // retire old buffers. Fall back to a full GPU idle wait to safely destroy.
+  vkr_renderer_wait_idle(text->renderer);
+  if (vertex_buffer.handle) {
+    vkr_vertex_buffer_destroy(text->renderer, &vertex_buffer);
+  }
+  if (index_buffer.handle) {
+    vkr_index_buffer_destroy(text->renderer, &index_buffer);
+  }
+}
+
 vkr_internal bool8_t vkr_ui_text_codepoint_key(char *buffer,
                                                uint64_t buffer_size,
                                                uint32_t codepoint) {
@@ -114,6 +177,10 @@ vkr_internal bool8_t vkr_ui_text_generate_buffers(VkrUiText *text) {
   if (!text || !text->resolved_font) {
     return false_v;
   }
+
+  RendererFrontend *rf = (RendererFrontend *)text->renderer;
+  uint64_t current_frame = rf ? rf->frame_number : 0;
+  vkr_ui_text_collect_retired_buffers(text, current_frame);
 
   if (text->layout.glyphs.length > UINT32_MAX) {
     log_error("Glyph count exceeds maximum supported: %llu",
@@ -325,15 +392,10 @@ vkr_internal bool8_t vkr_ui_text_generate_buffers(VkrUiText *text) {
 
   VkrRendererError buffer_err = VKR_RENDERER_ERROR_NONE;
   if (need_realloc) {
-    if (text->render.vertex_buffer.handle) {
-      vkr_vertex_buffer_destroy(text->renderer, &text->render.vertex_buffer);
-    }
-    if (text->render.index_buffer.handle) {
-      vkr_index_buffer_destroy(text->renderer, &text->render.index_buffer);
-    }
-
-    // Use dynamic buffers for UI text (host-visible, no GPU sync on update)
-    text->render.vertex_buffer = vkr_vertex_buffer_create_dynamic(
+    // Use dynamic buffers for UI text (host-visible, no GPU sync on update).
+    // Create new buffers first; old buffers are retired after a successful
+    // swap.
+    VkrVertexBuffer new_vertex_buffer = vkr_vertex_buffer_create_dynamic(
         text->renderer, vertices, sizeof(VkrTextVertex), alloc_vertex_count,
         VKR_VERTEX_INPUT_RATE_VERTEX, string8_lit("ui_text_vertices"),
         &buffer_err);
@@ -352,12 +414,12 @@ vkr_internal bool8_t vkr_ui_text_generate_buffers(VkrUiText *text) {
       return false_v;
     }
 
-    text->render.index_buffer = vkr_index_buffer_create_dynamic(
+    VkrIndexBuffer new_index_buffer = vkr_index_buffer_create_dynamic(
         text->renderer, indices, VKR_INDEX_TYPE_UINT32, alloc_index_count,
         string8_lit("ui_text_indices"), &buffer_err);
 
     if (buffer_err != VKR_RENDERER_ERROR_NONE) {
-      vkr_vertex_buffer_destroy(text->renderer, &text->render.vertex_buffer);
+      vkr_vertex_buffer_destroy(text->renderer, &new_vertex_buffer);
       if (use_scope) {
         vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       } else {
@@ -371,6 +433,11 @@ vkr_internal bool8_t vkr_ui_text_generate_buffers(VkrUiText *text) {
       return false_v;
     }
 
+    vkr_ui_text_retire_buffers(text, text->render.vertex_buffer,
+                               text->render.index_buffer, current_frame);
+
+    text->render.vertex_buffer = new_vertex_buffer;
+    text->render.index_buffer = new_index_buffer;
     text->render.vertex_capacity = alloc_vertex_count;
     text->render.index_capacity = alloc_index_count;
   } else {
@@ -477,6 +544,11 @@ void vkr_ui_text_destroy(VkrUiText *text) {
     return;
   }
 
+  RendererFrontend *rf = (RendererFrontend *)text->renderer;
+  if (rf) {
+    vkr_ui_text_collect_retired_buffers(text, rf->frame_number);
+  }
+
   if (text->render.instance_state.id != 0 && text->render.pipeline.id != 0) {
     vkr_pipeline_registry_release_instance_state(
         &text->renderer->pipeline_registry, text->render.pipeline,
@@ -488,6 +560,16 @@ void vkr_ui_text_destroy(VkrUiText *text) {
   }
   if (text->render.index_buffer.handle) {
     vkr_index_buffer_destroy(text->renderer, &text->render.index_buffer);
+  }
+
+  for (uint32_t i = 0; i < VKR_UI_TEXT_MAX_RETIRED_BUFFER_SETS; ++i) {
+    VkrUiTextRetiredBufferSet *slot = &text->retired_buffers[i];
+    if (slot->vertex_buffer.handle) {
+      vkr_vertex_buffer_destroy(text->renderer, &slot->vertex_buffer);
+    }
+    if (slot->index_buffer.handle) {
+      vkr_index_buffer_destroy(text->renderer, &slot->index_buffer);
+    }
   }
 
   vkr_text_layout_destroy(&text->layout);
@@ -504,6 +586,11 @@ void vkr_ui_text_destroy(VkrUiText *text) {
 bool8_t vkr_ui_text_set_content(VkrUiText *text, String8 content) {
   if (!text || !text->allocator) {
     return false_v;
+  }
+
+  RendererFrontend *rf = (RendererFrontend *)text->renderer;
+  if (rf) {
+    vkr_ui_text_collect_retired_buffers(text, rf->frame_number);
   }
 
   if (text->content.str) {
@@ -598,6 +685,11 @@ VkrTextBounds vkr_ui_text_get_bounds(VkrUiText *text) {
 bool8_t vkr_ui_text_prepare(VkrUiText *text) {
   if (!text) {
     return false_v;
+  }
+
+  RendererFrontend *rf = (RendererFrontend *)text->renderer;
+  if (rf) {
+    vkr_ui_text_collect_retired_buffers(text, rf->frame_number);
   }
 
   if (text->layout_dirty) {

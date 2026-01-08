@@ -56,6 +56,22 @@ typedef struct VkrUiTextRenderState {
 } VkrUiTextRenderState;
 
 /**
+ * @brief Retired buffer set waiting for GPU completion.
+ *
+ * UI text can resize its dynamic vertex/index buffers when content grows.
+ * To avoid destroying buffers that may still be referenced by in-flight command
+ * buffers, old buffers are retained for a few frames and destroyed later.
+ */
+typedef struct VkrUiTextRetiredBufferSet {
+  VkrVertexBuffer vertex_buffer;
+  VkrIndexBuffer index_buffer;
+  uint64_t retire_after_frame;
+} VkrUiTextRetiredBufferSet;
+
+/** @brief Maximum number of buffer sets kept alive after resizing. */
+#define VKR_UI_TEXT_MAX_RETIRED_BUFFER_SETS 8
+
+/**
  * @brief UI text resource.
  *
  * Owns the text content, computed layout, and GPU resources for rendering.
@@ -78,6 +94,9 @@ typedef struct VkrUiText {
 
   // Render state
   VkrUiTextRenderState render;
+
+  // Retired GPU buffers pending safe destruction.
+  VkrUiTextRetiredBufferSet retired_buffers[VKR_UI_TEXT_MAX_RETIRED_BUFFER_SETS];
 
   // Dirty flags
   bool8_t layout_dirty;  // Need to recompute layout
