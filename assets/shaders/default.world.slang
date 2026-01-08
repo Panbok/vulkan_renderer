@@ -14,7 +14,12 @@ struct LocalUniformObject
     float4 specular_color;
     float3 emission_color;
     float shininess;
+    uint32_t texture_flags; // 0x1=has_diffuse, 0x2=has_specular, 0x4=has_normal
 };
+
+static const uint32_t TEXTURE_FLAG_HAS_DIFFUSE = 0x1u;
+static const uint32_t TEXTURE_FLAG_HAS_SPECULAR = 0x2u;
+static const uint32_t TEXTURE_FLAG_HAS_NORMAL = 0x4u;
 
 struct DirectionalLight
 {
@@ -245,7 +250,16 @@ float4 fragmentMain(VertexDto input) : SV_Target
         return float4(abs(normal), 1.0f);
     }
 
-    float4 diffuse_sample = diffuse_texture.Sample(diffuse_sampler, input.texcoord);
+    // Use diffuse texture if available, otherwise use material color
+    float4 diffuse_sample;
+    if ((local_ubo.texture_flags & TEXTURE_FLAG_HAS_DIFFUSE) != 0)
+    {
+        diffuse_sample = diffuse_texture.Sample(diffuse_sampler, input.texcoord);
+    }
+    else
+    {
+        diffuse_sample = local_ubo.diffuse_color;
+    }
 
     float specular_sample = specular_texture.Sample(specular_sampler, input.texcoord).r;
 

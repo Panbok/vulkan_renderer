@@ -1,0 +1,25 @@
+# Viewport Display Shader Configuration
+# Renders the offscreen scene texture onto a UI plane.
+
+version=1.0
+name=shader.default.viewport_display
+renderpass=Renderpass.Editor
+stages=vertex,fragment
+stagefiles=assets/shaders/default.ui.spv
+use_instance=1
+use_local=1
+
+# Vertex attributes (2D position + UV)
+attribute=vec2,in_position
+attribute=vec2,in_texcoord
+
+# Global uniforms
+uniform=mat4,0,projection
+uniform=mat4,0,view
+
+# Instance uniforms
+uniform=vec4,1,diffuse_color
+uniform=samp,1,diffuse_texture
+
+# Local uniforms
+uniform=mat4,2,model

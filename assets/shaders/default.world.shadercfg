@@ -46,6 +46,7 @@ uniform=vec4,1,diffuse_color      # Material diffuse color (tint)
 uniform=vec4,1,specular_color     # Material specular tint
 uniform=vec3,1,emission_color     # Material emission self-illumination
 uniform=float,1,shininess         # Material shininess/exponent
+uniform=uint32,1,texture_flags    # Bit flags: 0x1=has_diffuse, 0x2=has_specular, 0x4=has_normal
 uniform=samp,1,diffuse_texture    # Material diffuse texture (slot 0)
 uniform=samp,1,specular_texture   # Material specular map   (slot 1)
 uniform=samp,1,normal_texture     # Material normal map     (slot 2)
