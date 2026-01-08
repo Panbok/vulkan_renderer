@@ -1,0 +1,30 @@
+# Picking Text Shader Configuration
+# Outputs object IDs for UI/world text picking.
+
+version=1.0
+name=shader.picking_text
+renderpass=Renderpass.Builtin.Picking
+stages=vertex,fragment
+stagefiles=assets/shaders/picking_text.spv
+use_instance=0
+use_local=1
+cull_mode=none
+
+# ============================================================================
+# Vertex Attributes (VkrTextVertex layout)
+# ============================================================================
+attribute=vec2,in_position
+attribute=vec2,in_texcoord
+attribute=vec4,in_color
+
+# ============================================================================
+# Uniforms
+# ============================================================================
+
+# Global uniforms (projection/view)
+uniform=mat4,0,projection
+uniform=mat4,0,view
+
+# Local uniforms (push constants)
+uniform=mat4,2,model
+uniform=uint32,2,object_id
