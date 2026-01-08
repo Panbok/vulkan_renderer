@@ -520,7 +520,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     }
 
     // Configure for Retina displays - use full physical pixel resolution
-    CGFloat backingScale = [[NSScreen mainScreen] backingScaleFactor];
+    CGFloat backingScale = [[state->window screen] backingScaleFactor];
     [state->layer setContentsScale:backingScale];
 
     // View creation
@@ -530,8 +530,10 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     [state->view setWantsLayer:YES];
 
     // Set initial drawable size for Retina displays
-    const NSRect contentRect = [state->window contentRectForFrameRect:[state->window frame]];
-    const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
+    const NSRect contentRect =
+        [state->window contentRectForFrameRect:[state->window frame]];
+    const NSRect framebufferRect =
+        [state->view convertRectToBacking:contentRect];
     [state->layer setDrawableSize:framebufferRect.size];
 
     // Setting window properties
