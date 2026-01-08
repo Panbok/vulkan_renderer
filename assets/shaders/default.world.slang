@@ -152,6 +152,12 @@ static const uint32_t RENDER_MODE_NORMAL = 2u;
 float3 compute_normal_from_map(VertexDto input)
 {
     float3 normal = input.normal;
+
+    if ((local_ubo.texture_flags & TEXTURE_FLAG_HAS_NORMAL) == 0)
+    {
+        return normal;
+    }
+
     float3 tangent = input.tangent.xyz;
     
     // Re-orthogonalize tangent (Gram-Schmidt)
@@ -261,7 +267,15 @@ float4 fragmentMain(VertexDto input) : SV_Target
         diffuse_sample = local_ubo.diffuse_color;
     }
 
-    float specular_sample = specular_texture.Sample(specular_sampler, input.texcoord).r;
+    float specular_sample;
+    if ((local_ubo.texture_flags & TEXTURE_FLAG_HAS_SPECULAR) != 0)
+    {
+        specular_sample = specular_texture.Sample(specular_sampler, input.texcoord).r;
+    }
+    else
+    {
+        specular_sample = 1.0; // Or use local_ubo.specular_color if appropriate
+    }
 
     float3 view_direction = normalize(input.view_position - input.frag_position);
 
