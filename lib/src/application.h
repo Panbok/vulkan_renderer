@@ -443,10 +443,15 @@ void application_start(Application *application) {
 
     if (camera) {
       application->renderer.camera_controller.camera = camera;
-      vkr_camera_controller_update(&application->renderer.camera_controller,
-                                   delta);
     } else {
       log_warn("Active camera handle invalid; skipping controller update");
+    }
+
+    vkr_view_system_update_all(&application->renderer, delta);
+
+    if (camera) {
+      vkr_camera_controller_update(&application->renderer.camera_controller,
+                                   delta);
     }
 
     vkr_camera_registry_update_all(camera_system);
