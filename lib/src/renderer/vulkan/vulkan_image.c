@@ -394,19 +394,24 @@ void vulkan_image_destroy(VulkanBackendState *state, VulkanImage *image) {
                        state->allocator);
   }
 
-  VkMemoryRequirements memory_requirements;
-  vkGetImageMemoryRequirements(state->device.logical_device, image->handle,
-                               &memory_requirements);
-  VkrAllocatorMemoryTag alloc_tag =
-      (image->memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-          ? VKR_ALLOCATOR_MEMORY_TAG_GPU
-          : VKR_ALLOCATOR_MEMORY_TAG_VULKAN;
+  if (image->handle != VK_NULL_HANDLE) {
+    if (image->memory != VK_NULL_HANDLE) {
+      VkMemoryRequirements memory_requirements;
+      vkGetImageMemoryRequirements(state->device.logical_device, image->handle,
+                                   &memory_requirements);
+      VkrAllocatorMemoryTag alloc_tag =
+          (image->memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+              ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+              : VKR_ALLOCATOR_MEMORY_TAG_VULKAN;
 
-  vkr_allocator_report(&state->alloc, memory_requirements.size, alloc_tag,
-                       false_v);
-
-  vkDestroyImage(state->device.logical_device, image->handle, state->allocator);
-  vkFreeMemory(state->device.logical_device, image->memory, state->allocator);
+      vkr_allocator_report(&state->alloc, memory_requirements.size, alloc_tag,
+                           false_v);
+      vkFreeMemory(state->device.logical_device, image->memory,
+                   state->allocator);
+    }
+    vkDestroyImage(state->device.logical_device, image->handle,
+                   state->allocator);
+  }
 }
 
 bool8_t vulkan_image_generate_mipmaps(VulkanBackendState *state,

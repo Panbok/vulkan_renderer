@@ -18,6 +18,7 @@
 #include "vulkan_debug.h"
 #endif
 
+// todo: make these configurable
 #define VKR_MAX_TEXTURE_HANDLES 4096
 #define VKR_MAX_BUFFER_HANDLES 2048
 
@@ -2041,29 +2042,25 @@ renderer_vulkan_create_texture(void *backend_state,
 
     scope = vkr_allocator_begin_scope(&state->temp_scope);
     if (!vkr_allocator_scope_is_valid(&scope)) {
-      return (VkrBackendResourceHandle){.ptr = NULL};
+      goto cleanup_texture;
     }
     staging_buffer =
         vkr_allocator_alloc(&state->temp_scope, sizeof(struct s_BufferHandle),
                             VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     if (!staging_buffer) {
       log_fatal("Failed to allocate staging buffer");
-      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      return (VkrBackendResourceHandle){.ptr = NULL};
+      goto cleanup_texture;
     }
 
     if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
       log_fatal("Failed to create staging buffer");
-      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      return (VkrBackendResourceHandle){.ptr = NULL};
+      goto cleanup_texture;
     }
 
     if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, image_size,
                                  0, initial_data)) {
       log_fatal("Failed to load data into staging buffer");
-      vulkan_buffer_destroy(state, &staging_buffer->buffer);
-      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      return (VkrBackendResourceHandle){.ptr = NULL};
+      goto cleanup_texture;
     }
   }
 
@@ -2076,11 +2073,7 @@ renderer_vulkan_create_texture(void *backend_state,
           VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
           &texture->texture.image)) {
     log_fatal("Failed to create Vulkan image");
-    if (staging_buffer)
-      vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    if (vkr_allocator_scope_is_valid(&scope))
-      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
+    goto cleanup_texture;
   }
 
   if (initial_data) {
@@ -2092,12 +2085,7 @@ renderer_vulkan_create_texture(void *backend_state,
                                           staging_buffer->buffer.handle,
                                           image_format, generate_mipmaps)) {
       log_fatal("Failed to upload texture via transfer queue");
-      vulkan_image_destroy(state, &texture->texture.image);
-      if (staging_buffer)
-        vulkan_buffer_destroy(state, &staging_buffer->buffer);
-      if (vkr_allocator_scope_is_valid(&scope))
-        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      return (VkrBackendResourceHandle){.ptr = NULL};
+      goto cleanup_texture;
     }
   } else {
     // Writable texture - just transition layout on graphics queue
@@ -2105,8 +2093,7 @@ renderer_vulkan_create_texture(void *backend_state,
     if (!vulkan_command_buffer_allocate_and_begin_single_use(
             state, &temp_command_buffer)) {
       log_fatal("Failed to allocate command buffer for writable texture");
-      vulkan_image_destroy(state, &texture->texture.image);
-      return (VkrBackendResourceHandle){.ptr = NULL};
+      goto cleanup_texture;
     }
 
     if (!vulkan_image_transition_layout(
@@ -2118,8 +2105,7 @@ renderer_vulkan_create_texture(void *backend_state,
       vkFreeCommandBuffers(state->device.logical_device,
                            state->device.graphics_command_pool, 1,
                            &temp_command_buffer.handle);
-      vulkan_image_destroy(state, &texture->texture.image);
-      return (VkrBackendResourceHandle){.ptr = NULL};
+      goto cleanup_texture;
     }
 
     if (!vulkan_command_buffer_end_single_use(
@@ -2128,8 +2114,10 @@ renderer_vulkan_create_texture(void *backend_state,
                                   state->current_frame)
                 ->handle)) {
       log_fatal("Failed to end single use command buffer");
-      vulkan_image_destroy(state, &texture->texture.image);
-      return (VkrBackendResourceHandle){.ptr = NULL};
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &temp_command_buffer.handle);
+      goto cleanup_texture;
     }
 
     vkFreeCommandBuffers(state->device.logical_device,
@@ -2177,12 +2165,7 @@ renderer_vulkan_create_texture(void *backend_state,
                       state->allocator,
                       &texture->texture.sampler) != VK_SUCCESS) {
     log_fatal("Failed to create texture sampler");
-    vulkan_image_destroy(state, &texture->texture.image);
-    if (staging_buffer)
-      vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    if (vkr_allocator_scope_is_valid(&scope))
-      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
+    goto cleanup_texture;
   }
 
   // Only set transparency bit for formats that support alpha channel
@@ -2203,6 +2186,23 @@ renderer_vulkan_create_texture(void *backend_state,
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   return (VkrBackendResourceHandle){.ptr = texture};
+
+cleanup_texture:
+  // Clean up resources on error path
+  if (texture) {
+    if (texture->texture.image.handle != VK_NULL_HANDLE) {
+      vulkan_image_destroy(state, &texture->texture.image);
+    }
+    if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
+      vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    }
+    if (vkr_allocator_scope_is_valid(&scope))
+      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    vkr_allocator_free(&state->texture_pool_alloc, texture,
+                       sizeof(struct s_TextureHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+  }
+  return (VkrBackendResourceHandle){.ptr = NULL};
 }
 
 vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
@@ -2251,29 +2251,25 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
 
   VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
   if (!vkr_allocator_scope_is_valid(&scope)) {
-    return (VkrBackendResourceHandle){.ptr = NULL};
+    goto cleanup_texture;
   }
   struct s_BufferHandle *staging_buffer =
       vkr_allocator_alloc(&state->temp_scope, sizeof(struct s_BufferHandle),
                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!staging_buffer) {
     log_fatal("Failed to allocate staging buffer");
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
+    goto cleanup_texture;
   }
 
   if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
     log_fatal("Failed to create staging buffer for cube map");
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
+    goto cleanup_texture;
   }
 
   if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, total_size, 0,
                                initial_data)) {
     log_fatal("Failed to load cube map data into staging buffer");
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
+    goto cleanup_texture;
   }
 
   // Create cube map image with 6 array layers
@@ -2285,9 +2281,7 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
                            VK_IMAGE_VIEW_TYPE_CUBE, VK_IMAGE_ASPECT_COLOR_BIT,
                            &texture->texture.image)) {
     log_fatal("Failed to create Vulkan cube map image");
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
+    goto cleanup_texture;
   }
 
   // Upload cube map faces via transfer queue
@@ -2295,10 +2289,7 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
                                              staging_buffer->buffer.handle,
                                              image_format, face_size)) {
     log_fatal("Failed to upload cube map via transfer queue");
-    vulkan_image_destroy(state, &texture->texture.image);
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
+    goto cleanup_texture;
   }
 
   // Create sampler for cube map (clamp to edge is typical for skyboxes)
@@ -2325,10 +2316,7 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
                       state->allocator,
                       &texture->texture.sampler) != VK_SUCCESS) {
     log_fatal("Failed to create cube map sampler");
-    vulkan_image_destroy(state, &texture->texture.image);
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return (VkrBackendResourceHandle){.ptr = NULL};
+    goto cleanup_texture;
   }
 
   texture->description.generation++;
@@ -2340,6 +2328,23 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
   //           texture->texture.image.handle);
 
   return (VkrBackendResourceHandle){.ptr = texture};
+
+cleanup_texture:
+  // Clean up resources on error path
+  if (texture) {
+    if (texture->texture.image.handle != VK_NULL_HANDLE) {
+      vulkan_image_destroy(state, &texture->texture.image);
+    }
+    if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
+      vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    }
+    if (vkr_allocator_scope_is_valid(&scope))
+      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    vkr_allocator_free(&state->texture_pool_alloc, texture,
+                       sizeof(struct s_TextureHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+  }
+  return (VkrBackendResourceHandle){.ptr = NULL};
 }
 
 VkrRendererError

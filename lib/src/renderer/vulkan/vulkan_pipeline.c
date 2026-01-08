@@ -403,7 +403,7 @@ void vulkan_graphics_pipeline_destroy(VulkanBackendState *state,
     pipeline->pipeline_layout = VK_NULL_HANDLE;
   }
 
-  // Free the pipeline structure itself (allocated from state->alloc arena)
-  vkr_allocator_free(&state->alloc, pipeline, sizeof(struct s_GraphicsPipeline),
-                     VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  // Note: The pipeline struct itself is owned by the caller and should not be
+  // freed here. The caller is responsible for freeing the struct if it
+  // allocated it.
 }
