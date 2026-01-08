@@ -102,6 +102,9 @@ static bool8_t cursor_in_content_area(PlatformState *state);
 - (void)windowDidDeminiaturize:(NSNotification *)notification {
   const NSRect contentRect = [state->view frame];
   const NSRect framebufferRect = [state->view convertRectToBacking:contentRect];
+
+  [state->layer setDrawableSize:framebufferRect.size];
+
   VkrWindowResizeEventData resize_data = {
       .width = (uint32_t)framebufferRect.size.width,
       .height = (uint32_t)framebufferRect.size.height};
@@ -529,13 +532,6 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     [state->view setLayer:state->layer];
     [state->view setWantsLayer:YES];
 
-    // Set initial drawable size for Retina displays
-    const NSRect contentRect =
-        [state->window contentRectForFrameRect:[state->window frame]];
-    const NSRect framebufferRect =
-        [state->view convertRectToBacking:contentRect];
-    [state->layer setDrawableSize:framebufferRect.size];
-
     // Setting window properties
     [state->window setLevel:NSNormalWindowLevel];
     [state->window setContentView:state->view];
@@ -544,6 +540,13 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     [state->window setDelegate:state->wnd_delegate];
     [state->window setAcceptsMouseMovedEvents:YES];
     [state->window setRestorable:NO];
+
+    // Set initial drawable size for Retina displays
+    const NSRect contentRect =
+        [state->window contentRectForFrameRect:[state->window frame]];
+    const NSRect framebufferRect =
+        [state->view convertRectToBacking:contentRect];
+    [state->layer setDrawableSize:framebufferRect.size];
 
     if (![[NSRunningApplication currentApplication] isFinishedLaunching])
       [NSApp run];
