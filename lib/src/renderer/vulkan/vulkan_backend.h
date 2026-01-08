@@ -39,15 +39,16 @@ void renderer_vulkan_renderpass_destroy(void *backend_state,
 VkrRenderPassHandle renderer_vulkan_renderpass_get(void *backend_state,
                                                    const char *name);
 
-VkrRenderTargetHandle renderer_vulkan_render_target_create(
-    void *backend_state, const VkrRenderTargetDesc *desc,
-    VkrRenderPassHandle pass);
+VkrRenderTargetHandle
+renderer_vulkan_render_target_create(void *backend_state,
+                                     const VkrRenderTargetDesc *desc,
+                                     VkrRenderPassHandle pass);
 void renderer_vulkan_render_target_destroy(void *backend_state,
                                            VkrRenderTargetHandle target);
 
-VkrRendererError renderer_vulkan_begin_render_pass(void *backend_state,
-                                                   VkrRenderPassHandle pass,
-                                                   VkrRenderTargetHandle target);
+VkrRendererError
+renderer_vulkan_begin_render_pass(void *backend_state, VkrRenderPassHandle pass,
+                                  VkrRenderTargetHandle target);
 VkrRendererError renderer_vulkan_end_render_pass(void *backend_state);
 
 VkrBackendResourceHandle
@@ -72,17 +73,18 @@ VkrBackendResourceHandle
 renderer_vulkan_create_texture(void *backend_state,
                                const VkrTextureDescription *desc,
                                const void *initial_data);
-VkrBackendResourceHandle
-renderer_vulkan_create_render_target_texture(
+VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
     void *backend_state, const VkrRenderTargetTextureDesc *desc);
-VkrBackendResourceHandle renderer_vulkan_create_depth_attachment(
-    void *backend_state, uint32_t width, uint32_t height);
+VkrBackendResourceHandle
+renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
+                                        uint32_t height);
 VkrRendererError renderer_vulkan_transition_texture_layout(
     void *backend_state, VkrBackendResourceHandle handle,
     VkrTextureLayout old_layout, VkrTextureLayout new_layout);
-VkrRendererError renderer_vulkan_update_texture(
-    void *backend_state, VkrBackendResourceHandle handle,
-    const VkrTextureDescription *desc);
+VkrRendererError
+renderer_vulkan_update_texture(void *backend_state,
+                               VkrBackendResourceHandle handle,
+                               const VkrTextureDescription *desc);
 VkrRendererError renderer_vulkan_write_texture(
     void *backend_state, VkrBackendResourceHandle handle,
     const VkrTextureWriteRegion *region, const void *data, uint64_t size);
@@ -134,9 +136,11 @@ void renderer_vulkan_draw_indexed(void *backend_state, uint32_t index_count,
                                   int32_t vertex_offset,
                                   uint32_t first_instance);
 
-VkrTextureOpaqueHandle renderer_vulkan_window_attachment_get(void *backend_state,
-                                                             uint32_t image_index);
-VkrTextureOpaqueHandle renderer_vulkan_depth_attachment_get(void *backend_state);
+VkrTextureOpaqueHandle
+renderer_vulkan_window_attachment_get(void *backend_state,
+                                      uint32_t image_index);
+VkrTextureOpaqueHandle
+renderer_vulkan_depth_attachment_get(void *backend_state);
 uint32_t renderer_vulkan_window_attachment_count(void *backend_state);
 uint32_t renderer_vulkan_window_attachment_index(void *backend_state);
 
@@ -147,10 +151,15 @@ renderer_vulkan_get_and_reset_descriptor_writes_avoided(void *backend_state);
 // --- Pixel Readback API ---
 VkrRendererError renderer_vulkan_readback_ring_init(void *backend_state);
 void renderer_vulkan_readback_ring_shutdown(void *backend_state);
-VkrRendererError renderer_vulkan_request_pixel_readback(
-    void *backend_state, VkrBackendResourceHandle texture, uint32_t x,
-    uint32_t y);
+VkrRendererError
+renderer_vulkan_request_pixel_readback(void *backend_state,
+                                       VkrBackendResourceHandle texture,
+                                       uint32_t x, uint32_t y);
 VkrRendererError
 renderer_vulkan_get_pixel_readback_result(void *backend_state,
                                           VkrPixelReadbackResult *result);
 void renderer_vulkan_update_readback_ring(void *backend_state);
+
+// Utility functions
+
+VkrAllocator *renderer_vulkan_get_allocator(void *backend_state);

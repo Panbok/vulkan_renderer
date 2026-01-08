@@ -1,6 +1,7 @@
 #include "vulkan_backend.h"
 #include "containers/str.h"
 #include "defines.h"
+#include "memory/vkr_pool_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_command.h"
 #include "vulkan_device.h"
@@ -16,6 +17,14 @@
 #ifndef NDEBUG
 #include "vulkan_debug.h"
 #endif
+
+#define VKR_MAX_TEXTURE_HANDLES 4096
+#define VKR_MAX_BUFFER_HANDLES 2048
+
+// Forward declarations for interface functions defined at end of file
+VkrAllocator *renderer_vulkan_get_allocator(void *backend_state);
+void renderer_vulkan_set_default_2d_texture(void *backend_state,
+                                            VkrTextureOpaqueHandle texture);
 
 // todo: we are having issues with image ghosting when camera moves
 // too fast, need to figure out why (clues VSync/present mode issues)
@@ -292,7 +301,7 @@ vulkan_backend_destroy_attachment_wrappers(VulkanBackendState *state,
   if (state->depth_texture) {
     vkr_allocator_free(&state->swapchain_alloc, state->depth_texture,
                        sizeof(struct s_TextureHandle),
-                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
     state->depth_texture = NULL;
   }
 }
@@ -315,7 +324,7 @@ vulkan_backend_create_attachment_wrappers(VulkanBackendState *state) {
   for (uint32_t i = 0; i < image_count; ++i) {
     struct s_TextureHandle *wrapper = vkr_allocator_alloc(
         &state->swapchain_alloc, sizeof(struct s_TextureHandle),
-        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+        VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
     if (!wrapper) {
       log_fatal("Failed to allocate swapchain image wrapper");
       return false;
@@ -343,7 +352,7 @@ vulkan_backend_create_attachment_wrappers(VulkanBackendState *state) {
 
   struct s_TextureHandle *depth_wrapper = vkr_allocator_alloc(
       &state->swapchain_alloc, sizeof(struct s_TextureHandle),
-      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   if (!depth_wrapper) {
     log_fatal("Failed to allocate depth attachment wrapper");
     return false;
@@ -838,6 +847,8 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .request_pixel_readback = renderer_vulkan_request_pixel_readback,
       .get_pixel_readback_result = renderer_vulkan_get_pixel_readback_result,
       .update_readback_ring = renderer_vulkan_update_readback_ring,
+      .get_allocator = renderer_vulkan_get_allocator,
+      .set_default_2d_texture = renderer_vulkan_set_default_2d_texture,
   };
 }
 uint64_t
@@ -1061,6 +1072,27 @@ renderer_vulkan_initialize(void **out_backend_state,
     array_set_VulkanFencePtr(&backend_state->images_in_flight, i, NULL);
   }
 
+  // Create resource handle pools for textures and buffers.
+  // Pool allocation allows proper free on resource destroy (arena frees are
+  // no-ops). Each pool is wrapped with a VkrAllocator for statistics tracking.
+
+  if (!vkr_pool_create(sizeof(struct s_TextureHandle), VKR_MAX_TEXTURE_HANDLES,
+                       &backend_state->texture_handle_pool)) {
+    log_fatal("Failed to create texture handle pool");
+    return false;
+  }
+  backend_state->texture_pool_alloc.ctx = &backend_state->texture_handle_pool;
+  vkr_pool_allocator_create(&backend_state->texture_pool_alloc);
+
+  if (!vkr_pool_create(sizeof(struct s_BufferHandle), VKR_MAX_BUFFER_HANDLES,
+                       &backend_state->buffer_handle_pool)) {
+    log_fatal("Failed to create buffer handle pool");
+    vkr_pool_allocator_destroy(&backend_state->texture_pool_alloc);
+    return false;
+  }
+  backend_state->buffer_pool_alloc.ctx = &backend_state->buffer_handle_pool;
+  vkr_pool_allocator_create(&backend_state->buffer_pool_alloc);
+
   return true;
 }
 
@@ -1180,6 +1212,11 @@ void renderer_vulkan_shutdown(void *backend_state) {
   vulkan_instance_destroy(state);
   vulkan_allocator_destroy(&state->alloc, &state->vk_allocator);
   state->allocator = NULL;
+
+  // Destroy resource handle pool allocators (also destroys underlying pools)
+  vkr_pool_allocator_destroy(&state->texture_pool_alloc);
+  vkr_pool_allocator_destroy(&state->buffer_pool_alloc);
+
   arena_destroy(state->swapchain_arena);
   arena_destroy(state->temp_arena);
   arena_destroy(state->arena);
@@ -1541,11 +1578,11 @@ renderer_vulkan_create_buffer(void *backend_state,
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
-  struct s_BufferHandle *buffer =
-      vkr_allocator_alloc(&state->alloc, sizeof(struct s_BufferHandle),
-                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  struct s_BufferHandle *buffer = vkr_allocator_alloc(
+      &state->buffer_pool_alloc, sizeof(struct s_BufferHandle),
+      VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
   if (!buffer) {
-    log_fatal("Failed to allocate buffer");
+    log_fatal("Failed to allocate buffer (pool exhausted)");
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -1555,6 +1592,9 @@ renderer_vulkan_create_buffer(void *backend_state,
   buffer->description = *desc;
 
   if (!vulkan_buffer_create(state, desc, buffer)) {
+    vkr_allocator_free(&state->buffer_pool_alloc, buffer,
+                       sizeof(struct s_BufferHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
     log_fatal("Failed to create Vulkan buffer");
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
@@ -1565,6 +1605,9 @@ renderer_vulkan_create_buffer(void *backend_state,
             backend_state, (VkrBackendResourceHandle){.ptr = buffer}, 0,
             desc->size, initial_data) != VKR_RENDERER_ERROR_NONE) {
       vulkan_buffer_destroy(state, &buffer->buffer);
+      vkr_allocator_free(&state->buffer_pool_alloc, buffer,
+                         sizeof(struct s_BufferHandle),
+                         VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
       log_error("Failed to upload initial data into buffer");
       return (VkrBackendResourceHandle){.ptr = NULL};
     }
@@ -1610,37 +1653,48 @@ VkrRendererError renderer_vulkan_upload_buffer(void *backend_state,
       .buffer_type = buffer_type,
       .bind_on_create = true_v,
   };
-  VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
-  if (!vkr_allocator_scope_is_valid(&scope)) {
+  struct s_BufferHandle *staging_buffer = vkr_allocator_alloc(
+      &state->buffer_pool_alloc, sizeof(struct s_BufferHandle),
+      VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  if (!staging_buffer) {
+    log_fatal("Failed to allocate staging buffer (pool exhausted)");
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
-  struct s_BufferHandle *staging_buffer =
-      vkr_allocator_alloc(&state->alloc, sizeof(struct s_BufferHandle),
-                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  MemZero(staging_buffer, sizeof(struct s_BufferHandle));
 
   if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    vkr_allocator_free(&state->buffer_pool_alloc, staging_buffer,
+                       sizeof(struct s_BufferHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
     log_fatal("Failed to create staging buffer");
-    return VKR_RENDERER_ERROR_NONE;
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
   if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, size, 0,
                                data)) {
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    vkr_allocator_free(&state->buffer_pool_alloc, staging_buffer,
+                       sizeof(struct s_BufferHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
     log_fatal("Failed to load data into staging buffer");
-    return VKR_RENDERER_ERROR_NONE;
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
   if (!vulkan_buffer_copy_to(state, &staging_buffer->buffer,
                              staging_buffer->buffer.handle, 0,
                              buffer->buffer.handle, offset, size)) {
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    vkr_allocator_free(&state->buffer_pool_alloc, staging_buffer,
+                       sizeof(struct s_BufferHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
     log_fatal("Failed to copy Vulkan buffer");
-    return VKR_RENDERER_ERROR_NONE;
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
   vulkan_buffer_destroy(state, &staging_buffer->buffer);
-  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  vkr_allocator_free(&state->buffer_pool_alloc, staging_buffer,
+                     sizeof(struct s_BufferHandle),
+                     VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
 
   return VKR_RENDERER_ERROR_NONE;
 }
@@ -1653,6 +1707,10 @@ void renderer_vulkan_destroy_buffer(void *backend_state,
   struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
   vulkan_buffer_destroy(state, &buffer->buffer);
 
+  // Return handle struct to pool
+  vkr_allocator_free(&state->buffer_pool_alloc, buffer,
+                     sizeof(struct s_BufferHandle),
+                     VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
   return;
 }
 
@@ -1691,11 +1749,11 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
     usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
   }
 
-  struct s_TextureHandle *texture =
-      vkr_allocator_alloc(&state->alloc, sizeof(struct s_TextureHandle),
-                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  struct s_TextureHandle *texture = vkr_allocator_alloc(
+      &state->texture_pool_alloc, sizeof(struct s_TextureHandle),
+      VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   if (!texture) {
-    log_fatal("Failed to allocate render target texture");
+    log_fatal("Failed to allocate render target texture (pool exhausted)");
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -1786,11 +1844,11 @@ renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
-  struct s_TextureHandle *texture =
-      vkr_allocator_alloc(&state->alloc, sizeof(struct s_TextureHandle),
-                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  struct s_TextureHandle *texture = vkr_allocator_alloc(
+      &state->texture_pool_alloc, sizeof(struct s_TextureHandle),
+      VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   if (!texture) {
-    log_fatal("Failed to allocate depth attachment texture");
+    log_fatal("Failed to allocate depth attachment texture (pool exhausted)");
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -1802,6 +1860,9 @@ renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1, VK_IMAGE_VIEW_TYPE_2D,
           VK_IMAGE_ASPECT_DEPTH_BIT, &texture->texture.image)) {
     log_fatal("Failed to create depth attachment image");
+    vkr_allocator_free(&state->texture_pool_alloc, texture,
+                       sizeof(struct s_TextureHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -1932,11 +1993,11 @@ renderer_vulkan_create_texture(void *backend_state,
 
   // log_debug("Creating Vulkan texture");
 
-  struct s_TextureHandle *texture =
-      vkr_allocator_alloc(&state->alloc, sizeof(struct s_TextureHandle),
-                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  struct s_TextureHandle *texture = vkr_allocator_alloc(
+      &state->texture_pool_alloc, sizeof(struct s_TextureHandle),
+      VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   if (!texture) {
-    log_fatal("Failed to allocate texture");
+    log_fatal("Failed to allocate texture (pool exhausted)");
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -2154,11 +2215,11 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
 
   // log_debug("Creating Vulkan cube map texture");
 
-  struct s_TextureHandle *texture =
-      vkr_allocator_alloc(&state->alloc, sizeof(struct s_TextureHandle),
-                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  struct s_TextureHandle *texture = vkr_allocator_alloc(
+      &state->texture_pool_alloc, sizeof(struct s_TextureHandle),
+      VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   if (!texture) {
-    log_fatal("Failed to allocate cube texture");
+    log_fatal("Failed to allocate cube texture (pool exhausted)");
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -2787,6 +2848,11 @@ void renderer_vulkan_destroy_texture(void *backend_state,
   vkDestroySampler(state->device.logical_device, texture->texture.sampler,
                    state->allocator);
   texture->texture.sampler = VK_NULL_HANDLE;
+
+  // Return handle struct to pool
+  vkr_allocator_free(&state->texture_pool_alloc, texture,
+                     sizeof(struct s_TextureHandle),
+                     VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   return;
 }
 
@@ -3725,4 +3791,17 @@ void renderer_vulkan_update_readback_ring(void *backend_state) {
       }
     }
   }
+}
+
+VkrAllocator *renderer_vulkan_get_allocator(void *backend_state) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  return &state->alloc;
+}
+
+void renderer_vulkan_set_default_2d_texture(void *backend_state,
+                                            VkrTextureOpaqueHandle texture) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  state->default_2d_texture = (struct s_TextureHandle *)texture;
 }

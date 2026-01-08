@@ -108,6 +108,7 @@ bool32_t vulkan_framebuffer_regenerate_for_domain(
     break;
 
   case VKR_PIPELINE_DOMAIN_PICKING:
+  case VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT:
     // Picking uses custom off-screen R32_UINT attachments, not swapchain.
     // Framebuffers are created separately by the picking system.
     return true;

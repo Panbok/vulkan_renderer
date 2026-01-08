@@ -155,9 +155,14 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
             out_shader_object->modules[j] = VK_NULL_HANDLE;
           }
         }
+        vkr_allocator_free(arena_alloc, shader_data, shader_size,
+                           VKR_ALLOCATOR_MEMORY_TAG_FILE);
         return false_v;
       }
     }
+    // Free shader bytecode after all modules are created (Vulkan copies it)
+    vkr_allocator_free(arena_alloc, shader_data, shader_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_FILE);
   } else if (desc->file_type == VKR_SHADER_FILE_TYPE_MULTI) {
     // Load per-stage files
     for (uint32_t i = 0; i < VKR_SHADER_STAGE_COUNT; i++) {
@@ -187,8 +192,13 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
               state, desc->modules[i].stages, shader_size, shader_data,
               desc->modules[i].entry_point, &out_shader_object->modules[i],
               &out_shader_object->stages[i])) {
+        vkr_allocator_free(arena_alloc, shader_data, shader_size,
+                           VKR_ALLOCATOR_MEMORY_TAG_FILE);
         return false_v;
       }
+      // Free shader bytecode after module is created (Vulkan copies it)
+      vkr_allocator_free(arena_alloc, shader_data, shader_size,
+                         VKR_ALLOCATOR_MEMORY_TAG_FILE);
     }
   } else {
     log_error("Unknown shader file type");
@@ -647,8 +657,12 @@ bool8_t vulkan_shader_update_instance(
       texture = (struct s_TextureHandle *)material->textures[sampler_index];
     }
     if (texture == NULL || texture->texture.image.handle == VK_NULL_HANDLE) {
-      // No texture bound; skip image/sampler updates
-      continue;
+      // No texture bound. Use default placeholder to avoid stale cubemap
+      // bindings in descriptor sets after scene reload.
+      texture = state->default_2d_texture;
+      if (texture == NULL || texture->texture.image.handle == VK_NULL_HANDLE) {
+        continue;
+      }
     }
 
     VulkanTexture *texture_object = &texture->texture;
@@ -735,6 +749,7 @@ bool8_t vulkan_shader_acquire_instance(VulkanBackendState *state,
                                        uint32_t *out_object_id) {
   assert_log(state != NULL, "Backend state is NULL");
   assert_log(shader_object != NULL, "Shader object is NULL");
+  assert_log(out_object_id != NULL, "Out object id is NULL");
 
   if (shader_object->instance_state_free_count > 0) {
     shader_object->instance_state_free_count--;
@@ -760,28 +775,44 @@ bool8_t vulkan_shader_acquire_instance(VulkanBackendState *state,
   for (uint32_t descriptor_state_idx = 0;
        descriptor_state_idx < VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT;
        descriptor_state_idx++) {
-    // Allocate per-frame generations
-    local_state->descriptor_states[descriptor_state_idx].generations =
-        vkr_allocator_alloc(arena_alloc,
-                            sizeof(uint32_t) * shader_object->frame_count,
-                            VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    for (uint32_t descriptor_generation_idx = 0;
-         descriptor_generation_idx < shader_object->frame_count;
-         descriptor_generation_idx++) {
-      local_state->descriptor_states[descriptor_state_idx]
-          .generations[descriptor_generation_idx] = VKR_INVALID_ID;
+    // Allocate per-frame generations once; instance state ids are reused via a
+    // free list, so re-allocating here would leak arena-backed memory.
+    if (!local_state->descriptor_states[descriptor_state_idx].generations) {
+      local_state->descriptor_states[descriptor_state_idx].generations =
+          vkr_allocator_alloc(arena_alloc,
+                              sizeof(uint32_t) * shader_object->frame_count,
+                              VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      if (!local_state->descriptor_states[descriptor_state_idx].generations) {
+        log_error("Failed to allocate descriptor generation tracking");
+        return false_v;
+      }
+      for (uint32_t descriptor_generation_idx = 0;
+           descriptor_generation_idx < shader_object->frame_count;
+           descriptor_generation_idx++) {
+        local_state->descriptor_states[descriptor_state_idx]
+            .generations[descriptor_generation_idx] = VKR_INVALID_ID;
+      }
     }
   }
 
-  // Allocate per-frame instance descriptor sets
-  local_state->descriptor_sets = (VkDescriptorSet *)vkr_allocator_alloc(
-      arena_alloc, sizeof(VkDescriptorSet) * shader_object->frame_count,
-      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  // Allocate per-frame instance descriptor sets buffer once; Vulkan descriptor
+  // sets themselves are allocated/freed per acquire/release.
+  if (!local_state->descriptor_sets) {
+    local_state->descriptor_sets = (VkDescriptorSet *)vkr_allocator_alloc(
+        arena_alloc, sizeof(VkDescriptorSet) * shader_object->frame_count,
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!local_state->descriptor_sets) {
+      log_error("Failed to allocate instance descriptor set handles");
+      return false_v;
+    }
+    MemZero(local_state->descriptor_sets,
+            sizeof(VkDescriptorSet) * shader_object->frame_count);
+  }
 
   VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&state->temp_scope);
   if (!vkr_allocator_scope_is_valid(&temp_scope)) {
     log_error("Failed to acquire temporary allocator for descriptor sets");
-    return false;
+    return false_v;
   }
   VkDescriptorSetLayout *layouts = (VkDescriptorSetLayout *)vkr_allocator_alloc(
       &state->temp_scope,
@@ -790,7 +821,7 @@ bool8_t vulkan_shader_acquire_instance(VulkanBackendState *state,
   if (layouts == NULL) {
     log_error("Failed to allocate temporary descriptor layouts");
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return false;
+    return false_v;
   }
 
   for (uint32_t i = 0; i < shader_object->frame_count; i++) {
@@ -809,7 +840,7 @@ bool8_t vulkan_shader_acquire_instance(VulkanBackendState *state,
           (VkDescriptorSet *)local_state->descriptor_sets) != VK_SUCCESS) {
     log_error("Failed to allocate descriptor set");
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return false;
+    return false_v;
   }
 
   vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -827,18 +858,23 @@ bool8_t vulkan_shader_release_instance(VulkanBackendState *state,
   VulkanShaderObjectInstanceState *local_state =
       &shader_object->instance_states[object_id];
 
-  if (vkFreeDescriptorSets(state->device.logical_device,
-                           shader_object->instance_descriptor_pool,
-                           shader_object->frame_count,
-                           local_state->descriptor_sets) != VK_SUCCESS) {
-    log_error("Failed to free descriptor sets");
-    return false;
+  if (local_state->descriptor_sets) {
+    if (vkFreeDescriptorSets(state->device.logical_device,
+                             shader_object->instance_descriptor_pool,
+                             shader_object->frame_count,
+                             local_state->descriptor_sets) != VK_SUCCESS) {
+      log_error("Failed to free descriptor sets");
+      return false_v;
+    }
   }
 
   // Reset generation tracking back to invalid without freeing memory
   for (uint32_t descriptor_state_idx = 0;
        descriptor_state_idx < VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT;
        descriptor_state_idx++) {
+    if (!local_state->descriptor_states[descriptor_state_idx].generations) {
+      continue;
+    }
     for (uint32_t descriptor_generation_idx = 0;
          descriptor_generation_idx < shader_object->frame_count;
          descriptor_generation_idx++) {

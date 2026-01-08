@@ -15,6 +15,7 @@
 #include "defines.h"
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_dmemory.h"
+#include "memory/vkr_pool.h"
 #include "renderer/vkr_renderer.h"
 #include "vulkan_allocator.h"
 
@@ -129,6 +130,7 @@ typedef struct VulkanImage {
   uint32_t height;
   uint32_t mip_levels;
   uint32_t array_layers;
+  uint32_t memory_property_flags;
 } VulkanImage;
 
 Array(VulkanImage);
@@ -407,6 +409,7 @@ typedef struct VulkanBackendState {
 
   struct s_TextureHandle **swapchain_image_textures;
   struct s_TextureHandle *depth_texture;
+  struct s_TextureHandle *default_2d_texture; // Fallback for empty sampler slots
 
   void (*on_render_target_refresh_required)();
 
@@ -424,4 +427,12 @@ typedef struct VulkanBackendState {
 
   // Pixel readback system for picking and screenshots
   VulkanReadbackRing readback_ring;
+
+  // Resource handle pools - fixed-size allocators for texture/buffer handles.
+  // Using pools instead of arena allows proper free on resource destroy.
+  // Each pool has a corresponding VkrAllocator for tracking statistics.
+  VkrPool texture_handle_pool;
+  VkrPool buffer_handle_pool;
+  VkrAllocator texture_pool_alloc;
+  VkrAllocator buffer_pool_alloc;
 } VulkanBackendState;

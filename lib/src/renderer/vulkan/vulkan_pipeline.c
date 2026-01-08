@@ -202,6 +202,12 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
     depth_stencil_state.depthWriteEnable = VK_FALSE;
     color_blend_attachment_state.blendEnable = VK_FALSE;
     break;
+  case VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT:
+    // Depth-tested picking that does not write depth.
+    depth_stencil_state.depthTestEnable = VK_TRUE;
+    depth_stencil_state.depthWriteEnable = VK_FALSE;
+    color_blend_attachment_state.blendEnable = VK_FALSE;
+    break;
   default:
     break;
   }
@@ -396,4 +402,8 @@ void vulkan_graphics_pipeline_destroy(VulkanBackendState *state,
                             pipeline->pipeline_layout, state->allocator);
     pipeline->pipeline_layout = VK_NULL_HANDLE;
   }
+
+  // Free the pipeline structure itself (allocated from state->alloc arena)
+  vkr_allocator_free(&state->alloc, pipeline, sizeof(struct s_GraphicsPipeline),
+                     VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
 }

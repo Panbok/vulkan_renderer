@@ -118,8 +118,9 @@ vulkan_renderpass_create_from_config(VulkanBackendState *state,
   assert_log(out_render_pass != NULL, "Out render pass is NULL");
   assert_log(cfg != NULL, "Config is NULL");
 
-  // PICKING domain requires special handling (R32_UINT format for object IDs)
-  if (cfg->domain == VKR_PIPELINE_DOMAIN_PICKING) {
+  // PICKING domains require special handling (R32_UINT format for object IDs)
+  if (cfg->domain == VKR_PIPELINE_DOMAIN_PICKING ||
+      cfg->domain == VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT) {
     MemZero(out_render_pass, sizeof(VulkanRenderPass));
     return vulkan_renderpass_create_for_domain(state, cfg->domain,
                                                out_render_pass);
@@ -356,6 +357,7 @@ bool8_t vulkan_renderpass_create_for_domain(VulkanBackendState *state,
     return true;
 
   case VKR_PIPELINE_DOMAIN_PICKING:
+  case VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT:
     // Picking render pass uses R32_UINT color attachment for object IDs
     return vulkan_renderpass_create_picking(state, out_render_pass);
 
@@ -439,6 +441,7 @@ bool8_t vulkan_renderpass_begin(VulkanCommandBuffer *command_buffer,
     break;
 
   case VKR_PIPELINE_DOMAIN_PICKING:
+  case VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT:
     // Integer color (R32_UINT) + depth attachments
     clear_values[0].color.uint32[0] = render_pass->clear_color_uint;
     clear_values[0].color.uint32[1] = 0;

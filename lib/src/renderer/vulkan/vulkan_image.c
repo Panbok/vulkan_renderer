@@ -59,6 +59,7 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
   out_image->mip_levels = mip_levels;
   out_image->array_layers = array_layers;
   out_image->view = VK_NULL_HANDLE;
+  out_image->memory_property_flags = memory_flags;
 
   if (vkCreateImage(state->device.logical_device, &image_create_info,
                     state->allocator, &out_image->handle) != VK_SUCCESS) {
@@ -192,15 +193,15 @@ bool8_t vulkan_image_transition_layout_range(
              "New layout is undefined");
 
   VkImageSubresourceRange range =
-      subresource_range ? *subresource_range
-                        : (VkImageSubresourceRange){
-                              .aspectMask =
-                                  vulkan_image_aspect_flags_from_format(format),
-                              .baseMipLevel = 0,
-                              .levelCount = image->mip_levels,
-                              .baseArrayLayer = 0,
-                              .layerCount = image->array_layers,
-                          };
+      subresource_range
+          ? *subresource_range
+          : (VkImageSubresourceRange){
+                .aspectMask = vulkan_image_aspect_flags_from_format(format),
+                .baseMipLevel = 0,
+                .levelCount = image->mip_levels,
+                .baseArrayLayer = 0,
+                .layerCount = image->array_layers,
+            };
 
   VkImageMemoryBarrier barrier = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -388,17 +389,24 @@ bool8_t vulkan_image_copy_cube_faces_from_buffer(
 }
 
 void vulkan_image_destroy(VulkanBackendState *state, VulkanImage *image) {
-  // log_debug("Destroying Vulkan image: %p", image->handle);
-
   if (image->view != VK_NULL_HANDLE) {
     vkDestroyImageView(state->device.logical_device, image->view,
                        state->allocator);
   }
 
+  VkMemoryRequirements memory_requirements;
+  vkGetImageMemoryRequirements(state->device.logical_device, image->handle,
+                               &memory_requirements);
+  VkrAllocatorMemoryTag alloc_tag =
+      (image->memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+          ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+          : VKR_ALLOCATOR_MEMORY_TAG_VULKAN;
+
+  vkr_allocator_report(&state->alloc, memory_requirements.size, alloc_tag,
+                       false_v);
+
   vkDestroyImage(state->device.logical_device, image->handle, state->allocator);
   vkFreeMemory(state->device.logical_device, image->memory, state->allocator);
-
-  // log_debug("Destroyed Vulkan image: %p", image->handle);
 }
 
 bool8_t vulkan_image_generate_mipmaps(VulkanBackendState *state,
@@ -1467,8 +1475,7 @@ bool8_t vulkan_image_copy_to_buffer(VulkanBackendState *state,
                                     uint64_t buffer_offset, uint32_t x,
                                     uint32_t y, uint32_t width, uint32_t height,
                                     VulkanCommandBuffer *command_buffer) {
-  return vulkan_image_copy_to_buffer_ex(state, image, buffer, buffer_offset, x,
-                                        y, width, height,
-                                        VK_IMAGE_ASPECT_COLOR_BIT,
-                                        command_buffer);
+  return vulkan_image_copy_to_buffer_ex(
+      state, image, buffer, buffer_offset, x, y, width, height,
+      VK_IMAGE_ASPECT_COLOR_BIT, command_buffer);
 }
