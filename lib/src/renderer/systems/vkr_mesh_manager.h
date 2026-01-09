@@ -252,27 +252,30 @@ void vkr_mesh_manager_update_model(VkrMeshManager *manager, uint32_t index);
  * @param manager The mesh manager.
  * @param index The index of the mesh.
  * @param model The world matrix to set.
+ * @return true if the model was set successfully, false otherwise.
  */
-void vkr_mesh_manager_set_model(VkrMeshManager *manager, uint32_t index,
-                                Mat4 model);
+bool8_t vkr_mesh_manager_set_model(VkrMeshManager *manager, uint32_t index,
+                                   Mat4 model);
 
 /**
  * @brief Set mesh visibility flag used by view/picking systems.
  * @param manager The mesh manager.
  * @param index The index of the mesh.
  * @param visible True to render and pick, false to skip.
+ * @return true if the visibility was set successfully, false otherwise.
  */
-void vkr_mesh_manager_set_visible(VkrMeshManager *manager, uint32_t index,
-                                  bool8_t visible);
+bool8_t vkr_mesh_manager_set_visible(VkrMeshManager *manager, uint32_t index,
+                                     bool8_t visible);
 
 /**
  * @brief Set mesh render_id used for picking.
  * @param manager The mesh manager.
  * @param index The index of the mesh.
  * @param render_id Persistent render id (0 disables picking).
+ * @return true if the render id was set successfully, false otherwise.
  */
-void vkr_mesh_manager_set_render_id(VkrMeshManager *manager, uint32_t index,
-                                    uint32_t render_id);
+bool8_t vkr_mesh_manager_set_render_id(VkrMeshManager *manager, uint32_t index,
+                                       uint32_t render_id);
 
 /**
  * @brief Returns number of submeshes for a mesh.

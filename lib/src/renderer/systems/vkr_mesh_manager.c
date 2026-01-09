@@ -821,16 +821,16 @@ void vkr_mesh_manager_update_model(VkrMeshManager *manager, uint32_t index) {
   }
 }
 
-void vkr_mesh_manager_set_model(VkrMeshManager *manager, uint32_t index,
-                                Mat4 model) {
+bool8_t vkr_mesh_manager_set_model(VkrMeshManager *manager, uint32_t index,
+                                   Mat4 model) {
   assert_log(manager != NULL, "Manager is NULL");
 
   if (index >= manager->meshes.length)
-    return;
+    return false_v;
 
   VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, index);
   if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0)
-    return;
+    return false_v;
 
   mesh->model = model;
 
@@ -842,34 +842,40 @@ void vkr_mesh_manager_set_model(VkrMeshManager *manager, uint32_t index,
     VkrSubMesh *submesh = array_get_VkrSubMesh(&mesh->submeshes, submesh_index);
     submesh->last_render_frame = 0;
   }
+
+  return true_v;
 }
 
-void vkr_mesh_manager_set_visible(VkrMeshManager *manager, uint32_t index,
-                                  bool8_t visible) {
+bool8_t vkr_mesh_manager_set_visible(VkrMeshManager *manager, uint32_t index,
+                                     bool8_t visible) {
   assert_log(manager != NULL, "Manager is NULL");
 
   if (index >= manager->meshes.length)
-    return;
+    return false_v;
 
   VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, index);
   if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0)
-    return;
+    return false_v;
 
   mesh->visible = visible;
+
+  return true_v;
 }
 
-void vkr_mesh_manager_set_render_id(VkrMeshManager *manager, uint32_t index,
-                                    uint32_t render_id) {
+bool8_t vkr_mesh_manager_set_render_id(VkrMeshManager *manager, uint32_t index,
+                                       uint32_t render_id) {
   assert_log(manager != NULL, "Manager is NULL");
 
   if (index >= manager->meshes.length)
-    return;
+    return false_v;
 
   VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, index);
   if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0)
-    return;
+    return false_v;
 
   mesh->render_id = render_id;
+
+  return true_v;
 }
 
 uint32_t vkr_mesh_manager_submesh_count(const VkrMesh *mesh) {

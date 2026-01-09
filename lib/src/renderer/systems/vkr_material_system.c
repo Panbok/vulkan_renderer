@@ -162,6 +162,8 @@ vkr_material_system_create_colored(VkrMaterialSystem *system, const char *name,
       &system->string_allocator, name_len + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!name_copy) {
     log_error("Failed to allocate material name");
+    // Return slot to free pool
+    system->free_ids.data[system->free_count++] = slot;
     if (out_error)
       *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return (VkrMaterialHandle){0};
