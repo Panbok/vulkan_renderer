@@ -101,7 +101,8 @@ bool8_t vkr_pipeline_registry_shutdown(VkrPipelineRegistry *registry) {
   for (uint32_t pipeline_id = 0; pipeline_id < registry->pipelines.length;
        pipeline_id++) {
     VkrPipeline *pipeline = &registry->pipelines.data[pipeline_id];
-    if (pipeline->handle.id != 0 && pipeline->backend_handle) {
+    // Destroy any pipeline with a valid backend handle, including released ones
+    if (pipeline->backend_handle) {
       vkr_renderer_destroy_pipeline(registry->renderer,
                                     pipeline->backend_handle);
       pipeline->backend_handle = NULL;
@@ -428,11 +429,26 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
   if (config->renderpass_name.str && config->renderpass_name.length > 0) {
     renderpass = vkr_renderer_renderpass_get(registry->renderer,
                                              config->renderpass_name);
+    if (!renderpass) {
+      log_debug("Render pass '%.*s' not found, using fallback",
+                (int)config->renderpass_name.length,
+                (const char *)config->renderpass_name.str);
+    }
   }
   if (!renderpass) {
-    String8 fallback = (domain == VKR_PIPELINE_DOMAIN_UI)
-                           ? string8_lit("Renderpass.Builtin.UI")
-                           : string8_lit("Renderpass.Builtin.World");
+    String8 fallback;
+    switch (domain) {
+    case VKR_PIPELINE_DOMAIN_UI:
+      fallback = string8_lit("Renderpass.Builtin.UI");
+      break;
+    case VKR_PIPELINE_DOMAIN_PICKING:
+    case VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT:
+      fallback = string8_lit("Renderpass.Builtin.Picking");
+      break;
+    default:
+      fallback = string8_lit("Renderpass.Builtin.World");
+      break;
+    }
     renderpass = vkr_renderer_renderpass_get(registry->renderer, fallback);
   }
 

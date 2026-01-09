@@ -230,6 +230,9 @@ void vkr_picking_cancel(VkrPickingContext *ctx);
  * descriptor sets don't reference stale textures. New instance states will
  * be acquired automatically on the next picking render.
  *
+ * Safe to call at any time, including during an active pick. If a pick is
+ * in progress, instance states will be reacquired on the next render cycle.
+ *
  * @param renderer The renderer frontend
  * @param ctx Picking context
  */
