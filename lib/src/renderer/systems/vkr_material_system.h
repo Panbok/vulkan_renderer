@@ -4,10 +4,13 @@
 #include "containers/vkr_hashtable.h"
 #include "defines.h"
 #include "memory/arena.h"
+#include "memory/vkr_dmemory.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_shader_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/vkr_renderer.h"
+
+#define VKR_MATERIAL_NAME_MAX 128
 
 // =============================================================================
 // Material System - Basic materials management with array and hash table
@@ -34,8 +37,10 @@ VkrHashTable(VkrMaterialEntry);
 
 typedef struct VkrMaterialSystem {
   // Internal arenas owned by the material system
-  Arena *arena;           // persistent allocations (materials, names, maps)
-  VkrAllocator allocator; // persistent allocator wrapping arena
+  Arena *arena;             // persistent allocations (materials, names, maps)
+  VkrAllocator allocator;   // persistent allocator wrapping arena
+  VkrDMemory string_memory; // dynamic strings (freed on unload)
+  VkrAllocator string_allocator; // allocator wrapper for string_memory
   VkrMaterialSystemConfig config;
 
   Array_VkrMaterial materials;                    // contiguous array
@@ -87,6 +92,20 @@ void vkr_material_system_shutdown(VkrMaterialSystem *system);
  * @return The handle to the default material
  */
 VkrMaterialHandle vkr_material_system_create_default(VkrMaterialSystem *system);
+
+/**
+ * @brief Creates a material with a specific diffuse color and default textures.
+ * Used for shapes that need custom colors without loading a material file.
+ * @param system The material system to create the material in
+ * @param name Unique name for the material (will be copied)
+ * @param diffuse_color The diffuse color for the material
+ * @param out_error Optional error output
+ * @return Handle to the created material, or invalid handle on failure
+ */
+VkrMaterialHandle
+vkr_material_system_create_colored(VkrMaterialSystem *system, const char *name,
+                                   Vec4 diffuse_color,
+                                   VkrRendererError *out_error);
 
 /**
  * @brief Acquires a material by name; increments refcount if it exists; fails

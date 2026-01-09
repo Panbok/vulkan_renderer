@@ -1,4 +1,5 @@
 #include "renderer/systems/vkr_material_system.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_resource_system.h"
 
 bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
@@ -21,6 +22,15 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   system->allocator = (VkrAllocator){.ctx = system->arena};
   vkr_allocator_arena(&system->allocator);
 
+  system->string_allocator.ctx = &system->string_memory;
+  if (!vkr_dmemory_create(MB(1), MB(8), &system->string_memory)) {
+    log_error("Failed to create material system string allocator");
+    arena_destroy(system->arena);
+    MemZero(system, sizeof(*system));
+    return false_v;
+  }
+  vkr_dmemory_allocator_create(&system->string_allocator);
+
   system->texture_system = texture_system;
   system->shader_system = shader_system;
   system->config = *config;
@@ -31,7 +41,9 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   if (hash_size > UINT32_MAX) {
     log_fatal("Hash table size overflow for max_material_count %u",
               config->max_material_count);
+    vkr_dmemory_allocator_destroy(&system->string_allocator);
     arena_destroy(system->arena);
+    MemZero(system, sizeof(*system));
     return false_v;
   }
   system->material_by_name =
@@ -66,6 +78,9 @@ void vkr_material_system_shutdown(VkrMaterialSystem *system) {
     return;
   array_destroy_VkrMaterial(&system->materials);
   array_destroy_uint32_t(&system->free_ids);
+  if (system->string_allocator.ctx) {
+    vkr_dmemory_allocator_destroy(&system->string_allocator);
+  }
   if (system->arena)
     arena_destroy(system->arena);
   MemZero(system, sizeof(*system));
@@ -89,10 +104,16 @@ vkr_material_system_create_default(VkrMaterialSystem *system) {
     material->textures[i].handle = VKR_TEXTURE_HANDLE_INVALID;
     material->textures[i].enabled = false;
   }
-  // Set default diffuse
+  // Set default diffuse (white texture, not checkerboard)
   material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle =
-      vkr_texture_system_get_default_handle(system->texture_system);
+      vkr_texture_system_get_default_diffuse_handle(system->texture_system);
   material->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = true;
+  material->textures[VKR_TEXTURE_SLOT_NORMAL].handle =
+      vkr_texture_system_get_default_normal_handle(system->texture_system);
+  material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled = true;
+  material->textures[VKR_TEXTURE_SLOT_SPECULAR].handle =
+      vkr_texture_system_get_default_specular_handle(system->texture_system);
+  material->textures[VKR_TEXTURE_SLOT_SPECULAR].enabled = true;
 
   if (system->next_free_index == 0)
     system->next_free_index = 1;
@@ -100,6 +121,95 @@ vkr_material_system_create_default(VkrMaterialSystem *system) {
   VkrMaterialHandle handle = {.id = material->id,
                               .generation = material->generation};
   return handle;
+}
+
+VkrMaterialHandle
+vkr_material_system_create_colored(VkrMaterialSystem *system, const char *name,
+                                   Vec4 diffuse_color,
+                                   VkrRendererError *out_error) {
+  assert_log(system != NULL, "Material system is NULL");
+  assert_log(name != NULL, "Material name is NULL");
+
+  if (out_error)
+    *out_error = VKR_RENDERER_ERROR_NONE;
+
+  // Check if material with this name already exists
+  VkrMaterialEntry *existing =
+      vkr_hash_table_get_VkrMaterialEntry(&system->material_by_name, name);
+  if (existing) {
+    existing->ref_count++;
+    VkrMaterial *m = &system->materials.data[existing->id];
+    return (VkrMaterialHandle){.id = m->id, .generation = m->generation};
+  }
+
+  // Find a free slot
+  uint32_t slot;
+  if (system->free_count > 0) {
+    slot = system->free_ids.data[--system->free_count];
+  } else {
+    if (system->next_free_index >= system->materials.length) {
+      log_error("Material system capacity exceeded");
+      if (out_error)
+        *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      return (VkrMaterialHandle){0};
+    }
+    slot = system->next_free_index++;
+  }
+
+  // Copy name to string memory
+  uint64_t name_len = string_length(name);
+  char *name_copy = (char *)vkr_allocator_alloc(
+      &system->string_allocator, name_len + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!name_copy) {
+    log_error("Failed to allocate material name");
+    if (out_error)
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return (VkrMaterialHandle){0};
+  }
+  MemCopy(name_copy, name, name_len);
+  name_copy[name_len] = '\0';
+
+  // Initialize material
+  VkrMaterial *material = &system->materials.data[slot];
+  material->id = slot + 1;
+  material->generation = system->generation_counter++;
+  material->name = name_copy;
+  material->phong.diffuse_color = diffuse_color;
+  material->phong.specular_color = vec4_new(1, 1, 1, 1);
+  material->phong.emission_color = vec4_new(0, 0, 0, 1);
+  material->phong.shininess = 8.0f;
+  material->pipeline_id = VKR_INVALID_ID;
+
+  // Initialize texture slots with defaults
+  for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; i++) {
+    material->textures[i].slot = (VkrTextureSlot)i;
+    material->textures[i].handle = VKR_TEXTURE_HANDLE_INVALID;
+    material->textures[i].enabled = false;
+  }
+
+  // Set default textures (white diffuse, flat normal, flat specular)
+  material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle =
+      vkr_texture_system_get_default_diffuse_handle(system->texture_system);
+  material->textures[VKR_TEXTURE_SLOT_DIFFUSE].enabled = true;
+  material->textures[VKR_TEXTURE_SLOT_NORMAL].handle =
+      vkr_texture_system_get_default_normal_handle(system->texture_system);
+  material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled = true;
+  material->textures[VKR_TEXTURE_SLOT_SPECULAR].handle =
+      vkr_texture_system_get_default_specular_handle(system->texture_system);
+  material->textures[VKR_TEXTURE_SLOT_SPECULAR].enabled = true;
+
+  // Register in hash table
+  VkrMaterialEntry entry = {
+      .id = slot,
+      .ref_count = 1,
+      .auto_release = true_v,
+      .name = name_copy,
+  };
+  vkr_hash_table_insert_VkrMaterialEntry(&system->material_by_name, name_copy,
+                                         entry);
+
+  return (VkrMaterialHandle){.id = material->id,
+                             .generation = material->generation};
 }
 
 VkrMaterialHandle vkr_material_system_acquire(VkrMaterialSystem *system,
@@ -161,8 +271,14 @@ void vkr_material_system_release(VkrMaterialSystem *system,
   entry->ref_count--;
 
   if (entry->ref_count == 0 && entry->auto_release) {
-    String8 name = string8_create_from_cstr((const uint8_t *)material->name,
-                                            string_length(material->name));
+    uint64_t name_length = string_length(material->name);
+    if (name_length == 0) {
+      log_warn("Material '%s' has empty name; skipping unload", material->name);
+      entry->auto_release = false_v;
+      return;
+    }
+    String8 name =
+        string8_create_from_cstr((const uint8_t *)material->name, name_length);
     VkrResourceHandleInfo handle_info = {
         .type = VKR_RESOURCE_TYPE_MATERIAL,
         .loader_id =
@@ -232,6 +348,13 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
       system->texture_system,
       material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle);
 
+  // Validate texture types - shaders expect 2D textures for material slots.
+  // Fall back to default if a non-2D texture (e.g. cubemap) is bound.
+  if (diffuse_texture &&
+      diffuse_texture->description.type != VKR_TEXTURE_TYPE_2D) {
+    diffuse_texture = vkr_texture_system_get_default(system->texture_system);
+  }
+
   // Domain-specific instance uniforms/samplers
   if (domain == VKR_PIPELINE_DOMAIN_UI) {
     vkr_shader_system_uniform_set(system->shader_system, "diffuse_color",
@@ -249,6 +372,16 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
     VkrTexture *normal_texture = vkr_texture_system_get_by_handle(
         system->texture_system,
         material->textures[VKR_TEXTURE_SLOT_NORMAL].handle);
+
+    // Validate texture types for specular and normal as well
+    if (specular_texture &&
+        specular_texture->description.type != VKR_TEXTURE_TYPE_2D) {
+      specular_texture = vkr_texture_system_get_default(system->texture_system);
+    }
+    if (normal_texture &&
+        normal_texture->description.type != VKR_TEXTURE_TYPE_2D) {
+      normal_texture = vkr_texture_system_get_default(system->texture_system);
+    }
 
     // World domain: set all supported Phong-like properties when provided
     vkr_shader_system_uniform_set(system->shader_system, "diffuse_color",
@@ -270,6 +403,34 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
     vkr_shader_system_uniform_set(system->shader_system, "shininess",
                                   &material->phong.shininess);
 
+    // Build texture flags to tell shader which textures have real data
+    // vs default placeholders. Compare against default handles.
+    uint32_t texture_flags = 0;
+    VkrTextureHandle default_diffuse =
+        vkr_texture_system_get_default_diffuse_handle(system->texture_system);
+    VkrTextureHandle default_specular =
+        vkr_texture_system_get_default_specular_handle(system->texture_system);
+    VkrTextureHandle default_normal =
+        vkr_texture_system_get_default_normal_handle(system->texture_system);
+
+    if (diffuse_texture &&
+        material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle.id !=
+            default_diffuse.id) {
+      texture_flags |= 0x1; // TEXTURE_FLAG_HAS_DIFFUSE
+    }
+    if (specular_texture &&
+        material->textures[VKR_TEXTURE_SLOT_SPECULAR].handle.id !=
+            default_specular.id) {
+      texture_flags |= 0x2; // TEXTURE_FLAG_HAS_SPECULAR
+    }
+    if (normal_texture &&
+        material->textures[VKR_TEXTURE_SLOT_NORMAL].handle.id !=
+            default_normal.id) {
+      texture_flags |= 0x4; // TEXTURE_FLAG_HAS_NORMAL
+    }
+    vkr_shader_system_uniform_set(system->shader_system, "texture_flags",
+                                  &texture_flags);
+
     vkr_shader_system_uniform_set(system->shader_system, "emission_color",
                                   &material->phong.emission_color);
 
@@ -289,6 +450,9 @@ void vkr_material_system_apply_local(VkrMaterialSystem *system,
 
   vkr_shader_system_uniform_set(system->shader_system, "model",
                                 &local_state->model);
+  // Set object_id for picking shader (ignored by shaders that don't use it)
+  vkr_shader_system_uniform_set(system->shader_system, "object_id",
+                                &local_state->object_id);
 }
 
 VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
