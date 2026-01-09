@@ -48,7 +48,7 @@ vkr_internal void vkr_ui_text_retire_buffers(VkrUiText *text,
                                              uint64_t current_frame) {
   assert_log(text != NULL, "Text is NULL");
 
-  if (vertex_buffer.handle == NULL || index_buffer.handle == NULL)
+  if (vertex_buffer.handle == NULL && index_buffer.handle == NULL)
     return;
 
   uint64_t retire_after_frame =

@@ -351,10 +351,11 @@ char *string_trim(char *str);
 void string_mid(char *dest, const char *source, int32_t start, int32_t length);
 
 /**
- * @brief Get the last character occurrence of a string.
- * @param str The string.
+ * @brief Get a pointer to the last occurrence of a character in a string.
+ * @param str The NUL-terminated string to search in.
  * @param ch The character to search for.
- * @return The last character occurrence.
+ * @return A pointer to the last occurrence of the character within str, or
+ * NULL if the character is not found.
  */
 char *string_get_last_char_occurrence(const char *str, int32_t ch);
 
