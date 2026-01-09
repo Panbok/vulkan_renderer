@@ -529,7 +529,7 @@ typedef struct VkrGlobalMaterialState {
 
 typedef struct VkrLocalMaterialState {
   Mat4 model;
-  uint32_t object_id;  // mesh_index + 1 (0 = background/no object) for picking
+  uint32_t object_id; // Encoded picking id (0 = background/no object)
 } VkrLocalMaterialState;
 
 typedef struct VkrRendererInstanceStateHandle {
@@ -643,6 +643,9 @@ typedef enum VkrPipelineDomain {
   VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT = 5,
   VKR_PIPELINE_DOMAIN_SKYBOX = 6,
   VKR_PIPELINE_DOMAIN_PICKING = 7,
+  // Picking variant for transparent drawables: depth-tested but does not write
+  // depth to match the visible transparent render path.
+  VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT = 8,
 
   VKR_PIPELINE_DOMAIN_COUNT
 } VkrPipelineDomain;
@@ -1238,6 +1241,19 @@ void vkr_renderer_update_readback_ring(VkrRendererFrontendHandle renderer);
 // --- END Pixel Readback API ---
 
 // ============================================================================
+// Utility functions
+// ============================================================================
+
+/**
+ * @brief Get the allocator for the backend.
+ *
+ * @param renderer The renderer frontend handle
+ * @return The allocator
+ */
+VkrAllocator *
+vkr_renderer_get_backend_allocator(VkrRendererFrontendHandle renderer);
+
+// ============================================================================
 // Backend Interface (Implemented by each backend, e.g., Vulkan)
 // ============================================================================
 
@@ -1376,4 +1392,11 @@ typedef struct VkrRendererBackendInterface {
   VkrRendererError (*get_pixel_readback_result)(void *backend_state,
                                                 VkrPixelReadbackResult *result);
   void (*update_readback_ring)(void *backend_state);
+
+  // Utility functions
+  VkrAllocator *(*get_allocator)(void *backend_state);
+
+  // Set the default 2D texture used as fallback for empty sampler slots
+  void (*set_default_2d_texture)(void *backend_state,
+                                 VkrTextureOpaqueHandle texture);
 } VkrRendererBackendInterface;

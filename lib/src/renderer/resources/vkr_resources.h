@@ -11,6 +11,15 @@
 #include "renderer/vkr_renderer.h"
 
 // =============================================================================
+// Scene resource handles (runtime scene instances owned by resource system)
+// =============================================================================
+
+typedef struct VkrSceneRuntime VkrSceneRuntime;
+typedef VkrSceneRuntime *VkrSceneHandle;
+
+#define VKR_SCENE_HANDLE_INVALID ((VkrSceneHandle)0)
+
+// =============================================================================
 // Geometry resource types (decoupled from systems)
 // =============================================================================
 
@@ -181,6 +190,15 @@ typedef struct VkrMesh {
   Mat4 model;
   Array_VkrSubMesh submeshes;
   VkrMeshLoadingState loading_state;
+  uint32_t render_id;
+  bool8_t visible;
+
+  // Bounding sphere for frustum culling
+  bool8_t bounds_valid;
+  Vec3 bounds_local_center;   // Local-space bounding sphere center
+  float32_t bounds_local_radius;
+  Vec3 bounds_world_center;   // Cached world-space center (updated with model)
+  float32_t bounds_world_radius;
 } VkrMesh;
 Array(VkrMesh);
 

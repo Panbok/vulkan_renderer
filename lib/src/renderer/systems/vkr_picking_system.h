@@ -223,6 +223,20 @@ bool8_t vkr_picking_is_pending(const VkrPickingContext *ctx);
 void vkr_picking_cancel(VkrPickingContext *ctx);
 
 /**
+ * @brief Invalidate picking instance states.
+ *
+ * Releases shader instance states but keeps the picking context alive.
+ * Call this when scene resources (textures) are being destroyed to ensure
+ * descriptor sets don't reference stale textures. New instance states will
+ * be acquired automatically on the next picking render.
+ *
+ * @param renderer The renderer frontend
+ * @param ctx Picking context
+ */
+void vkr_picking_invalidate_instance_states(struct s_RendererFrontend *renderer,
+                                            VkrPickingContext *ctx);
+
+/**
  * @brief Shutdown the picking system.
  *
  * Releases all GPU resources and resets the context.

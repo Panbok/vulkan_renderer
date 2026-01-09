@@ -229,7 +229,10 @@ vkr_internal bool8_t picking_render_submesh(
       if (diffuse_tex->enabled && diffuse_tex->handle.id != 0) {
         VkrTexture *texture = vkr_texture_system_get_by_handle(
             &rf->texture_system, diffuse_tex->handle);
-        if (texture && texture->handle) {
+        // Only use 2D textures - cubemaps/arrays are incompatible with the
+        // picking shader's sampler2D descriptor.
+        if (texture && texture->handle &&
+            texture->description.type == VKR_TEXTURE_TYPE_2D) {
           diffuse_texture_handle = texture->handle;
           if (can_alpha_test &&
               bitset8_is_set(&texture->description.properties,
@@ -628,6 +631,29 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
   vkr_material_system_apply_global(&rf->material_system, &rf->globals,
                                    VKR_PIPELINE_DOMAIN_PICKING);
 
+  // Re-acquire instance states if they were invalidated (e.g., after scene
+  // unload). This ensures descriptor sets reference valid textures.
+  if (ctx->shader_config.instance_texture_count > 0 &&
+      ctx->mesh_instance_state.id == VKR_INVALID_ID) {
+    VkrRendererError instance_err = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_pipeline_registry_acquire_instance_state(
+            &rf->pipeline_registry, ctx->picking_pipeline,
+            &ctx->mesh_instance_state, &instance_err)) {
+      log_warn("Failed to re-acquire picking instance state");
+    }
+  }
+
+  if (ctx->picking_transparent_pipeline.id != 0 &&
+      ctx->shader_config.instance_texture_count > 0 &&
+      ctx->mesh_transparent_instance_state.id == VKR_INVALID_ID) {
+    VkrRendererError instance_err = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_pipeline_registry_acquire_instance_state(
+            &rf->pipeline_registry, ctx->picking_transparent_pipeline,
+            &ctx->mesh_transparent_instance_state, &instance_err)) {
+      log_warn("Failed to re-acquire transparent picking instance state");
+    }
+  }
+
   const bool8_t can_alpha_test =
       (ctx->mesh_instance_state.id != VKR_INVALID_ID) ? true_v : false_v;
   if (can_alpha_test) {
@@ -903,6 +929,24 @@ void vkr_picking_cancel(VkrPickingContext *ctx) {
   }
   ctx->state = VKR_PICKING_STATE_IDLE;
   ctx->result_object_id = 0;
+}
+
+void vkr_picking_invalidate_instance_states(struct s_RendererFrontend *renderer,
+                                            VkrPickingContext *ctx) {
+  if (!renderer || !ctx || !ctx->initialized) {
+    return;
+  }
+
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+
+  // Release instance states to invalidate descriptor sets that may reference
+  // destroyed textures. New states will be acquired on next picking render.
+  picking_release_instance_state(rf, ctx->picking_pipeline,
+                                 &ctx->mesh_instance_state);
+  picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
+                                 &ctx->mesh_transparent_instance_state);
+
+  log_debug("Picking instance states invalidated");
 }
 
 void vkr_picking_shutdown(struct s_RendererFrontend *renderer,
