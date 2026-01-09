@@ -210,8 +210,9 @@ vkr_internal void vkr_mesh_manager_release_handles(VkrMeshManager *manager,
 vkr_internal void vkr_mesh_manager_cleanup_submesh_array(
     VkrMeshManager *manager, Array_VkrSubMesh *array, uint32_t built_count) {
   assert_log(manager != NULL, "Manager is NULL");
-  if (!array || !array->data || array->length == 0 || built_count == 0)
+  if (!array || !array->data || array->length == 0) {
     return;
+  }
   if (built_count > array->length) {
     built_count = (uint32_t)array->length;
   }
@@ -221,6 +222,7 @@ vkr_internal void vkr_mesh_manager_cleanup_submesh_array(
       vkr_mesh_manager_release_submesh(manager, submesh);
     }
   }
+  array_destroy_VkrSubMesh(array);
 }
 
 bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
@@ -291,6 +293,7 @@ void vkr_mesh_manager_shutdown(VkrMeshManager *manager) {
     VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, i);
     if (mesh->submeshes.data && mesh->submeshes.length > 0) {
       vkr_mesh_manager_release_handles(manager, mesh);
+      array_destroy_VkrSubMesh(&mesh->submeshes);
       MemZero(mesh, sizeof(*mesh));
     }
   }
@@ -410,6 +413,9 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
   new_mesh.transform = desc->transform;
   new_mesh.model = vkr_transform_get_world(&new_mesh.transform);
   new_mesh.submeshes = submesh_array;
+  new_mesh.render_id = 0;
+  new_mesh.visible = true_v;
+  new_mesh.loading_state = VKR_MESH_LOADING_STATE_LOADED;
 
   vkr_mesh_compute_local_bounds(&new_mesh, manager->geometry_system);
   vkr_mesh_update_world_bounds(&new_mesh);
@@ -653,6 +659,7 @@ bool8_t vkr_mesh_manager_remove(VkrMeshManager *manager, uint32_t index) {
   }
 
   vkr_mesh_manager_release_handles(manager, mesh);
+  array_destroy_VkrSubMesh(&mesh->submeshes);
   MemZero(mesh, sizeof(*mesh));
 
   if (manager->free_count < manager->free_indices.length) {
@@ -812,6 +819,57 @@ void vkr_mesh_manager_update_model(VkrMeshManager *manager, uint32_t index) {
     VkrSubMesh *submesh = array_get_VkrSubMesh(&mesh->submeshes, submesh_index);
     submesh->last_render_frame = 0;
   }
+}
+
+void vkr_mesh_manager_set_model(VkrMeshManager *manager, uint32_t index,
+                                Mat4 model) {
+  assert_log(manager != NULL, "Manager is NULL");
+
+  if (index >= manager->meshes.length)
+    return;
+
+  VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, index);
+  if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0)
+    return;
+
+  mesh->model = model;
+
+  vkr_mesh_update_world_bounds(mesh);
+
+  // Reset instance cache for all submeshes
+  for (uint32_t submesh_index = 0; submesh_index < mesh->submeshes.length;
+       ++submesh_index) {
+    VkrSubMesh *submesh = array_get_VkrSubMesh(&mesh->submeshes, submesh_index);
+    submesh->last_render_frame = 0;
+  }
+}
+
+void vkr_mesh_manager_set_visible(VkrMeshManager *manager, uint32_t index,
+                                  bool8_t visible) {
+  assert_log(manager != NULL, "Manager is NULL");
+
+  if (index >= manager->meshes.length)
+    return;
+
+  VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, index);
+  if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0)
+    return;
+
+  mesh->visible = visible;
+}
+
+void vkr_mesh_manager_set_render_id(VkrMeshManager *manager, uint32_t index,
+                                    uint32_t render_id) {
+  assert_log(manager != NULL, "Manager is NULL");
+
+  if (index >= manager->meshes.length)
+    return;
+
+  VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, index);
+  if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0)
+    return;
+
+  mesh->render_id = render_id;
 }
 
 uint32_t vkr_mesh_manager_submesh_count(const VkrMesh *mesh) {

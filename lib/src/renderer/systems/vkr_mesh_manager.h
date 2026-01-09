@@ -246,6 +246,35 @@ bool8_t vkr_mesh_manager_refresh_pipeline(VkrMeshManager *manager,
 void vkr_mesh_manager_update_model(VkrMeshManager *manager, uint32_t index);
 
 /**
+ * @brief Set mesh model matrix directly and update world bounds.
+ * Use this for ECS-driven transforms where the scene system manages transforms
+ * externally from the mesh's VkrTransform.
+ * @param manager The mesh manager.
+ * @param index The index of the mesh.
+ * @param model The world matrix to set.
+ */
+void vkr_mesh_manager_set_model(VkrMeshManager *manager, uint32_t index,
+                                Mat4 model);
+
+/**
+ * @brief Set mesh visibility flag used by view/picking systems.
+ * @param manager The mesh manager.
+ * @param index The index of the mesh.
+ * @param visible True to render and pick, false to skip.
+ */
+void vkr_mesh_manager_set_visible(VkrMeshManager *manager, uint32_t index,
+                                  bool8_t visible);
+
+/**
+ * @brief Set mesh render_id used for picking.
+ * @param manager The mesh manager.
+ * @param index The index of the mesh.
+ * @param render_id Persistent render id (0 disables picking).
+ */
+void vkr_mesh_manager_set_render_id(VkrMeshManager *manager, uint32_t index,
+                                    uint32_t render_id);
+
+/**
  * @brief Returns number of submeshes for a mesh.
  */
 uint32_t vkr_mesh_manager_submesh_count(const VkrMesh *mesh);
