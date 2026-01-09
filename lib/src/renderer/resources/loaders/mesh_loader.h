@@ -30,14 +30,13 @@ typedef struct VkrMeshLoaderResult {
   Arena *arena;     /**< Buffer-backed arena for mesh data */
   void *pool_chunk; /**< Chunk pointer for returning to pool (NULL if not
                        pooled) */
+  VkrAllocator allocator; /**< Arena allocator wrapper (used for accounting) */
   String8 source_path;
   VkrTransform root_transform;
   Array_VkrMeshLoaderSubset subsets;
 } VkrMeshLoaderResult;
 
 typedef struct VkrMeshLoaderContext {
-  Arena *arena;
-  Arena *scratch_arena;
   VkrAllocator allocator;
   VkrGeometrySystem *geometry_system;
   VkrMaterialSystem *material_system;

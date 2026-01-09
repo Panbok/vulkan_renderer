@@ -20,22 +20,18 @@ typedef struct VkrMeshBatchResult {
   bool8_t success;
 } VkrMeshBatchResult;
 
-// Portable little-endian conversion functions
 vkr_internal uint32_t vkr_host_to_little_u32(uint32_t value) {
-  // Check if system is little-endian
   const union {
     uint32_t u32;
     uint8_t u8[4];
   } endian_check = {0x01020304};
   const bool8_t is_little_endian = (endian_check.u8[0] == 0x04);
 
-  if (is_little_endian) {
+  if (is_little_endian)
     return value;
-  } else {
-    // Byte swap for big-endian systems
-    return ((value & 0xFF000000) >> 24) | ((value & 0x00FF0000) >> 8) |
-           ((value & 0x0000FF00) << 8) | ((value & 0x000000FF) << 24);
-  }
+
+  return ((value & 0xFF000000) >> 24) | ((value & 0x00FF0000) >> 8) |
+         ((value & 0x0000FF00) << 8) | ((value & 0x000000FF) << 24);
 }
 
 Vector(Vec2);
@@ -118,6 +114,21 @@ vkr_mesh_loader_builder_init(VkrMeshLoaderSubsetBuilder *builder,
                              VkrAllocator *allocator);
 vkr_internal String8 vkr_mesh_loader_make_material_dir(VkrAllocator *allocator,
                                                        const String8 *stem);
+vkr_internal bool8_t vkr_mesh_loader_read_file_to_string(
+    VkrAllocator *allocator, String8 file_path, String8 *out_content,
+    VkrRendererError *out_error);
+vkr_internal void vkr_mesh_loader_parse_next_line(String8 *file_str,
+                                                  uint64_t *offset,
+                                                  String8 *out_line);
+vkr_internal bool8_t vkr_mesh_loader_parse_vec3_line(String8 *line,
+                                                     uint32_t prefix_len,
+                                                     Vec3 *out_vec);
+vkr_internal void vkr_mesh_loader_cleanup_arenas(
+    VkrMeshLoaderResult **results, Arena **arenas, void **pool_chunks,
+    uint32_t count, VkrArenaPool *arena_pool);
+vkr_internal void vkr_mesh_loader_set_all_errors(VkrMeshBatchResult *results,
+                                                 uint32_t count,
+                                                 VkrRendererError error);
 
 vkr_internal bool8_t vkr_mesh_loader_write_bytes(FileHandle *fh,
                                                  const void *data,
@@ -151,15 +162,13 @@ vkr_internal bool8_t vkr_mesh_loader_write_vec3(FileHandle *fh, Vec3 value) {
 
 vkr_internal bool8_t vkr_mesh_loader_write_string(FileHandle *fh,
                                                   String8 value) {
-  if (value.length > UINT32_MAX) {
+  if (value.length > UINT32_MAX ||
+      !vkr_mesh_loader_write_u32(fh, (uint32_t)value.length))
     return false_v;
-  }
-  if (!vkr_mesh_loader_write_u32(fh, (uint32_t)value.length)) {
-    return false_v;
-  }
-  if (value.length == 0 || !value.str) {
+
+  if (value.length == 0 || !value.str)
     return true_v;
-  }
+
   return vkr_mesh_loader_write_bytes(fh, value.str, value.length);
 }
 
@@ -167,9 +176,10 @@ vkr_internal bool8_t vkr_mesh_loader_read_bytes(
     VkrMeshLoaderBinaryReader *reader, uint64_t size, void *out) {
   if (!reader || reader->ptr + size > reader->end)
     return false_v;
-  if (out) {
+
+  if (out)
     MemCopy(out, reader->ptr, size);
-  }
+
   reader->ptr += size;
   return true_v;
 }
@@ -214,18 +224,48 @@ vkr_mesh_loader_read_vec3(VkrMeshLoaderBinaryReader *reader, Vec3 *out) {
 vkr_internal bool8_t vkr_mesh_loader_read_string(
     VkrMeshLoaderBinaryReader *reader, VkrAllocator *allocator, String8 *out) {
   uint32_t len = 0;
-  if (!vkr_mesh_loader_read_u32(reader, &len))
+  if (!vkr_mesh_loader_read_u32(reader, &len) || reader->ptr + len > reader->end)
     return false_v;
-  if (reader->ptr + len > reader->end)
-    return false_v;
-  String8 view = {
-      .str = reader->ptr,
-      .length = len,
-  };
+
+  String8 view = {.str = reader->ptr, .length = len};
   reader->ptr += len;
-  if (out) {
+
+  if (out)
     *out = string8_duplicate(allocator, &view);
+
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_mesh_loader_read_file_to_string(
+    VkrAllocator *allocator, String8 file_path, String8 *out_content,
+    VkrRendererError *out_error) {
+  assert_log(allocator != NULL, "Allocator is NULL");
+  assert_log(out_content != NULL, "Out content is NULL");
+
+  FilePath fp = file_path_create((const char *)file_path.str, allocator,
+                                 FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+
+  FileHandle fh = {0};
+  FileError ferr = file_open(&fp, mode, &fh);
+  if (ferr != FILE_ERROR_NONE) {
+    if (out_error)
+      *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    log_error("MeshLoader: failed to open '%s'", fp.path.str);
+    return false_v;
   }
+
+  FileError read_err = file_read_string(&fh, allocator, out_content);
+  file_close(&fh);
+
+  if (read_err != FILE_ERROR_NONE) {
+    if (out_error)
+      *out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    log_error("MeshLoader: failed to read '%s'", fp.path.str);
+    return false_v;
+  }
+
   return true_v;
 }
 
@@ -368,17 +408,16 @@ vkr_mesh_loader_parse_vertex_ref(const String8 *token) {
   int32_t sign = 1;
   int32_t value = 0;
   bool8_t has_digits = false_v;
+
   for (uint64_t i = 0; i < token->length; ++i) {
     uint8_t ch = token->str[i];
     if (ch == '-') {
-      if (has_digits) {
+      if (has_digits)
         continue;
-      }
       sign = -1;
     } else if (ch == '/') {
-      if (current < 3) {
+      if (current < 3)
         values[current++] = has_digits ? sign * value : 0;
-      }
       sign = 1;
       value = 0;
       has_digits = false_v;
@@ -388,9 +427,8 @@ vkr_mesh_loader_parse_vertex_ref(const String8 *token) {
     }
   }
 
-  if (current < 3) {
+  if (current < 3)
     values[current++] = has_digits ? sign * value : 0;
-  }
 
   ref.position = values[0];
   ref.texcoord = (current >= 2) ? values[1] : 0;
@@ -400,15 +438,12 @@ vkr_mesh_loader_parse_vertex_ref(const String8 *token) {
 }
 
 vkr_internal uint32_t vkr_mesh_loader_fix_index(int32_t value, uint32_t count) {
-  if (value > 0) {
+  if (value > 0)
     return (uint32_t)(value - 1);
-  }
 
   if (value < 0) {
     int64_t resolved = (int64_t)count + value;
-    if (resolved < 0)
-      resolved = 0;
-    return (uint32_t)resolved;
+    return resolved < 0 ? 0 : (uint32_t)resolved;
   }
 
   return 0;
@@ -430,15 +465,14 @@ vkr_mesh_loader_find_material(Vector_VkrMeshLoaderMaterialDef *materials,
                               const String8 *name) {
   assert_log(materials != NULL, "Materials is NULL");
 
-  if (!name || !name->str || name->length == 0)
+  if (!name->str || name->length == 0)
     return NULL;
 
   for (uint64_t i = 0; i < materials->length; ++i) {
     VkrMeshLoaderMaterialDef *def =
         vector_get_VkrMeshLoaderMaterialDef(materials, i);
-    if (string8_equalsi(&def->name, name)) {
+    if (string8_equalsi(&def->name, name))
       return def;
-    }
   }
 
   return NULL;
@@ -468,7 +502,7 @@ vkr_internal String8 vkr_mesh_loader_texture_basename(VkrAllocator *allocator,
   assert_log(allocator != NULL, "Allocator is NULL");
   assert_log(token != NULL, "Token is NULL");
 
-  if (!token || !token->str || token->length == 0)
+  if (!token->str || token->length == 0)
     return (String8){0};
 
   uint64_t start = 0;
@@ -489,7 +523,7 @@ vkr_internal String8 vkr_mesh_loader_texture_path(VkrAllocator *allocator,
   assert_log(allocator != NULL, "Allocator is NULL");
   assert_log(token != NULL, "Token is NULL");
 
-  if (!token || !token->str || token->length == 0)
+  if (!token->str || token->length == 0)
     return (String8){0};
 
   String8 file = vkr_mesh_loader_texture_basename(allocator, token);
@@ -545,6 +579,8 @@ vkr_internal bool8_t vkr_mesh_loader_write_material_file(
       string8_create_formatted(state->load_allocator, "diffuse_texture=%.*s",
                                (int32_t)material->diffuse_map.length,
                                material->diffuse_map.str),
+      string8_create_formatted(state->load_allocator,
+                               "diffuse_colorspace=srgb"),
       string8_create_formatted(
           state->load_allocator, "diffuse_color=%f,%f,%f,%f",
           material->diffuse_color.x, material->diffuse_color.y,
@@ -552,6 +588,8 @@ vkr_internal bool8_t vkr_mesh_loader_write_material_file(
       string8_create_formatted(state->load_allocator, "specular_texture=%.*s",
                                (int32_t)material->specular_map.length,
                                material->specular_map.str),
+      string8_create_formatted(state->load_allocator,
+                               "specular_colorspace=linear"),
       string8_create_formatted(
           state->load_allocator, "specular_color=%f,%f,%f,%f",
           material->specular_color.x, material->specular_color.y,
@@ -559,6 +597,8 @@ vkr_internal bool8_t vkr_mesh_loader_write_material_file(
       string8_create_formatted(state->load_allocator, "norm_texture=%.*s",
                                (int32_t)material->normal_map.length,
                                material->normal_map.str),
+      string8_create_formatted(state->load_allocator,
+                               "normal_colorspace=linear"),
       string8_create_formatted(state->load_allocator, "shininess=%f",
                                material->shininess),
       string8_create_formatted(state->load_allocator, "emission_color=%f,%f,%f",
@@ -587,14 +627,12 @@ vkr_internal bool8_t vkr_mesh_loader_write_material_file(
   return true_v;
 }
 
-// Resolves material name to path, generates .mt file if needed
-// Materials are loaded later via batch loading on the main thread
 vkr_internal bool8_t vkr_mesh_loader_resolve_material(
     VkrMeshLoaderState *state, const String8 *material_name, String8 *out_path,
     VkrMaterialHandle *out_handle) {
   assert_log(state != NULL, "State is NULL");
 
-  if (!material_name || !material_name->str || material_name->length == 0)
+  if (!material_name->str || material_name->length == 0)
     return false_v;
 
   VkrMeshLoaderMaterialDef *mat =
@@ -611,18 +649,16 @@ vkr_internal bool8_t vkr_mesh_loader_resolve_material(
   }
 
   if (!mat->generated) {
-    if (!vkr_mesh_loader_write_material_file(state, mat, mat->generated_path)) {
+    if (!vkr_mesh_loader_write_material_file(state, mat, mat->generated_path))
       return false_v;
-    }
     mat->generated = true_v;
   }
 
-  if (out_path) {
+  if (out_path)
     *out_path = mat->generated_path;
-  }
-  if (out_handle) {
+  if (out_handle)
     *out_handle = VKR_MATERIAL_HANDLE_INVALID;
-  }
+
   return true_v;
 }
 
@@ -795,12 +831,45 @@ vkr_internal void vkr_mesh_loader_push_face(VkrMeshLoaderState *state,
     vector_push_VkrVertex3d(&state->builder.vertices, vert);
   }
 
-  uint32_t face_vert_count = token_count;
-  for (uint32_t tri = 0; tri < face_vert_count - 2; ++tri) {
+  for (uint32_t tri = 0; tri < token_count - 2; ++tri) {
     vector_push_uint32_t(&state->builder.indices, first_index);
     vector_push_uint32_t(&state->builder.indices, first_index + tri + 1);
     vector_push_uint32_t(&state->builder.indices, first_index + tri + 2);
   }
+}
+
+vkr_internal void vkr_mesh_loader_parse_next_line(String8 *file_str,
+                                                  uint64_t *offset,
+                                                  String8 *out_line) {
+  uint64_t line_end = *offset;
+  while (line_end < file_str->length && file_str->str[line_end] != '\n' &&
+         file_str->str[line_end] != '\r') {
+    line_end++;
+  }
+  *out_line = string8_substring(file_str, *offset, line_end);
+  *offset = line_end;
+  while (*offset < file_str->length &&
+         (file_str->str[*offset] == '\n' || file_str->str[*offset] == '\r')) {
+    (*offset)++;
+  }
+  string8_trim(out_line);
+}
+
+vkr_internal bool8_t vkr_mesh_loader_parse_vec3_line(String8 *line,
+                                                     uint32_t prefix_len,
+                                                     Vec3 *out_vec) {
+  String8 coords = vkr_string8_trimmed_suffix(line, prefix_len);
+  String8 tokens[3];
+  uint32_t count = string8_split_whitespace(&coords, tokens, 3);
+  if (count < 3)
+    return false_v;
+
+  float32_t x = 0, y = 0, z = 0;
+  string8_to_f32(&tokens[0], &x);
+  string8_to_f32(&tokens[1], &y);
+  string8_to_f32(&tokens[2], &z);
+  *out_vec = vec3_new(x, y, z);
+  return true_v;
 }
 
 vkr_internal bool8_t vkr_mesh_loader_parse_mtl(VkrMeshLoaderState *state,
@@ -812,44 +881,17 @@ vkr_internal bool8_t vkr_mesh_loader_parse_mtl(VkrMeshLoaderState *state,
 
   String8 full_path =
       file_path_join(state->load_allocator, state->obj_dir, rel_path);
-  FilePath file_path =
-      file_path_create((const char *)full_path.str, state->load_allocator,
-                       FILE_PATH_TYPE_RELATIVE);
-
-  FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_READ);
-
-  FileHandle fh = {0};
-  FileError ferr = file_open(&file_path, mode, &fh);
-  if (ferr != FILE_ERROR_NONE) {
-    log_error("MeshLoader: failed to open mtl '%s'", file_path.path.str);
-    return false_v;
-  }
-
   String8 file_str = {0};
-  FileError read_err = file_read_string(&fh, state->load_allocator, &file_str);
-  file_close(&fh);
-  if (read_err != FILE_ERROR_NONE) {
-    log_error("MeshLoader: failed to read mtl '%s'", file_path.path.str);
+  if (!vkr_mesh_loader_read_file_to_string(state->load_allocator, full_path,
+                                           &file_str, NULL))
     return false_v;
-  }
 
   VkrMeshLoaderMaterialDef *current = NULL;
   uint64_t offset = 0;
   while (offset < file_str.length) {
-    uint64_t line_end = offset;
-    while (line_end < file_str.length && file_str.str[line_end] != '\n' &&
-           file_str.str[line_end] != '\r') {
-      line_end++;
-    }
-    String8 line = string8_substring(&file_str, offset, line_end);
-    offset = line_end;
-    while (offset < file_str.length &&
-           (file_str.str[offset] == '\n' || file_str.str[offset] == '\r')) {
-      offset++;
-    }
+    String8 line = {0};
+    vkr_mesh_loader_parse_next_line(&file_str, &offset, &line);
 
-    string8_trim(&line);
     if (line.length == 0 || line.str[0] == '#')
       continue;
 
@@ -872,31 +914,29 @@ vkr_internal bool8_t vkr_mesh_loader_parse_mtl(VkrMeshLoaderState *state,
     if (!current)
       continue;
 
+    Vec3 vec3_val;
     if (vkr_string8_starts_with(&line, "Kd")) {
-      String8 tokens[3];
-      String8 values = vkr_string8_trimmed_suffix(&line, 2);
-      uint32_t count = string8_split_whitespace(&values, tokens, 3);
-      if (count >= 3) {
-        string8_to_f32(&tokens[0], &current->diffuse_color.x);
-        string8_to_f32(&tokens[1], &current->diffuse_color.y);
-        string8_to_f32(&tokens[2], &current->diffuse_color.z);
+      if (vkr_mesh_loader_parse_vec3_line(&line, 2, &vec3_val)) {
+        current->diffuse_color.x = vec3_val.x;
+        current->diffuse_color.y = vec3_val.y;
+        current->diffuse_color.z = vec3_val.z;
+      }
+    } else if (vkr_string8_starts_with(&line, "Ke")) {
+      if (vkr_mesh_loader_parse_vec3_line(&line, 2, &vec3_val)) {
+        current->emission_color = vec3_val;
       }
     } else if (vkr_string8_starts_with(&line, "Ks")) {
-      String8 tokens[3];
-      String8 values = vkr_string8_trimmed_suffix(&line, 2);
-      uint32_t count = string8_split_whitespace(&values, tokens, 3);
-      if (count >= 3) {
-        string8_to_f32(&tokens[0], &current->specular_color.x);
-        string8_to_f32(&tokens[1], &current->specular_color.y);
-        string8_to_f32(&tokens[2], &current->specular_color.z);
+      if (vkr_mesh_loader_parse_vec3_line(&line, 2, &vec3_val)) {
+        current->specular_color.x = vec3_val.x;
+        current->specular_color.y = vec3_val.y;
+        current->specular_color.z = vec3_val.z;
       }
     } else if (vkr_string8_starts_with(&line, "Ns")) {
       String8 value = vkr_string8_trimmed_suffix(&line, 2);
       float32_t shininess = 0.0f;
       string8_to_f32(&value, &shininess);
-      if (shininess > 0.0f) {
+      if (shininess > 0.0f)
         current->shininess = shininess;
-      }
     } else if (vkr_string8_starts_with(&line, "map_Kd")) {
       String8 value = vkr_string8_trimmed_suffix(&line, 6);
       current->diffuse_map =
@@ -921,79 +961,37 @@ vkr_internal bool8_t vkr_mesh_loader_parse_mtl(VkrMeshLoaderState *state,
 }
 
 vkr_internal bool8_t vkr_mesh_loader_parse_obj(VkrMeshLoaderState *state) {
-  FilePath file_path =
-      file_path_create((const char *)state->obj_path.str, state->load_allocator,
-                       FILE_PATH_TYPE_RELATIVE);
-  FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_READ);
-
-  FileHandle fh = {0};
-  FileError ferr = file_open(&file_path, mode, &fh);
-  if (ferr != FILE_ERROR_NONE) {
-    log_error("MeshLoader: failed to open obj '%s'", file_path.path.str);
-    *state->out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
-    return false_v;
-  }
-
   String8 file_str = {0};
-  FileError read_err = file_read_string(&fh, state->load_allocator, &file_str);
-  file_close(&fh);
-  if (read_err != FILE_ERROR_NONE) {
-    log_error("MeshLoader: failed to read obj '%s'", file_path.path.str);
-    *state->out_error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+  if (!vkr_mesh_loader_read_file_to_string(state->load_allocator,
+                                           state->obj_path, &file_str,
+                                           state->out_error))
     return false_v;
-  }
 
   uint64_t offset = 0;
   while (offset < file_str.length) {
-    uint64_t line_end = offset;
-    while (line_end < file_str.length && file_str.str[line_end] != '\n' &&
-           file_str.str[line_end] != '\r') {
-      line_end++;
-    }
-    String8 line = string8_substring(&file_str, offset, line_end);
-    offset = line_end;
-    while (offset < file_str.length &&
-           (file_str.str[offset] == '\n' || file_str.str[offset] == '\r')) {
-      offset++;
-    }
-    string8_trim(&line);
+    String8 line = {0};
+    vkr_mesh_loader_parse_next_line(&file_str, &offset, &line);
+
     if (line.length == 0 || line.str[0] == '#')
       continue;
 
+    Vec3 vec3_val;
     if (vkr_string8_starts_with(&line, "v ")) {
-      String8 coords = vkr_string8_trimmed_suffix(&line, 1);
-      String8 tokens[3];
-      uint32_t count = string8_split_whitespace(&coords, tokens, 3);
-      if (count >= 3) {
-        float32_t x = 0, y = 0, z = 0;
-        string8_to_f32(&tokens[0], &x);
-        string8_to_f32(&tokens[1], &y);
-        string8_to_f32(&tokens[2], &z);
-        vector_push_Vec3(&state->positions, vec3_new(x, y, z));
-      }
+      if (vkr_mesh_loader_parse_vec3_line(&line, 1, &vec3_val))
+        vector_push_Vec3(&state->positions, vec3_val);
       continue;
     }
 
     if (vkr_string8_starts_with(&line, "vn")) {
-      String8 coords = vkr_string8_trimmed_suffix(&line, 2);
-      String8 tokens[3];
-      uint32_t count = string8_split_whitespace(&coords, tokens, 3);
-      if (count >= 3) {
-        float32_t x = 0, y = 0, z = 0;
-        string8_to_f32(&tokens[0], &x);
-        string8_to_f32(&tokens[1], &y);
-        string8_to_f32(&tokens[2], &z);
-        vector_push_Vec3(&state->normals, vec3_new(x, y, z));
-      }
+      if (vkr_mesh_loader_parse_vec3_line(&line, 2, &vec3_val))
+        vector_push_Vec3(&state->normals, vec3_val);
       continue;
     }
 
     if (vkr_string8_starts_with(&line, "vt")) {
       String8 coords = vkr_string8_trimmed_suffix(&line, 2);
       String8 tokens[2];
-      uint32_t count = string8_split_whitespace(&coords, tokens, 2);
-      if (count >= 2) {
+      if (string8_split_whitespace(&coords, tokens, 2) >= 2) {
         float32_t u = 0, v = 0;
         string8_to_f32(&tokens[0], &u);
         string8_to_f32(&tokens[1], &v);
@@ -1028,9 +1026,8 @@ vkr_internal bool8_t vkr_mesh_loader_parse_obj(VkrMeshLoaderState *state) {
       String8 face = vkr_string8_trimmed_suffix(&line, 1);
       String8 tokens[64];
       uint32_t count = string8_split_whitespace(&face, tokens, 64);
-      if (count >= 3) {
+      if (count >= 3)
         vkr_mesh_loader_push_face(state, count, tokens);
-      }
       continue;
     }
   }
@@ -1055,7 +1052,6 @@ vkr_internal bool8_t vkr_mesh_loader_can_load(VkrResourceLoader *self,
   return false_v;
 }
 
-// Internal: Read binary cache without loading materials
 vkr_internal bool8_t vkr_mesh_loader_read_binary_no_materials(
     VkrMeshLoaderState *state, String8 cache_path) {
   assert_log(state != NULL, "State is NULL");
@@ -1067,11 +1063,9 @@ vkr_internal bool8_t vkr_mesh_loader_read_binary_no_materials(
       file_path_create((const char *)cache_path.str, state->load_allocator,
                        FILE_PATH_TYPE_RELATIVE);
 
-  if (!file_exists(&file_path)) {
+  if (!file_exists(&file_path))
     return false_v;
-  }
 
-  // Read file data
   uint8_t *data = NULL;
   uint64_t size = 0;
 
@@ -1081,15 +1075,13 @@ vkr_internal bool8_t vkr_mesh_loader_read_binary_no_materials(
 
   FileHandle fh = {0};
   FileError ferr = file_open(&file_path, mode, &fh);
-  if (ferr != FILE_ERROR_NONE) {
+  if (ferr != FILE_ERROR_NONE)
     return false_v;
-  }
 
   FileError read_err = file_read_all(&fh, state->load_allocator, &data, &size);
   file_close(&fh);
-  if (read_err != FILE_ERROR_NONE || !data || size == 0) {
+  if (read_err != FILE_ERROR_NONE || !data || size == 0)
     return false_v;
-  }
 
   VkrMeshLoaderBinaryReader reader = {.ptr = data, .end = data + size};
 
@@ -1215,14 +1207,12 @@ vkr_internal bool8_t vkr_mesh_loader_read_binary_no_materials(
   return true_v;
 }
 
-// Job function for loading a single mesh
 vkr_internal bool8_t vkr_mesh_load_job_run(VkrJobContext *ctx, void *payload) {
   VkrMeshLoadJobPayload *job = (VkrMeshLoadJobPayload *)payload;
 
   *job->success = false_v;
   *job->error = VKR_RENDERER_ERROR_NONE;
 
-  // Use the job's thread-local allocator for temporary/scratch allocations
   VkrAllocator *job_scratch = ctx->allocator;
   if (!job_scratch) {
     log_error("MeshLoader: job context allocator is NULL");
@@ -1234,28 +1224,19 @@ vkr_internal bool8_t vkr_mesh_load_job_run(VkrJobContext *ctx, void *payload) {
       job->context, job->result_allocator, job_scratch, job_scratch,
       job->mesh_path, job->error);
 
-  // Try to load from cache first
   String8 cache_path = vkr_mesh_loader_cache_path(&state);
   bool8_t loaded_from_cache = false_v;
 
-  if (cache_path.str) {
+  if (cache_path.str)
     loaded_from_cache =
         vkr_mesh_loader_read_binary_no_materials(&state, cache_path);
-  }
 
   if (!loaded_from_cache) {
-    // Parse OBJ (this will populate subsets and materials)
-    if (!vkr_mesh_loader_parse_obj(&state)) {
+    if (!vkr_mesh_loader_parse_obj(&state))
       return false_v;
-    }
 
-    // Write cache for next time
-    if (cache_path.str) {
+    if (cache_path.str)
       vkr_mesh_loader_write_binary(&state, cache_path);
-    }
-
-    // Material paths are stored in subset->material_name
-    // They will be collected on the main thread after all jobs complete
   }
 
   if (state.subsets.length == 0) {
@@ -1269,7 +1250,6 @@ vkr_internal bool8_t vkr_mesh_load_job_run(VkrJobContext *ctx, void *payload) {
     array_set_VkrMeshLoaderSubset(&subset_array, i, state.subsets.data[i]);
   }
 
-  // arena is already set in batch loader
   job->result->source_path =
       string8_duplicate(job->result_allocator, &job->mesh_path);
   job->result->root_transform = vkr_transform_identity();
@@ -1279,6 +1259,26 @@ vkr_internal bool8_t vkr_mesh_load_job_run(VkrJobContext *ctx, void *payload) {
   return true_v;
 }
 
+vkr_internal void vkr_mesh_loader_cleanup_arenas(
+    VkrMeshLoaderResult **results, Arena **arenas, void **pool_chunks,
+    uint32_t count, VkrArenaPool *arena_pool) {
+  for (uint32_t i = 0; i < count; i++) {
+    if (results[i])
+      vkr_allocator_release_global_accounting(&results[i]->allocator);
+    if (arenas[i])
+      arena_destroy(arenas[i]);
+    if (pool_chunks[i] && arena_pool)
+      vkr_arena_pool_release(arena_pool, pool_chunks[i]);
+  }
+}
+
+vkr_internal void vkr_mesh_loader_set_all_errors(VkrMeshBatchResult *results,
+                                                 uint32_t count,
+                                                 VkrRendererError error) {
+  for (uint32_t i = 0; i < count; i++)
+    results[i].error = error;
+}
+
 vkr_internal uint32_t vkr_mesh_loader_load_batch(
     VkrMeshLoaderContext *context, const String8 *mesh_paths, uint32_t count,
     VkrAllocator *temp_alloc, VkrMeshBatchResult *out_results) {
@@ -1286,11 +1286,9 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
   assert_log(mesh_paths != NULL, "Mesh paths is NULL");
   assert_log(out_results != NULL, "Out results is NULL");
 
-  if (count == 0) {
+  if (count == 0)
     return 0;
-  }
 
-  // Initialize outputs
   for (uint32_t i = 0; i < count; i++) {
     out_results[i].result = NULL;
     out_results[i].error = VKR_RENDERER_ERROR_NONE;
@@ -1332,20 +1330,17 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
   if (!results || !result_arenas || !pool_chunks || !result_allocators ||
       !errors || !success || !job_handles || !payloads || !job_submitted) {
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    for (uint32_t i = 0; i < count; i++) {
-      out_results[i].error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    }
+    vkr_mesh_loader_set_all_errors(out_results, count,
+                                   VKR_RENDERER_ERROR_OUT_OF_MEMORY);
     return 0;
   }
 
-  // Arena pool is required for mesh loading
   VkrArenaPool *arena_pool = context->arena_pool;
   if (!arena_pool || !arena_pool->initialized) {
     log_error("Mesh loader requires arena_pool to be initialized");
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    for (uint32_t i = 0; i < count; i++) {
-      out_results[i].error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
-    }
+    vkr_mesh_loader_set_all_errors(out_results, count,
+                                   VKR_RENDERER_ERROR_INITIALIZATION_FAILED);
     return 0;
   }
 
@@ -1353,14 +1348,11 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
     pool_chunks[i] = vkr_arena_pool_acquire(arena_pool);
     if (!pool_chunks[i]) {
       log_error("Arena pool exhausted at mesh %u/%u", i, count);
-      for (uint32_t k = 0; k < i; k++) {
-        arena_destroy(result_arenas[k]);
-        vkr_arena_pool_release(arena_pool, pool_chunks[k]);
-      }
+      vkr_mesh_loader_cleanup_arenas(results, result_arenas, pool_chunks, i,
+                                     arena_pool);
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      for (uint32_t k = 0; k < count; k++) {
-        out_results[k].error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      }
+      vkr_mesh_loader_set_all_errors(out_results, count,
+                                     VKR_RENDERER_ERROR_OUT_OF_MEMORY);
       return 0;
     }
 
@@ -1368,14 +1360,11 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
         arena_create_from_buffer(pool_chunks[i], arena_pool->chunk_size);
     if (!result_arenas[i]) {
       vkr_arena_pool_release(arena_pool, pool_chunks[i]);
-      for (uint32_t k = 0; k < i; k++) {
-        arena_destroy(result_arenas[k]);
-        vkr_arena_pool_release(arena_pool, pool_chunks[k]);
-      }
+      vkr_mesh_loader_cleanup_arenas(results, result_arenas, pool_chunks, i,
+                                     arena_pool);
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      for (uint32_t k = 0; k < count; k++) {
-        out_results[k].error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      }
+      vkr_mesh_loader_set_all_errors(out_results, count,
+                                     VKR_RENDERER_ERROR_OUT_OF_MEMORY);
       return 0;
     }
 
@@ -1386,39 +1375,36 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
         vkr_allocator_alloc(&result_allocators[i], sizeof(VkrMeshLoaderResult),
                             VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
     if (!results[i]) {
-      for (uint32_t k = 0; k <= i; k++) {
-        arena_destroy(result_arenas[k]);
-        vkr_arena_pool_release(arena_pool, pool_chunks[k]);
-      }
+      vkr_mesh_loader_cleanup_arenas(results, result_arenas, pool_chunks, i + 1,
+                                     arena_pool);
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      for (uint32_t k = 0; k < count; k++) {
-        out_results[k].error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      }
+      vkr_mesh_loader_set_all_errors(out_results, count,
+                                     VKR_RENDERER_ERROR_OUT_OF_MEMORY);
       return 0;
     }
+
     MemZero(results[i], sizeof(VkrMeshLoaderResult));
     results[i]->arena = result_arenas[i];
     results[i]->pool_chunk = pool_chunks[i];
+    results[i]->allocator = result_allocators[i];
 
     errors[i] = VKR_RENDERER_ERROR_NONE;
     success[i] = false_v;
     job_submitted[i] = false_v;
   }
 
-  // Submit all mesh load jobs in parallel
   if (job_sys) {
     Bitset8 type_mask = bitset8_create();
     bitset8_set(&type_mask, VKR_JOB_TYPE_RESOURCE);
 
     for (uint32_t i = 0; i < count; i++) {
-      if (!mesh_paths[i].str || mesh_paths[i].length == 0) {
+      if (!mesh_paths[i].str || mesh_paths[i].length == 0)
         continue;
-      }
 
       payloads[i] = (VkrMeshLoadJobPayload){
           .mesh_path = mesh_paths[i],
           .context = context,
-          .result_allocator = &result_allocators[i], // Per-job allocator
+          .result_allocator = &results[i]->allocator,
           .result = results[i],
           .error = &errors[i],
           .success = &success[i],
@@ -1437,28 +1423,23 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
           .defer_enqueue = false_v,
       };
 
-      if (vkr_job_submit(job_sys, &job_desc, &job_handles[i])) {
+      if (vkr_job_submit(job_sys, &job_desc, &job_handles[i]))
         job_submitted[i] = true_v;
-      }
     }
 
-    // Wait for all mesh load jobs to complete
     for (uint32_t i = 0; i < count; i++) {
-      if (job_submitted[i]) {
+      if (job_submitted[i])
         vkr_job_wait(job_sys, job_handles[i]);
-      }
     }
   } else {
-    // Synchronous fallback - use per-mesh allocators
     for (uint32_t i = 0; i < count; i++) {
-      if (!mesh_paths[i].str || mesh_paths[i].length == 0) {
+      if (!mesh_paths[i].str || mesh_paths[i].length == 0)
         continue;
-      }
 
       payloads[i] = (VkrMeshLoadJobPayload){
           .mesh_path = mesh_paths[i],
           .context = context,
-          .result_allocator = &result_allocators[i], // Per-mesh allocator
+          .result_allocator = &results[i]->allocator,
           .result = results[i],
           .error = &errors[i],
           .success = &success[i],
@@ -1473,17 +1454,15 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
     }
   }
 
-  // Collect ALL material paths from ALL meshes (on main thread for thread
-  // safety)
   uint32_t total_materials = 0;
   for (uint32_t i = 0; i < count; i++) {
-    if (success[i] && results[i]) {
-      for (uint64_t j = 0; j < results[i]->subsets.length; j++) {
-        VkrMeshLoaderSubset *subset = &results[i]->subsets.data[j];
-        if (subset->material_name.str && subset->material_name.length > 0) {
-          total_materials++;
-        }
-      }
+    if (!success[i] || !results[i])
+      continue;
+
+    for (uint64_t j = 0; j < results[i]->subsets.length; j++) {
+      VkrMeshLoaderSubset *subset = &results[i]->subsets.data[j];
+      if (subset->material_name.str && subset->material_name.length > 0)
+        total_materials++;
     }
   }
 
@@ -1491,7 +1470,6 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
             total_materials);
 
   if (total_materials > 0) {
-    // Allocate material batch arrays
     String8 *all_material_paths =
         vkr_allocator_alloc(temp_alloc, sizeof(String8) * total_materials,
                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -1510,7 +1488,6 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
 
     if (!all_material_paths || !all_material_handles || !all_material_errors ||
         !material_mesh_index || !material_subset_index) {
-      // Clean up and fall back to individual loading
       for (uint32_t i = 0; i < count; i++) {
         if (success[i] && results[i]) {
           out_results[i].result = results[i];
@@ -1524,7 +1501,6 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
       return count;
     }
 
-    // Collect all material paths from subsets (main thread, thread-safe)
     uint32_t mat_idx = 0;
     for (uint32_t i = 0; i < count; i++) {
       if (!success[i] || !results[i])
@@ -1541,15 +1517,13 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
       }
     }
 
-    // Batch load ALL materials via resource system (uses parallel loading)
     VkrResourceHandleInfo *material_handle_infos = vkr_allocator_alloc(
         temp_alloc, sizeof(VkrResourceHandleInfo) * total_materials,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     if (!material_handle_infos) {
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      for (uint32_t i = 0; i < count; i++) {
-        out_results[i].error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      }
+      vkr_mesh_loader_set_all_errors(out_results, count,
+                                     VKR_RENDERER_ERROR_OUT_OF_MEMORY);
       return 0;
     }
 
@@ -1560,7 +1534,6 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
     log_debug("Mesh batch: %u/%u materials loaded", materials_loaded,
               total_materials);
 
-    // Extract material handles and assign directly to subsets
     for (uint32_t m = 0; m < total_materials; m++) {
       VkrMaterialHandle mat_handle = VKR_MATERIAL_HANDLE_INVALID;
       if (material_handle_infos[m].type == VKR_RESOURCE_TYPE_MATERIAL) {
@@ -1581,7 +1554,6 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
     }
   }
 
-  // Build final results
   uint32_t loaded_count = 0;
   for (uint32_t i = 0; i < count; i++) {
     if (success[i] && results[i]) {
@@ -1592,7 +1564,6 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
     } else {
       out_results[i].error = errors[i];
       out_results[i].success = false_v;
-      // No arena to destroy - using context allocator
     }
   }
 
@@ -1601,10 +1572,6 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
             loaded_count, count);
   return loaded_count;
 }
-
-// =============================================================================
-// Resource System Callbacks
-// =============================================================================
 
 vkr_internal bool8_t vkr_mesh_loader_load(VkrResourceLoader *self, String8 name,
                                           VkrAllocator *temp_alloc,
@@ -1617,7 +1584,6 @@ vkr_internal bool8_t vkr_mesh_loader_load(VkrResourceLoader *self, String8 name,
 
   VkrMeshLoaderContext *context = (VkrMeshLoaderContext *)self->resource_system;
 
-  // Use batch loader with count=1
   VkrMeshBatchResult batch_result = {0};
   uint32_t loaded =
       vkr_mesh_loader_load_batch(context, &name, 1, temp_alloc, &batch_result);
@@ -1641,7 +1607,7 @@ vkr_internal void vkr_mesh_loader_unload(VkrResourceLoader *self,
                                          String8 name) {
   assert_log(self != NULL, "Self is NULL");
   assert_log(handle != NULL, "Handle is NULL");
-  (void)name; // Name not needed for mesh unload
+  (void)name;
 
   if (handle->type != VKR_RESOURCE_TYPE_MESH) {
     log_warn("MeshLoader: attempted to unload non-mesh resource");
@@ -1651,30 +1617,25 @@ vkr_internal void vkr_mesh_loader_unload(VkrResourceLoader *self,
   VkrMeshLoaderContext *context = (VkrMeshLoaderContext *)self->resource_system;
   VkrMeshLoaderResult *result = handle->as.mesh;
 
-  if (!result) {
+  if (!result)
     return;
-  }
 
-  // Release material handles for each subset
-  if (result->subsets.data) {
+  if (result->subsets.data && context->material_system) {
     for (uint64_t i = 0; i < result->subsets.length; i++) {
       VkrMeshLoaderSubset *subset = &result->subsets.data[i];
-      if (subset->material_handle.id != 0 && context->material_system) {
+      if (subset->material_handle.id != 0)
         vkr_material_system_release(context->material_system,
                                     subset->material_handle);
-      }
     }
   }
 
-  void *pool_chunk = result->pool_chunk;
-
   if (result->arena) {
+    vkr_allocator_release_global_accounting(&result->allocator);
     arena_destroy(result->arena);
   }
 
-  if (pool_chunk) {
-    vkr_arena_pool_release(context->arena_pool, pool_chunk);
-  }
+  if (result->pool_chunk)
+    vkr_arena_pool_release(context->arena_pool, result->pool_chunk);
 }
 
 vkr_internal uint32_t vkr_mesh_loader_batch_load(
@@ -1688,23 +1649,18 @@ vkr_internal uint32_t vkr_mesh_loader_batch_load(
 
   VkrMeshLoaderContext *context = (VkrMeshLoaderContext *)self->resource_system;
 
-  // Allocate batch results array (allocated from temp_alloc, freed by internal
-  // function's scope)
   VkrMeshBatchResult *batch_results =
       vkr_allocator_alloc(temp_alloc, sizeof(VkrMeshBatchResult) * count,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!batch_results) {
-    for (uint32_t i = 0; i < count; i++) {
+    for (uint32_t i = 0; i < count; i++)
       out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    }
     return 0;
   }
 
-  // Call the internal batch loader (handles its own scope on temp_alloc)
   uint32_t loaded = vkr_mesh_loader_load_batch(context, paths, count,
                                                temp_alloc, batch_results);
 
-  // Convert batch results to resource handle info
   for (uint32_t i = 0; i < count; i++) {
     if (batch_results[i].success && batch_results[i].result) {
       out_handles[i].type = VKR_RESOURCE_TYPE_MESH;
