@@ -482,6 +482,12 @@ void string_mid(char *dest, const char *source, int32_t start, int32_t length) {
   }
 }
 
+char *string_get_last_char_occurrence(const char *str, int32_t ch) {
+  assert(str != NULL && "String is NULL");
+  assert(ch >= 0 && "Character is negative");
+  return strrchr(str, ch);
+}
+
 int32_t string_index_of(const char *str, char c) {
   if (!str) {
     return -1;

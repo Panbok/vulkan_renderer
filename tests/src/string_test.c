@@ -493,6 +493,18 @@ static void test_cstring_mid(void) {
   printf("  test_cstring_mid PASSED\n");
 }
 
+static void test_cstring_get_last_char_occurrence(void) {
+  printf("  Running test_cstring_get_last_char_occurrence...\n");
+  setup_suite();
+  char *s = "Hello, World!";
+  const char *last = string_get_last_char_occurrence(s, 'o');
+  assert(last != NULL && "Last occurrence not found");
+  assert(*last == 'o' && "Pointer does not point to 'o'");
+  assert(last == s + 8 && "Pointer does not point to correct position");
+  teardown_suite();
+  printf("  test_cstring_get_last_char_occurrence PASSED\n");
+}
+
 static void test_string_conversions(void) {
   printf("  Running test_string_conversions...\n");
   float64_t d;
@@ -568,6 +580,7 @@ bool32_t run_string_tests(void) {
   test_cstring_ncopy();
   test_cstring_trim();
   test_cstring_mid();
+  test_cstring_get_last_char_occurrence();
   test_cstring_index_of();
   test_string_conversions();
 
