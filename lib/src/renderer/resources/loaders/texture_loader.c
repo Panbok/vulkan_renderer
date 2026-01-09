@@ -114,6 +114,7 @@ vkr_internal void vkr_texture_loader_unload(VkrResourceLoader *self,
   }
 
   uint32_t texture_index = entry->index;
+  const char *stable_name = entry->name;
 
   // Don't remove default texture
   if (texture_index == system->default_texture.id - 1) {
@@ -132,6 +133,13 @@ vkr_internal void vkr_texture_loader_unload(VkrResourceLoader *self,
   // Remove from hash table
   vkr_hash_table_remove_VkrTextureEntry(&system->texture_map,
                                         texture_key_buffer);
+
+  if (stable_name &&
+      vkr_dmemory_owns_ptr(&system->string_memory, (void *)stable_name)) {
+    uint64_t len = string_length(stable_name) + 1;
+    vkr_allocator_free(&system->string_allocator, (void *)stable_name, len,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
 
   // Update free index for slot reuse
   if (texture_index < system->next_free_index) {
