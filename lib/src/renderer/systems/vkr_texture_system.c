@@ -3,6 +3,7 @@
 #include "defines.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_resource_system.h"
 
 #include "stb_image.h"
@@ -486,6 +487,16 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   out_system->job_system = job_system;
   out_system->allocator = (VkrAllocator){.ctx = out_system->arena};
   vkr_allocator_arena(&out_system->allocator);
+
+  if (!vkr_dmemory_create(MB(1), MB(16), &out_system->string_memory)) {
+    log_error("Failed to create texture system string allocator");
+    arena_destroy(out_system->arena);
+    MemZero(out_system, sizeof(*out_system));
+    return false_v;
+  }
+  out_system->string_allocator = (VkrAllocator){.ctx = &out_system->string_memory};
+  vkr_dmemory_allocator_create(&out_system->string_allocator);
+
   out_system->textures = array_create_VkrTexture(&out_system->allocator,
                                                  config->max_texture_count);
   out_system->texture_map = vkr_hash_table_create_VkrTextureEntry(
@@ -496,6 +507,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
           VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   if (!out_system->cache_guard) {
     log_error("Failed to allocate texture cache write guard");
+    vkr_texture_system_shutdown(renderer, out_system);
     return false_v;
   }
 
@@ -503,6 +515,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   if (!vkr_mutex_create(&out_system->allocator,
                         &out_system->cache_guard->mutex)) {
     log_error("Failed to create texture cache write guard mutex");
+    vkr_texture_system_shutdown(renderer, out_system);
     return false_v;
   }
 
@@ -513,7 +526,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
                                                       guard_capacity);
   if (!out_system->cache_guard->inflight.entries) {
     log_error("Failed to create texture cache write guard hash table");
-    vkr_mutex_destroy(&out_system->allocator, &out_system->cache_guard->mutex);
+    vkr_texture_system_shutdown(renderer, out_system);
     return false_v;
   }
 
@@ -556,6 +569,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
       vkr_allocator_begin_scope(&out_system->allocator);
   if (!vkr_allocator_scope_is_valid(&image_scope)) {
     log_error("Failed to allocate memory for default texture");
+    vkr_texture_system_shutdown(renderer, out_system);
     return false_v;
   }
   default_texture->image = vkr_allocator_alloc(
@@ -690,8 +704,50 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
       .id = default_specular->description.id,
       .generation = default_specular->description.generation};
 
+  // Create a 1x1 white diffuse texture for materials without diffuse maps.
+  // Using white (1,1,1,1) ensures material diffuse_color is preserved.
+  VkrTexture *default_diffuse = &out_system->textures.data[3];
+  default_diffuse->description = (VkrTextureDescription){
+      .width = 1,
+      .height = 1,
+      .channels = 4,
+      .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      .type = VKR_TEXTURE_TYPE_2D,
+      .properties = bitset8_create(),
+      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+      .anisotropy_enable = false_v,
+      .generation = VKR_INVALID_ID,
+  };
+
+  const uint8_t white_pixel[4] = {255, 255, 255, 255};
+  VkrRendererError diffuse_err = VKR_RENDERER_ERROR_NONE;
+  default_diffuse->handle =
+      vkr_renderer_create_texture(renderer, &default_diffuse->description,
+                                  white_pixel, &diffuse_err);
+  if (diffuse_err != VKR_RENDERER_ERROR_NONE) {
+    String8 error_string = vkr_renderer_get_error_string(diffuse_err);
+    log_error("Failed to create default diffuse texture: %s",
+              string8_cstr(&error_string));
+    // Clean up previously created textures
+    vkr_renderer_destroy_texture(renderer, default_specular->handle);
+    vkr_renderer_destroy_texture(renderer, default_normal->handle);
+    return false_v;
+  }
+
+  default_diffuse->description.id = 4; // slot 3 -> id 4
+  default_diffuse->description.generation = out_system->generation_counter++;
+  default_diffuse->image = NULL;
+  out_system->default_diffuse_texture = (VkrTextureHandle){
+      .id = default_diffuse->description.id,
+      .generation = default_diffuse->description.generation};
+
   // Ensure first free search starts after reserved defaults
-  out_system->next_free_index = 3;
+  out_system->next_free_index = 4;
 
   return true_v;
 }
@@ -717,6 +773,9 @@ void vkr_texture_system_shutdown(VkrRendererFrontendHandle renderer,
   }
 
   array_destroy_VkrTexture(&system->textures);
+  if (system->string_allocator.ctx) {
+    vkr_dmemory_allocator_destroy(&system->string_allocator);
+  }
   arena_destroy(system->arena);
   MemZero(system, sizeof(*system));
 }
@@ -795,7 +854,8 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
   }
 
   char *stable_key = (char *)vkr_allocator_alloc(
-      &system->allocator, name.length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      &system->string_allocator, name.length + 1,
+      VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stable_key) {
     log_error("Failed to allocate key copy for texture map");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -811,11 +871,17 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
   texture->handle = handle;
 
   VkrTextureEntry entry = {
-      .index = free_slot_index, .ref_count = 1, .auto_release = false_v};
+      .index = free_slot_index,
+      .ref_count = 1,
+      .auto_release = false_v,
+      .name = stable_key,
+  };
   bool8_t insert_success = vkr_hash_table_insert_VkrTextureEntry(
       &system->texture_map, stable_key, entry);
   if (!insert_success) {
     log_error("Failed to insert texture '%s' into hash table", stable_key);
+    vkr_allocator_free(&system->string_allocator, stable_key,
+                       name.length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     vkr_renderer_destroy_texture(system->renderer, handle);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
@@ -1087,7 +1153,8 @@ vkr_texture_system_register_external(VkrTextureSystem *system, String8 name,
   }
 
   char *stable_key = (char *)vkr_allocator_alloc(
-      &system->allocator, name.length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      &system->string_allocator, name.length + 1,
+      VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stable_key) {
     log_error("Failed to allocate key copy for external texture map");
     return false_v;
@@ -1103,12 +1170,18 @@ vkr_texture_system_register_external(VkrTextureSystem *system, String8 name,
   texture->handle = backend_handle;
 
   VkrTextureEntry entry = {
-      .index = free_slot_index, .ref_count = 1, .auto_release = false_v};
+      .index = free_slot_index,
+      .ref_count = 1,
+      .auto_release = false_v,
+      .name = stable_key,
+  };
   bool8_t insert_success = vkr_hash_table_insert_VkrTextureEntry(
       &system->texture_map, stable_key, entry);
   if (!insert_success) {
     log_error("Failed to insert external texture '%s' into hash table",
               stable_key);
+    vkr_allocator_free(&system->string_allocator, stable_key,
+                       name.length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     vkr_renderer_destroy_texture(system->renderer, backend_handle);
     texture->description.generation = VKR_INVALID_ID;
     return false_v;
@@ -1177,6 +1250,12 @@ vkr_texture_system_get_default_handle(VkrTextureSystem *system) {
     return VKR_TEXTURE_HANDLE_INVALID;
   return (VkrTextureHandle){.id = texture->description.id,
                             .generation = texture->description.generation};
+}
+
+VkrTextureHandle
+vkr_texture_system_get_default_diffuse_handle(VkrTextureSystem *system) {
+  assert_log(system != NULL, "System is NULL");
+  return system->default_diffuse_texture;
 }
 
 VkrTextureHandle
@@ -1393,17 +1472,7 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
 
   VkrTextureRequest request = vkr_texture_parse_request(file_path);
   String8 base_path = request.base_path;
-
-  char *c_string_path =
-      (char *)vkr_allocator_alloc(&system->allocator, base_path.length + 1,
-                                  VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  if (!c_string_path) {
-    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-  }
-  MemCopy(c_string_path, base_path.str, (size_t)base_path.length);
-  c_string_path[base_path.length] = '\0';
-  out_texture->file_path = file_path_create(c_string_path, &system->allocator,
-                                            FILE_PATH_TYPE_RELATIVE);
+  out_texture->file_path = (FilePath){0};
 
   VkrTextureDecodeResult decode_result = {
       .decoded_pixels = NULL,
@@ -1596,7 +1665,8 @@ bool8_t vkr_texture_system_load(VkrTextureSystem *system, String8 name,
   }
 
   char *stable_key = (char *)vkr_allocator_alloc(
-      &system->allocator, name.length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      &system->string_allocator, name.length + 1,
+      VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stable_key) {
     log_error("Failed to allocate key copy for texture map");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -1618,9 +1688,21 @@ bool8_t vkr_texture_system_load(VkrTextureSystem *system, String8 name,
 
   // Add to hash table with 0 ref count
   VkrTextureEntry new_entry = {
-      .index = free_slot_index, .ref_count = 0, .auto_release = true_v};
-  vkr_hash_table_insert_VkrTextureEntry(&system->texture_map, stable_key,
-                                        new_entry);
+      .index = free_slot_index,
+      .ref_count = 0,
+      .auto_release = true_v,
+      .name = stable_key,
+  };
+  if (!vkr_hash_table_insert_VkrTextureEntry(&system->texture_map, stable_key,
+                                             new_entry)) {
+    log_error("Failed to insert texture '%s' into hash table", stable_key);
+    vkr_allocator_free(&system->string_allocator, stable_key,
+                       name.length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    vkr_renderer_destroy_texture(system->renderer, texture->handle);
+    MemZero(texture, sizeof(*texture));
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
 
   VkrTextureHandle handle = {.id = texture->description.id,
                              .generation = texture->description.generation};
@@ -1978,7 +2060,8 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
 
     // Store stable key
     char *stable_key =
-        (char *)vkr_allocator_alloc(&system->allocator, paths[i].length + 1,
+        (char *)vkr_allocator_alloc(&system->string_allocator,
+                                    paths[i].length + 1,
                                     VKR_ALLOCATOR_MEMORY_TAG_STRING);
     if (!stable_key) {
       out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -1998,9 +2081,20 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
 
     // Add to hash table
     VkrTextureEntry new_entry = {
-        .index = free_slot_index, .ref_count = 0, .auto_release = true_v};
-    vkr_hash_table_insert_VkrTextureEntry(&system->texture_map, stable_key,
-                                          new_entry);
+        .index = free_slot_index,
+        .ref_count = 0,
+        .auto_release = true_v,
+        .name = stable_key,
+    };
+    if (!vkr_hash_table_insert_VkrTextureEntry(&system->texture_map, stable_key,
+                                               new_entry)) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      vkr_allocator_free(&system->string_allocator, stable_key,
+                         paths[i].length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      vkr_renderer_destroy_texture(system->renderer, gpu_handle);
+      MemZero(texture, sizeof(*texture));
+      continue;
+    }
 
     out_handles[i] =
         (VkrTextureHandle){.id = texture->description.id,
@@ -2207,7 +2301,8 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
 
   // Create stable key for the cube map
   char *stable_key =
-      (char *)vkr_allocator_alloc(&system->allocator, base_path.length + 16,
+      (char *)vkr_allocator_alloc(&system->string_allocator,
+                                  base_path.length + 16,
                                   VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stable_key) {
     vkr_renderer_destroy_texture(system->renderer, backend_handle);
@@ -2229,11 +2324,17 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
 
   // Add to hash table
   VkrTextureEntry new_entry = {
-      .index = free_slot_index, .ref_count = 1, .auto_release = false_v};
+      .index = free_slot_index,
+      .ref_count = 1,
+      .auto_release = false_v,
+      .name = stable_key,
+  };
   bool8_t insert_success = vkr_hash_table_insert_VkrTextureEntry(
       &system->texture_map, stable_key, new_entry);
   if (!insert_success) {
     log_error("Failed to insert cube map '%s' into hash table", stable_key);
+    vkr_allocator_free(&system->string_allocator, stable_key,
+                       base_path.length + 16, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     vkr_renderer_destroy_texture(system->renderer, backend_handle);
     texture->description.generation = VKR_INVALID_ID;
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);

@@ -4,6 +4,7 @@
 #include "core/vkr_job_system.h"
 #include "defines.h"
 #include "memory/arena.h"
+#include "memory/vkr_dmemory.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/vkr_renderer.h"
 
@@ -21,6 +22,7 @@ typedef struct VkrTextureEntry {
   uint32_t index;       // index into textures array
   uint32_t ref_count;   // reference count
   bool8_t auto_release; // release when ref_count hits 0
+  const char *name;     // stable key for freeing on unload
 } VkrTextureEntry;
 VkrHashTable(VkrTextureEntry);
 
@@ -32,6 +34,8 @@ typedef struct VkrTextureSystem {
   VkrRendererFrontendHandle renderer;
   Arena *arena;           // internal arena owned by the system
   VkrAllocator allocator; // persistent allocator wrapping arena
+  VkrDMemory string_memory;    // dynamic strings (freed on unload)
+  VkrAllocator string_allocator; // allocator wrapper for string_memory
   VkrTextureSystemConfig config;
 
   Array_VkrTexture textures; // contiguous array of textures
@@ -42,7 +46,8 @@ typedef struct VkrTextureSystem {
   uint32_t generation_counter; // Monotonic generation counter for texture
                                // description generations
 
-  VkrTextureHandle default_texture;          // fallback texture
+  VkrTextureHandle default_texture;          // fallback texture (checkerboard)
+  VkrTextureHandle default_diffuse_texture;  // white diffuse fallback
   VkrTextureHandle default_normal_texture;   // flat normal fallback
   VkrTextureHandle default_specular_texture; // flat specular fallback
 
@@ -233,6 +238,14 @@ VkrTexture *vkr_texture_system_get_default(VkrTextureSystem *system);
  */
 VkrTextureHandle
 vkr_texture_system_get_default_handle(VkrTextureSystem *system);
+
+/**
+ * @brief Gets a handle to the default white diffuse texture.
+ *
+ * Used for materials without diffuse textures to preserve material color.
+ */
+VkrTextureHandle
+vkr_texture_system_get_default_diffuse_handle(VkrTextureSystem *system);
 
 /**
  * @brief Gets a handle to the default flat normal map
