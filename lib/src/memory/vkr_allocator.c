@@ -110,24 +110,6 @@ vkr_allocator_stats_snapshot(const VkrAllocatorStatisticsAtomic *src) {
   return stats;
 }
 
-vkr_internal INLINE uint32_t
-vkr_allocator_format_size_to_buffer(char *buffer, size_t buffer_size,
-                                    const char *tag_name, uint64_t size_stat) {
-  if (size_stat < KB(1)) {
-    return snprintf(buffer, buffer_size, "%s: %llu Bytes\n", tag_name,
-                    (unsigned long long)size_stat);
-  } else if (size_stat < MB(1)) {
-    return snprintf(buffer, buffer_size, "%s: %.2f KB\n", tag_name,
-                    (double)size_stat / KB(1));
-  } else if (size_stat < GB(1)) {
-    return snprintf(buffer, buffer_size, "%s: %.2f MB\n", tag_name,
-                    (double)size_stat / MB(1));
-  } else {
-    return snprintf(buffer, buffer_size, "%s: %.2f GB\n", tag_name,
-                    (double)size_stat / GB(1));
-  }
-}
-
 vkr_internal INLINE char *
 vkr_allocator_format_statistics(VkrAllocator *allocator,
                                 const VkrAllocatorStatistics *stats) {
@@ -188,6 +170,24 @@ vkr_allocator_format_statistics(VkrAllocator *allocator,
   }
 
   return result_str;
+}
+
+uint32_t vkr_allocator_format_size_to_buffer(char *buffer, size_t buffer_size,
+                                             const char *tag_name,
+                                             uint64_t size_stat) {
+  if (size_stat < KB(1)) {
+    return snprintf(buffer, buffer_size, "%s: %llu Bytes\n", tag_name,
+                    (unsigned long long)size_stat);
+  } else if (size_stat < MB(1)) {
+    return snprintf(buffer, buffer_size, "%s: %.2f KB\n", tag_name,
+                    (double)size_stat / KB(1));
+  } else if (size_stat < GB(1)) {
+    return snprintf(buffer, buffer_size, "%s: %.2f MB\n", tag_name,
+                    (double)size_stat / MB(1));
+  } else {
+    return snprintf(buffer, buffer_size, "%s: %.2f GB\n", tag_name,
+                    (double)size_stat / GB(1));
+  }
 }
 
 void *_vkr_allocator_alloc(VkrAllocator *allocator, uint64_t size,
@@ -674,6 +674,40 @@ char *vkr_allocator_print_global_statistics(VkrAllocator *allocator) {
   VkrAllocatorStatistics snapshot =
       vkr_allocator_stats_snapshot(&g_vkr_allocator_stats);
   return vkr_allocator_format_statistics(allocator, &snapshot);
+}
+
+void vkr_allocator_release_global_accounting(VkrAllocator *allocator) {
+  if (!allocator) {
+    return;
+  }
+
+#if !VKR_ALLOCATOR_DISABLE_STATS
+  if (allocator->stats.total_allocated == 0) {
+    return;
+  }
+
+  if (allocator->stats.total_temp_bytes > 0) {
+    vkr_atomic_uint64_sub_saturate(&g_vkr_allocator_stats.total_temp_bytes,
+                                   allocator->stats.total_temp_bytes);
+    allocator->stats.total_temp_bytes = 0;
+  }
+
+  for (uint32_t tag = 0; tag < VKR_ALLOCATOR_MEMORY_TAG_MAX; ++tag) {
+    uint64_t bytes = allocator->stats.tagged_allocs[tag];
+    if (bytes == 0) {
+      continue;
+    }
+    vkr_atomic_uint64_sub_saturate(&g_vkr_allocator_stats.tagged_allocs[tag],
+                                   bytes);
+    allocator->stats.tagged_allocs[tag] = 0;
+  }
+
+  vkr_atomic_uint64_sub_saturate(&g_vkr_allocator_stats.total_allocated,
+                                 allocator->stats.total_allocated);
+  allocator->stats.total_allocated = 0;
+#else
+  (void)allocator;
+#endif
 }
 
 void vkr_allocator_report(VkrAllocator *allocator, uint64_t size,

@@ -313,6 +313,30 @@ VkrAllocatorStatistics vkr_allocator_get_global_statistics();
 char *vkr_allocator_print_global_statistics(VkrAllocator *allocator);
 
 /**
+ * @brief Adjust global allocator byte statistics as if all outstanding
+ *        allocations made through this allocator were freed.
+ *
+ * Intended for allocators that are destroyed/reset in bulk without calling
+ * `vkr_allocator_free()` for each allocation.
+ *
+ * @note Call this exactly once, immediately before destroying the allocator's
+ *       backing store.
+ */
+void vkr_allocator_release_global_accounting(VkrAllocator *allocator);
+
+/**
+ * @brief Formats the size to a buffer.
+ * @param buffer The buffer to format the size to.
+ * @param buffer_size The size of the buffer.
+ * @param tag_name The name of the tag.
+ * @param size_stat The size to format.
+ * @return The length of the formatted size.
+ */
+uint32_t vkr_allocator_format_size_to_buffer(char *buffer, size_t buffer_size,
+                                             const char *tag_name,
+                                             uint64_t size_stat);
+
+/**
  * @brief Reports externally allocated/freed memory to allocator statistics.
  *
  * @param allocator Allocator whose local stats should be updated (NULL to
