@@ -123,6 +123,34 @@ void vkr_text_3d_set_color(VkrText3D *text_3d, Vec4 color);
 void vkr_text_3d_set_transform(VkrText3D *text_3d, VkrTransform transform);
 
 /**
+ * @brief Returns the current transform.
+ * @param text_3d The text 3D instance.
+ * @return The current transform (identity when text_3d is NULL).
+ */
+VkrTransform vkr_text_3d_get_transform(const VkrText3D *text_3d);
+
+/**
+ * @brief Sets the position while preserving rotation/scale.
+ * @param text_3d The text 3D instance.
+ * @param position The position to set.
+ */
+void vkr_text_3d_set_position(VkrText3D *text_3d, Vec3 position);
+
+/**
+ * @brief Sets the rotation while preserving position/scale.
+ * @param text_3d The text 3D instance.
+ * @param rotation The rotation to set.
+ */
+void vkr_text_3d_set_rotation(VkrText3D *text_3d, VkrQuat rotation);
+
+/**
+ * @brief Sets the scale while preserving position/rotation.
+ * @param text_3d The text 3D instance.
+ * @param scale The scale to set.
+ */
+void vkr_text_3d_set_scale(VkrText3D *text_3d, Vec3 scale);
+
+/**
  * @brief Updates the text 3D instance.
  * @param text_3d The text 3D instance.
  */

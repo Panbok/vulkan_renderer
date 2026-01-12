@@ -719,6 +719,37 @@ void vkr_text_3d_set_transform(VkrText3D *text_3d, VkrTransform transform) {
   text_3d->transform = transform;
 }
 
+VkrTransform vkr_text_3d_get_transform(const VkrText3D *text_3d) {
+  if (!text_3d) {
+    return vkr_transform_identity();
+  }
+  return text_3d->transform;
+}
+
+void vkr_text_3d_set_position(VkrText3D *text_3d, Vec3 position) {
+  assert_log(text_3d != NULL, "Text3D instance is NULL");
+  if (!text_3d) {
+    return;
+  }
+  vkr_transform_set_position(&text_3d->transform, position);
+}
+
+void vkr_text_3d_set_rotation(VkrText3D *text_3d, VkrQuat rotation) {
+  assert_log(text_3d != NULL, "Text3D instance is NULL");
+  if (!text_3d) {
+    return;
+  }
+  vkr_transform_set_rotation(&text_3d->transform, rotation);
+}
+
+void vkr_text_3d_set_scale(VkrText3D *text_3d, Vec3 scale) {
+  assert_log(text_3d != NULL, "Text3D instance is NULL");
+  if (!text_3d) {
+    return;
+  }
+  vkr_transform_set_scale(&text_3d->transform, scale);
+}
+
 void vkr_text_3d_update(VkrText3D *text_3d) {
   assert_log(text_3d != NULL, "Text3D instance is NULL");
   assert_log(text_3d->initialized, "Text3D instance is not initialized");
