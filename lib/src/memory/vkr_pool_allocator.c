@@ -169,6 +169,7 @@ void vkr_pool_allocator_create(VkrAllocator *out_allocator) {
   out_allocator->begin_scope = NULL;
   out_allocator->end_scope = NULL;
   out_allocator->supports_scopes = false_v;
+  out_allocator->accounting_released = false_v;
 }
 
 void vkr_pool_allocator_destroy(VkrAllocator *allocator) {

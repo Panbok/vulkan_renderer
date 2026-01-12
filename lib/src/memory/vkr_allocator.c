@@ -123,7 +123,7 @@ vkr_allocator_format_statistics(VkrAllocator *allocator,
   for (uint32_t i = 0; i < num_tags; ++i) {
     const char *tag_name = VkrAllocatorMemoryTagNames[i];
     uint64_t size_stat = stats->tagged_allocs[i];
-    uint32_t current_line_len = 0;
+    size_t current_line_len = 0;
 
     current_line_len = vkr_allocator_format_size_to_buffer(
         line_buffer, sizeof(line_buffer), tag_name, size_stat);
@@ -149,7 +149,7 @@ vkr_allocator_format_statistics(VkrAllocator *allocator,
     for (uint32_t i = 0; i < num_tags; ++i) {
       const char *tag_name = VkrAllocatorMemoryTagNames[i];
       uint64_t size_stat = stats->tagged_allocs[i];
-      uint32_t current_line_len = 0;
+      size_t current_line_len = 0;
 
       current_line_len = vkr_allocator_format_size_to_buffer(
           current_write_pos, remaining_capacity, tag_name, size_stat);
@@ -172,20 +172,20 @@ vkr_allocator_format_statistics(VkrAllocator *allocator,
   return result_str;
 }
 
-uint32_t vkr_allocator_format_size_to_buffer(char *buffer, size_t buffer_size,
-                                             const char *tag_name,
-                                             uint64_t size_stat) {
+size_t vkr_allocator_format_size_to_buffer(char *buffer, size_t buffer_size,
+                                            const char *tag_name,
+                                            uint64_t size_stat) {
   if (size_stat < KB(1)) {
-    return snprintf(buffer, buffer_size, "%s: %llu Bytes\n", tag_name,
+    return snprintf(buffer, buffer_size, "%s: %llu bytes\n", tag_name,
                     (unsigned long long)size_stat);
   } else if (size_stat < MB(1)) {
-    return snprintf(buffer, buffer_size, "%s: %.2f KB\n", tag_name,
+    return snprintf(buffer, buffer_size, "%s: %.1f KB\n", tag_name,
                     (double)size_stat / KB(1));
   } else if (size_stat < GB(1)) {
-    return snprintf(buffer, buffer_size, "%s: %.2f MB\n", tag_name,
+    return snprintf(buffer, buffer_size, "%s: %.1f MB\n", tag_name,
                     (double)size_stat / MB(1));
   } else {
-    return snprintf(buffer, buffer_size, "%s: %.2f GB\n", tag_name,
+    return snprintf(buffer, buffer_size, "%s: %.1f GB\n", tag_name,
                     (double)size_stat / GB(1));
   }
 }
@@ -681,8 +681,17 @@ void vkr_allocator_release_global_accounting(VkrAllocator *allocator) {
     return;
   }
 
+  // Check if accounting has already been released to prevent double-decrement
+  if (allocator->accounting_released) {
+    assert_log(false, "vkr_allocator_release_global_accounting called on "
+                      "allocator with accounting already released");
+    return;
+  }
+
 #if !VKR_ALLOCATOR_DISABLE_STATS
+  // Idempotent check: if nothing was allocated, mark as released and return
   if (allocator->stats.total_allocated == 0) {
+    allocator->accounting_released = true;
     return;
   }
 
@@ -705,9 +714,10 @@ void vkr_allocator_release_global_accounting(VkrAllocator *allocator) {
   vkr_atomic_uint64_sub_saturate(&g_vkr_allocator_stats.total_allocated,
                                  allocator->stats.total_allocated);
   allocator->stats.total_allocated = 0;
-#else
-  (void)allocator;
 #endif
+
+  // Mark accounting as released after adjusting global stats
+  allocator->accounting_released = true;
 }
 
 void vkr_allocator_report(VkrAllocator *allocator, uint64_t size,

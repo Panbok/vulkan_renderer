@@ -159,6 +159,7 @@ struct VkrAllocator {
                     VkrAllocatorMemoryTag tag);
 
   bool8_t supports_scopes;
+  bool8_t accounting_released; // Set to true after release_global_accounting
 };
 
 /**
@@ -320,21 +321,37 @@ char *vkr_allocator_print_global_statistics(VkrAllocator *allocator);
  * `vkr_allocator_free()` for each allocation.
  *
  * @note Call this exactly once, immediately before destroying the allocator's
- *       backing store.
+ *       backing store. After this call, the allocator becomes unusable for
+ *       accounting purposes (accounting_released flag is set). Subsequent calls
+ *       to this function will assert/log and return early to prevent
+ *       double-decrement of global statistics.
+ *
+ * @note Thread safety: Callers must synchronize with concurrent
+ *       vkr_allocator_alloc/vkr_allocator_free users. This function modifies
+ *       global atomic statistics and the allocator's accounting_released flag.
+ *       It is idempotent if called multiple times (returns early if
+ *       accounting_released is already set or if total_allocated is zero).
  */
 void vkr_allocator_release_global_accounting(VkrAllocator *allocator);
 
 /**
- * @brief Formats the size to a buffer.
- * @param buffer The buffer to format the size to.
- * @param buffer_size The size of the buffer.
- * @param tag_name The name of the tag.
- * @param size_stat The size to format.
- * @return The length of the formatted size.
+ * @brief Formats a size value to a human-readable string in a buffer.
+ *
+ * Formats the size using units: "bytes" (< 1 KB), "KB" (1 KB - 1 MB), "MB"
+ * (1 MB - 1 GB), or "GB" (>= 1 GB). Decimal values use one decimal place
+ * (e.g., "1.5 MB").
+ *
+ * @param buffer The buffer to write the formatted string to.
+ * @param buffer_size The size of the buffer in bytes.
+ * @param tag_name The tag name to include in the output (e.g., "RENDERER").
+ * @param size_stat The size value in bytes to format.
+ * @return The number of characters that would have been written (excluding the
+ *         null terminator). If the return value >= buffer_size, the output was
+ *         truncated. The buffer is always null-terminated when buffer_size > 0.
  */
-uint32_t vkr_allocator_format_size_to_buffer(char *buffer, size_t buffer_size,
-                                             const char *tag_name,
-                                             uint64_t size_stat);
+size_t vkr_allocator_format_size_to_buffer(char *buffer, size_t buffer_size,
+                                           const char *tag_name,
+                                           uint64_t size_stat);
 
 /**
  * @brief Reports externally allocated/freed memory to allocator statistics.

@@ -67,8 +67,7 @@ vkr_internal INLINE void *arena_realloc_aligned_cb(void *ctx, void *ptr,
     return ptr;
   }
 
-  void *p =
-      arena_alloc_aligned(arena, new_size, alignment, to_arena_tag(tag));
+  void *p = arena_alloc_aligned(arena, new_size, alignment, to_arena_tag(tag));
   if (!p)
     return NULL;
 
@@ -161,6 +160,7 @@ bool8_t vkr_allocator_arena(VkrAllocator *out_allocator) {
   out_allocator->begin_scope = arena_begin_scope_cb;
   out_allocator->end_scope = arena_end_scope_cb;
   out_allocator->supports_scopes = true_v;
+  out_allocator->accounting_released = false_v;
 
   return true_v;
 }

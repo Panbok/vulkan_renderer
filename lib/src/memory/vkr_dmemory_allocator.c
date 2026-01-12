@@ -100,6 +100,7 @@ void vkr_dmemory_allocator_create(VkrAllocator *out_allocator) {
   out_allocator->alloc_aligned = dmemory_alloc_aligned_cb;
   out_allocator->free_aligned = dmemory_free_aligned_cb;
   out_allocator->realloc_aligned = dmemory_realloc_aligned_cb;
+  out_allocator->accounting_released = false_v;
 }
 
 void vkr_dmemory_allocator_destroy(VkrAllocator *allocator) {
