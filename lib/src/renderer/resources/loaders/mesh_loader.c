@@ -123,9 +123,11 @@ vkr_internal void vkr_mesh_loader_parse_next_line(String8 *file_str,
 vkr_internal bool8_t vkr_mesh_loader_parse_vec3_line(String8 *line,
                                                      uint32_t prefix_len,
                                                      Vec3 *out_vec);
-vkr_internal void vkr_mesh_loader_cleanup_arenas(
-    VkrMeshLoaderResult **results, Arena **arenas, void **pool_chunks,
-    uint32_t count, VkrArenaPool *arena_pool);
+vkr_internal void vkr_mesh_loader_cleanup_arenas(VkrMeshLoaderResult **results,
+                                                 Arena **arenas,
+                                                 void **pool_chunks,
+                                                 uint32_t count,
+                                                 VkrArenaPool *arena_pool);
 vkr_internal void vkr_mesh_loader_set_all_errors(VkrMeshBatchResult *results,
                                                  uint32_t count,
                                                  VkrRendererError error);
@@ -224,7 +226,8 @@ vkr_mesh_loader_read_vec3(VkrMeshLoaderBinaryReader *reader, Vec3 *out) {
 vkr_internal bool8_t vkr_mesh_loader_read_string(
     VkrMeshLoaderBinaryReader *reader, VkrAllocator *allocator, String8 *out) {
   uint32_t len = 0;
-  if (!vkr_mesh_loader_read_u32(reader, &len) || reader->ptr + len > reader->end)
+  if (!vkr_mesh_loader_read_u32(reader, &len) ||
+      reader->ptr + len > reader->end)
     return false_v;
 
   String8 view = {.str = reader->ptr, .length = len};
@@ -666,8 +669,8 @@ vkr_internal void vkr_mesh_loader_compute_bounds(const VkrVertex3d *vertices,
                                                  uint32_t count, Vec3 *out_min,
                                                  Vec3 *out_max,
                                                  Vec3 *out_center) {
-  Vec3 min = vec3_new(FLT_MAX, FLT_MAX, FLT_MAX);
-  Vec3 max = vec3_new(-FLT_MAX, -FLT_MAX, -FLT_MAX);
+  Vec3 min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
+  Vec3 max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
 
   for (uint32_t i = 0; i < count; ++i) {
     Vec3 pos = vertices[i].position;
@@ -962,9 +965,8 @@ vkr_internal bool8_t vkr_mesh_loader_parse_mtl(VkrMeshLoaderState *state,
 
 vkr_internal bool8_t vkr_mesh_loader_parse_obj(VkrMeshLoaderState *state) {
   String8 file_str = {0};
-  if (!vkr_mesh_loader_read_file_to_string(state->load_allocator,
-                                           state->obj_path, &file_str,
-                                           state->out_error))
+  if (!vkr_mesh_loader_read_file_to_string(
+          state->load_allocator, state->obj_path, &file_str, state->out_error))
     return false_v;
 
   uint64_t offset = 0;
@@ -1259,9 +1261,11 @@ vkr_internal bool8_t vkr_mesh_load_job_run(VkrJobContext *ctx, void *payload) {
   return true_v;
 }
 
-vkr_internal void vkr_mesh_loader_cleanup_arenas(
-    VkrMeshLoaderResult **results, Arena **arenas, void **pool_chunks,
-    uint32_t count, VkrArenaPool *arena_pool) {
+vkr_internal void vkr_mesh_loader_cleanup_arenas(VkrMeshLoaderResult **results,
+                                                 Arena **arenas,
+                                                 void **pool_chunks,
+                                                 uint32_t count,
+                                                 VkrArenaPool *arena_pool) {
   for (uint32_t i = 0; i < count; i++) {
     if (results[i])
       vkr_allocator_release_global_accounting(&results[i]->allocator);

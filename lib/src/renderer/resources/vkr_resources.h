@@ -247,9 +247,10 @@ typedef struct VkrShaderUniformDesc {
   VkrShaderUniformType type;
   VkrShaderScope scope; // 0=global,1=instance,2=local
   String8 name;
-  uint32_t location; // within-scope index; for samplers = texture slot
-  uint32_t offset;   // UBO offset (scopes 0/1); 0 for samplers
-  uint32_t size;     // size in bytes (0 for samplers)
+  uint32_t location;    // within-scope index; for samplers = texture slot
+  uint32_t offset;      // UBO offset (scopes 0/1); 0 for samplers
+  uint32_t size;        // total size in bytes (element_size * array_count)
+  uint32_t array_count; // 1 for scalars, >1 for arrays
 } VkrShaderUniformDesc;
 Array(VkrShaderUniformDesc);
 

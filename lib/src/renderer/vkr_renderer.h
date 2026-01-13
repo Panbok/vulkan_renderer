@@ -514,6 +514,7 @@ typedef enum VkrRenderMode {
   VKR_RENDER_MODE_DEFAULT = 0,
   VKR_RENDER_MODE_LIGHTING = 1,
   VKR_RENDER_MODE_NORMAL = 2,
+  VKR_RENDER_MODE_UNLIT = 3,
   VKR_RENDER_MODE_COUNT,
 } VkrRenderMode;
 
@@ -646,6 +647,8 @@ typedef enum VkrPipelineDomain {
   // Picking variant for transparent drawables: depth-tested but does not write
   // depth to match the visible transparent render path.
   VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT = 8,
+  VKR_PIPELINE_DOMAIN_WORLD_OVERLAY = 9,
+  VKR_PIPELINE_DOMAIN_PICKING_OVERLAY = 10,
 
   VKR_PIPELINE_DOMAIN_COUNT
 } VkrPipelineDomain;
@@ -919,6 +922,9 @@ VkrTextureOpaqueHandle
 vkr_renderer_create_depth_attachment(VkrRendererFrontendHandle renderer,
                                      uint32_t width, uint32_t height,
                                      VkrRendererError *out_error);
+VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment(
+    VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
+    VkrRendererError *out_error);
 
 VkrRendererError vkr_renderer_transition_texture_layout(
     VkrRendererFrontendHandle renderer, VkrTextureOpaqueHandle texture,
@@ -1328,6 +1334,8 @@ typedef struct VkrRendererBackendInterface {
   VkrBackendResourceHandle (*depth_attachment_create)(void *backend_state,
                                                       uint32_t width,
                                                       uint32_t height);
+  VkrBackendResourceHandle (*sampled_depth_attachment_create)(
+      void *backend_state, uint32_t width, uint32_t height);
   VkrRendererError (*texture_transition_layout)(void *backend_state,
                                                 VkrBackendResourceHandle handle,
                                                 VkrTextureLayout old_layout,

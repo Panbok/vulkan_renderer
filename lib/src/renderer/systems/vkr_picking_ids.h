@@ -14,6 +14,7 @@ typedef enum VkrPickingIdKind {
   VKR_PICKING_ID_KIND_UI_TEXT = 1,    /**< UI text slot id. */
   VKR_PICKING_ID_KIND_WORLD_TEXT = 2, /**< World text slot id. */
   VKR_PICKING_ID_KIND_LIGHT = 3,      /**< Reserved for light picking. */
+  VKR_PICKING_ID_KIND_GIZMO = 4,      /**< Gizmo handle ids. */
 } VkrPickingIdKind;
 
 typedef struct VkrPickingDecodedId {
@@ -22,9 +23,10 @@ typedef struct VkrPickingDecodedId {
   bool8_t valid;
 } VkrPickingDecodedId;
 
-#define VKR_PICKING_ID_KIND_BITS 2u
+#define VKR_PICKING_ID_KIND_BITS 3u
 #define VKR_PICKING_ID_KIND_SHIFT (32u - VKR_PICKING_ID_KIND_BITS)
-#define VKR_PICKING_ID_KIND_MASK (0x3u << VKR_PICKING_ID_KIND_SHIFT)
+#define VKR_PICKING_ID_KIND_MASK                                             \
+  (((1u << VKR_PICKING_ID_KIND_BITS) - 1u) << VKR_PICKING_ID_KIND_SHIFT)
 #define VKR_PICKING_ID_VALUE_MASK ((1u << VKR_PICKING_ID_KIND_SHIFT) - 1u)
 // MAX_VALUE is one less than VALUE_MASK because encoding adds 1 to reserve 0 as
 // invalid

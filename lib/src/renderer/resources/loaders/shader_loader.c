@@ -17,7 +17,7 @@
 #define VKR_SHADER_CONFIG_MAX_TOKEN_LENGTH 64
 #define VKR_SHADER_UBO_ALIGNMENT 256
 #define VKR_SHADER_PUSH_CONSTANT_ALIGNMENT 4
-#define VKR_SHADER_UNIFORM_REGISTER_SIZE 16
+#define VKR_SHADER_STD140_BASE_ALIGNMENT 16
 #define VKR_SHADER_CONFIG_MAX_STAGES 8
 
 #define VKR_SHADER_ATTRIBUTE_COUNT_MAX 32
@@ -230,9 +230,10 @@ vkr_internal INLINE uint64_t vkr_std140_alignment(VkrShaderUniformType type) {
   case SHADER_UNIFORM_TYPE_FLOAT32:
   case SHADER_UNIFORM_TYPE_INT32:
   case SHADER_UNIFORM_TYPE_UINT32:
-  case SHADER_UNIFORM_TYPE_FLOAT32_2:
-  case SHADER_UNIFORM_TYPE_FLOAT32_3:
     return sizeof(float32_t);
+  case SHADER_UNIFORM_TYPE_FLOAT32_2:
+    return sizeof(float32_t) * 2;
+  case SHADER_UNIFORM_TYPE_FLOAT32_3:
   case SHADER_UNIFORM_TYPE_FLOAT32_4:
   case SHADER_UNIFORM_TYPE_MATRIX_4:
     return sizeof(float32_t) * 4;
@@ -251,6 +252,8 @@ vkr_internal INLINE uint64_t vkr_uniform_type_size(VkrShaderUniformType type) {
   case SHADER_UNIFORM_TYPE_FLOAT32_2:
     return sizeof(float32_t) * 2;
   case SHADER_UNIFORM_TYPE_FLOAT32_3:
+    // std140 rules: vec3 has 16-byte alignment but a base size of 12 bytes.
+    // Scalars may legally pack into the remaining 4 bytes of the 16-byte slot.
     return sizeof(float32_t) * 3;
   case SHADER_UNIFORM_TYPE_FLOAT32_4:
     return sizeof(float32_t) * 4;
@@ -265,23 +268,6 @@ vkr_internal INLINE uint64_t vkr_uniform_type_size(VkrShaderUniformType type) {
     return 0;
   }
   return 0;
-}
-
-vkr_internal INLINE uint64_t vkr_apply_uniform_register_packing(uint64_t offset,
-                                                                uint64_t size) {
-  const uint64_t reg = VKR_SHADER_UNIFORM_REGISTER_SIZE;
-
-  if (size == 0)
-    return offset;
-
-  if (size > reg)
-    return vkr_align_up_u64(offset, reg);
-
-  uint64_t row_offset = offset % reg;
-  if (row_offset + size > reg)
-    return vkr_align_up_u64(offset, reg);
-
-  return offset;
 }
 
 vkr_internal String8 vkr_create_formatted_error(VkrAllocator *allocator,
@@ -525,11 +511,18 @@ vkr_internal bool8_t vkr_split_csv_values_scratch(VkrAllocator *scratch,
 
 vkr_internal void vkr_compute_uniform_layout(VkrShaderConfig *cfg) {
   uint64_t global_offset = 0, instance_offset = 0, local_size = 0;
+  uint64_t global_align = VKR_SHADER_STD140_BASE_ALIGNMENT;
+  uint64_t instance_align = VKR_SHADER_STD140_BASE_ALIGNMENT;
   uint32_t global_tex = 0, instance_tex = 0;
 
   for (uint64_t i = 0; i < cfg->uniform_count; i++) {
     VkrShaderUniformDesc *ud =
         array_get_VkrShaderUniformDesc(&cfg->uniforms, i);
+
+    // Default to 1 if not set (for backwards compatibility)
+    if (ud->array_count == 0) {
+      ud->array_count = 1;
+    }
 
     if (ud->type == SHADER_UNIFORM_TYPE_SAMPLER) {
       if (ud->scope == VKR_SHADER_SCOPE_GLOBAL) {
@@ -542,35 +535,48 @@ vkr_internal void vkr_compute_uniform_layout(VkrShaderConfig *cfg) {
       continue;
     }
 
-    uint64_t align = vkr_std140_alignment(ud->type);
-    uint64_t size = vkr_uniform_type_size(ud->type);
-    ud->size = (uint32_t)size;
+    uint64_t element_size = vkr_uniform_type_size(ud->type);
+    uint64_t element_align = vkr_std140_alignment(ud->type);
+    uint64_t total_size;
+
+    if (ud->array_count > 1) {
+      if (element_align < VKR_SHADER_STD140_BASE_ALIGNMENT) {
+        element_align = VKR_SHADER_STD140_BASE_ALIGNMENT;
+      }
+      uint64_t element_stride = vkr_align_up_u64(element_size, element_align);
+      total_size = element_stride * ud->array_count;
+    } else {
+      total_size = element_size;
+    }
+
+    ud->size = (uint32_t)total_size;
 
     if (ud->scope == VKR_SHADER_SCOPE_GLOBAL) {
-      uint64_t aligned = vkr_align_up_u64(global_offset, align);
-      aligned = vkr_apply_uniform_register_packing(aligned, size);
+      uint64_t aligned = vkr_align_up_u64(global_offset, element_align);
       ud->offset = (uint32_t)aligned;
       ud->location = 0;
-      global_offset = aligned + size;
+      global_offset = aligned + total_size;
+      if (element_align > global_align) {
+        global_align = element_align;
+      }
     } else if (ud->scope == VKR_SHADER_SCOPE_INSTANCE) {
-      uint64_t aligned = vkr_align_up_u64(instance_offset, align);
-      aligned = vkr_apply_uniform_register_packing(aligned, size);
+      uint64_t aligned = vkr_align_up_u64(instance_offset, element_align);
       ud->offset = (uint32_t)aligned;
       ud->location = 0;
-      instance_offset = aligned + size;
+      instance_offset = aligned + total_size;
+      if (element_align > instance_align) {
+        instance_align = element_align;
+      }
     } else if (ud->scope == VKR_SHADER_SCOPE_LOCAL) {
-      uint64_t aligned =
-          vkr_align_up_u64(local_size, VKR_SHADER_PUSH_CONSTANT_ALIGNMENT);
+      uint64_t aligned = vkr_align_up_u64(local_size, element_align);
       ud->offset = (uint32_t)aligned;
       ud->location = 0;
-      local_size = aligned + size;
+      local_size = aligned + total_size;
     }
   }
 
-  cfg->global_ubo_size =
-      vkr_align_up_u64(global_offset, VKR_SHADER_UNIFORM_REGISTER_SIZE);
-  cfg->instance_ubo_size =
-      vkr_align_up_u64(instance_offset, VKR_SHADER_UNIFORM_REGISTER_SIZE);
+  cfg->global_ubo_size = vkr_align_up_u64(global_offset, global_align);
+  cfg->instance_ubo_size = vkr_align_up_u64(instance_offset, instance_align);
   cfg->push_constant_size = local_size;
 
   cfg->global_ubo_stride =
@@ -687,13 +693,62 @@ vkr_parse_uniform_line(VkrShaderConfigParser *parser, const String8 *value,
         "Uniform line must have format: type,scope,name");
   }
 
-  VkrShaderUniformType type = vkr_parse_uniform_type(&tokens[0]);
+  // Parse type, checking for array syntax: type[count]
+  String8 type_token = tokens[0];
+  String8 base_type_str = type_token;
+  uint32_t array_count = 1;
+
+  // Look for '[' in the type token
+  uint64_t bracket_pos = type_token.length;
+  for (uint64_t i = 0; i < type_token.length; i++) {
+    if (type_token.str[i] == '[') {
+      bracket_pos = i;
+      break;
+    }
+  }
+
+  if (bracket_pos < type_token.length) {
+    // Found array syntax, extract base type and count
+    base_type_str = string8_substring(&type_token, 0, bracket_pos);
+
+    // Find closing bracket
+    uint64_t close_bracket = type_token.length;
+    for (uint64_t i = bracket_pos + 1; i < type_token.length; i++) {
+      if (type_token.str[i] == ']') {
+        close_bracket = i;
+        break;
+      }
+    }
+
+    if (close_bracket == type_token.length) {
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      return vkr_create_parse_error(
+          parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_FORMAT,
+          parser->line_number, 0,
+          "Array uniform missing closing bracket: %.*s",
+          (int)type_token.length, type_token.str);
+    }
+
+    // Parse the count between brackets
+    String8 count_str =
+        string8_substring(&type_token, bracket_pos + 1, close_bracket);
+    if (!string8_to_u32(&count_str, &array_count) || array_count == 0) {
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      return vkr_create_parse_error(
+          parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
+          parser->line_number, 0,
+          "Invalid array count in uniform type: %.*s",
+          (int)type_token.length, type_token.str);
+    }
+  }
+
+  VkrShaderUniformType type = vkr_parse_uniform_type(&base_type_str);
   if (type == SHADER_UNIFORM_TYPE_UNDEFINED) {
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return vkr_create_parse_error(
         parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
-        parser->line_number, 0, "Unknown uniform type: %.*s", tokens[0].length,
-        tokens[0].str);
+        parser->line_number, 0, "Unknown uniform type: %.*s",
+        (int)base_type_str.length, base_type_str.str);
   }
 
   uint32_t scope_val;
@@ -702,8 +757,8 @@ vkr_parse_uniform_line(VkrShaderConfigParser *parser, const String8 *value,
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return vkr_create_parse_error(
         parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
-        parser->line_number, 0, "Invalid uniform scope: %.*s", tokens[1].length,
-        tokens[1].str);
+        parser->line_number, 0, "Invalid uniform scope: %.*s",
+        (int)tokens[1].length, tokens[1].str);
   }
 
   if (config->uniform_count >= config->uniforms.length) {
@@ -716,6 +771,7 @@ vkr_parse_uniform_line(VkrShaderConfigParser *parser, const String8 *value,
   VkrShaderUniformDesc uniform = {0};
   uniform.type = type;
   uniform.scope = (VkrShaderScope)scope_val;
+  uniform.array_count = array_count;
   // Store the name in the main arena for persistence
   uniform.name = string8_duplicate(parser->allocator, &tokens[2]);
 

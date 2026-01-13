@@ -18,6 +18,7 @@ typedef enum VkrResourceType {
   VKR_RESOURCE_TYPE_MATERIAL,
   VKR_RESOURCE_TYPE_GEOMETRY,
   VKR_RESOURCE_TYPE_MESH,
+  VKR_RESOURCE_TYPE_SCENE,
   VKR_RESOURCE_TYPE_BITMAP_FONT,
   VKR_RESOURCE_TYPE_SYSTEM_FONT,
   VKR_RESOURCE_TYPE_MTSDF_FONT,
@@ -33,6 +34,7 @@ typedef struct VkrResourceHandleInfo {
     VkrMaterialHandle material;
     VkrGeometryHandle geometry;
     VkrMeshLoaderResult *mesh;
+    VkrSceneHandle scene;
     VkrFont font;
     void *custom; // VKR_RESOURCE_TYPE_CUSTOM
   } as;

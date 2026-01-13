@@ -443,6 +443,7 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
       break;
     case VKR_PIPELINE_DOMAIN_PICKING:
     case VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT:
+    case VKR_PIPELINE_DOMAIN_PICKING_OVERLAY:
       fallback = string8_lit("Renderpass.Builtin.Picking");
       break;
     default:
