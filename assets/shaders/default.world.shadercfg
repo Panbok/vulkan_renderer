@@ -39,6 +39,34 @@ uniform=mat4,0,view          # Camera view matrix
 uniform=vec4,0,ambient_color
 uniform=vec3,0,view_position
 uniform=uint32,0,render_mode
+uniform=vec4,0,screen_params
+
+# Directional light
+uniform=uint32,0,dir_enabled       # 1 if directional light is active
+
+uniform=vec3,0,dir_direction       # World space direction (normalized)
+
+uniform=vec4,0,dir_color           # RGB = color * intensity, A = 1
+
+# Point lights (packed vec4 array: 3 vec4s per light, 16 lights max = 48 vec4s)
+# [i*3+0] = {position.xyz, constant}
+# [i*3+1] = {color.rgb * intensity, linear}
+# [i*3+2] = {intensity, quadratic, 0, 0}
+uniform=uint32,0,point_light_count
+
+uniform=vec4[48],0,point_light_data
+
+# Cascaded shadows (CSM)
+uniform=uint32,0,shadow_enabled
+uniform=uint32,0,shadow_cascade_count
+uniform=float,0,shadow_map_inv_size
+uniform=float,0,shadow_pcf_radius
+uniform=vec4,0,shadow_split_far
+uniform=float,0,shadow_bias
+uniform=float,0,shadow_normal_bias
+uniform=uint32,0,shadow_debug_cascades
+uniform=uint32,0,shadow_debug_mode
+uniform=mat4[4],0,shadow_view_projection
 
 # Instance uniforms (descriptor set 1)
 # Updated per material, each material gets its own descriptor set
@@ -50,6 +78,10 @@ uniform=uint32,1,texture_flags    # Bit flags: 0x1=has_diffuse, 0x2=has_specular
 uniform=samp,1,diffuse_texture    # Material diffuse texture (slot 0)
 uniform=samp,1,specular_texture   # Material specular map   (slot 1)
 uniform=samp,1,normal_texture     # Material normal map     (slot 2)
+uniform=samp,1,shadow_map_0       # Shadow map cascade 0
+uniform=samp,1,shadow_map_1       # Shadow map cascade 1
+uniform=samp,1,shadow_map_2       # Shadow map cascade 2
+uniform=samp,1,shadow_map_3       # Shadow map cascade 3
 
 # Local uniforms (push constants)
 # Updated per draw call (per object in the world)
@@ -61,11 +93,8 @@ uniform=mat4,2,model         # Object model matrix (transform)
 # Attributes:
 #   stride = 16 floats (64 bytes)
 #
-# Global UBO (std140):
-#   projection: offset=0,  size=64 (mat4)
-#   view:       offset=64, size=64 (mat4)
-#   → ubo_size = 128 bytes
-#   → ubo_stride = align_up(128, 256) = 256 bytes
+# Global UBO (std140): updated to include directional + point lights + CSM
+#   (See shader for field ordering; loader computes offsets at runtime)
 #
 # Instance UBO (std140):
 #   diffuse_color: offset=0,  size=16 (vec4)
@@ -73,7 +102,7 @@ uniform=mat4,2,model         # Object model matrix (transform)
 #   shininess: offset=32, size=4 (float)
 #   → ubo_size = 36 bytes  
 #   → ubo_stride = align_up(36, 256) = 256 bytes
-#   instance_texture_count = 3 (diffuse/specular/normal)
+#   instance_texture_count = 7 (diffuse/specular/normal + 4 shadow maps)
 #
 # Push Constants:
 #   model: offset=0, size=64 (mat4)

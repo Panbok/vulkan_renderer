@@ -1,0 +1,128 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "SceneRoot",
+      "parent": null,
+      "transform": {
+        "pos": [0.0, 0.0, 0.0],
+        "rot": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "name": "Sponza",
+      "parent": null,
+      "transform": {
+        "pos": [0.0, 0.0, -15.0],
+        "rot": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.0085, 0.0085, 0.0085]
+      },
+      "mesh": {
+        "path": "assets/models/sponza.obj",
+        "pipeline_domain": "world"
+      }
+    },
+    {
+      "name": "Sun",
+      "parent": 0,
+      "transform": {
+        "pos": [-0.57735, -0.57735, -0.57735],
+        "rot": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "directional_light": {
+        "enabled": true,
+        "color": [1.0, 1.0, 1.0],
+        "intensity": 1.0,
+        "direction_local": [-0.57735, -0.57735, -0.57735]
+      }
+    },
+    {
+      "name": "KeyLight",
+      "parent": 0,
+      "transform": {
+        "pos": [6.0, 2.0, -15.0],
+        "rot": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "point_light": {
+        "enabled": false,
+        "color": [0.95, 1.0, 1.0],
+        "intensity": 6.0,
+        "attenuation": {
+          "constant": 1.0,
+          "linear": 0.09,
+          "quadratic": 0.032
+        }
+      }
+    },
+    {
+      "name": "FillLight",
+      "parent": 0,
+      "transform": {
+        "pos": [-3.5, 1.5, -13.5],
+        "rot": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "point_light": {
+        "enabled": false,
+        "color": [0.4, 0.6, 1.0],
+        "intensity": 3.0,
+        "attenuation": {
+          "constant": 1.0,
+          "linear": 0.14,
+          "quadratic": 0.07
+        }
+      }
+    },
+    {
+      "name": "TransparentCube",
+      "parent": 0,
+      "transform": {
+        "pos": [6.0, 0.8, -15.0],
+        "rot": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.5, 0.5, 0.5]
+      },
+      "shape": {
+        "type": "cube",
+        "dimensions": [2.0, 2.0, 2.0],
+        "material": {
+          "name": "default_world",
+          "path": "assets/materials/default.world.mt"
+        }
+      }
+    },
+    {
+      "name": "Falcon",
+      "parent": 0,
+      "transform": {
+        "pos": [0.0, 0.2, -15.0],
+        "rot": [0.0, 0.0, 0.0, 1.0],
+        "scale": [0.2, 0.2, 0.2]
+      },
+      "mesh": {
+        "path": "assets/models/falcon.obj",
+        "pipeline_domain": "world"
+      }
+    },
+    {
+      "name": "WorldClock",
+      "parent": 0,
+      "transform": {
+        "pos": [7.0, 3.0, -11.5],
+        "rot": [0.0, 0.7071068, 0.0, 0.7071068],
+        "scale": [8.0, 8.0, 1.0]
+      },
+      "text3d": {
+        "text": "00:00:00",
+        "font": "UbuntuMono-3d",
+        "font_size": 64.0,
+        "color": [1.0, 0.95, 0.85, 1.0],
+        "texture_width": 1024,
+        "texture_height": 256,
+        "inset": 1.0
+      }
+    }
+  ]
+}

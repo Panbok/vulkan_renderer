@@ -10,7 +10,6 @@ struct LocalUniformObject
     float4 diffuse_color;
     float  screen_px_range;
     float  font_mode;
-    float2 _padding;
 };
 
 struct PushConstantsObject
