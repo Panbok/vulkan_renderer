@@ -163,8 +163,8 @@ bool8_t vkr_gamepad_poll(VkrGamepad *system, int32_t controller_id) {
   float32_t n_lx = 0.0f, n_ly = 0.0f, n_rx = 0.0f, n_ry = 0.0f;
 
   // Left stick magnitude
-  int32_t mag_l = (int32_t)sqrt_f64((float64_t)lx * (float64_t)lx +
-                                    (float64_t)ly * (float64_t)ly);
+  int32_t mag_l = (int32_t)vkr_sqrt_f64((float64_t)lx * (float64_t)lx +
+                                        (float64_t)ly * (float64_t)ly);
   if (mag_l > deadzone_l) {
     float32_t nx = (float32_t)lx / VKR_GAMEPAD_THUMB_MAX;
     float32_t ny = (float32_t)ly / VKR_GAMEPAD_THUMB_MAX;
@@ -177,8 +177,8 @@ bool8_t vkr_gamepad_poll(VkrGamepad *system, int32_t controller_id) {
   }
 
   // Right stick magnitude
-  int32_t mag_r = (int32_t)sqrt_f64((float64_t)rx * (float64_t)rx +
-                                    (float64_t)ry * (float64_t)ry);
+  int32_t mag_r = (int32_t)vkr_sqrt_f64((float64_t)rx * (float64_t)rx +
+                                        (float64_t)ry * (float64_t)ry);
   if (mag_r > deadzone_r) {
     float32_t nx = (float32_t)rx / VKR_GAMEPAD_THUMB_MAX;
     float32_t ny = (float32_t)ry / VKR_GAMEPAD_THUMB_MAX;

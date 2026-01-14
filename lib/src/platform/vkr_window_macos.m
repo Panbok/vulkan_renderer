@@ -222,16 +222,6 @@ static bool8_t cursor_in_content_area(PlatformState *state);
     int32_t new_y = current_y - (int32_t)dy; // Invert Y delta
 
     input_process_mouse_move(platform_state->input_state, new_x, new_y);
-
-    // NOTE: Do NOT update restore coordinates during capture mode.
-    // The restore position should remain fixed to where the mouse was
-    // when capture was first enabled, not follow virtual cursor movement.
-#ifndef NDEBUG
-    static int log_counter = 0;
-    if (++log_counter % 60 == 0) { // Log every 60 mouse moves to avoid spam
-      log_debug("Virtual cursor: (%d, %d)", new_x, new_y);
-    }
-#endif
   } else {
     // Normal mode, use absolute position
     const NSPoint pos = [event locationInWindow];
