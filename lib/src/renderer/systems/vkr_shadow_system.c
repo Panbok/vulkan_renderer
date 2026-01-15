@@ -19,6 +19,7 @@ vkr_internal void vkr_shadow_compute_cascade_splits(VkrShadowSystem *system,
   uint32_t count = system->config.cascade_count;
   if (count == 0) {
     system->cascade_splits[0] = near_clip;
+    system->cascade_splits[1] = far_clip;
     return;
   }
 
@@ -118,15 +119,17 @@ vkr_internal void vkr_shadow_compute_frustum_corners(const VkrCamera *camera,
 vkr_internal void vkr_shadow_compute_cascade_matrix(
     const Vec3 *light_direction, const Vec3 frustum_corners[8],
     uint32_t shadow_map_size, bool8_t stabilize, float32_t guard_band_texels,
-    const VkrShadowSceneBounds *scene_bounds, Mat4 *out_view_projection,
-    float32_t *out_world_units_per_texel) {
+    bool8_t use_constant_cascade_size, const VkrShadowSceneBounds *scene_bounds,
+    Mat4 *out_view_projection, float32_t *out_world_units_per_texel) {
   Vec3 dir = *light_direction;
   if (vec3_length(dir) < 0.001f) {
     dir = vec3_new(0.0f, -1.0f, 0.0f);
   }
   dir = vec3_normalize(dir);
 
-  // Compute the frustum center and radius for XY bounds
+  // Compute the slice center and its bounding sphere radius. Using the sphere
+  // (optional) yields a size-stable cascade extent, reducing shimmering from
+  // light-space AABB "breathing" when the camera rotates relative to the light.
   Vec3 center = vec3_zero();
   for (int i = 0; i < 8; ++i) {
     center = vec3_add(center, frustum_corners[i]);
@@ -150,10 +153,10 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   float32_t light_distance = radius * 2.0f;
   if (scene_bounds && scene_bounds->use_scene_bounds) {
     // Include scene bounds in distance calculation
-    Vec3 scene_center = vec3_scale(
-        vec3_add(scene_bounds->min, scene_bounds->max), 0.5f);
-    Vec3 scene_half_extent = vec3_scale(
-        vec3_sub(scene_bounds->max, scene_bounds->min), 0.5f);
+    Vec3 scene_center =
+        vec3_scale(vec3_add(scene_bounds->min, scene_bounds->max), 0.5f);
+    Vec3 scene_half_extent =
+        vec3_scale(vec3_sub(scene_bounds->max, scene_bounds->min), 0.5f);
     float32_t scene_radius = vec3_length(scene_half_extent);
     light_distance = vkr_max_f32(light_distance, scene_radius * 2.0f);
   }
@@ -203,10 +206,10 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   if (scene_bounds && scene_bounds->use_scene_bounds) {
     // Transform all 8 corners of the scene AABB to light space and extend Z
     for (int i = 0; i < 8; ++i) {
-      Vec3 corner = vec3_new(
-          (i & 1) ? scene_bounds->max.x : scene_bounds->min.x,
-          (i & 2) ? scene_bounds->max.y : scene_bounds->min.y,
-          (i & 4) ? scene_bounds->max.z : scene_bounds->min.z);
+      Vec3 corner =
+          vec3_new((i & 1) ? scene_bounds->max.x : scene_bounds->min.x,
+                   (i & 2) ? scene_bounds->max.y : scene_bounds->min.y,
+                   (i & 4) ? scene_bounds->max.z : scene_bounds->min.z);
       Vec4 corner_ls = mat4_mul_vec4(light_view, vec3_to_vec4(corner, 1.0f));
       // Only extend Z, not XY (XY is fitted to frustum for resolution)
       min_z = vkr_min_f32(min_z, corner_ls.z);
@@ -225,6 +228,13 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   float32_t center_x = (min_x + max_x) * 0.5f;
   float32_t center_y = (min_y + max_y) * 0.5f;
   float32_t extent = vkr_max_f32(extent_x, extent_y);
+
+  if (use_constant_cascade_size) {
+    Vec4 center_ls = mat4_mul_vec4(light_view, vec3_to_vec4(center, 1.0f));
+    center_x = center_ls.x;
+    center_y = center_ls.y;
+    extent = radius * 2.0f;
+  }
   if (extent < 0.001f) {
     extent = 0.001f;
   }
@@ -540,8 +550,10 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
 
     vkr_shadow_compute_cascade_matrix(
         &light_direction, corners, system->config.shadow_map_size,
-        system->config.stabilize_cascades, system->config.cascade_guard_band_texels,
-        &system->config.scene_bounds, &system->cascades[i].view_projection,
+        system->config.stabilize_cascades,
+        system->config.cascade_guard_band_texels,
+        system->config.use_constant_cascade_size, &system->config.scene_bounds,
+        &system->cascades[i].view_projection,
         &system->cascades[i].world_units_per_texel);
 
     Vec3 cascade_center = vec3_zero();
@@ -606,15 +618,19 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
   out_data->pcf_radius = system->config.pcf_radius;
   out_data->shadow_bias = system->config.shadow_bias;
   out_data->normal_bias = system->config.normal_bias;
+  out_data->cascade_blend_range = system->config.cascade_blend_range;
   out_data->debug_show_cascades = system->config.debug_show_cascades;
 
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     if (i < system->config.cascade_count) {
       out_data->split_far[i] = system->cascades[i].split_far;
+      out_data->world_units_per_texel[i] =
+          system->cascades[i].world_units_per_texel;
       out_data->view_projection[i] = system->cascades[i].view_projection;
       out_data->shadow_maps[i] = system->frames[frame_index].shadow_maps[i];
     } else {
       out_data->split_far[i] = 0.0f;
+      out_data->world_units_per_texel[i] = 0.0f;
       out_data->view_projection[i] = mat4_identity();
       out_data->shadow_maps[i] = NULL;
     }

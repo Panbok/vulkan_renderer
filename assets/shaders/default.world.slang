@@ -27,8 +27,10 @@ struct GlobalUniformBufferObject
     float shadow_pcf_radius;
 
     float4 shadow_split_far;
+    float4 shadow_world_units_per_texel;
     float shadow_bias;
     float shadow_normal_bias;
+    float shadow_cascade_blend_range;
     uint32_t shadow_debug_cascades;
     uint32_t shadow_debug_mode; // 0=off, 1=cascades, 2=factor, 3=depth, 4..7=maps, 8=frustum, 9=camera
 
@@ -118,16 +120,16 @@ SamplerState specular_sampler;
 SamplerState normal_sampler;
 
 [[vk::binding(11, 1)]]
-SamplerState shadow_sampler_0;
+SamplerComparisonState shadow_sampler_0;
 
 [[vk::binding(12, 1)]]
-SamplerState shadow_sampler_1;
+SamplerComparisonState shadow_sampler_1;
 
 [[vk::binding(13, 1)]]
-SamplerState shadow_sampler_2;
+SamplerComparisonState shadow_sampler_2;
 
 [[vk::binding(14, 1)]]
-SamplerState shadow_sampler_3;
+SamplerComparisonState shadow_sampler_3;
 
 [[vk::push_constant]]
 ConstantBuffer<PushConstantsObject> push_constants;
@@ -234,8 +236,11 @@ uint select_cascade(float view_depth)
 // edges more often (minor quality reduction at boundaries).
 float shadow_uv_margin()
 {
-    // Allow up to 10% out-of-range - this is quite lenient but eliminates seams
-    return 0.1f;
+    // Keep this tight. If we allow fragments outside [0,1] to be considered
+    // "covered", we end up clamping to the shadow-map edge which often yields
+    // fully-lit seams that track the camera/cascade split.
+    float texel_margin = g_ubo.shadow_map_inv_size * 1.0f; // 1 texel
+    return max(texel_margin, 0.00025f);
 }
 
 struct ShadowProjection
@@ -246,8 +251,25 @@ struct ShadowProjection
     float z_clamped;
     bool uv_out;
     bool z_out;
+    float uv_out_amount; // max distance outside [0,1] (0 = inside)
     float coverage_quality; // 1.0 = fully inside, decreases towards edge
 };
+
+float shadow_uv_soft_margin()
+{
+    // Soft fallback: allow a few texels out-of-range to avoid 1-pixel “holes”
+    // near cascade boundaries / snapping.
+    return max(g_ubo.shadow_map_inv_size * 8.0f, 0.001f);
+}
+
+float shadow_uv_kernel_margin()
+{
+    // If the receiver UV is close enough to the shadow map edge that the PCF
+    // kernel samples outside [0,1], border sampling can create bright seams.
+    // Treat that region as uncovered so we can fall back to a better cascade.
+    float r = clamp(round(max(g_ubo.shadow_pcf_radius, 0.0f)), 0.0f, 2.0f);
+    return g_ubo.shadow_map_inv_size * (r + 0.5f);
+}
 
 ShadowProjection project_shadow(float3 world_pos, uint cascade)
 {
@@ -259,28 +281,41 @@ ShadowProjection project_shadow(float3 world_pos, uint cascade)
     p.z = clip.z;
 
     float margin = shadow_uv_margin();
+    float kernel_margin = shadow_uv_kernel_margin();
+    // Treat the PCF kernel as part of the coverage test: if the kernel would
+    // sample outside [0,1], edge/border sampling can create bright seams.
+    float2 uv = p.uv;
+    float edge = min(min(uv.x, 1.0f - uv.x), min(uv.y, 1.0f - uv.y));
+    bool kernel_hits_edge = (edge < kernel_margin);
+
     p.uv_out = (p.uv.x < -margin || p.uv.x > 1.0f + margin ||
-                p.uv.y < -margin || p.uv.y > 1.0f + margin);
+                p.uv.y < -margin || p.uv.y > 1.0f + margin ||
+                kernel_hits_edge);
 
     // Z check: allow small deviation for depth precision issues
-    float z_margin = 0.05f;
+    float z_margin = 0.002f;
     p.z_out = (p.z < -z_margin || p.z > 1.0f + z_margin);
 
     p.uv_clamped = clamp(p.uv, 0.0f, 1.0f);
     p.z_clamped = saturate(p.z);
 
-    // Compute coverage quality - how well this cascade covers the fragment
-    // 1.0 = UV is well inside [0,1], decreases as UV approaches or exceeds bounds
+    float2 out_lo = max(0.0f.xx, 0.0f.xx - p.uv);
+    float2 out_hi = max(0.0f.xx, p.uv - 1.0f.xx);
+    p.uv_out_amount = max(max(out_lo.x, out_lo.y), max(out_hi.x, out_hi.y));
+
+    // Compute coverage quality - how well this cascade covers the fragment.
+    // 1.0 = UV is well inside [0,1], decreases towards the edge.
     float dist_from_edge = min(
         min(p.uv.x, 1.0f - p.uv.x),
         min(p.uv.y, 1.0f - p.uv.y)
     );
-    p.coverage_quality = saturate(dist_from_edge / 0.1f); // 0.1 = 10% from edge is full quality
+    float cover_band = max(margin + kernel_margin, 1e-6f);
+    p.coverage_quality = saturate(dist_from_edge / cover_band);
 
     return p;
 }
 
-float sample_shadow_pcf(Texture2D<float> map, SamplerState samp, float2 uv,
+float sample_shadow_pcf(Texture2D<float> map, SamplerComparisonState samp, float2 uv,
                         float compare_depth, float bias)
 {
     float2 inv_size =
@@ -291,6 +326,10 @@ float sample_shadow_pcf(Texture2D<float> map, SamplerState samp, float2 uv,
     float sum = 0.0f;
     int taps = 0;
 
+    // Avoid clamping to 1.0: ref=1 with LESS/LEQUAL tends to produce fully-lit
+    // seams for fragments that drift slightly past the cascade far plane.
+    float cmp = clamp(compare_depth - bias, 0.0f, 1.0f - 1e-5f);
+
     [unroll]
     for (int y = -radius; y <= radius; ++y)
     {
@@ -298,8 +337,8 @@ float sample_shadow_pcf(Texture2D<float> map, SamplerState samp, float2 uv,
         for (int x = -radius; x <= radius; ++x)
         {
             float2 o = float2(x, y) * inv_size;
-            float d = map.SampleLevel(samp, uv + o, 0).r;
-            sum += (compare_depth - bias <= d) ? 1.0f : 0.0f;
+            float2 uv_tap = clamp(uv + o, 0.0f, 1.0f);
+            sum += map.SampleCmpLevelZero(samp, uv_tap, cmp);
             taps++;
         }
     }
@@ -317,50 +356,100 @@ struct CascadeLookup
     ShadowProjection proj;
 };
 
+uint clamp_cascade_index(uint idx)
+{
+    uint count = min(max(g_ubo.shadow_cascade_count, 1u), 4u);
+    if (count == 0u) return 0u;
+    return min(idx, count - 1u);
+}
+
 CascadeLookup find_covering_cascade(float3 world_pos, uint initial_cascade)
 {
     CascadeLookup result;
+    initial_cascade = clamp_cascade_index(initial_cascade);
     result.cascade = initial_cascade;
     result.covered = false;
     result.proj = project_shadow(world_pos, initial_cascade);
 
     uint count = min(max(g_ubo.shadow_cascade_count, 1u), 4u);
 
-    // Track the best cascade found so far (highest coverage quality)
-    uint best_cascade = initial_cascade;
-    float best_quality = -1.0f;
-    ShadowProjection best_proj = result.proj;
-    bool any_covers = false;
+    // If the initially selected cascade covers, keep it. This avoids temporal
+    // instability from switching cascades based on marginal coverage heuristics.
+    if (!result.proj.uv_out && !result.proj.z_out)
+    {
+        result.covered = true;
+        return result;
+    }
 
-    // Check all cascades and pick the one with best coverage quality
-    // This ensures we use the cascade whose shadow map best covers this fragment
+    // Otherwise, search nearest cascades first. This produces stable results
+    // when two cascades overlap (guard band, snapping, or frustum fit changes).
+    //
+    // Order example for initial=1: 1,0,2,3
+    // Order example for initial=2: 2,1,3,0
+    [unroll]
+    for (uint step = 1u; step < 4u; ++step)
+    {
+        uint left = (initial_cascade >= step) ? (initial_cascade - step) : 0u;
+        if (left < count)
+        {
+            ShadowProjection p = project_shadow(world_pos, left);
+            if (!p.uv_out && !p.z_out)
+            {
+                result.cascade = left;
+                result.covered = true;
+                result.proj = p;
+                return result;
+            }
+        }
+
+        uint right = initial_cascade + step;
+        if (right < count)
+        {
+            ShadowProjection p = project_shadow(world_pos, right);
+            if (!p.uv_out && !p.z_out)
+            {
+                result.cascade = right;
+                result.covered = true;
+                result.proj = p;
+                return result;
+            }
+        }
+    }
+
+    // Soft fallback: if we failed strict coverage due to tiny numerical drift,
+    // pick the cascade that is only slightly out-of-range in UV and sample it
+    // clamped. This prevents straight “lit seams” that track the camera.
+    float soft_uv = shadow_uv_soft_margin();
+    float z_soft = 0.02f;
+    uint best = initial_cascade;
+    float best_out = 1e9f;
+    ShadowProjection best_proj = result.proj;
+
     [unroll]
     for (uint i = 0u; i < 4u; ++i)
     {
         if (i >= count) continue;
-
         ShadowProjection p = (i == initial_cascade) ? result.proj : project_shadow(world_pos, i);
-
-        if (!p.uv_out && !p.z_out)
+        bool z_ok = (p.z >= -z_soft && p.z <= 1.0f + z_soft);
+        if (!z_ok) continue;
+        if (p.uv_out_amount <= soft_uv)
         {
-            any_covers = true;
-            // Prefer cascades where the UV is more towards the center (better quality)
-            // Also slightly prefer lower-index cascades (higher resolution)
-            float quality = p.coverage_quality + (float)(count - 1u - i) * 0.01f;
-            if (quality > best_quality)
+            float out_amt = p.uv_out_amount + (float)i * 1e-6f; // stable tie-break
+            if (out_amt < best_out)
             {
-                best_quality = quality;
-                best_cascade = i;
+                best_out = out_amt;
+                best = i;
                 best_proj = p;
             }
         }
     }
 
-    if (any_covers)
+    if (best_out < 1e8f)
     {
-        result.cascade = best_cascade;
+        result.cascade = best;
         result.covered = true;
         result.proj = best_proj;
+        return result;
     }
 
     return result;
@@ -396,11 +485,16 @@ ShadowResult calculate_shadow_ex(float3 world_pos, float3 normal, uint initial_c
     result.effective_cascade = lookup.cascade;
     result.covered = true;
     float2 uv = lookup.proj.uv_clamped;
-    float z = lookup.proj.z;
+    float z = lookup.proj.z_clamped;
 
     float3 light_dir = normalize(-g_ubo.dir_direction);
     float ndotl = saturate(dot(normal, light_dir));
-    float bias = g_ubo.shadow_bias + g_ubo.shadow_normal_bias * (1.0f - ndotl);
+    float base_bias = g_ubo.shadow_bias + g_ubo.shadow_normal_bias * (1.0f - ndotl);
+
+    // Bias is in shadow-depth (0..1) units. Scaling it by world-space texel size
+    // can easily over-bias far cascades and wipe out shadows. Keep bias stable
+    // across cascades; tune per-scene via the config values.
+    float bias = base_bias;
 
     if (result.effective_cascade == 0u)
         result.factor = sample_shadow_pcf(shadow_map_0, shadow_sampler_0, uv, z, bias);
@@ -419,12 +513,78 @@ float calculate_shadow(float3 world_pos, float3 normal, uint cascade)
     return calculate_shadow_ex(world_pos, normal, cascade).factor;
 }
 
+ShadowResult calculate_shadow_blended(float3 world_pos, float3 normal, float view_depth, uint initial_cascade)
+{
+    uint selected = clamp_cascade_index(initial_cascade);
+    ShadowResult base = calculate_shadow_ex(world_pos, normal, selected);
+    if (!base.covered)
+    {
+        return base;
+    }
+
+    uint count = min(max(g_ubo.shadow_cascade_count, 1u), 4u);
+    if (count <= 1u)
+    {
+        return base;
+    }
+
+    // Blend near the selected cascade's far split to smooth transitions.
+    // Range is expressed in view-space units (positive forward).
+    float blend_range = max(g_ubo.shadow_cascade_blend_range, 0.0f);
+    if (blend_range <= 0.0f)
+    {
+        return base;
+    }
+
+    uint next = min(selected + 1u, count - 1u);
+    if (next == selected)
+    {
+        return base;
+    }
+
+    float split_far =
+        (selected == 0u) ? g_ubo.shadow_split_far.x :
+        (selected == 1u) ? g_ubo.shadow_split_far.y :
+        (selected == 2u) ? g_ubo.shadow_split_far.z :
+                           g_ubo.shadow_split_far.w;
+
+    float start = split_far - blend_range;
+    float t = saturate((view_depth - start) / max(blend_range, 1e-4f));
+    if (t <= 0.0f)
+    {
+        return base;
+    }
+
+    ShadowResult alt = calculate_shadow_ex(world_pos, normal, next);
+    if (!alt.covered)
+    {
+        return base;
+    }
+
+    ShadowResult out_r = base;
+    out_r.factor = lerp(base.factor, alt.factor, t);
+    // Keep effective_cascade as the base cascade so debug modes remain readable.
+    return out_r;
+}
+
 float sample_shadow_depth(uint cascade, float2 uv)
 {
-    if (cascade == 0u) return shadow_map_0.SampleLevel(shadow_sampler_0, uv, 0).r;
-    if (cascade == 1u) return shadow_map_1.SampleLevel(shadow_sampler_1, uv, 0).r;
-    if (cascade == 2u) return shadow_map_2.SampleLevel(shadow_sampler_2, uv, 0).r;
-    return shadow_map_3.SampleLevel(shadow_sampler_3, uv, 0).r;
+    // SampleCmp samplers do not reliably return raw depth via Sample().
+    // Use Load() for debug visualization (nearest, no sampler).
+    uint dim_x = 1u;
+    uint dim_y = 1u;
+    if (cascade == 0u) shadow_map_0.GetDimensions(dim_x, dim_y);
+    else if (cascade == 1u) shadow_map_1.GetDimensions(dim_x, dim_y);
+    else if (cascade == 2u) shadow_map_2.GetDimensions(dim_x, dim_y);
+    else shadow_map_3.GetDimensions(dim_x, dim_y);
+
+    int2 p = int2(clamp(uv, 0.0f, 1.0f) * float2((float)max(dim_x - 1u, 1u),
+                                                 (float)max(dim_y - 1u, 1u)));
+
+    if (cascade == 0u) return shadow_map_0.Load(int3(p, 0)).r;
+    if (cascade == 1u) return shadow_map_1.Load(int3(p, 0)).r;
+    if (cascade == 2u) return shadow_map_2.Load(int3(p, 0)).r;
+    return shadow_map_3.Load(int3(p, 0)).r;
 }
 
 float4 calculate_directional_light(DirectionalLight light, float3 normal,
@@ -550,7 +710,7 @@ float4 fragmentMain(VertexDto input) : SV_Target
         float4 view_pos = mul(g_ubo.view, float4(input.frag_position, 1.0));
         float view_depth = -view_pos.z;
         cascade = select_cascade(view_depth);
-        ShadowResult shadow_result = calculate_shadow_ex(input.frag_position, normal, cascade);
+        ShadowResult shadow_result = calculate_shadow_blended(input.frag_position, normal, view_depth, cascade);
         shadow = shadow_result.factor;
         effective_cascade = shadow_result.effective_cascade;
     }
@@ -800,10 +960,7 @@ float4 fragmentMain(VertexDto input) : SV_Target
 
         uint map_index = g_ubo.shadow_debug_mode - 4u;
         float d = 1.0f;
-        if (map_index == 0u) d = shadow_map_0.SampleLevel(shadow_sampler_0, uv, 0).r;
-        else if (map_index == 1u) d = shadow_map_1.SampleLevel(shadow_sampler_1, uv, 0).r;
-        else if (map_index == 2u) d = shadow_map_2.SampleLevel(shadow_sampler_2, uv, 0).r;
-        else d = shadow_map_3.SampleLevel(shadow_sampler_3, uv, 0).r;
+        d = sample_shadow_depth(map_index, uv);
 
         // Depth maps often cluster close to 1.0. Provide a few views at once:
         // - R: raw depth (d)

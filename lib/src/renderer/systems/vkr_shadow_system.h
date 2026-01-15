@@ -65,6 +65,13 @@ typedef struct VkrShadowSceneBounds {
  * cascade_guard_band_texels expands each cascade's XY bounds (in texels) to
  * reduce shadow pop-in from casters just outside the view frustum and from
  * stabilization snapping. Higher values trade resolution for coverage.
+ * use_constant_cascade_size forces each cascade's XY bounds to a size derived
+ * from the slice's bounding sphere radius (rather than the light-space AABB of
+ * the slice corners). This reduces shimmering caused by cascade extents
+ * "breathing" as the camera rotates relative to the light.
+ * cascade_blend_range is a view-space distance (in the same units as the
+ * camera clip planes) over which the shader cross-fades between cascades near
+ * split planes. Use 0 to disable blending.
  * z_extension_factor extends the light-space depth range to capture shadow
  * casters outside the camera frustum. Value is multiplied by the cascade's
  * bounding sphere radius. Only used if scene_bounds.use_scene_bounds is false.
@@ -79,6 +86,8 @@ typedef struct VkrShadowConfig {
   float32_t shadow_bias;
   float32_t normal_bias;
   float32_t pcf_radius;
+  bool8_t use_constant_cascade_size;
+  float32_t cascade_blend_range;
   bool8_t stabilize_cascades;
   bool8_t debug_show_cascades;
   VkrShadowSceneBounds scene_bounds;
@@ -95,6 +104,8 @@ typedef struct VkrShadowConfig {
       .shadow_bias = 0.001f,                                                   \
       .normal_bias = 0.01f,                                                    \
       .pcf_radius = 1.0f,                                                      \
+      .use_constant_cascade_size = true_v,                                     \
+      .cascade_blend_range = 30.0f,                                            \
       .stabilize_cascades = true_v,                                            \
       .debug_show_cascades = false_v,                                          \
       .scene_bounds = VKR_SHADOW_SCENE_BOUNDS_DEFAULT,                         \
@@ -120,9 +131,11 @@ typedef struct VkrShadowFrameData {
   float32_t pcf_radius;
   float32_t shadow_bias;
   float32_t normal_bias;
+  float32_t cascade_blend_range;
   bool8_t debug_show_cascades;
 
   float32_t split_far[VKR_SHADOW_CASCADE_COUNT_MAX];
+  float32_t world_units_per_texel[VKR_SHADOW_CASCADE_COUNT_MAX];
   Mat4 view_projection[VKR_SHADOW_CASCADE_COUNT_MAX];
 
   VkrTextureOpaqueHandle shadow_maps[VKR_SHADOW_CASCADE_COUNT_MAX];
