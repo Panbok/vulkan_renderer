@@ -275,11 +275,6 @@ void vkr_window_set_mouse_capture(VkrWindow *window, bool8_t capture) {
     // Initialize virtual cursor position to match current physical position
     input_process_mouse_move(state->input_state, cursor_pos.x, cursor_pos.y);
 
-    log_debug(
-        "Initialized virtual cursor to: (%d, %d) from physical: (%.1f, %.1f)",
-        cursor_pos.x, cursor_pos.y, state->restore_cursor_x,
-        state->restore_cursor_y);
-
     // Capture mouse but don't clip cursor - we'll re-center it instead
     SetCapture(state->window);
 
@@ -482,24 +477,9 @@ static LRESULT CALLBACK window_proc(HWND hwnd, UINT msg, WPARAM wparam,
       // Track physical cursor position for re-centering logic
       state->last_cursor_pos_x = x;
       state->last_cursor_pos_y = y;
-
-#ifndef NDEBUG
-      static int log_counter = 0;
-      if (++log_counter % 60 == 0) { // Log every 60 mouse moves to avoid spam
-        log_debug("Virtual cursor: (%d, %d)", new_x, new_y);
-      }
-#endif
     } else {
       // Normal mode, use absolute position
       input_process_mouse_move(state->input_state, x, y);
-
-#ifndef NDEBUG
-      static int normal_mode_log_counter = 0;
-      if (++normal_mode_log_counter % 60 ==
-          0) { // Log every 60 mouse moves to avoid spam
-        log_debug("Normal mode cursor: (%d, %d)", x, y);
-      }
-#endif
     }
 
     // Reset warp deltas

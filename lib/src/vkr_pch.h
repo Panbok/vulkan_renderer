@@ -40,7 +40,6 @@
 #include <io.h>
 #include <timeapi.h>
 #include <Xinput.h>
-#include <sched.h>
 #pragma comment(lib, "winmm.lib")
 #endif
 // clang-format on

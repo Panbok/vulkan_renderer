@@ -233,14 +233,6 @@ static bool8_t cursor_in_content_area(PlatformState *state);
     int32_t x = pos.x * platform_state->layer.contentsScale;
     int32_t y =
         window_size.height - (pos.y * platform_state->layer.contentsScale);
-#ifndef NDEBUG
-    static int normal_mode_log_counter = 0;
-    if (++normal_mode_log_counter % 60 ==
-        0) { // Log every 60 mouse moves to avoid spam
-      log_debug("Normal mode cursor: (%d, %d) -> Window coords: (%.1f, %.1f)",
-                x, y, pos.x, pos.y);
-    }
-#endif
 
     input_process_mouse_move(platform_state->input_state, x, y);
   }
@@ -680,10 +672,6 @@ void vkr_window_set_mouse_capture(VkrWindow *window, bool8_t capture) {
           (int32_t)(window_size.height - (pos.y * state->layer.contentsScale));
       input_process_mouse_move(state->input_state, virtual_x, virtual_y);
 
-      log_debug(
-          "Initialized virtual cursor to: (%d, %d) from physical: (%.1f, %.1f)",
-          virtual_x, virtual_y, pos.x, pos.y);
-
       CGAssociateMouseAndMouseCursorPosition(false);
 
       update_cursor_image(state);
@@ -701,11 +689,6 @@ void vkr_window_set_mouse_capture(VkrWindow *window, bool8_t capture) {
           0.0, vkr_min_f64(state->restore_cursor_x, contentRect.size.width));
       float64_t clamped_y = vkr_max_f64(
           0.0, vkr_min_f64(state->restore_cursor_y, contentRect.size.height));
-
-      log_debug("Restoring cursor to window coords: (%.1f, %.1f) in window "
-                "size: (%.1f, %.1f)",
-                clamped_x, clamped_y, contentRect.size.width,
-                contentRect.size.height);
 
       // Create local rect - coordinates are already in bottom-left origin
       const NSRect localRect = NSMakeRect(clamped_x, clamped_y, 0, 0);
