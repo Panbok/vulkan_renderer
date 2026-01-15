@@ -1,11 +1,3 @@
-struct GlobalUniformBufferObject
-{
-    column_major float4x4 light_view_projection;
-};
-
-[[vk::binding(0, 0)]]
-ConstantBuffer<GlobalUniformBufferObject> g_ubo;
-
 struct InstanceUniformBufferObject
 {
     float alpha_cutoff;
@@ -16,6 +8,7 @@ ConstantBuffer<InstanceUniformBufferObject> i_ubo;
 
 struct PushConstantsObject
 {
+    column_major float4x4 light_view_projection;
     column_major float4x4 model;
 };
 
@@ -48,7 +41,7 @@ VertexOutput vertexMain(VertexInput input)
 {
     VertexOutput output;
     float4 world_pos = mul(push_constants.model, float4(input.position, 1.0));
-    output.position = mul(g_ubo.light_view_projection, world_pos);
+    output.position = mul(push_constants.light_view_projection, world_pos);
     output.texcoord = input.texcoord;
     return output;
 }

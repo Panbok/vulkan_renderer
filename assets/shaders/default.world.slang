@@ -30,7 +30,7 @@ struct GlobalUniformBufferObject
     float shadow_bias;
     float shadow_normal_bias;
     uint32_t shadow_debug_cascades;
-    uint32_t shadow_debug_mode; // 0=off, 1=cascades, 2=shadow factor, 3=shadow map depth
+    uint32_t shadow_debug_mode; // 0=off, 1=cascades, 2=factor, 3=depth, 4..7=maps, 8=frustum, 9=camera
 
     column_major float4x4 shadow_view_projection[4];
 };
@@ -47,6 +47,13 @@ struct LocalUniformObject
 static const uint32_t TEXTURE_FLAG_HAS_DIFFUSE = 0x1u;
 static const uint32_t TEXTURE_FLAG_HAS_SPECULAR = 0x2u;
 static const uint32_t TEXTURE_FLAG_HAS_NORMAL = 0x4u;
+
+static const float3 SHADOW_CASCADE_DEBUG_COLORS[4] = {
+    float3(1, 0, 0),
+    float3(0, 1, 0),
+    float3(0, 0, 1),
+    float3(1, 1, 0),
+};
 
 struct DirectionalLight
 {
@@ -221,6 +228,58 @@ uint select_cascade(float view_depth)
     return min(count - 1u, 3u);
 }
 
+// Maximum UV deviation from [0,1] range before considering the cascade as not
+// covering. A larger value makes cascade selection more lenient, reducing
+// bright "seam" lines at cascade boundaries at the cost of sampling shadow map
+// edges more often (minor quality reduction at boundaries).
+float shadow_uv_margin()
+{
+    // Allow up to 10% out-of-range - this is quite lenient but eliminates seams
+    return 0.1f;
+}
+
+struct ShadowProjection
+{
+    float2 uv;
+    float z;
+    float2 uv_clamped;
+    float z_clamped;
+    bool uv_out;
+    bool z_out;
+    float coverage_quality; // 1.0 = fully inside, decreases towards edge
+};
+
+ShadowProjection project_shadow(float3 world_pos, uint cascade)
+{
+    ShadowProjection p;
+    float4 clip = mul(g_ubo.shadow_view_projection[cascade], float4(world_pos, 1.0f));
+    clip.xyz /= clip.w;
+
+    p.uv = clip.xy * 0.5f + 0.5f;
+    p.z = clip.z;
+
+    float margin = shadow_uv_margin();
+    p.uv_out = (p.uv.x < -margin || p.uv.x > 1.0f + margin ||
+                p.uv.y < -margin || p.uv.y > 1.0f + margin);
+
+    // Z check: allow small deviation for depth precision issues
+    float z_margin = 0.05f;
+    p.z_out = (p.z < -z_margin || p.z > 1.0f + z_margin);
+
+    p.uv_clamped = clamp(p.uv, 0.0f, 1.0f);
+    p.z_clamped = saturate(p.z);
+
+    // Compute coverage quality - how well this cascade covers the fragment
+    // 1.0 = UV is well inside [0,1], decreases as UV approaches or exceeds bounds
+    float dist_from_edge = min(
+        min(p.uv.x, 1.0f - p.uv.x),
+        min(p.uv.y, 1.0f - p.uv.y)
+    );
+    p.coverage_quality = saturate(dist_from_edge / 0.1f); // 0.1 = 10% from edge is full quality
+
+    return p;
+}
+
 float sample_shadow_pcf(Texture2D<float> map, SamplerState samp, float2 uv,
                         float compare_depth, float bias)
 {
@@ -248,36 +307,116 @@ float sample_shadow_pcf(Texture2D<float> map, SamplerState samp, float2 uv,
     return (taps > 0) ? (sum / (float)taps) : 1.0f;
 }
 
-float calculate_shadow(float3 world_pos, float3 normal, uint cascade)
+// Try to find a cascade that covers the fragment. Returns the cascade index
+// and whether coverage was found. Prioritizes the initially selected cascade,
+// then searches neighbors to handle coverage gaps from stabilization snapping.
+struct CascadeLookup
 {
+    uint cascade;
+    bool covered;
+    ShadowProjection proj;
+};
+
+CascadeLookup find_covering_cascade(float3 world_pos, uint initial_cascade)
+{
+    CascadeLookup result;
+    result.cascade = initial_cascade;
+    result.covered = false;
+    result.proj = project_shadow(world_pos, initial_cascade);
+
+    uint count = min(max(g_ubo.shadow_cascade_count, 1u), 4u);
+
+    // Track the best cascade found so far (highest coverage quality)
+    uint best_cascade = initial_cascade;
+    float best_quality = -1.0f;
+    ShadowProjection best_proj = result.proj;
+    bool any_covers = false;
+
+    // Check all cascades and pick the one with best coverage quality
+    // This ensures we use the cascade whose shadow map best covers this fragment
+    [unroll]
+    for (uint i = 0u; i < 4u; ++i)
+    {
+        if (i >= count) continue;
+
+        ShadowProjection p = (i == initial_cascade) ? result.proj : project_shadow(world_pos, i);
+
+        if (!p.uv_out && !p.z_out)
+        {
+            any_covers = true;
+            // Prefer cascades where the UV is more towards the center (better quality)
+            // Also slightly prefer lower-index cascades (higher resolution)
+            float quality = p.coverage_quality + (float)(count - 1u - i) * 0.01f;
+            if (quality > best_quality)
+            {
+                best_quality = quality;
+                best_cascade = i;
+                best_proj = p;
+            }
+        }
+    }
+
+    if (any_covers)
+    {
+        result.cascade = best_cascade;
+        result.covered = true;
+        result.proj = best_proj;
+    }
+
+    return result;
+}
+
+struct ShadowResult
+{
+    float factor;
+    uint effective_cascade;
+    bool covered;
+};
+
+ShadowResult calculate_shadow_ex(float3 world_pos, float3 normal, uint initial_cascade)
+{
+    ShadowResult result;
+    result.factor = 1.0f;
+    result.effective_cascade = initial_cascade;
+    result.covered = false;
+
     if (g_ubo.shadow_enabled == 0u || g_ubo.dir_enabled == 0u)
     {
-        return 1.0f;
+        return result;
     }
 
-    float4 clip = mul(g_ubo.shadow_view_projection[cascade], float4(world_pos, 1.0f));
-    clip.xyz /= clip.w;
-
-    float2 uv = clip.xy * 0.5f + 0.5f;
-    float z = clip.z;
-
-    if (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f ||
-        z < 0.0f || z > 1.0f)
+    // Find a cascade that actually covers this fragment
+    CascadeLookup lookup = find_covering_cascade(world_pos, initial_cascade);
+    if (!lookup.covered)
     {
-        return 1.0f;
+        // No cascade covers this fragment - treat as lit
+        return result;
     }
+
+    result.effective_cascade = lookup.cascade;
+    result.covered = true;
+    float2 uv = lookup.proj.uv_clamped;
+    float z = lookup.proj.z;
 
     float3 light_dir = normalize(-g_ubo.dir_direction);
     float ndotl = saturate(dot(normal, light_dir));
     float bias = g_ubo.shadow_bias + g_ubo.shadow_normal_bias * (1.0f - ndotl);
 
-    if (cascade == 0u)
-        return sample_shadow_pcf(shadow_map_0, shadow_sampler_0, uv, z, bias);
-    if (cascade == 1u)
-        return sample_shadow_pcf(shadow_map_1, shadow_sampler_1, uv, z, bias);
-    if (cascade == 2u)
-        return sample_shadow_pcf(shadow_map_2, shadow_sampler_2, uv, z, bias);
-    return sample_shadow_pcf(shadow_map_3, shadow_sampler_3, uv, z, bias);
+    if (result.effective_cascade == 0u)
+        result.factor = sample_shadow_pcf(shadow_map_0, shadow_sampler_0, uv, z, bias);
+    else if (result.effective_cascade == 1u)
+        result.factor = sample_shadow_pcf(shadow_map_1, shadow_sampler_1, uv, z, bias);
+    else if (result.effective_cascade == 2u)
+        result.factor = sample_shadow_pcf(shadow_map_2, shadow_sampler_2, uv, z, bias);
+    else
+        result.factor = sample_shadow_pcf(shadow_map_3, shadow_sampler_3, uv, z, bias);
+
+    return result;
+}
+
+float calculate_shadow(float3 world_pos, float3 normal, uint cascade)
+{
+    return calculate_shadow_ex(world_pos, normal, cascade).factor;
 }
 
 float sample_shadow_depth(uint cascade, float2 uv)
@@ -404,13 +543,16 @@ float4 fragmentMain(VertexDto input) : SV_Target
 
     // Directional light (if enabled)
     float shadow = 1.0f;
-    uint cascade = 0u;
+    uint cascade = 0u;           // Initially selected cascade (by view depth)
+    uint effective_cascade = 0u; // Actually used cascade (may differ due to fallback)
     if (g_ubo.shadow_enabled != 0u && g_ubo.dir_enabled != 0)
     {
         float4 view_pos = mul(g_ubo.view, float4(input.frag_position, 1.0));
         float view_depth = -view_pos.z;
         cascade = select_cascade(view_depth);
-        shadow = calculate_shadow(input.frag_position, normal, cascade);
+        ShadowResult shadow_result = calculate_shadow_ex(input.frag_position, normal, cascade);
+        shadow = shadow_result.factor;
+        effective_cascade = shadow_result.effective_cascade;
     }
 
     if (g_ubo.dir_enabled != 0)
@@ -476,18 +618,9 @@ float4 fragmentMain(VertexDto input) : SV_Target
 
     if (g_ubo.shadow_debug_mode == 3u)
     {
-        float4 clip = mul(g_ubo.shadow_view_projection[cascade], float4(input.frag_position, 1.0f));
-        clip.xyz /= clip.w;
-        float2 uv = clip.xy * 0.5f + 0.5f;
-        float z = clip.z;
-
-        bool uv_out =
-            (uv.x < 0.0f || uv.x > 1.0f || uv.y < 0.0f || uv.y > 1.0f);
-        bool z_out = (z < 0.0f || z > 1.0f);
-
-        float2 uv_clamped = saturate(uv);
-        float z_clamped = saturate(z);
-        float d = sample_shadow_depth(cascade, uv_clamped);
+        // Use effective_cascade to show the cascade actually being sampled
+        ShadowProjection p = project_shadow(input.frag_position, effective_cascade);
+        float d = sample_shadow_depth(effective_cascade, p.uv_clamped);
 
         // Debug (mode=3): visualize projection coverage and depth compare inputs.
         // - R: receiver depth (clamped)
@@ -496,16 +629,150 @@ float4 fragmentMain(VertexDto input) : SV_Target
         // Out-of-range tint:
         // - UV out-of-range: red
         // - Z out-of-range: blue
-        float dz = saturate(abs(z_clamped - d) * 50.0f);
-        color.rgb = float3(z_clamped, d, dz);
-        if (uv_out)
+        float dz = saturate(abs(p.z_clamped - d) * 50.0f);
+        color.rgb = float3(p.z_clamped, d, dz);
+        if (p.uv_out)
         {
             color.rgb = lerp(color.rgb, float3(1.0f, 0.0f, 0.0f), 0.75f);
         }
-        if (z_out)
+        if (p.z_out)
         {
             color.rgb = lerp(color.rgb, float3(0.0f, 0.0f, 1.0f), 0.75f);
         }
+        color.a = 1.0f;
+        return color;
+    }
+
+    if (g_ubo.shadow_debug_mode == 8u)
+    {
+        uint count = max(g_ubo.shadow_cascade_count, 1u);
+        count = min(count, 4u);
+
+        ShadowProjection sel = project_shadow(input.frag_position, cascade);
+        bool sel_in = (!sel.uv_out && !sel.z_out);
+
+        bool any_in = sel_in;
+        uint cover = cascade;
+        [unroll]
+        for (uint i = 0u; i < 4u; ++i)
+        {
+            if (i < count && !any_in)
+            {
+                ShadowProjection p = project_shadow(input.frag_position, i);
+                if (!p.uv_out && !p.z_out)
+                {
+                    any_in = true;
+                    cover = i;
+                }
+            }
+        }
+
+        float3 c = float3(sel.uv_clamped, sel.z_clamped);
+        c = lerp(c, SHADOW_CASCADE_DEBUG_COLORS[cascade], 0.15f);
+
+        if (!sel.uv_out)
+        {
+            float2 uv = sel.uv_clamped;
+            float edge = min(min(uv.x, 1.0f - uv.x), min(uv.y, 1.0f - uv.y));
+            float border_width = max(g_ubo.shadow_map_inv_size * 2.0f, 1e-6f);
+            float border = saturate((border_width - edge) / border_width);
+            c = lerp(c, float3(1.0f, 1.0f, 1.0f), border);
+        }
+
+        if (!sel_in)
+        {
+            c = lerp(c, float3(1.0f, 0.0f, 0.0f), sel.uv_out ? 0.75f : 0.0f);
+            c = lerp(c, float3(0.0f, 0.0f, 1.0f), sel.z_out ? 0.75f : 0.0f);
+            if (any_in)
+            {
+                c = lerp(c, SHADOW_CASCADE_DEBUG_COLORS[cover], 0.4f);
+                c = lerp(c, float3(1.0f, 0.0f, 1.0f), 0.6f);
+            }
+        }
+
+        color.rgb = c;
+        color.a = 1.0f;
+        return color;
+    }
+
+    if (g_ubo.shadow_debug_mode == 9u)
+    {
+        float4 world_pos = float4(input.frag_position, 1.0f);
+        float4 view_pos = mul(g_ubo.view, world_pos);
+        float4 clip_pos = mul(g_ubo.projection, view_pos);
+
+        float3 ndc = clip_pos.xyz / clip_pos.w;
+        float2 uv = ndc.xy * 0.5f + 0.5f;
+
+        uint count = max(g_ubo.shadow_cascade_count, 1u);
+        count = min(count, 4u);
+
+        float4 far_splits = g_ubo.shadow_split_far;
+        float far_ref = (count == 1u) ? far_splits.x :
+                        (count == 2u) ? far_splits.y :
+                        (count == 3u) ? far_splits.z :
+                                        far_splits.w;
+        far_ref = max(far_ref, 1e-4f);
+
+        float view_depth = -view_pos.z;
+        float depth_norm = saturate(view_depth / far_ref);
+
+        float3 c = float3(uv, depth_norm);
+
+        // Highlight unexpected clip-space / view-space signs (points in front
+        // should have clip.w > 0 and view_pos.z < 0 for the engine's
+        // right-handed convention).
+        if (clip_pos.w <= 0.0f || view_pos.z > 0.0f)
+        {
+            c = lerp(c, float3(1.0f, 0.0f, 0.0f), 0.85f);
+        }
+
+        bool ndc_out = (ndc.x < -1.0f || ndc.x > 1.0f ||
+                        ndc.y < -1.0f || ndc.y > 1.0f ||
+                        ndc.z <  0.0f || ndc.z > 1.0f);
+        if (ndc_out)
+        {
+            c = lerp(c, float3(1.0f, 0.5f, 0.0f), 0.75f);
+        }
+
+        // Draw split planes in view space. If the shadow cutoff aligns with
+        // one of these lines, the issue is likely cascade selection/coverage.
+        float thickness = max(far_ref * 0.002f, 0.05f);
+        float3 split_c = 0.0.xxx;
+        float w = 0.0f;
+
+        float d0 = abs(view_depth - far_splits.x);
+        float l0 = saturate((thickness - d0) / thickness);
+        split_c += l0 * float3(1.0f, 0.0f, 0.0f);
+        w += l0;
+
+        if (count >= 2u)
+        {
+            float d1 = abs(view_depth - far_splits.y);
+            float l1 = saturate((thickness - d1) / thickness);
+            split_c += l1 * float3(0.0f, 1.0f, 0.0f);
+            w += l1;
+        }
+
+        if (count >= 3u)
+        {
+            float d2 = abs(view_depth - far_splits.z);
+            float l2 = saturate((thickness - d2) / thickness);
+            split_c += l2 * float3(0.0f, 0.0f, 1.0f);
+            w += l2;
+        }
+
+        if (count >= 4u)
+        {
+            float d3 = abs(view_depth - far_splits.w);
+            float l3 = saturate((thickness - d3) / thickness);
+            split_c += l3 * float3(1.0f, 1.0f, 0.0f);
+            w += l3;
+        }
+
+        c = lerp(c, split_c, saturate(w));
+
+        color.rgb = c;
         color.a = 1.0f;
         return color;
     }
@@ -538,10 +805,14 @@ float4 fragmentMain(VertexDto input) : SV_Target
         else if (map_index == 2u) d = shadow_map_2.SampleLevel(shadow_sampler_2, uv, 0).r;
         else d = shadow_map_3.SampleLevel(shadow_sampler_3, uv, 0).r;
 
-        // Depth maps tend to sit close to 1.0 for large cascades; visualize the
-        // inverse depth to make shadow casters pop.
-        float v = saturate((1.0f - d) * 50.0f);
-        color.rgb = v.xxx;
+        // Depth maps often cluster close to 1.0. Provide a few views at once:
+        // - R: raw depth (d)
+        // - G: amplified inverse depth (casters pop, but can saturate)
+        // - B: zoomed view of the 0.98..1.0 range (reveals "near-1" structure)
+        float inv = 1.0f - d;
+        float inv_amp = saturate(inv * 50.0f);
+        float near1 = saturate((d - 0.98f) / 0.02f);
+        color.rgb = float3(d, inv_amp, near1);
         color.a = 1.0f;
         return color;
     }
@@ -555,19 +826,14 @@ float4 fragmentMain(VertexDto input) : SV_Target
         }
         else
         {
-            static const float4 cascade_colors[4] = {
-                float4(1, 0, 0, 1),
-                float4(0, 1, 0, 1),
-                float4(0, 0, 1, 1),
-                float4(1, 1, 0, 1),
-            };
+            // Use effective_cascade to show the cascade actually sampled (after fallback)
             if (g_ubo.shadow_debug_mode == 1u)
             {
-                color.rgb = cascade_colors[cascade].rgb;
+                color.rgb = SHADOW_CASCADE_DEBUG_COLORS[effective_cascade];
             }
             else
             {
-                color.rgb = lerp(color.rgb, cascade_colors[cascade].rgb, 0.3f);
+                color.rgb = lerp(color.rgb, SHADOW_CASCADE_DEBUG_COLORS[effective_cascade], 0.3f);
             }
         }
     }

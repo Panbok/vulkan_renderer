@@ -15,16 +15,14 @@ attribute=vec2,in_texcoord
 attribute=vec4,in_color
 attribute=vec4,in_tangent
 
-# Global uniform: per-cascade light VP
-uniform=mat4,0,light_view_projection
-
 # Instance UBO (alpha cutoff per material; 0 disables cutout)
 uniform=float,1,alpha_cutoff
 
 # Instance samplers (for alpha cutout)
 uniform=samp,1,diffuse_texture
 
-# Local (push constants): model matrix
+# Local (push constants): per-cascade light VP + model matrix
+uniform=mat4,2,light_view_projection
 uniform=mat4,2,model
 
 # Disable culling to allow thin/one-sided meshes to cast shadows
