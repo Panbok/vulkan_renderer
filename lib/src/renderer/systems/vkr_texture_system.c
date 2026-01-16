@@ -267,6 +267,21 @@ vkr_internal VkrTextureFormat vkr_texture_format_from_channels(
   }
 }
 
+vkr_internal bool8_t vkr_texture_has_transparency(const uint8_t *pixels,
+                                                  uint64_t pixel_count,
+                                                  uint32_t channels) {
+  if (!pixels || channels < VKR_TEXTURE_RGBA_CHANNELS)
+    return false_v;
+
+  for (uint64_t pixel_index = 0; pixel_index < pixel_count; pixel_index++) {
+    if (pixels[pixel_index * channels + 3] < 255) {
+      return true_v;
+    }
+  }
+
+  return false_v;
+}
+
 /**
  * @brief Writes decoded texture data to cache file
  * @param allocator The allocator to use
@@ -1365,6 +1380,31 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
                              source_stats.last_modified, &cached_width,
                              &cached_height, &cached_channels,
                              &cached_transparency, &cached_pixels)) {
+    if (!cached_transparency &&
+        cached_channels == VKR_TEXTURE_RGBA_CHANNELS) {
+      uint64_t pixel_count =
+          (uint64_t)cached_width * (uint64_t)cached_height;
+      if (vkr_texture_has_transparency(cached_pixels, pixel_count,
+                                       cached_channels)) {
+        cached_transparency = true_v;
+        VkrTextureCacheWriteGuard *cache_guard =
+            job->system ? job->system->cache_guard : NULL;
+        bool8_t cache_lock_acquired = true_v;
+        if (cache_guard) {
+          cache_lock_acquired =
+              vkr_texture_cache_guard_try_acquire(cache_guard, path_cstr);
+        }
+        if (cache_lock_acquired) {
+          vkr_texture_cache_write(scratch_allocator, cache_path,
+                                  source_stats.last_modified, cached_width,
+                                  cached_height, cached_channels,
+                                  cached_transparency, cached_pixels);
+          if (cache_guard) {
+            vkr_texture_cache_guard_release(cache_guard, path_cstr);
+          }
+        }
+      }
+    }
     result->decoded_pixels = cached_pixels;
     result->width = (int32_t)cached_width;
     result->height = (int32_t)cached_height;
@@ -1426,17 +1466,9 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
     return false_v;
   }
 
-  result->has_transparency = false_v;
-
-  // Check for transparency (sample pixels for performance)
   uint64_t pixel_count = (uint64_t)result->width * (uint64_t)result->height;
-  uint64_t step = pixel_count > 64 ? pixel_count / 64 : 1;
-  for (uint64_t px = 0; px < pixel_count; px += step) {
-    if (result->decoded_pixels[px * 4 + 3] < 255) {
-      result->has_transparency = true_v;
-      break;
-    }
-  }
+  result->has_transparency = vkr_texture_has_transparency(
+      result->decoded_pixels, pixel_count, VKR_TEXTURE_RGBA_CHANNELS);
 
   VkrTextureCacheWriteGuard *cache_guard =
       job->system ? job->system->cache_guard : NULL;
@@ -1556,14 +1588,10 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
 
   bool8_t has_transparency = false_v;
   if (actual_channels == VKR_TEXTURE_RGBA_CHANNELS) {
-    for (uint64_t pixel_index = 0;
-         pixel_index < (uint64_t)width * (uint64_t)height; pixel_index++) {
-      uint8_t a = loaded_image_data[pixel_index * actual_channels + 3];
-      if (a < 255) {
-        has_transparency = true_v;
-        break;
-      }
-    }
+    uint64_t pixel_count = (uint64_t)width * (uint64_t)height;
+    has_transparency =
+        vkr_texture_has_transparency(loaded_image_data, pixel_count,
+                                     actual_channels);
   }
 
   if (has_transparency) {
@@ -1584,7 +1612,9 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
       .mag_filter = VKR_FILTER_LINEAR,
       .mip_filter = VKR_MIP_FILTER_LINEAR,
       .anisotropy_enable = false_v,
-      .generation = VKR_INVALID_ID,
+      // Must be stable for the lifetime of this backend texture handle so
+      // descriptor-set generation tracking can invalidate correctly on reload.
+      .generation = system->generation_counter++,
   };
 
   uint32_t loaded_channels =
@@ -1682,7 +1712,9 @@ bool8_t vkr_texture_system_load(VkrTextureSystem *system, String8 name,
 
   // Assign stable id and generation
   texture->description.id = free_slot_index + 1;
-  texture->description.generation = system->generation_counter++;
+  if (texture->description.generation == VKR_INVALID_ID) {
+    texture->description.generation = system->generation_counter++;
+  }
 
   // Add to hash table with 0 ref count
   VkrTextureEntry new_entry = {

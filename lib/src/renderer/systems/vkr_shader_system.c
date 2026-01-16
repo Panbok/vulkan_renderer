@@ -167,9 +167,8 @@ bool8_t vkr_shader_system_create(VkrShaderSystem *state,
     return false_v;
   }
 
-  char *stable_name = vkr_allocator_alloc(&state->allocator,
-                                          cfg->name.length + 1,
-                                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  char *stable_name = vkr_allocator_alloc(
+      &state->allocator, cfg->name.length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stable_name) {
     log_error("Failed to allocate shader name");
     return false_v;
@@ -183,8 +182,7 @@ bool8_t vkr_shader_system_create(VkrShaderSystem *state,
   VkrShader *shader = array_get_VkrShader(&state->shaders, new_id);
   array_set_bool8_t(&state->active_shaders, new_id, true_v);
 
-  shader->name =
-      string8_create((uint8_t *)stable_name, cfg->name.length);
+  shader->name = string8_create((uint8_t *)stable_name, cfg->name.length);
   shader->id = new_id;
   shader->config = cfg;
 
@@ -352,7 +350,19 @@ bool8_t vkr_shader_system_uniform_set(VkrShaderSystem *state,
     return false_v;
   }
 
-  MemCopy(target_buffer + uniform->offset, value, (uint64_t)uniform->size);
+  // Some std140 layouts represent vec3 as 12 bytes (with possible padding
+  // before the next 16-byte-aligned member). Only write explicit padding when
+  // the computed uniform size includes it to avoid clobbering a following scalar
+  // packed into the same 16-byte slot (e.g. vec3 + uint).
+  if (uniform->type == SHADER_UNIFORM_TYPE_FLOAT32_3 &&
+      uniform->array_count == 1 && uniform->size == sizeof(float32_t) * 4u) {
+    MemCopy(target_buffer + uniform->offset, value, sizeof(float32_t) * 3ULL);
+    uint32_t pad = 0;
+    MemCopy(target_buffer + uniform->offset + sizeof(float32_t) * 3ULL, &pad,
+            sizeof(pad));
+  } else {
+    MemCopy(target_buffer + uniform->offset, value, (uint64_t)uniform->size);
+  }
 
   return true_v;
 }
@@ -393,6 +403,8 @@ bool8_t vkr_shader_system_sampler_set(VkrShaderSystem *state,
 
   if (uniform->scope == VKR_SHADER_SCOPE_INSTANCE) {
     uint32_t slot = uniform->location;
+    // log_debug("Sampler '%s' -> location %u, texture %p", sampler_name, slot,
+    // t);
     if (slot < VKR_MAX_INSTANCE_TEXTURES) {
       state->material_state.textures[slot] = t;
       state->material_state.textures_enabled[slot] = true_v;
@@ -446,6 +458,9 @@ bool8_t vkr_shader_system_apply_global(VkrShaderSystem *state) {
 
   VkrRendererError err = VKR_RENDERER_ERROR_NONE;
   if (state->current_shader) {
+    if (state->current_shader->config->global_ubo_size == 0) {
+      return true_v;
+    }
     vkr_ensure_staging_for_shader(state, state->current_shader);
   }
 
