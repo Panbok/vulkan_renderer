@@ -46,6 +46,7 @@ VertexOutput vertexMain(VertexInput input)
     return output;
 }
 
+// todo: we need to remove this, it causes major performance issues due to early z testing
 [shader("fragment")]
 void fragmentMain(VertexOutput input)
 {

@@ -17,7 +17,7 @@ struct s_RendererFrontend;
 struct VkrCamera;
 
 #define VKR_SHADOW_CASCADE_COUNT_MAX 4
-#define VKR_SHADOW_MAP_SIZE_DEFAULT 1024
+#define VKR_SHADOW_MAP_SIZE_DEFAULT 4096
 
 /**
  * @brief Per-cascade data updated each frame.
@@ -75,6 +75,10 @@ typedef struct VkrShadowSceneBounds {
  * z_extension_factor extends the light-space depth range to capture shadow
  * casters outside the camera frustum. Value is multiplied by the cascade's
  * bounding sphere radius. Only used if scene_bounds.use_scene_bounds is false.
+ *
+ * depth_bias_* are Vulkan rasterization depth-bias parameters applied when
+ * rendering the shadow map (receiver-side bias is controlled by shadow_bias /
+ * normal_bias in the world shader).
  */
 typedef struct VkrShadowConfig {
   uint32_t cascade_count;
@@ -83,6 +87,9 @@ typedef struct VkrShadowConfig {
   float32_t max_shadow_distance;
   float32_t cascade_guard_band_texels;
   float32_t z_extension_factor;
+  float32_t depth_bias_constant_factor;
+  float32_t depth_bias_clamp;
+  float32_t depth_bias_slope_factor;
   float32_t shadow_bias;
   float32_t normal_bias;
   float32_t pcf_radius;
@@ -93,23 +100,62 @@ typedef struct VkrShadowConfig {
   VkrShadowSceneBounds scene_bounds;
 } VkrShadowConfig;
 
-#define VKR_SHADOW_CONFIG_DEFAULT                                              \
+/**
+ * @brief High-quality CSM preset (recommended on modern GPUs).
+ *
+ * Uses 4 cascades and a 4096 shadow map to minimize aliasing. The world shader
+ * uses Poisson PCF and scales the effective radius per cascade based on
+ * world-units-per-texel to keep softness roughly consistent in world space.
+ */
+#define VKR_SHADOW_CONFIG_HIGH                                                 \
   ((VkrShadowConfig){                                                          \
-      .cascade_count = 3,                                                      \
-      .shadow_map_size = VKR_SHADOW_MAP_SIZE_DEFAULT,                          \
+      .cascade_count = 4,                                                      \
+      .shadow_map_size = 4096,                                                 \
       .cascade_split_lambda = 0.75f,                                           \
       .max_shadow_distance = 120.0f,                                           \
       .cascade_guard_band_texels = 128.0f,                                     \
       .z_extension_factor = 5.0f,                                              \
+      .depth_bias_constant_factor = 1.25f,                                     \
+      .depth_bias_clamp = 0.0f,                                                \
+      .depth_bias_slope_factor = 1.75f,                                        \
       .shadow_bias = 0.001f,                                                   \
       .normal_bias = 0.01f,                                                    \
-      .pcf_radius = 1.0f,                                                      \
+      .pcf_radius = 1.5f,                                                      \
       .use_constant_cascade_size = true_v,                                     \
-      .cascade_blend_range = 30.0f,                                            \
+      .cascade_blend_range = 8.0f,                                             \
       .stabilize_cascades = true_v,                                            \
       .debug_show_cascades = false_v,                                          \
       .scene_bounds = VKR_SHADOW_SCENE_BOUNDS_DEFAULT,                         \
   })
+
+/**
+ * @brief Balanced CSM preset (better performance/memory footprint).
+ */
+#define VKR_SHADOW_CONFIG_BALANCED                                             \
+  ((VkrShadowConfig){                                                          \
+      .cascade_count = 4,                                                      \
+      .shadow_map_size = 2048,                                                 \
+      .cascade_split_lambda = 0.75f,                                           \
+      .max_shadow_distance = 120.0f,                                           \
+      .cascade_guard_band_texels = 128.0f,                                     \
+      .z_extension_factor = 5.0f,                                              \
+      .depth_bias_constant_factor = 1.50f,                                     \
+      .depth_bias_clamp = 0.0f,                                                \
+      .depth_bias_slope_factor = 2.00f,                                        \
+      .shadow_bias = 0.001f,                                                   \
+      .normal_bias = 0.01f,                                                    \
+      .pcf_radius = 2.0f,                                                      \
+      .use_constant_cascade_size = true_v,                                     \
+      .cascade_blend_range = 8.0f,                                             \
+      .stabilize_cascades = true_v,                                            \
+      .debug_show_cascades = false_v,                                          \
+      .scene_bounds = VKR_SHADOW_SCENE_BOUNDS_DEFAULT,                         \
+  })
+
+/**
+ * @brief Project-wide default.
+ */
+#define VKR_SHADOW_CONFIG_DEFAULT VKR_SHADOW_CONFIG_HIGH
 
 /**
  * @brief Per-frame shadow resources (one per swapchain image).

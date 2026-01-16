@@ -265,8 +265,9 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   float32_t half = extent * 0.5f;
 
   if (stabilize && shadow_map_size > 0) {
-    // Stabilize by snapping the cascade projection center to the texel grid
-    // (light space) to reduce shimmering as the camera moves.
+    // Stabilize by snapping the cascade projection to the texel grid (light
+    // space). Snapping the bounds (not just the center) reduces visible
+    // shimmering on thin geometry as the camera moves.
     center_x = floorf(center_x / texel_size + 0.5f) * texel_size;
     center_y = floorf(center_y / texel_size + 0.5f) * texel_size;
   }
@@ -275,6 +276,15 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   float32_t right = center_x + half;
   float32_t bottom = center_y - half;
   float32_t top = center_y + half;
+
+  if (stabilize && shadow_map_size > 0) {
+    // Snap the orthographic bounds to texel increments to prevent the PCF
+    // kernel from “walking” across receiver edges when the camera moves.
+    left = floorf(left / texel_size + 0.5f) * texel_size;
+    bottom = floorf(bottom / texel_size + 0.5f) * texel_size;
+    right = left + extent;
+    top = bottom + extent;
+  }
   *out_world_units_per_texel = texel_size;
 
   float32_t near_clip = -max_z;
@@ -449,6 +459,17 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
   }
   if (system->config.z_extension_factor < 0.0f) {
     system->config.z_extension_factor = 0.0f;
+  }
+  // Vulkan rasterization depth bias: keep parameters non-negative and
+  // deterministic even if caller passes NaNs.
+  if (!(system->config.depth_bias_constant_factor >= 0.0f)) {
+    system->config.depth_bias_constant_factor = 0.0f;
+  }
+  if (!(system->config.depth_bias_slope_factor >= 0.0f)) {
+    system->config.depth_bias_slope_factor = 0.0f;
+  }
+  if (!(system->config.depth_bias_clamp >= 0.0f)) {
+    system->config.depth_bias_clamp = 0.0f;
   }
 
   if (!vkr_shadow_create_renderpass(system, rf)) {
