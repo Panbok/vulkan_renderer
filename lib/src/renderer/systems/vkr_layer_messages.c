@@ -111,6 +111,23 @@ static const VkrLayerMsgMeta s_msg_meta_table[] = {
         .rsp_kind = VKR_LAYER_RSP_NONE,
         .rsp_size = 0,
     },
+    // Shadow Layer Messages
+    {
+        .kind = VKR_LAYER_MSG_SHADOW_GET_FRAME_DATA,
+        .name = "SHADOW_GET_FRAME_DATA",
+        .expected_version = 1,
+        .payload_size = sizeof(VkrShadowFrameDataRequest),
+        .rsp_kind = VKR_LAYER_RSP_SHADOW_FRAME_DATA,
+        .rsp_size = sizeof(VkrLayerRsp_ShadowFrameData),
+    },
+    {
+        .kind = VKR_LAYER_MSG_SHADOW_INVALIDATE_INSTANCE_STATES,
+        .name = "SHADOW_INVALIDATE_INSTANCE_STATES",
+        .expected_version = 1,
+        .payload_size = 0,
+        .rsp_kind = VKR_LAYER_RSP_NONE,
+        .rsp_size = 0,
+    },
 };
 
 #define MSG_META_TABLE_COUNT                                                   \

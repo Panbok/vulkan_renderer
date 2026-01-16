@@ -19,6 +19,7 @@
 #pragma once
 
 #include "defines.h"
+#include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/views/vkr_view_editor.h"
 #include "renderer/systems/views/vkr_view_ui.h"
 #include "renderer/systems/views/vkr_view_world.h"
@@ -53,6 +54,10 @@ typedef enum VkrLayerMsgKind : uint32_t {
   VKR_LAYER_MSG_EDITOR_GET_VIEWPORT_MAPPING = 300,
   VKR_LAYER_MSG_EDITOR_SET_VIEWPORT_FIT_MODE = 301,
   VKR_LAYER_MSG_EDITOR_SET_RENDER_SCALE = 302,
+
+  // Shadow Layer Messages (4xx)
+  VKR_LAYER_MSG_SHADOW_GET_FRAME_DATA = 400,
+  VKR_LAYER_MSG_SHADOW_INVALIDATE_INSTANCE_STATES = 401,
 
   VKR_LAYER_MSG_KIND_COUNT
 } VkrLayerMsgKind;
@@ -128,6 +133,7 @@ typedef enum VkrLayerRspKind : uint32_t {
   VKR_LAYER_RSP_NONE = 0,
   VKR_LAYER_RSP_UI_TEXT_CREATE = 1,
   VKR_LAYER_RSP_EDITOR_VIEWPORT_MAPPING = 2,
+  VKR_LAYER_RSP_SHADOW_FRAME_DATA = 3,
 } VkrLayerRspKind;
 
 /**
@@ -258,6 +264,32 @@ typedef struct VkrLayerMsg_EditorSetRenderScale {
   float32_t payload;
 } VkrLayerMsg_EditorSetRenderScale;
 
+// --- Shadow Layer Messages ---
+
+/**
+ * @brief Request shadow frame data for the current swapchain image.
+ * Response: VkrLayerRsp_ShadowFrameData.
+ */
+typedef struct VkrShadowFrameDataRequest {
+  uint32_t frame_index;
+} VkrShadowFrameDataRequest;
+
+typedef struct VkrLayerMsg_ShadowGetFrameData {
+  VkrLayerMsgHeader h;
+  VkrShadowFrameDataRequest payload;
+} VkrLayerMsg_ShadowGetFrameData;
+
+/**
+ * @brief Invalidate any cached shadow instance state resources.
+ *
+ * Used on scene unload to prevent descriptor sets from referencing destroyed
+ * textures/samplers across reloads.
+ * No response.
+ */
+typedef struct VkrLayerMsg_ShadowInvalidateInstanceStates {
+  VkrLayerMsgHeader h;
+} VkrLayerMsg_ShadowInvalidateInstanceStates;
+
 // ============================================================================
 // Typed Response Structures
 // ============================================================================
@@ -277,6 +309,14 @@ typedef struct VkrLayerRsp_EditorViewportMapping {
   VkrLayerRspHeader h;
   VkrViewportMapping mapping;
 } VkrLayerRsp_EditorViewportMapping;
+
+/**
+ * @brief Response for shadow frame data query.
+ */
+typedef struct VkrLayerRsp_ShadowFrameData {
+  VkrLayerRspHeader h;
+  VkrShadowFrameData data;
+} VkrLayerRsp_ShadowFrameData;
 
 // ============================================================================
 // Message Protocol Metadata
@@ -332,9 +372,15 @@ _Static_assert(offsetof(VkrLayerMsg_EditorSetViewportFitMode, h) == 0,
                "Header must be first field");
 _Static_assert(offsetof(VkrLayerMsg_EditorSetRenderScale, h) == 0,
                "Header must be first field");
+_Static_assert(offsetof(VkrLayerMsg_ShadowGetFrameData, h) == 0,
+               "Header must be first field");
+_Static_assert(offsetof(VkrLayerMsg_ShadowInvalidateInstanceStates, h) == 0,
+               "Header must be first field");
 
 // Ensure response structs have header as first field
 _Static_assert(offsetof(VkrLayerRsp_UiTextCreate, h) == 0,
                "Header must be first field");
 _Static_assert(offsetof(VkrLayerRsp_EditorViewportMapping, h) == 0,
+               "Header must be first field");
+_Static_assert(offsetof(VkrLayerRsp_ShadowFrameData, h) == 0,
                "Header must be first field");

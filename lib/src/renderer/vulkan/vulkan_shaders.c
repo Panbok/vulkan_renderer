@@ -1,4 +1,5 @@
 #include "vulkan_shaders.h"
+#include "filesystem/filesystem.h"
 
 vkr_internal VkImageLayout
 vulkan_shader_image_layout_for_texture(const struct s_TextureHandle *texture) {
@@ -14,7 +15,6 @@ vulkan_shader_image_layout_for_texture(const struct s_TextureHandle *texture) {
     return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   }
 }
-#include "filesystem/filesystem.h"
 
 bool8_t vulkan_shader_module_create(
     VulkanBackendState *state, VkrShaderStageFlags stage, const uint64_t size,
@@ -242,7 +242,8 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   VkDescriptorSetLayoutCreateInfo global_descriptor_set_layout_create_info = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
       .bindingCount = has_global_ubo ? 1u : 0u,
-      .pBindings = has_global_ubo ? global_descriptor_set_layout_bindings : NULL,
+      .pBindings =
+          has_global_ubo ? global_descriptor_set_layout_bindings : NULL,
   };
 
   // Global descriptors set layout

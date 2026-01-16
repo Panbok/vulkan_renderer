@@ -2,7 +2,6 @@
 #include "containers/bitset.h"
 #include "containers/str.h"
 #include "defines.h"
-#include "memory/vkr_arena_allocator.h"
 #include "renderer/vulkan/vulkan_types.h"
 #include "vulkan_utils.h"
 
@@ -420,6 +419,19 @@ void vulkan_device_query_swapchain_details(VulkanBackendState *state,
   }
 }
 
+static const char *vk_format_to_string(VkFormat format) {
+  switch (format) {
+  case VK_FORMAT_D32_SFLOAT:
+    return "VK_FORMAT_D32_SFLOAT";
+  case VK_FORMAT_D32_SFLOAT_S8_UINT:
+    return "VK_FORMAT_D32_SFLOAT_S8_UINT";
+  case VK_FORMAT_D24_UNORM_S8_UINT:
+    return "VK_FORMAT_D24_UNORM_S8_UINT";
+  default:
+    return "VK_FORMAT_UNKNOWN";
+  }
+}
+
 bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
   assert_log(device != NULL, "Device is NULL");
   assert_log(device->physical_device != VK_NULL_HANDLE,
@@ -442,20 +454,7 @@ bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
 
     if ((properties.linearTilingFeatures & flags) == flags) {
       device->depth_format = candidates[i];
-      const char *name = "VK_FORMAT_UNKNOWN";
-      switch (device->depth_format) {
-      case VK_FORMAT_D32_SFLOAT:
-        name = "VK_FORMAT_D32_SFLOAT";
-        break;
-      case VK_FORMAT_D32_SFLOAT_S8_UINT:
-        name = "VK_FORMAT_D32_SFLOAT_S8_UINT";
-        break;
-      case VK_FORMAT_D24_UNORM_S8_UINT:
-        name = "VK_FORMAT_D24_UNORM_S8_UINT";
-        break;
-      default:
-        break;
-      }
+      const char *name = vk_format_to_string(device->depth_format);
       bool32_t linear_filter =
           (properties.linearTilingFeatures &
            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
@@ -464,20 +463,7 @@ bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
       return true;
     } else if ((properties.optimalTilingFeatures & flags) == flags) {
       device->depth_format = candidates[i];
-      const char *name = "VK_FORMAT_UNKNOWN";
-      switch (device->depth_format) {
-      case VK_FORMAT_D32_SFLOAT:
-        name = "VK_FORMAT_D32_SFLOAT";
-        break;
-      case VK_FORMAT_D32_SFLOAT_S8_UINT:
-        name = "VK_FORMAT_D32_SFLOAT_S8_UINT";
-        break;
-      case VK_FORMAT_D24_UNORM_S8_UINT:
-        name = "VK_FORMAT_D24_UNORM_S8_UINT";
-        break;
-      default:
-        break;
-      }
+      const char *name = vk_format_to_string(device->depth_format);
       bool32_t linear_filter =
           (properties.optimalTilingFeatures &
            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
