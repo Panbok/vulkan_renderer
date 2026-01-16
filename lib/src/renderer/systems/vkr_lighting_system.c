@@ -37,9 +37,8 @@ typedef struct PointLightSyncContext {
 } PointLightSyncContext;
 
 vkr_internal void point_light_insert_sorted(PointLightSyncContext *ctx,
-                                            uint32_t render_id,
-                                            Vec3 position, Vec3 color,
-                                            float32_t intensity,
+                                            uint32_t render_id, Vec3 position,
+                                            Vec3 color, float32_t intensity,
                                             float32_t constant,
                                             float32_t linear,
                                             float32_t quadratic) {
@@ -49,8 +48,7 @@ vkr_internal void point_light_insert_sorted(PointLightSyncContext *ctx,
   uint32_t count = ctx->count;
   uint32_t sort_key = render_id ? render_id : UINT32_MAX;
   uint32_t insert = 0;
-  while (insert < count &&
-         ctx->candidates[insert].render_id < sort_key) {
+  while (insert < count && ctx->candidates[insert].render_id < sort_key) {
     insert++;
   }
 
@@ -101,10 +99,11 @@ vkr_internal void sync_directional_light_cb(const VkrArchetype *arch,
   uint32_t count = vkr_entity_chunk_count(chunk);
 
   VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
-  SceneDirectionalLight *lights = (SceneDirectionalLight *)vkr_entity_chunk_column(
-      chunk, scene->comp_directional_light);
+  SceneDirectionalLight *lights =
+      (SceneDirectionalLight *)vkr_entity_chunk_column(
+          chunk, scene->comp_directional_light);
 
-  if (!lights)
+  if (!entities || !lights)
     return;
 
   for (uint32_t i = 0; i < count; i++) {
@@ -158,10 +157,10 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
   VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
   SceneTransform *transforms =
       (SceneTransform *)vkr_entity_chunk_column(chunk, scene->comp_transform);
-  ScenePointLight *lights =
-      (ScenePointLight *)vkr_entity_chunk_column(chunk, scene->comp_point_light);
+  ScenePointLight *lights = (ScenePointLight *)vkr_entity_chunk_column(
+      chunk, scene->comp_point_light);
 
-  if (!transforms || !lights)
+  if (!entities || !transforms || !lights)
     return;
 
   for (uint32_t i = 0; i < count; i++) {

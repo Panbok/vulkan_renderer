@@ -7,6 +7,7 @@
 #include "memory/vkr_dmemory.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_shader_system.h"
+#include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/vkr_renderer.h"
 
@@ -52,6 +53,11 @@ typedef struct VkrMaterialSystem {
 
   VkrTextureSystem *texture_system;
   VkrShaderSystem *shader_system;
+
+  // Shadow map bindings for world materials (updated per frame).
+  VkrTextureOpaqueHandle shadow_maps[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t shadow_map_count;
+  bool8_t shadow_maps_enabled;
 
   uint32_t next_free_index;
   uint32_t generation_counter;
@@ -108,6 +114,17 @@ vkr_material_system_create_colored(VkrMaterialSystem *system, const char *name,
                                    VkrRendererError *out_error);
 
 /**
+ * @brief Creates or updates built-in gizmo materials (X/Y/Z emissive axes).
+ * @param system The material system to create the materials in.
+ * @param out_handles Optional array of 3 handles (X/Y/Z).
+ * @param out_error Optional error output.
+ * @return true on success.
+ */
+bool8_t vkr_material_system_create_gizmo_materials(
+    VkrMaterialSystem *system, VkrMaterialHandle out_handles[3],
+    VkrRendererError *out_error);
+
+/**
  * @brief Acquires a material by name; increments refcount if it exists; fails
  * if not loaded.
  * @param system The material system to acquire the material from
@@ -160,6 +177,15 @@ void vkr_material_system_apply_global(VkrMaterialSystem *system,
 void vkr_material_system_apply_instance(VkrMaterialSystem *system,
                                         const VkrMaterial *material,
                                         VkrPipelineDomain domain);
+
+/**
+ * @brief Updates shadow map bindings for world materials.
+ *
+ * Passing enabled=false clears bindings (default textures will be used).
+ */
+void vkr_material_system_set_shadow_maps(VkrMaterialSystem *system,
+                                         const VkrTextureOpaqueHandle *maps,
+                                         uint32_t count, bool8_t enabled);
 
 /**
  * @brief Applies the local material state to the material system
