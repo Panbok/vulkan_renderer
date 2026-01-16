@@ -137,6 +137,110 @@ vkr_geometry_system_create_cube(VkrGeometrySystem *system, float32_t width,
                                 const char *name, VkrRendererError *out_error);
 
 /**
+ * @brief Creates an axis-aligned box centered at the given position.
+ * @param system The geometry system to create the box in.
+ * @param center Center position for the box.
+ * @param width Box width.
+ * @param height Box height.
+ * @param depth Box depth.
+ * @param auto_release Whether to auto-release when refcount reaches zero.
+ * @param name Geometry name for lookup/debugging.
+ * @param out_error The error output.
+ */
+VkrGeometryHandle
+vkr_geometry_system_create_box(VkrGeometrySystem *system, Vec3 center,
+                               float32_t width, float32_t height,
+                               float32_t depth, bool8_t auto_release,
+                               const char *name, VkrRendererError *out_error);
+
+/**
+ * @brief Creates a cylinder aligned to an axis with optional caps.
+ * @param system The geometry system to create the cylinder in.
+ * @param radius Cylinder radius.
+ * @param height Cylinder height along the axis direction.
+ * @param segments Radial segment count (clamped to >= 3).
+ * @param axis Axis direction; defaults to +Z when near-zero.
+ * @param origin Base position (z=0 plane in local space).
+ * @param cap_bottom Whether to generate the bottom cap.
+ * @param cap_top Whether to generate the top cap.
+ * @param name Geometry name for lookup/debugging.
+ * @param out_error The error output.
+ */
+VkrGeometryHandle vkr_geometry_system_create_cylinder(
+    VkrGeometrySystem *system, float32_t radius, float32_t height,
+    uint32_t segments, Vec3 axis, Vec3 origin, bool8_t cap_bottom,
+    bool8_t cap_top, const char *name, VkrRendererError *out_error);
+
+/**
+ * @brief Creates a cone aligned to an axis.
+ * @param system The geometry system to create the cone in.
+ * @param radius Cone base radius.
+ * @param height Cone height along the axis direction.
+ * @param segments Radial segment count (clamped to >= 3).
+ * @param axis Axis direction; defaults to +Z when near-zero.
+ * @param origin Base position (z=0 plane in local space).
+ * @param cap_base Whether to generate the base cap.
+ * @param name Geometry name for lookup/debugging.
+ * @param out_error The error output.
+ */
+VkrGeometryHandle vkr_geometry_system_create_cone(
+    VkrGeometrySystem *system, float32_t radius, float32_t height,
+    uint32_t segments, Vec3 axis, Vec3 origin, bool8_t cap_base,
+    const char *name, VkrRendererError *out_error);
+
+/**
+ * @brief Creates a torus centered at origin with its normal aligned to axis.
+ * @param system The geometry system to create the torus in.
+ * @param major_radius Distance from center to tube center.
+ * @param minor_radius Tube radius.
+ * @param major_segments Segment count around the major ring (>= 3).
+ * @param minor_segments Segment count around the tube (>= 3).
+ * @param axis Torus normal direction; defaults to +Z when near-zero.
+ * @param origin Center position.
+ * @param name Geometry name for lookup/debugging.
+ * @param out_error The error output.
+ */
+VkrGeometryHandle vkr_geometry_system_create_torus(
+    VkrGeometrySystem *system, float32_t major_radius, float32_t minor_radius,
+    uint32_t major_segments, uint32_t minor_segments, Vec3 axis, Vec3 origin,
+    const char *name, VkrRendererError *out_error);
+
+/**
+ * @brief Creates a UV sphere centered at origin with its poles aligned to axis.
+ * @param system The geometry system to create the sphere in.
+ * @param radius Sphere radius.
+ * @param latitude_segments Segment count between poles (clamped to >= 2).
+ * @param longitude_segments Segment count around the equator (clamped to >= 3).
+ * @param axis Sphere pole direction; defaults to +Z when near-zero.
+ * @param origin Center position.
+ * @param name Geometry name for lookup/debugging.
+ * @param out_error The error output.
+ */
+VkrGeometryHandle vkr_geometry_system_create_sphere(
+    VkrGeometrySystem *system, float32_t radius, uint32_t latitude_segments,
+    uint32_t longitude_segments, Vec3 axis, Vec3 origin, const char *name,
+    VkrRendererError *out_error);
+
+/**
+ * @brief Creates an arrow (cylinder shaft + cone head) aligned to an axis.
+ * @param system The geometry system to create the arrow in.
+ * @param shaft_length Cylinder shaft length.
+ * @param shaft_radius Cylinder shaft radius.
+ * @param head_length Cone head length.
+ * @param head_radius Cone head radius.
+ * @param segments Radial segment count (clamped to >= 3).
+ * @param axis Arrow direction; defaults to +Z when near-zero.
+ * @param origin Base position (start of shaft).
+ * @param name Geometry name for lookup/debugging.
+ * @param out_error The error output.
+ */
+VkrGeometryHandle vkr_geometry_system_create_arrow(
+    VkrGeometrySystem *system, float32_t shaft_length,
+    float32_t shaft_radius, float32_t head_length, float32_t head_radius,
+    uint32_t segments, Vec3 axis, Vec3 origin, const char *name,
+    VkrRendererError *out_error);
+
+/**
  * @brief Adds a reference to the geometry
  * @param system The geometry system to add the reference to
  * @param handle The geometry handle to add the reference to
