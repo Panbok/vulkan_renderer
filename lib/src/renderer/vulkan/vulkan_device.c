@@ -430,7 +430,11 @@ bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
   VkFormat candidates[3] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT,
                             VK_FORMAT_D24_UNORM_S8_UINT};
 
-  uint32_t flags = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+  // Depth is used both as an attachment and (for CSM) as a sampled texture.
+  // Pick a format that supports both to avoid "always-1" samples on platforms
+  // where depth-stencil formats are not sampleable.
+  uint32_t flags = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                   VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
   for (uint32_t i = 0; i < candidate_count; ++i) {
     VkFormatProperties properties;
     vkGetPhysicalDeviceFormatProperties(device->physical_device, candidates[i],
@@ -438,9 +442,48 @@ bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
 
     if ((properties.linearTilingFeatures & flags) == flags) {
       device->depth_format = candidates[i];
+      const char *name = "VK_FORMAT_UNKNOWN";
+      switch (device->depth_format) {
+      case VK_FORMAT_D32_SFLOAT:
+        name = "VK_FORMAT_D32_SFLOAT";
+        break;
+      case VK_FORMAT_D32_SFLOAT_S8_UINT:
+        name = "VK_FORMAT_D32_SFLOAT_S8_UINT";
+        break;
+      case VK_FORMAT_D24_UNORM_S8_UINT:
+        name = "VK_FORMAT_D24_UNORM_S8_UINT";
+        break;
+      default:
+        break;
+      }
+      bool32_t linear_filter =
+          (properties.linearTilingFeatures &
+           VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+      log_debug("Selected depth format (linear tiling): %s (%d) linear_filter=%u",
+                name, (int)device->depth_format, (uint32_t)linear_filter);
       return true;
     } else if ((properties.optimalTilingFeatures & flags) == flags) {
       device->depth_format = candidates[i];
+      const char *name = "VK_FORMAT_UNKNOWN";
+      switch (device->depth_format) {
+      case VK_FORMAT_D32_SFLOAT:
+        name = "VK_FORMAT_D32_SFLOAT";
+        break;
+      case VK_FORMAT_D32_SFLOAT_S8_UINT:
+        name = "VK_FORMAT_D32_SFLOAT_S8_UINT";
+        break;
+      case VK_FORMAT_D24_UNORM_S8_UINT:
+        name = "VK_FORMAT_D24_UNORM_S8_UINT";
+        break;
+      default:
+        break;
+      }
+      bool32_t linear_filter =
+          (properties.optimalTilingFeatures &
+           VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+      log_debug(
+          "Selected depth format (optimal tiling): %s (%d) linear_filter=%u",
+          name, (int)device->depth_format, (uint32_t)linear_filter);
       return true;
     }
   }

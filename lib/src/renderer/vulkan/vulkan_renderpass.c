@@ -120,7 +120,9 @@ vulkan_renderpass_create_from_config(VulkanBackendState *state,
 
   // PICKING domains require special handling (R32_UINT format for object IDs)
   if (cfg->domain == VKR_PIPELINE_DOMAIN_PICKING ||
-      cfg->domain == VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT) {
+      cfg->domain == VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT ||
+      cfg->domain == VKR_PIPELINE_DOMAIN_PICKING_OVERLAY ||
+      cfg->domain == VKR_PIPELINE_DOMAIN_SHADOW) {
     MemZero(out_render_pass, sizeof(VulkanRenderPass));
     return vulkan_renderpass_create_for_domain(state, cfg->domain,
                                                out_render_pass);
@@ -340,6 +342,7 @@ bool8_t vulkan_renderpass_create_for_domain(VulkanBackendState *state,
   switch (domain) {
   case VKR_PIPELINE_DOMAIN_WORLD:
   case VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT:
+  case VKR_PIPELINE_DOMAIN_WORLD_OVERLAY:
   case VKR_PIPELINE_DOMAIN_SKYBOX:
     return vulkan_renderpass_create_world(state, out_render_pass);
 
@@ -358,6 +361,7 @@ bool8_t vulkan_renderpass_create_for_domain(VulkanBackendState *state,
 
   case VKR_PIPELINE_DOMAIN_PICKING:
   case VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT:
+  case VKR_PIPELINE_DOMAIN_PICKING_OVERLAY:
     // Picking render pass uses R32_UINT color attachment for object IDs
     return vulkan_renderpass_create_picking(state, out_render_pass);
 
@@ -398,6 +402,7 @@ bool8_t vulkan_renderpass_begin(VulkanCommandBuffer *command_buffer,
   switch (render_pass->domain) {
   case VKR_PIPELINE_DOMAIN_WORLD:
   case VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT:
+  case VKR_PIPELINE_DOMAIN_WORLD_OVERLAY:
     // Color + depth attachments
     clear_values[0].color.float32[0] = render_pass->color.r;
     clear_values[0].color.float32[1] = render_pass->color.g;
@@ -442,6 +447,7 @@ bool8_t vulkan_renderpass_begin(VulkanCommandBuffer *command_buffer,
 
   case VKR_PIPELINE_DOMAIN_PICKING:
   case VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT:
+  case VKR_PIPELINE_DOMAIN_PICKING_OVERLAY:
     // Integer color (R32_UINT) + depth attachments
     clear_values[0].color.uint32[0] = render_pass->clear_color_uint;
     clear_values[0].color.uint32[1] = 0;

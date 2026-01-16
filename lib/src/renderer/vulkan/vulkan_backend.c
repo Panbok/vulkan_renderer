@@ -20,12 +20,15 @@
 
 // todo: make these configurable
 #define VKR_MAX_TEXTURE_HANDLES 4096
-#define VKR_MAX_BUFFER_HANDLES 2048
+#define VKR_MAX_BUFFER_HANDLES 8192
 
 // Forward declarations for interface functions defined at end of file
 VkrAllocator *renderer_vulkan_get_allocator(void *backend_state);
 void renderer_vulkan_set_default_2d_texture(void *backend_state,
                                             VkrTextureOpaqueHandle texture);
+void renderer_vulkan_set_depth_bias(void *backend_state,
+                                    float32_t constant_factor, float32_t clamp,
+                                    float32_t slope_factor);
 
 // todo: we are having issues with image ghosting when camera moves
 // too fast, need to figure out why (clues VSync/present mode issues)
@@ -163,7 +166,8 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
       continue;
     }
 
-    if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT) {
+    if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT ||
+        domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY) {
       continue;
     }
 
@@ -188,12 +192,19 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
     // log_debug("Created domain render pass for domain %u", domain);
   }
 
-  if (state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD] &&
-      !state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT]) {
-    state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] =
-        state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD];
-    state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] = true;
-    // log_debug("Linked WORLD_TRANSPARENT to WORLD render pass");
+  if (state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD]) {
+    if (!state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT]) {
+      state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] =
+          state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD];
+      state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] = true;
+      // log_debug("Linked WORLD_TRANSPARENT to WORLD render pass");
+    }
+    if (!state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD_OVERLAY]) {
+      state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD_OVERLAY] =
+          state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD];
+      state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD_OVERLAY] = true;
+      // log_debug("Linked WORLD_OVERLAY to WORLD render pass");
+    }
   }
 
   return true;
@@ -207,7 +218,8 @@ vkr_internal bool32_t create_domain_framebuffers(VulkanBackendState *state) {
       continue;
     }
 
-    if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT) {
+    if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT ||
+        domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY) {
       continue;
     }
 
@@ -244,6 +256,8 @@ vkr_internal bool32_t create_domain_framebuffers(VulkanBackendState *state) {
 
   if (state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD]) {
     state->domain_framebuffers[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] =
+        state->domain_framebuffers[VKR_PIPELINE_DOMAIN_WORLD];
+    state->domain_framebuffers[VKR_PIPELINE_DOMAIN_WORLD_OVERLAY] =
         state->domain_framebuffers[VKR_PIPELINE_DOMAIN_WORLD];
   }
 
@@ -745,11 +759,19 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
     VkrRenderPassEntry *entry =
         array_get_VkrRenderPassEntry(&state->render_pass_registry, i);
     if (entry && entry->pass && entry->pass->vk) {
-      entry->pass->cfg.render_area.z = (float32_t)state->swapchain.extent.width;
-      entry->pass->cfg.render_area.w =
-          (float32_t)state->swapchain.extent.height;
-      entry->pass->vk->width = state->swapchain.extent.width;
-      entry->pass->vk->height = state->swapchain.extent.height;
+      const bool has_explicit_area = entry->pass->cfg.render_area.z > 0.0f &&
+                                     entry->pass->cfg.render_area.w > 0.0f;
+      const bool is_shadow =
+          entry->pass->cfg.domain == VKR_PIPELINE_DOMAIN_SHADOW;
+
+      if (has_explicit_area && !is_shadow) {
+        entry->pass->cfg.render_area.z =
+            (float32_t)state->swapchain.extent.width;
+        entry->pass->cfg.render_area.w =
+            (float32_t)state->swapchain.extent.height;
+        entry->pass->vk->width = state->swapchain.extent.width;
+        entry->pass->vk->height = state->swapchain.extent.height;
+      }
     }
   }
 
@@ -826,6 +848,8 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .render_target_texture_create =
           renderer_vulkan_create_render_target_texture,
       .depth_attachment_create = renderer_vulkan_create_depth_attachment,
+      .sampled_depth_attachment_create =
+          renderer_vulkan_create_sampled_depth_attachment,
       .texture_transition_layout = renderer_vulkan_transition_texture_layout,
       .texture_update = renderer_vulkan_update_texture,
       .texture_write = renderer_vulkan_write_texture,
@@ -839,6 +863,7 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .bind_buffer = renderer_vulkan_bind_buffer,
       .set_viewport = renderer_vulkan_set_viewport,
       .set_scissor = renderer_vulkan_set_scissor,
+      .set_depth_bias = renderer_vulkan_set_depth_bias,
       .draw = renderer_vulkan_draw,
       .draw_indexed = renderer_vulkan_draw_indexed,
       .get_and_reset_descriptor_writes_avoided =
@@ -1150,7 +1175,8 @@ void renderer_vulkan_shutdown(void *backend_state) {
 
   for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
     if (state->domain_initialized[domain]) {
-      if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT) {
+      if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT ||
+          domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY) {
         continue;
       }
       for (uint32_t i = 0; i < state->domain_framebuffers[domain].length; ++i) {
@@ -1175,7 +1201,8 @@ void renderer_vulkan_shutdown(void *backend_state) {
       continue;
     }
 
-    if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT) {
+    if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT ||
+        domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY) {
       state->domain_render_passes[domain] = NULL;
       continue;
     }
@@ -1888,6 +1915,115 @@ renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
   return (VkrBackendResourceHandle){.ptr = texture};
 }
 
+VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
+    void *backend_state, uint32_t width, uint32_t height) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+
+  if (width == 0 || height == 0) {
+    log_error("Sampled depth attachment dimensions must be greater than zero");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  VkFormat depth_format = state->device.depth_format;
+  VkrTextureFormat vkr_format = vulkan_vk_format_to_vkr(depth_format);
+  if (!vulkan_texture_format_is_depth(vkr_format)) {
+    log_error("Unsupported depth format for sampled depth attachment");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  struct s_TextureHandle *texture = vkr_allocator_alloc(
+      &state->texture_pool_alloc, sizeof(struct s_TextureHandle),
+      VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+  if (!texture) {
+    log_fatal(
+        "Failed to allocate sampled depth attachment texture (pool exhausted)");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  MemZero(texture, sizeof(struct s_TextureHandle));
+
+  VkImageUsageFlags usage =
+      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  if (!vulkan_image_create(state, VK_IMAGE_TYPE_2D, width, height, depth_format,
+                           VK_IMAGE_TILING_OPTIMAL, usage,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1,
+                           VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT,
+                           &texture->texture.image)) {
+    log_fatal("Failed to create sampled depth attachment image");
+    vkr_allocator_free(&state->texture_pool_alloc, texture,
+                       sizeof(struct s_TextureHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  VkFilter shadow_filter = VK_FILTER_NEAREST;
+  VkSamplerMipmapMode shadow_mip = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  {
+    VkFormatProperties props = {0};
+    vkGetPhysicalDeviceFormatProperties(state->device.physical_device,
+                                        depth_format, &props);
+    if (props.optimalTilingFeatures &
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) {
+      shadow_filter = VK_FILTER_LINEAR;
+      shadow_mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    }
+  }
+
+  VkSamplerCreateInfo sampler_info = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      // Use comparison sampling for shadow maps. When the depth format supports
+      // linear filtering, enable it to get hardware PCF-like smoothing.
+      .magFilter = shadow_filter,
+      .minFilter = shadow_filter,
+      .mipmapMode = shadow_mip,
+      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+      .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+      .mipLodBias = 0.0f,
+      .anisotropyEnable = VK_FALSE,
+      .maxAnisotropy = 1.0f,
+      .compareEnable = VK_TRUE,
+      .compareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+      .minLod = 0.0f,
+      .maxLod = 0.0f,
+      .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+      .unnormalizedCoordinates = VK_FALSE,
+  };
+
+  if (vkCreateSampler(state->device.logical_device, &sampler_info,
+                      state->allocator,
+                      &texture->texture.sampler) != VK_SUCCESS) {
+    log_fatal("Failed to create sampled depth attachment sampler");
+    vulkan_image_destroy(state, &texture->texture.image);
+    vkr_allocator_free(&state->texture_pool_alloc, texture,
+                       sizeof(struct s_TextureHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  texture->description = (VkrTextureDescription){
+      .width = width,
+      .height = height,
+      .channels = 1,
+      .type = VKR_TEXTURE_TYPE_2D,
+      .format = vkr_format,
+      .properties = vkr_texture_property_flags_create(),
+      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_BORDER,
+      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_BORDER,
+      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_BORDER,
+      .min_filter = (shadow_filter == VK_FILTER_LINEAR) ? VKR_FILTER_LINEAR
+                                                        : VKR_FILTER_NEAREST,
+      .mag_filter = (shadow_filter == VK_FILTER_LINEAR) ? VKR_FILTER_LINEAR
+                                                        : VKR_FILTER_NEAREST,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+      .anisotropy_enable = false_v,
+      .generation = 1,
+  };
+
+  return (VkrBackendResourceHandle){.ptr = texture};
+}
+
 VkrRendererError renderer_vulkan_transition_texture_layout(
     void *backend_state, VkrBackendResourceHandle handle,
     VkrTextureLayout old_layout, VkrTextureLayout new_layout) {
@@ -2168,16 +2304,6 @@ renderer_vulkan_create_texture(void *backend_state,
     goto cleanup_texture;
   }
 
-  // Only set transparency bit for formats that support alpha channel
-  if (desc->channels == 4 ||
-      desc->format == VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM ||
-      desc->format == VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB ||
-      desc->format == VKR_TEXTURE_FORMAT_R8G8B8A8_UINT ||
-      desc->format == VKR_TEXTURE_FORMAT_R8G8B8A8_SNORM ||
-      desc->format == VKR_TEXTURE_FORMAT_R8G8B8A8_SINT) {
-    bitset8_set(&texture->description.properties,
-                VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
-  }
   texture->description.generation++;
 
   if (staging_buffer)
@@ -3060,6 +3186,24 @@ void renderer_vulkan_set_scissor(void *backend_state,
   vkCmdSetScissor(command_buffer->handle, 0, 1, &vk_scissor);
 }
 
+void renderer_vulkan_set_depth_bias(void *backend_state,
+                                    float32_t constant_factor, float32_t clamp,
+                                    float32_t slope_factor) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state->frame_active) {
+    log_warn("set_depth_bias called outside active frame");
+    return;
+  }
+
+  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+      &state->graphics_command_buffers, state->image_index);
+
+  vkCmdSetDepthBias(command_buffer->handle, constant_factor, clamp,
+                    slope_factor);
+}
+
 VkrRenderPassHandle
 renderer_vulkan_renderpass_create(void *backend_state,
                                   const VkrRenderPassConfig *cfg) {
@@ -3289,16 +3433,32 @@ renderer_vulkan_begin_render_pass(void *backend_state,
   MemZero(clear_values,
           sizeof(VkClearValue) * (uint64_t)target->attachment_count);
 
-  if (target->attachment_count > 0) {
-    clear_values[0].color.float32[0] = pass->cfg.clear_color.r;
-    clear_values[0].color.float32[1] = pass->cfg.clear_color.g;
-    clear_values[0].color.float32[2] = pass->cfg.clear_color.b;
-    clear_values[0].color.float32[3] = pass->cfg.clear_color.a;
-  }
+  for (uint32_t i = 0; i < target->attachment_count; ++i) {
+    struct s_TextureHandle *attachment = target->attachments[i];
+    if (!attachment) {
+      continue;
+    }
 
-  if (target->attachment_count > 1) {
-    clear_values[1].depthStencil.depth = 1.0f;
-    clear_values[1].depthStencil.stencil = 0;
+    switch (attachment->description.format) {
+    case VKR_TEXTURE_FORMAT_D32_SFLOAT:
+    case VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT:
+      clear_values[i].depthStencil.depth = 1.0f;
+      clear_values[i].depthStencil.stencil = 0;
+      break;
+    case VKR_TEXTURE_FORMAT_R32_UINT:
+      // Picking attachments are integer; default clear to 0.
+      clear_values[i].color.uint32[0] = 0;
+      clear_values[i].color.uint32[1] = 0;
+      clear_values[i].color.uint32[2] = 0;
+      clear_values[i].color.uint32[3] = 0;
+      break;
+    default:
+      clear_values[i].color.float32[0] = pass->cfg.clear_color.r;
+      clear_values[i].color.float32[1] = pass->cfg.clear_color.g;
+      clear_values[i].color.float32[2] = pass->cfg.clear_color.b;
+      clear_values[i].color.float32[3] = pass->cfg.clear_color.a;
+      break;
+    }
   }
 
   float32_t render_width = (pass->cfg.render_area.z > 0.0f)

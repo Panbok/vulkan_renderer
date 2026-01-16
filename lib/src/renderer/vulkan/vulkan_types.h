@@ -203,13 +203,14 @@ struct s_BufferHandle {
   VkrBufferDescription description;
 };
 
-#define VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT 8
+#define VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT                            \
+  (1 + (VKR_MAX_INSTANCE_TEXTURES * 2))
 typedef struct VulkanShaderObjectDescriptorState {
   // Per-frame descriptor generation tracking; length == frame_count
   uint32_t *generations;
 } VulkanShaderObjectDescriptorState;
 
-#define VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT 4096
+#define VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT 8192
 typedef struct VulkanShaderObjectInstanceState {
   // Per-frame descriptor sets; length == frame_count
   VkDescriptorSet *descriptor_sets;
@@ -409,7 +410,8 @@ typedef struct VulkanBackendState {
 
   struct s_TextureHandle **swapchain_image_textures;
   struct s_TextureHandle *depth_texture;
-  struct s_TextureHandle *default_2d_texture; // Fallback for empty sampler slots
+  struct s_TextureHandle
+      *default_2d_texture; // Fallback for empty sampler slots
 
   void (*on_render_target_refresh_required)();
 

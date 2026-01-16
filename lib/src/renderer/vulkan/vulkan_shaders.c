@@ -1,4 +1,19 @@
 #include "vulkan_shaders.h"
+
+vkr_internal VkImageLayout
+vulkan_shader_image_layout_for_texture(const struct s_TextureHandle *texture) {
+  if (!texture) {
+    return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  }
+
+  switch (texture->description.format) {
+  case VKR_TEXTURE_FORMAT_D32_SFLOAT:
+  case VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT:
+    return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+  default:
+    return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  }
+}
 #include "filesystem/filesystem.h"
 
 bool8_t vulkan_shader_module_create(
@@ -206,13 +221,18 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   }
 
   // Global descriptors
+  //
+  // Some shaders (e.g. the shadow pass) use only push constants + instance data
+  // and have no global UBO. Preserve set numbering by always creating set 0,
+  // but allow it to be empty (bindingCount=0) when global_ubo_stride==0.
 
+  const bool8_t has_global_ubo = desc->global_ubo_stride > 0;
   VkDescriptorSetLayoutBinding global_descriptor_set_layout_binding = {
       .binding = 0,
       .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
       .descriptorCount = 1,
       .pImmutableSamplers = NULL,
-      .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+      .stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
   };
 
   VkDescriptorSetLayoutBinding global_descriptor_set_layout_bindings[] = {
@@ -221,8 +241,8 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
 
   VkDescriptorSetLayoutCreateInfo global_descriptor_set_layout_create_info = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-      .bindingCount = 1,
-      .pBindings = global_descriptor_set_layout_bindings,
+      .bindingCount = has_global_ubo ? 1u : 0u,
+      .pBindings = has_global_ubo ? global_descriptor_set_layout_bindings : NULL,
   };
 
   // Global descriptors set layout
@@ -244,8 +264,8 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   VkDescriptorPoolCreateInfo descriptor_pool_create_info = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
       .maxSets = state->swapchain.image_count,
-      .poolSizeCount = 1,
-      .pPoolSizes = &global_pool_size,
+      .poolSizeCount = has_global_ubo ? 1u : 0u,
+      .pPoolSizes = has_global_ubo ? &global_pool_size : NULL,
   };
 
   if (vkCreateDescriptorPool(state->device.logical_device,
@@ -328,22 +348,28 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   out_shader_object->global_texture_count = desc->global_texture_count;
   out_shader_object->instance_texture_count = desc->instance_texture_count;
 
-  VkrBufferDescription global_uniform_buffer_desc = {
-      .size =
-          out_shader_object->global_ubo_stride * out_shader_object->frame_count,
-      .usage = vkr_buffer_usage_flags_from_bits(
-          VKR_BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER |
-          VKR_BUFFER_USAGE_TRANSFER_DST | VKR_BUFFER_USAGE_TRANSFER_SRC),
-      .memory_properties = vkr_memory_property_flags_from_bits(
-          VKR_MEMORY_PROPERTY_DEVICE_LOCAL | VKR_MEMORY_PROPERTY_HOST_VISIBLE |
-          VKR_MEMORY_PROPERTY_HOST_COHERENT),
-      .buffer_type = buffer_type,
-      .bind_on_create = true_v};
+  if (has_global_ubo) {
+    VkrBufferDescription global_uniform_buffer_desc = {
+        .size = out_shader_object->global_ubo_stride *
+                out_shader_object->frame_count,
+        .usage = vkr_buffer_usage_flags_from_bits(
+            VKR_BUFFER_USAGE_GLOBAL_UNIFORM_BUFFER |
+            VKR_BUFFER_USAGE_TRANSFER_DST | VKR_BUFFER_USAGE_TRANSFER_SRC),
+        .memory_properties = vkr_memory_property_flags_from_bits(
+            VKR_MEMORY_PROPERTY_DEVICE_LOCAL |
+            VKR_MEMORY_PROPERTY_HOST_VISIBLE |
+            VKR_MEMORY_PROPERTY_HOST_COHERENT),
+        .buffer_type = buffer_type,
+        .bind_on_create = true_v};
 
-  if (!vulkan_buffer_create(state, &global_uniform_buffer_desc,
-                            &out_shader_object->global_uniform_buffer)) {
-    log_fatal("Failed to create Vulkan global uniform buffer");
-    return false;
+    if (!vulkan_buffer_create(state, &global_uniform_buffer_desc,
+                              &out_shader_object->global_uniform_buffer)) {
+      log_fatal("Failed to create Vulkan global uniform buffer");
+      return false;
+    }
+  } else {
+    MemZero(&out_shader_object->global_uniform_buffer,
+            sizeof(out_shader_object->global_uniform_buffer));
   }
 
   // Instance descriptors: binding 0 = uniform buffer (optional), followed by
@@ -487,7 +513,12 @@ bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
   assert_log(state != NULL, "Backend state is NULL");
   assert_log(shader_object != NULL, "Shader object is NULL");
   assert_log(pipeline_layout != VK_NULL_HANDLE, "Pipeline layout is NULL");
-  assert_log(uniform != NULL, "Uniform is NULL");
+  assert_log(uniform != NULL || shader_object->global_ubo_size == 0,
+             "Uniform is NULL");
+
+  if (shader_object->global_ubo_size == 0) {
+    return true_v;
+  }
 
   if (shader_object->global_uniform_buffer.buffer.handle == VK_NULL_HANDLE) {
     log_warn("Global uniform buffer not created yet, skipping descriptor set "
@@ -677,10 +708,12 @@ bool8_t vulkan_shader_update_instance(
 
       if (*image_desc_generation != texture->description.generation ||
           *image_desc_generation == VKR_INVALID_ID) {
+        VkImageLayout image_layout =
+            vulkan_shader_image_layout_for_texture(texture);
         image_infos[descriptor_count] = (VkDescriptorImageInfo){
             .sampler = VK_NULL_HANDLE,
             .imageView = texture_object->image.view,
-            .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            .imageLayout = image_layout,
         };
 
         descriptor_writes[descriptor_count] = (VkWriteDescriptorSet){

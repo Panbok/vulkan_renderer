@@ -78,6 +78,10 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
 VkrBackendResourceHandle
 renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
                                         uint32_t height);
+VkrBackendResourceHandle
+renderer_vulkan_create_sampled_depth_attachment(void *backend_state,
+                                                uint32_t width,
+                                                uint32_t height);
 VkrRendererError renderer_vulkan_transition_texture_layout(
     void *backend_state, VkrBackendResourceHandle handle,
     VkrTextureLayout old_layout, VkrTextureLayout new_layout);
@@ -126,6 +130,10 @@ void renderer_vulkan_set_viewport(void *backend_state,
 
 void renderer_vulkan_set_scissor(void *backend_state,
                                  const VkrScissor *scissor);
+
+void renderer_vulkan_set_depth_bias(void *backend_state,
+                                    float32_t constant_factor, float32_t clamp,
+                                    float32_t slope_factor);
 
 void renderer_vulkan_draw(void *backend_state, uint32_t vertex_count,
                           uint32_t instance_count, uint32_t first_vertex,

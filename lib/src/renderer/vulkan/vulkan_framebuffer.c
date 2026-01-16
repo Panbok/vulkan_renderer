@@ -73,6 +73,7 @@ bool32_t vulkan_framebuffer_regenerate_for_domain(
   switch (domain) {
   case VKR_PIPELINE_DOMAIN_WORLD:
   case VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT:
+  case VKR_PIPELINE_DOMAIN_WORLD_OVERLAY:
     attachment_count = 2;
     use_color = true;
     use_depth = true;
@@ -109,6 +110,7 @@ bool32_t vulkan_framebuffer_regenerate_for_domain(
 
   case VKR_PIPELINE_DOMAIN_PICKING:
   case VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT:
+  case VKR_PIPELINE_DOMAIN_PICKING_OVERLAY:
     // Picking uses custom off-screen R32_UINT attachments, not swapchain.
     // Framebuffers are created separately by the picking system.
     return true;

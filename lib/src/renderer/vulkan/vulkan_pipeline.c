@@ -17,9 +17,12 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   // Bind the description so subsequent dereferences are valid
   out_pipeline->desc = *desc;
 
-  VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
-                                     VK_DYNAMIC_STATE_SCISSOR,
-                                     VK_DYNAMIC_STATE_LINE_WIDTH};
+  VkDynamicState dynamic_states[] = {
+      VK_DYNAMIC_STATE_VIEWPORT,
+      VK_DYNAMIC_STATE_SCISSOR,
+      VK_DYNAMIC_STATE_LINE_WIDTH,
+      VK_DYNAMIC_STATE_DEPTH_BIAS,
+  };
 
   VkPipelineDynamicStateCreateInfo dynamic_state = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
@@ -185,12 +188,21 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
     // Depth-only pipeline; no color attachments. Keep depth on; blending n/a
     depth_stencil_state.depthTestEnable = VK_TRUE;
     depth_stencil_state.depthWriteEnable = VK_TRUE;
+    // Shadow pass uses dynamic depth bias (vkCmdSetDepthBias) so presets can
+    // tune bias without recreating pipelines.
+    rasterization_state.depthBiasEnable = VK_TRUE;
     break;
   case VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT:
     // Transparent world objects: depth test on (respects opaque occlusion),
     // depth write off (transparent objects don't occlude each other),
     // alpha blending on
     depth_stencil_state.depthTestEnable = VK_TRUE;
+    depth_stencil_state.depthWriteEnable = VK_FALSE;
+    color_blend_attachment_state.blendEnable = VK_TRUE;
+    break;
+  case VKR_PIPELINE_DOMAIN_WORLD_OVERLAY:
+    // Overlay: no depth, alpha blending on.
+    depth_stencil_state.depthTestEnable = VK_FALSE;
     depth_stencil_state.depthWriteEnable = VK_FALSE;
     color_blend_attachment_state.blendEnable = VK_TRUE;
     break;
@@ -205,6 +217,12 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   case VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT:
     // Depth-tested picking that does not write depth.
     depth_stencil_state.depthTestEnable = VK_TRUE;
+    depth_stencil_state.depthWriteEnable = VK_FALSE;
+    color_blend_attachment_state.blendEnable = VK_FALSE;
+    break;
+  case VKR_PIPELINE_DOMAIN_PICKING_OVERLAY:
+    // Picking overlay: no depth, no blending (integer render target).
+    depth_stencil_state.depthTestEnable = VK_FALSE;
     depth_stencil_state.depthWriteEnable = VK_FALSE;
     color_blend_attachment_state.blendEnable = VK_FALSE;
     break;
