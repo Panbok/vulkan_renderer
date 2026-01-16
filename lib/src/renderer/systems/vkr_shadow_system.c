@@ -297,7 +297,7 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   }
 
   Mat4 light_projection =
-      mat4_ortho_vulkan(left, right, bottom, top, near_clip, far_clip);
+      mat4_ortho_zo_yinv(left, right, bottom, top, near_clip, far_clip);
   *out_view_projection = mat4_mul(light_projection, light_view);
 }
 

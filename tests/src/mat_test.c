@@ -360,6 +360,28 @@ static void test_mat4_projection_matrices(void) {
   assert(float_equals(corner2.x, 1.0f, 0.001f) && "Ortho right edge failed");
   assert(float_equals(corner2.y, 1.0f, 0.001f) && "Ortho top edge failed");
 
+  // Test renderer clip-space orthographic projection (Y inverted, Z in [0,1]).
+  Mat4 ortho_zo_yinv =
+      mat4_ortho_zo_yinv(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
+
+  Vec4 vk_near =
+      mat4_mul_vec4(ortho_zo_yinv, vec4_new(0.0f, 0.0f, -0.1f, 1.0f));
+  Vec4 vk_far =
+      mat4_mul_vec4(ortho_zo_yinv, vec4_new(0.0f, 0.0f, -100.0f, 1.0f));
+  assert(float_equals(vk_near.z, 0.0f, 0.001f) &&
+         "Ortho ZO+Y-invert near depth failed");
+  assert(float_equals(vk_far.z, 1.0f, 0.001f) &&
+         "Ortho ZO+Y-invert far depth failed");
+
+  Vec4 vk_bottom =
+      mat4_mul_vec4(ortho_zo_yinv, vec4_new(0.0f, -10.0f, -0.1f, 1.0f));
+  Vec4 vk_top =
+      mat4_mul_vec4(ortho_zo_yinv, vec4_new(0.0f, 10.0f, -0.1f, 1.0f));
+  assert(float_equals(vk_bottom.y, 1.0f, 0.001f) &&
+         "Ortho ZO+Y-invert bottom edge failed");
+  assert(float_equals(vk_top.y, -1.0f, 0.001f) &&
+         "Ortho ZO+Y-invert top edge failed");
+
   // Test perspective projection
   Mat4 perspective =
       mat4_perspective(vkr_to_radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f);

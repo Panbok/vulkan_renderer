@@ -1,7 +1,6 @@
 #pragma once
 
 #include "defines.h"
-#include "math.h"
 #include "vec.h"
 #include "vkr_quat.h"
 #include "vkr_simd.h"
@@ -320,8 +319,8 @@ static INLINE Mat4 mat4_identity(void) {
  * @param top Top edge of the view volume
  * @param near Near clipping plane distance (positive value)
  * @param far Far clipping plane distance (positive value, > near)
- * @return Orthographic projection matrix that maps view volume to [-1,1]³
- * (OpenGL) or [0,1] depth (Vulkan)
+ * @return Orthographic projection matrix that maps the view volume to NDC
+ *         with X,Y in [-1,1] and Z in [-1,1] (OpenGL-style depth range).
  * @note Used for 2D rendering, CAD applications, and shadow mapping
  * @note No perspective foreshortening - parallel lines remain parallel
  * @note Objects maintain their size regardless of distance from camera
@@ -349,6 +348,28 @@ static INLINE Mat4 mat4_ortho(float32_t left, float32_t right, float32_t bottom,
   return mat4_new(2.0f / (right - left), 0.0f, 0.0f, 0.0f, 0.0f,
                   2.0f / (top - bottom), 0.0f, 0.0f, 0.0f, 0.0f,
                   -2.0f / (far_clip - near_clip), 0.0f, tx, ty, tz, 1.0f);
+}
+
+/**
+ * @brief Creates an orthographic projection matrix for the renderer clip-space
+ * convention.
+ *
+ * Uses a [0,1] Z range and applies the same clip-space Y inversion as
+ * mat4_perspective() to match the renderer's canonical convention.
+ *
+ * Right-handed (mat4_look_at): view-space points in front of the camera have
+ * negative Z. This maps z=-near→0 and z=-far→1.
+ */
+static INLINE Mat4 mat4_ortho_zo_yinv(float32_t left, float32_t right,
+                                      float32_t bottom, float32_t top,
+                                      float32_t near_clip, float32_t far_clip) {
+  float32_t rl = (right - left);
+  float32_t tb = (top - bottom);
+  float32_t fn = (far_clip - near_clip);
+
+  return mat4_new(2.0f / rl, 0.0f, 0.0f, 0.0f, 0.0f, -2.0f / tb, 0.0f, 0.0f,
+                  0.0f, 0.0f, -1.0f / fn, 0.0f, -((right + left) / rl),
+                  -((top + bottom) / tb), -(near_clip / fn), 1.0f);
 }
 
 /**
