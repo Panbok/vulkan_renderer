@@ -220,6 +220,12 @@ gizmo_geometry_cleanup:
                                   geometries[index]);
     }
   }
+  for (uint32_t index = 0; index < ArrayCount(axis_materials); ++index) {
+    if (axis_materials[index].id != 0) {
+      vkr_material_system_release(&renderer->material_system,
+                                  axis_materials[index]);
+    }
+  }
   return false_v;
 }
 
@@ -350,8 +356,11 @@ void vkr_gizmo_system_render(VkrGizmoSystem *system,
     if (current_pipeline.id != pipeline.id ||
         current_pipeline.generation != pipeline.generation) {
       VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
-      vkr_pipeline_registry_bind_pipeline(&renderer->pipeline_registry,
-                                          pipeline, &bind_err);
+      if (!vkr_pipeline_registry_bind_pipeline(&renderer->pipeline_registry,
+                                               pipeline, &bind_err)) {
+        String8 err = vkr_renderer_get_error_string(bind_err);
+        log_warn("Gizmo pipeline bind failed: %s", string8_cstr(&err));
+      }
     }
 
     if (!globals_applied) {
@@ -398,8 +407,11 @@ void vkr_gizmo_system_render_picking(VkrGizmoSystem *system,
   assert_log(system != NULL, "System is NULL");
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(system->initialized, "System is not initialized");
-  assert_log(system->visible, "System is not visible");
   assert_log(camera != NULL, "Camera is NULL");
+
+  if (!system->visible) {
+    return;
+  }
 
   if (system->gizmo_mesh_index == VKR_INVALID_ID) {
     log_error("Gizmo system render picking failed: mesh is not loaded");

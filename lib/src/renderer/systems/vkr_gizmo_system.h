@@ -73,6 +73,9 @@ vkr_gizmo_decode_picking_id(uint32_t object_id) {
   if (!decoded.valid || decoded.kind != VKR_PICKING_ID_KIND_GIZMO) {
     return VKR_GIZMO_HANDLE_NONE;
   }
+  if (decoded.value > VKR_GIZMO_HANDLE_SCALE_UNIFORM) {
+    return VKR_GIZMO_HANDLE_NONE;
+  }
   return (VkrGizmoHandle)decoded.value;
 }
 

@@ -95,25 +95,32 @@ vkr_internal VkrQuat vkr_geometry_rotation_from_axis(Vec3 axis) {
   if (vec3_length_squared(rot_axis) <= VKR_FLOAT_EPSILON) {
     return vkr_quat_identity();
   }
-  return vkr_quat_from_axis_angle(vec3_normalize(rot_axis),
-                                  vkr_acos_f32(dot));
+  return vkr_quat_from_axis_angle(vec3_normalize(rot_axis), vkr_acos_f32(dot));
 }
 
 vkr_internal void vkr_geometry_apply_transform(VkrVertex3d *verts,
                                                uint32_t count, VkrQuat rotation,
                                                Vec3 translation) {
   for (uint32_t i = 0; i < count; ++i) {
-    verts[i].position =
-        vec3_add(vkr_quat_rotate_vec3(rotation, verts[i].position),
-                 translation);
+    verts[i].position = vec3_add(
+        vkr_quat_rotate_vec3(rotation, verts[i].position), translation);
     verts[i].normal = vkr_quat_rotate_vec3(rotation, verts[i].normal);
   }
 }
 
 vkr_internal void vkr_geometry_compute_bounds(const VkrVertex3d *verts,
                                               uint32_t count, Vec3 *out_min,
-                                              Vec3 *out_max,
-                                              Vec3 *out_center) {
+                                              Vec3 *out_max, Vec3 *out_center) {
+  if (count == 0) {
+    if (out_min)
+      *out_min = vec3_zero();
+    if (out_max)
+      *out_max = vec3_zero();
+    if (out_center)
+      *out_center = vec3_zero();
+    return;
+  }
+
   Vec3 min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
   Vec3 max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
 
@@ -514,18 +521,14 @@ vkr_internal void vkr_geometry_write_box_vertices(VkrVertex3d *verts,
                    front_normal, vec2_new(0.0f, 1.0f), zero_color,
                    zero_tangent);
 
-  vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy - hh, cz - hd),
-                   back_normal, vec2_new(1.0f, 0.0f), zero_color,
-                   zero_tangent);
-  vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy - hh, cz - hd),
-                   back_normal, vec2_new(0.0f, 0.0f), zero_color,
-                   zero_tangent);
-  vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy + hh, cz - hd),
-                   back_normal, vec2_new(0.0f, 1.0f), zero_color,
-                   zero_tangent);
-  vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy + hh, cz - hd),
-                   back_normal, vec2_new(1.0f, 1.0f), zero_color,
-                   zero_tangent);
+  vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy - hh, cz - hd), back_normal,
+                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
+  vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy - hh, cz - hd), back_normal,
+                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
+  vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy + hh, cz - hd), back_normal,
+                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+  vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy + hh, cz - hd), back_normal,
+                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
 
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy - hh, cz - hd), left_normal,
                    vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
@@ -536,14 +539,18 @@ vkr_internal void vkr_geometry_write_box_vertices(VkrVertex3d *verts,
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy + hh, cz - hd), left_normal,
                    vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
 
-  vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy - hh, cz - hd), right_normal,
-                   vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
-  vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy - hh, cz + hd), right_normal,
-                   vec2_new(1.0f, 0.0f), zero_color, zero_tangent);
-  vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy + hh, cz + hd), right_normal,
-                   vec2_new(1.0f, 1.0f), zero_color, zero_tangent);
-  vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy + hh, cz - hd), right_normal,
-                   vec2_new(0.0f, 1.0f), zero_color, zero_tangent);
+  vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy - hh, cz - hd),
+                   right_normal, vec2_new(0.0f, 0.0f), zero_color,
+                   zero_tangent);
+  vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy - hh, cz + hd),
+                   right_normal, vec2_new(1.0f, 0.0f), zero_color,
+                   zero_tangent);
+  vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy + hh, cz + hd),
+                   right_normal, vec2_new(1.0f, 1.0f), zero_color,
+                   zero_tangent);
+  vkr_write_vertex(verts, w++, vec3_new(cx + hw, cy + hh, cz - hd),
+                   right_normal, vec2_new(0.0f, 1.0f), zero_color,
+                   zero_tangent);
 
   vkr_write_vertex(verts, w++, vec3_new(cx - hw, cy + hh, cz + hd), top_normal,
                    vec2_new(0.0f, 0.0f), zero_color, zero_tangent);
@@ -585,9 +592,8 @@ vkr_geometry_system_create_box(VkrGeometrySystem *system, Vec3 center,
   vkr_geometry_write_box_vertices(verts, center, hw, hh, hd);
 
   uint32_t indices[36] = {
-      0,  1,  2,  2,  3,  0,  4,  7,  6,  6,  5,  4,
-      8,  9,  10, 10, 11, 8,  12, 15, 14, 14, 13, 12,
-      16, 17, 18, 18, 19, 16, 20, 21, 22, 22, 23, 20,
+      0,  1,  2,  2,  3,  0,  4,  7,  6,  6,  5,  4,  8,  9,  10, 10, 11, 8,
+      12, 15, 14, 14, 13, 12, 16, 17, 18, 18, 19, 16, 20, 21, 22, 22, 23, 20,
   };
 
   vkr_geometry_system_generate_tangents(&system->allocator, verts, 24, indices,
@@ -649,12 +655,12 @@ VkrGeometryHandle vkr_geometry_system_create_cylinder(
     return (VkrGeometryHandle){0};
   }
 
-  VkrVertex3d *verts = vkr_allocator_alloc(
-      &system->allocator, sizeof(*verts) * vertex_count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *indices = vkr_allocator_alloc(
-      &system->allocator, sizeof(*indices) * index_count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrVertex3d *verts =
+      vkr_allocator_alloc(&system->allocator, sizeof(*verts) * vertex_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *indices =
+      vkr_allocator_alloc(&system->allocator, sizeof(*indices) * index_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!verts || !indices) {
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -699,8 +705,8 @@ VkrGeometryHandle vkr_geometry_system_create_cylinder(
       float32_t angle = u * (VKR_PI * 2.0f);
       float32_t x = vkr_cos_f32(angle) * radius;
       float32_t y = vkr_sin_f32(angle) * radius;
-      Vec2 uv = vec2_new((x / (radius * 2.0f)) + 0.5f,
-                         (y / (radius * 2.0f)) + 0.5f);
+      Vec2 uv =
+          vec2_new((x / (radius * 2.0f)) + 0.5f, (y / (radius * 2.0f)) + 0.5f);
       vkr_write_vertex(verts, v++, vec3_new(x, y, 0.0f),
                        vec3_new(0.0f, 0.0f, -1.0f), uv, zero_color,
                        zero_tangent);
@@ -724,8 +730,8 @@ VkrGeometryHandle vkr_geometry_system_create_cylinder(
       float32_t angle = u * (VKR_PI * 2.0f);
       float32_t x = vkr_cos_f32(angle) * radius;
       float32_t y = vkr_sin_f32(angle) * radius;
-      Vec2 uv = vec2_new((x / (radius * 2.0f)) + 0.5f,
-                         (y / (radius * 2.0f)) + 0.5f);
+      Vec2 uv =
+          vec2_new((x / (radius * 2.0f)) + 0.5f, (y / (radius * 2.0f)) + 0.5f);
       vkr_write_vertex(verts, v++, vec3_new(x, y, height),
                        vec3_new(0.0f, 0.0f, 1.0f), uv, zero_color,
                        zero_tangent);
@@ -767,10 +773,11 @@ VkrGeometryHandle vkr_geometry_system_create_cylinder(
   return handle;
 }
 
-VkrGeometryHandle vkr_geometry_system_create_cone(
-    VkrGeometrySystem *system, float32_t radius, float32_t height,
-    uint32_t segments, Vec3 axis, Vec3 origin, bool8_t cap_base,
-    const char *name, VkrRendererError *out_error) {
+VkrGeometryHandle
+vkr_geometry_system_create_cone(VkrGeometrySystem *system, float32_t radius,
+                                float32_t height, uint32_t segments, Vec3 axis,
+                                Vec3 origin, bool8_t cap_base, const char *name,
+                                VkrRendererError *out_error) {
   assert_log(system != NULL, "Geometry system is NULL");
   assert_log(name != NULL, "Name is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
@@ -793,12 +800,12 @@ VkrGeometryHandle vkr_geometry_system_create_cone(
     return (VkrGeometryHandle){0};
   }
 
-  VkrVertex3d *verts = vkr_allocator_alloc(
-      &system->allocator, sizeof(*verts) * vertex_count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *indices = vkr_allocator_alloc(
-      &system->allocator, sizeof(*indices) * index_count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrVertex3d *verts =
+      vkr_allocator_alloc(&system->allocator, sizeof(*verts) * vertex_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *indices =
+      vkr_allocator_alloc(&system->allocator, sizeof(*indices) * index_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!verts || !indices) {
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -845,8 +852,8 @@ VkrGeometryHandle vkr_geometry_system_create_cone(
       float32_t angle = u * (VKR_PI * 2.0f);
       float32_t x = vkr_cos_f32(angle) * radius;
       float32_t y = vkr_sin_f32(angle) * radius;
-      Vec2 uv = vec2_new((x / (radius * 2.0f)) + 0.5f,
-                         (y / (radius * 2.0f)) + 0.5f);
+      Vec2 uv =
+          vec2_new((x / (radius * 2.0f)) + 0.5f, (y / (radius * 2.0f)) + 0.5f);
       vkr_write_vertex(verts, v++, vec3_new(x, y, 0.0f),
                        vec3_new(0.0f, 0.0f, -1.0f), uv, zero_color,
                        zero_tangent);
@@ -914,12 +921,12 @@ VkrGeometryHandle vkr_geometry_system_create_torus(
     return (VkrGeometryHandle){0};
   }
 
-  VkrVertex3d *verts = vkr_allocator_alloc(
-      &system->allocator, sizeof(*verts) * vertex_count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *indices = vkr_allocator_alloc(
-      &system->allocator, sizeof(*indices) * index_count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrVertex3d *verts =
+      vkr_allocator_alloc(&system->allocator, sizeof(*verts) * vertex_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *indices =
+      vkr_allocator_alloc(&system->allocator, sizeof(*indices) * index_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!verts || !indices) {
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -1019,12 +1026,12 @@ VkrGeometryHandle vkr_geometry_system_create_sphere(
     return (VkrGeometryHandle){0};
   }
 
-  VkrVertex3d *verts = vkr_allocator_alloc(
-      &system->allocator, sizeof(*verts) * vertex_count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *indices = vkr_allocator_alloc(
-      &system->allocator, sizeof(*indices) * index_count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrVertex3d *verts =
+      vkr_allocator_alloc(&system->allocator, sizeof(*verts) * vertex_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *indices =
+      vkr_allocator_alloc(&system->allocator, sizeof(*indices) * index_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!verts || !indices) {
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -1047,11 +1054,10 @@ VkrGeometryHandle vkr_geometry_system_create_sphere(
       float32_t sin_theta = vkr_sin_f32(theta);
       float32_t cos_theta = vkr_cos_f32(theta);
 
-      Vec3 normal = vec3_new(sin_phi * cos_theta, cos_phi,
-                             sin_phi * sin_theta);
+      Vec3 normal = vec3_new(sin_phi * cos_theta, cos_phi, sin_phi * sin_theta);
       Vec3 position = vec3_scale(normal, radius);
-      vkr_write_vertex(verts, v++, position, normal, vec2_new(u, 1.0f - v_coord),
-                       zero_color, zero_tangent);
+      vkr_write_vertex(verts, v++, position, normal,
+                       vec2_new(u, 1.0f - v_coord), zero_color, zero_tangent);
     }
   }
 
@@ -1122,12 +1128,12 @@ VkrGeometryHandle vkr_geometry_system_create_arrow(
     return (VkrGeometryHandle){0};
   }
 
-  VkrVertex3d *verts = vkr_allocator_alloc(
-      &system->allocator, sizeof(*verts) * vertex_count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *indices = vkr_allocator_alloc(
-      &system->allocator, sizeof(*indices) * index_count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrVertex3d *verts =
+      vkr_allocator_alloc(&system->allocator, sizeof(*verts) * vertex_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *indices =
+      vkr_allocator_alloc(&system->allocator, sizeof(*indices) * index_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!verts || !indices) {
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -1503,14 +1509,22 @@ vkr_internal uint32_t vkr_vertex_hash(const VkrVertex3d *v) {
 
   // FNV-1a hash
   uint32_t hash = 2166136261u;
-  hash ^= (uint32_t)px; hash *= 16777619u;
-  hash ^= (uint32_t)py; hash *= 16777619u;
-  hash ^= (uint32_t)pz; hash *= 16777619u;
-  hash ^= (uint32_t)nx; hash *= 16777619u;
-  hash ^= (uint32_t)ny; hash *= 16777619u;
-  hash ^= (uint32_t)nz; hash *= 16777619u;
-  hash ^= (uint32_t)tu; hash *= 16777619u;
-  hash ^= (uint32_t)tv; hash *= 16777619u;
+  hash ^= (uint32_t)px;
+  hash *= 16777619u;
+  hash ^= (uint32_t)py;
+  hash *= 16777619u;
+  hash ^= (uint32_t)pz;
+  hash *= 16777619u;
+  hash ^= (uint32_t)nx;
+  hash *= 16777619u;
+  hash ^= (uint32_t)ny;
+  hash *= 16777619u;
+  hash ^= (uint32_t)nz;
+  hash *= 16777619u;
+  hash ^= (uint32_t)tu;
+  hash *= 16777619u;
+  hash ^= (uint32_t)tv;
+  hash *= 16777619u;
   return hash;
 }
 
@@ -1535,7 +1549,8 @@ bool8_t vkr_geometry_system_deduplicate_vertices(
   // Use a hash table for O(n) deduplication instead of O(n²)
   // Hash table size should be ~2x vertex count for good performance
   uint32_t table_size = vertex_count * 2;
-  if (table_size < 1024) table_size = 1024;
+  if (table_size < 1024)
+    table_size = 1024;
 
   // Each bucket stores: vertex index in unique array, or UINT32_MAX if empty
   uint32_t *hash_table = vkr_allocator_alloc(
