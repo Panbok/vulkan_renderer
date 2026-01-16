@@ -382,6 +382,15 @@ static void test_mat4_projection_matrices(void) {
   assert(float_equals(vk_top.y, -1.0f, 0.001f) &&
          "Ortho ZO+Y-invert top edge failed");
 
+  Vec4 vk_left =
+      mat4_mul_vec4(ortho_zo_yinv, vec4_new(-10.0f, 0.0f, -0.1f, 1.0f));
+  Vec4 vk_right =
+      mat4_mul_vec4(ortho_zo_yinv, vec4_new(10.0f, 0.0f, -0.1f, 1.0f));
+  assert(float_equals(vk_left.x, -1.0f, 0.001f) &&
+         "Ortho ZO+Y-invert left edge failed");
+  assert(float_equals(vk_right.x, 1.0f, 0.001f) &&
+         "Ortho ZO+Y-invert right edge failed");
+
   // Test perspective projection
   Mat4 perspective =
       mat4_perspective(vkr_to_radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f);

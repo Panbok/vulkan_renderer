@@ -369,7 +369,7 @@ static INLINE Mat4 mat4_ortho_zo_yinv(float32_t left, float32_t right,
 
   return mat4_new(2.0f / rl, 0.0f, 0.0f, 0.0f, 0.0f, -2.0f / tb, 0.0f, 0.0f,
                   0.0f, 0.0f, -1.0f / fn, 0.0f, -((right + left) / rl),
-                  -((top + bottom) / tb), -(near_clip / fn), 1.0f);
+                  +((top + bottom) / tb), -(near_clip / fn), 1.0f);
 }
 
 /**
