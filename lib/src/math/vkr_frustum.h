@@ -54,6 +54,17 @@ typedef struct VkrFrustum {
 VkrFrustum vkr_frustum_from_view_projection(Mat4 view, Mat4 projection);
 
 /**
+ * @brief Extract frustum planes from a combined view-projection matrix.
+ *
+ * Assumes Vulkan clip conventions (Z in [0,1]). Useful when only a combined
+ * matrix is available, such as shadow cascade view-projection.
+ *
+ * @param view_projection Combined view-projection matrix (P * V).
+ * @return Frustum with 6 normalized planes.
+ */
+VkrFrustum vkr_frustum_from_matrix(Mat4 view_projection);
+
+/**
  * @brief Test if a bounding sphere intersects or is inside the frustum.
  *
  * Conservative test: returns true if the sphere might be visible.

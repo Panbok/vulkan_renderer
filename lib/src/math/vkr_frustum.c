@@ -89,6 +89,32 @@ VkrFrustum vkr_frustum_from_view_projection(Mat4 view, Mat4 projection) {
   return frustum;
 }
 
+VkrFrustum vkr_frustum_from_matrix(Mat4 view_projection) {
+  Mat4 vp = view_projection;
+
+  Vec4 r0 = mat4_row(vp, 0);
+  Vec4 r1 = mat4_row(vp, 1);
+  Vec4 r2 = mat4_row(vp, 2);
+  Vec4 r3 = mat4_row(vp, 3);
+
+  VkrFrustum frustum;
+  frustum.planes[VKR_FRUSTUM_PLANE_LEFT] =
+      vkr_plane_from_vec4(vec4_add(r3, r0));
+  frustum.planes[VKR_FRUSTUM_PLANE_RIGHT] =
+      vkr_plane_from_vec4(vec4_sub(r3, r0));
+  frustum.planes[VKR_FRUSTUM_PLANE_BOTTOM] =
+      vkr_plane_from_vec4(vec4_add(r3, r1));
+  frustum.planes[VKR_FRUSTUM_PLANE_TOP] =
+      vkr_plane_from_vec4(vec4_sub(r3, r1));
+
+  // Vulkan clip range: 0 <= z <= w
+  frustum.planes[VKR_FRUSTUM_PLANE_NEAR] = vkr_plane_from_vec4(r2);
+  frustum.planes[VKR_FRUSTUM_PLANE_FAR] =
+      vkr_plane_from_vec4(vec4_sub(r3, r2));
+
+  return frustum;
+}
+
 bool8_t vkr_frustum_test_sphere(const VkrFrustum *frustum, Vec3 center,
                                 float32_t radius) {
   for (uint32_t i = 0; i < VKR_FRUSTUM_PLANE_COUNT; i++) {
