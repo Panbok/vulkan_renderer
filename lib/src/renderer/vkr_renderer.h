@@ -202,6 +202,7 @@ typedef enum VkrBufferUsageBits {
   VKR_BUFFER_USAGE_STORAGE = 1 << 4,      // For compute/more advanced
   VKR_BUFFER_USAGE_TRANSFER_SRC = 1 << 5, // Can be source of a copy
   VKR_BUFFER_USAGE_TRANSFER_DST = 1 << 6, // Can be destination of a copy
+  VKR_BUFFER_USAGE_INDIRECT = 1 << 7,     // Indirect draw commands
 } VkrBufferUsageBits;
 typedef Bitset8 VkrBufferUsageFlags;
 
@@ -227,6 +228,8 @@ vkr_buffer_usage_flags_from_bits(uint8_t bits) {
     bitset8_set(&flags, VKR_BUFFER_USAGE_TRANSFER_SRC);
   if (bits & VKR_BUFFER_USAGE_TRANSFER_DST)
     bitset8_set(&flags, VKR_BUFFER_USAGE_TRANSFER_DST);
+  if (bits & VKR_BUFFER_USAGE_INDIRECT)
+    bitset8_set(&flags, VKR_BUFFER_USAGE_INDIRECT);
   return flags;
 }
 
@@ -330,6 +333,8 @@ typedef struct VkrDeviceInformation {
   VkrDeviceQueueFlags device_queues;
   VkrSamplerFilterFlags sampler_filters;
   float64_t max_sampler_anisotropy;
+  bool8_t supports_multi_draw_indirect;
+  bool8_t supports_draw_indirect_first_instance;
 } VkrDeviceInformation;
 
 // ============================================================================
@@ -347,6 +352,7 @@ typedef struct VkrBufferDescription {
   VkrBufferTypeFlags buffer_type;
 
   bool8_t bind_on_create;
+  bool8_t persistently_mapped;
 } VkrBufferDescription;
 
 typedef enum VkrShaderStage {
@@ -538,9 +544,10 @@ typedef struct VkrRendererInstanceStateHandle {
 } VkrRendererInstanceStateHandle;
 
 /*
-  Vulkan backend descriptor layout (current)
+  Vulkan backend descriptor layout
   - Descriptor set 0 (per-frame/global):
-      binding 0 = uniform buffer (GlobalUniformObject: view, projection)
+      binding 0 = uniform buffer (GlobalUniformObject: view, projection, etc.)
+      binding 1 = storage buffer (instance data stream)
   - Descriptor set 1 (per-object/instance):
       binding 0 = uniform buffer (InstanceUniformObject: material uniforms)
       binding 1 = sampled image (combined image sampler slot 0)
@@ -969,6 +976,13 @@ VkrRendererError vkr_renderer_update_buffer(VkrRendererFrontendHandle renderer,
                                             VkrBufferHandle buffer,
                                             uint64_t offset, uint64_t size,
                                             const void *data);
+void *vkr_renderer_buffer_get_mapped_ptr(VkrRendererFrontendHandle renderer,
+                                         VkrBufferHandle buffer);
+VkrRendererError vkr_renderer_flush_buffer(VkrRendererFrontendHandle renderer,
+                                           VkrBufferHandle buffer,
+                                           uint64_t offset, uint64_t size);
+void vkr_renderer_set_instance_buffer(VkrRendererFrontendHandle renderer,
+                                      VkrBufferHandle buffer);
 
 VkrRendererError vkr_renderer_update_pipeline_state(
     VkrRendererFrontendHandle renderer, VkrPipelineOpaqueHandle pipeline,
@@ -1153,6 +1167,17 @@ void vkr_renderer_set_viewport(VkrRendererFrontendHandle renderer,
 void vkr_renderer_set_scissor(VkrRendererFrontendHandle renderer,
                               const VkrScissor *scissor);
 
+/**
+ * @brief Set Vulkan rasterization depth-bias parameters for subsequent draws.
+ *
+ * This is used by the shadow pass to reduce self-shadowing acne by biasing
+ * shadow caster depth values. This is rasterization bias (vkCmdSetDepthBias),
+ * not receiver-side bias (shadow_bias / normal_bias in shaders).
+ */
+void vkr_renderer_set_depth_bias(VkrRendererFrontendHandle renderer,
+                                 float32_t constant_factor, float32_t clamp,
+                                 float32_t slope_factor);
+
 // High-level draw of current scene graph (uses configured systems)
 void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer,
                              float64_t delta_time);
@@ -1165,6 +1190,11 @@ void vkr_renderer_draw_indexed(VkrRendererFrontendHandle renderer,
                                uint32_t index_count, uint32_t instance_count,
                                uint32_t first_index, int32_t vertex_offset,
                                uint32_t first_instance);
+
+void vkr_renderer_draw_indexed_indirect(VkrRendererFrontendHandle renderer,
+                                        VkrBufferHandle indirect_buffer,
+                                        uint64_t offset, uint32_t draw_count,
+                                        uint32_t stride);
 
 VkrRendererError
 vkr_renderer_begin_render_pass(VkrRendererFrontendHandle renderer,
@@ -1325,6 +1355,11 @@ typedef struct VkrRendererBackendInterface {
                                     VkrBackendResourceHandle handle,
                                     uint64_t offset, uint64_t size,
                                     const void *data);
+  void *(*buffer_get_mapped_ptr)(void *backend_state,
+                                 VkrBackendResourceHandle handle);
+  VkrRendererError (*buffer_flush)(void *backend_state,
+                                   VkrBackendResourceHandle handle,
+                                   uint64_t offset, uint64_t size);
 
   VkrBackendResourceHandle (*texture_create)(void *backend_state,
                                              const VkrTextureDescription *desc,
@@ -1379,6 +1414,8 @@ typedef struct VkrRendererBackendInterface {
 
   void (*set_viewport)(void *backend_state, const VkrViewport *viewport);
   void (*set_scissor)(void *backend_state, const VkrScissor *scissor);
+  void (*set_depth_bias)(void *backend_state, float32_t constant_factor,
+                         float32_t clamp, float32_t slope_factor);
 
   void (*draw)(void *backend_state, uint32_t vertex_count,
                uint32_t instance_count, uint32_t first_vertex,
@@ -1387,6 +1424,14 @@ typedef struct VkrRendererBackendInterface {
   void (*draw_indexed)(void *backend_state, uint32_t index_count,
                        uint32_t instance_count, uint32_t first_index,
                        int32_t vertex_offset, uint32_t first_instance);
+
+  void (*draw_indexed_indirect)(void *backend_state,
+                                VkrBackendResourceHandle indirect_buffer,
+                                uint64_t offset, uint32_t draw_count,
+                                uint32_t stride);
+
+  void (*set_instance_buffer)(void *backend_state,
+                              VkrBackendResourceHandle buffer_handle);
 
   // Telemetry
   uint64_t (*get_and_reset_descriptor_writes_avoided)(void *backend_state);

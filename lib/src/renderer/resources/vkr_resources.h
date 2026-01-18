@@ -52,6 +52,8 @@ typedef struct VkrGeometry {
 
   VkrVertexBuffer vertex_buffer;
   VkrIndexBuffer index_buffer;
+  VkrIndexBuffer opaque_index_buffer; // Optional compacted opaque-only indices.
+  uint32_t opaque_index_count; // Index count for opaque_index_buffer.
 
   Vec3 center;
   Vec3 min_extents;
@@ -109,6 +111,10 @@ typedef struct VkrMaterialHandle {
 #define VKR_MATERIAL_HANDLE_INVALID                                            \
   (VkrMaterialHandle) { .id = 0, .generation = VKR_INVALID_ID }
 
+// Default cutoff for authoring-driven cutout materials without an explicit
+// alpha_cutoff value.
+#define VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT 0.1f
+
 typedef struct VkrPhongProperties {
   Vec4 diffuse_color;  // Base color factor
   Vec4 specular_color; // Specular reflection color
@@ -134,6 +140,7 @@ typedef struct VkrMaterial {
 
   // Phong lighting parameters
   VkrPhongProperties phong;
+  float32_t alpha_cutoff; // Alpha test threshold for cutout; 0 disables.
 
   // Texture maps
   VkrMaterialTexture textures[VKR_TEXTURE_SLOT_COUNT];
@@ -178,6 +185,20 @@ typedef struct VkrSubMesh {
   VkrRendererInstanceStateHandle instance_state;
   VkrPipelineDomain pipeline_domain;
   String8 shader_override;
+  /** Stable identifier for a sub-range inside shared geometry buffers. */
+  uint32_t range_id;
+  /** Index buffer range; index_count==0 implies full-geometry draw. */
+  uint32_t first_index;
+  uint32_t index_count;
+  int32_t vertex_offset;
+  /** Optional opaque-only range in a compacted index buffer. */
+  uint32_t opaque_first_index;
+  uint32_t opaque_index_count;
+  int32_t opaque_vertex_offset;
+  /** Local-space bounds for the draw range (center + extents). */
+  Vec3 center;
+  Vec3 min_extents;
+  Vec3 max_extents;
   bool8_t pipeline_dirty;
   bool8_t owns_geometry;
   bool8_t owns_material;
