@@ -313,6 +313,21 @@ void vkr_gizmo_system_render(VkrGizmoSystem *system,
   }
 
   Mat4 model = vkr_gizmo_build_model(system, camera, viewport_height);
+  VkrInstanceBufferPool *instance_pool = &renderer->instance_buffer_pool;
+  VkrInstanceDataGPU *instance = NULL;
+  uint32_t base_instance = 0;
+  if (!vkr_instance_buffer_alloc(instance_pool, 1, &base_instance, &instance)) {
+    log_warn("Gizmo render skipped: instance buffer allocation failed");
+    return;
+  }
+  instance[0] = (VkrInstanceDataGPU){
+      .model = model,
+      .object_id = 0,
+      .material_index = 0,
+      .flags = 0,
+      ._padding = 0,
+  };
+  vkr_instance_buffer_flush_range(instance_pool, base_instance, 1);
 
   bool8_t globals_applied = false_v;
   uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
@@ -331,6 +346,10 @@ void vkr_gizmo_system_render(VkrGizmoSystem *system,
 
     VkrMaterial *material = vkr_material_system_get_by_handle(
         &renderer->material_system, submesh->material);
+    if (!material && renderer->material_system.default_material.id != 0) {
+      material = vkr_material_system_get_by_handle(
+          &renderer->material_system, renderer->material_system.default_material);
+    }
     const char *shader_name =
         (material && material->shader_name && material->shader_name[0] != '\0')
             ? material->shader_name
@@ -338,6 +357,7 @@ void vkr_gizmo_system_render(VkrGizmoSystem *system,
     if (!vkr_shader_system_use(&renderer->shader_system, shader_name)) {
       vkr_shader_system_use(&renderer->shader_system, "shader.default.world");
     }
+
 
     VkrRendererError refresh_err = VKR_RENDERER_ERROR_NONE;
     if (!vkr_mesh_manager_refresh_pipeline(&renderer->mesh_manager,
@@ -370,10 +390,6 @@ void vkr_gizmo_system_render(VkrGizmoSystem *system,
       globals_applied = true_v;
     }
 
-    vkr_material_system_apply_local(
-        &renderer->material_system,
-        &(VkrLocalMaterialState){.model = model, .object_id = 0});
-
     if (material) {
       vkr_shader_system_bind_instance(&renderer->shader_system,
                                       submesh->instance_state.id);
@@ -381,6 +397,8 @@ void vkr_gizmo_system_render(VkrGizmoSystem *system,
         vkr_material_system_apply_instance(&renderer->material_system, material,
                                            VKR_PIPELINE_DOMAIN_WORLD);
         submesh->last_render_frame = renderer->frame_number;
+      } else {
+        vkr_shader_system_apply_instance(&renderer->shader_system);
       }
     }
 
@@ -395,8 +413,10 @@ void vkr_gizmo_system_render(VkrGizmoSystem *system,
       vkr_shader_system_apply_instance(&renderer->shader_system);
     }
 
-    vkr_geometry_system_render(renderer, &renderer->geometry_system,
-                               submesh->geometry, 1);
+    vkr_geometry_system_render_instanced_range(
+        renderer, &renderer->geometry_system, submesh->geometry,
+        submesh->index_count, submesh->first_index, submesh->vertex_offset, 1,
+        base_instance);
   }
 }
 
@@ -427,6 +447,11 @@ void vkr_gizmo_system_render_picking(VkrGizmoSystem *system,
 
   Mat4 model = vkr_gizmo_build_model(system, camera, viewport_height);
   float32_t alpha_cutoff = 0.0f;
+  VkrInstanceBufferPool *instance_pool = &renderer->instance_buffer_pool;
+  if (!instance_pool->initialized) {
+    log_error("Gizmo picking render requires an initialized instance buffer");
+    return;
+  }
 
   uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
   for (uint32_t i = 0; i < submesh_count; ++i) {
@@ -442,18 +467,34 @@ void vkr_gizmo_system_render_picking(VkrGizmoSystem *system,
     }
 
     uint32_t object_id = vkr_gizmo_encode_picking_id(handle);
-    vkr_material_system_apply_local(
-        &renderer->material_system,
-        &(VkrLocalMaterialState){.model = model, .object_id = object_id});
+
+    VkrInstanceDataGPU *instance_ptr = NULL;
+    uint32_t base_instance = 0;
+    if (!vkr_instance_buffer_alloc(instance_pool, 1, &base_instance,
+                                   &instance_ptr)) {
+      continue;
+    }
+
+    *instance_ptr = (VkrInstanceDataGPU){
+        .model = model,
+        .object_id = object_id,
+        .material_index = 0,
+        .flags = 0,
+      ._padding = 0,
+    };
+    vkr_instance_buffer_flush_range(instance_pool, base_instance, 1);
 
     vkr_shader_system_uniform_set(&renderer->shader_system, "alpha_cutoff",
                                   &alpha_cutoff);
+
 
     if (!vkr_shader_system_apply_instance(&renderer->shader_system)) {
       continue;
     }
 
-    vkr_geometry_system_render(renderer, &renderer->geometry_system,
-                               submesh->geometry, 1);
+    vkr_geometry_system_render_instanced_range(
+        renderer, &renderer->geometry_system, submesh->geometry,
+        submesh->index_count, submesh->first_index, submesh->vertex_offset, 1,
+        base_instance);
   }
 }

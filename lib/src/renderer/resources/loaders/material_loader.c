@@ -36,6 +36,9 @@ typedef struct VkrParsedMaterialData {
   char shader_name[VKR_MATERIAL_NAME_MAX];
   uint32_t pipeline_id;
   VkrPhongProperties phong;
+  float32_t alpha_cutoff;
+  bool8_t alpha_cutoff_set;
+  bool8_t cutout_enabled;
 
   // Texture paths as fixed buffers (thread-safe for parallel parsing)
   char diffuse_path[VKR_MATERIAL_PATH_MAX];
@@ -144,6 +147,7 @@ vkr_internal void vkr_material_init_defaults(VkrMaterial *material,
   material->phong.specular_color = vec4_new(1, 1, 1, 1);
   material->phong.shininess = 32.0f;
   material->phong.emission_color = vec3_new(0, 0, 0);
+  material->alpha_cutoff = 0.0f;
 
   for (uint32_t tex_slot = 0; tex_slot < VKR_TEXTURE_SLOT_COUNT; tex_slot++) {
     material->textures[tex_slot].slot = (VkrTextureSlot)tex_slot;
@@ -410,10 +414,18 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
   VkrMaterialEntry *existing_entry = vkr_hash_table_get_VkrMaterialEntry(
       &system->material_by_name, material_key);
   if (existing_entry) {
-    log_warn("Material '%s' already exists in system", material_key);
+    VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
+    VkrMaterialHandle handle =
+        vkr_material_system_acquire(system, material_name, true_v, &acquire_err);
     vkr_material_cleanup_shader_name(system, loaded_material.shader_name);
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    return false_v;
+    if (handle.id == 0) {
+      *out_error = acquire_err;
+      return false_v;
+    }
+    out_handle->type = VKR_RESOURCE_TYPE_MATERIAL;
+    out_handle->as.material = handle;
+    *out_error = VKR_RENDERER_ERROR_NONE;
+    return true_v;
   }
 
   uint32_t slot = vkr_material_find_slot(system);
@@ -511,6 +523,7 @@ vkr_material_loader_unload(VkrResourceLoader *self,
   material->phong.specular_color = vec4_new(1, 1, 1, 1);
   material->phong.shininess = 0.0f;
   material->phong.emission_color = vec3_new(0, 0, 0);
+  material->alpha_cutoff = 0.0f;
   for (uint32_t tex_slot = 0; tex_slot < VKR_TEXTURE_SLOT_COUNT; tex_slot++) {
     material->textures[tex_slot].handle = VKR_TEXTURE_HANDLE_INVALID;
     material->textures[tex_slot].enabled = false;
@@ -643,6 +656,7 @@ vkr_internal VkrRendererError vkr_material_loader_load_from_mt(
   vkr_material_init_defaults(out_material, material_system);
 
   VkrMaterialTexturePaths texture_paths = {0};
+  bool8_t alpha_cutoff_set = false_v;
 
   while (true) {
     String8 line = {0};
@@ -763,6 +777,33 @@ vkr_internal VkrRendererError vkr_material_loader_load_from_mt(
         out_material->phong.emission_color = v;
       } else {
         log_warn("Material '%s': invalid emission_color '%s'",
+                 string8_cstr(&material_name), string8_cstr(&value));
+      }
+
+    } else if (string8_contains_cstr(&key, "alpha_cutoff")) {
+      float32_t cutoff = 0.0f;
+      if (string8_to_f32(&value, &cutoff)) {
+        if (cutoff < 0.0f) {
+          log_warn("Material '%s': alpha_cutoff < 0 clamped to 0",
+                   string8_cstr(&material_name));
+          cutoff = 0.0f;
+        }
+        out_material->alpha_cutoff = cutoff;
+        alpha_cutoff_set = true_v;
+      } else {
+        log_warn("Material '%s': invalid alpha_cutoff '%s'",
+                 string8_cstr(&material_name), string8_cstr(&value));
+      }
+
+    } else if (string8_contains_cstr(&key, "cutout")) {
+      bool8_t cutout = false_v;
+      if (string8_to_bool(&value, &cutout)) {
+        if (!alpha_cutoff_set) {
+          out_material->alpha_cutoff =
+              cutout ? VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT : 0.0f;
+        }
+      } else {
+        log_warn("Material '%s': invalid cutout '%s'",
                  string8_cstr(&material_name), string8_cstr(&value));
       }
 
@@ -887,6 +928,9 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
   out_data->phong.specular_color = vec4_new(1, 1, 1, 1);
   out_data->phong.shininess = 32.0f;
   out_data->phong.emission_color = vec3_new(0, 0, 0);
+  out_data->alpha_cutoff = 0.0f;
+  out_data->alpha_cutoff_set = false_v;
+  out_data->cutout_enabled = false_v;
   out_data->pipeline_id = VKR_INVALID_ID;
   out_data->diffuse_colorspace = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
   out_data->specular_colorspace = VKR_MATERIAL_TEXTURE_COLORSPACE_LINEAR;
@@ -1002,6 +1046,20 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
       Vec3 v;
       if (string8_to_vec3(&value, &v)) {
         out_data->phong.emission_color = v;
+      }
+    } else if (string8_contains_cstr(&key, "alpha_cutoff")) {
+      float32_t cutoff = 0.0f;
+      if (string8_to_f32(&value, &cutoff)) {
+        if (cutoff < 0.0f) {
+          cutoff = 0.0f;
+        }
+        out_data->alpha_cutoff = cutoff;
+        out_data->alpha_cutoff_set = true_v;
+      }
+    } else if (string8_contains_cstr(&key, "cutout")) {
+      bool8_t cutout = false_v;
+      if (string8_to_bool(&value, &cutout)) {
+        out_data->cutout_enabled = cutout;
       }
     } else if (string8_contains_cstr(&key, "shader")) {
       char *trimmed = (char *)value.str;
@@ -1341,6 +1399,11 @@ vkr_internal uint32_t vkr_material_loader_load_batch(
     material->name = stable_name;
     material->pipeline_id = parsed_data[i].pipeline_id;
     material->phong = parsed_data[i].phong;
+    if (parsed_data[i].alpha_cutoff_set) {
+      material->alpha_cutoff = parsed_data[i].alpha_cutoff;
+    } else if (parsed_data[i].cutout_enabled) {
+      material->alpha_cutoff = VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT;
+    }
 
     if (parsed_data[i].shader_name[0] != '\0') {
       size_t shader_len = string_length(parsed_data[i].shader_name);
