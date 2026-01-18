@@ -53,7 +53,7 @@ typedef struct VkrGeometry {
   VkrVertexBuffer vertex_buffer;
   VkrIndexBuffer index_buffer;
   VkrIndexBuffer opaque_index_buffer; // Optional compacted opaque-only indices.
-  uint32_t opaque_index_count; // Index count for opaque_index_buffer.
+  uint32_t opaque_index_count;        // Index count for opaque_index_buffer.
 
   Vec3 center;
   Vec3 min_extents;
@@ -216,9 +216,9 @@ typedef struct VkrMesh {
 
   // Bounding sphere for frustum culling
   bool8_t bounds_valid;
-  Vec3 bounds_local_center;   // Local-space bounding sphere center
+  Vec3 bounds_local_center; // Local-space bounding sphere center
   float32_t bounds_local_radius;
-  Vec3 bounds_world_center;   // Cached world-space center (updated with model)
+  Vec3 bounds_world_center; // Cached world-space center (updated with model)
   float32_t bounds_world_radius;
 } VkrMesh;
 Array(VkrMesh);
