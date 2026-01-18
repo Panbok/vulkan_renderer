@@ -455,14 +455,22 @@ bool8_t vkr_shader_system_sampler_set_by_index(VkrShaderSystem *state,
 bool8_t vkr_shader_system_apply_global(VkrShaderSystem *state) {
   assert_log(state != NULL, "State is NULL");
   assert_log(state->registry != NULL, "Registry is NULL");
+  if (!state->current_shader) {
+    log_error("No shader currently bound");
+    return false_v;
+  }
 
   VkrRendererError err = VKR_RENDERER_ERROR_NONE;
-  if (state->current_shader) {
-    if (state->current_shader->config->global_ubo_size == 0) {
-      return true_v;
+  if (state->current_shader->config->global_ubo_size == 0) {
+    if (!vkr_pipeline_registry_update_global_state(state->registry, NULL,
+                                                   &err)) {
+      log_error("shader_system: apply_global failed: %s",
+                vkr_renderer_get_error_string(err));
+      return false_v;
     }
-    vkr_ensure_staging_for_shader(state, state->current_shader);
+    return true_v;
   }
+  vkr_ensure_staging_for_shader(state, state->current_shader);
 
   const void *global_ptr = (const void *)state->global_staging;
   if (!global_ptr && state->current_shader &&

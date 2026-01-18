@@ -480,3 +480,29 @@ void vkr_rich_text_destroy(VkrRichText *rt);
  * @return The yellow text color.
  */
 #define VKR_TEXT_COLOR_YELLOW (Vec4){1.0f, 1.0f, 0.0f, 1.0f}
+
+/**
+ * @brief Compares two font kernings for qsort in font loaders.
+ * @param a The first font kerning.
+ * @param b The second font kerning.
+ * @return The comparison result.
+ */
+vkr_internal int32_t vkr_font_kerning_qsort_compare(const void *a,
+                                                    const void *b) {
+  const VkrFontKerning *ka = (const VkrFontKerning *)a;
+  const VkrFontKerning *kb = (const VkrFontKerning *)b;
+
+  if (ka->codepoint_0 < kb->codepoint_0) {
+    return -1;
+  }
+  if (ka->codepoint_0 > kb->codepoint_0) {
+    return 1;
+  }
+  if (ka->codepoint_1 < kb->codepoint_1) {
+    return -1;
+  }
+  if (ka->codepoint_1 > kb->codepoint_1) {
+    return 1;
+  }
+  return 0;
+}

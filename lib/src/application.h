@@ -468,6 +468,18 @@ void application_start(Application *application) {
     uint32_t mesh_capacity =
         vkr_mesh_manager_capacity(&application->renderer.mesh_manager);
     for (uint32_t mesh_index = 0; mesh_index < mesh_capacity; ++mesh_index) {
+      VkrMesh *mesh =
+          vkr_mesh_manager_get(&application->renderer.mesh_manager, mesh_index);
+      if (!mesh) {
+        continue;
+      }
+
+      // Scene-driven meshes update their model via the scene bridge; avoid
+      // overwriting those transforms with the mesh-local transform.
+      if (mesh->render_id != 0) {
+        continue;
+      }
+
       vkr_mesh_manager_update_model(&application->renderer.mesh_manager,
                                     mesh_index);
     }
