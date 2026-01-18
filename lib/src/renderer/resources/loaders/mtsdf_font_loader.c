@@ -8,6 +8,7 @@
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 
+#include "core/vkr_text.h"
 #include "renderer/vkr_renderer.h"
 
 typedef struct VkrMtsdfFontRequest {
@@ -482,6 +483,8 @@ vkr_internal bool8_t vkr_mtsdf_build_font(VkrMtsdfFontMetadata *metadata,
     }
     MemCopy(out_font->kernings.data, metadata->kernings.data,
             metadata->kernings.length * sizeof(VkrFontKerning));
+    qsort(out_font->kernings.data, (size_t)out_font->kernings.length,
+          sizeof(VkrFontKerning), vkr_font_kerning_qsort_compare);
   }
 
   VkrFontGlyph *space = NULL;

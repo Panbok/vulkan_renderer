@@ -1,8 +1,8 @@
 #include "renderer/resources/loaders/bitmap_font_loader.h"
 
 #include "containers/str.h"
-#include "containers/vector.h"
 #include "core/logger.h"
+#include "core/vkr_text.h"
 #include "filesystem/filesystem.h"
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
@@ -1257,6 +1257,8 @@ vkr_internal bool8_t vkr_bitmap_font_build_result(
     }
     MemCopy(out_font->kernings.data, state->kernings.data,
             state->kernings.length * sizeof(VkrFontKerning));
+    qsort(out_font->kernings.data, (size_t)out_font->kernings.length,
+          sizeof(VkrFontKerning), vkr_font_kerning_qsort_compare);
   }
 
   VkrFontGlyph *space = NULL;
