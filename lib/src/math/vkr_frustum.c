@@ -89,6 +89,11 @@ VkrFrustum vkr_frustum_from_view_projection(Mat4 view, Mat4 projection) {
   return frustum;
 }
 
+/**
+ * @brief Construct frustum directly from a combined view-projection matrix.
+ * @note Assumes Vulkan clip range (0 <= z <= w). For OpenGL-style matrices,
+ *       use vkr_frustum_from_view_projection() instead.
+ */
 VkrFrustum vkr_frustum_from_matrix(Mat4 view_projection) {
   Mat4 vp = view_projection;
 
@@ -104,13 +109,11 @@ VkrFrustum vkr_frustum_from_matrix(Mat4 view_projection) {
       vkr_plane_from_vec4(vec4_sub(r3, r0));
   frustum.planes[VKR_FRUSTUM_PLANE_BOTTOM] =
       vkr_plane_from_vec4(vec4_add(r3, r1));
-  frustum.planes[VKR_FRUSTUM_PLANE_TOP] =
-      vkr_plane_from_vec4(vec4_sub(r3, r1));
+  frustum.planes[VKR_FRUSTUM_PLANE_TOP] = vkr_plane_from_vec4(vec4_sub(r3, r1));
 
   // Vulkan clip range: 0 <= z <= w
   frustum.planes[VKR_FRUSTUM_PLANE_NEAR] = vkr_plane_from_vec4(r2);
-  frustum.planes[VKR_FRUSTUM_PLANE_FAR] =
-      vkr_plane_from_vec4(vec4_sub(r3, r2));
+  frustum.planes[VKR_FRUSTUM_PLANE_FAR] = vkr_plane_from_vec4(vec4_sub(r3, r2));
 
   return frustum;
 }
