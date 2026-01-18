@@ -14,6 +14,7 @@
 typedef struct VkrArenaPool {
   VkrPool pool;        /**< Underlying fixed-size chunk pool */
   VkrMutex mutex;      /**< Mutex for thread-safe acquire/release */
+  VkrCondVar cond;     /**< Condition variable for blocking acquire */
   uint64_t chunk_size; /**< Size of each chunk */
   bool8_t initialized; /**< Whether the pool is initialized */
 } VkrArenaPool;
@@ -39,7 +40,7 @@ void vkr_arena_pool_destroy(VkrAllocator *allocator, VkrArenaPool *pool);
 /**
  * @brief Acquires a memory chunk from the pool (thread-safe).
  * @param pool Pool to acquire from.
- * @return Pointer to the chunk, or NULL if pool is exhausted.
+ * @return Pointer to the chunk. This call blocks until a chunk is available.
  */
 void *vkr_arena_pool_acquire(VkrArenaPool *pool);
 

@@ -24,6 +24,14 @@ bool8_t vkr_arena_pool_create(uint64_t chunk_size, uint32_t chunk_count,
     return false_v;
   }
 
+  // Create condition variable for blocking acquire
+  if (!vkr_cond_create(allocator, &out_pool->cond)) {
+    log_error("Failed to create arena pool condition variable");
+    vkr_mutex_destroy(allocator, &out_pool->mutex);
+    vkr_pool_destroy(&out_pool->pool);
+    return false_v;
+  }
+
   out_pool->chunk_size = chunk_size;
   out_pool->initialized = true_v;
 
@@ -35,6 +43,10 @@ bool8_t vkr_arena_pool_create(uint64_t chunk_size, uint32_t chunk_count,
 void vkr_arena_pool_destroy(VkrAllocator *allocator, VkrArenaPool *pool) {
   if (pool == NULL || !pool->initialized) {
     return;
+  }
+
+  if (pool->cond) {
+    vkr_cond_destroy(allocator, &pool->cond);
   }
 
   if (pool->mutex) {
@@ -51,6 +63,13 @@ void *vkr_arena_pool_acquire(VkrArenaPool *pool) {
   assert_log(pool->initialized, "pool must be initialized");
 
   vkr_mutex_lock(pool->mutex);
+  while (vkr_pool_free_chunks(&pool->pool) == 0) {
+    if (!vkr_cond_wait(pool->cond, pool->mutex)) {
+      vkr_mutex_unlock(pool->mutex);
+      return NULL;
+    }
+  }
+
   void *chunk = vkr_pool_alloc(&pool->pool);
   vkr_mutex_unlock(pool->mutex);
 
@@ -66,6 +85,9 @@ void vkr_arena_pool_release(VkrArenaPool *pool, void *chunk) {
   }
 
   vkr_mutex_lock(pool->mutex);
-  vkr_pool_free(&pool->pool, chunk);
+  bool8_t freed = vkr_pool_free(&pool->pool, chunk);
+  if (freed) {
+    vkr_cond_signal(pool->cond);
+  }
   vkr_mutex_unlock(pool->mutex);
 }
