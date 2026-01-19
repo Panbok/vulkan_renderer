@@ -38,6 +38,19 @@ typedef struct VkrMeshManagerConfig {
  * @param material_name Name of the material resource to acquire.
  * @param shader_override Optional shader override for the submesh.
  * @param pipeline_domain Rendering domain for the submesh.
+ * @param range_id Stable identifier for a draw range within a shared geometry
+ * buffer (used by batching). Use unique values when submeshes share the same
+ * geometry but draw different ranges.
+ * @param first_index Starting index within the bound index buffer.
+ * @param index_count Index count for the range (0 uses full geometry).
+ * @param vertex_offset Vertex offset applied to indices (typically 0 when
+ * indices are absolute).
+ * @param opaque_first_index Starting index in the compacted opaque buffer.
+ * @param opaque_index_count Index count for the opaque-only range.
+ * @param opaque_vertex_offset Vertex offset for opaque-only range.
+ * @param center Range-local center in mesh space.
+ * @param min_extents Minimum extents relative to center.
+ * @param max_extents Maximum extents relative to center.
  * @param owns_geometry Indicates if the mesh manager should release the
  * geometry handle when the submesh is destroyed.
  * @param owns_material Indicates if the mesh manager should release the
@@ -50,6 +63,16 @@ typedef struct VkrSubMeshDesc {
   String8 material_name;
   String8 shader_override;
   VkrPipelineDomain pipeline_domain;
+  uint32_t range_id;
+  uint32_t first_index;
+  uint32_t index_count;
+  int32_t vertex_offset;
+  uint32_t opaque_first_index;
+  uint32_t opaque_index_count;
+  int32_t opaque_vertex_offset;
+  Vec3 center;
+  Vec3 min_extents;
+  Vec3 max_extents;
   bool8_t owns_geometry;
   bool8_t owns_material;
 } VkrSubMeshDesc;
