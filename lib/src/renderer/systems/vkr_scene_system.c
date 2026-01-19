@@ -172,8 +172,8 @@ vkr_internal bool8_t scene_child_index_ensure_capacity(VkrScene *scene,
   return scene_grow_array(scene->alloc, (void **)&scene->child_index_slots,
                           &scene->child_index_capacity, count, needed_slots,
                           SCENE_DEFAULT_ENTITY_CAPACITY,
-                          sizeof(SceneChildIndexSlot), AlignOf(SceneChildIndexSlot),
-                          true_v);
+                          sizeof(SceneChildIndexSlot),
+                          AlignOf(SceneChildIndexSlot), true_v);
 }
 
 vkr_internal SceneChildIndexSlot *
@@ -219,7 +219,7 @@ vkr_internal bool8_t scene_child_index_slot_contains(
 }
 
 vkr_internal bool8_t scene_child_index_add(VkrScene *scene, VkrEntityId parent,
-                                          VkrEntityId child) {
+                                           VkrEntityId child) {
   if (!scene || !scene->alloc) {
     return false_v;
   }
@@ -276,7 +276,8 @@ vkr_internal void scene_child_index_remove(VkrScene *scene, VkrEntityId parent,
 
 vkr_internal void scene_child_index_clear_parent_slot(VkrScene *scene,
                                                       VkrEntityId parent) {
-  if (!scene || parent.u64 == VKR_ENTITY_ID_INVALID.u64 || !scene->child_index_slots) {
+  if (!scene || parent.u64 == VKR_ENTITY_ID_INVALID.u64 ||
+      !scene->child_index_slots) {
     return;
   }
   if (parent.parts.index >= scene->child_index_capacity) {
@@ -478,7 +479,8 @@ vkr_internal void scene_mark_children_world_dirty(VkrScene *scene,
     while (i < slot->child_count) {
       VkrEntityId child = slot->children[i];
       if (!vkr_entity_is_alive(scene->world, child) ||
-          !vkr_entity_has_component(scene->world, child, scene->comp_transform)) {
+          !vkr_entity_has_component(scene->world, child,
+                                    scene->comp_transform)) {
         slot->children[i] = slot->children[slot->child_count - 1];
         slot->child_count--;
         continue;
@@ -720,7 +722,8 @@ vkr_internal void scene_rebuild_topo_order(VkrScene *scene) {
             if (ctx.queue_tail < entity_count) {
               ctx.queue[ctx.queue_tail++] = child;
             } else {
-              log_warn("Topo sort queue overflow (entity_count=%u)", entity_count);
+              log_warn("Topo sort queue overflow (entity_count=%u)",
+                       entity_count);
             }
           }
           ci++;
@@ -1201,8 +1204,9 @@ void vkr_scene_destroy_entity(VkrScene *scene, VkrEntityId entity) {
           slot->child_count--;
           continue;
         }
-        SceneTransform *child_t = (SceneTransform *)vkr_entity_get_component_mut(
-            scene->world, child, scene->comp_transform);
+        SceneTransform *child_t =
+            (SceneTransform *)vkr_entity_get_component_mut(
+                scene->world, child, scene->comp_transform);
         if (child_t) {
           child_t->flags |= SCENE_TRANSFORM_DIRTY_WORLD;
         }
@@ -1321,7 +1325,7 @@ bool8_t vkr_scene_set_transform(VkrScene *scene, VkrEntityId entity,
               scene->comp_transform);
     return false;
   }
-  scene->hierarchy_dirty = true; // New entity in hierarchy
+  scene->hierarchy_dirty = true;   // New entity in hierarchy
   scene_invalidate_queries(scene); // Query may need recompile for new archetype
   return true;
 }
@@ -1398,7 +1402,8 @@ bool8_t vkr_scene_set_mesh_renderer(VkrScene *scene, VkrEntityId entity,
   bool8_t result = vkr_entity_add_component(scene->world, entity,
                                             scene->comp_mesh_renderer, &comp);
   if (result) {
-    scene_invalidate_queries(scene); // Query may need recompile for new archetype
+    scene_invalidate_queries(
+        scene); // Query may need recompile for new archetype
     scene->render_full_sync_needed = true;
   }
   return result;
