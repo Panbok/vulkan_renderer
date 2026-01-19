@@ -18,6 +18,32 @@ vkr_material_system_get_shadow_fallback(VkrMaterialSystem *system) {
   return fallback ? fallback->handle : NULL;
 }
 
+/**
+ * @brief Returns a depth-texture fallback for shadow-map bindings.
+ *
+ * The world shader uses comparison samplers for `shadow_map_*`. If an unused
+ * cascade slot is bound to a color texture (e.g. the default checkerboard),
+ * Vulkan validation will report that the image format does not support depth
+ * comparison sampling. To keep descriptor sets valid when fewer cascades are
+ * active, we reuse the last available shadow map for any missing slots.
+ */
+vkr_internal VkrTextureOpaqueHandle
+vkr_material_system_get_shadow_depth_fallback(VkrMaterialSystem *system) {
+  if (!system || system->shadow_map_count == 0) {
+    return NULL;
+  }
+
+  // Prefer the last valid cascade; walk backwards in case of transient NULLs.
+  for (uint32_t i = system->shadow_map_count; i > 0; --i) {
+    VkrTextureOpaqueHandle map = system->shadow_maps[i - 1];
+    if (map) {
+      return map;
+    }
+  }
+
+  return NULL;
+}
+
 vkr_internal void
 vkr_material_system_apply_shadow_samplers(VkrMaterialSystem *system) {
   vkr_local_persist const char
@@ -29,7 +55,10 @@ vkr_material_system_apply_shadow_samplers(VkrMaterialSystem *system) {
       };
 
   VkrTextureOpaqueHandle fallback =
-      vkr_material_system_get_shadow_fallback(system);
+      vkr_material_system_get_shadow_depth_fallback(system);
+  if (!fallback) {
+    fallback = vkr_material_system_get_shadow_fallback(system);
+  }
 
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     VkrTextureOpaqueHandle map = fallback;
@@ -605,7 +634,7 @@ void vkr_material_system_set_shadow_maps(VkrMaterialSystem *system,
   assert_log(system != NULL, "System is NULL");
 
   if (!enabled || !maps || count == 0) {
-    MemZero(system->shadow_maps, sizeof(system->shadow_maps));
+    MemZero((void *)system->shadow_maps, sizeof(system->shadow_maps));
     system->shadow_map_count = 0;
     system->shadow_maps_enabled = false_v;
     return;
@@ -615,7 +644,7 @@ void vkr_material_system_set_shadow_maps(VkrMaterialSystem *system,
     count = VKR_SHADOW_CASCADE_COUNT_MAX;
   }
 
-  MemZero(system->shadow_maps, sizeof(system->shadow_maps));
+  MemZero((void *)system->shadow_maps, sizeof(system->shadow_maps));
   for (uint32_t i = 0; i < count; ++i) {
     system->shadow_maps[i] = maps[i];
   }
