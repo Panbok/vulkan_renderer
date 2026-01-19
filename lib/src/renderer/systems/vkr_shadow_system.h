@@ -61,6 +61,9 @@ typedef struct VkrShadowSceneBounds {
  * @brief Shadow system configuration.
  *
  * cascade_count is clamped to [1, VKR_SHADOW_CASCADE_COUNT_MAX].
+ * shadow_map_size is the fallback size when a per-cascade override is 0.
+ * cascade_shadow_map_sizes can override resolution per cascade; 0 uses the
+ * fallback shadow_map_size.
  * max_shadow_distance clamps the far split to avoid wasting resolution.
  * cascade_guard_band_texels expands each cascade's XY bounds (in texels) to
  * reduce shadow pop-in from casters just outside the view frustum and from
@@ -79,10 +82,15 @@ typedef struct VkrShadowSceneBounds {
  * depth_bias_* are Vulkan rasterization depth-bias parameters applied when
  * rendering the shadow map (receiver-side bias is controlled by shadow_bias /
  * normal_bias in the world shader).
+ * foliage_alpha_cutoff_bias adds a small amount to alpha_cutoff for foliage
+ * materials during shadow map rendering to reduce cutout flicker.
+ * foliage_alpha_dither enables a world-space dither for foliage cutout in the
+ * shadow pass. This is shadow-only and does not affect the main material pass.
  */
 typedef struct VkrShadowConfig {
   uint32_t cascade_count;
   uint32_t shadow_map_size;
+  uint32_t cascade_shadow_map_sizes[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t cascade_split_lambda;
   float32_t max_shadow_distance;
   float32_t cascade_guard_band_texels;
@@ -93,6 +101,8 @@ typedef struct VkrShadowConfig {
   float32_t shadow_bias;
   float32_t normal_bias;
   float32_t pcf_radius;
+  float32_t foliage_alpha_cutoff_bias;
+  bool8_t foliage_alpha_dither;
   bool8_t use_constant_cascade_size;
   float32_t cascade_blend_range;
   bool8_t stabilize_cascades;
@@ -111,6 +121,7 @@ typedef struct VkrShadowConfig {
   ((VkrShadowConfig){                                                          \
       .cascade_count = 4,                                                      \
       .shadow_map_size = 4096,                                                 \
+      .cascade_shadow_map_sizes = {4096, 2048, 2048, 1024},                    \
       .cascade_split_lambda = 0.75f,                                           \
       .max_shadow_distance = 120.0f,                                           \
       .cascade_guard_band_texels = 128.0f,                                     \
@@ -120,7 +131,9 @@ typedef struct VkrShadowConfig {
       .depth_bias_slope_factor = 1.75f,                                        \
       .shadow_bias = 0.001f,                                                   \
       .normal_bias = 0.01f,                                                    \
-      .pcf_radius = 1.5f,                                                      \
+      .pcf_radius = 3.0f,                                                      \
+      .foliage_alpha_cutoff_bias = 0.10f,                                      \
+      .foliage_alpha_dither = true_v,                                          \
       .use_constant_cascade_size = true_v,                                     \
       .cascade_blend_range = 8.0f,                                             \
       .stabilize_cascades = true_v,                                            \
@@ -135,6 +148,7 @@ typedef struct VkrShadowConfig {
   ((VkrShadowConfig){                                                          \
       .cascade_count = 3,                                                      \
       .shadow_map_size = 2048,                                                 \
+      .cascade_shadow_map_sizes = {2048, 1024, 1024, 0},                       \
       .cascade_split_lambda = 0.75f,                                           \
       .max_shadow_distance = 120.0f,                                           \
       .cascade_guard_band_texels = 128.0f,                                     \
@@ -144,7 +158,9 @@ typedef struct VkrShadowConfig {
       .depth_bias_slope_factor = 2.00f,                                        \
       .shadow_bias = 0.001f,                                                   \
       .normal_bias = 0.01f,                                                    \
-      .pcf_radius = 3.0f,                                                      \
+      .pcf_radius = 2.0f,                                                      \
+      .foliage_alpha_cutoff_bias = 0.05f,                                      \
+      .foliage_alpha_dither = true_v,                                          \
       .use_constant_cascade_size = true_v,                                     \
       .cascade_blend_range = 8.0f,                                             \
       .stabilize_cascades = true_v,                                            \
@@ -156,6 +172,50 @@ typedef struct VkrShadowConfig {
  * @brief Project-wide default.
  */
 #define VKR_SHADOW_CONFIG_DEFAULT VKR_SHADOW_CONFIG_BALANCED
+
+static INLINE uint32_t vkr_shadow_config_get_cascade_map_size(
+    const VkrShadowConfig *config, uint32_t cascade_index) {
+  if (!config) {
+    return VKR_SHADOW_MAP_SIZE_DEFAULT;
+  }
+
+  uint32_t size = config->shadow_map_size;
+  if (cascade_index < VKR_SHADOW_CASCADE_COUNT_MAX) {
+    uint32_t override_size = config->cascade_shadow_map_sizes[cascade_index];
+    if (override_size > 0) {
+      size = override_size;
+    }
+  }
+
+  if (size == 0) {
+    size = VKR_SHADOW_MAP_SIZE_DEFAULT;
+  }
+
+  return size;
+}
+
+static INLINE uint32_t
+vkr_shadow_config_get_max_map_size(const VkrShadowConfig *config) {
+  if (!config) {
+    return VKR_SHADOW_MAP_SIZE_DEFAULT;
+  }
+
+  uint32_t count = config->cascade_count;
+  if (count == 0 || count > VKR_SHADOW_CASCADE_COUNT_MAX) {
+    count = VKR_SHADOW_CASCADE_COUNT_MAX;
+  }
+
+  uint32_t max_size = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    max_size = Max(max_size, vkr_shadow_config_get_cascade_map_size(config, i));
+  }
+
+  if (max_size == 0) {
+    max_size = VKR_SHADOW_MAP_SIZE_DEFAULT;
+  }
+
+  return max_size;
+}
 
 /**
  * @brief Per-frame shadow resources (one per swapchain image).
@@ -173,7 +233,7 @@ typedef struct VkrShadowFrameResources {
 typedef struct VkrShadowFrameData {
   bool8_t enabled;
   uint32_t cascade_count;
-  float32_t shadow_map_inv_size;
+  float32_t shadow_map_inv_size[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t pcf_radius;
   float32_t shadow_bias;
   float32_t normal_bias;

@@ -32,6 +32,7 @@ struct VertexOutput
 {
     float4 position : SV_Position;
     float2 texcoord : TEXCOORD0;
+    float3 world_pos : TEXCOORD1;
 };
 
 [shader("vertex")]
@@ -44,12 +45,14 @@ VertexOutput vertexMain(VertexInput input, uint instance_id : SV_InstanceID,
     float4 world_pos = vkr_world_from_model_3d(inst.model, input.position);
     output.position = mul(push_constants.light_view_projection, world_pos);
     output.texcoord = input.texcoord;
+    output.world_pos = world_pos.xyz;
     return output;
 }
 
 [shader("fragment")]
 void fragmentMain(VertexOutput input)
 {
-    vkr_apply_alpha_cutout(diffuse_texture, diffuse_sampler, input.texcoord,
-                           i_ubo.alpha_cutoff);
+    vkr_apply_alpha_cutout_shadow(diffuse_texture, diffuse_sampler,
+                                  input.texcoord, input.world_pos,
+                                  i_ubo.alpha_cutoff);
 }

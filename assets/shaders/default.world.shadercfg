@@ -59,7 +59,7 @@ uniform=vec4[48],0,point_light_data
 # Cascaded shadows (CSM)
 uniform=uint32,0,shadow_enabled
 uniform=uint32,0,shadow_cascade_count
-uniform=float,0,shadow_map_inv_size
+uniform=vec4,0,shadow_map_inv_size
 uniform=float,0,shadow_pcf_radius
 uniform=vec4,0,shadow_split_far
 uniform=vec4,0,shadow_world_units_per_texel

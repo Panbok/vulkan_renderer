@@ -21,4 +21,41 @@ void vkr_apply_alpha_cutout(Texture2D<float4> texture, SamplerState sampler,
     }
 }
 
+float vkr_alpha_cutout_hash(float3 p)
+{
+    p = frac(p * 0.1031f);
+    p += dot(p, p.yzx + 33.33f);
+    return frac((p.x + p.y) * p.z);
+}
+
+void vkr_apply_alpha_cutout_shadow(Texture2D<float4> texture, SamplerState sampler,
+                                   float2 uv, float3 world_pos, float cutoff)
+{
+    if (cutoff == 0.0f)
+    {
+        return;
+    }
+
+    float alpha = texture.Sample(sampler, uv).a;
+    float c = abs(cutoff);
+
+    if (cutoff < 0.0f)
+    {
+        // World-space dither to stabilize foliage cutouts in the shadow pass.
+        float3 cell = floor(world_pos * 4.0f);
+        float jitter = (vkr_alpha_cutout_hash(cell) - 0.5f) * 0.10f;
+        if (alpha + jitter < c)
+        {
+            discard;
+        }
+    }
+    else
+    {
+        if (alpha < c)
+        {
+            discard;
+        }
+    }
+}
+
 #endif

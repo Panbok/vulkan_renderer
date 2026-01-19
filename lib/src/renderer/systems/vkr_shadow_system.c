@@ -265,9 +265,8 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   float32_t half = extent * 0.5f;
 
   if (stabilize && shadow_map_size > 0) {
-    // Stabilize by snapping the cascade projection to the texel grid (light
-    // space). Snapping the bounds (not just the center) reduces visible
-    // shimmering on thin geometry as the camera moves.
+    // Stabilize by snapping the cascade center to the texel grid (light space).
+    // Avoid re-snapping derived bounds; double-snapping can drift by ~0.5 texel.
     center_x = floorf(center_x / texel_size + 0.5f) * texel_size;
     center_y = floorf(center_y / texel_size + 0.5f) * texel_size;
   }
@@ -276,15 +275,6 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   float32_t right = center_x + half;
   float32_t bottom = center_y - half;
   float32_t top = center_y + half;
-
-  if (stabilize && shadow_map_size > 0) {
-    // Snap the orthographic bounds to texel increments to prevent the PCF
-    // kernel from “walking” across receiver edges when the camera moves.
-    left = floorf(left / texel_size + 0.5f) * texel_size;
-    bottom = floorf(bottom / texel_size + 0.5f) * texel_size;
-    right = left + extent;
-    top = bottom + extent;
-  }
   *out_world_units_per_texel = texel_size;
 
   float32_t near_clip = -max_z;
@@ -310,12 +300,11 @@ vkr_internal bool8_t vkr_shadow_create_renderpass(VkrShadowSystem *system,
   VkrRenderPassHandle pass =
       vkr_renderer_renderpass_get(rf, string8_lit("Renderpass.CSM.Shadow"));
   if (!pass) {
-    const float32_t shadow_map_size = system->config.shadow_map_size;
     VkrRenderPassConfig cfg = {
         .name = string8_lit("Renderpass.CSM.Shadow"),
         .clear_flags = VKR_RENDERPASS_CLEAR_DEPTH,
         .domain = VKR_PIPELINE_DOMAIN_SHADOW,
-        .render_area = vec4_new(0.0f, 0.0f, shadow_map_size, shadow_map_size),
+        .render_area = vec4_new(0.0f, 0.0f, 0.0f, 0.0f),
     };
     pass = vkr_renderer_renderpass_create(rf, &cfg);
     if (!pass) {
@@ -331,7 +320,6 @@ vkr_internal bool8_t vkr_shadow_create_renderpass(VkrShadowSystem *system,
 
 vkr_internal bool8_t vkr_shadow_create_shadow_maps(VkrShadowSystem *system,
                                                    RendererFrontend *rf) {
-  uint32_t size = system->config.shadow_map_size;
   uint32_t cascades = system->config.cascade_count;
   uint32_t frames = vkr_renderer_window_attachment_count(rf);
   if (frames == 0 || cascades == 0) {
@@ -349,6 +337,8 @@ vkr_internal bool8_t vkr_shadow_create_shadow_maps(VkrShadowSystem *system,
 
   for (uint32_t f = 0; f < frames; ++f) {
     for (uint32_t c = 0; c < cascades; ++c) {
+      uint32_t size =
+          vkr_shadow_config_get_cascade_map_size(&system->config, c);
       VkrRendererError tex_err = VKR_RENDERER_ERROR_NONE;
       system->frames[f].shadow_maps[c] =
           vkr_renderer_create_sampled_depth_attachment(rf, size, size,
@@ -521,6 +511,8 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
   if (!(system->config.depth_bias_clamp >= 0.0f)) {
     system->config.depth_bias_clamp = 0.0f;
   }
+  system->config.foliage_alpha_cutoff_bias =
+      vkr_clamp_f32(system->config.foliage_alpha_cutoff_bias, 0.0f, 1.0f);
 
   if (!vkr_shadow_create_renderpass(system, rf)) {
     goto cleanup;
@@ -629,8 +621,10 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
     Vec3 corners[8];
     vkr_shadow_compute_frustum_corners(camera, split_near, split_far, corners);
 
+    uint32_t cascade_size =
+        vkr_shadow_config_get_cascade_map_size(&system->config, i);
     vkr_shadow_compute_cascade_matrix(
-        &light_direction, corners, system->config.shadow_map_size,
+        &light_direction, corners, cascade_size,
         system->config.stabilize_cascades,
         system->config.cascade_guard_band_texels,
         system->config.use_constant_cascade_size, &system->config.scene_bounds,
@@ -692,10 +686,6 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
 
   out_data->enabled = system->light_enabled;
   out_data->cascade_count = system->config.cascade_count;
-  out_data->shadow_map_inv_size =
-      (system->config.shadow_map_size > 0)
-          ? (1.0f / (float32_t)system->config.shadow_map_size)
-          : 0.0f;
   out_data->pcf_radius = system->config.pcf_radius;
   out_data->shadow_bias = system->config.shadow_bias;
   out_data->normal_bias = system->config.normal_bias;
@@ -704,12 +694,17 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
 
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     if (i < system->config.cascade_count) {
+      uint32_t size =
+          vkr_shadow_config_get_cascade_map_size(&system->config, i);
+      out_data->shadow_map_inv_size[i] =
+          (size > 0) ? (1.0f / (float32_t)size) : 0.0f;
       out_data->split_far[i] = system->cascades[i].split_far;
       out_data->world_units_per_texel[i] =
           system->cascades[i].world_units_per_texel;
       out_data->view_projection[i] = system->cascades[i].view_projection;
       out_data->shadow_maps[i] = system->frames[frame_index].shadow_maps[i];
     } else {
+      out_data->shadow_map_inv_size[i] = 0.0f;
       out_data->split_far[i] = 0.0f;
       out_data->world_units_per_texel[i] = 0.0f;
       out_data->view_projection[i] = mat4_identity();
