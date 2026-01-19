@@ -4,12 +4,16 @@
 #include "math/vec.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/loaders/material_loader.h"
+#include "renderer/resources/loaders/scene_loader.h"
 #include "renderer/resources/loaders/shader_loader.h"
 #include "renderer/resources/loaders/texture_loader.h"
+#include "renderer/systems/views/vkr_view_editor.h"
+#include "renderer/systems/views/vkr_view_shadow.h"
 #include "renderer/systems/views/vkr_view_skybox.h"
 #include "renderer/systems/views/vkr_view_ui.h"
 #include "renderer/systems/views/vkr_view_world.h"
 #include "renderer/systems/vkr_mesh_manager.h"
+#include "renderer/systems/vkr_picking_system.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vulkan/vulkan_backend.h"
@@ -39,20 +43,12 @@ vkr_internal bool8_t vkr_renderer_on_window_resize(Event *event,
   }
 
   if (resize->width == 0 || resize->height == 0) {
-    // log_debug("Skipping resize with zero dimensions: %ux%u", resize->width,
-    //           resize->height);
     return true_v;
   }
 
-  if (rf->rf_mutex) {
-    vkr_mutex_lock(rf->rf_mutex);
-  }
-  rf->pending_resize_width = resize->width;
-  rf->pending_resize_height = resize->height;
-  rf->resize_pending = true_v;
-  if (rf->rf_mutex) {
-    vkr_mutex_unlock(rf->rf_mutex);
-  }
+  uint64_t packed = ((uint64_t)resize->width << 32) | (uint64_t)resize->height;
+  vkr_atomic_uint64_store(&rf->pending_resize_mailbox, packed,
+                          VKR_MEMORY_ORDER_RELEASE);
   return true_v;
 }
 
@@ -82,7 +78,13 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   assert_log(out_error != NULL, "Out error is NULL");
   assert_log(device_requirements != NULL, "Device requirements is NULL");
 
-  // log_debug("Creating renderer");
+  // if (!vkr_dmemory_create(MB(100), MB(500), &renderer->dmemory)) {
+  //   log_fatal("Failed to create dmemory!");
+  //   return false_v;
+  // }
+
+  // renderer->dmemory_allocator = (VkrAllocator){.ctx = &renderer->dmemory};
+  // vkr_dmemory_allocator_create(&renderer->dmemory_allocator);
 
   renderer->arena = arena_create(MB(6));
   if (!renderer->arena) {
@@ -116,6 +118,8 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->event_manager = event_manager;
   renderer->frame_active = false;
   renderer->backend_state = NULL;
+  renderer->supports_multi_draw_indirect = false_v;
+  renderer->supports_draw_indirect_first_instance = false_v;
 
   // Clear high-level state
   renderer->pipeline_registry = (VkrPipelineRegistry){0};
@@ -125,6 +129,11 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->material_system = (VkrMaterialSystem){0};
   renderer->view_system = (VkrViewSystem){0};
   renderer->mesh_manager = (VkrMeshManager){0};
+  renderer->gizmo_system = (VkrGizmoSystem){0};
+  renderer->lighting_system = (VkrLightingSystem){0};
+  renderer->instance_buffer_pool = (VkrInstanceBufferPool){0};
+  renderer->indirect_draw_system = (VkrIndirectDrawSystem){0};
+  renderer->active_scene = NULL;
   renderer->camera_system = (VkrCameraSystem){0};
   renderer->active_camera = VKR_CAMERA_HANDLE_INVALID;
   renderer->camera_controller = (VkrCameraController){0};
@@ -132,16 +141,20 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
       .ambient_color = vec4_new(0.1, 0.1, 0.1, 1.0),
       .render_mode = VKR_RENDER_MODE_DEFAULT,
   };
+  renderer->frame_metrics = (VkrRendererFrameMetrics){0};
   renderer->rf_mutex = NULL;
   renderer->world_layer = VKR_LAYER_HANDLE_INVALID;
   renderer->skybox_layer = VKR_LAYER_HANDLE_INVALID;
   renderer->ui_layer = VKR_LAYER_HANDLE_INVALID;
+  renderer->editor_layer = VKR_LAYER_HANDLE_INVALID;
+  renderer->shadow_layer = VKR_LAYER_HANDLE_INVALID;
+  renderer->offscreen_color_handles = NULL;
+  renderer->offscreen_color_handle_count = 0;
   renderer->draw_state = (VkrShaderStateObject){.instance_state = {0}};
   renderer->frame_number = 0;
   renderer->target_frame_rate = target_frame_rate;
-  renderer->resize_pending = false_v;
-  renderer->pending_resize_width = 0;
-  renderer->pending_resize_height = 0;
+  vkr_atomic_uint64_store(&renderer->pending_resize_mailbox, 0,
+                          VKR_MEMORY_ORDER_RELAXED);
 
   // Create renderer mutex and initialize size tracking
   if (!vkr_mutex_create(&renderer->allocator, &renderer->rf_mutex)) {
@@ -152,6 +165,8 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   VkrWindowPixelSize initial = vkr_window_get_pixel_size(window);
   renderer->last_window_width = initial.width;
   renderer->last_window_height = initial.height;
+  renderer->window->width = initial.width;
+  renderer->window->height = initial.height;
 
   if (backend_type == VKR_RENDERER_BACKEND_TYPE_VULKAN) {
     renderer->backend = renderer_vulkan_get_interface();
@@ -160,8 +175,8 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
-  uint32_t width = (uint32_t)window->width;
-  uint32_t height = (uint32_t)window->height;
+  uint32_t width = initial.width;
+  uint32_t height = initial.height;
   VkrRenderPassConfig pass_configs[3] = {
       // Skybox renders first, clears everything
       {.name = string8_lit("Renderpass.Builtin.Skybox"),
@@ -208,6 +223,15 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
+  VkrDeviceInformation device_info = {0};
+  renderer->backend.get_device_information(renderer->backend_state,
+                                           &device_info,
+                                           renderer->scratch_arena);
+  renderer->supports_multi_draw_indirect =
+      device_info.supports_multi_draw_indirect;
+  renderer->supports_draw_indirect_first_instance =
+      device_info.supports_draw_indirect_first_instance;
+
   // Subscribe to window resize events internally
   event_manager_subscribe(renderer->event_manager, EVENT_TYPE_WINDOW_RESIZE,
                           vkr_renderer_on_window_resize, renderer);
@@ -247,8 +271,20 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
     }
   }
 
+  // Shutdown picking system if initialized
+  if (rf->picking.initialized) {
+    vkr_picking_shutdown(rf, &rf->picking);
+  }
+
+  if (rf->gizmo_system.initialized) {
+    vkr_gizmo_system_shutdown(&rf->gizmo_system, rf);
+  }
+
   vkr_view_system_shutdown(rf);
+  vkr_lighting_system_shutdown(&rf->lighting_system);
   vkr_pipeline_registry_shutdown(&rf->pipeline_registry);
+  vkr_instance_buffer_pool_shutdown(&rf->instance_buffer_pool, rf);
+  vkr_indirect_draw_shutdown(&rf->indirect_draw_system, rf);
 
   vkr_shader_system_shutdown(&rf->shader_system);
   vkr_texture_system_shutdown(rf, &rf->texture_system);
@@ -281,6 +317,7 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
     vkr_arena_pool_destroy(&rf->allocator, &rf->mtsdf_font_arena_pool);
   }
 
+  // vkr_dmemory_destroy(&renderer->dmemory);
   arena_destroy(renderer->arena);
   arena_destroy(renderer->scratch_arena);
 }
@@ -513,6 +550,92 @@ vkr_renderer_create_writable_texture(VkrRendererFrontendHandle renderer,
   return (VkrTextureOpaqueHandle)handle.ptr;
 }
 
+VkrTextureOpaqueHandle vkr_renderer_create_render_target_texture(
+    VkrRendererFrontendHandle renderer, const VkrRenderTargetTextureDesc *desc,
+    VkrRendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(desc != NULL, "Description is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  if (!renderer->backend.render_target_texture_create) {
+    *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    return NULL;
+  }
+
+  VkrBackendResourceHandle handle =
+      renderer->backend.render_target_texture_create(renderer->backend_state,
+                                                     desc);
+  if (handle.ptr == NULL) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return NULL;
+  }
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return (VkrTextureOpaqueHandle)handle.ptr;
+}
+
+VkrTextureOpaqueHandle
+vkr_renderer_create_depth_attachment(VkrRendererFrontendHandle renderer,
+                                     uint32_t width, uint32_t height,
+                                     VkrRendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  if (!renderer->backend.depth_attachment_create) {
+    *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    return NULL;
+  }
+
+  VkrBackendResourceHandle handle = renderer->backend.depth_attachment_create(
+      renderer->backend_state, width, height);
+  if (handle.ptr == NULL) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return NULL;
+  }
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return (VkrTextureOpaqueHandle)handle.ptr;
+}
+
+VkrTextureOpaqueHandle
+vkr_renderer_create_sampled_depth_attachment(VkrRendererFrontendHandle renderer,
+                                             uint32_t width, uint32_t height,
+                                             VkrRendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  if (!renderer->backend.sampled_depth_attachment_create) {
+    *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    return NULL;
+  }
+
+  VkrBackendResourceHandle handle =
+      renderer->backend.sampled_depth_attachment_create(renderer->backend_state,
+                                                        width, height);
+  if (handle.ptr == NULL) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return NULL;
+  }
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return (VkrTextureOpaqueHandle)handle.ptr;
+}
+
+VkrRendererError vkr_renderer_transition_texture_layout(
+    VkrRendererFrontendHandle renderer, VkrTextureOpaqueHandle texture,
+    VkrTextureLayout old_layout, VkrTextureLayout new_layout) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(texture != NULL, "Texture is NULL");
+
+  if (!renderer->backend.texture_transition_layout) {
+    return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+  }
+
+  VkrBackendResourceHandle handle = {.ptr = (void *)texture};
+  return renderer->backend.texture_transition_layout(
+      renderer->backend_state, handle, old_layout, new_layout);
+}
+
 VkrRendererError vkr_renderer_write_texture(VkrRendererFrontendHandle renderer,
                                             VkrTextureOpaqueHandle texture,
                                             const void *data, uint64_t size) {
@@ -619,7 +742,6 @@ vkr_renderer_update_global_state(VkrRendererFrontendHandle renderer,
                                  const void *uniform) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
-  assert_log(uniform != NULL, "Uniform is NULL");
 
   VkrBackendResourceHandle handle = {.ptr = (void *)pipeline};
   return renderer->backend.pipeline_update_state(renderer->backend_state,
@@ -691,6 +813,41 @@ VkrRendererError vkr_renderer_update_buffer(VkrRendererFrontendHandle renderer,
   VkrBackendResourceHandle handle = {.ptr = (void *)buffer};
   return renderer->backend.buffer_update(renderer->backend_state, handle,
                                          offset, size, data);
+}
+
+void *vkr_renderer_buffer_get_mapped_ptr(VkrRendererFrontendHandle renderer,
+                                         VkrBufferHandle buffer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(buffer != NULL, "Buffer is NULL");
+  if (!renderer->backend.buffer_get_mapped_ptr) {
+    return NULL;
+  }
+  VkrBackendResourceHandle handle = {.ptr = (void *)buffer};
+  return renderer->backend.buffer_get_mapped_ptr(renderer->backend_state,
+                                                 handle);
+}
+
+VkrRendererError vkr_renderer_flush_buffer(VkrRendererFrontendHandle renderer,
+                                           VkrBufferHandle buffer,
+                                           uint64_t offset, uint64_t size) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(buffer != NULL, "Buffer is NULL");
+  if (!renderer->backend.buffer_flush) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+  VkrBackendResourceHandle handle = {.ptr = (void *)buffer};
+  return renderer->backend.buffer_flush(renderer->backend_state, handle,
+                                        offset, size);
+}
+
+void vkr_renderer_set_instance_buffer(VkrRendererFrontendHandle renderer,
+                                      VkrBufferHandle buffer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.set_instance_buffer) {
+    return;
+  }
+  VkrBackendResourceHandle handle = {.ptr = (void *)buffer};
+  renderer->backend.set_instance_buffer(renderer->backend_state, handle);
 }
 
 VkrRendererError vkr_renderer_upload_buffer(VkrRendererFrontendHandle renderer,
@@ -841,10 +998,31 @@ VkrRendererError vkr_renderer_begin_frame(VkrRendererFrontendHandle renderer,
     return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
   }
 
+  uint64_t packed = vkr_atomic_uint64_exchange(
+      &renderer->pending_resize_mailbox, 0, VKR_MEMORY_ORDER_ACQ_REL);
+  if (packed != 0) {
+    uint32_t width = (uint32_t)(packed >> 32);
+    uint32_t height = (uint32_t)(packed & 0xFFFFFFFFu);
+    if (width > 0 && height > 0) {
+      vkr_renderer_resize(renderer, width, height);
+    }
+  }
+
   VkrRendererError result =
       renderer->backend.begin_frame(renderer->backend_state, delta_time);
   if (result == VKR_RENDERER_ERROR_NONE) {
     renderer->frame_active = true;
+    MemZero(&renderer->frame_metrics, sizeof(renderer->frame_metrics));
+    if (renderer->instance_buffer_pool.initialized) {
+      uint32_t image_index = vkr_renderer_window_image_index(renderer);
+      vkr_instance_buffer_begin_frame(&renderer->instance_buffer_pool,
+                                      image_index);
+      if (renderer->indirect_draw_system.initialized &&
+          renderer->indirect_draw_system.enabled) {
+        vkr_indirect_draw_begin_frame(&renderer->indirect_draw_system,
+                                      image_index);
+      }
+    }
   }
 
   return result;
@@ -904,6 +1082,34 @@ void vkr_renderer_bind_index_buffer(VkrRendererFrontendHandle renderer,
                                 binding->offset);
 }
 
+void vkr_renderer_set_viewport(VkrRendererFrontendHandle renderer,
+                               const VkrViewport *viewport) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(viewport != NULL, "Viewport is NULL");
+  assert_log(renderer->frame_active, "Set viewport called outside of frame");
+
+  renderer->backend.set_viewport(renderer->backend_state, viewport);
+}
+
+void vkr_renderer_set_scissor(VkrRendererFrontendHandle renderer,
+                              const VkrScissor *scissor) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(scissor != NULL, "Scissor is NULL");
+  assert_log(renderer->frame_active, "Set scissor called outside of frame");
+
+  renderer->backend.set_scissor(renderer->backend_state, scissor);
+}
+
+void vkr_renderer_set_depth_bias(VkrRendererFrontendHandle renderer,
+                                 float32_t constant_factor, float32_t clamp,
+                                 float32_t slope_factor) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(renderer->frame_active, "Set depth bias called outside of frame");
+
+  renderer->backend.set_depth_bias(renderer->backend_state, constant_factor,
+                                   clamp, slope_factor);
+}
+
 void vkr_renderer_draw(VkrRendererFrontendHandle renderer,
                        uint32_t vertex_count, uint32_t instance_count,
                        uint32_t first_vertex, uint32_t first_instance) {
@@ -924,6 +1130,24 @@ void vkr_renderer_draw_indexed(VkrRendererFrontendHandle renderer,
   renderer->backend.draw_indexed(renderer->backend_state, index_count,
                                  instance_count, first_index, vertex_offset,
                                  first_instance);
+}
+
+void vkr_renderer_draw_indexed_indirect(VkrRendererFrontendHandle renderer,
+                                        VkrBufferHandle indirect_buffer,
+                                        uint64_t offset, uint32_t draw_count,
+                                        uint32_t stride) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(renderer->frame_active, "Draw indexed indirect called outside of frame");
+  assert_log(indirect_buffer != NULL, "Indirect buffer is NULL");
+
+  if (!renderer->backend.draw_indexed_indirect) {
+    return;
+  }
+
+  renderer->backend.draw_indexed_indirect(renderer->backend_state,
+                                          (VkrBackendResourceHandle){
+                                              .ptr = (void *)indirect_buffer},
+                                          offset, draw_count, stride);
 }
 
 VkrRendererError vkr_renderer_end_frame(VkrRendererFrontendHandle renderer,
@@ -979,6 +1203,17 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
+  if (!vkr_instance_buffer_pool_init(&rf->instance_buffer_pool, rf,
+                                     VKR_INSTANCE_BUFFER_MAX_INSTANCES)) {
+    log_fatal("Failed to initialize instance buffer pool");
+    return false_v;
+  }
+
+  if (!vkr_indirect_draw_init(&rf->indirect_draw_system, rf,
+                              VKR_INDIRECT_DRAW_MAX_DRAWS)) {
+    log_warn("Indirect draw system unavailable; falling back to direct draws");
+  }
+
   VkrShaderSystemConfig shader_cfg = VKR_SHADER_SYSTEM_CONFIG_DEFAULT;
   if (!vkr_shader_system_initialize(&rf->shader_system, shader_cfg)) {
     log_fatal("Failed to initialize shader system");
@@ -1009,6 +1244,12 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
+  // Set default 2D texture in backend for fallback in empty sampler slots
+  VkrTexture *default_tex = vkr_texture_system_get_default(&rf->texture_system);
+  if (default_tex && rf->backend.set_default_2d_texture) {
+    rf->backend.set_default_2d_texture(rf->backend_state, default_tex->handle);
+  }
+
   VkrMaterialSystemConfig mat_cfg = {.max_material_count = 1024};
   if (!vkr_material_system_init(&rf->material_system, rf->arena,
                                 &rf->texture_system, &rf->shader_system,
@@ -1036,15 +1277,17 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   }
 
   rf->mesh_loader =
-      (VkrMeshLoaderContext){.arena = rf->arena,
-                             .scratch_arena = rf->scratch_arena,
-                             .geometry_system = &rf->geometry_system,
+      (VkrMeshLoaderContext){.geometry_system = &rf->geometry_system,
                              .material_system = &rf->material_system,
                              .mesh_manager = &rf->mesh_manager,
                              .job_system = job_system,
                              .arena_pool = &rf->mesh_arena_pool};
-  rf->mesh_loader.allocator.ctx = rf->mesh_loader.scratch_arena;
+  rf->mesh_loader.allocator.ctx = &rf->allocator;
   vkr_allocator_arena(&rf->mesh_loader.allocator);
+
+  // Provide the mesh manager access to the mesh loader context so it can
+  // throttle large batch loads to the arena pool capacity.
+  rf->mesh_manager.loader_context = &rf->mesh_loader;
 
   if (!vkr_arena_pool_create(MB(6), pool_chunk_count, &rf->allocator,
                              &rf->bitmap_font_arena_pool)) {
@@ -1096,6 +1339,7 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   vkr_resource_system_register_loader(
       (void *)&rf->mtsdf_font_loader,
       vkr_mtsdf_font_loader_create(&rf->mtsdf_font_loader));
+  vkr_resource_system_register_loader((void *)rf, vkr_scene_loader_create());
 
   VkrFontSystemConfig font_cfg = {
       .max_system_font_count = 16,
@@ -1115,6 +1359,17 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
+  if (!vkr_lighting_system_init(&rf->lighting_system)) {
+    log_fatal("Failed to initialize lighting system");
+    return false_v;
+  }
+  rf->lighting_system.shader_system = &rf->shader_system;
+
+  if (!vkr_view_shadow_register(rf)) {
+    log_error("Failed to register shadow view");
+    return false_v;
+  }
+
   if (!vkr_view_skybox_register(rf)) {
     log_error("Failed to register skybox view");
     return false_v;
@@ -1128,6 +1383,30 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   if (!vkr_view_ui_register(rf)) {
     log_error("Failed to register UI view");
     return false_v;
+  }
+
+  if (!vkr_view_editor_register(rf)) {
+    log_error("Failed to register editor view");
+    return false_v;
+  }
+
+  VkrGizmoConfig gizmo_cfg = VKR_GIZMO_CONFIG_DEFAULT;
+  if (!vkr_gizmo_system_init(&rf->gizmo_system, rf, &gizmo_cfg)) {
+    log_warn("Failed to initialize gizmo system (non-fatal)");
+  }
+
+  VkrWindowPixelSize initial_size = vkr_window_get_pixel_size(rf->window);
+
+  // Initialize picking system with initial window dimensions
+  if (initial_size.width > 0 && initial_size.height > 0) {
+    if (!vkr_picking_init(rf, &rf->picking, initial_size.width,
+                          initial_size.height)) {
+      log_warn("Failed to initialize picking system (non-fatal)");
+    }
+  }
+
+  if (initial_size.width > 0 && initial_size.height > 0) {
+    vkr_renderer_resize(rf, initial_size.width, initial_size.height);
   }
 
   return true_v;
@@ -1145,6 +1424,54 @@ void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer,
     return;
   }
 
+  // Render picking pass if requested (renders to off-screen target)
+  if (rf->picking.initialized) {
+    vkr_picking_render(rf, &rf->picking, &rf->mesh_manager);
+  }
+
   uint32_t image_index = vkr_renderer_window_image_index(renderer);
   vkr_view_system_draw_all(renderer, delta_time, image_index);
+}
+
+// =============================================================================
+// Pixel Readback API (for picking and screenshots)
+// =============================================================================
+
+VkrRendererError
+vkr_renderer_request_pixel_readback(VkrRendererFrontendHandle renderer,
+                                    VkrTextureOpaqueHandle texture, uint32_t x,
+                                    uint32_t y) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(texture != NULL, "Texture is NULL");
+
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+  struct s_TextureHandle *tex = (struct s_TextureHandle *)texture;
+
+  VkrBackendResourceHandle handle = {.ptr = tex};
+  return rf->backend.request_pixel_readback(rf->backend_state, handle, x, y);
+}
+
+VkrRendererError
+vkr_renderer_get_pixel_readback_result(VkrRendererFrontendHandle renderer,
+                                       VkrPixelReadbackResult *out_result) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(out_result != NULL, "Output result is NULL");
+
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+  return rf->backend.get_pixel_readback_result(rf->backend_state, out_result);
+}
+
+void vkr_renderer_update_readback_ring(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+  rf->backend.update_readback_ring(rf->backend_state);
+}
+
+VkrAllocator *
+vkr_renderer_get_backend_allocator(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+  assert_log(rf->backend_state != NULL, "Backend state is NULL");
+  return rf->backend.get_allocator(rf->backend_state);
 }
