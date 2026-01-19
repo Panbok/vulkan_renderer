@@ -12,3 +12,4 @@ shininess=64
 emission_color=0.0,0.0,0.0
 shader=shader.default.world
 pipeline=world
+cutout=true

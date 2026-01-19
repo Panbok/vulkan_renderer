@@ -9,5 +9,6 @@ norm_texture=assets/textures/chain_texture_ddn.tga
 normal_colorspace=linear
 shininess=10.000000
 emission_color=0.000000,0.000000,0.000000
+alpha_cutoff=0.100000
 shader=shader.default.world
 pipeline=world

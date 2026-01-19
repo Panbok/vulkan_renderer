@@ -1,0 +1,43 @@
+{
+    "version": 2,
+    "entities": [
+      {
+        "name": "SceneRoot",
+        "parent": null,
+        "transform": {
+          "pos": [0.0, 0.0, 0.0],
+          "rot": [0.0, 0.0, 0.0, 1.0],
+          "scale": [1.0, 1.0, 1.0]
+        }
+      },
+      {
+        "name": "Sun",
+        "parent": 0,
+        "transform": {
+          "pos": [-0.57735, -0.57735, -0.57735],
+          "rot": [0.0, 0.0, 0.0, 1.0],
+          "scale": [1.0, 1.0, 1.0]
+        },
+        "directional_light": {
+          "enabled": true,
+          "color": [1.0, 1.0, 1.0],
+          "intensity": 1.0,
+          "direction_local": [-0.57735, -0.57735, -0.57735]
+        }
+      },
+      {
+        "name": "Falcon 1",
+        "parent": 0,
+        "transform": {
+          "pos": [0.0, 0.2, -15.0],
+          "rot": [0.0, 0.0, 0.0, 1.0],
+          "scale": [0.2, 0.2, 0.2]
+        },
+        "mesh": {
+          "path": "assets/models/falcon.obj",
+          "pipeline_domain": "world"
+        }
+      }
+    ]
+  }
+  
