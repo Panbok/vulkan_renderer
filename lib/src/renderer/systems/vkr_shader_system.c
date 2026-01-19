@@ -352,8 +352,8 @@ bool8_t vkr_shader_system_uniform_set(VkrShaderSystem *state,
 
   // Some std140 layouts represent vec3 as 12 bytes (with possible padding
   // before the next 16-byte-aligned member). Only write explicit padding when
-  // the computed uniform size includes it to avoid clobbering a following scalar
-  // packed into the same 16-byte slot (e.g. vec3 + uint).
+  // the computed uniform size includes it to avoid clobbering a following
+  // scalar packed into the same 16-byte slot (e.g. vec3 + uint).
   if (uniform->type == SHADER_UNIFORM_TYPE_FLOAT32_3 &&
       uniform->array_count == 1 && uniform->size == sizeof(float32_t) * 4u) {
     MemCopy(target_buffer + uniform->offset, value, sizeof(float32_t) * 3ULL);
@@ -473,8 +473,7 @@ bool8_t vkr_shader_system_apply_global(VkrShaderSystem *state) {
   vkr_ensure_staging_for_shader(state, state->current_shader);
 
   const void *global_ptr = (const void *)state->global_staging;
-  if (!global_ptr && state->current_shader &&
-      state->current_shader->config->global_ubo_size > 0) {
+  if (!global_ptr) {
     log_warn("Global staging is NULL while global_ubo_size > 0");
     return false_v;
   }
