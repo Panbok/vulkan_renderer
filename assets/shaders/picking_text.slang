@@ -1,3 +1,5 @@
+#include "vkr_shader_transform.slangh"
+
 // Picking Text Shader
 // Outputs object_id as R32_UINT for pixel-perfect object selection.
 
@@ -32,9 +34,8 @@ struct VertexOutput {
 VertexOutput vertexMain(VertexInput input) {
     VertexOutput output;
 
-    float4 world_pos = mul(push.model, float4(input.position, 0.0, 1.0));
-    float4 view_pos = mul(g_ubo.view, world_pos);
-    output.position = mul(g_ubo.projection, view_pos);
+    float4 world_pos = vkr_world_from_model_2d(push.model, input.position);
+    output.position = vkr_clip_from_world(g_ubo.projection, g_ubo.view, world_pos);
     output.object_id = push.object_id;
 
     return output;

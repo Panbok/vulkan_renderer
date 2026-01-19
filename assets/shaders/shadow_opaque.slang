@@ -1,11 +1,5 @@
-struct InstanceData
-{
-    column_major float4x4 model;
-    uint object_id;
-    uint material_index;
-    uint flags;
-    uint _padding;
-};
+#include "vkr_shader_transform.slangh"
+#include "vkr_shader_instance.slangh"
 
 [[vk::binding(1, 0)]]
 StructuredBuffer<InstanceData> g_instances;
@@ -35,7 +29,7 @@ VertexOutput vertexMain(VertexInput input, uint instance_id : SV_InstanceID,
     VertexOutput output;
     uint instance_index = instance_id + base_instance;
     InstanceData inst = g_instances[instance_index];
-    float4 world_pos = mul(inst.model, float4(input.position, 1.0));
+    float4 world_pos = vkr_world_from_model_3d(inst.model, input.position);
     output.position = mul(push_constants.light_view_projection, world_pos);
     return output;
 }

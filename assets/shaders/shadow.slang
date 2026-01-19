@@ -1,16 +1,6 @@
-struct InstanceUniformBufferObject
-{
-    float alpha_cutoff;
-};
-
-struct InstanceData
-{
-    column_major float4x4 model;
-    uint object_id;
-    uint material_index;
-    uint flags;
-    uint _padding;
-};
+#include "vkr_shader_transform.slangh"
+#include "vkr_shader_instance.slangh"
+#include "vkr_shader_alpha_cutout.slangh"
 
 [[vk::binding(0, 1)]]
 ConstantBuffer<InstanceUniformBufferObject> i_ubo;
@@ -51,7 +41,7 @@ VertexOutput vertexMain(VertexInput input, uint instance_id : SV_InstanceID,
     VertexOutput output;
     uint instance_index = instance_id + base_instance;
     InstanceData inst = g_instances[instance_index];
-    float4 world_pos = mul(inst.model, float4(input.position, 1.0));
+    float4 world_pos = vkr_world_from_model_3d(inst.model, input.position);
     output.position = mul(push_constants.light_view_projection, world_pos);
     output.texcoord = input.texcoord;
     return output;
@@ -60,13 +50,6 @@ VertexOutput vertexMain(VertexInput input, uint instance_id : SV_InstanceID,
 [shader("fragment")]
 void fragmentMain(VertexOutput input)
 {
-    float cutoff = i_ubo.alpha_cutoff;
-    if (cutoff > 0.0f)
-    {
-        float alpha = diffuse_texture.Sample(diffuse_sampler, input.texcoord).a;
-        if (alpha < cutoff)
-        {
-            discard;
-        }
-    }
+    vkr_apply_alpha_cutout(diffuse_texture, diffuse_sampler, input.texcoord,
+                           i_ubo.alpha_cutoff);
 }

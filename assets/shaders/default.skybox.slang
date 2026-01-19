@@ -1,3 +1,5 @@
+#include "vkr_shader_transform.slangh"
+
 struct GlobalUniformBufferObject 
 {
     column_major float4x4 projection;  // Must match C struct order!
@@ -31,7 +33,8 @@ VertexDto vertexMain(VertexInput input)
     output.texcoord = input.position;
     
     // Simple projection * view * position (view has translation zeroed in C)
-    output.position = mul(g_ubo.projection, mul(g_ubo.view, float4(input.position, 1.0)));
+    float4 world_pos = float4(input.position, 1.0);
+    output.position = vkr_clip_from_world(g_ubo.projection, g_ubo.view, world_pos);
 
     return output;
 }

@@ -1,0 +1,14 @@
+#ifndef VKR_SHADER_INSTANCE_SLANGH
+#define VKR_SHADER_INSTANCE_SLANGH
+
+// Matches the CPU instance buffer layout; keep in sync with renderer instance data.
+struct InstanceData
+{
+    column_major float4x4 model;
+    uint object_id;
+    uint material_index;
+    uint flags;
+    uint _padding;
+};
+
+#endif

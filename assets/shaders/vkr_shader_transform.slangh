@@ -1,0 +1,22 @@
+#ifndef VKR_SHADER_TRANSFORM_SLANGH
+#define VKR_SHADER_TRANSFORM_SLANGH
+
+// Computes world-space position for 3D vertices (w=1).
+float4 vkr_world_from_model_3d(float4x4 model, float3 position)
+{
+    return mul(model, float4(position, 1.0f));
+}
+
+// Computes world-space position for 2D vertices (z=0, w=1).
+float4 vkr_world_from_model_2d(float4x4 model, float2 position)
+{
+    return mul(model, float4(position, 0.0f, 1.0f));
+}
+
+// Computes clip-space position from a world-space position using view/projection.
+float4 vkr_clip_from_world(float4x4 projection, float4x4 view, float4 world_pos)
+{
+    return mul(projection, mul(view, world_pos));
+}
+
+#endif

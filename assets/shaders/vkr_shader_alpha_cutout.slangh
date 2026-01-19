@@ -1,0 +1,24 @@
+#ifndef VKR_SHADER_ALPHA_CUTOUT_SLANGH
+#define VKR_SHADER_ALPHA_CUTOUT_SLANGH
+
+// Per-instance alpha cutoff; values <= 0 disable alpha testing.
+struct InstanceUniformBufferObject
+{
+    float alpha_cutoff;
+};
+
+// Applies alpha cutout for masked materials; discards when below the cutoff.
+void vkr_apply_alpha_cutout(Texture2D<float4> texture, SamplerState sampler,
+                            float2 uv, float cutoff)
+{
+    if (cutoff > 0.0f)
+    {
+        float alpha = texture.Sample(sampler, uv).a;
+        if (alpha < cutoff)
+        {
+            discard;
+        }
+    }
+}
+
+#endif

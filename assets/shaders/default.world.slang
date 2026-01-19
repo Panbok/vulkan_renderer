@@ -1,3 +1,6 @@
+#include "vkr_shader_transform.slangh"
+#include "vkr_shader_instance.slangh"
+
 // Maximum number of point lights
 static const uint32_t MAX_POINT_LIGHTS = 16u;
 
@@ -75,15 +78,6 @@ struct PointLight
     float quadratic;
 };
 
-struct InstanceData
-{
-    column_major float4x4 model;
-    uint object_id;
-    uint material_index;
-    uint flags;
-    uint _padding;
-};
-
 [[vk::binding(1, 1)]]
 Texture2D<float4> diffuse_texture;
 
@@ -151,12 +145,9 @@ struct VertexDto
     float4 position : SV_Position;
     float2 texcoord : TEXCOORD;
     float3 frag_position;
-    float4 ambient_color;
     float3 normal;
     float4 tangent;
     float4 color;
-    float3 view_position;
-    uint32_t render_mode;
 };
 
 [shader("vertex")]
@@ -170,21 +161,14 @@ VertexDto vertexMain(VertexInput input, uint instance_id : SV_InstanceID,
     output.texcoord = input.texcoord;
     output.color = input.color;
 
-    float4 worldPos = mul(inst.model, float4(input.position, 1.0));
+    float4 worldPos = vkr_world_from_model_3d(inst.model, input.position);
     output.frag_position = worldPos.xyz;
 
     float3x3 model_matrix = float3x3(inst.model);
     output.normal = normalize(mul(model_matrix, input.normal));
     output.tangent = float4(normalize(mul(model_matrix, input.tangent.xyz)), input.tangent.w);
 
-    output.ambient_color = g_ubo.ambient_color;
-    output.view_position = g_ubo.view_position;
-    output.render_mode = g_ubo.render_mode;
-    
-    float4 viewPos = mul(g_ubo.view, worldPos);
-    float4 clipPos = mul(g_ubo.projection, viewPos);
-
-    output.position = clipPos;
+    output.position = vkr_clip_from_world(g_ubo.projection, g_ubo.view, worldPos);
 
     return output;
 }
@@ -662,7 +646,7 @@ float4 calculate_directional_light(DirectionalLight light, float3 normal,
 
 float4 calculate_point_light(PointLight light, float3 normal,
                              float3 frag_position, float3 view_direction,
-                             float4 ambient_color, uint32_t render_mode,
+                             uint32_t render_mode,
                              float4 diffuse_sample, float specular_mask)
 {
     float3 light_direction = normalize(light.position - frag_position);
@@ -676,7 +660,6 @@ float4 calculate_point_light(PointLight light, float3 normal,
         (light.constant + light.linear * distance +
          light.quadratic * (distance * distance));
 
-    float4 ambient = float4(0.0, 0.0, 0.0, 0.0); 
     float4 diffuse = light.color * diff;
     float4 specular = light.color * spec;
     specular *= local_ubo.specular_color;
@@ -685,7 +668,6 @@ float4 calculate_point_light(PointLight light, float3 normal,
     {
         diffuse *= diffuse_sample;
         specular *= specular_mask;
-        specular *= local_ubo.specular_color;
         specular.a = diffuse_sample.a;
     }
     else
@@ -693,10 +675,9 @@ float4 calculate_point_light(PointLight light, float3 normal,
         diffuse *= local_ubo.diffuse_color;
     }
 
-    ambient *= attenuation;
     diffuse *= attenuation;
     specular *= attenuation;
-    return ambient + diffuse + specular;
+    return diffuse + specular;
 }
 
 [shader("fragment")]
@@ -704,7 +685,8 @@ float4 fragmentMain(VertexDto input) : SV_Target
 {
     float3 normal = compute_normal_from_map(input);
 
-    if (input.render_mode == RENDER_MODE_NORMAL)
+    uint32_t render_mode = g_ubo.render_mode;
+    if (render_mode == RENDER_MODE_NORMAL)
     {
         return float4(abs(normal), 1.0f);
     }
@@ -722,7 +704,7 @@ float4 fragmentMain(VertexDto input) : SV_Target
 
     float alpha = diffuse_sample.a;
 
-    if (input.render_mode == RENDER_MODE_UNLIT)
+    if (render_mode == RENDER_MODE_UNLIT)
     {
         return float4(local_ubo.emission_color.rgb, alpha);
     }
@@ -737,7 +719,12 @@ float4 fragmentMain(VertexDto input) : SV_Target
         specular_sample = 1.0; // Or use local_ubo.specular_color if appropriate
     }
 
-    float3 view_direction = normalize(input.view_position - input.frag_position);
+    float3 view_direction = float3(0.0f, 0.0f, 0.0f);
+    bool has_lighting = (g_ubo.dir_enabled != 0u) || (g_ubo.point_light_count > 0u);
+    if (has_lighting)
+    {
+        view_direction = normalize(g_ubo.view_position - input.frag_position);
+    }
 
     // Start with ambient contribution
     float4 color = float4(0.0, 0.0, 0.0, diffuse_sample.a);
@@ -764,15 +751,15 @@ float4 fragmentMain(VertexDto input) : SV_Target
 
         color += calculate_directional_light(dir_light, normal,
                                              view_direction,
-                                             input.ambient_color,
-                                             input.render_mode, diffuse_sample,
+                                             g_ubo.ambient_color,
+                                             render_mode, diffuse_sample,
                                              specular_sample, shadow);
     }
     else
     {
         // No directional light - add ambient only
-        float4 ambient = float4(input.ambient_color.rgb * local_ubo.diffuse_color.rgb, diffuse_sample.a);
-        if (input.render_mode == RENDER_MODE_DEFAULT)
+        float4 ambient = float4(g_ubo.ambient_color.rgb * local_ubo.diffuse_color.rgb, diffuse_sample.a);
+        if (render_mode == RENDER_MODE_DEFAULT)
         {
             ambient *= diffuse_sample;
         }
@@ -799,8 +786,7 @@ float4 fragmentMain(VertexDto input) : SV_Target
 
         color += calculate_point_light(point_light, normal, input.frag_position,
                                        view_direction,
-                                       input.ambient_color,
-                                       input.render_mode, diffuse_sample,
+                                       render_mode, diffuse_sample,
                                        specular_sample);
     }
 

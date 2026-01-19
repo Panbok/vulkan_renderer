@@ -1,3 +1,7 @@
+#include "vkr_shader_transform.slangh"
+#include "vkr_shader_instance.slangh"
+#include "vkr_shader_alpha_cutout.slangh"
+
 // Picking Shader
 // Outputs object_id as R32_UINT for pixel-perfect object selection.
 // Per-instance data is sourced from the instance buffer.
@@ -5,18 +9,6 @@
 struct GlobalUBO {
     column_major float4x4 projection;
     column_major float4x4 view;
-};
-
-struct InstanceUniformBufferObject {
-    float alpha_cutoff;
-};
-
-struct InstanceData {
-    column_major float4x4 model;
-    uint object_id;
-    uint material_index;
-    uint flags;
-    uint _padding;
 };
 
 [[vk::binding(0, 0)]]
@@ -46,7 +38,6 @@ struct VertexOutput {
     float4 position : SV_Position;
     float2 texcoord : TEXCOORD;
     nointerpolation uint32_t object_id : OBJECT_ID;
-    nointerpolation float alpha_cutoff : ALPHA_CUTOFF;
 };
 
 [shader("vertex")]
@@ -56,24 +47,18 @@ VertexOutput vertexMain(VertexInput input, uint instance_id : SV_InstanceID,
 
     uint instance_index = instance_id + base_instance;
     InstanceData inst = g_instances[instance_index];
-    float4 world_pos = mul(inst.model, float4(input.position, 1.0));
-    float4 view_pos = mul(g_ubo.view, world_pos);
-    output.position = mul(g_ubo.projection, view_pos);
+    float4 world_pos = vkr_world_from_model_3d(inst.model, input.position);
+    output.position = vkr_clip_from_world(g_ubo.projection, g_ubo.view, world_pos);
     output.texcoord = input.texcoord;
     output.object_id = inst.object_id;
-    output.alpha_cutoff = i_ubo.alpha_cutoff;
 
     return output;
 }
 
 [shader("fragment")]
 uint32_t fragmentMain(VertexOutput input) : SV_Target {
-    if (input.alpha_cutoff > 0.0f) {
-        float alpha = diffuse_texture.Sample(diffuse_sampler, input.texcoord).a;
-        if (alpha < input.alpha_cutoff) {
-            discard;
-        }
-    }
+    vkr_apply_alpha_cutout(diffuse_texture, diffuse_sampler, input.texcoord,
+                           i_ubo.alpha_cutoff);
 
     return input.object_id;
 }

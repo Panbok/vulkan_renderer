@@ -1,3 +1,5 @@
+#include "vkr_shader_transform.slangh"
+
 // Uniform buffer for MVP matrices
 struct UniformBufferObject 
 {
@@ -49,11 +51,8 @@ VertexOutput vertexMain(VertexInput input)
 {
     VertexOutput output;
     
-    float4 worldPos = mul(push_constants.model, float4(input.position, 0.0, 1.0));
-    float4 viewPos = mul(ubo.view, worldPos);
-    float4 clipPos = mul(ubo.projection, viewPos);
-
-    output.position = clipPos;
+    float4 worldPos = vkr_world_from_model_2d(push_constants.model, input.position);
+    output.position = vkr_clip_from_world(ubo.projection, ubo.view, worldPos);
     output.texcoord = input.texcoord;
 
     return output;
@@ -64,4 +63,3 @@ float4 fragmentMain(VertexOutput input) : SV_Target
 {
     return texture.Sample(sampler, input.texcoord) * local_ubo.diffuse_color;
 } 
-
