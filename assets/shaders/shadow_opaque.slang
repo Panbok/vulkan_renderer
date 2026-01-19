@@ -37,4 +37,5 @@ VertexOutput vertexMain(VertexInput input, uint instance_id : SV_InstanceID,
 [shader("fragment")]
 void fragmentMain()
 {
+    // No-op: shadow pass only writes depth, no color output needed
 }

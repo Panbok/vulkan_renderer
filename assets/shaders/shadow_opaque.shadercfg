@@ -14,5 +14,5 @@ attribute=vec3,in_position
 # Local (push constants): per-cascade light VP
 uniform=mat4,2,light_view_projection
 
-# Disable culling to allow thin/one-sided meshes to cast shadows
+# Use front-face culling to reduce shadow acne artifacts
 cull_mode=front
