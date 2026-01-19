@@ -9,8 +9,8 @@
 
 #include "containers/str.h"
 #include "defines.h"
-#include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_resource_system.h"
+#include "renderer/systems/vkr_scene_system.h"
 
 struct s_RendererFrontend;
 
@@ -31,7 +31,7 @@ typedef struct VkrSceneLoadResult {
  *
  * @param scene Target scene (must be initialized).
  * @param rf Renderer frontend for mesh loading.
- * @param path Path to the .scene.json file (null-terminated).
+ * @param path Path to the .scene.json file.
  * @param temp_alloc Temporary allocator for file contents and parsing.
  * @param out_result Optional load summary.
  * @param out_error Optional error output.

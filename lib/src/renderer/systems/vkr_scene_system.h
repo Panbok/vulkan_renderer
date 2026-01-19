@@ -24,6 +24,7 @@
 // Forward declarations
 struct s_RendererFrontend;
 struct VkrMeshLoadDesc;
+typedef struct SceneChildIndexSlot SceneChildIndexSlot;
 
 // ============================================================================
 // Error Types
@@ -221,6 +222,12 @@ typedef struct VkrScene {
   uint32_t topo_capacity; // Allocated size
   bool8_t
       hierarchy_dirty; // Set when parent links change; triggers topo rebuild
+
+  // Parent -> children index for transform hierarchy queries.
+  // Stored as a slot array keyed by parent entity index with a generation guard.
+  SceneChildIndexSlot *child_index_slots;
+  uint32_t child_index_capacity; // Slot count (>= world->dir.capacity)
+  bool8_t child_index_valid;     // False until rebuilt or incrementally updated
 
   // Owned mesh indices (for cleanup on scene destroy)
   uint32_t *owned_meshes;

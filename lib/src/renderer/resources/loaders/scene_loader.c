@@ -172,9 +172,9 @@ vkr_internal bool8_t scene_json_parse_vec4(VkrJsonReader *reader,
   return true_v;
 }
 
-vkr_internal bool8_t
-scene_json_read_string_field(const VkrJsonReader *object, const char *field,
-                             String8 *out_value) {
+vkr_internal bool8_t scene_json_read_string_field(const VkrJsonReader *object,
+                                                  const char *field,
+                                                  String8 *out_value) {
   VkrJsonReader reader = *object;
   if (!vkr_json_find_field(&reader, field)) {
     return false_v;
@@ -375,7 +375,8 @@ vkr_internal void scene_json_parse_transform(const VkrJsonReader *entity_reader,
 
   VkrJsonReader transform_obj = {0};
   if (!vkr_json_enter_object(&transform_reader, &transform_obj)) {
-    log_warn("Scene loader: entity %u transform is not an object", entity_index);
+    log_warn("Scene loader: entity %u transform is not an object",
+             entity_index);
     return;
   }
 
@@ -1069,12 +1070,6 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
         .direction_local = light_import->direction_local,
         .enabled = light_import->enabled,
     };
-
-    // log_debug("Scene loader: directional light for entity %u: color=%f,%f,%f,
-    // intensity=%f, direction_local=%f,%f,%f",
-    //           i, light.color.x, light.color.y, light.color.z,
-    //           light.intensity, light.direction_local.x,
-    //           light.direction_local.y, light.direction_local.z);
 
     if (!vkr_scene_set_directional_light(scene, entity, &light)) {
       log_error("Scene loader: failed to set directional light for entity %u",
