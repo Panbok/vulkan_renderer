@@ -41,6 +41,8 @@ void vulkan_command_buffer_free(VulkanBackendState *state,
 
   command_buffer->handle = VK_NULL_HANDLE;
   command_buffer->state = COMMAND_BUFFER_STATE_NOT_ALLOCATED;
+  command_buffer->bound_global_descriptor_set = VK_NULL_HANDLE;
+  command_buffer->bound_global_pipeline_layout = VK_NULL_HANDLE;
 }
 
 bool8_t vulkan_command_buffer_begin(VulkanCommandBuffer *command_buffer) {

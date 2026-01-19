@@ -14,26 +14,36 @@ void vulkan_buffer_flush(VulkanBackendState *state, VulkanBuffer *buffer,
     return;
   }
 
-  VkDeviceSize atom_size =
-      state->device.properties.limits.nonCoherentAtomSize;
+  VkDeviceSize atom_size = state->device.properties.limits.nonCoherentAtomSize;
   VkDeviceSize aligned_offset = offset;
   VkDeviceSize aligned_size = size;
 
   if (atom_size > 0) {
     aligned_offset = (offset / atom_size) * atom_size;
     VkDeviceSize end = offset + size;
-    VkDeviceSize aligned_end =
-        ((end + atom_size - 1) / atom_size) * atom_size;
+    VkDeviceSize aligned_end = ((end + atom_size - 1) / atom_size) * atom_size;
     aligned_size = aligned_end - aligned_offset;
   }
+
+  VkDeviceSize effective_size =
+      (aligned_size + aligned_offset > buffer->allocation_size)
+          ? (buffer->allocation_size - aligned_offset)
+          : aligned_size;
 
   VkMappedMemoryRange range = {
       .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
       .memory = buffer->memory,
       .offset = aligned_offset,
-      .size = aligned_size,
+      .size = (effective_size + aligned_offset == buffer->allocation_size)
+                  ? VK_WHOLE_SIZE
+                  : effective_size,
   };
-  vkFlushMappedMemoryRanges(state->device.logical_device, 1, &range);
+
+  VkResult result =
+      vkFlushMappedMemoryRanges(state->device.logical_device, 1, &range);
+  if (result != VK_SUCCESS) {
+    log_error("Failed to flush mapped memory ranges");
+  }
 }
 
 bool8_t vulkan_buffer_create(VulkanBackendState *state,
@@ -75,10 +85,9 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
                                         ? VKR_ALLOCATOR_MEMORY_TAG_GPU
                                         : VKR_ALLOCATOR_MEMORY_TAG_VULKAN;
-  out_buffer->buffer.memory_index =
-      find_memory_index(state->device.physical_device,
-                        memory_requirements.memoryTypeBits,
-                        out_buffer->buffer.memory_property_flags);
+  out_buffer->buffer.memory_index = find_memory_index(
+      state->device.physical_device, memory_requirements.memoryTypeBits,
+      out_buffer->buffer.memory_property_flags);
 
   if (out_buffer->buffer.memory_index == -1 &&
       (memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
@@ -162,7 +171,7 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
     }
     void *mapped_ptr = NULL;
     if (vkMapMemory(state->device.logical_device, out_buffer->buffer.memory, 0,
-                    desc->size, 0, &mapped_ptr) != VK_SUCCESS) {
+                    VK_WHOLE_SIZE, 0, &mapped_ptr) != VK_SUCCESS) {
       log_error("Failed to persistently map buffer memory");
       vulkan_buffer_destroy(state, &out_buffer->buffer);
       return false_v;

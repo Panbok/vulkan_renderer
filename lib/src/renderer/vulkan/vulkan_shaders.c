@@ -227,7 +227,6 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   // but allow it to be empty (bindingCount=0) when global_ubo_stride==0.
 
   const bool8_t has_global_ubo = desc->global_ubo_stride > 0;
-  const bool8_t has_instance_buffer = true_v;
   VkDescriptorSetLayoutBinding global_descriptor_set_layout_bindings[2];
   uint32_t global_binding_count = 0;
 
@@ -243,23 +242,21 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
         };
   }
 
-  if (has_instance_buffer) {
-    global_descriptor_set_layout_bindings[global_binding_count++] =
-        (VkDescriptorSetLayoutBinding){
-            .binding = 1,
-            .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-            .descriptorCount = 1,
-            .pImmutableSamplers = NULL,
-            .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-        };
-  }
+  global_descriptor_set_layout_bindings[global_binding_count++] =
+      (VkDescriptorSetLayoutBinding){
+          .binding = 1,
+          .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+          .descriptorCount = 1,
+          .pImmutableSamplers = NULL,
+          .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
+      };
 
   VkDescriptorSetLayoutCreateInfo global_descriptor_set_layout_create_info = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
       .bindingCount = global_binding_count,
-      .pBindings =
-          global_binding_count > 0 ? global_descriptor_set_layout_bindings
-                                   : NULL,
+      .pBindings = global_binding_count > 0
+                       ? global_descriptor_set_layout_bindings
+                       : NULL,
   };
 
   // Global descriptors set layout
@@ -281,12 +278,10 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
         .descriptorCount = state->swapchain.image_count,
     };
   }
-  if (has_instance_buffer) {
-    global_pool_sizes[global_pool_count++] = (VkDescriptorPoolSize){
-        .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        .descriptorCount = state->swapchain.image_count,
-    };
-  }
+  global_pool_sizes[global_pool_count++] = (VkDescriptorPoolSize){
+      .type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+      .descriptorCount = state->swapchain.image_count,
+  };
 
   VkDescriptorPoolCreateInfo descriptor_pool_create_info = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
@@ -567,8 +562,8 @@ bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
         shader_object->global_ubo_stride * (uint64_t)image_index;
     if (has_global_uniform) {
       if (!vulkan_buffer_load_data(
-              state, &shader_object->global_uniform_buffer.buffer, global_offset,
-              shader_object->global_ubo_size, 0, uniform)) {
+              state, &shader_object->global_uniform_buffer.buffer,
+              global_offset, shader_object->global_ubo_size, 0, uniform)) {
         log_error("Failed to load global uniform buffer data");
         return false;
       }
@@ -646,8 +641,8 @@ bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
   if (command_buffer->bound_global_descriptor_set != global_descriptor ||
       command_buffer->bound_global_pipeline_layout != pipeline_layout) {
     vkCmdBindDescriptorSets(command_buffer->handle,
-                            VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout,
-                            0, 1, &global_descriptor, 0, 0);
+                            VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0,
+                            1, &global_descriptor, 0, 0);
     command_buffer->bound_global_descriptor_set = global_descriptor;
     command_buffer->bound_global_pipeline_layout = pipeline_layout;
   }
