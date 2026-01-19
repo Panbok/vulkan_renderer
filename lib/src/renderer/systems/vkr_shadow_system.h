@@ -133,7 +133,7 @@ typedef struct VkrShadowConfig {
  */
 #define VKR_SHADOW_CONFIG_BALANCED                                             \
   ((VkrShadowConfig){                                                          \
-      .cascade_count = 4,                                                      \
+      .cascade_count = 3,                                                      \
       .shadow_map_size = 2048,                                                 \
       .cascade_split_lambda = 0.75f,                                           \
       .max_shadow_distance = 120.0f,                                           \
@@ -144,7 +144,7 @@ typedef struct VkrShadowConfig {
       .depth_bias_slope_factor = 2.00f,                                        \
       .shadow_bias = 0.001f,                                                   \
       .normal_bias = 0.01f,                                                    \
-      .pcf_radius = 2.0f,                                                      \
+      .pcf_radius = 3.0f,                                                      \
       .use_constant_cascade_size = true_v,                                     \
       .cascade_blend_range = 8.0f,                                             \
       .stabilize_cascades = true_v,                                            \
@@ -155,7 +155,7 @@ typedef struct VkrShadowConfig {
 /**
  * @brief Project-wide default.
  */
-#define VKR_SHADOW_CONFIG_DEFAULT VKR_SHADOW_CONFIG_HIGH
+#define VKR_SHADOW_CONFIG_DEFAULT VKR_SHADOW_CONFIG_BALANCED
 
 /**
  * @brief Per-frame shadow resources (one per swapchain image).
@@ -203,8 +203,10 @@ typedef struct VkrShadowSystem {
 
   VkrRenderPassHandle shadow_renderpass;
   bool8_t owns_renderpass;
-  VkrShaderConfig shader_config;
-  VkrPipelineHandle shadow_pipeline;
+  VkrShaderConfig shader_config_alpha;
+  VkrShaderConfig shader_config_opaque;
+  VkrPipelineHandle shadow_pipeline_alpha;
+  VkrPipelineHandle shadow_pipeline_opaque;
   Vec3 light_direction;
   bool8_t light_enabled;
 

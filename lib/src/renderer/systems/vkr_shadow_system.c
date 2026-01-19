@@ -386,45 +386,95 @@ vkr_internal bool8_t vkr_shadow_create_shadow_maps(VkrShadowSystem *system,
 
 vkr_internal bool8_t vkr_shadow_create_pipeline(VkrShadowSystem *system,
                                                 RendererFrontend *rf) {
-  VkrResourceHandleInfo cfg_info = {0};
+  VkrResourceHandleInfo alpha_cfg_info = {0};
   VkrRendererError shadercfg_err = VKR_RENDERER_ERROR_NONE;
   if (!vkr_resource_system_load_custom(
           string8_lit("shadercfg"),
           string8_lit("assets/shaders/shadow.shadercfg"),
-          &rf->scratch_allocator, &cfg_info, &shadercfg_err)) {
+          &rf->scratch_allocator, &alpha_cfg_info, &shadercfg_err)) {
     String8 err = vkr_renderer_get_error_string(shadercfg_err);
     log_error("Shadow shadercfg load failed: %s", string8_cstr(&err));
     return false_v;
   }
 
-  if (!cfg_info.as.custom) {
+  if (!alpha_cfg_info.as.custom) {
     log_error("Shadow shadercfg returned null custom data");
     return false_v;
   }
 
-  system->shader_config = *(VkrShaderConfig *)cfg_info.as.custom;
+  system->shader_config_alpha = *(VkrShaderConfig *)alpha_cfg_info.as.custom;
+  if (!vkr_shader_system_create(&rf->shader_system,
+                                &system->shader_config_alpha)) {
+    log_error("Failed to create shadow alpha shader from config");
+    return false_v;
+  }
 
-  if (!vkr_shader_system_create(&rf->shader_system, &system->shader_config)) {
-    log_error("Failed to create shadow shader from config");
+  VkrResourceHandleInfo opaque_cfg_info = {0};
+  if (!vkr_resource_system_load_custom(
+          string8_lit("shadercfg"),
+          string8_lit("assets/shaders/shadow_opaque.shadercfg"),
+          &rf->scratch_allocator, &opaque_cfg_info, &shadercfg_err)) {
+    String8 err = vkr_renderer_get_error_string(shadercfg_err);
+    log_error("Shadow opaque shadercfg load failed: %s", string8_cstr(&err));
+    vkr_shader_system_delete(&rf->shader_system, "shader.shadow");
+    return false_v;
+  }
+
+  if (!opaque_cfg_info.as.custom) {
+    log_error("Shadow opaque shadercfg returned null custom data");
+    vkr_shader_system_delete(&rf->shader_system, "shader.shadow");
+    return false_v;
+  }
+
+  system->shader_config_opaque = *(VkrShaderConfig *)opaque_cfg_info.as.custom;
+  if (!vkr_shader_system_create(&rf->shader_system,
+                                &system->shader_config_opaque)) {
+    log_error("Failed to create shadow opaque shader from config");
+    vkr_shader_system_delete(&rf->shader_system, "shader.shadow");
     return false_v;
   }
 
   VkrRendererError pipeline_error = VKR_RENDERER_ERROR_NONE;
   if (!vkr_pipeline_registry_create_from_shader_config(
-          &rf->pipeline_registry, &system->shader_config,
-          VKR_PIPELINE_DOMAIN_SHADOW, string8_lit("shadow"),
-          &system->shadow_pipeline, &pipeline_error)) {
+          &rf->pipeline_registry, &system->shader_config_alpha,
+          VKR_PIPELINE_DOMAIN_SHADOW, string8_lit("shadow_alpha"),
+          &system->shadow_pipeline_alpha, &pipeline_error)) {
     String8 err = vkr_renderer_get_error_string(pipeline_error);
-    log_error("Shadow pipeline creation failed: %s", string8_cstr(&err));
+    log_error("Shadow alpha pipeline creation failed: %s", string8_cstr(&err));
     vkr_shader_system_delete(&rf->shader_system, "shader.shadow");
+    vkr_shader_system_delete(&rf->shader_system, "shader.shadow.opaque");
     return false_v;
   }
 
-  if (system->shader_config.name.str && system->shader_config.name.length > 0) {
+  pipeline_error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_pipeline_registry_create_from_shader_config(
+          &rf->pipeline_registry, &system->shader_config_opaque,
+          VKR_PIPELINE_DOMAIN_SHADOW, string8_lit("shadow_opaque"),
+          &system->shadow_pipeline_opaque, &pipeline_error)) {
+    String8 err = vkr_renderer_get_error_string(pipeline_error);
+    log_error("Shadow opaque pipeline creation failed: %s", string8_cstr(&err));
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           system->shadow_pipeline_alpha);
+    system->shadow_pipeline_alpha = VKR_PIPELINE_HANDLE_INVALID;
+    vkr_shader_system_delete(&rf->shader_system, "shader.shadow");
+    vkr_shader_system_delete(&rf->shader_system, "shader.shadow.opaque");
+    return false_v;
+  }
+
+  if (system->shader_config_alpha.name.str &&
+      system->shader_config_alpha.name.length > 0) {
     VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
     vkr_pipeline_registry_alias_pipeline_name(
-        &rf->pipeline_registry, system->shadow_pipeline,
-        system->shader_config.name, &alias_err);
+        &rf->pipeline_registry, system->shadow_pipeline_alpha,
+        system->shader_config_alpha.name, &alias_err);
+  }
+
+  if (system->shader_config_opaque.name.str &&
+      system->shader_config_opaque.name.length > 0) {
+    VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
+    vkr_pipeline_registry_alias_pipeline_name(
+        &rf->pipeline_registry, system->shadow_pipeline_opaque,
+        system->shader_config_opaque.name, &alias_err);
   }
 
   return true_v;
@@ -497,14 +547,24 @@ void vkr_shadow_system_shutdown(VkrShadowSystem *system, RendererFrontend *rf) {
     return;
   }
 
-  if (system->shadow_pipeline.id != 0) {
+  if (system->shadow_pipeline_alpha.id != 0) {
     vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
-                                           system->shadow_pipeline);
-    system->shadow_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+                                           system->shadow_pipeline_alpha);
+    system->shadow_pipeline_alpha = VKR_PIPELINE_HANDLE_INVALID;
   }
 
-  if (system->shader_config.name.str) {
+  if (system->shadow_pipeline_opaque.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           system->shadow_pipeline_opaque);
+    system->shadow_pipeline_opaque = VKR_PIPELINE_HANDLE_INVALID;
+  }
+
+  if (system->shader_config_alpha.name.str) {
     vkr_shader_system_delete(&rf->shader_system, "shader.shadow");
+  }
+
+  if (system->shader_config_opaque.name.str) {
+    vkr_shader_system_delete(&rf->shader_system, "shader.shadow.opaque");
   }
 
   if (system->frames) {
