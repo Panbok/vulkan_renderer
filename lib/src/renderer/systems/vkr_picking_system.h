@@ -26,9 +26,6 @@
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/vkr_renderer.h"
 
-struct s_RendererFrontend;
-struct VkrMeshManager;
-
 // ============================================================================
 // Types
 // ============================================================================
@@ -58,8 +55,12 @@ typedef struct VkrPickingContext {
   VkrRenderPassHandle picking_pass;       /**< Picking render pass */
   VkrRenderTargetHandle picking_target;   /**< Render target */
   VkrPipelineHandle picking_pipeline;     /**< Picking mesh pipeline */
+  VkrPipelineHandle
+      picking_overlay_pipeline; /**< Picking mesh pipeline (no depth test). */
   VkrRendererInstanceStateHandle
       mesh_instance_state; /**< Shared instance state for mesh samplers. */
+  VkrRendererInstanceStateHandle
+      mesh_overlay_instance_state; /**< Instance state for overlay pipeline. */
   VkrPipelineHandle
       picking_transparent_pipeline; /**< Picking mesh pipeline (no depth write)
                                        for transparent submeshes. */
@@ -75,6 +76,9 @@ typedef struct VkrPickingContext {
       picking_world_text_pipeline;    /**< Picking text pipeline for WORLD text
                                          (depth-tested, no depth write). */
   VkrShaderConfig text_shader_config; /**< Cached text shader config */
+
+  // Light gizmo picking resources
+  VkrGeometryHandle light_gizmo_cube; /**< Unit cube for light picking gizmos */
 
   // -------------------------------------------------------------------------
   // Target dimensions
@@ -238,6 +242,21 @@ void vkr_picking_cancel(VkrPickingContext *ctx);
  */
 void vkr_picking_invalidate_instance_states(struct s_RendererFrontend *renderer,
                                             VkrPickingContext *ctx);
+
+/**
+ * @brief Render light gizmos for picking.
+ *
+ * Renders a small cube proxy at each pickable light's world position.
+ * Light entities must have SceneRenderId assigned to be pickable.
+ * Call this during the picking pass after mesh rendering but before text.
+ *
+ * @param renderer The renderer frontend
+ * @param ctx Picking context
+ * @param scene Scene containing light entities (may be NULL)
+ */
+void vkr_picking_render_light_gizmos(struct s_RendererFrontend *renderer,
+                                     VkrPickingContext *ctx,
+                                     const struct VkrScene *scene);
 
 /**
  * @brief Shutdown the picking system.

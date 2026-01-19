@@ -12,11 +12,13 @@
 #include "renderer/renderer_frontend.h"
 #include "renderer/systems/views/vkr_view_ui.h"
 #include "renderer/systems/views/vkr_view_world.h"
+#include "renderer/systems/vkr_gizmo_system.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_pipeline_registry.h"
 #include "renderer/systems/vkr_resource_system.h"
+#include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_shader_system.h"
 #include "vkr_picking_ids.h"
 #include "vkr_picking_system.h"
@@ -24,11 +26,10 @@
 /**
  * @brief Alpha test threshold for transparency-aware picking.
  *
- * Picking resolves to a single object ID per pixel. For cutout textures (alpha
- * = 0 background), sampling alpha prevents "invisible" texels from occluding
- * geometry/text behind them.
+ * Picking resolves to a single object ID per pixel. For cutout textures, using
+ * alpha_cutoff prevents "invisible" texels from occluding geometry behind
+ * them.
  */
-#define VKR_PICKING_ALPHA_CUTOFF 0.1f
 
 // ============================================================================
 // Internal helpers
@@ -205,9 +206,16 @@ vkr_internal bool8_t picking_create_render_target(RendererFrontend *rf,
  * caller can proceed with geometry rendering.
  */
 vkr_internal bool8_t picking_render_submesh(
-    RendererFrontend *rf, VkrMesh *mesh, VkrSubMesh *submesh,
-    VkrTextureOpaqueHandle fallback_texture, bool8_t can_alpha_test) {
-  if (!rf || !mesh || !submesh) {
+    RendererFrontend *rf, VkrInstanceBufferPool *instance_pool, VkrMesh *mesh,
+    VkrSubMesh *submesh, VkrTextureOpaqueHandle fallback_texture,
+    bool8_t can_alpha_test, uint32_t *out_first_instance) {
+  if (!rf || !instance_pool || !mesh || !submesh || !out_first_instance) {
+    return false_v;
+  }
+  if (!instance_pool->initialized) {
+    return false_v;
+  }
+  if (!can_alpha_test) {
     return false_v;
   }
 
@@ -234,21 +242,29 @@ vkr_internal bool8_t picking_render_submesh(
         if (texture && texture->handle &&
             texture->description.type == VKR_TEXTURE_TYPE_2D) {
           diffuse_texture_handle = texture->handle;
-          if (can_alpha_test &&
-              bitset8_is_set(&texture->description.properties,
-                             VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT)) {
-            alpha_cutoff = VKR_PICKING_ALPHA_CUTOFF;
+          if (can_alpha_test && material->alpha_cutoff > 0.0f) {
+            alpha_cutoff = material->alpha_cutoff;
           }
         }
       }
     }
   }
 
-  vkr_material_system_apply_local(&rf->material_system,
-                                  &(VkrLocalMaterialState){
-                                      .model = model,
-                                      .object_id = object_id, // 0 = background
-                                  });
+  VkrInstanceDataGPU *instance_ptr = NULL;
+  uint32_t base_instance = 0;
+  if (!vkr_instance_buffer_alloc(instance_pool, 1, &base_instance,
+                                 &instance_ptr)) {
+    return false_v;
+  }
+
+  *instance_ptr = (VkrInstanceDataGPU){
+      .model = model,
+      .object_id = object_id,
+      .material_index = 0,
+      .flags = 0,
+      ._padding = 0,
+  };
+  vkr_instance_buffer_flush_range(instance_pool, base_instance, 1);
 
   vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
                                 &alpha_cutoff);
@@ -258,7 +274,13 @@ vkr_internal bool8_t picking_render_submesh(
                                   diffuse_texture_handle);
   }
 
-  return vkr_shader_system_apply_instance(&rf->shader_system);
+
+  if (!vkr_shader_system_apply_instance(&rf->shader_system)) {
+    return false_v;
+  }
+  *out_first_instance = base_instance;
+
+  return true_v;
 }
 
 bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
@@ -270,6 +292,7 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
   RendererFrontend *rf = (RendererFrontend *)renderer;
   MemZero(ctx, sizeof(VkrPickingContext));
   ctx->mesh_instance_state.id = VKR_INVALID_ID;
+  ctx->mesh_overlay_instance_state.id = VKR_INVALID_ID;
   ctx->mesh_transparent_instance_state.id = VKR_INVALID_ID;
 
   if (width == 0 || height == 0) {
@@ -398,6 +421,35 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
     }
   }
 
+  // Create an overlay picking pipeline (no depth test/write) for gizmo handles.
+  {
+    VkrShaderConfig overlay_cfg = ctx->shader_config;
+    overlay_cfg.name = (String8){0};
+
+    VkrRendererError overlay_err = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_pipeline_registry_create_from_shader_config(
+            &rf->pipeline_registry, &overlay_cfg,
+            VKR_PIPELINE_DOMAIN_PICKING_OVERLAY, string8_lit("picking_overlay"),
+            &ctx->picking_overlay_pipeline, &overlay_err)) {
+      String8 err_str = vkr_renderer_get_error_string(overlay_err);
+      log_warn("Failed to create overlay picking pipeline: %s",
+               string8_cstr(&err_str));
+      ctx->picking_overlay_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+    } else if (ctx->shader_config.instance_texture_count > 0) {
+      VkrRendererError overlay_instance_err = VKR_RENDERER_ERROR_NONE;
+      if (!vkr_pipeline_registry_acquire_instance_state(
+              &rf->pipeline_registry, ctx->picking_overlay_pipeline,
+              &ctx->mesh_overlay_instance_state, &overlay_instance_err)) {
+        String8 err_str =
+            vkr_renderer_get_error_string(overlay_instance_err);
+        log_warn("Failed to acquire overlay picking instance state: %s",
+                 string8_cstr(&err_str));
+        picking_release_pipeline(rf, &ctx->picking_overlay_pipeline);
+        ctx->mesh_overlay_instance_state.id = VKR_INVALID_ID;
+      }
+    }
+  }
+
   VkrResourceHandleInfo text_cfg_info = {0};
   VkrRendererError text_cfg_err = VKR_RENDERER_ERROR_NONE;
   if (!vkr_resource_system_load_custom(
@@ -410,6 +462,9 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
     picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
                                    &ctx->mesh_transparent_instance_state);
     picking_release_pipeline(rf, &ctx->picking_transparent_pipeline);
+    picking_release_instance_state(rf, ctx->picking_overlay_pipeline,
+                                   &ctx->mesh_overlay_instance_state);
+    picking_release_pipeline(rf, &ctx->picking_overlay_pipeline);
     picking_release_instance_state(rf, ctx->picking_pipeline,
                                    &ctx->mesh_instance_state);
     picking_release_pipeline(rf, &ctx->picking_pipeline);
@@ -423,6 +478,9 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
     picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
                                    &ctx->mesh_transparent_instance_state);
     picking_release_pipeline(rf, &ctx->picking_transparent_pipeline);
+    picking_release_instance_state(rf, ctx->picking_overlay_pipeline,
+                                   &ctx->mesh_overlay_instance_state);
+    picking_release_pipeline(rf, &ctx->picking_overlay_pipeline);
     picking_release_instance_state(rf, ctx->picking_pipeline,
                                    &ctx->mesh_instance_state);
     picking_release_pipeline(rf, &ctx->picking_pipeline);
@@ -438,6 +496,9 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
     picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
                                    &ctx->mesh_transparent_instance_state);
     picking_release_pipeline(rf, &ctx->picking_transparent_pipeline);
+    picking_release_instance_state(rf, ctx->picking_overlay_pipeline,
+                                   &ctx->mesh_overlay_instance_state);
+    picking_release_pipeline(rf, &ctx->picking_overlay_pipeline);
     picking_release_instance_state(rf, ctx->picking_pipeline,
                                    &ctx->mesh_instance_state);
     picking_release_pipeline(rf, &ctx->picking_pipeline);
@@ -463,6 +524,9 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
     picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
                                    &ctx->mesh_transparent_instance_state);
     picking_release_pipeline(rf, &ctx->picking_transparent_pipeline);
+    picking_release_instance_state(rf, ctx->picking_overlay_pipeline,
+                                   &ctx->mesh_overlay_instance_state);
+    picking_release_pipeline(rf, &ctx->picking_overlay_pipeline);
     picking_release_instance_state(rf, ctx->picking_pipeline,
                                    &ctx->mesh_instance_state);
     picking_release_pipeline(rf, &ctx->picking_pipeline);
@@ -490,6 +554,9 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
       picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
                                      &ctx->mesh_transparent_instance_state);
       picking_release_pipeline(rf, &ctx->picking_transparent_pipeline);
+      picking_release_instance_state(rf, ctx->picking_overlay_pipeline,
+                                     &ctx->mesh_overlay_instance_state);
+      picking_release_pipeline(rf, &ctx->picking_overlay_pipeline);
       picking_release_instance_state(rf, ctx->picking_pipeline,
                                      &ctx->mesh_instance_state);
       picking_release_pipeline(rf, &ctx->picking_pipeline);
@@ -505,6 +572,14 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
     vkr_pipeline_registry_alias_pipeline_name(
         &rf->pipeline_registry, ctx->picking_text_pipeline,
         ctx->text_shader_config.name, &alias_err);
+  }
+
+  // Create unit cube for light gizmo picking
+  VkrRendererError cube_err = VKR_RENDERER_ERROR_NONE;
+  ctx->light_gizmo_cube = vkr_geometry_system_create_cube(
+      &rf->geometry_system, 1.0f, 1.0f, 1.0f, "light_gizmo_cube", &cube_err);
+  if (!ctx->light_gizmo_cube.id) {
+    log_warn("Failed to create light gizmo cube - light picking disabled");
   }
 
   ctx->state = VKR_PICKING_STATE_IDLE;
@@ -599,6 +674,12 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
   }
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
+  VkrInstanceBufferPool *instance_pool = &rf->instance_buffer_pool;
+  if (!instance_pool->initialized) {
+    log_error("Picking render skipped: instance buffer pool not initialized");
+    ctx->state = VKR_PICKING_STATE_IDLE;
+    return;
+  }
 
   VkrRendererError begin_err = vkr_renderer_begin_render_pass(
       rf, ctx->picking_pass, ctx->picking_target);
@@ -718,10 +799,6 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
     }
 
     Mat4 model = mesh->model;
-    uint32_t object_id =
-        mesh->render_id
-            ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, mesh->render_id)
-            : 0;
 
     for (uint32_t submesh_index = 0; submesh_index < submesh_count;
          submesh_index++) {
@@ -731,7 +808,7 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
         continue;
       }
 
-      bool8_t has_transparency = false_v;
+      bool8_t uses_cutout = false_v;
 
       if (submesh->material.id != 0) {
         VkrMaterial *material = vkr_material_system_get_by_handle(
@@ -739,19 +816,14 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
         if (material) {
           VkrMaterialTexture *diffuse_tex =
               &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
-          if (diffuse_tex->enabled && diffuse_tex->handle.id != 0) {
-            VkrTexture *texture = vkr_texture_system_get_by_handle(
-                &rf->texture_system, diffuse_tex->handle);
-            if (texture && texture->handle) {
-              has_transparency =
-                  bitset8_is_set(&texture->description.properties,
-                                 VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
-            }
+          if (material->alpha_cutoff > 0.0f && diffuse_tex->enabled &&
+              diffuse_tex->handle.id != 0) {
+            uses_cutout = true_v;
           }
         }
       }
 
-      if (has_transparent_pipeline && has_transparency && transparent_entries &&
+      if (has_transparent_pipeline && uses_cutout && transparent_entries &&
           transparent_count < max_transparent_entries) {
         Vec3 mesh_pos = vec3_new(model.elements[12], model.elements[13],
                                  model.elements[14]);
@@ -765,13 +837,16 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
         continue;
       }
 
-      if (!picking_render_submesh(rf, mesh, submesh, fallback_texture,
-                                  can_alpha_test)) {
+      uint32_t first_instance = 0;
+      if (!picking_render_submesh(rf, instance_pool, mesh, submesh,
+                                  fallback_texture, can_alpha_test,
+                                  &first_instance)) {
         continue;
       }
 
-      vkr_geometry_system_render(rf, &rf->geometry_system, submesh->geometry,
-                                 1);
+      vkr_geometry_system_render_instanced_range(
+          rf, &rf->geometry_system, submesh->geometry, submesh->index_count,
+          submesh->first_index, submesh->vertex_offset, 1, first_instance);
     }
   }
 
@@ -805,19 +880,58 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
           continue;
         }
 
-        if (!picking_render_submesh(rf, mesh, submesh, fallback_texture,
-                                    true_v)) {
+        uint32_t first_instance = 0;
+        if (!picking_render_submesh(rf, instance_pool, mesh, submesh,
+                                    fallback_texture, true_v,
+                                    &first_instance)) {
           continue;
         }
 
-        vkr_geometry_system_render(rf, &rf->geometry_system, submesh->geometry,
-                                   1);
+        vkr_geometry_system_render_instanced_range(
+            rf, &rf->geometry_system, submesh->geometry, submesh->index_count,
+            submesh->first_index, submesh->vertex_offset, 1, first_instance);
       }
     }
 
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   } else if (vkr_allocator_scope_is_valid(&temp_scope)) {
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
+  if (rf->gizmo_system.initialized && rf->gizmo_system.visible &&
+      ctx->picking_overlay_pipeline.id != 0) {
+    if (ctx->shader_config.instance_texture_count > 0 &&
+        ctx->mesh_overlay_instance_state.id == VKR_INVALID_ID) {
+      VkrRendererError instance_err = VKR_RENDERER_ERROR_NONE;
+      if (!vkr_pipeline_registry_acquire_instance_state(
+              &rf->pipeline_registry, ctx->picking_overlay_pipeline,
+              &ctx->mesh_overlay_instance_state, &instance_err)) {
+        log_warn("Failed to re-acquire overlay picking instance state");
+      }
+    }
+
+    if (ctx->mesh_overlay_instance_state.id != VKR_INVALID_ID) {
+      VkrRendererError overlay_bind_err = VKR_RENDERER_ERROR_NONE;
+      vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry,
+                                          ctx->picking_overlay_pipeline,
+                                          &overlay_bind_err);
+      if (overlay_bind_err == VKR_RENDERER_ERROR_NONE) {
+        vkr_material_system_apply_global(&rf->material_system, &rf->globals,
+                                         VKR_PIPELINE_DOMAIN_PICKING);
+        vkr_shader_system_bind_instance(&rf->shader_system,
+                                        ctx->mesh_overlay_instance_state.id);
+
+        VkrCamera *camera = vkr_camera_registry_get_by_handle(
+            &rf->camera_system, rf->active_camera);
+        vkr_gizmo_system_render_picking(&rf->gizmo_system, rf, camera,
+                                        ctx->height);
+      }
+    }
+  }
+
+  // Render light gizmos for picking (uses active scene from frontend)
+  if (rf->active_scene) {
+    vkr_picking_render_light_gizmos(rf, ctx, rf->active_scene);
   }
 
   if (ctx->picking_text_pipeline.id != 0 &&
@@ -943,10 +1057,137 @@ void vkr_picking_invalidate_instance_states(struct s_RendererFrontend *renderer,
   // destroyed textures. New states will be acquired on next picking render.
   picking_release_instance_state(rf, ctx->picking_pipeline,
                                  &ctx->mesh_instance_state);
+  picking_release_instance_state(rf, ctx->picking_overlay_pipeline,
+                                 &ctx->mesh_overlay_instance_state);
   picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
                                  &ctx->mesh_transparent_instance_state);
 
   log_debug("Picking instance states invalidated");
+}
+
+// ============================================================================
+// Light Gizmo Picking
+// ============================================================================
+
+/** Size of light gizmo cube in world units. */
+#define VKR_LIGHT_GIZMO_SIZE 0.25f
+
+/**
+ * @brief Context for iterating point lights during picking render.
+ */
+typedef struct LightGizmoPickingContext {
+  RendererFrontend *rf;
+  VkrPickingContext *ctx;
+  const VkrScene *scene;
+} LightGizmoPickingContext;
+
+/**
+ * @brief Chunk callback for rendering point light gizmos.
+ */
+vkr_internal void picking_render_point_light_cb(const VkrArchetype *arch,
+                                                VkrChunk *chunk, void *user) {
+  (void)arch;
+  LightGizmoPickingContext *lctx = (LightGizmoPickingContext *)user;
+  RendererFrontend *rf = lctx->rf;
+  VkrPickingContext *ctx = lctx->ctx;
+  const VkrScene *scene = lctx->scene;
+
+  uint32_t count = vkr_entity_chunk_count(chunk);
+  VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
+
+  SceneTransform *transforms =
+      (SceneTransform *)vkr_entity_chunk_column(chunk, scene->comp_transform);
+  ScenePointLight *lights =
+      (ScenePointLight *)vkr_entity_chunk_column(chunk, scene->comp_point_light);
+
+  if (!transforms || !lights)
+    return;
+
+  float32_t alpha_cutoff = 0.0f;
+  VkrInstanceBufferPool *instance_pool = &rf->instance_buffer_pool;
+  if (!instance_pool->initialized) {
+    log_error("Picking render requires an initialized instance buffer pool");
+    return;
+  }
+
+  for (uint32_t i = 0; i < count; i++) {
+    if (!lights[i].enabled)
+      continue;
+
+    // Get render ID for picking (skip if not assigned)
+    const SceneRenderId *render_id = (const SceneRenderId *)vkr_entity_get_component(
+        scene->world, entities[i], scene->comp_render_id);
+    if (!render_id || render_id->id == 0)
+      continue;
+
+    // Get world position from transform
+    Vec3 world_pos = mat4_position(transforms[i].world);
+
+    // Build model matrix: translate to position and scale to gizmo size
+    Mat4 model = mat4_mul(mat4_translate(world_pos),
+                          mat4_scale((Vec3){VKR_LIGHT_GIZMO_SIZE,
+                                            VKR_LIGHT_GIZMO_SIZE,
+                                            VKR_LIGHT_GIZMO_SIZE}));
+
+    // Encode picking ID using SCENE kind (reuses existing mapping)
+    uint32_t object_id =
+        vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, render_id->id);
+
+    VkrInstanceDataGPU *instance_ptr = NULL;
+    uint32_t base_instance = 0;
+    if (!vkr_instance_buffer_alloc(instance_pool, 1, &base_instance,
+                                   &instance_ptr)) {
+      continue;
+    }
+
+    *instance_ptr = (VkrInstanceDataGPU){
+        .model = model,
+        .object_id = object_id,
+        .material_index = 0,
+        .flags = 0,
+        ._padding = 0,
+    };
+    vkr_instance_buffer_flush_range(instance_pool, base_instance, 1);
+
+    vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
+                                  &alpha_cutoff);
+
+
+    if (!vkr_shader_system_apply_instance(&rf->shader_system))
+      continue;
+
+    // Draw the cube
+    vkr_geometry_system_render_instanced(rf, &rf->geometry_system,
+                                         ctx->light_gizmo_cube, 1,
+                                         base_instance);
+  }
+}
+
+void vkr_picking_render_light_gizmos(struct s_RendererFrontend *renderer,
+                                     VkrPickingContext *ctx,
+                                     const struct VkrScene *scene) {
+  if (!renderer || !ctx || !ctx->initialized)
+    return;
+
+  // Skip if no scene or light gizmo cube not available
+  if (!scene || !scene->world || !scene->queries_valid)
+    return;
+
+  if (!ctx->light_gizmo_cube.id)
+    return;
+
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+
+  // Iterate point lights with the compiled query
+  LightGizmoPickingContext lctx = {
+      .rf = rf,
+      .ctx = ctx,
+      .scene = scene,
+  };
+
+  vkr_entity_query_compiled_each_chunk(
+      (VkrQueryCompiled *)&scene->query_point_lights,
+      picking_render_point_light_cb, &lctx);
 }
 
 void vkr_picking_shutdown(struct s_RendererFrontend *renderer,
@@ -967,6 +1208,8 @@ void vkr_picking_shutdown(struct s_RendererFrontend *renderer,
 
   picking_release_instance_state(rf, ctx->picking_pipeline,
                                  &ctx->mesh_instance_state);
+  picking_release_instance_state(rf, ctx->picking_overlay_pipeline,
+                                 &ctx->mesh_overlay_instance_state);
   picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
                                  &ctx->mesh_transparent_instance_state);
 
@@ -974,6 +1217,12 @@ void vkr_picking_shutdown(struct s_RendererFrontend *renderer,
     vkr_pipeline_registry_release(&rf->pipeline_registry,
                                   ctx->picking_pipeline);
     ctx->picking_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+
+  if (ctx->picking_overlay_pipeline.id != 0) {
+    vkr_pipeline_registry_release(&rf->pipeline_registry,
+                                  ctx->picking_overlay_pipeline);
+    ctx->picking_overlay_pipeline = VKR_PIPELINE_HANDLE_INVALID;
   }
 
   if (ctx->picking_transparent_pipeline.id != 0) {
@@ -995,6 +1244,12 @@ void vkr_picking_shutdown(struct s_RendererFrontend *renderer,
   }
 
   picking_destroy_attachments(rf, ctx);
+
+  // Release light gizmo cube
+  if (ctx->light_gizmo_cube.id) {
+    vkr_geometry_system_release(&rf->geometry_system, ctx->light_gizmo_cube);
+    ctx->light_gizmo_cube = (VkrGeometryHandle){0};
+  }
 
   // Note: render pass is shared/cached, don't destroy it here
 
