@@ -20,6 +20,8 @@ vulkan_command_buffer_allocate(VulkanBackendState *state,
   }
 
   out_command_buffer->state = COMMAND_BUFFER_STATE_READY;
+  out_command_buffer->bound_global_descriptor_set = VK_NULL_HANDLE;
+  out_command_buffer->bound_global_pipeline_layout = VK_NULL_HANDLE;
 
   // log_debug("Created Vulkan command buffer: %p", out_command_buffer->handle);
 
@@ -55,6 +57,8 @@ bool8_t vulkan_command_buffer_begin(VulkanCommandBuffer *command_buffer) {
   }
 
   command_buffer->state = COMMAND_BUFFER_STATE_RECORDING;
+  command_buffer->bound_global_descriptor_set = VK_NULL_HANDLE;
+  command_buffer->bound_global_pipeline_layout = VK_NULL_HANDLE;
 
   return true_v;
 }
@@ -83,6 +87,8 @@ void vulkan_command_buffer_reset(VulkanCommandBuffer *command_buffer) {
   assert_log(command_buffer != VK_NULL_HANDLE, "Command buffer is NULL");
 
   command_buffer->state = COMMAND_BUFFER_STATE_READY;
+  command_buffer->bound_global_descriptor_set = VK_NULL_HANDLE;
+  command_buffer->bound_global_pipeline_layout = VK_NULL_HANDLE;
 }
 
 bool8_t vulkan_command_buffer_allocate_and_begin_single_use(

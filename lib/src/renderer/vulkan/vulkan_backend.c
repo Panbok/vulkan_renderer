@@ -844,6 +844,8 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .buffer_destroy = renderer_vulkan_destroy_buffer,
       .buffer_update = renderer_vulkan_update_buffer,
       .buffer_upload = renderer_vulkan_upload_buffer,
+      .buffer_get_mapped_ptr = renderer_vulkan_buffer_get_mapped_ptr,
+      .buffer_flush = renderer_vulkan_flush_buffer,
       .texture_create = renderer_vulkan_create_texture,
       .render_target_texture_create =
           renderer_vulkan_create_render_target_texture,
@@ -866,6 +868,8 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .set_depth_bias = renderer_vulkan_set_depth_bias,
       .draw = renderer_vulkan_draw,
       .draw_indexed = renderer_vulkan_draw_indexed,
+      .draw_indexed_indirect = renderer_vulkan_draw_indexed_indirect,
+      .set_instance_buffer = renderer_vulkan_set_instance_buffer,
       .get_and_reset_descriptor_writes_avoided =
           renderer_vulkan_get_and_reset_descriptor_writes_avoided,
       .readback_ring_init = renderer_vulkan_readback_ring_init,
@@ -1598,6 +1602,34 @@ void renderer_vulkan_draw_indexed(void *backend_state, uint32_t index_count,
   return;
 }
 
+void renderer_vulkan_draw_indexed_indirect(
+    void *backend_state, VkrBackendResourceHandle indirect_buffer,
+    uint64_t offset, uint32_t draw_count, uint32_t stride) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(indirect_buffer.ptr != NULL, "Indirect buffer is NULL");
+  assert_log(draw_count > 0, "Draw count is 0");
+  assert_log(stride > 0, "Stride is 0");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_BufferHandle *buffer =
+      (struct s_BufferHandle *)indirect_buffer.ptr;
+
+  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+      &state->graphics_command_buffers, state->image_index);
+
+  if (!state->device.features.multiDrawIndirect && draw_count > 1) {
+    for (uint32_t i = 0; i < draw_count; ++i) {
+      uint64_t draw_offset = offset + (uint64_t)i * stride;
+      vkCmdDrawIndexedIndirect(command_buffer->handle, buffer->buffer.handle,
+                               draw_offset, 1, stride);
+    }
+    return;
+  }
+
+  vkCmdDrawIndexedIndirect(command_buffer->handle, buffer->buffer.handle,
+                           offset, draw_count, stride);
+}
+
 VkrBackendResourceHandle
 renderer_vulkan_create_buffer(void *backend_state,
                               const VkrBufferDescription *desc,
@@ -1657,6 +1689,28 @@ VkrRendererError renderer_vulkan_update_buffer(void *backend_state,
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+void *renderer_vulkan_buffer_get_mapped_ptr(void *backend_state,
+                                            VkrBackendResourceHandle handle) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state || !handle.ptr) {
+    return NULL;
+  }
+  struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
+  return buffer->buffer.mapped_ptr;
+}
+
+VkrRendererError renderer_vulkan_flush_buffer(void *backend_state,
+                                              VkrBackendResourceHandle handle,
+                                              uint64_t offset, uint64_t size) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state || !handle.ptr) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+  struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
+  vulkan_buffer_flush(state, &buffer->buffer, offset, size);
   return VKR_RENDERER_ERROR_NONE;
 }
 
@@ -1725,6 +1779,15 @@ VkrRendererError renderer_vulkan_upload_buffer(void *backend_state,
                      VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
 
   return VKR_RENDERER_ERROR_NONE;
+}
+
+void renderer_vulkan_set_instance_buffer(void *backend_state,
+                                         VkrBackendResourceHandle handle) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state) {
+    return;
+  }
+  state->instance_buffer = (struct s_BufferHandle *)handle.ptr;
 }
 
 void renderer_vulkan_destroy_buffer(void *backend_state,

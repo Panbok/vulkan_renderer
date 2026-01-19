@@ -66,6 +66,13 @@ VkrRendererError renderer_vulkan_upload_buffer(void *backend_state,
                                                uint64_t offset, uint64_t size,
                                                const void *data);
 
+void *renderer_vulkan_buffer_get_mapped_ptr(void *backend_state,
+                                            VkrBackendResourceHandle handle);
+
+VkrRendererError renderer_vulkan_flush_buffer(void *backend_state,
+                                              VkrBackendResourceHandle handle,
+                                              uint64_t offset, uint64_t size);
+
 void renderer_vulkan_destroy_buffer(void *backend_state,
                                     VkrBackendResourceHandle handle);
 
@@ -125,6 +132,9 @@ void renderer_vulkan_bind_buffer(void *backend_state,
                                  VkrBackendResourceHandle buffer_handle,
                                  uint64_t offset);
 
+void renderer_vulkan_set_instance_buffer(void *backend_state,
+                                         VkrBackendResourceHandle buffer);
+
 void renderer_vulkan_set_viewport(void *backend_state,
                                   const VkrViewport *viewport);
 
@@ -143,6 +153,10 @@ void renderer_vulkan_draw_indexed(void *backend_state, uint32_t index_count,
                                   uint32_t instance_count, uint32_t first_index,
                                   int32_t vertex_offset,
                                   uint32_t first_instance);
+
+void renderer_vulkan_draw_indexed_indirect(
+    void *backend_state, VkrBackendResourceHandle indirect_buffer,
+    uint64_t offset, uint32_t draw_count, uint32_t stride);
 
 VkrTextureOpaqueHandle
 renderer_vulkan_window_attachment_get(void *backend_state,

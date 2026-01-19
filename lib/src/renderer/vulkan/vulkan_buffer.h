@@ -41,6 +41,8 @@ bool8_t vulkan_buffer_unlock_memory(VulkanBackendState *state,
 bool8_t vulkan_buffer_load_data(VulkanBackendState *state, VulkanBuffer *buffer,
                                 uint64_t offset, uint64_t size, uint32_t flags,
                                 const void *data);
+void vulkan_buffer_flush(VulkanBackendState *state, VulkanBuffer *buffer,
+                         uint64_t offset, uint64_t size);
 
 bool8_t vulkan_buffer_copy_to(VulkanBackendState *state,
                               VulkanBuffer *buffer_handle, VkBuffer source,

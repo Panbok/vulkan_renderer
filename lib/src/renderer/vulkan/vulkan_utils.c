@@ -210,6 +210,10 @@ VkBufferUsageFlags vulkan_buffer_usage_to_vk(VkrBufferUsageFlags usage) {
     vk_usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   }
 
+  if (bitset8_is_set(&usage, VKR_BUFFER_USAGE_INDIRECT)) {
+    vk_usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+  }
+
   if (vk_usage == 0) {
     log_fatal("Invalid buffer usage: no valid flags set");
     return VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;

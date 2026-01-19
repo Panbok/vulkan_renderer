@@ -458,8 +458,9 @@ bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
       bool32_t linear_filter =
           (properties.linearTilingFeatures &
            VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
-      log_debug("Selected depth format (linear tiling): %s (%d) linear_filter=%u",
-                name, (int)device->depth_format, (uint32_t)linear_filter);
+      log_debug(
+          "Selected depth format (linear tiling): %s (%d) linear_filter=%u",
+          name, (int)device->depth_format, (uint32_t)linear_filter);
       return true;
     } else if ((properties.optimalTilingFeatures & flags) == flags) {
       device->depth_format = candidates[i];
@@ -739,6 +740,9 @@ void vulkan_device_get_information(VulkanBackendState *state,
   device_information->device_types = device_types;
   device_information->device_queues = device_queues;
   device_information->sampler_filters = sampler_filters;
+  device_information->supports_multi_draw_indirect = features.multiDrawIndirect;
+  device_information->supports_draw_indirect_first_instance =
+      features.drawIndirectFirstInstance;
 }
 
 void vulkan_device_release_physical_device(VulkanBackendState *state) {
@@ -802,15 +806,56 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
       .samplerAnisotropy = VK_TRUE,
   };
 
+  VkPhysicalDeviceVulkan11Features supported_vulkan11 = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+  };
+
+  VkPhysicalDeviceFeatures2 supported_features = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+      .pNext = &supported_vulkan11,
+  };
+
+  vkGetPhysicalDeviceFeatures2(state->device.physical_device,
+                               &supported_features);
+
+  device_features.multiDrawIndirect =
+      supported_features.features.multiDrawIndirect;
+  device_features.drawIndirectFirstInstance =
+      supported_features.features.drawIndirectFirstInstance;
+
+  VkPhysicalDeviceVulkan11Features enabled_vulkan11 = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+      .shaderDrawParameters = supported_vulkan11.shaderDrawParameters,
+  };
+
+  VkPhysicalDeviceFeatures2 enabled_features = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
+      .pNext = &enabled_vulkan11,
+      .features = device_features,
+  };
+
+  if (!enabled_vulkan11.shaderDrawParameters) {
+    log_warn("shaderDrawParameters not supported; instanced draws may fail");
+  }
+
+  if (!device_features.multiDrawIndirect) {
+    log_warn("multiDrawIndirect not supported; MDI will fall back to 1 draw");
+  }
+
+  if (!device_features.drawIndirectFirstInstance) {
+    log_warn("drawIndirectFirstInstance not supported; MDI will be disabled");
+  }
+
   uint32_t ext_count = 0;
   const char **extension_names =
       vulkan_platform_get_required_device_extensions(&ext_count);
 
   VkDeviceCreateInfo device_create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+      .pNext = &enabled_features,
       .queueCreateInfoCount = queue_create_infos.length,
       .pQueueCreateInfos = queue_create_infos.data,
-      .pEnabledFeatures = &device_features,
+      .pEnabledFeatures = NULL,
       .enabledExtensionCount = ext_count,
       .ppEnabledExtensionNames = extension_names,
 #ifndef NDEBUG

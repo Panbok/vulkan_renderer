@@ -249,14 +249,18 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
     };
   }
 
+  const bool8_t has_instance_descriptors =
+      out_pipeline->shader_object.instance_ubo_stride > 0 ||
+      out_pipeline->shader_object.instance_texture_count > 0;
   VkDescriptorSetLayout set_layouts[2] = {
       out_pipeline->shader_object.global_descriptor_set_layout,
       out_pipeline->shader_object.instance_descriptor_set_layout,
   };
+  uint32_t set_layout_count = has_instance_descriptors ? 2u : 1u;
 
   VkPipelineLayoutCreateInfo pipeline_layout_info = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-      .setLayoutCount = 2,
+      .setLayoutCount = set_layout_count,
       .pSetLayouts = set_layouts,
       .pushConstantRangeCount =
           (desc->shader_object_description.push_constant_size > 0) ? 1u : 0u,
@@ -371,13 +375,10 @@ VkrRendererError vulkan_graphics_pipeline_update_state(
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, image_index);
 
-  if (uniform != NULL) {
-    if (!vulkan_shader_update_global_state(state, &pipeline->shader_object,
-                                           pipeline->pipeline_layout,
-                                           uniform)) {
-      log_error("Failed to update global state");
-      return VKR_RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
-    }
+  if (!vulkan_shader_update_global_state(state, &pipeline->shader_object,
+                                         pipeline->pipeline_layout, uniform)) {
+    log_error("Failed to update global state");
+    return VKR_RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED;
   }
 
   if (data != NULL) {

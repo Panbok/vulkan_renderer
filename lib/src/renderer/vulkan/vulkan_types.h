@@ -70,6 +70,7 @@ typedef struct VulkanBuffer {
   uint64_t allocation_size;
 
   bool8_t is_locked;
+  void *mapped_ptr;
 
   int32_t memory_index;
   uint32_t memory_property_flags;
@@ -120,6 +121,8 @@ typedef enum VulkanCommandBufferState {
 typedef struct VulkanCommandBuffer {
   VkCommandBuffer handle;
   VulkanCommandBufferState state;
+  VkDescriptorSet bound_global_descriptor_set;
+  VkPipelineLayout bound_global_pipeline_layout;
 } VulkanCommandBuffer;
 
 typedef struct VulkanImage {
@@ -230,6 +233,7 @@ typedef struct VulkanShaderObject {
   // Per-frame global descriptor sets; length == frame_count
   VkDescriptorSet *global_descriptor_sets;
   uint32_t *global_descriptor_generations;
+  VkBuffer *global_descriptor_instance_buffers;
   VkDescriptorSetLayout global_descriptor_set_layout;
   VkDescriptorSetLayoutBinding global_descriptor_set_layout_binding;
   struct s_BufferHandle global_uniform_buffer;
@@ -412,6 +416,7 @@ typedef struct VulkanBackendState {
   struct s_TextureHandle *depth_texture;
   struct s_TextureHandle
       *default_2d_texture; // Fallback for empty sampler slots
+  struct s_BufferHandle *instance_buffer; // Per-frame instance data buffer
 
   void (*on_render_target_refresh_required)();
 

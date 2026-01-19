@@ -1,11 +1,48 @@
 #include "vulkan_buffer.h"
 #include "memory/vkr_dmemory_allocator.h"
 
+void vulkan_buffer_flush(VulkanBackendState *state, VulkanBuffer *buffer,
+                         uint64_t offset, uint64_t size) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(buffer != NULL, "Buffer is NULL");
+
+  if (size == 0) {
+    return;
+  }
+
+  if (buffer->memory_property_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) {
+    return;
+  }
+
+  VkDeviceSize atom_size =
+      state->device.properties.limits.nonCoherentAtomSize;
+  VkDeviceSize aligned_offset = offset;
+  VkDeviceSize aligned_size = size;
+
+  if (atom_size > 0) {
+    aligned_offset = (offset / atom_size) * atom_size;
+    VkDeviceSize end = offset + size;
+    VkDeviceSize aligned_end =
+        ((end + atom_size - 1) / atom_size) * atom_size;
+    aligned_size = aligned_end - aligned_offset;
+  }
+
+  VkMappedMemoryRange range = {
+      .sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE,
+      .memory = buffer->memory,
+      .offset = aligned_offset,
+      .size = aligned_size,
+  };
+  vkFlushMappedMemoryRanges(state->device.logical_device, 1, &range);
+}
+
 bool8_t vulkan_buffer_create(VulkanBackendState *state,
                              const VkrBufferDescription *desc,
                              struct s_BufferHandle *out_buffer) {
   assert_log(state != NULL, "State is NULL");
   assert_log(out_buffer != NULL, "Out buffer is NULL");
+
+  MemZero(&out_buffer->buffer, sizeof(out_buffer->buffer));
 
   VkBufferUsageFlags usage = vulkan_buffer_usage_to_vk(desc->usage);
   VkMemoryPropertyFlags memory_property_flags =
@@ -38,9 +75,21 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
                                      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
                                         ? VKR_ALLOCATOR_MEMORY_TAG_GPU
                                         : VKR_ALLOCATOR_MEMORY_TAG_VULKAN;
-  out_buffer->buffer.memory_index = find_memory_index(
-      state->device.physical_device, memory_requirements.memoryTypeBits,
-      out_buffer->buffer.memory_property_flags);
+  out_buffer->buffer.memory_index =
+      find_memory_index(state->device.physical_device,
+                        memory_requirements.memoryTypeBits,
+                        out_buffer->buffer.memory_property_flags);
+
+  if (out_buffer->buffer.memory_index == -1 &&
+      (memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
+      (memory_property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+    VkMemoryPropertyFlags fallback_flags =
+        memory_property_flags & ~VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    out_buffer->buffer.memory_property_flags = fallback_flags;
+    out_buffer->buffer.memory_index =
+        find_memory_index(state->device.physical_device,
+                          memory_requirements.memoryTypeBits, fallback_flags);
+  }
 
   if (out_buffer->buffer.memory_index == -1) {
     log_error("Failed to find memory index for buffer");
@@ -99,7 +148,26 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
   vkr_dmemory_allocator_create(&out_buffer->buffer.allocator);
 
   if (desc->bind_on_create) {
-    return vulkan_buffer_bind(state, &out_buffer->buffer, 0);
+    if (!vulkan_buffer_bind(state, &out_buffer->buffer, 0)) {
+      return false_v;
+    }
+  }
+
+  if (desc->persistently_mapped) {
+    if (!bitset8_is_set(&desc->memory_properties,
+                        VKR_MEMORY_PROPERTY_HOST_VISIBLE)) {
+      log_error("Persistent mapping requested for non-host-visible buffer");
+      vulkan_buffer_destroy(state, &out_buffer->buffer);
+      return false_v;
+    }
+    void *mapped_ptr = NULL;
+    if (vkMapMemory(state->device.logical_device, out_buffer->buffer.memory, 0,
+                    desc->size, 0, &mapped_ptr) != VK_SUCCESS) {
+      log_error("Failed to persistently map buffer memory");
+      vulkan_buffer_destroy(state, &out_buffer->buffer);
+      return false_v;
+    }
+    out_buffer->buffer.mapped_ptr = mapped_ptr;
   }
 
   return true_v;
@@ -113,6 +181,11 @@ void vulkan_buffer_destroy(VulkanBackendState *state, VulkanBuffer *buffer) {
   // log_debug("Destroying Vulkan buffer: %p", buffer->handle);
 
   vkr_dmemory_allocator_destroy(&buffer->allocator);
+
+  if (buffer->mapped_ptr) {
+    vkUnmapMemory(state->device.logical_device, buffer->memory);
+    buffer->mapped_ptr = NULL;
+  }
 
   vkDestroyBuffer(state->device.logical_device, buffer->handle,
                   state->allocator);
@@ -282,6 +355,12 @@ bool8_t vulkan_buffer_load_data(VulkanBackendState *state, VulkanBuffer *buffer,
   assert_log(state != NULL, "State is NULL");
   assert_log(buffer != NULL, "Buffer is NULL");
 
+  if (buffer->mapped_ptr) {
+    MemCopy((uint8_t *)buffer->mapped_ptr + offset, data, size);
+    vulkan_buffer_flush(state, buffer, offset, size);
+    return true_v;
+  }
+
   void *mapped_memory =
       vulkan_buffer_lock_memory(state, buffer, offset, size, flags);
   if (mapped_memory == NULL) {
@@ -290,7 +369,7 @@ bool8_t vulkan_buffer_load_data(VulkanBackendState *state, VulkanBuffer *buffer,
   }
 
   MemCopy(mapped_memory, data, size);
-
+  vulkan_buffer_flush(state, buffer, offset, size);
   vulkan_buffer_unlock_memory(state, buffer);
 
   return true_v;
