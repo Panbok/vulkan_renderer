@@ -12,8 +12,8 @@
 #include "renderer/renderer_frontend.h"
 #include "renderer/systems/views/vkr_view_ui.h"
 #include "renderer/systems/views/vkr_view_world.h"
-#include "renderer/systems/vkr_gizmo_system.h"
 #include "renderer/systems/vkr_geometry_system.h"
+#include "renderer/systems/vkr_gizmo_system.h"
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_pipeline_registry.h"
@@ -212,10 +212,8 @@ vkr_internal bool8_t picking_render_submesh(
   if (!rf || !instance_pool || !mesh || !submesh || !out_first_instance) {
     return false_v;
   }
+
   if (!instance_pool->initialized) {
-    return false_v;
-  }
-  if (!can_alpha_test) {
     return false_v;
   }
 
@@ -269,11 +267,10 @@ vkr_internal bool8_t picking_render_submesh(
   vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
                                 &alpha_cutoff);
 
-  if (can_alpha_test && diffuse_texture_handle) {
+  if (diffuse_texture_handle) {
     vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
                                   diffuse_texture_handle);
   }
-
 
   if (!vkr_shader_system_apply_instance(&rf->shader_system)) {
     return false_v;
@@ -440,8 +437,7 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
       if (!vkr_pipeline_registry_acquire_instance_state(
               &rf->pipeline_registry, ctx->picking_overlay_pipeline,
               &ctx->mesh_overlay_instance_state, &overlay_instance_err)) {
-        String8 err_str =
-            vkr_renderer_get_error_string(overlay_instance_err);
+        String8 err_str = vkr_renderer_get_error_string(overlay_instance_err);
         log_warn("Failed to acquire overlay picking instance state: %s",
                  string8_cstr(&err_str));
         picking_release_pipeline(rf, &ctx->picking_overlay_pipeline);
@@ -1097,8 +1093,8 @@ vkr_internal void picking_render_point_light_cb(const VkrArchetype *arch,
 
   SceneTransform *transforms =
       (SceneTransform *)vkr_entity_chunk_column(chunk, scene->comp_transform);
-  ScenePointLight *lights =
-      (ScenePointLight *)vkr_entity_chunk_column(chunk, scene->comp_point_light);
+  ScenePointLight *lights = (ScenePointLight *)vkr_entity_chunk_column(
+      chunk, scene->comp_point_light);
 
   if (!transforms || !lights)
     return;
@@ -1115,8 +1111,9 @@ vkr_internal void picking_render_point_light_cb(const VkrArchetype *arch,
       continue;
 
     // Get render ID for picking (skip if not assigned)
-    const SceneRenderId *render_id = (const SceneRenderId *)vkr_entity_get_component(
-        scene->world, entities[i], scene->comp_render_id);
+    const SceneRenderId *render_id =
+        (const SceneRenderId *)vkr_entity_get_component(
+            scene->world, entities[i], scene->comp_render_id);
     if (!render_id || render_id->id == 0)
       continue;
 
@@ -1124,10 +1121,10 @@ vkr_internal void picking_render_point_light_cb(const VkrArchetype *arch,
     Vec3 world_pos = mat4_position(transforms[i].world);
 
     // Build model matrix: translate to position and scale to gizmo size
-    Mat4 model = mat4_mul(mat4_translate(world_pos),
-                          mat4_scale((Vec3){VKR_LIGHT_GIZMO_SIZE,
-                                            VKR_LIGHT_GIZMO_SIZE,
-                                            VKR_LIGHT_GIZMO_SIZE}));
+    Mat4 model =
+        mat4_mul(mat4_translate(world_pos),
+                 mat4_scale((Vec3){VKR_LIGHT_GIZMO_SIZE, VKR_LIGHT_GIZMO_SIZE,
+                                   VKR_LIGHT_GIZMO_SIZE}));
 
     // Encode picking ID using SCENE kind (reuses existing mapping)
     uint32_t object_id =
@@ -1152,14 +1149,12 @@ vkr_internal void picking_render_point_light_cb(const VkrArchetype *arch,
     vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
                                   &alpha_cutoff);
 
-
     if (!vkr_shader_system_apply_instance(&rf->shader_system))
       continue;
 
     // Draw the cube
-    vkr_geometry_system_render_instanced(rf, &rf->geometry_system,
-                                         ctx->light_gizmo_cube, 1,
-                                         base_instance);
+    vkr_geometry_system_render_instanced(
+        rf, &rf->geometry_system, ctx->light_gizmo_cube, 1, base_instance);
   }
 }
 

@@ -19,7 +19,7 @@
  * same mesh can reuse geometry handles instead of creating duplicates.
  */
 vkr_internal uint64_t vkr_mesh_fnv1a_hash(const uint8_t *data, uint64_t length,
-                                         uint64_t seed) {
+                                          uint64_t seed) {
   uint64_t hash = seed;
   if (!data || length == 0) {
     return hash;
@@ -37,9 +37,9 @@ vkr_internal uint64_t vkr_mesh_fnv1a_hash(const uint8_t *data, uint64_t length,
  * The key is derived from the mesh path plus subset index, which preserves
  * distinct submeshes while allowing identical mesh instances to share geometry.
  */
-vkr_internal void vkr_mesh_manager_build_geometry_key(
-    char out_name[GEOMETRY_NAME_MAX_LENGTH], String8 mesh_path,
-    uint32_t subset_index) {
+vkr_internal void
+vkr_mesh_manager_build_geometry_key(char out_name[GEOMETRY_NAME_MAX_LENGTH],
+                                    String8 mesh_path, uint32_t subset_index) {
   uint64_t hash = 14695981039346656037ull;
   hash = vkr_mesh_fnv1a_hash(mesh_path.str, mesh_path.length, hash);
   string_format(out_name, GEOMETRY_NAME_MAX_LENGTH, "mesh_%016llx_%u",
@@ -49,8 +49,9 @@ vkr_internal void vkr_mesh_manager_build_geometry_key(
 /**
  * @brief Build a stable geometry name for merged mesh buffers.
  */
-vkr_internal void vkr_mesh_manager_build_mesh_buffer_key(
-    char out_name[GEOMETRY_NAME_MAX_LENGTH], String8 mesh_path) {
+vkr_internal void
+vkr_mesh_manager_build_mesh_buffer_key(char out_name[GEOMETRY_NAME_MAX_LENGTH],
+                                       String8 mesh_path) {
   uint64_t hash = 14695981039346656037ull;
   hash = vkr_mesh_fnv1a_hash(mesh_path.str, mesh_path.length, hash);
   string_format(out_name, GEOMETRY_NAME_MAX_LENGTH, "meshbuf_%016llx",
@@ -87,11 +88,9 @@ vkr_internal bool8_t vkr_mesh_manager_material_uses_cutout(
  * @brief Compute bounding sphere for a mesh from its submesh geometries.
  * Unions all geometry AABBs then computes enclosing sphere.
  */
-vkr_internal void vkr_mesh_compute_local_bounds(VkrMesh *mesh,
-                                                VkrGeometrySystem *geo_system) {
+vkr_internal void vkr_mesh_compute_local_bounds(VkrMesh *mesh) {
   if (!mesh)
     return;
-  (void)geo_system;
 
   if (mesh->submeshes.length == 0) {
     mesh->bounds_valid = false_v;
@@ -480,9 +479,9 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
     Vec3 center = sub_desc->center;
     Vec3 min_extents = sub_desc->min_extents;
     Vec3 max_extents = sub_desc->max_extents;
-    bool8_t uses_full_geometry = (sub_desc->index_count == 0 &&
-                                  sub_desc->first_index == 0 &&
-                                  sub_desc->vertex_offset == 0);
+    bool8_t uses_full_geometry =
+        (sub_desc->index_count == 0 && sub_desc->first_index == 0 &&
+         sub_desc->vertex_offset == 0);
 
     if (index_count == 0) {
       VkrGeometry *geo =
@@ -542,7 +541,7 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
   new_mesh.visible = true_v;
   new_mesh.loading_state = VKR_MESH_LOADING_STATE_LOADED;
 
-  vkr_mesh_compute_local_bounds(&new_mesh, manager->geometry_system);
+  vkr_mesh_compute_local_bounds(&new_mesh);
   vkr_mesh_update_world_bounds(&new_mesh);
 
   uint32_t slot = VKR_INVALID_ID;
@@ -628,11 +627,11 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
   VkrMeshLoaderResult *mesh_result = handle_info->as.mesh;
 
   // Validate mesh result
-  bool8_t use_merged =
-      mesh_result->has_mesh_buffer &&
-      mesh_result->mesh_buffer.vertex_count > 0 &&
-      mesh_result->mesh_buffer.index_count > 0 &&
-      mesh_result->submeshes.length > 0 && mesh_result->submeshes.data;
+  bool8_t use_merged = mesh_result->has_mesh_buffer &&
+                       mesh_result->mesh_buffer.vertex_count > 0 &&
+                       mesh_result->mesh_buffer.index_count > 0 &&
+                       mesh_result->submeshes.length > 0 &&
+                       mesh_result->submeshes.data;
   if (!use_merged &&
       (mesh_result->subsets.length == 0 || !mesh_result->subsets.data)) {
     log_error("MeshManager: mesh '%.*s' returned no subsets",
@@ -643,9 +642,8 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
     return false_v;
   }
 
-  uint32_t subset_count = use_merged
-                              ? (uint32_t)mesh_result->submeshes.length
-                              : (uint32_t)mesh_result->subsets.length;
+  uint32_t subset_count = use_merged ? (uint32_t)mesh_result->submeshes.length
+                                     : (uint32_t)mesh_result->subsets.length;
   VkrAllocator *scratch_allocator = &manager->scratch_allocator;
   VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(scratch_allocator);
   if (!vkr_allocator_scope_is_valid(&temp_scope)) {
@@ -685,8 +683,7 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
     } else {
       uint32_t total_indices = mesh_result->mesh_buffer.index_count;
       for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
-        VkrMeshLoaderSubmeshRange *range =
-            &mesh_result->submeshes.data[i];
+        VkrMeshLoaderSubmeshRange *range = &mesh_result->submeshes.data[i];
         if (!vkr_mesh_manager_material_uses_cutout(manager->material_system,
                                                    range->material_handle)) {
           opaque_index_count += range->index_count;
@@ -695,10 +692,10 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
 
       if (opaque_index_count > 0 && opaque_index_count < total_indices) {
         build_opaque_indices = true_v;
-        opaque_ranges = vkr_allocator_alloc(
-            scratch_allocator,
-            (uint64_t)subset_count * sizeof(VkrOpaqueRangeInfo),
-            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+        opaque_ranges = vkr_allocator_alloc(scratch_allocator,
+                                            (uint64_t)subset_count *
+                                                sizeof(VkrOpaqueRangeInfo),
+                                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
         if (!opaque_ranges) {
           if (out_error) {
             *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -710,10 +707,10 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
         }
 
         if (subsets_success) {
-          opaque_indices = vkr_allocator_alloc(
-              scratch_allocator,
-              (uint64_t)opaque_index_count * sizeof(uint32_t),
-              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+          opaque_indices = vkr_allocator_alloc(scratch_allocator,
+                                               (uint64_t)opaque_index_count *
+                                                   sizeof(uint32_t),
+                                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
           if (!opaque_indices) {
             if (out_error) {
               *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -726,10 +723,9 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
           uint32_t *src_indices = (uint32_t *)mesh_result->mesh_buffer.indices;
           uint32_t opaque_write = 0;
           for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
-            VkrMeshLoaderSubmeshRange *range =
-                &mesh_result->submeshes.data[i];
-            if (vkr_mesh_manager_material_uses_cutout(
-                    manager->material_system, range->material_handle)) {
+            VkrMeshLoaderSubmeshRange *range = &mesh_result->submeshes.data[i];
+            if (vkr_mesh_manager_material_uses_cutout(manager->material_system,
+                                                      range->material_handle)) {
               continue;
             }
             if (opaque_write + range->index_count > opaque_index_count) {
@@ -758,13 +754,12 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
     char geometry_name_buf[GEOMETRY_NAME_MAX_LENGTH] = {0};
     vkr_mesh_manager_build_mesh_buffer_key(geometry_name_buf,
                                            mesh_result->source_path);
-    String8 geometry_name = string8_create(
-        (uint8_t *)geometry_name_buf, string_length(geometry_name_buf));
+    String8 geometry_name = string8_create((uint8_t *)geometry_name_buf,
+                                           string_length(geometry_name_buf));
 
     VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
-    merged_geometry =
-        vkr_geometry_system_acquire_by_name(manager->geometry_system,
-                                            geometry_name, true_v, &geo_err);
+    merged_geometry = vkr_geometry_system_acquire_by_name(
+        manager->geometry_system, geometry_name, true_v, &geo_err);
     if (merged_geometry.id == 0) {
       if (geo_err != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
         if (out_error) {
@@ -772,15 +767,13 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
         }
         subsets_success = false_v;
       } else {
-        Vec3 union_min =
-            vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
+        Vec3 union_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
         Vec3 union_max =
             vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
         bool8_t has_bounds = false_v;
 
         for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
-          VkrMeshLoaderSubmeshRange *range =
-              &mesh_result->submeshes.data[i];
+          VkrMeshLoaderSubmeshRange *range = &mesh_result->submeshes.data[i];
           Vec3 range_min = vec3_add(range->center, range->min_extents);
           Vec3 range_max = vec3_add(range->center, range->max_extents);
           union_min.x = vkr_min_f32(union_min.x, range_min.x);
@@ -830,8 +823,8 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
       if (geometry) {
         geometry->opaque_index_count = opaque_index_count;
         if (!geometry->opaque_index_buffer.handle && opaque_indices) {
-          String8 debug_name = string8_create(
-              (uint8_t *)geometry->name, string_length(geometry->name));
+          String8 debug_name = string8_create((uint8_t *)geometry->name,
+                                              string_length(geometry->name));
           VkrRendererError opaque_err = VKR_RENDERER_ERROR_NONE;
           geometry->opaque_index_buffer = vkr_index_buffer_create(
               manager->geometry_system->renderer, opaque_indices,
@@ -897,14 +890,12 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
           .first_index = range->first_index,
           .index_count = range->index_count,
           .vertex_offset = range->vertex_offset,
-          .opaque_first_index =
-              (build_opaque_indices && opaque_ranges)
-                  ? opaque_ranges[i].first_index
-                  : 0,
-          .opaque_index_count =
-              (build_opaque_indices && opaque_ranges)
-                  ? opaque_ranges[i].index_count
-                  : 0,
+          .opaque_first_index = (build_opaque_indices && opaque_ranges)
+                                    ? opaque_ranges[i].first_index
+                                    : 0,
+          .opaque_index_count = (build_opaque_indices && opaque_ranges)
+                                    ? opaque_ranges[i].index_count
+                                    : 0,
           .opaque_vertex_offset = range->vertex_offset,
           .center = range->center,
           .min_extents = range->min_extents,
@@ -929,11 +920,10 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
     vkr_mesh_manager_build_geometry_key(subset->geometry_config.name,
                                         mesh_result->source_path, i);
     uint64_t name_length = string_length(subset->geometry_config.name);
-    String8 geometry_name = string8_create(
-        (uint8_t *)subset->geometry_config.name, name_length);
-    VkrGeometryHandle geometry =
-        vkr_geometry_system_acquire_by_name(manager->geometry_system,
-                                            geometry_name, true_v, &geo_err);
+    String8 geometry_name =
+        string8_create((uint8_t *)subset->geometry_config.name, name_length);
+    VkrGeometryHandle geometry = vkr_geometry_system_acquire_by_name(
+        manager->geometry_system, geometry_name, true_v, &geo_err);
     if (geometry.id == 0) {
       if (geo_err != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
         if (out_error) {
@@ -942,9 +932,8 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
         subsets_success = false_v;
         break;
       }
-      geometry = vkr_geometry_system_create(manager->geometry_system,
-                                            &subset->geometry_config, true_v,
-                                            &geo_err);
+      geometry = vkr_geometry_system_create(
+          manager->geometry_system, &subset->geometry_config, true_v, &geo_err);
       if (geometry.id == 0) {
         if (out_error) {
           *out_error = geo_err;
@@ -1378,10 +1367,9 @@ uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
       VkrRendererError err = VKR_RENDERER_ERROR_NONE;
 
       uint32_t global_i = base + j;
-      if (vkr_mesh_manager_process_resource_handle(manager, &handle_infos[j],
-                                                   load_errors[j],
-                                                   &descs[global_i], &mesh_index,
-                                                   &err)) {
+      if (vkr_mesh_manager_process_resource_handle(
+              manager, &handle_infos[j], load_errors[j], &descs[global_i],
+              &mesh_index, &err)) {
         if (out_indices) {
           out_indices[global_i] = mesh_index;
         }
