@@ -26,6 +26,40 @@ typedef struct VkrMeshLoaderSubset {
 } VkrMeshLoaderSubset;
 Array(VkrMeshLoaderSubset);
 
+/**
+ * @brief CPU-side mesh buffer payload owned by the loader arena.
+ *
+ * The data pointers remain valid until the loader result is unloaded.
+ */
+typedef struct VkrMeshLoaderBuffer {
+  uint32_t vertex_size;
+  uint32_t vertex_count;
+  void *vertices;
+  uint32_t index_size;
+  uint32_t index_count;
+  void *indices;
+} VkrMeshLoaderBuffer;
+
+/**
+ * @brief Range metadata for a submesh inside a merged mesh buffer.
+ *
+ * Bounds are stored as center + min/max extents in mesh-local space.
+ */
+typedef struct VkrMeshLoaderSubmeshRange {
+  uint32_t range_id;
+  uint32_t first_index;
+  uint32_t index_count;
+  int32_t vertex_offset;
+  Vec3 center;
+  Vec3 min_extents;
+  Vec3 max_extents;
+  String8 material_name;
+  String8 shader_override;
+  VkrPipelineDomain pipeline_domain;
+  VkrMaterialHandle material_handle;
+} VkrMeshLoaderSubmeshRange;
+Array(VkrMeshLoaderSubmeshRange);
+
 typedef struct VkrMeshLoaderResult {
   Arena *arena;     /**< Buffer-backed arena for mesh data */
   void *pool_chunk; /**< Chunk pointer for returning to pool (NULL if not
@@ -33,6 +67,9 @@ typedef struct VkrMeshLoaderResult {
   VkrAllocator allocator; /**< Arena allocator wrapper (used for accounting) */
   String8 source_path;
   VkrTransform root_transform;
+  bool8_t has_mesh_buffer; /**< True when mesh_buffer/submeshes are populated. */
+  VkrMeshLoaderBuffer mesh_buffer; /**< Merged vertex/index payload. */
+  Array_VkrMeshLoaderSubmeshRange submeshes; /**< Per-submesh ranges. */
   Array_VkrMeshLoaderSubset subsets;
 } VkrMeshLoaderResult;
 
