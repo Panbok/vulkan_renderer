@@ -184,8 +184,13 @@ vkr_internal void vkr_compute_attribute_layout(VkrShaderConfig *cfg) {
         }
       }
       if (!found) {
-        log_warn("Shader '%s' missing expected vertex attribute '%s'",
-                 string8_cstr(&cfg->name), exp->name);
+        // Some pipelines intentionally only declare a subset of the canonical
+        // 3D vertex attributes (for example, shadow depth-only passes). The
+        // shader config is the source of truth for which attributes are bound.
+        if (string_equals(exp->name, "in_position")) {
+          log_warn("Shader '%s' missing required vertex attribute '%s'",
+                   string8_cstr(&cfg->name), exp->name);
+        }
       }
     }
   } else {
@@ -724,8 +729,7 @@ vkr_parse_uniform_line(VkrShaderConfigParser *parser, const String8 *value,
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       return vkr_create_parse_error(
           parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_FORMAT,
-          parser->line_number, 0,
-          "Array uniform missing closing bracket: %.*s",
+          parser->line_number, 0, "Array uniform missing closing bracket: %.*s",
           (int)type_token.length, type_token.str);
     }
 
@@ -736,8 +740,7 @@ vkr_parse_uniform_line(VkrShaderConfigParser *parser, const String8 *value,
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       return vkr_create_parse_error(
           parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
-          parser->line_number, 0,
-          "Invalid array count in uniform type: %.*s",
+          parser->line_number, 0, "Invalid array count in uniform type: %.*s",
           (int)type_token.length, type_token.str);
     }
   }

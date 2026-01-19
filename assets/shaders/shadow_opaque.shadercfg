@@ -10,13 +10,9 @@ use_local=1
 
 # Vertex attributes
 attribute=vec3,in_position
-attribute=vec3,in_normal
-attribute=vec2,in_texcoord
-attribute=vec4,in_color
-attribute=vec4,in_tangent
 
 # Local (push constants): per-cascade light VP
 uniform=mat4,2,light_view_projection
 
 # Disable culling to allow thin/one-sided meshes to cast shadows
-cull_mode=none
+cull_mode=front

@@ -170,7 +170,8 @@ VertexDto vertexMain(VertexInput input, uint instance_id : SV_InstanceID,
     output.texcoord = input.texcoord;
     output.color = input.color;
 
-    output.frag_position = float3(mul(inst.model, float4(input.position, 1.0)).xyz);
+    float4 worldPos = mul(inst.model, float4(input.position, 1.0));
+    output.frag_position = worldPos.xyz;
 
     float3x3 model_matrix = float3x3(inst.model);
     output.normal = normalize(mul(model_matrix, input.normal));
@@ -180,7 +181,6 @@ VertexDto vertexMain(VertexInput input, uint instance_id : SV_InstanceID,
     output.view_position = g_ubo.view_position;
     output.render_mode = g_ubo.render_mode;
     
-    float4 worldPos = mul(inst.model, float4(input.position, 1.0));
     float4 viewPos = mul(g_ubo.view, worldPos);
     float4 clipPos = mul(g_ubo.projection, viewPos);
 

@@ -35,10 +35,7 @@ SamplerState diffuse_sampler;
 struct VertexInput
 {
     [[vk::location(0)]] float3 position : POSITION;
-    [[vk::location(1)]] float3 normal   : NORMAL;
     [[vk::location(2)]] float2 texcoord : TEXCOORD;
-    [[vk::location(3)]] float4 color    : COLOR0;
-    [[vk::location(4)]] float4 tangent  : TANGENT;
 };
 
 struct VertexOutput

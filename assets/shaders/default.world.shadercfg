@@ -85,8 +85,6 @@ uniform=samp,1,shadow_map_1       # Shadow map cascade 1
 uniform=samp,1,shadow_map_2       # Shadow map cascade 2
 uniform=samp,1,shadow_map_3       # Shadow map cascade 3
 
-# Local uniforms (push constants)
-
 # ============================================================================
 # Computed Layout (for reference, calculated by loader)
 # ============================================================================
