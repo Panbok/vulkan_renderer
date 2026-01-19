@@ -8,7 +8,7 @@ renderpass=Renderpass.Builtin.World
 stages=vertex,fragment
 stagefiles=assets/shaders/default.world.spv
 use_instance=1
-use_local=1
+use_local=0
 
 # ============================================================================
 # Vertex Attributes (tightly packed, interleaved)
@@ -86,8 +86,6 @@ uniform=samp,1,shadow_map_2       # Shadow map cascade 2
 uniform=samp,1,shadow_map_3       # Shadow map cascade 3
 
 # Local uniforms (push constants)
-# Updated per draw call (per object in the world)
-uniform=mat4,2,model         # Object model matrix (transform)
 
 # ============================================================================
 # Computed Layout (for reference, calculated by loader)
@@ -107,6 +105,4 @@ uniform=mat4,2,model         # Object model matrix (transform)
 #   instance_texture_count = 7 (diffuse/specular/normal + 4 shadow maps)
 #
 # Push Constants:
-#   model: offset=0, size=64 (mat4)
-#   → push_constant_size = 64 bytes
-#   → push_constant_stride = align_up(64, 4) = 64 bytes
+#   (none)

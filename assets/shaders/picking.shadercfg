@@ -8,7 +8,7 @@ renderpass=Renderpass.Builtin.Picking
 stages=vertex,fragment
 stagefiles=assets/shaders/picking.spv
 use_instance=1
-use_local=1
+use_local=0
 
 # ============================================================================
 # Vertex Attributes (same layout as world shader for geometry compatibility)
@@ -27,10 +27,8 @@ attribute=vec4,in_tangent
 uniform=mat4,0,projection
 uniform=mat4,0,view
 
-# Instance uniforms (samplers for alpha-aware picking)
+# Instance uniforms (alpha cutoff + samplers for alpha-aware picking)
+uniform=float,1,alpha_cutoff
 uniform=samp,1,diffuse_texture
 
-# Local uniforms (push constants) - model matrix and object ID
-uniform=mat4,2,model
-uniform=uint32,2,object_id
-uniform=float,2,alpha_cutoff
+# Local uniforms (push constants)

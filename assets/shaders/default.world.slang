@@ -75,10 +75,13 @@ struct PointLight
     float quadratic;
 };
 
-
-struct PushConstantsObject
+struct InstanceData
 {
     column_major float4x4 model;
+    uint object_id;
+    uint material_index;
+    uint flags;
+    uint _padding;
 };
 
 [[vk::binding(1, 1)]]
@@ -104,6 +107,9 @@ Texture2D<float> shadow_map_3;
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<GlobalUniformBufferObject> g_ubo;
+
+[[vk::binding(1, 0)]]
+StructuredBuffer<InstanceData> g_instances;
 
 // Instance UBO (set 1, binding 0)
 [[vk::binding(0, 1)]]
@@ -131,9 +137,6 @@ SamplerComparisonState shadow_sampler_2;
 [[vk::binding(14, 1)]]
 SamplerComparisonState shadow_sampler_3;
 
-[[vk::push_constant]]
-ConstantBuffer<PushConstantsObject> push_constants;
-
 struct VertexInput
 {
     [[vk::location(0)]] float3 position : POSITION;
@@ -157,16 +160,19 @@ struct VertexDto
 };
 
 [shader("vertex")]
-VertexDto vertexMain(VertexInput input)
+VertexDto vertexMain(VertexInput input, uint instance_id : SV_InstanceID,
+                     uint base_instance : SV_StartInstanceLocation)
 {
     VertexDto output;
+    uint instance_index = instance_id + base_instance;
+    InstanceData inst = g_instances[instance_index];
 
     output.texcoord = input.texcoord;
     output.color = input.color;
 
-    output.frag_position = float3(mul(push_constants.model, float4(input.position, 1.0)).xyz);
+    output.frag_position = float3(mul(inst.model, float4(input.position, 1.0)).xyz);
 
-    float3x3 model_matrix = float3x3(push_constants.model);
+    float3x3 model_matrix = float3x3(inst.model);
     output.normal = normalize(mul(model_matrix, input.normal));
     output.tangent = float4(normalize(mul(model_matrix, input.tangent.xyz)), input.tangent.w);
 
@@ -174,7 +180,7 @@ VertexDto vertexMain(VertexInput input)
     output.view_position = g_ubo.view_position;
     output.render_mode = g_ubo.render_mode;
     
-    float4 worldPos = mul(push_constants.model, float4(input.position, 1.0));
+    float4 worldPos = mul(inst.model, float4(input.position, 1.0));
     float4 viewPos = mul(g_ubo.view, worldPos);
     float4 clipPos = mul(g_ubo.projection, viewPos);
 

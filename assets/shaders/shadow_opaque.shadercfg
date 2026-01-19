@@ -1,11 +1,11 @@
-# Shadow map shader configuration (depth-only)
+# Shadow map shader configuration (depth-only, opaque casters)
 
 version=1.0
-name=shader.shadow
+name=shader.shadow.opaque
 renderpass=Renderpass.CSM.Shadow
 stages=vertex,fragment
-stagefiles=assets/shaders/shadow.spv
-use_instance=1
+stagefiles=assets/shaders/shadow_opaque.spv
+use_instance=0
 use_local=1
 
 # Vertex attributes
@@ -14,12 +14,6 @@ attribute=vec3,in_normal
 attribute=vec2,in_texcoord
 attribute=vec4,in_color
 attribute=vec4,in_tangent
-
-# Instance UBO (alpha cutoff per material; 0 disables cutout)
-uniform=float,1,alpha_cutoff
-
-# Instance samplers (for alpha cutout)
-uniform=samp,1,diffuse_texture
 
 # Local (push constants): per-cascade light VP
 uniform=mat4,2,light_view_projection
