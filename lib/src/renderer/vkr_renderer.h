@@ -100,6 +100,7 @@ typedef enum VkrRendererError {
   VKR_RENDERER_ERROR_PIPELINE_STATE_UPDATE_FAILED,
   VKR_RENDERER_ERROR_FILE_NOT_FOUND,
   VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED,
+  VKR_RENDERER_ERROR_INCOMPATIBLE_SIGNATURE,
 
   VKR_RENDERER_ERROR_COUNT
 } VkrRendererError;
@@ -433,11 +434,22 @@ vkr_texture_usage_flags_from_bits(uint8_t bits) {
 
 typedef enum VkrTextureLayout {
   VKR_TEXTURE_LAYOUT_UNDEFINED = 0,
-  VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY,
-  VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT,
-  VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT,
-  VKR_TEXTURE_LAYOUT_TRANSFER_SRC,
-  VKR_TEXTURE_LAYOUT_TRANSFER_DST,
+  VKR_TEXTURE_LAYOUT_GENERAL,
+  VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+  VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+  VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+  VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+  VKR_TEXTURE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+  VKR_TEXTURE_LAYOUT_TRANSFER_DST_OPTIMAL,
+  VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR,
+
+  // Legacy aliases for backward compatibility
+  VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY = VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+  VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT = VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+  VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT =
+      VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+  VKR_TEXTURE_LAYOUT_TRANSFER_SRC = VKR_TEXTURE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+  VKR_TEXTURE_LAYOUT_TRANSFER_DST = VKR_TEXTURE_LAYOUT_TRANSFER_DST_OPTIMAL,
 } VkrTextureLayout;
 
 typedef enum VkrTexturePropertyBits {
@@ -482,6 +494,16 @@ typedef enum VkrMipFilter {
   VKR_MIP_FILTER_COUNT,
 } VkrMipFilter;
 
+typedef enum VkrSampleCount {
+  VKR_SAMPLE_COUNT_1 = 1,
+  VKR_SAMPLE_COUNT_2 = 2,
+  VKR_SAMPLE_COUNT_4 = 4,
+  VKR_SAMPLE_COUNT_8 = 8,
+  VKR_SAMPLE_COUNT_16 = 16,
+  VKR_SAMPLE_COUNT_32 = 32,
+  VKR_SAMPLE_COUNT_64 = 64,
+} VkrSampleCount;
+
 typedef struct VkrTextureDescription {
   uint32_t id;
   uint32_t width;
@@ -491,6 +513,7 @@ typedef struct VkrTextureDescription {
 
   VkrTextureType type;
   VkrTextureFormat format;
+  VkrSampleCount sample_count; // MSAA sample count (default: VKR_SAMPLE_COUNT_1)
   VkrTexturePropertyFlags properties;
 
   VkrTextureRepeatMode u_repeat_mode;
@@ -660,14 +683,86 @@ typedef enum VkrPipelineDomain {
   VKR_PIPELINE_DOMAIN_COUNT
 } VkrPipelineDomain;
 
-typedef enum VkrRenderPassClearFlags {
-  VKR_RENDERPASS_CLEAR_NONE = 0,
-  VKR_RENDERPASS_CLEAR_COLOR = 1 << 0,
-  VKR_RENDERPASS_CLEAR_DEPTH = 1 << 1,
-  VKR_RENDERPASS_CLEAR_STENCIL = 1 << 2,
-  VKR_RENDERPASS_USE_DEPTH = 1
-                             << 3, // Include depth attachment without clearing
-} VkrRenderPassClearFlags;
+// ============================================================================
+// Render Pass Signature (for compatibility checking and MSAA support)
+// ============================================================================
+
+#define VKR_MAX_COLOR_ATTACHMENTS 8
+
+/**
+ * @brief Render pass signature for compatibility validation and pipeline state
+ * derivation.
+ *
+ * Captures attachment metadata required for:
+ * - Framebuffer compatibility checking
+ * - Pipeline multisample state derivation
+ * - Render target validation
+ */
+typedef struct VkrRenderPassSignature {
+  uint8_t color_attachment_count;
+  VkrTextureFormat color_formats[VKR_MAX_COLOR_ATTACHMENTS];
+  VkrSampleCount color_samples[VKR_MAX_COLOR_ATTACHMENTS];
+  bool8_t has_depth_stencil;
+  VkrTextureFormat depth_stencil_format;
+  VkrSampleCount depth_stencil_samples;
+  bool8_t has_resolve_attachments;
+  uint8_t resolve_attachment_count;
+} VkrRenderPassSignature;
+
+// ============================================================================
+// VkrRenderPassDesc - Explicit render pass attachment configuration
+// ============================================================================
+
+typedef enum VkrAttachmentLoadOp {
+  VKR_ATTACHMENT_LOAD_OP_LOAD = 0,
+  VKR_ATTACHMENT_LOAD_OP_CLEAR,
+  VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+} VkrAttachmentLoadOp;
+
+typedef enum VkrAttachmentStoreOp {
+  VKR_ATTACHMENT_STORE_OP_STORE = 0,
+  VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+} VkrAttachmentStoreOp;
+
+typedef union VkrClearValue {
+  struct {
+    float32_t r, g, b, a;
+  } color_f32;
+  struct {
+    uint32_t r, g, b, a;
+  } color_u32;
+  struct {
+    float32_t depth;
+    uint32_t stencil;
+  } depth_stencil;
+} VkrClearValue;
+
+typedef struct VkrRenderPassAttachmentDesc {
+  VkrTextureFormat format;
+  VkrSampleCount samples;
+  VkrAttachmentLoadOp load_op;
+  VkrAttachmentLoadOp stencil_load_op;
+  VkrAttachmentStoreOp store_op;
+  VkrAttachmentStoreOp stencil_store_op;
+  VkrTextureLayout initial_layout;
+  VkrTextureLayout final_layout;
+  VkrClearValue clear_value;
+} VkrRenderPassAttachmentDesc;
+
+typedef struct VkrResolveAttachmentRef {
+  uint8_t src_attachment_index; // Index into color_attachments
+  uint8_t dst_attachment_index; // Index in resolve output
+} VkrResolveAttachmentRef;
+
+typedef struct VkrRenderPassDesc {
+  String8 name;
+  VkrPipelineDomain domain;
+  uint8_t color_attachment_count;
+  VkrRenderPassAttachmentDesc *color_attachments;
+  VkrRenderPassAttachmentDesc *depth_stencil_attachment; // NULL if no depth
+  uint8_t resolve_attachment_count;
+  VkrResolveAttachmentRef *resolve_attachments;
+} VkrRenderPassDesc;
 
 typedef struct VkrViewport {
   float32_t x;
@@ -685,22 +780,35 @@ typedef struct VkrScissor {
   uint32_t height;
 } VkrScissor;
 
-typedef struct VkrRenderPassConfig {
-  String8 name;
-  String8 prev_name;
-  String8 next_name;
-  Vec4 render_area;
-  Vec4 clear_color;
-  uint8_t clear_flags;
-  VkrPipelineDomain domain;
-} VkrRenderPassConfig;
+// ============================================================================
+// VkrRenderTargetDesc - Extended render target with mip/layer addressing
+// ============================================================================
 
+/**
+ * @brief Reference to a specific subresource of a texture for framebuffer use.
+ *
+ * Allows rendering to specific mip levels or array layers (e.g., cubemap faces).
+ */
+typedef struct VkrRenderTargetAttachmentRef {
+  VkrTextureOpaqueHandle texture;
+  uint32_t mip_level;   // Mip level to use (0 = base level)
+  uint32_t base_layer;  // Base array layer (0 for 2D textures, 0-5 for cubemaps)
+  uint32_t layer_count; // Number of layers (1 for single layer, 6 for full cubemap)
+} VkrRenderTargetAttachmentRef;
+
+/**
+ * @brief Extended render target descriptor with mip/layer addressing support.
+ *
+ * Use this for advanced cases like:
+ * - Rendering to specific mip levels (mip chain generation)
+ * - Rendering to cubemap faces
+ * - Rendering to texture array slices
+ */
 typedef struct VkrRenderTargetDesc {
   bool8_t sync_to_window_size;
+  uint32_t width, height;
   uint8_t attachment_count;
-  VkrTextureOpaqueHandle *attachments;
-  uint32_t width;
-  uint32_t height;
+  VkrRenderTargetAttachmentRef *attachments;
 } VkrRenderTargetDesc;
 
 typedef struct VkrRenderTargetTextureDesc {
@@ -729,8 +837,8 @@ typedef struct VkrGraphicsPipelineDescription {
 
 typedef struct VkrRendererBackendConfig {
   const char *application_name;
-  uint16_t renderpass_count;
-  VkrRenderPassConfig *pass_configs;
+  uint16_t renderpass_desc_count;
+  const VkrRenderPassDesc *pass_descs;
   void (*on_render_target_refresh_required)();
 } VkrRendererBackendConfig;
 
@@ -933,6 +1041,25 @@ VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment(
     VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
     VkrRendererError *out_error);
 
+/**
+ * @brief Creates an MSAA (multisampled) render target texture.
+ *
+ * Creates a texture with the specified sample count for use as an MSAA
+ * attachment. MSAA textures cannot be sampled directly and must be resolved
+ * to a single-sample texture before sampling.
+ *
+ * @param renderer Renderer handle
+ * @param width Texture width
+ * @param height Texture height
+ * @param format Texture format
+ * @param samples MSAA sample count (must be > 1 for actual MSAA)
+ * @param out_error Optional error output
+ * @return Handle to the created MSAA texture, or NULL on failure
+ */
+VkrTextureOpaqueHandle vkr_renderer_create_render_target_texture_msaa(
+    VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
+    VkrTextureFormat format, VkrSampleCount samples, VkrRendererError *out_error);
+
 VkrRendererError vkr_renderer_transition_texture_layout(
     VkrRendererFrontendHandle renderer, VkrTextureOpaqueHandle texture,
     VkrTextureLayout old_layout, VkrTextureLayout new_layout);
@@ -1034,18 +1161,104 @@ VkrRendererError vkr_renderer_upload_buffer(VkrRendererFrontendHandle renderer,
 // --- END Data Update ---
 
 // --- START Render Pass & Target Management ---
-VkrRenderPassHandle
-vkr_renderer_renderpass_create(VkrRendererFrontendHandle renderer,
-                               const VkrRenderPassConfig *cfg);
 void vkr_renderer_renderpass_destroy(VkrRendererFrontendHandle renderer,
                                      VkrRenderPassHandle pass);
 VkrRenderPassHandle
 vkr_renderer_renderpass_get(VkrRendererFrontendHandle renderer, String8 name);
 
+/**
+ * @brief Retrieve the signature of a render pass for compatibility checking.
+ *
+ * @param renderer The renderer frontend handle
+ * @param pass The render pass handle
+ * @param out_signature Output signature struct (must not be NULL)
+ * @return true if signature was retrieved, false if pass is invalid
+ */
+bool8_t vkr_renderer_renderpass_get_signature(VkrRendererFrontendHandle renderer,
+                                              VkrRenderPassHandle pass,
+                                              VkrRenderPassSignature *out_signature);
+
+/**
+ * @brief Compare two render pass signatures for compatibility.
+ *
+ * Two signatures are compatible if they have the same attachment count,
+ * formats, and sample counts. This is required for framebuffer reuse
+ * and pipeline compatibility.
+ *
+ * @param a First signature
+ * @param b Second signature
+ * @return true if signatures are compatible, false otherwise
+ */
+bool8_t vkr_renderpass_signature_compatible(const VkrRenderPassSignature *a,
+                                            const VkrRenderPassSignature *b);
+
+/**
+ * @brief Policy for domain render pass override.
+ */
+typedef enum VkrDomainOverridePolicy {
+  /** Require new pass signature to be compatible with current domain pass */
+  VKR_DOMAIN_OVERRIDE_POLICY_REQUIRE_COMPATIBLE = 0,
+  /** Force override even if signatures are incompatible (invalidates cache) */
+  VKR_DOMAIN_OVERRIDE_POLICY_FORCE,
+} VkrDomainOverridePolicy;
+
+/**
+ * @brief Override the render pass used for a specific pipeline domain.
+ *
+ * Allows replacing the built-in domain render pass with a custom one.
+ * Useful for custom render pass configurations (e.g., different clear ops).
+ *
+ * @param renderer The renderer frontend handle
+ * @param domain The pipeline domain to override
+ * @param pass The new render pass to use for this domain
+ * @param policy Override policy (REQUIRE_COMPATIBLE or FORCE)
+ * @param out_error Optional output for error details
+ * @return true if override succeeded, false otherwise
+ */
+bool8_t vkr_renderer_domain_renderpass_set(VkrRendererFrontendHandle renderer,
+                                           VkrPipelineDomain domain,
+                                           VkrRenderPassHandle pass,
+                                           VkrDomainOverridePolicy policy,
+                                           VkrRendererError *out_error);
+
+/**
+ * @brief Create a render pass from an explicit descriptor.
+ *
+ * This function creates a render pass with full control over attachment
+ * configurations, including load/store ops, layouts, and clear values.
+ * Use this for custom render passes that don't fit the standard domain patterns.
+ *
+ * @param renderer The renderer frontend handle
+ * @param desc Render pass descriptor with explicit attachment configuration
+ * @param out_error Optional output for error details
+ * @return Handle to the created render pass, or NULL on failure
+ */
+VkrRenderPassHandle
+vkr_renderer_renderpass_create_desc(VkrRendererFrontendHandle renderer,
+                                    const VkrRenderPassDesc *desc,
+                                    VkrRendererError *out_error);
+
+/**
+ * @brief Create a render target with extended mip/layer addressing.
+ *
+ * This function creates a render target that can address specific mip levels
+ * and array layers of texture attachments. Useful for rendering to:
+ * - Specific mip levels during mip chain generation
+ * - Individual cubemap faces
+ * - Texture array slices
+ *
+ * @param renderer The renderer frontend handle
+ * @param desc Extended render target descriptor
+ * @param pass Render pass this target will be used with
+ * @param out_error Optional output for error details
+ * @return Handle to the created render target, or NULL on failure
+ */
 VkrRenderTargetHandle
 vkr_renderer_render_target_create(VkrRendererFrontendHandle renderer,
-                                  const VkrRenderTargetDesc *desc,
-                                  VkrRenderPassHandle pass);
+                                   const VkrRenderTargetDesc *desc,
+                                   VkrRenderPassHandle pass,
+                                   VkrRendererError *out_error);
+
 void vkr_renderer_render_target_destroy(VkrRendererFrontendHandle renderer,
                                         VkrRenderTargetHandle target,
                                         bool8_t free_internal_memory);
@@ -1323,13 +1536,19 @@ typedef struct VkrRendererBackendInterface {
                                 float64_t delta_time); // Includes present
 
   // --- Render Pass Management ---
-  VkrRenderPassHandle (*renderpass_create)(void *backend_state,
-                                           const VkrRenderPassConfig *cfg);
+  VkrRenderPassHandle (*renderpass_create_desc)(void *backend_state,
+                                                const VkrRenderPassDesc *desc,
+                                                VkrRendererError *out_error);
   void (*renderpass_destroy)(void *backend_state, VkrRenderPassHandle pass);
   VkrRenderPassHandle (*renderpass_get)(void *backend_state, const char *name);
+  bool8_t (*domain_renderpass_set)(void *backend_state, VkrPipelineDomain domain,
+                                   VkrRenderPassHandle pass,
+                                   VkrDomainOverridePolicy policy,
+                                   VkrRendererError *out_error);
   VkrRenderTargetHandle (*render_target_create)(void *backend_state,
-                                                const VkrRenderTargetDesc *desc,
-                                                VkrRenderPassHandle pass);
+                                                 const VkrRenderTargetDesc *desc,
+                                                 VkrRenderPassHandle pass,
+                                                 VkrRendererError *out_error);
   void (*render_target_destroy)(void *backend_state,
                                 VkrRenderTargetHandle target);
   VkrRendererError (*begin_render_pass)(void *backend_state,
@@ -1371,6 +1590,9 @@ typedef struct VkrRendererBackendInterface {
                                                       uint32_t height);
   VkrBackendResourceHandle (*sampled_depth_attachment_create)(
       void *backend_state, uint32_t width, uint32_t height);
+  VkrBackendResourceHandle (*render_target_texture_msaa_create)(
+      void *backend_state, uint32_t width, uint32_t height,
+      VkrTextureFormat format, VkrSampleCount samples);
   VkrRendererError (*texture_transition_layout)(void *backend_state,
                                                 VkrBackendResourceHandle handle,
                                                 VkrTextureLayout old_layout,
