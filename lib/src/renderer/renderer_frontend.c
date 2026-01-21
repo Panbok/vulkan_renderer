@@ -999,8 +999,7 @@ VkrRenderTargetHandle vkr_renderer_render_target_create(
 }
 
 void vkr_renderer_render_target_destroy(VkrRendererFrontendHandle renderer,
-                                        VkrRenderTargetHandle target,
-                                        bool8_t free_internal_memory) {
+                                        VkrRenderTargetHandle target) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(target != NULL, "Target is NULL");
 
