@@ -830,7 +830,7 @@ VkrRendererError vkr_renderer_flush_buffer(VkrRendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(buffer != NULL, "Buffer is NULL");
   if (!renderer->backend.buffer_flush) {
-    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
   }
   VkrBackendResourceHandle handle = {.ptr = (void *)buffer};
   return renderer->backend.buffer_flush(renderer->backend_state, handle, offset,
@@ -1548,6 +1548,8 @@ void vkr_renderer_update_readback_ring(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
+  assert_log(rf->backend.update_readback_ring != NULL,
+             "Update readback ring function is not supported");
   rf->backend.update_readback_ring(rf->backend_state);
 }
 
