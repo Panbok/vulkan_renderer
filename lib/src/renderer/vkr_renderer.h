@@ -1260,8 +1260,7 @@ vkr_renderer_render_target_create(VkrRendererFrontendHandle renderer,
                                    VkrRendererError *out_error);
 
 void vkr_renderer_render_target_destroy(VkrRendererFrontendHandle renderer,
-                                        VkrRenderTargetHandle target,
-                                        bool8_t free_internal_memory);
+                                        VkrRenderTargetHandle target);
 VkrTextureOpaqueHandle
 vkr_renderer_window_attachment_get(VkrRendererFrontendHandle renderer,
                                    uint32_t image_index);
