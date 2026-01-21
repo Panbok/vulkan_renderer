@@ -167,6 +167,8 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->last_window_height = initial.height;
   renderer->window->width = initial.width;
   renderer->window->height = initial.height;
+  uint32_t width = initial.width;
+  uint32_t height = initial.height;
 
   if (backend_type == VKR_RENDERER_BACKEND_TYPE_VULKAN) {
     renderer->backend = renderer_vulkan_get_interface();
@@ -175,38 +177,10 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
-  uint32_t width = initial.width;
-  uint32_t height = initial.height;
-  VkrRenderPassConfig pass_configs[3] = {
-      // Skybox renders first, clears everything
-      {.name = string8_lit("Renderpass.Builtin.Skybox"),
-       .prev_name = {0},
-       .next_name = string8_lit("Renderpass.Builtin.World"),
-       .domain = VKR_PIPELINE_DOMAIN_SKYBOX,
-       .render_area = (Vec4){0, 0, (float32_t)width, (float32_t)height},
-       .clear_color = (Vec4){0.0f, 0.0f, 0.0f, 1.0f},
-       .clear_flags = VKR_RENDERPASS_CLEAR_COLOR | VKR_RENDERPASS_CLEAR_DEPTH},
-      // World loads skybox content, uses depth without clearing
-      {.name = string8_lit("Renderpass.Builtin.World"),
-       .prev_name = string8_lit("Renderpass.Builtin.Skybox"),
-       .next_name = string8_lit("Renderpass.Builtin.UI"),
-       .domain = VKR_PIPELINE_DOMAIN_WORLD,
-       .render_area = (Vec4){0, 0, (float32_t)width, (float32_t)height},
-       .clear_color = (Vec4){0.1f, 0.1f, 0.2f, 1.0f},
-       .clear_flags = VKR_RENDERPASS_USE_DEPTH}, // LOAD color, use depth
-      // UI loads world content, no depth
-      {.name = string8_lit("Renderpass.Builtin.UI"),
-       .prev_name = string8_lit("Renderpass.Builtin.World"),
-       .next_name = (String8){0},
-       .domain = VKR_PIPELINE_DOMAIN_UI,
-       .render_area = (Vec4){0, 0, (float32_t)width, (float32_t)height},
-       .clear_color = (Vec4){0, 0, 0, 0},
-       .clear_flags = VKR_RENDERPASS_CLEAR_NONE}};
-
   VkrRendererBackendConfig local_backend_config = {
       .application_name = "vulkan_renderer",
-      .renderpass_count = ArrayCount(pass_configs),
-      .pass_configs = pass_configs,
+      .renderpass_desc_count = 0,
+      .pass_descs = NULL,
       .on_render_target_refresh_required =
           renderer_frontend_on_target_refresh_required,
   };
@@ -224,9 +198,8 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   }
 
   VkrDeviceInformation device_info = {0};
-  renderer->backend.get_device_information(renderer->backend_state,
-                                           &device_info,
-                                           renderer->scratch_arena);
+  renderer->backend.get_device_information(
+      renderer->backend_state, &device_info, renderer->scratch_arena);
   renderer->supports_multi_draw_indirect =
       device_info.supports_multi_draw_indirect;
   renderer->supports_draw_indirect_first_instance =
@@ -621,6 +594,30 @@ vkr_renderer_create_sampled_depth_attachment(VkrRendererFrontendHandle renderer,
   return (VkrTextureOpaqueHandle)handle.ptr;
 }
 
+VkrTextureOpaqueHandle vkr_renderer_create_render_target_texture_msaa(
+    VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
+    VkrTextureFormat format, VkrSampleCount samples,
+    VkrRendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  if (!renderer->backend.render_target_texture_msaa_create) {
+    *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    return NULL;
+  }
+
+  VkrBackendResourceHandle handle =
+      renderer->backend.render_target_texture_msaa_create(
+          renderer->backend_state, width, height, format, samples);
+  if (handle.ptr == NULL) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return NULL;
+  }
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return (VkrTextureOpaqueHandle)handle.ptr;
+}
+
 VkrRendererError vkr_renderer_transition_texture_layout(
     VkrRendererFrontendHandle renderer, VkrTextureOpaqueHandle texture,
     VkrTextureLayout old_layout, VkrTextureLayout new_layout) {
@@ -836,8 +833,8 @@ VkrRendererError vkr_renderer_flush_buffer(VkrRendererFrontendHandle renderer,
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
   VkrBackendResourceHandle handle = {.ptr = (void *)buffer};
-  return renderer->backend.buffer_flush(renderer->backend_state, handle,
-                                        offset, size);
+  return renderer->backend.buffer_flush(renderer->backend_state, handle, offset,
+                                        size);
 }
 
 void vkr_renderer_set_instance_buffer(VkrRendererFrontendHandle renderer,
@@ -862,17 +859,6 @@ VkrRendererError vkr_renderer_upload_buffer(VkrRendererFrontendHandle renderer,
   VkrBackendResourceHandle handle = {.ptr = (void *)buffer};
   return renderer->backend.buffer_upload(renderer->backend_state, handle,
                                          offset, size, data);
-}
-
-VkrRenderPassHandle
-vkr_renderer_renderpass_create(VkrRendererFrontendHandle renderer,
-                               const VkrRenderPassConfig *cfg) {
-  assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(cfg != NULL, "Render pass config is NULL");
-  if (!renderer->backend.renderpass_create) {
-    return NULL;
-  }
-  return renderer->backend.renderpass_create(renderer->backend_state, cfg);
 }
 
 void vkr_renderer_renderpass_destroy(VkrRendererFrontendHandle renderer,
@@ -905,27 +891,123 @@ vkr_renderer_renderpass_get(VkrRendererFrontendHandle renderer, String8 name) {
   return handle;
 }
 
-VkrRenderTargetHandle
-vkr_renderer_render_target_create(VkrRendererFrontendHandle renderer,
-                                  const VkrRenderTargetDesc *desc,
-                                  VkrRenderPassHandle pass) {
+bool8_t
+vkr_renderer_renderpass_get_signature(VkrRendererFrontendHandle renderer,
+                                      VkrRenderPassHandle pass,
+                                      VkrRenderPassSignature *out_signature) {
+  if (!renderer || !pass || !out_signature) {
+    return false_v;
+  }
+
+  struct s_RenderPass *rp = (struct s_RenderPass *)pass;
+  if (!rp->vk || rp->vk->handle == VK_NULL_HANDLE) {
+    return false_v;
+  }
+
+  *out_signature = rp->vk->signature;
+  return true_v;
+}
+
+bool8_t vkr_renderpass_signature_compatible(const VkrRenderPassSignature *a,
+                                            const VkrRenderPassSignature *b) {
+  assert_log(a != NULL, "A is NULL");
+  assert_log(b != NULL, "B is NULL");
+
+  if (a->color_attachment_count != b->color_attachment_count) {
+    return false_v;
+  }
+
+  for (uint8_t i = 0; i < a->color_attachment_count; ++i) {
+    if (a->color_formats[i] != b->color_formats[i] ||
+        a->color_samples[i] != b->color_samples[i]) {
+      return false_v;
+    }
+  }
+
+  if (a->has_depth_stencil != b->has_depth_stencil) {
+    return false_v;
+  }
+
+  if (a->has_depth_stencil) {
+    if (a->depth_stencil_format != b->depth_stencil_format ||
+        a->depth_stencil_samples != b->depth_stencil_samples) {
+      return false_v;
+    }
+  }
+
+  if (a->has_resolve_attachments != b->has_resolve_attachments ||
+      a->resolve_attachment_count != b->resolve_attachment_count) {
+    return false_v;
+  }
+
+  return true_v;
+}
+
+bool8_t vkr_renderer_domain_renderpass_set(VkrRendererFrontendHandle renderer,
+                                           VkrPipelineDomain domain,
+                                           VkrRenderPassHandle pass,
+                                           VkrDomainOverridePolicy policy,
+                                           VkrRendererError *out_error) {
   assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(desc != NULL, "Render target description is NULL");
-  if (!renderer->backend.render_target_create) {
+  assert_log(pass != NULL, "Pass is NULL");
+
+  if (!renderer->backend.domain_renderpass_set) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    }
+    return false_v;
+  }
+
+  return renderer->backend.domain_renderpass_set(
+      renderer->backend_state, domain, pass, policy, out_error);
+}
+
+VkrRenderPassHandle
+vkr_renderer_renderpass_create_desc(VkrRendererFrontendHandle renderer,
+                                    const VkrRenderPassDesc *desc,
+                                    VkrRendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(desc != NULL, "Desc is NULL");
+
+  if (!renderer->backend.renderpass_create_desc) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    }
     return NULL;
   }
+
+  return renderer->backend.renderpass_create_desc(renderer->backend_state, desc,
+                                                  out_error);
+}
+
+VkrRenderTargetHandle vkr_renderer_render_target_create(
+    VkrRendererFrontendHandle renderer, const VkrRenderTargetDesc *desc,
+    VkrRenderPassHandle pass, VkrRendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(desc != NULL, "Desc is NULL");
+  assert_log(pass != NULL, "Pass is NULL");
+
+  if (!renderer->backend.render_target_create) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    }
+    return NULL;
+  }
+
   return renderer->backend.render_target_create(renderer->backend_state, desc,
-                                                pass);
+                                                pass, out_error);
 }
 
 void vkr_renderer_render_target_destroy(VkrRendererFrontendHandle renderer,
                                         VkrRenderTargetHandle target,
                                         bool8_t free_internal_memory) {
-  (void)free_internal_memory;
   assert_log(renderer != NULL, "Renderer is NULL");
-  if (!target || !renderer->backend.render_target_destroy) {
+  assert_log(target != NULL, "Target is NULL");
+
+  if (!renderer->backend.render_target_destroy) {
     return;
   }
+
   renderer->backend.render_target_destroy(renderer->backend_state, target);
 }
 
@@ -1137,17 +1219,18 @@ void vkr_renderer_draw_indexed_indirect(VkrRendererFrontendHandle renderer,
                                         uint64_t offset, uint32_t draw_count,
                                         uint32_t stride) {
   assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(renderer->frame_active, "Draw indexed indirect called outside of frame");
+  assert_log(renderer->frame_active,
+             "Draw indexed indirect called outside of frame");
   assert_log(indirect_buffer != NULL, "Indirect buffer is NULL");
 
   if (!renderer->backend.draw_indexed_indirect) {
     return;
   }
 
-  renderer->backend.draw_indexed_indirect(renderer->backend_state,
-                                          (VkrBackendResourceHandle){
-                                              .ptr = (void *)indirect_buffer},
-                                          offset, draw_count, stride);
+  renderer->backend.draw_indexed_indirect(
+      renderer->backend_state,
+      (VkrBackendResourceHandle){.ptr = (void *)indirect_buffer}, offset,
+      draw_count, stride);
 }
 
 VkrRendererError vkr_renderer_end_frame(VkrRendererFrontendHandle renderer,
