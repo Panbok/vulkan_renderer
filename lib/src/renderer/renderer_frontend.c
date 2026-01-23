@@ -255,13 +255,13 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
 
   vkr_view_system_shutdown(rf);
   vkr_lighting_system_shutdown(&rf->lighting_system);
+  vkr_mesh_manager_shutdown(&rf->mesh_manager);
   vkr_pipeline_registry_shutdown(&rf->pipeline_registry);
   vkr_instance_buffer_pool_shutdown(&rf->instance_buffer_pool, rf);
   vkr_indirect_draw_shutdown(&rf->indirect_draw_system, rf);
 
   vkr_shader_system_shutdown(&rf->shader_system);
   vkr_texture_system_shutdown(rf, &rf->texture_system);
-  vkr_mesh_manager_shutdown(&rf->mesh_manager);
   vkr_font_system_shutdown(&rf->font_system);
   vkr_material_system_shutdown(&rf->material_system);
   vkr_geometry_system_shutdown(&rf->geometry_system);
@@ -1340,7 +1340,7 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
-  VkrMeshManagerConfig mesh_cfg = {.max_mesh_count = 1024};
+  VkrMeshManagerConfig mesh_cfg = {.max_mesh_count = 100000};
   if (!vkr_mesh_manager_init(&rf->mesh_manager, &rf->geometry_system,
                              &rf->material_system, &rf->pipeline_registry,
                              &mesh_cfg)) {
