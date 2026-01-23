@@ -60,8 +60,9 @@
     assert_log(allocator != NULL, "Allocator is NULL");                        \
     assert_log(length > 0, "Length is 0");                                     \
                                                                                \
-    type *buf = vkr_allocator_alloc(allocator, length * sizeof(type),          \
-                                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY);           \
+    type *buf = vkr_allocator_alloc_aligned(                                   \
+        allocator, length * sizeof(type), AlignOf(type),                       \
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);                                       \
     assert_log(buf != NULL, "allocator alloc failed for array_create");        \
     Array_##name array = {allocator, buf ? length : 0, buf};                   \
     return array;                                                              \
@@ -101,9 +102,10 @@
   static inline void array_destroy_##name(Array_##name *array) {               \
     assert_log(array != NULL, "Array is NULL");                                \
     if (array->allocator && array->data) {                                     \
-      vkr_allocator_free(array->allocator, array->data,                        \
-                         array->length * sizeof(type),                         \
-                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);                      \
+      vkr_allocator_free_aligned(array->allocator, array->data,                \
+                                 array->length * sizeof(type),                \
+                                 AlignOf(type),                                \
+                                 VKR_ALLOCATOR_MEMORY_TAG_ARRAY);              \
     }                                                                          \
     array->data = NULL;                                                        \
     array->allocator = NULL;                                                   \
