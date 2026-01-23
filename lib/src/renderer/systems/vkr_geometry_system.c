@@ -1,5 +1,17 @@
 #include "renderer/systems/vkr_geometry_system.h"
 
+void vkr_geometry_system_render_instanced_range_with_index_buffer(
+    VkrRendererFrontendHandle renderer, VkrGeometrySystem *system,
+    VkrGeometryHandle handle, const VkrIndexBuffer *index_buffer,
+    uint32_t index_count, uint32_t first_index, int32_t vertex_offset,
+    uint32_t instance_count, uint32_t first_instance);
+
+void vkr_geometry_system_render_indirect_with_index_buffer(
+    VkrRendererFrontendHandle renderer, VkrGeometrySystem *system,
+    VkrGeometryHandle handle, const VkrIndexBuffer *index_buffer,
+    VkrBufferHandle indirect_buffer, uint64_t offset, uint32_t draw_count,
+    uint32_t stride);
+
 #include "containers/str.h"
 #include "math/vec.h"
 #include "math/vkr_math.h"
@@ -357,6 +369,11 @@ void vkr_geometry_system_shutdown(VkrGeometrySystem *system) {
       vkr_index_buffer_destroy(system->renderer, &geometry->index_buffer);
       geometry->index_buffer.handle = NULL;
     }
+    if (geometry->opaque_index_buffer.handle) {
+      vkr_index_buffer_destroy(system->renderer,
+                               &geometry->opaque_index_buffer);
+      geometry->opaque_index_buffer.handle = NULL;
+    }
   }
 
   array_destroy_VkrGeometry(&system->geometries);
@@ -383,6 +400,10 @@ vkr_internal VkrGeometryHandle geometry_creation_failure(
   if (geom->index_buffer.handle) {
     vkr_index_buffer_destroy(system->renderer, &geom->index_buffer);
     geom->index_buffer.handle = NULL;
+  }
+  if (geom->opaque_index_buffer.handle) {
+    vkr_index_buffer_destroy(system->renderer, &geom->opaque_index_buffer);
+    geom->opaque_index_buffer.handle = NULL;
   }
 
   uint32_t slot = (handle.id > 0) ? (handle.id - 1) : 0;
@@ -1327,6 +1348,11 @@ void vkr_geometry_system_release(VkrGeometrySystem *system,
       vkr_index_buffer_destroy(system->renderer, &geometry->index_buffer);
       geometry->index_buffer.handle = NULL;
     }
+    if (geometry->opaque_index_buffer.handle) {
+      vkr_index_buffer_destroy(system->renderer,
+                               &geometry->opaque_index_buffer);
+      geometry->opaque_index_buffer.handle = NULL;
+    }
 
     if (geometry->name[0] != '\0') {
       vkr_hash_table_remove_VkrGeometryEntry(&system->geometry_by_name,
@@ -1336,6 +1362,7 @@ void vkr_geometry_system_release(VkrGeometrySystem *system,
     geometry->material_name[0] = '\0';
     geometry->vertex_count = 0;
     geometry->index_count = 0;
+    geometry->opaque_index_count = 0;
     geometry->vertex_size = 0;
     geometry->index_size = 0;
     geometry->id = 0;
@@ -1357,6 +1384,50 @@ void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
                                 VkrGeometrySystem *system,
                                 VkrGeometryHandle handle,
                                 uint32_t instance_count) {
+  vkr_geometry_system_render_instanced_range(renderer, system, handle,
+                                             UINT32_MAX, 0, 0, instance_count,
+                                             0);
+}
+
+void vkr_geometry_system_render_instanced(VkrRendererFrontendHandle renderer,
+                                          VkrGeometrySystem *system,
+                                          VkrGeometryHandle handle,
+                                          uint32_t instance_count,
+                                          uint32_t first_instance) {
+  vkr_geometry_system_render_instanced_range(
+      renderer, system, handle, UINT32_MAX, 0, 0, instance_count,
+      first_instance);
+}
+
+void vkr_geometry_system_render_instanced_range(VkrRendererFrontendHandle renderer,
+                                                VkrGeometrySystem *system,
+                                                VkrGeometryHandle handle,
+                                                uint32_t index_count,
+                                                uint32_t first_index,
+                                                int32_t vertex_offset,
+                                                uint32_t instance_count,
+                                                uint32_t first_instance) {
+  vkr_geometry_system_render_instanced_range_with_index_buffer(
+      renderer, system, handle, NULL, index_count, first_index, vertex_offset,
+      instance_count, first_instance);
+}
+
+void vkr_geometry_system_render_indirect(VkrRendererFrontendHandle renderer,
+                                         VkrGeometrySystem *system,
+                                         VkrGeometryHandle handle,
+                                         VkrBufferHandle indirect_buffer,
+                                         uint64_t offset, uint32_t draw_count,
+                                         uint32_t stride) {
+  vkr_geometry_system_render_indirect_with_index_buffer(
+      renderer, system, handle, NULL, indirect_buffer, offset, draw_count,
+      stride);
+}
+
+void vkr_geometry_system_render_instanced_range_with_index_buffer(
+    VkrRendererFrontendHandle renderer, VkrGeometrySystem *system,
+    VkrGeometryHandle handle, const VkrIndexBuffer *index_buffer,
+    uint32_t index_count, uint32_t first_index, int32_t vertex_offset,
+    uint32_t instance_count, uint32_t first_instance) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(system != NULL, "System is NULL");
   assert_log(handle.id != 0, "Handle is invalid");
@@ -1366,7 +1437,10 @@ void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
   if (!geometry)
     return;
 
-  if (!geometry->vertex_buffer.handle || !geometry->index_buffer.handle)
+  const VkrIndexBuffer *resolved_index =
+      index_buffer ? index_buffer : &geometry->index_buffer;
+
+  if (!geometry->vertex_buffer.handle || !resolved_index->handle)
     return;
 
   VkrVertexBufferBinding vbb = {
@@ -1377,14 +1451,56 @@ void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
   vkr_renderer_bind_vertex_buffer(renderer, &vbb);
 
   VkrIndexBufferBinding ibb = {
-      .buffer = geometry->index_buffer.handle,
-      .type = geometry->index_buffer.type,
+      .buffer = resolved_index->handle,
+      .type = resolved_index->type,
       .offset = 0,
   };
   vkr_renderer_bind_index_buffer(renderer, &ibb);
 
-  vkr_renderer_draw_indexed(renderer, geometry->index_count, instance_count, 0,
-                            0, 0);
+  uint32_t draw_index_count =
+      (index_count != UINT32_MAX) ? index_count : resolved_index->index_count;
+  vkr_renderer_draw_indexed(renderer, draw_index_count, instance_count,
+                            first_index, vertex_offset, first_instance);
+}
+
+void vkr_geometry_system_render_indirect_with_index_buffer(
+    VkrRendererFrontendHandle renderer, VkrGeometrySystem *system,
+    VkrGeometryHandle handle, const VkrIndexBuffer *index_buffer,
+    VkrBufferHandle indirect_buffer, uint64_t offset, uint32_t draw_count,
+    uint32_t stride) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(system != NULL, "System is NULL");
+  assert_log(handle.id != 0, "Handle is invalid");
+  assert_log(indirect_buffer != NULL, "Indirect buffer is NULL");
+  assert_log(draw_count > 0, "Draw count must be > 0");
+  assert_log(stride > 0, "Stride must be > 0");
+
+  VkrGeometry *geometry = vkr_geometry_from_handle(system, handle);
+  if (!geometry)
+    return;
+
+  const VkrIndexBuffer *resolved_index =
+      index_buffer ? index_buffer : &geometry->index_buffer;
+
+  if (!geometry->vertex_buffer.handle || !resolved_index->handle)
+    return;
+
+  VkrVertexBufferBinding vbb = {
+      .buffer = geometry->vertex_buffer.handle,
+      .binding = 0,
+      .offset = 0,
+  };
+  vkr_renderer_bind_vertex_buffer(renderer, &vbb);
+
+  VkrIndexBufferBinding ibb = {
+      .buffer = resolved_index->handle,
+      .type = resolved_index->type,
+      .offset = 0,
+  };
+  vkr_renderer_bind_index_buffer(renderer, &ibb);
+
+  vkr_renderer_draw_indexed_indirect(renderer, indirect_buffer, offset,
+                                     draw_count, stride);
 }
 
 void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,

@@ -293,6 +293,43 @@ void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
                                 VkrGeometrySystem *system,
                                 VkrGeometryHandle handle,
                                 uint32_t instance_count);
+void vkr_geometry_system_render_instanced(VkrRendererFrontendHandle renderer,
+                                          VkrGeometrySystem *system,
+                                          VkrGeometryHandle handle,
+                                          uint32_t instance_count,
+                                          uint32_t first_instance);
+/**
+ * @brief Renders a sub-range of a geometry's index buffer.
+ *
+ * Pass index_count == UINT32_MAX to draw the full geometry range. Callers must
+ * supply ranges that stay within the geometry's index buffer.
+ */
+void vkr_geometry_system_render_instanced_range(VkrRendererFrontendHandle renderer,
+                                                VkrGeometrySystem *system,
+                                                VkrGeometryHandle handle,
+                                                uint32_t index_count,
+                                                uint32_t first_index,
+                                                int32_t vertex_offset,
+                                                uint32_t instance_count,
+                                                uint32_t first_instance);
+
+void vkr_geometry_system_render_instanced_range_with_index_buffer(
+    VkrRendererFrontendHandle renderer, VkrGeometrySystem *system,
+    VkrGeometryHandle handle, const VkrIndexBuffer *index_buffer,
+    uint32_t index_count, uint32_t first_index, int32_t vertex_offset,
+    uint32_t instance_count, uint32_t first_instance);
+void vkr_geometry_system_render_indirect(VkrRendererFrontendHandle renderer,
+                                         VkrGeometrySystem *system,
+                                         VkrGeometryHandle handle,
+                                         VkrBufferHandle indirect_buffer,
+                                         uint64_t offset, uint32_t draw_count,
+                                         uint32_t stride);
+
+void vkr_geometry_system_render_indirect_with_index_buffer(
+    VkrRendererFrontendHandle renderer, VkrGeometrySystem *system,
+    VkrGeometryHandle handle, const VkrIndexBuffer *index_buffer,
+    VkrBufferHandle indirect_buffer, uint64_t offset, uint32_t draw_count,
+    uint32_t stride);
 
 // =============================================================================
 // Helpers
