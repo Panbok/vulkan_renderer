@@ -889,14 +889,15 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
     uint32_t *mesh_entity_indices =
         vkr_allocator_alloc(temp_alloc, mesh_desc_count * sizeof(uint32_t),
                             VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    uint32_t *mesh_indices =
-        vkr_allocator_alloc(temp_alloc, mesh_desc_count * sizeof(uint32_t),
-                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    VkrMeshInstanceHandle *instance_handles = vkr_allocator_alloc(
+        temp_alloc, mesh_desc_count * sizeof(VkrMeshInstanceHandle),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     VkrRendererError *mesh_errors = vkr_allocator_alloc(
         temp_alloc, mesh_desc_count * sizeof(VkrRendererError),
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
-    if (!mesh_descs || !mesh_entity_indices || !mesh_indices || !mesh_errors) {
+    if (!mesh_descs || !mesh_entity_indices || !instance_handles ||
+        !mesh_errors) {
       if (out_error)
         *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
       log_error("Scene loader: failed to allocate mesh load buffers");
@@ -920,13 +921,14 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
       desc_index++;
     }
 
-    vkr_mesh_manager_load_batch(&rf->mesh_manager, mesh_descs, mesh_desc_count,
-                                mesh_indices, mesh_errors);
+    vkr_mesh_manager_create_instances_batch(&rf->mesh_manager, mesh_descs,
+                                            mesh_desc_count, instance_handles,
+                                            mesh_errors);
 
     for (uint32_t i = 0; i < mesh_desc_count; i++) {
-      uint32_t mesh_index = mesh_indices[i];
+      VkrMeshInstanceHandle instance = instance_handles[i];
       VkrRendererError mesh_err = mesh_errors[i];
-      if (mesh_index == VKR_INVALID_ID || mesh_err != VKR_RENDERER_ERROR_NONE) {
+      if (instance.id == 0 || mesh_err != VKR_RENDERER_ERROR_NONE) {
         String8 err_str = vkr_renderer_get_error_string(mesh_err);
         log_error("Scene loader: failed to load mesh '%.*s': %.*s",
                   (int)mesh_descs[i].mesh_path.length,
@@ -938,7 +940,7 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
       uint32_t entity_index = mesh_entity_indices[i];
       VkrEntityId entity = entity_ids[entity_index];
 
-      if (!vkr_scene_set_mesh_renderer(scene, entity, mesh_index)) {
+      if (!vkr_scene_set_mesh_renderer(scene, entity, instance)) {
         if (out_error)
           *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
         log_error("Scene loader: failed to add mesh renderer to entity %u",
@@ -946,8 +948,8 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
         return false_v;
       }
 
-      if (!vkr_scene_track_mesh(scene, mesh_index, out_error)) {
-        log_error("Scene loader: failed to track mesh %u", mesh_index);
+      if (!vkr_scene_track_instance(scene, instance, out_error)) {
+        log_error("Scene loader: failed to track instance %u", instance.id);
         return false_v;
       }
 
