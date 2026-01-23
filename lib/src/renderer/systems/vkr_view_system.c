@@ -106,7 +106,7 @@ vkr_internal void vkr_view_system_destroy_pass_targets(RendererFrontend *rf,
 
   for (uint32_t i = 0; i < pass->render_target_count; ++i) {
     if (pass->render_targets[i]) {
-      vkr_renderer_render_target_destroy(rf, pass->render_targets[i], false_v);
+      vkr_renderer_render_target_destroy(rf, pass->render_targets[i]);
     }
   }
 
@@ -603,22 +603,32 @@ void vkr_view_system_rebuild_targets(VkrRendererFrontendHandle renderer) {
       pass->render_target_count = count;
 
       for (uint32_t image_index = 0; image_index < count; ++image_index) {
-        VkrTextureOpaqueHandle attachments[2] = {0};
+        VkrRenderTargetAttachmentRef attachments[2] = {0};
         uint8_t attachment_count = 0;
 
         if (pass->use_swapchain_color) {
-          attachments[attachment_count++] =
-              vkr_renderer_window_attachment_get(renderer, image_index);
+          attachments[attachment_count++] = (VkrRenderTargetAttachmentRef){
+              .texture =
+                  vkr_renderer_window_attachment_get(renderer, image_index),
+              .mip_level = 0,
+              .base_layer = 0,
+              .layer_count = 1,
+          };
         }
 
         if (pass->use_depth) {
           if (!depth) {
             log_error("Depth attachment unavailable for layer %s",
                       layer->name.str ? (const char *)layer->name.str
-                                      : "<unnamed>");
+                                    : "<unnamed>");
             continue;
           }
-          attachments[attachment_count++] = depth;
+          attachments[attachment_count++] = (VkrRenderTargetAttachmentRef){
+              .texture = depth,
+              .mip_level = 0,
+              .base_layer = 0,
+              .layer_count = 1,
+          };
         }
 
         if (attachment_count == 0) {
@@ -637,14 +647,17 @@ void vkr_view_system_rebuild_targets(VkrRendererFrontendHandle renderer) {
             .height = vkr_view_system_layer_height(vs, layer),
         };
 
+        VkrRendererError rt_err = VKR_RENDERER_ERROR_NONE;
         pass->render_targets[image_index] = vkr_renderer_render_target_create(
-            renderer, &desc, pass->renderpass);
+            renderer, &desc, pass->renderpass, &rt_err);
 
         if (!pass->render_targets[image_index]) {
+          String8 err = vkr_renderer_get_error_string(rt_err);
           log_error("Failed to create render target for layer %s image %u",
                     layer->name.str ? (const char *)layer->name.str
                                     : "<unnamed>",
                     image_index);
+          log_error("Render target error: %s", string8_cstr(&err));
         }
       }
     }
