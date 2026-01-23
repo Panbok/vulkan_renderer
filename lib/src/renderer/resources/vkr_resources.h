@@ -212,6 +212,7 @@ typedef struct VkrMesh {
   Array_VkrSubMesh submeshes;
   VkrMeshLoadingState loading_state;
   uint32_t render_id;
+  uint32_t live_index; // Index in mesh manager's active mesh list.
   bool8_t visible;
 
   // Bounding sphere for frustum culling
@@ -222,6 +223,138 @@ typedef struct VkrMesh {
   float32_t bounds_world_radius;
 } VkrMesh;
 Array(VkrMesh);
+
+// =============================================================================
+// Mesh Asset Types (Shared per unique mesh file + overrides)
+// =============================================================================
+
+/**
+ * @brief Handle to a shared mesh asset.
+ *
+ * Assets store geometry, material, and draw range data that is shared across
+ * all instances referencing the same mesh file with identical overrides.
+ */
+typedef struct VkrMeshAssetHandle {
+  uint32_t id;
+  uint32_t generation;
+} VkrMeshAssetHandle;
+
+#define VKR_MESH_ASSET_HANDLE_INVALID                                          \
+  (VkrMeshAssetHandle) { .id = 0, .generation = VKR_INVALID_ID }
+
+/**
+ * @brief Submesh data stored in a mesh asset (shared across instances).
+ *
+ * Contains geometry, material, and draw range information that is identical
+ * for all instances using this asset. Per-instance state (pipeline handles,
+ * instance descriptors) is stored separately in VkrMeshSubmeshInstanceState.
+ */
+typedef struct VkrMeshAssetSubmesh {
+  VkrGeometryHandle geometry;
+  VkrMaterialHandle material;
+  VkrPipelineDomain pipeline_domain;
+  String8 shader_override; // Owned stable copy
+
+  uint32_t range_id;
+  uint32_t first_index;
+  uint32_t index_count;
+  int32_t vertex_offset;
+
+  uint32_t opaque_first_index;
+  uint32_t opaque_index_count;
+  int32_t opaque_vertex_offset;
+
+  Vec3 center;
+  Vec3 min_extents;
+  Vec3 max_extents;
+
+  bool8_t owns_geometry;
+  bool8_t owns_material;
+} VkrMeshAssetSubmesh;
+Array(VkrMeshAssetSubmesh);
+
+/**
+ * @brief Shared mesh asset storing geometry/material data for multiple instances.
+ *
+ * A mesh asset is created once per unique (mesh_path, pipeline_domain,
+ * shader_override) combination. Multiple mesh instances can reference the same
+ * asset, sharing the submesh array and local bounds.
+ *
+ * @note Strings (mesh_path, shader_override) are owned copies allocated from a
+ * freeable allocator and must be freed when the asset is destroyed.
+ */
+typedef struct VkrMeshAsset {
+  uint32_t id;
+  uint32_t generation;
+
+  String8 mesh_path;       // Owned (freeable allocator)
+  VkrPipelineDomain domain;
+  String8 shader_override; // Owned (freeable allocator)
+  char *key_string;        // Owned key for asset_by_key removal
+
+  Array_VkrMeshAssetSubmesh submeshes;
+
+  bool8_t bounds_valid;
+  Vec3 bounds_local_center;
+  float32_t bounds_local_radius;
+
+  uint32_t ref_count; // Number of live instances referencing this asset
+} VkrMeshAsset;
+Array(VkrMeshAsset);
+
+// =============================================================================
+// Mesh Instance Types (Per-entity state)
+// =============================================================================
+
+/**
+ * @brief Handle to a mesh instance.
+ */
+typedef struct VkrMeshInstanceHandle {
+  uint32_t id;
+  uint32_t generation;
+} VkrMeshInstanceHandle;
+
+#define VKR_MESH_INSTANCE_HANDLE_INVALID                                       \
+  (VkrMeshInstanceHandle) { .id = 0, .generation = VKR_INVALID_ID }
+
+/**
+ * @brief Per-submesh instance state that cannot be shared across instances.
+ *
+ * Each instance has its own array of these, sized to match the asset's submesh
+ * count. Contains pipeline handles and descriptor set bindings that are
+ * instance-specific.
+ */
+typedef struct VkrMeshSubmeshInstanceState {
+  VkrPipelineHandle pipeline;
+  VkrRendererInstanceStateHandle instance_state;
+  bool8_t pipeline_dirty;
+  uint64_t last_render_frame;
+} VkrMeshSubmeshInstanceState;
+Array(VkrMeshSubmeshInstanceState);
+
+/**
+ * @brief Per-entity mesh instance referencing a shared asset.
+ *
+ * Stores transform, visibility, and per-submesh pipeline state. The actual
+ * geometry/material data is retrieved from the referenced asset.
+ */
+typedef struct VkrMeshInstance {
+  VkrMeshAssetHandle asset;
+  uint32_t generation; // Handle generation for stale-handle detection.
+  uint32_t live_index; // Index in mesh manager's active instance list.
+
+  Mat4 model;
+  uint32_t render_id;
+  bool8_t visible;
+  VkrMeshLoadingState loading_state;
+
+  bool8_t bounds_valid;
+  Vec3 bounds_world_center;
+  float32_t bounds_world_radius;
+
+  Array_VkrMeshSubmeshInstanceState submesh_state;
+} VkrMeshInstance;
+Array(VkrMeshInstance);
 
 // =============================================================================
 // Shader resource types (decoupled from systems)
