@@ -7,6 +7,21 @@
 #include "renderer/systems/vkr_pipeline_registry.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_shader_system.h"
+#include "renderer/vulkan/vulkan_types.h"
+
+vkr_internal VkrTextureFormat vkr_shadow_get_depth_format(RendererFrontend *rf) {
+  if (!rf) {
+    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  }
+
+  VkrTextureOpaqueHandle depth_tex = vkr_renderer_depth_attachment_get(rf);
+  if (!depth_tex) {
+    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  }
+
+  struct s_TextureHandle *handle = (struct s_TextureHandle *)depth_tex;
+  return handle->description.format;
+}
 
 // ============================================================================
 // Cascade Helpers
@@ -300,15 +315,34 @@ vkr_internal bool8_t vkr_shadow_create_renderpass(VkrShadowSystem *system,
   VkrRenderPassHandle pass =
       vkr_renderer_renderpass_get(rf, string8_lit("Renderpass.CSM.Shadow"));
   if (!pass) {
-    VkrRenderPassConfig cfg = {
-        .name = string8_lit("Renderpass.CSM.Shadow"),
-        .clear_flags = VKR_RENDERPASS_CLEAR_DEPTH,
-        .domain = VKR_PIPELINE_DOMAIN_SHADOW,
-        .render_area = vec4_new(0.0f, 0.0f, 0.0f, 0.0f),
+    VkrTextureFormat depth_format = vkr_shadow_get_depth_format(rf);
+    VkrClearValue clear_depth = {.depth_stencil = {1.0f, 0}};
+    VkrRenderPassAttachmentDesc depth_attachment = {
+        .format = depth_format,
+        .samples = VKR_SAMPLE_COUNT_1,
+        .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+        .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+        .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+        .final_layout = VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+        .clear_value = clear_depth,
     };
-    pass = vkr_renderer_renderpass_create(rf, &cfg);
+    VkrRenderPassDesc desc = {
+        .name = string8_lit("Renderpass.CSM.Shadow"),
+        .domain = VKR_PIPELINE_DOMAIN_SHADOW,
+        .color_attachment_count = 0,
+        .color_attachments = NULL,
+        .depth_stencil_attachment = &depth_attachment,
+        .resolve_attachment_count = 0,
+        .resolve_attachments = NULL,
+    };
+    VkrRendererError pass_err = VKR_RENDERER_ERROR_NONE;
+    pass = vkr_renderer_renderpass_create_desc(rf, &desc, &pass_err);
     if (!pass) {
+      String8 err = vkr_renderer_get_error_string(pass_err);
       log_error("Failed to create shadow render pass");
+      log_error("Renderpass error: %s", string8_cstr(&err));
       return false_v;
     }
     system->owns_renderpass = true_v;
@@ -350,8 +384,12 @@ vkr_internal bool8_t vkr_shadow_create_shadow_maps(VkrShadowSystem *system,
         return false_v;
       }
 
-      VkrTextureOpaqueHandle attachments[1] = {
-          system->frames[f].shadow_maps[c]};
+      VkrRenderTargetAttachmentRef attachments[1] = {
+          {.texture = system->frames[f].shadow_maps[c],
+           .mip_level = 0,
+           .base_layer = 0,
+           .layer_count = 1},
+      };
       VkrRenderTargetDesc rt_desc = {
           .sync_to_window_size = false_v,
           .attachment_count = 1,
@@ -360,12 +398,15 @@ vkr_internal bool8_t vkr_shadow_create_shadow_maps(VkrShadowSystem *system,
           .height = size,
       };
 
+      VkrRendererError rt_err = VKR_RENDERER_ERROR_NONE;
       system->frames[f].shadow_targets[c] = vkr_renderer_render_target_create(
-          rf, &rt_desc, system->shadow_renderpass);
+          rf, &rt_desc, system->shadow_renderpass, &rt_err);
       if (!system->frames[f].shadow_targets[c]) {
+        String8 err = vkr_renderer_get_error_string(rt_err);
         log_error(
             "Failed to create shadow render target (frame %u, cascade %u)", f,
             c);
+        log_error("Render target error: %s", string8_cstr(&err));
         return false_v;
       }
     }
@@ -564,7 +605,7 @@ void vkr_shadow_system_shutdown(VkrShadowSystem *system, RendererFrontend *rf) {
       for (uint32_t c = 0; c < system->config.cascade_count; ++c) {
         if (system->frames[f].shadow_targets[c]) {
           vkr_renderer_render_target_destroy(
-              rf, system->frames[f].shadow_targets[c], true_v);
+              rf, system->frames[f].shadow_targets[c]);
           system->frames[f].shadow_targets[c] = NULL;
         }
         if (system->frames[f].shadow_maps[c]) {

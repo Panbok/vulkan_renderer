@@ -171,7 +171,7 @@ typedef struct VkrShadowConfig {
 /**
  * @brief Project-wide default.
  */
-#define VKR_SHADOW_CONFIG_DEFAULT VKR_SHADOW_CONFIG_BALANCED
+#define VKR_SHADOW_CONFIG_DEFAULT VKR_SHADOW_CONFIG_HIGH
 
 static INLINE uint32_t vkr_shadow_config_get_cascade_map_size(
     const VkrShadowConfig *config, uint32_t cascade_index) {
