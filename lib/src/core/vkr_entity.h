@@ -8,6 +8,7 @@
 
 #include "containers/array.h"
 #include "containers/vkr_hashtable.h"
+#include "defines.h"
 #include "memory/vkr_allocator.h"
 
 /**
@@ -62,6 +63,7 @@ Array(VkrEntityId);
 
 typedef uint16_t VkrComponentTypeId;
 #define VKR_COMPONENT_TYPE_INVALID ((VkrComponentTypeId)0xFFFFu)
+#define VKR_ENTITY_TYPE_TO_COL_INVALID ((uint16_t)0xFFFFu)
 
 #define VKR_SIG_WORDS 4
 
@@ -321,12 +323,44 @@ VkrEntityId vkr_entity_create_entity_with_components(
 bool8_t vkr_entity_destroy_entity(VkrWorld *world, VkrEntityId id);
 
 /**
- * @brief Check if an entity is alive
- * @param world World to check the entity in
+ * @brief Check if an entity is alive (inline for hot paths).
+ * @param world World to check the entity in (must not be NULL)
  * @param id Entity ID
  * @return True if the entity is alive, false otherwise
  */
-bool8_t vkr_entity_is_alive(const VkrWorld *world, VkrEntityId id);
+vkr_internal INLINE bool8_t vkr_entity_is_alive(const VkrWorld *world,
+                                                VkrEntityId id) {
+  if (id.u64 == 0) {
+    return false_v;
+  }
+  if (id.parts.world != world->world_id) {
+    return false_v;
+  }
+  if (id.parts.index >= world->dir.capacity) {
+    return false_v;
+  }
+  return world->dir.generations[id.parts.index] == id.parts.generation;
+}
+
+/**
+ * @brief Check if entity ID matches a known-valid entity's current generation.
+ *
+ * Even faster than vkr_entity_is_alive when you know:
+ * - The world is valid
+ * - The entity index is within bounds
+ * - The world ID matches
+ *
+ * Only checks generation. Use when iterating topo_order with pre-validated
+ * indices.
+ *
+ * @param world World (must not be NULL)
+ * @param id Entity ID to check
+ * @return true if generation matches, false otherwise
+ */
+vkr_internal INLINE bool8_t vkr_entity_generation_valid(const VkrWorld *world,
+                                                        VkrEntityId id) {
+  return world->dir.generations[id.parts.index] == id.parts.generation;
+}
 
 // ================================
 // Component Operations
@@ -355,34 +389,207 @@ bool8_t vkr_entity_remove_component(VkrWorld *world, VkrEntityId id,
                                     VkrComponentTypeId type);
 
 /**
- * @brief Get a mutable component
+ * @brief Unchecked component access for pre-validated entities.
+ *
+ * @pre Entity MUST be validated alive before calling.
+ * @pre Component type MUST be valid and present in the entity's archetype.
+ *
+ * Skips all validation for maximum performance. Use only when:
+ * - Entity was validated with vkr_entity_is_alive earlier in the same code path
+ * - Component presence is guaranteed (e.g., from a compiled query that
+ *   requires the component)
+ *
+ * @param world World (must not be NULL)
+ * @param id Entity ID (must be alive)
+ * @param type Component type (must be present)
+ * @return Pointer to component data (never NULL if preconditions met)
+ */
+vkr_internal INLINE void *
+vkr_entity_get_component_unchecked(VkrWorld *world, VkrEntityId id,
+                                   VkrComponentTypeId type) {
+  VkrEntityRecord rec = world->dir.records[id.parts.index];
+  VkrArchetype *arch = rec.chunk->arch;
+  uint16_t col_i = arch->type_to_col[type];
+  uint8_t *col = (uint8_t *)rec.chunk->columns[col_i];
+  return col + (size_t)arch->sizes[col_i] * rec.slot;
+}
+
+/**
+ * @brief Unchecked const component access for pre-validated entities.
+ *
+ * Same as vkr_entity_get_component_unchecked but returns const pointer.
+ *
+ * @param world World (must not be NULL)
+ * @param id Entity ID (must be alive)
+ * @param type Component type (must be present)
+ * @return Const pointer to component data
+ */
+vkr_internal INLINE const void *
+vkr_entity_get_component_unchecked_const(const VkrWorld *world, VkrEntityId id,
+                                         VkrComponentTypeId type) {
+  VkrEntityRecord rec = world->dir.records[id.parts.index];
+  const VkrArchetype *arch = rec.chunk->arch;
+  uint16_t col_i = arch->type_to_col[type];
+  const uint8_t *col = (const uint8_t *)rec.chunk->columns[col_i];
+  return col + (size_t)arch->sizes[col_i] * rec.slot;
+}
+
+/**
+ * @brief Combined is_alive + get_component in single validation pass (inline).
+ *
+ * Validates entity once and retrieves component, avoiding the common pattern:
+ *   if (!vkr_entity_is_alive(world, id)) return;
+ *   T* comp = vkr_entity_get_component_mut(world, id, type);  // re-validates!
+ *
+ * Returns NULL if entity is dead or component is not present.
+ *
+ * @param world World (must not be NULL)
+ * @param id Entity ID
+ * @param type Component type ID
+ * @return Pointer to component, or NULL if entity dead or component missing
+ */
+vkr_internal INLINE void *
+vkr_entity_get_component_if_alive(VkrWorld *world, VkrEntityId id,
+                                  VkrComponentTypeId type) {
+  // Single validation pass
+  if (id.u64 == 0 || id.parts.world != world->world_id ||
+      id.parts.index >= world->dir.capacity ||
+      world->dir.generations[id.parts.index] != id.parts.generation) {
+    return NULL;
+  }
+
+  VkrEntityRecord rec = world->dir.records[id.parts.index];
+  if (!rec.chunk) {
+    return NULL;
+  }
+
+  VkrArchetype *arch = rec.chunk->arch;
+  uint16_t col_i = arch->type_to_col[type];
+  if (col_i == VKR_ENTITY_TYPE_TO_COL_INVALID) {
+    return NULL;
+  }
+
+  uint8_t *col = (uint8_t *)rec.chunk->columns[col_i];
+  return col + (size_t)arch->sizes[col_i] * rec.slot;
+}
+
+/**
+ * @brief Combined is_alive + get_component (const version, inline).
+ *
+ * @param world World (must not be NULL)
+ * @param id Entity ID
+ * @param type Component type ID
+ * @return Const pointer to component, or NULL if entity dead or component
+ * missing
+ */
+vkr_internal INLINE const void *
+vkr_entity_get_component_if_alive_const(const VkrWorld *world, VkrEntityId id,
+                                        VkrComponentTypeId type) {
+  if (id.u64 == 0 || id.parts.world != world->world_id ||
+      id.parts.index >= world->dir.capacity ||
+      world->dir.generations[id.parts.index] != id.parts.generation) {
+    return NULL;
+  }
+
+  VkrEntityRecord rec = world->dir.records[id.parts.index];
+  if (!rec.chunk) {
+    return NULL;
+  }
+
+  const VkrArchetype *arch = rec.chunk->arch;
+  uint16_t col_i = arch->type_to_col[type];
+  if (col_i == VKR_ENTITY_TYPE_TO_COL_INVALID) {
+    return NULL;
+  }
+
+  const uint8_t *col = (const uint8_t *)rec.chunk->columns[col_i];
+  return col + (size_t)arch->sizes[col_i] * rec.slot;
+}
+
+/**
+ * @brief Check if entity is alive and has a specific component (inline).
+ *
+ * Combines validation and component presence check without retrieving data.
+ *
+ * @param world World (must not be NULL)
+ * @param id Entity ID
+ * @param type Component type ID
+ * @return true if entity is alive AND has the component
+ */
+vkr_internal INLINE bool8_t vkr_entity_has_component_if_alive(
+    const VkrWorld *world, VkrEntityId id, VkrComponentTypeId type) {
+  if (id.u64 == 0 || id.parts.world != world->world_id ||
+      id.parts.index >= world->dir.capacity ||
+      world->dir.generations[id.parts.index] != id.parts.generation) {
+    return false_v;
+  }
+
+  VkrEntityRecord rec = world->dir.records[id.parts.index];
+  if (!rec.chunk) {
+    return false_v;
+  }
+
+  const VkrArchetype *arch = rec.chunk->arch;
+  return arch->type_to_col[type] != VKR_ENTITY_TYPE_TO_COL_INVALID;
+}
+
+/**
+ * @brief Construct entity ID from index using world's current generation.
+ *
+ * Use when iterating indices (e.g., topo_order) and need full entity IDs.
+ * The constructed ID is valid only if the generation matches.
+ *
+ * @param world World (must not be NULL)
+ * @param index Entity index (must be < world->dir.capacity)
+ * @return Entity ID with current generation from directory
+ */
+vkr_internal INLINE VkrEntityId vkr_entity_id_from_index(const VkrWorld *world,
+                                                         uint32_t index) {
+  VkrEntityId id;
+  id.parts.index = index;
+  id.parts.generation = world->dir.generations[index];
+  id.parts.world = world->world_id;
+  return id;
+}
+
+/**
+ * @brief Get a mutable component (inline, validates entity).
  * @param world World to get the component from
  * @param id Entity ID
  * @param type Component type ID
- * @return Mutable component
+ * @return Mutable component, or NULL if entity dead or component missing
  */
-void *vkr_entity_get_component_mut(VkrWorld *world, VkrEntityId id,
-                                   VkrComponentTypeId type);
+vkr_internal INLINE void *
+vkr_entity_get_component_mut(VkrWorld *world, VkrEntityId id,
+                             VkrComponentTypeId type) {
+  return vkr_entity_get_component_if_alive(world, id, type);
+}
 
 /**
- * @brief Get a component
+ * @brief Get a component (inline, validates entity).
  * @param world World to get the component from
  * @param id Entity ID
  * @param type Component type ID
- * @return Component
+ * @return Component, or NULL if entity dead or component missing
  */
-const void *vkr_entity_get_component(const VkrWorld *world, VkrEntityId id,
-                                     VkrComponentTypeId type);
+vkr_internal INLINE const void *
+vkr_entity_get_component(const VkrWorld *world, VkrEntityId id,
+                         VkrComponentTypeId type) {
+  return vkr_entity_get_component_if_alive_const(world, id, type);
+}
 
 /**
- * @brief Check if an entity has a component
+ * @brief Check if an entity has a component (inline, validates entity).
  * @param world World to check the component in
  * @param id Entity ID
  * @param type Component type ID
- * @return True if the entity has the component, false otherwise
+ * @return True if the entity is alive and has the component, false otherwise
  */
-bool8_t vkr_entity_has_component(const VkrWorld *world, VkrEntityId id,
-                                 VkrComponentTypeId type);
+vkr_internal INLINE bool8_t vkr_entity_has_component(const VkrWorld *world,
+                                                     VkrEntityId id,
+                                                     VkrComponentTypeId type) {
+  return vkr_entity_has_component_if_alive(world, id, type);
+}
 
 // ================================
 // Query API

@@ -577,6 +577,7 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
   if (!vkr_dmemory_create(MB(32), MB(128), &manager->instance_dmemory)) {
     log_error("Failed to create mesh manager instance dmemory");
     vkr_dmemory_allocator_destroy(&manager->asset_allocator);
+    vkr_dmemory_destroy(&manager->asset_dmemory);
     return false_v;
   }
   manager->instance_allocator.ctx = &manager->instance_dmemory;

@@ -1393,10 +1393,6 @@ VkrEntityId vkr_entity_create_entity_with_components(
   return id;
 }
 
-bool8_t vkr_entity_is_alive(const VkrWorld *world, VkrEntityId id) {
-  assert_log(world, "World must not be NULL");
-  return vkr_entity_validate_id(world, id);
-}
 
 vkr_internal INLINE void
 vkr_entity_chunk_swap_remove(VkrWorld *world, VkrChunk *chunk, uint32_t slot) {
@@ -1660,50 +1656,6 @@ bool8_t vkr_entity_remove_component(VkrWorld *world, VkrEntityId id,
                                 NULL);
 }
 
-void *vkr_entity_get_component_mut(VkrWorld *world, VkrEntityId id,
-                                   VkrComponentTypeId type) {
-  assert_log(world, "World must not be NULL");
-  if (!vkr_entity_validate_id(world, id))
-    return NULL;
-  if (!vkr_entity_validate_type(world, type))
-    return NULL;
-
-  VkrEntityRecord rec = world->dir.records[id.parts.index];
-  VkrArchetype *archetype = rec.chunk->arch;
-  int32_t col_i = vkr_entity_arch_find_col(archetype, type);
-  if (col_i < 0)
-    return NULL;
-
-  uint8_t *col = (uint8_t *)rec.chunk->columns[col_i];
-  if (!col) {
-    log_error(
-        "NULL column at index %d for type %u in archetype with %u components",
-        col_i, type, archetype->comp_count);
-    return NULL;
-  }
-  return (void *)(col + (size_t)archetype->sizes[col_i] * rec.slot);
-}
-
-const void *vkr_entity_get_component(const VkrWorld *world, VkrEntityId id,
-                                     VkrComponentTypeId type) {
-  assert_log(world, "World must not be NULL");
-  return vkr_entity_get_component_mut((VkrWorld *)world, id, type);
-}
-
-bool8_t vkr_entity_has_component(const VkrWorld *world, VkrEntityId id,
-                                 VkrComponentTypeId type) {
-  assert_log(world, "World must not be NULL");
-
-  if (!vkr_entity_validate_id(world, id))
-    return false_v;
-  if (!vkr_entity_validate_type(world, type))
-    return false_v;
-
-  const VkrEntityRecord record = world->dir.records[id.parts.index];
-  const VkrArchetype *archetype = record.chunk->arch;
-
-  return vkr_entity_arch_find_col(archetype, type) >= 0 ? true_v : false_v;
-}
 
 // ----------------------
 // Query
