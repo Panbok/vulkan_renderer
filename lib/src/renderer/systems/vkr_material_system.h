@@ -55,8 +55,7 @@ typedef struct VkrMaterialSystem {
   VkrShaderSystem *shader_system;
 
   // Shadow map bindings for world materials (updated per frame).
-  VkrTextureOpaqueHandle shadow_maps[VKR_SHADOW_CASCADE_COUNT_MAX];
-  uint32_t shadow_map_count;
+  VkrTextureOpaqueHandle shadow_map;
   bool8_t shadow_maps_enabled;
 
   uint32_t next_free_index;
@@ -183,9 +182,9 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
  *
  * Passing enabled=false clears bindings (default textures will be used).
  */
-void vkr_material_system_set_shadow_maps(VkrMaterialSystem *system,
-                                         const VkrTextureOpaqueHandle *maps,
-                                         uint32_t count, bool8_t enabled);
+void vkr_material_system_set_shadow_map(VkrMaterialSystem *system,
+                                        VkrTextureOpaqueHandle map,
+                                        bool8_t enabled);
 
 /**
  * @brief Applies the local material state to the material system

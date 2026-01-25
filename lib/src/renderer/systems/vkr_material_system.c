@@ -21,38 +21,23 @@ vkr_material_system_get_shadow_fallback(VkrMaterialSystem *system) {
 /**
  * @brief Returns a depth-texture fallback for shadow-map bindings.
  *
- * The world shader uses comparison samplers for `shadow_map_*`. If an unused
- * cascade slot is bound to a color texture (e.g. the default checkerboard),
- * Vulkan validation will report that the image format does not support depth
- * comparison sampling. To keep descriptor sets valid when fewer cascades are
- * active, we reuse the last available shadow map for any missing slots.
+ * The world shader uses a comparison sampler for `shadow_map`. If it is bound
+ * to a color texture (e.g. the default checkerboard), Vulkan validation will
+ * report that the image format does not support depth comparison sampling. To
+ * keep descriptors valid when shadows are disabled, reuse the last depth map.
  */
 vkr_internal VkrTextureOpaqueHandle
 vkr_material_system_get_shadow_depth_fallback(VkrMaterialSystem *system) {
-  if (!system || system->shadow_map_count == 0) {
+  if (!system || !system->shadow_map) {
     return NULL;
   }
 
-  // Prefer the last valid cascade; walk backwards in case of transient NULLs.
-  for (uint32_t i = system->shadow_map_count; i > 0; --i) {
-    VkrTextureOpaqueHandle map = system->shadow_maps[i - 1];
-    if (map) {
-      return map;
-    }
-  }
-
-  return NULL;
+  return system->shadow_map;
 }
 
 vkr_internal void
 vkr_material_system_apply_shadow_samplers(VkrMaterialSystem *system) {
-  vkr_local_persist const char
-      *k_shadow_samplers[VKR_SHADOW_CASCADE_COUNT_MAX] = {
-          "shadow_map_0",
-          "shadow_map_1",
-          "shadow_map_2",
-          "shadow_map_3",
-      };
+  vkr_local_persist const char *k_shadow_sampler = "shadow_map";
 
   VkrTextureOpaqueHandle fallback =
       vkr_material_system_get_shadow_depth_fallback(system);
@@ -60,15 +45,11 @@ vkr_material_system_apply_shadow_samplers(VkrMaterialSystem *system) {
     fallback = vkr_material_system_get_shadow_fallback(system);
   }
 
-  for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
-    VkrTextureOpaqueHandle map = fallback;
-    if (system->shadow_maps_enabled && i < system->shadow_map_count &&
-        system->shadow_maps[i]) {
-      map = system->shadow_maps[i];
-    }
-    vkr_shader_system_sampler_set(system->shader_system, k_shadow_samplers[i],
-                                  map);
+  VkrTextureOpaqueHandle map = fallback;
+  if (system->shadow_maps_enabled && system->shadow_map) {
+    map = system->shadow_map;
   }
+  vkr_shader_system_sampler_set(system->shader_system, k_shadow_sampler, map);
 }
 
 /**
@@ -628,28 +609,18 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
   vkr_shader_system_apply_instance(system->shader_system);
 }
 
-void vkr_material_system_set_shadow_maps(VkrMaterialSystem *system,
-                                         const VkrTextureOpaqueHandle *maps,
-                                         uint32_t count, bool8_t enabled) {
+void vkr_material_system_set_shadow_map(VkrMaterialSystem *system,
+                                        VkrTextureOpaqueHandle map,
+                                        bool8_t enabled) {
   assert_log(system != NULL, "System is NULL");
 
-  if (!enabled || !maps || count == 0) {
-    MemZero((void *)system->shadow_maps, sizeof(system->shadow_maps));
-    system->shadow_map_count = 0;
+  if (!enabled || !map) {
+    system->shadow_map = NULL;
     system->shadow_maps_enabled = false_v;
     return;
   }
 
-  if (count > VKR_SHADOW_CASCADE_COUNT_MAX) {
-    count = VKR_SHADOW_CASCADE_COUNT_MAX;
-  }
-
-  MemZero((void *)system->shadow_maps, sizeof(system->shadow_maps));
-  for (uint32_t i = 0; i < count; ++i) {
-    system->shadow_maps[i] = maps[i];
-  }
-
-  system->shadow_map_count = count;
+  system->shadow_map = map;
   system->shadow_maps_enabled = true_v;
 }
 
