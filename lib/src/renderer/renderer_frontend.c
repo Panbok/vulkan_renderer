@@ -594,6 +594,29 @@ vkr_renderer_create_sampled_depth_attachment(VkrRendererFrontendHandle renderer,
   return (VkrTextureOpaqueHandle)handle.ptr;
 }
 
+VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment_array(
+    VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
+    uint32_t layers, VkrRendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  if (!renderer->backend.sampled_depth_attachment_array_create) {
+    *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    return NULL;
+  }
+
+  VkrBackendResourceHandle handle =
+      renderer->backend.sampled_depth_attachment_array_create(
+          renderer->backend_state, width, height, layers);
+  if (handle.ptr == NULL) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return NULL;
+  }
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return (VkrTextureOpaqueHandle)handle.ptr;
+}
+
 VkrTextureOpaqueHandle vkr_renderer_create_render_target_texture_msaa(
     VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
     VkrTextureFormat format, VkrSampleCount samples,
@@ -1273,7 +1296,7 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   VkrCameraHandle default_camera = VKR_CAMERA_HANDLE_INVALID;
   if (!vkr_camera_registry_create_perspective(
           &rf->camera_system, string8_lit("camera.default"), rf->window, 60.0f,
-          0.1f, 100.0f, &default_camera)) {
+          0.1f, 1000.0f, &default_camera)) {
     log_fatal("Failed to create default camera");
     return false_v;
   }

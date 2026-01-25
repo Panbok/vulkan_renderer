@@ -1040,6 +1040,9 @@ vkr_renderer_create_depth_attachment(VkrRendererFrontendHandle renderer,
 VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment(
     VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
     VkrRendererError *out_error);
+VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment_array(
+    VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
+    uint32_t layers, VkrRendererError *out_error);
 
 /**
  * @brief Creates an MSAA (multisampled) render target texture.
@@ -1589,6 +1592,8 @@ typedef struct VkrRendererBackendInterface {
                                                       uint32_t height);
   VkrBackendResourceHandle (*sampled_depth_attachment_create)(
       void *backend_state, uint32_t width, uint32_t height);
+  VkrBackendResourceHandle (*sampled_depth_attachment_array_create)(
+      void *backend_state, uint32_t width, uint32_t height, uint32_t layers);
   VkrBackendResourceHandle (*render_target_texture_msaa_create)(
       void *backend_state, uint32_t width, uint32_t height,
       VkrTextureFormat format, VkrSampleCount samples);
