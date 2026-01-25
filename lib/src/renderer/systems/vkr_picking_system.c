@@ -20,8 +20,23 @@
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_shader_system.h"
+#include "renderer/vulkan/vulkan_types.h"
 #include "vkr_picking_ids.h"
 #include "vkr_picking_system.h"
+
+vkr_internal VkrTextureFormat vkr_picking_get_depth_format(RendererFrontend *rf) {
+  if (!rf) {
+    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  }
+
+  VkrTextureOpaqueHandle depth_tex = vkr_renderer_depth_attachment_get(rf);
+  if (!depth_tex) {
+    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  }
+
+  struct s_TextureHandle *handle = (struct s_TextureHandle *)depth_tex;
+  return handle->description.format;
+}
 
 /**
  * @brief Alpha test threshold for transparency-aware picking.
@@ -39,6 +54,7 @@ typedef struct VkrPickingTransparentSubmeshEntry {
   uint32_t mesh_index;
   uint32_t submesh_index;
   float32_t distance;
+  bool8_t is_instance; // True if mesh_index refers to instance slot
 } VkrPickingTransparentSubmeshEntry;
 
 vkr_internal int vkr_picking_transparent_submesh_compare(const void *a,
@@ -115,7 +131,7 @@ vkr_internal void picking_destroy_attachments(RendererFrontend *rf,
   assert_log(ctx != NULL, "Picking context is NULL");
 
   if (ctx->picking_target) {
-    vkr_renderer_render_target_destroy(rf, ctx->picking_target, false_v);
+    vkr_renderer_render_target_destroy(rf, ctx->picking_target);
     ctx->picking_target = NULL;
   }
 
@@ -172,8 +188,16 @@ vkr_internal bool8_t picking_create_render_target(RendererFrontend *rf,
     return false_v;
   }
 
-  VkrTextureOpaqueHandle attachments[2] = {ctx->picking_texture,
-                                           ctx->picking_depth};
+  VkrRenderTargetAttachmentRef attachments[2] = {
+      {.texture = ctx->picking_texture,
+       .mip_level = 0,
+       .base_layer = 0,
+       .layer_count = 1},
+      {.texture = ctx->picking_depth,
+       .mip_level = 0,
+       .base_layer = 0,
+       .layer_count = 1},
+  };
   VkrRenderTargetDesc rt_desc = {
       .sync_to_window_size = false_v,
       .attachment_count = 2,
@@ -182,10 +206,14 @@ vkr_internal bool8_t picking_create_render_target(RendererFrontend *rf,
       .height = ctx->height,
   };
 
+  VkrRendererError rt_err = VKR_RENDERER_ERROR_NONE;
   ctx->picking_target =
-      vkr_renderer_render_target_create(rf, &rt_desc, ctx->picking_pass);
+      vkr_renderer_render_target_create(rf, &rt_desc, ctx->picking_pass,
+                                         &rt_err);
   if (!ctx->picking_target) {
+    String8 err = vkr_renderer_get_error_string(rt_err);
     log_error("Failed to create picking render target");
+    log_error("Render target error: %s", string8_cstr(&err));
     return false_v;
   }
 
@@ -280,6 +308,80 @@ vkr_internal bool8_t picking_render_submesh(
   return true_v;
 }
 
+vkr_internal bool8_t picking_render_instance_submesh(
+    RendererFrontend *rf, VkrInstanceBufferPool *instance_pool,
+    VkrMeshInstance *instance, VkrMeshAssetSubmesh *submesh,
+    VkrTextureOpaqueHandle fallback_texture, bool8_t can_alpha_test,
+    uint32_t *out_first_instance) {
+  if (!rf || !instance_pool || !instance || !submesh || !out_first_instance) {
+    return false_v;
+  }
+
+  if (!instance_pool->initialized) {
+    return false_v;
+  }
+
+  Mat4 model = instance->model;
+  uint32_t object_id =
+      instance->render_id
+          ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, instance->render_id)
+          : 0;
+
+  VkrTextureOpaqueHandle diffuse_texture_handle = fallback_texture;
+  float32_t alpha_cutoff = 0.0f;
+
+  if (submesh->material.id != 0) {
+    VkrMaterial *material = vkr_material_system_get_by_handle(
+        &rf->material_system, submesh->material);
+    if (material) {
+      VkrMaterialTexture *diffuse_tex =
+          &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
+      if (diffuse_tex->enabled && diffuse_tex->handle.id != 0) {
+        VkrTexture *texture = vkr_texture_system_get_by_handle(
+            &rf->texture_system, diffuse_tex->handle);
+        if (texture && texture->handle &&
+            texture->description.type == VKR_TEXTURE_TYPE_2D) {
+          diffuse_texture_handle = texture->handle;
+          if (can_alpha_test && material->alpha_cutoff > 0.0f) {
+            alpha_cutoff = material->alpha_cutoff;
+          }
+        }
+      }
+    }
+  }
+
+  VkrInstanceDataGPU *instance_ptr = NULL;
+  uint32_t base_instance = 0;
+  if (!vkr_instance_buffer_alloc(instance_pool, 1, &base_instance,
+                                 &instance_ptr)) {
+    return false_v;
+  }
+
+  *instance_ptr = (VkrInstanceDataGPU){
+      .model = model,
+      .object_id = object_id,
+      .material_index = 0,
+      .flags = 0,
+      ._padding = 0,
+  };
+  vkr_instance_buffer_flush_range(instance_pool, base_instance, 1);
+
+  vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
+                                &alpha_cutoff);
+
+  if (diffuse_texture_handle) {
+    vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
+                                  diffuse_texture_handle);
+  }
+
+  if (!vkr_shader_system_apply_instance(&rf->shader_system)) {
+    return false_v;
+  }
+  *out_first_instance = base_instance;
+
+  return true_v;
+}
+
 bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
                          VkrPickingContext *ctx, uint32_t width,
                          uint32_t height) {
@@ -300,15 +402,47 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
   ctx->picking_pass = vkr_renderer_renderpass_get(
       rf, string8_lit("Renderpass.Builtin.Picking"));
   if (!ctx->picking_pass) {
-    VkrRenderPassConfig pass_cfg = {
-        .name = string8_lit("Renderpass.Builtin.Picking"),
-        .clear_color = {0.0f, 0.0f, 0.0f, 0.0f},
-        .clear_flags = VKR_RENDERPASS_CLEAR_COLOR | VKR_RENDERPASS_CLEAR_DEPTH,
-        .domain = VKR_PIPELINE_DOMAIN_PICKING,
+    VkrTextureFormat depth_format = vkr_picking_get_depth_format(rf);
+    VkrClearValue clear_picking = {.color_u32 = {0u, 0u, 0u, 0u}};
+    VkrClearValue clear_depth = {.depth_stencil = {1.0f, 0}};
+    VkrRenderPassAttachmentDesc picking_color = {
+        .format = VKR_TEXTURE_FORMAT_R32_UINT,
+        .samples = VKR_SAMPLE_COUNT_1,
+        .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+        .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+        .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+        .final_layout = VKR_TEXTURE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .clear_value = clear_picking,
     };
-    ctx->picking_pass = vkr_renderer_renderpass_create(rf, &pass_cfg);
+    VkrRenderPassAttachmentDesc picking_depth = {
+        .format = depth_format,
+        .samples = VKR_SAMPLE_COUNT_1,
+        .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+        .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+        .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+        .final_layout = VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        .clear_value = clear_depth,
+    };
+    VkrRenderPassDesc pass_desc = {
+        .name = string8_lit("Renderpass.Builtin.Picking"),
+        .domain = VKR_PIPELINE_DOMAIN_PICKING,
+        .color_attachment_count = 1,
+        .color_attachments = &picking_color,
+        .depth_stencil_attachment = &picking_depth,
+        .resolve_attachment_count = 0,
+        .resolve_attachments = NULL,
+    };
+    VkrRendererError pass_err = VKR_RENDERER_ERROR_NONE;
+    ctx->picking_pass =
+        vkr_renderer_renderpass_create_desc(rf, &pass_desc, &pass_err);
     if (!ctx->picking_pass) {
+      String8 err = vkr_renderer_get_error_string(pass_err);
       log_error("Failed to create picking render pass");
+      log_error("Renderpass error: %s", string8_cstr(&err));
       return false_v;
     }
   }
@@ -745,7 +879,7 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
     fallback_texture = default_texture->handle;
   }
 
-  uint32_t mesh_capacity = vkr_mesh_manager_capacity(mesh_manager);
+  uint32_t mesh_count = vkr_mesh_manager_count(mesh_manager);
   Vec3 camera_pos = rf->globals.view_position;
 
   const bool8_t has_transparent_pipeline =
@@ -758,17 +892,36 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
   uint32_t transparent_count = 0;
   uint32_t max_transparent_entries = 0;
 
+  uint32_t instance_count = vkr_mesh_manager_instance_count(mesh_manager);
+
   VkrAllocatorScope temp_scope = {0};
   if (has_transparent_pipeline) {
     VkrAllocator *temp_alloc = &rf->allocator;
     temp_scope = vkr_allocator_begin_scope(temp_alloc);
     if (vkr_allocator_scope_is_valid(&temp_scope)) {
-      for (uint32_t mesh_index = 0; mesh_index < mesh_capacity; mesh_index++) {
-        VkrMesh *mesh = vkr_mesh_manager_get(mesh_manager, mesh_index);
+      // Count legacy mesh submeshes
+      for (uint32_t mesh_index = 0; mesh_index < mesh_count; mesh_index++) {
+        VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(
+            mesh_manager, mesh_index, NULL);
         if (!mesh || !mesh->visible) {
           continue;
         }
         max_transparent_entries += vkr_mesh_manager_submesh_count(mesh);
+      }
+
+      // Count instance submeshes
+      for (uint32_t inst_idx = 0; inst_idx < instance_count; inst_idx++) {
+        VkrMeshInstance *inst = vkr_mesh_manager_get_instance_by_live_index(
+            mesh_manager, inst_idx, NULL);
+        if (!inst || !inst->visible ||
+            inst->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+          continue;
+        }
+        VkrMeshAsset *asset =
+            vkr_mesh_manager_get_asset(mesh_manager, inst->asset);
+        if (asset) {
+          max_transparent_entries += asset->submeshes.length;
+        }
       }
 
       if (max_transparent_entries > 0) {
@@ -780,8 +933,10 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
     }
   }
 
-  for (uint32_t mesh_index = 0; mesh_index < mesh_capacity; mesh_index++) {
-    VkrMesh *mesh = vkr_mesh_manager_get(mesh_manager, mesh_index);
+  for (uint32_t mesh_index = 0; mesh_index < mesh_count; mesh_index++) {
+    uint32_t mesh_slot = 0;
+    VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(
+        mesh_manager, mesh_index, &mesh_slot);
     if (!mesh) {
       continue;
     }
@@ -798,8 +953,8 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
 
     for (uint32_t submesh_index = 0; submesh_index < submesh_count;
          submesh_index++) {
-      VkrSubMesh *submesh =
-          vkr_mesh_manager_get_submesh(mesh_manager, mesh_index, submesh_index);
+      VkrSubMesh *submesh = vkr_mesh_manager_get_submesh(
+          mesh_manager, mesh_slot, submesh_index);
       if (!submesh) {
         continue;
       }
@@ -826,9 +981,10 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
         float32_t distance = vec3_distance(mesh_pos, camera_pos);
         transparent_entries[transparent_count++] =
             (VkrPickingTransparentSubmeshEntry){
-                .mesh_index = mesh_index,
+                .mesh_index = mesh_slot,
                 .submesh_index = submesh_index,
                 .distance = distance,
+                .is_instance = false_v,
             };
         continue;
       }
@@ -837,6 +993,69 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
       if (!picking_render_submesh(rf, instance_pool, mesh, submesh,
                                   fallback_texture, can_alpha_test,
                                   &first_instance)) {
+        continue;
+      }
+
+      vkr_geometry_system_render_instanced_range(
+          rf, &rf->geometry_system, submesh->geometry, submesh->index_count,
+          submesh->first_index, submesh->vertex_offset, 1, first_instance);
+    }
+  }
+
+  // Instance iteration
+  for (uint32_t inst_idx = 0; inst_idx < instance_count; inst_idx++) {
+    uint32_t instance_slot = 0;
+    VkrMeshInstance *inst = vkr_mesh_manager_get_instance_by_live_index(
+        mesh_manager, inst_idx, &instance_slot);
+    if (!inst || !inst->visible ||
+        inst->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+      continue;
+    }
+
+    VkrMeshAsset *asset = vkr_mesh_manager_get_asset(mesh_manager, inst->asset);
+    if (!asset) {
+      continue;
+    }
+
+    Mat4 model = inst->model;
+
+    for (uint32_t submesh_idx = 0; submesh_idx < asset->submeshes.length;
+         submesh_idx++) {
+      VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[submesh_idx];
+
+      bool8_t uses_cutout = false_v;
+      if (submesh->material.id != 0) {
+        VkrMaterial *material = vkr_material_system_get_by_handle(
+            &rf->material_system, submesh->material);
+        if (material) {
+          VkrMaterialTexture *diffuse_tex =
+              &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
+          if (material->alpha_cutoff > 0.0f && diffuse_tex->enabled &&
+              diffuse_tex->handle.id != 0) {
+            uses_cutout = true_v;
+          }
+        }
+      }
+
+      if (has_transparent_pipeline && uses_cutout && transparent_entries &&
+          transparent_count < max_transparent_entries) {
+        Vec3 mesh_pos = vec3_new(model.elements[12], model.elements[13],
+                                 model.elements[14]);
+        float32_t distance = vec3_distance(mesh_pos, camera_pos);
+        transparent_entries[transparent_count++] =
+            (VkrPickingTransparentSubmeshEntry){
+                .mesh_index = instance_slot,
+                .submesh_index = submesh_idx,
+                .distance = distance,
+                .is_instance = true_v,
+            };
+        continue;
+      }
+
+      uint32_t first_instance = 0;
+      if (!picking_render_instance_submesh(rf, instance_pool, inst, submesh,
+                                           fallback_texture, can_alpha_test,
+                                           &first_instance)) {
         continue;
       }
 
@@ -865,27 +1084,59 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
 
       for (uint32_t t = 0; t < transparent_count; ++t) {
         VkrPickingTransparentSubmeshEntry *entry = &transparent_entries[t];
-        VkrMesh *mesh = vkr_mesh_manager_get(mesh_manager, entry->mesh_index);
-        if (!mesh || !mesh->visible) {
-          continue;
-        }
-
-        VkrSubMesh *submesh = vkr_mesh_manager_get_submesh(
-            mesh_manager, entry->mesh_index, entry->submesh_index);
-        if (!submesh) {
-          continue;
-        }
-
         uint32_t first_instance = 0;
-        if (!picking_render_submesh(rf, instance_pool, mesh, submesh,
-                                    fallback_texture, true_v,
-                                    &first_instance)) {
-          continue;
-        }
 
-        vkr_geometry_system_render_instanced_range(
-            rf, &rf->geometry_system, submesh->geometry, submesh->index_count,
-            submesh->first_index, submesh->vertex_offset, 1, first_instance);
+        if (entry->is_instance) {
+          // Instance path
+          VkrMeshInstance *inst = vkr_mesh_manager_get_instance_by_index(
+              mesh_manager, entry->mesh_index);
+          if (!inst || !inst->visible ||
+              inst->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+            continue;
+          }
+
+          VkrMeshAsset *asset =
+              vkr_mesh_manager_get_asset(mesh_manager, inst->asset);
+          if (!asset || entry->submesh_index >= asset->submeshes.length) {
+            continue;
+          }
+
+          VkrMeshAssetSubmesh *submesh =
+              &asset->submeshes.data[entry->submesh_index];
+
+          if (!picking_render_instance_submesh(rf, instance_pool, inst, submesh,
+                                               fallback_texture, true_v,
+                                               &first_instance)) {
+            continue;
+          }
+
+          vkr_geometry_system_render_instanced_range(
+              rf, &rf->geometry_system, submesh->geometry, submesh->index_count,
+              submesh->first_index, submesh->vertex_offset, 1, first_instance);
+        } else {
+          // Legacy mesh path
+          VkrMesh *mesh =
+              vkr_mesh_manager_get(mesh_manager, entry->mesh_index);
+          if (!mesh || !mesh->visible) {
+            continue;
+          }
+
+          VkrSubMesh *submesh = vkr_mesh_manager_get_submesh(
+              mesh_manager, entry->mesh_index, entry->submesh_index);
+          if (!submesh) {
+            continue;
+          }
+
+          if (!picking_render_submesh(rf, instance_pool, mesh, submesh,
+                                      fallback_texture, true_v,
+                                      &first_instance)) {
+            continue;
+          }
+
+          vkr_geometry_system_render_instanced_range(
+              rf, &rf->geometry_system, submesh->geometry, submesh->index_count,
+              submesh->first_index, submesh->vertex_offset, 1, first_instance);
+        }
       }
     }
 
