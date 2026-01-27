@@ -600,6 +600,11 @@ VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment_array(
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
+  if (width == 0 || height == 0 || layers == 0) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return NULL;
+  }
+
   if (!renderer->backend.sampled_depth_attachment_array_create) {
     *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
     return NULL;
