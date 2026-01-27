@@ -34,7 +34,7 @@
       "directional_light": {
         "enabled": true,
         "color": [1.0, 1.0, 1.0],
-        "intensity": 1.0,
+        "intensity": 3.0,
         "direction_local": [-0.57735, -0.57735, -0.57735]
       }
     },

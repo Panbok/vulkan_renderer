@@ -26,18 +26,22 @@ struct GlobalUniformBufferObject
     // Cascaded shadows (CSM)
     uint32_t shadow_enabled;
     uint32_t shadow_cascade_count;
-    float4 shadow_map_inv_size;
+    float4 shadow_map_inv_size[2];
     float shadow_pcf_radius;
 
-    float4 shadow_split_far;
-    float4 shadow_world_units_per_texel;
+    float4 shadow_split_far[2];
+    float4 shadow_world_units_per_texel[2];
     float shadow_bias;
     float shadow_normal_bias;
+    float shadow_slope_bias;
+    float shadow_bias_texel_scale;
+    float shadow_slope_bias_texel_scale;
+    float shadow_distance_fade_range;
     float shadow_cascade_blend_range;
     uint32_t shadow_debug_cascades;
-    uint32_t shadow_debug_mode; // 0=off, 1=cascades, 2=factor, 3=depth, 4..7=maps, 8=frustum, 9=camera
+    uint32_t shadow_debug_mode; // 0=off, 1=cascades, 2=factor, 3=depth, 4..11=maps, 12=frustum, 13=camera
 
-    column_major float4x4 shadow_view_projection[4];
+    column_major float4x4 shadow_view_projection[8];
 };
 
 struct LocalUniformObject
@@ -52,12 +56,17 @@ struct LocalUniformObject
 static const uint32_t TEXTURE_FLAG_HAS_DIFFUSE = 0x1u;
 static const uint32_t TEXTURE_FLAG_HAS_SPECULAR = 0x2u;
 static const uint32_t TEXTURE_FLAG_HAS_NORMAL = 0x4u;
+static const uint32_t SHADOW_CASCADE_MAX = 8u;
 
-static const float3 SHADOW_CASCADE_DEBUG_COLORS[4] = {
+static const float3 SHADOW_CASCADE_DEBUG_COLORS[8] = {
     float3(1, 0, 0),
     float3(0, 1, 0),
     float3(0, 0, 1),
     float3(1, 1, 0),
+    float3(1, 0, 1),
+    float3(0, 1, 1),
+    float3(1, 0.5, 0),
+    float3(1, 1, 1),
 };
 
 struct DirectionalLight
@@ -88,16 +97,7 @@ Texture2D<float4> specular_texture;
 Texture2D<float4> normal_texture;
 
 [[vk::binding(4, 1)]]
-Texture2D<float> shadow_map_0;
-
-[[vk::binding(5, 1)]]
-Texture2D<float> shadow_map_1;
-
-[[vk::binding(6, 1)]]
-Texture2D<float> shadow_map_2;
-
-[[vk::binding(7, 1)]]
-Texture2D<float> shadow_map_3;
+Texture2DArray<float> shadow_map;
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<GlobalUniformBufferObject> g_ubo;
@@ -109,27 +109,18 @@ StructuredBuffer<InstanceData> g_instances;
 [[vk::binding(0, 1)]]
 ConstantBuffer<LocalUniformObject> local_ubo;
 
-// Samplers in the same instance set: set 1, bindings 1+instance_texture_count (here: 8..14)
-[[vk::binding(8, 1)]]
+// Samplers in the same instance set: set 1, bindings 1+instance_texture_count (here: 5..8)
+[[vk::binding(5, 1)]]
 SamplerState diffuse_sampler;
 
-[[vk::binding(9, 1)]]
+[[vk::binding(6, 1)]]
 SamplerState specular_sampler;
 
-[[vk::binding(10, 1)]]
+[[vk::binding(7, 1)]]
 SamplerState normal_sampler;
 
-[[vk::binding(11, 1)]]
-SamplerComparisonState shadow_sampler_0;
-
-[[vk::binding(12, 1)]]
-SamplerComparisonState shadow_sampler_1;
-
-[[vk::binding(13, 1)]]
-SamplerComparisonState shadow_sampler_2;
-
-[[vk::binding(14, 1)]]
-SamplerComparisonState shadow_sampler_3;
+[[vk::binding(8, 1)]]
+SamplerComparisonState shadow_sampler;
 
 struct VertexInput
 {
@@ -204,20 +195,39 @@ float3 compute_normal_from_map(VertexDto input)
     return normalize(mul(tbn, sampled));
 }
 
+float shadow_vec4_array_get(float4 arr[2], uint idx)
+{
+    uint i = min(idx, SHADOW_CASCADE_MAX - 1u);
+    uint vec = i >> 2;
+    uint lane = i & 3u;
+    float4 v = arr[vec];
+    return (lane == 0u) ? v.x :
+           (lane == 1u) ? v.y :
+           (lane == 2u) ? v.z :
+                          v.w;
+}
+
+float shadow_split_far_for(uint cascade)
+{
+    return shadow_vec4_array_get(g_ubo.shadow_split_far, cascade);
+}
+
 uint select_cascade(float view_depth)
 {
     uint count = max(g_ubo.shadow_cascade_count, 1u);
-    count = min(count, 4u);
-
-    float4 far_splits = g_ubo.shadow_split_far;
+    count = min(count, SHADOW_CASCADE_MAX);
 
     if (count <= 1u) return 0u;
-    if (view_depth < far_splits.x) return 0u;
-    if (count == 2u) return 1u;
-    if (view_depth < far_splits.y) return 1u;
-    if (count == 3u) return 2u;
-    if (view_depth < far_splits.z) return 2u;
-    return min(count - 1u, 3u);
+
+    for (uint i = 0u; i < count - 1u; ++i)
+    {
+        if (view_depth < shadow_split_far_for(i))
+        {
+            return i;
+        }
+    }
+
+    return count - 1u;
 }
 
 // Maximum UV deviation from [0,1] range before considering the cascade as not
@@ -226,10 +236,7 @@ uint select_cascade(float view_depth)
 // edges more often (minor quality reduction at boundaries).
 float shadow_map_inv_size_for(uint cascade)
 {
-    return (cascade == 0u) ? g_ubo.shadow_map_inv_size.x :
-           (cascade == 1u) ? g_ubo.shadow_map_inv_size.y :
-           (cascade == 2u) ? g_ubo.shadow_map_inv_size.z :
-                             g_ubo.shadow_map_inv_size.w;
+    return shadow_vec4_array_get(g_ubo.shadow_map_inv_size, cascade);
 }
 
 float shadow_uv_margin(uint cascade)
@@ -353,21 +360,15 @@ float shadow_pcf_radius_texels(uint cascade)
 
     // Keep the filter roughly constant in world-space across cascades by
     // scaling the radius in texels according to world-units-per-texel.
-    float base = max(g_ubo.shadow_world_units_per_texel.x, 1e-6f);
-    float cur = (cascade == 0u) ? g_ubo.shadow_world_units_per_texel.x :
-                (cascade == 1u) ? g_ubo.shadow_world_units_per_texel.y :
-                (cascade == 2u) ? g_ubo.shadow_world_units_per_texel.z :
-                                  g_ubo.shadow_world_units_per_texel.w;
-    float scale = clamp(cur / base, 0.5f, 8.0f);
+    float base = max(shadow_world_units_per_texel(0u), 1e-6f);
+    float cur = shadow_world_units_per_texel(cascade);
+    float scale = clamp(cur / base, 0.5f, 2.0f);
     return clamp(r0 * scale, 0.0f, 4.0f);
 }
 
 float shadow_world_units_per_texel(uint cascade)
 {
-    return (cascade == 0u) ? g_ubo.shadow_world_units_per_texel.x :
-           (cascade == 1u) ? g_ubo.shadow_world_units_per_texel.y :
-           (cascade == 2u) ? g_ubo.shadow_world_units_per_texel.z :
-                             g_ubo.shadow_world_units_per_texel.w;
+    return shadow_vec4_array_get(g_ubo.shadow_world_units_per_texel, cascade);
 }
 
 float2 shadow_light_space_xy(float3 world_pos)
@@ -380,8 +381,13 @@ float2 shadow_light_space_xy(float3 world_pos)
     return float2(dot(world_pos, right), dot(world_pos, up));
 }
 
-float sample_shadow_pcf(Texture2D<float> map, SamplerComparisonState samp, float2 uv,
-                        float compare_depth, float bias, float3 world_pos, uint cascade)
+float sample_shadow_pcf(Texture2DArray<float> map,
+                        SamplerComparisonState samp,
+                        float2 uv,
+                        float compare_depth,
+                        float bias,
+                        float3 world_pos,
+                        uint cascade)
 {
     float inv = shadow_map_inv_size_for(cascade);
     float2 inv_size = float2(inv, inv);
@@ -393,7 +399,7 @@ float sample_shadow_pcf(Texture2D<float> map, SamplerComparisonState samp, float
     float r_tex = shadow_pcf_radius_texels(cascade);
     if (r_tex <= 0.0f)
     {
-        return map.SampleCmpLevelZero(samp, uv, cmp);
+        return map.SampleCmpLevelZero(samp, float3(uv, (float)cascade), cmp);
     }
 
     float2 radius_uv = inv_size * r_tex;
@@ -411,7 +417,8 @@ float sample_shadow_pcf(Texture2D<float> map, SamplerComparisonState samp, float
     {
         float2 tap = shadow_rotate(SHADOW_POISSON_16[i], cs);
         float2 uv_tap = clamp(uv + tap * radius_uv, 0.0f, 1.0f);
-        sum += map.SampleCmpLevelZero(samp, uv_tap, cmp);
+        sum += map.SampleCmpLevelZero(samp, float3(uv_tap, (float)cascade),
+                                      cmp);
     }
 
     return sum * (1.0f / 16.0f);
@@ -429,7 +436,7 @@ struct CascadeLookup
 
 uint clamp_cascade_index(uint idx)
 {
-    uint count = min(max(g_ubo.shadow_cascade_count, 1u), 4u);
+    uint count = min(max(g_ubo.shadow_cascade_count, 1u), SHADOW_CASCADE_MAX);
     if (count == 0u) return 0u;
     return min(idx, count - 1u);
 }
@@ -442,7 +449,7 @@ CascadeLookup find_covering_cascade(float3 world_pos, uint initial_cascade)
     result.covered = false;
     result.proj = project_shadow(world_pos, initial_cascade);
 
-    uint count = min(max(g_ubo.shadow_cascade_count, 1u), 4u);
+    uint count = min(max(g_ubo.shadow_cascade_count, 1u), SHADOW_CASCADE_MAX);
 
     // If the initially selected cascade covers, keep it. This avoids temporal
     // instability from switching cascades based on marginal coverage heuristics.
@@ -458,7 +465,7 @@ CascadeLookup find_covering_cascade(float3 world_pos, uint initial_cascade)
     // Order example for initial=1: 1,0,2,3
     // Order example for initial=2: 2,1,3,0
     [unroll]
-    for (uint step = 1u; step < 4u; ++step)
+    for (uint step = 1u; step < SHADOW_CASCADE_MAX; ++step)
     {
         uint left = (initial_cascade >= step) ? (initial_cascade - step) : 0u;
         if (left < count)
@@ -496,7 +503,7 @@ CascadeLookup find_covering_cascade(float3 world_pos, uint initial_cascade)
     ShadowProjection best_proj = result.proj;
 
     [unroll]
-    for (uint i = 0u; i < 4u; ++i)
+    for (uint i = 0u; i < SHADOW_CASCADE_MAX; ++i)
     {
         if (i >= count) continue;
         ShadowProjection p = (i == initial_cascade) ? result.proj : project_shadow(world_pos, i);
@@ -560,21 +567,19 @@ ShadowResult calculate_shadow_ex(float3 world_pos, float3 normal, uint initial_c
 
     float3 light_dir = normalize(-g_ubo.dir_direction);
     float ndotl = saturate(dot(normal, light_dir));
+    float wupt = shadow_world_units_per_texel(result.effective_cascade);
     float base_bias = g_ubo.shadow_bias + g_ubo.shadow_normal_bias * (1.0f - ndotl);
+    base_bias += g_ubo.shadow_bias_texel_scale * wupt;
 
-    // Bias is in shadow-depth (0..1) units. Scaling it by world-space texel size
-    // can easily over-bias far cascades and wipe out shadows. Keep bias stable
-    // across cascades; tune per-scene via the config values.
-    float bias = base_bias;
+    float slope = sqrt(max(1.0f - ndotl * ndotl, 0.0f)) / max(ndotl, 1e-3f);
+    slope = min(slope, 8.0f);
+    float slope_bias = g_ubo.shadow_slope_bias +
+                       g_ubo.shadow_slope_bias_texel_scale * wupt;
 
-    if (result.effective_cascade == 0u)
-        result.factor = sample_shadow_pcf(shadow_map_0, shadow_sampler_0, uv, z, bias, world_pos, 0u);
-    else if (result.effective_cascade == 1u)
-        result.factor = sample_shadow_pcf(shadow_map_1, shadow_sampler_1, uv, z, bias, world_pos, 1u);
-    else if (result.effective_cascade == 2u)
-        result.factor = sample_shadow_pcf(shadow_map_2, shadow_sampler_2, uv, z, bias, world_pos, 2u);
-    else
-        result.factor = sample_shadow_pcf(shadow_map_3, shadow_sampler_3, uv, z, bias, world_pos, 3u);
+    float bias = max(base_bias + slope_bias * slope, 0.0f);
+
+    result.factor = sample_shadow_pcf(shadow_map, shadow_sampler, uv, z, bias,
+                                      world_pos, result.effective_cascade);
 
     return result;
 }
@@ -593,7 +598,7 @@ ShadowResult calculate_shadow_blended(float3 world_pos, float3 normal, float vie
         return base;
     }
 
-    uint count = min(max(g_ubo.shadow_cascade_count, 1u), 4u);
+    uint count = min(max(g_ubo.shadow_cascade_count, 1u), SHADOW_CASCADE_MAX);
     if (count <= 1u)
     {
         return base;
@@ -613,11 +618,7 @@ ShadowResult calculate_shadow_blended(float3 world_pos, float3 normal, float vie
         return base;
     }
 
-    float split_far =
-        (selected == 0u) ? g_ubo.shadow_split_far.x :
-        (selected == 1u) ? g_ubo.shadow_split_far.y :
-        (selected == 2u) ? g_ubo.shadow_split_far.z :
-                           g_ubo.shadow_split_far.w;
+    float split_far = shadow_split_far_for(selected);
 
     float start = split_far - blend_range;
     float t = saturate((view_depth - start) / max(blend_range, 1e-4f));
@@ -644,18 +645,13 @@ float sample_shadow_depth(uint cascade, float2 uv)
     // Use Load() for debug visualization (nearest, no sampler).
     uint dim_x = 1u;
     uint dim_y = 1u;
-    if (cascade == 0u) shadow_map_0.GetDimensions(dim_x, dim_y);
-    else if (cascade == 1u) shadow_map_1.GetDimensions(dim_x, dim_y);
-    else if (cascade == 2u) shadow_map_2.GetDimensions(dim_x, dim_y);
-    else shadow_map_3.GetDimensions(dim_x, dim_y);
+    uint dim_layers = 1u;
+    shadow_map.GetDimensions(dim_x, dim_y, dim_layers);
 
     int2 p = int2(clamp(uv, 0.0f, 1.0f) * float2((float)max(dim_x - 1u, 1u),
                                                  (float)max(dim_y - 1u, 1u)));
-
-    if (cascade == 0u) return shadow_map_0.Load(int3(p, 0)).r;
-    if (cascade == 1u) return shadow_map_1.Load(int3(p, 0)).r;
-    if (cascade == 2u) return shadow_map_2.Load(int3(p, 0)).r;
-    return shadow_map_3.Load(int3(p, 0)).r;
+    uint layer = min(cascade, max(dim_layers, 1u) - 1u);
+    return shadow_map.Load(int4(p, layer, 0)).r;
 }
 
 float4 calculate_directional_light(DirectionalLight light, float3 normal,
@@ -787,6 +783,16 @@ float4 fragmentMain(VertexDto input) : SV_Target
         ShadowResult shadow_result = calculate_shadow_blended(input.frag_position, normal, view_depth, cascade);
         shadow = shadow_result.factor;
         effective_cascade = shadow_result.effective_cascade;
+
+        float fade_range = max(g_ubo.shadow_distance_fade_range, 0.0f);
+        if (fade_range > 0.0f)
+        {
+            uint count = min(max(g_ubo.shadow_cascade_count, 1u), SHADOW_CASCADE_MAX);
+            float far_split = shadow_split_far_for(count - 1u);
+            float start = far_split - fade_range;
+            float t = saturate((view_depth - start) / max(fade_range, 1e-4f));
+            shadow = lerp(shadow, 1.0f, t);
+        }
     }
 
     if (g_ubo.dir_enabled != 0)
@@ -876,10 +882,9 @@ float4 fragmentMain(VertexDto input) : SV_Target
         return color;
     }
 
-    if (g_ubo.shadow_debug_mode == 8u)
+    if (g_ubo.shadow_debug_mode == 12u)
     {
-        uint count = max(g_ubo.shadow_cascade_count, 1u);
-        count = min(count, 4u);
+        uint count = min(max(g_ubo.shadow_cascade_count, 1u), SHADOW_CASCADE_MAX);
 
         ShadowProjection sel = project_shadow(input.frag_position, cascade);
         bool sel_in = (!sel.uv_out && !sel.z_out);
@@ -887,7 +892,7 @@ float4 fragmentMain(VertexDto input) : SV_Target
         bool any_in = sel_in;
         uint cover = cascade;
         [unroll]
-        for (uint i = 0u; i < 4u; ++i)
+        for (uint i = 0u; i < SHADOW_CASCADE_MAX; ++i)
         {
             if (i < count && !any_in)
             {
@@ -928,7 +933,7 @@ float4 fragmentMain(VertexDto input) : SV_Target
         return color;
     }
 
-    if (g_ubo.shadow_debug_mode == 9u)
+    if (g_ubo.shadow_debug_mode == 13u)
     {
         float4 world_pos = float4(input.frag_position, 1.0f);
         float4 view_pos = mul(g_ubo.view, world_pos);
@@ -937,14 +942,9 @@ float4 fragmentMain(VertexDto input) : SV_Target
         float3 ndc = clip_pos.xyz / clip_pos.w;
         float2 uv = ndc.xy * 0.5f + 0.5f;
 
-        uint count = max(g_ubo.shadow_cascade_count, 1u);
-        count = min(count, 4u);
+        uint count = min(max(g_ubo.shadow_cascade_count, 1u), SHADOW_CASCADE_MAX);
 
-        float4 far_splits = g_ubo.shadow_split_far;
-        float far_ref = (count == 1u) ? far_splits.x :
-                        (count == 2u) ? far_splits.y :
-                        (count == 3u) ? far_splits.z :
-                                        far_splits.w;
+        float far_ref = shadow_split_far_for(count - 1u);
         far_ref = max(far_ref, 1e-4f);
 
         float view_depth = -view_pos.z;
@@ -974,33 +974,12 @@ float4 fragmentMain(VertexDto input) : SV_Target
         float3 split_c = 0.0.xxx;
         float w = 0.0f;
 
-        float d0 = abs(view_depth - far_splits.x);
-        float l0 = saturate((thickness - d0) / thickness);
-        split_c += l0 * float3(1.0f, 0.0f, 0.0f);
-        w += l0;
-
-        if (count >= 2u)
+        for (uint i = 0u; i < count; ++i)
         {
-            float d1 = abs(view_depth - far_splits.y);
-            float l1 = saturate((thickness - d1) / thickness);
-            split_c += l1 * float3(0.0f, 1.0f, 0.0f);
-            w += l1;
-        }
-
-        if (count >= 3u)
-        {
-            float d2 = abs(view_depth - far_splits.z);
-            float l2 = saturate((thickness - d2) / thickness);
-            split_c += l2 * float3(0.0f, 0.0f, 1.0f);
-            w += l2;
-        }
-
-        if (count >= 4u)
-        {
-            float d3 = abs(view_depth - far_splits.w);
-            float l3 = saturate((thickness - d3) / thickness);
-            split_c += l3 * float3(1.0f, 1.0f, 0.0f);
-            w += l3;
+            float d = abs(view_depth - shadow_split_far_for(i));
+            float l = saturate((thickness - d) / thickness);
+            split_c += l * SHADOW_CASCADE_DEBUG_COLORS[i];
+            w += l;
         }
 
         c = lerp(c, split_c, saturate(w));
@@ -1010,9 +989,9 @@ float4 fragmentMain(VertexDto input) : SV_Target
         return color;
     }
 
-    if (g_ubo.shadow_debug_mode >= 4u && g_ubo.shadow_debug_mode <= 7u)
+    if (g_ubo.shadow_debug_mode >= 4u && g_ubo.shadow_debug_mode <= 11u)
     {
-        // Debug (mode=4..7): show raw shadow map contents (cascade 0..3) by
+        // Debug (mode=4..11): show raw shadow map contents (cascade 0..7) by
         // mapping the current pixel to UV space.
         //
         // On Vulkan backends, `SV_Position` may be provided either as
@@ -1031,7 +1010,8 @@ float4 fragmentMain(VertexDto input) : SV_Target
             uv = pos * inv_viewport;
         }
 
-        uint map_index = g_ubo.shadow_debug_mode - 4u;
+        uint map_index = min(g_ubo.shadow_debug_mode - 4u,
+                             SHADOW_CASCADE_MAX - 1u);
         float d = 1.0f;
         d = sample_shadow_depth(map_index, uv);
 

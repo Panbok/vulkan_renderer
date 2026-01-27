@@ -21,5 +21,5 @@ uniform=samp,1,diffuse_texture
 # Local (push constants): per-cascade light VP
 uniform=mat4,2,light_view_projection
 
-# Cull front faces to reduce shadow acne (back-face shadow rendering)
-cull_mode=front
+# Cull back faces to reduce light-leak lines on thin geometry
+cull_mode=back

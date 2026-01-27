@@ -59,16 +59,20 @@ uniform=vec4[48],0,point_light_data
 # Cascaded shadows (CSM)
 uniform=uint32,0,shadow_enabled
 uniform=uint32,0,shadow_cascade_count
-uniform=vec4,0,shadow_map_inv_size
+uniform=vec4[2],0,shadow_map_inv_size
 uniform=float,0,shadow_pcf_radius
-uniform=vec4,0,shadow_split_far
-uniform=vec4,0,shadow_world_units_per_texel
+uniform=vec4[2],0,shadow_split_far
+uniform=vec4[2],0,shadow_world_units_per_texel
 uniform=float,0,shadow_bias
 uniform=float,0,shadow_normal_bias
+uniform=float,0,shadow_slope_bias
+uniform=float,0,shadow_bias_texel_scale
+uniform=float,0,shadow_slope_bias_texel_scale
+uniform=float,0,shadow_distance_fade_range
 uniform=float,0,shadow_cascade_blend_range
 uniform=uint32,0,shadow_debug_cascades
 uniform=uint32,0,shadow_debug_mode
-uniform=mat4[4],0,shadow_view_projection
+uniform=mat4[8],0,shadow_view_projection
 
 # Instance uniforms (descriptor set 1)
 # Updated per material, each material gets its own descriptor set
@@ -80,10 +84,7 @@ uniform=uint32,1,texture_flags    # Bit flags: 0x1=has_diffuse, 0x2=has_specular
 uniform=samp,1,diffuse_texture    # Material diffuse texture (slot 0)
 uniform=samp,1,specular_texture   # Material specular map   (slot 1)
 uniform=samp,1,normal_texture     # Material normal map     (slot 2)
-uniform=samp,1,shadow_map_0       # Shadow map cascade 0
-uniform=samp,1,shadow_map_1       # Shadow map cascade 1
-uniform=samp,1,shadow_map_2       # Shadow map cascade 2
-uniform=samp,1,shadow_map_3       # Shadow map cascade 3
+uniform=samp,1,shadow_map         # Shadow map array (all cascades)
 
 # ============================================================================
 # Computed Layout (for reference, calculated by loader)
@@ -100,7 +101,7 @@ uniform=samp,1,shadow_map_3       # Shadow map cascade 3
 #   shininess: offset=32, size=4 (float)
 #   → ubo_size = 36 bytes  
 #   → ubo_stride = align_up(36, 256) = 256 bytes
-#   instance_texture_count = 7 (diffuse/specular/normal + 4 shadow maps)
+#   instance_texture_count = 4 (diffuse/specular/normal + shadow map array)
 #
 # Push Constants:
 #   (none)
