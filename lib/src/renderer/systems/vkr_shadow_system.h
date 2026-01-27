@@ -129,7 +129,7 @@ typedef struct VkrShadowConfig {
   ((VkrShadowConfig){                                                          \
       .cascade_count = 4,                                                      \
       .shadow_map_size = 4096,                                                 \
-      .cascade_split_lambda = 75.0f,                                           \
+      .cascade_split_lambda = 0.75f,                                           \
       .max_shadow_distance = 120.0f,                                           \
       .cascade_guard_band_texels = 128.0f,                                     \
       .z_extension_factor = 5.0f,                                              \

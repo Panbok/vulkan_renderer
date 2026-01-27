@@ -267,10 +267,6 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
       // Only extend Z, not XY (XY is fitted to frustum for resolution)
       min_z = vkr_min_f32(min_z, corner_ls.z);
       max_z = vkr_max_f32(max_z, corner_ls.z);
-      min_x = vkr_min_f32(min_x, corner_ls.x);
-      max_x = vkr_max_f32(max_x, corner_ls.x);
-      min_y = vkr_min_f32(min_y, corner_ls.y);
-      max_y = vkr_max_f32(max_y, corner_ls.y);
     }
   } else if (z_extension_factor > 0.0f) {
     float32_t z_ext = radius * z_extension_factor;
