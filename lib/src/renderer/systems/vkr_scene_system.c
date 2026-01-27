@@ -24,6 +24,7 @@
 #define SCENE_DEFAULT_ENTITY_CAPACITY 1024
 #define SCENE_DEFAULT_DIRTY_CAPACITY 256
 #define SCENE_DEFAULT_MESH_CAPACITY 64
+#define SCENE_DEFAULT_INSTANCE_CAPACITY 64
 
 // ============================================================================
 // Internal Types
@@ -309,6 +310,7 @@ vkr_internal void scene_child_index_build_cb(const VkrArchetype *arch,
   (void)arch;
   SceneChildIndexBuildCtx *ctx = (SceneChildIndexBuildCtx *)user;
   VkrScene *scene = ctx->scene;
+  VkrWorld *world = scene->world;
 
   uint32_t count = vkr_entity_chunk_count(chunk);
   VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
@@ -320,7 +322,8 @@ vkr_internal void scene_child_index_build_cb(const VkrArchetype *arch,
     if (parent.u64 == VKR_ENTITY_ID_INVALID.u64) {
       continue;
     }
-    if (!vkr_entity_is_alive(scene->world, parent)) {
+    // Use inline fast path for parent validation
+    if (!vkr_entity_is_alive(world, parent)) {
       continue;
     }
     scene_child_index_add(scene, parent, entities[i]);
@@ -390,7 +393,7 @@ vkr_internal bool8_t scene_ensure_topo_capacity(VkrScene *scene,
                                                 uint32_t needed) {
   return scene_grow_array(scene->alloc, (void **)&scene->topo_order,
                           &scene->topo_capacity, scene->topo_count, needed, 64,
-                          sizeof(uint32_t), AlignOf(uint32_t), false_v);
+                          sizeof(VkrEntityId), AlignOf(VkrEntityId), false_v);
 }
 
 /**
@@ -418,11 +421,18 @@ vkr_internal bool8_t scene_ensure_mesh_capacity(VkrScene *scene,
 
 /**
  * @brief Mark entity as needing render sync.
+ * @note Entity is assumed to be already validated alive by caller.
  */
 vkr_internal void scene_mark_render_dirty(VkrScene *scene, VkrEntityId entity) {
-  // Check if entity has mesh renderer
-  if (!vkr_entity_has_component(scene->world, entity,
-                                scene->comp_mesh_renderer)) {
+  // Fast path: check if entity has mesh renderer or shape via archetype lookup
+  // Entity already validated in caller (vkr_scene_update), use unchecked access
+  VkrEntityRecord rec = scene->world->dir.records[entity.parts.index];
+  const VkrArchetype *arch = rec.chunk->arch;
+
+  bool8_t has_renderable =
+      (arch->type_to_col[scene->comp_mesh_renderer] != VKR_ENTITY_TYPE_TO_COL_INVALID) ||
+      (arch->type_to_col[scene->comp_shape] != VKR_ENTITY_TYPE_TO_COL_INVALID);
+  if (!has_renderable) {
     return;
   }
 
@@ -475,21 +485,22 @@ vkr_internal void scene_mark_children_world_dirty(VkrScene *scene,
       return;
     }
 
+    VkrWorld *world = scene->world;
+    VkrComponentTypeId comp_transform = scene->comp_transform;
+
     uint32_t i = 0;
     while (i < slot->child_count) {
       VkrEntityId child = slot->children[i];
-      if (!vkr_entity_is_alive(scene->world, child) ||
-          !vkr_entity_has_component(scene->world, child,
-                                    scene->comp_transform)) {
+      // Combined is_alive + has_component + get_component in single call
+      SceneTransform *child_t = (SceneTransform *)vkr_entity_get_component_if_alive(
+          world, child, comp_transform);
+      if (!child_t) {
+        // Entity dead or no transform - remove from index
         slot->children[i] = slot->children[slot->child_count - 1];
         slot->child_count--;
         continue;
       }
-      SceneTransform *child_t = (SceneTransform *)vkr_entity_get_component_mut(
-          scene->world, child, scene->comp_transform);
-      if (child_t) {
-        child_t->flags |= SCENE_TRANSFORM_DIRTY_WORLD;
-      }
+      child_t->flags |= SCENE_TRANSFORM_DIRTY_WORLD;
       i++;
     }
     return;
@@ -513,6 +524,49 @@ vkr_internal Mat4 scene_compute_local_matrix(Vec3 position, VkrQuat rotation,
   Mat4 r = vkr_quat_to_mat4(rotation);
   Mat4 s = mat4_scale(scale);
   return mat4_mul(mat4_mul(t, r), s);
+}
+
+// ============================================================================
+// Two-Pass Transform Update (Phase 3 Optimization)
+// ============================================================================
+
+/**
+ * @brief Chunk callback for Pass 1: Update dirty local matrices.
+ *
+ * Iterates all transform chunks and updates local matrices for entities with
+ * SCENE_TRANSFORM_DIRTY_LOCAL flag. This is cache-friendly because transforms
+ * are stored contiguously in chunks.
+ *
+ * Also clears WORLD_UPDATED flag from previous frame to prepare for Pass 2's
+ * deferred dirty propagation.
+ *
+ * Local matrix computation has no dependencies on other entities, so chunk
+ * iteration order doesn't matter.
+ */
+vkr_internal void transform_local_update_cb(const VkrArchetype *arch,
+                                            VkrChunk *chunk, void *user) {
+  VkrScene *scene = (VkrScene *)user;
+
+  uint32_t count = chunk->count;
+  if (count == 0)
+    return;
+
+  // Direct column access via archetype - no per-entity lookup
+  uint16_t transform_col = arch->type_to_col[scene->comp_transform];
+  SceneTransform *transforms = (SceneTransform *)chunk->columns[transform_col];
+
+  for (uint32_t i = 0; i < count; i++) {
+    SceneTransform *t = &transforms[i];
+
+    // Clear WORLD_UPDATED from previous frame (for deferred dirty propagation)
+    t->flags &= ~SCENE_TRANSFORM_WORLD_UPDATED;
+
+    if (t->flags & SCENE_TRANSFORM_DIRTY_LOCAL) {
+      t->local = scene_compute_local_matrix(t->position, t->rotation, t->scale);
+      t->flags &= ~SCENE_TRANSFORM_DIRTY_LOCAL;
+      t->flags |= SCENE_TRANSFORM_DIRTY_WORLD;
+    }
+  }
 }
 
 // ============================================================================
@@ -546,6 +600,7 @@ vkr_internal void topo_find_roots_cb(const VkrArchetype *arch, VkrChunk *chunk,
   (void)arch;
   TopoSortContext *ctx = (TopoSortContext *)user;
   VkrScene *scene = ctx->scene;
+  VkrWorld *world = scene->world;
 
   uint32_t count = vkr_entity_chunk_count(chunk);
   VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
@@ -556,8 +611,9 @@ vkr_internal void topo_find_roots_cb(const VkrArchetype *arch, VkrChunk *chunk,
     transforms[i].flags &= ~SCENE_TRANSFORM_DIRTY_HIERARCHY;
 
     VkrEntityId parent = transforms[i].parent;
+    // Use inline fast path for parent validation
     bool8_t is_root = (parent.u64 == VKR_ENTITY_ID_INVALID.u64) ||
-                      !vkr_entity_is_alive(scene->world, parent);
+                      !vkr_entity_is_alive(world, parent);
 
     if (is_root) {
       ctx->queue[ctx->queue_tail++] = entities[i];
@@ -603,7 +659,7 @@ vkr_internal void topo_find_children_cb(const VkrArchetype *arch,
 typedef struct FindUnvisitedCtx {
   VkrScene *scene;
   uint8_t *visited;
-  uint32_t *topo_order;
+  VkrEntityId *topo_order;
   uint32_t *topo_count;
 } FindUnvisitedCtx;
 
@@ -621,7 +677,7 @@ vkr_internal void topo_find_unvisited_cb(const VkrArchetype *arch,
       log_warn("Cycle detected in transform hierarchy for entity %u, treating "
                "as root",
                idx);
-      ctx->topo_order[(*ctx->topo_count)++] = idx;
+      ctx->topo_order[(*ctx->topo_count)++] = entities[i];
       ctx->visited[idx] = 1;
     }
   }
@@ -700,7 +756,7 @@ vkr_internal void scene_rebuild_topo_order(VkrScene *scene) {
       continue;
     visited[idx] = 1;
 
-    scene->topo_order[scene->topo_count++] = idx;
+    scene->topo_order[scene->topo_count++] = entity;
 
     // Find children
     if (use_child_index) {
@@ -709,9 +765,9 @@ vkr_internal void scene_rebuild_topo_order(VkrScene *scene) {
         uint32_t ci = 0;
         while (ci < slot->child_count) {
           VkrEntityId child = slot->children[ci];
-          if (!vkr_entity_is_alive(scene->world, child) ||
-              !vkr_entity_has_component(scene->world, child,
-                                        scene->comp_transform)) {
+          // Combined is_alive + has_component check via get_component
+          if (!vkr_entity_has_component_if_alive(scene->world, child,
+                                                  scene->comp_transform)) {
             slot->children[ci] = slot->children[slot->child_count - 1];
             slot->child_count--;
             continue;
@@ -825,6 +881,26 @@ vkr_internal bool8_t scene_compile_queries(VkrScene *scene) {
     vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_renderables);
     vkr_entity_query_compiled_destroy(scene->alloc,
                                       &scene->query_directional_light);
+    return false;
+  }
+
+  // Build shapes query (transform + shape + render id)
+  VkrComponentTypeId shape_types[3] = {
+      scene->comp_transform,
+      scene->comp_shape,
+      scene->comp_render_id,
+  };
+  VkrQuery q_shapes;
+  vkr_entity_query_build(scene->world, shape_types, 3, NULL, 0, &q_shapes);
+
+  if (!vkr_entity_query_compile(scene->world, &q_shapes, scene->alloc,
+                                &scene->query_shapes)) {
+    log_error("Failed to compile shapes query");
+    vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_transforms);
+    vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_renderables);
+    vkr_entity_query_compiled_destroy(scene->alloc,
+                                      &scene->query_directional_light);
+    vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_point_lights);
     return false;
   }
 
@@ -1036,6 +1112,15 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
   // Destroy local text3d instance array (legacy, may be empty)
   vkr_scene_destroy_text3d_instances(scene);
 
+  // Remove owned mesh instances from mesh manager
+  if (rf && scene->owned_instances) {
+    for (uint32_t i = 0; i < scene->owned_instance_count; i++) {
+      vkr_mesh_manager_destroy_instance(&rf->mesh_manager,
+                                        scene->owned_instances[i]);
+    }
+    scene->owned_instance_count = 0;
+  }
+
   // Remove owned meshes from mesh manager
   if (rf && scene->owned_meshes) {
     for (uint32_t i = 0; i < scene->owned_mesh_count; i++) {
@@ -1050,6 +1135,7 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
     vkr_entity_query_compiled_destroy(scene->alloc,
                                       &scene->query_directional_light);
     vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_point_lights);
+    vkr_entity_query_compiled_destroy(scene->alloc, &scene->query_shapes);
   }
 
   scene_child_index_shutdown(scene);
@@ -1057,14 +1143,21 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
   // Free arrays
   if (scene->topo_order) {
     vkr_allocator_free_aligned(scene->alloc, scene->topo_order,
-                               scene->topo_capacity * sizeof(uint32_t),
-                               AlignOf(uint32_t),
+                               scene->topo_capacity * sizeof(VkrEntityId),
+                               AlignOf(VkrEntityId),
                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   if (scene->owned_meshes) {
     vkr_allocator_free_aligned(scene->alloc, scene->owned_meshes,
                                scene->owned_mesh_capacity * sizeof(uint32_t),
                                AlignOf(uint32_t),
+                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (scene->owned_instances) {
+    vkr_allocator_free_aligned(scene->alloc, scene->owned_instances,
+                               scene->owned_instance_capacity *
+                                   sizeof(VkrMeshInstanceHandle),
+                               AlignOf(VkrMeshInstanceHandle),
                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   if (scene->render_dirty_entities) {
@@ -1100,57 +1193,68 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
     scene_rebuild_topo_order(scene);
   }
 
-  // Process transforms in topological order
+  // ============================================================================
+  // Two-Pass Transform Update (Phase 3 + Phase 4 Optimization)
+  // ============================================================================
+  //
+  // Pass 1: Update all dirty local matrices (chunk-based, cache-friendly)
+  // - Iterates chunks contiguously for better cache utilization
+  // - Local matrix computation has no dependencies, order doesn't matter
+  // - Clears WORLD_UPDATED flag from previous frame
+  //
+  // Pass 2: Propagate world matrices (topo-ordered, deferred dirty propagation)
+  // - Must be in topological order so parents are updated before children
+  // - Deferred dirty propagation: if parent has WORLD_UPDATED, child inherits dirty
+  // - Eliminates expensive scene_mark_children_world_dirty() lookups
+
+  // Pass 1: Chunk-based local matrix update + clear WORLD_UPDATED flags
+  vkr_entity_query_compiled_each_chunk(&scene->query_transforms,
+                                       transform_local_update_cb, scene);
+
+  // Pass 2: Topo-ordered world matrix propagation with deferred dirty propagation
+  VkrWorld *world = scene->world;
+  VkrComponentTypeId comp_transform = scene->comp_transform;
+
   for (uint32_t i = 0; i < scene->topo_count; i++) {
-    uint32_t entity_idx = scene->topo_order[i];
+    // Full entity ID stored in topo_order - no reconstruction needed
+    VkrEntityId entity = scene->topo_order[i];
 
-    // Reconstruct entity ID (we stored just index, need to look up generation)
-    VkrEntityId entity;
-    entity.parts.index = entity_idx;
-    entity.parts.generation = scene->world->dir.generations[entity_idx];
-    entity.parts.world = scene->world_id;
-
-    if (!vkr_entity_is_alive(scene->world, entity))
-      continue;
-
-    SceneTransform *transform = (SceneTransform *)vkr_entity_get_component_mut(
-        scene->world, entity, scene->comp_transform);
+    // Combined is_alive + get_component - single validation
+    SceneTransform *transform = (SceneTransform *)vkr_entity_get_component_if_alive(
+        world, entity, comp_transform);
     if (!transform)
       continue;
 
-    // Recompute local matrix if TRS changed
-    if (transform->flags & SCENE_TRANSFORM_DIRTY_LOCAL) {
-      transform->local = scene_compute_local_matrix(
-          transform->position, transform->rotation, transform->scale);
-      transform->flags &= ~SCENE_TRANSFORM_DIRTY_LOCAL;
-      transform->flags |= SCENE_TRANSFORM_DIRTY_WORLD;
-    }
+    // Single parent lookup for both dirty propagation and matrix computation
+    SceneTransform *parent_transform = NULL;
+    if (transform->parent.u64 != VKR_ENTITY_ID_INVALID.u64) {
+      parent_transform = (SceneTransform *)vkr_entity_get_component_if_alive(
+          world, transform->parent, comp_transform);
 
-    // Recompute world matrix if needed
-    bool8_t world_updated = false_v;
-    if (transform->flags & SCENE_TRANSFORM_DIRTY_WORLD) {
-      SceneTransform *parent_transform = NULL;
-      if (transform->parent.u64 != VKR_ENTITY_ID_INVALID.u64 &&
-          vkr_entity_is_alive(scene->world, transform->parent)) {
-        parent_transform = (SceneTransform *)vkr_entity_get_component_mut(
-            scene->world, transform->parent, scene->comp_transform);
+      // Deferred dirty propagation: if parent was updated this frame, inherit dirty
+      // This eliminates the expensive scene_mark_children_world_dirty() call
+      if (parent_transform &&
+          (parent_transform->flags & SCENE_TRANSFORM_WORLD_UPDATED)) {
+        transform->flags |= SCENE_TRANSFORM_DIRTY_WORLD;
       }
-
-      if (parent_transform) {
-        transform->world = mat4_mul(parent_transform->world, transform->local);
-      } else {
-        transform->world = transform->local;
-      }
-
-      transform->flags &= ~SCENE_TRANSFORM_DIRTY_WORLD;
-      world_updated = true_v;
     }
 
-    if (world_updated) {
-      // Mark for render sync
-      scene_mark_render_dirty(scene, entity);
-      scene_mark_children_world_dirty(scene, entity);
+    // Only process if world matrix needs update
+    if (!(transform->flags & SCENE_TRANSFORM_DIRTY_WORLD))
+      continue;
+
+    // Compute world matrix
+    if (parent_transform) {
+      transform->world = mat4_mul(parent_transform->world, transform->local);
+    } else {
+      transform->world = transform->local;
     }
+
+    transform->flags &= ~SCENE_TRANSFORM_DIRTY_WORLD;
+    transform->flags |= SCENE_TRANSFORM_WORLD_UPDATED; // Mark for child propagation
+
+    // Mark for render sync
+    scene_mark_render_dirty(scene, entity);
   }
 }
 
@@ -1388,14 +1492,14 @@ void vkr_scene_set_parent(VkrScene *scene, VkrEntityId entity,
 }
 
 bool8_t vkr_scene_set_mesh_renderer(VkrScene *scene, VkrEntityId entity,
-                                    uint32_t mesh_index) {
+                                    VkrMeshInstanceHandle instance) {
   if (!scene || !scene->world)
     return false;
 
-  SceneMeshRenderer comp = {.mesh_index = mesh_index};
+  SceneMeshRenderer comp = {.instance = instance};
   if (!vkr_scene_ensure_render_id(scene, entity, NULL)) {
-    log_error("Failed to assign render id for entity (mesh_index=%u)",
-              mesh_index);
+    log_error("Failed to assign render id for entity (instance.id=%u)",
+              instance.id);
     return false;
   }
 
@@ -1614,6 +1718,55 @@ void vkr_scene_release_mesh(VkrScene *scene, uint32_t mesh_index) {
   }
 }
 
+/**
+ * @brief Ensure owned instance handle array has sufficient capacity.
+ */
+vkr_internal bool8_t scene_ensure_instance_capacity(VkrScene *scene,
+                                                     uint32_t needed) {
+  return scene_grow_array(
+      scene->alloc, (void **)&scene->owned_instances,
+      &scene->owned_instance_capacity, scene->owned_instance_count, needed,
+      SCENE_DEFAULT_INSTANCE_CAPACITY, sizeof(VkrMeshInstanceHandle),
+      AlignOf(VkrMeshInstanceHandle), false_v);
+}
+
+bool8_t vkr_scene_track_instance(VkrScene *scene, VkrMeshInstanceHandle instance,
+                                  VkrSceneError *out_error) {
+  if (!scene) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
+    return false_v;
+  }
+
+  if (!scene_ensure_instance_capacity(scene, scene->owned_instance_count + 1)) {
+    if (out_error)
+      *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
+    return false_v;
+  }
+
+  scene->owned_instances[scene->owned_instance_count++] = instance;
+  if (out_error)
+    *out_error = VKR_SCENE_ERROR_NONE;
+  return true_v;
+}
+
+void vkr_scene_release_instance(VkrScene *scene, VkrMeshInstanceHandle instance) {
+  if (!scene)
+    return;
+
+  // Find and remove from owned list
+  for (uint32_t i = 0; i < scene->owned_instance_count; i++) {
+    if (scene->owned_instances[i].id == instance.id &&
+        scene->owned_instances[i].generation == instance.generation) {
+      // Swap with last and shrink
+      scene->owned_instances[i] =
+          scene->owned_instances[scene->owned_instance_count - 1];
+      scene->owned_instance_count--;
+      return;
+    }
+  }
+}
+
 // ============================================================================
 // Render Bridge
 // ============================================================================
@@ -1701,15 +1854,18 @@ scene_render_bridge_clear_mapping(VkrSceneRenderBridge *bridge) {
 
 vkr_internal bool8_t scene_entity_is_visible(VkrScene *scene,
                                              VkrEntityId entity) {
-  uint32_t max_depth = scene->world->dir.capacity;
+  VkrWorld *world = scene->world;
+  VkrComponentTypeId comp_visibility = scene->comp_visibility;
+  VkrComponentTypeId comp_transform = scene->comp_transform;
+  uint32_t max_depth = world->dir.capacity;
   uint32_t depth = 0;
   VkrEntityId current = entity;
 
-  while (current.u64 != VKR_ENTITY_ID_INVALID.u64 &&
-         vkr_entity_is_alive(scene->world, current) && depth < max_depth) {
+  while (current.u64 != VKR_ENTITY_ID_INVALID.u64 && depth < max_depth) {
+    // Combined is_alive + get_component: returns NULL if dead or component missing
     const SceneVisibility *vis =
-        (const SceneVisibility *)vkr_entity_get_component(
-            scene->world, current, scene->comp_visibility);
+        (const SceneVisibility *)vkr_entity_get_component_if_alive_const(
+            world, current, comp_visibility);
     if (vis) {
       if (!vis->visible) {
         return false_v;
@@ -1719,16 +1875,16 @@ vkr_internal bool8_t scene_entity_is_visible(VkrScene *scene,
       }
     }
 
+    // Get transform for parent traversal
     const SceneTransform *transform =
-        (const SceneTransform *)vkr_entity_get_component(scene->world, current,
-                                                         scene->comp_transform);
+        (const SceneTransform *)vkr_entity_get_component_if_alive_const(
+            world, current, comp_transform);
     if (!transform) {
       break;
     }
 
     VkrEntityId parent = transform->parent;
-    if (parent.u64 == VKR_ENTITY_ID_INVALID.u64 ||
-        !vkr_entity_is_alive(scene->world, parent)) {
+    if (parent.u64 == VKR_ENTITY_ID_INVALID.u64) {
       break;
     }
 
@@ -1761,16 +1917,17 @@ scene_render_bridge_update_mapping(VkrSceneRenderBridge *bridge,
 }
 
 vkr_internal void scene_sync_renderable(RenderSyncContext *ctx,
-                                        VkrEntityId entity, uint32_t mesh_index,
+                                        VkrEntityId entity,
+                                        VkrMeshInstanceHandle instance,
                                         Mat4 world, uint32_t render_id,
                                         bool8_t is_visible) {
-  if (!vkr_mesh_manager_set_visible(&ctx->rf->mesh_manager, mesh_index,
-                                    is_visible)) {
+  if (!vkr_mesh_manager_instance_set_visible(&ctx->rf->mesh_manager, instance,
+                                             is_visible)) {
     return;
   }
 
-  if (!vkr_mesh_manager_set_render_id(&ctx->rf->mesh_manager, mesh_index,
-                                      render_id)) {
+  if (!vkr_mesh_manager_instance_set_render_id(&ctx->rf->mesh_manager, instance,
+                                               render_id)) {
     return;
   }
 
@@ -1779,7 +1936,8 @@ vkr_internal void scene_sync_renderable(RenderSyncContext *ctx,
     return;
   }
 
-  if (!vkr_mesh_manager_set_model(&ctx->rf->mesh_manager, mesh_index, world)) {
+  if (!vkr_mesh_manager_instance_set_model(&ctx->rf->mesh_manager, instance,
+                                           world)) {
     return;
   }
 
@@ -1806,10 +1964,10 @@ vkr_internal void render_sync_chunk_cb(const VkrArchetype *arch,
       (SceneRenderId *)vkr_entity_chunk_column(chunk, scene->comp_render_id);
 
   for (uint32_t i = 0; i < count; i++) {
-    uint32_t mesh_index = mesh_renderers[i].mesh_index;
+    VkrMeshInstanceHandle instance = mesh_renderers[i].instance;
     bool8_t is_visible = scene_entity_is_visible(scene, entities[i]);
     uint32_t render_id = render_ids ? render_ids[i].id : 0;
-    scene_sync_renderable(ctx, entities[i], mesh_index, transforms[i].world,
+    scene_sync_renderable(ctx, entities[i], instance, transforms[i].world,
                           render_id, is_visible);
   }
 }
@@ -1845,6 +2003,48 @@ vkr_internal void render_sync_point_light_cb(const VkrArchetype *arch,
   }
 }
 
+/**
+ * @brief Chunk callback to sync shapes (legacy meshes).
+ */
+vkr_internal void render_sync_shape_cb(const VkrArchetype *arch,
+                                       VkrChunk *chunk, void *user) {
+  (void)arch;
+  RenderSyncContext *ctx = (RenderSyncContext *)user;
+  VkrScene *scene = ctx->scene;
+  RendererFrontend *rf = ctx->rf;
+
+  uint32_t count = vkr_entity_chunk_count(chunk);
+  VkrEntityId *entities = vkr_entity_chunk_entities(chunk);
+  SceneTransform *transforms =
+      (SceneTransform *)vkr_entity_chunk_column(chunk, scene->comp_transform);
+  SceneShape *shapes =
+      (SceneShape *)vkr_entity_chunk_column(chunk, scene->comp_shape);
+  SceneRenderId *render_ids =
+      (SceneRenderId *)vkr_entity_chunk_column(chunk, scene->comp_render_id);
+
+  if (!transforms || !shapes || !render_ids)
+    return;
+
+  for (uint32_t i = 0; i < count; i++) {
+    uint32_t mesh_index = shapes[i].mesh_index;
+    if (mesh_index == VKR_INVALID_ID)
+      continue;
+
+    uint32_t render_id = render_ids[i].id;
+    bool8_t is_visible = scene_entity_is_visible(scene, entities[i]);
+
+    // Sync legacy mesh state
+    vkr_mesh_manager_set_model(&rf->mesh_manager, mesh_index,
+                               transforms[i].world);
+    vkr_mesh_manager_set_visible(&rf->mesh_manager, mesh_index, is_visible);
+    vkr_mesh_manager_set_render_id(&rf->mesh_manager, mesh_index, render_id);
+
+    // Update picking mapping
+    scene_render_bridge_update_mapping(ctx->bridge, render_id, entities[i],
+                                       is_visible);
+  }
+}
+
 vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
                                            struct s_RendererFrontend *rf,
                                            VkrScene *scene) {
@@ -1863,31 +2063,54 @@ vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
       .scene = scene,
   };
 
-  // Process dirty entities
+  // Process dirty entities - use inline functions for hot path
+  VkrWorld *world = scene->world;
   for (uint32_t i = 0; i < scene->render_dirty_count; i++) {
     VkrEntityId entity = scene->render_dirty_entities[i];
 
-    if (!vkr_entity_is_alive(scene->world, entity))
-      continue;
-
+    // Combined is_alive + get_component - single validation
     const SceneTransform *transform =
-        (const SceneTransform *)vkr_entity_get_component(scene->world, entity,
-                                                         scene->comp_transform);
-    const SceneMeshRenderer *mesh_renderer =
-        (const SceneMeshRenderer *)vkr_entity_get_component(
-            scene->world, entity, scene->comp_mesh_renderer);
-    const SceneRenderId *render_id_comp =
-        (const SceneRenderId *)vkr_entity_get_component(scene->world, entity,
-                                                        scene->comp_render_id);
-
-    if (!transform || !mesh_renderer || !render_id_comp)
+        (const SceneTransform *)vkr_entity_get_component_if_alive_const(
+            world, entity, scene->comp_transform);
+    if (!transform)
       continue;
 
-    uint32_t mesh_index = mesh_renderer->mesh_index;
+    // Entity is alive (validated above), use unchecked for render_id
+    // But render_id might not exist, so use safe accessor
+    const SceneRenderId *render_id_comp =
+        (const SceneRenderId *)vkr_entity_get_component_if_alive_const(
+            world, entity, scene->comp_render_id);
+    if (!render_id_comp)
+      continue;
+
     bool8_t is_visible = scene_entity_is_visible(scene, entity);
     uint32_t render_id = render_id_comp->id;
-    scene_sync_renderable(&ctx, entity, mesh_index, transform->world, render_id,
-                          is_visible);
+
+    // Try mesh renderer (instance) first - entity validated, component optional
+    const SceneMeshRenderer *mesh_renderer =
+        (const SceneMeshRenderer *)vkr_entity_get_component_if_alive_const(
+            world, entity, scene->comp_mesh_renderer);
+    if (mesh_renderer) {
+      VkrMeshInstanceHandle instance = mesh_renderer->instance;
+      scene_sync_renderable(&ctx, entity, instance, transform->world, render_id,
+                            is_visible);
+      continue;
+    }
+
+    // Try shape (legacy mesh) next
+    const SceneShape *shape =
+        (const SceneShape *)vkr_entity_get_component_if_alive_const(
+            world, entity, scene->comp_shape);
+    if (shape && shape->mesh_index != VKR_INVALID_ID) {
+      vkr_mesh_manager_set_model(&rf->mesh_manager, shape->mesh_index,
+                                 transform->world);
+      vkr_mesh_manager_set_visible(&rf->mesh_manager, shape->mesh_index,
+                                   is_visible);
+      vkr_mesh_manager_set_render_id(&rf->mesh_manager, shape->mesh_index,
+                                     render_id);
+      scene_render_bridge_update_mapping(ctx.bridge, render_id, entity,
+                                         is_visible);
+    }
   }
 
   scene->render_dirty_count = 0;
@@ -1924,6 +2147,8 @@ vkr_internal void scene_render_bridge_full_sync(VkrSceneRenderBridge *bridge,
                                        render_sync_chunk_cb, &ctx);
   vkr_entity_query_compiled_each_chunk(&scene->query_point_lights,
                                        render_sync_point_light_cb, &ctx);
+  vkr_entity_query_compiled_each_chunk(&scene->query_shapes,
+                                       render_sync_shape_cb, &ctx);
 
   scene->render_dirty_count = 0;
   scene->render_full_sync_needed = false;
@@ -2478,9 +2703,21 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
     return false_v;
   }
 
-  // Also set as mesh renderer for picking/visibility
-  if (!vkr_scene_set_mesh_renderer(scene, entity, mesh_index)) {
-    log_warn("Scene: failed to set mesh renderer for shape entity");
+  // Shapes use legacy mesh indices. Set up render_id, visibility, and model
+  // on the mesh for picking to work. Transform sync requires a query for shapes.
+  uint32_t render_id = 0;
+  if (!vkr_scene_ensure_render_id(scene, entity, &render_id)) {
+    log_warn("Scene: failed to assign render id for shape entity");
+  }
+
+  // Set up mesh for picking and visibility
+  bool8_t is_visible = scene_entity_is_visible(scene, entity);
+  vkr_mesh_manager_set_render_id(&rf->mesh_manager, mesh_index, render_id);
+  vkr_mesh_manager_set_visible(&rf->mesh_manager, mesh_index, is_visible);
+
+  // Set model matrix from transform
+  if (transform) {
+    vkr_mesh_manager_set_model(&rf->mesh_manager, mesh_index, transform->world);
   }
 
   scene_invalidate_queries(scene);

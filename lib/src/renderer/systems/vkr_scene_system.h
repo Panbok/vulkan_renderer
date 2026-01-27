@@ -62,6 +62,8 @@ typedef struct SceneName {
 #define SCENE_TRANSFORM_DIRTY_WORLD 0x02 // World matrix needs recompute
 #define SCENE_TRANSFORM_DIRTY_HIERARCHY                                        \
   0x04 // Parent link changed, rebuild topo order
+#define SCENE_TRANSFORM_WORLD_UPDATED                                          \
+  0x08 // World matrix was updated this frame (for child propagation)
 
 /**
  * @brief Transform component with TRS, cached matrices, and hierarchy support.
@@ -72,6 +74,8 @@ typedef struct SceneName {
  * - DIRTY_WORLD: Set when local or parent changes. Cleared after world matrix
  * recompute.
  * - DIRTY_HIERARCHY: Set when parent link changes. Triggers topo order rebuild.
+ * - WORLD_UPDATED: Set when world matrix updated this frame. Used for deferred
+ *   dirty propagation to children during topo traversal. Cleared in Pass 1.
  */
 typedef struct SceneTransform {
   Vec3 position;
@@ -89,7 +93,7 @@ typedef struct SceneTransform {
  * @brief Mesh renderer component linking entity to mesh manager slot.
  */
 typedef struct SceneMeshRenderer {
-  uint32_t mesh_index; // Index into VkrMeshManager.meshes
+  VkrMeshInstanceHandle instance; // Handle to mesh instance
 } SceneMeshRenderer;
 
 /**
@@ -214,12 +218,13 @@ typedef struct VkrScene {
   VkrQueryCompiled
       query_directional_light;         // Entities with SceneDirectionalLight
   VkrQueryCompiled query_point_lights; // (SceneTransform, ScenePointLight)
+  VkrQueryCompiled query_shapes;       // (SceneTransform, SceneShape)
   bool8_t queries_valid;               // False until first compile
 
   // Transform hierarchy support
-  uint32_t *topo_order;   // Topologically sorted entity indices
-  uint32_t topo_count;    // Number of entities in topo_order
-  uint32_t topo_capacity; // Allocated size
+  VkrEntityId *topo_order; // Topologically sorted entity IDs (full IDs, not just indices)
+  uint32_t topo_count;     // Number of entities in topo_order
+  uint32_t topo_capacity;  // Allocated size
   bool8_t
       hierarchy_dirty; // Set when parent links change; triggers topo rebuild
 
@@ -230,10 +235,15 @@ typedef struct VkrScene {
   uint32_t child_index_capacity; // Slot count (>= world->dir.capacity)
   bool8_t child_index_valid;     // False until rebuilt or incrementally updated
 
-  // Owned mesh indices (for cleanup on scene destroy)
+  // Owned mesh indices (for cleanup on scene destroy - legacy meshes)
   uint32_t *owned_meshes;
   uint32_t owned_mesh_count;
   uint32_t owned_mesh_capacity;
+
+  // Owned mesh instances (for cleanup on scene destroy - new instance system)
+  VkrMeshInstanceHandle *owned_instances;
+  uint32_t owned_instance_count;
+  uint32_t owned_instance_capacity;
 
   // Render dirty tracking (entities needing sync to mesh manager)
   VkrEntityId *render_dirty_entities;
@@ -462,11 +472,11 @@ void vkr_scene_set_parent(VkrScene *scene, VkrEntityId entity,
  * @brief Add mesh renderer component and ensure a render id for picking.
  * @param scene Scene containing the entity
  * @param entity Entity to modify
- * @param mesh_index Index into mesh manager
+ * @param instance Handle to mesh instance
  * @return true on success
  */
 bool8_t vkr_scene_set_mesh_renderer(VkrScene *scene, VkrEntityId entity,
-                                    uint32_t mesh_index);
+                                    VkrMeshInstanceHandle instance);
 
 /**
  * @brief Ensure entity has a render id (assigned if missing).
@@ -573,6 +583,25 @@ bool8_t vkr_scene_track_mesh(VkrScene *scene, uint32_t mesh_index,
  * @param mesh_index Mesh index to release
  */
 void vkr_scene_release_mesh(VkrScene *scene, uint32_t mesh_index);
+
+/**
+ * @brief Track a mesh instance as scene-owned.
+ * Scene will destroy this instance on shutdown.
+ * @param scene Scene to own the instance.
+ * @param instance Instance handle to track.
+ * @param out_error Optional error output.
+ * @return true on success.
+ */
+bool8_t vkr_scene_track_instance(VkrScene *scene, VkrMeshInstanceHandle instance,
+                                  VkrSceneError *out_error);
+
+/**
+ * @brief Release a mesh instance from scene ownership.
+ * Scene will no longer destroy this instance on shutdown.
+ * @param scene Scene owning the instance
+ * @param instance Instance handle to release
+ */
+void vkr_scene_release_instance(VkrScene *scene, VkrMeshInstanceHandle instance);
 
 // ============================================================================
 // Text3D Component
