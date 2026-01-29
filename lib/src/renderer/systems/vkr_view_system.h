@@ -10,7 +10,7 @@
 /** Maximum number of layers that can be registered in the view system. */
 #define VKR_VIEW_SYSTEM_MAX_LAYERS 16
 /** Maximum number of passes that can be configured per layer. */
-#define VKR_VIEW_SYSTEM_MAX_LAYER_PASSES 4
+#define VKR_VIEW_SYSTEM_MAX_LAYER_PASSES 8
 /** Maximum number of behaviors that can be attached to a single layer. */
 #define VKR_VIEW_SYSTEM_MAX_LAYER_BEHAVIORS 8
 
