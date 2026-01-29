@@ -1,3 +1,19 @@
+/**
+ * @file vkr_view_skybox.c
+ * @brief Skybox view layer implementation.
+ *
+ * The Skybox layer renders an environment cube map as the background of the
+ * 3D scene. It renders first (order -10) so other layers can draw over it.
+ *
+ * Key features:
+ * - Uses front-face culling to render the inside of the skybox cube
+ * - Strips translation from view matrix for infinite distance effect
+ * - Supports runtime switching between swapchain and offscreen rendering
+ *
+ * The skybox uses a 6-face cube map texture loaded from TGA files in the
+ * format: name.right.tga, name.left.tga, etc.
+ */
+
 #include "renderer/systems/views/vkr_view_skybox.h"
 
 #include "containers/str.h"
@@ -12,15 +28,31 @@
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/systems/vkr_view_system.h"
 
+/** Offscreen renderpass name for skybox in editor mode. */
+#define VKR_VIEW_OFFSCREEN_SKYBOX_PASS_NAME "Renderpass.Offscreen.Skybox"
+
+/**
+ * @brief Internal state for the Skybox view layer.
+ *
+ * Manages the cube geometry, cube map texture, and separate pipelines
+ * for swapchain vs offscreen rendering.
+ */
 typedef struct VkrViewSkyboxState {
-  VkrShaderConfig shader_config;
-  VkrPipelineHandle pipeline;
-  VkrGeometryHandle cube_geometry;
-  VkrTextureHandle cube_map_texture;
-  VkrRendererInstanceStateHandle instance_state; // Pipeline instance state
-  bool8_t initialized;
+  VkrShaderConfig shader_config;        /**< Skybox shader config. */
+  VkrPipelineHandle pipeline;           /**< Currently active pipeline. */
+  VkrPipelineHandle pipeline_swapchain; /**< Pipeline for swapchain output. */
+  VkrPipelineHandle pipeline_offscreen; /**< Pipeline for offscreen output. */
+  VkrGeometryHandle cube_geometry;      /**< Inverted cube for skybox. */
+  VkrTextureHandle cube_map_texture;    /**< 6-face environment cube map. */
+  VkrRendererInstanceStateHandle instance_state; /**< Pipeline instance. */
+  bool8_t offscreen_enabled; /**< Whether offscreen mode is active. */
+  bool8_t initialized;       /**< Whether resources are loaded. */
 } VkrViewSkyboxState;
 
+/* ============================================================================
+ * Layer Lifecycle Callbacks
+ * ============================================================================
+ */
 vkr_internal bool32_t vkr_view_skybox_on_create(VkrLayerContext *ctx);
 vkr_internal void vkr_view_skybox_on_attach(VkrLayerContext *ctx);
 vkr_internal void vkr_view_skybox_on_resize(VkrLayerContext *ctx,
@@ -30,8 +62,32 @@ vkr_internal void vkr_view_skybox_on_render(VkrLayerContext *ctx,
 vkr_internal void vkr_view_skybox_on_detach(VkrLayerContext *ctx);
 vkr_internal void vkr_view_skybox_on_destroy(VkrLayerContext *ctx);
 
+/* ============================================================================
+ * Resource Management
+ * ============================================================================
+ */
+
+/** Releases all Skybox resources (geometry, texture, pipelines). */
 vkr_internal void vkr_view_skybox_cleanup_resources(RendererFrontend *rf,
                                                     VkrViewSkyboxState *state);
+
+/** Finds the Skybox layer by handle in the view system. */
+vkr_internal VkrLayer *vkr_view_skybox_find_layer(VkrViewSystem *vs,
+                                                  VkrLayerHandle handle);
+
+/* ============================================================================
+ * Offscreen/Pipeline Management
+ * ============================================================================
+ */
+
+/** Toggles between offscreen and swapchain pipelines. */
+vkr_internal bool8_t vkr_view_skybox_set_offscreen_enabled(
+    RendererFrontend *rf, VkrViewSkyboxState *state, bool8_t enabled);
+
+/** Switches to a different pipeline and updates instance state. */
+vkr_internal bool8_t
+vkr_view_skybox_switch_pipeline(RendererFrontend *rf, VkrViewSkyboxState *state,
+                                VkrPipelineHandle pipeline);
 
 bool32_t vkr_view_skybox_register(RendererFrontend *rf) {
   assert_log(rf != NULL, "Renderer frontend is NULL");
@@ -77,6 +133,7 @@ bool32_t vkr_view_skybox_register(RendererFrontend *rf) {
                     .on_detach = vkr_view_skybox_on_detach,
                     .on_destroy = vkr_view_skybox_on_destroy},
       .user_data = state,
+      .enabled = true_v,
   };
 
   VkrRendererError layer_err = VKR_RENDERER_ERROR_NONE;
@@ -100,6 +157,177 @@ void vkr_view_skybox_unregister(RendererFrontend *rf) {
 
   vkr_view_system_unregister_layer(rf, rf->skybox_layer);
   rf->skybox_layer = VKR_LAYER_HANDLE_INVALID;
+}
+
+bool32_t vkr_view_skybox_set_custom_targets(
+    RendererFrontend *rf, String8 renderpass_name,
+    VkrRenderPassHandle renderpass, VkrRenderTargetHandle *render_targets,
+    uint32_t render_target_count,
+    VkrTextureOpaqueHandle *custom_color_attachments,
+    uint32_t custom_color_attachment_count,
+    VkrTextureLayout *custom_color_layouts) {
+  if (!rf || !renderpass || !render_targets || render_target_count == 0) {
+    return false_v;
+  }
+
+  VkrLayer *skybox_layer =
+      vkr_view_skybox_find_layer(&rf->view_system, rf->skybox_layer);
+  if (!skybox_layer || skybox_layer->pass_count == 0) {
+    return false_v;
+  }
+
+  VkrLayerPass *pass = array_get_VkrLayerPass(&skybox_layer->passes, 0);
+  if (!pass->use_custom_render_targets && pass->render_targets &&
+      pass->render_target_count > 0) {
+    for (uint32_t i = 0; i < pass->render_target_count; ++i) {
+      if (pass->render_targets[i]) {
+        vkr_renderer_render_target_destroy(rf, pass->render_targets[i]);
+      }
+    }
+    vkr_allocator_free(&rf->view_system.allocator, pass->render_targets,
+                       sizeof(VkrRenderTargetHandle) *
+                           (uint64_t)pass->render_target_count,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    pass->render_targets = NULL;
+    pass->render_target_count = 0;
+  }
+
+  pass->use_custom_render_targets = true_v;
+  pass->use_swapchain_color = false_v;
+  pass->renderpass_name = renderpass_name;
+  pass->renderpass = renderpass;
+  pass->render_targets = render_targets;
+  pass->render_target_count = render_target_count;
+  pass->custom_color_attachments = custom_color_attachments;
+  pass->custom_color_attachment_count = custom_color_attachment_count;
+  pass->custom_color_layouts = custom_color_layouts;
+
+  VkrViewSkyboxState *state = (VkrViewSkyboxState *)skybox_layer->user_data;
+  if (state) {
+    if (!vkr_view_skybox_set_offscreen_enabled(rf, state, true_v)) {
+      log_warn("Failed to switch skybox pipeline to offscreen renderpass");
+    }
+  }
+
+  return true_v;
+}
+
+void vkr_view_skybox_use_swapchain_targets(RendererFrontend *rf) {
+  if (!rf) {
+    return;
+  }
+
+  VkrLayer *skybox_layer =
+      vkr_view_skybox_find_layer(&rf->view_system, rf->skybox_layer);
+  if (!skybox_layer || skybox_layer->pass_count == 0) {
+    return;
+  }
+
+  VkrViewSkyboxState *state = (VkrViewSkyboxState *)skybox_layer->user_data;
+  if (state) {
+    if (!vkr_view_skybox_set_offscreen_enabled(rf, state, false_v)) {
+      log_warn("Failed to restore skybox pipeline to swapchain renderpass");
+    }
+  }
+
+  VkrLayerPass *pass = array_get_VkrLayerPass(&skybox_layer->passes, 0);
+  if (pass->use_custom_render_targets) {
+    pass->render_targets = NULL;
+    pass->render_target_count = 0;
+    pass->custom_color_attachments = NULL;
+    pass->custom_color_attachment_count = 0;
+    pass->custom_color_layouts = NULL;
+  }
+
+  pass->use_custom_render_targets = false_v;
+  pass->use_swapchain_color = true_v;
+  pass->use_depth = true_v;
+  pass->renderpass_name = string8_lit("Renderpass.Builtin.Skybox");
+  pass->renderpass = NULL;
+}
+
+vkr_internal bool8_t
+vkr_view_skybox_switch_pipeline(RendererFrontend *rf, VkrViewSkyboxState *state,
+                                VkrPipelineHandle pipeline) {
+  if (!rf || !state || pipeline.id == 0) {
+    return false_v;
+  }
+
+  if (state->pipeline.id == pipeline.id &&
+      state->pipeline.generation == pipeline.generation) {
+    return true_v;
+  }
+
+  if (state->instance_state.id != 0 && state->pipeline.id != 0) {
+    vkr_pipeline_registry_release_instance_state(
+        &rf->pipeline_registry, state->pipeline, state->instance_state,
+        &(VkrRendererError){0});
+  }
+
+  VkrRendererError instance_err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_pipeline_registry_acquire_instance_state(
+          &rf->pipeline_registry, pipeline, &state->instance_state,
+          &instance_err)) {
+    String8 err_str = vkr_renderer_get_error_string(instance_err);
+    log_error("Failed to acquire skybox instance state: %s",
+              string8_cstr(&err_str));
+    return false_v;
+  }
+
+  state->pipeline = pipeline;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_view_skybox_set_offscreen_enabled(
+    RendererFrontend *rf, VkrViewSkyboxState *state, bool8_t enabled) {
+  if (!rf || !state || !state->initialized) {
+    return false_v;
+  }
+
+  if (state->offscreen_enabled == enabled) {
+    return true_v;
+  }
+
+  VkrPipelineHandle next_pipeline =
+      enabled ? state->pipeline_offscreen : state->pipeline_swapchain;
+
+  if (enabled && next_pipeline.id == 0) {
+    VkrRenderPassHandle offscreen_pass = vkr_renderer_renderpass_get(
+        rf, string8_lit(VKR_VIEW_OFFSCREEN_SKYBOX_PASS_NAME));
+    if (!offscreen_pass) {
+      log_warn("Offscreen skybox renderpass not available");
+      return false_v;
+    }
+
+    VkrShaderConfig offscreen_cfg = state->shader_config;
+    offscreen_cfg.renderpass_name =
+        string8_lit(VKR_VIEW_OFFSCREEN_SKYBOX_PASS_NAME);
+    offscreen_cfg.name = (String8){0};
+
+    VkrRendererError pipeline_error = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_pipeline_registry_create_from_shader_config(
+            &rf->pipeline_registry, &offscreen_cfg, VKR_PIPELINE_DOMAIN_SKYBOX,
+            string8_lit("skybox_offscreen"), &state->pipeline_offscreen,
+            &pipeline_error)) {
+      String8 err_str = vkr_renderer_get_error_string(pipeline_error);
+      log_warn("Skybox offscreen pipeline creation failed: %s",
+               string8_cstr(&err_str));
+      state->pipeline_offscreen = VKR_PIPELINE_HANDLE_INVALID;
+      return false_v;
+    }
+    next_pipeline = state->pipeline_offscreen;
+  }
+
+  if (next_pipeline.id == 0) {
+    return false_v;
+  }
+
+  if (!vkr_view_skybox_switch_pipeline(rf, state, next_pipeline)) {
+    return false_v;
+  }
+
+  state->offscreen_enabled = enabled;
+  return true_v;
 }
 
 vkr_internal bool32_t vkr_view_skybox_on_create(VkrLayerContext *ctx) {
@@ -147,6 +375,9 @@ vkr_internal bool32_t vkr_view_skybox_on_create(VkrLayerContext *ctx) {
     log_error("Skybox pipeline creation failed: %s", string8_cstr(&err_str));
     goto cleanup;
   }
+  state->pipeline_swapchain = state->pipeline;
+  state->pipeline_offscreen = VKR_PIPELINE_HANDLE_INVALID;
+  state->offscreen_enabled = false_v;
 
   VkrRendererError geom_err = VKR_RENDERER_ERROR_NONE;
   state->cube_geometry = vkr_geometry_system_create_cube(
@@ -302,12 +533,21 @@ vkr_internal void vkr_view_skybox_cleanup_resources(RendererFrontend *rf,
     state->cube_map_texture = (VkrTextureHandle){0};
   }
 
-  if (state->pipeline.id != 0) {
+  if (state->pipeline_swapchain.id != 0) {
     vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
-                                           state->pipeline);
-    state->pipeline = (VkrPipelineHandle){0};
+                                           state->pipeline_swapchain);
+  }
+  if (state->pipeline_offscreen.id != 0 &&
+      state->pipeline_offscreen.id != state->pipeline_swapchain.id) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           state->pipeline_offscreen);
   }
 
+  state->pipeline = (VkrPipelineHandle){0};
+  state->pipeline_swapchain = (VkrPipelineHandle){0};
+  state->pipeline_offscreen = (VkrPipelineHandle){0};
+
+  state->offscreen_enabled = false_v;
   state->initialized = false_v;
 }
 
@@ -325,32 +565,28 @@ vkr_internal void vkr_view_skybox_on_destroy(VkrLayerContext *ctx) {
   if (!state) {
     return;
   }
-
-  // Release pipeline instance state
-  if (state->instance_state.id != 0 && state->pipeline.id != 0) {
-    VkrRendererError release_err = VKR_RENDERER_ERROR_NONE;
-    vkr_pipeline_registry_release_instance_state(
-        &rf->pipeline_registry, state->pipeline, state->instance_state,
-        &release_err);
-  }
-
-  // Destroy geometry
-  if (state->cube_geometry.id != 0) {
-    vkr_geometry_system_release(&rf->geometry_system, state->cube_geometry);
-  }
-
-  // Release cube map texture
-  if (state->cube_map_texture.id != 0) {
-    vkr_texture_system_release_by_handle(&rf->texture_system,
-                                         state->cube_map_texture);
-  }
-
-  // Destroy pipeline
-  if (state->pipeline.id != 0) {
-    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
-                                           state->pipeline);
-  }
-
-  state->initialized = false_v;
+  vkr_view_skybox_cleanup_resources(rf, state);
   log_debug("Skybox view destroyed");
+}
+
+vkr_internal VkrLayer *vkr_view_skybox_find_layer(VkrViewSystem *vs,
+                                                  VkrLayerHandle handle) {
+  if (!vs || !vs->initialized || handle.id == 0) {
+    return NULL;
+  }
+
+  if (handle.id - 1 >= vs->layers.length) {
+    return NULL;
+  }
+
+  VkrLayer *layer = array_get_VkrLayer(&vs->layers, handle.id - 1);
+  if (!layer->active) {
+    return NULL;
+  }
+
+  if (layer->handle.generation != handle.generation) {
+    return NULL;
+  }
+
+  return layer;
 }
