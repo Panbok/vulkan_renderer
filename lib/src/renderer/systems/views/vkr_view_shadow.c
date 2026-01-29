@@ -397,9 +397,11 @@ vkr_internal bool32_t vkr_view_shadow_on_create(VkrLayerContext *ctx) {
     return false_v;
   }
 
+  state->pass_target_count = 0;
+
   VkrShadowConfig cfg = VKR_SHADOW_CONFIG_DEFAULT;
   if (!vkr_shadow_system_init(&state->shadow_system, rf, &cfg)) {
-    return false_v;
+    goto cleanup;
   }
 
   uint32_t material_count = rf->material_system.materials.length;
@@ -410,9 +412,7 @@ vkr_internal bool32_t vkr_view_shadow_on_create(VkrLayerContext *ctx) {
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     if (!state->material_instances_alpha) {
       log_error("Failed to allocate shadow material instance states");
-      vkr_view_shadow_free_material_instances(rf, state);
-      vkr_shadow_system_shutdown(&state->shadow_system, rf);
-      return false_v;
+      goto cleanup;
     }
     MemZero(state->material_instances_alpha,
             sizeof(VkrRendererInstanceStateHandle) * (uint64_t)material_count);
@@ -422,16 +422,14 @@ vkr_internal bool32_t vkr_view_shadow_on_create(VkrLayerContext *ctx) {
   if (!vkr_draw_batcher_init(&state->draw_batcher, &rf->allocator,
                              VKR_VIEW_SHADOW_DRAW_BATCH_INITIAL_CAPACITY)) {
     log_error("Failed to initialize shadow draw batcher");
-    vkr_view_shadow_free_material_instances(rf, state);
-    vkr_shadow_system_shutdown(&state->shadow_system, rf);
-    return false_v;
+    goto cleanup;
   }
 
   VkrLayer *layer = ctx->layer;
   if (!layer ||
       layer->pass_count != state->shadow_system.config.cascade_count) {
     log_error("Shadow layer pass count does not match cascade count");
-    return false_v;
+    goto cleanup;
   }
 
   uint32_t frame_count = vkr_renderer_window_attachment_count(rf);
@@ -450,7 +448,7 @@ vkr_internal bool32_t vkr_view_shadow_on_create(VkrLayerContext *ctx) {
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     if (!state->pass_targets[pass_index]) {
       log_error("Failed to allocate shadow pass targets");
-      return false_v;
+      goto cleanup;
     }
 
     for (uint32_t f = 0; f < frame_count; ++f) {
@@ -464,6 +462,13 @@ vkr_internal bool32_t vkr_view_shadow_on_create(VkrLayerContext *ctx) {
 
   state->initialized = true_v;
   return true_v;
+
+cleanup:
+  vkr_view_shadow_free_pass_targets(rf, state);
+  vkr_draw_batcher_shutdown(&state->draw_batcher);
+  vkr_view_shadow_free_material_instances(rf, state);
+  vkr_shadow_system_shutdown(&state->shadow_system, rf);
+  return false_v;
 }
 
 vkr_internal void vkr_view_shadow_on_destroy(VkrLayerContext *ctx) {
@@ -589,8 +594,8 @@ vkr_internal void vkr_view_shadow_on_render(VkrLayerContext *ctx,
     return;
   }
 
-  uint32_t cascade_size = vkr_shadow_config_get_cascade_map_size(
-      &state->shadow_system.config, cascade_index);
+  uint32_t cascade_size =
+      vkr_shadow_config_get_max_map_size(&state->shadow_system.config);
   if (rf->shadow_debug_mode != 0 && (rf->frame_number % 240u) == 0u) {
     VkrRenderTargetHandle rt =
         vkr_layer_context_get_render_target(ctx, info->image_index);
@@ -598,8 +603,8 @@ vkr_internal void vkr_view_shadow_on_render(VkrLayerContext *ctx,
     const void *target = (const void *)rt;
     if (state->shadow_system.frames &&
         info->image_index < state->shadow_system.frame_resource_count) {
-      map = (const void *)state->shadow_system.frames[info->image_index]
-                .shadow_maps[cascade_index];
+      map = (const void *)
+                state->shadow_system.frames[info->image_index].shadow_map;
     }
 
     const VkrCascadeData *cascade =
@@ -954,11 +959,11 @@ vkr_internal void vkr_view_shadow_on_render(VkrLayerContext *ctx,
     vkr_shader_system_uniform_set(
         &rf->shader_system, "light_view_projection",
         &state->shadow_system.cascades[cascade_index].view_projection);
-    float32_t alpha_cutoff_uniform =
-        foliage_dither ? -alpha_cutoff : alpha_cutoff;
-    vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
-                                  &alpha_cutoff_uniform);
     if (needs_alpha_test) {
+      float32_t alpha_cutoff_uniform =
+          foliage_dither ? -alpha_cutoff : alpha_cutoff;
+      vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
+                                    &alpha_cutoff_uniform);
       vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
                                     diffuse);
     }
