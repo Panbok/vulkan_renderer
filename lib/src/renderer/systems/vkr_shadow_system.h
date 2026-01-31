@@ -29,6 +29,7 @@ typedef struct VkrCascadeData {
   Mat4 view_projection;
   float32_t split_far;
   float32_t world_units_per_texel;
+  Vec2 light_space_origin; // Light-space grid origin in right/up basis.
   Vec3 bounds_center;
   float32_t bounds_radius;
 } VkrCascadeData;
@@ -141,9 +142,9 @@ typedef struct VkrShadowConfig {
       .shadow_slope_bias = 0.001f,                                             \
       .shadow_bias_texel_scale = 0.001f,                                       \
       .shadow_slope_bias_texel_scale = 0.001f,                                 \
-      .pcf_radius = 1.0f,                                                      \
+      .pcf_radius = 1.9f,                                                      \
       .shadow_distance_fade_range = 12.0f,                                     \
-      .foliage_alpha_cutoff_bias = 0.10f,                                      \
+      .foliage_alpha_cutoff_bias = 0.01f,                                      \
       .foliage_alpha_dither = true_v,                                          \
       .use_constant_cascade_size = true_v,                                     \
       .cascade_blend_range = 8.0f,                                             \
@@ -231,6 +232,7 @@ typedef struct VkrShadowFrameData {
 
   float32_t split_far[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t world_units_per_texel[VKR_SHADOW_CASCADE_COUNT_MAX];
+  Vec2 light_space_origin[VKR_SHADOW_CASCADE_COUNT_MAX];
   Mat4 view_projection[VKR_SHADOW_CASCADE_COUNT_MAX];
 
   VkrTextureOpaqueHandle shadow_map;

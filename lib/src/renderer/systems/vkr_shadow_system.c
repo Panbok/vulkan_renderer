@@ -203,7 +203,7 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
     uint32_t shadow_map_size, bool8_t stabilize, float32_t guard_band_texels,
     bool8_t use_constant_cascade_size, const VkrShadowSceneBounds *scene_bounds,
     float32_t z_extension_factor, Mat4 *out_view_projection,
-    float32_t *out_world_units_per_texel) {
+    float32_t *out_world_units_per_texel, Vec2 *out_light_space_origin) {
   Mat4 view = light_view ? *light_view : mat4_identity();
 
   // Compute the slice center and its bounding sphere radius.
@@ -336,6 +336,10 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   float32_t bottom = center_y - half;
   float32_t top = center_y + half;
   *out_world_units_per_texel = texel_size;
+  if (out_light_space_origin) {
+    out_light_space_origin->x = left - view.columns.col3.x;
+    out_light_space_origin->y = bottom - view.columns.col3.y;
+  }
 
   float32_t near_clip = -max_z;
   float32_t far_clip = -min_z;
@@ -714,6 +718,7 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
       system->cascades[i].view_projection = mat4_identity();
       system->cascades[i].split_far = 0.0f;
       system->cascades[i].world_units_per_texel = 0.0f;
+      system->cascades[i].light_space_origin = vec2_zero();
       system->cascades[i].bounds_center = vec3_zero();
       system->cascades[i].bounds_radius = 0.0f;
     }
@@ -743,7 +748,8 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
         system->config.cascade_guard_band_texels,
         system->config.use_constant_cascade_size, &system->config.scene_bounds,
         system->config.z_extension_factor, &system->cascades[i].view_projection,
-        &system->cascades[i].world_units_per_texel);
+        &system->cascades[i].world_units_per_texel,
+        &system->cascades[i].light_space_origin);
 
     Vec3 cascade_center = vec3_zero();
     for (int c = 0; c < 8; ++c) {
@@ -821,11 +827,13 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
       out_data->split_far[i] = system->cascades[i].split_far;
       out_data->world_units_per_texel[i] =
           system->cascades[i].world_units_per_texel;
+      out_data->light_space_origin[i] = system->cascades[i].light_space_origin;
       out_data->view_projection[i] = system->cascades[i].view_projection;
     } else {
       out_data->shadow_map_inv_size[i] = 0.0f;
       out_data->split_far[i] = 0.0f;
       out_data->world_units_per_texel[i] = 0.0f;
+      out_data->light_space_origin[i] = vec2_zero();
       out_data->view_projection[i] = mat4_identity();
     }
   }

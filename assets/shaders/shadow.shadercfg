@@ -22,4 +22,4 @@ uniform=samp,1,diffuse_texture
 uniform=mat4,2,light_view_projection
 
 # Cull back faces to reduce light-leak lines on thin geometry
-cull_mode=back
+cull_mode=front
