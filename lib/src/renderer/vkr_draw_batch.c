@@ -95,8 +95,13 @@ bool8_t vkr_draw_batcher_init(VkrDrawBatcher *batcher, VkrAllocator *allocator,
   batcher->transparent_batches =
       vector_create_VkrDrawBatch_with_capacity(allocator, capacity);
 
-  return batcher->opaque_commands.data && batcher->transparent_commands.data &&
-         batcher->opaque_batches.data && batcher->transparent_batches.data;
+  if (batcher->opaque_commands.data && batcher->transparent_commands.data &&
+      batcher->opaque_batches.data && batcher->transparent_batches.data) {
+    return true_v;
+  }
+
+  vkr_draw_batcher_shutdown(batcher);
+  return false_v;
 }
 
 void vkr_draw_batcher_shutdown(VkrDrawBatcher *batcher) {
