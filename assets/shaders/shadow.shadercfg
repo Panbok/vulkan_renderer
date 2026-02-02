@@ -21,5 +21,5 @@ uniform=samp,1,diffuse_texture
 # Local (push constants): per-cascade light VP
 uniform=mat4,2,light_view_projection
 
-# Cull back faces to reduce light-leak lines on thin geometry
+# Cull front faces to remove self-shadowing artifacts
 cull_mode=front

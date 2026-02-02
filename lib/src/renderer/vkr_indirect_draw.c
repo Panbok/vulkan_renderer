@@ -6,11 +6,17 @@ vkr_internal bool8_t vkr_indirect_draw_try_init(
     VkrIndirectDrawSystem *system, VkrRendererFrontendHandle renderer,
     uint32_t max_draws, VkrMemoryPropertyFlags memory_flags,
     bool8_t needs_flush) {
+  uint64_t max_allowed = UINT64_MAX / sizeof(VkrIndirectDrawCommand);
+  if ((uint64_t)max_draws > max_allowed) {
+    log_warn("Indirect draw max_draws %u would overflow size; max allowed %llu",
+             max_draws, (unsigned long long)max_allowed);
+    return false_v;
+  }
+
   VkrBufferTypeFlags buffer_type = bitset8_create();
   bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
 
-  uint64_t size_bytes =
-      (uint64_t)max_draws * sizeof(VkrIndirectDrawCommand);
+  uint64_t size_bytes = (uint64_t)max_draws * sizeof(VkrIndirectDrawCommand);
   VkrBufferDescription desc = {
       .size = size_bytes,
       .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_INDIRECT |
@@ -42,8 +48,9 @@ vkr_internal bool8_t vkr_indirect_draw_try_init(
                                                  .capacity = max_draws,
                                                  .write_offset = 0,
                                                  .needs_flush = needs_flush};
-    system->buffers[i].mapped_ptr = (VkrIndirectDrawCommand *)
-        vkr_renderer_buffer_get_mapped_ptr(renderer, buffer);
+    system->buffers[i].mapped_ptr =
+        (VkrIndirectDrawCommand *)vkr_renderer_buffer_get_mapped_ptr(renderer,
+                                                                     buffer);
     if (!system->buffers[i].mapped_ptr) {
       log_error("Indirect draw buffer mapping failed");
       for (uint32_t j = 0; j <= i; ++j) {
@@ -67,8 +74,7 @@ bool8_t vkr_indirect_draw_init(VkrIndirectDrawSystem *system,
 
   MemZero(system, sizeof(*system));
   system->renderer = renderer;
-  system->max_draws =
-      max_draws > 0 ? max_draws : VKR_INDIRECT_DRAW_MAX_DRAWS;
+  system->max_draws = max_draws > 0 ? max_draws : VKR_INDIRECT_DRAW_MAX_DRAWS;
   system->enabled = true_v;
 
   VkrMemoryPropertyFlags preferred = vkr_memory_property_flags_from_bits(
@@ -80,19 +86,19 @@ bool8_t vkr_indirect_draw_init(VkrIndirectDrawSystem *system,
       vkr_memory_property_flags_from_bits(VKR_MEMORY_PROPERTY_HOST_VISIBLE);
 
   if (vkr_indirect_draw_try_init(system, renderer, system->max_draws, preferred,
-                                false_v)) {
+                                 false_v)) {
     system->initialized = true_v;
     return true_v;
   }
 
   if (vkr_indirect_draw_try_init(system, renderer, system->max_draws, fallback,
-                                false_v)) {
+                                 false_v)) {
     system->initialized = true_v;
     return true_v;
   }
 
   if (vkr_indirect_draw_try_init(system, renderer, system->max_draws,
-                                fallback_no_coherent, true_v)) {
+                                 fallback_no_coherent, true_v)) {
     system->initialized = true_v;
     return true_v;
   }
@@ -142,7 +148,8 @@ bool8_t vkr_indirect_draw_alloc(VkrIndirectDrawSystem *system, uint32_t count,
   }
 
   VkrIndirectDrawBuffer *buffer = &system->buffers[system->current_frame];
-  if (buffer->write_offset + count > buffer->capacity) {
+  if (buffer->write_offset > buffer->capacity ||
+      count > buffer->capacity - buffer->write_offset) {
     log_warn("Indirect draw buffer overflow: %u + %u > %u",
              buffer->write_offset, count, buffer->capacity);
     return false_v;
@@ -165,9 +172,21 @@ void vkr_indirect_draw_flush_range(VkrIndirectDrawSystem *system,
     return;
   }
 
-  uint64_t offset_bytes =
-      (uint64_t)base_draw * sizeof(VkrIndirectDrawCommand);
-  uint64_t size_bytes = (uint64_t)count * sizeof(VkrIndirectDrawCommand);
+  /* Reject if range extends beyond valid written data (avoids flush past end).
+   */
+  if (count > buffer->write_offset ||
+      base_draw > buffer->write_offset - count) {
+    return;
+  }
+
+  uint64_t elem_size = sizeof(VkrIndirectDrawCommand);
+  uint64_t max_allowed = UINT64_MAX / elem_size;
+  if ((uint64_t)base_draw > max_allowed || (uint64_t)count > max_allowed) {
+    return;
+  }
+
+  uint64_t offset_bytes = (uint64_t)base_draw * elem_size;
+  uint64_t size_bytes = (uint64_t)count * elem_size;
   vkr_renderer_flush_buffer(system->renderer, buffer->buffer, offset_bytes,
                             size_bytes);
 }
@@ -181,8 +200,8 @@ void vkr_indirect_draw_flush_current(VkrIndirectDrawSystem *system) {
   vkr_indirect_draw_flush_range(system, 0, buffer->write_offset);
 }
 
-VkrBufferHandle vkr_indirect_draw_get_current(
-    const VkrIndirectDrawSystem *system) {
+VkrBufferHandle
+vkr_indirect_draw_get_current(const VkrIndirectDrawSystem *system) {
   if (!system || !system->initialized) {
     return NULL;
   }

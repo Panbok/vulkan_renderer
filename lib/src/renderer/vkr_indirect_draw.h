@@ -21,8 +21,14 @@ typedef struct VkrIndirectDrawCommand {
   uint32_t first_instance;
 } VkrIndirectDrawCommand;
 
-_Static_assert(sizeof(VkrIndirectDrawCommand) == 20,
-               "VkrIndirectDrawCommand must match VkDrawIndexedIndirectCommand");
+_Static_assert(
+    sizeof(VkrIndirectDrawCommand) == 20,
+    "VkrIndirectDrawCommand must match VkDrawIndexedIndirectCommand");
+_Static_assert(offsetof(VkrIndirectDrawCommand, index_count) == 0, "");
+_Static_assert(offsetof(VkrIndirectDrawCommand, instance_count) == 4, "");
+_Static_assert(offsetof(VkrIndirectDrawCommand, first_index) == 8, "");
+_Static_assert(offsetof(VkrIndirectDrawCommand, vertex_offset) == 12, "");
+_Static_assert(offsetof(VkrIndirectDrawCommand, first_instance) == 16, "");
 
 typedef struct VkrIndirectDrawBuffer {
   VkrBufferHandle buffer;
@@ -58,7 +64,7 @@ void vkr_indirect_draw_flush_range(VkrIndirectDrawSystem *system,
                                    uint32_t base_draw, uint32_t count);
 void vkr_indirect_draw_flush_current(VkrIndirectDrawSystem *system);
 
-VkrBufferHandle vkr_indirect_draw_get_current(
-    const VkrIndirectDrawSystem *system);
+VkrBufferHandle
+vkr_indirect_draw_get_current(const VkrIndirectDrawSystem *system);
 
 uint32_t vkr_indirect_draw_remaining(const VkrIndirectDrawSystem *system);

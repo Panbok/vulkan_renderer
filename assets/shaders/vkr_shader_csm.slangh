@@ -84,7 +84,9 @@ float shadow_uv_margin(uint cascade)
     // "covered", we end up clamping to the shadow-map edge which often yields
     // fully-lit seams that track the camera/cascade split.
     float texel_margin = shadow_map_inv_size_for(cascade) * 1.0f; // 1 texel
-    return max(texel_margin, 0.00025f);
+    float base = max(texel_margin, 0.00025f);
+    float scale = max(shadow_vec4_array_get(g_ubo.shadow_uv_margin_scale, cascade), 0.0f);
+    return base * scale;
 }
 
 struct ShadowProjection
@@ -102,7 +104,9 @@ float shadow_uv_soft_margin(uint cascade)
 {
     // Soft fallback: allow a few texels out-of-range to avoid 1-pixel “holes”
     // near cascade boundaries / snapping.
-    return max(shadow_map_inv_size_for(cascade) * 8.0f, 0.001f);
+    float base = max(shadow_map_inv_size_for(cascade) * 8.0f, 0.001f);
+    float scale = max(shadow_vec4_array_get(g_ubo.shadow_uv_soft_margin_scale, cascade), 0.0f);
+    return base * scale;
 }
 
 float shadow_world_units_per_texel(uint cascade)
@@ -129,14 +133,16 @@ float shadow_uv_kernel_margin(uint cascade)
     {
         return 0.0f;
     }
-    return shadow_map_inv_size_for(cascade) * (r + 0.5f);
+    float base = shadow_map_inv_size_for(cascade) * (r + 0.5f);
+    float scale = max(shadow_vec4_array_get(g_ubo.shadow_uv_kernel_margin_scale, cascade), 0.0f);
+    return base * scale;
 }
 
 ShadowProjection project_shadow(float3 world_pos, uint cascade)
 {
     ShadowProjection p;
     float4 clip = mul(g_ubo.shadow_view_projection[cascade], float4(world_pos, 1.0f));
-    clip.xyz /= clip.w;
+    clip.xyz /= max(clip.w, 1e-6f);
 
     p.uv = clip.xy * 0.5f + 0.5f;
     p.z = clip.z;
@@ -259,7 +265,6 @@ struct CascadeLookup
 uint clamp_cascade_index(uint idx)
 {
     uint count = min(max(g_ubo.shadow_cascade_count, 1u), SHADOW_CASCADE_MAX);
-    if (count == 0u) return 0u;
     return min(idx, count - 1u);
 }
 
@@ -474,8 +479,9 @@ float sample_shadow_depth(uint cascade, float2 uv)
     uint dim_layers = 1u;
     shadow_map.GetDimensions(dim_x, dim_y, dim_layers);
 
-    int2 p = int2(clamp(uv, 0.0f, 1.0f) * float2((float)max(dim_x - 1u, 1u),
-                                                 (float)max(dim_y - 1u, 1u)));
+    int2 p = int2(clamp(uv, 0.0f, 1.0f) * float2((float)(dim_x - 1u),
+                                                 (float)(dim_y - 1u)));
+    p = clamp(p, int2(0, 0), int2(dim_x - 1u, dim_y - 1u));
     uint layer = min(cascade, max(dim_layers, 1u) - 1u);
     return shadow_map.Load(int4(p, layer, 0)).r;
 }

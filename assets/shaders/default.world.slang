@@ -33,6 +33,9 @@ struct GlobalUniformBufferObject
     float4 shadow_world_units_per_texel[2];
     float4 shadow_light_space_origin_x[2];
     float4 shadow_light_space_origin_y[2];
+    float4 shadow_uv_margin_scale[2];
+    float4 shadow_uv_soft_margin_scale[2];
+    float4 shadow_uv_kernel_margin_scale[2];
     float shadow_bias;
     float shadow_normal_bias;
     float shadow_slope_bias;
