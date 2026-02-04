@@ -20,6 +20,7 @@
 #include <sys/types.h>
 #include <time.h>
 
+#include <spirv_reflect.h>
 #include <stb_image.h>
 #include <stb_truetype.h>
 
