@@ -138,7 +138,8 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
                            state->device.depth_format, VK_IMAGE_TILING_OPTIMAL,
                            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1,
-                           VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT,
+                           VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
+                           VK_IMAGE_ASPECT_DEPTH_BIT,
                            &state->swapchain.depth_attachment)) {
     log_error("Failed to create depth attachment");
     return false;
@@ -307,7 +308,8 @@ vkr_internal bool32_t vulkan_swapchain_create_with_old(
                            state->device.depth_format, VK_IMAGE_TILING_OPTIMAL,
                            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1,
-                           VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT,
+                           VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
+                           VK_IMAGE_ASPECT_DEPTH_BIT,
                            &state->swapchain.depth_attachment)) {
     log_error("Failed to create depth attachment");
     return false;

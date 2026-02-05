@@ -861,12 +861,119 @@ bool8_t vulkan_shader_update_instance(
   return true_v;
 }
 
+/**
+ * @brief Finish releasing a shader instance once GPU work is complete.
+ *
+ * This is called only when the instance is guaranteed not to be referenced
+ * by in-flight command buffers.
+ */
+vkr_internal bool8_t vulkan_shader_release_instance_immediate(
+    VulkanBackendState *state, VulkanShaderObject *shader_object,
+    uint32_t object_id) {
+  assert_log(state != NULL, "Backend state is NULL");
+  assert_log(shader_object != NULL, "Shader object is NULL");
+
+  VulkanShaderObjectInstanceState *local_state =
+      &shader_object->instance_states[object_id];
+
+  if (local_state->descriptor_sets &&
+      shader_object->instance_descriptor_pool != VK_NULL_HANDLE) {
+    if (vkFreeDescriptorSets(state->device.logical_device,
+                             shader_object->instance_descriptor_pool,
+                             shader_object->frame_count,
+                             local_state->descriptor_sets) != VK_SUCCESS) {
+      log_error("Failed to free descriptor sets");
+      return false_v;
+    }
+  }
+
+  // Reset generation tracking back to invalid without freeing memory
+  for (uint32_t descriptor_state_idx = 0;
+       descriptor_state_idx < VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT;
+       descriptor_state_idx++) {
+    if (!local_state->descriptor_states[descriptor_state_idx].generations) {
+      continue;
+    }
+    for (uint32_t descriptor_generation_idx = 0;
+         descriptor_generation_idx < shader_object->frame_count;
+         descriptor_generation_idx++) {
+      local_state->descriptor_states[descriptor_state_idx]
+          .generations[descriptor_generation_idx] = VKR_INVALID_ID;
+    }
+  }
+
+  local_state->release_pending = false_v;
+  local_state->release_serial = 0;
+
+  // Push id to free list for reuse
+  assert_log(shader_object->instance_state_free_count <
+                 VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT,
+             "instance_state_free_ids overflow");
+  shader_object
+      ->instance_state_free_ids[shader_object->instance_state_free_count++] =
+      object_id;
+
+  return true_v;
+}
+
+/**
+ * @brief Process deferred instance releases whose GPU work has completed.
+ */
+vkr_internal void vulkan_shader_process_pending_releases(
+    VulkanBackendState *state, VulkanShaderObject *shader_object) {
+  if (!state || !shader_object || shader_object->pending_release_count == 0) {
+    return;
+  }
+
+  uint64_t safe_serial =
+      state->submit_serial >= BUFFERING_FRAMES
+          ? state->submit_serial - BUFFERING_FRAMES
+          : 0;
+
+  uint32_t i = 0;
+  while (i < shader_object->pending_release_count) {
+    uint32_t object_id = shader_object->pending_release_ids[i];
+    if (object_id >= shader_object->instance_uniform_buffer_count) {
+      shader_object->pending_release_ids[i] =
+          shader_object
+              ->pending_release_ids[--shader_object->pending_release_count];
+      continue;
+    }
+
+    VulkanShaderObjectInstanceState *local_state =
+        &shader_object->instance_states[object_id];
+    if (!local_state->release_pending) {
+      shader_object->pending_release_ids[i] =
+          shader_object
+              ->pending_release_ids[--shader_object->pending_release_count];
+      continue;
+    }
+
+    if (local_state->release_serial > safe_serial) {
+      i++;
+      continue;
+    }
+
+    if (vulkan_shader_release_instance_immediate(state, shader_object,
+                                                 object_id)) {
+      shader_object->pending_release_ids[i] =
+          shader_object
+              ->pending_release_ids[--shader_object->pending_release_count];
+      continue;
+    }
+
+    i++;
+  }
+}
+
 bool8_t vulkan_shader_acquire_instance(VulkanBackendState *state,
                                        VulkanShaderObject *shader_object,
                                        uint32_t *out_object_id) {
   assert_log(state != NULL, "Backend state is NULL");
   assert_log(shader_object != NULL, "Shader object is NULL");
   assert_log(out_object_id != NULL, "Out object id is NULL");
+
+  vulkan_shader_process_pending_releases(state, shader_object);
 
   if (shader_object->instance_state_free_count > 0) {
     shader_object->instance_state_free_count--;
@@ -969,43 +1076,30 @@ bool8_t vulkan_shader_release_instance(VulkanBackendState *state,
                                        uint32_t object_id) {
   assert_log(state != NULL, "Backend state is NULL");
   assert_log(shader_object != NULL, "Shader object is NULL");
-  assert_log(object_id < shader_object->instance_uniform_buffer_count,
-             "Object ID is out of bounds");
+  if (object_id >= shader_object->instance_uniform_buffer_count) {
+    log_error(
+        "Shader instance release out of bounds: id=%u (count=%u)",
+        object_id, shader_object->instance_uniform_buffer_count);
+    return false_v;
+  }
 
   VulkanShaderObjectInstanceState *local_state =
       &shader_object->instance_states[object_id];
 
-  if (local_state->descriptor_sets) {
-    if (vkFreeDescriptorSets(state->device.logical_device,
-                             shader_object->instance_descriptor_pool,
-                             shader_object->frame_count,
-                             local_state->descriptor_sets) != VK_SUCCESS) {
-      log_error("Failed to free descriptor sets");
-      return false_v;
-    }
+  if (local_state->release_pending) {
+    return true_v;
   }
 
-  // Reset generation tracking back to invalid without freeing memory
-  for (uint32_t descriptor_state_idx = 0;
-       descriptor_state_idx < VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT;
-       descriptor_state_idx++) {
-    if (!local_state->descriptor_states[descriptor_state_idx].generations) {
-      continue;
-    }
-    for (uint32_t descriptor_generation_idx = 0;
-         descriptor_generation_idx < shader_object->frame_count;
-         descriptor_generation_idx++) {
-      local_state->descriptor_states[descriptor_state_idx]
-          .generations[descriptor_generation_idx] = VKR_INVALID_ID;
-    }
+  if (shader_object->pending_release_count >=
+      VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT) {
+    log_error("Shader instance pending release queue overflow");
+    return false_v;
   }
 
-  // Push id to free list for reuse
-  assert_log(shader_object->instance_state_free_count <
-                 VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT,
-             "instance_state_free_ids overflow");
-  shader_object
-      ->instance_state_free_ids[shader_object->instance_state_free_count++] =
+  local_state->release_pending = true_v;
+  local_state->release_serial =
+      state->submit_serial + (state->frame_active ? 1u : 0u);
+  shader_object->pending_release_ids[shader_object->pending_release_count++] =
       object_id;
 
   return true_v;

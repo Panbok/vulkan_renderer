@@ -83,30 +83,12 @@ typedef struct VulkanBuffer {
   VkrDMemory offset_allocator; // Tracks which offsets are allocated
 } VulkanBuffer;
 
-typedef enum VulkanRenderPassState {
-  RENDER_PASS_STATE_READY,
-  RENDER_PASS_STATE_RECORDING,
-  RENDER_PASS_STATE_IN_RENDER_PASS,
-  RENDER_PASS_STATE_RECORDING_ENDED,
-  RENDER_PASS_STATE_SUBMITTED,
-  RENDER_PASS_STATE_NOT_ALLOCATED
-} VulkanRenderPassState;
-
 typedef struct VulkanRenderPass {
   VkRenderPass handle;
-
-  Vec2 position;
-  Vec4 color;
-  uint32_t clear_color_uint; // Integer clear color (for R32_UINT picking)
-
-  float32_t width, height;
-
-  float32_t depth;
-
-  uint32_t stencil;
-
-  VulkanRenderPassState state;
   VkrPipelineDomain domain;
+
+  // Cached signature for compatibility checking and pipeline state derivation
+  VkrRenderPassSignature signature;
 } VulkanRenderPass;
 
 typedef enum VulkanCommandBufferState {
@@ -134,6 +116,7 @@ typedef struct VulkanImage {
   uint32_t mip_levels;
   uint32_t array_layers;
   uint32_t memory_property_flags;
+  VkSampleCountFlagBits samples;
 } VulkanImage;
 
 Array(VulkanImage);
@@ -223,6 +206,10 @@ typedef struct VulkanShaderObjectInstanceState {
   VkDescriptorSetLayoutBinding descriptor_set_layout_bindings
       [VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT];
 
+  // Submit serial when release requested; used to defer freeing until safe.
+  uint64_t release_serial;
+  bool8_t release_pending;
+
 } VulkanShaderObjectInstanceState;
 
 typedef struct VulkanShaderObject {
@@ -247,6 +234,9 @@ typedef struct VulkanShaderObject {
   struct s_BufferHandle instance_uniform_buffer;
   VulkanShaderObjectInstanceState
       instance_states[VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT];
+  // Deferred instance releases awaiting GPU completion.
+  uint32_t pending_release_count;
+  uint32_t pending_release_ids[VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT];
 
   uint64_t global_ubo_size;
   uint64_t global_ubo_stride;
@@ -268,20 +258,38 @@ struct s_GraphicsPipeline {
 struct s_TextureHandle {
   VulkanTexture texture;
   VkrTextureDescription description;
+#ifndef NDEBUG
+  uint32_t generation; // Debug: generation counter for liveness validation
+#endif
 };
+
+// Max attachments: colors + depth/stencil + resolves
+#define VKR_RENDER_TARGET_MAX_ATTACHMENTS \
+  (VKR_MAX_COLOR_ATTACHMENTS * 2 + 1)
 
 struct s_RenderPass {
   VulkanRenderPass *vk;
   String8 name;
-  VkrRenderPassConfig cfg;
+  uint8_t attachment_count;
+  VkClearValue clear_values[VKR_RENDER_TARGET_MAX_ATTACHMENTS];
+  uint8_t resolve_attachment_count;
+  VkrResolveAttachmentRef resolve_attachments[VKR_MAX_COLOR_ATTACHMENTS];
+  bool8_t ends_in_present;
 };
 
 struct s_RenderTarget {
   VkFramebuffer handle;
   uint32_t width, height;
+  uint32_t layer_count;
   bool8_t sync_to_window_size;
   uint8_t attachment_count;
-  struct s_TextureHandle **attachments;
+  struct s_TextureHandle *attachments[VKR_RENDER_TARGET_MAX_ATTACHMENTS];
+  VkImageView attachment_views[VKR_RENDER_TARGET_MAX_ATTACHMENTS];
+  bool8_t attachment_view_owned[VKR_RENDER_TARGET_MAX_ATTACHMENTS];
+#ifndef NDEBUG
+  // Captured texture generations at render target creation for liveness validation
+  uint32_t attachment_generations[VKR_RENDER_TARGET_MAX_ATTACHMENTS];
+#endif
 };
 
 typedef struct VkrRenderPassEntry {
@@ -289,6 +297,74 @@ typedef struct VkrRenderPassEntry {
   struct s_RenderPass *pass;
 } VkrRenderPassEntry;
 Array(VkrRenderPassEntry);
+
+// ============================================================================
+// Framebuffer Cache - avoids redundant framebuffer creation
+// ============================================================================
+
+#define VKR_FRAMEBUFFER_CACHE_MAX_ENTRIES 64
+
+typedef struct VkrFramebufferCacheKey {
+  VkRenderPass render_pass;
+  uint32_t width;
+  uint32_t height;
+  uint32_t layers;
+  uint8_t attachment_count;
+  VkImageView attachments[VKR_RENDER_TARGET_MAX_ATTACHMENTS];
+} VkrFramebufferCacheKey;
+
+typedef struct VkrFramebufferCacheEntry {
+  VkrFramebufferCacheKey key;
+  VkFramebuffer framebuffer;
+  bool8_t in_use;
+} VkrFramebufferCacheEntry;
+
+typedef struct VkrFramebufferCache {
+  VkrFramebufferCacheEntry entries[VKR_FRAMEBUFFER_CACHE_MAX_ENTRIES];
+  uint32_t entry_count;
+} VkrFramebufferCache;
+
+// ============================================================================
+// Deferred Destruction Queue - delays resource destruction until GPU is done
+// ============================================================================
+
+#define VKR_DEFERRED_DESTROY_QUEUE_SIZE 256
+
+typedef enum VkrDeferredDestroyKind {
+  VKR_DEFERRED_DESTROY_FRAMEBUFFER = 0,
+  VKR_DEFERRED_DESTROY_RENDERPASS,
+  VKR_DEFERRED_DESTROY_IMAGE,
+  VKR_DEFERRED_DESTROY_IMAGE_VIEW,
+  VKR_DEFERRED_DESTROY_SAMPLER,
+  VKR_DEFERRED_DESTROY_BUFFER,
+  VKR_DEFERRED_DESTROY_TEXTURE_WRAPPER,
+  VKR_DEFERRED_DESTROY_BUFFER_WRAPPER,
+  VKR_DEFERRED_DESTROY_RENDER_TARGET_WRAPPER,
+} VkrDeferredDestroyKind;
+
+typedef struct VkrDeferredDestroyEntry {
+  VkrDeferredDestroyKind kind;
+  uint64_t submit_serial; // Frame serial when destruction was requested
+  union {
+    VkFramebuffer framebuffer;
+    VkRenderPass renderpass;
+    VkImage image;
+    VkImageView image_view;
+    VkSampler sampler;
+    VkBuffer buffer;
+    void *wrapper; // For TEXTURE_WRAPPER, BUFFER_WRAPPER, RENDER_TARGET_WRAPPER
+  } payload;
+  VkDeviceMemory memory; // Optional memory to free (for images/buffers)
+  VkrAllocator *pool_alloc; // Allocator to return wrapper to (if applicable)
+  uint64_t wrapper_size;    // Size of wrapper struct (for pool free)
+} VkrDeferredDestroyEntry;
+
+typedef struct VkrDeferredDestroyQueue {
+  VkrDeferredDestroyEntry entries[VKR_DEFERRED_DESTROY_QUEUE_SIZE];
+  uint32_t head;  // Next slot to read from
+  uint32_t tail;  // Next slot to write to
+  uint32_t count; // Number of entries in queue
+} VkrDeferredDestroyQueue;
 
 // ============================================================================
 // Pixel Readback System (for picking and screenshots)
@@ -324,6 +400,19 @@ typedef struct VulkanReadbackRing {
   uint32_t pending_count; // Number of slots in PENDING state
   bool8_t initialized;    // True if ring has been initialized
 } VulkanReadbackRing;
+
+typedef struct VulkanRgTimingState {
+  bool8_t supported;
+  uint32_t query_capacity;
+  VkQueryPool query_pools[BUFFERING_FRAMES];
+  uint32_t frame_pass_counts[BUFFERING_FRAMES];
+  uint64_t *query_results;
+  uint32_t query_results_capacity;
+  float64_t *last_pass_ms;
+  bool8_t *last_pass_valid;
+  uint32_t last_pass_capacity;
+  uint32_t last_pass_count;
+} VulkanRgTimingState;
 
 /**
  * @brief Vulkan backend state containing all rendering resources and state
@@ -373,13 +462,6 @@ typedef struct VulkanBackendState {
    */
   VulkanRenderPass *domain_render_passes[VKR_PIPELINE_DOMAIN_COUNT];
 
-  /**
-   * Framebuffers for each domain, per swapchain image.
-   * Indexed as: domain_framebuffers[domain][swapchain_image_index]
-   * Recreated on swapchain resize/recreation.
-   */
-  Array_VulkanFramebuffer domain_framebuffers[VKR_PIPELINE_DOMAIN_COUNT];
-
   /** Tracks which domains have been initialized */
   bool8_t domain_initialized[VKR_PIPELINE_DOMAIN_COUNT];
   Array_VkrRenderPassEntry render_pass_registry;
@@ -388,7 +470,7 @@ typedef struct VulkanBackendState {
   /**
    * Currently active render pass domain.
    * Set to VKR_PIPELINE_DOMAIN_COUNT when no pass is active.
-   * Used by automatic switching logic to detect domain changes.
+   * Tracks the active pass domain for validation and state tracking.
    */
   VkrPipelineDomain current_render_pass_domain;
 
@@ -397,8 +479,8 @@ typedef struct VulkanBackendState {
   /**
    * Indicates if a render pass is currently recording.
    * - Set to false in begin_frame (no pass started)
-   * - Set to true when pipeline binding starts a render pass
-   * - Set to false in end_frame after ending any active pass
+   * - Set to true in begin_render_pass
+   * - Set to false in end_render_pass/end_frame
    */
   bool8_t render_pass_active;
   bool8_t frame_active;
@@ -434,12 +516,26 @@ typedef struct VulkanBackendState {
 
   // Pixel readback system for picking and screenshots
   VulkanReadbackRing readback_ring;
+  VulkanRgTimingState rg_timing;
+
+  // Framebuffer cache for reusing framebuffers with same attachments
+  VkrFramebufferCache framebuffer_cache;
+
+  // Deferred destruction queue - delays resource destruction until GPU is done
+  VkrDeferredDestroyQueue deferred_destroy_queue;
 
   // Resource handle pools - fixed-size allocators for texture/buffer handles.
   // Using pools instead of arena allows proper free on resource destroy.
   // Each pool has a corresponding VkrAllocator for tracking statistics.
   VkrPool texture_handle_pool;
   VkrPool buffer_handle_pool;
+  VkrPool render_target_pool;
   VkrAllocator texture_pool_alloc;
   VkrAllocator buffer_pool_alloc;
+  VkrAllocator render_target_alloc;
+
+#ifndef NDEBUG
+  // Debug: monotonic counter for texture liveness validation
+  uint32_t texture_generation_counter;
+#endif
 } VulkanBackendState;
