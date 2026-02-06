@@ -1,6 +1,6 @@
 #include "vulkan_pipeline.h"
-#include "vulkan_shaders.h"
 #include "platform/vkr_platform.h"
+#include "vulkan_shaders.h"
 
 vkr_internal const VkrDescriptorSetDesc *
 vulkan_pipeline_find_reflected_set(const VkrShaderReflection *reflection,
@@ -17,9 +17,10 @@ vulkan_pipeline_find_reflected_set(const VkrShaderReflection *reflection,
   return NULL;
 }
 
-vkr_internal void vulkan_pipeline_destroy_set_layouts(
-    VulkanBackendState *state, VkDescriptorSetLayout *layouts,
-    uint32_t layout_count) {
+vkr_internal void
+vulkan_pipeline_destroy_set_layouts(VulkanBackendState *state,
+                                    VkDescriptorSetLayout *layouts,
+                                    uint32_t layout_count) {
   if (!state || !layouts) {
     return;
   }
@@ -132,7 +133,8 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
     log_error("Shader object is missing reflection data");
     goto cleanup;
   }
-  const VkrShaderReflection *reflection = &out_pipeline->shader_object.reflection;
+  const VkrShaderReflection *reflection =
+      &out_pipeline->shader_object.reflection;
 
   if (!vulkan_pipeline_build_vertex_input_from_reflection(
           state, reflection, &bindings, &attributes)) {
@@ -300,11 +302,11 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
 
   VkPushConstantRange *push_constant_ranges = NULL;
   if (reflection->push_constant_range_count > 0) {
-    push_constant_ranges = vkr_allocator_alloc(
-        &state->temp_scope,
-        sizeof(VkPushConstantRange) *
-            (uint64_t)reflection->push_constant_range_count,
-        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    push_constant_ranges =
+        vkr_allocator_alloc(&state->temp_scope,
+                            sizeof(VkPushConstantRange) *
+                                (uint64_t)reflection->push_constant_range_count,
+                            VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     if (!push_constant_ranges) {
       log_error("Failed to allocate reflected push constant ranges");
       goto cleanup;
@@ -329,8 +331,8 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
       log_error("Failed to allocate reflected descriptor set layouts");
       goto cleanup;
     }
-    MemZero(reflected_set_layouts,
-            sizeof(VkDescriptorSetLayout) * (uint64_t)reflected_set_layout_count);
+    MemZero(reflected_set_layouts, sizeof(VkDescriptorSetLayout) *
+                                       (uint64_t)reflected_set_layout_count);
 
     for (uint32_t set_index = 0; set_index < reflected_set_layout_count;
          ++set_index) {
@@ -370,10 +372,9 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
           .bindingCount = binding_count,
           .pBindings = layout_bindings,
       };
-      if (vkCreateDescriptorSetLayout(state->device.logical_device,
-                                      &set_layout_info, state->allocator,
-                                      &reflected_set_layouts[set_index]) !=
-          VK_SUCCESS) {
+      if (vkCreateDescriptorSetLayout(
+              state->device.logical_device, &set_layout_info, state->allocator,
+              &reflected_set_layouts[set_index]) != VK_SUCCESS) {
         log_error("Failed to create reflected descriptor set layout for set %u",
                   set_index);
         goto cleanup;
@@ -395,7 +396,6 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
     log_fatal("Failed to create pipeline layout");
     goto cleanup;
   }
-  out_pipeline->pipeline_layout = VK_NULL_HANDLE;
 
   VkPipelineShaderStageCreateInfo shader_stages[] = {
       out_pipeline->shader_object.stages[VKR_SHADER_STAGE_VERTEX],
@@ -453,10 +453,11 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
               pipeline_create_result, pipeline_create_ms);
     goto cleanup;
   }
-  log_info("Pipeline create time: %.3f ms (domain=%u cache=%s sets=%u attrs=%u)",
-           pipeline_create_ms, desc->domain,
-           state->pipeline_cache != VK_NULL_HANDLE ? "enabled" : "disabled",
-           reflection->layout_set_count, reflection->vertex_attribute_count);
+  log_info(
+      "Pipeline create time: %.3f ms (domain=%u cache=%s sets=%u attrs=%u)",
+      pipeline_create_ms, desc->domain,
+      state->pipeline_cache != VK_NULL_HANDLE ? "enabled" : "disabled",
+      reflection->layout_set_count, reflection->vertex_attribute_count);
 
   // Note: Local state is now acquired via frontend API per renderable.
 
@@ -496,7 +497,8 @@ cleanup:
 
   if (!success) {
     if (pipeline != VK_NULL_HANDLE) {
-      vkDestroyPipeline(state->device.logical_device, pipeline, state->allocator);
+      vkDestroyPipeline(state->device.logical_device, pipeline,
+                        state->allocator);
     }
     if (pipeline_layout != VK_NULL_HANDLE) {
       vkDestroyPipelineLayout(state->device.logical_device, pipeline_layout,

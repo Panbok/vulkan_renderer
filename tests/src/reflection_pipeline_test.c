@@ -73,6 +73,9 @@ vkr_internal void test_reflection_world_program_success(void) {
   Arena *arena = arena_create(MB(4), MB(4));
   VkrAllocator allocator = {.ctx = arena};
   vkr_allocator_arena(&allocator);
+  Arena *temp_arena = arena_create(MB(2), MB(2));
+  VkrAllocator temp_allocator = {.ctx = temp_arena};
+  vkr_allocator_arena(&temp_allocator);
 
   uint8_t *shader_data = NULL;
   uint64_t shader_size = 0;
@@ -100,6 +103,7 @@ vkr_internal void test_reflection_world_program_success(void) {
   VkrReflectionErrorContext error = {0};
   VkrSpirvReflectionCreateInfo create_info = {
       .allocator = &allocator,
+      .temp_allocator = &temp_allocator,
       .program_name = string8_lit("test.default.world"),
       .vertex_abi_profile = VKR_VERTEX_ABI_PROFILE_3D,
       .module_count = ArrayCount(modules),
@@ -136,6 +140,7 @@ vkr_internal void test_reflection_world_program_success(void) {
   vulkan_spirv_shader_reflection_destroy(&allocator, &reflection);
   vkr_allocator_free(&allocator, shader_data, shader_size,
                      VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  arena_destroy(temp_arena);
   arena_destroy(arena);
   printf("  test_reflection_world_program_success PASSED\n");
 }
@@ -145,6 +150,9 @@ vkr_internal void test_reflection_duplicate_stage_rejected(void) {
   Arena *arena = arena_create(MB(2), MB(2));
   VkrAllocator allocator = {.ctx = arena};
   vkr_allocator_arena(&allocator);
+  Arena *temp_arena = arena_create(MB(1), MB(1));
+  VkrAllocator temp_allocator = {.ctx = temp_arena};
+  vkr_allocator_arena(&temp_allocator);
 
   uint8_t *shader_data = NULL;
   uint64_t shader_size = 0;
@@ -172,6 +180,7 @@ vkr_internal void test_reflection_duplicate_stage_rejected(void) {
   VkrReflectionErrorContext error = {0};
   VkrSpirvReflectionCreateInfo create_info = {
       .allocator = &allocator,
+      .temp_allocator = &temp_allocator,
       .program_name = string8_lit("test.duplicate.stage"),
       .vertex_abi_profile = VKR_VERTEX_ABI_PROFILE_UNKNOWN,
       .module_count = ArrayCount(modules),
@@ -186,6 +195,7 @@ vkr_internal void test_reflection_duplicate_stage_rejected(void) {
   vulkan_spirv_shader_reflection_destroy(&allocator, &reflection);
   vkr_allocator_free(&allocator, shader_data, shader_size,
                      VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  arena_destroy(temp_arena);
   arena_destroy(arena);
   printf("  test_reflection_duplicate_stage_rejected PASSED\n");
 }
@@ -195,6 +205,9 @@ vkr_internal void test_reflection_missing_vertex_abi_rejected(void) {
   Arena *arena = arena_create(MB(4), MB(4));
   VkrAllocator allocator = {.ctx = arena};
   vkr_allocator_arena(&allocator);
+  Arena *temp_arena = arena_create(MB(2), MB(2));
+  VkrAllocator temp_allocator = {.ctx = temp_arena};
+  vkr_allocator_arena(&temp_allocator);
 
   uint8_t *shader_data = NULL;
   uint64_t shader_size = 0;
@@ -222,6 +235,7 @@ vkr_internal void test_reflection_missing_vertex_abi_rejected(void) {
   VkrReflectionErrorContext error = {0};
   VkrSpirvReflectionCreateInfo create_info = {
       .allocator = &allocator,
+      .temp_allocator = &temp_allocator,
       .program_name = string8_lit("test.missing.vertex.abi"),
       .vertex_abi_profile = VKR_VERTEX_ABI_PROFILE_UNKNOWN,
       .module_count = ArrayCount(modules),
@@ -236,6 +250,7 @@ vkr_internal void test_reflection_missing_vertex_abi_rejected(void) {
   vulkan_spirv_shader_reflection_destroy(&allocator, &reflection);
   vkr_allocator_free(&allocator, shader_data, shader_size,
                      VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  arena_destroy(temp_arena);
   arena_destroy(arena);
   printf("  test_reflection_missing_vertex_abi_rejected PASSED\n");
 }
@@ -245,6 +260,9 @@ vkr_internal void test_reflection_repeated_create_destroy_cycle(void) {
   Arena *arena = arena_create(MB(8), MB(8));
   VkrAllocator allocator = {.ctx = arena};
   vkr_allocator_arena(&allocator);
+  Arena *temp_arena = arena_create(MB(2), MB(2));
+  VkrAllocator temp_allocator = {.ctx = temp_arena};
+  vkr_allocator_arena(&temp_allocator);
 
   uint8_t *shader_data = NULL;
   uint64_t shader_size = 0;
@@ -270,6 +288,7 @@ vkr_internal void test_reflection_repeated_create_destroy_cycle(void) {
 
   VkrSpirvReflectionCreateInfo create_info = {
       .allocator = &allocator,
+      .temp_allocator = &temp_allocator,
       .program_name = string8_lit("test.repeated.reflection.cycle"),
       .vertex_abi_profile = VKR_VERTEX_ABI_PROFILE_TEXT_2D,
       .module_count = ArrayCount(modules),
@@ -288,8 +307,53 @@ vkr_internal void test_reflection_repeated_create_destroy_cycle(void) {
 
   vkr_allocator_free(&allocator, shader_data, shader_size,
                      VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  arena_destroy(temp_arena);
   arena_destroy(arena);
   printf("  test_reflection_repeated_create_destroy_cycle PASSED\n");
+}
+
+vkr_internal void test_reflection_missing_temp_allocator_rejected(void) {
+  printf("  Running test_reflection_missing_temp_allocator_rejected...\n");
+  Arena *arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
+
+  uint8_t *shader_data = NULL;
+  uint64_t shader_size = 0;
+  reflection_test_load_spirv(&allocator, "assets/shaders/picking.spv",
+                             &shader_data, &shader_size);
+
+  VkrShaderStageModuleDesc modules[1] = {
+      {
+          .stage = VK_SHADER_STAGE_VERTEX_BIT,
+          .path = string8_lit("assets/shaders/picking.spv"),
+          .entry_point = string8_lit("vertexMain"),
+          .spirv_bytes = shader_data,
+          .spirv_size = shader_size,
+      },
+  };
+
+  VkrShaderReflection reflection = {0};
+  VkrReflectionErrorContext error = {0};
+  VkrSpirvReflectionCreateInfo create_info = {
+      .allocator = &allocator,
+      .temp_allocator = NULL,
+      .program_name = string8_lit("test.missing.temp.allocator"),
+      .vertex_abi_profile = VKR_VERTEX_ABI_PROFILE_UNKNOWN,
+      .module_count = ArrayCount(modules),
+      .modules = modules,
+      .max_push_constant_size = 0,
+  };
+
+  assert(vulkan_spirv_shader_reflection_create(&create_info, &reflection,
+                                               &error) == false_v);
+  assert(error.code == VKR_REFLECTION_ERROR_PARSE_FAILED);
+
+  vulkan_spirv_shader_reflection_destroy(&allocator, &reflection);
+  vkr_allocator_free(&allocator, shader_data, shader_size,
+                     VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  arena_destroy(arena);
+  printf("  test_reflection_missing_temp_allocator_rejected PASSED\n");
 }
 
 bool32_t run_reflection_pipeline_tests(void) {
@@ -299,6 +363,7 @@ bool32_t run_reflection_pipeline_tests(void) {
   test_reflection_duplicate_stage_rejected();
   test_reflection_missing_vertex_abi_rejected();
   test_reflection_repeated_create_destroy_cycle();
+  test_reflection_missing_temp_allocator_rejected();
 
   printf("--- Reflection Pipeline Tests Completed ---\n");
   return true;

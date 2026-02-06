@@ -257,8 +257,9 @@ static uint32_t RoundUp(uint32_t value, uint32_t multiple) {
 static int SortCompareUint32(const void *a, const void *b) {
   const uint32_t *p_a = (const uint32_t *)a;
   const uint32_t *p_b = (const uint32_t *)b;
-
-  return (int)*p_a - (int)*p_b;
+  if (*p_a < *p_b) return -1;
+  if (*p_a > *p_b) return 1;
+  return 0;
 }
 
 static int SortCompareAccessedVariable(const void *a, const void *b) {
@@ -266,8 +267,11 @@ static int SortCompareAccessedVariable(const void *a, const void *b) {
       (const SpvReflectPrvAccessedVariable *)a;
   const SpvReflectPrvAccessedVariable *p_b =
       (const SpvReflectPrvAccessedVariable *)b;
-
-  return (int)p_a->variable_ptr - (int)p_b->variable_ptr;
+  uintptr_t va = (uintptr_t)p_a->variable_ptr;
+  uintptr_t vb = (uintptr_t)p_b->variable_ptr;
+  if (va < vb) return -1;
+  if (va > vb) return 1;
+  return 0;
 }
 
 //
@@ -827,7 +831,8 @@ static SpvReflectResult ParseNodes(SpvReflectPrvParser *p_parser) {
           (const char *)(p_parser->spirv_code + p_node->word_offset + 1);
 
       const size_t source_len = strlen(p_source);
-      const size_t embedded_source_len = strlen(p_parser->source_embedded);
+      const size_t embedded_source_len =
+          p_parser->source_embedded ? strlen(p_parser->source_embedded) : 0;
       char *p_continued_source =
           (char *)calloc(source_len + embedded_source_len + 1, sizeof(char));
 
@@ -836,12 +841,16 @@ static SpvReflectResult ParseNodes(SpvReflectPrvParser *p_parser) {
       }
 
 #ifdef _WIN32
-      strcpy_s(p_continued_source, embedded_source_len + 1,
-               p_parser->source_embedded);
+      if (embedded_source_len > 0) {
+        strcpy_s(p_continued_source, embedded_source_len + 1,
+                 p_parser->source_embedded);
+      }
       strcat_s(p_continued_source, embedded_source_len + source_len + 1,
                p_source);
 #else
-      strcpy(p_continued_source, p_parser->source_embedded);
+      if (embedded_source_len > 0) {
+        strcpy(p_continued_source, p_parser->source_embedded);
+      }
       strcat(p_continued_source, p_source);
 #endif
 
@@ -1346,7 +1355,9 @@ static SpvReflectResult ParseFunction(SpvReflectPrvParser *p_parser,
 static int SortCompareFunctions(const void *a, const void *b) {
   const SpvReflectPrvFunction *af = (const SpvReflectPrvFunction *)a;
   const SpvReflectPrvFunction *bf = (const SpvReflectPrvFunction *)b;
-  return (int)af->id - (int)bf->id;
+  if (af->id < bf->id) return -1;
+  if (af->id > bf->id) return 1;
+  return 0;
 }
 
 static SpvReflectResult ParseFunctions(SpvReflectPrvParser *p_parser) {
@@ -2298,14 +2309,14 @@ static int SortCompareDescriptorBinding(const void *a, const void *b) {
       (const SpvReflectDescriptorBinding *)a;
   const SpvReflectDescriptorBinding *p_elem_b =
       (const SpvReflectDescriptorBinding *)b;
-  int value = (int)(p_elem_a->binding) - (int)(p_elem_b->binding);
-  if (value == 0) {
-    // use spirv-id as a tiebreaker to ensure a stable ordering, as they're
-    // guaranteed unique.
-    assert(p_elem_a->spirv_id != p_elem_b->spirv_id);
-    value = (int)(p_elem_a->spirv_id) - (int)(p_elem_b->spirv_id);
-  }
-  return value;
+  if (p_elem_a->binding < p_elem_b->binding) return -1;
+  if (p_elem_a->binding > p_elem_b->binding) return 1;
+  /* use spirv-id as a tiebreaker to ensure a stable ordering, as they're
+   * guaranteed unique. */
+  assert(p_elem_a->spirv_id != p_elem_b->spirv_id);
+  if (p_elem_a->spirv_id < p_elem_b->spirv_id) return -1;
+  if (p_elem_a->spirv_id > p_elem_b->spirv_id) return 1;
+  return 0;
 }
 
 static SpvReflectResult
@@ -4344,7 +4355,7 @@ static SpvReflectResult ParseExecutionModes(SpvReflectPrvParser *p_parser,
       p_entry_point->execution_mode_count++;
     }
     uint32_t *indices =
-        (uint32_t *)calloc(p_module->entry_point_count, sizeof(indices));
+        (uint32_t *)calloc(p_module->entry_point_count, sizeof(uint32_t));
     if (IsNull(indices)) {
       return SPV_REFLECT_RESULT_ERROR_ALLOC_FAILED;
     }

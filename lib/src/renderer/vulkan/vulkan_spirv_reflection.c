@@ -734,7 +734,7 @@ vkr_internal bool8_t vulkan_reflection_collect_descriptor_bindings(
           }
           if (existing->byte_size != descriptor_byte_size) {
             vulkan_reflection_set_error_ex(
-                out_error, VKR_REFLECTION_ERROR_BINDING_COUNT_MISMATCH,
+                out_error, VKR_REFLECTION_ERROR_BINDING_SIZE_MISMATCH,
                 module->stage, module->entry_point_name,
                 SPV_REFLECT_RESULT_ERROR_COUNT_MISMATCH,
                 create_info->program_name,
@@ -1300,7 +1300,9 @@ bool8_t vulkan_spirv_reflection_module_create(
     VkrReflectionErrorContext *out_error) {
   assert_log(out_module != NULL, "Output module must not be NULL");
   MemZero(out_module, sizeof(*out_module));
-  vulkan_reflection_error_context_reset(out_error);
+  if (out_error != NULL) {
+    vulkan_reflection_error_context_reset(out_error);
+  }
 
   const String8 resolved_entry_point =
       vulkan_spirv_reflection_resolve_entry_point(entry_point);
@@ -1593,6 +1595,8 @@ const char *vulkan_reflection_error_string(VkrReflectionError error) {
     return "binding_type_mismatch";
   case VKR_REFLECTION_ERROR_BINDING_COUNT_MISMATCH:
     return "binding_count_mismatch";
+  case VKR_REFLECTION_ERROR_BINDING_SIZE_MISMATCH:
+    return "binding_size_mismatch";
   case VKR_REFLECTION_ERROR_UNSUPPORTED_DESCRIPTOR:
     return "unsupported_descriptor";
   case VKR_REFLECTION_ERROR_RUNTIME_ARRAY:

@@ -247,7 +247,8 @@ vkr_internal void vulkan_shader_log_reflection_layout_debug(
             (int)program_name.length,
             program_name.str ? (const char *)program_name.str : "",
             reflection->set_count, reflection->layout_set_count,
-            reflection->push_constant_range_count, reflection->vertex_binding_count,
+            reflection->push_constant_range_count,
+            reflection->vertex_binding_count,
             reflection->vertex_attribute_count);
 
   for (uint32_t set_index = 0; set_index < reflection->set_count; ++set_index) {
@@ -256,15 +257,17 @@ vkr_internal void vulkan_shader_log_reflection_layout_debug(
               set_desc->binding_count);
     for (uint32_t binding_index = 0; binding_index < set_desc->binding_count;
          ++binding_index) {
-      const VkrDescriptorBindingDesc *binding = &set_desc->bindings[binding_index];
+      const VkrDescriptorBindingDesc *binding =
+          &set_desc->bindings[binding_index];
       log_debug("    binding=%u type=%d count=%u stages=0x%x size=%u",
-                binding->binding, binding->type, binding->count, binding->stages,
-                binding->byte_size);
+                binding->binding, binding->type, binding->count,
+                binding->stages, binding->byte_size);
     }
   }
 
   for (uint32_t i = 0; i < reflection->push_constant_range_count; ++i) {
-    const VkrPushConstantRangeDesc *range = &reflection->push_constant_ranges[i];
+    const VkrPushConstantRangeDesc *range =
+        &reflection->push_constant_ranges[i];
     log_debug("  push_constant[%u] offset=%u size=%u stages=0x%x", i,
               range->offset, range->size, range->stages);
   }
@@ -391,13 +394,13 @@ vkr_internal uint32_t vulkan_shader_reflection_count_descriptors_of_type(
   return total;
 }
 
-vkr_internal bool8_t vulkan_shader_descriptor_type_is_sampled_image(
-    VkDescriptorType type) {
+vkr_internal bool8_t
+vulkan_shader_descriptor_type_is_sampled_image(VkDescriptorType type) {
   return type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
 }
 
-vkr_internal bool8_t vulkan_shader_descriptor_type_is_sampler(
-    VkDescriptorType type) {
+vkr_internal bool8_t
+vulkan_shader_descriptor_type_is_sampler(VkDescriptorType type) {
   return type == VK_DESCRIPTOR_TYPE_SAMPLER;
 }
 
@@ -439,15 +442,16 @@ vkr_internal bool8_t vulkan_shader_validate_linear_binding_slots(
   return true_v;
 }
 
-vkr_internal uint64_t vulkan_shader_max_push_constant_end(
-    const VkrShaderReflection *reflection) {
+vkr_internal uint64_t
+vulkan_shader_max_push_constant_end(const VkrShaderReflection *reflection) {
   if (!reflection || reflection->push_constant_range_count == 0) {
     return 0;
   }
 
   uint64_t max_end = 0;
   for (uint32_t i = 0; i < reflection->push_constant_range_count; ++i) {
-    const VkrPushConstantRangeDesc *range = &reflection->push_constant_ranges[i];
+    const VkrPushConstantRangeDesc *range =
+        &reflection->push_constant_ranges[i];
     uint64_t end = (uint64_t)range->offset + (uint64_t)range->size;
     if (end > max_end) {
       max_end = end;
@@ -679,8 +683,8 @@ vkr_internal bool8_t vulkan_shader_bind_descriptor_set_checked(
   }
 
   vkCmdBindDescriptorSets(
-      command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, set_index,
-      1, &descriptor_set, supplied_dynamic_offset_count,
+      command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout,
+      set_index, 1, &descriptor_set, supplied_dynamic_offset_count,
       supplied_dynamic_offset_count > 0 ? dynamic_offsets : NULL);
   return true_v;
 }
@@ -905,7 +909,7 @@ bool8_t vulkan_shader_module_create(
 
   if (size == 0 || code == NULL) {
     log_error("Invalid shader code: size is 0 or code is NULL");
-    return false;
+    return false_v;
   }
 
   if (size % 4 != 0) {
@@ -1099,7 +1103,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   if (!vulkan_shader_resolve_runtime_set_contract(
           &out_shader_object->reflection, out_shader_object)) {
     log_fatal("Failed to resolve reflected descriptor set contract");
-    return false_v;
+    goto cleanup_reflection;
   }
 
   out_shader_object->frame_count = state->swapchain.image_count;
@@ -1154,7 +1158,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
               "%u)",
               (unsigned long long)reflected_global_ubo_size,
               state->device.properties.limits.maxUniformBufferRange);
-    return false_v;
+    goto cleanup_reflection;
   }
   if (reflected_instance_ubo_size >
       state->device.properties.limits.maxUniformBufferRange) {
@@ -1162,21 +1166,20 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
               "%u)",
               (unsigned long long)reflected_instance_ubo_size,
               state->device.properties.limits.maxUniformBufferRange);
-    return false_v;
+    goto cleanup_reflection;
   }
   if (reflected_push_constant_size >
       state->device.properties.limits.maxPushConstantsSize) {
-    log_fatal(
-        "Reflected push constant size exceeds device limit (%llu > %u)",
-        (unsigned long long)reflected_push_constant_size,
-        state->device.properties.limits.maxPushConstantsSize);
-    return false_v;
+    log_fatal("Reflected push constant size exceeds device limit (%llu > %u)",
+              (unsigned long long)reflected_push_constant_size,
+              state->device.properties.limits.maxPushConstantsSize);
+    goto cleanup_reflection;
   }
   if (reflected_instance_texture_count > VKR_MAX_INSTANCE_TEXTURES) {
     log_fatal("Reflected draw texture slot count exceeds engine capacity (%u > "
               "%u)",
               reflected_instance_texture_count, VKR_MAX_INSTANCE_TEXTURES);
-    return false_v;
+    goto cleanup_reflection;
   }
   if (reflected_instance_texture_count > 0) {
     if (!vulkan_shader_validate_linear_binding_slots(
@@ -1186,7 +1189,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
       log_fatal("Draw sampled-image bindings must be contiguous, single-slot "
                 "bindings for %u slots",
                 reflected_instance_texture_count);
-      return false_v;
+      goto cleanup_reflection;
     }
     if (!vulkan_shader_validate_linear_binding_slots(
             draw_set_desc, out_shader_object->draw_sampler_binding_base,
@@ -1194,7 +1197,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
       log_fatal("Draw sampler bindings must be contiguous, single-slot "
                 "bindings for %u slots",
                 reflected_instance_texture_count);
-      return false_v;
+      goto cleanup_reflection;
     }
   }
   if (out_shader_object->frame_uniform_binding !=
@@ -1202,14 +1205,14 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
       reflected_global_ubo_size == 0) {
     log_fatal("Reflected frame UBO binding %u has zero byte size",
               out_shader_object->frame_uniform_binding);
-    return false_v;
+    goto cleanup_reflection;
   }
   if (out_shader_object->draw_uniform_binding !=
           VKR_SHADER_REFLECTION_INDEX_INVALID &&
       reflected_instance_ubo_size == 0) {
     log_fatal("Reflected draw UBO binding %u has zero byte size",
               out_shader_object->draw_uniform_binding);
-    return false_v;
+    goto cleanup_reflection;
   }
 
   out_shader_object->global_ubo_size = reflected_global_ubo_size;
@@ -1236,7 +1239,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
             state, frame_set_desc,
             &out_shader_object->global_descriptor_set_layout)) {
       log_fatal("Failed to create reflected frame descriptor set layout");
-      return false_v;
+      goto cleanup_reflection;
     }
 
     VulkanDescriptorPoolTypeCount
@@ -1250,7 +1253,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
               VKR_SHADER_DESCRIPTOR_TYPE_BUCKET_MAX, binding->type,
               binding->count * out_shader_object->frame_count)) {
         log_fatal("Frame descriptor pool type table overflow");
-        return false_v;
+        goto cleanup_reflection;
       }
     }
 
@@ -1272,14 +1275,14 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
             state->device.logical_device, &pool_info, state->allocator,
             &out_shader_object->global_descriptor_pool) != VK_SUCCESS) {
       log_fatal("Failed to create frame descriptor pool");
-      return false_v;
+      goto cleanup_reflection;
     }
 
     VkrAllocatorScope temp_scope =
         vkr_allocator_begin_scope(&state->temp_scope);
     if (!vkr_allocator_scope_is_valid(&temp_scope)) {
       log_fatal("Failed to acquire temporary allocator for frame descriptors");
-      return false_v;
+      goto cleanup_reflection;
     }
 
     VkDescriptorSetLayout *layouts =
@@ -1290,7 +1293,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
     if (!layouts) {
       log_fatal("Failed to allocate temporary frame descriptor layouts");
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      return false_v;
+      goto cleanup_reflection;
     }
     for (uint32_t i = 0; i < out_shader_object->frame_count; ++i) {
       layouts[i] = out_shader_object->global_descriptor_set_layout;
@@ -1312,7 +1315,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
         !out_shader_object->global_descriptor_instance_buffers) {
       log_fatal("Failed to allocate frame descriptor tracking buffers");
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      return false_v;
+      goto cleanup_reflection;
     }
 
     const VkDescriptorSetAllocateInfo allocate_info = {
@@ -1326,7 +1329,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
         VK_SUCCESS) {
       log_fatal("Failed to allocate frame descriptor sets");
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      return false_v;
+      goto cleanup_reflection;
     }
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
@@ -1359,7 +1362,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
     if (!vulkan_buffer_create(state, &global_uniform_buffer_desc,
                               &out_shader_object->global_uniform_buffer)) {
       log_fatal("Failed to create Vulkan global uniform buffer");
-      return false;
+      goto cleanup_reflection;
     }
   } else {
     MemZero(&out_shader_object->global_uniform_buffer,
@@ -1372,7 +1375,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
       log_fatal("Draw set %u exceeds descriptor state capacity (%u > %u)",
                 draw_set_desc->set, draw_set_desc->binding_count,
                 VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT);
-      return false_v;
+      goto cleanup_reflection;
     }
     for (uint32_t i = 0; i < draw_set_desc->binding_count; ++i) {
       if (draw_set_desc->bindings[i].binding >=
@@ -1381,7 +1384,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
             "Draw set %u binding index %u exceeds descriptor state capacity %u",
             draw_set_desc->set, draw_set_desc->bindings[i].binding,
             VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT);
-        return false_v;
+        goto cleanup_reflection;
       }
     }
 
@@ -1389,7 +1392,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
             state, draw_set_desc,
             &out_shader_object->instance_descriptor_set_layout)) {
       log_fatal("Failed to create reflected draw descriptor set layout");
-      return false_v;
+      goto cleanup_reflection;
     }
 
     uint32_t initial_instance_capacity =
@@ -1406,7 +1409,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
             state, draw_set_desc, out_shader_object->frame_count,
             initial_instance_capacity, &primary_pool)) {
       log_fatal("Failed to create initial draw descriptor pool");
-      return false_v;
+      goto cleanup_reflection;
     }
 
     out_shader_object->instance_descriptor_pool = primary_pool;
@@ -1436,7 +1439,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
     if (!vulkan_buffer_create(state, &instance_uniform_buffer_desc,
                               &out_shader_object->instance_uniform_buffer)) {
       log_fatal("Failed to create Vulkan instance uniform buffer");
-      return false;
+      goto cleanup_reflection;
     }
   } else {
     MemZero(&out_shader_object->instance_uniform_buffer,
@@ -1448,6 +1451,15 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   out_shader_object->instance_state_free_count = 0;
 
   return true;
+
+cleanup_reflection:
+  if (out_shader_object->has_reflection) {
+    vulkan_spirv_shader_reflection_destroy(&state->alloc,
+                                           &out_shader_object->reflection);
+    out_shader_object->has_reflection = false_v;
+  }
+  vulkan_shader_destroy_modules(state, out_shader_object);
+  return false_v;
 }
 
 bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
@@ -1924,8 +1936,9 @@ bool8_t vulkan_shader_update_instance(
   uint32_t dynamic_offsets[VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT];
   MemZero(dynamic_offsets, sizeof(dynamic_offsets));
   if (!vulkan_shader_bind_descriptor_set_checked(
-          command_buffer->handle, pipeline_layout, shader_object->draw_set_index,
-          local_descriptor, shader_object->draw_dynamic_offset_count,
+          command_buffer->handle, pipeline_layout,
+          shader_object->draw_set_index, local_descriptor,
+          shader_object->draw_dynamic_offset_count,
           shader_object->draw_dynamic_offset_count, dynamic_offsets)) {
     return false_v;
   }

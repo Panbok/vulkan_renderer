@@ -1760,15 +1760,19 @@ inline ShaderModule::~ShaderModule() {
 
 inline ShaderModule::ShaderModule(ShaderModule&& other)
 {
-    *this = std::move(other);
+    m_result = std::move(other.m_result);
+    m_module = std::move(other.m_module);
+    other.m_module = {};
 }
 
 inline ShaderModule& ShaderModule::operator=(ShaderModule&& other)
 {
-    m_result = std::move(other.m_result);
-    m_module = std::move(other.m_module);
-
-    other.m_module = {};
+    if (this != &other) {
+        spvReflectDestroyShaderModule(&m_module);
+        m_result = std::move(other.m_result);
+        m_module = std::move(other.m_module);
+        other.m_module = {};
+    }
     return *this;
 }
 
@@ -1845,6 +1849,9 @@ inline uint32_t ShaderModule::GetEntryPointCount() const {
   @return
 */
 inline const char* ShaderModule::GetEntryPointName(uint32_t index) const {
+  if (index >= m_module.entry_point_count) {
+    return nullptr;
+  }
   return m_module.entry_points[index].name;
 }
 
@@ -1854,6 +1861,9 @@ inline const char* ShaderModule::GetEntryPointName(uint32_t index) const {
   @return Returns the shader stage for the entry point at \b index
 */
 inline SpvReflectShaderStageFlagBits ShaderModule::GetEntryPointShaderStage(uint32_t index) const {
+  if (index >= m_module.entry_point_count) {
+    return (SpvReflectShaderStageFlagBits)0;
+  }
   return m_module.entry_points[index].shader_stage;
 }
 
