@@ -46,10 +46,7 @@ if %errorlevel%==0 (
     if %errorlevel%==0 set "COMPILERS=-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
 )
 
-set "TOOLCHAIN="
-if defined VCPKG_ROOT set "TOOLCHAIN=-DCMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"
-
-cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE %GENERATOR% %COMPILERS% %TOOLCHAIN%
+cmake --fresh -S . -B build -U CMAKE_TOOLCHAIN_FILE -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE %GENERATOR% %COMPILERS%
 if %errorlevel% neq 0 (
     echo CMake configure failed.
     exit /b 1
@@ -77,4 +74,3 @@ if %errorlevel% equ 0 (
 
 echo Library build completed successfully!
 endlocal
-

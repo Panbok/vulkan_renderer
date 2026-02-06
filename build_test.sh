@@ -13,11 +13,7 @@ set -e # Exit early if any commands fail
   if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
     COMPILERS="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
   fi
-  TOOLCHAIN=""
-  if [ -n "${VCPKG_ROOT}" ]; then
-    TOOLCHAIN="-DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-  fi
-  cmake -B build -S . -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS} ${TOOLCHAIN}
+  cmake --fresh -B build -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
   # Build only the test target
   cmake --build ./build --target vulkan_renderer_tester
 )

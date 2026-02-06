@@ -28,16 +28,12 @@ if [ -d "$BUILD_DIR" ]; then
 fi
 mkdir -p "$BUILD_DIR"
 
-TOOLCHAIN=""
-if [ -n "${VCPKG_ROOT}" ]; then
-  TOOLCHAIN="-DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-fi
-
 # Note: We REMOVED CMAKE_C_COMPILER and CMAKE_CXX_COMPILER.
 # Xcode will automatically use its internal clang.
 cmake -S . -B "$BUILD_DIR" \
+  --fresh \
+  -U CMAKE_TOOLCHAIN_FILE \
   -G Xcode \
-  ${TOOLCHAIN} \
   -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE
 
 echo "--- Step 3: Setup Complete ---"

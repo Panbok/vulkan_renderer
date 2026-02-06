@@ -52,10 +52,7 @@ if /I "%GENERATOR%"=="-G Ninja" (
     if %errorlevel%==0 set "GEN_TOOLSET=-T ClangCL"
 )
 
-set "TOOLCHAIN="
-if defined VCPKG_ROOT if exist "%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake" set "TOOLCHAIN=-DCMAKE_TOOLCHAIN_FILE=""%VCPKG_ROOT%\scripts\builds
-
-cmake -S . -B build_release -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE %GENERATOR% %GEN_TOOLSET% %COMPILERS% %TOOLCHAIN%
+cmake --fresh -S . -B build_release -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING=Release -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE %GENERATOR% %GEN_TOOLSET% %COMPILERS%
 if %errorlevel% neq 0 (
     echo CMake configure failed.
     exit /b 1
@@ -83,4 +80,3 @@ if %errorlevel% equ 0 (
 
 echo Release build completed successfully!
 endlocal
-

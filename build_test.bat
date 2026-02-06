@@ -11,8 +11,8 @@ rem Ensure compile steps are run within the repository directory
 pushd "%~dp0" || exit /b 1
 
 rem Configure step (can often be skipped if build dir exists and config hasn't changed)
-rem Re-running ensures VCPKG path is picked up if environment changed.
-cmake -B build -S .
+rem Re-running refreshes CMake cache state for this build directory.
+cmake --fresh -B build -S . -U CMAKE_TOOLCHAIN_FILE
 if %errorlevel% neq 0 (
     echo CMake configure failed.
     popd

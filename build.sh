@@ -41,12 +41,7 @@ BUILD_TYPE="${1:-Debug}"
     COMPILERS="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
   fi
 
-  TOOLCHAIN=""
-  if [ -n "${VCPKG_ROOT}" ]; then
-    TOOLCHAIN="-DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-  fi
-
-  cmake -S . -B build -DCMAKE_BUILD_TYPE:STRING=${BUILD_TYPE} -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS} ${TOOLCHAIN}
+  cmake --fresh -S . -B build -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING=${BUILD_TYPE} -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
   cmake --build ./build --target vulkan_renderer --config ${BUILD_TYPE}
 
   echo "Copying shaders to build/app/assets"

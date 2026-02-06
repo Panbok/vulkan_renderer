@@ -36,11 +36,7 @@ set -e # Exit early if any commands fail
   if command -v clang >/dev/null 2>&1 && command -v clang++ >/dev/null 2>&1; then
     COMPILERS="-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++"
   fi
-  TOOLCHAIN=""
-  if [ -n "${VCPKG_ROOT}" ]; then
-    TOOLCHAIN="-DCMAKE_TOOLCHAIN_FILE=${VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
-  fi
-  cmake -B build_release -S . -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS} ${TOOLCHAIN}
+  cmake --fresh -B build_release -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
   cmake --build ./build_release --target vulkan_renderer --config Release
 
   echo "Copying shaders to release build directory"
