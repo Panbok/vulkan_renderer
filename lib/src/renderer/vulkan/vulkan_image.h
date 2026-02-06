@@ -8,6 +8,7 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
                              VkImageTiling tiling, VkImageUsageFlags usage,
                              VkMemoryPropertyFlags memory_flags,
                              uint32_t mip_levels, uint32_t array_layers,
+                             VkSampleCountFlagBits samples,
                              VkImageViewType view_type,
                              VkImageAspectFlags view_aspect_flags,
                              VulkanImage *out_image);

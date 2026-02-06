@@ -822,6 +822,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
       supported_features.features.multiDrawIndirect;
   device_features.drawIndirectFirstInstance =
       supported_features.features.drawIndirectFirstInstance;
+  device_features.depthBiasClamp = supported_features.features.depthBiasClamp;
 
   VkPhysicalDeviceVulkan11Features enabled_vulkan11 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
@@ -873,6 +874,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
   }
 
   state->device.logical_device = device;
+  state->device.features = device_features;
 
   log_debug("Logical device created with handle: %p", state->device);
 
