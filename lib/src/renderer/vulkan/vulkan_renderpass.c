@@ -39,7 +39,8 @@ vkr_internal VkAttachmentStoreOp vkr_store_op_to_vk(VkrAttachmentStoreOp op) {
 /**
  * @brief Convert VkrSampleCount to Vulkan VkSampleCountFlagBits.
  */
-vkr_internal VkSampleCountFlagBits vkr_sample_count_to_vk(VkrSampleCount samples) {
+vkr_internal VkSampleCountFlagBits
+vkr_sample_count_to_vk(VkrSampleCount samples) {
   switch (samples) {
   case VKR_SAMPLE_COUNT_1:
     return VK_SAMPLE_COUNT_1_BIT;
@@ -109,8 +110,8 @@ bool8_t vulkan_renderpass_create_from_desc(VulkanBackendState *state,
     return false_v;
   }
   if (desc->color_attachment_count > VKR_MAX_COLOR_ATTACHMENTS) {
-    log_error("Too many color attachments: %u (max %u)", desc->color_attachment_count,
-              VKR_MAX_COLOR_ATTACHMENTS);
+    log_error("Too many color attachments: %u (max %u)",
+              desc->color_attachment_count, VKR_MAX_COLOR_ATTACHMENTS);
     return false_v;
   }
   if (desc->resolve_attachment_count > desc->color_attachment_count) {
@@ -129,8 +130,7 @@ bool8_t vulkan_renderpass_create_from_desc(VulkanBackendState *state,
       }
     }
   }
-  if (desc->depth_stencil_attachment &&
-      desc->color_attachment_count > 0 &&
+  if (desc->depth_stencil_attachment && desc->color_attachment_count > 0 &&
       desc->depth_stencil_attachment->samples != expected_samples) {
     log_error("Depth/stencil sample count must match color attachments");
     return false_v;
@@ -164,8 +164,8 @@ bool8_t vulkan_renderpass_create_from_desc(VulkanBackendState *state,
   bool8_t has_depth = desc->depth_stencil_attachment != NULL;
 
   // Build attachment descriptions
-  VkAttachmentDescription attachments[VKR_MAX_COLOR_ATTACHMENTS + 1 +
-                                       VKR_MAX_COLOR_ATTACHMENTS];
+  VkAttachmentDescription
+      attachments[VKR_MAX_COLOR_ATTACHMENTS + 1 + VKR_MAX_COLOR_ATTACHMENTS];
   VkAttachmentReference color_refs[VKR_MAX_COLOR_ATTACHMENTS];
   VkAttachmentReference resolve_refs[VKR_MAX_COLOR_ATTACHMENTS];
   VkAttachmentReference depth_ref = {0};
@@ -216,8 +216,7 @@ bool8_t vulkan_renderpass_create_from_desc(VulkanBackendState *state,
 
   // Resolve attachments (for MSAA)
   uint32_t resolve_base_idx = attachment_idx;
-  const VkrResolveAttachmentRef *resolve_order[VKR_MAX_COLOR_ATTACHMENTS] = {
-      0};
+  const VkrResolveAttachmentRef *resolve_order[VKR_MAX_COLOR_ATTACHMENTS] = {0};
   for (uint8_t i = 0; i < desc->resolve_attachment_count; ++i) {
     resolve_order[desc->resolve_attachments[i].dst_attachment_index] =
         &desc->resolve_attachments[i];
@@ -228,13 +227,11 @@ bool8_t vulkan_renderpass_create_from_desc(VulkanBackendState *state,
       log_error("Resolve attachment ordering incomplete");
       return false_v;
     }
-    // Resolve attachments use same format as source color attachment but with 1 sample
+    // Resolve attachments use same format as source color attachment but with 1
+    // sample
     uint8_t src_idx = resolve_ref->src_attachment_index;
-    if (src_idx >= desc->color_attachment_count) {
-      log_error("Invalid resolve source attachment index: %u", src_idx);
-      return false_v;
-    }
-    const VkrRenderPassAttachmentDesc *src_att = &desc->color_attachments[src_idx];
+    const VkrRenderPassAttachmentDesc *src_att =
+        &desc->color_attachments[src_idx];
     attachments[attachment_idx] = (VkAttachmentDescription){
         .format = vulkan_image_format_from_texture_format(src_att->format),
         .samples = VK_SAMPLE_COUNT_1_BIT,
@@ -248,8 +245,8 @@ bool8_t vulkan_renderpass_create_from_desc(VulkanBackendState *state,
     attachment_idx++;
   }
 
-  // Build resolve refs array - must match color attachment count with VK_ATTACHMENT_UNUSED
-  // for slots without resolve
+  // Build resolve refs array - must match color attachment count with
+  // VK_ATTACHMENT_UNUSED for slots without resolve
   for (uint8_t i = 0; i < desc->color_attachment_count; i++) {
     resolve_refs[i].attachment = VK_ATTACHMENT_UNUSED;
     resolve_refs[i].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -276,12 +273,12 @@ bool8_t vulkan_renderpass_create_from_desc(VulkanBackendState *state,
       {
           .srcSubpass = VK_SUBPASS_EXTERNAL,
           .dstSubpass = 0,
-          .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                          (has_depth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
-                                     : 0),
-          .dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                          (has_depth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
-                                     : 0),
+          .srcStageMask =
+              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+              (has_depth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT : 0),
+          .dstStageMask =
+              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+              (has_depth ? VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT : 0),
           .srcAccessMask = 0,
           .dstAccessMask =
               (desc->color_attachment_count > 0
@@ -294,9 +291,9 @@ bool8_t vulkan_renderpass_create_from_desc(VulkanBackendState *state,
       {
           .srcSubpass = 0,
           .dstSubpass = VK_SUBPASS_EXTERNAL,
-          .srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                          (has_depth ? VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT
-                                     : 0),
+          .srcStageMask =
+              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+              (has_depth ? VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT : 0),
           .dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
           .srcAccessMask =
               (desc->color_attachment_count > 0
@@ -324,7 +321,6 @@ bool8_t vulkan_renderpass_create_from_desc(VulkanBackendState *state,
     log_error("Failed to create render pass from descriptor");
     return false_v;
   }
-
 
   // Populate signature from descriptor
   VkrRenderPassSignature *sig = &out_render_pass->signature;
