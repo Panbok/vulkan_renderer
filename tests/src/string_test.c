@@ -47,6 +47,16 @@ static void test_str8_create(void) {
   printf("  test_str8_create PASSED\n");
 }
 
+static void test_str8_create_from_cstr_empty(void) {
+  printf("  Running test_str8_create_from_cstr_empty...\n");
+  const char *empty = "";
+  String8 str = string8_create_from_cstr((const uint8_t *)empty, 0);
+  assert(str.str == (const uint8_t *)empty &&
+         "Empty string should preserve source pointer");
+  assert(str.length == 0 && "Empty string length should be 0");
+  printf("  test_str8_create_from_cstr_empty PASSED\n");
+}
+
 static void test_str8_create_literal(void) {
   printf("  Running test_str8_create_literal...\n");
   String8 str = string8_lit("Hello, World!");
@@ -546,6 +556,7 @@ bool32_t run_string_tests(void) {
   printf("--- Starting String Tests ---\n");
 
   test_str8_create();
+  test_str8_create_from_cstr_empty();
   test_str8_create_literal();
   test_str8_create_formatted();
   test_str8_create_formatted_v();
