@@ -22,6 +22,161 @@
 // todo: make this configurable
 #define BUFFERING_FRAMES 3
 
+/**
+ * Reflection failure categories used by the SPIR-V reflection pipeline.
+ *
+ * These codes are intended to be stable diagnostics that can be bubbled up to
+ * frontend creation APIs and logs. They intentionally separate parse failures,
+ * shader contract mismatches, and Vulkan limit violations so
+ * call sites can report precise remediation hints.
+ */
+typedef enum VkrReflectionError {
+  VKR_REFLECTION_OK = 0,
+  VKR_REFLECTION_ERROR_PARSE_FAILED,
+  VKR_REFLECTION_ERROR_DUPLICATE_STAGE,
+  VKR_REFLECTION_ERROR_ENTRY_POINT_NOT_FOUND,
+  VKR_REFLECTION_ERROR_STAGE_MISMATCH,
+  VKR_REFLECTION_ERROR_BINDING_TYPE_MISMATCH,
+  VKR_REFLECTION_ERROR_BINDING_COUNT_MISMATCH,
+  VKR_REFLECTION_ERROR_UNSUPPORTED_DESCRIPTOR,
+  VKR_REFLECTION_ERROR_RUNTIME_ARRAY,
+  VKR_REFLECTION_ERROR_MISSING_LOCATION,
+  VKR_REFLECTION_ERROR_VERTEX_COMPONENT_DECORATION,
+  VKR_REFLECTION_ERROR_DUPLICATE_VERTEX_LOCATION,
+  VKR_REFLECTION_ERROR_UNSUPPORTED_VERTEX_INPUT,
+  VKR_REFLECTION_ERROR_PUSH_CONSTANT_ALIGNMENT,
+  VKR_REFLECTION_ERROR_PUSH_CONSTANT_LIMIT,
+} VkrReflectionError;
+
+#define VKR_REFLECTION_ERROR_PROGRAM_NAME_MAX 256
+#define VKR_REFLECTION_ERROR_MODULE_PATH_MAX 512
+#define VKR_REFLECTION_ERROR_ENTRY_POINT_MAX 128
+
+/**
+ * Reflection error context for deterministic diagnostics.
+ *
+ * `set`, `binding`, and `location` use `UINT32_MAX` when not applicable.
+ * `backend_result` is the raw reflection-library result code (if any), kept as
+ * `int32_t` to avoid leaking third-party types into call sites that only need
+ * renderer-level diagnostics.
+ *
+ * String fields point into fixed storage in this struct to avoid lifetime bugs
+ * when reflection backends release temporary parse state before diagnostics are
+ * logged.
+ */
+typedef struct VkrReflectionErrorContext {
+  VkrReflectionError code;
+  String8 program_name;
+  String8 module_path;
+  String8 entry_point;
+  uint8_t program_name_storage[VKR_REFLECTION_ERROR_PROGRAM_NAME_MAX];
+  uint8_t module_path_storage[VKR_REFLECTION_ERROR_MODULE_PATH_MAX];
+  uint8_t entry_point_storage[VKR_REFLECTION_ERROR_ENTRY_POINT_MAX];
+  VkShaderStageFlagBits stage;
+  uint32_t set;
+  uint32_t binding;
+  uint32_t location;
+  int32_t backend_result;
+} VkrReflectionErrorContext;
+
+typedef struct VkrShaderStageModuleDesc {
+  VkShaderStageFlagBits stage;
+  String8 path;
+  String8 entry_point;
+  const uint8_t *spirv_bytes;
+  uint64_t spirv_size;
+} VkrShaderStageModuleDesc;
+
+typedef struct VkrSpirvReflectionCreateInfo {
+  VkrAllocator *allocator;
+  String8 program_name;
+  VkrVertexAbiProfile vertex_abi_profile;
+  uint32_t module_count;
+  const VkrShaderStageModuleDesc *modules;
+  uint32_t max_push_constant_size; // 0 disables push-constant limit validation
+} VkrSpirvReflectionCreateInfo;
+
+typedef struct VkrDescriptorBindingDesc {
+  uint32_t binding;
+  VkDescriptorType type;
+  uint32_t count;
+  uint32_t byte_size; // Buffer descriptor block size in bytes; 0 for non-buffers.
+  VkShaderStageFlags stages;
+  String8 name;
+} VkrDescriptorBindingDesc;
+
+typedef enum VkrDescriptorSetRole {
+  VKR_DESCRIPTOR_SET_ROLE_NONE = 0,
+  VKR_DESCRIPTOR_SET_ROLE_FRAME,
+  VKR_DESCRIPTOR_SET_ROLE_MATERIAL,
+  VKR_DESCRIPTOR_SET_ROLE_DRAW,
+  VKR_DESCRIPTOR_SET_ROLE_FEATURE,
+  VKR_DESCRIPTOR_SET_ROLE_COUNT
+} VkrDescriptorSetRole;
+
+typedef struct VkrDescriptorSetDesc {
+  uint32_t set;
+  VkrDescriptorSetRole role;
+  uint32_t binding_count;
+  VkrDescriptorBindingDesc *bindings;
+} VkrDescriptorSetDesc;
+
+typedef struct VkrPushConstantRangeDesc {
+  uint32_t offset;
+  uint32_t size;
+  VkShaderStageFlags stages;
+} VkrPushConstantRangeDesc;
+
+typedef struct VkrVertexInputBindingDesc {
+  uint32_t binding;
+  uint32_t stride;
+  VkVertexInputRate rate;
+} VkrVertexInputBindingDesc;
+
+typedef struct VkrVertexInputAttributeDesc {
+  uint32_t location;
+  uint32_t binding;
+  VkFormat format;
+  uint32_t offset;
+  String8 name;
+} VkrVertexInputAttributeDesc;
+
+typedef struct VkrUniformMemberDesc {
+  String8 name;
+  uint32_t offset;
+  uint32_t size;
+  uint32_t array_stride;
+  uint32_t matrix_stride;
+  uint32_t columns;
+  uint32_t rows;
+} VkrUniformMemberDesc;
+
+typedef struct VkrUniformBlockDesc {
+  String8 name;
+  uint32_t set;
+  uint32_t binding;
+  uint32_t size;
+  uint32_t member_count;
+  VkrUniformMemberDesc *members;
+} VkrUniformBlockDesc;
+
+typedef struct VkrShaderReflection {
+  uint32_t set_count;         // Number of non-empty descriptor sets
+  VkrDescriptorSetDesc *sets; // Sorted by set index
+  uint32_t layout_set_count;  // max_set + 1 (includes sparse holes)
+
+  uint32_t push_constant_range_count;
+  VkrPushConstantRangeDesc *push_constant_ranges;
+
+  uint32_t vertex_binding_count;
+  VkrVertexInputBindingDesc *vertex_bindings;
+  uint32_t vertex_attribute_count;
+  VkrVertexInputAttributeDesc *vertex_attributes;
+
+  uint32_t uniform_block_count;
+  VkrUniformBlockDesc *uniform_blocks;
+} VkrShaderReflection;
+
 typedef enum QueueFamilyType {
   QUEUE_FAMILY_TYPE_GRAPHICS,
   QUEUE_FAMILY_TYPE_PRESENT,
@@ -191,15 +346,21 @@ struct s_BufferHandle {
 
 #define VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT                            \
   (1 + (VKR_MAX_INSTANCE_TEXTURES * 2))
+#define VULKAN_SHADER_OBJECT_MAX_INSTANCE_POOLS 8
 typedef struct VulkanShaderObjectDescriptorState {
   // Per-frame descriptor generation tracking; length == frame_count
   uint32_t *generations;
+  // Per-frame descriptor payload tracking used to detect handle changes even
+  // when backend texture generations are reused across scene reloads.
+  VkImageView *image_views;
+  VkSampler *samplers;
 } VulkanShaderObjectDescriptorState;
 
 #define VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT 8192
 typedef struct VulkanShaderObjectInstanceState {
   // Per-frame descriptor sets; length == frame_count
   VkDescriptorSet *descriptor_sets;
+  VkDescriptorPool descriptor_pool;
 
   VulkanShaderObjectDescriptorState
       descriptor_states[VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT];
@@ -215,6 +376,23 @@ typedef struct VulkanShaderObjectInstanceState {
 typedef struct VulkanShaderObject {
   VkPipelineShaderStageCreateInfo stages[VKR_SHADER_STAGE_COUNT];
   VkShaderModule modules[VKR_SHADER_STAGE_COUNT];
+  bool8_t has_reflection;
+  VkrShaderReflection reflection;
+
+  // Runtime set indices resolved from reflection roles/fallback conventions.
+  uint32_t frame_set_index;
+  uint32_t draw_set_index;
+
+  // Resolved binding indices used by legacy frontend state upload paths.
+  uint32_t frame_uniform_binding;
+  uint32_t frame_instance_buffer_binding;
+  uint32_t draw_uniform_binding;
+  uint32_t draw_sampled_image_binding_base;
+  uint32_t draw_sampler_binding_base;
+
+  // Dynamic descriptor counts for zero-offset bind calls.
+  uint32_t frame_dynamic_offset_count;
+  uint32_t draw_dynamic_offset_count;
 
   VkDescriptorPool global_descriptor_pool;
   // Per-frame global descriptor sets; length == frame_count
@@ -230,6 +408,13 @@ typedef struct VulkanShaderObject {
   uint32_t instance_state_free_count;
   uint32_t instance_state_free_ids[VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT];
   VkDescriptorPool instance_descriptor_pool;
+  VkDescriptorPool
+      instance_descriptor_pools[VULKAN_SHADER_OBJECT_MAX_INSTANCE_POOLS];
+  uint32_t instance_descriptor_pool_count;
+  uint32_t
+      instance_pool_instance_capacities[VULKAN_SHADER_OBJECT_MAX_INSTANCE_POOLS];
+  uint32_t instance_pool_fallback_allocations;
+  uint32_t instance_pool_overflow_creations;
   VkDescriptorSetLayout instance_descriptor_set_layout;
   struct s_BufferHandle instance_uniform_buffer;
   VulkanShaderObjectInstanceState
@@ -505,6 +690,8 @@ typedef struct VulkanBackendState {
   VkSurfaceKHR surface;
 
   VulkanSwapchain swapchain;
+  VkPipelineCache pipeline_cache;
+  String8 pipeline_cache_path;
 
   Array_VkSemaphore image_available_semaphores;
   Array_VkSemaphore queue_complete_semaphores;
