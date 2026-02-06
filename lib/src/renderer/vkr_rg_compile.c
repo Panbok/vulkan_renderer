@@ -45,10 +45,9 @@ vkr_internal bool8_t vkr_rg_edge_exists(const Vector_uint32_t *edges,
 }
 
 vkr_internal void vkr_rg_add_edge(VkrRenderGraph *graph, uint32_t from,
-                                  uint32_t to) {
+                                 uint32_t to) {
   if (from == to) {
-    log_error("RenderGraph add edge failed: from == to");
-    return;
+    return; /* Self-edge is redundant; pass already depends on itself. */
   }
 
   VkrRgPass *from_pass = vector_get_VkrRgPass(&graph->passes, from);
@@ -379,6 +378,9 @@ vkr_internal void vkr_rg_process_image_read(VkrRenderGraph *graph,
                                             VkrRgDependencyState *states,
                                             uint32_t pass_index,
                                             VkrRgImageHandle image) {
+  if (image.id == 0) {
+    return;
+  }
   uint32_t idx = image.id - 1;
   VkrRgDependencyState *state = &states[idx];
   if (state->last_writer >= 0) {
@@ -391,6 +393,9 @@ vkr_internal void vkr_rg_process_image_write(VkrRenderGraph *graph,
                                              VkrRgDependencyState *states,
                                              uint32_t pass_index,
                                              VkrRgImageHandle image) {
+  if (image.id == 0) {
+    return;
+  }
   uint32_t idx = image.id - 1;
   VkrRgDependencyState *state = &states[idx];
   if (state->last_writer >= 0) {
@@ -404,9 +409,12 @@ vkr_internal void vkr_rg_process_image_write(VkrRenderGraph *graph,
 }
 
 vkr_internal void vkr_rg_process_buffer_read(VkrRenderGraph *graph,
-                                             VkrRgDependencyState *states,
-                                             uint32_t pass_index,
-                                             VkrRgBufferHandle buffer) {
+                                            VkrRgDependencyState *states,
+                                            uint32_t pass_index,
+                                            VkrRgBufferHandle buffer) {
+  if (buffer.id == 0) {
+    return;
+  }
   uint32_t idx = buffer.id - 1;
   VkrRgDependencyState *state = &states[idx];
   if (state->last_writer >= 0) {
@@ -416,9 +424,12 @@ vkr_internal void vkr_rg_process_buffer_read(VkrRenderGraph *graph,
 }
 
 vkr_internal void vkr_rg_process_buffer_write(VkrRenderGraph *graph,
-                                              VkrRgDependencyState *states,
-                                              uint32_t pass_index,
-                                              VkrRgBufferHandle buffer) {
+                                             VkrRgDependencyState *states,
+                                             uint32_t pass_index,
+                                             VkrRgBufferHandle buffer) {
+  if (buffer.id == 0) {
+    return;
+  }
   uint32_t idx = buffer.id - 1;
   VkrRgDependencyState *state = &states[idx];
   if (state->last_writer >= 0) {
@@ -1726,7 +1737,7 @@ vkr_internal void vkr_rg_compute_lifetimes(VkrRenderGraph *graph) {
   }
 }
 
-vkr_internal void vkr_rg_generate_barriers(VkrRenderGraph *graph) {
+vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
   typedef struct VkrRgImageState {
     VkrRgImageAccessFlags access;
     VkrTextureLayout layout;
@@ -1746,11 +1757,24 @@ vkr_internal void vkr_rg_generate_barriers(VkrRenderGraph *graph) {
     image_states = vkr_allocator_alloc(graph->allocator,
                                        sizeof(VkrRgImageState) * image_count,
                                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!image_states) {
+      log_error("RenderGraph barrier generation: image_states allocation failed");
+      return false_v;
+    }
   }
   if (buffer_count > 0) {
     buffer_states = vkr_allocator_alloc(graph->allocator,
                                         sizeof(VkrRgBufferState) * buffer_count,
                                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!buffer_states) {
+      if (image_states) {
+        vkr_allocator_free(graph->allocator, image_states,
+                           sizeof(VkrRgImageState) * image_count,
+                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+      log_error("RenderGraph barrier generation: buffer_states allocation failed");
+      return false_v;
+    }
   }
 
   for (uint32_t i = 0; i < image_count; ++i) {
@@ -1915,6 +1939,7 @@ vkr_internal void vkr_rg_generate_barriers(VkrRenderGraph *graph) {
                        sizeof(VkrRgBufferState) * buffer_count,
                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
+  return true_v;
 }
 
 bool8_t vkr_rg_compile(VkrRenderGraph *graph) {
@@ -1948,18 +1973,35 @@ bool8_t vkr_rg_compile(VkrRenderGraph *graph) {
     image_states = vkr_allocator_alloc(
         graph->allocator, sizeof(VkrRgDependencyState) * image_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!image_states) {
+      log_error("RenderGraph compile: image_states allocation failed");
+      return false_v;
+    }
   }
   if (buffer_count > 0) {
     buffer_states = vkr_allocator_alloc(
         graph->allocator, sizeof(VkrRgDependencyState) * buffer_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!buffer_states) {
+      if (image_states) {
+        vkr_allocator_free(graph->allocator, image_states,
+                           sizeof(VkrRgDependencyState) * image_count,
+                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+      log_error("RenderGraph compile: buffer_states allocation failed");
+      return false_v;
+    }
   }
 
-  for (uint32_t i = 0; i < image_count; ++i) {
-    vkr_rg_dependency_state_init(&image_states[i], graph->allocator);
+  if (image_states && image_count > 0) {
+    for (uint32_t i = 0; i < image_count; ++i) {
+      vkr_rg_dependency_state_init(&image_states[i], graph->allocator);
+    }
   }
-  for (uint32_t i = 0; i < buffer_count; ++i) {
-    vkr_rg_dependency_state_init(&buffer_states[i], graph->allocator);
+  if (buffer_states && buffer_count > 0) {
+    for (uint32_t i = 0; i < buffer_count; ++i) {
+      vkr_rg_dependency_state_init(&buffer_states[i], graph->allocator);
+    }
   }
 
   for (uint32_t pass_index = 0; pass_index < graph->passes.length;
@@ -2045,7 +2087,9 @@ bool8_t vkr_rg_compile(VkrRenderGraph *graph) {
   }
 
   vkr_rg_compute_lifetimes(graph);
-  vkr_rg_generate_barriers(graph);
+  if (!vkr_rg_generate_barriers(graph)) {
+    return false_v;
+  }
   if (!vkr_rg_allocate_resources(graph)) {
     return false_v;
   }

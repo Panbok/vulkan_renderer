@@ -146,6 +146,9 @@ void vkr_rg_execute(VkrRenderGraph *graph, struct s_RendererFrontend *rf) {
        ++order_index) {
     uint32_t pass_index = graph->execution_order.data[order_index];
     VkrRgPass *pass = vector_get_VkrRgPass(&graph->passes, pass_index);
+    if (!pass) {
+      continue;
+    }
     VkrRgPassTiming *timing = NULL;
     if (pass_index < graph->pass_timings.length) {
       timing = vector_get_VkrRgPassTiming(&graph->pass_timings, pass_index);
@@ -160,8 +163,10 @@ void vkr_rg_execute(VkrRenderGraph *graph, struct s_RendererFrontend *rf) {
       vkr_renderer_rg_timing_begin_pass(rf, pass_index);
     }
 
-    vkr_rg_apply_image_barriers(graph, (RendererFrontend *)rf, pass);
-    vkr_rg_apply_buffer_barriers(graph, (RendererFrontend *)rf, pass);
+    if (rf) {
+      vkr_rg_apply_image_barriers(graph, (RendererFrontend *)rf, pass);
+      vkr_rg_apply_buffer_barriers(graph, (RendererFrontend *)rf, pass);
+    }
 
     VkrRenderTargetHandle target = NULL;
     if (pass->render_targets &&

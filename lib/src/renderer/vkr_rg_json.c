@@ -424,10 +424,6 @@ vkr_internal bool8_t vkr_rg_json_parse_index(VkrRgJsonParseContext *ctx,
   assert_log(field_name != NULL, "field_name is NULL");
   assert_log(ctx != NULL, "ctx is NULL");
 
-  if (!out_index) {
-    return false_v;
-  }
-
   *out_index = (VkrRgJsonIndex){0};
 
   VkrJsonReader index_reader = *obj;
@@ -1576,6 +1572,7 @@ vkr_internal void vkr_rg_release_name(VkrAllocator *allocator, String8 name,
   }
 }
 
+// TODO: use hash map instead of linear search
 vkr_internal VkrRgImageHandle vkr_rg_build_find_image(VkrRenderGraph *rg,
                                                       String8 name) {
   if (!rg) {
@@ -1592,6 +1589,7 @@ vkr_internal VkrRgImageHandle vkr_rg_build_find_image(VkrRenderGraph *rg,
   return VKR_RG_IMAGE_HANDLE_INVALID;
 }
 
+// TODO: use hash map instead of linear search
 vkr_internal VkrRgBufferHandle vkr_rg_build_find_buffer(VkrRenderGraph *rg,
                                                         String8 name) {
   if (!rg) {
