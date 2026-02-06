@@ -4,28 +4,36 @@
 #include "defines.h"
 #include "renderer/vkr_render_packet.h"
 
-static int32_t vkr_rg_find_image_index(VkrRenderGraph *graph, String8 name) {
+vkr_internal int64_t vkr_rg_find_image_index(VkrRenderGraph *graph,
+                                             String8 name) {
+  if (!graph) {
+    return (int64_t)-1;
+  }
   for (uint64_t i = 0; i < graph->images.length; ++i) {
     VkrRgImage *image = vector_get_VkrRgImage(&graph->images, i);
     if (string8_equals(&image->name, &name)) {
-      return (int32_t)i;
+      return (int64_t)i;
     }
   }
-  return -1;
+  return (int64_t)-1;
 }
 
-static int32_t vkr_rg_find_buffer_index(VkrRenderGraph *graph, String8 name) {
+vkr_internal int64_t vkr_rg_find_buffer_index(VkrRenderGraph *graph,
+                                              String8 name) {
+  if (!graph) {
+    return (int64_t)-1;
+  }
   for (uint64_t i = 0; i < graph->buffers.length; ++i) {
     VkrRgBuffer *buffer = vector_get_VkrRgBuffer(&graph->buffers, i);
     if (string8_equals(&buffer->name, &name)) {
-      return (int32_t)i;
+      return (int64_t)i;
     }
   }
-  return -1;
+  return (int64_t)-1;
 }
 
-static bool8_t vkr_rg_image_desc_equal(const VkrRgImageDesc *a,
-                                       const VkrRgImageDesc *b) {
+vkr_internal bool8_t vkr_rg_image_desc_equal(const VkrRgImageDesc *a,
+                                             const VkrRgImageDesc *b) {
   return a->width == b->width && a->height == b->height &&
          a->format == b->format && a->usage.set == b->usage.set &&
          a->samples == b->samples && a->layers == b->layers &&
@@ -33,8 +41,8 @@ static bool8_t vkr_rg_image_desc_equal(const VkrRgImageDesc *a,
          a->flags == b->flags;
 }
 
-static bool8_t vkr_rg_buffer_desc_equal(const VkrRgBufferDesc *a,
-                                        const VkrRgBufferDesc *b) {
+vkr_internal bool8_t vkr_rg_buffer_desc_equal(const VkrRgBufferDesc *a,
+                                              const VkrRgBufferDesc *b) {
   return a->size == b->size && a->usage.set == b->usage.set &&
          a->flags == b->flags;
 }
@@ -84,8 +92,7 @@ VkrTextureOpaqueHandle vkr_rg_get_image_texture(const VkrRenderGraph *graph,
     return NULL;
   }
 
-  VkrRgImage *entry =
-      vkr_rg_image_from_handle((VkrRenderGraph *)graph, image);
+  VkrRgImage *entry = vkr_rg_image_from_handle((VkrRenderGraph *)graph, image);
   if (!entry) {
     return NULL;
   }
@@ -149,7 +156,7 @@ void vkr_rg_set_packet(VkrRenderGraph *graph, const VkrRenderPacket *packet) {
   graph->packet = packet;
 }
 
-static const VkrRenderPacket *
+vkr_internal const VkrRenderPacket *
 vkr_rg_get_packet_from_ctx(const VkrRgPassContext *ctx) {
   if (!ctx || !ctx->graph) {
     return NULL;
@@ -175,7 +182,8 @@ vkr_rg_pass_get_skybox_payload(const VkrRgPassContext *ctx) {
   return packet ? packet->skybox : NULL;
 }
 
-const VkrUiPassPayload *vkr_rg_pass_get_ui_payload(const VkrRgPassContext *ctx) {
+const VkrUiPassPayload *
+vkr_rg_pass_get_ui_payload(const VkrRgPassContext *ctx) {
   const VkrRenderPacket *packet = vkr_rg_get_packet_from_ctx(ctx);
   return packet ? packet->ui : NULL;
 }
@@ -235,14 +243,12 @@ bool8_t vkr_rg_get_pass_timings(const VkrRenderGraph *graph,
   return true_v;
 }
 
-void vkr_rg_log_resource_stats(const VkrRenderGraph *graph,
-                               const char *label) {
+void vkr_rg_log_resource_stats(const VkrRenderGraph *graph, const char *label) {
   if (!graph) {
     return;
   }
 
-  const char *tag =
-      (label && label[0] != '\0') ? label : "RenderGraph";
+  const char *tag = (label && label[0] != '\0') ? label : "RenderGraph";
   const VkrRenderGraphResourceStats *stats = &graph->resource_stats;
 
   log_debug("%s resources: images=%u (peak=%u), image_bytes=%llu (peak=%llu), "
@@ -402,8 +408,7 @@ vkr_rg_executor_registry_find(const VkrRgExecutorRegistry *reg, String8 name,
   }
 
   for (uint64_t i = 0; i < reg->entries.length; ++i) {
-    VkrRgPassExecutor *entry =
-        vector_get_VkrRgPassExecutor(&reg->entries, i);
+    VkrRgPassExecutor *entry = vector_get_VkrRgPassExecutor(&reg->entries, i);
     if (string8_equals(&entry->name, &name)) {
       if (out_user_data) {
         *out_user_data = entry->user_data;
@@ -485,7 +490,8 @@ void vkr_rg_destroy(VkrRenderGraph *graph) {
     if (graph->renderer && entry->targets && entry->target_count > 0) {
       for (uint32_t t = 0; t < entry->target_count; ++t) {
         if (entry->targets[t]) {
-          vkr_renderer_render_target_destroy(graph->renderer, entry->targets[t]);
+          vkr_renderer_render_target_destroy(graph->renderer,
+                                             entry->targets[t]);
         }
       }
     }
@@ -577,7 +583,7 @@ VkrRgImageHandle vkr_rg_create_image(VkrRenderGraph *graph, String8 name,
     return VKR_RG_IMAGE_HANDLE_INVALID;
   }
 
-  int32_t index = vkr_rg_find_image_index(graph, name);
+  int64_t index = vkr_rg_find_image_index(graph, name);
   if (index >= 0) {
     VkrRgImage *image = vector_get_VkrRgImage(&graph->images, (uint32_t)index);
     if (!vkr_rg_image_desc_equal(&image->desc, desc)) {
@@ -627,7 +633,7 @@ VkrRgImageHandle vkr_rg_import_image(VkrRenderGraph *graph, String8 name,
   }
   resolved_desc.flags |= VKR_RG_RESOURCE_FLAG_EXTERNAL;
 
-  int32_t index = vkr_rg_find_image_index(graph, name);
+  int64_t index = vkr_rg_find_image_index(graph, name);
   if (index >= 0) {
     VkrRgImage *image = vector_get_VkrRgImage(&graph->images, (uint32_t)index);
     if (has_desc) {
@@ -676,8 +682,7 @@ VkrRgImageHandle vkr_rg_import_swapchain(VkrRenderGraph *graph) {
 VkrRgImageHandle vkr_rg_import_depth(VkrRenderGraph *graph) {
   return vkr_rg_import_image(graph, string8_lit("swapchain_depth"), NULL,
                              VKR_RG_IMAGE_ACCESS_DEPTH_ATTACHMENT,
-                             VKR_TEXTURE_LAYOUT_UNDEFINED,
-                             NULL);
+                             VKR_TEXTURE_LAYOUT_UNDEFINED, NULL);
 }
 
 VkrRgBufferHandle vkr_rg_create_buffer(VkrRenderGraph *graph, String8 name,
@@ -687,7 +692,7 @@ VkrRgBufferHandle vkr_rg_create_buffer(VkrRenderGraph *graph, String8 name,
     return VKR_RG_BUFFER_HANDLE_INVALID;
   }
 
-  int32_t index = vkr_rg_find_buffer_index(graph, name);
+  int64_t index = vkr_rg_find_buffer_index(graph, name);
   if (index >= 0) {
     VkrRgBuffer *buffer =
         vector_get_VkrRgBuffer(&graph->buffers, (uint32_t)index);
@@ -733,7 +738,7 @@ VkrRgBufferHandle vkr_rg_import_buffer(VkrRenderGraph *graph, String8 name,
     return VKR_RG_BUFFER_HANDLE_INVALID;
   }
 
-  int32_t index = vkr_rg_find_buffer_index(graph, name);
+  int64_t index = vkr_rg_find_buffer_index(graph, name);
   if (index >= 0) {
     VkrRgBuffer *buffer =
         vector_get_VkrRgBuffer(&graph->buffers, (uint32_t)index);
@@ -803,7 +808,7 @@ VkrRgPassBuilder vkr_rg_add_pass(VkrRenderGraph *graph, VkrRgPassType type,
                             .pass_index = (uint32_t)graph->passes.length - 1};
 }
 
-static VkrRgPass *vkr_rg_builder_get_pass(VkrRgPassBuilder *pb) {
+vkr_internal VkrRgPass *vkr_rg_builder_get_pass(VkrRgPassBuilder *pb) {
   if (!pb || !pb->graph) {
     return NULL;
   }
@@ -813,8 +818,8 @@ static VkrRgPass *vkr_rg_builder_get_pass(VkrRgPassBuilder *pb) {
   return vector_get_VkrRgPass(&pb->graph->passes, pb->pass_index);
 }
 
-void vkr_rg_pass_set_execute(VkrRgPassBuilder *pb,
-                             VkrRgPassExecuteFn execute, void *user_data) {
+void vkr_rg_pass_set_execute(VkrRgPassBuilder *pb, VkrRgPassExecuteFn execute,
+                             void *user_data) {
   VkrRgPass *pass = vkr_rg_builder_get_pass(pb);
   if (!pass) {
     return;
@@ -876,10 +881,8 @@ void vkr_rg_pass_set_depth_attachment(VkrRgPassBuilder *pb,
 
   VkrRgAttachmentDesc local_desc =
       desc ? *desc : (VkrRgAttachmentDesc){.slice = VKR_RG_IMAGE_SLICE_DEFAULT};
-  pass->desc.depth_attachment =
-      (VkrRgAttachment){.image = image,
-                        .desc = local_desc,
-                        .read_only = read_only};
+  pass->desc.depth_attachment = (VkrRgAttachment){
+      .image = image, .desc = local_desc, .read_only = read_only};
   pass->desc.has_depth_attachment = true_v;
 }
 
@@ -963,6 +966,12 @@ void vkr_rg_set_present_image(VkrRenderGraph *graph, VkrRgImageHandle image) {
   if (!graph) {
     return;
   }
+
+  if (!vkr_rg_image_from_handle(graph, image)) {
+    log_error("RenderGraph set present image has invalid handle");
+    return;
+  }
+
   graph->present_image = image;
 }
 
