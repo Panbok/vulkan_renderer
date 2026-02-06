@@ -1,5 +1,85 @@
 #include "vulkan_pipeline.h"
 #include "vulkan_shaders.h"
+#include "platform/vkr_platform.h"
+
+vkr_internal const VkrDescriptorSetDesc *
+vulkan_pipeline_find_reflected_set(const VkrShaderReflection *reflection,
+                                   uint32_t set_index) {
+  if (!reflection || !reflection->sets) {
+    return NULL;
+  }
+
+  for (uint32_t i = 0; i < reflection->set_count; ++i) {
+    if (reflection->sets[i].set == set_index) {
+      return &reflection->sets[i];
+    }
+  }
+  return NULL;
+}
+
+vkr_internal void vulkan_pipeline_destroy_set_layouts(
+    VulkanBackendState *state, VkDescriptorSetLayout *layouts,
+    uint32_t layout_count) {
+  if (!state || !layouts) {
+    return;
+  }
+  for (uint32_t i = 0; i < layout_count; ++i) {
+    if (layouts[i] != VK_NULL_HANDLE) {
+      vkDestroyDescriptorSetLayout(state->device.logical_device, layouts[i],
+                                   state->allocator);
+    }
+  }
+}
+
+vkr_internal bool8_t vulkan_pipeline_build_vertex_input_from_reflection(
+    VulkanBackendState *state, const VkrShaderReflection *reflection,
+    Array_VkVertexInputBindingDescription *out_bindings,
+    Array_VkVertexInputAttributeDescription *out_attributes) {
+  if (!state || !reflection || !out_bindings || !out_attributes) {
+    return false_v;
+  }
+
+  if (reflection->vertex_binding_count > 0) {
+    *out_bindings = array_create_VkVertexInputBindingDescription(
+        &state->temp_scope, reflection->vertex_binding_count);
+    if (!out_bindings->data) {
+      log_error("Failed to allocate reflected vertex binding descriptions");
+      return false_v;
+    }
+
+    for (uint32_t i = 0; i < reflection->vertex_binding_count; ++i) {
+      array_set_VkVertexInputBindingDescription(
+          out_bindings, i,
+          (VkVertexInputBindingDescription){
+              .binding = reflection->vertex_bindings[i].binding,
+              .stride = reflection->vertex_bindings[i].stride,
+              .inputRate = reflection->vertex_bindings[i].rate,
+          });
+    }
+  }
+
+  if (reflection->vertex_attribute_count > 0) {
+    *out_attributes = array_create_VkVertexInputAttributeDescription(
+        &state->temp_scope, reflection->vertex_attribute_count);
+    if (!out_attributes->data) {
+      log_error("Failed to allocate reflected vertex attribute descriptions");
+      return false_v;
+    }
+
+    for (uint32_t i = 0; i < reflection->vertex_attribute_count; ++i) {
+      array_set_VkVertexInputAttributeDescription(
+          out_attributes, i,
+          (VkVertexInputAttributeDescription){
+              .location = reflection->vertex_attributes[i].location,
+              .binding = reflection->vertex_attributes[i].binding,
+              .format = reflection->vertex_attributes[i].format,
+              .offset = reflection->vertex_attributes[i].offset,
+          });
+    }
+  }
+
+  return true_v;
+}
 
 bool8_t vulkan_graphics_graphics_pipeline_create(
     VulkanBackendState *state, const VkrGraphicsPipelineDescription *desc,
@@ -8,11 +88,22 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   assert_log(desc != NULL, "Description is NULL");
   assert_log(out_pipeline != NULL, "Out pipeline is NULL");
 
+  bool8_t success = false_v;
+  bool8_t shader_object_created = false_v;
+  bool8_t scope_valid = false_v;
+  VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
+  VkPipeline pipeline = VK_NULL_HANDLE;
+  VkDescriptorSetLayout *reflected_set_layouts = NULL;
+  uint32_t reflected_set_layout_count = 0;
+  Array_VkVertexInputBindingDescription bindings = {0};
+  Array_VkVertexInputAttributeDescription attributes = {0};
+
   if (!vulkan_shader_object_create(state, &desc->shader_object_description,
                                    &out_pipeline->shader_object)) {
     log_fatal("Failed to create shader object");
-    return false_v;
+    goto cleanup;
   }
+  shader_object_created = true_v;
 
   // Bind the description so subsequent dereferences are valid
   out_pipeline->desc = *desc;
@@ -33,39 +124,19 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
   VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
   if (!vkr_allocator_scope_is_valid(&scope)) {
     log_error("Failed to create valid allocator scope");
-    return false_v;
+    goto cleanup;
   }
+  scope_valid = true_v;
 
-  Array_VkVertexInputBindingDescription bindings = {0};
-  if (desc->binding_count > 0) {
-    bindings = array_create_VkVertexInputBindingDescription(
-        &state->temp_scope, desc->binding_count);
-    for (uint32_t i = 0; i < desc->binding_count; i++) {
-      VkVertexInputBindingDescription binding = {
-          .binding = desc->bindings[i].binding,
-          .stride = desc->bindings[i].stride,
-          .inputRate =
-              desc->bindings[i].input_rate == VKR_VERTEX_INPUT_RATE_VERTEX
-                  ? VK_VERTEX_INPUT_RATE_VERTEX
-                  : VK_VERTEX_INPUT_RATE_INSTANCE,
-      };
-      array_set_VkVertexInputBindingDescription(&bindings, i, binding);
-    }
+  if (!out_pipeline->shader_object.has_reflection) {
+    log_error("Shader object is missing reflection data");
+    goto cleanup;
   }
+  const VkrShaderReflection *reflection = &out_pipeline->shader_object.reflection;
 
-  Array_VkVertexInputAttributeDescription attributes = {0};
-  if (desc->attribute_count > 0) {
-    attributes = array_create_VkVertexInputAttributeDescription(
-        &state->temp_scope, desc->attribute_count);
-    for (uint32_t i = 0; i < desc->attribute_count; i++) {
-      VkVertexInputAttributeDescription attribute = {
-          .location = desc->attributes[i].location,
-          .binding = desc->attributes[i].binding,
-          .format = vulkan_vertex_format_to_vk(desc->attributes[i].format),
-          .offset = desc->attributes[i].offset,
-      };
-      array_set_VkVertexInputAttributeDescription(&attributes, i, attribute);
-    }
+  if (!vulkan_pipeline_build_vertex_input_from_reflection(
+          state, reflection, &bindings, &attributes)) {
+    goto cleanup;
   }
 
   VkPipelineVertexInputStateCreateInfo vertex_input_state = {
@@ -84,19 +155,6 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
 
   float32_t viewport_width = (float32_t)state->swapchain.extent.width;
   float32_t viewport_height = (float32_t)state->swapchain.extent.height;
-  if (desc->renderpass) {
-    struct s_RenderPass *named_pass = (struct s_RenderPass *)desc->renderpass;
-    if (named_pass->vk) {
-      if (named_pass->vk->width > 0 && named_pass->vk->height > 0) {
-        viewport_width = named_pass->vk->width;
-        viewport_height = named_pass->vk->height;
-      } else {
-        log_warn(
-            "Invalid render pass dimensions (%f x %f), using swapchain extent",
-            named_pass->vk->width, named_pass->vk->height);
-      }
-    }
-  }
 
   VkViewport viewport = {
       .x = 0.0f,
@@ -240,45 +298,104 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
                           : &color_blend_attachment_state,
   };
 
-  VkPushConstantRange push_constant = {0};
-  if (desc->shader_object_description.push_constant_size > 0) {
-    push_constant = (VkPushConstantRange){
-        .stageFlags = VK_SHADER_STAGE_VERTEX_BIT,
-        .offset = 0,
-        .size = (uint32_t)desc->shader_object_description.push_constant_size,
-    };
+  VkPushConstantRange *push_constant_ranges = NULL;
+  if (reflection->push_constant_range_count > 0) {
+    push_constant_ranges = vkr_allocator_alloc(
+        &state->temp_scope,
+        sizeof(VkPushConstantRange) *
+            (uint64_t)reflection->push_constant_range_count,
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!push_constant_ranges) {
+      log_error("Failed to allocate reflected push constant ranges");
+      goto cleanup;
+    }
+
+    for (uint32_t i = 0; i < reflection->push_constant_range_count; ++i) {
+      push_constant_ranges[i] = (VkPushConstantRange){
+          .stageFlags = reflection->push_constant_ranges[i].stages,
+          .offset = reflection->push_constant_ranges[i].offset,
+          .size = reflection->push_constant_ranges[i].size,
+      };
+    }
   }
 
-  const bool8_t has_instance_descriptors =
-      out_pipeline->shader_object.instance_ubo_stride > 0 ||
-      out_pipeline->shader_object.instance_texture_count > 0;
-  VkDescriptorSetLayout set_layouts[2] = {
-      out_pipeline->shader_object.global_descriptor_set_layout,
-      out_pipeline->shader_object.instance_descriptor_set_layout,
-  };
-  uint32_t set_layout_count = has_instance_descriptors ? 2u : 1u;
+  reflected_set_layout_count = reflection->layout_set_count;
+  if (reflected_set_layout_count > 0) {
+    reflected_set_layouts = vkr_allocator_alloc(
+        &state->temp_scope,
+        sizeof(VkDescriptorSetLayout) * (uint64_t)reflected_set_layout_count,
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!reflected_set_layouts) {
+      log_error("Failed to allocate reflected descriptor set layouts");
+      goto cleanup;
+    }
+    MemZero(reflected_set_layouts,
+            sizeof(VkDescriptorSetLayout) * (uint64_t)reflected_set_layout_count);
+
+    for (uint32_t set_index = 0; set_index < reflected_set_layout_count;
+         ++set_index) {
+      const VkrDescriptorSetDesc *set_desc =
+          vulkan_pipeline_find_reflected_set(reflection, set_index);
+      uint32_t binding_count = 0;
+      VkDescriptorSetLayoutBinding *layout_bindings = NULL;
+      if (set_desc) {
+        binding_count = set_desc->binding_count;
+        if (binding_count > 0) {
+          layout_bindings = vkr_allocator_alloc(
+              &state->temp_scope,
+              sizeof(VkDescriptorSetLayoutBinding) * (uint64_t)binding_count,
+              VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+          if (!layout_bindings) {
+            log_error("Failed to allocate reflected set bindings for set %u",
+                      set_index);
+            goto cleanup;
+          }
+          for (uint32_t binding_index = 0; binding_index < binding_count;
+               ++binding_index) {
+            const VkrDescriptorBindingDesc *binding_desc =
+                &set_desc->bindings[binding_index];
+            layout_bindings[binding_index] = (VkDescriptorSetLayoutBinding){
+                .binding = binding_desc->binding,
+                .descriptorType = binding_desc->type,
+                .descriptorCount = binding_desc->count,
+                .stageFlags = binding_desc->stages,
+                .pImmutableSamplers = NULL,
+            };
+          }
+        }
+      }
+
+      const VkDescriptorSetLayoutCreateInfo set_layout_info = {
+          .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+          .bindingCount = binding_count,
+          .pBindings = layout_bindings,
+      };
+      if (vkCreateDescriptorSetLayout(state->device.logical_device,
+                                      &set_layout_info, state->allocator,
+                                      &reflected_set_layouts[set_index]) !=
+          VK_SUCCESS) {
+        log_error("Failed to create reflected descriptor set layout for set %u",
+                  set_index);
+        goto cleanup;
+      }
+    }
+  }
 
   VkPipelineLayoutCreateInfo pipeline_layout_info = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-      .setLayoutCount = set_layout_count,
-      .pSetLayouts = set_layouts,
-      .pushConstantRangeCount =
-          (desc->shader_object_description.push_constant_size > 0) ? 1u : 0u,
-      .pPushConstantRanges =
-          (desc->shader_object_description.push_constant_size > 0)
-              ? &push_constant
-              : NULL,
+      .setLayoutCount = reflected_set_layout_count,
+      .pSetLayouts = reflected_set_layouts,
+      .pushConstantRangeCount = reflection->push_constant_range_count,
+      .pPushConstantRanges = push_constant_ranges,
   };
 
-  VkPipelineLayout pipeline_layout;
   if (vkCreatePipelineLayout(state->device.logical_device,
                              &pipeline_layout_info, state->allocator,
                              &pipeline_layout) != VK_SUCCESS) {
     log_fatal("Failed to create pipeline layout");
-    return false_v;
+    goto cleanup;
   }
-
-  out_pipeline->pipeline_layout = pipeline_layout;
+  out_pipeline->pipeline_layout = VK_NULL_HANDLE;
 
   VkPipelineShaderStageCreateInfo shader_stages[] = {
       out_pipeline->shader_object.stages[VKR_SHADER_STAGE_VERTEX],
@@ -292,8 +409,18 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
       render_pass = named_pass->vk;
     } else {
       log_error("Render pass is not initialized");
-      return false_v;
+      goto cleanup;
     }
+  }
+
+  // Derive multisample state from render pass signature
+  if (render_pass && render_pass->signature.color_attachment_count > 0) {
+    multisample_state.rasterizationSamples =
+        (VkSampleCountFlagBits)render_pass->signature.color_samples[0];
+  } else if (render_pass && render_pass->signature.has_depth_stencil) {
+    // Depth-only pass: use depth/stencil sample count
+    multisample_state.rasterizationSamples =
+        (VkSampleCountFlagBits)render_pass->signature.depth_stencil_samples;
   }
 
   VkGraphicsPipelineCreateInfo pipeline_info = {
@@ -315,31 +442,73 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
       .basePipelineIndex = -1,
   };
 
-  VkPipeline pipeline;
-  if (vkCreateGraphicsPipelines(state->device.logical_device, NULL, 1,
-                                &pipeline_info, state->allocator,
-                                &pipeline) != VK_SUCCESS) {
-    log_fatal("Failed to create graphics pipeline");
-    vkDestroyPipelineLayout(state->device.logical_device, pipeline_layout,
-                            state->allocator);
-    out_pipeline->pipeline_layout = VK_NULL_HANDLE;
-    out_pipeline->pipeline = VK_NULL_HANDLE;
-    return false_v;
+  const float64_t pipeline_create_start_time = vkr_platform_get_absolute_time();
+  const VkResult pipeline_create_result = vkCreateGraphicsPipelines(
+      state->device.logical_device, state->pipeline_cache, 1, &pipeline_info,
+      state->allocator, &pipeline);
+  const float64_t pipeline_create_ms =
+      (vkr_platform_get_absolute_time() - pipeline_create_start_time) * 1000.0;
+  if (pipeline_create_result != VK_SUCCESS) {
+    log_fatal("Failed to create graphics pipeline (VkResult=%d, %.3f ms)",
+              pipeline_create_result, pipeline_create_ms);
+    goto cleanup;
   }
+  log_info("Pipeline create time: %.3f ms (domain=%u cache=%s sets=%u attrs=%u)",
+           pipeline_create_ms, desc->domain,
+           state->pipeline_cache != VK_NULL_HANDLE ? "enabled" : "disabled",
+           reflection->layout_set_count, reflection->vertex_attribute_count);
 
   // Note: Local state is now acquired via frontend API per renderable.
 
-  if (desc->binding_count > 0) {
+  if (bindings.length > 0) {
+    array_destroy_VkVertexInputBindingDescription(&bindings);
+    bindings = (Array_VkVertexInputBindingDescription){0};
+  }
+
+  if (attributes.length > 0) {
+    array_destroy_VkVertexInputAttributeDescription(&attributes);
+    attributes = (Array_VkVertexInputAttributeDescription){0};
+  }
+
+  vulkan_pipeline_destroy_set_layouts(state, reflected_set_layouts,
+                                      reflected_set_layout_count);
+  reflected_set_layouts = NULL;
+  reflected_set_layout_count = 0;
+
+  out_pipeline->pipeline_layout = pipeline_layout;
+  out_pipeline->pipeline = pipeline;
+  success = true_v;
+
+cleanup:
+  if (bindings.length > 0) {
     array_destroy_VkVertexInputBindingDescription(&bindings);
   }
-
-  if (desc->attribute_count > 0) {
+  if (attributes.length > 0) {
     array_destroy_VkVertexInputAttributeDescription(&attributes);
   }
+  if (reflected_set_layouts) {
+    vulkan_pipeline_destroy_set_layouts(state, reflected_set_layouts,
+                                        reflected_set_layout_count);
+  }
+  if (scope_valid) {
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  }
 
-  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-
-  out_pipeline->pipeline = pipeline;
+  if (!success) {
+    if (pipeline != VK_NULL_HANDLE) {
+      vkDestroyPipeline(state->device.logical_device, pipeline, state->allocator);
+    }
+    if (pipeline_layout != VK_NULL_HANDLE) {
+      vkDestroyPipelineLayout(state->device.logical_device, pipeline_layout,
+                              state->allocator);
+    }
+    out_pipeline->pipeline = VK_NULL_HANDLE;
+    out_pipeline->pipeline_layout = VK_NULL_HANDLE;
+    if (shader_object_created) {
+      vulkan_shader_object_destroy(state, &out_pipeline->shader_object);
+    }
+    return false_v;
+  }
 
   log_debug("Created Vulkan pipeline: %p", pipeline);
 
