@@ -8,9 +8,12 @@ enable_language(C OBJC)
 elseif(WIN32)
 file(GLOB_RECURSE LIB_SOURCES src/*.c src/*.h)
 endif()
+list(APPEND LIB_SOURCES ${CMAKE_SOURCE_DIR}/vendor/spirv_reflect.c)
 
 # Create a static library
 add_library(renderer_lib STATIC ${LIB_SOURCES})
+
+target_compile_definitions(renderer_lib PUBLIC SPIRV_REFLECT_USE_SYSTEM_SPIRV_H)
 
 # Platform-specific optimization flags
 if(MSVC)
@@ -22,10 +25,24 @@ endif()
 # Find Vulkan package
 find_package(Vulkan REQUIRED)
 
+# Locate SPIR-V headers (needed by spirv_reflect.h when using system headers).
+find_path(SPIRV_HEADERS_INCLUDE_DIR
+    NAMES spirv/unified1/spirv.h
+    HINTS
+        /usr/local/include
+        /opt/homebrew/include
+        ${Vulkan_INCLUDE_DIRS}
+)
+
+if(NOT SPIRV_HEADERS_INCLUDE_DIR)
+    message(FATAL_ERROR "SPIR-V headers not found (missing spirv/unified1/spirv.h). Install SPIRV-Headers or point CMake to the include path.")
+endif()
+
 # Set include directories
 target_include_directories(renderer_lib
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src
     PUBLIC ${CMAKE_SOURCE_DIR}/vendor
+    PUBLIC ${SPIRV_HEADERS_INCLUDE_DIR}
     PRIVATE ${Vulkan_INCLUDE_DIRS}
 )
 
