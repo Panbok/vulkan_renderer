@@ -19,13 +19,14 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
                              VkImageTiling tiling, VkImageUsageFlags usage,
                              VkMemoryPropertyFlags memory_flags,
                              uint32_t mip_levels, uint32_t array_layers,
+                             VkSampleCountFlagBits samples,
                              VkImageViewType view_type,
                              VkImageAspectFlags view_aspect_flags,
                              VulkanImage *out_image) {
   assert_log(state != NULL, "State is NULL");
   assert_log(out_image != NULL, "Output image is NULL");
 
-  // todo: support configurable depth, sample count, and sharing mode.
+  // todo: support configurable depth and sharing mode.
   VkImageCreateFlags create_flags = 0;
   if (view_type == VK_IMAGE_VIEW_TYPE_CUBE) {
     if (array_layers % 6 != 0) {
@@ -50,7 +51,7 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
       .tiling = tiling,
       .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
       .usage = usage,
-      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .samples = samples,
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
   };
 
@@ -58,6 +59,7 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
   out_image->height = height;
   out_image->mip_levels = mip_levels;
   out_image->array_layers = array_layers;
+  out_image->samples = samples;
   out_image->view = VK_NULL_HANDLE;
   out_image->memory_property_flags = memory_flags;
 
@@ -278,6 +280,18 @@ bool8_t vulkan_image_transition_layout_range(
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     source_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     destination_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+  } else if (old_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL &&
+             new_layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
+    barrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    source_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    destination_stage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+  } else if (old_layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR &&
+             new_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+    barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    source_stage = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+    destination_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
   } else if (old_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL &&
              new_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -290,12 +304,30 @@ bool8_t vulkan_image_transition_layout_range(
     barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     destination_stage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+  } else if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED &&
+             new_layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) {
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    destination_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
   } else if (old_layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL &&
              new_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
     barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     source_stage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     destination_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  } else if (old_layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL &&
+             new_layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL) {
+    barrier.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    source_stage = VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    destination_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  } else if (old_layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL &&
+             new_layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
+    barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    barrier.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    source_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    destination_stage = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
   } else if (old_layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
              new_layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) {
     barrier.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
