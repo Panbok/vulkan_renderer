@@ -89,6 +89,7 @@ typedef struct VkrShaderStageModuleDesc {
 
 typedef struct VkrSpirvReflectionCreateInfo {
   VkrAllocator *allocator;
+  VkrAllocator *temp_allocator;
   String8 program_name;
   VkrVertexAbiProfile vertex_abi_profile;
   uint32_t module_count;
@@ -100,7 +101,8 @@ typedef struct VkrDescriptorBindingDesc {
   uint32_t binding;
   VkDescriptorType type;
   uint32_t count;
-  uint32_t byte_size; // Buffer descriptor block size in bytes; 0 for non-buffers.
+  uint32_t
+      byte_size; // Buffer descriptor block size in bytes; 0 for non-buffers.
   VkShaderStageFlags stages;
   String8 name;
 } VkrDescriptorBindingDesc;
@@ -411,8 +413,8 @@ typedef struct VulkanShaderObject {
   VkDescriptorPool
       instance_descriptor_pools[VULKAN_SHADER_OBJECT_MAX_INSTANCE_POOLS];
   uint32_t instance_descriptor_pool_count;
-  uint32_t
-      instance_pool_instance_capacities[VULKAN_SHADER_OBJECT_MAX_INSTANCE_POOLS];
+  uint32_t instance_pool_instance_capacities
+      [VULKAN_SHADER_OBJECT_MAX_INSTANCE_POOLS];
   uint32_t instance_pool_fallback_allocations;
   uint32_t instance_pool_overflow_creations;
   VkDescriptorSetLayout instance_descriptor_set_layout;
@@ -449,8 +451,7 @@ struct s_TextureHandle {
 };
 
 // Max attachments: colors + depth/stencil + resolves
-#define VKR_RENDER_TARGET_MAX_ATTACHMENTS \
-  (VKR_MAX_COLOR_ATTACHMENTS * 2 + 1)
+#define VKR_RENDER_TARGET_MAX_ATTACHMENTS (VKR_MAX_COLOR_ATTACHMENTS * 2 + 1)
 
 struct s_RenderPass {
   VulkanRenderPass *vk;
@@ -472,7 +473,8 @@ struct s_RenderTarget {
   VkImageView attachment_views[VKR_RENDER_TARGET_MAX_ATTACHMENTS];
   bool8_t attachment_view_owned[VKR_RENDER_TARGET_MAX_ATTACHMENTS];
 #ifndef NDEBUG
-  // Captured texture generations at render target creation for liveness validation
+  // Captured texture generations at render target creation for liveness
+  // validation
   uint32_t attachment_generations[VKR_RENDER_TARGET_MAX_ATTACHMENTS];
 #endif
 };
@@ -539,7 +541,7 @@ typedef struct VkrDeferredDestroyEntry {
     VkBuffer buffer;
     void *wrapper; // For TEXTURE_WRAPPER, BUFFER_WRAPPER, RENDER_TARGET_WRAPPER
   } payload;
-  VkDeviceMemory memory; // Optional memory to free (for images/buffers)
+  VkDeviceMemory memory;    // Optional memory to free (for images/buffers)
   VkrAllocator *pool_alloc; // Allocator to return wrapper to (if applicable)
   uint64_t wrapper_size;    // Size of wrapper struct (for pool free)
 } VkrDeferredDestroyEntry;
@@ -682,7 +684,7 @@ typedef struct VulkanBackendState {
   struct s_TextureHandle **swapchain_image_textures;
   struct s_TextureHandle *depth_texture;
   struct s_TextureHandle
-      *default_2d_texture; // Fallback for empty sampler slots
+      *default_2d_texture;                // Fallback for empty sampler slots
   struct s_BufferHandle *instance_buffer; // Per-frame instance data buffer
 
   void (*on_render_target_refresh_required)();
