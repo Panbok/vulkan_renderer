@@ -20,6 +20,7 @@
 #include "filesystem_test.h"
 #include "pool_test.h"
 #include "quat_test.h"
+#include "reflection_pipeline_test.h"
 #include "queue_test.h"
 #include "simd_test.h"
 #include "string_test.h"

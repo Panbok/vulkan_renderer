@@ -59,6 +59,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_filesystem_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_reflection_pipeline_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_hashtable_tests();
   printf("\n"); // Add spacing
   all_passed &= run_freelist_tests();
