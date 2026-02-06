@@ -3,40 +3,20 @@
 #include "defines.h"
 #include "vulkan_types.h"
 
-bool8_t vulkan_renderpass_create(VulkanBackendState *state,
-                                 VulkanRenderPass *out_render_pass,
-                                 Vec2 position, Vec4 color, float32_t w,
-                                 float32_t h, float32_t depth,
-                                 uint32_t stencil);
-bool8_t vulkan_renderpass_create_from_config(
-    VulkanBackendState *state, const VkrRenderPassConfig *cfg,
-    VulkanRenderPass *out_render_pass);
-
-bool8_t vulkan_renderpass_create_for_domain(VulkanBackendState *state,
-                                            VkrPipelineDomain domain,
-                                            VulkanRenderPass *out_render_pass);
-
-bool8_t vulkan_renderpass_create_world(VulkanBackendState *state,
-                                       VulkanRenderPass *out_render_pass);
-
-bool8_t vulkan_renderpass_create_ui(VulkanBackendState *state,
-                                    VulkanRenderPass *out_render_pass);
-
-bool8_t vulkan_renderpass_create_shadow(VulkanBackendState *state,
-                                        VulkanRenderPass *out_render_pass);
-
-bool8_t vulkan_renderpass_create_post(VulkanBackendState *state,
-                                      VulkanRenderPass *out_render_pass);
-
-bool8_t vulkan_renderpass_create_picking(VulkanBackendState *state,
-                                         VulkanRenderPass *out_render_pass);
+/**
+ * @brief Create a render pass from an explicit descriptor.
+ *
+ * Creates a render pass with full control over attachment configuration
+ * including load/store operations, layouts, and MSAA resolve attachments.
+ *
+ * @param state Vulkan backend state
+ * @param desc Render pass descriptor
+ * @param out_render_pass Output render pass object
+ * @return true on success, false on failure
+ */
+bool8_t vulkan_renderpass_create_from_desc(VulkanBackendState *state,
+                                           const VkrRenderPassDesc *desc,
+                                           VulkanRenderPass *out_render_pass);
 
 void vulkan_renderpass_destroy(VulkanBackendState *state,
                                VulkanRenderPass *render_pass);
-
-bool8_t vulkan_renderpass_begin(VulkanCommandBuffer *command_buffer,
-                                VulkanRenderPass *render_pass,
-                                VkFramebuffer framebuffer);
-
-bool8_t vulkan_renderpass_end(VulkanCommandBuffer *command_buffer,
-                              VulkanBackendState *state);
