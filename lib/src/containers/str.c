@@ -13,7 +13,13 @@ String8 string8_create(uint8_t *data, uint64_t length) {
 
 String8 string8_create_from_cstr(const uint8_t *data, uint64_t length) {
   assert(data != NULL && "Data is NULL");
-  assert(length > 0 && "Length is 0");
+
+  // Empty C strings are valid inputs for parsed/runtime text; preserve
+  // pointer+length semantics instead of aborting.
+  if (length == 0) {
+    String8 empty = {(uint8_t *)data, 0};
+    return empty;
+  }
 
   // Cast away const for string literals - this is safe because we know
   // these are read-only string literals that won't be modified
