@@ -1,5 +1,6 @@
 #include "renderer/systems/vkr_mesh_manager.h"
 
+#include "containers/bitset.h"
 #include "containers/str.h"
 #include "core/logger.h"
 #include "defines.h"
@@ -163,13 +164,7 @@ vkr_internal bool8_t vkr_mesh_manager_material_uses_cutout(
     material = vkr_material_system_get_by_handle(
         material_system, material_system->default_material);
   }
-  if (!material || material->alpha_cutoff <= 0.0f) {
-    return false_v;
-  }
-
-  VkrMaterialTexture *diffuse_tex =
-      &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
-  return diffuse_tex->enabled && diffuse_tex->handle.id != 0;
+  return vkr_material_system_material_uses_cutout(material_system, material);
 }
 
 /**
@@ -373,7 +368,8 @@ vkr_internal void vkr_mesh_manager_release_submesh(VkrMeshManager *manager,
   assert_log(manager != NULL, "Manager is NULL");
   assert_log(submesh != NULL, "Submesh is NULL");
 
-  if (submesh->pipeline.id != 0) {
+  if (submesh->pipeline.id != 0 &&
+      submesh->instance_state.id != VKR_INVALID_ID) {
     VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
     vkr_pipeline_registry_release_instance_state(
         manager->pipeline_registry, submesh->pipeline, submesh->instance_state,
@@ -644,7 +640,7 @@ void vkr_mesh_manager_shutdown(VkrMeshManager *manager) {
       for (uint32_t j = 0; j < inst->submesh_state.length; ++j) {
         VkrMeshSubmeshInstanceState *state =
             array_get_VkrMeshSubmeshInstanceState(&inst->submesh_state, j);
-        if (state->instance_state.id != 0) {
+        if (state->instance_state.id != VKR_INVALID_ID) {
           VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
           vkr_pipeline_registry_release_instance_state(
               manager->pipeline_registry, state->pipeline,
@@ -784,7 +780,8 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
         .geometry = geometry,
         .material = material,
         .pipeline = VKR_PIPELINE_HANDLE_INVALID,
-        .instance_state = (VkrRendererInstanceStateHandle){0},
+        .instance_state = (VkrRendererInstanceStateHandle){
+            .id = VKR_INVALID_ID},
         .pipeline_domain =
             vkr_mesh_manager_resolve_domain(sub_desc->pipeline_domain, 0),
         .shader_override =
@@ -1478,7 +1475,8 @@ bool8_t vkr_mesh_manager_refresh_pipeline(VkrMeshManager *manager,
     return true_v;
   }
 
-  if (submesh->pipeline.id != 0) {
+  if (submesh->pipeline.id != 0 &&
+      submesh->instance_state.id != VKR_INVALID_ID) {
     VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
     vkr_pipeline_registry_release_instance_state(
         manager->pipeline_registry, submesh->pipeline, submesh->instance_state,
@@ -1941,6 +1939,7 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
 
   for (uint32_t i = 0; i < submesh_count; ++i) {
     VkrMeshSubmeshInstanceState state = {0};
+    state.instance_state.id = VKR_INVALID_ID;
     state.pipeline_dirty = true_v;
     array_set_VkrMeshSubmeshInstanceState(&inst->submesh_state, i, state);
   }
@@ -2520,7 +2519,7 @@ bool8_t vkr_mesh_manager_destroy_instance(VkrMeshManager *manager,
     for (uint32_t j = 0; j < inst->submesh_state.length; ++j) {
       VkrMeshSubmeshInstanceState *state =
           array_get_VkrMeshSubmeshInstanceState(&inst->submesh_state, j);
-      if (state->instance_state.id != 0) {
+      if (state->instance_state.id != VKR_INVALID_ID) {
         VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
         vkr_pipeline_registry_release_instance_state(
             manager->pipeline_registry, state->pipeline, state->instance_state,
@@ -2688,19 +2687,20 @@ bool8_t vkr_mesh_manager_instance_refresh_pipeline(
     return true_v;
   }
 
-  if (state->instance_state.id != 0 &&
+  if (state->instance_state.id != VKR_INVALID_ID &&
       (state->pipeline.id != desired_pipeline.id ||
        state->pipeline.generation != desired_pipeline.generation)) {
     VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
     vkr_pipeline_registry_release_instance_state(
         manager->pipeline_registry, state->pipeline, state->instance_state,
         &rel_err);
-    state->instance_state = (VkrRendererInstanceStateHandle){0};
+    state->instance_state = (VkrRendererInstanceStateHandle){
+        .id = VKR_INVALID_ID};
   }
 
-  if (state->instance_state.id == 0) {
+  if (state->instance_state.id == VKR_INVALID_ID) {
     VkrRendererError acq_err = VKR_RENDERER_ERROR_NONE;
-    VkrRendererInstanceStateHandle new_state = {0};
+    VkrRendererInstanceStateHandle new_state = {.id = VKR_INVALID_ID};
     if (!vkr_pipeline_registry_acquire_instance_state(
             manager->pipeline_registry, desired_pipeline, &new_state,
             &acq_err)) {

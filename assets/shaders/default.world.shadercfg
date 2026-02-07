@@ -9,6 +9,7 @@ stages=vertex,fragment
 stagefiles=assets/shaders/default.world.spv
 use_instance=1
 use_local=0
+vertex_abi=3d
 
 # ============================================================================
 # Vertex Attributes (tightly packed, interleaved)
@@ -85,6 +86,7 @@ uniform=vec4,1,diffuse_color      # Material diffuse color (tint)
 uniform=vec4,1,specular_color     # Material specular tint
 uniform=vec3,1,emission_color     # Material emission self-illumination
 uniform=float,1,shininess         # Material shininess/exponent
+uniform=float,1,alpha_cutoff      # Alpha cutout threshold (0 disables)
 uniform=uint32,1,texture_flags    # Bit flags: 0x1=has_diffuse, 0x2=has_specular, 0x4=has_normal
 uniform=samp,1,diffuse_texture    # Material diffuse texture (slot 0)
 uniform=samp,1,specular_texture   # Material specular map   (slot 1)
@@ -103,9 +105,12 @@ uniform=samp,1,shadow_map         # Shadow map array (all cascades)
 # Instance UBO (std140):
 #   diffuse_color: offset=0,  size=16 (vec4)
 #   specular_color: offset=16, size=16 (vec4)
-#   shininess: offset=32, size=4 (float)
-#   → ubo_size = 36 bytes  
-#   → ubo_stride = align_up(36, 256) = 256 bytes
+#   emission_color: offset=32, size=16 (vec3 + padding)
+#   shininess: offset=48, size=4 (float)
+#   alpha_cutoff: offset=52, size=4 (float)
+#   texture_flags: offset=56, size=4 (uint)
+#   → ubo_size = 64 bytes
+#   → ubo_stride = align_up(64, 256) = 256 bytes
 #   instance_texture_count = 4 (diffuse/specular/normal + shadow map array)
 #
 # Push Constants:

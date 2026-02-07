@@ -10,8 +10,8 @@
 #include "defines.h"
 #include "math/vec.h"
 #include "renderer/renderer_frontend.h"
-#include "renderer/systems/views/vkr_view_ui.h"
-#include "renderer/systems/views/vkr_view_world.h"
+#include "renderer/systems/vkr_ui_system.h"
+#include "renderer/systems/vkr_world_resources.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_gizmo_system.h"
 #include "renderer/systems/vkr_material_system.h"
@@ -258,6 +258,11 @@ vkr_internal bool8_t picking_render_submesh(
     VkrMaterial *material = vkr_material_system_get_by_handle(
         &rf->material_system, submesh->material);
     if (material) {
+      if (can_alpha_test) {
+        alpha_cutoff =
+            vkr_material_system_material_alpha_cutoff(&rf->material_system,
+                                                      material);
+      }
       VkrMaterialTexture *diffuse_tex =
           &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
       if (diffuse_tex->enabled && diffuse_tex->handle.id != 0) {
@@ -268,9 +273,6 @@ vkr_internal bool8_t picking_render_submesh(
         if (texture && texture->handle &&
             texture->description.type == VKR_TEXTURE_TYPE_2D) {
           diffuse_texture_handle = texture->handle;
-          if (can_alpha_test && material->alpha_cutoff > 0.0f) {
-            alpha_cutoff = material->alpha_cutoff;
-          }
         }
       }
     }
@@ -334,6 +336,11 @@ vkr_internal bool8_t picking_render_instance_submesh(
     VkrMaterial *material = vkr_material_system_get_by_handle(
         &rf->material_system, submesh->material);
     if (material) {
+      if (can_alpha_test) {
+        alpha_cutoff =
+            vkr_material_system_material_alpha_cutoff(&rf->material_system,
+                                                      material);
+      }
       VkrMaterialTexture *diffuse_tex =
           &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
       if (diffuse_tex->enabled && diffuse_tex->handle.id != 0) {
@@ -342,9 +349,6 @@ vkr_internal bool8_t picking_render_instance_submesh(
         if (texture && texture->handle &&
             texture->description.type == VKR_TEXTURE_TYPE_2D) {
           diffuse_texture_handle = texture->handle;
-          if (can_alpha_test && material->alpha_cutoff > 0.0f) {
-            alpha_cutoff = material->alpha_cutoff;
-          }
         }
       }
     }
@@ -899,7 +903,7 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
     VkrAllocator *temp_alloc = &rf->allocator;
     temp_scope = vkr_allocator_begin_scope(temp_alloc);
     if (vkr_allocator_scope_is_valid(&temp_scope)) {
-      // Count legacy mesh submeshes
+      // Count mesh-slot submeshes
       for (uint32_t mesh_index = 0; mesh_index < mesh_count; mesh_index++) {
         VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(
             mesh_manager, mesh_index, NULL);
@@ -959,22 +963,20 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
         continue;
       }
 
-      bool8_t uses_cutout = false_v;
-
+      bool8_t requires_blend = false_v;
+      VkrMaterial *material = NULL;
       if (submesh->material.id != 0) {
-        VkrMaterial *material = vkr_material_system_get_by_handle(
-            &rf->material_system, submesh->material);
-        if (material) {
-          VkrMaterialTexture *diffuse_tex =
-              &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
-          if (material->alpha_cutoff > 0.0f && diffuse_tex->enabled &&
-              diffuse_tex->handle.id != 0) {
-            uses_cutout = true_v;
-          }
-        }
+        material = vkr_material_system_get_by_handle(&rf->material_system,
+                                                     submesh->material);
       }
+      if (!material && rf->material_system.default_material.id != 0) {
+        material = vkr_material_system_get_by_handle(
+            &rf->material_system, rf->material_system.default_material);
+      }
+      requires_blend = vkr_material_system_material_has_transparency(
+          &rf->material_system, material);
 
-      if (has_transparent_pipeline && uses_cutout && transparent_entries &&
+      if (has_transparent_pipeline && requires_blend && transparent_entries &&
           transparent_count < max_transparent_entries) {
         Vec3 mesh_pos = vec3_new(model.elements[12], model.elements[13],
                                  model.elements[14]);
@@ -1023,21 +1025,20 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
          submesh_idx++) {
       VkrMeshAssetSubmesh *submesh = &asset->submeshes.data[submesh_idx];
 
-      bool8_t uses_cutout = false_v;
+      bool8_t requires_blend = false_v;
+      VkrMaterial *material = NULL;
       if (submesh->material.id != 0) {
-        VkrMaterial *material = vkr_material_system_get_by_handle(
-            &rf->material_system, submesh->material);
-        if (material) {
-          VkrMaterialTexture *diffuse_tex =
-              &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
-          if (material->alpha_cutoff > 0.0f && diffuse_tex->enabled &&
-              diffuse_tex->handle.id != 0) {
-            uses_cutout = true_v;
-          }
-        }
+        material = vkr_material_system_get_by_handle(&rf->material_system,
+                                                     submesh->material);
       }
+      if (!material && rf->material_system.default_material.id != 0) {
+        material = vkr_material_system_get_by_handle(
+            &rf->material_system, rf->material_system.default_material);
+      }
+      requires_blend = vkr_material_system_material_has_transparency(
+          &rf->material_system, material);
 
-      if (has_transparent_pipeline && uses_cutout && transparent_entries &&
+      if (has_transparent_pipeline && requires_blend && transparent_entries &&
           transparent_count < max_transparent_entries) {
         Vec3 mesh_pos = vec3_new(model.elements[12], model.elements[13],
                                  model.elements[14]);
@@ -1145,6 +1146,20 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
 
+  if (ctx->picking_text_pipeline.id != 0 &&
+      ctx->picking_world_text_pipeline.id != 0) {
+    // Draw WORLD picking text before gizmos so gizmos can override it.
+    if (rf->world_resources.initialized) {
+      vkr_world_resources_render_picking_text(
+          rf, &rf->world_resources, ctx->picking_world_text_pipeline);
+    }
+  }
+
+  // Render light gizmos before gizmo overlay so handles remain topmost.
+  if (rf->active_scene) {
+    vkr_picking_render_light_gizmos(rf, ctx, rf->active_scene);
+  }
+
   if (rf->gizmo_system.initialized && rf->gizmo_system.visible &&
       ctx->picking_overlay_pipeline.id != 0) {
     if (ctx->shader_config.instance_texture_count > 0 &&
@@ -1158,34 +1173,33 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
     }
 
     if (ctx->mesh_overlay_instance_state.id != VKR_INVALID_ID) {
-      VkrRendererError overlay_bind_err = VKR_RENDERER_ERROR_NONE;
-      vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry,
-                                          ctx->picking_overlay_pipeline,
-                                          &overlay_bind_err);
-      if (overlay_bind_err == VKR_RENDERER_ERROR_NONE) {
-        vkr_material_system_apply_global(&rf->material_system, &rf->globals,
-                                         VKR_PIPELINE_DOMAIN_PICKING);
-        vkr_shader_system_bind_instance(&rf->shader_system,
-                                        ctx->mesh_overlay_instance_state.id);
+      if (vkr_shader_system_use(&rf->shader_system, "shader.picking")) {
+        VkrRendererError overlay_bind_err = VKR_RENDERER_ERROR_NONE;
+        vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry,
+                                            ctx->picking_overlay_pipeline,
+                                            &overlay_bind_err);
+        if (overlay_bind_err == VKR_RENDERER_ERROR_NONE) {
+          vkr_material_system_apply_global(&rf->material_system, &rf->globals,
+                                           VKR_PIPELINE_DOMAIN_PICKING);
+          vkr_shader_system_bind_instance(&rf->shader_system,
+                                          ctx->mesh_overlay_instance_state.id);
 
-        VkrCamera *camera = vkr_camera_registry_get_by_handle(
-            &rf->camera_system, rf->active_camera);
-        vkr_gizmo_system_render_picking(&rf->gizmo_system, rf, camera,
-                                        ctx->height);
+          VkrCamera *camera = vkr_camera_registry_get_by_handle(
+              &rf->camera_system, rf->active_camera);
+          vkr_gizmo_system_render_picking(&rf->gizmo_system, rf, camera,
+                                          ctx->height);
+        }
       }
     }
   }
 
-  // Render light gizmos for picking (uses active scene from frontend)
-  if (rf->active_scene) {
-    vkr_picking_render_light_gizmos(rf, ctx, rf->active_scene);
-  }
-
   if (ctx->picking_text_pipeline.id != 0 &&
       ctx->picking_world_text_pipeline.id != 0) {
-    // Draw WORLD picking text first (depth-tested), then UI picking text last.
-    vkr_view_world_render_picking_text(rf, ctx->picking_world_text_pipeline);
-    vkr_view_ui_render_picking_text(rf, ctx->picking_text_pipeline);
+    // UI picking text should always render last.
+    if (rf->ui_system.initialized) {
+      vkr_ui_system_render_picking_text(rf, &rf->ui_system,
+                                        ctx->picking_text_pipeline);
+    }
   }
 
   VkrRendererError end_err = vkr_renderer_end_render_pass(rf);
@@ -1423,6 +1437,38 @@ void vkr_picking_render_light_gizmos(struct s_RendererFrontend *renderer,
     return;
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
+  if (!vkr_shader_system_use(&rf->shader_system, "shader.picking")) {
+    return;
+  }
+
+  VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry,
+                                           ctx->picking_pipeline, &bind_err)) {
+    return;
+  }
+
+  if (ctx->shader_config.instance_texture_count > 0 &&
+      ctx->mesh_instance_state.id == VKR_INVALID_ID) {
+    VkrRendererError instance_err = VKR_RENDERER_ERROR_NONE;
+    (void)vkr_pipeline_registry_acquire_instance_state(
+        &rf->pipeline_registry, ctx->picking_pipeline,
+        &ctx->mesh_instance_state, &instance_err);
+  }
+
+  if (ctx->mesh_instance_state.id == VKR_INVALID_ID) {
+    return;
+  }
+
+  vkr_material_system_apply_global(&rf->material_system, &rf->globals,
+                                   VKR_PIPELINE_DOMAIN_PICKING);
+  vkr_shader_system_bind_instance(&rf->shader_system,
+                                  ctx->mesh_instance_state.id);
+  VkrTexture *fallback_texture =
+      vkr_texture_system_get_default(&rf->texture_system);
+  if (fallback_texture && fallback_texture->handle) {
+    vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
+                                  fallback_texture->handle);
+  }
 
   // Iterate point lights with the compiled query
   LightGizmoPickingContext lctx = {

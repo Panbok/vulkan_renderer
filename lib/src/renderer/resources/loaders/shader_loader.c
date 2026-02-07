@@ -5,7 +5,6 @@
 #include "containers/str.h"
 #include "core/logger.h"
 #include "filesystem/filesystem.h"
-#include "renderer/vkr_buffer.h"
 
 // =============================================================================
 // Constants
@@ -94,139 +93,6 @@ vkr_attribute_type_size(VkrShaderAttributeType type) {
     return sizeof(uint32_t);
   default:
     return 0;
-  }
-}
-
-typedef struct VkrVertexAttributeExpectation {
-  const char *name;
-  VkrShaderAttributeType type;
-  uint32_t offset;
-} VkrVertexAttributeExpectation;
-
-vkr_internal void vkr_apply_attribute_expectations(
-    VkrShaderConfig *cfg, const VkrVertexAttributeExpectation *expectations,
-    uint32_t expectation_count, uint32_t stride) {
-  cfg->attribute_stride = stride;
-  for (uint32_t i = 0; i < expectation_count; ++i) {
-    const VkrVertexAttributeExpectation *exp = &expectations[i];
-    bool8_t found = false_v;
-    for (uint32_t j = 0; j < cfg->attribute_count; ++j) {
-      VkrShaderAttributeDesc *ad =
-          array_get_VkrShaderAttributeDesc(&cfg->attributes, j);
-      if (vkr_string8_equals_cstr(&ad->name, exp->name)) {
-        ad->location = i;
-        ad->offset = exp->offset;
-        ad->size = vkr_attribute_type_size(exp->type);
-        found = true_v;
-        break;
-      }
-    }
-    if (!found) {
-      log_warn("Shader '%s' missing vertex attribute '%s'; defaulting to zero",
-               string8_cstr(&cfg->name), exp->name);
-    }
-  }
-}
-
-vkr_internal VkrVertexType
-vkr_shader_config_detect_vertex_type(const VkrShaderConfig *cfg) {
-  if (cfg->renderpass_name.length > 0 &&
-      vkr_string8_equals_cstr_i(&cfg->renderpass_name,
-                                "Renderpass.Builtin.UI")) {
-    return VKR_VERTEX_TYPE_2D;
-  }
-
-  for (uint32_t i = 0; i < cfg->attribute_count; ++i) {
-    const VkrShaderAttributeDesc *ad =
-        array_get_VkrShaderAttributeDesc(&cfg->attributes, i);
-    if (vkr_string8_equals_cstr_i(&ad->name, "in_position") &&
-        (ad->type == SHADER_ATTRIBUTE_TYPE_VEC3 ||
-         ad->type == SHADER_ATTRIBUTE_TYPE_VEC4)) {
-      return VKR_VERTEX_TYPE_3D;
-    }
-    if (ad->name.str && vkr_string8_equals_cstr_i(&ad->name, "in_normal")) {
-      return VKR_VERTEX_TYPE_3D;
-    }
-  }
-
-  return VKR_VERTEX_TYPE_2D;
-}
-
-vkr_internal void vkr_compute_attribute_layout(VkrShaderConfig *cfg) {
-  cfg->vertex_type = vkr_shader_config_detect_vertex_type(cfg);
-
-  if (cfg->vertex_type == VKR_VERTEX_TYPE_3D) {
-    static const VkrVertexAttributeExpectation expectations[] = {
-        {"in_position", SHADER_ATTRIBUTE_TYPE_VEC3,
-         (uint32_t)offsetof(VkrVertex3d, position)},
-        {"in_normal", SHADER_ATTRIBUTE_TYPE_VEC3,
-         (uint32_t)offsetof(VkrVertex3d, normal)},
-        {"in_texcoord", SHADER_ATTRIBUTE_TYPE_VEC2,
-         (uint32_t)offsetof(VkrVertex3d, texcoord)},
-        {"in_color", SHADER_ATTRIBUTE_TYPE_VEC4,
-         (uint32_t)offsetof(VkrVertex3d, colour)},
-        {"in_tangent", SHADER_ATTRIBUTE_TYPE_VEC4,
-         (uint32_t)offsetof(VkrVertex3d, tangent)},
-    };
-    cfg->attribute_stride = sizeof(VkrVertex3d);
-    for (uint32_t i = 0; i < ArrayCount(expectations); ++i) {
-      const VkrVertexAttributeExpectation *exp = &expectations[i];
-      bool8_t found = false_v;
-      for (uint32_t j = 0; j < cfg->attribute_count; ++j) {
-        VkrShaderAttributeDesc *ad =
-            array_get_VkrShaderAttributeDesc(&cfg->attributes, j);
-        if (vkr_string8_equals_cstr(&ad->name, exp->name)) {
-          ad->location = i;
-          ad->offset = exp->offset;
-          ad->size = vkr_attribute_type_size(exp->type);
-          found = true_v;
-          break;
-        }
-      }
-      if (!found) {
-        // Some pipelines intentionally only declare a subset of the canonical
-        // 3D vertex attributes (for example, shadow depth-only passes). The
-        // shader config is the source of truth for which attributes are bound.
-        if (string_equals(exp->name, "in_position")) {
-          log_warn("Shader '%s' missing required vertex attribute '%s'",
-                   string8_cstr(&cfg->name), exp->name);
-        }
-      }
-    }
-  } else {
-    bool8_t has_color = false_v;
-    for (uint32_t j = 0; j < cfg->attribute_count; ++j) {
-      VkrShaderAttributeDesc *ad =
-          array_get_VkrShaderAttributeDesc(&cfg->attributes, j);
-      if (vkr_string8_equals_cstr(&ad->name, "in_color")) {
-        has_color = true_v;
-        break;
-      }
-    }
-
-    if (has_color) {
-      static const VkrVertexAttributeExpectation expectations[] = {
-          {"in_position", SHADER_ATTRIBUTE_TYPE_VEC2,
-           (uint32_t)offsetof(VkrTextVertex, position)},
-          {"in_texcoord", SHADER_ATTRIBUTE_TYPE_VEC2,
-           (uint32_t)offsetof(VkrTextVertex, texcoord)},
-          {"in_color", SHADER_ATTRIBUTE_TYPE_VEC4,
-           (uint32_t)offsetof(VkrTextVertex, color)},
-      };
-      vkr_apply_attribute_expectations(cfg, expectations,
-                                       (uint32_t)ArrayCount(expectations),
-                                       sizeof(VkrTextVertex));
-    } else {
-      static const VkrVertexAttributeExpectation expectations[] = {
-          {"in_position", SHADER_ATTRIBUTE_TYPE_VEC2,
-           (uint32_t)offsetof(VkrVertex2d, position)},
-          {"in_texcoord", SHADER_ATTRIBUTE_TYPE_VEC2,
-           (uint32_t)offsetof(VkrVertex2d, texcoord)},
-      };
-      vkr_apply_attribute_expectations(cfg, expectations,
-                                       (uint32_t)ArrayCount(expectations),
-                                       sizeof(VkrVertex2d));
-    }
   }
 }
 
@@ -344,6 +210,25 @@ vkr_internal VkrCullMode vkr_parse_cull_mode(const String8 *cull_str) {
   if (vkr_string8_equals_cstr_i(cull_str, "front_and_back"))
     return VKR_CULL_MODE_FRONT_AND_BACK;
   return VKR_CULL_MODE_BACK; // Default
+}
+
+vkr_internal VkrVertexAbiProfile
+vkr_parse_vertex_abi_profile(const String8 *abi_str) {
+  if (vkr_string8_equals_cstr_i(abi_str, "3d")) {
+    return VKR_VERTEX_ABI_PROFILE_3D;
+  }
+  if (vkr_string8_equals_cstr_i(abi_str, "2d")) {
+    return VKR_VERTEX_ABI_PROFILE_2D;
+  }
+  if (vkr_string8_equals_cstr_i(abi_str, "text2d") ||
+      vkr_string8_equals_cstr_i(abi_str, "text_2d")) {
+    return VKR_VERTEX_ABI_PROFILE_TEXT_2D;
+  }
+  if (vkr_string8_equals_cstr_i(abi_str, "unknown") ||
+      vkr_string8_equals_cstr_i(abi_str, "none")) {
+    return VKR_VERTEX_ABI_PROFILE_UNKNOWN;
+  }
+  return VKR_VERTEX_ABI_PROFILE_UNKNOWN;
 }
 
 // =============================================================================
@@ -908,6 +793,7 @@ vkr_initialize_config(VkrAllocator *config_alloc, VkrShaderConfig *config) {
   config->cull_mode = VKR_CULL_MODE_BACK;
   config->name = (String8){0};
   config->renderpass_name = (String8){0};
+  config->vertex_abi_profile = VKR_VERTEX_ABI_PROFILE_UNKNOWN;
 
   return (VkrShaderConfigParseResult){.is_valid = true_v};
 }
@@ -1035,6 +921,21 @@ vkr_internal VkrShaderConfigParseResult vkr_shader_loader_parse(
     } else if (vkr_string8_equals_cstr_i(&key, "renderpass")) {
       out_config->renderpass_name = string8_duplicate(parser.allocator, &value);
       has_renderpass = true_v;
+    } else if (vkr_string8_equals_cstr_i(&key, "vertex_abi")) {
+      out_config->vertex_abi_profile = vkr_parse_vertex_abi_profile(&value);
+      if (out_config->vertex_abi_profile == VKR_VERTEX_ABI_PROFILE_UNKNOWN) {
+        line_result = vkr_create_parse_error(
+            parser.allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
+            parser.line_number, 0,
+            "Invalid vertex_abi value '%.*s' (expected 3d, 2d, text2d)",
+            (int)value.length, (const char *)value.str);
+      }
+    } else if (vkr_string8_equals_cstr_i(&key, "metadata_path") ||
+               vkr_string8_equals_cstr_i(&key, "metadata")) {
+      line_result = vkr_create_parse_error(
+          parser.allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
+          parser.line_number, 0,
+          "metadata_path/metadata is no longer supported; remove this key");
     } else if (vkr_string8_equals_cstr_i(&key, "stages")) {
       line_result = vkr_parse_stages_line(&parser, &value, out_config);
       if (line_result.is_valid) {
@@ -1083,15 +984,8 @@ vkr_internal VkrShaderConfigParseResult vkr_shader_loader_parse(
         "Missing required field(s): name and stages are both required");
   }
 
-  // Compute layouts
-  vkr_compute_attribute_layout(out_config);
-
   if (!has_renderpass) {
-    if (out_config->vertex_type == VKR_VERTEX_TYPE_2D) {
-      out_config->renderpass_name = string8_lit("Renderpass.Builtin.UI");
-    } else {
-      out_config->renderpass_name = string8_lit("Renderpass.Builtin.World");
-    }
+    out_config->renderpass_name = string8_lit("Renderpass.Builtin.World");
   }
 
   vkr_compute_uniform_layout(out_config);
@@ -1155,12 +1049,13 @@ vkr_shader_config_validate(const VkrShaderConfig *config) {
         .error_message = string8_lit("At least one shader stage is required")};
   }
 
-  if (config->vertex_type == VKR_VERTEX_TYPE_UNKNOWN) {
+  if (config->attribute_count > 0 &&
+      config->vertex_abi_profile == VKR_VERTEX_ABI_PROFILE_UNKNOWN) {
     return (VkrShaderConfigParseResult){
         .is_valid = false_v,
-        .error_type = VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
-        .error_message =
-            string8_lit("Failed to determine vertex layout for shader")};
+        .error_type = VKR_SHADER_CONFIG_ERROR_MISSING_REQUIRED_FIELD,
+        .error_message = string8_lit(
+            "vertex_abi is required when vertex attributes are declared")};
   }
 
   return (VkrShaderConfigParseResult){.is_valid = true_v};

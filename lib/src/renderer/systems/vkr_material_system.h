@@ -64,6 +64,12 @@ typedef struct VkrMaterialSystem {
   VkrMaterialHandle default_material;
 } VkrMaterialSystem;
 
+typedef enum VkrMaterialAlphaMode {
+  VKR_MATERIAL_ALPHA_OPAQUE = 0,
+  VKR_MATERIAL_ALPHA_CUTOUT = 1,
+  VKR_MATERIAL_ALPHA_BLEND = 2,
+} VkrMaterialAlphaMode;
+
 // =============================================================================
 // Initialization / Shutdown
 // =============================================================================
@@ -164,7 +170,7 @@ void vkr_material_system_add_ref(VkrMaterialSystem *system,
  * @param domain The domain to apply the global material state to
  */
 void vkr_material_system_apply_global(VkrMaterialSystem *system,
-                                      VkrGlobalMaterialState *global_state,
+                                      const VkrGlobalMaterialState *global_state,
                                       VkrPipelineDomain domain);
 
 /**
@@ -205,3 +211,27 @@ void vkr_material_system_apply_local(VkrMaterialSystem *system,
  */
 VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
                                                VkrMaterialHandle handle);
+
+/**
+ * @brief Returns whether a material should be treated as transparent.
+ *
+ * Uses diffuse alpha and texture alpha mode to decide if the material should
+ * be blended at draw time. Alpha-cutout materials are not treated as blended.
+ */
+bool8_t vkr_material_system_material_has_transparency(
+    const VkrMaterialSystem *system, const VkrMaterial *material);
+
+/**
+ * @brief Returns whether a material should use alpha cutout (discard).
+ */
+bool8_t vkr_material_system_material_uses_cutout(
+    const VkrMaterialSystem *system, const VkrMaterial *material);
+
+/**
+ * @brief Returns the effective alpha cutoff for cutout materials.
+ *
+ * When a material does not explicitly set alpha_cutoff but its diffuse texture
+ * is classified as an alpha mask, this returns VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT.
+ */
+float32_t vkr_material_system_material_alpha_cutoff(
+    const VkrMaterialSystem *system, const VkrMaterial *material);

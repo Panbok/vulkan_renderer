@@ -165,6 +165,9 @@ bool8_t vkr_pipeline_registry_acquire_by_name(VkrPipelineRegistry *registry,
                                               bool8_t auto_release,
                                               VkrPipelineHandle *out_handle,
                                               VkrRendererError *out_error);
+bool8_t vkr_pipeline_registry_find_by_name(VkrPipelineRegistry *registry,
+                                           String8 name,
+                                           VkrPipelineHandle *out_handle);
 
 /**
  * @brief Destroy a pipeline and release associated resources

@@ -1,5 +1,6 @@
 #include "vkr_shader_transform.slangh"
 #include "vkr_shader_instance.slangh"
+#include "vkr_shader_alpha_cutout.slangh"
 
 // Maximum number of point lights
 static const uint32_t MAX_POINT_LIGHTS = 16u;
@@ -55,7 +56,9 @@ struct LocalUniformObject
     float4 specular_color;
     float3 emission_color;
     float shininess;
+    float alpha_cutoff;
     uint32_t texture_flags; // 0x1=has_diffuse, 0x2=has_specular, 0x4=has_normal
+    float2 _padding;
 };
 
 static const uint32_t TEXTURE_FLAG_HAS_DIFFUSE = 0x1u;
@@ -278,6 +281,9 @@ float4 fragmentMain(VertexDto input) : SV_Target
     {
         diffuse_sample = local_ubo.diffuse_color;
     }
+
+    vkr_apply_alpha_cutout(diffuse_texture, diffuse_sampler, input.texcoord,
+                           local_ubo.alpha_cutoff);
 
     float alpha = diffuse_sample.a;
 

@@ -79,6 +79,97 @@ vkr_material_system_resolve_2d_texture(VkrMaterialSystem *system,
   return (texture && texture->handle) ? texture : NULL;
 }
 
+vkr_internal void vkr_material_system_uniform_set_optional(
+    VkrMaterialSystem *system, const char *name, const void *value) {
+  if (!system || !system->shader_system || !system->shader_system->current_shader ||
+      !name || !value) {
+    return;
+  }
+
+  if (vkr_shader_system_uniform_index(system->shader_system,
+                                      system->shader_system->current_shader,
+                                      name) == VKR_SHADER_INVALID_UNIFORM_INDEX) {
+    return;
+  }
+
+  vkr_shader_system_uniform_set(system->shader_system, name, value);
+}
+
+vkr_internal VkrMaterialAlphaMode vkr_material_system_material_alpha_mode(
+    const VkrMaterialSystem *system, const VkrMaterial *material) {
+  if (!system || !system->texture_system || !material) {
+    return VKR_MATERIAL_ALPHA_OPAQUE;
+  }
+
+  if (material->phong.diffuse_color.w < 0.999f) {
+    return VKR_MATERIAL_ALPHA_BLEND;
+  }
+
+  const VkrMaterialTexture *diffuse_tex =
+      &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
+  if (!diffuse_tex->enabled || diffuse_tex->handle.id == 0) {
+    return VKR_MATERIAL_ALPHA_OPAQUE;
+  }
+
+  VkrTexture *texture =
+      vkr_texture_system_get_by_handle(system->texture_system,
+                                       diffuse_tex->handle);
+  if (!texture) {
+    return VKR_MATERIAL_ALPHA_OPAQUE;
+  }
+
+  if (!bitset8_is_set(&texture->description.properties,
+                      VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT)) {
+    return VKR_MATERIAL_ALPHA_OPAQUE;
+  }
+
+  if (material->alpha_cutoff <= 0.0f) {
+    return VKR_MATERIAL_ALPHA_OPAQUE;
+  }
+
+  if (bitset8_is_set(&texture->description.properties,
+                     VKR_TEXTURE_PROPERTY_ALPHA_MASK_BIT)) {
+    return VKR_MATERIAL_ALPHA_CUTOUT;
+  }
+
+  return VKR_MATERIAL_ALPHA_BLEND;
+}
+
+bool8_t vkr_material_system_material_has_transparency(
+    const VkrMaterialSystem *system, const VkrMaterial *material) {
+  return vkr_material_system_material_alpha_mode(system, material) ==
+                 VKR_MATERIAL_ALPHA_BLEND
+             ? true_v
+             : false_v;
+}
+
+bool8_t vkr_material_system_material_uses_cutout(
+    const VkrMaterialSystem *system, const VkrMaterial *material) {
+  return vkr_material_system_material_alpha_mode(system, material) ==
+                 VKR_MATERIAL_ALPHA_CUTOUT
+             ? true_v
+             : false_v;
+}
+
+float32_t vkr_material_system_material_alpha_cutoff(
+    const VkrMaterialSystem *system, const VkrMaterial *material) {
+  if (!system || !material) {
+    return 0.0f;
+  }
+
+  if (vkr_material_system_material_alpha_mode(system, material) !=
+      VKR_MATERIAL_ALPHA_CUTOUT) {
+    return 0.0f;
+  }
+
+  if (material->alpha_cutoff > 0.0f) {
+    return material->alpha_cutoff;
+  }
+
+  return VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT;
+
+}
+
 vkr_internal bool8_t
 vkr_material_system_find_by_name(VkrMaterialSystem *system, const char *name,
                                  VkrMaterialHandle *out_handle) {
@@ -472,10 +563,15 @@ void vkr_material_system_add_ref(VkrMaterialSystem *system,
 }
 
 void vkr_material_system_apply_global(VkrMaterialSystem *system,
-                                      VkrGlobalMaterialState *global_state,
+                                      const VkrGlobalMaterialState *global_state,
                                       VkrPipelineDomain domain) {
   assert_log(system != NULL, "System is NULL");
   assert_log(global_state != NULL, "Global state is NULL");
+
+  bool8_t world_globals =
+      (domain == VKR_PIPELINE_DOMAIN_WORLD) ||
+      (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT) ||
+      (domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY);
 
   if (domain == VKR_PIPELINE_DOMAIN_UI) {
     vkr_shader_system_uniform_set(system->shader_system, "view",
@@ -488,12 +584,14 @@ void vkr_material_system_apply_global(VkrMaterialSystem *system,
                                   &global_state->view);
     vkr_shader_system_uniform_set(system->shader_system, "projection",
                                   &global_state->projection);
-    vkr_shader_system_uniform_set(system->shader_system, "ambient_color",
-                                  &global_state->ambient_color);
-    vkr_shader_system_uniform_set(system->shader_system, "view_position",
-                                  &global_state->view_position);
-    vkr_shader_system_uniform_set(system->shader_system, "render_mode",
-                                  &global_state->render_mode);
+    if (world_globals) {
+      vkr_shader_system_uniform_set(system->shader_system, "ambient_color",
+                                    &global_state->ambient_color);
+      vkr_shader_system_uniform_set(system->shader_system, "view_position",
+                                    &global_state->view_position);
+      vkr_shader_system_uniform_set(system->shader_system, "render_mode",
+                                    &global_state->render_mode);
+    }
   }
 
   vkr_shader_system_apply_global(system->shader_system);
@@ -579,6 +677,16 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
     vkr_shader_system_uniform_set(system->shader_system, "shininess",
                                   &material->phong.shininess);
 
+    if (domain == VKR_PIPELINE_DOMAIN_WORLD ||
+        domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT ||
+        domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY ||
+        domain == VKR_PIPELINE_DOMAIN_SHADOW) {
+      float32_t alpha_cutoff =
+          vkr_material_system_material_alpha_cutoff(system, material);
+      vkr_shader_system_uniform_set(system->shader_system, "alpha_cutoff",
+                                    &alpha_cutoff);
+    }
+
     // Build texture flags to tell shader which textures have real data
     // vs default placeholders. Compare against default handles.
     uint32_t texture_flags = 0;
@@ -632,8 +740,8 @@ void vkr_material_system_apply_local(VkrMaterialSystem *system,
   vkr_shader_system_uniform_set(system->shader_system, "model",
                                 &local_state->model);
   // Set object_id for picking shader (ignored by shaders that don't use it)
-  vkr_shader_system_uniform_set(system->shader_system, "object_id",
-                                &local_state->object_id);
+  vkr_material_system_uniform_set_optional(system, "object_id",
+                                           &local_state->object_id);
 }
 
 VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,

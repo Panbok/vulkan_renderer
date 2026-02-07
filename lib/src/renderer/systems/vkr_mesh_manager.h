@@ -260,7 +260,7 @@ VkrMesh *vkr_mesh_manager_get(VkrMeshManager *manager, uint32_t index);
 /**
  * @brief Get pointer to mesh by live index.
  *
- * Live index is a dense list of active legacy meshes (0..mesh_count-1).
+ * Live index is a dense list of active mesh-slot entries (0..mesh_count-1).
  *
  * @param manager The mesh manager.
  * @param live_index Index into the active mesh list.

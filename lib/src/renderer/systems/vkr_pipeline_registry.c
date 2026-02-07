@@ -175,6 +175,25 @@ bool8_t vkr_pipeline_registry_create_graphics_pipeline(
   }
   pipeline->backend_handle = backend;
 
+  VkrShaderRuntimeLayout runtime_layout = {0};
+  if (vkr_renderer_pipeline_get_shader_runtime_layout(registry->renderer, backend,
+                                                      &runtime_layout)) {
+    pipeline->description.shader_object_description.global_ubo_size =
+        runtime_layout.global_ubo_size;
+    pipeline->description.shader_object_description.global_ubo_stride =
+        runtime_layout.global_ubo_stride;
+    pipeline->description.shader_object_description.instance_ubo_size =
+        runtime_layout.instance_ubo_size;
+    pipeline->description.shader_object_description.instance_ubo_stride =
+        runtime_layout.instance_ubo_stride;
+    pipeline->description.shader_object_description.push_constant_size =
+        runtime_layout.push_constant_size;
+    pipeline->description.shader_object_description.global_texture_count =
+        runtime_layout.global_texture_count;
+    pipeline->description.shader_object_description.instance_texture_count =
+        runtime_layout.instance_texture_count;
+  }
+
   {
     Array_VkrPipelineHandle *domain_list =
         &registry->pipelines_by_domain[pipeline->domain];
@@ -282,63 +301,25 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
     return false_v;
   }
 
-  // Vertex input: derive solely from shader config
-  uint32_t attr_count = 0, binding_count = 0, stride = 0;
+  // Vertex input is reflection-driven. Keep pipeline description arrays empty.
+  uint32_t attr_count = 0;
+  uint32_t binding_count = 0;
   VkrVertexInputAttributeDescription *attrs = NULL;
   VkrVertexInputBindingDescription *bindings = NULL;
 
-  binding_count = 1;
-  stride = (uint32_t)config->attribute_stride;
-  bindings = (VkrVertexInputBindingDescription *)vkr_allocator_alloc(
-      temp_alloc, sizeof(VkrVertexInputBindingDescription),
-      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-  bindings[0] = (VkrVertexInputBindingDescription){
-      .binding = 0,
-      .stride = stride,
-      .input_rate = VKR_VERTEX_INPUT_RATE_VERTEX};
-
-  attr_count = config->attribute_count;
-  if (attr_count > 0) {
-    attrs = (VkrVertexInputAttributeDescription *)vkr_allocator_alloc(
-        temp_alloc,
-        sizeof(VkrVertexInputAttributeDescription) * (uint64_t)attr_count,
-        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    for (uint32_t i = 0; i < attr_count; i++) {
-      const VkrShaderAttributeDesc *ad =
-          array_get_VkrShaderAttributeDesc(&config->attributes, i);
-      VkrVertexFormat fmt = VKR_VERTEX_FORMAT_UNDEFINED;
-      switch (ad->type) {
-      case SHADER_ATTRIBUTE_TYPE_VEC2:
-        fmt = VKR_VERTEX_FORMAT_R32G32_SFLOAT;
-        break;
-      case SHADER_ATTRIBUTE_TYPE_VEC3:
-        fmt = VKR_VERTEX_FORMAT_R32G32B32_SFLOAT;
-        break;
-      case SHADER_ATTRIBUTE_TYPE_VEC4:
-        fmt = VKR_VERTEX_FORMAT_R32G32B32A32_SFLOAT;
-        break;
-      case SHADER_ATTRIBUTE_TYPE_INT32:
-        fmt = VKR_VERTEX_FORMAT_R32_SINT;
-        break;
-      case SHADER_ATTRIBUTE_TYPE_UINT32:
-        fmt = VKR_VERTEX_FORMAT_R32_UINT;
-        break;
-      default:
-        fmt = VKR_VERTEX_FORMAT_UNDEFINED;
-        break;
-      }
-      attrs[i] = (VkrVertexInputAttributeDescription){
-          .location = ad->location,
-          .binding = 0,
-          .format = fmt,
-          .offset = ad->offset,
-      };
-    }
+  if (config->attribute_count > 0 &&
+      config->vertex_abi_profile == VKR_VERTEX_ABI_PROFILE_UNKNOWN) {
+    log_error("Shader '%.*s' is missing required explicit vertex_abi",
+              (int)config->name.length, (const char *)config->name.str);
+    *out_error = VKR_RENDERER_ERROR_SHADER_COMPILATION_FAILED;
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    return false_v;
   }
 
   VkrShaderObjectDescription shader_desc = {
       .file_format = VKR_SHADER_FILE_FORMAT_SPIR_V,
       .file_type = VKR_SHADER_FILE_TYPE_MULTI,
+      .vertex_abi_profile = config->vertex_abi_profile,
   };
 
   // Initialize modules per stage present
@@ -415,15 +396,7 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
     return false_v;
   }
 
-  shader_desc.global_ubo_size = config->global_ubo_size;
-  shader_desc.global_ubo_stride = config->global_ubo_stride;
-  shader_desc.instance_ubo_size = config->instance_ubo_size;
-  shader_desc.instance_ubo_stride = config->instance_ubo_stride;
-  shader_desc.push_constant_size = config->push_constant_size;
-  shader_desc.global_texture_count = config->global_texture_count;
-  shader_desc.instance_texture_count = config->instance_texture_count;
-  // NOTE: global/instance texture counts are used to build descriptor layouts
-  // in the backend when present in config.
+  // Layout sizes/counts are reflection-derived in Vulkan shader-object creation.
 
   VkrRenderPassHandle renderpass = NULL;
   if (config->renderpass_name.str && config->renderpass_name.length > 0) {
@@ -488,8 +461,12 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
   {
     VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
     String8 domain_alias = string8_create_formatted(temp_alloc, "p_%u", domain);
-    vkr_pipeline_registry_alias_pipeline_name(registry, *out_handle,
-                                              domain_alias, &alias_err);
+    VkrPipelineHandle existing = VKR_PIPELINE_HANDLE_INVALID;
+    if (!vkr_pipeline_registry_find_by_name(registry, domain_alias,
+                                            &existing)) {
+      vkr_pipeline_registry_alias_pipeline_name(registry, *out_handle,
+                                                domain_alias, &alias_err);
+    }
   }
 
   vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
@@ -522,6 +499,29 @@ bool8_t vkr_pipeline_registry_acquire_by_name(VkrPipelineRegistry *registry,
   }
   found->auto_release = auto_release;
   found->ref_count++;
+  VkrPipeline *p = &registry->pipelines.data[found->id];
+  *out_handle = p->handle;
+  return true_v;
+}
+
+bool8_t vkr_pipeline_registry_find_by_name(VkrPipelineRegistry *registry,
+                                           String8 name,
+                                           VkrPipelineHandle *out_handle) {
+  assert_log(registry != NULL, "Registry is NULL");
+  assert_log(out_handle != NULL, "Out handle is NULL");
+
+  *out_handle = VKR_PIPELINE_HANDLE_INVALID;
+  if (!name.str) {
+    return false_v;
+  }
+
+  const char *key = (const char *)name.str;
+  VkrPipelineEntry *found =
+      vkr_hash_table_get_VkrPipelineEntry(&registry->pipelines_by_name, key);
+  if (!found) {
+    return false_v;
+  }
+
   VkrPipeline *p = &registry->pipelines.data[found->id];
   *out_handle = p->handle;
   return true_v;
@@ -723,6 +723,11 @@ bool8_t vkr_pipeline_registry_release_instance_state(
   assert_log(registry != NULL, "Registry is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
+  if (local_state.id == VKR_INVALID_ID) {
+    *out_error = VKR_RENDERER_ERROR_NONE;
+    return true_v;
+  }
+
   VkrPipeline *pipeline = NULL;
   if (!vkr_pipeline_registry_get_pipeline(registry, handle, &pipeline)) {
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
@@ -820,9 +825,9 @@ bool8_t vkr_pipeline_registry_get_pipeline_for_material(
   assert_log(out_error != NULL, "Out error is NULL");
   *out_error = VKR_RENDERER_ERROR_NONE;
 
-  // For now, map material_pipeline_id to domain if in range; default to WORLD
+  // Map material_pipeline_id to a pipeline domain when valid; default to WORLD.
   VkrPipelineDomain domain = VKR_PIPELINE_DOMAIN_WORLD;
-  if (material_pipeline_id <= VKR_PIPELINE_DOMAIN_COMPUTE) {
+  if (material_pipeline_id < VKR_PIPELINE_DOMAIN_COUNT) {
     domain = (VkrPipelineDomain)material_pipeline_id;
   }
 
@@ -843,20 +848,24 @@ bool8_t vkr_pipeline_registry_get_pipeline_for_material(
     name = string8_create_formatted(temp_alloc, "p_%u", domain);
   }
 
-  // Try to acquire existing
+  // Try to find shader pipeline and verify domain match
   VkrPipelineHandle found = VKR_PIPELINE_HANDLE_INVALID;
-  if (vkr_pipeline_registry_acquire_by_name(registry, name, true_v, &found,
-                                            out_error)) {
-    *out_handle = found;
-    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    return true_v;
+  if (vkr_pipeline_registry_find_by_name(registry, name, &found)) {
+    VkrPipeline *pipeline = NULL;
+    if (vkr_pipeline_registry_get_pipeline(registry, found, &pipeline) &&
+        pipeline && pipeline->domain == domain) {
+      *out_handle = found;
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      return true_v;
+    }
   }
 
-  // Fallback to domain pipeline key if shader lookup failed
+  // Fallback to domain pipeline key
   String8 fallback = string8_create_formatted(temp_alloc, "p_%u", domain);
-  if (!string8_equals(&fallback, &name)) {
-    if (vkr_pipeline_registry_acquire_by_name(registry, fallback, true_v,
-                                              &found, out_error)) {
+  if (vkr_pipeline_registry_find_by_name(registry, fallback, &found)) {
+    VkrPipeline *pipeline = NULL;
+    if (vkr_pipeline_registry_get_pipeline(registry, found, &pipeline) &&
+        pipeline && pipeline->domain == domain) {
       *out_handle = found;
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
       return true_v;

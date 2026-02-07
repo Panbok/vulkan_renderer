@@ -43,7 +43,8 @@ typedef struct VkrShaderSystem {
   uint32_t current_shader_id;
   struct VkrShader *current_shader;
   VkrPipelineRegistry *registry;
-  // Staging buffers for apply calls (dynamic allocation based on shader)
+  // Staging buffers for apply calls (dynamic allocation based on reflected
+  // runtime shader layout)
   // Runtime state for uploads
   VkrShaderStateObject instance_state;
   VkrRendererMaterialState material_state;

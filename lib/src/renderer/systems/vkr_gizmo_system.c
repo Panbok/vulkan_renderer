@@ -449,6 +449,12 @@ void vkr_gizmo_system_render_picking(VkrGizmoSystem *system,
 
   Mat4 model = vkr_gizmo_build_model(system, camera, viewport_height);
   float32_t alpha_cutoff = 0.0f;
+  VkrTexture *fallback_texture =
+      vkr_texture_system_get_default(&renderer->texture_system);
+  if (fallback_texture && fallback_texture->handle) {
+    vkr_shader_system_sampler_set(&renderer->shader_system, "diffuse_texture",
+                                  fallback_texture->handle);
+  }
   VkrInstanceBufferPool *instance_pool = &renderer->instance_buffer_pool;
   if (!instance_pool->initialized) {
     log_error("Gizmo picking render requires an initialized instance buffer");

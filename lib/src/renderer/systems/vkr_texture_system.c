@@ -267,19 +267,54 @@ vkr_internal VkrTextureFormat vkr_texture_format_from_channels(
   }
 }
 
-vkr_internal bool8_t vkr_texture_has_transparency(const uint8_t *pixels,
-                                                  uint64_t pixel_count,
-                                                  uint32_t channels) {
-  if (!pixels || channels < VKR_TEXTURE_RGBA_CHANNELS)
-    return false_v;
+typedef struct VkrTextureAlphaAnalysis {
+  bool8_t has_transparency;
+  bool8_t alpha_mask;
+} VkrTextureAlphaAnalysis;
 
+// Treat alpha as a cutout mask when only a small fraction of transparent texels
+// have intermediate coverage (typical for foliage with anti-aliased edges).
+#define VKR_TEXTURE_ALPHA_MASK_INTERMEDIATE_RATIO 0.30f
+
+vkr_internal VkrTextureAlphaAnalysis
+vkr_texture_analyze_alpha(const uint8_t *pixels, uint64_t pixel_count,
+                          uint32_t channels) {
+  VkrTextureAlphaAnalysis analysis = {false_v, false_v};
+  if (!pixels || channels < VKR_TEXTURE_RGBA_CHANNELS || pixel_count == 0) {
+    return analysis;
+  }
+
+  uint64_t transparent_count = 0;
+  uint64_t intermediate_count = 0;
   for (uint64_t pixel_index = 0; pixel_index < pixel_count; pixel_index++) {
-    if (pixels[pixel_index * channels + 3] < 255) {
-      return true_v;
+    uint8_t alpha = pixels[pixel_index * channels + 3];
+    if (alpha < 255) {
+      transparent_count++;
+      if (alpha > 0 && alpha < 255) {
+        intermediate_count++;
+      }
     }
   }
 
-  return false_v;
+  if (transparent_count == 0) {
+    return analysis;
+  }
+
+  analysis.has_transparency = true_v;
+  float32_t ratio =
+      (float32_t)intermediate_count / (float32_t)transparent_count;
+  analysis.alpha_mask =
+      ratio <= VKR_TEXTURE_ALPHA_MASK_INTERMEDIATE_RATIO ? true_v : false_v;
+  return analysis;
+}
+
+vkr_internal bool8_t vkr_texture_has_transparency(const uint8_t *pixels,
+                                                  uint64_t pixel_count,
+                                                  uint32_t channels) {
+  return vkr_texture_analyze_alpha(pixels, pixel_count, channels)
+             .has_transparency
+         ? true_v
+         : false_v;
 }
 
 /**
@@ -1139,6 +1174,8 @@ vkr_texture_system_register_external(VkrTextureSystem *system, String8 name,
   assert_log(name.str != NULL, "Name is NULL");
   assert_log(desc != NULL, "Description is NULL");
   assert_log(backend_handle != NULL, "Backend handle is NULL");
+  const bool8_t is_external =
+      bitset8_is_set(&desc->properties, VKR_TEXTURE_PROPERTY_EXTERNAL_BIT);
 
   const char *texture_key = (const char *)name.str;
   VkrTextureEntry *existing_entry =
@@ -1195,7 +1232,9 @@ vkr_texture_system_register_external(VkrTextureSystem *system, String8 name,
               stable_key);
     vkr_allocator_free(&system->string_allocator, stable_key, name.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    vkr_renderer_destroy_texture(system->renderer, backend_handle);
+    if (!is_external) {
+      vkr_renderer_destroy_texture(system->renderer, backend_handle);
+    }
     texture->description.generation = VKR_INVALID_ID;
     return false_v;
   }
@@ -1214,7 +1253,9 @@ void vkr_texture_destroy(VkrRendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(texture != NULL, "Texture is NULL");
 
-  if (texture->handle) {
+  if (texture->handle &&
+      !bitset8_is_set(&texture->description.properties,
+                      VKR_TEXTURE_PROPERTY_EXTERNAL_BIT)) {
     vkr_renderer_destroy_texture(renderer, texture->handle);
   }
 
@@ -1586,16 +1627,18 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
 
   VkrTexturePropertyFlags props = vkr_texture_property_flags_create();
 
-  bool8_t has_transparency = false_v;
+  VkrTextureAlphaAnalysis alpha_analysis = {false_v, false_v};
   if (actual_channels == VKR_TEXTURE_RGBA_CHANNELS) {
     uint64_t pixel_count = (uint64_t)width * (uint64_t)height;
-    has_transparency =
-        vkr_texture_has_transparency(loaded_image_data, pixel_count,
-                                     actual_channels);
+    alpha_analysis = vkr_texture_analyze_alpha(loaded_image_data, pixel_count,
+                                               actual_channels);
   }
 
-  if (has_transparency) {
+  if (alpha_analysis.has_transparency) {
     bitset8_set(&props, VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
+    if (alpha_analysis.alpha_mask) {
+      bitset8_set(&props, VKR_TEXTURE_PROPERTY_ALPHA_MASK_BIT);
+    }
   }
 
   out_texture->description = (VkrTextureDescription){
