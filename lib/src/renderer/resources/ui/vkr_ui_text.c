@@ -503,7 +503,8 @@ bool8_t vkr_ui_text_create(VkrRendererFrontendHandle renderer,
   out_text->layout_dirty = true_v;
   out_text->buffers_dirty = true_v;
   out_text->render.pipeline = pipeline;
-  out_text->render.instance_state = (VkrRendererInstanceStateHandle){0};
+  out_text->render.instance_state = (VkrRendererInstanceStateHandle){
+      .id = VKR_INVALID_ID};
 
   if (out_text->config.font.id != 0) {
     out_text->resolved_font =
@@ -550,7 +551,8 @@ void vkr_ui_text_destroy(VkrUiText *text) {
     vkr_ui_text_collect_retired_buffers(text, rf->frame_number);
   }
 
-  if (text->render.instance_state.id != 0 && text->render.pipeline.id != 0) {
+  if (text->render.instance_state.id != VKR_INVALID_ID &&
+      text->render.pipeline.id != 0) {
     vkr_pipeline_registry_release_instance_state(
         &text->renderer->pipeline_registry, text->render.pipeline,
         text->render.instance_state, &(VkrRendererError){0});

@@ -80,7 +80,7 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
           &resources->pipeline, &pipeline_err)) {
     String8 err_str = vkr_renderer_get_error_string(pipeline_err);
     log_error("World pipeline creation failed: %s", string8_cstr(&err_str));
-    return false_v;
+    goto cleanup;
   }
 
   VkrRendererError transparent_err = VKR_RENDERER_ERROR_NONE;
@@ -92,7 +92,7 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
     String8 err_str = vkr_renderer_get_error_string(transparent_err);
     log_error("World transparent pipeline creation failed: %s",
               string8_cstr(&err_str));
-    return false_v;
+    goto cleanup;
   }
 
   VkrRendererError overlay_err = VKR_RENDERER_ERROR_NONE;
@@ -114,14 +114,14 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
           &rf->scratch_allocator, &text_cfg_info, &text_cfg_err)) {
     String8 err = vkr_renderer_get_error_string(text_cfg_err);
     log_error("World text shadercfg load failed: %s", string8_cstr(&err));
-    return false_v;
+    goto cleanup;
   }
 
   resources->text_shader_config = *(VkrShaderConfig *)text_cfg_info.as.custom;
   if (!vkr_shader_system_create(&rf->shader_system,
                                 &resources->text_shader_config)) {
     log_error("Failed to create world text shader in shader system");
-    return false_v;
+    goto cleanup;
   }
 
   VkrShaderConfig text_cfg = resources->text_shader_config;
@@ -140,11 +140,44 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
 
   resources->text_slots = array_create_VkrWorldTextSlot(
       &rf->allocator, VKR_WORLD_RESOURCES_MAX_TEXTS);
+  if (!resources->text_slots.data) {
+    log_error("World text slots array create failed");
+    goto cleanup;
+  }
   MemZero(resources->text_slots.data,
           sizeof(VkrWorldTextSlot) * (uint64_t)resources->text_slots.length);
 
   resources->initialized = true_v;
   return true_v;
+
+cleanup:
+  if (resources->text_slots.data) {
+    array_destroy_VkrWorldTextSlot(&resources->text_slots);
+    resources->text_slots = (Array_VkrWorldTextSlot){0};
+  }
+  if (resources->text_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           resources->text_pipeline);
+    resources->text_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+  if (resources->overlay_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           resources->overlay_pipeline);
+    resources->overlay_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+  if (resources->transparent_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           resources->transparent_pipeline);
+    resources->transparent_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+  if (resources->pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           resources->pipeline);
+    resources->pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+  MemZero(&resources->shader_config, sizeof(resources->shader_config));
+  MemZero(&resources->text_shader_config, sizeof(resources->text_shader_config));
+  return false_v;
 }
 
 void vkr_world_resources_shutdown(RendererFrontend *rf,
@@ -361,6 +394,14 @@ void vkr_world_resources_render_picking_text(RendererFrontend *rf,
       continue;
     }
 
+    uint64_t idx64 = (uint64_t)slot->text.quad_count * 6u;
+    if (idx64 > (uint64_t)UINT32_MAX) {
+      log_error("World text index count overflow (quad_count=%u)",
+                slot->text.quad_count);
+      continue;
+    }
+    uint32_t index_count = (uint32_t)idx64;
+
     VkrVertexBufferBinding vbb = {
         .buffer = slot->text.vertex_buffer.handle,
         .binding = 0,
@@ -375,7 +416,6 @@ void vkr_world_resources_render_picking_text(RendererFrontend *rf,
     };
     vkr_renderer_bind_index_buffer(rf, &ibb);
 
-    uint32_t index_count = slot->text.quad_count * 6;
     vkr_renderer_draw_indexed(rf, index_count, 1, 0, 0, 0);
   }
 }

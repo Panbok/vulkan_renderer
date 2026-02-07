@@ -63,6 +63,9 @@ static Mat4 vkr_editor_viewport_build_model(const VkrViewportMapping *mapping,
   if (rect.z <= 0.0f || rect.w <= 0.0f) {
     rect = mapping->panel_rect_px;
   }
+  if (rect.z <= 0.0f || rect.w <= 0.0f) {
+    return mat4_identity();
+  }
 
   float32_t scale_x = rect.z / plane_size.x;
   float32_t scale_y = rect.w / plane_size.y;
@@ -294,11 +297,6 @@ void vkr_editor_viewport_shutdown(RendererFrontend *rf,
   if (resources->mesh_index != VKR_INVALID_ID) {
     vkr_mesh_manager_remove(&rf->mesh_manager, resources->mesh_index);
     resources->mesh_index = VKR_INVALID_ID;
-  }
-
-  if (resources->material.id != 0) {
-    vkr_material_system_release(&rf->material_system, resources->material);
-    resources->material = VKR_MATERIAL_HANDLE_INVALID;
   }
 
   if (resources->pipeline.id != 0) {

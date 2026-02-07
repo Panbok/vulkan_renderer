@@ -97,6 +97,7 @@ vkr_internal void vkr_ui_system_position_slot(VkrUiTextSlot *slot,
     y = (float32_t)height - bounds.size.y - slot->padding.y;
     break;
   case VKR_UI_TEXT_ANCHOR_BOTTOM_LEFT:
+    x = slot->padding.x;
     y = slot->padding.y;
     break;
   case VKR_UI_TEXT_ANCHOR_BOTTOM_RIGHT:
@@ -193,7 +194,7 @@ bool8_t vkr_ui_system_init(RendererFrontend *rf, VkrUiSystem *system) {
           &pipeline_err)) {
     String8 err_str = vkr_renderer_get_error_string(pipeline_err);
     log_error("UI pipeline creation failed: %s", string8_cstr(&err_str));
-    return false_v;
+    goto cleanup;
   }
 
   VkrResourceHandleInfo material_info = {0};
@@ -214,7 +215,7 @@ bool8_t vkr_ui_system_init(RendererFrontend *rf, VkrUiSystem *system) {
           &instance_err)) {
     String8 err_str = vkr_renderer_get_error_string(instance_err);
     log_error("UI instance state acquire failed: %s", string8_cstr(&err_str));
-    return false_v;
+    goto cleanup;
   }
 
   VkrResourceHandleInfo text_cfg_info = {0};
@@ -225,14 +226,14 @@ bool8_t vkr_ui_system_init(RendererFrontend *rf, VkrUiSystem *system) {
           &rf->scratch_allocator, &text_cfg_info, &text_shader_err)) {
     String8 err = vkr_renderer_get_error_string(text_shader_err);
     log_error("UI text shadercfg load failed: %s", string8_cstr(&err));
-    return false_v;
+    goto cleanup;
   }
 
   system->text_shader_config = *(VkrShaderConfig *)text_cfg_info.as.custom;
   if (!vkr_shader_system_create(&rf->shader_system,
                                 &system->text_shader_config)) {
     log_error("Failed to create UI text shader in shader system");
-    return false_v;
+    goto cleanup;
   }
 
   VkrRendererError text_pipeline_err = VKR_RENDERER_ERROR_NONE;
@@ -242,11 +243,15 @@ bool8_t vkr_ui_system_init(RendererFrontend *rf, VkrUiSystem *system) {
           &system->text_pipeline, &text_pipeline_err)) {
     String8 err_str = vkr_renderer_get_error_string(text_pipeline_err);
     log_error("UI text pipeline creation failed: %s", string8_cstr(&err_str));
-    return false_v;
+    goto cleanup;
   }
 
   system->text_slots =
       array_create_VkrUiTextSlot(&rf->allocator, VKR_UI_SYSTEM_MAX_TEXTS);
+  if (!system->text_slots.data) {
+    log_error("UI text slots array create failed");
+    goto cleanup;
+  }
   MemZero(system->text_slots.data,
           sizeof(VkrUiTextSlot) * (uint64_t)system->text_slots.length);
 
@@ -254,6 +259,31 @@ bool8_t vkr_ui_system_init(RendererFrontend *rf, VkrUiSystem *system) {
   system->screen_height = rf->last_window_height;
   system->initialized = true_v;
   return true_v;
+
+cleanup:
+  if (system->text_slots.data) {
+    array_destroy_VkrUiTextSlot(&system->text_slots);
+    system->text_slots = (Array_VkrUiTextSlot){0};
+  }
+  if (system->text_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           system->text_pipeline);
+    system->text_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+  if (system->instance_state.id != VKR_INVALID_ID && system->pipeline.id != 0) {
+    vkr_pipeline_registry_release_instance_state(
+        &rf->pipeline_registry, system->pipeline, system->instance_state,
+        &(VkrRendererError){0});
+    system->instance_state.id = VKR_INVALID_ID;
+  }
+  if (system->pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           system->pipeline);
+    system->pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+  MemZero(&system->shader_config, sizeof(system->shader_config));
+  MemZero(&system->text_shader_config, sizeof(system->text_shader_config));
+  return false_v;
 }
 
 void vkr_ui_system_shutdown(RendererFrontend *rf, VkrUiSystem *system) {
@@ -391,7 +421,7 @@ bool8_t vkr_ui_system_text_create(RendererFrontend *rf, VkrUiSystem *system,
 
 bool8_t vkr_ui_system_text_update(RendererFrontend *rf, VkrUiSystem *system,
                                   uint32_t text_id, String8 content) {
-  if (!system) {
+  if (!rf || !system) {
     return false_v;
   }
 

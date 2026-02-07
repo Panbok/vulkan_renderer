@@ -15,10 +15,14 @@ vkr_viewport_mapping_window_to_target_pixel(const VkrViewportMapping *mapping,
 
   const int32_t img_x = (int32_t)vkr_round_f32(mapping->image_rect_px.x);
   const int32_t img_y = (int32_t)vkr_round_f32(mapping->image_rect_px.y);
+  const float32_t raw_w =
+      vkr_max_f32(0.0f, mapping->image_rect_px.z);
+  const float32_t raw_h =
+      vkr_max_f32(0.0f, mapping->image_rect_px.w);
   const uint32_t img_w =
-      vkr_max_u32(1u, (uint32_t)vkr_round_f32(mapping->image_rect_px.z));
+      vkr_max_u32(1u, (uint32_t)vkr_round_f32(raw_w));
   const uint32_t img_h =
-      vkr_max_u32(1u, (uint32_t)vkr_round_f32(mapping->image_rect_px.w));
+      vkr_max_u32(1u, (uint32_t)vkr_round_f32(raw_h));
 
   if (window_x < img_x || window_y < img_y) {
     return false_v;
@@ -26,9 +30,6 @@ vkr_viewport_mapping_window_to_target_pixel(const VkrViewportMapping *mapping,
 
   const int32_t local_x_i = window_x - img_x;
   const int32_t local_y_i = window_y - img_y;
-  if (local_x_i < 0 || local_y_i < 0) {
-    return false_v;
-  }
   if ((uint32_t)local_x_i >= img_w || (uint32_t)local_y_i >= img_h) {
     return false_v;
   }

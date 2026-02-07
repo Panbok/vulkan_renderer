@@ -47,7 +47,7 @@ bool8_t vkr_skybox_system_init(RendererFrontend *rf, VkrSkyboxSystem *system) {
           &pipeline_err)) {
     String8 err_str = vkr_renderer_get_error_string(pipeline_err);
     log_error("Skybox pipeline creation failed: %s", string8_cstr(&err_str));
-    return false_v;
+    goto cleanup;
   }
 
   VkrRendererError geom_err = VKR_RENDERER_ERROR_NONE;
@@ -57,7 +57,7 @@ bool8_t vkr_skybox_system_init(RendererFrontend *rf, VkrSkyboxSystem *system) {
     String8 err_str = vkr_renderer_get_error_string(geom_err);
     log_error("Skybox cube geometry creation failed: %s",
               string8_cstr(&err_str));
-    return false_v;
+    goto cleanup;
   }
 
   VkrRendererError tex_err = VKR_RENDERER_ERROR_NONE;
@@ -66,7 +66,7 @@ bool8_t vkr_skybox_system_init(RendererFrontend *rf, VkrSkyboxSystem *system) {
           string8_lit("jpg"), &system->cube_map_texture, &tex_err)) {
     String8 err_str = vkr_renderer_get_error_string(tex_err);
     log_error("Skybox cubemap load failed: %s", string8_cstr(&err_str));
-    return false_v;
+    goto cleanup;
   }
 
   VkrRendererError inst_err = VKR_RENDERER_ERROR_NONE;
@@ -76,15 +76,38 @@ bool8_t vkr_skybox_system_init(RendererFrontend *rf, VkrSkyboxSystem *system) {
     String8 err_str = vkr_renderer_get_error_string(inst_err);
     log_error("Skybox instance state acquire failed: %s",
               string8_cstr(&err_str));
-    return false_v;
+    goto cleanup;
   }
 
   system->initialized = true_v;
   return true_v;
+
+cleanup:
+  if (system->instance_state.id != VKR_INVALID_ID && system->pipeline.id != 0) {
+    vkr_pipeline_registry_release_instance_state(
+        &rf->pipeline_registry, system->pipeline, system->instance_state,
+        &(VkrRendererError){0});
+    system->instance_state.id = VKR_INVALID_ID;
+  }
+  if (system->cube_map_texture.id != 0) {
+    vkr_texture_system_release_by_handle(&rf->texture_system,
+                                         system->cube_map_texture);
+    system->cube_map_texture = (VkrTextureHandle){0};
+  }
+  if (system->cube_geometry.id != 0) {
+    vkr_geometry_system_release(&rf->geometry_system, system->cube_geometry);
+    system->cube_geometry = (VkrGeometryHandle){0};
+  }
+  if (system->pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           system->pipeline);
+    system->pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+  MemZero(&system->shader_config, sizeof(system->shader_config));
+  return false_v;
 }
 
-void vkr_skybox_system_shutdown(RendererFrontend *rf,
-                                VkrSkyboxSystem *system) {
+void vkr_skybox_system_shutdown(RendererFrontend *rf, VkrSkyboxSystem *system) {
   if (!rf || !system) {
     return;
   }
@@ -94,6 +117,11 @@ void vkr_skybox_system_shutdown(RendererFrontend *rf,
     vkr_pipeline_registry_release_instance_state(
         &rf->pipeline_registry, system->pipeline, system->instance_state,
         &release_err);
+    if (release_err != VKR_RENDERER_ERROR_NONE) {
+      String8 err_str = vkr_renderer_get_error_string(release_err);
+      log_error("Skybox instance state release failed: %s",
+                string8_cstr(&err_str));
+    }
     system->instance_state.id = VKR_INVALID_ID;
   }
 
@@ -155,20 +183,32 @@ void vkr_skybox_system_render_packet(RendererFrontend *rf,
   vkr_material_system_apply_global(&rf->material_system, &skybox_globals,
                                    VKR_PIPELINE_DOMAIN_SKYBOX);
 
-  vkr_shader_system_bind_instance(&rf->shader_system, system->instance_state.id);
+  if (!vkr_shader_system_bind_instance(&rf->shader_system,
+                                       system->instance_state.id)) {
+    log_error("Failed to bind shader instance");
+    return;
+  }
 
   VkrTextureHandle cubemap =
       payload->cubemap.id != 0 ? payload->cubemap : system->cube_map_texture;
   VkrTexture *cube_map =
       vkr_texture_system_get_by_handle(&rf->texture_system, cubemap);
-  if (cube_map && cube_map->handle) {
-    if (!vkr_shader_system_sampler_set(&rf->shader_system, "cube_texture",
-                                       cube_map->handle)) {
-      log_error("Failed to set cube_texture sampler");
-    }
+  if (!cube_map || cube_map->handle == 0) {
+    log_error("Skybox cubemap invalid (handle requested: id=%u)",
+              cubemap.id != 0 ? cubemap.id : system->cube_map_texture.id);
+    return;
+  }
+  if (!vkr_shader_system_sampler_set(&rf->shader_system, "cube_texture",
+                                     cube_map->handle)) {
+    log_error("Failed to set cube_texture sampler");
+    return;
   }
 
-  vkr_shader_system_apply_instance(&rf->shader_system);
+  if (!vkr_shader_system_apply_instance(&rf->shader_system)) {
+    log_error("Failed to apply shader instance");
+    return;
+  }
 
-  vkr_geometry_system_render(rf, &rf->geometry_system, system->cube_geometry, 1);
+  vkr_geometry_system_render(rf, &rf->geometry_system, system->cube_geometry,
+                             1);
 }

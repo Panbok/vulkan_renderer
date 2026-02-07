@@ -21,6 +21,9 @@ vkr_internal Mat4 vkr_camera_calculate_projection(const VkrCamera *camera) {
     }
     assert_log(width > 0 && height > 0, "Camera size invalid");
 
+    if (width == 0 || height == 0) {
+      return mat4_identity();
+    }
     float32_t aspect = (float32_t)width / (float32_t)height;
     return mat4_perspective(vkr_to_radians(camera->zoom), aspect,
                             camera->near_clip, camera->far_clip);
