@@ -55,6 +55,56 @@ vkr_internal void vkr_shadow_compute_cascade_splits(VkrShadowSystem *system,
   }
 }
 
+vkr_internal bool8_t vkr_shadow_has_any_per_cascade(const float32_t *values,
+                                                    uint32_t count) {
+  if (!values || count == 0) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    if (values[i] > 0.0f) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+vkr_internal float32_t vkr_shadow_profile_lerp(float32_t start, float32_t end,
+                                               uint32_t cascade,
+                                               uint32_t count) {
+  if (count <= 1) {
+    return start;
+  }
+  float32_t t = (float32_t)cascade / (float32_t)(count - 1);
+  return start + (end - start) * t;
+}
+
+vkr_internal float32_t vkr_shadow_default_guard_band(float32_t base,
+                                                     uint32_t cascade,
+                                                     uint32_t count) {
+  return base * vkr_shadow_profile_lerp(0.5f, 1.25f, cascade, count);
+}
+
+vkr_internal float32_t vkr_shadow_default_z_extension(float32_t base,
+                                                      uint32_t cascade,
+                                                      uint32_t count) {
+  return base * vkr_shadow_profile_lerp(0.6f, 1.2f, cascade, count);
+}
+
+vkr_internal float32_t vkr_shadow_default_uv_margin_scale(uint32_t cascade,
+                                                          uint32_t count) {
+  return vkr_shadow_profile_lerp(0.75f, 1.5f, cascade, count);
+}
+
+vkr_internal float32_t vkr_shadow_default_uv_soft_margin_scale(uint32_t cascade,
+                                                               uint32_t count) {
+  return vkr_shadow_profile_lerp(1.0f, 2.0f, cascade, count);
+}
+
+vkr_internal float32_t
+vkr_shadow_default_uv_kernel_margin_scale(uint32_t cascade, uint32_t count) {
+  return vkr_shadow_profile_lerp(1.0f, 1.2f, cascade, count);
+}
+
 vkr_internal void vkr_shadow_compute_frustum_corners(const VkrCamera *camera,
                                                      float32_t near_split,
                                                      float32_t far_split,
@@ -573,6 +623,11 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
   }
 
   MemZero(system, sizeof(*system));
+  system->alpha_instance_states = NULL;
+  system->alpha_instance_state_count = 0;
+  system->alpha_instance_state_capacity = 0;
+  system->alpha_instance_cursor = 0;
+  system->alpha_instance_cursor_frame_number = UINT64_MAX;
   system->config = config ? *config : VKR_SHADOW_CONFIG_DEFAULT;
 
   if (system->config.cascade_count == 0) {
@@ -627,6 +682,24 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
   system->config.foliage_alpha_cutoff_bias =
       vkr_clamp_f32(system->config.foliage_alpha_cutoff_bias, 0.0f, 1.0f);
 
+  for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
+    if (!(system->config.cascade_guard_band_texels_per[i] >= 0.0f)) {
+      system->config.cascade_guard_band_texels_per[i] = 0.0f;
+    }
+    if (!(system->config.cascade_z_extension_factor_per[i] >= 0.0f)) {
+      system->config.cascade_z_extension_factor_per[i] = 0.0f;
+    }
+    if (!(system->config.shadow_uv_margin_scale_per[i] >= 0.0f)) {
+      system->config.shadow_uv_margin_scale_per[i] = 0.0f;
+    }
+    if (!(system->config.shadow_uv_soft_margin_scale_per[i] >= 0.0f)) {
+      system->config.shadow_uv_soft_margin_scale_per[i] = 0.0f;
+    }
+    if (!(system->config.shadow_uv_kernel_margin_scale_per[i] >= 0.0f)) {
+      system->config.shadow_uv_kernel_margin_scale_per[i] = 0.0f;
+    }
+  }
+
   if (!vkr_shadow_create_renderpass(system, rf)) {
     goto cleanup;
   }
@@ -650,6 +723,31 @@ cleanup:
 void vkr_shadow_system_shutdown(VkrShadowSystem *system, RendererFrontend *rf) {
   if (!system || !rf) {
     return;
+  }
+
+  if (system->shadow_pipeline_alpha.id != 0 && system->alpha_instance_states) {
+    for (uint32_t i = 0; i < system->alpha_instance_state_count; ++i) {
+      if (system->alpha_instance_states[i].id == VKR_INVALID_ID) {
+        continue;
+      }
+      VkrRendererError release_err = VKR_RENDERER_ERROR_NONE;
+      vkr_pipeline_registry_release_instance_state(
+          &rf->pipeline_registry, system->shadow_pipeline_alpha,
+          system->alpha_instance_states[i], &release_err);
+      system->alpha_instance_states[i].id = VKR_INVALID_ID;
+    }
+  }
+
+  if (system->alpha_instance_states) {
+    vkr_allocator_free(&rf->allocator, system->alpha_instance_states,
+                       sizeof(VkrRendererInstanceStateHandle) *
+                           (uint64_t)system->alpha_instance_state_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    system->alpha_instance_states = NULL;
+    system->alpha_instance_state_count = 0;
+    system->alpha_instance_state_capacity = 0;
+    system->alpha_instance_cursor = 0;
+    system->alpha_instance_cursor_frame_number = UINT64_MAX;
   }
 
   if (system->shadow_pipeline_alpha.id != 0) {
@@ -735,6 +833,12 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
       system->config.max_shadow_distance, shadow_map_size,
       system->config.anchor_snap_texels);
 
+  uint32_t cascade_count = system->config.cascade_count;
+  bool8_t has_guard_per = vkr_shadow_has_any_per_cascade(
+      system->config.cascade_guard_band_texels_per, cascade_count);
+  bool8_t has_z_per = vkr_shadow_has_any_per_cascade(
+      system->config.cascade_z_extension_factor_per, cascade_count);
+
   for (uint32_t i = 0; i < system->config.cascade_count; ++i) {
     float32_t split_near = system->cascade_splits[i];
     float32_t split_far = system->cascade_splits[i + 1];
@@ -742,12 +846,32 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
     Vec3 corners[8];
     vkr_shadow_compute_frustum_corners(camera, split_near, split_far, corners);
 
+    float32_t guard_band = system->config.cascade_guard_band_texels;
+    if (has_guard_per) {
+      float32_t per = system->config.cascade_guard_band_texels_per[i];
+      if (per > 0.0f) {
+        guard_band = per;
+      }
+    } else {
+      guard_band = vkr_shadow_default_guard_band(guard_band, i, cascade_count);
+    }
+
+    float32_t z_extension = system->config.z_extension_factor;
+    if (has_z_per) {
+      float32_t per = system->config.cascade_z_extension_factor_per[i];
+      if (per > 0.0f) {
+        z_extension = per;
+      }
+    } else {
+      z_extension =
+          vkr_shadow_default_z_extension(z_extension, i, cascade_count);
+    }
+
     vkr_shadow_compute_cascade_matrix(
         &light_view, corners, shadow_map_size,
-        system->config.stabilize_cascades,
-        system->config.cascade_guard_band_texels,
+        system->config.stabilize_cascades, guard_band,
         system->config.use_constant_cascade_size, &system->config.scene_bounds,
-        system->config.z_extension_factor, &system->cascades[i].view_projection,
+        z_extension, &system->cascades[i].view_projection,
         &system->cascades[i].world_units_per_texel,
         &system->cascades[i].light_space_origin);
 
@@ -819,20 +943,67 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
   out_data->debug_show_cascades = system->config.debug_show_cascades;
 
   uint32_t map_size = vkr_shadow_config_get_max_map_size(&system->config);
+  uint32_t cascade_count = system->config.cascade_count;
+  bool8_t has_margin_per = vkr_shadow_has_any_per_cascade(
+      system->config.shadow_uv_margin_scale_per, cascade_count);
+  bool8_t has_soft_margin_per = vkr_shadow_has_any_per_cascade(
+      system->config.shadow_uv_soft_margin_scale_per, cascade_count);
+  bool8_t has_kernel_margin_per = vkr_shadow_has_any_per_cascade(
+      system->config.shadow_uv_kernel_margin_scale_per, cascade_count);
 
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
-    if (i < system->config.cascade_count) {
+    if (i < cascade_count) {
+      float32_t uv_margin_scale = 1.0f;
+      if (has_margin_per) {
+        uv_margin_scale = system->config.shadow_uv_margin_scale_per[i];
+        if (uv_margin_scale <= 0.0f) {
+          uv_margin_scale = 1.0f;
+        }
+      } else {
+        uv_margin_scale = vkr_shadow_default_uv_margin_scale(i, cascade_count);
+      }
+
+      float32_t uv_soft_margin_scale = 1.0f;
+      if (has_soft_margin_per) {
+        uv_soft_margin_scale =
+            system->config.shadow_uv_soft_margin_scale_per[i];
+        if (uv_soft_margin_scale <= 0.0f) {
+          uv_soft_margin_scale = 1.0f;
+        }
+      } else {
+        uv_soft_margin_scale =
+            vkr_shadow_default_uv_soft_margin_scale(i, cascade_count);
+      }
+
+      float32_t uv_kernel_margin_scale = 1.0f;
+      if (has_kernel_margin_per) {
+        uv_kernel_margin_scale =
+            system->config.shadow_uv_kernel_margin_scale_per[i];
+        if (uv_kernel_margin_scale <= 0.0f) {
+          uv_kernel_margin_scale = 1.0f;
+        }
+      } else {
+        uv_kernel_margin_scale =
+            vkr_shadow_default_uv_kernel_margin_scale(i, cascade_count);
+      }
+
       out_data->shadow_map_inv_size[i] =
           (map_size > 0) ? (1.0f / (float32_t)map_size) : 0.0f;
       out_data->split_far[i] = system->cascades[i].split_far;
       out_data->world_units_per_texel[i] =
           system->cascades[i].world_units_per_texel;
+      out_data->shadow_uv_margin_scale[i] = uv_margin_scale;
+      out_data->shadow_uv_soft_margin_scale[i] = uv_soft_margin_scale;
+      out_data->shadow_uv_kernel_margin_scale[i] = uv_kernel_margin_scale;
       out_data->light_space_origin[i] = system->cascades[i].light_space_origin;
       out_data->view_projection[i] = system->cascades[i].view_projection;
     } else {
       out_data->shadow_map_inv_size[i] = 0.0f;
       out_data->split_far[i] = 0.0f;
       out_data->world_units_per_texel[i] = 0.0f;
+      out_data->shadow_uv_margin_scale[i] = 1.0f;
+      out_data->shadow_uv_soft_margin_scale[i] = 1.0f;
+      out_data->shadow_uv_kernel_margin_scale[i] = 1.0f;
       out_data->light_space_origin[i] = vec2_zero();
       out_data->view_projection[i] = mat4_identity();
     }

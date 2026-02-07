@@ -53,9 +53,9 @@ typedef struct VkrShadowSceneBounds {
 
 #define VKR_SHADOW_SCENE_BOUNDS_DEFAULT                                        \
   ((VkrShadowSceneBounds){                                                     \
-      .min = {-15.0f, -15.0f, -15.0f},                                         \
-      .max = {15.0f, 15.0f, 15.0f},                                            \
-      .use_scene_bounds = true_v,                                              \
+      .min = {-20.0f, -20.0f, -20.0f},                                         \
+      .max = {20.0f, 20.0f, 20.0f},                                            \
+      .use_scene_bounds = false_v,                                             \
   })
 
 /**
@@ -98,7 +98,9 @@ typedef struct VkrShadowConfig {
   float32_t cascade_split_lambda;
   float32_t max_shadow_distance;
   float32_t cascade_guard_band_texels;
+  float32_t cascade_guard_band_texels_per[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t z_extension_factor;
+  float32_t cascade_z_extension_factor_per[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t depth_bias_constant_factor;
   float32_t depth_bias_clamp;
   float32_t depth_bias_slope_factor;
@@ -108,6 +110,9 @@ typedef struct VkrShadowConfig {
   float32_t shadow_bias_texel_scale;
   float32_t shadow_slope_bias_texel_scale;
   float32_t pcf_radius;
+  float32_t shadow_uv_margin_scale_per[VKR_SHADOW_CASCADE_COUNT_MAX];
+  float32_t shadow_uv_soft_margin_scale_per[VKR_SHADOW_CASCADE_COUNT_MAX];
+  float32_t shadow_uv_kernel_margin_scale_per[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t shadow_distance_fade_range;
   float32_t foliage_alpha_cutoff_bias;
   bool8_t foliage_alpha_dither;
@@ -122,33 +127,38 @@ typedef struct VkrShadowConfig {
 /**
  * @brief High-quality CSM preset (recommended on modern GPUs).
  *
- * Uses 4 cascades and a 4096 shadow map to minimize aliasing. The world shader
+ * Uses 4 cascades and a 2048 shadow map to minimize aliasing. The world shader
  * uses Poisson PCF and scales the effective radius per cascade based on
  * world-units-per-texel to keep softness roughly consistent in world space.
  */
 #define VKR_SHADOW_CONFIG_HIGH                                                 \
   ((VkrShadowConfig){                                                          \
       .cascade_count = 4,                                                      \
-      .shadow_map_size = 4096,                                                 \
-      .cascade_split_lambda = 0.75f,                                           \
-      .max_shadow_distance = 120.0f,                                           \
-      .cascade_guard_band_texels = 128.0f,                                     \
-      .z_extension_factor = 5.0f,                                              \
-      .depth_bias_constant_factor = 1.25f,                                     \
+      .shadow_map_size = 2048,                                                 \
+      .cascade_split_lambda = 0.80f,                                           \
+      .max_shadow_distance = 200.0f,                                           \
+      .cascade_guard_band_texels = 32.0f,                                      \
+      .cascade_guard_band_texels_per = {16.0f, 24.0f, 32.0f, 48.0f},           \
+      .z_extension_factor = 4.0f,                                              \
+      .cascade_z_extension_factor_per = {2.0f, 3.0f, 4.0f, 5.0f},              \
+      .depth_bias_constant_factor = 0.0f,                                      \
       .depth_bias_clamp = 0.0f,                                                \
-      .depth_bias_slope_factor = 1.75f,                                        \
-      .shadow_bias = 0.001f,                                                   \
-      .normal_bias = 0.01f,                                                    \
-      .shadow_slope_bias = 0.001f,                                             \
-      .shadow_bias_texel_scale = 0.001f,                                       \
-      .shadow_slope_bias_texel_scale = 0.001f,                                 \
-      .pcf_radius = 1.9f,                                                      \
-      .shadow_distance_fade_range = 12.0f,                                     \
-      .foliage_alpha_cutoff_bias = 0.01f,                                      \
+      .depth_bias_slope_factor = 0.0f,                                         \
+      .shadow_bias = 0.00001f,                                                 \
+      .normal_bias = 0.001f,                                                   \
+      .shadow_slope_bias = 0.0002f,                                            \
+      .shadow_bias_texel_scale = 0.0002f,                                      \
+      .shadow_slope_bias_texel_scale = 0.0001f,                                \
+      .pcf_radius = 1.6f,                                                      \
+      .shadow_uv_margin_scale_per = {0.75f, 1.0f, 1.25f, 1.5f},                \
+      .shadow_uv_soft_margin_scale_per = {1.0f, 1.25f, 1.5f, 2.0f},            \
+      .shadow_uv_kernel_margin_scale_per = {1.0f, 1.1f, 1.15f, 1.2f},          \
+      .shadow_distance_fade_range = 1.0f,                                      \
+      .foliage_alpha_cutoff_bias = 0.02f,                                      \
       .foliage_alpha_dither = true_v,                                          \
       .use_constant_cascade_size = true_v,                                     \
-      .cascade_blend_range = 8.0f,                                             \
-      .anchor_snap_texels = 8.0f,                                              \
+      .cascade_blend_range = 1.0f,                                             \
+      .anchor_snap_texels = 16.0f,                                             \
       .stabilize_cascades = true_v,                                            \
       .debug_show_cascades = false_v,                                          \
       .scene_bounds = VKR_SHADOW_SCENE_BOUNDS_DEFAULT,                         \
@@ -164,7 +174,9 @@ typedef struct VkrShadowConfig {
       .cascade_split_lambda = 0.75f,                                           \
       .max_shadow_distance = 120.0f,                                           \
       .cascade_guard_band_texels = 128.0f,                                     \
+      .cascade_guard_band_texels_per = {0},                                    \
       .z_extension_factor = 5.0f,                                              \
+      .cascade_z_extension_factor_per = {0},                                   \
       .depth_bias_constant_factor = 1.50f,                                     \
       .depth_bias_clamp = 0.0f,                                                \
       .depth_bias_slope_factor = 2.00f,                                        \
@@ -174,6 +186,9 @@ typedef struct VkrShadowConfig {
       .shadow_bias_texel_scale = 0.001f,                                       \
       .shadow_slope_bias_texel_scale = 0.001f,                                 \
       .pcf_radius = 2.0f,                                                      \
+      .shadow_uv_margin_scale_per = {0},                                       \
+      .shadow_uv_soft_margin_scale_per = {0},                                  \
+      .shadow_uv_kernel_margin_scale_per = {0},                                \
       .shadow_distance_fade_range = 10.0f,                                     \
       .foliage_alpha_cutoff_bias = 0.05f,                                      \
       .foliage_alpha_dither = true_v,                                          \
@@ -226,6 +241,9 @@ typedef struct VkrShadowFrameData {
   float32_t shadow_slope_bias;
   float32_t shadow_bias_texel_scale;
   float32_t shadow_slope_bias_texel_scale;
+  float32_t shadow_uv_margin_scale[VKR_SHADOW_CASCADE_COUNT_MAX];
+  float32_t shadow_uv_soft_margin_scale[VKR_SHADOW_CASCADE_COUNT_MAX];
+  float32_t shadow_uv_kernel_margin_scale[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t shadow_distance_fade_range;
   float32_t cascade_blend_range;
   bool8_t debug_show_cascades;
@@ -258,6 +276,19 @@ typedef struct VkrShadowSystem {
   VkrShaderConfig shader_config_opaque;
   VkrPipelineHandle shadow_pipeline_alpha;
   VkrPipelineHandle shadow_pipeline_opaque;
+  /**
+   * Alpha shadow pass instance states.
+   *
+   * Cutout shadow rendering updates per-material sampler bindings. A single
+   * descriptor set cannot be rewritten after being bound in the same command
+   * buffer, so the pass rotates through this pool to guarantee each draw uses
+   * a distinct instance state for the frame.
+   */
+  VkrRendererInstanceStateHandle *alpha_instance_states;
+  uint32_t alpha_instance_state_count;
+  uint32_t alpha_instance_state_capacity;
+  uint32_t alpha_instance_cursor;
+  uint64_t alpha_instance_cursor_frame_number;
   Vec3 light_direction;
   bool8_t light_enabled;
 
