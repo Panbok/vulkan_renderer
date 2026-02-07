@@ -10,6 +10,7 @@ assets/textures
 assets/models
 assets/meters
 assets/materials
+assets/scenes
 docs
 
 *.o
