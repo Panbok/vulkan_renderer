@@ -54,12 +54,27 @@
 #include "core/vkr_threads.h"
 #include "core/vkr_window.h"
 #include "defines.h"
+#include "math/vec.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/renderer_frontend.h"
+#include "renderer/systems/vkr_editor_viewport.h"
+#include "renderer/systems/vkr_picking_ids.h"
 #include "renderer/systems/vkr_camera.h"
 #include "renderer/systems/vkr_camera_controller.h"
 #include "renderer/vkr_renderer.h"
+#include "renderer/vkr_render_packet.h"
+
+/**
+ * @brief Editor viewport state owned by the application.
+ */
+typedef struct ApplicationEditorViewport {
+  bool8_t enabled;
+  VkrViewportFitMode fit_mode;
+  float32_t render_scale;
+  uint32_t last_target_width;
+  uint32_t last_target_height;
+} ApplicationEditorViewport;
 
 /**
  * @brief Flags representing the current state of the application.
@@ -74,6 +89,15 @@ typedef enum ApplicationFlag {
   APPLICATION_FLAG_SUSPENDED =
       1 << 2, /**< Application loop is currently suspended. */
 } ApplicationFlag;
+
+#define VKR_MAX_PENDING_TEXT_UPDATES 32
+
+typedef struct ApplicationTextUpdate {
+  uint32_t text_id;
+  String8 content;
+  bool8_t has_transform;
+  VkrTransform transform;
+} ApplicationTextUpdate;
 
 /**
  * @brief Configuration settings for creating an application instance.
@@ -125,6 +149,13 @@ typedef struct Application {
 
   VkrJobSystem job_system; /**< Engine-wide job system. */
 
+  ApplicationTextUpdate ui_text_updates[VKR_MAX_PENDING_TEXT_UPDATES];
+  uint32_t ui_text_update_count;
+  ApplicationTextUpdate world_text_updates[VKR_MAX_PENDING_TEXT_UPDATES];
+  uint32_t world_text_update_count;
+
+  ApplicationEditorViewport editor_viewport;
+  bool8_t rg_gpu_timing_enabled; /**< Enables per-pass GPU timing in RG. */
 } Application;
 
 /**
@@ -209,6 +240,13 @@ bool8_t application_create(Application *application,
   }
 
   application->config = config;
+  application->editor_viewport = (ApplicationEditorViewport){
+      .enabled = false_v,
+      .fit_mode = VKR_VIEWPORT_FIT_STRETCH,
+      .render_scale = 1.0f,
+      .last_target_width = 0,
+      .last_target_height = 0,
+  };
   application->app_flags = bitset8_create();
 
   ArenaFlags app_arena_flags = bitset8_create();
@@ -325,10 +363,315 @@ bool8_t application_create(Application *application,
 
   bitset8_set(&application->app_flags, APPLICATION_FLAG_INITIALIZED);
 
-  event_manager_dispatch(&application->event_manager,
+ event_manager_dispatch(&application->event_manager,
                          (Event){.type = EVENT_TYPE_APPLICATION_INIT});
 
-  log_info("Application initialized");
+ log_info("Application initialized");
+ return true_v;
+}
+
+vkr_internal VkrMaterial *
+application_get_material(RendererFrontend *rf, VkrMaterialHandle handle) {
+  if (!rf) {
+    return NULL;
+  }
+
+  VkrMaterial *material =
+      vkr_material_system_get_by_handle(&rf->material_system, handle);
+  if (!material && rf->material_system.default_material.id != 0) {
+    material = vkr_material_system_get_by_handle(
+        &rf->material_system, rf->material_system.default_material);
+  }
+
+  return material;
+}
+
+vkr_internal bool8_t application_material_is_cutout(RendererFrontend *rf,
+                                                    VkrMaterial *material) {
+  if (!rf || !material) {
+    return false_v;
+  }
+  return vkr_material_system_material_has_transparency(&rf->material_system,
+                                                       material);
+}
+
+vkr_internal float32_t application_transparent_depth(Mat4 view, Mat4 model,
+                                                     Vec3 local_center) {
+  Vec3 world_center = mat4_mul_vec3(model, local_center);
+  Vec4 view_pos =
+      mat4_mul_vec4(view, vec4_new(world_center.x, world_center.y,
+                                   world_center.z, 1.0f));
+  float32_t depth = -view_pos.z;
+  return depth > 0.0f ? depth : 0.0f;
+}
+
+vkr_internal uint64_t application_pack_transparent_sort_key(
+    float32_t distance, uint32_t tie_breaker) {
+  uint32_t distance_bits = 0;
+  MemCopy(&distance_bits, &distance, sizeof(distance_bits));
+  return ((uint64_t)distance_bits << 32) | (uint64_t)tie_breaker;
+}
+
+vkr_internal int application_transparent_draw_compare(const void *lhs,
+                                                      const void *rhs) {
+  const VkrDrawItem *a = (const VkrDrawItem *)lhs;
+  const VkrDrawItem *b = (const VkrDrawItem *)rhs;
+  if (a->sort_key > b->sort_key) {
+    return -1;
+  }
+  if (a->sort_key < b->sort_key) {
+    return 1;
+  }
+  if (a->first_instance < b->first_instance) {
+    return -1;
+  }
+  if (a->first_instance > b->first_instance) {
+    return 1;
+  }
+  return 0;
+}
+
+vkr_internal bool8_t application_build_world_payload(
+    Application *application, VkrAllocator *scratch,
+    VkrWorldPassPayload *out_payload) {
+  if (!application || !scratch || !out_payload) {
+    return false_v;
+  }
+
+  RendererFrontend *rf = &application->renderer;
+  Mat4 view = rf->globals.view;
+  uint32_t opaque_count = 0;
+  uint32_t transparent_count = 0;
+
+  uint32_t mesh_count = vkr_mesh_manager_count(&rf->mesh_manager);
+  for (uint32_t i = 0; i < mesh_count; ++i) {
+    uint32_t mesh_slot = 0;
+    VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(
+        &rf->mesh_manager, i, &mesh_slot);
+    if (!mesh || !mesh->visible ||
+        mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+      continue;
+    }
+
+    uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
+    for (uint32_t s = 0; s < submesh_count; ++s) {
+      VkrSubMesh *submesh =
+          vkr_mesh_manager_get_submesh(&rf->mesh_manager, mesh_slot, s);
+      if (!submesh) {
+        continue;
+      }
+
+      VkrMaterial *material = application_get_material(rf, submesh->material);
+      if (application_material_is_cutout(rf, material)) {
+        transparent_count++;
+      } else {
+        opaque_count++;
+      }
+    }
+  }
+
+  uint32_t live_instance_count =
+      vkr_mesh_manager_instance_count(&rf->mesh_manager);
+  for (uint32_t i = 0; i < live_instance_count; ++i) {
+    uint32_t instance_slot = 0;
+    VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
+        &rf->mesh_manager, i, &instance_slot);
+    if (!instance || !instance->visible ||
+        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+      continue;
+    }
+
+    VkrMeshAsset *asset =
+        vkr_mesh_manager_get_asset(&rf->mesh_manager, instance->asset);
+    if (!asset) {
+      continue;
+    }
+
+    uint32_t submesh_count = (uint32_t)asset->submeshes.length;
+    for (uint32_t s = 0; s < submesh_count; ++s) {
+      VkrMeshAssetSubmesh *submesh =
+          array_get_VkrMeshAssetSubmesh(&asset->submeshes, s);
+      if (!submesh) {
+        continue;
+      }
+
+      VkrMaterial *material = application_get_material(rf, submesh->material);
+      if (application_material_is_cutout(rf, material)) {
+        transparent_count++;
+      } else {
+        opaque_count++;
+      }
+    }
+  }
+
+  uint32_t total_draws = opaque_count + transparent_count;
+  if (total_draws == 0) {
+    *out_payload = (VkrWorldPassPayload){0};
+    return true_v;
+  }
+
+  VkrDrawItem *opaque_draws = NULL;
+  if (opaque_count > 0) {
+    opaque_draws = vkr_allocator_alloc(
+        scratch, sizeof(VkrDrawItem) * (uint64_t)opaque_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  VkrDrawItem *transparent_draws = NULL;
+  if (transparent_count > 0) {
+    transparent_draws = vkr_allocator_alloc(
+        scratch, sizeof(VkrDrawItem) * (uint64_t)transparent_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  VkrInstanceDataGPU *instances = vkr_allocator_alloc(
+      scratch, sizeof(VkrInstanceDataGPU) * (uint64_t)total_draws,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  if ((opaque_count > 0 && !opaque_draws) ||
+      (transparent_count > 0 && !transparent_draws) || !instances) {
+    *out_payload = (VkrWorldPassPayload){0};
+    return false_v;
+  }
+
+  uint32_t opaque_index = 0;
+  uint32_t transparent_index = 0;
+  uint32_t instance_index = 0;
+
+  for (uint32_t i = 0; i < mesh_count; ++i) {
+    uint32_t mesh_slot = 0;
+    VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(
+        &rf->mesh_manager, i, &mesh_slot);
+    if (!mesh || !mesh->visible ||
+        mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+      continue;
+    }
+
+    VkrMeshHandle mesh_handle = {.id = mesh_slot + 1u, .generation = 0};
+
+    uint32_t object_id =
+        mesh->render_id
+            ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, mesh->render_id)
+            : 0;
+
+    uint32_t submesh_count = vkr_mesh_manager_submesh_count(mesh);
+    for (uint32_t s = 0; s < submesh_count; ++s) {
+      VkrSubMesh *submesh =
+          vkr_mesh_manager_get_submesh(&rf->mesh_manager, mesh_slot, s);
+      if (!submesh) {
+        continue;
+      }
+
+      VkrMaterial *material = application_get_material(rf, submesh->material);
+      bool8_t cutout = application_material_is_cutout(rf, material);
+      float32_t mesh_distance = cutout ? application_transparent_depth(
+                                             view, mesh->model, submesh->center)
+                                       : 0.0f;
+      uint64_t sort_key = cutout ? application_pack_transparent_sort_key(
+                                       mesh_distance, instance_index)
+                                 : 0u;
+
+      VkrDrawItem *draw = cutout ? &transparent_draws[transparent_index++]
+                                 : &opaque_draws[opaque_index++];
+      *draw = (VkrDrawItem){
+          .mesh = mesh_handle,
+          .submesh_index = s,
+          .material = VKR_MATERIAL_HANDLE_INVALID,
+          .instance_count = 1,
+          .first_instance = instance_index,
+          .sort_key = sort_key,
+          .pipeline_override = VKR_PIPELINE_HANDLE_INVALID,
+      };
+
+      instances[instance_index] = (VkrInstanceDataGPU){
+          .model = mesh->model,
+          .object_id = object_id,
+          .material_index = 0,
+          .flags = 0,
+          ._padding = 0,
+      };
+      instance_index++;
+    }
+  }
+
+  for (uint32_t i = 0; i < live_instance_count; ++i) {
+    uint32_t instance_slot = 0;
+    VkrMeshInstance *instance = vkr_mesh_manager_get_instance_by_live_index(
+        &rf->mesh_manager, i, &instance_slot);
+    if (!instance || !instance->visible ||
+        instance->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+      continue;
+    }
+
+    VkrMeshAsset *asset =
+        vkr_mesh_manager_get_asset(&rf->mesh_manager, instance->asset);
+    if (!asset) {
+      continue;
+    }
+
+    VkrMeshInstanceHandle handle = {
+        .id = instance_slot + 1u,
+        .generation = instance->generation,
+    };
+
+    uint32_t object_id = 0;
+    if (instance->render_id != 0) {
+      object_id = vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE,
+                                        instance->render_id);
+    }
+
+    uint32_t submesh_count = (uint32_t)asset->submeshes.length;
+    for (uint32_t s = 0; s < submesh_count; ++s) {
+      VkrMeshAssetSubmesh *submesh =
+          array_get_VkrMeshAssetSubmesh(&asset->submeshes, s);
+      if (!submesh) {
+        continue;
+      }
+
+      VkrMaterial *material = application_get_material(rf, submesh->material);
+      bool8_t cutout = application_material_is_cutout(rf, material);
+      float32_t instance_distance =
+          cutout ? application_transparent_depth(view, instance->model,
+                                                 submesh->center)
+                 : 0.0f;
+      uint64_t sort_key = cutout ? application_pack_transparent_sort_key(
+                                       instance_distance, instance_index)
+                                 : 0u;
+
+      VkrDrawItem *draw = cutout ? &transparent_draws[transparent_index++]
+                                 : &opaque_draws[opaque_index++];
+      *draw = (VkrDrawItem){
+          .mesh = handle,
+          .submesh_index = s,
+          .material = VKR_MATERIAL_HANDLE_INVALID,
+          .instance_count = 1,
+          .first_instance = instance_index,
+          .sort_key = sort_key,
+          .pipeline_override = VKR_PIPELINE_HANDLE_INVALID,
+      };
+
+      instances[instance_index] = (VkrInstanceDataGPU){
+          .model = instance->model,
+          .object_id = object_id,
+          .material_index = 0,
+          .flags = 0,
+          ._padding = 0,
+      };
+      instance_index++;
+    }
+  }
+
+  if (transparent_count > 1) {
+    qsort(transparent_draws, transparent_count, sizeof(VkrDrawItem),
+          application_transparent_draw_compare);
+  }
+
+  *out_payload = (VkrWorldPassPayload){
+      .opaque_draws = opaque_draws,
+      .opaque_draw_count = opaque_count,
+      .transparent_draws = transparent_draws,
+      .transparent_draw_count = transparent_count,
+      .instances = instances,
+      .instance_count = total_draws,
+  };
   return true_v;
 }
 
@@ -350,18 +693,201 @@ void application_draw_frame(Application *application, float64_t delta) {
   assert(bitset8_is_set(&application->app_flags, APPLICATION_FLAG_RUNNING) &&
          "Application is not running");
 
-  if (vkr_renderer_begin_frame(&application->renderer, delta) !=
+  VkrFrameSetup setup = {0};
+  if (vkr_renderer_prepare_frame(&application->renderer, &setup) !=
       VKR_RENDERER_ERROR_NONE) {
-    log_fatal("Failed to begin renderer frame");
+    log_fatal("Failed to prepare renderer frame");
     return;
   }
 
-  vkr_renderer_draw_frame(&application->renderer, delta);
+  VkrAllocator *scratch = &application->renderer.scratch_allocator;
+  VkrAllocatorScope scope = {0};
+  if (vkr_allocator_supports_scopes(scratch)) {
+    scope = vkr_allocator_begin_scope(scratch);
+  }
 
-  if (vkr_renderer_end_frame(&application->renderer, delta) !=
-      VKR_RENDERER_ERROR_NONE) {
-    log_fatal("Failed to end renderer frame");
-    return;
+  VkrWorldPassPayload world_payload = {0};
+  bool8_t has_world =
+      application_build_world_payload(application, scratch, &world_payload);
+
+  VkrShadowPassPayload shadow_payload = {0};
+  bool8_t has_shadow = false_v;
+  if (has_world && application->renderer.shadow_system.initialized &&
+      application->renderer.lighting_system.directional.enabled) {
+    VkrShadowFrameData shadow_frame = {0};
+    vkr_shadow_system_get_frame_data(&application->renderer.shadow_system,
+                                     setup.image_index, &shadow_frame);
+    uint32_t cascade_count = shadow_frame.cascade_count;
+    if (cascade_count > 0) {
+      shadow_payload.cascade_count = cascade_count;
+      for (uint32_t i = 0; i < cascade_count; ++i) {
+        shadow_payload.light_view_proj[i] = shadow_frame.view_projection[i];
+        shadow_payload.split_depths[i] = shadow_frame.split_far[i];
+      }
+      shadow_payload.opaque_draws = world_payload.opaque_draws;
+      shadow_payload.opaque_draw_count = world_payload.opaque_draw_count;
+      shadow_payload.alpha_draws = world_payload.transparent_draws;
+      shadow_payload.alpha_draw_count = world_payload.transparent_draw_count;
+      shadow_payload.instances = world_payload.instances;
+      shadow_payload.instance_count = world_payload.instance_count;
+      shadow_payload.config_override = NULL;
+      has_shadow = true_v;
+    }
+  }
+
+  VkrPickingPassPayload picking_payload = {0};
+  bool8_t has_picking =
+      application->renderer.picking.state == VKR_PICKING_STATE_RENDER_PENDING;
+  if (has_picking) {
+    picking_payload.pending = true_v;
+    picking_payload.x = application->renderer.picking.requested_x;
+    picking_payload.y = application->renderer.picking.requested_y;
+  }
+
+  bool8_t editor_enabled = application->editor_viewport.enabled &&
+                           application->renderer.editor_viewport.initialized;
+  bool8_t has_editor = false_v;
+  uint32_t viewport_width = 0;
+  uint32_t viewport_height = 0;
+  VkrViewportMapping editor_mapping = {0};
+  VkrDrawItem editor_draws[1] = {0};
+  VkrInstanceDataGPU editor_instances[1] = {0};
+  VkrEditorPassPayload editor_payload = {0};
+
+  if (editor_enabled) {
+    if (vkr_editor_viewport_compute_mapping(
+            setup.window_width, setup.window_height,
+            application->editor_viewport.fit_mode,
+            application->editor_viewport.render_scale, &editor_mapping) &&
+        vkr_editor_viewport_build_payload(&application->renderer.editor_viewport,
+                                          &editor_mapping, editor_draws,
+                                          editor_instances, &editor_payload)) {
+      viewport_width = editor_mapping.target_width;
+      viewport_height = editor_mapping.target_height;
+      has_editor = true_v;
+    } else {
+      editor_enabled = false_v;
+    }
+  }
+
+  if (editor_enabled) {
+    if (viewport_width != application->editor_viewport.last_target_width ||
+        viewport_height != application->editor_viewport.last_target_height) {
+      vkr_camera_registry_resize_all(&application->renderer.camera_system,
+                                     viewport_width, viewport_height);
+      application->editor_viewport.last_target_width = viewport_width;
+      application->editor_viewport.last_target_height = viewport_height;
+    }
+  } else if (application->editor_viewport.last_target_width != 0 ||
+             application->editor_viewport.last_target_height != 0) {
+    vkr_camera_registry_resize_all(&application->renderer.camera_system,
+                                   setup.window_width, setup.window_height);
+    application->editor_viewport.last_target_width = 0;
+    application->editor_viewport.last_target_height = 0;
+  }
+
+  VkrUiPassPayload ui_payload = {0};
+  VkrSkyboxPassPayload skybox_payload = {
+      .cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .material = VKR_MATERIAL_HANDLE_INVALID,
+  };
+
+  VkrTextUpdate world_text_updates[VKR_MAX_PENDING_TEXT_UPDATES];
+  VkrTextUpdate ui_text_updates[VKR_MAX_PENDING_TEXT_UPDATES];
+  VkrTextUpdatesPayload text_updates_payload = {0};
+  bool8_t has_text_updates = false_v;
+
+  if (application->world_text_update_count > 0) {
+    uint32_t count = application->world_text_update_count;
+    if (count > VKR_MAX_PENDING_TEXT_UPDATES) {
+      count = VKR_MAX_PENDING_TEXT_UPDATES;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+      ApplicationTextUpdate *pending =
+          &application->world_text_updates[i];
+      world_text_updates[i] = (VkrTextUpdate){
+          .text_id = pending->text_id,
+          .content = pending->content,
+          .transform = pending->has_transform ? &pending->transform : NULL,
+      };
+    }
+    text_updates_payload.world_text_updates = world_text_updates;
+    text_updates_payload.world_text_update_count = count;
+    has_text_updates = true_v;
+  }
+
+  if (application->ui_text_update_count > 0) {
+    uint32_t count = application->ui_text_update_count;
+    if (count > VKR_MAX_PENDING_TEXT_UPDATES) {
+      count = VKR_MAX_PENDING_TEXT_UPDATES;
+    }
+    for (uint32_t i = 0; i < count; ++i) {
+      ApplicationTextUpdate *pending = &application->ui_text_updates[i];
+      ui_text_updates[i] = (VkrTextUpdate){
+          .text_id = pending->text_id,
+          .content = pending->content,
+          .transform = NULL,
+      };
+    }
+    text_updates_payload.ui_text_updates = ui_text_updates;
+    text_updates_payload.ui_text_update_count = count;
+    has_text_updates = true_v;
+  }
+
+  VkrGpuDebugPayload debug_payload = {
+      .enable_timing = application->rg_gpu_timing_enabled,
+      .capture_pass_timestamps = application->rg_gpu_timing_enabled,
+  };
+  const VkrGpuDebugPayload *debug_ptr =
+      application->rg_gpu_timing_enabled ? &debug_payload : NULL;
+
+  VkrRenderPacket packet = {
+      .packet_version = VKR_RENDER_PACKET_VERSION,
+      .frame =
+          {
+              .frame_index = (uint32_t)application->renderer.frame_number,
+              .delta_time = delta,
+              .window_width = setup.window_width,
+              .window_height = setup.window_height,
+              .viewport_width = viewport_width,
+              .viewport_height = viewport_height,
+              .editor_enabled = editor_enabled,
+          },
+      .globals =
+          {
+              .view = application->renderer.globals.view,
+              .projection = application->renderer.globals.projection,
+              .view_position = application->renderer.globals.view_position,
+              .ambient_color = application->renderer.globals.ambient_color,
+              .render_mode =
+                  (uint32_t)application->renderer.globals.render_mode,
+          },
+      .world = has_world ? &world_payload : NULL,
+      .shadow = has_shadow ? &shadow_payload : NULL,
+      .skybox = &skybox_payload,
+      .ui = &ui_payload,
+      .editor = has_editor ? &editor_payload : NULL,
+      .picking = has_picking ? &picking_payload : NULL,
+      .text_updates = has_text_updates ? &text_updates_payload : NULL,
+      .debug = debug_ptr,
+  };
+
+  VkrRendererFrameMetrics metrics = {0};
+  VkrValidationError validation = {0};
+  VkrRendererError submit_err = vkr_renderer_submit_packet(
+      &application->renderer, &packet, &metrics, &validation);
+  if (submit_err != VKR_RENDERER_ERROR_NONE) {
+    if (validation.field_path && validation.message) {
+      log_error("Packet validation failed: %s (%s)", validation.field_path,
+                validation.message);
+    } else {
+      String8 err = vkr_renderer_get_error_string(submit_err);
+      log_error("Packet submit failed: %s", string8_cstr(&err));
+    }
+  }
+
+  if (vkr_allocator_scope_is_valid(&scope)) {
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
 }
 
@@ -432,7 +958,26 @@ void application_start(Application *application) {
       continue;
     }
 
+    VkrAllocatorScope frame_scope = {0};
+    VkrAllocator *frame_alloc = &application->renderer.scratch_allocator;
+    if (vkr_allocator_supports_scopes(frame_alloc)) {
+      frame_scope = vkr_allocator_begin_scope(frame_alloc);
+    }
+    application->ui_text_update_count = 0;
+    application->world_text_update_count = 0;
+
     application_update(application, delta);
+
+    // `application_update()` may request shutdown (for example via auto-close).
+    // Stop this frame immediately to avoid recording/render calls after
+    // APPLICATION_FLAG_RUNNING has been cleared.
+    if (!bitset8_is_set(&application->app_flags, APPLICATION_FLAG_RUNNING) ||
+        !bitset8_is_set(&application->app_flags, APPLICATION_FLAG_INITIALIZED)) {
+      if (vkr_allocator_scope_is_valid(&frame_scope)) {
+        vkr_allocator_end_scope(&frame_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      }
+      break;
+    }
 
     VkrCameraSystem *camera_system = &application->renderer.camera_system;
     VkrCameraHandle active_camera =
@@ -447,14 +992,24 @@ void application_start(Application *application) {
       log_warn("Active camera handle invalid; skipping controller update");
     }
 
-    vkr_view_system_update_all(&application->renderer, delta);
-
     if (camera) {
       vkr_camera_controller_update(&application->renderer.camera_controller,
                                    delta);
     }
 
     vkr_camera_registry_update_all(camera_system);
+
+    if (application->renderer.active_scene) {
+      vkr_lighting_system_sync_from_scene(&application->renderer.lighting_system,
+                                          application->renderer.active_scene);
+    }
+
+    if (camera) {
+      vkr_shadow_system_update(
+          &application->renderer.shadow_system, camera,
+          application->renderer.lighting_system.directional.enabled,
+          application->renderer.lighting_system.directional.direction);
+    }
 
     // Update world view/projection from camera each frame to reflect movement
     application->renderer.globals.view =
@@ -484,7 +1039,19 @@ void application_start(Application *application) {
                                     mesh_index);
     }
 
+    if (!bitset8_is_set(&application->app_flags, APPLICATION_FLAG_RUNNING) ||
+        !bitset8_is_set(&application->app_flags, APPLICATION_FLAG_INITIALIZED)) {
+      if (vkr_allocator_scope_is_valid(&frame_scope)) {
+        vkr_allocator_end_scope(&frame_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      }
+      break;
+    }
+
     application_draw_frame(application, delta);
+
+    if (vkr_allocator_scope_is_valid(&frame_scope)) {
+      vkr_allocator_end_scope(&frame_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    }
 
     if (application->config->target_frame_rate > 0) {
       // Frame limiting / yielding CPU
@@ -552,13 +1119,16 @@ void application_resume(Application *application) {
  * @brief Signals the application's main loop to terminate.
  * Clears the `APPLICATION_FLAG_RUNNING` flag, which will cause the `while`
  * condition in `application_start` to become false, leading to loop exit.
- * Asserts that the application is currently running.
+ * This call is idempotent to support shutdown paths that may request close
+ * from both update-time logic and post-loop teardown.
  * @param application Pointer to the `Application` structure.
  */
 void application_close(Application *application) {
   assert(application != NULL && "Application is NULL");
-  assert(bitset8_is_set(&application->app_flags, APPLICATION_FLAG_RUNNING) &&
-         "Application is not running");
+
+  if (!bitset8_is_set(&application->app_flags, APPLICATION_FLAG_RUNNING)) {
+    return;
+  }
 
   bitset8_clear(&application->app_flags, APPLICATION_FLAG_RUNNING);
 }
