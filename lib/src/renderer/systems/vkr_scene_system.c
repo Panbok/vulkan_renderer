@@ -9,13 +9,12 @@
 #include "math/vkr_math.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/renderer_frontend.h"
-#include "renderer/systems/views/vkr_view_world.h"
-#include "renderer/systems/vkr_layer_messages.h"
+#include "renderer/systems/vkr_world_resources.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_picking_ids.h"
 #include "renderer/systems/vkr_picking_system.h"
 #include "renderer/systems/vkr_resource_system.h"
-#include "renderer/systems/vkr_view_system.h"
+#include "renderer/resources/world/vkr_text_3d.h"
 
 // ============================================================================
 // Internal Constants
@@ -1014,12 +1013,6 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
   scene_invalidate_queries(scene);
   scene->next_render_id = 1;
 
-  // Initialize text3d storage
-  scene->text3d_instances = NULL;
-  scene->text3d_count = 0;
-  scene->text3d_capacity = 0;
-  scene->text3d_initialized = false;
-
   if (out_error)
     *out_error = VKR_SCENE_ERROR_NONE;
   return true;
@@ -1051,12 +1044,10 @@ vkr_internal void destroy_text3d_chunk_cb(const VkrArchetype *arch,
     return;
 
   for (uint32_t i = 0; i < count; i++) {
-    VkrLayerMsg_WorldTextDestroy msg = {
-        .h = VKR_LAYER_MSG_HEADER_INIT(VKR_LAYER_MSG_WORLD_TEXT_DESTROY,
-                                       VkrViewWorldTextDestroyData),
-        .payload = {.text_id = text3d_comps[i].text_index},
-    };
-    vkr_view_system_send_msg_no_rsp(rf, rf->world_layer, &msg.h);
+    if (rf->world_resources.initialized) {
+      vkr_world_resources_text_destroy(rf, &rf->world_resources,
+                                       text3d_comps[i].text_index);
+    }
   }
 }
 
@@ -1074,21 +1065,10 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
 
     // Invalidate picking instance states before scene textures are destroyed.
     // This ensures descriptor sets don't reference stale texture handles.
-    RendererFrontend *frontend = (RendererFrontend *)rf;
-    vkr_picking_invalidate_instance_states(rf, &frontend->picking);
-
-    if (frontend->shadow_layer.id != 0) {
-      VkrLayerMsg_ShadowInvalidateInstanceStates msg = {
-          .h = {.kind = VKR_LAYER_MSG_SHADOW_INVALIDATE_INSTANCE_STATES,
-                .version = 1,
-                .payload_size = 0,
-                .flags = VKR_LAYER_MSG_FLAG_NONE},
-      };
-      vkr_view_system_send_msg_no_rsp(rf, frontend->shadow_layer, &msg.h);
-    }
+    vkr_picking_invalidate_instance_states(rf, &rf->picking);
   }
 
-  // Send destroy messages for all text3d entities to world view.
+  // Send destroy messages for all text3d entities to world resources.
   // Must happen before ECS world destruction since we need to query components.
   if (rf && scene->rf && scene->world) {
     // Build text3d query
@@ -1108,9 +1088,6 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
       vkr_entity_query_compiled_destroy(scene->alloc, &compiled);
     }
   }
-
-  // Destroy local text3d instance array (legacy, may be empty)
-  vkr_scene_destroy_text3d_instances(scene);
 
   // Remove owned mesh instances from mesh manager
   if (rf && scene->owned_instances) {
@@ -2004,7 +1981,7 @@ vkr_internal void render_sync_point_light_cb(const VkrArchetype *arch,
 }
 
 /**
- * @brief Chunk callback to sync shapes (legacy meshes).
+ * @brief Chunk callback to sync shapes (mesh-slot path).
  */
 vkr_internal void render_sync_shape_cb(const VkrArchetype *arch,
                                        VkrChunk *chunk, void *user) {
@@ -2033,7 +2010,7 @@ vkr_internal void render_sync_shape_cb(const VkrArchetype *arch,
     uint32_t render_id = render_ids[i].id;
     bool8_t is_visible = scene_entity_is_visible(scene, entities[i]);
 
-    // Sync legacy mesh state
+    // Sync mesh-slot state for shapes
     vkr_mesh_manager_set_model(&rf->mesh_manager, mesh_index,
                                transforms[i].world);
     vkr_mesh_manager_set_visible(&rf->mesh_manager, mesh_index, is_visible);
@@ -2097,7 +2074,7 @@ vkr_internal void scene_render_bridge_sync(VkrSceneRenderBridge *bridge,
       continue;
     }
 
-    // Try shape (legacy mesh) next
+    // Try shape (mesh-slot path) next
     const SceneShape *shape =
         (const SceneShape *)vkr_entity_get_component_if_alive_const(
             world, entity, scene->comp_shape);
@@ -2256,6 +2233,9 @@ void vkr_scene_handle_destroy(VkrSceneHandle handle,
 
   scene_render_bridge_shutdown(&runtime->bridge);
   vkr_scene_shutdown(&runtime->scene, rf);
+  if (rf && rf->render_graph_enabled && rf->render_graph) {
+    vkr_rg_log_resource_stats(rf->render_graph, "RenderGraph (scene unload)");
+  }
 
   // Release global accounting for the scene arena before destroying it.
   // This adjusts global memory stats for all allocations made from scene_alloc
@@ -2348,7 +2328,7 @@ bool8_t vkr_scene_set_text3d(VkrScene *scene, VkrEntityId entity,
     return true_v;
   }
 
-  // Allocate world view text slot ID (use entity index as text_id)
+  // Allocate world-resources text slot ID (use entity index as text_id)
   uint32_t text_id = entity.parts.index;
 
   // Get transform for text positioning
@@ -2361,23 +2341,25 @@ bool8_t vkr_scene_set_text3d(VkrScene *scene, VkrEntityId entity,
         transform->position, transform->scale, transform->rotation);
   }
 
-  // Send layer message to create text in world view
-  VkrLayerMsg_WorldTextCreate msg = {
-      .h = VKR_LAYER_MSG_HEADER_INIT(VKR_LAYER_MSG_WORLD_TEXT_CREATE,
-                                     VkrViewWorldTextCreateData),
-      .payload = {.text_id = text_id,
-                  .content = config->text,
-                  .has_config = true_v,
-                  .config = {.font = config->font,
-                             .font_size = config->font_size,
-                             .color = config->color,
-                             .texture_width = config->texture_width,
-                             .texture_height = config->texture_height,
-                             .uv_inset_px = config->uv_inset_px},
-                  .transform = text_transform},
+  VkrText3DConfig text_config = {
+      .font = config->font,
+      .font_size = config->font_size,
+      .color = config->color,
+      .texture_width = config->texture_width,
+      .texture_height = config->texture_height,
+      .uv_inset_px = config->uv_inset_px,
   };
 
-  vkr_view_system_send_msg_no_rsp(rf, rf->world_layer, &msg.h);
+  VkrWorldTextCreateData payload = {
+      .text_id = text_id,
+      .content = config->text,
+      .config = &text_config,
+      .transform = text_transform,
+  };
+
+  if (rf->world_resources.initialized) {
+    vkr_world_resources_text_create(rf, &rf->world_resources, &payload);
+  }
 
   uint32_t tex_w = config->texture_width > 0 ? config->texture_width
                                              : VKR_TEXT_3D_DEFAULT_TEXTURE_SIZE;
@@ -2399,13 +2381,9 @@ bool8_t vkr_scene_set_text3d(VkrScene *scene, VkrEntityId entity,
 
   if (!vkr_entity_add_component(scene->world, entity, scene->comp_text3d,
                                 &comp)) {
-    // Send destroy message to clean up
-    VkrLayerMsg_WorldTextDestroy destroy_msg = {
-        .h = VKR_LAYER_MSG_HEADER_INIT(VKR_LAYER_MSG_WORLD_TEXT_DESTROY,
-                                       VkrViewWorldTextDestroyData),
-        .payload = {.text_id = text_id},
-    };
-    vkr_view_system_send_msg_no_rsp(rf, rf->world_layer, &destroy_msg.h);
+    if (rf->world_resources.initialized) {
+      vkr_world_resources_text_destroy(rf, &rf->world_resources, text_id);
+    }
     if (out_error)
       *out_error = VKR_SCENE_ERROR_COMPONENT_ADD_FAILED;
     return false_v;
@@ -2437,95 +2415,13 @@ bool8_t vkr_scene_update_text3d(VkrScene *scene, VkrEntityId entity,
 
   RendererFrontend *rf = (RendererFrontend *)scene->rf;
 
-  // Send layer message to update text in world view
-  VkrLayerMsg_WorldTextUpdate msg = {
-      .h = VKR_LAYER_MSG_HEADER_INIT(VKR_LAYER_MSG_WORLD_TEXT_UPDATE,
-                                     VkrViewWorldTextUpdateData),
-      .payload = {.text_id = comp->text_index, .content = text},
-  };
-
-  vkr_view_system_send_msg_no_rsp(rf, rf->world_layer, &msg.h);
+  if (rf->world_resources.initialized) {
+    vkr_world_resources_text_update(rf, &rf->world_resources, comp->text_index,
+                                    text);
+  }
 
   comp->dirty = false_v;
   return true_v;
-}
-
-void vkr_scene_init_text3d_instances(VkrScene *scene,
-                                     struct s_RendererFrontend *rf) {
-  if (!scene || !rf || scene->text3d_initialized)
-    return;
-
-  for (uint32_t i = 0; i < scene->text3d_count; i++) {
-    VkrText3D *instance = &scene->text3d_instances[i];
-    if (instance->initialized)
-      continue;
-
-    VkrText3DConfig config = VKR_TEXT_3D_CONFIG_DEFAULT;
-    config.text = instance->text;
-    config.font = instance->font;
-    config.font_size = instance->font_size;
-    config.color = instance->color;
-    config.texture_width = instance->texture_width;
-    config.texture_height = instance->texture_height;
-
-    VkrRendererError text_err = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_text_3d_create(instance, rf, &rf->font_system, &rf->allocator,
-                            &config, &text_err)) {
-      String8 err_str = vkr_renderer_get_error_string(text_err);
-      log_error("Scene: failed to initialize text3d instance %u: %s", i,
-                string8_cstr(&err_str));
-      continue;
-    }
-  }
-
-  scene->text3d_initialized = true_v;
-}
-
-void vkr_scene_render_text3d(VkrScene *scene, struct s_RendererFrontend *rf) {
-  if (!scene || !rf || scene->text3d_count == 0)
-    return;
-
-  // Initialize if needed
-  if (!scene->text3d_initialized) {
-    vkr_scene_init_text3d_instances(scene, rf);
-  }
-
-  // Iterate text3d entities and render
-  // (Using direct iteration since we need transform for each text)
-  for (uint32_t i = 0; i < scene->text3d_count; i++) {
-    VkrText3D *instance = &scene->text3d_instances[i];
-    if (!instance->initialized)
-      continue;
-
-    // Find the entity that owns this text index
-    // (For now, we iterate the component storage - could optimize with lookup)
-    vkr_text_3d_update(instance);
-    vkr_text_3d_draw(instance);
-  }
-}
-
-void vkr_scene_destroy_text3d_instances(VkrScene *scene) {
-  if (!scene)
-    return;
-
-  for (uint32_t i = 0; i < scene->text3d_count; i++) {
-    VkrText3D *instance = &scene->text3d_instances[i];
-    if (instance->initialized) {
-      vkr_text_3d_destroy(instance);
-    }
-  }
-
-  if (scene->text3d_instances) {
-    vkr_allocator_free_aligned(scene->alloc, scene->text3d_instances,
-                               scene->text3d_capacity * sizeof(VkrText3D),
-                               AlignOf(VkrText3D),
-                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-
-  scene->text3d_instances = NULL;
-  scene->text3d_count = 0;
-  scene->text3d_capacity = 0;
-  scene->text3d_initialized = false_v;
 }
 
 // ============================================================================
@@ -2703,7 +2599,7 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
     return false_v;
   }
 
-  // Shapes use legacy mesh indices. Set up render_id, visibility, and model
+  // Shapes use mesh-slot indices. Set up render_id, visibility, and model
   // on the mesh for picking to work. Transform sync requires a query for shapes.
   uint32_t render_id = 0;
   if (!vkr_scene_ensure_render_id(scene, entity, &render_id)) {

@@ -19,7 +19,6 @@
 #include "math/vkr_quat.h"
 #include "memory/vkr_allocator.h"
 #include "renderer/resources/vkr_resources.h"
-#include "renderer/resources/world/vkr_text_3d.h"
 
 // Forward declarations
 struct s_RendererFrontend;
@@ -129,14 +128,14 @@ typedef enum SceneShapeType {
 } SceneShapeType;
 
 /**
- * @brief 3D text component tied to world-layer text instances.
+ * @brief 3D text component tied to world-resources text instances.
  *
- * text_index is the world-layer text id (currently entity index).
- * The world view owns GPU instances; the scene stores ids/size metadata.
+ * text_index is the world text id (currently entity index).
+ * World resources own GPU instances; the scene stores ids/size metadata.
  * world_width/world_height capture the base plane size for gizmo pivot math.
  */
 typedef struct SceneText3D {
-  uint32_t text_index;    // World-layer text id (currently entity index)
+  uint32_t text_index;    // World text id (currently entity index)
   bool8_t dirty;          // True if text content changed, needs re-render
   float32_t world_width;  // Base width in world units (before entity scale)
   float32_t world_height; // Base height in world units (before entity scale)
@@ -214,7 +213,6 @@ typedef struct VkrScene {
   // Compiled queries for efficient per-frame iteration
   VkrQueryCompiled query_transforms;  // Entities with SceneTransform
   VkrQueryCompiled query_renderables; // (SceneTransform, SceneMeshRenderer)
-  VkrQueryCompiled query_text3d;      // Entities with SceneText3D
   VkrQueryCompiled
       query_directional_light;         // Entities with SceneDirectionalLight
   VkrQueryCompiled query_point_lights; // (SceneTransform, ScenePointLight)
@@ -235,7 +233,7 @@ typedef struct VkrScene {
   uint32_t child_index_capacity; // Slot count (>= world->dir.capacity)
   bool8_t child_index_valid;     // False until rebuilt or incrementally updated
 
-  // Owned mesh indices (for cleanup on scene destroy - legacy meshes)
+  // Owned mesh indices (mesh-slot path; used by shapes)
   uint32_t *owned_meshes;
   uint32_t owned_mesh_count;
   uint32_t owned_mesh_capacity;
@@ -253,11 +251,6 @@ typedef struct VkrScene {
 
   uint32_t next_render_id; // Monotonic render id allocator (0 reserved)
 
-  // Legacy local text storage (world view owns live instances).
-  VkrText3D *text3d_instances;
-  uint32_t text3d_count;
-  uint32_t text3d_capacity;
-  bool8_t text3d_initialized; // True after first renderer sync
 } VkrScene;
 
 // ============================================================================
@@ -611,7 +604,7 @@ void vkr_scene_release_instance(VkrScene *scene, VkrMeshInstanceHandle instance)
  * @brief Configuration for adding a text3d component to an entity.
  */
 typedef struct VkrSceneText3DConfig {
-  String8 text;            // Text content (passed through to world layer)
+  String8 text;            // Text content (passed through to world resources)
   VkrFontHandle font;      // Font handle (or invalid for default)
   float32_t font_size;     // Font size in points (0 = font's native)
   Vec4 color;              // Text color RGBA
@@ -632,8 +625,8 @@ typedef struct VkrSceneText3DConfig {
 /**
  * @brief Add a text3d component to an entity.
  *
- * Sends a world-layer create message and links the entity to that text id.
- * The world view owns GPU resources; the scene stores text metadata.
+ * Sends a world-resources create request and links the entity to that text id.
+ * World resources own GPU resources; the scene stores text metadata.
  *
  * @param scene Scene containing the entity.
  * @param entity Entity to add text3d component to.
@@ -660,38 +653,11 @@ SceneText3D *vkr_scene_get_text3d(VkrScene *scene, VkrEntityId entity);
  *
  * @param scene Scene containing the entity.
  * @param entity Entity with text3d component.
- * @param text New text content (passed to world layer).
+ * @param text New text content (passed to world resources).
  * @return true on success.
  */
 bool8_t vkr_scene_update_text3d(VkrScene *scene, VkrEntityId entity,
                                 String8 text);
-
-/**
- * @brief Initialize scene-owned text3d instances with the renderer.
- *
- * Legacy path: world view manages text instances in the world layer.
- *
- * @param scene Scene to initialize.
- * @param rf Renderer frontend.
- */
-void vkr_scene_init_text3d_instances(VkrScene *scene,
-                                     struct s_RendererFrontend *rf);
-
-/**
- * @brief Update and draw all scene-owned text3d entities.
- *
- * Legacy path: world view handles text rendering in the world layer.
- *
- * @param scene Scene to render.
- * @param rf Renderer frontend.
- */
-void vkr_scene_render_text3d(VkrScene *scene, struct s_RendererFrontend *rf);
-
-/**
- * @brief Destroy scene-owned text3d instances.
- * @param scene Scene to cleanup.
- */
-void vkr_scene_destroy_text3d_instances(VkrScene *scene);
 
 // ============================================================================
 // Shape Component
