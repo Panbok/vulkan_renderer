@@ -11,12 +11,17 @@ vkr_internal Mat4 vkr_camera_calculate_projection(const VkrCamera *camera) {
   assert_log(camera->type != VKR_CAMERA_TYPE_NONE, "Camera type is NONE");
 
   if (camera->type == VKR_CAMERA_TYPE_PERSPECTIVE) {
-    VkrWindowPixelSize window_size = vkr_window_get_pixel_size(camera->window);
-    assert_log(window_size.width > 0 && window_size.height > 0,
-               "Window size invalid");
+    uint32_t width = camera->cached_window_width;
+    uint32_t height = camera->cached_window_height;
+    if (width == 0 || height == 0) {
+      VkrWindowPixelSize window_size =
+          vkr_window_get_pixel_size(camera->window);
+      width = window_size.width;
+      height = window_size.height;
+    }
+    assert_log(width > 0 && height > 0, "Camera size invalid");
 
-    float32_t aspect =
-        (float32_t)window_size.width / (float32_t)window_size.height;
+    float32_t aspect = (float32_t)width / (float32_t)height;
     return mat4_perspective(vkr_to_radians(camera->zoom), aspect,
                             camera->near_clip, camera->far_clip);
   }

@@ -6,11 +6,11 @@
 #include "core/vkr_window.h"
 #include "math/mat.h"
 #include "math/vec.h"
-#include "memory/vkr_allocator.h"
 #include "memory/arena.h"
+#include "memory/vkr_allocator.h"
 
 #define VKR_MAX_MOUSE_DELTA 100.0f
-#define VKR_DEFAULT_CAMERA_ZOOM 1.0f
+#define VKR_DEFAULT_CAMERA_ZOOM 90.0f
 #define VKR_DEFAULT_CAMERA_SPEED 7.5f
 #define VKR_DEFAULT_CAMERA_SENSITIVITY 6.0f
 #define VKR_DEFAULT_CAMERA_YAW -90.0f
