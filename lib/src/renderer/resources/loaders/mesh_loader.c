@@ -831,7 +831,7 @@ vkr_internal void vkr_mesh_loader_compute_bounds(const VkrVertex3d *vertices,
   Vec3 max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
 
   for (uint32_t i = 0; i < count; ++i) {
-    Vec3 pos = vertices[i].position;
+    Vec3 pos = vkr_vertex_unpack_vec3(vertices[i].position);
     min.x = vkr_min_f32(min.x, pos.x);
     min.y = vkr_min_f32(min.y, pos.y);
     min.z = vkr_min_f32(min.z, pos.z);
@@ -980,15 +980,17 @@ vkr_internal void vkr_mesh_loader_push_face(VkrMeshLoaderState *state,
         vkr_mesh_loader_fix_index(ref.normal, (uint32_t)state->normals.length);
 
     VkrVertex3d vert = {0};
-    vert.position = (pos_idx < state->positions.length)
-                        ? *vector_get_Vec3(&state->positions, pos_idx)
-                        : vec3_zero();
+    vert.position = vkr_vertex_pack_vec3(
+        (pos_idx < state->positions.length)
+            ? *vector_get_Vec3(&state->positions, pos_idx)
+            : vec3_zero());
     vert.texcoord = (tex_idx < state->texcoords.length)
                         ? *vector_get_Vec2(&state->texcoords, tex_idx)
                         : vec2_zero();
-    vert.normal = (norm_idx < state->normals.length)
-                      ? *vector_get_Vec3(&state->normals, norm_idx)
-                      : vec3_new(0.0f, 1.0f, 0.0f);
+    vert.normal = vkr_vertex_pack_vec3(
+        (norm_idx < state->normals.length)
+            ? *vector_get_Vec3(&state->normals, norm_idx)
+            : vec3_new(0.0f, 1.0f, 0.0f));
     vert.colour = vec4_new(1.0f, 1.0f, 1.0f, 1.0f);
     vert.tangent = vec4_zero();
 

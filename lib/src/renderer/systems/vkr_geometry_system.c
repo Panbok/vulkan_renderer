@@ -77,8 +77,8 @@ vkr_internal INLINE void vkr_write_vertex(VkrVertex3d *vertices, uint32_t index,
                                           Vec2 texcoord, Vec4 color,
                                           Vec4 tangent) {
   VkrVertex3d *vertex = &vertices[index];
-  vertex->position = position;
-  vertex->normal = normal;
+  vertex->position = vkr_vertex_pack_vec3(position);
+  vertex->normal = vkr_vertex_pack_vec3(normal);
   vertex->texcoord = texcoord;
   vertex->colour = color;
   vertex->tangent = tangent;
@@ -114,9 +114,12 @@ vkr_internal void vkr_geometry_apply_transform(VkrVertex3d *verts,
                                                uint32_t count, VkrQuat rotation,
                                                Vec3 translation) {
   for (uint32_t i = 0; i < count; ++i) {
-    verts[i].position = vec3_add(
-        vkr_quat_rotate_vec3(rotation, verts[i].position), translation);
-    verts[i].normal = vkr_quat_rotate_vec3(rotation, verts[i].normal);
+    Vec3 position = vkr_vertex_unpack_vec3(verts[i].position);
+    Vec3 normal = vkr_vertex_unpack_vec3(verts[i].normal);
+    position = vec3_add(vkr_quat_rotate_vec3(rotation, position), translation);
+    normal = vkr_quat_rotate_vec3(rotation, normal);
+    verts[i].position = vkr_vertex_pack_vec3(position);
+    verts[i].normal = vkr_vertex_pack_vec3(normal);
   }
 }
 
@@ -137,7 +140,7 @@ vkr_internal void vkr_geometry_compute_bounds(const VkrVertex3d *verts,
   Vec3 max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
 
   for (uint32_t i = 0; i < count; ++i) {
-    Vec3 p = verts[i].position;
+    Vec3 p = vkr_vertex_unpack_vec3(verts[i].position);
     min.x = vkr_min_f32(min.x, p.x);
     min.y = vkr_min_f32(min.y, p.y);
     min.z = vkr_min_f32(min.z, p.z);
@@ -1541,8 +1544,11 @@ void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,
     VkrVertex3d *v1 = &verts[i1];
     VkrVertex3d *v2 = &verts[i2];
 
-    Vec3 e1 = vec3_sub(v1->position, v0->position);
-    Vec3 e2 = vec3_sub(v2->position, v0->position);
+    Vec3 p0 = vkr_vertex_unpack_vec3(v0->position);
+    Vec3 p1 = vkr_vertex_unpack_vec3(v1->position);
+    Vec3 p2 = vkr_vertex_unpack_vec3(v2->position);
+    Vec3 e1 = vec3_sub(p1, p0);
+    Vec3 e2 = vec3_sub(p2, p0);
 
     float32_t deltaU1 = v1->texcoord.u - v0->texcoord.u;
     float32_t deltaV1 = v1->texcoord.v - v0->texcoord.v;
@@ -1572,7 +1578,7 @@ void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,
   }
 
   for (uint32_t i = 0; i < vertex_count; ++i) {
-    Vec3 normal = verts[i].normal;
+    Vec3 normal = vkr_vertex_unpack_vec3(verts[i].normal);
     Vec3 tangent = tangent_accumulators[i];
 
     float32_t tangent_len_sq = vec3_length_squared(tangent);
@@ -1603,8 +1609,10 @@ void vkr_geometry_system_generate_tangents(VkrAllocator *allocator,
 static INLINE bool8_t vkr_vertex3d_equal(const VkrVertex3d *lhs,
                                          const VkrVertex3d *rhs) {
   const float32_t epsilon = VKR_FLOAT_EPSILON;
-  return vec3_equal(lhs->position, rhs->position, epsilon) &&
-         vec3_equal(lhs->normal, rhs->normal, epsilon) &&
+  return vec3_equal(vkr_vertex_unpack_vec3(lhs->position),
+                    vkr_vertex_unpack_vec3(rhs->position), epsilon) &&
+         vec3_equal(vkr_vertex_unpack_vec3(lhs->normal),
+                    vkr_vertex_unpack_vec3(rhs->normal), epsilon) &&
          vec2_equal(lhs->texcoord, rhs->texcoord, epsilon) &&
          vec4_equal(lhs->colour, rhs->colour, epsilon) &&
          vec4_equal(lhs->tangent, rhs->tangent, epsilon);
