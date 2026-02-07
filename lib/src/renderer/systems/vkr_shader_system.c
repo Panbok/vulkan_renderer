@@ -3,6 +3,46 @@
 #include "core/logger.h"
 #include "renderer/resources/vkr_resources.h"
 
+typedef struct VkrShaderRuntimeSizes {
+  uint64_t global_ubo_size;
+  uint64_t instance_ubo_size;
+  uint64_t push_constant_size;
+} VkrShaderRuntimeSizes;
+
+vkr_internal VkrShaderRuntimeSizes
+vkr_shader_resolve_runtime_sizes(VkrShaderSystem *state, VkrShader *shader) {
+  VkrShaderRuntimeSizes sizes = {
+      .global_ubo_size = shader->config->global_ubo_size,
+      .instance_ubo_size = shader->config->instance_ubo_size,
+      .push_constant_size = shader->config->push_constant_size,
+  };
+
+  if (!state || !state->registry || !shader) {
+    return sizes;
+  }
+
+  VkrPipelineHandle pipeline_handle = VKR_PIPELINE_HANDLE_INVALID;
+  if (!vkr_pipeline_registry_find_by_name(state->registry, shader->name,
+                                          &pipeline_handle) ||
+      pipeline_handle.id == 0) {
+    return sizes;
+  }
+
+  VkrPipeline *pipeline = NULL;
+  if (!vkr_pipeline_registry_get_pipeline(state->registry, pipeline_handle,
+                                          &pipeline) ||
+      !pipeline) {
+    return sizes;
+  }
+
+  const VkrShaderObjectDescription *shader_desc =
+      &pipeline->description.shader_object_description;
+  sizes.global_ubo_size = shader_desc->global_ubo_size;
+  sizes.instance_ubo_size = shader_desc->instance_ubo_size;
+  sizes.push_constant_size = shader_desc->push_constant_size;
+  return sizes;
+}
+
 vkr_internal uint8_t *vkr_get_staging_buffer_for_scope(VkrShaderSystem *state,
                                                        VkrShaderScope scope) {
   assert_log(state != NULL, "State is NULL");
@@ -23,9 +63,11 @@ vkr_internal void vkr_ensure_staging_for_shader(VkrShaderSystem *state,
   assert_log(state != NULL, "State is NULL");
   assert_log(shader != NULL, "Shader is NULL");
 
-  const uint64_t g_size = shader->config->global_ubo_size;
-  const uint64_t i_size = shader->config->instance_ubo_size;
-  const uint64_t l_size = shader->config->push_constant_size;
+  const VkrShaderRuntimeSizes runtime_sizes =
+      vkr_shader_resolve_runtime_sizes(state, shader);
+  const uint64_t g_size = runtime_sizes.global_ubo_size;
+  const uint64_t i_size = runtime_sizes.instance_ubo_size;
+  const uint64_t l_size = runtime_sizes.push_constant_size;
 
   if (g_size > 0 &&
       (state->global_staging == NULL || state->global_staging_size < g_size)) {
@@ -90,7 +132,8 @@ bool8_t vkr_shader_system_initialize(VkrShaderSystem *state,
           (uint64_t)cfg.max_shader_count * sizeof(VkrShader));
 
   // Initialize staging buffers
-  state->instance_state = (VkrShaderStateObject){0};
+  state->instance_state =
+      (VkrShaderStateObject){.instance_state = {.id = VKR_INVALID_ID}};
   state->material_state = (VkrRendererMaterialState){0};
   state->global_staging = NULL;
   state->global_staging_size = 0;
@@ -111,23 +154,17 @@ void vkr_shader_system_shutdown(VkrShaderSystem *state) {
   // Release all instance resources before destroying arena
   if (state->registry) {
     for (uint32_t i = 1; i < state->shaders.length; i++) {
-      if ((*array_get_bool8_t(&state->active_shaders, i))) {
-        VkrShader *shader = array_get_VkrShader(&state->shaders, i);
+      if (!(*array_get_bool8_t(&state->active_shaders, i))) {
+        continue;
+      }
+      VkrShader *shader = array_get_VkrShader(&state->shaders, i);
 
-        // Release all instances for this shader
-        for (uint32_t j = 0; j < shader->instance_capacity; j++) {
-          if (shader->instance_ids[j] != 0) {
-            VkrRendererInstanceStateHandle handle = {
-                .id = shader->instance_ids[j]};
-            VkrPipelineHandle current =
-                vkr_pipeline_registry_get_current_pipeline(state->registry);
-            if (current.id != 0) {
-              VkrRendererError err = VKR_RENDERER_ERROR_NONE;
-              vkr_pipeline_registry_release_instance_state(
-                  state->registry, current, handle, &err);
-            }
-          }
+      for (uint32_t j = 0; j < shader->instance_capacity; j++) {
+        if (shader->instance_ids[j] == VKR_INVALID_ID) {
+          continue;
         }
+        vkr_shader_release_instance_resources(state, shader,
+                                              shader->instance_ids[j]);
       }
     }
   }
@@ -198,8 +235,8 @@ bool8_t vkr_shader_system_create(VkrShaderSystem *state,
   shader->instance_ids = (uint32_t *)vkr_allocator_alloc(
       &state->allocator, (uint64_t)shader->instance_capacity * sizeof(uint32_t),
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-  MemZero(shader->instance_ids,
-          (uint64_t)shader->instance_capacity * sizeof(uint32_t));
+  MemSet(shader->instance_ids, 0xFF,
+         (uint64_t)shader->instance_capacity * sizeof(uint32_t));
 
   shader->instance_free_list = (uint32_t *)vkr_allocator_alloc(
       &state->allocator, (uint64_t)shader->instance_capacity * sizeof(uint32_t),
@@ -461,7 +498,9 @@ bool8_t vkr_shader_system_apply_global(VkrShaderSystem *state) {
   }
 
   VkrRendererError err = VKR_RENDERER_ERROR_NONE;
-  if (state->current_shader->config->global_ubo_size == 0) {
+  const VkrShaderRuntimeSizes runtime_sizes =
+      vkr_shader_resolve_runtime_sizes(state, state->current_shader);
+  if (runtime_sizes.global_ubo_size == 0) {
     if (!vkr_pipeline_registry_update_global_state(state->registry, NULL,
                                                    &err)) {
       log_error("shader_system: apply_global failed: %s",
@@ -474,7 +513,7 @@ bool8_t vkr_shader_system_apply_global(VkrShaderSystem *state) {
 
   const void *global_ptr = (const void *)state->global_staging;
   if (!global_ptr) {
-    log_warn("Global staging is NULL while global_ubo_size > 0");
+    log_warn("Global staging is NULL while runtime global UBO size > 0");
     return false_v;
   }
 
@@ -503,10 +542,11 @@ bool8_t vkr_shader_system_apply_instance(VkrShaderSystem *state) {
   state->instance_state.instance_state.id = shader->bound_instance_id;
 
   state->instance_state.instance_ubo_data = state->instance_staging;
-  state->instance_state.instance_ubo_size = shader->config->instance_ubo_size;
+  const VkrShaderRuntimeSizes runtime_sizes =
+      vkr_shader_resolve_runtime_sizes(state, shader);
+  state->instance_state.instance_ubo_size = runtime_sizes.instance_ubo_size;
   state->instance_state.push_constants_data = state->local_staging;
-  state->instance_state.push_constants_size =
-      shader->config->push_constant_size;
+  state->instance_state.push_constants_size = runtime_sizes.push_constant_size;
 
   VkrRendererError err = VKR_RENDERER_ERROR_NONE;
   if (!vkr_pipeline_registry_update_instance_state(
@@ -557,14 +597,11 @@ bool8_t vkr_shader_acquire_instance_resources(VkrShaderSystem *state,
 
   VkrPipelineHandle pipeline_handle = VKR_PIPELINE_HANDLE_INVALID;
 
-  // Try to find pipeline by shader name in registry
-  // For now, use current pipeline if it matches shader
-  VkrPipelineHandle current =
-      vkr_pipeline_registry_get_current_pipeline(state->registry);
-  if (current.id != 0) {
-    pipeline_handle = current;
-  } else {
-    log_error("No pipeline bound for shader '%s'", string8_cstr(&shader->name));
+  if (!vkr_pipeline_registry_find_by_name(state->registry, shader->name,
+                                          &pipeline_handle) ||
+      pipeline_handle.id == 0) {
+    log_error("No pipeline found for shader '%s'",
+              string8_cstr(&shader->name));
     return false_v;
   }
 
@@ -609,16 +646,18 @@ bool8_t vkr_shader_release_instance_resources(VkrShaderSystem *state,
     return false_v;
   }
 
-  VkrPipelineHandle current =
-      vkr_pipeline_registry_get_current_pipeline(state->registry);
-  if (current.id == 0) {
-    log_warn("No pipeline bound when releasing instance %u", instance_id);
+  VkrPipelineHandle pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  if (!vkr_pipeline_registry_find_by_name(state->registry, shader->name,
+                                          &pipeline) ||
+      pipeline.id == 0) {
+    log_warn("No pipeline found for shader '%s' when releasing instance %u",
+             string8_cstr(&shader->name), instance_id);
     return false_v;
   }
 
   VkrRendererError err = VKR_RENDERER_ERROR_NONE;
   VkrRendererInstanceStateHandle state_handle = {.id = instance_id};
-  if (!vkr_pipeline_registry_release_instance_state(state->registry, current,
+  if (!vkr_pipeline_registry_release_instance_state(state->registry, pipeline,
                                                     state_handle, &err)) {
     log_error("Failed to release instance resources: %s",
               vkr_renderer_get_error_string(err));
@@ -626,7 +665,7 @@ bool8_t vkr_shader_release_instance_resources(VkrShaderSystem *state,
   }
 
   shader->instance_free_list[shader->instance_free_list_count++] = slot;
-  shader->instance_ids[slot] = 0;
+  shader->instance_ids[slot] = VKR_INVALID_ID;
   shader->instance_used_count--;
 
   return true_v;
@@ -641,7 +680,7 @@ bool8_t vkr_shader_system_delete_by_id(VkrShaderSystem *state,
 
   if (state->registry) {
     for (uint32_t i = 0; i < shader->instance_capacity; i++) {
-      if (shader->instance_ids[i] != 0) {
+      if (shader->instance_ids[i] != VKR_INVALID_ID) {
         vkr_shader_release_instance_resources(state, shader,
                                               shader->instance_ids[i]);
       }
