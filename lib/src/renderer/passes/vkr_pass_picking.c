@@ -41,35 +41,10 @@ vkr_internal VkrTextureOpaqueHandle vkr_pass_picking_get_diffuse_texture(
   return diffuse ? diffuse->handle : NULL;
 }
 
-vkr_internal bool8_t vkr_pass_picking_acquire_instance_state(
-    RendererFrontend *rf, VkrPipelineHandle pipeline,
-    VkrRendererInstanceStateHandle *out_state) {
-  if (!rf || pipeline.id == 0 || !out_state) {
-    return false_v;
-  }
-
-  if (out_state->id != VKR_INVALID_ID) {
-    return true_v;
-  }
-
-  VkrRendererError instance_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_pipeline_registry_acquire_instance_state(
-          &rf->pipeline_registry, pipeline, out_state, &instance_err)) {
-    String8 err = vkr_renderer_get_error_string(instance_err);
-    log_warn("Picking pass: failed to acquire instance state: %s",
-             string8_cstr(&err));
-    out_state->id = VKR_INVALID_ID;
-    return false_v;
-  }
-
-  return true_v;
-}
-
 vkr_internal bool8_t vkr_pass_picking_bind_pipeline(
-    RendererFrontend *rf, VkrPickingContext *picking,
-    VkrPipelineHandle pipeline, VkrRendererInstanceStateHandle *instance_state,
+    RendererFrontend *rf, VkrPipelineHandle pipeline,
     const VkrFrameGlobals *globals) {
-  if (!rf || !picking || pipeline.id == 0 || !globals) {
+  if (!rf || pipeline.id == 0 || !globals) {
     return false_v;
   }
 
@@ -83,13 +58,6 @@ vkr_internal bool8_t vkr_pass_picking_bind_pipeline(
   vkr_shader_system_uniform_set(&rf->shader_system, "projection",
                                 &globals->projection);
   vkr_shader_system_apply_global(&rf->shader_system);
-
-  if (!instance_state ||
-      !vkr_pass_picking_acquire_instance_state(rf, pipeline, instance_state)) {
-    return false_v;
-  }
-
-  vkr_shader_system_bind_instance(&rf->shader_system, instance_state->id);
   return true_v;
 }
 
@@ -109,8 +77,9 @@ vkr_internal void vkr_pass_picking_draw_list(RendererFrontend *rf,
   }
 
   VkrPipelineHandle current_pipeline = VKR_PIPELINE_HANDLE_INVALID;
-  VkrRendererInstanceStateHandle *current_instance_state = NULL;
-  bool8_t current_alpha = false_v;
+  bool8_t shared_instance_bound = false_v;
+  VkrTextureOpaqueHandle default_diffuse =
+      vkr_pass_picking_get_diffuse_texture(rf, NULL);
 
   for (uint32_t i = 0; i < draw_count; ++i) {
     const VkrDrawItem *draw = &draws[i];
@@ -166,13 +135,17 @@ vkr_internal void vkr_pass_picking_draw_list(RendererFrontend *rf,
     VkrPipelineHandle pipeline = use_transparent_pipeline
                                      ? picking->picking_transparent_pipeline
                                      : picking->picking_pipeline;
-    VkrRendererInstanceStateHandle *instance_state =
+    VkrRendererInstanceStateHandle *shared_state =
         use_transparent_pipeline ? &picking->mesh_transparent_instance_state
                                  : &picking->mesh_instance_state;
+    VkrPickingInstanceStatePool *alpha_pool =
+        use_transparent_pipeline ? &picking->mesh_transparent_alpha_instance_pool
+                                 : &picking->mesh_alpha_instance_pool;
 
     if (pipeline.id == 0) {
       pipeline = picking->picking_pipeline;
-      instance_state = &picking->mesh_instance_state;
+      shared_state = &picking->mesh_instance_state;
+      alpha_pool = &picking->mesh_alpha_instance_pool;
       use_alpha = false_v;
       alpha_cutoff = 0.0f;
     }
@@ -182,32 +155,50 @@ vkr_internal void vkr_pass_picking_draw_list(RendererFrontend *rf,
     }
 
     if (pipeline.id != current_pipeline.id ||
-        pipeline.generation != current_pipeline.generation ||
-        use_alpha != current_alpha) {
-      if (!vkr_pass_picking_bind_pipeline(rf, picking, pipeline, instance_state,
-                                          globals)) {
+        pipeline.generation != current_pipeline.generation) {
+      if (!vkr_pass_picking_bind_pipeline(rf, pipeline, globals)) {
         continue;
       }
       current_pipeline = pipeline;
-      current_instance_state = instance_state;
-      current_alpha = use_alpha;
-    } else if (!current_instance_state ||
-               current_instance_state->id == VKR_INVALID_ID) {
-      if (!vkr_pass_picking_acquire_instance_state(rf, pipeline,
-                                                   instance_state)) {
-        continue;
-      }
-      vkr_shader_system_bind_instance(&rf->shader_system, instance_state->id);
-      current_instance_state = instance_state;
+      shared_instance_bound = false_v;
     }
 
-    VkrTextureOpaqueHandle diffuse =
-        vkr_pass_picking_get_diffuse_texture(rf, material);
-    float32_t cutoff = use_alpha ? alpha_cutoff : 0.0f;
-    vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff", &cutoff);
-    vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
-                                  diffuse);
-    vkr_shader_system_apply_instance(&rf->shader_system);
+    if (use_alpha) {
+      if (!vkr_picking_bind_draw_instance_state(rf, pipeline, shared_state,
+                                                alpha_pool, true_v)) {
+        continue;
+      }
+
+      VkrTextureOpaqueHandle diffuse =
+          vkr_pass_picking_get_diffuse_texture(rf, material);
+      vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
+                                    &alpha_cutoff);
+      if (diffuse) {
+        vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
+                                      diffuse);
+      }
+      if (!vkr_shader_system_apply_instance(&rf->shader_system)) {
+        continue;
+      }
+      shared_instance_bound = false_v;
+    } else if (!shared_instance_bound ||
+               shared_state->id == VKR_INVALID_ID) {
+      float32_t zero_cutoff = 0.0f;
+      if (!vkr_picking_bind_draw_instance_state(rf, pipeline, shared_state,
+                                                alpha_pool, false_v)) {
+        continue;
+      }
+      vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
+                                    &zero_cutoff);
+      if (default_diffuse) {
+        vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
+                                      default_diffuse);
+      }
+      if (!vkr_shader_system_apply_instance(&rf->shader_system)) {
+        continue;
+      }
+      shared_instance_bound = true_v;
+    }
 
     bool8_t use_opaque_range = !use_transparent_pipeline;
     VkrPassDrawRange range = {0};
@@ -258,6 +249,7 @@ vkr_internal void vkr_pass_picking_execute(VkrRgPassContext *ctx,
   if (picking->state != VKR_PICKING_STATE_RENDER_PENDING) {
     return;
   }
+  vkr_picking_begin_frame_instance_pools(picking, rf->frame_number);
 
   const VkrDrawItem *draws = payload->draws;
   uint32_t draw_count = payload->draw_count;

@@ -176,6 +176,198 @@ picking_release_instance_state(RendererFrontend *rf, VkrPipelineHandle pipeline,
 }
 
 /**
+ * @brief Rewind a pool's per-frame cursor when frame_number advances.
+ */
+vkr_internal void
+picking_instance_pool_begin_frame(VkrPickingInstanceStatePool *pool,
+                                  uint64_t frame_number) {
+  if (!pool) {
+    return;
+  }
+  if (pool->cursor_frame_number != frame_number) {
+    pool->cursor_frame_number = frame_number;
+    pool->cursor = 0;
+  }
+}
+
+/**
+ * @brief Grow pool storage while preserving acquired state handles.
+ */
+vkr_internal bool8_t
+picking_instance_pool_ensure_capacity(RendererFrontend *rf,
+                                      VkrPickingInstanceStatePool *pool,
+                                      uint32_t required_capacity) {
+  if (!rf || !pool) {
+    return false_v;
+  }
+  if (required_capacity <= pool->capacity) {
+    return true_v;
+  }
+
+  uint32_t new_capacity = pool->capacity > 0 ? pool->capacity * 2u : 64u;
+  while (new_capacity < required_capacity) {
+    new_capacity *= 2u;
+  }
+
+  VkrRendererInstanceStateHandle *new_states = vkr_allocator_alloc(
+      &rf->allocator, sizeof(VkrRendererInstanceStateHandle) * new_capacity,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!new_states) {
+    log_error("Picking: failed to grow alpha instance pool to %u",
+              new_capacity);
+    return false_v;
+  }
+
+  for (uint32_t i = 0; i < new_capacity; ++i) {
+    new_states[i].id = VKR_INVALID_ID;
+  }
+
+  if (pool->states && pool->count > 0) {
+    MemCopy(new_states, pool->states,
+            sizeof(VkrRendererInstanceStateHandle) * (uint64_t)pool->count);
+  }
+
+  if (pool->states) {
+    vkr_allocator_free(&rf->allocator, pool->states,
+                       sizeof(VkrRendererInstanceStateHandle) *
+                           (uint64_t)pool->capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
+  pool->states = new_states;
+  pool->capacity = new_capacity;
+  return true_v;
+}
+
+/**
+ * @brief Return the next per-draw alpha instance state, acquiring as needed.
+ */
+vkr_internal bool8_t
+picking_instance_pool_acquire_next(RendererFrontend *rf,
+                                   VkrPipelineHandle pipeline,
+                                   VkrPickingInstanceStatePool *pool,
+                                   VkrRendererInstanceStateHandle *out_state) {
+  if (!rf || !pool || !out_state || pipeline.id == 0) {
+    return false_v;
+  }
+
+  const uint32_t slot = pool->cursor;
+  if (!picking_instance_pool_ensure_capacity(rf, pool, slot + 1u)) {
+    return false_v;
+  }
+
+  if (slot >= pool->count) {
+    VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
+    VkrRendererInstanceStateHandle state_handle = {.id = VKR_INVALID_ID};
+    if (!vkr_pipeline_registry_acquire_instance_state(
+            &rf->pipeline_registry, pipeline, &state_handle, &acquire_err)) {
+      String8 err = vkr_renderer_get_error_string(acquire_err);
+      log_warn("Picking: failed to acquire alpha instance state: %s",
+               string8_cstr(&err));
+      return false_v;
+    }
+
+    pool->states[slot] = state_handle;
+    pool->count = slot + 1u;
+  }
+
+  *out_state = pool->states[slot];
+  pool->cursor++;
+  return true_v;
+}
+
+/**
+ * @brief Release all acquired handles in the pool but keep storage cached.
+ */
+vkr_internal void
+picking_instance_pool_release_states(RendererFrontend *rf,
+                                     VkrPipelineHandle pipeline,
+                                     VkrPickingInstanceStatePool *pool) {
+  if (!rf || !pool || pipeline.id == 0) {
+    return;
+  }
+
+  for (uint32_t i = 0; i < pool->count; ++i) {
+    picking_release_instance_state(rf, pipeline, &pool->states[i]);
+  }
+
+  pool->count = 0;
+  pool->cursor = 0;
+  pool->cursor_frame_number = UINT64_MAX;
+}
+
+/**
+ * @brief Release all handles and free pool storage.
+ */
+vkr_internal void
+picking_instance_pool_destroy(RendererFrontend *rf, VkrPipelineHandle pipeline,
+                              VkrPickingInstanceStatePool *pool) {
+  if (!rf || !pool) {
+    return;
+  }
+
+  picking_instance_pool_release_states(rf, pipeline, pool);
+
+  if (pool->states) {
+    vkr_allocator_free(&rf->allocator, pool->states,
+                       sizeof(VkrRendererInstanceStateHandle) *
+                           (uint64_t)pool->capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    pool->states = NULL;
+  }
+
+  pool->capacity = 0;
+}
+
+void vkr_picking_begin_frame_instance_pools(VkrPickingContext *ctx,
+                                            uint64_t frame_number) {
+  if (!ctx) {
+    return;
+  }
+  picking_instance_pool_begin_frame(&ctx->mesh_alpha_instance_pool,
+                                    frame_number);
+  picking_instance_pool_begin_frame(&ctx->mesh_transparent_alpha_instance_pool,
+                                    frame_number);
+}
+
+bool8_t vkr_picking_bind_draw_instance_state(
+    struct s_RendererFrontend *renderer, VkrPipelineHandle pipeline,
+    VkrRendererInstanceStateHandle *shared_state,
+    VkrPickingInstanceStatePool *alpha_pool, bool8_t use_alpha_cutoff) {
+  if (!renderer || pipeline.id == 0 || !shared_state || !alpha_pool) {
+    return false_v;
+  }
+
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+  VkrRendererInstanceStateHandle bound_state = {.id = VKR_INVALID_ID};
+
+  if (use_alpha_cutoff) {
+    if (!picking_instance_pool_acquire_next(rf, pipeline, alpha_pool,
+                                            &bound_state)) {
+      return false_v;
+    }
+  } else {
+    if (shared_state->id == VKR_INVALID_ID) {
+      VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
+      if (!vkr_pipeline_registry_acquire_instance_state(
+              &rf->pipeline_registry, pipeline, shared_state, &acquire_err)) {
+        String8 err = vkr_renderer_get_error_string(acquire_err);
+        log_warn("Picking: failed to acquire shared instance state: %s",
+                 string8_cstr(&err));
+        shared_state->id = VKR_INVALID_ID;
+        return false_v;
+      }
+    }
+    bound_state = *shared_state;
+  }
+
+  if (bound_state.id == VKR_INVALID_ID) {
+    return false_v;
+  }
+  return vkr_shader_system_bind_instance(&rf->shader_system, bound_state.id);
+}
+
+/**
  * @brief Create picking render target using existing pass.
  */
 vkr_internal bool8_t picking_create_render_target(RendererFrontend *rf,
@@ -225,57 +417,66 @@ vkr_internal bool8_t picking_create_render_target(RendererFrontend *rf,
 // ============================================================================
 
 /**
- * @brief Prepare and apply per-submesh material state for picking.
+ * @brief Resolve per-draw alpha-cutout state for picking.
  *
- * Resolves diffuse texture and alpha cutoff, applies local material state,
- * sets shader uniforms/samplers and applies the shader instance.
- *
- * Returns true when the shader instance was applied successfully and the
- * caller can proceed with geometry rendering.
+ * When alpha testing is disabled (or no valid cutout material is present),
+ * output uses fallback texture and zero cutoff so descriptor updates stay
+ * stable for shared non-alpha states.
  */
-vkr_internal bool8_t picking_render_submesh(
-    RendererFrontend *rf, VkrInstanceBufferPool *instance_pool, VkrMesh *mesh,
-    VkrSubMesh *submesh, VkrTextureOpaqueHandle fallback_texture,
-    bool8_t can_alpha_test, uint32_t *out_first_instance) {
-  if (!rf || !instance_pool || !mesh || !submesh || !out_first_instance) {
-    return false_v;
+vkr_internal void picking_resolve_draw_alpha_state(
+    RendererFrontend *rf, VkrMaterialHandle material_handle,
+    VkrTextureOpaqueHandle fallback_texture, bool8_t can_alpha_test,
+    float32_t *out_alpha_cutoff, VkrTextureOpaqueHandle *out_diffuse_texture,
+    bool8_t *out_use_alpha_cutoff) {
+  assert_log(out_alpha_cutoff != NULL, "out_alpha_cutoff is NULL");
+  assert_log(out_diffuse_texture != NULL, "out_diffuse_texture is NULL");
+  assert_log(out_use_alpha_cutoff != NULL, "out_use_alpha_cutoff is NULL");
+
+  *out_alpha_cutoff = 0.0f;
+  *out_diffuse_texture = fallback_texture;
+  *out_use_alpha_cutoff = false_v;
+
+  if (!rf || !can_alpha_test || material_handle.id == 0) {
+    return;
   }
 
-  if (!instance_pool->initialized) {
-    return false_v;
+  VkrMaterial *material =
+      vkr_material_system_get_by_handle(&rf->material_system, material_handle);
+  if (!material) {
+    return;
   }
 
-  Mat4 model = mesh->model;
-  uint32_t object_id =
-      mesh->render_id
-          ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, mesh->render_id)
-          : 0;
+  const float32_t alpha_cutoff =
+      vkr_material_system_material_alpha_cutoff(&rf->material_system, material);
+  if (alpha_cutoff <= 0.0f) {
+    return;
+  }
 
-  VkrTextureOpaqueHandle diffuse_texture_handle = fallback_texture;
-  float32_t alpha_cutoff = 0.0f;
-
-  if (submesh->material.id != 0) {
-    VkrMaterial *material = vkr_material_system_get_by_handle(
-        &rf->material_system, submesh->material);
-    if (material) {
-      if (can_alpha_test) {
-        alpha_cutoff =
-            vkr_material_system_material_alpha_cutoff(&rf->material_system,
-                                                      material);
-      }
-      VkrMaterialTexture *diffuse_tex =
-          &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
-      if (diffuse_tex->enabled && diffuse_tex->handle.id != 0) {
-        VkrTexture *texture = vkr_texture_system_get_by_handle(
-            &rf->texture_system, diffuse_tex->handle);
-        // Only use 2D textures - cubemaps/arrays are incompatible with the
-        // picking shader's sampler2D descriptor.
-        if (texture && texture->handle &&
-            texture->description.type == VKR_TEXTURE_TYPE_2D) {
-          diffuse_texture_handle = texture->handle;
-        }
-      }
+  VkrTextureOpaqueHandle diffuse_texture = fallback_texture;
+  VkrMaterialTexture *diffuse_tex = &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
+  if (diffuse_tex->enabled && diffuse_tex->handle.id != 0) {
+    VkrTexture *texture =
+        vkr_texture_system_get_by_handle(&rf->texture_system, diffuse_tex->handle);
+    if (texture && texture->handle &&
+        texture->description.type == VKR_TEXTURE_TYPE_2D) {
+      diffuse_texture = texture->handle;
     }
+  }
+
+  *out_alpha_cutoff = alpha_cutoff;
+  *out_diffuse_texture = diffuse_texture;
+  *out_use_alpha_cutoff = true_v;
+}
+
+/**
+ * @brief Upload one picking instance payload and flush immediately.
+ */
+vkr_internal bool8_t
+picking_upload_instance_payload(VkrInstanceBufferPool *instance_pool, Mat4 model,
+                                uint32_t object_id,
+                                uint32_t *out_first_instance) {
+  if (!instance_pool || !out_first_instance) {
+    return false_v;
   }
 
   VkrInstanceDataGPU *instance_ptr = NULL;
@@ -293,6 +494,58 @@ vkr_internal bool8_t picking_render_submesh(
       ._padding = 0,
   };
   vkr_instance_buffer_flush_range(instance_pool, base_instance, 1);
+  *out_first_instance = base_instance;
+  return true_v;
+}
+
+/**
+ * @brief Prepare and apply per-submesh material state for picking.
+ *
+ * Resolves diffuse texture and alpha cutoff, applies local material state,
+ * sets shader uniforms/samplers and applies the shader instance.
+ *
+ * Returns true when the shader instance was applied successfully and the
+ * caller can proceed with geometry rendering.
+ */
+vkr_internal bool8_t picking_render_submesh(
+    RendererFrontend *rf, VkrInstanceBufferPool *instance_pool, VkrMesh *mesh,
+    VkrSubMesh *submesh, VkrPipelineHandle pipeline,
+    VkrRendererInstanceStateHandle *shared_state,
+    VkrPickingInstanceStatePool *alpha_pool,
+    VkrTextureOpaqueHandle fallback_texture, bool8_t can_alpha_test,
+    uint32_t *out_first_instance) {
+  if (!rf || !instance_pool || !mesh || !submesh || pipeline.id == 0 ||
+      !shared_state || !alpha_pool || !out_first_instance) {
+    return false_v;
+  }
+
+  if (!instance_pool->initialized) {
+    return false_v;
+  }
+
+  Mat4 model = mesh->model;
+  uint32_t object_id =
+      mesh->render_id
+          ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, mesh->render_id)
+          : 0;
+
+  float32_t alpha_cutoff = 0.0f;
+  VkrTextureOpaqueHandle diffuse_texture_handle = fallback_texture;
+  bool8_t use_alpha_cutoff = false_v;
+  picking_resolve_draw_alpha_state(
+      rf, submesh->material, fallback_texture, can_alpha_test, &alpha_cutoff,
+      &diffuse_texture_handle, &use_alpha_cutoff);
+
+  uint32_t base_instance = 0;
+  if (!picking_upload_instance_payload(instance_pool, model, object_id,
+                                       &base_instance)) {
+    return false_v;
+  }
+
+  if (!vkr_picking_bind_draw_instance_state(
+          rf, pipeline, shared_state, alpha_pool, use_alpha_cutoff)) {
+    return false_v;
+  }
 
   vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
                                 &alpha_cutoff);
@@ -313,9 +566,12 @@ vkr_internal bool8_t picking_render_submesh(
 vkr_internal bool8_t picking_render_instance_submesh(
     RendererFrontend *rf, VkrInstanceBufferPool *instance_pool,
     VkrMeshInstance *instance, VkrMeshAssetSubmesh *submesh,
+    VkrPipelineHandle pipeline, VkrRendererInstanceStateHandle *shared_state,
+    VkrPickingInstanceStatePool *alpha_pool,
     VkrTextureOpaqueHandle fallback_texture, bool8_t can_alpha_test,
     uint32_t *out_first_instance) {
-  if (!rf || !instance_pool || !instance || !submesh || !out_first_instance) {
+  if (!rf || !instance_pool || !instance || !submesh || pipeline.id == 0 ||
+      !shared_state || !alpha_pool || !out_first_instance) {
     return false_v;
   }
 
@@ -329,46 +585,23 @@ vkr_internal bool8_t picking_render_instance_submesh(
           ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, instance->render_id)
           : 0;
 
-  VkrTextureOpaqueHandle diffuse_texture_handle = fallback_texture;
   float32_t alpha_cutoff = 0.0f;
+  VkrTextureOpaqueHandle diffuse_texture_handle = fallback_texture;
+  bool8_t use_alpha_cutoff = false_v;
+  picking_resolve_draw_alpha_state(
+      rf, submesh->material, fallback_texture, can_alpha_test, &alpha_cutoff,
+      &diffuse_texture_handle, &use_alpha_cutoff);
 
-  if (submesh->material.id != 0) {
-    VkrMaterial *material = vkr_material_system_get_by_handle(
-        &rf->material_system, submesh->material);
-    if (material) {
-      if (can_alpha_test) {
-        alpha_cutoff =
-            vkr_material_system_material_alpha_cutoff(&rf->material_system,
-                                                      material);
-      }
-      VkrMaterialTexture *diffuse_tex =
-          &material->textures[VKR_TEXTURE_SLOT_DIFFUSE];
-      if (diffuse_tex->enabled && diffuse_tex->handle.id != 0) {
-        VkrTexture *texture = vkr_texture_system_get_by_handle(
-            &rf->texture_system, diffuse_tex->handle);
-        if (texture && texture->handle &&
-            texture->description.type == VKR_TEXTURE_TYPE_2D) {
-          diffuse_texture_handle = texture->handle;
-        }
-      }
-    }
-  }
-
-  VkrInstanceDataGPU *instance_ptr = NULL;
   uint32_t base_instance = 0;
-  if (!vkr_instance_buffer_alloc(instance_pool, 1, &base_instance,
-                                 &instance_ptr)) {
+  if (!picking_upload_instance_payload(instance_pool, model, object_id,
+                                       &base_instance)) {
     return false_v;
   }
 
-  *instance_ptr = (VkrInstanceDataGPU){
-      .model = model,
-      .object_id = object_id,
-      .material_index = 0,
-      .flags = 0,
-      ._padding = 0,
-  };
-  vkr_instance_buffer_flush_range(instance_pool, base_instance, 1);
+  if (!vkr_picking_bind_draw_instance_state(
+          rf, pipeline, shared_state, alpha_pool, use_alpha_cutoff)) {
+    return false_v;
+  }
 
   vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
                                 &alpha_cutoff);
@@ -397,6 +630,8 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
   ctx->mesh_instance_state.id = VKR_INVALID_ID;
   ctx->mesh_overlay_instance_state.id = VKR_INVALID_ID;
   ctx->mesh_transparent_instance_state.id = VKR_INVALID_ID;
+  ctx->mesh_alpha_instance_pool.cursor_frame_number = UINT64_MAX;
+  ctx->mesh_transparent_alpha_instance_pool.cursor_frame_number = UINT64_MAX;
 
   if (width == 0 || height == 0) {
     log_error("Invalid picking dimensions: %ux%u", width, height);
@@ -808,6 +1043,7 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
   }
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
+  vkr_picking_begin_frame_instance_pools(ctx, rf->frame_number);
   VkrInstanceBufferPool *instance_pool = &rf->instance_buffer_pool;
   if (!instance_pool->initialized) {
     log_error("Picking render skipped: instance buffer pool not initialized");
@@ -846,35 +1082,8 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
   vkr_material_system_apply_global(&rf->material_system, &rf->globals,
                                    VKR_PIPELINE_DOMAIN_PICKING);
 
-  // Re-acquire instance states if they were invalidated (e.g., after scene
-  // unload). This ensures descriptor sets reference valid textures.
-  if (ctx->shader_config.instance_texture_count > 0 &&
-      ctx->mesh_instance_state.id == VKR_INVALID_ID) {
-    VkrRendererError instance_err = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_pipeline_registry_acquire_instance_state(
-            &rf->pipeline_registry, ctx->picking_pipeline,
-            &ctx->mesh_instance_state, &instance_err)) {
-      log_warn("Failed to re-acquire picking instance state");
-    }
-  }
-
-  if (ctx->picking_transparent_pipeline.id != 0 &&
-      ctx->shader_config.instance_texture_count > 0 &&
-      ctx->mesh_transparent_instance_state.id == VKR_INVALID_ID) {
-    VkrRendererError instance_err = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_pipeline_registry_acquire_instance_state(
-            &rf->pipeline_registry, ctx->picking_transparent_pipeline,
-            &ctx->mesh_transparent_instance_state, &instance_err)) {
-      log_warn("Failed to re-acquire transparent picking instance state");
-    }
-  }
-
   const bool8_t can_alpha_test =
-      (ctx->mesh_instance_state.id != VKR_INVALID_ID) ? true_v : false_v;
-  if (can_alpha_test) {
-    vkr_shader_system_bind_instance(&rf->shader_system,
-                                    ctx->mesh_instance_state.id);
-  }
+      (ctx->shader_config.instance_texture_count > 0) ? true_v : false_v;
 
   VkrTextureOpaqueHandle fallback_texture = NULL;
   VkrTexture *default_texture =
@@ -887,10 +1096,7 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
   Vec3 camera_pos = rf->globals.view_position;
 
   const bool8_t has_transparent_pipeline =
-      (ctx->picking_transparent_pipeline.id != 0 &&
-       ctx->mesh_transparent_instance_state.id != VKR_INVALID_ID)
-          ? true_v
-          : false_v;
+      (ctx->picking_transparent_pipeline.id != 0) ? true_v : false_v;
 
   VkrPickingTransparentSubmeshEntry *transparent_entries = NULL;
   uint32_t transparent_count = 0;
@@ -992,9 +1198,10 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
       }
 
       uint32_t first_instance = 0;
-      if (!picking_render_submesh(rf, instance_pool, mesh, submesh,
-                                  fallback_texture, can_alpha_test,
-                                  &first_instance)) {
+      if (!picking_render_submesh(
+              rf, instance_pool, mesh, submesh, ctx->picking_pipeline,
+              &ctx->mesh_instance_state, &ctx->mesh_alpha_instance_pool,
+              fallback_texture, can_alpha_test, &first_instance)) {
         continue;
       }
 
@@ -1054,9 +1261,10 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
       }
 
       uint32_t first_instance = 0;
-      if (!picking_render_instance_submesh(rf, instance_pool, inst, submesh,
-                                           fallback_texture, can_alpha_test,
-                                           &first_instance)) {
+      if (!picking_render_instance_submesh(
+              rf, instance_pool, inst, submesh, ctx->picking_pipeline,
+              &ctx->mesh_instance_state, &ctx->mesh_alpha_instance_pool,
+              fallback_texture, can_alpha_test, &first_instance)) {
         continue;
       }
 
@@ -1080,9 +1288,6 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
       vkr_material_system_apply_global(&rf->material_system, &rf->globals,
                                        VKR_PIPELINE_DOMAIN_PICKING);
 
-      vkr_shader_system_bind_instance(&rf->shader_system,
-                                      ctx->mesh_transparent_instance_state.id);
-
       for (uint32_t t = 0; t < transparent_count; ++t) {
         VkrPickingTransparentSubmeshEntry *entry = &transparent_entries[t];
         uint32_t first_instance = 0;
@@ -1105,9 +1310,12 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
           VkrMeshAssetSubmesh *submesh =
               &asset->submeshes.data[entry->submesh_index];
 
-          if (!picking_render_instance_submesh(rf, instance_pool, inst, submesh,
-                                               fallback_texture, true_v,
-                                               &first_instance)) {
+          if (!picking_render_instance_submesh(
+                  rf, instance_pool, inst, submesh,
+                  ctx->picking_transparent_pipeline,
+                  &ctx->mesh_transparent_instance_state,
+                  &ctx->mesh_transparent_alpha_instance_pool, fallback_texture,
+                  true_v, &first_instance)) {
             continue;
           }
 
@@ -1128,9 +1336,12 @@ void vkr_picking_render(struct s_RendererFrontend *renderer,
             continue;
           }
 
-          if (!picking_render_submesh(rf, instance_pool, mesh, submesh,
-                                      fallback_texture, true_v,
-                                      &first_instance)) {
+          if (!picking_render_submesh(
+                  rf, instance_pool, mesh, submesh,
+                  ctx->picking_transparent_pipeline,
+                  &ctx->mesh_transparent_instance_state,
+                  &ctx->mesh_transparent_alpha_instance_pool, fallback_texture,
+                  true_v, &first_instance)) {
             continue;
           }
 
@@ -1322,6 +1533,11 @@ void vkr_picking_invalidate_instance_states(struct s_RendererFrontend *renderer,
                                  &ctx->mesh_overlay_instance_state);
   picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
                                  &ctx->mesh_transparent_instance_state);
+  picking_instance_pool_release_states(rf, ctx->picking_pipeline,
+                                       &ctx->mesh_alpha_instance_pool);
+  picking_instance_pool_release_states(
+      rf, ctx->picking_transparent_pipeline,
+      &ctx->mesh_transparent_alpha_instance_pool);
 
   log_debug("Picking instance states invalidated");
 }
@@ -1504,6 +1720,10 @@ void vkr_picking_shutdown(struct s_RendererFrontend *renderer,
                                  &ctx->mesh_overlay_instance_state);
   picking_release_instance_state(rf, ctx->picking_transparent_pipeline,
                                  &ctx->mesh_transparent_instance_state);
+  picking_instance_pool_destroy(rf, ctx->picking_pipeline,
+                                &ctx->mesh_alpha_instance_pool);
+  picking_instance_pool_destroy(rf, ctx->picking_transparent_pipeline,
+                                &ctx->mesh_transparent_alpha_instance_pool);
 
   if (ctx->picking_pipeline.id != 0) {
     vkr_pipeline_registry_release(&rf->pipeline_registry,

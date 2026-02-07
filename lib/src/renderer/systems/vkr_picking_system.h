@@ -41,6 +41,24 @@ typedef enum VkrPickingState {
 } VkrPickingState;
 
 /**
+ * @brief Per-pipeline pool of alpha-cutout picking instance states.
+ *
+ * Alpha-cutout picking rewrites instance descriptor bindings (diffuse sampler)
+ * per draw. Vulkan forbids rewriting a descriptor set after it has been bound
+ * in the same command buffer, so alpha draws rotate through unique instance
+ * states. The pool retains acquired states across frames and only resets the
+ * cursor each frame.
+ */
+typedef struct VkrPickingInstanceStatePool {
+  VkrRendererInstanceStateHandle *states; /**< Cached instance state handles */
+  uint32_t count;                         /**< Number of valid entries in states */
+  uint32_t capacity;                      /**< Allocated states capacity */
+  uint32_t cursor;                        /**< Next state slot for this frame */
+  uint64_t cursor_frame_number; /**< Last frame that reset cursor (UINT64_MAX if
+                                   never reset) */
+} VkrPickingInstanceStatePool;
+
+/**
  * @brief Picking system context.
  *
  * Manages the off-screen picking render target, pipeline, and async
@@ -58,7 +76,7 @@ typedef struct VkrPickingContext {
   VkrPipelineHandle
       picking_overlay_pipeline; /**< Picking mesh pipeline (no depth test). */
   VkrRendererInstanceStateHandle
-      mesh_instance_state; /**< Shared instance state for mesh samplers. */
+      mesh_instance_state; /**< Shared instance state for non-cutout mesh draws. */
   VkrRendererInstanceStateHandle
       mesh_overlay_instance_state; /**< Instance state for overlay pipeline. */
   VkrPipelineHandle
@@ -67,9 +85,16 @@ typedef struct VkrPickingContext {
   VkrRendererInstanceStateHandle mesh_transparent_instance_state; /**< Instance
                                                                      state for
                                                                      transparent
-                                                                     pipeline
-                                                                     samplers.
+                                                                     non-cutout
+                                                                     draws.
                                                                    */
+  VkrPickingInstanceStatePool
+      mesh_alpha_instance_pool; /**< Per-draw alpha-cutout states for opaque
+                                   picking pipeline. */
+  VkrPickingInstanceStatePool
+      mesh_transparent_alpha_instance_pool; /**< Per-draw alpha-cutout states
+                                               for transparent picking pipeline.
+                                             */
   VkrShaderConfig shader_config;           /**< Cached mesh shader config */
   VkrPipelineHandle picking_text_pipeline; /**< Picking text pipeline */
   VkrPipelineHandle
@@ -107,6 +132,31 @@ typedef struct VkrPickResult {
   uint32_t object_id; /**< Encoded object ID (0 = no hit) */
   bool8_t hit;        /**< True if an object was hit */
 } VkrPickResult;
+
+// ============================================================================
+// Internal helpers shared by picking paths
+// ============================================================================
+
+/**
+ * @brief Reset alpha pool cursors once per frame.
+ *
+ * Call before recording picking draws for the frame. This does not release any
+ * instance states; it only rewinds per-frame allocation cursors.
+ */
+void vkr_picking_begin_frame_instance_pools(VkrPickingContext *ctx,
+                                            uint64_t frame_number);
+
+/**
+ * @brief Bind a descriptor-safe instance state for a picking draw.
+ *
+ * Non-cutout draws use shared_state. Alpha-cutout draws acquire the next state
+ * from alpha_pool so each descriptor update targets a unique set in the command
+ * buffer.
+ */
+bool8_t vkr_picking_bind_draw_instance_state(
+    struct s_RendererFrontend *renderer, VkrPipelineHandle pipeline,
+    VkrRendererInstanceStateHandle *shared_state,
+    VkrPickingInstanceStatePool *alpha_pool, bool8_t use_alpha_cutoff);
 
 // ============================================================================
 // API
