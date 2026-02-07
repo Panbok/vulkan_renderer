@@ -16,7 +16,7 @@
         "transform": {
           "pos": [0.0, 0.0, 0.0],
           "rot": [0.0, 0.0, 0.0, 1.0],
-          "scale": [1.0, 1.0, 1.0]
+          "scale": [0.7, 0.7, 0.7]
         },
         "mesh": {
           "path": "assets/models/san-miguel-low-poly.obj",
@@ -34,7 +34,7 @@
         "directional_light": {
           "enabled": true,
           "color": [1.0, 1.0, 1.0],
-          "intensity": 1.0,
+          "intensity": 1.5,
           "direction_local": [-0.57735, -0.57735, -0.57735]
         }
       }
