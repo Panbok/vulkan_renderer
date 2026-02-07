@@ -276,9 +276,8 @@ typedef struct VkrTextureAlphaAnalysis {
 // have intermediate coverage (typical for foliage with anti-aliased edges).
 #define VKR_TEXTURE_ALPHA_MASK_INTERMEDIATE_RATIO 0.30f
 
-vkr_internal VkrTextureAlphaAnalysis
-vkr_texture_analyze_alpha(const uint8_t *pixels, uint64_t pixel_count,
-                          uint32_t channels) {
+vkr_internal VkrTextureAlphaAnalysis vkr_texture_analyze_alpha(
+    const uint8_t *pixels, uint64_t pixel_count, uint32_t channels) {
   VkrTextureAlphaAnalysis analysis = {false_v, false_v};
   if (!pixels || channels < VKR_TEXTURE_RGBA_CHANNELS || pixel_count == 0) {
     return analysis;
@@ -303,8 +302,7 @@ vkr_texture_analyze_alpha(const uint8_t *pixels, uint64_t pixel_count,
   analysis.has_transparency = true_v;
   float32_t ratio =
       (float32_t)intermediate_count / (float32_t)transparent_count;
-  analysis.alpha_mask =
-      ratio <= VKR_TEXTURE_ALPHA_MASK_INTERMEDIATE_RATIO ? true_v : false_v;
+  analysis.alpha_mask = (ratio <= VKR_TEXTURE_ALPHA_MASK_INTERMEDIATE_RATIO);
   return analysis;
 }
 
@@ -312,9 +310,7 @@ vkr_internal bool8_t vkr_texture_has_transparency(const uint8_t *pixels,
                                                   uint64_t pixel_count,
                                                   uint32_t channels) {
   return vkr_texture_analyze_alpha(pixels, pixel_count, channels)
-             .has_transparency
-         ? true_v
-         : false_v;
+      .has_transparency;
 }
 
 /**
@@ -1253,9 +1249,8 @@ void vkr_texture_destroy(VkrRendererFrontendHandle renderer,
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(texture != NULL, "Texture is NULL");
 
-  if (texture->handle &&
-      !bitset8_is_set(&texture->description.properties,
-                      VKR_TEXTURE_PROPERTY_EXTERNAL_BIT)) {
+  if (texture->handle && !bitset8_is_set(&texture->description.properties,
+                                         VKR_TEXTURE_PROPERTY_EXTERNAL_BIT)) {
     vkr_renderer_destroy_texture(renderer, texture->handle);
   }
 
@@ -1421,10 +1416,8 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
                              source_stats.last_modified, &cached_width,
                              &cached_height, &cached_channels,
                              &cached_transparency, &cached_pixels)) {
-    if (!cached_transparency &&
-        cached_channels == VKR_TEXTURE_RGBA_CHANNELS) {
-      uint64_t pixel_count =
-          (uint64_t)cached_width * (uint64_t)cached_height;
+    if (!cached_transparency && cached_channels == VKR_TEXTURE_RGBA_CHANNELS) {
+      uint64_t pixel_count = (uint64_t)cached_width * (uint64_t)cached_height;
       if (vkr_texture_has_transparency(cached_pixels, pixel_count,
                                        cached_channels)) {
         cached_transparency = true_v;

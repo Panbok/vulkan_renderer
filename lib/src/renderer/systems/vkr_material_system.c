@@ -79,16 +79,17 @@ vkr_material_system_resolve_2d_texture(VkrMaterialSystem *system,
   return (texture && texture->handle) ? texture : NULL;
 }
 
-vkr_internal void vkr_material_system_uniform_set_optional(
-    VkrMaterialSystem *system, const char *name, const void *value) {
-  if (!system || !system->shader_system || !system->shader_system->current_shader ||
-      !name || !value) {
+vkr_internal void
+vkr_material_system_uniform_set_optional(VkrMaterialSystem *system,
+                                         const char *name, const void *value) {
+  if (!system || !system->shader_system ||
+      !system->shader_system->current_shader || !name || !value) {
     return;
   }
 
-  if (vkr_shader_system_uniform_index(system->shader_system,
-                                      system->shader_system->current_shader,
-                                      name) == VKR_SHADER_INVALID_UNIFORM_INDEX) {
+  if (vkr_shader_system_uniform_index(
+          system->shader_system, system->shader_system->current_shader, name) ==
+      VKR_SHADER_INVALID_UNIFORM_INDEX) {
     return;
   }
 
@@ -111,9 +112,8 @@ vkr_internal VkrMaterialAlphaMode vkr_material_system_material_alpha_mode(
     return VKR_MATERIAL_ALPHA_OPAQUE;
   }
 
-  VkrTexture *texture =
-      vkr_texture_system_get_by_handle(system->texture_system,
-                                       diffuse_tex->handle);
+  VkrTexture *texture = vkr_texture_system_get_by_handle(system->texture_system,
+                                                         diffuse_tex->handle);
   if (!texture) {
     return VKR_MATERIAL_ALPHA_OPAQUE;
   }
@@ -135,24 +135,27 @@ vkr_internal VkrMaterialAlphaMode vkr_material_system_material_alpha_mode(
   return VKR_MATERIAL_ALPHA_BLEND;
 }
 
-bool8_t vkr_material_system_material_has_transparency(
-    const VkrMaterialSystem *system, const VkrMaterial *material) {
+bool8_t
+vkr_material_system_material_has_transparency(const VkrMaterialSystem *system,
+                                              const VkrMaterial *material) {
   return vkr_material_system_material_alpha_mode(system, material) ==
                  VKR_MATERIAL_ALPHA_BLEND
              ? true_v
              : false_v;
 }
 
-bool8_t vkr_material_system_material_uses_cutout(
-    const VkrMaterialSystem *system, const VkrMaterial *material) {
+bool8_t
+vkr_material_system_material_uses_cutout(const VkrMaterialSystem *system,
+                                         const VkrMaterial *material) {
   return vkr_material_system_material_alpha_mode(system, material) ==
                  VKR_MATERIAL_ALPHA_CUTOUT
              ? true_v
              : false_v;
 }
 
-float32_t vkr_material_system_material_alpha_cutoff(
-    const VkrMaterialSystem *system, const VkrMaterial *material) {
+float32_t
+vkr_material_system_material_alpha_cutoff(const VkrMaterialSystem *system,
+                                          const VkrMaterial *material) {
   if (!system || !material) {
     return 0.0f;
   }
@@ -162,12 +165,7 @@ float32_t vkr_material_system_material_alpha_cutoff(
     return 0.0f;
   }
 
-  if (material->alpha_cutoff > 0.0f) {
-    return material->alpha_cutoff;
-  }
-
-  return VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT;
-
+  return material->alpha_cutoff;
 }
 
 vkr_internal bool8_t
@@ -562,16 +560,15 @@ void vkr_material_system_add_ref(VkrMaterialSystem *system,
   entry->ref_count++;
 }
 
-void vkr_material_system_apply_global(VkrMaterialSystem *system,
-                                      const VkrGlobalMaterialState *global_state,
-                                      VkrPipelineDomain domain) {
+void vkr_material_system_apply_global(
+    VkrMaterialSystem *system, const VkrGlobalMaterialState *global_state,
+    VkrPipelineDomain domain) {
   assert_log(system != NULL, "System is NULL");
   assert_log(global_state != NULL, "Global state is NULL");
 
-  bool8_t world_globals =
-      (domain == VKR_PIPELINE_DOMAIN_WORLD) ||
-      (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT) ||
-      (domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY);
+  bool8_t world_globals = (domain == VKR_PIPELINE_DOMAIN_WORLD) ||
+                          (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT) ||
+                          (domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY);
 
   if (domain == VKR_PIPELINE_DOMAIN_UI) {
     vkr_shader_system_uniform_set(system->shader_system, "view",

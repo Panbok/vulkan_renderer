@@ -701,10 +701,6 @@ void application_draw_frame(Application *application, float64_t delta) {
   }
 
   VkrAllocator *scratch = &application->renderer.scratch_allocator;
-  VkrAllocatorScope scope = {0};
-  if (vkr_allocator_supports_scopes(scratch)) {
-    scope = vkr_allocator_begin_scope(scratch);
-  }
 
   VkrWorldPassPayload world_payload = {0};
   bool8_t has_world =
@@ -884,10 +880,6 @@ void application_draw_frame(Application *application, float64_t delta) {
       String8 err = vkr_renderer_get_error_string(submit_err);
       log_error("Packet submit failed: %s", string8_cstr(&err));
     }
-  }
-
-  if (vkr_allocator_scope_is_valid(&scope)) {
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
 }
 

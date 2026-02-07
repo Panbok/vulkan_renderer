@@ -308,7 +308,8 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
   VkrVertexInputBindingDescription *bindings = NULL;
 
   if (config->attribute_count > 0 &&
-      config->vertex_abi_profile == VKR_VERTEX_ABI_PROFILE_UNKNOWN) {
+      (config->vertex_abi_profile == VKR_VERTEX_ABI_PROFILE_UNKNOWN ||
+       config->vertex_abi_profile == VKR_VERTEX_ABI_PROFILE_NONE)) {
     log_error("Shader '%.*s' is missing required explicit vertex_abi",
               (int)config->name.length, (const char *)config->name.str);
     *out_error = VKR_RENDERER_ERROR_SHADER_COMPILATION_FAILED;
@@ -489,6 +490,11 @@ bool8_t vkr_pipeline_registry_acquire_by_name(VkrPipelineRegistry *registry,
     *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
     return false_v;
   }
+  if (name.length > 0 && name.str[name.length] != '\0') {
+    log_error("pipeline name must be NUL-terminated at name.str[name.length]");
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
 
   const char *key = (const char *)name.str;
   VkrPipelineEntry *found =
@@ -512,6 +518,12 @@ bool8_t vkr_pipeline_registry_find_by_name(VkrPipelineRegistry *registry,
 
   *out_handle = VKR_PIPELINE_HANDLE_INVALID;
   if (!name.str) {
+    return false_v;
+  }
+  /* Hash table expects NUL-terminated keys; name.str must have NUL at
+   * name.str[name.length] for safe lookup. */
+  if (name.length > 0 && name.str[name.length] != '\0') {
+    log_error("pipeline name must be NUL-terminated at name.str[name.length]");
     return false_v;
   }
 

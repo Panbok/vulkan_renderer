@@ -213,6 +213,7 @@ vkr_internal bool8_t vulkan_reflection_get_vertex_abi_profile_desc(
     };
     return true_v;
   case VKR_VERTEX_ABI_PROFILE_UNKNOWN:
+  case VKR_VERTEX_ABI_PROFILE_NONE:
   default:
     break;
   }

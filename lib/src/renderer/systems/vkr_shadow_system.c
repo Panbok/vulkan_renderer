@@ -953,35 +953,38 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
 
   for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
     if (i < cascade_count) {
-      float32_t uv_margin_scale = 1.0f;
+      float32_t uv_margin_scale;
       if (has_margin_per) {
-        uv_margin_scale = system->config.shadow_uv_margin_scale_per[i];
-        if (uv_margin_scale <= 0.0f) {
-          uv_margin_scale = 1.0f;
-        }
+        float32_t per = system->config.shadow_uv_margin_scale_per[i];
+        uv_margin_scale = (per > 0.0f)
+                             ? per
+                             : vkr_shadow_default_uv_margin_scale(i,
+                                                                  cascade_count);
       } else {
         uv_margin_scale = vkr_shadow_default_uv_margin_scale(i, cascade_count);
       }
 
-      float32_t uv_soft_margin_scale = 1.0f;
+      float32_t uv_soft_margin_scale;
       if (has_soft_margin_per) {
-        uv_soft_margin_scale =
+        float32_t per =
             system->config.shadow_uv_soft_margin_scale_per[i];
-        if (uv_soft_margin_scale <= 0.0f) {
-          uv_soft_margin_scale = 1.0f;
-        }
+        uv_soft_margin_scale =
+            (per > 0.0f)
+                ? per
+                : vkr_shadow_default_uv_soft_margin_scale(i, cascade_count);
       } else {
         uv_soft_margin_scale =
             vkr_shadow_default_uv_soft_margin_scale(i, cascade_count);
       }
 
-      float32_t uv_kernel_margin_scale = 1.0f;
+      float32_t uv_kernel_margin_scale;
       if (has_kernel_margin_per) {
-        uv_kernel_margin_scale =
+        float32_t per =
             system->config.shadow_uv_kernel_margin_scale_per[i];
-        if (uv_kernel_margin_scale <= 0.0f) {
-          uv_kernel_margin_scale = 1.0f;
-        }
+        uv_kernel_margin_scale =
+            (per > 0.0f)
+                ? per
+                : vkr_shadow_default_uv_kernel_margin_scale(i, cascade_count);
       } else {
         uv_kernel_margin_scale =
             vkr_shadow_default_uv_kernel_margin_scale(i, cascade_count);

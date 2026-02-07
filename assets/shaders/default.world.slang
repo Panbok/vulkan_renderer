@@ -282,10 +282,8 @@ float4 fragmentMain(VertexDto input) : SV_Target
         diffuse_sample = local_ubo.diffuse_color;
     }
 
-    vkr_apply_alpha_cutout(diffuse_texture, diffuse_sampler, input.texcoord,
-                           local_ubo.alpha_cutoff);
-
     float alpha = diffuse_sample.a;
+    vkr_apply_alpha_cutout_from_alpha(alpha, local_ubo.alpha_cutoff);
 
     if (render_mode == RENDER_MODE_UNLIT)
     {

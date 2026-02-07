@@ -217,12 +217,18 @@ VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
  *
  * Uses diffuse alpha and texture alpha mode to decide if the material should
  * be blended at draw time. Alpha-cutout materials are not treated as blended.
+ *
+ * If both transparency and cutout checks are needed, prefer
+ * vkr_material_system_material_alpha_mode once and branch on the result.
  */
 bool8_t vkr_material_system_material_has_transparency(
     const VkrMaterialSystem *system, const VkrMaterial *material);
 
 /**
  * @brief Returns whether a material should use alpha cutout (discard).
+ *
+ * If both transparency and cutout checks are needed, prefer
+ * vkr_material_system_material_alpha_mode once and branch on the result.
  */
 bool8_t vkr_material_system_material_uses_cutout(
     const VkrMaterialSystem *system, const VkrMaterial *material);

@@ -165,6 +165,17 @@ bool8_t vkr_pipeline_registry_acquire_by_name(VkrPipelineRegistry *registry,
                                               bool8_t auto_release,
                                               VkrPipelineHandle *out_handle,
                                               VkrRendererError *out_error);
+/**
+ * @brief Lookup a pipeline by name (lookup-only; does not load or acquire).
+ * Does not increment reference count; use vkr_pipeline_registry_acquire_by_name
+ * when acquiring a reference.
+ * @param registry Pipeline registry
+ * @param name Pipeline name (must be NUL-terminated at name.str[name.length])
+ * @param out_handle Output pipeline handle; set to VKR_PIPELINE_HANDLE_INVALID on
+ * failure.
+ * @return true if found and out_handle is filled; false if not found, on error,
+ * or if name is invalid.
+ */
 bool8_t vkr_pipeline_registry_find_by_name(VkrPipelineRegistry *registry,
                                            String8 name,
                                            VkrPipelineHandle *out_handle);

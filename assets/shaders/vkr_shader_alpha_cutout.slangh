@@ -21,6 +21,16 @@ void vkr_apply_alpha_cutout(Texture2D<float4> texture, SamplerState sampler,
     }
 }
 
+// Applies alpha cutout using a pre-sampled alpha value (avoids double-sampling
+// or reading unbound texture when the caller has already sampled diffuse).
+void vkr_apply_alpha_cutout_from_alpha(float alpha, float cutoff)
+{
+    if (cutoff > 0.0f && alpha < cutoff)
+    {
+        discard;
+    }
+}
+
 float vkr_alpha_cutout_hash(float3 p)
 {
     p = frac(p * 0.1031f);

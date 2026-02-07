@@ -12,14 +12,18 @@ typedef struct VkrShaderRuntimeSizes {
 vkr_internal VkrShaderRuntimeSizes
 vkr_shader_resolve_runtime_sizes(VkrShaderSystem *state, VkrShader *shader) {
   VkrShaderRuntimeSizes sizes = {
-      .global_ubo_size = shader->config->global_ubo_size,
-      .instance_ubo_size = shader->config->instance_ubo_size,
-      .push_constant_size = shader->config->push_constant_size,
+      .global_ubo_size = 0,
+      .instance_ubo_size = 0,
+      .push_constant_size = 0,
   };
 
-  if (!state || !state->registry || !shader) {
+  if (!state || !state->registry || !shader || !shader->config) {
     return sizes;
   }
+
+  sizes.global_ubo_size = shader->config->global_ubo_size;
+  sizes.instance_ubo_size = shader->config->instance_ubo_size;
+  sizes.push_constant_size = shader->config->push_constant_size;
 
   VkrPipelineHandle pipeline_handle = VKR_PIPELINE_HANDLE_INVALID;
   if (!vkr_pipeline_registry_find_by_name(state->registry, shader->name,

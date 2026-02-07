@@ -226,7 +226,7 @@ vkr_parse_vertex_abi_profile(const String8 *abi_str) {
   }
   if (vkr_string8_equals_cstr_i(abi_str, "unknown") ||
       vkr_string8_equals_cstr_i(abi_str, "none")) {
-    return VKR_VERTEX_ABI_PROFILE_UNKNOWN;
+    return VKR_VERTEX_ABI_PROFILE_NONE;
   }
   return VKR_VERTEX_ABI_PROFILE_UNKNOWN;
 }
@@ -927,7 +927,8 @@ vkr_internal VkrShaderConfigParseResult vkr_shader_loader_parse(
         line_result = vkr_create_parse_error(
             parser.allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
             parser.line_number, 0,
-            "Invalid vertex_abi value '%.*s' (expected 3d, 2d, text2d)",
+            "Invalid vertex_abi value '%.*s' (expected 3d, 2d, text2d/text_2d, "
+            "or none)",
             (int)value.length, (const char *)value.str);
       }
     } else if (vkr_string8_equals_cstr_i(&key, "metadata_path") ||
@@ -1050,7 +1051,8 @@ vkr_shader_config_validate(const VkrShaderConfig *config) {
   }
 
   if (config->attribute_count > 0 &&
-      config->vertex_abi_profile == VKR_VERTEX_ABI_PROFILE_UNKNOWN) {
+      (config->vertex_abi_profile == VKR_VERTEX_ABI_PROFILE_UNKNOWN ||
+       config->vertex_abi_profile == VKR_VERTEX_ABI_PROFILE_NONE)) {
     return (VkrShaderConfigParseResult){
         .is_valid = false_v,
         .error_type = VKR_SHADER_CONFIG_ERROR_MISSING_REQUIRED_FIELD,

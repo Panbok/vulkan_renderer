@@ -9,12 +9,12 @@
 #include "math/vkr_math.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/renderer_frontend.h"
-#include "renderer/systems/vkr_world_resources.h"
+#include "renderer/resources/world/vkr_text_3d.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_picking_ids.h"
 #include "renderer/systems/vkr_picking_system.h"
 #include "renderer/systems/vkr_resource_system.h"
-#include "renderer/resources/world/vkr_text_3d.h"
+#include "renderer/systems/vkr_world_resources.h"
 
 // ============================================================================
 // Internal Constants
@@ -429,7 +429,8 @@ vkr_internal void scene_mark_render_dirty(VkrScene *scene, VkrEntityId entity) {
   const VkrArchetype *arch = rec.chunk->arch;
 
   bool8_t has_renderable =
-      (arch->type_to_col[scene->comp_mesh_renderer] != VKR_ENTITY_TYPE_TO_COL_INVALID) ||
+      (arch->type_to_col[scene->comp_mesh_renderer] !=
+       VKR_ENTITY_TYPE_TO_COL_INVALID) ||
       (arch->type_to_col[scene->comp_shape] != VKR_ENTITY_TYPE_TO_COL_INVALID);
   if (!has_renderable) {
     return;
@@ -491,8 +492,9 @@ vkr_internal void scene_mark_children_world_dirty(VkrScene *scene,
     while (i < slot->child_count) {
       VkrEntityId child = slot->children[i];
       // Combined is_alive + has_component + get_component in single call
-      SceneTransform *child_t = (SceneTransform *)vkr_entity_get_component_if_alive(
-          world, child, comp_transform);
+      SceneTransform *child_t =
+          (SceneTransform *)vkr_entity_get_component_if_alive(world, child,
+                                                              comp_transform);
       if (!child_t) {
         // Entity dead or no transform - remove from index
         slot->children[i] = slot->children[slot->child_count - 1];
@@ -766,7 +768,7 @@ vkr_internal void scene_rebuild_topo_order(VkrScene *scene) {
           VkrEntityId child = slot->children[ci];
           // Combined is_alive + has_component check via get_component
           if (!vkr_entity_has_component_if_alive(scene->world, child,
-                                                  scene->comp_transform)) {
+                                                 scene->comp_transform)) {
             slot->children[ci] = slot->children[slot->child_count - 1];
             slot->child_count--;
             continue;
@@ -1131,11 +1133,10 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
                                VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   if (scene->owned_instances) {
-    vkr_allocator_free_aligned(scene->alloc, scene->owned_instances,
-                               scene->owned_instance_capacity *
-                                   sizeof(VkrMeshInstanceHandle),
-                               AlignOf(VkrMeshInstanceHandle),
-                               VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    vkr_allocator_free_aligned(
+        scene->alloc, scene->owned_instances,
+        scene->owned_instance_capacity * sizeof(VkrMeshInstanceHandle),
+        AlignOf(VkrMeshInstanceHandle), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   if (scene->render_dirty_entities) {
     vkr_allocator_free_aligned(
@@ -1181,14 +1182,16 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
   //
   // Pass 2: Propagate world matrices (topo-ordered, deferred dirty propagation)
   // - Must be in topological order so parents are updated before children
-  // - Deferred dirty propagation: if parent has WORLD_UPDATED, child inherits dirty
+  // - Deferred dirty propagation: if parent has WORLD_UPDATED, child inherits
+  // dirty
   // - Eliminates expensive scene_mark_children_world_dirty() lookups
 
   // Pass 1: Chunk-based local matrix update + clear WORLD_UPDATED flags
   vkr_entity_query_compiled_each_chunk(&scene->query_transforms,
                                        transform_local_update_cb, scene);
 
-  // Pass 2: Topo-ordered world matrix propagation with deferred dirty propagation
+  // Pass 2: Topo-ordered world matrix propagation with deferred dirty
+  // propagation
   VkrWorld *world = scene->world;
   VkrComponentTypeId comp_transform = scene->comp_transform;
 
@@ -1197,8 +1200,9 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
     VkrEntityId entity = scene->topo_order[i];
 
     // Combined is_alive + get_component - single validation
-    SceneTransform *transform = (SceneTransform *)vkr_entity_get_component_if_alive(
-        world, entity, comp_transform);
+    SceneTransform *transform =
+        (SceneTransform *)vkr_entity_get_component_if_alive(world, entity,
+                                                            comp_transform);
     if (!transform)
       continue;
 
@@ -1208,8 +1212,9 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
       parent_transform = (SceneTransform *)vkr_entity_get_component_if_alive(
           world, transform->parent, comp_transform);
 
-      // Deferred dirty propagation: if parent was updated this frame, inherit dirty
-      // This eliminates the expensive scene_mark_children_world_dirty() call
+      // Deferred dirty propagation: if parent was updated this frame, inherit
+      // dirty This eliminates the expensive scene_mark_children_world_dirty()
+      // call
       if (parent_transform &&
           (parent_transform->flags & SCENE_TRANSFORM_WORLD_UPDATED)) {
         transform->flags |= SCENE_TRANSFORM_DIRTY_WORLD;
@@ -1228,7 +1233,8 @@ void vkr_scene_update(VkrScene *scene, float64_t dt) {
     }
 
     transform->flags &= ~SCENE_TRANSFORM_DIRTY_WORLD;
-    transform->flags |= SCENE_TRANSFORM_WORLD_UPDATED; // Mark for child propagation
+    transform->flags |=
+        SCENE_TRANSFORM_WORLD_UPDATED; // Mark for child propagation
 
     // Mark for render sync
     scene_mark_render_dirty(scene, entity);
@@ -1699,7 +1705,7 @@ void vkr_scene_release_mesh(VkrScene *scene, uint32_t mesh_index) {
  * @brief Ensure owned instance handle array has sufficient capacity.
  */
 vkr_internal bool8_t scene_ensure_instance_capacity(VkrScene *scene,
-                                                     uint32_t needed) {
+                                                    uint32_t needed) {
   return scene_grow_array(
       scene->alloc, (void **)&scene->owned_instances,
       &scene->owned_instance_capacity, scene->owned_instance_count, needed,
@@ -1707,8 +1713,9 @@ vkr_internal bool8_t scene_ensure_instance_capacity(VkrScene *scene,
       AlignOf(VkrMeshInstanceHandle), false_v);
 }
 
-bool8_t vkr_scene_track_instance(VkrScene *scene, VkrMeshInstanceHandle instance,
-                                  VkrSceneError *out_error) {
+bool8_t vkr_scene_track_instance(VkrScene *scene,
+                                 VkrMeshInstanceHandle instance,
+                                 VkrSceneError *out_error) {
   if (!scene) {
     if (out_error)
       *out_error = VKR_SCENE_ERROR_ALLOC_FAILED;
@@ -1727,7 +1734,8 @@ bool8_t vkr_scene_track_instance(VkrScene *scene, VkrMeshInstanceHandle instance
   return true_v;
 }
 
-void vkr_scene_release_instance(VkrScene *scene, VkrMeshInstanceHandle instance) {
+void vkr_scene_release_instance(VkrScene *scene,
+                                VkrMeshInstanceHandle instance) {
   if (!scene)
     return;
 
@@ -1839,7 +1847,8 @@ vkr_internal bool8_t scene_entity_is_visible(VkrScene *scene,
   VkrEntityId current = entity;
 
   while (current.u64 != VKR_ENTITY_ID_INVALID.u64 && depth < max_depth) {
-    // Combined is_alive + get_component: returns NULL if dead or component missing
+    // Combined is_alive + get_component: returns NULL if dead or component
+    // missing
     const SceneVisibility *vis =
         (const SceneVisibility *)vkr_entity_get_component_if_alive_const(
             world, current, comp_visibility);
@@ -2359,6 +2368,8 @@ bool8_t vkr_scene_set_text3d(VkrScene *scene, VkrEntityId entity,
 
   if (rf->world_resources.initialized) {
     vkr_world_resources_text_create(rf, &rf->world_resources, &payload);
+  } else {
+    log_warn("Scene: world_resources not initialized, text3d will not render");
   }
 
   uint32_t tex_w = config->texture_width > 0 ? config->texture_width
@@ -2416,8 +2427,10 @@ bool8_t vkr_scene_update_text3d(VkrScene *scene, VkrEntityId entity,
   RendererFrontend *rf = (RendererFrontend *)scene->rf;
 
   if (rf->world_resources.initialized) {
-    vkr_world_resources_text_update(rf, &rf->world_resources, comp->text_index,
-                                    text);
+    if (!vkr_world_resources_text_update(rf, &rf->world_resources,
+                                         comp->text_index, text)) {
+      return false_v;
+    }
   }
 
   comp->dirty = false_v;
@@ -2600,7 +2613,8 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
   }
 
   // Shapes use mesh-slot indices. Set up render_id, visibility, and model
-  // on the mesh for picking to work. Transform sync requires a query for shapes.
+  // on the mesh for picking to work. Transform sync requires a query for
+  // shapes.
   uint32_t render_id = 0;
   if (!vkr_scene_ensure_render_id(scene, entity, &render_id)) {
     log_warn("Scene: failed to assign render id for shape entity");
