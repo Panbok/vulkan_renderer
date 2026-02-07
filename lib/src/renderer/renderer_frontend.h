@@ -11,6 +11,7 @@
 #include "renderer/resources/loaders/system_font_loader.h"
 #include "renderer/systems/vkr_camera.h"
 #include "renderer/systems/vkr_camera_controller.h"
+#include "renderer/systems/vkr_editor_viewport.h"
 #include "renderer/systems/vkr_font_system.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_gizmo_system.h"
@@ -20,11 +21,15 @@
 #include "renderer/systems/vkr_picking_system.h"
 #include "renderer/systems/vkr_pipeline_registry.h"
 #include "renderer/systems/vkr_shader_system.h"
+#include "renderer/systems/vkr_skybox_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_texture_system.h"
-#include "renderer/systems/vkr_view_system.h"
+#include "renderer/systems/vkr_ui_system.h"
+#include "renderer/systems/vkr_world_resources.h"
 #include "renderer/vkr_indirect_draw.h"
 #include "renderer/vkr_instance_buffer.h"
+#include "renderer/vkr_render_graph.h"
+#include "renderer/vkr_rg_json.h"
 #include "renderer/vkr_renderer.h"
 
 /**
@@ -94,10 +99,21 @@ struct s_RendererFrontend {
   VkrGeometrySystem geometry_system;
   VkrTextureSystem texture_system;
   VkrMaterialSystem material_system;
-  VkrViewSystem view_system;
+  VkrRgExecutorRegistry rg_executor_registry;
+  VkrRenderGraph *render_graph;
+  VkrRgJsonGraph render_graph_json;
+  VkrDMemory render_graph_dmemory;
+  VkrAllocator render_graph_allocator;
+  bool8_t render_graph_loaded;
+  bool8_t render_graph_enabled;
   VkrFontSystem font_system;
   VkrGizmoSystem gizmo_system;
   VkrLightingSystem lighting_system;
+  VkrShadowSystem shadow_system;
+  VkrEditorViewportResources editor_viewport;
+  VkrWorldResources world_resources;
+  VkrUiSystem ui_system;
+  VkrSkyboxSystem skybox_system;
 
   // Active scene for lighting and other ECS-driven systems
   VkrScene *active_scene;
@@ -128,11 +144,6 @@ struct s_RendererFrontend {
   VkrMtsdfFontLoaderContext mtsdf_font_loader;
   VkrArenaPool mtsdf_font_arena_pool;
 
-  VkrLayerHandle world_layer;
-  VkrLayerHandle skybox_layer;
-  VkrLayerHandle ui_layer;
-  VkrLayerHandle editor_layer;
-  VkrLayerHandle shadow_layer;
   VkrTextureHandle *offscreen_color_handles;
   uint32_t offscreen_color_handle_count;
 

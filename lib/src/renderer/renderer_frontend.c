@@ -1,28 +1,45 @@
 #include "renderer/renderer_frontend.h"
 #include "containers/str.h"
 #include "core/logger.h"
+#include "math/mat.h"
 #include "math/vec.h"
 #include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_dmemory_allocator.h"
+#include "renderer/passes/vkr_pass_editor.h"
+#include "renderer/passes/vkr_pass_picking.h"
+#include "renderer/passes/vkr_pass_shadow.h"
+#include "renderer/passes/vkr_pass_skybox.h"
+#include "renderer/passes/vkr_pass_ui.h"
+#include "renderer/passes/vkr_pass_world.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/resources/loaders/scene_loader.h"
 #include "renderer/resources/loaders/shader_loader.h"
 #include "renderer/resources/loaders/texture_loader.h"
-#include "renderer/systems/views/vkr_view_editor.h"
-#include "renderer/systems/views/vkr_view_shadow.h"
-#include "renderer/systems/views/vkr_view_skybox.h"
-#include "renderer/systems/views/vkr_view_ui.h"
-#include "renderer/systems/views/vkr_view_world.h"
+#include "renderer/vkr_render_packet.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_picking_system.h"
 #include "renderer/systems/vkr_resource_system.h"
+#include "renderer/systems/vkr_skybox_system.h"
+#include "renderer/systems/vkr_ui_system.h"
+#include "renderer/systems/vkr_world_resources.h"
 #include "renderer/vkr_renderer.h"
+#include "renderer/vkr_rg_json.h"
 #include "renderer/vulkan/vulkan_backend.h"
+
+#include <stdarg.h>
+#include <stdio.h>
 
 static RendererFrontend *g_renderer_rt_refresh = NULL;
 
 vkr_internal void
 renderer_frontend_regenerate_render_targets(RendererFrontend *rf);
 vkr_internal void renderer_frontend_on_target_refresh_required(void);
+vkr_internal bool8_t
+renderer_frontend_validate_render_graph(RendererFrontend *rf);
+VkrRendererError vkr_renderer_begin_frame(VkrRendererFrontendHandle renderer,
+                                          float64_t delta_time);
+VkrRendererError vkr_renderer_end_frame(VkrRendererFrontendHandle renderer,
+                                        float64_t delta_time);
 
 vkr_internal bool8_t vkr_renderer_on_window_resize(Event *event,
                                                    UserData user_data) {
@@ -55,14 +72,38 @@ vkr_internal bool8_t vkr_renderer_on_window_resize(Event *event,
 vkr_internal void
 renderer_frontend_regenerate_render_targets(RendererFrontend *rf) {
   assert_log(rf != NULL, "Renderer frontend is NULL");
-
-  vkr_view_system_rebuild_targets(rf);
+  (void)rf;
 }
 
 vkr_internal void renderer_frontend_on_target_refresh_required(void) {
   if (g_renderer_rt_refresh) {
     renderer_frontend_regenerate_render_targets(g_renderer_rt_refresh);
   }
+}
+
+vkr_internal bool8_t
+renderer_frontend_validate_render_graph(RendererFrontend *rf) {
+  assert_log(rf != NULL, "Renderer frontend is NULL");
+
+  const char *graph_path = "assets/render_graphs/main.rendergraph.json";
+  if (rf->render_graph_loaded) {
+    return true_v;
+  }
+  VkrAllocator *scratch = &rf->scratch_allocator;
+  VkrAllocatorScope scope = {0};
+  if (vkr_allocator_supports_scopes(scratch)) {
+    scope = vkr_allocator_begin_scope(scratch);
+  }
+
+  VkrRgJsonGraph graph = {0};
+  bool8_t ok = vkr_rg_json_load_file(scratch, graph_path, &graph);
+  vkr_rg_json_destroy(&graph);
+
+  if (vkr_allocator_scope_is_valid(&scope)) {
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
+  return ok;
 }
 
 bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
@@ -127,10 +168,19 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->geometry_system = (VkrGeometrySystem){0};
   renderer->texture_system = (VkrTextureSystem){0};
   renderer->material_system = (VkrMaterialSystem){0};
-  renderer->view_system = (VkrViewSystem){0};
+  renderer->rg_executor_registry = (VkrRgExecutorRegistry){0};
+  renderer->render_graph = NULL;
+  renderer->render_graph_json = (VkrRgJsonGraph){0};
+  renderer->render_graph_dmemory = (VkrDMemory){0};
+  renderer->render_graph_allocator = (VkrAllocator){0};
+  renderer->render_graph_loaded = false_v;
+  renderer->render_graph_enabled = false_v;
   renderer->mesh_manager = (VkrMeshManager){0};
   renderer->gizmo_system = (VkrGizmoSystem){0};
   renderer->lighting_system = (VkrLightingSystem){0};
+  renderer->world_resources = (VkrWorldResources){0};
+  renderer->ui_system = (VkrUiSystem){0};
+  renderer->skybox_system = (VkrSkyboxSystem){0};
   renderer->instance_buffer_pool = (VkrInstanceBufferPool){0};
   renderer->indirect_draw_system = (VkrIndirectDrawSystem){0};
   renderer->active_scene = NULL;
@@ -143,15 +193,19 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   };
   renderer->frame_metrics = (VkrRendererFrameMetrics){0};
   renderer->rf_mutex = NULL;
-  renderer->world_layer = VKR_LAYER_HANDLE_INVALID;
-  renderer->skybox_layer = VKR_LAYER_HANDLE_INVALID;
-  renderer->ui_layer = VKR_LAYER_HANDLE_INVALID;
-  renderer->editor_layer = VKR_LAYER_HANDLE_INVALID;
-  renderer->shadow_layer = VKR_LAYER_HANDLE_INVALID;
   renderer->offscreen_color_handles = NULL;
   renderer->offscreen_color_handle_count = 0;
-  renderer->draw_state = (VkrShaderStateObject){.instance_state = {0}};
+  renderer->draw_state =
+      (VkrShaderStateObject){.instance_state = {.id = VKR_INVALID_ID}};
   renderer->frame_number = 0;
+
+  if (!vkr_dmemory_create(MB(2), MB(16), &renderer->render_graph_dmemory)) {
+    log_fatal("Failed to create render graph allocator!");
+    return false_v;
+  }
+  renderer->render_graph_allocator =
+      (VkrAllocator){.ctx = &renderer->render_graph_dmemory};
+  vkr_dmemory_allocator_create(&renderer->render_graph_allocator);
   renderer->target_frame_rate = target_frame_rate;
   vkr_atomic_uint64_store(&renderer->pending_resize_mailbox, 0,
                           VKR_MEMORY_ORDER_RELAXED);
@@ -236,11 +290,14 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
           vkr_mesh_manager_get_submesh(&rf->mesh_manager, i, submesh_index);
       if (!submesh || submesh->pipeline.id == 0)
         continue;
-      vkr_pipeline_registry_release_instance_state(
-          &rf->pipeline_registry, submesh->pipeline, submesh->instance_state,
-          &(VkrRendererError){0});
+      if (submesh->instance_state.id != VKR_INVALID_ID) {
+        vkr_pipeline_registry_release_instance_state(
+            &rf->pipeline_registry, submesh->pipeline, submesh->instance_state,
+            &(VkrRendererError){0});
+      }
       submesh->pipeline = VKR_PIPELINE_HANDLE_INVALID;
-      submesh->instance_state = (VkrRendererInstanceStateHandle){0};
+      submesh->instance_state =
+          (VkrRendererInstanceStateHandle){.id = VKR_INVALID_ID};
     }
   }
 
@@ -249,18 +306,44 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
     vkr_picking_shutdown(rf, &rf->picking);
   }
 
+  if (rf->editor_viewport.initialized) {
+    vkr_editor_viewport_shutdown(rf, &rf->editor_viewport);
+  }
+
+  if (rf->ui_system.initialized) {
+    vkr_ui_system_shutdown(rf, &rf->ui_system);
+  }
+  if (rf->world_resources.initialized) {
+    vkr_world_resources_shutdown(rf, &rf->world_resources);
+  }
+  if (rf->skybox_system.initialized) {
+    vkr_skybox_system_shutdown(rf, &rf->skybox_system);
+  }
+
+  if (rf->shadow_system.initialized) {
+    vkr_shadow_system_shutdown(&rf->shadow_system, rf);
+  }
+
   if (rf->gizmo_system.initialized) {
     vkr_gizmo_system_shutdown(&rf->gizmo_system, rf);
   }
 
-  vkr_view_system_shutdown(rf);
+  if (rf->render_graph) {
+    vkr_rg_destroy(rf->render_graph);
+    rf->render_graph = NULL;
+  }
+  if (rf->render_graph_loaded) {
+    vkr_rg_json_destroy(&rf->render_graph_json);
+    rf->render_graph_loaded = false_v;
+  }
+
+  vkr_rg_executor_registry_destroy(&rf->rg_executor_registry);
   vkr_lighting_system_shutdown(&rf->lighting_system);
   vkr_mesh_manager_shutdown(&rf->mesh_manager);
+  vkr_shader_system_shutdown(&rf->shader_system);
   vkr_pipeline_registry_shutdown(&rf->pipeline_registry);
   vkr_instance_buffer_pool_shutdown(&rf->instance_buffer_pool, rf);
   vkr_indirect_draw_shutdown(&rf->indirect_draw_system, rf);
-
-  vkr_shader_system_shutdown(&rf->shader_system);
   vkr_texture_system_shutdown(rf, &rf->texture_system);
   vkr_font_system_shutdown(&rf->font_system);
   vkr_material_system_shutdown(&rf->material_system);
@@ -288,6 +371,10 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   }
   if (rf->mtsdf_font_arena_pool.initialized) {
     vkr_arena_pool_destroy(&rf->allocator, &rf->mtsdf_font_arena_pool);
+  }
+
+  if (rf->render_graph_allocator.ctx) {
+    vkr_dmemory_allocator_destroy(&rf->render_graph_allocator);
   }
 
   // vkr_dmemory_destroy(&renderer->dmemory);
@@ -749,6 +836,22 @@ VkrPipelineOpaqueHandle vkr_renderer_create_graphics_pipeline(
   return (VkrPipelineOpaqueHandle)handle.ptr;
 }
 
+bool8_t vkr_renderer_pipeline_get_shader_runtime_layout(
+    VkrRendererFrontendHandle renderer, VkrPipelineOpaqueHandle pipeline,
+    VkrShaderRuntimeLayout *out_layout) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(pipeline != NULL, "Pipeline is NULL");
+  assert_log(out_layout != NULL, "Out layout is NULL");
+
+  if (!renderer->backend.pipeline_get_shader_runtime_layout) {
+    return false_v;
+  }
+
+  VkrBackendResourceHandle handle = {.ptr = (void *)pipeline};
+  return renderer->backend.pipeline_get_shader_runtime_layout(
+      renderer->backend_state, handle, out_layout);
+}
+
 VkrRendererError vkr_renderer_update_pipeline_state(
     VkrRendererFrontendHandle renderer, VkrPipelineOpaqueHandle pipeline,
     const void *uniform, const VkrShaderStateObject *data,
@@ -826,6 +929,59 @@ void vkr_renderer_destroy_pipeline(VkrRendererFrontendHandle renderer,
   renderer->backend.pipeline_destroy(renderer->backend_state, handle);
 }
 
+bool8_t vkr_renderer_create_ui_text(VkrRendererFrontendHandle renderer,
+                                    const VkrUiTextCreateData *payload,
+                                    uint32_t *out_text_id) {
+  if (!renderer || !payload) {
+    return false_v;
+  }
+
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+  if (!rf->ui_system.initialized) {
+    return false_v;
+  }
+  return vkr_ui_system_text_create(rf, &rf->ui_system, payload, out_text_id);
+}
+
+bool8_t vkr_renderer_destroy_ui_text(VkrRendererFrontendHandle renderer,
+                                     uint32_t text_id) {
+  if (!renderer) {
+    return false_v;
+  }
+
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+  if (!rf->ui_system.initialized) {
+    return false_v;
+  }
+  return vkr_ui_system_text_destroy(rf, &rf->ui_system, text_id);
+}
+
+bool8_t vkr_renderer_create_world_text(VkrRendererFrontendHandle renderer,
+                                       const VkrWorldTextCreateData *payload) {
+  if (!renderer || !payload) {
+    return false_v;
+  }
+
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+  if (!rf->world_resources.initialized) {
+    return false_v;
+  }
+  return vkr_world_resources_text_create(rf, &rf->world_resources, payload);
+}
+
+bool8_t vkr_renderer_destroy_world_text(VkrRendererFrontendHandle renderer,
+                                        uint32_t text_id) {
+  if (!renderer) {
+    return false_v;
+  }
+
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+  if (!rf->world_resources.initialized) {
+    return false_v;
+  }
+  return vkr_world_resources_text_destroy(rf, &rf->world_resources, text_id);
+}
+
 VkrRendererError vkr_renderer_update_buffer(VkrRendererFrontendHandle renderer,
                                             VkrBufferHandle buffer,
                                             uint64_t offset, uint64_t size,
@@ -863,6 +1019,23 @@ VkrRendererError vkr_renderer_flush_buffer(VkrRendererFrontendHandle renderer,
   VkrBackendResourceHandle handle = {.ptr = (void *)buffer};
   return renderer->backend.buffer_flush(renderer->backend_state, handle, offset,
                                         size);
+}
+
+VkrRendererError vkr_renderer_buffer_barrier(VkrRendererFrontendHandle renderer,
+                                             VkrBufferHandle buffer,
+                                             VkrBufferAccessFlags src_access,
+                                             VkrBufferAccessFlags dst_access) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(buffer != NULL, "Buffer is NULL");
+  if (!renderer->backend.buffer_barrier) {
+    return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+  }
+  if (src_access == dst_access) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+  VkrBackendResourceHandle handle = {.ptr = (void *)buffer};
+  return renderer->backend.buffer_barrier(renderer->backend_state, handle,
+                                          src_access, dst_access);
 }
 
 void vkr_renderer_set_instance_buffer(VkrRendererFrontendHandle renderer,
@@ -1091,12 +1264,518 @@ vkr_renderer_window_attachment_count(VkrRendererFrontendHandle renderer) {
   return renderer->backend.window_attachment_count_get(renderer->backend_state);
 }
 
+VkrTextureFormat
+vkr_renderer_get_swapchain_format(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.swapchain_format_get) {
+    return VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
+  }
+  return renderer->backend.swapchain_format_get(renderer->backend_state);
+}
+
 uint32_t vkr_renderer_window_image_index(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
   if (!renderer->backend.window_attachment_index_get) {
     return 0;
   }
   return renderer->backend.window_attachment_index_get(renderer->backend_state);
+}
+
+static VkrRendererError
+vkr_renderer_validation_fail(VkrValidationError *out_error,
+                             VkrRendererError code, const char *field_path,
+                             const char *message) {
+  if (out_error) {
+    out_error->code = code;
+    out_error->field_path = field_path;
+    out_error->message = message;
+  }
+  return code;
+}
+
+static VkrRendererError
+vkr_renderer_validation_failf(VkrValidationError *out_error,
+                              VkrRendererError code, const char *message,
+                              const char *field_fmt, ...) {
+  if (!out_error) {
+    return code;
+  }
+
+  static char field_path[128];
+  va_list args;
+  va_start(args, field_fmt);
+  vsnprintf(field_path, sizeof(field_path), field_fmt, args);
+  va_end(args);
+  out_error->code = code;
+  out_error->field_path = field_path;
+  out_error->message = message;
+  return code;
+}
+
+static bool8_t vkr_renderer_validate_pipeline_override(
+    RendererFrontend *rf, VkrPipelineHandle pipeline_override,
+    VkrPipelineDomain domain) {
+  if (!rf || pipeline_override.id == 0) {
+    return true_v;
+  }
+
+  VkrPipeline *pipeline = NULL;
+  if (!vkr_pipeline_registry_get_pipeline(&rf->pipeline_registry,
+                                          pipeline_override, &pipeline) ||
+      !pipeline) {
+    return false_v;
+  }
+
+  return pipeline->domain == domain;
+}
+
+static VkrRendererError vkr_renderer_validate_draws(
+    RendererFrontend *rf, const VkrDrawItem *draws, uint32_t draw_count,
+    uint32_t instance_count, const char *field_prefix,
+    VkrPipelineDomain domain, VkrValidationError *out_error) {
+  if (draw_count == 0) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+  if (!draws) {
+    return vkr_renderer_validation_fail(
+        out_error, VKR_RENDERER_ERROR_INVALID_PARAMETER, field_prefix,
+        "draw list is NULL");
+  }
+
+  for (uint32_t i = 0; i < draw_count; ++i) {
+    const VkrDrawItem *draw = &draws[i];
+    if (draw->mesh.id == 0) {
+      return vkr_renderer_validation_failf(
+          out_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "mesh handle is invalid", "%s[%u].mesh", field_prefix, i);
+    }
+    if (draw->instance_count == 0) {
+      continue;
+    }
+
+    uint64_t end =
+        (uint64_t)draw->first_instance + (uint64_t)draw->instance_count;
+    if (end > instance_count) {
+      return vkr_renderer_validation_failf(
+          out_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "instance range exceeds payload instance_count", "%s[%u].first_instance",
+          field_prefix, i);
+    }
+
+    if (draw->pipeline_override.id != 0 &&
+        !vkr_renderer_validate_pipeline_override(rf, draw->pipeline_override,
+                                                 domain)) {
+      return vkr_renderer_validation_failf(
+          out_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "pipeline_override is invalid for this pass domain",
+          "%s[%u].pipeline_override", field_prefix, i);
+    }
+  }
+
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+VkrRendererError vkr_renderer_prepare_frame(VkrRendererFrontendHandle renderer,
+                                            VkrFrameSetup *out_setup) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(out_setup != NULL, "Frame setup is NULL");
+
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+
+  VkrRendererError result = vkr_renderer_begin_frame(renderer, 0.0);
+  if (result != VKR_RENDERER_ERROR_NONE) {
+    return result;
+  }
+  rf->frame_number++;
+
+  VkrTextureFormat depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  VkrTextureOpaqueHandle depth_tex = vkr_renderer_depth_attachment_get(renderer);
+  if (depth_tex) {
+    struct s_TextureHandle *depth_handle = (struct s_TextureHandle *)depth_tex;
+    depth_format = depth_handle->description.format;
+  }
+
+  out_setup->image_index = vkr_renderer_window_image_index(renderer);
+  out_setup->window_width = rf->last_window_width;
+  out_setup->window_height = rf->last_window_height;
+  out_setup->swapchain_format = vkr_renderer_get_swapchain_format(renderer);
+  out_setup->swapchain_depth_format = depth_format;
+
+  if (out_setup->window_width == 0 || out_setup->window_height == 0) {
+    VkrWindowPixelSize size = vkr_window_get_pixel_size(rf->window);
+    out_setup->window_width = size.width;
+    out_setup->window_height = size.height;
+  }
+
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+VkrRendererError vkr_renderer_submit_packet(
+    VkrRendererFrontendHandle renderer, const VkrRenderPacket *packet,
+    VkrRendererFrameMetrics *out_metrics,
+    VkrValidationError *out_validation_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+
+  RendererFrontend *rf = (RendererFrontend *)renderer;
+  if (!rf->frame_active) {
+    return vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_FRAME_IN_PROGRESS, "frame",
+        "frame is not active; call vkr_renderer_prepare_frame first");
+  }
+
+  float64_t safe_dt = 1.0 / 60.0;
+  if (packet && packet->frame.delta_time > 0.0) {
+    safe_dt = packet->frame.delta_time;
+  }
+
+  if (!packet) {
+    VkrRendererError err = vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER, "packet",
+        "packet is NULL");
+    vkr_renderer_end_frame(renderer, safe_dt);
+    return err;
+  }
+
+  if (packet->packet_version != VKR_RENDER_PACKET_VERSION) {
+    VkrRendererError err = vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+        "packet_version", "unsupported packet version");
+    vkr_renderer_end_frame(renderer, safe_dt);
+    return err;
+  }
+
+  if (packet->frame.window_width == 0 || packet->frame.window_height == 0) {
+    VkrRendererError err = vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+        "frame.window_width", "frame dimensions must be non-zero");
+    vkr_renderer_end_frame(renderer, safe_dt);
+    return err;
+  }
+
+  const VkrWorldPassPayload *world = packet->world;
+  if (world) {
+    if (world->instance_count > 0 && !world->instances) {
+      VkrRendererError err = vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "world.instances", "instances pointer is NULL");
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+    VkrRendererError err = vkr_renderer_validate_draws(
+        rf, world->opaque_draws, world->opaque_draw_count,
+        world->instance_count, "world.opaque_draws", VKR_PIPELINE_DOMAIN_WORLD,
+        out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+    err = vkr_renderer_validate_draws(
+        rf, world->transparent_draws, world->transparent_draw_count,
+        world->instance_count, "world.transparent_draws",
+        VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT, out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+  }
+
+  const VkrShadowPassPayload *shadow = packet->shadow;
+  if (shadow) {
+    if (shadow->cascade_count == 0 ||
+        shadow->cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX) {
+      VkrRendererError err = vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "shadow.cascade_count", "cascade_count is out of range");
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+    if (rf->shadow_system.initialized &&
+        shadow->cascade_count > rf->shadow_system.config.cascade_count) {
+      VkrRendererError err = vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "shadow.cascade_count", "cascade_count exceeds shadow system config");
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+    if (shadow->instance_count > 0 && !shadow->instances) {
+      VkrRendererError err = vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "shadow.instances", "instances pointer is NULL");
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+    VkrRendererError err = vkr_renderer_validate_draws(
+        rf, shadow->opaque_draws, shadow->opaque_draw_count,
+        shadow->instance_count, "shadow.opaque_draws",
+        VKR_PIPELINE_DOMAIN_SHADOW, out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+    err = vkr_renderer_validate_draws(
+        rf, shadow->alpha_draws, shadow->alpha_draw_count,
+        shadow->instance_count, "shadow.alpha_draws",
+        VKR_PIPELINE_DOMAIN_SHADOW, out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+  }
+
+  const VkrUiPassPayload *ui = packet->ui;
+  if (ui) {
+    if (ui->instance_count > 0 && !ui->instances) {
+      VkrRendererError err = vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "ui.instances", "instances pointer is NULL");
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+    VkrRendererError err = vkr_renderer_validate_draws(
+        rf, ui->draws, ui->draw_count, ui->instance_count, "ui.draws",
+        VKR_PIPELINE_DOMAIN_UI, out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+  }
+
+  const VkrEditorPassPayload *editor = packet->editor;
+  if (editor) {
+    if (editor->instance_count > 0 && !editor->instances) {
+      VkrRendererError err = vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "editor.instances", "instances pointer is NULL");
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+    VkrRendererError err = vkr_renderer_validate_draws(
+        rf, editor->draws, editor->draw_count, editor->instance_count,
+        "editor.draws", VKR_PIPELINE_DOMAIN_UI, out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+  }
+
+  const VkrPickingPassPayload *picking = packet->picking;
+  if (picking && picking->pending) {
+    if (!rf->picking.initialized) {
+      VkrRendererError err = vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "picking.pending", "picking system is not initialized");
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+    if (picking->x >= rf->picking.width || picking->y >= rf->picking.height) {
+      VkrRendererError err = vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "picking.x", "picking coordinates out of bounds");
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+    if (picking->draws == NULL) {
+      if (!world) {
+        VkrRendererError err = vkr_renderer_validation_fail(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "picking.draws", "world payload required when draws are NULL");
+        vkr_renderer_end_frame(renderer, safe_dt);
+        return err;
+      }
+      if (picking->instances && picking->instances != world->instances) {
+        VkrRendererError err = vkr_renderer_validation_fail(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "picking.instances",
+            "instances must be NULL or match world instances");
+        vkr_renderer_end_frame(renderer, safe_dt);
+        return err;
+      }
+    } else {
+      if (picking->instance_count > 0 && !picking->instances) {
+        VkrRendererError err = vkr_renderer_validation_fail(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "picking.instances", "instances pointer is NULL");
+        vkr_renderer_end_frame(renderer, safe_dt);
+        return err;
+      }
+      VkrRendererError err = vkr_renderer_validate_draws(
+          rf, picking->draws, picking->draw_count, picking->instance_count,
+          "picking.draws", VKR_PIPELINE_DOMAIN_PICKING, out_validation_error);
+      if (err != VKR_RENDERER_ERROR_NONE) {
+        vkr_renderer_end_frame(renderer, safe_dt);
+        return err;
+      }
+    }
+  }
+
+  const VkrTextUpdatesPayload *text_updates = packet->text_updates;
+  if (text_updates) {
+    if (text_updates->world_text_update_count > 0 &&
+        !text_updates->world_text_updates) {
+      VkrRendererError err = vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "text_updates.world_text_updates", "update list is NULL");
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+    if (text_updates->ui_text_update_count > 0 &&
+        !text_updates->ui_text_updates) {
+      VkrRendererError err = vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "text_updates.ui_text_updates", "update list is NULL");
+      vkr_renderer_end_frame(renderer, safe_dt);
+      return err;
+    }
+    for (uint32_t i = 0; i < text_updates->world_text_update_count; ++i) {
+      const VkrTextUpdate *update = &text_updates->world_text_updates[i];
+      if (update->text_id == VKR_INVALID_ID) {
+        VkrRendererError err = vkr_renderer_validation_failf(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "text_id is invalid", "text_updates.world[%u].text_id", i);
+        vkr_renderer_end_frame(renderer, safe_dt);
+        return err;
+      }
+      if (update->content.length > 0 && !update->content.str) {
+        VkrRendererError err = vkr_renderer_validation_failf(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "content is NULL", "text_updates.world[%u].content", i);
+        vkr_renderer_end_frame(renderer, safe_dt);
+        return err;
+      }
+    }
+    for (uint32_t i = 0; i < text_updates->ui_text_update_count; ++i) {
+      const VkrTextUpdate *update = &text_updates->ui_text_updates[i];
+      if (update->text_id == VKR_INVALID_ID) {
+        VkrRendererError err = vkr_renderer_validation_failf(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "text_id is invalid", "text_updates.ui[%u].text_id", i);
+        vkr_renderer_end_frame(renderer, safe_dt);
+        return err;
+      }
+      if (update->content.length > 0 && !update->content.str) {
+        VkrRendererError err = vkr_renderer_validation_failf(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "content is NULL", "text_updates.ui[%u].content", i);
+        vkr_renderer_end_frame(renderer, safe_dt);
+        return err;
+      }
+    }
+  }
+
+  if (text_updates) {
+    for (uint32_t i = 0; i < text_updates->world_text_update_count; ++i) {
+      const VkrTextUpdate *update = &text_updates->world_text_updates[i];
+      if (rf->world_resources.initialized) {
+        vkr_world_resources_text_update(rf, &rf->world_resources, update->text_id,
+                                        update->content);
+        if (update->transform) {
+          vkr_world_resources_text_set_transform(
+              rf, &rf->world_resources, update->text_id, update->transform);
+        }
+      }
+    }
+    for (uint32_t i = 0; i < text_updates->ui_text_update_count; ++i) {
+      const VkrTextUpdate *update = &text_updates->ui_text_updates[i];
+      if (rf->ui_system.initialized) {
+        vkr_ui_system_text_update(rf, &rf->ui_system, update->text_id,
+                                  update->content);
+      }
+    }
+  }
+
+  uint32_t viewport_width = packet->frame.viewport_width;
+  uint32_t viewport_height = packet->frame.viewport_height;
+  if (viewport_width == 0 || viewport_height == 0) {
+    viewport_width = packet->frame.window_width;
+    viewport_height = packet->frame.window_height;
+  }
+
+  uint32_t ui_width = packet->frame.window_width;
+  uint32_t ui_height = packet->frame.window_height;
+  if (ui_width == 0 || ui_height == 0) {
+    ui_width = viewport_width;
+    ui_height = viewport_height;
+  }
+
+  rf->globals = (VkrGlobalMaterialState){
+      .projection = packet->globals.projection,
+      .view = packet->globals.view,
+      .ui_projection = mat4_ortho(0.0f, (float32_t)ui_width,
+                                  (float32_t)ui_height, 0.0f, -1.0f, 1.0f),
+      .ui_view = mat4_identity(),
+      .ambient_color = packet->globals.ambient_color,
+      .view_position = packet->globals.view_position,
+      .render_mode = (VkrRenderMode)packet->globals.render_mode,
+  };
+
+  if (rf->ui_system.initialized) {
+    vkr_ui_system_set_offscreen_size(rf, &rf->ui_system,
+                                     packet->frame.editor_enabled,
+                                     viewport_width, viewport_height);
+    vkr_ui_system_resize(rf, &rf->ui_system, ui_width, ui_height);
+  }
+
+  if (!rf->render_graph_enabled || !rf->render_graph ||
+      !rf->render_graph_loaded) {
+    VkrRendererError err = vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+        "render_graph", "render graph is not available");
+    vkr_renderer_end_frame(renderer, safe_dt);
+    return err;
+  }
+
+  VkrShadowConfig shadow_cfg_fallback = VKR_SHADOW_CONFIG_DEFAULT;
+  const VkrShadowConfig *shadow_cfg = rf->shadow_system.initialized
+                                          ? &rf->shadow_system.config
+                                          : &shadow_cfg_fallback;
+  uint32_t cascade_count = shadow_cfg->cascade_count;
+  if (cascade_count == 0) {
+    cascade_count = 1;
+  }
+  if (cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX) {
+    cascade_count = VKR_SHADOW_CASCADE_COUNT_MAX;
+  }
+
+  VkrTextureFormat depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  VkrTextureOpaqueHandle depth_tex = vkr_renderer_depth_attachment_get(renderer);
+  if (depth_tex) {
+    struct s_TextureHandle *depth_handle = (struct s_TextureHandle *)depth_tex;
+    depth_format = depth_handle->description.format;
+  }
+
+  VkrRenderGraphFrameInfo frame = {
+      .frame_index = packet->frame.frame_index,
+      .image_index = vkr_renderer_window_image_index(renderer),
+      .delta_time = packet->frame.delta_time,
+      .window_width = packet->frame.window_width,
+      .window_height = packet->frame.window_height,
+      .viewport_width = viewport_width,
+      .viewport_height = viewport_height,
+      .editor_enabled = packet->frame.editor_enabled,
+      .swapchain_format = vkr_renderer_get_swapchain_format(renderer),
+      .swapchain_depth_format = depth_format,
+      .shadow_map_size = vkr_shadow_config_get_max_map_size(shadow_cfg),
+      .shadow_cascade_count = cascade_count,
+  };
+
+  vkr_rg_begin_frame(rf->render_graph, &frame);
+  if (!vkr_rg_build_from_json(rf->render_graph, &rf->render_graph_json, &frame,
+                              &rf->rg_executor_registry)) {
+    VkrRendererError err = vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED,
+        "render_graph", "render graph build failed");
+    vkr_renderer_end_frame(renderer, safe_dt);
+    return err;
+  }
+
+  vkr_rg_set_packet(rf->render_graph, packet);
+  vkr_rg_execute(rf->render_graph, rf);
+
+  if (out_metrics) {
+    *out_metrics = rf->frame_metrics;
+  }
+
+  return vkr_renderer_end_frame(renderer, safe_dt);
 }
 
 VkrRendererError vkr_renderer_begin_frame(VkrRendererFrontendHandle renderer,
@@ -1115,6 +1794,12 @@ VkrRendererError vkr_renderer_begin_frame(VkrRendererFrontendHandle renderer,
     if (width > 0 && height > 0) {
       vkr_renderer_resize(renderer, width, height);
     }
+  }
+  VkrWindowPixelSize pixel_size = vkr_window_get_pixel_size(renderer->window);
+  if (pixel_size.width > 0 && pixel_size.height > 0 &&
+      (pixel_size.width != renderer->last_window_width ||
+       pixel_size.height != renderer->last_window_height)) {
+    vkr_renderer_resize(renderer, pixel_size.width, pixel_size.height);
   }
 
   VkrRendererError result =
@@ -1160,7 +1845,9 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
     }
   }
 
-  vkr_view_system_on_resize(renderer, width, height);
+  if (rf->ui_system.initialized) {
+    vkr_ui_system_resize(rf, &rf->ui_system, width, height);
+  }
   renderer_frontend_regenerate_render_targets(rf);
   vkr_pipeline_registry_mark_global_state_dirty(&rf->pipeline_registry);
 }
@@ -1288,6 +1975,55 @@ uint64_t vkr_renderer_get_and_reset_descriptor_writes_avoided(
       renderer->backend_state);
 }
 
+bool8_t vkr_renderer_rg_timing_begin_frame(VkrRendererFrontendHandle renderer,
+                                           uint32_t pass_count) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.rg_timing_begin_frame) {
+    return false_v;
+  }
+  return renderer->backend.rg_timing_begin_frame(renderer->backend_state,
+                                                 pass_count);
+}
+
+void vkr_renderer_rg_timing_begin_pass(VkrRendererFrontendHandle renderer,
+                                       uint32_t pass_index) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.rg_timing_begin_pass) {
+    return;
+  }
+  renderer->backend.rg_timing_begin_pass(renderer->backend_state, pass_index);
+}
+
+void vkr_renderer_rg_timing_end_pass(VkrRendererFrontendHandle renderer,
+                                     uint32_t pass_index) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.rg_timing_end_pass) {
+    return;
+  }
+  renderer->backend.rg_timing_end_pass(renderer->backend_state, pass_index);
+}
+
+bool8_t vkr_renderer_rg_timing_get_results(VkrRendererFrontendHandle renderer,
+                                           uint32_t *out_pass_count,
+                                           const float64_t **out_pass_ms,
+                                           const bool8_t **out_pass_valid) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.rg_timing_get_results) {
+    if (out_pass_count) {
+      *out_pass_count = 0;
+    }
+    if (out_pass_ms) {
+      *out_pass_ms = NULL;
+    }
+    if (out_pass_valid) {
+      *out_pass_valid = NULL;
+    }
+    return false_v;
+  }
+  return renderer->backend.rg_timing_get_results(
+      renderer->backend_state, out_pass_count, out_pass_ms, out_pass_valid);
+}
+
 bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
                                          VkrJobSystem *job_system) {
   assert_log(renderer != NULL, "Renderer is NULL");
@@ -1300,8 +2036,8 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   }
   VkrCameraHandle default_camera = VKR_CAMERA_HANDLE_INVALID;
   if (!vkr_camera_registry_create_perspective(
-          &rf->camera_system, string8_lit("camera.default"), rf->window, 60.0f,
-          0.1f, 1000.0f, &default_camera)) {
+          &rf->camera_system, string8_lit("camera.default"), rf->window, 70.0f,
+          0.1f, 500.0f, &default_camera)) {
     log_fatal("Failed to create default camera");
     return false_v;
   }
@@ -1312,6 +2048,37 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
     log_fatal("Failed to initialize pipeline registry");
     return false_v;
   }
+
+  if (!vkr_rg_executor_registry_init(&rf->rg_executor_registry,
+                                     &rf->allocator)) {
+    log_fatal("Failed to initialize render graph executor registry");
+    return false_v;
+  }
+
+  if (!vkr_pass_shadow_register(&rf->rg_executor_registry) ||
+      !vkr_pass_picking_register(&rf->rg_executor_registry) ||
+      !vkr_pass_skybox_register(&rf->rg_executor_registry) ||
+      !vkr_pass_world_register(&rf->rg_executor_registry) ||
+      !vkr_pass_ui_register(&rf->rg_executor_registry) ||
+      !vkr_pass_editor_register(&rf->rg_executor_registry)) {
+    log_fatal("Failed to register render graph pass executors");
+    return false_v;
+  }
+
+  rf->render_graph = vkr_rg_create(&rf->render_graph_allocator);
+  if (!rf->render_graph) {
+    log_fatal("Failed to create render graph");
+    return false_v;
+  }
+
+  const char *graph_path = "assets/render_graphs/main.rendergraph.json";
+  if (!vkr_rg_json_load_file(&rf->render_graph_allocator, graph_path,
+                             &rf->render_graph_json)) {
+    log_fatal("Failed to load render graph JSON");
+    return false_v;
+  }
+  rf->render_graph_loaded = true_v;
+  rf->render_graph_enabled = true_v;
 
   if (!vkr_instance_buffer_pool_init(&rf->instance_buffer_pool, rf,
                                      VKR_INSTANCE_BUFFER_MAX_INSTANCES)) {
@@ -1464,39 +2231,39 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
-  if (!vkr_view_system_init(rf)) {
-    log_fatal("Failed to initialize view system");
-    return false_v;
-  }
-
   if (!vkr_lighting_system_init(&rf->lighting_system)) {
     log_fatal("Failed to initialize lighting system");
     return false_v;
   }
   rf->lighting_system.shader_system = &rf->shader_system;
 
-  if (!vkr_view_shadow_register(rf)) {
-    log_error("Failed to register shadow view");
+  VkrShadowConfig shadow_cfg = VKR_SHADOW_CONFIG_DEFAULT;
+  if (!vkr_shadow_system_init(&rf->shadow_system, rf, &shadow_cfg)) {
+    log_error("Failed to initialize shadow system");
     return false_v;
   }
 
-  if (!vkr_view_skybox_register(rf)) {
-    log_error("Failed to register skybox view");
+  if (!vkr_world_resources_init(rf, &rf->world_resources)) {
+    log_error("Failed to initialize world resources");
     return false_v;
   }
 
-  if (!vkr_view_world_register(rf)) {
-    log_error("Failed to register world view");
+  if (!vkr_ui_system_init(rf, &rf->ui_system)) {
+    log_error("Failed to initialize UI system");
     return false_v;
   }
 
-  if (!vkr_view_ui_register(rf)) {
-    log_error("Failed to register UI view");
+  if (!vkr_skybox_system_init(rf, &rf->skybox_system)) {
+    log_error("Failed to initialize skybox system");
     return false_v;
   }
 
-  if (!vkr_view_editor_register(rf)) {
-    log_error("Failed to register editor view");
+  if (!vkr_editor_viewport_init(rf, &rf->editor_viewport)) {
+    log_warn("Editor viewport resources unavailable (non-fatal)");
+  }
+
+  if (!renderer_frontend_validate_render_graph(rf)) {
+    log_fatal("Render graph JSON validation failed");
     return false_v;
   }
 
@@ -1520,27 +2287,6 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   }
 
   return true_v;
-}
-
-void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer,
-                             float64_t delta_time) {
-  assert_log(renderer != NULL, "Renderer is NULL");
-  RendererFrontend *rf = (RendererFrontend *)renderer;
-
-  rf->frame_number++;
-
-  if (!rf->view_system.initialized) {
-    log_error("View system not initialized; skipping draw frame");
-    return;
-  }
-
-  // Render picking pass if requested (renders to off-screen target)
-  if (rf->picking.initialized) {
-    vkr_picking_render(rf, &rf->picking, &rf->mesh_manager);
-  }
-
-  uint32_t image_index = vkr_renderer_window_image_index(renderer);
-  vkr_view_system_draw_all(renderer, delta_time, image_index);
 }
 
 // =============================================================================
