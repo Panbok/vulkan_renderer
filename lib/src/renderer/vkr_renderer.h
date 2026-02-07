@@ -6,6 +6,7 @@
 #include "core/vkr_window.h"
 #include "defines.h"
 #include "math/mat.h"
+#include "math/vkr_transform.h"
 #include "renderer/systems/vkr_camera.h"
 
 // ============================================================================
@@ -65,6 +66,11 @@ typedef struct s_Pipeline *VkrPipelineOpaqueHandle;
 typedef struct s_TextureHandle *VkrTextureOpaqueHandle;
 typedef struct s_RenderPass *VkrRenderPassHandle;
 typedef struct s_RenderTarget *VkrRenderTargetHandle;
+typedef struct VkrRenderPacket VkrRenderPacket;
+typedef struct VkrValidationError VkrValidationError;
+typedef struct VkrRendererFrameMetrics VkrRendererFrameMetrics;
+typedef struct VkrUiTextConfig VkrUiTextConfig;
+typedef struct VkrText3DConfig VkrText3DConfig;
 
 typedef union {
   void *ptr;
@@ -245,6 +251,17 @@ vkr_buffer_usage_flags_from_bits(uint8_t bits) {
 #define VKR_BUFFER_USAGE_FLAGS_UNIFORM()                                       \
   vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_UNIFORM |                  \
                                    VKR_BUFFER_USAGE_TRANSFER_DST)
+
+typedef enum VkrBufferAccessFlags {
+  VKR_BUFFER_ACCESS_NONE = 0,
+  VKR_BUFFER_ACCESS_VERTEX = 1 << 0,
+  VKR_BUFFER_ACCESS_INDEX = 1 << 1,
+  VKR_BUFFER_ACCESS_UNIFORM = 1 << 2,
+  VKR_BUFFER_ACCESS_STORAGE_READ = 1 << 3,
+  VKR_BUFFER_ACCESS_STORAGE_WRITE = 1 << 4,
+  VKR_BUFFER_ACCESS_TRANSFER_SRC = 1 << 5,
+  VKR_BUFFER_ACCESS_TRANSFER_DST = 1 << 6,
+} VkrBufferAccessFlags;
 
 typedef enum VkrBufferTypeBits {
   VKR_BUFFER_TYPE_GRAPHICS = 1 << 0,
@@ -455,6 +472,9 @@ typedef enum VkrTextureLayout {
 typedef enum VkrTexturePropertyBits {
   VKR_TEXTURE_PROPERTY_WRITABLE_BIT = 1 << 0,
   VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT = 1 << 1,
+  VKR_TEXTURE_PROPERTY_ALPHA_MASK_BIT = 1 << 2,
+  // Backend handle is owned externally; the texture system must not destroy it.
+  VKR_TEXTURE_PROPERTY_EXTERNAL_BIT = 1 << 3,
 } VkrTexturePropertyBits;
 typedef Bitset8 VkrTexturePropertyFlags;
 
@@ -470,6 +490,10 @@ vkr_texture_property_flags_from_bits(uint8_t bits) {
     bitset8_set(&flags, VKR_TEXTURE_PROPERTY_WRITABLE_BIT);
   if (bits & VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT)
     bitset8_set(&flags, VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
+  if (bits & VKR_TEXTURE_PROPERTY_ALPHA_MASK_BIT)
+    bitset8_set(&flags, VKR_TEXTURE_PROPERTY_ALPHA_MASK_BIT);
+  if (bits & VKR_TEXTURE_PROPERTY_EXTERNAL_BIT)
+    bitset8_set(&flags, VKR_TEXTURE_PROPERTY_EXTERNAL_BIT);
   return flags;
 }
 
@@ -602,6 +626,31 @@ typedef struct VkrRendererMaterialState {
 } VkrRendererMaterialState;
 
 // =============================================================================
+// Text
+// =============================================================================
+typedef enum VkrUiTextAnchor {
+  VKR_UI_TEXT_ANCHOR_TOP_LEFT = 0,
+  VKR_UI_TEXT_ANCHOR_TOP_RIGHT,
+  VKR_UI_TEXT_ANCHOR_BOTTOM_LEFT,
+  VKR_UI_TEXT_ANCHOR_BOTTOM_RIGHT,
+} VkrUiTextAnchor;
+
+typedef struct VkrUiTextCreateData {
+  uint32_t text_id;
+  String8 content;
+  const VkrUiTextConfig *config; // Optional; NULL uses defaults
+  VkrUiTextAnchor anchor;
+  Vec2 padding;
+} VkrUiTextCreateData;
+
+typedef struct VkrWorldTextCreateData {
+  uint32_t text_id;
+  String8 content;
+  const VkrText3DConfig *config; // Optional; NULL uses defaults
+  VkrTransform transform;
+} VkrWorldTextCreateData;
+
+// =============================================================================
 // Skybox
 // =============================================================================
 typedef struct VkrSkyboxHandle {
@@ -629,6 +678,15 @@ typedef struct VkrShaderModuleDescription {
   // Future: defines, include paths etc.
 } VkrShaderModuleDescription;
 
+typedef enum VkrVertexAbiProfile {
+  VKR_VERTEX_ABI_PROFILE_UNKNOWN = 0,
+  /** Explicit "no profile" — valid when vertex_abi is "none" or "unknown". */
+  VKR_VERTEX_ABI_PROFILE_NONE,
+  VKR_VERTEX_ABI_PROFILE_3D,
+  VKR_VERTEX_ABI_PROFILE_2D,
+  VKR_VERTEX_ABI_PROFILE_TEXT_2D,
+} VkrVertexAbiProfile;
+
 typedef struct VkrShaderObjectDescription {
   /* Format of the shader file (e.g., SPIR-V, HLSL, GLSL) */
   VkrShaderFileFormat file_format;
@@ -637,6 +695,9 @@ typedef struct VkrShaderObjectDescription {
   VkrShaderFileType file_type;
 
   VkrShaderModuleDescription modules[VKR_SHADER_STAGE_COUNT];
+  // Explicit host-side vertex ABI contract used to map reflected locations to
+  // stable offsets/stride.
+  VkrVertexAbiProfile vertex_abi_profile;
 
   // Deprecated fields removed: uniforms are config-driven
 
@@ -648,6 +709,22 @@ typedef struct VkrShaderObjectDescription {
   uint32_t global_texture_count;
   uint32_t instance_texture_count;
 } VkrShaderObjectDescription;
+
+/**
+ * @brief Reflection-derived runtime shader layout sizes queried per pipeline.
+ *
+ * This mirrors the runtime-relevant sizing subset from `VkrShaderObjectDescription`
+ * and is populated by backend reflection output.
+ */
+typedef struct VkrShaderRuntimeLayout {
+  uint64_t global_ubo_size;
+  uint64_t global_ubo_stride;
+  uint64_t instance_ubo_size;
+  uint64_t instance_ubo_stride;
+  uint64_t push_constant_size;
+  uint32_t global_texture_count;
+  uint32_t instance_texture_count;
+} VkrShaderRuntimeLayout;
 
 // Used at PIPELINE CREATION time to define vertex layout
 typedef struct VkrVertexInputAttributeDescription {
@@ -843,17 +920,8 @@ typedef struct VkrRendererBackendConfig {
 } VkrRendererBackendConfig;
 
 // ============================================================================
-// View / Layer System
+// View Helpers
 // ============================================================================
-typedef struct VkrLayerHandle {
-  uint32_t id;
-  uint32_t generation;
-} VkrLayerHandle;
-
-#define VKR_LAYER_HANDLE_INVALID ((VkrLayerHandle){0, 0})
-
-typedef struct VkrLayerContext VkrLayerContext; // Opaque to clients
-
 typedef struct VkrLayerRenderInfo {
   uint32_t image_index;    // Swapchain image index being rendered
   float64_t delta_time;    // Delta time since last frame
@@ -867,82 +935,6 @@ typedef struct VkrLayerUpdateInfo {
   VkrCameraHandle active_camera;  // Currently active camera
   uint32_t frame_number;          // Current frame count
 } VkrLayerUpdateInfo;
-
-// Forward declaration for typed message header
-typedef struct VkrLayerMsgHeader VkrLayerMsgHeader;
-
-typedef struct VkrLayerCallbacks {
-  bool32_t (*on_create)(
-      VkrLayerContext *ctx);               // optional, return false on failure
-  void (*on_attach)(VkrLayerContext *ctx); // Optional
-  void (*on_resize)(VkrLayerContext *ctx, uint32_t width, uint32_t height);
-  void (*on_render)(VkrLayerContext *ctx, const VkrLayerRenderInfo *info);
-  void (*on_detach)(VkrLayerContext *ctx);  // Optional
-  void (*on_destroy)(VkrLayerContext *ctx); // Optional
-
-  bool8_t (*on_update)(VkrLayerContext *ctx, const VkrLayerUpdateInfo *info);
-  void (*on_enable)(VkrLayerContext *ctx);
-  void (*on_disable)(VkrLayerContext *ctx);
-  /**
-   * @brief Callback for receiving typed layer messages.
-   * @param ctx Layer context.
-   * @param msg Message header (payload follows immediately after).
-   * @param out_rsp Buffer for typed response (NULL if none expected).
-   * @param out_rsp_capacity Size of out_rsp buffer.
-   * @param out_rsp_size Actual response size written.
-   */
-  void (*on_data_received)(VkrLayerContext *ctx, const VkrLayerMsgHeader *msg,
-                           void *out_rsp, uint64_t out_rsp_capacity,
-                           uint64_t *out_rsp_size);
-} VkrLayerCallbacks;
-
-typedef struct VkrLayerPassConfig {
-  String8 renderpass_name; // e.g. "Renderpass.Builtin.World"
-  bool8_t use_swapchain_color;
-  bool8_t use_depth;
-} VkrLayerPassConfig;
-
-typedef struct VkrLayerConfig {
-  String8 name;
-  uint32_t order;
-  uint32_t width;
-  uint32_t height;
-  Mat4 view;
-  Mat4 projection;
-  uint8_t pass_count;
-  VkrLayerPassConfig *passes;
-  VkrLayerCallbacks callbacks;
-  void *user_data;
-  bool8_t enabled;
-  uint32_t flags;
-} VkrLayerConfig;
-
-typedef enum VkrLayerFlags {
-  VKR_LAYER_FLAG_NONE = 0,
-  VKR_LAYER_FLAG_ALWAYS_UPDATE = 1 << 0,
-} VkrLayerFlags;
-
-typedef struct VkrLayerBehavior {
-  String8 name;
-  void *behavior_data;
-
-  void (*on_attach)(VkrLayerContext *ctx, void *behavior_data);
-  void (*on_detach)(VkrLayerContext *ctx, void *behavior_data);
-  bool8_t (*on_update)(VkrLayerContext *ctx, void *behavior_data,
-                       const VkrLayerUpdateInfo *info);
-  void (*on_render)(VkrLayerContext *ctx, void *behavior_data,
-                    const VkrLayerRenderInfo *info);
-  void (*on_data_received)(VkrLayerContext *ctx, void *behavior_data,
-                           const VkrLayerMsgHeader *msg, void *out_rsp,
-                           uint64_t out_rsp_capacity, uint64_t *out_rsp_size);
-} VkrLayerBehavior;
-
-typedef struct VkrLayerBehaviorHandle {
-  uint32_t id;
-  uint32_t generation;
-} VkrLayerBehaviorHandle;
-
-#define VKR_LAYER_BEHAVIOR_HANDLE_INVALID ((VkrLayerBehaviorHandle){0, 0})
 
 // ============================================================================
 // Buffer and Vertex/Index Data Structures
@@ -962,6 +954,17 @@ typedef struct VkrIndexBufferBinding {
   VkrIndexType type; // uint16 or uint32
   uint64_t offset;   // Offset into the buffer
 } VkrIndexBufferBinding;
+
+// ============================================================================
+// Stateless Frame Setup
+// ============================================================================
+typedef struct VkrFrameSetup {
+  uint32_t image_index;
+  uint32_t window_width;
+  uint32_t window_height;
+  VkrTextureFormat swapchain_format;
+  VkrTextureFormat swapchain_depth_format;
+} VkrFrameSetup;
 
 // ============================================================================
 // Frontend API (User-Facing)
@@ -1097,8 +1100,23 @@ VkrPipelineOpaqueHandle vkr_renderer_create_graphics_pipeline(
     const VkrGraphicsPipelineDescription *description,
     VkrRendererError *out_error);
 
+bool8_t vkr_renderer_pipeline_get_shader_runtime_layout(
+    VkrRendererFrontendHandle renderer, VkrPipelineOpaqueHandle pipeline,
+    VkrShaderRuntimeLayout *out_layout);
+
 void vkr_renderer_destroy_pipeline(VkrRendererFrontendHandle renderer,
                                    VkrPipelineOpaqueHandle pipeline);
+
+// Text creation/destruction (persistent resources)
+bool8_t vkr_renderer_create_ui_text(VkrRendererFrontendHandle renderer,
+                                    const VkrUiTextCreateData *payload,
+                                    uint32_t *out_text_id);
+bool8_t vkr_renderer_destroy_ui_text(VkrRendererFrontendHandle renderer,
+                                     uint32_t text_id);
+bool8_t vkr_renderer_create_world_text(VkrRendererFrontendHandle renderer,
+                                       const VkrWorldTextCreateData *payload);
+bool8_t vkr_renderer_destroy_world_text(VkrRendererFrontendHandle renderer,
+                                        uint32_t text_id);
 // --- END Resource Management ---
 
 // --- START Data Update ---
@@ -1111,6 +1129,16 @@ void *vkr_renderer_buffer_get_mapped_ptr(VkrRendererFrontendHandle renderer,
 VkrRendererError vkr_renderer_flush_buffer(VkrRendererFrontendHandle renderer,
                                            VkrBufferHandle buffer,
                                            uint64_t offset, uint64_t size);
+/**
+ * @brief Insert a pipeline barrier between two buffer access states.
+ *
+ * Must be called outside an active render pass.
+ */
+VkrRendererError
+vkr_renderer_buffer_barrier(VkrRendererFrontendHandle renderer,
+                            VkrBufferHandle buffer,
+                            VkrBufferAccessFlags src_access,
+                            VkrBufferAccessFlags dst_access);
 void vkr_renderer_set_instance_buffer(VkrRendererFrontendHandle renderer,
                                       VkrBufferHandle buffer);
 
@@ -1272,99 +1300,17 @@ vkr_renderer_depth_attachment_get(VkrRendererFrontendHandle renderer);
 uint32_t
 vkr_renderer_window_attachment_count(VkrRendererFrontendHandle renderer);
 uint32_t vkr_renderer_window_image_index(VkrRendererFrontendHandle renderer);
+VkrTextureFormat
+vkr_renderer_get_swapchain_format(VkrRendererFrontendHandle renderer);
 // --- END Render Pass & Target Management ---
 
-// --- START View / Layer System ---
-bool32_t vkr_view_system_init(VkrRendererFrontendHandle renderer);
-void vkr_view_system_shutdown(VkrRendererFrontendHandle renderer);
-bool32_t vkr_view_system_register_layer(VkrRendererFrontendHandle renderer,
-                                        const VkrLayerConfig *cfg,
-                                        VkrLayerHandle *out_handle,
-                                        VkrRendererError *out_error);
-void vkr_view_system_unregister_layer(VkrRendererFrontendHandle renderer,
-                                      VkrLayerHandle handle);
-bool32_t vkr_view_system_set_layer_camera(VkrRendererFrontendHandle renderer,
-                                          VkrLayerHandle handle,
-                                          const Mat4 *view,
-                                          const Mat4 *projection);
-void vkr_view_system_on_resize(VkrRendererFrontendHandle renderer,
-                               uint32_t width, uint32_t height);
-void vkr_view_system_rebuild_targets(VkrRendererFrontendHandle renderer);
-void vkr_view_system_update_all(VkrRendererFrontendHandle renderer,
-                                float64_t delta_time);
-void vkr_view_system_draw_all(VkrRendererFrontendHandle renderer,
-                              float64_t delta_time, uint32_t image_index);
-
-void vkr_view_system_set_layer_enabled(VkrRendererFrontendHandle renderer,
-                                       VkrLayerHandle handle, bool8_t enabled);
-bool8_t vkr_view_system_is_layer_enabled(VkrRendererFrontendHandle renderer,
-                                         VkrLayerHandle handle);
-
-void vkr_view_system_set_modal_focus(VkrRendererFrontendHandle renderer,
-                                     VkrLayerHandle handle);
-void vkr_view_system_clear_modal_focus(VkrRendererFrontendHandle renderer);
-VkrLayerHandle
-vkr_view_system_get_modal_focus(VkrRendererFrontendHandle renderer);
-
-/**
- * @brief Send a typed message to a layer with optional response.
- *
- * Type-safe messaging API for inter-layer communication. Validates message
- * kind, version, and payload size in debug builds.
- *
- * @param renderer The renderer frontend handle.
- * @param target The target layer handle.
- * @param msg Pointer to message (header + payload).
- * @param out_rsp Buffer for typed response (NULL if none expected).
- * @param out_rsp_capacity Size of out_rsp buffer in bytes.
- * @param out_rsp_size Actual response size written (optional).
- * @return true on success, false on failure.
- */
-bool32_t vkr_view_system_send_msg(VkrRendererFrontendHandle renderer,
-                                  VkrLayerHandle target,
-                                  const VkrLayerMsgHeader *msg, void *out_rsp,
-                                  uint64_t out_rsp_capacity,
-                                  uint64_t *out_rsp_size);
-
-/**
- * @brief Send a typed message without expecting a response.
- *
- * Convenience wrapper for fire-and-forget messages.
- *
- * @param renderer The renderer frontend handle.
- * @param target The target layer handle.
- * @param msg Pointer to message (header + payload).
- * @return true on success, false on failure.
- */
-bool32_t vkr_view_system_send_msg_no_rsp(VkrRendererFrontendHandle renderer,
-                                         VkrLayerHandle target,
-                                         const VkrLayerMsgHeader *msg);
-
-/**
- * @brief Broadcast a typed message to all layers matching flags.
- *
- * @param renderer The renderer frontend handle.
- * @param msg Pointer to message (header + payload).
- * @param flags_filter Only layers with matching flags receive the message.
- */
-void vkr_view_system_broadcast_msg(VkrRendererFrontendHandle renderer,
-                                   const VkrLayerMsgHeader *msg,
-                                   uint32_t flags_filter);
-
-VkrLayerBehaviorHandle vkr_view_system_attach_behavior(
-    VkrRendererFrontendHandle renderer, VkrLayerHandle layer_handle,
-    const VkrLayerBehavior *behavior, VkrRendererError *out_error);
-void vkr_view_system_detach_behavior(VkrRendererFrontendHandle renderer,
-                                     VkrLayerHandle layer_handle,
-                                     VkrLayerBehaviorHandle behavior_handle);
-void *vkr_view_system_get_behavior_data(VkrRendererFrontendHandle renderer,
-                                        VkrLayerHandle layer_handle,
-                                        VkrLayerBehaviorHandle behavior_handle);
-// --- END View / Layer System ---
-
 // --- START Frame Lifecycle & Rendering Commands ---
-VkrRendererError vkr_renderer_begin_frame(VkrRendererFrontendHandle renderer,
-                                          float64_t delta_time);
+VkrRendererError vkr_renderer_prepare_frame(VkrRendererFrontendHandle renderer,
+                                            VkrFrameSetup *out_setup);
+VkrRendererError vkr_renderer_submit_packet(
+    VkrRendererFrontendHandle renderer, const VkrRenderPacket *packet,
+    VkrRendererFrameMetrics *out_metrics,
+    VkrValidationError *out_validation_error);
 
 void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
                          uint32_t height);
@@ -1393,9 +1339,6 @@ void vkr_renderer_set_depth_bias(VkrRendererFrontendHandle renderer,
                                  float32_t constant_factor, float32_t clamp,
                                  float32_t slope_factor);
 
-// High-level draw of current scene graph (uses configured systems)
-void vkr_renderer_draw_frame(VkrRendererFrontendHandle renderer,
-                             float64_t delta_time);
 
 void vkr_renderer_draw(VkrRendererFrontendHandle renderer,
                        uint32_t vertex_count, uint32_t instance_count,
@@ -1419,13 +1362,22 @@ vkr_renderer_begin_render_pass(VkrRendererFrontendHandle renderer,
 VkrRendererError
 vkr_renderer_end_render_pass(VkrRendererFrontendHandle renderer);
 
-VkrRendererError vkr_renderer_end_frame(VkrRendererFrontendHandle renderer,
-                                        float64_t delta_time);
 // --- END Frame Lifecycle & Rendering Commands ---
 
 // Returns and resets backend descriptor writes avoided counter for the frame
 uint64_t vkr_renderer_get_and_reset_descriptor_writes_avoided(
     VkrRendererFrontendHandle renderer);
+
+// RenderGraph GPU timestamp timing (per-pass)
+bool8_t vkr_renderer_rg_timing_begin_frame(VkrRendererFrontendHandle renderer,
+                                           uint32_t pass_count);
+void vkr_renderer_rg_timing_begin_pass(VkrRendererFrontendHandle renderer,
+                                       uint32_t pass_index);
+void vkr_renderer_rg_timing_end_pass(VkrRendererFrontendHandle renderer,
+                                     uint32_t pass_index);
+bool8_t vkr_renderer_rg_timing_get_results(
+    VkrRendererFrontendHandle renderer, uint32_t *out_pass_count,
+    const float64_t **out_pass_ms, const bool8_t **out_pass_valid);
 
 // --- START Pixel Readback API (for picking and screenshots) ---
 
@@ -1562,6 +1514,7 @@ typedef struct VkrRendererBackendInterface {
   VkrTextureOpaqueHandle (*depth_attachment_get)(void *backend_state);
   uint32_t (*window_attachment_count_get)(void *backend_state);
   uint32_t (*window_attachment_index_get)(void *backend_state);
+  VkrTextureFormat (*swapchain_format_get)(void *backend_state);
 
   // --- Resource Management ---
   VkrBackendResourceHandle (*buffer_create)(void *backend_state,
@@ -1581,6 +1534,10 @@ typedef struct VkrRendererBackendInterface {
   VkrRendererError (*buffer_flush)(void *backend_state,
                                    VkrBackendResourceHandle handle,
                                    uint64_t offset, uint64_t size);
+  VkrRendererError (*buffer_barrier)(void *backend_state,
+                                     VkrBackendResourceHandle handle,
+                                     VkrBufferAccessFlags src_access,
+                                     VkrBufferAccessFlags dst_access);
 
   VkrBackendResourceHandle (*texture_create)(void *backend_state,
                                              const VkrTextureDescription *desc,
@@ -1620,6 +1577,9 @@ typedef struct VkrRendererBackendInterface {
   // must reference the binding numbers defined in these descriptions.
   VkrBackendResourceHandle (*graphics_pipeline_create)(
       void *backend_state, const VkrGraphicsPipelineDescription *description);
+  bool8_t (*pipeline_get_shader_runtime_layout)(
+      void *backend_state, VkrBackendResourceHandle pipeline_handle,
+      VkrShaderRuntimeLayout *out_layout);
   VkrRendererError (*pipeline_update_state)(
       void *backend_state, VkrBackendResourceHandle pipeline_handle,
       const void *global_uniform_data, const VkrShaderStateObject *data,
@@ -1661,6 +1621,15 @@ typedef struct VkrRendererBackendInterface {
 
   // Telemetry
   uint64_t (*get_and_reset_descriptor_writes_avoided)(void *backend_state);
+
+  // RenderGraph GPU timing
+  bool8_t (*rg_timing_begin_frame)(void *backend_state, uint32_t pass_count);
+  void (*rg_timing_begin_pass)(void *backend_state, uint32_t pass_index);
+  void (*rg_timing_end_pass)(void *backend_state, uint32_t pass_index);
+  bool8_t (*rg_timing_get_results)(void *backend_state,
+                                   uint32_t *out_pass_count,
+                                   const float64_t **out_pass_ms,
+                                   const bool8_t **out_pass_valid);
 
   // --- Pixel Readback ---
   VkrRendererError (*readback_ring_init)(void *backend_state);
