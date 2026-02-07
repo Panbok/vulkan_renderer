@@ -201,6 +201,8 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
 
   if (!vkr_dmemory_create(MB(2), MB(16), &renderer->render_graph_dmemory)) {
     log_fatal("Failed to create render graph allocator!");
+    arena_destroy(renderer->scratch_arena);
+    arena_destroy(renderer->arena);
     return false_v;
   }
   renderer->render_graph_allocator =
@@ -1301,7 +1303,7 @@ vkr_renderer_validation_failf(VkrValidationError *out_error,
     return code;
   }
 
-  static char field_path[128];
+  static _Thread_local char field_path[128];
   va_list args;
   va_start(args, field_fmt);
   vsnprintf(field_path, sizeof(field_path), field_fmt, args);
@@ -2260,11 +2262,6 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
 
   if (!vkr_editor_viewport_init(rf, &rf->editor_viewport)) {
     log_warn("Editor viewport resources unavailable (non-fatal)");
-  }
-
-  if (!renderer_frontend_validate_render_graph(rf)) {
-    log_fatal("Render graph JSON validation failed");
-    return false_v;
   }
 
   VkrGizmoConfig gizmo_cfg = VKR_GIZMO_CONFIG_DEFAULT;
