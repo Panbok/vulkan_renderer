@@ -1,0 +1,215 @@
+{
+  "version": 1,
+  "name": "main",
+  "resources": [
+    {
+      "name": "swapchain",
+      "type": "image",
+      "import": "swapchain",
+      "flags": ["EXTERNAL", "PER_IMAGE"]
+    },
+    {
+      "name": "swapchain_depth",
+      "type": "image",
+      "import": "swapchain_depth",
+      "flags": ["EXTERNAL", "PER_IMAGE"]
+    },
+    {
+      "name": "shadow_map",
+      "type": "image",
+      "extent": { "mode": "square", "size_source": "shadow_map_size" },
+      "layers_source": "shadow_cascade_count",
+      "format": "D32_SFLOAT",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"],
+      "flags": ["TRANSIENT", "PER_IMAGE"]
+    },
+    {
+      "name": "scene_color",
+      "type": "image",
+      "condition": "editor_enabled",
+      "extent": { "mode": "viewport" },
+      "format": "SWAPCHAIN",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "scene_depth",
+      "type": "image",
+      "condition": "editor_enabled",
+      "extent": { "mode": "viewport" },
+      "format": "D32_SFLOAT",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    }
+  ],
+  "passes": [
+    {
+      "name": "Shadow.Cascade.${i}",
+      "type": "graphics",
+      "domain": "SHADOW",
+      "repeat": { "count_source": "shadow_cascade_count" },
+      "attachments": {
+        "depth": {
+          "image": "shadow_map",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": { "depth": 1.0, "stencil": 0 },
+          "slice": { "base_layer": "${i}", "layer_count": 1 }
+        }
+      },
+      "execute": "pass.shadow.cascade"
+    },
+    {
+      "name": "Picking.Request",
+      "type": "compute",
+      "flags": ["NO_CULL"],
+      "execute": "pass.picking"
+    },
+    {
+      "name": "Skybox.Fullscreen",
+      "type": "graphics",
+      "domain": "SKYBOX",
+      "condition": "!editor_enabled",
+      "attachments": {
+        "color": [
+          {
+            "image": "swapchain",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": { "color": [0.02, 0.02, 0.03, 1.0] }
+          }
+        ],
+        "depth": {
+          "image": "swapchain_depth",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": { "depth": 1.0, "stencil": 0 }
+        }
+      },
+      "execute": "pass.skybox"
+    },
+    {
+      "name": "Skybox.Editor",
+      "type": "graphics",
+      "domain": "SKYBOX",
+      "condition": "editor_enabled",
+      "attachments": {
+        "color": [
+          {
+            "image": "scene_color",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": { "color": [0.02, 0.02, 0.03, 1.0] }
+          }
+        ],
+        "depth": {
+          "image": "scene_depth",
+          "load": "CLEAR",
+          "store": "STORE",
+          "clear": { "depth": 1.0, "stencil": 0 }
+        }
+      },
+      "execute": "pass.skybox"
+    },
+    {
+      "name": "World.Fullscreen",
+      "type": "graphics",
+      "domain": "WORLD",
+      "condition": "!editor_enabled",
+      "reads": [
+        {
+          "image": "shadow_map",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "attachments": {
+        "color": [
+          { "image": "swapchain", "load": "LOAD", "store": "STORE" }
+        ],
+        "depth": {
+          "image": "swapchain_depth",
+          "load": "LOAD",
+          "store": "STORE"
+        }
+      },
+      "execute": "pass.world"
+    },
+    {
+      "name": "World.Editor",
+      "type": "graphics",
+      "domain": "WORLD",
+      "condition": "editor_enabled",
+      "reads": [
+        {
+          "image": "shadow_map",
+          "access": "SAMPLED",
+          "binding": 0
+        }
+      ],
+      "attachments": {
+        "color": [
+          { "image": "scene_color", "load": "LOAD", "store": "STORE" }
+        ],
+        "depth": {
+          "image": "scene_depth",
+          "load": "LOAD",
+          "store": "STORE"
+        }
+      },
+      "execute": "pass.world"
+    },
+    {
+      "name": "UI.Fullscreen",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "!editor_enabled",
+      "attachments": {
+        "color": [
+          { "image": "swapchain", "load": "LOAD", "store": "STORE" }
+        ]
+      },
+      "execute": "pass.ui"
+    },
+    {
+      "name": "UI.Editor",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "editor_enabled",
+      "attachments": {
+        "color": [
+          { "image": "scene_color", "load": "LOAD", "store": "STORE" }
+        ]
+      },
+      "execute": "pass.ui"
+    },
+    {
+      "name": "Editor.Composite",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "editor_enabled",
+      "reads": [
+        {
+          "image": "scene_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0
+        }
+      ],
+      "attachments": {
+        "color": [
+          {
+            "image": "swapchain",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": { "color": [0, 0, 0, 1] }
+          }
+        ]
+      },
+      "execute": "pass.editor"
+    }
+  ],
+  "outputs": {
+    "present": "swapchain"
+  }
+}
