@@ -9,7 +9,7 @@ vkr_internal void vkr_pass_editor_draw_list(
     RendererFrontend *rf, const VkrEditorPassPayload *payload,
     const VkrDrawItem *draws, uint32_t draw_count, uint32_t base_instance,
     const VkrGlobalMaterialState *globals) {
-  if (!rf || !payload || !draws || draw_count == 0) {
+  if (!rf || !payload || !draws || draw_count == 0 || !globals) {
     return;
   }
 
@@ -91,8 +91,7 @@ vkr_internal void vkr_pass_editor_draw_list(
         continue;
       }
 
-      vkr_material_system_apply_global(&rf->material_system,
-                                       (VkrGlobalMaterialState *)globals,
+      vkr_material_system_apply_global(&rf->material_system, globals,
                                        VKR_PIPELINE_DOMAIN_UI);
       globals_pipeline = pipeline;
     }

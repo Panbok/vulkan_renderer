@@ -183,6 +183,49 @@ vkr_internal void vkr_pass_world_apply_shadow_globals(
   }
 }
 
+/** Resolves material by handle with default fallback. Returns NULL if invalid. */
+static VkrMaterial *vkr_pass_world_resolve_material(RendererFrontend *rf,
+                                                    VkrMaterialHandle handle) {
+  VkrMaterial *material =
+      vkr_material_system_get_by_handle(&rf->material_system, handle);
+  if (!material && rf->material_system.default_material.id != 0) {
+    material = vkr_material_system_get_by_handle(
+        &rf->material_system, rf->material_system.default_material);
+  }
+  return material;
+}
+
+/** Binds pipeline/globals when pipeline changed, binds instance, applies material, draws. */
+static void vkr_pass_world_bind_globals_and_draw(
+    RendererFrontend *rf, const VkrFrameInfo *frame,
+    const VkrDrawItem *draw, uint32_t base_instance, VkrPipelineDomain domain,
+    const VkrGlobalMaterialState *globals,
+    const VkrShadowFrameData *shadow_data, bool8_t shadow_valid,
+    VkrPipelineHandle *inout_globals_pipeline, VkrPipelineHandle pipeline,
+    uint32_t instance_id, const VkrMaterial *material,
+    VkrGeometryHandle geometry, const VkrPassDrawRange *range) {
+  if (pipeline.id != inout_globals_pipeline->id ||
+      pipeline.generation != inout_globals_pipeline->generation) {
+    VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry, pipeline,
+                                             &bind_err)) {
+      return;
+    }
+    vkr_lighting_system_apply_uniforms(&rf->lighting_system);
+    vkr_pass_world_apply_shadow_globals(rf, frame, shadow_data, shadow_valid);
+    vkr_material_system_apply_global(&rf->material_system, globals,
+                                    VKR_PIPELINE_DOMAIN_WORLD);
+    *inout_globals_pipeline = pipeline;
+  }
+  vkr_shader_system_bind_instance(&rf->shader_system, instance_id);
+  vkr_material_system_apply_instance(&rf->material_system, material,
+                                    VKR_PIPELINE_DOMAIN_WORLD);
+  vkr_geometry_system_render_instanced_range_with_index_buffer(
+      rf, &rf->geometry_system, geometry, range->index_buffer, range->index_count,
+      range->first_index, range->vertex_offset, draw->instance_count,
+      base_instance + draw->first_instance);
+}
+
 vkr_internal void vkr_pass_world_draw_list(
     RendererFrontend *rf, const VkrFrameInfo *frame,
     const VkrWorldPassPayload *payload, const VkrDrawItem *draws,
@@ -212,17 +255,9 @@ vkr_internal void vkr_pass_world_draw_list(
         continue;
       }
 
-      VkrMaterialHandle material_handle = draw->material;
-      if (material_handle.id == 0) {
-        material_handle = submesh->material;
-      }
-
-      VkrMaterial *material = vkr_material_system_get_by_handle(
-          &rf->material_system, material_handle);
-      if (!material && rf->material_system.default_material.id != 0) {
-        material = vkr_material_system_get_by_handle(
-            &rf->material_system, rf->material_system.default_material);
-      }
+      VkrMaterialHandle material_handle =
+          draw->material.id == 0 ? submesh->material : draw->material;
+      VkrMaterial *material = vkr_pass_world_resolve_material(rf, material_handle);
       if (!material) {
         continue;
       }
@@ -240,38 +275,16 @@ vkr_internal void vkr_pass_world_draw_list(
         continue;
       }
 
-      if (pipeline.id != globals_pipeline.id ||
-          pipeline.generation != globals_pipeline.generation) {
-        VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
-        if (!vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry,
-                                                 pipeline, &bind_err)) {
-          continue;
-        }
-
-        vkr_lighting_system_apply_uniforms(&rf->lighting_system);
-        vkr_pass_world_apply_shadow_globals(rf, frame, shadow_data,
-                                            shadow_valid);
-        vkr_material_system_apply_global(&rf->material_system,
-                                         (VkrGlobalMaterialState *)globals,
-                                         VKR_PIPELINE_DOMAIN_WORLD);
-        globals_pipeline = pipeline;
-      }
-
-      vkr_shader_system_bind_instance(&rf->shader_system,
-                                      inst_state->instance_state.id);
-      vkr_material_system_apply_instance(&rf->material_system, material,
-                                         VKR_PIPELINE_DOMAIN_WORLD);
-
       VkrPassDrawRange range = {0};
       if (!vkr_pass_packet_resolve_draw_range(rf, submesh, allow_opaque,
                                               &range)) {
         continue;
       }
 
-      vkr_geometry_system_render_instanced_range_with_index_buffer(
-          rf, &rf->geometry_system, submesh->geometry, range.index_buffer,
-          range.index_count, range.first_index, range.vertex_offset,
-          draw->instance_count, base_instance + draw->first_instance);
+      vkr_pass_world_bind_globals_and_draw(
+          rf, frame, draw, base_instance, domain, globals, shadow_data,
+          shadow_valid, &globals_pipeline, pipeline,
+          inst_state->instance_state.id, material, submesh->geometry, &range);
     } else {
       uint32_t mesh_index = draw->mesh.id - 1u;
       VkrMesh *mesh = NULL;
@@ -282,17 +295,9 @@ vkr_internal void vkr_pass_world_draw_list(
       }
       (void)mesh;
 
-      VkrMaterialHandle material_handle = draw->material;
-      if (material_handle.id == 0) {
-        material_handle = submesh->material;
-      }
-
-      VkrMaterial *material = vkr_material_system_get_by_handle(
-          &rf->material_system, material_handle);
-      if (!material && rf->material_system.default_material.id != 0) {
-        material = vkr_material_system_get_by_handle(
-            &rf->material_system, rf->material_system.default_material);
-      }
+      VkrMaterialHandle material_handle =
+          draw->material.id == 0 ? submesh->material : draw->material;
+      VkrMaterial *material = vkr_pass_world_resolve_material(rf, material_handle);
       if (!material) {
         continue;
       }
@@ -310,38 +315,16 @@ vkr_internal void vkr_pass_world_draw_list(
         continue;
       }
 
-      if (pipeline.id != globals_pipeline.id ||
-          pipeline.generation != globals_pipeline.generation) {
-        VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
-        if (!vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry,
-                                                 pipeline, &bind_err)) {
-          continue;
-        }
-
-        vkr_lighting_system_apply_uniforms(&rf->lighting_system);
-        vkr_pass_world_apply_shadow_globals(rf, frame, shadow_data,
-                                            shadow_valid);
-        vkr_material_system_apply_global(&rf->material_system,
-                                         (VkrGlobalMaterialState *)globals,
-                                         VKR_PIPELINE_DOMAIN_WORLD);
-        globals_pipeline = pipeline;
-      }
-
-      vkr_shader_system_bind_instance(&rf->shader_system,
-                                      submesh->instance_state.id);
-      vkr_material_system_apply_instance(&rf->material_system, material,
-                                         VKR_PIPELINE_DOMAIN_WORLD);
-
       VkrPassDrawRange range = {0};
       if (!vkr_pass_packet_resolve_draw_range_mesh(rf, submesh, allow_opaque,
                                                    &range)) {
         continue;
       }
 
-      vkr_geometry_system_render_instanced_range_with_index_buffer(
-          rf, &rf->geometry_system, submesh->geometry, range.index_buffer,
-          range.index_count, range.first_index, range.vertex_offset,
-          draw->instance_count, base_instance + draw->first_instance);
+      vkr_pass_world_bind_globals_and_draw(
+          rf, frame, draw, base_instance, domain, globals, shadow_data,
+          shadow_valid, &globals_pipeline, pipeline,
+          submesh->instance_state.id, material, submesh->geometry, &range);
     }
   }
 }

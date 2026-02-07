@@ -207,6 +207,85 @@ vkr_internal bool8_t vkr_pass_shadow_bind_next_alpha_instance(
       &rf->shader_system, system->alpha_instance_states[slot].id);
 }
 
+/** Resolves material by handle with default fallback. Returns NULL if invalid. */
+static VkrMaterial *vkr_pass_shadow_resolve_material(RendererFrontend *rf,
+                                                     VkrMaterialHandle handle) {
+  VkrMaterial *material =
+      vkr_material_system_get_by_handle(&rf->material_system, handle);
+  if (!material && rf->material_system.default_material.id != 0) {
+    material = vkr_material_system_get_by_handle(
+        &rf->material_system, rf->material_system.default_material);
+  }
+  return material;
+}
+
+/**
+ * Binds pipeline/shader when needed, applies alpha instance state when use_alpha,
+ * then issues the draw. Updates inout_current_pipeline and inout_current_alpha.
+ */
+static bool8_t vkr_pass_shadow_bind_and_draw(
+    RendererFrontend *rf, const VkrShadowConfig *config,
+    VkrShadowSystem *shadow, const Mat4 *light_view_proj,
+    const VkrDrawItem *draw, uint32_t base_instance, bool8_t alpha_list,
+    const VkrMaterial *material, VkrGeometryHandle geometry,
+    const VkrPassDrawRange *range, VkrPipelineHandle *inout_current_pipeline,
+    bool8_t *inout_current_alpha) {
+  bool8_t use_alpha = alpha_list;
+  VkrPipelineHandle pipeline = use_alpha ? shadow->shadow_pipeline_alpha
+                                         : shadow->shadow_pipeline_opaque;
+  if (pipeline.id == 0 && !use_alpha) {
+    pipeline = shadow->shadow_pipeline_alpha;
+    use_alpha = true_v;
+  }
+  if (pipeline.id == 0) {
+    return false_v;
+  }
+
+  if (pipeline.id != inout_current_pipeline->id ||
+      pipeline.generation != inout_current_pipeline->generation ||
+      use_alpha != *inout_current_alpha) {
+    VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry, pipeline,
+                                             &bind_err)) {
+      return false_v;
+    }
+    const char *shader_name =
+        use_alpha ? "shader.shadow" : "shader.shadow.opaque";
+    if (!vkr_shader_system_use(&rf->shader_system, shader_name)) {
+      return false_v;
+    }
+    vkr_shader_system_uniform_set(&rf->shader_system, "light_view_projection",
+                                  light_view_proj);
+    vkr_shader_system_apply_global(&rf->shader_system);
+    *inout_current_pipeline = pipeline;
+    *inout_current_alpha = use_alpha;
+    if (!use_alpha) {
+      vkr_shader_system_apply_instance(&rf->shader_system);
+    }
+  }
+
+  if (use_alpha) {
+    if (!vkr_pass_shadow_bind_next_alpha_instance(rf, shadow)) {
+      return false_v;
+    }
+    float32_t alpha_cutoff =
+        vkr_pass_shadow_get_alpha_cutoff(rf, material, config);
+    VkrTextureOpaqueHandle diffuse =
+        vkr_pass_shadow_get_diffuse_texture(rf, material);
+    vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
+                                  &alpha_cutoff);
+    vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
+                                  diffuse);
+    vkr_shader_system_apply_instance(&rf->shader_system);
+  }
+
+  vkr_geometry_system_render_instanced_range_with_index_buffer(
+      rf, &rf->geometry_system, geometry, range->index_buffer,
+      range->index_count, range->first_index, range->vertex_offset,
+      draw->instance_count, base_instance + draw->first_instance);
+  return true_v;
+}
+
 vkr_internal void
 vkr_pass_shadow_draw_list(RendererFrontend *rf, const VkrShadowConfig *config,
                           const Mat4 *light_view_proj, uint32_t base_instance,
@@ -240,81 +319,24 @@ vkr_pass_shadow_draw_list(RendererFrontend *rf, const VkrShadowConfig *config,
       (void)asset;
       (void)inst_state;
 
-      VkrMaterialHandle material_handle = draw->material;
-      if (material_handle.id == 0) {
-        material_handle = submesh->material;
-      }
-
-      VkrMaterial *material = vkr_material_system_get_by_handle(
-          &rf->material_system, material_handle);
-      if (!material && rf->material_system.default_material.id != 0) {
-        material = vkr_material_system_get_by_handle(
-            &rf->material_system, rf->material_system.default_material);
-      }
-
-      bool8_t use_alpha = alpha_list;
-      VkrPipelineHandle pipeline = use_alpha ? shadow->shadow_pipeline_alpha
-                                             : shadow->shadow_pipeline_opaque;
-      if (pipeline.id == 0 && !use_alpha) {
-        pipeline = shadow->shadow_pipeline_alpha;
-        use_alpha = true_v;
-      }
-      if (pipeline.id == 0) {
+      VkrMaterialHandle material_handle =
+          draw->material.id == 0 ? submesh->material : draw->material;
+      VkrMaterial *material =
+          vkr_pass_shadow_resolve_material(rf, material_handle);
+      if (!material) {
         continue;
       }
 
-      if (pipeline.id != current_pipeline.id ||
-          pipeline.generation != current_pipeline.generation ||
-          use_alpha != current_alpha) {
-        VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
-        if (!vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry,
-                                                 pipeline, &bind_err)) {
-          continue;
-        }
-
-        const char *shader_name =
-            use_alpha ? "shader.shadow" : "shader.shadow.opaque";
-        if (!vkr_shader_system_use(&rf->shader_system, shader_name)) {
-          continue;
-        }
-
-        vkr_shader_system_uniform_set(&rf->shader_system,
-                                      "light_view_projection", light_view_proj);
-        vkr_shader_system_apply_global(&rf->shader_system);
-
-        current_pipeline = pipeline;
-        current_alpha = use_alpha;
-
-        if (!use_alpha) {
-          vkr_shader_system_apply_instance(&rf->shader_system);
-        }
-      }
-
-      if (use_alpha) {
-        if (!vkr_pass_shadow_bind_next_alpha_instance(rf, shadow)) {
-          continue;
-        }
-        float32_t alpha_cutoff =
-            vkr_pass_shadow_get_alpha_cutoff(rf, material, config);
-        VkrTextureOpaqueHandle diffuse =
-            vkr_pass_shadow_get_diffuse_texture(rf, material);
-        vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
-                                      &alpha_cutoff);
-        vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
-                                      diffuse);
-        vkr_shader_system_apply_instance(&rf->shader_system);
-      }
-
       VkrPassDrawRange range = {0};
-      if (!vkr_pass_packet_resolve_draw_range(rf, submesh, !use_alpha,
+      if (!vkr_pass_packet_resolve_draw_range(rf, submesh, !alpha_list,
                                               &range)) {
         continue;
       }
 
-      vkr_geometry_system_render_instanced_range_with_index_buffer(
-          rf, &rf->geometry_system, submesh->geometry, range.index_buffer,
-          range.index_count, range.first_index, range.vertex_offset,
-          draw->instance_count, base_instance + draw->first_instance);
+      vkr_pass_shadow_bind_and_draw(rf, config, shadow, light_view_proj, draw,
+                                    base_instance, alpha_list, material,
+                                    submesh->geometry, &range,
+                                    &current_pipeline, &current_alpha);
     } else {
       VkrMesh *mesh = NULL;
       VkrSubMesh *submesh = NULL;
@@ -324,81 +346,24 @@ vkr_pass_shadow_draw_list(RendererFrontend *rf, const VkrShadowConfig *config,
       }
       (void)mesh;
 
-      VkrMaterialHandle material_handle = draw->material;
-      if (material_handle.id == 0) {
-        material_handle = submesh->material;
-      }
-
-      VkrMaterial *material = vkr_material_system_get_by_handle(
-          &rf->material_system, material_handle);
-      if (!material && rf->material_system.default_material.id != 0) {
-        material = vkr_material_system_get_by_handle(
-            &rf->material_system, rf->material_system.default_material);
-      }
-
-      bool8_t use_alpha = alpha_list;
-      VkrPipelineHandle pipeline = use_alpha ? shadow->shadow_pipeline_alpha
-                                             : shadow->shadow_pipeline_opaque;
-      if (pipeline.id == 0 && !use_alpha) {
-        pipeline = shadow->shadow_pipeline_alpha;
-        use_alpha = true_v;
-      }
-      if (pipeline.id == 0) {
+      VkrMaterialHandle material_handle =
+          draw->material.id == 0 ? submesh->material : draw->material;
+      VkrMaterial *material =
+          vkr_pass_shadow_resolve_material(rf, material_handle);
+      if (!material) {
         continue;
       }
 
-      if (pipeline.id != current_pipeline.id ||
-          pipeline.generation != current_pipeline.generation ||
-          use_alpha != current_alpha) {
-        VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
-        if (!vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry,
-                                                 pipeline, &bind_err)) {
-          continue;
-        }
-
-        const char *shader_name =
-            use_alpha ? "shader.shadow" : "shader.shadow.opaque";
-        if (!vkr_shader_system_use(&rf->shader_system, shader_name)) {
-          continue;
-        }
-
-        vkr_shader_system_uniform_set(&rf->shader_system,
-                                      "light_view_projection", light_view_proj);
-        vkr_shader_system_apply_global(&rf->shader_system);
-
-        current_pipeline = pipeline;
-        current_alpha = use_alpha;
-
-        if (!use_alpha) {
-          vkr_shader_system_apply_instance(&rf->shader_system);
-        }
-      }
-
-      if (use_alpha) {
-        if (!vkr_pass_shadow_bind_next_alpha_instance(rf, shadow)) {
-          continue;
-        }
-        float32_t alpha_cutoff =
-            vkr_pass_shadow_get_alpha_cutoff(rf, material, config);
-        VkrTextureOpaqueHandle diffuse =
-            vkr_pass_shadow_get_diffuse_texture(rf, material);
-        vkr_shader_system_uniform_set(&rf->shader_system, "alpha_cutoff",
-                                      &alpha_cutoff);
-        vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
-                                      diffuse);
-        vkr_shader_system_apply_instance(&rf->shader_system);
-      }
-
       VkrPassDrawRange range = {0};
-      if (!vkr_pass_packet_resolve_draw_range_mesh(rf, submesh, !use_alpha,
+      if (!vkr_pass_packet_resolve_draw_range_mesh(rf, submesh, !alpha_list,
                                                    &range)) {
         continue;
       }
 
-      vkr_geometry_system_render_instanced_range_with_index_buffer(
-          rf, &rf->geometry_system, submesh->geometry, range.index_buffer,
-          range.index_count, range.first_index, range.vertex_offset,
-          draw->instance_count, base_instance + draw->first_instance);
+      vkr_pass_shadow_bind_and_draw(rf, config, shadow, light_view_proj, draw,
+                                    base_instance, alpha_list, material,
+                                    submesh->geometry, &range,
+                                    &current_pipeline, &current_alpha);
     }
   }
 }
