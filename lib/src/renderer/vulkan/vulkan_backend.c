@@ -1,6 +1,7 @@
 #include "vulkan_backend.h"
 #include "containers/str.h"
 #include "defines.h"
+#include "filesystem/filesystem.h"
 #include "memory/vkr_pool_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_command.h"
@@ -21,6 +22,15 @@
 // todo: make these configurable
 #define VKR_MAX_TEXTURE_HANDLES 4096
 #define VKR_MAX_BUFFER_HANDLES 8192
+#define VKR_MAX_RENDER_TARGET_HANDLES 256
+
+// Debug: assign texture generation for liveness validation
+#ifndef NDEBUG
+#define ASSIGN_TEXTURE_GENERATION(state, texture)                              \
+  (texture)->generation = ++(state)->texture_generation_counter
+#else
+#define ASSIGN_TEXTURE_GENERATION(state, texture) ((void)0)
+#endif
 
 // Forward declarations for interface functions defined at end of file
 VkrAllocator *renderer_vulkan_get_allocator(void *backend_state);
@@ -29,6 +39,36 @@ void renderer_vulkan_set_default_2d_texture(void *backend_state,
 void renderer_vulkan_set_depth_bias(void *backend_state,
                                     float32_t constant_factor, float32_t clamp,
                                     float32_t slope_factor);
+bool8_t renderer_vulkan_domain_renderpass_set(void *backend_state,
+                                               VkrPipelineDomain domain,
+                                               VkrRenderPassHandle pass_handle,
+                                               VkrDomainOverridePolicy policy,
+                                               VkrRendererError *out_error);
+VkrRenderPassHandle renderer_vulkan_renderpass_create_desc(
+    void *backend_state, const VkrRenderPassDesc *desc,
+    VkrRendererError *out_error);
+VkrRenderTargetHandle renderer_vulkan_render_target_create(
+    void *backend_state, const VkrRenderTargetDesc *desc,
+    VkrRenderPassHandle pass_handle, VkrRendererError *out_error);
+VkrBackendResourceHandle renderer_vulkan_create_render_target_texture_msaa(
+    void *backend_state, uint32_t width, uint32_t height, VkrTextureFormat format,
+    VkrSampleCount samples);
+VkrRendererError renderer_vulkan_buffer_barrier(
+    void *backend_state, VkrBackendResourceHandle handle,
+    VkrBufferAccessFlags src_access, VkrBufferAccessFlags dst_access);
+VkrTextureFormat renderer_vulkan_swapchain_format_get(void *backend_state);
+bool8_t renderer_vulkan_pipeline_get_shader_runtime_layout(
+    void *backend_state, VkrBackendResourceHandle pipeline_handle,
+    VkrShaderRuntimeLayout *out_layout);
+
+// Local helpers defined later in this file.
+vkr_internal VkrTextureFormat vulkan_vk_format_to_vkr(VkFormat format);
+vkr_internal VkrSampleCount
+vulkan_vk_samples_to_vkr(VkSampleCountFlagBits samples);
+vkr_internal VkImageAspectFlags
+vulkan_aspect_flags_from_texture_format(VkrTextureFormat format);
+
+static void vulkan_rg_timing_fetch_results(VulkanBackendState *state);
 
 // todo: we are having issues with image ghosting when camera moves
 // too fast, need to figure out why (clues VSync/present mode issues)
@@ -42,6 +82,497 @@ vkr_internal uint32_t vulkan_calculate_mip_levels(uint32_t width,
     mip_levels++;
   }
   return mip_levels;
+}
+
+/**
+ * @brief Classifies a raw filesystem path string as absolute/relative.
+ *
+ * Pipeline cache paths may come from environment overrides and must preserve
+ * caller intent. This helper avoids `file_path_create()` because that helper
+ * rewrites relative paths through `PROJECT_SOURCE_DIR`, which is not desired
+ * for explicit cache location overrides.
+ */
+vkr_internal FilePathType
+vulkan_path_type_from_string8(const String8 *path) {
+  if (!path || !path->str || path->length == 0) {
+    return FILE_PATH_TYPE_RELATIVE;
+  }
+
+#if defined(PLATFORM_WINDOWS)
+  if (path->str[0] == '/' || path->str[0] == '\\') {
+    return FILE_PATH_TYPE_ABSOLUTE;
+  }
+  if (path->length >= 2 && path->str[1] == ':') {
+    return FILE_PATH_TYPE_ABSOLUTE;
+  }
+  return FILE_PATH_TYPE_RELATIVE;
+#else
+  return (path->str[0] == '/') ? FILE_PATH_TYPE_ABSOLUTE
+                               : FILE_PATH_TYPE_RELATIVE;
+#endif
+}
+
+vkr_internal INLINE FilePath
+vulkan_file_path_from_string8(String8 path) {
+  return (FilePath){
+      .path = path,
+      .type = vulkan_path_type_from_string8(&path),
+  };
+}
+
+vkr_internal void vulkan_pipeline_cache_log_file_error(
+    const char *operation, const String8 *path, FileError error) {
+  String8 err = file_get_error_string(error);
+  log_warn("Failed to %s pipeline cache '%s': %s", operation,
+           path ? string8_cstr(path) : "", (const char *)err.str);
+}
+
+vkr_internal bool8_t vulkan_pipeline_cache_try_load_initial_data(
+    VulkanBackendState *state, VkPipelineCacheCreateInfo *io_create_info) {
+  if (!state || !io_create_info || !state->pipeline_cache_path.str ||
+      state->pipeline_cache_path.length == 0) {
+    return false_v;
+  }
+
+  const FilePath cache_file =
+      vulkan_file_path_from_string8(state->pipeline_cache_path);
+  if (!file_exists(&cache_file)) {
+    return false_v;
+  }
+
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+
+  FileHandle handle = {0};
+  const FileError open_error = file_open(&cache_file, mode, &handle);
+  if (open_error != FILE_ERROR_NONE) {
+    vulkan_pipeline_cache_log_file_error(
+        "open", &state->pipeline_cache_path, open_error);
+    return false_v;
+  }
+
+  uint8_t *cache_data = NULL;
+  uint64_t cache_size = 0;
+  const FileError read_error =
+      file_read_all(&handle, &state->temp_scope, &cache_data, &cache_size);
+  file_close(&handle);
+  if (read_error != FILE_ERROR_NONE) {
+    vulkan_pipeline_cache_log_file_error(
+        "read", &state->pipeline_cache_path, read_error);
+    return false_v;
+  }
+
+  if (!cache_data || cache_size == 0) {
+    return false_v;
+  }
+
+  io_create_info->initialDataSize = (size_t)cache_size;
+  io_create_info->pInitialData = cache_data;
+  log_info("Loaded pipeline cache data: %llu bytes",
+           (unsigned long long)cache_size);
+  return true_v;
+}
+
+vkr_internal VkResult vulkan_pipeline_cache_create_with_fallback(
+    VulkanBackendState *state, VkPipelineCacheCreateInfo *create_info) {
+  VkResult cache_result =
+      vkCreatePipelineCache(state->device.logical_device, create_info,
+                            state->allocator, &state->pipeline_cache);
+  if (cache_result == VK_SUCCESS || create_info->initialDataSize == 0) {
+    return cache_result;
+  }
+
+  log_warn("Pipeline cache '%s' is incompatible/corrupt (VkResult=%d); "
+           "recreating empty cache",
+           string8_cstr(&state->pipeline_cache_path), cache_result);
+  create_info->initialDataSize = 0;
+  create_info->pInitialData = NULL;
+  return vkCreatePipelineCache(state->device.logical_device, create_info,
+                               state->allocator, &state->pipeline_cache);
+}
+
+vkr_internal bool8_t vulkan_file_promote_replace(const char *temp_path,
+                                                 const char *final_path) {
+  if (!temp_path || !final_path) {
+    return false_v;
+  }
+  if (rename(temp_path, final_path) == 0) {
+    return true_v;
+  }
+  remove(final_path);
+  return rename(temp_path, final_path) == 0;
+}
+
+vkr_internal String8
+vulkan_pipeline_cache_resolve_path(VulkanBackendState *state) {
+  assert_log(state != NULL, "state is NULL");
+
+  const char *override_path = getenv("VKR_PIPELINE_CACHE_PATH");
+  if (override_path && override_path[0] != '\0') {
+    return vkr_string8_duplicate_cstr(&state->alloc, override_path);
+  }
+
+#if defined(PLATFORM_APPLE)
+  const char *home = getenv("HOME");
+  if (home && home[0] != '\0') {
+    return string8_create_formatted(
+        &state->alloc,
+        "%s/Library/Caches/VulkanRenderer/pipeline_cache_v1.bin", home);
+  }
+#elif defined(PLATFORM_WINDOWS)
+  const char *local_app_data = getenv("LOCALAPPDATA");
+  if (local_app_data && local_app_data[0] != '\0') {
+    return string8_create_formatted(
+        &state->alloc, "%s\\VulkanRenderer\\pipeline_cache_v1.bin",
+        local_app_data);
+  }
+#else
+  const char *xdg_cache_home = getenv("XDG_CACHE_HOME");
+  if (xdg_cache_home && xdg_cache_home[0] != '\0') {
+    return string8_create_formatted(
+        &state->alloc, "%s/vulkan_renderer/pipeline_cache_v1.bin",
+        xdg_cache_home);
+  }
+
+  const char *home = getenv("HOME");
+  if (home && home[0] != '\0') {
+    return string8_create_formatted(
+        &state->alloc, "%s/.cache/vulkan_renderer/pipeline_cache_v1.bin",
+        home);
+  }
+#endif
+
+  // Last-resort fallback keeps cache enabled when platform env vars are absent.
+  return vkr_string8_duplicate_cstr(&state->alloc, "pipeline_cache_v1.bin");
+}
+
+vkr_internal bool8_t
+vulkan_pipeline_cache_initialize(VulkanBackendState *state) {
+  assert_log(state != NULL, "state is NULL");
+
+  state->pipeline_cache = VK_NULL_HANDLE;
+  state->pipeline_cache_path = vulkan_pipeline_cache_resolve_path(state);
+  log_info("Pipeline cache path: %s", string8_cstr(&state->pipeline_cache_path));
+
+  VkPipelineCacheCreateInfo create_info = {
+      .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
+      .initialDataSize = 0,
+      .pInitialData = NULL,
+  };
+
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
+  bool8_t scope_valid = vkr_allocator_scope_is_valid(&scope);
+  if (scope_valid) {
+    vulkan_pipeline_cache_try_load_initial_data(state, &create_info);
+  }
+
+  const bool8_t used_persisted_data = create_info.initialDataSize > 0;
+  VkResult cache_result =
+      vulkan_pipeline_cache_create_with_fallback(state, &create_info);
+
+  if (scope_valid) {
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  }
+
+  if (cache_result != VK_SUCCESS) {
+    log_warn("Failed to create Vulkan pipeline cache (VkResult=%d); continuing "
+             "without persistent cache",
+             cache_result);
+    state->pipeline_cache = VK_NULL_HANDLE;
+    return false_v;
+  }
+
+  if (used_persisted_data) {
+    log_info("Initialized Vulkan pipeline cache with persisted data");
+  } else {
+    log_info("Initialized Vulkan pipeline cache with empty data");
+  }
+
+  return true_v;
+}
+
+vkr_internal bool8_t vulkan_pipeline_cache_save(VulkanBackendState *state) {
+  assert_log(state != NULL, "state is NULL");
+
+  if (state->pipeline_cache == VK_NULL_HANDLE) {
+    return false_v;
+  }
+  if (!state->pipeline_cache_path.str || state->pipeline_cache_path.length == 0) {
+    log_warn("Skipping pipeline cache save: cache path is empty");
+    return false_v;
+  }
+
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    log_warn("Skipping pipeline cache save: failed to create temp scope");
+    return false_v;
+  }
+
+  size_t cache_size = 0;
+  VkResult query_result = vkGetPipelineCacheData(state->device.logical_device,
+                                                 state->pipeline_cache,
+                                                 &cache_size, NULL);
+  if (query_result != VK_SUCCESS || cache_size == 0) {
+    if (query_result != VK_SUCCESS) {
+      log_warn("Failed to query pipeline cache data size (VkResult=%d)",
+               query_result);
+    }
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
+    return false_v;
+  }
+
+  uint8_t *cache_data = vkr_allocator_alloc(&state->temp_scope, cache_size,
+                                            VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  if (!cache_data) {
+    log_warn("Skipping pipeline cache save: failed to allocate %zu bytes",
+             cache_size);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
+    return false_v;
+  }
+
+  VkResult read_result = vkGetPipelineCacheData(state->device.logical_device,
+                                                state->pipeline_cache,
+                                                &cache_size, cache_data);
+  if (read_result != VK_SUCCESS || cache_size == 0) {
+    log_warn("Failed to read pipeline cache data (VkResult=%d)", read_result);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
+    return false_v;
+  }
+
+  String8 cache_directory =
+      file_path_get_directory(&state->temp_scope, state->pipeline_cache_path);
+  if (cache_directory.length > 0 &&
+      !file_ensure_directory(&state->temp_scope, &cache_directory)) {
+    log_warn("Failed to create pipeline cache directory '%.*s'",
+             (int32_t)cache_directory.length, cache_directory.str);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
+    return false_v;
+  }
+
+  String8 temp_path = string8_create_formatted(
+      &state->temp_scope, "%s.tmp", string8_cstr(&state->pipeline_cache_path));
+  const FilePath temp_file = vulkan_file_path_from_string8(temp_path);
+
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_WRITE);
+  bitset8_set(&mode, FILE_MODE_TRUNCATE);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+
+  FileHandle handle = {0};
+  FileError open_error = file_open(&temp_file, mode, &handle);
+  if (open_error != FILE_ERROR_NONE) {
+    String8 err = file_get_error_string(open_error);
+    log_warn("Failed to open pipeline cache temp file '%s': %s",
+             string8_cstr(&temp_path), (const char *)err.str);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
+    return false_v;
+  }
+
+  uint64_t bytes_written = 0;
+  FileError write_error =
+      file_write(&handle, (uint64_t)cache_size, cache_data, &bytes_written);
+  file_close(&handle);
+
+  if (write_error != FILE_ERROR_NONE || bytes_written != (uint64_t)cache_size) {
+    String8 err = file_get_error_string(write_error);
+    log_warn("Failed to write pipeline cache temp file '%s': %s",
+             string8_cstr(&temp_path), (const char *)err.str);
+    remove(string8_cstr(&temp_path));
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
+    return false_v;
+  }
+
+  const char *temp_cstr = string8_cstr(&temp_path);
+  const char *final_cstr = string8_cstr(&state->pipeline_cache_path);
+  if (!vulkan_file_promote_replace(temp_cstr, final_cstr)) {
+    int32_t rename_error = errno;
+    log_warn("Failed to promote pipeline cache temp file '%s' -> '%s': %s",
+             temp_cstr, final_cstr, strerror(rename_error));
+    remove(temp_cstr);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
+    return false_v;
+  }
+
+  log_info("Saved pipeline cache data: %zu bytes -> %s", cache_size, final_cstr);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  return true_v;
+}
+
+vkr_internal void vulkan_pipeline_cache_shutdown(VulkanBackendState *state) {
+  assert_log(state != NULL, "state is NULL");
+
+  if (state->pipeline_cache != VK_NULL_HANDLE) {
+    vulkan_pipeline_cache_save(state);
+    vkDestroyPipelineCache(state->device.logical_device, state->pipeline_cache,
+                           state->allocator);
+    state->pipeline_cache = VK_NULL_HANDLE;
+  }
+}
+
+vkr_internal void framebuffer_cache_invalidate(VulkanBackendState *state) {
+  VkrFramebufferCache *cache = &state->framebuffer_cache;
+  for (uint32_t i = 0; i < cache->entry_count; ++i) {
+    if (cache->entries[i].in_use &&
+        cache->entries[i].framebuffer != VK_NULL_HANDLE) {
+      vkDestroyFramebuffer(state->device.logical_device,
+                           cache->entries[i].framebuffer, state->allocator);
+      cache->entries[i].framebuffer = VK_NULL_HANDLE;
+      cache->entries[i].in_use = false_v;
+    }
+  }
+  cache->entry_count = 0;
+}
+
+// ============================================================================
+// Deferred Destruction Queue
+// ============================================================================
+
+/**
+ * @brief Enqueue a resource for deferred destruction.
+ *
+ * Resources are not destroyed immediately but queued for destruction once
+ * the GPU is guaranteed to have finished using them (after BUFFERING_FRAMES frames).
+ *
+ * @param state Vulkan backend state
+ * @param kind Type of resource to destroy
+ * @param payload Union containing the resource handle
+ * @param memory Optional device memory to free (VK_NULL_HANDLE if none)
+ * @param pool_alloc Optional allocator for wrapper pool return
+ * @param wrapper_size Size of wrapper struct if pool_alloc is set
+ * @return true if enqueued successfully, false if queue is full (immediate destroy needed)
+ */
+vkr_internal bool8_t
+vulkan_deferred_destroy_enqueue(VulkanBackendState *state,
+                                VkrDeferredDestroyKind kind, void *handle,
+                                VkDeviceMemory memory, VkrAllocator *pool_alloc,
+                                uint64_t wrapper_size) {
+  VkrDeferredDestroyQueue *queue = &state->deferred_destroy_queue;
+
+  if (queue->count >= VKR_DEFERRED_DESTROY_QUEUE_SIZE) {
+    log_warn("Deferred destroy queue full, immediate destruction required");
+    return false_v;
+  }
+
+  VkrDeferredDestroyEntry *entry = &queue->entries[queue->tail];
+  entry->kind = kind;
+  entry->submit_serial = state->submit_serial;
+  entry->payload.wrapper = handle; // All handles are pointer-sized
+  entry->memory = memory;
+  entry->pool_alloc = pool_alloc;
+  entry->wrapper_size = wrapper_size;
+
+  queue->tail = (queue->tail + 1) % VKR_DEFERRED_DESTROY_QUEUE_SIZE;
+  queue->count++;
+
+  return true_v;
+}
+
+/**
+ * @brief Process the deferred destruction queue, destroying retired resources.
+ *
+ * Called at the start of each frame after fence wait. Destroys all resources
+ * whose submit_serial is old enough that the GPU is guaranteed to be done with them.
+ *
+ * @param state Vulkan backend state
+ */
+vkr_internal void vulkan_deferred_destroy_process(VulkanBackendState *state) {
+  VkrDeferredDestroyQueue *queue = &state->deferred_destroy_queue;
+
+  // Resources are safe to destroy when submit_serial <= current - BUFFERING_FRAMES
+  uint64_t safe_serial =
+      state->submit_serial >= BUFFERING_FRAMES
+          ? state->submit_serial - BUFFERING_FRAMES
+          : 0;
+
+  while (queue->count > 0) {
+    VkrDeferredDestroyEntry *entry = &queue->entries[queue->head];
+
+    // Stop if we reach an entry that's not safe to destroy yet
+    if (entry->submit_serial > safe_serial) {
+      break;
+    }
+
+    // Destroy the resource based on its kind
+    switch (entry->kind) {
+    case VKR_DEFERRED_DESTROY_FRAMEBUFFER:
+      if (entry->payload.framebuffer != VK_NULL_HANDLE) {
+        vkDestroyFramebuffer(state->device.logical_device,
+                             entry->payload.framebuffer, state->allocator);
+      }
+      break;
+    case VKR_DEFERRED_DESTROY_RENDERPASS:
+      if (entry->payload.renderpass != VK_NULL_HANDLE) {
+        vkDestroyRenderPass(state->device.logical_device,
+                            entry->payload.renderpass, state->allocator);
+      }
+      break;
+    case VKR_DEFERRED_DESTROY_IMAGE:
+      if (entry->payload.image != VK_NULL_HANDLE) {
+        vkDestroyImage(state->device.logical_device, entry->payload.image,
+                       state->allocator);
+      }
+      if (entry->memory != VK_NULL_HANDLE) {
+        vkFreeMemory(state->device.logical_device, entry->memory,
+                     state->allocator);
+      }
+      break;
+    case VKR_DEFERRED_DESTROY_IMAGE_VIEW:
+      if (entry->payload.image_view != VK_NULL_HANDLE) {
+        vkDestroyImageView(state->device.logical_device,
+                           entry->payload.image_view, state->allocator);
+      }
+      break;
+    case VKR_DEFERRED_DESTROY_SAMPLER:
+      if (entry->payload.sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(state->device.logical_device, entry->payload.sampler,
+                         state->allocator);
+      }
+      break;
+    case VKR_DEFERRED_DESTROY_BUFFER:
+      if (entry->payload.buffer != VK_NULL_HANDLE) {
+        vkDestroyBuffer(state->device.logical_device, entry->payload.buffer,
+                        state->allocator);
+      }
+      if (entry->memory != VK_NULL_HANDLE) {
+        vkFreeMemory(state->device.logical_device, entry->memory,
+                     state->allocator);
+      }
+      break;
+    case VKR_DEFERRED_DESTROY_TEXTURE_WRAPPER:
+    case VKR_DEFERRED_DESTROY_BUFFER_WRAPPER:
+    case VKR_DEFERRED_DESTROY_RENDER_TARGET_WRAPPER:
+      // Free wrapper back to pool if allocator provided
+      if (entry->pool_alloc && entry->payload.wrapper) {
+        vkr_allocator_free(entry->pool_alloc, entry->payload.wrapper,
+                           entry->wrapper_size, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      }
+      break;
+    }
+
+    // Advance head and decrement count
+    queue->head = (queue->head + 1) % VKR_DEFERRED_DESTROY_QUEUE_SIZE;
+    queue->count--;
+  }
+}
+
+/**
+ * @brief Flush the entire deferred destruction queue, destroying all entries.
+ *
+ * Called during shutdown to ensure all resources are destroyed.
+ *
+ * @param state Vulkan backend state
+ */
+vkr_internal void vulkan_deferred_destroy_flush(VulkanBackendState *state) {
+  // Process all entries regardless of serial by setting safe_serial high
+  state->submit_serial = UINT64_MAX;
+  vulkan_deferred_destroy_process(state);
+  state->submit_serial = 0;
+
+  // Reset queue state
+  state->deferred_destroy_queue.head = 0;
+  state->deferred_destroy_queue.tail = 0;
+  state->deferred_destroy_queue.count = 0;
 }
 
 vkr_internal void vulkan_select_filter_modes(
@@ -97,6 +628,17 @@ vkr_internal bool8_t vulkan_texture_format_is_depth(VkrTextureFormat format) {
   }
 }
 
+vkr_internal bool8_t vulkan_texture_format_is_integer(VkrTextureFormat format) {
+  switch (format) {
+  case VKR_TEXTURE_FORMAT_R32_UINT:
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_UINT:
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_SINT:
+    return true_v;
+  default:
+    return false_v;
+  }
+}
+
 vkr_internal uint32_t
 vulkan_texture_format_channel_count(VkrTextureFormat format) {
   switch (format) {
@@ -127,16 +669,22 @@ vulkan_texture_layout_to_vk(VkrTextureLayout layout) {
   switch (layout) {
   case VKR_TEXTURE_LAYOUT_UNDEFINED:
     return VK_IMAGE_LAYOUT_UNDEFINED;
-  case VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY:
-    return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-  case VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT:
+  case VKR_TEXTURE_LAYOUT_GENERAL:
+    return VK_IMAGE_LAYOUT_GENERAL;
+  case VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
     return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  case VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT:
+  case VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
     return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-  case VKR_TEXTURE_LAYOUT_TRANSFER_SRC:
+  case VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL:
+    return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+  case VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
+    return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  case VKR_TEXTURE_LAYOUT_TRANSFER_SRC_OPTIMAL:
     return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-  case VKR_TEXTURE_LAYOUT_TRANSFER_DST:
+  case VKR_TEXTURE_LAYOUT_TRANSFER_DST_OPTIMAL:
     return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+  case VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR:
+    return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
   default:
     log_error("Unsupported texture layout: %d", layout);
     return VK_IMAGE_LAYOUT_UNDEFINED;
@@ -161,6 +709,16 @@ vkr_internal bool32_t create_command_buffers(VulkanBackendState *state) {
 vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
   assert_log(state != NULL, "State not initialized");
 
+  VkrTextureFormat swapchain_format =
+      vulkan_vk_format_to_vkr(state->swapchain.format);
+  VkrTextureFormat depth_format =
+      vulkan_vk_format_to_vkr(state->device.depth_format);
+  VkrClearValue clear_world = {.color_f32 = {0.1f, 0.1f, 0.2f, 1.0f}};
+  VkrClearValue clear_black = {.color_f32 = {0.0f, 0.0f, 0.0f, 1.0f}};
+  VkrClearValue clear_transparent = {.color_f32 = {0.0f, 0.0f, 0.0f, 0.0f}};
+  VkrClearValue clear_depth = {.depth_stencil = {1.0f, 0}};
+  VkrClearValue clear_picking = {.color_u32 = {0u, 0u, 0u, 0u}};
+
   for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
     if (state->domain_initialized[domain]) {
       continue;
@@ -168,6 +726,10 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
 
     if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT ||
         domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY) {
+      continue;
+    }
+
+    if (domain == VKR_PIPELINE_DOMAIN_COMPUTE) {
       continue;
     }
 
@@ -181,9 +743,159 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
 
     MemZero(state->domain_render_passes[domain], sizeof(VulkanRenderPass));
 
-    if (!vulkan_renderpass_create_for_domain(
-            state, (VkrPipelineDomain)domain,
-            state->domain_render_passes[domain])) {
+    VkrRenderPassAttachmentDesc color_attachment = {0};
+    VkrRenderPassAttachmentDesc depth_attachment = {0};
+    VkrRenderPassDesc desc = {0};
+
+    switch (domain) {
+    case VKR_PIPELINE_DOMAIN_WORLD:
+    case VKR_PIPELINE_DOMAIN_SKYBOX:
+    case VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT:
+    case VKR_PIPELINE_DOMAIN_WORLD_OVERLAY:
+    {
+      VkrClearValue color_clear =
+          (domain == VKR_PIPELINE_DOMAIN_SKYBOX) ? clear_black : clear_world;
+      color_attachment = (VkrRenderPassAttachmentDesc){
+          .format = swapchain_format,
+          .samples = VKR_SAMPLE_COUNT_1,
+          .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+          .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+          .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+          .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+          .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+          .final_layout = VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+          .clear_value = color_clear,
+      };
+      depth_attachment = (VkrRenderPassAttachmentDesc){
+          .format = depth_format,
+          .samples = VKR_SAMPLE_COUNT_1,
+          .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+          .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+          .store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+          .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+          .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+          .final_layout = VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+          .clear_value = clear_depth,
+      };
+      desc = (VkrRenderPassDesc){
+          .name = (String8){0},
+          .domain = (VkrPipelineDomain)domain,
+          .color_attachment_count = 1,
+          .color_attachments = &color_attachment,
+          .depth_stencil_attachment = &depth_attachment,
+          .resolve_attachment_count = 0,
+          .resolve_attachments = NULL,
+      };
+      break;
+    }
+    case VKR_PIPELINE_DOMAIN_UI:
+      color_attachment = (VkrRenderPassAttachmentDesc){
+          .format = swapchain_format,
+          .samples = VKR_SAMPLE_COUNT_1,
+          .load_op = VKR_ATTACHMENT_LOAD_OP_LOAD,
+          .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+          .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+          .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+          .initial_layout = VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+          .final_layout = VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR,
+          .clear_value = clear_transparent,
+      };
+      desc = (VkrRenderPassDesc){
+          .name = (String8){0},
+          .domain = VKR_PIPELINE_DOMAIN_UI,
+          .color_attachment_count = 1,
+          .color_attachments = &color_attachment,
+          .depth_stencil_attachment = NULL,
+          .resolve_attachment_count = 0,
+          .resolve_attachments = NULL,
+      };
+      break;
+    case VKR_PIPELINE_DOMAIN_SHADOW:
+      depth_attachment = (VkrRenderPassAttachmentDesc){
+          .format = depth_format,
+          .samples = VKR_SAMPLE_COUNT_1,
+          .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+          .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+          .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+          .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+          .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+          .final_layout = VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+          .clear_value = clear_depth,
+      };
+      desc = (VkrRenderPassDesc){
+          .name = (String8){0},
+          .domain = VKR_PIPELINE_DOMAIN_SHADOW,
+          .color_attachment_count = 0,
+          .color_attachments = NULL,
+          .depth_stencil_attachment = &depth_attachment,
+          .resolve_attachment_count = 0,
+          .resolve_attachments = NULL,
+      };
+      break;
+    case VKR_PIPELINE_DOMAIN_POST:
+      color_attachment = (VkrRenderPassAttachmentDesc){
+          .format = swapchain_format,
+          .samples = VKR_SAMPLE_COUNT_1,
+          .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+          .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+          .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+          .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+          .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+          .final_layout = VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR,
+          .clear_value = clear_black,
+      };
+      desc = (VkrRenderPassDesc){
+          .name = (String8){0},
+          .domain = VKR_PIPELINE_DOMAIN_POST,
+          .color_attachment_count = 1,
+          .color_attachments = &color_attachment,
+          .depth_stencil_attachment = NULL,
+          .resolve_attachment_count = 0,
+          .resolve_attachments = NULL,
+      };
+      break;
+    case VKR_PIPELINE_DOMAIN_PICKING:
+    case VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT:
+    case VKR_PIPELINE_DOMAIN_PICKING_OVERLAY:
+      color_attachment = (VkrRenderPassAttachmentDesc){
+          .format = VKR_TEXTURE_FORMAT_R32_UINT,
+          .samples = VKR_SAMPLE_COUNT_1,
+          .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+          .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+          .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+          .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+          .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+          .final_layout = VKR_TEXTURE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+          .clear_value = clear_picking,
+      };
+      depth_attachment = (VkrRenderPassAttachmentDesc){
+          .format = depth_format,
+          .samples = VKR_SAMPLE_COUNT_1,
+          .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+          .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+          .store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+          .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+          .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+          .final_layout = VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+          .clear_value = clear_depth,
+      };
+      desc = (VkrRenderPassDesc){
+          .name = (String8){0},
+          .domain = (VkrPipelineDomain)domain,
+          .color_attachment_count = 1,
+          .color_attachments = &color_attachment,
+          .depth_stencil_attachment = &depth_attachment,
+          .resolve_attachment_count = 0,
+          .resolve_attachments = NULL,
+      };
+      break;
+    default:
+      log_fatal("Unknown pipeline domain: %u", domain);
+      return false;
+    }
+
+    if (!vulkan_renderpass_create_from_desc(
+            state, &desc, state->domain_render_passes[domain])) {
       log_fatal("Failed to create domain render pass for domain %u", domain);
       return false;
     }
@@ -205,60 +917,6 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
       state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD_OVERLAY] = true;
       // log_debug("Linked WORLD_OVERLAY to WORLD render pass");
     }
-  }
-
-  return true;
-}
-
-vkr_internal bool32_t create_domain_framebuffers(VulkanBackendState *state) {
-  assert_log(state != NULL, "State not initialized");
-
-  for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
-    if (!state->domain_initialized[domain]) {
-      continue;
-    }
-
-    if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT ||
-        domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY) {
-      continue;
-    }
-
-    if (state->domain_framebuffers[domain].length > 0) {
-      for (uint32_t i = 0; i < state->domain_framebuffers[domain].length; ++i) {
-        VulkanFramebuffer *old_fb =
-            array_get_VulkanFramebuffer(&state->domain_framebuffers[domain], i);
-        vulkan_framebuffer_destroy(state, old_fb);
-      }
-      array_destroy_VulkanFramebuffer(&state->domain_framebuffers[domain]);
-    }
-
-    state->domain_framebuffers[domain] = array_create_VulkanFramebuffer(
-        &state->swapchain_alloc, state->swapchain.images.length);
-
-    for (uint32_t i = 0; i < state->swapchain.images.length; i++) {
-      array_set_VulkanFramebuffer(&state->domain_framebuffers[domain], i,
-                                  (VulkanFramebuffer){
-                                      .handle = VK_NULL_HANDLE,
-                                      .attachments = {0},
-                                      .renderpass = NULL,
-                                  });
-    }
-
-    if (!vulkan_framebuffer_regenerate_for_domain(
-            state, &state->swapchain, state->domain_render_passes[domain],
-            (VkrPipelineDomain)domain, &state->domain_framebuffers[domain])) {
-      log_fatal("Failed to regenerate framebuffers for domain %u", domain);
-      return false;
-    }
-
-    // log_debug("Created domain framebuffers for domain %u", domain);
-  }
-
-  if (state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD]) {
-    state->domain_framebuffers[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] =
-        state->domain_framebuffers[VKR_PIPELINE_DOMAIN_WORLD];
-    state->domain_framebuffers[VKR_PIPELINE_DOMAIN_WORLD_OVERLAY] =
-        state->domain_framebuffers[VKR_PIPELINE_DOMAIN_WORLD];
   }
 
   return true;
@@ -286,6 +944,42 @@ vkr_internal VkrTextureFormat vulkan_vk_format_to_vkr(VkFormat format) {
   }
 }
 
+vkr_internal VkrSampleCount
+vulkan_vk_samples_to_vkr(VkSampleCountFlagBits samples) {
+  switch (samples) {
+  case VK_SAMPLE_COUNT_1_BIT:
+    return VKR_SAMPLE_COUNT_1;
+  case VK_SAMPLE_COUNT_2_BIT:
+    return VKR_SAMPLE_COUNT_2;
+  case VK_SAMPLE_COUNT_4_BIT:
+    return VKR_SAMPLE_COUNT_4;
+  case VK_SAMPLE_COUNT_8_BIT:
+    return VKR_SAMPLE_COUNT_8;
+  case VK_SAMPLE_COUNT_16_BIT:
+    return VKR_SAMPLE_COUNT_16;
+  case VK_SAMPLE_COUNT_32_BIT:
+    return VKR_SAMPLE_COUNT_32;
+  case VK_SAMPLE_COUNT_64_BIT:
+    return VKR_SAMPLE_COUNT_64;
+  default:
+    return VKR_SAMPLE_COUNT_1;
+  }
+}
+
+vkr_internal VkImageAspectFlags
+vulkan_aspect_flags_from_texture_format(VkrTextureFormat format) {
+  VkFormat vk_format = vulkan_image_format_from_texture_format(format);
+  switch (vk_format) {
+  case VK_FORMAT_D32_SFLOAT:
+    return VK_IMAGE_ASPECT_DEPTH_BIT;
+  case VK_FORMAT_D32_SFLOAT_S8_UINT:
+  case VK_FORMAT_D24_UNORM_S8_UINT:
+    return VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+  default:
+    return VK_IMAGE_ASPECT_COLOR_BIT;
+  }
+}
+
 vkr_internal void
 vulkan_backend_destroy_attachment_wrappers(VulkanBackendState *state,
                                            uint32_t image_count) {
@@ -303,7 +997,7 @@ vulkan_backend_destroy_attachment_wrappers(VulkanBackendState *state,
       if (wrapper) {
         vkr_allocator_free(&state->swapchain_alloc, wrapper,
                            sizeof(struct s_TextureHandle),
-                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+                           VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
       }
     }
 
@@ -354,6 +1048,7 @@ vulkan_backend_create_attachment_wrappers(VulkanBackendState *state) {
     wrapper->texture.image.height = state->swapchain.extent.height;
     wrapper->texture.image.mip_levels = 1;
     wrapper->texture.image.array_layers = 1;
+    wrapper->texture.image.samples = VK_SAMPLE_COUNT_1_BIT;
     wrapper->texture.sampler = VK_NULL_HANDLE;
 
     wrapper->description.width = state->swapchain.extent.width;
@@ -361,6 +1056,7 @@ vulkan_backend_create_attachment_wrappers(VulkanBackendState *state) {
     wrapper->description.channels = 4;
     wrapper->description.format =
         vulkan_vk_format_to_vkr(state->swapchain.format);
+    wrapper->description.sample_count = VKR_SAMPLE_COUNT_1;
 
     state->swapchain_image_textures[i] = wrapper;
   }
@@ -374,6 +1070,7 @@ vulkan_backend_create_attachment_wrappers(VulkanBackendState *state) {
   }
   MemZero(depth_wrapper, sizeof(struct s_TextureHandle));
   depth_wrapper->texture.image = state->swapchain.depth_attachment;
+  depth_wrapper->texture.image.samples = VK_SAMPLE_COUNT_1_BIT;
   depth_wrapper->texture.sampler = VK_NULL_HANDLE;
   depth_wrapper->description.width = state->swapchain.extent.width;
   depth_wrapper->description.height = state->swapchain.extent.height;
@@ -382,6 +1079,7 @@ vulkan_backend_create_attachment_wrappers(VulkanBackendState *state) {
       (state->device.depth_format == VK_FORMAT_D24_UNORM_S8_UINT)
           ? VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT
           : VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  depth_wrapper->description.sample_count = VKR_SAMPLE_COUNT_1;
 
   state->depth_texture = depth_wrapper;
 
@@ -393,9 +1091,14 @@ vulkan_backend_renderpass_lookup(VulkanBackendState *state, String8 name) {
   for (uint32_t i = 0; i < state->render_pass_count; ++i) {
     VkrRenderPassEntry *entry =
         array_get_VkrRenderPassEntry(&state->render_pass_registry, i);
-    if (entry->pass && entry->pass->vk &&
-        entry->pass->vk->handle != VK_NULL_HANDLE &&
-        string8_equalsi(&entry->name, &name)) {
+    if (!entry->pass || !entry->pass->vk ||
+        entry->pass->vk->handle == VK_NULL_HANDLE) {
+      continue;
+    }
+    if (entry->name.length == 0 || entry->name.str == NULL) {
+      continue;
+    }
+    if (string8_equalsi(&entry->name, &name)) {
       return entry->pass;
     }
   }
@@ -447,11 +1150,42 @@ vkr_internal bool32_t vulkan_backend_renderpass_register(
   return true;
 }
 
+/**
+ * @brief Internal helper to create a render pass from VkrRenderPassDesc.
+ */
 vkr_internal struct s_RenderPass *
-vulkan_backend_renderpass_create_internal(VulkanBackendState *state,
-                                          const VkrRenderPassConfig *cfg) {
+vulkan_backend_renderpass_create_from_desc_internal(VulkanBackendState *state,
+                                                    const VkrRenderPassDesc *desc) {
   assert_log(state != NULL, "State not initialized");
-  assert_log(cfg != NULL, "Render pass config is NULL");
+  assert_log(desc != NULL, "Render pass descriptor is NULL");
+
+  if (desc->color_attachment_count > 0 && !desc->color_attachments) {
+    log_error("Render pass descriptor missing color attachments");
+    return NULL;
+  }
+  if (desc->resolve_attachment_count > 0 && !desc->resolve_attachments) {
+    log_error("Render pass descriptor missing resolve attachments");
+    return NULL;
+  }
+  if (desc->color_attachment_count > VKR_MAX_COLOR_ATTACHMENTS) {
+    log_error("Render pass color attachment count %u exceeds max %u",
+              desc->color_attachment_count, VKR_MAX_COLOR_ATTACHMENTS);
+    return NULL;
+  }
+  if (desc->resolve_attachment_count > VKR_MAX_COLOR_ATTACHMENTS) {
+    log_error("Render pass resolve attachment count %u exceeds max %u",
+              desc->resolve_attachment_count, VKR_MAX_COLOR_ATTACHMENTS);
+    return NULL;
+  }
+  uint8_t total_attachments =
+      (uint8_t)(desc->color_attachment_count +
+                (desc->depth_stencil_attachment ? 1u : 0u) +
+                desc->resolve_attachment_count);
+  if (total_attachments > VKR_RENDER_TARGET_MAX_ATTACHMENTS) {
+    log_error("Render pass attachment count %u exceeds max %u",
+              total_attachments, VKR_RENDER_TARGET_MAX_ATTACHMENTS);
+    return NULL;
+  }
 
   struct s_RenderPass *pass = vkr_allocator_alloc(
       &state->alloc, sizeof(*pass), VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
@@ -461,27 +1195,83 @@ vulkan_backend_renderpass_create_internal(VulkanBackendState *state,
   }
   MemZero(pass, sizeof(*pass));
 
-  pass->cfg = *cfg;
-  pass->name = string8_duplicate(&state->alloc, &cfg->name);
+  // Store name and descriptor-derived metadata
+  pass->name = string8_duplicate(&state->alloc, &desc->name);
+  pass->attachment_count = (uint8_t)(desc->color_attachment_count +
+                                     (desc->depth_stencil_attachment ? 1u : 0u) +
+                                     desc->resolve_attachment_count);
+  pass->resolve_attachment_count = desc->resolve_attachment_count;
+  for (uint8_t i = 0; i < desc->resolve_attachment_count; ++i) {
+    pass->resolve_attachments[i] = desc->resolve_attachments[i];
+  }
+  pass->ends_in_present = false_v;
+
+  uint8_t attachment_index = 0;
+  for (uint8_t i = 0; i < desc->color_attachment_count; ++i) {
+    const VkrRenderPassAttachmentDesc *att = &desc->color_attachments[i];
+    VkClearValue clear = {0};
+    if (vulkan_texture_format_is_integer(att->format)) {
+      clear.color.uint32[0] = att->clear_value.color_u32.r;
+      clear.color.uint32[1] = att->clear_value.color_u32.g;
+      clear.color.uint32[2] = att->clear_value.color_u32.b;
+      clear.color.uint32[3] = att->clear_value.color_u32.a;
+    } else {
+      clear.color.float32[0] = att->clear_value.color_f32.r;
+      clear.color.float32[1] = att->clear_value.color_f32.g;
+      clear.color.float32[2] = att->clear_value.color_f32.b;
+      clear.color.float32[3] = att->clear_value.color_f32.a;
+    }
+    pass->clear_values[attachment_index++] = clear;
+    if (att->final_layout == VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR) {
+      pass->ends_in_present = true_v;
+    }
+  }
+
+  if (desc->depth_stencil_attachment) {
+    VkClearValue clear = {0};
+    clear.depthStencil.depth =
+        desc->depth_stencil_attachment->clear_value.depth_stencil.depth;
+    clear.depthStencil.stencil =
+        desc->depth_stencil_attachment->clear_value.depth_stencil.stencil;
+    pass->clear_values[attachment_index++] = clear;
+  }
+
+  for (uint8_t i = 0; i < desc->resolve_attachment_count; ++i) {
+    VkClearValue clear = {0};
+    pass->clear_values[attachment_index++] = clear;
+  }
 
   pass->vk = vkr_allocator_alloc(&state->alloc, sizeof(VulkanRenderPass),
                                  VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!pass->vk) {
     log_fatal("Failed to allocate Vulkan render pass");
-    return NULL;
+    goto cleanup;
   }
   MemZero(pass->vk, sizeof(VulkanRenderPass));
 
-  if (!vulkan_renderpass_create_from_config(state, cfg, pass->vk)) {
-    log_error("Failed to create Vulkan render pass from config");
-    return NULL;
+  if (!vulkan_renderpass_create_from_desc(state, desc, pass->vk)) {
+    log_error("Failed to create Vulkan render pass from descriptor");
+    goto cleanup;
   }
 
-  if (!vulkan_backend_renderpass_register(state, pass)) {
-    return NULL;
+  if (desc->name.length > 0 && desc->name.str != NULL) {
+    if (!vulkan_backend_renderpass_register(state, pass)) {
+      goto cleanup;
+    }
   }
 
   return pass;
+
+cleanup:
+  if (pass->vk) {
+    vulkan_renderpass_destroy(state, pass->vk);
+    vkr_allocator_free(&state->alloc, pass->vk, sizeof(VulkanRenderPass),
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    pass->vk = NULL;
+  }
+  vkr_allocator_free(&state->alloc, pass, sizeof(*pass),
+                     VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  return NULL;
 }
 
 vkr_internal bool32_t vulkan_backend_create_builtin_passes(
@@ -489,60 +1279,93 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
   assert_log(state != NULL, "State not initialized");
   assert_log(backend_config != NULL, "Backend config is NULL");
 
-  uint16_t cfg_count =
-      backend_config ? backend_config->renderpass_count : (uint16_t)0;
-  VkrRenderPassConfig *configs =
-      backend_config ? backend_config->pass_configs : NULL;
+  uint16_t desc_count =
+      backend_config ? backend_config->renderpass_desc_count : (uint16_t)0;
+  const VkrRenderPassDesc *descs =
+      backend_config ? backend_config->pass_descs : NULL;
 
   if (!array_is_null_VkrRenderPassEntry(&state->render_pass_registry)) {
     state->render_pass_count = 0;
   } else {
-    uint16_t capacity = cfg_count > 0 ? (uint16_t)(cfg_count + 2) : 4;
-    if (capacity < 4) {
-      capacity = 4;
-    }
+    uint16_t capacity = (uint16_t)Max(4u, (uint32_t)desc_count + 4u);
     state->render_pass_registry =
         array_create_VkrRenderPassEntry(&state->alloc, capacity);
     state->render_pass_count = 0;
   }
 
-  if (configs && cfg_count > 0) {
-    for (uint16_t i = 0; i < cfg_count; ++i) {
+  if (descs && desc_count > 0) {
+    for (uint16_t i = 0; i < desc_count; ++i) {
       struct s_RenderPass *created =
-          vulkan_backend_renderpass_create_internal(state, &configs[i]);
+          vulkan_backend_renderpass_create_from_desc_internal(state, &descs[i]);
       if (!created) {
         return false;
       }
 
-      if (vkr_string8_equals_cstr_i(&configs[i].name,
+      if (vkr_string8_equals_cstr_i(&descs[i].name,
                                     "renderpass.builtin.world")) {
         state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD] = created->vk;
         state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD] = true;
-      } else if (vkr_string8_equals_cstr_i(&configs[i].name,
+      } else if (vkr_string8_equals_cstr_i(&descs[i].name,
                                            "renderpass.builtin.ui")) {
         state->domain_render_passes[VKR_PIPELINE_DOMAIN_UI] = created->vk;
         state->domain_initialized[VKR_PIPELINE_DOMAIN_UI] = true;
-      } else if (vkr_string8_equals_cstr_i(&configs[i].name,
+      } else if (vkr_string8_equals_cstr_i(&descs[i].name,
                                            "renderpass.builtin.skybox")) {
         state->domain_render_passes[VKR_PIPELINE_DOMAIN_SKYBOX] = created->vk;
         state->domain_initialized[VKR_PIPELINE_DOMAIN_SKYBOX] = true;
+      } else if (vkr_string8_equals_cstr_i(&descs[i].name,
+                                           "renderpass.builtin.picking")) {
+        state->domain_render_passes[VKR_PIPELINE_DOMAIN_PICKING] = created->vk;
+        state->domain_initialized[VKR_PIPELINE_DOMAIN_PICKING] = true;
       }
     }
   }
 
-  if (!state->domain_render_passes[VKR_PIPELINE_DOMAIN_SKYBOX]) {
-    VkrRenderPassConfig skybox_cfg = {
+  VkrTextureFormat swapchain_format =
+      vulkan_vk_format_to_vkr(state->swapchain.format);
+  VkrTextureFormat depth_format =
+      vulkan_vk_format_to_vkr(state->device.depth_format);
+  VkrClearValue clear_black = {.color_f32 = {0.0f, 0.0f, 0.0f, 1.0f}};
+  VkrClearValue clear_world = {.color_f32 = {0.1f, 0.1f, 0.2f, 1.0f}};
+  VkrClearValue clear_transparent = {.color_f32 = {0.0f, 0.0f, 0.0f, 0.0f}};
+  VkrClearValue clear_depth = {.depth_stencil = {1.0f, 0}};
+  VkrClearValue clear_picking = {.color_u32 = {0u, 0u, 0u, 0u}};
+
+  if (!vulkan_backend_renderpass_lookup(
+          state, string8_lit("Renderpass.Builtin.Skybox"))) {
+    VkrRenderPassAttachmentDesc skybox_color = {
+        .format = swapchain_format,
+        .samples = VKR_SAMPLE_COUNT_1,
+        .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+        .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+        .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+        .final_layout = VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .clear_value = clear_black,
+    };
+    VkrRenderPassAttachmentDesc skybox_depth = {
+        .format = depth_format,
+        .samples = VKR_SAMPLE_COUNT_1,
+        .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+        .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+        .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+        .final_layout = VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        .clear_value = clear_depth,
+    };
+    VkrRenderPassDesc skybox_desc = {
         .name = string8_lit("Renderpass.Builtin.Skybox"),
-        .prev_name = {0},
-        .next_name = string8_lit("Renderpass.Builtin.World"),
         .domain = VKR_PIPELINE_DOMAIN_SKYBOX,
-        .render_area = (Vec4){0, 0, (float32_t)state->swapchain.extent.width,
-                              (float32_t)state->swapchain.extent.height},
-        .clear_color = (Vec4){1.0f, 0.0f, 1.0f, 1.0f}, // Magenta for debugging
-        .clear_flags = VKR_RENDERPASS_CLEAR_COLOR | VKR_RENDERPASS_CLEAR_DEPTH,
+        .color_attachment_count = 1,
+        .color_attachments = &skybox_color,
+        .depth_stencil_attachment = &skybox_depth,
+        .resolve_attachment_count = 0,
+        .resolve_attachments = NULL,
     };
     struct s_RenderPass *skybox =
-        vulkan_backend_renderpass_create_internal(state, &skybox_cfg);
+        vulkan_backend_renderpass_create_from_desc_internal(state, &skybox_desc);
     if (!skybox) {
       return false;
     }
@@ -550,20 +1373,41 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
     state->domain_initialized[VKR_PIPELINE_DOMAIN_SKYBOX] = true;
   }
 
-  if (!state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD]) {
-    VkrRenderPassConfig world_cfg = {
+  if (!vulkan_backend_renderpass_lookup(
+          state, string8_lit("Renderpass.Builtin.World"))) {
+    VkrRenderPassAttachmentDesc world_color = {
+        .format = swapchain_format,
+        .samples = VKR_SAMPLE_COUNT_1,
+        .load_op = VKR_ATTACHMENT_LOAD_OP_LOAD,
+        .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+        .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initial_layout = VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .final_layout = VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .clear_value = clear_world,
+    };
+    VkrRenderPassAttachmentDesc world_depth = {
+        .format = depth_format,
+        .samples = VKR_SAMPLE_COUNT_1,
+        .load_op = VKR_ATTACHMENT_LOAD_OP_LOAD,
+        .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+        .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initial_layout = VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        .final_layout = VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        .clear_value = clear_depth,
+    };
+    VkrRenderPassDesc world_desc = {
         .name = string8_lit("Renderpass.Builtin.World"),
-        .prev_name = string8_lit("Renderpass.Builtin.Skybox"),
-        .next_name = string8_lit("Renderpass.Builtin.UI"),
         .domain = VKR_PIPELINE_DOMAIN_WORLD,
-        .render_area = (Vec4){0, 0, (float32_t)state->swapchain.extent.width,
-                              (float32_t)state->swapchain.extent.height},
-        .clear_color = (Vec4){0.1f, 0.1f, 0.2f, 1.0f},
-        .clear_flags = VKR_RENDERPASS_USE_DEPTH, // Use depth without clearing
-                                                 // (skybox already cleared)
+        .color_attachment_count = 1,
+        .color_attachments = &world_color,
+        .depth_stencil_attachment = &world_depth,
+        .resolve_attachment_count = 0,
+        .resolve_attachments = NULL,
     };
     struct s_RenderPass *world =
-        vulkan_backend_renderpass_create_internal(state, &world_cfg);
+        vulkan_backend_renderpass_create_from_desc_internal(state, &world_desc);
     if (!world) {
       return false;
     }
@@ -571,19 +1415,30 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
     state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD] = true;
   }
 
-  if (!state->domain_render_passes[VKR_PIPELINE_DOMAIN_UI]) {
-    VkrRenderPassConfig ui_cfg = {
+  if (!vulkan_backend_renderpass_lookup(
+          state, string8_lit("Renderpass.Builtin.UI"))) {
+    VkrRenderPassAttachmentDesc ui_color = {
+        .format = swapchain_format,
+        .samples = VKR_SAMPLE_COUNT_1,
+        .load_op = VKR_ATTACHMENT_LOAD_OP_LOAD,
+        .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+        .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initial_layout = VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .final_layout = VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR,
+        .clear_value = clear_transparent,
+    };
+    VkrRenderPassDesc ui_desc = {
         .name = string8_lit("Renderpass.Builtin.UI"),
-        .prev_name = string8_lit("Renderpass.Builtin.World"),
-        .next_name = {0},
         .domain = VKR_PIPELINE_DOMAIN_UI,
-        .render_area = (Vec4){0, 0, (float32_t)state->swapchain.extent.width,
-                              (float32_t)state->swapchain.extent.height},
-        .clear_color = (Vec4){0, 0, 0, 0},
-        .clear_flags = VKR_RENDERPASS_CLEAR_NONE,
+        .color_attachment_count = 1,
+        .color_attachments = &ui_color,
+        .depth_stencil_attachment = NULL,
+        .resolve_attachment_count = 0,
+        .resolve_attachments = NULL,
     };
     struct s_RenderPass *ui =
-        vulkan_backend_renderpass_create_internal(state, &ui_cfg);
+        vulkan_backend_renderpass_create_from_desc_internal(state, &ui_desc);
     if (!ui) {
       return false;
     }
@@ -591,20 +1446,41 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
     state->domain_initialized[VKR_PIPELINE_DOMAIN_UI] = true;
   }
 
-  // Create PICKING render pass (R32_UINT for object IDs)
-  if (!state->domain_render_passes[VKR_PIPELINE_DOMAIN_PICKING]) {
-    VkrRenderPassConfig picking_cfg = {
+  if (!vulkan_backend_renderpass_lookup(
+          state, string8_lit("Renderpass.Builtin.Picking"))) {
+    VkrRenderPassAttachmentDesc picking_color = {
+        .format = VKR_TEXTURE_FORMAT_R32_UINT,
+        .samples = VKR_SAMPLE_COUNT_1,
+        .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+        .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+        .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+        .final_layout = VKR_TEXTURE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+        .clear_value = clear_picking,
+    };
+    VkrRenderPassAttachmentDesc picking_depth = {
+        .format = depth_format,
+        .samples = VKR_SAMPLE_COUNT_1,
+        .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+        .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+        .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+        .final_layout = VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+        .clear_value = clear_depth,
+    };
+    VkrRenderPassDesc picking_desc = {
         .name = string8_lit("Renderpass.Builtin.Picking"),
-        .prev_name = {0},
-        .next_name = {0},
         .domain = VKR_PIPELINE_DOMAIN_PICKING,
-        .render_area = (Vec4){0, 0, (float32_t)state->swapchain.extent.width,
-                              (float32_t)state->swapchain.extent.height},
-        .clear_color = (Vec4){0, 0, 0, 0}, // 0 = no object
-        .clear_flags = VKR_RENDERPASS_CLEAR_COLOR | VKR_RENDERPASS_CLEAR_DEPTH,
+        .color_attachment_count = 1,
+        .color_attachments = &picking_color,
+        .depth_stencil_attachment = &picking_depth,
+        .resolve_attachment_count = 0,
+        .resolve_attachments = NULL,
     };
     struct s_RenderPass *picking =
-        vulkan_backend_renderpass_create_internal(state, &picking_cfg);
+        vulkan_backend_renderpass_create_from_desc_internal(state, &picking_desc);
     if (!picking) {
       return false;
     }
@@ -644,6 +1520,11 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
 
   // Swapchain recreation succeeded - now clean up old resources and create new
   // ones
+
+  // Invalidate framebuffer cache - all cached framebuffers reference old
+  // swapchain images that are now invalid
+  framebuffer_cache_invalidate(state);
+
   vulkan_backend_destroy_attachment_wrappers(state, old_image_count);
 
   // Clear images_in_flight using OLD count
@@ -745,40 +1626,6 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
     }
   }
 
-  for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
-    if (state->domain_initialized[domain]) {
-      state->domain_render_passes[domain]->position = (Vec2){0, 0};
-      state->domain_render_passes[domain]->width =
-          state->swapchain.extent.width;
-      state->domain_render_passes[domain]->height =
-          state->swapchain.extent.height;
-    }
-  }
-
-  for (uint32_t i = 0; i < state->render_pass_count; ++i) {
-    VkrRenderPassEntry *entry =
-        array_get_VkrRenderPassEntry(&state->render_pass_registry, i);
-    if (entry && entry->pass && entry->pass->vk) {
-      const bool has_explicit_area = entry->pass->cfg.render_area.z > 0.0f &&
-                                     entry->pass->cfg.render_area.w > 0.0f;
-      const bool is_shadow =
-          entry->pass->cfg.domain == VKR_PIPELINE_DOMAIN_SHADOW;
-
-      if (has_explicit_area && !is_shadow) {
-        entry->pass->cfg.render_area.z =
-            (float32_t)state->swapchain.extent.width;
-        entry->pass->cfg.render_area.w =
-            (float32_t)state->swapchain.extent.height;
-        entry->pass->vk->width = state->swapchain.extent.width;
-        entry->pass->vk->height = state->swapchain.extent.height;
-      }
-    }
-  }
-
-  if (!create_domain_framebuffers(state)) {
-    log_error("Failed to recreate domain framebuffers");
-    return false;
-  }
 
   if (!create_command_buffers(state)) {
     log_error("Failed to create Vulkan command buffers");
@@ -829,9 +1676,10 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .wait_idle = renderer_vulkan_wait_idle,
       .begin_frame = renderer_vulkan_begin_frame,
       .end_frame = renderer_vulkan_end_frame,
-      .renderpass_create = renderer_vulkan_renderpass_create,
+      .renderpass_create_desc = renderer_vulkan_renderpass_create_desc,
       .renderpass_destroy = renderer_vulkan_renderpass_destroy,
       .renderpass_get = renderer_vulkan_renderpass_get,
+      .domain_renderpass_set = renderer_vulkan_domain_renderpass_set,
       .render_target_create = renderer_vulkan_render_target_create,
       .render_target_destroy = renderer_vulkan_render_target_destroy,
       .begin_render_pass = renderer_vulkan_begin_render_pass,
@@ -840,24 +1688,32 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .depth_attachment_get = renderer_vulkan_depth_attachment_get,
       .window_attachment_count_get = renderer_vulkan_window_attachment_count,
       .window_attachment_index_get = renderer_vulkan_window_attachment_index,
+      .swapchain_format_get = renderer_vulkan_swapchain_format_get,
       .buffer_create = renderer_vulkan_create_buffer,
       .buffer_destroy = renderer_vulkan_destroy_buffer,
       .buffer_update = renderer_vulkan_update_buffer,
       .buffer_upload = renderer_vulkan_upload_buffer,
       .buffer_get_mapped_ptr = renderer_vulkan_buffer_get_mapped_ptr,
       .buffer_flush = renderer_vulkan_flush_buffer,
+      .buffer_barrier = renderer_vulkan_buffer_barrier,
       .texture_create = renderer_vulkan_create_texture,
       .render_target_texture_create =
           renderer_vulkan_create_render_target_texture,
       .depth_attachment_create = renderer_vulkan_create_depth_attachment,
       .sampled_depth_attachment_create =
           renderer_vulkan_create_sampled_depth_attachment,
+      .sampled_depth_attachment_array_create =
+          renderer_vulkan_create_sampled_depth_attachment_array,
+      .render_target_texture_msaa_create =
+          renderer_vulkan_create_render_target_texture_msaa,
       .texture_transition_layout = renderer_vulkan_transition_texture_layout,
       .texture_update = renderer_vulkan_update_texture,
       .texture_write = renderer_vulkan_write_texture,
       .texture_resize = renderer_vulkan_resize_texture,
       .texture_destroy = renderer_vulkan_destroy_texture,
       .graphics_pipeline_create = renderer_vulkan_create_graphics_pipeline,
+      .pipeline_get_shader_runtime_layout =
+          renderer_vulkan_pipeline_get_shader_runtime_layout,
       .pipeline_update_state = renderer_vulkan_update_pipeline_state,
       .pipeline_destroy = renderer_vulkan_destroy_pipeline,
       .instance_state_acquire = renderer_vulkan_instance_state_acquire,
@@ -872,6 +1728,10 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .set_instance_buffer = renderer_vulkan_set_instance_buffer,
       .get_and_reset_descriptor_writes_avoided =
           renderer_vulkan_get_and_reset_descriptor_writes_avoided,
+      .rg_timing_begin_frame = renderer_vulkan_rg_timing_begin_frame,
+      .rg_timing_begin_pass = renderer_vulkan_rg_timing_begin_pass,
+      .rg_timing_end_pass = renderer_vulkan_rg_timing_end_pass,
+      .rg_timing_get_results = renderer_vulkan_rg_timing_get_results,
       .readback_ring_init = renderer_vulkan_readback_ring_init,
       .readback_ring_shutdown = renderer_vulkan_readback_ring_shutdown,
       .request_pixel_readback = renderer_vulkan_request_pixel_readback,
@@ -887,6 +1747,338 @@ renderer_vulkan_get_and_reset_descriptor_writes_avoided(void *backend_state) {
   uint64_t value = state->descriptor_writes_avoided;
   state->descriptor_writes_avoided = 0;
   return value;
+}
+
+static void vulkan_rg_timing_destroy(VulkanBackendState *state) {
+  if (!state) {
+    return;
+  }
+
+  for (uint32_t i = 0; i < BUFFERING_FRAMES; ++i) {
+    if (state->rg_timing.query_pools[i] != VK_NULL_HANDLE) {
+      vkDestroyQueryPool(state->device.logical_device,
+                         state->rg_timing.query_pools[i], state->allocator);
+      state->rg_timing.query_pools[i] = VK_NULL_HANDLE;
+    }
+    state->rg_timing.frame_pass_counts[i] = 0;
+  }
+
+  if (state->rg_timing.query_results) {
+    vkr_allocator_free(&state->alloc, state->rg_timing.query_results,
+                       sizeof(uint64_t) *
+                           (uint64_t)state->rg_timing.query_results_capacity *
+                           2,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    state->rg_timing.query_results = NULL;
+  }
+
+  if (state->rg_timing.last_pass_ms) {
+    vkr_allocator_free(&state->alloc, state->rg_timing.last_pass_ms,
+                       sizeof(float64_t) *
+                           (uint64_t)state->rg_timing.last_pass_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    state->rg_timing.last_pass_ms = NULL;
+  }
+
+  if (state->rg_timing.last_pass_valid) {
+    vkr_allocator_free(&state->alloc, state->rg_timing.last_pass_valid,
+                       sizeof(bool8_t) *
+                           (uint64_t)state->rg_timing.last_pass_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    state->rg_timing.last_pass_valid = NULL;
+  }
+
+  state->rg_timing.query_capacity = 0;
+  state->rg_timing.query_results_capacity = 0;
+  state->rg_timing.last_pass_capacity = 0;
+  state->rg_timing.last_pass_count = 0;
+}
+
+static bool32_t vulkan_rg_timing_create_pools(VulkanBackendState *state,
+                                              uint32_t query_capacity) {
+  if (!state || query_capacity == 0) {
+    return false_v;
+  }
+
+  vulkan_rg_timing_destroy(state);
+
+  VkQueryPoolCreateInfo pool_info = {
+      .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
+      .queryType = VK_QUERY_TYPE_TIMESTAMP,
+      .queryCount = query_capacity,
+  };
+
+  for (uint32_t i = 0; i < BUFFERING_FRAMES; ++i) {
+    if (vkCreateQueryPool(state->device.logical_device, &pool_info,
+                          state->allocator,
+                          &state->rg_timing.query_pools[i]) != VK_SUCCESS) {
+      log_warn("Failed to create Vulkan RG timing query pool");
+      vulkan_rg_timing_destroy(state);
+      return false_v;
+    }
+  }
+
+  state->rg_timing.query_capacity = query_capacity;
+  state->rg_timing.query_results_capacity = query_capacity;
+  state->rg_timing.query_results = vkr_allocator_alloc(
+      &state->alloc, sizeof(uint64_t) * (uint64_t)query_capacity * 2,
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (!state->rg_timing.query_results) {
+    log_warn("Failed to allocate RG timing query result buffer");
+    vulkan_rg_timing_destroy(state);
+    return false_v;
+  }
+
+  return true_v;
+}
+
+static bool32_t vulkan_rg_timing_ensure_capacity(VulkanBackendState *state,
+                                                 uint32_t pass_count) {
+  if (!state || !state->rg_timing.supported) {
+    return false_v;
+  }
+
+  uint32_t required = pass_count * 2;
+  if (required == 0) {
+    return false_v;
+  }
+
+  if (required <= state->rg_timing.query_capacity) {
+    return true_v;
+  }
+
+  vkDeviceWaitIdle(state->device.logical_device);
+  return vulkan_rg_timing_create_pools(state, required);
+}
+
+static void vulkan_rg_timing_fetch_results(VulkanBackendState *state) {
+  if (!state || !state->rg_timing.supported) {
+    return;
+  }
+
+  uint32_t frame_index = state->current_frame;
+  uint32_t pass_count = state->rg_timing.frame_pass_counts[frame_index];
+  state->rg_timing.last_pass_count = 0;
+
+  if (pass_count == 0 || state->rg_timing.query_capacity == 0) {
+    state->rg_timing.frame_pass_counts[frame_index] = 0;
+    return;
+  }
+
+  uint32_t query_count = pass_count * 2;
+  if (query_count > state->rg_timing.query_capacity) {
+    query_count = state->rg_timing.query_capacity;
+    pass_count = query_count / 2;
+  }
+
+  if (state->rg_timing.query_results_capacity < query_count) {
+    if (state->rg_timing.query_results) {
+      vkr_allocator_free(&state->alloc, state->rg_timing.query_results,
+                         sizeof(uint64_t) *
+                             (uint64_t)state->rg_timing.query_results_capacity *
+                             2,
+                         VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      state->rg_timing.query_results = NULL;
+    }
+    state->rg_timing.query_results_capacity = query_count;
+    state->rg_timing.query_results = vkr_allocator_alloc(
+        &state->alloc, sizeof(uint64_t) * (uint64_t)query_count * 2,
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!state->rg_timing.query_results) {
+      log_warn("Failed to resize RG timing query result buffer");
+      state->rg_timing.query_results_capacity = 0;
+      state->rg_timing.frame_pass_counts[frame_index] = 0;
+      return;
+    }
+  }
+
+  if (state->rg_timing.last_pass_capacity < pass_count) {
+    if (state->rg_timing.last_pass_ms) {
+      vkr_allocator_free(&state->alloc, state->rg_timing.last_pass_ms,
+                         sizeof(float64_t) *
+                             (uint64_t)state->rg_timing.last_pass_capacity,
+                         VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      state->rg_timing.last_pass_ms = NULL;
+    }
+    if (state->rg_timing.last_pass_valid) {
+      vkr_allocator_free(&state->alloc, state->rg_timing.last_pass_valid,
+                         sizeof(bool8_t) *
+                             (uint64_t)state->rg_timing.last_pass_capacity,
+                         VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      state->rg_timing.last_pass_valid = NULL;
+    }
+    state->rg_timing.last_pass_capacity = pass_count;
+    state->rg_timing.last_pass_ms = vkr_allocator_alloc(
+        &state->alloc, sizeof(float64_t) * (uint64_t)pass_count,
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    state->rg_timing.last_pass_valid = vkr_allocator_alloc(
+        &state->alloc, sizeof(bool8_t) * (uint64_t)pass_count,
+        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!state->rg_timing.last_pass_ms || !state->rg_timing.last_pass_valid) {
+      log_warn("Failed to allocate RG timing results");
+      state->rg_timing.last_pass_count = 0;
+      state->rg_timing.frame_pass_counts[frame_index] = 0;
+      return;
+    }
+  }
+
+  VkQueryPool pool = state->rg_timing.query_pools[frame_index];
+  if (pool == VK_NULL_HANDLE) {
+    state->rg_timing.frame_pass_counts[frame_index] = 0;
+    return;
+  }
+
+  VkResult result = vkGetQueryPoolResults(
+      state->device.logical_device, pool, 0, query_count,
+      sizeof(uint64_t) * (uint64_t)query_count * 2,
+      state->rg_timing.query_results, sizeof(uint64_t) * 2,
+      VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
+  if (result != VK_SUCCESS && result != VK_NOT_READY) {
+    log_warn("Failed to read RG timing query results");
+    state->rg_timing.frame_pass_counts[frame_index] = 0;
+    return;
+  }
+
+  float64_t period = (float64_t)state->device.properties.limits.timestampPeriod;
+  for (uint32_t i = 0; i < pass_count; ++i) {
+    uint32_t start_query = i * 2;
+    uint32_t end_query = start_query + 1;
+    uint64_t start_ts =
+        state->rg_timing.query_results[start_query * 2 + 0];
+    uint64_t start_avail =
+        state->rg_timing.query_results[start_query * 2 + 1];
+    uint64_t end_ts = state->rg_timing.query_results[end_query * 2 + 0];
+    uint64_t end_avail = state->rg_timing.query_results[end_query * 2 + 1];
+
+    bool8_t valid = (start_avail != 0 && end_avail != 0 && end_ts >= start_ts);
+    state->rg_timing.last_pass_valid[i] = valid;
+    if (valid) {
+      state->rg_timing.last_pass_ms[i] =
+          ((float64_t)(end_ts - start_ts) * period) / 1000000.0;
+    } else {
+      state->rg_timing.last_pass_ms[i] = 0.0;
+    }
+  }
+
+  state->rg_timing.last_pass_count = pass_count;
+  state->rg_timing.frame_pass_counts[frame_index] = 0;
+}
+
+bool8_t renderer_vulkan_rg_timing_begin_frame(void *backend_state,
+                                              uint32_t pass_count) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state || !state->rg_timing.supported || pass_count == 0) {
+    return false_v;
+  }
+
+  if (!vulkan_rg_timing_ensure_capacity(state, pass_count)) {
+    return false_v;
+  }
+
+  VkQueryPool pool = state->rg_timing.query_pools[state->current_frame];
+  if (pool == VK_NULL_HANDLE) {
+    return false_v;
+  }
+
+  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+      &state->graphics_command_buffers, state->image_index);
+  if (!command_buffer) {
+    return false_v;
+  }
+
+  vkCmdResetQueryPool(command_buffer->handle, pool, 0,
+                      state->rg_timing.query_capacity);
+  state->rg_timing.frame_pass_counts[state->current_frame] = pass_count;
+  return true_v;
+}
+
+void renderer_vulkan_rg_timing_begin_pass(void *backend_state,
+                                          uint32_t pass_index) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state || !state->rg_timing.supported ||
+      state->rg_timing.query_capacity == 0) {
+    return;
+  }
+
+  uint32_t query_index = pass_index * 2;
+  if (query_index >= state->rg_timing.query_capacity) {
+    return;
+  }
+
+  VkQueryPool pool = state->rg_timing.query_pools[state->current_frame];
+  if (pool == VK_NULL_HANDLE) {
+    return;
+  }
+
+  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+      &state->graphics_command_buffers, state->image_index);
+  if (!command_buffer) {
+    return;
+  }
+
+  vkCmdWriteTimestamp(command_buffer->handle, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                      pool, query_index);
+}
+
+void renderer_vulkan_rg_timing_end_pass(void *backend_state,
+                                        uint32_t pass_index) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state || !state->rg_timing.supported ||
+      state->rg_timing.query_capacity == 0) {
+    return;
+  }
+
+  uint32_t query_index = pass_index * 2 + 1;
+  if (query_index >= state->rg_timing.query_capacity) {
+    return;
+  }
+
+  VkQueryPool pool = state->rg_timing.query_pools[state->current_frame];
+  if (pool == VK_NULL_HANDLE) {
+    return;
+  }
+
+  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+      &state->graphics_command_buffers, state->image_index);
+  if (!command_buffer) {
+    return;
+  }
+
+  vkCmdWriteTimestamp(command_buffer->handle,
+                      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pool,
+                      query_index);
+}
+
+bool8_t renderer_vulkan_rg_timing_get_results(void *backend_state,
+                                              uint32_t *out_pass_count,
+                                              const float64_t **out_pass_ms,
+                                              const bool8_t **out_pass_valid) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (out_pass_count) {
+    *out_pass_count = 0;
+  }
+  if (out_pass_ms) {
+    *out_pass_ms = NULL;
+  }
+  if (out_pass_valid) {
+    *out_pass_valid = NULL;
+  }
+
+  if (!state || !state->rg_timing.supported ||
+      state->rg_timing.last_pass_count == 0) {
+    return false_v;
+  }
+
+  if (out_pass_count) {
+    *out_pass_count = state->rg_timing.last_pass_count;
+  }
+  if (out_pass_ms) {
+    *out_pass_ms = state->rg_timing.last_pass_ms;
+  }
+  if (out_pass_valid) {
+    *out_pass_valid = state->rg_timing.last_pass_valid;
+  }
+  return true_v;
 }
 
 // todo: set up event manager for window stuff and maybe other events
@@ -971,7 +2163,6 @@ renderer_vulkan_initialize(void **out_backend_state,
 
   for (uint32_t i = 0; i < VKR_PIPELINE_DOMAIN_COUNT; i++) {
     backend_state->domain_render_passes[i] = NULL;
-    backend_state->domain_framebuffers[i] = (Array_VulkanFramebuffer){0};
     backend_state->domain_initialized[i] = false;
   }
 
@@ -1013,6 +2204,16 @@ renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
+  vulkan_pipeline_cache_initialize(backend_state);
+
+  backend_state->rg_timing.supported =
+      backend_state->device.properties.limits.timestampComputeAndGraphics != 0;
+  if (!backend_state->rg_timing.supported ||
+      backend_state->device.properties.limits.timestampPeriod <= 0.0f) {
+    backend_state->rg_timing.supported = false_v;
+    log_warn("Vulkan GPU timestamps not supported; RG GPU timings disabled");
+  }
+
   if (!vulkan_swapchain_create(backend_state)) {
     log_fatal("Failed to create Vulkan swapchain");
     return false;
@@ -1028,10 +2229,6 @@ renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
-  if (!create_domain_framebuffers(backend_state)) {
-    log_fatal("Failed to create Vulkan domain framebuffers");
-    return false;
-  }
 
   if (!vulkan_backend_create_attachment_wrappers(backend_state)) {
     log_fatal("Failed to create swapchain attachment wrappers");
@@ -1123,6 +2320,16 @@ renderer_vulkan_initialize(void **out_backend_state,
   backend_state->buffer_pool_alloc.ctx = &backend_state->buffer_handle_pool;
   vkr_pool_allocator_create(&backend_state->buffer_pool_alloc);
 
+  if (!vkr_pool_create(sizeof(struct s_RenderTarget), VKR_MAX_RENDER_TARGET_HANDLES,
+                       &backend_state->render_target_pool)) {
+    log_fatal("Failed to create render target handle pool");
+    vkr_pool_allocator_destroy(&backend_state->buffer_pool_alloc);
+    vkr_pool_allocator_destroy(&backend_state->texture_pool_alloc);
+    return false;
+  }
+  backend_state->render_target_alloc.ctx = &backend_state->render_target_pool;
+  vkr_pool_allocator_create(&backend_state->render_target_alloc);
+
   return true;
 }
 
@@ -1142,9 +2349,17 @@ void renderer_vulkan_shutdown(void *backend_state) {
 
   // Ensure all GPU work is complete before destroying any resources
   vkDeviceWaitIdle(state->device.logical_device);
+  vulkan_pipeline_cache_shutdown(state);
+
+  // Flush deferred destruction queue - destroy all pending resources
+  vulkan_deferred_destroy_flush(state);
+
+  // Invalidate framebuffer cache - destroy all cached framebuffers
+  framebuffer_cache_invalidate(state);
 
   // Ensure pixel readback ring resources are destroyed before device teardown.
   renderer_vulkan_readback_ring_shutdown(state);
+  vulkan_rg_timing_destroy(state);
 
   // Free command buffers first to release references to pipelines
   for (uint32_t i = 0; i < state->graphics_command_buffers.length; i++) {
@@ -1176,21 +2391,6 @@ void renderer_vulkan_shutdown(void *backend_state) {
     vulkan_framebuffer_destroy(state, framebuffer);
   }
   array_destroy_VulkanFramebuffer(&state->swapchain.framebuffers);
-
-  for (uint32_t domain = 0; domain < VKR_PIPELINE_DOMAIN_COUNT; domain++) {
-    if (state->domain_initialized[domain]) {
-      if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT ||
-          domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY) {
-        continue;
-      }
-      for (uint32_t i = 0; i < state->domain_framebuffers[domain].length; ++i) {
-        VulkanFramebuffer *framebuffer =
-            array_get_VulkanFramebuffer(&state->domain_framebuffers[domain], i);
-        vulkan_framebuffer_destroy(state, framebuffer);
-      }
-      array_destroy_VulkanFramebuffer(&state->domain_framebuffers[domain]);
-    }
-  }
 
   for (uint32_t i = 0; i < state->render_pass_count; ++i) {
     VkrRenderPassEntry *entry =
@@ -1248,6 +2448,7 @@ void renderer_vulkan_shutdown(void *backend_state) {
   // Destroy resource handle pool allocators (also destroys underlying pools)
   vkr_pool_allocator_destroy(&state->texture_pool_alloc);
   vkr_pool_allocator_destroy(&state->buffer_pool_alloc);
+  vkr_pool_allocator_destroy(&state->render_target_alloc);
 
   arena_destroy(state->swapchain_arena);
   arena_destroy(state->temp_arena);
@@ -1292,11 +2493,10 @@ VkrRendererError renderer_vulkan_wait_idle(void *backend_state) {
 /**
  * @brief Begin a new rendering frame
  *
- * AUTOMATIC RENDER PASS MANAGEMENT:
- * This function deliberately does NOT start any render pass. Instead, render
- * passes are started automatically when the first pipeline is bound via
- * vulkan_graphics_pipeline_update_state(). This enables automatic multi-pass
- * rendering based on pipeline domains.
+ * RENDER PASS MANAGEMENT:
+ * This function deliberately does NOT start any render pass. Render passes are
+ * started explicitly via vkr_renderer_begin_render_pass() and ended via
+ * vkr_renderer_end_render_pass().
  *
  * FRAME LIFECYCLE:
  * 1. Wait for previous frame fence (GPU finished previous frame)
@@ -1316,9 +2516,9 @@ VkrRendererError renderer_vulkan_wait_idle(void *backend_state) {
  * NEXT STEPS:
  * After begin_frame, the application should:
  * 1. Update global uniforms (view/projection matrices)
- * 2. Bind pipelines (automatically starts domain-specific render passes)
- * 3. Draw geometry
- * 4. Call end_frame (automatically ends any active render pass)
+ * 2. Begin a render pass (vkr_renderer_begin_render_pass)
+ * 3. Bind pipelines and draw geometry
+ * 4. End render passes and call end_frame
  *
  * @param backend_state Vulkan backend state
  * @param delta_time Frame delta time in seconds
@@ -1340,6 +2540,12 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
     log_warn("Vulkan fence timed out");
     return VKR_RENDERER_ERROR_NONE;
   }
+
+  vulkan_rg_timing_fetch_results(state);
+
+  // Process deferred destruction queue after fence wait
+  // (safe to destroy resources from BUFFERING_FRAMES ago)
+  vulkan_deferred_destroy_process(state);
 
   // Acquire the next image from the swapchain
   if (!vulkan_swapchain_acquire_next_image(
@@ -1714,6 +2920,126 @@ VkrRendererError renderer_vulkan_flush_buffer(void *backend_state,
   return VKR_RENDERER_ERROR_NONE;
 }
 
+vkr_internal VkAccessFlags
+vulkan_buffer_access_to_vk(VkrBufferAccessFlags access) {
+  VkAccessFlags flags = 0;
+  if (access & VKR_BUFFER_ACCESS_VERTEX) {
+    flags |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+  }
+  if (access & VKR_BUFFER_ACCESS_INDEX) {
+    flags |= VK_ACCESS_INDEX_READ_BIT;
+  }
+  if (access & VKR_BUFFER_ACCESS_UNIFORM) {
+    flags |= VK_ACCESS_UNIFORM_READ_BIT;
+  }
+  if (access & VKR_BUFFER_ACCESS_STORAGE_READ) {
+    flags |= VK_ACCESS_SHADER_READ_BIT;
+  }
+  if (access & VKR_BUFFER_ACCESS_STORAGE_WRITE) {
+    flags |= VK_ACCESS_SHADER_WRITE_BIT;
+  }
+  if (access & VKR_BUFFER_ACCESS_TRANSFER_SRC) {
+    flags |= VK_ACCESS_TRANSFER_READ_BIT;
+  }
+  if (access & VKR_BUFFER_ACCESS_TRANSFER_DST) {
+    flags |= VK_ACCESS_TRANSFER_WRITE_BIT;
+  }
+  return flags;
+}
+
+vkr_internal VkPipelineStageFlags
+vulkan_buffer_stage_for_access(VkrBufferAccessFlags access, bool8_t is_src) {
+  if (access == VKR_BUFFER_ACCESS_NONE) {
+    return is_src ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                  : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+  }
+
+  VkPipelineStageFlags flags = 0;
+  if (access & (VKR_BUFFER_ACCESS_VERTEX | VKR_BUFFER_ACCESS_INDEX)) {
+    flags |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+  }
+  if (access & (VKR_BUFFER_ACCESS_UNIFORM | VKR_BUFFER_ACCESS_STORAGE_READ |
+                VKR_BUFFER_ACCESS_STORAGE_WRITE)) {
+    flags |= VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
+             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+  }
+  if (access & (VKR_BUFFER_ACCESS_TRANSFER_SRC |
+                VKR_BUFFER_ACCESS_TRANSFER_DST)) {
+    flags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+  }
+
+  if (flags == 0) {
+    flags = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+  }
+
+  return flags;
+}
+
+VkrRendererError renderer_vulkan_buffer_barrier(
+    void *backend_state, VkrBackendResourceHandle handle,
+    VkrBufferAccessFlags src_access, VkrBufferAccessFlags dst_access) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(handle.ptr != NULL, "Buffer handle is NULL");
+
+  if (src_access == dst_access) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
+  if (!buffer || buffer->buffer.handle == VK_NULL_HANDLE) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  VkBufferMemoryBarrier barrier = {
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+      .srcAccessMask = vulkan_buffer_access_to_vk(src_access),
+      .dstAccessMask = vulkan_buffer_access_to_vk(dst_access),
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = buffer->buffer.handle,
+      .offset = 0,
+      .size = VK_WHOLE_SIZE,
+  };
+
+  VkPipelineStageFlags src_stage =
+      vulkan_buffer_stage_for_access(src_access, true_v);
+  VkPipelineStageFlags dst_stage =
+      vulkan_buffer_stage_for_access(dst_access, false_v);
+
+  if (state->frame_active) {
+    if (state->render_pass_active) {
+      log_error("Cannot apply buffer barrier during active render pass");
+      return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+    }
+    if (state->image_index >= state->graphics_command_buffers.length) {
+      return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+    }
+    VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+        &state->graphics_command_buffers, state->image_index);
+    vkCmdPipelineBarrier(command_buffer->handle, src_stage, dst_stage, 0, 0,
+                         NULL, 1, &barrier, 0, NULL);
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
+  VulkanCommandBuffer temp_command_buffer = {0};
+  if (!vulkan_command_buffer_allocate_and_begin_single_use(
+          state, &temp_command_buffer)) {
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
+
+  vkCmdPipelineBarrier(temp_command_buffer.handle, src_stage, dst_stage, 0, 0,
+                       NULL, 1, &barrier, 0, NULL);
+
+  if (!vulkan_command_buffer_end_single_use(state, &temp_command_buffer,
+                                            state->device.graphics_queue,
+                                            VK_NULL_HANDLE)) {
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  return VKR_RENDERER_ERROR_NONE;
+}
+
 VkrRendererError renderer_vulkan_upload_buffer(void *backend_state,
                                                VkrBackendResourceHandle handle,
                                                uint64_t offset, uint64_t size,
@@ -1853,8 +3179,8 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
   if (!vulkan_image_create(state, VK_IMAGE_TYPE_2D, desc->width, desc->height,
                            image_format, VK_IMAGE_TILING_OPTIMAL, usage,
                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1,
-                           VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
-                           &texture->texture.image)) {
+                           VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
+                           VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
     log_fatal("Failed to create render target image");
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
@@ -1895,6 +3221,7 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
       .channels = vulkan_texture_format_channel_count(desc->format),
       .type = VKR_TEXTURE_TYPE_2D,
       .format = desc->format,
+      .sample_count = VKR_SAMPLE_COUNT_1,
       .properties = vkr_texture_property_flags_create(),
       .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
       .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
@@ -1914,6 +3241,7 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
                 VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
   }
 
+  ASSIGN_TEXTURE_GENERATION(state, texture);
   return (VkrBackendResourceHandle){.ptr = texture};
 }
 
@@ -1948,8 +3276,9 @@ renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
   if (!vulkan_image_create(
           state, VK_IMAGE_TYPE_2D, width, height, depth_format,
           VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1, VK_IMAGE_VIEW_TYPE_2D,
-          VK_IMAGE_ASPECT_DEPTH_BIT, &texture->texture.image)) {
+          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1, VK_SAMPLE_COUNT_1_BIT,
+          VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT,
+          &texture->texture.image)) {
     log_fatal("Failed to create depth attachment image");
     vkr_allocator_free(&state->texture_pool_alloc, texture,
                        sizeof(struct s_TextureHandle),
@@ -1964,6 +3293,7 @@ renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
       .channels = 1,
       .type = VKR_TEXTURE_TYPE_2D,
       .format = vkr_format,
+      .sample_count = VKR_SAMPLE_COUNT_1,
       .properties = vkr_texture_property_flags_create(),
       .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
       .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
@@ -1975,6 +3305,7 @@ renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
       .generation = 1,
   };
 
+  ASSIGN_TEXTURE_GENERATION(state, texture);
   return (VkrBackendResourceHandle){.ptr = texture};
 }
 
@@ -2011,8 +3342,8 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
   if (!vulkan_image_create(state, VK_IMAGE_TYPE_2D, width, height, depth_format,
                            VK_IMAGE_TILING_OPTIMAL, usage,
                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1,
-                           VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT,
-                           &texture->texture.image)) {
+                           VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
+                           VK_IMAGE_ASPECT_DEPTH_BIT, &texture->texture.image)) {
     log_fatal("Failed to create sampled depth attachment image");
     vkr_allocator_free(&state->texture_pool_alloc, texture,
                        sizeof(struct s_TextureHandle),
@@ -2071,6 +3402,7 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
       .channels = 1,
       .type = VKR_TEXTURE_TYPE_2D,
       .format = vkr_format,
+      .sample_count = VKR_SAMPLE_COUNT_1,
       .properties = vkr_texture_property_flags_create(),
       .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_BORDER,
       .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_BORDER,
@@ -2084,6 +3416,191 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
       .generation = 1,
   };
 
+  ASSIGN_TEXTURE_GENERATION(state, texture);
+  return (VkrBackendResourceHandle){.ptr = texture};
+}
+
+VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment_array(
+    void *backend_state, uint32_t width, uint32_t height, uint32_t layers) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+
+  if (width == 0 || height == 0 || layers == 0) {
+    log_error("Sampled depth attachment array dimensions must be > 0");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  VkFormat depth_format = state->device.depth_format;
+  VkrTextureFormat vkr_format = vulkan_vk_format_to_vkr(depth_format);
+  if (!vulkan_texture_format_is_depth(vkr_format)) {
+    log_error("Unsupported depth format for sampled depth attachment array");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  struct s_TextureHandle *texture = vkr_allocator_alloc(
+      &state->texture_pool_alloc, sizeof(struct s_TextureHandle),
+      VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+  if (!texture) {
+    log_fatal("Failed to allocate sampled depth attachment array texture");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  MemZero(texture, sizeof(struct s_TextureHandle));
+
+  VkImageUsageFlags usage =
+      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  if (!vulkan_image_create(
+          state, VK_IMAGE_TYPE_2D, width, height, depth_format,
+          VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1,
+          layers, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+          VK_IMAGE_ASPECT_DEPTH_BIT, &texture->texture.image)) {
+    log_fatal("Failed to create sampled depth attachment array image");
+    vkr_allocator_free(&state->texture_pool_alloc, texture,
+                       sizeof(struct s_TextureHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  VkFilter shadow_filter = VK_FILTER_NEAREST;
+  VkSamplerMipmapMode shadow_mip = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  {
+    VkFormatProperties props = {0};
+    vkGetPhysicalDeviceFormatProperties(state->device.physical_device,
+                                        depth_format, &props);
+    if (props.optimalTilingFeatures &
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) {
+      shadow_filter = VK_FILTER_LINEAR;
+      shadow_mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    }
+  }
+
+  VkSamplerCreateInfo sampler_info = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      .magFilter = shadow_filter,
+      .minFilter = shadow_filter,
+      .mipmapMode = shadow_mip,
+      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+      .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER,
+      .mipLodBias = 0.0f,
+      .anisotropyEnable = VK_FALSE,
+      .maxAnisotropy = 1.0f,
+      .compareEnable = VK_TRUE,
+      .compareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+      .minLod = 0.0f,
+      .maxLod = 0.0f,
+      .borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE,
+      .unnormalizedCoordinates = VK_FALSE,
+  };
+
+  if (vkCreateSampler(state->device.logical_device, &sampler_info,
+                      state->allocator,
+                      &texture->texture.sampler) != VK_SUCCESS) {
+    log_fatal("Failed to create sampled depth attachment array sampler");
+    vulkan_image_destroy(state, &texture->texture.image);
+    vkr_allocator_free(&state->texture_pool_alloc, texture,
+                       sizeof(struct s_TextureHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  texture->description = (VkrTextureDescription){
+      .width = width,
+      .height = height,
+      .channels = 1,
+      .type = VKR_TEXTURE_TYPE_2D,
+      .format = vkr_format,
+      .sample_count = VKR_SAMPLE_COUNT_1,
+      .properties = vkr_texture_property_flags_create(),
+      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_BORDER,
+      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_BORDER,
+      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_BORDER,
+      .min_filter = (shadow_filter == VK_FILTER_LINEAR) ? VKR_FILTER_LINEAR
+                                                        : VKR_FILTER_NEAREST,
+      .mag_filter = (shadow_filter == VK_FILTER_LINEAR) ? VKR_FILTER_LINEAR
+                                                        : VKR_FILTER_NEAREST,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+      .anisotropy_enable = false_v,
+      .generation = 1,
+  };
+
+  ASSIGN_TEXTURE_GENERATION(state, texture);
+  return (VkrBackendResourceHandle){.ptr = texture};
+}
+
+VkrBackendResourceHandle renderer_vulkan_create_render_target_texture_msaa(
+    void *backend_state, uint32_t width, uint32_t height, VkrTextureFormat format,
+    VkrSampleCount samples) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+
+  if (width == 0 || height == 0) {
+    log_error("MSAA texture dimensions must be greater than zero");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  if (vulkan_texture_format_is_depth(format)) {
+    log_error("MSAA color texture format must be a color format");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  if (samples < VKR_SAMPLE_COUNT_2) {
+    log_warn("MSAA texture created with sample count < 2; use regular render "
+             "target for 1x");
+  }
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  VkFormat image_format = vulkan_image_format_from_texture_format(format);
+  VkSampleCountFlagBits vk_samples = (VkSampleCountFlagBits)samples;
+
+  // MSAA textures are only used as color attachments and transfer source
+  // (for resolve). They cannot be directly sampled.
+  VkImageUsageFlags usage =
+      VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+
+  struct s_TextureHandle *texture = vkr_allocator_alloc(
+      &state->texture_pool_alloc, sizeof(struct s_TextureHandle),
+      VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+  if (!texture) {
+    log_fatal("Failed to allocate MSAA texture (pool exhausted)");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  MemZero(texture, sizeof(struct s_TextureHandle));
+
+  if (!vulkan_image_create(state, VK_IMAGE_TYPE_2D, width, height, image_format,
+                           VK_IMAGE_TILING_OPTIMAL, usage,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1, vk_samples,
+                           VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
+                           &texture->texture.image)) {
+    log_fatal("Failed to create MSAA image");
+    vkr_allocator_free(&state->texture_pool_alloc, texture,
+                       sizeof(struct s_TextureHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  // No sampler for MSAA textures (cannot be directly sampled)
+  texture->texture.sampler = VK_NULL_HANDLE;
+
+  texture->description = (VkrTextureDescription){
+      .width = width,
+      .height = height,
+      .channels = vulkan_texture_format_channel_count(format),
+      .type = VKR_TEXTURE_TYPE_2D,
+      .format = format,
+      .properties = vkr_texture_property_flags_create(),
+      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
+      .min_filter = VKR_FILTER_NEAREST,
+      .mag_filter = VKR_FILTER_NEAREST,
+      .mip_filter = VKR_MIP_FILTER_NONE,
+      .anisotropy_enable = false_v,
+      .sample_count = samples,
+      .generation = 1,
+  };
+
+  ASSIGN_TEXTURE_GENERATION(state, texture);
   return (VkrBackendResourceHandle){.ptr = texture};
 }
 
@@ -2269,8 +3786,8 @@ renderer_vulkan_create_texture(void *backend_state,
           VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
               VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mip_levels, 1,
-          VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
-          &texture->texture.image)) {
+          VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
+          VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
     log_fatal("Failed to create Vulkan image");
     goto cleanup_texture;
   }
@@ -2374,6 +3891,7 @@ renderer_vulkan_create_texture(void *backend_state,
   if (vkr_allocator_scope_is_valid(&scope))
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
+  ASSIGN_TEXTURE_GENERATION(state, texture);
   return (VkrBackendResourceHandle){.ptr = texture};
 
 cleanup_texture:
@@ -2467,8 +3985,8 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
                            VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                VK_IMAGE_USAGE_SAMPLED_BIT,
                            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mip_levels, 6,
-                           VK_IMAGE_VIEW_TYPE_CUBE, VK_IMAGE_ASPECT_COLOR_BIT,
-                           &texture->texture.image)) {
+                           VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_CUBE,
+                           VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
     log_fatal("Failed to create Vulkan cube map image");
     goto cleanup_texture;
   }
@@ -2516,6 +4034,7 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
   // log_debug("Created Vulkan cube map texture: %p",
   //           texture->texture.image.handle);
 
+  ASSIGN_TEXTURE_GENERATION(state, texture);
   return (VkrBackendResourceHandle){.ptr = texture};
 
 cleanup_texture:
@@ -2814,8 +4333,8 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
           VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
               VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mip_levels,
-          texture->texture.image.array_layers, VK_IMAGE_VIEW_TYPE_2D,
-          VK_IMAGE_ASPECT_COLOR_BIT, &new_image)) {
+          texture->texture.image.array_layers, VK_SAMPLE_COUNT_1_BIT,
+          VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, &new_image)) {
     return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   }
 
@@ -3077,6 +4596,27 @@ VkrBackendResourceHandle renderer_vulkan_create_graphics_pipeline(
   return (VkrBackendResourceHandle){.ptr = pipeline};
 }
 
+bool8_t renderer_vulkan_pipeline_get_shader_runtime_layout(
+    void *backend_state, VkrBackendResourceHandle pipeline_handle,
+    VkrShaderRuntimeLayout *out_layout) {
+  if (!backend_state || !pipeline_handle.ptr || !out_layout) {
+    return false_v;
+  }
+
+  struct s_GraphicsPipeline *pipeline =
+      (struct s_GraphicsPipeline *)pipeline_handle.ptr;
+  *out_layout = (VkrShaderRuntimeLayout){
+      .global_ubo_size = pipeline->shader_object.global_ubo_size,
+      .global_ubo_stride = pipeline->shader_object.global_ubo_stride,
+      .instance_ubo_size = pipeline->shader_object.instance_ubo_size,
+      .instance_ubo_stride = pipeline->shader_object.instance_ubo_stride,
+      .push_constant_size = pipeline->shader_object.push_constant_size,
+      .global_texture_count = pipeline->shader_object.global_texture_count,
+      .instance_texture_count = pipeline->shader_object.instance_texture_count,
+  };
+  return true_v;
+}
+
 VkrRendererError renderer_vulkan_update_pipeline_state(
     void *backend_state, VkrBackendResourceHandle pipeline_handle,
     const void *uniform, const VkrShaderStateObject *data,
@@ -3121,6 +4661,10 @@ renderer_vulkan_instance_state_release(void *backend_state,
                                        VkrRendererInstanceStateHandle handle) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(pipeline_handle.ptr != NULL, "Pipeline handle is NULL");
+
+  if (handle.id == VKR_INVALID_ID) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   struct s_GraphicsPipeline *pipeline =
@@ -3260,6 +4804,10 @@ void renderer_vulkan_set_depth_bias(void *backend_state,
     return;
   }
 
+  if (!state->device.features.depthBiasClamp) {
+    clamp = 0.0f;
+  }
+
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, state->image_index);
 
@@ -3268,38 +4816,66 @@ void renderer_vulkan_set_depth_bias(void *backend_state,
 }
 
 VkrRenderPassHandle
-renderer_vulkan_renderpass_create(void *backend_state,
-                                  const VkrRenderPassConfig *cfg) {
-  assert_log(backend_state != NULL, "Backend state is NULL");
-  assert_log(cfg != NULL, "Render pass config is NULL");
-  assert_log(cfg->name.length > 0, "Render pass name is empty");
-
-  VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  struct s_RenderPass *existing =
-      vulkan_backend_renderpass_lookup(state, cfg->name);
-  if (existing) {
-    return (VkrRenderPassHandle)existing;
-  }
-
-  struct s_RenderPass *created =
-      vulkan_backend_renderpass_create_internal(state, cfg);
-  if (!created) {
+renderer_vulkan_renderpass_create_desc(void *backend_state,
+                                       const VkrRenderPassDesc *desc,
+                                       VkrRendererError *out_error) {
+  if (!backend_state || !desc) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    }
     return NULL;
   }
 
-  if (vkr_string8_equals_cstr_i(&created->name, "renderpass.builtin.world")) {
-    state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD] = created->vk;
-    state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD] = true;
-  } else if (vkr_string8_equals_cstr_i(&created->name,
-                                       "renderpass.builtin.ui")) {
-    state->domain_render_passes[VKR_PIPELINE_DOMAIN_UI] = created->vk;
-    state->domain_initialized[VKR_PIPELINE_DOMAIN_UI] = true;
-  } else if (vkr_string8_equals_cstr_i(&created->name,
-                                       "renderpass.builtin.picking")) {
-    state->domain_render_passes[VKR_PIPELINE_DOMAIN_PICKING] = created->vk;
-    state->domain_initialized[VKR_PIPELINE_DOMAIN_PICKING] = true;
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  // Check if render pass with this name already exists
+  if (desc->name.length > 0) {
+    struct s_RenderPass *existing =
+        vulkan_backend_renderpass_lookup(state, desc->name);
+    if (existing) {
+      log_warn("Render pass '%.*s' already exists, returning existing",
+               (int)desc->name.length, desc->name.str);
+      return (VkrRenderPassHandle)existing;
+    }
   }
 
+  struct s_RenderPass *created =
+      vulkan_backend_renderpass_create_from_desc_internal(state, desc);
+  if (!created) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
+    return NULL;
+  }
+
+  // Auto-assign to domain if domain is valid
+  VkrPipelineDomain domain = desc->domain;
+  if (domain < VKR_PIPELINE_DOMAIN_COUNT &&
+      !state->domain_render_passes[domain]) {
+    state->domain_render_passes[domain] = created->vk;
+    state->domain_initialized[domain] = true;
+    log_debug("Auto-assigned render pass to domain %d", domain);
+    if (domain == VKR_PIPELINE_DOMAIN_WORLD) {
+      state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] =
+          created->vk;
+      state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] = true;
+      state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD_OVERLAY] =
+          created->vk;
+      state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD_OVERLAY] = true;
+    } else if (domain == VKR_PIPELINE_DOMAIN_PICKING) {
+      state->domain_render_passes[VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT] =
+          created->vk;
+      state->domain_initialized[VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT] =
+          true;
+      state->domain_render_passes[VKR_PIPELINE_DOMAIN_PICKING_OVERLAY] =
+          created->vk;
+      state->domain_initialized[VKR_PIPELINE_DOMAIN_PICKING_OVERLAY] = true;
+    }
+  }
+
+  if (out_error) {
+    *out_error = VKR_RENDERER_ERROR_NONE;
+  }
   return (VkrRenderPassHandle)created;
 }
 
@@ -3311,7 +4887,19 @@ void renderer_vulkan_renderpass_destroy(void *backend_state,
   }
 
   struct s_RenderPass *pass = (struct s_RenderPass *)pass_handle;
-  vulkan_renderpass_destroy(state, pass->vk);
+  VulkanRenderPass *pass_vk = pass->vk;
+  VkRenderPass handle = pass_vk ? pass_vk->handle : VK_NULL_HANDLE;
+  if (pass_vk) {
+    pass_vk->handle = VK_NULL_HANDLE;
+  }
+  if (handle != VK_NULL_HANDLE) {
+    if (!vulkan_deferred_destroy_enqueue(
+            state, VKR_DEFERRED_DESTROY_RENDERPASS, handle, VK_NULL_HANDLE,
+            NULL, 0)) {
+      vkDestroyRenderPass(state->device.logical_device, handle,
+                          state->allocator);
+    }
+  }
   if (state->active_named_render_pass == pass) {
     state->active_named_render_pass = NULL;
   }
@@ -3327,11 +4915,17 @@ void renderer_vulkan_renderpass_destroy(void *backend_state,
   }
 
   for (uint32_t i = 0; i < VKR_PIPELINE_DOMAIN_COUNT; ++i) {
-    if (state->domain_render_passes[i] == pass->vk) {
+    if (state->domain_render_passes[i] == pass_vk) {
       state->domain_render_passes[i] = NULL;
       state->domain_initialized[i] = false;
     }
   }
+
+  pass->vk = NULL;
+  pass->name = (String8){0};
+  pass->attachment_count = 0;
+  pass->resolve_attachment_count = 0;
+  pass->ends_in_present = false_v;
 }
 
 VkrRenderPassHandle renderer_vulkan_renderpass_get(void *backend_state,
@@ -3342,32 +4936,204 @@ VkrRenderPassHandle renderer_vulkan_renderpass_get(void *backend_state,
   }
 
   uint64_t len = strlen(name);
+  if (len == 0) {
+    return NULL;
+  }
   String8 lookup = string8_create_from_cstr((const uint8_t *)name, len);
   struct s_RenderPass *found = vulkan_backend_renderpass_lookup(state, lookup);
   return (VkrRenderPassHandle)found;
 }
 
+bool8_t renderer_vulkan_renderpass_get_signature(void *backend_state,
+                                                  VkrRenderPassHandle pass_handle,
+                                                  VkrRenderPassSignature *out_signature) {
+  (void)backend_state; // Unused, but kept for interface consistency
+  if (!pass_handle || !out_signature) {
+    return false_v;
+  }
+
+  struct s_RenderPass *pass = (struct s_RenderPass *)pass_handle;
+  if (!pass->vk || pass->vk->handle == VK_NULL_HANDLE) {
+    return false_v;
+  }
+
+  *out_signature = pass->vk->signature;
+  return true_v;
+}
+
+bool8_t renderer_vulkan_domain_renderpass_set(void *backend_state,
+                                               VkrPipelineDomain domain,
+                                               VkrRenderPassHandle pass_handle,
+                                               VkrDomainOverridePolicy policy,
+                                               VkrRendererError *out_error) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state || domain >= VKR_PIPELINE_DOMAIN_COUNT) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
+    }
+    return false_v;
+  }
+
+  struct s_RenderPass *pass = (struct s_RenderPass *)pass_handle;
+  if (!pass || !pass->vk) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
+    }
+    return false_v;
+  }
+
+  VulkanRenderPass *current = state->domain_render_passes[domain];
+
+  // Check signature compatibility if policy requires it
+  if (policy == VKR_DOMAIN_OVERRIDE_POLICY_REQUIRE_COMPATIBLE && current) {
+    if (!vkr_renderpass_signature_compatible(&current->signature,
+                                             &pass->vk->signature)) {
+      if (out_error) {
+        *out_error = VKR_RENDERER_ERROR_INCOMPATIBLE_SIGNATURE;
+      }
+      return false_v;
+    }
+  }
+
+  // Invalidate framebuffer cache since we're changing the render pass
+  // (framebuffers are tied to specific VkRenderPass handles)
+  framebuffer_cache_invalidate(state);
+
+  // Update the domain render pass
+  state->domain_render_passes[domain] = pass->vk;
+  state->domain_initialized[domain] = true;
+
+  // Handle aliased domains - if setting WORLD, also update aliases
+  if (domain == VKR_PIPELINE_DOMAIN_WORLD) {
+    state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] =
+        pass->vk;
+    state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT] = true;
+    state->domain_render_passes[VKR_PIPELINE_DOMAIN_WORLD_OVERLAY] = pass->vk;
+    state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD_OVERLAY] = true;
+  }
+
+  // Handle picking aliases
+  if (domain == VKR_PIPELINE_DOMAIN_PICKING) {
+    state->domain_render_passes[VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT] =
+        pass->vk;
+    state->domain_initialized[VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT] = true;
+    state->domain_render_passes[VKR_PIPELINE_DOMAIN_PICKING_OVERLAY] = pass->vk;
+    state->domain_initialized[VKR_PIPELINE_DOMAIN_PICKING_OVERLAY] = true;
+  }
+
+  if (out_error) {
+    *out_error = VKR_RENDERER_ERROR_NONE;
+  }
+  return true_v;
+}
+
+/**
+ * @brief Create a subresource image view for specific mip level and array layer range.
+ */
+vkr_internal VkImageView
+vulkan_create_subresource_view(VulkanBackendState *state,
+                               struct s_TextureHandle *tex, uint32_t mip_level,
+                               uint32_t base_layer, uint32_t layer_count) {
+  VulkanImage *image = &tex->texture.image;
+  VkImageAspectFlags aspect =
+      vulkan_aspect_flags_from_texture_format(tex->description.format);
+
+  VkImageViewType view_type = VK_IMAGE_VIEW_TYPE_2D;
+  if (layer_count > 1) {
+    if (tex->description.type == VKR_TEXTURE_TYPE_CUBE_MAP &&
+        layer_count == 6 && (base_layer % 6) == 0) {
+      view_type = VK_IMAGE_VIEW_TYPE_CUBE;
+    } else {
+      view_type = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    }
+  }
+
+  VkImageViewCreateInfo create_info = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+      .image = image->handle,
+      .viewType = view_type,
+      .format = vulkan_image_format_from_texture_format(tex->description.format),
+      .components =
+          {
+              .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+              .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+              .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+              .a = VK_COMPONENT_SWIZZLE_IDENTITY,
+          },
+      .subresourceRange =
+          {
+              .aspectMask = aspect,
+              .baseMipLevel = mip_level,
+              .levelCount = 1, // Single mip level for render target
+              .baseArrayLayer = base_layer,
+              .layerCount = layer_count,
+          },
+  };
+
+  VkImageView view;
+  if (vkCreateImageView(state->device.logical_device, &create_info,
+                        state->allocator, &view) != VK_SUCCESS) {
+    log_error("Failed to create subresource image view");
+    return VK_NULL_HANDLE;
+  }
+  return view;
+}
+
 VkrRenderTargetHandle
 renderer_vulkan_render_target_create(void *backend_state,
-                                     const VkrRenderTargetDesc *desc,
-                                     VkrRenderPassHandle pass_handle) {
-  assert_log(backend_state != NULL, "Backend state is NULL");
-  assert_log(desc != NULL, "Render target desc is NULL");
-  assert_log(pass_handle != NULL, "Render pass handle is NULL");
-  assert_log(desc->attachments != NULL, "Render target attachments are NULL");
-
-  VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  struct s_RenderPass *pass = (struct s_RenderPass *)pass_handle;
-  if (!pass->vk || pass->vk->handle == VK_NULL_HANDLE ||
-      desc->attachment_count == 0) {
+                                      const VkrRenderTargetDesc *desc,
+                                      VkrRenderPassHandle pass_handle,
+                                      VkrRendererError *out_error) {
+  if (!backend_state || !desc || !pass_handle) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    }
     return NULL;
   }
 
-  struct s_RenderTarget *target =
-      vkr_allocator_alloc(&state->alloc, sizeof(struct s_RenderTarget),
-                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_RenderPass *pass = (struct s_RenderPass *)pass_handle;
+
+  if (!pass->vk || pass->vk->handle == VK_NULL_HANDLE ||
+      desc->attachment_count == 0 || !desc->attachments) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    }
+    return NULL;
+  }
+
+  uint8_t color_count = pass->vk->signature.color_attachment_count;
+  uint8_t depth_count = pass->vk->signature.has_depth_stencil ? 1u : 0u;
+  uint8_t resolve_count = pass->resolve_attachment_count;
+  uint8_t expected_count = color_count + depth_count + resolve_count;
+
+  if (desc->attachment_count != expected_count) {
+    log_error("Render target attachment count %u does not match render pass "
+              "signature (%u)",
+              desc->attachment_count, expected_count);
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    }
+    return NULL;
+  }
+
+  if (desc->attachment_count > VKR_RENDER_TARGET_MAX_ATTACHMENTS) {
+    log_error("Render target attachment count %u exceeds max %u",
+              desc->attachment_count, VKR_RENDER_TARGET_MAX_ATTACHMENTS);
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    }
+    return NULL;
+  }
+
+  struct s_RenderTarget *target = vkr_allocator_alloc(
+      &state->render_target_alloc, sizeof(struct s_RenderTarget),
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!target) {
-    log_fatal("Failed to allocate render target");
+    log_fatal("Failed to allocate render target from pool");
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
     return NULL;
   }
   MemZero(target, sizeof(struct s_RenderTarget));
@@ -3378,49 +5144,166 @@ renderer_vulkan_render_target_create(void *backend_state,
       desc->sync_to_window_size ? state->swapchain.extent.width : desc->width;
   target->height =
       desc->sync_to_window_size ? state->swapchain.extent.height : desc->height;
-
-  target->attachments = vkr_allocator_alloc(&state->alloc,
-                                            sizeof(struct s_TextureHandle *) *
-                                                target->attachment_count,
-                                            VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-  if (!target->attachments) {
-    log_fatal("Failed to allocate render target attachments");
+  if (target->width == 0 || target->height == 0) {
+    vkr_allocator_free(&state->render_target_alloc, target,
+                       sizeof(struct s_RenderTarget),
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    }
+    log_error("Render target dimensions must be greater than zero");
     return NULL;
   }
 
+  uint32_t expected_layer_count = 0;
+
+  // Temporary allocator scope for views array
   VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&state->temp_scope);
   if (!vkr_allocator_scope_is_valid(&temp_scope)) {
-    log_fatal("Failed to acquire temporary allocator scope for render target");
+    vkr_allocator_free(&state->render_target_alloc, target,
+                       sizeof(struct s_RenderTarget),
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
     return NULL;
   }
 
-  VkImageView *views = vkr_allocator_alloc(
+  VkImageView *views = (VkImageView *)vkr_allocator_alloc(
       &state->temp_scope,
       sizeof(VkImageView) * (uint64_t)target->attachment_count,
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!views) {
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    log_fatal("Failed to allocate render target image views");
+    vkr_allocator_free(&state->render_target_alloc, target,
+                       sizeof(struct s_RenderTarget),
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
     return NULL;
   }
 
+  // Track which views we created (need to destroy on error/cleanup)
+  VkImageView created_views[VKR_RENDER_TARGET_MAX_ATTACHMENTS] = {
+      VK_NULL_HANDLE};
+  uint32_t created_view_count = 0;
+
   for (uint32_t i = 0; i < target->attachment_count; ++i) {
-    struct s_TextureHandle *tex =
-        (struct s_TextureHandle *)desc->attachments[i];
+    const VkrRenderTargetAttachmentRef *ref = &desc->attachments[i];
+    struct s_TextureHandle *tex = (struct s_TextureHandle *)ref->texture;
+
     if (!tex) {
-      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       log_error("Render target attachment %u is NULL", i);
-      return NULL;
+      goto cleanup_error;
     }
-    if (tex->texture.image.view == VK_NULL_HANDLE) {
-      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      log_error("Render target attachment %u has no image view", i);
-      return NULL;
+    if (ref->layer_count == 0) {
+      log_error("Render target attachment %u has invalid layer count", i);
+      goto cleanup_error;
     }
+    if (ref->mip_level >= tex->texture.image.mip_levels) {
+      log_error("Render target attachment %u mip level %u exceeds max %u", i,
+                ref->mip_level, tex->texture.image.mip_levels);
+      goto cleanup_error;
+    }
+    if (ref->base_layer + ref->layer_count > tex->texture.image.array_layers) {
+      log_error("Render target attachment %u layer range out of bounds", i);
+      goto cleanup_error;
+    }
+
     target->attachments[i] = tex;
-    views[i] = tex->texture.image.view;
+#ifndef NDEBUG
+    target->attachment_generations[i] = tex->generation;
+#endif
+
+    if (expected_layer_count == 0) {
+      expected_layer_count = ref->layer_count;
+    } else if (ref->layer_count != expected_layer_count) {
+      log_error("Render target attachment %u layer count %u does not match "
+                "expected %u",
+                i, ref->layer_count, expected_layer_count);
+      goto cleanup_error;
+    }
+
+    uint32_t mip_width =
+        Max(1u, tex->texture.image.width >> ref->mip_level);
+    uint32_t mip_height =
+        Max(1u, tex->texture.image.height >> ref->mip_level);
+    if (target->width > mip_width || target->height > mip_height) {
+      log_error("Render target attachment %u size %ux%u exceeds mip %ux%u", i,
+                target->width, target->height, mip_width, mip_height);
+      goto cleanup_error;
+    }
+
+    VkrTextureFormat expected_format = tex->description.format;
+    VkrSampleCount expected_samples = VKR_SAMPLE_COUNT_1;
+    if (i < color_count) {
+      expected_format = pass->vk->signature.color_formats[i];
+      expected_samples = pass->vk->signature.color_samples[i];
+    } else if (pass->vk->signature.has_depth_stencil &&
+               i == color_count) {
+      expected_format = pass->vk->signature.depth_stencil_format;
+      expected_samples = pass->vk->signature.depth_stencil_samples;
+    } else {
+      uint8_t resolve_index = (uint8_t)(i - color_count - depth_count);
+      VkrResolveAttachmentRef *resolve_ref = NULL;
+      for (uint8_t r = 0; r < pass->resolve_attachment_count; ++r) {
+        if (pass->resolve_attachments[r].dst_attachment_index == resolve_index) {
+          resolve_ref = &pass->resolve_attachments[r];
+          break;
+        }
+      }
+      if (!resolve_ref ||
+          resolve_ref->src_attachment_index >= color_count) {
+        log_error("Render target resolve attachment %u has invalid source", i);
+        goto cleanup_error;
+      }
+      expected_format =
+          pass->vk->signature.color_formats[resolve_ref->src_attachment_index];
+      expected_samples = VKR_SAMPLE_COUNT_1;
+    }
+
+    if (tex->description.format != expected_format) {
+      log_error("Render target attachment %u format mismatch", i);
+      goto cleanup_error;
+    }
+    VkrSampleCount texture_samples =
+        vulkan_vk_samples_to_vkr(tex->texture.image.samples);
+    if (texture_samples != expected_samples) {
+      log_error("Render target attachment %u sample count mismatch", i);
+      goto cleanup_error;
+    }
+
+    // Determine if we need a subresource view
+    bool8_t needs_subresource =
+        ref->mip_level != 0 || ref->base_layer != 0 ||
+        (ref->layer_count != 1 &&
+         ref->layer_count != tex->texture.image.array_layers);
+
+    if (needs_subresource) {
+      VkImageView subview = vulkan_create_subresource_view(
+          state, tex, ref->mip_level, ref->base_layer, ref->layer_count);
+      if (subview == VK_NULL_HANDLE) {
+        goto cleanup_error;
+      }
+      views[i] = subview;
+      created_views[created_view_count++] = subview;
+      target->attachment_view_owned[i] = true_v;
+    } else {
+      // Use texture's default view
+      if (tex->texture.image.view == VK_NULL_HANDLE) {
+        log_error("Render target attachment %u has no image view", i);
+        goto cleanup_error;
+      }
+      views[i] = tex->texture.image.view;
+      target->attachment_view_owned[i] = false_v;
+    }
+    target->attachment_views[i] = views[i];
   }
 
+  target->layer_count = expected_layer_count > 0 ? expected_layer_count : 1u;
+
+  // Create framebuffer (render target owns the framebuffer)
   VkFramebufferCreateInfo fb_info = {
       .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
       .renderPass = pass->vk->handle,
@@ -3428,18 +5311,34 @@ renderer_vulkan_render_target_create(void *backend_state,
       .pAttachments = views,
       .width = target->width,
       .height = target->height,
-      .layers = 1,
+      .layers = target->layer_count,
   };
 
   if (vkCreateFramebuffer(state->device.logical_device, &fb_info,
                           state->allocator, &target->handle) != VK_SUCCESS) {
-    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     log_fatal("Failed to create framebuffer for render target");
-    return NULL;
+    goto cleanup_error;
   }
 
   vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (out_error) {
+    *out_error = VKR_RENDERER_ERROR_NONE;
+  }
   return (VkrRenderTargetHandle)target;
+
+cleanup_error:
+  for (uint32_t i = 0; i < created_view_count; ++i) {
+    vkDestroyImageView(state->device.logical_device, created_views[i],
+                       state->allocator);
+  }
+  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  vkr_allocator_free(&state->render_target_alloc, target,
+                     sizeof(struct s_RenderTarget),
+                     VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (out_error) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  }
+  return NULL;
 }
 
 void renderer_vulkan_render_target_destroy(
@@ -3450,19 +5349,41 @@ void renderer_vulkan_render_target_destroy(
   }
 
   struct s_RenderTarget *target = (struct s_RenderTarget *)target_handle;
-  if (target->handle != VK_NULL_HANDLE) {
-    vkDestroyFramebuffer(state->device.logical_device, target->handle,
-                         state->allocator);
-    target->handle = VK_NULL_HANDLE;
+
+  VkFramebuffer framebuffer = target->handle;
+  target->handle = VK_NULL_HANDLE;
+
+  for (uint32_t i = 0; i < target->attachment_count; ++i) {
+    if (target->attachment_view_owned[i] &&
+        target->attachment_views[i] != VK_NULL_HANDLE) {
+      if (!vulkan_deferred_destroy_enqueue(
+              state, VKR_DEFERRED_DESTROY_IMAGE_VIEW,
+              target->attachment_views[i], VK_NULL_HANDLE, NULL, 0)) {
+        vkDestroyImageView(state->device.logical_device,
+                           target->attachment_views[i], state->allocator);
+      }
+    }
+    target->attachment_views[i] = VK_NULL_HANDLE;
+    target->attachment_view_owned[i] = false_v;
   }
-  if (target->attachments) {
-    vkr_allocator_free(&state->alloc, target->attachments,
-                       sizeof(struct s_TextureHandle *) *
-                           target->attachment_count,
+
+  if (framebuffer != VK_NULL_HANDLE) {
+    if (!vulkan_deferred_destroy_enqueue(
+            state, VKR_DEFERRED_DESTROY_FRAMEBUFFER, framebuffer,
+            VK_NULL_HANDLE, NULL, 0)) {
+      vkDestroyFramebuffer(state->device.logical_device, framebuffer,
+                           state->allocator);
+    }
+  }
+
+  if (!vulkan_deferred_destroy_enqueue(
+          state, VKR_DEFERRED_DESTROY_RENDER_TARGET_WRAPPER, target,
+          VK_NULL_HANDLE, &state->render_target_alloc,
+          sizeof(struct s_RenderTarget))) {
+    vkr_allocator_free(&state->render_target_alloc, target,
+                       sizeof(struct s_RenderTarget),
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    target->attachments = NULL;
   }
-  target->attachment_count = 0;
 }
 
 VkrRendererError
@@ -3479,67 +5400,33 @@ renderer_vulkan_begin_render_pass(void *backend_state,
     return VKR_RENDERER_ERROR_INVALID_HANDLE;
   }
 
+#ifndef NDEBUG
+  // Debug: validate attachment liveness - detect use-after-free
+  for (uint32_t i = 0; i < target->attachment_count; ++i) {
+    struct s_TextureHandle *attachment = target->attachments[i];
+    if (attachment && attachment->generation != target->attachment_generations[i]) {
+      log_error("Render target attachment %u has stale texture reference "
+                "(captured gen %u, current gen %u). "
+                "Texture was likely destroyed and recreated.",
+                i, target->attachment_generations[i], attachment->generation);
+      assert_log(false_v, "Stale texture attachment detected");
+      return VKR_RENDERER_ERROR_INVALID_HANDLE;
+    }
+  }
+#endif
+
+  if (pass->attachment_count != target->attachment_count) {
+    log_error("Render pass attachment count %u does not match target (%u)",
+              pass->attachment_count, target->attachment_count);
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
   VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, state->image_index);
 
-  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&state->temp_scope);
-  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
-    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-  }
-  VkClearValue *clear_values = vkr_allocator_alloc(
-      &state->temp_scope, sizeof(VkClearValue) * target->attachment_count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!clear_values) {
-    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-  }
-  MemZero(clear_values,
-          sizeof(VkClearValue) * (uint64_t)target->attachment_count);
-
-  for (uint32_t i = 0; i < target->attachment_count; ++i) {
-    struct s_TextureHandle *attachment = target->attachments[i];
-    if (!attachment) {
-      continue;
-    }
-
-    switch (attachment->description.format) {
-    case VKR_TEXTURE_FORMAT_D32_SFLOAT:
-    case VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT:
-      clear_values[i].depthStencil.depth = 1.0f;
-      clear_values[i].depthStencil.stencil = 0;
-      break;
-    case VKR_TEXTURE_FORMAT_R32_UINT:
-      // Picking attachments are integer; default clear to 0.
-      clear_values[i].color.uint32[0] = 0;
-      clear_values[i].color.uint32[1] = 0;
-      clear_values[i].color.uint32[2] = 0;
-      clear_values[i].color.uint32[3] = 0;
-      break;
-    default:
-      clear_values[i].color.float32[0] = pass->cfg.clear_color.r;
-      clear_values[i].color.float32[1] = pass->cfg.clear_color.g;
-      clear_values[i].color.float32[2] = pass->cfg.clear_color.b;
-      clear_values[i].color.float32[3] = pass->cfg.clear_color.a;
-      break;
-    }
-  }
-
-  float32_t render_width = (pass->cfg.render_area.z > 0.0f)
-                               ? pass->cfg.render_area.z
-                               : (float32_t)target->width;
-  float32_t render_height = (pass->cfg.render_area.w > 0.0f)
-                                ? pass->cfg.render_area.w
-                                : (float32_t)target->height;
-
-  uint32_t extent_w =
-      Max(1u, (uint32_t)Min(render_width, (float32_t)target->width));
-  uint32_t extent_h =
-      Max(1u, (uint32_t)Min(render_height, (float32_t)target->height));
-
   VkRect2D render_area = {
-      .offset = {(int32_t)Max(0, (int32_t)pass->cfg.render_area.x),
-                 (int32_t)Max(0, (int32_t)pass->cfg.render_area.y)},
-      .extent = {extent_w, extent_h},
+      .offset = {0, 0},
+      .extent = {target->width, target->height},
   };
 
   VkRenderPassBeginInfo begin_info = {
@@ -3547,8 +5434,8 @@ renderer_vulkan_begin_render_pass(void *backend_state,
       .renderPass = pass->vk->handle,
       .framebuffer = target->handle,
       .renderArea = render_area,
-      .clearValueCount = target->attachment_count,
-      .pClearValues = clear_values,
+      .clearValueCount = pass->attachment_count,
+      .pClearValues = pass->clear_values,
   };
 
   vkCmdBeginRenderPass(command_buffer->handle, &begin_info,
@@ -3570,7 +5457,6 @@ renderer_vulkan_begin_render_pass(void *backend_state,
   vkCmdSetViewport(command_buffer->handle, 0, 1, &viewport);
   vkCmdSetScissor(command_buffer->handle, 0, 1, &render_area);
 
-  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   return VKR_RENDERER_ERROR_NONE;
 }
 
@@ -3586,7 +5472,7 @@ VkrRendererError renderer_vulkan_end_render_pass(void *backend_state) {
   vkCmdEndRenderPass(command_buffer->handle);
 
   if (state->active_named_render_pass &&
-      state->active_named_render_pass->cfg.next_name.length == 0) {
+      state->active_named_render_pass->ends_in_present) {
     state->swapchain_image_is_present_ready = true;
   }
 
@@ -3623,6 +5509,14 @@ uint32_t renderer_vulkan_window_attachment_count(void *backend_state) {
     return 0;
   }
   return state->swapchain.image_count;
+}
+
+VkrTextureFormat renderer_vulkan_swapchain_format_get(void *backend_state) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state) {
+    return VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
+  }
+  return vulkan_vk_format_to_vkr(state->swapchain.format);
 }
 
 uint32_t renderer_vulkan_window_attachment_index(void *backend_state) {

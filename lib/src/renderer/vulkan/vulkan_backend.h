@@ -31,18 +31,11 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
 VkrRendererError renderer_vulkan_end_frame(void *backend_state,
                                            float64_t delta_time);
 
-VkrRenderPassHandle
-renderer_vulkan_renderpass_create(void *backend_state,
-                                  const VkrRenderPassConfig *cfg);
 void renderer_vulkan_renderpass_destroy(void *backend_state,
                                         VkrRenderPassHandle pass);
 VkrRenderPassHandle renderer_vulkan_renderpass_get(void *backend_state,
                                                    const char *name);
 
-VkrRenderTargetHandle
-renderer_vulkan_render_target_create(void *backend_state,
-                                     const VkrRenderTargetDesc *desc,
-                                     VkrRenderPassHandle pass);
 void renderer_vulkan_render_target_destroy(void *backend_state,
                                            VkrRenderTargetHandle target);
 
@@ -89,6 +82,11 @@ VkrBackendResourceHandle
 renderer_vulkan_create_sampled_depth_attachment(void *backend_state,
                                                 uint32_t width,
                                                 uint32_t height);
+VkrBackendResourceHandle
+renderer_vulkan_create_sampled_depth_attachment_array(void *backend_state,
+                                                      uint32_t width,
+                                                      uint32_t height,
+                                                      uint32_t layers);
 VkrRendererError renderer_vulkan_transition_texture_layout(
     void *backend_state, VkrBackendResourceHandle handle,
     VkrTextureLayout old_layout, VkrTextureLayout new_layout);
@@ -110,6 +108,9 @@ void renderer_vulkan_destroy_texture(void *backend_state,
 
 VkrBackendResourceHandle renderer_vulkan_create_graphics_pipeline(
     void *backend_state, const VkrGraphicsPipelineDescription *desc);
+bool8_t renderer_vulkan_pipeline_get_shader_runtime_layout(
+    void *backend_state, VkrBackendResourceHandle pipeline_handle,
+    VkrShaderRuntimeLayout *out_layout);
 
 VkrRendererError renderer_vulkan_update_pipeline_state(
     void *backend_state, VkrBackendResourceHandle pipeline_handle,
@@ -169,6 +170,18 @@ uint32_t renderer_vulkan_window_attachment_index(void *backend_state);
 // Telemetry
 uint64_t
 renderer_vulkan_get_and_reset_descriptor_writes_avoided(void *backend_state);
+
+// RenderGraph GPU timing (timestamps)
+bool8_t renderer_vulkan_rg_timing_begin_frame(void *backend_state,
+                                              uint32_t pass_count);
+void renderer_vulkan_rg_timing_begin_pass(void *backend_state,
+                                          uint32_t pass_index);
+void renderer_vulkan_rg_timing_end_pass(void *backend_state,
+                                        uint32_t pass_index);
+bool8_t renderer_vulkan_rg_timing_get_results(void *backend_state,
+                                              uint32_t *out_pass_count,
+                                              const float64_t **out_pass_ms,
+                                              const bool8_t **out_pass_valid);
 
 // --- Pixel Readback API ---
 VkrRendererError renderer_vulkan_readback_ring_init(void *backend_state);
