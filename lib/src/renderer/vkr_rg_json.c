@@ -240,6 +240,7 @@ vkr_global const VkrRgJsonFormatMap k_rg_json_format_map[] = {
     {"R32_SFLOAT", VKR_TEXTURE_FORMAT_R32_SFLOAT},
     {"R32_UINT", VKR_TEXTURE_FORMAT_R32_UINT},
     {"R8G8_UNORM", VKR_TEXTURE_FORMAT_R8G8_UNORM},
+    {"D16_UNORM", VKR_TEXTURE_FORMAT_D16_UNORM},
     {"D32_SFLOAT", VKR_TEXTURE_FORMAT_D32_SFLOAT},
     {"D24_UNORM_S8_UINT", VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT},
 };
@@ -247,16 +248,29 @@ vkr_global const VkrRgJsonFormatMap k_rg_json_format_map[] = {
 vkr_internal bool8_t vkr_rg_json_parse_format(VkrRgJsonParseContext *ctx,
                                               String8 value,
                                               VkrTextureFormat *out_format,
-                                              bool8_t *out_swapchain) {
+                                              VkrRgJsonImageFormatSource
+                                                  *out_format_source) {
   assert_log(out_format != NULL, "out_format is NULL");
-  assert_log(out_swapchain != NULL, "out_swapchain is NULL");
+  assert_log(out_format_source != NULL, "out_format_source is NULL");
   assert_log(ctx != NULL, "ctx is NULL");
 
   String8 trimmed = value;
   string8_trim(&trimmed);
 
   if (vkr_string8_equals_cstr_i(&trimmed, "SWAPCHAIN")) {
-    *out_swapchain = true_v;
+    *out_format_source = VKR_RG_JSON_IMAGE_FORMAT_SWAPCHAIN;
+    *out_format = VKR_TEXTURE_FORMAT_COUNT;
+    return true_v;
+  }
+
+  if (vkr_string8_equals_cstr_i(&trimmed, "SWAPCHAIN_DEPTH")) {
+    *out_format_source = VKR_RG_JSON_IMAGE_FORMAT_SWAPCHAIN_DEPTH;
+    *out_format = VKR_TEXTURE_FORMAT_COUNT;
+    return true_v;
+  }
+
+  if (vkr_string8_equals_cstr_i(&trimmed, "SHADOW_DEPTH")) {
+    *out_format_source = VKR_RG_JSON_IMAGE_FORMAT_SHADOW_DEPTH;
     *out_format = VKR_TEXTURE_FORMAT_COUNT;
     return true_v;
   }
@@ -265,7 +279,7 @@ vkr_internal bool8_t vkr_rg_json_parse_format(VkrRgJsonParseContext *ctx,
                                      sizeof(k_rg_json_format_map[0]));
   for (uint32_t i = 0; i < format_count; ++i) {
     if (vkr_string8_equals_cstr_i(&trimmed, k_rg_json_format_map[i].name)) {
-      *out_swapchain = false_v;
+      *out_format_source = VKR_RG_JSON_IMAGE_FORMAT_EXPLICIT;
       *out_format = k_rg_json_format_map[i].format;
       return true_v;
     }
@@ -465,6 +479,7 @@ vkr_internal bool8_t vkr_rg_json_parse_image_desc(
 
   *out_desc = (VkrRgJsonImageDesc){0};
   out_desc->usage = vkr_texture_usage_flags_create();
+  out_desc->format_source = VKR_RG_JSON_IMAGE_FORMAT_EXPLICIT;
 
   VkrJsonReader import_reader = *obj;
   if (vkr_json_find_field(&import_reader, "import")) {
@@ -509,7 +524,7 @@ vkr_internal bool8_t vkr_rg_json_parse_image_desc(
       return vkr_rg_json_error(ctx, field_path, "format must be a string");
     }
     if (!vkr_rg_json_parse_format(ctx, fmt, &out_desc->format,
-                                  &out_desc->format_is_swapchain)) {
+                                  &out_desc->format_source)) {
       return false_v;
     }
   } else if (!out_desc->is_import) {
@@ -1754,10 +1769,20 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
             return false_v;
           }
           desc.layers = layers;
-          if (resource->image.format_is_swapchain) {
+          switch (resource->image.format_source) {
+          case VKR_RG_JSON_IMAGE_FORMAT_SWAPCHAIN:
             desc.format = frame->swapchain_format;
-          } else {
+            break;
+          case VKR_RG_JSON_IMAGE_FORMAT_SWAPCHAIN_DEPTH:
+            desc.format = frame->swapchain_depth_format;
+            break;
+          case VKR_RG_JSON_IMAGE_FORMAT_SHADOW_DEPTH:
+            desc.format = frame->shadow_depth_format;
+            break;
+          case VKR_RG_JSON_IMAGE_FORMAT_EXPLICIT:
+          default:
             desc.format = resource->image.format;
+            break;
           }
 
           vkr_rg_create_image(rg, resolved_name, &desc);
