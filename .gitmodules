@@ -1,0 +1,3 @@
+[submodule "vendor/ktx-software"]
+	path = vendor/ktx-software
+	url = https://github.com/KhronosGroup/KTX-Software.git
