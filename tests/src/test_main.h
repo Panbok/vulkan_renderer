@@ -25,6 +25,8 @@
 #include "simd_test.h"
 #include "string_test.h"
 #include "text_test.h"
+#include "texture_format_tests.h"
+#include "texture_vkt_tests.h"
 #include "threads_test.h"
 #include "transform_test.h"
 #include "vec_test.h"
