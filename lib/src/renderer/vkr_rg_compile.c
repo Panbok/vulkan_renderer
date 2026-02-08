@@ -630,6 +630,7 @@ vkr_internal uint32_t vkr_rg_format_bytes_per_pixel(VkrTextureFormat format) {
     return 1;
   case VKR_TEXTURE_FORMAT_R8G8_UNORM:
   case VKR_TEXTURE_FORMAT_R16_SFLOAT:
+  case VKR_TEXTURE_FORMAT_D16_UNORM:
     return 2;
   case VKR_TEXTURE_FORMAT_R32_SFLOAT:
   case VKR_TEXTURE_FORMAT_R32_UINT:
