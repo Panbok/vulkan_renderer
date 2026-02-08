@@ -351,6 +351,8 @@ typedef struct VkrDeviceInformation {
   VkrDeviceQueueFlags device_queues;
   VkrSamplerFilterFlags sampler_filters;
   float64_t max_sampler_anisotropy;
+  bool8_t supports_texture_astc_4x4;
+  bool8_t supports_texture_bc7;
   bool8_t supports_multi_draw_indirect;
   bool8_t supports_draw_indirect_first_instance;
 } VkrDeviceInformation;
@@ -406,6 +408,10 @@ typedef enum VkrTextureFormat {
   VKR_TEXTURE_FORMAT_R8G8B8A8_UINT,
   VKR_TEXTURE_FORMAT_R8G8B8A8_SNORM,
   VKR_TEXTURE_FORMAT_R8G8B8A8_SINT,
+  VKR_TEXTURE_FORMAT_BC7_UNORM,
+  VKR_TEXTURE_FORMAT_BC7_SRGB,
+  VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM,
+  VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB,
   // Single/dual channel formats
   VKR_TEXTURE_FORMAT_R8_UNORM,
   VKR_TEXTURE_FORMAT_R16_SFLOAT,
@@ -558,6 +564,26 @@ typedef struct VkrTextureWriteRegion {
   uint32_t width;
   uint32_t height;
 } VkrTextureWriteRegion;
+
+typedef struct VkrTextureUploadRegion {
+  uint32_t mip_level;
+  uint32_t array_layer;
+  uint32_t width;
+  uint32_t height;
+  uint32_t depth;
+  uint64_t byte_offset;
+  uint64_t byte_size;
+} VkrTextureUploadRegion;
+
+typedef struct VkrTextureUploadPayload {
+  const uint8_t *data;
+  uint64_t data_size;
+  uint32_t mip_levels;
+  uint32_t array_layers;
+  bool8_t is_compressed;
+  uint32_t region_count;
+  const VkrTextureUploadRegion *regions;
+} VkrTextureUploadPayload;
 
 // ----------------------------------------------------------------------------
 // Instance state & material state
@@ -1027,6 +1053,10 @@ vkr_renderer_create_texture(VkrRendererFrontendHandle renderer,
                             const VkrTextureDescription *description,
                             const void *initial_data,
                             VkrRendererError *out_error);
+VkrTextureOpaqueHandle vkr_renderer_create_texture_with_payload(
+    VkrRendererFrontendHandle renderer,
+    const VkrTextureDescription *description,
+    const VkrTextureUploadPayload *payload, VkrRendererError *out_error);
 VkrTextureOpaqueHandle
 vkr_renderer_create_writable_texture(VkrRendererFrontendHandle renderer,
                                      const VkrTextureDescription *desc,
@@ -1542,6 +1572,9 @@ typedef struct VkrRendererBackendInterface {
   VkrBackendResourceHandle (*texture_create)(void *backend_state,
                                              const VkrTextureDescription *desc,
                                              const void *initial_data);
+  VkrBackendResourceHandle (*texture_create_with_payload)(
+      void *backend_state, const VkrTextureDescription *desc,
+      const VkrTextureUploadPayload *payload);
   VkrBackendResourceHandle (*render_target_texture_create)(
       void *backend_state, const VkrRenderTargetTextureDesc *desc);
   VkrBackendResourceHandle (*depth_attachment_create)(void *backend_state,
