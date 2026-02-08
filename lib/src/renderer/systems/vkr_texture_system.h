@@ -30,11 +30,17 @@ typedef struct VkrTextureSystemConfig {
   uint32_t max_texture_count;
 } VkrTextureSystemConfig;
 
+typedef enum VkrTextureVktContainerType {
+  VKR_TEXTURE_VKT_CONTAINER_UNKNOWN = 0,
+  VKR_TEXTURE_VKT_CONTAINER_LEGACY_RAW,
+  VKR_TEXTURE_VKT_CONTAINER_KTX2,
+} VkrTextureVktContainerType;
+
 typedef struct VkrTextureSystem {
   VkrRendererFrontendHandle renderer;
-  Arena *arena;           // internal arena owned by the system
-  VkrAllocator allocator; // persistent allocator wrapping arena
-  VkrDMemory string_memory;    // dynamic strings (freed on unload)
+  Arena *arena;                  // internal arena owned by the system
+  VkrAllocator allocator;        // persistent allocator wrapping arena
+  VkrDMemory string_memory;      // dynamic strings (freed on unload)
   VkrAllocator string_allocator; // allocator wrapper for string_memory
   VkrTextureSystemConfig config;
 
@@ -51,9 +57,79 @@ typedef struct VkrTextureSystem {
   VkrTextureHandle default_normal_texture;   // flat normal fallback
   VkrTextureHandle default_specular_texture; // flat specular fallback
 
-  VkrJobSystem *job_system; // For async texture loading
+  VkrJobSystem *job_system;                      // For async texture loading
   struct VkrTextureCacheWriteGuard *cache_guard; // Internal cache write guard
+
+  // Device-dependent transcode policy inputs for KTX2/UASTC decode.
+  bool8_t prefer_astc_transcode;     // Whether to prefer ASTC transcode
+  bool8_t supports_texture_astc_4x4; // Whether ASTC 4x4 is supported
+  bool8_t supports_texture_bc7;      // Whether BC7 is supported
+
+  // Runtime rollout controls for `.vkt` migration.
+  bool8_t strict_vkt_only_mode;     // Disable source-image fallback.
+  bool8_t allow_legacy_vkt;         // Allow legacy raw `.vkt` read path.
+  bool8_t allow_source_fallback;    // Permit source image decode when `.vkt`
+                                    // is missing/invalid.
+  bool8_t allow_legacy_cache_write; // Permit writing legacy raw sidecar cache.
 } VkrTextureSystem;
+
+/**
+ * @brief Returns true when path has a `.vkt` extension (query suffix ignored).
+ * @param path The path to check
+ * @return true if the path has a `.vkt` extension, false otherwise
+ */
+bool8_t vkr_texture_is_vkt_path(String8 path);
+
+/**
+ * @brief Builds direct/sidecar/source resolution candidates for a texture
+ * request.
+ *
+ * If request path is already `.vkt`, `out_direct_vkt` and `out_source_path` are
+ * set to the normalized request path and `out_sidecar_vkt` is empty.
+ *
+ * @param allocator The allocator to use
+ * @param request_path The path to build the resolution candidates for
+ * @param out_direct_vkt The direct `.vkt` path (if any)
+ * @param out_sidecar_vkt The sidecar `.vkt` path (if any)
+ * @param out_source_path The source path (if any)
+ */
+void vkr_texture_build_resolution_candidates(VkrAllocator *allocator,
+                                             String8 request_path,
+                                             String8 *out_direct_vkt,
+                                             String8 *out_sidecar_vkt,
+                                             String8 *out_source_path);
+
+/**
+ * @brief Classifies `.vkt` bytes as legacy raw cache, KTX2, or unknown.
+ * @param bytes The bytes to classify
+ * @param size The size of the bytes
+ * @return The container type
+ */
+VkrTextureVktContainerType
+vkr_texture_detect_vkt_container(const uint8_t *bytes, uint64_t size);
+
+/**
+ * @brief Parses `?cs=srgb|linear` and returns whether the request is sRGB.
+ *
+ * Unknown values keep the provided default.
+ * @param request_path The path to check
+ * @param default_srgb The default sRGB value
+ * @return true if the request is sRGB, false otherwise
+ */
+bool8_t vkr_texture_request_prefers_srgb(String8 request_path,
+                                         bool8_t default_srgb);
+
+/**
+ * @brief Selects transcode target format with deterministic fallback ordering.
+ * @param prefer_astc_platform Whether to prefer ASTC transcode
+ * @param request_srgb Whether the request is sRGB
+ * @param supports_astc_4x4 Whether ASTC 4x4 is supported
+ * @param supports_bc7 Whether BC7 is supported
+ * @return The transcode target format
+ */
+VkrTextureFormat vkr_texture_select_transcode_target_format(
+    bool8_t prefer_astc_platform, bool8_t request_srgb,
+    bool8_t supports_astc_4x4, bool8_t supports_bc7);
 
 // =============================================================================
 // Initialization / Shutdown

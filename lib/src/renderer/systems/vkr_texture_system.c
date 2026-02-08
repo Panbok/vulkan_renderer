@@ -6,6 +6,7 @@
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_resource_system.h"
 
+#include "ktx.h"
 #include "stb_image.h"
 
 // =============================================================================
@@ -147,6 +148,41 @@ vkr_texture_cache_guard_release(VkrTextureCacheWriteGuard *guard,
 }
 
 /**
+ * @brief Parses common truthy/falsy environment values.
+ *
+ * Empty or unknown values keep the provided default so rollout toggles can
+ * evolve without crashing older launch scripts.
+ */
+vkr_internal bool8_t vkr_texture_env_flag(const char *name,
+                                          bool8_t default_value) {
+  if (!name || name[0] == '\0') {
+    return default_value;
+  }
+
+  const char *value = getenv(name);
+  if (!value || value[0] == '\0') {
+    return default_value;
+  }
+
+  switch (value[0]) {
+  case '1':
+  case 'y':
+  case 'Y':
+  case 't':
+  case 'T':
+    return true_v;
+  case '0':
+  case 'n':
+  case 'N':
+  case 'f':
+  case 'F':
+    return false_v;
+  default:
+    return default_value;
+  }
+}
+
+/**
  * @brief Desired sampling color space for a texture request.
  */
 typedef enum VkrTextureColorSpace {
@@ -159,9 +195,29 @@ typedef enum VkrTextureColorSpace {
  */
 typedef struct VkrTextureRequest {
   String8 base_path;
-  String8 query;
   VkrTextureColorSpace colorspace;
 } VkrTextureRequest;
+
+typedef struct VkrTextureQueryColorScanResult {
+  bool8_t prefers_srgb;
+  bool8_t had_unknown;
+} VkrTextureQueryColorScanResult;
+
+vkr_internal bool8_t vkr_texture_path_has_vkt_extension(String8 path) {
+  if (!path.str || path.length < 4) {
+    return false_v;
+  }
+
+  for (uint64_t i = path.length; i > 0; --i) {
+    if (path.str[i - 1] == '.') {
+      String8 ext = string8_substring(&path, i, path.length);
+      String8 vkt_ext = string8_lit("vkt");
+      return string8_equalsi(&ext, &vkt_ext);
+    }
+  }
+
+  return false_v;
+}
 
 /**
  * @brief Strip the query portion from a texture name.
@@ -187,16 +243,20 @@ vkr_internal String8 vkr_texture_strip_query(String8 name, String8 *out_query) {
 }
 
 /**
- * @brief Parse a texture request into a base path and desired color space.
- * @note Only the `cs` query parameter is consumed; others are ignored.
- * @note Unknown `cs` values log once and default to linear.
+ * @brief Scans `cs` query parameters and resolves final colorspace preference.
+ *
+ * Parsing order is left-to-right so later `cs` values override earlier ones.
+ * Unknown values optionally force linear fallback to match legacy behavior.
  */
-vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
-  String8 query = {0};
-  String8 base_path = vkr_texture_strip_query(name, &query);
-  VkrTextureColorSpace colorspace = VKR_TEXTURE_COLORSPACE_LINEAR;
-
-  vkr_local_persist bool8_t warned_unknown = false_v;
+vkr_internal VkrTextureQueryColorScanResult vkr_texture_scan_query_colorspace(
+    String8 query, bool8_t default_prefers_srgb, bool8_t unknown_sets_linear) {
+  VkrTextureQueryColorScanResult result = {
+      .prefers_srgb = default_prefers_srgb,
+      .had_unknown = false_v,
+  };
+  const String8 key_cs = string8_lit("cs");
+  const String8 val_srgb = string8_lit("srgb");
+  const String8 val_linear = string8_lit("linear");
 
   uint64_t start = 0;
   while (start < query.length) {
@@ -216,21 +276,17 @@ vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
 
     if (eq_pos != UINT64_MAX && eq_pos > 0 && eq_pos + 1 < param.length) {
       String8 key = string8_substring(&param, 0, eq_pos);
-      String8 value = string8_substring(&param, eq_pos + 1, param.length);
-      String8 key_cs = string8_lit("cs");
       if (string8_equalsi(&key, &key_cs)) {
-        String8 val_srgb = string8_lit("srgb");
-        String8 val_linear = string8_lit("linear");
+        String8 value = string8_substring(&param, eq_pos + 1, param.length);
         if (string8_equalsi(&value, &val_srgb)) {
-          colorspace = VKR_TEXTURE_COLORSPACE_SRGB;
+          result.prefers_srgb = true_v;
         } else if (string8_equalsi(&value, &val_linear)) {
-          colorspace = VKR_TEXTURE_COLORSPACE_LINEAR;
-        } else if (!warned_unknown) {
-          log_warn("Texture request has unknown colorspace '%.*s'; defaulting "
-                   "to linear",
-                   (int32_t)value.length, value.str);
-          warned_unknown = true_v;
-          colorspace = VKR_TEXTURE_COLORSPACE_LINEAR;
+          result.prefers_srgb = false_v;
+        } else {
+          result.had_unknown = true_v;
+          if (unknown_sets_linear) {
+            result.prefers_srgb = false_v;
+          }
         }
       }
     }
@@ -238,11 +294,125 @@ vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
     start = end + 1;
   }
 
+  return result;
+}
+
+/**
+ * @brief Parse a texture request into a base path and desired color space.
+ * @note Only the `cs` query parameter is consumed; others are ignored.
+ * @note Unknown `cs` values log once and default to linear.
+ */
+vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
+  String8 query = {0};
+  String8 base_path = vkr_texture_strip_query(name, &query);
+  VkrTextureQueryColorScanResult scan =
+      vkr_texture_scan_query_colorspace(query, false_v, true_v);
+
+  if (scan.had_unknown) {
+    vkr_local_persist bool8_t warned_unknown = false_v;
+    if (!warned_unknown) {
+      log_warn("Texture request has unknown colorspace value; defaulting to "
+               "linear");
+      warned_unknown = true_v;
+    }
+  }
+
   return (VkrTextureRequest){
       .base_path = base_path,
-      .query = query,
-      .colorspace = colorspace,
+      .colorspace = scan.prefers_srgb ? VKR_TEXTURE_COLORSPACE_SRGB
+                                      : VKR_TEXTURE_COLORSPACE_LINEAR,
   };
+}
+
+bool8_t vkr_texture_is_vkt_path(String8 path) {
+  String8 query = {0};
+  String8 base_path = vkr_texture_strip_query(path, &query);
+  (void)query;
+  return vkr_texture_path_has_vkt_extension(base_path);
+}
+
+void vkr_texture_build_resolution_candidates(VkrAllocator *allocator,
+                                             String8 request_path,
+                                             String8 *out_direct_vkt,
+                                             String8 *out_sidecar_vkt,
+                                             String8 *out_source_path) {
+  assert_log(allocator != NULL, "Allocator is NULL");
+
+  VkrTextureRequest request = vkr_texture_parse_request(request_path);
+  const bool8_t direct_vkt =
+      vkr_texture_path_has_vkt_extension(request.base_path);
+
+  if (out_source_path) {
+    *out_source_path = request.base_path;
+  }
+
+  if (direct_vkt) {
+    if (out_direct_vkt) {
+      *out_direct_vkt = request.base_path;
+    }
+    if (out_sidecar_vkt) {
+      *out_sidecar_vkt = (String8){0};
+    }
+    return;
+  }
+
+  if (out_direct_vkt) {
+    *out_direct_vkt = (String8){0};
+  }
+  if (out_sidecar_vkt) {
+    *out_sidecar_vkt = vkr_texture_cache_path(allocator, request.base_path);
+  }
+}
+
+VkrTextureVktContainerType
+vkr_texture_detect_vkt_container(const uint8_t *bytes, uint64_t size) {
+  static const uint8_t ktx2_signature[12] = {
+      0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
+
+  if (!bytes || size < 4) {
+    return VKR_TEXTURE_VKT_CONTAINER_UNKNOWN;
+  }
+
+  if (size >= sizeof(ktx2_signature) &&
+      MemCompare(bytes, ktx2_signature, sizeof(ktx2_signature)) == 0) {
+    return VKR_TEXTURE_VKT_CONTAINER_KTX2;
+  }
+
+  const uint32_t magic = (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
+                         ((uint32_t)bytes[2] << 16) |
+                         ((uint32_t)bytes[3] << 24);
+  if (magic == VKR_TEXTURE_CACHE_MAGIC) {
+    return VKR_TEXTURE_VKT_CONTAINER_LEGACY_RAW;
+  }
+
+  return VKR_TEXTURE_VKT_CONTAINER_UNKNOWN;
+}
+
+bool8_t vkr_texture_request_prefers_srgb(String8 request_path,
+                                         bool8_t default_srgb) {
+  String8 query = {0};
+  (void)vkr_texture_strip_query(request_path, &query);
+  return vkr_texture_scan_query_colorspace(query, default_srgb, false_v)
+      .prefers_srgb;
+}
+
+VkrTextureFormat vkr_texture_select_transcode_target_format(
+    bool8_t prefer_astc_platform, bool8_t request_srgb,
+    bool8_t supports_astc_4x4, bool8_t supports_bc7) {
+  if (prefer_astc_platform) {
+    if (supports_astc_4x4) {
+      return request_srgb ? VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB
+                          : VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
+    }
+  } else {
+    if (supports_bc7) {
+      return request_srgb ? VKR_TEXTURE_FORMAT_BC7_SRGB
+                          : VKR_TEXTURE_FORMAT_BC7_UNORM;
+    }
+  }
+
+  return request_srgb ? VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB
+                      : VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
 }
 
 /**
@@ -311,6 +481,55 @@ vkr_internal bool8_t vkr_texture_has_transparency(const uint8_t *pixels,
                                                   uint32_t channels) {
   return vkr_texture_analyze_alpha(pixels, pixel_count, channels)
       .has_transparency;
+}
+
+vkr_internal bool8_t
+vkr_texture_format_is_block_compressed(VkrTextureFormat format) {
+  switch (format) {
+  case VKR_TEXTURE_FORMAT_BC7_UNORM:
+  case VKR_TEXTURE_FORMAT_BC7_SRGB:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+    return true_v;
+  default:
+    return false_v;
+  }
+}
+
+vkr_internal uint32_t
+vkr_texture_channel_count_from_format(VkrTextureFormat format) {
+  switch (format) {
+  case VKR_TEXTURE_FORMAT_R8_UNORM:
+    return VKR_TEXTURE_R_CHANNELS;
+  case VKR_TEXTURE_FORMAT_R8G8_UNORM:
+    return VKR_TEXTURE_RG_CHANNELS;
+  case VKR_TEXTURE_FORMAT_BC7_UNORM:
+  case VKR_TEXTURE_FORMAT_BC7_SRGB:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM:
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB:
+    return VKR_TEXTURE_RGBA_CHANNELS;
+  default:
+    return VKR_TEXTURE_RGBA_CHANNELS;
+  }
+}
+
+vkr_internal ktx_transcode_fmt_e
+vkr_texture_ktx_transcode_format_from_texture_format(VkrTextureFormat format) {
+  switch (format) {
+  case VKR_TEXTURE_FORMAT_BC7_UNORM:
+  case VKR_TEXTURE_FORMAT_BC7_SRGB:
+    return KTX_TTF_BC7_RGBA;
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+    return KTX_TTF_ASTC_4x4_RGBA;
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM:
+  case VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB:
+    return KTX_TTF_RGBA32;
+  default:
+    return KTX_TTF_NOSELECTION;
+  }
 }
 
 /**
@@ -384,6 +603,8 @@ vkr_internal bool8_t vkr_texture_cache_write(
  * path.
  * @param allocator The allocator to use
  * @param cache_path The path to the cache file
+ * @param validate_source_mtime Whether source_mtime mismatch should reject
+ * cache usage
  * @param source_mtime The modification time of the source file
  * @param out_width The width of the texture
  * @param out_height The height of the texture
@@ -391,9 +612,10 @@ vkr_internal bool8_t vkr_texture_cache_write(
  * @param out_has_transparency Whether any alpha value is not fully opaque
  */
 vkr_internal bool8_t vkr_texture_cache_read(
-    VkrAllocator *allocator, String8 cache_path, uint64_t source_mtime,
-    uint32_t *out_width, uint32_t *out_height, uint32_t *out_channels,
-    bool8_t *out_has_transparency, uint8_t **out_pixel_data) {
+    VkrAllocator *allocator, String8 cache_path, bool8_t validate_source_mtime,
+    uint64_t source_mtime, uint32_t *out_width, uint32_t *out_height,
+    uint32_t *out_channels, bool8_t *out_has_transparency,
+    uint8_t **out_pixel_data) {
   assert_log(allocator != NULL, "Allocator is NULL");
 
   if (!cache_path.str || !out_pixel_data) {
@@ -439,7 +661,7 @@ vkr_internal bool8_t vkr_texture_cache_read(
     return false_v;
   }
 
-  if (cached_mtime != source_mtime) {
+  if (validate_source_mtime && cached_mtime != source_mtime) {
     file_close(&fh);
     return false_v;
   }
@@ -543,6 +765,43 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   out_system->string_allocator =
       (VkrAllocator){.ctx = &out_system->string_memory};
   vkr_dmemory_allocator_create(&out_system->string_allocator);
+
+#if defined(PLATFORM_APPLE)
+  out_system->prefer_astc_transcode = true_v;
+#else
+  out_system->prefer_astc_transcode = false_v;
+#endif
+  out_system->supports_texture_astc_4x4 = false_v;
+  out_system->supports_texture_bc7 = false_v;
+  VkrDeviceInformation device_info = {0};
+  vkr_renderer_get_device_information(renderer, &device_info,
+                                      out_system->arena);
+  out_system->supports_texture_astc_4x4 = device_info.supports_texture_astc_4x4;
+  out_system->supports_texture_bc7 = device_info.supports_texture_bc7;
+
+  out_system->strict_vkt_only_mode =
+      vkr_texture_env_flag("VKR_TEXTURE_VKT_STRICT", false_v);
+  out_system->allow_source_fallback =
+      vkr_texture_env_flag("VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK",
+                           out_system->strict_vkt_only_mode ? false_v : true_v);
+  out_system->allow_legacy_vkt =
+      vkr_texture_env_flag("VKR_TEXTURE_VKT_ALLOW_LEGACY",
+                           out_system->strict_vkt_only_mode ? false_v : true_v);
+  out_system->allow_legacy_cache_write =
+      vkr_texture_env_flag("VKR_TEXTURE_VKT_WRITE_LEGACY_CACHE", false_v);
+
+  if (out_system->strict_vkt_only_mode) {
+    out_system->allow_source_fallback = false_v;
+    out_system->allow_legacy_vkt = false_v;
+    out_system->allow_legacy_cache_write = false_v;
+  }
+
+  log_info("Texture `.vkt` policy: strict=%u, allow_source_fallback=%u, "
+           "allow_legacy=%u, allow_legacy_cache_write=%u",
+           (uint32_t)out_system->strict_vkt_only_mode,
+           (uint32_t)out_system->allow_source_fallback,
+           (uint32_t)out_system->allow_legacy_vkt,
+           (uint32_t)out_system->allow_legacy_cache_write);
 
   out_system->textures = array_create_VkrTexture(&out_system->allocator,
                                                  config->max_texture_count);
@@ -1338,6 +1597,15 @@ vkr_texture_system_get_default_specular_handle(VkrTextureSystem *system) {
  */
 typedef struct VkrTextureDecodeResult {
   uint8_t *decoded_pixels;
+  uint8_t *upload_data;
+  uint64_t upload_data_size;
+  VkrTextureUploadRegion *upload_regions;
+  uint32_t upload_region_count;
+  uint32_t upload_mip_levels;
+  uint32_t upload_array_layers;
+  VkrTextureFormat upload_format;
+  bool8_t upload_is_compressed;
+  bool8_t alpha_mask;
   int32_t width;
   int32_t height;
   int32_t original_channels;
@@ -1359,10 +1627,500 @@ typedef struct VkrTextureDecodeJobPayload {
   String8 file_path;
   uint32_t desired_channels;
   bool8_t flip_vertical;
+  VkrTextureColorSpace colorspace;
   VkrTextureSystem *system;
 
   VkrTextureDecodeResult *result;
 } VkrTextureDecodeJobPayload;
+
+vkr_internal char *vkr_texture_path_to_cstr(VkrAllocator *allocator,
+                                            String8 path);
+
+vkr_internal void
+vkr_texture_decode_result_reset(VkrTextureDecodeResult *result) {
+  if (!result) {
+    return;
+  }
+
+  result->success = false_v;
+  result->error = VKR_RENDERER_ERROR_NONE;
+  result->decoded_pixels = NULL;
+  result->upload_data = NULL;
+  result->upload_data_size = 0;
+  result->upload_regions = NULL;
+  result->upload_region_count = 0;
+  result->upload_mip_levels = 0;
+  result->upload_array_layers = 0;
+  result->upload_is_compressed = false_v;
+  result->upload_format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+  result->alpha_mask = false_v;
+  result->loaded_from_cache = false_v;
+}
+
+vkr_internal void
+vkr_texture_decode_result_release(VkrTextureDecodeResult *result) {
+  if (!result) {
+    return;
+  }
+  if (result->decoded_pixels) {
+    stbi_image_free(result->decoded_pixels);
+    result->decoded_pixels = NULL;
+  }
+  if (result->upload_data) {
+    free(result->upload_data);
+    result->upload_data = NULL;
+  }
+  if (result->upload_regions) {
+    free(result->upload_regions);
+    result->upload_regions = NULL;
+  }
+  result->upload_data_size = 0;
+  result->upload_region_count = 0;
+}
+
+vkr_internal bool8_t vkr_texture_ktx_metadata_bool(ktxTexture *texture,
+                                                   const char *key,
+                                                   bool8_t default_value) {
+  if (!texture || !key) {
+    return default_value;
+  }
+
+  unsigned int value_len = 0;
+  void *value = NULL;
+  if (ktxHashList_FindValue(&texture->kvDataHead, key, &value_len, &value) !=
+          KTX_SUCCESS ||
+      !value || value_len == 0) {
+    return default_value;
+  }
+
+  const uint8_t first = ((const uint8_t *)value)[0];
+  if (first == 1 || first == '1' || first == 't' || first == 'T' ||
+      first == 'y' || first == 'Y') {
+    return true_v;
+  }
+  if (first == 0 || first == '0' || first == 'f' || first == 'F' ||
+      first == 'n' || first == 'N') {
+    return false_v;
+  }
+
+  return default_value;
+}
+
+vkr_internal bool8_t vkr_texture_decode_from_ktx2(
+    VkrAllocator *allocator, VkrTextureSystem *system, String8 vkt_path,
+    VkrTextureColorSpace colorspace, VkrTextureDecodeResult *out_result) {
+  if (!allocator || !system || !vkt_path.str || !out_result) {
+    return false_v;
+  }
+
+  char *path_cstr = vkr_texture_path_to_cstr(allocator, vkt_path);
+  if (!path_cstr) {
+    out_result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  FilePath fp = file_path_create(path_cstr, allocator, FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+
+  FileHandle fh = {0};
+  if (file_open(&fp, mode, &fh) != FILE_ERROR_NONE) {
+    out_result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  uint8_t *file_data = NULL;
+  uint64_t file_size = 0;
+  FileError read_err = file_read_all(&fh, allocator, &file_data, &file_size);
+  file_close(&fh);
+  if (read_err != FILE_ERROR_NONE || !file_data || file_size == 0) {
+    out_result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  ktxTexture2 *ktx_texture = NULL;
+  ktxTexture *base_texture = NULL;
+  uint8_t *upload_data = NULL;
+  VkrTextureUploadRegion *upload_regions = NULL;
+  bool8_t success = false_v;
+
+  ktxResult ktx_result = ktxTexture2_CreateFromMemory(
+      file_data, (ktx_size_t)file_size, KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+      &ktx_texture);
+  if (ktx_result != KTX_SUCCESS || !ktx_texture) {
+    log_error("Failed to parse KTX2 texture '%s': %s", path_cstr,
+              ktxErrorString(ktx_result));
+    out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    goto cleanup;
+  }
+
+  base_texture = ktxTexture(ktx_texture);
+  if (base_texture->numDimensions != 2 || base_texture->isCubemap ||
+      base_texture->numFaces != 1 || base_texture->numLayers != 1) {
+    log_error("Unsupported KTX2 texture shape for '%s' (dims=%u layers=%u "
+              "faces=%u cubemap=%u)",
+              path_cstr, base_texture->numDimensions, base_texture->numLayers,
+              base_texture->numFaces, base_texture->isCubemap);
+    out_result->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    goto cleanup;
+  }
+
+  if (base_texture->baseWidth == 0 || base_texture->baseHeight == 0 ||
+      base_texture->baseWidth > VKR_TEXTURE_MAX_DIMENSION ||
+      base_texture->baseHeight > VKR_TEXTURE_MAX_DIMENSION) {
+    out_result->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    goto cleanup;
+  }
+
+  if (!ktxTexture2_NeedsTranscoding(ktx_texture)) {
+    log_error("KTX2 texture '%s' does not require Basis transcoding; this "
+              "runtime path currently expects UASTC/Basis payloads.",
+              path_cstr);
+    out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    goto cleanup;
+  }
+
+  const bool8_t request_srgb = (colorspace == VKR_TEXTURE_COLORSPACE_SRGB);
+  const VkrTextureFormat target_format =
+      vkr_texture_select_transcode_target_format(
+          system->prefer_astc_transcode, request_srgb,
+          system->supports_texture_astc_4x4, system->supports_texture_bc7);
+  const ktx_transcode_fmt_e target_transcode_format =
+      vkr_texture_ktx_transcode_format_from_texture_format(target_format);
+  if (target_transcode_format == KTX_TTF_NOSELECTION) {
+    out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    goto cleanup;
+  }
+
+  ktx_result =
+      ktxTexture2_TranscodeBasis(ktx_texture, target_transcode_format, 0);
+  if (ktx_result != KTX_SUCCESS) {
+    log_error("Failed to transcode KTX2 texture '%s' to '%s': %s", path_cstr,
+              ktxTranscodeFormatString(target_transcode_format),
+              ktxErrorString(ktx_result));
+    out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    goto cleanup;
+  }
+
+  uint8_t *ktx_data = ktxTexture_GetData(base_texture);
+  ktx_size_t ktx_data_size = ktxTexture_GetDataSize(base_texture);
+  if (!ktx_data || ktx_data_size == 0) {
+    out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    goto cleanup;
+  }
+
+  const uint32_t region_count =
+      base_texture->numLevels * base_texture->numLayers;
+  if (region_count == 0) {
+    out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    goto cleanup;
+  }
+
+  upload_data = (uint8_t *)malloc((size_t)ktx_data_size);
+  upload_regions = (VkrTextureUploadRegion *)malloc(
+      sizeof(VkrTextureUploadRegion) * region_count);
+  if (!upload_data || !upload_regions) {
+    out_result->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    goto cleanup;
+  }
+
+  MemCopy(upload_data, ktx_data, (size_t)ktx_data_size);
+  uint32_t region_index = 0;
+  for (uint32_t layer = 0; layer < base_texture->numLayers; ++layer) {
+    for (uint32_t mip = 0; mip < base_texture->numLevels; ++mip) {
+      ktx_size_t image_offset = 0;
+      ktx_result =
+          ktxTexture_GetImageOffset(base_texture, mip, layer, 0, &image_offset);
+      if (ktx_result != KTX_SUCCESS || image_offset > ktx_data_size) {
+        out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        goto cleanup;
+      }
+
+      const ktx_size_t image_size = ktxTexture_GetImageSize(base_texture, mip);
+      if (image_offset + image_size > ktx_data_size) {
+        out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        goto cleanup;
+      }
+
+      const uint32_t mip_width = Max(1u, base_texture->baseWidth >> mip);
+      const uint32_t mip_height = Max(1u, base_texture->baseHeight >> mip);
+      upload_regions[region_index++] = (VkrTextureUploadRegion){
+          .mip_level = mip,
+          .array_layer = layer,
+          .width = mip_width,
+          .height = mip_height,
+          .depth = 1,
+          .byte_offset = image_offset,
+          .byte_size = image_size,
+      };
+    }
+  }
+
+  out_result->upload_data = upload_data;
+  out_result->upload_data_size = ktx_data_size;
+  out_result->upload_regions = upload_regions;
+  out_result->upload_region_count = region_count;
+  out_result->upload_mip_levels = base_texture->numLevels;
+  out_result->upload_array_layers = base_texture->numLayers;
+  out_result->upload_format = target_format;
+  out_result->upload_is_compressed =
+      vkr_texture_format_is_block_compressed(target_format);
+  out_result->width = (int32_t)base_texture->baseWidth;
+  out_result->height = (int32_t)base_texture->baseHeight;
+  out_result->original_channels =
+      (int32_t)vkr_texture_channel_count_from_format(target_format);
+  out_result->has_transparency = vkr_texture_ktx_metadata_bool(
+      base_texture, "vkr.has_transparency", false_v);
+  out_result->alpha_mask =
+      vkr_texture_ktx_metadata_bool(base_texture, "vkr.alpha_mask", false_v);
+  out_result->success = true_v;
+  success = true_v;
+
+cleanup:
+  if (ktx_texture) {
+    ktxTexture2_Destroy(ktx_texture);
+  }
+  if (!success) {
+    if (upload_data) {
+      free(upload_data);
+    }
+    if (upload_regions) {
+      free(upload_regions);
+    }
+  }
+  return success;
+}
+
+/**
+ * @brief Creates a temporary null-terminated copy of a String8 path.
+ */
+vkr_internal char *vkr_texture_path_to_cstr(VkrAllocator *allocator,
+                                            String8 path) {
+  if (!allocator || !path.str || path.length == 0) {
+    return NULL;
+  }
+
+  char *path_cstr = vkr_allocator_alloc(allocator, path.length + 1,
+                                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!path_cstr) {
+    return NULL;
+  }
+
+  MemCopy(path_cstr, path.str, path.length);
+  path_cstr[path.length] = '\0';
+  return path_cstr;
+}
+
+/**
+ * @brief Returns true when a path currently exists on disk.
+ */
+vkr_internal bool8_t vkr_texture_path_exists(VkrAllocator *allocator,
+                                             String8 path) {
+  char *path_cstr = vkr_texture_path_to_cstr(allocator, path);
+  if (!path_cstr) {
+    return false_v;
+  }
+
+  FilePath fp = file_path_create(path_cstr, allocator, FILE_PATH_TYPE_RELATIVE);
+  return file_exists(&fp);
+}
+
+/**
+ * @brief Probes the `.vkt` container type from the file signature.
+ */
+vkr_internal VkrTextureVktContainerType
+vkr_texture_probe_vkt_container(VkrAllocator *allocator, String8 vkt_path) {
+  char *path_cstr = vkr_texture_path_to_cstr(allocator, vkt_path);
+  if (!path_cstr) {
+    return VKR_TEXTURE_VKT_CONTAINER_UNKNOWN;
+  }
+
+  FilePath fp = file_path_create(path_cstr, allocator, FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+
+  FileHandle fh = {0};
+  if (file_open(&fp, mode, &fh) != FILE_ERROR_NONE) {
+    return VKR_TEXTURE_VKT_CONTAINER_UNKNOWN;
+  }
+
+  uint8_t *probe = NULL;
+  uint64_t bytes_read = 0;
+  const uint64_t probe_size = 16;
+  FileError read_err =
+      file_read(&fh, allocator, probe_size, &bytes_read, &probe);
+  file_close(&fh);
+
+  if (read_err != FILE_ERROR_NONE || !probe || bytes_read == 0) {
+    return VKR_TEXTURE_VKT_CONTAINER_UNKNOWN;
+  }
+
+  return vkr_texture_detect_vkt_container(probe, bytes_read);
+}
+
+/**
+ * @brief Populates result from a legacy `.vkt` cache file.
+ *
+ * For sidecar legacy caches, callers should pass source mtime validation.
+ * Direct legacy `.vkt` requests can disable mtime validation to preserve
+ * compatibility when source files are unavailable.
+ */
+vkr_internal bool8_t vkr_texture_try_read_legacy_cache(
+    VkrAllocator *allocator, VkrTextureSystem *system, String8 cache_path,
+    bool8_t validate_source_mtime, uint64_t source_mtime,
+    const char *cache_guard_key, VkrTextureDecodeResult *out_result) {
+  uint32_t cached_width = 0;
+  uint32_t cached_height = 0;
+  uint32_t cached_channels = 0;
+  bool8_t cached_transparency = false_v;
+  uint8_t *cached_pixels = NULL;
+
+  if (!vkr_texture_cache_read(allocator, cache_path, validate_source_mtime,
+                              source_mtime, &cached_width, &cached_height,
+                              &cached_channels, &cached_transparency,
+                              &cached_pixels)) {
+    return false_v;
+  }
+
+  if (!cached_transparency && cached_channels == VKR_TEXTURE_RGBA_CHANNELS) {
+    uint64_t pixel_count = (uint64_t)cached_width * (uint64_t)cached_height;
+    if (vkr_texture_has_transparency(cached_pixels, pixel_count,
+                                     cached_channels)) {
+      cached_transparency = true_v;
+      VkrTextureCacheWriteGuard *cache_guard =
+          system ? system->cache_guard : NULL;
+      bool8_t cache_lock_acquired = true_v;
+      if (cache_guard && cache_guard_key) {
+        cache_lock_acquired =
+            vkr_texture_cache_guard_try_acquire(cache_guard, cache_guard_key);
+      }
+      if (cache_lock_acquired) {
+        const uint64_t mtime_to_write =
+            validate_source_mtime ? source_mtime : 0;
+        vkr_texture_cache_write(allocator, cache_path, mtime_to_write,
+                                cached_width, cached_height, cached_channels,
+                                cached_transparency, cached_pixels);
+        if (cache_guard && cache_guard_key) {
+          vkr_texture_cache_guard_release(cache_guard, cache_guard_key);
+        }
+      }
+    }
+  }
+
+  out_result->decoded_pixels = cached_pixels;
+  out_result->width = (int32_t)cached_width;
+  out_result->height = (int32_t)cached_height;
+  out_result->original_channels = (int32_t)cached_channels;
+  out_result->has_transparency = cached_transparency;
+  out_result->alpha_mask = false_v;
+  if (cached_channels == VKR_TEXTURE_RGBA_CHANNELS) {
+    uint64_t pixel_count = (uint64_t)cached_width * (uint64_t)cached_height;
+    out_result->alpha_mask =
+        vkr_texture_analyze_alpha(cached_pixels, pixel_count, cached_channels)
+            .alpha_mask;
+  }
+  out_result->loaded_from_cache = true_v;
+  out_result->success = true_v;
+  return true_v;
+}
+
+/**
+ * @brief Decodes a source image file and optionally refreshes sidecar cache.
+ */
+vkr_internal bool8_t vkr_texture_decode_from_source_image(
+    VkrAllocator *allocator, VkrTextureSystem *system, String8 source_path,
+    bool8_t flip_vertical, String8 sidecar_cache_path,
+    bool8_t allow_cache_write, const char *cache_guard_key,
+    VkrTextureDecodeResult *out_result) {
+  char *source_cstr = vkr_texture_path_to_cstr(allocator, source_path);
+  if (!source_cstr) {
+    out_result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  FilePath source_fp =
+      file_path_create(source_cstr, allocator, FILE_PATH_TYPE_RELATIVE);
+  FileStats source_stats = {0};
+  if (file_stats(&source_fp, &source_stats) != FILE_ERROR_NONE) {
+    log_error("Failed to stat texture file: %s", source_cstr);
+    out_result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+
+  FileHandle fh = {0};
+  if (file_open(&source_fp, mode, &fh) != FILE_ERROR_NONE) {
+    log_error("Failed to open texture file: %s", source_cstr);
+    out_result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  uint8_t *file_data = NULL;
+  uint64_t file_size = 0;
+  FileError read_err = file_read_all(&fh, allocator, &file_data, &file_size);
+  file_close(&fh);
+  if (read_err != FILE_ERROR_NONE || !file_data || file_size == 0) {
+    log_error("Failed to read texture file: %s", source_cstr);
+    out_result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  stbi_set_flip_vertically_on_load_thread(flip_vertical ? 1 : 0);
+  out_result->decoded_pixels = stbi_load_from_memory(
+      file_data, (int)file_size, &out_result->width, &out_result->height,
+      &out_result->original_channels, VKR_TEXTURE_RGBA_CHANNELS);
+  if (!out_result->decoded_pixels) {
+    const char *reason = stbi_failure_reason();
+    log_error("Failed to decode texture '%s': %s", source_cstr,
+              reason ? reason : "unknown");
+    out_result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  if (out_result->width <= 0 || out_result->height <= 0 ||
+      out_result->width > VKR_TEXTURE_MAX_DIMENSION ||
+      out_result->height > VKR_TEXTURE_MAX_DIMENSION) {
+    stbi_image_free(out_result->decoded_pixels);
+    out_result->decoded_pixels = NULL;
+    out_result->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  const uint64_t pixel_count =
+      (uint64_t)out_result->width * (uint64_t)out_result->height;
+  VkrTextureAlphaAnalysis alpha = vkr_texture_analyze_alpha(
+      out_result->decoded_pixels, pixel_count, VKR_TEXTURE_RGBA_CHANNELS);
+  out_result->has_transparency = alpha.has_transparency;
+  out_result->alpha_mask = alpha.alpha_mask;
+
+  if (allow_cache_write && sidecar_cache_path.str) {
+    VkrTextureCacheWriteGuard *cache_guard =
+        system ? system->cache_guard : NULL;
+    bool8_t cache_lock_acquired = true_v;
+    if (cache_guard && cache_guard_key) {
+      cache_lock_acquired =
+          vkr_texture_cache_guard_try_acquire(cache_guard, cache_guard_key);
+    }
+    if (cache_lock_acquired) {
+      vkr_texture_cache_write(
+          allocator, sidecar_cache_path, source_stats.last_modified,
+          (uint32_t)out_result->width, (uint32_t)out_result->height,
+          VKR_TEXTURE_RGBA_CHANNELS, out_result->has_transparency,
+          out_result->decoded_pixels);
+      if (cache_guard && cache_guard_key) {
+        vkr_texture_cache_guard_release(cache_guard, cache_guard_key);
+      }
+    }
+  }
+
+  out_result->success = true_v;
+  return true_v;
+}
 
 /**
  * @brief Runs the texture decoding job
@@ -1380,150 +2138,175 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
   VkrAllocator *scratch_allocator = ctx->allocator;
   assert_log(scratch_allocator != NULL, "Job allocator is NULL");
 
-  result->success = false_v;
-  result->error = VKR_RENDERER_ERROR_NONE;
-  result->decoded_pixels = NULL;
-  result->loaded_from_cache = false_v;
+  vkr_texture_decode_result_reset(result);
+  String8 direct_vkt = {0};
+  String8 sidecar_vkt = {0};
+  String8 source_path = {0};
+  vkr_texture_build_resolution_candidates(scratch_allocator, job->file_path,
+                                          &direct_vkt, &sidecar_vkt,
+                                          &source_path);
 
-  // Create null-terminated path for file operations
-  uint64_t path_len = job->file_path.length;
-  char *path_cstr = vkr_allocator_alloc(scratch_allocator, path_len + 1,
-                                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  if (!path_cstr) {
-    result->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    return false_v;
-  }
-  MemCopy(path_cstr, job->file_path.str, path_len);
-  path_cstr[path_len] = '\0';
+  const bool8_t has_direct_vkt =
+      direct_vkt.str && vkr_texture_path_exists(scratch_allocator, direct_vkt);
+  const bool8_t has_sidecar_vkt =
+      sidecar_vkt.str &&
+      vkr_texture_path_exists(scratch_allocator, sidecar_vkt);
 
-  FilePath source_fp =
-      file_path_create(path_cstr, scratch_allocator, FILE_PATH_TYPE_RELATIVE);
-  FileStats source_stats = {0};
-  FileError stats_err = file_stats(&source_fp, &source_stats);
-  if (stats_err != FILE_ERROR_NONE) {
-    log_error("Failed to stat texture file: %s", path_cstr);
-    result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
-    return false_v;
+  String8 selected_vkt = {0};
+  bool8_t selected_is_direct = false_v;
+  if (has_direct_vkt) {
+    selected_vkt = direct_vkt;
+    selected_is_direct = true_v;
+  } else if (has_sidecar_vkt) {
+    selected_vkt = sidecar_vkt;
   }
 
-  String8 cache_path =
-      vkr_texture_cache_path(scratch_allocator, job->file_path);
-  uint32_t cached_width = 0, cached_height = 0, cached_channels = 0;
-  bool8_t cached_transparency = false_v;
-  uint8_t *cached_pixels = NULL;
+  char *source_cstr = vkr_texture_path_to_cstr(scratch_allocator, source_path);
+  char *selected_vkt_cstr =
+      selected_vkt.str
+          ? vkr_texture_path_to_cstr(scratch_allocator, selected_vkt)
+          : NULL;
+  const bool8_t strict_vkt_only =
+      job->system ? job->system->strict_vkt_only_mode : false_v;
+  const bool8_t allow_legacy_vkt =
+      job->system ? job->system->allow_legacy_vkt : true_v;
+  const bool8_t allow_source_fallback =
+      job->system ? job->system->allow_source_fallback : true_v;
+  bool8_t allow_sidecar_cache_write =
+      (job->system && job->system->allow_legacy_cache_write) ? true_v : false_v;
 
-  if (vkr_texture_cache_read(scratch_allocator, cache_path,
-                             source_stats.last_modified, &cached_width,
-                             &cached_height, &cached_channels,
-                             &cached_transparency, &cached_pixels)) {
-    if (!cached_transparency && cached_channels == VKR_TEXTURE_RGBA_CHANNELS) {
-      uint64_t pixel_count = (uint64_t)cached_width * (uint64_t)cached_height;
-      if (vkr_texture_has_transparency(cached_pixels, pixel_count,
-                                       cached_channels)) {
-        cached_transparency = true_v;
-        VkrTextureCacheWriteGuard *cache_guard =
-            job->system ? job->system->cache_guard : NULL;
-        bool8_t cache_lock_acquired = true_v;
-        if (cache_guard) {
-          cache_lock_acquired =
-              vkr_texture_cache_guard_try_acquire(cache_guard, path_cstr);
+  if (selected_vkt.str) {
+    VkrTextureVktContainerType container =
+        vkr_texture_probe_vkt_container(scratch_allocator, selected_vkt);
+
+    switch (container) {
+    case VKR_TEXTURE_VKT_CONTAINER_LEGACY_RAW: {
+      if (!allow_legacy_vkt) {
+        if (selected_is_direct || !allow_source_fallback) {
+          log_error("Legacy `.vkt` support is disabled for '%s'",
+                    selected_vkt_cstr ? selected_vkt_cstr : "");
+          result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+          return false_v;
         }
-        if (cache_lock_acquired) {
-          vkr_texture_cache_write(scratch_allocator, cache_path,
-                                  source_stats.last_modified, cached_width,
-                                  cached_height, cached_channels,
-                                  cached_transparency, cached_pixels);
-          if (cache_guard) {
-            vkr_texture_cache_guard_release(cache_guard, path_cstr);
-          }
+        log_warn("Ignoring legacy sidecar `.vkt` for '%s' because legacy "
+                 "support is disabled. Falling back to source image decode.",
+                 source_cstr ? source_cstr : "");
+        allow_sidecar_cache_write = false_v;
+        break;
+      }
+
+      vkr_local_persist bool8_t warned_legacy = false_v;
+      if (!warned_legacy) {
+        log_warn("Legacy raw `.vkt` cache detected. Migrate to KTX2/UASTC "
+                 "assets.");
+        warned_legacy = true_v;
+      }
+
+      bool8_t validate_source_mtime = false_v;
+      uint64_t source_mtime = 0;
+      if (!selected_is_direct && source_cstr) {
+        FilePath source_fp = file_path_create(source_cstr, scratch_allocator,
+                                              FILE_PATH_TYPE_RELATIVE);
+        FileStats source_stats = {0};
+        if (file_stats(&source_fp, &source_stats) == FILE_ERROR_NONE) {
+          validate_source_mtime = true_v;
+          source_mtime = source_stats.last_modified;
         }
       }
+
+      const char *cache_guard_key =
+          source_cstr ? source_cstr : selected_vkt_cstr;
+      if (vkr_texture_try_read_legacy_cache(
+              scratch_allocator, job->system, selected_vkt,
+              validate_source_mtime, source_mtime, cache_guard_key, result)) {
+        return true_v;
+      }
+
+      if (selected_is_direct || !allow_source_fallback) {
+        log_error("Failed to read legacy `.vkt` file: %s",
+                  selected_vkt_cstr ? selected_vkt_cstr : "");
+        result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        return false_v;
+      }
+      break;
     }
-    result->decoded_pixels = cached_pixels;
-    result->width = (int32_t)cached_width;
-    result->height = (int32_t)cached_height;
-    result->original_channels = (int32_t)cached_channels;
-    result->has_transparency = cached_transparency;
-    result->loaded_from_cache = true_v;
-    result->success = true_v;
-    return true_v;
-  }
 
-  // Cache miss - decode from source file
-  FileMode mode = bitset8_create();
-  bitset8_set(&mode, FILE_MODE_READ);
-  bitset8_set(&mode, FILE_MODE_BINARY);
+    case VKR_TEXTURE_VKT_CONTAINER_KTX2:
+      if (vkr_texture_decode_from_ktx2(scratch_allocator, job->system,
+                                       selected_vkt, job->colorspace, result)) {
+        return true_v;
+      }
+      if (selected_is_direct) {
+        log_error("Failed to decode KTX2 `.vkt` texture '%s'",
+                  selected_vkt_cstr ? selected_vkt_cstr : "");
+        result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        return false_v;
+      }
+      if (!allow_source_fallback || strict_vkt_only) {
+        log_error("Failed to decode sidecar `.vkt` texture '%s' and source "
+                  "fallback is disabled",
+                  selected_vkt_cstr ? selected_vkt_cstr : "");
+        result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        return false_v;
+      }
+      log_warn("Failed to decode KTX2 sidecar `.vkt` for '%s'. Falling back "
+               "to source image decode.",
+               source_cstr ? source_cstr : "");
+      allow_sidecar_cache_write = false_v;
+      break;
 
-  FileHandle fh = {0};
-  FileError ferr = file_open(&source_fp, mode, &fh);
-  if (ferr != FILE_ERROR_NONE) {
-    log_error("Failed to open texture file: %s", path_cstr);
-    result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
-    return false_v;
-  }
-
-  uint8_t *file_data = NULL;
-  uint64_t file_size = 0;
-  FileError read_err =
-      file_read_all(&fh, scratch_allocator, &file_data, &file_size);
-  file_close(&fh);
-
-  if (read_err != FILE_ERROR_NONE || !file_data || file_size == 0) {
-    log_error("Failed to read texture file: %s", path_cstr);
-    result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
-    return false_v;
-  }
-
-  stbi_set_flip_vertically_on_load_thread(job->flip_vertical ? 1 : 0);
-
-  // Decode image from memory - always request RGBA for consistency
-  int32_t stbi_requested = VKR_TEXTURE_RGBA_CHANNELS;
-
-  result->decoded_pixels = stbi_load_from_memory(
-      file_data, (int)file_size, &result->width, &result->height,
-      &result->original_channels, stbi_requested);
-
-  if (!result->decoded_pixels) {
-    const char *reason = stbi_failure_reason();
-    log_error("Failed to decode texture '%s': %s", path_cstr,
-              reason ? reason : "unknown");
-    result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
-    return false_v;
-  }
-
-  if (result->width <= 0 || result->height <= 0 ||
-      result->width > VKR_TEXTURE_MAX_DIMENSION ||
-      result->height > VKR_TEXTURE_MAX_DIMENSION) {
-    stbi_image_free(result->decoded_pixels);
-    result->decoded_pixels = NULL;
-    result->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-    return false_v;
-  }
-
-  uint64_t pixel_count = (uint64_t)result->width * (uint64_t)result->height;
-  result->has_transparency = vkr_texture_has_transparency(
-      result->decoded_pixels, pixel_count, VKR_TEXTURE_RGBA_CHANNELS);
-
-  VkrTextureCacheWriteGuard *cache_guard =
-      job->system ? job->system->cache_guard : NULL;
-  bool8_t cache_lock_acquired = true_v;
-  if (cache_guard) {
-    cache_lock_acquired =
-        vkr_texture_cache_guard_try_acquire(cache_guard, path_cstr);
-  }
-
-  if (cache_lock_acquired) {
-    vkr_texture_cache_write(scratch_allocator, cache_path,
-                            source_stats.last_modified, (uint32_t)result->width,
-                            (uint32_t)result->height, VKR_TEXTURE_RGBA_CHANNELS,
-                            result->has_transparency, result->decoded_pixels);
-    if (cache_guard) {
-      vkr_texture_cache_guard_release(cache_guard, path_cstr);
+    case VKR_TEXTURE_VKT_CONTAINER_UNKNOWN:
+    default:
+      if (selected_is_direct) {
+        log_error("Unsupported `.vkt` container for '%s'",
+                  selected_vkt_cstr ? selected_vkt_cstr : "");
+        result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        return false_v;
+      }
+      if (!allow_source_fallback || strict_vkt_only) {
+        log_error("Unsupported sidecar `.vkt` container for '%s' and source "
+                  "fallback is disabled",
+                  selected_vkt_cstr ? selected_vkt_cstr : "");
+        result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        return false_v;
+      }
+      log_warn("Unknown sidecar `.vkt` format for '%s'. Falling back to "
+               "source image decode.",
+               source_cstr ? source_cstr : "");
+      allow_sidecar_cache_write = false_v;
+      break;
     }
   }
 
-  result->success = true_v;
-  return true_v;
+  if (!selected_vkt.str && !allow_source_fallback) {
+    log_error("Texture request '%s' has no `.vkt` asset and source fallback "
+              "is disabled",
+              source_cstr ? source_cstr : "");
+    result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  if (!selected_vkt.str && allow_source_fallback) {
+    vkr_local_persist bool8_t warned_source_fallback = false_v;
+    if (!warned_source_fallback) {
+      log_warn("Source-image fallback is enabled. Missing `.vkt` files will "
+               "still load from authoring textures. Set "
+               "`VKR_TEXTURE_VKT_STRICT=1` to enforce `.vkt`-only runtime.");
+      warned_source_fallback = true_v;
+    }
+  }
+
+  if (!source_path.str ||
+      !vkr_texture_path_exists(scratch_allocator, source_path)) {
+    result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
+    return false_v;
+  }
+
+  const String8 sidecar_path_for_write =
+      sidecar_vkt.str ? sidecar_vkt : (String8){0};
+  return vkr_texture_decode_from_source_image(
+      scratch_allocator, job->system, source_path, job->flip_vertical,
+      sidecar_path_for_write, allow_sidecar_cache_write, source_cstr, result);
 }
 
 VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
@@ -1538,19 +2321,14 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
   String8 base_path = request.base_path;
   out_texture->file_path = (FilePath){0};
 
-  VkrTextureDecodeResult decode_result = {
-      .decoded_pixels = NULL,
-      .width = 0,
-      .height = 0,
-      .original_channels = 0,
-      .error = VKR_RENDERER_ERROR_NONE,
-      .success = false_v,
-  };
+  VkrTextureDecodeResult decode_result = {0};
+  vkr_texture_decode_result_reset(&decode_result);
 
   VkrTextureDecodeJobPayload job_payload = {
       .file_path = base_path,
       .desired_channels = desired_channels,
       .flip_vertical = true_v,
+      .colorspace = request.colorspace,
       .system = system,
       .result = &decode_result,
   };
@@ -1589,47 +2367,51 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
     vkr_allocator_end_scope(&sync_scope, VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   }
 
-  if (!decode_result.success || !decode_result.decoded_pixels) {
-    return decode_result.error;
+  const bool8_t has_upload_payload = decode_result.upload_data &&
+                                     decode_result.upload_regions &&
+                                     decode_result.upload_region_count > 0;
+  if (!decode_result.success ||
+      (!decode_result.decoded_pixels && !has_upload_payload)) {
+    VkrRendererError decode_error = decode_result.error;
+    vkr_texture_decode_result_release(&decode_result);
+    return decode_error;
   }
 
-  uint8_t *loaded_image_data = decode_result.decoded_pixels;
   int32_t width = decode_result.width;
   int32_t height = decode_result.height;
   int32_t original_channels = decode_result.original_channels;
 
-  uint32_t actual_channels =
-      desired_channels > 0 ? desired_channels : (uint32_t)original_channels;
+  uint32_t actual_channels = 0;
+  VkrTextureFormat format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+  if (has_upload_payload) {
+    format = decode_result.upload_format;
+    actual_channels = vkr_texture_channel_count_from_format(format);
+  } else {
+    actual_channels =
+        desired_channels > 0 ? desired_channels : (uint32_t)original_channels;
 
-  switch (actual_channels) {
-  case VKR_TEXTURE_R_CHANNELS:
-  case VKR_TEXTURE_RG_CHANNELS:
-  case VKR_TEXTURE_RGB_CHANNELS:
-  case VKR_TEXTURE_RGBA_CHANNELS:
-    break;
-  default:
-    actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
-    break;
-  }
-  if (actual_channels == VKR_TEXTURE_RGB_CHANNELS) {
-    actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
-  }
+    switch (actual_channels) {
+    case VKR_TEXTURE_R_CHANNELS:
+    case VKR_TEXTURE_RG_CHANNELS:
+    case VKR_TEXTURE_RGB_CHANNELS:
+    case VKR_TEXTURE_RGBA_CHANNELS:
+      break;
+    default:
+      actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
+      break;
+    }
+    if (actual_channels == VKR_TEXTURE_RGB_CHANNELS) {
+      actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
+    }
 
-  VkrTextureFormat format =
-      vkr_texture_format_from_channels(actual_channels, request.colorspace);
+    format =
+        vkr_texture_format_from_channels(actual_channels, request.colorspace);
+  }
 
   VkrTexturePropertyFlags props = vkr_texture_property_flags_create();
-
-  VkrTextureAlphaAnalysis alpha_analysis = {false_v, false_v};
-  if (actual_channels == VKR_TEXTURE_RGBA_CHANNELS) {
-    uint64_t pixel_count = (uint64_t)width * (uint64_t)height;
-    alpha_analysis = vkr_texture_analyze_alpha(loaded_image_data, pixel_count,
-                                               actual_channels);
-  }
-
-  if (alpha_analysis.has_transparency) {
+  if (decode_result.has_transparency) {
     bitset8_set(&props, VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
-    if (alpha_analysis.alpha_mask) {
+    if (decode_result.alpha_mask) {
       bitset8_set(&props, VKR_TEXTURE_PROPERTY_ALPHA_MASK_BIT);
     }
   }
@@ -1646,12 +2428,35 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
       .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
       .min_filter = VKR_FILTER_LINEAR,
       .mag_filter = VKR_FILTER_LINEAR,
-      .mip_filter = VKR_MIP_FILTER_LINEAR,
+      .mip_filter = (has_upload_payload && decode_result.upload_mip_levels <= 1)
+                        ? VKR_MIP_FILTER_NONE
+                        : VKR_MIP_FILTER_LINEAR,
       .anisotropy_enable = false_v,
       // Must be stable for the lifetime of this backend texture handle so
       // descriptor-set generation tracking can invalidate correctly on reload.
       .generation = system->generation_counter++,
   };
+
+  if (has_upload_payload) {
+    VkrTextureUploadPayload upload_payload = {
+        .data = decode_result.upload_data,
+        .data_size = decode_result.upload_data_size,
+        .mip_levels = decode_result.upload_mip_levels,
+        .array_layers = decode_result.upload_array_layers,
+        .is_compressed = decode_result.upload_is_compressed,
+        .region_count = decode_result.upload_region_count,
+        .regions = decode_result.upload_regions,
+    };
+    VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
+    out_texture->handle = vkr_renderer_create_texture_with_payload(
+        system->renderer, &out_texture->description, &upload_payload,
+        &renderer_error);
+    vkr_texture_decode_result_release(&decode_result);
+    out_texture->image = NULL;
+    return renderer_error;
+  }
+
+  uint8_t *loaded_image_data = decode_result.decoded_pixels;
 
   uint32_t loaded_channels =
       desired_channels > 0 ? desired_channels : (uint32_t)original_channels;
@@ -1662,13 +2467,13 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
 
   VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&system->allocator);
   if (!vkr_allocator_scope_is_valid(&temp_scope)) {
-    stbi_image_free(loaded_image_data);
+    vkr_texture_decode_result_release(&decode_result);
     return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
   }
   out_texture->image = vkr_allocator_alloc(&system->allocator, final_image_size,
                                            VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   if (!out_texture->image) {
-    stbi_image_free(loaded_image_data);
+    vkr_texture_decode_result_release(&decode_result);
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
     return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
   }
@@ -1688,13 +2493,31 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
     MemCopy(out_texture->image, loaded_image_data, (size_t)loaded_image_size);
   }
 
-  stbi_image_free(loaded_image_data);
+  vkr_texture_decode_result_release(&decode_result);
 
   // GPU upload happens on calling thread (synchronized)
+  VkrTextureUploadRegion upload_region = {
+      .mip_level = 0,
+      .array_layer = 0,
+      .width = (uint32_t)width,
+      .height = (uint32_t)height,
+      .depth = 1,
+      .byte_offset = 0,
+      .byte_size = final_image_size,
+  };
+  VkrTextureUploadPayload upload_payload = {
+      .data = out_texture->image,
+      .data_size = final_image_size,
+      .mip_levels = 1,
+      .array_layers = 1,
+      .is_compressed = false_v,
+      .region_count = 1,
+      .regions = &upload_region,
+  };
   VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
-  out_texture->handle =
-      vkr_renderer_create_texture(system->renderer, &out_texture->description,
-                                  out_texture->image, &renderer_error);
+  out_texture->handle = vkr_renderer_create_texture_with_payload(
+      system->renderer, &out_texture->description, &upload_payload,
+      &renderer_error);
 
   vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   out_texture->image = NULL;
@@ -1983,16 +2806,8 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
 
   for (uint32_t i = 0; i < count; i++) {
     job_submitted[i] = false_v;
-    results[i] = (VkrTextureDecodeResult){
-        .decoded_pixels = NULL,
-        .width = 0,
-        .height = 0,
-        .original_channels = 0,
-        .has_transparency = false_v,
-        .loaded_from_cache = false_v,
-        .error = VKR_RENDERER_ERROR_NONE,
-        .success = false_v,
-    };
+    results[i] = (VkrTextureDecodeResult){0};
+    vkr_texture_decode_result_reset(&results[i]);
 
     if (!paths[i].str || paths[i].length == 0) {
       continue;
@@ -2012,6 +2827,7 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
         .file_path = requests[i].base_path,
         .desired_channels = VKR_TEXTURE_RGBA_CHANNELS,
         .flip_vertical = true_v,
+        .colorspace = requests[i].colorspace,
         .system = system,
         .result = &results[i],
     };
@@ -2048,13 +2864,17 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
       continue;
     }
 
-    if (!results[i].success || !results[i].decoded_pixels) {
+    const bool8_t has_upload_payload = results[i].upload_data &&
+                                       results[i].upload_regions &&
+                                       results[i].upload_region_count > 0;
+    if (!results[i].success ||
+        (!results[i].decoded_pixels && !has_upload_payload)) {
       out_errors[i] = results[i].error;
+      vkr_texture_decode_result_release(&results[i]);
       continue;
     }
 
     // Process decoded data and upload to GPU
-    uint8_t *loaded_image_data = results[i].decoded_pixels;
     int32_t width = results[i].width;
     int32_t height = results[i].height;
 
@@ -2065,8 +2885,7 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
         vkr_hash_table_get_VkrTextureEntry(&system->texture_map, check_key);
     if (existing) {
       // Already loaded - just return the existing handle, free decoded data
-      stbi_image_free(loaded_image_data);
-      results[i].decoded_pixels = NULL;
+      vkr_texture_decode_result_release(&results[i]);
       VkrTexture *tex = &system->textures.data[existing->index];
       out_handles[i] = (VkrTextureHandle){
           .id = tex->description.id, .generation = tex->description.generation};
@@ -2077,13 +2896,22 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
 
     // Use cached format/transparency if available, otherwise use defaults
     uint32_t actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
-    VkrTextureFormat format = vkr_texture_format_from_channels(
-        actual_channels, requests[i].colorspace);
+    VkrTextureFormat format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+    if (has_upload_payload) {
+      format = results[i].upload_format;
+      actual_channels = vkr_texture_channel_count_from_format(format);
+    } else {
+      format = vkr_texture_format_from_channels(actual_channels,
+                                                requests[i].colorspace);
+    }
     bool8_t has_transparency = results[i].has_transparency;
 
     VkrTexturePropertyFlags props = vkr_texture_property_flags_create();
     if (has_transparency) {
       bitset8_set(&props, VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
+      if (results[i].alpha_mask) {
+        bitset8_set(&props, VKR_TEXTURE_PROPERTY_ALPHA_MASK_BIT);
+      }
     }
 
     VkrTextureDescription desc = {
@@ -2098,18 +2926,51 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
         .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
         .min_filter = VKR_FILTER_LINEAR,
         .mag_filter = VKR_FILTER_LINEAR,
-        .mip_filter = VKR_MIP_FILTER_LINEAR,
+        .mip_filter = (has_upload_payload && results[i].upload_mip_levels <= 1)
+                          ? VKR_MIP_FILTER_NONE
+                          : VKR_MIP_FILTER_LINEAR,
         .anisotropy_enable = false_v,
         .generation = VKR_INVALID_ID,
     };
 
+    uint8_t *loaded_image_data = results[i].decoded_pixels;
+    uint64_t payload_size =
+        (uint64_t)width * (uint64_t)height * (uint64_t)actual_channels;
+    VkrTextureUploadRegion upload_region = {
+        .mip_level = 0,
+        .array_layer = 0,
+        .width = (uint32_t)width,
+        .height = (uint32_t)height,
+        .depth = 1,
+        .byte_offset = 0,
+        .byte_size = payload_size,
+    };
+    VkrTextureUploadPayload upload_payload = {
+        .data = loaded_image_data,
+        .data_size = payload_size,
+        .mip_levels = 1,
+        .array_layers = 1,
+        .is_compressed = false_v,
+        .region_count = 1,
+        .regions = &upload_region,
+    };
+    if (has_upload_payload) {
+      upload_payload.data = results[i].upload_data;
+      upload_payload.data_size = results[i].upload_data_size;
+      upload_payload.mip_levels = results[i].upload_mip_levels;
+      upload_payload.array_layers = results[i].upload_array_layers;
+      upload_payload.is_compressed = results[i].upload_is_compressed;
+      upload_payload.region_count = results[i].upload_region_count;
+      upload_payload.regions = results[i].upload_regions;
+    }
+
     // GPU upload on main thread
     VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
-    VkrTextureOpaqueHandle gpu_handle = vkr_renderer_create_texture(
-        system->renderer, &desc, loaded_image_data, &renderer_error);
+    VkrTextureOpaqueHandle gpu_handle =
+        vkr_renderer_create_texture_with_payload(
+            system->renderer, &desc, &upload_payload, &renderer_error);
 
-    stbi_image_free(loaded_image_data);
-    results[i].decoded_pixels = NULL;
+    vkr_texture_decode_result_release(&results[i]);
 
     if (renderer_error != VKR_RENDERER_ERROR_NONE || !gpu_handle) {
       out_errors[i] = renderer_error;
