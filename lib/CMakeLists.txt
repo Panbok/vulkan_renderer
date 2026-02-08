@@ -25,6 +25,27 @@ endif()
 # Find Vulkan package
 find_package(Vulkan REQUIRED)
 
+# KTX-Software (KTX2 + BasisU transcoding)
+set(VKR_KTX_SOFTWARE_DIR "${CMAKE_SOURCE_DIR}/vendor/ktx-software")
+if(NOT EXISTS "${VKR_KTX_SOFTWARE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "KTX-Software submodule not found. Run: git submodule update --init --recursive")
+endif()
+
+set(KTX_FEATURE_DOC OFF CACHE BOOL "Disable KTX docs in renderer build." FORCE)
+set(KTX_FEATURE_JNI OFF CACHE BOOL "Disable KTX JNI in renderer build." FORCE)
+set(KTX_FEATURE_PY OFF CACHE BOOL "Disable KTX python bindings in renderer build." FORCE)
+set(KTX_FEATURE_TESTS OFF CACHE BOOL "Disable KTX tests in renderer build." FORCE)
+set(KTX_FEATURE_TOOLS OFF CACHE BOOL "Disable KTX tools in renderer build." FORCE)
+set(KTX_FEATURE_TOOLS_CTS OFF CACHE BOOL "Disable KTX tools CTS in renderer build." FORCE)
+set(KTX_FEATURE_LOADTEST_APPS OFF CACHE STRING "Disable KTX loadtest apps in renderer build." FORCE)
+set(KTX_FEATURE_GL_UPLOAD OFF CACHE BOOL "Disable KTX GL upload path in renderer build." FORCE)
+set(KTX_FEATURE_VK_UPLOAD OFF CACHE BOOL "Disable KTX Vulkan upload path in renderer build." FORCE)
+
+set(_VKR_BUILD_SHARED_LIBS_PREV "${BUILD_SHARED_LIBS}")
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build KTX dependencies statically." FORCE)
+add_subdirectory("${VKR_KTX_SOFTWARE_DIR}" "${CMAKE_BINARY_DIR}/vendor/ktx-software" EXCLUDE_FROM_ALL)
+set(BUILD_SHARED_LIBS "${_VKR_BUILD_SHARED_LIBS_PREV}" CACHE BOOL "Restore shared library default after KTX setup." FORCE)
+
 # Locate SPIR-V headers (needed by spirv_reflect.h when using system headers).
 find_path(SPIRV_HEADERS_INCLUDE_DIR
     NAMES spirv/unified1/spirv.h
@@ -52,6 +73,7 @@ if(TARGET Vulkan::Vulkan)
 else()
     target_link_libraries(renderer_lib PRIVATE ${Vulkan_LIBRARIES})
 endif()
+target_link_libraries(renderer_lib PRIVATE ktx_read)
 
 # Set platform-specific definitions and link libraries
 if(APPLE)
