@@ -6,6 +6,7 @@ stages=vertex,fragment
 stagefiles=assets/shaders/default.skybox.spv
 use_instance=1
 use_local=0
+vertex_abi=3d
 
 # Attributes: type,name
 attribute=vec3,in_position

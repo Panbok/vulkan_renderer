@@ -9,6 +9,7 @@ stages=vertex,fragment
 stagefiles=assets/shaders/default.ui.spv
 use_instance=1
 use_local=1
+vertex_abi=2d
 
 # ============================================================================
 # Vertex Attributes (2D position + UV coordinates)

@@ -8,6 +8,7 @@ stages=vertex,fragment
 stagefiles=assets/shaders/picking_text.spv
 use_instance=0
 use_local=1
+vertex_abi=text2d
 cull_mode=none
 
 # ============================================================================

@@ -8,6 +8,7 @@ stages=vertex,fragment
 stagefiles=assets/shaders/default.ui.spv
 use_instance=1
 use_local=1
+vertex_abi=2d
 
 # Vertex attributes (2D position + UV)
 attribute=vec2,in_position
