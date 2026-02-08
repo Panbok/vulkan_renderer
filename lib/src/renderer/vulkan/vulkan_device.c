@@ -460,22 +460,6 @@ vkr_internal bool32_t vulkan_device_pick_sampled_depth_format(
     vkGetPhysicalDeviceFormatProperties(device->physical_device, candidates[i],
                                         &properties);
 
-    if ((properties.linearTilingFeatures & required_features) ==
-        required_features) {
-      if (out_uses_linear_tiling) {
-        *out_uses_linear_tiling = true_v;
-      }
-      if (out_supports_linear_filtering) {
-        *out_supports_linear_filtering =
-            ((properties.linearTilingFeatures &
-              VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0)
-                ? true_v
-                : false_v;
-      }
-      *out_format = candidates[i];
-      return true;
-    }
-
     if ((properties.optimalTilingFeatures & required_features) ==
         required_features) {
       if (out_uses_linear_tiling) {
@@ -484,6 +468,22 @@ vkr_internal bool32_t vulkan_device_pick_sampled_depth_format(
       if (out_supports_linear_filtering) {
         *out_supports_linear_filtering =
             ((properties.optimalTilingFeatures &
+              VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0)
+                ? true_v
+                : false_v;
+      }
+      *out_format = candidates[i];
+      return true;
+    }
+
+    if ((properties.linearTilingFeatures & required_features) ==
+        required_features) {
+      if (out_uses_linear_tiling) {
+        *out_uses_linear_tiling = true_v;
+      }
+      if (out_supports_linear_filtering) {
+        *out_supports_linear_filtering =
+            ((properties.linearTilingFeatures &
               VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0)
                 ? true_v
                 : false_v;
@@ -502,8 +502,9 @@ bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
              "Physical device was not acquired");
 
   // Swapchain depth format candidates prioritize precision/compatibility.
+  // Exclude VK_FORMAT_D32_SFLOAT_S8_UINT: it maps to VKR_TEXTURE_FORMAT_D32_SFLOAT
+  // but requires depth+stencil aspects, causing render-pass/image-view mismatches.
   const VkFormat depth_candidates[] = {VK_FORMAT_D32_SFLOAT,
-                                       VK_FORMAT_D32_SFLOAT_S8_UINT,
                                        VK_FORMAT_D24_UNORM_S8_UINT};
   bool8_t depth_linear_tiling = false_v;
   bool8_t depth_linear_filtering = false_v;

@@ -34,7 +34,11 @@
   } while (0)
 #else
 #define ASSIGN_TEXTURE_GENERATION(state, texture)                              \
-  ((texture)->description.generation = ++(state)->texture_generation_counter)
+  do {                                                                         \
+    uint32_t g = ++(state)->texture_generation_counter;                        \
+    (texture)->generation = g;                                                 \
+    (texture)->description.generation = g;                                     \
+  } while (0)
 #endif
 
 // Forward declarations for interface functions defined at end of file
@@ -1112,7 +1116,6 @@ vkr_internal VkrTextureFormat vulkan_vk_format_to_vkr(VkFormat format) {
   case VK_FORMAT_D16_UNORM:
     return VKR_TEXTURE_FORMAT_D16_UNORM;
   case VK_FORMAT_D32_SFLOAT:
-  case VK_FORMAT_D32_SFLOAT_S8_UINT:
     return VKR_TEXTURE_FORMAT_D32_SFLOAT;
   case VK_FORMAT_D24_UNORM_S8_UINT:
     return VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT;

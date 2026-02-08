@@ -77,6 +77,10 @@ typedef struct VkrRgJsonExtent {
   String8 size_source;      // The source of the size.
 } VkrRgJsonExtent;
 
+/**
+ * Image format source.
+ * @note: Determines the runtime source of the image format.
+ */
 typedef enum VkrRgJsonImageFormatSource {
   VKR_RG_JSON_IMAGE_FORMAT_EXPLICIT = 0,
   VKR_RG_JSON_IMAGE_FORMAT_SWAPCHAIN,
@@ -89,15 +93,15 @@ typedef enum VkrRgJsonImageFormatSource {
  * @note: The image description is only used to describe an image.
  */
 typedef struct VkrRgJsonImageDesc {
-  bool8_t is_import;                    // Whether the image is imported.
-  String8 import_name;                  // The name of the imported image.
+  bool8_t is_import;                        // Whether the image is imported.
+  String8 import_name;                      // The name of the imported image.
   VkrRgJsonImageFormatSource format_source; // Runtime format source token.
-  VkrTextureFormat format;              // Explicit format when source=EXPLICIT.
-  VkrTextureUsageFlags usage;           // The usage of the image.
-  bool8_t layers_is_set;                // Whether the layers are set.
-  uint32_t layers;                      // The layers of the image.
-  String8 layers_source;                // The source of the layers.
-  VkrRgJsonExtent extent;               // The extent of the image.
+  VkrTextureFormat format;    // Explicit format when source=EXPLICIT.
+  VkrTextureUsageFlags usage; // The usage of the image.
+  bool8_t layers_is_set;      // Whether the layers are set.
+  uint32_t layers;            // The layers of the image.
+  String8 layers_source;      // The source of the layers.
+  VkrRgJsonExtent extent;     // The extent of the image.
 } VkrRgJsonImageDesc;
 
 /**
