@@ -36,7 +36,7 @@ if [ -z "${PACKER_BIN}" ] || [ ! -x "${PACKER_BIN}" ]; then
   if [ "${STRICT_MODE}" = "1" ]; then
     exit 1
   fi
-  exit 0
+  exit 2
 fi
 
 set -- --input-dir "${TEXTURE_ROOT}"

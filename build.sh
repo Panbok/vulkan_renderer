@@ -44,7 +44,7 @@ BUILD_TYPE="${1:-Debug}"
   cmake --fresh -S . -B build -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING=${BUILD_TYPE} -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
 
   if [ "${BUILD_TYPE}" = "Release" ] && [ "${VKR_VKT_PACK:-1}" != "1" ]; then
-    echo "Release build requires texture packing. Set VKR_VKT_PACK=1."
+    echo "Release build requires texture packing. Texture packing is enabled by default (VKR_VKT_PACK=1); set VKR_VKT_PACK=0 to disable. Set VKR_VKT_PACK=1 to enable packing for Release builds."
     exit 1
   fi
   if [ "${BUILD_TYPE}" = "Release" ] && [ -z "${VKR_VKT_PACK_STRICT+x}" ]; then

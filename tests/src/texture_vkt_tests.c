@@ -128,5 +128,5 @@ bool32_t run_texture_vkt_tests() {
   test_texture_transcode_target_policy();
 
   printf("--- Texture VKT Tests Completed ---\n");
-  return true;
+  return true_v;
 }

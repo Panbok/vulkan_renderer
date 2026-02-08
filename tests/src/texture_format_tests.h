@@ -5,4 +5,4 @@
 #include "renderer/vulkan/vulkan_utils.h"
 #include "vkr_pch.h"
 
-bool32_t run_texture_format_tests();
+bool32_t run_texture_format_tests(void);

@@ -47,13 +47,15 @@ struct PackConfig {
   bool verbose = false;
 };
 
-bool parse_args(int argc, char **argv, PackConfig &out_config) {
+enum class ParseResult { kOk, kHelp, kError };
+
+ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
   for (int index = 1; index < argc; ++index) {
     const std::string arg = argv[index];
     if (arg == "--input-dir") {
       if (index + 1 >= argc) {
         std::cerr << "Missing value for --input-dir\n";
-        return false;
+        return ParseResult::kError;
       }
       out_config.input_dir = fs::path(argv[++index]);
       continue;
@@ -71,18 +73,18 @@ bool parse_args(int argc, char **argv, PackConfig &out_config) {
       continue;
     }
     if (arg == "--help" || arg == "-h") {
-      return false;
+      return ParseResult::kHelp;
     }
     std::cerr << "Unknown argument: " << arg << "\n";
-    return false;
+    return ParseResult::kError;
   }
 
   if (out_config.input_dir.empty()) {
     std::cerr << "Missing required argument --input-dir\n";
-    return false;
+    return ParseResult::kError;
   }
 
-  return true;
+  return ParseResult::kOk;
 }
 
 void print_usage(const char *program_name) {
@@ -91,27 +93,31 @@ void print_usage(const char *program_name) {
 }
 
 std::string to_lower_ascii(std::string value) {
-  std::transform(value.begin(), value.end(), value.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  std::transform(
+      value.begin(), value.end(), value.begin(),
+      [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
   return value;
 }
 
 bool is_supported_source_extension(const fs::path &path) {
-  static const std::array<const char *, 5> kExts = {
-      ".png", ".jpg", ".jpeg", ".bmp", ".tga"};
+  static const std::array<const char *, 5> kExts = {".png", ".jpg", ".jpeg",
+                                                    ".bmp", ".tga"};
   std::string ext = to_lower_ascii(path.extension().string());
   return std::find(kExts.begin(), kExts.end(), ext) != kExts.end();
 }
 
 bool infer_srgb_colorspace(const fs::path &path) {
   const std::string name = to_lower_ascii(path.filename().string());
-  if (name.find("normal") != std::string::npos || name.find("_n.") != std::string::npos ||
+  if (name.find("normal") != std::string::npos ||
+      name.find("_n.") != std::string::npos ||
       name.find("roughness") != std::string::npos ||
       name.find("metallic") != std::string::npos ||
       name.find("metalness") != std::string::npos ||
       name.find("occlusion") != std::string::npos ||
-      name.find("ao.") != std::string::npos || name.find("orm") != std::string::npos ||
-      name.find("rma") != std::string::npos || name.find("mask") != std::string::npos ||
+      name.find("ao.") != std::string::npos ||
+      name.find("orm") != std::string::npos ||
+      name.find("rma") != std::string::npos ||
+      name.find("mask") != std::string::npos ||
       name.find("height") != std::string::npos ||
       name.find("displace") != std::string::npos ||
       name.find("specular") != std::string::npos ||
@@ -167,8 +173,7 @@ std::vector<LevelImage> build_mip_chain_rgba8(const uint8_t *base_pixels,
           }
         }
 
-        const size_t dst_index =
-            (static_cast<size_t>(y) * next_width + x) * 4u;
+        const size_t dst_index = (static_cast<size_t>(y) * next_width + x) * 4u;
         for (uint32_t channel = 0; channel < 4; ++channel) {
           next.pixels[dst_index + channel] =
               static_cast<uint8_t>(accum[channel] / 4u);
@@ -207,8 +212,8 @@ AlphaAnalysis analyze_alpha(const uint8_t *pixels, uint32_t width,
   }
 
   analysis.has_transparency = true;
-  const float ratio =
-      static_cast<float>(intermediate_count) / static_cast<float>(transparent_count);
+  const float ratio = static_cast<float>(intermediate_count) /
+                      static_cast<float>(transparent_count);
   analysis.alpha_mask = ratio <= kAlphaMaskIntermediateRatio;
   return analysis;
 }
@@ -248,7 +253,8 @@ std::string to_hex_u64(uint64_t value) {
   return out;
 }
 
-bool add_kv_string(ktxTexture2 *texture, const char *key, const std::string &value) {
+bool add_kv_string(ktxTexture2 *texture, const char *key,
+                   const std::string &value) {
   if (!texture || !key) {
     return false;
   }
@@ -284,7 +290,8 @@ bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
   int width = 0;
   int height = 0;
   int channels = 0;
-  stbi_uc *loaded = stbi_load(src_path.string().c_str(), &width, &height, &channels, 4);
+  stbi_uc *loaded =
+      stbi_load(src_path.string().c_str(), &width, &height, &channels, 4);
   if (!loaded || width <= 0 || height <= 0) {
     std::cerr << "Failed to decode texture: " << src_path << "\n";
     if (loaded) {
@@ -293,16 +300,15 @@ bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
     return false;
   }
 
-  std::vector<LevelImage> levels =
-      build_mip_chain_rgba8(loaded, static_cast<uint32_t>(width),
-                            static_cast<uint32_t>(height));
-  const AlphaAnalysis alpha = analyze_alpha(loaded, static_cast<uint32_t>(width),
-                                            static_cast<uint32_t>(height));
+  std::vector<LevelImage> levels = build_mip_chain_rgba8(
+      loaded, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+  const AlphaAnalysis alpha = analyze_alpha(
+      loaded, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
   stbi_image_free(loaded);
 
   ktxTextureCreateInfo create_info = {};
-  create_info.vkFormat = srgb_colorspace ? VK_FORMAT_R8G8B8A8_SRGB
-                                         : VK_FORMAT_R8G8B8A8_UNORM;
+  create_info.vkFormat =
+      srgb_colorspace ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
   create_info.baseWidth = static_cast<ktx_uint32_t>(width);
   create_info.baseHeight = static_cast<ktx_uint32_t>(height);
   create_info.baseDepth = 1;
@@ -314,8 +320,8 @@ bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
   create_info.generateMipmaps = KTX_FALSE;
 
   ktxTexture2 *texture = nullptr;
-  KTX_error_code result =
-      ktxTexture2_Create(&create_info, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &texture);
+  KTX_error_code result = ktxTexture2_Create(
+      &create_info, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &texture);
   if (result != KTX_SUCCESS || !texture) {
     std::cerr << "Failed to create KTX2 object for '" << src_path
               << "': " << ktxErrorString(result) << "\n";
@@ -330,8 +336,8 @@ bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
           ktxTexture(texture), level_index, 0, 0, level.pixels.data(),
           static_cast<ktx_size_t>(level.pixels.size()));
       if (result != KTX_SUCCESS) {
-        std::cerr << "Failed to set mip level " << level_index << " for '" << src_path
-                  << "': " << ktxErrorString(result) << "\n";
+        std::cerr << "Failed to set mip level " << level_index << " for '"
+                  << src_path << "': " << ktxErrorString(result) << "\n";
         break;
       }
     }
@@ -375,7 +381,8 @@ bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
 
     fs::path tmp_path = dst_path;
     tmp_path += ".tmp";
-    result = ktxTexture_WriteToNamedFile(ktxTexture(texture), tmp_path.string().c_str());
+    result = ktxTexture_WriteToNamedFile(ktxTexture(texture),
+                                         tmp_path.string().c_str());
     if (result != KTX_SUCCESS) {
       std::cerr << "Failed to write temporary output '" << tmp_path
                 << "': " << ktxErrorString(result) << "\n";
@@ -387,16 +394,17 @@ bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
     std::error_code ec_rename;
     fs::rename(tmp_path, dst_path, ec_rename);
     if (ec_rename) {
-      std::cerr << "Failed to move temporary output to destination '" << dst_path
-                << "': " << ec_rename.message() << "\n";
+      std::cerr << "Failed to move temporary output to destination '"
+                << dst_path << "': " << ec_rename.message() << "\n";
       fs::remove(tmp_path, ec_remove);
       break;
     }
 
     if (verbose) {
       std::cout << "Packed " << src_path << " -> " << dst_path << " ("
-                << levels.size() << " mips, colorspace="
-                << (srgb_colorspace ? "srgb" : "linear") << ")\n";
+                << levels.size()
+                << " mips, colorspace=" << (srgb_colorspace ? "srgb" : "linear")
+                << ")\n";
     }
     success = true;
   } while (false);
@@ -433,7 +441,12 @@ std::vector<fs::path> discover_source_textures(const fs::path &root_dir) {
 
 int main(int argc, char **argv) {
   PackConfig config = {};
-  if (!parse_args(argc, argv, config)) {
+  ParseResult parse_result = parse_args(argc, argv, config);
+  if (parse_result == ParseResult::kHelp) {
+    print_usage(argv[0]);
+    return 0;
+  }
+  if (parse_result == ParseResult::kError) {
     print_usage(argv[0]);
     return 1;
   }
@@ -445,7 +458,8 @@ int main(int argc, char **argv) {
 
   stbi_set_flip_vertically_on_load(1);
 
-  const std::vector<fs::path> sources = discover_source_textures(config.input_dir);
+  const std::vector<fs::path> sources =
+      discover_source_textures(config.input_dir);
   if (sources.empty()) {
     std::cout << "No source textures found under " << config.input_dir << "\n";
     return 0;
@@ -461,7 +475,8 @@ int main(int argc, char **argv) {
     }
 
     const bool srgb_colorspace = infer_srgb_colorspace(src_path);
-    if (pack_texture_to_vkt(src_path, dst_path, srgb_colorspace, config.verbose)) {
+    if (pack_texture_to_vkt(src_path, dst_path, srgb_colorspace,
+                            config.verbose)) {
       ++stats.packed;
     } else {
       ++stats.failed;
