@@ -26,6 +26,7 @@ vulkan_shader_image_layout_for_texture(const struct s_TextureHandle *texture) {
   }
 
   switch (texture->description.format) {
+  case VKR_TEXTURE_FORMAT_D16_UNORM:
   case VKR_TEXTURE_FORMAT_D32_SFLOAT:
   case VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT:
     return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;

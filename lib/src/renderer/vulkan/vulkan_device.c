@@ -430,6 +430,8 @@ void vulkan_device_query_swapchain_details(VulkanBackendState *state,
 
 static const char *vk_format_to_string(VkFormat format) {
   switch (format) {
+  case VK_FORMAT_D16_UNORM:
+    return "VK_FORMAT_D16_UNORM";
   case VK_FORMAT_D32_SFLOAT:
     return "VK_FORMAT_D32_SFLOAT";
   case VK_FORMAT_D32_SFLOAT_S8_UINT:
@@ -441,50 +443,111 @@ static const char *vk_format_to_string(VkFormat format) {
   }
 }
 
-bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
-  assert_log(device != NULL, "Device is NULL");
-  assert_log(device->physical_device != VK_NULL_HANDLE,
-             "Physical device was not acquired");
+vkr_internal bool32_t vulkan_device_pick_sampled_depth_format(
+    VulkanDevice *device, const VkFormat *candidates, uint32_t candidate_count,
+    VkFormat *out_format, bool8_t *out_uses_linear_tiling,
+    bool8_t *out_supports_linear_filtering) {
+  if (!device || !candidates || candidate_count == 0 || !out_format) {
+    return false;
+  }
 
-  // Format candidates
-  const uint32_t candidate_count = 3;
-  VkFormat candidates[3] = {VK_FORMAT_D32_SFLOAT, VK_FORMAT_D32_SFLOAT_S8_UINT,
-                            VK_FORMAT_D24_UNORM_S8_UINT};
+  const uint32_t required_features =
+      VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
 
-  // Depth is used both as an attachment and (for CSM) as a sampled texture.
-  // Pick a format that supports both to avoid "always-1" samples on platforms
-  // where depth-stencil formats are not sampleable.
-  uint32_t flags = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                   VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
   for (uint32_t i = 0; i < candidate_count; ++i) {
-    VkFormatProperties properties;
+    VkFormatProperties properties = {0};
     vkGetPhysicalDeviceFormatProperties(device->physical_device, candidates[i],
                                         &properties);
 
-    if ((properties.linearTilingFeatures & flags) == flags) {
-      device->depth_format = candidates[i];
-      const char *name = vk_format_to_string(device->depth_format);
-      bool32_t linear_filter =
-          (properties.linearTilingFeatures &
-           VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
-      log_debug(
-          "Selected depth format (linear tiling): %s (%d) linear_filter=%u",
-          name, (int)device->depth_format, (uint32_t)linear_filter);
+    if ((properties.linearTilingFeatures & required_features) ==
+        required_features) {
+      if (out_uses_linear_tiling) {
+        *out_uses_linear_tiling = true_v;
+      }
+      if (out_supports_linear_filtering) {
+        *out_supports_linear_filtering =
+            ((properties.linearTilingFeatures &
+              VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0)
+                ? true_v
+                : false_v;
+      }
+      *out_format = candidates[i];
       return true;
-    } else if ((properties.optimalTilingFeatures & flags) == flags) {
-      device->depth_format = candidates[i];
-      const char *name = vk_format_to_string(device->depth_format);
-      bool32_t linear_filter =
-          (properties.optimalTilingFeatures &
-           VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
-      log_debug(
-          "Selected depth format (optimal tiling): %s (%d) linear_filter=%u",
-          name, (int)device->depth_format, (uint32_t)linear_filter);
+    }
+
+    if ((properties.optimalTilingFeatures & required_features) ==
+        required_features) {
+      if (out_uses_linear_tiling) {
+        *out_uses_linear_tiling = false_v;
+      }
+      if (out_supports_linear_filtering) {
+        *out_supports_linear_filtering =
+            ((properties.optimalTilingFeatures &
+              VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0)
+                ? true_v
+                : false_v;
+      }
+      *out_format = candidates[i];
       return true;
     }
   }
 
   return false;
+}
+
+bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
+  assert_log(device != NULL, "Device is NULL");
+  assert_log(device->physical_device != VK_NULL_HANDLE,
+             "Physical device was not acquired");
+
+  // Swapchain depth format candidates prioritize precision/compatibility.
+  const VkFormat depth_candidates[] = {VK_FORMAT_D32_SFLOAT,
+                                       VK_FORMAT_D32_SFLOAT_S8_UINT,
+                                       VK_FORMAT_D24_UNORM_S8_UINT};
+  bool8_t depth_linear_tiling = false_v;
+  bool8_t depth_linear_filtering = false_v;
+  if (!vulkan_device_pick_sampled_depth_format(
+          device, depth_candidates,
+          (uint32_t)(sizeof(depth_candidates) / sizeof(depth_candidates[0])),
+          &device->depth_format, &depth_linear_tiling,
+          &depth_linear_filtering)) {
+    return false;
+  }
+
+  log_debug("Selected swapchain depth format (%s tiling): %s (%d) "
+            "linear_filter=%u",
+            depth_linear_tiling ? "linear" : "optimal",
+            vk_format_to_string(device->depth_format), (int)device->depth_format,
+            (uint32_t)depth_linear_filtering);
+
+  // Shadow map depth prefers the smallest sampled format first to reduce
+  // footprint, then falls back to the wider formats.
+  const VkFormat shadow_candidates[] = {VK_FORMAT_D16_UNORM,
+                                        VK_FORMAT_D24_UNORM_S8_UINT,
+                                        VK_FORMAT_D32_SFLOAT};
+  bool8_t shadow_linear_tiling = false_v;
+  bool8_t shadow_linear_filtering = false_v;
+  if (!vulkan_device_pick_sampled_depth_format(
+          device, shadow_candidates,
+          (uint32_t)(sizeof(shadow_candidates) / sizeof(shadow_candidates[0])),
+          &device->shadow_depth_format, &shadow_linear_tiling,
+          &shadow_linear_filtering)) {
+    device->shadow_depth_format = device->depth_format;
+    log_warn("No dedicated sampled shadow depth format found; reusing "
+             "swapchain depth format: %s (%d)",
+             vk_format_to_string(device->shadow_depth_format),
+             (int)device->shadow_depth_format);
+  } else {
+    log_debug("Selected shadow depth format (%s tiling): %s (%d) "
+              "linear_filter=%u",
+              shadow_linear_tiling ? "linear" : "optimal",
+              vk_format_to_string(device->shadow_depth_format),
+              (int)device->shadow_depth_format,
+              (uint32_t)shadow_linear_filtering);
+  }
+
+  return true;
 }
 
 void vulkan_device_query_queue_indices(VulkanBackendState *state,
@@ -971,6 +1034,7 @@ void vulkan_device_destroy_logical_device(VulkanBackendState *state) {
   state->device.logical_device = VK_NULL_HANDLE;
 
   state->device.depth_format = VK_FORMAT_UNDEFINED;
+  state->device.shadow_depth_format = VK_FORMAT_UNDEFINED;
 
   state->device.graphics_queue_index = -1;
   state->device.present_queue_index = -1;
