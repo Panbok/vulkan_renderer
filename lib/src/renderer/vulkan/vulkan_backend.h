@@ -169,6 +169,7 @@ VkrTextureOpaqueHandle
 renderer_vulkan_depth_attachment_get(void *backend_state);
 uint32_t renderer_vulkan_window_attachment_count(void *backend_state);
 uint32_t renderer_vulkan_window_attachment_index(void *backend_state);
+VkrTextureFormat renderer_vulkan_shadow_depth_format_get(void *backend_state);
 
 // Telemetry
 uint64_t

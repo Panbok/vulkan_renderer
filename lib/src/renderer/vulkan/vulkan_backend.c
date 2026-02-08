@@ -24,12 +24,17 @@
 #define VKR_MAX_BUFFER_HANDLES 8192
 #define VKR_MAX_RENDER_TARGET_HANDLES 256
 
-// Debug: assign texture generation for liveness validation
+// Assign texture generation for descriptor invalidation and debug liveness
 #ifndef NDEBUG
 #define ASSIGN_TEXTURE_GENERATION(state, texture)                              \
-  (texture)->generation = ++(state)->texture_generation_counter
+  do {                                                                         \
+    uint32_t g = ++(state)->texture_generation_counter;                        \
+    (texture)->generation = g;                                                 \
+    (texture)->description.generation = g;                                     \
+  } while (0)
 #else
-#define ASSIGN_TEXTURE_GENERATION(state, texture) ((void)0)
+#define ASSIGN_TEXTURE_GENERATION(state, texture)                              \
+  ((texture)->description.generation = ++(state)->texture_generation_counter)
 #endif
 
 // Forward declarations for interface functions defined at end of file
@@ -57,6 +62,7 @@ VkrRendererError renderer_vulkan_buffer_barrier(
     void *backend_state, VkrBackendResourceHandle handle,
     VkrBufferAccessFlags src_access, VkrBufferAccessFlags dst_access);
 VkrTextureFormat renderer_vulkan_swapchain_format_get(void *backend_state);
+VkrTextureFormat renderer_vulkan_shadow_depth_format_get(void *backend_state);
 bool8_t renderer_vulkan_pipeline_get_shader_runtime_layout(
     void *backend_state, VkrBackendResourceHandle pipeline_handle,
     VkrShaderRuntimeLayout *out_layout);
@@ -69,6 +75,33 @@ vkr_internal VkImageAspectFlags
 vulkan_aspect_flags_from_texture_format(VkrTextureFormat format);
 
 static void vulkan_rg_timing_fetch_results(VulkanBackendState *state);
+
+/**
+ * @brief Resolve the depth format used by sampled shadow resources.
+ *
+ * Some devices cannot expose a dedicated sampled shadow format. In that case
+ * this falls back to the primary depth format so shadow pipelines, passes, and
+ * runtime shadow images remain format-compatible.
+ */
+vkr_internal VkFormat
+vulkan_shadow_depth_vk_format_get(const VulkanBackendState *state) {
+  if (!state) {
+    return VK_FORMAT_UNDEFINED;
+  }
+  if (state->device.shadow_depth_format != VK_FORMAT_UNDEFINED) {
+    return state->device.shadow_depth_format;
+  }
+  return state->device.depth_format;
+}
+
+vkr_internal VkrTextureFormat
+vulkan_shadow_depth_vkr_format_get(const VulkanBackendState *state) {
+  VkFormat shadow_format = vulkan_shadow_depth_vk_format_get(state);
+  if (shadow_format == VK_FORMAT_UNDEFINED) {
+    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  }
+  return vulkan_vk_format_to_vkr(shadow_format);
+}
 
 // todo: we are having issues with image ghosting when camera moves
 // too fast, need to figure out why (clues VSync/present mode issues)
@@ -618,8 +651,40 @@ vkr_internal void vulkan_select_filter_modes(
     *out_max_lod = max_lod;
 }
 
+/**
+ * @brief Select sampler filtering for sampled shadow depth images.
+ *
+ * Shadow depth attachments are created with optimal tiling, so we query only
+ * `optimalTilingFeatures` and enable linear filtering when supported.
+ */
+vkr_internal void vulkan_select_shadow_sampler_filter_modes(
+    const VulkanBackendState *state, VkFormat depth_format, VkFilter *out_filter,
+    VkSamplerMipmapMode *out_mipmap_mode) {
+  VkFilter filter = VK_FILTER_NEAREST;
+  VkSamplerMipmapMode mipmap_mode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+
+  if (state && depth_format != VK_FORMAT_UNDEFINED) {
+    VkFormatProperties props = {0};
+    vkGetPhysicalDeviceFormatProperties(state->device.physical_device,
+                                        depth_format, &props);
+    if (props.optimalTilingFeatures &
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) {
+      filter = VK_FILTER_LINEAR;
+      mipmap_mode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    }
+  }
+
+  if (out_filter) {
+    *out_filter = filter;
+  }
+  if (out_mipmap_mode) {
+    *out_mipmap_mode = mipmap_mode;
+  }
+}
+
 vkr_internal bool8_t vulkan_texture_format_is_depth(VkrTextureFormat format) {
   switch (format) {
+  case VKR_TEXTURE_FORMAT_D16_UNORM:
   case VKR_TEXTURE_FORMAT_D32_SFLOAT:
   case VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT:
     return true_v;
@@ -692,6 +757,7 @@ vulkan_texture_format_channel_count(VkrTextureFormat format) {
   case VKR_TEXTURE_FORMAT_R16_SFLOAT:
   case VKR_TEXTURE_FORMAT_R32_SFLOAT:
   case VKR_TEXTURE_FORMAT_R32_UINT:
+  case VKR_TEXTURE_FORMAT_D16_UNORM:
   case VKR_TEXTURE_FORMAT_D32_SFLOAT:
   case VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT:
     return 1;
@@ -812,6 +878,8 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
       vulkan_vk_format_to_vkr(state->swapchain.format);
   VkrTextureFormat depth_format =
       vulkan_vk_format_to_vkr(state->device.depth_format);
+  VkrTextureFormat shadow_depth_format =
+      vulkan_shadow_depth_vkr_format_get(state);
   VkrClearValue clear_world = {.color_f32 = {0.1f, 0.1f, 0.2f, 1.0f}};
   VkrClearValue clear_black = {.color_f32 = {0.0f, 0.0f, 0.0f, 1.0f}};
   VkrClearValue clear_transparent = {.color_f32 = {0.0f, 0.0f, 0.0f, 0.0f}};
@@ -911,7 +979,7 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
       break;
     case VKR_PIPELINE_DOMAIN_SHADOW:
       depth_attachment = (VkrRenderPassAttachmentDesc){
-          .format = depth_format,
+          .format = shadow_depth_format,
           .samples = VKR_SAMPLE_COUNT_1,
           .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
           .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -1041,7 +1109,10 @@ vkr_internal VkrTextureFormat vulkan_vk_format_to_vkr(VkFormat format) {
     return VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB;
   case VK_FORMAT_R32_UINT:
     return VKR_TEXTURE_FORMAT_R32_UINT;
+  case VK_FORMAT_D16_UNORM:
+    return VKR_TEXTURE_FORMAT_D16_UNORM;
   case VK_FORMAT_D32_SFLOAT:
+  case VK_FORMAT_D32_SFLOAT_S8_UINT:
     return VKR_TEXTURE_FORMAT_D32_SFLOAT;
   case VK_FORMAT_D24_UNORM_S8_UINT:
     return VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT;
@@ -1077,6 +1148,7 @@ vkr_internal VkImageAspectFlags
 vulkan_aspect_flags_from_texture_format(VkrTextureFormat format) {
   VkFormat vk_format = vulkan_image_format_from_texture_format(format);
   switch (vk_format) {
+  case VK_FORMAT_D16_UNORM:
   case VK_FORMAT_D32_SFLOAT:
     return VK_IMAGE_ASPECT_DEPTH_BIT;
   case VK_FORMAT_D32_SFLOAT_S8_UINT:
@@ -1183,9 +1255,7 @@ vulkan_backend_create_attachment_wrappers(VulkanBackendState *state) {
   depth_wrapper->description.height = state->swapchain.extent.height;
   depth_wrapper->description.channels = 1;
   depth_wrapper->description.format =
-      (state->device.depth_format == VK_FORMAT_D24_UNORM_S8_UINT)
-          ? VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT
-          : VKR_TEXTURE_FORMAT_D32_SFLOAT;
+      vulkan_vk_format_to_vkr(state->device.depth_format);
   depth_wrapper->description.sample_count = VKR_SAMPLE_COUNT_1;
 
   state->depth_texture = depth_wrapper;
@@ -1796,6 +1866,7 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .window_attachment_count_get = renderer_vulkan_window_attachment_count,
       .window_attachment_index_get = renderer_vulkan_window_attachment_index,
       .swapchain_format_get = renderer_vulkan_swapchain_format_get,
+      .shadow_depth_format_get = renderer_vulkan_shadow_depth_format_get,
       .buffer_create = renderer_vulkan_create_buffer,
       .buffer_destroy = renderer_vulkan_destroy_buffer,
       .buffer_update = renderer_vulkan_update_buffer,
@@ -3427,7 +3498,11 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
   }
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  VkFormat depth_format = state->device.depth_format;
+  VkFormat depth_format = vulkan_shadow_depth_vk_format_get(state);
+  if (depth_format == VK_FORMAT_UNDEFINED) {
+    log_error("No valid depth format available for sampled depth attachment");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
   VkrTextureFormat vkr_format = vulkan_vk_format_to_vkr(depth_format);
   if (!vulkan_texture_format_is_depth(vkr_format)) {
     log_error("Unsupported depth format for sampled depth attachment");
@@ -3461,16 +3536,8 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
 
   VkFilter shadow_filter = VK_FILTER_NEAREST;
   VkSamplerMipmapMode shadow_mip = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-  {
-    VkFormatProperties props = {0};
-    vkGetPhysicalDeviceFormatProperties(state->device.physical_device,
-                                        depth_format, &props);
-    if (props.optimalTilingFeatures &
-        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) {
-      shadow_filter = VK_FILTER_LINEAR;
-      shadow_mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    }
-  }
+  vulkan_select_shadow_sampler_filter_modes(state, depth_format, &shadow_filter,
+                                            &shadow_mip);
 
   VkSamplerCreateInfo sampler_info = {
       .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -3538,7 +3605,12 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment_array(
   }
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  VkFormat depth_format = state->device.depth_format;
+  VkFormat depth_format = vulkan_shadow_depth_vk_format_get(state);
+  if (depth_format == VK_FORMAT_UNDEFINED) {
+    log_error(
+        "No valid depth format available for sampled depth attachment array");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
   VkrTextureFormat vkr_format = vulkan_vk_format_to_vkr(depth_format);
   if (!vulkan_texture_format_is_depth(vkr_format)) {
     log_error("Unsupported depth format for sampled depth attachment array");
@@ -3571,16 +3643,8 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment_array(
 
   VkFilter shadow_filter = VK_FILTER_NEAREST;
   VkSamplerMipmapMode shadow_mip = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-  {
-    VkFormatProperties props = {0};
-    vkGetPhysicalDeviceFormatProperties(state->device.physical_device,
-                                        depth_format, &props);
-    if (props.optimalTilingFeatures &
-        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) {
-      shadow_filter = VK_FILTER_LINEAR;
-      shadow_mip = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    }
-  }
+  vulkan_select_shadow_sampler_filter_modes(state, depth_format, &shadow_filter,
+                                            &shadow_mip);
 
   VkSamplerCreateInfo sampler_info = {
       .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -4115,8 +4179,6 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
     goto cleanup_texture;
   }
 
-  texture->description.generation++;
-
   if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
   }
@@ -4347,8 +4409,6 @@ renderer_vulkan_create_texture(void *backend_state,
     goto cleanup_texture;
   }
 
-  texture->description.generation++;
-
   if (staging_buffer)
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
   if (vkr_allocator_scope_is_valid(&scope))
@@ -4488,8 +4548,6 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
     log_fatal("Failed to create cube map sampler");
     goto cleanup_texture;
   }
-
-  texture->description.generation++;
 
   vulkan_buffer_destroy(state, &staging_buffer->buffer);
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -5992,6 +6050,12 @@ VkrTextureFormat renderer_vulkan_swapchain_format_get(void *backend_state) {
     return VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
   }
   return vulkan_vk_format_to_vkr(state->swapchain.format);
+}
+
+VkrTextureFormat
+renderer_vulkan_shadow_depth_format_get(void *backend_state) {
+  return vulkan_shadow_depth_vkr_format_get(
+      (const VulkanBackendState *)backend_state);
 }
 
 uint32_t renderer_vulkan_window_attachment_index(void *backend_state) {
