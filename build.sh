@@ -42,6 +42,25 @@ BUILD_TYPE="${1:-Debug}"
   fi
 
   cmake --fresh -S . -B build -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE:STRING=${BUILD_TYPE} -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE ${GENERATOR} ${COMPILERS}
+
+  if [ "${BUILD_TYPE}" = "Release" ] && [ "${VKR_VKT_PACK:-1}" != "1" ]; then
+    echo "Release build requires texture packing. Set VKR_VKT_PACK=1."
+    exit 1
+  fi
+  if [ "${BUILD_TYPE}" = "Release" ] && [ -z "${VKR_VKT_PACK_STRICT+x}" ]; then
+    export VKR_VKT_PACK_STRICT=1
+    echo "Release build: enabling strict texture packing (VKR_VKT_PACK_STRICT=1)"
+  fi
+
+  if [ "${VKR_VKT_PACK:-1}" = "1" ]; then
+    echo "Building texture packer"
+    cmake --build ./build --target vkr_vkt_packer --config ${BUILD_TYPE}
+    echo "Packing textures (.vkt)"
+    ./tools/pack_vkt_textures.sh
+  else
+    echo "Skipping texture pack step (set VKR_VKT_PACK=1 to enable)"
+  fi
+
   cmake --build ./build --target vulkan_renderer --config ${BUILD_TYPE}
 
   echo "Copying shaders to build/app/assets"

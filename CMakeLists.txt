@@ -26,5 +26,6 @@ endif()
 
 # Add subdirectories for each component
 add_subdirectory(lib)
+add_subdirectory(tools)
 add_subdirectory(app)
 add_subdirectory(tests)
