@@ -568,6 +568,24 @@ void vkr_renderer_destroy_buffer(VkrRendererFrontendHandle renderer,
   renderer->backend.buffer_destroy(renderer->backend_state, handle);
 }
 
+/**
+ * @brief Converts backend handle-returning create calls to frontend contract.
+ *
+ * Frontend create APIs consistently map NULL backend handles to
+ * `VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED`.
+ */
+vkr_internal VkrTextureOpaqueHandle
+vkr_renderer_texture_create_result(VkrBackendResourceHandle handle,
+                                   VkrRendererError *out_error) {
+  if (handle.ptr == NULL) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return NULL;
+  }
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return (VkrTextureOpaqueHandle)handle.ptr;
+}
+
 VkrTextureOpaqueHandle
 vkr_renderer_create_texture(VkrRendererFrontendHandle renderer,
                             const VkrTextureDescription *description,
@@ -581,13 +599,27 @@ vkr_renderer_create_texture(VkrRendererFrontendHandle renderer,
 
   VkrBackendResourceHandle handle = renderer->backend.texture_create(
       renderer->backend_state, description, initial_data);
-  if (handle.ptr == NULL) {
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  return vkr_renderer_texture_create_result(handle, out_error);
+}
+
+VkrTextureOpaqueHandle vkr_renderer_create_texture_with_payload(
+    VkrRendererFrontendHandle renderer,
+    const VkrTextureDescription *description,
+    const VkrTextureUploadPayload *payload, VkrRendererError *out_error) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(description != NULL, "Description is NULL");
+  assert_log(payload != NULL, "Payload is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  if (!renderer->backend.texture_create_with_payload) {
+    *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
     return NULL;
   }
 
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return (VkrTextureOpaqueHandle)handle.ptr;
+  VkrBackendResourceHandle handle =
+      renderer->backend.texture_create_with_payload(renderer->backend_state,
+                                                    description, payload);
+  return vkr_renderer_texture_create_result(handle, out_error);
 }
 
 VkrTextureOpaqueHandle
@@ -603,13 +635,7 @@ vkr_renderer_create_writable_texture(VkrRendererFrontendHandle renderer,
 
   VkrBackendResourceHandle handle = renderer->backend.texture_create(
       renderer->backend_state, &desc_copy, NULL);
-  if (handle.ptr == NULL) {
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    return NULL;
-  }
-
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return (VkrTextureOpaqueHandle)handle.ptr;
+  return vkr_renderer_texture_create_result(handle, out_error);
 }
 
 VkrTextureOpaqueHandle vkr_renderer_create_render_target_texture(
@@ -627,13 +653,7 @@ VkrTextureOpaqueHandle vkr_renderer_create_render_target_texture(
   VkrBackendResourceHandle handle =
       renderer->backend.render_target_texture_create(renderer->backend_state,
                                                      desc);
-  if (handle.ptr == NULL) {
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    return NULL;
-  }
-
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return (VkrTextureOpaqueHandle)handle.ptr;
+  return vkr_renderer_texture_create_result(handle, out_error);
 }
 
 VkrTextureOpaqueHandle
@@ -650,13 +670,7 @@ vkr_renderer_create_depth_attachment(VkrRendererFrontendHandle renderer,
 
   VkrBackendResourceHandle handle = renderer->backend.depth_attachment_create(
       renderer->backend_state, width, height);
-  if (handle.ptr == NULL) {
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    return NULL;
-  }
-
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return (VkrTextureOpaqueHandle)handle.ptr;
+  return vkr_renderer_texture_create_result(handle, out_error);
 }
 
 VkrTextureOpaqueHandle
@@ -674,13 +688,7 @@ vkr_renderer_create_sampled_depth_attachment(VkrRendererFrontendHandle renderer,
   VkrBackendResourceHandle handle =
       renderer->backend.sampled_depth_attachment_create(renderer->backend_state,
                                                         width, height);
-  if (handle.ptr == NULL) {
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    return NULL;
-  }
-
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return (VkrTextureOpaqueHandle)handle.ptr;
+  return vkr_renderer_texture_create_result(handle, out_error);
 }
 
 VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment_array(
@@ -702,13 +710,7 @@ VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment_array(
   VkrBackendResourceHandle handle =
       renderer->backend.sampled_depth_attachment_array_create(
           renderer->backend_state, width, height, layers);
-  if (handle.ptr == NULL) {
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    return NULL;
-  }
-
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return (VkrTextureOpaqueHandle)handle.ptr;
+  return vkr_renderer_texture_create_result(handle, out_error);
 }
 
 VkrTextureOpaqueHandle vkr_renderer_create_render_target_texture_msaa(
@@ -726,13 +728,7 @@ VkrTextureOpaqueHandle vkr_renderer_create_render_target_texture_msaa(
   VkrBackendResourceHandle handle =
       renderer->backend.render_target_texture_msaa_create(
           renderer->backend_state, width, height, format, samples);
-  if (handle.ptr == NULL) {
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    return NULL;
-  }
-
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return (VkrTextureOpaqueHandle)handle.ptr;
+  return vkr_renderer_texture_create_result(handle, out_error);
 }
 
 VkrRendererError vkr_renderer_transition_texture_layout(
