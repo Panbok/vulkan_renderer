@@ -419,6 +419,7 @@ typedef enum VkrTextureFormat {
   VKR_TEXTURE_FORMAT_R32_UINT,
   VKR_TEXTURE_FORMAT_R8G8_UNORM,
   // Depth/stencil formats
+  VKR_TEXTURE_FORMAT_D16_UNORM,
   VKR_TEXTURE_FORMAT_D32_SFLOAT,
   VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT,
 
@@ -1332,6 +1333,8 @@ vkr_renderer_window_attachment_count(VkrRendererFrontendHandle renderer);
 uint32_t vkr_renderer_window_image_index(VkrRendererFrontendHandle renderer);
 VkrTextureFormat
 vkr_renderer_get_swapchain_format(VkrRendererFrontendHandle renderer);
+VkrTextureFormat
+vkr_renderer_get_shadow_depth_format(VkrRendererFrontendHandle renderer);
 // --- END Render Pass & Target Management ---
 
 // --- START Frame Lifecycle & Rendering Commands ---
@@ -1545,6 +1548,7 @@ typedef struct VkrRendererBackendInterface {
   uint32_t (*window_attachment_count_get)(void *backend_state);
   uint32_t (*window_attachment_index_get)(void *backend_state);
   VkrTextureFormat (*swapchain_format_get)(void *backend_state);
+  VkrTextureFormat (*shadow_depth_format_get)(void *backend_state);
 
   // --- Resource Management ---
   VkrBackendResourceHandle (*buffer_create)(void *backend_state,
