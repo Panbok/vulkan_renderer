@@ -312,6 +312,7 @@ typedef struct VulkanDevice {
   VkPhysicalDeviceMemoryProperties memory;
 
   VkFormat depth_format;
+  VkFormat shadow_depth_format;
 } VulkanDevice;
 
 typedef struct VulkanFramebuffer {

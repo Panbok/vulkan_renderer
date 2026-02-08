@@ -316,6 +316,8 @@ VkFormat vulkan_image_format_from_texture_format(VkrTextureFormat format) {
     return VK_FORMAT_R32_UINT;
   case VKR_TEXTURE_FORMAT_R8G8_UNORM:
     return VK_FORMAT_R8G8_UNORM;
+  case VKR_TEXTURE_FORMAT_D16_UNORM:
+    return VK_FORMAT_D16_UNORM;
   case VKR_TEXTURE_FORMAT_D32_SFLOAT:
     return VK_FORMAT_D32_SFLOAT;
   case VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT:
