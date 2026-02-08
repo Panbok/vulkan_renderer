@@ -4,11 +4,18 @@
 
 #include "stb_image.h"
 
-vkr_global const char *png_ext = "png";
-vkr_global const char *jpg_ext = "jpg";
-vkr_global const char *jpeg_ext = "jpeg";
-vkr_global const char *bmp_ext = "bmp";
-vkr_global const char *tga_ext = "tga";
+vkr_internal const char *vkr_texture_loader_supported_extensions[] = {
+    "png",
+    "jpg",
+    "jpeg",
+    "bmp",
+    "tga",
+    "vkt",
+};
+
+#define VKR_TEXTURE_LOADER_SUPPORTED_EXTENSION_COUNT                           \
+  (sizeof(vkr_texture_loader_supported_extensions) /                           \
+   sizeof(vkr_texture_loader_supported_extensions[0]))
 
 /**
  * @brief Strip query parameters from a texture name for extension checks.
@@ -22,6 +29,39 @@ vkr_internal String8 vkr_texture_loader_strip_query(String8 name) {
   return name;
 }
 
+/**
+ * @brief Returns the file extension (without dot) from a query-stripped path.
+ */
+vkr_internal String8 vkr_texture_loader_extract_extension(String8 base_name) {
+  for (uint64_t ext_length = base_name.length; ext_length > 0; ext_length--) {
+    if (base_name.str[ext_length - 1] == '.') {
+      return string8_substring(&base_name, ext_length, base_name.length);
+    }
+  }
+  return (String8){0};
+}
+
+/**
+ * @brief Checks whether the extension is accepted by the texture loader.
+ */
+vkr_internal bool8_t
+vkr_texture_loader_extension_is_supported(String8 extension) {
+  if (!extension.str || extension.length == 0) {
+    return false_v;
+  }
+
+  for (uint32_t i = 0; i < VKR_TEXTURE_LOADER_SUPPORTED_EXTENSION_COUNT; ++i) {
+    const char *candidate_cstr = vkr_texture_loader_supported_extensions[i];
+    String8 candidate = string8_create_from_cstr(
+        (const uint8_t *)candidate_cstr, string_length(candidate_cstr));
+    if (string8_equalsi(&extension, &candidate)) {
+      return true_v;
+    }
+  }
+
+  return false_v;
+}
+
 // Forward declarations
 vkr_internal VkrRendererError vkr_texture_loader_load_from_file(
     VkrResourceLoader *self, String8 file_path, uint32_t desired_channels,
@@ -33,29 +73,8 @@ vkr_internal bool8_t vkr_texture_loader_can_load(VkrResourceLoader *self,
   assert_log(name.str != NULL, "Name is NULL");
 
   String8 base_name = vkr_texture_loader_strip_query(name);
-  const uint8_t *extension_chars = base_name.str;
-
-  String8 png = string8_create_from_cstr((const uint8_t *)png_ext,
-                                         string_length(png_ext));
-  String8 jpg = string8_create_from_cstr((const uint8_t *)jpg_ext,
-                                         string_length(jpg_ext));
-  String8 jpeg = string8_create_from_cstr((const uint8_t *)jpeg_ext,
-                                          string_length(jpeg_ext));
-  String8 bmp = string8_create_from_cstr((const uint8_t *)bmp_ext,
-                                         string_length(bmp_ext));
-  String8 tga = string8_create_from_cstr((const uint8_t *)tga_ext,
-                                         string_length(tga_ext));
-
-  for (uint64_t ext_length = base_name.length; ext_length > 0; ext_length--) {
-    if (extension_chars[ext_length - 1] == '.') {
-      String8 ext = string8_substring(&base_name, ext_length, base_name.length);
-      return string8_equalsi(&ext, &png) || string8_equalsi(&ext, &jpg) ||
-             string8_equalsi(&ext, &jpeg) || string8_equalsi(&ext, &bmp) ||
-             string8_equalsi(&ext, &tga);
-    }
-  }
-
-  return false_v;
+  String8 extension = vkr_texture_loader_extract_extension(base_name);
+  return vkr_texture_loader_extension_is_supported(extension);
 }
 
 vkr_internal bool8_t vkr_texture_loader_load(VkrResourceLoader *self,
