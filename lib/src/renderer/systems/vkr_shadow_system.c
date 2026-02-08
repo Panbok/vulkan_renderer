@@ -7,22 +7,6 @@
 #include "renderer/systems/vkr_pipeline_registry.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_shader_system.h"
-#include "renderer/vulkan/vulkan_types.h"
-
-vkr_internal VkrTextureFormat
-vkr_shadow_get_depth_format(RendererFrontend *rf) {
-  if (!rf) {
-    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
-  }
-
-  VkrTextureOpaqueHandle depth_tex = vkr_renderer_depth_attachment_get(rf);
-  if (!depth_tex) {
-    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
-  }
-
-  struct s_TextureHandle *handle = (struct s_TextureHandle *)depth_tex;
-  return handle->description.format;
-}
 
 // ============================================================================
 // Cascade Helpers
@@ -414,7 +398,7 @@ vkr_internal bool8_t vkr_shadow_create_renderpass(VkrShadowSystem *system,
   VkrRenderPassHandle pass =
       vkr_renderer_renderpass_get(rf, string8_lit("Renderpass.CSM.Shadow"));
   if (!pass) {
-    VkrTextureFormat depth_format = vkr_shadow_get_depth_format(rf);
+    VkrTextureFormat depth_format = vkr_renderer_get_shadow_depth_format(rf);
     VkrClearValue clear_depth = {.depth_stencil = {1.0f, 0}};
     VkrRenderPassAttachmentDesc depth_attachment = {
         .format = depth_format,
@@ -612,6 +596,12 @@ vkr_internal bool8_t vkr_shadow_create_pipeline(VkrShadowSystem *system,
   return true_v;
 }
 
+vkr_internal bool8_t
+vkr_shadow_system_uses_render_graph_shadow_map(const RendererFrontend *rf) {
+  // RenderGraph allocates and owns the per-frame shadow map image resource.
+  return rf && rf->render_graph_enabled && rf->render_graph_loaded;
+}
+
 // ============================================================================
 // Public API
 // ============================================================================
@@ -704,8 +694,10 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
     goto cleanup;
   }
 
-  if (!vkr_shadow_create_shadow_maps(system, rf)) {
-    goto cleanup;
+  if (!vkr_shadow_system_uses_render_graph_shadow_map(rf)) {
+    if (!vkr_shadow_create_shadow_maps(system, rf)) {
+      goto cleanup;
+    }
   }
 
   if (!vkr_shadow_create_pipeline(system, rf)) {
@@ -924,7 +916,7 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
   if (!system || !system->initialized) {
     return;
   }
-  if (frame_index >= system->frame_resource_count) {
+  if (system->frames && frame_index >= system->frame_resource_count) {
     return;
   }
 
@@ -1012,5 +1004,7 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
     }
   }
 
-  out_data->shadow_map = system->frames[frame_index].shadow_map;
+  if (system->frames && frame_index < system->frame_resource_count) {
+    out_data->shadow_map = system->frames[frame_index].shadow_map;
+  }
 }
