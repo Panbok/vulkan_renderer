@@ -516,6 +516,7 @@ typedef struct VkrRenderGraphFrameInfo {
   bool8_t editor_enabled;           /**< Whether editor is enabled */
   VkrTextureFormat swapchain_format; /**< Swapchain color format */
   VkrTextureFormat swapchain_depth_format; /**< Swapchain depth format */
+  VkrTextureFormat shadow_depth_format; /**< Shadow map depth format */
   uint32_t shadow_map_size;         /**< Shadow map dimension */
   uint32_t shadow_cascade_count;    /**< Number of shadow cascades */
 } VkrRenderGraphFrameInfo;
