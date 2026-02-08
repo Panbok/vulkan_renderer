@@ -19,7 +19,7 @@
       "type": "image",
       "extent": { "mode": "square", "size_source": "shadow_map_size" },
       "layers_source": "shadow_cascade_count",
-      "format": "D32_SFLOAT",
+      "format": "SHADOW_DEPTH",
       "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"],
       "flags": ["TRANSIENT", "PER_IMAGE"]
     },
@@ -37,7 +37,7 @@
       "type": "image",
       "condition": "editor_enabled",
       "extent": { "mode": "viewport" },
-      "format": "D32_SFLOAT",
+      "format": "SWAPCHAIN_DEPTH",
       "usage": ["DEPTH_STENCIL_ATTACHMENT"],
       "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
     }
