@@ -639,6 +639,37 @@ vkr_internal bool8_t vulkan_texture_format_is_integer(VkrTextureFormat format) {
   }
 }
 
+vkr_internal bool8_t
+vulkan_texture_format_is_compressed(VkrTextureFormat format) {
+  switch (format) {
+  case VKR_TEXTURE_FORMAT_BC7_UNORM:
+  case VKR_TEXTURE_FORMAT_BC7_SRGB:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+    return true_v;
+  default:
+    return false_v;
+  }
+}
+
+/**
+ * @brief Rejects runtime mutation APIs for compressed textures in rollout 1.
+ *
+ * Compressed uploads currently require full mip/layer payload creation, so
+ * write/resize entrypoints are intentionally blocked to prevent partial updates.
+ */
+vkr_internal VkrRendererError vulkan_texture_reject_compressed_mutation(
+    VkrTextureFormat format, const char *operation_name) {
+  if (!vulkan_texture_format_is_compressed(format)) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
+  log_error("Texture operation '%s' is unsupported for compressed formats in "
+            "this rollout",
+            operation_name ? operation_name : "unknown");
+  return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+}
+
 vkr_internal uint32_t
 vulkan_texture_format_channel_count(VkrTextureFormat format) {
   switch (format) {
@@ -650,6 +681,11 @@ vulkan_texture_format_channel_count(VkrTextureFormat format) {
   case VKR_TEXTURE_FORMAT_R8G8B8A8_SNORM:
   case VKR_TEXTURE_FORMAT_R8G8B8A8_SINT:
     return 4;
+  case VKR_TEXTURE_FORMAT_BC7_UNORM:
+  case VKR_TEXTURE_FORMAT_BC7_SRGB:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+    return 0;
   case VKR_TEXTURE_FORMAT_R8G8_UNORM:
     return 2;
   case VKR_TEXTURE_FORMAT_R8_UNORM:
@@ -662,6 +698,69 @@ vulkan_texture_format_channel_count(VkrTextureFormat format) {
   default:
     return 1;
   }
+}
+
+vkr_internal uint32_t
+vulkan_texture_format_block_width(VkrTextureFormat format) {
+  switch (format) {
+  case VKR_TEXTURE_FORMAT_BC7_UNORM:
+  case VKR_TEXTURE_FORMAT_BC7_SRGB:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+    return 4;
+  default:
+    return 1;
+  }
+}
+
+vkr_internal uint32_t
+vulkan_texture_format_block_height(VkrTextureFormat format) {
+  switch (format) {
+  case VKR_TEXTURE_FORMAT_BC7_UNORM:
+  case VKR_TEXTURE_FORMAT_BC7_SRGB:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+    return 4;
+  default:
+    return 1;
+  }
+}
+
+vkr_internal uint32_t
+vulkan_texture_format_block_size_bytes(VkrTextureFormat format,
+                                       uint32_t channels) {
+  switch (format) {
+  case VKR_TEXTURE_FORMAT_BC7_UNORM:
+  case VKR_TEXTURE_FORMAT_BC7_SRGB:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
+  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+    return 16;
+  default:
+    return channels;
+  }
+}
+
+vkr_internal uint32_t vulkan_texture_mip_extent(uint32_t base,
+                                                uint32_t mip_level) {
+  return Max(1u, base >> mip_level);
+}
+
+vkr_internal uint64_t
+vulkan_texture_expected_region_size_bytes(VkrTextureFormat format,
+                                          uint32_t channels, uint32_t width,
+                                          uint32_t height) {
+  const uint32_t block_width = vulkan_texture_format_block_width(format);
+  const uint32_t block_height = vulkan_texture_format_block_height(format);
+  const uint32_t block_size =
+      vulkan_texture_format_block_size_bytes(format, channels);
+  if (block_size == 0) {
+    return 0;
+  }
+
+  const uint64_t blocks_x = (width + (uint64_t)block_width - 1) / block_width;
+  const uint64_t blocks_y =
+      (height + (uint64_t)block_height - 1) / block_height;
+  return blocks_x * blocks_y * (uint64_t)block_size;
 }
 
 vkr_internal VkImageLayout
@@ -932,6 +1031,14 @@ vkr_internal VkrTextureFormat vulkan_vk_format_to_vkr(VkFormat format) {
     return VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
   case VK_FORMAT_R8G8B8A8_UNORM:
     return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+  case VK_FORMAT_BC7_UNORM_BLOCK:
+    return VKR_TEXTURE_FORMAT_BC7_UNORM;
+  case VK_FORMAT_BC7_SRGB_BLOCK:
+    return VKR_TEXTURE_FORMAT_BC7_SRGB;
+  case VK_FORMAT_ASTC_4x4_UNORM_BLOCK:
+    return VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
+  case VK_FORMAT_ASTC_4x4_SRGB_BLOCK:
+    return VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB;
   case VK_FORMAT_R32_UINT:
     return VKR_TEXTURE_FORMAT_R32_UINT;
   case VK_FORMAT_D32_SFLOAT:
@@ -1697,6 +1804,7 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .buffer_flush = renderer_vulkan_flush_buffer,
       .buffer_barrier = renderer_vulkan_buffer_barrier,
       .texture_create = renderer_vulkan_create_texture,
+      .texture_create_with_payload = renderer_vulkan_create_texture_with_payload,
       .render_target_texture_create =
           renderer_vulkan_create_render_target_texture,
       .depth_attachment_create = renderer_vulkan_create_depth_attachment,
@@ -3690,6 +3798,356 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
     VulkanBackendState *state, const VkrTextureDescription *desc,
     const void *initial_data);
 
+VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
+    void *backend_state, const VkrTextureDescription *desc,
+    const VkrTextureUploadPayload *payload) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(desc != NULL, "Texture description is NULL");
+  assert_log(payload != NULL, "Payload is NULL");
+
+  if (!payload->data || payload->data_size == 0 || payload->region_count == 0 ||
+      !payload->regions || payload->mip_levels == 0 ||
+      payload->array_layers == 0) {
+    log_error("Invalid texture upload payload");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+  if (desc->width == 0 || desc->height == 0) {
+    log_error("Payload texture dimensions must be greater than zero");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  if (desc->type != VKR_TEXTURE_TYPE_2D) {
+    log_error("Payload texture creation currently supports only 2D textures");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  const bool8_t format_is_compressed =
+      vulkan_texture_format_is_compressed(desc->format);
+  if (payload->is_compressed != format_is_compressed) {
+    log_error("Payload compression flag must match texture format");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  const uint64_t expected_region_count =
+      (uint64_t)payload->mip_levels * (uint64_t)payload->array_layers;
+  if (payload->region_count != expected_region_count) {
+    log_error("Payload must provide exactly one full region per mip/layer "
+              "subresource (expected=%llu, provided=%u)",
+              (unsigned long long)expected_region_count, payload->region_count);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  const uint32_t max_mip_levels =
+      vulkan_calculate_mip_levels(desc->width, desc->height);
+  if (payload->mip_levels > max_mip_levels) {
+    log_error("Payload mip level count exceeds valid chain length "
+              "(requested=%u, max=%u)",
+              payload->mip_levels, max_mip_levels);
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  if (!format_is_compressed && (desc->channels == 0 || desc->channels > 4)) {
+    log_error("Uncompressed payload upload requires channel count in [1,4]");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  struct s_TextureHandle *texture = vkr_allocator_alloc(
+      &state->texture_pool_alloc, sizeof(struct s_TextureHandle),
+      VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+  if (!texture) {
+    log_fatal("Failed to allocate texture (pool exhausted)");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+  MemZero(texture, sizeof(struct s_TextureHandle));
+  texture->description = *desc;
+
+  struct s_BufferHandle *staging_buffer = NULL;
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    goto cleanup_texture;
+  }
+
+  const uint64_t subresource_count = expected_region_count;
+  uint8_t *subresource_seen = vkr_allocator_alloc(
+      &state->temp_scope, subresource_count, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkBufferImageCopy *copy_regions = vkr_allocator_alloc(
+      &state->temp_scope, sizeof(VkBufferImageCopy) * payload->region_count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!subresource_seen || !copy_regions) {
+    log_error("Failed to allocate payload upload metadata");
+    goto cleanup_texture;
+  }
+  MemZero(subresource_seen, subresource_count);
+
+  for (uint32_t region_index = 0; region_index < payload->region_count;
+       ++region_index) {
+    const VkrTextureUploadRegion *region = &payload->regions[region_index];
+
+    if (region->mip_level >= payload->mip_levels ||
+        region->array_layer >= payload->array_layers) {
+      log_error("Payload region index is out of bounds (mip=%u layer=%u)",
+                region->mip_level, region->array_layer);
+      goto cleanup_texture;
+    }
+
+    if (region->depth != 1) {
+      log_error("Payload regions for 2D textures must use depth=1");
+      goto cleanup_texture;
+    }
+
+    const uint32_t mip_width =
+        vulkan_texture_mip_extent(desc->width, region->mip_level);
+    const uint32_t mip_height =
+        vulkan_texture_mip_extent(desc->height, region->mip_level);
+    if (region->width != mip_width || region->height != mip_height) {
+      log_error("Payload region extent must match full mip dimensions "
+                "(mip=%u expected=%ux%u got=%ux%u)",
+                region->mip_level, mip_width, mip_height, region->width,
+                region->height);
+      goto cleanup_texture;
+    }
+
+    if (region->byte_offset >= payload->data_size ||
+        region->byte_offset + region->byte_size > payload->data_size ||
+        region->byte_offset + region->byte_size < region->byte_offset) {
+      log_error("Payload byte range is out of bounds");
+      goto cleanup_texture;
+    }
+
+    const uint64_t expected_size = vulkan_texture_expected_region_size_bytes(
+        desc->format, desc->channels, mip_width, mip_height);
+    if (expected_size == 0 || region->byte_size != expected_size) {
+      log_error("Payload region byte size mismatch for mip=%u layer=%u "
+                "(expected=%llu got=%llu)",
+                region->mip_level, region->array_layer,
+                (unsigned long long)expected_size,
+                (unsigned long long)region->byte_size);
+      goto cleanup_texture;
+    }
+
+    const uint64_t subresource_index =
+        (uint64_t)region->array_layer * (uint64_t)payload->mip_levels +
+        (uint64_t)region->mip_level;
+    if (subresource_seen[subresource_index]) {
+      log_error("Payload contains duplicate region for mip=%u layer=%u",
+                region->mip_level, region->array_layer);
+      goto cleanup_texture;
+    }
+    subresource_seen[subresource_index] = 1;
+
+    copy_regions[region_index] = (VkBufferImageCopy){
+        .bufferOffset = region->byte_offset,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel = region->mip_level,
+                .baseArrayLayer = region->array_layer,
+                .layerCount = 1,
+            },
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {region->width, region->height, region->depth},
+    };
+  }
+
+  for (uint64_t i = 0; i < subresource_count; ++i) {
+    if (!subresource_seen[i]) {
+      const uint32_t missing_layer = (uint32_t)(i / payload->mip_levels);
+      const uint32_t missing_mip = (uint32_t)(i % payload->mip_levels);
+      log_error("Payload missing upload region for mip=%u layer=%u",
+                missing_mip, missing_layer);
+      goto cleanup_texture;
+    }
+  }
+
+  VkrBufferTypeFlags buffer_type = bitset8_create();
+  bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
+  const VkrBufferDescription staging_buffer_desc = {
+      .size = payload->data_size,
+      .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
+      .memory_properties = vkr_memory_property_flags_from_bits(
+          VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
+      .buffer_type = buffer_type,
+      .bind_on_create = true_v,
+  };
+
+  staging_buffer = vkr_allocator_alloc(&state->temp_scope,
+                                       sizeof(struct s_BufferHandle),
+                                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (!staging_buffer) {
+    log_fatal("Failed to allocate staging buffer");
+    goto cleanup_texture;
+  }
+
+  if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
+    log_fatal("Failed to create staging buffer");
+    goto cleanup_texture;
+  }
+
+  if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0,
+                               payload->data_size, 0, payload->data)) {
+    log_fatal("Failed to upload payload bytes to staging buffer");
+    goto cleanup_texture;
+  }
+
+  VkImageUsageFlags usage =
+      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  if (!format_is_compressed) {
+    usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  }
+
+  const VkFormat image_format =
+      vulkan_image_format_from_texture_format(desc->format);
+  if (!vulkan_image_create(state, VK_IMAGE_TYPE_2D, desc->width, desc->height,
+                           image_format, VK_IMAGE_TILING_OPTIMAL, usage,
+                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                           payload->mip_levels, payload->array_layers,
+                           VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
+                           VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
+    log_fatal("Failed to create Vulkan image for payload upload");
+    goto cleanup_texture;
+  }
+
+  VulkanCommandBuffer temp_command_buffer = {0};
+  if (!vulkan_command_buffer_allocate_and_begin_single_use(
+          state, &temp_command_buffer)) {
+    log_fatal("Failed to allocate command buffer for payload upload");
+    goto cleanup_texture;
+  }
+
+  const VkImageSubresourceRange full_range = {
+      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+      .baseMipLevel = 0,
+      .levelCount = payload->mip_levels,
+      .baseArrayLayer = 0,
+      .layerCount = payload->array_layers,
+  };
+
+  if (!vulkan_image_transition_layout_range(
+          state, &texture->texture.image, &temp_command_buffer, image_format,
+          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+          &full_range)) {
+    vkEndCommandBuffer(temp_command_buffer.handle);
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1,
+                         &temp_command_buffer.handle);
+    log_fatal("Failed to transition payload image to TRANSFER_DST");
+    goto cleanup_texture;
+  }
+
+  vkCmdCopyBufferToImage(
+      temp_command_buffer.handle, staging_buffer->buffer.handle,
+      texture->texture.image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      payload->region_count, copy_regions);
+
+  if (!vulkan_image_transition_layout_range(
+          state, &texture->texture.image, &temp_command_buffer, image_format,
+          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &full_range)) {
+    vkEndCommandBuffer(temp_command_buffer.handle);
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1,
+                         &temp_command_buffer.handle);
+    log_fatal("Failed to transition payload image to SHADER_READ_ONLY");
+    goto cleanup_texture;
+  }
+
+  if (!vulkan_command_buffer_end_single_use(
+          state, &temp_command_buffer, state->device.graphics_queue,
+          array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
+              ->handle)) {
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1,
+                         &temp_command_buffer.handle);
+    log_fatal("Failed to submit payload upload commands");
+    goto cleanup_texture;
+  }
+
+  vkFreeCommandBuffers(state->device.logical_device,
+                       state->device.graphics_command_pool, 1,
+                       &temp_command_buffer.handle);
+
+  VkFilter min_filter = VK_FILTER_LINEAR;
+  VkFilter mag_filter = VK_FILTER_LINEAR;
+  VkSamplerMipmapMode mipmap_mode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  VkBool32 anisotropy_enable = VK_FALSE;
+  float32_t max_lod =
+      (texture->texture.image.mip_levels > 0)
+          ? (float32_t)(texture->texture.image.mip_levels - 1)
+          : 0.0f;
+  vulkan_select_filter_modes(desc, state->device.features.samplerAnisotropy,
+                             texture->texture.image.mip_levels, &min_filter,
+                             &mag_filter, &mipmap_mode, &anisotropy_enable,
+                             &max_lod);
+
+  VkSamplerCreateInfo sampler_info = {
+      .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+      .magFilter = mag_filter,
+      .minFilter = min_filter,
+      .mipmapMode = mipmap_mode,
+      .addressModeU =
+          vulkan_sampler_address_mode_from_repeat(desc->u_repeat_mode),
+      .addressModeV =
+          vulkan_sampler_address_mode_from_repeat(desc->v_repeat_mode),
+      .addressModeW =
+          vulkan_sampler_address_mode_from_repeat(desc->w_repeat_mode),
+      .mipLodBias = 0.0f,
+      .anisotropyEnable = anisotropy_enable,
+      .maxAnisotropy =
+          anisotropy_enable
+              ? state->device.properties.limits.maxSamplerAnisotropy
+              : 1.0f,
+      .compareEnable = VK_FALSE,
+      .compareOp = VK_COMPARE_OP_ALWAYS,
+      .minLod = 0.0f,
+      .maxLod = max_lod,
+      .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+      .unnormalizedCoordinates = VK_FALSE,
+  };
+
+  if (vkCreateSampler(state->device.logical_device, &sampler_info,
+                      state->allocator,
+                      &texture->texture.sampler) != VK_SUCCESS) {
+    log_fatal("Failed to create texture sampler");
+    goto cleanup_texture;
+  }
+
+  texture->description.generation++;
+
+  if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+  }
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  ASSIGN_TEXTURE_GENERATION(state, texture);
+  return (VkrBackendResourceHandle){.ptr = texture};
+
+cleanup_texture:
+  if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+  }
+  if (texture) {
+    if (texture->texture.sampler != VK_NULL_HANDLE) {
+      vkDestroySampler(state->device.logical_device, texture->texture.sampler,
+                       state->allocator);
+      texture->texture.sampler = VK_NULL_HANDLE;
+    }
+    if (texture->texture.image.handle != VK_NULL_HANDLE) {
+      vulkan_image_destroy(state, &texture->texture.image);
+    }
+    vkr_allocator_free(&state->texture_pool_alloc, texture,
+                       sizeof(struct s_TextureHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+  }
+  if (vkr_allocator_scope_is_valid(&scope)) {
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  return (VkrBackendResourceHandle){.ptr = NULL};
+}
+
 VkrBackendResourceHandle
 renderer_vulkan_create_texture(void *backend_state,
                                const VkrTextureDescription *desc,
@@ -3706,6 +4164,11 @@ renderer_vulkan_create_texture(void *backend_state,
   // Branch to cube map creation if type is cube map
   if (desc->type == VKR_TEXTURE_TYPE_CUBE_MAP) {
     return renderer_vulkan_create_cube_texture(state, desc, initial_data);
+  }
+
+  if (vulkan_texture_format_is_compressed(desc->format)) {
+    log_error("Compressed textures require payload upload path");
+    return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
   // log_debug("Creating Vulkan texture");
@@ -4149,6 +4612,12 @@ VkrRendererError renderer_vulkan_write_texture(
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   struct s_TextureHandle *texture = (struct s_TextureHandle *)handle.ptr;
 
+  VkrRendererError compressed_error = vulkan_texture_reject_compressed_mutation(
+      texture->description.format, "texture_write");
+  if (compressed_error != VKR_RENDERER_ERROR_NONE) {
+    return compressed_error;
+  }
+
   uint32_t mip_level = region ? region->mip_level : 0;
   uint32_t array_layer = region ? region->array_layer : 0;
   uint32_t x = region ? region->x : 0;
@@ -4309,6 +4778,12 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   struct s_TextureHandle *texture = (struct s_TextureHandle *)handle.ptr;
+
+  VkrRendererError compressed_error = vulkan_texture_reject_compressed_mutation(
+      texture->description.format, "texture_resize");
+  if (compressed_error != VKR_RENDERER_ERROR_NONE) {
+    return compressed_error;
+  }
 
   VkFormat image_format =
       vulkan_image_format_from_texture_format(texture->description.format);

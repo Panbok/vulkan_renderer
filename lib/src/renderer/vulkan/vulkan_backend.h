@@ -73,6 +73,9 @@ VkrBackendResourceHandle
 renderer_vulkan_create_texture(void *backend_state,
                                const VkrTextureDescription *desc,
                                const void *initial_data);
+VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
+    void *backend_state, const VkrTextureDescription *desc,
+    const VkrTextureUploadPayload *payload);
 VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
     void *backend_state, const VkrRenderTargetTextureDesc *desc);
 VkrBackendResourceHandle
