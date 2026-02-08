@@ -5,6 +5,15 @@
 #include "renderer/vulkan/vulkan_types.h"
 #include "vulkan_utils.h"
 
+static bool8_t vulkan_device_supports_sampled_format(VkPhysicalDevice device,
+                                                     VkFormat format) {
+  VkFormatProperties properties = {0};
+  vkGetPhysicalDeviceFormatProperties(device, format, &properties);
+  return (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
+             ? true_v
+             : false_v;
+}
+
 static bool32_t has_required_extensions(VulkanBackendState *state,
                                         VkPhysicalDevice device) {
   uint32_t extension_count = 0;
@@ -567,6 +576,16 @@ void vulkan_device_get_information(VulkanBackendState *state,
 
   device_information->max_sampler_anisotropy =
       (float64_t)state->device.properties.limits.maxSamplerAnisotropy;
+  device_information->supports_texture_astc_4x4 =
+      vulkan_device_supports_sampled_format(state->device.physical_device,
+                                            VK_FORMAT_ASTC_4x4_UNORM_BLOCK) &&
+      vulkan_device_supports_sampled_format(state->device.physical_device,
+                                            VK_FORMAT_ASTC_4x4_SRGB_BLOCK);
+  device_information->supports_texture_bc7 =
+      vulkan_device_supports_sampled_format(state->device.physical_device,
+                                            VK_FORMAT_BC7_UNORM_BLOCK) &&
+      vulkan_device_supports_sampled_format(state->device.physical_device,
+                                            VK_FORMAT_BC7_SRGB_BLOCK);
 
   VkrAllocator *temp_alloc = &state->temp_scope;
   VkrAllocator *arena_alloc = &state->alloc;
