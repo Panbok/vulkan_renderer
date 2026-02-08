@@ -1271,6 +1271,15 @@ vkr_renderer_get_swapchain_format(VkrRendererFrontendHandle renderer) {
   return renderer->backend.swapchain_format_get(renderer->backend_state);
 }
 
+VkrTextureFormat
+vkr_renderer_get_shadow_depth_format(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.shadow_depth_format_get) {
+    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  }
+  return renderer->backend.shadow_depth_format_get(renderer->backend_state);
+}
+
 uint32_t vkr_renderer_window_image_index(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
   if (!renderer->backend.window_attachment_index_get) {
@@ -1308,6 +1317,28 @@ vkr_renderer_validation_failf(VkrValidationError *out_error,
   out_error->field_path = field_path;
   out_error->message = message;
   return code;
+}
+
+/**
+ * @brief Returns the active swapchain depth texture format.
+ *
+ * Depth attachment recreation can lag behind frame setup during resize/minimize
+ * transitions. This helper keeps callers on a deterministic fallback format
+ * until the backend depth wrapper is available again.
+ */
+static VkrTextureFormat
+vkr_renderer_get_swapchain_depth_format(VkrRendererFrontendHandle renderer) {
+  if (!renderer) {
+    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  }
+
+  VkrTextureOpaqueHandle depth_tex = vkr_renderer_depth_attachment_get(renderer);
+  if (!depth_tex) {
+    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  }
+
+  struct s_TextureHandle *depth_handle = (struct s_TextureHandle *)depth_tex;
+  return depth_handle->description.format;
 }
 
 static bool8_t vkr_renderer_validate_pipeline_override(
@@ -1386,18 +1417,12 @@ VkrRendererError vkr_renderer_prepare_frame(VkrRendererFrontendHandle renderer,
   }
   rf->frame_number++;
 
-  VkrTextureFormat depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT;
-  VkrTextureOpaqueHandle depth_tex = vkr_renderer_depth_attachment_get(renderer);
-  if (depth_tex) {
-    struct s_TextureHandle *depth_handle = (struct s_TextureHandle *)depth_tex;
-    depth_format = depth_handle->description.format;
-  }
-
   out_setup->image_index = vkr_renderer_window_image_index(renderer);
   out_setup->window_width = rf->last_window_width;
   out_setup->window_height = rf->last_window_height;
   out_setup->swapchain_format = vkr_renderer_get_swapchain_format(renderer);
-  out_setup->swapchain_depth_format = depth_format;
+  out_setup->swapchain_depth_format =
+      vkr_renderer_get_swapchain_depth_format(renderer);
 
   if (out_setup->window_width == 0 || out_setup->window_height == 0) {
     VkrWindowPixelSize size = vkr_window_get_pixel_size(rf->window);
@@ -1734,13 +1759,6 @@ VkrRendererError vkr_renderer_submit_packet(
     cascade_count = VKR_SHADOW_CASCADE_COUNT_MAX;
   }
 
-  VkrTextureFormat depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT;
-  VkrTextureOpaqueHandle depth_tex = vkr_renderer_depth_attachment_get(renderer);
-  if (depth_tex) {
-    struct s_TextureHandle *depth_handle = (struct s_TextureHandle *)depth_tex;
-    depth_format = depth_handle->description.format;
-  }
-
   VkrRenderGraphFrameInfo frame = {
       .frame_index = packet->frame.frame_index,
       .image_index = vkr_renderer_window_image_index(renderer),
@@ -1751,7 +1769,9 @@ VkrRendererError vkr_renderer_submit_packet(
       .viewport_height = viewport_height,
       .editor_enabled = packet->frame.editor_enabled,
       .swapchain_format = vkr_renderer_get_swapchain_format(renderer),
-      .swapchain_depth_format = depth_format,
+      .swapchain_depth_format =
+          vkr_renderer_get_swapchain_depth_format(renderer),
+      .shadow_depth_format = vkr_renderer_get_shadow_depth_format(renderer),
       .shadow_map_size = vkr_shadow_config_get_max_map_size(shadow_cfg),
       .shadow_cascade_count = cascade_count,
   };
