@@ -4,6 +4,16 @@
 
 // Internal function for swapchain recreation (used by swapchain module)
 bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state);
+VkResult vulkan_backend_queue_submit_locked(VulkanBackendState *state,
+                                            VkQueue queue,
+                                            uint32_t submit_count,
+                                            const VkSubmitInfo *submit_infos,
+                                            VkFence fence);
+VkResult vulkan_backend_queue_present_locked(
+    VulkanBackendState *state, VkQueue queue,
+    const VkPresentInfoKHR *present_info);
+VkResult vulkan_backend_queue_wait_idle_locked(VulkanBackendState *state,
+                                               VkQueue queue);
 
 VkrRendererBackendInterface renderer_vulkan_get_interface();
 
@@ -24,6 +34,8 @@ void renderer_vulkan_get_device_information(
     Arena *temp_arena);
 
 VkrRendererError renderer_vulkan_wait_idle(void *backend_state);
+void renderer_vulkan_set_job_system(void *backend_state,
+                                    VkrJobSystem *job_system);
 
 VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
                                              float64_t delta_time);
@@ -48,6 +60,10 @@ VkrBackendResourceHandle
 renderer_vulkan_create_buffer(void *backend_state,
                               const VkrBufferDescription *desc,
                               const void *initial_data);
+uint32_t renderer_vulkan_create_buffer_batch(
+    void *backend_state, const VkrBufferBatchCreateRequest *requests,
+    uint32_t count, VkrBackendResourceHandle *out_handles,
+    VkrRendererError *out_errors);
 
 VkrRendererError renderer_vulkan_update_buffer(void *backend_state,
                                                VkrBackendResourceHandle handle,
@@ -76,6 +92,10 @@ renderer_vulkan_create_texture(void *backend_state,
 VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
     void *backend_state, const VkrTextureDescription *desc,
     const VkrTextureUploadPayload *payload);
+uint32_t renderer_vulkan_create_texture_with_payload_batch(
+    void *backend_state, const VkrTextureBatchCreateRequest *requests,
+    uint32_t count, VkrBackendResourceHandle *out_handles,
+    VkrRendererError *out_errors);
 VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
     void *backend_state, const VkrRenderTargetTextureDesc *desc);
 VkrBackendResourceHandle

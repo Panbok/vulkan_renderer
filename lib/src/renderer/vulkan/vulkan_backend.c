@@ -1,5 +1,6 @@
 #include "vulkan_backend.h"
 #include "containers/str.h"
+#include "core/vkr_threads.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
 #include "memory/vkr_pool_allocator.h"
@@ -35,9 +36,11 @@
 #else
 #define ASSIGN_TEXTURE_GENERATION(state, texture)                              \
   do {                                                                         \
-    uint32_t g = ++(state)->texture_generation_counter;                        \
-    (texture)->generation = g;                                                 \
-    (texture)->description.generation = g;                                     \
+    (void)(state);                                                             \
+    if ((texture)->description.generation == VKR_INVALID_ID ||                 \
+        (texture)->description.generation == 0u) {                             \
+      (texture)->description.generation = 1u;                                  \
+    }                                                                          \
   } while (0)
 #endif
 
@@ -53,6 +56,8 @@ bool8_t renderer_vulkan_domain_renderpass_set(void *backend_state,
                                                VkrRenderPassHandle pass_handle,
                                                VkrDomainOverridePolicy policy,
                                                VkrRendererError *out_error);
+void renderer_vulkan_set_job_system(void *backend_state,
+                                    VkrJobSystem *job_system);
 VkrRenderPassHandle renderer_vulkan_renderpass_create_desc(
     void *backend_state, const VkrRenderPassDesc *desc,
     VkrRendererError *out_error);
@@ -65,6 +70,14 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture_msaa(
 VkrRendererError renderer_vulkan_buffer_barrier(
     void *backend_state, VkrBackendResourceHandle handle,
     VkrBufferAccessFlags src_access, VkrBufferAccessFlags dst_access);
+uint32_t renderer_vulkan_create_buffer_batch(
+    void *backend_state, const VkrBufferBatchCreateRequest *requests,
+    uint32_t count, VkrBackendResourceHandle *out_handles,
+    VkrRendererError *out_errors);
+uint32_t renderer_vulkan_create_texture_with_payload_batch(
+    void *backend_state, const VkrTextureBatchCreateRequest *requests,
+    uint32_t count, VkrBackendResourceHandle *out_handles,
+    VkrRendererError *out_errors);
 VkrTextureFormat renderer_vulkan_swapchain_format_get(void *backend_state);
 VkrTextureFormat renderer_vulkan_shadow_depth_format_get(void *backend_state);
 bool8_t renderer_vulkan_pipeline_get_shader_runtime_layout(
@@ -77,8 +90,893 @@ vkr_internal VkrSampleCount
 vulkan_vk_samples_to_vkr(VkSampleCountFlagBits samples);
 vkr_internal VkImageAspectFlags
 vulkan_aspect_flags_from_texture_format(VkrTextureFormat format);
+vkr_internal uint32_t vulkan_calculate_mip_levels(uint32_t width,
+                                                  uint32_t height);
+vkr_internal bool8_t
+vulkan_texture_format_is_compressed(VkrTextureFormat format);
+vkr_internal uint32_t vulkan_texture_mip_extent(uint32_t base, uint32_t level);
+vkr_internal uint64_t vulkan_texture_expected_region_size_bytes(
+    VkrTextureFormat format, uint32_t channels, uint32_t width,
+    uint32_t height);
 
 static void vulkan_rg_timing_fetch_results(VulkanBackendState *state);
+vkr_internal void vulkan_backend_parallel_worker_context_reset(
+    VulkanParallelWorkerContext *worker);
+vkr_internal void vulkan_backend_parallel_worker_context_destroy(
+    VulkanBackendState *state, VulkanParallelWorkerContext *worker);
+vkr_internal bool8_t vulkan_backend_parallel_worker_context_create(
+    VulkanBackendState *state, uint32_t worker_index);
+vkr_internal void
+vulkan_backend_parallel_runtime_shutdown(VulkanBackendState *state);
+vkr_internal bool8_t
+vulkan_backend_parallel_runtime_initialize(VulkanBackendState *state);
+vkr_internal uint64_t vulkan_backend_env_u64(const char *name,
+                                             uint64_t default_value,
+                                             uint64_t min_value,
+                                             uint64_t max_value);
+vkr_internal bool8_t vulkan_backend_parallel_upload_batch_worthwhile(
+    const VulkanBackendState *state, uint32_t upload_job_count,
+    uint64_t upload_total_bytes);
+vkr_internal bool8_t vulkan_backend_env_flag(const char *name,
+                                             bool8_t default_value);
+vkr_internal void
+vulkan_backend_refresh_parallel_feature_toggles(VulkanBackendState *state);
+vkr_internal bool8_t vulkan_backend_prepare_staging_buffer(
+    VulkanBackendState *state, uint64_t size, const void *data,
+    struct s_BufferHandle *out_staging_buffer);
+vkr_internal bool8_t vulkan_backend_copy_buffer_region(
+    VulkanBackendState *state, VkCommandPool command_pool, VkQueue queue,
+    VkBuffer src_buffer, uint64_t src_offset, VkBuffer dst_buffer,
+    uint64_t dst_offset, uint64_t size);
+vkr_internal bool8_t vulkan_backend_record_buffer_copy_command(
+    VulkanBackendState *state, VkCommandPool command_pool, VkBuffer src_buffer,
+    uint64_t src_offset, VkBuffer dst_buffer, uint64_t dst_offset,
+    uint64_t size, VkCommandBuffer *out_command_buffer);
+vkr_internal bool8_t vulkan_backend_submit_recorded_command_buffers(
+    VulkanBackendState *state, VkQueue queue,
+    const VkCommandBuffer *command_buffers, uint32_t command_buffer_count);
+vkr_internal void vulkan_backend_free_recorded_upload_command_buffers(
+    VulkanBackendState *state, const VkCommandBuffer *command_buffers,
+    const uint32_t *worker_indices, uint32_t command_buffer_count);
+vkr_internal VkrRendererError vulkan_backend_upload_buffer_with_queue(
+    VulkanBackendState *state, struct s_BufferHandle *buffer, uint64_t offset,
+    uint64_t size, const void *data, VkCommandPool command_pool, VkQueue queue);
+vkr_internal bool8_t vulkan_backend_validate_texture_payload_request(
+    const VkrTextureDescription *desc, const VkrTextureUploadPayload *payload,
+    bool8_t *out_format_is_compressed);
+vkr_internal bool8_t vulkan_backend_build_texture_payload_copy_regions(
+    const VkrTextureDescription *desc, const VkrTextureUploadPayload *payload,
+    uint8_t *subresource_seen, VkBufferImageCopy *copy_regions);
+vkr_internal bool8_t vulkan_backend_upload_texture_payload_with_queue(
+    VulkanBackendState *state, VulkanImage *image, VkFormat image_format,
+    VkBuffer staging_buffer, const VkBufferImageCopy *copy_regions,
+    uint32_t region_count, uint32_t mip_levels, uint32_t array_layers,
+    VkCommandPool command_pool, VkQueue queue);
+vkr_internal bool8_t vulkan_backend_record_texture_payload_upload_command(
+    VulkanBackendState *state, VulkanImage *image, VkFormat image_format,
+    VkBuffer staging_buffer, const VkBufferImageCopy *copy_regions,
+    uint32_t region_count, uint32_t mip_levels, uint32_t array_layers,
+    VkCommandPool command_pool, VkCommandBuffer *out_command_buffer);
+vkr_internal void vulkan_backend_destroy_partial_texture(
+    VulkanBackendState *state, struct s_TextureHandle *texture);
+
+/**
+ * Tracks one prepared staging allocation for a batch-upload request.
+ * Ownership remains on the submitting thread; worker jobs only read handles.
+ */
+typedef struct VulkanBufferBatchUploadEntry {
+  uint32_t request_index;
+  struct s_BufferHandle staging;
+} VulkanBufferBatchUploadEntry;
+
+/**
+ * Immutable worker payload for one buffer-copy command encode operation.
+ *
+ * Workers only record command buffers; submission is centralized on the caller
+ * thread to amortize queue-submit and fence-wait costs across the batch.
+ */
+typedef struct VulkanBufferBatchUploadJobPayload {
+  VulkanBackendState *state;
+  struct s_BufferHandle *destination;
+  struct s_BufferHandle *staging;
+  uint32_t request_index;
+  uint64_t destination_offset;
+  uint64_t size;
+  VkrRendererError *out_errors;
+  VkCommandBuffer *out_command_buffer;
+  uint32_t *out_worker_index;
+  bool8_t *out_recorded;
+} VulkanBufferBatchUploadJobPayload;
+
+typedef struct VulkanTextureBatchUploadEntry {
+  uint32_t request_index;
+  struct s_TextureHandle *texture;
+  struct s_BufferHandle staging;
+  const VkrTextureDescription *description;
+  const VkBufferImageCopy *copy_regions;
+  uint32_t region_count;
+  uint32_t mip_levels;
+  uint32_t array_layers;
+  VkFormat image_format;
+  bool8_t prepared;
+} VulkanTextureBatchUploadEntry;
+
+typedef struct VulkanTextureBatchUploadJobPayload {
+  VulkanBackendState *state;
+  VulkanImage *image;
+  struct s_BufferHandle *staging;
+  const VkBufferImageCopy *copy_regions;
+  uint32_t region_count;
+  uint32_t mip_levels;
+  uint32_t array_layers;
+  VkFormat image_format;
+  uint32_t request_index;
+  VkrRendererError *out_errors;
+  VkCommandBuffer *out_command_buffer;
+  uint32_t *out_worker_index;
+  bool8_t *out_recorded;
+} VulkanTextureBatchUploadJobPayload;
+
+vkr_internal bool8_t vulkan_backend_buffer_batch_upload_job_run(
+    VkrJobContext *ctx, void *payload);
+vkr_internal bool8_t vulkan_backend_texture_batch_upload_job_run(
+    VkrJobContext *ctx, void *payload);
+
+vkr_internal INLINE VulkanQueueSubmitRole
+vulkan_backend_queue_role_from_handle(const VulkanBackendState *state,
+                                      VkQueue queue) {
+  if (!state || queue == VK_NULL_HANDLE) {
+    return VULKAN_QUEUE_SUBMIT_ROLE_GRAPHICS_UPLOAD;
+  }
+
+  if (queue == state->device.graphics_queue) {
+    return VULKAN_QUEUE_SUBMIT_ROLE_GRAPHICS_UPLOAD;
+  }
+  if (queue == state->device.transfer_queue) {
+    return VULKAN_QUEUE_SUBMIT_ROLE_TRANSFER;
+  }
+  if (queue == state->device.present_queue) {
+    return VULKAN_QUEUE_SUBMIT_ROLE_PRESENT;
+  }
+
+  return VULKAN_QUEUE_SUBMIT_ROLE_GRAPHICS_UPLOAD;
+}
+
+vkr_internal bool8_t
+vulkan_backend_queue_submit_locks_create(VulkanBackendState *state) {
+  assert_log(state != NULL, "State is NULL");
+
+  for (uint32_t i = 0; i < VULKAN_QUEUE_SUBMIT_ROLE_COUNT; ++i) {
+    state->queue_submit_state.mutexes[i] = NULL;
+  }
+
+  for (uint32_t i = 0; i < VULKAN_QUEUE_SUBMIT_ROLE_COUNT; ++i) {
+    if (!vkr_mutex_create(&state->alloc, &state->queue_submit_state.mutexes[i])) {
+      log_error("Failed to create Vulkan queue submit lock (%u)", i);
+      for (uint32_t j = 0; j < i; ++j) {
+        if (state->queue_submit_state.mutexes[j]) {
+          vkr_mutex_destroy(&state->alloc, &state->queue_submit_state.mutexes[j]);
+        }
+      }
+      return false_v;
+    }
+  }
+
+  return true_v;
+}
+
+vkr_internal void
+vulkan_backend_queue_submit_locks_destroy(VulkanBackendState *state) {
+  assert_log(state != NULL, "State is NULL");
+
+  for (uint32_t i = 0; i < VULKAN_QUEUE_SUBMIT_ROLE_COUNT; ++i) {
+    if (state->queue_submit_state.mutexes[i]) {
+      vkr_mutex_destroy(&state->alloc, &state->queue_submit_state.mutexes[i]);
+    }
+  }
+}
+
+VkResult vulkan_backend_queue_submit_locked(VulkanBackendState *state,
+                                            VkQueue queue,
+                                            uint32_t submit_count,
+                                            const VkSubmitInfo *submit_infos,
+                                            VkFence fence) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(queue != VK_NULL_HANDLE, "Queue is NULL");
+
+  const VulkanQueueSubmitRole role =
+      vulkan_backend_queue_role_from_handle(state, queue);
+  VkrMutex mutex = state->queue_submit_state.mutexes[role];
+
+  if (mutex) {
+    vkr_mutex_lock(mutex);
+  }
+  VkResult result =
+      vkQueueSubmit(queue, submit_count, submit_infos, fence);
+  if (mutex) {
+    vkr_mutex_unlock(mutex);
+  }
+
+  return result;
+}
+
+VkResult
+vulkan_backend_queue_present_locked(VulkanBackendState *state, VkQueue queue,
+                                    const VkPresentInfoKHR *present_info) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(queue != VK_NULL_HANDLE, "Queue is NULL");
+  assert_log(present_info != NULL, "Present info is NULL");
+
+  const VulkanQueueSubmitRole role =
+      vulkan_backend_queue_role_from_handle(state, queue);
+  VkrMutex mutex = state->queue_submit_state.mutexes[role];
+
+  if (mutex) {
+    vkr_mutex_lock(mutex);
+  }
+  VkResult result = vkQueuePresentKHR(queue, present_info);
+  if (mutex) {
+    vkr_mutex_unlock(mutex);
+  }
+
+  return result;
+}
+
+VkResult vulkan_backend_queue_wait_idle_locked(VulkanBackendState *state,
+                                               VkQueue queue) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(queue != VK_NULL_HANDLE, "Queue is NULL");
+
+  const VulkanQueueSubmitRole role =
+      vulkan_backend_queue_role_from_handle(state, queue);
+  VkrMutex mutex = state->queue_submit_state.mutexes[role];
+
+  if (mutex) {
+    vkr_mutex_lock(mutex);
+  }
+  VkResult result = vkQueueWaitIdle(queue);
+  if (mutex) {
+    vkr_mutex_unlock(mutex);
+  }
+
+  return result;
+}
+
+vkr_internal void vulkan_backend_parallel_worker_context_reset(
+    VulkanParallelWorkerContext *worker) {
+  assert_log(worker != NULL, "Worker context is NULL");
+  worker->initialized = false_v;
+  worker->transfer_command_pool = VK_NULL_HANDLE;
+  worker->graphics_upload_command_pool = VK_NULL_HANDLE;
+}
+
+vkr_internal void vulkan_backend_parallel_worker_context_destroy(
+    VulkanBackendState *state, VulkanParallelWorkerContext *worker) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(worker != NULL, "Worker context is NULL");
+
+  if (worker->transfer_command_pool != VK_NULL_HANDLE) {
+    vkDestroyCommandPool(state->device.logical_device,
+                         worker->transfer_command_pool, state->allocator);
+    worker->transfer_command_pool = VK_NULL_HANDLE;
+  }
+  if (worker->graphics_upload_command_pool != VK_NULL_HANDLE) {
+    vkDestroyCommandPool(state->device.logical_device,
+                         worker->graphics_upload_command_pool,
+                         state->allocator);
+    worker->graphics_upload_command_pool = VK_NULL_HANDLE;
+  }
+  worker->initialized = false_v;
+}
+
+vkr_internal bool8_t vulkan_backend_parallel_worker_context_create(
+    VulkanBackendState *state, uint32_t worker_index) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(worker_index < VKR_VULKAN_PARALLEL_MAX_WORKERS,
+             "Worker index out of range");
+
+  VulkanParallelWorkerContext *worker =
+      &state->parallel_runtime.workers[worker_index];
+  if (worker->initialized) {
+    return true_v;
+  }
+
+  vulkan_backend_parallel_worker_context_reset(worker);
+
+  VkCommandPoolCreateInfo transfer_pool_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+      .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT |
+               VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+      .queueFamilyIndex = (uint32_t)state->device.transfer_queue_index,
+  };
+  if (vkCreateCommandPool(state->device.logical_device, &transfer_pool_info,
+                          state->allocator,
+                          &worker->transfer_command_pool) != VK_SUCCESS) {
+    log_error("Failed to create worker transfer command pool (%u)",
+              worker_index);
+    return false_v;
+  }
+
+  VkCommandPoolCreateInfo graphics_upload_pool_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+      .flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT |
+               VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
+      .queueFamilyIndex = (uint32_t)state->device.graphics_queue_index,
+  };
+  if (vkCreateCommandPool(state->device.logical_device,
+                          &graphics_upload_pool_info, state->allocator,
+                          &worker->graphics_upload_command_pool) !=
+      VK_SUCCESS) {
+    log_error("Failed to create worker graphics upload command pool (%u)",
+              worker_index);
+    vulkan_backend_parallel_worker_context_destroy(state, worker);
+    return false_v;
+  }
+
+  worker->initialized = true_v;
+  return true_v;
+}
+
+vkr_internal void
+vulkan_backend_parallel_runtime_shutdown(VulkanBackendState *state) {
+  assert_log(state != NULL, "State is NULL");
+
+  for (uint32_t i = 0; i < VKR_VULKAN_PARALLEL_MAX_WORKERS; ++i) {
+    vulkan_backend_parallel_worker_context_destroy(
+        state, &state->parallel_runtime.workers[i]);
+  }
+}
+
+vkr_internal bool8_t
+vulkan_backend_parallel_runtime_initialize(VulkanBackendState *state) {
+  assert_log(state != NULL, "State is NULL");
+
+  for (uint32_t i = 0; i < state->parallel_runtime.worker_count; ++i) {
+    if (!vulkan_backend_parallel_worker_context_create(state, i)) {
+      vulkan_backend_parallel_runtime_shutdown(state);
+      return false_v;
+    }
+  }
+
+  return true_v;
+}
+
+vkr_internal bool8_t vulkan_backend_prepare_staging_buffer(
+    VulkanBackendState *state, uint64_t size, const void *data,
+    struct s_BufferHandle *out_staging_buffer) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(out_staging_buffer != NULL, "Out staging buffer is NULL");
+
+  if (!data || size == 0) {
+    return false_v;
+  }
+
+  MemZero(out_staging_buffer, sizeof(struct s_BufferHandle));
+  VkrBufferTypeFlags buffer_type = bitset8_create();
+  bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
+
+  const VkrBufferDescription staging_desc = {
+      .size = size,
+      .memory_properties = vkr_memory_property_flags_from_bits(
+          VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
+      .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
+      .buffer_type = buffer_type,
+      .bind_on_create = true_v,
+  };
+
+  if (!vulkan_buffer_create(state, &staging_desc, out_staging_buffer)) {
+    return false_v;
+  }
+  if (!vulkan_buffer_load_data(state, &out_staging_buffer->buffer, 0, size, 0,
+                               data)) {
+    vulkan_buffer_destroy(state, &out_staging_buffer->buffer);
+    return false_v;
+  }
+  return true_v;
+}
+
+vkr_internal bool8_t vulkan_backend_record_buffer_copy_command(
+    VulkanBackendState *state, VkCommandPool command_pool, VkBuffer src_buffer,
+    uint64_t src_offset, VkBuffer dst_buffer, uint64_t dst_offset,
+    uint64_t size, VkCommandBuffer *out_command_buffer) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(command_pool != VK_NULL_HANDLE, "Command pool is NULL");
+  assert_log(src_buffer != VK_NULL_HANDLE, "Source buffer is NULL");
+  assert_log(dst_buffer != VK_NULL_HANDLE, "Destination buffer is NULL");
+  assert_log(out_command_buffer != NULL, "Output command buffer is NULL");
+
+  *out_command_buffer = VK_NULL_HANDLE;
+
+  VkCommandBufferAllocateInfo alloc_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .commandPool = command_pool,
+      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+      .commandBufferCount = 1,
+  };
+
+  VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+  if (vkAllocateCommandBuffers(state->device.logical_device, &alloc_info,
+                               &command_buffer) != VK_SUCCESS) {
+    return false_v;
+  }
+
+  VkCommandBufferBeginInfo begin_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+  };
+  if (vkBeginCommandBuffer(command_buffer, &begin_info) != VK_SUCCESS) {
+    vkFreeCommandBuffers(state->device.logical_device, command_pool, 1,
+                         &command_buffer);
+    return false_v;
+  }
+
+  const VkBufferCopy copy_region = {
+      .srcOffset = src_offset,
+      .dstOffset = dst_offset,
+      .size = size,
+  };
+  vkCmdCopyBuffer(command_buffer, src_buffer, dst_buffer, 1, &copy_region);
+
+  if (vkEndCommandBuffer(command_buffer) != VK_SUCCESS) {
+    vkFreeCommandBuffers(state->device.logical_device, command_pool, 1,
+                         &command_buffer);
+    return false_v;
+  }
+
+  *out_command_buffer = command_buffer;
+  return true_v;
+}
+
+vkr_internal bool8_t vulkan_backend_submit_recorded_command_buffers(
+    VulkanBackendState *state, VkQueue queue,
+    const VkCommandBuffer *command_buffers, uint32_t command_buffer_count) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(queue != VK_NULL_HANDLE, "Queue is NULL");
+  assert_log(command_buffers != NULL, "Command buffers are NULL");
+
+  if (command_buffer_count == 0) {
+    return true_v;
+  }
+
+  VulkanFence submit_fence = {0};
+  vulkan_fence_create(state, false_v, &submit_fence);
+  if (submit_fence.handle == VK_NULL_HANDLE) {
+    return false_v;
+  }
+
+  const VkSubmitInfo submit_info = {
+      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+      .commandBufferCount = command_buffer_count,
+      .pCommandBuffers = command_buffers,
+  };
+  if (vulkan_backend_queue_submit_locked(state, queue, 1, &submit_info,
+                                         submit_fence.handle) != VK_SUCCESS) {
+    vulkan_fence_destroy(state, &submit_fence);
+    return false_v;
+  }
+
+  const bool8_t success = vulkan_fence_wait(state, UINT64_MAX, &submit_fence);
+  vulkan_fence_destroy(state, &submit_fence);
+  return success;
+}
+
+vkr_internal void vulkan_backend_free_recorded_upload_command_buffers(
+    VulkanBackendState *state, const VkCommandBuffer *command_buffers,
+    const uint32_t *worker_indices, uint32_t command_buffer_count) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(command_buffers != NULL, "Command buffers are NULL");
+
+  if (command_buffer_count == 0) {
+    return;
+  }
+
+  for (uint32_t i = 0; i < command_buffer_count; ++i) {
+    if (command_buffers[i] == VK_NULL_HANDLE) {
+      continue;
+    }
+
+    VkCommandPool command_pool = state->device.graphics_command_pool;
+    if (worker_indices &&
+        worker_indices[i] < state->parallel_runtime.worker_count) {
+      VulkanParallelWorkerContext *worker =
+          &state->parallel_runtime.workers[worker_indices[i]];
+      if (worker->initialized &&
+          worker->graphics_upload_command_pool != VK_NULL_HANDLE) {
+        command_pool = worker->graphics_upload_command_pool;
+      }
+    }
+
+    VkCommandBuffer command_buffer = command_buffers[i];
+    vkFreeCommandBuffers(state->device.logical_device, command_pool, 1,
+                         &command_buffer);
+  }
+}
+
+vkr_internal bool8_t vulkan_backend_copy_buffer_region(
+    VulkanBackendState *state, VkCommandPool command_pool, VkQueue queue,
+    VkBuffer src_buffer, uint64_t src_offset, VkBuffer dst_buffer,
+    uint64_t dst_offset, uint64_t size) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(command_pool != VK_NULL_HANDLE, "Command pool is NULL");
+  assert_log(queue != VK_NULL_HANDLE, "Queue is NULL");
+  assert_log(src_buffer != VK_NULL_HANDLE, "Source buffer is NULL");
+  assert_log(dst_buffer != VK_NULL_HANDLE, "Destination buffer is NULL");
+
+  VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+  if (!vulkan_backend_record_buffer_copy_command(
+          state, command_pool, src_buffer, src_offset, dst_buffer, dst_offset,
+          size, &command_buffer)) {
+    return false_v;
+  }
+
+  const bool8_t success = vulkan_backend_submit_recorded_command_buffers(
+      state, queue, &command_buffer, 1);
+  vkFreeCommandBuffers(state->device.logical_device, command_pool, 1,
+                       &command_buffer);
+  return success;
+}
+
+vkr_internal VkrRendererError vulkan_backend_upload_buffer_with_queue(
+    VulkanBackendState *state, struct s_BufferHandle *buffer, uint64_t offset,
+    uint64_t size, const void *data, VkCommandPool command_pool,
+    VkQueue queue) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(buffer != NULL, "Buffer is NULL");
+
+  if (!data || size == 0) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  struct s_BufferHandle staging = {0};
+  if (!vulkan_backend_prepare_staging_buffer(state, size, data, &staging)) {
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  bool8_t copied = vulkan_backend_copy_buffer_region(
+      state, command_pool, queue, staging.buffer.handle, 0,
+      buffer->buffer.handle, offset, size);
+  vulkan_buffer_destroy(state, &staging.buffer);
+
+  return copied ? VKR_RENDERER_ERROR_NONE : VKR_RENDERER_ERROR_DEVICE_ERROR;
+}
+
+vkr_internal bool8_t
+vulkan_backend_buffer_batch_upload_job_run(VkrJobContext *ctx, void *payload) {
+  assert_log(ctx != NULL, "Job context is NULL");
+  assert_log(payload != NULL, "Payload is NULL");
+
+  VulkanBufferBatchUploadJobPayload *job =
+      (VulkanBufferBatchUploadJobPayload *)payload;
+  if (!job->state || !job->destination || !job->staging || !job->out_errors) {
+    return false_v;
+  }
+  if (!job->out_command_buffer || !job->out_worker_index ||
+      !job->out_recorded) {
+    job->out_errors[job->request_index] = VKR_RENDERER_ERROR_DEVICE_ERROR;
+    return false_v;
+  }
+  *job->out_command_buffer = VK_NULL_HANDLE;
+  *job->out_worker_index = ctx->worker_index;
+  *job->out_recorded = false_v;
+
+  if (ctx->worker_index >= job->state->parallel_runtime.worker_count) {
+    job->out_errors[job->request_index] = VKR_RENDERER_ERROR_DEVICE_ERROR;
+    return false_v;
+  }
+
+  VulkanParallelWorkerContext *worker =
+      &job->state->parallel_runtime.workers[ctx->worker_index];
+  if (!worker->initialized ||
+      worker->graphics_upload_command_pool == VK_NULL_HANDLE) {
+    job->out_errors[job->request_index] = VKR_RENDERER_ERROR_DEVICE_ERROR;
+    return false_v;
+  }
+
+  if (!vulkan_backend_record_buffer_copy_command(
+          job->state, worker->graphics_upload_command_pool,
+          job->staging->buffer.handle, 0, job->destination->buffer.handle,
+          job->destination_offset, job->size, job->out_command_buffer)) {
+    job->out_errors[job->request_index] = VKR_RENDERER_ERROR_DEVICE_ERROR;
+    return false_v;
+  }
+
+  *job->out_recorded = true_v;
+  job->out_errors[job->request_index] = VKR_RENDERER_ERROR_NONE;
+  return true_v;
+}
+
+vkr_internal bool8_t vulkan_backend_validate_texture_payload_request(
+    const VkrTextureDescription *desc, const VkrTextureUploadPayload *payload,
+    bool8_t *out_format_is_compressed) {
+  assert_log(desc != NULL, "Texture description is NULL");
+  assert_log(payload != NULL, "Texture payload is NULL");
+  assert_log(out_format_is_compressed != NULL, "Out compression flag is NULL");
+
+  if (!payload->data || payload->data_size == 0 || payload->region_count == 0 ||
+      !payload->regions || payload->mip_levels == 0 ||
+      payload->array_layers == 0) {
+    return false_v;
+  }
+  if (desc->width == 0 || desc->height == 0) {
+    return false_v;
+  }
+  if (desc->type != VKR_TEXTURE_TYPE_2D) {
+    return false_v;
+  }
+
+  const bool8_t format_is_compressed =
+      vulkan_texture_format_is_compressed(desc->format);
+  *out_format_is_compressed = format_is_compressed;
+  if (payload->is_compressed != format_is_compressed) {
+    return false_v;
+  }
+
+  const uint64_t expected_region_count =
+      (uint64_t)payload->mip_levels * (uint64_t)payload->array_layers;
+  if (payload->region_count != expected_region_count) {
+    return false_v;
+  }
+
+  const uint32_t max_mip_levels =
+      vulkan_calculate_mip_levels(desc->width, desc->height);
+  if (payload->mip_levels > max_mip_levels) {
+    return false_v;
+  }
+
+  if (!format_is_compressed && (desc->channels == 0 || desc->channels > 4)) {
+    return false_v;
+  }
+
+  return true_v;
+}
+
+vkr_internal bool8_t vulkan_backend_build_texture_payload_copy_regions(
+    const VkrTextureDescription *desc, const VkrTextureUploadPayload *payload,
+    uint8_t *subresource_seen, VkBufferImageCopy *copy_regions) {
+  assert_log(desc != NULL, "Texture description is NULL");
+  assert_log(payload != NULL, "Texture payload is NULL");
+  assert_log(subresource_seen != NULL, "Subresource seen table is NULL");
+  assert_log(copy_regions != NULL, "Copy regions are NULL");
+
+  const uint64_t subresource_count =
+      (uint64_t)payload->mip_levels * (uint64_t)payload->array_layers;
+  MemZero(subresource_seen, subresource_count);
+
+  for (uint32_t region_index = 0; region_index < payload->region_count;
+       ++region_index) {
+    const VkrTextureUploadRegion *region = &payload->regions[region_index];
+    if (region->mip_level >= payload->mip_levels ||
+        region->array_layer >= payload->array_layers) {
+      return false_v;
+    }
+    if (region->depth != 1) {
+      return false_v;
+    }
+
+    const uint32_t mip_width =
+        vulkan_texture_mip_extent(desc->width, region->mip_level);
+    const uint32_t mip_height =
+        vulkan_texture_mip_extent(desc->height, region->mip_level);
+    if (region->width != mip_width || region->height != mip_height) {
+      return false_v;
+    }
+
+    if (region->byte_offset >= payload->data_size ||
+        region->byte_offset + region->byte_size > payload->data_size ||
+        region->byte_offset + region->byte_size < region->byte_offset) {
+      return false_v;
+    }
+
+    const uint64_t expected_size = vulkan_texture_expected_region_size_bytes(
+        desc->format, desc->channels, mip_width, mip_height);
+    if (expected_size == 0 || region->byte_size != expected_size) {
+      return false_v;
+    }
+
+    const uint64_t subresource_index =
+        (uint64_t)region->array_layer * (uint64_t)payload->mip_levels +
+        (uint64_t)region->mip_level;
+    if (subresource_seen[subresource_index]) {
+      return false_v;
+    }
+    subresource_seen[subresource_index] = 1;
+
+    copy_regions[region_index] = (VkBufferImageCopy){
+        .bufferOffset = region->byte_offset,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel = region->mip_level,
+                .baseArrayLayer = region->array_layer,
+                .layerCount = 1,
+            },
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {region->width, region->height, region->depth},
+    };
+  }
+
+  for (uint64_t i = 0; i < subresource_count; ++i) {
+    if (!subresource_seen[i]) {
+      return false_v;
+    }
+  }
+
+  return true_v;
+}
+
+vkr_internal bool8_t vulkan_backend_record_texture_payload_upload_command(
+    VulkanBackendState *state, VulkanImage *image, VkFormat image_format,
+    VkBuffer staging_buffer, const VkBufferImageCopy *copy_regions,
+    uint32_t region_count, uint32_t mip_levels, uint32_t array_layers,
+    VkCommandPool command_pool, VkCommandBuffer *out_command_buffer) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(image != NULL, "Image is NULL");
+  assert_log(staging_buffer != VK_NULL_HANDLE, "Staging buffer is NULL");
+  assert_log(copy_regions != NULL, "Copy regions are NULL");
+  assert_log(region_count > 0, "Region count must be > 0");
+  assert_log(mip_levels > 0, "Mip level count must be > 0");
+  assert_log(array_layers > 0, "Array layer count must be > 0");
+  assert_log(command_pool != VK_NULL_HANDLE, "Command pool is NULL");
+  assert_log(out_command_buffer != NULL, "Output command buffer is NULL");
+
+  *out_command_buffer = VK_NULL_HANDLE;
+
+  VkCommandBufferAllocateInfo alloc_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+      .commandPool = command_pool,
+      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+      .commandBufferCount = 1,
+  };
+
+  VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+  if (vkAllocateCommandBuffers(state->device.logical_device, &alloc_info,
+                               &command_buffer) != VK_SUCCESS) {
+    return false_v;
+  }
+
+  VkCommandBufferBeginInfo begin_info = {
+      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+  };
+  if (vkBeginCommandBuffer(command_buffer, &begin_info) != VK_SUCCESS) {
+    vkFreeCommandBuffers(state->device.logical_device, command_pool, 1,
+                         &command_buffer);
+    return false_v;
+  }
+
+  VulkanCommandBuffer wrapped_cmd = {.handle = command_buffer};
+  const VkImageSubresourceRange full_range = {
+      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+      .baseMipLevel = 0,
+      .levelCount = mip_levels,
+      .baseArrayLayer = 0,
+      .layerCount = array_layers,
+  };
+
+  if (!vulkan_image_transition_layout_range(
+          state, image, &wrapped_cmd, image_format, VK_IMAGE_LAYOUT_UNDEFINED,
+          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &full_range)) {
+    goto cleanup_fail;
+  }
+
+  vkCmdCopyBufferToImage(command_buffer, staging_buffer, image->handle,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count,
+                         copy_regions);
+
+  if (!vulkan_image_transition_layout_range(
+          state, image, &wrapped_cmd, image_format,
+          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &full_range)) {
+    goto cleanup_fail;
+  }
+
+  if (vkEndCommandBuffer(command_buffer) != VK_SUCCESS) {
+    goto cleanup_fail;
+  }
+
+  *out_command_buffer = command_buffer;
+  return true_v;
+
+cleanup_fail:
+  (void)vkEndCommandBuffer(command_buffer);
+  vkFreeCommandBuffers(state->device.logical_device, command_pool, 1,
+                       &command_buffer);
+  return false_v;
+}
+
+vkr_internal bool8_t vulkan_backend_upload_texture_payload_with_queue(
+    VulkanBackendState *state, VulkanImage *image, VkFormat image_format,
+    VkBuffer staging_buffer, const VkBufferImageCopy *copy_regions,
+    uint32_t region_count, uint32_t mip_levels, uint32_t array_layers,
+    VkCommandPool command_pool, VkQueue queue) {
+  assert_log(queue != VK_NULL_HANDLE, "Queue is NULL");
+
+  VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+  if (!vulkan_backend_record_texture_payload_upload_command(
+          state, image, image_format, staging_buffer, copy_regions,
+          region_count, mip_levels, array_layers, command_pool,
+          &command_buffer)) {
+    return false_v;
+  }
+
+  const bool8_t success = vulkan_backend_submit_recorded_command_buffers(
+      state, queue, &command_buffer, 1);
+  vkFreeCommandBuffers(state->device.logical_device, command_pool, 1,
+                       &command_buffer);
+  return success;
+}
+
+vkr_internal bool8_t
+vulkan_backend_texture_batch_upload_job_run(VkrJobContext *ctx, void *payload) {
+  assert_log(ctx != NULL, "Job context is NULL");
+  assert_log(payload != NULL, "Payload is NULL");
+
+  VulkanTextureBatchUploadJobPayload *job =
+      (VulkanTextureBatchUploadJobPayload *)payload;
+  if (!job->state || !job->image || !job->staging || !job->copy_regions ||
+      !job->out_errors || job->region_count == 0 || job->mip_levels == 0 ||
+      job->array_layers == 0) {
+    return false_v;
+  }
+  if (!job->out_command_buffer || !job->out_worker_index ||
+      !job->out_recorded) {
+    job->out_errors[job->request_index] = VKR_RENDERER_ERROR_DEVICE_ERROR;
+    return false_v;
+  }
+  *job->out_command_buffer = VK_NULL_HANDLE;
+  *job->out_worker_index = ctx->worker_index;
+  *job->out_recorded = false_v;
+
+  if (ctx->worker_index >= job->state->parallel_runtime.worker_count) {
+    job->out_errors[job->request_index] = VKR_RENDERER_ERROR_DEVICE_ERROR;
+    return false_v;
+  }
+
+  VulkanParallelWorkerContext *worker =
+      &job->state->parallel_runtime.workers[ctx->worker_index];
+  if (!worker->initialized ||
+      worker->graphics_upload_command_pool == VK_NULL_HANDLE) {
+    job->out_errors[job->request_index] = VKR_RENDERER_ERROR_DEVICE_ERROR;
+    return false_v;
+  }
+
+  if (!vulkan_backend_record_texture_payload_upload_command(
+          job->state, job->image, job->image_format,
+          job->staging->buffer.handle, job->copy_regions, job->region_count,
+          job->mip_levels, job->array_layers,
+          worker->graphics_upload_command_pool, job->out_command_buffer)) {
+    job->out_errors[job->request_index] = VKR_RENDERER_ERROR_DEVICE_ERROR;
+    return false_v;
+  }
+
+  *job->out_recorded = true_v;
+  job->out_errors[job->request_index] = VKR_RENDERER_ERROR_NONE;
+  return true_v;
+}
+
+vkr_internal void
+vulkan_backend_destroy_partial_texture(VulkanBackendState *state,
+                                       struct s_TextureHandle *texture) {
+  assert_log(state != NULL, "State is NULL");
+  if (!texture) {
+    return;
+  }
+
+  if (texture->texture.sampler != VK_NULL_HANDLE) {
+    vkDestroySampler(state->device.logical_device, texture->texture.sampler,
+                     state->allocator);
+    texture->texture.sampler = VK_NULL_HANDLE;
+  }
+  if (texture->texture.image.handle != VK_NULL_HANDLE) {
+    vulkan_image_destroy(state, &texture->texture.image);
+  }
+
+  vkr_allocator_free(&state->texture_pool_alloc, texture,
+                     sizeof(struct s_TextureHandle),
+                     VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+}
 
 /**
  * @brief Resolve the depth format used by sampled shadow resources.
@@ -119,6 +1017,120 @@ vkr_internal uint32_t vulkan_calculate_mip_levels(uint32_t width,
     mip_levels++;
   }
   return mip_levels;
+}
+
+/**
+ * @brief Parses common truthy/falsy environment values.
+ *
+ * Unknown values preserve `default_value` so rollout scripts can safely set
+ * overrides without requiring strict parsing support in every build.
+ */
+vkr_internal bool8_t vulkan_backend_env_flag(const char *name,
+                                             bool8_t default_value) {
+  if (!name || name[0] == '\0') {
+    return default_value;
+  }
+
+  const char *value = getenv(name);
+  if (!value || value[0] == '\0') {
+    return default_value;
+  }
+
+  switch (value[0]) {
+  case '1':
+  case 'y':
+  case 'Y':
+  case 't':
+  case 'T':
+    return true_v;
+  case '0':
+  case 'n':
+  case 'N':
+  case 'f':
+  case 'F':
+    return false_v;
+  default:
+    return default_value;
+  }
+}
+
+/**
+ * @brief Parses an unsigned integer environment override with clamping.
+ *
+ * Invalid values fall back to `default_value` so rollout scripts can safely
+ * set optional tuning knobs without making startup brittle.
+ */
+vkr_internal uint64_t vulkan_backend_env_u64(const char *name,
+                                             uint64_t default_value,
+                                             uint64_t min_value,
+                                             uint64_t max_value) {
+  if (!name || name[0] == '\0') {
+    return default_value;
+  }
+
+  const char *value = getenv(name);
+  if (!value || value[0] == '\0') {
+    return default_value;
+  }
+
+  char *end = NULL;
+  const uint64_t parsed = (uint64_t)strtoull(value, &end, 10);
+  if (end == value || (end && end[0] != '\0')) {
+    return default_value;
+  }
+
+  if (parsed < min_value) {
+    return min_value;
+  }
+  if (parsed > max_value) {
+    return max_value;
+  }
+  return parsed;
+}
+
+/**
+ * @brief Decide whether upload worker fan-out is worth its setup overhead.
+ *
+ * Small upload batches are faster on the direct synchronous path. Thresholds
+ * are tunable to keep large-scene throughput while avoiding regressions on
+ * scenes that upload only a few resources.
+ */
+vkr_internal bool8_t vulkan_backend_parallel_upload_batch_worthwhile(
+    const VulkanBackendState *state, uint32_t upload_job_count,
+    uint64_t upload_total_bytes) {
+  if (!state || !state->parallel_upload_unsafe_enabled ||
+      upload_job_count == 0) {
+    return false_v;
+  }
+
+  const uint64_t min_jobs =
+      vulkan_backend_env_u64("VKR_PARALLEL_UPLOAD_MIN_JOBS", 8u, 1u, 4096u);
+  const uint64_t min_bytes = vulkan_backend_env_u64(
+      "VKR_PARALLEL_UPLOAD_MIN_BYTES", (uint64_t)MB(4), 1u, UINT64_MAX);
+
+  return upload_job_count >= (uint32_t)min_jobs ||
+         upload_total_bytes >= min_bytes;
+}
+
+vkr_internal void
+vulkan_backend_refresh_parallel_feature_toggles(VulkanBackendState *state) {
+  if (!state) {
+    return;
+  }
+
+#if VKR_VULKAN_PARALLEL_UPLOAD
+  const bool8_t upload_default_enabled = true_v;
+#else
+  const bool8_t upload_default_enabled = false_v;
+#endif
+
+  state->parallel_upload_enabled =
+      vulkan_backend_env_flag("VKR_PARALLEL_UPLOAD", upload_default_enabled);
+  state->parallel_upload_unsafe_enabled =
+      vulkan_backend_env_flag("VKR_PARALLEL_UPLOAD_UNSAFE", false_v);
+  if (!state->parallel_upload_enabled) {
+    state->parallel_upload_unsafe_enabled = false_v;
+  }
 }
 
 /**
@@ -1687,7 +2699,7 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
   uint32_t old_image_count = state->swapchain.image_count;
 
   // Wait for GPU to finish all pending work
-  vkQueueWaitIdle(state->device.graphics_queue);
+  vulkan_backend_queue_wait_idle_locked(state, state->device.graphics_queue);
 
   // Attempt swapchain recreation FIRST
   // If this fails (e.g., window minimized), we don't destroy anything
@@ -1838,6 +2850,7 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
   }
 
   state->active_named_render_pass = NULL;
+  state->active_named_render_target = NULL;
   state->is_swapchain_recreation_requested = false;
 
   log_debug("Swapchain recreation complete: %u images, %u in-flight frames",
@@ -1853,6 +2866,7 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .shutdown = renderer_vulkan_shutdown,
       .on_resize = renderer_vulkan_on_resize,
       .get_device_information = renderer_vulkan_get_device_information,
+      .set_job_system = renderer_vulkan_set_job_system,
       .wait_idle = renderer_vulkan_wait_idle,
       .begin_frame = renderer_vulkan_begin_frame,
       .end_frame = renderer_vulkan_end_frame,
@@ -1871,6 +2885,7 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .swapchain_format_get = renderer_vulkan_swapchain_format_get,
       .shadow_depth_format_get = renderer_vulkan_shadow_depth_format_get,
       .buffer_create = renderer_vulkan_create_buffer,
+      .buffer_create_batch = renderer_vulkan_create_buffer_batch,
       .buffer_destroy = renderer_vulkan_destroy_buffer,
       .buffer_update = renderer_vulkan_update_buffer,
       .buffer_upload = renderer_vulkan_upload_buffer,
@@ -1879,6 +2894,8 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .buffer_barrier = renderer_vulkan_buffer_barrier,
       .texture_create = renderer_vulkan_create_texture,
       .texture_create_with_payload = renderer_vulkan_create_texture_with_payload,
+      .texture_create_with_payload_batch =
+          renderer_vulkan_create_texture_with_payload_batch,
       .render_target_texture_create =
           renderer_vulkan_create_render_target_texture,
       .depth_attachment_create = renderer_vulkan_create_depth_attachment,
@@ -2162,8 +3179,8 @@ bool8_t renderer_vulkan_rg_timing_begin_frame(void *backend_state,
     return false_v;
   }
 
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, state->image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
   if (!command_buffer) {
     return false_v;
   }
@@ -2192,8 +3209,8 @@ void renderer_vulkan_rg_timing_begin_pass(void *backend_state,
     return;
   }
 
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, state->image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
   if (!command_buffer) {
     return;
   }
@@ -2220,8 +3237,8 @@ void renderer_vulkan_rg_timing_end_pass(void *backend_state,
     return;
   }
 
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, state->image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
   if (!command_buffer) {
     return;
   }
@@ -2336,10 +3353,17 @@ renderer_vulkan_initialize(void **out_backend_state,
   backend_state->depth_texture = NULL;
   backend_state->on_render_target_refresh_required =
       backend_config ? backend_config->on_render_target_refresh_required : NULL;
+  backend_state->parallel_runtime.enabled = false_v;
+  backend_state->parallel_runtime.job_system = NULL;
+  backend_state->parallel_runtime.worker_count = 0;
+  backend_state->parallel_upload_enabled = false_v;
+  backend_state->parallel_upload_unsafe_enabled = false_v;
+  vulkan_backend_refresh_parallel_feature_toggles(backend_state);
 
   backend_state->current_render_pass_domain =
       VKR_PIPELINE_DOMAIN_COUNT; // Invalid domain
   backend_state->active_named_render_pass = NULL;
+  backend_state->active_named_render_target = NULL;
   backend_state->render_pass_active = false;
   backend_state->active_image_index = 0;
 
@@ -2512,6 +3536,11 @@ renderer_vulkan_initialize(void **out_backend_state,
   backend_state->render_target_alloc.ctx = &backend_state->render_target_pool;
   vkr_pool_allocator_create(&backend_state->render_target_alloc);
 
+  if (!vulkan_backend_queue_submit_locks_create(backend_state)) {
+    log_fatal("Failed to create Vulkan queue submit locks");
+    return false;
+  }
+
   return true;
 }
 
@@ -2614,6 +3643,8 @@ void renderer_vulkan_shutdown(void *backend_state) {
 
     state->domain_render_passes[domain] = NULL;
   }
+
+  vulkan_backend_parallel_runtime_shutdown(state);
   vulkan_backend_destroy_attachment_wrappers(state,
                                              state->swapchain.image_count);
   vulkan_swapchain_destroy(state);
@@ -2624,6 +3655,7 @@ void renderer_vulkan_shutdown(void *backend_state) {
   vulkan_debug_destroy_debug_messenger(state);
 #endif
   vulkan_instance_destroy(state);
+  vulkan_backend_queue_submit_locks_destroy(state);
   vulkan_allocator_destroy(&state->alloc, &state->vk_allocator);
   state->allocator = NULL;
 
@@ -2670,6 +3702,52 @@ VkrRendererError renderer_vulkan_wait_idle(void *backend_state) {
   }
 
   return VKR_RENDERER_ERROR_NONE;
+}
+
+void renderer_vulkan_set_job_system(void *backend_state,
+                                    VkrJobSystem *job_system) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  vulkan_backend_refresh_parallel_feature_toggles(state);
+  vulkan_backend_parallel_runtime_shutdown(state);
+
+  state->parallel_runtime.job_system = job_system;
+  state->parallel_runtime.worker_count = 0;
+  state->parallel_runtime.enabled = false_v;
+
+  for (uint32_t i = 0; i < VKR_VULKAN_PARALLEL_MAX_WORKERS; ++i) {
+    vulkan_backend_parallel_worker_context_reset(
+        &state->parallel_runtime.workers[i]);
+  }
+
+  /*
+   * Runtime workers are only required for upload jobs. Keeping runtime disabled
+   * otherwise avoids per-frame worker-pool reset overhead.
+   */
+  const bool8_t needs_parallel_upload_runtime =
+      state->parallel_upload_enabled && state->parallel_upload_unsafe_enabled;
+  const bool8_t needs_parallel_runtime = needs_parallel_upload_runtime;
+  if (needs_parallel_runtime && job_system && job_system->worker_count > 0) {
+    state->parallel_runtime.worker_count =
+        Min(job_system->worker_count, VKR_VULKAN_PARALLEL_MAX_WORKERS);
+    if (state->parallel_runtime.worker_count > 0 &&
+        vulkan_backend_parallel_runtime_initialize(state)) {
+      state->parallel_runtime.enabled = true_v;
+    } else {
+      state->parallel_runtime.worker_count = 0;
+      state->parallel_runtime.enabled = false_v;
+      log_warn("Vulkan parallel runtime disabled: failed to initialize worker "
+               "command pools");
+    }
+  }
+
+  log_info("Vulkan parallel features: upload=%s, upload_unsafe=%s, "
+           "runtime=%s, workers=%u",
+           state->parallel_upload_enabled ? "on" : "off",
+           state->parallel_upload_unsafe_enabled ? "on" : "off",
+           state->parallel_runtime.enabled ? "on" : "off",
+           state->parallel_runtime.worker_count);
 }
 
 /**
@@ -2741,8 +3819,11 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
     return VKR_RENDERER_ERROR_NONE;
   }
 
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, state->image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
   vulkan_command_buffer_reset(command_buffer);
 
   if (!vulkan_command_buffer_begin(command_buffer)) {
@@ -2772,6 +3853,7 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
   state->current_render_pass_domain =
       VKR_PIPELINE_DOMAIN_COUNT; // Invalid domain (no pass active)
   state->active_named_render_pass = NULL;
+  state->active_named_render_target = NULL;
 
   return VKR_RENDERER_ERROR_NONE;
 }
@@ -2790,8 +3872,11 @@ void renderer_vulkan_draw(void *backend_state, uint32_t vertex_count,
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, state->image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return;
+  }
 
   vkCmdDraw(command_buffer->handle, vertex_count, instance_count, first_vertex,
             first_instance);
@@ -2840,8 +3925,11 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, state->image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
 
   if (state->render_pass_active) {
     VkrRendererError end_err = renderer_vulkan_end_render_pass(state);
@@ -2939,8 +4027,8 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
       .pWaitDstStageMask = flags,
   };
 
-  VkResult result = vkQueueSubmit(
-      state->device.graphics_queue, 1, &submit_info,
+  VkResult result = vulkan_backend_queue_submit_locked(
+      state, state->device.graphics_queue, 1, &submit_info,
       array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
           ->handle);
   if (result != VK_SUCCESS) {
@@ -2981,8 +4069,11 @@ void renderer_vulkan_draw_indexed(void *backend_state, uint32_t index_count,
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, state->image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return;
+  }
 
   vkCmdDrawIndexed(command_buffer->handle, index_count, instance_count,
                    first_index, vertex_offset, first_instance);
@@ -3002,8 +4093,11 @@ void renderer_vulkan_draw_indexed_indirect(
   struct s_BufferHandle *buffer =
       (struct s_BufferHandle *)indirect_buffer.ptr;
 
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, state->image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return;
+  }
 
   if (!state->device.features.multiDrawIndirect && draw_count > 1) {
     for (uint32_t i = 0; i < draw_count; ++i) {
@@ -3062,6 +4156,281 @@ renderer_vulkan_create_buffer(void *backend_state,
   }
 
   return (VkrBackendResourceHandle){.ptr = buffer};
+}
+
+uint32_t renderer_vulkan_create_buffer_batch(
+    void *backend_state, const VkrBufferBatchCreateRequest *requests,
+    uint32_t count, VkrBackendResourceHandle *out_handles,
+    VkrRendererError *out_errors) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(requests != NULL, "Requests is NULL");
+  assert_log(count > 0, "Count must be > 0");
+  assert_log(out_handles != NULL, "Out handles is NULL");
+  assert_log(out_errors != NULL, "Out errors is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  uint32_t created = 0;
+
+  uint32_t candidate_upload_jobs = 0;
+  uint64_t candidate_upload_bytes = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const VkrBufferUploadPayload *upload = requests[i].upload;
+    if (!upload || !upload->data || upload->size == 0) {
+      continue;
+    }
+    candidate_upload_jobs++;
+    if (candidate_upload_bytes <= UINT64_MAX - upload->size) {
+      candidate_upload_bytes += upload->size;
+    } else {
+      candidate_upload_bytes = UINT64_MAX;
+    }
+  }
+
+  bool8_t use_parallel_upload =
+      state->parallel_upload_enabled && state->parallel_runtime.enabled &&
+      state->parallel_runtime.job_system &&
+      state->parallel_runtime.worker_count > 0 &&
+      vulkan_backend_parallel_upload_batch_worthwhile(
+          state, candidate_upload_jobs, candidate_upload_bytes);
+
+  VkrAllocatorScope parallel_scope = {0};
+  VulkanBufferBatchUploadEntry *upload_entries = NULL;
+  VulkanBufferBatchUploadJobPayload *job_payloads = NULL;
+  VkrJobHandle *job_handles = NULL;
+  bool8_t *job_submitted = NULL;
+  VkCommandBuffer *recorded_command_buffers = NULL;
+  uint32_t *recorded_worker_indices = NULL;
+  uint32_t *submitted_request_indices = NULL;
+  bool8_t *recorded_flags = NULL;
+  uint32_t upload_count = 0;
+
+  if (use_parallel_upload) {
+    parallel_scope = vkr_allocator_begin_scope(&state->alloc);
+    if (!vkr_allocator_scope_is_valid(&parallel_scope)) {
+      use_parallel_upload = false_v;
+    } else {
+      upload_entries = vkr_allocator_alloc(
+          &state->alloc, sizeof(VulkanBufferBatchUploadEntry) * count,
+          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      job_payloads = vkr_allocator_alloc(
+          &state->alloc, sizeof(VulkanBufferBatchUploadJobPayload) * count,
+          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      job_handles =
+          vkr_allocator_alloc(&state->alloc, sizeof(VkrJobHandle) * count,
+                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      job_submitted =
+          vkr_allocator_alloc(&state->alloc, sizeof(bool8_t) * count,
+                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      recorded_command_buffers =
+          vkr_allocator_alloc(&state->alloc, sizeof(VkCommandBuffer) * count,
+                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      recorded_worker_indices =
+          vkr_allocator_alloc(&state->alloc, sizeof(uint32_t) * count,
+                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      submitted_request_indices =
+          vkr_allocator_alloc(&state->alloc, sizeof(uint32_t) * count,
+                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      recorded_flags =
+          vkr_allocator_alloc(&state->alloc, sizeof(bool8_t) * count,
+                              VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      if (!upload_entries || !job_payloads || !job_handles || !job_submitted ||
+          !recorded_command_buffers || !recorded_worker_indices ||
+          !submitted_request_indices || !recorded_flags) {
+        use_parallel_upload = false_v;
+      } else {
+        MemZero(upload_entries, sizeof(VulkanBufferBatchUploadEntry) * count);
+        MemZero(job_submitted, sizeof(bool8_t) * count);
+        MemZero(recorded_command_buffers, sizeof(VkCommandBuffer) * count);
+        MemZero(recorded_worker_indices, sizeof(uint32_t) * count);
+        MemZero(submitted_request_indices, sizeof(uint32_t) * count);
+        MemZero(recorded_flags, sizeof(bool8_t) * count);
+      }
+    }
+  }
+
+  for (uint32_t i = 0; i < count; ++i) {
+    out_handles[i] = (VkrBackendResourceHandle){.ptr = NULL};
+    out_errors[i] = VKR_RENDERER_ERROR_UNKNOWN;
+
+    const VkrBufferBatchCreateRequest *request = &requests[i];
+    if (!request->description) {
+      out_errors[i] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      continue;
+    }
+
+    const VkrBufferUploadPayload *upload = request->upload;
+    if (upload && upload->data && upload->size > 0) {
+      const uint64_t upload_end = upload->offset + upload->size;
+      if (upload_end < upload->offset ||
+          upload_end > request->description->size) {
+        out_errors[i] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        continue;
+      }
+    }
+
+    const void *upload_data = NULL;
+    uint64_t upload_size = 0;
+    uint64_t upload_offset = 0;
+    if (upload && upload->data && upload->size > 0) {
+      upload_data = upload->data;
+      upload_size = upload->size;
+      upload_offset = upload->offset;
+    }
+
+    VkrBackendResourceHandle created_handle = renderer_vulkan_create_buffer(
+        backend_state, request->description, NULL);
+    if (!created_handle.ptr) {
+      out_errors[i] = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      continue;
+    }
+
+    out_handles[i] = created_handle;
+
+    if (upload_data && upload_size > 0) {
+      if (!use_parallel_upload) {
+        VkrRendererError upload_error = renderer_vulkan_upload_buffer(
+            backend_state, created_handle, upload_offset, upload_size,
+            upload_data);
+        if (upload_error != VKR_RENDERER_ERROR_NONE) {
+          renderer_vulkan_destroy_buffer(backend_state, created_handle);
+          out_handles[i] = (VkrBackendResourceHandle){.ptr = NULL};
+          out_errors[i] = upload_error;
+          continue;
+        }
+        out_errors[i] = VKR_RENDERER_ERROR_NONE;
+        created++;
+        continue;
+      }
+
+      VulkanBufferBatchUploadEntry *entry = &upload_entries[upload_count];
+      entry->request_index = i;
+      if (!vulkan_backend_prepare_staging_buffer(
+              state, upload_size, upload_data, &entry->staging)) {
+        renderer_vulkan_destroy_buffer(backend_state, created_handle);
+        out_handles[i] = (VkrBackendResourceHandle){.ptr = NULL};
+        out_errors[i] = VKR_RENDERER_ERROR_DEVICE_ERROR;
+        continue;
+      }
+
+      job_payloads[upload_count] = (VulkanBufferBatchUploadJobPayload){
+          .state = state,
+          .destination = (struct s_BufferHandle *)created_handle.ptr,
+          .staging = &entry->staging,
+          .request_index = i,
+          .destination_offset = upload_offset,
+          .size = upload_size,
+          .out_errors = out_errors,
+          .out_command_buffer = &recorded_command_buffers[upload_count],
+          .out_worker_index = &recorded_worker_indices[upload_count],
+          .out_recorded = &recorded_flags[upload_count],
+      };
+      upload_count++;
+      continue;
+    }
+
+    out_errors[i] = VKR_RENDERER_ERROR_NONE;
+    created++;
+  }
+
+  if (use_parallel_upload && upload_count > 0) {
+    Bitset8 gpu_mask = bitset8_create();
+    bitset8_set(&gpu_mask, VKR_JOB_TYPE_GPU);
+
+    for (uint32_t i = 0; i < upload_count; ++i) {
+      const uint32_t request_index = job_payloads[i].request_index;
+      out_errors[request_index] = VKR_RENDERER_ERROR_UNKNOWN;
+
+      VkrJobDesc job_desc = {
+          .priority = VKR_JOB_PRIORITY_NORMAL,
+          .type_mask = gpu_mask,
+          .run = vulkan_backend_buffer_batch_upload_job_run,
+          .on_success = NULL,
+          .on_failure = NULL,
+          .payload = &job_payloads[i],
+          .payload_size = sizeof(VulkanBufferBatchUploadJobPayload),
+          .dependencies = NULL,
+          .dependency_count = 0,
+          .defer_enqueue = false_v,
+      };
+      if (!vkr_job_submit(state->parallel_runtime.job_system, &job_desc,
+                          &job_handles[i])) {
+        // Fall back to synchronous copy if job submission fails.
+        out_errors[request_index] =
+            vulkan_backend_copy_buffer_region(
+                state, state->device.graphics_command_pool,
+                state->device.graphics_queue,
+                upload_entries[i].staging.buffer.handle, 0,
+                ((struct s_BufferHandle *)out_handles[request_index].ptr)
+                    ->buffer.handle,
+                job_payloads[i].destination_offset, job_payloads[i].size)
+                ? VKR_RENDERER_ERROR_NONE
+                : VKR_RENDERER_ERROR_DEVICE_ERROR;
+        continue;
+      }
+      job_submitted[i] = true_v;
+    }
+
+    for (uint32_t i = 0; i < upload_count; ++i) {
+      const uint32_t request_index = job_payloads[i].request_index;
+      if (job_submitted[i] &&
+          !vkr_job_wait(state->parallel_runtime.job_system, job_handles[i])) {
+        out_errors[request_index] = VKR_RENDERER_ERROR_DEVICE_ERROR;
+      }
+    }
+
+    uint32_t submit_count = 0;
+    for (uint32_t i = 0; i < upload_count; ++i) {
+      const uint32_t request_index = job_payloads[i].request_index;
+      if (!job_submitted[i] ||
+          out_errors[request_index] != VKR_RENDERER_ERROR_NONE) {
+        continue;
+      }
+      if (!recorded_flags[i] || recorded_command_buffers[i] == VK_NULL_HANDLE) {
+        out_errors[request_index] = VKR_RENDERER_ERROR_DEVICE_ERROR;
+        continue;
+      }
+
+      submitted_request_indices[submit_count] = request_index;
+      recorded_command_buffers[submit_count] = recorded_command_buffers[i];
+      recorded_worker_indices[submit_count] = recorded_worker_indices[i];
+      submit_count++;
+    }
+
+    if (submit_count > 0) {
+      if (!vulkan_backend_submit_recorded_command_buffers(
+              state, state->device.graphics_queue, recorded_command_buffers,
+              submit_count)) {
+        for (uint32_t i = 0; i < submit_count; ++i) {
+          out_errors[submitted_request_indices[i]] =
+              VKR_RENDERER_ERROR_DEVICE_ERROR;
+        }
+      }
+
+      vulkan_backend_free_recorded_upload_command_buffers(
+          state, recorded_command_buffers, recorded_worker_indices,
+          submit_count);
+    }
+
+    for (uint32_t i = 0; i < upload_count; ++i) {
+      const uint32_t request_index = job_payloads[i].request_index;
+      if (out_errors[request_index] != VKR_RENDERER_ERROR_NONE) {
+        if (out_handles[request_index].ptr) {
+          renderer_vulkan_destroy_buffer(backend_state,
+                                         out_handles[request_index]);
+          out_handles[request_index] = (VkrBackendResourceHandle){.ptr = NULL};
+        }
+      } else {
+        created++;
+      }
+      vulkan_buffer_destroy(state, &upload_entries[i].staging.buffer);
+    }
+  }
+
+  if (vkr_allocator_scope_is_valid(&parallel_scope)) {
+    vkr_allocator_end_scope(&parallel_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
+  return created;
 }
 
 VkrRendererError renderer_vulkan_update_buffer(void *backend_state,
@@ -3197,8 +4566,11 @@ VkrRendererError renderer_vulkan_buffer_barrier(
     if (state->image_index >= state->graphics_command_buffers.length) {
       return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
     }
-    VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-        &state->graphics_command_buffers, state->image_index);
+    VulkanCommandBuffer *command_buffer =
+        vulkan_backend_get_active_graphics_command_buffer(state);
+    if (!command_buffer) {
+      return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+    }
     vkCmdPipelineBarrier(command_buffer->handle, src_stage, dst_stage, 0, 0,
                          NULL, 1, &barrier, 0, NULL);
     return VKR_RENDERER_ERROR_NONE;
@@ -3230,63 +4602,13 @@ VkrRendererError renderer_vulkan_upload_buffer(void *backend_state,
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
-
-  // Create a host-visible staging buffer to upload to. Mark it as the source
-  // of the transfer.
-  VkrBufferTypeFlags buffer_type = bitset8_create();
-  bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
-  const VkrBufferDescription staging_buffer_desc = {
-      .size = size,
-      .memory_properties = vkr_memory_property_flags_from_bits(
-          VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
-      .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
-      .buffer_type = buffer_type,
-      .bind_on_create = true_v,
-  };
-  struct s_BufferHandle *staging_buffer = vkr_allocator_alloc(
-      &state->buffer_pool_alloc, sizeof(struct s_BufferHandle),
-      VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
-  if (!staging_buffer) {
-    log_fatal("Failed to allocate staging buffer (pool exhausted)");
-    return VKR_RENDERER_ERROR_DEVICE_ERROR;
-  }
-  MemZero(staging_buffer, sizeof(struct s_BufferHandle));
-
-  if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
-    vkr_allocator_free(&state->buffer_pool_alloc, staging_buffer,
-                       sizeof(struct s_BufferHandle),
-                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
-    log_fatal("Failed to create staging buffer");
-    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  if (!state || !buffer || size == 0 || !data) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
 
-  if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, size, 0,
-                               data)) {
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    vkr_allocator_free(&state->buffer_pool_alloc, staging_buffer,
-                       sizeof(struct s_BufferHandle),
-                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
-    log_fatal("Failed to load data into staging buffer");
-    return VKR_RENDERER_ERROR_DEVICE_ERROR;
-  }
-
-  if (!vulkan_buffer_copy_to(state, &staging_buffer->buffer,
-                             staging_buffer->buffer.handle, 0,
-                             buffer->buffer.handle, offset, size)) {
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    vkr_allocator_free(&state->buffer_pool_alloc, staging_buffer,
-                       sizeof(struct s_BufferHandle),
-                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
-    log_fatal("Failed to copy Vulkan buffer");
-    return VKR_RENDERER_ERROR_DEVICE_ERROR;
-  }
-
-  vulkan_buffer_destroy(state, &staging_buffer->buffer);
-  vkr_allocator_free(&state->buffer_pool_alloc, staging_buffer,
-                     sizeof(struct s_BufferHandle),
-                     VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
-
-  return VKR_RENDERER_ERROR_NONE;
+  return vulkan_backend_upload_buffer_with_queue(
+      state, buffer, offset, size, data, state->device.graphics_command_pool,
+      state->device.graphics_queue);
 }
 
 void renderer_vulkan_set_instance_buffer(void *backend_state,
@@ -3828,8 +5150,11 @@ VkrRendererError renderer_vulkan_transition_texture_layout(
     if (state->image_index >= state->graphics_command_buffers.length) {
       return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
     }
-    VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-        &state->graphics_command_buffers, state->image_index);
+    VulkanCommandBuffer *command_buffer =
+        vulkan_backend_get_active_graphics_command_buffer(state);
+    if (!command_buffer) {
+      return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+    }
     if (!vulkan_image_transition_layout_range(state, &texture->texture.image,
                                               command_buffer, image_format,
                                               vk_old, vk_new, &range)) {
@@ -4211,6 +5536,379 @@ cleanup_texture:
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   return (VkrBackendResourceHandle){.ptr = NULL};
+}
+
+uint32_t renderer_vulkan_create_texture_with_payload_batch(
+    void *backend_state, const VkrTextureBatchCreateRequest *requests,
+    uint32_t count, VkrBackendResourceHandle *out_handles,
+    VkrRendererError *out_errors) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(requests != NULL, "Requests is NULL");
+  assert_log(count > 0, "Count must be > 0");
+  assert_log(out_handles != NULL, "Out handles is NULL");
+  assert_log(out_errors != NULL, "Out errors is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  uint32_t candidate_upload_jobs = 0;
+  uint64_t candidate_upload_bytes = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const VkrTextureBatchCreateRequest *request = &requests[i];
+    if (!request->payload || !request->payload->data ||
+        request->payload->data_size == 0) {
+      continue;
+    }
+    candidate_upload_jobs++;
+    if (candidate_upload_bytes <= UINT64_MAX - request->payload->data_size) {
+      candidate_upload_bytes += request->payload->data_size;
+    } else {
+      candidate_upload_bytes = UINT64_MAX;
+    }
+  }
+
+  const bool8_t use_parallel_upload =
+      state->parallel_upload_enabled && state->parallel_runtime.enabled &&
+      state->parallel_runtime.job_system &&
+      state->parallel_runtime.worker_count > 0 &&
+      vulkan_backend_parallel_upload_batch_worthwhile(
+          state, candidate_upload_jobs, candidate_upload_bytes);
+
+  if (!use_parallel_upload) {
+    uint32_t created = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+      out_handles[i] = (VkrBackendResourceHandle){.ptr = NULL};
+      out_errors[i] = VKR_RENDERER_ERROR_UNKNOWN;
+
+      const VkrTextureBatchCreateRequest *request = &requests[i];
+      if (!request->description || !request->payload) {
+        out_errors[i] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        continue;
+      }
+
+      VkrBackendResourceHandle handle =
+          renderer_vulkan_create_texture_with_payload(
+              backend_state, request->description, request->payload);
+      if (!handle.ptr) {
+        out_errors[i] = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        continue;
+      }
+
+      out_handles[i] = handle;
+      out_errors[i] = VKR_RENDERER_ERROR_NONE;
+      created++;
+    }
+    return created;
+  }
+
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->alloc);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    for (uint32_t i = 0; i < count; ++i) {
+      out_handles[i] = (VkrBackendResourceHandle){.ptr = NULL};
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+    return 0;
+  }
+
+  VulkanTextureBatchUploadEntry *entries = vkr_allocator_alloc(
+      &state->alloc, sizeof(VulkanTextureBatchUploadEntry) * count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VulkanTextureBatchUploadJobPayload *job_payloads = vkr_allocator_alloc(
+      &state->alloc, sizeof(VulkanTextureBatchUploadJobPayload) * count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrJobHandle *job_handles =
+      vkr_allocator_alloc(&state->alloc, sizeof(VkrJobHandle) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  bool8_t *job_submitted = vkr_allocator_alloc(
+      &state->alloc, sizeof(bool8_t) * count, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkCommandBuffer *recorded_command_buffers =
+      vkr_allocator_alloc(&state->alloc, sizeof(VkCommandBuffer) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *recorded_worker_indices = vkr_allocator_alloc(
+      &state->alloc, sizeof(uint32_t) * count, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *submitted_request_indices = vkr_allocator_alloc(
+      &state->alloc, sizeof(uint32_t) * count, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  bool8_t *recorded_flags = vkr_allocator_alloc(
+      &state->alloc, sizeof(bool8_t) * count, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!entries || !job_payloads || !job_handles || !job_submitted ||
+      !recorded_command_buffers || !recorded_worker_indices ||
+      !submitted_request_indices || !recorded_flags) {
+    for (uint32_t i = 0; i < count; ++i) {
+      out_handles[i] = (VkrBackendResourceHandle){.ptr = NULL};
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return 0;
+  }
+
+  MemZero(entries, sizeof(VulkanTextureBatchUploadEntry) * count);
+  MemZero(job_submitted, sizeof(bool8_t) * count);
+  MemZero(recorded_command_buffers, sizeof(VkCommandBuffer) * count);
+  MemZero(recorded_worker_indices, sizeof(uint32_t) * count);
+  MemZero(submitted_request_indices, sizeof(uint32_t) * count);
+  MemZero(recorded_flags, sizeof(bool8_t) * count);
+
+  uint32_t prepared_count = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    out_handles[i] = (VkrBackendResourceHandle){.ptr = NULL};
+    out_errors[i] = VKR_RENDERER_ERROR_UNKNOWN;
+
+    const VkrTextureBatchCreateRequest *request = &requests[i];
+    if (!request->description || !request->payload) {
+      out_errors[i] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      continue;
+    }
+
+    bool8_t format_is_compressed = false_v;
+    if (!vulkan_backend_validate_texture_payload_request(
+            request->description, request->payload, &format_is_compressed)) {
+      out_errors[i] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      continue;
+    }
+
+    struct s_TextureHandle *texture = vkr_allocator_alloc(
+        &state->texture_pool_alloc, sizeof(struct s_TextureHandle),
+        VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+    if (!texture) {
+      out_errors[i] = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      continue;
+    }
+    MemZero(texture, sizeof(struct s_TextureHandle));
+    texture->description = *request->description;
+
+    const uint64_t subresource_count = (uint64_t)request->payload->mip_levels *
+                                       (uint64_t)request->payload->array_layers;
+    uint8_t *subresource_seen = vkr_allocator_alloc(
+        &state->alloc, subresource_count, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    VkBufferImageCopy *copy_regions = vkr_allocator_alloc(
+        &state->alloc,
+        sizeof(VkBufferImageCopy) * request->payload->region_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!subresource_seen || !copy_regions) {
+      vulkan_backend_destroy_partial_texture(state, texture);
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      continue;
+    }
+    if (!vulkan_backend_build_texture_payload_copy_regions(
+            request->description, request->payload, subresource_seen,
+            copy_regions)) {
+      vulkan_backend_destroy_partial_texture(state, texture);
+      out_errors[i] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      continue;
+    }
+
+    struct s_BufferHandle staging = {0};
+    if (!vulkan_backend_prepare_staging_buffer(
+            state, request->payload->data_size, request->payload->data,
+            &staging)) {
+      vulkan_backend_destroy_partial_texture(state, texture);
+      out_errors[i] = VKR_RENDERER_ERROR_DEVICE_ERROR;
+      continue;
+    }
+
+    VkImageUsageFlags usage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    if (!format_is_compressed) {
+      usage |=
+          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    }
+
+    const VkFormat image_format =
+        vulkan_image_format_from_texture_format(request->description->format);
+    if (!vulkan_image_create(
+            state, VK_IMAGE_TYPE_2D, request->description->width,
+            request->description->height, image_format, VK_IMAGE_TILING_OPTIMAL,
+            usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+            request->payload->mip_levels, request->payload->array_layers,
+            VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
+            VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
+      vulkan_buffer_destroy(state, &staging.buffer);
+      vulkan_backend_destroy_partial_texture(state, texture);
+      out_errors[i] = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      continue;
+    }
+
+    entries[prepared_count] = (VulkanTextureBatchUploadEntry){
+        .request_index = i,
+        .texture = texture,
+        .staging = staging,
+        .description = request->description,
+        .copy_regions = copy_regions,
+        .region_count = request->payload->region_count,
+        .mip_levels = request->payload->mip_levels,
+        .array_layers = request->payload->array_layers,
+        .image_format = image_format,
+        .prepared = true_v,
+    };
+    // `struct s_BufferHandle` contains an allocator context pointer that must
+    // target the owning instance's embedded offset allocator after a by-value
+    // copy.
+    entries[prepared_count].staging.buffer.allocator.ctx =
+        &entries[prepared_count].staging.buffer.offset_allocator;
+    prepared_count++;
+  }
+
+  if (prepared_count > 0) {
+    Bitset8 gpu_mask = bitset8_create();
+    bitset8_set(&gpu_mask, VKR_JOB_TYPE_GPU);
+
+    for (uint32_t i = 0; i < prepared_count; ++i) {
+      VulkanTextureBatchUploadEntry *entry = &entries[i];
+      out_errors[entry->request_index] = VKR_RENDERER_ERROR_UNKNOWN;
+      job_payloads[i] = (VulkanTextureBatchUploadJobPayload){
+          .state = state,
+          .image = &entry->texture->texture.image,
+          .staging = &entry->staging,
+          .copy_regions = entry->copy_regions,
+          .region_count = entry->region_count,
+          .mip_levels = entry->mip_levels,
+          .array_layers = entry->array_layers,
+          .image_format = entry->image_format,
+          .request_index = entry->request_index,
+          .out_errors = out_errors,
+          .out_command_buffer = &recorded_command_buffers[i],
+          .out_worker_index = &recorded_worker_indices[i],
+          .out_recorded = &recorded_flags[i],
+      };
+
+      VkrJobDesc job_desc = {
+          .priority = VKR_JOB_PRIORITY_NORMAL,
+          .type_mask = gpu_mask,
+          .run = vulkan_backend_texture_batch_upload_job_run,
+          .on_success = NULL,
+          .on_failure = NULL,
+          .payload = &job_payloads[i],
+          .payload_size = sizeof(VulkanTextureBatchUploadJobPayload),
+          .dependencies = NULL,
+          .dependency_count = 0,
+          .defer_enqueue = false_v,
+      };
+
+      if (!vkr_job_submit(state->parallel_runtime.job_system, &job_desc,
+                          &job_handles[i])) {
+        const bool8_t success =
+            vulkan_backend_upload_texture_payload_with_queue(
+                state, &entry->texture->texture.image, entry->image_format,
+                entry->staging.buffer.handle, entry->copy_regions,
+                entry->region_count, entry->mip_levels, entry->array_layers,
+                state->device.graphics_command_pool,
+                state->device.graphics_queue);
+        out_errors[entry->request_index] =
+            success ? VKR_RENDERER_ERROR_NONE : VKR_RENDERER_ERROR_DEVICE_ERROR;
+      } else {
+        job_submitted[i] = true_v;
+      }
+    }
+
+    for (uint32_t i = 0; i < prepared_count; ++i) {
+      if (job_submitted[i]) {
+        const uint32_t request_index = entries[i].request_index;
+        if (!vkr_job_wait(state->parallel_runtime.job_system, job_handles[i])) {
+          out_errors[request_index] = VKR_RENDERER_ERROR_DEVICE_ERROR;
+        }
+      }
+    }
+
+    uint32_t submit_count = 0;
+    for (uint32_t i = 0; i < prepared_count; ++i) {
+      const uint32_t request_index = entries[i].request_index;
+      if (!job_submitted[i] ||
+          out_errors[request_index] != VKR_RENDERER_ERROR_NONE) {
+        continue;
+      }
+      if (!recorded_flags[i] || recorded_command_buffers[i] == VK_NULL_HANDLE) {
+        out_errors[request_index] = VKR_RENDERER_ERROR_DEVICE_ERROR;
+        continue;
+      }
+
+      submitted_request_indices[submit_count] = request_index;
+      recorded_command_buffers[submit_count] = recorded_command_buffers[i];
+      recorded_worker_indices[submit_count] = recorded_worker_indices[i];
+      submit_count++;
+    }
+
+    if (submit_count > 0) {
+      if (!vulkan_backend_submit_recorded_command_buffers(
+              state, state->device.graphics_queue, recorded_command_buffers,
+              submit_count)) {
+        for (uint32_t i = 0; i < submit_count; ++i) {
+          out_errors[submitted_request_indices[i]] =
+              VKR_RENDERER_ERROR_DEVICE_ERROR;
+        }
+      }
+
+      vulkan_backend_free_recorded_upload_command_buffers(
+          state, recorded_command_buffers, recorded_worker_indices,
+          submit_count);
+    }
+  }
+
+  uint32_t created = 0;
+  for (uint32_t i = 0; i < prepared_count; ++i) {
+    VulkanTextureBatchUploadEntry *entry = &entries[i];
+    const uint32_t request_index = entry->request_index;
+    struct s_TextureHandle *texture = entry->texture;
+
+    vulkan_buffer_destroy(state, &entry->staging.buffer);
+
+    if (out_errors[request_index] != VKR_RENDERER_ERROR_NONE) {
+      vulkan_backend_destroy_partial_texture(state, texture);
+      out_handles[request_index] = (VkrBackendResourceHandle){.ptr = NULL};
+      continue;
+    }
+
+    VkFilter min_filter = VK_FILTER_LINEAR;
+    VkFilter mag_filter = VK_FILTER_LINEAR;
+    VkSamplerMipmapMode mipmap_mode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    VkBool32 anisotropy_enable = VK_FALSE;
+    float32_t max_lod = (texture->texture.image.mip_levels > 0)
+                            ? (float32_t)(texture->texture.image.mip_levels - 1)
+                            : 0.0f;
+    vulkan_select_filter_modes(
+        entry->description, state->device.features.samplerAnisotropy,
+        texture->texture.image.mip_levels, &min_filter, &mag_filter,
+        &mipmap_mode, &anisotropy_enable, &max_lod);
+
+    VkSamplerCreateInfo sampler_info = {
+        .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+        .magFilter = mag_filter,
+        .minFilter = min_filter,
+        .mipmapMode = mipmap_mode,
+        .addressModeU = vulkan_sampler_address_mode_from_repeat(
+            entry->description->u_repeat_mode),
+        .addressModeV = vulkan_sampler_address_mode_from_repeat(
+            entry->description->v_repeat_mode),
+        .addressModeW = vulkan_sampler_address_mode_from_repeat(
+            entry->description->w_repeat_mode),
+        .mipLodBias = 0.0f,
+        .anisotropyEnable = anisotropy_enable,
+        .maxAnisotropy =
+            anisotropy_enable
+                ? state->device.properties.limits.maxSamplerAnisotropy
+                : 1.0f,
+        .compareEnable = VK_FALSE,
+        .compareOp = VK_COMPARE_OP_ALWAYS,
+        .minLod = 0.0f,
+        .maxLod = max_lod,
+        .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+        .unnormalizedCoordinates = VK_FALSE,
+    };
+
+    if (vkCreateSampler(state->device.logical_device, &sampler_info,
+                        state->allocator,
+                        &texture->texture.sampler) != VK_SUCCESS) {
+      out_errors[request_index] = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      vulkan_backend_destroy_partial_texture(state, texture);
+      out_handles[request_index] = (VkrBackendResourceHandle){.ptr = NULL};
+      continue;
+    }
+
+    ASSIGN_TEXTURE_GENERATION(state, texture);
+    out_handles[request_index] = (VkrBackendResourceHandle){.ptr = texture};
+    out_errors[request_index] = VKR_RENDERER_ERROR_NONE;
+    created++;
+  }
+
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return created;
 }
 
 VkrBackendResourceHandle
@@ -4643,7 +6341,7 @@ renderer_vulkan_update_texture(void *backend_state,
   }
 
   // Ensure no in-flight use of the old sampler before switching
-  vkQueueWaitIdle(state->device.graphics_queue);
+  vulkan_backend_queue_wait_idle_locked(state, state->device.graphics_queue);
 
   // Destroy old sampler and use new one
   vkDestroySampler(state->device.logical_device, texture->texture.sampler,
@@ -5056,7 +6754,7 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
   }
 
   // Ensure previous operations complete before swapping resources
-  vkQueueWaitIdle(state->device.graphics_queue);
+  vulkan_backend_queue_wait_idle_locked(state, state->device.graphics_queue);
 
   VulkanImage old_image = texture->texture.image;
   VkSampler old_sampler = texture->texture.sampler;
@@ -5241,8 +6939,11 @@ void renderer_vulkan_bind_pipeline(void *backend_state,
       (struct s_GraphicsPipeline *)pipeline_handle.ptr;
 
   // todo: add support for multiple command buffers
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, state->image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return;
+  }
 
   vkCmdBindPipeline(command_buffer->handle, VK_PIPELINE_BIND_POINT_GRAPHICS,
                     pipeline->pipeline);
@@ -5261,8 +6962,11 @@ void renderer_vulkan_bind_buffer(void *backend_state,
 
   // log_debug("Binding Vulkan buffer with usage flags");
 
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, state->image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return;
+  }
 
   // log_debug("Current command buffer handle: %p", command_buffer->handle);
 
@@ -5296,8 +7000,11 @@ void renderer_vulkan_set_viewport(void *backend_state,
     return;
   }
 
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, state->image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return;
+  }
 
   VkViewport vk_viewport = {
       .x = viewport->x,
@@ -5318,8 +7025,11 @@ void renderer_vulkan_set_scissor(void *backend_state,
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
 
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, state->image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return;
+  }
 
   VkRect2D vk_scissor = {
       .offset = {scissor->x, scissor->y},
@@ -5344,8 +7054,11 @@ void renderer_vulkan_set_depth_bias(void *backend_state,
     clamp = 0.0f;
   }
 
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, state->image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return;
+  }
 
   vkCmdSetDepthBias(command_buffer->handle, constant_factor, clamp,
                     slope_factor);
@@ -5438,6 +7151,7 @@ void renderer_vulkan_renderpass_destroy(void *backend_state,
   }
   if (state->active_named_render_pass == pass) {
     state->active_named_render_pass = NULL;
+    state->active_named_render_target = NULL;
   }
 
   for (uint32_t i = 0; i < state->render_pass_count; ++i) {
@@ -5957,8 +7671,14 @@ renderer_vulkan_begin_render_pass(void *backend_state,
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
 
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+  if (state->image_index >= state->graphics_command_buffers.length) {
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
+  VulkanCommandBuffer *primary_command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, state->image_index);
+  if (!primary_command_buffer) {
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
 
   VkRect2D render_area = {
       .offset = {0, 0},
@@ -5974,12 +7694,24 @@ renderer_vulkan_begin_render_pass(void *backend_state,
       .pClearValues = pass->clear_values,
   };
 
-  vkCmdBeginRenderPass(command_buffer->handle, &begin_info,
+  vkCmdBeginRenderPass(primary_command_buffer->handle, &begin_info,
                        VK_SUBPASS_CONTENTS_INLINE);
 
   state->render_pass_active = true;
   state->current_render_pass_domain = pass->vk->domain;
   state->active_named_render_pass = pass;
+  state->active_named_render_target = target;
+
+  VulkanCommandBuffer *record_command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!record_command_buffer) {
+    vkCmdEndRenderPass(primary_command_buffer->handle);
+    state->active_named_render_pass = NULL;
+    state->active_named_render_target = NULL;
+    state->render_pass_active = false;
+    state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
 
   VkViewport viewport = {
       .x = (float32_t)render_area.offset.x,
@@ -5989,9 +7721,8 @@ renderer_vulkan_begin_render_pass(void *backend_state,
       .minDepth = 0.0f,
       .maxDepth = 1.0f,
   };
-
-  vkCmdSetViewport(command_buffer->handle, 0, 1, &viewport);
-  vkCmdSetScissor(command_buffer->handle, 0, 1, &render_area);
+  vkCmdSetViewport(record_command_buffer->handle, 0, 1, &viewport);
+  vkCmdSetScissor(record_command_buffer->handle, 0, 1, &render_area);
 
   return VKR_RENDERER_ERROR_NONE;
 }
@@ -6002,10 +7733,16 @@ VkrRendererError renderer_vulkan_end_render_pass(void *backend_state) {
     return VKR_RENDERER_ERROR_NONE;
   }
 
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
+  if (state->image_index >= state->graphics_command_buffers.length) {
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
+  VulkanCommandBuffer *primary_command_buffer = array_get_VulkanCommandBuffer(
       &state->graphics_command_buffers, state->image_index);
+  if (!primary_command_buffer) {
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
 
-  vkCmdEndRenderPass(command_buffer->handle);
+  vkCmdEndRenderPass(primary_command_buffer->handle);
 
   if (state->active_named_render_pass &&
       state->active_named_render_pass->ends_in_present) {
@@ -6013,6 +7750,7 @@ VkrRendererError renderer_vulkan_end_render_pass(void *backend_state) {
   }
 
   state->active_named_render_pass = NULL;
+  state->active_named_render_target = NULL;
   state->render_pass_active = false;
   state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
   return VKR_RENDERER_ERROR_NONE;
@@ -6292,8 +8030,11 @@ renderer_vulkan_request_pixel_readback(void *backend_state,
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
 
-  VulkanCommandBuffer *cmd = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, state->image_index);
+  VulkanCommandBuffer *cmd =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!cmd) {
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
 
   vulkan_image_copy_to_buffer(state, &tex->texture.image, slot->buffer.handle,
                               0, x, y, 1, 1, cmd);
