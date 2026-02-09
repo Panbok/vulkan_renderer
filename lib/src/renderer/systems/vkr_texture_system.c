@@ -2857,9 +2857,48 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
     }
   }
 
-  // Process results and do GPU uploads on main thread
+  // Build one backend batch of texture uploads from decode results.
+  VkrTextureDescription *batch_descriptions = vkr_allocator_alloc(
+      &system->allocator, sizeof(VkrTextureDescription) * count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrTextureUploadPayload *batch_payloads = vkr_allocator_alloc(
+      &system->allocator, sizeof(VkrTextureUploadPayload) * count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrTextureUploadRegion *batch_single_regions = vkr_allocator_alloc(
+      &system->allocator, sizeof(VkrTextureUploadRegion) * count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrTextureBatchCreateRequest *batch_requests = vkr_allocator_alloc(
+      &system->allocator, sizeof(VkrTextureBatchCreateRequest) * count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *batch_source_indices =
+      vkr_allocator_alloc(&system->allocator, sizeof(uint32_t) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrTextureOpaqueHandle *batch_gpu_handles = vkr_allocator_alloc(
+      &system->allocator, sizeof(VkrTextureOpaqueHandle) * count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrRendererError *batch_gpu_errors = vkr_allocator_alloc(
+      &system->allocator, sizeof(VkrRendererError) * count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  if (!batch_descriptions || !batch_payloads || !batch_single_regions ||
+      !batch_requests || !batch_source_indices || !batch_gpu_handles ||
+      !batch_gpu_errors) {
+    for (uint32_t i = 0; i < count; ++i) {
+      if (results[i].decoded_pixels || results[i].upload_data) {
+        vkr_texture_decode_result_release(&results[i]);
+      }
+      if (out_errors[i] == VKR_RENDERER_ERROR_UNKNOWN) {
+        out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      }
+    }
+    vkr_allocator_end_scope(&decode_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return already_loaded;
+  }
+
+  uint32_t batch_count = 0;
   uint32_t loaded = 0;
-  for (uint32_t i = 0; i < count; i++) {
+  for (uint32_t i = 0; i < count; ++i) {
     if (!paths[i].str || paths[i].length == 0) {
       continue;
     }
@@ -2874,27 +2913,19 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
       continue;
     }
 
-    // Process decoded data and upload to GPU
-    int32_t width = results[i].width;
-    int32_t height = results[i].height;
-
-    // Check if this texture was already loaded by earlier iteration in this
-    // batch BEFORE doing GPU upload to avoid wasting GPU resources
     const char *check_key = (const char *)paths[i].str;
     VkrTextureEntry *existing =
         vkr_hash_table_get_VkrTextureEntry(&system->texture_map, check_key);
     if (existing) {
-      // Already loaded - just return the existing handle, free decoded data
-      vkr_texture_decode_result_release(&results[i]);
       VkrTexture *tex = &system->textures.data[existing->index];
       out_handles[i] = (VkrTextureHandle){
           .id = tex->description.id, .generation = tex->description.generation};
       out_errors[i] = VKR_RENDERER_ERROR_NONE;
       loaded++;
+      vkr_texture_decode_result_release(&results[i]);
       continue;
     }
 
-    // Use cached format/transparency if available, otherwise use defaults
     uint32_t actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
     VkrTextureFormat format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
     if (has_upload_payload) {
@@ -2914,9 +2945,10 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
       }
     }
 
-    VkrTextureDescription desc = {
-        .width = (uint32_t)width,
-        .height = (uint32_t)height,
+    VkrTextureDescription *desc = &batch_descriptions[batch_count];
+    *desc = (VkrTextureDescription){
+        .width = (uint32_t)results[i].width,
+        .height = (uint32_t)results[i].height,
         .channels = actual_channels,
         .format = format,
         .type = VKR_TEXTURE_TYPE_2D,
@@ -2933,79 +2965,110 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
         .generation = VKR_INVALID_ID,
     };
 
-    uint8_t *loaded_image_data = results[i].decoded_pixels;
-    uint64_t payload_size =
-        (uint64_t)width * (uint64_t)height * (uint64_t)actual_channels;
-    VkrTextureUploadRegion upload_region = {
-        .mip_level = 0,
-        .array_layer = 0,
-        .width = (uint32_t)width,
-        .height = (uint32_t)height,
-        .depth = 1,
-        .byte_offset = 0,
-        .byte_size = payload_size,
-    };
-    VkrTextureUploadPayload upload_payload = {
-        .data = loaded_image_data,
-        .data_size = payload_size,
-        .mip_levels = 1,
-        .array_layers = 1,
-        .is_compressed = false_v,
-        .region_count = 1,
-        .regions = &upload_region,
-    };
+    VkrTextureUploadPayload *upload_payload = &batch_payloads[batch_count];
     if (has_upload_payload) {
-      upload_payload.data = results[i].upload_data;
-      upload_payload.data_size = results[i].upload_data_size;
-      upload_payload.mip_levels = results[i].upload_mip_levels;
-      upload_payload.array_layers = results[i].upload_array_layers;
-      upload_payload.is_compressed = results[i].upload_is_compressed;
-      upload_payload.region_count = results[i].upload_region_count;
-      upload_payload.regions = results[i].upload_regions;
+      *upload_payload = (VkrTextureUploadPayload){
+          .data = results[i].upload_data,
+          .data_size = results[i].upload_data_size,
+          .mip_levels = results[i].upload_mip_levels,
+          .array_layers = results[i].upload_array_layers,
+          .is_compressed = results[i].upload_is_compressed,
+          .region_count = results[i].upload_region_count,
+          .regions = results[i].upload_regions,
+      };
+    } else {
+      uint64_t payload_size =
+          (uint64_t)results[i].width * (uint64_t)results[i].height *
+          (uint64_t)actual_channels;
+      batch_single_regions[batch_count] = (VkrTextureUploadRegion){
+          .mip_level = 0,
+          .array_layer = 0,
+          .width = (uint32_t)results[i].width,
+          .height = (uint32_t)results[i].height,
+          .depth = 1,
+          .byte_offset = 0,
+          .byte_size = payload_size,
+      };
+      *upload_payload = (VkrTextureUploadPayload){
+          .data = results[i].decoded_pixels,
+          .data_size = payload_size,
+          .mip_levels = 1,
+          .array_layers = 1,
+          .is_compressed = false_v,
+          .region_count = 1,
+          .regions = &batch_single_regions[batch_count],
+      };
     }
 
-    // GPU upload on main thread
-    VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
-    VkrTextureOpaqueHandle gpu_handle =
-        vkr_renderer_create_texture_with_payload(
-            system->renderer, &desc, &upload_payload, &renderer_error);
+    batch_requests[batch_count] = (VkrTextureBatchCreateRequest){
+        .description = desc,
+        .payload = upload_payload,
+    };
+    batch_source_indices[batch_count] = i;
+    batch_count++;
+  }
 
-    vkr_texture_decode_result_release(&results[i]);
+  if (batch_count > 0) {
+    vkr_renderer_create_texture_with_payload_batch(
+        system->renderer, batch_requests, batch_count, batch_gpu_handles,
+        batch_gpu_errors);
+  }
 
-    if (renderer_error != VKR_RENDERER_ERROR_NONE || !gpu_handle) {
-      out_errors[i] = renderer_error;
+  for (uint32_t batch_index = 0; batch_index < batch_count; ++batch_index) {
+    const uint32_t source_index = batch_source_indices[batch_index];
+    const char *key = (const char *)paths[source_index].str;
+    VkrTextureOpaqueHandle gpu_handle = batch_gpu_handles[batch_index];
+    VkrRendererError create_error = batch_gpu_errors[batch_index];
+
+    if (create_error != VKR_RENDERER_ERROR_NONE || !gpu_handle) {
+      out_errors[source_index] = (create_error == VKR_RENDERER_ERROR_UNKNOWN)
+                                     ? VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED
+                                     : create_error;
+      vkr_texture_decode_result_release(&results[source_index]);
       continue;
     }
 
-    // Find free slot and register texture
+    VkrTextureEntry *existing =
+        vkr_hash_table_get_VkrTextureEntry(&system->texture_map, key);
+    if (existing) {
+      VkrTexture *tex = &system->textures.data[existing->index];
+      out_handles[source_index] = (VkrTextureHandle){
+          .id = tex->description.id, .generation = tex->description.generation};
+      out_errors[source_index] = VKR_RENDERER_ERROR_NONE;
+      loaded++;
+      vkr_renderer_destroy_texture(system->renderer, gpu_handle);
+      vkr_texture_decode_result_release(&results[source_index]);
+      continue;
+    }
+
     uint32_t free_slot_index = vkr_texture_system_find_free_slot(system);
     if (free_slot_index == VKR_INVALID_ID) {
-      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      out_errors[source_index] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       vkr_renderer_destroy_texture(system->renderer, gpu_handle);
+      vkr_texture_decode_result_release(&results[source_index]);
       continue;
     }
 
-    // Store stable key
     char *stable_key = (char *)vkr_allocator_alloc(
-        &system->string_allocator, paths[i].length + 1,
+        &system->string_allocator, paths[source_index].length + 1,
         VKR_ALLOCATOR_MEMORY_TAG_STRING);
     if (!stable_key) {
-      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      out_errors[source_index] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       vkr_renderer_destroy_texture(system->renderer, gpu_handle);
+      vkr_texture_decode_result_release(&results[source_index]);
       continue;
     }
-    MemCopy(stable_key, paths[i].str, (size_t)paths[i].length);
-    stable_key[paths[i].length] = '\0';
+    MemCopy(stable_key, paths[source_index].str,
+            (size_t)paths[source_index].length);
+    stable_key[paths[source_index].length] = '\0';
 
-    // Setup texture in system
     VkrTexture *texture = &system->textures.data[free_slot_index];
     MemZero(texture, sizeof(VkrTexture));
-    texture->description = desc;
+    texture->description = batch_descriptions[batch_index];
     texture->description.id = free_slot_index + 1;
     texture->description.generation = system->generation_counter++;
     texture->handle = gpu_handle;
 
-    // Add to hash table
     VkrTextureEntry new_entry = {
         .index = free_slot_index,
         .ref_count = 0,
@@ -3014,19 +3077,23 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
     };
     if (!vkr_hash_table_insert_VkrTextureEntry(&system->texture_map, stable_key,
                                                new_entry)) {
-      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      out_errors[source_index] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       vkr_allocator_free(&system->string_allocator, stable_key,
-                         paths[i].length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+                         paths[source_index].length + 1,
+                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
       vkr_renderer_destroy_texture(system->renderer, gpu_handle);
       MemZero(texture, sizeof(*texture));
+      vkr_texture_decode_result_release(&results[source_index]);
       continue;
     }
 
-    out_handles[i] =
-        (VkrTextureHandle){.id = texture->description.id,
-                           .generation = texture->description.generation};
-    out_errors[i] = VKR_RENDERER_ERROR_NONE;
+    out_handles[source_index] = (VkrTextureHandle){
+        .id = texture->description.id,
+        .generation = texture->description.generation,
+    };
+    out_errors[source_index] = VKR_RENDERER_ERROR_NONE;
     loaded++;
+    vkr_texture_decode_result_release(&results[source_index]);
   }
 
   // Copy handles from first occurrence to all duplicates

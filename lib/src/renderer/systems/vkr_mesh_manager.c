@@ -504,6 +504,116 @@ vkr_internal void vkr_mesh_manager_cleanup_submesh_array(
   array_destroy_VkrSubMesh(array);
 }
 
+vkr_internal bool8_t vkr_mesh_manager_resolve_subset_geometries_batch(
+    VkrMeshManager *manager, VkrMeshLoaderResult *mesh_result,
+    uint32_t subset_count, VkrGeometryHandle *out_geometries,
+    VkrRendererError *out_error) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(mesh_result != NULL, "Mesh result is NULL");
+  assert_log(out_geometries != NULL, "Out geometries is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  for (uint32_t i = 0; i < subset_count; ++i) {
+    out_geometries[i] = VKR_GEOMETRY_HANDLE_INVALID;
+  }
+
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&manager->scratch_allocator);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
+  VkrGeometryConfig *pending_configs = vkr_allocator_alloc(
+      &manager->scratch_allocator, sizeof(VkrGeometryConfig) * subset_count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *pending_subset_indices =
+      vkr_allocator_alloc(&manager->scratch_allocator,
+                          sizeof(uint32_t) * subset_count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!pending_configs || !pending_subset_indices) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return false_v;
+  }
+
+  uint32_t pending_count = 0;
+  for (uint32_t i = 0; i < subset_count; ++i) {
+    VkrMeshLoaderSubset *subset = array_get_VkrMeshLoaderSubset(
+        &mesh_result->subsets, i);
+    if (!subset) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      goto fail_cleanup;
+    }
+
+    vkr_mesh_manager_build_geometry_key(subset->geometry_config.name,
+                                        mesh_result->source_path, i);
+    uint64_t name_length = string_length(subset->geometry_config.name);
+    String8 geometry_name =
+        string8_create((uint8_t *)subset->geometry_config.name, name_length);
+
+    VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
+    VkrGeometryHandle geometry = vkr_geometry_system_acquire_by_name(
+        manager->geometry_system, geometry_name, true_v, &geo_err);
+    if (geometry.id != 0) {
+      out_geometries[i] = geometry;
+      continue;
+    }
+
+    if (geo_err != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
+      *out_error = geo_err;
+      goto fail_cleanup;
+    }
+
+    pending_configs[pending_count] = subset->geometry_config;
+    pending_subset_indices[pending_count] = i;
+    pending_count++;
+  }
+
+  if (pending_count > 0) {
+    VkrGeometryHandle *pending_handles =
+        vkr_allocator_alloc(&manager->scratch_allocator,
+                            sizeof(VkrGeometryHandle) * pending_count,
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    VkrRendererError *pending_errors =
+        vkr_allocator_alloc(&manager->scratch_allocator,
+                            sizeof(VkrRendererError) * pending_count,
+                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!pending_handles || !pending_errors) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      goto fail_cleanup;
+    }
+
+    vkr_geometry_system_create_batch(manager->geometry_system, pending_configs,
+                                     pending_count, true_v, pending_handles,
+                                     pending_errors);
+    for (uint32_t i = 0; i < pending_count; ++i) {
+      if (pending_handles[i].id == 0) {
+        *out_error = pending_errors[i];
+        if (*out_error == VKR_RENDERER_ERROR_NONE ||
+            *out_error == VKR_RENDERER_ERROR_UNKNOWN) {
+          *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        }
+        goto fail_cleanup;
+      }
+      out_geometries[pending_subset_indices[i]] = pending_handles[i];
+    }
+  }
+
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return true_v;
+
+fail_cleanup:
+  for (uint32_t i = 0; i < subset_count; ++i) {
+    if (out_geometries[i].id != 0) {
+      vkr_geometry_system_release(manager->geometry_system, out_geometries[i]);
+      out_geometries[i] = VKR_GEOMETRY_HANDLE_INVALID;
+    }
+  }
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  return false_v;
+}
+
 bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
                               VkrGeometrySystem *geometry_system,
                               VkrMaterialSystem *material_system,
@@ -948,6 +1058,7 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
   uint32_t built_count = 0;
   bool8_t subsets_success = true_v;
   VkrGeometryHandle merged_geometry = VKR_GEOMETRY_HANDLE_INVALID;
+  VkrGeometryHandle *resolved_subset_geometries = NULL;
   VkrOpaqueRangeInfo *opaque_ranges = NULL;
   uint32_t *opaque_indices = NULL;
   uint32_t opaque_index_count = 0;
@@ -1120,6 +1231,22 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
     }
   }
 
+  if (subsets_success && !use_merged) {
+    resolved_subset_geometries = vkr_allocator_alloc(
+        scratch_allocator, sizeof(VkrGeometryHandle) * subset_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!resolved_subset_geometries) {
+      if (out_error) {
+        *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      }
+      subsets_success = false_v;
+    } else if (!vkr_mesh_manager_resolve_subset_geometries_batch(
+                   manager, mesh_result, subset_count, resolved_subset_geometries,
+                   out_error)) {
+      subsets_success = false_v;
+    }
+  }
+
   // Build all subsets
   for (uint32_t i = 0; subsets_success && i < subset_count; ++i) {
     if (use_merged) {
@@ -1191,32 +1318,23 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
       break;
     }
 
-    VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
-    vkr_mesh_manager_build_geometry_key(subset->geometry_config.name,
-                                        mesh_result->source_path, i);
-    uint64_t name_length = string_length(subset->geometry_config.name);
-    String8 geometry_name =
-        string8_create((uint8_t *)subset->geometry_config.name, name_length);
-    VkrGeometryHandle geometry = vkr_geometry_system_acquire_by_name(
-        manager->geometry_system, geometry_name, true_v, &geo_err);
-    if (geometry.id == 0) {
-      if (geo_err != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
-        if (out_error) {
-          *out_error = geo_err;
-        }
-        subsets_success = false_v;
-        break;
+    if (!resolved_subset_geometries) {
+      if (out_error) {
+        *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
       }
-      geometry = vkr_geometry_system_create(
-          manager->geometry_system, &subset->geometry_config, true_v, &geo_err);
-      if (geometry.id == 0) {
-        if (out_error) {
-          *out_error = geo_err;
-        }
-        subsets_success = false_v;
-        break;
-      }
+      subsets_success = false_v;
+      break;
     }
+
+    VkrGeometryHandle geometry = resolved_subset_geometries[i];
+    if (geometry.id == 0) {
+      if (out_error && *out_error == VKR_RENDERER_ERROR_NONE) {
+        *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      }
+      subsets_success = false_v;
+      break;
+    }
+    resolved_subset_geometries[i] = VKR_GEOMETRY_HANDLE_INVALID;
 
     VkrMaterialHandle material = subset->material_handle;
     bool8_t owns_material = true_v;
@@ -1256,6 +1374,15 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
 
   // Check if all subsets were built successfully
   if (!subsets_success || built_count != subset_count) {
+    if (resolved_subset_geometries) {
+      for (uint32_t i = 0; i < subset_count; ++i) {
+        if (resolved_subset_geometries[i].id != 0) {
+          vkr_geometry_system_release(manager->geometry_system,
+                                      resolved_subset_geometries[i]);
+          resolved_subset_geometries[i] = VKR_GEOMETRY_HANDLE_INVALID;
+        }
+      }
+    }
     // Clean up any geometry that was created
     for (uint32_t i = 0; i < built_count; ++i) {
       if (sub_descs[i].geometry.id != 0) {
