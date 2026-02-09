@@ -11,10 +11,9 @@
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
 #include "platform/vkr_platform.h"
-#include "renderer/systems/vkr_editor_viewport.h"
 #include "renderer/resources/ui/vkr_ui_text.h"
-#include "renderer/resources/world/vkr_text_3d.h"
 #include "renderer/systems/vkr_camera_controller.h"
+#include "renderer/systems/vkr_editor_viewport.h"
 #include "renderer/systems/vkr_font_system.h"
 #include "renderer/systems/vkr_gizmo_system.h"
 #include "renderer/systems/vkr_picking_ids.h"
@@ -22,13 +21,14 @@
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/vkr_renderer.h"
+#include <stdio.h>
 
 #define VKR_FPS_UPDATE_INTERVAL 0.25
 #define VKR_MEMORY_UPDATE_INTERVAL 1.0
 #define VKR_FPS_DELTA_MIN 0.000001
 #define VKR_WORLD_TIME_UPDATE_INTERVAL 0.25
 #define VKR_UI_TEXT_PADDING 16.0f
-#define SCENE_PATH "assets/scenes/default.scene.json"
+#define SCENE_PATH "assets/scenes/san_miguel.scene.json"
 
 typedef struct FilterModeEntry {
   VkrFilter min_filter;
@@ -126,9 +126,53 @@ typedef struct State {
   bool8_t auto_close_enabled;
   float64_t auto_close_after_seconds;
   bool8_t auto_close_requested;
+
+  // Optional benchmark logging for non-interactive perf validation runs.
+  bool8_t benchmark_enabled;
+  const char *benchmark_label;
+  uint64_t benchmark_sample_count;
+  float64_t benchmark_frame_ms_sum;
+  float64_t benchmark_frame_ms_min;
+  float64_t benchmark_frame_ms_max;
+  uint64_t benchmark_rg_cpu_sample_count;
+  float64_t benchmark_rg_cpu_ms_sum;
 } State;
 
 vkr_global State *state = NULL;
+
+/**
+ * @brief Parses common truthy/falsy environment values.
+ *
+ * Unknown values keep the provided default to avoid brittle automation.
+ */
+vkr_internal bool8_t application_env_flag(const char *name,
+                                          bool8_t default_value) {
+  if (!name || name[0] == '\0') {
+    return default_value;
+  }
+
+  const char *value = getenv(name);
+  if (!value || value[0] == '\0') {
+    return default_value;
+  }
+
+  switch (value[0]) {
+  case '1':
+  case 'y':
+  case 'Y':
+  case 't':
+  case 'T':
+    return true_v;
+  case '0':
+  case 'n':
+  case 'N':
+  case 'f':
+  case 'F':
+    return false_v;
+  default:
+    return default_value;
+  }
+}
 
 vkr_internal void application_queue_ui_text_update(Application *application,
                                                    uint32_t text_id,
@@ -158,9 +202,10 @@ vkr_internal void application_queue_ui_text_update(Application *application,
       };
 }
 
-vkr_internal void application_queue_world_text_update(
-    Application *application, uint32_t text_id, String8 content,
-    const VkrTransform *transform) {
+vkr_internal void
+application_queue_world_text_update(Application *application, uint32_t text_id,
+                                    String8 content,
+                                    const VkrTransform *transform) {
   if (!application || text_id == VKR_INVALID_ID) {
     return;
   }
@@ -1022,7 +1067,8 @@ vkr_internal void application_handle_input(Application *application,
 
   if (input_is_key_up(input_state, KEY_F6) &&
       input_was_key_down(input_state, KEY_F6)) {
-    application->editor_viewport.enabled = !application->editor_viewport.enabled;
+    application->editor_viewport.enabled =
+        !application->editor_viewport.enabled;
   }
 
   if (input_is_key_up(input_state, KEY_F7) &&
@@ -1186,7 +1232,8 @@ vkr_internal void application_update_fps_text(Application *application,
                                           application->renderer.active_camera);
 
     VkrAllocator *frame_alloc = &application->renderer.scratch_allocator;
-    const VkrRendererFrameMetrics *metrics = &application->renderer.frame_metrics;
+    const VkrRendererFrameMetrics *metrics =
+        &application->renderer.frame_metrics;
     const VkrWorldBatchMetrics *world = &metrics->world;
     const VkrShadowMetrics *shadow = &metrics->shadow;
     VkrRenderGraphResourceStats rg_stats = {0};
@@ -1200,6 +1247,51 @@ vkr_internal void application_update_fps_text(Application *application,
       have_rg_timings =
           vkr_rg_get_pass_timings(application->renderer.render_graph,
                                   &rg_pass_timings, &rg_pass_timing_count);
+    }
+
+    if (state->benchmark_enabled) {
+      const float64_t frame_ms = state->current_frametime * 1000.0;
+      state->benchmark_sample_count++;
+      state->benchmark_frame_ms_sum += frame_ms;
+      if (state->benchmark_sample_count == 1) {
+        state->benchmark_frame_ms_min = frame_ms;
+        state->benchmark_frame_ms_max = frame_ms;
+      } else {
+        state->benchmark_frame_ms_min =
+            Min(state->benchmark_frame_ms_min, frame_ms);
+        state->benchmark_frame_ms_max =
+            Max(state->benchmark_frame_ms_max, frame_ms);
+      }
+
+      float64_t rg_cpu_total_ms = 0.0;
+      if (have_rg_timings && rg_pass_timings && rg_pass_timing_count > 0) {
+        for (uint32_t i = 0; i < rg_pass_timing_count; ++i) {
+          const VkrRgPassTiming *timing = &rg_pass_timings[i];
+          if (timing->culled || timing->disabled) {
+            continue;
+          }
+          rg_cpu_total_ms += timing->cpu_ms;
+        }
+        state->benchmark_rg_cpu_sample_count++;
+        state->benchmark_rg_cpu_ms_sum += rg_cpu_total_ms;
+      }
+
+      log_info("BENCHMARK_SAMPLE label=%s frame_ms=%.3f fps=%.2f "
+               "rg_cpu_total_ms=%.3f "
+               "world_draws=%u world_batches=%u world_calls=%u",
+               state->benchmark_label ? state->benchmark_label : "default",
+               frame_ms, state->current_fps, rg_cpu_total_ms,
+               world->draws_collected, world->batches_created,
+               world->draws_issued);
+      fprintf(stdout,
+              "BENCHMARK_SAMPLE label=%s frame_ms=%.3f fps=%.2f "
+              "rg_cpu_total_ms=%.3f "
+              "world_draws=%u world_batches=%u world_calls=%u\n",
+              state->benchmark_label ? state->benchmark_label : "default",
+              frame_ms, state->current_fps, rg_cpu_total_ms,
+              world->draws_collected, world->batches_created,
+              world->draws_issued);
+      fflush(stdout);
     }
 
     String8 fps_text = string8_create_formatted(
@@ -1259,31 +1351,27 @@ vkr_internal void application_update_fps_text(Application *application,
             rg_image_peak_mb, rg_buffer_live_mb, rg_buffer_peak_mb,
             shadow->shadow_draw_calls_opaque[0],
             shadow->shadow_batches_opaque[0],
-            shadow->shadow_draw_calls_alpha[0],
-            shadow->shadow_batches_alpha[0],
+            shadow->shadow_draw_calls_alpha[0], shadow->shadow_batches_alpha[0],
             shadow->shadow_descriptor_binds_set1[0],
             shadow->shadow_draw_calls_opaque[1],
             shadow->shadow_batches_opaque[1],
-            shadow->shadow_draw_calls_alpha[1],
-            shadow->shadow_batches_alpha[1],
+            shadow->shadow_draw_calls_alpha[1], shadow->shadow_batches_alpha[1],
             shadow->shadow_descriptor_binds_set1[1],
             shadow->shadow_draw_calls_opaque[2],
             shadow->shadow_batches_opaque[2],
-            shadow->shadow_draw_calls_alpha[2],
-            shadow->shadow_batches_alpha[2],
+            shadow->shadow_draw_calls_alpha[2], shadow->shadow_batches_alpha[2],
             shadow->shadow_descriptor_binds_set1[2],
             shadow->shadow_draw_calls_opaque[3],
             shadow->shadow_batches_opaque[3],
-            shadow->shadow_draw_calls_alpha[3],
-            shadow->shadow_batches_alpha[3],
+            shadow->shadow_draw_calls_alpha[3], shadow->shadow_batches_alpha[3],
             shadow->shadow_descriptor_binds_set1[3]);
         if (metrics_text.length > 0 && application->rg_gpu_timing_enabled &&
             have_rg_timings && rg_pass_timings && rg_pass_timing_count > 0) {
           String8 timing_header = string8_create_formatted(
               frame_alloc, "\nRG pass timings (cpu/gpu):\n");
           if (timing_header.length > 0) {
-            metrics_text = string8_concat(frame_alloc, &metrics_text,
-                                          &timing_header);
+            metrics_text =
+                string8_concat(frame_alloc, &metrics_text, &timing_header);
           }
           for (uint32_t i = 0; i < rg_pass_timing_count; ++i) {
             const VkrRgPassTiming *timing = &rg_pass_timings[i];
@@ -1293,19 +1381,17 @@ vkr_internal void application_update_fps_text(Application *application,
             String8 timing_line = {0};
             if (timing->gpu_valid) {
               timing_line = string8_create_formatted(
-                  frame_alloc,
-                  "RG pass %.*s: cpu %.3f ms  gpu %.3f ms\n",
+                  frame_alloc, "RG pass %.*s: cpu %.3f ms  gpu %.3f ms\n",
                   (int)timing->name.length, timing->name.str, timing->cpu_ms,
                   timing->gpu_ms);
             } else {
               timing_line = string8_create_formatted(
-                  frame_alloc,
-                  "RG pass %.*s: cpu %.3f ms  gpu n/a\n",
+                  frame_alloc, "RG pass %.*s: cpu %.3f ms  gpu n/a\n",
                   (int)timing->name.length, timing->name.str, timing->cpu_ms);
             }
             if (timing_line.length > 0) {
-              metrics_text = string8_concat(frame_alloc, &metrics_text,
-                                            &timing_line);
+              metrics_text =
+                  string8_concat(frame_alloc, &metrics_text, &timing_line);
             }
           }
         }
@@ -1584,8 +1670,8 @@ vkr_internal void application_update_picking(Application *application) {
           String8 name =
               scene ? vkr_scene_get_name(scene, entity) : (String8){0};
           if (name.length > 0) {
-            picked_text = string8_create_formatted(
-                frame_alloc, "Picked: %.*s", (int)name.length, name.str);
+            picked_text = string8_create_formatted(frame_alloc, "Picked: %.*s",
+                                                   (int)name.length, name.str);
           } else {
             picked_text = string8_create_formatted(
                 frame_alloc, "Picked: entity %u", entity.parts.index);
@@ -1608,8 +1694,8 @@ vkr_internal void application_update_picking(Application *application) {
           String8 name =
               scene ? vkr_scene_get_name(scene, text_entity) : (String8){0};
           if (name.length > 0) {
-            picked_text = string8_create_formatted(
-                frame_alloc, "Picked: %.*s", (int)name.length, name.str);
+            picked_text = string8_create_formatted(frame_alloc, "Picked: %.*s",
+                                                   (int)name.length, name.str);
           } else {
             picked_text = string8_create_formatted(
                 frame_alloc, "Picked: world text #%u", decoded.value);
@@ -1630,15 +1716,15 @@ vkr_internal void application_update_picking(Application *application) {
             input_is_button_down(state->input_state, BUTTON_LEFT);
         if (drag_button_down && handle != VKR_GIZMO_HANDLE_NONE) {
           if (application_begin_gizmo_drag(application, handle)) {
-            vkr_gizmo_system_set_active_handle(&application->renderer.gizmo_system,
-                                               handle);
+            vkr_gizmo_system_set_active_handle(
+                &application->renderer.gizmo_system, handle);
             application->renderer.gizmo_system.mode = state->gizmo_drag.mode;
             update_selection = false_v;
           }
         }
       } else {
-        picked_text = string8_create_formatted(
-            frame_alloc, "Picked: light #%u", decoded.value);
+        picked_text = string8_create_formatted(frame_alloc, "Picked: light #%u",
+                                               decoded.value);
       }
     } else {
       picked_text = string8_lit("Picked: none");
@@ -1657,8 +1743,8 @@ vkr_internal void application_update_picking(Application *application) {
     if (picked_text.length > 0 &&
         result.object_id != state->last_picked_object_id) {
       state->last_picked_object_id = result.object_id;
-      application_queue_ui_text_update(application, state->picked_object_text_id,
-                                       picked_text);
+      application_queue_ui_text_update(
+          application, state->picked_object_text_id, picked_text);
     }
 
     state->gizmo_drag.pending_select = false_v;
@@ -1847,6 +1933,14 @@ int main(int argc, char **argv) {
   state->auto_close_enabled = false_v;
   state->auto_close_after_seconds = 0.0;
   state->auto_close_requested = false_v;
+  state->benchmark_enabled = false_v;
+  state->benchmark_label = "default";
+  state->benchmark_sample_count = 0;
+  state->benchmark_frame_ms_sum = 0.0;
+  state->benchmark_frame_ms_min = 0.0;
+  state->benchmark_frame_ms_max = 0.0;
+  state->benchmark_rg_cpu_sample_count = 0;
+  state->benchmark_rg_cpu_ms_sum = 0.0;
 
   const char *auto_close_env = getenv("VKR_AUTOCLOSE_SECONDS");
   if (auto_close_env && auto_close_env[0] != '\0') {
@@ -1861,6 +1955,22 @@ int main(int argc, char **argv) {
       log_warn("Ignoring invalid VKR_AUTOCLOSE_SECONDS value '%s'",
                auto_close_env);
     }
+  }
+
+  application.rg_gpu_timing_enabled =
+      application_env_flag("VKR_RG_GPU_TIMING", false_v);
+  if (application.rg_gpu_timing_enabled) {
+    log_info("RenderGraph GPU timings enabled via VKR_RG_GPU_TIMING");
+  }
+
+  state->benchmark_enabled = application_env_flag("VKR_BENCHMARK_LOG", false_v);
+  const char *benchmark_label_env = getenv("VKR_BENCHMARK_LABEL");
+  if (benchmark_label_env && benchmark_label_env[0] != '\0') {
+    state->benchmark_label = benchmark_label_env;
+  }
+  if (state->benchmark_enabled) {
+    log_info("Benchmark logging enabled (label=%s)",
+             state->benchmark_label ? state->benchmark_label : "default");
   }
 
   Scratch scratch = scratch_create(application.app_arena);
@@ -1892,6 +2002,45 @@ int main(int argc, char **argv) {
 
   application_start(&application);
   application_close(&application);
+
+  if (state->benchmark_enabled) {
+    if (state->benchmark_sample_count > 0) {
+      const float64_t avg_frame_ms = state->benchmark_frame_ms_sum /
+                                     (float64_t)state->benchmark_sample_count;
+      const float64_t avg_rg_cpu_ms =
+          state->benchmark_rg_cpu_sample_count > 0
+              ? state->benchmark_rg_cpu_ms_sum /
+                    (float64_t)state->benchmark_rg_cpu_sample_count
+              : 0.0;
+      log_info("BENCHMARK_SUMMARY label=%s samples=%llu avg_frame_ms=%.3f "
+               "min_frame_ms=%.3f max_frame_ms=%.3f rg_cpu_samples=%llu "
+               "avg_rg_cpu_ms=%.3f",
+               state->benchmark_label ? state->benchmark_label : "default",
+               (unsigned long long)state->benchmark_sample_count, avg_frame_ms,
+               state->benchmark_frame_ms_min, state->benchmark_frame_ms_max,
+               (unsigned long long)state->benchmark_rg_cpu_sample_count,
+               avg_rg_cpu_ms);
+      fprintf(stdout,
+              "BENCHMARK_SUMMARY label=%s samples=%llu avg_frame_ms=%.3f "
+              "min_frame_ms=%.3f max_frame_ms=%.3f rg_cpu_samples=%llu "
+              "avg_rg_cpu_ms=%.3f\n",
+              state->benchmark_label ? state->benchmark_label : "default",
+              (unsigned long long)state->benchmark_sample_count, avg_frame_ms,
+              state->benchmark_frame_ms_min, state->benchmark_frame_ms_max,
+              (unsigned long long)state->benchmark_rg_cpu_sample_count,
+              avg_rg_cpu_ms);
+      fflush(stdout);
+    } else {
+      log_warn("BENCHMARK_SUMMARY label=%s samples=0",
+               state->benchmark_label ? state->benchmark_label : "default");
+      fprintf(stdout,
+              "BENCHMARK_SUMMARY label=%s samples=0 avg_frame_ms=0.000 "
+              "min_frame_ms=0.000 max_frame_ms=0.000 rg_cpu_samples=0 "
+              "avg_rg_cpu_ms=0.000\n",
+              state->benchmark_label ? state->benchmark_label : "default");
+      fflush(stdout);
+    }
+  }
 
   String8 scene_path = string8_lit(SCENE_PATH);
   vkr_resource_system_unload(&state->scene_resource, scene_path);
