@@ -533,15 +533,49 @@ bool8_t vkr_shader_system_apply_global(VkrShaderSystem *state) {
 
 bool8_t vkr_shader_system_apply_instance(VkrShaderSystem *state) {
   assert_log(state != NULL, "State is NULL");
-  assert_log(state->current_shader != NULL, "Current shader is NULL");
   assert_log(state->registry != NULL, "Registry is NULL");
 
-  VkrShader *shader = state->current_shader;
-  vkr_ensure_staging_for_shader(state, shader);
+  uint32_t requested_instance_id = VKR_INVALID_ID;
+  if (state->current_shader) {
+    requested_instance_id = state->current_shader->bound_instance_id;
+  }
+
   VkrPipelineHandle current =
       vkr_pipeline_registry_get_current_pipeline(state->registry);
   if (current.id == 0)
     return false_v;
+
+  VkrPipeline *pipeline = NULL;
+  if (!vkr_pipeline_registry_get_pipeline(state->registry, current, &pipeline) ||
+      !pipeline) {
+    return false_v;
+  }
+
+  if (pipeline->shader_name.str && pipeline->shader_name.length > 0) {
+    const char *pipeline_shader_name = string8_cstr(&pipeline->shader_name);
+    if (!state->current_shader ||
+        !vkr_string8_equals_cstr(&state->current_shader->name,
+                                 pipeline_shader_name)) {
+      if (!vkr_shader_system_use(state, pipeline_shader_name) ||
+          !state->current_shader) {
+        log_error("Failed to bind shader '%s' for pipeline %u",
+                  pipeline_shader_name, current.id);
+        return false_v;
+      }
+    }
+  }
+
+  if (!state->current_shader) {
+    log_error("No shader currently bound");
+    return false_v;
+  }
+
+  if (requested_instance_id != VKR_INVALID_ID) {
+    state->current_shader->bound_instance_id = requested_instance_id;
+  }
+
+  VkrShader *shader = state->current_shader;
+  vkr_ensure_staging_for_shader(state, shader);
 
   state->instance_state.instance_state.id = shader->bound_instance_id;
 

@@ -214,12 +214,12 @@ static void vkr_pass_world_bind_globals_and_draw(
     vkr_lighting_system_apply_uniforms(&rf->lighting_system);
     vkr_pass_world_apply_shadow_globals(rf, frame, shadow_data, shadow_valid);
     vkr_material_system_apply_global(&rf->material_system, globals,
-                                    VKR_PIPELINE_DOMAIN_WORLD);
+                                     domain);
     *inout_globals_pipeline = pipeline;
   }
   vkr_shader_system_bind_instance(&rf->shader_system, instance_id);
   vkr_material_system_apply_instance(&rf->material_system, material,
-                                    VKR_PIPELINE_DOMAIN_WORLD);
+                                     domain);
   vkr_geometry_system_render_instanced_range_with_index_buffer(
       rf, &rf->geometry_system, geometry, range->index_buffer, range->index_count,
       range->first_index, range->vertex_offset, draw->instance_count,

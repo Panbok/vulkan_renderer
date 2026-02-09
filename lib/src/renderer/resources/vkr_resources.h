@@ -163,6 +163,11 @@ typedef struct VkrPipelineHandle {
 typedef struct VkrPipeline {
   VkrPipelineHandle handle;
   VkrGraphicsPipelineDescription description;
+  /**
+   * Stable shader identifier used to keep shader-system staging/state aligned
+   * with the concrete pipeline selected for a draw.
+   */
+  String8 shader_name;
 
   VkrPipelineDomain domain;
   VkrRenderPassHandle renderpass;

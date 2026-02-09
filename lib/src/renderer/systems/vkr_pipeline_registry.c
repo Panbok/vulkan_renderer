@@ -4,6 +4,29 @@
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/vkr_resources.h"
 
+vkr_internal bool8_t vkr_pipeline_registry_set_shader_name(
+    VkrPipelineRegistry *registry, VkrPipeline *pipeline, String8 shader_name) {
+  if (!registry || !pipeline) {
+    return false_v;
+  }
+  if (!shader_name.str || shader_name.length == 0) {
+    pipeline->shader_name = (String8){0};
+    return true_v;
+  }
+
+  char *stable = (char *)vkr_allocator_alloc(
+      &registry->allocator, shader_name.length + 1,
+      VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!stable) {
+    return false_v;
+  }
+  MemCopy(stable, shader_name.str, shader_name.length);
+  stable[shader_name.length] = '\0';
+  pipeline->shader_name =
+      string8_create((uint8_t *)stable, shader_name.length);
+  return true_v;
+}
+
 vkr_internal INLINE void
 vkr__reset_registry_state(VkrPipelineRegistry *registry) {
   assert_log(registry != NULL, "Registry is NULL");
@@ -163,6 +186,7 @@ bool8_t vkr_pipeline_registry_create_graphics_pipeline(
   }
 
   pipeline->description = *desc;
+  pipeline->shader_name = (String8){0};
   pipeline->domain = desc->domain;
   pipeline->renderpass = desc->renderpass;
 
@@ -451,6 +475,19 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
                                                       out_handle, out_error)) {
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
     return false_v;
+  }
+
+  if (config->name.str && config->name.length > 0) {
+    VkrPipeline *created_pipeline = NULL;
+    if (vkr_pipeline_registry_get_pipeline(registry, *out_handle,
+                                           &created_pipeline) &&
+        created_pipeline &&
+        !vkr_pipeline_registry_set_shader_name(registry, created_pipeline,
+                                               config->name)) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      return false_v;
+    }
   }
 
   if (config->name.str && config->name.length > 0) {

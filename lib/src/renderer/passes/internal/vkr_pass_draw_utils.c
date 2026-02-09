@@ -215,7 +215,6 @@ bool8_t vkr_pass_packet_resolve_pipeline(RendererFrontend *rf,
   }
 
   const char *fallback = vkr_pass_packet_default_shader_for_domain(domain);
-  const char *shader_name = fallback;
   const char *pipeline_shader = fallback;
   bool8_t use_domain_pipeline = false_v;
 
@@ -233,16 +232,7 @@ bool8_t vkr_pass_packet_resolve_pipeline(RendererFrontend *rf,
       allow_material_shader = (material->pipeline_id == (uint32_t)domain);
     }
     if (allow_material_shader) {
-      shader_name = material->shader_name;
       pipeline_shader = material->shader_name;
-    }
-  }
-
-  if (!vkr_shader_system_use(&rf->shader_system, shader_name)) {
-    shader_name = fallback;
-    pipeline_shader = fallback;
-    if (!vkr_shader_system_use(&rf->shader_system, shader_name)) {
-      return false_v;
     }
   }
 
@@ -252,16 +242,59 @@ bool8_t vkr_pass_packet_resolve_pipeline(RendererFrontend *rf,
                                            pipeline_override, &pipeline) &&
         pipeline && pipeline->domain == domain) {
       *out_pipeline = pipeline_override;
+    } else {
+      pipeline_override = VKR_PIPELINE_HANDLE_INVALID;
+    }
+  }
+
+  if (pipeline_override.id == 0) {
+    VkrRendererError err = VKR_RENDERER_ERROR_NONE;
+    const char *lookup_name = use_domain_pipeline ? NULL : pipeline_shader;
+    if (!vkr_pipeline_registry_get_pipeline_for_material(
+            &rf->pipeline_registry, lookup_name, (uint32_t)domain, out_pipeline,
+            &err)) {
+      return false_v;
+    }
+  }
+
+  VkrPipeline *resolved_pipeline = NULL;
+  if (vkr_pipeline_registry_get_pipeline(&rf->pipeline_registry, *out_pipeline,
+                                         &resolved_pipeline) &&
+      resolved_pipeline && resolved_pipeline->shader_name.str &&
+      resolved_pipeline->shader_name.length > 0 &&
+      resolved_pipeline
+              ->shader_name.str[resolved_pipeline->shader_name.length] ==
+          '\0') {
+    if (vkr_shader_system_use(
+            &rf->shader_system,
+            (const char *)resolved_pipeline->shader_name.str)) {
       return true_v;
     }
   }
 
-  VkrRendererError err = VKR_RENDERER_ERROR_NONE;
-  const char *lookup_name = use_domain_pipeline ? NULL : pipeline_shader;
-  if (!vkr_pipeline_registry_get_pipeline_for_material(
-          &rf->pipeline_registry, lookup_name, (uint32_t)domain, out_pipeline,
-          &err)) {
-    return false_v;
+  const char *resolved_shader = fallback;
+  if (!use_domain_pipeline && pipeline_shader && pipeline_shader[0] != '\0') {
+    VkrPipelineHandle shader_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+    String8 shader_key =
+        string8_create((uint8_t *)pipeline_shader, string_length(pipeline_shader));
+    if (vkr_pipeline_registry_find_by_name(&rf->pipeline_registry, shader_key,
+                                           &shader_pipeline) &&
+        shader_pipeline.id == out_pipeline->id &&
+        shader_pipeline.generation == out_pipeline->generation) {
+      VkrPipeline *matched_pipeline = NULL;
+      if (vkr_pipeline_registry_get_pipeline(&rf->pipeline_registry,
+                                             shader_pipeline,
+                                             &matched_pipeline) &&
+          matched_pipeline && matched_pipeline->domain == domain) {
+        resolved_shader = pipeline_shader;
+      }
+    }
+  }
+
+  if (!vkr_shader_system_use(&rf->shader_system, resolved_shader)) {
+    if (!vkr_shader_system_use(&rf->shader_system, fallback)) {
+      return false_v;
+    }
   }
 
   return true_v;
