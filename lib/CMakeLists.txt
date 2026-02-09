@@ -47,16 +47,59 @@ add_subdirectory("${VKR_KTX_SOFTWARE_DIR}" "${CMAKE_BINARY_DIR}/vendor/ktx-softw
 set(BUILD_SHARED_LIBS "${_VKR_BUILD_SHARED_LIBS_PREV}" CACHE BOOL "Restore shared library default after KTX setup." FORCE)
 
 # Locate SPIR-V headers (needed by spirv_reflect.h when using system headers).
-find_path(SPIRV_HEADERS_INCLUDE_DIR
+set(_VKR_VULKAN_SDK_INCLUDE "")
+if(DEFINED ENV{VULKAN_SDK})
+    # Vulkan SDK layout on Windows/macOS/Linux: <VULKAN_SDK>/Include
+    set(_VKR_VULKAN_SDK_INCLUDE "$ENV{VULKAN_SDK}/Include")
+endif()
+
+set(_VKR_VULKAN_TARGET_INCLUDES "")
+if(TARGET Vulkan::Vulkan)
+    get_target_property(_VKR_VULKAN_TARGET_INCLUDES Vulkan::Vulkan INTERFACE_INCLUDE_DIRECTORIES)
+endif()
+
+# Prefer the canonical SPIRV-Headers layout: spirv/unified1/spirv.h
+find_path(_VKR_SPIRV_UNIFIED1_INCLUDE_DIR
     NAMES spirv/unified1/spirv.h
     HINTS
+        ${_VKR_VULKAN_SDK_INCLUDE}
+        ${_VKR_VULKAN_TARGET_INCLUDES}
         /usr/local/include
         /opt/homebrew/include
         ${Vulkan_INCLUDE_DIRS}
+        ${Vulkan_INCLUDE_DIR}
 )
 
+# Newer Vulkan SDKs on Windows may ship a flattened header at:
+#   <VULKAN_SDK>/Include/spirv-headers/spirv.h
+find_path(_VKR_SPIRV_FLAT_INCLUDE_DIR
+    NAMES spirv-headers/spirv.h
+    HINTS
+        ${_VKR_VULKAN_SDK_INCLUDE}
+        ${_VKR_VULKAN_TARGET_INCLUDES}
+        /usr/local/include
+        /opt/homebrew/include
+        ${Vulkan_INCLUDE_DIRS}
+        ${Vulkan_INCLUDE_DIR}
+)
+
+set(_VKR_ADDITIONAL_SPIRV_HEADER_INCLUDE_DIR "")
+if(_VKR_SPIRV_UNIFIED1_INCLUDE_DIR)
+    set(SPIRV_HEADERS_INCLUDE_DIR "${_VKR_SPIRV_UNIFIED1_INCLUDE_DIR}")
+elseif(_VKR_SPIRV_FLAT_INCLUDE_DIR)
+    # Vulkan SDK flattened SPIR-V header layout.
+    # `vendor/spirv_reflect.h` will include <spirv-headers/spirv.h> when present.
+    set(SPIRV_HEADERS_INCLUDE_DIR "${_VKR_SPIRV_FLAT_INCLUDE_DIR}")
+endif()
+
 if(NOT SPIRV_HEADERS_INCLUDE_DIR)
-    message(FATAL_ERROR "SPIR-V headers not found (missing spirv/unified1/spirv.h). Install SPIRV-Headers or point CMake to the include path.")
+    message(FATAL_ERROR
+        "SPIR-V headers not found (missing spirv/unified1/spirv.h).\n"
+        "Fix options:\n"
+        "  - Install SPIRV-Headers (system/vcpkg)\n"
+        "  - Ensure your Vulkan SDK install includes SPIR-V headers\n"
+        "  - Or configure with: -DSPIRV_HEADERS_INCLUDE_DIR=<path-to-include>\n"
+    )
 endif()
 
 # Set include directories
