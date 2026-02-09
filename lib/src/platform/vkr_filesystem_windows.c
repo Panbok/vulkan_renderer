@@ -448,9 +448,12 @@ FileError file_load_spirv_shader(const FilePath *path, VkrAllocator *allocator,
   file_close(&handle);
 
   if ((uintptr_t)(*out_data) % 4 != 0) {
+    uint8_t *old_buffer = *out_data;
     uint8_t *aligned = vkr_allocator_alloc(allocator, *out_size,
-                                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    MemCopy(aligned, *out_data, *out_size);
+                                           VKR_ALLOCATOR_MEMORY_TAG_FILE);
+    MemCopy(aligned, old_buffer, *out_size);
+    vkr_allocator_free(allocator, old_buffer, *out_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_FILE);
     *out_data = aligned;
   }
   return err;

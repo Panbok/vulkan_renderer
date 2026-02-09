@@ -29,8 +29,8 @@ vkr_internal INLINE uint64_t vkr_dmemory_min_alignment(void) {
   return min_alignment;
 }
 
-vkr_internal INLINE uint64_t vkr_dmemory_normalize_alignment(
-    uint64_t alignment) {
+vkr_internal INLINE uint64_t
+vkr_dmemory_normalize_alignment(uint64_t alignment) {
   uint64_t eff_alignment = alignment;
   uint64_t min_alignment = vkr_dmemory_min_alignment();
 
@@ -226,11 +226,62 @@ void *vkr_dmemory_alloc_aligned(VkrDMemory *dmemory, uint64_t size,
 
   uint64_t offset = 0;
   if (!vkr_freelist_allocate(&dmemory->freelist, request_size, &offset)) {
+    // Attempt to grow up to the reserved size and retry.
+    // This keeps pointers stable because base_memory is reserved upfront.
+    const uint64_t overhead_slack =
+        vkr_dmemory_metadata_size() + vkr_dmemory_min_alignment();
+
+    if (dmemory->reserve_size > dmemory->total_size &&
+        dmemory->reserve_size > overhead_slack) {
+      const uint64_t free_space = vkr_dmemory_get_free_space(dmemory);
+      const uint64_t used_space = dmemory->total_size - free_space;
+      uint64_t needed_total_overhead = used_space + request_size;
+      if (needed_total_overhead < used_space) {
+        needed_total_overhead = dmemory->reserve_size; // overflow; clamp
+      }
+
+      uint64_t target_total_overhead = dmemory->total_size;
+      while (target_total_overhead < needed_total_overhead &&
+             target_total_overhead < dmemory->reserve_size) {
+        uint64_t doubled = target_total_overhead * 2;
+        if (doubled <= target_total_overhead) {
+          target_total_overhead = dmemory->reserve_size;
+          break;
+        }
+        target_total_overhead =
+            (doubled > dmemory->reserve_size) ? dmemory->reserve_size : doubled;
+      }
+
+      target_total_overhead =
+          vkr_align_to_page(target_total_overhead, dmemory->page_size);
+      if (target_total_overhead > dmemory->reserve_size) {
+        target_total_overhead = dmemory->reserve_size;
+      }
+
+      uint64_t target_total_param = 0;
+      if (target_total_overhead > overhead_slack) {
+        target_total_param = target_total_overhead - overhead_slack;
+      }
+
+      if (target_total_param > 0) {
+        if (vkr_dmemory_resize(dmemory, target_total_param)) {
+          if (vkr_freelist_allocate(&dmemory->freelist, request_size,
+                                    &offset)) {
+            goto allocation_success;
+          }
+        }
+      }
+    }
+
     log_error("Failed to allocate %llu bytes (aligned request size %llu) from "
-              "freelist",
-              (uint64_t)size, (uint64_t)request_size);
+              "freelist (total=%llu reserve=%llu free=%llu)",
+              (uint64_t)size, (uint64_t)request_size,
+              (uint64_t)dmemory->total_size, (uint64_t)dmemory->reserve_size,
+              (uint64_t)vkr_dmemory_get_free_space(dmemory));
     return NULL;
   }
+
+allocation_success:
 
   uint64_t aligned_offset = AlignPow2(offset + metadata_size, eff_alignment);
   uint64_t aligned_end = aligned_offset + size;
@@ -257,8 +308,7 @@ void *vkr_dmemory_alloc_aligned(VkrDMemory *dmemory, uint64_t size,
 
 vkr_internal INLINE bool8_t
 vkr_dmemory_free_internal(VkrDMemory *dmemory, void *ptr,
-                          uint64_t provided_size,
-                          uint64_t provided_alignment) {
+                          uint64_t provided_size, uint64_t provided_alignment) {
   assert_log(dmemory != NULL, "DMemory must not be NULL");
   assert_log(ptr != NULL, "Pointer must not be NULL");
 
@@ -272,8 +322,7 @@ vkr_dmemory_free_internal(VkrDMemory *dmemory, void *ptr,
              (uint64_t)provided_size, (uint64_t)header->user_size);
   }
 
-  if (provided_alignment > 0 &&
-      provided_alignment != header->alignment) {
+  if (provided_alignment > 0 && provided_alignment != header->alignment) {
     log_warn("dmemory free alignment mismatch: provided=%llu, stored=%llu",
              (uint64_t)provided_alignment, (uint64_t)header->alignment);
   }
@@ -332,11 +381,11 @@ void *vkr_dmemory_realloc(VkrDMemory *dmemory, void *ptr, uint64_t new_size,
     return NULL;
   }
 
-  uint64_t copy_size = new_size < header->user_size ? new_size : header->user_size;
+  uint64_t copy_size =
+      new_size < header->user_size ? new_size : header->user_size;
   MemCopy(new_ptr, ptr, copy_size);
 
-  vkr_dmemory_free_internal(dmemory, ptr, header->user_size,
-                            header->alignment);
+  vkr_dmemory_free_internal(dmemory, ptr, header->user_size, header->alignment);
 
   return new_ptr;
 }
