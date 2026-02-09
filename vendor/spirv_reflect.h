@@ -32,9 +32,25 @@ VERSION HISTORY
 #define SPIRV_REFLECT_H
 
 #if defined(SPIRV_REFLECT_USE_SYSTEM_SPIRV_H)
-#include <spirv/unified1/spirv.h>
+  // System header layout can vary by SDK/package:
+  // - SPIRV-Headers: <spirv/unified1/spirv.h>
+  // - Vulkan SDK (some Windows versions): <spirv-headers/spirv.h>
+  // - Some distros/packages: <spirv.h>
+  #if defined(__has_include)
+    #if __has_include(<spirv/unified1/spirv.h>)
+      #include <spirv/unified1/spirv.h>
+    #elif __has_include(<spirv-headers/spirv.h>)
+      #include <spirv-headers/spirv.h>
+    #elif __has_include(<spirv.h>)
+      #include <spirv.h>
+    #else
+      #error "SPIR-V headers not found. Install SPIRV-Headers (preferred) or ensure your Vulkan SDK provides SPIR-V headers."
+    #endif
+  #else
+    #include <spirv/unified1/spirv.h>
+  #endif
 #else
-#include "./include/spirv/unified1/spirv.h"
+  #include "./include/spirv/unified1/spirv.h"
 #endif
 
 
