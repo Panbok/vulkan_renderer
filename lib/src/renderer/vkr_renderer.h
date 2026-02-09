@@ -586,6 +586,34 @@ typedef struct VkrTextureUploadPayload {
   const VkrTextureUploadRegion *regions;
 } VkrTextureUploadPayload;
 
+/**
+ * @brief Optional initial upload parameters for batch buffer creation.
+ *
+ * When present, the backend uploads the provided bytes after buffer creation.
+ * Upload range must be fully contained within the destination buffer size.
+ */
+typedef struct VkrBufferUploadPayload {
+  const void *data;
+  uint64_t size;
+  uint64_t offset;
+} VkrBufferUploadPayload;
+
+/**
+ * @brief One buffer creation request for backend batch APIs.
+ */
+typedef struct VkrBufferBatchCreateRequest {
+  const VkrBufferDescription *description;
+  const VkrBufferUploadPayload *upload;
+} VkrBufferBatchCreateRequest;
+
+/**
+ * @brief One texture creation request for backend batch APIs.
+ */
+typedef struct VkrTextureBatchCreateRequest {
+  const VkrTextureDescription *description;
+  const VkrTextureUploadPayload *payload;
+} VkrTextureBatchCreateRequest;
+
 // ----------------------------------------------------------------------------
 // Instance state & material state
 // ----------------------------------------------------------------------------
@@ -1049,6 +1077,11 @@ VkrBufferHandle vkr_renderer_create_index_buffer_dynamic(
     VkrRendererFrontendHandle renderer, uint64_t size, VkrIndexType type,
     const void *initial_data, VkrRendererError *out_error);
 
+uint32_t vkr_renderer_create_buffer_batch(
+    VkrRendererFrontendHandle renderer,
+    const VkrBufferBatchCreateRequest *requests, uint32_t count,
+    VkrBufferHandle *out_handles, VkrRendererError *out_errors);
+
 VkrTextureOpaqueHandle
 vkr_renderer_create_texture(VkrRendererFrontendHandle renderer,
                             const VkrTextureDescription *description,
@@ -1058,6 +1091,10 @@ VkrTextureOpaqueHandle vkr_renderer_create_texture_with_payload(
     VkrRendererFrontendHandle renderer,
     const VkrTextureDescription *description,
     const VkrTextureUploadPayload *payload, VkrRendererError *out_error);
+uint32_t vkr_renderer_create_texture_with_payload_batch(
+    VkrRendererFrontendHandle renderer,
+    const VkrTextureBatchCreateRequest *requests, uint32_t count,
+    VkrTextureOpaqueHandle *out_handles, VkrRendererError *out_errors);
 VkrTextureOpaqueHandle
 vkr_renderer_create_writable_texture(VkrRendererFrontendHandle renderer,
                                      const VkrTextureDescription *desc,
@@ -1513,6 +1550,7 @@ typedef struct VkrRendererBackendInterface {
   void (*get_device_information)(void *backend_state,
                                  VkrDeviceInformation *device_information,
                                  Arena *temp_arena);
+  void (*set_job_system)(void *backend_state, VkrJobSystem *job_system);
 
   // --- Synchronization ---
   VkrRendererError (*wait_idle)(void *backend_state); // Wait for GPU to be idle
@@ -1554,6 +1592,10 @@ typedef struct VkrRendererBackendInterface {
   VkrBackendResourceHandle (*buffer_create)(void *backend_state,
                                             const VkrBufferDescription *desc,
                                             const void *initial_data);
+  uint32_t (*buffer_create_batch)(
+      void *backend_state, const VkrBufferBatchCreateRequest *requests,
+      uint32_t count, VkrBackendResourceHandle *out_handles,
+      VkrRendererError *out_errors);
   void (*buffer_destroy)(void *backend_state, VkrBackendResourceHandle handle);
   VkrRendererError (*buffer_update)(void *backend_state,
                                     VkrBackendResourceHandle handle,
@@ -1579,6 +1621,10 @@ typedef struct VkrRendererBackendInterface {
   VkrBackendResourceHandle (*texture_create_with_payload)(
       void *backend_state, const VkrTextureDescription *desc,
       const VkrTextureUploadPayload *payload);
+  uint32_t (*texture_create_with_payload_batch)(
+      void *backend_state, const VkrTextureBatchCreateRequest *requests,
+      uint32_t count, VkrBackendResourceHandle *out_handles,
+      VkrRendererError *out_errors);
   VkrBackendResourceHandle (*render_target_texture_create)(
       void *backend_state, const VkrRenderTargetTextureDesc *desc);
   VkrBackendResourceHandle (*depth_attachment_create)(void *backend_state,

@@ -467,17 +467,116 @@ VkrBufferHandle vkr_renderer_create_buffer(
   assert_log(description != NULL, "Description is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  // log_debug("Creating buffer");
-
-  VkrBackendResourceHandle handle = renderer->backend.buffer_create(
-      renderer->backend_state, description, initial_data);
-  if (handle.ptr == NULL) {
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  VkrBufferUploadPayload upload = {
+      .data = initial_data,
+      .size = description->size,
+      .offset = 0,
+  };
+  VkrBufferBatchCreateRequest request = {
+      .description = description,
+      .upload = initial_data ? &upload : NULL,
+  };
+  VkrBufferHandle handle = NULL;
+  if (vkr_renderer_create_buffer_batch(renderer, &request, 1, &handle,
+                                       out_error) != 1 ||
+      !handle) {
+    if (*out_error == VKR_RENDERER_ERROR_NONE) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
     return NULL;
   }
+  return handle;
+}
 
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return (VkrBufferHandle)handle.ptr;
+uint32_t vkr_renderer_create_buffer_batch(
+    VkrRendererFrontendHandle renderer,
+    const VkrBufferBatchCreateRequest *requests, uint32_t count,
+    VkrBufferHandle *out_handles, VkrRendererError *out_errors) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(requests != NULL, "Requests is NULL");
+  assert_log(count > 0, "Count must be > 0");
+  assert_log(out_handles != NULL, "Out handles is NULL");
+  assert_log(out_errors != NULL, "Out errors is NULL");
+
+  for (uint32_t i = 0; i < count; ++i) {
+    out_handles[i] = NULL;
+    out_errors[i] = VKR_RENDERER_ERROR_UNKNOWN;
+  }
+
+  if (renderer->backend.buffer_create_batch) {
+    VkrBackendResourceHandle *backend_handles = vkr_allocator_alloc(
+        &renderer->scratch_allocator, sizeof(VkrBackendResourceHandle) * count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!backend_handles) {
+      for (uint32_t i = 0; i < count; ++i) {
+        out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      }
+      return 0;
+    }
+
+    uint32_t created = renderer->backend.buffer_create_batch(
+        renderer->backend_state, requests, count, backend_handles, out_errors);
+    for (uint32_t i = 0; i < count; ++i) {
+      out_handles[i] = (VkrBufferHandle)backend_handles[i].ptr;
+      if (out_handles[i] && out_errors[i] == VKR_RENDERER_ERROR_UNKNOWN) {
+        out_errors[i] = VKR_RENDERER_ERROR_NONE;
+      }
+    }
+    vkr_allocator_free(&renderer->scratch_allocator, backend_handles,
+                       sizeof(VkrBackendResourceHandle) * count,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return created;
+  }
+
+  uint32_t created = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const VkrBufferBatchCreateRequest *request = &requests[i];
+    if (!request->description) {
+      out_errors[i] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      continue;
+    }
+
+    const void *initial_data = NULL;
+    bool8_t requires_followup_upload = false_v;
+    if (request->upload && request->upload->data && request->upload->size > 0) {
+      const uint64_t upload_end = request->upload->offset + request->upload->size;
+      if (upload_end < request->upload->offset ||
+          upload_end > request->description->size) {
+        out_errors[i] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        continue;
+      }
+      if (request->upload->offset == 0 &&
+          request->upload->size == request->description->size) {
+        initial_data = request->upload->data;
+      } else {
+        requires_followup_upload = true_v;
+      }
+    }
+
+    VkrBackendResourceHandle handle = renderer->backend.buffer_create(
+        renderer->backend_state, request->description, initial_data);
+    if (!handle.ptr) {
+      out_errors[i] = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      continue;
+    }
+
+    if (requires_followup_upload) {
+      VkrRendererError upload_error = renderer->backend.buffer_upload(
+          renderer->backend_state, handle, request->upload->offset,
+          request->upload->size, request->upload->data);
+      if (upload_error != VKR_RENDERER_ERROR_NONE) {
+        renderer->backend.buffer_destroy(renderer->backend_state, handle);
+        out_errors[i] = upload_error;
+        continue;
+      }
+    }
+
+    out_handles[i] = (VkrBufferHandle)handle.ptr;
+    out_errors[i] = VKR_RENDERER_ERROR_NONE;
+    created++;
+  }
+
+  return created;
 }
 
 VkrBufferHandle
@@ -611,15 +710,86 @@ VkrTextureOpaqueHandle vkr_renderer_create_texture_with_payload(
   assert_log(payload != NULL, "Payload is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
-  if (!renderer->backend.texture_create_with_payload) {
-    *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+  VkrTextureBatchCreateRequest request = {
+      .description = description,
+      .payload = payload,
+  };
+  VkrTextureOpaqueHandle handle = NULL;
+  if (vkr_renderer_create_texture_with_payload_batch(
+          renderer, &request, 1, &handle, out_error) != 1 ||
+      !handle) {
+    if (*out_error == VKR_RENDERER_ERROR_NONE) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
     return NULL;
   }
+  return handle;
+}
 
-  VkrBackendResourceHandle handle =
-      renderer->backend.texture_create_with_payload(renderer->backend_state,
-                                                    description, payload);
-  return vkr_renderer_texture_create_result(handle, out_error);
+uint32_t vkr_renderer_create_texture_with_payload_batch(
+    VkrRendererFrontendHandle renderer,
+    const VkrTextureBatchCreateRequest *requests, uint32_t count,
+    VkrTextureOpaqueHandle *out_handles, VkrRendererError *out_errors) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(requests != NULL, "Requests is NULL");
+  assert_log(count > 0, "Count must be > 0");
+  assert_log(out_handles != NULL, "Out handles is NULL");
+  assert_log(out_errors != NULL, "Out errors is NULL");
+
+  for (uint32_t i = 0; i < count; ++i) {
+    out_handles[i] = NULL;
+    out_errors[i] = VKR_RENDERER_ERROR_UNKNOWN;
+  }
+
+  if (renderer->backend.texture_create_with_payload_batch) {
+    VkrBackendResourceHandle *backend_handles = vkr_allocator_alloc(
+        &renderer->scratch_allocator, sizeof(VkrBackendResourceHandle) * count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!backend_handles) {
+      for (uint32_t i = 0; i < count; ++i) {
+        out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      }
+      return 0;
+    }
+    uint32_t created = renderer->backend.texture_create_with_payload_batch(
+        renderer->backend_state, requests, count, backend_handles, out_errors);
+    for (uint32_t i = 0; i < count; ++i) {
+      out_handles[i] = (VkrTextureOpaqueHandle)backend_handles[i].ptr;
+      if (out_handles[i] && out_errors[i] == VKR_RENDERER_ERROR_UNKNOWN) {
+        out_errors[i] = VKR_RENDERER_ERROR_NONE;
+      }
+    }
+    vkr_allocator_free(&renderer->scratch_allocator, backend_handles,
+                       sizeof(VkrBackendResourceHandle) * count,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return created;
+  }
+
+  if (!renderer->backend.texture_create_with_payload) {
+    for (uint32_t i = 0; i < count; ++i) {
+      out_errors[i] = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    }
+    return 0;
+  }
+
+  uint32_t created = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!requests[i].description || !requests[i].payload) {
+      out_errors[i] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      continue;
+    }
+    VkrBackendResourceHandle handle = renderer->backend.texture_create_with_payload(
+        renderer->backend_state, requests[i].description, requests[i].payload);
+    out_handles[i] = (VkrTextureOpaqueHandle)handle.ptr;
+    if (!out_handles[i]) {
+      out_errors[i] = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      continue;
+    }
+    out_errors[i] = VKR_RENDERER_ERROR_NONE;
+    created++;
+  }
+
+  return created;
 }
 
 VkrTextureOpaqueHandle
@@ -2046,6 +2216,10 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
                                          VkrJobSystem *job_system) {
   assert_log(renderer != NULL, "Renderer is NULL");
   RendererFrontend *rf = (RendererFrontend *)renderer;
+
+  if (rf->backend.set_job_system) {
+    rf->backend.set_job_system(rf->backend_state, job_system);
+  }
 
   VkrCameraSystemConfig camera_cfg = {.max_camera_count = 24};
   if (!vkr_camera_registry_init(&camera_cfg, &rf->camera_system)) {
