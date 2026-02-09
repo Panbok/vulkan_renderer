@@ -1,5 +1,6 @@
 #include "vulkan_buffer.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "vulkan_backend.h"
 
 void vulkan_buffer_flush(VulkanBackendState *state, VulkanBuffer *buffer,
                          uint64_t offset, uint64_t size) {
@@ -441,8 +442,9 @@ bool8_t vulkan_buffer_copy_to(VulkanBackendState *state,
       .pCommandBuffers = &command_buffer,
   };
 
-  if (vkQueueSubmit(buffer_handle->queue, 1, &submit_info, temp_fence.handle) !=
-      VK_SUCCESS) {
+  if (vulkan_backend_queue_submit_locked(state, buffer_handle->queue, 1,
+                                         &submit_info,
+                                         temp_fence.handle) != VK_SUCCESS) {
     log_error("Failed to submit command buffer");
     vulkan_fence_destroy(state, &temp_fence);
     vkFreeCommandBuffers(state->device.logical_device,
@@ -459,8 +461,10 @@ bool8_t vulkan_buffer_copy_to(VulkanBackendState *state,
     return false_v;
   }
 
-  // Ensure queue is completely idle before cleanup to avoid validation errors
-  vkQueueWaitIdle(buffer_handle->queue);
+#if !VKR_VULKAN_PARALLEL_UPLOAD
+  // Legacy fallback path can preserve full queue-idle behavior.
+  vulkan_backend_queue_wait_idle_locked(state, buffer_handle->queue);
+#endif
 
   vulkan_fence_destroy(state, &temp_fence);
   vkFreeCommandBuffers(state->device.logical_device,

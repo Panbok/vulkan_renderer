@@ -22,6 +22,12 @@
 // todo: make this configurable
 #define BUFFERING_FRAMES 3
 
+#ifndef VKR_VULKAN_PARALLEL_UPLOAD
+#define VKR_VULKAN_PARALLEL_UPLOAD 1
+#endif
+
+#define VKR_VULKAN_PARALLEL_MAX_WORKERS 8
+
 /**
  * Reflection failure categories used by the SPIR-V reflection pipeline.
  *
@@ -289,6 +295,30 @@ typedef struct VulkanSwapchainDetails {
   Array_VkSurfaceFormatKHR formats;
   Array_VkPresentModeKHR present_modes;
 } VulkanSwapchainDetails;
+
+typedef enum VulkanQueueSubmitRole {
+  VULKAN_QUEUE_SUBMIT_ROLE_TRANSFER = 0,
+  VULKAN_QUEUE_SUBMIT_ROLE_GRAPHICS_UPLOAD = 1,
+  VULKAN_QUEUE_SUBMIT_ROLE_PRESENT = 2,
+  VULKAN_QUEUE_SUBMIT_ROLE_COUNT = 3
+} VulkanQueueSubmitRole;
+
+typedef struct VulkanQueueSubmitState {
+  VkrMutex mutexes[VULKAN_QUEUE_SUBMIT_ROLE_COUNT];
+} VulkanQueueSubmitState;
+
+typedef struct VulkanParallelWorkerContext {
+  bool8_t initialized;
+  VkCommandPool transfer_command_pool;
+  VkCommandPool graphics_upload_command_pool;
+} VulkanParallelWorkerContext;
+
+typedef struct VulkanParallelRuntime {
+  bool8_t enabled;
+  VkrJobSystem *job_system;
+  uint32_t worker_count;
+  VulkanParallelWorkerContext workers[VKR_VULKAN_PARALLEL_MAX_WORKERS];
+} VulkanParallelRuntime;
 
 /* non-copyable */
 typedef struct VulkanDevice {
@@ -640,6 +670,10 @@ typedef struct VulkanBackendState {
 #endif
 
   VulkanDevice device;
+  VulkanQueueSubmitState queue_submit_state;
+  bool8_t parallel_upload_enabled;
+  bool8_t parallel_upload_unsafe_enabled;
+  VulkanParallelRuntime parallel_runtime;
 
   /**
    * Domain-specific render passes indexed by VkrPipelineDomain.
@@ -664,6 +698,7 @@ typedef struct VulkanBackendState {
   VkrPipelineDomain current_render_pass_domain;
 
   struct s_RenderPass *active_named_render_pass;
+  struct s_RenderTarget *active_named_render_target;
 
   /**
    * Indicates if a render pass is currently recording.
@@ -730,3 +765,17 @@ typedef struct VulkanBackendState {
   uint32_t texture_generation_counter;
 #endif
 } VulkanBackendState;
+
+vkr_internal INLINE VulkanCommandBuffer *
+vulkan_backend_get_active_graphics_command_buffer(VulkanBackendState *state) {
+  if (!state) {
+    return NULL;
+  }
+
+  if (state->image_index >= state->graphics_command_buffers.length) {
+    return NULL;
+  }
+
+  return array_get_VulkanCommandBuffer(&state->graphics_command_buffers,
+                                       state->image_index);
+}

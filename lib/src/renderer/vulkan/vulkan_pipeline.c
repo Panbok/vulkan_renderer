@@ -522,6 +522,10 @@ void vulkan_graphics_pipeline_bind(VulkanCommandBuffer *command_buffer,
                                    struct s_GraphicsPipeline *pipeline) {
   assert_log(command_buffer != NULL, "Command buffer is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
+  if (command_buffer->handle == VK_NULL_HANDLE ||
+      pipeline->pipeline == VK_NULL_HANDLE) {
+    return;
+  }
 
   vkCmdBindPipeline(command_buffer->handle, bind_point, pipeline->pipeline);
 }
@@ -542,9 +546,11 @@ VkrRendererError vulkan_graphics_pipeline_update_state(
   assert_log(state != NULL, "State is NULL");
   assert_log(pipeline != NULL, "Pipeline is NULL");
 
-  uint32_t image_index = state->image_index;
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
 
   if (!vulkan_shader_update_global_state(state, &pipeline->shader_object,
                                          pipeline->pipeline_layout, uniform)) {

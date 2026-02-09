@@ -452,8 +452,8 @@ bool8_t vulkan_swapchain_present(VulkanBackendState *state,
       .pImageIndices = &image_index,
   };
 
-  VkResult result =
-      vkQueuePresentKHR(state->device.present_queue, &present_info);
+  VkResult result = vulkan_backend_queue_present_locked(
+      state, state->device.present_queue, &present_info);
   if (result != VK_SUCCESS) {
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
       log_warn("Swapchain out of date during present, recreating...");

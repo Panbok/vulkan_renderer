@@ -668,6 +668,10 @@ vkr_internal bool8_t vulkan_shader_bind_descriptor_set_checked(
     uint32_t set_index, VkDescriptorSet descriptor_set,
     uint32_t expected_dynamic_offset_count,
     uint32_t supplied_dynamic_offset_count, const uint32_t *dynamic_offsets) {
+  if (command_buffer == VK_NULL_HANDLE) {
+    return true_v;
+  }
+
   if (expected_dynamic_offset_count != supplied_dynamic_offset_count) {
     log_error("Descriptor bind rejected for set %u: expected %u dynamic "
               "offsets, supplied %u",
@@ -1485,8 +1489,12 @@ bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
   }
 
   uint32_t image_index = state->image_index;
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    log_error("No active command buffer available for global state update");
+    return false_v;
+  }
   if (!shader_object->global_descriptor_sets ||
       image_index >= shader_object->frame_count) {
     log_error("Frame descriptor set is unavailable for image index %u",
@@ -1651,13 +1659,17 @@ bool8_t vulkan_shader_update_instance(
   }
 
   uint32_t image_index = state->image_index;
-  VulkanCommandBuffer *command_buffer = array_get_VulkanCommandBuffer(
-      &state->graphics_command_buffers, image_index);
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    log_error("No active command buffer available for instance state update");
+    return false_v;
+  }
 
   if (shader_object->reflection.push_constant_range_count > 0) {
     if (!data->push_constants_data || data->push_constants_size == 0) {
       log_warn("Push constants required but no data provided");
-    } else {
+    } else if (command_buffer->handle != VK_NULL_HANDLE) {
       for (uint32_t i = 0;
            i < shader_object->reflection.push_constant_range_count; ++i) {
         const VkrPushConstantRangeDesc *range =
@@ -1697,9 +1709,21 @@ bool8_t vulkan_shader_update_instance(
   if (data->instance_state.id == VKR_INVALID_ID) {
     return true_v;
   }
+  if (data->instance_state.id >= VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT) {
+    log_error("Instance state id %u exceeds max %u",
+              data->instance_state.id,
+              VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT);
+    return false_v;
+  }
 
   VulkanShaderObjectInstanceState *instance_state =
       &shader_object->instance_states[data->instance_state.id];
+  if (instance_state->release_pending ||
+      instance_state->descriptor_pool == VK_NULL_HANDLE) {
+    log_warn("Instance state %u descriptor set is not allocated",
+             data->instance_state.id);
+    return false_v;
+  }
   if (instance_state->descriptor_sets == NULL ||
       instance_state->descriptor_sets[image_index] == VK_NULL_HANDLE) {
     log_warn("Instance descriptor set not created yet, skipping update");
@@ -1971,6 +1995,10 @@ vkr_internal bool8_t vulkan_shader_release_instance_immediate(
       return false_v;
     }
   }
+  if (local_state->descriptor_sets) {
+    MemZero(local_state->descriptor_sets,
+            sizeof(VkDescriptorSet) * shader_object->frame_count);
+  }
 
   // Reset generation tracking back to invalid without freeing memory
   for (uint32_t descriptor_state_idx = 0;
@@ -2095,6 +2123,8 @@ bool8_t vulkan_shader_acquire_instance(VulkanBackendState *state,
   VulkanShaderObjectInstanceState *local_state =
       &shader_object->instance_states[object_id];
   local_state->descriptor_pool = VK_NULL_HANDLE;
+  local_state->release_pending = false_v;
+  local_state->release_serial = 0;
   VkrAllocator *arena_alloc = &state->alloc;
   for (uint32_t descriptor_state_idx = 0;
        descriptor_state_idx < VULKAN_SHADER_OBJECT_DESCRIPTOR_STATE_COUNT;

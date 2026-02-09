@@ -7,6 +7,11 @@ void vulkan_fence_create(VulkanBackendState *state, bool8_t is_signaled,
   assert_log(out_fence != NULL, "Vulkan fence is NULL");
   assert_log(state != NULL, "Vulkan backend state is NULL");
 
+  // Callers often pass stack fences; always reset state so wait/destroy logic
+  // never observes stale values from previous stack contents.
+  out_fence->handle = VK_NULL_HANDLE;
+  out_fence->is_signaled = false_v;
+
   VkFenceCreateInfo fence_info = {
       .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
       .pNext = NULL,

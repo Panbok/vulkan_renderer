@@ -1,4 +1,6 @@
 #include "vulkan_command.h"
+#include "vulkan_backend.h"
+#include "vulkan_fence.h"
 
 bool8_t
 vulkan_command_buffer_allocate(VulkanBackendState *state,
@@ -117,6 +119,7 @@ vulkan_command_buffer_end_single_use(VulkanBackendState *state,
                                      VkQueue queue, VkFence fence) {
   assert_log(state != NULL, "State is NULL");
   assert_log(command_buffer != NULL, "Command buffer is NULL");
+  (void)fence;
 
   if (!vulkan_command_buffer_end(command_buffer)) {
     log_error("Failed to end Vulkan command buffer");
@@ -130,18 +133,39 @@ vulkan_command_buffer_end_single_use(VulkanBackendState *state,
       .pCommandBuffers = &command_buffer->handle,
   };
 
-  if (vkQueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE) != VK_SUCCESS) {
+  VulkanFence temp_fence;
+  vulkan_fence_create(state, false_v, &temp_fence);
+  if (temp_fence.handle == VK_NULL_HANDLE) {
+    log_error("Failed to create fence for single-use command submission");
+    vulkan_command_buffer_free(state, command_buffer);
+    return false_v;
+  }
+
+  if (vulkan_backend_queue_submit_locked(state, queue, 1, &submit_info,
+                                         temp_fence.handle) != VK_SUCCESS) {
     log_error("Failed to submit Vulkan command buffer");
+    vulkan_fence_destroy(state, &temp_fence);
     vulkan_command_buffer_free(state, command_buffer);
     return false_v;
   }
 
-  if (vkQueueWaitIdle(queue) != VK_SUCCESS) {
-    log_error("Failed to wait for Vulkan command buffer to finish");
+#if VKR_VULKAN_PARALLEL_UPLOAD
+  if (!vulkan_fence_wait(state, UINT64_MAX, &temp_fence)) {
+    log_error("Failed waiting on single-use command fence");
+    vulkan_fence_destroy(state, &temp_fence);
     vulkan_command_buffer_free(state, command_buffer);
     return false_v;
   }
+#else
+  if (vulkan_backend_queue_wait_idle_locked(state, queue) != VK_SUCCESS) {
+    log_error("Failed to wait for Vulkan queue to become idle");
+    vulkan_fence_destroy(state, &temp_fence);
+    vulkan_command_buffer_free(state, command_buffer);
+    return false_v;
+  }
+#endif
 
+  vulkan_fence_destroy(state, &temp_fence);
   vulkan_command_buffer_free(state, command_buffer);
 
   return true_v;
