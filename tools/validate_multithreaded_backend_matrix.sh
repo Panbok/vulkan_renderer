@@ -30,13 +30,7 @@ log_has_runtime_errors() {
     return 1
   fi
 
-  if rg -n \
-    -e "validation layer:" \
-    -e "VUID-" \
-    -e "AddressSanitizer" \
-    -e "ABORTING" \
-    -e "Abort trap" \
-    -e "Segmentation fault" \
+  if grep -E -n "validation layer:|VUID-|AddressSanitizer|ABORTING|Abort trap|Segmentation fault" \
     "${log_file}" >/dev/null 2>&1; then
     return 0
   fi

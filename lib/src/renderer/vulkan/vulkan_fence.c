@@ -30,6 +30,7 @@ void vulkan_fence_create(VulkanBackendState *state, bool8_t is_signaled,
 
 void vulkan_fence_destroy(VulkanBackendState *state, VulkanFence *fence) {
   assert_log(state != NULL, "Vulkan backend state is NULL");
+  assert_log(fence != NULL, "Vulkan fence is NULL");
 
   if (fence->handle) {
     vkDestroyFence(state->device.logical_device, fence->handle,

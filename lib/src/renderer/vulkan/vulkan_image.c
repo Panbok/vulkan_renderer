@@ -773,9 +773,6 @@ bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
   }
 
   vulkan_fence_wait(state, UINT64_MAX, &transfer_fence);
-#if !VKR_VULKAN_PARALLEL_UPLOAD
-  vulkan_backend_queue_wait_idle_locked(state, transfer_queue);
-#endif
   vulkan_fence_destroy(state, &transfer_fence);
   vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1,
                        &transfer_cmd);
@@ -888,9 +885,6 @@ bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
   }
 
   vulkan_fence_wait(state, UINT64_MAX, &graphics_fence);
-#if !VKR_VULKAN_PARALLEL_UPLOAD
-  vulkan_backend_queue_wait_idle_locked(state, state->device.graphics_queue);
-#endif
   vulkan_fence_destroy(state, &graphics_fence);
   vkFreeCommandBuffers(state->device.logical_device,
                        state->device.graphics_command_pool, 1, &graphics_cmd);
@@ -1100,9 +1094,6 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
   }
 
   vulkan_fence_wait(state, UINT64_MAX, &fence);
-#if !VKR_VULKAN_PARALLEL_UPLOAD
-  vulkan_backend_queue_wait_idle_locked(state, transfer_queue);
-#endif
   vulkan_fence_destroy(state, &fence);
   vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1, &cmd);
 
@@ -1168,9 +1159,6 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
     }
 
     vulkan_fence_wait(state, UINT64_MAX, &graphics_fence);
-#if !VKR_VULKAN_PARALLEL_UPLOAD
-    vulkan_backend_queue_wait_idle_locked(state, state->device.graphics_queue);
-#endif
     vulkan_fence_destroy(state, &graphics_fence);
     vkFreeCommandBuffers(state->device.logical_device,
                          state->device.graphics_command_pool, 1, &graphics_cmd);
@@ -1407,9 +1395,6 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
     return false_v;
   }
 
-#if !VKR_VULKAN_PARALLEL_UPLOAD
-  vulkan_backend_queue_wait_idle_locked(state, queue);
-#endif
   vulkan_fence_destroy(state, &fence);
   vkFreeCommandBuffers(state->device.logical_device, command_pool, 1, &cmd);
 
@@ -1476,9 +1461,6 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
     }
 
     vulkan_fence_wait(state, UINT64_MAX, &graphics_fence);
-#if !VKR_VULKAN_PARALLEL_UPLOAD
-    vulkan_backend_queue_wait_idle_locked(state, state->device.graphics_queue);
-#endif
     vulkan_fence_destroy(state, &graphics_fence);
     vkFreeCommandBuffers(state->device.logical_device,
                          state->device.graphics_command_pool, 1, &graphics_cmd);

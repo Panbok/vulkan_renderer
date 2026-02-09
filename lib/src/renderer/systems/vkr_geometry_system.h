@@ -122,10 +122,22 @@ VkrGeometryHandle vkr_geometry_system_create(VkrGeometrySystem *system,
                                              const VkrGeometryConfig *config,
                                              bool8_t auto_release,
                                              VkrRendererError *out_error);
-uint32_t vkr_geometry_system_create_batch(
-    VkrGeometrySystem *system, const VkrGeometryConfig *configs, uint32_t count,
-    bool8_t auto_release, VkrGeometryHandle *out_handles,
-    VkrRendererError *out_errors);
+
+/**
+ * @brief Creates a batch of geometries from an array of configurations.
+ * @param system The geometry system to create the geometries in.
+ * @param configs Array of geometry configurations.
+ * @param count The number of geometries to create.
+ * @param auto_release Auto release flag for lifetime management.
+ * @param out_handles Array to receive the handles of the created geometries.
+ * @param out_errors Array to receive the errors for each geometry creation.
+ * @return The number of geometries created.
+ */
+uint32_t vkr_geometry_system_create_batch(VkrGeometrySystem *system,
+                                          const VkrGeometryConfig *configs,
+                                          uint32_t count, bool8_t auto_release,
+                                          VkrGeometryHandle *out_handles,
+                                          VkrRendererError *out_errors);
 /**
  * @brief Creates a cube geometry from the given width, height, and depth.
  * @param system The geometry system to create the cube in
@@ -187,10 +199,11 @@ VkrGeometryHandle vkr_geometry_system_create_cylinder(
  * @param name Geometry name for lookup/debugging.
  * @param out_error The error output.
  */
-VkrGeometryHandle vkr_geometry_system_create_cone(
-    VkrGeometrySystem *system, float32_t radius, float32_t height,
-    uint32_t segments, Vec3 axis, Vec3 origin, bool8_t cap_base,
-    const char *name, VkrRendererError *out_error);
+VkrGeometryHandle
+vkr_geometry_system_create_cone(VkrGeometrySystem *system, float32_t radius,
+                                float32_t height, uint32_t segments, Vec3 axis,
+                                Vec3 origin, bool8_t cap_base, const char *name,
+                                VkrRendererError *out_error);
 
 /**
  * @brief Creates a torus centered at origin with its normal aligned to axis.
@@ -239,10 +252,9 @@ VkrGeometryHandle vkr_geometry_system_create_sphere(
  * @param out_error The error output.
  */
 VkrGeometryHandle vkr_geometry_system_create_arrow(
-    VkrGeometrySystem *system, float32_t shaft_length,
-    float32_t shaft_radius, float32_t head_length, float32_t head_radius,
-    uint32_t segments, Vec3 axis, Vec3 origin, const char *name,
-    VkrRendererError *out_error);
+    VkrGeometrySystem *system, float32_t shaft_length, float32_t shaft_radius,
+    float32_t head_length, float32_t head_radius, uint32_t segments, Vec3 axis,
+    Vec3 origin, const char *name, VkrRendererError *out_error);
 
 /**
  * @brief Adds a reference to the geometry
@@ -308,14 +320,10 @@ void vkr_geometry_system_render_instanced(VkrRendererFrontendHandle renderer,
  * Pass index_count == UINT32_MAX to draw the full geometry range. Callers must
  * supply ranges that stay within the geometry's index buffer.
  */
-void vkr_geometry_system_render_instanced_range(VkrRendererFrontendHandle renderer,
-                                                VkrGeometrySystem *system,
-                                                VkrGeometryHandle handle,
-                                                uint32_t index_count,
-                                                uint32_t first_index,
-                                                int32_t vertex_offset,
-                                                uint32_t instance_count,
-                                                uint32_t first_instance);
+void vkr_geometry_system_render_instanced_range(
+    VkrRendererFrontendHandle renderer, VkrGeometrySystem *system,
+    VkrGeometryHandle handle, uint32_t index_count, uint32_t first_index,
+    int32_t vertex_offset, uint32_t instance_count, uint32_t first_instance);
 
 void vkr_geometry_system_render_instanced_range_with_index_buffer(
     VkrRendererFrontendHandle renderer, VkrGeometrySystem *system,

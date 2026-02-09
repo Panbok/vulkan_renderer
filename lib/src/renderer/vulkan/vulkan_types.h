@@ -766,6 +766,11 @@ typedef struct VulkanBackendState {
 #endif
 } VulkanBackendState;
 
+/**
+ * Returns the active graphics command buffer for the current frame.
+ * Must be called from the main render thread while image_index is stable.
+ * Returns NULL if state is invalid or image_index is out of bounds.
+ */
 vkr_internal INLINE VulkanCommandBuffer *
 vulkan_backend_get_active_graphics_command_buffer(VulkanBackendState *state) {
   if (!state) {

@@ -546,8 +546,10 @@ bool8_t vkr_shader_system_apply_instance(VkrShaderSystem *state) {
     return false_v;
 
   VkrPipeline *pipeline = NULL;
-  if (!vkr_pipeline_registry_get_pipeline(state->registry, current, &pipeline) ||
+  if (!vkr_pipeline_registry_get_pipeline(state->registry, current,
+                                          &pipeline) ||
       !pipeline) {
+    log_warn("Failed to get pipeline %u for apply_instance", current.id);
     return false_v;
   }
 
@@ -638,8 +640,7 @@ bool8_t vkr_shader_acquire_instance_resources(VkrShaderSystem *state,
   if (!vkr_pipeline_registry_find_by_name(state->registry, shader->name,
                                           &pipeline_handle) ||
       pipeline_handle.id == 0) {
-    log_error("No pipeline found for shader '%s'",
-              string8_cstr(&shader->name));
+    log_error("No pipeline found for shader '%s'", string8_cstr(&shader->name));
     return false_v;
   }
 

@@ -452,7 +452,8 @@ bool8_t vulkan_buffer_copy_to(VulkanBackendState *state,
     return false_v;
   }
 
-  // Wait for the temporary fence
+  // Wait for the copy to complete via the per-operation fence; no queue-idle
+  // needed since the fence already guarantees the copy has finished.
   if (!vulkan_fence_wait(state, UINT64_MAX, &temp_fence)) {
     log_error("Failed to wait for fence");
     vulkan_fence_destroy(state, &temp_fence);
@@ -460,11 +461,6 @@ bool8_t vulkan_buffer_copy_to(VulkanBackendState *state,
                          buffer_handle->command_pool, 1, &command_buffer);
     return false_v;
   }
-
-#if !VKR_VULKAN_PARALLEL_UPLOAD
-  // Legacy fallback path can preserve full queue-idle behavior.
-  vulkan_backend_queue_wait_idle_locked(state, buffer_handle->queue);
-#endif
 
   vulkan_fence_destroy(state, &temp_fence);
   vkFreeCommandBuffers(state->device.logical_device,

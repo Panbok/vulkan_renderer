@@ -253,18 +253,21 @@ bool8_t vkr_pass_packet_resolve_pipeline(RendererFrontend *rf,
     if (!vkr_pipeline_registry_get_pipeline_for_material(
             &rf->pipeline_registry, lookup_name, (uint32_t)domain, out_pipeline,
             &err)) {
+      log_error(
+          "Failed to resolve pipeline for material '%s' in domain %u: error %d",
+          lookup_name ? lookup_name : "(null)", (uint32_t)domain, err);
       return false_v;
     }
   }
 
   VkrPipeline *resolved_pipeline = NULL;
-  if (vkr_pipeline_registry_get_pipeline(&rf->pipeline_registry, *out_pipeline,
-                                         &resolved_pipeline) &&
-      resolved_pipeline && resolved_pipeline->shader_name.str &&
+  vkr_pipeline_registry_get_pipeline(&rf->pipeline_registry, *out_pipeline,
+                                     &resolved_pipeline);
+
+  if (resolved_pipeline && resolved_pipeline->shader_name.str &&
       resolved_pipeline->shader_name.length > 0 &&
-      resolved_pipeline
-              ->shader_name.str[resolved_pipeline->shader_name.length] ==
-          '\0') {
+      resolved_pipeline->shader_name
+              .str[resolved_pipeline->shader_name.length] == '\0') {
     if (vkr_shader_system_use(
             &rf->shader_system,
             (const char *)resolved_pipeline->shader_name.str)) {
@@ -273,26 +276,14 @@ bool8_t vkr_pass_packet_resolve_pipeline(RendererFrontend *rf,
   }
 
   const char *resolved_shader = fallback;
-  if (!use_domain_pipeline && pipeline_shader && pipeline_shader[0] != '\0') {
-    VkrPipelineHandle shader_pipeline = VKR_PIPELINE_HANDLE_INVALID;
-    String8 shader_key =
-        string8_create((uint8_t *)pipeline_shader, string_length(pipeline_shader));
-    if (vkr_pipeline_registry_find_by_name(&rf->pipeline_registry, shader_key,
-                                           &shader_pipeline) &&
-        shader_pipeline.id == out_pipeline->id &&
-        shader_pipeline.generation == out_pipeline->generation) {
-      VkrPipeline *matched_pipeline = NULL;
-      if (vkr_pipeline_registry_get_pipeline(&rf->pipeline_registry,
-                                             shader_pipeline,
-                                             &matched_pipeline) &&
-          matched_pipeline && matched_pipeline->domain == domain) {
-        resolved_shader = pipeline_shader;
-      }
-    }
+  if (!use_domain_pipeline && pipeline_shader && pipeline_shader[0] != '\0' &&
+      resolved_pipeline && resolved_pipeline->domain == domain) {
+    resolved_shader = pipeline_shader;
   }
 
   if (!vkr_shader_system_use(&rf->shader_system, resolved_shader)) {
-    if (!vkr_shader_system_use(&rf->shader_system, fallback)) {
+    if (resolved_shader == fallback ||
+        !vkr_shader_system_use(&rf->shader_system, fallback)) {
       return false_v;
     }
   }

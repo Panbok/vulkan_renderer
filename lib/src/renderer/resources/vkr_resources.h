@@ -279,7 +279,8 @@ typedef struct VkrMeshAssetSubmesh {
 Array(VkrMeshAssetSubmesh);
 
 /**
- * @brief Shared mesh asset storing geometry/material data for multiple instances.
+ * @brief Shared mesh asset storing geometry/material data for multiple
+ * instances.
  *
  * A mesh asset is created once per unique (mesh_path, pipeline_domain,
  * shader_override) combination. Multiple mesh instances can reference the same
@@ -292,7 +293,7 @@ typedef struct VkrMeshAsset {
   uint32_t id;
   uint32_t generation;
 
-  String8 mesh_path;       // Owned (freeable allocator)
+  String8 mesh_path; // Owned (freeable allocator)
   VkrPipelineDomain domain;
   String8 shader_override; // Owned (freeable allocator)
   char *key_string;        // Owned key for asset_by_key removal
@@ -421,11 +422,11 @@ typedef struct VkrShaderStageFile {
 Array(VkrShaderStageFile);
 
 typedef struct VkrShaderConfig {
-  String8 name;              // shader.unique name
-  String8 renderpass_name;   // renderpass key string
-  uint8_t use_instance;      // enable instance scope (set 1)
-  uint8_t use_local;         // enable push constants
-  VkrCullMode cull_mode;     // culling mode (default: VKR_CULL_MODE_BACK)
+  String8 name;            // shader.unique name
+  String8 renderpass_name; // renderpass key string
+  uint8_t use_instance;    // enable instance scope (set 1)
+  uint8_t use_local;       // enable push constants
+  VkrCullMode cull_mode;   // culling mode (default: VKR_CULL_MODE_BACK)
   VkrVertexAbiProfile vertex_abi_profile; // Explicit host vertex ABI contract.
 
   // Stages

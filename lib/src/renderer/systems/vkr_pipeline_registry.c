@@ -485,6 +485,8 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
         !vkr_pipeline_registry_set_shader_name(registry, created_pipeline,
                                                config->name)) {
       *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      vkr_pipeline_registry_destroy_pipeline(registry, *out_handle);
+      *out_handle = VKR_PIPELINE_HANDLE_INVALID;
       vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
       return false_v;
     }

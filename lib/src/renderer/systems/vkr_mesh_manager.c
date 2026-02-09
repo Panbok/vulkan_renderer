@@ -594,6 +594,13 @@ vkr_internal bool8_t vkr_mesh_manager_resolve_subset_geometries_batch(
             *out_error == VKR_RENDERER_ERROR_UNKNOWN) {
           *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
         }
+        for (uint32_t j = i + 1; j < pending_count; ++j) {
+          if (pending_handles[j].id != 0) {
+            vkr_geometry_system_release(manager->geometry_system,
+                                        pending_handles[j]);
+            pending_handles[j] = VKR_GEOMETRY_HANDLE_INVALID;
+          }
+        }
         goto fail_cleanup;
       }
       out_geometries[pending_subset_indices[i]] = pending_handles[i];

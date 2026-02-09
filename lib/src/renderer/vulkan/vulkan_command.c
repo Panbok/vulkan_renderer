@@ -149,21 +149,12 @@ vulkan_command_buffer_end_single_use(VulkanBackendState *state,
     return false_v;
   }
 
-#if VKR_VULKAN_PARALLEL_UPLOAD
   if (!vulkan_fence_wait(state, UINT64_MAX, &temp_fence)) {
     log_error("Failed waiting on single-use command fence");
     vulkan_fence_destroy(state, &temp_fence);
     vulkan_command_buffer_free(state, command_buffer);
     return false_v;
   }
-#else
-  if (vulkan_backend_queue_wait_idle_locked(state, queue) != VK_SUCCESS) {
-    log_error("Failed to wait for Vulkan queue to become idle");
-    vulkan_fence_destroy(state, &temp_fence);
-    vulkan_command_buffer_free(state, command_buffer);
-    return false_v;
-  }
-#endif
 
   vulkan_fence_destroy(state, &temp_fence);
   vulkan_command_buffer_free(state, command_buffer);

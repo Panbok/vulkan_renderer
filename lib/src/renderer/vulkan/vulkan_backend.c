@@ -4378,6 +4378,18 @@ uint32_t renderer_vulkan_create_buffer_batch(
       }
     }
 
+    for (uint32_t i = 0; i < upload_count; ++i) {
+      const uint32_t request_index = job_payloads[i].request_index;
+      if (job_submitted[i] &&
+          out_errors[request_index] != VKR_RENDERER_ERROR_NONE &&
+          recorded_flags[i] && recorded_command_buffers[i] != VK_NULL_HANDLE) {
+        vulkan_backend_free_recorded_upload_command_buffers(
+            state, &recorded_command_buffers[i], &recorded_worker_indices[i],
+            1);
+        recorded_command_buffers[i] = VK_NULL_HANDLE;
+      }
+    }
+
     uint32_t submit_count = 0;
     for (uint32_t i = 0; i < upload_count; ++i) {
       const uint32_t request_index = job_payloads[i].request_index;
@@ -5804,6 +5816,18 @@ uint32_t renderer_vulkan_create_texture_with_payload_batch(
         if (!vkr_job_wait(state->parallel_runtime.job_system, job_handles[i])) {
           out_errors[request_index] = VKR_RENDERER_ERROR_DEVICE_ERROR;
         }
+      }
+    }
+
+    for (uint32_t i = 0; i < prepared_count; ++i) {
+      const uint32_t request_index = entries[i].request_index;
+      if (job_submitted[i] &&
+          out_errors[request_index] != VKR_RENDERER_ERROR_NONE &&
+          recorded_flags[i] && recorded_command_buffers[i] != VK_NULL_HANDLE) {
+        vulkan_backend_free_recorded_upload_command_buffers(
+            state, &recorded_command_buffers[i], &recorded_worker_indices[i],
+            1);
+        recorded_command_buffers[i] = VK_NULL_HANDLE;
       }
     }
 

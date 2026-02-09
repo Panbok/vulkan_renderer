@@ -2887,7 +2887,7 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
       if (results[i].decoded_pixels || results[i].upload_data) {
         vkr_texture_decode_result_release(&results[i]);
       }
-      if (out_errors[i] == VKR_RENDERER_ERROR_UNKNOWN) {
+      if (out_errors[i] == VKR_RENDERER_ERROR_NONE) {
         out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       }
     }
@@ -3021,9 +3021,10 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
     VkrRendererError create_error = batch_gpu_errors[batch_index];
 
     if (create_error != VKR_RENDERER_ERROR_NONE || !gpu_handle) {
-      out_errors[source_index] = (create_error == VKR_RENDERER_ERROR_UNKNOWN)
-                                     ? VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED
-                                     : create_error;
+      out_errors[source_index] =
+          (create_error != VKR_RENDERER_ERROR_NONE && create_error != VKR_RENDERER_ERROR_UNKNOWN)
+              ? create_error
+              : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
       vkr_texture_decode_result_release(&results[source_index]);
       continue;
     }

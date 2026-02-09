@@ -506,10 +506,11 @@ VkrGeometryHandle vkr_geometry_system_create(VkrGeometrySystem *system,
   return handle;
 }
 
-uint32_t vkr_geometry_system_create_batch(
-    VkrGeometrySystem *system, const VkrGeometryConfig *configs, uint32_t count,
-    bool8_t auto_release, VkrGeometryHandle *out_handles,
-    VkrRendererError *out_errors) {
+uint32_t vkr_geometry_system_create_batch(VkrGeometrySystem *system,
+                                          const VkrGeometryConfig *configs,
+                                          uint32_t count, bool8_t auto_release,
+                                          VkrGeometryHandle *out_handles,
+                                          VkrRendererError *out_errors) {
   assert_log(system != NULL, "Geometry system is NULL");
   assert_log(configs != NULL, "Configs is NULL");
   assert_log(count > 0, "Count must be > 0");
@@ -519,6 +520,14 @@ uint32_t vkr_geometry_system_create_batch(
   for (uint32_t i = 0; i < count; ++i) {
     out_handles[i] = VKR_GEOMETRY_HANDLE_INVALID;
     out_errors[i] = VKR_RENDERER_ERROR_UNKNOWN;
+  }
+
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&system->allocator);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    for (uint32_t i = 0; i < count; ++i) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+    return 0;
   }
 
   VkrGeometry **geometry_slots =
@@ -555,6 +564,7 @@ uint32_t vkr_geometry_system_create_batch(
     for (uint32_t i = 0; i < count; ++i) {
       out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     }
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return 0;
   }
 
@@ -565,9 +575,9 @@ uint32_t vkr_geometry_system_create_batch(
     index_request_indices[i] = UINT32_MAX;
 
     const VkrGeometryConfig *config = &configs[i];
-    if (!config || config->vertex_size == 0 || config->vertex_count == 0 ||
-        !config->vertices || config->index_size == 0 || config->index_count == 0 ||
-        !config->indices) {
+    if (config->vertex_size == 0 || config->vertex_count == 0 ||
+        !config->vertices || config->index_size == 0 ||
+        config->index_count == 0 || !config->indices) {
       out_errors[i] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
       continue;
     }
@@ -609,9 +619,9 @@ uint32_t vkr_geometry_system_create_batch(
 
     buffer_descriptions[request_count] = (VkrBufferDescription){
         .size = vertex_size_bytes,
-        .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_VERTEX_BUFFER |
-                                                  VKR_BUFFER_USAGE_TRANSFER_DST |
-                                                  VKR_BUFFER_USAGE_TRANSFER_SRC),
+        .usage = vkr_buffer_usage_flags_from_bits(
+            VKR_BUFFER_USAGE_VERTEX_BUFFER | VKR_BUFFER_USAGE_TRANSFER_DST |
+            VKR_BUFFER_USAGE_TRANSFER_SRC),
         .memory_properties = vkr_memory_property_flags_from_bits(
             VKR_MEMORY_PROPERTY_DEVICE_LOCAL),
         .buffer_type = buffer_type,
@@ -631,9 +641,9 @@ uint32_t vkr_geometry_system_create_batch(
 
     buffer_descriptions[request_count] = (VkrBufferDescription){
         .size = index_size_bytes,
-        .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_INDEX_BUFFER |
-                                                  VKR_BUFFER_USAGE_TRANSFER_DST |
-                                                  VKR_BUFFER_USAGE_TRANSFER_SRC),
+        .usage = vkr_buffer_usage_flags_from_bits(
+            VKR_BUFFER_USAGE_INDEX_BUFFER | VKR_BUFFER_USAGE_TRANSFER_DST |
+            VKR_BUFFER_USAGE_TRANSFER_SRC),
         .memory_properties = vkr_memory_property_flags_from_bits(
             VKR_MEMORY_PROPERTY_DEVICE_LOCAL),
         .buffer_type = buffer_type,
@@ -692,21 +702,24 @@ uint32_t vkr_geometry_system_create_batch(
                                     buffer_handles[index_request_index]);
       }
 
-      VkrRendererError first_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      VkrRendererError first_error =
+          VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
       if (vertex_request_index != UINT32_MAX &&
           buffer_errors[vertex_request_index] != VKR_RENDERER_ERROR_NONE) {
         first_error = buffer_errors[vertex_request_index];
       } else if (index_request_index != UINT32_MAX &&
-                 buffer_errors[index_request_index] != VKR_RENDERER_ERROR_NONE) {
+                 buffer_errors[index_request_index] !=
+                     VKR_RENDERER_ERROR_NONE) {
         first_error = buffer_errors[index_request_index];
       }
       out_errors[i] = first_error;
-      out_handles[i] = geometry_creation_failure(system, geometry, out_handles[i]);
+      out_handles[i] =
+          geometry_creation_failure(system, geometry, out_handles[i]);
       continue;
     }
 
-    String8 debug_name =
-        string8_create((uint8_t *)geometry->name, string_length(geometry->name));
+    String8 debug_name = string8_create((uint8_t *)geometry->name,
+                                        string_length(geometry->name));
     geometry->vertex_buffer = (VkrVertexBuffer){
         .handle = buffer_handles[vertex_request_index],
         .stride = geometry->vertex_size,
@@ -737,7 +750,8 @@ uint32_t vkr_geometry_system_create_batch(
     if (!vkr_hash_table_insert_VkrGeometryEntry(&system->geometry_by_name,
                                                 stable_name, life_entry)) {
       out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      out_handles[i] = geometry_creation_failure(system, geometry, out_handles[i]);
+      out_handles[i] =
+          geometry_creation_failure(system, geometry, out_handles[i]);
       continue;
     }
 
@@ -745,6 +759,7 @@ uint32_t vkr_geometry_system_create_batch(
     created++;
   }
 
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   return created;
 }
 
@@ -1629,9 +1644,8 @@ void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
                                 VkrGeometrySystem *system,
                                 VkrGeometryHandle handle,
                                 uint32_t instance_count) {
-  vkr_geometry_system_render_instanced_range(renderer, system, handle,
-                                             UINT32_MAX, 0, 0, instance_count,
-                                             0);
+  vkr_geometry_system_render_instanced_range(
+      renderer, system, handle, UINT32_MAX, 0, 0, instance_count, 0);
 }
 
 void vkr_geometry_system_render_instanced(VkrRendererFrontendHandle renderer,
@@ -1639,19 +1653,15 @@ void vkr_geometry_system_render_instanced(VkrRendererFrontendHandle renderer,
                                           VkrGeometryHandle handle,
                                           uint32_t instance_count,
                                           uint32_t first_instance) {
-  vkr_geometry_system_render_instanced_range(
-      renderer, system, handle, UINT32_MAX, 0, 0, instance_count,
-      first_instance);
+  vkr_geometry_system_render_instanced_range(renderer, system, handle,
+                                             UINT32_MAX, 0, 0, instance_count,
+                                             first_instance);
 }
 
-void vkr_geometry_system_render_instanced_range(VkrRendererFrontendHandle renderer,
-                                                VkrGeometrySystem *system,
-                                                VkrGeometryHandle handle,
-                                                uint32_t index_count,
-                                                uint32_t first_index,
-                                                int32_t vertex_offset,
-                                                uint32_t instance_count,
-                                                uint32_t first_instance) {
+void vkr_geometry_system_render_instanced_range(
+    VkrRendererFrontendHandle renderer, VkrGeometrySystem *system,
+    VkrGeometryHandle handle, uint32_t index_count, uint32_t first_index,
+    int32_t vertex_offset, uint32_t instance_count, uint32_t first_instance) {
   vkr_geometry_system_render_instanced_range_with_index_buffer(
       renderer, system, handle, NULL, index_count, first_index, vertex_offset,
       instance_count, first_instance);
