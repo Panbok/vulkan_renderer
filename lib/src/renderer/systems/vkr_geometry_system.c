@@ -506,6 +506,248 @@ VkrGeometryHandle vkr_geometry_system_create(VkrGeometrySystem *system,
   return handle;
 }
 
+uint32_t vkr_geometry_system_create_batch(
+    VkrGeometrySystem *system, const VkrGeometryConfig *configs, uint32_t count,
+    bool8_t auto_release, VkrGeometryHandle *out_handles,
+    VkrRendererError *out_errors) {
+  assert_log(system != NULL, "Geometry system is NULL");
+  assert_log(configs != NULL, "Configs is NULL");
+  assert_log(count > 0, "Count must be > 0");
+  assert_log(out_handles != NULL, "Out handles is NULL");
+  assert_log(out_errors != NULL, "Out errors is NULL");
+
+  for (uint32_t i = 0; i < count; ++i) {
+    out_handles[i] = VKR_GEOMETRY_HANDLE_INVALID;
+    out_errors[i] = VKR_RENDERER_ERROR_UNKNOWN;
+  }
+
+  VkrGeometry **geometry_slots =
+      vkr_allocator_alloc(&system->allocator, sizeof(VkrGeometry *) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  bool8_t *slot_reserved =
+      vkr_allocator_alloc(&system->allocator, sizeof(bool8_t) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *vertex_request_indices =
+      vkr_allocator_alloc(&system->allocator, sizeof(uint32_t) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *index_request_indices =
+      vkr_allocator_alloc(&system->allocator, sizeof(uint32_t) * count,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrBufferDescription *buffer_descriptions = vkr_allocator_alloc(
+      &system->allocator, sizeof(VkrBufferDescription) * count * 2,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrBufferUploadPayload *buffer_uploads = vkr_allocator_alloc(
+      &system->allocator, sizeof(VkrBufferUploadPayload) * count * 2,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrBufferBatchCreateRequest *buffer_requests = vkr_allocator_alloc(
+      &system->allocator, sizeof(VkrBufferBatchCreateRequest) * count * 2,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrBufferHandle *buffer_handles = vkr_allocator_alloc(
+      &system->allocator, sizeof(VkrBufferHandle) * count * 2,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  VkrRendererError *buffer_errors = vkr_allocator_alloc(
+      &system->allocator, sizeof(VkrRendererError) * count * 2,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  if (!geometry_slots || !slot_reserved || !vertex_request_indices ||
+      !index_request_indices || !buffer_descriptions || !buffer_uploads ||
+      !buffer_requests || !buffer_handles || !buffer_errors) {
+    for (uint32_t i = 0; i < count; ++i) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    }
+    return 0;
+  }
+
+  MemZero(slot_reserved, sizeof(bool8_t) * count);
+  uint32_t request_count = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    vertex_request_indices[i] = UINT32_MAX;
+    index_request_indices[i] = UINT32_MAX;
+
+    const VkrGeometryConfig *config = &configs[i];
+    if (!config || config->vertex_size == 0 || config->vertex_count == 0 ||
+        !config->vertices || config->index_size == 0 || config->index_count == 0 ||
+        !config->indices) {
+      out_errors[i] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      continue;
+    }
+
+    VkrGeometryHandle handle = VKR_GEOMETRY_HANDLE_INVALID;
+    VkrGeometry *geometry = geometry_acquire_slot(system, &handle);
+    if (!geometry) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      continue;
+    }
+
+    geometry->vertex_size = config->vertex_size;
+    geometry->vertex_count = config->vertex_count;
+    geometry->index_size = config->index_size;
+    geometry->index_count = config->index_count;
+    geometry->center = config->center;
+    geometry->min_extents = config->min_extents;
+    geometry->max_extents = config->max_extents;
+
+    if (config->name[0] != '\0') {
+      string_copy(geometry->name, config->name);
+    } else {
+      string_format(geometry->name, sizeof(geometry->name), "geometry_%u",
+                    handle.id);
+    }
+    if (config->material_name[0] != '\0') {
+      string_copy(geometry->material_name, config->material_name);
+    } else {
+      geometry->material_name[0] = '\0';
+    }
+
+    VkrBufferTypeFlags buffer_type = bitset8_create();
+    bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
+
+    const uint64_t vertex_size_bytes =
+        (uint64_t)config->vertex_size * (uint64_t)config->vertex_count;
+    const uint64_t index_size_bytes =
+        (uint64_t)config->index_size * (uint64_t)config->index_count;
+
+    buffer_descriptions[request_count] = (VkrBufferDescription){
+        .size = vertex_size_bytes,
+        .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_VERTEX_BUFFER |
+                                                  VKR_BUFFER_USAGE_TRANSFER_DST |
+                                                  VKR_BUFFER_USAGE_TRANSFER_SRC),
+        .memory_properties = vkr_memory_property_flags_from_bits(
+            VKR_MEMORY_PROPERTY_DEVICE_LOCAL),
+        .buffer_type = buffer_type,
+        .bind_on_create = true_v,
+    };
+    buffer_uploads[request_count] = (VkrBufferUploadPayload){
+        .data = config->vertices,
+        .size = vertex_size_bytes,
+        .offset = 0,
+    };
+    buffer_requests[request_count] = (VkrBufferBatchCreateRequest){
+        .description = &buffer_descriptions[request_count],
+        .upload = &buffer_uploads[request_count],
+    };
+    vertex_request_indices[i] = request_count;
+    request_count++;
+
+    buffer_descriptions[request_count] = (VkrBufferDescription){
+        .size = index_size_bytes,
+        .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_INDEX_BUFFER |
+                                                  VKR_BUFFER_USAGE_TRANSFER_DST |
+                                                  VKR_BUFFER_USAGE_TRANSFER_SRC),
+        .memory_properties = vkr_memory_property_flags_from_bits(
+            VKR_MEMORY_PROPERTY_DEVICE_LOCAL),
+        .buffer_type = buffer_type,
+        .bind_on_create = true_v,
+    };
+    buffer_uploads[request_count] = (VkrBufferUploadPayload){
+        .data = config->indices,
+        .size = index_size_bytes,
+        .offset = 0,
+    };
+    buffer_requests[request_count] = (VkrBufferBatchCreateRequest){
+        .description = &buffer_descriptions[request_count],
+        .upload = &buffer_uploads[request_count],
+    };
+    index_request_indices[i] = request_count;
+    request_count++;
+
+    out_handles[i] = handle;
+    geometry_slots[i] = geometry;
+    slot_reserved[i] = true_v;
+  }
+
+  if (request_count > 0) {
+    vkr_renderer_create_buffer_batch(system->renderer, buffer_requests,
+                                     request_count, buffer_handles,
+                                     buffer_errors);
+  }
+
+  uint32_t created = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (!slot_reserved[i]) {
+      continue;
+    }
+
+    VkrGeometry *geometry = geometry_slots[i];
+    const uint32_t vertex_request_index = vertex_request_indices[i];
+    const uint32_t index_request_index = index_request_indices[i];
+    const bool8_t vertex_ok =
+        vertex_request_index != UINT32_MAX &&
+        buffer_errors[vertex_request_index] == VKR_RENDERER_ERROR_NONE &&
+        buffer_handles[vertex_request_index] != NULL;
+    const bool8_t index_ok =
+        index_request_index != UINT32_MAX &&
+        buffer_errors[index_request_index] == VKR_RENDERER_ERROR_NONE &&
+        buffer_handles[index_request_index] != NULL;
+
+    if (!vertex_ok || !index_ok) {
+      if (vertex_request_index != UINT32_MAX &&
+          buffer_handles[vertex_request_index] != NULL) {
+        vkr_renderer_destroy_buffer(system->renderer,
+                                    buffer_handles[vertex_request_index]);
+      }
+      if (index_request_index != UINT32_MAX &&
+          buffer_handles[index_request_index] != NULL) {
+        vkr_renderer_destroy_buffer(system->renderer,
+                                    buffer_handles[index_request_index]);
+      }
+
+      VkrRendererError first_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      if (vertex_request_index != UINT32_MAX &&
+          buffer_errors[vertex_request_index] != VKR_RENDERER_ERROR_NONE) {
+        first_error = buffer_errors[vertex_request_index];
+      } else if (index_request_index != UINT32_MAX &&
+                 buffer_errors[index_request_index] != VKR_RENDERER_ERROR_NONE) {
+        first_error = buffer_errors[index_request_index];
+      }
+      out_errors[i] = first_error;
+      out_handles[i] = geometry_creation_failure(system, geometry, out_handles[i]);
+      continue;
+    }
+
+    String8 debug_name =
+        string8_create((uint8_t *)geometry->name, string_length(geometry->name));
+    geometry->vertex_buffer = (VkrVertexBuffer){
+        .handle = buffer_handles[vertex_request_index],
+        .stride = geometry->vertex_size,
+        .vertex_count = geometry->vertex_count,
+        .input_rate = VKR_VERTEX_INPUT_RATE_VERTEX,
+        .is_dynamic = false_v,
+        .debug_name = debug_name,
+        .size_bytes = buffer_descriptions[vertex_request_index].size,
+    };
+    geometry->index_buffer = (VkrIndexBuffer){
+        .handle = buffer_handles[index_request_index],
+        .type = (geometry->index_size == sizeof(uint16_t))
+                    ? VKR_INDEX_TYPE_UINT16
+                    : VKR_INDEX_TYPE_UINT32,
+        .index_count = geometry->index_count,
+        .is_dynamic = false_v,
+        .debug_name = debug_name,
+        .size_bytes = buffer_descriptions[index_request_index].size,
+    };
+
+    const char *stable_name = geometry->name;
+    VkrGeometryEntry life_entry = {
+        .id = (out_handles[i].id - 1),
+        .ref_count = 1,
+        .auto_release = auto_release,
+        .name = stable_name,
+    };
+    if (!vkr_hash_table_insert_VkrGeometryEntry(&system->geometry_by_name,
+                                                stable_name, life_entry)) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      out_handles[i] = geometry_creation_failure(system, geometry, out_handles[i]);
+      continue;
+    }
+
+    out_errors[i] = VKR_RENDERER_ERROR_NONE;
+    created++;
+  }
+
+  return created;
+}
+
 VkrGeometryHandle
 vkr_geometry_system_create_cube(VkrGeometrySystem *system, float32_t width,
                                 float32_t height, float32_t depth,

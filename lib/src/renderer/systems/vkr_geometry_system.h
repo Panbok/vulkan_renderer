@@ -122,6 +122,10 @@ VkrGeometryHandle vkr_geometry_system_create(VkrGeometrySystem *system,
                                              const VkrGeometryConfig *config,
                                              bool8_t auto_release,
                                              VkrRendererError *out_error);
+uint32_t vkr_geometry_system_create_batch(
+    VkrGeometrySystem *system, const VkrGeometryConfig *configs, uint32_t count,
+    bool8_t auto_release, VkrGeometryHandle *out_handles,
+    VkrRendererError *out_errors);
 /**
  * @brief Creates a cube geometry from the given width, height, and depth.
  * @param system The geometry system to create the cube in
