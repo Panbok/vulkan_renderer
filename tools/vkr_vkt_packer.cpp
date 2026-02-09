@@ -8,9 +8,12 @@
 #include <array>
 #include <cctype>
 #include <cstdint>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -45,6 +48,7 @@ struct PackConfig {
   bool strict = false;
   bool force = false;
   bool verbose = false;
+  bool progress = true;
 };
 
 enum class ParseResult { kOk, kHelp, kError };
@@ -72,6 +76,14 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
       out_config.verbose = true;
       continue;
     }
+    if (arg == "--progress") {
+      out_config.progress = true;
+      continue;
+    }
+    if (arg == "--no-progress") {
+      out_config.progress = false;
+      continue;
+    }
     if (arg == "--help" || arg == "-h") {
       return ParseResult::kHelp;
     }
@@ -89,7 +101,26 @@ ParseResult parse_args(int argc, char **argv, PackConfig &out_config) {
 
 void print_usage(const char *program_name) {
   std::cout << "Usage: " << program_name
-            << " --input-dir <path> [--strict] [--force] [--verbose]\n";
+            << " --input-dir <path> [--strict] [--force] [--verbose] [--progress|--no-progress]\n";
+}
+
+std::string format_duration(double seconds) {
+  if (seconds < 0.0) {
+    seconds = 0.0;
+  }
+  const int total = static_cast<int>(seconds + 0.5);
+  const int mins = total / 60;
+  const int secs = total % 60;
+  std::ostringstream oss;
+  oss << mins << "m" << std::setw(2) << std::setfill('0') << secs << "s";
+  return oss.str();
+}
+
+void log_progress_line(bool enabled, const std::string &line) {
+  if (!enabled) {
+    return;
+  }
+  std::cout << line << std::endl;
 }
 
 std::string to_lower_ascii(std::string value) {
@@ -286,7 +317,8 @@ bool should_skip_output(const fs::path &src, const fs::path &dst, bool force) {
 }
 
 bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
-                         bool srgb_colorspace, bool verbose) {
+                         bool srgb_colorspace, bool verbose, bool progress) {
+  log_progress_line(progress, "  - decode: " + src_path.generic_string());
   int width = 0;
   int height = 0;
   int channels = 0;
@@ -300,6 +332,7 @@ bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
     return false;
   }
 
+  log_progress_line(progress, "  - mips: build chain");
   std::vector<LevelImage> levels = build_mip_chain_rgba8(
       loaded, static_cast<uint32_t>(width), static_cast<uint32_t>(height));
   const AlphaAnalysis alpha = analyze_alpha(
@@ -330,6 +363,7 @@ bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
 
   bool success = false;
   do {
+    log_progress_line(progress, "  - ktx2: write mip payloads");
     for (uint32_t level_index = 0; level_index < levels.size(); ++level_index) {
       const LevelImage &level = levels[level_index];
       result = ktxTexture_SetImageFromMemory(
@@ -364,6 +398,7 @@ bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
       }
     }
 
+    log_progress_line(progress, "  - compress: UASTC (basis)");
     ktxBasisParams basis_params = {};
     basis_params.structSize = sizeof(basis_params);
     basis_params.compressionLevel = KTX_ETC1S_DEFAULT_COMPRESSION_LEVEL;
@@ -379,6 +414,7 @@ bool pack_texture_to_vkt(const fs::path &src_path, const fs::path &dst_path,
       break;
     }
 
+    log_progress_line(progress, "  - write: " + dst_path.generic_string());
     fs::path tmp_path = dst_path;
     tmp_path += ".tmp";
     result = ktxTexture_WriteToNamedFile(ktxTexture(texture),
@@ -467,19 +503,54 @@ int main(int argc, char **argv) {
 
   PackStats stats = {};
   stats.discovered = static_cast<uint32_t>(sources.size());
-  for (const fs::path &src_path : sources) {
+  log_progress_line(config.progress,
+                    "Discovered " + std::to_string(stats.discovered) +
+                        " source textures under " + config.input_dir.string());
+
+  const auto start_time = std::chrono::steady_clock::now();
+
+  for (size_t index = 0; index < sources.size(); ++index) {
+    const fs::path &src_path = sources[index];
+    const uint32_t current = static_cast<uint32_t>(index + 1u);
+
+    std::error_code rel_ec;
+    fs::path rel_path = fs::relative(src_path, config.input_dir, rel_ec);
+    const std::string label =
+        (rel_ec ? src_path.generic_string() : rel_path.generic_string());
+
+    if (config.progress) {
+      const auto now = std::chrono::steady_clock::now();
+      const double elapsed =
+          std::chrono::duration<double>(now - start_time).count();
+      const double avg = (current > 1u) ? (elapsed / double(current - 1u)) : 0.0;
+      const double eta = avg * double(stats.discovered - (current - 1u));
+
+      std::ostringstream header;
+      header << "[" << current << "/" << stats.discovered << "] "
+             << std::fixed << std::setprecision(1)
+             << (100.0 * double(current) / double(stats.discovered)) << "% "
+             << "packed=" << stats.packed << " skipped=" << stats.skipped
+             << " failed=" << stats.failed << " elapsed="
+             << format_duration(elapsed) << " eta=" << format_duration(eta)
+             << " :: " << label;
+      log_progress_line(true, header.str());
+    }
+
     const fs::path dst_path = src_path.string() + ".vkt";
     if (should_skip_output(src_path, dst_path, config.force)) {
       ++stats.skipped;
+      log_progress_line(config.progress, "  - skip: up-to-date");
       continue;
     }
 
     const bool srgb_colorspace = infer_srgb_colorspace(src_path);
-    if (pack_texture_to_vkt(src_path, dst_path, srgb_colorspace,
-                            config.verbose)) {
+    if (pack_texture_to_vkt(src_path, dst_path, srgb_colorspace, config.verbose,
+                            config.progress)) {
       ++stats.packed;
+      log_progress_line(config.progress, "  - ok");
     } else {
       ++stats.failed;
+      log_progress_line(config.progress, "  - failed");
     }
   }
 
