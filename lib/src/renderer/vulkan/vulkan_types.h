@@ -275,6 +275,7 @@ typedef struct VulkanImage {
   VkImage handle;
   VkDeviceMemory memory;
   VkImageView view;
+  uint64_t allocation_size;
   uint32_t width;
   uint32_t height;
   uint32_t mip_levels;
@@ -547,7 +548,7 @@ typedef struct VkrFramebufferCache {
 // Deferred Destruction Queue - delays resource destruction until GPU is done
 // ============================================================================
 
-#define VKR_DEFERRED_DESTROY_QUEUE_SIZE 256
+#define VKR_DEFERRED_DESTROY_QUEUE_SIZE 4096
 
 typedef enum VkrDeferredDestroyKind {
   VKR_DEFERRED_DESTROY_FRAMEBUFFER = 0,
@@ -556,6 +557,7 @@ typedef enum VkrDeferredDestroyKind {
   VKR_DEFERRED_DESTROY_IMAGE_VIEW,
   VKR_DEFERRED_DESTROY_SAMPLER,
   VKR_DEFERRED_DESTROY_BUFFER,
+  VKR_DEFERRED_DESTROY_COMMAND_SUBMISSION,
   VKR_DEFERRED_DESTROY_TEXTURE_WRAPPER,
   VKR_DEFERRED_DESTROY_BUFFER_WRAPPER,
   VKR_DEFERRED_DESTROY_RENDER_TARGET_WRAPPER,
@@ -574,6 +576,8 @@ typedef struct VkrDeferredDestroyEntry {
     void *wrapper; // For TEXTURE_WRAPPER, BUFFER_WRAPPER, RENDER_TARGET_WRAPPER
   } payload;
   VkDeviceMemory memory;    // Optional memory to free (for images/buffers)
+  uint64_t memory_size;     // Size used for allocator accounting (0 if unknown)
+  VkrAllocatorMemoryTag memory_tag; // Accounting tag for memory_size
   VkrAllocator *pool_alloc; // Allocator to return wrapper to (if applicable)
   uint64_t wrapper_size;    // Size of wrapper struct (for pool free)
 } VkrDeferredDestroyEntry;
@@ -651,6 +655,9 @@ typedef struct VulkanBackendState {
   Arena *swapchain_arena;
   VkrAllocator swapchain_alloc;
   VkrWindow *window;
+  // Thread that owns frame command recording and must perform frame-active
+  // upload command emission.
+  uint64_t render_thread_id;
   VkrDeviceRequirements *device_requirements;
 
   VulkanAllocator vk_allocator;
@@ -660,6 +667,13 @@ typedef struct VulkanBackendState {
 
   float64_t frame_delta;
   uint64_t submit_serial;
+  uint64_t completed_submit_serial;
+  uint64_t frame_submit_serial[BUFFERING_FRAMES];
+  // Debug counters for validating that async upload/mutation paths remain
+  // non-blocking during streaming.
+  uint64_t upload_path_fence_wait_count;
+  uint64_t upload_path_queue_wait_idle_count;
+  uint64_t upload_path_device_wait_idle_count;
   uint32_t current_frame;
   uint32_t image_index;
 

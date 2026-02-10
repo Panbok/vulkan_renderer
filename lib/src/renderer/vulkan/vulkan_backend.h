@@ -14,6 +14,9 @@ VkResult vulkan_backend_queue_present_locked(
     const VkPresentInfoKHR *present_info);
 VkResult vulkan_backend_queue_wait_idle_locked(VulkanBackendState *state,
                                                VkQueue queue);
+bool8_t vulkan_backend_defer_single_use_submission(
+    VulkanBackendState *state, VkCommandPool command_pool,
+    VkCommandBuffer command_buffer, VkFence submit_fence);
 
 VkrRendererBackendInterface renderer_vulkan_get_interface();
 
@@ -194,6 +197,10 @@ VkrTextureFormat renderer_vulkan_shadow_depth_format_get(void *backend_state);
 // Telemetry
 uint64_t
 renderer_vulkan_get_and_reset_descriptor_writes_avoided(void *backend_state);
+uint64_t renderer_vulkan_get_submit_serial(void *backend_state);
+uint64_t renderer_vulkan_get_completed_submit_serial(void *backend_state);
+bool8_t renderer_vulkan_get_and_reset_upload_wait_stats(
+    void *backend_state, VkrRendererUploadWaitStats *out_stats);
 
 // RenderGraph GPU timing (timestamps)
 bool8_t renderer_vulkan_rg_timing_begin_frame(void *backend_state,

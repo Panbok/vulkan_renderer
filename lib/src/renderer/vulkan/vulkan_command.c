@@ -1,6 +1,7 @@
 #include "vulkan_command.h"
 #include "vulkan_backend.h"
 #include "vulkan_fence.h"
+#include "core/vkr_threads.h"
 
 bool8_t
 vulkan_command_buffer_allocate(VulkanBackendState *state,
@@ -127,10 +128,30 @@ vulkan_command_buffer_end_single_use(VulkanBackendState *state,
     return false_v;
   }
 
+  const bool8_t can_defer_submission =
+      state->frame_active && queue == state->device.graphics_queue &&
+      state->render_thread_id == vkr_thread_current_id();
+
+  /*
+   * Upload helpers are required to stay non-blocking while a frame is being
+   * recorded. If we cannot defer this submission, fail instead of waiting.
+   */
+  if (state->frame_active && !can_defer_submission) {
+    log_error("Refusing blocking single-use submit during active frame "
+              "(render_pass_active=%s, queue_is_graphics=%s, render_thread=%s)",
+              state->render_pass_active ? "true" : "false",
+              queue == state->device.graphics_queue ? "true" : "false",
+              state->render_thread_id == vkr_thread_current_id() ? "true"
+                                                                  : "false");
+    vulkan_command_buffer_free(state, command_buffer);
+    return false_v;
+  }
+
+  VkCommandBuffer submitted_command_buffer = command_buffer->handle;
   VkSubmitInfo submit_info = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
       .commandBufferCount = 1,
-      .pCommandBuffers = &command_buffer->handle,
+      .pCommandBuffers = &submitted_command_buffer,
   };
 
   VulkanFence temp_fence;
@@ -141,6 +162,31 @@ vulkan_command_buffer_end_single_use(VulkanBackendState *state,
     return false_v;
   }
 
+  if (can_defer_submission) {
+    if (!vulkan_backend_defer_single_use_submission(
+            state, state->device.graphics_command_pool, submitted_command_buffer,
+            temp_fence.handle)) {
+      log_error("Failed to enqueue deferred single-use command submission");
+      vulkan_fence_destroy(state, &temp_fence);
+      vulkan_command_buffer_free(state, command_buffer);
+      return false_v;
+    }
+
+    // Ownership has moved to deferred destruction queue.
+    command_buffer->handle = VK_NULL_HANDLE;
+    command_buffer->state = COMMAND_BUFFER_STATE_NOT_ALLOCATED;
+    command_buffer->bound_global_descriptor_set = VK_NULL_HANDLE;
+    command_buffer->bound_global_pipeline_layout = VK_NULL_HANDLE;
+
+    if (vulkan_backend_queue_submit_locked(state, queue, 1, &submit_info,
+                                           temp_fence.handle) != VK_SUCCESS) {
+      log_error("Failed to submit deferred single-use command buffer");
+      return false_v;
+    }
+
+    return true_v;
+  }
+
   if (vulkan_backend_queue_submit_locked(state, queue, 1, &submit_info,
                                          temp_fence.handle) != VK_SUCCESS) {
     log_error("Failed to submit Vulkan command buffer");
@@ -149,6 +195,10 @@ vulkan_command_buffer_end_single_use(VulkanBackendState *state,
     return false_v;
   }
 
+  if (state->frame_active &&
+      state->render_thread_id == vkr_thread_current_id()) {
+    state->upload_path_fence_wait_count++;
+  }
   if (!vulkan_fence_wait(state, UINT64_MAX, &temp_fence)) {
     log_error("Failed waiting on single-use command fence");
     vulkan_fence_destroy(state, &temp_fence);

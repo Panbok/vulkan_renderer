@@ -3,6 +3,7 @@
 #include "core/vkr_threads.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
+#include "memory/vkr_dmemory_allocator.h"
 #include "memory/vkr_pool_allocator.h"
 #include "vulkan_buffer.h"
 #include "vulkan_command.h"
@@ -48,6 +49,10 @@
 VkrAllocator *renderer_vulkan_get_allocator(void *backend_state);
 void renderer_vulkan_set_default_2d_texture(void *backend_state,
                                             VkrTextureOpaqueHandle texture);
+uint64_t renderer_vulkan_get_submit_serial(void *backend_state);
+uint64_t renderer_vulkan_get_completed_submit_serial(void *backend_state);
+bool8_t renderer_vulkan_get_and_reset_upload_wait_stats(
+    void *backend_state, VkrRendererUploadWaitStats *out_stats);
 void renderer_vulkan_set_depth_bias(void *backend_state,
                                     float32_t constant_factor, float32_t clamp,
                                     float32_t slope_factor);
@@ -70,6 +75,10 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture_msaa(
 VkrRendererError renderer_vulkan_buffer_barrier(
     void *backend_state, VkrBackendResourceHandle handle,
     VkrBufferAccessFlags src_access, VkrBufferAccessFlags dst_access);
+VkrRendererError renderer_vulkan_update_buffer(void *backend_state,
+                                               VkrBackendResourceHandle handle,
+                                               uint64_t offset, uint64_t size,
+                                               const void *data);
 uint32_t renderer_vulkan_create_buffer_batch(
     void *backend_state, const VkrBufferBatchCreateRequest *requests,
     uint32_t count, VkrBackendResourceHandle *out_handles,
@@ -124,6 +133,21 @@ vulkan_backend_refresh_parallel_feature_toggles(VulkanBackendState *state);
 vkr_internal bool8_t vulkan_backend_prepare_staging_buffer(
     VulkanBackendState *state, uint64_t size, const void *data,
     struct s_BufferHandle *out_staging_buffer);
+vkr_internal bool8_t
+vulkan_deferred_destroy_enqueue(VulkanBackendState *state,
+                                VkrDeferredDestroyKind kind, void *handle,
+                                VkDeviceMemory memory, VkrAllocator *pool_alloc,
+                                uint64_t wrapper_size);
+vkr_internal bool8_t vulkan_deferred_destroy_enqueue_with_memory_accounting(
+    VulkanBackendState *state, VkrDeferredDestroyKind kind, void *handle,
+    VkDeviceMemory memory, uint64_t memory_size,
+    VkrAllocatorMemoryTag memory_tag, VkrAllocator *pool_alloc,
+    uint64_t wrapper_size);
+vkr_internal void vulkan_deferred_destroy_process(VulkanBackendState *state);
+vkr_internal bool8_t vulkan_backend_can_record_frame_upload(
+    const VulkanBackendState *state, VkQueue queue);
+vkr_internal bool8_t vulkan_backend_defer_staging_buffer_destroy(
+    VulkanBackendState *state, VulkanBuffer *buffer);
 vkr_internal bool8_t vulkan_backend_copy_buffer_region(
     VulkanBackendState *state, VkCommandPool command_pool, VkQueue queue,
     VkBuffer src_buffer, uint64_t src_offset, VkBuffer dst_buffer,
@@ -134,10 +158,14 @@ vkr_internal bool8_t vulkan_backend_record_buffer_copy_command(
     uint64_t size, VkCommandBuffer *out_command_buffer);
 vkr_internal bool8_t vulkan_backend_submit_recorded_command_buffers(
     VulkanBackendState *state, VkQueue queue,
-    const VkCommandBuffer *command_buffers, uint32_t command_buffer_count);
+    VkCommandBuffer *command_buffers, const uint32_t *worker_indices,
+    uint32_t command_buffer_count);
 vkr_internal void vulkan_backend_free_recorded_upload_command_buffers(
     VulkanBackendState *state, const VkCommandBuffer *command_buffers,
     const uint32_t *worker_indices, uint32_t command_buffer_count);
+vkr_internal VkCommandPool vulkan_backend_upload_command_pool_for_recorded_buffer(
+    const VulkanBackendState *state, const uint32_t *worker_indices,
+    uint32_t command_index);
 vkr_internal VkrRendererError vulkan_backend_upload_buffer_with_queue(
     VulkanBackendState *state, struct s_BufferHandle *buffer, uint64_t offset,
     uint64_t size, const void *data, VkCommandPool command_pool, VkQueue queue);
@@ -157,6 +185,10 @@ vkr_internal bool8_t vulkan_backend_record_texture_payload_upload_command(
     VkBuffer staging_buffer, const VkBufferImageCopy *copy_regions,
     uint32_t region_count, uint32_t mip_levels, uint32_t array_layers,
     VkCommandPool command_pool, VkCommandBuffer *out_command_buffer);
+vkr_internal bool8_t vulkan_backend_record_texture_payload_upload_into_active(
+    VulkanBackendState *state, VulkanImage *image, VkFormat image_format,
+    VkBuffer staging_buffer, const VkBufferImageCopy *copy_regions,
+    uint32_t region_count, uint32_t mip_levels, uint32_t array_layers);
 vkr_internal void vulkan_backend_destroy_partial_texture(
     VulkanBackendState *state, struct s_TextureHandle *texture);
 
@@ -217,6 +249,12 @@ typedef struct VulkanTextureBatchUploadJobPayload {
   bool8_t *out_recorded;
 } VulkanTextureBatchUploadJobPayload;
 
+typedef struct VulkanDeferredCommandSubmission {
+  VkCommandPool command_pool;
+  VkCommandBuffer command_buffer;
+  VkFence submit_fence;
+} VulkanDeferredCommandSubmission;
+
 vkr_internal bool8_t vulkan_backend_buffer_batch_upload_job_run(
     VkrJobContext *ctx, void *payload);
 vkr_internal bool8_t vulkan_backend_texture_batch_upload_job_run(
@@ -263,6 +301,48 @@ vulkan_backend_queue_submit_locks_create(VulkanBackendState *state) {
   }
 
   return true_v;
+}
+
+bool8_t vulkan_backend_defer_single_use_submission(
+    VulkanBackendState *state, VkCommandPool command_pool,
+    VkCommandBuffer command_buffer, VkFence submit_fence) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(command_pool != VK_NULL_HANDLE, "Command pool is NULL");
+  assert_log(command_buffer != VK_NULL_HANDLE, "Command buffer is NULL");
+  assert_log(submit_fence != VK_NULL_HANDLE, "Submit fence is NULL");
+
+  VulkanDeferredCommandSubmission *submission = vkr_allocator_alloc(
+      &state->alloc, sizeof(VulkanDeferredCommandSubmission),
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (!submission) {
+    return false_v;
+  }
+
+  *submission = (VulkanDeferredCommandSubmission){
+      .command_pool = command_pool,
+      .command_buffer = command_buffer,
+      .submit_fence = submit_fence,
+  };
+
+  if (vulkan_deferred_destroy_enqueue(state,
+                                      VKR_DEFERRED_DESTROY_COMMAND_SUBMISSION,
+                                      submission, VK_NULL_HANDLE, NULL, 0)) {
+    return true_v;
+  }
+
+  // Queue saturation can happen during large streaming bursts; drain any
+  // already-retired entries and retry once before failing.
+  vulkan_deferred_destroy_process(state);
+  if (vulkan_deferred_destroy_enqueue(state,
+                                      VKR_DEFERRED_DESTROY_COMMAND_SUBMISSION,
+                                      submission, VK_NULL_HANDLE, NULL, 0)) {
+    return true_v;
+  }
+
+  vkr_allocator_free(&state->alloc, submission,
+                     sizeof(VulkanDeferredCommandSubmission),
+                     VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  return false_v;
 }
 
 vkr_internal void
@@ -333,6 +413,10 @@ VkResult vulkan_backend_queue_wait_idle_locked(VulkanBackendState *state,
 
   if (mutex) {
     vkr_mutex_lock(mutex);
+  }
+  if (state->frame_active &&
+      state->render_thread_id == vkr_thread_current_id()) {
+    state->upload_path_queue_wait_idle_count++;
   }
   VkResult result = vkQueueWaitIdle(queue);
   if (mutex) {
@@ -528,13 +612,93 @@ vkr_internal bool8_t vulkan_backend_record_buffer_copy_command(
 }
 
 vkr_internal bool8_t vulkan_backend_submit_recorded_command_buffers(
-    VulkanBackendState *state, VkQueue queue,
-    const VkCommandBuffer *command_buffers, uint32_t command_buffer_count) {
+    VulkanBackendState *state, VkQueue queue, VkCommandBuffer *command_buffers,
+    const uint32_t *worker_indices, uint32_t command_buffer_count) {
   assert_log(state != NULL, "State is NULL");
   assert_log(queue != VK_NULL_HANDLE, "Queue is NULL");
   assert_log(command_buffers != NULL, "Command buffers are NULL");
 
   if (command_buffer_count == 0) {
+    return true_v;
+  }
+
+  const bool8_t can_defer_submission =
+      state->frame_active && queue == state->device.graphics_queue &&
+      state->render_thread_id == vkr_thread_current_id();
+
+  /*
+   * Render-thread resource streaming must never block while a frame is active.
+   * Command buffers submitted from this context are retired via submit-serial
+   * deferred destruction once the corresponding frame fences signal.
+   */
+  if (state->frame_active && !can_defer_submission) {
+    log_error(
+        "Refusing blocking upload submit during active frame "
+        "(render_pass_active=%s, queue_is_graphics=%s, render_thread=%s)",
+        state->render_pass_active ? "true" : "false",
+        queue == state->device.graphics_queue ? "true" : "false",
+        state->render_thread_id == vkr_thread_current_id() ? "true" : "false");
+    return false_v;
+  }
+
+  if (can_defer_submission) {
+    uint32_t non_null_count = 0;
+    for (uint32_t i = 0; i < command_buffer_count; ++i) {
+      if (command_buffers[i] != VK_NULL_HANDLE) {
+        non_null_count++;
+      }
+    }
+    if (non_null_count == 0) {
+      return true_v;
+    }
+
+    VkrDeferredDestroyQueue *deferred_queue = &state->deferred_destroy_queue;
+    if (deferred_queue->count + non_null_count > VKR_DEFERRED_DESTROY_QUEUE_SIZE) {
+      vulkan_deferred_destroy_process(state);
+      if (deferred_queue->count + non_null_count >
+          VKR_DEFERRED_DESTROY_QUEUE_SIZE) {
+        log_error("Deferred destroy queue saturated for upload command "
+                  "submissions");
+        return false_v;
+      }
+    }
+
+    for (uint32_t i = 0; i < command_buffer_count; ++i) {
+      VkCommandBuffer command_buffer = command_buffers[i];
+      if (command_buffer == VK_NULL_HANDLE) {
+        continue;
+      }
+
+      VulkanFence submit_fence = {0};
+      vulkan_fence_create(state, false_v, &submit_fence);
+      if (submit_fence.handle == VK_NULL_HANDLE) {
+        return false_v;
+      }
+
+      VkCommandPool command_pool =
+          vulkan_backend_upload_command_pool_for_recorded_buffer(
+              state, worker_indices, i);
+      if (!vulkan_backend_defer_single_use_submission(
+              state, command_pool, command_buffer, submit_fence.handle)) {
+        vulkan_fence_destroy(state, &submit_fence);
+        return false_v;
+      }
+
+      const VkSubmitInfo submit_info = {
+          .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+          .commandBufferCount = 1,
+          .pCommandBuffers = &command_buffer,
+      };
+      if (vulkan_backend_queue_submit_locked(state, queue, 1, &submit_info,
+                                             submit_fence.handle) != VK_SUCCESS) {
+        log_error("Failed to submit deferred upload command buffer");
+        return false_v;
+      }
+
+      // Ownership moved to deferred destroy path.
+      command_buffers[i] = VK_NULL_HANDLE;
+    }
+
     return true_v;
   }
 
@@ -555,9 +719,32 @@ vkr_internal bool8_t vulkan_backend_submit_recorded_command_buffers(
     return false_v;
   }
 
+  if (state->frame_active &&
+      state->render_thread_id == vkr_thread_current_id()) {
+    state->upload_path_fence_wait_count++;
+  }
   const bool8_t success = vulkan_fence_wait(state, UINT64_MAX, &submit_fence);
   vulkan_fence_destroy(state, &submit_fence);
   return success;
+}
+
+vkr_internal VkCommandPool vulkan_backend_upload_command_pool_for_recorded_buffer(
+    const VulkanBackendState *state, const uint32_t *worker_indices,
+    uint32_t command_index) {
+  assert_log(state != NULL, "State is NULL");
+
+  VkCommandPool command_pool = state->device.graphics_command_pool;
+  if (worker_indices &&
+      worker_indices[command_index] < state->parallel_runtime.worker_count) {
+    const VulkanParallelWorkerContext *worker =
+        &state->parallel_runtime.workers[worker_indices[command_index]];
+    if (worker->initialized &&
+        worker->graphics_upload_command_pool != VK_NULL_HANDLE) {
+      command_pool = worker->graphics_upload_command_pool;
+    }
+  }
+
+  return command_pool;
 }
 
 vkr_internal void vulkan_backend_free_recorded_upload_command_buffers(
@@ -575,16 +762,8 @@ vkr_internal void vulkan_backend_free_recorded_upload_command_buffers(
       continue;
     }
 
-    VkCommandPool command_pool = state->device.graphics_command_pool;
-    if (worker_indices &&
-        worker_indices[i] < state->parallel_runtime.worker_count) {
-      VulkanParallelWorkerContext *worker =
-          &state->parallel_runtime.workers[worker_indices[i]];
-      if (worker->initialized &&
-          worker->graphics_upload_command_pool != VK_NULL_HANDLE) {
-        command_pool = worker->graphics_upload_command_pool;
-      }
-    }
+    VkCommandPool command_pool = vulkan_backend_upload_command_pool_for_recorded_buffer(
+        state, worker_indices, i);
 
     VkCommandBuffer command_buffer = command_buffers[i];
     vkFreeCommandBuffers(state->device.logical_device, command_pool, 1,
@@ -610,9 +789,11 @@ vkr_internal bool8_t vulkan_backend_copy_buffer_region(
   }
 
   const bool8_t success = vulkan_backend_submit_recorded_command_buffers(
-      state, queue, &command_buffer, 1);
-  vkFreeCommandBuffers(state->device.logical_device, command_pool, 1,
-                       &command_buffer);
+      state, queue, &command_buffer, NULL, 1);
+  if (command_buffer != VK_NULL_HANDLE) {
+    vkFreeCommandBuffers(state->device.logical_device, command_pool, 1,
+                         &command_buffer);
+  }
   return success;
 }
 
@@ -627,9 +808,44 @@ vkr_internal VkrRendererError vulkan_backend_upload_buffer_with_queue(
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
 
+  /*
+   * Host-visible buffers (for example dynamic UI text buffers) can be updated
+   * directly without staging or queue submission. This keeps in-frame dynamic
+   * updates off the blocking submit path.
+   */
+  if ((buffer->buffer.memory_property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) !=
+      0) {
+    if (!vulkan_buffer_load_data(state, &buffer->buffer, offset, size, 0, data)) {
+      return VKR_RENDERER_ERROR_DEVICE_ERROR;
+    }
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
   struct s_BufferHandle staging = {0};
   if (!vulkan_backend_prepare_staging_buffer(state, size, data, &staging)) {
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  if (vulkan_backend_can_record_frame_upload(state, queue)) {
+    VulkanCommandBuffer *command_buffer =
+        vulkan_backend_get_active_graphics_command_buffer(state);
+    if (!command_buffer) {
+      vulkan_buffer_destroy(state, &staging.buffer);
+      return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+    }
+
+    VkBufferCopy copy_region = {
+        .srcOffset = 0,
+        .dstOffset = offset,
+        .size = size,
+    };
+    vkCmdCopyBuffer(command_buffer->handle, staging.buffer.handle,
+                    buffer->buffer.handle, 1, &copy_region);
+
+    if (!vulkan_backend_defer_staging_buffer_destroy(state, &staging.buffer)) {
+      return VKR_RENDERER_ERROR_DEVICE_ERROR;
+    }
+    return VKR_RENDERER_ERROR_NONE;
   }
 
   bool8_t copied = vulkan_backend_copy_buffer_region(
@@ -727,6 +943,76 @@ vkr_internal bool8_t vulkan_backend_validate_texture_payload_request(
     return false_v;
   }
 
+  return true_v;
+}
+
+vkr_internal bool8_t vulkan_backend_can_record_frame_upload(
+    const VulkanBackendState *state, VkQueue queue) {
+  if (!state || !state->frame_active || state->render_pass_active) {
+    return false_v;
+  }
+
+  if (queue == VK_NULL_HANDLE || queue != state->device.graphics_queue) {
+    return false_v;
+  }
+
+  return state->render_thread_id == vkr_thread_current_id();
+}
+
+vkr_internal bool8_t vulkan_backend_defer_staging_buffer_destroy(
+    VulkanBackendState *state, VulkanBuffer *buffer) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(buffer != NULL, "Buffer is NULL");
+
+  if (buffer->handle == VK_NULL_HANDLE) {
+    return true_v;
+  }
+
+  vkr_dmemory_allocator_destroy(&buffer->allocator);
+  if (buffer->mapped_ptr) {
+    vkUnmapMemory(state->device.logical_device, buffer->memory);
+    buffer->mapped_ptr = NULL;
+  }
+
+  VkBuffer vk_buffer = buffer->handle;
+  VkDeviceMemory vk_memory = buffer->memory;
+  uint64_t allocation_size = buffer->allocation_size;
+  VkrAllocatorMemoryTag alloc_tag =
+      (buffer->memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+          ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+          : VKR_ALLOCATOR_MEMORY_TAG_VULKAN;
+  buffer->handle = VK_NULL_HANDLE;
+  buffer->memory = VK_NULL_HANDLE;
+
+  if (vulkan_deferred_destroy_enqueue_with_memory_accounting(
+          state, VKR_DEFERRED_DESTROY_BUFFER, (void *)vk_buffer, vk_memory,
+          allocation_size, alloc_tag, NULL, 0)) {
+    return true_v;
+  }
+
+  // Retry after draining any already-retired entries first.
+  vulkan_deferred_destroy_process(state);
+  if (vulkan_deferred_destroy_enqueue_with_memory_accounting(
+          state, VKR_DEFERRED_DESTROY_BUFFER, (void *)vk_buffer, vk_memory,
+          allocation_size, alloc_tag, NULL, 0)) {
+    return true_v;
+  }
+
+  // In frame-active mode, immediate destruction can invalidate in-flight copy
+  // commands. Keep the buffer alive instead of forcing a stall or UAF.
+  if (state->frame_active) {
+    log_error("Deferred destroy queue saturated for staging buffer; leaking "
+              "buffer to preserve GPU safety");
+    return false_v;
+  }
+
+  vkDestroyBuffer(state->device.logical_device, vk_buffer, state->allocator);
+  if (vk_memory != VK_NULL_HANDLE) {
+    if (allocation_size > 0) {
+      vkr_allocator_report(&state->alloc, allocation_size, alloc_tag, false_v);
+    }
+    vkFreeMemory(state->device.logical_device, vk_memory, state->allocator);
+  }
   return true_v;
 }
 
@@ -886,12 +1172,64 @@ cleanup_fail:
   return false_v;
 }
 
+vkr_internal bool8_t vulkan_backend_record_texture_payload_upload_into_active(
+    VulkanBackendState *state, VulkanImage *image, VkFormat image_format,
+    VkBuffer staging_buffer, const VkBufferImageCopy *copy_regions,
+    uint32_t region_count, uint32_t mip_levels, uint32_t array_layers) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(image != NULL, "Image is NULL");
+  assert_log(staging_buffer != VK_NULL_HANDLE, "Staging buffer is NULL");
+  assert_log(copy_regions != NULL, "Copy regions are NULL");
+  assert_log(region_count > 0, "Region count must be > 0");
+  assert_log(mip_levels > 0, "Mip level count must be > 0");
+  assert_log(array_layers > 0, "Array layer count must be > 0");
+
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return false_v;
+  }
+
+  const VkImageSubresourceRange full_range = {
+      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+      .baseMipLevel = 0,
+      .levelCount = mip_levels,
+      .baseArrayLayer = 0,
+      .layerCount = array_layers,
+  };
+
+  if (!vulkan_image_transition_layout_range(
+          state, image, command_buffer, image_format, VK_IMAGE_LAYOUT_UNDEFINED,
+          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &full_range)) {
+    return false_v;
+  }
+
+  vkCmdCopyBufferToImage(command_buffer->handle, staging_buffer, image->handle,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count,
+                         copy_regions);
+
+  if (!vulkan_image_transition_layout_range(
+          state, image, command_buffer, image_format,
+          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &full_range)) {
+    return false_v;
+  }
+
+  return true_v;
+}
+
 vkr_internal bool8_t vulkan_backend_upload_texture_payload_with_queue(
     VulkanBackendState *state, VulkanImage *image, VkFormat image_format,
     VkBuffer staging_buffer, const VkBufferImageCopy *copy_regions,
     uint32_t region_count, uint32_t mip_levels, uint32_t array_layers,
     VkCommandPool command_pool, VkQueue queue) {
   assert_log(queue != VK_NULL_HANDLE, "Queue is NULL");
+
+  if (vulkan_backend_can_record_frame_upload(state, queue)) {
+    return vulkan_backend_record_texture_payload_upload_into_active(
+        state, image, image_format, staging_buffer, copy_regions, region_count,
+        mip_levels, array_layers);
+  }
 
   VkCommandBuffer command_buffer = VK_NULL_HANDLE;
   if (!vulkan_backend_record_texture_payload_upload_command(
@@ -902,9 +1240,11 @@ vkr_internal bool8_t vulkan_backend_upload_texture_payload_with_queue(
   }
 
   const bool8_t success = vulkan_backend_submit_recorded_command_buffers(
-      state, queue, &command_buffer, 1);
-  vkFreeCommandBuffers(state->device.logical_device, command_pool, 1,
-                       &command_buffer);
+      state, queue, &command_buffer, NULL, 1);
+  if (command_buffer != VK_NULL_HANDLE) {
+    vkFreeCommandBuffers(state->device.logical_device, command_pool, 1,
+                         &command_buffer);
+  }
   return success;
 }
 
@@ -1496,6 +1836,16 @@ vulkan_deferred_destroy_enqueue(VulkanBackendState *state,
                                 VkrDeferredDestroyKind kind, void *handle,
                                 VkDeviceMemory memory, VkrAllocator *pool_alloc,
                                 uint64_t wrapper_size) {
+  return vulkan_deferred_destroy_enqueue_with_memory_accounting(
+      state, kind, handle, memory, 0, VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN,
+      pool_alloc, wrapper_size);
+}
+
+vkr_internal bool8_t vulkan_deferred_destroy_enqueue_with_memory_accounting(
+    VulkanBackendState *state, VkrDeferredDestroyKind kind, void *handle,
+    VkDeviceMemory memory, uint64_t memory_size,
+    VkrAllocatorMemoryTag memory_tag, VkrAllocator *pool_alloc,
+    uint64_t wrapper_size) {
   VkrDeferredDestroyQueue *queue = &state->deferred_destroy_queue;
 
   if (queue->count >= VKR_DEFERRED_DESTROY_QUEUE_SIZE) {
@@ -1505,9 +1855,11 @@ vulkan_deferred_destroy_enqueue(VulkanBackendState *state,
 
   VkrDeferredDestroyEntry *entry = &queue->entries[queue->tail];
   entry->kind = kind;
-  entry->submit_serial = state->submit_serial;
+  entry->submit_serial = state->submit_serial + (state->frame_active ? 1u : 0u);
   entry->payload.wrapper = handle; // All handles are pointer-sized
   entry->memory = memory;
+  entry->memory_size = memory_size;
+  entry->memory_tag = memory_tag;
   entry->pool_alloc = pool_alloc;
   entry->wrapper_size = wrapper_size;
 
@@ -1527,12 +1879,7 @@ vulkan_deferred_destroy_enqueue(VulkanBackendState *state,
  */
 vkr_internal void vulkan_deferred_destroy_process(VulkanBackendState *state) {
   VkrDeferredDestroyQueue *queue = &state->deferred_destroy_queue;
-
-  // Resources are safe to destroy when submit_serial <= current - BUFFERING_FRAMES
-  uint64_t safe_serial =
-      state->submit_serial >= BUFFERING_FRAMES
-          ? state->submit_serial - BUFFERING_FRAMES
-          : 0;
+  uint64_t safe_serial = state->completed_submit_serial;
 
   while (queue->count > 0) {
     VkrDeferredDestroyEntry *entry = &queue->entries[queue->head];
@@ -1562,6 +1909,11 @@ vkr_internal void vulkan_deferred_destroy_process(VulkanBackendState *state) {
                        state->allocator);
       }
       if (entry->memory != VK_NULL_HANDLE) {
+        if (entry->memory_size > 0 &&
+            entry->memory_tag != VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN) {
+          vkr_allocator_report(&state->alloc, entry->memory_size,
+                               entry->memory_tag, false_v);
+        }
         vkFreeMemory(state->device.logical_device, entry->memory,
                      state->allocator);
       }
@@ -1584,8 +1936,32 @@ vkr_internal void vulkan_deferred_destroy_process(VulkanBackendState *state) {
                         state->allocator);
       }
       if (entry->memory != VK_NULL_HANDLE) {
+        if (entry->memory_size > 0 &&
+            entry->memory_tag != VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN) {
+          vkr_allocator_report(&state->alloc, entry->memory_size,
+                               entry->memory_tag, false_v);
+        }
         vkFreeMemory(state->device.logical_device, entry->memory,
                      state->allocator);
+      }
+      break;
+    case VKR_DEFERRED_DESTROY_COMMAND_SUBMISSION:
+      if (entry->payload.wrapper) {
+        VulkanDeferredCommandSubmission *submission =
+            (VulkanDeferredCommandSubmission *)entry->payload.wrapper;
+        if (submission->submit_fence != VK_NULL_HANDLE) {
+          vkDestroyFence(state->device.logical_device, submission->submit_fence,
+                         state->allocator);
+        }
+        if (submission->command_buffer != VK_NULL_HANDLE &&
+            submission->command_pool != VK_NULL_HANDLE) {
+          VkCommandBuffer command_buffer = submission->command_buffer;
+          vkFreeCommandBuffers(state->device.logical_device,
+                               submission->command_pool, 1, &command_buffer);
+        }
+        vkr_allocator_free(&state->alloc, submission,
+                           sizeof(VulkanDeferredCommandSubmission),
+                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
       }
       break;
     case VKR_DEFERRED_DESTROY_TEXTURE_WRAPPER:
@@ -1614,9 +1990,12 @@ vkr_internal void vulkan_deferred_destroy_process(VulkanBackendState *state) {
  */
 vkr_internal void vulkan_deferred_destroy_flush(VulkanBackendState *state) {
   // Process all entries regardless of serial by setting safe_serial high
+  const uint64_t previous_completed_serial = state->completed_submit_serial;
   state->submit_serial = UINT64_MAX;
+  state->completed_submit_serial = UINT64_MAX;
   vulkan_deferred_destroy_process(state);
   state->submit_serial = 0;
+  state->completed_submit_serial = previous_completed_serial;
 
   // Reset queue state
   state->deferred_destroy_queue.head = 0;
@@ -2927,6 +3306,10 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .set_instance_buffer = renderer_vulkan_set_instance_buffer,
       .get_and_reset_descriptor_writes_avoided =
           renderer_vulkan_get_and_reset_descriptor_writes_avoided,
+      .get_submit_serial = renderer_vulkan_get_submit_serial,
+      .get_completed_submit_serial = renderer_vulkan_get_completed_submit_serial,
+      .get_and_reset_upload_wait_stats =
+          renderer_vulkan_get_and_reset_upload_wait_stats,
       .rg_timing_begin_frame = renderer_vulkan_rg_timing_begin_frame,
       .rg_timing_begin_pass = renderer_vulkan_rg_timing_begin_pass,
       .rg_timing_end_pass = renderer_vulkan_rg_timing_end_pass,
@@ -2946,6 +3329,38 @@ renderer_vulkan_get_and_reset_descriptor_writes_avoided(void *backend_state) {
   uint64_t value = state->descriptor_writes_avoided;
   state->descriptor_writes_avoided = 0;
   return value;
+}
+
+uint64_t renderer_vulkan_get_submit_serial(void *backend_state) {
+  if (!backend_state) {
+    return 0;
+  }
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  return state->submit_serial;
+}
+
+uint64_t renderer_vulkan_get_completed_submit_serial(void *backend_state) {
+  if (!backend_state) {
+    return 0;
+  }
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  return state->completed_submit_serial;
+}
+
+bool8_t renderer_vulkan_get_and_reset_upload_wait_stats(
+    void *backend_state, VkrRendererUploadWaitStats *out_stats) {
+  if (!backend_state || !out_stats) {
+    return false_v;
+  }
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  out_stats->fence_wait_count = state->upload_path_fence_wait_count;
+  out_stats->queue_wait_idle_count = state->upload_path_queue_wait_idle_count;
+  out_stats->device_wait_idle_count = state->upload_path_device_wait_idle_count;
+  state->upload_path_fence_wait_count = 0;
+  state->upload_path_queue_wait_idle_count = 0;
+  state->upload_path_device_wait_idle_count = 0;
+  return true_v;
 }
 
 static void vulkan_rg_timing_destroy(VulkanBackendState *state) {
@@ -3345,6 +3760,7 @@ renderer_vulkan_initialize(void **out_backend_state,
   backend_state->swapchain_arena = swapchain_arena;
   backend_state->swapchain_alloc = swapchain_alloc;
   backend_state->window = window;
+  backend_state->render_thread_id = vkr_thread_current_id();
   backend_state->device_requirements = device_requirements;
   backend_state->descriptor_writes_avoided = 0;
   backend_state->render_pass_registry = (Array_VkrRenderPassEntry){0};
@@ -3695,11 +4111,29 @@ void renderer_vulkan_on_resize(void *backend_state, uint32_t new_width,
 VkrRendererError renderer_vulkan_wait_idle(void *backend_state) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (state->frame_active &&
+      state->render_thread_id == vkr_thread_current_id()) {
+    state->upload_path_device_wait_idle_count++;
+  }
   VkResult result = vkDeviceWaitIdle(state->device.logical_device);
   if (result != VK_SUCCESS) {
     log_warn("Failed to wait for Vulkan device to be idle");
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
+
+  /*
+   * Device-idle guarantees all queued submissions are complete. Publish that
+   * completion so deferred release paths (buffers/images/descriptor-backed
+   * instance states) can drain immediately instead of accumulating across
+   * rapid unload/reload cycles.
+   */
+  if (state->submit_serial > state->completed_submit_serial) {
+    state->completed_submit_serial = state->submit_serial;
+  }
+  for (uint32_t i = 0; i < BUFFERING_FRAMES; ++i) {
+    state->frame_submit_serial[i] = state->submit_serial;
+  }
+  vulkan_deferred_destroy_process(state);
 
   return VKR_RENDERER_ERROR_NONE;
 }
@@ -3799,6 +4233,15 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
                                                state->current_frame))) {
     log_warn("Vulkan fence timed out");
     return VKR_RENDERER_ERROR_NONE;
+  }
+
+  // The fence wait above guarantees GPU completion for the last submission that
+  // used this frame slot.
+  if (state->current_frame < BUFFERING_FRAMES) {
+    uint64_t frame_serial = state->frame_submit_serial[state->current_frame];
+    if (frame_serial > state->completed_submit_serial) {
+      state->completed_submit_serial = frame_serial;
+    }
   }
 
   vulkan_rg_timing_fetch_results(state);
@@ -4038,8 +4481,12 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
 
   vulkan_command_buffer_update_submitted(command_buffer);
 
-  // Monotonic submit counter used for async readback submission tracking.
+  // Monotonic submit counter used for async resource/readback submission
+  // tracking.
   state->submit_serial++;
+  if (state->current_frame < BUFFERING_FRAMES) {
+    state->frame_submit_serial[state->current_frame] = state->submit_serial;
+  }
 
   // Advance frame counter for triple-buffering synchronization.
   // Must happen after queue submit so readback fence checks can detect
@@ -4143,9 +4590,19 @@ renderer_vulkan_create_buffer(void *backend_state,
 
   // If initial data is provided, load it into the buffer
   if (initial_data && desc->size > 0) {
-    if (renderer_vulkan_upload_buffer(
-            backend_state, (VkrBackendResourceHandle){.ptr = buffer}, 0,
-            desc->size, initial_data) != VKR_RENDERER_ERROR_NONE) {
+    VkrRendererError upload_error = VKR_RENDERER_ERROR_NONE;
+    if (bitset8_is_set(&desc->memory_properties,
+                       VKR_MEMORY_PROPERTY_HOST_VISIBLE)) {
+      upload_error = renderer_vulkan_update_buffer(
+          backend_state, (VkrBackendResourceHandle){.ptr = buffer}, 0, desc->size,
+          initial_data);
+    } else {
+      upload_error = renderer_vulkan_upload_buffer(
+          backend_state, (VkrBackendResourceHandle){.ptr = buffer}, 0, desc->size,
+          initial_data);
+    }
+
+    if (upload_error != VKR_RENDERER_ERROR_NONE) {
       vulkan_buffer_destroy(state, &buffer->buffer);
       vkr_allocator_free(&state->buffer_pool_alloc, buffer,
                          sizeof(struct s_BufferHandle),
@@ -4189,7 +4646,7 @@ uint32_t renderer_vulkan_create_buffer_batch(
   bool8_t use_parallel_upload =
       state->parallel_upload_enabled && state->parallel_runtime.enabled &&
       state->parallel_runtime.job_system &&
-      state->parallel_runtime.worker_count > 0 &&
+      state->parallel_runtime.worker_count > 0 && !state->frame_active &&
       vulkan_backend_parallel_upload_batch_worthwhile(
           state, candidate_upload_jobs, candidate_upload_bytes);
 
@@ -4411,7 +4868,7 @@ uint32_t renderer_vulkan_create_buffer_batch(
     if (submit_count > 0) {
       if (!vulkan_backend_submit_recorded_command_buffers(
               state, state->device.graphics_queue, recorded_command_buffers,
-              submit_count)) {
+              recorded_worker_indices, submit_count)) {
         for (uint32_t i = 0; i < submit_count; ++i) {
           out_errors[submitted_request_indices[i]] =
               VKR_RENDERER_ERROR_DEVICE_ERROR;
@@ -4638,13 +5095,55 @@ void renderer_vulkan_destroy_buffer(void *backend_state,
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   struct s_BufferHandle *buffer = (struct s_BufferHandle *)handle.ptr;
-  vulkan_buffer_destroy(state, &buffer->buffer);
+  if (!state || !buffer) {
+    return;
+  }
 
-  // Return handle struct to pool
-  vkr_allocator_free(&state->buffer_pool_alloc, buffer,
-                     sizeof(struct s_BufferHandle),
-                     VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
-  return;
+  // Destroy CPU-side allocator state immediately; GPU objects are retired using
+  // submit serial tracking.
+  vkr_dmemory_allocator_destroy(&buffer->buffer.allocator);
+  if (buffer->buffer.mapped_ptr) {
+    vkUnmapMemory(state->device.logical_device, buffer->buffer.memory);
+    buffer->buffer.mapped_ptr = NULL;
+  }
+
+  VkBuffer vk_buffer = buffer->buffer.handle;
+  VkDeviceMemory vk_memory = buffer->buffer.memory;
+  uint64_t allocation_size = buffer->buffer.allocation_size;
+  uint32_t memory_property_flags = buffer->buffer.memory_property_flags;
+  buffer->buffer.handle = VK_NULL_HANDLE;
+  buffer->buffer.memory = VK_NULL_HANDLE;
+
+  if (vk_buffer != VK_NULL_HANDLE) {
+    if (!vulkan_deferred_destroy_enqueue_with_memory_accounting(
+            state, VKR_DEFERRED_DESTROY_BUFFER, (void *)vk_buffer, vk_memory,
+            allocation_size,
+            (memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+                ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+                : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
+            NULL, 0)) {
+      vkDestroyBuffer(state->device.logical_device, vk_buffer, state->allocator);
+      if (vk_memory != VK_NULL_HANDLE) {
+        if (allocation_size > 0) {
+          vkr_allocator_report(
+              &state->alloc, allocation_size,
+              (memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+                  ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+                  : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
+              false_v);
+        }
+        vkFreeMemory(state->device.logical_device, vk_memory, state->allocator);
+      }
+    }
+  }
+
+  if (!vulkan_deferred_destroy_enqueue(
+          state, VKR_DEFERRED_DESTROY_BUFFER_WRAPPER, buffer, VK_NULL_HANDLE,
+          &state->buffer_pool_alloc, sizeof(struct s_BufferHandle))) {
+    vkr_allocator_free(&state->buffer_pool_alloc, buffer,
+                       sizeof(struct s_BufferHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
+  }
 }
 
 VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
@@ -5268,6 +5767,9 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
   texture->description = *desc;
 
   struct s_BufferHandle *staging_buffer = NULL;
+  const bool8_t frame_upload_path =
+      vulkan_backend_can_record_frame_upload(state, state->device.graphics_queue);
+  bool8_t staging_destroy_deferred = false_v;
   VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
   if (!vkr_allocator_scope_is_valid(&scope)) {
     goto cleanup_texture;
@@ -5415,64 +5917,81 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
     goto cleanup_texture;
   }
 
-  VulkanCommandBuffer temp_command_buffer = {0};
-  if (!vulkan_command_buffer_allocate_and_begin_single_use(
-          state, &temp_command_buffer)) {
-    log_fatal("Failed to allocate command buffer for payload upload");
-    goto cleanup_texture;
-  }
+  if (frame_upload_path) {
+    if (!vulkan_backend_record_texture_payload_upload_into_active(
+            state, &texture->texture.image, image_format,
+            staging_buffer->buffer.handle, copy_regions, payload->region_count,
+            payload->mip_levels, payload->array_layers)) {
+      log_fatal("Failed to record payload upload commands into active frame");
+      goto cleanup_texture;
+    }
 
-  const VkImageSubresourceRange full_range = {
-      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-      .baseMipLevel = 0,
-      .levelCount = payload->mip_levels,
-      .baseArrayLayer = 0,
-      .layerCount = payload->array_layers,
-  };
+    if (!vulkan_backend_defer_staging_buffer_destroy(state,
+                                                     &staging_buffer->buffer)) {
+      log_fatal("Failed to defer staging buffer destroy for payload upload");
+      goto cleanup_texture;
+    }
+    staging_destroy_deferred = true_v;
+  } else {
+    VulkanCommandBuffer temp_command_buffer = {0};
+    if (!vulkan_command_buffer_allocate_and_begin_single_use(
+            state, &temp_command_buffer)) {
+      log_fatal("Failed to allocate command buffer for payload upload");
+      goto cleanup_texture;
+    }
 
-  if (!vulkan_image_transition_layout_range(
-          state, &texture->texture.image, &temp_command_buffer, image_format,
-          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-          &full_range)) {
-    vkEndCommandBuffer(temp_command_buffer.handle);
+    const VkImageSubresourceRange full_range = {
+        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+        .baseMipLevel = 0,
+        .levelCount = payload->mip_levels,
+        .baseArrayLayer = 0,
+        .layerCount = payload->array_layers,
+    };
+
+    if (!vulkan_image_transition_layout_range(
+            state, &texture->texture.image, &temp_command_buffer, image_format,
+            VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            &full_range)) {
+      vkEndCommandBuffer(temp_command_buffer.handle);
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &temp_command_buffer.handle);
+      log_fatal("Failed to transition payload image to TRANSFER_DST");
+      goto cleanup_texture;
+    }
+
+    vkCmdCopyBufferToImage(
+        temp_command_buffer.handle, staging_buffer->buffer.handle,
+        texture->texture.image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        payload->region_count, copy_regions);
+
+    if (!vulkan_image_transition_layout_range(
+            state, &texture->texture.image, &temp_command_buffer, image_format,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &full_range)) {
+      vkEndCommandBuffer(temp_command_buffer.handle);
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &temp_command_buffer.handle);
+      log_fatal("Failed to transition payload image to SHADER_READ_ONLY");
+      goto cleanup_texture;
+    }
+
+    if (!vulkan_command_buffer_end_single_use(
+            state, &temp_command_buffer, state->device.graphics_queue,
+            array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
+                ->handle)) {
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &temp_command_buffer.handle);
+      log_fatal("Failed to submit payload upload commands");
+      goto cleanup_texture;
+    }
+
     vkFreeCommandBuffers(state->device.logical_device,
                          state->device.graphics_command_pool, 1,
                          &temp_command_buffer.handle);
-    log_fatal("Failed to transition payload image to TRANSFER_DST");
-    goto cleanup_texture;
   }
-
-  vkCmdCopyBufferToImage(
-      temp_command_buffer.handle, staging_buffer->buffer.handle,
-      texture->texture.image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-      payload->region_count, copy_regions);
-
-  if (!vulkan_image_transition_layout_range(
-          state, &texture->texture.image, &temp_command_buffer, image_format,
-          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &full_range)) {
-    vkEndCommandBuffer(temp_command_buffer.handle);
-    vkFreeCommandBuffers(state->device.logical_device,
-                         state->device.graphics_command_pool, 1,
-                         &temp_command_buffer.handle);
-    log_fatal("Failed to transition payload image to SHADER_READ_ONLY");
-    goto cleanup_texture;
-  }
-
-  if (!vulkan_command_buffer_end_single_use(
-          state, &temp_command_buffer, state->device.graphics_queue,
-          array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
-              ->handle)) {
-    vkFreeCommandBuffers(state->device.logical_device,
-                         state->device.graphics_command_pool, 1,
-                         &temp_command_buffer.handle);
-    log_fatal("Failed to submit payload upload commands");
-    goto cleanup_texture;
-  }
-
-  vkFreeCommandBuffers(state->device.logical_device,
-                       state->device.graphics_command_pool, 1,
-                       &temp_command_buffer.handle);
 
   VkFilter min_filter = VK_FILTER_LINEAR;
   VkFilter mag_filter = VK_FILTER_LINEAR;
@@ -5519,7 +6038,8 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
     goto cleanup_texture;
   }
 
-  if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
+  if (!staging_destroy_deferred && staging_buffer &&
+      staging_buffer->buffer.handle != VK_NULL_HANDLE) {
     vulkan_buffer_destroy(state, &staging_buffer->buffer);
   }
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -5529,20 +6049,29 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
 
 cleanup_texture:
   if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    if (frame_upload_path && !staging_destroy_deferred) {
+      vulkan_backend_defer_staging_buffer_destroy(state, &staging_buffer->buffer);
+    } else {
+      vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    }
   }
   if (texture) {
-    if (texture->texture.sampler != VK_NULL_HANDLE) {
-      vkDestroySampler(state->device.logical_device, texture->texture.sampler,
-                       state->allocator);
-      texture->texture.sampler = VK_NULL_HANDLE;
+    if (frame_upload_path) {
+      renderer_vulkan_destroy_texture(
+          state, (VkrBackendResourceHandle){.ptr = texture});
+    } else {
+      if (texture->texture.sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(state->device.logical_device, texture->texture.sampler,
+                         state->allocator);
+        texture->texture.sampler = VK_NULL_HANDLE;
+      }
+      if (texture->texture.image.handle != VK_NULL_HANDLE) {
+        vulkan_image_destroy(state, &texture->texture.image);
+      }
+      vkr_allocator_free(&state->texture_pool_alloc, texture,
+                         sizeof(struct s_TextureHandle),
+                         VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
     }
-    if (texture->texture.image.handle != VK_NULL_HANDLE) {
-      vulkan_image_destroy(state, &texture->texture.image);
-    }
-    vkr_allocator_free(&state->texture_pool_alloc, texture,
-                       sizeof(struct s_TextureHandle),
-                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   }
   if (vkr_allocator_scope_is_valid(&scope)) {
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -5580,7 +6109,7 @@ uint32_t renderer_vulkan_create_texture_with_payload_batch(
   const bool8_t use_parallel_upload =
       state->parallel_upload_enabled && state->parallel_runtime.enabled &&
       state->parallel_runtime.job_system &&
-      state->parallel_runtime.worker_count > 0 &&
+      state->parallel_runtime.worker_count > 0 && !state->frame_active &&
       vulkan_backend_parallel_upload_batch_worthwhile(
           state, candidate_upload_jobs, candidate_upload_bytes);
 
@@ -5852,7 +6381,7 @@ uint32_t renderer_vulkan_create_texture_with_payload_batch(
     if (submit_count > 0) {
       if (!vulkan_backend_submit_recorded_command_buffers(
               state, state->device.graphics_queue, recorded_command_buffers,
-              submit_count)) {
+              recorded_worker_indices, submit_count)) {
         for (uint32_t i = 0; i < submit_count; ++i) {
           out_errors[submitted_request_indices[i]] =
               VKR_RENDERER_ERROR_DEVICE_ERROR;
@@ -5992,6 +6521,10 @@ renderer_vulkan_create_texture(void *backend_state,
   bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
 
   struct s_BufferHandle *staging_buffer = NULL;
+  const bool8_t frame_upload_path =
+      initial_data &&
+      vulkan_backend_can_record_frame_upload(state, state->device.graphics_queue);
+  bool8_t staging_destroy_deferred = false_v;
 
   VkrAllocatorScope scope = {0};
   if (initial_data) {
@@ -6052,6 +6585,18 @@ renderer_vulkan_create_texture(void *backend_state,
                                           image_format, generate_mipmaps)) {
       log_fatal("Failed to upload texture via transfer queue");
       goto cleanup_texture;
+    }
+
+    if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
+      if (frame_upload_path) {
+        if (!vulkan_backend_defer_staging_buffer_destroy(state,
+                                                         &staging_buffer->buffer)) {
+          goto cleanup_texture;
+        }
+        staging_destroy_deferred = true_v;
+      } else {
+        vulkan_buffer_destroy(state, &staging_buffer->buffer);
+      }
     }
   } else {
     // Writable texture - just transition layout on graphics queue
@@ -6134,8 +6679,18 @@ renderer_vulkan_create_texture(void *backend_state,
     goto cleanup_texture;
   }
 
-  if (staging_buffer)
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+  if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE &&
+      !staging_destroy_deferred) {
+    if (frame_upload_path) {
+      if (!vulkan_backend_defer_staging_buffer_destroy(state,
+                                                       &staging_buffer->buffer)) {
+        goto cleanup_texture;
+      }
+      staging_destroy_deferred = true_v;
+    } else {
+      vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    }
+  }
   if (vkr_allocator_scope_is_valid(&scope))
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
@@ -6143,20 +6698,36 @@ renderer_vulkan_create_texture(void *backend_state,
   return (VkrBackendResourceHandle){.ptr = texture};
 
 cleanup_texture:
-  // Clean up resources on error path
-  if (texture) {
-    if (texture->texture.image.handle != VK_NULL_HANDLE) {
-      vulkan_image_destroy(state, &texture->texture.image);
-    }
-    if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
+  if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
+    if (frame_upload_path) {
+      vulkan_backend_defer_staging_buffer_destroy(state, &staging_buffer->buffer);
+    } else {
       vulkan_buffer_destroy(state, &staging_buffer->buffer);
     }
-    if (vkr_allocator_scope_is_valid(&scope))
-      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    vkr_allocator_free(&state->texture_pool_alloc, texture,
-                       sizeof(struct s_TextureHandle),
-                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   }
+
+  // If upload commands were recorded into the active frame, destruction must
+  // be deferred to avoid tearing down resources before GPU submission completes.
+  if (texture) {
+    if (frame_upload_path) {
+      renderer_vulkan_destroy_texture(
+          state, (VkrBackendResourceHandle){.ptr = texture});
+    } else {
+      if (texture->texture.image.handle != VK_NULL_HANDLE) {
+        vulkan_image_destroy(state, &texture->texture.image);
+      }
+      if (texture->texture.sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(state->device.logical_device, texture->texture.sampler,
+                         state->allocator);
+        texture->texture.sampler = VK_NULL_HANDLE;
+      }
+      vkr_allocator_free(&state->texture_pool_alloc, texture,
+                         sizeof(struct s_TextureHandle),
+                         VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+    }
+  }
+  if (vkr_allocator_scope_is_valid(&scope))
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   return (VkrBackendResourceHandle){.ptr = NULL};
 }
 
@@ -6205,12 +6776,16 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
   };
 
   VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
+  struct s_BufferHandle *staging_buffer = NULL;
+  const bool8_t frame_upload_path =
+      vulkan_backend_can_record_frame_upload(state, state->device.graphics_queue);
+  bool8_t staging_destroy_deferred = false_v;
   if (!vkr_allocator_scope_is_valid(&scope)) {
     goto cleanup_texture;
   }
-  struct s_BufferHandle *staging_buffer =
-      vkr_allocator_alloc(&state->temp_scope, sizeof(struct s_BufferHandle),
-                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  staging_buffer = vkr_allocator_alloc(&state->temp_scope,
+                                       sizeof(struct s_BufferHandle),
+                                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!staging_buffer) {
     log_fatal("Failed to allocate staging buffer");
     goto cleanup_texture;
@@ -6247,6 +6822,16 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
     goto cleanup_texture;
   }
 
+  if (frame_upload_path) {
+    if (!vulkan_backend_defer_staging_buffer_destroy(state,
+                                                     &staging_buffer->buffer)) {
+      goto cleanup_texture;
+    }
+    staging_destroy_deferred = true_v;
+  } else {
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+  }
+
   // Create sampler for cube map (clamp to edge is typical for skyboxes)
   VkSamplerCreateInfo sampler_info = {
       .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
@@ -6274,7 +6859,17 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
     goto cleanup_texture;
   }
 
-  vulkan_buffer_destroy(state, &staging_buffer->buffer);
+  if (staging_buffer->buffer.handle != VK_NULL_HANDLE && !staging_destroy_deferred) {
+    if (frame_upload_path) {
+      if (!vulkan_backend_defer_staging_buffer_destroy(state,
+                                                       &staging_buffer->buffer)) {
+        goto cleanup_texture;
+      }
+      staging_destroy_deferred = true_v;
+    } else {
+      vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    }
+  }
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   // log_debug("Created Vulkan cube map texture: %p",
@@ -6284,20 +6879,34 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
   return (VkrBackendResourceHandle){.ptr = texture};
 
 cleanup_texture:
-  // Clean up resources on error path
-  if (texture) {
-    if (texture->texture.image.handle != VK_NULL_HANDLE) {
-      vulkan_image_destroy(state, &texture->texture.image);
-    }
-    if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
+  if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
+    if (frame_upload_path) {
+      vulkan_backend_defer_staging_buffer_destroy(state, &staging_buffer->buffer);
+    } else {
       vulkan_buffer_destroy(state, &staging_buffer->buffer);
     }
-    if (vkr_allocator_scope_is_valid(&scope))
-      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    vkr_allocator_free(&state->texture_pool_alloc, texture,
-                       sizeof(struct s_TextureHandle),
-                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
   }
+
+  if (texture) {
+    if (frame_upload_path) {
+      renderer_vulkan_destroy_texture(
+          state, (VkrBackendResourceHandle){.ptr = texture});
+    } else {
+      if (texture->texture.image.handle != VK_NULL_HANDLE) {
+        vulkan_image_destroy(state, &texture->texture.image);
+      }
+      if (texture->texture.sampler != VK_NULL_HANDLE) {
+        vkDestroySampler(state->device.logical_device, texture->texture.sampler,
+                         state->allocator);
+        texture->texture.sampler = VK_NULL_HANDLE;
+      }
+      vkr_allocator_free(&state->texture_pool_alloc, texture,
+                         sizeof(struct s_TextureHandle),
+                         VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+    }
+  }
+  if (vkr_allocator_scope_is_valid(&scope))
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   return (VkrBackendResourceHandle){.ptr = NULL};
 }
 
@@ -6364,13 +6973,16 @@ renderer_vulkan_update_texture(void *backend_state,
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
-  // Ensure no in-flight use of the old sampler before switching
-  vulkan_backend_queue_wait_idle_locked(state, state->device.graphics_queue);
-
-  // Destroy old sampler and use new one
-  vkDestroySampler(state->device.logical_device, texture->texture.sampler,
-                   state->allocator);
+  VkSampler old_sampler = texture->texture.sampler;
   texture->texture.sampler = new_sampler;
+  if (old_sampler != VK_NULL_HANDLE) {
+    if (!vulkan_deferred_destroy_enqueue(state, VKR_DEFERRED_DESTROY_SAMPLER,
+                                         (void *)old_sampler, VK_NULL_HANDLE,
+                                         NULL, 0)) {
+      vkDestroySampler(state->device.logical_device, old_sampler,
+                       state->allocator);
+    }
+  }
 
   texture->description.u_repeat_mode = desc->u_repeat_mode;
   texture->description.v_repeat_mode = desc->v_repeat_mode;
@@ -6485,6 +7097,61 @@ VkrRendererError renderer_vulkan_write_texture(
 
   VkFormat image_format =
       vulkan_image_format_from_texture_format(texture->description.format);
+
+  if (vulkan_backend_can_record_frame_upload(state, state->device.graphics_queue)) {
+    VulkanCommandBuffer *command_buffer =
+        vulkan_backend_get_active_graphics_command_buffer(state);
+    if (!command_buffer) {
+      vulkan_buffer_destroy(state, &staging_buffer->buffer);
+      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+    }
+
+    if (!vulkan_image_transition_layout_range(
+            state, &texture->texture.image, command_buffer, image_format,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &subresource_range)) {
+      vulkan_buffer_destroy(state, &staging_buffer->buffer);
+      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      return VKR_RENDERER_ERROR_DEVICE_ERROR;
+    }
+
+    VkBufferImageCopy copy_region = {
+        .bufferOffset = 0,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                             .mipLevel = mip_level,
+                             .baseArrayLayer = array_layer,
+                             .layerCount = 1},
+        .imageOffset = {(int32_t)x, (int32_t)y, 0},
+        .imageExtent = {width, height, 1}};
+
+    vkCmdCopyBufferToImage(command_buffer->handle, staging_buffer->buffer.handle,
+                           texture->texture.image.handle,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                           &copy_region);
+
+    if (!vulkan_image_transition_layout_range(
+            state, &texture->texture.image, command_buffer, image_format,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &subresource_range)) {
+      vulkan_buffer_destroy(state, &staging_buffer->buffer);
+      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      return VKR_RENDERER_ERROR_DEVICE_ERROR;
+    }
+
+    if (!vulkan_backend_defer_staging_buffer_destroy(state,
+                                                     &staging_buffer->buffer)) {
+      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      return VKR_RENDERER_ERROR_DEVICE_ERROR;
+    }
+
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    texture->description.generation++;
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
   if (!vulkan_image_transition_layout_range(
           state, &texture->texture.image, &temp_command_buffer, image_format,
           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -6777,19 +7444,53 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
     return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   }
 
-  // Ensure previous operations complete before swapping resources
-  vulkan_backend_queue_wait_idle_locked(state, state->device.graphics_queue);
-
   VulkanImage old_image = texture->texture.image;
   VkSampler old_sampler = texture->texture.sampler;
 
   texture->texture.image = new_image;
   texture->texture.sampler = new_sampler;
 
-  // Destroy old sampler
-  vkDestroySampler(state->device.logical_device, old_sampler, state->allocator);
-
-  vulkan_image_destroy(state, &old_image);
+  if (old_sampler != VK_NULL_HANDLE) {
+    if (!vulkan_deferred_destroy_enqueue(state, VKR_DEFERRED_DESTROY_SAMPLER,
+                                         (void *)old_sampler, VK_NULL_HANDLE,
+                                         NULL, 0)) {
+      vkDestroySampler(state->device.logical_device, old_sampler,
+                       state->allocator);
+    }
+  }
+  if (old_image.view != VK_NULL_HANDLE) {
+    if (!vulkan_deferred_destroy_enqueue(state, VKR_DEFERRED_DESTROY_IMAGE_VIEW,
+                                         (void *)old_image.view, VK_NULL_HANDLE,
+                                         NULL, 0)) {
+      vkDestroyImageView(state->device.logical_device, old_image.view,
+                         state->allocator);
+    }
+  }
+  if (old_image.handle != VK_NULL_HANDLE) {
+    if (!vulkan_deferred_destroy_enqueue_with_memory_accounting(
+            state, VKR_DEFERRED_DESTROY_IMAGE, (void *)old_image.handle,
+            old_image.memory, old_image.allocation_size,
+            (old_image.memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+                ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+                : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
+            NULL, 0)) {
+      vkDestroyImage(state->device.logical_device, old_image.handle,
+                     state->allocator);
+      if (old_image.memory != VK_NULL_HANDLE) {
+        if (old_image.allocation_size > 0) {
+          vkr_allocator_report(
+              &state->alloc, old_image.allocation_size,
+              (old_image.memory_property_flags &
+               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+                  ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+                  : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
+              false_v);
+        }
+        vkFreeMemory(state->device.logical_device, old_image.memory,
+                     state->allocator);
+      }
+    }
+  }
 
   texture->description.width = new_width;
   texture->description.height = new_height;
@@ -6800,31 +7501,66 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
 
 void renderer_vulkan_destroy_texture(void *backend_state,
                                      VkrBackendResourceHandle handle) {
-  assert_log(backend_state != NULL, "Backend state is NULL");
-  assert_log(handle.ptr != NULL, "Handle is NULL");
-
-  // log_debug("Destroying Vulkan texture");
-
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   struct s_TextureHandle *texture = (struct s_TextureHandle *)handle.ptr;
-
-  // Ensure the texture is not in use before destroying
-  if (renderer_vulkan_wait_idle(backend_state) != VKR_RENDERER_ERROR_NONE) {
-    log_error("Failed to wait for idle before destroying texture");
+  if (!state || !texture) {
+    return;
   }
 
-  vulkan_image_destroy(state, &texture->texture.image);
-
-  // Destroy the sampler
-  vkDestroySampler(state->device.logical_device, texture->texture.sampler,
-                   state->allocator);
+  VulkanImage image = texture->texture.image;
+  VkSampler sampler = texture->texture.sampler;
+  texture->texture.image = (VulkanImage){0};
   texture->texture.sampler = VK_NULL_HANDLE;
 
-  // Return handle struct to pool
-  vkr_allocator_free(&state->texture_pool_alloc, texture,
-                     sizeof(struct s_TextureHandle),
-                     VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
-  return;
+  if (sampler != VK_NULL_HANDLE) {
+    if (!vulkan_deferred_destroy_enqueue(state, VKR_DEFERRED_DESTROY_SAMPLER,
+                                         (void *)sampler, VK_NULL_HANDLE, NULL,
+                                         0)) {
+      vkDestroySampler(state->device.logical_device, sampler, state->allocator);
+    }
+  }
+
+  if (image.view != VK_NULL_HANDLE) {
+    if (!vulkan_deferred_destroy_enqueue(state, VKR_DEFERRED_DESTROY_IMAGE_VIEW,
+                                         (void *)image.view, VK_NULL_HANDLE,
+                                         NULL, 0)) {
+      vkDestroyImageView(state->device.logical_device, image.view,
+                         state->allocator);
+    }
+  }
+  if (image.handle != VK_NULL_HANDLE) {
+    if (!vulkan_deferred_destroy_enqueue_with_memory_accounting(
+            state, VKR_DEFERRED_DESTROY_IMAGE, (void *)image.handle, image.memory,
+            image.allocation_size,
+            (image.memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+                ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+                : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
+            NULL, 0)) {
+      vkDestroyImage(state->device.logical_device, image.handle,
+                     state->allocator);
+      if (image.memory != VK_NULL_HANDLE) {
+        if (image.allocation_size > 0) {
+          vkr_allocator_report(
+              &state->alloc, image.allocation_size,
+              (image.memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+                  ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+                  : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
+              false_v);
+        }
+        vkFreeMemory(state->device.logical_device, image.memory,
+                     state->allocator);
+      }
+    }
+  }
+
+  if (!vulkan_deferred_destroy_enqueue(
+          state, VKR_DEFERRED_DESTROY_TEXTURE_WRAPPER, texture,
+          VK_NULL_HANDLE, &state->texture_pool_alloc,
+          sizeof(struct s_TextureHandle))) {
+    vkr_allocator_free(&state->texture_pool_alloc, texture,
+                       sizeof(struct s_TextureHandle),
+                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+  }
 }
 
 VkrBackendResourceHandle renderer_vulkan_create_graphics_pipeline(
@@ -7910,6 +8646,8 @@ vkr_internal bool8_t vulkan_create_readback_buffer(VulkanBackendState *state,
   if (vkBindBufferMemory(state->device.logical_device, out_buffer->handle,
                          out_buffer->memory, 0) != VK_SUCCESS) {
     log_error("Failed to bind readback buffer memory");
+    vkr_allocator_report(&state->alloc, out_buffer->allocation_size,
+                         VKR_ALLOCATOR_MEMORY_TAG_VULKAN, false_v);
     vkFreeMemory(state->device.logical_device, out_buffer->memory,
                  state->allocator);
     vkDestroyBuffer(state->device.logical_device, out_buffer->handle,

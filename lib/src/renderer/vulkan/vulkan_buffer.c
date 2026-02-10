@@ -1,4 +1,5 @@
 #include "vulkan_buffer.h"
+#include "core/vkr_threads.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "vulkan_backend.h"
 
@@ -389,6 +390,39 @@ bool8_t vulkan_buffer_copy_to(VulkanBackendState *state,
                               VulkanBuffer *buffer_handle, VkBuffer source,
                               uint64_t source_offset, VkBuffer dest,
                               uint64_t dest_offset, uint64_t size) {
+  const bool8_t can_record_in_active_frame =
+      state->frame_active && !state->render_pass_active &&
+      buffer_handle->queue == state->device.graphics_queue &&
+      state->render_thread_id == vkr_thread_current_id();
+
+  /*
+   * Buffer upload paths must not block while a frame is active. If we cannot
+   * record into the active graphics command buffer, fail instead of waiting on
+   * a per-copy fence.
+   */
+  if (state->frame_active && !can_record_in_active_frame) {
+    log_error("Refusing blocking buffer copy during active frame "
+              "(render_pass_active=%s, queue_is_graphics=%s, render_thread=%s)",
+              state->render_pass_active ? "true" : "false",
+              buffer_handle->queue == state->device.graphics_queue ? "true"
+                                                                    : "false",
+              state->render_thread_id == vkr_thread_current_id() ? "true"
+                                                                  : "false");
+    return false_v;
+  }
+
+  if (can_record_in_active_frame) {
+    VulkanCommandBuffer *active_command_buffer =
+        vulkan_backend_get_active_graphics_command_buffer(state);
+    if (active_command_buffer) {
+      VkBufferCopy copy_region = {
+          .srcOffset = source_offset, .dstOffset = dest_offset, .size = size};
+      vkCmdCopyBuffer(active_command_buffer->handle, source, dest, 1,
+                      &copy_region);
+      return true_v;
+    }
+  }
+
   VkCommandBufferAllocateInfo alloc_info = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
       .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
@@ -454,6 +488,10 @@ bool8_t vulkan_buffer_copy_to(VulkanBackendState *state,
 
   // Wait for the copy to complete via the per-operation fence; no queue-idle
   // needed since the fence already guarantees the copy has finished.
+  if (state->frame_active &&
+      state->render_thread_id == vkr_thread_current_id()) {
+    state->upload_path_fence_wait_count++;
+  }
   if (!vulkan_fence_wait(state, UINT64_MAX, &temp_fence)) {
     log_error("Failed to wait for fence");
     vulkan_fence_destroy(state, &temp_fence);

@@ -1,4 +1,5 @@
 #include "vulkan_image.h"
+#include "core/vkr_threads.h"
 #include "vulkan_backend.h"
 #include "vulkan_fence.h"
 
@@ -62,6 +63,7 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
   out_image->array_layers = array_layers;
   out_image->samples = samples;
   out_image->view = VK_NULL_HANDLE;
+  out_image->allocation_size = 0;
   out_image->memory_property_flags = memory_flags;
 
   if (vkCreateImage(state->device.logical_device, &image_create_info,
@@ -105,6 +107,7 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
   }
   vkr_allocator_report(&state->alloc, memory_requirements.size, alloc_tag,
                        true_v);
+  out_image->allocation_size = memory_requirements.size;
 
   if (vkBindImageMemory(state->device.logical_device, out_image->handle,
                         out_image->memory, 0) != VK_SUCCESS) {
@@ -127,6 +130,7 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
                            false_v);
       vkFreeMemory(state->device.logical_device, out_image->memory,
                    state->allocator);
+      out_image->allocation_size = 0;
       vkDestroyImage(state->device.logical_device, out_image->handle,
                      state->allocator);
       return false;
@@ -429,18 +433,22 @@ void vulkan_image_destroy(VulkanBackendState *state, VulkanImage *image) {
 
   if (image->handle != VK_NULL_HANDLE) {
     if (image->memory != VK_NULL_HANDLE) {
-      VkMemoryRequirements memory_requirements;
-      vkGetImageMemoryRequirements(state->device.logical_device, image->handle,
-                                   &memory_requirements);
+      uint64_t allocation_size = image->allocation_size;
+      if (allocation_size == 0) {
+        VkMemoryRequirements memory_requirements;
+        vkGetImageMemoryRequirements(state->device.logical_device, image->handle,
+                                     &memory_requirements);
+        allocation_size = memory_requirements.size;
+      }
       VkrAllocatorMemoryTag alloc_tag =
           (image->memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
               ? VKR_ALLOCATOR_MEMORY_TAG_GPU
               : VKR_ALLOCATOR_MEMORY_TAG_VULKAN;
 
-      vkr_allocator_report(&state->alloc, memory_requirements.size, alloc_tag,
-                           false_v);
+      vkr_allocator_report(&state->alloc, allocation_size, alloc_tag, false_v);
       vkFreeMemory(state->device.logical_device, image->memory,
                    state->allocator);
+      image->allocation_size = 0;
     }
     vkDestroyImage(state->device.logical_device, image->handle,
                    state->allocator);
@@ -568,6 +576,126 @@ bool8_t vulkan_image_generate_mipmaps(VulkanBackendState *state,
   return true_v;
 }
 
+vkr_internal bool8_t vulkan_image_can_record_frame_upload(
+    const VulkanBackendState *state) {
+  if (!state || !state->frame_active || state->render_pass_active) {
+    return false_v;
+  }
+  return state->render_thread_id == vkr_thread_current_id();
+}
+
+vkr_internal bool8_t vulkan_image_record_staging_upload_in_active(
+    VulkanBackendState *state, VulkanImage *image, VkBuffer staging_buffer,
+    VkFormat image_format, bool8_t generate_mipmaps) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(image != NULL, "Image is NULL");
+  assert_log(staging_buffer != VK_NULL_HANDLE, "Staging buffer is NULL");
+
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return false_v;
+  }
+
+  VkImageSubresourceRange full_range = {
+      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+      .baseMipLevel = 0,
+      .levelCount = image->mip_levels,
+      .baseArrayLayer = 0,
+      .layerCount = image->array_layers,
+  };
+
+  if (!vulkan_image_transition_layout_range(
+          state, image, command_buffer, image_format, VK_IMAGE_LAYOUT_UNDEFINED,
+          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &full_range)) {
+    return false_v;
+  }
+
+  VkBufferImageCopy base_region = {
+      .bufferOffset = 0,
+      .bufferRowLength = 0,
+      .bufferImageHeight = 0,
+      .imageSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                           .mipLevel = 0,
+                           .baseArrayLayer = 0,
+                           .layerCount = image->array_layers},
+      .imageOffset = {0, 0, 0},
+      .imageExtent = {image->width, image->height, 1},
+  };
+  vkCmdCopyBufferToImage(command_buffer->handle, staging_buffer, image->handle,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &base_region);
+
+  if (generate_mipmaps && image->mip_levels > 1) {
+    if (vulkan_image_generate_mipmaps(state, image, image_format,
+                                      command_buffer)) {
+      return true_v;
+    }
+
+    log_warn("Mipmap generation failed in frame-active upload, using base level "
+             "only");
+  }
+
+  return vulkan_image_transition_layout_range(
+      state, image, command_buffer, image_format,
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &full_range);
+}
+
+vkr_internal bool8_t vulkan_image_record_cube_upload_in_active(
+    VulkanBackendState *state, VulkanImage *image, VkBuffer staging_buffer,
+    VkFormat image_format, uint64_t face_size) {
+  assert_log(state != NULL, "State is NULL");
+  assert_log(image != NULL, "Image is NULL");
+  assert_log(staging_buffer != VK_NULL_HANDLE, "Staging buffer is NULL");
+  assert_log(image->array_layers == 6, "Cube map must have 6 layers");
+
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return false_v;
+  }
+
+  VkImageSubresourceRange full_range = {
+      .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+      .baseMipLevel = 0,
+      .levelCount = image->mip_levels,
+      .baseArrayLayer = 0,
+      .layerCount = 6,
+  };
+
+  if (!vulkan_image_transition_layout_range(
+          state, image, command_buffer, image_format, VK_IMAGE_LAYOUT_UNDEFINED,
+          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &full_range)) {
+    return false_v;
+  }
+
+  VkBufferImageCopy regions[6];
+  for (uint32_t face = 0; face < 6; ++face) {
+    regions[face] = (VkBufferImageCopy){
+        .bufferOffset = face * face_size,
+        .bufferRowLength = 0,
+        .bufferImageHeight = 0,
+        .imageSubresource =
+            {
+                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                .mipLevel = 0,
+                .baseArrayLayer = face,
+                .layerCount = 1,
+            },
+        .imageOffset = {0, 0, 0},
+        .imageExtent = {image->width, image->height, 1},
+    };
+  }
+
+  vkCmdCopyBufferToImage(command_buffer->handle, staging_buffer, image->handle,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6, regions);
+
+  return vulkan_image_transition_layout_range(
+      state, image, command_buffer, image_format,
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &full_range);
+}
+
 bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
                                          VulkanImage *image,
                                          VkBuffer staging_buffer,
@@ -576,6 +704,24 @@ bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
   assert_log(state != NULL, "State is NULL");
   assert_log(image != NULL, "Image is NULL");
   assert_log(staging_buffer != VK_NULL_HANDLE, "Staging buffer is NULL");
+
+  /*
+   * Async resource uploads must not take a blocking transfer-fence fallback
+   * during an active frame. Require render-thread frame recording in that case.
+   */
+  if (state->frame_active && !vulkan_image_can_record_frame_upload(state)) {
+    log_error("Refusing blocking image upload with mipmaps during active frame "
+              "(render_pass_active=%s, render_thread=%s)",
+              state->render_pass_active ? "true" : "false",
+              state->render_thread_id == vkr_thread_current_id() ? "true"
+                                                                  : "false");
+    return false_v;
+  }
+
+  if (vulkan_image_can_record_frame_upload(state)) {
+    return vulkan_image_record_staging_upload_in_active(
+        state, image, staging_buffer, image_format, generate_mipmaps);
+  }
 
   bool8_t use_transfer_queue = (state->device.transfer_queue_index !=
                                 state->device.graphics_queue_index);
@@ -772,6 +918,10 @@ bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
     return false_v;
   }
 
+  if (state->frame_active &&
+      state->render_thread_id == vkr_thread_current_id()) {
+    state->upload_path_fence_wait_count++;
+  }
   vulkan_fence_wait(state, UINT64_MAX, &transfer_fence);
   vulkan_fence_destroy(state, &transfer_fence);
   vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1,
@@ -884,6 +1034,10 @@ bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
     return false_v;
   }
 
+  if (state->frame_active &&
+      state->render_thread_id == vkr_thread_current_id()) {
+    state->upload_path_fence_wait_count++;
+  }
   vulkan_fence_wait(state, UINT64_MAX, &graphics_fence);
   vulkan_fence_destroy(state, &graphics_fence);
   vkFreeCommandBuffers(state->device.logical_device,
@@ -901,6 +1055,24 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
   assert_log(image != NULL, "Image is NULL");
   assert_log(staging_buffer != VK_NULL_HANDLE, "Staging buffer is NULL");
   assert_log(image->array_layers == 6, "Cube map must have 6 layers");
+
+  /*
+   * Cube uploads are part of resource streaming and must stay non-blocking when
+   * a frame is active.
+   */
+  if (state->frame_active && !vulkan_image_can_record_frame_upload(state)) {
+    log_error("Refusing blocking cube upload during active frame "
+              "(render_pass_active=%s, render_thread=%s)",
+              state->render_pass_active ? "true" : "false",
+              state->render_thread_id == vkr_thread_current_id() ? "true"
+                                                                  : "false");
+    return false_v;
+  }
+
+  if (vulkan_image_can_record_frame_upload(state)) {
+    return vulkan_image_record_cube_upload_in_active(
+        state, image, staging_buffer, image_format, face_size);
+  }
 
   bool8_t use_transfer_queue = (state->device.transfer_queue_index !=
                                 state->device.graphics_queue_index);
@@ -1093,6 +1265,10 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
     return false_v;
   }
 
+  if (state->frame_active &&
+      state->render_thread_id == vkr_thread_current_id()) {
+    state->upload_path_fence_wait_count++;
+  }
   vulkan_fence_wait(state, UINT64_MAX, &fence);
   vulkan_fence_destroy(state, &fence);
   vkFreeCommandBuffers(state->device.logical_device, transfer_pool, 1, &cmd);
@@ -1158,6 +1334,10 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
       return false_v;
     }
 
+    if (state->frame_active &&
+        state->render_thread_id == vkr_thread_current_id()) {
+      state->upload_path_fence_wait_count++;
+    }
     vulkan_fence_wait(state, UINT64_MAX, &graphics_fence);
     vulkan_fence_destroy(state, &graphics_fence);
     vkFreeCommandBuffers(state->device.logical_device,
@@ -1174,6 +1354,24 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
   assert_log(state != NULL, "State is NULL");
   assert_log(image != NULL, "Image is NULL");
   assert_log(staging_buffer != VK_NULL_HANDLE, "Staging buffer is NULL");
+
+  /*
+   * Non-mipmap uploads follow the same non-blocking requirement during active
+   * frame recording.
+   */
+  if (state->frame_active && !vulkan_image_can_record_frame_upload(state)) {
+    log_error("Refusing blocking image upload during active frame "
+              "(render_pass_active=%s, render_thread=%s)",
+              state->render_pass_active ? "true" : "false",
+              state->render_thread_id == vkr_thread_current_id() ? "true"
+                                                                  : "false");
+    return false_v;
+  }
+
+  if (vulkan_image_can_record_frame_upload(state)) {
+    return vulkan_image_record_staging_upload_in_active(
+        state, image, staging_buffer, image_format, false_v);
+  }
 
   // Use transfer queue if it's a dedicated queue (different family from
   // graphics), otherwise fall back to graphics queue for simplicity
@@ -1383,6 +1581,10 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
   }
 
   // Wait for transfer to complete
+  if (state->frame_active &&
+      state->render_thread_id == vkr_thread_current_id()) {
+    state->upload_path_fence_wait_count++;
+  }
   if (!vulkan_fence_wait(state, UINT64_MAX, &fence)) {
     log_error("Failed to wait for transfer fence");
     vulkan_fence_destroy(state, &fence);
@@ -1460,6 +1662,10 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
       return false_v;
     }
 
+    if (state->frame_active &&
+        state->render_thread_id == vkr_thread_current_id()) {
+      state->upload_path_fence_wait_count++;
+    }
     vulkan_fence_wait(state, UINT64_MAX, &graphics_fence);
     vulkan_fence_destroy(state, &graphics_fence);
     vkFreeCommandBuffers(state->device.logical_device,

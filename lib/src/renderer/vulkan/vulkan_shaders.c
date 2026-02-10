@@ -722,6 +722,47 @@ vkr_internal uint32_t vulkan_shader_default_set_allocation_count(
   }
 }
 
+vkr_internal uint32_t
+vulkan_shader_next_power_of_two_u32(uint32_t value) {
+  if (value <= 1u) {
+    return 1u;
+  }
+
+  uint32_t power = 1u;
+  while (power < value && power <= (UINT32_MAX / 2u)) {
+    power <<= 1u;
+  }
+  return power < value ? value : power;
+}
+
+vkr_internal uint32_t vulkan_shader_total_instance_pool_capacity(
+    const VulkanShaderObject *shader_object) {
+  if (!shader_object) {
+    return 0;
+  }
+
+  uint64_t total = 0;
+  for (uint32_t i = 0; i < shader_object->instance_descriptor_pool_count; ++i) {
+    total += shader_object->instance_pool_instance_capacities[i];
+  }
+  return total > UINT32_MAX ? UINT32_MAX : (uint32_t)total;
+}
+
+vkr_internal uint32_t vulkan_shader_live_instance_state_count(
+    const VulkanShaderObject *shader_object) {
+  if (!shader_object) {
+    return 0;
+  }
+
+  if (shader_object->instance_uniform_buffer_count <
+      shader_object->instance_state_free_count) {
+    return shader_object->instance_uniform_buffer_count;
+  }
+
+  return shader_object->instance_uniform_buffer_count -
+         shader_object->instance_state_free_count;
+}
+
 vkr_internal bool8_t vulkan_shader_create_instance_descriptor_pool(
     VulkanBackendState *state, const VkrDescriptorSetDesc *draw_set_desc,
     uint32_t frame_count, uint32_t instance_capacity,
@@ -864,8 +905,26 @@ vkr_internal bool8_t vulkan_shader_allocate_instance_descriptor_sets(
       shader_object->instance_descriptor_pool_count - 1;
   const uint32_t current_capacity =
       shader_object->instance_pool_instance_capacities[current_index];
-  const uint32_t new_capacity =
-      Min(current_capacity * 2u, VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT);
+  const uint32_t max_capacity = VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT;
+  const uint32_t total_capacity =
+      vulkan_shader_total_instance_pool_capacity(shader_object);
+  const uint32_t live_instances =
+      vulkan_shader_live_instance_state_count(shader_object);
+  uint32_t required_extra_capacity = 1u;
+  if (live_instances > total_capacity) {
+    required_extra_capacity = live_instances - total_capacity;
+  }
+
+  uint32_t target_capacity =
+      Max(current_capacity * 2u, required_extra_capacity);
+  target_capacity = Min(target_capacity, max_capacity);
+  uint32_t new_capacity = vulkan_shader_next_power_of_two_u32(target_capacity);
+  if (new_capacity > max_capacity) {
+    new_capacity = max_capacity;
+  }
+  if (new_capacity <= current_capacity && current_capacity < max_capacity) {
+    new_capacity = Min(current_capacity * 2u, max_capacity);
+  }
   if (new_capacity <= current_capacity) {
     log_error("Cannot grow instance descriptor pool beyond %u instances",
               current_capacity);
@@ -881,26 +940,29 @@ vkr_internal bool8_t vulkan_shader_allocate_instance_descriptor_sets(
     return false_v;
   }
 
-  const uint32_t new_pool_index =
-      shader_object->instance_descriptor_pool_count++;
-  shader_object->instance_descriptor_pools[new_pool_index] = overflow_pool;
-  shader_object->instance_pool_instance_capacities[new_pool_index] =
-      new_capacity;
-  shader_object->instance_pool_overflow_creations++;
-
   VkResult retry_result = VK_SUCCESS;
   if (!vulkan_shader_allocate_instance_sets_from_pool(
           state, shader_object, overflow_pool, out_sets, &retry_result)) {
     log_error("Overflow descriptor pool allocation failed with VkResult=%d",
               retry_result);
+    vkDestroyDescriptorPool(state->device.logical_device, overflow_pool,
+                            state->allocator);
     return false_v;
   }
 
+  const uint32_t new_pool_index = shader_object->instance_descriptor_pool_count;
+  shader_object->instance_descriptor_pools[new_pool_index] = overflow_pool;
+  shader_object->instance_pool_instance_capacities[new_pool_index] =
+      new_capacity;
+  shader_object->instance_descriptor_pool_count++;
+  shader_object->instance_pool_overflow_creations++;
   shader_object->instance_pool_fallback_allocations++;
   *out_pool = overflow_pool;
   log_warn("Instance descriptor pool overflow fallback used (new capacity=%u, "
-           "pools=%u)",
-           new_capacity, shader_object->instance_descriptor_pool_count);
+           "pools=%u, live=%u, total_capacity=%u)",
+           new_capacity, shader_object->instance_descriptor_pool_count,
+           live_instances,
+           total_capacity + new_capacity);
   return true_v;
 }
 
@@ -1403,6 +1465,12 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
     uint32_t initial_instance_capacity =
         vulkan_shader_default_set_allocation_count(
             draw_set_desc->role, state->swapchain.image_count);
+    /*
+     * Reflection metadata may classify draw sets as NONE/FEATURE, which maps to
+     * a small default and causes avoidable overflow churn for normal scene
+     * populations. Keep a conservative floor to reduce runtime pool growth.
+     */
+    initial_instance_capacity = Max(initial_instance_capacity, 512u);
     initial_instance_capacity = Min(initial_instance_capacity,
                                     VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT);
     if (initial_instance_capacity == 0) {
@@ -2048,14 +2116,12 @@ vulkan_shader_process_pending_releases(VulkanBackendState *state,
     return;
   }
 
-  // Descriptor sets must not be freed while command buffers are recording.
-  if (state->frame_active) {
-    return;
-  }
-
-  uint64_t safe_serial = state->submit_serial >= BUFFERING_FRAMES
-                             ? state->submit_serial - BUFFERING_FRAMES
-                             : 0;
+  /*
+   * completed_submit_serial already reflects queue retirement. Any release
+   * tagged with a serial <= this value is no longer referenced by in-flight
+   * GPU work and can be safely returned to descriptor pools.
+   */
+  uint64_t safe_serial = state->completed_submit_serial;
 
   uint32_t i = 0;
   while (i < shader_object->pending_release_count) {
@@ -2224,8 +2290,22 @@ bool8_t vulkan_shader_release_instance(VulkanBackendState *state,
   VulkanShaderObjectInstanceState *local_state =
       &shader_object->instance_states[object_id];
 
+  /*
+   * Release queues are drained opportunistically here so scene-unload spikes do
+   * not depend on later acquire traffic to recycle descriptor sets.
+   */
+  vulkan_shader_process_pending_releases(state, shader_object);
+
   if (local_state->release_pending) {
     return true_v;
+  }
+
+  const uint64_t release_serial =
+      state->submit_serial + (state->frame_active ? 1u : 0u);
+
+  if (release_serial <= state->completed_submit_serial) {
+    return vulkan_shader_release_instance_immediate(state, shader_object,
+                                                    object_id);
   }
 
   if (shader_object->pending_release_count >=
@@ -2235,8 +2315,7 @@ bool8_t vulkan_shader_release_instance(VulkanBackendState *state,
   }
 
   local_state->release_pending = true_v;
-  local_state->release_serial =
-      state->submit_serial + (state->frame_active ? 1u : 0u);
+  local_state->release_serial = release_serial;
   shader_object->pending_release_ids[shader_object->pending_release_count++] =
       object_id;
 
