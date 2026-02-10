@@ -18,9 +18,9 @@
 #include "containers/queue.h"
 #include "containers/vector.h"
 #include "core/vkr_threads.h"
-#include "memory/vkr_allocator.h"
 #include "defines.h"
 #include "memory/arena.h"
+#include "memory/vkr_allocator.h"
 
 /**
  * @brief Priority classes used for scheduling.
@@ -59,8 +59,8 @@ typedef struct VkrJobContext {
   struct VkrJobSystem *system;
   uint32_t worker_index;
   VkrThreadId thread_id;
-  VkrAllocator *allocator;       /**< Temporary allocator for the job */
-  VkrAllocatorScope scope;       /**< Scope controlling temp allocations */
+  VkrAllocator *allocator; /**< Temporary allocator for the job */
+  VkrAllocatorScope scope; /**< Scope controlling temp allocations */
 } VkrJobContext;
 
 typedef bool8_t (*VkrJobRunFn)(VkrJobContext *ctx, void *payload);
@@ -140,6 +140,8 @@ void vkr_job_system_shutdown(VkrJobSystem *system);
 
 /**
  * @brief Submit a job for execution.
+ *
+ * This call can block while waiting for a free job slot.
  * @param system The job system to submit the job to.
  * @param desc The description of the job to submit.
  * @param out_handle The handle to the submitted job.
@@ -147,6 +149,14 @@ void vkr_job_system_shutdown(VkrJobSystem *system);
  */
 bool8_t vkr_job_submit(VkrJobSystem *system, const VkrJobDesc *desc,
                        VkrJobHandle *out_handle);
+
+/**
+ * @brief Attempt to submit a job without waiting for a free slot.
+ *
+ * Returns false immediately when no slot is available or submission fails.
+ */
+bool8_t vkr_job_try_submit(VkrJobSystem *system, const VkrJobDesc *desc,
+                           VkrJobHandle *out_handle);
 
 /**
  * @brief Add a dependency so that 'job' waits for 'dependency' to complete.

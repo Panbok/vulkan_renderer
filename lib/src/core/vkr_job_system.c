@@ -476,15 +476,22 @@ void vkr_job_system_shutdown(VkrJobSystem *system) {
   MemZero(system, sizeof(VkrJobSystem));
 }
 
-bool8_t vkr_job_submit(VkrJobSystem *system, const VkrJobDesc *desc,
-                       VkrJobHandle *out_handle) {
+vkr_internal bool8_t vkr_job_submit_internal(VkrJobSystem *system,
+                                             const VkrJobDesc *desc,
+                                             VkrJobHandle *out_handle,
+                                             bool8_t wait_for_slot) {
   assert_log(system != NULL, "JobSystem is NULL");
   assert_log(desc != NULL, "JobDesc is NULL");
 
   vkr_mutex_lock(system->mutex);
 
-  while (system->free_top == 0 && system->running) {
+  while (wait_for_slot && system->free_top == 0 && system->running) {
     vkr_cond_wait(system->slots_avail, system->mutex);
+  }
+
+  if (!wait_for_slot && system->free_top == 0) {
+    vkr_mutex_unlock(system->mutex);
+    return false_v;
   }
 
   if (!system->running) {
@@ -572,6 +579,16 @@ bool8_t vkr_job_submit(VkrJobSystem *system, const VkrJobDesc *desc,
 
   vkr_mutex_unlock(system->mutex);
   return true_v;
+}
+
+bool8_t vkr_job_submit(VkrJobSystem *system, const VkrJobDesc *desc,
+                       VkrJobHandle *out_handle) {
+  return vkr_job_submit_internal(system, desc, out_handle, true_v);
+}
+
+bool8_t vkr_job_try_submit(VkrJobSystem *system, const VkrJobDesc *desc,
+                           VkrJobHandle *out_handle) {
+  return vkr_job_submit_internal(system, desc, out_handle, false_v);
 }
 
 bool8_t vkr_job_add_dependency(VkrJobSystem *system, VkrJobHandle job,
