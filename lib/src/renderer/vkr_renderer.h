@@ -1021,6 +1021,12 @@ typedef struct VkrFrameSetup {
   VkrTextureFormat swapchain_depth_format;
 } VkrFrameSetup;
 
+typedef struct VkrRendererUploadWaitStats {
+  uint64_t fence_wait_count;
+  uint64_t queue_wait_idle_count;
+  uint64_t device_wait_idle_count;
+} VkrRendererUploadWaitStats;
+
 // ============================================================================
 // Frontend API (User-Facing)
 // ============================================================================
@@ -1051,6 +1057,11 @@ void vkr_renderer_get_device_information(
     VkrRendererFrontendHandle renderer,
     VkrDeviceInformation *device_information, Arena *temp_arena);
 uint64_t vkr_renderer_get_target_frame_rate(VkrRendererFrontendHandle renderer);
+uint64_t vkr_renderer_get_submit_serial(VkrRendererFrontendHandle renderer);
+uint64_t
+vkr_renderer_get_completed_submit_serial(VkrRendererFrontendHandle renderer);
+bool8_t vkr_renderer_get_and_reset_upload_wait_stats(
+    VkrRendererFrontendHandle renderer, VkrRendererUploadWaitStats *out_stats);
 // --- END Utility ---
 
 // --- START Resource Management ---
@@ -1704,6 +1715,10 @@ typedef struct VkrRendererBackendInterface {
 
   // Telemetry
   uint64_t (*get_and_reset_descriptor_writes_avoided)(void *backend_state);
+  uint64_t (*get_submit_serial)(void *backend_state);
+  uint64_t (*get_completed_submit_serial)(void *backend_state);
+  bool8_t (*get_and_reset_upload_wait_stats)(
+      void *backend_state, VkrRendererUploadWaitStats *out_stats);
 
   // RenderGraph GPU timing
   bool8_t (*rg_timing_begin_frame)(void *backend_state, uint32_t pass_count);
