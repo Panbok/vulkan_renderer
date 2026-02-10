@@ -626,13 +626,11 @@ vkr_internal bool8_t vulkan_image_record_staging_upload_in_active(
                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &base_region);
 
   if (generate_mipmaps && image->mip_levels > 1) {
-    if (vulkan_image_generate_mipmaps(state, image, image_format,
-                                      command_buffer)) {
-      return true_v;
+    if (!vulkan_image_generate_mipmaps(state, image, image_format,
+                                       command_buffer)) {
+      return false_v;
     }
-
-    log_warn("Mipmap generation failed in frame-active upload, using base level "
-             "only");
+    return true_v;
   }
 
   return vulkan_image_transition_layout_range(

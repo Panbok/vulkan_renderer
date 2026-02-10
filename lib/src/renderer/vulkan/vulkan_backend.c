@@ -5115,13 +5115,27 @@ void renderer_vulkan_destroy_buffer(void *backend_state,
   buffer->buffer.memory = VK_NULL_HANDLE;
 
   if (vk_buffer != VK_NULL_HANDLE) {
-    if (!vulkan_deferred_destroy_enqueue_with_memory_accounting(
-            state, VKR_DEFERRED_DESTROY_BUFFER, (void *)vk_buffer, vk_memory,
-            allocation_size,
-            (memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-                ? VKR_ALLOCATOR_MEMORY_TAG_GPU
-                : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
-            NULL, 0)) {
+    bool8_t buffer_enqueued = vulkan_deferred_destroy_enqueue_with_memory_accounting(
+        state, VKR_DEFERRED_DESTROY_BUFFER, (void *)vk_buffer, vk_memory,
+        allocation_size,
+        (memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+            ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+            : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
+        NULL, 0);
+    if (!buffer_enqueued) {
+      vulkan_deferred_destroy_process(state);
+      buffer_enqueued = vulkan_deferred_destroy_enqueue_with_memory_accounting(
+          state, VKR_DEFERRED_DESTROY_BUFFER, (void *)vk_buffer, vk_memory,
+          allocation_size,
+          (memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+              ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+              : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
+          NULL, 0);
+    }
+    if (!buffer_enqueued) {
+      if (state->frame_active) {
+        vkDeviceWaitIdle(state->device.logical_device);
+      }
       vkDestroyBuffer(state->device.logical_device, vk_buffer, state->allocator);
       if (vk_memory != VK_NULL_HANDLE) {
         if (allocation_size > 0) {
@@ -5137,9 +5151,19 @@ void renderer_vulkan_destroy_buffer(void *backend_state,
     }
   }
 
-  if (!vulkan_deferred_destroy_enqueue(
-          state, VKR_DEFERRED_DESTROY_BUFFER_WRAPPER, buffer, VK_NULL_HANDLE,
-          &state->buffer_pool_alloc, sizeof(struct s_BufferHandle))) {
+  bool8_t wrapper_enqueued = vulkan_deferred_destroy_enqueue(
+      state, VKR_DEFERRED_DESTROY_BUFFER_WRAPPER, buffer, VK_NULL_HANDLE,
+      &state->buffer_pool_alloc, sizeof(struct s_BufferHandle));
+  if (!wrapper_enqueued) {
+    vulkan_deferred_destroy_process(state);
+    wrapper_enqueued = vulkan_deferred_destroy_enqueue(
+        state, VKR_DEFERRED_DESTROY_BUFFER_WRAPPER, buffer, VK_NULL_HANDLE,
+        &state->buffer_pool_alloc, sizeof(struct s_BufferHandle));
+  }
+  if (!wrapper_enqueued) {
+    if (state->frame_active) {
+      vkDeviceWaitIdle(state->device.logical_device);
+    }
     vkr_allocator_free(&state->buffer_pool_alloc, buffer,
                        sizeof(struct s_BufferHandle),
                        VKR_ALLOCATOR_MEMORY_TAG_BUFFER);
@@ -7079,14 +7103,6 @@ VkrRendererError renderer_vulkan_write_texture(
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
-  VulkanCommandBuffer temp_command_buffer = {0};
-  if (!vulkan_command_buffer_allocate_and_begin_single_use(
-          state, &temp_command_buffer)) {
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return VKR_RENDERER_ERROR_DEVICE_ERROR;
-  }
-
   VkImageSubresourceRange subresource_range = {
       .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
       .baseMipLevel = mip_level,
@@ -7150,6 +7166,14 @@ VkrRendererError renderer_vulkan_write_texture(
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     texture->description.generation++;
     return VKR_RENDERER_ERROR_NONE;
+  }
+
+  VulkanCommandBuffer temp_command_buffer = {0};
+  if (!vulkan_command_buffer_allocate_and_begin_single_use(
+          state, &temp_command_buffer)) {
+    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
   if (!vulkan_image_transition_layout_range(

@@ -163,27 +163,29 @@ vulkan_command_buffer_end_single_use(VulkanBackendState *state,
   }
 
   if (can_defer_submission) {
-    if (!vulkan_backend_defer_single_use_submission(
-            state, state->device.graphics_command_pool, submitted_command_buffer,
-            temp_fence.handle)) {
-      log_error("Failed to enqueue deferred single-use command submission");
+    if (vulkan_backend_queue_submit_locked(state, queue, 1, &submit_info,
+                                          temp_fence.handle) != VK_SUCCESS) {
+      log_error("Failed to submit deferred single-use command buffer");
       vulkan_fence_destroy(state, &temp_fence);
       vulkan_command_buffer_free(state, command_buffer);
       return false_v;
     }
 
-    // Ownership has moved to deferred destruction queue.
+    if (!vulkan_backend_defer_single_use_submission(
+            state, state->device.graphics_command_pool, submitted_command_buffer,
+            temp_fence.handle)) {
+      log_error("Failed to enqueue deferred single-use command submission; "
+                "waiting on fence and cleaning up");
+      vulkan_fence_wait(state, UINT64_MAX, &temp_fence);
+      vulkan_fence_destroy(state, &temp_fence);
+      vulkan_command_buffer_free(state, command_buffer);
+      return false_v;
+    }
+
     command_buffer->handle = VK_NULL_HANDLE;
     command_buffer->state = COMMAND_BUFFER_STATE_NOT_ALLOCATED;
     command_buffer->bound_global_descriptor_set = VK_NULL_HANDLE;
     command_buffer->bound_global_pipeline_layout = VK_NULL_HANDLE;
-
-    if (vulkan_backend_queue_submit_locked(state, queue, 1, &submit_info,
-                                           temp_fence.handle) != VK_SUCCESS) {
-      log_error("Failed to submit deferred single-use command buffer");
-      return false_v;
-    }
-
     return true_v;
   }
 

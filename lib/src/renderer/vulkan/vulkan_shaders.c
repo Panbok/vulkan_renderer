@@ -754,13 +754,19 @@ vkr_internal uint32_t vulkan_shader_live_instance_state_count(
     return 0;
   }
 
-  if (shader_object->instance_uniform_buffer_count <
-      shader_object->instance_state_free_count) {
-    return shader_object->instance_uniform_buffer_count;
+  const uint32_t instance_uniform_buffer_count =
+      shader_object->instance_uniform_buffer_count;
+  const uint32_t instance_state_free_count =
+      shader_object->instance_state_free_count;
+  if (instance_state_free_count > instance_uniform_buffer_count) {
+    log_error("shader_object: instance_state_free_count (%u) > "
+              "instance_uniform_buffer_count (%u)",
+              (unsigned)instance_state_free_count,
+              (unsigned)instance_uniform_buffer_count);
+    return 0;
   }
 
-  return shader_object->instance_uniform_buffer_count -
-         shader_object->instance_state_free_count;
+  return instance_uniform_buffer_count - instance_state_free_count;
 }
 
 vkr_internal bool8_t vulkan_shader_create_instance_descriptor_pool(
@@ -906,6 +912,9 @@ vkr_internal bool8_t vulkan_shader_allocate_instance_descriptor_sets(
   const uint32_t current_capacity =
       shader_object->instance_pool_instance_capacities[current_index];
   const uint32_t max_capacity = VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT;
+  const uint32_t safe_doubled =
+      (current_capacity <= max_capacity / 2u) ? (current_capacity * 2u)
+                                              : max_capacity;
   const uint32_t total_capacity =
       vulkan_shader_total_instance_pool_capacity(shader_object);
   const uint32_t live_instances =
@@ -915,15 +924,14 @@ vkr_internal bool8_t vulkan_shader_allocate_instance_descriptor_sets(
     required_extra_capacity = live_instances - total_capacity;
   }
 
-  uint32_t target_capacity =
-      Max(current_capacity * 2u, required_extra_capacity);
+  uint32_t target_capacity = Max(safe_doubled, required_extra_capacity);
   target_capacity = Min(target_capacity, max_capacity);
   uint32_t new_capacity = vulkan_shader_next_power_of_two_u32(target_capacity);
   if (new_capacity > max_capacity) {
     new_capacity = max_capacity;
   }
   if (new_capacity <= current_capacity && current_capacity < max_capacity) {
-    new_capacity = Min(current_capacity * 2u, max_capacity);
+    new_capacity = Min(safe_doubled, max_capacity);
   }
   if (new_capacity <= current_capacity) {
     log_error("Cannot grow instance descriptor pool beyond %u instances",

@@ -414,13 +414,15 @@ bool8_t vulkan_buffer_copy_to(VulkanBackendState *state,
   if (can_record_in_active_frame) {
     VulkanCommandBuffer *active_command_buffer =
         vulkan_backend_get_active_graphics_command_buffer(state);
-    if (active_command_buffer) {
-      VkBufferCopy copy_region = {
-          .srcOffset = source_offset, .dstOffset = dest_offset, .size = size};
-      vkCmdCopyBuffer(active_command_buffer->handle, source, dest, 1,
-                      &copy_region);
-      return true_v;
+    if (!active_command_buffer) {
+      log_error("Active graphics command buffer is NULL during frame upload");
+      return false_v;
     }
+    VkBufferCopy copy_region = {
+        .srcOffset = source_offset, .dstOffset = dest_offset, .size = size};
+    vkCmdCopyBuffer(active_command_buffer->handle, source, dest, 1,
+                    &copy_region);
+    return true_v;
   }
 
   VkCommandBufferAllocateInfo alloc_info = {
