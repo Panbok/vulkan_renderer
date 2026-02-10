@@ -194,6 +194,19 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
 void vkr_texture_system_release(VkrTextureSystem *system, String8 texture_name);
 
 /**
+ * @brief Adds one reference to a texture by handle.
+ *
+ * This is useful when a caller already has a resolved handle (for example from
+ * async resource resolution) and needs to retain lifetime without relying on
+ * name-key lookup.
+ *
+ * @param system The texture system to update
+ * @param handle The texture handle to retain
+ */
+void vkr_texture_system_add_ref_by_handle(VkrTextureSystem *system,
+                                          VkrTextureHandle handle);
+
+/**
  * @brief Releases a texture by handle
  * @param system The texture system to release the texture from
  * @param handle The handle of the texture to release
@@ -340,6 +353,44 @@ vkr_texture_system_get_default_specular_handle(VkrTextureSystem *system);
 // =============================================================================
 // Helpers (used by loaders with direct system access)
 // =============================================================================
+
+typedef struct VkrTexturePreparedLoad {
+  VkrTextureDescription description;
+  uint8_t *upload_data;
+  uint64_t upload_data_size;
+  VkrTextureUploadRegion *upload_regions;
+  uint32_t upload_region_count;
+  uint32_t upload_mip_levels;
+  uint32_t upload_array_layers;
+  bool8_t upload_is_compressed;
+} VkrTexturePreparedLoad;
+
+/**
+ * @brief Decode and prepare upload payload without touching GPU state.
+ *
+ * The output is heap-owned and must be released with
+ * `vkr_texture_system_release_prepared_load` on every path.
+ */
+bool8_t vkr_texture_system_prepare_load_from_file(
+    VkrTextureSystem *system, String8 file_path, uint32_t desired_channels,
+    VkrAllocator *temp_alloc, VkrTexturePreparedLoad *out_prepared,
+    VkrRendererError *out_error);
+
+/**
+ * @brief Finalize a previously prepared texture on the render thread.
+ *
+ * This function creates the GPU texture and inserts it into the texture map.
+ * On success the returned handle is visible to acquire calls.
+ */
+bool8_t vkr_texture_system_finalize_prepared_load(
+    VkrTextureSystem *system, String8 name,
+    const VkrTexturePreparedLoad *prepared, VkrTextureHandle *out_handle,
+    VkrRendererError *out_error);
+
+/**
+ * @brief Releases CPU memory owned by a prepared texture payload.
+ */
+void vkr_texture_system_release_prepared_load(VkrTexturePreparedLoad *prepared);
 
 /**
  * @brief Loads a texture from a file
