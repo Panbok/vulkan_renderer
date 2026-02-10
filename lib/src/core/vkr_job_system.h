@@ -153,7 +153,11 @@ bool8_t vkr_job_submit(VkrJobSystem *system, const VkrJobDesc *desc,
 /**
  * @brief Attempt to submit a job without waiting for a free slot.
  *
- * Returns false immediately when no slot is available or submission fails.
+ * Returns immediately when no slot is available or submission fails.
+ * @param system The job system to submit the job to.
+ * @param desc The description of the job to submit.
+ * @param out_handle The handle to the submitted job (valid only on success).
+ * @return True if the job was submitted successfully, false otherwise.
  */
 bool8_t vkr_job_try_submit(VkrJobSystem *system, const VkrJobDesc *desc,
                            VkrJobHandle *out_handle);
