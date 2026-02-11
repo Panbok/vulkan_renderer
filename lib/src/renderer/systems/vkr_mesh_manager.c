@@ -146,6 +146,25 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
     VkrMeshManager *manager, const VkrResourceHandleInfo *handle_info,
     const VkrMeshLoadDesc *desc, const char *key_buf,
     VkrRendererError *out_error);
+vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_pending_asset_slot(
+    VkrMeshManager *manager, const VkrMeshLoadDesc *desc, const char *key_buf,
+    uint64_t pending_request_id, VkrRendererError *out_error);
+vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
+    VkrMeshManager *manager, VkrMeshAsset *asset,
+    const VkrMeshLoaderResult *mesh_result, const VkrMeshLoadDesc *desc,
+    VkrRendererError *out_error);
+vkr_internal bool8_t vkr_mesh_manager_sync_pending_asset(VkrMeshManager *manager,
+                                                         uint32_t slot,
+                                                         VkrMeshAsset *asset);
+vkr_internal bool8_t vkr_mesh_manager_init_instance_state_array(
+    VkrMeshManager *manager, VkrMeshInstance *instance,
+    uint32_t submesh_count);
+vkr_internal void
+vkr_mesh_manager_release_instance_state_array(VkrMeshManager *manager,
+                                              VkrMeshInstance *instance);
+vkr_internal void
+vkr_mesh_manager_refresh_instances_for_asset(VkrMeshManager *manager,
+                                             uint32_t slot);
 
 typedef struct VkrOpaqueRangeInfo {
   uint32_t first_index;
@@ -295,6 +314,70 @@ vkr_mesh_manager_update_instance_bounds(VkrMeshInstance *instance,
   instance->bounds_world_radius = asset->bounds_local_radius * max_scale;
 }
 
+vkr_internal bool8_t vkr_mesh_manager_init_instance_state_array(
+    VkrMeshManager *manager, VkrMeshInstance *instance,
+    uint32_t submesh_count) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(instance != NULL, "Instance is NULL");
+
+  if (submesh_count == 0) {
+    return false_v;
+  }
+
+  instance->submesh_state = array_create_VkrMeshSubmeshInstanceState(
+      &manager->instance_allocator, submesh_count);
+  if (!instance->submesh_state.data) {
+    return false_v;
+  }
+
+  for (uint32_t i = 0; i < submesh_count; ++i) {
+    VkrMeshSubmeshInstanceState state = {0};
+    state.instance_state.id = VKR_INVALID_ID;
+    state.pipeline = VKR_PIPELINE_HANDLE_INVALID;
+    state.pipeline_dirty = true_v;
+    array_set_VkrMeshSubmeshInstanceState(&instance->submesh_state, i, state);
+  }
+
+  return true_v;
+}
+
+vkr_internal void
+vkr_mesh_manager_release_instance_state_array(VkrMeshManager *manager,
+                                              VkrMeshInstance *instance) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(instance != NULL, "Instance is NULL");
+
+  if (!instance->submesh_state.data) {
+    return;
+  }
+
+  for (uint32_t i = 0; i < instance->submesh_state.length; ++i) {
+    VkrMeshSubmeshInstanceState *state =
+        array_get_VkrMeshSubmeshInstanceState(&instance->submesh_state, i);
+    if (!state || state->instance_state.id == VKR_INVALID_ID ||
+        state->pipeline.id == 0) {
+      continue;
+    }
+
+    VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_pipeline_registry_release_instance_state(
+            manager->pipeline_registry, state->pipeline, state->instance_state,
+            &rel_err)) {
+      log_warn(
+          "MeshManager: failed to release instance state (pipeline=%u, "
+          "generation=%u, state=%u, err=%d)",
+          state->pipeline.id, state->pipeline.generation, state->instance_state.id,
+          rel_err);
+    }
+    state->instance_state = (VkrRendererInstanceStateHandle){.id =
+                                                                 VKR_INVALID_ID};
+    state->pipeline = VKR_PIPELINE_HANDLE_INVALID;
+    state->pipeline_dirty = true_v;
+  }
+
+  array_destroy_VkrMeshSubmeshInstanceState(&instance->submesh_state);
+}
+
 vkr_internal bool8_t vkr_mesh_manager_resolve_geometry(
     VkrMeshManager *manager, const VkrSubMeshDesc *desc,
     VkrGeometryHandle *out_handle, bool8_t *out_owned,
@@ -441,6 +524,15 @@ vkr_internal void vkr_mesh_manager_destroy_asset_slot(VkrMeshManager *manager,
     return;
   }
 
+  if (asset->pending_request_id != 0 && asset->mesh_path.str &&
+      asset->mesh_path.length > 0) {
+    VkrResourceHandleInfo tracked_info = {0};
+    tracked_info.type = VKR_RESOURCE_TYPE_MESH;
+    tracked_info.request_id = asset->pending_request_id;
+    vkr_resource_system_unload(&tracked_info, asset->mesh_path);
+    asset->pending_request_id = 0;
+  }
+
   if (asset->key_string) {
     vkr_hash_table_remove_VkrMeshAssetEntry(&manager->asset_by_key,
                                             asset->key_string);
@@ -470,6 +562,241 @@ vkr_internal void vkr_mesh_manager_destroy_asset_slot(VkrMeshManager *manager,
   if (adjust_count && manager->asset_count > 0) {
     manager->asset_count--;
   }
+}
+
+vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_pending_asset_slot(
+    VkrMeshManager *manager, const VkrMeshLoadDesc *desc, const char *key_buf,
+    uint64_t pending_request_id, VkrRendererError *out_error) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(desc != NULL, "Desc is NULL");
+  assert_log(key_buf != NULL, "Key buffer is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+
+  uint32_t slot = 0;
+  if (manager->asset_free_count > 0) {
+    slot = *array_get_uint32_t(&manager->asset_free_indices,
+                               manager->asset_free_count - 1);
+    manager->asset_free_count--;
+  } else {
+    if (manager->next_asset_index >= manager->mesh_assets.length) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      return VKR_MESH_ASSET_HANDLE_INVALID;
+    }
+    slot = manager->next_asset_index++;
+  }
+
+  VkrMeshAsset *asset = array_get_VkrMeshAsset(&manager->mesh_assets, slot);
+  MemZero(asset, sizeof(*asset));
+
+  asset->id = slot + 1;
+  asset->generation = manager->asset_generation_counter++;
+  asset->domain = vkr_mesh_manager_resolve_domain(desc->pipeline_domain, 0);
+  asset->loading_state = pending_request_id != 0
+                             ? VKR_MESH_LOADING_STATE_PENDING
+                             : VKR_MESH_LOADING_STATE_NOT_LOADED;
+  asset->last_error = VKR_RENDERER_ERROR_NONE;
+  asset->pending_request_id = pending_request_id;
+  asset->ref_count = 0;
+
+  asset->mesh_path =
+      string8_duplicate(&manager->asset_allocator, &desc->mesh_path);
+  if (!asset->mesh_path.str || asset->mesh_path.length == 0) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    MemZero(asset, sizeof(*asset));
+    array_set_uint32_t(&manager->asset_free_indices, manager->asset_free_count,
+                       slot);
+    manager->asset_free_count++;
+    return VKR_MESH_ASSET_HANDLE_INVALID;
+  }
+
+  if (desc->shader_override.str && desc->shader_override.length > 0) {
+    asset->shader_override =
+        string8_duplicate(&manager->asset_allocator, &desc->shader_override);
+    if (!asset->shader_override.str || asset->shader_override.length == 0) {
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      vkr_mesh_manager_free_asset_strings(manager, asset);
+      MemZero(asset, sizeof(*asset));
+      array_set_uint32_t(&manager->asset_free_indices, manager->asset_free_count,
+                         slot);
+      manager->asset_free_count++;
+      return VKR_MESH_ASSET_HANDLE_INVALID;
+    }
+  }
+
+  char *key_copy =
+      vkr_allocator_alloc(&manager->asset_allocator, string_length(key_buf) + 1,
+                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!key_copy) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    vkr_mesh_manager_free_asset_strings(manager, asset);
+    MemZero(asset, sizeof(*asset));
+    array_set_uint32_t(&manager->asset_free_indices, manager->asset_free_count,
+                       slot);
+    manager->asset_free_count++;
+    return VKR_MESH_ASSET_HANDLE_INVALID;
+  }
+
+  string_copy(key_copy, key_buf);
+  asset->key_string = key_copy;
+  VkrMeshAssetEntry entry = {.asset_index = slot, .key = key_copy};
+  if (!vkr_hash_table_insert_VkrMeshAssetEntry(&manager->asset_by_key, key_copy,
+                                                entry)) {
+    vkr_allocator_free(&manager->asset_allocator, key_copy,
+                       string_length(key_copy) + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    asset->key_string = NULL;
+    vkr_mesh_manager_free_asset_strings(manager, asset);
+    MemZero(asset, sizeof(*asset));
+    array_set_uint32_t(&manager->asset_free_indices, manager->asset_free_count,
+                       slot);
+    manager->asset_free_count++;
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return VKR_MESH_ASSET_HANDLE_INVALID;
+  }
+
+  manager->asset_count++;
+  return (VkrMeshAssetHandle){.id = asset->id, .generation = asset->generation};
+}
+
+vkr_internal void
+vkr_mesh_manager_refresh_instances_for_asset(VkrMeshManager *manager,
+                                             uint32_t slot) {
+  assert_log(manager != NULL, "Manager is NULL");
+
+  if (slot >= manager->mesh_assets.length) {
+    return;
+  }
+
+  VkrMeshAsset *asset = array_get_VkrMeshAsset(&manager->mesh_assets, slot);
+  if (!asset || asset->id == 0) {
+    return;
+  }
+
+  for (uint32_t i = 0; i < manager->mesh_instances.length; ++i) {
+    VkrMeshInstance *instance =
+        array_get_VkrMeshInstance(&manager->mesh_instances, i);
+    if (!instance || instance->asset.id != asset->id ||
+        instance->asset.generation != asset->generation) {
+      continue;
+    }
+
+    if (asset->loading_state == VKR_MESH_LOADING_STATE_FAILED) {
+      vkr_mesh_manager_release_instance_state_array(manager, instance);
+      instance->loading_state = VKR_MESH_LOADING_STATE_FAILED;
+      instance->bounds_valid = false_v;
+      continue;
+    }
+
+    if (asset->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+      instance->loading_state = VKR_MESH_LOADING_STATE_PENDING;
+      continue;
+    }
+
+    uint32_t submesh_count = (uint32_t)asset->submeshes.length;
+    if (submesh_count == 0) {
+      instance->loading_state = VKR_MESH_LOADING_STATE_FAILED;
+      instance->bounds_valid = false_v;
+      continue;
+    }
+
+    if (!instance->submesh_state.data &&
+        !vkr_mesh_manager_init_instance_state_array(manager, instance,
+                                                    submesh_count)) {
+      instance->loading_state = VKR_MESH_LOADING_STATE_FAILED;
+      instance->bounds_valid = false_v;
+      continue;
+    }
+
+    instance->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+    vkr_mesh_manager_update_instance_bounds(instance, asset, instance->model);
+  }
+}
+
+vkr_internal bool8_t vkr_mesh_manager_sync_pending_asset(VkrMeshManager *manager,
+                                                         uint32_t slot,
+                                                         VkrMeshAsset *asset) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(asset != NULL, "Asset is NULL");
+
+  if (asset->loading_state != VKR_MESH_LOADING_STATE_PENDING ||
+      asset->pending_request_id == 0) {
+    return true_v;
+  }
+
+  VkrResourceHandleInfo tracked_info = {
+      .type = VKR_RESOURCE_TYPE_MESH,
+      .request_id = asset->pending_request_id,
+  };
+
+  VkrRendererError state_error = VKR_RENDERER_ERROR_NONE;
+  VkrResourceLoadState state =
+      vkr_resource_system_get_state(&tracked_info, &state_error);
+  if (state == VKR_RESOURCE_LOAD_STATE_PENDING_CPU ||
+      state == VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES ||
+      state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU) {
+    return true_v;
+  }
+
+  if (state != VKR_RESOURCE_LOAD_STATE_READY) {
+    if (asset->mesh_path.str && asset->mesh_path.length > 0) {
+      vkr_resource_system_unload(&tracked_info, asset->mesh_path);
+    }
+    asset->pending_request_id = 0;
+    asset->loading_state = VKR_MESH_LOADING_STATE_FAILED;
+    asset->last_error = state_error != VKR_RENDERER_ERROR_NONE
+                            ? state_error
+                            : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    vkr_mesh_manager_refresh_instances_for_asset(manager, slot);
+    return false_v;
+  }
+
+  VkrResourceHandleInfo resolved_info = {0};
+  if (!vkr_resource_system_try_get_resolved(&tracked_info, &resolved_info)) {
+    return true_v;
+  }
+  if (resolved_info.type != VKR_RESOURCE_TYPE_MESH || !resolved_info.as.mesh) {
+    if (asset->mesh_path.str && asset->mesh_path.length > 0) {
+      vkr_resource_system_unload(&tracked_info, asset->mesh_path);
+    }
+    asset->pending_request_id = 0;
+    asset->loading_state = VKR_MESH_LOADING_STATE_FAILED;
+    asset->last_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    vkr_mesh_manager_refresh_instances_for_asset(manager, slot);
+    return false_v;
+  }
+
+  VkrMeshLoadDesc desc = {
+      .mesh_path = asset->mesh_path,
+      .pipeline_domain = asset->domain,
+      .shader_override = asset->shader_override,
+  };
+
+  VkrRendererError build_error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_mesh_manager_build_asset_from_mesh_result(
+          manager, asset, resolved_info.as.mesh, &desc, &build_error)) {
+    if (asset->mesh_path.str && asset->mesh_path.length > 0) {
+      vkr_resource_system_unload(&tracked_info, asset->mesh_path);
+    }
+    asset->pending_request_id = 0;
+    asset->loading_state = VKR_MESH_LOADING_STATE_FAILED;
+    asset->last_error = build_error != VKR_RENDERER_ERROR_NONE
+                            ? build_error
+                            : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    vkr_mesh_manager_refresh_instances_for_asset(manager, slot);
+    return false_v;
+  }
+
+  if (asset->mesh_path.str && asset->mesh_path.length > 0) {
+    vkr_resource_system_unload(&tracked_info, asset->mesh_path);
+  }
+
+  asset->pending_request_id = 0;
+  asset->last_error = VKR_RENDERER_ERROR_NONE;
+  asset->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+  vkr_mesh_manager_refresh_instances_for_asset(manager, slot);
+  return true_v;
 }
 
 vkr_internal void vkr_mesh_manager_release_handles(VkrMeshManager *manager,
@@ -753,19 +1080,7 @@ void vkr_mesh_manager_shutdown(VkrMeshManager *manager) {
   for (uint32_t i = 0; i < manager->mesh_instances.length; ++i) {
     VkrMeshInstance *inst =
         array_get_VkrMeshInstance(&manager->mesh_instances, i);
-    if (inst->submesh_state.data) {
-      for (uint32_t j = 0; j < inst->submesh_state.length; ++j) {
-        VkrMeshSubmeshInstanceState *state =
-            array_get_VkrMeshSubmeshInstanceState(&inst->submesh_state, j);
-        if (state->instance_state.id != VKR_INVALID_ID) {
-          VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
-          vkr_pipeline_registry_release_instance_state(
-              manager->pipeline_registry, state->pipeline,
-              state->instance_state, &rel_err);
-        }
-      }
-      array_destroy_VkrMeshSubmeshInstanceState(&inst->submesh_state);
-    }
+    vkr_mesh_manager_release_instance_state_array(manager, inst);
   }
   array_destroy_VkrMeshInstance(&manager->mesh_instances);
   array_destroy_uint32_t(&manager->instance_live_indices);
@@ -1831,7 +2146,7 @@ uint32_t vkr_mesh_manager_load_batch(VkrMeshManager *manager,
     meshes_deduplicated_total += (wave_count - unique_count);
 
     // Load only unique mesh paths.
-    uint32_t meshes_loaded = vkr_resource_system_load_batch(
+    uint32_t meshes_loaded = vkr_resource_system_load_batch_sync(
         VKR_RESOURCE_TYPE_MESH, unique_paths, unique_count, scratch_allocator,
         handle_infos, load_errors);
     meshes_loaded_total += meshes_loaded;
@@ -1907,6 +2222,8 @@ VkrMeshAssetHandle vkr_mesh_manager_acquire_asset(VkrMeshManager *manager,
     VkrMeshAsset *asset =
         array_get_VkrMeshAsset(&manager->mesh_assets, existing->asset_index);
     if (asset && asset->id != 0) {
+      (void)vkr_mesh_manager_sync_pending_asset(manager, existing->asset_index,
+                                                asset);
       asset->ref_count++;
       return (VkrMeshAssetHandle){.id = asset->id,
                                   .generation = asset->generation};
@@ -1920,34 +2237,81 @@ VkrMeshAssetHandle vkr_mesh_manager_acquire_asset(VkrMeshManager *manager,
     return VKR_MESH_ASSET_HANDLE_INVALID;
   }
 
-  VkrResourceHandleInfo handle_info = {0};
-  if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, mesh_path,
-                                scratch_allocator, &handle_info, out_error)) {
-    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return VKR_MESH_ASSET_HANDLE_INVALID;
-  }
-
   VkrMeshLoadDesc desc = {
       .mesh_path = mesh_path,
       .pipeline_domain = normalized_domain,
       .shader_override = shader_override,
   };
 
-  VkrMeshAssetHandle asset_handle =
-      vkr_mesh_manager_create_asset_from_handle_info(manager, &handle_info,
-                                                     &desc, key_buf, out_error);
+  VkrResourceHandleInfo request_info = {0};
+  if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, mesh_path,
+                                scratch_allocator, &request_info, out_error)) {
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return VKR_MESH_ASSET_HANDLE_INVALID;
+  }
 
-  if (handle_info.type == VKR_RESOURCE_TYPE_MESH && handle_info.as.mesh) {
-    vkr_resource_system_unload(&handle_info, mesh_path);
+  VkrMeshAssetHandle asset_handle = vkr_mesh_manager_create_pending_asset_slot(
+      manager, &desc, key_buf, request_info.request_id, out_error);
+  if (asset_handle.id == 0) {
+    if (request_info.request_id != 0) {
+      vkr_resource_system_unload(&request_info, mesh_path);
+    } else if (request_info.type == VKR_RESOURCE_TYPE_MESH &&
+               request_info.as.mesh) {
+      vkr_resource_system_unload(&request_info, mesh_path);
+    }
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return VKR_MESH_ASSET_HANDLE_INVALID;
+  }
+
+  uint32_t slot = asset_handle.id - 1;
+  VkrMeshAsset *asset = array_get_VkrMeshAsset(&manager->mesh_assets, slot);
+  if (!asset || asset->id != asset_handle.id ||
+      asset->generation != asset_handle.generation) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
+    if (request_info.request_id != 0 || request_info.as.mesh) {
+      vkr_resource_system_unload(&request_info, mesh_path);
+    }
+    vkr_mesh_manager_destroy_asset_slot(manager, slot, true_v);
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    return VKR_MESH_ASSET_HANDLE_INVALID;
+  }
+
+  if (request_info.request_id == 0) {
+    if (request_info.type != VKR_RESOURCE_TYPE_MESH || !request_info.as.mesh) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      vkr_mesh_manager_destroy_asset_slot(manager, slot, true_v);
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      return VKR_MESH_ASSET_HANDLE_INVALID;
+    }
+
+    VkrRendererError build_error = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_mesh_manager_build_asset_from_mesh_result(
+            manager, asset, request_info.as.mesh, &desc, &build_error)) {
+      *out_error = build_error != VKR_RENDERER_ERROR_NONE
+                       ? build_error
+                       : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      vkr_resource_system_unload(&request_info, mesh_path);
+      vkr_mesh_manager_destroy_asset_slot(manager, slot, true_v);
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      return VKR_MESH_ASSET_HANDLE_INVALID;
+    }
+
+    asset->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+    asset->last_error = VKR_RENDERER_ERROR_NONE;
+    asset->pending_request_id = 0;
+    vkr_resource_system_unload(&request_info, mesh_path);
+  } else {
+    asset->loading_state = VKR_MESH_LOADING_STATE_PENDING;
+    asset->last_error = VKR_RENDERER_ERROR_NONE;
+    asset->pending_request_id = request_info.request_id;
+    (void)vkr_mesh_manager_sync_pending_asset(manager, slot, asset);
   }
 
   vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
-  if (asset_handle.id != 0) {
-    VkrMeshAsset *asset = vkr_mesh_manager_get_asset(manager, asset_handle);
-    if (asset) {
-      asset->ref_count++;
-    }
+  asset = vkr_mesh_manager_get_asset(manager, asset_handle);
+  if (asset) {
+    asset->ref_count++;
   }
 
   return asset_handle;
@@ -1979,6 +2343,19 @@ void vkr_mesh_manager_release_asset(VkrMeshManager *manager,
   }
 }
 
+void vkr_mesh_manager_pump_async(VkrMeshManager *manager) {
+  assert_log(manager != NULL, "Manager is NULL");
+
+  for (uint32_t i = 0; i < manager->mesh_assets.length; ++i) {
+    VkrMeshAsset *asset = array_get_VkrMeshAsset(&manager->mesh_assets, i);
+    if (!asset || asset->id == 0 ||
+        asset->loading_state != VKR_MESH_LOADING_STATE_PENDING) {
+      continue;
+    }
+    (void)vkr_mesh_manager_sync_pending_asset(manager, i, asset);
+  }
+}
+
 VkrMeshAsset *vkr_mesh_manager_get_asset(VkrMeshManager *manager,
                                          VkrMeshAssetHandle handle) {
   assert_log(manager != NULL, "Manager is NULL");
@@ -1996,6 +2373,10 @@ VkrMeshAsset *vkr_mesh_manager_get_asset(VkrMeshManager *manager,
   if (!asset || asset->id != handle.id ||
       asset->generation != handle.generation) {
     return NULL;
+  }
+
+  if (asset->loading_state == VKR_MESH_LOADING_STATE_PENDING) {
+    (void)vkr_mesh_manager_sync_pending_asset(manager, slot, asset);
   }
 
   return asset;
@@ -2024,6 +2405,13 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
     return VKR_MESH_INSTANCE_HANDLE_INVALID;
   }
 
+  if (asset->loading_state == VKR_MESH_LOADING_STATE_FAILED) {
+    *out_error = asset->last_error != VKR_RENDERER_ERROR_NONE
+                     ? asset->last_error
+                     : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return VKR_MESH_INSTANCE_HANDLE_INVALID;
+  }
+
   uint32_t slot;
   if (manager->instance_free_count > 0) {
     slot = *array_get_uint32_t(&manager->instance_free_indices,
@@ -2037,29 +2425,9 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
     slot = manager->next_instance_index++;
   }
 
-  uint32_t submesh_count = (uint32_t)asset->submeshes.length;
-  if (submesh_count == 0) {
-    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    array_set_uint32_t(&manager->instance_free_indices,
-                       manager->instance_free_count, slot);
-    manager->instance_free_count++;
-    return VKR_MESH_INSTANCE_HANDLE_INVALID;
-  }
-
   VkrMeshInstance *inst =
       array_get_VkrMeshInstance(&manager->mesh_instances, slot);
   MemZero(inst, sizeof(*inst));
-
-  inst->submesh_state = array_create_VkrMeshSubmeshInstanceState(
-      &manager->instance_allocator, submesh_count);
-  if (!inst->submesh_state.data) {
-    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    MemZero(inst, sizeof(*inst));
-    array_set_uint32_t(&manager->instance_free_indices,
-                       manager->instance_free_count, slot);
-    manager->instance_free_count++;
-    return VKR_MESH_INSTANCE_HANDLE_INVALID;
-  }
 
   inst->asset = asset_handle;
   inst->generation = manager->instance_generation_counter++;
@@ -2067,24 +2435,469 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
   inst->model = model;
   inst->render_id = render_id;
   inst->visible = visible;
-  inst->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+  inst->loading_state = VKR_MESH_LOADING_STATE_PENDING;
 
   array_set_uint32_t(&manager->instance_live_indices, inst->live_index, slot);
 
-  for (uint32_t i = 0; i < submesh_count; ++i) {
-    VkrMeshSubmeshInstanceState state = {0};
-    state.instance_state.id = VKR_INVALID_ID;
-    state.pipeline_dirty = true_v;
-    array_set_VkrMeshSubmeshInstanceState(&inst->submesh_state, i, state);
-  }
+  if (asset->loading_state == VKR_MESH_LOADING_STATE_LOADED) {
+    uint32_t submesh_count = (uint32_t)asset->submeshes.length;
+    if (submesh_count == 0 ||
+        !vkr_mesh_manager_init_instance_state_array(manager, inst,
+                                                    submesh_count)) {
+      *out_error = submesh_count == 0 ? VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED
+                                      : VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      MemZero(inst, sizeof(*inst));
+      array_set_uint32_t(&manager->instance_free_indices,
+                         manager->instance_free_count, slot);
+      manager->instance_free_count++;
+      return VKR_MESH_INSTANCE_HANDLE_INVALID;
+    }
 
-  vkr_mesh_manager_update_instance_bounds(inst, asset, model);
+    inst->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+    vkr_mesh_manager_update_instance_bounds(inst, asset, model);
+  }
 
   asset->ref_count++;
   manager->instance_count++;
 
   return (VkrMeshInstanceHandle){.id = slot + 1,
                                  .generation = inst->generation};
+}
+
+VkrMeshInstanceHandle vkr_mesh_manager_create_instance_from_resource(
+    VkrMeshManager *manager, const VkrMeshLoadDesc *desc,
+    const VkrResourceHandleInfo *handle_info, uint32_t render_id,
+    bool8_t visible, VkrRendererError *out_error) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(desc != NULL, "Desc is NULL");
+  assert_log(handle_info != NULL, "Handle info is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+
+  if (handle_info->type != VKR_RESOURCE_TYPE_MESH ||
+      (!handle_info->as.mesh && handle_info->request_id == 0)) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return VKR_MESH_INSTANCE_HANDLE_INVALID;
+  }
+
+  VkrPipelineDomain normalized_domain =
+      vkr_mesh_manager_resolve_domain(desc->pipeline_domain, 0);
+  const char *shader_str =
+      desc->shader_override.str ? (const char *)desc->shader_override.str : "";
+
+  char key_buf[512];
+  string_format(key_buf, sizeof(key_buf), "%.*s|%u|%.*s",
+                (int)desc->mesh_path.length, desc->mesh_path.str,
+                (uint32_t)normalized_domain, (int)desc->shader_override.length,
+                shader_str);
+
+  VkrMeshAssetHandle asset_handle = VKR_MESH_ASSET_HANDLE_INVALID;
+  bool8_t created_new_asset = false_v;
+
+  VkrMeshAssetEntry *cached =
+      vkr_hash_table_get_VkrMeshAssetEntry(&manager->asset_by_key, key_buf);
+  if (cached) {
+    VkrMeshAsset *asset =
+        array_get_VkrMeshAsset(&manager->mesh_assets, cached->asset_index);
+    if (asset && asset->id != 0) {
+      (void)vkr_mesh_manager_sync_pending_asset(manager, cached->asset_index,
+                                                asset);
+      asset_handle = (VkrMeshAssetHandle){.id = asset->id,
+                                          .generation = asset->generation};
+    }
+  }
+
+  if (asset_handle.id == 0) {
+    VkrMeshLoadDesc normalized_desc = *desc;
+    normalized_desc.pipeline_domain = normalized_domain;
+
+    VkrRendererError asset_error = VKR_RENDERER_ERROR_NONE;
+    if (handle_info->as.mesh) {
+      asset_handle = vkr_mesh_manager_create_asset_from_handle_info(
+          manager, handle_info, &normalized_desc, key_buf, &asset_error);
+    } else if (handle_info->request_id != 0) {
+      /*
+       * Callers may release their tracked request right after instance creation
+       * (scene async finalize does this). Retain our own deduped request ref so
+       * the asset can keep resolving independently of caller lifetime.
+       */
+      VkrAllocatorScope scope =
+          vkr_allocator_begin_scope(&manager->scratch_allocator);
+      if (!vkr_allocator_scope_is_valid(&scope)) {
+        asset_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      } else {
+        VkrResourceHandleInfo retained_request = {0};
+        VkrRendererError retain_error = VKR_RENDERER_ERROR_NONE;
+        if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, desc->mesh_path,
+                                      &manager->scratch_allocator,
+                                      &retained_request, &retain_error)) {
+          asset_error = retain_error != VKR_RENDERER_ERROR_NONE
+                            ? retain_error
+                            : VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+        } else if (retained_request.request_id != 0) {
+          asset_handle = vkr_mesh_manager_create_pending_asset_slot(
+              manager, &normalized_desc, key_buf, retained_request.request_id,
+              &asset_error);
+          if (asset_handle.id != 0) {
+            uint32_t slot = asset_handle.id - 1;
+            VkrMeshAsset *asset =
+                array_get_VkrMeshAsset(&manager->mesh_assets, slot);
+            if (asset && asset->id == asset_handle.id) {
+              asset->loading_state = VKR_MESH_LOADING_STATE_PENDING;
+              asset->last_error = VKR_RENDERER_ERROR_NONE;
+              asset->pending_request_id = retained_request.request_id;
+              (void)vkr_mesh_manager_sync_pending_asset(manager, slot, asset);
+            }
+          } else {
+            vkr_resource_system_unload(&retained_request, desc->mesh_path);
+          }
+        } else if (retained_request.as.mesh) {
+          asset_handle = vkr_mesh_manager_create_asset_from_handle_info(
+              manager, &retained_request, &normalized_desc, key_buf, &asset_error);
+        } else {
+          asset_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        }
+        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+    } else {
+      VkrAllocatorScope scope =
+          vkr_allocator_begin_scope(&manager->scratch_allocator);
+      if (!vkr_allocator_scope_is_valid(&scope)) {
+        asset_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      } else {
+        VkrResourceHandleInfo owned_request = {0};
+        bool8_t release_owned_request = false_v;
+        VkrRendererError request_error = VKR_RENDERER_ERROR_NONE;
+        if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_MESH, desc->mesh_path,
+                                      &manager->scratch_allocator,
+                                      &owned_request, &request_error)) {
+          asset_error = request_error != VKR_RENDERER_ERROR_NONE
+                            ? request_error
+                            : VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+        } else if (owned_request.request_id != 0) {
+          asset_handle = vkr_mesh_manager_create_pending_asset_slot(
+              manager, &normalized_desc, key_buf, owned_request.request_id,
+              &asset_error);
+          if (asset_handle.id != 0) {
+            uint32_t slot = asset_handle.id - 1;
+            VkrMeshAsset *asset =
+                array_get_VkrMeshAsset(&manager->mesh_assets, slot);
+            if (asset && asset->id == asset_handle.id) {
+              asset->loading_state = VKR_MESH_LOADING_STATE_PENDING;
+              asset->last_error = VKR_RENDERER_ERROR_NONE;
+              asset->pending_request_id = owned_request.request_id;
+              (void)vkr_mesh_manager_sync_pending_asset(manager, slot, asset);
+            }
+          } else {
+            release_owned_request = true_v;
+          }
+        } else if (owned_request.as.mesh) {
+          asset_handle = vkr_mesh_manager_create_asset_from_handle_info(
+              manager, &owned_request, &normalized_desc, key_buf, &asset_error);
+          release_owned_request = true_v;
+        } else {
+          asset_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+        }
+
+        if (release_owned_request) {
+          vkr_resource_system_unload(&owned_request, desc->mesh_path);
+        }
+
+        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+      }
+    }
+    if (asset_handle.id == 0) {
+      *out_error = asset_error != VKR_RENDERER_ERROR_NONE
+                       ? asset_error
+                       : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      return VKR_MESH_INSTANCE_HANDLE_INVALID;
+    }
+    created_new_asset = true_v;
+  }
+
+  VkrTransform transform = desc->transform;
+  Mat4 model = vkr_transform_get_world(&transform);
+  VkrMeshInstanceHandle instance = vkr_mesh_manager_create_instance(
+      manager, asset_handle, model, render_id, visible, out_error);
+  if (instance.id == 0 && created_new_asset) {
+    vkr_mesh_manager_release_asset(manager, asset_handle);
+  }
+
+  return instance;
+}
+
+vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
+    VkrMeshManager *manager, VkrMeshAsset *asset,
+    const VkrMeshLoaderResult *mesh_result, const VkrMeshLoadDesc *desc,
+    VkrRendererError *out_error) {
+  assert_log(manager != NULL, "Manager is NULL");
+  assert_log(asset != NULL, "Asset is NULL");
+  assert_log(mesh_result != NULL, "Mesh result is NULL");
+  assert_log(desc != NULL, "Desc is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  *out_error = VKR_RENDERER_ERROR_NONE;
+
+  if (asset->submeshes.data && asset->submeshes.length > 0) {
+    for (uint32_t i = 0; i < asset->submeshes.length; ++i) {
+      VkrMeshAssetSubmesh *submesh =
+          array_get_VkrMeshAssetSubmesh(&asset->submeshes, i);
+      if (submesh) {
+        vkr_mesh_manager_release_asset_submesh(manager, submesh);
+      }
+    }
+    array_destroy_VkrMeshAssetSubmesh(&asset->submeshes);
+  }
+
+  asset->bounds_valid = false_v;
+  asset->bounds_local_center = vec3_zero();
+  asset->bounds_local_radius = 0.0f;
+
+  bool8_t use_merged = mesh_result->has_mesh_buffer &&
+                       mesh_result->mesh_buffer.vertex_count > 0 &&
+                       mesh_result->mesh_buffer.index_count > 0 &&
+                       mesh_result->submeshes.length > 0 &&
+                       mesh_result->submeshes.data;
+  if (!use_merged &&
+      (mesh_result->subsets.length == 0 || !mesh_result->subsets.data)) {
+    log_error("MeshManager: mesh '%.*s' returned no subsets",
+              (int)desc->mesh_path.length, desc->mesh_path.str);
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return false_v;
+  }
+
+  uint32_t subset_count = use_merged ? (uint32_t)mesh_result->submeshes.length
+                                     : (uint32_t)mesh_result->subsets.length;
+  asset->submeshes =
+      array_create_VkrMeshAssetSubmesh(&manager->asset_allocator, subset_count);
+  if (!asset->submeshes.data) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  MemZero(asset->submeshes.data, subset_count * sizeof(VkrMeshAssetSubmesh));
+
+  VkrGeometryHandle merged_geometry = VKR_GEOMETRY_HANDLE_INVALID;
+  bool8_t subsets_success = true_v;
+
+  if (use_merged) {
+    char geometry_name_buf[GEOMETRY_NAME_MAX_LENGTH] = {0};
+    vkr_mesh_manager_build_mesh_buffer_key(geometry_name_buf,
+                                           mesh_result->source_path);
+    String8 geometry_name = string8_create((uint8_t *)geometry_name_buf,
+                                           string_length(geometry_name_buf));
+
+    VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
+    merged_geometry = vkr_geometry_system_acquire_by_name(
+        manager->geometry_system, geometry_name, true_v, &geo_err);
+
+    if (merged_geometry.id == 0) {
+      if (geo_err != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
+        *out_error = geo_err;
+        subsets_success = false_v;
+      } else {
+        Vec3 union_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
+        Vec3 union_max =
+            vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
+
+        for (uint64_t i = 0; i < mesh_result->submeshes.length; ++i) {
+          const VkrMeshLoaderSubmeshRange *range =
+              &mesh_result->submeshes.data[i];
+          Vec3 range_min = vec3_add(range->center, range->min_extents);
+          Vec3 range_max = vec3_add(range->center, range->max_extents);
+          union_min.x = vkr_min_f32(union_min.x, range_min.x);
+          union_min.y = vkr_min_f32(union_min.y, range_min.y);
+          union_min.z = vkr_min_f32(union_min.z, range_min.z);
+          union_max.x = vkr_max_f32(union_max.x, range_max.x);
+          union_max.y = vkr_max_f32(union_max.y, range_max.y);
+          union_max.z = vkr_max_f32(union_max.z, range_max.z);
+        }
+
+        Vec3 center = vec3_scale(vec3_add(union_min, union_max), 0.5f);
+        Vec3 min_extents = vec3_sub(union_min, center);
+        Vec3 max_extents = vec3_sub(union_max, center);
+
+        VkrGeometryConfig cfg = {0};
+        cfg.vertex_size = mesh_result->mesh_buffer.vertex_size;
+        cfg.vertex_count = mesh_result->mesh_buffer.vertex_count;
+        cfg.vertices = mesh_result->mesh_buffer.vertices;
+        cfg.index_size = mesh_result->mesh_buffer.index_size;
+        cfg.index_count = mesh_result->mesh_buffer.index_count;
+        cfg.indices = mesh_result->mesh_buffer.indices;
+        cfg.center = center;
+        cfg.min_extents = min_extents;
+        cfg.max_extents = max_extents;
+        string_copy(cfg.name, geometry_name_buf);
+
+        merged_geometry = vkr_geometry_system_create(manager->geometry_system,
+                                                     &cfg, true_v, &geo_err);
+        if (merged_geometry.id == 0) {
+          *out_error = geo_err;
+          subsets_success = false_v;
+        }
+      }
+    }
+  }
+
+  Vec3 bounds_union_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
+  Vec3 bounds_union_max =
+      vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
+  bool8_t has_bounds = false_v;
+
+  uint32_t built_count = 0;
+  for (uint32_t i = 0; subsets_success && i < subset_count; ++i) {
+    VkrMeshAssetSubmesh *submesh =
+        array_get_VkrMeshAssetSubmesh(&asset->submeshes, i);
+
+    if (use_merged) {
+      const VkrMeshLoaderSubmeshRange *range = &mesh_result->submeshes.data[i];
+
+      if (i > 0 && merged_geometry.id != 0) {
+        vkr_geometry_system_acquire(manager->geometry_system, merged_geometry);
+      }
+
+      VkrMaterialHandle material = range->material_handle;
+      bool8_t owns_material = true_v;
+      if (material.id == 0) {
+        material = manager->material_system->default_material;
+        owns_material = false_v;
+      }
+      if (owns_material && material.id != 0) {
+        vkr_material_system_add_ref(manager->material_system, material);
+      }
+
+      VkrPipelineDomain domain = vkr_mesh_manager_resolve_domain(
+          range->pipeline_domain, desc->pipeline_domain);
+
+      String8 shader_override = range->shader_override.str
+                                    ? range->shader_override
+                                    : desc->shader_override;
+      String8 shader_override_copy = {0};
+      if (shader_override.str && shader_override.length > 0) {
+        shader_override_copy =
+            string8_duplicate(&manager->asset_allocator, &shader_override);
+      }
+
+      *submesh = (VkrMeshAssetSubmesh){
+          .geometry = merged_geometry,
+          .material = material,
+          .shader_override = shader_override_copy,
+          .pipeline_domain = domain,
+          .range_id = range->range_id,
+          .first_index = range->first_index,
+          .index_count = range->index_count,
+          .vertex_offset = range->vertex_offset,
+          .center = range->center,
+          .min_extents = range->min_extents,
+          .max_extents = range->max_extents,
+          .owns_geometry = true_v,
+          .owns_material = owns_material,
+      };
+    } else {
+      const VkrMeshLoaderSubset *subset = &mesh_result->subsets.data[i];
+      VkrGeometryConfig geometry_config = subset->geometry_config;
+
+      vkr_mesh_manager_build_geometry_key(geometry_config.name,
+                                          mesh_result->source_path, i);
+      uint64_t name_length = string_length(geometry_config.name);
+      String8 geometry_name =
+          string8_create((uint8_t *)geometry_config.name, name_length);
+
+      VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
+      VkrGeometryHandle geometry = vkr_geometry_system_acquire_by_name(
+          manager->geometry_system, geometry_name, true_v, &geo_err);
+
+      if (geometry.id == 0) {
+        if (geo_err != VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED) {
+          *out_error = geo_err;
+          subsets_success = false_v;
+          break;
+        }
+        geometry = vkr_geometry_system_create(manager->geometry_system,
+                                              &geometry_config, true_v, &geo_err);
+        if (geometry.id == 0) {
+          *out_error = geo_err;
+          subsets_success = false_v;
+          break;
+        }
+      }
+
+      VkrMaterialHandle material = subset->material_handle;
+      bool8_t owns_material = true_v;
+      if (material.id == 0) {
+        material = manager->material_system->default_material;
+        owns_material = false_v;
+      }
+      if (owns_material && material.id != 0) {
+        vkr_material_system_add_ref(manager->material_system, material);
+      }
+
+      VkrPipelineDomain domain = vkr_mesh_manager_resolve_domain(
+          subset->pipeline_domain, desc->pipeline_domain);
+
+      String8 shader_override = subset->shader_override.str
+                                    ? subset->shader_override
+                                    : desc->shader_override;
+      String8 shader_override_copy = {0};
+      if (shader_override.str && shader_override.length > 0) {
+        shader_override_copy =
+            string8_duplicate(&manager->asset_allocator, &shader_override);
+      }
+
+      *submesh = (VkrMeshAssetSubmesh){
+          .geometry = geometry,
+          .material = material,
+          .shader_override = shader_override_copy,
+          .pipeline_domain = domain,
+          .range_id = geometry.id,
+          .first_index = 0,
+          .index_count = geometry_config.index_count,
+          .vertex_offset = 0,
+          .center = geometry_config.center,
+          .min_extents = geometry_config.min_extents,
+          .max_extents = geometry_config.max_extents,
+          .owns_geometry = true_v,
+          .owns_material = owns_material,
+      };
+    }
+
+    built_count++;
+
+    Vec3 sub_min = vec3_add(submesh->center, submesh->min_extents);
+    Vec3 sub_max = vec3_add(submesh->center, submesh->max_extents);
+    bounds_union_min.x = vkr_min_f32(bounds_union_min.x, sub_min.x);
+    bounds_union_min.y = vkr_min_f32(bounds_union_min.y, sub_min.y);
+    bounds_union_min.z = vkr_min_f32(bounds_union_min.z, sub_min.z);
+    bounds_union_max.x = vkr_max_f32(bounds_union_max.x, sub_max.x);
+    bounds_union_max.y = vkr_max_f32(bounds_union_max.y, sub_max.y);
+    bounds_union_max.z = vkr_max_f32(bounds_union_max.z, sub_max.z);
+    has_bounds = true_v;
+  }
+
+  if (!subsets_success) {
+    for (uint32_t i = 0; i < built_count; ++i) {
+      VkrMeshAssetSubmesh *submesh =
+          array_get_VkrMeshAssetSubmesh(&asset->submeshes, i);
+      if (submesh) {
+        vkr_mesh_manager_release_asset_submesh(manager, submesh);
+      }
+    }
+    array_destroy_VkrMeshAssetSubmesh(&asset->submeshes);
+    asset->bounds_valid = false_v;
+    asset->bounds_local_center = vec3_zero();
+    asset->bounds_local_radius = 0.0f;
+    return false_v;
+  }
+
+  if (has_bounds) {
+    asset->bounds_valid = true_v;
+    asset->bounds_local_center =
+        vec3_scale(vec3_add(bounds_union_min, bounds_union_max), 0.5f);
+    Vec3 half_extents = vec3_sub(bounds_union_max, asset->bounds_local_center);
+    asset->bounds_local_radius = vec3_length(half_extents);
+  }
+
+  return true_v;
 }
 
 /**
@@ -2157,6 +2970,9 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
   asset->generation = generation;
   asset->domain = vkr_mesh_manager_resolve_domain(desc->pipeline_domain, 0);
   asset->ref_count = 0;
+  asset->loading_state = VKR_MESH_LOADING_STATE_NOT_LOADED;
+  asset->last_error = VKR_RENDERER_ERROR_NONE;
+  asset->pending_request_id = 0;
 
   asset->mesh_path =
       string8_duplicate(&manager->asset_allocator, &desc->mesh_path);
@@ -2419,6 +3235,10 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
 
   manager->asset_count++;
 
+  asset->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+  asset->last_error = VKR_RENDERER_ERROR_NONE;
+  asset->pending_request_id = 0;
+
   return (VkrMeshAssetHandle){.id = id, .generation = generation};
 }
 
@@ -2463,34 +3283,18 @@ uint32_t vkr_mesh_manager_create_instances_batch(
   uint32_t *desc_to_unique =
       vkr_allocator_alloc(scratch_allocator, sizeof(uint32_t) * wave_size,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *unique_to_first_desc =
-      vkr_allocator_alloc(scratch_allocator, sizeof(uint32_t) * wave_size,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   VkrMeshAssetHandle *unique_assets = vkr_allocator_alloc(
       scratch_allocator, sizeof(VkrMeshAssetHandle) * wave_size,
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  bool8_t *unique_needs_load =
-      vkr_allocator_alloc(scratch_allocator, sizeof(bool8_t) * wave_size,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  String8 *load_paths =
-      vkr_allocator_alloc(scratch_allocator, sizeof(String8) * wave_size,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *load_to_unique =
-      vkr_allocator_alloc(scratch_allocator, sizeof(uint32_t) * wave_size,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrResourceHandleInfo *handle_infos = vkr_allocator_alloc(
-      scratch_allocator, sizeof(VkrResourceHandleInfo) * wave_size,
+  bool8_t *unique_temp_refs = vkr_allocator_alloc(
+      scratch_allocator, sizeof(bool8_t) * wave_size,
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrRendererError *load_errors = vkr_allocator_alloc(
+  VkrRendererError *unique_errors = vkr_allocator_alloc(
       scratch_allocator, sizeof(VkrRendererError) * wave_size,
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  char(*key_bufs)[512] =
-      vkr_allocator_alloc(scratch_allocator, sizeof(char[512]) * wave_size,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
-  if (!unique_keys || !desc_to_unique || !unique_to_first_desc ||
-      !unique_assets || !unique_needs_load || !load_paths || !load_to_unique ||
-      !handle_infos || !load_errors || !key_bufs) {
+  if (!unique_keys || !desc_to_unique || !unique_assets || !unique_temp_refs ||
+      !unique_errors) {
     if (out_errors) {
       for (uint32_t i = 0; i < count; i++) {
         out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
@@ -2501,8 +3305,7 @@ uint32_t vkr_mesh_manager_create_instances_batch(
   }
 
   uint32_t instances_created = 0;
-  uint32_t assets_cached_hits = 0;
-  uint32_t assets_loaded = 0;
+  uint32_t assets_requested = 0;
 
   for (uint32_t base = 0; base < count; base += wave_size) {
     uint32_t wave_end = vkr_min_u32(base + wave_size, count);
@@ -2519,72 +3322,23 @@ uint32_t vkr_mesh_manager_create_instances_batch(
       } else {
         desc_to_unique[j] = unique_count;
         unique_keys[unique_count] = key;
-        unique_to_first_desc[unique_count] = j;
-
-        const char *shader_str = key.shader_override.str
-                                     ? (const char *)key.shader_override.str
-                                     : "";
-        string_format(key_bufs[unique_count], sizeof(key_bufs[0]),
-                      "%.*s|%u|%.*s", (int)key.mesh_path.length,
-                      key.mesh_path.str, (uint32_t)key.pipeline_domain,
-                      (int)key.shader_override.length, shader_str);
-
-        VkrMeshAssetEntry *cached = vkr_hash_table_get_VkrMeshAssetEntry(
-            &manager->asset_by_key, key_bufs[unique_count]);
-        if (cached) {
-          VkrMeshAsset *asset = array_get_VkrMeshAsset(&manager->mesh_assets,
-                                                       cached->asset_index);
-          if (asset && asset->id != 0) {
-            unique_assets[unique_count] = (VkrMeshAssetHandle){
-                .id = asset->id, .generation = asset->generation};
-            unique_needs_load[unique_count] = false_v;
-            assets_cached_hits++;
-          } else {
-            unique_needs_load[unique_count] = true_v;
-            unique_assets[unique_count] = VKR_MESH_ASSET_HANDLE_INVALID;
-          }
-        } else {
-          unique_needs_load[unique_count] = true_v;
-          unique_assets[unique_count] = VKR_MESH_ASSET_HANDLE_INVALID;
-        }
+        unique_assets[unique_count] = VKR_MESH_ASSET_HANDLE_INVALID;
+        unique_temp_refs[unique_count] = false_v;
+        unique_errors[unique_count] = VKR_RENDERER_ERROR_NONE;
         unique_count++;
       }
     }
 
-    uint32_t load_count = 0;
-    for (uint32_t j = 0; j < unique_count; j++) {
-      if (unique_needs_load[j]) {
-        load_paths[load_count] = unique_keys[j].mesh_path;
-        load_to_unique[load_count] = j;
-        load_count++;
-      }
-    }
-
-    if (load_count > 0) {
-      uint32_t loaded = vkr_resource_system_load_batch(
-          VKR_RESOURCE_TYPE_MESH, load_paths, load_count, scratch_allocator,
-          handle_infos, load_errors);
-      assets_loaded += loaded;
-
-      for (uint32_t l = 0; l < load_count; l++) {
-        uint32_t unique_idx = load_to_unique[l];
-        if (load_errors[l] == VKR_RENDERER_ERROR_NONE &&
-            handle_infos[l].type == VKR_RESOURCE_TYPE_MESH) {
-          VkrRendererError asset_err = VKR_RENDERER_ERROR_NONE;
-          // Use the first desc that defined this unique key
-          uint32_t first_desc_idx = unique_to_first_desc[unique_idx];
-          unique_assets[unique_idx] =
-              vkr_mesh_manager_create_asset_from_handle_info(
-                  manager, &handle_infos[l], &descs[base + first_desc_idx],
-                  key_bufs[unique_idx], &asset_err);
-        }
-      }
-
-      for (uint32_t l = 0; l < load_count; l++) {
-        if (handle_infos[l].type == VKR_RESOURCE_TYPE_MESH &&
-            handle_infos[l].as.mesh) {
-          vkr_resource_system_unload(&handle_infos[l], load_paths[l]);
-        }
+    for (uint32_t j = 0; j < unique_count; ++j) {
+      VkrRendererError asset_err = VKR_RENDERER_ERROR_NONE;
+      VkrMeshAssetHandle asset = vkr_mesh_manager_acquire_asset(
+          manager, unique_keys[j].mesh_path, unique_keys[j].pipeline_domain,
+          unique_keys[j].shader_override, &asset_err);
+      unique_assets[j] = asset;
+      unique_temp_refs[j] = asset.id != 0;
+      unique_errors[j] = asset_err;
+      if (asset.id != 0) {
+        assets_requested++;
       }
     }
 
@@ -2595,7 +3349,10 @@ uint32_t vkr_mesh_manager_create_instances_batch(
 
       if (asset_handle.id == 0) {
         if (out_errors) {
-          out_errors[global_i] = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+          VkrRendererError asset_err = unique_errors[unique_idx];
+          out_errors[global_i] = asset_err != VKR_RENDERER_ERROR_NONE
+                                     ? asset_err
+                                     : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
         }
         continue;
       }
@@ -2618,13 +3375,18 @@ uint32_t vkr_mesh_manager_create_instances_batch(
         out_errors[global_i] = inst_err;
       }
     }
+
+    for (uint32_t j = 0; j < unique_count; ++j) {
+      if (unique_temp_refs[j] && unique_assets[j].id != 0) {
+        vkr_mesh_manager_release_asset(manager, unique_assets[j]);
+      }
+    }
   }
 
   vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
-  log_debug("Instance batch: %u instances created, %u assets loaded, "
-            "%u cache hits",
-            instances_created, assets_loaded, assets_cached_hits);
+  log_debug("Instance batch: %u instances created, %u assets requested",
+            instances_created, assets_requested);
   return instances_created;
 }
 
@@ -2649,19 +3411,7 @@ bool8_t vkr_mesh_manager_destroy_instance(VkrMeshManager *manager,
 
   uint32_t live_index = inst->live_index;
 
-  if (inst->submesh_state.data) {
-    for (uint32_t j = 0; j < inst->submesh_state.length; ++j) {
-      VkrMeshSubmeshInstanceState *state =
-          array_get_VkrMeshSubmeshInstanceState(&inst->submesh_state, j);
-      if (state->instance_state.id != VKR_INVALID_ID) {
-        VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
-        vkr_pipeline_registry_release_instance_state(
-            manager->pipeline_registry, state->pipeline, state->instance_state,
-            &rel_err);
-      }
-    }
-    array_destroy_VkrMeshSubmeshInstanceState(&inst->submesh_state);
-  }
+  vkr_mesh_manager_release_instance_state_array(manager, inst);
 
   vkr_mesh_manager_release_asset(manager, inst->asset);
 

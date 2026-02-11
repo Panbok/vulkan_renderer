@@ -100,6 +100,7 @@ typedef struct VkrMeshDesc {
 
 // Forward declaration
 typedef struct VkrMeshLoaderContext VkrMeshLoaderContext;
+typedef struct VkrResourceHandleInfo VkrResourceHandleInfo;
 
 /**
  * @brief Hash table entry for mesh asset lookup by key string.
@@ -373,8 +374,10 @@ VkrSubMesh *vkr_mesh_manager_get_submesh(VkrMeshManager *manager,
  * @brief Acquire a mesh asset by key, creating it if necessary.
  *
  * If an asset with the given key already exists, increments its ref_count and
- * returns the handle. Otherwise, loads the mesh file, creates the asset, and
- * inserts it into the registry.
+ * returns the handle. Otherwise, schedules an async mesh resource request,
+ * creates a pending asset slot immediately, and inserts it into the registry.
+ * Callers can create instances against pending assets; they become renderable
+ * after `vkr_mesh_manager_pump_async` finalizes the payload.
  *
  * @param manager The mesh manager.
  * @param mesh_path Path to the mesh file.
@@ -388,6 +391,16 @@ VkrMeshAssetHandle vkr_mesh_manager_acquire_asset(VkrMeshManager *manager,
                                                   VkrPipelineDomain domain,
                                                   String8 shader_override,
                                                   VkrRendererError *out_error);
+
+/**
+ * @brief Progress pending mesh asset requests on the render thread.
+ *
+ * Finalizes assets whose mesh resource requests reached READY state and updates
+ * dependent instances from `PENDING` to `LOADED`.
+ *
+ * @param manager The mesh manager.
+ */
+void vkr_mesh_manager_pump_async(VkrMeshManager *manager);
 
 /**
  * @brief Release a mesh asset reference.
@@ -437,6 +450,30 @@ uint32_t vkr_mesh_manager_asset_count(const VkrMeshManager *manager);
 VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
     VkrMeshManager *manager, VkrMeshAssetHandle asset, Mat4 model,
     uint32_t render_id, bool8_t visible, VkrRendererError *out_error);
+
+/**
+ * @brief Create a mesh instance from an already-resolved mesh resource handle.
+ *
+ * This path avoids synchronous resource-system loads in callers that already
+ * own a READY `VKR_RESOURCE_TYPE_MESH` handle. The manager reuses an existing
+ * asset key when available or materializes a new shared asset from the
+ * provided loader result. When `handle_info->request_id` is non-zero, the
+ * manager acquires its own request reference so callers can unload their
+ * tracked handle immediately after successful instance creation.
+ *
+ * @param manager The mesh manager.
+ * @param desc Load descriptor that defines key/domain/transform overrides.
+ * @param handle_info Resolved mesh resource handle (`type == MESH`).
+ * @param render_id Render ID for picking (0 disables picking).
+ * @param visible Initial visibility state.
+ * @param out_error Error code if creation fails.
+ * @return Handle to the instance, or VKR_MESH_INSTANCE_HANDLE_INVALID on
+ * failure.
+ */
+VkrMeshInstanceHandle vkr_mesh_manager_create_instance_from_resource(
+    VkrMeshManager *manager, const VkrMeshLoadDesc *desc,
+    const VkrResourceHandleInfo *handle_info, uint32_t render_id,
+    bool8_t visible, VkrRendererError *out_error);
 
 /**
  * @brief Batch create mesh instances from load descriptors.
