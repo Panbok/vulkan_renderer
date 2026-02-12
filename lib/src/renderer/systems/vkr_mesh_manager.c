@@ -153,12 +153,10 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
     VkrMeshManager *manager, VkrMeshAsset *asset,
     const VkrMeshLoaderResult *mesh_result, const VkrMeshLoadDesc *desc,
     VkrRendererError *out_error);
-vkr_internal bool8_t vkr_mesh_manager_sync_pending_asset(VkrMeshManager *manager,
-                                                         uint32_t slot,
-                                                         VkrMeshAsset *asset);
+vkr_internal bool8_t vkr_mesh_manager_sync_pending_asset(
+    VkrMeshManager *manager, uint32_t slot, VkrMeshAsset *asset);
 vkr_internal bool8_t vkr_mesh_manager_init_instance_state_array(
-    VkrMeshManager *manager, VkrMeshInstance *instance,
-    uint32_t submesh_count);
+    VkrMeshManager *manager, VkrMeshInstance *instance, uint32_t submesh_count);
 vkr_internal void
 vkr_mesh_manager_release_instance_state_array(VkrMeshManager *manager,
                                               VkrMeshInstance *instance);
@@ -363,14 +361,13 @@ vkr_mesh_manager_release_instance_state_array(VkrMeshManager *manager,
     if (!vkr_pipeline_registry_release_instance_state(
             manager->pipeline_registry, state->pipeline, state->instance_state,
             &rel_err)) {
-      log_warn(
-          "MeshManager: failed to release instance state (pipeline=%u, "
-          "generation=%u, state=%u, err=%d)",
-          state->pipeline.id, state->pipeline.generation, state->instance_state.id,
-          rel_err);
+      log_warn("MeshManager: failed to release instance state (pipeline=%u, "
+               "generation=%u, state=%u, err=%d)",
+               state->pipeline.id, state->pipeline.generation,
+               state->instance_state.id, rel_err);
     }
-    state->instance_state = (VkrRendererInstanceStateHandle){.id =
-                                                                 VKR_INVALID_ID};
+    state->instance_state =
+        (VkrRendererInstanceStateHandle){.id = VKR_INVALID_ID};
     state->pipeline = VKR_PIPELINE_HANDLE_INVALID;
     state->pipeline_dirty = true_v;
   }
@@ -618,8 +615,8 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_pending_asset_slot(
       *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       vkr_mesh_manager_free_asset_strings(manager, asset);
       MemZero(asset, sizeof(*asset));
-      array_set_uint32_t(&manager->asset_free_indices, manager->asset_free_count,
-                         slot);
+      array_set_uint32_t(&manager->asset_free_indices,
+                         manager->asset_free_count, slot);
       manager->asset_free_count++;
       return VKR_MESH_ASSET_HANDLE_INVALID;
     }
@@ -642,7 +639,7 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_pending_asset_slot(
   asset->key_string = key_copy;
   VkrMeshAssetEntry entry = {.asset_index = slot, .key = key_copy};
   if (!vkr_hash_table_insert_VkrMeshAssetEntry(&manager->asset_by_key, key_copy,
-                                                entry)) {
+                                               entry)) {
     vkr_allocator_free(&manager->asset_allocator, key_copy,
                        string_length(key_copy) + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
@@ -714,9 +711,8 @@ vkr_mesh_manager_refresh_instances_for_asset(VkrMeshManager *manager,
   }
 }
 
-vkr_internal bool8_t vkr_mesh_manager_sync_pending_asset(VkrMeshManager *manager,
-                                                         uint32_t slot,
-                                                         VkrMeshAsset *asset) {
+vkr_internal bool8_t vkr_mesh_manager_sync_pending_asset(
+    VkrMeshManager *manager, uint32_t slot, VkrMeshAsset *asset) {
   assert_log(manager != NULL, "Manager is NULL");
   assert_log(asset != NULL, "Asset is NULL");
 
@@ -845,7 +841,8 @@ vkr_internal bool8_t vkr_mesh_manager_resolve_subset_geometries_batch(
     out_geometries[i] = VKR_GEOMETRY_HANDLE_INVALID;
   }
 
-  VkrAllocatorScope scope = vkr_allocator_begin_scope(&manager->scratch_allocator);
+  VkrAllocatorScope scope =
+      vkr_allocator_begin_scope(&manager->scratch_allocator);
   if (!vkr_allocator_scope_is_valid(&scope)) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
@@ -854,10 +851,9 @@ vkr_internal bool8_t vkr_mesh_manager_resolve_subset_geometries_batch(
   VkrGeometryConfig *pending_configs = vkr_allocator_alloc(
       &manager->scratch_allocator, sizeof(VkrGeometryConfig) * subset_count,
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *pending_subset_indices =
-      vkr_allocator_alloc(&manager->scratch_allocator,
-                          sizeof(uint32_t) * subset_count,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  uint32_t *pending_subset_indices = vkr_allocator_alloc(
+      &manager->scratch_allocator, sizeof(uint32_t) * subset_count,
+      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!pending_configs || !pending_subset_indices) {
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -866,8 +862,8 @@ vkr_internal bool8_t vkr_mesh_manager_resolve_subset_geometries_batch(
 
   uint32_t pending_count = 0;
   for (uint32_t i = 0; i < subset_count; ++i) {
-    VkrMeshLoaderSubset *subset = array_get_VkrMeshLoaderSubset(
-        &mesh_result->subsets, i);
+    VkrMeshLoaderSubset *subset =
+        array_get_VkrMeshLoaderSubset(&mesh_result->subsets, i);
     if (!subset) {
       *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
       goto fail_cleanup;
@@ -898,14 +894,12 @@ vkr_internal bool8_t vkr_mesh_manager_resolve_subset_geometries_batch(
   }
 
   if (pending_count > 0) {
-    VkrGeometryHandle *pending_handles =
-        vkr_allocator_alloc(&manager->scratch_allocator,
-                            sizeof(VkrGeometryHandle) * pending_count,
-                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    VkrRendererError *pending_errors =
-        vkr_allocator_alloc(&manager->scratch_allocator,
-                            sizeof(VkrRendererError) * pending_count,
-                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    VkrGeometryHandle *pending_handles = vkr_allocator_alloc(
+        &manager->scratch_allocator, sizeof(VkrGeometryHandle) * pending_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    VkrRendererError *pending_errors = vkr_allocator_alloc(
+        &manager->scratch_allocator, sizeof(VkrRendererError) * pending_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     if (!pending_handles || !pending_errors) {
       *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       goto fail_cleanup;
@@ -1212,8 +1206,8 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
         .geometry = geometry,
         .material = material,
         .pipeline = VKR_PIPELINE_HANDLE_INVALID,
-        .instance_state = (VkrRendererInstanceStateHandle){
-            .id = VKR_INVALID_ID},
+        .instance_state =
+            (VkrRendererInstanceStateHandle){.id = VKR_INVALID_ID},
         .pipeline_domain =
             vkr_mesh_manager_resolve_domain(sub_desc->pipeline_domain, 0),
         .shader_override =
@@ -1563,8 +1557,8 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
       }
       subsets_success = false_v;
     } else if (!vkr_mesh_manager_resolve_subset_geometries_batch(
-                   manager, mesh_result, subset_count, resolved_subset_geometries,
-                   out_error)) {
+                   manager, mesh_result, subset_count,
+                   resolved_subset_geometries, out_error)) {
       subsets_success = false_v;
     }
   }
@@ -2437,15 +2431,13 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
   inst->visible = visible;
   inst->loading_state = VKR_MESH_LOADING_STATE_PENDING;
 
-  array_set_uint32_t(&manager->instance_live_indices, inst->live_index, slot);
-
   if (asset->loading_state == VKR_MESH_LOADING_STATE_LOADED) {
     uint32_t submesh_count = (uint32_t)asset->submeshes.length;
-    if (submesh_count == 0 ||
-        !vkr_mesh_manager_init_instance_state_array(manager, inst,
-                                                    submesh_count)) {
-      *out_error = submesh_count == 0 ? VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED
-                                      : VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    if (submesh_count == 0 || !vkr_mesh_manager_init_instance_state_array(
+                                  manager, inst, submesh_count)) {
+      *out_error = submesh_count == 0
+                       ? VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED
+                       : VKR_RENDERER_ERROR_OUT_OF_MEMORY;
       MemZero(inst, sizeof(*inst));
       array_set_uint32_t(&manager->instance_free_indices,
                          manager->instance_free_count, slot);
@@ -2457,6 +2449,7 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
     vkr_mesh_manager_update_instance_bounds(inst, asset, model);
   }
 
+  array_set_uint32_t(&manager->instance_live_indices, inst->live_index, slot);
   asset->ref_count++;
   manager->instance_count++;
 
@@ -2554,7 +2547,8 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance_from_resource(
           }
         } else if (retained_request.as.mesh) {
           asset_handle = vkr_mesh_manager_create_asset_from_handle_info(
-              manager, &retained_request, &normalized_desc, key_buf, &asset_error);
+              manager, &retained_request, &normalized_desc, key_buf,
+              &asset_error);
         } else {
           asset_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
         }
@@ -2813,8 +2807,8 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
           subsets_success = false_v;
           break;
         }
-        geometry = vkr_geometry_system_create(manager->geometry_system,
-                                              &geometry_config, true_v, &geo_err);
+        geometry = vkr_geometry_system_create(
+            manager->geometry_system, &geometry_config, true_v, &geo_err);
         if (geometry.id == 0) {
           *out_error = geo_err;
           subsets_success = false_v;
@@ -3286,9 +3280,9 @@ uint32_t vkr_mesh_manager_create_instances_batch(
   VkrMeshAssetHandle *unique_assets = vkr_allocator_alloc(
       scratch_allocator, sizeof(VkrMeshAssetHandle) * wave_size,
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  bool8_t *unique_temp_refs = vkr_allocator_alloc(
-      scratch_allocator, sizeof(bool8_t) * wave_size,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  bool8_t *unique_temp_refs =
+      vkr_allocator_alloc(scratch_allocator, sizeof(bool8_t) * wave_size,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   VkrRendererError *unique_errors = vkr_allocator_alloc(
       scratch_allocator, sizeof(VkrRendererError) * wave_size,
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -3350,9 +3344,10 @@ uint32_t vkr_mesh_manager_create_instances_batch(
       if (asset_handle.id == 0) {
         if (out_errors) {
           VkrRendererError asset_err = unique_errors[unique_idx];
-          out_errors[global_i] = asset_err != VKR_RENDERER_ERROR_NONE
-                                     ? asset_err
-                                     : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+          out_errors[global_i] =
+              asset_err != VKR_RENDERER_ERROR_NONE
+                  ? asset_err
+                  : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
         }
         continue;
       }
@@ -3578,8 +3573,8 @@ bool8_t vkr_mesh_manager_instance_refresh_pipeline(
     vkr_pipeline_registry_release_instance_state(
         manager->pipeline_registry, state->pipeline, state->instance_state,
         &rel_err);
-    state->instance_state = (VkrRendererInstanceStateHandle){
-        .id = VKR_INVALID_ID};
+    state->instance_state =
+        (VkrRendererInstanceStateHandle){.id = VKR_INVALID_ID};
   }
 
   if (state->instance_state.id == VKR_INVALID_ID) {
