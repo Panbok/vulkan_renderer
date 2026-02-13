@@ -163,6 +163,15 @@ vkr_mesh_manager_release_instance_state_array(VkrMeshManager *manager,
 vkr_internal void
 vkr_mesh_manager_refresh_instances_for_asset(VkrMeshManager *manager,
                                              uint32_t slot);
+vkr_internal void
+vkr_mesh_manager_asset_instance_index_clear_asset(VkrMeshManager *manager,
+                                                  uint32_t asset_slot);
+vkr_internal void vkr_mesh_manager_asset_instance_index_add_instance(
+    VkrMeshManager *manager, uint32_t instance_slot,
+    VkrMeshAssetHandle asset_handle);
+vkr_internal void vkr_mesh_manager_asset_instance_index_remove_instance(
+    VkrMeshManager *manager, uint32_t instance_slot,
+    VkrMeshAssetHandle asset_handle);
 
 typedef struct VkrOpaqueRangeInfo {
   uint32_t first_index;
@@ -507,6 +516,98 @@ vkr_internal void vkr_mesh_manager_free_asset_strings(VkrMeshManager *manager,
   }
 }
 
+vkr_internal void
+vkr_mesh_manager_asset_instance_index_clear_asset(VkrMeshManager *manager,
+                                                  uint32_t asset_slot) {
+  assert_log(manager != NULL, "Manager is NULL");
+
+  if (asset_slot >= manager->asset_instance_heads.length ||
+      asset_slot >= manager->asset_instance_generations.length) {
+    return;
+  }
+
+  array_set_uint32_t(&manager->asset_instance_heads, asset_slot, VKR_INVALID_ID);
+  array_set_uint32_t(&manager->asset_instance_generations, asset_slot,
+                     VKR_INVALID_ID);
+}
+
+vkr_internal void vkr_mesh_manager_asset_instance_index_add_instance(
+    VkrMeshManager *manager, uint32_t instance_slot,
+    VkrMeshAssetHandle asset_handle) {
+  assert_log(manager != NULL, "Manager is NULL");
+
+  if (asset_handle.id == 0) {
+    return;
+  }
+
+  uint32_t asset_slot = asset_handle.id - 1;
+  if (asset_slot >= manager->asset_instance_heads.length ||
+      asset_slot >= manager->asset_instance_generations.length ||
+      instance_slot >= manager->instance_asset_next.length ||
+      instance_slot >= manager->instance_asset_prev.length) {
+    return;
+  }
+
+  uint32_t tracked_generation =
+      *array_get_uint32_t(&manager->asset_instance_generations, asset_slot);
+  if (tracked_generation != asset_handle.generation) {
+    // Slot reuse increments generation; stale lists are invalid for new asset.
+    array_set_uint32_t(&manager->asset_instance_heads, asset_slot,
+                       VKR_INVALID_ID);
+    array_set_uint32_t(&manager->asset_instance_generations, asset_slot,
+                       asset_handle.generation);
+  }
+
+  uint32_t head = *array_get_uint32_t(&manager->asset_instance_heads, asset_slot);
+  array_set_uint32_t(&manager->instance_asset_prev, instance_slot,
+                     VKR_INVALID_ID);
+  array_set_uint32_t(&manager->instance_asset_next, instance_slot, head);
+  if (head != VKR_INVALID_ID && head < manager->instance_asset_prev.length) {
+    array_set_uint32_t(&manager->instance_asset_prev, head, instance_slot);
+  }
+  array_set_uint32_t(&manager->asset_instance_heads, asset_slot, instance_slot);
+}
+
+vkr_internal void vkr_mesh_manager_asset_instance_index_remove_instance(
+    VkrMeshManager *manager, uint32_t instance_slot,
+    VkrMeshAssetHandle asset_handle) {
+  assert_log(manager != NULL, "Manager is NULL");
+
+  if (instance_slot >= manager->instance_asset_next.length ||
+      instance_slot >= manager->instance_asset_prev.length) {
+    return;
+  }
+
+  uint32_t prev = *array_get_uint32_t(&manager->instance_asset_prev, instance_slot);
+  uint32_t next = *array_get_uint32_t(&manager->instance_asset_next, instance_slot);
+
+  if (asset_handle.id != 0) {
+    uint32_t asset_slot = asset_handle.id - 1;
+    if (asset_slot < manager->asset_instance_heads.length &&
+        asset_slot < manager->asset_instance_generations.length) {
+      uint32_t tracked_generation =
+          *array_get_uint32_t(&manager->asset_instance_generations, asset_slot);
+      if (tracked_generation == asset_handle.generation) {
+        uint32_t head =
+            *array_get_uint32_t(&manager->asset_instance_heads, asset_slot);
+
+        if (prev != VKR_INVALID_ID && prev < manager->instance_asset_next.length) {
+          array_set_uint32_t(&manager->instance_asset_next, prev, next);
+        } else if (head == instance_slot) {
+          array_set_uint32_t(&manager->asset_instance_heads, asset_slot, next);
+        }
+
+        if (next != VKR_INVALID_ID && next < manager->instance_asset_prev.length) {
+          array_set_uint32_t(&manager->instance_asset_prev, next, prev);
+        }
+      }
+    }
+  }
+
+  array_set_uint32_t(&manager->instance_asset_prev, instance_slot, VKR_INVALID_ID);
+  array_set_uint32_t(&manager->instance_asset_next, instance_slot, VKR_INVALID_ID);
+}
+
 vkr_internal void vkr_mesh_manager_destroy_asset_slot(VkrMeshManager *manager,
                                                       uint32_t slot,
                                                       bool8_t adjust_count) {
@@ -520,6 +621,8 @@ vkr_internal void vkr_mesh_manager_destroy_asset_slot(VkrMeshManager *manager,
   if (!asset || asset->id == 0) {
     return;
   }
+
+  vkr_mesh_manager_asset_instance_index_clear_asset(manager, slot);
 
   if (asset->pending_request_id != 0 && asset->mesh_path.str &&
       asset->mesh_path.length > 0) {
@@ -671,11 +774,27 @@ vkr_mesh_manager_refresh_instances_for_asset(VkrMeshManager *manager,
     return;
   }
 
-  for (uint32_t i = 0; i < manager->mesh_instances.length; ++i) {
+  uint32_t tracked_generation =
+      *array_get_uint32_t(&manager->asset_instance_generations, slot);
+  if (tracked_generation != asset->generation) {
+    return;
+  }
+
+  uint32_t instance_slot =
+      *array_get_uint32_t(&manager->asset_instance_heads, slot);
+  while (instance_slot != VKR_INVALID_ID) {
+    if (instance_slot >= manager->mesh_instances.length ||
+        instance_slot >= manager->instance_asset_next.length) {
+      break;
+    }
+
+    uint32_t next_slot =
+        *array_get_uint32_t(&manager->instance_asset_next, instance_slot);
     VkrMeshInstance *instance =
-        array_get_VkrMeshInstance(&manager->mesh_instances, i);
+        array_get_VkrMeshInstance(&manager->mesh_instances, instance_slot);
     if (!instance || instance->asset.id != asset->id ||
         instance->asset.generation != asset->generation) {
+      instance_slot = next_slot;
       continue;
     }
 
@@ -683,31 +802,26 @@ vkr_mesh_manager_refresh_instances_for_asset(VkrMeshManager *manager,
       vkr_mesh_manager_release_instance_state_array(manager, instance);
       instance->loading_state = VKR_MESH_LOADING_STATE_FAILED;
       instance->bounds_valid = false_v;
-      continue;
-    }
-
-    if (asset->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
+    } else if (asset->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
       instance->loading_state = VKR_MESH_LOADING_STATE_PENDING;
-      continue;
+    } else {
+      uint32_t submesh_count = (uint32_t)asset->submeshes.length;
+      bool8_t submesh_state_ready =
+          submesh_count > 0 &&
+          (instance->submesh_state.data ||
+           vkr_mesh_manager_init_instance_state_array(manager, instance,
+                                                      submesh_count));
+      if (!submesh_state_ready) {
+        instance->loading_state = VKR_MESH_LOADING_STATE_FAILED;
+        instance->bounds_valid = false_v;
+      } else {
+        instance->loading_state = VKR_MESH_LOADING_STATE_LOADED;
+        vkr_mesh_manager_update_instance_bounds(instance, asset,
+                                                instance->model);
+      }
     }
 
-    uint32_t submesh_count = (uint32_t)asset->submeshes.length;
-    if (submesh_count == 0) {
-      instance->loading_state = VKR_MESH_LOADING_STATE_FAILED;
-      instance->bounds_valid = false_v;
-      continue;
-    }
-
-    if (!instance->submesh_state.data &&
-        !vkr_mesh_manager_init_instance_state_array(manager, instance,
-                                                    submesh_count)) {
-      instance->loading_state = VKR_MESH_LOADING_STATE_FAILED;
-      instance->bounds_valid = false_v;
-      continue;
-    }
-
-    instance->loading_state = VKR_MESH_LOADING_STATE_LOADED;
-    vkr_mesh_manager_update_instance_bounds(instance, asset, instance->model);
+    instance_slot = next_slot;
   }
 }
 
@@ -1027,11 +1141,17 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
   manager->next_asset_index = 0;
   manager->asset_generation_counter = 1;
   manager->asset_by_key = vkr_hash_table_create_VkrMeshAssetEntry(
-      &manager->allocator, max_assets * 2);
+      &manager->allocator, ((uint64_t)max_assets) * 2u);
+  manager->asset_instance_heads = array_create_uint32_t(&manager->allocator,
+                                                         max_assets);
+  manager->asset_instance_generations =
+      array_create_uint32_t(&manager->allocator, max_assets);
 
   for (uint32_t i = 0; i < manager->mesh_assets.length; ++i) {
     VkrMeshAsset empty = {0};
     array_set_VkrMeshAsset(&manager->mesh_assets, i, empty);
+    array_set_uint32_t(&manager->asset_instance_heads, i, VKR_INVALID_ID);
+    array_set_uint32_t(&manager->asset_instance_generations, i, VKR_INVALID_ID);
   }
 
   uint32_t max_instances = manager->config.max_mesh_count;
@@ -1041,6 +1161,10 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
       array_create_uint32_t(&manager->allocator, max_instances);
   manager->instance_free_indices =
       array_create_uint32_t(&manager->allocator, max_instances);
+  manager->instance_asset_next =
+      array_create_uint32_t(&manager->allocator, max_instances);
+  manager->instance_asset_prev =
+      array_create_uint32_t(&manager->allocator, max_instances);
   manager->instance_free_count = 0;
   manager->instance_count = 0;
   manager->next_instance_index = 0;
@@ -1049,6 +1173,8 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
   for (uint32_t i = 0; i < manager->mesh_instances.length; ++i) {
     VkrMeshInstance empty = {0};
     array_set_VkrMeshInstance(&manager->mesh_instances, i, empty);
+    array_set_uint32_t(&manager->instance_asset_next, i, VKR_INVALID_ID);
+    array_set_uint32_t(&manager->instance_asset_prev, i, VKR_INVALID_ID);
   }
 
   return true_v;
@@ -1079,6 +1205,8 @@ void vkr_mesh_manager_shutdown(VkrMeshManager *manager) {
   array_destroy_VkrMeshInstance(&manager->mesh_instances);
   array_destroy_uint32_t(&manager->instance_live_indices);
   array_destroy_uint32_t(&manager->instance_free_indices);
+  array_destroy_uint32_t(&manager->instance_asset_next);
+  array_destroy_uint32_t(&manager->instance_asset_prev);
   vkr_dmemory_allocator_destroy(&manager->instance_allocator);
 
   for (uint32_t i = 0; i < manager->mesh_assets.length; ++i) {
@@ -1086,6 +1214,8 @@ void vkr_mesh_manager_shutdown(VkrMeshManager *manager) {
   }
   array_destroy_VkrMeshAsset(&manager->mesh_assets);
   array_destroy_uint32_t(&manager->asset_free_indices);
+  array_destroy_uint32_t(&manager->asset_instance_heads);
+  array_destroy_uint32_t(&manager->asset_instance_generations);
   vkr_hash_table_destroy_VkrMeshAssetEntry(&manager->asset_by_key);
   vkr_dmemory_allocator_destroy(&manager->asset_allocator);
 
@@ -2247,10 +2377,8 @@ VkrMeshAssetHandle vkr_mesh_manager_acquire_asset(VkrMeshManager *manager,
   VkrMeshAssetHandle asset_handle = vkr_mesh_manager_create_pending_asset_slot(
       manager, &desc, key_buf, request_info.request_id, out_error);
   if (asset_handle.id == 0) {
-    if (request_info.request_id != 0) {
-      vkr_resource_system_unload(&request_info, mesh_path);
-    } else if (request_info.type == VKR_RESOURCE_TYPE_MESH &&
-               request_info.as.mesh) {
+    if (request_info.request_id != 0 ||
+        (request_info.type == VKR_RESOURCE_TYPE_MESH && request_info.as.mesh)) {
       vkr_resource_system_unload(&request_info, mesh_path);
     }
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -2422,6 +2550,8 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
   VkrMeshInstance *inst =
       array_get_VkrMeshInstance(&manager->mesh_instances, slot);
   MemZero(inst, sizeof(*inst));
+  array_set_uint32_t(&manager->instance_asset_next, slot, VKR_INVALID_ID);
+  array_set_uint32_t(&manager->instance_asset_prev, slot, VKR_INVALID_ID);
 
   inst->asset = asset_handle;
   inst->generation = manager->instance_generation_counter++;
@@ -2450,6 +2580,7 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
   }
 
   array_set_uint32_t(&manager->instance_live_indices, inst->live_index, slot);
+  vkr_mesh_manager_asset_instance_index_add_instance(manager, slot, inst->asset);
   asset->ref_count++;
   manager->instance_count++;
 
@@ -3407,6 +3538,9 @@ bool8_t vkr_mesh_manager_destroy_instance(VkrMeshManager *manager,
   uint32_t live_index = inst->live_index;
 
   vkr_mesh_manager_release_instance_state_array(manager, inst);
+
+  vkr_mesh_manager_asset_instance_index_remove_instance(manager, slot,
+                                                        inst->asset);
 
   vkr_mesh_manager_release_asset(manager, inst->asset);
 

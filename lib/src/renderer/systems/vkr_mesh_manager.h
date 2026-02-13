@@ -161,6 +161,11 @@ typedef struct VkrMeshManager {
   Array_VkrMeshInstance mesh_instances;
   Array_uint32_t instance_live_indices;
   Array_uint32_t instance_free_indices;
+  // Reverse index from asset slot/generation to instance slots.
+  Array_uint32_t asset_instance_heads;
+  Array_uint32_t asset_instance_generations;
+  Array_uint32_t instance_asset_next;
+  Array_uint32_t instance_asset_prev;
   uint32_t instance_free_count;
   uint32_t instance_count;
   uint32_t next_instance_index;

@@ -735,6 +735,40 @@ vkr_internal bool8_t vkr_resource_system_async_load_job_run(VkrJobContext *ctx,
   return true_v;
 }
 
+/** Frees partially or fully initialized resource system state. No-op if sys is NULL. */
+vkr_internal void vkr_resource_system_init_cleanup(VkrResourceSystem *sys) {
+  if (!sys) {
+    return;
+  }
+  VkrAllocator *a = sys->allocator;
+  if (sys->completions) {
+    vkr_allocator_free(a, sys->completions,
+                       sizeof(VkrResourceAsyncCompletion) *
+                           sys->completion_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    sys->completions = NULL;
+  }
+  if (sys->requests) {
+    vkr_allocator_free(a, sys->requests,
+                       sizeof(VkrResourceAsyncRequest) * sys->request_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    sys->requests = NULL;
+  }
+  if (sys->request_by_key.allocator) {
+    vkr_hash_table_destroy_uint32_t(&sys->request_by_key);
+  }
+  vkr_mutex_destroy(a, &sys->mutex);
+  if (sys->loaders) {
+    vkr_allocator_free(a, sys->loaders,
+                       sizeof(VkrResourceLoader) * sys->loader_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    sys->loaders = NULL;
+  }
+  vkr_allocator_free(a, sys, sizeof(VkrResourceSystem),
+                     VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  vkr_resource_system = NULL;
+}
+
 bool8_t vkr_resource_system_init(VkrAllocator *allocator,
                                  VkrRendererFrontendHandle renderer,
                                  VkrJobSystem *job_system) {
@@ -774,8 +808,11 @@ bool8_t vkr_resource_system_init(VkrAllocator *allocator,
       vkr_resource_system->allocator,
       sizeof(VkrResourceLoader) * vkr_resource_system->loader_capacity,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-  assert_log(vkr_resource_system->loaders != NULL,
-             "Failed to allocate loaders array");
+  if (!vkr_resource_system->loaders) {
+    log_fatal("Failed to allocate loaders array");
+    vkr_resource_system_init_cleanup(vkr_resource_system);
+    return false_v;
+  }
   vkr_resource_system->loader_count = 0;
 
   for (uint32_t loader = 0; loader < vkr_resource_system->loader_capacity;
@@ -786,6 +823,7 @@ bool8_t vkr_resource_system_init(VkrAllocator *allocator,
   if (!vkr_mutex_create(vkr_resource_system->allocator,
                         &vkr_resource_system->mutex)) {
     log_fatal("Failed to create resource system mutex");
+    vkr_resource_system_init_cleanup(vkr_resource_system);
     return false_v;
   }
 
@@ -798,6 +836,7 @@ bool8_t vkr_resource_system_init(VkrAllocator *allocator,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!vkr_resource_system->requests) {
     log_fatal("Failed to allocate async request table");
+    vkr_resource_system_init_cleanup(vkr_resource_system);
     return false_v;
   }
   MemZero(vkr_resource_system->requests,
@@ -811,6 +850,7 @@ bool8_t vkr_resource_system_init(VkrAllocator *allocator,
                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!vkr_resource_system->completions) {
     log_fatal("Failed to allocate async completion queue");
+    vkr_resource_system_init_cleanup(vkr_resource_system);
     return false_v;
   }
   MemZero(vkr_resource_system->completions,

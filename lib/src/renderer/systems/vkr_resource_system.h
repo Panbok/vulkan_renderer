@@ -154,10 +154,10 @@ struct VkrResourceLoader {
    *
    * Called exactly once for any payload produced by `prepare_async`, including
    * cancellation/failure paths where `finalize_async` is never reached.
+   * Returns no value; the callback is responsible for freeing payload resources.
    *
    * @param self The loader
    * @param payload The payload to release
-   * @return True if the payload was released successfully, false otherwise
    */
   void (*release_async_payload)(VkrResourceLoader *self, void *payload);
 
