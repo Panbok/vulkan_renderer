@@ -292,29 +292,25 @@ vkr_internal void vkr_texture_loader_unload(VkrResourceLoader *self,
 
   /*
    * Async request path canonicalization can diverge from texture-map keys when
-   * legacy callers pass mixed aliases. Fall back to handle identity to keep
-   * release symmetry and avoid leaked GPU textures.
+   * legacy callers pass mixed aliases. Use the texture-system reverse lookup
+   * (slot index -> stable key) to resolve by handle in O(1).
    */
   if (!entry && handle->type == VKR_RESOURCE_TYPE_TEXTURE &&
       handle->as.texture.id != 0) {
-    for (uint64_t i = 0; i < system->texture_map.capacity; ++i) {
-      VkrHashEntry_VkrTextureEntry *map_entry = &system->texture_map.entries[i];
-      if (map_entry->occupied != VKR_OCCUPIED) {
-        continue;
-      }
-
-      uint32_t texture_index = map_entry->value.index;
-      if (texture_index >= system->textures.length) {
-        continue;
-      }
-
+    uint32_t texture_index = handle->as.texture.id - 1;
+    if (texture_index < system->textures.length &&
+        system->texture_keys_by_index) {
       VkrTexture *mapped_texture = &system->textures.data[texture_index];
-      if (mapped_texture->description.id == handle->as.texture.id &&
+      const char *reverse_key = system->texture_keys_by_index[texture_index];
+      if (reverse_key &&
+          mapped_texture->description.id == handle->as.texture.id &&
           mapped_texture->description.generation ==
               handle->as.texture.generation) {
-        entry = &map_entry->value;
-        remove_key = map_entry->key;
-        break;
+        entry = vkr_hash_table_get_VkrTextureEntry(&system->texture_map,
+                                                   reverse_key);
+        if (entry) {
+          remove_key = reverse_key;
+        }
       }
     }
   }
@@ -368,7 +364,14 @@ vkr_internal void vkr_texture_loader_unload(VkrResourceLoader *self,
   texture->description.generation = VKR_INVALID_ID;
 
   // Remove from hash table
-  vkr_hash_table_remove_VkrTextureEntry(&system->texture_map, remove_key);
+  bool8_t removed =
+      vkr_hash_table_remove_VkrTextureEntry(&system->texture_map, remove_key);
+  if (removed && system->texture_keys_by_index &&
+      texture_index < system->textures.length) {
+    system->texture_keys_by_index[texture_index] = NULL;
+  } else if (!removed) {
+    log_warn("Texture map remove failed for key '%s' during unload", remove_key);
+  }
 
   if (stable_name &&
       vkr_dmemory_owns_ptr(&system->string_memory, (void *)stable_name)) {
