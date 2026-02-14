@@ -42,6 +42,9 @@ typedef struct VkrMaterialSystem {
   VkrAllocator allocator;   // persistent allocator wrapping arena
   VkrDMemory string_memory; // dynamic strings (freed on unload)
   VkrAllocator string_allocator; // allocator wrapper for string_memory
+  VkrDMemory async_memory;       // freeable async payload allocations
+  VkrAllocator async_allocator;  // allocator wrapper for async_memory
+  VkrMutex async_mutex;          // guards async allocator across threads
   VkrMaterialSystemConfig config;
 
   Array_VkrMaterial materials;                    // contiguous array
@@ -125,9 +128,10 @@ vkr_material_system_create_colored(VkrMaterialSystem *system, const char *name,
  * @param out_error Optional error output.
  * @return true on success.
  */
-bool8_t vkr_material_system_create_gizmo_materials(
-    VkrMaterialSystem *system, VkrMaterialHandle out_handles[3],
-    VkrRendererError *out_error);
+bool8_t
+vkr_material_system_create_gizmo_materials(VkrMaterialSystem *system,
+                                           VkrMaterialHandle out_handles[3],
+                                           VkrRendererError *out_error);
 
 /**
  * @brief Acquires a material by name; increments refcount if it exists; fails
@@ -169,9 +173,9 @@ void vkr_material_system_add_ref(VkrMaterialSystem *system,
  * @param global_state The global material state to apply
  * @param domain The domain to apply the global material state to
  */
-void vkr_material_system_apply_global(VkrMaterialSystem *system,
-                                      const VkrGlobalMaterialState *global_state,
-                                      VkrPipelineDomain domain);
+void vkr_material_system_apply_global(
+    VkrMaterialSystem *system, const VkrGlobalMaterialState *global_state,
+    VkrPipelineDomain domain);
 
 /**
  * @brief Applies the instance material state to the material system
@@ -221,8 +225,9 @@ VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
  * If both transparency and cutout checks are needed, prefer
  * vkr_material_system_material_alpha_mode once and branch on the result.
  */
-bool8_t vkr_material_system_material_has_transparency(
-    const VkrMaterialSystem *system, const VkrMaterial *material);
+bool8_t
+vkr_material_system_material_has_transparency(const VkrMaterialSystem *system,
+                                              const VkrMaterial *material);
 
 /**
  * @brief Returns whether a material should use alpha cutout (discard).
@@ -230,14 +235,17 @@ bool8_t vkr_material_system_material_has_transparency(
  * If both transparency and cutout checks are needed, prefer
  * vkr_material_system_material_alpha_mode once and branch on the result.
  */
-bool8_t vkr_material_system_material_uses_cutout(
-    const VkrMaterialSystem *system, const VkrMaterial *material);
+bool8_t
+vkr_material_system_material_uses_cutout(const VkrMaterialSystem *system,
+                                         const VkrMaterial *material);
 
 /**
  * @brief Returns the effective alpha cutoff for cutout materials.
  *
  * When a material does not explicitly set alpha_cutoff but its diffuse texture
- * is classified as an alpha mask, this returns VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT.
+ * is classified as an alpha mask, this returns
+ * VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT.
  */
-float32_t vkr_material_system_material_alpha_cutoff(
-    const VkrMaterialSystem *system, const VkrMaterial *material);
+float32_t
+vkr_material_system_material_alpha_cutoff(const VkrMaterialSystem *system,
+                                          const VkrMaterial *material);

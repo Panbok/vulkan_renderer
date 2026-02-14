@@ -4,6 +4,9 @@
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_resource_system.h"
 
+#define VKR_MATERIAL_SYSTEM_ASYNC_DMEMORY_INITIAL MB(1)
+#define VKR_MATERIAL_SYSTEM_ASYNC_DMEMORY_RESERVE MB(16)
+
 typedef struct VkrGizmoMaterialDef {
   const char *name;
   Vec4 emission;
@@ -217,6 +220,25 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
     return false_v;
   }
   vkr_dmemory_allocator_create(&system->string_allocator);
+  if (!vkr_dmemory_create(VKR_MATERIAL_SYSTEM_ASYNC_DMEMORY_INITIAL,
+                          VKR_MATERIAL_SYSTEM_ASYNC_DMEMORY_RESERVE,
+                          &system->async_memory)) {
+    log_error("Failed to create material system async allocator");
+    vkr_dmemory_allocator_destroy(&system->string_allocator);
+    arena_destroy(system->arena);
+    MemZero(system, sizeof(*system));
+    return false_v;
+  }
+  system->async_allocator = (VkrAllocator){.ctx = &system->async_memory};
+  vkr_dmemory_allocator_create(&system->async_allocator);
+  if (!vkr_mutex_create(&system->allocator, &system->async_mutex)) {
+    log_error("Failed to create material system async allocator mutex");
+    vkr_dmemory_allocator_destroy(&system->async_allocator);
+    vkr_dmemory_allocator_destroy(&system->string_allocator);
+    arena_destroy(system->arena);
+    MemZero(system, sizeof(*system));
+    return false_v;
+  }
 
   system->texture_system = texture_system;
   system->shader_system = shader_system;
@@ -228,6 +250,8 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   if (hash_size > UINT32_MAX) {
     log_fatal("Hash table size overflow for max_material_count %u",
               config->max_material_count);
+    vkr_mutex_destroy(&system->allocator, &system->async_mutex);
+    vkr_dmemory_allocator_destroy(&system->async_allocator);
     vkr_dmemory_allocator_destroy(&system->string_allocator);
     arena_destroy(system->arena);
     MemZero(system, sizeof(*system));
@@ -265,6 +289,12 @@ void vkr_material_system_shutdown(VkrMaterialSystem *system) {
     return;
   array_destroy_VkrMaterial(&system->materials);
   array_destroy_uint32_t(&system->free_ids);
+  if (system->async_mutex) {
+    vkr_mutex_destroy(&system->allocator, &system->async_mutex);
+  }
+  if (system->async_allocator.ctx) {
+    vkr_dmemory_allocator_destroy(&system->async_allocator);
+  }
   if (system->string_allocator.ctx) {
     vkr_dmemory_allocator_destroy(&system->string_allocator);
   }
