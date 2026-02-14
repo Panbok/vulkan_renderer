@@ -752,10 +752,10 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
       (VkrMaterialLoaderAsyncPayload *)payload;
   const VkrParsedMaterialData *parsed = &async_payload->parsed;
 
+  char material_name_buf[VKR_MATERIAL_NAME_MAX] = {0};
   String8 material_name = string8_create_from_cstr(
       (const uint8_t *)parsed->name, string_length(parsed->name));
   if (!material_name.str || material_name.length == 0) {
-    char material_name_buf[VKR_MATERIAL_NAME_MAX] = {0};
     vkr_get_stable_material_name(material_name_buf, name, &material_name);
   }
 
@@ -1624,8 +1624,6 @@ vkr_internal uint32_t vkr_material_loader_load_batch(
   }
 
   VkrMaterialSystem *mat_sys = context->material_system;
-  VkrJobSystem *job_sys = context->job_system;
-  (void)job_sys;
   VkrAllocatorScope scratch_scope =
       vkr_allocator_begin_scope(context->temp_allocator);
   if (!vkr_allocator_scope_is_valid(&scratch_scope)) {
