@@ -42,11 +42,15 @@ typedef struct VkrTextureSystem {
   VkrAllocator allocator;        // persistent allocator wrapping arena
   VkrDMemory string_memory;      // dynamic strings (freed on unload)
   VkrAllocator string_allocator; // allocator wrapper for string_memory
+  VkrDMemory async_memory;       // freeable async payload allocations
+  VkrAllocator async_allocator;  // allocator wrapper for async_memory
+  VkrMutex async_mutex;          // guards async allocator across threads
   VkrTextureSystemConfig config;
 
   Array_VkrTexture textures; // contiguous array of textures
   VkrHashTable_VkrTextureEntry
-      texture_map; // name -> ref (index, refcount, flags)
+      texture_map;                    // name -> ref (index, refcount, flags)
+  const char **texture_keys_by_index; // slot index -> stable texture-map key
 
   uint32_t next_free_index;    // linear probe for free slot
   uint32_t generation_counter; // Monotonic generation counter for texture
@@ -370,6 +374,9 @@ typedef struct VkrTexturePreparedLoad {
  *
  * The output is heap-owned and must be released with
  * `vkr_texture_system_release_prepared_load` on every path.
+ *
+ * On failure, `out_prepared` is zeroed and does not require cleanup,
+ * but calling `vkr_texture_system_release_prepared_load` is safe.
  */
 bool8_t vkr_texture_system_prepare_load_from_file(
     VkrTextureSystem *system, String8 file_path, uint32_t desired_channels,
