@@ -1514,16 +1514,17 @@ vkr_mesh_loader_destroy_result(VkrMeshLoaderContext *context,
     }
   }
 
+  void *cached_pool_chunk = result->pool_chunk;
+  result->pool_chunk = NULL;
+
   if (result->arena) {
     vkr_allocator_release_global_accounting(&result->allocator);
     arena_destroy(result->arena);
     result->arena = NULL;
   }
 
-  if (result->pool_chunk) {
-    vkr_arena_pool_release(context->arena_pool, result->pool_chunk);
-    result->pool_chunk = NULL;
-  }
+  if (cached_pool_chunk)
+    vkr_arena_pool_release(context->arena_pool, cached_pool_chunk);
 }
 
 vkr_internal void vkr_mesh_loader_cleanup_arenas(VkrMeshLoaderResult **results,
