@@ -663,8 +663,9 @@ vkr_internal bool8_t vkr_mtsdf_font_loader_load(
   VkrTextureHandle atlas = VKR_TEXTURE_HANDLE_INVALID;
   VkrResourceHandleInfo texture_info = {0};
   VkrRendererError tex_error = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_TEXTURE, request.atlas_path,
-                                temp_alloc, &texture_info, &tex_error)) {
+  if (!vkr_resource_system_load_sync(VKR_RESOURCE_TYPE_TEXTURE,
+                                     request.atlas_path, temp_alloc,
+                                     &texture_info, &tex_error)) {
     String8 err = vkr_renderer_get_error_string(tex_error);
     log_error("MtsdfFontLoader: failed to load atlas '%s': %s",
               string8_cstr(&request.atlas_path), string8_cstr(&err));

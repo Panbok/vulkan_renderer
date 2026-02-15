@@ -1060,8 +1060,9 @@ vkr_internal bool8_t vkr_bitmap_font_load_atlas(
 
     VkrResourceHandleInfo texture_info = {0};
     VkrRendererError tex_error = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_TEXTURE, atlas_path,
-                                  temp_alloc, &texture_info, &tex_error)) {
+    if (!vkr_resource_system_load_sync(VKR_RESOURCE_TYPE_TEXTURE, atlas_path,
+                                       temp_alloc, &texture_info,
+                                       &tex_error)) {
       String8 err = vkr_renderer_get_error_string(tex_error);
       log_error("BitmapFontLoader: failed to load atlas '%s': %s",
                 string8_cstr(&atlas_path), string8_cstr(&err));
@@ -1564,7 +1565,7 @@ VkrResourceLoader
 vkr_bitmap_font_loader_create(const VkrBitmapFontLoaderContext *context) {
   VkrResourceLoader loader = {0};
   loader.type = VKR_RESOURCE_TYPE_BITMAP_FONT;
-  loader.resource_system = context;
+  loader.resource_system = (void *)context;
   loader.load = vkr_bitmap_font_loader_load;
   loader.unload = vkr_bitmap_font_loader_unload;
   loader.batch_load = vkr_bitmap_font_loader_batch_load;

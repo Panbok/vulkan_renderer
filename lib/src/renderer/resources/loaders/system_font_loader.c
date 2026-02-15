@@ -508,7 +508,13 @@ vkr_internal bool8_t vkr_system_font_remove_atlas_by_entry(
   texture->description.id = VKR_INVALID_ID;
   texture->description.generation = VKR_INVALID_ID;
 
-  vkr_hash_table_remove_VkrTextureEntry(&system->texture_map, key_cstr);
+  bool8_t removed =
+      vkr_hash_table_remove_VkrTextureEntry(&system->texture_map, key_cstr);
+  if (removed && system->texture_keys_by_index) {
+    system->texture_keys_by_index[texture_index] = NULL;
+  } else if (!removed) {
+    log_warn("SystemFontLoader: failed to remove atlas key '%s'", key_cstr);
+  }
 
   if (texture_index < system->next_free_index) {
     system->next_free_index = texture_index;
@@ -556,7 +562,7 @@ vkr_internal void vkr_system_font_destroy_atlas_texture(
     }
   }
 
-  log_warn("SystemFontLoader: atlas texture not found for cleanup");
+  log_debug("SystemFontLoader: atlas texture already released before cleanup");
 }
 
 vkr_internal bool8_t vkr_system_font_loader_can_load(VkrResourceLoader *self,
