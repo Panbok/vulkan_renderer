@@ -20,6 +20,21 @@ typedef struct VkrMeshBatchResult {
   bool8_t success;
 } VkrMeshBatchResult;
 
+typedef struct VkrMeshLoaderAsyncMaterialDependency {
+  bool8_t use_merged;
+  uint32_t index;
+  String8 material_path;
+  VkrResourceHandleInfo request_info;
+} VkrMeshLoaderAsyncMaterialDependency;
+
+typedef struct VkrMeshLoaderAsyncPayload {
+  VkrMeshLoaderContext *context;
+  VkrMeshLoaderResult *result;
+  VkrMeshLoaderAsyncMaterialDependency *dependencies;
+  uint32_t dependency_count;
+  bool8_t ownership_transferred;
+} VkrMeshLoaderAsyncPayload;
+
 vkr_internal uint32_t vkr_host_to_little_u32(uint32_t value) {
   const union {
     uint32_t u32;
@@ -127,6 +142,19 @@ typedef struct VkrMeshLoadJobPayload {
 vkr_internal void
 vkr_mesh_loader_builder_init(VkrMeshLoaderSubsetBuilder *builder,
                              VkrAllocator *allocator);
+vkr_internal bool8_t vkr_mesh_loader_prepare_async(VkrResourceLoader *self,
+                                                   String8 name,
+                                                   VkrAllocator *temp_alloc,
+                                                   void **out_payload,
+                                                   VkrRendererError *out_error);
+vkr_internal bool8_t vkr_mesh_loader_finalize_async(
+    VkrResourceLoader *self, String8 name, void *payload,
+    VkrResourceHandleInfo *out_handle, VkrRendererError *out_error);
+vkr_internal bool8_t vkr_mesh_loader_estimate_async_finalize_cost(
+    VkrResourceLoader *self, String8 name, void *payload,
+    VkrResourceAsyncFinalizeCost *out_cost);
+vkr_internal void vkr_mesh_loader_release_async_payload(VkrResourceLoader *self,
+                                                        void *payload);
 vkr_internal uint32_t vkr_mesh_loader_add_material_bucket(
     VkrMeshLoaderState *state, const String8 *material_name);
 vkr_internal uint32_t vkr_mesh_loader_find_material_bucket(
@@ -161,6 +189,10 @@ vkr_internal void vkr_mesh_loader_cleanup_arenas(VkrMeshLoaderResult **results,
 vkr_internal void vkr_mesh_loader_set_all_errors(VkrMeshBatchResult *results,
                                                  uint32_t count,
                                                  VkrRendererError error);
+vkr_internal void
+vkr_mesh_loader_destroy_result(VkrMeshLoaderContext *context,
+                               VkrMeshLoaderResult *result,
+                               bool8_t release_material_handles);
 
 vkr_internal bool8_t vkr_mesh_loader_write_bytes(FileHandle *fh,
                                                  const void *data,
@@ -980,17 +1012,17 @@ vkr_internal void vkr_mesh_loader_push_face(VkrMeshLoaderState *state,
         vkr_mesh_loader_fix_index(ref.normal, (uint32_t)state->normals.length);
 
     VkrVertex3d vert = {0};
-    vert.position = vkr_vertex_pack_vec3(
-        (pos_idx < state->positions.length)
-            ? *vector_get_Vec3(&state->positions, pos_idx)
-            : vec3_zero());
+    vert.position =
+        vkr_vertex_pack_vec3((pos_idx < state->positions.length)
+                                 ? *vector_get_Vec3(&state->positions, pos_idx)
+                                 : vec3_zero());
     vert.texcoord = (tex_idx < state->texcoords.length)
                         ? *vector_get_Vec2(&state->texcoords, tex_idx)
                         : vec2_zero();
-    vert.normal = vkr_vertex_pack_vec3(
-        (norm_idx < state->normals.length)
-            ? *vector_get_Vec3(&state->normals, norm_idx)
-            : vec3_new(0.0f, 1.0f, 0.0f));
+    vert.normal =
+        vkr_vertex_pack_vec3((norm_idx < state->normals.length)
+                                 ? *vector_get_Vec3(&state->normals, norm_idx)
+                                 : vec3_new(0.0f, 1.0f, 0.0f));
     vert.colour = vec4_new(1.0f, 1.0f, 1.0f, 1.0f);
     vert.tangent = vec4_zero();
 
@@ -1452,6 +1484,48 @@ vkr_internal bool8_t vkr_mesh_load_job_run(VkrJobContext *ctx, void *payload) {
   return true_v;
 }
 
+vkr_internal void
+vkr_mesh_loader_destroy_result(VkrMeshLoaderContext *context,
+                               VkrMeshLoaderResult *result,
+                               bool8_t release_material_handles) {
+  if (!context || !result) {
+    return;
+  }
+
+  if (release_material_handles && context->material_system) {
+    if (result->has_mesh_buffer && result->submeshes.data) {
+      for (uint64_t i = 0; i < result->submeshes.length; i++) {
+        VkrMeshLoaderSubmeshRange *range = &result->submeshes.data[i];
+        if (range->material_handle.id != 0) {
+          vkr_material_system_release(context->material_system,
+                                      range->material_handle);
+          range->material_handle = VKR_MATERIAL_HANDLE_INVALID;
+        }
+      }
+    } else if (result->subsets.data) {
+      for (uint64_t i = 0; i < result->subsets.length; i++) {
+        VkrMeshLoaderSubset *subset = &result->subsets.data[i];
+        if (subset->material_handle.id != 0) {
+          vkr_material_system_release(context->material_system,
+                                      subset->material_handle);
+          subset->material_handle = VKR_MATERIAL_HANDLE_INVALID;
+        }
+      }
+    }
+  }
+
+  if (result->arena) {
+    vkr_allocator_release_global_accounting(&result->allocator);
+    arena_destroy(result->arena);
+    result->arena = NULL;
+  }
+
+  if (result->pool_chunk) {
+    vkr_arena_pool_release(context->arena_pool, result->pool_chunk);
+    result->pool_chunk = NULL;
+  }
+}
+
 vkr_internal void vkr_mesh_loader_cleanup_arenas(VkrMeshLoaderResult **results,
                                                  Arena **arenas,
                                                  void **pool_chunks,
@@ -1491,6 +1565,7 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
   }
 
   VkrJobSystem *job_sys = context->job_system;
+  (void)job_sys;
   VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(temp_alloc);
   if (!vkr_allocator_scope_is_valid(&temp_scope)) {
     for (uint32_t i = 0; i < count; i++) {
@@ -1514,16 +1589,12 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   bool8_t *success = vkr_allocator_alloc(temp_alloc, sizeof(bool8_t) * count,
                                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrJobHandle *job_handles = vkr_allocator_alloc(
-      temp_alloc, sizeof(VkrJobHandle) * count, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   VkrMeshLoadJobPayload *payloads =
       vkr_allocator_alloc(temp_alloc, sizeof(VkrMeshLoadJobPayload) * count,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  bool8_t *job_submitted = vkr_allocator_alloc(
-      temp_alloc, sizeof(bool8_t) * count, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   if (!results || !result_arenas || !pool_chunks || !result_allocators ||
-      !errors || !success || !job_handles || !payloads || !job_submitted) {
+      !errors || !success || !payloads) {
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     vkr_mesh_loader_set_all_errors(out_results, count,
                                    VKR_RENDERER_ERROR_OUT_OF_MEMORY);
@@ -1585,68 +1656,27 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
 
     errors[i] = VKR_RENDERER_ERROR_NONE;
     success[i] = false_v;
-    job_submitted[i] = false_v;
   }
 
-  if (job_sys) {
-    Bitset8 type_mask = bitset8_create();
-    bitset8_set(&type_mask, VKR_JOB_TYPE_RESOURCE);
+  for (uint32_t i = 0; i < count; i++) {
+    if (!mesh_paths[i].str || mesh_paths[i].length == 0)
+      continue;
 
-    for (uint32_t i = 0; i < count; i++) {
-      if (!mesh_paths[i].str || mesh_paths[i].length == 0)
-        continue;
+    payloads[i] = (VkrMeshLoadJobPayload){
+        .mesh_path = mesh_paths[i],
+        .context = context,
+        .result_allocator = &results[i]->allocator,
+        .result = results[i],
+        .error = &errors[i],
+        .success = &success[i],
+    };
 
-      payloads[i] = (VkrMeshLoadJobPayload){
-          .mesh_path = mesh_paths[i],
-          .context = context,
-          .result_allocator = &results[i]->allocator,
-          .result = results[i],
-          .error = &errors[i],
-          .success = &success[i],
-      };
-
-      VkrJobDesc job_desc = {
-          .priority = VKR_JOB_PRIORITY_NORMAL,
-          .type_mask = type_mask,
-          .run = vkr_mesh_load_job_run,
-          .on_success = NULL,
-          .on_failure = NULL,
-          .payload = &payloads[i],
-          .payload_size = sizeof(VkrMeshLoadJobPayload),
-          .dependencies = NULL,
-          .dependency_count = 0,
-          .defer_enqueue = false_v,
-      };
-
-      if (vkr_job_submit(job_sys, &job_desc, &job_handles[i]))
-        job_submitted[i] = true_v;
-    }
-
-    for (uint32_t i = 0; i < count; i++) {
-      if (job_submitted[i])
-        vkr_job_wait(job_sys, job_handles[i]);
-    }
-  } else {
-    for (uint32_t i = 0; i < count; i++) {
-      if (!mesh_paths[i].str || mesh_paths[i].length == 0)
-        continue;
-
-      payloads[i] = (VkrMeshLoadJobPayload){
-          .mesh_path = mesh_paths[i],
-          .context = context,
-          .result_allocator = &results[i]->allocator,
-          .result = results[i],
-          .error = &errors[i],
-          .success = &success[i],
-      };
-
-      VkrJobContext fake_ctx = {.system = NULL,
-                                .worker_index = 0,
-                                .thread_id = 0,
-                                .allocator = temp_alloc,
-                                .scope = temp_scope};
-      vkr_mesh_load_job_run(&fake_ctx, &payloads[i]);
-    }
+    VkrJobContext fake_ctx = {.system = NULL,
+                              .worker_index = 0,
+                              .thread_id = 0,
+                              .allocator = temp_alloc,
+                              .scope = temp_scope};
+    vkr_mesh_load_job_run(&fake_ctx, &payloads[i]);
   }
 
   uint32_t total_materials = 0;
@@ -1742,7 +1772,7 @@ vkr_internal uint32_t vkr_mesh_loader_load_batch(
       return 0;
     }
 
-    uint32_t materials_loaded = vkr_resource_system_load_batch(
+    uint32_t materials_loaded = vkr_resource_system_load_batch_sync(
         VKR_RESOURCE_TYPE_MATERIAL, all_material_paths, total_materials,
         temp_alloc, material_handle_infos, all_material_errors);
 
@@ -1823,6 +1853,330 @@ vkr_internal bool8_t vkr_mesh_loader_load(VkrResourceLoader *self, String8 name,
   return true_v;
 }
 
+vkr_internal bool8_t vkr_mesh_loader_prepare_async(
+    VkrResourceLoader *self, String8 name, VkrAllocator *temp_alloc,
+    void **out_payload, VkrRendererError *out_error) {
+  assert_log(self != NULL, "Self is NULL");
+  assert_log(name.str != NULL, "Name is NULL");
+  assert_log(temp_alloc != NULL, "Temp allocator is NULL");
+  assert_log(out_payload != NULL, "Out payload is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  *out_payload = NULL;
+  *out_error = VKR_RENDERER_ERROR_NONE;
+
+  VkrMeshLoaderContext *context = (VkrMeshLoaderContext *)self->resource_system;
+  if (!context || !context->arena_pool || !context->arena_pool->initialized) {
+    *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
+    return false_v;
+  }
+
+  VkrMeshLoaderAsyncPayload *payload =
+      (VkrMeshLoaderAsyncPayload *)vkr_allocator_alloc_ts(
+          &context->async_allocator, sizeof(*payload),
+          VKR_ALLOCATOR_MEMORY_TAG_STRUCT, context->async_mutex);
+  if (!payload) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  MemZero(payload, sizeof(*payload));
+  payload->context = context;
+
+  void *pool_chunk = vkr_arena_pool_acquire(context->arena_pool);
+  if (!pool_chunk) {
+    vkr_allocator_free_ts(&context->async_allocator, payload, sizeof(*payload),
+                          VKR_ALLOCATOR_MEMORY_TAG_STRUCT,
+                          context->async_mutex);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
+  Arena *result_arena =
+      arena_create_from_buffer(pool_chunk, context->arena_pool->chunk_size);
+  if (!result_arena) {
+    vkr_arena_pool_release(context->arena_pool, pool_chunk);
+    vkr_allocator_free_ts(&context->async_allocator, payload, sizeof(*payload),
+                          VKR_ALLOCATOR_MEMORY_TAG_STRUCT,
+                          context->async_mutex);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+
+  VkrAllocator result_allocator = {.ctx = result_arena};
+  vkr_allocator_arena(&result_allocator);
+  VkrMeshLoaderResult *result = vkr_allocator_alloc(
+      &result_allocator, sizeof(*result), VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
+  if (!result) {
+    arena_destroy(result_arena);
+    vkr_arena_pool_release(context->arena_pool, pool_chunk);
+    vkr_allocator_free_ts(&context->async_allocator, payload, sizeof(*payload),
+                          VKR_ALLOCATOR_MEMORY_TAG_STRUCT,
+                          context->async_mutex);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  MemZero(result, sizeof(*result));
+  result->arena = result_arena;
+  result->pool_chunk = pool_chunk;
+  result->allocator = result_allocator;
+  payload->result = result;
+
+  bool8_t job_success = false_v;
+  VkrRendererError job_error = VKR_RENDERER_ERROR_NONE;
+  VkrMeshLoadJobPayload job_payload = {
+      .mesh_path = name,
+      .context = context,
+      .result_allocator = &result->allocator,
+      .result = result,
+      .error = &job_error,
+      .success = &job_success,
+  };
+
+  VkrAllocatorScope parse_scope = vkr_allocator_begin_scope(temp_alloc);
+  VkrJobContext fake_ctx = {.system = NULL,
+                            .worker_index = 0,
+                            .thread_id = 0,
+                            .allocator = temp_alloc,
+                            .scope = parse_scope};
+  vkr_mesh_load_job_run(&fake_ctx, &job_payload);
+  vkr_allocator_end_scope(&parse_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  if (!job_success) {
+    vkr_mesh_loader_destroy_result(context, result, false_v);
+    payload->result = NULL;
+    vkr_allocator_free_ts(&context->async_allocator, payload, sizeof(*payload),
+                          VKR_ALLOCATOR_MEMORY_TAG_STRUCT,
+                          context->async_mutex);
+    *out_error = job_error != VKR_RENDERER_ERROR_NONE
+                     ? job_error
+                     : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return false_v;
+  }
+
+  uint32_t dependency_count = 0;
+  if (result->has_mesh_buffer) {
+    for (uint64_t i = 0; i < result->submeshes.length; i++) {
+      VkrMeshLoaderSubmeshRange *range = &result->submeshes.data[i];
+      if (range->material_name.str && range->material_name.length > 0) {
+        dependency_count++;
+      }
+    }
+  } else {
+    for (uint64_t i = 0; i < result->subsets.length; i++) {
+      VkrMeshLoaderSubset *subset = &result->subsets.data[i];
+      if (subset->material_name.str && subset->material_name.length > 0) {
+        dependency_count++;
+      }
+    }
+  }
+
+  payload->dependency_count = dependency_count;
+  if (dependency_count > 0) {
+    uint64_t dep_size =
+        sizeof(VkrMeshLoaderAsyncMaterialDependency) * dependency_count;
+    payload->dependencies =
+        (VkrMeshLoaderAsyncMaterialDependency *)vkr_allocator_alloc_ts(
+            &context->async_allocator, dep_size, VKR_ALLOCATOR_MEMORY_TAG_ARRAY,
+            context->async_mutex);
+    if (!payload->dependencies) {
+      vkr_mesh_loader_destroy_result(context, result, false_v);
+      payload->result = NULL;
+      vkr_allocator_free_ts(&context->async_allocator, payload,
+                            sizeof(*payload), VKR_ALLOCATOR_MEMORY_TAG_STRUCT,
+                            context->async_mutex);
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      return false_v;
+    }
+    MemZero(payload->dependencies,
+            sizeof(VkrMeshLoaderAsyncMaterialDependency) * dependency_count);
+
+    uint32_t dep_index = 0;
+    if (result->has_mesh_buffer) {
+      for (uint64_t i = 0; i < result->submeshes.length; i++) {
+        VkrMeshLoaderSubmeshRange *range = &result->submeshes.data[i];
+        if (!range->material_name.str || range->material_name.length == 0) {
+          continue;
+        }
+
+        VkrMeshLoaderAsyncMaterialDependency *dep =
+            &payload->dependencies[dep_index++];
+        dep->use_merged = true_v;
+        dep->index = (uint32_t)i;
+        dep->material_path = range->material_name;
+        MemZero(&dep->request_info, sizeof(dep->request_info));
+        dep->request_info.type = VKR_RESOURCE_TYPE_MATERIAL;
+        dep->request_info.loader_id = VKR_INVALID_ID;
+        dep->request_info.load_state = VKR_RESOURCE_LOAD_STATE_INVALID;
+        dep->request_info.last_error = VKR_RENDERER_ERROR_NONE;
+
+        VkrRendererError material_error = VKR_RENDERER_ERROR_NONE;
+        (void)vkr_resource_system_load(VKR_RESOURCE_TYPE_MATERIAL,
+                                       dep->material_path, temp_alloc,
+                                       &dep->request_info, &material_error);
+      }
+    } else {
+      for (uint64_t i = 0; i < result->subsets.length; i++) {
+        VkrMeshLoaderSubset *subset = &result->subsets.data[i];
+        if (!subset->material_name.str || subset->material_name.length == 0) {
+          continue;
+        }
+
+        VkrMeshLoaderAsyncMaterialDependency *dep =
+            &payload->dependencies[dep_index++];
+        dep->use_merged = false_v;
+        dep->index = (uint32_t)i;
+        dep->material_path = subset->material_name;
+        MemZero(&dep->request_info, sizeof(dep->request_info));
+        dep->request_info.type = VKR_RESOURCE_TYPE_MATERIAL;
+        dep->request_info.loader_id = VKR_INVALID_ID;
+        dep->request_info.load_state = VKR_RESOURCE_LOAD_STATE_INVALID;
+        dep->request_info.last_error = VKR_RENDERER_ERROR_NONE;
+
+        VkrRendererError material_error = VKR_RENDERER_ERROR_NONE;
+        (void)vkr_resource_system_load(VKR_RESOURCE_TYPE_MATERIAL,
+                                       dep->material_path, temp_alloc,
+                                       &dep->request_info, &material_error);
+      }
+    }
+  }
+
+  payload->ownership_transferred = false_v;
+  *out_payload = payload;
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_mesh_loader_finalize_async(
+    VkrResourceLoader *self, String8 name, void *payload,
+    VkrResourceHandleInfo *out_handle, VkrRendererError *out_error) {
+  assert_log(self != NULL, "Self is NULL");
+  assert_log(name.str != NULL, "Name is NULL");
+  assert_log(payload != NULL, "Payload is NULL");
+  assert_log(out_handle != NULL, "Out handle is NULL");
+  assert_log(out_error != NULL, "Out error is NULL");
+
+  VkrMeshLoaderAsyncPayload *async_payload =
+      (VkrMeshLoaderAsyncPayload *)payload;
+  VkrMeshLoaderContext *context = async_payload->context;
+  if (!context || !async_payload->result) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return false_v;
+  }
+
+  for (uint32_t i = 0; i < async_payload->dependency_count; ++i) {
+    VkrMeshLoaderAsyncMaterialDependency *dep = &async_payload->dependencies[i];
+    VkrRendererError dependency_error = VKR_RENDERER_ERROR_NONE;
+    VkrResourceLoadState state =
+        vkr_resource_system_get_state(&dep->request_info, &dependency_error);
+    if (state == VKR_RESOURCE_LOAD_STATE_PENDING_CPU ||
+        state == VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES ||
+        state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+      return false_v;
+    }
+  }
+
+  for (uint32_t i = 0; i < async_payload->dependency_count; ++i) {
+    VkrMeshLoaderAsyncMaterialDependency *dep = &async_payload->dependencies[i];
+    VkrResourceHandleInfo resolved_info = {0};
+    if (!vkr_resource_system_try_get_resolved(&dep->request_info,
+                                              &resolved_info)) {
+      continue;
+    }
+    if (resolved_info.type != VKR_RESOURCE_TYPE_MATERIAL ||
+        resolved_info.as.material.id == 0) {
+      continue;
+    }
+
+    if (dep->use_merged) {
+      if (dep->index >= async_payload->result->submeshes.length) {
+        continue;
+      }
+      VkrMeshLoaderSubmeshRange *range =
+          &async_payload->result->submeshes.data[dep->index];
+      if (range->material_handle.id == 0) {
+        range->material_handle = resolved_info.as.material;
+        if (context->material_system) {
+          vkr_material_system_add_ref(context->material_system,
+                                      range->material_handle);
+        }
+      }
+    } else {
+      if (dep->index >= async_payload->result->subsets.length) {
+        continue;
+      }
+      VkrMeshLoaderSubset *subset =
+          &async_payload->result->subsets.data[dep->index];
+      if (subset->material_handle.id == 0) {
+        subset->material_handle = resolved_info.as.material;
+        if (context->material_system) {
+          vkr_material_system_add_ref(context->material_system,
+                                      subset->material_handle);
+        }
+      }
+    }
+  }
+
+  out_handle->type = VKR_RESOURCE_TYPE_MESH;
+  out_handle->loader_id = self->id;
+  out_handle->as.mesh = async_payload->result;
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  async_payload->ownership_transferred = true_v;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_mesh_loader_estimate_async_finalize_cost(
+    VkrResourceLoader *self, String8 name, void *payload,
+    VkrResourceAsyncFinalizeCost *out_cost) {
+  (void)self;
+  (void)name;
+  (void)payload;
+  assert_log(out_cost != NULL, "Out cost is NULL");
+
+  // Mesh finalize publishes CPU-side payload and resolves dependencies.
+  // GPU uploads happen later when mesh assets are acquired by mesh systems.
+  MemZero(out_cost, sizeof(*out_cost));
+  return true_v;
+}
+
+vkr_internal void vkr_mesh_loader_release_async_payload(VkrResourceLoader *self,
+                                                        void *payload) {
+  assert_log(self != NULL, "Self is NULL");
+  if (!payload) {
+    return;
+  }
+
+  VkrMeshLoaderAsyncPayload *async_payload =
+      (VkrMeshLoaderAsyncPayload *)payload;
+
+  for (uint32_t i = 0; i < async_payload->dependency_count; ++i) {
+    VkrMeshLoaderAsyncMaterialDependency *dep = &async_payload->dependencies[i];
+    if (dep->request_info.request_id != 0 && dep->material_path.str &&
+        dep->material_path.length > 0) {
+      vkr_resource_system_unload(&dep->request_info, dep->material_path);
+    }
+  }
+
+  if (!async_payload->ownership_transferred && async_payload->result) {
+    vkr_mesh_loader_destroy_result(async_payload->context,
+                                   async_payload->result, true_v);
+    async_payload->result = NULL;
+  }
+
+  if (async_payload->dependencies) {
+    vkr_allocator_free_ts(
+        &async_payload->context->async_allocator, async_payload->dependencies,
+        sizeof(VkrMeshLoaderAsyncMaterialDependency) *
+            async_payload->dependency_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY, async_payload->context->async_mutex);
+    async_payload->dependencies = NULL;
+  }
+
+  vkr_allocator_free_ts(&async_payload->context->async_allocator, async_payload,
+                        sizeof(*async_payload), VKR_ALLOCATOR_MEMORY_TAG_STRUCT,
+                        async_payload->context->async_mutex);
+}
+
 vkr_internal void vkr_mesh_loader_unload(VkrResourceLoader *self,
                                          const VkrResourceHandleInfo *handle,
                                          String8 name) {
@@ -1841,33 +2195,7 @@ vkr_internal void vkr_mesh_loader_unload(VkrResourceLoader *self,
   if (!result)
     return;
 
-  if (context->material_system) {
-    if (result->has_mesh_buffer && result->submeshes.data) {
-      for (uint64_t i = 0; i < result->submeshes.length; i++) {
-        VkrMeshLoaderSubmeshRange *range = &result->submeshes.data[i];
-        if (range->material_handle.id != 0) {
-          vkr_material_system_release(context->material_system,
-                                      range->material_handle);
-        }
-      }
-    } else if (result->subsets.data) {
-      for (uint64_t i = 0; i < result->subsets.length; i++) {
-        VkrMeshLoaderSubset *subset = &result->subsets.data[i];
-        if (subset->material_handle.id != 0) {
-          vkr_material_system_release(context->material_system,
-                                      subset->material_handle);
-        }
-      }
-    }
-  }
-
-  if (result->arena) {
-    vkr_allocator_release_global_accounting(&result->allocator);
-    arena_destroy(result->arena);
-  }
-
-  if (result->pool_chunk)
-    vkr_arena_pool_release(context->arena_pool, result->pool_chunk);
+  vkr_mesh_loader_destroy_result(context, result, true_v);
 }
 
 vkr_internal uint32_t vkr_mesh_loader_batch_load(
@@ -1915,6 +2243,11 @@ VkrResourceLoader vkr_mesh_loader_create(VkrMeshLoaderContext *context) {
   loader.resource_system = context;
   loader.can_load = vkr_mesh_loader_can_load;
   loader.load = vkr_mesh_loader_load;
+  loader.prepare_async = vkr_mesh_loader_prepare_async;
+  loader.finalize_async = vkr_mesh_loader_finalize_async;
+  loader.estimate_async_finalize_cost =
+      vkr_mesh_loader_estimate_async_finalize_cost;
+  loader.release_async_payload = vkr_mesh_loader_release_async_payload;
   loader.unload = vkr_mesh_loader_unload;
   loader.batch_load = vkr_mesh_loader_batch_load;
   return loader;

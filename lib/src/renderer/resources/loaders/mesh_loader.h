@@ -7,6 +7,7 @@
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
 #include "memory/vkr_arena_pool.h"
+#include "memory/vkr_dmemory.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
@@ -61,13 +62,14 @@ typedef struct VkrMeshLoaderSubmeshRange {
 Array(VkrMeshLoaderSubmeshRange);
 
 typedef struct VkrMeshLoaderResult {
-  Arena *arena;     /**< Buffer-backed arena for mesh data */
-  void *pool_chunk; /**< Chunk pointer for returning to pool (NULL if not
-                       pooled) */
+  Arena *arena;           /**< Buffer-backed arena for mesh data */
+  void *pool_chunk;       /**< Chunk pointer for returning to pool (NULL if not
+                             pooled) */
   VkrAllocator allocator; /**< Arena allocator wrapper (used for accounting) */
   String8 source_path;
   VkrTransform root_transform;
-  bool8_t has_mesh_buffer; /**< True when mesh_buffer/submeshes are populated. */
+  bool8_t
+      has_mesh_buffer; /**< True when mesh_buffer/submeshes are populated. */
   VkrMeshLoaderBuffer mesh_buffer; /**< Merged vertex/index payload. */
   Array_VkrMeshLoaderSubmeshRange submeshes; /**< Per-submesh ranges. */
   Array_VkrMeshLoaderSubset subsets;
@@ -75,6 +77,9 @@ typedef struct VkrMeshLoaderResult {
 
 typedef struct VkrMeshLoaderContext {
   VkrAllocator allocator;
+  VkrDMemory async_memory;
+  VkrAllocator async_allocator;
+  VkrMutex async_mutex;
   VkrGeometrySystem *geometry_system;
   VkrMaterialSystem *material_system;
   VkrMeshManager *mesh_manager;
