@@ -1029,6 +1029,26 @@ typedef struct DestroyText3DContext {
 } DestroyText3DContext;
 
 /**
+ * @brief Wait for renderer idle during scene teardown and log phase-specific failures.
+ *
+ * Scene unload enqueues deferred GPU destruction; waiting again after teardown
+ * allows serial-based deferred queues to drain immediately instead of carrying
+ * large transient allocations into the next load cycle.
+ */
+vkr_internal void scene_shutdown_wait_idle(RendererFrontend *rf,
+                                           const char *phase) {
+  if (!rf) {
+    return;
+  }
+
+  VkrRendererError wait_err = vkr_renderer_wait_idle(rf);
+  if (wait_err != VKR_RENDERER_ERROR_NONE) {
+    log_warn("Scene shutdown: renderer wait idle failed during %s (%d)", phase,
+             wait_err);
+  }
+}
+
+/**
  * @brief Chunk callback to send destroy messages for all text3d entities.
  */
 vkr_internal void destroy_text3d_chunk_cb(const VkrArchetype *arch,
@@ -1060,10 +1080,7 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
   // Wait for GPU idle before destroying any resources to avoid freeing
   // descriptor sets and buffers that are still referenced by in-flight frames.
   if (rf) {
-    VkrRendererError wait_err = vkr_renderer_wait_idle(rf);
-    if (wait_err != VKR_RENDERER_ERROR_NONE) {
-      log_warn("Scene shutdown: renderer wait idle failed (%d)", wait_err);
-    }
+    scene_shutdown_wait_idle((RendererFrontend *)rf, "pre-teardown");
 
     // Invalidate picking instance states before scene textures are destroyed.
     // This ensures descriptor sets don't reference stale texture handles.
@@ -1105,6 +1122,12 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
     for (uint32_t i = 0; i < scene->owned_mesh_count; i++) {
       vkr_mesh_manager_remove(&rf->mesh_manager, scene->owned_meshes[i]);
     }
+  }
+
+  // Scene-owned resources were retired above; wait once more so deferred Vulkan
+  // destruction completes before the next scene load begins.
+  if (rf) {
+    scene_shutdown_wait_idle((RendererFrontend *)rf, "post-teardown");
   }
 
   // Destroy queries
@@ -2511,9 +2534,9 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
       VkrResourceHandleInfo handle_info = {0};
       VkrRendererError load_err = VKR_RENDERER_ERROR_NONE;
 
-      if (vkr_resource_system_load(VKR_RESOURCE_TYPE_MATERIAL, mat_path,
-                                   &rf->scratch_allocator, &handle_info,
-                                   &load_err)) {
+      if (vkr_resource_system_load_sync(
+              VKR_RESOURCE_TYPE_MATERIAL, mat_path, &rf->scratch_allocator,
+              &handle_info, &load_err)) {
         // After loading, acquire with name to get proper ref count
         acquired_mat = vkr_material_system_acquire(&rf->material_system,
                                                    mat_name, true_v, &mat_err);

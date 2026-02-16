@@ -179,7 +179,7 @@ bool8_t vkr_editor_viewport_init(RendererFrontend *rf,
 
   VkrResourceHandleInfo material_info = {0};
   VkrRendererError material_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_resource_system_load(
+  if (!vkr_resource_system_load_sync(
           VKR_RESOURCE_TYPE_MATERIAL,
           string8_lit("assets/materials/default.viewport_display.mt"),
           &rf->allocator, &material_info, &material_err)) {

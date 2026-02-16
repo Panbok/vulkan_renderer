@@ -553,9 +553,15 @@ void vkr_ui_text_destroy(VkrUiText *text) {
 
   if (text->render.instance_state.id != VKR_INVALID_ID &&
       text->render.pipeline.id != 0) {
-    vkr_pipeline_registry_release_instance_state(
+    VkrRendererError release_error = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_pipeline_registry_release_instance_state(
         &text->renderer->pipeline_registry, text->render.pipeline,
-        text->render.instance_state, &(VkrRendererError){0});
+        text->render.instance_state, &release_error)) {
+      log_warn("UI text: failed to release instance state (pipeline=%u, "
+               "generation=%u, state=%u, err=%d)",
+               text->render.pipeline.id, text->render.pipeline.generation,
+               text->render.instance_state.id, release_error);
+    }
   }
 
   if (text->render.vertex_buffer.handle) {

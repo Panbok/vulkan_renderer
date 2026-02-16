@@ -178,9 +178,21 @@ Array(VkrPipeline);
 // Mesh/SubMesh - app/scene-side draw units
 // =============================================================================
 
+typedef enum VkrResourceLoadState {
+  VKR_RESOURCE_LOAD_STATE_INVALID = 0,
+  VKR_RESOURCE_LOAD_STATE_PENDING_CPU,
+  VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES,
+  VKR_RESOURCE_LOAD_STATE_PENDING_GPU,
+  VKR_RESOURCE_LOAD_STATE_READY,
+  VKR_RESOURCE_LOAD_STATE_FAILED,
+  VKR_RESOURCE_LOAD_STATE_CANCELED
+} VkrResourceLoadState;
+
 typedef enum VkrMeshLoadingState {
   VKR_MESH_LOADING_STATE_NOT_LOADED = 0,
-  VKR_MESH_LOADING_STATE_LOADED = 1,
+  VKR_MESH_LOADING_STATE_PENDING = 1,
+  VKR_MESH_LOADING_STATE_LOADED = 2,
+  VKR_MESH_LOADING_STATE_FAILED = 3
 } VkrMeshLoadingState;
 
 typedef struct VkrSubMesh {
@@ -303,6 +315,16 @@ typedef struct VkrMeshAsset {
   bool8_t bounds_valid;
   Vec3 bounds_local_center;
   float32_t bounds_local_radius;
+
+  /**
+   * Asset readiness state for async mesh loading.
+   *
+   * `PENDING` means submesh/material/geometry payload is not finalized yet.
+   * `FAILED` keeps `last_error` until the asset is released/reloaded.
+   */
+  VkrMeshLoadingState loading_state;
+  VkrRendererError last_error;
+  uint64_t pending_request_id; // Resource-system request id while pending.
 
   uint32_t ref_count; // Number of live instances referencing this asset
 } VkrMeshAsset;

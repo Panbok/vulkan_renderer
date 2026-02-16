@@ -199,10 +199,10 @@ bool8_t vkr_ui_system_init(RendererFrontend *rf, VkrUiSystem *system) {
 
   VkrResourceHandleInfo material_info = {0};
   VkrRendererError material_err = VKR_RENDERER_ERROR_NONE;
-  if (vkr_resource_system_load(VKR_RESOURCE_TYPE_MATERIAL,
-                               string8_lit("assets/materials/default.ui.mt"),
-                               &rf->scratch_allocator, &material_info,
-                               &material_err)) {
+  if (vkr_resource_system_load_sync(
+          VKR_RESOURCE_TYPE_MATERIAL,
+          string8_lit("assets/materials/default.ui.mt"),
+          &rf->scratch_allocator, &material_info, &material_err)) {
     system->material = material_info.as.material;
   } else {
     String8 err_str = vkr_renderer_get_error_string(material_err);
