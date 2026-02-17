@@ -36,6 +36,20 @@ typedef enum VkrTextureVktContainerType {
   VKR_TEXTURE_VKT_CONTAINER_KTX2,
 } VkrTextureVktContainerType;
 
+/**
+ * @brief Semantic texture classes used by transcode target selection.
+ *
+ * These classes express sampling intent, not source file encoding. Selection
+ * logic uses them to keep normals/data linear and to choose class-appropriate
+ * compressed families.
+ */
+typedef enum VkrTextureClass {
+  VKR_TEXTURE_CLASS_COLOR_SRGB = 0,
+  VKR_TEXTURE_CLASS_COLOR_LINEAR,
+  VKR_TEXTURE_CLASS_NORMAL_RG,
+  VKR_TEXTURE_CLASS_DATA_MASK,
+} VkrTextureClass;
+
 typedef struct VkrTextureSystem {
   VkrRendererFrontendHandle renderer;
   Arena *arena;                  // internal arena owned by the system
@@ -65,9 +79,11 @@ typedef struct VkrTextureSystem {
   struct VkrTextureCacheWriteGuard *cache_guard; // Internal cache write guard
 
   // Device-dependent transcode policy inputs for KTX2/UASTC decode.
-  bool8_t prefer_astc_transcode;     // Whether to prefer ASTC transcode
+  VkrDeviceTypeFlags device_types;   // Device type bits used as preference hint
   bool8_t supports_texture_astc_4x4; // Whether ASTC 4x4 is supported
   bool8_t supports_texture_bc7;      // Whether BC7 is supported
+  bool8_t supports_texture_etc2;     // Whether ETC2 RGBA is supported
+  bool8_t supports_texture_bc5;      // Whether BC5 is supported
 
   // Runtime rollout controls for `.vkt` migration.
   bool8_t strict_vkt_only_mode;     // Disable source-image fallback.
@@ -125,15 +141,19 @@ bool8_t vkr_texture_request_prefers_srgb(String8 request_path,
 
 /**
  * @brief Selects transcode target format with deterministic fallback ordering.
- * @param prefer_astc_platform Whether to prefer ASTC transcode
+ * @param texture_class Texture data class used to pick a target ladder
  * @param request_srgb Whether the request is sRGB
+ * @param device_types Device type bits used for preference ordering
  * @param supports_astc_4x4 Whether ASTC 4x4 is supported
  * @param supports_bc7 Whether BC7 is supported
+ * @param supports_etc2 Whether ETC2 RGBA is supported
+ * @param supports_bc5 Whether BC5 is supported
  * @return The transcode target format
  */
 VkrTextureFormat vkr_texture_select_transcode_target_format(
-    bool8_t prefer_astc_platform, bool8_t request_srgb,
-    bool8_t supports_astc_4x4, bool8_t supports_bc7);
+    VkrTextureClass texture_class, bool8_t request_srgb,
+    VkrDeviceTypeFlags device_types, bool8_t supports_astc_4x4,
+    bool8_t supports_bc7, bool8_t supports_etc2, bool8_t supports_bc5);
 
 // =============================================================================
 // Initialization / Shutdown

@@ -650,6 +650,14 @@ void vulkan_device_get_information(VulkanBackendState *state,
                                             VK_FORMAT_BC7_UNORM_BLOCK) &&
       vulkan_device_supports_sampled_format(state->device.physical_device,
                                             VK_FORMAT_BC7_SRGB_BLOCK);
+  device_information->supports_texture_etc2 =
+      vulkan_device_supports_sampled_format(state->device.physical_device,
+                                            VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK) &&
+      vulkan_device_supports_sampled_format(state->device.physical_device,
+                                            VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK);
+  device_information->supports_texture_bc5 =
+      vulkan_device_supports_sampled_format(state->device.physical_device,
+                                            VK_FORMAT_BC5_UNORM_BLOCK);
 
   VkrAllocator *temp_alloc = &state->temp_scope;
   VkrAllocator *arena_alloc = &state->alloc;

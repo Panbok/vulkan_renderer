@@ -9,6 +9,8 @@
 #include "ktx.h"
 #include "stb_image.h"
 
+#include <ctype.h>
+
 // =============================================================================
 // Texture Cache Format
 // =============================================================================
@@ -205,11 +207,15 @@ typedef enum VkrTextureColorSpace {
 typedef struct VkrTextureRequest {
   String8 base_path;
   VkrTextureColorSpace colorspace;
+  VkrTextureClass texture_class;
+  bool8_t has_explicit_colorspace;
+  bool8_t has_explicit_class;
 } VkrTextureRequest;
 
 typedef struct VkrTextureQueryColorScanResult {
   bool8_t prefers_srgb;
   bool8_t had_unknown;
+  bool8_t has_explicit;
 } VkrTextureQueryColorScanResult;
 
 vkr_internal bool8_t vkr_texture_path_has_vkt_extension(String8 path) {
@@ -328,6 +334,53 @@ vkr_internal String8 vkr_texture_strip_resource_key_prefix(String8 name) {
 }
 
 /**
+ * @brief Iterates query parameters and returns the next valid `key=value` pair.
+ * @param query Query string without leading `?`.
+ * @param io_cursor In/out scan cursor.
+ * @param out_key Output key slice.
+ * @param out_value Output value slice.
+ * @return true when a pair is produced, false when iteration completes.
+ */
+vkr_internal bool8_t vkr_texture_query_next_pair(String8 query,
+                                                 uint64_t *io_cursor,
+                                                 String8 *out_key,
+                                                 String8 *out_value) {
+  if (!io_cursor || !out_key || !out_value) {
+    return false_v;
+  }
+
+  uint64_t cursor = *io_cursor;
+  while (cursor < query.length) {
+    uint64_t end = cursor;
+    while (end < query.length && query.str[end] != '&') {
+      end++;
+    }
+
+    String8 param = string8_substring(&query, cursor, end);
+    cursor = end + 1;
+
+    uint64_t eq_pos = UINT64_MAX;
+    for (uint64_t i = 0; i < param.length; ++i) {
+      if (param.str[i] == '=') {
+        eq_pos = i;
+        break;
+      }
+    }
+    if (eq_pos == UINT64_MAX || eq_pos == 0 || eq_pos + 1 >= param.length) {
+      continue;
+    }
+
+    *out_key = string8_substring(&param, 0, eq_pos);
+    *out_value = string8_substring(&param, eq_pos + 1, param.length);
+    *io_cursor = cursor;
+    return true_v;
+  }
+
+  *io_cursor = query.length;
+  return false_v;
+}
+
+/**
  * @brief Scans `cs` query parameters and resolves final colorspace preference.
  *
  * Parsing order is left-to-right so later `cs` values override earlier ones.
@@ -338,53 +391,181 @@ vkr_internal VkrTextureQueryColorScanResult vkr_texture_scan_query_colorspace(
   VkrTextureQueryColorScanResult result = {
       .prefers_srgb = default_prefers_srgb,
       .had_unknown = false_v,
+      .has_explicit = false_v,
   };
   const String8 key_cs = string8_lit("cs");
   const String8 val_srgb = string8_lit("srgb");
   const String8 val_linear = string8_lit("linear");
 
-  uint64_t start = 0;
-  while (start < query.length) {
-    uint64_t end = start;
-    while (end < query.length && query.str[end] != '&') {
-      end++;
+  uint64_t cursor = 0;
+  String8 key = {0};
+  String8 value = {0};
+  while (vkr_texture_query_next_pair(query, &cursor, &key, &value)) {
+    if (!string8_equalsi(&key, &key_cs)) {
+      continue;
     }
 
-    String8 param = string8_substring(&query, start, end);
-    uint64_t eq_pos = UINT64_MAX;
-    for (uint64_t i = 0; i < param.length; ++i) {
-      if (param.str[i] == '=') {
-        eq_pos = i;
-        break;
+    if (string8_equalsi(&value, &val_srgb)) {
+      result.prefers_srgb = true_v;
+      result.has_explicit = true_v;
+    } else if (string8_equalsi(&value, &val_linear)) {
+      result.prefers_srgb = false_v;
+      result.has_explicit = true_v;
+    } else {
+      result.had_unknown = true_v;
+      if (unknown_sets_linear) {
+        result.prefers_srgb = false_v;
       }
     }
-
-    if (eq_pos != UINT64_MAX && eq_pos > 0 && eq_pos + 1 < param.length) {
-      String8 key = string8_substring(&param, 0, eq_pos);
-      if (string8_equalsi(&key, &key_cs)) {
-        String8 value = string8_substring(&param, eq_pos + 1, param.length);
-        if (string8_equalsi(&value, &val_srgb)) {
-          result.prefers_srgb = true_v;
-        } else if (string8_equalsi(&value, &val_linear)) {
-          result.prefers_srgb = false_v;
-        } else {
-          result.had_unknown = true_v;
-          if (unknown_sets_linear) {
-            result.prefers_srgb = false_v;
-          }
-        }
-      }
-    }
-
-    start = end + 1;
   }
 
   return result;
 }
 
+vkr_internal bool8_t vkr_texture_class_from_string(String8 value,
+                                                   VkrTextureClass *out_class) {
+  if (!out_class || !value.str || value.length == 0) {
+    return false_v;
+  }
+
+  const String8 color_srgb = string8_lit("color_srgb");
+  const String8 srgb = string8_lit("srgb");
+  const String8 color = string8_lit("color");
+  const String8 color_linear = string8_lit("color_linear");
+  const String8 linear = string8_lit("linear");
+  const String8 normal_rg = string8_lit("normal_rg");
+  const String8 normal = string8_lit("normal");
+  const String8 data_mask = string8_lit("data_mask");
+  const String8 data = string8_lit("data");
+  const String8 mask = string8_lit("mask");
+
+  if (string8_equalsi(&value, &color_srgb) || string8_equalsi(&value, &srgb) ||
+      string8_equalsi(&value, &color)) {
+    *out_class = VKR_TEXTURE_CLASS_COLOR_SRGB;
+    return true_v;
+  }
+  if (string8_equalsi(&value, &color_linear) || string8_equalsi(&value, &linear)) {
+    *out_class = VKR_TEXTURE_CLASS_COLOR_LINEAR;
+    return true_v;
+  }
+  if (string8_equalsi(&value, &normal_rg) || string8_equalsi(&value, &normal)) {
+    *out_class = VKR_TEXTURE_CLASS_NORMAL_RG;
+    return true_v;
+  }
+  if (string8_equalsi(&value, &data_mask) || string8_equalsi(&value, &data) ||
+      string8_equalsi(&value, &mask)) {
+    *out_class = VKR_TEXTURE_CLASS_DATA_MASK;
+    return true_v;
+  }
+
+  return false_v;
+}
+
+vkr_internal bool8_t vkr_texture_scan_query_class(String8 query,
+                                                  VkrTextureClass *out_class,
+                                                  bool8_t *out_had_unknown) {
+  if (!out_class) {
+    return false_v;
+  }
+  if (out_had_unknown) {
+    *out_had_unknown = false_v;
+  }
+
+  const String8 key_tc = string8_lit("tc");
+  const String8 key_class = string8_lit("class");
+  bool8_t has_explicit = false_v;
+
+  uint64_t cursor = 0;
+  String8 key = {0};
+  String8 value = {0};
+  while (vkr_texture_query_next_pair(query, &cursor, &key, &value)) {
+    if (!string8_equalsi(&key, &key_tc) && !string8_equalsi(&key, &key_class)) {
+      continue;
+    }
+
+    VkrTextureClass parsed = VKR_TEXTURE_CLASS_COLOR_LINEAR;
+    if (vkr_texture_class_from_string(value, &parsed)) {
+      *out_class = parsed;
+      has_explicit = true_v;
+    } else if (out_had_unknown) {
+      *out_had_unknown = true_v;
+    }
+  }
+
+  return has_explicit;
+}
+
+vkr_internal bool8_t vkr_texture_contains_token_ci(String8 name,
+                                                   String8 token) {
+  if (!name.str || !token.str || token.length == 0 || token.length > name.length) {
+    return false_v;
+  }
+
+  for (uint64_t i = 0; i <= name.length - token.length; ++i) {
+    bool8_t match = true_v;
+    for (uint64_t j = 0; j < token.length; ++j) {
+      const unsigned char a = (unsigned char)name.str[i + j];
+      const unsigned char b = (unsigned char)token.str[j];
+      if (tolower(a) != tolower(b)) {
+        match = false_v;
+        break;
+      }
+    }
+    if (match) {
+      return true_v;
+    }
+  }
+
+  return false_v;
+}
+
+vkr_internal bool8_t vkr_texture_name_contains_any_ci(String8 name,
+                                                      const String8 *tokens,
+                                                      uint32_t token_count) {
+  for (uint32_t i = 0; i < token_count; ++i) {
+    if (vkr_texture_contains_token_ci(name, tokens[i])) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
+vkr_internal VkrTextureClass
+vkr_texture_class_from_filename_heuristic(String8 base_path,
+                                          VkrTextureColorSpace colorspace) {
+  if (!base_path.str || base_path.length == 0) {
+    return colorspace == VKR_TEXTURE_COLORSPACE_SRGB
+               ? VKR_TEXTURE_CLASS_COLOR_SRGB
+               : VKR_TEXTURE_CLASS_COLOR_LINEAR;
+  }
+
+  const String8 normal_tokens[] = {
+      string8_lit("normal"), string8_lit("_n."), string8_lit("norm")};
+  if (vkr_texture_name_contains_any_ci(base_path, normal_tokens,
+                                       ArrayCount(normal_tokens))) {
+    return VKR_TEXTURE_CLASS_NORMAL_RG;
+  }
+
+  const String8 data_tokens[] = {
+      string8_lit("roughness"), string8_lit("metallic"), string8_lit("metalness"),
+      string8_lit("occlusion"), string8_lit("ao."),      string8_lit("orm"),
+      string8_lit("rma"),       string8_lit("mask"),     string8_lit("height"),
+      string8_lit("displace"),  string8_lit("specular"), string8_lit("gloss"),
+      string8_lit("data"),      string8_lit("utility")};
+  if (vkr_texture_name_contains_any_ci(base_path, data_tokens,
+                                       ArrayCount(data_tokens))) {
+    return VKR_TEXTURE_CLASS_DATA_MASK;
+  }
+
+  return colorspace == VKR_TEXTURE_COLORSPACE_SRGB
+             ? VKR_TEXTURE_CLASS_COLOR_SRGB
+             : VKR_TEXTURE_CLASS_COLOR_LINEAR;
+}
+
 /**
  * @brief Parse a texture request into a base path and desired color space.
- * @note Only the `cs` query parameter is consumed; others are ignored.
+ * @note Consumes `cs` (colorspace) and `tc`/`class` (texture class) query
+ * parameters.
  * @note Unknown `cs` values log once and default to linear.
  */
 vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
@@ -393,6 +574,18 @@ vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
   String8 base_path = vkr_texture_strip_query(name, &query);
   VkrTextureQueryColorScanResult scan =
       vkr_texture_scan_query_colorspace(query, false_v, true_v);
+  VkrTextureClass texture_class = VKR_TEXTURE_CLASS_COLOR_SRGB;
+  bool8_t had_unknown_class = false_v;
+  const bool8_t has_explicit_class =
+      vkr_texture_scan_query_class(query, &texture_class, &had_unknown_class);
+
+  VkrTextureColorSpace colorspace = scan.prefers_srgb
+                                        ? VKR_TEXTURE_COLORSPACE_SRGB
+                                        : VKR_TEXTURE_COLORSPACE_LINEAR;
+  if (!has_explicit_class) {
+    texture_class =
+        vkr_texture_class_from_filename_heuristic(base_path, colorspace);
+  }
 
   if (scan.had_unknown) {
     vkr_local_persist bool8_t warned_unknown = false_v;
@@ -402,11 +595,21 @@ vkr_internal VkrTextureRequest vkr_texture_parse_request(String8 name) {
       warned_unknown = true_v;
     }
   }
+  if (had_unknown_class) {
+    vkr_local_persist bool8_t warned_unknown_class = false_v;
+    if (!warned_unknown_class) {
+      log_warn("Texture request has unknown class value; falling back to "
+               "inference");
+      warned_unknown_class = true_v;
+    }
+  }
 
   return (VkrTextureRequest){
       .base_path = base_path,
-      .colorspace = scan.prefers_srgb ? VKR_TEXTURE_COLORSPACE_SRGB
-                                      : VKR_TEXTURE_COLORSPACE_LINEAR,
+      .colorspace = colorspace,
+      .texture_class = texture_class,
+      .has_explicit_colorspace = scan.has_explicit,
+      .has_explicit_class = has_explicit_class,
   };
 }
 
@@ -483,23 +686,106 @@ bool8_t vkr_texture_request_prefers_srgb(String8 request_path,
       .prefers_srgb;
 }
 
+vkr_internal bool8_t
+vkr_texture_device_prefers_discrete(VkrDeviceTypeFlags device_types) {
+  return bitset8_is_set(&device_types, VKR_DEVICE_TYPE_DISCRETE_BIT);
+}
+
+vkr_internal VkrTextureFormat
+vkr_texture_color_family_format(bool8_t request_srgb, VkrTextureFormat unorm,
+                                VkrTextureFormat srgb) {
+  return request_srgb ? srgb : unorm;
+}
+
 VkrTextureFormat vkr_texture_select_transcode_target_format(
-    bool8_t prefer_astc_platform, bool8_t request_srgb,
-    bool8_t supports_astc_4x4, bool8_t supports_bc7) {
-  if (prefer_astc_platform) {
+    VkrTextureClass texture_class, bool8_t request_srgb,
+    VkrDeviceTypeFlags device_types, bool8_t supports_astc_4x4,
+    bool8_t supports_bc7, bool8_t supports_etc2, bool8_t supports_bc5) {
+  const bool8_t prefer_discrete =
+      vkr_texture_device_prefers_discrete(device_types);
+
+  if (texture_class == VKR_TEXTURE_CLASS_NORMAL_RG) {
+    if (prefer_discrete) {
+      if (supports_bc5) {
+        return VKR_TEXTURE_FORMAT_BC5_UNORM;
+      }
+      if (supports_astc_4x4) {
+        return VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
+      }
+    } else {
+      if (supports_astc_4x4) {
+        return VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
+      }
+      if (supports_bc5) {
+        return VKR_TEXTURE_FORMAT_BC5_UNORM;
+      }
+    }
+    return VKR_TEXTURE_FORMAT_R8G8_UNORM;
+  }
+
+  if (texture_class == VKR_TEXTURE_CLASS_DATA_MASK) {
+    if (prefer_discrete) {
+      if (supports_bc7) {
+        return VKR_TEXTURE_FORMAT_BC7_UNORM;
+      }
+      if (supports_astc_4x4) {
+        return VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
+      }
+      if (supports_etc2) {
+        return VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM;
+      }
+    } else {
+      if (supports_astc_4x4) {
+        return VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
+      }
+      if (supports_etc2) {
+        return VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM;
+      }
+      if (supports_bc7) {
+        return VKR_TEXTURE_FORMAT_BC7_UNORM;
+      }
+    }
+    return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+  }
+
+  // Color classes can use sRGB or UNORM variants based on request intent.
+  const bool8_t allow_srgb = (texture_class == VKR_TEXTURE_CLASS_COLOR_SRGB);
+  const bool8_t use_srgb = allow_srgb ? request_srgb : false_v;
+
+  if (prefer_discrete) {
+    if (supports_bc7) {
+      return vkr_texture_color_family_format(
+          use_srgb, VKR_TEXTURE_FORMAT_BC7_UNORM, VKR_TEXTURE_FORMAT_BC7_SRGB);
+    }
     if (supports_astc_4x4) {
-      return request_srgb ? VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB
-                          : VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
+      return vkr_texture_color_family_format(use_srgb,
+                                             VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM,
+                                             VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB);
+    }
+    if (supports_etc2) {
+      return vkr_texture_color_family_format(
+          use_srgb, VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM,
+          VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB);
     }
   } else {
+    if (supports_astc_4x4) {
+      return vkr_texture_color_family_format(use_srgb,
+                                             VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM,
+                                             VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB);
+    }
+    if (supports_etc2) {
+      return vkr_texture_color_family_format(
+          use_srgb, VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM,
+          VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB);
+    }
     if (supports_bc7) {
-      return request_srgb ? VKR_TEXTURE_FORMAT_BC7_SRGB
-                          : VKR_TEXTURE_FORMAT_BC7_UNORM;
+      return vkr_texture_color_family_format(
+          use_srgb, VKR_TEXTURE_FORMAT_BC7_UNORM, VKR_TEXTURE_FORMAT_BC7_SRGB);
     }
   }
 
-  return request_srgb ? VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB
-                      : VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+  return use_srgb ? VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB
+                  : VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
 }
 
 /**
@@ -575,6 +861,9 @@ vkr_texture_format_is_block_compressed(VkrTextureFormat format) {
   switch (format) {
   case VKR_TEXTURE_FORMAT_BC7_UNORM:
   case VKR_TEXTURE_FORMAT_BC7_SRGB:
+  case VKR_TEXTURE_FORMAT_BC5_UNORM:
+  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM:
+  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
     return true_v;
@@ -589,9 +878,12 @@ vkr_texture_channel_count_from_format(VkrTextureFormat format) {
   case VKR_TEXTURE_FORMAT_R8_UNORM:
     return VKR_TEXTURE_R_CHANNELS;
   case VKR_TEXTURE_FORMAT_R8G8_UNORM:
+  case VKR_TEXTURE_FORMAT_BC5_UNORM:
     return VKR_TEXTURE_RG_CHANNELS;
   case VKR_TEXTURE_FORMAT_BC7_UNORM:
   case VKR_TEXTURE_FORMAT_BC7_SRGB:
+  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM:
+  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
   case VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM:
@@ -608,6 +900,11 @@ vkr_texture_ktx_transcode_format_from_texture_format(VkrTextureFormat format) {
   case VKR_TEXTURE_FORMAT_BC7_UNORM:
   case VKR_TEXTURE_FORMAT_BC7_SRGB:
     return KTX_TTF_BC7_RGBA;
+  case VKR_TEXTURE_FORMAT_BC5_UNORM:
+    return KTX_TTF_BC5_RG;
+  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM:
+  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
+    return KTX_TTF_ETC2_RGBA;
   case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
     return KTX_TTF_ASTC_4x4_RGBA;
@@ -902,18 +1199,19 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
-#if defined(PLATFORM_APPLE)
-  out_system->prefer_astc_transcode = true_v;
-#else
-  out_system->prefer_astc_transcode = false_v;
-#endif
+  out_system->device_types = bitset8_create();
   out_system->supports_texture_astc_4x4 = false_v;
   out_system->supports_texture_bc7 = false_v;
+  out_system->supports_texture_etc2 = false_v;
+  out_system->supports_texture_bc5 = false_v;
   VkrDeviceInformation device_info = {0};
   vkr_renderer_get_device_information(renderer, &device_info,
                                       out_system->arena);
+  out_system->device_types = device_info.device_types;
   out_system->supports_texture_astc_4x4 = device_info.supports_texture_astc_4x4;
   out_system->supports_texture_bc7 = device_info.supports_texture_bc7;
+  out_system->supports_texture_etc2 = device_info.supports_texture_etc2;
+  out_system->supports_texture_bc5 = device_info.supports_texture_bc5;
 
   out_system->strict_vkt_only_mode =
       vkr_texture_env_flag("VKR_TEXTURE_VKT_STRICT", false_v);
@@ -1876,6 +2174,12 @@ typedef struct VkrTextureDecodeResult {
  * @param file_path The path to the texture file
  * @param desired_channels The number of channels to request from the texture
  * @param flip_vertical Whether to flip the texture vertically
+ * @param colorspace Requested sampling color space
+ * @param texture_class Requested semantic texture class
+ * @param has_explicit_colorspace Whether colorspace came from explicit query
+ * input
+ * @param has_explicit_class Whether texture class came from explicit query
+ * input
  * @param system The texture system owning the cache guard
  * @param result The result of the texture decoding
  */
@@ -1884,6 +2188,9 @@ typedef struct VkrTextureDecodeJobPayload {
   uint32_t desired_channels;
   bool8_t flip_vertical;
   VkrTextureColorSpace colorspace;
+  VkrTextureClass texture_class;
+  bool8_t has_explicit_colorspace;
+  bool8_t has_explicit_class;
   VkrTextureSystem *system;
 
   VkrTextureDecodeResult *result;
@@ -1962,9 +2269,96 @@ vkr_internal bool8_t vkr_texture_ktx_metadata_bool(ktxTexture *texture,
   return default_value;
 }
 
+vkr_internal bool8_t vkr_texture_ktx_metadata_string(ktxTexture *texture,
+                                                     const char *key,
+                                                     String8 *out_value) {
+  if (out_value) {
+    *out_value = (String8){0};
+  }
+  if (!texture || !key || !out_value) {
+    return false_v;
+  }
+
+  unsigned int value_len = 0;
+  void *value = NULL;
+  if (ktxHashList_FindValue(&texture->kvDataHead, key, &value_len, &value) !=
+          KTX_SUCCESS ||
+      !value || value_len == 0) {
+    return false_v;
+  }
+
+  const uint8_t *bytes = (const uint8_t *)value;
+  uint64_t len = 0;
+  while (len < value_len && bytes[len] != '\0') {
+    len++;
+  }
+  if (len == 0) {
+    return false_v;
+  }
+
+  *out_value = (String8){.str = (uint8_t *)bytes, .length = len};
+  return true_v;
+}
+
+vkr_internal VkrTextureColorSpace
+vkr_texture_ktx_metadata_colorspace(ktxTexture *texture,
+                                    VkrTextureColorSpace default_value,
+                                    bool8_t *out_found) {
+  if (out_found) {
+    *out_found = false_v;
+  }
+
+  String8 value = {0};
+  if (!vkr_texture_ktx_metadata_string(texture, "vkr.colorspace_hint", &value)) {
+    return default_value;
+  }
+
+  const String8 srgb = string8_lit("srgb");
+  const String8 linear = string8_lit("linear");
+  if (string8_equalsi(&value, &srgb)) {
+    if (out_found) {
+      *out_found = true_v;
+    }
+    return VKR_TEXTURE_COLORSPACE_SRGB;
+  }
+  if (string8_equalsi(&value, &linear)) {
+    if (out_found) {
+      *out_found = true_v;
+    }
+    return VKR_TEXTURE_COLORSPACE_LINEAR;
+  }
+
+  return default_value;
+}
+
+vkr_internal VkrTextureClass
+vkr_texture_ktx_metadata_class(ktxTexture *texture, VkrTextureClass default_value,
+                               bool8_t *out_found) {
+  if (out_found) {
+    *out_found = false_v;
+  }
+
+  String8 value = {0};
+  if (!vkr_texture_ktx_metadata_string(texture, "vkr.texture_class", &value)) {
+    return default_value;
+  }
+
+  VkrTextureClass parsed = default_value;
+  if (!vkr_texture_class_from_string(value, &parsed)) {
+    return default_value;
+  }
+
+  if (out_found) {
+    *out_found = true_v;
+  }
+  return parsed;
+}
+
 vkr_internal bool8_t vkr_texture_decode_from_ktx2(
     VkrAllocator *allocator, VkrTextureSystem *system, String8 vkt_path,
-    VkrTextureColorSpace colorspace, VkrTextureDecodeResult *out_result) {
+    VkrTextureColorSpace colorspace, bool8_t has_explicit_colorspace,
+    VkrTextureClass texture_class, bool8_t has_explicit_class,
+    VkrTextureDecodeResult *out_result) {
   if (!allocator || !system || !vkt_path.str || !out_result) {
     return false_v;
   }
@@ -2037,11 +2431,34 @@ vkr_internal bool8_t vkr_texture_decode_from_ktx2(
     goto cleanup;
   }
 
-  const bool8_t request_srgb = (colorspace == VKR_TEXTURE_COLORSPACE_SRGB);
+  bool8_t metadata_class_found = false_v;
+  VkrTextureColorSpace effective_colorspace =
+      has_explicit_colorspace
+          ? colorspace
+          : vkr_texture_ktx_metadata_colorspace(base_texture, colorspace, NULL);
+  VkrTextureClass effective_class =
+      has_explicit_class
+          ? texture_class
+          : vkr_texture_ktx_metadata_class(base_texture, texture_class,
+                                           &metadata_class_found);
+
+  // If class metadata is absent, keep filename-driven non-color classes
+  // (normal/data), but realign color class to effective colorspace metadata.
+  if (!has_explicit_class && !metadata_class_found &&
+      (effective_class == VKR_TEXTURE_CLASS_COLOR_SRGB ||
+       effective_class == VKR_TEXTURE_CLASS_COLOR_LINEAR)) {
+    effective_class = (effective_colorspace == VKR_TEXTURE_COLORSPACE_SRGB)
+                          ? VKR_TEXTURE_CLASS_COLOR_SRGB
+                          : VKR_TEXTURE_CLASS_COLOR_LINEAR;
+  }
+
+  const bool8_t request_srgb =
+      (effective_colorspace == VKR_TEXTURE_COLORSPACE_SRGB);
   const VkrTextureFormat target_format =
       vkr_texture_select_transcode_target_format(
-          system->prefer_astc_transcode, request_srgb,
-          system->supports_texture_astc_4x4, system->supports_texture_bc7);
+          effective_class, request_srgb, system->device_types,
+          system->supports_texture_astc_4x4, system->supports_texture_bc7,
+          system->supports_texture_etc2, system->supports_texture_bc5);
   const ktx_transcode_fmt_e target_transcode_format =
       vkr_texture_ktx_transcode_format_from_texture_format(target_format);
   if (target_transcode_format == KTX_TTF_NOSELECTION) {
@@ -2501,7 +2918,10 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
 
     case VKR_TEXTURE_VKT_CONTAINER_KTX2:
       if (vkr_texture_decode_from_ktx2(scratch_allocator, job->system,
-                                       selected_vkt, job->colorspace, result)) {
+                                       selected_vkt, job->colorspace,
+                                       job->has_explicit_colorspace,
+                                       job->texture_class,
+                                       job->has_explicit_class, result)) {
         return true_v;
       }
       if (selected_is_direct) {
@@ -2623,6 +3043,9 @@ bool8_t vkr_texture_system_prepare_load_from_file(
       .desired_channels = desired_channels,
       .flip_vertical = true_v,
       .colorspace = request.colorspace,
+      .texture_class = request.texture_class,
+      .has_explicit_colorspace = request.has_explicit_colorspace,
+      .has_explicit_class = request.has_explicit_class,
       .system = system,
       .result = &decode_result,
   };
@@ -2889,6 +3312,9 @@ VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
       .desired_channels = desired_channels,
       .flip_vertical = true_v,
       .colorspace = request.colorspace,
+      .texture_class = request.texture_class,
+      .has_explicit_colorspace = request.has_explicit_colorspace,
+      .has_explicit_class = request.has_explicit_class,
       .system = system,
       .result = &decode_result,
   };
@@ -3331,6 +3757,9 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
         .desired_channels = VKR_TEXTURE_RGBA_CHANNELS,
         .flip_vertical = true_v,
         .colorspace = requests[i].colorspace,
+        .texture_class = requests[i].texture_class,
+        .has_explicit_colorspace = requests[i].has_explicit_colorspace,
+        .has_explicit_class = requests[i].has_explicit_class,
         .system = system,
         .result = &results[i],
     };

@@ -353,6 +353,8 @@ typedef struct VkrDeviceInformation {
   float64_t max_sampler_anisotropy;
   bool8_t supports_texture_astc_4x4;
   bool8_t supports_texture_bc7;
+  bool8_t supports_texture_etc2;
+  bool8_t supports_texture_bc5;
   bool8_t supports_multi_draw_indirect;
   bool8_t supports_draw_indirect_first_instance;
 } VkrDeviceInformation;
@@ -410,6 +412,9 @@ typedef enum VkrTextureFormat {
   VKR_TEXTURE_FORMAT_R8G8B8A8_SINT,
   VKR_TEXTURE_FORMAT_BC7_UNORM,
   VKR_TEXTURE_FORMAT_BC7_SRGB,
+  VKR_TEXTURE_FORMAT_BC5_UNORM,
+  VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM,
+  VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB,
   VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM,
   VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB,
   // Single/dual channel formats
