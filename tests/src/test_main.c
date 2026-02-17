@@ -63,6 +63,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_renderer_batch_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_resource_async_state_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_filesystem_tests();
   printf("\n"); // Add spacing
   all_passed &= run_reflection_pipeline_tests();

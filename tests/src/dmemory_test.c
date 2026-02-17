@@ -150,7 +150,8 @@ static void test_dmemory_out_of_memory(void) {
 
   VkrDMemory dmemory;
   const uint64_t TOTAL_SIZE = KB(64); // Small size for testing
-  const uint64_t RESERVE_SIZE = MB(1);
+  // Keep reserve equal to total so alloc() cannot grow on OOM.
+  const uint64_t RESERVE_SIZE = TOTAL_SIZE;
 
   assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
 
@@ -387,7 +388,8 @@ static void test_dmemory_boundary_conditions(void) {
 
   VkrDMemory dmemory;
   const uint64_t TOTAL_SIZE = KB(64);
-  const uint64_t RESERVE_SIZE = MB(1);
+  // Keep reserve equal to total so boundary checks run without auto-growth.
+  const uint64_t RESERVE_SIZE = TOTAL_SIZE;
 
   assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
 

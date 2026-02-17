@@ -20,6 +20,7 @@
 #include "filesystem_test.h"
 #include "pool_test.h"
 #include "quat_test.h"
+#include "resource_async_state_tests.h"
 #include "renderer_batch_test.h"
 #include "reflection_pipeline_test.h"
 #include "queue_test.h"

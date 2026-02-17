@@ -25,6 +25,8 @@ typedef struct RendererBatchMockState {
   uint32_t upload_fail_call;
   VkrRendererError upload_fail_error;
   uint32_t destroy_call_count;
+  uint32_t upload_wait_stats_call_count;
+  VkrRendererUploadWaitStats upload_wait_stats;
 
   uintptr_t next_handle_token;
 } RendererBatchMockState;
@@ -120,6 +122,18 @@ static void renderer_batch_mock_buffer_destroy(void *backend_state,
   (void)handle;
   RendererBatchMockState *state = backend_state;
   state->destroy_call_count++;
+}
+
+static bool8_t renderer_batch_mock_get_and_reset_upload_wait_stats(
+    void *backend_state, VkrRendererUploadWaitStats *out_stats) {
+  RendererBatchMockState *state = backend_state;
+  assert(state != NULL);
+  assert(out_stats != NULL);
+
+  state->upload_wait_stats_call_count++;
+  *out_stats = state->upload_wait_stats;
+  state->upload_wait_stats = (VkrRendererUploadWaitStats){0};
+  return true_v;
 }
 
 static void renderer_batch_test_init_frontend(RendererFrontend *renderer,
@@ -397,12 +411,48 @@ static void test_geometry_system_batch_failure_rolls_back_buffers(void) {
   printf("  test_geometry_system_batch_failure_rolls_back_buffers PASSED\n");
 }
 
+static void test_renderer_upload_wait_stats_mapping(void) {
+  printf("  Running test_renderer_upload_wait_stats_mapping...\n");
+
+  RendererFrontend renderer = {0};
+  RendererBatchMockState state = {0};
+  renderer_batch_test_init_frontend(&renderer, &state);
+  renderer.backend.get_and_reset_upload_wait_stats =
+      renderer_batch_mock_get_and_reset_upload_wait_stats;
+
+  state.upload_wait_stats = (VkrRendererUploadWaitStats){
+      .fence_wait_count = 3,
+      .queue_wait_idle_count = 2,
+      .device_wait_idle_count = 1,
+  };
+
+  VkrRendererUploadWaitStats stats = {0};
+  assert(vkr_renderer_get_and_reset_upload_wait_stats(&renderer, &stats) ==
+         true_v);
+  assert(stats.fence_wait_count == 3);
+  assert(stats.queue_wait_idle_count == 2);
+  assert(stats.device_wait_idle_count == 1);
+  assert(state.upload_wait_stats_call_count == 1);
+
+  stats = (VkrRendererUploadWaitStats){0};
+  assert(vkr_renderer_get_and_reset_upload_wait_stats(&renderer, &stats) ==
+         true_v);
+  assert(stats.fence_wait_count == 0);
+  assert(stats.queue_wait_idle_count == 0);
+  assert(stats.device_wait_idle_count == 0);
+  assert(state.upload_wait_stats_call_count == 2);
+
+  renderer_batch_test_shutdown_frontend(&renderer);
+  printf("  test_renderer_upload_wait_stats_mapping PASSED\n");
+}
+
 bool32_t run_renderer_batch_tests(void) {
   printf("--- Running Renderer Batch tests... ---\n");
   test_renderer_buffer_batch_fallback_cleanup();
   test_renderer_buffer_batch_backend_mapping();
   test_renderer_texture_batch_backend_mapping();
   test_geometry_system_batch_failure_rolls_back_buffers();
+  test_renderer_upload_wait_stats_mapping();
   printf("--- Renderer Batch tests completed. ---\n");
   return true_v;
 }
