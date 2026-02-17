@@ -15,13 +15,13 @@
 #include "renderer/resources/loaders/scene_loader.h"
 #include "renderer/resources/loaders/shader_loader.h"
 #include "renderer/resources/loaders/texture_loader.h"
-#include "renderer/vkr_render_packet.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_picking_system.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_skybox_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "renderer/systems/vkr_world_resources.h"
+#include "renderer/vkr_render_packet.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vkr_rg_json.h"
 #include "renderer/vulkan/vulkan_backend.h"
@@ -30,6 +30,11 @@
 #include <stdio.h>
 
 static RendererFrontend *g_renderer_rt_refresh = NULL;
+
+#define VKR_MESH_LOADER_ASYNC_DMEMORY_INITIAL MB(2)
+#define VKR_MESH_LOADER_ASYNC_DMEMORY_RESERVE MB(32)
+#define VKR_SCENE_LOADER_ASYNC_DMEMORY_INITIAL MB(8)
+#define VKR_SCENE_LOADER_ASYNC_DMEMORY_RESERVE MB(256)
 
 vkr_internal void
 renderer_frontend_regenerate_render_targets(RendererFrontend *rf);
@@ -40,6 +45,32 @@ VkrRendererError vkr_renderer_begin_frame(VkrRendererFrontendHandle renderer,
                                           float64_t delta_time);
 VkrRendererError vkr_renderer_end_frame(VkrRendererFrontendHandle renderer,
                                         float64_t delta_time);
+
+vkr_internal void
+renderer_frontend_destroy_loader_async_allocators(RendererFrontend *rf) {
+  if (!rf) {
+    return;
+  }
+
+  if (rf->scene_async_mutex) {
+    vkr_mutex_destroy(&rf->allocator, &rf->scene_async_mutex);
+    rf->scene_async_mutex = NULL;
+  }
+  if (rf->scene_async_allocator.ctx) {
+    vkr_dmemory_allocator_destroy(&rf->scene_async_allocator);
+    rf->scene_async_allocator = (VkrAllocator){0};
+    rf->scene_async_memory = (VkrDMemory){0};
+  }
+  if (rf->mesh_loader.async_mutex) {
+    vkr_mutex_destroy(&rf->allocator, &rf->mesh_loader.async_mutex);
+    rf->mesh_loader.async_mutex = NULL;
+  }
+  if (rf->mesh_loader.async_allocator.ctx) {
+    vkr_dmemory_allocator_destroy(&rf->mesh_loader.async_allocator);
+    rf->mesh_loader.async_allocator = (VkrAllocator){0};
+    rf->mesh_loader.async_memory = (VkrDMemory){0};
+  }
+}
 
 vkr_internal bool8_t vkr_renderer_on_window_resize(Event *event,
                                                    UserData user_data) {
@@ -176,6 +207,10 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->render_graph_loaded = false_v;
   renderer->render_graph_enabled = false_v;
   renderer->mesh_manager = (VkrMeshManager){0};
+  renderer->mesh_loader = (VkrMeshLoaderContext){0};
+  renderer->scene_async_memory = (VkrDMemory){0};
+  renderer->scene_async_allocator = (VkrAllocator){0};
+  renderer->scene_async_mutex = NULL;
   renderer->gizmo_system = (VkrGizmoSystem){0};
   renderer->lighting_system = (VkrLightingSystem){0};
   renderer->world_resources = (VkrWorldResources){0};
@@ -346,10 +381,10 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   vkr_pipeline_registry_shutdown(&rf->pipeline_registry);
   vkr_instance_buffer_pool_shutdown(&rf->instance_buffer_pool, rf);
   vkr_indirect_draw_shutdown(&rf->indirect_draw_system, rf);
-  vkr_texture_system_shutdown(rf, &rf->texture_system);
   vkr_font_system_shutdown(&rf->font_system);
   vkr_material_system_shutdown(&rf->material_system);
   vkr_geometry_system_shutdown(&rf->geometry_system);
+  vkr_texture_system_shutdown(rf, &rf->texture_system);
 
   g_renderer_rt_refresh = NULL;
 
@@ -374,6 +409,8 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   if (rf->mtsdf_font_arena_pool.initialized) {
     vkr_arena_pool_destroy(&rf->allocator, &rf->mtsdf_font_arena_pool);
   }
+
+  renderer_frontend_destroy_loader_async_allocators(rf);
 
   if (rf->render_graph_allocator.ctx) {
     vkr_dmemory_allocator_destroy(&rf->render_graph_allocator);
@@ -460,6 +497,40 @@ VkrRendererError vkr_renderer_wait_idle(VkrRendererFrontendHandle renderer) {
   return renderer->backend.wait_idle(renderer->backend_state);
 }
 
+uint64_t vkr_renderer_get_submit_serial(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.get_submit_serial) {
+    return 0;
+  }
+  return renderer->backend.get_submit_serial(renderer->backend_state);
+}
+
+uint64_t
+vkr_renderer_get_completed_submit_serial(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.get_completed_submit_serial) {
+    return 0;
+  }
+  return renderer->backend.get_completed_submit_serial(renderer->backend_state);
+}
+
+bool8_t vkr_renderer_get_and_reset_upload_wait_stats(
+    VkrRendererFrontendHandle renderer, VkrRendererUploadWaitStats *out_stats) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(out_stats != NULL, "Out stats is NULL");
+
+  out_stats->fence_wait_count = 0;
+  out_stats->queue_wait_idle_count = 0;
+  out_stats->device_wait_idle_count = 0;
+
+  if (!renderer->backend.get_and_reset_upload_wait_stats) {
+    return false_v;
+  }
+
+  return renderer->backend.get_and_reset_upload_wait_stats(
+      renderer->backend_state, out_stats);
+}
+
 VkrBufferHandle vkr_renderer_create_buffer(
     VkrRendererFrontendHandle renderer, const VkrBufferDescription *description,
     const void *initial_data, VkrRendererError *out_error) {
@@ -488,10 +559,11 @@ VkrBufferHandle vkr_renderer_create_buffer(
   return handle;
 }
 
-uint32_t vkr_renderer_create_buffer_batch(
-    VkrRendererFrontendHandle renderer,
-    const VkrBufferBatchCreateRequest *requests, uint32_t count,
-    VkrBufferHandle *out_handles, VkrRendererError *out_errors) {
+uint32_t
+vkr_renderer_create_buffer_batch(VkrRendererFrontendHandle renderer,
+                                 const VkrBufferBatchCreateRequest *requests,
+                                 uint32_t count, VkrBufferHandle *out_handles,
+                                 VkrRendererError *out_errors) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(requests != NULL, "Requests is NULL");
   assert_log(count > 0, "Count must be > 0");
@@ -539,7 +611,8 @@ uint32_t vkr_renderer_create_buffer_batch(
     const void *initial_data = NULL;
     bool8_t requires_followup_upload = false_v;
     if (request->upload && request->upload->data && request->upload->size > 0) {
-      const uint64_t upload_end = request->upload->offset + request->upload->size;
+      const uint64_t upload_end =
+          request->upload->offset + request->upload->size;
       if (upload_end < request->upload->offset ||
           upload_end > request->description->size) {
         out_errors[i] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
@@ -673,9 +746,8 @@ void vkr_renderer_destroy_buffer(VkrRendererFrontendHandle renderer,
  * Frontend create APIs consistently map NULL backend handles to
  * `VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED`.
  */
-vkr_internal VkrTextureOpaqueHandle
-vkr_renderer_texture_create_result(VkrBackendResourceHandle handle,
-                                   VkrRendererError *out_error) {
+vkr_internal VkrTextureOpaqueHandle vkr_renderer_texture_create_result(
+    VkrBackendResourceHandle handle, VkrRendererError *out_error) {
   if (handle.ptr == NULL) {
     *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return NULL;
@@ -715,8 +787,8 @@ VkrTextureOpaqueHandle vkr_renderer_create_texture_with_payload(
       .payload = payload,
   };
   VkrTextureOpaqueHandle handle = NULL;
-  if (vkr_renderer_create_texture_with_payload_batch(
-          renderer, &request, 1, &handle, out_error) != 1 ||
+  if (vkr_renderer_create_texture_with_payload_batch(renderer, &request, 1,
+                                                     &handle, out_error) != 1 ||
       !handle) {
     if (*out_error == VKR_RENDERER_ERROR_NONE) {
       *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
@@ -778,8 +850,10 @@ uint32_t vkr_renderer_create_texture_with_payload_batch(
       out_errors[i] = VKR_RENDERER_ERROR_INVALID_PARAMETER;
       continue;
     }
-    VkrBackendResourceHandle handle = renderer->backend.texture_create_with_payload(
-        renderer->backend_state, requests[i].description, requests[i].payload);
+    VkrBackendResourceHandle handle =
+        renderer->backend.texture_create_with_payload(renderer->backend_state,
+                                                      requests[i].description,
+                                                      requests[i].payload);
     out_handles[i] = (VkrTextureOpaqueHandle)handle.ptr;
     if (!out_handles[i]) {
       out_errors[i] = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
@@ -1502,7 +1576,8 @@ vkr_renderer_get_swapchain_depth_format(VkrRendererFrontendHandle renderer) {
     return VKR_TEXTURE_FORMAT_D32_SFLOAT;
   }
 
-  VkrTextureOpaqueHandle depth_tex = vkr_renderer_depth_attachment_get(renderer);
+  VkrTextureOpaqueHandle depth_tex =
+      vkr_renderer_depth_attachment_get(renderer);
   if (!depth_tex) {
     return VKR_TEXTURE_FORMAT_D32_SFLOAT;
   }
@@ -1511,9 +1586,10 @@ vkr_renderer_get_swapchain_depth_format(VkrRendererFrontendHandle renderer) {
   return depth_handle->description.format;
 }
 
-static bool8_t vkr_renderer_validate_pipeline_override(
-    RendererFrontend *rf, VkrPipelineHandle pipeline_override,
-    VkrPipelineDomain domain) {
+static bool8_t
+vkr_renderer_validate_pipeline_override(RendererFrontend *rf,
+                                        VkrPipelineHandle pipeline_override,
+                                        VkrPipelineDomain domain) {
   if (!rf || pipeline_override.id == 0) {
     return true_v;
   }
@@ -1528,17 +1604,18 @@ static bool8_t vkr_renderer_validate_pipeline_override(
   return pipeline->domain == domain;
 }
 
-static VkrRendererError vkr_renderer_validate_draws(
-    RendererFrontend *rf, const VkrDrawItem *draws, uint32_t draw_count,
-    uint32_t instance_count, const char *field_prefix,
-    VkrPipelineDomain domain, VkrValidationError *out_error) {
+static VkrRendererError
+vkr_renderer_validate_draws(RendererFrontend *rf, const VkrDrawItem *draws,
+                            uint32_t draw_count, uint32_t instance_count,
+                            const char *field_prefix, VkrPipelineDomain domain,
+                            VkrValidationError *out_error) {
   if (draw_count == 0) {
     return VKR_RENDERER_ERROR_NONE;
   }
   if (!draws) {
-    return vkr_renderer_validation_fail(
-        out_error, VKR_RENDERER_ERROR_INVALID_PARAMETER, field_prefix,
-        "draw list is NULL");
+    return vkr_renderer_validation_fail(out_error,
+                                        VKR_RENDERER_ERROR_INVALID_PARAMETER,
+                                        field_prefix, "draw list is NULL");
   }
 
   for (uint32_t i = 0; i < draw_count; ++i) {
@@ -1557,8 +1634,8 @@ static VkrRendererError vkr_renderer_validate_draws(
     if (end > instance_count) {
       return vkr_renderer_validation_failf(
           out_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-          "instance range exceeds payload instance_count", "%s[%u].first_instance",
-          field_prefix, i);
+          "instance range exceeds payload instance_count",
+          "%s[%u].first_instance", field_prefix, i);
     }
 
     if (draw->pipeline_override.id != 0 &&
@@ -1603,10 +1680,11 @@ VkrRendererError vkr_renderer_prepare_frame(VkrRendererFrontendHandle renderer,
   return VKR_RENDERER_ERROR_NONE;
 }
 
-VkrRendererError vkr_renderer_submit_packet(
-    VkrRendererFrontendHandle renderer, const VkrRenderPacket *packet,
-    VkrRendererFrameMetrics *out_metrics,
-    VkrValidationError *out_validation_error) {
+VkrRendererError
+vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
+                           const VkrRenderPacket *packet,
+                           VkrRendererFrameMetrics *out_metrics,
+                           VkrValidationError *out_validation_error) {
   assert_log(renderer != NULL, "Renderer is NULL");
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
@@ -1859,8 +1937,8 @@ VkrRendererError vkr_renderer_submit_packet(
     for (uint32_t i = 0; i < text_updates->world_text_update_count; ++i) {
       const VkrTextUpdate *update = &text_updates->world_text_updates[i];
       if (rf->world_resources.initialized) {
-        vkr_world_resources_text_update(rf, &rf->world_resources, update->text_id,
-                                        update->content);
+        vkr_world_resources_text_update(rf, &rf->world_resources,
+                                        update->text_id, update->content);
         if (update->transform) {
           vkr_world_resources_text_set_transform(
               rf, &rf->world_resources, update->text_id, update->transform);
@@ -1994,6 +2072,10 @@ VkrRendererError vkr_renderer_begin_frame(VkrRendererFrontendHandle renderer,
       renderer->backend.begin_frame(renderer->backend_state, delta_time);
   if (result == VKR_RENDERER_ERROR_NONE) {
     renderer->frame_active = true;
+    // Pump async resource finalization only after frame activation so GPU-bound
+    // requests can stamp submit_serial + 1 for this frame's in-flight submit.
+    vkr_resource_system_pump(NULL);
+    vkr_mesh_manager_pump_async(&renderer->mesh_manager);
     MemZero(&renderer->frame_metrics, sizeof(renderer->frame_metrics));
     if (renderer->instance_buffer_pool.initialized) {
       uint32_t image_index = vkr_renderer_window_image_index(renderer);
@@ -2353,6 +2435,35 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
                              .arena_pool = &rf->mesh_arena_pool};
   rf->mesh_loader.allocator.ctx = &rf->allocator;
   vkr_allocator_arena(&rf->mesh_loader.allocator);
+  if (!vkr_dmemory_create(VKR_MESH_LOADER_ASYNC_DMEMORY_INITIAL,
+                          VKR_MESH_LOADER_ASYNC_DMEMORY_RESERVE,
+                          &rf->mesh_loader.async_memory)) {
+    log_fatal("Failed to create mesh loader async allocator");
+    return false_v;
+  }
+  rf->mesh_loader.async_allocator =
+      (VkrAllocator){.ctx = &rf->mesh_loader.async_memory};
+  vkr_dmemory_allocator_create(&rf->mesh_loader.async_allocator);
+  if (!vkr_mutex_create(&rf->allocator, &rf->mesh_loader.async_mutex)) {
+    log_fatal("Failed to create mesh loader async allocator mutex");
+    renderer_frontend_destroy_loader_async_allocators(rf);
+    return false_v;
+  }
+
+  if (!vkr_dmemory_create(VKR_SCENE_LOADER_ASYNC_DMEMORY_INITIAL,
+                          VKR_SCENE_LOADER_ASYNC_DMEMORY_RESERVE,
+                          &rf->scene_async_memory)) {
+    log_fatal("Failed to create scene loader async allocator");
+    renderer_frontend_destroy_loader_async_allocators(rf);
+    return false_v;
+  }
+  rf->scene_async_allocator = (VkrAllocator){.ctx = &rf->scene_async_memory};
+  vkr_dmemory_allocator_create(&rf->scene_async_allocator);
+  if (!vkr_mutex_create(&rf->allocator, &rf->scene_async_mutex)) {
+    log_fatal("Failed to create scene loader async allocator mutex");
+    renderer_frontend_destroy_loader_async_allocators(rf);
+    return false_v;
+  }
 
   // Provide the mesh manager access to the mesh loader context so it can
   // throttle large batch loads to the arena pool capacity.
@@ -2361,6 +2472,7 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   if (!vkr_arena_pool_create(MB(6), pool_chunk_count, &rf->allocator,
                              &rf->bitmap_font_arena_pool)) {
     log_fatal("Failed to create bitmap font arena pool");
+    renderer_frontend_destroy_loader_async_allocators(rf);
     return false_v;
   }
 
@@ -2370,6 +2482,7 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   if (!vkr_arena_pool_create(MB(6), pool_chunk_count, &rf->allocator,
                              &rf->system_font_arena_pool)) {
     log_fatal("Failed to create system font arena pool");
+    renderer_frontend_destroy_loader_async_allocators(rf);
     return false_v;
   }
 
@@ -2382,6 +2495,7 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   if (!vkr_arena_pool_create(MB(6), pool_chunk_count, &rf->allocator,
                              &rf->mtsdf_font_arena_pool)) {
     log_fatal("Failed to create mtsdf font arena pool");
+    renderer_frontend_destroy_loader_async_allocators(rf);
     return false_v;
   }
 
@@ -2420,11 +2534,13 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   if (!vkr_font_system_init(&rf->font_system, rf, &font_cfg, &font_sys_err)) {
     String8 err_str = vkr_renderer_get_error_string(font_sys_err);
     log_error("Failed to initialize font system: %s", string8_cstr(&err_str));
+    renderer_frontend_destroy_loader_async_allocators(rf);
     return false_v;
   }
 
   if (!vkr_lighting_system_init(&rf->lighting_system)) {
     log_fatal("Failed to initialize lighting system");
+    renderer_frontend_destroy_loader_async_allocators(rf);
     return false_v;
   }
   rf->lighting_system.shader_system = &rf->shader_system;
@@ -2432,21 +2548,25 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   VkrShadowConfig shadow_cfg = VKR_SHADOW_CONFIG_DEFAULT;
   if (!vkr_shadow_system_init(&rf->shadow_system, rf, &shadow_cfg)) {
     log_error("Failed to initialize shadow system");
+    renderer_frontend_destroy_loader_async_allocators(rf);
     return false_v;
   }
 
   if (!vkr_world_resources_init(rf, &rf->world_resources)) {
     log_error("Failed to initialize world resources");
+    renderer_frontend_destroy_loader_async_allocators(rf);
     return false_v;
   }
 
   if (!vkr_ui_system_init(rf, &rf->ui_system)) {
     log_error("Failed to initialize UI system");
+    renderer_frontend_destroy_loader_async_allocators(rf);
     return false_v;
   }
 
   if (!vkr_skybox_system_init(rf, &rf->skybox_system)) {
     log_error("Failed to initialize skybox system");
+    renderer_frontend_destroy_loader_async_allocators(rf);
     return false_v;
   }
 

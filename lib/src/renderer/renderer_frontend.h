@@ -21,16 +21,16 @@
 #include "renderer/systems/vkr_picking_system.h"
 #include "renderer/systems/vkr_pipeline_registry.h"
 #include "renderer/systems/vkr_shader_system.h"
-#include "renderer/systems/vkr_skybox_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
+#include "renderer/systems/vkr_skybox_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "renderer/systems/vkr_world_resources.h"
 #include "renderer/vkr_indirect_draw.h"
 #include "renderer/vkr_instance_buffer.h"
 #include "renderer/vkr_render_graph.h"
-#include "renderer/vkr_rg_json.h"
 #include "renderer/vkr_renderer.h"
+#include "renderer/vkr_rg_json.h"
 
 /**
  * @brief Per-frame batching statistics for the world render path.
@@ -127,6 +127,9 @@ struct s_RendererFrontend {
   VkrMeshManager mesh_manager;
   VkrMeshLoaderContext mesh_loader;
   VkrArenaPool mesh_arena_pool;
+  VkrDMemory scene_async_memory;
+  VkrAllocator scene_async_allocator;
+  VkrMutex scene_async_mutex;
 
   // Instance data streaming
   VkrInstanceBufferPool instance_buffer_pool;
