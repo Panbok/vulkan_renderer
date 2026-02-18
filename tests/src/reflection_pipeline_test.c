@@ -68,6 +68,38 @@ reflection_test_find_binding(const VkrShaderReflection *reflection,
   return NULL;
 }
 
+vkr_internal const VkrDescriptorSetDesc *
+reflection_test_find_descriptor_set(const VkrShaderReflection *reflection,
+                                    uint32_t set_index) {
+  if (!reflection) {
+    return NULL;
+  }
+
+  for (uint32_t i = 0; i < reflection->set_count; ++i) {
+    if (reflection->sets[i].set == set_index) {
+      return &reflection->sets[i];
+    }
+  }
+
+  return NULL;
+}
+
+vkr_internal const VkrDescriptorBindingDesc *
+reflection_test_find_descriptor_binding(const VkrDescriptorSetDesc *set_desc,
+                                        uint32_t binding_index) {
+  if (!set_desc) {
+    return NULL;
+  }
+
+  for (uint32_t i = 0; i < set_desc->binding_count; ++i) {
+    if (set_desc->bindings[i].binding == binding_index) {
+      return &set_desc->bindings[i];
+    }
+  }
+
+  return NULL;
+}
+
 vkr_internal void test_reflection_world_program_success(void) {
   printf("  Running test_reflection_world_program_success...\n");
   Arena *arena = arena_create(MB(4), MB(4));
@@ -143,6 +175,98 @@ vkr_internal void test_reflection_world_program_success(void) {
   arena_destroy(temp_arena);
   arena_destroy(arena);
   printf("  test_reflection_world_program_success PASSED\n");
+}
+
+vkr_internal void test_reflection_pbr_world_program_layout(void) {
+  printf("  Running test_reflection_pbr_world_program_layout...\n");
+  Arena *arena = arena_create(MB(4), MB(4));
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
+  Arena *temp_arena = arena_create(MB(2), MB(2));
+  VkrAllocator temp_allocator = {.ctx = temp_arena};
+  vkr_allocator_arena(&temp_allocator);
+
+  uint8_t *shader_data = NULL;
+  uint64_t shader_size = 0;
+  reflection_test_load_spirv(&allocator, "assets/shaders/pbr.world.spv",
+                             &shader_data, &shader_size);
+
+  VkrShaderStageModuleDesc modules[2] = {
+      {
+          .stage = VK_SHADER_STAGE_VERTEX_BIT,
+          .path = string8_lit("assets/shaders/pbr.world.spv"),
+          .entry_point = string8_lit("vertexMain"),
+          .spirv_bytes = shader_data,
+          .spirv_size = shader_size,
+      },
+      {
+          .stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+          .path = string8_lit("assets/shaders/pbr.world.spv"),
+          .entry_point = string8_lit("fragmentMain"),
+          .spirv_bytes = shader_data,
+          .spirv_size = shader_size,
+      },
+  };
+
+  VkrShaderReflection reflection = {0};
+  VkrReflectionErrorContext error = {0};
+  VkrSpirvReflectionCreateInfo create_info = {
+      .allocator = &allocator,
+      .temp_allocator = &temp_allocator,
+      .program_name = string8_lit("test.pbr.world"),
+      .vertex_abi_profile = VKR_VERTEX_ABI_PROFILE_3D,
+      .module_count = ArrayCount(modules),
+      .modules = modules,
+      .max_push_constant_size = 0,
+  };
+
+  assert(vulkan_spirv_shader_reflection_create(&create_info, &reflection,
+                                               &error) == true_v);
+  assert(error.code == VKR_REFLECTION_OK);
+  assert(reflection.vertex_binding_count > 0);
+  assert(reflection.vertex_attribute_count > 0);
+
+  const VkrDescriptorSetDesc *set0 =
+      reflection_test_find_descriptor_set(&reflection, 0);
+  const VkrDescriptorSetDesc *set1 =
+      reflection_test_find_descriptor_set(&reflection, 1);
+  assert(set0 != NULL);
+  assert(set1 != NULL);
+
+  const VkrDescriptorBindingDesc *set0_globals =
+      reflection_test_find_descriptor_binding(set0, 0);
+  const VkrDescriptorBindingDesc *set0_instances =
+      reflection_test_find_descriptor_binding(set0, 1);
+  assert(set0_globals != NULL);
+  assert(set0_globals->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+  assert(set0_instances != NULL);
+  assert(set0_instances->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+
+  const VkrDescriptorBindingDesc *set1_local =
+      reflection_test_find_descriptor_binding(set1, 0);
+  assert(set1_local != NULL);
+  assert(set1_local->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
+
+  for (uint32_t binding = 1; binding <= 6; ++binding) {
+    const VkrDescriptorBindingDesc *desc =
+        reflection_test_find_descriptor_binding(set1, binding);
+    assert(desc != NULL);
+    assert(desc->type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
+  }
+
+  for (uint32_t binding = 7; binding <= 12; ++binding) {
+    const VkrDescriptorBindingDesc *desc =
+        reflection_test_find_descriptor_binding(set1, binding);
+    assert(desc != NULL);
+    assert(desc->type == VK_DESCRIPTOR_TYPE_SAMPLER);
+  }
+
+  vulkan_spirv_shader_reflection_destroy(&allocator, &reflection);
+  vkr_allocator_free(&allocator, shader_data, shader_size,
+                     VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  arena_destroy(temp_arena);
+  arena_destroy(arena);
+  printf("  test_reflection_pbr_world_program_layout PASSED\n");
 }
 
 vkr_internal void test_reflection_duplicate_stage_rejected(void) {
@@ -360,6 +484,7 @@ bool32_t run_reflection_pipeline_tests(void) {
   printf("--- Starting Reflection Pipeline Tests ---\n");
 
   test_reflection_world_program_success();
+  test_reflection_pbr_world_program_layout();
   test_reflection_duplicate_stage_rejected();
   test_reflection_missing_vertex_abi_rejected();
   test_reflection_repeated_create_destroy_cycle();

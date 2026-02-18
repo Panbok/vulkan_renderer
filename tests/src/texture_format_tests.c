@@ -44,6 +44,29 @@ static bool32_t test_vulkan_image_format_astc_mapping(void) {
   return true_v;
 }
 
+static bool32_t test_vulkan_image_format_bc5_etc2_mapping(void) {
+  printf("  Running test_vulkan_image_format_bc5_etc2_mapping...\n");
+  if (!test_expect_vk_format(
+          vulkan_image_format_from_texture_format(VKR_TEXTURE_FORMAT_BC5_UNORM),
+          VK_FORMAT_BC5_UNORM_BLOCK, "BC5_UNORM")) {
+    return false_v;
+  }
+  if (!test_expect_vk_format(
+          vulkan_image_format_from_texture_format(
+              VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM),
+          VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK, "ETC2_RGBA_UNORM")) {
+    return false_v;
+  }
+  if (!test_expect_vk_format(
+          vulkan_image_format_from_texture_format(
+              VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB),
+          VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK, "ETC2_RGBA_SRGB")) {
+    return false_v;
+  }
+  printf("  test_vulkan_image_format_bc5_etc2_mapping PASSED\n");
+  return true_v;
+}
+
 static bool32_t test_vulkan_image_format_depth_mapping(void) {
   printf("  Running test_vulkan_image_format_depth_mapping...\n");
   if (!test_expect_vk_format(
@@ -73,6 +96,7 @@ bool32_t run_texture_format_tests(void) {
   bool32_t ok = true_v;
   ok &= test_vulkan_image_format_bc7_mapping();
   ok &= test_vulkan_image_format_astc_mapping();
+  ok &= test_vulkan_image_format_bc5_etc2_mapping();
   ok &= test_vulkan_image_format_depth_mapping();
 
   printf("--- Texture Format Tests Completed ---\n");

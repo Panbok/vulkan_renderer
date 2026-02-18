@@ -101,18 +101,32 @@ static void test_texture_query_colorspace_policy(void) {
 static void test_texture_transcode_target_policy(void) {
   printf("  Running test_texture_transcode_target_policy...\n");
 
-  assert(vkr_texture_select_transcode_target_format(true_v, true_v, true_v,
-                                                    true_v) ==
-         VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB);
-  assert(vkr_texture_select_transcode_target_format(true_v, false_v, false_v,
-                                                    true_v) ==
-         VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM);
-  assert(vkr_texture_select_transcode_target_format(false_v, false_v, true_v,
-                                                    true_v) ==
-         VKR_TEXTURE_FORMAT_BC7_UNORM);
-  assert(vkr_texture_select_transcode_target_format(false_v, true_v, true_v,
-                                                    false_v) ==
-         VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB);
+  VkrDeviceTypeFlags integrated = bitset8_create();
+  bitset8_set(&integrated, VKR_DEVICE_TYPE_INTEGRATED_BIT);
+  VkrDeviceTypeFlags discrete = bitset8_create();
+  bitset8_set(&discrete, VKR_DEVICE_TYPE_DISCRETE_BIT);
+
+  assert(vkr_texture_select_transcode_target_format(
+             VKR_TEXTURE_CLASS_COLOR_SRGB, true_v, integrated, true_v, true_v,
+             true_v, true_v) == VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB);
+  assert(vkr_texture_select_transcode_target_format(
+             VKR_TEXTURE_CLASS_COLOR_LINEAR, false_v, discrete, true_v, true_v,
+             true_v, true_v) == VKR_TEXTURE_FORMAT_BC7_UNORM);
+  assert(vkr_texture_select_transcode_target_format(
+             VKR_TEXTURE_CLASS_COLOR_LINEAR, true_v, discrete, true_v, true_v,
+             true_v, true_v) == VKR_TEXTURE_FORMAT_BC7_UNORM);
+  assert(vkr_texture_select_transcode_target_format(
+             VKR_TEXTURE_CLASS_COLOR_SRGB, true_v, integrated, false_v, false_v,
+             true_v, false_v) == VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB);
+  assert(vkr_texture_select_transcode_target_format(
+             VKR_TEXTURE_CLASS_NORMAL_RG, true_v, discrete, true_v, true_v,
+             true_v, true_v) == VKR_TEXTURE_FORMAT_BC5_UNORM);
+  assert(vkr_texture_select_transcode_target_format(
+             VKR_TEXTURE_CLASS_NORMAL_RG, false_v, integrated, false_v, false_v,
+             false_v, false_v) == VKR_TEXTURE_FORMAT_R8G8_UNORM);
+  assert(vkr_texture_select_transcode_target_format(
+             VKR_TEXTURE_CLASS_DATA_MASK, true_v, integrated, false_v, false_v,
+             true_v, false_v) == VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM);
 
   printf("  test_texture_transcode_target_policy PASSED\n");
 }
