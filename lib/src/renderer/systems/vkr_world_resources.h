@@ -24,8 +24,8 @@ struct s_RendererFrontend;
  * may be reused for new text.
  */
 typedef struct VkrWorldTextSlot {
-  VkrText3D text;   /**< 3D text resource and GPU state */
-  bool8_t active;   /**< Slot is in use and should be rendered */
+  VkrText3D text; /**< 3D text resource and GPU state */
+  bool8_t active; /**< Slot is in use and should be rendered */
 } VkrWorldTextSlot;
 Array(VkrWorldTextSlot);
 
@@ -37,16 +37,26 @@ Array(VkrWorldTextSlot);
  * and projection from the render packet.
  */
 typedef struct VkrWorldResources {
-  VkrShaderConfig shader_config;           /**< Base world shader config */
-  VkrPipelineHandle pipeline;              /**< Opaque geometry pipeline */
-  VkrPipelineHandle transparent_pipeline;  /**< Transparent geometry pipeline */
-  VkrPipelineHandle overlay_pipeline;      /**< Overlay geometry pipeline */
+  VkrShaderConfig shader_config;          /**< Base world shader config */
+  VkrPipelineHandle pipeline;             /**< Opaque geometry pipeline */
+  VkrPipelineHandle transparent_pipeline; /**< Transparent geometry pipeline */
+  VkrPipelineHandle overlay_pipeline;     /**< Overlay geometry pipeline */
+  VkrShaderConfig pbr_shader_config;      /**< PBR world shader config */
+  VkrShaderConfig
+      pbr_world_shader_config; /**< PBR world shader config (opaque name) */
+  VkrShaderConfig pbr_transparent_shader_config; /**< PBR shader config for
+                                                    transparent domain */
+  VkrShaderConfig
+      pbr_overlay_shader_config;  /**< PBR shader config for overlay domain */
+  VkrPipelineHandle pbr_pipeline; /**< PBR opaque pipeline */
+  VkrPipelineHandle pbr_transparent_pipeline; /**< PBR transparent pipeline */
+  VkrPipelineHandle pbr_overlay_pipeline;     /**< PBR overlay pipeline */
 
-  VkrShaderConfig text_shader_config;      /**< 3D text shader config */
-  VkrPipelineHandle text_pipeline;          /**< 3D text glyph pipeline */
-  Array_VkrWorldTextSlot text_slots;        /**< Allocated 3D text slots */
+  VkrShaderConfig text_shader_config; /**< 3D text shader config */
+  VkrPipelineHandle text_pipeline;    /**< 3D text glyph pipeline */
+  Array_VkrWorldTextSlot text_slots;  /**< Allocated 3D text slots */
 
-  bool8_t initialized;                     /**< Resources have been initialized */
+  bool8_t initialized; /**< Resources have been initialized */
 } VkrWorldResources;
 
 /**
@@ -131,7 +141,8 @@ void vkr_world_resources_render_text(struct s_RendererFrontend *rf,
 /**
  * @brief Render world text into the picking pass.
  *
- * Same geometry as render_text but uses the given picking pipeline for ID output.
+ * Same geometry as render_text but uses the given picking pipeline for ID
+ * output.
  * @param rf Renderer frontend
  * @param resources World resources
  * @param pipeline Picking pipeline to bind

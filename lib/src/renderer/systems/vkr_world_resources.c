@@ -76,8 +76,8 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
   VkrRendererError pipeline_err = VKR_RENDERER_ERROR_NONE;
   if (!vkr_pipeline_registry_create_from_shader_config(
           &rf->pipeline_registry, &resources->shader_config,
-          VKR_PIPELINE_DOMAIN_WORLD, string8_lit("world"),
-          &resources->pipeline, &pipeline_err)) {
+          VKR_PIPELINE_DOMAIN_WORLD, string8_lit("world"), &resources->pipeline,
+          &pipeline_err)) {
     String8 err_str = vkr_renderer_get_error_string(pipeline_err);
     log_error("World pipeline creation failed: %s", string8_cstr(&err_str));
     goto cleanup;
@@ -104,6 +104,75 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
     log_warn("World overlay pipeline creation failed: %s",
              string8_cstr(&err_str));
     resources->overlay_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+
+  {
+    VkrResourceHandleInfo pbr_cfg_info = {0};
+    VkrRendererError pbr_cfg_err = VKR_RENDERER_ERROR_NONE;
+    if (vkr_resource_system_load_custom(
+            string8_lit("shadercfg"),
+            string8_lit("assets/shaders/pbr.world.shadercfg"),
+            &rf->scratch_allocator, &pbr_cfg_info, &pbr_cfg_err)) {
+      resources->pbr_shader_config = *(VkrShaderConfig *)pbr_cfg_info.as.custom;
+
+      resources->pbr_world_shader_config = resources->pbr_shader_config;
+      resources->pbr_transparent_shader_config = resources->pbr_shader_config;
+      resources->pbr_overlay_shader_config = resources->pbr_shader_config;
+
+      resources->pbr_world_shader_config.name = string8_lit("shader.pbr.world");
+      resources->pbr_transparent_shader_config.name =
+          string8_lit("shader.pbr.world.transparent");
+      resources->pbr_overlay_shader_config.name =
+          string8_lit("shader.pbr.world.overlay");
+
+      if (!vkr_shader_system_create(&rf->shader_system,
+                                    &resources->pbr_world_shader_config) ||
+          !vkr_shader_system_create(
+              &rf->shader_system, &resources->pbr_transparent_shader_config) ||
+          !vkr_shader_system_create(&rf->shader_system,
+                                    &resources->pbr_overlay_shader_config)) {
+        log_warn("Failed to register PBR world shaders");
+      } else {
+        VkrRendererError pbr_world_err = VKR_RENDERER_ERROR_NONE;
+        if (!vkr_pipeline_registry_create_from_shader_config(
+                &rf->pipeline_registry, &resources->pbr_world_shader_config,
+                VKR_PIPELINE_DOMAIN_WORLD, string8_lit("pbr_world"),
+                &resources->pbr_pipeline, &pbr_world_err)) {
+          String8 err_str = vkr_renderer_get_error_string(pbr_world_err);
+          log_warn("PBR world pipeline creation failed: %s",
+                   string8_cstr(&err_str));
+          resources->pbr_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+        }
+
+        VkrRendererError pbr_transparent_err = VKR_RENDERER_ERROR_NONE;
+        if (!vkr_pipeline_registry_create_from_shader_config(
+                &rf->pipeline_registry,
+                &resources->pbr_transparent_shader_config,
+                VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT,
+                string8_lit("pbr_world_transparent"),
+                &resources->pbr_transparent_pipeline, &pbr_transparent_err)) {
+          String8 err_str = vkr_renderer_get_error_string(pbr_transparent_err);
+          log_warn("PBR transparent pipeline creation failed: %s",
+                   string8_cstr(&err_str));
+          resources->pbr_transparent_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+        }
+
+        VkrRendererError pbr_overlay_err = VKR_RENDERER_ERROR_NONE;
+        if (!vkr_pipeline_registry_create_from_shader_config(
+                &rf->pipeline_registry, &resources->pbr_overlay_shader_config,
+                VKR_PIPELINE_DOMAIN_WORLD_OVERLAY,
+                string8_lit("pbr_world_overlay"),
+                &resources->pbr_overlay_pipeline, &pbr_overlay_err)) {
+          String8 err_str = vkr_renderer_get_error_string(pbr_overlay_err);
+          log_warn("PBR overlay pipeline creation failed: %s",
+                   string8_cstr(&err_str));
+          resources->pbr_overlay_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+        }
+      }
+    } else {
+      String8 err = vkr_renderer_get_error_string(pbr_cfg_err);
+      log_warn("PBR shadercfg load failed: %s", string8_cstr(&err));
+    }
   }
 
   VkrResourceHandleInfo text_cfg_info = {0};
@@ -133,8 +202,7 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
           VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT, string8_lit("world_text_3d"),
           &resources->text_pipeline, &text_pipeline_err)) {
     String8 err_str = vkr_renderer_get_error_string(text_pipeline_err);
-    log_warn("World text pipeline creation failed: %s",
-             string8_cstr(&err_str));
+    log_warn("World text pipeline creation failed: %s", string8_cstr(&err_str));
     resources->text_pipeline = VKR_PIPELINE_HANDLE_INVALID;
   }
 
@@ -160,6 +228,21 @@ cleanup:
                                            resources->text_pipeline);
     resources->text_pipeline = VKR_PIPELINE_HANDLE_INVALID;
   }
+  if (resources->pbr_overlay_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           resources->pbr_overlay_pipeline);
+    resources->pbr_overlay_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+  if (resources->pbr_transparent_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           resources->pbr_transparent_pipeline);
+    resources->pbr_transparent_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+  if (resources->pbr_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           resources->pbr_pipeline);
+    resources->pbr_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
   if (resources->overlay_pipeline.id != 0) {
     vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
                                            resources->overlay_pipeline);
@@ -176,7 +259,15 @@ cleanup:
     resources->pipeline = VKR_PIPELINE_HANDLE_INVALID;
   }
   MemZero(&resources->shader_config, sizeof(resources->shader_config));
-  MemZero(&resources->text_shader_config, sizeof(resources->text_shader_config));
+  MemZero(&resources->pbr_shader_config, sizeof(resources->pbr_shader_config));
+  MemZero(&resources->pbr_world_shader_config,
+          sizeof(resources->pbr_world_shader_config));
+  MemZero(&resources->pbr_transparent_shader_config,
+          sizeof(resources->pbr_transparent_shader_config));
+  MemZero(&resources->pbr_overlay_shader_config,
+          sizeof(resources->pbr_overlay_shader_config));
+  MemZero(&resources->text_shader_config,
+          sizeof(resources->text_shader_config));
   return false_v;
 }
 
@@ -206,6 +297,22 @@ void vkr_world_resources_shutdown(RendererFrontend *rf,
     vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
                                            resources->overlay_pipeline);
     resources->overlay_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+
+  if (resources->pbr_overlay_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           resources->pbr_overlay_pipeline);
+    resources->pbr_overlay_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+  if (resources->pbr_transparent_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           resources->pbr_transparent_pipeline);
+    resources->pbr_transparent_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+  if (resources->pbr_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           resources->pbr_pipeline);
+    resources->pbr_pipeline = VKR_PIPELINE_HANDLE_INVALID;
   }
 
   if (resources->transparent_pipeline.id != 0) {
@@ -272,7 +379,8 @@ bool8_t vkr_world_resources_text_update(RendererFrontend *rf,
     return false_v;
   }
 
-  VkrWorldTextSlot *slot = vkr_world_resources_get_text_slot(resources, text_id);
+  VkrWorldTextSlot *slot =
+      vkr_world_resources_get_text_slot(resources, text_id);
   if (!slot) {
     log_warn("World text id %u not found for update", text_id);
     return false_v;
@@ -282,15 +390,17 @@ bool8_t vkr_world_resources_text_update(RendererFrontend *rf,
   return true_v;
 }
 
-bool8_t vkr_world_resources_text_set_transform(
-    RendererFrontend *rf, VkrWorldResources *resources, uint32_t text_id,
-    const VkrTransform *transform) {
+bool8_t vkr_world_resources_text_set_transform(RendererFrontend *rf,
+                                               VkrWorldResources *resources,
+                                               uint32_t text_id,
+                                               const VkrTransform *transform) {
   (void)rf;
   if (!resources || !transform) {
     return false_v;
   }
 
-  VkrWorldTextSlot *slot = vkr_world_resources_get_text_slot(resources, text_id);
+  VkrWorldTextSlot *slot =
+      vkr_world_resources_get_text_slot(resources, text_id);
   if (!slot) {
     log_warn("World text id %u not found for transform", text_id);
     return false_v;
@@ -308,7 +418,8 @@ bool8_t vkr_world_resources_text_destroy(RendererFrontend *rf,
     return false_v;
   }
 
-  VkrWorldTextSlot *slot = vkr_world_resources_get_text_slot(resources, text_id);
+  VkrWorldTextSlot *slot =
+      vkr_world_resources_get_text_slot(resources, text_id);
   if (!slot) {
     log_warn("World text id %u not found for destroy", text_id);
     return false_v;
