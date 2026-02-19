@@ -1149,13 +1149,19 @@ void application_shutdown(Application *application) {
     log_warn("Failed to wait for renderer to be idle");
   }
 
+  /*
+   * Resource async workers call loader prepare/finalize callbacks that use
+   * renderer-owned async allocators (texture/material/mesh/scene). Join worker
+   * threads before renderer teardown so those allocators remain valid for the
+   * entire worker lifetime.
+   */
+  vkr_job_system_shutdown(&application->job_system);
+
   vkr_renderer_destroy(&application->renderer);
   vkr_window_destroy(&application->window);
   event_manager_destroy(&application->event_manager);
   vkr_mutex_destroy(&application->app_allocator, &application->app_mutex);
   vkr_gamepad_shutdown(&application->gamepad);
-
-  vkr_job_system_shutdown(&application->job_system);
 
   vkr_platform_shutdown();
 
