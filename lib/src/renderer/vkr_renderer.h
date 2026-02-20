@@ -679,7 +679,7 @@ typedef struct VkrShaderStateObject {
 typedef struct VkrRendererMaterialState {
   // Per-material uniforms (raw mode only; legacy struct removed)
 // Dynamic sampler slots (config-driven). Only the first texture_count are used.
-#define VKR_MAX_INSTANCE_TEXTURES 8
+#define VKR_MAX_INSTANCE_TEXTURES 12
   VkrTextureOpaqueHandle textures[VKR_MAX_INSTANCE_TEXTURES];
   bool8_t textures_enabled[VKR_MAX_INSTANCE_TEXTURES];
   uint32_t texture_count;
