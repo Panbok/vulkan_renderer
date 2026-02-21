@@ -6,6 +6,7 @@
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/passes/vkr_pass_editor.h"
+#include "renderer/passes/vkr_pass_ibl_bake.h"
 #include "renderer/passes/vkr_pass_picking.h"
 #include "renderer/passes/vkr_pass_shadow.h"
 #include "renderer/passes/vkr_pass_skybox.h"
@@ -2331,6 +2332,7 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
 
   if (!vkr_pass_shadow_register(&rf->rg_executor_registry) ||
       !vkr_pass_picking_register(&rf->rg_executor_registry) ||
+      !vkr_pass_ibl_bake_register(&rf->rg_executor_registry) ||
       !vkr_pass_skybox_register(&rf->rg_executor_registry) ||
       !vkr_pass_world_register(&rf->rg_executor_registry) ||
       !vkr_pass_ui_register(&rf->rg_executor_registry) ||
