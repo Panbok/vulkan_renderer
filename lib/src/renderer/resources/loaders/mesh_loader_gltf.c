@@ -101,11 +101,22 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_path_exists(VkrAllocator *allocator,
     return false_v;
   }
 
+  char *path_cstr = (char *)vkr_allocator_alloc(
+      allocator, path.length + 1, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!path_cstr) {
+    return false_v;
+  }
+  MemCopy(path_cstr, path.str, path.length);
+  path_cstr[path.length] = '\0';
+
   FilePathType type = vkr_mesh_loader_gltf_path_is_absolute(path)
                           ? FILE_PATH_TYPE_ABSOLUTE
                           : FILE_PATH_TYPE_RELATIVE;
-  FilePath fp = file_path_create((const char *)path.str, allocator, type);
-  return file_exists(&fp);
+  FilePath fp = file_path_create(path_cstr, allocator, type);
+  bool8_t exists = file_exists(&fp);
+  vkr_allocator_free(allocator, path_cstr, path.length + 1,
+                     VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  return exists;
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_find_existing_texture_file(
@@ -655,12 +666,19 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
   const cgltf_accessor *color_accessor =
       cgltf_find_accessor(primitive, cgltf_attribute_type_color, 0);
 
-  const uint32_t vertex_count = (uint32_t)position_accessor->count;
-  const uint32_t index_count =
-      primitive->indices ? (uint32_t)primitive->indices->count : vertex_count;
-  if (index_count == 0 || vertex_count == 0) {
+  const cgltf_size pos_count = position_accessor->count;
+  const cgltf_size idx_count =
+      primitive->indices ? primitive->indices->count : pos_count;
+  if (pos_count == 0 || idx_count == 0) {
     return true_v;
   }
+  if (pos_count > (cgltf_size)UINT32_MAX ||
+      (primitive->indices && primitive->indices->count > (cgltf_size)UINT32_MAX)) {
+    vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
+    return false_v;
+  }
+  const uint32_t vertex_count = (uint32_t)pos_count;
+  const uint32_t index_count = (uint32_t)idx_count;
 
   VkrAllocatorScope primitive_scope =
       vkr_allocator_begin_scope(info->scratch_allocator);
