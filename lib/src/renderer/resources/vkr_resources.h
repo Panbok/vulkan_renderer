@@ -88,6 +88,8 @@ typedef enum VkrTextureSlot {
   VKR_TEXTURE_SLOT_NORMAL = 1,
   VKR_TEXTURE_SLOT_SPECULAR = 2,
   VKR_TEXTURE_SLOT_EMISSION = 3,
+  VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS = 4,
+  VKR_TEXTURE_SLOT_OCCLUSION = 5,
   VKR_TEXTURE_SLOT_COUNT
 } VkrTextureSlot;
 
@@ -122,6 +124,26 @@ typedef struct VkrPhongProperties {
   Vec3 emission_color; // Self-illumination
 } VkrPhongProperties;
 
+typedef enum VkrMaterialType {
+  VKR_MATERIAL_TYPE_PHONG = 0,
+  VKR_MATERIAL_TYPE_PBR = 1,
+} VkrMaterialType;
+
+typedef enum VkrMaterialAlphaMode {
+  VKR_MATERIAL_ALPHA_OPAQUE = 0,
+  VKR_MATERIAL_ALPHA_CUTOUT = 1,
+  VKR_MATERIAL_ALPHA_BLEND = 2,
+} VkrMaterialAlphaMode;
+
+typedef struct VkrPbrProperties {
+  Vec4 base_color;
+  float32_t metallic;
+  float32_t roughness;
+  float32_t normal_scale;
+  float32_t occlusion_strength;
+  Vec3 emissive_factor;
+} VkrPbrProperties;
+
 typedef struct VkrMaterialTexture {
   VkrTextureHandle handle;
   VkrTextureSlot slot;
@@ -138,8 +160,13 @@ typedef struct VkrMaterial {
   // domain-based default is used.
   const char *shader_name;
 
-  // Phong lighting parameters
+  VkrMaterialType material_type;
+  VkrMaterialAlphaMode alpha_mode;
+  bool8_t alpha_mode_explicit;
+
+  // Material parameters. `phong` remains for backwards compatibility.
   VkrPhongProperties phong;
+  VkrPbrProperties pbr;
   float32_t alpha_cutoff; // Alpha test threshold for cutout; 0 disables.
 
   // Texture maps
@@ -510,7 +537,7 @@ Array(VkrShader);
   {.max_shader_count = 512,                                                    \
    .max_uniform_count = 32,                                                    \
    .max_global_textures = 8,                                                   \
-   .max_instance_textures = 8}
+   .max_instance_textures = 12}
 
 // =============================================================================
 // Font resource types (decoupled from systems)
