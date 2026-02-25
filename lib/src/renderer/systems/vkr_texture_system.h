@@ -201,8 +201,11 @@ VkrTextureHandle vkr_texture_system_acquire(VkrTextureSystem *system,
                                             VkrRendererError *out_error);
 
 /**
- * @brief Creates a writable texture owned by the texture system (no
- * auto-release).
+ * @brief Creates a writable texture owned by the texture system.
+ *
+ * Writable textures are auto-released when their refcount reaches zero so
+ * runtime-generated resources (for example scene bake outputs) can be recycled
+ * across load/unload cycles without manual unload calls.
  */
 bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
                                            String8 name,

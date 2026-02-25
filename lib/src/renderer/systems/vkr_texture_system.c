@@ -444,7 +444,8 @@ vkr_internal bool8_t vkr_texture_class_from_string(String8 value,
     *out_class = VKR_TEXTURE_CLASS_COLOR_SRGB;
     return true_v;
   }
-  if (string8_equalsi(&value, &color_linear) || string8_equalsi(&value, &linear)) {
+  if (string8_equalsi(&value, &color_linear) ||
+      string8_equalsi(&value, &linear)) {
     *out_class = VKR_TEXTURE_CLASS_COLOR_LINEAR;
     return true_v;
   }
@@ -497,7 +498,8 @@ vkr_internal bool8_t vkr_texture_scan_query_class(String8 query,
 
 vkr_internal bool8_t vkr_texture_contains_token_ci(String8 name,
                                                    String8 token) {
-  if (!name.str || !token.str || token.length == 0 || token.length > name.length) {
+  if (!name.str || !token.str || token.length == 0 ||
+      token.length > name.length) {
     return false_v;
   }
 
@@ -530,27 +532,28 @@ vkr_internal bool8_t vkr_texture_name_contains_any_ci(String8 name,
   return false_v;
 }
 
-vkr_internal VkrTextureClass
-vkr_texture_class_from_filename_heuristic(String8 base_path,
-                                          VkrTextureColorSpace colorspace) {
+vkr_internal VkrTextureClass vkr_texture_class_from_filename_heuristic(
+    String8 base_path, VkrTextureColorSpace colorspace) {
   if (!base_path.str || base_path.length == 0) {
     return colorspace == VKR_TEXTURE_COLORSPACE_SRGB
                ? VKR_TEXTURE_CLASS_COLOR_SRGB
                : VKR_TEXTURE_CLASS_COLOR_LINEAR;
   }
 
-  const String8 normal_tokens[] = {
-      string8_lit("normal"), string8_lit("_n."), string8_lit("norm")};
+  const String8 normal_tokens[] = {string8_lit("normal"), string8_lit("_n."),
+                                   string8_lit("norm")};
   if (vkr_texture_name_contains_any_ci(base_path, normal_tokens,
                                        ArrayCount(normal_tokens))) {
     return VKR_TEXTURE_CLASS_NORMAL_RG;
   }
 
   const String8 data_tokens[] = {
-      string8_lit("roughness"), string8_lit("metallic"), string8_lit("metalness"),
-      string8_lit("occlusion"), string8_lit("ao."),      string8_lit("orm"),
-      string8_lit("rma"),       string8_lit("mask"),     string8_lit("height"),
-      string8_lit("displace"),  string8_lit("specular"), string8_lit("gloss"),
+      string8_lit("roughness"), string8_lit("metallic"),
+      string8_lit("metalness"), string8_lit("occlusion"),
+      string8_lit("ao."),       string8_lit("orm"),
+      string8_lit("rma"),       string8_lit("mask"),
+      string8_lit("height"),    string8_lit("displace"),
+      string8_lit("specular"),  string8_lit("gloss"),
       string8_lit("data"),      string8_lit("utility")};
   if (vkr_texture_name_contains_any_ci(base_path, data_tokens,
                                        ArrayCount(data_tokens))) {
@@ -691,9 +694,8 @@ vkr_texture_device_prefers_discrete(VkrDeviceTypeFlags device_types) {
   return bitset8_is_set(&device_types, VKR_DEVICE_TYPE_DISCRETE_BIT);
 }
 
-vkr_internal VkrTextureFormat
-vkr_texture_color_family_format(bool8_t request_srgb, VkrTextureFormat unorm,
-                                VkrTextureFormat srgb) {
+vkr_internal VkrTextureFormat vkr_texture_color_family_format(
+    bool8_t request_srgb, VkrTextureFormat unorm, VkrTextureFormat srgb) {
   return request_srgb ? srgb : unorm;
 }
 
@@ -1658,7 +1660,7 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
   VkrTextureEntry entry = {
       .index = free_slot_index,
       .ref_count = 1,
-      .auto_release = false_v,
+      .auto_release = true_v,
       .name = stable_key,
   };
   bool8_t insert_success = vkr_hash_table_insert_VkrTextureEntry(
@@ -2300,16 +2302,16 @@ vkr_internal bool8_t vkr_texture_ktx_metadata_string(ktxTexture *texture,
   return true_v;
 }
 
-vkr_internal VkrTextureColorSpace
-vkr_texture_ktx_metadata_colorspace(ktxTexture *texture,
-                                    VkrTextureColorSpace default_value,
-                                    bool8_t *out_found) {
+vkr_internal VkrTextureColorSpace vkr_texture_ktx_metadata_colorspace(
+    ktxTexture *texture, VkrTextureColorSpace default_value,
+    bool8_t *out_found) {
   if (out_found) {
     *out_found = false_v;
   }
 
   String8 value = {0};
-  if (!vkr_texture_ktx_metadata_string(texture, "vkr.colorspace_hint", &value)) {
+  if (!vkr_texture_ktx_metadata_string(texture, "vkr.colorspace_hint",
+                                       &value)) {
     return default_value;
   }
 
@@ -2331,9 +2333,8 @@ vkr_texture_ktx_metadata_colorspace(ktxTexture *texture,
   return default_value;
 }
 
-vkr_internal VkrTextureClass
-vkr_texture_ktx_metadata_class(ktxTexture *texture, VkrTextureClass default_value,
-                               bool8_t *out_found) {
+vkr_internal VkrTextureClass vkr_texture_ktx_metadata_class(
+    ktxTexture *texture, VkrTextureClass default_value, bool8_t *out_found) {
   if (out_found) {
     *out_found = false_v;
   }
@@ -2917,11 +2918,10 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
     }
 
     case VKR_TEXTURE_VKT_CONTAINER_KTX2:
-      if (vkr_texture_decode_from_ktx2(scratch_allocator, job->system,
-                                       selected_vkt, job->colorspace,
-                                       job->has_explicit_colorspace,
-                                       job->texture_class,
-                                       job->has_explicit_class, result)) {
+      if (vkr_texture_decode_from_ktx2(
+              scratch_allocator, job->system, selected_vkt, job->colorspace,
+              job->has_explicit_colorspace, job->texture_class,
+              job->has_explicit_class, result)) {
         return true_v;
       }
       if (selected_is_direct) {
@@ -4089,6 +4089,34 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
     return false_v;
   }
 
+  uint64_t key_buffer_size = base_path.length + 16;
+  char *key_buffer = (char *)vkr_allocator_alloc(
+      temp_alloc, key_buffer_size, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  if (!key_buffer) {
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return false_v;
+  }
+  snprintf(key_buffer, key_buffer_size, "%.*s_cube", (int)base_path.length,
+           base_path.str);
+
+  VkrTextureEntry *existing_entry =
+      vkr_hash_table_get_VkrTextureEntry(&system->texture_map, key_buffer);
+  if (existing_entry) {
+    if (existing_entry->ref_count == 0) {
+      existing_entry->auto_release = false_v;
+    }
+    existing_entry->ref_count++;
+    VkrTexture *existing_texture =
+        &system->textures.data[existing_entry->index];
+    *out_handle = (VkrTextureHandle){
+        .id = existing_texture->description.id,
+        .generation = existing_texture->description.generation};
+    *out_error = VKR_RENDERER_ERROR_NONE;
+    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    return true_v;
+  }
+
   // Build full path for first face to get dimensions
   uint64_t path_buffer_size = base_path.length + 16 + extension.length;
   char *path_buffer = (char *)vkr_allocator_alloc(
@@ -4175,7 +4203,10 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
       .width = (uint32_t)width,
       .height = (uint32_t)height,
       .channels = 4,
-      .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      // LDR cubemap source faces (jpg/png) are authored in sRGB space.
+      // Sampling through an sRGB format ensures bake shaders receive linear
+      // radiance values.
+      .format = VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB,
       .type = VKR_TEXTURE_TYPE_CUBE_MAP,
       .properties = vkr_texture_property_flags_create(),
       .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
