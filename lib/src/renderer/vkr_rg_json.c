@@ -49,6 +49,8 @@ vkr_internal bool8_t vkr_rg_json_parse_condition(
     out_condition->kind = VKR_RG_JSON_CONDITION_EDITOR_ENABLED;
   } else if (vkr_string8_equals_cstr_i(&trimmed, "!editor_enabled")) {
     out_condition->kind = VKR_RG_JSON_CONDITION_EDITOR_DISABLED;
+  } else if (vkr_string8_equals_cstr_i(&trimmed, "picking_pending")) {
+    out_condition->kind = VKR_RG_JSON_CONDITION_PICKING_PENDING;
   } else {
     return vkr_rg_json_error(ctx, field_path, "unknown condition expression");
   }
@@ -1019,6 +1021,8 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
       out_pass->domain = VKR_PIPELINE_DOMAIN_POST;
     } else if (vkr_string8_equals_cstr_i(&domain, "SKYBOX")) {
       out_pass->domain = VKR_PIPELINE_DOMAIN_SKYBOX;
+    } else if (vkr_string8_equals_cstr_i(&domain, "PICKING")) {
+      out_pass->domain = VKR_PIPELINE_DOMAIN_PICKING;
     } else {
       ok = vkr_rg_json_error(ctx, field_path, "unknown pipeline domain");
       goto cleanup;
@@ -1387,6 +1391,8 @@ vkr_internal bool8_t vkr_rg_json_condition_enabled(
     return frame->editor_enabled;
   case VKR_RG_JSON_CONDITION_EDITOR_DISABLED:
     return !frame->editor_enabled;
+  case VKR_RG_JSON_CONDITION_PICKING_PENDING:
+    return frame->picking_pending;
   default:
     return false_v;
   }

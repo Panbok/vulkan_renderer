@@ -54,8 +54,9 @@ Synchronization for declared resources is implemented, with these boundaries:
 - buffer barriers are write-aware but still cover whole buffers;
 - compute/transfer pass types do not imply separate queues or cross-queue
   scheduling;
-- picking and IBL executors record graphics work against resources not declared
-  in the graph.
+- picking attachments and pixel-copy access are declared, but the IBL executor
+  still records nested graphics work against resources not declared in the
+  graph.
 
 `VKR_RG_RESOURCE_FLAG_TRANSIENT` resources are cached/reused across frames and
 recreated when their resolved descriptions change. They are not currently freed
@@ -91,6 +92,6 @@ after each frame, despite the stale header comment, and they are not aliased.
 
 ## Revisit When
 
-- Move picking and IBL work into declared graph passes.
+- Move the remaining IBL bake work into declared graph passes.
 - Measure per-frame realization and introduce topology caching if warranted.
 - Add queue-aware compute/transfer scheduling or transient aliasing.

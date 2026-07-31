@@ -538,14 +538,19 @@ typedef struct VkrRgPassBuilder {
  * Passed to vkr_rg_begin_frame; copied by the graph.
  */
 typedef struct VkrRenderGraphFrameInfo {
-  uint32_t frame_index;                    /**< Current frame index */
-  uint32_t image_index;                    /**< Swapchain image index */
-  float64_t delta_time;                    /**< Frame delta time */
-  uint32_t window_width;                   /**< Window width */
-  uint32_t window_height;                  /**< Window height */
-  uint32_t viewport_width;                 /**< Viewport width */
-  uint32_t viewport_height;                /**< Viewport height */
-  bool8_t editor_enabled;                  /**< Whether editor is enabled */
+  uint32_t frame_index;     /**< Current frame index */
+  uint32_t image_index;     /**< Swapchain image index */
+  float64_t delta_time;     /**< Frame delta time */
+  uint32_t window_width;    /**< Window width */
+  uint32_t window_height;   /**< Window height */
+  uint32_t viewport_width;  /**< Viewport width */
+  uint32_t viewport_height; /**< Viewport height */
+  bool8_t editor_enabled;   /**< Whether editor is enabled */
+  /**
+   * Whether this frame's packet requests a pick. Gates the picking resources
+   * and passes so a non-picking frame pays nothing for them.
+   */
+  bool8_t picking_pending;
   VkrTextureFormat swapchain_format;       /**< Swapchain color format */
   VkrTextureFormat swapchain_depth_format; /**< Swapchain depth format */
   VkrTextureFormat shadow_depth_format;    /**< Shadow map depth format */

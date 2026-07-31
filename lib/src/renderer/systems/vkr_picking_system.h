@@ -13,7 +13,7 @@
  * 3. On mouse click, convert window coords to target coords using
  *    vkr_viewport_mapping_window_to_target_pixel(), then call
  *    vkr_picking_request()
- * 4. Call vkr_picking_render() during the frame (renders only if requested)
+ * 4. The graph's Picking.Request/Picking.Readback passes render and copy
  * 5. Call vkr_picking_get_result() to poll for the result
  * 6. Call vkr_picking_shutdown() during cleanup
  *
@@ -26,6 +26,9 @@
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/vkr_renderer.h"
 
+struct s_RendererFrontend;
+struct VkrScene;
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -34,8 +37,15 @@
  * @brief State machine for picking request lifecycle.
  */
 typedef enum VkrPickingState {
-  VKR_PICKING_STATE_IDLE = 0,         /**< No pick in progress */
-  VKR_PICKING_STATE_RENDER_PENDING,   /**< Pick requested, needs render pass */
+  VKR_PICKING_STATE_IDLE = 0,       /**< No pick in progress */
+  VKR_PICKING_STATE_RENDER_PENDING, /**< Pick requested, needs render pass */
+  /**
+   * Draws recorded by Picking.Request; the copy is still owed by
+   * Picking.Readback, which runs after the graph transitions the target to
+   * TRANSFER_SRC. Splitting the two is what lets that layout come from a
+   * declared access rather than a render pass's finalLayout.
+   */
+  VKR_PICKING_STATE_RENDER_RECORDED,
   VKR_PICKING_STATE_READBACK_PENDING, /**< Rendered, GPU readback in flight */
   VKR_PICKING_STATE_RESULT_READY,     /**< Result available */
 } VkrPickingState;
@@ -51,9 +61,9 @@ typedef enum VkrPickingState {
  */
 typedef struct VkrPickingInstanceStatePool {
   VkrRendererInstanceStateHandle *states; /**< Cached instance state handles */
-  uint32_t count;                         /**< Number of valid entries in states */
-  uint32_t capacity;                      /**< Allocated states capacity */
-  uint32_t cursor;                        /**< Next state slot for this frame */
+  uint32_t count;               /**< Number of valid entries in states */
+  uint32_t capacity;            /**< Allocated states capacity */
+  uint32_t cursor;              /**< Next state slot for this frame */
   uint64_t cursor_frame_number; /**< Last frame that reset cursor (UINT64_MAX if
                                    never reset) */
 } VkrPickingInstanceStatePool;
@@ -61,22 +71,28 @@ typedef struct VkrPickingInstanceStatePool {
 /**
  * @brief Picking system context.
  *
- * Manages the off-screen picking render target, pipeline, and async
- * readback state for pixel-perfect object selection.
+ * Owns the picking pipelines and the async readback state. The off-screen
+ * colour/depth targets are graph resources (`picking_color`/`picking_depth`),
+ * declared in the render graph JSON so their accesses and barriers are visible
+ * to the scheduler.
  */
 typedef struct VkrPickingContext {
   // -------------------------------------------------------------------------
-  // Render resources (created on init, recreated on resize)
+  // Render resources (created on init)
   // -------------------------------------------------------------------------
-  VkrTextureOpaqueHandle picking_texture; /**< R32_UINT color target */
-  VkrTextureOpaqueHandle picking_depth;   /**< Depth attachment */
-  VkrRenderPassHandle picking_pass;       /**< Picking render pass */
-  VkrRenderTargetHandle picking_target;   /**< Render target */
-  VkrPipelineHandle picking_pipeline;     /**< Picking mesh pipeline */
+  /**
+   * Render pass kept only so picking pipelines have something to be created
+   * against at init. The graph builds its own compatible pass for
+   * Picking.Request and owns the colour/depth targets; Vulkan requires render
+   * pass *compatibility*, not identity, for pipeline binding.
+   */
+  VkrRenderPassHandle picking_pass;
+  VkrPipelineHandle picking_pipeline; /**< Picking mesh pipeline */
   VkrPipelineHandle
       picking_overlay_pipeline; /**< Picking mesh pipeline (no depth test). */
   VkrRendererInstanceStateHandle
-      mesh_instance_state; /**< Shared instance state for non-cutout mesh draws. */
+      mesh_instance_state; /**< Shared instance state for non-cutout mesh draws.
+                            */
   VkrRendererInstanceStateHandle
       mesh_overlay_instance_state; /**< Instance state for overlay pipeline. */
   VkrPipelineHandle
@@ -95,8 +111,8 @@ typedef struct VkrPickingContext {
       mesh_transparent_alpha_instance_pool; /**< Per-draw alpha-cutout states
                                                for transparent picking pipeline.
                                              */
-  VkrShaderConfig shader_config;           /**< Cached mesh shader config */
-  VkrPipelineHandle picking_text_pipeline; /**< Picking text pipeline */
+  VkrShaderConfig shader_config;            /**< Cached mesh shader config */
+  VkrPipelineHandle picking_text_pipeline;  /**< Picking text pipeline */
   VkrPipelineHandle
       picking_world_text_pipeline;    /**< Picking text pipeline for WORLD text
                                          (depth-tested, no depth write). */
@@ -108,6 +124,8 @@ typedef struct VkrPickingContext {
   // -------------------------------------------------------------------------
   // Target dimensions
   // -------------------------------------------------------------------------
+  // Mirrors the viewport extent the graph sizes picking_color/picking_depth
+  // from; used to bounds-check requested pick coordinates.
   uint32_t width;  /**< Current render target width */
   uint32_t height; /**< Current render target height */
 
@@ -179,17 +197,12 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
                          uint32_t height);
 
 /**
- * @brief Resize the picking render target.
+ * @brief Update the picking extent used for request bounds checking.
  *
- * Call when the viewport dimensions change. Destroys and recreates the
- * picking attachments at the new size.
- *
- * If a pick is in progress, this function waits for the GPU to become idle
- * (completing any pending readback) before destroying attachments, then
- * recreates them at the new size. The picking state is not reset, so callers
- * should check for results via vkr_picking_get_result() before resizing, or
- * call vkr_picking_cancel() to explicitly reset the state if the pending pick
- * should be discarded.
+ * Call when the viewport dimensions change. The render graph owns and resizes
+ * `picking_color` and `picking_depth`; this function performs no allocation,
+ * destruction, or GPU wait. A pending pick retains its recorded coordinates
+ * and completes normally unless the caller explicitly cancels it.
  *
  * @param renderer The renderer frontend
  * @param ctx Picking context
@@ -223,25 +236,6 @@ void vkr_picking_resize(struct s_RendererFrontend *renderer,
  */
 void vkr_picking_request(VkrPickingContext *ctx, uint32_t target_x,
                          uint32_t target_y);
-
-/**
- * @brief Render the picking pass.
- *
- * Renders all visible meshes to the picking target with object IDs.
- * Only renders if a pick is requested (state == RENDER_PENDING).
- * After rendering, initiates async pixel readback.
- *
- * Call this during the frame, before or after the main scene render.
- * The picking pass uses its own render target and does not affect
- * the main scene.
- *
- * @param renderer The renderer frontend
- * @param ctx Picking context
- * @param mesh_manager Mesh manager containing meshes to render
- */
-void vkr_picking_render(struct s_RendererFrontend *renderer,
-                        VkrPickingContext *ctx,
-                        struct VkrMeshManager *mesh_manager);
 
 /**
  * @brief Get the result of a picking operation.

@@ -518,6 +518,29 @@ vkr_internal bool8_t vkr_world_resources_bake_cubemap(
     }
   }
 
+  // Make the bake's writes visible to the shader reads that sample this cubemap
+  // later in the frame.
+  //
+  // The bake render pass already moved the image to SHADER_READ_ONLY via its
+  // finalLayout, so this is a same-layout barrier -- but a layout transition is
+  // not a visibility operation. The subpass→EXTERNAL dependency that render
+  // passes are created with is execution-only (dstAccessMask = 0,
+  // dstStageMask = BOTTOM_OF_PIPE), so nothing otherwise guarantees a later
+  // fragment shader sees these writes. Graph-declared resources get this from
+  // the render graph's barriers; these cubemaps are produced inside a pass
+  // executor and are invisible to it, so the barrier has to be explicit here.
+  VkrRendererError barrier_err = vkr_renderer_image_barrier(
+      rf, target_cubemap, VKR_IMAGE_ACCESS_COLOR_ATTACHMENT,
+      VKR_IMAGE_ACCESS_SAMPLED, VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, NULL);
+  if (barrier_err != VKR_RENDERER_ERROR_NONE) {
+    String8 err = vkr_renderer_get_error_string(barrier_err);
+    log_error(
+        "IBL bake: failed to make '%s' output visible to shader reads: %s",
+        shader_name, string8_cstr(&err));
+    return false_v;
+  }
+
   return true_v;
 }
 

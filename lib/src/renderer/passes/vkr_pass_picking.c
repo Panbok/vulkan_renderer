@@ -276,16 +276,7 @@ vkr_internal void vkr_pass_picking_execute(VkrRgPassContext *ctx,
   if (!vkr_pass_packet_upload_instances(rf, instances, instance_count,
                                         &base_instance)) {
     picking->state = VKR_PICKING_STATE_IDLE;
-    return;
-  }
-
-  VkrRendererError begin_err = vkr_renderer_begin_render_pass(
-      rf, picking->picking_pass, picking->picking_target);
-  if (begin_err != VKR_RENDERER_ERROR_NONE) {
-    picking->state = VKR_PICKING_STATE_IDLE;
-    // A failed begin leaves the command buffer indeterminate, so this is a
-    // recording failure the graph must abort on, not a skipped pick.
-    ctx->error = begin_err;
+    ctx->error = VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
     return;
   }
 
@@ -334,15 +325,47 @@ vkr_internal void vkr_pass_picking_execute(VkrRgPassContext *ctx,
                                       picking->picking_text_pipeline);
   }
 
-  VkrRendererError end_err = vkr_renderer_end_render_pass(rf);
-  if (end_err != VKR_RENDERER_ERROR_NONE) {
+  // The image→buffer copy happens in Picking.Readback, which declares the
+  // TRANSFER_SRC read that produces the copy-source layout.
+  picking->state = VKR_PICKING_STATE_RENDER_RECORDED;
+}
+
+/**
+ * @brief Copies the picked pixel out of the graph-owned picking target.
+ *
+ * A separate pass because the copy needs the colour target in TRANSFER_SRC,
+ * and the only honest way to get there is to declare the read and let the graph
+ * emit the barrier. Previously this layout came from the picking render pass's
+ * finalLayout, which the graph could not see.
+ */
+vkr_internal void vkr_pass_picking_readback_execute(VkrRgPassContext *ctx,
+                                                    void *user_data) {
+  (void)user_data;
+
+  if (!ctx || !ctx->renderer || !ctx->graph) {
+    return;
+  }
+
+  RendererFrontend *rf = (RendererFrontend *)ctx->renderer;
+  VkrPickingContext *picking = &rf->picking;
+  if (!picking->initialized ||
+      picking->state != VKR_PICKING_STATE_RENDER_RECORDED) {
+    return;
+  }
+
+  VkrRgImageHandle image =
+      vkr_rg_find_image(ctx->graph, string8_lit("picking_color"));
+  VkrTextureOpaqueHandle texture =
+      vkr_rg_get_image_texture(ctx->graph, image, ctx->image_index);
+  if (!texture) {
+    log_error("Picking readback: graph image 'picking_color' is unavailable");
     picking->state = VKR_PICKING_STATE_IDLE;
-    ctx->error = end_err;
+    ctx->error = VKR_RENDERER_ERROR_INVALID_HANDLE;
     return;
   }
 
   VkrRendererError readback_err = vkr_renderer_request_pixel_readback(
-      rf, picking->picking_texture, picking->requested_x, picking->requested_y);
+      rf, texture, picking->requested_x, picking->requested_y);
   if (readback_err != VKR_RENDERER_ERROR_NONE) {
     // The readback records an image copy and a host-read barrier, so a failure
     // here also leaves recorded state the graph cannot reason about.
@@ -364,6 +387,15 @@ bool8_t vkr_pass_picking_register(VkrRgExecutorRegistry *registry) {
       .execute = vkr_pass_picking_execute,
       .user_data = NULL,
   };
+  if (!vkr_rg_executor_registry_register(registry, &entry)) {
+    return false_v;
+  }
 
-  return vkr_rg_executor_registry_register(registry, &entry);
+  VkrRgPassExecutor readback_entry = {
+      .name = string8_lit("pass.picking.readback"),
+      .execute = vkr_pass_picking_readback_execute,
+      .user_data = NULL,
+  };
+
+  return vkr_rg_executor_registry_register(registry, &readback_entry);
 }

@@ -20,6 +20,7 @@
 #include "mat_test.h"
 #include "material_pbr_tests.h"
 #include "math_test.h"
+#include "picking_state_test.h"
 #include "pool_test.h"
 #include "quat_test.h"
 #include "queue_test.h"

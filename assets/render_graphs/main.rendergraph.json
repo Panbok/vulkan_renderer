@@ -40,6 +40,24 @@
       "format": "SWAPCHAIN_DEPTH",
       "usage": ["DEPTH_STENCIL_ATTACHMENT"],
       "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "picking_color",
+      "type": "image",
+      "condition": "picking_pending",
+      "extent": { "mode": "viewport" },
+      "format": "R32_UINT",
+      "usage": ["COLOR_ATTACHMENT", "TRANSFER_SRC"],
+      "flags": ["TRANSIENT", "RESIZABLE"]
+    },
+    {
+      "name": "picking_depth",
+      "type": "image",
+      "condition": "picking_pending",
+      "extent": { "mode": "viewport" },
+      "format": "SWAPCHAIN_DEPTH",
+      "usage": ["DEPTH_STENCIL_ATTACHMENT"],
+      "flags": ["TRANSIENT", "RESIZABLE"]
     }
   ],
   "passes": [
@@ -61,9 +79,40 @@
     },
     {
       "name": "Picking.Request",
-      "type": "compute",
+      "type": "graphics",
+      "domain": "PICKING",
+      "condition": "picking_pending",
       "flags": ["NO_CULL"],
+      "attachments": {
+        "color": [
+          {
+            "image": "picking_color",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": { "color": [0, 0, 0, 0] }
+          }
+        ],
+        "depth": {
+          "image": "picking_depth",
+          "load": "CLEAR",
+          "store": "DONT_CARE",
+          "clear": { "depth": 1.0, "stencil": 0 }
+        }
+      },
       "execute": "pass.picking"
+    },
+    {
+      "name": "Picking.Readback",
+      "type": "compute",
+      "condition": "picking_pending",
+      "flags": ["NO_CULL"],
+      "reads": [
+        {
+          "image": "picking_color",
+          "access": "TRANSFER_SRC"
+        }
+      ],
+      "execute": "pass.picking.readback"
     },
     {
       "name": "IBL.Bake",

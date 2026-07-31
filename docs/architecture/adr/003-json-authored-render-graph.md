@@ -94,9 +94,11 @@ the runtime-selected formats instead of pinning a `VkFormat`.
   yet been shown material by profiling.
 - Executor `user_data` lifetime is managed by the caller and not enforced by the
   registry.
-- JSON pass type is not a guarantee about commands: current picking and IBL
-  declarations are typed `compute` but their executors orchestrate graphics or
-  CPU work, some of it outside declared graph resources.
+- JSON pass type is not a guarantee about queue selection: all pass kinds still
+  record on the graphics command buffer. `Picking.Request` is a declared
+  graphics pass and `Picking.Readback` declares its transfer read, while the
+  `compute`-typed IBL executor still orchestrates nested graphics work outside
+  declared graph resources.
 
 ## Alternatives Considered
 

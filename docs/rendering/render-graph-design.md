@@ -18,9 +18,10 @@ runtime parameters.
 
 Current status is **partial**: graph scheduling, culling, resource realization,
 timing, fallible execution, and access/subresource-aware synchronization for
-declared resources ship. Picking and IBL still perform undeclared GPU work, and
-queue ownership and buffer byte ranges are not modeled. The architecture spec
-§3.3 and §8 is the current status authority.
+declared resources ship. Picking attachments and readback access are declared;
+IBL baking still performs undeclared nested GPU work, and queue ownership and
+buffer byte ranges are not modeled. The architecture spec §3.3 and §8 is the
+current status authority.
 
 ---
 

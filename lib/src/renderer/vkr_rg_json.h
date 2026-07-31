@@ -15,6 +15,8 @@ typedef enum VkrRgJsonConditionKind {
   VKR_RG_JSON_CONDITION_NONE = 0,
   VKR_RG_JSON_CONDITION_EDITOR_ENABLED,
   VKR_RG_JSON_CONDITION_EDITOR_DISABLED,
+  /** True only on frames whose packet actually requests a pick. */
+  VKR_RG_JSON_CONDITION_PICKING_PENDING,
 } VkrRgJsonConditionKind;
 
 /**

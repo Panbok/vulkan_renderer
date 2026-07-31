@@ -1933,7 +1933,7 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
   if (packet && packet->frame.delta_time > 0.0) {
     safe_dt = packet->frame.delta_time;
   }
-  bool8_t cancel_new_picking_readback = false_v;
+  bool8_t cancel_new_picking_work = false_v;
 
   VkrRendererError err =
       vkr_renderer_validate_packet(rf, packet, out_validation_error);
@@ -2029,6 +2029,8 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
       .viewport_width = viewport_width,
       .viewport_height = viewport_height,
       .editor_enabled = packet->frame.editor_enabled,
+      .picking_pending =
+          (packet->picking && packet->picking->pending) ? true_v : false_v,
       .swapchain_format = vkr_renderer_get_swapchain_format(renderer),
       .swapchain_depth_format =
           vkr_renderer_get_swapchain_depth_format(renderer),
@@ -2055,9 +2057,10 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
     // whose layout transitions never happened.
     vkr_renderer_validation_fail(out_validation_error, err, "render_graph",
                                  "render graph execution failed");
-    cancel_new_picking_readback =
-        picking_state_before != VKR_PICKING_STATE_READBACK_PENDING &&
-        rf->picking.state == VKR_PICKING_STATE_READBACK_PENDING;
+    cancel_new_picking_work =
+        picking_state_before == VKR_PICKING_STATE_RENDER_PENDING &&
+        (rf->picking.state == VKR_PICKING_STATE_RENDER_RECORDED ||
+         rf->picking.state == VKR_PICKING_STATE_READBACK_PENDING);
     goto cancel;
   }
 
@@ -2068,8 +2071,9 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
   err = vkr_renderer_end_frame(renderer, safe_dt);
   if (err != VKR_RENDERER_ERROR_NONE &&
       err != VKR_RENDERER_ERROR_PRESENTATION_FAILED &&
-      picking_state_before != VKR_PICKING_STATE_READBACK_PENDING &&
-      rf->picking.state == VKR_PICKING_STATE_READBACK_PENDING) {
+      picking_state_before == VKR_PICKING_STATE_RENDER_PENDING &&
+      (rf->picking.state == VKR_PICKING_STATE_RENDER_RECORDED ||
+       rf->picking.state == VKR_PICKING_STATE_READBACK_PENDING)) {
     // No queue submission owns the newly-recorded readback. The backend has
     // returned its ring slot to IDLE; mirror that rollback in the picking state
     // so a failed submit cannot leave picking pending forever.
@@ -2081,7 +2085,7 @@ cancel:
   if (out_metrics) {
     *out_metrics = rf->frame_metrics;
   }
-  if (cancel_new_picking_readback) {
+  if (cancel_new_picking_work) {
     vkr_picking_cancel(&rf->picking);
   }
   VkrRendererError cancel_err = vkr_renderer_cancel_frame(renderer);
