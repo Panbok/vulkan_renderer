@@ -55,7 +55,7 @@ owning document status in the same change.
 | [002](architecture/adr/002-render-graph.md) | partial | Compiled render graph with declared resource access |
 | [003](architecture/adr/003-json-authored-render-graph.md) | implemented | JSON-authored render graph with named executors |
 | [004](architecture/adr/004-stateless-render-packet.md) | partial | Versioned render-packet submission |
-| [005](architecture/adr/005-reflection-driven-pipelines.md) | partial | SPIR-V-reflected resource layouts with declarative manifests |
+| [005](architecture/adr/005-reflection-driven-pipelines.md) | implemented | SPIR-V-reflected resource layouts with declarative manifests |
 | [006](architecture/adr/006-cpu-memory-allocators.md) | implemented | Lifetime-specific CPU allocators behind a common interface |
 | [007](architecture/adr/007-gpu-memory-allocation.md) | partial | Per-resource device-memory allocation |
 | [008](architecture/adr/008-cpu-gpu-communication.md) | partial | Lifetime-tiered CPU↔GPU data paths |
@@ -69,7 +69,7 @@ owning document status in the same change.
 
 | Document | Status | Purpose |
 |---|---|---|
-| [render-graph-design.md](rendering/render-graph-design.md) | partial | Access/subresource synchronization implemented for declared resources; picking/IBL coverage remains incomplete |
+| [render-graph-design.md](rendering/render-graph-design.md) | partial | Access/subresource synchronization implemented; IBL bake coverage remains incomplete |
 | [render-graph-schema.json](rendering/render-graph-schema.json) | — | JSON schema for `assets/render_graphs/*.rendergraph.json` |
 | [stateless_renderer/stateless_renderer_spec.md](rendering/stateless_renderer/stateless_renderer_spec.md) | partial | Packet API design; see ADR-004 for the real boundary |
 | [pipeline-layout-reflection-and-cache-spec.md](rendering/pipeline-layout-reflection-and-cache-spec.md) | partial | Reflection-driven pipeline layout and cache |
@@ -89,11 +89,11 @@ owning document status in the same change.
 | Document | Status | Purpose |
 |---|---|---|
 | [gltf-loader-design.md](assets/gltf-loader-design.md) | partial | glTF import ships; material conversion has named gaps |
-| [texture-compression-policy/SPEC.md](assets/texture-compression-policy/SPEC.md) | partial | Capability-driven `.vkt` policy; `NORMAL_RG` uncompressed fallback is incomplete |
+| [texture-compression-policy/SPEC.md](assets/texture-compression-policy/SPEC.md) | implemented | Capability-driven `.vkt` policy with transcodable `NORMAL_RG` fallbacks |
 | [texture-compression-vkt-ktx2-uastc-spec.md](assets/texture-compression-vkt-ktx2-uastc-spec.md) | partial | `.vkt` via KTX2 + Basis Universal UASTC |
-| [texture-compression-vkt-ktx2-uastc-implementation-tracker.md](assets/texture-compression-vkt-ktx2-uastc-implementation-tracker.md) | partial | Implementation tracker; normal-map fallback gap open |
+| [texture-compression-vkt-ktx2-uastc-implementation-tracker.md](assets/texture-compression-vkt-ktx2-uastc-implementation-tracker.md) | implemented | Completed implementation tracker, including normal-map fallback hardening |
 | [parallel-asset-loading.md](assets/parallel-asset-loading.md) | partial | Async CPU prep; parallel upload needs an unsafe opt-in |
-| [async-gpu-transfer-queue.md](assets/async-gpu-transfer-queue.md) | proposed | Intended async end state; uploads still fence-wait today |
+| [async-gpu-transfer-queue.md](assets/async-gpu-transfer-queue.md) | proposed | Independent-submit end state; in-frame uploads are deferred, out-of-frame uploads still wait |
 | [resource_loading_analysis.md](assets/resource_loading_analysis.md) | proposed | Resource loading analysis |
 | [static-scene-batching-spec.md](assets/static-scene-batching-spec.md) | proposed | Static batching; `VkrDrawBatcher` is unwired |
 | [san-miguel-obj-import-megabuffer-and-mdi-plan.md](assets/san-miguel-obj-import-megabuffer-and-mdi-plan.md) | proposed | Import dedup, mega-buffers, multi-draw indirect |
@@ -106,6 +106,7 @@ owning document status in the same change.
 | [instanced-rendering/SPEC.md](instanced-rendering/SPEC.md) | partial | World-pass batching and transparent sorting; draw merging not implemented |
 | [instanced-rendering/opaque-compaction/SPEC.md](instanced-rendering/opaque-compaction/SPEC.md) | proposed | Opaque index compaction for an MDI megabuffer |
 | [performance/ecs-hot-path-optimization-spec.md](performance/ecs-hot-path-optimization-spec.md) | partial | ECS hot-path changes ship; before/after performance is unmeasured |
+| [performance/gpu-memory-baseline.md](performance/gpu-memory-baseline.md) | investigation | Captured device-memory baseline; concludes pooling is not justified by the numbers |
 
 Performance workflow and evidence rules:
 [`.codex/skills/vkr-performance/SKILL.md`](../.codex/skills/vkr-performance/SKILL.md).

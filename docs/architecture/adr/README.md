@@ -28,7 +28,7 @@ Considered → Revisit When**.
 | [ADR-002](002-render-graph.md) | Compiled render graph with declared resource access | Accepted (partial) |
 | [ADR-003](003-json-authored-render-graph.md) | JSON-authored render graph with named executors | Accepted |
 | [ADR-004](004-stateless-render-packet.md) | Versioned render-packet submission | Accepted (partial) |
-| [ADR-005](005-reflection-driven-pipelines.md) | SPIR-V-reflected resource layouts with declarative manifests | Accepted (partial) |
+| [ADR-005](005-reflection-driven-pipelines.md) | SPIR-V-reflected resource layouts with declarative manifests | Accepted |
 | [ADR-006](006-cpu-memory-allocators.md) | Lifetime-specific CPU allocators behind a common interface | Accepted |
 | [ADR-007](007-gpu-memory-allocation.md) | Per-resource device memory allocation | Accepted (partial) |
 | [ADR-008](008-cpu-gpu-communication.md) | Lifetime-tiered CPU↔GPU data paths | Accepted (partial) |

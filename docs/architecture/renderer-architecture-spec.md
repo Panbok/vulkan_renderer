@@ -34,15 +34,16 @@ document overstated how completely those systems are integrated:
   It is packet-based, not a purely stateless or replayable renderer.
 - The render graph schedules and instruments declared work, and barrier
   execution now derives Vulkan access and stage masks from the compiler's
-  access flags with per-(mip, layer) state. Picking and IBL executors still
-  perform undeclared rendering outside graph-owned passes, so graph inference
-  is authoritative only for declared resources.
-- SPIR-V reflection drives descriptor layouts, push constants, and vertex ABI,
-  but it does not currently reflect uniform members or cross-validate their
-  offsets against `.shadercfg` declarations.
-- Resource preparation is asynchronous, but Vulkan upload finalization waits
-  on fences. The dedicated transfer queue is a synchronous upload path today,
-  and parallel upload command pools require an explicitly unsafe opt-in.
+  access flags with per-(mip, layer) state. Picking is now fully declared;
+  runtime IBL baking still performs nested rendering outside graph-owned
+  passes, so graph inference is authoritative only for declared resources.
+- SPIR-V reflection drives descriptor layouts, push constants, vertex ABI, and
+  now uniform members, whose offsets and sizes are cross-validated against
+  `.shadercfg` at shader creation.
+- Resource preparation is asynchronous, and frame-path upload finalization no
+  longer blocks: a full Sponza load measures zero render-thread fence waits,
+  queue waits, and device waits. Uploads outside an active frame still block,
+  and parallel upload command pools still require an explicitly unsafe opt-in.
 - The world path still has no active frustum culling, draw batching, or MDI.
   Its instance stream is live, but most draws contain one instance.
 
@@ -159,10 +160,12 @@ Implemented graph capabilities:
 - CPU timing and optional buffered GPU timestamp results;
 - live/peak graph-resource statistics.
 
-The source JSON contains five resource declarations and ten pass declarations.
-After conditions and the four-cascade repeat are resolved, the normal topology
-contains nine active declarations without the editor composite and ten with it.
-The fullscreen/editor variants are alternatives, not additive passes.
+The source JSON contains seven resource declarations and eleven pass
+declarations. Conditions gate four of the resources: `scene_color`/`scene_depth`
+on `editor_enabled`, and `picking_color`/`picking_depth` on `picking_pending`, so
+a frame that neither uses the editor nor picks realizes none of them. The
+fullscreen/editor variants are alternatives, not additive passes, and the
+four-cascade shadow repeat expands at build time.
 
 #### Synchronization boundary
 
@@ -190,11 +193,12 @@ Remaining boundaries:
 - exported images report subresource 0's layout, with a compile-time warning
   when layers disagree.
 
-The graph is also not the sole authority over current GPU work. The picking
-executor opens its own retained render pass/target, and the IBL executor invokes
-helpers that create targets and record several graphics passes. Those internal
-resources and accesses are not declared in the JSON graph. This must be fixed
-before graph inference can be treated as a correctness guarantee.
+The graph is also not the sole authority over current GPU work. Picking now
+uses graph-owned attachments and a separately declared transfer read for its
+pixel copy. The IBL executor still invokes helpers that create targets and
+record several graphics passes; those internal resources and accesses are not
+declared in the JSON graph. This must be fixed before graph inference can be
+treated as a correctness guarantee for the whole frame.
 
 `VKR_RG_RESOURCE_FLAG_TRANSIENT` currently means graph-owned/reusable rather
 than “freed after each frame”: resources survive between realizations and are
@@ -208,15 +212,20 @@ SPIR-V reflection is implemented with `spirv_reflect` and currently supplies:
 - descriptor sets, bindings, descriptor type/count, and block byte sizes;
 - push constant ranges;
 - vertex inputs used to build/validate supported host vertex ABIs;
-- semantic role resolution for frame/draw sets and bindings.
+- semantic role resolution for frame/draw sets and bindings;
+- uniform block members, including scoped names, offsets, sizes, scalar/vector/
+  matrix shape, array count/stride, and matrix stride.
 
 `.shadercfg` remains important for shader identity, stages, render pass,
-`vertex_abi`, and the frontend's named uniform declarations and CPU offsets.
-However, `vulkan_spirv_shader_reflection_create()` currently sets
-`uniform_block_count` to zero. There is no member-by-member reflection or
-validation of manifest names, types, array strides, or offsets against SPIR-V.
-Descriptor writes are validated by set/binding/type/count, but that does not
-protect the CPU uniform staging layout from manifest drift.
+`vertex_abi`, and the frontend's named uniform declarations. Shader creation
+cross-validates those declarations against the reflected frame/draw block:
+scope, name, offset, exact byte size, scalar/vector/matrix shape, array count
+and stride, and matrix stride must agree. Matching blocks contributed by
+multiple stages must also have identical member layouts. Slang-generated
+matrix/array wrapper structs are normalized before comparison. Reflection does
+not yet flatten arbitrary user-authored nested structs into the manifest's
+flat declaration model, and reverse completeness is intentionally not required:
+a shader may contain a member the host never writes.
 
 Static assertions correctly pin `VkrVertex3d`, `VkrInstanceDataGPU`, and
 `VkrIndirectDrawCommand` host layouts. Pipeline cache persistence is also
@@ -248,22 +257,22 @@ activated once dependency/GPU finalization completes.
 |---|---|---|
 | Frontend/backend interface | Implemented | One Vulkan backend; portability seam unproven |
 | Packet submission | Implemented, partial | Versioned/validated with a real cancel path, but ordered and state-mutating |
-| JSON render graph | Implemented, partial | Scheduling/culling/timing; access- and subresource-aware barriers for declared resources; picking/IBL work still undeclared |
-| SPIR-V reflection | Implemented, partial | Descriptors, push constants, vertex ABI; no uniform-member reflection |
+| JSON render graph | Implemented, partial | Scheduling/culling/timing; access- and subresource-aware barriers for declared resources; IBL bake work remains undeclared |
+| SPIR-V reflection | Implemented | Descriptors, push constants, vertex ABI, and uniform members validated against `.shadercfg` |
 | Pipeline cache | Implemented | Disk-backed Vulkan cache |
 | Cascaded shadow maps | Implemented | Four-cascade default with debug/fit controls |
 | PBR materials | Implemented, evolving | Metallic-roughness and texture slots present |
-| IBL | In progress | Runtime bake paths and scene/probe model present; graph integration incomplete |
-| glTF and scene loading | Implemented | CPU async pipeline with render-thread finalization |
-| KTX2/UASTC textures | Implemented, partial | BC7/BC5, ASTC, ETC2, and RGBA32 paths; normal-map fallback gap |
-| Editor viewport and picking | Implemented | Picking readback usually deferred but ring wrap can block |
+| IBL | In progress | Runtime bake paths and scene/probe model present; bake work still undeclared to the graph, output visibility now barriered explicitly |
+| glTF and scene loading | Implemented | CPU async pipeline; frame-path uploads measured non-blocking |
+| KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; every selector result is transcodable |
+| Editor viewport and picking | Implemented | Picking fully declared in the render graph; readback usually deferred but ring wrap can block |
 | Text | Implemented | Bitmap, MTSDF, system-font, UI and world text paths |
 | Instance stream | Implemented, underused | Fixed 65,536 entries; current world extraction usually emits one instance/draw |
 | CPU frustum culling | Not integrated | Frustum module has no production call site |
 | Draw batching | Not integrated | Batcher module has no production call site |
 | Multi-draw indirect | Plumbed, unused | Stream/backend entry exists; no command allocation caller |
 | Compute dispatch | Not exercised | “compute” JSON passes currently orchestrate graphics/CPU work |
-| Device-memory suballocation | Absent | One `VkDeviceMemory` allocation per Vulkan buffer/image/readback buffer |
+| Device-memory suballocation | Absent, measured | Still one `VkDeviceMemory` per buffer/image/readback buffer; allocation-count and per-type telemetry now exists to size a pool |
 | Bindless/descriptor indexing | Absent | Per-material descriptor binding model |
 | HDR/tonemap/post chain | Absent | Post domain is reserved |
 | Shader hot reload | Absent | Build-time shader compilation only |
@@ -317,19 +326,23 @@ buffers. A `VulkanBuffer` also owns a `VkrDMemory` offset allocator for ranges
 inside that buffer; this permits suballocation where callers deliberately share
 a buffer, but does not make arbitrary buffers or images share device memory.
 
-Device allocation sizes are reported through allocator tags, and the graph
-tracks sizes of its own resources. Missing capabilities are:
+All device allocations route through one tracked allocation/free pair. The
+renderer exposes live/peak/total allocation counts and bytes, per-memory-type
+distribution, heap capacities, and driver heap usage/budget when
+`VK_EXT_memory_budget` is available. If its fixed handle table saturates it
+marks live totals inexact rather than presenting them as authoritative. The
+graph also tracks sizes of its own resources. Missing capabilities are:
 
-- heap budget/usage reporting;
 - pooled blocks by memory type;
-- allocation-count telemetry;
 - defragmentation/eviction;
 - transient image/buffer aliasing.
 
-Per-resource allocation is simple and currently functional, but scalability
-must be measured rather than inferred from the presence of large scene assets.
+Per-resource allocation is simple and currently functional. It has now been
+measured rather than inferred: see
+[performance/gpu-memory-baseline.md](../performance/gpu-memory-baseline.md).
 The earlier claim that Sponza/San Miguel approach a particular allocation limit
-was not backed by captured telemetry.
+is **refuted** on the measured configuration — Sponza peaks at 206 live
+allocations against a limit of ~1.07e9.
 
 ---
 
@@ -355,15 +368,20 @@ with/fixes a separate 1,024-instance capacity depending on the path.
 
 `VkrResourceLoader` separates worker-thread `prepare_async` from render-thread
 `finalize_async`. The resource pump has count/op/byte budgets and guarantees
-forward progress by permitting the first oversized request. This bounds how
-much finalization is started in a pump; it does not bound wall time because the
-GPU upload functions wait indefinitely for their transfer and graphics upload
-fences.
+forward progress by permitting the first oversized request.
+
+Upload helpers no longer block the render thread during a frame: when a frame is
+being recorded they record into the active command buffer and defer both the
+submission and the staging teardown, and refuse rather than wait if they cannot.
+Measured over a full Sponza load, this yields zero render-thread fence, queue,
+and device waits (§8, P1 item 8). Uploads that run outside an active frame still
+wait on their fences.
 
 A dedicated transfer queue is selected when the device exposes a separate
-family, including queue-family ownership work. The current image and buffer
-upload helpers submit and then wait, so they do not overlap upload completion
-with later rendering or retire staging data asynchronously.
+family, including queue-family ownership work. Staging is retired
+asynchronously: the deferred-destroy queue is gated on submit serials against
+`completed_submit_serial`, which only advances once a frame-slot fence proves
+GPU completion. Out-of-frame upload helpers still submit and wait.
 
 Per-worker transfer/graphics-upload command pools are created only when both
 `VKR_PARALLEL_UPLOAD` and `VKR_PARALLEL_UPLOAD_UNSAFE=1` enable the experimental
@@ -492,29 +510,124 @@ required gate — see §10.
    legitimately think in layout pairs and run outside the graph.
 
    **Residual gap:** this is correct synchronization for *declared* resources.
-   Picking and IBL still record GPU work on resources the graph does not
-   declare (P1 item 6), so graph state for those remains incomplete.
+   Picking is now declared (P1 item 6), but IBL baking still records nested GPU
+   work on resources the graph cannot see.
 
 ### P1 — Architectural completion
 
-6. **Bring picking and IBL GPU work into the graph.** Their attachments,
-   accesses, and graphics passes must be declared rather than hidden inside
-   nominal compute executors.
-7. **Reflect and validate uniform members.** Until then, treat `.shadercfg`
-   uniform layout as manually synchronized data and add tests that compare
-   offsets/sizes against compiled shaders.
-8. **Make uploads genuinely asynchronous.** Signal semaphores/timeline values,
-   retain staging allocations until completion, and remove per-upload infinite
-   waits from frame finalization.
-9. **Fix KTX2 normal-map capability fallback.** The selector returns
-   `R8G8_UNORM` when neither BC5 nor ASTC is supported, but the KTX transcode
-   API has no uncompressed two-channel target corresponding to that format, so
-   the mapper correctly returns `KTX_TTF_NOSELECTION`. Select a supported
-   RGBA32 transcode fallback (and reconstruct/use normal channels accordingly)
-   instead. Strict `.vkt` loading currently fails on that capability
-   combination.
-10. **Add device-memory pooling and budget telemetry.** Measure allocation count,
-   heap use, and load time before selecting block sizes or VMA.
+6. **Bring picking and IBL GPU work into the graph.** Picking: **done
+   2026-07-31.** `picking_color` and `picking_depth` are graph resources sized
+   from the viewport and gated by a new `picking_pending` condition, so a
+   non-picking frame allocates nothing for them (measured: 197 → 195 live
+   device allocations at scene load). `Picking.Request` is a declared graphics
+   pass in the `PICKING` domain; a new `Picking.Readback` pass declares the
+   `TRANSFER_SRC` read that produces the copy-source layout, which previously
+   came from the picking render pass's `finalLayout` and was invisible to the
+   graph. The picking system no longer owns the texture, depth, or target — it
+   keeps its render pass purely so pipelines have something compatible to be
+   created against, plus the readback ring and the pick-coordinate bounds. The
+   dead `vkr_picking_render` path was removed.
+
+   IBL: **not declared, and declaring it would have been theatre.** Its outputs
+   are written by the bake's own render passes (`finalLayout` =
+   `SHADER_READ_ONLY`) and sampled through material descriptors; no other graph
+   pass touches them. Declaring them would add a scheduling edge that the
+   declaration order already provides and a barrier that the read-after-read
+   rule correctly skips — zero emitted barriers, for a substantial amount of
+   dynamic-handle import plumbing.
+
+   **What the investigation did find is a real hazard, now fixed.** Render
+   passes are created with a subpass→EXTERNAL dependency of
+   `dstStageMask = BOTTOM_OF_PIPE`, `dstAccessMask = 0` — an execution-only
+   dependency that performs no visibility operation. A `finalLayout` transition
+   is not a visibility operation either. Graph-declared resources are covered
+   because the graph emits explicit access-carrying barriers (P0 item 5), but
+   the IBL bake's outputs are produced inside an executor and are invisible to
+   it, so nothing guaranteed a later fragment shader saw those writes.
+   `vkr_world_resources_bake_cubemap` now emits an explicit
+   `COLOR_ATTACHMENT → SAMPLED` barrier on each baked cubemap. It is a
+   same-layout write→read barrier — precisely the hazard class the P0 barrier
+   work was built to express, and one the old layout-pair model could not have
+   represented.
+
+   The genuine remaining gap is unchanged: the bake still creates render targets
+   and records passes the graph cannot see. Closing that means moving the bake
+   in, which stays out of scope.
+7. ~~**Reflect and validate uniform members.**~~ **Done 2026-07-31.**
+   `vulkan_reflection_collect_uniform_blocks` populates what was previously
+   hardcoded to zero, and `vulkan_shader_validate_uniform_layout` cross-checks
+   each manifest declaration against the correct reflected frame/draw block at
+   shader creation. Name, offset, exact size, scalar/vector/matrix shape, array
+   count/stride, and matrix stride must agree; matching `(set,binding)` blocks
+   across shader stages must have identical member layouts. Slang's generated
+   matrix/array storage wrappers are normalized into those traits. Samplers are
+   skipped (addressed by `location`, not offset); a manifest entry with no
+   reflected member is an error, while a reflected member the manifest never
+   declares is permitted.
+
+   **This found a shipped defect.** `default.ui` and `default.viewport_display`
+   declared `view` before `projection` in their Slang UBOs while their manifests
+   declared the opposite order, so the host wrote the projection matrix into the
+   shader's `view` slot and vice versa. It was invisible only because the UI view
+   matrix is identity, which makes the two interchangeable. Both shaders were
+   reordered to the projection-then-view convention every other shader uses.
+   `tests/src/reflection_pipeline_test.c` now sweeps all 13 shipped
+   `.shadercfg`/`.spv` pairs through the shipped validator, so drift fails a
+   test rather than a launch.
+8. **Make uploads genuinely asynchronous.** Two of three parts are **already
+   satisfied, now measured** rather than assumed:
+
+   - *No infinite waits in frame finalization.* `vkr_resource_system_pump`
+     drives `finalize_async` on the render thread with `frame_active` set, so
+     the wait counters' guard can fire. A full Sponza load with
+     `VKR_ASSERT_NO_UPLOAD_WAITS=1` reports
+     `fence=0 queue_idle=0 device_idle=0`, with zero "refusing blocking
+     single-use submit" logs — the uploads take the deferred in-frame recording
+     path rather than being skipped, so the zero is meaningful.
+   - *Staging retained until completion.* Deferred destroy is gated on
+     `submit_serial` against `completed_submit_serial`, which only advances
+     after a frame-slot fence wait proves GPU completion. Staging enqueued
+     during a frame is stamped `submit_serial + 1` — the submission that will
+     contain its copy. On queue saturation it deliberately leaks rather than
+     free early.
+   - *Timeline semaphores* remain unimplemented, and were out of the agreed
+     scope for this pass.
+
+   Uploads outside an active frame (bootstrap, single-use submits with no frame
+   recording) still block. That costs scene **load** time, not frame time, and
+   quantifying it needs a Release measurement rather than the Debug figure in
+   the GPU memory baseline.
+9. ~~**Fix KTX2 normal-map capability fallback.**~~ **Done 2026-07-31.**
+   The fix belonged in the selector, not the mapper: libktx has no uncompressed
+   two-channel transcode target, so `R8G8_UNORM` could never be reachable.
+   Added `VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM` with its own capability probe
+   (queried separately from ETC2 RGBA rather than assumed to follow it), placed
+   it in the `NORMAL_RG` ladder below BC5 and ASTC, and changed the terminal
+   fallback to `R8G8B8A8_UNORM`. The silent `KTX_TTF_NOSELECTION` branch now
+   logs. `tests/src/texture_vkt_tests.c` sweeps all 1024 combinations of texture
+   class, device type, sRGB intent, and the five capability flags, asserting
+   every selector result has a transcode target.
+10. **Add device-memory pooling and budget telemetry.** Telemetry **done
+   2026-07-31**; pooling deliberately not started. All device allocations now
+   route through `vulkan_backend_allocate_device_memory` /
+   `vulkan_backend_free_device_memory`, which record into a handle-keyed table
+   so live counts remain exact while that table has capacity; saturation marks
+   them inexact. `VK_EXT_memory_budget` is enabled when present for driver heap
+   usage. `vkr_renderer_get_device_memory_stats`
+   reports live/peak/total allocation counts, bytes, and the per-memory-type
+   distribution, logged by the app at startup, scene load-ready, and unload.
+   `find_memory_index_with_fallback` replaces three hand-rolled retry
+   strategies, one of which (`vulkan_image.c`) had no fallback at all.
+   **Baseline captured** — see
+   [performance/gpu-memory-baseline.md](../performance/gpu-memory-baseline.md).
+   On Apple M1 Pro / MoltenVK loading Sponza: peak 206 live allocations against
+   a `maxMemoryAllocationCount` of ~1.07e9, 2281 MB resident, and a strongly
+   bimodal distribution (DEVICE_LOCAL mean 14.5 MB across 156 allocations;
+   host-visible mean 0.47 MB across 50). **The measurement argues against
+   writing a pooling allocator now:** the count is nowhere near any limit, the
+   large allocations are already block-sized, and the only population pooling
+   would help totals ~1% of device memory. Revisit on a device reporting a low
+   allocation limit.
 
 ### P2 — Throughput
 
@@ -557,14 +670,15 @@ The renderer demonstrates broad, relevant engineering skill:
 
 The most important portfolio weakness is not missing visual effects; it is that
 some flagship abstractions are only partially authoritative. A graphics
-reviewer will notice the per-draw world loop, synchronous uploads, undeclared
-GPU work inside graph executors, and swallowed Vulkan errors. Fixing those with
-validation-layer runs and before/after measurements will strengthen the project
-more than adding another isolated effect.
+reviewer will notice the per-draw world loop, blocking out-of-frame upload and
+readback-wrap paths, and undeclared IBL bake work inside a graph executor.
+Closing or measuring those boundaries—and exercising failure paths and a wider
+device/swapchain matrix—will strengthen the project more than adding another
+isolated effect.
 
 A fair current description is: **strong engine/rendering architecture and
-breadth, with prototype-level gaps in failure handling, graph synchronization,
-GPU allocation, and draw throughput.**
+breadth, with remaining gaps in whole-frame graph authority, cross-device
+failure validation, GPU allocation policy, and draw throughput.**
 
 ---
 
@@ -579,17 +693,22 @@ following checks were rerun:
 | `./build_test.sh` after P0 review | Exit 0; all registered suites completed, including 10 render-graph barrier/error-contract tests and the framebuffer slice-view regression test |
 | `./build.sh Debug` after P0 review | Exit 0; application and shaders built successfully |
 | Validation-layer run after P0 | Apple M1 Pro/MoltenVK, three-image swapchain: startup, IBL setup, swapchain recreation, and 10 seconds of steady frames completed with no validation messages after fixing the layer-0 array-view mismatch |
+| `./build_test.sh` after P1 review | Exit 0; picking lifecycle regressions, strict uniform-layout negatives, all 13 shipped shader manifests, and all 1,024 texture-selector combinations passed |
+| `./build.sh Debug` after P1 review | Exit 0; shaders, texture packer, renderer library, and application built successfully |
+| `./validate_pipeline_cache.sh` after P1 review | Exit 0; cold cache created/saved and warm cache loaded; 20 pipelines created in both runs |
+| P1 Sponza validation-layer run | Apple M1 Pro/MoltenVK, three-image swapchain: Sponza ready in 33.1 Debug seconds, 50-second run clean, exact device-memory telemetry, and zero fence/queue/device upload waits |
+| `tools/validate_multithreaded_backend_matrix.sh` after P1 review | Exit 0; all five compile/runtime configurations passed |
 | `vkr_frustum` production references | None outside its module/tests/docs |
 | `VkrDrawBatcher` production references | None outside its module/tests/docs |
 | `vkr_indirect_draw_alloc` callers | None |
-| `vkAllocateMemory` call sites | Four direct backend sites |
+| `vkAllocateMemory` call sites | Centralized in one tracked backend wrapper; one raw allocate/free pair remains inside that wrapper |
 | VMA | Not present |
 | Dynamic rendering | Not present |
 | Descriptor indexing/bindless | Not enabled |
-| Uniform block reflection output | Explicitly set to empty |
+| Uniform block reflection output | Populated; validated against all 13 `.shadercfg` files by `reflection_pipeline_test` |
 | `vkr_renderer_transition_texture_layout` callers | Replaced by `vkr_renderer_image_barrier`; the layout-pair table survives only for upload/copy paths in `vulkan_image.c` |
 
 The CPU suite and one hardware smoke configuration do not replace
-validation-layer runs across two-, three-, and four-image swapchains,
-queue-family layouts, GPUs, resize/minimize/cancel paths, and injected acquire,
-fence, submit, and present failures.
+validation-layer runs across two- and four-image swapchains, queue-family
+layouts, other GPUs, resize/minimize/cancel paths, interactive picking, and
+injected acquire, fence, submit, and present failures.
