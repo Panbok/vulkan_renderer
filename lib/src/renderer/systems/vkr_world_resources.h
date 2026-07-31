@@ -16,6 +16,20 @@
 #include "renderer/vkr_renderer.h"
 
 struct s_RendererFrontend;
+typedef struct VkrScene VkrScene;
+
+typedef struct VkrWorldIblProbeSlot {
+  VkrTextureOpaqueHandle irradiance_map;
+  VkrTextureOpaqueHandle prefilter_map;
+  Vec3 center;
+  Vec3 extents;
+  float32_t blend_distance;
+  float32_t weight;
+  float32_t intensity;
+  float32_t diffuse_intensity;
+  float32_t specular_intensity;
+  bool8_t box_projection_enabled;
+} VkrWorldIblProbeSlot;
 
 /**
  * @brief A single 3D text slot in the world resources.
@@ -56,6 +70,30 @@ typedef struct VkrWorldResources {
   VkrPipelineHandle text_pipeline;    /**< 3D text glyph pipeline */
   Array_VkrWorldTextSlot text_slots;  /**< Allocated 3D text slots */
 
+  VkrTextureHandle ibl_fallback_source_cubemap;
+  VkrTextureHandle ibl_fallback_irradiance_cubemap;
+  VkrTextureHandle ibl_fallback_prefilter_cubemap;
+  VkrTextureHandle ibl_brdf_lut;
+
+  VkrRenderPassHandle ibl_bake_render_pass;
+  VkrShaderConfig ibl_diffuse_bake_shader_config;
+  VkrShaderConfig ibl_specular_bake_shader_config;
+  VkrPipelineHandle ibl_diffuse_bake_pipeline;
+  VkrPipelineHandle ibl_specular_bake_pipeline;
+  VkrRendererInstanceStateHandle ibl_diffuse_bake_instance_state;
+  VkrRendererInstanceStateHandle ibl_specular_bake_instance_state;
+  VkrGeometryHandle ibl_bake_cube_geometry;
+
+  VkrTextureHandle ibl_active_irradiance_cubemap;
+  VkrTextureHandle ibl_active_prefilter_cubemap;
+  bool8_t ibl_active_enabled;
+  float32_t ibl_active_intensity;
+  float32_t ibl_active_diffuse_intensity;
+  float32_t ibl_active_specular_intensity;
+  bool8_t ibl_bake_runtime_ready;
+  bool8_t ibl_bake_render_pass_owned;
+  bool8_t ibl_default_ready;
+
   bool8_t initialized; /**< Resources have been initialized */
 } VkrWorldResources;
 
@@ -75,6 +113,56 @@ bool8_t vkr_world_resources_init(struct s_RendererFrontend *rf,
  */
 void vkr_world_resources_shutdown(struct s_RendererFrontend *rf,
                                   VkrWorldResources *resources);
+
+/**
+ * @brief Ensures fallback IBL maps and BRDF LUT are ready for binding.
+ *
+ * This function is safe to call every frame; work is done once and cached.
+ * Returns false only when fallback cube acquisition fails.
+ */
+bool8_t
+vkr_world_resources_ensure_default_ibl_ready(struct s_RendererFrontend *rf,
+                                             VkrWorldResources *resources);
+
+/**
+ * @brief Produces scene IBL maps when the scene environment bake is pending.
+ *
+ * Failure does not abort rendering; bake state transitions to FAILED so
+ * fallback maps remain active.
+ */
+void vkr_world_resources_bake_scene_ibl_if_pending(
+    struct s_RendererFrontend *rf, VkrWorldResources *resources,
+    VkrScene *scene);
+
+/**
+ * @brief Bakes all pending local reflection probes for the active scene.
+ */
+void vkr_world_resources_bake_scene_reflection_probes_if_pending(
+    struct s_RendererFrontend *rf, VkrWorldResources *resources,
+    VkrScene *scene);
+
+/**
+ * @brief Selects active IBL maps from scene-ready data or fallback maps.
+ */
+void vkr_world_resources_set_active_ibl_from_scene_or_default(
+    struct s_RendererFrontend *rf, VkrWorldResources *resources,
+    const VkrScene *scene);
+
+/**
+ * @brief Pushes currently active IBL maps and scalar controls to materials.
+ */
+void vkr_world_resources_apply_active_ibl_to_material_system(
+    struct s_RendererFrontend *rf, VkrWorldResources *resources);
+
+/**
+ * @brief Selects and blends two probe slots for the given world position.
+ *
+ * Slot selection prefers local reflection probes by influence and falls back
+ * to active/global IBL maps when no local probe contributes.
+ */
+void vkr_world_resources_select_probe_slots_for_position(
+    struct s_RendererFrontend *rf, VkrWorldResources *resources,
+    const VkrScene *scene, Vec3 world_position, VkrWorldIblProbeSlot out_slots[2]);
 
 /**
  * @brief Create or replace a 3D text slot.

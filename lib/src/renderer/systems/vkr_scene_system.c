@@ -151,6 +151,38 @@ vkr_internal bool8_t scene_grow_array(VkrAllocator *alloc, void **array,
   return true_v;
 }
 
+vkr_internal void
+scene_release_owned_texture_handle(RendererFrontend *rf,
+                                   VkrTextureHandle *handle) {
+  if (!rf || !handle || handle->id == 0) {
+    return;
+  }
+
+  vkr_texture_system_release_by_handle(&rf->texture_system, *handle);
+  *handle = VKR_TEXTURE_HANDLE_INVALID;
+}
+
+vkr_internal void scene_reset_reflection_probe_runtime(
+    VkrSceneReflectionProbe *probe) {
+  if (!probe) {
+    return;
+  }
+
+  *probe = (VkrSceneReflectionProbe){
+      .enabled = false_v,
+      .center = {0},
+      .extents = {0},
+      .blend_distance = 1.0f,
+      .intensity = 1.0f,
+      .diffuse_intensity = 1.0f,
+      .specular_intensity = 1.0f,
+      .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_NONE,
+  };
+}
+
 vkr_internal void scene_invalidate_queries(VkrScene *scene) {
   if (!scene) {
     return;
@@ -1014,6 +1046,20 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
 
   scene_invalidate_queries(scene);
   scene->next_render_id = 1;
+  scene->environment = (VkrSceneEnvironment){
+      .enabled = false_v,
+      .intensity = 1.0f,
+      .diffuse_intensity = 1.0f,
+      .specular_intensity = 1.0f,
+      .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE,
+  };
+  scene->reflection_probe_count = 0;
+  for (uint32_t i = 0; i < VKR_SCENE_REFLECTION_PROBE_MAX; ++i) {
+    scene_reset_reflection_probe_runtime(&scene->reflection_probes[i]);
+  }
 
   if (out_error)
     *out_error = VKR_SCENE_ERROR_NONE;
@@ -1127,6 +1173,26 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
   // Scene-owned resources were retired above; wait once more so deferred Vulkan
   // destruction completes before the next scene load begins.
   if (rf) {
+    scene_release_owned_texture_handle((RendererFrontend *)rf,
+                                       &scene->environment.prefilter_cubemap);
+    scene_release_owned_texture_handle((RendererFrontend *)rf,
+                                       &scene->environment.irradiance_cubemap);
+    scene_release_owned_texture_handle((RendererFrontend *)rf,
+                                       &scene->environment.source_cubemap);
+    for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
+      VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
+      scene_release_owned_texture_handle((RendererFrontend *)rf,
+                                         &probe->prefilter_cubemap);
+      scene_release_owned_texture_handle((RendererFrontend *)rf,
+                                         &probe->irradiance_cubemap);
+      scene_release_owned_texture_handle((RendererFrontend *)rf,
+                                         &probe->source_cubemap);
+      scene_reset_reflection_probe_runtime(probe);
+    }
+    scene->reflection_probe_count = 0;
+    scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
+    scene->environment.enabled = false_v;
+
     scene_shutdown_wait_idle((RendererFrontend *)rf, "post-teardown");
   }
 

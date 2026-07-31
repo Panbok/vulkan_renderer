@@ -247,14 +247,14 @@ vkr_internal void test_reflection_pbr_world_program_layout(void) {
   assert(set1_local != NULL);
   assert(set1_local->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 
-  for (uint32_t binding = 1; binding <= 6; ++binding) {
+  for (uint32_t binding = 1; binding <= 11; ++binding) {
     const VkrDescriptorBindingDesc *desc =
         reflection_test_find_descriptor_binding(set1, binding);
     assert(desc != NULL);
     assert(desc->type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
   }
 
-  for (uint32_t binding = 7; binding <= 12; ++binding) {
+  for (uint32_t binding = 12; binding <= 22; ++binding) {
     const VkrDescriptorBindingDesc *desc =
         reflection_test_find_descriptor_binding(set1, binding);
     assert(desc != NULL);

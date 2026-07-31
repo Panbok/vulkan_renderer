@@ -1,7 +1,9 @@
 #include "renderer/passes/vkr_pass_skybox.h"
 
 #include "renderer/renderer_frontend.h"
+#include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_skybox_system.h"
+#include "renderer/systems/vkr_texture_system.h"
 #include "renderer/vkr_render_packet.h"
 
 vkr_internal void vkr_pass_skybox_execute(VkrRgPassContext *ctx,
@@ -19,8 +21,19 @@ vkr_internal void vkr_pass_skybox_execute(VkrRgPassContext *ctx,
     return;
   }
 
+  VkrSkyboxPassPayload effective_payload = *payload;
+  if (effective_payload.cubemap.id == 0 && rf->active_scene &&
+      rf->active_scene->environment.source_cubemap.id != 0) {
+    VkrTexture *scene_cubemap = vkr_texture_system_get_by_handle(
+        &rf->texture_system, rf->active_scene->environment.source_cubemap);
+    if (scene_cubemap && scene_cubemap->handle &&
+        scene_cubemap->description.type == VKR_TEXTURE_TYPE_CUBE_MAP) {
+      effective_payload.cubemap = rf->active_scene->environment.source_cubemap;
+    }
+  }
+
   if (rf->skybox_system.initialized) {
-    vkr_skybox_system_render_packet(rf, &rf->skybox_system, payload,
+    vkr_skybox_system_render_packet(rf, &rf->skybox_system, &effective_payload,
                                     &packet->globals);
   }
 }

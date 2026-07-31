@@ -28,7 +28,7 @@
 #define VKR_FPS_DELTA_MIN 0.000001
 #define VKR_WORLD_TIME_UPDATE_INTERVAL 0.25
 #define VKR_UI_TEXT_PADDING 16.0f
-#define SCENE_PATH "assets/scenes/san_miguel.scene.json"
+#define SCENE_PATH "assets/scenes/sponza.scene.json"
 
 typedef struct FilterModeEntry {
   VkrFilter min_filter;
@@ -121,6 +121,12 @@ typedef struct State {
 
   // Scene system demo
   VkrResourceHandleInfo scene_resource;
+  bool8_t scene_load_terminal_logged;
+  bool8_t scene_load_stats_baseline_valid;
+  VkrAllocatorStatistics scene_load_stats_baseline;
+  bool8_t scene_memory_verbose;
+  bool8_t scene_load_timer_active;
+  float64_t scene_load_start_time_seconds;
 
   // Optional automation-only runtime cap used for non-interactive verification.
   bool8_t auto_close_enabled;
@@ -136,6 +142,23 @@ typedef struct State {
   float64_t benchmark_frame_ms_max;
   uint64_t benchmark_rg_cpu_sample_count;
   float64_t benchmark_rg_cpu_ms_sum;
+
+  // Upload wait telemetry for async streaming validation runs.
+  bool8_t assert_no_upload_waits;
+  bool8_t upload_wait_violation_seen;
+  uint64_t upload_wait_fence_total;
+  uint64_t upload_wait_queue_idle_total;
+  uint64_t upload_wait_device_idle_total;
+
+  // Runtime IBL validation controls.
+  uint32_t ibl_validation_mode;
+  float32_t ibl_validation_scalar;
+  VkrScene *ibl_validation_scene;
+  bool8_t ibl_validation_defaults_captured;
+  bool8_t ibl_validation_base_enabled;
+  float32_t ibl_validation_base_intensity;
+  float32_t ibl_validation_base_diffuse_intensity;
+  float32_t ibl_validation_base_specular_intensity;
 } State;
 
 vkr_global State *state = NULL;
@@ -172,6 +195,251 @@ vkr_internal bool8_t application_env_flag(const char *name,
   default:
     return default_value;
   }
+}
+
+vkr_internal const char *application_ibl_validation_mode_label(uint32_t mode) {
+  switch (mode) {
+  case 1u:
+    return "IBL off";
+  case 2u:
+    return "IBL diffuse only";
+  case 3u:
+    return "IBL specular only";
+  case 0u:
+  default:
+    return "Scene IBL";
+  }
+}
+
+vkr_internal void
+application_update_ibl_validation_controls(Application *application) {
+  if (!application || !state) {
+    return;
+  }
+
+  VkrScene *scene = application->renderer.active_scene;
+  if (!scene) {
+    state->ibl_validation_scene = NULL;
+    state->ibl_validation_defaults_captured = false_v;
+    return;
+  }
+
+  if (state->ibl_validation_scene != scene ||
+      !state->ibl_validation_defaults_captured) {
+    state->ibl_validation_scene = scene;
+    state->ibl_validation_defaults_captured = true_v;
+    state->ibl_validation_base_enabled = scene->environment.enabled;
+    state->ibl_validation_base_intensity = scene->environment.intensity;
+    state->ibl_validation_base_diffuse_intensity =
+        scene->environment.diffuse_intensity;
+    state->ibl_validation_base_specular_intensity =
+        scene->environment.specular_intensity;
+  }
+
+  scene->environment.enabled = state->ibl_validation_base_enabled;
+  switch (state->ibl_validation_mode) {
+  case 1u: // Off
+    scene->environment.intensity = 0.0f;
+    scene->environment.diffuse_intensity = 0.0f;
+    scene->environment.specular_intensity = 0.0f;
+    break;
+  case 2u: // Diffuse only
+    scene->environment.intensity =
+        state->ibl_validation_base_intensity * state->ibl_validation_scalar;
+    scene->environment.diffuse_intensity =
+        state->ibl_validation_base_diffuse_intensity *
+        state->ibl_validation_scalar;
+    scene->environment.specular_intensity = 0.0f;
+    break;
+  case 3u: // Specular only
+    scene->environment.intensity =
+        state->ibl_validation_base_intensity * state->ibl_validation_scalar;
+    scene->environment.diffuse_intensity = 0.0f;
+    scene->environment.specular_intensity =
+        state->ibl_validation_base_specular_intensity *
+        state->ibl_validation_scalar;
+    break;
+  case 0u: // Scene default
+  default:
+    scene->environment.intensity =
+        state->ibl_validation_base_intensity * state->ibl_validation_scalar;
+    scene->environment.diffuse_intensity =
+        state->ibl_validation_base_diffuse_intensity *
+        state->ibl_validation_scalar;
+    scene->environment.specular_intensity =
+        state->ibl_validation_base_specular_intensity *
+        state->ibl_validation_scalar;
+    break;
+  }
+}
+
+vkr_internal bool8_t application_capture_backend_allocator_stats(
+    Application *application, VkrAllocatorStatistics *out_stats) {
+  if (!application || !out_stats) {
+    return false_v;
+  }
+
+  VkrAllocator *backend_allocator =
+      vkr_renderer_get_backend_allocator(&application->renderer);
+  if (!backend_allocator) {
+    return false_v;
+  }
+
+  *out_stats = vkr_allocator_get_statistics(backend_allocator);
+  return true_v;
+}
+
+vkr_internal int64_t application_stat_delta(uint64_t current,
+                                            uint64_t baseline) {
+  if (current >= baseline) {
+    return (int64_t)(current - baseline);
+  }
+  return -(int64_t)(baseline - current);
+}
+
+vkr_internal const char *
+application_allocator_tag_name(VkrAllocatorMemoryTag tag) {
+  switch (tag) {
+  case VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN:
+    return "UNKNOWN";
+  case VKR_ALLOCATOR_MEMORY_TAG_ARRAY:
+    return "ARRAY";
+  case VKR_ALLOCATOR_MEMORY_TAG_STRING:
+    return "STRING";
+  case VKR_ALLOCATOR_MEMORY_TAG_VECTOR:
+    return "VECTOR";
+  case VKR_ALLOCATOR_MEMORY_TAG_QUEUE:
+    return "QUEUE";
+  case VKR_ALLOCATOR_MEMORY_TAG_STRUCT:
+    return "STRUCT";
+  case VKR_ALLOCATOR_MEMORY_TAG_BUFFER:
+    return "BUFFER";
+  case VKR_ALLOCATOR_MEMORY_TAG_RENDERER:
+    return "RENDERER";
+  case VKR_ALLOCATOR_MEMORY_TAG_FILE:
+    return "FILE";
+  case VKR_ALLOCATOR_MEMORY_TAG_TEXTURE:
+    return "TEXTURE";
+  case VKR_ALLOCATOR_MEMORY_TAG_HASH_TABLE:
+    return "HASH_TABLE";
+  case VKR_ALLOCATOR_MEMORY_TAG_FREELIST:
+    return "FREELIST";
+  case VKR_ALLOCATOR_MEMORY_TAG_VULKAN:
+    return "VULKAN";
+  case VKR_ALLOCATOR_MEMORY_TAG_GPU:
+    return "GPU";
+  default:
+    return "UNKNOWN";
+  }
+}
+
+vkr_internal double application_bytes_to_mb(uint64_t bytes) {
+  return (double)bytes / (double)MB(1);
+}
+
+vkr_internal double application_delta_bytes_to_mb(int64_t bytes) {
+  return (double)bytes / (double)MB(1);
+}
+
+vkr_internal void application_log_backend_allocator_breakdown(
+    const char *label, const VkrAllocatorStatistics *stats) {
+  if (!label || !stats) {
+    return;
+  }
+
+  char stats_buffer[2048];
+  char *write = stats_buffer;
+  size_t remaining = sizeof(stats_buffer);
+  for (uint32_t tag = 0; tag < VKR_ALLOCATOR_MEMORY_TAG_MAX && remaining > 1;
+       ++tag) {
+    size_t line_len = vkr_allocator_format_size_to_buffer(
+        write, remaining,
+        application_allocator_tag_name((VkrAllocatorMemoryTag)tag),
+        stats->tagged_allocs[tag]);
+    if (line_len == 0 || line_len >= remaining) {
+      break;
+    }
+    write += line_len;
+    remaining -= line_len;
+  }
+  *write = '\0';
+
+  log_debug("Vulkan backend %s stats:\n%s", label, stats_buffer);
+}
+
+vkr_internal void application_log_backend_allocator_stats(
+    Application *application, const char *label,
+    const VkrAllocatorStatistics *baseline_stats) {
+  if (!application || !label) {
+    return;
+  }
+
+  VkrAllocatorStatistics stats = {0};
+  if (!application_capture_backend_allocator_stats(application, &stats)) {
+    return;
+  }
+
+  const uint64_t total_bytes = stats.total_allocated;
+  const uint64_t gpu_bytes = stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_GPU];
+  const uint64_t vulkan_bytes =
+      stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_VULKAN];
+  const uint64_t texture_bytes =
+      stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_TEXTURE];
+
+  if (!baseline_stats) {
+    log_debug("SCENE_MEM label=%s total=%.3fMB gpu=%.3fMB vulkan=%.3fMB "
+              "texture=%.3fMB",
+              label, application_bytes_to_mb(total_bytes),
+              application_bytes_to_mb(gpu_bytes),
+              application_bytes_to_mb(vulkan_bytes),
+              application_bytes_to_mb(texture_bytes));
+    if (state && state->scene_memory_verbose) {
+      application_log_backend_allocator_breakdown(label, &stats);
+    }
+    return;
+  }
+
+  const int64_t delta_total =
+      application_stat_delta(total_bytes, baseline_stats->total_allocated);
+  const int64_t delta_gpu = application_stat_delta(
+      gpu_bytes, baseline_stats->tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_GPU]);
+  const int64_t delta_vulkan = application_stat_delta(
+      vulkan_bytes,
+      baseline_stats->tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_VULKAN]);
+  const int64_t delta_texture = application_stat_delta(
+      texture_bytes,
+      baseline_stats->tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_TEXTURE]);
+
+  log_debug(
+      "SCENE_MEM label=%s total=%.3fMB gpu=%.3fMB vulkan=%.3fMB texture=%.3fMB "
+      "delta_total=%+.3fMB delta_gpu=%+.3fMB delta_vulkan=%+.3fMB "
+      "delta_texture=%+.3fMB",
+      label, application_bytes_to_mb(total_bytes),
+      application_bytes_to_mb(gpu_bytes), application_bytes_to_mb(vulkan_bytes),
+      application_bytes_to_mb(texture_bytes),
+      application_delta_bytes_to_mb(delta_total),
+      application_delta_bytes_to_mb(delta_gpu),
+      application_delta_bytes_to_mb(delta_vulkan),
+      application_delta_bytes_to_mb(delta_texture));
+  if (state && state->scene_memory_verbose) {
+    application_log_backend_allocator_breakdown(label, &stats);
+  }
+}
+
+vkr_internal float64_t
+application_consume_scene_load_elapsed_seconds(Application *application) {
+  if (!application || !state || !state->scene_load_timer_active) {
+    return -1.0;
+  }
+
+  float64_t elapsed =
+      application->clock.elapsed - state->scene_load_start_time_seconds;
+  if (elapsed < 0.0) {
+    elapsed = 0.0;
+  }
+
+  state->scene_load_timer_active = false_v;
+  return elapsed;
 }
 
 vkr_internal void application_queue_ui_text_update(Application *application,
@@ -877,6 +1145,99 @@ bool8_t application_on_mouse_event(Event *event, UserData user_data) {
   return true_v;
 }
 
+vkr_internal bool8_t
+application_try_activate_scene_resource(Application *application) {
+  if (!application || !state ||
+      state->scene_resource.type != VKR_RESOURCE_TYPE_SCENE) {
+    return false_v;
+  }
+
+  String8 scene_path = string8_lit(SCENE_PATH);
+  VkrRendererError state_error = VKR_RENDERER_ERROR_NONE;
+  VkrResourceLoadState load_state =
+      vkr_resource_system_get_state(&state->scene_resource, &state_error);
+
+  switch (load_state) {
+  case VKR_RESOURCE_LOAD_STATE_READY:
+    break;
+  case VKR_RESOURCE_LOAD_STATE_FAILED:
+    if (!state->scene_load_terminal_logged) {
+      String8 err = vkr_renderer_get_error_string(state_error);
+      float64_t elapsed =
+          application_consume_scene_load_elapsed_seconds(application);
+      if (elapsed >= 0.0) {
+        log_info("SCENE_LOAD_TIME result=failed seconds=%.3f ms=%.1f", elapsed,
+                 elapsed * 1000.0);
+      }
+      log_error("Scene load failed for '%s': %s", string8_cstr(&scene_path),
+                string8_cstr(&err));
+      state->scene_load_terminal_logged = true_v;
+    }
+    return false_v;
+  case VKR_RESOURCE_LOAD_STATE_CANCELED:
+    if (!state->scene_load_terminal_logged) {
+      float64_t elapsed =
+          application_consume_scene_load_elapsed_seconds(application);
+      if (elapsed >= 0.0) {
+        log_info("SCENE_LOAD_TIME result=canceled seconds=%.3f ms=%.1f",
+                 elapsed, elapsed * 1000.0);
+      }
+      log_warn("Scene load canceled for '%s'", string8_cstr(&scene_path));
+      state->scene_load_terminal_logged = true_v;
+    }
+    return false_v;
+  default:
+    return false_v;
+  }
+
+  if (!state->scene_resource.as.scene) {
+    VkrResourceHandleInfo resolved_info = {0};
+    if (!vkr_resource_system_try_get_resolved(&state->scene_resource,
+                                              &resolved_info) ||
+        !resolved_info.as.scene) {
+      if (!state->scene_load_terminal_logged) {
+        log_error("Scene handle resolve failed for '%s'",
+                  string8_cstr(&scene_path));
+        state->scene_load_terminal_logged = true_v;
+      }
+      return false_v;
+    }
+
+    state->scene_resource = resolved_info;
+  }
+
+  VkrScene *scene = vkr_scene_handle_get_scene(state->scene_resource.as.scene);
+  if (!scene) {
+    if (!state->scene_load_terminal_logged) {
+      log_error("Scene '%s' is marked ready but scene pointer is null",
+                string8_cstr(&scene_path));
+      state->scene_load_terminal_logged = true_v;
+    }
+    return false_v;
+  }
+
+  state->scene_load_terminal_logged = false_v;
+  if (application->renderer.active_scene != scene) {
+    application->renderer.active_scene = scene;
+    float64_t elapsed =
+        application_consume_scene_load_elapsed_seconds(application);
+    if (elapsed >= 0.0) {
+      log_info("SCENE_LOAD_TIME result=ready seconds=%.3f ms=%.1f", elapsed,
+               elapsed * 1000.0);
+    }
+    log_info("Activated scene '%s' after async load",
+             string8_cstr(&scene_path));
+    application_log_backend_allocator_stats(
+        application, "load-ready",
+        state->scene_load_stats_baseline_valid
+            ? &state->scene_load_stats_baseline
+            : NULL);
+    state->scene_load_stats_baseline_valid = false_v;
+  }
+
+  return true_v;
+}
+
 /**
  * @brief Initialize scene system and load scene content.
  */
@@ -885,14 +1246,36 @@ vkr_internal void application_init_scene_system(Application *application) {
     return;
   }
 
-  VkrSceneHandle scene_handle = state->scene_resource.as.scene;
-  VkrScene *scene = vkr_scene_handle_get_scene(scene_handle);
-  if (scene) {
-    application->renderer.active_scene = scene;
+  String8 scene_path = string8_lit(SCENE_PATH);
+  if (state->scene_resource.type == VKR_RESOURCE_TYPE_SCENE) {
+    if (application_try_activate_scene_resource(application)) {
+      return;
+    }
+
+    VkrRendererError existing_err = VKR_RENDERER_ERROR_NONE;
+    VkrResourceLoadState existing_state =
+        vkr_resource_system_get_state(&state->scene_resource, &existing_err);
+    if (existing_state == VKR_RESOURCE_LOAD_STATE_PENDING_CPU ||
+        existing_state == VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES ||
+        existing_state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU) {
+      return;
+    }
+
+    if (existing_state == VKR_RESOURCE_LOAD_STATE_FAILED ||
+        existing_state == VKR_RESOURCE_LOAD_STATE_CANCELED) {
+      vkr_resource_system_unload(&state->scene_resource, scene_path);
+      state->scene_resource = (VkrResourceHandleInfo){0};
+    }
+  }
+
+  if (application->renderer.active_scene != NULL) {
     return;
   }
 
   state->scene_resource = (VkrResourceHandleInfo){0};
+  state->scene_load_terminal_logged = false_v;
+  state->scene_load_timer_active = false_v;
+  state->scene_load_start_time_seconds = 0.0;
 
   VkrAllocatorScope load_scope =
       vkr_allocator_begin_scope(&application->renderer.scratch_allocator);
@@ -902,7 +1285,6 @@ vkr_internal void application_init_scene_system(Application *application) {
   }
 
   VkrRendererError load_err = VKR_RENDERER_ERROR_NONE;
-  String8 scene_path = string8_lit(SCENE_PATH);
   if (!vkr_resource_system_load(VKR_RESOURCE_TYPE_SCENE, scene_path,
                                 &application->renderer.scratch_allocator,
                                 &state->scene_resource, &load_err)) {
@@ -912,21 +1294,15 @@ vkr_internal void application_init_scene_system(Application *application) {
     vkr_allocator_end_scope(&load_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     return;
   }
-
-  VkrAllocator *backend_allocator =
-      vkr_renderer_get_backend_allocator(&application->renderer);
-
-  char *allocator_stats = vkr_allocator_print_statistics(backend_allocator);
-  log_debug("Vulkan backend load stats:\n%s", allocator_stats);
-
-  // char *allocator_stats = vkr_allocator_print_global_statistics(
-  //     &application->renderer.scratch_allocator);
-  // log_debug("Scene load stats:\n%s", allocator_stats);
+  state->scene_load_stats_baseline_valid =
+      application_capture_backend_allocator_stats(
+          application, &state->scene_load_stats_baseline);
+  state->scene_load_timer_active = true_v;
+  state->scene_load_start_time_seconds = application->clock.elapsed;
+  application_log_backend_allocator_stats(application, "load-enqueue", NULL);
 
   vkr_allocator_end_scope(&load_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-
-  scene = vkr_scene_handle_get_scene(state->scene_resource.as.scene);
-  application->renderer.active_scene = scene;
+  (void)application_try_activate_scene_resource(application);
 }
 
 vkr_internal void application_unload_scene_system(Application *application) {
@@ -935,28 +1311,17 @@ vkr_internal void application_unload_scene_system(Application *application) {
   }
 
   String8 scene_path = string8_lit(SCENE_PATH);
-  vkr_resource_system_unload(&state->scene_resource, scene_path);
-  state->scene_resource = (VkrResourceHandleInfo){0};
-  application->renderer.active_scene = NULL;
-
-  VkrAllocatorScope unload_scope =
-      vkr_allocator_begin_scope(&application->renderer.scratch_allocator);
-  if (!vkr_allocator_scope_is_valid(&unload_scope)) {
-    log_error("Failed to create scene load scratch scope");
-    return;
+  if (state->scene_resource.type == VKR_RESOURCE_TYPE_SCENE ||
+      state->scene_resource.request_id != 0 || state->scene_resource.as.scene) {
+    vkr_resource_system_unload(&state->scene_resource, scene_path);
   }
-
-  VkrAllocator *backend_allocator =
-      vkr_renderer_get_backend_allocator(&application->renderer);
-
-  char *allocator_stats = vkr_allocator_print_statistics(backend_allocator);
-  log_debug("Vulkan backend unload stats:\n%s", allocator_stats);
-
-  // char *allocator_stats = vkr_allocator_print_global_statistics(
-  //     &application->renderer.scratch_allocator);
-  // log_debug("Scene unload stats:\n%s", allocator_stats);
-
-  vkr_allocator_end_scope(&unload_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  state->scene_resource = (VkrResourceHandleInfo){0};
+  state->scene_load_terminal_logged = false_v;
+  state->scene_load_stats_baseline_valid = false_v;
+  state->scene_load_timer_active = false_v;
+  state->scene_load_start_time_seconds = 0.0;
+  application->renderer.active_scene = NULL;
+  application_log_backend_allocator_stats(application, "unload", NULL);
 }
 
 vkr_internal void application_init_memory_text(Application *application) {
@@ -1076,6 +1441,27 @@ vkr_internal void application_handle_input(Application *application,
     application->rg_gpu_timing_enabled = !application->rg_gpu_timing_enabled;
     log_info("RenderGraph GPU timings %s",
              application->rg_gpu_timing_enabled ? "enabled" : "disabled");
+  }
+
+  if (input_is_key_up(input_state, KEY_F8) &&
+      input_was_key_down(input_state, KEY_F8)) {
+    state->ibl_validation_mode = (state->ibl_validation_mode + 1u) % 4u;
+    log_info("IBL validation mode: %s",
+             application_ibl_validation_mode_label(state->ibl_validation_mode));
+  }
+
+  if (input_is_key_up(input_state, KEY_F9) &&
+      input_was_key_down(input_state, KEY_F9)) {
+    state->ibl_validation_scalar =
+        Max(0.0f, state->ibl_validation_scalar - 0.1f);
+    log_info("IBL validation scalar: %.2f", state->ibl_validation_scalar);
+  }
+
+  if (input_is_key_up(input_state, KEY_F10) &&
+      input_was_key_down(input_state, KEY_F10)) {
+    state->ibl_validation_scalar =
+        Min(2.0f, state->ibl_validation_scalar + 0.1f);
+    log_info("IBL validation scalar: %.2f", state->ibl_validation_scalar);
   }
 
   if (input_is_key_down(input_state, KEY_TAB) &&
@@ -1304,9 +1690,12 @@ vkr_internal void application_update_fps_text(Application *application,
       String8 left_text = string8_create_formatted(
           frame_alloc,
           "Camera: {x: %.2f, y: %.2f, z: %.2f}\nCamera rotation: {yaw: %.2f, "
-          "pitch: %.2f}\nPress Tab for free mode",
+          "pitch: %.2f}\nPress Tab for free mode\nIBL mode: %s (x%.2f)\n"
+          "F8 cycle mode, F9/F10 intensity",
           camera->position.x, camera->position.y, camera->position.z,
-          camera->yaw, camera->pitch);
+          camera->yaw, camera->pitch,
+          application_ibl_validation_mode_label(state->ibl_validation_mode),
+          state->ibl_validation_scalar);
       if (left_text.length > 0) {
         application_queue_ui_text_update(application, state->left_text_id,
                                          left_text);
@@ -1447,7 +1836,8 @@ vkr_internal void application_init_ui_texts(Application *application) {
       .text_id = VKR_INVALID_ID,
       .content = string8_lit(
           "Camera: {x: 0.0, y: 0.0, z: 0.0}\nCamera rotation: {yaw: 0.0, "
-          "pitch: 0.0, roll: 0.0}\nPress Tab for free mode"),
+          "pitch: 0.0, roll: 0.0}\nPress Tab for free mode\nIBL mode: "
+          "Scene IBL (x1.00)\nF8 cycle mode, F9/F10 intensity"),
       .config = &text_config,
       .anchor = VKR_UI_TEXT_ANCHOR_TOP_LEFT,
       .padding = vec2_new(VKR_UI_TEXT_PADDING, VKR_UI_TEXT_PADDING),
@@ -1540,6 +1930,17 @@ vkr_internal void application_init_world_content(Application *application) {
 vkr_internal void application_update_scene(Application *application,
                                            float64_t delta_time) {
   if (!application || !state) {
+    return;
+  }
+
+  (void)application_try_activate_scene_resource(application);
+  if (!state->scene_resource.as.scene || !application->renderer.active_scene) {
+    return;
+  }
+
+  VkrRendererError state_error = VKR_RENDERER_ERROR_NONE;
+  if (vkr_resource_system_get_state(&state->scene_resource, &state_error) !=
+      VKR_RESOURCE_LOAD_STATE_READY) {
     return;
   }
 
@@ -1816,6 +2217,59 @@ vkr_internal void application_update_world_text(Application *application) {
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
 }
 
+vkr_internal void application_poll_upload_wait_stats(Application *application) {
+  if (!application || !state) {
+    return;
+  }
+
+  bool8_t scene_pending = false_v;
+  if (state->scene_resource.request_id != 0) {
+    VkrRendererError scene_state_error = VKR_RENDERER_ERROR_NONE;
+    VkrResourceLoadState scene_state = vkr_resource_system_get_state(
+        &state->scene_resource, &scene_state_error);
+    scene_pending =
+        (scene_state == VKR_RESOURCE_LOAD_STATE_PENDING_CPU) ||
+        (scene_state == VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES) ||
+        (scene_state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU);
+  }
+
+  VkrRendererUploadWaitStats wait_stats = {0};
+  if (!vkr_renderer_get_and_reset_upload_wait_stats(&application->renderer,
+                                                    &wait_stats)) {
+    return;
+  }
+
+  /*
+   * Track only waits observed while an async scene request is still pending.
+   * Startup/bootstrap uploads may legitimately use synchronous helpers and are
+   * outside the async-streaming acceptance criteria.
+   */
+  if (!scene_pending) {
+    return;
+  }
+
+  const bool8_t has_waits = (wait_stats.fence_wait_count > 0) ||
+                            (wait_stats.queue_wait_idle_count > 0) ||
+                            (wait_stats.device_wait_idle_count > 0);
+  if (!has_waits) {
+    return;
+  }
+
+  state->upload_wait_fence_total += wait_stats.fence_wait_count;
+  state->upload_wait_queue_idle_total += wait_stats.queue_wait_idle_count;
+  state->upload_wait_device_idle_total += wait_stats.device_wait_idle_count;
+
+  if (state->assert_no_upload_waits) {
+    log_error("Upload-path wait detected during async scene loading "
+              "(fence=%llu, queue_idle=%llu, device_idle=%llu)",
+              (unsigned long long)wait_stats.fence_wait_count,
+              (unsigned long long)wait_stats.queue_wait_idle_count,
+              (unsigned long long)wait_stats.device_wait_idle_count);
+    state->upload_wait_violation_seen = true_v;
+    application_close(application);
+  }
+}
+
 void application_update(Application *application, float64_t delta) {
   application_handle_input(application, delta);
 
@@ -1843,6 +2297,8 @@ void application_update(Application *application, float64_t delta) {
   application_update_world_text(application);
   application_update_picking(application);
   application_update_scene(application, delta);
+  application_update_ibl_validation_controls(application);
+  application_poll_upload_wait_stats(application);
 
   if (state->auto_close_enabled && !state->auto_close_requested &&
       application->clock.elapsed >= state->auto_close_after_seconds) {
@@ -1941,6 +2397,21 @@ int main(int argc, char **argv) {
   state->benchmark_frame_ms_max = 0.0;
   state->benchmark_rg_cpu_sample_count = 0;
   state->benchmark_rg_cpu_ms_sum = 0.0;
+  state->assert_no_upload_waits = false_v;
+  state->upload_wait_violation_seen = false_v;
+  state->upload_wait_fence_total = 0;
+  state->upload_wait_queue_idle_total = 0;
+  state->upload_wait_device_idle_total = 0;
+  state->ibl_validation_mode = 0u;
+  state->ibl_validation_scalar = 1.0f;
+  state->ibl_validation_scene = NULL;
+  state->ibl_validation_defaults_captured = false_v;
+  state->ibl_validation_base_enabled = false_v;
+  state->ibl_validation_base_intensity = 1.0f;
+  state->ibl_validation_base_diffuse_intensity = 1.0f;
+  state->ibl_validation_base_specular_intensity = 1.0f;
+  state->scene_load_timer_active = false_v;
+  state->scene_load_start_time_seconds = 0.0;
 
   const char *auto_close_env = getenv("VKR_AUTOCLOSE_SECONDS");
   if (auto_close_env && auto_close_env[0] != '\0') {
@@ -1973,6 +2444,19 @@ int main(int argc, char **argv) {
              state->benchmark_label ? state->benchmark_label : "default");
   }
 
+  state->assert_no_upload_waits =
+      application_env_flag("VKR_ASSERT_NO_UPLOAD_WAITS", false_v);
+  if (state->assert_no_upload_waits) {
+    log_info("Upload wait assertion enabled via VKR_ASSERT_NO_UPLOAD_WAITS");
+  }
+
+  state->scene_memory_verbose =
+      application_env_flag("VKR_SCENE_MEM_VERBOSE", false_v);
+  if (state->scene_memory_verbose) {
+    log_info(
+        "Verbose scene memory breakdown enabled via VKR_SCENE_MEM_VERBOSE");
+  }
+
   Scratch scratch = scratch_create(application.app_arena);
   vkr_renderer_get_device_information(
       &application.renderer, &state->device_information, scratch.arena);
@@ -1995,6 +2479,10 @@ int main(int argc, char **argv) {
 
   log_info("Texture filtering controls: F4=prev, F5=next (start: %s)",
            FILTER_MODES[state->filter_mode_index].label);
+  log_info("IBL validation controls: F8=mode, F9/F10=intensity "
+           "(start: %s x%.2f)",
+           application_ibl_validation_mode_label(state->ibl_validation_mode),
+           state->ibl_validation_scalar);
   scratch_destroy(scratch, ARENA_MEMORY_TAG_RENDERER);
 
   application_init_ui_texts(&application);
@@ -2042,8 +2530,31 @@ int main(int argc, char **argv) {
     }
   }
 
+  if (state->upload_wait_fence_total > 0 ||
+      state->upload_wait_queue_idle_total > 0 ||
+      state->upload_wait_device_idle_total > 0 ||
+      state->assert_no_upload_waits) {
+    log_info("UPLOAD_WAIT_SUMMARY fence=%llu queue_idle=%llu device_idle=%llu "
+             "violation=%s",
+             (unsigned long long)state->upload_wait_fence_total,
+             (unsigned long long)state->upload_wait_queue_idle_total,
+             (unsigned long long)state->upload_wait_device_idle_total,
+             state->upload_wait_violation_seen ? "true" : "false");
+    fprintf(stdout,
+            "UPLOAD_WAIT_SUMMARY fence=%llu queue_idle=%llu device_idle=%llu "
+            "violation=%s\n",
+            (unsigned long long)state->upload_wait_fence_total,
+            (unsigned long long)state->upload_wait_queue_idle_total,
+            (unsigned long long)state->upload_wait_device_idle_total,
+            state->upload_wait_violation_seen ? "true" : "false");
+    fflush(stdout);
+  }
+
   String8 scene_path = string8_lit(SCENE_PATH);
-  vkr_resource_system_unload(&state->scene_resource, scene_path);
+  if (state->scene_resource.type == VKR_RESOURCE_TYPE_SCENE ||
+      state->scene_resource.request_id != 0 || state->scene_resource.as.scene) {
+    vkr_resource_system_unload(&state->scene_resource, scene_path);
+  }
   state->scene_resource = (VkrResourceHandleInfo){0};
 
   application_shutdown(&application);

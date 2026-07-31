@@ -1,5 +1,23 @@
 {
   "version": 2,
+  "environment": {
+    "enabled": true,
+    "cubemap": {
+      "base_path": "assets/textures/skybox",
+      "extension": "jpg"
+    },
+    "intensity": 1.0,
+    "diffuse_intensity": 1.0,
+    "specular_intensity": 1.0
+  },
+  "reflection_probes": [
+    {
+      "enabled": true,
+      "center": [0.0, 4.0, -15.0],
+      "extents": [14.0, 10.0, 18.0],
+      "blend_distance": 6.0
+    }
+  ],
   "entities": [
     {
       "name": "SceneRoot",

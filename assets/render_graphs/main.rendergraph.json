@@ -66,6 +66,12 @@
       "execute": "pass.picking"
     },
     {
+      "name": "IBL.Bake",
+      "type": "compute",
+      "flags": ["NO_CULL"],
+      "execute": "pass.ibl_bake"
+    },
+    {
       "name": "Skybox.Fullscreen",
       "type": "graphics",
       "domain": "SKYBOX",

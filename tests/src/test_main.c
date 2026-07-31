@@ -65,6 +65,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_resource_async_state_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_scene_loader_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_gltf_importer_tests();
   printf("\n"); // Add spacing
   all_passed &= run_material_pbr_tests();

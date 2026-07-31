@@ -48,6 +48,30 @@ typedef struct SceneDirectionalLightImport {
   bool8_t enabled;
 } SceneDirectionalLightImport;
 
+typedef struct SceneEnvironmentImport {
+  bool8_t has_block;
+  bool8_t valid;
+  bool8_t enabled;
+  String8 cubemap_base_path;
+  String8 cubemap_extension;
+  float32_t intensity;
+  float32_t diffuse_intensity;
+  float32_t specular_intensity;
+} SceneEnvironmentImport;
+
+typedef struct SceneReflectionProbeImport {
+  bool8_t enabled;
+  Vec3 center;
+  Vec3 extents;
+  float32_t blend_distance;
+  float32_t intensity;
+  float32_t diffuse_intensity;
+  float32_t specular_intensity;
+  bool8_t has_cubemap;
+  String8 cubemap_base_path;
+  String8 cubemap_extension;
+} SceneReflectionProbeImport;
+
 typedef struct SceneEntityImport {
   String8 name;
   int32_t parent_index;
@@ -104,6 +128,12 @@ typedef struct VkrSceneLoaderAsyncPayload {
   VkrEntityId *entity_ids;
   SceneMeshAsyncState *mesh_states;
   SceneShapeMaterialAsyncState *shape_material_states;
+  SceneEnvironmentImport environment_import;
+  bool8_t environment_applied;
+  SceneReflectionProbeImport
+      reflection_probe_imports[VKR_SCENE_REFLECTION_PROBE_MAX];
+  uint32_t reflection_probe_import_count;
+  bool8_t reflection_probes_applied;
   SceneAsyncFinalizeStage stage;
   uint32_t stage_cursor;
   VkrSceneLoadResult load_result;
@@ -134,6 +164,26 @@ vkr_internal bool8_t scene_loader_alloc_copy_string(VkrAllocator *allocator,
                                                     String8 source,
                                                     char **out_storage,
                                                     String8 *out_copy);
+vkr_internal SceneEnvironmentImport scene_environment_import_defaults(void);
+vkr_internal SceneEnvironmentImport
+scene_loader_parse_environment_import(String8 json);
+vkr_internal SceneReflectionProbeImport
+scene_reflection_probe_import_defaults(void);
+vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
+    String8 json,
+    SceneReflectionProbeImport
+        out_imports[VKR_SCENE_REFLECTION_PROBE_MAX]);
+vkr_internal void
+scene_loader_reset_scene_environment(VkrScene *scene,
+                                     struct s_RendererFrontend *rf);
+vkr_internal void scene_loader_apply_environment_import(
+    VkrScene *scene, struct s_RendererFrontend *rf,
+    const SceneEnvironmentImport *environment_import);
+vkr_internal void scene_loader_reset_scene_reflection_probes(
+    VkrScene *scene, struct s_RendererFrontend *rf);
+vkr_internal void scene_loader_apply_reflection_probe_imports(
+    VkrScene *scene, struct s_RendererFrontend *rf,
+    const SceneReflectionProbeImport *imports, uint32_t import_count);
 vkr_internal bool8_t scene_loader_parse_json_imports(
     VkrAllocator *allocator, VkrMutex mutex, String8 json,
     SceneEntityImport **out_imports, uint32_t *out_entity_count,
@@ -393,6 +443,447 @@ scene_directional_light_import_defaults(void) {
       .direction_local = vec3_new(0.0f, -1.0f, 0.0f),
       .enabled = true_v,
   };
+}
+
+vkr_internal SceneEnvironmentImport scene_environment_import_defaults(void) {
+  return (SceneEnvironmentImport){
+      .has_block = false_v,
+      .valid = true_v,
+      .enabled = false_v,
+      .cubemap_base_path = {0},
+      .cubemap_extension = {0},
+      .intensity = 1.0f,
+      .diffuse_intensity = 1.0f,
+      .specular_intensity = 1.0f,
+  };
+}
+
+vkr_internal SceneEnvironmentImport
+scene_loader_parse_environment_import(String8 json) {
+  SceneEnvironmentImport result = scene_environment_import_defaults();
+  if (!json.str || json.length == 0) {
+    return result;
+  }
+
+  VkrJsonReader root = vkr_json_reader_from_string(json);
+  VkrJsonReader environment_reader = root;
+  if (!vkr_json_find_field(&environment_reader, "environment")) {
+    return result;
+  }
+
+  result.has_block = true_v;
+  if (scene_json_parse_null(&environment_reader)) {
+    return result;
+  }
+
+  VkrJsonReader environment_object = {0};
+  if (!vkr_json_enter_object(&environment_reader, &environment_object)) {
+    result.valid = false_v;
+    return result;
+  }
+
+  result.enabled = true_v;
+  (void)scene_json_read_bool_field(&environment_object, "enabled",
+                                   &result.enabled);
+  (void)scene_json_read_float_field(&environment_object, "intensity",
+                                    &result.intensity);
+  (void)scene_json_read_float_field(&environment_object, "diffuse_intensity",
+                                    &result.diffuse_intensity);
+  (void)scene_json_read_float_field(&environment_object, "specular_intensity",
+                                    &result.specular_intensity);
+
+  if (!result.enabled) {
+    return result;
+  }
+
+  VkrJsonReader cubemap_reader = environment_object;
+  if (!vkr_json_find_field(&cubemap_reader, "cubemap")) {
+    result.valid = false_v;
+    return result;
+  }
+
+  VkrJsonReader cubemap_object = {0};
+  if (!vkr_json_enter_object(&cubemap_reader, &cubemap_object)) {
+    result.valid = false_v;
+    return result;
+  }
+
+  bool8_t has_base_path = scene_json_read_string_field(
+      &cubemap_object, "base_path", &result.cubemap_base_path);
+  bool8_t has_extension = scene_json_read_string_field(
+      &cubemap_object, "extension", &result.cubemap_extension);
+  if (!has_base_path || !has_extension ||
+      result.cubemap_base_path.length == 0 ||
+      result.cubemap_extension.length == 0) {
+    result.valid = false_v;
+  }
+
+  return result;
+}
+
+vkr_internal SceneReflectionProbeImport
+scene_reflection_probe_import_defaults(void) {
+  return (SceneReflectionProbeImport){
+      .enabled = true_v,
+      .center = {0},
+      .extents = {1.0f, 1.0f, 1.0f},
+      .blend_distance = 1.0f,
+      .intensity = 1.0f,
+      .diffuse_intensity = 1.0f,
+      .specular_intensity = 1.0f,
+      .has_cubemap = false_v,
+      .cubemap_base_path = {0},
+      .cubemap_extension = {0},
+  };
+}
+
+vkr_internal uint32_t scene_loader_parse_reflection_probe_imports(
+    String8 json,
+    SceneReflectionProbeImport
+        out_imports[VKR_SCENE_REFLECTION_PROBE_MAX]) {
+  if (!json.str || json.length == 0 || !out_imports) {
+    return 0;
+  }
+
+  for (uint32_t i = 0; i < VKR_SCENE_REFLECTION_PROBE_MAX; ++i) {
+    out_imports[i] = scene_reflection_probe_import_defaults();
+  }
+
+  VkrJsonReader root = vkr_json_reader_from_string(json);
+  VkrJsonReader probes_reader = root;
+  if (!vkr_json_find_field(&probes_reader, "reflection_probes")) {
+    return 0;
+  }
+
+  VkrJsonReader null_check = probes_reader;
+  if (scene_json_parse_null(&null_check)) {
+    return 0;
+  }
+
+  vkr_json_skip_whitespace(&probes_reader);
+  if (probes_reader.pos >= probes_reader.length ||
+      probes_reader.data[probes_reader.pos] != '[') {
+    log_warn("Scene loader: reflection_probes must be an array");
+    return 0;
+  }
+  probes_reader.pos++;
+
+  uint32_t import_count = 0;
+  uint32_t input_index = 0;
+  bool8_t overflow_warned = false_v;
+  while (vkr_json_next_array_element(&probes_reader)) {
+    if (import_count >= VKR_SCENE_REFLECTION_PROBE_MAX) {
+      if (!overflow_warned) {
+        log_warn(
+            "Scene loader: reflection_probes exceeds limit (%u), extra entries "
+            "are ignored",
+            VKR_SCENE_REFLECTION_PROBE_MAX);
+        overflow_warned = true_v;
+      }
+      break;
+    }
+
+    VkrJsonReader probe_object = {0};
+    if (!vkr_json_enter_object(&probes_reader, &probe_object)) {
+      log_warn("Scene loader: reflection probe %u is not an object",
+               input_index);
+      input_index++;
+      continue;
+    }
+
+    SceneReflectionProbeImport import = scene_reflection_probe_import_defaults();
+    (void)scene_json_read_bool_field(&probe_object, "enabled", &import.enabled);
+    (void)scene_json_read_float_field(&probe_object, "blend_distance",
+                                      &import.blend_distance);
+    import.blend_distance = Max(import.blend_distance, 0.0f);
+    (void)scene_json_read_float_field(&probe_object, "intensity",
+                                      &import.intensity);
+    (void)scene_json_read_float_field(&probe_object, "diffuse_intensity",
+                                      &import.diffuse_intensity);
+    (void)scene_json_read_float_field(&probe_object, "specular_intensity",
+                                      &import.specular_intensity);
+
+    bool8_t has_center = scene_json_read_vec3_field(&probe_object, "center",
+                                                    &import.center);
+    bool8_t has_extents = scene_json_read_vec3_field(&probe_object, "extents",
+                                                     &import.extents);
+
+    if (import.enabled && (!has_center || !has_extents)) {
+      log_warn("Scene loader: reflection probe %u missing center/extents",
+               input_index);
+      input_index++;
+      continue;
+    }
+
+    if ((has_extents || import.enabled) &&
+        (import.extents.x <= 0.0f || import.extents.y <= 0.0f ||
+         import.extents.z <= 0.0f)) {
+      log_warn("Scene loader: reflection probe %u has non-positive extents",
+               input_index);
+      input_index++;
+      continue;
+    }
+
+    VkrJsonReader cubemap_reader = probe_object;
+    if (vkr_json_find_field(&cubemap_reader, "cubemap")) {
+      if (!scene_json_parse_null(&cubemap_reader)) {
+        VkrJsonReader cubemap_object = {0};
+        if (!vkr_json_enter_object(&cubemap_reader, &cubemap_object)) {
+          log_warn("Scene loader: reflection probe %u cubemap is invalid",
+                   input_index);
+          input_index++;
+          continue;
+        }
+
+        bool8_t has_base_path = scene_json_read_string_field(
+            &cubemap_object, "base_path", &import.cubemap_base_path);
+        bool8_t has_extension = scene_json_read_string_field(
+            &cubemap_object, "extension", &import.cubemap_extension);
+        if (!has_base_path || !has_extension ||
+            import.cubemap_base_path.length == 0 ||
+            import.cubemap_extension.length == 0) {
+          log_warn("Scene loader: reflection probe %u cubemap path is invalid",
+                   input_index);
+          input_index++;
+          continue;
+        }
+
+        import.has_cubemap = true_v;
+      }
+    }
+
+    out_imports[import_count++] = import;
+    input_index++;
+  }
+
+  return import_count;
+}
+
+vkr_internal void scene_loader_reset_scene_environment(VkrScene *scene,
+                                                       RendererFrontend *rf) {
+  if (!scene) {
+    return;
+  }
+
+  if (rf) {
+    if (scene->environment.prefilter_cubemap.id != 0) {
+      vkr_texture_system_release_by_handle(
+          &rf->texture_system, scene->environment.prefilter_cubemap);
+    }
+    if (scene->environment.irradiance_cubemap.id != 0) {
+      vkr_texture_system_release_by_handle(
+          &rf->texture_system, scene->environment.irradiance_cubemap);
+    }
+    if (scene->environment.source_cubemap.id != 0) {
+      vkr_texture_system_release_by_handle(&rf->texture_system,
+                                           scene->environment.source_cubemap);
+    }
+  }
+
+  scene->environment = (VkrSceneEnvironment){
+      .enabled = false_v,
+      .intensity = 1.0f,
+      .diffuse_intensity = 1.0f,
+      .specular_intensity = 1.0f,
+      .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE,
+  };
+}
+
+vkr_internal void scene_loader_apply_environment_import(
+    VkrScene *scene, struct s_RendererFrontend *rf,
+    const SceneEnvironmentImport *environment_import) {
+  if (!scene) {
+    return;
+  }
+
+  scene_loader_reset_scene_environment(scene, rf);
+  if (!environment_import || !environment_import->has_block) {
+    return;
+  }
+
+  scene->environment.intensity = environment_import->intensity;
+  scene->environment.diffuse_intensity = environment_import->diffuse_intensity;
+  scene->environment.specular_intensity =
+      environment_import->specular_intensity;
+  scene->environment.enabled = environment_import->enabled;
+
+  if (!environment_import->valid) {
+    log_warn("Scene loader: invalid environment block, using fallback IBL");
+    scene->environment.enabled = false_v;
+    scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
+    return;
+  }
+
+  if (!environment_import->enabled) {
+    scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
+    return;
+  }
+
+  if (!rf) {
+    log_warn("Scene loader: renderer missing while applying environment block");
+    scene->environment.enabled = false_v;
+    scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
+    return;
+  }
+
+  VkrTextureHandle source_cubemap = VKR_TEXTURE_HANDLE_INVALID;
+  VkrRendererError cubemap_error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_texture_system_load_cube_map(&rf->texture_system,
+                                        environment_import->cubemap_base_path,
+                                        environment_import->cubemap_extension,
+                                        &source_cubemap, &cubemap_error)) {
+    String8 err_str = vkr_renderer_get_error_string(cubemap_error);
+    log_warn("Scene loader: environment cubemap load failed for '%.*s': %.*s",
+             (int)environment_import->cubemap_base_path.length,
+             environment_import->cubemap_base_path.str, (int)err_str.length,
+             err_str.str);
+    scene->environment.enabled = false_v;
+    scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_NONE;
+    return;
+  }
+
+  scene->environment.source_cubemap = source_cubemap;
+  scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_PENDING;
+}
+
+vkr_internal void scene_loader_reset_scene_reflection_probes(
+    VkrScene *scene, struct s_RendererFrontend *rf) {
+  if (!scene) {
+    return;
+  }
+
+  if (rf) {
+    for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
+      VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
+      if (probe->prefilter_cubemap.id != 0) {
+        vkr_texture_system_release_by_handle(&rf->texture_system,
+                                             probe->prefilter_cubemap);
+      }
+      if (probe->irradiance_cubemap.id != 0) {
+        vkr_texture_system_release_by_handle(&rf->texture_system,
+                                             probe->irradiance_cubemap);
+      }
+      if (probe->source_cubemap.id != 0) {
+        vkr_texture_system_release_by_handle(&rf->texture_system,
+                                             probe->source_cubemap);
+      }
+    }
+  }
+
+  scene->reflection_probe_count = 0;
+  for (uint32_t i = 0; i < VKR_SCENE_REFLECTION_PROBE_MAX; ++i) {
+    scene->reflection_probes[i] = (VkrSceneReflectionProbe){
+        .enabled = false_v,
+        .center = {0},
+        .extents = {0},
+        .blend_distance = 1.0f,
+        .intensity = 1.0f,
+        .diffuse_intensity = 1.0f,
+        .specular_intensity = 1.0f,
+        .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+        .irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+        .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+        .bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_NONE,
+    };
+  }
+}
+
+vkr_internal void scene_loader_apply_reflection_probe_imports(
+    VkrScene *scene, struct s_RendererFrontend *rf,
+    const SceneReflectionProbeImport *imports, uint32_t import_count) {
+  if (!scene) {
+    return;
+  }
+
+  scene_loader_reset_scene_reflection_probes(scene, rf);
+  if (!imports || import_count == 0) {
+    return;
+  }
+
+  VkrTextureHandle environment_source = VKR_TEXTURE_HANDLE_INVALID;
+  bool8_t environment_source_valid = false_v;
+  if (rf && scene->environment.source_cubemap.id != 0) {
+    VkrTexture *environment_texture = vkr_texture_system_get_by_handle(
+        &rf->texture_system, scene->environment.source_cubemap);
+    if (environment_texture && environment_texture->handle &&
+        environment_texture->description.type == VKR_TEXTURE_TYPE_CUBE_MAP) {
+      environment_source = scene->environment.source_cubemap;
+      environment_source_valid = true_v;
+    }
+  }
+
+  for (uint32_t i = 0; i < import_count; ++i) {
+    if (scene->reflection_probe_count >= VKR_SCENE_REFLECTION_PROBE_MAX) {
+      break;
+    }
+
+    const SceneReflectionProbeImport *import = &imports[i];
+    VkrSceneReflectionProbe probe = {
+        .enabled = import->enabled,
+        .center = import->center,
+        .extents = import->extents,
+        .blend_distance = import->blend_distance,
+        .intensity = import->intensity,
+        .diffuse_intensity = import->diffuse_intensity,
+        .specular_intensity = import->specular_intensity,
+        .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+        .irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+        .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
+        .bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_NONE,
+    };
+
+    if (probe.enabled) {
+      if (!rf) {
+        log_warn(
+            "Scene loader: renderer missing while applying reflection probe %u",
+            i);
+        probe.enabled = false_v;
+      } else {
+        VkrTextureHandle source_cubemap = VKR_TEXTURE_HANDLE_INVALID;
+        bool8_t source_valid = false_v;
+        if (import->has_cubemap) {
+          VkrRendererError cubemap_error = VKR_RENDERER_ERROR_NONE;
+          if (vkr_texture_system_load_cube_map(
+                  &rf->texture_system, import->cubemap_base_path,
+                  import->cubemap_extension, &source_cubemap,
+                  &cubemap_error)) {
+            source_valid = true_v;
+          } else {
+            String8 err_str = vkr_renderer_get_error_string(cubemap_error);
+            log_warn(
+                "Scene loader: reflection probe %u cubemap load failed for "
+                "'%.*s': %.*s",
+                i, (int)import->cubemap_base_path.length,
+                import->cubemap_base_path.str, (int)err_str.length,
+                err_str.str);
+          }
+        } else if (environment_source_valid) {
+          source_cubemap = environment_source;
+          vkr_texture_system_add_ref_by_handle(&rf->texture_system,
+                                               source_cubemap);
+          source_valid = true_v;
+        } else {
+          log_warn(
+              "Scene loader: reflection probe %u has no cubemap and no valid "
+              "environment source",
+              i);
+        }
+
+        if (source_valid) {
+          probe.source_cubemap = source_cubemap;
+          probe.bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_PENDING;
+        } else {
+          probe.enabled = false_v;
+          probe.bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_NONE;
+        }
+      }
+    }
+
+    scene->reflection_probes[scene->reflection_probe_count++] = probe;
+  }
 }
 
 vkr_internal bool8_t scene_json_count_entities(const VkrJsonReader *root,
@@ -850,6 +1341,19 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
     log_error("Scene loader: unsupported scene version %d", version);
     return false_v;
   }
+
+  SceneEnvironmentImport environment_import =
+      scene_loader_parse_environment_import(json);
+  scene_loader_apply_environment_import(scene, rf, &environment_import);
+
+  SceneReflectionProbeImport reflection_probe_imports
+      [VKR_SCENE_REFLECTION_PROBE_MAX] = {0};
+  uint32_t reflection_probe_import_count =
+      scene_loader_parse_reflection_probe_imports(json,
+                                                  reflection_probe_imports);
+  scene_loader_apply_reflection_probe_imports(scene, rf,
+                                              reflection_probe_imports,
+                                              reflection_probe_import_count);
 
   uint32_t entity_count = 0;
   if (!scene_json_count_entities(&root, &entity_count)) {
@@ -1740,6 +2244,9 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
   }
   MemZero(payload, sizeof(*payload));
   payload->rf = rf;
+  payload->environment_import = scene_environment_import_defaults();
+  payload->reflection_probe_import_count = 0;
+  payload->reflection_probes_applied = false_v;
   payload->stage = SCENE_ASYNC_STAGE_CREATE_ENTITIES;
   payload->stage_cursor = 0;
   payload->ownership_transferred = false_v;
@@ -1768,6 +2275,12 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
     *out_error = scene_error_to_renderer_error(scene_error);
     return false_v;
   }
+
+  payload->environment_import =
+      scene_loader_parse_environment_import(json_copy);
+  payload->reflection_probe_import_count =
+      scene_loader_parse_reflection_probe_imports(
+          json_copy, payload->reflection_probe_imports);
 
   payload->load_result.entity_count = payload->entity_count;
 
@@ -1857,6 +2370,18 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
   if (!scene) {
     *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     return false_v;
+  }
+
+  if (!async_payload->environment_applied) {
+    scene_loader_apply_environment_import(scene, async_payload->rf,
+                                          &async_payload->environment_import);
+    async_payload->environment_applied = true_v;
+  }
+  if (!async_payload->reflection_probes_applied) {
+    scene_loader_apply_reflection_probe_imports(
+        scene, async_payload->rf, async_payload->reflection_probe_imports,
+        async_payload->reflection_probe_import_count);
+    async_payload->reflection_probes_applied = true_v;
   }
 
   if (async_payload->entity_count == 0) {

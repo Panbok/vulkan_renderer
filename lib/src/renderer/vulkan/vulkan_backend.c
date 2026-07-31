@@ -57,21 +57,22 @@ void renderer_vulkan_set_depth_bias(void *backend_state,
                                     float32_t constant_factor, float32_t clamp,
                                     float32_t slope_factor);
 bool8_t renderer_vulkan_domain_renderpass_set(void *backend_state,
-                                               VkrPipelineDomain domain,
-                                               VkrRenderPassHandle pass_handle,
-                                               VkrDomainOverridePolicy policy,
-                                               VkrRendererError *out_error);
+                                              VkrPipelineDomain domain,
+                                              VkrRenderPassHandle pass_handle,
+                                              VkrDomainOverridePolicy policy,
+                                              VkrRendererError *out_error);
 void renderer_vulkan_set_job_system(void *backend_state,
                                     VkrJobSystem *job_system);
-VkrRenderPassHandle renderer_vulkan_renderpass_create_desc(
-    void *backend_state, const VkrRenderPassDesc *desc,
-    VkrRendererError *out_error);
+VkrRenderPassHandle
+renderer_vulkan_renderpass_create_desc(void *backend_state,
+                                       const VkrRenderPassDesc *desc,
+                                       VkrRendererError *out_error);
 VkrRenderTargetHandle renderer_vulkan_render_target_create(
     void *backend_state, const VkrRenderTargetDesc *desc,
     VkrRenderPassHandle pass_handle, VkrRendererError *out_error);
 VkrBackendResourceHandle renderer_vulkan_create_render_target_texture_msaa(
-    void *backend_state, uint32_t width, uint32_t height, VkrTextureFormat format,
-    VkrSampleCount samples);
+    void *backend_state, uint32_t width, uint32_t height,
+    VkrTextureFormat format, VkrSampleCount samples);
 VkrRendererError renderer_vulkan_buffer_barrier(
     void *backend_state, VkrBackendResourceHandle handle,
     VkrBufferAccessFlags src_access, VkrBufferAccessFlags dst_access);
@@ -133,11 +134,9 @@ vulkan_backend_refresh_parallel_feature_toggles(VulkanBackendState *state);
 vkr_internal bool8_t vulkan_backend_prepare_staging_buffer(
     VulkanBackendState *state, uint64_t size, const void *data,
     struct s_BufferHandle *out_staging_buffer);
-vkr_internal bool8_t
-vulkan_deferred_destroy_enqueue(VulkanBackendState *state,
-                                VkrDeferredDestroyKind kind, void *handle,
-                                VkDeviceMemory memory, VkrAllocator *pool_alloc,
-                                uint64_t wrapper_size);
+vkr_internal bool8_t vulkan_deferred_destroy_enqueue(
+    VulkanBackendState *state, VkrDeferredDestroyKind kind, void *handle,
+    VkDeviceMemory memory, VkrAllocator *pool_alloc, uint64_t wrapper_size);
 vkr_internal bool8_t vulkan_deferred_destroy_enqueue_with_memory_accounting(
     VulkanBackendState *state, VkrDeferredDestroyKind kind, void *handle,
     VkDeviceMemory memory, uint64_t memory_size,
@@ -157,13 +156,13 @@ vkr_internal bool8_t vulkan_backend_record_buffer_copy_command(
     uint64_t src_offset, VkBuffer dst_buffer, uint64_t dst_offset,
     uint64_t size, VkCommandBuffer *out_command_buffer);
 vkr_internal bool8_t vulkan_backend_submit_recorded_command_buffers(
-    VulkanBackendState *state, VkQueue queue,
-    VkCommandBuffer *command_buffers, const uint32_t *worker_indices,
-    uint32_t command_buffer_count);
+    VulkanBackendState *state, VkQueue queue, VkCommandBuffer *command_buffers,
+    const uint32_t *worker_indices, uint32_t command_buffer_count);
 vkr_internal void vulkan_backend_free_recorded_upload_command_buffers(
     VulkanBackendState *state, const VkCommandBuffer *command_buffers,
     const uint32_t *worker_indices, uint32_t command_buffer_count);
-vkr_internal VkCommandPool vulkan_backend_upload_command_pool_for_recorded_buffer(
+vkr_internal VkCommandPool
+vulkan_backend_upload_command_pool_for_recorded_buffer(
     const VulkanBackendState *state, const uint32_t *worker_indices,
     uint32_t command_index);
 vkr_internal VkrRendererError vulkan_backend_upload_buffer_with_queue(
@@ -189,8 +188,9 @@ vkr_internal bool8_t vulkan_backend_record_texture_payload_upload_into_active(
     VulkanBackendState *state, VulkanImage *image, VkFormat image_format,
     VkBuffer staging_buffer, const VkBufferImageCopy *copy_regions,
     uint32_t region_count, uint32_t mip_levels, uint32_t array_layers);
-vkr_internal void vulkan_backend_destroy_partial_texture(
-    VulkanBackendState *state, struct s_TextureHandle *texture);
+vkr_internal void
+vulkan_backend_destroy_partial_texture(VulkanBackendState *state,
+                                       struct s_TextureHandle *texture);
 
 /**
  * Tracks one prepared staging allocation for a batch-upload request.
@@ -255,14 +255,13 @@ typedef struct VulkanDeferredCommandSubmission {
   VkFence submit_fence;
 } VulkanDeferredCommandSubmission;
 
-vkr_internal bool8_t vulkan_backend_buffer_batch_upload_job_run(
-    VkrJobContext *ctx, void *payload);
-vkr_internal bool8_t vulkan_backend_texture_batch_upload_job_run(
-    VkrJobContext *ctx, void *payload);
+vkr_internal bool8_t
+vulkan_backend_buffer_batch_upload_job_run(VkrJobContext *ctx, void *payload);
+vkr_internal bool8_t
+vulkan_backend_texture_batch_upload_job_run(VkrJobContext *ctx, void *payload);
 
-vkr_internal INLINE VulkanQueueSubmitRole
-vulkan_backend_queue_role_from_handle(const VulkanBackendState *state,
-                                      VkQueue queue) {
+vkr_internal INLINE VulkanQueueSubmitRole vulkan_backend_queue_role_from_handle(
+    const VulkanBackendState *state, VkQueue queue) {
   if (!state || queue == VK_NULL_HANDLE) {
     return VULKAN_QUEUE_SUBMIT_ROLE_GRAPHICS_UPLOAD;
   }
@@ -289,11 +288,13 @@ vulkan_backend_queue_submit_locks_create(VulkanBackendState *state) {
   }
 
   for (uint32_t i = 0; i < VULKAN_QUEUE_SUBMIT_ROLE_COUNT; ++i) {
-    if (!vkr_mutex_create(&state->alloc, &state->queue_submit_state.mutexes[i])) {
+    if (!vkr_mutex_create(&state->alloc,
+                          &state->queue_submit_state.mutexes[i])) {
       log_error("Failed to create Vulkan queue submit lock (%u)", i);
       for (uint32_t j = 0; j < i; ++j) {
         if (state->queue_submit_state.mutexes[j]) {
-          vkr_mutex_destroy(&state->alloc, &state->queue_submit_state.mutexes[j]);
+          vkr_mutex_destroy(&state->alloc,
+                            &state->queue_submit_state.mutexes[j]);
         }
       }
       return false_v;
@@ -371,8 +372,7 @@ VkResult vulkan_backend_queue_submit_locked(VulkanBackendState *state,
   if (mutex) {
     vkr_mutex_lock(mutex);
   }
-  VkResult result =
-      vkQueueSubmit(queue, submit_count, submit_infos, fence);
+  VkResult result = vkQueueSubmit(queue, submit_count, submit_infos, fence);
   if (mutex) {
     vkr_mutex_unlock(mutex);
   }
@@ -632,12 +632,12 @@ vkr_internal bool8_t vulkan_backend_submit_recorded_command_buffers(
    * deferred destruction once the corresponding frame fences signal.
    */
   if (state->frame_active && !can_defer_submission) {
-    log_error(
-        "Refusing blocking upload submit during active frame "
-        "(render_pass_active=%s, queue_is_graphics=%s, render_thread=%s)",
-        state->render_pass_active ? "true" : "false",
-        queue == state->device.graphics_queue ? "true" : "false",
-        state->render_thread_id == vkr_thread_current_id() ? "true" : "false");
+    log_error("Refusing blocking upload submit during active frame "
+              "(render_pass_active=%s, queue_is_graphics=%s, render_thread=%s)",
+              state->render_pass_active ? "true" : "false",
+              queue == state->device.graphics_queue ? "true" : "false",
+              state->render_thread_id == vkr_thread_current_id() ? "true"
+                                                                 : "false");
     return false_v;
   }
 
@@ -653,7 +653,8 @@ vkr_internal bool8_t vulkan_backend_submit_recorded_command_buffers(
     }
 
     VkrDeferredDestroyQueue *deferred_queue = &state->deferred_destroy_queue;
-    if (deferred_queue->count + non_null_count > VKR_DEFERRED_DESTROY_QUEUE_SIZE) {
+    if (deferred_queue->count + non_null_count >
+        VKR_DEFERRED_DESTROY_QUEUE_SIZE) {
       vulkan_deferred_destroy_process(state);
       if (deferred_queue->count + non_null_count >
           VKR_DEFERRED_DESTROY_QUEUE_SIZE) {
@@ -690,7 +691,8 @@ vkr_internal bool8_t vulkan_backend_submit_recorded_command_buffers(
           .pCommandBuffers = &command_buffer,
       };
       if (vulkan_backend_queue_submit_locked(state, queue, 1, &submit_info,
-                                             submit_fence.handle) != VK_SUCCESS) {
+                                             submit_fence.handle) !=
+          VK_SUCCESS) {
         log_error("Failed to submit deferred upload command buffer");
         return false_v;
       }
@@ -728,7 +730,8 @@ vkr_internal bool8_t vulkan_backend_submit_recorded_command_buffers(
   return success;
 }
 
-vkr_internal VkCommandPool vulkan_backend_upload_command_pool_for_recorded_buffer(
+vkr_internal VkCommandPool
+vulkan_backend_upload_command_pool_for_recorded_buffer(
     const VulkanBackendState *state, const uint32_t *worker_indices,
     uint32_t command_index) {
   assert_log(state != NULL, "State is NULL");
@@ -762,8 +765,9 @@ vkr_internal void vulkan_backend_free_recorded_upload_command_buffers(
       continue;
     }
 
-    VkCommandPool command_pool = vulkan_backend_upload_command_pool_for_recorded_buffer(
-        state, worker_indices, i);
+    VkCommandPool command_pool =
+        vulkan_backend_upload_command_pool_for_recorded_buffer(
+            state, worker_indices, i);
 
     VkCommandBuffer command_buffer = command_buffers[i];
     vkFreeCommandBuffers(state->device.logical_device, command_pool, 1,
@@ -813,9 +817,10 @@ vkr_internal VkrRendererError vulkan_backend_upload_buffer_with_queue(
    * directly without staging or queue submission. This keeps in-frame dynamic
    * updates off the blocking submit path.
    */
-  if ((buffer->buffer.memory_property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) !=
-      0) {
-    if (!vulkan_buffer_load_data(state, &buffer->buffer, offset, size, 0, data)) {
+  if ((buffer->buffer.memory_property_flags &
+       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+    if (!vulkan_buffer_load_data(state, &buffer->buffer, offset, size, 0,
+                                 data)) {
       return VKR_RENDERER_ERROR_DEVICE_ERROR;
     }
     return VKR_RENDERER_ERROR_NONE;
@@ -1481,8 +1486,7 @@ vulkan_backend_refresh_parallel_feature_toggles(VulkanBackendState *state) {
  * rewrites relative paths through `PROJECT_SOURCE_DIR`, which is not desired
  * for explicit cache location overrides.
  */
-vkr_internal FilePathType
-vulkan_path_type_from_string8(const String8 *path) {
+vkr_internal FilePathType vulkan_path_type_from_string8(const String8 *path) {
   if (!path || !path->str || path->length == 0) {
     return FILE_PATH_TYPE_RELATIVE;
   }
@@ -1501,16 +1505,16 @@ vulkan_path_type_from_string8(const String8 *path) {
 #endif
 }
 
-vkr_internal INLINE FilePath
-vulkan_file_path_from_string8(String8 path) {
+vkr_internal INLINE FilePath vulkan_file_path_from_string8(String8 path) {
   return (FilePath){
       .path = path,
       .type = vulkan_path_type_from_string8(&path),
   };
 }
 
-vkr_internal void vulkan_pipeline_cache_log_file_error(
-    const char *operation, const String8 *path, FileError error) {
+vkr_internal void vulkan_pipeline_cache_log_file_error(const char *operation,
+                                                       const String8 *path,
+                                                       FileError error) {
   String8 err = file_get_error_string(error);
   log_warn("Failed to %s pipeline cache '%s': %s", operation,
            path ? string8_cstr(path) : "", (const char *)err.str);
@@ -1536,8 +1540,8 @@ vkr_internal bool8_t vulkan_pipeline_cache_try_load_initial_data(
   FileHandle handle = {0};
   const FileError open_error = file_open(&cache_file, mode, &handle);
   if (open_error != FILE_ERROR_NONE) {
-    vulkan_pipeline_cache_log_file_error(
-        "open", &state->pipeline_cache_path, open_error);
+    vulkan_pipeline_cache_log_file_error("open", &state->pipeline_cache_path,
+                                         open_error);
     return false_v;
   }
 
@@ -1547,8 +1551,8 @@ vkr_internal bool8_t vulkan_pipeline_cache_try_load_initial_data(
       file_read_all(&handle, &state->temp_scope, &cache_data, &cache_size);
   file_close(&handle);
   if (read_error != FILE_ERROR_NONE) {
-    vulkan_pipeline_cache_log_file_error(
-        "read", &state->pipeline_cache_path, read_error);
+    vulkan_pipeline_cache_log_file_error("read", &state->pipeline_cache_path,
+                                         read_error);
     return false_v;
   }
 
@@ -1606,29 +1610,28 @@ vulkan_pipeline_cache_resolve_path(VulkanBackendState *state) {
   const char *home = getenv("HOME");
   if (home && home[0] != '\0') {
     return string8_create_formatted(
-        &state->alloc,
-        "%s/Library/Caches/VulkanRenderer/pipeline_cache_v1.bin", home);
+        &state->alloc, "%s/Library/Caches/VulkanRenderer/pipeline_cache_v1.bin",
+        home);
   }
 #elif defined(PLATFORM_WINDOWS)
   const char *local_app_data = getenv("LOCALAPPDATA");
   if (local_app_data && local_app_data[0] != '\0') {
-    return string8_create_formatted(
-        &state->alloc, "%s\\VulkanRenderer\\pipeline_cache_v1.bin",
-        local_app_data);
+    return string8_create_formatted(&state->alloc,
+                                    "%s\\VulkanRenderer\\pipeline_cache_v1.bin",
+                                    local_app_data);
   }
 #else
   const char *xdg_cache_home = getenv("XDG_CACHE_HOME");
   if (xdg_cache_home && xdg_cache_home[0] != '\0') {
-    return string8_create_formatted(
-        &state->alloc, "%s/vulkan_renderer/pipeline_cache_v1.bin",
-        xdg_cache_home);
+    return string8_create_formatted(&state->alloc,
+                                    "%s/vulkan_renderer/pipeline_cache_v1.bin",
+                                    xdg_cache_home);
   }
 
   const char *home = getenv("HOME");
   if (home && home[0] != '\0') {
     return string8_create_formatted(
-        &state->alloc, "%s/.cache/vulkan_renderer/pipeline_cache_v1.bin",
-        home);
+        &state->alloc, "%s/.cache/vulkan_renderer/pipeline_cache_v1.bin", home);
   }
 #endif
 
@@ -1642,7 +1645,8 @@ vulkan_pipeline_cache_initialize(VulkanBackendState *state) {
 
   state->pipeline_cache = VK_NULL_HANDLE;
   state->pipeline_cache_path = vulkan_pipeline_cache_resolve_path(state);
-  log_info("Pipeline cache path: %s", string8_cstr(&state->pipeline_cache_path));
+  log_info("Pipeline cache path: %s",
+           string8_cstr(&state->pipeline_cache_path));
 
   VkPipelineCacheCreateInfo create_info = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO,
@@ -1687,7 +1691,8 @@ vkr_internal bool8_t vulkan_pipeline_cache_save(VulkanBackendState *state) {
   if (state->pipeline_cache == VK_NULL_HANDLE) {
     return false_v;
   }
-  if (!state->pipeline_cache_path.str || state->pipeline_cache_path.length == 0) {
+  if (!state->pipeline_cache_path.str ||
+      state->pipeline_cache_path.length == 0) {
     log_warn("Skipping pipeline cache save: cache path is empty");
     return false_v;
   }
@@ -1699,9 +1704,8 @@ vkr_internal bool8_t vulkan_pipeline_cache_save(VulkanBackendState *state) {
   }
 
   size_t cache_size = 0;
-  VkResult query_result = vkGetPipelineCacheData(state->device.logical_device,
-                                                 state->pipeline_cache,
-                                                 &cache_size, NULL);
+  VkResult query_result = vkGetPipelineCacheData(
+      state->device.logical_device, state->pipeline_cache, &cache_size, NULL);
   if (query_result != VK_SUCCESS || cache_size == 0) {
     if (query_result != VK_SUCCESS) {
       log_warn("Failed to query pipeline cache data size (VkResult=%d)",
@@ -1720,9 +1724,9 @@ vkr_internal bool8_t vulkan_pipeline_cache_save(VulkanBackendState *state) {
     return false_v;
   }
 
-  VkResult read_result = vkGetPipelineCacheData(state->device.logical_device,
-                                                state->pipeline_cache,
-                                                &cache_size, cache_data);
+  VkResult read_result =
+      vkGetPipelineCacheData(state->device.logical_device,
+                             state->pipeline_cache, &cache_size, cache_data);
   if (read_result != VK_SUCCESS || cache_size == 0) {
     log_warn("Failed to read pipeline cache data (VkResult=%d)", read_result);
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
@@ -1783,7 +1787,8 @@ vkr_internal bool8_t vulkan_pipeline_cache_save(VulkanBackendState *state) {
     return false_v;
   }
 
-  log_info("Saved pipeline cache data: %zu bytes -> %s", cache_size, final_cstr);
+  log_info("Saved pipeline cache data: %zu bytes -> %s", cache_size,
+           final_cstr);
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_FILE);
   return true_v;
 }
@@ -1821,7 +1826,8 @@ vkr_internal void framebuffer_cache_invalidate(VulkanBackendState *state) {
  * @brief Enqueue a resource for deferred destruction.
  *
  * Resources are not destroyed immediately but queued for destruction once
- * the GPU is guaranteed to have finished using them (after BUFFERING_FRAMES frames).
+ * the GPU is guaranteed to have finished using them (after BUFFERING_FRAMES
+ * frames).
  *
  * @param state Vulkan backend state
  * @param kind Type of resource to destroy
@@ -1829,13 +1835,12 @@ vkr_internal void framebuffer_cache_invalidate(VulkanBackendState *state) {
  * @param memory Optional device memory to free (VK_NULL_HANDLE if none)
  * @param pool_alloc Optional allocator for wrapper pool return
  * @param wrapper_size Size of wrapper struct if pool_alloc is set
- * @return true if enqueued successfully, false if queue is full (immediate destroy needed)
+ * @return true if enqueued successfully, false if queue is full (immediate
+ * destroy needed)
  */
-vkr_internal bool8_t
-vulkan_deferred_destroy_enqueue(VulkanBackendState *state,
-                                VkrDeferredDestroyKind kind, void *handle,
-                                VkDeviceMemory memory, VkrAllocator *pool_alloc,
-                                uint64_t wrapper_size) {
+vkr_internal bool8_t vulkan_deferred_destroy_enqueue(
+    VulkanBackendState *state, VkrDeferredDestroyKind kind, void *handle,
+    VkDeviceMemory memory, VkrAllocator *pool_alloc, uint64_t wrapper_size) {
   return vulkan_deferred_destroy_enqueue_with_memory_accounting(
       state, kind, handle, memory, 0, VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN,
       pool_alloc, wrapper_size);
@@ -1873,7 +1878,8 @@ vkr_internal bool8_t vulkan_deferred_destroy_enqueue_with_memory_accounting(
  * @brief Process the deferred destruction queue, destroying retired resources.
  *
  * Called at the start of each frame after fence wait. Destroys all resources
- * whose submit_serial is old enough that the GPU is guaranteed to be done with them.
+ * whose submit_serial is old enough that the GPU is guaranteed to be done with
+ * them.
  *
  * @param state Vulkan backend state
  */
@@ -1970,7 +1976,8 @@ vkr_internal void vulkan_deferred_destroy_process(VulkanBackendState *state) {
       // Free wrapper back to pool if allocator provided
       if (entry->pool_alloc && entry->payload.wrapper) {
         vkr_allocator_free(entry->pool_alloc, entry->payload.wrapper,
-                           entry->wrapper_size, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+                           entry->wrapper_size,
+                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
       }
       break;
     }
@@ -2053,8 +2060,8 @@ vkr_internal void vulkan_select_filter_modes(
  * `optimalTilingFeatures` and enable linear filtering when supported.
  */
 vkr_internal void vulkan_select_shadow_sampler_filter_modes(
-    const VulkanBackendState *state, VkFormat depth_format, VkFilter *out_filter,
-    VkSamplerMipmapMode *out_mipmap_mode) {
+    const VulkanBackendState *state, VkFormat depth_format,
+    VkFilter *out_filter, VkSamplerMipmapMode *out_mipmap_mode) {
   VkFilter filter = VK_FILTER_NEAREST;
   VkSamplerMipmapMode mipmap_mode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
 
@@ -2119,7 +2126,8 @@ vulkan_texture_format_is_compressed(VkrTextureFormat format) {
  * @brief Rejects runtime mutation APIs for compressed textures in rollout 1.
  *
  * Compressed uploads currently require full mip/layer payload creation, so
- * write/resize entrypoints are intentionally blocked to prevent partial updates.
+ * write/resize entrypoints are intentionally blocked to prevent partial
+ * updates.
  */
 vkr_internal VkrRendererError vulkan_texture_reject_compressed_mutation(
     VkrTextureFormat format, const char *operation_name) {
@@ -2199,9 +2207,8 @@ vulkan_texture_format_block_height(VkrTextureFormat format) {
   }
 }
 
-vkr_internal uint32_t
-vulkan_texture_format_block_size_bytes(VkrTextureFormat format,
-                                       uint32_t channels) {
+vkr_internal uint32_t vulkan_texture_format_block_size_bytes(
+    VkrTextureFormat format, uint32_t channels) {
   switch (format) {
   case VKR_TEXTURE_FORMAT_BC7_UNORM:
   case VKR_TEXTURE_FORMAT_BC7_SRGB:
@@ -2221,10 +2228,9 @@ vkr_internal uint32_t vulkan_texture_mip_extent(uint32_t base,
   return Max(1u, base >> mip_level);
 }
 
-vkr_internal uint64_t
-vulkan_texture_expected_region_size_bytes(VkrTextureFormat format,
-                                          uint32_t channels, uint32_t width,
-                                          uint32_t height) {
+vkr_internal uint64_t vulkan_texture_expected_region_size_bytes(
+    VkrTextureFormat format, uint32_t channels, uint32_t width,
+    uint32_t height) {
   const uint32_t block_width = vulkan_texture_format_block_width(format);
   const uint32_t block_height = vulkan_texture_format_block_height(format);
   const uint32_t block_size =
@@ -2328,8 +2334,7 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
     case VKR_PIPELINE_DOMAIN_WORLD:
     case VKR_PIPELINE_DOMAIN_SKYBOX:
     case VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT:
-    case VKR_PIPELINE_DOMAIN_WORLD_OVERLAY:
-    {
+    case VKR_PIPELINE_DOMAIN_WORLD_OVERLAY: {
       VkrClearValue color_clear =
           (domain == VKR_PIPELINE_DOMAIN_SKYBOX) ? clear_black : clear_world;
       color_attachment = (VkrRenderPassAttachmentDesc){
@@ -2746,8 +2751,8 @@ vkr_internal bool32_t vulkan_backend_renderpass_register(
  * @brief Internal helper to create a render pass from VkrRenderPassDesc.
  */
 vkr_internal struct s_RenderPass *
-vulkan_backend_renderpass_create_from_desc_internal(VulkanBackendState *state,
-                                                    const VkrRenderPassDesc *desc) {
+vulkan_backend_renderpass_create_from_desc_internal(
+    VulkanBackendState *state, const VkrRenderPassDesc *desc) {
   assert_log(state != NULL, "State not initialized");
   assert_log(desc != NULL, "Render pass descriptor is NULL");
 
@@ -2789,9 +2794,10 @@ vulkan_backend_renderpass_create_from_desc_internal(VulkanBackendState *state,
 
   // Store name and descriptor-derived metadata
   pass->name = string8_duplicate(&state->alloc, &desc->name);
-  pass->attachment_count = (uint8_t)(desc->color_attachment_count +
-                                     (desc->depth_stencil_attachment ? 1u : 0u) +
-                                     desc->resolve_attachment_count);
+  pass->attachment_count =
+      (uint8_t)(desc->color_attachment_count +
+                (desc->depth_stencil_attachment ? 1u : 0u) +
+                desc->resolve_attachment_count);
   pass->resolve_attachment_count = desc->resolve_attachment_count;
   for (uint8_t i = 0; i < desc->resolve_attachment_count; ++i) {
     pass->resolve_attachments[i] = desc->resolve_attachments[i];
@@ -2957,7 +2963,8 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
         .resolve_attachments = NULL,
     };
     struct s_RenderPass *skybox =
-        vulkan_backend_renderpass_create_from_desc_internal(state, &skybox_desc);
+        vulkan_backend_renderpass_create_from_desc_internal(state,
+                                                            &skybox_desc);
     if (!skybox) {
       return false;
     }
@@ -3007,8 +3014,8 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
     state->domain_initialized[VKR_PIPELINE_DOMAIN_WORLD] = true;
   }
 
-  if (!vulkan_backend_renderpass_lookup(
-          state, string8_lit("Renderpass.Builtin.UI"))) {
+  if (!vulkan_backend_renderpass_lookup(state,
+                                        string8_lit("Renderpass.Builtin.UI"))) {
     VkrRenderPassAttachmentDesc ui_color = {
         .format = swapchain_format,
         .samples = VKR_SAMPLE_COUNT_1,
@@ -3072,7 +3079,8 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
         .resolve_attachments = NULL,
     };
     struct s_RenderPass *picking =
-        vulkan_backend_renderpass_create_from_desc_internal(state, &picking_desc);
+        vulkan_backend_renderpass_create_from_desc_internal(state,
+                                                            &picking_desc);
     if (!picking) {
       return false;
     }
@@ -3218,7 +3226,6 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
     }
   }
 
-
   if (!create_command_buffers(state)) {
     log_error("Failed to create Vulkan command buffers");
     return false;
@@ -3293,7 +3300,8 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .buffer_flush = renderer_vulkan_flush_buffer,
       .buffer_barrier = renderer_vulkan_buffer_barrier,
       .texture_create = renderer_vulkan_create_texture,
-      .texture_create_with_payload = renderer_vulkan_create_texture_with_payload,
+      .texture_create_with_payload =
+          renderer_vulkan_create_texture_with_payload,
       .texture_create_with_payload_batch =
           renderer_vulkan_create_texture_with_payload_batch,
       .render_target_texture_create =
@@ -3328,7 +3336,8 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .get_and_reset_descriptor_writes_avoided =
           renderer_vulkan_get_and_reset_descriptor_writes_avoided,
       .get_submit_serial = renderer_vulkan_get_submit_serial,
-      .get_completed_submit_serial = renderer_vulkan_get_completed_submit_serial,
+      .get_completed_submit_serial =
+          renderer_vulkan_get_completed_submit_serial,
       .get_and_reset_upload_wait_stats =
           renderer_vulkan_get_and_reset_upload_wait_stats,
       .rg_timing_begin_frame = renderer_vulkan_rg_timing_begin_frame,
@@ -3578,10 +3587,8 @@ static void vulkan_rg_timing_fetch_results(VulkanBackendState *state) {
   for (uint32_t i = 0; i < pass_count; ++i) {
     uint32_t start_query = i * 2;
     uint32_t end_query = start_query + 1;
-    uint64_t start_ts =
-        state->rg_timing.query_results[start_query * 2 + 0];
-    uint64_t start_avail =
-        state->rg_timing.query_results[start_query * 2 + 1];
+    uint64_t start_ts = state->rg_timing.query_results[start_query * 2 + 0];
+    uint64_t start_avail = state->rg_timing.query_results[start_query * 2 + 1];
     uint64_t end_ts = state->rg_timing.query_results[end_query * 2 + 0];
     uint64_t end_avail = state->rg_timing.query_results[end_query * 2 + 1];
 
@@ -3680,8 +3687,7 @@ void renderer_vulkan_rg_timing_end_pass(void *backend_state,
   }
 
   vkCmdWriteTimestamp(command_buffer->handle,
-                      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pool,
-                      query_index);
+                      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pool, query_index);
 }
 
 bool8_t renderer_vulkan_rg_timing_get_results(void *backend_state,
@@ -3872,7 +3878,6 @@ renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
-
   if (!vulkan_backend_create_attachment_wrappers(backend_state)) {
     log_fatal("Failed to create swapchain attachment wrappers");
     return false;
@@ -3963,7 +3968,8 @@ renderer_vulkan_initialize(void **out_backend_state,
   backend_state->buffer_pool_alloc.ctx = &backend_state->buffer_handle_pool;
   vkr_pool_allocator_create(&backend_state->buffer_pool_alloc);
 
-  if (!vkr_pool_create(sizeof(struct s_RenderTarget), VKR_MAX_RENDER_TARGET_HANDLES,
+  if (!vkr_pool_create(sizeof(struct s_RenderTarget),
+                       VKR_MAX_RENDER_TARGET_HANDLES,
                        &backend_state->render_target_pool)) {
     log_fatal("Failed to create render target handle pool");
     vkr_pool_allocator_destroy(&backend_state->buffer_pool_alloc);
@@ -4558,8 +4564,7 @@ void renderer_vulkan_draw_indexed_indirect(
   assert_log(stride > 0, "Stride is 0");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  struct s_BufferHandle *buffer =
-      (struct s_BufferHandle *)indirect_buffer.ptr;
+  struct s_BufferHandle *buffer = (struct s_BufferHandle *)indirect_buffer.ptr;
 
   VulkanCommandBuffer *command_buffer =
       vulkan_backend_get_active_graphics_command_buffer(state);
@@ -4615,12 +4620,12 @@ renderer_vulkan_create_buffer(void *backend_state,
     if (bitset8_is_set(&desc->memory_properties,
                        VKR_MEMORY_PROPERTY_HOST_VISIBLE)) {
       upload_error = renderer_vulkan_update_buffer(
-          backend_state, (VkrBackendResourceHandle){.ptr = buffer}, 0, desc->size,
-          initial_data);
+          backend_state, (VkrBackendResourceHandle){.ptr = buffer}, 0,
+          desc->size, initial_data);
     } else {
       upload_error = renderer_vulkan_upload_buffer(
-          backend_state, (VkrBackendResourceHandle){.ptr = buffer}, 0, desc->size,
-          initial_data);
+          backend_state, (VkrBackendResourceHandle){.ptr = buffer}, 0,
+          desc->size, initial_data);
     }
 
     if (upload_error != VKR_RENDERER_ERROR_NONE) {
@@ -5004,8 +5009,8 @@ vulkan_buffer_stage_for_access(VkrBufferAccessFlags access, bool8_t is_src) {
     flags |= VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
   }
-  if (access & (VKR_BUFFER_ACCESS_TRANSFER_SRC |
-                VKR_BUFFER_ACCESS_TRANSFER_DST)) {
+  if (access &
+      (VKR_BUFFER_ACCESS_TRANSFER_SRC | VKR_BUFFER_ACCESS_TRANSFER_DST)) {
     flags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
   }
 
@@ -5136,13 +5141,14 @@ void renderer_vulkan_destroy_buffer(void *backend_state,
   buffer->buffer.memory = VK_NULL_HANDLE;
 
   if (vk_buffer != VK_NULL_HANDLE) {
-    bool8_t buffer_enqueued = vulkan_deferred_destroy_enqueue_with_memory_accounting(
-        state, VKR_DEFERRED_DESTROY_BUFFER, (void *)vk_buffer, vk_memory,
-        allocation_size,
-        (memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-            ? VKR_ALLOCATOR_MEMORY_TAG_GPU
-            : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
-        NULL, 0);
+    bool8_t buffer_enqueued =
+        vulkan_deferred_destroy_enqueue_with_memory_accounting(
+            state, VKR_DEFERRED_DESTROY_BUFFER, (void *)vk_buffer, vk_memory,
+            allocation_size,
+            (memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+                ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+                : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
+            NULL, 0);
     if (!buffer_enqueued) {
       vulkan_deferred_destroy_process(state);
       buffer_enqueued = vulkan_deferred_destroy_enqueue_with_memory_accounting(
@@ -5157,7 +5163,8 @@ void renderer_vulkan_destroy_buffer(void *backend_state,
       if (state->frame_active) {
         vkDeviceWaitIdle(state->device.logical_device);
       }
-      vkDestroyBuffer(state->device.logical_device, vk_buffer, state->allocator);
+      vkDestroyBuffer(state->device.logical_device, vk_buffer,
+                      state->allocator);
       if (vk_memory != VK_NULL_HANDLE) {
         if (allocation_size > 0) {
           vkr_allocator_report(
@@ -5236,11 +5243,11 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
 
   MemZero(texture, sizeof(struct s_TextureHandle));
 
-  if (!vulkan_image_create(state, VK_IMAGE_TYPE_2D, desc->width, desc->height,
-                           image_format, VK_IMAGE_TILING_OPTIMAL, usage,
-                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1,
-                           VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
-                           VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
+  if (!vulkan_image_create(
+          state, VK_IMAGE_TYPE_2D, desc->width, desc->height, image_format,
+          VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+          1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
+          VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
     log_fatal("Failed to create render target image");
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
@@ -5403,11 +5410,11 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
 
   VkImageUsageFlags usage =
       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-  if (!vulkan_image_create(state, VK_IMAGE_TYPE_2D, width, height, depth_format,
-                           VK_IMAGE_TILING_OPTIMAL, usage,
-                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1,
-                           VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
-                           VK_IMAGE_ASPECT_DEPTH_BIT, &texture->texture.image)) {
+  if (!vulkan_image_create(
+          state, VK_IMAGE_TYPE_2D, width, height, depth_format,
+          VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+          1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
+          VK_IMAGE_ASPECT_DEPTH_BIT, &texture->texture.image)) {
     log_fatal("Failed to create sampled depth attachment image");
     vkr_allocator_free(&state->texture_pool_alloc, texture,
                        sizeof(struct s_TextureHandle),
@@ -5512,8 +5519,8 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment_array(
       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   if (!vulkan_image_create(
           state, VK_IMAGE_TYPE_2D, width, height, depth_format,
-          VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1,
-          layers, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+          VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+          1, layers, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D_ARRAY,
           VK_IMAGE_ASPECT_DEPTH_BIT, &texture->texture.image)) {
     log_fatal("Failed to create sampled depth attachment array image");
     vkr_allocator_free(&state->texture_pool_alloc, texture,
@@ -5582,8 +5589,8 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment_array(
 }
 
 VkrBackendResourceHandle renderer_vulkan_create_render_target_texture_msaa(
-    void *backend_state, uint32_t width, uint32_t height, VkrTextureFormat format,
-    VkrSampleCount samples) {
+    void *backend_state, uint32_t width, uint32_t height,
+    VkrTextureFormat format, VkrSampleCount samples) {
   assert_log(backend_state != NULL, "Backend state is NULL");
 
   if (width == 0 || height == 0) {
@@ -5620,11 +5627,11 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture_msaa(
 
   MemZero(texture, sizeof(struct s_TextureHandle));
 
-  if (!vulkan_image_create(state, VK_IMAGE_TYPE_2D, width, height, image_format,
-                           VK_IMAGE_TILING_OPTIMAL, usage,
-                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1, vk_samples,
-                           VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
-                           &texture->texture.image)) {
+  if (!vulkan_image_create(
+          state, VK_IMAGE_TYPE_2D, width, height, image_format,
+          VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+          1, 1, vk_samples, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
+          &texture->texture.image)) {
     log_fatal("Failed to create MSAA image");
     vkr_allocator_free(&state->texture_pool_alloc, texture,
                        sizeof(struct s_TextureHandle),
@@ -5812,8 +5819,8 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
   texture->description = *desc;
 
   struct s_BufferHandle *staging_buffer = NULL;
-  const bool8_t frame_upload_path =
-      vulkan_backend_can_record_frame_upload(state, state->device.graphics_queue);
+  const bool8_t frame_upload_path = vulkan_backend_can_record_frame_upload(
+      state, state->device.graphics_queue);
   bool8_t staging_destroy_deferred = false_v;
   VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
   if (!vkr_allocator_scope_is_valid(&scope)) {
@@ -5925,9 +5932,9 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
       .bind_on_create = true_v,
   };
 
-  staging_buffer = vkr_allocator_alloc(&state->temp_scope,
-                                       sizeof(struct s_BufferHandle),
-                                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  staging_buffer =
+      vkr_allocator_alloc(&state->temp_scope, sizeof(struct s_BufferHandle),
+                          VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!staging_buffer) {
     log_fatal("Failed to allocate staging buffer");
     goto cleanup_texture;
@@ -5947,17 +5954,18 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
   VkImageUsageFlags usage =
       VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   if (!format_is_compressed) {
-    usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    usage |=
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
   }
 
   const VkFormat image_format =
       vulkan_image_format_from_texture_format(desc->format);
-  if (!vulkan_image_create(state, VK_IMAGE_TYPE_2D, desc->width, desc->height,
-                           image_format, VK_IMAGE_TILING_OPTIMAL, usage,
-                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                           payload->mip_levels, payload->array_layers,
-                           VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
-                           VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
+  if (!vulkan_image_create(
+          state, VK_IMAGE_TYPE_2D, desc->width, desc->height, image_format,
+          VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+          payload->mip_levels, payload->array_layers, VK_SAMPLE_COUNT_1_BIT,
+          VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
+          &texture->texture.image)) {
     log_fatal("Failed to create Vulkan image for payload upload");
     goto cleanup_texture;
   }
@@ -6024,7 +6032,8 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
 
     if (!vulkan_command_buffer_end_single_use(
             state, &temp_command_buffer, state->device.graphics_queue,
-            array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
+            array_get_VulkanFence(&state->in_flight_fences,
+                                  state->current_frame)
                 ->handle)) {
       vkFreeCommandBuffers(state->device.logical_device,
                            state->device.graphics_command_pool, 1,
@@ -6042,10 +6051,9 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
   VkFilter mag_filter = VK_FILTER_LINEAR;
   VkSamplerMipmapMode mipmap_mode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
   VkBool32 anisotropy_enable = VK_FALSE;
-  float32_t max_lod =
-      (texture->texture.image.mip_levels > 0)
-          ? (float32_t)(texture->texture.image.mip_levels - 1)
-          : 0.0f;
+  float32_t max_lod = (texture->texture.image.mip_levels > 0)
+                          ? (float32_t)(texture->texture.image.mip_levels - 1)
+                          : 0.0f;
   vulkan_select_filter_modes(desc, state->device.features.samplerAnisotropy,
                              texture->texture.image.mip_levels, &min_filter,
                              &mag_filter, &mipmap_mode, &anisotropy_enable,
@@ -6095,7 +6103,8 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
 cleanup_texture:
   if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
     if (frame_upload_path && !staging_destroy_deferred) {
-      vulkan_backend_defer_staging_buffer_destroy(state, &staging_buffer->buffer);
+      vulkan_backend_defer_staging_buffer_destroy(state,
+                                                  &staging_buffer->buffer);
     } else {
       vulkan_buffer_destroy(state, &staging_buffer->buffer);
     }
@@ -6567,8 +6576,8 @@ renderer_vulkan_create_texture(void *backend_state,
 
   struct s_BufferHandle *staging_buffer = NULL;
   const bool8_t frame_upload_path =
-      initial_data &&
-      vulkan_backend_can_record_frame_upload(state, state->device.graphics_queue);
+      initial_data && vulkan_backend_can_record_frame_upload(
+                          state, state->device.graphics_queue);
   bool8_t staging_destroy_deferred = false_v;
 
   VkrAllocatorScope scope = {0};
@@ -6634,8 +6643,8 @@ renderer_vulkan_create_texture(void *backend_state,
 
     if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
       if (frame_upload_path) {
-        if (!vulkan_backend_defer_staging_buffer_destroy(state,
-                                                         &staging_buffer->buffer)) {
+        if (!vulkan_backend_defer_staging_buffer_destroy(
+                state, &staging_buffer->buffer)) {
           goto cleanup_texture;
         }
         staging_destroy_deferred = true_v;
@@ -6727,8 +6736,8 @@ renderer_vulkan_create_texture(void *backend_state,
   if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE &&
       !staging_destroy_deferred) {
     if (frame_upload_path) {
-      if (!vulkan_backend_defer_staging_buffer_destroy(state,
-                                                       &staging_buffer->buffer)) {
+      if (!vulkan_backend_defer_staging_buffer_destroy(
+              state, &staging_buffer->buffer)) {
         goto cleanup_texture;
       }
       staging_destroy_deferred = true_v;
@@ -6745,14 +6754,16 @@ renderer_vulkan_create_texture(void *backend_state,
 cleanup_texture:
   if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
     if (frame_upload_path) {
-      vulkan_backend_defer_staging_buffer_destroy(state, &staging_buffer->buffer);
+      vulkan_backend_defer_staging_buffer_destroy(state,
+                                                  &staging_buffer->buffer);
     } else {
       vulkan_buffer_destroy(state, &staging_buffer->buffer);
     }
   }
 
   // If upload commands were recorded into the active frame, destruction must
-  // be deferred to avoid tearing down resources before GPU submission completes.
+  // be deferred to avoid tearing down resources before GPU submission
+  // completes.
   if (texture) {
     if (frame_upload_path) {
       renderer_vulkan_destroy_texture(
@@ -6781,8 +6792,10 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
     const void *initial_data) {
   assert_log(state != NULL, "State is NULL");
   assert_log(desc != NULL, "Texture description is NULL");
-  assert_log(initial_data != NULL,
-             "Cube map requires initial data for all 6 faces");
+  const bool32_t writable =
+      bitset8_is_set(&desc->properties, VKR_TEXTURE_PROPERTY_WRITABLE_BIT);
+  assert_log(initial_data != NULL || writable,
+             "Cube map requires initial data unless writable");
 
   // log_debug("Creating Vulkan cube map texture");
 
@@ -6797,102 +6810,166 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
   MemZero(texture, sizeof(struct s_TextureHandle));
   texture->description = *desc;
 
-  // Each face has the same dimensions
-  VkDeviceSize face_size = (VkDeviceSize)desc->width *
-                           (VkDeviceSize)desc->height *
-                           (VkDeviceSize)desc->channels;
-  VkDeviceSize total_size = face_size * 6;
-
   VkFormat image_format = vulkan_image_format_from_texture_format(desc->format);
 
-  // Cube maps typically don't use mipmaps initially for simplicity
   uint32_t mip_levels = 1;
+  if (!initial_data && desc->mip_filter != VKR_MIP_FILTER_NONE) {
+    mip_levels = vulkan_calculate_mip_levels(desc->width, desc->height);
+  }
 
-  VkrBufferTypeFlags buffer_type = bitset8_create();
-  bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
-
-  const VkrBufferDescription staging_buffer_desc = {
-      .size = total_size,
-      .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
-      .memory_properties = vkr_memory_property_flags_from_bits(
-          VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
-      .buffer_type = buffer_type,
-      .bind_on_create = true_v,
-  };
-
-  VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
+  VkrAllocatorScope scope = {0};
   struct s_BufferHandle *staging_buffer = NULL;
   const bool8_t frame_upload_path =
-      vulkan_backend_can_record_frame_upload(state, state->device.graphics_queue);
+      initial_data && vulkan_backend_can_record_frame_upload(
+                          state, state->device.graphics_queue);
   bool8_t staging_destroy_deferred = false_v;
-  if (!vkr_allocator_scope_is_valid(&scope)) {
-    goto cleanup_texture;
-  }
-  staging_buffer = vkr_allocator_alloc(&state->temp_scope,
-                                       sizeof(struct s_BufferHandle),
-                                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-  if (!staging_buffer) {
-    log_fatal("Failed to allocate staging buffer");
-    goto cleanup_texture;
-  }
+  VkDeviceSize face_size = 0;
 
-  if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
-    log_fatal("Failed to create staging buffer for cube map");
-    goto cleanup_texture;
-  }
+  if (initial_data) {
+    VkrBufferTypeFlags buffer_type = bitset8_create();
+    bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
 
-  if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, total_size, 0,
-                               initial_data)) {
-    log_fatal("Failed to load cube map data into staging buffer");
-    goto cleanup_texture;
+    face_size = (VkDeviceSize)desc->width * (VkDeviceSize)desc->height *
+                (VkDeviceSize)desc->channels;
+    VkDeviceSize total_size = face_size * 6;
+    const VkrBufferDescription staging_buffer_desc = {
+        .size = total_size,
+        .usage =
+            vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
+        .memory_properties = vkr_memory_property_flags_from_bits(
+            VKR_MEMORY_PROPERTY_HOST_VISIBLE |
+            VKR_MEMORY_PROPERTY_HOST_COHERENT),
+        .buffer_type = buffer_type,
+        .bind_on_create = true_v,
+    };
+
+    scope = vkr_allocator_begin_scope(&state->temp_scope);
+    if (!vkr_allocator_scope_is_valid(&scope)) {
+      goto cleanup_texture;
+    }
+    staging_buffer =
+        vkr_allocator_alloc(&state->temp_scope, sizeof(struct s_BufferHandle),
+                            VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    if (!staging_buffer) {
+      log_fatal("Failed to allocate staging buffer");
+      goto cleanup_texture;
+    }
+
+    if (!vulkan_buffer_create(state, &staging_buffer_desc, staging_buffer)) {
+      log_fatal("Failed to create staging buffer for cube map");
+      goto cleanup_texture;
+    }
+
+    if (!vulkan_buffer_load_data(state, &staging_buffer->buffer, 0, total_size,
+                                 0, initial_data)) {
+      log_fatal("Failed to load cube map data into staging buffer");
+      goto cleanup_texture;
+    }
   }
 
   // Create cube map image with 6 array layers
-  if (!vulkan_image_create(state, VK_IMAGE_TYPE_2D, desc->width, desc->height,
-                           image_format, VK_IMAGE_TILING_OPTIMAL,
-                           VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                               VK_IMAGE_USAGE_SAMPLED_BIT,
-                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mip_levels, 6,
-                           VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_CUBE,
-                           VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
+  if (!vulkan_image_create(
+          state, VK_IMAGE_TYPE_2D, desc->width, desc->height, image_format,
+          VK_IMAGE_TILING_OPTIMAL,
+          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mip_levels, 6,
+          VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_CUBE,
+          VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
     log_fatal("Failed to create Vulkan cube map image");
     goto cleanup_texture;
   }
 
-  // Upload cube map faces via transfer queue
-  if (!vulkan_image_upload_cube_via_transfer(state, &texture->texture.image,
-                                             staging_buffer->buffer.handle,
-                                             image_format, face_size)) {
-    log_fatal("Failed to upload cube map via transfer queue");
-    goto cleanup_texture;
-  }
-
-  if (frame_upload_path) {
-    if (!vulkan_backend_defer_staging_buffer_destroy(state,
-                                                     &staging_buffer->buffer)) {
+  if (initial_data) {
+    // Upload cube map faces via transfer queue.
+    if (!vulkan_image_upload_cube_via_transfer(state, &texture->texture.image,
+                                               staging_buffer->buffer.handle,
+                                               image_format, face_size)) {
+      log_fatal("Failed to upload cube map via transfer queue");
       goto cleanup_texture;
     }
-    staging_destroy_deferred = true_v;
+
+    if (frame_upload_path) {
+      if (!vulkan_backend_defer_staging_buffer_destroy(
+              state, &staging_buffer->buffer)) {
+        goto cleanup_texture;
+      }
+      staging_destroy_deferred = true_v;
+    } else {
+      vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    }
   } else {
-    vulkan_buffer_destroy(state, &staging_buffer->buffer);
+    // Writable cube map: make all subresources readable by default.
+    VulkanCommandBuffer temp_command_buffer = {0};
+    if (!vulkan_command_buffer_allocate_and_begin_single_use(
+            state, &temp_command_buffer)) {
+      log_fatal("Failed to allocate command buffer for writable cube map");
+      goto cleanup_texture;
+    }
+
+    if (!vulkan_image_transition_layout(
+            state, &texture->texture.image, &temp_command_buffer, image_format,
+            VK_IMAGE_LAYOUT_UNDEFINED,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+      log_fatal("Failed to transition writable cube map layout");
+      vkEndCommandBuffer(temp_command_buffer.handle);
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &temp_command_buffer.handle);
+      goto cleanup_texture;
+    }
+
+    if (!vulkan_command_buffer_end_single_use(
+            state, &temp_command_buffer, state->device.graphics_queue,
+            array_get_VulkanFence(&state->in_flight_fences,
+                                  state->current_frame)
+                ->handle)) {
+      log_fatal("Failed to submit writable cube map transition");
+      vkFreeCommandBuffers(state->device.logical_device,
+                           state->device.graphics_command_pool, 1,
+                           &temp_command_buffer.handle);
+      goto cleanup_texture;
+    }
+
+    vkFreeCommandBuffers(state->device.logical_device,
+                         state->device.graphics_command_pool, 1,
+                         &temp_command_buffer.handle);
   }
 
-  // Create sampler for cube map (clamp to edge is typical for skyboxes)
+  VkFilter min_filter = VK_FILTER_LINEAR;
+  VkFilter mag_filter = VK_FILTER_LINEAR;
+  VkSamplerMipmapMode mipmap_mode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  VkBool32 anisotropy_enable = VK_FALSE;
+  float32_t max_lod = (texture->texture.image.mip_levels > 0)
+                          ? (float32_t)(texture->texture.image.mip_levels - 1)
+                          : 0.0f;
+  vulkan_select_filter_modes(desc, state->device.features.samplerAnisotropy,
+                             texture->texture.image.mip_levels, &min_filter,
+                             &mag_filter, &mipmap_mode, &anisotropy_enable,
+                             &max_lod);
+
+  // Create sampler for cube map.
   VkSamplerCreateInfo sampler_info = {
       .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-      .magFilter = VK_FILTER_LINEAR,
-      .minFilter = VK_FILTER_LINEAR,
-      .mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
-      .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-      .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-      .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+      .magFilter = mag_filter,
+      .minFilter = min_filter,
+      .mipmapMode = mipmap_mode,
+      .addressModeU =
+          vulkan_sampler_address_mode_from_repeat(desc->u_repeat_mode),
+      .addressModeV =
+          vulkan_sampler_address_mode_from_repeat(desc->v_repeat_mode),
+      .addressModeW =
+          vulkan_sampler_address_mode_from_repeat(desc->w_repeat_mode),
       .mipLodBias = 0.0f,
-      .anisotropyEnable = VK_FALSE,
-      .maxAnisotropy = 1.0f,
+      .anisotropyEnable = anisotropy_enable,
+      .maxAnisotropy =
+          anisotropy_enable
+              ? state->device.properties.limits.maxSamplerAnisotropy
+              : 1.0f,
       .compareEnable = VK_FALSE,
       .compareOp = VK_COMPARE_OP_ALWAYS,
       .minLod = 0.0f,
-      .maxLod = 0.0f,
+      .maxLod = max_lod,
       .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
       .unnormalizedCoordinates = VK_FALSE,
   };
@@ -6904,10 +6981,11 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
     goto cleanup_texture;
   }
 
-  if (staging_buffer->buffer.handle != VK_NULL_HANDLE && !staging_destroy_deferred) {
+  if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE &&
+      !staging_destroy_deferred) {
     if (frame_upload_path) {
-      if (!vulkan_backend_defer_staging_buffer_destroy(state,
-                                                       &staging_buffer->buffer)) {
+      if (!vulkan_backend_defer_staging_buffer_destroy(
+              state, &staging_buffer->buffer)) {
         goto cleanup_texture;
       }
       staging_destroy_deferred = true_v;
@@ -6926,7 +7004,8 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
 cleanup_texture:
   if (staging_buffer && staging_buffer->buffer.handle != VK_NULL_HANDLE) {
     if (frame_upload_path) {
-      vulkan_backend_defer_staging_buffer_destroy(state, &staging_buffer->buffer);
+      vulkan_backend_defer_staging_buffer_destroy(state,
+                                                  &staging_buffer->buffer);
     } else {
       vulkan_buffer_destroy(state, &staging_buffer->buffer);
     }
@@ -7135,7 +7214,8 @@ VkrRendererError renderer_vulkan_write_texture(
   VkFormat image_format =
       vulkan_image_format_from_texture_format(texture->description.format);
 
-  if (vulkan_backend_can_record_frame_upload(state, state->device.graphics_queue)) {
+  if (vulkan_backend_can_record_frame_upload(state,
+                                             state->device.graphics_queue)) {
     VulkanCommandBuffer *command_buffer =
         vulkan_backend_get_active_graphics_command_buffer(state);
     if (!command_buffer) {
@@ -7164,10 +7244,10 @@ VkrRendererError renderer_vulkan_write_texture(
         .imageOffset = {(int32_t)x, (int32_t)y, 0},
         .imageExtent = {width, height, 1}};
 
-    vkCmdCopyBufferToImage(command_buffer->handle, staging_buffer->buffer.handle,
-                           texture->texture.image.handle,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
-                           &copy_region);
+    vkCmdCopyBufferToImage(
+        command_buffer->handle, staging_buffer->buffer.handle,
+        texture->texture.image.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+        &copy_region);
 
     if (!vulkan_image_transition_layout_range(
             state, &texture->texture.image, command_buffer, image_format,
@@ -7515,7 +7595,8 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
     if (!vulkan_deferred_destroy_enqueue_with_memory_accounting(
             state, VKR_DEFERRED_DESTROY_IMAGE, (void *)old_image.handle,
             old_image.memory, old_image.allocation_size,
-            (old_image.memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+            (old_image.memory_property_flags &
+             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
                 ? VKR_ALLOCATOR_MEMORY_TAG_GPU
                 : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
             NULL, 0)) {
@@ -7523,13 +7604,12 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
                      state->allocator);
       if (old_image.memory != VK_NULL_HANDLE) {
         if (old_image.allocation_size > 0) {
-          vkr_allocator_report(
-              &state->alloc, old_image.allocation_size,
-              (old_image.memory_property_flags &
-               VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-                  ? VKR_ALLOCATOR_MEMORY_TAG_GPU
-                  : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
-              false_v);
+          vkr_allocator_report(&state->alloc, old_image.allocation_size,
+                               (old_image.memory_property_flags &
+                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+                                   ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+                                   : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
+                               false_v);
         }
         vkFreeMemory(state->device.logical_device, old_image.memory,
                      state->allocator);
@@ -7575,8 +7655,8 @@ void renderer_vulkan_destroy_texture(void *backend_state,
   }
   if (image.handle != VK_NULL_HANDLE) {
     if (!vulkan_deferred_destroy_enqueue_with_memory_accounting(
-            state, VKR_DEFERRED_DESTROY_IMAGE, (void *)image.handle, image.memory,
-            image.allocation_size,
+            state, VKR_DEFERRED_DESTROY_IMAGE, (void *)image.handle,
+            image.memory, image.allocation_size,
             (image.memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
                 ? VKR_ALLOCATOR_MEMORY_TAG_GPU
                 : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
@@ -7585,12 +7665,12 @@ void renderer_vulkan_destroy_texture(void *backend_state,
                      state->allocator);
       if (image.memory != VK_NULL_HANDLE) {
         if (image.allocation_size > 0) {
-          vkr_allocator_report(
-              &state->alloc, image.allocation_size,
-              (image.memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-                  ? VKR_ALLOCATOR_MEMORY_TAG_GPU
-                  : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
-              false_v);
+          vkr_allocator_report(&state->alloc, image.allocation_size,
+                               (image.memory_property_flags &
+                                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+                                   ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+                                   : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
+                               false_v);
         }
         vkFreeMemory(state->device.logical_device, image.memory,
                      state->allocator);
@@ -7599,9 +7679,8 @@ void renderer_vulkan_destroy_texture(void *backend_state,
   }
 
   if (!vulkan_deferred_destroy_enqueue(
-          state, VKR_DEFERRED_DESTROY_TEXTURE_WRAPPER, texture,
-          VK_NULL_HANDLE, &state->texture_pool_alloc,
-          sizeof(struct s_TextureHandle))) {
+          state, VKR_DEFERRED_DESTROY_TEXTURE_WRAPPER, texture, VK_NULL_HANDLE,
+          &state->texture_pool_alloc, sizeof(struct s_TextureHandle))) {
     vkr_allocator_free(&state->texture_pool_alloc, texture,
                        sizeof(struct s_TextureHandle),
                        VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
@@ -7919,8 +7998,7 @@ renderer_vulkan_renderpass_create_desc(void *backend_state,
     } else if (domain == VKR_PIPELINE_DOMAIN_PICKING) {
       state->domain_render_passes[VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT] =
           created->vk;
-      state->domain_initialized[VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT] =
-          true;
+      state->domain_initialized[VKR_PIPELINE_DOMAIN_PICKING_TRANSPARENT] = true;
       state->domain_render_passes[VKR_PIPELINE_DOMAIN_PICKING_OVERLAY] =
           created->vk;
       state->domain_initialized[VKR_PIPELINE_DOMAIN_PICKING_OVERLAY] = true;
@@ -7947,9 +8025,8 @@ void renderer_vulkan_renderpass_destroy(void *backend_state,
     pass_vk->handle = VK_NULL_HANDLE;
   }
   if (handle != VK_NULL_HANDLE) {
-    if (!vulkan_deferred_destroy_enqueue(
-            state, VKR_DEFERRED_DESTROY_RENDERPASS, handle, VK_NULL_HANDLE,
-            NULL, 0)) {
+    if (!vulkan_deferred_destroy_enqueue(state, VKR_DEFERRED_DESTROY_RENDERPASS,
+                                         handle, VK_NULL_HANDLE, NULL, 0)) {
       vkDestroyRenderPass(state->device.logical_device, handle,
                           state->allocator);
     }
@@ -7999,9 +8076,9 @@ VkrRenderPassHandle renderer_vulkan_renderpass_get(void *backend_state,
   return (VkrRenderPassHandle)found;
 }
 
-bool8_t renderer_vulkan_renderpass_get_signature(void *backend_state,
-                                                  VkrRenderPassHandle pass_handle,
-                                                  VkrRenderPassSignature *out_signature) {
+bool8_t renderer_vulkan_renderpass_get_signature(
+    void *backend_state, VkrRenderPassHandle pass_handle,
+    VkrRenderPassSignature *out_signature) {
   (void)backend_state; // Unused, but kept for interface consistency
   if (!pass_handle || !out_signature) {
     return false_v;
@@ -8017,10 +8094,10 @@ bool8_t renderer_vulkan_renderpass_get_signature(void *backend_state,
 }
 
 bool8_t renderer_vulkan_domain_renderpass_set(void *backend_state,
-                                               VkrPipelineDomain domain,
-                                               VkrRenderPassHandle pass_handle,
-                                               VkrDomainOverridePolicy policy,
-                                               VkrRendererError *out_error) {
+                                              VkrPipelineDomain domain,
+                                              VkrRenderPassHandle pass_handle,
+                                              VkrDomainOverridePolicy policy,
+                                              VkrRendererError *out_error) {
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   if (!state || domain >= VKR_PIPELINE_DOMAIN_COUNT) {
     if (out_error) {
@@ -8083,12 +8160,12 @@ bool8_t renderer_vulkan_domain_renderpass_set(void *backend_state,
 }
 
 /**
- * @brief Create a subresource image view for specific mip level and array layer range.
+ * @brief Create a subresource image view for specific mip level and array layer
+ * range.
  */
-vkr_internal VkImageView
-vulkan_create_subresource_view(VulkanBackendState *state,
-                               struct s_TextureHandle *tex, uint32_t mip_level,
-                               uint32_t base_layer, uint32_t layer_count) {
+vkr_internal VkImageView vulkan_create_subresource_view(
+    VulkanBackendState *state, struct s_TextureHandle *tex, uint32_t mip_level,
+    uint32_t base_layer, uint32_t layer_count) {
   VulkanImage *image = &tex->texture.image;
   VkImageAspectFlags aspect =
       vulkan_aspect_flags_from_texture_format(tex->description.format);
@@ -8107,7 +8184,8 @@ vulkan_create_subresource_view(VulkanBackendState *state,
       .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
       .image = image->handle,
       .viewType = view_type,
-      .format = vulkan_image_format_from_texture_format(tex->description.format),
+      .format =
+          vulkan_image_format_from_texture_format(tex->description.format),
       .components =
           {
               .r = VK_COMPONENT_SWIZZLE_IDENTITY,
@@ -8134,11 +8212,9 @@ vulkan_create_subresource_view(VulkanBackendState *state,
   return view;
 }
 
-VkrRenderTargetHandle
-renderer_vulkan_render_target_create(void *backend_state,
-                                      const VkrRenderTargetDesc *desc,
-                                      VkrRenderPassHandle pass_handle,
-                                      VkrRendererError *out_error) {
+VkrRenderTargetHandle renderer_vulkan_render_target_create(
+    void *backend_state, const VkrRenderTargetDesc *desc,
+    VkrRenderPassHandle pass_handle, VkrRendererError *out_error) {
   if (!backend_state || !desc || !pass_handle) {
     if (out_error) {
       *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
@@ -8280,10 +8356,8 @@ renderer_vulkan_render_target_create(void *backend_state,
       goto cleanup_error;
     }
 
-    uint32_t mip_width =
-        Max(1u, tex->texture.image.width >> ref->mip_level);
-    uint32_t mip_height =
-        Max(1u, tex->texture.image.height >> ref->mip_level);
+    uint32_t mip_width = Max(1u, tex->texture.image.width >> ref->mip_level);
+    uint32_t mip_height = Max(1u, tex->texture.image.height >> ref->mip_level);
     if (target->width > mip_width || target->height > mip_height) {
       log_error("Render target attachment %u size %ux%u exceeds mip %ux%u", i,
                 target->width, target->height, mip_width, mip_height);
@@ -8295,21 +8369,20 @@ renderer_vulkan_render_target_create(void *backend_state,
     if (i < color_count) {
       expected_format = pass->vk->signature.color_formats[i];
       expected_samples = pass->vk->signature.color_samples[i];
-    } else if (pass->vk->signature.has_depth_stencil &&
-               i == color_count) {
+    } else if (pass->vk->signature.has_depth_stencil && i == color_count) {
       expected_format = pass->vk->signature.depth_stencil_format;
       expected_samples = pass->vk->signature.depth_stencil_samples;
     } else {
       uint8_t resolve_index = (uint8_t)(i - color_count - depth_count);
       VkrResolveAttachmentRef *resolve_ref = NULL;
       for (uint8_t r = 0; r < pass->resolve_attachment_count; ++r) {
-        if (pass->resolve_attachments[r].dst_attachment_index == resolve_index) {
+        if (pass->resolve_attachments[r].dst_attachment_index ==
+            resolve_index) {
           resolve_ref = &pass->resolve_attachments[r];
           break;
         }
       }
-      if (!resolve_ref ||
-          resolve_ref->src_attachment_index >= color_count) {
+      if (!resolve_ref || resolve_ref->src_attachment_index >= color_count) {
         log_error("Render target resolve attachment %u has invalid source", i);
         goto cleanup_error;
       }
@@ -8331,7 +8404,8 @@ renderer_vulkan_render_target_create(void *backend_state,
 
     // Determine if we need a subresource view
     bool8_t needs_subresource =
-        ref->mip_level != 0 || ref->base_layer != 0 ||
+        tex->texture.image.mip_levels > 1 || ref->mip_level != 0 ||
+        ref->base_layer != 0 ||
         (ref->layer_count != 1 &&
          ref->layer_count != tex->texture.image.array_layers);
 
@@ -8459,7 +8533,8 @@ renderer_vulkan_begin_render_pass(void *backend_state,
   // Debug: validate attachment liveness - detect use-after-free
   for (uint32_t i = 0; i < target->attachment_count; ++i) {
     struct s_TextureHandle *attachment = target->attachments[i];
-    if (attachment && attachment->generation != target->attachment_generations[i]) {
+    if (attachment &&
+        attachment->generation != target->attachment_generations[i]) {
       log_error("Render target attachment %u has stale texture reference "
                 "(captured gen %u, current gen %u). "
                 "Texture was likely destroyed and recreated.",
@@ -8598,8 +8673,7 @@ VkrTextureFormat renderer_vulkan_swapchain_format_get(void *backend_state) {
   return vulkan_vk_format_to_vkr(state->swapchain.format);
 }
 
-VkrTextureFormat
-renderer_vulkan_shadow_depth_format_get(void *backend_state) {
+VkrTextureFormat renderer_vulkan_shadow_depth_format_get(void *backend_state) {
   return vulkan_shadow_depth_vkr_format_get(
       (const VulkanBackendState *)backend_state);
 }

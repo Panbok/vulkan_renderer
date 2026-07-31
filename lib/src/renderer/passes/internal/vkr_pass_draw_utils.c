@@ -1,5 +1,7 @@
 #include "renderer/passes/internal/vkr_pass_draw_utils.h"
 
+#include <stdio.h>
+
 #include "core/logger.h"
 #include "renderer/systems/vkr_geometry_system.h"
 
@@ -216,23 +218,29 @@ bool8_t vkr_pass_packet_resolve_pipeline(RendererFrontend *rf,
 
   const char *fallback = vkr_pass_packet_default_shader_for_domain(domain);
   const char *pipeline_shader = fallback;
-  bool8_t use_domain_pipeline = false_v;
-
-  if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT ||
-      domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY) {
-    use_domain_pipeline = true_v;
-  } else if (material && material->shader_name &&
-             material->shader_name[0] != '\0') {
+  bool8_t has_material_shader = false_v;
+  if (material && material->shader_name && material->shader_name[0] != '\0') {
     bool8_t allow_material_shader = false_v;
     if (domain == VKR_PIPELINE_DOMAIN_WORLD) {
       allow_material_shader =
           (material->pipeline_id == VKR_INVALID_ID) ||
           (material->pipeline_id == VKR_PIPELINE_DOMAIN_WORLD);
+    } else if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT) {
+      allow_material_shader =
+          (material->pipeline_id == VKR_INVALID_ID) ||
+          (material->pipeline_id == VKR_PIPELINE_DOMAIN_WORLD) ||
+          (material->pipeline_id == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT);
+    } else if (domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY) {
+      allow_material_shader =
+          (material->pipeline_id == VKR_INVALID_ID) ||
+          (material->pipeline_id == VKR_PIPELINE_DOMAIN_WORLD) ||
+          (material->pipeline_id == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY);
     } else {
       allow_material_shader = (material->pipeline_id == (uint32_t)domain);
     }
     if (allow_material_shader) {
       pipeline_shader = material->shader_name;
+      has_material_shader = true_v;
     }
   }
 
@@ -248,14 +256,42 @@ bool8_t vkr_pass_packet_resolve_pipeline(RendererFrontend *rf,
   }
 
   if (pipeline_override.id == 0) {
+    char domain_shader_name[256] = {0};
+    const char *lookup_candidates[3] = {0};
+    uint32_t lookup_count = 0;
+    if (has_material_shader) {
+      if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT) {
+        int written = snprintf(domain_shader_name, sizeof(domain_shader_name),
+                               "%s.transparent", pipeline_shader);
+        if (written > 0 && (size_t)written < sizeof(domain_shader_name)) {
+          lookup_candidates[lookup_count++] = domain_shader_name;
+        }
+      } else if (domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY) {
+        int written = snprintf(domain_shader_name, sizeof(domain_shader_name),
+                               "%s.overlay", pipeline_shader);
+        if (written > 0 && (size_t)written < sizeof(domain_shader_name)) {
+          lookup_candidates[lookup_count++] = domain_shader_name;
+        }
+      }
+      lookup_candidates[lookup_count++] = pipeline_shader;
+    }
+    lookup_candidates[lookup_count++] = NULL;
+
     VkrRendererError err = VKR_RENDERER_ERROR_NONE;
-    const char *lookup_name = use_domain_pipeline ? NULL : pipeline_shader;
-    if (!vkr_pipeline_registry_get_pipeline_for_material(
-            &rf->pipeline_registry, lookup_name, (uint32_t)domain, out_pipeline,
-            &err)) {
+    bool8_t resolved = false_v;
+    for (uint32_t i = 0; i < lookup_count; ++i) {
+      const char *lookup_name = lookup_candidates[i];
+      if (vkr_pipeline_registry_get_pipeline_for_material(
+              &rf->pipeline_registry, lookup_name, (uint32_t)domain,
+              out_pipeline, &err)) {
+        resolved = true_v;
+        break;
+      }
+    }
+    if (!resolved) {
       log_error(
           "Failed to resolve pipeline for material '%s' in domain %u: error %d",
-          lookup_name ? lookup_name : "(null)", (uint32_t)domain, err);
+          pipeline_shader ? pipeline_shader : "(null)", (uint32_t)domain, err);
       return false_v;
     }
   }
@@ -276,8 +312,8 @@ bool8_t vkr_pass_packet_resolve_pipeline(RendererFrontend *rf,
   }
 
   const char *resolved_shader = fallback;
-  if (!use_domain_pipeline && pipeline_shader && pipeline_shader[0] != '\0' &&
-      resolved_pipeline && resolved_pipeline->domain == domain) {
+  if (pipeline_shader && pipeline_shader[0] != '\0' && resolved_pipeline &&
+      resolved_pipeline->domain == domain) {
     resolved_shader = pipeline_shader;
   }
 

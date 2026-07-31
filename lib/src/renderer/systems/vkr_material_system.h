@@ -21,6 +21,19 @@ typedef struct VkrMaterialSystemConfig {
   uint32_t max_material_count;
 } VkrMaterialSystemConfig;
 
+typedef struct VkrMaterialIblProbeSlot {
+  VkrTextureOpaqueHandle irradiance_map;
+  VkrTextureOpaqueHandle prefilter_map;
+  Vec3 center;
+  Vec3 extents;
+  float32_t blend_distance;
+  float32_t weight;
+  float32_t intensity;
+  float32_t diffuse_intensity;
+  float32_t specular_intensity;
+  bool8_t box_projection_enabled;
+} VkrMaterialIblProbeSlot;
+
 // Lifetime entry stored only in a hash table keyed by material name.
 // 'id' is the index into the materials array. This structure manages
 // references and auto-release behavior only.
@@ -61,17 +74,21 @@ typedef struct VkrMaterialSystem {
   VkrTextureOpaqueHandle shadow_map;
   bool8_t shadow_maps_enabled;
 
+  // IBL bindings for PBR world materials (updated per frame).
+  VkrTextureOpaqueHandle ibl_irradiance_map;
+  VkrTextureOpaqueHandle ibl_prefilter_map;
+  VkrTextureOpaqueHandle ibl_brdf_lut;
+  bool8_t ibl_enabled;
+  float32_t ibl_intensity;
+  float32_t ibl_diffuse_intensity;
+  float32_t ibl_specular_intensity;
+  VkrMaterialIblProbeSlot ibl_probe_slots[2];
+
   uint32_t next_free_index;
   uint32_t generation_counter;
 
   VkrMaterialHandle default_material;
 } VkrMaterialSystem;
-
-typedef enum VkrMaterialAlphaMode {
-  VKR_MATERIAL_ALPHA_OPAQUE = 0,
-  VKR_MATERIAL_ALPHA_CUTOUT = 1,
-  VKR_MATERIAL_ALPHA_BLEND = 2,
-} VkrMaterialAlphaMode;
 
 // =============================================================================
 // Initialization / Shutdown
@@ -195,6 +212,24 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
 void vkr_material_system_set_shadow_map(VkrMaterialSystem *system,
                                         VkrTextureOpaqueHandle map,
                                         bool8_t enabled);
+
+/**
+ * @brief Updates active IBL maps and scalar controls for PBR materials.
+ *
+ * Call once per frame before world draws. Passing enabled=false keeps maps
+ * bound for descriptor validity while disabling IBL contribution in shader.
+ */
+void vkr_material_system_set_ibl_maps(
+    VkrMaterialSystem *system, VkrTextureOpaqueHandle irradiance_map,
+    VkrTextureOpaqueHandle prefilter_map, VkrTextureOpaqueHandle brdf_lut,
+    bool8_t enabled, float32_t intensity, float32_t diffuse_intensity,
+    float32_t specular_intensity);
+
+/**
+ * @brief Updates two per-draw local probe slots for PBR IBL blending.
+ */
+void vkr_material_system_set_ibl_probe_slots(
+    VkrMaterialSystem *system, const VkrMaterialIblProbeSlot slots[2]);
 
 /**
  * @brief Applies the local material state to the material system

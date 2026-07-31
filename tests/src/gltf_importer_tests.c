@@ -72,17 +72,20 @@ static void gltf_test_remove_dir(const char *path) {
 static void gltf_test_ensure_dirs(void) {
   char tests_tmp[1024];
   snprintf(tests_tmp, sizeof(tests_tmp), "%stests/tmp", PROJECT_SOURCE_DIR);
-  assert(gltf_test_make_dir(tests_tmp) == true_v);
+  bool8_t r1 = gltf_test_make_dir(tests_tmp);
+  assert(r1 == true_v);
 
   char importer_tmp[1024];
   snprintf(importer_tmp, sizeof(importer_tmp), "%stests/tmp/gltf_importer",
            PROJECT_SOURCE_DIR);
-  assert(gltf_test_make_dir(importer_tmp) == true_v);
+  bool8_t r2 = gltf_test_make_dir(importer_tmp);
+  assert(r2 == true_v);
 
   char assets_materials[1024];
   snprintf(assets_materials, sizeof(assets_materials), "%sassets/materials",
            PROJECT_SOURCE_DIR);
-  assert(gltf_test_make_dir(assets_materials) == true_v);
+  bool8_t r3 = gltf_test_make_dir(assets_materials);
+  assert(r3 == true_v);
 }
 
 static bool8_t gltf_test_write_file_bytes(const char *path, const void *bytes,
@@ -344,7 +347,8 @@ static void gltf_test_write_basic_triangle_bin(const char *path) {
   uint8_t bytes[42] = {0};
   MemCopy(bytes, positions, sizeof(positions));
   MemCopy(bytes + sizeof(positions), indices, sizeof(indices));
-  assert(gltf_test_write_file_bytes(path, bytes, sizeof(bytes)) == true_v);
+  bool8_t ok = gltf_test_write_file_bytes(path, bytes, sizeof(bytes));
+  assert(ok == true_v);
 }
 
 static VkrMeshLoaderGltfParseInfo gltf_test_make_parse_info(

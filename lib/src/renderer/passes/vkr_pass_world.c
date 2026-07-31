@@ -4,6 +4,8 @@
 #include "math/vec.h"
 #include "renderer/passes/internal/vkr_pass_draw_utils.h"
 #include "renderer/renderer_frontend.h"
+#include "renderer/systems/vkr_material_system.h"
+#include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_world_resources.h"
 #include "renderer/vkr_render_packet.h"
 
@@ -183,7 +185,8 @@ vkr_internal void vkr_pass_world_apply_shadow_globals(
   }
 }
 
-/** Resolves material by handle with default fallback. Returns NULL if invalid. */
+/** Resolves material by handle with default fallback. Returns NULL if invalid.
+ */
 static VkrMaterial *vkr_pass_world_resolve_material(RendererFrontend *rf,
                                                     VkrMaterialHandle handle) {
   VkrMaterial *material =
@@ -195,10 +198,64 @@ static VkrMaterial *vkr_pass_world_resolve_material(RendererFrontend *rf,
   return material;
 }
 
-/** Binds pipeline/globals when pipeline changed, binds instance, applies material, draws. */
+static void vkr_pass_world_apply_probe_slots_for_draw(
+    RendererFrontend *rf, const VkrWorldPassPayload *payload,
+    const VkrDrawItem *draw, Vec3 probe_sample_position) {
+  if (!rf || !payload || !draw || !rf->world_resources.initialized) {
+    return;
+  }
+
+  VkrWorldIblProbeSlot world_slots[2] = {0};
+  vkr_world_resources_select_probe_slots_for_position(
+      rf, &rf->world_resources, rf->active_scene, probe_sample_position,
+      world_slots);
+
+  VkrMaterialIblProbeSlot material_slots[2] = {0};
+  for (uint32_t i = 0; i < 2u; ++i) {
+    material_slots[i] = (VkrMaterialIblProbeSlot){
+        .irradiance_map = world_slots[i].irradiance_map,
+        .prefilter_map = world_slots[i].prefilter_map,
+        .center = world_slots[i].center,
+        .extents = world_slots[i].extents,
+        .blend_distance = world_slots[i].blend_distance,
+        .weight = world_slots[i].weight,
+        .intensity = world_slots[i].intensity,
+        .diffuse_intensity = world_slots[i].diffuse_intensity,
+        .specular_intensity = world_slots[i].specular_intensity,
+        .box_projection_enabled = world_slots[i].box_projection_enabled,
+    };
+  }
+  vkr_material_system_set_ibl_probe_slots(&rf->material_system, material_slots);
+}
+
+/**
+ * @brief Returns the probe-selection sample position for a draw call.
+ *
+ * Probe selection must be driven by world-space draw location, not camera
+ * position, otherwise local probe blending appears camera-anchored.
+ */
+static Vec3 vkr_pass_world_probe_sample_position_for_draw(
+    const VkrWorldPassPayload *payload, const VkrDrawItem *draw,
+    Vec3 fallback_position) {
+  if (!payload || !payload->instances || !draw || draw->instance_count == 0) {
+    return fallback_position;
+  }
+
+  if (draw->first_instance >= payload->instance_count) {
+    return fallback_position;
+  }
+
+  const VkrInstanceDataGPU *instance =
+      &payload->instances[draw->first_instance];
+  return vec3_new(instance->model.elements[12], instance->model.elements[13],
+                  instance->model.elements[14]);
+}
+
+/** Binds pipeline/globals when pipeline changed, binds instance, applies
+ * material, draws. */
 static void vkr_pass_world_bind_globals_and_draw(
-    RendererFrontend *rf, const VkrFrameInfo *frame,
-    const VkrDrawItem *draw, uint32_t base_instance, VkrPipelineDomain domain,
+    RendererFrontend *rf, const VkrFrameInfo *frame, const VkrDrawItem *draw,
+    uint32_t base_instance, VkrPipelineDomain domain,
     const VkrGlobalMaterialState *globals,
     const VkrShadowFrameData *shadow_data, bool8_t shadow_valid,
     VkrPipelineHandle *inout_globals_pipeline, VkrPipelineHandle pipeline,
@@ -213,17 +270,15 @@ static void vkr_pass_world_bind_globals_and_draw(
     }
     vkr_lighting_system_apply_uniforms(&rf->lighting_system);
     vkr_pass_world_apply_shadow_globals(rf, frame, shadow_data, shadow_valid);
-    vkr_material_system_apply_global(&rf->material_system, globals,
-                                     domain);
+    vkr_material_system_apply_global(&rf->material_system, globals, domain);
     *inout_globals_pipeline = pipeline;
   }
   vkr_shader_system_bind_instance(&rf->shader_system, instance_id);
-  vkr_material_system_apply_instance(&rf->material_system, material,
-                                     domain);
+  vkr_material_system_apply_instance(&rf->material_system, material, domain);
   vkr_geometry_system_render_instanced_range_with_index_buffer(
-      rf, &rf->geometry_system, geometry, range->index_buffer, range->index_count,
-      range->first_index, range->vertex_offset, draw->instance_count,
-      base_instance + draw->first_instance);
+      rf, &rf->geometry_system, geometry, range->index_buffer,
+      range->index_count, range->first_index, range->vertex_offset,
+      draw->instance_count, base_instance + draw->first_instance);
 }
 
 vkr_internal void vkr_pass_world_draw_list(
@@ -237,12 +292,17 @@ vkr_internal void vkr_pass_world_draw_list(
   }
 
   VkrPipelineHandle globals_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  Vec3 fallback_probe_sample_position =
+      globals ? globals->view_position : vec3_zero();
 
   for (uint32_t i = 0; i < draw_count; ++i) {
     const VkrDrawItem *draw = &draws[i];
     if (draw->instance_count == 0) {
       continue;
     }
+
+    Vec3 probe_sample_position = vkr_pass_world_probe_sample_position_for_draw(
+        payload, draw, fallback_probe_sample_position);
 
     if (vkr_pass_packet_handle_is_instance(draw->mesh)) {
       VkrMeshInstance *instance = NULL;
@@ -257,7 +317,8 @@ vkr_internal void vkr_pass_world_draw_list(
 
       VkrMaterialHandle material_handle =
           draw->material.id == 0 ? submesh->material : draw->material;
-      VkrMaterial *material = vkr_pass_world_resolve_material(rf, material_handle);
+      VkrMaterial *material =
+          vkr_pass_world_resolve_material(rf, material_handle);
       if (!material) {
         continue;
       }
@@ -281,6 +342,8 @@ vkr_internal void vkr_pass_world_draw_list(
         continue;
       }
 
+      vkr_pass_world_apply_probe_slots_for_draw(rf, payload, draw,
+                                                probe_sample_position);
       vkr_pass_world_bind_globals_and_draw(
           rf, frame, draw, base_instance, domain, globals, shadow_data,
           shadow_valid, &globals_pipeline, pipeline,
@@ -297,7 +360,8 @@ vkr_internal void vkr_pass_world_draw_list(
 
       VkrMaterialHandle material_handle =
           draw->material.id == 0 ? submesh->material : draw->material;
-      VkrMaterial *material = vkr_pass_world_resolve_material(rf, material_handle);
+      VkrMaterial *material =
+          vkr_pass_world_resolve_material(rf, material_handle);
       if (!material) {
         continue;
       }
@@ -321,10 +385,12 @@ vkr_internal void vkr_pass_world_draw_list(
         continue;
       }
 
+      vkr_pass_world_apply_probe_slots_for_draw(rf, payload, draw,
+                                                probe_sample_position);
       vkr_pass_world_bind_globals_and_draw(
           rf, frame, draw, base_instance, domain, globals, shadow_data,
-          shadow_valid, &globals_pipeline, pipeline,
-          submesh->instance_state.id, material, submesh->geometry, &range);
+          shadow_valid, &globals_pipeline, pipeline, submesh->instance_state.id,
+          material, submesh->geometry, &range);
     }
   }
 }

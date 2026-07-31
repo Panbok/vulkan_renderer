@@ -186,6 +186,84 @@ typedef struct ScenePointLight {
   bool8_t enabled;     // Whether this light is active
 } ScenePointLight;
 
+/**
+ * @brief Runtime status of scene environment IBL bake products.
+ *
+ * `PENDING` means a source cubemap is loaded and bake work is still required.
+ * `READY` means irradiance/prefilter handles are valid for rendering.
+ * `FAILED` keeps rendering alive by forcing fallback IBL selection.
+ */
+typedef enum VkrSceneEnvironmentBakeState {
+  VKR_SCENE_ENV_BAKE_STATE_NONE = 0,
+  VKR_SCENE_ENV_BAKE_STATE_PENDING,
+  VKR_SCENE_ENV_BAKE_STATE_READY,
+  VKR_SCENE_ENV_BAKE_STATE_FAILED,
+} VkrSceneEnvironmentBakeState;
+
+/**
+ * @brief Runtime status of reflection probe bake products.
+ *
+ * `PENDING` means a source cubemap is available and convolution bake has not
+ * completed yet.
+ * `READY` means irradiance/prefilter cubemaps are valid and selectable.
+ * `FAILED` keeps rendering alive by falling back to scene/global IBL maps.
+ */
+typedef enum VkrSceneReflectionProbeBakeState {
+  VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_NONE = 0,
+  VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_PENDING,
+  VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_READY,
+  VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_FAILED,
+} VkrSceneReflectionProbeBakeState;
+
+#define VKR_SCENE_REFLECTION_PROBE_MAX 16u
+
+/**
+ * @brief Scene-owned local reflection probe for box-projected IBL.
+ *
+ * The probe volume is an axis-aligned world-space box:
+ * `center +/- extents`. `blend_distance` expands influence outside the box
+ * with linear falloff.
+ *
+ * Ownership:
+ * - `source_cubemap`, `irradiance_cubemap`, `prefilter_cubemap` are scene
+ *   handles released by scene reset/shutdown paths.
+ */
+typedef struct VkrSceneReflectionProbe {
+  bool8_t enabled;
+  Vec3 center;
+  Vec3 extents;
+  float32_t blend_distance;
+  float32_t intensity;
+  float32_t diffuse_intensity;
+  float32_t specular_intensity;
+  VkrTextureHandle source_cubemap;
+  VkrTextureHandle irradiance_cubemap;
+  VkrTextureHandle prefilter_cubemap;
+  VkrSceneReflectionProbeBakeState bake_state;
+} VkrSceneReflectionProbe;
+
+/**
+ * @brief Scene-owned environment IBL resources and controls.
+ *
+ * Ownership:
+ * - `source_cubemap`, `irradiance_cubemap`, `prefilter_cubemap` are retained
+ *   by the scene and released by scene shutdown/reload paths.
+ * - Bake products are scene-owned writable cubemaps generated at runtime and
+ *   released with normal texture-system handle symmetry.
+ */
+typedef struct VkrSceneEnvironment {
+  bool8_t enabled;
+  float32_t intensity;
+  float32_t diffuse_intensity;
+  float32_t specular_intensity;
+
+  VkrTextureHandle source_cubemap;
+  VkrTextureHandle irradiance_cubemap;
+  VkrTextureHandle prefilter_cubemap;
+
+  VkrSceneEnvironmentBakeState bake_state;
+} VkrSceneEnvironment;
+
 // ============================================================================
 // Scene Type
 // ============================================================================
@@ -220,7 +298,8 @@ typedef struct VkrScene {
   bool8_t queries_valid;               // False until first compile
 
   // Transform hierarchy support
-  VkrEntityId *topo_order; // Topologically sorted entity IDs (full IDs, not just indices)
+  VkrEntityId *topo_order; // Topologically sorted entity IDs (full IDs, not
+                           // just indices)
   uint32_t topo_count;     // Number of entities in topo_order
   uint32_t topo_capacity;  // Allocated size
   bool8_t
@@ -251,6 +330,10 @@ typedef struct VkrScene {
 
   uint32_t next_render_id; // Monotonic render id allocator (0 reserved)
 
+  VkrSceneEnvironment environment; // Scene environment and bake state
+  VkrSceneReflectionProbe
+      reflection_probes[VKR_SCENE_REFLECTION_PROBE_MAX];
+  uint32_t reflection_probe_count;
 } VkrScene;
 
 // ============================================================================
@@ -585,8 +668,9 @@ void vkr_scene_release_mesh(VkrScene *scene, uint32_t mesh_index);
  * @param out_error Optional error output.
  * @return true on success.
  */
-bool8_t vkr_scene_track_instance(VkrScene *scene, VkrMeshInstanceHandle instance,
-                                  VkrSceneError *out_error);
+bool8_t vkr_scene_track_instance(VkrScene *scene,
+                                 VkrMeshInstanceHandle instance,
+                                 VkrSceneError *out_error);
 
 /**
  * @brief Release a mesh instance from scene ownership.
@@ -594,7 +678,8 @@ bool8_t vkr_scene_track_instance(VkrScene *scene, VkrMeshInstanceHandle instance
  * @param scene Scene owning the instance
  * @param instance Instance handle to release
  */
-void vkr_scene_release_instance(VkrScene *scene, VkrMeshInstanceHandle instance);
+void vkr_scene_release_instance(VkrScene *scene,
+                                VkrMeshInstanceHandle instance);
 
 // ============================================================================
 // Text3D Component
