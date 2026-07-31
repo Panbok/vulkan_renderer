@@ -107,6 +107,7 @@ owning document status in the same change.
 | [instanced-rendering/opaque-compaction/SPEC.md](instanced-rendering/opaque-compaction/SPEC.md) | proposed | Opaque index compaction for an MDI megabuffer |
 | [performance/ecs-hot-path-optimization-spec.md](performance/ecs-hot-path-optimization-spec.md) | partial | ECS hot-path changes ship; before/after performance is unmeasured |
 | [performance/gpu-memory-baseline.md](performance/gpu-memory-baseline.md) | investigation | Captured device-memory baseline; concludes pooling is not justified by the numbers |
+| [performance/p2-throughput-findings.md](performance/p2-throughput-findings.md) | investigation | Measured P2: culling and shadow visibility ship; instancing and MDI have zero mergeable draws |
 
 Performance workflow and evidence rules:
 [`.codex/skills/vkr-performance/SKILL.md`](../.codex/skills/vkr-performance/SKILL.md).

@@ -631,19 +631,38 @@ required gate — see §10.
 
 ### P2 — Throughput
 
-11. **Cull before materializing world payloads**, using correctly transformed
-    bounds. Non-uniform scaling must conservatively expand spheres or transform
-    AABBs.
-12. **Use real instancing first.** Consecutive draws with the same pipeline,
-    material, geometry buffers, and index range can become one indexed draw
-    with `instance_count > 1` when instance records are contiguous.
-13. **Use MDI only for meaningful binding-state groups.** Multiple indirect
-    commands can share one call only while pipeline, descriptors, and
-    vertex/index buffers remain compatible. Per-material descriptor sets and
-    per-geometry buffers limit grouping; bindless/material tables and shared
-    mega-buffers may be prerequisites for large wins.
-14. **Keep camera and shadow visibility separate.** Camera-culled lists cannot
-    be reused for CSM because off-camera objects may cast visible shadows.
+11. ~~**Cull before materializing world payloads.**~~ **Shipped 2026-07-31, and
+    measured as a no-op on current content.** Visibility is classified per
+    submesh from world-space spheres derived with the largest model-matrix
+    column length, so non-uniform scale over-estimates rather than clipping.
+    On Sponza it tests 36 submeshes and rejects **0**: the glTF importer merges
+    primitives by material, so each submesh spans the whole model (radii 6.5–9.6
+    against a model radius of 10.2) and no spatial locality remains to cull
+    against. See
+    [performance/p2-throughput-findings.md](../performance/p2-throughput-findings.md).
+12. **Use real instancing first.** **Not shipped — measured as zero benefit.**
+    Sponza yields 35 opaque draws with **35 distinct merge keys and a largest
+    mergeable run of 1**: the scene is two different models whose submeshes each
+    carry a distinct material, so nothing repeats. Merging requires reordering
+    instance-record emission so a run is contiguous, which is a real refactor of
+    a working draw path for a provably zero payoff on this content. The merge
+    counter ships in the benchmark line, and the measurement itself is tested
+    against synthetic repeated-asset inputs, so a scene that *does* instance one
+    asset many times will show the opportunity immediately.
+13. **Use MDI only for meaningful binding-state groups.** **Not shipped —
+    measured.** The largest binding-compatible run is **1** before descriptor
+    and buffer compatibility are even considered, so there is nothing for
+    indirect submission to batch. This confirms the item's own suspicion that
+    bindless/material tables and shared mega-buffers are prerequisites rather
+    than optimizations.
+14. ~~**Keep camera and shadow visibility separate.**~~ **Shipped 2026-07-31.**
+    The shadow payload previously aliased the world payload's arrays, so the
+    moment culling rejected anything every camera-culled object would silently
+    stop casting a shadow. Camera and light visibility are now classified
+    independently in one traversal, with the caster list built from the widest
+    cascade volume (cascades nest, so it bounds every caster any cascade needs).
+    Unobservable today precisely because nothing is culled, which is why it had
+    to land together with item 11.
 
 ### P3 — Feature growth after measurement
 
