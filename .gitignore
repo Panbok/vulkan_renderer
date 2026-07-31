@@ -37,3 +37,7 @@ assets/*.spv
 !/.codex/skills/
 !/.codex/skills/**
 .codex/skills/*/ledger.tsv
+
+# Task notes are local working state, not shared context. Durable findings
+# belong in docs/.
+/.scratch/

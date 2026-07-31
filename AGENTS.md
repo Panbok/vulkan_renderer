@@ -52,6 +52,7 @@ enumerated.
 
 | Task | Skill |
 |---|---|
+| Multi-step research, diagnosis, implementation, subagent delegation, task notes | `.codex/skills/vkr-task-workflow/SKILL.md` |
 | Renderer architecture, refactors, backend/graph/pass changes, hot paths, API design | `.codex/skills/vkr-renderer-design/SKILL.md` |
 | Auditing for LOC reduction, file-by-file compression plans, consolidation passes | `.codex/skills/compress-codebase/SKILL.md` |
 | Frame-time or hitch investigation, optimization, benchmarks, any speed claim | `.codex/skills/vkr-performance/SKILL.md` |
@@ -62,6 +63,11 @@ enumerated.
 `vkr-renderer-design` carries the compression, N+1, and hot-path rules in
 `PRINCIPLES.md`, this repository's real backend seams and its currently-known
 gaps in `VULKAN_PATTERNS.md`, and audit sequencing in `WORKFLOW.md`.
+
+`vkr-task-workflow` is the entry point for multi-step work. Classify every
+request first: answer a focused question, a brief explanation, or a status check
+directly. It routes to the skills above rather than restating them, and owns
+task notes under `.scratch/`, which is local and untracked.
 
 ## Build, test, validate
 
@@ -132,6 +138,9 @@ communication is required.
 `.claude/skills/` symlinks are committed repository context. Keep them in the
 same change when an architectural decision, status claim, or skill rule moves.
 Start documentation discovery at `docs/README.md`.
+
+Task notes under `.scratch/` are local and untracked; move anything that must
+survive into `docs/`.
 
 ## Commits and PRs
 
