@@ -203,9 +203,18 @@ VkrRendererError vkr_rg_execute(VkrRenderGraph *graph,
     }
 
     VkrRenderTargetHandle target = NULL;
-    if (pass->render_targets &&
-        graph->frame_info.image_index < pass->render_target_count) {
-      target = pass->render_targets[graph->frame_info.image_index];
+    if (pass->render_targets && pass->render_target_count > 0) {
+      // A pass whose attachments are all single-buffered builds one target, not
+      // one per swapchain image, so indexing by image_index would leave every
+      // frame that is not on image 0 with no target at all. Mirror
+      // vkr_rg_pick_image_texture's convention: one entry serves every image.
+      // Ordering is still safe -- the single target is written and consumed
+      // within one frame's command buffer, and submissions execute in order.
+      const uint32_t target_index =
+          pass->render_target_count == 1u ? 0u : graph->frame_info.image_index;
+      if (target_index < pass->render_target_count) {
+        target = pass->render_targets[target_index];
+      }
     }
 
     VkrRgPassContext ctx = {
