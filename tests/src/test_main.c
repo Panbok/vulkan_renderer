@@ -65,6 +65,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_picking_state_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_draw_merge_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_render_graph_barrier_tests();
   printf("\n"); // Add spacing
   all_passed &= run_resource_async_state_tests();

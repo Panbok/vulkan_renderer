@@ -1767,21 +1767,32 @@ vkr_internal void application_update_fps_text(Application *application,
         state->benchmark_rg_cpu_ms_sum += rg_cpu_total_ms;
       }
 
+      const VkrVisibilityStats *vis = &application->visibility_stats;
       log_info("BENCHMARK_SAMPLE label=%s frame_ms=%.3f fps=%.2f "
                "rg_cpu_total_ms=%.3f "
-               "world_draws=%u world_batches=%u world_calls=%u",
+               "world_draws=%u world_batches=%u world_calls=%u "
+               "vis_tested=%u vis_cull_cam=%u vis_cull_shadow=%u "
+               "mergeable=%u distinct_keys=%u max_run=%u",
                state->benchmark_label ? state->benchmark_label : "default",
                frame_ms, state->current_fps, rg_cpu_total_ms,
                world->draws_collected, world->batches_created,
-               world->draws_issued);
+               world->draws_issued, vis->objects_tested,
+               vis->objects_culled_camera, vis->objects_culled_shadow,
+               vis->mergeable_opaque_draws, vis->distinct_opaque_keys,
+               vis->largest_mergeable_run);
       fprintf(stdout,
               "BENCHMARK_SAMPLE label=%s frame_ms=%.3f fps=%.2f "
               "rg_cpu_total_ms=%.3f "
-              "world_draws=%u world_batches=%u world_calls=%u\n",
+              "world_draws=%u world_batches=%u world_calls=%u "
+              "vis_tested=%u vis_cull_cam=%u vis_cull_shadow=%u "
+              "mergeable=%u distinct_keys=%u max_run=%u\n",
               state->benchmark_label ? state->benchmark_label : "default",
               frame_ms, state->current_fps, rg_cpu_total_ms,
               world->draws_collected, world->batches_created,
-              world->draws_issued);
+              world->draws_issued, vis->objects_tested,
+              vis->objects_culled_camera, vis->objects_culled_shadow,
+              vis->mergeable_opaque_draws, vis->distinct_opaque_keys,
+              vis->largest_mergeable_run);
       fflush(stdout);
     }
 
