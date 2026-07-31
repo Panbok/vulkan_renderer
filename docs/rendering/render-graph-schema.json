@@ -1,0 +1,193 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Vulkan Renderer Render Graph",
+  "type": "object",
+  "required": ["version", "name", "resources", "passes"],
+  "properties": {
+    "version": { "type": "integer", "enum": [1] },
+    "name": { "type": "string" },
+    "resources": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/resource" }
+    },
+    "passes": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/pass" }
+    },
+    "outputs": { "$ref": "#/definitions/outputs" }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "condition": {
+      "type": "string",
+      "enum": ["editor_enabled", "!editor_enabled"]
+    },
+    "repeat": {
+      "type": "object",
+      "required": ["count_source"],
+      "properties": {
+        "count_source": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "extent": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["window", "viewport", "fixed", "square"]
+        },
+        "width": { "type": "integer", "minimum": 1 },
+        "height": { "type": "integer", "minimum": 1 },
+        "size_source": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "resource": {
+      "type": "object",
+      "required": ["name", "type"],
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["image", "buffer"] },
+        "condition": { "$ref": "#/definitions/condition" },
+        "repeat": { "$ref": "#/definitions/repeat" },
+        "flags": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "TRANSIENT",
+              "PERSISTENT",
+              "EXTERNAL",
+              "PER_IMAGE",
+              "RESIZABLE"
+            ]
+          }
+        },
+        "import": { "type": "string", "enum": ["swapchain", "swapchain_depth"] },
+        "extent": { "$ref": "#/definitions/extent" },
+        "format": { "type": "string" },
+        "usage": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "SAMPLED",
+              "COLOR_ATTACHMENT",
+              "DEPTH_STENCIL_ATTACHMENT",
+              "TRANSFER_SRC",
+              "TRANSFER_DST"
+            ]
+          }
+        },
+        "layers": { "type": "integer", "minimum": 1 },
+        "layers_source": { "type": "string" },
+        "size": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "resourceUse": {
+      "type": "object",
+      "required": ["access"],
+      "properties": {
+        "image": { "type": "string" },
+        "buffer": { "type": "string" },
+        "access": { "type": "string" },
+        "binding": { "type": "integer", "minimum": 0 },
+        "array_index": {
+          "oneOf": [{ "type": "integer" }, { "type": "string" }]
+        },
+        "repeat": { "$ref": "#/definitions/repeat" }
+      },
+      "additionalProperties": false
+    },
+    "clearValue": {
+      "type": "object",
+      "properties": {
+        "color": {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "depth": { "type": "number" },
+        "stencil": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "attachment": {
+      "type": "object",
+      "required": ["image", "load", "store"],
+      "properties": {
+        "image": { "type": "string" },
+        "load": { "type": "string", "enum": ["LOAD", "CLEAR", "DONT_CARE"] },
+        "store": { "type": "string", "enum": ["STORE", "DONT_CARE"] },
+        "clear": { "$ref": "#/definitions/clearValue" },
+        "read_only": { "type": "boolean" },
+        "slice": {
+          "type": "object",
+          "properties": {
+            "mip_level": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "string" }] },
+            "base_layer": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "string" }] },
+            "layer_count": { "oneOf": [{ "type": "integer", "minimum": 1 }, { "type": "string" }] }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "attachments": {
+      "type": "object",
+      "properties": {
+        "color": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/attachment" }
+        },
+        "depth": { "$ref": "#/definitions/attachment" }
+      },
+      "additionalProperties": false
+    },
+    "pass": {
+      "type": "object",
+      "required": ["name", "type", "execute"],
+      "properties": {
+        "name": { "type": "string" },
+        "type": { "type": "string", "enum": ["graphics", "compute", "transfer"] },
+        "flags": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["NO_CULL", "DISABLED"] }
+        },
+        "domain": { "type": "string" },
+        "condition": { "$ref": "#/definitions/condition" },
+        "repeat": { "$ref": "#/definitions/repeat" },
+        "reads": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/resourceUse" }
+        },
+        "writes": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/resourceUse" }
+        },
+        "attachments": { "$ref": "#/definitions/attachments" },
+        "execute": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "outputs": {
+      "type": "object",
+      "properties": {
+        "present": { "type": "string" },
+        "export_images": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "export_buffers": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

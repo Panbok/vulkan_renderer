@@ -1,6 +1,7 @@
 .cache
 .cursor
 .traces
+.DS_Store
 build
 build_xcode
 build_release
@@ -11,7 +12,6 @@ assets/models
 assets/meters
 assets/materials
 assets/scenes
-docs
 
 *.o
 *.out
@@ -21,9 +21,19 @@ docs
 *.lib
 *.exp
 .vs
-.spec
 assets/*.spv
 .cursor
-.claude
-CLAUDE.md
-AGENTS.md
+
+# Claude keeps only the shared skill links under version control. Other local
+# Claude state remains machine-specific.
+/.claude/*
+!/.claude/skills/
+!/.claude/skills/*
+
+# Skills are committed shared context: Claude reads the links under
+# .claude/skills/ and Codex reads the same sources here. Everything else under
+# .codex/ stays local.
+/.codex/*
+!/.codex/skills/
+!/.codex/skills/**
+.codex/skills/*/ledger.tsv

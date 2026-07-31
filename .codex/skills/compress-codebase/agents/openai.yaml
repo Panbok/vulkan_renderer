@@ -1,0 +1,4 @@
+interface:
+  display_name: "Compress Codebase"
+  short_description: "Map and compress code without changing behavior"
+  default_prompt: "Use $compress-codebase to map this scope and propose evidence-driven semantic compression."
