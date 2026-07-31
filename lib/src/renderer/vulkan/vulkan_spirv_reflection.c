@@ -866,6 +866,328 @@ vkr_internal bool8_t vulkan_reflection_collect_descriptor_bindings(
   return true_v;
 }
 
+vkr_internal uint32_t
+vulkan_reflection_uniform_array_count(const SpvReflectArrayTraits *array) {
+  if (!array || array->dims_count == 0) {
+    return 1;
+  }
+
+  uint64_t count = 1;
+  for (uint32_t i = 0; i < array->dims_count; ++i) {
+    if (array->dims[i] == 0 || count > UINT32_MAX / array->dims[i]) {
+      return 0;
+    }
+    count *= array->dims[i];
+  }
+  return (uint32_t)count;
+}
+
+vkr_internal VkrUniformScalarKind
+vulkan_reflection_uniform_scalar_kind(const SpvReflectBlockVariable *member) {
+  if (!member || !member->type_description) {
+    return VKR_UNIFORM_SCALAR_KIND_UNKNOWN;
+  }
+
+  const SpvReflectTypeFlags flags = member->type_description->type_flags;
+  if (flags & SPV_REFLECT_TYPE_FLAG_FLOAT) {
+    return VKR_UNIFORM_SCALAR_KIND_FLOAT;
+  }
+  if (flags & SPV_REFLECT_TYPE_FLAG_INT) {
+    return member->numeric.scalar.signedness ? VKR_UNIFORM_SCALAR_KIND_SINT
+                                             : VKR_UNIFORM_SCALAR_KIND_UINT;
+  }
+  return VKR_UNIFORM_SCALAR_KIND_UNKNOWN;
+}
+
+vkr_internal bool8_t vulkan_reflection_type_name_starts_with(
+    const SpvReflectBlockVariable *member, const char *prefix) {
+  if (!member || !member->type_description ||
+      !member->type_description->type_name || !prefix) {
+    return false_v;
+  }
+  const size_t prefix_length = strlen(prefix);
+  return strncmp(member->type_description->type_name, prefix, prefix_length) ==
+         0;
+}
+
+vkr_internal void vulkan_reflection_copy_uniform_numeric_shape(
+    const SpvReflectBlockVariable *member, VkrUniformMemberDesc *out_member) {
+  const SpvReflectTypeFlags flags =
+      member->type_description ? member->type_description->type_flags : 0;
+  out_member->scalar_width = member->numeric.scalar.width;
+  out_member->scalar_kind = vulkan_reflection_uniform_scalar_kind(member);
+  out_member->vector_component_count =
+      (flags & SPV_REFLECT_TYPE_FLAG_VECTOR)
+          ? member->numeric.vector.component_count
+          : 1;
+}
+
+vkr_internal bool8_t vulkan_reflection_copy_slang_matrix_shape(
+    const SpvReflectBlockVariable *matrix_storage,
+    VkrUniformMemberDesc *out_member) {
+  if (!vulkan_reflection_type_name_starts_with(matrix_storage,
+                                               "_MatrixStorage_") ||
+      matrix_storage->member_count != 1) {
+    return false_v;
+  }
+
+  // Slang lowers a matrix in a std140 block to a synthetic structure holding
+  // an array of row/column vectors. Recover the source-level shape so the
+  // manifest validator compares mat4 with mat4, not struct with struct.
+  const SpvReflectBlockVariable *data = &matrix_storage->members[0];
+  if (data->array.dims_count != 1 || data->array.dims[0] == 0 ||
+      data->numeric.vector.component_count == 0) {
+    return false_v;
+  }
+
+  out_member->scalar_width = data->numeric.scalar.width;
+  out_member->scalar_kind = vulkan_reflection_uniform_scalar_kind(data);
+  out_member->vector_component_count = 0;
+  out_member->matrix_columns = data->array.dims[0];
+  out_member->matrix_rows = data->numeric.vector.component_count;
+  out_member->matrix_stride = data->array.stride;
+  return true_v;
+}
+
+vkr_internal void
+vulkan_reflection_copy_uniform_shape(const SpvReflectBlockVariable *member,
+                                     VkrUniformMemberDesc *out_member) {
+  const SpvReflectTypeFlags flags =
+      member->type_description ? member->type_description->type_flags : 0;
+  out_member->offset = member->offset;
+  out_member->size = member->size;
+  out_member->array_stride = 0;
+  out_member->array_count = 1;
+
+  if (vulkan_reflection_type_name_starts_with(member, "_Array_") &&
+      member->member_count == 1) {
+    // Slang wraps std140 arrays in a synthetic structure. The wrapper's only
+    // member carries the real array count/stride and the element's traits.
+    const SpvReflectBlockVariable *data = &member->members[0];
+    out_member->array_stride = data->array.stride;
+    out_member->array_count =
+        vulkan_reflection_uniform_array_count(&data->array);
+    if (!vulkan_reflection_copy_slang_matrix_shape(data, out_member)) {
+      vulkan_reflection_copy_uniform_numeric_shape(data, out_member);
+    }
+    return;
+  }
+
+  if (vulkan_reflection_copy_slang_matrix_shape(member, out_member)) {
+    return;
+  }
+
+  out_member->array_stride =
+      member->array.dims_count > 0 ? member->array.stride : 0;
+  out_member->array_count =
+      vulkan_reflection_uniform_array_count(&member->array);
+  vulkan_reflection_copy_uniform_numeric_shape(member, out_member);
+
+  if (flags & SPV_REFLECT_TYPE_FLAG_MATRIX) {
+    out_member->matrix_stride = member->numeric.matrix.stride;
+    out_member->matrix_columns = member->numeric.matrix.column_count;
+    out_member->matrix_rows = member->numeric.matrix.row_count;
+    out_member->vector_component_count = 0;
+  } else {
+    out_member->matrix_stride = 0;
+    out_member->matrix_columns = 0;
+    out_member->matrix_rows = 0;
+  }
+}
+
+vkr_internal bool8_t vulkan_reflection_uniform_member_matches(
+    const VkrUniformMemberDesc *reflected,
+    const SpvReflectBlockVariable *member) {
+  VkrUniformMemberDesc incoming = {0};
+  vulkan_reflection_copy_uniform_shape(member, &incoming);
+  const bool8_t names_match =
+      member->name && member->name[0] != '\0'
+          ? reflected->name.str &&
+                vkr_string8_equals_cstr(&reflected->name, member->name)
+          : reflected->name.length == 0;
+  return names_match && reflected->offset == incoming.offset &&
+         reflected->size == incoming.size &&
+         reflected->array_stride == incoming.array_stride &&
+         reflected->array_count == incoming.array_count &&
+         reflected->matrix_stride == incoming.matrix_stride &&
+         reflected->matrix_columns == incoming.matrix_columns &&
+         reflected->matrix_rows == incoming.matrix_rows &&
+         reflected->vector_component_count == incoming.vector_component_count &&
+         reflected->scalar_width == incoming.scalar_width &&
+         reflected->scalar_kind == incoming.scalar_kind;
+}
+
+vkr_internal bool8_t
+vulkan_reflection_uniform_block_matches(const VkrUniformBlockDesc *reflected,
+                                        const SpvReflectBlockVariable *block) {
+  if (reflected->size != block->size ||
+      reflected->member_count != block->member_count) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < block->member_count; ++i) {
+    if (!vulkan_reflection_uniform_member_matches(&reflected->members[i],
+                                                  &block->members[i])) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+/**
+ * @brief Copies one SPIR-V block's members into a reflected uniform block.
+ *
+ * Only the top level is recorded. Nested structs would need a flattened,
+ * dotted-name representation to be comparable with `.shadercfg`, which declares
+ * flat names; recording them half-way would produce entries no consumer can
+ * match. @return false only on allocation failure.
+ */
+vkr_internal bool8_t vulkan_reflection_copy_uniform_members(
+    VkrAllocator *allocator, const SpvReflectBlockVariable *block,
+    VkrUniformBlockDesc *out_block) {
+  if (block->member_count == 0) {
+    out_block->member_count = 0;
+    out_block->members = NULL;
+    return true_v;
+  }
+
+  out_block->members = vkr_allocator_alloc(
+      allocator, sizeof(VkrUniformMemberDesc) * (uint64_t)block->member_count,
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (!out_block->members) {
+    return false_v;
+  }
+  MemZero(out_block->members,
+          sizeof(VkrUniformMemberDesc) * (uint64_t)block->member_count);
+  out_block->member_count = block->member_count;
+
+  for (uint32_t i = 0; i < block->member_count; ++i) {
+    const SpvReflectBlockVariable *member = &block->members[i];
+    VkrUniformMemberDesc *out_member = &out_block->members[i];
+    out_member->name =
+        vulkan_reflection_name_duplicate(allocator, member->name);
+    vulkan_reflection_copy_uniform_shape(member, out_member);
+  }
+
+  return true_v;
+}
+
+/**
+ * @brief Collects uniform-block members so `.shadercfg` offsets can be checked
+ * against the compiled shader.
+ *
+ * Descriptor collection already validates set/binding/type/count and the block
+ * byte size. Member layout is what it cannot see, and it is exactly what the
+ * frontend's CPU-side uniform staging depends on: a manifest whose offsets
+ * drift from the shader writes correct-looking bytes to the wrong place.
+ *
+ * Blocks are keyed by (set, binding). A repeated declaration from another
+ * stage must match every member; descriptor size alone cannot detect a layout
+ * drift that preserves the block's total byte size.
+ */
+vkr_internal bool8_t vulkan_reflection_collect_uniform_blocks(
+    const VkrSpirvReflectionCreateInfo *create_info,
+    const VulkanSpirvReflectionModule *modules, VkrShaderReflection *reflection,
+    VkrReflectionErrorContext *out_error) {
+  uint32_t capacity = 0;
+  for (uint32_t module_index = 0; module_index < create_info->module_count;
+       ++module_index) {
+    const VulkanSpirvReflectionModule *module = &modules[module_index];
+    for (uint32_t set_index = 0;
+         set_index < module->entry_point->descriptor_set_count; ++set_index) {
+      capacity += module->entry_point->descriptor_sets[set_index].binding_count;
+    }
+  }
+
+  reflection->uniform_block_count = 0;
+  reflection->uniform_blocks = NULL;
+  if (capacity == 0) {
+    return true_v;
+  }
+
+  VkrUniformBlockDesc *blocks = vkr_allocator_alloc(
+      create_info->allocator, sizeof(VkrUniformBlockDesc) * (uint64_t)capacity,
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (!blocks) {
+    vulkan_reflection_set_error_ex(
+        out_error, VKR_REFLECTION_ERROR_PARSE_FAILED, VK_SHADER_STAGE_ALL,
+        string8_lit(""), SPV_REFLECT_RESULT_ERROR_ALLOC_FAILED,
+        create_info->program_name, string8_lit(""),
+        VKR_REFLECTION_INDEX_INVALID, VKR_REFLECTION_INDEX_INVALID,
+        VKR_REFLECTION_INDEX_INVALID);
+    return false_v;
+  }
+  MemZero(blocks, sizeof(VkrUniformBlockDesc) * (uint64_t)capacity);
+  reflection->uniform_blocks = blocks;
+
+  for (uint32_t module_index = 0; module_index < create_info->module_count;
+       ++module_index) {
+    const VulkanSpirvReflectionModule *module = &modules[module_index];
+    for (uint32_t set_index = 0;
+         set_index < module->entry_point->descriptor_set_count; ++set_index) {
+      const SpvReflectDescriptorSet *set =
+          &module->entry_point->descriptor_sets[set_index];
+      for (uint32_t binding_index = 0; binding_index < set->binding_count;
+           ++binding_index) {
+        const SpvReflectDescriptorBinding *binding =
+            set->bindings[binding_index];
+        if (!binding ||
+            binding->descriptor_type !=
+                SPV_REFLECT_DESCRIPTOR_TYPE_UNIFORM_BUFFER ||
+            binding->block.member_count == 0) {
+          continue;
+        }
+
+        VkrUniformBlockDesc *existing = NULL;
+        for (uint32_t i = 0; i < reflection->uniform_block_count; ++i) {
+          if (blocks[i].set == set->set &&
+              blocks[i].binding == binding->binding) {
+            existing = &blocks[i];
+            break;
+          }
+        }
+        if (existing) {
+          if (!vulkan_reflection_uniform_block_matches(existing,
+                                                       &binding->block)) {
+            vulkan_reflection_set_error_ex(
+                out_error, VKR_REFLECTION_ERROR_UNIFORM_LAYOUT_MISMATCH,
+                module->stage, module->entry_point_name,
+                SPV_REFLECT_RESULT_ERROR_COUNT_MISMATCH,
+                create_info->program_name,
+                create_info->modules[module_index].path, set->set,
+                binding->binding, VKR_REFLECTION_INDEX_INVALID);
+            return false_v;
+          }
+          continue;
+        }
+
+        VkrUniformBlockDesc *out_block =
+            &blocks[reflection->uniform_block_count];
+        out_block->name = vulkan_reflection_name_duplicate(
+            create_info->allocator,
+            binding->block.name ? binding->block.name : binding->name);
+        out_block->set = set->set;
+        out_block->binding = binding->binding;
+        out_block->size = binding->block.size;
+        if (!vulkan_reflection_copy_uniform_members(
+                create_info->allocator, &binding->block, out_block)) {
+          vulkan_reflection_set_error_ex(
+              out_error, VKR_REFLECTION_ERROR_PARSE_FAILED, module->stage,
+              module->entry_point_name, SPV_REFLECT_RESULT_ERROR_ALLOC_FAILED,
+              create_info->program_name,
+              create_info->modules[module_index].path, set->set,
+              binding->binding, VKR_REFLECTION_INDEX_INVALID);
+          // The partially filled entry is counted so the destroy path frees it.
+          reflection->uniform_block_count++;
+          return false_v;
+        }
+        reflection->uniform_block_count++;
+      }
+    }
+  }
+
+  return true_v;
+}
+
 vkr_internal bool8_t vulkan_reflection_collect_push_constants(
     const VkrSpirvReflectionCreateInfo *create_info,
     const VulkanSpirvReflectionModule *modules, VkrShaderReflection *reflection,
@@ -1561,8 +1883,11 @@ bool8_t vulkan_spirv_shader_reflection_create(
     goto fail;
   }
 
-  out_reflection->uniform_block_count = 0;
-  out_reflection->uniform_blocks = NULL;
+  if (!vulkan_reflection_collect_uniform_blocks(create_info, modules,
+                                                out_reflection, out_error)) {
+    goto fail;
+  }
+
   is_success = true_v;
 
   goto cleanup;
@@ -1598,6 +1923,8 @@ const char *vulkan_reflection_error_string(VkrReflectionError error) {
     return "binding_count_mismatch";
   case VKR_REFLECTION_ERROR_BINDING_SIZE_MISMATCH:
     return "binding_size_mismatch";
+  case VKR_REFLECTION_ERROR_UNIFORM_LAYOUT_MISMATCH:
+    return "uniform_layout_mismatch";
   case VKR_REFLECTION_ERROR_UNSUPPORTED_DESCRIPTOR:
     return "unsupported_descriptor";
   case VKR_REFLECTION_ERROR_RUNTIME_ARRAY:

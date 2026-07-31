@@ -9,6 +9,21 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
                                     const VkrShaderObjectDescription *desc,
                                     VulkanShaderObject *out_shader_object);
 
+/**
+ * @brief Cross-validates `.shadercfg` uniform declarations against SPIR-V.
+ *
+ * Called during shader creation. Exposed so the manifest/shader agreement can
+ * be gated on CPU, where a mismatch is a failed test rather than a failed app
+ * launch.
+ *
+ * @param uniforms Manifest declarations; NULL skips validation.
+ * @return false when the manifest and the compiled shader disagree.
+ */
+bool8_t vulkan_shader_validate_uniform_layout(
+    const VkrShaderReflection *reflection,
+    const struct VkrShaderUniformDesc *uniforms, uint32_t uniform_count,
+    String8 program_name);
+
 bool8_t vulkan_shader_update_global_state(VulkanBackendState *state,
                                           VulkanShaderObject *shader_object,
                                           VkPipelineLayout pipeline_layout,

@@ -14,16 +14,15 @@ vkr_internal bool8_t vkr_pipeline_registry_set_shader_name(
     return true_v;
   }
 
-  char *stable = (char *)vkr_allocator_alloc(
-      &registry->allocator, shader_name.length + 1,
-      VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  char *stable =
+      (char *)vkr_allocator_alloc(&registry->allocator, shader_name.length + 1,
+                                  VKR_ALLOCATOR_MEMORY_TAG_STRING);
   if (!stable) {
     return false_v;
   }
   MemCopy(stable, shader_name.str, shader_name.length);
   stable[shader_name.length] = '\0';
-  pipeline->shader_name =
-      string8_create((uint8_t *)stable, shader_name.length);
+  pipeline->shader_name = string8_create((uint8_t *)stable, shader_name.length);
   return true_v;
 }
 
@@ -200,8 +199,8 @@ bool8_t vkr_pipeline_registry_create_graphics_pipeline(
   pipeline->backend_handle = backend;
 
   VkrShaderRuntimeLayout runtime_layout = {0};
-  if (vkr_renderer_pipeline_get_shader_runtime_layout(registry->renderer, backend,
-                                                      &runtime_layout)) {
+  if (vkr_renderer_pipeline_get_shader_runtime_layout(
+          registry->renderer, backend, &runtime_layout)) {
     pipeline->description.shader_object_description.global_ubo_size =
         runtime_layout.global_ubo_size;
     pipeline->description.shader_object_description.global_ubo_stride =
@@ -345,6 +344,8 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
       .file_format = VKR_SHADER_FILE_FORMAT_SPIR_V,
       .file_type = VKR_SHADER_FILE_TYPE_MULTI,
       .vertex_abi_profile = config->vertex_abi_profile,
+      .uniforms = config->uniforms.data,
+      .uniform_count = config->uniform_count,
   };
 
   // Initialize modules per stage present
@@ -421,7 +422,8 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
     return false_v;
   }
 
-  // Layout sizes/counts are reflection-derived in Vulkan shader-object creation.
+  // Layout sizes/counts are reflection-derived in Vulkan shader-object
+  // creation.
 
   VkrRenderPassHandle renderpass = NULL;
   if (config->renderpass_name.str && config->renderpass_name.length > 0) {

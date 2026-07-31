@@ -11,7 +11,7 @@ Replace the shader config system with **mandatory SPIR-V reflection** that deriv
 - descriptor set layouts and pipeline layouts
 - push constant ranges
 - vertex input layout
-- optional uniform block/member metadata (for tooling)
+- uniform block/member metadata used to validate manifest staging ABI
 
 Also add **Vulkan pipeline cache** persistence and a **generic descriptor update path**.
 
@@ -201,16 +201,17 @@ Notes:
 - Location gaps are allowed.
 - If there are no user vertex inputs: `vertex_binding_count = 0`, `vertex_attribute_count = 0`.
 
-### 9.6 Uniform Block Member Reflection (Optional)
+### 9.6 Uniform Block Member Reflection
 
-Member reflection is optional and not required for pipeline creation.
+Copy per-member name, offset, size, scalar/vector/matrix shape, array
+count/stride, and matrix stride. Matching blocks reflected from multiple stages
+must agree member-for-member. Shader creation uses this metadata to validate
+the retained `.shadercfg` frame/draw uniform declarations; samplers and local
+uniforms do not participate in UBO member validation.
 
-If enabled:
-- Copy per-member name/offset/size/stride/matrix info for tooling.
-
-If disabled:
-- set `member_count = 0`
-- set `members = NULL`
+Slang-generated matrix/array storage wrapper structs are normalized into those
+traits. Arbitrary user-authored nested structs are not flattened into the
+manifest's flat declaration model.
 
 ---
 

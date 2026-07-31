@@ -847,6 +847,8 @@ typedef enum VkrVertexAbiProfile {
   VKR_VERTEX_ABI_PROFILE_TEXT_2D,
 } VkrVertexAbiProfile;
 
+struct VkrShaderUniformDesc;
+
 typedef struct VkrShaderObjectDescription {
   /* Format of the shader file (e.g., SPIR-V, HLSL, GLSL) */
   VkrShaderFileFormat file_format;
@@ -859,7 +861,13 @@ typedef struct VkrShaderObjectDescription {
   // stable offsets/stride.
   VkrVertexAbiProfile vertex_abi_profile;
 
-  // Deprecated fields removed: uniforms are config-driven
+  /**
+   * Manifest uniform declarations, validated against SPIR-V reflection at
+   * shader creation. Optional: NULL skips the check. Borrowed for the duration
+   * of the create call only.
+   */
+  const struct VkrShaderUniformDesc *uniforms;
+  uint32_t uniform_count;
 
   uint64_t global_ubo_size;
   uint64_t global_ubo_stride;

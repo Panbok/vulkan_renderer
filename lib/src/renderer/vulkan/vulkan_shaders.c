@@ -1,5 +1,6 @@
 #include "vulkan_shaders.h"
 #include "filesystem/filesystem.h"
+#include "renderer/resources/vkr_resources.h"
 #include "vulkan_spirv_reflection.h"
 
 typedef struct VulkanShaderReflectionInput {
@@ -722,8 +723,7 @@ vkr_internal uint32_t vulkan_shader_default_set_allocation_count(
   }
 }
 
-vkr_internal uint32_t
-vulkan_shader_next_power_of_two_u32(uint32_t value) {
+vkr_internal uint32_t vulkan_shader_next_power_of_two_u32(uint32_t value) {
   if (value <= 1u) {
     return 1u;
   }
@@ -912,9 +912,9 @@ vkr_internal bool8_t vulkan_shader_allocate_instance_descriptor_sets(
   const uint32_t current_capacity =
       shader_object->instance_pool_instance_capacities[current_index];
   const uint32_t max_capacity = VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT;
-  const uint32_t safe_doubled =
-      (current_capacity <= max_capacity / 2u) ? (current_capacity * 2u)
-                                              : max_capacity;
+  const uint32_t safe_doubled = (current_capacity <= max_capacity / 2u)
+                                    ? (current_capacity * 2u)
+                                    : max_capacity;
   const uint32_t total_capacity =
       vulkan_shader_total_instance_pool_capacity(shader_object);
   const uint32_t live_instances =
@@ -969,8 +969,7 @@ vkr_internal bool8_t vulkan_shader_allocate_instance_descriptor_sets(
   log_warn("Instance descriptor pool overflow fallback used (new capacity=%u, "
            "pools=%u, live=%u, total_capacity=%u)",
            new_capacity, shader_object->instance_descriptor_pool_count,
-           live_instances,
-           total_capacity + new_capacity);
+           live_instances, total_capacity + new_capacity);
   return true_v;
 }
 
@@ -1044,6 +1043,208 @@ void vulkan_shader_module_destroy(VulkanBackendState *state,
                           state->allocator);
     shader = VK_NULL_HANDLE;
   };
+}
+
+vkr_internal const VkrUniformBlockDesc *
+vulkan_shader_find_scope_uniform_block(const VkrShaderReflection *reflection,
+                                       VkrShaderScope scope) {
+  const VkrDescriptorSetRole role = scope == VKR_SHADER_SCOPE_GLOBAL
+                                        ? VKR_DESCRIPTOR_SET_ROLE_FRAME
+                                        : VKR_DESCRIPTOR_SET_ROLE_DRAW;
+  const VkrDescriptorSetDesc *set =
+      vulkan_shader_reflection_find_set_by_role(reflection, role);
+  const uint32_t fallback_index = scope == VKR_SHADER_SCOPE_GLOBAL ? 0u : 1u;
+  if (!set && reflection->set_count > fallback_index) {
+    set = &reflection->sets[fallback_index];
+  }
+  if (!set) {
+    return NULL;
+  }
+
+  const VkrDescriptorBindingDesc *binding =
+      vulkan_shader_reflection_find_first_binding_of_type(
+          set, vulkan_shader_descriptor_type_is_uniform);
+  if (!binding) {
+    return NULL;
+  }
+
+  for (uint32_t i = 0; i < reflection->uniform_block_count; ++i) {
+    const VkrUniformBlockDesc *block = &reflection->uniform_blocks[i];
+    if (block->set == set->set && block->binding == binding->binding) {
+      return block;
+    }
+  }
+  return NULL;
+}
+
+vkr_internal const VkrUniformMemberDesc *
+vulkan_shader_find_reflected_member(const VkrUniformBlockDesc *block,
+                                    String8 name) {
+  if (!block) {
+    return NULL;
+  }
+  for (uint32_t i = 0; i < block->member_count; ++i) {
+    if (string8_equals(&block->members[i].name, &name)) {
+      return &block->members[i];
+    }
+  }
+  return NULL;
+}
+
+vkr_internal bool8_t vulkan_shader_uniform_type_matches(
+    VkrShaderUniformType type, const VkrUniformMemberDesc *reflected) {
+  VkrUniformScalarKind scalar_kind = VKR_UNIFORM_SCALAR_KIND_UNKNOWN;
+  uint32_t vector_components = 1;
+  uint32_t matrix_columns = 0;
+  uint32_t matrix_rows = 0;
+  uint32_t matrix_stride = 0;
+
+  switch (type) {
+  case SHADER_UNIFORM_TYPE_FLOAT32:
+    scalar_kind = VKR_UNIFORM_SCALAR_KIND_FLOAT;
+    break;
+  case SHADER_UNIFORM_TYPE_FLOAT32_2:
+    scalar_kind = VKR_UNIFORM_SCALAR_KIND_FLOAT;
+    vector_components = 2;
+    break;
+  case SHADER_UNIFORM_TYPE_FLOAT32_3:
+    scalar_kind = VKR_UNIFORM_SCALAR_KIND_FLOAT;
+    vector_components = 3;
+    break;
+  case SHADER_UNIFORM_TYPE_FLOAT32_4:
+    scalar_kind = VKR_UNIFORM_SCALAR_KIND_FLOAT;
+    vector_components = 4;
+    break;
+  case SHADER_UNIFORM_TYPE_INT32:
+    scalar_kind = VKR_UNIFORM_SCALAR_KIND_SINT;
+    break;
+  case SHADER_UNIFORM_TYPE_UINT32:
+    scalar_kind = VKR_UNIFORM_SCALAR_KIND_UINT;
+    break;
+  case SHADER_UNIFORM_TYPE_MATRIX_4:
+    scalar_kind = VKR_UNIFORM_SCALAR_KIND_FLOAT;
+    vector_components = 0;
+    matrix_columns = 4;
+    matrix_rows = 4;
+    matrix_stride = sizeof(float32_t) * 4u;
+    break;
+  case SHADER_UNIFORM_TYPE_UNDEFINED:
+  case SHADER_UNIFORM_TYPE_SAMPLER:
+    return false_v;
+  }
+
+  return reflected->scalar_kind == scalar_kind &&
+         reflected->scalar_width == sizeof(float32_t) * 8u &&
+         reflected->vector_component_count == vector_components &&
+         reflected->matrix_columns == matrix_columns &&
+         reflected->matrix_rows == matrix_rows &&
+         reflected->matrix_stride == matrix_stride;
+}
+
+/**
+ * @brief Cross-validates `.shadercfg` uniform declarations against SPIR-V.
+ *
+ * Descriptor validation already covers set/binding/type/count and total block
+ * size. Member layout is the gap, and it is what the frontend's CPU-side
+ * uniform staging depends on: `vkr_shader_system_uniform_set` writes to
+ * `target_buffer + uniform->offset` using offsets computed by the manifest
+ * parser, never by the shader. A manifest that drifts from the shader writes
+ * well-formed bytes to the wrong place, which no descriptor check and no
+ * validation layer can see.
+ *
+ * Samplers are skipped: they are addressed by `location`, not by a UBO offset.
+ * A manifest entry with no reflected member is an error. A reflected member the
+ * manifest never declares is permitted because a shader may legitimately carry
+ * uniforms the host never writes.
+ *
+ * @param uniforms May be NULL, which skips validation entirely.
+ * @return false when the manifest and the compiled shader disagree.
+ */
+bool8_t vulkan_shader_validate_uniform_layout(
+    const VkrShaderReflection *reflection,
+    const struct VkrShaderUniformDesc *uniforms, uint32_t uniform_count,
+    String8 program_name) {
+  if (!uniforms || uniform_count == 0) {
+    return true_v;
+  }
+  bool8_t valid = true_v;
+  for (uint32_t i = 0; i < uniform_count; ++i) {
+    const VkrShaderUniformDesc *declared = &uniforms[i];
+    if (declared->type == SHADER_UNIFORM_TYPE_SAMPLER ||
+        declared->scope == VKR_SHADER_SCOPE_LOCAL) {
+      continue;
+    }
+
+    const VkrUniformBlockDesc *block =
+        vulkan_shader_find_scope_uniform_block(reflection, declared->scope);
+    const VkrUniformMemberDesc *reflected =
+        vulkan_shader_find_reflected_member(block, declared->name);
+    if (!reflected) {
+      log_error("Shader '%.*s': uniform '%.*s' is declared in .shadercfg but "
+                "absent from the compiled shader's scope-%u uniform block",
+                (int)program_name.length, program_name.str,
+                (int)declared->name.length, declared->name.str,
+                declared->scope);
+      valid = false_v;
+      continue;
+    }
+
+    if (reflected->offset != declared->offset) {
+      log_error(
+          "Shader '%.*s': uniform '%.*s' offset mismatch; .shadercfg says "
+          "%u, SPIR-V says %u",
+          (int)program_name.length, program_name.str,
+          (int)declared->name.length, declared->name.str, declared->offset,
+          reflected->offset);
+      valid = false_v;
+    }
+
+    if (declared->size != reflected->size) {
+      log_error("Shader '%.*s': uniform '%.*s' is %u bytes in .shadercfg but "
+                "%u bytes in SPIR-V",
+                (int)program_name.length, program_name.str,
+                (int)declared->name.length, declared->name.str, declared->size,
+                reflected->size);
+      valid = false_v;
+    }
+
+    if (!vulkan_shader_uniform_type_matches(declared->type, reflected)) {
+      log_error("Shader '%.*s': uniform '%.*s' type mismatch between "
+                ".shadercfg and SPIR-V",
+                (int)program_name.length, program_name.str,
+                (int)declared->name.length, declared->name.str);
+      valid = false_v;
+    }
+
+    if (declared->array_count != reflected->array_count) {
+      log_error("Shader '%.*s': uniform '%.*s' array count is %u in "
+                ".shadercfg but %u in SPIR-V",
+                (int)program_name.length, program_name.str,
+                (int)declared->name.length, declared->name.str,
+                declared->array_count, reflected->array_count);
+      valid = false_v;
+    }
+
+    if (declared->array_count > 1) {
+      const uint32_t declared_stride = declared->size / declared->array_count;
+      if (declared_stride != reflected->array_stride) {
+        log_error("Shader '%.*s': uniform '%.*s' array stride is %u in "
+                  ".shadercfg but %u in SPIR-V",
+                  (int)program_name.length, program_name.str,
+                  (int)declared->name.length, declared->name.str,
+                  declared_stride, reflected->array_stride);
+        valid = false_v;
+      }
+    } else if (reflected->array_stride != 0) {
+      log_error("Shader '%.*s': uniform '%.*s' is scalar in .shadercfg but "
+                "an array in SPIR-V",
+                (int)program_name.length, program_name.str,
+                (int)declared->name.length, declared->name.str);
+      valid = false_v;
+    }
+  }
+
+  return valid;
 }
 
 bool8_t vulkan_shader_object_create(VulkanBackendState *state,
@@ -1173,6 +1374,18 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   out_shader_object->has_reflection = true_v;
   vulkan_shader_log_reflection_layout_debug(reflection_input.program_name,
                                             &out_shader_object->reflection);
+
+  if (!vulkan_shader_validate_uniform_layout(
+          &out_shader_object->reflection, desc->uniforms, desc->uniform_count,
+          reflection_input.program_name)) {
+    vulkan_shader_reflection_input_destroy(arena_alloc, &reflection_input);
+    vulkan_spirv_shader_reflection_destroy(arena_alloc,
+                                           &out_shader_object->reflection);
+    out_shader_object->has_reflection = false_v;
+    vulkan_shader_destroy_modules(state, out_shader_object);
+    return false_v;
+  }
+
   vulkan_shader_reflection_input_destroy(arena_alloc, &reflection_input);
 
   if (!vulkan_shader_resolve_runtime_set_contract(
@@ -1786,8 +1999,7 @@ bool8_t vulkan_shader_update_instance(
     return true_v;
   }
   if (data->instance_state.id >= VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT) {
-    log_error("Instance state id %u exceeds max %u",
-              data->instance_state.id,
+    log_error("Instance state id %u exceeds max %u", data->instance_state.id,
               VULKAN_SHADER_OBJECT_INSTANCE_STATE_COUNT);
     return false_v;
   }

@@ -45,6 +45,7 @@ typedef enum VkrReflectionError {
   VKR_REFLECTION_ERROR_BINDING_TYPE_MISMATCH,
   VKR_REFLECTION_ERROR_BINDING_COUNT_MISMATCH,
   VKR_REFLECTION_ERROR_BINDING_SIZE_MISMATCH,
+  VKR_REFLECTION_ERROR_UNIFORM_LAYOUT_MISMATCH,
   VKR_REFLECTION_ERROR_UNSUPPORTED_DESCRIPTOR,
   VKR_REFLECTION_ERROR_RUNTIME_ARRAY,
   VKR_REFLECTION_ERROR_MISSING_LOCATION,
@@ -150,14 +151,25 @@ typedef struct VkrVertexInputAttributeDesc {
   String8 name;
 } VkrVertexInputAttributeDesc;
 
+typedef enum VkrUniformScalarKind {
+  VKR_UNIFORM_SCALAR_KIND_UNKNOWN = 0,
+  VKR_UNIFORM_SCALAR_KIND_FLOAT,
+  VKR_UNIFORM_SCALAR_KIND_SINT,
+  VKR_UNIFORM_SCALAR_KIND_UINT,
+} VkrUniformScalarKind;
+
 typedef struct VkrUniformMemberDesc {
   String8 name;
   uint32_t offset;
   uint32_t size;
   uint32_t array_stride;
+  uint32_t array_count;
   uint32_t matrix_stride;
-  uint32_t columns;
-  uint32_t rows;
+  uint32_t matrix_columns;
+  uint32_t matrix_rows;
+  uint32_t vector_component_count;
+  uint32_t scalar_width;
+  VkrUniformScalarKind scalar_kind;
 } VkrUniformMemberDesc;
 
 typedef struct VkrUniformBlockDesc {

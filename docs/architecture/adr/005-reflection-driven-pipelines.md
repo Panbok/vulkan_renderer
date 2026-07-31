@@ -1,11 +1,11 @@
 ---
-status: partial
+status: implemented
 updated: 2026-07-31
 authority: adr
 ---
 # ADR-005: SPIR-V-Reflected Resource Layouts with Declarative Shader Manifests
 
-**Status:** Accepted (partial)
+**Status:** Accepted
 
 ## Context
 
@@ -19,8 +19,9 @@ uniform updates, render-pass selection, stage files, and vertex ABI choice.
 
 ## Decision
 
-Use SPIR-V reflection for the binary interface it currently exposes, and use
-`.shadercfg` as a separate frontend manifest.
+Use SPIR-V reflection for the compiled binary interface, and use `.shadercfg`
+as a separate frontend manifest whose uniform declarations are checked against
+that interface.
 
 `vulkan_spirv_reflection.c` currently reflects and merges:
 
@@ -28,7 +29,9 @@ Use SPIR-V reflection for the binary interface it currently exposes, and use
   size;
 - push constant ranges;
 - vertex inputs, which are matched to explicit supported host ABI profiles;
-- semantic frame/draw set and binding roles, with convention fallback.
+- semantic frame/draw set and binding roles, with convention fallback;
+- uniform blocks and members, including name, offset, size, scalar/vector/
+  matrix shape, array count/stride, and matrix stride.
 
 Pipeline descriptor-set layouts and push-constant layout are constructed from
 that reflected data. Runtime descriptor writes are checked against reflected
@@ -36,21 +39,19 @@ set/binding/type/count. Host vertex, instance, and indirect command layouts are
 pinned independently with `_Static_assert`.
 
 `.shadercfg` declares shader identity, stages/files, render pass, instance use,
-`vertex_abi`, and named uniforms. The frontend uses those uniform declarations
-to calculate CPU offsets and stage named values.
+`vertex_abi`, and named uniforms. The frontend uses those declarations to stage
+named values. At shader creation, each non-sampler frame/draw declaration must
+match a member in the corresponding reflected block by name, offset, exact
+size, scalar/vector/matrix shape, array count/stride, and matrix stride.
+Matching `(set,binding)` blocks reflected from multiple stages must have
+identical member layouts.
 
-### Current limit: no uniform-member cross-validation
-
-Although `VkrShaderReflection` has uniform block/member fields,
-`vulkan_spirv_shader_reflection_create()` explicitly returns
-`uniform_block_count = 0` and `uniform_blocks = NULL`. The implementation does
-not compare manifest uniform names, member types, offsets, array strides, or
-matrix layout against SPIR-V.
-
-Consequently, the manifest and compiled uniform block can drift while
-descriptor layout validation still succeeds. Reflected block byte size catches
-some total-size errors but not member-level disagreement. The earlier claim
-that uniform offsets were reflected and cross-validated was incorrect.
+Slang lowers std140 matrices and arrays into generated wrapper structs. The
+reflection layer recognizes those compiler-generated storage wrappers and
+normalizes their nested traits before validation. Arbitrary user-authored
+nested structs are not flattened into the manifest's flat declaration model.
+A reflected member the manifest does not declare is permitted because the host
+does not need to write every shader member.
 
 ## Consequences
 
@@ -60,14 +61,16 @@ that uniform offsets were reflected and cross-validated was incorrect.
   binary instead of hand-written binding tables.
 - Descriptor writes fail early on binding/type/count mismatches.
 - Explicit vertex ABI profiles and static assertions make host layout reviewable.
-- Manifests retain useful semantic names and pipeline intent.
+- Uniform ABI drift fails shader creation instead of silently staging bytes at
+  the wrong offset.
+- Manifests retain useful semantic names and pipeline intent. The validator
+  exposed and fixed the shipped UI/viewport projection/view order mismatch.
 
 **Negative / risks**
 
-- Uniform layout still has two independently maintained sources without a
-  member-level check; wrong rendering can result without a load error.
-- Shader authors cannot safely add/reorder manifest uniforms without verifying
-  compiled layout.
+- Uniform declarations remain duplicated between manifest and shader and must
+  pass validation whenever either side changes.
+- The flat manifest cannot describe arbitrary nested user structs.
 - Reflection/load complexity and the `spirv_reflect` dependency remain.
 - `.shadercfg` is bespoke and long for large global blocks.
 
@@ -76,14 +79,14 @@ that uniform offsets were reflected and cross-validated was incorrect.
 - **Manifest-only descriptor layout.** Restores binary/host drift. Rejected.
 - **Reflection-only interface with generated names/code.** Removes duplication
   but requires a generation and frontend binding strategy not yet implemented.
-- **Keep manual uniform layout with tests.** Acceptable as an interim safeguard,
-  not a complete solution.
+- **Keep manual uniform layout with tests only.** Rejected because tests cannot
+  cover every externally supplied shader or stage combination.
 
 ## Revisit When
 
-- Reflect uniform block members and validate manifest type, offset, stride, and
-  total size against every relevant stage.
 - Prefer generating host metadata from reflection if the manifest no longer
   provides independent value.
+- Add a manifest representation for user-authored nested structs if shaders
+  require them.
 - Extend reflection rules for descriptor indexing, storage-buffer light data,
   or shader hot reload.
