@@ -69,7 +69,7 @@ owning document status in the same change.
 
 | Document | Status | Purpose |
 |---|---|---|
-| [render-graph-design.md](rendering/render-graph-design.md) | partial | Render graph core; access synchronization and graph coverage remain incomplete |
+| [render-graph-design.md](rendering/render-graph-design.md) | partial | Access/subresource synchronization implemented for declared resources; picking/IBL coverage remains incomplete |
 | [render-graph-schema.json](rendering/render-graph-schema.json) | — | JSON schema for `assets/render_graphs/*.rendergraph.json` |
 | [stateless_renderer/stateless_renderer_spec.md](rendering/stateless_renderer/stateless_renderer_spec.md) | partial | Packet API design; see ADR-004 for the real boundary |
 | [pipeline-layout-reflection-and-cache-spec.md](rendering/pipeline-layout-reflection-and-cache-spec.md) | partial | Reflection-driven pipeline layout and cache |

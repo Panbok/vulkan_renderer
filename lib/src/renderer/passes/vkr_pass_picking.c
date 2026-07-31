@@ -41,9 +41,9 @@ vkr_internal VkrTextureOpaqueHandle vkr_pass_picking_get_diffuse_texture(
   return diffuse ? diffuse->handle : NULL;
 }
 
-vkr_internal bool8_t vkr_pass_picking_bind_pipeline(
-    RendererFrontend *rf, VkrPipelineHandle pipeline,
-    const VkrFrameGlobals *globals) {
+vkr_internal bool8_t
+vkr_pass_picking_bind_pipeline(RendererFrontend *rf, VkrPipelineHandle pipeline,
+                               const VkrFrameGlobals *globals) {
   if (!rf || pipeline.id == 0 || !globals) {
     return false_v;
   }
@@ -139,8 +139,9 @@ vkr_internal void vkr_pass_picking_draw_list(RendererFrontend *rf,
         use_transparent_pipeline ? &picking->mesh_transparent_instance_state
                                  : &picking->mesh_instance_state;
     VkrPickingInstanceStatePool *alpha_pool =
-        use_transparent_pipeline ? &picking->mesh_transparent_alpha_instance_pool
-                                 : &picking->mesh_alpha_instance_pool;
+        use_transparent_pipeline
+            ? &picking->mesh_transparent_alpha_instance_pool
+            : &picking->mesh_alpha_instance_pool;
 
     if (pipeline.id == 0) {
       pipeline = picking->picking_pipeline;
@@ -181,8 +182,7 @@ vkr_internal void vkr_pass_picking_draw_list(RendererFrontend *rf,
         continue;
       }
       shared_instance_bound = false_v;
-    } else if (!shared_instance_bound ||
-               shared_state->id == VKR_INVALID_ID) {
+    } else if (!shared_instance_bound || shared_state->id == VKR_INVALID_ID) {
       float32_t zero_cutoff = 0.0f;
       if (!vkr_picking_bind_draw_instance_state(rf, pipeline, shared_state,
                                                 alpha_pool, false_v)) {
@@ -283,6 +283,9 @@ vkr_internal void vkr_pass_picking_execute(VkrRgPassContext *ctx,
       rf, picking->picking_pass, picking->picking_target);
   if (begin_err != VKR_RENDERER_ERROR_NONE) {
     picking->state = VKR_PICKING_STATE_IDLE;
+    // A failed begin leaves the command buffer indeterminate, so this is a
+    // recording failure the graph must abort on, not a skipped pick.
+    ctx->error = begin_err;
     return;
   }
 
@@ -331,12 +334,20 @@ vkr_internal void vkr_pass_picking_execute(VkrRgPassContext *ctx,
                                       picking->picking_text_pipeline);
   }
 
-  vkr_renderer_end_render_pass(rf);
+  VkrRendererError end_err = vkr_renderer_end_render_pass(rf);
+  if (end_err != VKR_RENDERER_ERROR_NONE) {
+    picking->state = VKR_PICKING_STATE_IDLE;
+    ctx->error = end_err;
+    return;
+  }
 
   VkrRendererError readback_err = vkr_renderer_request_pixel_readback(
       rf, picking->picking_texture, picking->requested_x, picking->requested_y);
   if (readback_err != VKR_RENDERER_ERROR_NONE) {
+    // The readback records an image copy and a host-read barrier, so a failure
+    // here also leaves recorded state the graph cannot reason about.
     picking->state = VKR_PICKING_STATE_IDLE;
+    ctx->error = readback_err;
     return;
   }
 

@@ -126,12 +126,16 @@ void vkr_indirect_draw_shutdown(VkrIndirectDrawSystem *system,
 }
 
 void vkr_indirect_draw_begin_frame(VkrIndirectDrawSystem *system,
-                                   uint32_t frame_index) {
+                                   uint32_t frame_slot) {
   if (!system || !system->initialized) {
     return;
   }
 
-  system->current_frame = frame_index % VKR_INDIRECT_DRAW_FRAMES;
+  // See vkr_instance_buffer_begin_frame: this must be the fence-protected
+  // frame-in-flight slot, not the swapchain image index.
+  assert_log(frame_slot < VKR_INDIRECT_DRAW_FRAMES,
+             "Frame slot out of range for indirect draw system");
+  system->current_frame = frame_slot;
   VkrIndirectDrawBuffer *buffer = &system->buffers[system->current_frame];
   buffer->write_offset = 0;
 }

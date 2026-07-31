@@ -245,11 +245,9 @@ vkr_global const VkrRgJsonFormatMap k_rg_json_format_map[] = {
     {"D24_UNORM_S8_UINT", VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT},
 };
 
-vkr_internal bool8_t vkr_rg_json_parse_format(VkrRgJsonParseContext *ctx,
-                                              String8 value,
-                                              VkrTextureFormat *out_format,
-                                              VkrRgJsonImageFormatSource
-                                                  *out_format_source) {
+vkr_internal bool8_t vkr_rg_json_parse_format(
+    VkrRgJsonParseContext *ctx, String8 value, VkrTextureFormat *out_format,
+    VkrRgJsonImageFormatSource *out_format_source) {
   assert_log(out_format != NULL, "out_format is NULL");
   assert_log(out_format_source != NULL, "out_format_source is NULL");
   assert_log(ctx != NULL, "ctx is NULL");
@@ -318,6 +316,8 @@ vkr_internal bool8_t vkr_rg_json_parse_texture_usage(
       bitset8_set(out_flags, VKR_TEXTURE_USAGE_TRANSFER_SRC);
     } else if (vkr_string8_equals_cstr_i(&value, "TRANSFER_DST")) {
       bitset8_set(out_flags, VKR_TEXTURE_USAGE_TRANSFER_DST);
+    } else if (vkr_string8_equals_cstr_i(&value, "STORAGE")) {
+      bitset8_set(out_flags, VKR_TEXTURE_USAGE_STORAGE);
     } else {
       return vkr_rg_json_error(ctx, field_path, "unknown texture usage");
     }

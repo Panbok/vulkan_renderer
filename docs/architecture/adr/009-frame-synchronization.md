@@ -39,21 +39,19 @@ This per-image render-complete policy is retained because it addresses binary
 semaphore ownership by presentation. Resize recreates arrays for the new image
 count and clamps the current frame slot.
 
-### Incomplete surrounding invariants
+### Surrounding invariants and remaining limits
 
-The WSI sizing decision is sound, but the complete frame synchronization/error
-contract is not yet correct:
+The frame-resource index and failure contracts now follow the sizing decision:
 
-- the three-entry instance and indirect stream rings are indexed by acquired
-  image modulo three, so a four-image swapchain can alias stream storage for two
-  images still in flight;
-- several fence-wait, acquire, command-buffer, submit, and present failures log
-  an error but return `VKR_RENDERER_ERROR_NONE`;
-- some early returns can leave frontend/backend frame-active state difficult to
-  reason about;
+- mapped instance/indirect streams use the current frame slot;
+- swapchain image arrays use the actual count returned by
+  `vkGetSwapchainImagesKHR`, rather than the requested minimum;
+- fence/acquire/record/submit/present failures reach the frontend, with a
+  distinct recoverable frame-skip result;
+- failures after acquire either submit a freshly recorded discard-only command
+  buffer or force sync-object/swapchain recovery before the next acquire;
 - deferred readback/upload paths include infinite fence waits;
-- rejected packets end/present an acquired frame even though no valid graph pass
-  may have established the assumed swapchain layout.
+- fixed triple buffering is not runtime-configurable.
 
 ## Consequences
 
@@ -71,10 +69,8 @@ contract is not yet correct:
 - Binary semaphore/fence bookkeeping is more complex than a timeline-based
   internal dependency model.
 - Fixed triple buffering is not configurable.
-- Other per-frame resources must use the same frame-slot/image lifetime model;
-  current stream buffers do not.
-- Error swallowing can report a frame as successful when synchronization,
-  submission, or presentation failed.
+- Swapchain recreation still performs a device-wide idle wait and rebuilds WSI
+  resources synchronously.
 
 ## Alternatives Considered
 
@@ -91,9 +87,8 @@ contract is not yet correct:
 
 ## Revisit When
 
-- Fix all frame-resource index domains and add tests/validation runs with
-  two-, three-, and four-image swapchains.
-- Propagate every Vulkan frame failure and document state after each failure.
+- Add validation runs with two-, three-, and four-image swapchains, including
+  resize, minimized-window, cancel, and injected failure paths.
 - Add async compute/upload dependencies, where timeline semaphores become more
   valuable.
 - Add explicit frame pacing or present-wait support.

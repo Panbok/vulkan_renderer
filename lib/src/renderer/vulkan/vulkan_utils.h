@@ -38,6 +38,11 @@ VkFormat vulkan_image_format_from_texture_format(VkrTextureFormat format);
 VkImageUsageFlags
 vulkan_image_usage_from_texture_usage(VkrTextureUsageFlags usage);
 
+bool8_t vulkan_attachment_needs_subresource_view(
+    uint32_t image_mip_levels, uint32_t image_array_layers,
+    uint32_t attachment_mip_level, uint32_t attachment_base_layer,
+    uint32_t attachment_layer_count);
+
 VkSamplerAddressMode
 vulkan_sampler_address_mode_from_repeat(VkrTextureRepeatMode mode);
 

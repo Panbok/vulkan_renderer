@@ -3091,14 +3091,18 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
   return true;
 }
 
-bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
+VkrRendererError vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
   assert_log(state != NULL, "State not initialized");
   assert_log(state->swapchain.handle != VK_NULL_HANDLE,
              "Swapchain not initialized");
 
+  if (state->device_unusable) {
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
   if (state->is_swapchain_recreation_requested) {
     // log_debug("Swapchain recreation was already requested");
-    return false;
+    return VKR_RENDERER_ERROR_FRAME_SKIPPED;
   }
 
   state->is_swapchain_recreation_requested = true;
@@ -3106,16 +3110,26 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
   // Store old image count BEFORE recreation for proper cleanup
   uint32_t old_image_count = state->swapchain.image_count;
 
-  // Wait for GPU to finish all pending work
-  vulkan_backend_queue_wait_idle_locked(state, state->device.graphics_queue);
+  // Image views, present semaphores, and the old swapchain are owned by more
+  // than the graphics queue. Device-idle is the completion proof required
+  // before destroying any of them.
+  if (renderer_vulkan_wait_idle(state) != VKR_RENDERER_ERROR_NONE) {
+    log_error("Cannot recreate swapchain: device idle wait failed");
+    state->is_swapchain_recreation_requested = false_v;
+    state->device_unusable = true_v;
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
 
-  // Attempt swapchain recreation FIRST
-  // If this fails (e.g., window minimized), we don't destroy anything
-  // and the old swapchain remains valid
-  if (!vulkan_swapchain_recreate(state)) {
-    log_warn("Swapchain recreation skipped or failed, keeping old swapchain");
-    state->is_swapchain_recreation_requested = false;
-    return false;
+  VulkanSwapchainResult swapchain_result = vulkan_swapchain_recreate(state);
+  if (swapchain_result != VULKAN_SWAPCHAIN_RESULT_OK) {
+    state->is_swapchain_recreation_requested = false_v;
+    if (swapchain_result == VULKAN_SWAPCHAIN_RESULT_SKIP) {
+      log_warn("Swapchain recreation deferred; keeping old swapchain");
+      return VKR_RENDERER_ERROR_FRAME_SKIPPED;
+    }
+    log_error("Swapchain recreation failed");
+    state->device_unusable = true_v;
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
   // Swapchain recreation succeeded - now clean up old resources and create new
@@ -3150,9 +3164,8 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
     array_destroy_VulkanFramebuffer(&state->swapchain.framebuffers);
   }
 
-  // Destroy old sync objects (counts may change with new swapchain)
-  // Ensure nothing is using them anymore.
-  vkDeviceWaitIdle(state->device.logical_device);
+  // Destroy old sync objects (counts may change with new swapchain). The
+  // device-idle wait above proved that graphics and presentation released them.
 
   for (uint32_t i = 0; i < state->image_available_semaphores.length; ++i) {
     vkDestroySemaphore(
@@ -3184,6 +3197,12 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
 
   state->in_flight_fences = array_create_VulkanFence(
       &state->alloc, state->swapchain.max_in_flight_frames);
+  MemZero(state->image_available_semaphores.data,
+          sizeof(VkSemaphore) * state->image_available_semaphores.length);
+  MemZero(state->queue_complete_semaphores.data,
+          sizeof(VkSemaphore) * state->queue_complete_semaphores.length);
+  MemZero(state->in_flight_fences.data,
+          sizeof(VulkanFence) * state->in_flight_fences.length);
 
   for (uint32_t i = 0; i < state->swapchain.max_in_flight_frames; i++) {
     VkSemaphoreCreateInfo semaphore_info = {
@@ -3192,13 +3211,17 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
             state->device.logical_device, &semaphore_info, state->allocator,
             array_get_VkSemaphore(&state->image_available_semaphores, i)) !=
         VK_SUCCESS) {
-      log_fatal("Failed to create image available semaphore during resize");
-      return false;
+      log_error("Failed to create image available semaphore during resize");
+      goto recreate_failed;
     }
 
     // Create signaled fence so first frame can wait safely.
     vulkan_fence_create(state, true_v,
                         array_get_VulkanFence(&state->in_flight_fences, i));
+    if (array_get_VulkanFence(&state->in_flight_fences, i)->handle ==
+        VK_NULL_HANDLE) {
+      goto recreate_failed;
+    }
   }
 
   for (uint32_t i = 0; i < state->swapchain.image_count; i++) {
@@ -3208,32 +3231,34 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
             state->device.logical_device, &semaphore_info, state->allocator,
             array_get_VkSemaphore(&state->queue_complete_semaphores, i)) !=
         VK_SUCCESS) {
-      log_fatal("Failed to create queue complete semaphore during resize");
-      return false;
+      log_error("Failed to create queue complete semaphore during resize");
+      goto recreate_failed;
     }
   }
 
-  // Resize images_in_flight array if needed for new image count
+  // images_in_flight holds pointers into in_flight_fences, which was just
+  // destroyed and rebuilt above. Every entry must be cleared -- not only when
+  // the image count changed -- or the surviving entries dangle into freed
+  // storage and the next end_frame waits on a destroyed fence.
   if (state->swapchain.image_count != old_image_count) {
     if (state->images_in_flight.data) {
       array_destroy_VulkanFencePtr(&state->images_in_flight);
     }
-    // Recreate the images_in_flight array with the new size
     state->images_in_flight = array_create_VulkanFencePtr(
         &state->alloc, state->swapchain.image_count);
-    for (uint32_t i = 0; i < state->swapchain.image_count; ++i) {
-      array_set_VulkanFencePtr(&state->images_in_flight, i, NULL);
-    }
+  }
+  for (uint32_t i = 0; i < state->images_in_flight.length; ++i) {
+    array_set_VulkanFencePtr(&state->images_in_flight, i, NULL);
   }
 
   if (!create_command_buffers(state)) {
     log_error("Failed to create Vulkan command buffers");
-    return false;
+    goto recreate_failed;
   }
 
   if (!vulkan_backend_create_attachment_wrappers(state)) {
     log_error("Failed to recreate swapchain attachment wrappers");
-    return false;
+    goto recreate_failed;
   }
 
   state->swapchain.framebuffers = array_create_VulkanFramebuffer(
@@ -3264,7 +3289,17 @@ bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
             state->swapchain.image_count,
             state->swapchain.max_in_flight_frames);
 
-  return true;
+  return VKR_RENDERER_ERROR_NONE;
+
+recreate_failed:
+  // Creation passed the point where the old swapchain was retired. This is not
+  // a resize/minimize skip: continuing with partially rebuilt WSI state would
+  // dereference missing command buffers or synchronization objects.
+  state->active_named_render_pass = NULL;
+  state->active_named_render_target = NULL;
+  state->is_swapchain_recreation_requested = false_v;
+  state->device_unusable = true_v;
+  return VKR_RENDERER_ERROR_DEVICE_ERROR;
 }
 
 VkrRendererBackendInterface renderer_vulkan_get_interface() {
@@ -3277,6 +3312,7 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .wait_idle = renderer_vulkan_wait_idle,
       .begin_frame = renderer_vulkan_begin_frame,
       .end_frame = renderer_vulkan_end_frame,
+      .cancel_frame = renderer_vulkan_cancel_frame,
       .renderpass_create_desc = renderer_vulkan_renderpass_create_desc,
       .renderpass_destroy = renderer_vulkan_renderpass_destroy,
       .renderpass_get = renderer_vulkan_renderpass_get,
@@ -3289,6 +3325,8 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .depth_attachment_get = renderer_vulkan_depth_attachment_get,
       .window_attachment_count_get = renderer_vulkan_window_attachment_count,
       .window_attachment_index_get = renderer_vulkan_window_attachment_index,
+      .frame_in_flight_index_get = renderer_vulkan_frame_in_flight_index,
+      .frame_in_flight_count_get = renderer_vulkan_frame_in_flight_count,
       .swapchain_format_get = renderer_vulkan_swapchain_format_get,
       .shadow_depth_format_get = renderer_vulkan_shadow_depth_format_get,
       .buffer_create = renderer_vulkan_create_buffer,
@@ -3313,7 +3351,7 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
           renderer_vulkan_create_sampled_depth_attachment_array,
       .render_target_texture_msaa_create =
           renderer_vulkan_create_render_target_texture_msaa,
-      .texture_transition_layout = renderer_vulkan_transition_texture_layout,
+      .image_barrier = renderer_vulkan_image_barrier,
       .texture_update = renderer_vulkan_update_texture,
       .texture_write = renderer_vulkan_write_texture,
       .texture_resize = renderer_vulkan_resize_texture,
@@ -4127,8 +4165,10 @@ void renderer_vulkan_on_resize(void *backend_state, uint32_t new_width,
   state->swapchain.extent.width = new_width;
   state->swapchain.extent.height = new_height;
 
-  if (!vulkan_backend_recreate_swapchain(state)) {
-    log_error("Failed to recreate swapchain");
+  VkrRendererError result = vulkan_backend_recreate_swapchain(state);
+  if (result != VKR_RENDERER_ERROR_NONE &&
+      result != VKR_RENDERER_ERROR_FRAME_SKIPPED) {
+    log_error("Failed to recreate swapchain during resize");
     return;
   }
 
@@ -4231,8 +4271,8 @@ void renderer_vulkan_set_job_system(void *backend_state,
  * RENDER PASS STATE:
  * - render_pass_active = false: No render pass is active at frame start
  * - current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT: Invalid domain
- * - swapchain_image_is_present_ready = false: Image not yet transitioned to
- * PRESENT
+ * - swapchain_image_layout = UNDEFINED: acquire does not preserve contents, and
+ *   no pass has recorded against the image yet
  *
  * NEXT STEPS:
  * After begin_frame, the application should:
@@ -4250,16 +4290,41 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
   // log_debug("Beginning Vulkan frame");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (state->device_unusable) {
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
   state->frame_delta = delta_time;
-  state->swapchain_image_is_present_ready = false;
+  // Acquiring an image does not preserve its contents; nothing has recorded
+  // against it yet this frame.
+  state->swapchain_image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-  // Wait for the current frame's fence to be signaled (previous frame
-  // finished)
+  // A previous frame acquired an image but never submitted, so its acquire
+  // semaphore is still signalled. Recreating the swapchain rebuilds the sync
+  // objects and clears that state.
+  if (state->frame_recovery_required) {
+    log_warn("Recovering from an incomplete frame; recreating swapchain");
+    VkrRendererError recovery_result = vulkan_backend_recreate_swapchain(state);
+    if (recovery_result != VKR_RENDERER_ERROR_NONE) {
+      // Recreation is refused while the window is minimized. Keep the flag set
+      // so recovery is retried, otherwise the stale acquire semaphore would be
+      // reused the moment the window comes back.
+      if (recovery_result == VKR_RENDERER_ERROR_FRAME_SKIPPED) {
+        log_warn(
+            "Frame recovery deferred: swapchain could not be recreated yet");
+      }
+      return recovery_result;
+    }
+    state->frame_recovery_required = false_v;
+  }
+
+  // Wait for the current frame slot's fence (its previous submission finished).
   if (!vulkan_fence_wait(state, UINT64_MAX,
                          array_get_VulkanFence(&state->in_flight_fences,
                                                state->current_frame))) {
-    log_warn("Vulkan fence timed out");
-    return VKR_RENDERER_ERROR_NONE;
+    // An unbounded wait that does not succeed means device loss or a hang, not
+    // a transient timeout.
+    log_error("Vulkan frame fence wait failed");
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
   // The fence wait above guarantees GPU completion for the last submission that
@@ -4278,27 +4343,42 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
   vulkan_deferred_destroy_process(state);
 
   // Acquire the next image from the swapchain
-  if (!vulkan_swapchain_acquire_next_image(
-          state, UINT64_MAX,
-          *array_get_VkSemaphore(&state->image_available_semaphores,
-                                 state->current_frame),
-          VK_NULL_HANDLE, // Don't use fence with acquire - it conflicts with
-                          // queue submit
-          &state->image_index)) {
-    log_warn("Failed to acquire next image");
-    return VKR_RENDERER_ERROR_NONE;
+  VulkanSwapchainResult acquire_result = vulkan_swapchain_acquire_next_image(
+      state, UINT64_MAX,
+      *array_get_VkSemaphore(&state->image_available_semaphores,
+                             state->current_frame),
+      VK_NULL_HANDLE, // Don't use fence with acquire - it conflicts with
+                      // queue submit
+      &state->image_index);
+  if (acquire_result == VULKAN_SWAPCHAIN_RESULT_SKIP) {
+    // No image was acquired, so no semaphore is left pending: a plain skip.
+    return VKR_RENDERER_ERROR_FRAME_SKIPPED;
+  }
+  if (acquire_result == VULKAN_SWAPCHAIN_RESULT_FAILED) {
+    log_error("Failed to acquire next swapchain image");
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
+  // From here on an image is acquired. Every failure exit must mark the frame
+  // for recovery, because the acquire semaphore will be signalled with no
+  // waiter.
+  VkrRendererError result = VKR_RENDERER_ERROR_NONE;
   VulkanCommandBuffer *command_buffer =
       vulkan_backend_get_active_graphics_command_buffer(state);
   if (!command_buffer) {
-    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+    log_error("No active graphics command buffer for this frame");
+    result = VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+    goto cleanup;
   }
-  vulkan_command_buffer_reset(command_buffer);
+  if (!vulkan_command_buffer_reset(state, command_buffer)) {
+    result = VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+    goto cleanup;
+  }
 
   if (!vulkan_command_buffer_begin(command_buffer)) {
-    log_fatal("Failed to begin Vulkan command buffer");
-    return VKR_RENDERER_ERROR_NONE;
+    log_error("Failed to begin Vulkan command buffer");
+    result = VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+    goto cleanup;
   }
   state->frame_active = true_v;
 
@@ -4326,6 +4406,15 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
   state->active_named_render_target = NULL;
 
   return VKR_RENDERER_ERROR_NONE;
+
+cleanup:
+  // An image was acquired but this frame will never submit, so nothing will
+  // wait on image_available_semaphores[current_frame]. Handing that
+  // already-signalled semaphore back to vkAcquireNextImageKHR is invalid
+  // (VUID-vkAcquireNextImageKHR-semaphore-01779), so force a recreate first.
+  state->frame_active = false_v;
+  state->frame_recovery_required = true_v;
+  return result;
 }
 
 void renderer_vulkan_draw(void *backend_state, uint32_t vertex_count,
@@ -4355,132 +4444,153 @@ void renderer_vulkan_draw(void *backend_state, uint32_t vertex_count,
 }
 
 /**
- * @brief End the current rendering frame and submit to GPU
+ * @brief End the current rendering frame and submit it to the GPU.
  *
- * IMAGE LAYOUT TRANSITIONS:
- * The function handles a critical layout transition case:
- * - If WORLD domain was last active: Image is in COLOR_ATTACHMENT_OPTIMAL
- * - Image must be transitioned to PRESENT_SRC_KHR for presentation
- * - If UI/POST domain was last: Image is already in PRESENT_SRC_KHR (no-op)
+ * Flow: end any active render pass, transition the swapchain image to
+ * PRESENT_SRC_KHR from its tracked layout, end the command buffer, then submit
+ * and present through vulkan_backend_submit_and_present.
  *
- * This is tracked via swapchain_image_is_present_ready flag:
- * - Set by UI/POST render passes (finalLayout = PRESENT_SRC_KHR)
- * - If false: Manual transition required (WORLD was last)
- * - If true: No transition needed (UI/POST was last)
+ * Synchronization:
+ * - image_available_semaphores[slot]: signalled by acquire, waited by submit
+ * - queue_complete_semaphores[image]: signalled by submit, waited by present
+ * - in_flight_fences[slot]: signalled by submit, waited by the next begin_frame
+ *   that reuses the slot
+ * - images_in_flight[image]: the fence of the frame currently using that image
  *
- * FRAME SUBMISSION FLOW:
- * 1. End any active render pass
- * 2. Transition image to PRESENT layout if needed
- * 3. End command buffer recording
- * 4. Wait for previous frame using this image (fence)
- * 5. Submit command buffer to GPU queue
- * 6. Present image to swapchain
- * 7. Advance frame counter for triple buffering
- *
- * SYNCHRONIZATION:
- * - Image available semaphore: Signals when image is acquired from swapchain
- * - Queue complete semaphore: Signals when GPU finishes rendering
- * - In-flight fence: Ensures previous frame using this image has completed
+ * On failure the frame is always closed (frame_active cleared) and, when an
+ * acquired image was left unpresented, frame_recovery_required is set so the
+ * next begin_frame rebuilds the sync objects.
  *
  * @param backend_state Vulkan backend state
  * @param delta_time Frame delta time in seconds
  * @return VKR_RENDERER_ERROR_NONE on success
  */
-VkrRendererError renderer_vulkan_end_frame(void *backend_state,
-                                           float64_t delta_time) {
-  assert_log(backend_state != NULL, "Backend state is NULL");
-  assert_log(delta_time > 0, "Delta time is 0");
+/**
+ * @brief True when the render target writes the currently acquired swapchain
+ * image.
+ *
+ * Used to decide whether a finished render pass tells us anything about the
+ * swapchain image's layout. Runs once per render pass, not per draw.
+ */
+vkr_internal bool8_t vulkan_backend_target_uses_swapchain_image(
+    const VulkanBackendState *state, const struct s_RenderTarget *target) {
+  if (!target || !state->swapchain_image_textures ||
+      state->image_index >= state->swapchain.image_count) {
+    return false_v;
+  }
+  struct s_TextureHandle *swapchain_texture =
+      state->swapchain_image_textures[state->image_index];
+  for (uint8_t i = 0; i < target->attachment_count; ++i) {
+    if (target->attachments[i] == swapchain_texture) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
 
-  // log_debug("Ending Vulkan frame");
+/**
+ * @brief Records the transition that makes the acquired swapchain image
+ * presentable.
+ *
+ * The source layout comes from state->swapchain_image_layout, which tracks what
+ * this frame's passes actually left behind. A frame that never touched the
+ * image transitions from UNDEFINED, which legally discards contents -- the
+ * honest description of an image nothing rendered into.
+ */
+vkr_internal void
+vulkan_backend_record_present_transition(VulkanBackendState *state,
+                                         VulkanCommandBuffer *command_buffer) {
+  if (state->swapchain_image_layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR) {
+    return;
+  }
 
-  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  const bool8_t was_written =
+      state->swapchain_image_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  VkImageMemoryBarrier present_barrier = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = was_written ? VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT : 0,
+      .dstAccessMask = 0,
+      .oldLayout = state->swapchain_image_layout,
+      .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = *array_get_VkImage(&state->swapchain.images, state->image_index),
+      .subresourceRange =
+          {
+              .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+              .baseMipLevel = 0,
+              .levelCount = 1,
+              .baseArrayLayer = 0,
+              .layerCount = 1,
+          },
+  };
 
-  VulkanCommandBuffer *command_buffer =
-      vulkan_backend_get_active_graphics_command_buffer(state);
-  if (!command_buffer) {
+  vkCmdPipelineBarrier(command_buffer->handle,
+                       was_written
+                           ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                           : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0,
+                       NULL, 1, &present_barrier);
+  state->swapchain_image_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+}
+
+vkr_internal void
+vulkan_backend_discard_unsubmitted_readbacks(VulkanBackendState *state);
+
+/**
+ * @brief Submits the frame's command buffer and presents its swapchain image.
+ *
+ * Shared by end_frame and cancel_frame so the fence/semaphore/serial sequence
+ * exists exactly once. Three invariants hold on every path:
+ *
+ * 1. in_flight_fences[slot] is reset only immediately before the submit that
+ *    signals it, so any earlier failure leaves it signalled and the next
+ *    begin_frame cannot deadlock on it.
+ * 2. current_frame advances if and only if the submit succeeded, keeping the
+ *    slot paired with its fence and acquire semaphore.
+ * 3. images_in_flight[image_index] is published only after a successful submit,
+ *    so no image is ever left pointing at a fence that will never signal.
+ */
+vkr_internal VkrRendererError vulkan_backend_submit_and_present(
+    VulkanBackendState *state, VulkanCommandBuffer *command_buffer) {
+  if (state->swapchain.max_in_flight_frames == 0 ||
+      state->current_frame >= state->in_flight_fences.length ||
+      state->current_frame >= state->image_available_semaphores.length ||
+      state->image_index >= state->images_in_flight.length ||
+      state->image_index >= state->queue_complete_semaphores.length) {
+    log_error("Frame synchronization index is out of bounds "
+              "(slot=%u/%llu image=%u/%llu)",
+              state->current_frame,
+              (unsigned long long)state->in_flight_fences.length,
+              state->image_index,
+              (unsigned long long)state->queue_complete_semaphores.length);
+    state->frame_recovery_required = true_v;
+    vulkan_backend_discard_unsubmitted_readbacks(state);
     return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
   }
 
-  if (state->render_pass_active) {
-    VkrRendererError end_err = renderer_vulkan_end_render_pass(state);
-    if (end_err != VKR_RENDERER_ERROR_NONE) {
-      log_fatal("Failed to end active render pass");
-      return end_err;
-    }
-  }
-
-  // ============================================================================
-  // CRITICAL IMAGE LAYOUT TRANSITION
-  // ============================================================================
-  // Handle the case where WORLD domain was the last (or only) pass active:
-  //
-  // WORLD render pass: finalLayout = COLOR_ATTACHMENT_OPTIMAL
-  //   → Image is left in attachment-optimal layout for efficient UI chaining
-  //   → If no UI pass runs, we must transition to PRESENT_SRC_KHR here
-  //
-  // UI render pass: finalLayout = PRESENT_SRC_KHR
-  //   → Image is already in present layout, no transition needed
-  //   → swapchain_image_is_present_ready = true (set by UI pass)
-  //
-  // POST render pass: finalLayout = PRESENT_SRC_KHR
-  //   → Image is already in present layout, no transition needed
-  //   → swapchain_image_is_present_ready = true (set by POST pass)
-  //
-  // This design allows efficient WORLD→UI chaining without extra transitions,
-  // while still supporting WORLD-only frames via manual transition here.
-  // ============================================================================
-  if (!state->swapchain_image_is_present_ready) {
-    VkImageMemoryBarrier present_barrier = {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-        .dstAccessMask = 0,
-        .oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image =
-            *array_get_VkImage(&state->swapchain.images, state->image_index),
-        .subresourceRange =
-            {
-                .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-    };
-
-    vkCmdPipelineBarrier(command_buffer->handle,
-                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                         VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0,
-                         NULL, 1, &present_barrier);
-  }
-
-  if (!vulkan_command_buffer_end(command_buffer)) {
-    log_fatal("Failed to end Vulkan command buffer");
-    return VKR_RENDERER_ERROR_NONE;
-  }
-
-  state->frame_active = false_v;
-
-  // Make sure the previous frame is not using this image (i.e. its fence is
-  // being waited on)
+  // Make sure the previous frame that used this image has finished.
   VulkanFencePtr *image_fence =
       array_get_VulkanFencePtr(&state->images_in_flight, state->image_index);
-  if (*image_fence != NULL) { // was frame
+  if (*image_fence != NULL) {
     if (!vulkan_fence_wait(state, UINT64_MAX, *image_fence)) {
-      log_warn("Failed to wait for Vulkan fence");
-      return VKR_RENDERER_ERROR_NONE;
+      log_error("Failed to wait for the fence guarding swapchain image %u",
+                state->image_index);
+      // The acquire semaphore is already signalled and will not be consumed.
+      state->frame_recovery_required = true_v;
+      vulkan_backend_discard_unsubmitted_readbacks(state);
+      return VKR_RENDERER_ERROR_DEVICE_ERROR;
     }
   }
 
-  // Mark the image fence as in-use by this frame.
-  *image_fence =
+  VulkanFence *frame_fence =
       array_get_VulkanFence(&state->in_flight_fences, state->current_frame);
-
-  // Reset the fence for use on the next frame
-  vulkan_fence_reset(state, array_get_VulkanFence(&state->in_flight_fences,
-                                                  state->current_frame));
+  if (!vulkan_fence_reset(state, frame_fence)) {
+    // As above, the acquired image has no submit waiting on its semaphore.
+    state->frame_recovery_required = true_v;
+    vulkan_backend_discard_unsubmitted_readbacks(state);
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
 
   VkPipelineStageFlags flags[1] = {
       VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
@@ -4497,15 +4607,20 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
       .pWaitDstStageMask = flags,
   };
 
-  VkResult result = vulkan_backend_queue_submit_locked(
-      state, state->device.graphics_queue, 1, &submit_info,
-      array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
-          ->handle);
+  VkResult result =
+      vulkan_backend_queue_submit_locked(state, state->device.graphics_queue, 1,
+                                         &submit_info, frame_fence->handle);
   if (result != VK_SUCCESS) {
-    log_fatal("Failed to submit Vulkan command buffer");
-    return VKR_RENDERER_ERROR_NONE;
+    log_error("Failed to submit Vulkan command buffer: %d", result);
+    // The fence was reset but nothing will signal it, and the acquire semaphore
+    // is still pending. Recovery recreates both.
+    state->frame_recovery_required = true_v;
+    vulkan_backend_discard_unsubmitted_readbacks(state);
+    return VKR_RENDERER_ERROR_SUBMISSION_FAILED;
   }
 
+  // Publish only now: before this point the fence could never signal.
+  *image_fence = frame_fence;
   vulkan_command_buffer_update_submitted(command_buffer);
 
   // Monotonic submit counter used for async resource/readback submission
@@ -4515,22 +4630,164 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
     state->frame_submit_serial[state->current_frame] = state->submit_serial;
   }
 
-  // Advance frame counter for triple-buffering synchronization.
-  // Must happen after queue submit so readback fence checks can detect
-  // completion.
+  // Advance the frame slot after queue submit so readback fence checks can
+  // detect completion. This is the only place the slot advances.
   state->current_frame =
       (state->current_frame + 1) % state->swapchain.max_in_flight_frames;
 
-  if (!vulkan_swapchain_present(
-          state,
-          *array_get_VkSemaphore(&state->queue_complete_semaphores,
-                                 state->image_index),
-          state->image_index)) {
-    log_warn("Failed to present Vulkan image");
+  VulkanSwapchainResult present_result = vulkan_swapchain_present(
+      state,
+      *array_get_VkSemaphore(&state->queue_complete_semaphores,
+                             state->image_index),
+      state->image_index);
+  if (present_result == VULKAN_SWAPCHAIN_RESULT_FAILED) {
+    log_error("Failed to present Vulkan image");
+    // Queue submission succeeded, but the state of the per-image present
+    // semaphore is no longer safe to infer. Recreate it before reuse.
+    state->frame_recovery_required = true_v;
+    return VKR_RENDERER_ERROR_PRESENTATION_FAILED;
+  }
+  // SKIP means the swapchain was recreated after the work was already
+  // submitted: the frame is complete, only its presentation was dropped.
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+VkrRendererError renderer_vulkan_end_frame(void *backend_state,
+                                           float64_t delta_time) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+  assert_log(delta_time > 0, "Delta time is 0");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    state->frame_active = false_v;
+    state->frame_recovery_required = true_v;
+    vulkan_backend_discard_unsubmitted_readbacks(state);
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
+
+  if (state->render_pass_active) {
+    VkrRendererError end_err = renderer_vulkan_end_render_pass(state);
+    if (end_err != VKR_RENDERER_ERROR_NONE) {
+      log_error("Failed to end active render pass");
+      state->frame_active = false_v;
+      state->frame_recovery_required = true_v;
+      vulkan_backend_discard_unsubmitted_readbacks(state);
+      return end_err;
+    }
+  }
+
+  // Graph render passes leave the swapchain image in COLOR_ATTACHMENT_OPTIMAL
+  // (their attachment finalLayout), while a pass flagged ends_in_present has
+  // already reached PRESENT_SRC_KHR. Either way the source layout is read from
+  // tracked state, never assumed.
+  vulkan_backend_record_present_transition(state, command_buffer);
+
+  if (!vulkan_command_buffer_end(command_buffer)) {
+    log_error("Failed to end Vulkan command buffer");
+    state->frame_active = false_v;
+    state->frame_recovery_required = true_v;
+    vulkan_backend_discard_unsubmitted_readbacks(state);
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
+
+  state->frame_active = false_v;
+  return vulkan_backend_submit_and_present(state, command_buffer);
+}
+
+/** @brief Rolls back readbacks recorded into the unsubmitted primary buffer. */
+vkr_internal void
+vulkan_backend_discard_unsubmitted_readbacks(VulkanBackendState *state) {
+  VulkanReadbackRing *ring = &state->readback_ring;
+  if (!ring->initialized || ring->pending_count == 0) {
+    return;
+  }
+
+  // Requests recorded this frame form the tail ending at write_index. Walk it
+  // backwards so the same slots are immediately reusable after cancellation.
+  for (uint32_t i = 0; i < VKR_READBACK_RING_SIZE; ++i) {
+    uint32_t previous = (ring->write_index + VKR_READBACK_RING_SIZE - 1) %
+                        VKR_READBACK_RING_SIZE;
+    VulkanReadbackSlot *slot = &ring->slots[previous];
+    if (slot->state != VULKAN_READBACK_SLOT_PENDING ||
+        slot->request_frame != state->current_frame ||
+        slot->request_submit_serial != state->submit_serial) {
+      break;
+    }
+
+    slot->state = VULKAN_READBACK_SLOT_IDLE;
+    ring->write_index = previous;
+    ring->pending_count--;
+  }
+
+  if (ring->pending_count == 0) {
+    ring->read_index = ring->write_index;
+  }
+}
+
+/**
+ * @brief Abandons the frame opened by begin_frame without rendering anything.
+ *
+ * The primary command buffer is reset first, so barriers, passes, readbacks,
+ * and timestamps recorded before a graph failure are not submitted as a
+ * partial frame. A fresh command buffer then records only the discard-to-
+ * present transition needed to consume the acquire semaphore and return the
+ * image to the presentation engine.
+ */
+VkrRendererError renderer_vulkan_cancel_frame(void *backend_state) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state->frame_active) {
     return VKR_RENDERER_ERROR_NONE;
   }
 
-  return VKR_RENDERER_ERROR_NONE;
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    state->frame_active = false_v;
+    state->frame_recovery_required = true_v;
+    vulkan_backend_discard_unsubmitted_readbacks(state);
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
+
+  if (!vulkan_command_buffer_reset(state, command_buffer)) {
+    state->frame_active = false_v;
+    state->frame_recovery_required = true_v;
+    vulkan_backend_discard_unsubmitted_readbacks(state);
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
+
+  state->render_pass_active = false_v;
+  state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
+  state->active_named_render_pass = NULL;
+  state->active_named_render_target = NULL;
+  state->swapchain_image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+  vulkan_backend_discard_unsubmitted_readbacks(state);
+  if (state->current_frame < BUFFERING_FRAMES) {
+    state->rg_timing.frame_pass_counts[state->current_frame] = 0;
+  }
+
+  if (!vulkan_command_buffer_begin(command_buffer)) {
+    log_error("Failed to begin discard command buffer while cancelling frame");
+    state->frame_active = false_v;
+    state->frame_recovery_required = true_v;
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
+
+  vulkan_backend_record_present_transition(state, command_buffer);
+
+  if (!vulkan_command_buffer_end(command_buffer)) {
+    log_error("Failed to end Vulkan command buffer while cancelling frame");
+    state->frame_active = false_v;
+    state->frame_recovery_required = true_v;
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
+
+  state->frame_active = false_v;
+  return vulkan_backend_submit_and_present(state, command_buffer);
 }
 
 void renderer_vulkan_draw_indexed(void *backend_state, uint32_t index_count,
@@ -5027,7 +5284,13 @@ VkrRendererError renderer_vulkan_buffer_barrier(
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(handle.ptr != NULL, "Buffer handle is NULL");
 
-  if (src_access == dst_access) {
+  // Read-after-read with identical access is the only barrier that is genuinely
+  // free. Two writes with the same access still need ordering, so equality
+  // alone must not skip the barrier.
+  const bool8_t src_writes =
+      (src_access &
+       (VKR_BUFFER_ACCESS_STORAGE_WRITE | VKR_BUFFER_ACCESS_TRANSFER_DST)) != 0;
+  if (src_access == dst_access && !src_writes) {
     return VKR_RENDERER_ERROR_NONE;
   }
 
@@ -5079,6 +5342,205 @@ VkrRendererError renderer_vulkan_buffer_barrier(
 
   vkCmdPipelineBarrier(temp_command_buffer.handle, src_stage, dst_stage, 0, 0,
                        NULL, 1, &barrier, 0, NULL);
+
+  if (!vulkan_command_buffer_end_single_use(state, &temp_command_buffer,
+                                            state->device.graphics_queue,
+                                            VK_NULL_HANDLE)) {
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+/**
+ * @brief Maps an image access to Vulkan access flags.
+ *
+ * Source masks name writes only: a read never needs to be made available, and
+ * the execution dependency that orders a write after a read comes from the
+ * stage masks. Destination masks name everything the next user will do.
+ */
+vkr_internal VkAccessFlags vulkan_image_access_to_vk(VkrImageAccessFlags access,
+                                                     bool8_t is_src) {
+  VkAccessFlags flags = 0;
+  if (access & VKR_IMAGE_ACCESS_STORAGE_WRITE) {
+    flags |= VK_ACCESS_SHADER_WRITE_BIT;
+  }
+  if (access & VKR_IMAGE_ACCESS_COLOR_ATTACHMENT) {
+    flags |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  }
+  if (access & VKR_IMAGE_ACCESS_DEPTH_ATTACHMENT) {
+    flags |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  }
+  if (access & VKR_IMAGE_ACCESS_TRANSFER_DST) {
+    flags |= VK_ACCESS_TRANSFER_WRITE_BIT;
+  }
+  if (is_src) {
+    return flags;
+  }
+
+  if (access & (VKR_IMAGE_ACCESS_SAMPLED | VKR_IMAGE_ACCESS_STORAGE_READ)) {
+    flags |= VK_ACCESS_SHADER_READ_BIT;
+  }
+  if (access & VKR_IMAGE_ACCESS_COLOR_ATTACHMENT) {
+    flags |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
+  }
+  if (access & VKR_IMAGE_ACCESS_DEPTH_ATTACHMENT) {
+    flags |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+  }
+  if (access & VKR_IMAGE_ACCESS_DEPTH_READ_ONLY) {
+    flags |=
+        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+  }
+  if (access & VKR_IMAGE_ACCESS_TRANSFER_SRC) {
+    flags |= VK_ACCESS_TRANSFER_READ_BIT;
+  }
+  if (access & VKR_IMAGE_ACCESS_PRESENT) {
+    flags |= VK_ACCESS_MEMORY_READ_BIT;
+  }
+  return flags;
+}
+
+/** @brief Maps an image access to the pipeline stages that perform it. */
+vkr_internal VkPipelineStageFlags
+vulkan_image_stage_for_access(VkrImageAccessFlags access, bool8_t is_src) {
+  if (access == VKR_IMAGE_ACCESS_NONE) {
+    return is_src ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
+                  : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+  }
+
+  VkPipelineStageFlags flags = 0;
+  if (access & (VKR_IMAGE_ACCESS_SAMPLED | VKR_IMAGE_ACCESS_STORAGE_READ |
+                VKR_IMAGE_ACCESS_STORAGE_WRITE)) {
+    flags |= VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
+             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+  }
+  if (access & VKR_IMAGE_ACCESS_COLOR_ATTACHMENT) {
+    flags |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  }
+  if (access &
+      (VKR_IMAGE_ACCESS_DEPTH_ATTACHMENT | VKR_IMAGE_ACCESS_DEPTH_READ_ONLY)) {
+    flags |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+             VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+  }
+  if (access & VKR_IMAGE_ACCESS_DEPTH_READ_ONLY) {
+    flags |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+  }
+  if (access &
+      (VKR_IMAGE_ACCESS_TRANSFER_SRC | VKR_IMAGE_ACCESS_TRANSFER_DST)) {
+    flags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+  }
+  if (access & VKR_IMAGE_ACCESS_PRESENT) {
+    flags |= VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
+  }
+
+  if (flags == 0) {
+    flags = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+  }
+
+  return flags;
+}
+
+/**
+ * @brief Records an image memory barrier from access masks and a subresource
+ * range.
+ *
+ * Replaces the old layout-pair transition, which derived stage and access masks
+ * from a fixed table of old/new layout combinations. That table could not
+ * express a same-layout hazard at all -- a write followed by a read in the same
+ * layout looked like a no-op -- and always covered the whole image, so a
+ * barrier for one shadow cascade layer transitioned all four.
+ *
+ * Must be called outside an active render pass.
+ */
+VkrRendererError renderer_vulkan_image_barrier(
+    void *backend_state, VkrBackendResourceHandle handle,
+    VkrImageAccessFlags src_access, VkrImageAccessFlags dst_access,
+    VkrTextureLayout old_layout, VkrTextureLayout new_layout,
+    const VkrImageSubresourceRange *range) {
+  assert_log(backend_state != NULL, "Backend state is NULL");
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_TextureHandle *texture = (struct s_TextureHandle *)handle.ptr;
+  if (!texture || texture->texture.image.handle == VK_NULL_HANDLE) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  // Read-after-read in an unchanged layout is the only barrier that can be
+  // skipped: nothing needs to be made available and no layout changes.
+  if (old_layout == new_layout && src_access == dst_access &&
+      !vkr_image_access_is_write(src_access)) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
+  if (new_layout == VKR_TEXTURE_LAYOUT_UNDEFINED) {
+    log_error("Cannot transition an image to UNDEFINED");
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+  if (vulkan_texture_format_is_depth(texture->description.format)) {
+    aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+    if (texture->description.format == VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT) {
+      aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
+    }
+  }
+
+  uint32_t base_mip = 0;
+  uint32_t mip_count = 0;
+  uint32_t base_layer = 0;
+  uint32_t layer_count = 0;
+  vkr_image_subresource_range_resolve(range, texture->texture.image.mip_levels,
+                                      texture->texture.image.array_layers,
+                                      &base_mip, &mip_count, &base_layer,
+                                      &layer_count);
+
+  VkImageMemoryBarrier barrier = {
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .srcAccessMask = vulkan_image_access_to_vk(src_access, true_v),
+      .dstAccessMask = vulkan_image_access_to_vk(dst_access, false_v),
+      .oldLayout = vulkan_texture_layout_to_vk(old_layout),
+      .newLayout = vulkan_texture_layout_to_vk(new_layout),
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = texture->texture.image.handle,
+      .subresourceRange =
+          {
+              .aspectMask = aspect,
+              .baseMipLevel = base_mip,
+              .levelCount = mip_count,
+              .baseArrayLayer = base_layer,
+              .layerCount = layer_count,
+          },
+  };
+
+  VkPipelineStageFlags src_stage =
+      vulkan_image_stage_for_access(src_access, true_v);
+  VkPipelineStageFlags dst_stage =
+      vulkan_image_stage_for_access(dst_access, false_v);
+
+  if (state->frame_active) {
+    if (state->render_pass_active) {
+      log_error("Cannot apply image barrier during active render pass");
+      return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+    }
+    VulkanCommandBuffer *command_buffer =
+        vulkan_backend_get_active_graphics_command_buffer(state);
+    if (!command_buffer) {
+      return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+    }
+    vkCmdPipelineBarrier(command_buffer->handle, src_stage, dst_stage, 0, 0,
+                         NULL, 0, NULL, 1, &barrier);
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
+  VulkanCommandBuffer temp_command_buffer = {0};
+  if (!vulkan_command_buffer_allocate_and_begin_single_use(
+          state, &temp_command_buffer)) {
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
+
+  vkCmdPipelineBarrier(temp_command_buffer.handle, src_stage, dst_stage, 0, 0,
+                       NULL, 0, NULL, 1, &barrier);
 
   if (!vulkan_command_buffer_end_single_use(state, &temp_command_buffer,
                                             state->device.graphics_queue,
@@ -5662,91 +6124,6 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture_msaa(
 
   ASSIGN_TEXTURE_GENERATION(state, texture);
   return (VkrBackendResourceHandle){.ptr = texture};
-}
-
-VkrRendererError renderer_vulkan_transition_texture_layout(
-    void *backend_state, VkrBackendResourceHandle handle,
-    VkrTextureLayout old_layout, VkrTextureLayout new_layout) {
-  assert_log(backend_state != NULL, "Backend state is NULL");
-  assert_log(handle.ptr != NULL, "Texture handle is NULL");
-
-  if (old_layout == new_layout) {
-    return VKR_RENDERER_ERROR_NONE;
-  }
-  if (new_layout == VKR_TEXTURE_LAYOUT_UNDEFINED) {
-    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
-  }
-
-  VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  struct s_TextureHandle *texture = (struct s_TextureHandle *)handle.ptr;
-
-  VkImageLayout vk_old = vulkan_texture_layout_to_vk(old_layout);
-  VkImageLayout vk_new = vulkan_texture_layout_to_vk(new_layout);
-  if (vk_old == VK_IMAGE_LAYOUT_UNDEFINED &&
-      vk_new == VK_IMAGE_LAYOUT_UNDEFINED) {
-    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
-  }
-
-  VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-  if (vulkan_texture_format_is_depth(texture->description.format)) {
-    aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-    if (texture->description.format == VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT) {
-      aspect |= VK_IMAGE_ASPECT_STENCIL_BIT;
-    }
-  }
-
-  VkImageSubresourceRange range = {
-      .aspectMask = aspect,
-      .baseMipLevel = 0,
-      .levelCount = texture->texture.image.mip_levels,
-      .baseArrayLayer = 0,
-      .layerCount = texture->texture.image.array_layers,
-  };
-
-  VkFormat image_format =
-      vulkan_image_format_from_texture_format(texture->description.format);
-  if (state->frame_active) {
-    if (state->render_pass_active) {
-      log_error("Cannot transition texture layout during active render pass");
-      return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
-    }
-    if (state->image_index >= state->graphics_command_buffers.length) {
-      return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
-    }
-    VulkanCommandBuffer *command_buffer =
-        vulkan_backend_get_active_graphics_command_buffer(state);
-    if (!command_buffer) {
-      return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
-    }
-    if (!vulkan_image_transition_layout_range(state, &texture->texture.image,
-                                              command_buffer, image_format,
-                                              vk_old, vk_new, &range)) {
-      return VKR_RENDERER_ERROR_DEVICE_ERROR;
-    }
-    return VKR_RENDERER_ERROR_NONE;
-  }
-
-  VulkanCommandBuffer temp_command_buffer = {0};
-  if (!vulkan_command_buffer_allocate_and_begin_single_use(
-          state, &temp_command_buffer)) {
-    return VKR_RENDERER_ERROR_DEVICE_ERROR;
-  }
-
-  if (!vulkan_image_transition_layout_range(state, &texture->texture.image,
-                                            &temp_command_buffer, image_format,
-                                            vk_old, vk_new, &range)) {
-    vulkan_command_buffer_free(state, &temp_command_buffer);
-    return VKR_RENDERER_ERROR_DEVICE_ERROR;
-  }
-
-  if (!vulkan_command_buffer_end_single_use(
-          state, &temp_command_buffer, state->device.graphics_queue,
-          array_get_VulkanFence(&state->in_flight_fences, state->current_frame)
-              ->handle)) {
-    return VKR_RENDERER_ERROR_DEVICE_ERROR;
-  }
-
-  return VKR_RENDERER_ERROR_NONE;
 }
 
 vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
@@ -8402,12 +8779,9 @@ VkrRenderTargetHandle renderer_vulkan_render_target_create(
       goto cleanup_error;
     }
 
-    // Determine if we need a subresource view
-    bool8_t needs_subresource =
-        tex->texture.image.mip_levels > 1 || ref->mip_level != 0 ||
-        ref->base_layer != 0 ||
-        (ref->layer_count != 1 &&
-         ref->layer_count != tex->texture.image.array_layers);
+    bool8_t needs_subresource = vulkan_attachment_needs_subresource_view(
+        tex->texture.image.mip_levels, tex->texture.image.array_layers,
+        ref->mip_level, ref->base_layer, ref->layer_count);
 
     if (needs_subresource) {
       VkImageView subview = vulkan_create_subresource_view(
@@ -8624,9 +8998,17 @@ VkrRendererError renderer_vulkan_end_render_pass(void *backend_state) {
 
   vkCmdEndRenderPass(primary_command_buffer->handle);
 
-  if (state->active_named_render_pass &&
-      state->active_named_render_pass->ends_in_present) {
-    state->swapchain_image_is_present_ready = true;
+  // Record what this pass left the acquired swapchain image in, so end_frame
+  // and cancel_frame can build the present transition from a real layout rather
+  // than assuming one. Only passes that actually target the acquired image
+  // count; a pass rendering to an offscreen target leaves it untouched.
+  if (state->active_named_render_pass && state->active_named_render_target &&
+      vulkan_backend_target_uses_swapchain_image(
+          state, state->active_named_render_target)) {
+    state->swapchain_image_layout =
+        state->active_named_render_pass->ends_in_present
+            ? VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+            : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
   }
 
   state->active_named_render_pass = NULL;
@@ -8684,6 +9066,22 @@ uint32_t renderer_vulkan_window_attachment_index(void *backend_state) {
     return 0;
   }
   return state->image_index;
+}
+
+uint32_t renderer_vulkan_frame_in_flight_index(void *backend_state) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state) {
+    return 0;
+  }
+  return state->current_frame;
+}
+
+uint32_t renderer_vulkan_frame_in_flight_count(void *backend_state) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state) {
+    return 1;
+  }
+  return state->swapchain.max_in_flight_frames;
 }
 
 vkr_internal bool8_t vulkan_create_readback_buffer(VulkanBackendState *state,

@@ -43,14 +43,15 @@ before any recording” model:
 
 - `prepare_frame` waits/acquires and begins a command buffer before the packet
   exists;
-- validation failures call `vkr_renderer_end_frame()` rather than canceling the
-  acquired frame;
+- packet validation is side-effect-free, and failures cancel the acquired frame
+  by re-recording a discard-only submission;
 - submission mutates retained text, UI, globals, descriptors, graph caches, and
   resource-finalization state;
 - packet handles depend on retained registries, so the packet is not
   independently serializable/replayable;
-- graph execution failures are not part of the submit error contract because
-  `vkr_rg_execute()` returns `void`.
+- graph execution and backend cancellation failures are part of the submit
+  error contract, but retained mutations before a graph failure are not
+  transactional.
 
 The packet is therefore a good extraction and validation boundary, but not a
 fully stateless renderer or transactional submission API.
@@ -71,9 +72,8 @@ fully stateless renderer or transactional submission API.
 - Adding/changing public payload layout requires versioning discipline.
 - Retained handles and text/resource side effects prevent standalone replay.
 - The prepare/submit split still carries ordering and failure-state complexity.
-- Invalid-packet finalization currently assumes a swapchain color-attachment old
-  layout even when no graph pass ran; this is a correctness bug, not merely an
-  API naming issue.
+- Validation still occurs after swapchain acquisition, so invalid packets pay a
+  discard submission and present instead of avoiding WSI work entirely.
 
 ## Alternatives Considered
 
@@ -87,9 +87,10 @@ fully stateless renderer or transactional submission API.
 
 ## Revisit When
 
-- Move validation before swapchain acquisition or implement a correct cancel
-  path that preserves image layout and frame state.
+- Move validation before swapchain acquisition if the extra packet-build/API
+  sequencing is justified by measured invalid-packet frequency.
 - Define whether replay/capture is an actual requirement; if so, snapshot or
   remap retained resource identities explicitly.
-- Make graph/pass execution return errors and include them in submit results.
+- Define transactional semantics for retained-state mutation if callers need a
+  rejected packet to leave no retained changes.
 - Introduce parallel command recording or packet construction.

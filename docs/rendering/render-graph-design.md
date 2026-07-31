@@ -17,10 +17,10 @@ Graph topology is not hardcoded in C; C only supplies the executor registry and
 runtime parameters.
 
 Current status is **partial**: graph scheduling, culling, resource realization,
-timing, and declared pass execution ship, but image execution drops compiled
-access masks, same-layout and subresource hazards are incomplete, and picking
-and IBL still perform undeclared GPU work. The architecture spec §3.3 and §8 is
-the current status authority.
+timing, fallible execution, and access/subresource-aware synchronization for
+declared resources ship. Picking and IBL still perform undeclared GPU work, and
+queue ownership and buffer byte ranges are not modeled. The architecture spec
+§3.3 and §8 is the current status authority.
 
 ---
 
@@ -245,7 +245,7 @@ No arbitrary expressions or numeric comparisons in v1.
    - Define passes and dependencies
    - Mark present output
 
-2) Compile (CPU, only when graph changes)
+2) Compile (CPU, each graph realization; physical objects are cached)
    - Validate
    - Build dependency edges
    - Cull unused passes
@@ -257,7 +257,6 @@ No arbitrary expressions or numeric comparisons in v1.
 3) Execute (per frame, GPU command recording)
    - Insert pre-pass barriers
    - Begin renderpass / execute / end
-   - Insert post-pass barriers
    - Transition present image
 
 4) Reset (per frame)
@@ -379,18 +378,7 @@ typedef enum VkrRgPassFlags {
 ### Resource Uses (for barriers and dependencies)
 
 ```c
-typedef enum VkrRgImageAccessFlags {
-  VKR_RG_IMAGE_ACCESS_NONE = 0,
-  VKR_RG_IMAGE_ACCESS_SAMPLED = 1 << 0,
-  VKR_RG_IMAGE_ACCESS_STORAGE_READ = 1 << 1,
-  VKR_RG_IMAGE_ACCESS_STORAGE_WRITE = 1 << 2,
-  VKR_RG_IMAGE_ACCESS_COLOR_ATTACHMENT = 1 << 3,
-  VKR_RG_IMAGE_ACCESS_DEPTH_ATTACHMENT = 1 << 4,
-  VKR_RG_IMAGE_ACCESS_DEPTH_READ_ONLY = 1 << 5,
-  VKR_RG_IMAGE_ACCESS_TRANSFER_SRC = 1 << 6,
-  VKR_RG_IMAGE_ACCESS_TRANSFER_DST = 1 << 7,
-  VKR_RG_IMAGE_ACCESS_PRESENT = 1 << 8,
-} VkrRgImageAccessFlags;
+typedef VkrImageAccessFlags VkrRgImageAccessFlags;
 
 typedef struct VkrRgImageUse {
   VkrRgImageHandle image;
@@ -401,16 +389,7 @@ typedef struct VkrRgImageUse {
 
 Array(VkrRgImageUse);
 
-typedef enum VkrRgBufferAccessFlags {
-  VKR_RG_BUFFER_ACCESS_NONE = 0,
-  VKR_RG_BUFFER_ACCESS_VERTEX = 1 << 0,
-  VKR_RG_BUFFER_ACCESS_INDEX = 1 << 1,
-  VKR_RG_BUFFER_ACCESS_UNIFORM = 1 << 2,
-  VKR_RG_BUFFER_ACCESS_STORAGE_READ = 1 << 3,
-  VKR_RG_BUFFER_ACCESS_STORAGE_WRITE = 1 << 4,
-  VKR_RG_BUFFER_ACCESS_TRANSFER_SRC = 1 << 5,
-  VKR_RG_BUFFER_ACCESS_TRANSFER_DST = 1 << 6,
-} VkrRgBufferAccessFlags;
+typedef VkrBufferAccessFlags VkrRgBufferAccessFlags;
 
 typedef struct VkrRgBufferUse {
   VkrRgBufferHandle buffer;
@@ -525,7 +504,8 @@ VkrRgImageHandle vkr_rg_create_image(VkrRenderGraph *graph, String8 name,
 VkrRgImageHandle vkr_rg_import_image(VkrRenderGraph *graph, String8 name,
                                      VkrTextureOpaqueHandle handle,
                                      VkrRgImageAccessFlags current_access,
-                                     VkrTextureLayout current_layout);
+                                     VkrTextureLayout current_layout,
+                                     const VkrRgImageDesc *desc);
 VkrRgImageHandle vkr_rg_import_swapchain(VkrRenderGraph *graph);
 VkrRgImageHandle vkr_rg_import_depth(VkrRenderGraph *graph);
 
@@ -570,7 +550,8 @@ void vkr_rg_export_buffer(VkrRenderGraph *graph, VkrRgBufferHandle buffer);
 
 // Compile + Execute
 bool8_t vkr_rg_compile(VkrRenderGraph *graph);
-void vkr_rg_execute(VkrRenderGraph *graph, struct s_RendererFrontend *rf);
+VkrRendererError vkr_rg_execute(VkrRenderGraph *graph,
+                                struct s_RendererFrontend *rf);
 ```
 
 Notes:
@@ -682,6 +663,9 @@ For each graphics pass:
 - Build a `VkrRenderPassDesc` from attachment formats and load/store ops.
 - Use `VkrRenderPassSignature` as a cache key; reuse compatible renderpasses.
 - Build `VkrRenderTargetDesc` using attachment slices and backing textures.
+- Materialize an exact image view for every partial mip/layer range, including
+  layer 0 of an array; the backing texture's default view is valid only when
+  the attachment covers its complete view range.
 - Keep one render target per swapchain image when any attachment is `PER_IMAGE`.
 
 **Layout convention for renderpasses:**
@@ -693,20 +677,27 @@ For each graphics pass:
 
 ### 7) Barrier Generation
 
-Track per-resource state in execution order and emit barriers when required.
+Track each image `(mip, layer)` and each whole buffer in execution order. Gather
+all declarations for a pass before emitting its pre-barriers: compatible image
+accesses that require the same layout are unioned, while incompatible layouts
+fail compilation.
 
 ```c
-typedef struct VkrRgResourceState {
+typedef struct VkrRgSubresourceState {
   VkrRgImageAccessFlags access;
   VkrTextureLayout layout;
-} VkrRgResourceState;
+  VkrRgImageAccessFlags pending_access;
+  VkrTextureLayout pending_layout;
+} VkrRgSubresourceState;
 
 for each pass in execution_order:
-  for each resource use in pass:
+  for each declared use in pass:
     desired = access_to_state(use)
-    if state != desired:
-      emit barrier(state -> desired)
-      state = desired
+    gather desired access/layout per subresource
+  for each touched subresource:
+    if layout changed or access changed or prior access wrote:
+      emit barrier(prior -> combined desired)
+    commit combined desired
 ```
 
 Mapping access -> layout:
@@ -739,7 +730,9 @@ For each pass in `execution_order`:
    - `vkr_renderer_end_render_pass()`
 3. If compute/transfer:
    - call `execute` (record compute/transfer commands).
-4. Apply post-pass barriers (if needed).
+Barrier, target, begin/end-render-pass, and executor failures stop execution and
+return a `VkrRendererError` to packet submission. Missing runtime resource
+handles are errors rather than silently skipped declarations.
 
 After the final graphics pass that writes the present image, transition it to
 `PRESENT_SRC_KHR`.
@@ -1045,8 +1038,8 @@ This single JSON file supports both fullscreen and editor modes via
 
 ## Implementation Plan (No Backward Compatibility)
 
-**Status:** The core migration is implemented; synchronization and complete
-graph coverage remain partial. The historical phase log is
+**Status:** The core migration and synchronization for declared resources are
+implemented; complete graph coverage remains partial. The historical phase log is
 `docs/archive/render-graph-progress.md`.
 
 ### Phase 1: JSON Contract + Loader

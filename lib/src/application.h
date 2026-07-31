@@ -58,12 +58,12 @@
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/renderer_frontend.h"
-#include "renderer/systems/vkr_editor_viewport.h"
-#include "renderer/systems/vkr_picking_ids.h"
 #include "renderer/systems/vkr_camera.h"
 #include "renderer/systems/vkr_camera_controller.h"
-#include "renderer/vkr_renderer.h"
+#include "renderer/systems/vkr_editor_viewport.h"
+#include "renderer/systems/vkr_picking_ids.h"
 #include "renderer/vkr_render_packet.h"
+#include "renderer/vkr_renderer.h"
 
 /**
  * @brief Editor viewport state owned by the application.
@@ -363,15 +363,15 @@ bool8_t application_create(Application *application,
 
   bitset8_set(&application->app_flags, APPLICATION_FLAG_INITIALIZED);
 
- event_manager_dispatch(&application->event_manager,
+  event_manager_dispatch(&application->event_manager,
                          (Event){.type = EVENT_TYPE_APPLICATION_INIT});
 
- log_info("Application initialized");
- return true_v;
+  log_info("Application initialized");
+  return true_v;
 }
 
-vkr_internal VkrMaterial *
-application_get_material(RendererFrontend *rf, VkrMaterialHandle handle) {
+vkr_internal VkrMaterial *application_get_material(RendererFrontend *rf,
+                                                   VkrMaterialHandle handle) {
   if (!rf) {
     return NULL;
   }
@@ -398,9 +398,8 @@ vkr_internal bool8_t application_material_is_cutout(RendererFrontend *rf,
 vkr_internal float32_t application_transparent_depth(Mat4 view, Mat4 model,
                                                      Vec3 local_center) {
   Vec3 world_center = mat4_mul_vec3(model, local_center);
-  Vec4 view_pos =
-      mat4_mul_vec4(view, vec4_new(world_center.x, world_center.y,
-                                   world_center.z, 1.0f));
+  Vec4 view_pos = mat4_mul_vec4(
+      view, vec4_new(world_center.x, world_center.y, world_center.z, 1.0f));
   float32_t depth = -view_pos.z;
   return depth > 0.0f ? depth : 0.0f;
 }
@@ -431,9 +430,9 @@ vkr_internal int application_transparent_draw_compare(const void *lhs,
   return 0;
 }
 
-vkr_internal bool8_t application_build_world_payload(
-    Application *application, VkrAllocator *scratch,
-    VkrWorldPassPayload *out_payload) {
+vkr_internal bool8_t
+application_build_world_payload(Application *application, VkrAllocator *scratch,
+                                VkrWorldPassPayload *out_payload) {
   if (!application || !scratch || !out_payload) {
     return false_v;
   }
@@ -446,8 +445,8 @@ vkr_internal bool8_t application_build_world_payload(
   uint32_t mesh_count = vkr_mesh_manager_count(&rf->mesh_manager);
   for (uint32_t i = 0; i < mesh_count; ++i) {
     uint32_t mesh_slot = 0;
-    VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(
-        &rf->mesh_manager, i, &mesh_slot);
+    VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
+                                                            i, &mesh_slot);
     if (!mesh || !mesh->visible ||
         mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
       continue;
@@ -538,8 +537,8 @@ vkr_internal bool8_t application_build_world_payload(
 
   for (uint32_t i = 0; i < mesh_count; ++i) {
     uint32_t mesh_slot = 0;
-    VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(
-        &rf->mesh_manager, i, &mesh_slot);
+    VkrMesh *mesh = vkr_mesh_manager_get_mesh_by_live_index(&rf->mesh_manager,
+                                                            i, &mesh_slot);
     if (!mesh || !mesh->visible ||
         mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
       continue;
@@ -614,8 +613,8 @@ vkr_internal bool8_t application_build_world_payload(
 
     uint32_t object_id = 0;
     if (instance->render_id != 0) {
-      object_id = vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE,
-                                        instance->render_id);
+      object_id =
+          vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, instance->render_id);
     }
 
     uint32_t submesh_count = (uint32_t)asset->submeshes.length;
@@ -694,9 +693,19 @@ void application_draw_frame(Application *application, float64_t delta) {
          "Application is not running");
 
   VkrFrameSetup setup = {0};
-  if (vkr_renderer_prepare_frame(&application->renderer, &setup) !=
-      VKR_RENDERER_ERROR_NONE) {
-    log_fatal("Failed to prepare renderer frame");
+  VkrRendererError prepare_err =
+      vkr_renderer_prepare_frame(&application->renderer, &setup);
+  if (prepare_err != VKR_RENDERER_ERROR_NONE) {
+    // A minimized or resizing window skips frames as a matter of course; this
+    // path runs every tick while minimized, so it must not log.
+    if (prepare_err != VKR_RENDERER_ERROR_FRAME_SKIPPED) {
+      String8 err = vkr_renderer_get_error_string(prepare_err);
+      log_error("Failed to prepare renderer frame: %s", string8_cstr(&err));
+      if (prepare_err == VKR_RENDERER_ERROR_DEVICE_ERROR) {
+        log_fatal("Renderer device is unusable; stopping");
+        bitset8_clear(&application->app_flags, APPLICATION_FLAG_RUNNING);
+      }
+    }
     return;
   }
 
@@ -755,9 +764,9 @@ void application_draw_frame(Application *application, float64_t delta) {
             setup.window_width, setup.window_height,
             application->editor_viewport.fit_mode,
             application->editor_viewport.render_scale, &editor_mapping) &&
-        vkr_editor_viewport_build_payload(&application->renderer.editor_viewport,
-                                          &editor_mapping, editor_draws,
-                                          editor_instances, &editor_payload)) {
+        vkr_editor_viewport_build_payload(
+            &application->renderer.editor_viewport, &editor_mapping,
+            editor_draws, editor_instances, &editor_payload)) {
       viewport_width = editor_mapping.target_width;
       viewport_height = editor_mapping.target_height;
       has_editor = true_v;
@@ -799,8 +808,7 @@ void application_draw_frame(Application *application, float64_t delta) {
       count = VKR_MAX_PENDING_TEXT_UPDATES;
     }
     for (uint32_t i = 0; i < count; ++i) {
-      ApplicationTextUpdate *pending =
-          &application->world_text_updates[i];
+      ApplicationTextUpdate *pending = &application->world_text_updates[i];
       world_text_updates[i] = (VkrTextUpdate){
           .text_id = pending->text_id,
           .content = pending->content,
@@ -879,6 +887,10 @@ void application_draw_frame(Application *application, float64_t delta) {
     } else {
       String8 err = vkr_renderer_get_error_string(submit_err);
       log_error("Packet submit failed: %s", string8_cstr(&err));
+    }
+    if (submit_err == VKR_RENDERER_ERROR_DEVICE_ERROR) {
+      log_fatal("Renderer device is unusable; stopping");
+      bitset8_clear(&application->app_flags, APPLICATION_FLAG_RUNNING);
     }
   }
 }
@@ -964,7 +976,8 @@ void application_start(Application *application) {
     // Stop this frame immediately to avoid recording/render calls after
     // APPLICATION_FLAG_RUNNING has been cleared.
     if (!bitset8_is_set(&application->app_flags, APPLICATION_FLAG_RUNNING) ||
-        !bitset8_is_set(&application->app_flags, APPLICATION_FLAG_INITIALIZED)) {
+        !bitset8_is_set(&application->app_flags,
+                        APPLICATION_FLAG_INITIALIZED)) {
       if (vkr_allocator_scope_is_valid(&frame_scope)) {
         vkr_allocator_end_scope(&frame_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       }
@@ -992,8 +1005,9 @@ void application_start(Application *application) {
     vkr_camera_registry_update_all(camera_system);
 
     if (application->renderer.active_scene) {
-      vkr_lighting_system_sync_from_scene(&application->renderer.lighting_system,
-                                          application->renderer.active_scene);
+      vkr_lighting_system_sync_from_scene(
+          &application->renderer.lighting_system,
+          application->renderer.active_scene);
     }
 
     if (camera) {
@@ -1032,7 +1046,8 @@ void application_start(Application *application) {
     }
 
     if (!bitset8_is_set(&application->app_flags, APPLICATION_FLAG_RUNNING) ||
-        !bitset8_is_set(&application->app_flags, APPLICATION_FLAG_INITIALIZED)) {
+        !bitset8_is_set(&application->app_flags,
+                        APPLICATION_FLAG_INITIALIZED)) {
       if (vkr_allocator_scope_is_valid(&frame_scope)) {
         vkr_allocator_end_scope(&frame_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       }

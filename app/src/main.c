@@ -1302,7 +1302,10 @@ vkr_internal void application_init_scene_system(Application *application) {
   application_log_backend_allocator_stats(application, "load-enqueue", NULL);
 
   vkr_allocator_end_scope(&load_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  (void)application_try_activate_scene_resource(application);
+  if (!application_try_activate_scene_resource(application)) {
+    log_error("Failed to activate scene resource after load");
+    return;
+  }
 }
 
 vkr_internal void application_unload_scene_system(Application *application) {

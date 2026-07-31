@@ -1,7 +1,7 @@
 #include "vulkan_command.h"
+#include "core/vkr_threads.h"
 #include "vulkan_backend.h"
 #include "vulkan_fence.h"
-#include "core/vkr_threads.h"
 
 bool8_t
 vulkan_command_buffer_allocate(VulkanBackendState *state,
@@ -88,12 +88,23 @@ void vulkan_command_buffer_update_submitted(
   command_buffer->state = COMMAND_BUFFER_STATE_SUBMITTED;
 }
 
-void vulkan_command_buffer_reset(VulkanCommandBuffer *command_buffer) {
+bool8_t vulkan_command_buffer_reset(VulkanBackendState *state,
+                                    VulkanCommandBuffer *command_buffer) {
+  assert_log(state != NULL, "State is NULL");
   assert_log(command_buffer != VK_NULL_HANDLE, "Command buffer is NULL");
+
+  // Keep command-pool memory for the next recording; releasing it every frame
+  // would turn a correctness reset into allocator churn on the hot path.
+  VkResult result = vkResetCommandBuffer(command_buffer->handle, 0);
+  if (result != VK_SUCCESS) {
+    log_error("Failed to reset Vulkan command buffer: %d", result);
+    return false_v;
+  }
 
   command_buffer->state = COMMAND_BUFFER_STATE_READY;
   command_buffer->bound_global_descriptor_set = VK_NULL_HANDLE;
   command_buffer->bound_global_pipeline_layout = VK_NULL_HANDLE;
+  return true_v;
 }
 
 bool8_t vulkan_command_buffer_allocate_and_begin_single_use(
@@ -142,7 +153,7 @@ vulkan_command_buffer_end_single_use(VulkanBackendState *state,
               state->render_pass_active ? "true" : "false",
               queue == state->device.graphics_queue ? "true" : "false",
               state->render_thread_id == vkr_thread_current_id() ? "true"
-                                                                  : "false");
+                                                                 : "false");
     vulkan_command_buffer_free(state, command_buffer);
     return false_v;
   }
@@ -164,7 +175,7 @@ vulkan_command_buffer_end_single_use(VulkanBackendState *state,
 
   if (can_defer_submission) {
     if (vulkan_backend_queue_submit_locked(state, queue, 1, &submit_info,
-                                          temp_fence.handle) != VK_SUCCESS) {
+                                           temp_fence.handle) != VK_SUCCESS) {
       log_error("Failed to submit deferred single-use command buffer");
       vulkan_fence_destroy(state, &temp_fence);
       vulkan_command_buffer_free(state, command_buffer);
@@ -172,8 +183,8 @@ vulkan_command_buffer_end_single_use(VulkanBackendState *state,
     }
 
     if (!vulkan_backend_defer_single_use_submission(
-            state, state->device.graphics_command_pool, submitted_command_buffer,
-            temp_fence.handle)) {
+            state, state->device.graphics_command_pool,
+            submitted_command_buffer, temp_fence.handle)) {
       log_error("Failed to enqueue deferred single-use command submission; "
                 "waiting on fence and cleaning up");
       vulkan_fence_wait(state, UINT64_MAX, &temp_fence);

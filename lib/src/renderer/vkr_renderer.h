@@ -107,6 +107,14 @@ typedef enum VkrRendererError {
   VKR_RENDERER_ERROR_FILE_NOT_FOUND,
   VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED,
   VKR_RENDERER_ERROR_INCOMPATIBLE_SIGNATURE,
+  /**
+   * Recoverable: this frame produced no output and no frame state is left
+   * active. Raised when the swapchain was recreated mid-frame or the window has
+   * a zero-sized extent. Callers should skip the frame and continue, not abort.
+   */
+  VKR_RENDERER_ERROR_FRAME_SKIPPED,
+  /** Queue submission failed; the frame's work never reached the device. */
+  VKR_RENDERER_ERROR_SUBMISSION_FAILED,
 
   VKR_RENDERER_ERROR_COUNT
 } VkrRendererError;
@@ -262,6 +270,88 @@ typedef enum VkrBufferAccessFlags {
   VKR_BUFFER_ACCESS_TRANSFER_SRC = 1 << 5,
   VKR_BUFFER_ACCESS_TRANSFER_DST = 1 << 6,
 } VkrBufferAccessFlags;
+
+/**
+ * @brief How an image is accessed by a pipeline stage.
+ *
+ * Mirrors VkrBufferAccessFlags. The render graph aliases this as
+ * VkrRgImageAccessFlags so that declaration and backend share one vocabulary
+ * and access masks survive the trip to the barrier. Combine flags for
+ * read+write.
+ */
+typedef enum VkrImageAccessFlags {
+  VKR_IMAGE_ACCESS_NONE = 0,
+  VKR_IMAGE_ACCESS_SAMPLED = 1 << 0,
+  VKR_IMAGE_ACCESS_STORAGE_READ = 1 << 1,
+  VKR_IMAGE_ACCESS_STORAGE_WRITE = 1 << 2,
+  VKR_IMAGE_ACCESS_COLOR_ATTACHMENT = 1 << 3,
+  VKR_IMAGE_ACCESS_DEPTH_ATTACHMENT = 1 << 4,
+  VKR_IMAGE_ACCESS_DEPTH_READ_ONLY = 1 << 5,
+  VKR_IMAGE_ACCESS_TRANSFER_SRC = 1 << 6,
+  VKR_IMAGE_ACCESS_TRANSFER_DST = 1 << 7,
+  VKR_IMAGE_ACCESS_PRESENT = 1 << 8,
+} VkrImageAccessFlags;
+
+/**
+ * @brief Subresource span addressed by a barrier.
+ *
+ * A count of 0 means "through the last one", so a zeroed struct addresses the
+ * whole image. Making the safe case the zero case matters: uses that never
+ * declare a slice are zero-initialized and must keep meaning whole-image.
+ */
+typedef struct VkrImageSubresourceRange {
+  uint32_t base_mip;
+  uint32_t mip_count; /**< 0 == all remaining mips */
+  uint32_t base_layer;
+  uint32_t layer_count; /**< 0 == all remaining layers */
+} VkrImageSubresourceRange;
+
+/** @brief True when the access performs any write. */
+vkr_internal INLINE bool8_t
+vkr_image_access_is_write(VkrImageAccessFlags access) {
+  return (access &
+          (VKR_IMAGE_ACCESS_STORAGE_WRITE | VKR_IMAGE_ACCESS_COLOR_ATTACHMENT |
+           VKR_IMAGE_ACCESS_DEPTH_ATTACHMENT |
+           VKR_IMAGE_ACCESS_TRANSFER_DST)) != 0
+             ? true_v
+             : false_v;
+}
+
+/** @brief Resolves a range's "0 == remaining" counts against real extents. */
+vkr_internal INLINE void vkr_image_subresource_range_resolve(
+    const VkrImageSubresourceRange *range, uint32_t mip_levels, uint32_t layers,
+    uint32_t *out_base_mip, uint32_t *out_mip_count, uint32_t *out_base_layer,
+    uint32_t *out_layer_count) {
+  if (mip_levels == 0) {
+    mip_levels = 1;
+  }
+  if (layers == 0) {
+    layers = 1;
+  }
+
+  uint32_t base_mip = range ? range->base_mip : 0;
+  uint32_t base_layer = range ? range->base_layer : 0;
+  if (base_mip >= mip_levels) {
+    base_mip = mip_levels - 1;
+  }
+  if (base_layer >= layers) {
+    base_layer = layers - 1;
+  }
+
+  uint32_t mip_count = range ? range->mip_count : 0;
+  uint32_t layer_count = range ? range->layer_count : 0;
+  if (mip_count == 0 || mip_count > mip_levels - base_mip) {
+    mip_count = mip_levels - base_mip;
+  }
+  if (layer_count == 0 || layer_count > layers - base_layer) {
+    layer_count = layers - base_layer;
+  }
+
+  *out_base_mip = base_mip;
+  *out_mip_count = mip_count;
+  *out_base_layer = base_layer;
+  *out_layer_count = layer_count;
+}
 
 typedef enum VkrBufferTypeBits {
   VKR_BUFFER_TYPE_GRAPHICS = 1 << 0,
@@ -438,6 +528,7 @@ typedef enum VkrTextureUsageBits {
   VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT = 1 << 2,
   VKR_TEXTURE_USAGE_TRANSFER_SRC = 1 << 3,
   VKR_TEXTURE_USAGE_TRANSFER_DST = 1 << 4,
+  VKR_TEXTURE_USAGE_STORAGE = 1 << 5,
 } VkrTextureUsageBits;
 typedef Bitset8 VkrTextureUsageFlags;
 
@@ -458,6 +549,8 @@ vkr_texture_usage_flags_from_bits(uint8_t bits) {
     bitset8_set(&flags, VKR_TEXTURE_USAGE_TRANSFER_SRC);
   if (bits & VKR_TEXTURE_USAGE_TRANSFER_DST)
     bitset8_set(&flags, VKR_TEXTURE_USAGE_TRANSFER_DST);
+  if (bits & VKR_TEXTURE_USAGE_STORAGE)
+    bitset8_set(&flags, VKR_TEXTURE_USAGE_STORAGE);
   return flags;
 }
 
@@ -473,8 +566,10 @@ typedef enum VkrTextureLayout {
   VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR,
 
   // Legacy aliases for backward compatibility
-  VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY = VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-  VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT = VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+  VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY =
+      VKR_TEXTURE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+  VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT =
+      VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
   VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT =
       VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
   VKR_TEXTURE_LAYOUT_TRANSFER_SRC = VKR_TEXTURE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -549,7 +644,8 @@ typedef struct VkrTextureDescription {
 
   VkrTextureType type;
   VkrTextureFormat format;
-  VkrSampleCount sample_count; // MSAA sample count (default: VKR_SAMPLE_COUNT_1)
+  VkrSampleCount
+      sample_count; // MSAA sample count (default: VKR_SAMPLE_COUNT_1)
   VkrTexturePropertyFlags properties;
 
   VkrTextureRepeatMode u_repeat_mode;
@@ -773,8 +869,8 @@ typedef struct VkrShaderObjectDescription {
 /**
  * @brief Reflection-derived runtime shader layout sizes queried per pipeline.
  *
- * This mirrors the runtime-relevant sizing subset from `VkrShaderObjectDescription`
- * and is populated by backend reflection output.
+ * This mirrors the runtime-relevant sizing subset from
+ * `VkrShaderObjectDescription` and is populated by backend reflection output.
  */
 typedef struct VkrShaderRuntimeLayout {
   uint64_t global_ubo_size;
@@ -924,13 +1020,15 @@ typedef struct VkrScissor {
 /**
  * @brief Reference to a specific subresource of a texture for framebuffer use.
  *
- * Allows rendering to specific mip levels or array layers (e.g., cubemap faces).
+ * Allows rendering to specific mip levels or array layers (e.g., cubemap
+ * faces).
  */
 typedef struct VkrRenderTargetAttachmentRef {
   VkrTextureOpaqueHandle texture;
-  uint32_t mip_level;   // Mip level to use (0 = base level)
-  uint32_t base_layer;  // Base array layer (0 for 2D textures, 0-5 for cubemaps)
-  uint32_t layer_count; // Number of layers (1 for single layer, 6 for full cubemap)
+  uint32_t mip_level;  // Mip level to use (0 = base level)
+  uint32_t base_layer; // Base array layer (0 for 2D textures, 0-5 for cubemaps)
+  uint32_t
+      layer_count; // Number of layers (1 for single layer, 6 for full cubemap)
 } VkrRenderTargetAttachmentRef;
 
 /**
@@ -1093,10 +1191,11 @@ VkrBufferHandle vkr_renderer_create_index_buffer_dynamic(
     VkrRendererFrontendHandle renderer, uint64_t size, VkrIndexType type,
     const void *initial_data, VkrRendererError *out_error);
 
-uint32_t vkr_renderer_create_buffer_batch(
-    VkrRendererFrontendHandle renderer,
-    const VkrBufferBatchCreateRequest *requests, uint32_t count,
-    VkrBufferHandle *out_handles, VkrRendererError *out_errors);
+uint32_t
+vkr_renderer_create_buffer_batch(VkrRendererFrontendHandle renderer,
+                                 const VkrBufferBatchCreateRequest *requests,
+                                 uint32_t count, VkrBufferHandle *out_handles,
+                                 VkrRendererError *out_errors);
 
 VkrTextureOpaqueHandle
 vkr_renderer_create_texture(VkrRendererFrontendHandle renderer,
@@ -1124,9 +1223,10 @@ VkrTextureOpaqueHandle
 vkr_renderer_create_depth_attachment(VkrRendererFrontendHandle renderer,
                                      uint32_t width, uint32_t height,
                                      VkrRendererError *out_error);
-VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment(
-    VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
-    VkrRendererError *out_error);
+VkrTextureOpaqueHandle
+vkr_renderer_create_sampled_depth_attachment(VkrRendererFrontendHandle renderer,
+                                             uint32_t width, uint32_t height,
+                                             VkrRendererError *out_error);
 VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment_array(
     VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
     uint32_t layers, VkrRendererError *out_error);
@@ -1148,11 +1248,23 @@ VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment_array(
  */
 VkrTextureOpaqueHandle vkr_renderer_create_render_target_texture_msaa(
     VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
-    VkrTextureFormat format, VkrSampleCount samples, VkrRendererError *out_error);
+    VkrTextureFormat format, VkrSampleCount samples,
+    VkrRendererError *out_error);
 
-VkrRendererError vkr_renderer_transition_texture_layout(
+/**
+ * @brief Records an image memory barrier for a texture.
+ *
+ * Derives Vulkan access and stage masks from the declared accesses rather than
+ * from the layout pair, so same-layout hazards (write then read, write then
+ * write) are expressible. Pass NULL for @p range to cover the whole image.
+ *
+ * Must be called outside an active render pass.
+ */
+VkrRendererError vkr_renderer_image_barrier(
     VkrRendererFrontendHandle renderer, VkrTextureOpaqueHandle texture,
-    VkrTextureLayout old_layout, VkrTextureLayout new_layout);
+    VkrImageAccessFlags src_access, VkrImageAccessFlags dst_access,
+    VkrTextureLayout old_layout, VkrTextureLayout new_layout,
+    const VkrImageSubresourceRange *range);
 
 VkrRendererError vkr_renderer_write_texture(VkrRendererFrontendHandle renderer,
                                             VkrTextureOpaqueHandle texture,
@@ -1218,11 +1330,10 @@ VkrRendererError vkr_renderer_flush_buffer(VkrRendererFrontendHandle renderer,
  *
  * Must be called outside an active render pass.
  */
-VkrRendererError
-vkr_renderer_buffer_barrier(VkrRendererFrontendHandle renderer,
-                            VkrBufferHandle buffer,
-                            VkrBufferAccessFlags src_access,
-                            VkrBufferAccessFlags dst_access);
+VkrRendererError vkr_renderer_buffer_barrier(VkrRendererFrontendHandle renderer,
+                                             VkrBufferHandle buffer,
+                                             VkrBufferAccessFlags src_access,
+                                             VkrBufferAccessFlags dst_access);
 void vkr_renderer_set_instance_buffer(VkrRendererFrontendHandle renderer,
                                       VkrBufferHandle buffer);
 
@@ -1289,9 +1400,10 @@ vkr_renderer_renderpass_get(VkrRendererFrontendHandle renderer, String8 name);
  * @param out_signature Output signature struct (must not be NULL)
  * @return true if signature was retrieved, false if pass is invalid
  */
-bool8_t vkr_renderer_renderpass_get_signature(VkrRendererFrontendHandle renderer,
-                                              VkrRenderPassHandle pass,
-                                              VkrRenderPassSignature *out_signature);
+bool8_t
+vkr_renderer_renderpass_get_signature(VkrRendererFrontendHandle renderer,
+                                      VkrRenderPassHandle pass,
+                                      VkrRenderPassSignature *out_signature);
 
 /**
  * @brief Compare two render pass signatures for compatibility.
@@ -1341,7 +1453,8 @@ bool8_t vkr_renderer_domain_renderpass_set(VkrRendererFrontendHandle renderer,
  *
  * This function creates a render pass with full control over attachment
  * configurations, including load/store ops, layouts, and clear values.
- * Use this for custom render passes that don't fit the standard domain patterns.
+ * Use this for custom render passes that don't fit the standard domain
+ * patterns.
  *
  * @param renderer The renderer frontend handle
  * @param desc Render pass descriptor with explicit attachment configuration
@@ -1368,11 +1481,9 @@ vkr_renderer_renderpass_create_desc(VkrRendererFrontendHandle renderer,
  * @param out_error Optional output for error details
  * @return Handle to the created render target, or NULL on failure
  */
-VkrRenderTargetHandle
-vkr_renderer_render_target_create(VkrRendererFrontendHandle renderer,
-                                   const VkrRenderTargetDesc *desc,
-                                   VkrRenderPassHandle pass,
-                                   VkrRendererError *out_error);
+VkrRenderTargetHandle vkr_renderer_render_target_create(
+    VkrRendererFrontendHandle renderer, const VkrRenderTargetDesc *desc,
+    VkrRenderPassHandle pass, VkrRendererError *out_error);
 
 void vkr_renderer_render_target_destroy(VkrRendererFrontendHandle renderer,
                                         VkrRenderTargetHandle target);
@@ -1384,6 +1495,16 @@ vkr_renderer_depth_attachment_get(VkrRendererFrontendHandle renderer);
 uint32_t
 vkr_renderer_window_attachment_count(VkrRendererFrontendHandle renderer);
 uint32_t vkr_renderer_window_image_index(VkrRendererFrontendHandle renderer);
+/**
+ * @brief Frame-in-flight slot currently being recorded.
+ *
+ * Use this, not the swapchain image index, to index per-frame CPU-written
+ * buffers: the slot's fence is waited on in begin_frame, so its previous
+ * contents are guaranteed to be free of GPU readers.
+ */
+uint32_t vkr_renderer_frame_in_flight_index(VkrRendererFrontendHandle renderer);
+/** @brief Number of distinct frame-in-flight slots (<= BUFFERING_FRAMES). */
+uint32_t vkr_renderer_frame_in_flight_count(VkrRendererFrontendHandle renderer);
 VkrTextureFormat
 vkr_renderer_get_swapchain_format(VkrRendererFrontendHandle renderer);
 VkrTextureFormat
@@ -1393,10 +1514,11 @@ vkr_renderer_get_shadow_depth_format(VkrRendererFrontendHandle renderer);
 // --- START Frame Lifecycle & Rendering Commands ---
 VkrRendererError vkr_renderer_prepare_frame(VkrRendererFrontendHandle renderer,
                                             VkrFrameSetup *out_setup);
-VkrRendererError vkr_renderer_submit_packet(
-    VkrRendererFrontendHandle renderer, const VkrRenderPacket *packet,
-    VkrRendererFrameMetrics *out_metrics,
-    VkrValidationError *out_validation_error);
+VkrRendererError
+vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
+                           const VkrRenderPacket *packet,
+                           VkrRendererFrameMetrics *out_metrics,
+                           VkrValidationError *out_validation_error);
 
 void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
                          uint32_t height);
@@ -1424,7 +1546,6 @@ void vkr_renderer_set_scissor(VkrRendererFrontendHandle renderer,
 void vkr_renderer_set_depth_bias(VkrRendererFrontendHandle renderer,
                                  float32_t constant_factor, float32_t clamp,
                                  float32_t slope_factor);
-
 
 void vkr_renderer_draw(VkrRendererFrontendHandle renderer,
                        uint32_t vertex_count, uint32_t instance_count,
@@ -1461,9 +1582,10 @@ void vkr_renderer_rg_timing_begin_pass(VkrRendererFrontendHandle renderer,
                                        uint32_t pass_index);
 void vkr_renderer_rg_timing_end_pass(VkrRendererFrontendHandle renderer,
                                      uint32_t pass_index);
-bool8_t vkr_renderer_rg_timing_get_results(
-    VkrRendererFrontendHandle renderer, uint32_t *out_pass_count,
-    const float64_t **out_pass_ms, const bool8_t **out_pass_valid);
+bool8_t vkr_renderer_rg_timing_get_results(VkrRendererFrontendHandle renderer,
+                                           uint32_t *out_pass_count,
+                                           const float64_t **out_pass_ms,
+                                           const bool8_t **out_pass_valid);
 
 // --- START Pixel Readback API (for picking and screenshots) ---
 
@@ -1575,6 +1697,15 @@ typedef struct VkrRendererBackendInterface {
   VkrRendererError (*begin_frame)(void *backend_state, float64_t delta_time);
   VkrRendererError (*end_frame)(void *backend_state,
                                 float64_t delta_time); // Includes present
+  /**
+   * Abandons the frame opened by begin_frame without rendering anything.
+   *
+   * Still submits and presents, because that is the only way to consume the
+   * acquire semaphore, signal the frame fence, and return the acquired image to
+   * the presentation engine. The image is transitioned from whatever layout it
+   * is actually in, so no old layout is invented.
+   */
+  VkrRendererError (*cancel_frame)(void *backend_state);
 
   // --- Render Pass Management ---
   VkrRenderPassHandle (*renderpass_create_desc)(void *backend_state,
@@ -1582,14 +1713,15 @@ typedef struct VkrRendererBackendInterface {
                                                 VkrRendererError *out_error);
   void (*renderpass_destroy)(void *backend_state, VkrRenderPassHandle pass);
   VkrRenderPassHandle (*renderpass_get)(void *backend_state, const char *name);
-  bool8_t (*domain_renderpass_set)(void *backend_state, VkrPipelineDomain domain,
+  bool8_t (*domain_renderpass_set)(void *backend_state,
+                                   VkrPipelineDomain domain,
                                    VkrRenderPassHandle pass,
                                    VkrDomainOverridePolicy policy,
                                    VkrRendererError *out_error);
   VkrRenderTargetHandle (*render_target_create)(void *backend_state,
-                                                 const VkrRenderTargetDesc *desc,
-                                                 VkrRenderPassHandle pass,
-                                                 VkrRendererError *out_error);
+                                                const VkrRenderTargetDesc *desc,
+                                                VkrRenderPassHandle pass,
+                                                VkrRendererError *out_error);
   void (*render_target_destroy)(void *backend_state,
                                 VkrRenderTargetHandle target);
   VkrRendererError (*begin_render_pass)(void *backend_state,
@@ -1601,6 +1733,14 @@ typedef struct VkrRendererBackendInterface {
   VkrTextureOpaqueHandle (*depth_attachment_get)(void *backend_state);
   uint32_t (*window_attachment_count_get)(void *backend_state);
   uint32_t (*window_attachment_index_get)(void *backend_state);
+  /**
+   * Index of the frame-in-flight slot the backend is currently recording into,
+   * in [0, frame_in_flight_count_get()). Distinct from the swapchain image
+   * index: this slot is the one whose fence was waited on in begin_frame, so it
+   * is the only safe index for CPU-written, GPU-read per-frame buffers.
+   */
+  uint32_t (*frame_in_flight_index_get)(void *backend_state);
+  uint32_t (*frame_in_flight_count_get)(void *backend_state);
   VkrTextureFormat (*swapchain_format_get)(void *backend_state);
   VkrTextureFormat (*shadow_depth_format_get)(void *backend_state);
 
@@ -1608,10 +1748,11 @@ typedef struct VkrRendererBackendInterface {
   VkrBackendResourceHandle (*buffer_create)(void *backend_state,
                                             const VkrBufferDescription *desc,
                                             const void *initial_data);
-  uint32_t (*buffer_create_batch)(
-      void *backend_state, const VkrBufferBatchCreateRequest *requests,
-      uint32_t count, VkrBackendResourceHandle *out_handles,
-      VkrRendererError *out_errors);
+  uint32_t (*buffer_create_batch)(void *backend_state,
+                                  const VkrBufferBatchCreateRequest *requests,
+                                  uint32_t count,
+                                  VkrBackendResourceHandle *out_handles,
+                                  VkrRendererError *out_errors);
   void (*buffer_destroy)(void *backend_state, VkrBackendResourceHandle handle);
   VkrRendererError (*buffer_update)(void *backend_state,
                                     VkrBackendResourceHandle handle,
@@ -1653,10 +1794,24 @@ typedef struct VkrRendererBackendInterface {
   VkrBackendResourceHandle (*render_target_texture_msaa_create)(
       void *backend_state, uint32_t width, uint32_t height,
       VkrTextureFormat format, VkrSampleCount samples);
-  VkrRendererError (*texture_transition_layout)(void *backend_state,
-                                                VkrBackendResourceHandle handle,
-                                                VkrTextureLayout old_layout,
-                                                VkrTextureLayout new_layout);
+  /**
+   * Records an image memory barrier.
+   *
+   * src/dst access select the Vulkan access and stage masks, and the layout
+   * change applies only to the named subresource range (NULL == whole image).
+   * Must be called outside an active render pass.
+   *
+   * This replaced a layout-pair transition entry. Keeping both would leave two
+   * ways to transition an image, one of which silently drops access masks --
+   * which is the defect the access-aware path exists to fix.
+   */
+  VkrRendererError (*image_barrier)(void *backend_state,
+                                    VkrBackendResourceHandle handle,
+                                    VkrImageAccessFlags src_access,
+                                    VkrImageAccessFlags dst_access,
+                                    VkrTextureLayout old_layout,
+                                    VkrTextureLayout new_layout,
+                                    const VkrImageSubresourceRange *range);
   VkrRendererError (*texture_update)(void *backend_state,
                                      VkrBackendResourceHandle handle,
                                      const VkrTextureDescription *desc);

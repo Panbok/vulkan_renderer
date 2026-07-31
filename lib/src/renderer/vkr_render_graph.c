@@ -520,6 +520,40 @@ void vkr_rg_destroy(VkrRenderGraph *graph) {
              (unsigned long long)graph->resource_stats.live_buffer_bytes);
   }
 
+  // Persistent barrier-generation storage; reused across frames, so it is only
+  // released here.
+  if (graph->subresource_states) {
+    vkr_allocator_free(graph->allocator, graph->subresource_states,
+                       sizeof(VkrRgSubresourceState) *
+                           graph->subresource_state_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (graph->image_state_offsets) {
+    vkr_allocator_free(graph->allocator, graph->image_state_offsets,
+                       sizeof(uint32_t) * graph->image_state_offset_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (graph->image_touch_tokens) {
+    vkr_allocator_free(graph->allocator, graph->image_touch_tokens,
+                       sizeof(uint32_t) * graph->touched_image_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (graph->touched_image_indices) {
+    vkr_allocator_free(graph->allocator, graph->touched_image_indices,
+                       sizeof(uint32_t) * graph->touched_image_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (graph->buffer_states) {
+    vkr_allocator_free(graph->allocator, graph->buffer_states,
+                       sizeof(VkrRgBufferState) * graph->buffer_state_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (graph->touched_buffer_indices) {
+    vkr_allocator_free(graph->allocator, graph->touched_buffer_indices,
+                       sizeof(uint32_t) * graph->touched_buffer_capacity,
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
   vector_destroy_VkrRgImage(&graph->images);
   vector_destroy_VkrRgBuffer(&graph->buffers);
   vector_destroy_VkrRgPass(&graph->passes);

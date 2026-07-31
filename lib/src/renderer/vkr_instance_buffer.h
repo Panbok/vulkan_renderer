@@ -85,10 +85,12 @@ void vkr_instance_buffer_pool_shutdown(VkrInstanceBufferPool *pool,
  * @brief Begin the instance buffer frame.
  *
  * @param pool The pool.
- * @param frame_index The frame index.
+ * @param frame_slot Frame-in-flight slot, in [0, VKR_INSTANCE_BUFFER_FRAMES).
+ *        Must be the slot whose fence the backend already waited on — not the
+ *        swapchain image index, which can exceed the slot count.
  */
 void vkr_instance_buffer_begin_frame(VkrInstanceBufferPool *pool,
-                                     uint32_t frame_index);
+                                     uint32_t frame_slot);
 
 /**
  * @brief Allocate instance data from the instance buffer.

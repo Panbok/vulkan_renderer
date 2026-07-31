@@ -3,15 +3,15 @@
 #include "vulkan_types.h"
 
 // Internal function for swapchain recreation (used by swapchain module)
-bool32_t vulkan_backend_recreate_swapchain(VulkanBackendState *state);
+VkrRendererError vulkan_backend_recreate_swapchain(VulkanBackendState *state);
 VkResult vulkan_backend_queue_submit_locked(VulkanBackendState *state,
                                             VkQueue queue,
                                             uint32_t submit_count,
                                             const VkSubmitInfo *submit_infos,
                                             VkFence fence);
-VkResult vulkan_backend_queue_present_locked(
-    VulkanBackendState *state, VkQueue queue,
-    const VkPresentInfoKHR *present_info);
+VkResult
+vulkan_backend_queue_present_locked(VulkanBackendState *state, VkQueue queue,
+                                    const VkPresentInfoKHR *present_info);
 VkResult vulkan_backend_queue_wait_idle_locked(VulkanBackendState *state,
                                                VkQueue queue);
 bool8_t vulkan_backend_defer_single_use_submission(
@@ -45,6 +45,8 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
 
 VkrRendererError renderer_vulkan_end_frame(void *backend_state,
                                            float64_t delta_time);
+
+VkrRendererError renderer_vulkan_cancel_frame(void *backend_state);
 
 void renderer_vulkan_renderpass_destroy(void *backend_state,
                                         VkrRenderPassHandle pass);
@@ -104,18 +106,15 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
 VkrBackendResourceHandle
 renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
                                         uint32_t height);
-VkrBackendResourceHandle
-renderer_vulkan_create_sampled_depth_attachment(void *backend_state,
-                                                uint32_t width,
-                                                uint32_t height);
-VkrBackendResourceHandle
-renderer_vulkan_create_sampled_depth_attachment_array(void *backend_state,
-                                                      uint32_t width,
-                                                      uint32_t height,
-                                                      uint32_t layers);
-VkrRendererError renderer_vulkan_transition_texture_layout(
+VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
+    void *backend_state, uint32_t width, uint32_t height);
+VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment_array(
+    void *backend_state, uint32_t width, uint32_t height, uint32_t layers);
+VkrRendererError renderer_vulkan_image_barrier(
     void *backend_state, VkrBackendResourceHandle handle,
-    VkrTextureLayout old_layout, VkrTextureLayout new_layout);
+    VkrImageAccessFlags src_access, VkrImageAccessFlags dst_access,
+    VkrTextureLayout old_layout, VkrTextureLayout new_layout,
+    const VkrImageSubresourceRange *range);
 VkrRendererError
 renderer_vulkan_update_texture(void *backend_state,
                                VkrBackendResourceHandle handle,
@@ -192,6 +191,8 @@ VkrTextureOpaqueHandle
 renderer_vulkan_depth_attachment_get(void *backend_state);
 uint32_t renderer_vulkan_window_attachment_count(void *backend_state);
 uint32_t renderer_vulkan_window_attachment_index(void *backend_state);
+uint32_t renderer_vulkan_frame_in_flight_index(void *backend_state);
+uint32_t renderer_vulkan_frame_in_flight_count(void *backend_state);
 VkrTextureFormat renderer_vulkan_shadow_depth_format_get(void *backend_state);
 
 // Telemetry

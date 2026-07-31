@@ -575,8 +575,8 @@ typedef struct VkrDeferredDestroyEntry {
     VkBuffer buffer;
     void *wrapper; // For TEXTURE_WRAPPER, BUFFER_WRAPPER, RENDER_TARGET_WRAPPER
   } payload;
-  VkDeviceMemory memory;    // Optional memory to free (for images/buffers)
-  uint64_t memory_size;     // Size used for allocator accounting (0 if unknown)
+  VkDeviceMemory memory; // Optional memory to free (for images/buffers)
+  uint64_t memory_size;  // Size used for allocator accounting (0 if unknown)
   VkrAllocatorMemoryTag memory_tag; // Accounting tag for memory_size
   VkrAllocator *pool_alloc; // Allocator to return wrapper to (if applicable)
   uint64_t wrapper_size;    // Size of wrapper struct (for pool free)
@@ -665,6 +665,22 @@ typedef struct VulkanBackendState {
 
   bool8_t is_swapchain_recreation_requested;
 
+  /**
+   * Set when a frame consumed a swapchain acquire but never submitted, leaving
+   * an acquire semaphore signalled with no waiter. The next begin_frame must
+   * idle the device and recreate the swapchain -- which rebuilds the sync
+   * objects -- before acquiring again, or vkAcquireNextImageKHR would be handed
+   * an already-signalled semaphore.
+   */
+  bool8_t frame_recovery_required;
+
+  /**
+   * Set when swapchain/device recovery failed after WSI state may have been
+   * partially rebuilt. No later frame or resize may touch that state; the
+   * frontend must surface DEVICE_ERROR and shut the renderer down.
+   */
+  bool8_t device_unusable;
+
   float64_t frame_delta;
   uint64_t submit_serial;
   uint64_t completed_submit_serial;
@@ -726,11 +742,19 @@ typedef struct VulkanBackendState {
   uint32_t active_image_index;
 
   /**
-   * Tracks if the swapchain image is in PRESENT_SRC_KHR layout.
-   * Used to avoid redundant layout transitions in end_frame.
-   * Set to true when UI or POST domain ends (transitions to PRESENT).
+   * Layout of swapchain.images[image_index] as recorded so far this frame.
+   *
+   * UNDEFINED at begin_frame, because acquiring an image does not preserve its
+   * contents. Updated in end_render_pass to the ended pass's final layout when
+   * that pass targeted the acquired swapchain image. Consumed by end_frame and
+   * cancel_frame to build the present transition.
+   *
+   * This must be tracked rather than assumed: a frame that ends without any
+   * pass touching the swapchain image (a rejected packet, an aborted graph) has
+   * it in UNDEFINED, and naming COLOR_ATTACHMENT_OPTIMAL as the barrier's
+   * oldLayout there is undefined behaviour.
    */
-  bool8_t swapchain_image_is_present_ready;
+  VkImageLayout swapchain_image_layout;
 
   struct s_TextureHandle **swapchain_image_textures;
   struct s_TextureHandle *depth_texture;

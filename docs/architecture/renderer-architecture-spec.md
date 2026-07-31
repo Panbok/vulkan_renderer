@@ -32,11 +32,11 @@ document overstated how completely those systems are integrated:
 - The render packet is a useful frame contract, but submission begins the
   Vulkan frame before packet validation and mutates retained renderer systems.
   It is packet-based, not a purely stateless or replayable renderer.
-- The render graph schedules and instruments declared work, but image barrier
-  execution currently uses layout pairs rather than the compiler's access
-  masks. Same-layout hazards and subresource-granular state are not handled,
-  and picking/IBL executors perform undeclared rendering outside graph-owned
-  passes.
+- The render graph schedules and instruments declared work, and barrier
+  execution now derives Vulkan access and stage masks from the compiler's
+  access flags with per-(mip, layer) state. Picking and IBL executors still
+  perform undeclared rendering outside graph-owned passes, so graph inference
+  is authoritative only for declared resources.
 - SPIR-V reflection drives descriptor layouts, push constants, and vertex ABI,
   but it does not currently reflect uniform members or cross-validate their
   offsets against `.shadercfg` declarations.
@@ -46,12 +46,14 @@ document overstated how completely those systems are integrated:
 - The world path still has no active frustum culling, draw batching, or MDI.
   Its instance stream is live, but most draws contain one instance.
 
-There are also correctness issues that should take precedence over new visual
-features: frame-stream buffers are indexed by swapchain image modulo three,
-backend begin/end-frame failures are sometimes returned as success, render
-graph execution failures do not propagate to packet submission, and rejected
-packets end and present an already-acquired frame using an unsafe assumed old
-layout.
+The correctness issues that previously took precedence over new visual features
+— frame streams indexed by swapchain image modulo three, backend frame failures
+returned as success, render graph execution failures that could not reach packet
+submission, and rejected packets presenting with an assumed old layout — were
+resolved on 2026-07-31 (§8, P0). Their hardware verification still depends on a
+broader validation matrix; a three-image Apple M1 Pro/MoltenVK Debug smoke run
+is clean, while resize/minimize, other image counts, and injected failures
+remain to be exercised.
 
 The project remains a strong renderer showcase. Its next step should be to make
 the current architecture trustworthy under failure and across swapchain
@@ -164,21 +166,29 @@ The fullscreen/editor variants are alternatives, not additive passes.
 
 #### Synchronization boundary
 
-The compiler records access and layout transitions, but execution is not yet a
-complete access-aware synchronization implementation:
+Barrier execution is access- and subresource-aware for declared resources:
 
-- image execution drops `src_access`/`dst_access` and calls
-  `vkr_renderer_transition_texture_layout(old_layout, new_layout)`;
-- image barriers are skipped when layouts match, so write→read or write→write
-  hazards in the same layout are not represented;
-- buffer barriers are likewise skipped when access flags match, even when a
-  same-access write hazard may require ordering;
-- image state and barriers cover whole images even when attachments name a
-  mip/layer slice;
-- the backend supports a finite set of old/new layout pairs rather than a
-  general stage/access mapping;
+- barriers carry `src_access`/`dst_access` and a subresource range through to
+  `vkr_renderer_image_barrier`, which derives Vulkan access and stage masks from
+  them rather than from an old/new layout pair;
+- a barrier is emitted when the layout changes, the access changes, **or** the
+  previous access performed a write, so same-layout write→read and write→write
+  hazards are represented;
+- barrier state is tracked per (mip, layer), so a pass writing one cascade layer
+  transitions only that layer, and contiguous subresources sharing a state
+  coalesce back into a single barrier for a whole-image read;
+- accesses to the same subresource within one pass are combined before its
+  pre-barrier is emitted; compatible storage reads/writes become one `GENERAL`
+  state, while declarations requiring incompatible layouts fail compilation;
+- buffer barriers apply the same write-aware rule.
+
+Remaining boundaries:
+
 - all graph passes record on the graphics command buffer; compute/transfer pass
-  kinds do not provide queue scheduling or ownership-transfer semantics.
+  kinds do not provide queue scheduling or ownership-transfer semantics;
+- buffer barriers still cover the whole buffer rather than a byte range;
+- exported images report subresource 0's layout, with a compile-time warning
+  when layers disagree.
 
 The graph is also not the sole authority over current GPU work. The picking
 executor opens its own retained render pass/target, and the IBL executor invokes
@@ -237,8 +247,8 @@ activated once dependency/GPU finalization completes.
 | Area | Status | Current boundary |
 |---|---|---|
 | Frontend/backend interface | Implemented | One Vulkan backend; portability seam unproven |
-| Packet submission | Implemented, partial | Versioned/validated, but ordered and state-mutating |
-| JSON render graph | Implemented, partial | Scheduling/culling/timing; incomplete access synchronization and graph coverage |
+| Packet submission | Implemented, partial | Versioned/validated with a real cancel path, but ordered and state-mutating |
+| JSON render graph | Implemented, partial | Scheduling/culling/timing; access- and subresource-aware barriers for declared resources; picking/IBL work still undeclared |
 | SPIR-V reflection | Implemented, partial | Descriptors, push constants, vertex ABI; no uniform-member reflection |
 | Pipeline cache | Implemented | Disk-backed Vulkan cache |
 | Cascaded shadow maps | Implemented | Four-cascade default with debug/fit controls |
@@ -381,20 +391,23 @@ The WSI object sizing is deliberate:
 
 Per-image render-complete semaphores avoid re-signaling a semaphore still owned
 by presentation. `max_in_flight_frames` is capped by `BUFFERING_FRAMES` (3).
+All per-image arrays use the image count returned by
+`vkGetSwapchainImagesKHR`, which may be larger than the requested minimum.
 
-This part is sound, but the wider frame implementation has unresolved issues:
+The frame implementation's P0 defects were resolved on 2026-07-31 (§8):
 
-- instance and indirect stream arrays contain three buffers but are reset using
-  acquired `image_index % 3`; a four-image swapchain aliases images 0 and 3,
-  even though both can be in flight;
+- instance and indirect streams are indexed by the fence-protected
+  frame-in-flight slot, and the slot advances exactly once per frame;
 - fence wait, acquire, command-buffer begin/end, queue submit, and present
-  failures are logged in several paths but returned as
-  `VKR_RENDERER_ERROR_NONE`;
-- `vkr_rg_execute()` returns `void`; compile, barrier, and begin/end-pass
-  failures cannot reach `vkr_renderer_submit_packet()`;
-- ending a rejected packet assumes the acquired swapchain image was in
-  `COLOR_ATTACHMENT_OPTIMAL`, although no pass may have transitioned it from
-  its acquired/present state.
+  failures return distinct errors, with `VKR_RENDERER_ERROR_FRAME_SKIPPED`
+  separating a recreate-and-skip from device loss;
+- `vkr_rg_execute()` returns `VkrRendererError`, so compile, barrier, and
+  begin/end-pass failures reach `vkr_renderer_submit_packet()`;
+- a rejected packet goes through `vkr_renderer_cancel_frame()`, which
+  resets the partially recorded primary command buffer, rolls back frame-local
+  readback/timing state, and records only a discard-to-present transition;
+- failures after acquire that cannot submit mark the frame for WSI/sync-object
+  recovery before the next acquire.
 
 `vkDeviceWaitIdle` is not part of the normal successful submit loop, but it is
 used by resize/shutdown and some graph timing/cache/resource recreation paths.
@@ -404,21 +417,83 @@ Upload paths instead contain blocking fence waits.
 
 ## 8. Prioritized Issues
 
-### P0 — Correctness and error contracts
+### P0 — Correctness and error contracts — **resolved 2026-07-31**
 
-1. **Index frame streams by the frame-in-flight slot, or size/index them by
-   swapchain image.** Do not modulo an arbitrary image count into a three-entry
-   ring.
-2. **Propagate backend failures.** Return distinct errors for fence, acquire,
-   record, submit, and present failures; preserve frame-active invariants on
-   every exit.
-3. **Validate before acquiring, or add an explicit cancel path.** A rejected
-   packet must not present a command buffer with an invented old layout.
-4. **Make graph execution fallible.** Barrier and render-pass failures must
-   abort submission and reach the caller.
-5. **Complete graph synchronization.** Emit barriers from stage/access/layout,
-   including same-layout hazards, and track image subresources where slices are
-   used.
+All five landed together; they are listed here as the record of what changed.
+Barrier and frame-path behaviour passed a validation-layer startup/steady-frame
+smoke run with a three-image swapchain. The broader scenario matrix remains a
+required gate — see §10.
+
+1. ~~**Index frame streams by the frame-in-flight slot.**~~ Done.
+   `frame_in_flight_index_get` / `frame_in_flight_count_get` were added to
+   `VkrRendererBackendInterface`, and `VkrInstanceBufferPool` /
+   `VkrIndirectDrawSystem` are now indexed by the fence-protected slot instead
+   of `image_index % 3`. `vkr_renderer_initialize` fails loudly if the backend
+   reports more in-flight frames than the pools hold. Two further defects were
+   found and fixed in the same area: `current_frame` was advanced twice per
+   frame (`renderer_vulkan_end_frame` *and* the tail of
+   `vulkan_swapchain_present`), which pinned the slot at 0 forever on a
+   two-image swapchain; and `images_in_flight` kept pointers into the
+   `in_flight_fences` array across a swapchain recreate that destroyed it.
+2. ~~**Propagate backend failures.**~~ Done. `VKR_RENDERER_ERROR_FRAME_SKIPPED`
+   and `VKR_RENDERER_ERROR_SUBMISSION_FAILED` were added;
+   `vulkan_swapchain_acquire_next_image` and `vulkan_swapchain_present` return a
+   tri-state `VulkanSwapchainResult` so a recreate-and-skip is no longer
+   indistinguishable from device loss. All seven false-success sites now return
+   real codes. `renderer_vulkan_begin_frame` has a single cleanup path, and a
+   frame that consumed an acquire without submitting sets
+   `frame_recovery_required`, which forces a device idle and swapchain recreate
+   before the next acquire. The acquire path no longer retries with a semaphore
+   that the recreate just destroyed. Swapchain-sized arrays now use the actual
+   image count returned by `vkGetSwapchainImagesKHR`, not the requested
+   `minImageCount`; queue-family indices also remain alive through
+   `vkCreateSwapchainKHR`. A terminal recreation failure marks the backend
+   unusable, so the void resize callback cannot leave later frames touching
+   partially rebuilt WSI state; the next frame surfaces `DEVICE_ERROR`.
+3. ~~**Add an explicit cancel path.**~~ Done. Packet validation moved into a
+   side-effect-free `vkr_renderer_validate_packet`, collapsing 29 duplicated
+   exits into one `goto cancel`. `vkr_renderer_cancel_frame` and the backend
+   `cancel_frame` entry reset the primary command buffer, discarding any passes,
+   barriers, timestamps, and readbacks recorded before the failure. They then
+   record and submit only an `UNDEFINED`→`PRESENT_SRC_KHR` transition, consuming
+   the acquire semaphore without presenting a partial frame. Newly-started
+   picking readbacks are rolled back in both the backend ring and retained
+   picking state.
+4. ~~**Make graph execution fallible.**~~ Done. `vkr_rg_execute` returns
+   `VkrRendererError`; barrier application and begin/end render pass are
+   checked and abort at the first failure; `VkrRgPassContext.error` lets an
+   executor report a recording failure without changing the executor signature.
+   Missing runtime image/buffer handles and missing graphics render targets are
+   errors rather than silently skipped work. `vkr_renderer_submit_packet`
+   cancels the frame on graph failure rather than presenting a partially
+   recorded one, and cancellation failures replace the original result as the
+   actionable lifecycle error.
+5. ~~**Complete graph synchronization.**~~ Done for declared resources.
+   `VkrRgImageAccessFlags` is now an alias of a renderer-wide
+   `VkrImageAccessFlags`, and the backend's `image_barrier` entry derives
+   `VkAccessFlags` and `VkPipelineStageFlags` from those accesses — replacing
+   the 21-entry old/new layout table, which could not express a same-layout
+   hazard and always covered the whole image. Barrier state is tracked per
+   (mip, layer); a barrier is emitted when the layout changes, the access
+   changes, **or** the previous access wrote. Contiguous subresources with
+   identical state coalesce into one barrier. Same-pass accesses are aggregated
+   before barrier emission: compatible storage read/write flags are unioned,
+   while incompatible layouts are rejected. Image storage usage is now exposed
+   through `VKR_TEXTURE_USAGE_STORAGE`, JSON `"STORAGE"`, and
+   `VK_IMAGE_USAGE_STORAGE_BIT`, so storage declarations are validated against
+   a real image-creation capability. Concretely, the four-cascade
+   `shadow_map` now emits one per-layer barrier per cascade — previously
+   cascades 1–3 emitted nothing at all — and a single merged barrier for the
+   whole-image `World.*` read. Each cascade, including layer 0, also receives an
+   exact one-layer framebuffer view; using the default whole-array view for
+   layer 0 made Vulkan require untouched layers to be attachment-optimal and
+   was caught by the validation smoke run. The layout-pair table remains in
+   `vulkan_image.c` for the ~20 upload, mipmap, and copy call sites that
+   legitimately think in layout pairs and run outside the graph.
+
+   **Residual gap:** this is correct synchronization for *declared* resources.
+   Picking and IBL still record GPU work on resources the graph does not
+   declare (P1 item 6), so graph state for those remains incomplete.
 
 ### P1 — Architectural completion
 
@@ -433,8 +508,11 @@ Upload paths instead contain blocking fence waits.
    waits from frame finalization.
 9. **Fix KTX2 normal-map capability fallback.** The selector returns
    `R8G8_UNORM` when neither BC5 nor ASTC is supported, but the KTX transcode
-   mapper has no `R8G8_UNORM` case and returns `KTX_TTF_NOSELECTION`. Strict
-   `.vkt` loading therefore fails on that capability combination.
+   API has no uncompressed two-channel target corresponding to that format, so
+   the mapper correctly returns `KTX_TTF_NOSELECTION`. Select a supported
+   RGBA32 transcode fallback (and reconstruct/use normal channels accordingly)
+   instead. Strict `.vkt` loading currently fails on that capability
+   combination.
 10. **Add device-memory pooling and budget telemetry.** Measure allocation count,
    heap use, and load time before selecting block sizes or VMA.
 
@@ -498,6 +576,9 @@ following checks were rerun:
 | Check | Result |
 |---|---|
 | `./build_test.sh` | Exit 0; all registered test suites completed |
+| `./build_test.sh` after P0 review | Exit 0; all registered suites completed, including 10 render-graph barrier/error-contract tests and the framebuffer slice-view regression test |
+| `./build.sh Debug` after P0 review | Exit 0; application and shaders built successfully |
+| Validation-layer run after P0 | Apple M1 Pro/MoltenVK, three-image swapchain: startup, IBL setup, swapchain recreation, and 10 seconds of steady frames completed with no validation messages after fixing the layer-0 array-view mismatch |
 | `vkr_frustum` production references | None outside its module/tests/docs |
 | `VkrDrawBatcher` production references | None outside its module/tests/docs |
 | `vkr_indirect_draw_alloc` callers | None |
@@ -506,7 +587,9 @@ following checks were rerun:
 | Dynamic rendering | Not present |
 | Descriptor indexing/bindless | Not enabled |
 | Uniform block reflection output | Explicitly set to empty |
+| `vkr_renderer_transition_texture_layout` callers | Replaced by `vkr_renderer_image_barrier`; the layout-pair table survives only for upload/copy paths in `vulkan_image.c` |
 
-The test runner is predominantly CPU-side and does not replace Vulkan
-validation-layer runs across multiple swapchain image counts, queue-family
-layouts, GPUs, and resize/failure scenarios.
+The CPU suite and one hardware smoke configuration do not replace
+validation-layer runs across two-, three-, and four-image swapchains,
+queue-family layouts, GPUs, resize/minimize/cancel paths, and injected acquire,
+fence, submit, and present failures.

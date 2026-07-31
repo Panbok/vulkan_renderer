@@ -42,8 +42,8 @@ QueueFamilyIndexResult find_queue_family_indices(VulkanBackendState *state,
   QueueFamilyIndexResult result = {0};
   result.length = QUEUE_FAMILY_TYPE_COUNT;
   for (uint32_t i = 0; i < QUEUE_FAMILY_TYPE_COUNT; i++) {
-    result.indices[i] = (QueueFamilyIndex){
-        .index = 0, .type = i, .is_present = false};
+    result.indices[i] =
+        (QueueFamilyIndex){.index = 0, .type = i, .is_present = false};
   }
 
   uint32_t queue_family_count = 0;
@@ -64,9 +64,12 @@ QueueFamilyIndexResult find_queue_family_indices(VulkanBackendState *state,
                                            queue_family_properties.data);
 
   for (uint32_t i = 0; i < queue_family_count; i++) {
-    QueueFamilyIndex *graphics_index = &result.indices[QUEUE_FAMILY_TYPE_GRAPHICS];
-    QueueFamilyIndex *present_index = &result.indices[QUEUE_FAMILY_TYPE_PRESENT];
-    QueueFamilyIndex *transfer_index = &result.indices[QUEUE_FAMILY_TYPE_TRANSFER];
+    QueueFamilyIndex *graphics_index =
+        &result.indices[QUEUE_FAMILY_TYPE_GRAPHICS];
+    QueueFamilyIndex *present_index =
+        &result.indices[QUEUE_FAMILY_TYPE_PRESENT];
+    QueueFamilyIndex *transfer_index =
+        &result.indices[QUEUE_FAMILY_TYPE_TRANSFER];
 
     if (graphics_index->is_present && present_index->is_present &&
         transfer_index->is_present) {
@@ -246,12 +249,28 @@ vulkan_image_usage_from_texture_usage(VkrTextureUsageFlags usage) {
     vk_usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   }
 
+  if (bitset8_is_set(&usage, VKR_TEXTURE_USAGE_STORAGE)) {
+    vk_usage |= VK_IMAGE_USAGE_STORAGE_BIT;
+  }
+
   if (vk_usage == 0) {
     log_fatal("Invalid texture usage: no valid flags set");
     return VK_IMAGE_USAGE_SAMPLED_BIT;
   }
 
   return vk_usage;
+}
+
+bool8_t vulkan_attachment_needs_subresource_view(
+    uint32_t image_mip_levels, uint32_t image_array_layers,
+    uint32_t attachment_mip_level, uint32_t attachment_base_layer,
+    uint32_t attachment_layer_count) {
+  // A framebuffer attachment view must describe exactly the declared mip and
+  // layer range. Layer 0 of an array is still a slice: using the default
+  // whole-array view would require every layer to be in the attachment layout.
+  return image_mip_levels > 1 || attachment_mip_level != 0 ||
+         attachment_base_layer != 0 ||
+         attachment_layer_count != image_array_layers;
 }
 
 VkMemoryPropertyFlags

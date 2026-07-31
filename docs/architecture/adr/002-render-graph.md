@@ -44,15 +44,14 @@ stable objects, but topology realization itself is currently per frame.
 
 ### Current synchronization boundary
 
-This decision is only partially implemented:
+Synchronization for declared resources is implemented, with these boundaries:
 
-- the compiler records image access masks, but `vkr_rg_execute.c` drops them and
-  calls a layout-pair transition API;
-- image barriers with equal old/new layouts are skipped, so same-layout memory
-  hazards are not synchronized;
-- buffer barriers with equal access flags are also skipped;
-- image state is whole-resource even when a pass names a mip/layer slice;
-- the backend supports a finite table of layout transitions;
+- declared image accesses reach the backend with access masks and mip/layer
+  ranges; same-layout write hazards are preserved;
+- barrier state is tracked per image subresource, and compatible declarations
+  within one pass are combined before its pre-barriers are emitted;
+- incompatible same-pass image layouts fail graph compilation;
+- buffer barriers are write-aware but still cover whole buffers;
 - compute/transfer pass types do not imply separate queues or cross-queue
   scheduling;
 - picking and IBL executors record graphics work against resources not declared
@@ -70,20 +69,16 @@ after each frame, despite the stale header comment, and they are not aliased.
   centralized.
 - Conditional/repeated pass structures are data rather than application call
   sequences.
-- Known lifetimes provide the basis for future subresource tracking and
-  aliasing.
+- Known lifetimes and subresource state provide the basis for future aliasing.
 - Generation-bearing handles catch some stale graph references.
 
 **Negative / risks**
 
 - An undeclared access is invisible to the compiler.
-- The current executor does not yet honor enough of the compiled access state
-  for synchronization correctness to be considered a graph guarantee.
 - Hidden nested render passes make graph inspection incomplete.
 - Per-frame graph realization and occasional cache rebuilds add CPU cost and
   can invoke device-idle waits when graph-owned objects change.
-- Execution currently returns `void`; compile, barrier, and begin/end-pass
-  failures are logged rather than propagated to packet submission.
+- Queue ownership and buffer byte ranges are not modeled.
 
 ## Alternatives Considered
 
@@ -96,9 +91,6 @@ after each frame, despite the stale header comment, and they are not aliased.
 
 ## Revisit When
 
-- Complete stage/access/layout barrier emission, including same-layout hazards
-  and mip/layer state.
 - Move picking and IBL work into declared graph passes.
-- Make compile/execution fallible and propagate errors to the caller.
 - Measure per-frame realization and introduce topology caching if warranted.
 - Add queue-aware compute/transfer scheduling or transient aliasing.

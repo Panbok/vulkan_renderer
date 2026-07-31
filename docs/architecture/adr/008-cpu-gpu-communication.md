@@ -28,10 +28,9 @@ cause the pass to omit work.
 `VkrIndirectDrawSystem` mirrors this for 16,384 layout-asserted indirect
 commands, but no production pass currently calls `vkr_indirect_draw_alloc()`.
 
-The stream ring is currently reset with acquired `image_index % 3`. This is
-unsafe when the swapchain has more than three images because two simultaneously
-in-flight images can alias one mapped stream. The ring must instead use the
-frame-in-flight slot or be sized/indexed by swapchain image count.
+Both stream rings are reset with the frame-in-flight slot exposed by the
+backend. Reuse is therefore protected by the same fence that `begin_frame`
+waited before resetting the cursor, independently of swapchain image count.
 
 ### 2. Uniforms and descriptors
 
@@ -84,8 +83,6 @@ case, not guaranteed non-blocking.
 - The implementation has several lifetime paths and fixed capacities.
 - A pump byte/op budget does not guarantee a frame-time budget while each GPU
   finalization can block on fences.
-- The current three-buffer/image-index mapping is a correctness issue on
-  swapchains with more than three images.
 - Readback ring pressure can stall the recording thread.
 - The CPU-only prepare contract and experimental parallel-upload safety are
   primarily convention/configuration based.
@@ -104,7 +101,6 @@ case, not guaranteed non-blocking.
 
 ## Revisit When
 
-- Fix stream-ring indexing before relying on four-image swapchains.
 - Remove per-upload waits and define staging retirement/consumer dependencies.
 - Replace the unsafe parallel opt-in with validated queue/pool ownership or
   remove the dormant path.

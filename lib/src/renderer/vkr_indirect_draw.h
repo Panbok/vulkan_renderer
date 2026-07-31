@@ -53,8 +53,15 @@ bool8_t vkr_indirect_draw_init(VkrIndirectDrawSystem *system,
 void vkr_indirect_draw_shutdown(VkrIndirectDrawSystem *system,
                                 VkrRendererFrontendHandle renderer);
 
+/**
+ * @brief Begin the indirect draw frame.
+ *
+ * @param system The system.
+ * @param frame_slot Frame-in-flight slot, in [0, VKR_INDIRECT_DRAW_FRAMES).
+ *        Must be the fence-protected slot, not the swapchain image index.
+ */
 void vkr_indirect_draw_begin_frame(VkrIndirectDrawSystem *system,
-                                   uint32_t frame_index);
+                                   uint32_t frame_slot);
 
 bool8_t vkr_indirect_draw_alloc(VkrIndirectDrawSystem *system, uint32_t count,
                                 uint32_t *out_base_draw,

@@ -46,6 +46,7 @@ VkrRendererError vkr_renderer_begin_frame(VkrRendererFrontendHandle renderer,
                                           float64_t delta_time);
 VkrRendererError vkr_renderer_end_frame(VkrRendererFrontendHandle renderer,
                                         float64_t delta_time);
+VkrRendererError vkr_renderer_cancel_frame(VkrRendererFrontendHandle renderer);
 
 vkr_internal void
 renderer_frontend_destroy_loader_async_allocators(RendererFrontend *rf) {
@@ -456,9 +457,18 @@ String8 vkr_renderer_get_error_string(VkrRendererError error) {
     return string8_lit("File not found");
   case VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED:
     return string8_lit("Resource not loaded");
-  default:
-    return string8_lit("Unknown error");
+  case VKR_RENDERER_ERROR_INITIALIZATION_FAILED:
+    return string8_lit("Initialization failed");
+  case VKR_RENDERER_ERROR_INCOMPATIBLE_SIGNATURE:
+    return string8_lit("Incompatible signature");
+  case VKR_RENDERER_ERROR_FRAME_SKIPPED:
+    return string8_lit("Frame skipped");
+  case VKR_RENDERER_ERROR_SUBMISSION_FAILED:
+    return string8_lit("Queue submission failed");
+  case VKR_RENDERER_ERROR_COUNT:
+    break;
   }
+  return string8_lit("Unknown error");
 }
 
 VkrWindow *vkr_renderer_get_window(VkrRendererFrontendHandle renderer) {
@@ -976,19 +986,22 @@ VkrTextureOpaqueHandle vkr_renderer_create_render_target_texture_msaa(
   return vkr_renderer_texture_create_result(handle, out_error);
 }
 
-VkrRendererError vkr_renderer_transition_texture_layout(
+VkrRendererError vkr_renderer_image_barrier(
     VkrRendererFrontendHandle renderer, VkrTextureOpaqueHandle texture,
-    VkrTextureLayout old_layout, VkrTextureLayout new_layout) {
+    VkrImageAccessFlags src_access, VkrImageAccessFlags dst_access,
+    VkrTextureLayout old_layout, VkrTextureLayout new_layout,
+    const VkrImageSubresourceRange *range) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(texture != NULL, "Texture is NULL");
 
-  if (!renderer->backend.texture_transition_layout) {
+  if (!renderer->backend.image_barrier) {
     return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
   }
 
   VkrBackendResourceHandle handle = {.ptr = (void *)texture};
-  return renderer->backend.texture_transition_layout(
-      renderer->backend_state, handle, old_layout, new_layout);
+  return renderer->backend.image_barrier(renderer->backend_state, handle,
+                                         src_access, dst_access, old_layout,
+                                         new_layout, range);
 }
 
 VkrRendererError vkr_renderer_write_texture(VkrRendererFrontendHandle renderer,
@@ -1273,9 +1286,9 @@ VkrRendererError vkr_renderer_buffer_barrier(VkrRendererFrontendHandle renderer,
   if (!renderer->backend.buffer_barrier) {
     return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
   }
-  if (src_access == dst_access) {
-    return VKR_RENDERER_ERROR_NONE;
-  }
+  // The write-aware skip lives in the backend, which owns the access-to-Vulkan
+  // mapping. Skipping here on equality alone would drop write-after-write
+  // ordering before the backend ever sees it.
   VkrBackendResourceHandle handle = {.ptr = (void *)buffer};
   return renderer->backend.buffer_barrier(renderer->backend_state, handle,
                                           src_access, dst_access);
@@ -1533,6 +1546,24 @@ uint32_t vkr_renderer_window_image_index(VkrRendererFrontendHandle renderer) {
   return renderer->backend.window_attachment_index_get(renderer->backend_state);
 }
 
+uint32_t
+vkr_renderer_frame_in_flight_index(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.frame_in_flight_index_get) {
+    return 0;
+  }
+  return renderer->backend.frame_in_flight_index_get(renderer->backend_state);
+}
+
+uint32_t
+vkr_renderer_frame_in_flight_count(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.frame_in_flight_count_get) {
+    return 1;
+  }
+  return renderer->backend.frame_in_flight_count_get(renderer->backend_state);
+}
+
 static VkrRendererError
 vkr_renderer_validation_fail(VkrValidationError *out_error,
                              VkrRendererError code, const char *field_path,
@@ -1681,6 +1712,209 @@ VkrRendererError vkr_renderer_prepare_frame(VkrRendererFrontendHandle renderer,
   return VKR_RENDERER_ERROR_NONE;
 }
 
+/**
+ * @brief Validates a render packet without touching any renderer state.
+ *
+ * Pure: it reads the packet and the retained systems it must check against, and
+ * mutates nothing. That is what lets the caller reject a packet and cancel the
+ * frame cleanly -- if validation had side effects, a rejected packet would
+ * leave the renderer half-updated.
+ *
+ * @return VKR_RENDERER_ERROR_NONE when the packet may be submitted.
+ */
+vkr_internal VkrRendererError vkr_renderer_validate_packet(
+    RendererFrontend *rf, const VkrRenderPacket *packet,
+    VkrValidationError *out_validation_error) {
+  if (!packet) {
+    return vkr_renderer_validation_fail(out_validation_error,
+                                        VKR_RENDERER_ERROR_INVALID_PARAMETER,
+                                        "packet", "packet is NULL");
+  }
+
+  if (packet->packet_version != VKR_RENDER_PACKET_VERSION) {
+    return vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+        "packet_version", "unsupported packet version");
+  }
+
+  if (packet->frame.window_width == 0 || packet->frame.window_height == 0) {
+    return vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+        "frame.window_width", "frame dimensions must be non-zero");
+  }
+
+  const VkrWorldPassPayload *world = packet->world;
+  if (world) {
+    if (world->instance_count > 0 && !world->instances) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "world.instances", "instances pointer is NULL");
+    }
+    VkrRendererError err = vkr_renderer_validate_draws(
+        rf, world->opaque_draws, world->opaque_draw_count,
+        world->instance_count, "world.opaque_draws", VKR_PIPELINE_DOMAIN_WORLD,
+        out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      return err;
+    }
+    err = vkr_renderer_validate_draws(
+        rf, world->transparent_draws, world->transparent_draw_count,
+        world->instance_count, "world.transparent_draws",
+        VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT, out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      return err;
+    }
+  }
+
+  const VkrShadowPassPayload *shadow = packet->shadow;
+  if (shadow) {
+    if (shadow->cascade_count == 0 ||
+        shadow->cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "shadow.cascade_count", "cascade_count is out of range");
+    }
+    if (rf->shadow_system.initialized &&
+        shadow->cascade_count > rf->shadow_system.config.cascade_count) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "shadow.cascade_count", "cascade_count exceeds shadow system config");
+    }
+    if (shadow->instance_count > 0 && !shadow->instances) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "shadow.instances", "instances pointer is NULL");
+    }
+    VkrRendererError err = vkr_renderer_validate_draws(
+        rf, shadow->opaque_draws, shadow->opaque_draw_count,
+        shadow->instance_count, "shadow.opaque_draws",
+        VKR_PIPELINE_DOMAIN_SHADOW, out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      return err;
+    }
+    err = vkr_renderer_validate_draws(
+        rf, shadow->alpha_draws, shadow->alpha_draw_count,
+        shadow->instance_count, "shadow.alpha_draws",
+        VKR_PIPELINE_DOMAIN_SHADOW, out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      return err;
+    }
+  }
+
+  const VkrUiPassPayload *ui = packet->ui;
+  if (ui) {
+    if (ui->instance_count > 0 && !ui->instances) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "ui.instances", "instances pointer is NULL");
+    }
+    VkrRendererError err = vkr_renderer_validate_draws(
+        rf, ui->draws, ui->draw_count, ui->instance_count, "ui.draws",
+        VKR_PIPELINE_DOMAIN_UI, out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      return err;
+    }
+  }
+
+  const VkrEditorPassPayload *editor = packet->editor;
+  if (editor) {
+    if (editor->instance_count > 0 && !editor->instances) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "editor.instances", "instances pointer is NULL");
+    }
+    VkrRendererError err = vkr_renderer_validate_draws(
+        rf, editor->draws, editor->draw_count, editor->instance_count,
+        "editor.draws", VKR_PIPELINE_DOMAIN_UI, out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      return err;
+    }
+  }
+
+  const VkrPickingPassPayload *picking = packet->picking;
+  if (picking && picking->pending) {
+    if (!rf->picking.initialized) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "picking.pending", "picking system is not initialized");
+    }
+    if (picking->x >= rf->picking.width || picking->y >= rf->picking.height) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "picking.x", "picking coordinates out of bounds");
+    }
+    if (picking->draws == NULL) {
+      if (!world) {
+        return vkr_renderer_validation_fail(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "picking.draws", "world payload required when draws are NULL");
+      }
+      if (picking->instances && picking->instances != world->instances) {
+        return vkr_renderer_validation_fail(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "picking.instances",
+            "instances must be NULL or match world instances");
+      }
+    } else {
+      if (picking->instance_count > 0 && !picking->instances) {
+        return vkr_renderer_validation_fail(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "picking.instances", "instances pointer is NULL");
+      }
+      VkrRendererError err = vkr_renderer_validate_draws(
+          rf, picking->draws, picking->draw_count, picking->instance_count,
+          "picking.draws", VKR_PIPELINE_DOMAIN_PICKING, out_validation_error);
+      if (err != VKR_RENDERER_ERROR_NONE) {
+        return err;
+      }
+    }
+  }
+
+  const VkrTextUpdatesPayload *text_updates = packet->text_updates;
+  if (text_updates) {
+    if (text_updates->world_text_update_count > 0 &&
+        !text_updates->world_text_updates) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "text_updates.world_text_updates", "update list is NULL");
+    }
+    if (text_updates->ui_text_update_count > 0 &&
+        !text_updates->ui_text_updates) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "text_updates.ui_text_updates", "update list is NULL");
+    }
+    for (uint32_t i = 0; i < text_updates->world_text_update_count; ++i) {
+      const VkrTextUpdate *update = &text_updates->world_text_updates[i];
+      if (update->text_id == VKR_INVALID_ID) {
+        return vkr_renderer_validation_failf(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "text_id is invalid", "text_updates.world[%u].text_id", i);
+      }
+      if (update->content.length > 0 && !update->content.str) {
+        return vkr_renderer_validation_failf(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "content is NULL", "text_updates.world[%u].content", i);
+      }
+    }
+    for (uint32_t i = 0; i < text_updates->ui_text_update_count; ++i) {
+      const VkrTextUpdate *update = &text_updates->ui_text_updates[i];
+      if (update->text_id == VKR_INVALID_ID) {
+        return vkr_renderer_validation_failf(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "text_id is invalid", "text_updates.ui[%u].text_id", i);
+      }
+      if (update->content.length > 0 && !update->content.str) {
+        return vkr_renderer_validation_failf(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "content is NULL", "text_updates.ui[%u].content", i);
+      }
+    }
+  }
+
+  return VKR_RENDERER_ERROR_NONE;
+}
+
 VkrRendererError
 vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
                            const VkrRenderPacket *packet,
@@ -1699,241 +1933,20 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
   if (packet && packet->frame.delta_time > 0.0) {
     safe_dt = packet->frame.delta_time;
   }
+  bool8_t cancel_new_picking_readback = false_v;
 
-  if (!packet) {
-    VkrRendererError err = vkr_renderer_validation_fail(
-        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER, "packet",
-        "packet is NULL");
-    vkr_renderer_end_frame(renderer, safe_dt);
-    return err;
+  VkrRendererError err =
+      vkr_renderer_validate_packet(rf, packet, out_validation_error);
+  if (err != VKR_RENDERER_ERROR_NONE) {
+    // Nothing has been mutated and no pass has touched the acquired image.
+    goto cancel;
   }
 
-  if (packet->packet_version != VKR_RENDER_PACKET_VERSION) {
-    VkrRendererError err = vkr_renderer_validation_fail(
-        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-        "packet_version", "unsupported packet version");
-    vkr_renderer_end_frame(renderer, safe_dt);
-    return err;
-  }
-
-  if (packet->frame.window_width == 0 || packet->frame.window_height == 0) {
-    VkrRendererError err = vkr_renderer_validation_fail(
-        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-        "frame.window_width", "frame dimensions must be non-zero");
-    vkr_renderer_end_frame(renderer, safe_dt);
-    return err;
-  }
-
-  const VkrWorldPassPayload *world = packet->world;
-  if (world) {
-    if (world->instance_count > 0 && !world->instances) {
-      VkrRendererError err = vkr_renderer_validation_fail(
-          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-          "world.instances", "instances pointer is NULL");
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-    VkrRendererError err = vkr_renderer_validate_draws(
-        rf, world->opaque_draws, world->opaque_draw_count,
-        world->instance_count, "world.opaque_draws", VKR_PIPELINE_DOMAIN_WORLD,
-        out_validation_error);
-    if (err != VKR_RENDERER_ERROR_NONE) {
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-    err = vkr_renderer_validate_draws(
-        rf, world->transparent_draws, world->transparent_draw_count,
-        world->instance_count, "world.transparent_draws",
-        VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT, out_validation_error);
-    if (err != VKR_RENDERER_ERROR_NONE) {
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-  }
-
-  const VkrShadowPassPayload *shadow = packet->shadow;
-  if (shadow) {
-    if (shadow->cascade_count == 0 ||
-        shadow->cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX) {
-      VkrRendererError err = vkr_renderer_validation_fail(
-          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-          "shadow.cascade_count", "cascade_count is out of range");
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-    if (rf->shadow_system.initialized &&
-        shadow->cascade_count > rf->shadow_system.config.cascade_count) {
-      VkrRendererError err = vkr_renderer_validation_fail(
-          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-          "shadow.cascade_count", "cascade_count exceeds shadow system config");
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-    if (shadow->instance_count > 0 && !shadow->instances) {
-      VkrRendererError err = vkr_renderer_validation_fail(
-          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-          "shadow.instances", "instances pointer is NULL");
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-    VkrRendererError err = vkr_renderer_validate_draws(
-        rf, shadow->opaque_draws, shadow->opaque_draw_count,
-        shadow->instance_count, "shadow.opaque_draws",
-        VKR_PIPELINE_DOMAIN_SHADOW, out_validation_error);
-    if (err != VKR_RENDERER_ERROR_NONE) {
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-    err = vkr_renderer_validate_draws(
-        rf, shadow->alpha_draws, shadow->alpha_draw_count,
-        shadow->instance_count, "shadow.alpha_draws",
-        VKR_PIPELINE_DOMAIN_SHADOW, out_validation_error);
-    if (err != VKR_RENDERER_ERROR_NONE) {
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-  }
-
-  const VkrUiPassPayload *ui = packet->ui;
-  if (ui) {
-    if (ui->instance_count > 0 && !ui->instances) {
-      VkrRendererError err = vkr_renderer_validation_fail(
-          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-          "ui.instances", "instances pointer is NULL");
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-    VkrRendererError err = vkr_renderer_validate_draws(
-        rf, ui->draws, ui->draw_count, ui->instance_count, "ui.draws",
-        VKR_PIPELINE_DOMAIN_UI, out_validation_error);
-    if (err != VKR_RENDERER_ERROR_NONE) {
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-  }
-
-  const VkrEditorPassPayload *editor = packet->editor;
-  if (editor) {
-    if (editor->instance_count > 0 && !editor->instances) {
-      VkrRendererError err = vkr_renderer_validation_fail(
-          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-          "editor.instances", "instances pointer is NULL");
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-    VkrRendererError err = vkr_renderer_validate_draws(
-        rf, editor->draws, editor->draw_count, editor->instance_count,
-        "editor.draws", VKR_PIPELINE_DOMAIN_UI, out_validation_error);
-    if (err != VKR_RENDERER_ERROR_NONE) {
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-  }
-
-  const VkrPickingPassPayload *picking = packet->picking;
-  if (picking && picking->pending) {
-    if (!rf->picking.initialized) {
-      VkrRendererError err = vkr_renderer_validation_fail(
-          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-          "picking.pending", "picking system is not initialized");
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-    if (picking->x >= rf->picking.width || picking->y >= rf->picking.height) {
-      VkrRendererError err = vkr_renderer_validation_fail(
-          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-          "picking.x", "picking coordinates out of bounds");
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-    if (picking->draws == NULL) {
-      if (!world) {
-        VkrRendererError err = vkr_renderer_validation_fail(
-            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-            "picking.draws", "world payload required when draws are NULL");
-        vkr_renderer_end_frame(renderer, safe_dt);
-        return err;
-      }
-      if (picking->instances && picking->instances != world->instances) {
-        VkrRendererError err = vkr_renderer_validation_fail(
-            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-            "picking.instances",
-            "instances must be NULL or match world instances");
-        vkr_renderer_end_frame(renderer, safe_dt);
-        return err;
-      }
-    } else {
-      if (picking->instance_count > 0 && !picking->instances) {
-        VkrRendererError err = vkr_renderer_validation_fail(
-            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-            "picking.instances", "instances pointer is NULL");
-        vkr_renderer_end_frame(renderer, safe_dt);
-        return err;
-      }
-      VkrRendererError err = vkr_renderer_validate_draws(
-          rf, picking->draws, picking->draw_count, picking->instance_count,
-          "picking.draws", VKR_PIPELINE_DOMAIN_PICKING, out_validation_error);
-      if (err != VKR_RENDERER_ERROR_NONE) {
-        vkr_renderer_end_frame(renderer, safe_dt);
-        return err;
-      }
-    }
-  }
-
+  // ---- Retained-state mutation begins here. ----
+  // Failures past this point still cancel the frame, but do not roll back what
+  // has already been applied: rolling back would need a shadow copy of every
+  // retained system. The next accepted packet renders the applied state.
   const VkrTextUpdatesPayload *text_updates = packet->text_updates;
-  if (text_updates) {
-    if (text_updates->world_text_update_count > 0 &&
-        !text_updates->world_text_updates) {
-      VkrRendererError err = vkr_renderer_validation_fail(
-          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-          "text_updates.world_text_updates", "update list is NULL");
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-    if (text_updates->ui_text_update_count > 0 &&
-        !text_updates->ui_text_updates) {
-      VkrRendererError err = vkr_renderer_validation_fail(
-          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-          "text_updates.ui_text_updates", "update list is NULL");
-      vkr_renderer_end_frame(renderer, safe_dt);
-      return err;
-    }
-    for (uint32_t i = 0; i < text_updates->world_text_update_count; ++i) {
-      const VkrTextUpdate *update = &text_updates->world_text_updates[i];
-      if (update->text_id == VKR_INVALID_ID) {
-        VkrRendererError err = vkr_renderer_validation_failf(
-            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-            "text_id is invalid", "text_updates.world[%u].text_id", i);
-        vkr_renderer_end_frame(renderer, safe_dt);
-        return err;
-      }
-      if (update->content.length > 0 && !update->content.str) {
-        VkrRendererError err = vkr_renderer_validation_failf(
-            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-            "content is NULL", "text_updates.world[%u].content", i);
-        vkr_renderer_end_frame(renderer, safe_dt);
-        return err;
-      }
-    }
-    for (uint32_t i = 0; i < text_updates->ui_text_update_count; ++i) {
-      const VkrTextUpdate *update = &text_updates->ui_text_updates[i];
-      if (update->text_id == VKR_INVALID_ID) {
-        VkrRendererError err = vkr_renderer_validation_failf(
-            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-            "text_id is invalid", "text_updates.ui[%u].text_id", i);
-        vkr_renderer_end_frame(renderer, safe_dt);
-        return err;
-      }
-      if (update->content.length > 0 && !update->content.str) {
-        VkrRendererError err = vkr_renderer_validation_failf(
-            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
-            "content is NULL", "text_updates.ui[%u].content", i);
-        vkr_renderer_end_frame(renderer, safe_dt);
-        return err;
-      }
-    }
-  }
-
   if (text_updates) {
     for (uint32_t i = 0; i < text_updates->world_text_update_count; ++i) {
       const VkrTextUpdate *update = &text_updates->world_text_updates[i];
@@ -1989,11 +2002,10 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
 
   if (!rf->render_graph_enabled || !rf->render_graph ||
       !rf->render_graph_loaded) {
-    VkrRendererError err = vkr_renderer_validation_fail(
+    err = vkr_renderer_validation_fail(
         out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
         "render_graph", "render graph is not available");
-    vkr_renderer_end_frame(renderer, safe_dt);
-    return err;
+    goto cancel;
   }
 
   VkrShadowConfig shadow_cfg_fallback = VKR_SHADOW_CONFIG_DEFAULT;
@@ -2028,21 +2040,60 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
   vkr_rg_begin_frame(rf->render_graph, &frame);
   if (!vkr_rg_build_from_json(rf->render_graph, &rf->render_graph_json, &frame,
                               &rf->rg_executor_registry)) {
-    VkrRendererError err = vkr_renderer_validation_fail(
+    err = vkr_renderer_validation_fail(
         out_validation_error, VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED,
         "render_graph", "render graph build failed");
-    vkr_renderer_end_frame(renderer, safe_dt);
-    return err;
+    goto cancel;
   }
 
   vkr_rg_set_packet(rf->render_graph, packet);
-  vkr_rg_execute(rf->render_graph, rf);
+  VkrPickingState picking_state_before = rf->picking.state;
+  err = vkr_rg_execute(rf->render_graph, rf);
+  if (err != VKR_RENDERER_ERROR_NONE) {
+    // A barrier or render pass failed, so the recorded commands are not a
+    // coherent frame. Cancelling discards the image instead of presenting work
+    // whose layout transitions never happened.
+    vkr_renderer_validation_fail(out_validation_error, err, "render_graph",
+                                 "render graph execution failed");
+    cancel_new_picking_readback =
+        picking_state_before != VKR_PICKING_STATE_READBACK_PENDING &&
+        rf->picking.state == VKR_PICKING_STATE_READBACK_PENDING;
+    goto cancel;
+  }
 
   if (out_metrics) {
     *out_metrics = rf->frame_metrics;
   }
 
-  return vkr_renderer_end_frame(renderer, safe_dt);
+  err = vkr_renderer_end_frame(renderer, safe_dt);
+  if (err != VKR_RENDERER_ERROR_NONE &&
+      err != VKR_RENDERER_ERROR_PRESENTATION_FAILED &&
+      picking_state_before != VKR_PICKING_STATE_READBACK_PENDING &&
+      rf->picking.state == VKR_PICKING_STATE_READBACK_PENDING) {
+    // No queue submission owns the newly-recorded readback. The backend has
+    // returned its ring slot to IDLE; mirror that rollback in the picking state
+    // so a failed submit cannot leave picking pending forever.
+    vkr_picking_cancel(&rf->picking);
+  }
+  return err;
+
+cancel:
+  if (out_metrics) {
+    *out_metrics = rf->frame_metrics;
+  }
+  if (cancel_new_picking_readback) {
+    vkr_picking_cancel(&rf->picking);
+  }
+  VkrRendererError cancel_err = vkr_renderer_cancel_frame(renderer);
+  if (cancel_err != VKR_RENDERER_ERROR_NONE) {
+    String8 cancel_error_string = vkr_renderer_get_error_string(cancel_err);
+    log_error("Failed to cancel renderer frame: %s",
+              string8_cstr(&cancel_error_string));
+    // The backend lifecycle error is now the actionable failure. Structured
+    // packet/graph detail remains available in out_validation_error.
+    return cancel_err;
+  }
+  return err;
 }
 
 VkrRendererError vkr_renderer_begin_frame(VkrRendererFrontendHandle renderer,
@@ -2078,15 +2129,20 @@ VkrRendererError vkr_renderer_begin_frame(VkrRendererFrontendHandle renderer,
     vkr_resource_system_pump(NULL);
     vkr_mesh_manager_pump_async(&renderer->mesh_manager);
     MemZero(&renderer->frame_metrics, sizeof(renderer->frame_metrics));
+    // Per-frame streams are indexed by the frame-in-flight slot, never by the
+    // swapchain image index: begin_frame waited on this slot's fence, so its
+    // previous contents are guaranteed to have no GPU readers left. A swapchain
+    // with more images than in-flight slots would alias two live images onto
+    // one buffer.
+    uint32_t frame_slot = vkr_renderer_frame_in_flight_index(renderer);
     if (renderer->instance_buffer_pool.initialized) {
-      uint32_t image_index = vkr_renderer_window_image_index(renderer);
       vkr_instance_buffer_begin_frame(&renderer->instance_buffer_pool,
-                                      image_index);
-      if (renderer->indirect_draw_system.initialized &&
-          renderer->indirect_draw_system.enabled) {
-        vkr_indirect_draw_begin_frame(&renderer->indirect_draw_system,
-                                      image_index);
-      }
+                                      frame_slot);
+    }
+    if (renderer->indirect_draw_system.initialized &&
+        renderer->indirect_draw_system.enabled) {
+      vkr_indirect_draw_begin_frame(&renderer->indirect_draw_system,
+                                    frame_slot);
     }
   }
 
@@ -2236,6 +2292,38 @@ VkrRendererError vkr_renderer_end_frame(VkrRendererFrontendHandle renderer,
   return result;
 }
 
+/**
+ * @brief Abandons the active frame without rendering it.
+ *
+ * Used when a packet is rejected or graph execution fails after the swapchain
+ * image has already been acquired. The backend still submits and presents so
+ * the acquire semaphore is consumed and the image is returned to the
+ * presentation engine; see the cancel_frame backend entry for why discarding is
+ * not an option. Always clears frame_active, so a caller can never be left
+ * holding a frame it cannot end.
+ */
+VkrRendererError vkr_renderer_cancel_frame(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+
+  if (!renderer->frame_active) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  VkrRendererError result = VKR_RENDERER_ERROR_NONE;
+  if (renderer->backend.cancel_frame) {
+    result = renderer->backend.cancel_frame(renderer->backend_state);
+  } else {
+    // A backend without a cancel entry must still terminate the frame, or the
+    // next prepare_frame would fail with FRAME_IN_PROGRESS forever.
+    result = renderer->backend.end_frame(renderer->backend_state, 1.0 / 60.0);
+  }
+  renderer->frame_active = false;
+
+  vkr_pipeline_registry_collect_backend_telemetry(&renderer->pipeline_registry);
+
+  return result;
+}
+
 uint64_t vkr_renderer_get_and_reset_descriptor_writes_avoided(
     VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
@@ -2355,6 +2443,21 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   }
   rf->render_graph_loaded = true_v;
   rf->render_graph_enabled = true_v;
+
+  // Per-frame streams are indexed directly by the backend's frame-in-flight
+  // slot, so their slot counts must cover every slot the backend can produce.
+  // Checked once here rather than per frame; a mismatch would alias two
+  // in-flight frames onto one buffer.
+  uint32_t frame_slot_count = vkr_renderer_frame_in_flight_count(rf);
+  if (frame_slot_count > VKR_INSTANCE_BUFFER_FRAMES ||
+      frame_slot_count > VKR_INDIRECT_DRAW_FRAMES) {
+    log_fatal(
+        "Backend reports %u frames in flight; per-frame stream pools hold "
+        "%u/%u slots",
+        frame_slot_count, (uint32_t)VKR_INSTANCE_BUFFER_FRAMES,
+        (uint32_t)VKR_INDIRECT_DRAW_FRAMES);
+    return false_v;
+  }
 
   if (!vkr_instance_buffer_pool_init(&rf->instance_buffer_pool, rf,
                                      VKR_INSTANCE_BUFFER_MAX_INSTANCES)) {

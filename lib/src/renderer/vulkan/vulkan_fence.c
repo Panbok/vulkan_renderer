@@ -75,12 +75,18 @@ bool8_t vulkan_fence_wait(VulkanBackendState *state, uint64_t timeout,
   return false_v;
 }
 
-void vulkan_fence_reset(VulkanBackendState *state, VulkanFence *fence) {
+bool8_t vulkan_fence_reset(VulkanBackendState *state, VulkanFence *fence) {
   assert_log(state != NULL, "Vulkan backend state is NULL");
   assert_log(fence != NULL, "Vulkan fence is NULL");
 
   if (fence->is_signaled) {
-    vkResetFences(state->device.logical_device, 1, &fence->handle);
+    VkResult result =
+        vkResetFences(state->device.logical_device, 1, &fence->handle);
+    if (result != VK_SUCCESS) {
+      log_error("Failed to reset Vulkan fence: %d", result);
+      return false_v;
+    }
     fence->is_signaled = false_v;
   }
+  return true_v;
 }

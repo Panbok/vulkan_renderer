@@ -77,9 +77,31 @@ typedef struct VkrRgImageBarrier {
   VkrRgImageAccessFlags dst_access; /**< Destination access mask */
   VkrTextureLayout src_layout;      /**< Source layout */
   VkrTextureLayout dst_layout;      /**< Destination layout */
+  /** Subresources this barrier covers; zeroed means the whole image. */
+  VkrImageSubresourceRange range;
 } VkrRgImageBarrier;
 
 Vector(VkrRgImageBarrier);
+
+/**
+ * @brief Access and layout of one image subresource during barrier generation.
+ */
+typedef struct VkrRgSubresourceState {
+  VkrRgImageAccessFlags access;
+  VkrTextureLayout layout;
+  VkrRgImageAccessFlags pending_access;
+  VkrTextureLayout pending_layout;
+  uint32_t pending_token;
+} VkrRgSubresourceState;
+
+/**
+ * @brief Access of one buffer during barrier generation.
+ */
+typedef struct VkrRgBufferState {
+  VkrRgBufferAccessFlags access;
+  VkrRgBufferAccessFlags pending_access;
+  uint32_t pending_token;
+} VkrRgBufferState;
 
 /**
  * @brief Buffer access transition inserted before or after a pass.
@@ -163,7 +185,41 @@ typedef struct VkrRenderGraph {
   VkrRenderGraphResourceStats
       resource_stats; /**< Live/peak resource counts and bytes */
   Vector_VkrRgPassTiming pass_timings; /**< Per-pass timing from last execute */
+
+  /**
+   * Per-subresource state used by barrier generation. Image i owns
+   * mip_levels * array_layers consecutive slots starting at
+   * image_state_offsets[i]; buffers own one slot each.
+   *
+   * Grown on demand and reused across frames. vkr_rg_begin_frame clears the
+   * compiled flag every frame, so barrier generation runs every frame and must
+   * not allocate in steady state. Freed by vkr_rg_destroy.
+   */
+  VkrRgSubresourceState *subresource_states;
+  uint32_t subresource_state_capacity;
+  uint32_t *image_state_offsets;
+  uint32_t image_state_offset_capacity;
+  uint32_t *image_touch_tokens;
+  uint32_t *touched_image_indices;
+  uint32_t touched_image_capacity;
+  VkrRgBufferState *buffer_states;
+  uint32_t buffer_state_capacity;
+  uint32_t *touched_buffer_indices;
+  uint32_t touched_buffer_capacity;
 } VkrRenderGraph;
+
+/**
+ * @brief Runs the renderer-independent half of compile: validation, dependency
+ * edges, culling, topological ordering, lifetimes, and barrier planning.
+ *
+ * Split out of vkr_rg_compile so barrier planning -- a deterministic function
+ * of the declared graph -- can be exercised without a live renderer. Everything
+ * vkr_rg_compile does after this point allocates real textures and framebuffers
+ * and requires a backend.
+ *
+ * @return true when the graph scheduled and its barriers were planned.
+ */
+bool8_t vkr_rg_compile_schedule(VkrRenderGraph *graph);
 
 /**
  * @brief Adds image count and bytes to the graph's resource stats (live and

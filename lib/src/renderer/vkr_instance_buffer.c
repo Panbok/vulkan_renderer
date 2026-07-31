@@ -12,8 +12,8 @@ vkr_internal bool8_t vkr_instance_buffer_pool_try_init(
   uint64_t size_bytes = (uint64_t)max_instances * sizeof(VkrInstanceDataGPU);
   VkrBufferDescription desc = {
       .size = size_bytes,
-      .usage = vkr_buffer_usage_flags_from_bits(
-          VKR_BUFFER_USAGE_STORAGE | VKR_BUFFER_USAGE_TRANSFER_DST),
+      .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_STORAGE |
+                                                VKR_BUFFER_USAGE_TRANSFER_DST),
       .memory_properties = memory_flags,
       .buffer_type = buffer_type,
       .bind_on_create = true_v,
@@ -40,8 +40,9 @@ vkr_internal bool8_t vkr_instance_buffer_pool_try_init(
                                            .capacity = max_instances,
                                            .write_offset = 0,
                                            .needs_flush = needs_flush};
-    pool->buffers[i].mapped_ptr = (VkrInstanceDataGPU *)
-        vkr_renderer_buffer_get_mapped_ptr(renderer, buffer);
+    pool->buffers[i].mapped_ptr =
+        (VkrInstanceDataGPU *)vkr_renderer_buffer_get_mapped_ptr(renderer,
+                                                                 buffer);
     if (!pool->buffers[i].mapped_ptr) {
       log_error("Instance buffer mapping failed");
       for (uint32_t j = 0; j <= i; ++j) {
@@ -65,8 +66,8 @@ bool8_t vkr_instance_buffer_pool_init(VkrInstanceBufferPool *pool,
 
   MemZero(pool, sizeof(*pool));
   pool->renderer = renderer;
-  pool->max_instances = max_instances > 0 ? max_instances
-                                          : VKR_INSTANCE_BUFFER_MAX_INSTANCES;
+  pool->max_instances =
+      max_instances > 0 ? max_instances : VKR_INSTANCE_BUFFER_MAX_INSTANCES;
 
   VkrMemoryPropertyFlags preferred = vkr_memory_property_flags_from_bits(
       VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT |
@@ -118,12 +119,17 @@ void vkr_instance_buffer_pool_shutdown(VkrInstanceBufferPool *pool,
 }
 
 void vkr_instance_buffer_begin_frame(VkrInstanceBufferPool *pool,
-                                     uint32_t frame_index) {
+                                     uint32_t frame_slot) {
   if (!pool || !pool->initialized) {
     return;
   }
 
-  pool->current_frame = frame_index % VKR_INSTANCE_BUFFER_FRAMES;
+  // frame_slot is the fence-protected frame-in-flight slot, which the backend
+  // caps at BUFFERING_FRAMES == VKR_INSTANCE_BUFFER_FRAMES. Wrapping it here
+  // would silently alias two in-flight frames onto one buffer.
+  assert_log(frame_slot < VKR_INSTANCE_BUFFER_FRAMES,
+             "Frame slot out of range for instance buffer pool");
+  pool->current_frame = frame_slot;
   VkrInstanceBuffer *buffer = &pool->buffers[pool->current_frame];
   buffer->write_offset = 0;
 
@@ -155,8 +161,7 @@ bool8_t vkr_instance_buffer_alloc(VkrInstanceBufferPool *pool, uint32_t count,
 }
 
 void vkr_instance_buffer_flush_range(VkrInstanceBufferPool *pool,
-                                     uint32_t base_instance,
-                                     uint32_t count) {
+                                     uint32_t base_instance, uint32_t count) {
   if (!pool || !pool->initialized || count == 0) {
     return;
   }
@@ -181,8 +186,8 @@ void vkr_instance_buffer_flush_current(VkrInstanceBufferPool *pool) {
   vkr_instance_buffer_flush_range(pool, 0, buffer->write_offset);
 }
 
-VkrBufferHandle vkr_instance_buffer_get_current(
-    const VkrInstanceBufferPool *pool) {
+VkrBufferHandle
+vkr_instance_buffer_get_current(const VkrInstanceBufferPool *pool) {
   if (!pool || !pool->initialized) {
     return NULL;
   }
