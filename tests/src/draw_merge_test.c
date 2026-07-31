@@ -246,6 +246,113 @@ static void test_submesh_sphere_is_conservative_under_scale(void) {
   printf("  test_submesh_sphere_is_conservative_under_scale PASSED\n");
 }
 
+
+static VkrDrawCandidate make_candidate(uint32_t geom, uint32_t mat,
+                                       uint32_t first, uint32_t count,
+                                       uint32_t object_id) {
+  VkrDrawCandidate c = {0};
+  c.key = merge_key(geom, mat, first, count);
+  c.model = mat4_identity();
+  c.model.m03 = (float32_t)object_id; // distinguishable per instance
+  c.object_id = object_id;
+  c.submesh_index = 0;
+  return c;
+}
+
+/**
+ * The property that makes an instanced draw legal: every instance of a merged
+ * run must occupy consecutive slots starting at the draw's first_instance.
+ * If emission and merging disagree the GPU reads another draw's transforms,
+ * which renders plausibly wrong rather than obviously broken.
+ */
+static void test_merged_runs_have_contiguous_instances(void) {
+  printf("  Running test_merged_runs_have_contiguous_instances...\n");
+  VkrDrawCandidate cands[6] = {
+      make_candidate(7, 3, 0, 120, 10), make_candidate(1, 1, 0, 10, 20),
+      make_candidate(7, 3, 0, 120, 11), make_candidate(2, 2, 0, 10, 30),
+      make_candidate(7, 3, 0, 120, 12), make_candidate(1, 1, 0, 10, 21),
+  };
+  VkrDrawItem draws[6] = {0};
+  VkrInstanceDataGPU instances[6] = {0};
+  uint32_t draw_count = 0;
+
+  uint32_t written = vkr_draw_merge_candidates(cands, 6, 0u, draws, &draw_count,
+                                               instances);
+  assert(written == 6);
+  // geom7 x3, geom1 x2, geom2 x1 -> three draws.
+  assert(draw_count == 3);
+
+  uint32_t total_instances = 0;
+  for (uint32_t d = 0; d < draw_count; ++d) {
+    assert(draws[d].instance_count >= 1);
+    total_instances += draws[d].instance_count;
+    // Each draw's range must lie inside the array and not overlap the next.
+    assert(draws[d].first_instance + draws[d].instance_count <= written);
+    if (d > 0) {
+      assert(draws[d].first_instance ==
+             draws[d - 1].first_instance + draws[d - 1].instance_count);
+    }
+  }
+  assert(total_instances == 6);
+
+  // The run of three must exist and its instances must be the three distinct
+  // objects that shared the key.
+  uint32_t run_of_three = UINT32_MAX;
+  for (uint32_t d = 0; d < draw_count; ++d) {
+    if (draws[d].instance_count == 3) {
+      run_of_three = d;
+    }
+  }
+  assert(run_of_three != UINT32_MAX);
+  uint32_t seen = 0;
+  for (uint32_t i = 0; i < 3; ++i) {
+    uint32_t oid = instances[draws[run_of_three].first_instance + i].object_id;
+    assert(oid >= 10 && oid <= 12);
+    seen |= 1u << (oid - 10);
+  }
+  assert(seen == 0x7);
+  printf("  test_merged_runs_have_contiguous_instances PASSED\n");
+}
+
+static void test_unmerged_emission_preserves_order(void) {
+  printf("  Running test_unmerged_emission_preserves_order...\n");
+  // Transparent draws must keep their sorted order and stay one instance each.
+  VkrDrawCandidate cands[3] = {
+      make_candidate(1, 1, 0, 10, 100),
+      make_candidate(1, 1, 0, 10, 101),
+      make_candidate(1, 1, 0, 10, 102),
+  };
+  VkrDrawItem draws[3] = {0};
+  VkrInstanceDataGPU instances[8] = {0};
+
+  uint32_t written = vkr_draw_emit_unmerged(cands, 3, 5u, draws, instances);
+  assert(written == 3);
+  for (uint32_t i = 0; i < 3; ++i) {
+    assert(draws[i].instance_count == 1);
+    assert(draws[i].first_instance == 5u + i);
+    assert(instances[5u + i].object_id == 100u + i);
+  }
+  printf("  test_unmerged_emission_preserves_order PASSED\n");
+}
+
+static void test_merge_of_all_distinct_emits_one_draw_each(void) {
+  printf("  Running test_merge_of_all_distinct_emits_one_draw_each...\n");
+  VkrDrawCandidate cands[3] = {
+      make_candidate(1, 1, 0, 10, 1),
+      make_candidate(2, 2, 0, 10, 2),
+      make_candidate(3, 3, 0, 10, 3),
+  };
+  VkrDrawItem draws[3] = {0};
+  VkrInstanceDataGPU instances[3] = {0};
+  uint32_t draw_count = 0;
+  vkr_draw_merge_candidates(cands, 3, 0u, draws, &draw_count, instances);
+  assert(draw_count == 3);
+  for (uint32_t i = 0; i < 3; ++i) {
+    assert(draws[i].instance_count == 1);
+  }
+  printf("  test_merge_of_all_distinct_emits_one_draw_each PASSED\n");
+}
+
 bool32_t run_draw_merge_tests(void) {
   printf("--- Starting Draw Merge Tests ---\n");
 
@@ -254,6 +361,9 @@ bool32_t run_draw_merge_tests(void) {
   test_same_geometry_different_range_does_not_merge();
   test_same_geometry_different_material_does_not_merge();
   test_empty_input_is_safe();
+  test_merged_runs_have_contiguous_instances();
+  test_unmerged_emission_preserves_order();
+  test_merge_of_all_distinct_emits_one_draw_each();
   test_frustum_never_rejects_visible_geometry();
   test_frustum_rejects_far_offscreen_geometry();
   test_camera_and_shadow_visibility_are_independent();

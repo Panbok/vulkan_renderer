@@ -5,10 +5,13 @@ authority: spec
 ---
 # P2 Throughput — Measured Findings
 
-> **Headline.** Frustum culling and separate shadow visibility ship. Instancing
-> and multi-draw-indirect do **not**, because the measurement shows they would
-> collapse exactly zero draws on the shipped content. Frame time is unchanged:
-> 19.671 ms → 19.637 ms average, which is noise.
+> **Headline.** All four P2 items ship. Culling rejects ~37% of submeshes on
+> San Miguel (0% on Sponza). Instancing and multi-draw-indirect are implemented
+> and MDI demonstrably fires — the shadow pass collapses **1124 draw calls into
+> 8 indirect calls** every frame. Frame time does not move: 20.57 ms with MDI
+> vs 20.91 ms without, across three interleaved runs whose own spread is larger
+> than the gap. Draw submission is ~2% of a ~20 ms frame, so removing it cannot
+> show up.
 
 ## Why this document exists
 
@@ -17,11 +20,14 @@ per-draw loop is a throughput problem worth attacking with culling, instancing,
 and MDI. Per AGENTS.md an unmeasured performance claim is not a result, so each
 item was measured before and after rather than assumed.
 
-Two of the four assumptions did not survive contact with the content.
+Two of the four assumptions did not survive contact with the content, and the
+two remaining ones shipped with numbers that say where the frame time actually
+goes.
 
 ## Method
 
-Release build, headless, fixed camera (no input), Sponza:
+Release build, headless, no input. Two scenes: Sponza (36 draws) for Findings
+1-3, San Miguel (282 submeshes) for Finding 4.
 
 ```sh
 ./build_release.sh
@@ -29,12 +35,18 @@ VKR_AUTOLOAD_SCENE=1 VKR_BENCHMARK_LOG=1 VKR_BENCHMARK_LABEL=<label> \
   VKR_AUTOCLOSE_SECONDS=60 ./build_release/app/vulkan_renderer
 ```
 
-`BENCHMARK_SAMPLE` now carries the visibility and merge counters added for this
-work: `vis_tested`, `vis_cull_cam`, `vis_cull_shadow`, `mergeable`,
-`distinct_keys`, `max_run`.
+`BENCHMARK_SAMPLE` carries the visibility, merge and submission counters added
+for this work: `vis_tested`, `vis_cull_cam`, `vis_cull_shadow`,
+`opaque_before`, `opaque_after`, `mergeable`, `max_run`, `geoms`, `mats`,
+`indirect`.
 
-Both runs use the same camera, so the comparison is like-for-like. A moving
-camera would make culling numbers vary per frame and is the obvious follow-up.
+`VKR_DISABLE_MDI=1` turns the indirect path off at runtime, so the A/B in
+Finding 4 is the same binary against the same content — the only way to
+attribute a frame-time delta to MDI rather than to a build difference.
+
+Culling counts vary frame to frame on San Miguel because the camera moves, which
+is why Finding 4 compares 40-second means over three interleaved runs rather
+than single frames.
 
 ## Results
 
@@ -63,7 +75,7 @@ issuing about one draw per material for the whole scene. Whatever costs 19 ms
 per frame here, it is not draw-call submission: the render graph's whole CPU
 time is 0.15–0.28 ms.
 
-## Finding 2 — culling cannot reject anything on this content
+## Finding 2 — culling rejects nothing on Sponza, ~37% on San Miguel
 
 Culling was implemented twice. At object granularity it tested 6 objects and
 rejected 0 — unsurprising, since two of them are Sponza-sized and contain the
@@ -75,8 +87,14 @@ essentially the entire model, because its geometry is scattered across the whole
 building. There is no spatial locality left to cull against.
 
 Culling ships anyway, because it is correct, costs 36 sphere tests per frame,
-and is a prerequisite for Finding 3. But on this content it is a no-op, and
-saying otherwise would be inventing a result.
+and is a prerequisite for Finding 3. But on Sponza it is a no-op, and saying
+otherwise would be inventing a result.
+
+On **San Miguel** it is not a no-op: 282 submeshes tested, 102-107 rejected
+depending on camera position — about **37%** of the scene, and the world draw
+count tracks it (175-180 draws from 282 submeshes). That scene has the spatial
+locality Sponza's material-merged submeshes destroyed, which is the difference
+the next paragraph predicts.
 
 **What would make culling pay:** per-primitive submeshes rather than
 material-merged ones, or splitting merged submeshes spatially, or moving to
@@ -99,34 +117,79 @@ needed to land *with* culling rather than after it.
 camera volume but inside the light volume must be marked
 `VKR_VISIBLE_SHADOW` and not `VKR_VISIBLE_CAMERA`.
 
-## Finding 4 — instancing and MDI have nothing to merge
+## Finding 4 — instancing and MDI ship, and MDI fires only in the shadow pass
 
-Two draws can be merged only if they are the same submesh of the same geometry
-with the same material — one asset drawn more than once. Measured on Sponza:
+Both were implemented after the Sponza measurement, on the owner's call, and
+re-measured on **San Miguel** (`assets/scenes/san_miguel.scene.json`) — 282
+submeshes rather than Sponza's 36.
 
-- 35 opaque draws
-- **35 distinct merge keys**
-- **largest mergeable run: 1**
+### What the content turned out to be
 
-Every draw is unique. The scene is two different models, each submesh a distinct
-material; nothing repeats. Instancing would collapse 0 draws, and MDI — which
-additionally requires shared descriptors and vertex/index buffers — has no
-groups of size greater than one to work with even before those constraints.
+```
+vis_tested=282 vis_cull_cam=102 vis_cull_shadow=0
+opaque_before=180 opaque_after=180 mergeable=0 max_run=1
+geoms=1 mats=180 indirect=1124
+```
 
-Neither is shipped. Implementing instancing requires reordering instance-record
-emission so a merged run is contiguous, which is a real refactor of a working
-draw path with, on this content, a provably zero payoff. That trade is not worth
-making on a guess.
+`geoms=1 mats=180` is the whole story. San Miguel is one `.obj` whose submeshes
+**share a single geometry buffer** but carry a **distinct material each**. So:
 
-The merge measurement itself is tested against synthetic inputs with known
-answers (`test_repeated_asset_is_mergeable` expects `mergeable=2`,
-`max_run=3`), so the zero is a measurement, not a broken counter.
+- **Instancing merges nothing** (`mergeable=0`, `max_run=1`). Merging requires
+  the same submesh of the same geometry with the same material; no two draws
+  here agree on material.
+- **World-pass MDI batches nothing.** A batch may only span draws sharing
+  pipeline *and* descriptor set *and* buffers. The per-material descriptor set
+  changes on every draw, so every batch closes at size 1 and falls back to a
+  direct draw.
+- **Shadow-pass MDI batches everything.** Opaque shadow casters are depth-only:
+  the pass binds its pipeline and instance state once for the whole list and
+  never touches a material. Geometry and index buffer are the only things left
+  that can break a batch — and there is exactly one geometry. So all 281 opaque
+  casters × 4 cascades collapse into **8 indirect calls** (batches are capped at
+  256 commands), which is what `indirect=1124` counts.
+
+This asymmetry is the useful result: **MDI's reach is set by how much state a
+pass binds per draw, not by how many draws it has.** The depth-only pass was
+already binding-uniform and got the full win; the world pass cannot until
+materials stop owning a descriptor set each.
+
+### Frame time: no measurable change
+
+A/B on the same binary, same scene, same camera path via `VKR_DISABLE_MDI=1`,
+three interleaved runs of 40 s each:
+
+| run | MDI on | MDI off |
+|---|---|---|
+| 1 | 19.984 ms | 20.578 ms |
+| 2 | 21.333 ms | 22.307 ms |
+| 3 | 20.391 ms | 19.844 ms |
+| **mean** | **20.57 ms** | **20.91 ms** |
+
+Run 3 reverses the ordering and the within-mode spread (1.3–2.5 ms) exceeds the
+between-mode gap (0.34 ms). The honest reading is **no measurable difference**.
+
+The reason is visible in the same line: `rg_cpu_total_ms` is 0.32–0.53 ms of a
+~20 ms frame. The entire render graph — every pass, every draw call, every
+barrier — is about 2% of frame time. Deleting 1116 draw calls from a 2% slice
+cannot move the total. San Miguel at ~20 ms is GPU-bound on shading, not on
+submission.
+
+Both features ship regardless, because they are correct, cost nothing measurable,
+and are the prerequisite for content that *is* submission-bound. The counters
+are in the benchmark line, so the day such a scene exists the payoff is visible
+without new instrumentation.
 
 **What would make instancing pay:** content that instances one asset many times
-— foliage, props, modular kits. The engine already supports it: `VkrMeshAsset`
-is shared across `VkrMeshInstance`s, so N instances of one asset would produce
-runs of length N. The metric is now in the benchmark line, so the moment such a
-scene exists the payoff is visible without new instrumentation.
+— foliage, props, modular kits. `VkrMeshAsset` is already shared across
+`VkrMeshInstance`s, so N instances of one asset produce a run of length N.
+
+**What would make world-pass MDI pay:** bindless or material-table descriptors,
+so draws stop needing a descriptor change each. That is the prerequisite the
+spec already suspected, now measured rather than assumed.
+
+The merge measurement itself is tested against synthetic inputs with known
+answers (`test_repeated_asset_is_mergeable` expects `mergeable=2`, `max_run=3`),
+so the zero on this content is a measurement, not a broken counter.
 
 ## Incidental finding — the projection and view matrices disagree on handedness
 
@@ -153,7 +216,7 @@ again.
 
 | Item | Outcome |
 |---|---|
-| 11. Cull before materializing world payloads | Shipped; rejects 0 on this content, root cause documented |
-| 12. Use real instancing first | **Not shipped** — 0 mergeable draws measured |
-| 13. Use MDI only for meaningful groups | **Not shipped** — largest binding-compatible run is 1 |
+| 11. Cull before materializing world payloads | Shipped; rejects 0 on Sponza, ~37% on San Miguel |
+| 12. Use real instancing first | Shipped; merges 0 on both scenes (no repeated asset), pinned by test |
+| 13. Use MDI only for meaningful groups | Shipped; 1124 shadow draws → 8 indirect calls, frame time unchanged |
 | 14. Keep camera and shadow visibility separate | Shipped; correctness fix, pinned by test |

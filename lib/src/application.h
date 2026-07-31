@@ -140,6 +140,12 @@ typedef struct VkrShadowDrawLists {
   uint32_t opaque_draw_count;
   VkrDrawItem *alpha_draws;
   uint32_t alpha_draw_count;
+  /**
+   * Shadow keeps its own instance array: its visible set differs from the
+   * camera's, so one array cannot hold contiguous merged runs for both.
+   */
+  VkrInstanceDataGPU *instances;
+  uint32_t instance_count;
 } VkrShadowDrawLists;
 
 
@@ -660,6 +666,34 @@ vkr_internal bool8_t application_build_world_payload(
     return true_v;
   }
 
+  // Candidates are collected first so emission order can be chosen after the
+  // fact: merging needs equal keys adjacent AND their instance records
+  // contiguous, which is only decidable once every candidate is known.
+  VkrDrawCandidate *camera_opaque_cands = NULL;
+  VkrDrawCandidate *camera_transparent_cands = NULL;
+  VkrDrawCandidate *shadow_opaque_cands = NULL;
+  VkrDrawCandidate *shadow_alpha_cands = NULL;
+  if (camera_opaque_count > 0) {
+    camera_opaque_cands = vkr_allocator_alloc(
+        scratch, sizeof(VkrDrawCandidate) * (uint64_t)camera_opaque_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (camera_transparent_count > 0) {
+    camera_transparent_cands = vkr_allocator_alloc(
+        scratch, sizeof(VkrDrawCandidate) * (uint64_t)camera_transparent_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (out_shadow && shadow_opaque_count > 0) {
+    shadow_opaque_cands = vkr_allocator_alloc(
+        scratch, sizeof(VkrDrawCandidate) * (uint64_t)shadow_opaque_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (out_shadow && shadow_alpha_count > 0) {
+    shadow_alpha_cands = vkr_allocator_alloc(
+        scratch, sizeof(VkrDrawCandidate) * (uint64_t)shadow_alpha_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
   VkrDrawItem *opaque_draws = NULL;
   if (camera_opaque_count > 0) {
     opaque_draws = vkr_allocator_alloc(
@@ -684,9 +718,19 @@ vkr_internal bool8_t application_build_world_payload(
         scratch, sizeof(VkrDrawItem) * (uint64_t)shadow_alpha_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
-  VkrInstanceDataGPU *instances = vkr_allocator_alloc(
-      scratch, sizeof(VkrInstanceDataGPU) * (uint64_t)instance_slot_count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+
+  // World and shadow keep separate instance arrays: their visible sets differ,
+  // so one array cannot hold contiguous merged runs for both.
+  const uint32_t world_instance_count =
+      camera_opaque_count + camera_transparent_count;
+  const uint32_t shadow_instance_count =
+      out_shadow ? shadow_opaque_count + shadow_alpha_count : 0u;
+  VkrInstanceDataGPU *instances = NULL;
+  if (world_instance_count > 0) {
+    instances = vkr_allocator_alloc(
+        scratch, sizeof(VkrInstanceDataGPU) * (uint64_t)world_instance_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
   VkrDrawMergeKey *merge_keys = NULL;
   if (camera_opaque_count > 0) {
     merge_keys = vkr_allocator_alloc(
@@ -695,11 +739,22 @@ vkr_internal bool8_t application_build_world_payload(
   }
   uint32_t merge_key_count = 0;
 
-  if ((camera_opaque_count > 0 && !opaque_draws) ||
-      (camera_transparent_count > 0 && !transparent_draws) ||
-      (out_shadow && shadow_opaque_count > 0 && !shadow_opaque_draws) ||
-      (out_shadow && shadow_alpha_count > 0 && !shadow_alpha_draws) ||
-      !instances) {
+  VkrInstanceDataGPU *shadow_instances = NULL;
+  if (shadow_instance_count > 0) {
+    shadow_instances = vkr_allocator_alloc(
+        scratch, sizeof(VkrInstanceDataGPU) * (uint64_t)shadow_instance_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+
+  if ((camera_opaque_count > 0 && (!opaque_draws || !camera_opaque_cands)) ||
+      (camera_transparent_count > 0 &&
+       (!transparent_draws || !camera_transparent_cands)) ||
+      (out_shadow && shadow_opaque_count > 0 &&
+       (!shadow_opaque_draws || !shadow_opaque_cands)) ||
+      (out_shadow && shadow_alpha_count > 0 &&
+       (!shadow_alpha_draws || !shadow_alpha_cands)) ||
+      (world_instance_count > 0 && !instances) ||
+      (shadow_instance_count > 0 && !shadow_instances)) {
     *out_payload = (VkrWorldPassPayload){0};
     if (out_shadow) {
       *out_shadow = (VkrShadowDrawLists){0};
@@ -711,7 +766,6 @@ vkr_internal bool8_t application_build_world_payload(
   uint32_t transparent_index = 0;
   uint32_t shadow_opaque_index = 0;
   uint32_t shadow_alpha_index = 0;
-  uint32_t instance_index = 0;
   vis_slot = 0;
 
   // ---- Populate pass: reuse the cached visibility, never re-test. ----
@@ -748,54 +802,44 @@ vkr_internal bool8_t application_build_world_payload(
                                                  submesh->center)
                  : 0.0f;
       const uint64_t sort_key =
-          cutout ? application_pack_transparent_sort_key(mesh_distance,
-                                                         instance_index)
+          cutout ? application_pack_transparent_sort_key(mesh_distance, vis_slot)
                  : 0u;
 
-      const VkrDrawItem item = {
+      const VkrDrawCandidate candidate = {
+          .key =
+              {
+                  .geometry = ((uint64_t)submesh->geometry.id << 32) |
+                              (uint64_t)submesh->geometry.generation,
+                  .material = (uint64_t)submesh->material.id,
+                  .first_index = submesh->first_index,
+                  .index_count = submesh->index_count,
+                  .vertex_offset = submesh->vertex_offset,
+                  .domain = (uint32_t)submesh->pipeline_domain,
+              },
+          .model = mesh->model,
           .mesh = mesh_handle,
           .submesh_index = s,
-          .material = VKR_MATERIAL_HANDLE_INVALID,
-          .instance_count = 1,
-          .first_instance = instance_index,
+          .object_id = object_id,
           .sort_key = sort_key,
-          .pipeline_override = VKR_PIPELINE_HANDLE_INVALID,
       };
 
       if (flags & VKR_VISIBLE_CAMERA) {
         if (cutout) {
-          transparent_draws[transparent_index++] = item;
+          camera_transparent_cands[transparent_index++] = candidate;
         } else {
-          opaque_draws[opaque_index++] = item;
+          camera_opaque_cands[opaque_index++] = candidate;
           if (merge_keys) {
-            merge_keys[merge_key_count++] = (VkrDrawMergeKey){
-                .geometry = ((uint64_t)submesh->geometry.id << 32) |
-                            (uint64_t)submesh->geometry.generation,
-                .material = (uint64_t)submesh->material.id,
-                .first_index = submesh->first_index,
-                .index_count = submesh->index_count,
-                .vertex_offset = submesh->vertex_offset,
-                .domain = (uint32_t)submesh->pipeline_domain,
-            };
+            merge_keys[merge_key_count++] = candidate.key;
           }
         }
       }
       if ((flags & VKR_VISIBLE_SHADOW) && out_shadow) {
         if (cutout) {
-          shadow_alpha_draws[shadow_alpha_index++] = item;
+          shadow_alpha_cands[shadow_alpha_index++] = candidate;
         } else {
-          shadow_opaque_draws[shadow_opaque_index++] = item;
+          shadow_opaque_cands[shadow_opaque_index++] = candidate;
         }
       }
-
-      instances[instance_index] = (VkrInstanceDataGPU){
-          .model = mesh->model,
-          .object_id = object_id,
-          .material_index = 0,
-          .flags = 0,
-          ._padding = 0,
-      };
-      instance_index++;
     }
   }
 
@@ -842,81 +886,98 @@ vkr_internal bool8_t application_build_world_payload(
                                                  submesh->center)
                  : 0.0f;
       const uint64_t sort_key =
-          cutout ? application_pack_transparent_sort_key(instance_distance,
-                                                         instance_index)
+          cutout ? application_pack_transparent_sort_key(instance_distance, vis_slot)
                  : 0u;
 
-      const VkrDrawItem item = {
+      const VkrDrawCandidate candidate = {
+          .key =
+              {
+                  .geometry = ((uint64_t)submesh->geometry.id << 32) |
+                              (uint64_t)submesh->geometry.generation,
+                  .material = (uint64_t)submesh->material.id,
+                  .first_index = submesh->first_index,
+                  .index_count = submesh->index_count,
+                  .vertex_offset = submesh->vertex_offset,
+                  .domain = (uint32_t)submesh->pipeline_domain,
+              },
+          .model = instance->model,
           .mesh = handle,
           .submesh_index = s,
-          .material = VKR_MATERIAL_HANDLE_INVALID,
-          .instance_count = 1,
-          .first_instance = instance_index,
+          .object_id = object_id,
           .sort_key = sort_key,
-          .pipeline_override = VKR_PIPELINE_HANDLE_INVALID,
       };
 
       if (flags & VKR_VISIBLE_CAMERA) {
         if (cutout) {
-          transparent_draws[transparent_index++] = item;
+          camera_transparent_cands[transparent_index++] = candidate;
         } else {
-          opaque_draws[opaque_index++] = item;
+          camera_opaque_cands[opaque_index++] = candidate;
           if (merge_keys) {
-            merge_keys[merge_key_count++] = (VkrDrawMergeKey){
-                .geometry = ((uint64_t)submesh->geometry.id << 32) |
-                            (uint64_t)submesh->geometry.generation,
-                .material = (uint64_t)submesh->material.id,
-                .first_index = submesh->first_index,
-                .index_count = submesh->index_count,
-                .vertex_offset = submesh->vertex_offset,
-                .domain = (uint32_t)submesh->pipeline_domain,
-            };
+            merge_keys[merge_key_count++] = candidate.key;
           }
         }
       }
       if ((flags & VKR_VISIBLE_SHADOW) && out_shadow) {
         if (cutout) {
-          shadow_alpha_draws[shadow_alpha_index++] = item;
+          shadow_alpha_cands[shadow_alpha_index++] = candidate;
         } else {
-          shadow_opaque_draws[shadow_opaque_index++] = item;
+          shadow_opaque_cands[shadow_opaque_index++] = candidate;
         }
       }
-
-      instances[instance_index] = (VkrInstanceDataGPU){
-          .model = instance->model,
-          .object_id = object_id,
-          .material_index = 0,
-          .flags = 0,
-          ._padding = 0,
-      };
-      instance_index++;
     }
   }
 
   vkr_draw_measure_merge_opportunity(merge_keys, merge_key_count, &stats);
+
+  // ---- Emission: opaque merges; transparent and alpha do not. ----
+  // Transparent draws carry a back-to-front order and alpha-tested shadow draws
+  // rebind per-draw material state, so collapsing either would change what is
+  // drawn, not merely how many calls it takes.
+  uint32_t merged_opaque_draws = 0;
+  const uint32_t opaque_instances_written = vkr_draw_merge_candidates(
+      camera_opaque_cands, camera_opaque_count, 0u, opaque_draws,
+      &merged_opaque_draws, instances);
+
+  if (camera_transparent_count > 1) {
+    qsort(camera_transparent_cands, camera_transparent_count,
+          sizeof(VkrDrawCandidate), vkr_draw_candidate_depth_compare);
+  }
+  vkr_draw_emit_unmerged(camera_transparent_cands, camera_transparent_count,
+                         opaque_instances_written, transparent_draws,
+                         instances);
+
+  uint32_t merged_shadow_draws = 0;
+  if (out_shadow) {
+    const uint32_t shadow_written = vkr_draw_merge_candidates(
+        shadow_opaque_cands, shadow_opaque_count, 0u, shadow_opaque_draws,
+        &merged_shadow_draws, shadow_instances);
+    vkr_draw_emit_unmerged(shadow_alpha_cands, shadow_alpha_count,
+                           shadow_written, shadow_alpha_draws,
+                           shadow_instances);
+  }
+
+  stats.opaque_draws_before_merge = camera_opaque_count;
+  stats.opaque_draws_emitted = merged_opaque_draws;
   if (out_stats) {
     *out_stats = stats;
   }
 
-  if (camera_transparent_count > 1) {
-    qsort(transparent_draws, camera_transparent_count, sizeof(VkrDrawItem),
-          application_transparent_draw_compare);
-  }
-
   *out_payload = (VkrWorldPassPayload){
       .opaque_draws = opaque_draws,
-      .opaque_draw_count = camera_opaque_count,
+      .opaque_draw_count = merged_opaque_draws,
       .transparent_draws = transparent_draws,
       .transparent_draw_count = camera_transparent_count,
       .instances = instances,
-      .instance_count = instance_slot_count,
+      .instance_count = world_instance_count,
   };
   if (out_shadow) {
     *out_shadow = (VkrShadowDrawLists){
         .opaque_draws = shadow_opaque_draws,
-        .opaque_draw_count = shadow_opaque_count,
+        .opaque_draw_count = merged_shadow_draws,
         .alpha_draws = shadow_alpha_draws,
         .alpha_draw_count = shadow_alpha_count,
+        .instances = shadow_instances,
+        .instance_count = shadow_instance_count,
     };
   }
   return true_v;
@@ -1001,8 +1062,8 @@ void application_draw_frame(Application *application, float64_t delta) {
     shadow_payload.opaque_draw_count = shadow_lists.opaque_draw_count;
     shadow_payload.alpha_draws = shadow_lists.alpha_draws;
     shadow_payload.alpha_draw_count = shadow_lists.alpha_draw_count;
-    shadow_payload.instances = world_payload.instances;
-    shadow_payload.instance_count = world_payload.instance_count;
+    shadow_payload.instances = shadow_lists.instances;
+    shadow_payload.instance_count = shadow_lists.instance_count;
     shadow_payload.config_override = NULL;
     has_shadow = shadow_payload.opaque_draw_count > 0 ||
                  shadow_payload.alpha_draw_count > 0;

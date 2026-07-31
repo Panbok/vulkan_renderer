@@ -2,6 +2,7 @@
 
 #include "defines.h"
 #include "renderer/renderer_frontend.h"
+#include "renderer/vkr_indirect_draw.h"
 #include "renderer/vkr_render_packet.h"
 
 /**
@@ -113,3 +114,36 @@ bool8_t vkr_pass_packet_resolve_pipeline(RendererFrontend *rf,
                                          const VkrMaterial *material,
                                          VkrPipelineHandle pipeline_override,
                                          VkrPipelineHandle *out_pipeline);
+
+/** Upper bound on draws collapsed into one indirect call; bounded so a batch
+ *  lives on the stack and never allocates in the draw loop. */
+#define VKR_PASS_INDIRECT_MAX_BATCH 256u
+
+/**
+ * @brief Draws accumulated for a single indirect submission.
+ *
+ * Holds only what an indirect call needs to be legal: the shared geometry and
+ * index buffer, plus per-draw ranges. Deciding *when* a draw may join belongs
+ * to the caller, because what counts as shared bound state differs per pass --
+ * the world pass breaks on material, the shadow pass does not.
+ */
+typedef struct VkrPassIndirectBatch {
+  VkrIndirectDrawCommand commands[VKR_PASS_INDIRECT_MAX_BATCH];
+  uint32_t count;
+  VkrGeometryHandle geometry;
+  const VkrIndexBuffer *index_buffer;
+} VkrPassIndirectBatch;
+
+/**
+ * @brief Submits an accumulated batch, preferring one indirect call.
+ *
+ * Falls back to individual indexed draws when the batch holds one draw, the
+ * device lacks multiDrawIndirect, a non-zero firstInstance is needed without
+ * drawIndirectFirstInstance, or the indirect buffer is exhausted. The fallback
+ * produces identical output; it is the normal path for content whose draws do
+ * not share binding state.
+ *
+ * Clears the batch. @return true when a single indirect call was used.
+ */
+bool8_t vkr_pass_indirect_batch_submit(RendererFrontend *rf,
+                                       VkrPassIndirectBatch *batch);

@@ -14,6 +14,7 @@
 #include "math/mat.h"
 #include "math/vec.h"
 #include "math/vkr_frustum.h"
+#include "renderer/vkr_render_packet.h"
 
 /** Object is inside the camera volume and belongs in the world draw list. */
 #define VKR_VISIBLE_CAMERA 0x1u
@@ -44,6 +45,17 @@ typedef struct VkrVisibilityStats {
   uint32_t distinct_opaque_keys;
   /** Longest run of identical keys; 1 means nothing can be merged at all. */
   uint32_t largest_mergeable_run;
+  /** Opaque draws actually emitted after merging, and the count before it. */
+  uint32_t opaque_draws_emitted;
+  uint32_t opaque_draws_before_merge;
+  /**
+   * Distinct geometry buffers and materials across the opaque list. These say
+   * *why* batching does or does not pay: indirect submission needs draws that
+   * share both, so a list with as many materials as draws can never batch
+   * however it is submitted.
+   */
+  uint32_t distinct_geometries;
+  uint32_t distinct_materials;
 } VkrVisibilityStats;
 
 /**
@@ -63,6 +75,61 @@ typedef struct VkrDrawMergeKey {
 
 /** @brief qsort comparator establishing a total order over merge keys. */
 int vkr_draw_merge_key_compare(const void *lhs, const void *rhs);
+
+/**
+ * @brief One prospective draw, before merging decides how many draws to emit.
+ *
+ * Collected during scene traversal so the emission order can be chosen after
+ * the fact: merging requires draws sharing a key to be adjacent *and* their
+ * instance records contiguous, which is only possible once every candidate is
+ * known.
+ */
+typedef struct VkrDrawCandidate {
+  VkrDrawMergeKey key;
+  Mat4 model;
+  VkrMeshHandle mesh;
+  uint32_t submesh_index;
+  uint32_t object_id;
+  /** Back-to-front ordering for transparent draws; unused when opaque. */
+  uint64_t sort_key;
+} VkrDrawCandidate;
+
+/** @brief Orders candidates by merge key so equal keys become adjacent runs. */
+int vkr_draw_candidate_key_compare(const void *lhs, const void *rhs);
+
+/** @brief Orders transparent candidates back to front. */
+int vkr_draw_candidate_depth_compare(const void *lhs, const void *rhs);
+
+/**
+ * @brief Merges key-adjacent candidates into instanced draws.
+ *
+ * Sorts @p candidates by merge key, then emits one VkrDrawItem per run with
+ * `instance_count` set to the run length. Instance records are written in the
+ * same order, so each run's records are contiguous starting at its
+ * `first_instance` -- the property that makes a single instanced draw legal.
+ *
+ * @param instance_base Index in @p out_instances where this list starts, so
+ *        several lists can share one instance array.
+ * @param out_draw_count Receives the number of draws emitted (<= @p count).
+ * @return Number of instance records written, always @p count.
+ */
+uint32_t vkr_draw_merge_candidates(VkrDrawCandidate *candidates, uint32_t count,
+                                   uint32_t instance_base,
+                                   VkrDrawItem *out_draws,
+                                   uint32_t *out_draw_count,
+                                   VkrInstanceDataGPU *out_instances);
+
+/**
+ * @brief Emits candidates one draw each, preserving their current order.
+ *
+ * Used for transparent and alpha-tested lists, where submission order carries
+ * meaning (depth sorting) or per-draw descriptor state changes, so merging
+ * would be incorrect rather than merely unhelpful.
+ */
+uint32_t vkr_draw_emit_unmerged(const VkrDrawCandidate *candidates,
+                                uint32_t count, uint32_t instance_base,
+                                VkrDrawItem *out_draws,
+                                VkrInstanceDataGPU *out_instances);
 
 /**
  * @brief Measures how many opaque draws instancing could collapse.

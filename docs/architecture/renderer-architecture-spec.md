@@ -44,8 +44,13 @@ document overstated how completely those systems are integrated:
   longer blocks: a full Sponza load measures zero render-thread fence waits,
   queue waits, and device waits. Uploads outside an active frame still block,
   and parallel upload command pools still require an explicitly unsafe opt-in.
-- The world path still has no active frustum culling, draw batching, or MDI.
-  Its instance stream is live, but most draws contain one instance.
+- The world path culls, merges instanced draws, and submits multi-draw-indirect
+  where binding state permits. On the measured content the payoff is confined to
+  the shadow pass, which collapses 1124 depth-only draw calls into 8 indirect
+  calls; the world pass batches nothing because each material owns a descriptor
+  set. Frame time is unchanged either way — the whole render graph is ~2% of a
+  20 ms frame. See
+  [performance/p2-throughput-findings.md](../performance/p2-throughput-findings.md).
 
 The correctness issues that previously took precedence over new visual features
 — frame streams indexed by swapchain image modulo three, backend frame failures
@@ -267,10 +272,10 @@ activated once dependency/GPU finalization completes.
 | KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; every selector result is transcodable |
 | Editor viewport and picking | Implemented | Picking fully declared in the render graph; readback usually deferred but ring wrap can block |
 | Text | Implemented | Bitmap, MTSDF, system-font, UI and world text paths |
-| Instance stream | Implemented, underused | Fixed 65,536 entries; current world extraction usually emits one instance/draw |
-| CPU frustum culling | Not integrated | Frustum module has no production call site |
-| Draw batching | Not integrated | Batcher module has no production call site |
-| Multi-draw indirect | Plumbed, unused | Stream/backend entry exists; no command allocation caller |
+| Instance stream | Implemented, underused | Fixed 65,536 entries; measured content repeats no asset, so runs are length 1 |
+| CPU frustum culling | Implemented | Per-submesh, camera and light volumes classified independently; rejects ~37% on San Miguel, 0% on Sponza |
+| Draw batching | Implemented | Opaque draws merged by geometry/material/range into instanced draws; merges 0 on measured content |
+| Multi-draw indirect | Implemented | Fires where a pass binds state once: 1124 shadow draws → 8 indirect calls; world pass batches nothing until bindless |
 | Compute dispatch | Not exercised | “compute” JSON passes currently orchestrate graphics/CPU work |
 | Device-memory suballocation | Absent, measured | Still one `VkDeviceMemory` per buffer/image/readback buffer; allocation-count and per-type telemetry now exists to size a pool |
 | Bindless/descriptor indexing | Absent | Per-material descriptor binding model |
@@ -638,23 +643,36 @@ required gate — see §10.
     On Sponza it tests 36 submeshes and rejects **0**: the glTF importer merges
     primitives by material, so each submesh spans the whole model (radii 6.5–9.6
     against a model radius of 10.2) and no spatial locality remains to cull
-    against. See
+    against. On **San Miguel** the same code rejects **102–107 of 282**
+    submeshes (~37%) as the camera moves, which is what culling looks like on
+    content that kept its spatial locality. See
     [performance/p2-throughput-findings.md](../performance/p2-throughput-findings.md).
-12. **Use real instancing first.** **Not shipped — measured as zero benefit.**
-    Sponza yields 35 opaque draws with **35 distinct merge keys and a largest
-    mergeable run of 1**: the scene is two different models whose submeshes each
-    carry a distinct material, so nothing repeats. Merging requires reordering
-    instance-record emission so a run is contiguous, which is a real refactor of
-    a working draw path for a provably zero payoff on this content. The merge
-    counter ships in the benchmark line, and the measurement itself is tested
-    against synthetic repeated-asset inputs, so a scene that *does* instance one
-    asset many times will show the opportunity immediately.
-13. **Use MDI only for meaningful binding-state groups.** **Not shipped —
-    measured.** The largest binding-compatible run is **1** before descriptor
-    and buffer compatibility are even considered, so there is nothing for
-    indirect submission to batch. This confirms the item's own suspicion that
-    bindless/material tables and shared mega-buffers are prerequisites rather
-    than optimizations.
+12. ~~**Use real instancing first.**~~ **Shipped 2026-07-31.** Opaque draws are
+    sorted by merge key and runs sharing geometry, material and index range
+    collapse into one instanced draw, with instance records emitted in run order
+    so each run is contiguous — the property that makes a single instanced draw
+    legal. On both measured scenes it merges **zero** draws, because neither
+    repeats an asset: Sponza is two models with per-submesh materials, and San
+    Miguel is one geometry buffer with a distinct material per submesh
+    (`geoms=1 mats=180`). The merge counters ship in the benchmark line and the
+    algorithm is tested against synthetic repeated-asset inputs, so content that
+    *does* instance one asset many times shows the opportunity immediately.
+13. ~~**Use MDI only for meaningful binding-state groups.**~~ **Shipped
+    2026-07-31.** Draws accumulate into a bounded batch and are submitted with
+    `vkCmdDrawIndexedIndirect` when more than one shares all bound state,
+    falling back to direct draws otherwise (also when `multiDrawIndirect` or
+    `drawIndirectFirstInstance` is unavailable). The measurement makes the
+    governing rule explicit: **MDI's reach is set by how much state a pass binds
+    per draw, not by how many draws it has.** The world pass batches nothing —
+    every draw changes descriptor set, since materials own one each. The
+    depth-only shadow pass binds its pipeline and instance state once for the
+    whole list, so all 281 opaque casters × 4 cascades collapse into **8
+    indirect calls**. Frame time is unchanged (20.57 ms with, 20.91 ms without,
+    across three interleaved runs whose own spread is larger), because the
+    render graph's entire CPU cost is 0.3–0.5 ms of a 20 ms frame. This confirms
+    the item's suspicion from the other direction: bindless/material tables are
+    the prerequisite for the *world* pass to batch, and even then the win will
+    not be frame time on GPU-bound content.
 14. ~~**Keep camera and shadow visibility separate.**~~ **Shipped 2026-07-31.**
     The shadow payload previously aliased the world payload's arrays, so the
     moment culling rejected anything every camera-culled object would silently

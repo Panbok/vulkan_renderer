@@ -253,32 +253,152 @@ static Vec3 vkr_pass_world_probe_sample_position_for_draw(
 
 /** Binds pipeline/globals when pipeline changed, binds instance, applies
  * material, draws. */
-static void vkr_pass_world_bind_globals_and_draw(
-    RendererFrontend *rf, const VkrFrameInfo *frame, const VkrDrawItem *draw,
+/** Upper bound on draws collapsed into one indirect call; bounded so the batch
+ *  lives on the stack and never allocates in the draw loop. */
+#define VKR_PASS_MDI_MAX_BATCH 64u
+
+/**
+ * @brief Consecutive draws that can share one indirect submission.
+ *
+ * Draws may only share a call while every piece of bound state is identical:
+ * pipeline, material (which owns the descriptor writes), instance state,
+ * geometry buffers, and the IBL probe slots applied per draw. Anything that
+ * differs must break the batch, because an indirect call binds once and draws
+ * many times -- batching across a state change would silently render with the
+ * wrong state rather than fail.
+ */
+typedef struct VkrPassMdiBatch {
+  VkrIndirectDrawCommand commands[VKR_PASS_MDI_MAX_BATCH];
+  uint32_t count;
+
+  VkrPipelineHandle pipeline;
+  const VkrMaterial *material;
+  VkrGeometryHandle geometry;
+  const VkrIndexBuffer *index_buffer;
+  uint32_t instance_state_id;
+  Vec3 probe_position;
+  const VkrDrawItem *first_draw;
+  bool8_t open;
+} VkrPassMdiBatch;
+
+vkr_internal bool8_t vkr_pass_mdi_key_matches(
+    const VkrPassMdiBatch *batch, VkrPipelineHandle pipeline,
+    const VkrMaterial *material, VkrGeometryHandle geometry,
+    const VkrIndexBuffer *index_buffer, uint32_t instance_state_id,
+    Vec3 probe_position) {
+  return batch->open && batch->count < VKR_PASS_MDI_MAX_BATCH &&
+         batch->pipeline.id == pipeline.id &&
+         batch->pipeline.generation == pipeline.generation &&
+         batch->material == material && batch->geometry.id == geometry.id &&
+         batch->geometry.generation == geometry.generation &&
+         batch->index_buffer == index_buffer &&
+         batch->instance_state_id == instance_state_id &&
+         batch->probe_position.x == probe_position.x &&
+         batch->probe_position.y == probe_position.y &&
+         batch->probe_position.z == probe_position.z;
+}
+
+/**
+ * @brief Binds the batch's shared state and submits its draws.
+ *
+ * Uses one vkCmdDrawIndexedIndirect when the batch holds more than one draw and
+ * the device supports it; otherwise falls back to individual indexed draws,
+ * which produce identical output. The fallback is not a rare path: a scene
+ * whose draws never share binding state will take it for every batch.
+ */
+vkr_internal void vkr_pass_world_flush_mdi_batch(
+    RendererFrontend *rf, const VkrFrameInfo *frame,
+    const VkrWorldPassPayload *payload, VkrPassMdiBatch *batch,
     uint32_t base_instance, VkrPipelineDomain domain,
-    const VkrGlobalMaterialState *globals,
-    const VkrShadowFrameData *shadow_data, bool8_t shadow_valid,
-    VkrPipelineHandle *inout_globals_pipeline, VkrPipelineHandle pipeline,
-    uint32_t instance_id, const VkrMaterial *material,
-    VkrGeometryHandle geometry, const VkrPassDrawRange *range) {
-  if (pipeline.id != inout_globals_pipeline->id ||
-      pipeline.generation != inout_globals_pipeline->generation) {
+    const VkrGlobalMaterialState *globals, const VkrShadowFrameData *shadow_data,
+    bool8_t shadow_valid, VkrPipelineHandle *inout_globals_pipeline) {
+  if (!batch->open || batch->count == 0) {
+    batch->open = false_v;
+    batch->count = 0;
+    return;
+  }
+
+  if (batch->pipeline.id != inout_globals_pipeline->id ||
+      batch->pipeline.generation != inout_globals_pipeline->generation) {
     VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry, pipeline,
-                                             &bind_err)) {
+    if (!vkr_pipeline_registry_bind_pipeline(&rf->pipeline_registry,
+                                             batch->pipeline, &bind_err)) {
+      batch->open = false_v;
+      batch->count = 0;
       return;
     }
     vkr_lighting_system_apply_uniforms(&rf->lighting_system);
     vkr_pass_world_apply_shadow_globals(rf, frame, shadow_data, shadow_valid);
     vkr_material_system_apply_global(&rf->material_system, globals, domain);
-    *inout_globals_pipeline = pipeline;
+    *inout_globals_pipeline = batch->pipeline;
   }
-  vkr_shader_system_bind_instance(&rf->shader_system, instance_id);
-  vkr_material_system_apply_instance(&rf->material_system, material, domain);
-  vkr_geometry_system_render_instanced_range_with_index_buffer(
-      rf, &rf->geometry_system, geometry, range->index_buffer,
-      range->index_count, range->first_index, range->vertex_offset,
-      draw->instance_count, base_instance + draw->first_instance);
+
+  vkr_pass_world_apply_probe_slots_for_draw(rf, payload, batch->first_draw,
+                                            batch->probe_position);
+  vkr_shader_system_bind_instance(&rf->shader_system, batch->instance_state_id);
+  vkr_material_system_apply_instance(&rf->material_system, batch->material,
+                                     domain);
+
+  const uint32_t submitted = batch->count;
+  VkrPassIndirectBatch indirect = {
+      .count = batch->count,
+      .geometry = batch->geometry,
+      .index_buffer = batch->index_buffer,
+  };
+  MemCopy(indirect.commands, batch->commands,
+          sizeof(VkrIndirectDrawCommand) * (uint64_t)batch->count);
+  vkr_pass_indirect_batch_submit(rf, &indirect);
+
+  rf->frame_metrics.world.draws_issued += submitted;
+  rf->frame_metrics.world.batches_created++;
+  if (submitted > rf->frame_metrics.world.max_batch_size) {
+    rf->frame_metrics.world.max_batch_size = submitted;
+  }
+
+  (void)base_instance;
+  batch->open = false_v;
+  batch->count = 0;
+}
+
+/**
+ * @brief Adds one resolved draw to the pending indirect batch.
+ *
+ * Flushes first when the draw cannot share the open batch's bound state, so a
+ * batch only ever contains draws that would have produced identical binds.
+ */
+static void vkr_pass_world_bind_globals_and_draw(
+    RendererFrontend *rf, const VkrFrameInfo *frame,
+    const VkrWorldPassPayload *payload, const VkrDrawItem *draw,
+    uint32_t base_instance, VkrPipelineDomain domain,
+    const VkrGlobalMaterialState *globals,
+    const VkrShadowFrameData *shadow_data, bool8_t shadow_valid,
+    VkrPipelineHandle *inout_globals_pipeline, VkrPipelineHandle pipeline,
+    uint32_t instance_id, const VkrMaterial *material,
+    VkrGeometryHandle geometry, const VkrPassDrawRange *range,
+    Vec3 probe_position, VkrPassMdiBatch *batch) {
+  if (!vkr_pass_mdi_key_matches(batch, pipeline, material, geometry,
+                                range->index_buffer, instance_id,
+                                probe_position)) {
+    vkr_pass_world_flush_mdi_batch(rf, frame, payload, batch, base_instance,
+                                   domain, globals, shadow_data, shadow_valid,
+                                   inout_globals_pipeline);
+    batch->pipeline = pipeline;
+    batch->material = material;
+    batch->geometry = geometry;
+    batch->index_buffer = range->index_buffer;
+    batch->instance_state_id = instance_id;
+    batch->probe_position = probe_position;
+    batch->first_draw = draw;
+    batch->open = true_v;
+  }
+
+  batch->commands[batch->count++] = (VkrIndirectDrawCommand){
+      .index_count = range->index_count,
+      .instance_count = draw->instance_count,
+      .first_index = range->first_index,
+      .vertex_offset = range->vertex_offset,
+      .first_instance = base_instance + draw->first_instance,
+  };
 }
 
 vkr_internal void vkr_pass_world_draw_list(
@@ -294,6 +414,7 @@ vkr_internal void vkr_pass_world_draw_list(
   VkrPipelineHandle globals_pipeline = VKR_PIPELINE_HANDLE_INVALID;
   Vec3 fallback_probe_sample_position =
       globals ? globals->view_position : vec3_zero();
+  VkrPassMdiBatch batch = {0};
 
   for (uint32_t i = 0; i < draw_count; ++i) {
     const VkrDrawItem *draw = &draws[i];
@@ -342,12 +463,11 @@ vkr_internal void vkr_pass_world_draw_list(
         continue;
       }
 
-      vkr_pass_world_apply_probe_slots_for_draw(rf, payload, draw,
-                                                probe_sample_position);
       vkr_pass_world_bind_globals_and_draw(
-          rf, frame, draw, base_instance, domain, globals, shadow_data,
+          rf, frame, payload, draw, base_instance, domain, globals, shadow_data,
           shadow_valid, &globals_pipeline, pipeline,
-          inst_state->instance_state.id, material, submesh->geometry, &range);
+          inst_state->instance_state.id, material, submesh->geometry, &range,
+          probe_sample_position, &batch);
     } else {
       uint32_t mesh_index = draw->mesh.id - 1u;
       VkrMesh *mesh = NULL;
@@ -385,14 +505,17 @@ vkr_internal void vkr_pass_world_draw_list(
         continue;
       }
 
-      vkr_pass_world_apply_probe_slots_for_draw(rf, payload, draw,
-                                                probe_sample_position);
       vkr_pass_world_bind_globals_and_draw(
-          rf, frame, draw, base_instance, domain, globals, shadow_data,
+          rf, frame, payload, draw, base_instance, domain, globals, shadow_data,
           shadow_valid, &globals_pipeline, pipeline, submesh->instance_state.id,
-          material, submesh->geometry, &range);
+          material, submesh->geometry, &range, probe_sample_position, &batch);
     }
   }
+
+  // The final batch has no following draw to trigger its flush.
+  vkr_pass_world_flush_mdi_batch(rf, frame, payload, &batch, base_instance,
+                                 domain, globals, shadow_data, shadow_valid,
+                                 &globals_pipeline);
 }
 
 vkr_internal void vkr_pass_world_execute(VkrRgPassContext *ctx,
@@ -471,15 +594,24 @@ vkr_internal void vkr_pass_world_execute(VkrRgPassContext *ctx,
     uint32_t transparent_count = payload->transparent_draw_count;
     uint32_t total_draws = opaque_count + transparent_count;
 
+    // draws_issued, batches_created, max_batch_size and indirect_draws_issued
+    // are accumulated by vkr_pass_world_flush_mdi_batch as batches submit.
     rf->frame_metrics.world.draws_collected = total_draws;
     rf->frame_metrics.world.opaque_draws = opaque_count;
     rf->frame_metrics.world.transparent_draws = transparent_count;
-    rf->frame_metrics.world.opaque_batches = opaque_count;
-    rf->frame_metrics.world.draws_issued = total_draws;
-    rf->frame_metrics.world.batches_created = opaque_count;
-    rf->frame_metrics.world.draws_merged = 0;
-    rf->frame_metrics.world.avg_batch_size = opaque_count > 0 ? 1.0f : 0.0f;
-    rf->frame_metrics.world.max_batch_size = opaque_count > 0 ? 1u : 0u;
+    rf->frame_metrics.world.opaque_batches =
+        rf->frame_metrics.world.batches_created;
+    rf->frame_metrics.world.draws_merged =
+        rf->frame_metrics.world.draws_issued >
+                rf->frame_metrics.world.batches_created
+            ? rf->frame_metrics.world.draws_issued -
+                  rf->frame_metrics.world.batches_created
+            : 0u;
+    rf->frame_metrics.world.avg_batch_size =
+        rf->frame_metrics.world.batches_created > 0
+            ? (float32_t)rf->frame_metrics.world.draws_issued /
+                  (float32_t)rf->frame_metrics.world.batches_created
+            : 0.0f;
   }
 
   if (rf->world_resources.initialized) {

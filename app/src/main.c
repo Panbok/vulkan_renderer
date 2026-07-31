@@ -28,7 +28,7 @@
 #define VKR_FPS_DELTA_MIN 0.000001
 #define VKR_WORLD_TIME_UPDATE_INTERVAL 0.25
 #define VKR_UI_TEXT_PADDING 16.0f
-#define SCENE_PATH "assets/scenes/sponza.scene.json"
+#define SCENE_PATH "assets/scenes/san_miguel.scene.json"
 
 typedef struct FilterModeEntry {
   VkrFilter min_filter;
@@ -1772,27 +1772,33 @@ vkr_internal void application_update_fps_text(Application *application,
                "rg_cpu_total_ms=%.3f "
                "world_draws=%u world_batches=%u world_calls=%u "
                "vis_tested=%u vis_cull_cam=%u vis_cull_shadow=%u "
-               "mergeable=%u distinct_keys=%u max_run=%u",
+               "opaque_before=%u opaque_after=%u mergeable=%u max_run=%u "
+               "geoms=%u mats=%u indirect=%u",
                state->benchmark_label ? state->benchmark_label : "default",
                frame_ms, state->current_fps, rg_cpu_total_ms,
                world->draws_collected, world->batches_created,
                world->draws_issued, vis->objects_tested,
                vis->objects_culled_camera, vis->objects_culled_shadow,
-               vis->mergeable_opaque_draws, vis->distinct_opaque_keys,
-               vis->largest_mergeable_run);
+               vis->opaque_draws_before_merge, vis->opaque_draws_emitted,
+               vis->mergeable_opaque_draws, vis->largest_mergeable_run,
+               vis->distinct_geometries, vis->distinct_materials,
+               world->indirect_draws_issued);
       fprintf(stdout,
               "BENCHMARK_SAMPLE label=%s frame_ms=%.3f fps=%.2f "
               "rg_cpu_total_ms=%.3f "
               "world_draws=%u world_batches=%u world_calls=%u "
               "vis_tested=%u vis_cull_cam=%u vis_cull_shadow=%u "
-              "mergeable=%u distinct_keys=%u max_run=%u\n",
+              "opaque_before=%u opaque_after=%u mergeable=%u max_run=%u "
+              "geoms=%u mats=%u indirect=%u\n",
               state->benchmark_label ? state->benchmark_label : "default",
               frame_ms, state->current_fps, rg_cpu_total_ms,
               world->draws_collected, world->batches_created,
               world->draws_issued, vis->objects_tested,
               vis->objects_culled_camera, vis->objects_culled_shadow,
-              vis->mergeable_opaque_draws, vis->distinct_opaque_keys,
-              vis->largest_mergeable_run);
+              vis->opaque_draws_before_merge, vis->opaque_draws_emitted,
+              vis->mergeable_opaque_draws, vis->largest_mergeable_run,
+              vis->distinct_geometries, vis->distinct_materials,
+               world->indirect_draws_issued);
       fflush(stdout);
     }
 
@@ -2549,6 +2555,14 @@ int main(int argc, char **argv) {
       log_warn("Ignoring invalid VKR_AUTOCLOSE_SECONDS value '%s'",
                auto_close_env);
     }
+  }
+
+  // A/B switch for the indirect path. Same binary, same scene, same camera
+  // path -- the only honest way to attribute a frame-time delta to MDI rather
+  // than to build or content differences.
+  if (application_env_flag("VKR_DISABLE_MDI", false_v)) {
+    application.renderer.indirect_draw_system.enabled = false_v;
+    log_info("Multi-draw-indirect disabled via VKR_DISABLE_MDI");
   }
 
   // Headless metrics capture. Both knobs are opt-in so interactive runs are

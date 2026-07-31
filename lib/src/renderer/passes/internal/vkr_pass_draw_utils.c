@@ -326,3 +326,62 @@ bool8_t vkr_pass_packet_resolve_pipeline(RendererFrontend *rf,
 
   return true_v;
 }
+
+bool8_t vkr_pass_indirect_batch_submit(RendererFrontend *rf,
+                                       VkrPassIndirectBatch *batch) {
+  if (!rf || !batch || batch->count == 0) {
+    if (batch) {
+      batch->count = 0;
+    }
+    return false_v;
+  }
+
+  bool8_t used_indirect = false_v;
+  if (batch->count > 1u && rf->supports_multi_draw_indirect &&
+      rf->indirect_draw_system.initialized &&
+      rf->indirect_draw_system.enabled) {
+    // firstInstance inside an indirect command needs its own device feature.
+    bool8_t needs_first_instance = false_v;
+    for (uint32_t i = 0; i < batch->count; ++i) {
+      if (batch->commands[i].first_instance != 0u) {
+        needs_first_instance = true_v;
+        break;
+      }
+    }
+
+    if (!needs_first_instance || rf->supports_draw_indirect_first_instance) {
+      uint32_t base_draw = 0;
+      VkrIndirectDrawCommand *dst = NULL;
+      if (vkr_indirect_draw_alloc(&rf->indirect_draw_system, batch->count,
+                                  &base_draw, &dst)) {
+        MemCopy(dst, batch->commands,
+                sizeof(VkrIndirectDrawCommand) * (uint64_t)batch->count);
+        vkr_indirect_draw_flush_range(&rf->indirect_draw_system, base_draw,
+                                      batch->count);
+        VkrBufferHandle indirect_buffer =
+            vkr_indirect_draw_get_current(&rf->indirect_draw_system);
+        if (indirect_buffer) {
+          vkr_geometry_system_render_indirect(
+              rf, &rf->geometry_system, batch->geometry, indirect_buffer,
+              (uint64_t)base_draw * sizeof(VkrIndirectDrawCommand),
+              batch->count, (uint32_t)sizeof(VkrIndirectDrawCommand));
+          rf->frame_metrics.world.indirect_draws_issued += batch->count;
+          used_indirect = true_v;
+        }
+      }
+    }
+  }
+
+  if (!used_indirect) {
+    for (uint32_t i = 0; i < batch->count; ++i) {
+      const VkrIndirectDrawCommand *cmd = &batch->commands[i];
+      vkr_geometry_system_render_instanced_range_with_index_buffer(
+          rf, &rf->geometry_system, batch->geometry, batch->index_buffer,
+          cmd->index_count, cmd->first_index, cmd->vertex_offset,
+          cmd->instance_count, cmd->first_instance);
+    }
+  }
+
+  batch->count = 0;
+  return used_indirect;
+}
