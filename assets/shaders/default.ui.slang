@@ -3,8 +3,8 @@
 // Uniform buffer for MVP matrices
 struct UniformBufferObject 
 {
-    column_major float4x4 view;
     column_major float4x4 projection;
+    column_major float4x4 view;
 };
 
 struct LocalUniformObject

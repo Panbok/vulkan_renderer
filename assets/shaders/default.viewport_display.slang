@@ -4,8 +4,8 @@
 // Matches the default UI layout to sample the scene texture in a UI plane.
 
 struct UniformBufferObject {
-  column_major float4x4 view;
   column_major float4x4 projection;
+  column_major float4x4 view;
 };
 
 struct LocalUniformObject {
