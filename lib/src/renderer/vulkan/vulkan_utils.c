@@ -331,6 +331,8 @@ VkFormat vulkan_image_format_from_texture_format(VkrTextureFormat format) {
     return VK_FORMAT_ASTC_4x4_UNORM_BLOCK;
   case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
     return VK_FORMAT_ASTC_4x4_SRGB_BLOCK;
+  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
+    return VK_FORMAT_EAC_R11G11_UNORM_BLOCK;
   case VKR_TEXTURE_FORMAT_R8_UNORM:
     return VK_FORMAT_R8_UNORM;
   case VKR_TEXTURE_FORMAT_R16_SFLOAT:

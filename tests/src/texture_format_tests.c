@@ -62,6 +62,13 @@ static bool32_t test_vulkan_image_format_bc5_etc2_mapping(void) {
                              "ETC2_RGBA_SRGB")) {
     return false_v;
   }
+  // The compressed two-channel normal-map target on ETC2-class devices.
+  if (!test_expect_vk_format(vulkan_image_format_from_texture_format(
+                                 VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM),
+                             VK_FORMAT_EAC_R11G11_UNORM_BLOCK,
+                             "EAC_R11G11_UNORM")) {
+    return false_v;
+  }
   printf("  test_vulkan_image_format_bc5_etc2_mapping PASSED\n");
   return true_v;
 }

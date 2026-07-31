@@ -1,5 +1,5 @@
 ---
-status: partial
+status: implemented
 updated: 2026-07-31
 authority: spec
 ---
@@ -8,8 +8,8 @@ authority: spec
 ## 1. Purpose and Scope
 
 This document defines the authoritative v2 policy for `.vkt` texture compression
-selection in the renderer. Most of the policy is implemented; the remaining
-normal-map fallback gap is called out below.
+selection in the renderer. The capability-driven ladders and loadable terminal
+fallbacks are implemented.
 
 Scope:
 
@@ -28,14 +28,14 @@ Out of scope:
 The runtime now implements:
 
 - Offline packer emits a universal KTX2 + Basis UASTC source payload.
-- Texture-class-aware ASTC, BC7, ETC2, BC5, RG8, and RGBA8 selection ladders.
+- Texture-class-aware ASTC, BC7, ETC2, BC5, EAC RG11, and RGBA8 selection
+  ladders.
 - Capability-gated selection with device type used only for preference order.
 - Material/request/metadata intent resolution and strict `.vkt` controls.
 
-One gap keeps this document `partial`: if a `NORMAL_RG` texture reaches the
-uncompressed `R8G8_UNORM` fallback, the KTX transcode mapper returns
-`KTX_TTF_NOSELECTION`. That path must either map to a valid Basis transcode
-target or choose the existing RGBA8 fallback before the policy is complete.
+libktx has no uncompressed two-channel Basis transcode target. `NORMAL_RG`
+therefore uses capability-gated EAC RG11 below BC5/ASTC and terminates at the
+loadable RGBA8 target. EAC support is probed independently from ETC2 RGBA.
 
 ## 3. Policy Invariants
 
@@ -72,6 +72,7 @@ The runtime selector contract requires these capability flags:
 - `supports_texture_bc7`
 - `supports_texture_etc2`
 - `supports_texture_bc5`
+- `supports_texture_eac_r11g11`
 
 Device type is a preference hint:
 
@@ -114,14 +115,14 @@ For discrete preference:
 
 1. BC5 UNORM
 2. ASTC 4x4 UNORM (RG payload packed into RGBA blocks)
-3. RG8 UNORM
+3. EAC RG11 UNORM
 4. RGBA8 UNORM fallback
 
 For integrated/tiled preference:
 
 1. ASTC 4x4 UNORM (RG payload packed into RGBA blocks)
 2. BC5 UNORM
-3. RG8 UNORM
+3. EAC RG11 UNORM
 4. RGBA8 UNORM fallback
 
 ### 6.3 Data/Mask Class (`DATA_MASK`)
@@ -190,12 +191,10 @@ precedence request inputs.
 ## 11. Implementation Status
 
 The dual-path baseline, class-aware selector, capability plumbing, strict mode,
-ETC2 path, and BC5 path are implemented. Release flows can require `.vkt`, while
-development keeps explicit compatibility controls. Asset migration coverage is
-operational state rather than a guarantee of this policy document.
-
-The policy remains partial until the `NORMAL_RG` uncompressed fallback described
-in §2 is loadable.
+ETC2/BC5/EAC paths, and loadable RGBA fallback are implemented. Release flows
+can require `.vkt`, while development keeps explicit compatibility controls.
+Asset migration coverage is operational state rather than a guarantee of this
+policy document.
 
 ## 12. Validation Matrix
 
@@ -204,7 +203,7 @@ Implementers must validate at minimum:
 1. Color textures choose expected family under all capability combinations
    (ASTC/BC7/ETC2 availability permutations).
 2. Normal textures prefer BC5 or ASTC per device preference and never choose
-   sRGB.
+   sRGB; EAC and RGBA fallbacks remain loadable.
 3. Data/mask textures stay linear and follow deterministic ladder.
 4. Request precedence resolution behaves deterministically for conflicting
    request/material/metadata inputs.
@@ -212,6 +211,8 @@ Implementers must validate at minimum:
 6. Strict mode correctly rejects missing/invalid `.vkt` without silent source
    fallback.
 7. Scene reload cycles do not regress memory stability.
+8. Every selector result maps to a libktx transcode target across the complete
+   capability matrix.
 
 ## 13. Acceptance Criteria
 
@@ -223,7 +224,7 @@ Policy implementation is complete only when:
 4. Capability gates are authoritative; platform/device type never bypasses
    unsupported formats.
 5. Failure/fallback logging is explicit and actionable.
-6. The `NORMAL_RG` uncompressed fallback produces a loadable target.
+6. The `NORMAL_RG` terminal fallback produces a loadable target.
 
 ## 14. Implemented Public API and Type Changes
 
@@ -233,9 +234,11 @@ The implementation includes:
    - BC5 UNORM
    - ETC2 RGBA UNORM
    - ETC2 RGBA SRGB
+   - EAC RG11 UNORM
 2. `VkrDeviceInformation` additions:
    - ETC2 support flag
    - BC5 support flag
+   - EAC RG11 support flag
 3. A selector contract that accepts texture class and capability set as
    explicit inputs.
 
@@ -245,5 +248,5 @@ The implementation includes:
    historical context.
 2. This document is the authoritative v2 policy reference for robust texture
    compression selection.
-3. Code is the implementation authority; this document defines policy and
-   records the remaining boundary.
+3. Code is the implementation authority; this document defines the implemented
+   selection policy.

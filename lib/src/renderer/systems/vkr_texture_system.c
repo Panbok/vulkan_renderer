@@ -702,7 +702,8 @@ vkr_internal VkrTextureFormat vkr_texture_color_family_format(
 VkrTextureFormat vkr_texture_select_transcode_target_format(
     VkrTextureClass texture_class, bool8_t request_srgb,
     VkrDeviceTypeFlags device_types, bool8_t supports_astc_4x4,
-    bool8_t supports_bc7, bool8_t supports_etc2, bool8_t supports_bc5) {
+    bool8_t supports_bc7, bool8_t supports_etc2, bool8_t supports_bc5,
+    bool8_t supports_eac_rg11) {
   const bool8_t prefer_discrete =
       vkr_texture_device_prefers_discrete(device_types);
 
@@ -722,7 +723,14 @@ VkrTextureFormat vkr_texture_select_transcode_target_format(
         return VKR_TEXTURE_FORMAT_BC5_UNORM;
       }
     }
-    return VKR_TEXTURE_FORMAT_R8G8_UNORM;
+    if (supports_eac_rg11) {
+      return VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM;
+    }
+    // Not R8G8_UNORM: libktx has no uncompressed two-channel transcode target,
+    // so selecting it produced KTX_TTF_NOSELECTION and failed every strict
+    // .vkt load on devices with neither BC5 nor ASTC. RGBA32 wastes two
+    // channels but is always transcodable.
+    return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
   }
 
   if (texture_class == VKR_TEXTURE_CLASS_DATA_MASK) {
@@ -868,6 +876,7 @@ vkr_texture_format_is_block_compressed(VkrTextureFormat format) {
   case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
     return true_v;
   default:
     return false_v;
@@ -881,6 +890,7 @@ vkr_texture_channel_count_from_format(VkrTextureFormat format) {
     return VKR_TEXTURE_R_CHANNELS;
   case VKR_TEXTURE_FORMAT_R8G8_UNORM:
   case VKR_TEXTURE_FORMAT_BC5_UNORM:
+  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
     return VKR_TEXTURE_RG_CHANNELS;
   case VKR_TEXTURE_FORMAT_BC7_UNORM:
   case VKR_TEXTURE_FORMAT_BC7_SRGB:
@@ -910,12 +920,21 @@ vkr_texture_ktx_transcode_format_from_texture_format(VkrTextureFormat format) {
   case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
     return KTX_TTF_ASTC_4x4_RGBA;
+  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
+    return KTX_TTF_ETC2_EAC_RG11;
   case VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM:
   case VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB:
     return KTX_TTF_RGBA32;
   default:
     return KTX_TTF_NOSELECTION;
   }
+}
+
+bool8_t vkr_texture_format_has_ktx_transcode_target(VkrTextureFormat format) {
+  return vkr_texture_ktx_transcode_format_from_texture_format(format) !=
+                 KTX_TTF_NOSELECTION
+             ? true_v
+             : false_v;
 }
 
 /**
@@ -1206,6 +1225,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   out_system->supports_texture_bc7 = false_v;
   out_system->supports_texture_etc2 = false_v;
   out_system->supports_texture_bc5 = false_v;
+  out_system->supports_texture_eac_rg11 = false_v;
   VkrDeviceInformation device_info = {0};
   vkr_renderer_get_device_information(renderer, &device_info,
                                       out_system->arena);
@@ -1214,6 +1234,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   out_system->supports_texture_bc7 = device_info.supports_texture_bc7;
   out_system->supports_texture_etc2 = device_info.supports_texture_etc2;
   out_system->supports_texture_bc5 = device_info.supports_texture_bc5;
+  out_system->supports_texture_eac_rg11 = device_info.supports_texture_eac_rg11;
 
   out_system->strict_vkt_only_mode =
       vkr_texture_env_flag("VKR_TEXTURE_VKT_STRICT", false_v);
@@ -2459,10 +2480,18 @@ vkr_internal bool8_t vkr_texture_decode_from_ktx2(
       vkr_texture_select_transcode_target_format(
           effective_class, request_srgb, system->device_types,
           system->supports_texture_astc_4x4, system->supports_texture_bc7,
-          system->supports_texture_etc2, system->supports_texture_bc5);
+          system->supports_texture_etc2, system->supports_texture_bc5,
+          system->supports_texture_eac_rg11);
   const ktx_transcode_fmt_e target_transcode_format =
       vkr_texture_ktx_transcode_format_from_texture_format(target_format);
   if (target_transcode_format == KTX_TTF_NOSELECTION) {
+    // The selector picked a format libktx cannot transcode to. That is a bug in
+    // the selector, not a property of this texture, so say so loudly rather
+    // than failing the load silently.
+    log_error("No KTX2 transcode target for the format selected for '%s' "
+              "(texture class %d, format %d); this device's capability "
+              "combination is unhandled by the transcode selector",
+              path_cstr, (int)effective_class, (int)target_format);
     out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     goto cleanup;
   }

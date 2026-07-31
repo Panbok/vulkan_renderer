@@ -108,27 +108,84 @@ static void test_texture_transcode_target_policy(void) {
 
   assert(vkr_texture_select_transcode_target_format(
              VKR_TEXTURE_CLASS_COLOR_SRGB, true_v, integrated, true_v, true_v,
-             true_v, true_v) == VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB);
+             true_v, true_v, true_v) == VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB);
   assert(vkr_texture_select_transcode_target_format(
              VKR_TEXTURE_CLASS_COLOR_LINEAR, false_v, discrete, true_v, true_v,
-             true_v, true_v) == VKR_TEXTURE_FORMAT_BC7_UNORM);
+             true_v, true_v, true_v) == VKR_TEXTURE_FORMAT_BC7_UNORM);
   assert(vkr_texture_select_transcode_target_format(
              VKR_TEXTURE_CLASS_COLOR_LINEAR, true_v, discrete, true_v, true_v,
-             true_v, true_v) == VKR_TEXTURE_FORMAT_BC7_UNORM);
+             true_v, true_v, true_v) == VKR_TEXTURE_FORMAT_BC7_UNORM);
   assert(vkr_texture_select_transcode_target_format(
              VKR_TEXTURE_CLASS_COLOR_SRGB, true_v, integrated, false_v, false_v,
-             true_v, false_v) == VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB);
+             true_v, false_v,
+             false_v) == VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB);
   assert(vkr_texture_select_transcode_target_format(
              VKR_TEXTURE_CLASS_NORMAL_RG, true_v, discrete, true_v, true_v,
-             true_v, true_v) == VKR_TEXTURE_FORMAT_BC5_UNORM);
+             true_v, true_v, true_v) == VKR_TEXTURE_FORMAT_BC5_UNORM);
+  // Neither BC5 nor ASTC, but EAC RG11 available: the compressed two-channel
+  // target, not a widened RGBA one.
   assert(vkr_texture_select_transcode_target_format(
              VKR_TEXTURE_CLASS_NORMAL_RG, false_v, integrated, false_v, false_v,
-             false_v, false_v) == VKR_TEXTURE_FORMAT_R8G8_UNORM);
+             true_v, false_v, true_v) == VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM);
+  // No two-channel compressed target at all. This used to return R8G8_UNORM,
+  // which libktx cannot transcode to, so every strict .vkt normal map failed.
+  assert(vkr_texture_select_transcode_target_format(
+             VKR_TEXTURE_CLASS_NORMAL_RG, false_v, integrated, false_v, false_v,
+             false_v, false_v, false_v) == VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM);
   assert(vkr_texture_select_transcode_target_format(
              VKR_TEXTURE_CLASS_DATA_MASK, true_v, integrated, false_v, false_v,
-             true_v, false_v) == VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM);
+             true_v, false_v,
+             false_v) == VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM);
 
   printf("  test_texture_transcode_target_policy PASSED\n");
+}
+
+/**
+ * The selector and the transcode mapper are separate switches that must agree.
+ * They silently disagreed for one capability combination, so pin the invariant
+ * itself rather than another handful of examples: every format the selector can
+ * ever return must be transcodable.
+ */
+static void test_transcode_target_always_transcodable(void) {
+  printf("  Running test_transcode_target_always_transcodable...\n");
+
+  static const VkrTextureClass classes[] = {
+      VKR_TEXTURE_CLASS_COLOR_SRGB,
+      VKR_TEXTURE_CLASS_COLOR_LINEAR,
+      VKR_TEXTURE_CLASS_NORMAL_RG,
+      VKR_TEXTURE_CLASS_DATA_MASK,
+  };
+  static const uint8_t device_bits[] = {
+      VKR_DEVICE_TYPE_DISCRETE_BIT,
+      VKR_DEVICE_TYPE_INTEGRATED_BIT,
+      VKR_DEVICE_TYPE_VIRTUAL_BIT,
+      VKR_DEVICE_TYPE_CPU_BIT,
+  };
+
+  uint32_t checked = 0;
+  for (uint32_t c = 0; c < 4; ++c) {
+    for (uint32_t d = 0; d < 4; ++d) {
+      VkrDeviceTypeFlags device_types = bitset8_create();
+      bitset8_set(&device_types, device_bits[d]);
+      for (uint32_t srgb = 0; srgb < 2; ++srgb) {
+        // Sweep all 32 capability combinations: astc, bc7, etc2, bc5, eac.
+        for (uint32_t caps = 0; caps < 32; ++caps) {
+          VkrTextureFormat format = vkr_texture_select_transcode_target_format(
+              classes[c], srgb ? true_v : false_v, device_types,
+              (caps & 1) ? true_v : false_v, (caps & 2) ? true_v : false_v,
+              (caps & 4) ? true_v : false_v, (caps & 8) ? true_v : false_v,
+              (caps & 16) ? true_v : false_v);
+          assert(vkr_texture_format_has_ktx_transcode_target(format));
+          checked++;
+        }
+      }
+    }
+  }
+  assert(checked == 4 * 4 * 2 * 32);
+
+  printf("  test_transcode_target_always_transcodable PASSED (%u "
+         "combinations)\n",
+         checked);
 }
 
 bool32_t run_texture_vkt_tests() {
@@ -140,6 +197,7 @@ bool32_t run_texture_vkt_tests() {
   test_texture_vkt_container_detection();
   test_texture_query_colorspace_policy();
   test_texture_transcode_target_policy();
+  test_transcode_target_always_transcodable();
 
   printf("--- Texture VKT Tests Completed ---\n");
   return true_v;

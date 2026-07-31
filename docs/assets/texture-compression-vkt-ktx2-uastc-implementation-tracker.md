@@ -1,5 +1,5 @@
 ---
-status: partial
+status: implemented
 updated: 2026-07-31
 authority: progress
 ---
@@ -33,6 +33,9 @@ authority: progress
   - `VKR_TEXTURE_VKT_STRICT` enforces `.vkt`-only runtime and disables source fallback/legacy read.
   - `VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK`, `VKR_TEXTURE_VKT_ALLOW_LEGACY`, and `VKR_TEXTURE_VKT_WRITE_LEGACY_CACHE` tune dual-path development behavior.
 - `build.sh` now enforces strict texture packing defaults for `Release` builds (`VKR_VKT_PACK_STRICT=1` unless explicitly overridden) and rejects `Release` builds with `VKR_VKT_PACK=0`.
+- `NORMAL_RG` uses BC5/ASTC/EAC RG11 with a terminal RGBA target because
+  libktx has no uncompressed two-channel Basis transcode target. EAC capability
+  is probed independently from ETC2 RGBA.
 
 ## Phase Details
 ### P0
@@ -212,6 +215,11 @@ authority: progress
   - `./build_test.sh` completed successfully.
   - `cmake --build build -j 8` completed successfully.
   - `VKR_TEXTURE_PACK_INPUT_DIR=/tmp/vkt_skip_nonexistent ./build.sh Debug` completed successfully.
+- Post-P1 fallback hardening:
+  - Added EAC RG11 format/capability/transcode support and replaced the
+    unreachable RG8 terminal choice with RGBA.
+  - Exhaustively validated all 1,024 selector combinations; every result maps
+    to a libktx transcode target.
 
 ## Open Risks
 - Compressed texture write/resize semantics are intentionally restricted in rollout 1.

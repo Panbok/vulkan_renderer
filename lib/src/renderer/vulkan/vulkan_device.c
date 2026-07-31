@@ -651,13 +651,19 @@ void vulkan_device_get_information(VulkanBackendState *state,
       vulkan_device_supports_sampled_format(state->device.physical_device,
                                             VK_FORMAT_BC7_SRGB_BLOCK);
   device_information->supports_texture_etc2 =
-      vulkan_device_supports_sampled_format(state->device.physical_device,
-                                            VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK) &&
+      vulkan_device_supports_sampled_format(
+          state->device.physical_device, VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK) &&
       vulkan_device_supports_sampled_format(state->device.physical_device,
                                             VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK);
   device_information->supports_texture_bc5 =
       vulkan_device_supports_sampled_format(state->device.physical_device,
                                             VK_FORMAT_BC5_UNORM_BLOCK);
+  // Queried separately from ETC2 RGBA: both belong to the same Vulkan feature
+  // bit, but this codebase probes per format, and assuming one implies the
+  // other is exactly how the previous normal-map fallback went wrong.
+  device_information->supports_texture_eac_rg11 =
+      vulkan_device_supports_sampled_format(state->device.physical_device,
+                                            VK_FORMAT_EAC_R11G11_UNORM_BLOCK);
 
   VkrAllocator *temp_alloc = &state->temp_scope;
   VkrAllocator *arena_alloc = &state->alloc;

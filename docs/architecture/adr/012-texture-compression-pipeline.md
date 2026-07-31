@@ -36,13 +36,15 @@ and format support:
 
 - color/data textures prefer BC7, ASTC 4×4, or ETC2 and can transcode to RGBA32
   when no compressed target is supported;
-- normal maps prefer BC5 or ASTC.
+- normal maps prefer BC5 or ASTC, then capability-gated EAC RG11, with RGBA32
+  as the universally transcodable fallback.
 
-There is a current normal-map fallback bug: target selection returns
-`VKR_TEXTURE_FORMAT_R8G8_UNORM` when neither BC5 nor ASTC is supported, but
-`vkr_texture_ktx_transcode_format_from_texture_format()` has no mapping for
-that format. It returns `KTX_TTF_NOSELECTION`, causing the KTX2 decode to fail.
-Source fallback may mask this in development; runtime strict mode exposes it.
+libktx has no uncompressed two-channel Basis transcode target, so the former
+`R8G8_UNORM` terminal choice could never be valid. EAC RG11 is probed
+independently from ETC2 RGBA and mapped to its libktx target; the terminal RGBA
+choice guarantees every selector result has a transcode mapping. The unit
+matrix covers all 1,024 combinations of texture class, device preference,
+sRGB intent, and the five capability flags.
 
 The decoded/transcoded bytes are uploaded through explicit mip/layer
 `VkrTextureUploadRegion` entries. Writable/resize paths reject block-compressed
@@ -80,8 +82,6 @@ The vendored submodule is currently KTX-Software v4.4.2 at
 - Runtime transcoding consumes CPU time and temporary memory; faster total load
   time must be measured rather than assumed.
 - Current KTX2 decode rejects cubemaps, arrays, and non-Basis KTX2 payloads.
-- Strict KTX2 normal-map loading fails on devices supporting neither BC5 nor
-  ASTC until the `R8G8` fallback is made transcodable or replaced.
 - KTX-Software adds a sizeable C/C++ dependency and build cost.
 - Several build/runtime environment switches can be confused.
 - Block-compressed assets cannot use generic writable/resize paths.
@@ -104,6 +104,5 @@ The vendored submodule is currently KTX-Software v4.4.2 at
   on representative scenes/devices.
 - Add a native post-transcode cache if repeat load time warrants it.
 - Define compressed cubemap/array support for environment assets and streaming.
-- Fix and test the no-BC5/no-ASTC normal-map fallback.
 - Remove legacy/source fallback only after a runtime strict-mode validation run,
   not merely a strict pack.

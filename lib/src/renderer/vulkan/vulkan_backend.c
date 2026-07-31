@@ -2116,6 +2116,7 @@ vulkan_texture_format_is_compressed(VkrTextureFormat format) {
   case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
     return true_v;
   default:
     return false_v;
@@ -2159,6 +2160,7 @@ vulkan_texture_format_channel_count(VkrTextureFormat format) {
   case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
     return 0;
   case VKR_TEXTURE_FORMAT_R8G8_UNORM:
     return 2;
@@ -2185,6 +2187,7 @@ vulkan_texture_format_block_width(VkrTextureFormat format) {
   case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
     return 4;
   default:
     return 1;
@@ -2201,6 +2204,7 @@ vulkan_texture_format_block_height(VkrTextureFormat format) {
   case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
     return 4;
   default:
     return 1;
@@ -2217,6 +2221,7 @@ vkr_internal uint32_t vulkan_texture_format_block_size_bytes(
   case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
   case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
+  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
     return 16;
   default:
     return channels;

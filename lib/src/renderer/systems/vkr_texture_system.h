@@ -84,6 +84,7 @@ typedef struct VkrTextureSystem {
   bool8_t supports_texture_bc7;      // Whether BC7 is supported
   bool8_t supports_texture_etc2;     // Whether ETC2 RGBA is supported
   bool8_t supports_texture_bc5;      // Whether BC5 is supported
+  bool8_t supports_texture_eac_rg11; // Whether EAC RG11 is supported
 
   // Runtime rollout controls for `.vkt` migration.
   bool8_t strict_vkt_only_mode;     // Disable source-image fallback.
@@ -148,12 +149,27 @@ bool8_t vkr_texture_request_prefers_srgb(String8 request_path,
  * @param supports_bc7 Whether BC7 is supported
  * @param supports_etc2 Whether ETC2 RGBA is supported
  * @param supports_bc5 Whether BC5 is supported
+ * @param supports_eac_rg11 Whether EAC RG11 is supported
  * @return The transcode target format
+ *
+ * @note Every format this can return must satisfy
+ * vkr_texture_format_has_ktx_transcode_target. A format without a transcode
+ * target fails .vkt loading outright.
  */
 VkrTextureFormat vkr_texture_select_transcode_target_format(
     VkrTextureClass texture_class, bool8_t request_srgb,
     VkrDeviceTypeFlags device_types, bool8_t supports_astc_4x4,
-    bool8_t supports_bc7, bool8_t supports_etc2, bool8_t supports_bc5);
+    bool8_t supports_bc7, bool8_t supports_etc2, bool8_t supports_bc5,
+    bool8_t supports_eac_rg11);
+
+/**
+ * @brief Whether a KTX2 payload can be transcoded to this format.
+ *
+ * Exposed so the selector's output can be checked against the transcode
+ * mapper's coverage without leaking libktx types across this boundary. A
+ * selector result that fails this predicate fails .vkt loading at runtime.
+ */
+bool8_t vkr_texture_format_has_ktx_transcode_target(VkrTextureFormat format);
 
 // =============================================================================
 // Initialization / Shutdown

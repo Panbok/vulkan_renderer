@@ -445,6 +445,8 @@ typedef struct VkrDeviceInformation {
   bool8_t supports_texture_bc7;
   bool8_t supports_texture_etc2;
   bool8_t supports_texture_bc5;
+  /** EAC RG11: the only compressed two-channel target on ETC2-class GPUs. */
+  bool8_t supports_texture_eac_rg11;
   bool8_t supports_multi_draw_indirect;
   bool8_t supports_draw_indirect_first_instance;
 } VkrDeviceInformation;
@@ -507,6 +509,8 @@ typedef enum VkrTextureFormat {
   VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB,
   VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM,
   VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB,
+  /** Two-channel EAC; the only compressed RG target on ETC2-class devices. */
+  VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM,
   // Single/dual channel formats
   VKR_TEXTURE_FORMAT_R8_UNORM,
   VKR_TEXTURE_FORMAT_R16_SFLOAT,
