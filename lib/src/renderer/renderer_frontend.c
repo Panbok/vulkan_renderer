@@ -542,6 +542,19 @@ bool8_t vkr_renderer_get_and_reset_upload_wait_stats(
       renderer->backend_state, out_stats);
 }
 
+bool8_t vkr_renderer_get_device_memory_stats(VkrRendererFrontendHandle renderer,
+                                             VkrDeviceMemoryStats *out_stats) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(out_stats != NULL, "Out stats is NULL");
+
+  MemZero(out_stats, sizeof(*out_stats));
+  if (!renderer->backend.get_device_memory_stats) {
+    return false_v;
+  }
+  return renderer->backend.get_device_memory_stats(renderer->backend_state,
+                                                   out_stats);
+}
+
 VkrBufferHandle vkr_renderer_create_buffer(
     VkrRendererFrontendHandle renderer, const VkrBufferDescription *description,
     const void *initial_data, VkrRendererError *out_error) {

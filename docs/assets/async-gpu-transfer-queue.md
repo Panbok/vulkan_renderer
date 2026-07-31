@@ -9,6 +9,11 @@ authority: design
 
 This document describes the implementation of asynchronous GPU buffer/image uploads using a dedicated Vulkan transfer queue. The goal is to improve texture and mesh loading performance by utilizing dedicated DMA hardware when available.
 
+This remains a proposed independent-submission design. The shipped frame path
+now records uploads into the active primary command buffer and retires staging
+by submit serial without a render-thread wait; bootstrap and other out-of-frame
+helpers still use the submit-and-wait flow described below.
+
 ## Architecture
 
 ### Transfer Queue Concept
@@ -266,4 +271,3 @@ but no matching release operation was queued for execution from source queue fam
 - [Vulkan Spec: Queue Family Ownership Transfer](https://registry.khronos.org/vulkan/specs/1.3-extensions/html/vkspec.html#synchronization-queue-transfers)
 - [AMD: Async Compute and Transfer](https://gpuopen.com/learn/concurrent-execution-asynchronous-queues/)
 - [NVIDIA: Vulkan Memory Management](https://developer.nvidia.com/vulkan-memory-management)
-

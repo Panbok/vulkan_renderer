@@ -131,6 +131,12 @@ typedef struct State {
   // Optional automation-only runtime cap used for non-interactive verification.
   bool8_t auto_close_enabled;
   float64_t auto_close_after_seconds;
+  /** Periodic GPU/allocator telemetry dump; see VKR_METRICS_INTERVAL_SECONDS.
+   */
+  bool8_t metrics_dump_enabled;
+  float64_t metrics_dump_interval_seconds;
+  VkrClock metrics_dump_clock;
+  uint32_t metrics_dump_index;
   bool8_t auto_close_requested;
 
   // Optional benchmark logging for non-interactive perf validation runs.
@@ -365,6 +371,96 @@ vkr_internal void application_log_backend_allocator_breakdown(
   *write = '\0';
 
   log_debug("Vulkan backend %s stats:\n%s", label, stats_buffer);
+}
+
+/**
+ * @brief Logs device-memory allocation telemetry.
+ *
+ * This is the measurement the architecture spec asks for before any block
+ * allocator is written: allocation count, peak, and per-memory-type
+ * distribution decide whether pooling pays and what block size to use.
+ */
+vkr_internal void application_log_device_memory_stats(Application *application,
+                                                      const char *label) {
+  if (!application || !label) {
+    return;
+  }
+
+  VkrDeviceMemoryStats stats = {0};
+  if (!vkr_renderer_get_device_memory_stats(&application->renderer, &stats)) {
+    return;
+  }
+
+  log_info("GPU_MEM label=%s allocations=live:%llu peak:%llu total:%llu "
+           "limit:%llu bytes=live:%.3fMB peak:%.3fMB exact=%s",
+           label, (unsigned long long)stats.live_allocation_count,
+           (unsigned long long)stats.peak_allocation_count,
+           (unsigned long long)stats.total_allocation_count,
+           (unsigned long long)stats.max_allocation_count,
+           application_bytes_to_mb(stats.live_bytes),
+           application_bytes_to_mb(stats.peak_bytes),
+           stats.live_totals_exact ? "yes" : "no");
+
+  for (uint32_t i = 0; i < stats.memory_type_count; ++i) {
+    if (stats.live_count_by_type[i] == 0) {
+      continue;
+    }
+    log_info("GPU_MEM   type=%u heap=%u flags=0x%x count=%llu bytes=%.3fMB", i,
+             stats.heap_index_by_type[i], stats.property_flags_by_type[i],
+             (unsigned long long)stats.live_count_by_type[i],
+             application_bytes_to_mb(stats.live_bytes_by_type[i]));
+  }
+
+  for (uint32_t i = 0; i < stats.heap_count; ++i) {
+    if (stats.heap_usage_valid) {
+      log_info("GPU_MEM   heap=%u size=%.3fMB usage=%.3fMB budget=%.3fMB", i,
+               application_bytes_to_mb(stats.heap_size_bytes[i]),
+               application_bytes_to_mb(stats.heap_usage_bytes[i]),
+               application_bytes_to_mb(stats.heap_budget_bytes[i]));
+    } else {
+      log_info("GPU_MEM   heap=%u size=%.3fMB (usage unavailable: no "
+               "VK_EXT_memory_budget)",
+               i, application_bytes_to_mb(stats.heap_size_bytes[i]));
+    }
+  }
+}
+
+/**
+ * @brief Emits one periodic telemetry sample.
+ *
+ * Labelled with a monotonically increasing index and the elapsed time so a
+ * capture can be read as a series -- allocation counts settling after a scene
+ * load look different from allocation counts that keep climbing, and only the
+ * series distinguishes them.
+ */
+vkr_internal void application_dump_periodic_metrics(Application *application) {
+  if (!application || !state || !state->metrics_dump_enabled) {
+    return;
+  }
+  if (!vkr_clock_interval_elapsed(&state->metrics_dump_clock,
+                                  state->metrics_dump_interval_seconds)) {
+    return;
+  }
+
+  char label[64];
+  snprintf(label, sizeof(label), "tick%u@%.1fs", state->metrics_dump_index,
+           application->clock.elapsed);
+  state->metrics_dump_index++;
+
+  application_log_device_memory_stats(application, label);
+
+  VkrAllocatorStatistics stats = {0};
+  if (application_capture_backend_allocator_stats(application, &stats)) {
+    log_info("CPU_MEM label=%s total=%.3fMB gpu=%.3fMB vulkan=%.3fMB "
+             "texture=%.3fMB",
+             label, application_bytes_to_mb(stats.total_allocated),
+             application_bytes_to_mb(
+                 stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_GPU]),
+             application_bytes_to_mb(
+                 stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_VULKAN]),
+             application_bytes_to_mb(
+                 stats.tagged_allocs[VKR_ALLOCATOR_MEMORY_TAG_TEXTURE]));
+  }
 }
 
 vkr_internal void application_log_backend_allocator_stats(
@@ -1233,6 +1329,9 @@ application_try_activate_scene_resource(Application *application) {
             ? &state->scene_load_stats_baseline
             : NULL);
     state->scene_load_stats_baseline_valid = false_v;
+    // Captured at the same point as the allocator breakdown so the two can be
+    // read together: one says how many bytes, the other how many allocations.
+    application_log_device_memory_stats(application, "load-ready");
   }
 
   return true_v;
@@ -1302,9 +1401,11 @@ vkr_internal void application_init_scene_system(Application *application) {
   application_log_backend_allocator_stats(application, "load-enqueue", NULL);
 
   vkr_allocator_end_scope(&load_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  // An async load is not ready the instant it is enqueued; activation is
+  // retried from application_update_scene. Not an error -- it is the normal
+  // path, and logging it as one made every capture look like a failure.
   if (!application_try_activate_scene_resource(application)) {
-    log_error("Failed to activate scene resource after load");
-    return;
+    log_debug("Scene load enqueued; activation deferred until it completes");
   }
 }
 
@@ -1325,6 +1426,7 @@ vkr_internal void application_unload_scene_system(Application *application) {
   state->scene_load_start_time_seconds = 0.0;
   application->renderer.active_scene = NULL;
   application_log_backend_allocator_stats(application, "unload", NULL);
+  application_log_device_memory_stats(application, "unload");
 }
 
 vkr_internal void application_init_memory_text(Application *application) {
@@ -2302,6 +2404,7 @@ void application_update(Application *application, float64_t delta) {
   application_update_scene(application, delta);
   application_update_ibl_validation_controls(application);
   application_poll_upload_wait_stats(application);
+  application_dump_periodic_metrics(application);
 
   if (state->auto_close_enabled && !state->auto_close_requested &&
       application->clock.elapsed >= state->auto_close_after_seconds) {
@@ -2341,6 +2444,9 @@ int main(int argc, char **argv) {
     return 1;
   }
   application.rg_gpu_timing_enabled = false_v;
+
+  // Baseline before any scene loads: the renderer's own resident allocations.
+  application_log_device_memory_stats(&application, "startup");
 
   state = arena_alloc(application.app_arena, sizeof(State),
                       ARENA_MEMORY_TAG_STRUCT);
@@ -2391,6 +2497,9 @@ int main(int argc, char **argv) {
   state->gizmo_hot_handle = VKR_GIZMO_HANDLE_NONE;
   state->auto_close_enabled = false_v;
   state->auto_close_after_seconds = 0.0;
+  state->metrics_dump_enabled = false_v;
+  state->metrics_dump_interval_seconds = 0.0;
+  state->metrics_dump_index = 0;
   state->auto_close_requested = false_v;
   state->benchmark_enabled = false_v;
   state->benchmark_label = "default";
@@ -2428,6 +2537,32 @@ int main(int argc, char **argv) {
     } else {
       log_warn("Ignoring invalid VKR_AUTOCLOSE_SECONDS value '%s'",
                auto_close_env);
+    }
+  }
+
+  // Headless metrics capture. Both knobs are opt-in so interactive runs are
+  // unchanged; together with VKR_AUTOCLOSE_SECONDS they make a baseline
+  // reproducible without a human driving the app.
+  if (application_env_flag("VKR_AUTOLOAD_SCENE", false_v)) {
+    log_info("Auto-loading scene '%s' via VKR_AUTOLOAD_SCENE", SCENE_PATH);
+    application_init_scene_system(&application);
+  }
+
+  const char *metrics_interval_env = getenv("VKR_METRICS_INTERVAL_SECONDS");
+  if (metrics_interval_env && metrics_interval_env[0] != '\0') {
+    char *metrics_end_ptr = NULL;
+    float64_t metrics_interval = strtod(metrics_interval_env, &metrics_end_ptr);
+    if (metrics_end_ptr != metrics_interval_env && metrics_interval > 0.0) {
+      state->metrics_dump_enabled = true_v;
+      state->metrics_dump_interval_seconds = metrics_interval;
+      state->metrics_dump_clock = vkr_clock_create();
+      vkr_clock_start(&state->metrics_dump_clock);
+      log_info("Periodic metrics dump enabled every %.2fs via "
+               "VKR_METRICS_INTERVAL_SECONDS",
+               metrics_interval);
+    } else {
+      log_warn("Ignoring invalid VKR_METRICS_INTERVAL_SECONDS value '%s'",
+               metrics_interval_env);
     }
   }
 

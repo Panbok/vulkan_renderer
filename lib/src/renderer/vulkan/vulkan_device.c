@@ -9,7 +9,8 @@ static bool8_t vulkan_device_supports_sampled_format(VkPhysicalDevice device,
                                                      VkFormat format) {
   VkFormatProperties properties = {0};
   vkGetPhysicalDeviceFormatProperties(device, format, &properties);
-  return (properties.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
+  return (properties.optimalTilingFeatures &
+          VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT)
              ? true_v
              : false_v;
 }
@@ -54,6 +55,51 @@ static bool32_t has_required_extensions(VulkanBackendState *state,
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
 
   return true;
+}
+
+/**
+ * @brief Whether the physical device exposes a given extension.
+ *
+ * Used for optional extensions, which -- unlike the platform's required list --
+ * must not fail device selection when absent.
+ */
+static bool8_t device_supports_extension(VulkanBackendState *state,
+                                         VkPhysicalDevice device,
+                                         const char *extension_name) {
+  uint32_t extension_count = 0;
+  if (vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count,
+                                           NULL) != VK_SUCCESS ||
+      extension_count == 0) {
+    return false_v;
+  }
+
+  VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
+  if (!vkr_allocator_scope_is_valid(&scope)) {
+    return false_v;
+  }
+  Array_VkExtensionProperties available =
+      array_create_VkExtensionProperties(&state->temp_scope, extension_count);
+  if (!available.data ||
+      vkEnumerateDeviceExtensionProperties(device, NULL, &extension_count,
+                                           available.data) != VK_SUCCESS) {
+    array_destroy_VkExtensionProperties(&available);
+    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    return false_v;
+  }
+
+  bool8_t found = false_v;
+  for (uint32_t i = 0; i < extension_count; ++i) {
+    if (string_equals(
+            extension_name,
+            array_get_VkExtensionProperties(&available, i)->extensionName)) {
+      found = true_v;
+      break;
+    }
+  }
+
+  array_destroy_VkExtensionProperties(&available);
+  vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  return found;
 }
 
 static uint32_t score_device(VulkanBackendState *state,
@@ -502,8 +548,9 @@ bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
              "Physical device was not acquired");
 
   // Swapchain depth format candidates prioritize precision/compatibility.
-  // Exclude VK_FORMAT_D32_SFLOAT_S8_UINT: it maps to VKR_TEXTURE_FORMAT_D32_SFLOAT
-  // but requires depth+stencil aspects, causing render-pass/image-view mismatches.
+  // Exclude VK_FORMAT_D32_SFLOAT_S8_UINT: it maps to
+  // VKR_TEXTURE_FORMAT_D32_SFLOAT but requires depth+stencil aspects, causing
+  // render-pass/image-view mismatches.
   const VkFormat depth_candidates[] = {VK_FORMAT_D32_SFLOAT,
                                        VK_FORMAT_D24_UNORM_S8_UINT};
   bool8_t depth_linear_tiling = false_v;
@@ -519,14 +566,13 @@ bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
   log_debug("Selected swapchain depth format (%s tiling): %s (%d) "
             "linear_filter=%u",
             depth_linear_tiling ? "linear" : "optimal",
-            vk_format_to_string(device->depth_format), (int)device->depth_format,
-            (uint32_t)depth_linear_filtering);
+            vk_format_to_string(device->depth_format),
+            (int)device->depth_format, (uint32_t)depth_linear_filtering);
 
   // Shadow map depth prefers the smallest sampled format first to reduce
   // footprint, then falls back to the wider formats.
-  const VkFormat shadow_candidates[] = {VK_FORMAT_D16_UNORM,
-                                        VK_FORMAT_D24_UNORM_S8_UINT,
-                                        VK_FORMAT_D32_SFLOAT};
+  const VkFormat shadow_candidates[] = {
+      VK_FORMAT_D16_UNORM, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT};
   bool8_t shadow_linear_tiling = false_v;
   bool8_t shadow_linear_filtering = false_v;
   if (!vulkan_device_pick_sampled_depth_format(
@@ -944,9 +990,31 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
     log_warn("drawIndirectFirstInstance not supported; MDI will be disabled");
   }
 
+  uint32_t required_ext_count = 0;
+  const char **required_extension_names =
+      vulkan_platform_get_required_device_extensions(&required_ext_count);
+
+  // Copy the platform's required list so optional extensions can be appended.
+  // VK_EXT_memory_budget is telemetry only: without it heap usage is unknown,
+  // but nothing else changes, so its absence must not fail device creation.
+  const char *extension_names[16] = {0};
   uint32_t ext_count = 0;
-  const char **extension_names =
-      vulkan_platform_get_required_device_extensions(&ext_count);
+  assert_log(required_ext_count <= ArrayCount(extension_names),
+             "Too many required device extensions");
+  for (uint32_t i = 0; i < required_ext_count; ++i) {
+    extension_names[ext_count++] = required_extension_names[i];
+  }
+
+  state->supports_memory_budget = false_v;
+  if (ext_count < ArrayCount(extension_names) &&
+      device_supports_extension(state, state->device.physical_device,
+                                VK_EXT_MEMORY_BUDGET_EXTENSION_NAME)) {
+    extension_names[ext_count++] = VK_EXT_MEMORY_BUDGET_EXTENSION_NAME;
+    state->supports_memory_budget = true_v;
+  } else {
+    log_info("VK_EXT_memory_budget unavailable; heap usage will not be "
+             "reported");
+  }
 
   VkDeviceCreateInfo device_create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,

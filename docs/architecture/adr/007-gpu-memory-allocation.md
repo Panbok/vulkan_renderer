@@ -29,17 +29,23 @@ Keep direct device-memory ownership for now:
 - each readback buffer owns one allocation;
 - no VMA or custom block allocator is present.
 
-There are four direct `vkAllocateMemory` sites in the backend. Every
-`VulkanBuffer` also owns a `VkrDMemory` offset allocator over its virtual byte
-range. Callers may use that to suballocate logical ranges when they intentionally
-share the same buffer; it does not imply that all mesh geometry currently uses
-a common mega-buffer.
+All device allocation/free operations route through one tracked backend wrapper;
+the wrapper contains the only raw `vkAllocateMemory`/`vkFreeMemory` pair.
+Every `VulkanBuffer` also owns a `VkrDMemory` offset allocator over its virtual
+byte range. Callers may use that to suballocate logical ranges when they
+intentionally share the same buffer; it does not imply that all mesh geometry
+currently uses a common mega-buffer.
 
 Supporting behavior:
 
 - a requested host-visible/device-local buffer memory type can fall back to
-  host-visible memory when the combined type is unavailable;
+  host-visible memory when the combined type is unavailable, and resources
+  retain the selected memory type's actual property flags;
 - allocation sizes are reported to the project's GPU/Vulkan accounting tags;
+- a handle-keyed table exposes live/peak/total allocation counts and bytes plus
+  per-memory-type distribution; saturation marks live totals inexact;
+- heap capacity is always reported and `VK_EXT_memory_budget` adds driver usage
+  and budget when available;
 - graph-resource statistics separately track graph-owned image/buffer sizes;
 - Vulkan driver host allocations use project `VkAllocationCallbacks`, which is
   independent of this device-memory policy.
@@ -60,13 +66,15 @@ Supporting behavior:
   device's `maxMemoryAllocationCount`.
 - Small resources pay alignment/granularity and driver-allocation overhead.
 - There is no block reuse, defragmentation, eviction, or heap-budget policy.
-- Existing accounting reports requested allocation sizes but does not expose
-  heap budgets, fragmentation, or proximity to the device allocation-count
-  limit.
+- Telemetry reports usage but does not impose budgets, prevent exhaustion, or
+  expose fragmentation.
 
-No captured telemetry currently proves that Sponza or San Miguel approaches a
-specific limit. Allocation count, heap usage, and load-time cost must be
-measured before making that claim or selecting pool block sizes.
+A Debug Sponza capture on Apple M1 Pro/MoltenVK peaked at 206 live allocations
+against `maxMemoryAllocationCount` ~1.07e9. Its DEVICE_LOCAL allocations
+averaged 14.5 MB while host-visible allocations averaged 0.47 MB. This does not
+justify a pool on that device; broader hardware and content measurements remain
+necessary before choosing block sizes. See
+[GPU device-memory baseline](../../performance/gpu-memory-baseline.md).
 
 ## Alternatives Considered
 
@@ -80,7 +88,8 @@ measured before making that claim or selecting pool block sizes.
 
 ## Revisit When
 
-- Add allocation-count and `VK_EXT_memory_budget` telemetry first.
 - Pool when measured content/device limits or `vkAllocateMemory` time justify
   the complexity.
+- Re-measure on discrete GPUs and any target exposing a materially lower
+  allocation-count limit.
 - Revisit with texture streaming, eviction, or graph transient aliasing.

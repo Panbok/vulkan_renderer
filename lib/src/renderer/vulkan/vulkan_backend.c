@@ -53,6 +53,9 @@ uint64_t renderer_vulkan_get_submit_serial(void *backend_state);
 uint64_t renderer_vulkan_get_completed_submit_serial(void *backend_state);
 bool8_t renderer_vulkan_get_and_reset_upload_wait_stats(
     void *backend_state, VkrRendererUploadWaitStats *out_stats);
+bool8_t
+renderer_vulkan_get_device_memory_stats(void *backend_state,
+                                        VkrDeviceMemoryStats *out_stats);
 void renderer_vulkan_set_depth_bias(void *backend_state,
                                     float32_t constant_factor, float32_t clamp,
                                     float32_t slope_factor);
@@ -523,6 +526,142 @@ vulkan_backend_parallel_runtime_initialize(VulkanBackendState *state) {
   }
 
   return true_v;
+}
+
+// =============================================================================
+// Device memory telemetry
+// =============================================================================
+
+/** @brief Open-addressed slot lookup keyed by the VkDeviceMemory handle. */
+vkr_internal uint32_t vulkan_device_memory_slot(
+    const VulkanDeviceMemoryStats *stats, VkDeviceMemory memory) {
+  // Handles are opaque; mixing the low bits is enough to spread sequential
+  // driver-assigned values across the table.
+  uint64_t hash = (uint64_t)(uintptr_t)memory;
+  hash = (hash >> 4) ^ (hash >> 20);
+  return (uint32_t)(hash & (uint64_t)(stats->entry_capacity - 1));
+}
+
+vkr_internal void
+vulkan_device_memory_record_alloc(VulkanBackendState *state,
+                                  VkDeviceMemory memory, uint64_t size,
+                                  uint32_t memory_type_index) {
+  VulkanDeviceMemoryStats *stats = &state->device_memory_stats;
+
+  stats->total_allocation_count++;
+  stats->live_allocation_count++;
+  if (stats->live_allocation_count > stats->peak_allocation_count) {
+    stats->peak_allocation_count = stats->live_allocation_count;
+  }
+  stats->live_bytes += size;
+  if (stats->live_bytes > stats->peak_bytes) {
+    stats->peak_bytes = stats->live_bytes;
+  }
+  if (memory_type_index < VK_MAX_MEMORY_TYPES) {
+    stats->live_bytes_by_type[memory_type_index] += size;
+    stats->live_count_by_type[memory_type_index]++;
+  }
+
+  if (!stats->entries || !stats->tracking_exact) {
+    return;
+  }
+  uint32_t slot = vulkan_device_memory_slot(stats, memory);
+  for (uint32_t probe = 0; probe < stats->entry_capacity; ++probe) {
+    VulkanDeviceMemoryEntry *entry =
+        &stats->entries[(slot + probe) & (stats->entry_capacity - 1)];
+    if (entry->memory == VK_NULL_HANDLE) {
+      entry->memory = memory;
+      entry->size = size;
+      entry->memory_type_index = memory_type_index;
+      return;
+    }
+  }
+
+  // Full: subsequent frees cannot be attributed, so stop claiming the live
+  // figures are exact rather than silently reporting wrong ones.
+  stats->tracking_exact = false_v;
+  log_warn("Device memory tracking table is full (%u entries); live totals are "
+           "no longer exact",
+           stats->entry_capacity);
+}
+
+vkr_internal void vulkan_device_memory_record_free(VulkanBackendState *state,
+                                                   VkDeviceMemory memory) {
+  VulkanDeviceMemoryStats *stats = &state->device_memory_stats;
+  if (!stats->entries || memory == VK_NULL_HANDLE) {
+    return;
+  }
+
+  uint32_t slot = vulkan_device_memory_slot(stats, memory);
+  for (uint32_t probe = 0; probe < stats->entry_capacity; ++probe) {
+    uint32_t index = (slot + probe) & (stats->entry_capacity - 1);
+    VulkanDeviceMemoryEntry *entry = &stats->entries[index];
+    if (entry->memory != memory) {
+      if (entry->memory == VK_NULL_HANDLE && stats->tracking_exact) {
+        // A cleanly terminated probe run means this handle was never tracked.
+        return;
+      }
+      continue;
+    }
+
+    stats->live_allocation_count--;
+    stats->live_bytes -= entry->size;
+    if (entry->memory_type_index < VK_MAX_MEMORY_TYPES) {
+      stats->live_bytes_by_type[entry->memory_type_index] -= entry->size;
+      stats->live_count_by_type[entry->memory_type_index]--;
+    }
+    *entry = (VulkanDeviceMemoryEntry){0};
+
+    // Re-insert the following run so linear probing stays intact.
+    for (uint32_t next = 1; next < stats->entry_capacity; ++next) {
+      uint32_t moved_index = (index + next) & (stats->entry_capacity - 1);
+      VulkanDeviceMemoryEntry moved = stats->entries[moved_index];
+      if (moved.memory == VK_NULL_HANDLE) {
+        break;
+      }
+      stats->entries[moved_index] = (VulkanDeviceMemoryEntry){0};
+      uint32_t reinsert = vulkan_device_memory_slot(stats, moved.memory);
+      for (uint32_t p = 0; p < stats->entry_capacity; ++p) {
+        VulkanDeviceMemoryEntry *target =
+            &stats->entries[(reinsert + p) & (stats->entry_capacity - 1)];
+        if (target->memory == VK_NULL_HANDLE) {
+          *target = moved;
+          break;
+        }
+      }
+    }
+    return;
+  }
+}
+
+/**
+ * @brief Allocates device memory and records it for telemetry.
+ *
+ * Every VkDeviceMemory the renderer owns goes through here, and every free
+ * through vulkan_backend_free_device_memory. Counts remain exact while the
+ * handle table has capacity; overflow is surfaced through tracking_exact.
+ */
+VkResult
+vulkan_backend_allocate_device_memory(VulkanBackendState *state,
+                                      const VkMemoryAllocateInfo *alloc_info,
+                                      VkDeviceMemory *out_memory) {
+  VkResult result = vkAllocateMemory(state->device.logical_device, alloc_info,
+                                     state->allocator, out_memory);
+  if (result == VK_SUCCESS) {
+    vulkan_device_memory_record_alloc(state, *out_memory,
+                                      alloc_info->allocationSize,
+                                      alloc_info->memoryTypeIndex);
+  }
+  return result;
+}
+
+void vulkan_backend_free_device_memory(VulkanBackendState *state,
+                                       VkDeviceMemory memory) {
+  if (memory == VK_NULL_HANDLE) {
+    return;
+  }
+  vulkan_device_memory_record_free(state, memory);
+  vkFreeMemory(state->device.logical_device, memory, state->allocator);
 }
 
 vkr_internal bool8_t vulkan_backend_prepare_staging_buffer(
@@ -1016,7 +1155,7 @@ vkr_internal bool8_t vulkan_backend_defer_staging_buffer_destroy(
     if (allocation_size > 0) {
       vkr_allocator_report(&state->alloc, allocation_size, alloc_tag, false_v);
     }
-    vkFreeMemory(state->device.logical_device, vk_memory, state->allocator);
+    vulkan_backend_free_device_memory(state, vk_memory);
   }
   return true_v;
 }
@@ -1920,8 +2059,7 @@ vkr_internal void vulkan_deferred_destroy_process(VulkanBackendState *state) {
           vkr_allocator_report(&state->alloc, entry->memory_size,
                                entry->memory_tag, false_v);
         }
-        vkFreeMemory(state->device.logical_device, entry->memory,
-                     state->allocator);
+        vulkan_backend_free_device_memory(state, entry->memory);
       }
       break;
     case VKR_DEFERRED_DESTROY_IMAGE_VIEW:
@@ -1947,8 +2085,7 @@ vkr_internal void vulkan_deferred_destroy_process(VulkanBackendState *state) {
           vkr_allocator_report(&state->alloc, entry->memory_size,
                                entry->memory_tag, false_v);
         }
-        vkFreeMemory(state->device.logical_device, entry->memory,
-                     state->allocator);
+        vulkan_backend_free_device_memory(state, entry->memory);
       }
       break;
     case VKR_DEFERRED_DESTROY_COMMAND_SUBMISSION:
@@ -3383,6 +3520,7 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
           renderer_vulkan_get_completed_submit_serial,
       .get_and_reset_upload_wait_stats =
           renderer_vulkan_get_and_reset_upload_wait_stats,
+      .get_device_memory_stats = renderer_vulkan_get_device_memory_stats,
       .rg_timing_begin_frame = renderer_vulkan_rg_timing_begin_frame,
       .rg_timing_begin_pass = renderer_vulkan_rg_timing_begin_pass,
       .rg_timing_end_pass = renderer_vulkan_rg_timing_end_pass,
@@ -3433,6 +3571,69 @@ bool8_t renderer_vulkan_get_and_reset_upload_wait_stats(
   state->upload_path_fence_wait_count = 0;
   state->upload_path_queue_wait_idle_count = 0;
   state->upload_path_device_wait_idle_count = 0;
+  return true_v;
+}
+
+bool8_t
+renderer_vulkan_get_device_memory_stats(void *backend_state,
+                                        VkrDeviceMemoryStats *out_stats) {
+  if (!backend_state || !out_stats) {
+    return false_v;
+  }
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  const VulkanDeviceMemoryStats *stats = &state->device_memory_stats;
+
+  out_stats->live_allocation_count = stats->live_allocation_count;
+  out_stats->peak_allocation_count = stats->peak_allocation_count;
+  out_stats->total_allocation_count = stats->total_allocation_count;
+  out_stats->live_bytes = stats->live_bytes;
+  out_stats->peak_bytes = stats->peak_bytes;
+  out_stats->live_totals_exact = stats->tracking_exact;
+  out_stats->max_allocation_count =
+      state->device.properties.limits.maxMemoryAllocationCount;
+
+  VkPhysicalDeviceMemoryProperties memory_properties = {0};
+  vkGetPhysicalDeviceMemoryProperties(state->device.physical_device,
+                                      &memory_properties);
+
+  out_stats->memory_type_count =
+      Min(memory_properties.memoryTypeCount, VKR_DEVICE_MEMORY_TYPE_MAX);
+  for (uint32_t i = 0; i < out_stats->memory_type_count; ++i) {
+    out_stats->live_bytes_by_type[i] = stats->live_bytes_by_type[i];
+    out_stats->live_count_by_type[i] = stats->live_count_by_type[i];
+    out_stats->heap_index_by_type[i] =
+        memory_properties.memoryTypes[i].heapIndex;
+    out_stats->property_flags_by_type[i] =
+        (uint32_t)memory_properties.memoryTypes[i].propertyFlags;
+  }
+
+  out_stats->heap_count =
+      Min(memory_properties.memoryHeapCount, VKR_DEVICE_MEMORY_HEAP_MAX);
+  for (uint32_t i = 0; i < out_stats->heap_count; ++i) {
+    out_stats->heap_size_bytes[i] = memory_properties.memoryHeaps[i].size;
+  }
+
+  // Driver-reported usage/budget, which accounts for allocations this process
+  // does not own. Without the extension we can still report heap sizes and our
+  // own totals, just not how much headroom is actually left.
+  if (state->supports_memory_budget) {
+    VkPhysicalDeviceMemoryBudgetPropertiesEXT budget = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT,
+    };
+    VkPhysicalDeviceMemoryProperties2 properties2 = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2,
+        .pNext = &budget,
+    };
+    vkGetPhysicalDeviceMemoryProperties2(state->device.physical_device,
+                                         &properties2);
+    for (uint32_t i = 0; i < out_stats->heap_count; ++i) {
+      out_stats->heap_usage_bytes[i] = budget.heapUsage[i];
+      out_stats->heap_budget_bytes[i] = budget.heapBudget[i];
+    }
+    out_stats->heap_usage_valid = true_v;
+  }
+
   return true_v;
 }
 
@@ -3840,6 +4041,26 @@ renderer_vulkan_initialize(void **out_backend_state,
   backend_state->on_render_target_refresh_required =
       backend_config ? backend_config->on_render_target_refresh_required : NULL;
   backend_state->parallel_runtime.enabled = false_v;
+
+  // Device-memory tracking table. Sized once from the backend arena; capacity
+  // is a power of two so the probe wrap is a mask.
+  backend_state->device_memory_stats = (VulkanDeviceMemoryStats){0};
+  backend_state->device_memory_stats.entries =
+      vkr_allocator_alloc(&backend_state->alloc,
+                          sizeof(VulkanDeviceMemoryEntry) *
+                              (uint64_t)VULKAN_DEVICE_MEMORY_TRACK_CAPACITY,
+                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (backend_state->device_memory_stats.entries) {
+    MemZero(backend_state->device_memory_stats.entries,
+            sizeof(VulkanDeviceMemoryEntry) *
+                (uint64_t)VULKAN_DEVICE_MEMORY_TRACK_CAPACITY);
+    backend_state->device_memory_stats.entry_capacity =
+        VULKAN_DEVICE_MEMORY_TRACK_CAPACITY;
+    backend_state->device_memory_stats.tracking_exact = true_v;
+  } else {
+    log_warn("Device memory tracking table allocation failed; live totals will "
+             "not be exact");
+  }
   backend_state->parallel_runtime.job_system = NULL;
   backend_state->parallel_runtime.worker_count = 0;
   backend_state->parallel_upload_enabled = false_v;
@@ -5641,7 +5862,7 @@ void renderer_vulkan_destroy_buffer(void *backend_state,
                   : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
               false_v);
         }
-        vkFreeMemory(state->device.logical_device, vk_memory, state->allocator);
+        vulkan_backend_free_device_memory(state, vk_memory);
       }
     }
   }
@@ -7993,8 +8214,7 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
                                    : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
                                false_v);
         }
-        vkFreeMemory(state->device.logical_device, old_image.memory,
-                     state->allocator);
+        vulkan_backend_free_device_memory(state, old_image.memory);
       }
     }
   }
@@ -8054,8 +8274,7 @@ void renderer_vulkan_destroy_texture(void *backend_state,
                                    : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
                                false_v);
         }
-        vkFreeMemory(state->device.logical_device, image.memory,
-                     state->allocator);
+        vulkan_backend_free_device_memory(state, image.memory);
       }
     }
   }
@@ -9117,21 +9336,14 @@ vkr_internal bool8_t vulkan_create_readback_buffer(VulkanBackendState *state,
                                 out_buffer->handle, &memory_requirements);
   out_buffer->allocation_size = memory_requirements.size;
 
-  // Try HOST_VISIBLE + HOST_CACHED first, fall back to HOST_VISIBLE + COHERENT
-  VkMemoryPropertyFlags desired_flags =
+  // Prefer cached host-visible memory. The shared fallback drops HOST_CACHED
+  // when necessary and returns the selected type's actual flags, including
+  // HOST_COHERENT when the device provides it.
+  VkMemoryPropertyFlags selected_flags =
       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
-  out_buffer->memory_index =
-      find_memory_index(state->device.physical_device,
-                        memory_requirements.memoryTypeBits, desired_flags);
-
-  if (out_buffer->memory_index == -1) {
-    // Fall back to HOST_VISIBLE + COHERENT
-    desired_flags = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-                    VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    out_buffer->memory_index =
-        find_memory_index(state->device.physical_device,
-                          memory_requirements.memoryTypeBits, desired_flags);
-  }
+  out_buffer->memory_index = find_memory_index_with_fallback(
+      state->device.physical_device, memory_requirements.memoryTypeBits,
+      selected_flags, &selected_flags);
 
   if (out_buffer->memory_index == -1) {
     log_error("Failed to find suitable memory type for readback buffer");
@@ -9141,11 +9353,7 @@ vkr_internal bool8_t vulkan_create_readback_buffer(VulkanBackendState *state,
     return false_v;
   }
 
-  VkPhysicalDeviceMemoryProperties mem_props;
-  vkGetPhysicalDeviceMemoryProperties(state->device.physical_device,
-                                      &mem_props);
-  out_buffer->memory_property_flags =
-      mem_props.memoryTypes[out_buffer->memory_index].propertyFlags;
+  out_buffer->memory_property_flags = selected_flags;
 
   VkMemoryAllocateInfo alloc_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
@@ -9153,8 +9361,8 @@ vkr_internal bool8_t vulkan_create_readback_buffer(VulkanBackendState *state,
       .memoryTypeIndex = (uint32_t)out_buffer->memory_index,
   };
 
-  if (vkAllocateMemory(state->device.logical_device, &alloc_info,
-                       state->allocator, &out_buffer->memory) != VK_SUCCESS) {
+  if (vulkan_backend_allocate_device_memory(
+          state, &alloc_info, &out_buffer->memory) != VK_SUCCESS) {
     log_error("Failed to allocate memory for readback buffer");
     vkDestroyBuffer(state->device.logical_device, out_buffer->handle,
                     state->allocator);
@@ -9170,8 +9378,7 @@ vkr_internal bool8_t vulkan_create_readback_buffer(VulkanBackendState *state,
     log_error("Failed to bind readback buffer memory");
     vkr_allocator_report(&state->alloc, out_buffer->allocation_size,
                          VKR_ALLOCATOR_MEMORY_TAG_VULKAN, false_v);
-    vkFreeMemory(state->device.logical_device, out_buffer->memory,
-                 state->allocator);
+    vulkan_backend_free_device_memory(state, out_buffer->memory);
     vkDestroyBuffer(state->device.logical_device, out_buffer->handle,
                     state->allocator);
     out_buffer->handle = VK_NULL_HANDLE;
@@ -9195,8 +9402,7 @@ vkr_internal void vulkan_destroy_readback_buffer(VulkanBackendState *state,
       vkr_allocator_report(&state->alloc, buffer->allocation_size,
                            VKR_ALLOCATOR_MEMORY_TAG_VULKAN, false_v);
     }
-    vkFreeMemory(state->device.logical_device, buffer->memory,
-                 state->allocator);
+    vulkan_backend_free_device_memory(state, buffer->memory);
   }
 
   buffer->handle = VK_NULL_HANDLE;

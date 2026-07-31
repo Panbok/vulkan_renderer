@@ -1142,6 +1142,50 @@ typedef struct VkrRendererUploadWaitStats {
   uint64_t device_wait_idle_count;
 } VkrRendererUploadWaitStats;
 
+/** Maximum device memory types/heaps reported; matches VK_MAX_MEMORY_TYPES. */
+#define VKR_DEVICE_MEMORY_TYPE_MAX 32
+#define VKR_DEVICE_MEMORY_HEAP_MAX 16
+
+/**
+ * @brief Device-memory allocation telemetry.
+ *
+ * The renderer makes one device allocation per buffer, image, and readback
+ * buffer. These are the numbers that decide whether block pooling is worth
+ * doing and what block size it should use, which is why they are captured
+ * before any allocator is written.
+ *
+ * `heap_usage_bytes`/`heap_budget_bytes` are populated only when
+ * VK_EXT_memory_budget is available; `heap_usage_valid` says which it is.
+ */
+typedef struct VkrDeviceMemoryStats {
+  uint64_t live_allocation_count;
+  uint64_t peak_allocation_count;
+  uint64_t total_allocation_count;
+  /**
+   * Device limit on simultaneous allocations. Peak against this is the number
+   * that decides whether one-allocation-per-resource is a correctness risk or
+   * only a performance question.
+   */
+  uint64_t max_allocation_count;
+  uint64_t live_bytes;
+  uint64_t peak_bytes;
+  /** False once the tracking table overflowed; live figures are then inexact.
+   */
+  bool8_t live_totals_exact;
+
+  uint32_t memory_type_count;
+  uint64_t live_bytes_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];
+  uint64_t live_count_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];
+  uint32_t heap_index_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];
+  uint32_t property_flags_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];
+
+  uint32_t heap_count;
+  uint64_t heap_size_bytes[VKR_DEVICE_MEMORY_HEAP_MAX];
+  uint64_t heap_usage_bytes[VKR_DEVICE_MEMORY_HEAP_MAX];
+  uint64_t heap_budget_bytes[VKR_DEVICE_MEMORY_HEAP_MAX];
+  bool8_t heap_usage_valid;
+} VkrDeviceMemoryStats;
+
 // ============================================================================
 // Frontend API (User-Facing)
 // ============================================================================
@@ -1177,6 +1221,9 @@ uint64_t
 vkr_renderer_get_completed_submit_serial(VkrRendererFrontendHandle renderer);
 bool8_t vkr_renderer_get_and_reset_upload_wait_stats(
     VkrRendererFrontendHandle renderer, VkrRendererUploadWaitStats *out_stats);
+/** @brief Snapshots device-memory allocation telemetry. Non-resetting. */
+bool8_t vkr_renderer_get_device_memory_stats(VkrRendererFrontendHandle renderer,
+                                             VkrDeviceMemoryStats *out_stats);
 // --- END Utility ---
 
 // --- START Resource Management ---
@@ -1891,6 +1938,8 @@ typedef struct VkrRendererBackendInterface {
   uint64_t (*get_completed_submit_serial)(void *backend_state);
   bool8_t (*get_and_reset_upload_wait_stats)(
       void *backend_state, VkrRendererUploadWaitStats *out_stats);
+  bool8_t (*get_device_memory_stats)(void *backend_state,
+                                     VkrDeviceMemoryStats *out_stats);
 
   // RenderGraph GPU timing
   bool8_t (*rg_timing_begin_frame)(void *backend_state, uint32_t pass_count);

@@ -64,6 +64,9 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
   out_image->samples = samples;
   out_image->view = VK_NULL_HANDLE;
   out_image->allocation_size = 0;
+  // Provisional; overwritten below with the flags actually granted, because
+  // vulkan_image_destroy derives the free-side allocator tag from this field
+  // and the two must agree.
   out_image->memory_property_flags = memory_flags;
 
   if (vkCreateImage(state->device.logical_device, &image_create_info,
@@ -75,14 +78,18 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
   VkMemoryRequirements memory_requirements;
   vkGetImageMemoryRequirements(state->device.logical_device, out_image->handle,
                                &memory_requirements);
+  uint32_t granted_memory_flags = memory_flags;
+  int32_t memory_type = find_memory_index_with_fallback(
+      state->device.physical_device, memory_requirements.memoryTypeBits,
+      memory_flags, &granted_memory_flags);
+
+  // Tag from the flags actually granted, not the ones requested: a fallback
+  // that dropped DEVICE_LOCAL would otherwise report host memory as GPU memory.
   VkrAllocatorMemoryTag alloc_tag =
-      (memory_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+      (granted_memory_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
           ? VKR_ALLOCATOR_MEMORY_TAG_GPU
           : VKR_ALLOCATOR_MEMORY_TAG_VULKAN;
-
-  int32_t memory_type =
-      find_memory_index(state->device.physical_device,
-                        memory_requirements.memoryTypeBits, memory_flags);
+  out_image->memory_property_flags = granted_memory_flags;
   if (memory_type == -1) {
     log_error("Required memory type not found. Image not valid.");
     vkDestroyImage(state->device.logical_device, out_image->handle,
@@ -98,8 +105,8 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
       .memoryTypeIndex = memory_type,
   };
 
-  if (vkAllocateMemory(state->device.logical_device, &memory_allocate_info,
-                       state->allocator, &out_image->memory) != VK_SUCCESS) {
+  if (vulkan_backend_allocate_device_memory(state, &memory_allocate_info,
+                                            &out_image->memory) != VK_SUCCESS) {
     log_error("Failed to allocate memory");
     vkDestroyImage(state->device.logical_device, out_image->handle,
                    state->allocator);
@@ -114,8 +121,7 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
     log_error("Failed to bind memory");
     vkr_allocator_report(&state->alloc, memory_requirements.size, alloc_tag,
                          false_v);
-    vkFreeMemory(state->device.logical_device, out_image->memory,
-                 state->allocator);
+    vulkan_backend_free_device_memory(state, out_image->memory);
     vkDestroyImage(state->device.logical_device, out_image->handle,
                    state->allocator);
     return false;
@@ -128,8 +134,7 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
       log_error("Failed to create image view");
       vkr_allocator_report(&state->alloc, memory_requirements.size, alloc_tag,
                            false_v);
-      vkFreeMemory(state->device.logical_device, out_image->memory,
-                   state->allocator);
+      vulkan_backend_free_device_memory(state, out_image->memory);
       out_image->allocation_size = 0;
       vkDestroyImage(state->device.logical_device, out_image->handle,
                      state->allocator);
@@ -436,8 +441,8 @@ void vulkan_image_destroy(VulkanBackendState *state, VulkanImage *image) {
       uint64_t allocation_size = image->allocation_size;
       if (allocation_size == 0) {
         VkMemoryRequirements memory_requirements;
-        vkGetImageMemoryRequirements(state->device.logical_device, image->handle,
-                                     &memory_requirements);
+        vkGetImageMemoryRequirements(state->device.logical_device,
+                                     image->handle, &memory_requirements);
         allocation_size = memory_requirements.size;
       }
       VkrAllocatorMemoryTag alloc_tag =
@@ -446,8 +451,7 @@ void vulkan_image_destroy(VulkanBackendState *state, VulkanImage *image) {
               : VKR_ALLOCATOR_MEMORY_TAG_VULKAN;
 
       vkr_allocator_report(&state->alloc, allocation_size, alloc_tag, false_v);
-      vkFreeMemory(state->device.logical_device, image->memory,
-                   state->allocator);
+      vulkan_backend_free_device_memory(state, image->memory);
       image->allocation_size = 0;
     }
     vkDestroyImage(state->device.logical_device, image->handle,
@@ -576,8 +580,8 @@ bool8_t vulkan_image_generate_mipmaps(VulkanBackendState *state,
   return true_v;
 }
 
-vkr_internal bool8_t vulkan_image_can_record_frame_upload(
-    const VulkanBackendState *state) {
+vkr_internal bool8_t
+vulkan_image_can_record_frame_upload(const VulkanBackendState *state) {
   if (!state || !state->frame_active || state->render_pass_active) {
     return false_v;
   }
@@ -712,7 +716,7 @@ bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
               "(render_pass_active=%s, render_thread=%s)",
               state->render_pass_active ? "true" : "false",
               state->render_thread_id == vkr_thread_current_id() ? "true"
-                                                                  : "false");
+                                                                 : "false");
     return false_v;
   }
 
@@ -1023,8 +1027,8 @@ bool8_t vulkan_image_upload_with_mipmaps(VulkanBackendState *state,
       .pCommandBuffers = &graphics_cmd,
   };
 
-  if (vulkan_backend_queue_submit_locked(state, state->device.graphics_queue,
-                                         1, &graphics_submit,
+  if (vulkan_backend_queue_submit_locked(state, state->device.graphics_queue, 1,
+                                         &graphics_submit,
                                          graphics_fence.handle) != VK_SUCCESS) {
     vulkan_fence_destroy(state, &graphics_fence);
     vkFreeCommandBuffers(state->device.logical_device,
@@ -1063,7 +1067,7 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
               "(render_pass_active=%s, render_thread=%s)",
               state->render_pass_active ? "true" : "false",
               state->render_thread_id == vkr_thread_current_id() ? "true"
-                                                                  : "false");
+                                                                 : "false");
     return false_v;
   }
 
@@ -1322,9 +1326,9 @@ bool8_t vulkan_image_upload_cube_via_transfer(VulkanBackendState *state,
         .pCommandBuffers = &graphics_cmd,
     };
 
-    if (vulkan_backend_queue_submit_locked(state, state->device.graphics_queue,
-                                           1, &graphics_submit,
-                                           graphics_fence.handle) != VK_SUCCESS) {
+    if (vulkan_backend_queue_submit_locked(
+            state, state->device.graphics_queue, 1, &graphics_submit,
+            graphics_fence.handle) != VK_SUCCESS) {
       vulkan_fence_destroy(state, &graphics_fence);
       vkFreeCommandBuffers(state->device.logical_device,
                            state->device.graphics_command_pool, 1,
@@ -1362,7 +1366,7 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
               "(render_pass_active=%s, render_thread=%s)",
               state->render_pass_active ? "true" : "false",
               state->render_thread_id == vkr_thread_current_id() ? "true"
-                                                                  : "false");
+                                                                 : "false");
     return false_v;
   }
 
@@ -1650,9 +1654,9 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
         .pCommandBuffers = &graphics_cmd,
     };
 
-    if (vulkan_backend_queue_submit_locked(state, state->device.graphics_queue,
-                                           1, &graphics_submit,
-                                           graphics_fence.handle) != VK_SUCCESS) {
+    if (vulkan_backend_queue_submit_locked(
+            state, state->device.graphics_queue, 1, &graphics_submit,
+            graphics_fence.handle) != VK_SUCCESS) {
       vulkan_fence_destroy(state, &graphics_fence);
       vkFreeCommandBuffers(state->device.logical_device,
                            state->device.graphics_command_pool, 1,

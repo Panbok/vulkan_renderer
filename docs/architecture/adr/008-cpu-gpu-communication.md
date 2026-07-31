@@ -39,8 +39,9 @@ Descriptor writes are cached using generation plus the concrete image view,
 sampler, and buffer payload. Instance descriptor-state release is deferred by a
 monotonic submit serial.
 
-`.shadercfg` supplies named uniform staging offsets; those member offsets are
-not yet cross-validated against SPIR-V (ADR-005).
+`.shadercfg` supplies named uniform staging declarations; shader creation
+cross-validates their scope, offset, size, and type/array/matrix layout against
+SPIR-V (ADR-005).
 
 ### 3. Resource preparation and bulk upload
 
@@ -50,10 +51,13 @@ oversized request so progress cannot deadlock.
 
 Bulk image/buffer uploads use staging and a dedicated transfer queue when a
 separate transfer family is available, including queue-family ownership work.
-However, upload helpers wait indefinitely on their submit fences before
-returning, including a graphics upload phase where needed. GPU finalization is
-therefore synchronous at the call boundary; the queue is dedicated, but upload
-completion is not asynchronous.
+During an active frame they record into the primary command buffer and enqueue
+staging destruction against the next submit serial. Retirement occurs only
+after a frame-slot fence advances `completed_submit_serial`, so frame-path
+finalization neither waits nor frees staging early. A full Sponza load with
+`VKR_ASSERT_NO_UPLOAD_WAITS=1` measured zero render-thread fence, queue, and
+device waits. Upload helpers invoked outside an active frame still submit and
+wait at the call boundary.
 
 Per-worker transfer and graphics-upload command pools exist behind experimental
 parallel runtime controls. They require both `VKR_PARALLEL_UPLOAD` and
@@ -81,8 +85,9 @@ case, not guaranteed non-blocking.
 **Negative / risks**
 
 - The implementation has several lifetime paths and fixed capacities.
-- A pump byte/op budget does not guarantee a frame-time budget while each GPU
-  finalization can block on fences.
+- A pump byte/op budget does not guarantee a frame-time budget; command
+  recording and driver cost can still exceed it even without a CPU wait.
+- Bootstrap and other out-of-frame upload paths can still block on fences.
 - Readback ring pressure can stall the recording thread.
 - The CPU-only prepare contract and experimental parallel-upload safety are
   primarily convention/configuration based.
@@ -94,14 +99,15 @@ case, not guaranteed non-blocking.
 - **Use the graphics queue only.** Simpler ownership, but gives up a selected
   transfer queue. Still a reasonable fallback on devices without a dedicated
   family.
-- **Truly asynchronous upload retirement.** Preferred evolution: signal a
-  semaphore/timeline value, retain staging objects until completion, and let
-  consuming work wait without blocking the CPU.
+- **Timeline-backed upload retirement.** A possible evolution for independent
+  submissions/queues and explicit consumer dependencies; current in-frame
+  retirement instead uses existing submit serials and frame fences.
 - **Synchronous readback.** Simpler but stalls on every pick. Rejected.
 
 ## Revisit When
 
-- Remove per-upload waits and define staging retirement/consumer dependencies.
+- Remove remaining out-of-frame per-upload waits and define independent
+  submission/consumer dependencies if bootstrap latency matters.
 - Replace the unsafe parallel opt-in with validated queue/pool ownership or
   remove the dormant path.
 - Add adaptive finalization based on measured frame time.

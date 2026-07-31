@@ -21,6 +21,22 @@ QueueFamilyIndexResult find_queue_family_indices(VulkanBackendState *state,
 int32_t find_memory_index(VkPhysicalDevice device, uint32_t type_filter,
                           uint32_t property_flags);
 
+/**
+ * @brief find_memory_index with a defined fallback order for optional bits.
+ *
+ * Drops performance-only property bits (DEVICE_LOCAL, then HOST_CACHED) until a
+ * memory type matches, and reports the selected type's complete property flags
+ * through @p out_used_flags. Every device allocation should use this rather
+ * than hand-rolling its own retry, which is how one call site ended up with no
+ * fallback at all.
+ *
+ * @return Memory type index, or -1 when nothing matches.
+ */
+int32_t find_memory_index_with_fallback(VkPhysicalDevice device,
+                                        uint32_t type_filter,
+                                        uint32_t property_flags,
+                                        uint32_t *out_used_flags);
+
 VkFormat vulkan_vertex_format_to_vk(VkrVertexFormat format);
 
 VkPrimitiveTopology

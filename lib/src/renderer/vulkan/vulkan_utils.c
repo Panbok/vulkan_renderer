@@ -128,6 +128,43 @@ int32_t find_memory_index(VkPhysicalDevice device, uint32_t type_filter,
   return -1;
 }
 
+int32_t find_memory_index_with_fallback(VkPhysicalDevice device,
+                                        uint32_t type_filter,
+                                        uint32_t property_flags,
+                                        uint32_t *out_used_flags) {
+  // Ordered from most to least desirable. Each entry names a bit that improves
+  // performance but is not required for correctness, so dropping it yields a
+  // slower-but-working allocation instead of a hard failure. DEVICE_LOCAL goes
+  // first because a HOST_VISIBLE|DEVICE_LOCAL request (ReBAR-style) is the
+  // common case that legitimately has no matching type.
+  static const uint32_t optional_bits[] = {
+      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+  };
+
+  uint32_t attempt_flags = property_flags;
+  int32_t index = find_memory_index(device, type_filter, attempt_flags);
+
+  for (uint32_t i = 0; index == -1 && i < ArrayCount(optional_bits); ++i) {
+    if ((attempt_flags & optional_bits[i]) == 0) {
+      continue;
+    }
+    attempt_flags &= ~optional_bits[i];
+    index = find_memory_index(device, type_filter, attempt_flags);
+  }
+
+  if (index != -1 && out_used_flags) {
+    VkPhysicalDeviceMemoryProperties memory_properties;
+    vkGetPhysicalDeviceMemoryProperties(device, &memory_properties);
+    assert((uint32_t)index < memory_properties.memoryTypeCount);
+    // A selected type may expose useful properties beyond those requested.
+    // Persist the type's full property set so mapping, flushing, and allocator
+    // tagging describe the allocation that Vulkan actually returned.
+    *out_used_flags = memory_properties.memoryTypes[index].propertyFlags;
+  }
+  return index;
+}
+
 VkFormat vulkan_vertex_format_to_vk(VkrVertexFormat format) {
   switch (format) {
   case VKR_VERTEX_FORMAT_R32_SFLOAT:

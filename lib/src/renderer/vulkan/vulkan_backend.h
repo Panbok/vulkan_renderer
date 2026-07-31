@@ -12,6 +12,22 @@ VkResult vulkan_backend_queue_submit_locked(VulkanBackendState *state,
 VkResult
 vulkan_backend_queue_present_locked(VulkanBackendState *state, VkQueue queue,
                                     const VkPresentInfoKHR *present_info);
+/**
+ * @brief Allocates device memory, recording it for allocation telemetry.
+ *
+ * All VkDeviceMemory the renderer owns must go through this pair so live
+ * counts, byte totals, and per-memory-type distribution stay exact.
+ */
+VkResult
+vulkan_backend_allocate_device_memory(VulkanBackendState *state,
+                                      const VkMemoryAllocateInfo *alloc_info,
+                                      VkDeviceMemory *out_memory);
+
+/** @brief Frees device memory allocated by
+ * vulkan_backend_allocate_device_memory. */
+void vulkan_backend_free_device_memory(VulkanBackendState *state,
+                                       VkDeviceMemory memory);
+
 VkResult vulkan_backend_queue_wait_idle_locked(VulkanBackendState *state,
                                                VkQueue queue);
 bool8_t vulkan_backend_defer_single_use_submission(

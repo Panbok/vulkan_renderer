@@ -659,6 +659,42 @@ typedef struct VulkanRgTimingState {
  * - SHADOW: Depth-only, for shadow map generation
  * - POST: Color-only, for post-processing effects
  */
+/** Bounded registry of live device allocations; see VulkanDeviceMemoryStats. */
+#define VULKAN_DEVICE_MEMORY_TRACK_CAPACITY 8192
+
+typedef struct VulkanDeviceMemoryEntry {
+  VkDeviceMemory memory; /**< VK_NULL_HANDLE marks a free slot */
+  uint64_t size;
+  uint32_t memory_type_index;
+} VulkanDeviceMemoryEntry;
+
+/**
+ * @brief Device-memory allocation telemetry.
+ *
+ * The renderer allocates one VkDeviceMemory per buffer/image/readback buffer.
+ * Byte totals were already tracked through allocator tags, but allocation
+ * *count* and per-memory-type distribution were not, and those are what decide
+ * whether pooling is worth doing and what block sizes it should use.
+ *
+ * Allocations are recorded in an open-addressed table keyed by the
+ * VkDeviceMemory handle, so a free only needs the handle and the counters
+ * cannot drift from the real state while tracking remains exact. If the table
+ * saturates, the stats are marked inexact rather than presenting the remaining
+ * live counters as authoritative.
+ */
+typedef struct VulkanDeviceMemoryStats {
+  uint64_t live_allocation_count;
+  uint64_t peak_allocation_count;
+  uint64_t total_allocation_count; /**< Cumulative, never decremented */
+  uint64_t live_bytes;
+  uint64_t peak_bytes;
+  uint64_t live_bytes_by_type[VK_MAX_MEMORY_TYPES];
+  uint64_t live_count_by_type[VK_MAX_MEMORY_TYPES];
+  VulkanDeviceMemoryEntry *entries; /**< Capacity-sized, zeroed on init */
+  uint32_t entry_capacity;
+  bool8_t tracking_exact; /**< False once the table has overflowed */
+} VulkanDeviceMemoryStats;
+
 typedef struct VulkanBackendState {
   Arena *arena;
   VkrAllocator alloc;
@@ -702,6 +738,10 @@ typedef struct VulkanBackendState {
   uint64_t upload_path_fence_wait_count;
   uint64_t upload_path_queue_wait_idle_count;
   uint64_t upload_path_device_wait_idle_count;
+  VulkanDeviceMemoryStats device_memory_stats;
+  /** True when VK_EXT_memory_budget is enabled and heap usage can be queried.
+   */
+  bool8_t supports_memory_budget;
   uint32_t current_frame;
   uint32_t image_index;
 

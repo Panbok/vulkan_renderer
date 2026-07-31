@@ -83,24 +83,10 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
                                 out_buffer->buffer.handle,
                                 &memory_requirements);
   out_buffer->buffer.allocation_size = memory_requirements.size;
-  VkrAllocatorMemoryTag alloc_tag = (out_buffer->buffer.memory_property_flags &
-                                     VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-                                        ? VKR_ALLOCATOR_MEMORY_TAG_GPU
-                                        : VKR_ALLOCATOR_MEMORY_TAG_VULKAN;
-  out_buffer->buffer.memory_index = find_memory_index(
+  out_buffer->buffer.memory_index = find_memory_index_with_fallback(
       state->device.physical_device, memory_requirements.memoryTypeBits,
-      out_buffer->buffer.memory_property_flags);
-
-  if (out_buffer->buffer.memory_index == -1 &&
-      (memory_property_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) &&
-      (memory_property_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
-    VkMemoryPropertyFlags fallback_flags =
-        memory_property_flags & ~VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
-    out_buffer->buffer.memory_property_flags = fallback_flags;
-    out_buffer->buffer.memory_index =
-        find_memory_index(state->device.physical_device,
-                          memory_requirements.memoryTypeBits, fallback_flags);
-  }
+      out_buffer->buffer.memory_property_flags,
+      &out_buffer->buffer.memory_property_flags);
 
   if (out_buffer->buffer.memory_index == -1) {
     log_error("Failed to find memory index for buffer");
@@ -109,15 +95,20 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
     return false_v;
   }
 
+  const VkrAllocatorMemoryTag alloc_tag =
+      (out_buffer->buffer.memory_property_flags &
+       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+          ? VKR_ALLOCATOR_MEMORY_TAG_GPU
+          : VKR_ALLOCATOR_MEMORY_TAG_VULKAN;
+
   VkMemoryAllocateInfo alloc_info = {
       .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
       .allocationSize = memory_requirements.size,
       .memoryTypeIndex = out_buffer->buffer.memory_index,
   };
 
-  if (vkAllocateMemory(state->device.logical_device, &alloc_info,
-                       state->allocator,
-                       &out_buffer->buffer.memory) != VK_SUCCESS) {
+  if (vulkan_backend_allocate_device_memory(
+          state, &alloc_info, &out_buffer->buffer.memory) != VK_SUCCESS) {
     log_error("Failed to allocate memory for buffer");
     vkDestroyBuffer(state->device.logical_device, out_buffer->buffer.handle,
                     state->allocator);
@@ -148,8 +139,7 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
     log_error("Failed to create offset allocator for buffer");
     vkr_allocator_report(&state->alloc, out_buffer->buffer.allocation_size,
                          alloc_tag, false_v);
-    vkFreeMemory(state->device.logical_device, out_buffer->buffer.memory,
-                 state->allocator);
+    vulkan_backend_free_device_memory(state, out_buffer->buffer.memory);
     vkDestroyBuffer(state->device.logical_device, out_buffer->buffer.handle,
                     state->allocator);
     return false_v;
@@ -209,8 +199,7 @@ void vulkan_buffer_destroy(VulkanBackendState *state, VulkanBuffer *buffer) {
               : VKR_ALLOCATOR_MEMORY_TAG_VULKAN,
           false_v);
     }
-    vkFreeMemory(state->device.logical_device, buffer->memory,
-                 state->allocator);
+    vulkan_backend_free_device_memory(state, buffer->memory);
   }
 
   buffer->handle = VK_NULL_HANDLE;
@@ -267,8 +256,8 @@ bool8_t vulkan_buffer_resize(VulkanBackendState *state, uint64_t new_size,
   };
 
   VkDeviceMemory new_memory;
-  if (vkAllocateMemory(state->device.logical_device, &alloc_info,
-                       state->allocator, &new_memory) != VK_SUCCESS) {
+  if (vulkan_backend_allocate_device_memory(state, &alloc_info, &new_memory) !=
+      VK_SUCCESS) {
     log_error("Failed to allocate memory for new buffer during resize");
     vkDestroyBuffer(state->device.logical_device, new_buffer, state->allocator);
     return false_v;
@@ -285,7 +274,7 @@ bool8_t vulkan_buffer_resize(VulkanBackendState *state, uint64_t new_size,
     vkr_allocator_report(&state->alloc, new_requirements.size, alloc_tag,
                          false_v);
     vkDestroyBuffer(state->device.logical_device, new_buffer, state->allocator);
-    vkFreeMemory(state->device.logical_device, new_memory, state->allocator);
+    vulkan_backend_free_device_memory(state, new_memory);
     return false_v;
   }
 
@@ -295,7 +284,7 @@ bool8_t vulkan_buffer_resize(VulkanBackendState *state, uint64_t new_size,
     vkr_allocator_report(&state->alloc, new_requirements.size, alloc_tag,
                          false_v);
     vkDestroyBuffer(state->device.logical_device, new_buffer, state->allocator);
-    vkFreeMemory(state->device.logical_device, new_memory, state->allocator);
+    vulkan_backend_free_device_memory(state, new_memory);
     return false_v;
   }
 
@@ -304,7 +293,7 @@ bool8_t vulkan_buffer_resize(VulkanBackendState *state, uint64_t new_size,
     vkr_allocator_report(&state->alloc, new_requirements.size, alloc_tag,
                          false_v);
     vkDestroyBuffer(state->device.logical_device, new_buffer, state->allocator);
-    vkFreeMemory(state->device.logical_device, new_memory, state->allocator);
+    vulkan_backend_free_device_memory(state, new_memory);
     return false_v;
   }
 
@@ -321,7 +310,7 @@ bool8_t vulkan_buffer_resize(VulkanBackendState *state, uint64_t new_size,
       vkr_allocator_report(&state->alloc, buffer->allocation_size, alloc_tag,
                            false_v);
     }
-    vkFreeMemory(state->device.logical_device, old_memory, state->allocator);
+    vulkan_backend_free_device_memory(state, old_memory);
   }
 
   buffer->handle = new_buffer;
@@ -401,13 +390,12 @@ bool8_t vulkan_buffer_copy_to(VulkanBackendState *state,
    * a per-copy fence.
    */
   if (state->frame_active && !can_record_in_active_frame) {
-    log_error("Refusing blocking buffer copy during active frame "
-              "(render_pass_active=%s, queue_is_graphics=%s, render_thread=%s)",
-              state->render_pass_active ? "true" : "false",
-              buffer_handle->queue == state->device.graphics_queue ? "true"
-                                                                    : "false",
-              state->render_thread_id == vkr_thread_current_id() ? "true"
-                                                                  : "false");
+    log_error(
+        "Refusing blocking buffer copy during active frame "
+        "(render_pass_active=%s, queue_is_graphics=%s, render_thread=%s)",
+        state->render_pass_active ? "true" : "false",
+        buffer_handle->queue == state->device.graphics_queue ? "true" : "false",
+        state->render_thread_id == vkr_thread_current_id() ? "true" : "false");
     return false_v;
   }
 
