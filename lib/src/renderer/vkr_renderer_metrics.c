@@ -1,0 +1,1144 @@
+#include "renderer/vkr_renderer_metrics.h"
+
+#include "core/vkr_json_writer.h"
+#include "memory/vkr_allocator.h"
+#include "renderer/systems/vkr_pipeline_registry.h"
+#include "renderer/vkr_render_graph.h"
+#include "renderer/vkr_renderer.h"
+
+vkr_internal bool8_t vkr_renderer_metric_register_full(
+    VkrMetrics *metrics, const char *name, VkrMetricDomain domain,
+    VkrMetricKind kind, VkrMetricUnit unit, VkrMetricScalar scalar,
+    VkrMetricWriter writer, bool8_t required, VkrMetricId *out_id) {
+  const VkrMetricDescription description = {
+      .name =
+          string8_create_from_cstr((const uint8_t *)name, string_length(name)),
+      .domain = domain,
+      .kind = kind,
+      .unit = unit,
+      .scalar = scalar,
+      .writer = writer,
+      .required_when_enabled = required,
+  };
+  if (vkr_metrics_register(metrics, &description, out_id)) {
+    return true_v;
+  }
+  log_error("Metric registration failed for '%s' (%u/%u slots used)", name,
+            metrics ? metrics->slot_count : 0u, VKR_METRICS_MAX_SLOTS);
+  return false_v;
+}
+
+vkr_internal bool8_t vkr_renderer_metric_register(
+    VkrMetrics *metrics, const char *name, VkrMetricDomain domain,
+    VkrMetricKind kind, VkrMetricUnit unit, VkrMetricScalar scalar,
+    VkrMetricId *out_id) {
+  return vkr_renderer_metric_register_full(metrics, name, domain, kind, unit,
+                                           scalar,
+                                           VKR_METRIC_WRITER_RENDER_THREAD,
+                                           false_v, out_id);
+}
+
+vkr_internal bool8_t vkr_renderer_event_register(VkrMetrics *metrics,
+                                                 const char *name,
+                                                 VkrMetricDomain domain,
+                                                 VkrMetricId *out_id) {
+  // Event sources are written from loader and job threads, never the render
+  // thread, so their slots must be concurrent.
+  return vkr_renderer_metric_register_full(
+      metrics, name, domain, VKR_METRIC_KIND_DURATION,
+      VKR_METRIC_UNIT_NANOSECONDS, VKR_METRIC_SCALAR_U64,
+      VKR_METRIC_WRITER_CONCURRENT, false_v, out_id);
+}
+
+/** Instantaneous u64 gauge. */
+#define VKR_REGISTER_U64(FIELD, NAME, DOMAIN, UNIT)                            \
+  if (!vkr_renderer_metric_register(metrics, NAME, DOMAIN,                     \
+                                    VKR_METRIC_KIND_GAUGE, UNIT,               \
+                                    VKR_METRIC_SCALAR_U64, &ids->FIELD))       \
+  return false_v
+
+/** Work-volume gauge whose absence makes a report incomplete. */
+#define VKR_REGISTER_U64_REQUIRED(FIELD, NAME, DOMAIN, UNIT)                   \
+  if (!vkr_renderer_metric_register_full(                                      \
+          metrics, NAME, DOMAIN, VKR_METRIC_KIND_GAUGE, UNIT,                  \
+          VKR_METRIC_SCALAR_U64, VKR_METRIC_WRITER_RENDER_THREAD, true_v,      \
+          &ids->FIELD))                                                        \
+  return false_v
+
+#define VKR_REGISTER_F64(FIELD, NAME, DOMAIN, UNIT)                            \
+  if (!vkr_renderer_metric_register(metrics, NAME, DOMAIN,                     \
+                                    VKR_METRIC_KIND_GAUGE, UNIT,               \
+                                    VKR_METRIC_SCALAR_F64, &ids->FIELD))       \
+  return false_v
+
+/**
+ * Cumulative pull source published as a per-frame delta. The underlying
+ * registry counts up for the process lifetime; a report that averaged the
+ * running total would describe nothing, so the frame delta is what ships.
+ */
+#define VKR_REGISTER_COUNTER(FIELD, NAME, DOMAIN)                              \
+  if (!vkr_renderer_metric_register(metrics, NAME, DOMAIN,                     \
+                                    VKR_METRIC_KIND_COUNTER,                   \
+                                    VKR_METRIC_UNIT_COUNT,                     \
+                                    VKR_METRIC_SCALAR_U64, &ids->FIELD))       \
+  return false_v
+
+bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
+                                      VkrMetrics *metrics) {
+  if (!renderer_metrics || !metrics || metrics->sealed) {
+    return false_v;
+  }
+  MemZero(renderer_metrics, sizeof(*renderer_metrics));
+  renderer_metrics->metrics = metrics;
+  VkrRendererMetricIds *ids = &renderer_metrics->ids;
+
+  VKR_REGISTER_U64_REQUIRED(world_draws_collected, "draw.world.draws_collected",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(world_opaque_draws, "draw.world.opaque_draws",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(world_transparent_draws,
+                            "draw.world.transparent_draws",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(world_opaque_batches, "draw.world.opaque_batches",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(world_draws_issued, "draw.world.commands_issued",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(world_draw_calls_issued, "draw.world.calls_issued",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(world_batches_created, "draw.world.batches_created",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(world_draws_merged, "draw.world.draws_merged",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(world_indirect_draws_issued,
+                   "draw.world.indirect_commands_issued",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(world_indirect_calls_issued,
+                   "draw.world.indirect_calls_issued", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_F64(world_avg_batch_size, "draw.world.avg_batch_size",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(world_max_batch_size, "draw.world.max_batch_size",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+
+  VKR_REGISTER_U64_REQUIRED(visibility_objects_tested,
+                            "visibility.objects_tested",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(visibility_culled_camera,
+                            "visibility.objects_culled_camera",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(visibility_culled_shadow,
+                            "visibility.objects_culled_shadow",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_without_bounds,
+                   "visibility.objects_without_bounds", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_mergeable_opaque,
+                   "visibility.mergeable_opaque_draws", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_distinct_opaque_keys,
+                   "visibility.distinct_opaque_keys", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_largest_mergeable_run,
+                   "visibility.largest_mergeable_run", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_opaque_emitted, "visibility.opaque_draws_emitted",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_opaque_before_merge,
+                   "visibility.opaque_draws_before_merge",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_distinct_geometries,
+                   "visibility.distinct_geometries", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(visibility_distinct_geometry_material_pairs,
+                   "visibility.distinct_geometry_material_pairs",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+
+  for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
+    char name[64];
+#define VKR_REGISTER_CASCADE(FIELD, SUFFIX)                                    \
+  snprintf(name, sizeof(name), "draw.shadow.cascade%u." SUFFIX, i);            \
+  if (!vkr_renderer_metric_register(                                           \
+          metrics, name, VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_KIND_GAUGE,        \
+          VKR_METRIC_UNIT_COUNT, VKR_METRIC_SCALAR_U64, &ids->FIELD[i]))       \
+  return false_v
+    VKR_REGISTER_CASCADE(shadow_draw_calls_opaque, "opaque_calls");
+    VKR_REGISTER_CASCADE(shadow_draw_calls_alpha, "alpha_calls");
+    VKR_REGISTER_CASCADE(shadow_descriptor_binds_set1, "set1_binds");
+    VKR_REGISTER_CASCADE(shadow_batches_opaque, "opaque_batches");
+    VKR_REGISTER_CASCADE(shadow_batches_alpha, "alpha_batches");
+    VKR_REGISTER_CASCADE(shadow_indirect_draws_opaque, "indirect_commands");
+    VKR_REGISTER_CASCADE(shadow_indirect_calls_opaque, "indirect_calls");
+#undef VKR_REGISTER_CASCADE
+  }
+
+  VKR_REGISTER_U64(rg_live_images, "rendergraph.images.live",
+                   VKR_METRIC_DOMAIN_RENDERGRAPH, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(rg_peak_images, "rendergraph.images.peak",
+                   VKR_METRIC_DOMAIN_RENDERGRAPH, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(rg_live_image_bytes, "rendergraph.image_bytes.live",
+                   VKR_METRIC_DOMAIN_RENDERGRAPH, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(rg_peak_image_bytes, "rendergraph.image_bytes.peak",
+                   VKR_METRIC_DOMAIN_RENDERGRAPH, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(rg_live_buffers, "rendergraph.buffers.live",
+                   VKR_METRIC_DOMAIN_RENDERGRAPH, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(rg_peak_buffers, "rendergraph.buffers.peak",
+                   VKR_METRIC_DOMAIN_RENDERGRAPH, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(rg_live_buffer_bytes, "rendergraph.buffer_bytes.live",
+                   VKR_METRIC_DOMAIN_RENDERGRAPH, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(rg_peak_buffer_bytes, "rendergraph.buffer_bytes.peak",
+                   VKR_METRIC_DOMAIN_RENDERGRAPH, VKR_METRIC_UNIT_BYTES);
+
+  VKR_REGISTER_U64(upload_fence_waits, "upload.fence_waits",
+                   VKR_METRIC_DOMAIN_UPLOAD, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(upload_queue_idle_waits, "upload.queue_idle_waits",
+                   VKR_METRIC_DOMAIN_UPLOAD, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(upload_device_idle_waits, "upload.device_idle_waits",
+                   VKR_METRIC_DOMAIN_UPLOAD, VKR_METRIC_UNIT_COUNT);
+  // Durations are nanoseconds; the name deliberately carries no unit suffix.
+  if (!vkr_renderer_metric_register(
+          metrics, "cpu.backend_present", VKR_METRIC_DOMAIN_FRAME,
+          VKR_METRIC_KIND_DURATION, VKR_METRIC_UNIT_NANOSECONDS,
+          VKR_METRIC_SCALAR_U64, &ids->backend_present)) {
+    return false_v;
+  }
+
+#define VKR_REGISTER_BOOT(FIELD, NAME)                                         \
+  if (!vkr_renderer_metric_register(                                           \
+          metrics, NAME, VKR_METRIC_DOMAIN_BOOT, VKR_METRIC_KIND_DURATION,     \
+          VKR_METRIC_UNIT_NANOSECONDS, VKR_METRIC_SCALAR_U64, &ids->FIELD))    \
+  return false_v
+  VKR_REGISTER_BOOT(boot_instance, "boot.instance");
+  VKR_REGISTER_BOOT(boot_device, "boot.device");
+  VKR_REGISTER_BOOT(boot_target, "boot.target");
+  VKR_REGISTER_BOOT(boot_systems, "boot.systems");
+  VKR_REGISTER_BOOT(boot_graph, "boot.graph");
+  VKR_REGISTER_BOOT(boot_scene, "boot.scene");
+#undef VKR_REGISTER_BOOT
+
+  VKR_REGISTER_U64(job_queue_depth, "job.queue_depth", VKR_METRIC_DOMAIN_JOB,
+                   VKR_METRIC_UNIT_COUNT);
+  // Both are point samples taken on the render thread, not time-weighted
+  // utilization over the frame; the names say "at sample time" for that reason.
+  VKR_REGISTER_U64(job_workers_busy, "job.workers_busy_at_sample",
+                   VKR_METRIC_DOMAIN_JOB, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_F64(job_worker_busy_ratio, "job.worker_busy_ratio_at_sample",
+                   VKR_METRIC_DOMAIN_JOB, VKR_METRIC_UNIT_RATIO);
+  VKR_REGISTER_COUNTER(job_completed_total, "job.completed",
+                       VKR_METRIC_DOMAIN_JOB);
+
+  VKR_REGISTER_U64(instance_occupancy, "instance_buffer.occupancy",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(instance_capacity, "instance_buffer.capacity",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(instance_overflows, "instance_buffer.overflows",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+
+  VKR_REGISTER_U64(gpu_live_allocations, "memory.gpu.allocations.live",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(gpu_peak_allocations, "memory.gpu.allocations.peak",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(gpu_total_allocations, "memory.gpu.allocations.total",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(gpu_max_allocations, "memory.gpu.allocations.limit",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(gpu_live_bytes, "memory.gpu.bytes.live",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(gpu_peak_bytes, "memory.gpu.bytes.peak",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_BYTES);
+  VKR_REGISTER_U64(gpu_live_totals_exact, "memory.gpu.live_totals_exact",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(gpu_heap_usage_valid, "memory.gpu.heap_usage_valid",
+                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
+
+  VKR_REGISTER_COUNTER(pipelines_created, "pipeline.created",
+                       VKR_METRIC_DOMAIN_PIPELINE);
+  VKR_REGISTER_COUNTER(pipeline_binds, "pipeline.binds",
+                       VKR_METRIC_DOMAIN_PIPELINE);
+  VKR_REGISTER_COUNTER(redundant_binds_avoided,
+                       "pipeline.redundant_binds_avoided",
+                       VKR_METRIC_DOMAIN_PIPELINE);
+  VKR_REGISTER_COUNTER(meshes_batched, "pipeline.meshes_batched",
+                       VKR_METRIC_DOMAIN_PIPELINE);
+  VKR_REGISTER_U64(frame_pipeline_changes, "pipeline.frame_changes",
+                   VKR_METRIC_DOMAIN_PIPELINE, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(frame_redundant_binds_avoided,
+                   "pipeline.frame_redundant_binds_avoided",
+                   VKR_METRIC_DOMAIN_PIPELINE, VKR_METRIC_UNIT_COUNT);
+
+  VKR_REGISTER_U64(cpu_live_bytes, "memory.cpu.bytes.live",
+                   VKR_METRIC_DOMAIN_MEMORY_CPU, VKR_METRIC_UNIT_BYTES);
+  static const char *tag_names[VKR_ALLOCATOR_MEMORY_TAG_MAX] = {
+      "unknown",   "array",    "string",   "vector", "queue",
+      "struct",    "buffer",   "renderer", "file",   "texture",
+      "hashtable", "freelist", "vulkan",   "gpu",
+  };
+  for (uint32_t i = 0; i < VKR_ALLOCATOR_MEMORY_TAG_MAX; ++i) {
+    char name[64];
+    snprintf(name, sizeof(name), "memory.cpu.tag.%s.bytes", tag_names[i]);
+    if (!vkr_renderer_metric_register(
+            metrics, name, VKR_METRIC_DOMAIN_MEMORY_CPU, VKR_METRIC_KIND_GAUGE,
+            VKR_METRIC_UNIT_BYTES, VKR_METRIC_SCALAR_U64,
+            &ids->cpu_tag_bytes[i])) {
+      return false_v;
+    }
+  }
+
+  if (!vkr_renderer_event_register(metrics, "pipeline.create",
+                                   VKR_METRIC_DOMAIN_PIPELINE,
+                                   &ids->pipeline_create_event) ||
+      !vkr_renderer_event_register(metrics, "shader.load",
+                                   VKR_METRIC_DOMAIN_ASSET,
+                                   &ids->shader_load_event) ||
+      !vkr_renderer_event_register(metrics, "shader.reflection",
+                                   VKR_METRIC_DOMAIN_ASSET,
+                                   &ids->shader_reflection_event)) {
+    return false_v;
+  }
+  static const char *asset_names[VKR_RENDERER_ASSET_METRIC_COUNT] = {
+      "asset.texture_load", "asset.mesh_load",  "asset.material_load",
+      "asset.font_load",    "asset.scene_load",
+  };
+  for (uint32_t i = 0; i < VKR_RENDERER_ASSET_METRIC_COUNT; ++i) {
+    if (!vkr_renderer_event_register(metrics, asset_names[i],
+                                     VKR_METRIC_DOMAIN_ASSET,
+                                     &ids->asset_load_event[i])) {
+      return false_v;
+    }
+  }
+
+  renderer_metrics->producers = (VkrRendererMetricsProducerConfig){
+      .pipeline_create = {metrics, ids->pipeline_create_event},
+      .shader_load = {metrics, ids->shader_load_event},
+      .shader_reflection = {metrics, ids->shader_reflection_event},
+  };
+  for (uint32_t i = 0; i < VKR_RENDERER_ASSET_METRIC_COUNT; ++i) {
+    renderer_metrics->producers.asset_load[i] =
+        (VkrMetricEventProducer){metrics, ids->asset_load_event[i]};
+  }
+
+  return true_v;
+}
+
+#undef VKR_REGISTER_U64
+#undef VKR_REGISTER_U64_REQUIRED
+#undef VKR_REGISTER_F64
+#undef VKR_REGISTER_COUNTER
+
+bool8_t vkr_renderer_metrics_register_device_memory(
+    VkrRendererMetrics *renderer_metrics, VkrRendererFrontendHandle renderer) {
+  if (!renderer_metrics || !renderer_metrics->metrics || !renderer ||
+      renderer_metrics->metrics->sealed) {
+    return false_v;
+  }
+
+  VkrDeviceMemoryStats stats = {0};
+  if (!vkr_renderer_get_device_memory_stats(renderer, &stats)) {
+    return false_v;
+  }
+
+  // Two rows per memory type and three per heap. A device at the Vulkan
+  // maxima would ask for more rows than the catalog can hold, so the count is
+  // clamped to what actually fits. Collection is driven by these same counts,
+  // which keeps a short catalog consistent rather than merely smaller.
+  VkrMetrics *metrics = renderer_metrics->metrics;
+  const uint32_t requested_types =
+      Min(stats.memory_type_count, (uint32_t)VKR_DEVICE_MEMORY_TYPE_MAX);
+  const uint32_t requested_heaps =
+      Min(stats.heap_count, (uint32_t)VKR_DEVICE_MEMORY_HEAP_MAX);
+  const uint32_t available = vkr_metrics_slots_available(metrics);
+  uint32_t type_count = Min(requested_types, available / 2u);
+  uint32_t heap_count =
+      Min(requested_heaps, (available - type_count * 2u) / 3u);
+  if (type_count < requested_types || heap_count < requested_heaps) {
+    log_warn("Metrics catalog holds %u/%u memory types and %u/%u heaps; "
+             "per-type/per-heap rows will be partial",
+             type_count, requested_types, heap_count, requested_heaps);
+  }
+
+  VkrRendererMetricIds *ids = &renderer_metrics->ids;
+  char name[64];
+  for (uint32_t i = 0; i < type_count; ++i) {
+    snprintf(name, sizeof(name), "memory.gpu.type.%u.bytes.live", i);
+    if (!vkr_renderer_metric_register(
+            metrics, name, VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_KIND_GAUGE,
+            VKR_METRIC_UNIT_BYTES, VKR_METRIC_SCALAR_U64,
+            &ids->gpu_type_live_bytes[i])) {
+      type_count = i;
+      heap_count = 0;
+      break;
+    }
+    snprintf(name, sizeof(name), "memory.gpu.type.%u.allocations.live", i);
+    if (!vkr_renderer_metric_register(
+            metrics, name, VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_KIND_GAUGE,
+            VKR_METRIC_UNIT_COUNT, VKR_METRIC_SCALAR_U64,
+            &ids->gpu_type_live_allocations[i])) {
+      type_count = i;
+      heap_count = 0;
+      break;
+    }
+  }
+  for (uint32_t i = 0; i < heap_count; ++i) {
+#define VKR_REGISTER_HEAP_ROW(FIELD, SUFFIX)                                   \
+  snprintf(name, sizeof(name), "memory.gpu.heap.%u." SUFFIX, i);               \
+  if (!vkr_renderer_metric_register(                                           \
+          metrics, name, VKR_METRIC_DOMAIN_MEMORY_GPU,                         \
+          VKR_METRIC_KIND_GAUGE, VKR_METRIC_UNIT_BYTES, VKR_METRIC_SCALAR_U64, \
+          &ids->FIELD[i])) {                                                   \
+    heap_count = i;                                                            \
+    break;                                                                     \
+  }
+    VKR_REGISTER_HEAP_ROW(gpu_heap_size_bytes, "size_bytes");
+    VKR_REGISTER_HEAP_ROW(gpu_heap_usage_bytes, "usage_bytes");
+    VKR_REGISTER_HEAP_ROW(gpu_heap_budget_bytes, "budget_bytes");
+#undef VKR_REGISTER_HEAP_ROW
+  }
+
+  renderer_metrics->device_memory_type_count = type_count;
+  renderer_metrics->device_memory_heap_count = heap_count;
+  return true_v;
+}
+
+const VkrRendererMetricsProducerConfig *
+vkr_renderer_metrics_get_producers(const VkrRendererMetrics *renderer_metrics) {
+  return renderer_metrics ? &renderer_metrics->producers : NULL;
+}
+
+void vkr_renderer_metrics_set_scene_boot_ns(
+    VkrRendererMetrics *renderer_metrics, uint64_t duration_ns) {
+  if (renderer_metrics && renderer_metrics->boot_scene_ns == 0) {
+    renderer_metrics->boot_scene_ns = duration_ns;
+  }
+}
+
+bool8_t
+vkr_renderer_metrics_prepare_pass_table(VkrRendererMetrics *renderer_metrics,
+                                        VkrRendererFrontendHandle renderer,
+                                        VkrAllocator *allocator) {
+  if (!renderer_metrics || !renderer || !allocator) {
+    return false_v;
+  }
+  RendererFrontend *frontend = (RendererFrontend *)renderer;
+  uint64_t capacity = frontend->render_graph_json.passes.length;
+  for (uint64_t i = 0; i < frontend->render_graph_json.passes.length; ++i) {
+    const VkrRgJsonPass *pass =
+        vector_get_VkrRgJsonPass(&frontend->render_graph_json.passes, i);
+    if (pass && pass->repeat.enabled) {
+      capacity += VKR_SHADOW_CASCADE_COUNT_MAX - 1u;
+    }
+  }
+  if (capacity == 0 || capacity > UINT32_MAX) {
+    return false_v;
+  }
+  VkrRendererMetricsPassSample *samples = vkr_allocator_alloc(
+      allocator, capacity * sizeof(*samples), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  if (!samples) {
+    return false_v;
+  }
+  MemZero(samples, capacity * sizeof(*samples));
+  renderer_metrics->passes.samples = samples;
+  renderer_metrics->passes.capacity = (uint32_t)capacity;
+  renderer_metrics->passes.count = 0;
+  renderer_metrics->passes.truncated = false_v;
+  return true_v;
+}
+
+vkr_internal void
+vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
+                                    RendererFrontend *renderer,
+                                    uint64_t cpu_frame_index) {
+  VkrRendererMetricsPassTable *table = &renderer_metrics->passes;
+  table->count = 0;
+  table->truncated = false_v;
+  table->cpu_frame_index = cpu_frame_index;
+  if (!renderer->render_graph) {
+    return;
+  }
+
+  const VkrRgPassTiming *timings = NULL;
+  uint32_t timing_count = 0;
+  if (!vkr_rg_get_pass_timings(renderer->render_graph, &timings,
+                               &timing_count) ||
+      !timings) {
+    return;
+  }
+  table->count = Min(timing_count, table->capacity);
+  table->truncated = timing_count > table->count;
+  for (uint32_t i = 0; i < table->count; ++i) {
+    const VkrRgPassTiming *source = &timings[i];
+    VkrRendererMetricsPassSample *sample = &table->samples[i];
+    const uint64_t length =
+        Min(source->name.length, (uint64_t)VKR_METRIC_NAME_MAX);
+    if (source->name.str && length > 0) {
+      MemCopy(sample->name, source->name.str, length);
+    }
+    sample->name[length] = '\0';
+    sample->name_length = (uint8_t)length;
+    sample->cpu_ms = source->cpu_ms;
+    sample->gpu_ms = source->gpu_ms;
+    sample->cpu_frame_index = cpu_frame_index;
+    sample->gpu_source_frame_index = source->gpu_source_frame_index;
+    sample->gpu_source_submit_serial = source->gpu_source_submit_serial;
+    sample->culled = source->culled;
+    sample->disabled = source->disabled;
+    sample->gpu_valid = source->gpu_valid;
+  }
+}
+
+void vkr_renderer_metrics_collect(
+    VkrRendererMetrics *renderer_metrics,
+    const VkrRendererMetricsCollectContext *context) {
+#if !VKR_METRICS_ENABLED
+  (void)renderer_metrics;
+  (void)context;
+  return;
+#else
+  if (!renderer_metrics || !renderer_metrics->metrics || !context ||
+      !context->renderer || !context->frame_metrics || !context->visibility) {
+    return;
+  }
+  VkrMetrics *metrics = renderer_metrics->metrics;
+  VkrRendererMetricIds *ids = &renderer_metrics->ids;
+  RendererFrontend *renderer = (RendererFrontend *)context->renderer;
+  const VkrWorldBatchMetrics *world = &context->frame_metrics->world;
+  const VkrShadowMetrics *shadow = &context->frame_metrics->shadow;
+  const VkrVisibilityStats *visibility = context->visibility;
+
+#define VKR_SET_U64(FIELD, VALUE)                                              \
+  vkr_metrics_gauge_set_u64(metrics, ids->FIELD, (uint64_t)(VALUE))
+#define VKR_SET_F64(FIELD, VALUE)                                              \
+  vkr_metrics_gauge_set_f64(metrics, ids->FIELD, (float64_t)(VALUE))
+  if (context->frame_metrics->backend_present_valid) {
+    vkr_metrics_duration_add_ns(metrics, ids->backend_present,
+                                context->frame_metrics->backend_present_ns);
+  } else {
+    vkr_metrics_mark(metrics, ids->backend_present,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_NOT_SAMPLED);
+  }
+
+#define VKR_SET_BOOT(FIELD, VALUE)                                             \
+  do {                                                                         \
+    if ((VALUE) > 0) {                                                         \
+      vkr_metrics_duration_add_ns(metrics, ids->FIELD, (VALUE));               \
+    } else {                                                                   \
+      vkr_metrics_mark(metrics, ids->FIELD,                                    \
+                       VKR_METRIC_AVAILABILITY_UNAVAILABLE,                    \
+                       VKR_METRIC_REASON_NOT_READY);                           \
+    }                                                                          \
+  } while (0)
+  VKR_SET_BOOT(boot_instance, renderer->boot_metrics.instance_ns);
+  VKR_SET_BOOT(boot_device, renderer->boot_metrics.device_ns);
+  VKR_SET_BOOT(boot_target, renderer->boot_metrics.target_ns);
+  VKR_SET_BOOT(boot_systems, renderer->boot_metrics.systems_ns);
+  VKR_SET_BOOT(boot_graph, renderer->boot_metrics.graph_ns);
+  VKR_SET_BOOT(boot_scene, renderer_metrics->boot_scene_ns);
+#undef VKR_SET_BOOT
+
+  // Publishes a cumulative pull source as this frame's delta. `begin_frame`
+  // zeroes counter slots, so a single add produces exactly the interval value.
+#define VKR_SET_DELTA(FIELD, BASELINE, VALUE)                                  \
+  do {                                                                         \
+    const uint64_t current_ = (uint64_t)(VALUE);                               \
+    const uint64_t previous_ = renderer_metrics->previous.BASELINE;            \
+    vkr_metrics_counter_add(metrics, ids->FIELD,                               \
+                            current_ >= previous_ ? current_ - previous_ : 0); \
+    renderer_metrics->previous.BASELINE = current_;                            \
+  } while (0)
+
+  VkrJobSystemMetrics jobs = {0};
+  vkr_job_system_get_metrics(context->job_system, &jobs);
+  VKR_SET_U64(job_queue_depth, jobs.queue_depth);
+  VKR_SET_U64(job_workers_busy, jobs.busy_workers);
+  VKR_SET_F64(job_worker_busy_ratio,
+              jobs.worker_count > 0
+                  ? (float64_t)jobs.busy_workers / (float64_t)jobs.worker_count
+                  : 0.0);
+  VKR_SET_DELTA(job_completed_total, jobs_completed, jobs.jobs_completed_total);
+
+  const VkrInstanceBufferPool *instance_pool = &renderer->instance_buffer_pool;
+  if (instance_pool->initialized &&
+      instance_pool->current_frame < VKR_INSTANCE_BUFFER_FRAMES) {
+    VKR_SET_U64(
+        instance_occupancy,
+        instance_pool->buffers[instance_pool->current_frame].write_offset);
+    VKR_SET_U64(instance_capacity, instance_pool->max_instances);
+    VKR_SET_U64(instance_overflows, instance_pool->frame_overflow_count);
+  }
+  VKR_SET_U64(world_draws_collected, world->draws_collected);
+  VKR_SET_U64(world_opaque_draws, world->opaque_draws);
+  VKR_SET_U64(world_transparent_draws, world->transparent_draws);
+  VKR_SET_U64(world_opaque_batches, world->opaque_batches);
+  VKR_SET_U64(world_draws_issued, world->draws_issued);
+  VKR_SET_U64(world_draw_calls_issued, world->draw_calls_issued);
+  VKR_SET_U64(world_batches_created, world->batches_created);
+  VKR_SET_U64(world_draws_merged, world->draws_merged);
+  VKR_SET_U64(world_indirect_draws_issued, world->indirect_draws_issued);
+  VKR_SET_U64(world_indirect_calls_issued, world->indirect_calls_issued);
+  VKR_SET_F64(world_avg_batch_size, world->avg_batch_size);
+  VKR_SET_U64(world_max_batch_size, world->max_batch_size);
+
+  VKR_SET_U64(visibility_objects_tested, visibility->objects_tested);
+  VKR_SET_U64(visibility_culled_camera, visibility->objects_culled_camera);
+  VKR_SET_U64(visibility_culled_shadow, visibility->objects_culled_shadow);
+  VKR_SET_U64(visibility_without_bounds, visibility->objects_without_bounds);
+  VKR_SET_U64(visibility_mergeable_opaque, visibility->mergeable_opaque_draws);
+  VKR_SET_U64(visibility_distinct_opaque_keys,
+              visibility->distinct_opaque_keys);
+  VKR_SET_U64(visibility_largest_mergeable_run,
+              visibility->largest_mergeable_run);
+  VKR_SET_U64(visibility_opaque_emitted, visibility->opaque_draws_emitted);
+  VKR_SET_U64(visibility_opaque_before_merge,
+              visibility->opaque_draws_before_merge);
+  VKR_SET_U64(visibility_distinct_geometries, visibility->distinct_geometries);
+  VKR_SET_U64(visibility_distinct_geometry_material_pairs,
+              visibility->distinct_geometry_material_pairs);
+
+  for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_draw_calls_opaque[i],
+                              shadow->shadow_draw_calls_opaque[i]);
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_draw_calls_alpha[i],
+                              shadow->shadow_draw_calls_alpha[i]);
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_descriptor_binds_set1[i],
+                              shadow->shadow_descriptor_binds_set1[i]);
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_batches_opaque[i],
+                              shadow->shadow_batches_opaque[i]);
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_batches_alpha[i],
+                              shadow->shadow_batches_alpha[i]);
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_draws_opaque[i],
+                              shadow->shadow_indirect_draws_opaque[i]);
+    vkr_metrics_gauge_set_u64(metrics, ids->shadow_indirect_calls_opaque[i],
+                              shadow->shadow_indirect_calls_opaque[i]);
+  }
+
+  VkrRenderGraphResourceStats rg = {0};
+  if (renderer->render_graph &&
+      vkr_rg_get_resource_stats(renderer->render_graph, &rg)) {
+    VKR_SET_U64(rg_live_images, rg.live_image_textures);
+    VKR_SET_U64(rg_peak_images, rg.peak_image_textures);
+    VKR_SET_U64(rg_live_image_bytes, rg.live_image_bytes);
+    VKR_SET_U64(rg_peak_image_bytes, rg.peak_image_bytes);
+    VKR_SET_U64(rg_live_buffers, rg.live_buffers);
+    VKR_SET_U64(rg_peak_buffers, rg.peak_buffers);
+    VKR_SET_U64(rg_live_buffer_bytes, rg.live_buffer_bytes);
+    VKR_SET_U64(rg_peak_buffer_bytes, rg.peak_buffer_bytes);
+  }
+
+  // OWNERSHIP: this call resets the backend's counters, so this collector is
+  // its only permitted caller. A second caller would silently steal samples,
+  // and the theft would look like an absence of upload stalls. Consumers read
+  // these values from the published frame, never from the backend directly.
+  VkrRendererUploadWaitStats waits = {0};
+  if (vkr_renderer_get_and_reset_upload_wait_stats(renderer, &waits)) {
+    VKR_SET_U64(upload_fence_waits, waits.fence_wait_count);
+    VKR_SET_U64(upload_queue_idle_waits, waits.queue_wait_idle_count);
+    VKR_SET_U64(upload_device_idle_waits, waits.device_wait_idle_count);
+  }
+
+  VkrDeviceMemoryStats gpu = {0};
+  if (vkr_renderer_get_device_memory_stats(renderer, &gpu)) {
+    VKR_SET_U64(gpu_live_allocations, gpu.live_allocation_count);
+    VKR_SET_U64(gpu_peak_allocations, gpu.peak_allocation_count);
+    VKR_SET_U64(gpu_total_allocations, gpu.total_allocation_count);
+    VKR_SET_U64(gpu_max_allocations, gpu.max_allocation_count);
+    VKR_SET_U64(gpu_live_bytes, gpu.live_bytes);
+    VKR_SET_U64(gpu_peak_bytes, gpu.peak_bytes);
+    VKR_SET_U64(gpu_live_totals_exact, gpu.live_totals_exact);
+    VKR_SET_U64(gpu_heap_usage_valid, gpu.heap_usage_valid);
+    if (!gpu.live_totals_exact) {
+      vkr_metrics_mark(metrics, ids->gpu_live_allocations,
+                       VKR_METRIC_AVAILABILITY_INEXACT,
+                       VKR_METRIC_REASON_SOURCE_INEXACT);
+      vkr_metrics_mark(metrics, ids->gpu_live_bytes,
+                       VKR_METRIC_AVAILABILITY_INEXACT,
+                       VKR_METRIC_REASON_SOURCE_INEXACT);
+    }
+    const uint32_t type_count =
+        Min(gpu.memory_type_count, renderer_metrics->device_memory_type_count);
+    for (uint32_t i = 0; i < type_count; ++i) {
+      vkr_metrics_gauge_set_u64(metrics, ids->gpu_type_live_bytes[i],
+                                gpu.live_bytes_by_type[i]);
+      vkr_metrics_gauge_set_u64(metrics, ids->gpu_type_live_allocations[i],
+                                gpu.live_count_by_type[i]);
+      if (!gpu.live_totals_exact) {
+        vkr_metrics_mark(metrics, ids->gpu_type_live_bytes[i],
+                         VKR_METRIC_AVAILABILITY_INEXACT,
+                         VKR_METRIC_REASON_SOURCE_INEXACT);
+        vkr_metrics_mark(metrics, ids->gpu_type_live_allocations[i],
+                         VKR_METRIC_AVAILABILITY_INEXACT,
+                         VKR_METRIC_REASON_SOURCE_INEXACT);
+      }
+    }
+    const uint32_t heap_count =
+        Min(gpu.heap_count, renderer_metrics->device_memory_heap_count);
+    for (uint32_t i = 0; i < heap_count; ++i) {
+      vkr_metrics_gauge_set_u64(metrics, ids->gpu_heap_size_bytes[i],
+                                gpu.heap_size_bytes[i]);
+      if (gpu.heap_usage_valid) {
+        vkr_metrics_gauge_set_u64(metrics, ids->gpu_heap_usage_bytes[i],
+                                  gpu.heap_usage_bytes[i]);
+        vkr_metrics_gauge_set_u64(metrics, ids->gpu_heap_budget_bytes[i],
+                                  gpu.heap_budget_bytes[i]);
+      } else {
+        vkr_metrics_mark(metrics, ids->gpu_heap_usage_bytes[i],
+                         VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                         VKR_METRIC_REASON_UNSUPPORTED);
+        vkr_metrics_mark(metrics, ids->gpu_heap_budget_bytes[i],
+                         VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                         VKR_METRIC_REASON_UNSUPPORTED);
+      }
+    }
+  }
+
+  uint32_t pipeline_created = 0;
+  uint32_t pipeline_binds = 0;
+  uint32_t redundant = 0;
+  uint32_t meshes_batched = 0;
+  vkr_pipeline_registry_get_stats(&renderer->pipeline_registry,
+                                  &pipeline_created, &pipeline_binds,
+                                  &redundant, &meshes_batched);
+  VKR_SET_DELTA(pipelines_created, pipelines_created, pipeline_created);
+  VKR_SET_DELTA(pipeline_binds, pipeline_binds, pipeline_binds);
+  VKR_SET_DELTA(redundant_binds_avoided, redundant_binds_avoided, redundant);
+  VKR_SET_DELTA(meshes_batched, meshes_batched, meshes_batched);
+  uint32_t frame_changes = 0;
+  uint32_t frame_redundant = 0;
+  vkr_pipeline_registry_get_frame_stats(&renderer->pipeline_registry,
+                                        &frame_changes, &frame_redundant);
+  VKR_SET_U64(frame_pipeline_changes, frame_changes);
+  VKR_SET_U64(frame_redundant_binds_avoided, frame_redundant);
+
+  VkrAllocatorStatistics cpu = vkr_allocator_get_global_statistics();
+  VKR_SET_U64(cpu_live_bytes, cpu.total_allocated);
+  for (uint32_t i = 0; i < VKR_ALLOCATOR_MEMORY_TAG_MAX; ++i) {
+    vkr_metrics_gauge_set_u64(metrics, ids->cpu_tag_bytes[i],
+                              cpu.tagged_allocs[i]);
+  }
+  vkr_renderer_metrics_collect_passes(renderer_metrics, renderer,
+                                      context->cpu_frame_index);
+#undef VKR_SET_U64
+#undef VKR_SET_F64
+#undef VKR_SET_DELTA
+#endif
+}
+
+const VkrRendererMetricsPassTable *vkr_renderer_metrics_get_pass_table(
+    const VkrRendererMetrics *renderer_metrics) {
+  return renderer_metrics ? &renderer_metrics->passes : NULL;
+}
+
+bool8_t vkr_renderer_metrics_read_frame(
+    const VkrRendererMetrics *renderer_metrics, const VkrMetricsFrame *frame,
+    VkrRendererFrameMetrics *out_frame_metrics,
+    VkrVisibilityStats *out_visibility,
+    VkrRenderGraphResourceStats *out_rg_stats) {
+  if (!renderer_metrics || !frame) {
+    return false_v;
+  }
+  const VkrRendererMetricIds *ids = &renderer_metrics->ids;
+
+  // Each field is written only when its slot carried a sample, so an absent
+  // metric leaves the caller's value alone instead of forcing a zero.
+#define VKR_READ_U32(TARGET, ID)                                               \
+  do {                                                                         \
+    uint64_t value_ = 0;                                                       \
+    if (vkr_metrics_frame_read_u64(frame, (ID), &value_)) {                    \
+      (TARGET) = (uint32_t)value_;                                             \
+    }                                                                          \
+  } while (0)
+#define VKR_READ_U64(TARGET, ID)                                               \
+  do {                                                                         \
+    uint64_t value_ = 0;                                                       \
+    if (vkr_metrics_frame_read_u64(frame, (ID), &value_)) {                    \
+      (TARGET) = value_;                                                       \
+    }                                                                          \
+  } while (0)
+
+  bool8_t read_any = false_v;
+  if (out_frame_metrics) {
+    VkrWorldBatchMetrics *world = &out_frame_metrics->world;
+    uint64_t collected = 0;
+    read_any =
+        vkr_metrics_frame_read_u64(frame, ids->world_draws_collected,
+                                   &collected);
+    if (read_any) {
+      world->draws_collected = (uint32_t)collected;
+    }
+    VKR_READ_U32(world->opaque_draws, ids->world_opaque_draws);
+    VKR_READ_U32(world->transparent_draws, ids->world_transparent_draws);
+    VKR_READ_U32(world->opaque_batches, ids->world_opaque_batches);
+    VKR_READ_U32(world->draws_issued, ids->world_draws_issued);
+    VKR_READ_U32(world->draw_calls_issued, ids->world_draw_calls_issued);
+    VKR_READ_U32(world->batches_created, ids->world_batches_created);
+    VKR_READ_U32(world->draws_merged, ids->world_draws_merged);
+    VKR_READ_U32(world->indirect_draws_issued, ids->world_indirect_draws_issued);
+    VKR_READ_U32(world->indirect_calls_issued, ids->world_indirect_calls_issued);
+    VKR_READ_U32(world->max_batch_size, ids->world_max_batch_size);
+    float64_t avg_batch_size = 0.0;
+    if (vkr_metrics_frame_read_f64(frame, ids->world_avg_batch_size,
+                                   &avg_batch_size)) {
+      world->avg_batch_size = (float32_t)avg_batch_size;
+    }
+
+    VkrShadowMetrics *shadow = &out_frame_metrics->shadow;
+    for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
+      VKR_READ_U32(shadow->shadow_draw_calls_opaque[i],
+                   ids->shadow_draw_calls_opaque[i]);
+      VKR_READ_U32(shadow->shadow_draw_calls_alpha[i],
+                   ids->shadow_draw_calls_alpha[i]);
+      VKR_READ_U32(shadow->shadow_descriptor_binds_set1[i],
+                   ids->shadow_descriptor_binds_set1[i]);
+      VKR_READ_U32(shadow->shadow_batches_opaque[i],
+                   ids->shadow_batches_opaque[i]);
+      VKR_READ_U32(shadow->shadow_batches_alpha[i],
+                   ids->shadow_batches_alpha[i]);
+      VKR_READ_U32(shadow->shadow_indirect_draws_opaque[i],
+                   ids->shadow_indirect_draws_opaque[i]);
+      VKR_READ_U32(shadow->shadow_indirect_calls_opaque[i],
+                   ids->shadow_indirect_calls_opaque[i]);
+    }
+  }
+
+  if (out_visibility) {
+    VKR_READ_U32(out_visibility->objects_tested,
+                 ids->visibility_objects_tested);
+    VKR_READ_U32(out_visibility->objects_culled_camera,
+                 ids->visibility_culled_camera);
+    VKR_READ_U32(out_visibility->objects_culled_shadow,
+                 ids->visibility_culled_shadow);
+    VKR_READ_U32(out_visibility->objects_without_bounds,
+                 ids->visibility_without_bounds);
+    VKR_READ_U32(out_visibility->mergeable_opaque_draws,
+                 ids->visibility_mergeable_opaque);
+    VKR_READ_U32(out_visibility->distinct_opaque_keys,
+                 ids->visibility_distinct_opaque_keys);
+    VKR_READ_U32(out_visibility->largest_mergeable_run,
+                 ids->visibility_largest_mergeable_run);
+    VKR_READ_U32(out_visibility->opaque_draws_emitted,
+                 ids->visibility_opaque_emitted);
+    VKR_READ_U32(out_visibility->opaque_draws_before_merge,
+                 ids->visibility_opaque_before_merge);
+    VKR_READ_U32(out_visibility->distinct_geometries,
+                 ids->visibility_distinct_geometries);
+    VKR_READ_U32(out_visibility->distinct_geometry_material_pairs,
+                 ids->visibility_distinct_geometry_material_pairs);
+  }
+
+  if (out_rg_stats) {
+    VKR_READ_U32(out_rg_stats->live_image_textures, ids->rg_live_images);
+    VKR_READ_U32(out_rg_stats->peak_image_textures, ids->rg_peak_images);
+    VKR_READ_U64(out_rg_stats->live_image_bytes, ids->rg_live_image_bytes);
+    VKR_READ_U64(out_rg_stats->peak_image_bytes, ids->rg_peak_image_bytes);
+    VKR_READ_U32(out_rg_stats->live_buffers, ids->rg_live_buffers);
+    VKR_READ_U32(out_rg_stats->peak_buffers, ids->rg_peak_buffers);
+    VKR_READ_U64(out_rg_stats->live_buffer_bytes, ids->rg_live_buffer_bytes);
+    VKR_READ_U64(out_rg_stats->peak_buffer_bytes, ids->rg_peak_buffer_bytes);
+  }
+
+#undef VKR_READ_U32
+#undef VKR_READ_U64
+  return read_any;
+}
+
+vkr_internal const char *
+vkr_metric_availability_name(VkrMetricAvailability availability) {
+  switch (availability) {
+  case VKR_METRIC_AVAILABILITY_VALID:
+    return "valid";
+  case VKR_METRIC_AVAILABILITY_INEXACT:
+    return "inexact";
+  case VKR_METRIC_AVAILABILITY_UNAVAILABLE:
+  default:
+    return "unavailable";
+  }
+}
+
+vkr_internal const char *vkr_metric_kind_name(VkrMetricKind kind) {
+  switch (kind) {
+  case VKR_METRIC_KIND_COUNTER:
+    return "counter";
+  case VKR_METRIC_KIND_GAUGE:
+    return "gauge";
+  case VKR_METRIC_KIND_DURATION:
+    return "duration";
+  default:
+    return "unknown";
+  }
+}
+
+vkr_internal const char *vkr_metric_unit_name(VkrMetricUnit unit) {
+  static const char *names[VKR_METRIC_UNIT_COUNT_MAX] = {
+      "count", "bytes", "ns", "ratio", "percent", "count_per_s",
+  };
+  return unit < VKR_METRIC_UNIT_COUNT_MAX ? names[unit] : "unknown";
+}
+
+vkr_internal const char *vkr_metric_reason_name(VkrMetricReason reason) {
+  switch (reason) {
+  case VKR_METRIC_REASON_NONE:
+    return "none";
+  case VKR_METRIC_REASON_NOT_SAMPLED:
+    return "not_sampled";
+  case VKR_METRIC_REASON_DISABLED:
+    return "disabled";
+  case VKR_METRIC_REASON_UNSUPPORTED:
+    return "unsupported";
+  case VKR_METRIC_REASON_NOT_READY:
+    return "not_ready";
+  case VKR_METRIC_REASON_SOURCE_INEXACT:
+    return "source_inexact";
+  case VKR_METRIC_REASON_PUBLICATION_DROPPED:
+    return "publication_dropped";
+  default:
+    return "unknown";
+  }
+}
+
+vkr_internal bool8_t vkr_json_name(VkrJsonWriter *writer, const char *name) {
+  return vkr_json_writer_name(
+      writer,
+      string8_create_from_cstr((const uint8_t *)name, string_length(name)));
+}
+
+vkr_internal bool8_t vkr_json_cstr(VkrJsonWriter *writer, const char *value) {
+  return vkr_json_writer_string(
+      writer,
+      string8_create_from_cstr((const uint8_t *)value, string_length(value)));
+}
+
+vkr_internal bool8_t vkr_renderer_metric_write_sample(
+    VkrJsonWriter *writer, const VkrMetricCatalogEntry *entry,
+    const VkrMetricSample *sample) {
+  if (!vkr_json_writer_begin_object(writer) || !vkr_json_name(writer, "name") ||
+      !vkr_json_writer_string(
+          writer, string8_create_from_cstr((const uint8_t *)entry->name,
+                                           entry->name_length)) ||
+      !vkr_json_name(writer, "kind") ||
+      !vkr_json_cstr(writer, vkr_metric_kind_name(entry->kind)) ||
+      !vkr_json_name(writer, "unit") ||
+      !vkr_json_cstr(writer, vkr_metric_unit_name(entry->unit)) ||
+      !vkr_json_name(writer, "availability") ||
+      !vkr_json_cstr(writer,
+                     vkr_metric_availability_name(sample->availability)) ||
+      !vkr_json_name(writer, "reason") ||
+      !vkr_json_cstr(writer, vkr_metric_reason_name(sample->reason)) ||
+      !vkr_json_name(writer, "required") ||
+      !vkr_json_writer_bool(writer, entry->required_when_enabled) ||
+      !vkr_json_name(writer, "value")) {
+    return false_v;
+  }
+  if (sample->availability == VKR_METRIC_AVAILABILITY_UNAVAILABLE) {
+    if (!vkr_json_writer_null(writer)) {
+      return false_v;
+    }
+  } else if (entry->kind == VKR_METRIC_KIND_DURATION) {
+    if (!vkr_json_writer_begin_object(writer) ||
+        !vkr_json_name(writer, "sum_ns") ||
+        !vkr_json_writer_u64(writer, sample->value.duration.sum_ns) ||
+        !vkr_json_name(writer, "count") ||
+        !vkr_json_writer_u64(writer, sample->value.duration.count) ||
+        !vkr_json_name(writer, "min_ns") ||
+        !vkr_json_writer_u64(writer, sample->value.duration.min_ns) ||
+        !vkr_json_name(writer, "max_ns") ||
+        !vkr_json_writer_u64(writer, sample->value.duration.max_ns) ||
+        !vkr_json_writer_end_object(writer)) {
+      return false_v;
+    }
+  } else if (entry->scalar == VKR_METRIC_SCALAR_F64) {
+    if (!vkr_json_writer_f64(writer, sample->value.f64)) {
+      return false_v;
+    }
+  } else if (!vkr_json_writer_u64(writer, sample->value.u64)) {
+    return false_v;
+  }
+  return vkr_json_writer_end_object(writer);
+}
+
+bool8_t vkr_renderer_metrics_write_json(VkrRendererMetrics *renderer_metrics,
+                                        String8 path) {
+  if (!renderer_metrics || !renderer_metrics->metrics) {
+    return false_v;
+  }
+  VkrMetricsSnapshotView snapshot = {0};
+  if (!vkr_metrics_snapshot_acquire(renderer_metrics->metrics, &snapshot)) {
+    return false_v;
+  }
+
+  VkrMetricEvent event = {0};
+  uint32_t event_count = 0;
+  while (
+      event_count < VKR_METRIC_EVENT_CAPACITY &&
+      vkr_metrics_event_peek(renderer_metrics->metrics, event_count, &event)) {
+    event_count++;
+  }
+
+  // The pass table is single-buffered and filled by the collecting thread,
+  // while the snapshot above is a pinned publication. Recording both frame
+  // indices lets a reader see whether they describe the same frame rather
+  // than assume it.
+  const VkrRendererMetricsPassTable *passes = &renderer_metrics->passes;
+  const bool8_t passes_match_snapshot =
+      passes->cpu_frame_index == snapshot.frame->cpu_frame_index;
+  const uint32_t missing_required = vkr_metrics_frame_missing_required(
+      renderer_metrics->metrics, snapshot.frame);
+
+  VkrJsonFileWriter file = {0};
+  bool8_t success = vkr_json_file_writer_begin(&file, path);
+  VkrJsonWriter *writer = &file.writer;
+#if VKR_METRICS_ENABLED
+  const bool8_t compiled_enabled = true_v;
+#else
+  const bool8_t compiled_enabled = false_v;
+#endif
+  if (success) {
+    success =
+        vkr_json_writer_begin_object(writer) &&
+        vkr_json_name(writer, "schema_version") &&
+        vkr_json_writer_u64(writer, 1u) && vkr_json_name(writer, "kind") &&
+        vkr_json_cstr(writer, "vkr.metrics.snapshot") &&
+        vkr_json_name(writer, "instrumentation") &&
+        vkr_json_writer_begin_object(writer) &&
+        vkr_json_name(writer, "compiled_enabled") &&
+        vkr_json_writer_bool(writer, compiled_enabled) &&
+        vkr_json_name(writer, "pass_gpu_timings") &&
+        vkr_json_writer_bool(
+            writer, renderer_metrics->metrics->config.pass_gpu_timings) &&
+        vkr_json_name(writer, "event_subjects") &&
+        vkr_json_writer_bool(
+            writer, renderer_metrics->metrics->config.event_subjects) &&
+        vkr_json_writer_end_object(writer) &&
+        vkr_json_name(writer, "cpu_frame_index") &&
+        vkr_json_writer_u64(writer, snapshot.frame->cpu_frame_index) &&
+        vkr_json_name(writer, "submit_serial") &&
+        vkr_json_writer_u64(writer, snapshot.frame->submit_serial) &&
+        vkr_json_name(writer, "publication_serial") &&
+        vkr_json_writer_u64(writer, snapshot.frame->publication_serial) &&
+        vkr_json_name(writer, "snapshot_publications_dropped") &&
+        vkr_json_writer_u64(writer,
+                            snapshot.frame->snapshot_publications_dropped) &&
+        vkr_json_name(writer, "events_dropped") &&
+        vkr_json_writer_u64(writer, snapshot.frame->events_dropped) &&
+        vkr_json_name(writer, "missing_required_metrics") &&
+        vkr_json_writer_u64(writer, missing_required) &&
+        vkr_json_name(writer, "metrics") && vkr_json_writer_begin_array(writer);
+  }
+  uint32_t catalog_count = 0;
+  const VkrMetricCatalogEntry *catalog =
+      vkr_metrics_get_catalog(renderer_metrics->metrics, &catalog_count);
+  for (uint32_t i = 0;
+       success && i < snapshot.frame->slot_count && i < catalog_count; ++i) {
+    success = vkr_renderer_metric_write_sample(writer, &catalog[i],
+                                               &snapshot.frame->samples[i]);
+  }
+  if (success) {
+    success =
+        vkr_json_writer_end_array(writer) &&
+        vkr_json_name(writer, "passes_truncated") &&
+        vkr_json_writer_bool(writer, passes->truncated) &&
+        vkr_json_name(writer, "passes_cpu_frame_index") &&
+        vkr_json_writer_u64(writer, passes->cpu_frame_index) &&
+        vkr_json_name(writer, "passes_match_snapshot") &&
+        vkr_json_writer_bool(writer, passes_match_snapshot) &&
+        vkr_json_name(writer, "passes") && vkr_json_writer_begin_array(writer);
+  }
+  for (uint32_t i = 0; success && i < passes->count; ++i) {
+    const VkrRendererMetricsPassSample *pass = &passes->samples[i];
+    success = vkr_json_writer_begin_object(writer) &&
+              vkr_json_name(writer, "name") &&
+              vkr_json_writer_string(
+                  writer, string8_create_from_cstr((const uint8_t *)pass->name,
+                                                   pass->name_length)) &&
+              vkr_json_name(writer, "cpu_ms") &&
+              vkr_json_writer_f64(writer, pass->cpu_ms) &&
+              vkr_json_name(writer, "cpu_frame_index") &&
+              vkr_json_writer_u64(writer, pass->cpu_frame_index) &&
+              vkr_json_name(writer, "gpu_ms") &&
+              (pass->gpu_valid ? vkr_json_writer_f64(writer, pass->gpu_ms)
+                               : vkr_json_writer_null(writer)) &&
+              vkr_json_name(writer, "gpu_valid") &&
+              vkr_json_writer_bool(writer, pass->gpu_valid) &&
+              vkr_json_name(writer, "gpu_source_frame_index") &&
+              (pass->gpu_valid
+                   ? vkr_json_writer_u64(writer, pass->gpu_source_frame_index)
+                   : vkr_json_writer_null(writer)) &&
+              vkr_json_name(writer, "gpu_source_submit_serial") &&
+              (pass->gpu_valid
+                   ? vkr_json_writer_u64(writer, pass->gpu_source_submit_serial)
+                   : vkr_json_writer_null(writer)) &&
+              vkr_json_name(writer, "culled") &&
+              vkr_json_writer_bool(writer, pass->culled) &&
+              vkr_json_name(writer, "disabled") &&
+              vkr_json_writer_bool(writer, pass->disabled) &&
+              vkr_json_writer_end_object(writer);
+  }
+  if (success) {
+    success =
+        vkr_json_writer_end_array(writer) && vkr_json_name(writer, "events") &&
+        vkr_json_writer_begin_object(writer) &&
+        vkr_json_name(writer, "dropped") &&
+        vkr_json_writer_u64(writer, snapshot.frame->events_dropped) &&
+        vkr_json_name(writer, "subjects_truncated") &&
+        vkr_json_writer_u64(writer,
+                            snapshot.frame->event_subjects_truncated) &&
+        vkr_json_name(writer, "items") && vkr_json_writer_begin_array(writer);
+  }
+  uint32_t events_written = 0;
+  for (uint32_t i = 0; success && i < event_count; ++i) {
+    if (!vkr_metrics_event_peek(renderer_metrics->metrics, i, &event)) {
+      success = false_v;
+      break;
+    }
+    const uint32_t source_index = vkr_metric_id_index(event.source);
+    // An event whose source no longer resolves is a defect in one row, not a
+    // reason to discard the whole report; skip it and let the count of
+    // written items differ from the count consumed.
+    if (vkr_metric_id_generation(event.source) !=
+            renderer_metrics->metrics->registry_generation ||
+        source_index >= catalog_count) {
+      log_warn("Dropping metrics event with unresolvable source id 0x%08x",
+               event.source);
+      continue;
+    }
+    const VkrMetricCatalogEntry *source = &catalog[source_index];
+    success =
+        vkr_json_writer_begin_object(writer) &&
+        vkr_json_name(writer, "source") &&
+        vkr_json_writer_string(
+            writer, string8_create_from_cstr((const uint8_t *)source->name,
+                                             source->name_length)) &&
+        vkr_json_name(writer, "subject") &&
+        vkr_json_writer_string(
+            writer, string8_create_from_cstr((const uint8_t *)event.subject,
+                                             event.subject_length)) &&
+        vkr_json_name(writer, "status") &&
+        vkr_json_cstr(writer, event.status == VKR_METRIC_EVENT_STATUS_SUCCESS
+                                  ? "success"
+                                  : "failed") &&
+        vkr_json_name(writer, "start_ns") &&
+        vkr_json_writer_u64(writer, event.start_ns) &&
+        vkr_json_name(writer, "duration_ns") &&
+        vkr_json_writer_u64(writer, event.duration_ns) &&
+        vkr_json_name(writer, "bytes") &&
+        vkr_json_writer_u64(writer, event.bytes) &&
+        vkr_json_name(writer, "thread_id") &&
+        vkr_json_writer_u64(writer, event.thread_id) &&
+        vkr_json_name(writer, "subject_truncated") &&
+        vkr_json_writer_bool(writer, event.subject_truncated) &&
+        vkr_json_writer_end_object(writer);
+    events_written += success ? 1u : 0u;
+  }
+  (void)events_written;
+  if (success) {
+    success = vkr_json_writer_end_array(writer) &&
+              vkr_json_writer_end_object(writer) &&
+              vkr_json_writer_end_object(writer) &&
+              vkr_json_file_writer_commit(&file);
+    if (success && event_count > 0) {
+      success =
+          vkr_metrics_event_consume(renderer_metrics->metrics, event_count);
+    }
+  } else if (file.active) {
+    vkr_json_file_writer_abort(&file);
+  }
+  vkr_metrics_snapshot_release(renderer_metrics->metrics, &snapshot);
+  return success;
+}

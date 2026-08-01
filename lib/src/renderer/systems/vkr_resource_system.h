@@ -11,6 +11,8 @@
 // =============================================================================
 
 typedef struct VkrMeshLoaderResult VkrMeshLoaderResult;
+typedef struct VkrRendererMetricsProducerConfig
+    VkrRendererMetricsProducerConfig;
 
 typedef enum VkrResourceType {
   VKR_RESOURCE_TYPE_UNKNOWN = 0,
@@ -154,7 +156,8 @@ struct VkrResourceLoader {
    *
    * Called exactly once for any payload produced by `prepare_async`, including
    * cancellation/failure paths where `finalize_async` is never reached.
-   * Returns no value; the callback is responsible for freeing payload resources.
+   * Returns no value; the callback is responsible for freeing payload
+   * resources.
    *
    * @param self The loader
    * @param payload The payload to release
@@ -197,9 +200,10 @@ struct VkrResourceLoader {
  * @param job_system The job system to use for parallel loading (can be NULL)
  * @return True if the resource system was initialized, false otherwise
  */
-bool8_t vkr_resource_system_init(VkrAllocator *allocator,
-                                 VkrRendererFrontendHandle renderer,
-                                 VkrJobSystem *job_system);
+bool8_t vkr_resource_system_init(
+    VkrAllocator *allocator, VkrRendererFrontendHandle renderer,
+    VkrJobSystem *job_system,
+    const VkrRendererMetricsProducerConfig *metrics_producers);
 
 /**
  * @brief Registers a resource loader

@@ -3,6 +3,7 @@
 #include "containers/bitset.h"
 #include "core/event.h"
 #include "core/vkr_job_system.h"
+#include "core/vkr_metrics.h"
 #include "core/vkr_window.h"
 #include "defines.h"
 #include "math/mat.h"
@@ -69,6 +70,8 @@ typedef struct s_RenderTarget *VkrRenderTargetHandle;
 typedef struct VkrRenderPacket VkrRenderPacket;
 typedef struct VkrValidationError VkrValidationError;
 typedef struct VkrRendererFrameMetrics VkrRendererFrameMetrics;
+typedef struct VkrRendererMetricsProducerConfig
+    VkrRendererMetricsProducerConfig;
 typedef struct VkrUiTextConfig VkrUiTextConfig;
 typedef struct VkrText3DConfig VkrText3DConfig;
 
@@ -1084,11 +1087,24 @@ typedef struct VkrGraphicsPipelineDescription {
   VkrPipelineDomain domain;
 } VkrGraphicsPipelineDescription;
 
+/** Initialization timings retained for publication after metrics begin. */
+typedef struct VkrRendererBootMetrics {
+  uint64_t instance_ns;
+  uint64_t device_ns;
+  uint64_t target_ns;
+  uint64_t systems_ns;
+  uint64_t graph_ns;
+} VkrRendererBootMetrics;
+
 typedef struct VkrRendererBackendConfig {
   const char *application_name;
   uint16_t renderpass_desc_count;
   const VkrRenderPassDesc *pass_descs;
   void (*on_render_target_refresh_required)();
+  VkrRendererBootMetrics *boot_metrics;
+  VkrMetricEventProducer pipeline_create_metrics;
+  VkrMetricEventProducer shader_load_metrics;
+  VkrMetricEventProducer shader_reflection_metrics;
 } VkrRendererBackendConfig;
 
 // ============================================================================
@@ -1201,8 +1217,9 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
                                  uint64_t target_frame_rate,
                                  VkrRendererError *out_error);
 
-bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
-                                         VkrJobSystem *job_system);
+bool32_t vkr_renderer_systems_initialize(
+    VkrRendererFrontendHandle renderer, VkrJobSystem *job_system,
+    const VkrRendererMetricsProducerConfig *metrics_producers);
 
 void vkr_renderer_destroy(VkrRendererFrontendHandle renderer);
 // --- END Initialization and Shutdown ---
@@ -1223,6 +1240,9 @@ uint64_t
 vkr_renderer_get_completed_submit_serial(VkrRendererFrontendHandle renderer);
 bool8_t vkr_renderer_get_and_reset_upload_wait_stats(
     VkrRendererFrontendHandle renderer, VkrRendererUploadWaitStats *out_stats);
+bool8_t
+vkr_renderer_get_last_present_duration(VkrRendererFrontendHandle renderer,
+                                       uint64_t *out_duration_ns);
 /** @brief Snapshots device-memory allocation telemetry. Non-resetting. */
 bool8_t vkr_renderer_get_device_memory_stats(VkrRendererFrontendHandle renderer,
                                              VkrDeviceMemoryStats *out_stats);
@@ -1638,7 +1658,8 @@ uint64_t vkr_renderer_get_and_reset_descriptor_writes_avoided(
 
 // RenderGraph GPU timestamp timing (per-pass)
 bool8_t vkr_renderer_rg_timing_begin_frame(VkrRendererFrontendHandle renderer,
-                                           uint32_t pass_count);
+                                           uint32_t pass_count,
+                                           uint64_t source_frame_index);
 void vkr_renderer_rg_timing_begin_pass(VkrRendererFrontendHandle renderer,
                                        uint32_t pass_index);
 void vkr_renderer_rg_timing_end_pass(VkrRendererFrontendHandle renderer,
@@ -1646,7 +1667,9 @@ void vkr_renderer_rg_timing_end_pass(VkrRendererFrontendHandle renderer,
 bool8_t vkr_renderer_rg_timing_get_results(VkrRendererFrontendHandle renderer,
                                            uint32_t *out_pass_count,
                                            const float64_t **out_pass_ms,
-                                           const bool8_t **out_pass_valid);
+                                           const bool8_t **out_pass_valid,
+                                           uint64_t *out_source_frame_index,
+                                           uint64_t *out_source_submit_serial);
 
 // --- START Pixel Readback API (for picking and screenshots) ---
 
@@ -1940,17 +1963,22 @@ typedef struct VkrRendererBackendInterface {
   uint64_t (*get_completed_submit_serial)(void *backend_state);
   bool8_t (*get_and_reset_upload_wait_stats)(
       void *backend_state, VkrRendererUploadWaitStats *out_stats);
+  bool8_t (*get_last_present_duration)(void *backend_state,
+                                       uint64_t *out_duration_ns);
   bool8_t (*get_device_memory_stats)(void *backend_state,
                                      VkrDeviceMemoryStats *out_stats);
 
   // RenderGraph GPU timing
-  bool8_t (*rg_timing_begin_frame)(void *backend_state, uint32_t pass_count);
+  bool8_t (*rg_timing_begin_frame)(void *backend_state, uint32_t pass_count,
+                                   uint64_t source_frame_index);
   void (*rg_timing_begin_pass)(void *backend_state, uint32_t pass_index);
   void (*rg_timing_end_pass)(void *backend_state, uint32_t pass_index);
   bool8_t (*rg_timing_get_results)(void *backend_state,
                                    uint32_t *out_pass_count,
                                    const float64_t **out_pass_ms,
-                                   const bool8_t **out_pass_valid);
+                                   const bool8_t **out_pass_valid,
+                                   uint64_t *out_source_frame_index,
+                                   uint64_t *out_source_submit_serial);
 
   // --- Pixel Readback ---
   VkrRendererError (*readback_ring_init)(void *backend_state);

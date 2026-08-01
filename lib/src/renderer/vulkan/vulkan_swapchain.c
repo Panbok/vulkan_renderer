@@ -2,6 +2,7 @@
 #include "core/logger.h"
 #include "defines.h"
 #include "memory/arena.h"
+#include "platform/vkr_platform.h"
 #include "vulkan_backend.h"
 #include "vulkan_utils.h"
 
@@ -451,8 +452,17 @@ vulkan_swapchain_present(VulkanBackendState *state,
       .pImageIndices = &image_index,
   };
 
+#if VKR_METRICS_ENABLED
+  const float64_t present_start = vkr_platform_get_absolute_time();
+#endif
   VkResult result = vulkan_backend_queue_present_locked(
       state, state->device.present_queue, &present_info);
+#if VKR_METRICS_ENABLED
+  state->last_present_duration_ns =
+      (uint64_t)((vkr_platform_get_absolute_time() - present_start) *
+                 1000000000.0);
+  state->last_present_duration_valid = true_v;
+#endif
   if (result != VK_SUCCESS) {
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
       log_warn("Swapchain out of date during present, recreating...");

@@ -1,6 +1,9 @@
 #include "renderer/systems/vkr_resource_system.h"
 #include "containers/vkr_hashtable.h"
+#include "filesystem/filesystem.h"
 #include "memory/vkr_allocator.h"
+#include "platform/vkr_platform.h"
+#include "renderer/vkr_renderer_metrics.h"
 
 typedef struct VkrResourceAsyncRequest {
   bool8_t in_use;
@@ -17,6 +20,9 @@ typedef struct VkrResourceAsyncRequest {
   uint64_t gpu_submit_serial;
   void *async_payload;
   VkrResourceHandleInfo loaded_info;
+  uint64_t metrics_start_ns;
+  uint64_t metrics_bytes;
+  bool8_t metrics_emitted;
 } VkrResourceAsyncRequest;
 
 typedef struct VkrResourceAsyncCompletion {
@@ -37,6 +43,8 @@ typedef struct VkrResourceAsyncJobPayload {
   VkrResourceType type;
   String8 path;
 } VkrResourceAsyncJobPayload;
+
+#define VKR_RESOURCE_METRIC_PATH_MAX 1024u
 
 struct VkrResourceSystem {
   VkrAllocator *allocator;
@@ -60,6 +68,7 @@ struct VkrResourceSystem {
   uint32_t completion_head;
   uint32_t completion_tail;
   uint32_t completion_count;
+  VkrMetricEventProducer asset_load_metrics[VKR_RENDERER_ASSET_METRIC_COUNT];
 };
 
 /**
@@ -79,6 +88,116 @@ vkr_internal const VkrResourceAsyncBudget vkr_resource_async_budget_default = {
 
 vkr_internal bool8_t vkr_resource_system_async_load_job_run(VkrJobContext *ctx,
                                                             void *payload);
+
+vkr_internal VkrMetricEventProducer vkr_resource_system_metrics_producer(
+    const VkrResourceSystem *system, VkrResourceType type) {
+  uint32_t source = VKR_RENDERER_ASSET_METRIC_COUNT;
+  switch (type) {
+  case VKR_RESOURCE_TYPE_TEXTURE:
+    source = VKR_RENDERER_ASSET_METRIC_TEXTURE;
+    break;
+  case VKR_RESOURCE_TYPE_MESH:
+  case VKR_RESOURCE_TYPE_GEOMETRY:
+    source = VKR_RENDERER_ASSET_METRIC_MESH;
+    break;
+  case VKR_RESOURCE_TYPE_MATERIAL:
+    source = VKR_RENDERER_ASSET_METRIC_MATERIAL;
+    break;
+  case VKR_RESOURCE_TYPE_BITMAP_FONT:
+  case VKR_RESOURCE_TYPE_SYSTEM_FONT:
+  case VKR_RESOURCE_TYPE_MTSDF_FONT:
+    source = VKR_RENDERER_ASSET_METRIC_FONT;
+    break;
+  case VKR_RESOURCE_TYPE_SCENE:
+    source = VKR_RENDERER_ASSET_METRIC_SCENE;
+    break;
+  default:
+    break;
+  }
+  return source < VKR_RENDERER_ASSET_METRIC_COUNT
+             ? system->asset_load_metrics[source]
+             : (VkrMetricEventProducer){0};
+}
+
+/**
+ * @brief Publishes one asset-load event.
+ *
+ * `start_ns` doubles as the "measured" flag: it is zero when instrumentation
+ * is compiled out, in which case nothing is published.
+ */
+vkr_internal void
+vkr_resource_system_record_load(VkrResourceSystem *system, VkrResourceType type,
+                                String8 path, uint64_t start_ns, uint64_t bytes,
+                                VkrMetricEventStatus status) {
+#if !VKR_METRICS_ENABLED
+  (void)system;
+  (void)type;
+  (void)path;
+  (void)start_ns;
+  (void)bytes;
+  (void)status;
+  return;
+#else
+  if (!system || start_ns == 0) {
+    return;
+  }
+  const uint64_t now_ns =
+      (uint64_t)(vkr_platform_get_absolute_time() * 1000000000.0);
+  (void)vkr_metrics_event_record(
+      vkr_resource_system_metrics_producer(system, type), path, start_ns,
+      now_ns >= start_ns ? now_ns - start_ns : 0, bytes, status);
+#endif
+}
+
+/**
+ * @brief Size on disk of the file a path names, or 0 when unknown.
+ *
+ * This is the size of the *source file*, not the bytes a loader ultimately
+ * materialized: a scene that pulls a dependency closure reports only its own
+ * manifest. Any query suffix is stripped first so the stat targets the real
+ * file.
+ */
+vkr_internal uint64_t vkr_resource_system_metric_source_bytes(String8 path) {
+#if !VKR_METRICS_ENABLED
+  (void)path;
+  return 0;
+#else
+  if (!path.str || path.length == 0) {
+    return 0;
+  }
+  uint64_t length = 0;
+  while (length < path.length && path.str[length] != '?') {
+    length++;
+  }
+  if (length == 0 || length >= VKR_RESOURCE_METRIC_PATH_MAX) {
+    return 0;
+  }
+
+  char storage[VKR_RESOURCE_METRIC_PATH_MAX];
+  MemCopy(storage, path.str, length);
+  storage[length] = '\0';
+  const FilePath file_path = {
+      .path = string8_create_from_cstr((const uint8_t *)storage, length),
+      .type =
+          storage[0] == '/' ? FILE_PATH_TYPE_ABSOLUTE : FILE_PATH_TYPE_RELATIVE,
+  };
+  FileStats stats = {0};
+  return file_stats(&file_path, &stats) == FILE_ERROR_NONE ? stats.size : 0;
+#endif
+}
+
+vkr_internal void
+vkr_resource_system_record_request_load(VkrResourceSystem *system,
+                                        VkrResourceAsyncRequest *request,
+                                        VkrMetricEventStatus status) {
+  if (!request || request->metrics_emitted) {
+    return;
+  }
+  request->metrics_emitted = true_v;
+  vkr_resource_system_record_load(system, request->type, request->path,
+                                  request->metrics_start_ns,
+                                  request->metrics_bytes, status);
+}
 
 /**
  * @brief Strip accidental "<type>|" request-key prefixes from resource paths.
@@ -454,11 +573,9 @@ vkr_resource_system_make_request_key(VkrResourceSystem *system,
   return key;
 }
 
-vkr_internal void
-vkr_resource_system_request_release_locked(VkrResourceSystem *system,
-                                           int32_t request_index,
-                                           uint32_t *out_async_loader_id,
-                                           void **out_async_payload) {
+vkr_internal void vkr_resource_system_request_release_locked(
+    VkrResourceSystem *system, int32_t request_index,
+    uint32_t *out_async_loader_id, void **out_async_payload) {
   assert_log(system != NULL, "System is NULL");
   assert_log(request_index >= 0, "Request index is invalid");
   assert_log((uint32_t)request_index < system->request_capacity,
@@ -713,6 +830,8 @@ vkr_internal bool8_t vkr_resource_system_async_load_job_run(VkrJobContext *ctx,
       if (request->in_use) {
         request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
         request->last_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+        vkr_resource_system_record_request_load(
+            system, request, VKR_METRIC_EVENT_STATUS_FAILED);
       }
     }
     vkr_mutex_unlock(system->mutex);
@@ -735,7 +854,8 @@ vkr_internal bool8_t vkr_resource_system_async_load_job_run(VkrJobContext *ctx,
   return true_v;
 }
 
-/** Frees partially or fully initialized resource system state. No-op if sys is NULL. */
+/** Frees partially or fully initialized resource system state. No-op if sys is
+ * NULL. */
 vkr_internal void vkr_resource_system_init_cleanup(VkrResourceSystem *sys) {
   if (!sys) {
     return;
@@ -769,9 +889,10 @@ vkr_internal void vkr_resource_system_init_cleanup(VkrResourceSystem *sys) {
   vkr_resource_system = NULL;
 }
 
-bool8_t vkr_resource_system_init(VkrAllocator *allocator,
-                                 VkrRendererFrontendHandle renderer,
-                                 VkrJobSystem *job_system) {
+bool8_t vkr_resource_system_init(
+    VkrAllocator *allocator, VkrRendererFrontendHandle renderer,
+    VkrJobSystem *job_system,
+    const VkrRendererMetricsProducerConfig *metrics_producers) {
   assert_log(allocator != NULL, "Allocator is NULL");
   assert_log(renderer != NULL, "Renderer is NULL");
 
@@ -798,6 +919,11 @@ bool8_t vkr_resource_system_init(VkrAllocator *allocator,
   vkr_resource_system->renderer = renderer;
   vkr_resource_system->allocator = allocator;
   vkr_resource_system->job_system = job_system;
+  if (metrics_producers) {
+    MemCopy(vkr_resource_system->asset_load_metrics,
+            metrics_producers->asset_load,
+            sizeof(vkr_resource_system->asset_load_metrics));
+  }
   vkr_resource_system->loader_capacity = 16;
   vkr_resource_system->request_capacity = 64;
   vkr_resource_system->completion_capacity =
@@ -901,8 +1027,20 @@ bool8_t vkr_resource_system_load_sync(VkrResourceType type, String8 path,
                                       VkrAllocator *temp_alloc,
                                       VkrResourceHandleInfo *out_info,
                                       VkrRendererError *out_error) {
-  return vkr_resource_system_load_sync_internal(type, path, temp_alloc,
-                                                out_info, out_error);
+#if VKR_METRICS_ENABLED
+  const uint64_t metrics_start_ns =
+      (uint64_t)(vkr_platform_get_absolute_time() * 1000000000.0);
+#else
+  const uint64_t metrics_start_ns = 0;
+#endif
+  const bool8_t loaded = vkr_resource_system_load_sync_internal(
+      type, path, temp_alloc, out_info, out_error);
+  vkr_resource_system_record_load(vkr_resource_system, type, path,
+                                  metrics_start_ns,
+                                  vkr_resource_system_metric_source_bytes(path),
+                                  loaded ? VKR_METRIC_EVENT_STATUS_SUCCESS
+                                         : VKR_METRIC_EVENT_STATUS_FAILED);
+  return loaded;
 }
 
 bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
@@ -915,6 +1053,12 @@ bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
   assert_log(out_error != NULL, "Out error is NULL");
 
   path = vkr_resource_system_normalize_path(type, path);
+#if VKR_METRICS_ENABLED
+  const uint64_t metrics_start_ns =
+      (uint64_t)(vkr_platform_get_absolute_time() * 1000000000.0);
+#else
+  const uint64_t metrics_start_ns = 0;
+#endif
 
   vkr_resource_system_reset_handle_info(out_info);
   *out_error = VKR_RENDERER_ERROR_NONE;
@@ -922,8 +1066,14 @@ bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
   if (g_resource_system_force_sync ||
       !vkr_resource_system_is_async_default_type(type) ||
       !vkr_resource_system->job_system) {
-    return vkr_resource_system_load_sync_internal(type, path, temp_alloc,
-                                                  out_info, out_error);
+    const bool8_t loaded = vkr_resource_system_load_sync_internal(
+        type, path, temp_alloc, out_info, out_error);
+    vkr_resource_system_record_load(
+        vkr_resource_system, type, path, metrics_start_ns,
+        vkr_resource_system_metric_source_bytes(path),
+        loaded ? VKR_METRIC_EVENT_STATUS_SUCCESS
+               : VKR_METRIC_EVENT_STATUS_FAILED);
+    return loaded;
   }
 
   VkrResourceLoader *selected_loader =
@@ -1042,6 +1192,8 @@ bool8_t vkr_resource_system_load(VkrResourceType type, String8 path,
   request->cpu_job_in_flight = false_v;
   request->gpu_submit_serial = 0;
   request->async_payload = NULL;
+  request->metrics_start_ns = metrics_start_ns;
+  request->metrics_bytes = vkr_resource_system_metric_source_bytes(path);
   vkr_resource_system_reset_handle_info(&request->loaded_info);
 
   if (!vkr_hash_table_insert_uint32_t(&vkr_resource_system->request_by_key,
@@ -1627,12 +1779,13 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
         }
         request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
         request->last_error = VKR_RENDERER_ERROR_NONE;
+        vkr_resource_system_record_request_load(
+            vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
         uint32_t detached_loader_id = VKR_INVALID_ID;
         void *detached_payload = NULL;
-        vkr_resource_system_request_release_locked(vkr_resource_system,
-                                                   request_index,
-                                                   &detached_loader_id,
-                                                   &detached_payload);
+        vkr_resource_system_request_release_locked(
+            vkr_resource_system, request_index, &detached_loader_id,
+            &detached_payload);
         if (detached_payload) {
           release_async_payload = true_v;
           release_async_loader_id = detached_loader_id;
@@ -1655,6 +1808,8 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
       } else {
         request->last_error = completion.load_error;
         request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
+        vkr_resource_system_record_request_load(
+            vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
       }
     }
 
@@ -1697,9 +1852,9 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
         request->ref_count == 0 && !request->cpu_job_in_flight) {
       uint32_t detached_loader_id = VKR_INVALID_ID;
       void *detached_payload = NULL;
-      vkr_resource_system_request_release_locked(vkr_resource_system, (int32_t)i,
-                                                 &detached_loader_id,
-                                                 &detached_payload);
+      vkr_resource_system_request_release_locked(
+          vkr_resource_system, (int32_t)i, &detached_loader_id,
+          &detached_payload);
       if (detached_payload) {
         vkr_mutex_unlock(vkr_resource_system->mutex);
         vkr_resource_system_release_async_payload(detached_loader_id,
@@ -1717,10 +1872,9 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
           !request->cpu_job_in_flight) {
         uint32_t detached_loader_id = VKR_INVALID_ID;
         void *detached_payload = NULL;
-        vkr_resource_system_request_release_locked(vkr_resource_system,
-                                                   (int32_t)i,
-                                                   &detached_loader_id,
-                                                   &detached_payload);
+        vkr_resource_system_request_release_locked(
+            vkr_resource_system, (int32_t)i, &detached_loader_id,
+            &detached_payload);
         if (detached_payload) {
           vkr_mutex_unlock(vkr_resource_system->mutex);
           vkr_resource_system_release_async_payload(detached_loader_id,
@@ -1745,13 +1899,14 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
       if (request->cancel_requested && request->ref_count == 0) {
         request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
         request->last_error = VKR_RENDERER_ERROR_NONE;
+        vkr_resource_system_record_request_load(
+            vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
         if (!request->cpu_job_in_flight) {
           uint32_t detached_loader_id = VKR_INVALID_ID;
           void *detached_payload = NULL;
-          vkr_resource_system_request_release_locked(vkr_resource_system,
-                                                     (int32_t)i,
-                                                     &detached_loader_id,
-                                                     &detached_payload);
+          vkr_resource_system_request_release_locked(
+              vkr_resource_system, (int32_t)i, &detached_loader_id,
+              &detached_payload);
           if (detached_payload) {
             vkr_mutex_unlock(vkr_resource_system->mutex);
             vkr_resource_system_release_async_payload(detached_loader_id,
@@ -1784,6 +1939,8 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
           request->async_payload = NULL;
           request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
           request->last_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+          vkr_resource_system_record_request_load(
+            vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
           vkr_mutex_unlock(vkr_resource_system->mutex);
           vkr_resource_system_release_async_payload(payload_loader_id,
                                                     payload_ptr);
@@ -1798,6 +1955,9 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
         VkrResourceAsyncFinalizeCost finalize_cost = {0};
         vkr_resource_system_estimate_finalize_cost(loader, request->path,
                                                    payload_ptr, &finalize_cost);
+        if (request->metrics_bytes == 0) {
+          request->metrics_bytes = finalize_cost.gpu_upload_bytes;
+        }
         if (!vkr_resource_system_gpu_cost_fits_budget(
                 &finalize_cost, used_gpu_upload_ops, used_gpu_upload_bytes,
                 effective_budget)) {
@@ -1860,6 +2020,8 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
           request->async_payload = NULL;
           request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
           request->last_error = finalize_error;
+          vkr_resource_system_record_request_load(
+            vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
           vkr_mutex_unlock(vkr_resource_system->mutex);
           vkr_resource_system_release_async_payload(payload_loader_id,
                                                     payload_ptr);
@@ -1898,6 +2060,11 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
           completed_submit_serial >= request->gpu_submit_serial) {
         request->load_state = VKR_RESOURCE_LOAD_STATE_READY;
         request->last_error = VKR_RENDERER_ERROR_NONE;
+        // The only terminal state that counts as a successful load; every
+        // other exit below publishes its event with FAILED so a cancellation
+        // or finalize error never widens the load-duration aggregate.
+        vkr_resource_system_record_request_load(
+            vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_SUCCESS);
         finalize_budget--;
       }
     }

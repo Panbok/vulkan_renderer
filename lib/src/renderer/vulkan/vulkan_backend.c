@@ -3520,6 +3520,7 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
           renderer_vulkan_get_completed_submit_serial,
       .get_and_reset_upload_wait_stats =
           renderer_vulkan_get_and_reset_upload_wait_stats,
+      .get_last_present_duration = renderer_vulkan_get_last_present_duration,
       .get_device_memory_stats = renderer_vulkan_get_device_memory_stats,
       .rg_timing_begin_frame = renderer_vulkan_rg_timing_begin_frame,
       .rg_timing_begin_pass = renderer_vulkan_rg_timing_begin_pass,
@@ -3571,6 +3572,20 @@ bool8_t renderer_vulkan_get_and_reset_upload_wait_stats(
   state->upload_path_fence_wait_count = 0;
   state->upload_path_queue_wait_idle_count = 0;
   state->upload_path_device_wait_idle_count = 0;
+  return true_v;
+}
+
+bool8_t renderer_vulkan_get_last_present_duration(void *backend_state,
+                                                  uint64_t *out_duration_ns) {
+  if (!backend_state || !out_duration_ns) {
+    return false_v;
+  }
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state->last_present_duration_valid) {
+    *out_duration_ns = 0;
+    return false_v;
+  }
+  *out_duration_ns = state->last_present_duration_ns;
   return true_v;
 }
 
@@ -3747,6 +3762,10 @@ static void vulkan_rg_timing_fetch_results(VulkanBackendState *state) {
   uint32_t frame_index = state->current_frame;
   uint32_t pass_count = state->rg_timing.frame_pass_counts[frame_index];
   state->rg_timing.last_pass_count = 0;
+  state->rg_timing.last_source_frame_index =
+      state->rg_timing.frame_cpu_indices[frame_index];
+  state->rg_timing.last_source_submit_serial =
+      state->frame_submit_serial[frame_index];
 
   if (pass_count == 0 || state->rg_timing.query_capacity == 0) {
     state->rg_timing.frame_pass_counts[frame_index] = 0;
@@ -3851,7 +3870,8 @@ static void vulkan_rg_timing_fetch_results(VulkanBackendState *state) {
 }
 
 bool8_t renderer_vulkan_rg_timing_begin_frame(void *backend_state,
-                                              uint32_t pass_count) {
+                                              uint32_t pass_count,
+                                              uint64_t source_frame_index) {
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   if (!state || !state->rg_timing.supported || pass_count == 0) {
     return false_v;
@@ -3875,6 +3895,7 @@ bool8_t renderer_vulkan_rg_timing_begin_frame(void *backend_state,
   vkCmdResetQueryPool(command_buffer->handle, pool, 0,
                       state->rg_timing.query_capacity);
   state->rg_timing.frame_pass_counts[state->current_frame] = pass_count;
+  state->rg_timing.frame_cpu_indices[state->current_frame] = source_frame_index;
   return true_v;
 }
 
@@ -3934,10 +3955,10 @@ void renderer_vulkan_rg_timing_end_pass(void *backend_state,
                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, pool, query_index);
 }
 
-bool8_t renderer_vulkan_rg_timing_get_results(void *backend_state,
-                                              uint32_t *out_pass_count,
-                                              const float64_t **out_pass_ms,
-                                              const bool8_t **out_pass_valid) {
+bool8_t renderer_vulkan_rg_timing_get_results(
+    void *backend_state, uint32_t *out_pass_count,
+    const float64_t **out_pass_ms, const bool8_t **out_pass_valid,
+    uint64_t *out_source_frame_index, uint64_t *out_source_submit_serial) {
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   if (out_pass_count) {
     *out_pass_count = 0;
@@ -3947,6 +3968,12 @@ bool8_t renderer_vulkan_rg_timing_get_results(void *backend_state,
   }
   if (out_pass_valid) {
     *out_pass_valid = NULL;
+  }
+  if (out_source_frame_index) {
+    *out_source_frame_index = 0;
+  }
+  if (out_source_submit_serial) {
+    *out_source_submit_serial = 0;
   }
 
   if (!state || !state->rg_timing.supported ||
@@ -3962,6 +3989,12 @@ bool8_t renderer_vulkan_rg_timing_get_results(void *backend_state,
   }
   if (out_pass_valid) {
     *out_pass_valid = state->rg_timing.last_pass_valid;
+  }
+  if (out_source_frame_index) {
+    *out_source_frame_index = state->rg_timing.last_source_frame_index;
+  }
+  if (out_source_submit_serial) {
+    *out_source_submit_serial = state->rg_timing.last_source_submit_serial;
   }
   return true_v;
 }
@@ -4040,6 +4073,13 @@ renderer_vulkan_initialize(void **out_backend_state,
   backend_state->depth_texture = NULL;
   backend_state->on_render_target_refresh_required =
       backend_config ? backend_config->on_render_target_refresh_required : NULL;
+  if (backend_config) {
+    backend_state->pipeline_create_metrics =
+        backend_config->pipeline_create_metrics;
+    backend_state->shader_load_metrics = backend_config->shader_load_metrics;
+    backend_state->shader_reflection_metrics =
+        backend_config->shader_reflection_metrics;
+  }
   backend_state->parallel_runtime.enabled = false_v;
 
   // Device-memory tracking table. Sized once from the backend arena; capacity
@@ -4090,10 +4130,20 @@ renderer_vulkan_initialize(void **out_backend_state,
   backend_state->allocator =
       vulkan_allocator_callbacks(&backend_state->vk_allocator);
 
+#if VKR_METRICS_ENABLED
+  const float64_t instance_start = vkr_platform_get_absolute_time();
+#endif
   if (!vulkan_instance_create(backend_state, window)) {
     log_fatal("Failed to create Vulkan instance");
     return false;
   }
+#if VKR_METRICS_ENABLED
+  if (backend_config && backend_config->boot_metrics) {
+    backend_config->boot_metrics->instance_ns =
+        (uint64_t)((vkr_platform_get_absolute_time() - instance_start) *
+                   1000000000.0);
+  }
+#endif
 
 #ifndef NDEBUG
   if (!vulkan_debug_create_debug_messenger(backend_state)) {
@@ -4107,6 +4157,9 @@ renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
+#if VKR_METRICS_ENABLED
+  const float64_t device_start = vkr_platform_get_absolute_time();
+#endif
   if (!vulkan_device_pick_physical_device(backend_state)) {
     log_fatal("Failed to create Vulkan physical device");
     return false;
@@ -4116,6 +4169,13 @@ renderer_vulkan_initialize(void **out_backend_state,
     log_fatal("Failed to create Vulkan logical device");
     return false;
   }
+#if VKR_METRICS_ENABLED
+  if (backend_config && backend_config->boot_metrics) {
+    backend_config->boot_metrics->device_ns =
+        (uint64_t)((vkr_platform_get_absolute_time() - device_start) *
+                   1000000000.0);
+  }
+#endif
 
   vulkan_pipeline_cache_initialize(backend_state);
 
@@ -4127,10 +4187,20 @@ renderer_vulkan_initialize(void **out_backend_state,
     log_warn("Vulkan GPU timestamps not supported; RG GPU timings disabled");
   }
 
+#if VKR_METRICS_ENABLED
+  const float64_t target_start = vkr_platform_get_absolute_time();
+#endif
   if (!vulkan_swapchain_create(backend_state)) {
     log_fatal("Failed to create Vulkan swapchain");
     return false;
   }
+#if VKR_METRICS_ENABLED
+  if (backend_config && backend_config->boot_metrics) {
+    backend_config->boot_metrics->target_ns =
+        (uint64_t)((vkr_platform_get_absolute_time() - target_start) *
+                   1000000000.0);
+  }
+#endif
 
   if (!vulkan_backend_create_builtin_passes(backend_state, backend_config)) {
     log_fatal("Failed to create built-in render passes");
@@ -4779,6 +4849,8 @@ vulkan_backend_discard_unsubmitted_readbacks(VulkanBackendState *state);
  */
 vkr_internal VkrRendererError vulkan_backend_submit_and_present(
     VulkanBackendState *state, VulkanCommandBuffer *command_buffer) {
+  state->last_present_duration_valid = false_v;
+  state->last_present_duration_ns = 0;
   if (state->swapchain.max_in_flight_frames == 0 ||
       state->current_frame >= state->in_flight_fences.length ||
       state->current_frame >= state->image_available_semaphores.length ||

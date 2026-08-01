@@ -229,6 +229,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
       .render_mode = VKR_RENDER_MODE_DEFAULT,
   };
   renderer->frame_metrics = (VkrRendererFrameMetrics){0};
+  renderer->boot_metrics = (VkrRendererBootMetrics){0};
   renderer->rf_mutex = NULL;
   renderer->offscreen_color_handles = NULL;
   renderer->offscreen_color_handle_count = 0;
@@ -270,16 +271,21 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
-  VkrRendererBackendConfig local_backend_config = {
+  VkrRendererBackendConfig resolved_backend_config = {
       .application_name = "vulkan_renderer",
       .renderpass_desc_count = 0,
       .pass_descs = NULL,
       .on_render_target_refresh_required =
           renderer_frontend_on_target_refresh_required,
+      .boot_metrics = &renderer->boot_metrics,
   };
-
-  const VkrRendererBackendConfig *backend_cfg =
-      backend_config ? backend_config : &local_backend_config;
+  if (backend_config) {
+    resolved_backend_config = *backend_config;
+    resolved_backend_config.on_render_target_refresh_required =
+        renderer_frontend_on_target_refresh_required;
+    resolved_backend_config.boot_metrics = &renderer->boot_metrics;
+  }
+  const VkrRendererBackendConfig *backend_cfg = &resolved_backend_config;
   g_renderer_rt_refresh = renderer;
 
   if (!renderer->backend.initialize(&renderer->backend_state, backend_type,
@@ -540,6 +546,17 @@ bool8_t vkr_renderer_get_and_reset_upload_wait_stats(
 
   return renderer->backend.get_and_reset_upload_wait_stats(
       renderer->backend_state, out_stats);
+}
+
+bool8_t
+vkr_renderer_get_last_present_duration(VkrRendererFrontendHandle renderer,
+                                       uint64_t *out_duration_ns) {
+  if (!renderer || !out_duration_ns ||
+      !renderer->backend.get_last_present_duration) {
+    return false_v;
+  }
+  return renderer->backend.get_last_present_duration(renderer->backend_state,
+                                                     out_duration_ns);
 }
 
 bool8_t vkr_renderer_get_device_memory_stats(VkrRendererFrontendHandle renderer,
@@ -2077,11 +2094,19 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
     goto cancel;
   }
 
+  // end_frame runs before the out-parameter copy because the present duration
+  // only exists after presentation completes. Anything end_frame writes into
+  // frame_metrics is therefore included in what the caller receives, which is
+  // the intent: the caller's copy describes the whole submitted frame.
+  err = vkr_renderer_end_frame(renderer, safe_dt);
+#if VKR_METRICS_ENABLED
+  rf->frame_metrics.backend_present_valid =
+      vkr_renderer_get_last_present_duration(
+          renderer, &rf->frame_metrics.backend_present_ns);
+#endif
   if (out_metrics) {
     *out_metrics = rf->frame_metrics;
   }
-
-  err = vkr_renderer_end_frame(renderer, safe_dt);
   if (err != VKR_RENDERER_ERROR_NONE &&
       err != VKR_RENDERER_ERROR_PRESENTATION_FAILED &&
       picking_state_before == VKR_PICKING_STATE_RENDER_PENDING &&
@@ -2352,13 +2377,14 @@ uint64_t vkr_renderer_get_and_reset_descriptor_writes_avoided(
 }
 
 bool8_t vkr_renderer_rg_timing_begin_frame(VkrRendererFrontendHandle renderer,
-                                           uint32_t pass_count) {
+                                           uint32_t pass_count,
+                                           uint64_t source_frame_index) {
   assert_log(renderer != NULL, "Renderer is NULL");
   if (!renderer->backend.rg_timing_begin_frame) {
     return false_v;
   }
-  return renderer->backend.rg_timing_begin_frame(renderer->backend_state,
-                                                 pass_count);
+  return renderer->backend.rg_timing_begin_frame(
+      renderer->backend_state, pass_count, source_frame_index);
 }
 
 void vkr_renderer_rg_timing_begin_pass(VkrRendererFrontendHandle renderer,
@@ -2382,7 +2408,9 @@ void vkr_renderer_rg_timing_end_pass(VkrRendererFrontendHandle renderer,
 bool8_t vkr_renderer_rg_timing_get_results(VkrRendererFrontendHandle renderer,
                                            uint32_t *out_pass_count,
                                            const float64_t **out_pass_ms,
-                                           const bool8_t **out_pass_valid) {
+                                           const bool8_t **out_pass_valid,
+                                           uint64_t *out_source_frame_index,
+                                           uint64_t *out_source_submit_serial) {
   assert_log(renderer != NULL, "Renderer is NULL");
   if (!renderer->backend.rg_timing_get_results) {
     if (out_pass_count) {
@@ -2394,16 +2422,27 @@ bool8_t vkr_renderer_rg_timing_get_results(VkrRendererFrontendHandle renderer,
     if (out_pass_valid) {
       *out_pass_valid = NULL;
     }
+    if (out_source_frame_index) {
+      *out_source_frame_index = 0;
+    }
+    if (out_source_submit_serial) {
+      *out_source_submit_serial = 0;
+    }
     return false_v;
   }
   return renderer->backend.rg_timing_get_results(
-      renderer->backend_state, out_pass_count, out_pass_ms, out_pass_valid);
+      renderer->backend_state, out_pass_count, out_pass_ms, out_pass_valid,
+      out_source_frame_index, out_source_submit_serial);
 }
 
-bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
-                                         VkrJobSystem *job_system) {
+bool32_t vkr_renderer_systems_initialize(
+    VkrRendererFrontendHandle renderer, VkrJobSystem *job_system,
+    const VkrRendererMetricsProducerConfig *metrics_producers) {
   assert_log(renderer != NULL, "Renderer is NULL");
   RendererFrontend *rf = (RendererFrontend *)renderer;
+#if VKR_METRICS_ENABLED
+  const float64_t systems_start = vkr_platform_get_absolute_time();
+#endif
 
   if (rf->backend.set_job_system) {
     rf->backend.set_job_system(rf->backend_state, job_system);
@@ -2446,6 +2485,9 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
+#if VKR_METRICS_ENABLED
+  const float64_t graph_start = vkr_platform_get_absolute_time();
+#endif
   rf->render_graph = vkr_rg_create(&rf->render_graph_allocator);
   if (!rf->render_graph) {
     log_fatal("Failed to create render graph");
@@ -2460,6 +2502,11 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   }
   rf->render_graph_loaded = true_v;
   rf->render_graph_enabled = true_v;
+#if VKR_METRICS_ENABLED
+  rf->boot_metrics.graph_ns =
+      (uint64_t)((vkr_platform_get_absolute_time() - graph_start) *
+                 1000000000.0);
+#endif
 
   // Per-frame streams are indexed directly by the backend's frame-in-flight
   // slot, so their slot counts must cover every slot the backend can produce.
@@ -2495,7 +2542,8 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
   // todo: shader sys should accepts pipeline registry as a parameter
   vkr_shader_system_set_registry(&rf->shader_system, &rf->pipeline_registry);
 
-  if (!vkr_resource_system_init(&rf->allocator, rf, job_system)) {
+  if (!vkr_resource_system_init(&rf->allocator, rf, job_system,
+                                metrics_producers)) {
     log_fatal("Failed to initialize resource system");
     return false_v;
   }
@@ -2715,6 +2763,11 @@ bool32_t vkr_renderer_systems_initialize(VkrRendererFrontendHandle renderer,
     vkr_renderer_resize(rf, initial_size.width, initial_size.height);
   }
 
+#if VKR_METRICS_ENABLED
+  rf->boot_metrics.systems_ns =
+      (uint64_t)((vkr_platform_get_absolute_time() - systems_start) *
+                 1000000000.0);
+#endif
   return true_v;
 }
 

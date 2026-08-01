@@ -641,12 +641,15 @@ typedef struct VulkanRgTimingState {
   uint32_t query_capacity;
   VkQueryPool query_pools[BUFFERING_FRAMES];
   uint32_t frame_pass_counts[BUFFERING_FRAMES];
+  uint64_t frame_cpu_indices[BUFFERING_FRAMES];
   uint64_t *query_results;
   uint32_t query_results_capacity;
   float64_t *last_pass_ms;
   bool8_t *last_pass_valid;
   uint32_t last_pass_capacity;
   uint32_t last_pass_count;
+  uint64_t last_source_frame_index;
+  uint64_t last_source_submit_serial;
 } VulkanRgTimingState;
 
 /**
@@ -738,6 +741,11 @@ typedef struct VulkanBackendState {
   uint64_t upload_path_fence_wait_count;
   uint64_t upload_path_queue_wait_idle_count;
   uint64_t upload_path_device_wait_idle_count;
+  uint64_t last_present_duration_ns;
+  bool8_t last_present_duration_valid;
+  VkrMetricEventProducer pipeline_create_metrics;
+  VkrMetricEventProducer shader_load_metrics;
+  VkrMetricEventProducer shader_reflection_metrics;
   VulkanDeviceMemoryStats device_memory_stats;
   /** True when VK_EXT_memory_budget is enabled and heap usage can be queried.
    */

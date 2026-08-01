@@ -51,6 +51,7 @@
 #include "core/vkr_clock.h"
 #include "core/vkr_gamepad.h"
 #include "core/vkr_job_system.h"
+#include "core/vkr_metrics.h"
 #include "core/vkr_threads.h"
 #include "core/vkr_window.h"
 #include "defines.h"
@@ -65,6 +66,7 @@
 #include "renderer/systems/vkr_picking_ids.h"
 #include "renderer/vkr_render_packet.h"
 #include "renderer/vkr_renderer.h"
+#include "renderer/vkr_renderer_metrics.h"
 #include "renderer/vkr_visibility.h"
 
 /**
@@ -120,7 +122,21 @@ typedef struct ApplicationConfig {
                               general game/application allocations. */
   VkrDeviceRequirements device_requirements; /**< The device requirements for
                                              the application. */
+  VkrMetricsConfig metrics_config; /**< Runtime instrumentation policy. */
 } ApplicationConfig;
+
+typedef struct ApplicationMetricIds {
+  // Catalog v1 boundaries: wall spans one active loop iteration including
+  // limiter sleep; work spans that iteration through draw completion; update,
+  // prepare, submit, and sleep wrap only their correspondingly named calls.
+  // Backend present is separately nested inside submit by the renderer adapter.
+  VkrMetricId frame_wall;
+  VkrMetricId frame_work;
+  VkrMetricId update;
+  VkrMetricId render_prepare;
+  VkrMetricId render_submit;
+  VkrMetricId limiter_sleep;
+} ApplicationMetricIds;
 
 /**
  * @brief Main structure representing the application.
@@ -154,6 +170,11 @@ typedef struct Application {
   Arena *log_arena; /**< Memory arena dedicated to the logging system. */
   VkrAllocator app_allocator; /**< Allocator backed by `app_arena` for thread
                                  primitives and other systems. */
+  Arena *metrics_arena;
+  VkrAllocator metrics_allocator;
+  VkrMetrics *metrics;
+  ApplicationMetricIds metric_ids;
+  VkrRendererMetrics renderer_metrics;
   EventManager event_manager; /**< Manages event dispatch and subscriptions. */
   VkrWindow window;           /**< Represents the application window. */
   ApplicationConfig *config;  /**< Pointer to the configuration used to create
@@ -182,7 +203,7 @@ typedef struct Application {
   uint32_t world_text_update_count;
 
   ApplicationEditorViewport editor_viewport;
-  bool8_t rg_gpu_timing_enabled; /**< Enables per-pass GPU timing in RG. */
+  /* Per-pass GPU timing is owned by `metrics->config.pass_gpu_timings`. */
 } Application;
 
 /**
@@ -235,6 +256,71 @@ bool8_t application_on_mouse_event(Event *event, UserData user_data);
  * @param delta The time elapsed since the last frame, in seconds.
  */
 void application_update(Application *application, float64_t delta);
+
+vkr_internal bool8_t application_register_duration_metric(
+    VkrMetrics *metrics, const char *name, VkrMetricDomain domain,
+    bool8_t required, VkrMetricId *out_id) {
+  const VkrMetricDescription description = {
+      .name =
+          string8_create_from_cstr((const uint8_t *)name, string_length(name)),
+      .domain = domain,
+      .kind = VKR_METRIC_KIND_DURATION,
+      .unit = VKR_METRIC_UNIT_NANOSECONDS,
+      .scalar = VKR_METRIC_SCALAR_U64,
+      .writer = VKR_METRIC_WRITER_RENDER_THREAD,
+      .required_when_enabled = required,
+  };
+  return vkr_metrics_register(metrics, &description, out_id);
+}
+
+vkr_internal bool8_t application_metrics_initialize(Application *application) {
+  application->metrics_arena = arena_create(MB(2), KB(64));
+  if (!application->metrics_arena) {
+    return false_v;
+  }
+  application->metrics = arena_alloc(
+      application->metrics_arena, sizeof(VkrMetrics), ARENA_MEMORY_TAG_STRUCT);
+  if (!application->metrics) {
+    return false_v;
+  }
+  application->metrics_allocator =
+      (VkrAllocator){.ctx = application->metrics_arena};
+  if (!vkr_allocator_arena(&application->metrics_allocator)) {
+    return false_v;
+  }
+  vkr_metrics_init(application->metrics);
+  application->metrics->config = application->config->metrics_config;
+  ApplicationMetricIds *ids = &application->metric_ids;
+  // Durations are nanoseconds. No name carries a unit suffix, because the
+  // catalog unit is the contract and a name that disagreed with it would be
+  // wrong by a factor of a million in every consumer that trusted it.
+  if (!application_register_duration_metric(
+          application->metrics, "frame.wall", VKR_METRIC_DOMAIN_FRAME, true_v,
+          &ids->frame_wall) ||
+      !application_register_duration_metric(
+          application->metrics, "cpu.frame_work", VKR_METRIC_DOMAIN_FRAME,
+          true_v, &ids->frame_work) ||
+      !application_register_duration_metric(
+          application->metrics, "cpu.update", VKR_METRIC_DOMAIN_FRAME, true_v,
+          &ids->update) ||
+      !application_register_duration_metric(
+          application->metrics, "cpu.render_prepare", VKR_METRIC_DOMAIN_FRAME,
+          true_v, &ids->render_prepare) ||
+      !application_register_duration_metric(
+          application->metrics, "cpu.render_submit", VKR_METRIC_DOMAIN_FRAME,
+          true_v, &ids->render_submit) ||
+      // Not required: the frame limiter is off for profiling, so this slot is
+      // legitimately unsampled in exactly the runs that matter most. Marking
+      // it required would make every authoritative run report incomplete.
+      !application_register_duration_metric(
+          application->metrics, "frame.limiter_sleep", VKR_METRIC_DOMAIN_FRAME,
+          false_v, &ids->limiter_sleep) ||
+      !vkr_renderer_metrics_register(&application->renderer_metrics,
+                                     application->metrics)) {
+    return false_v;
+  }
+  return true_v;
+}
 /**
  * @brief Creates a cube mesh and uploads it to GPU buffers
  * @param application Pointer to the `Application` structure.
@@ -303,6 +389,11 @@ bool8_t application_create(Application *application,
 
   log_debug("Initialized logging");
 
+  if (!application_metrics_initialize(application)) {
+    log_fatal("Failed to initialize application metrics");
+    return false_v;
+  }
+
   event_manager_create(&application->event_manager);
   vkr_window_create(&application->window, &application->event_manager,
                     config->title, config->x, config->y, config->width,
@@ -320,20 +411,41 @@ bool8_t application_create(Application *application,
   }
 
   VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
+  const VkrRendererMetricsProducerConfig *metrics_producers =
+      vkr_renderer_metrics_get_producers(&application->renderer_metrics);
+  VkrRendererBackendConfig backend_cfg = {
+      .application_name = "vulkan_renderer",
+      .pipeline_create_metrics = metrics_producers->pipeline_create,
+      .shader_load_metrics = metrics_producers->shader_load,
+      .shader_reflection_metrics = metrics_producers->shader_reflection,
+  };
   if (!vkr_renderer_initialize(
           &application->renderer, VKR_RENDERER_BACKEND_TYPE_VULKAN,
           &application->window, &application->event_manager,
-          &application->config->device_requirements, NULL,
+          &application->config->device_requirements, &backend_cfg,
           application->config->target_frame_rate, &renderer_error)) {
     log_fatal("Failed to create renderer!");
+    return false_v;
+  }
+  if (!vkr_renderer_metrics_register_device_memory(
+          &application->renderer_metrics, &application->renderer) ||
+      !vkr_metrics_seal(application->metrics)) {
+    log_fatal("Failed to finalize renderer metrics catalog");
     return false_v;
   }
 
   vkr_gamepad_init(&application->gamepad, &application->window.input_state);
 
   if (!vkr_renderer_systems_initialize(&application->renderer,
-                                       &application->job_system)) {
+                                       &application->job_system,
+                                       metrics_producers)) {
     log_fatal("Failed to initialize renderer frontend systems");
+    return false_v;
+  }
+  if (!vkr_renderer_metrics_prepare_pass_table(
+          &application->renderer_metrics, &application->renderer,
+          &application->metrics_allocator)) {
+    log_fatal("Failed to prepare renderer metrics pass table");
     return false_v;
   }
 
@@ -1008,8 +1120,11 @@ void application_draw_frame(Application *application, float64_t delta) {
          "Application is not running");
 
   VkrFrameSetup setup = {0};
-  VkrRendererError prepare_err =
-      vkr_renderer_prepare_frame(&application->renderer, &setup);
+  VkrRendererError prepare_err = VKR_RENDERER_ERROR_NONE;
+  VKR_METRICS_SCOPE_NS(application->metrics,
+                       application->metric_ids.render_prepare) {
+    prepare_err = vkr_renderer_prepare_frame(&application->renderer, &setup);
+  }
   if (prepare_err != VKR_RENDERER_ERROR_NONE) {
     // A minimized or resizing window skips frames as a matter of course; this
     // path runs every tick while minimized, so it must not log.
@@ -1179,12 +1294,16 @@ void application_draw_frame(Application *application, float64_t delta) {
     has_text_updates = true_v;
   }
 
+  // The metrics config is the single authority for whether timestamps are
+  // recorded. A second copy could drift and make a report claim timestamps
+  // were on for a run that never took one, which would silently mislabel the
+  // run's comparison configuration.
+  const bool8_t gpu_timing = application->metrics->config.pass_gpu_timings;
   VkrGpuDebugPayload debug_payload = {
-      .enable_timing = application->rg_gpu_timing_enabled,
-      .capture_pass_timestamps = application->rg_gpu_timing_enabled,
+      .enable_timing = gpu_timing,
+      .capture_pass_timestamps = gpu_timing,
   };
-  const VkrGpuDebugPayload *debug_ptr =
-      application->rg_gpu_timing_enabled ? &debug_payload : NULL;
+  const VkrGpuDebugPayload *debug_ptr = gpu_timing ? &debug_payload : NULL;
 
   VkrRenderPacket packet = {
       .packet_version = VKR_RENDER_PACKET_VERSION,
@@ -1219,8 +1338,24 @@ void application_draw_frame(Application *application, float64_t delta) {
 
   VkrRendererFrameMetrics metrics = {0};
   VkrValidationError validation = {0};
-  VkrRendererError submit_err = vkr_renderer_submit_packet(
-      &application->renderer, &packet, &metrics, &validation);
+  VkrRendererError submit_err = VKR_RENDERER_ERROR_NONE;
+  VKR_METRICS_SCOPE_NS(application->metrics,
+                       application->metric_ids.render_submit) {
+    submit_err = vkr_renderer_submit_packet(&application->renderer, &packet,
+                                            &metrics, &validation);
+  }
+#if VKR_METRICS_ENABLED
+  VkrRendererMetricsCollectContext metrics_context = {
+      .renderer = &application->renderer,
+      .frame_metrics = &metrics,
+      .visibility = &application->visibility_stats,
+      .job_system = &application->job_system,
+      .cpu_frame_index = packet.frame.frame_index,
+      .submit_serial = vkr_renderer_get_submit_serial(&application->renderer),
+  };
+  vkr_renderer_metrics_collect(&application->renderer_metrics,
+                               &metrics_context);
+#endif
   if (submit_err != VKR_RENDERER_ERROR_NONE) {
     if (validation.field_path && validation.message) {
       log_error("Packet validation failed: %s (%s)", validation.field_path,
@@ -1303,6 +1438,10 @@ void application_start(Application *application) {
       continue;
     }
 
+    vkr_metrics_begin_frame(
+        application->metrics, application->renderer.frame_number + 1u,
+        vkr_renderer_get_submit_serial(&application->renderer));
+
     VkrAllocatorScope frame_scope = {0};
     VkrAllocator *frame_alloc = &application->renderer.scratch_allocator;
     if (vkr_allocator_supports_scopes(frame_alloc)) {
@@ -1311,7 +1450,10 @@ void application_start(Application *application) {
     application->ui_text_update_count = 0;
     application->world_text_update_count = 0;
 
-    application_update(application, delta);
+    VKR_METRICS_SCOPE_NS(application->metrics,
+                         application->metric_ids.update) {
+      application_update(application, delta);
+    }
 
     // `application_update()` may request shutdown (for example via auto-close).
     // Stop this frame immediately to avoid recording/render calls after
@@ -1392,10 +1534,17 @@ void application_start(Application *application) {
       if (vkr_allocator_scope_is_valid(&frame_scope)) {
         vkr_allocator_end_scope(&frame_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
       }
+      // Publish before leaving: this is the shutdown path an auto-closing run
+      // takes, and dropping it would make the final snapshot one frame stale.
+      vkr_metrics_end_frame(application->metrics);
       break;
     }
 
     application_draw_frame(application, delta);
+
+    VKR_METRICS_ADD_ELAPSED_NS(application->metrics,
+                               application->metric_ids.frame_work,
+                               current_absolute_time);
 
     if (vkr_allocator_scope_is_valid(&frame_scope)) {
       vkr_allocator_end_scope(&frame_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
@@ -1414,10 +1563,18 @@ void application_start(Application *application) {
         uint64_t remaining_ms = (uint64_t)(remaining_seconds * 1000.0);
 
         if (remaining_ms > 0) {
-          vkr_platform_sleep(remaining_ms);
+          VKR_METRICS_SCOPE_NS(application->metrics,
+                               application->metric_ids.limiter_sleep) {
+            vkr_platform_sleep(remaining_ms);
+          }
         }
       }
     }
+
+    VKR_METRICS_ADD_ELAPSED_NS(application->metrics,
+                               application->metric_ids.frame_wall,
+                               current_absolute_time);
+    vkr_metrics_end_frame(application->metrics);
 
     application->last_frame_time = current_total_time;
 
@@ -1518,6 +1675,10 @@ void application_shutdown(Application *application) {
   event_manager_destroy(&application->event_manager);
   vkr_mutex_destroy(&application->app_allocator, &application->app_mutex);
   vkr_gamepad_shutdown(&application->gamepad);
+
+  arena_destroy(application->metrics_arena);
+  application->metrics_arena = NULL;
+  application->metrics = NULL;
 
   vkr_platform_shutdown();
 

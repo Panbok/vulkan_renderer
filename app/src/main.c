@@ -155,6 +155,14 @@ typedef struct State {
   uint64_t upload_wait_fence_total;
   uint64_t upload_wait_queue_idle_total;
   uint64_t upload_wait_device_idle_total;
+  uint64_t upload_wait_last_publication_serial;
+  bool8_t upload_wait_evidence_incomplete;
+
+  // HUD frame-time window, averaged from published metrics rather than from
+  // a second wall clock.
+  uint64_t hud_last_publication_serial;
+  float64_t hud_frametime_sum;
+  uint64_t hud_frame_samples;
 
   // Runtime IBL validation controls.
   uint32_t ibl_validation_mode;
@@ -168,6 +176,41 @@ typedef struct State {
 } State;
 
 vkr_global State *state = NULL;
+
+vkr_internal bool8_t application_metric_duration_seconds(
+    const VkrMetricsFrame *frame, VkrMetricId id, float64_t *out_value) {
+  uint64_t mean_ns = 0;
+  if (!out_value ||
+      !vkr_metrics_frame_read_duration_mean_ns(frame, id, &mean_ns)) {
+    return false_v;
+  }
+  *out_value = (float64_t)mean_ns / 1000000000.0;
+  return true_v;
+}
+
+/**
+ * @brief Folds the newest published frame time into the HUD's display window.
+ *
+ * The HUD reports an average over its refresh interval, so it accumulates
+ * published per-frame values rather than displaying whichever single frame
+ * happened to be current when the interval elapsed. Gating on the publication
+ * serial keeps a repeated or dropped publication from being counted twice.
+ */
+vkr_internal void application_accumulate_frame_time(Application *application) {
+  VkrMetricsSnapshotView snapshot = {0};
+  if (!vkr_metrics_snapshot_acquire(application->metrics, &snapshot)) {
+    return;
+  }
+  float64_t frame_seconds = 0.0;
+  if (snapshot.publication_serial != state->hud_last_publication_serial &&
+      application_metric_duration_seconds(
+          snapshot.frame, application->metric_ids.frame_wall, &frame_seconds)) {
+    state->hud_last_publication_serial = snapshot.publication_serial;
+    state->hud_frametime_sum += frame_seconds;
+    state->hud_frame_samples++;
+  }
+  vkr_metrics_snapshot_release(application->metrics, &snapshot);
+}
 
 /**
  * @brief Parses common truthy/falsy environment values.
@@ -1318,6 +1361,8 @@ application_try_activate_scene_resource(Application *application) {
     float64_t elapsed =
         application_consume_scene_load_elapsed_seconds(application);
     if (elapsed >= 0.0) {
+      vkr_renderer_metrics_set_scene_boot_ns(
+          &application->renderer_metrics, (uint64_t)(elapsed * 1000000000.0));
       log_info("SCENE_LOAD_TIME result=ready seconds=%.3f ms=%.1f", elapsed,
                elapsed * 1000.0);
     }
@@ -1543,9 +1588,11 @@ vkr_internal void application_handle_input(Application *application,
 
   if (input_is_key_up(input_state, KEY_F7) &&
       input_was_key_down(input_state, KEY_F7)) {
-    application->rg_gpu_timing_enabled = !application->rg_gpu_timing_enabled;
+    application->metrics->config.pass_gpu_timings =
+        !application->metrics->config.pass_gpu_timings;
     log_info("RenderGraph GPU timings %s",
-             application->rg_gpu_timing_enabled ? "enabled" : "disabled");
+             application->metrics->config.pass_gpu_timings ? "enabled"
+                                                           : "disabled");
   }
 
   if (input_is_key_up(input_state, KEY_F8) &&
@@ -1710,41 +1757,72 @@ vkr_internal void application_update_fps_text(Application *application,
 
   state->fps_accumulated_time += delta_time;
   state->fps_frame_count++;
+  application_accumulate_frame_time(application);
 
   if (vkr_clock_interval_elapsed(&state->fps_update_clock,
                                  VKR_FPS_UPDATE_INTERVAL)) {
-    if (state->fps_accumulated_time > VKR_FPS_DELTA_MIN &&
-        state->fps_frame_count > 0) {
+    // Average the published frame times collected over this interval. Falling
+    // back to the loop's own accumulation keeps the HUD alive when metrics are
+    // compiled out or no frame published during the window.
+    if (state->hud_frame_samples > 0 &&
+        state->hud_frametime_sum / (float64_t)state->hud_frame_samples >
+            VKR_FPS_DELTA_MIN) {
+      state->current_frametime =
+          state->hud_frametime_sum / (float64_t)state->hud_frame_samples;
+      state->current_fps = 1.0 / state->current_frametime;
+    } else if (state->fps_accumulated_time > VKR_FPS_DELTA_MIN &&
+               state->fps_frame_count > 0) {
       state->current_fps =
           (float64_t)state->fps_frame_count / state->fps_accumulated_time;
       state->current_frametime =
           state->fps_accumulated_time / (float64_t)state->fps_frame_count;
     }
+    state->hud_frametime_sum = 0.0;
+    state->hud_frame_samples = 0;
 
     VkrCamera *camera =
         vkr_camera_registry_get_by_handle(&application->renderer.camera_system,
                                           application->renderer.active_camera);
 
     VkrAllocator *frame_alloc = &application->renderer.scratch_allocator;
-    const VkrRendererFrameMetrics *metrics =
-        &application->renderer.frame_metrics;
-    const VkrWorldBatchMetrics *world = &metrics->world;
-    const VkrShadowMetrics *shadow = &metrics->shadow;
+
+    // Everything below describes one published frame. Seed from the live
+    // structs so a metric the collector could not sample leaves the last known
+    // value rather than a zero, then let the adapter overwrite what it has.
+    VkrRendererFrameMetrics metrics_snapshot =
+        application->renderer.frame_metrics;
+    VkrVisibilityStats visibility_snapshot = application->visibility_stats;
     VkrRenderGraphResourceStats rg_stats = {0};
     bool8_t have_rg_stats = false_v;
-    const VkrRgPassTiming *rg_pass_timings = NULL;
-    uint32_t rg_pass_timing_count = 0;
-    bool8_t have_rg_timings = false_v;
-    if (application->renderer.render_graph) {
-      have_rg_stats = vkr_rg_get_resource_stats(
-          application->renderer.render_graph, &rg_stats);
-      have_rg_timings =
-          vkr_rg_get_pass_timings(application->renderer.render_graph,
-                                  &rg_pass_timings, &rg_pass_timing_count);
+    VkrMetricsSnapshotView snapshot = {0};
+    const bool8_t have_snapshot =
+        vkr_metrics_snapshot_acquire(application->metrics, &snapshot);
+    if (have_snapshot) {
+      have_rg_stats = vkr_renderer_metrics_read_frame(
+          &application->renderer_metrics, snapshot.frame, &metrics_snapshot,
+          &visibility_snapshot, &rg_stats);
     }
 
+    const VkrRendererFrameMetrics *metrics = &metrics_snapshot;
+    const VkrWorldBatchMetrics *world = &metrics->world;
+    const VkrShadowMetrics *shadow = &metrics->shadow;
+    const VkrRendererMetricsPassTable *pass_table =
+        vkr_renderer_metrics_get_pass_table(&application->renderer_metrics);
+    const VkrRendererMetricsPassSample *rg_pass_timings =
+        pass_table ? pass_table->samples : NULL;
+    const uint32_t rg_pass_timing_count = pass_table ? pass_table->count : 0;
+    const bool8_t have_rg_timings = rg_pass_timing_count > 0;
+
     if (state->benchmark_enabled) {
-      const float64_t frame_ms = state->current_frametime * 1000.0;
+      // Preserve the legacy benchmark's interval-average boundary for both
+      // metrics-enabled and compile-disabled binaries. The HUD may display the
+      // latest published frame, but using that value here would make the Phase
+      // 1 overhead A/B compare two different sampling methods.
+      const float64_t frame_ms = state->fps_frame_count > 0
+                                     ? (state->fps_accumulated_time /
+                                        (float64_t)state->fps_frame_count) *
+                                           1000.0
+                                     : 0.0;
       state->benchmark_sample_count++;
       state->benchmark_frame_ms_sum += frame_ms;
       if (state->benchmark_sample_count == 1) {
@@ -1760,7 +1838,7 @@ vkr_internal void application_update_fps_text(Application *application,
       float64_t rg_cpu_total_ms = 0.0;
       if (have_rg_timings && rg_pass_timings && rg_pass_timing_count > 0) {
         for (uint32_t i = 0; i < rg_pass_timing_count; ++i) {
-          const VkrRgPassTiming *timing = &rg_pass_timings[i];
+          const VkrRendererMetricsPassSample *timing = &rg_pass_timings[i];
           if (timing->culled || timing->disabled) {
             continue;
           }
@@ -1770,7 +1848,7 @@ vkr_internal void application_update_fps_text(Application *application,
         state->benchmark_rg_cpu_ms_sum += rg_cpu_total_ms;
       }
 
-      const VkrVisibilityStats *vis = &application->visibility_stats;
+      const VkrVisibilityStats *vis = &visibility_snapshot;
       uint32_t shadow_calls = 0;
       uint32_t shadow_indirect_commands = 0;
       uint32_t shadow_indirect_calls = 0;
@@ -1898,8 +1976,9 @@ vkr_internal void application_update_fps_text(Application *application,
             shadow->shadow_batches_opaque[3],
             shadow->shadow_draw_calls_alpha[3], shadow->shadow_batches_alpha[3],
             shadow->shadow_descriptor_binds_set1[3]);
-        if (metrics_text.length > 0 && application->rg_gpu_timing_enabled &&
-            have_rg_timings && rg_pass_timings && rg_pass_timing_count > 0) {
+        if (metrics_text.length > 0 &&
+            application->metrics->config.pass_gpu_timings && have_rg_timings &&
+            rg_pass_timings && rg_pass_timing_count > 0) {
           String8 timing_header = string8_create_formatted(
               frame_alloc, "\nRG pass timings (cpu/gpu):\n");
           if (timing_header.length > 0) {
@@ -1907,7 +1986,7 @@ vkr_internal void application_update_fps_text(Application *application,
                 string8_concat(frame_alloc, &metrics_text, &timing_header);
           }
           for (uint32_t i = 0; i < rg_pass_timing_count; ++i) {
-            const VkrRgPassTiming *timing = &rg_pass_timings[i];
+            const VkrRendererMetricsPassSample *timing = &rg_pass_timings[i];
             if (timing->culled || timing->disabled) {
               continue;
             }
@@ -1915,12 +1994,12 @@ vkr_internal void application_update_fps_text(Application *application,
             if (timing->gpu_valid) {
               timing_line = string8_create_formatted(
                   frame_alloc, "RG pass %.*s: cpu %.3f ms  gpu %.3f ms\n",
-                  (int)timing->name.length, timing->name.str, timing->cpu_ms,
+                  (int)timing->name_length, timing->name, timing->cpu_ms,
                   timing->gpu_ms);
             } else {
               timing_line = string8_create_formatted(
                   frame_alloc, "RG pass %.*s: cpu %.3f ms  gpu n/a\n",
-                  (int)timing->name.length, timing->name.str, timing->cpu_ms);
+                  (int)timing->name_length, timing->name, timing->cpu_ms);
             }
             if (timing_line.length > 0) {
               metrics_text =
@@ -1937,6 +2016,9 @@ vkr_internal void application_update_fps_text(Application *application,
 
     state->fps_accumulated_time = 0.0;
     state->fps_frame_count = 0;
+    if (have_snapshot) {
+      vkr_metrics_snapshot_release(application->metrics, &snapshot);
+    }
   }
 }
 
@@ -2377,9 +2459,43 @@ vkr_internal void application_poll_upload_wait_stats(Application *application) {
         (scene_state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU);
   }
 
+  VkrMetricsSnapshotView snapshot = {0};
+  if (!vkr_metrics_snapshot_acquire(application->metrics, &snapshot)) {
+    return;
+  }
+  if (snapshot.publication_serial ==
+      state->upload_wait_last_publication_serial) {
+    vkr_metrics_snapshot_release(application->metrics, &snapshot);
+    return;
+  }
+  // Publication serials must advance by exactly one. A gap means a frame's
+  // upload waits were never published (both spare snapshot buffers were
+  // pinned) and this assertion no longer has complete evidence to stand on.
+  const uint64_t previous_serial = state->upload_wait_last_publication_serial;
+  const bool8_t serial_gap =
+      previous_serial != 0 && snapshot.publication_serial > previous_serial + 1;
+  state->upload_wait_last_publication_serial = snapshot.publication_serial;
+
   VkrRendererUploadWaitStats wait_stats = {0};
-  if (!vkr_renderer_get_and_reset_upload_wait_stats(&application->renderer,
-                                                    &wait_stats)) {
+  const VkrRendererMetricIds *ids = &application->renderer_metrics.ids;
+  // An unavailable slot is missing evidence, never zero waits: reading it as
+  // "no stalls" would turn a broken instrument into a passing assertion.
+  const bool8_t complete =
+      vkr_metrics_frame_read_u64(snapshot.frame, ids->upload_fence_waits,
+                                 &wait_stats.fence_wait_count) &&
+      vkr_metrics_frame_read_u64(snapshot.frame, ids->upload_queue_idle_waits,
+                                 &wait_stats.queue_wait_idle_count) &&
+      vkr_metrics_frame_read_u64(snapshot.frame, ids->upload_device_idle_waits,
+                                 &wait_stats.device_wait_idle_count);
+  vkr_metrics_snapshot_release(application->metrics, &snapshot);
+
+  if (!complete || serial_gap) {
+    if (!state->upload_wait_evidence_incomplete) {
+      state->upload_wait_evidence_incomplete = true_v;
+      log_warn("Upload-wait evidence incomplete (%s); "
+               "VKR_ASSERT_NO_UPLOAD_WAITS cannot be relied upon",
+               !complete ? "metric unavailable" : "publication gap");
+    }
     return;
   }
 
@@ -2458,6 +2574,22 @@ void application_update(Application *application, float64_t delta) {
 // and static for release builds, also should look into how we can
 // implement hot reload for the application in debug builds
 int main(int argc, char **argv) {
+  int exit_code = 0;
+  const char *metrics_json_path = NULL;
+  for (int i = 1; i < argc; ++i) {
+    if (strcmp(argv[i], "--metrics-json") == 0) {
+      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+        fprintf(stderr, "--metrics-json requires an output path\n");
+        return 2;
+      }
+      metrics_json_path = argv[++i];
+    }
+  }
+  const bool8_t rg_gpu_timing_enabled =
+      application_env_flag("VKR_RG_GPU_TIMING", false_v);
+  const bool8_t metrics_event_subjects =
+      application_env_flag("VKR_METRICS_EVENT_SUBJECTS", false_v);
+
   ApplicationConfig config = {0};
   config.title = "Hello, World!";
   config.x = 100;
@@ -2466,6 +2598,10 @@ int main(int argc, char **argv) {
   config.height = 600;
   config.app_arena_size = MB(1);
   config.target_frame_rate = 0;
+  config.metrics_config = (VkrMetricsConfig){
+      .pass_gpu_timings = rg_gpu_timing_enabled,
+      .event_subjects = metrics_event_subjects,
+  };
   config.device_requirements = (VkrDeviceRequirements){
       .supported_stages =
           VKR_SHADER_STAGE_VERTEX_BIT | VKR_SHADER_STAGE_FRAGMENT_BIT,
@@ -2482,7 +2618,6 @@ int main(int argc, char **argv) {
     log_fatal("Application creation failed!");
     return 1;
   }
-  application.rg_gpu_timing_enabled = false_v;
 
   // Baseline before any scene loads: the renderer's own resident allocations.
   application_log_device_memory_stats(&application, "startup");
@@ -2553,6 +2688,11 @@ int main(int argc, char **argv) {
   state->upload_wait_fence_total = 0;
   state->upload_wait_queue_idle_total = 0;
   state->upload_wait_device_idle_total = 0;
+  state->upload_wait_last_publication_serial = 0;
+  state->upload_wait_evidence_incomplete = false_v;
+  state->hud_last_publication_serial = 0;
+  state->hud_frametime_sum = 0.0;
+  state->hud_frame_samples = 0;
   state->ibl_validation_mode = 0u;
   state->ibl_validation_scalar = 1.0f;
   state->ibl_validation_scene = NULL;
@@ -2613,10 +2753,12 @@ int main(int argc, char **argv) {
     }
   }
 
-  application.rg_gpu_timing_enabled =
-      application_env_flag("VKR_RG_GPU_TIMING", false_v);
-  if (application.rg_gpu_timing_enabled) {
+  // Already applied through config.metrics_config; this only reports it.
+  if (application.metrics->config.pass_gpu_timings) {
     log_info("RenderGraph GPU timings enabled via VKR_RG_GPU_TIMING");
+  }
+  if (metrics_event_subjects) {
+    log_info("Metrics event subjects enabled via VKR_METRICS_EVENT_SUBJECTS");
   }
 
   state->benchmark_enabled = application_env_flag("VKR_BENCHMARK_LOG", false_v);
@@ -2735,6 +2877,19 @@ int main(int argc, char **argv) {
     fflush(stdout);
   }
 
+  if (metrics_json_path) {
+    String8 metrics_path = string8_create_from_cstr(
+        (const uint8_t *)metrics_json_path, string_length(metrics_json_path));
+    if (!vkr_renderer_metrics_write_json(&application.renderer_metrics,
+                                         metrics_path)) {
+      log_error("Failed to write metrics JSON to '%s'", metrics_json_path);
+      exit_code = 5;
+    } else {
+      fprintf(stdout, "METRICS_JSON status=pass\n");
+      fflush(stdout);
+    }
+  }
+
   String8 scene_path = string8_lit(SCENE_PATH);
   if (state->scene_resource.type == VKR_RESOURCE_TYPE_SCENE ||
       state->scene_resource.request_id != 0 || state->scene_resource.as.scene) {
@@ -2744,5 +2899,5 @@ int main(int argc, char **argv) {
 
   application_shutdown(&application);
 
-  return 0;
+  return exit_code;
 }

@@ -130,6 +130,7 @@ void vkr_instance_buffer_begin_frame(VkrInstanceBufferPool *pool,
   assert_log(frame_slot < VKR_INSTANCE_BUFFER_FRAMES,
              "Frame slot out of range for instance buffer pool");
   pool->current_frame = frame_slot;
+  pool->frame_overflow_count = 0;
   VkrInstanceBuffer *buffer = &pool->buffers[pool->current_frame];
   buffer->write_offset = 0;
 
@@ -149,6 +150,9 @@ bool8_t vkr_instance_buffer_alloc(VkrInstanceBufferPool *pool, uint32_t count,
 
   VkrInstanceBuffer *buffer = &pool->buffers[pool->current_frame];
   if (buffer->write_offset + count > buffer->capacity) {
+#if VKR_METRICS_ENABLED
+    pool->frame_overflow_count++;
+#endif
     log_warn("Instance buffer overflow: %u + %u > %u", buffer->write_offset,
              count, buffer->capacity);
     return false_v;

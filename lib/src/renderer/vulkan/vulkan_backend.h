@@ -218,18 +218,21 @@ uint64_t renderer_vulkan_get_submit_serial(void *backend_state);
 uint64_t renderer_vulkan_get_completed_submit_serial(void *backend_state);
 bool8_t renderer_vulkan_get_and_reset_upload_wait_stats(
     void *backend_state, VkrRendererUploadWaitStats *out_stats);
+bool8_t renderer_vulkan_get_last_present_duration(void *backend_state,
+                                                  uint64_t *out_duration_ns);
 
 // RenderGraph GPU timing (timestamps)
 bool8_t renderer_vulkan_rg_timing_begin_frame(void *backend_state,
-                                              uint32_t pass_count);
+                                              uint32_t pass_count,
+                                              uint64_t source_frame_index);
 void renderer_vulkan_rg_timing_begin_pass(void *backend_state,
                                           uint32_t pass_index);
 void renderer_vulkan_rg_timing_end_pass(void *backend_state,
                                         uint32_t pass_index);
-bool8_t renderer_vulkan_rg_timing_get_results(void *backend_state,
-                                              uint32_t *out_pass_count,
-                                              const float64_t **out_pass_ms,
-                                              const bool8_t **out_pass_valid);
+bool8_t renderer_vulkan_rg_timing_get_results(
+    void *backend_state, uint32_t *out_pass_count,
+    const float64_t **out_pass_ms, const bool8_t **out_pass_valid,
+    uint64_t *out_source_frame_index, uint64_t *out_source_submit_serial);
 
 // --- Pixel Readback API ---
 VkrRendererError renderer_vulkan_readback_ring_init(void *backend_state);

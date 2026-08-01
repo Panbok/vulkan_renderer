@@ -1353,7 +1353,7 @@ bool32_t run_resource_async_state_tests(void) {
   ResourceAsyncMockBackendState backend_state = {0};
   resource_async_mock_init_renderer(&renderer, &backend_state);
 
-  assert(vkr_resource_system_init(&allocator, &renderer, &job_system) ==
+  assert(vkr_resource_system_init(&allocator, &renderer, &job_system, NULL) ==
          true_v);
 
   ResourceAsyncMockLoaderContext loader_ctx = {0};

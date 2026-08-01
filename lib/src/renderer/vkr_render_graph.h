@@ -581,12 +581,14 @@ typedef struct VkrRenderGraphResourceStats {
  * supported.
  */
 typedef struct VkrRgPassTiming {
-  String8 name;      /**< Pass name */
-  float64_t cpu_ms;  /**< CPU time in milliseconds */
-  float64_t gpu_ms;  /**< GPU time in milliseconds (if gpu_valid) */
-  bool8_t culled;    /**< True if pass was culled */
-  bool8_t disabled;  /**< True if pass was disabled */
-  bool8_t gpu_valid; /**< True if gpu_ms is valid */
+  String8 name;     /**< Pass name */
+  float64_t cpu_ms; /**< CPU time in milliseconds */
+  float64_t gpu_ms; /**< GPU time in milliseconds (if gpu_valid) */
+  uint64_t gpu_source_frame_index; /**< CPU frame that recorded this sample. */
+  uint64_t gpu_source_submit_serial; /**< Submission that owns this sample. */
+  bool8_t culled;                    /**< True if pass was culled */
+  bool8_t disabled;                  /**< True if pass was disabled */
+  bool8_t gpu_valid;                 /**< True if gpu_ms is valid */
 } VkrRgPassTiming;
 
 Vector(VkrRgPassTiming);

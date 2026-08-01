@@ -17,6 +17,7 @@
 #include "containers/bitset.h"
 #include "containers/queue.h"
 #include "containers/vector.h"
+#include "core/vkr_atomic.h"
 #include "core/vkr_threads.h"
 #include "defines.h"
 #include "memory/arena.h"
@@ -94,6 +95,13 @@ typedef struct VkrJobSystemConfig {
   Bitset8 worker_type_mask_default;
 } VkrJobSystemConfig;
 
+typedef struct VkrJobSystemMetrics {
+  uint32_t queue_depth;
+  uint32_t busy_workers;
+  uint32_t worker_count;
+  uint64_t jobs_completed_total;
+} VkrJobSystemMetrics;
+
 /**
  * @brief Job system state.
  */
@@ -115,6 +123,10 @@ typedef struct VkrJobSystem {
 
   uint32_t *free_stack;
   uint32_t free_top;
+
+  VkrAtomicUint32 metrics_queue_depth;
+  VkrAtomicUint32 metrics_busy_workers;
+  VkrAtomicUint64 metrics_jobs_completed;
 } VkrJobSystem;
 
 /**
@@ -137,6 +149,8 @@ bool8_t vkr_job_system_init(const VkrJobSystemConfig *config,
  * @param system The job system to shutdown.
  */
 void vkr_job_system_shutdown(VkrJobSystem *system);
+void vkr_job_system_get_metrics(const VkrJobSystem *system,
+                                VkrJobSystemMetrics *out_metrics);
 
 /**
  * @brief Submit a job for execution.

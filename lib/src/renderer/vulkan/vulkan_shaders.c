@@ -1,5 +1,6 @@
 #include "vulkan_shaders.h"
 #include "filesystem/filesystem.h"
+#include "platform/vkr_platform.h"
 #include "renderer/resources/vkr_resources.h"
 #include "vulkan_spirv_reflection.h"
 
@@ -1256,6 +1257,19 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
 
   MemZero(out_shader_object, sizeof(*out_shader_object));
   VkrAllocator *arena_alloc = &state->alloc;
+#if VKR_METRICS_ENABLED
+  const float64_t shader_load_start_seconds = vkr_platform_get_absolute_time();
+  const uint64_t shader_load_start_ns =
+      (uint64_t)(shader_load_start_seconds * 1000000000.0);
+  uint64_t shader_load_bytes = 0;
+  String8 metric_subject = {0};
+  for (uint32_t i = 0; i < VKR_SHADER_STAGE_COUNT; ++i) {
+    if (desc->modules[i].stages.set != 0) {
+      metric_subject = desc->modules[i].path;
+      break;
+    }
+  }
+#endif
 
   if (desc->file_format != VKR_SHADER_FILE_FORMAT_SPIR_V) {
     log_error("Only SPIR-V shader file format is supported");
@@ -1280,6 +1294,9 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
       log_fatal("Failed to load shader: %s", file_get_error_string(file_error));
       return false_v;
     }
+#if VKR_METRICS_ENABLED
+    shader_load_bytes += shader_size;
+#endif
 
     for (uint32_t i = 0; i < VKR_SHADER_STAGE_COUNT; i++) {
       if (desc->modules[i].stages.set == 0)
@@ -1328,6 +1345,9 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
                   file_get_error_string(file_error));
         return false_v;
       }
+#if VKR_METRICS_ENABLED
+      shader_load_bytes += shader_size;
+#endif
 
       if (!vulkan_shader_module_create(
               state, desc->modules[i].stages, shader_size, shader_data,
@@ -1346,6 +1366,20 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
     return false_v;
   }
 
+#if VKR_METRICS_ENABLED
+  // Difference the float seconds before scaling: converting each endpoint to
+  // nanoseconds first and subtracting would quantize short intervals against
+  // a large absolute timestamp.
+  const float64_t shader_load_end_seconds = vkr_platform_get_absolute_time();
+  (void)vkr_metrics_event_record(
+      state->shader_load_metrics, metric_subject, shader_load_start_ns,
+      vkr_metrics_elapsed_ns(shader_load_start_seconds), shader_load_bytes,
+      VKR_METRIC_EVENT_STATUS_SUCCESS);
+
+  const float64_t reflection_start_seconds = shader_load_end_seconds;
+  const uint64_t reflection_start_ns =
+      (uint64_t)(reflection_start_seconds * 1000000000.0);
+#endif
   VulkanShaderReflectionInput reflection_input = {0};
   if (!vulkan_shader_collect_reflection_input(state, desc, &reflection_input)) {
     vulkan_shader_destroy_modules(state, out_shader_object);
@@ -1371,6 +1405,16 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
     vulkan_shader_destroy_modules(state, out_shader_object);
     return false_v;
   }
+#if VKR_METRICS_ENABLED
+  uint64_t reflection_bytes = 0;
+  for (uint32_t i = 0; i < reflection_input.owned_buffer_count; ++i) {
+    reflection_bytes += reflection_input.owned_buffer_sizes[i];
+  }
+  (void)vkr_metrics_event_record(
+      state->shader_reflection_metrics, reflection_input.program_name,
+      reflection_start_ns, vkr_metrics_elapsed_ns(reflection_start_seconds),
+      reflection_bytes, VKR_METRIC_EVENT_STATUS_SUCCESS);
+#endif
   out_shader_object->has_reflection = true_v;
   vulkan_shader_log_reflection_layout_debug(reflection_input.program_name,
                                             &out_shader_object->reflection);

@@ -77,7 +77,14 @@ vkr_internal bool8_t job_system_enqueue_locked(VkrJobSystem *system,
 
   VkrJobHandle handle = slot->handle;
   slot->state = JOB_STATE_QUEUED;
-  return queue_enqueue_VkrJobHandle(queue, handle);
+  if (!queue_enqueue_VkrJobHandle(queue, handle)) {
+    return false_v;
+  }
+#if VKR_METRICS_ENABLED
+  vkr_atomic_uint32_fetch_add(&system->metrics_queue_depth, 1u,
+                              VKR_MEMORY_ORDER_RELAXED);
+#endif
+  return true_v;
 }
 
 vkr_internal bool8_t job_system_register_dependency_locked(
@@ -137,6 +144,13 @@ vkr_internal bool8_t job_system_try_dequeue_locked(VkrJobSystem *system,
 
       VkrJobSlot *slot = job_system_get_slot(system, handle);
       if (!slot || slot->state != JOB_STATE_QUEUED) {
+        // The handle leaves the queue permanently here, so its enqueue must be
+        // retired too. The rotate paths below re-enqueue and deliberately do
+        // not touch the counter.
+#if VKR_METRICS_ENABLED
+        vkr_atomic_uint32_fetch_sub(&system->metrics_queue_depth, 1u,
+                                    VKR_MEMORY_ORDER_RELAXED);
+#endif
         continue;
       }
 
@@ -153,6 +167,12 @@ vkr_internal bool8_t job_system_try_dequeue_locked(VkrJobSystem *system,
       }
 
       slot->state = JOB_STATE_RUNNING;
+#if VKR_METRICS_ENABLED
+      vkr_atomic_uint32_fetch_sub(&system->metrics_queue_depth, 1u,
+                                  VKR_MEMORY_ORDER_RELAXED);
+      vkr_atomic_uint32_fetch_add(&system->metrics_busy_workers, 1u,
+                                  VKR_MEMORY_ORDER_RELAXED);
+#endif
       *out_handle = handle;
       return true_v;
     }
@@ -241,6 +261,12 @@ vkr_internal void job_worker_complete(VkrJobSystem *system, VkrJobSlot *slot,
   // Wake any waiters so they see the generation has changed (job fully done)
   vkr_cond_broadcast(system->cond);
   vkr_mutex_unlock(system->mutex);
+#if VKR_METRICS_ENABLED
+  vkr_atomic_uint32_fetch_sub(&system->metrics_busy_workers, 1u,
+                              VKR_MEMORY_ORDER_RELAXED);
+  vkr_atomic_uint64_fetch_add(&system->metrics_jobs_completed, 1u,
+                              VKR_MEMORY_ORDER_RELAXED);
+#endif
 }
 
 vkr_internal void *job_worker_thread(void *param) {
@@ -252,18 +278,35 @@ vkr_internal void *job_worker_thread(void *param) {
   while (true) {
     vkr_mutex_lock(system->mutex);
     VkrJobHandle handle = {0};
+    bool8_t dequeued = false_v;
     while (system->running &&
-           !job_system_try_dequeue_locked(system, worker->type_mask, &handle)) {
+           !(dequeued = job_system_try_dequeue_locked(
+                 system, worker->type_mask, &handle))) {
       vkr_cond_wait(system->cond, system->mutex);
     }
 
     if (!system->running) {
+      // A successful dequeue already marked this worker busy. Shutdown must
+      // not leave that count standing, or a final sample reads as if a worker
+      // were still running work.
+#if VKR_METRICS_ENABLED
+      if (dequeued) {
+        vkr_atomic_uint32_fetch_sub(&system->metrics_busy_workers, 1u,
+                                    VKR_MEMORY_ORDER_RELAXED);
+      }
+#else
+      (void)dequeued;
+#endif
       vkr_mutex_unlock(system->mutex);
       break;
     }
 
     VkrJobSlot *slot = job_system_get_slot(system, handle);
     if (!slot || slot->state != JOB_STATE_RUNNING) {
+#if VKR_METRICS_ENABLED
+      vkr_atomic_uint32_fetch_sub(&system->metrics_busy_workers, 1u,
+                                  VKR_MEMORY_ORDER_RELAXED);
+#endif
       vkr_mutex_unlock(system->mutex);
       continue;
     }
@@ -410,6 +453,26 @@ bool8_t vkr_job_system_init(const VkrJobSystemConfig *config,
   log_debug("Job system initialized with %u workers", config->worker_count);
 
   return true_v;
+}
+
+void vkr_job_system_get_metrics(const VkrJobSystem *system,
+                                VkrJobSystemMetrics *out_metrics) {
+  if (!out_metrics) {
+    return;
+  }
+  MemZero(out_metrics, sizeof(*out_metrics));
+  if (!system) {
+    return;
+  }
+  out_metrics->worker_count = system->worker_count;
+#if VKR_METRICS_ENABLED
+  out_metrics->queue_depth = vkr_atomic_uint32_load(
+      &system->metrics_queue_depth, VKR_MEMORY_ORDER_RELAXED);
+  out_metrics->busy_workers = vkr_atomic_uint32_load(
+      &system->metrics_busy_workers, VKR_MEMORY_ORDER_RELAXED);
+  out_metrics->jobs_completed_total = vkr_atomic_uint64_load(
+      &system->metrics_jobs_completed, VKR_MEMORY_ORDER_RELAXED);
+#endif
 }
 
 void vkr_job_system_shutdown(VkrJobSystem *system) {

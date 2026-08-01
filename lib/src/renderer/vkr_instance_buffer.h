@@ -56,9 +56,10 @@ typedef struct VkrInstanceBuffer {
 typedef struct VkrInstanceBufferPool {
   VkrInstanceBuffer buffers[VKR_INSTANCE_BUFFER_FRAMES]; /**< The buffers. */
   VkrRendererFrontendHandle renderer;                    /**< The renderer. */
-  uint32_t current_frame; /**< The current frame. */
-  uint32_t max_instances; /**< The maximum number of instances. */
-  bool8_t initialized;    /**< Whether the pool is initialized. */
+  uint32_t current_frame;        /**< The current frame. */
+  uint32_t max_instances;        /**< The maximum number of instances. */
+  uint32_t frame_overflow_count; /**< Failed allocations in this frame. */
+  bool8_t initialized;           /**< Whether the pool is initialized. */
 } VkrInstanceBufferPool;
 
 /**

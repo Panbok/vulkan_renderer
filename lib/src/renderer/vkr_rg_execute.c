@@ -30,8 +30,11 @@ vkr_internal void vkr_rg_apply_gpu_timings(VkrRenderGraph *graph,
   uint32_t pass_count = 0;
   const float64_t *pass_ms = NULL;
   const bool8_t *pass_valid = NULL;
+  uint64_t source_frame_index = 0;
+  uint64_t source_submit_serial = 0;
   if (!vkr_renderer_rg_timing_get_results(rf, &pass_count, &pass_ms,
-                                          &pass_valid)) {
+                                          &pass_valid, &source_frame_index,
+                                          &source_submit_serial)) {
     return;
   }
 
@@ -46,6 +49,8 @@ vkr_internal void vkr_rg_apply_gpu_timings(VkrRenderGraph *graph,
         vector_get_VkrRgPassTiming(&graph->pass_timings, i);
     timing->gpu_ms = pass_ms[i];
     timing->gpu_valid = pass_valid ? pass_valid[i] : true_v;
+    timing->gpu_source_frame_index = source_frame_index;
+    timing->gpu_source_submit_serial = source_submit_serial;
   }
 }
 
@@ -161,7 +166,8 @@ VkrRendererError vkr_rg_execute(VkrRenderGraph *graph,
   }
   bool8_t gpu_timing_active =
       gpu_timing_requested && (rf != NULL) &&
-      vkr_renderer_rg_timing_begin_frame(rf, (uint32_t)graph->passes.length);
+      vkr_renderer_rg_timing_begin_frame(rf, (uint32_t)graph->passes.length,
+                                         graph->frame_info.frame_index);
 
   VkrRendererError result = VKR_RENDERER_ERROR_NONE;
   uint32_t failed_pass_index = 0;

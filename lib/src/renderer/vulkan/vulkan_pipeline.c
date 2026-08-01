@@ -449,17 +449,34 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
       state->allocator, &pipeline);
   const float64_t pipeline_create_ms =
       (vkr_platform_get_absolute_time() - pipeline_create_start_time) * 1000.0;
+#if VKR_METRICS_ENABLED
+  // Subject is the first participating stage's module path; with event
+  // subjects disabled it is dropped and the event is an anonymous duration.
+  String8 pipeline_subject = {0};
+  for (uint32_t i = 0; i < VKR_SHADER_STAGE_COUNT; ++i) {
+    if (desc->shader_object_description.modules[i].stages.set != 0) {
+      pipeline_subject = desc->shader_object_description.modules[i].path;
+      break;
+    }
+  }
+  (void)vkr_metrics_event_record(
+      state->pipeline_create_metrics, pipeline_subject,
+      (uint64_t)(pipeline_create_start_time * 1000000000.0),
+      (uint64_t)(pipeline_create_ms * 1000000.0), 0,
+      pipeline_create_result == VK_SUCCESS ? VKR_METRIC_EVENT_STATUS_SUCCESS
+                                           : VKR_METRIC_EVENT_STATUS_FAILED);
+#endif
   if (pipeline_create_result != VK_SUCCESS) {
     log_fatal("Failed to create graphics pipeline (VkResult=%d, %.3f ms)",
               pipeline_create_result, pipeline_create_ms);
     goto cleanup;
   }
-  log_info(
-      "Pipeline create time: %.3f ms (domain=%u cache=%s sets=%u attrs=%u)",
-      pipeline_create_ms, desc->domain,
-      state->pipeline_cache != VK_NULL_HANDLE ? "enabled" : "disabled",
-      reflection->layout_set_count, reflection->vertex_attribute_count);
-
+  // The event carries timing; this keeps the shape of the pipeline in the log
+  // where a human debugging a cache miss can still see it.
+  log_debug("Pipeline created in %.3f ms (domain=%u cache=%s sets=%u attrs=%u)",
+            pipeline_create_ms, desc->domain,
+            state->pipeline_cache != VK_NULL_HANDLE ? "enabled" : "disabled",
+            reflection->layout_set_count, reflection->vertex_attribute_count);
   // Note: Local state is now acquired via frontend API per renderable.
 
   if (bindings.length > 0) {

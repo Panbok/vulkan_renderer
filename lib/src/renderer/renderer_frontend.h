@@ -83,6 +83,8 @@ typedef struct VkrShadowMetrics {
 typedef struct VkrRendererFrameMetrics {
   VkrWorldBatchMetrics world;
   VkrShadowMetrics shadow;
+  uint64_t backend_present_ns;
+  bool8_t backend_present_valid;
 } VkrRendererFrameMetrics;
 
 struct s_RendererFrontend {
@@ -100,6 +102,7 @@ struct s_RendererFrontend {
   VkrRendererBackendInterface backend;
   bool8_t supports_multi_draw_indirect;
   bool8_t supports_draw_indirect_first_instance;
+  VkrRendererBootMetrics boot_metrics;
 
   // High-level renderer subsystems and state (now accessible)
   VkrPipelineRegistry pipeline_registry;
