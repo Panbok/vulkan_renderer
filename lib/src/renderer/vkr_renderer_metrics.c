@@ -32,10 +32,9 @@ vkr_internal bool8_t vkr_renderer_metric_register(
     VkrMetrics *metrics, const char *name, VkrMetricDomain domain,
     VkrMetricKind kind, VkrMetricUnit unit, VkrMetricScalar scalar,
     VkrMetricId *out_id) {
-  return vkr_renderer_metric_register_full(metrics, name, domain, kind, unit,
-                                           scalar,
-                                           VKR_METRIC_WRITER_RENDER_THREAD,
-                                           false_v, out_id);
+  return vkr_renderer_metric_register_full(
+      metrics, name, domain, kind, unit, scalar,
+      VKR_METRIC_WRITER_RENDER_THREAD, false_v, out_id);
 }
 
 vkr_internal bool8_t vkr_renderer_event_register(VkrMetrics *metrics,
@@ -77,11 +76,96 @@ vkr_internal bool8_t vkr_renderer_event_register(VkrMetrics *metrics,
  * running total would describe nothing, so the frame delta is what ships.
  */
 #define VKR_REGISTER_COUNTER(FIELD, NAME, DOMAIN)                              \
-  if (!vkr_renderer_metric_register(metrics, NAME, DOMAIN,                     \
-                                    VKR_METRIC_KIND_COUNTER,                   \
-                                    VKR_METRIC_UNIT_COUNT,                     \
-                                    VKR_METRIC_SCALAR_U64, &ids->FIELD))       \
+  if (!vkr_renderer_metric_register(                                           \
+          metrics, NAME, DOMAIN, VKR_METRIC_KIND_COUNTER,                      \
+          VKR_METRIC_UNIT_COUNT, VKR_METRIC_SCALAR_U64, &ids->FIELD))          \
   return false_v
+
+/**
+ * Stable report names for the logical GPU allocation owners. Designated so a
+ * reordered enumerator cannot silently rename a published row; the assertion
+ * catches a new enumerator, which would otherwise leave a NULL here and be
+ * found only when snprintf read it.
+ */
+vkr_internal const char
+    *const vkr_gpu_allocation_owner_names[VKR_GPU_ALLOCATION_OWNER_COUNT] = {
+        [VKR_GPU_ALLOCATION_OWNER_UNKNOWN] = "unknown",
+        [VKR_GPU_ALLOCATION_OWNER_MESH] = "mesh",
+        [VKR_GPU_ALLOCATION_OWNER_TEXTURE] = "texture",
+        [VKR_GPU_ALLOCATION_OWNER_FONT] = "font",
+        [VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH] = "render_graph",
+        [VKR_GPU_ALLOCATION_OWNER_SHADER] = "shader",
+        [VKR_GPU_ALLOCATION_OWNER_INSTANCE] = "instance",
+        [VKR_GPU_ALLOCATION_OWNER_INDIRECT] = "indirect",
+        [VKR_GPU_ALLOCATION_OWNER_STAGING] = "staging",
+        [VKR_GPU_ALLOCATION_OWNER_READBACK] = "readback",
+        [VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN] = "swapchain",
+};
+_Static_assert(VKR_GPU_ALLOCATION_OWNER_COUNT == 11,
+               "A new VkrGpuAllocationOwner needs a report name here");
+
+typedef struct VkrGpuOwnerMetricRowDescription {
+  const char *suffix;
+  VkrMetricKind kind;
+  VkrMetricUnit unit;
+  /**
+   * True for rows derived from the backend's handle table. When that table
+   * saturates the live and peak figures drift, while the cumulative totals
+   * stay exact and keep publishing without an inexactness mark.
+   */
+  bool8_t follows_handle_table_exactness;
+} VkrGpuOwnerMetricRowDescription;
+
+vkr_internal const VkrGpuOwnerMetricRowDescription
+    vkr_gpu_owner_metric_rows[VKR_GPU_OWNER_METRIC_ROW_COUNT] = {
+        [VKR_GPU_OWNER_METRIC_ROW_LIVE_BYTES] = {"bytes.live",
+                                                 VKR_METRIC_KIND_GAUGE,
+                                                 VKR_METRIC_UNIT_BYTES, true_v},
+        [VKR_GPU_OWNER_METRIC_ROW_PEAK_BYTES] = {"bytes.peak",
+                                                 VKR_METRIC_KIND_GAUGE,
+                                                 VKR_METRIC_UNIT_BYTES, true_v},
+        [VKR_GPU_OWNER_METRIC_ROW_ALLOCATED_BYTES] = {"bytes.allocated",
+                                                      VKR_METRIC_KIND_COUNTER,
+                                                      VKR_METRIC_UNIT_BYTES,
+                                                      false_v},
+        [VKR_GPU_OWNER_METRIC_ROW_LIVE_ALLOCATIONS] = {"allocations.live",
+                                                       VKR_METRIC_KIND_GAUGE,
+                                                       VKR_METRIC_UNIT_COUNT,
+                                                       true_v},
+        [VKR_GPU_OWNER_METRIC_ROW_PEAK_ALLOCATIONS] = {"allocations.peak",
+                                                       VKR_METRIC_KIND_GAUGE,
+                                                       VKR_METRIC_UNIT_COUNT,
+                                                       true_v},
+        [VKR_GPU_OWNER_METRIC_ROW_CREATED_ALLOCATIONS] =
+            {"allocations.created", VKR_METRIC_KIND_COUNTER,
+             VKR_METRIC_UNIT_COUNT, false_v},
+};
+
+/**
+ * @brief Projects one owner's totals onto the published row order.
+ *
+ * Keeping this beside the row table is what makes a new row a two-line change:
+ * the enum, the description, and this projection are the only places the row
+ * set appears.
+ */
+vkr_internal void vkr_gpu_owner_metric_row_values(
+    const VkrGpuAllocationOwnerTotals *totals,
+    VkrRendererCumulativeBaselines *baselines, uint32_t owner,
+    uint64_t out_values[VKR_GPU_OWNER_METRIC_ROW_COUNT]) {
+  out_values[VKR_GPU_OWNER_METRIC_ROW_LIVE_BYTES] = totals->live_bytes;
+  out_values[VKR_GPU_OWNER_METRIC_ROW_PEAK_BYTES] = totals->peak_bytes;
+  out_values[VKR_GPU_OWNER_METRIC_ROW_ALLOCATED_BYTES] =
+      vkr_renderer_metrics_cumulative_delta(
+          totals->total_bytes, &baselines->gpu_owner[owner].allocated_bytes);
+  out_values[VKR_GPU_OWNER_METRIC_ROW_LIVE_ALLOCATIONS] =
+      totals->live_allocation_count;
+  out_values[VKR_GPU_OWNER_METRIC_ROW_PEAK_ALLOCATIONS] =
+      totals->peak_allocation_count;
+  out_values[VKR_GPU_OWNER_METRIC_ROW_CREATED_ALLOCATIONS] =
+      vkr_renderer_metrics_cumulative_delta(
+          totals->total_allocation_count,
+          &baselines->gpu_owner[owner].allocations_created);
+}
 
 bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                                       VkrMetrics *metrics) {
@@ -90,6 +174,7 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   }
   MemZero(renderer_metrics, sizeof(*renderer_metrics));
   renderer_metrics->metrics = metrics;
+  renderer_metrics->previous.gpu_memory_interval_contiguous = true_v;
   VkrRendererMetricIds *ids = &renderer_metrics->ids;
 
   VKR_REGISTER_U64_REQUIRED(world_draws_collected, "draw.world.draws_collected",
@@ -121,8 +206,8 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
 
   VKR_REGISTER_U64_REQUIRED(visibility_objects_tested,
-                            "visibility.objects_tested",
-                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+                            "visibility.objects_tested", VKR_METRIC_DOMAIN_DRAW,
+                            VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64_REQUIRED(visibility_culled_camera,
                             "visibility.objects_culled_camera",
                             VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
@@ -237,8 +322,9 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(gpu_peak_allocations, "memory.gpu.allocations.peak",
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
-  VKR_REGISTER_U64(gpu_total_allocations, "memory.gpu.allocations.total",
-                   VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_COUNTER(gpu_allocations_created,
+                       "memory.gpu.allocations.created",
+                       VKR_METRIC_DOMAIN_MEMORY_GPU);
   VKR_REGISTER_U64(gpu_max_allocations, "memory.gpu.allocations.limit",
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(gpu_live_bytes, "memory.gpu.bytes.live",
@@ -249,6 +335,22 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(gpu_heap_usage_valid, "memory.gpu.heap_usage_valid",
                    VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_UNIT_COUNT);
+
+  for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner) {
+    for (uint32_t row = 0; row < VKR_GPU_OWNER_METRIC_ROW_COUNT; ++row) {
+      char name[64];
+      snprintf(name, sizeof(name), "memory.gpu.owner.%s.%s",
+               vkr_gpu_allocation_owner_names[owner],
+               vkr_gpu_owner_metric_rows[row].suffix);
+      if (!vkr_renderer_metric_register(
+              metrics, name, VKR_METRIC_DOMAIN_MEMORY_GPU,
+              vkr_gpu_owner_metric_rows[row].kind,
+              vkr_gpu_owner_metric_rows[row].unit, VKR_METRIC_SCALAR_U64,
+              &ids->gpu_owner[owner][row])) {
+        return false_v;
+      }
+    }
+  }
 
   VKR_REGISTER_COUNTER(pipelines_created, "pipeline.created",
                        VKR_METRIC_DOMAIN_PIPELINE);
@@ -381,9 +483,8 @@ bool8_t vkr_renderer_metrics_register_device_memory(
 #define VKR_REGISTER_HEAP_ROW(FIELD, SUFFIX)                                   \
   snprintf(name, sizeof(name), "memory.gpu.heap.%u." SUFFIX, i);               \
   if (!vkr_renderer_metric_register(                                           \
-          metrics, name, VKR_METRIC_DOMAIN_MEMORY_GPU,                         \
-          VKR_METRIC_KIND_GAUGE, VKR_METRIC_UNIT_BYTES, VKR_METRIC_SCALAR_U64, \
-          &ids->FIELD[i])) {                                                   \
+          metrics, name, VKR_METRIC_DOMAIN_MEMORY_GPU, VKR_METRIC_KIND_GAUGE,  \
+          VKR_METRIC_UNIT_BYTES, VKR_METRIC_SCALAR_U64, &ids->FIELD[i])) {     \
     heap_count = i;                                                            \
     break;                                                                     \
   }
@@ -539,10 +640,10 @@ void vkr_renderer_metrics_collect(
 #define VKR_SET_DELTA(FIELD, BASELINE, VALUE)                                  \
   do {                                                                         \
     const uint64_t current_ = (uint64_t)(VALUE);                               \
-    const uint64_t previous_ = renderer_metrics->previous.BASELINE;            \
-    vkr_metrics_counter_add(metrics, ids->FIELD,                               \
-                            current_ >= previous_ ? current_ - previous_ : 0); \
-    renderer_metrics->previous.BASELINE = current_;                            \
+    vkr_metrics_counter_add(                                                   \
+        metrics, ids->FIELD,                                                   \
+        vkr_renderer_metrics_cumulative_delta(                                 \
+            current_, &renderer_metrics->previous.BASELINE));                  \
   } while (0)
 
   VkrJobSystemMetrics jobs = {0};
@@ -636,14 +737,50 @@ void vkr_renderer_metrics_collect(
 
   VkrDeviceMemoryStats gpu = {0};
   if (vkr_renderer_get_device_memory_stats(renderer, &gpu)) {
+    const bool8_t counters_valid =
+        renderer_metrics->previous.gpu_memory_interval_contiguous;
     VKR_SET_U64(gpu_live_allocations, gpu.live_allocation_count);
     VKR_SET_U64(gpu_peak_allocations, gpu.peak_allocation_count);
-    VKR_SET_U64(gpu_total_allocations, gpu.total_allocation_count);
+    const uint64_t allocations_created = vkr_renderer_metrics_cumulative_delta(
+        gpu.total_allocation_count,
+        &renderer_metrics->previous.gpu_allocations_created);
+    if (counters_valid) {
+      vkr_metrics_counter_add(metrics, ids->gpu_allocations_created,
+                              allocations_created);
+    } else {
+      vkr_metrics_mark(metrics, ids->gpu_allocations_created,
+                       VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                       VKR_METRIC_REASON_NOT_SAMPLED);
+    }
     VKR_SET_U64(gpu_max_allocations, gpu.max_allocation_count);
     VKR_SET_U64(gpu_live_bytes, gpu.live_bytes);
     VKR_SET_U64(gpu_peak_bytes, gpu.peak_bytes);
     VKR_SET_U64(gpu_live_totals_exact, gpu.live_totals_exact);
     VKR_SET_U64(gpu_heap_usage_valid, gpu.heap_usage_valid);
+    for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner) {
+      uint64_t values[VKR_GPU_OWNER_METRIC_ROW_COUNT];
+      vkr_gpu_owner_metric_row_values(
+          &gpu.owners[owner], &renderer_metrics->previous, owner, values);
+      for (uint32_t row = 0; row < VKR_GPU_OWNER_METRIC_ROW_COUNT; ++row) {
+        const VkrMetricId id = ids->gpu_owner[owner][row];
+        if (vkr_gpu_owner_metric_rows[row].kind == VKR_METRIC_KIND_COUNTER) {
+          if (counters_valid) {
+            vkr_metrics_counter_add(metrics, id, values[row]);
+          } else {
+            vkr_metrics_mark(metrics, id, VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                             VKR_METRIC_REASON_NOT_SAMPLED);
+          }
+        } else {
+          vkr_metrics_gauge_set_u64(metrics, id, values[row]);
+        }
+        if (!gpu.live_totals_exact &&
+            vkr_gpu_owner_metric_rows[row].follows_handle_table_exactness) {
+          vkr_metrics_mark(metrics, id, VKR_METRIC_AVAILABILITY_INEXACT,
+                           VKR_METRIC_REASON_SOURCE_INEXACT);
+        }
+      }
+    }
+    renderer_metrics->previous.gpu_memory_interval_contiguous = true_v;
     if (!gpu.live_totals_exact) {
       vkr_metrics_mark(metrics, ids->gpu_live_allocations,
                        VKR_METRIC_AVAILABILITY_INEXACT,
@@ -687,6 +824,20 @@ void vkr_renderer_metrics_collect(
                          VKR_METRIC_REASON_UNSUPPORTED);
       }
     }
+  } else {
+    renderer_metrics->previous.gpu_memory_interval_contiguous = false_v;
+    vkr_metrics_mark(metrics, ids->gpu_allocations_created,
+                     VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                     VKR_METRIC_REASON_NOT_SAMPLED);
+    for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner) {
+      for (uint32_t row = 0; row < VKR_GPU_OWNER_METRIC_ROW_COUNT; ++row) {
+        if (vkr_gpu_owner_metric_rows[row].kind == VKR_METRIC_KIND_COUNTER) {
+          vkr_metrics_mark(metrics, ids->gpu_owner[owner][row],
+                           VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                           VKR_METRIC_REASON_NOT_SAMPLED);
+        }
+      }
+    }
   }
 
   uint32_t pipeline_created = 0;
@@ -726,11 +877,12 @@ const VkrRendererMetricsPassTable *vkr_renderer_metrics_get_pass_table(
   return renderer_metrics ? &renderer_metrics->passes : NULL;
 }
 
-bool8_t vkr_renderer_metrics_read_frame(
-    const VkrRendererMetrics *renderer_metrics, const VkrMetricsFrame *frame,
-    VkrRendererFrameMetrics *out_frame_metrics,
-    VkrVisibilityStats *out_visibility,
-    VkrRenderGraphResourceStats *out_rg_stats) {
+bool8_t
+vkr_renderer_metrics_read_frame(const VkrRendererMetrics *renderer_metrics,
+                                const VkrMetricsFrame *frame,
+                                VkrRendererFrameMetrics *out_frame_metrics,
+                                VkrVisibilityStats *out_visibility,
+                                VkrRenderGraphResourceStats *out_rg_stats) {
   if (!renderer_metrics || !frame) {
     return false_v;
   }
@@ -757,9 +909,8 @@ bool8_t vkr_renderer_metrics_read_frame(
   if (out_frame_metrics) {
     VkrWorldBatchMetrics *world = &out_frame_metrics->world;
     uint64_t collected = 0;
-    read_any =
-        vkr_metrics_frame_read_u64(frame, ids->world_draws_collected,
-                                   &collected);
+    read_any = vkr_metrics_frame_read_u64(frame, ids->world_draws_collected,
+                                          &collected);
     if (read_any) {
       world->draws_collected = (uint32_t)collected;
     }
@@ -770,8 +921,10 @@ bool8_t vkr_renderer_metrics_read_frame(
     VKR_READ_U32(world->draw_calls_issued, ids->world_draw_calls_issued);
     VKR_READ_U32(world->batches_created, ids->world_batches_created);
     VKR_READ_U32(world->draws_merged, ids->world_draws_merged);
-    VKR_READ_U32(world->indirect_draws_issued, ids->world_indirect_draws_issued);
-    VKR_READ_U32(world->indirect_calls_issued, ids->world_indirect_calls_issued);
+    VKR_READ_U32(world->indirect_draws_issued,
+                 ids->world_indirect_draws_issued);
+    VKR_READ_U32(world->indirect_calls_issued,
+                 ids->world_indirect_calls_issued);
     VKR_READ_U32(world->max_batch_size, ids->world_max_batch_size);
     float64_t avg_batch_size = 0.0;
     if (vkr_metrics_frame_read_f64(frame, ids->world_avg_batch_size,
@@ -1030,15 +1183,15 @@ bool8_t vkr_renderer_metrics_write_json(VkrRendererMetrics *renderer_metrics,
                                                &snapshot.frame->samples[i]);
   }
   if (success) {
-    success =
-        vkr_json_writer_end_array(writer) &&
-        vkr_json_name(writer, "passes_truncated") &&
-        vkr_json_writer_bool(writer, passes->truncated) &&
-        vkr_json_name(writer, "passes_cpu_frame_index") &&
-        vkr_json_writer_u64(writer, passes->cpu_frame_index) &&
-        vkr_json_name(writer, "passes_match_snapshot") &&
-        vkr_json_writer_bool(writer, passes_match_snapshot) &&
-        vkr_json_name(writer, "passes") && vkr_json_writer_begin_array(writer);
+    success = vkr_json_writer_end_array(writer) &&
+              vkr_json_name(writer, "passes_truncated") &&
+              vkr_json_writer_bool(writer, passes->truncated) &&
+              vkr_json_name(writer, "passes_cpu_frame_index") &&
+              vkr_json_writer_u64(writer, passes->cpu_frame_index) &&
+              vkr_json_name(writer, "passes_match_snapshot") &&
+              vkr_json_writer_bool(writer, passes_match_snapshot) &&
+              vkr_json_name(writer, "passes") &&
+              vkr_json_writer_begin_array(writer);
   }
   for (uint32_t i = 0; success && i < passes->count; ++i) {
     const VkrRendererMetricsPassSample *pass = &passes->samples[i];
@@ -1077,8 +1230,7 @@ bool8_t vkr_renderer_metrics_write_json(VkrRendererMetrics *renderer_metrics,
         vkr_json_name(writer, "dropped") &&
         vkr_json_writer_u64(writer, snapshot.frame->events_dropped) &&
         vkr_json_name(writer, "subjects_truncated") &&
-        vkr_json_writer_u64(writer,
-                            snapshot.frame->event_subjects_truncated) &&
+        vkr_json_writer_u64(writer, snapshot.frame->event_subjects_truncated) &&
         vkr_json_name(writer, "items") && vkr_json_writer_begin_array(writer);
   }
   uint32_t events_written = 0;

@@ -35,7 +35,8 @@
 typedef uint32_t VkrMetricId;
 
 typedef enum VkrMetricKind {
-  VKR_METRIC_KIND_COUNTER,  /**< Monotonic u64; the frame delta is published. */
+  VKR_METRIC_KIND_COUNTER,  /**< Interval u64; cumulative sources are
+                               differenced. */
   VKR_METRIC_KIND_GAUGE,    /**< Instantaneous u64 or f64. */
   VKR_METRIC_KIND_DURATION, /**< Integer nanoseconds; sum/count/min/max. */
 } VkrMetricKind;
@@ -391,7 +392,7 @@ bool8_t vkr_metrics_event_record(VkrMetricEventProducer producer,
 #define vkr_metrics_duration_add_ns(metrics, id, duration_ns) ((void)0)
 #define vkr_metrics_mark(metrics, id, availability, reason) ((void)0)
 #define vkr_metrics_event_record(producer, subject, start_ns, duration_ns,     \
-                                 bytes, status)                               \
+                                 bytes, status)                                \
   (true_v)
 #endif
 
@@ -418,15 +419,15 @@ static INLINE uint64_t vkr_metrics_elapsed_ns(float64_t start_seconds) {
 }
 
 #if VKR_METRICS_ENABLED
-/* The timer lives in the `for` scope, so nesting shadows rather than collides. */
+/* The timer lives in the `for` scope, so nesting shadows rather than collides.
+ */
 #define VKR_METRICS_SCOPE_NS(metrics, id)                                      \
-  for (VkrMetricsScopeTimer vkr_metrics_scope_ =                               \
-           {vkr_platform_get_absolute_time(), true_v};                         \
-       vkr_metrics_scope_.active;                                              \
-       vkr_metrics_scope_.active = false_v,                                    \
-       vkr_metrics_duration_add_ns(                                            \
-           (metrics), (id),                                                    \
-           vkr_metrics_elapsed_ns(vkr_metrics_scope_.start_seconds)))
+  for (VkrMetricsScopeTimer                                                    \
+           vkr_metrics_scope_ = {vkr_platform_get_absolute_time(), true_v};    \
+       vkr_metrics_scope_.active; vkr_metrics_scope_.active = false_v,         \
+           vkr_metrics_duration_add_ns((metrics), (id),                        \
+                                       vkr_metrics_elapsed_ns(                 \
+                                           vkr_metrics_scope_.start_seconds)))
 
 #define VKR_METRICS_ADD_ELAPSED_NS(metrics, id, start_seconds)                 \
   vkr_metrics_duration_add_ns((metrics), (id),                                 \

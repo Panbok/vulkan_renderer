@@ -21,6 +21,24 @@ typedef enum VkrRendererAssetMetricSource {
   VKR_RENDERER_ASSET_METRIC_COUNT,
 } VkrRendererAssetMetricSource;
 
+/**
+ * @brief The published rows for each `VkrGpuAllocationOwner` bucket.
+ *
+ * Order matches the row description table in vkr_renderer_metrics.c, which
+ * owns each row's name suffix, kind, unit, and whether the handle table's
+ * exactness applies to it. Adding a row is one enumerator plus one table entry;
+ * registration and collection iterate this enum and need no change.
+ */
+typedef enum VkrGpuOwnerMetricRow {
+  VKR_GPU_OWNER_METRIC_ROW_LIVE_BYTES = 0,
+  VKR_GPU_OWNER_METRIC_ROW_PEAK_BYTES,
+  VKR_GPU_OWNER_METRIC_ROW_ALLOCATED_BYTES,
+  VKR_GPU_OWNER_METRIC_ROW_LIVE_ALLOCATIONS,
+  VKR_GPU_OWNER_METRIC_ROW_PEAK_ALLOCATIONS,
+  VKR_GPU_OWNER_METRIC_ROW_CREATED_ALLOCATIONS,
+  VKR_GPU_OWNER_METRIC_ROW_COUNT,
+} VkrGpuOwnerMetricRow;
+
 typedef struct VkrRendererMetricsPassSample {
   char name[VKR_METRIC_NAME_MAX + 1u];
   uint8_t name_length;
@@ -116,12 +134,14 @@ typedef struct VkrRendererMetricIds {
 
   VkrMetricId gpu_live_allocations;
   VkrMetricId gpu_peak_allocations;
-  VkrMetricId gpu_total_allocations;
+  VkrMetricId gpu_allocations_created;
   VkrMetricId gpu_max_allocations;
   VkrMetricId gpu_live_bytes;
   VkrMetricId gpu_peak_bytes;
   VkrMetricId gpu_live_totals_exact;
   VkrMetricId gpu_heap_usage_valid;
+  VkrMetricId gpu_owner[VKR_GPU_ALLOCATION_OWNER_COUNT]
+                       [VKR_GPU_OWNER_METRIC_ROW_COUNT];
   VkrMetricId gpu_type_live_bytes[VKR_DEVICE_MEMORY_TYPE_MAX];
   VkrMetricId gpu_type_live_allocations[VKR_DEVICE_MEMORY_TYPE_MAX];
   VkrMetricId gpu_heap_size_bytes[VKR_DEVICE_MEMORY_HEAP_MAX];
@@ -154,9 +174,10 @@ typedef struct VkrRendererMetricsProducerConfig {
 /**
  * @brief Last-seen values of cumulative pull sources.
  *
- * The pipeline registry and job system count up for the process lifetime.
- * These baselines turn each pull into a per-frame delta so the published
- * counters describe this frame's work rather than the run's running total.
+ * The pipeline registry, job system, and device-memory tracker count up for the
+ * process lifetime. These baselines turn each pull into a per-frame delta so
+ * the published counters describe this frame's work rather than the run's
+ * running total.
  */
 typedef struct VkrRendererCumulativeBaselines {
   uint64_t pipelines_created;
@@ -164,7 +185,22 @@ typedef struct VkrRendererCumulativeBaselines {
   uint64_t redundant_binds_avoided;
   uint64_t meshes_batched;
   uint64_t jobs_completed;
+  uint64_t gpu_allocations_created;
+  struct {
+    uint64_t allocated_bytes;
+    uint64_t allocations_created;
+  } gpu_owner[VKR_GPU_ALLOCATION_OWNER_COUNT];
+  /** False after a failed pull until one snapshot re-establishes baselines. */
+  bool8_t gpu_memory_interval_contiguous;
 } VkrRendererCumulativeBaselines;
+
+/** Advances one cumulative-source baseline and returns its interval delta. */
+static INLINE uint64_t
+vkr_renderer_metrics_cumulative_delta(uint64_t current, uint64_t *previous) {
+  const uint64_t prior = *previous;
+  *previous = current;
+  return current >= prior ? current - prior : 0u;
+}
 
 typedef struct VkrRendererMetrics {
   VkrMetrics *metrics;
@@ -225,8 +261,9 @@ bool8_t vkr_renderer_metrics_write_json(VkrRendererMetrics *renderer_metrics,
  *
  * @return True when at least the world batch metrics were readable.
  */
-bool8_t vkr_renderer_metrics_read_frame(
-    const VkrRendererMetrics *renderer_metrics, const VkrMetricsFrame *frame,
-    VkrRendererFrameMetrics *out_frame_metrics,
-    VkrVisibilityStats *out_visibility,
-    VkrRenderGraphResourceStats *out_rg_stats);
+bool8_t
+vkr_renderer_metrics_read_frame(const VkrRendererMetrics *renderer_metrics,
+                                const VkrMetricsFrame *frame,
+                                VkrRendererFrameMetrics *out_frame_metrics,
+                                VkrVisibilityStats *out_visibility,
+                                VkrRenderGraphResourceStats *out_rg_stats);
