@@ -2,10 +2,6 @@
 
 #include "core/vkr_json_writer.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 static String8 vkr_harness_string(const char *value) {
   const char *safe = value ? value : "";
   return string8_create_from_cstr((const uint8_t *)safe, string_length(safe));
@@ -79,15 +75,15 @@ void vkr_harness_report_add_authority_reason(VkrHarnessReport *report,
                                              const char *reason) {
   report->authoritative = false_v;
   for (uint32_t i = 0; i < report->authority_reason_count; ++i) {
-    if (strcmp(report->authority_reasons[i], reason) == 0) {
+    if (string_equals(report->authority_reasons[i], reason)) {
       return;
     }
   }
   if (report->authority_reason_count >= VKR_HARNESS_MAX_AUTHORITY_REASONS) {
     return;
   }
-  snprintf(report->authority_reasons[report->authority_reason_count++],
-           sizeof(report->authority_reasons[0]), "%s", reason);
+  string_format(report->authority_reasons[report->authority_reason_count++],
+                sizeof(report->authority_reasons[0]), "%s", reason);
 }
 
 void vkr_harness_report_add_incompatibility(VkrHarnessReport *report,
@@ -95,13 +91,13 @@ void vkr_harness_report_add_incompatibility(VkrHarnessReport *report,
   report->profile_compatible = false_v;
   vkr_harness_report_add_authority_reason(report, reason);
   for (uint32_t i = 0; i < report->incompatibility_reason_count; ++i) {
-    if (strcmp(report->incompatibility_reasons[i], reason) == 0) {
+    if (string_equals(report->incompatibility_reasons[i], reason)) {
       return;
     }
   }
   if (report->incompatibility_reason_count <
       ArrayCount(report->incompatibility_reasons)) {
-    snprintf(
+    string_format(
         report->incompatibility_reasons[report->incompatibility_reason_count++],
         sizeof(report->incompatibility_reasons[0]), "%s", reason);
   }
@@ -120,18 +116,18 @@ bool8_t vkr_harness_report_add_artifact(VkrHarnessReport *report,
   if (!vkr_harness_sha256_file(absolute_path, artifact->sha256)) {
     return false_v;
   }
-  snprintf(artifact->role, sizeof(artifact->role), "%s", role);
-  snprintf(artifact->path, sizeof(artifact->path), "%s", relative_path);
-  snprintf(artifact->media_type, sizeof(artifact->media_type), "%s",
-           media_type);
-  snprintf(artifact->status, sizeof(artifact->status), "complete");
+  string_format(artifact->role, sizeof(artifact->role), "%s", role);
+  string_format(artifact->path, sizeof(artifact->path), "%s", relative_path);
+  string_format(artifact->media_type, sizeof(artifact->media_type), "%s",
+                media_type);
+  string_format(artifact->status, sizeof(artifact->status), "complete");
   report->artifact_count++;
   return true_v;
 }
 
 void vkr_harness_report_set_status(VkrHarnessReport *report, const char *status,
                                    VkrHarnessExitCode exit_code) {
-  snprintf(report->status, sizeof(report->status), "%s", status);
+  string_format(report->status, sizeof(report->status), "%s", status);
   report->exit_code = exit_code;
 }
 
@@ -317,8 +313,8 @@ bool8_t vkr_harness_report_write(const char *path,
     const VkrHarnessPassResult *pass = &report->passes[i];
     VkrHarnessMetricResult cpu = {.statistics = pass->cpu_ms};
     VkrHarnessMetricResult gpu = {.statistics = pass->gpu_ms};
-    snprintf(cpu.unit, sizeof(cpu.unit), "ms");
-    snprintf(gpu.unit, sizeof(gpu.unit), "ms");
+    string_format(cpu.unit, sizeof(cpu.unit), "ms");
+    string_format(gpu.unit, sizeof(gpu.unit), "ms");
     ok =
         vkr_json_writer_begin_object(writer) &&
         vkr_harness_json_string(writer, "name", pass->name) &&
@@ -447,16 +443,15 @@ bool8_t vkr_harness_summary_csv_write(const char *path,
                           "Unable to allocate the summary buffer");
     return false_v;
   }
-  uint64_t used = (uint64_t)snprintf(
-      csv, (size_t)capacity,
-      "run_index,metric,unit,stat,value,sample_count,status\n");
+  uint64_t used = (uint64_t)string_format(
+      csv, capacity, "run_index,metric,unit,stat,value,sample_count,status\n");
   for (uint32_t metric_index = 0; metric_index < report->metric_count;
        ++metric_index) {
     const VkrHarnessMetricResult *metric = &report->metrics[metric_index];
     for (uint32_t stat = 0; stat < VKR_HARNESS_STAT_COUNT; ++stat) {
-      const int written = snprintf(
-          csv + used, (size_t)(capacity - used),
-          "aggregate,%s,%s,%s,%.17g,%llu,%s\n", metric->name, metric->unit,
+      const int32_t written = string_format(
+          csv + used, capacity - used, "aggregate,%s,%s,%s,%.17g,%llu,%s\n",
+          metric->name, metric->unit,
           vkr_harness_statistic_name((VkrHarnessStatisticKind)stat),
           vkr_harness_statistic_value(&metric->statistics,
                                       (VkrHarnessStatisticKind)stat),

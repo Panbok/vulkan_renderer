@@ -1,9 +1,15 @@
 #pragma once
 
+#include "containers/str.h"
+#include "containers/vkr_sort.h"
 #include "core/vkr_metrics.h"
 #include "defines.h"
+#include "filesystem/filesystem.h"
 #include "math/vec.h"
+#include "math/vkr_math.h"
 #include "memory/arena.h"
+#include "memory/vkr_arena_allocator.h"
+#include "platform/vkr_platform.h"
 
 #define VKR_HARNESS_SCHEMA_VERSION 1u
 #define VKR_HARNESS_CAMERA_SCRIPT_VERSION 1u
@@ -390,6 +396,15 @@ typedef struct VkrHarnessReport {
 void vkr_harness_error_clear(VkrHarnessError *error);
 void vkr_harness_error_set(VkrHarnessError *error, const char *code,
                            const char *field, const char *format, ...);
+void vkr_harness_stdout(const char *format, ...);
+void vkr_harness_stderr(const char *format, ...);
+
+/** A borrowed, non-allocating FilePath view over null-terminated path text. */
+FilePath vkr_harness_file_path(const char *path);
+
+/** Reads a file into a raw harness arena without allocator-metric pollution. */
+bool8_t vkr_harness_read_file(const char *path, Arena *arena,
+                              uint8_t **out_data, uint64_t *out_size);
 
 bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
                                const char *manifest_path,

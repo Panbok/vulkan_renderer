@@ -1,14 +1,10 @@
 #include "vkr_harness.h"
 
-#include <stdarg.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-static int vkr_harness_fingerprint_field_compare(const void *a, const void *b) {
+static int32_t vkr_harness_fingerprint_field_compare(const void *a,
+                                                     const void *b) {
   const VkrHarnessFingerprintField *lhs = a;
   const VkrHarnessFingerprintField *rhs = b;
-  return strcmp(lhs->name, rhs->name);
+  return string_compare(lhs->name, rhs->name);
 }
 
 /**
@@ -38,24 +34,24 @@ bool8_t vkr_harness_fingerprint(const VkrHarnessFingerprintField *fields,
   }
   VkrHarnessFingerprintField sorted[VKR_HARNESS_MAX_FINGERPRINT_FIELDS];
   if (field_count > 0) {
-    memcpy(sorted, fields, sizeof(*sorted) * field_count);
-    qsort(sorted, field_count, sizeof(*sorted),
-          vkr_harness_fingerprint_field_compare);
+    MemCopy(sorted, fields, sizeof(*sorted) * field_count);
+    vkr_sort(sorted, field_count, sizeof(*sorted),
+             vkr_harness_fingerprint_field_compare);
   }
   VkrHarnessSha256 hash;
   vkr_harness_sha256_begin(&hash);
   for (uint32_t i = 0; i < field_count; ++i) {
     if (sorted[i].name[0] == '\0' ||
-        (i > 0 && strcmp(sorted[i - 1u].name, sorted[i].name) == 0)) {
+        (i > 0 && string_equals(sorted[i - 1u].name, sorted[i].name))) {
       vkr_harness_error_set(
           out_error, "fingerprint.field", "$.comparison",
           "Fingerprint field names must be unique and nonempty");
       return false_v;
     }
     vkr_harness_fingerprint_absorb(&hash, sorted[i].name,
-                                   (uint32_t)strlen(sorted[i].name));
+                                   (uint32_t)string_length(sorted[i].name));
     vkr_harness_fingerprint_absorb(&hash, sorted[i].value,
-                                   (uint32_t)strlen(sorted[i].value));
+                                   (uint32_t)string_length(sorted[i].value));
   }
   vkr_harness_sha256_end(&hash, out_digest);
   return true_v;
@@ -73,11 +69,11 @@ static bool8_t vkr_harness_add_field(
   }
   VkrHarnessFingerprintField *field = &fields[*count];
   const int name_length =
-      snprintf(field->name, sizeof(field->name), "%s", name);
+      string_format(field->name, sizeof(field->name), "%s", name);
   va_list args;
   va_start(args, format);
   const int value_length =
-      vsnprintf(field->value, sizeof(field->value), format, args);
+      string_format_v(field->value, sizeof(field->value), format, args);
   va_end(args);
   if (name_length < 0 || (uint32_t)name_length >= sizeof(field->name) ||
       value_length < 0 || (uint32_t)value_length >= sizeof(field->value)) {
@@ -135,7 +131,7 @@ bool8_t vkr_harness_case_fingerprints(
       case_manifest->camera.orbit_start_angle_degrees);
   for (uint32_t i = 0; i < case_manifest->camera.key_count; ++i) {
     char name[96];
-    snprintf(name, sizeof(name), "camera.key.%03u", i);
+    string_format(name, sizeof(name), "camera.key.%03u", i);
     ADD(name, "%.17g,%.9g,%.9g,%.9g,%.9g,%.9g",
         case_manifest->camera.keys[i].time_seconds,
         case_manifest->camera.keys[i].position.x,
@@ -164,18 +160,18 @@ bool8_t vkr_harness_case_fingerprints(
   if (tool != VKR_HARNESS_TOOL_PROFILE) {
     for (uint32_t i = 0; i < case_manifest->capture_count; ++i) {
       char name[96];
-      snprintf(name, sizeof(name), "capture.%03u", i);
+      string_format(name, sizeof(name), "capture.%03u", i);
       char value[VKR_HARNESS_TEXT_MAX];
-      int written = snprintf(value, sizeof(value), "%u",
-                             case_manifest->captures[i].at_frame);
+      int32_t written = string_format(value, sizeof(value), "%u",
+                                      case_manifest->captures[i].at_frame);
       for (uint32_t channel = 0;
            channel < case_manifest->captures[i].channel_count; ++channel) {
         if (written < 0 || (uint32_t)written >= sizeof(value)) {
           goto too_many;
         }
         written +=
-            snprintf(value + written, sizeof(value) - (uint32_t)written, ",%s",
-                     case_manifest->captures[i].channels[channel]);
+            string_format(value + written, sizeof(value) - (uint32_t)written,
+                          ",%s", case_manifest->captures[i].channels[channel]);
       }
       if (written < 0 || (uint32_t)written >= sizeof(value)) {
         goto too_many;
@@ -211,12 +207,12 @@ bool8_t vkr_harness_case_fingerprints(
   ADD("statistics.algorithm", "%s", "nearest-rank-v1,population-stddev-v1");
   for (uint32_t i = 0; i < profile->required_metric_count; ++i) {
     char name[96];
-    snprintf(name, sizeof(name), "required_metric.%03u", i);
+    string_format(name, sizeof(name), "required_metric.%03u", i);
     ADD(name, "%s", profile->required_metrics[i]);
   }
   for (uint32_t i = 0; i < case_manifest->assertion_count; ++i) {
     char name[96];
-    snprintf(name, sizeof(name), "assertion.%03u", i);
+    string_format(name, sizeof(name), "assertion.%03u", i);
     ADD(name, "%s,%u,%u,%.17g,%.17g", case_manifest->assertions[i].metric,
         case_manifest->assertions[i].statistic,
         case_manifest->assertions[i].operation,

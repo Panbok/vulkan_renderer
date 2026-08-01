@@ -93,10 +93,6 @@ typedef struct VkrHarnessSampleSet {
   const VkrHarnessSampleEvent *events;
 } VkrHarnessSampleSet;
 
-/** Reads a whole file into `arena`; the caller controls its lifetime. */
-bool8_t vkr_harness_read_file(const char *path, Arena *arena,
-                              uint8_t **out_data, uint64_t *out_length);
-
 bool8_t vkr_harness_samples_write(const char *path,
                                   const VkrHarnessSampleFileHeader *header,
                                   const VkrHarnessSampleSet *samples,

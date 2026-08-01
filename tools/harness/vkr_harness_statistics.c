@@ -1,10 +1,6 @@
 #include "vkr_harness.h"
 
-#include <math.h>
-#include <stdlib.h>
-#include <string.h>
-
-static int vkr_harness_compare_f64(const void *a, const void *b) {
+static int32_t vkr_harness_compare_f64(const void *a, const void *b) {
   const float64_t lhs = *(const float64_t *)a;
   const float64_t rhs = *(const float64_t *)b;
   return lhs < rhs ? -1 : lhs > rhs ? 1 : 0;
@@ -27,11 +23,11 @@ bool8_t vkr_harness_statistics_compute(const float64_t *samples,
   float64_t *sorted = sort_scratch;
   MemCopy(sorted, samples, (size_t)sample_count * sizeof(*sorted));
   for (uint64_t i = 0; i < sample_count; ++i) {
-    if (!isfinite(sorted[i])) {
+    if (!vkr_is_finite_f64(sorted[i])) {
       return false_v;
     }
   }
-  qsort(sorted, (size_t)sample_count, sizeof(*sorted), vkr_harness_compare_f64);
+  vkr_sort(sorted, sample_count, sizeof(*sorted), vkr_harness_compare_f64);
   float64_t total = 0.0;
   for (uint64_t i = 0; i < sample_count; ++i) {
     total += samples[i];
@@ -52,7 +48,7 @@ bool8_t vkr_harness_statistics_compute(const float64_t *samples,
       .p95 = sorted[p95_rank > 0 ? p95_rank - 1u : 0u],
       .min = sorted[0],
       .max = sorted[sample_count - 1u],
-      .stddev = sqrt(variance / (float64_t)sample_count),
+      .stddev = vkr_sqrt_f64(variance / (float64_t)sample_count),
       .total = total,
   };
   return true_v;

@@ -1,9 +1,5 @@
 #include "vkr_harness_json.h"
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 #define VKR_HARNESS_MANIFEST_MAX_BYTES MB(1)
 
 static bool8_t vkr_harness_manifest_field(const VkrHarnessJsonDocument *doc,
@@ -133,11 +129,11 @@ static bool8_t vkr_harness_metric_name_valid(const char *name) {
 
 static bool8_t vkr_harness_parse_speed(const char *value,
                                        VkrHarnessSpeed *out) {
-  if (strcmp(value, "slow") == 0) {
+  if (string_equals(value, "slow")) {
     *out = VKR_HARNESS_SPEED_SLOW;
-  } else if (strcmp(value, "medium") == 0) {
+  } else if (string_equals(value, "medium")) {
     *out = VKR_HARNESS_SPEED_MEDIUM;
-  } else if (strcmp(value, "fast") == 0) {
+  } else if (string_equals(value, "fast")) {
     *out = VKR_HARNESS_SPEED_FAST;
   } else {
     return false_v;
@@ -147,11 +143,11 @@ static bool8_t vkr_harness_parse_speed(const char *value,
 
 static bool8_t vkr_harness_parse_target(const char *value,
                                         VkrHarnessTarget *out) {
-  if (strcmp(value, "windowed_visible") == 0) {
+  if (string_equals(value, "windowed_visible")) {
     *out = VKR_HARNESS_TARGET_WINDOWED_VISIBLE;
-  } else if (strcmp(value, "windowed_hidden") == 0) {
+  } else if (string_equals(value, "windowed_hidden")) {
     *out = VKR_HARNESS_TARGET_WINDOWED_HIDDEN;
-  } else if (strcmp(value, "offscreen") == 0) {
+  } else if (string_equals(value, "offscreen")) {
     *out = VKR_HARNESS_TARGET_OFFSCREEN;
   } else {
     return false_v;
@@ -161,11 +157,11 @@ static bool8_t vkr_harness_parse_target(const char *value,
 
 static bool8_t vkr_harness_parse_present(const char *value,
                                          VkrHarnessPresentMode *out) {
-  if (strcmp(value, "immediate") == 0) {
+  if (string_equals(value, "immediate")) {
     *out = VKR_HARNESS_PRESENT_IMMEDIATE;
-  } else if (strcmp(value, "fifo") == 0) {
+  } else if (string_equals(value, "fifo")) {
     *out = VKR_HARNESS_PRESENT_FIFO;
-  } else if (strcmp(value, "none") == 0) {
+  } else if (string_equals(value, "none")) {
     *out = VKR_HARNESS_PRESENT_NONE;
   } else {
     return false_v;
@@ -260,9 +256,9 @@ static bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
                           "Camera mode, speed, or interpolation is invalid");
     return false_v;
   }
-  if (strcmp(interpolation, "catmull_rom") == 0) {
+  if (string_equals(interpolation, "catmull_rom")) {
     camera->interpolation = VKR_HARNESS_CAMERA_INTERPOLATION_CATMULL_ROM;
-  } else if (strcmp(interpolation, "linear") != 0) {
+  } else if (!string_equals(interpolation, "linear")) {
     vkr_harness_error_set(error, "camera.interpolation",
                           "$.camera.interpolation", "Unknown interpolation");
     return false_v;
@@ -316,7 +312,7 @@ static bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
                                   &angle_token, error)) {
     return false_v;
   }
-  if (strcmp(mode, "static") == 0) {
+  if (string_equals(mode, "static")) {
     camera->mode = VKR_HARNESS_CAMERA_STATIC;
     float64_t yaw = 0.0;
     float64_t pitch = 0.0;
@@ -334,9 +330,9 @@ static bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
     }
     camera->static_pose.yaw_degrees = (float32_t)yaw;
     camera->static_pose.pitch_degrees = (float32_t)pitch;
-  } else if (strcmp(mode, "keyframes") == 0 ||
-             strcmp(mode, "flythrough") == 0) {
-    camera->mode = strcmp(mode, "keyframes") == 0
+  } else if (string_equals(mode, "keyframes") ||
+             string_equals(mode, "flythrough")) {
+    camera->mode = string_equals(mode, "keyframes")
                        ? VKR_HARNESS_CAMERA_KEYFRAMES
                        : VKR_HARNESS_CAMERA_FLYTHROUGH;
     if (keys < 0 || position >= 0 || center >= 0 || yaw_token >= 0 ||
@@ -345,7 +341,7 @@ static bool8_t vkr_harness_parse_camera(const VkrHarnessJsonDocument *doc,
         !vkr_harness_parse_camera_keys(doc, keys, camera, error)) {
       return false_v;
     }
-  } else if (strcmp(mode, "orbit") == 0) {
+  } else if (string_equals(mode, "orbit")) {
     camera->mode = VKR_HARNESS_CAMERA_ORBIT;
     float64_t radius = 0.0;
     float64_t height = 0.0;
@@ -443,7 +439,7 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
           ArrayCount(required), "$.renderer", error)) {
     return false_v;
   }
-  strcpy(renderer->render_mode, "default");
+  string_copy(renderer->render_mode, "default");
   uint64_t cascades = 0;
   if (!vkr_harness_manifest_bool(doc, token, "editor", true_v,
                                  &renderer->editor, error) ||
@@ -461,13 +457,13 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   }
   renderer->shadow_cascades = (uint32_t)cascades;
   const bool8_t preset_valid =
-      strcmp(renderer->shadow_preset, "default") == 0 ||
-      strcmp(renderer->shadow_preset, "balanced") == 0 ||
-      strcmp(renderer->shadow_preset, "high") == 0;
-  const bool8_t mode_valid = strcmp(renderer->render_mode, "default") == 0 ||
-                             strcmp(renderer->render_mode, "lighting") == 0 ||
-                             strcmp(renderer->render_mode, "normal") == 0 ||
-                             strcmp(renderer->render_mode, "unlit") == 0;
+      string_equals(renderer->shadow_preset, "default") ||
+      string_equals(renderer->shadow_preset, "balanced") ||
+      string_equals(renderer->shadow_preset, "high");
+  const bool8_t mode_valid = string_equals(renderer->render_mode, "default") ||
+                             string_equals(renderer->render_mode, "lighting") ||
+                             string_equals(renderer->render_mode, "normal") ||
+                             string_equals(renderer->render_mode, "unlit");
   if (!preset_valid || !mode_valid || cascades < 1u || cascades > 8u) {
     vkr_harness_error_set(error, "renderer.config", "$.renderer",
                           "Renderer preset, mode, or cascade count is invalid");
@@ -490,12 +486,12 @@ static bool8_t vkr_harness_capture_channel_known(const char *channel) {
       "shadow_debug_depth",
   };
   for (uint32_t i = 0; i < ArrayCount(fixed); ++i) {
-    if (strcmp(channel, fixed[i]) == 0) {
+    if (string_equals(channel, fixed[i])) {
       return true_v;
     }
   }
   const char prefix[] = "shadow_cascade_";
-  if (strncmp(channel, prefix, sizeof(prefix) - 1u) == 0 &&
+  if (string_n_equals(channel, prefix, sizeof(prefix) - 1u) &&
       channel[sizeof(prefix) - 1u] >= '0' &&
       channel[sizeof(prefix) - 1u] <= '7' && channel[sizeof(prefix)] == '\0') {
     return true_v;
@@ -564,7 +560,7 @@ static bool8_t vkr_harness_parse_captures(const VkrHarnessJsonDocument *doc,
         return false_v;
       }
       for (uint32_t prior = 0; prior < capture->channel_count; ++prior) {
-        if (strcmp(capture->channels[prior], channel) == 0) {
+        if (string_equals(capture->channels[prior], channel)) {
           vkr_harness_error_set(error, "capture.duplicate_channel",
                                 "$.captures[].channels[]",
                                 "Duplicate capture channel '%s'", channel);
@@ -704,8 +700,8 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
       .warmup_frames = 120u,
       .compare = vkr_harness_compare_defaults(),
   };
-  snprintf(out_case->manifest_path, sizeof(out_case->manifest_path), "%s",
-           manifest_path ? manifest_path : "<memory>");
+  string_format(out_case->manifest_path, sizeof(out_case->manifest_path), "%s",
+                manifest_path ? manifest_path : "<memory>");
   uint64_t schema = 0;
   uint64_t target_images = out_case->target_image_count;
   int32_t target_images_token = -1;
@@ -761,15 +757,16 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
       !vkr_harness_manifest_id_valid(out_case->id) ||
       !vkr_harness_manifest_component_valid(out_case->suite) ||
       !vkr_harness_path_is_safe_relative(out_case->scene) ||
-      strncmp(out_case->scene, "assets/scenes/", 14u) != 0 ||
-      strncmp(out_case->id, out_case->suite, strlen(out_case->suite)) != 0 ||
-      out_case->id[strlen(out_case->suite)] != '.' ||
+      !string_n_equals(out_case->scene, "assets/scenes/", 14u) ||
+      !string_n_equals(out_case->id, out_case->suite,
+                       string_length(out_case->suite)) ||
+      out_case->id[string_length(out_case->suite)] != '.' ||
       out_case->seed > UINT32_MAX || out_case->fixed_delta_seconds <= 0.0 ||
       target_images < 1u || target_images > 8u || repetitions == 0u ||
       repetitions > VKR_HARNESS_MAX_RUNS || repetition_timeout == 0u ||
       repetition_timeout > UINT32_MAX || asset_timeout == 0u ||
       asset_timeout > UINT32_MAX ||
-      (strcmp(boot, "full") != 0 && strcmp(boot, "automation") != 0) ||
+      (!string_equals(boot, "full") && !string_equals(boot, "automation")) ||
       !vkr_harness_parse_target(target, &out_case->target) ||
       !vkr_harness_parse_present(present, &out_case->present)) {
     vkr_harness_error_set(
@@ -777,13 +774,13 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
         "Case identity, path, enum, timing, or count is invalid");
     return false_v;
   }
-  out_case->boot = strcmp(boot, "full") == 0 ? VKR_HARNESS_BOOT_FULL
-                                             : VKR_HARNESS_BOOT_AUTOMATION;
-  if (strcmp(cache, "isolated_cold") == 0) {
+  out_case->boot = string_equals(boot, "full") ? VKR_HARNESS_BOOT_FULL
+                                               : VKR_HARNESS_BOOT_AUTOMATION;
+  if (string_equals(cache, "isolated_cold")) {
     out_case->cache = VKR_HARNESS_CACHE_ISOLATED_COLD;
-  } else if (strcmp(cache, "isolated_warm") == 0) {
+  } else if (string_equals(cache, "isolated_warm")) {
     out_case->cache = VKR_HARNESS_CACHE_ISOLATED_WARM;
-  } else if (strcmp(cache, "shared") == 0) {
+  } else if (string_equals(cache, "shared")) {
     out_case->cache = VKR_HARNESS_CACHE_SHARED;
   } else {
     vkr_harness_error_set(out_error, "case.cache", "$.cache",
@@ -907,8 +904,8 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
       .warmup_max_drift_ratio = 0.10,
       .require_warmup_stability = true_v,
   };
-  snprintf(out_profile->manifest_path, sizeof(out_profile->manifest_path), "%s",
-           manifest_path ? manifest_path : "<memory>");
+  string_format(out_profile->manifest_path, sizeof(out_profile->manifest_path),
+                "%s", manifest_path ? manifest_path : "<memory>");
   uint64_t schema = 0;
   char dirty[24];
   if (!vkr_harness_manifest_u64(&doc, 0, "schema_version", true_v, &schema,
@@ -927,9 +924,9 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
     return false_v;
   }
   out_profile->schema_version = (uint32_t)schema;
-  if (strcmp(dirty, "require_clean") == 0) {
+  if (string_equals(dirty, "require_clean")) {
     out_profile->allow_dirty = false_v;
-  } else if (strcmp(dirty, "allow") == 0) {
+  } else if (string_equals(dirty, "allow")) {
     out_profile->allow_dirty = true_v;
   } else {
     vkr_harness_error_set(out_error, "profile.dirty_policy", "$.dirty_policy",
@@ -1089,7 +1086,7 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
     }
     for (uint32_t prior = 0; prior < out_profile->required_metric_count;
          ++prior) {
-      if (strcmp(out_profile->required_metrics[prior], name) == 0) {
+      if (string_equals(out_profile->required_metrics[prior], name)) {
         vkr_harness_error_set(out_error, "profile.duplicate_metric",
                               "$.required_metrics[]",
                               "Duplicate required metric '%s'", name);
@@ -1110,39 +1107,40 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
   return true_v;
 }
 
-static bool8_t vkr_harness_load_text(const char *path, char **out_data,
-                                     uint64_t *out_length,
+static bool8_t vkr_harness_load_text(const char *path, Arena *arena,
+                                     char **out_data, uint64_t *out_length,
                                      VkrHarnessError *error) {
-  FILE *file = fopen(path, "rb");
-  if (!file || fseek(file, 0, SEEK_END) != 0) {
-    if (file) {
-      fclose(file);
-    }
+  FilePath file_path = vkr_harness_file_path(path);
+  FileStats stats = {0};
+  if (file_stats(&file_path, &stats) != FILE_ERROR_NONE) {
     vkr_harness_error_set(error, "manifest.open", "$",
                           "Unable to open manifest '%s'", path);
     return false_v;
   }
-  const long size = ftell(file);
-  if (size <= 0 || (uint64_t)size > VKR_HARNESS_MANIFEST_MAX_BYTES ||
-      fseek(file, 0, SEEK_SET) != 0) {
-    fclose(file);
+  if (stats.size == 0u || stats.size > VKR_HARNESS_MANIFEST_MAX_BYTES) {
     vkr_harness_error_set(error, "manifest.size", "$",
                           "Manifest is empty or exceeds %llu bytes",
                           (unsigned long long)VKR_HARNESS_MANIFEST_MAX_BYTES);
     return false_v;
   }
-  char *data = malloc((size_t)size + 1u);
-  if (!data || fread(data, 1, (size_t)size, file) != (size_t)size) {
-    free(data);
-    fclose(file);
+  uint8_t *bytes = NULL;
+  uint64_t size = 0u;
+  if (!vkr_harness_read_file(path, arena, &bytes, &size) || size == 0u ||
+      size > VKR_HARNESS_MANIFEST_MAX_BYTES) {
     vkr_harness_error_set(error, "manifest.read", "$",
                           "Unable to read manifest '%s'", path);
     return false_v;
   }
-  fclose(file);
+  char *data = arena_alloc(arena, size + 1u, ARENA_MEMORY_TAG_FILE);
+  if (!data) {
+    vkr_harness_error_set(error, "manifest.read", "$",
+                          "Unable to allocate manifest storage");
+    return false_v;
+  }
+  MemCopy(data, bytes, size);
   data[size] = '\0';
   *out_data = data;
-  *out_length = (uint64_t)size;
+  *out_length = size;
   return true_v;
 }
 
@@ -1157,12 +1155,15 @@ bool8_t vkr_harness_case_load(const char *repository_root,
   }
   char *json = NULL;
   uint64_t length = 0;
-  if (!vkr_harness_load_text(path, &json, &length, out_error)) {
+  Arena *load_arena = arena_create(MB(2), KB(4));
+  if (!load_arena ||
+      !vkr_harness_load_text(path, load_arena, &json, &length, out_error)) {
+    arena_destroy(load_arena);
     return false_v;
   }
   const bool8_t parsed = vkr_harness_case_parse(
       json, length, relative_manifest_path, out_case, out_error);
-  free(json);
+  arena_destroy(load_arena);
   if (!parsed) {
     return false_v;
   }
@@ -1172,15 +1173,15 @@ bool8_t vkr_harness_case_load(const char *repository_root,
     return false_v;
   }
   const char prefix[] = "tools/cases/";
-  if (strncmp(relative_manifest_path, prefix, sizeof(prefix) - 1u) != 0) {
+  if (!string_n_equals(relative_manifest_path, prefix, sizeof(prefix) - 1u)) {
     vkr_harness_error_set(out_error, "case.root", "$.suite",
                           "Cases must live under tools/cases/<suite>/");
     return false_v;
   }
   const char *suite = relative_manifest_path + sizeof(prefix) - 1u;
-  const char *slash = strchr(suite, '/');
-  if (!slash || (uint64_t)(slash - suite) != strlen(out_case->suite) ||
-      memcmp(suite, out_case->suite, (size_t)(slash - suite)) != 0) {
+  const char *slash = string_find_char(suite, '/');
+  if (!slash || (uint64_t)(slash - suite) != string_length(out_case->suite) ||
+      MemCompare(suite, out_case->suite, (uint64_t)(slash - suite)) != 0) {
     vkr_harness_error_set(out_error, "case.suite", "$.suite",
                           "Case suite does not match its containing directory");
     return false_v;
@@ -1199,17 +1200,20 @@ bool8_t vkr_harness_profile_load(const char *repository_root,
   }
   char *json = NULL;
   uint64_t length = 0;
-  if (!vkr_harness_load_text(path, &json, &length, out_error)) {
+  Arena *load_arena = arena_create(MB(2), KB(4));
+  if (!load_arena ||
+      !vkr_harness_load_text(path, load_arena, &json, &length, out_error)) {
+    arena_destroy(load_arena);
     return false_v;
   }
   const bool8_t parsed = vkr_harness_profile_parse(
       json, length, relative_manifest_path, out_profile, out_error);
-  free(json);
+  arena_destroy(load_arena);
   if (!parsed) {
     return false_v;
   }
   const char prefix[] = "tools/profiles/";
-  if (strncmp(relative_manifest_path, prefix, sizeof(prefix) - 1u) != 0) {
+  if (!string_n_equals(relative_manifest_path, prefix, sizeof(prefix) - 1u)) {
     vkr_harness_error_set(out_error, "profile.root", "$.id",
                           "Profiles must live under tools/profiles/");
     return false_v;

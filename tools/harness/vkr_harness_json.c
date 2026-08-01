@@ -1,10 +1,5 @@
 #include "vkr_harness_json.h"
 
-#include <errno.h>
-#include <math.h>
-#include <stdlib.h>
-#include <string.h>
-
 typedef struct VkrHarnessJsonParser {
   VkrHarnessJsonDocument *document;
   uint64_t cursor;
@@ -110,7 +105,7 @@ static int32_t vkr_harness_json_parse_string_token(VkrHarnessJsonParser *parser,
           }
         }
         parser->cursor += 4u;
-      } else if (!strchr("\"\\/bfnrt", escaped)) {
+      } else if (!string_find_char("\"\\/bfnrt", escaped)) {
         vkr_harness_error_set(parser->error, "json.escape", "$",
                               "Invalid escape at byte %llu",
                               (unsigned long long)parser->cursor);
@@ -197,11 +192,11 @@ static int32_t vkr_harness_json_parse_literal(VkrHarnessJsonParser *parser,
                                               int32_t parent,
                                               const char *literal,
                                               VkrHarnessJsonTokenType type) {
-  const uint64_t literal_length = strlen(literal);
+  const uint64_t literal_length = string_length(literal);
   const uint32_t start = (uint32_t)parser->cursor;
   if (parser->cursor + literal_length > parser->document->length ||
-      memcmp(parser->document->json + parser->cursor, literal,
-             literal_length) != 0) {
+      MemCompare(parser->document->json + parser->cursor, literal,
+                 literal_length) != 0) {
     return -1;
   }
   parser->cursor += literal_length;
@@ -349,7 +344,7 @@ bool8_t vkr_harness_json_parse(VkrHarnessJsonDocument *document,
                           "JSON input is empty or too large");
     return false_v;
   }
-  memset(document, 0, sizeof(*document));
+  MemZero(document, sizeof(*document));
   document->json = json;
   document->length = length;
   VkrHarnessJsonParser parser = {
@@ -395,9 +390,9 @@ vkr_harness_json_token_key_equals(const VkrHarnessJsonDocument *document,
     return false_v;
   }
   const VkrHarnessJsonToken *key = &document->tokens[token];
-  const uint64_t length = strlen(name);
+  const uint64_t length = string_length(name);
   return key->end - key->start == length &&
-         memcmp(document->json + key->start, name, length) == 0;
+         MemCompare(document->json + key->start, name, length) == 0;
 }
 
 int32_t vkr_harness_json_object_get(const VkrHarnessJsonDocument *document,
@@ -466,7 +461,7 @@ bool8_t vkr_harness_json_object_validate(
     }
     bool8_t known = false_v;
     for (uint32_t i = 0; i < allowed_count; ++i) {
-      if (strcmp(decoded, allowed[i]) == 0) {
+      if (string_equals(decoded, allowed[i])) {
         known = true_v;
         break;
       }
@@ -611,12 +606,10 @@ bool8_t vkr_harness_json_f64(const VkrHarnessJsonDocument *document,
     return false_v;
   }
   char buffer[64];
-  memcpy(buffer, document->json + value->start, length);
+  MemCopy(buffer, document->json + value->start, length);
   buffer[length] = '\0';
-  errno = 0;
-  char *end = NULL;
-  const double parsed = strtod(buffer, &end);
-  if (errno != 0 || end != buffer + length || !isfinite(parsed)) {
+  float64_t parsed = 0.0;
+  if (!string_to_f64(buffer, &parsed)) {
     vkr_harness_error_set(out_error, "manifest.number", field,
                           "Number is non-finite or out of range");
     return false_v;
@@ -631,7 +624,7 @@ bool8_t vkr_harness_json_u64(const VkrHarnessJsonDocument *document,
   float64_t parsed = 0.0;
   if (!vkr_harness_json_f64(document, token, &parsed, field, out_error) ||
       parsed < 0.0 || parsed > (float64_t)UINT64_MAX ||
-      floor(parsed) != parsed) {
+      vkr_floor_f64(parsed) != parsed) {
     vkr_harness_error_set(out_error, "manifest.integer", field,
                           "Expected a non-negative integer");
     return false_v;

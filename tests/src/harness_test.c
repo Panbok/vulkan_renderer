@@ -340,6 +340,40 @@ static void test_harness_safe_paths(void) {
   printf("  test_harness_safe_paths PASSED\n");
 }
 
+static void test_harness_platform_process_primitives(void) {
+  printf("  Running test_harness_platform_process_primitives...\n");
+  const char *arguments[] = {"--version"};
+  char output[256];
+  int32_t exit_code = -1;
+  assert(vkr_platform_process_capture("git", arguments, ArrayCount(arguments),
+                                      NULL, output, sizeof(output),
+                                      &exit_code));
+  assert(exit_code == 0);
+  assert(string_find(output, "git version") != NULL);
+
+  char lock_name[96];
+  string_format(lock_name, sizeof(lock_name), "VkrHarnessTest%u",
+                vkr_platform_get_process_id());
+  VkrPlatformProcessLock first = {0};
+  VkrPlatformProcessLock second = {0};
+  assert(
+      vkr_platform_process_lock_acquire(lock_name, PROJECT_SOURCE_DIR, &first));
+  assert(!vkr_platform_process_lock_acquire(lock_name, PROJECT_SOURCE_DIR,
+                                            &second));
+  vkr_platform_process_lock_release(&first);
+  assert(vkr_platform_process_lock_acquire(lock_name, PROJECT_SOURCE_DIR,
+                                           &second));
+  vkr_platform_process_lock_release(&second);
+#if !defined(_WIN32)
+  char lock_path[VKR_HARNESS_PATH_MAX];
+  string_format(lock_path, sizeof(lock_path), "%s/%s.lock", PROJECT_SOURCE_DIR,
+                lock_name);
+  FilePath lock_file = vkr_harness_file_path(lock_path);
+  assert(file_remove(&lock_file) == FILE_ERROR_NONE);
+#endif
+  printf("  test_harness_platform_process_primitives PASSED\n");
+}
+
 bool32_t run_harness_tests(void) {
   printf("--- Running Harness tests... ---\n");
   test_harness_hash_and_statistics();
@@ -350,6 +384,7 @@ bool32_t run_harness_tests(void) {
   test_harness_assertion_verdict();
   test_harness_report_shape();
   test_harness_safe_paths();
+  test_harness_platform_process_primitives();
   printf("--- Harness tests completed. ---\n");
   return true;
 }

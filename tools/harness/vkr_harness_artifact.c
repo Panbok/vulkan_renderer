@@ -1,57 +1,30 @@
 #include "vkr_harness.h"
 
-#include <errno.h>
-#include <stdio.h>
-#include <string.h>
-#include <time.h>
-
-#if defined(_WIN32)
-#include <direct.h>
-#include <process.h>
-#define VKR_HARNESS_MKDIR(path) _mkdir(path)
-#define VKR_HARNESS_PID() _getpid()
-#else
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
-#define VKR_HARNESS_MKDIR(path) mkdir((path), 0755)
-#define VKR_HARNESS_PID() getpid()
-#endif
-
 bool8_t vkr_harness_make_directories(const char *path,
                                      VkrHarnessError *out_error) {
-  if (!path || path[0] == '\0' || strlen(path) >= VKR_HARNESS_PATH_MAX) {
+  if (!path || path[0] == '\0' || string_length(path) >= VKR_HARNESS_PATH_MAX) {
     vkr_harness_error_set(out_error, "artifact.path", "$",
                           "Artifact directory path is invalid");
     return false_v;
   }
-  char current[VKR_HARNESS_PATH_MAX];
-  snprintf(current, sizeof(current), "%s", path);
-  char *first_component = current + 1;
-#if defined(_WIN32)
-  if (current[0] && current[1] == ':') {
-    first_component = current + 3;
-  }
-#endif
-  for (char *cursor = first_component; *cursor; ++cursor) {
-    if (*cursor != '/' && *cursor != '\\') {
-      continue;
-    }
-    const char saved = *cursor;
-    *cursor = '\0';
-    if (VKR_HARNESS_MKDIR(current) != 0 && errno != EEXIST) {
-      vkr_harness_error_set(out_error, "artifact.mkdir", "$",
-                            "Unable to create directory '%s'", current);
-      return false_v;
-    }
-    *cursor = saved;
-  }
-  if (VKR_HARNESS_MKDIR(current) != 0 && errno != EEXIST) {
+  Arena *arena = arena_create(KB(4), KB(4));
+  if (!arena) {
     vkr_harness_error_set(out_error, "artifact.mkdir", "$",
-                          "Unable to create directory '%s'", current);
+                          "Unable to allocate directory scratch storage");
     return false_v;
   }
-  return true_v;
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
+  String8 path_view =
+      string8_create_from_cstr((const uint8_t *)path, string_length(path));
+  const bool8_t created = file_ensure_directory(&allocator, &path_view);
+  vkr_allocator_release_global_accounting(&allocator);
+  arena_destroy(arena);
+  if (!created) {
+    vkr_harness_error_set(out_error, "artifact.mkdir", "$",
+                          "Unable to create directory '%s'", path);
+  }
+  return created;
 }
 
 bool8_t vkr_harness_atomic_write(const char *path, const void *data,
@@ -60,37 +33,41 @@ bool8_t vkr_harness_atomic_write(const char *path, const void *data,
     return false_v;
   }
   char temp[VKR_HARNESS_PATH_MAX];
-  const int written = snprintf(temp, sizeof(temp), "%s.tmp.%u", path,
-                               (unsigned)VKR_HARNESS_PID());
+  const int32_t written = string_format(temp, sizeof(temp), "%s.tmp.%u", path,
+                                        vkr_platform_get_process_id());
   if (written < 0 || (uint32_t)written >= sizeof(temp)) {
     vkr_harness_error_set(out_error, "artifact.path", "$",
                           "Artifact path is too long");
     return false_v;
   }
-  FILE *file = fopen(temp, "wb");
-  if (!file ||
+  FilePath temp_path = vkr_harness_file_path(temp);
+  FilePath final_path = vkr_harness_file_path(path);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_WRITE);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+  bitset8_set(&mode, FILE_MODE_TRUNCATE);
+  FileHandle file = {0};
+  uint64_t bytes_written = 0u;
+  if (file_open(&temp_path, mode, &file) != FILE_ERROR_NONE ||
       (length > 0u &&
-       fwrite(data, 1u, (size_t)length, file) != (size_t)length) ||
-      fflush(file) != 0) {
-    if (file) {
-      fclose(file);
-    }
-    remove(temp);
+       file_write(&file, length, data, &bytes_written) != FILE_ERROR_NONE) ||
+      bytes_written != length) {
+    file_close(&file);
+    (void)file_remove(&temp_path);
     vkr_harness_error_set(out_error, "artifact.write", "$",
                           "Unable to write '%s'", path);
     return false_v;
   }
-#if !defined(_WIN32)
-  if (fsync(fileno(file)) != 0) {
-    fclose(file);
-    remove(temp);
+  if (file_sync(&file) != FILE_ERROR_NONE) {
+    file_close(&file);
+    (void)file_remove(&temp_path);
     vkr_harness_error_set(out_error, "artifact.sync", "$",
                           "Unable to sync '%s'", path);
     return false_v;
   }
-#endif
-  if (fclose(file) != 0 || rename(temp, path) != 0) {
-    remove(temp);
+  file_close(&file);
+  if (file_rename(&temp_path, &final_path, true_v) != FILE_ERROR_NONE) {
+    (void)file_remove(&temp_path);
     vkr_harness_error_set(out_error, "artifact.rename", "$",
                           "Unable to atomically publish '%s'", path);
     return false_v;
@@ -102,46 +79,28 @@ bool8_t vkr_harness_generate_run_id(char out_run_id[64]) {
   if (!out_run_id) {
     return false_v;
   }
-  struct timespec now = {0};
-  if (timespec_get(&now, TIME_UTC) != TIME_UTC) {
+  VkrTime utc = {0};
+  if (!vkr_platform_get_utc_time(&utc)) {
     return false_v;
   }
-  struct tm utc = {0};
-#if defined(_WIN32)
-  if (gmtime_s(&utc, &now.tv_sec) != 0) {
-    return false_v;
-  }
-#else
-  if (!gmtime_r(&now.tv_sec, &utc)) {
-    return false_v;
-  }
-#endif
+  static uint32_t sequence = 0u;
   const uint32_t nonce =
-      ((uint32_t)now.tv_nsec ^ (uint32_t)VKR_HARNESS_PID()) & 0xffffffu;
-  return snprintf(out_run_id, 64, "%04d%02d%02dT%02d%02d%02d.%03ldZ-%06x",
-                  utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday, utc.tm_hour,
-                  utc.tm_min, utc.tm_sec, now.tv_nsec / 1000000L, nonce) > 0;
+      (utc.milliseconds ^ vkr_platform_get_process_id() ^ ++sequence) &
+      0xffffffu;
+  return string_format(out_run_id, 64, "%04d%02d%02dT%02d%02d%02d.%03dZ-%06x",
+                       utc.year + 1900, utc.month + 1, utc.day, utc.hours,
+                       utc.minutes, utc.seconds, utc.milliseconds, nonce) > 0;
 }
 
 bool8_t vkr_harness_timestamp_utc(char out_timestamp[40]) {
   if (!out_timestamp) {
     return false_v;
   }
-  struct timespec now = {0};
-  if (timespec_get(&now, TIME_UTC) != TIME_UTC) {
+  VkrTime utc = {0};
+  if (!vkr_platform_get_utc_time(&utc)) {
     return false_v;
   }
-  struct tm utc = {0};
-#if defined(_WIN32)
-  if (gmtime_s(&utc, &now.tv_sec) != 0) {
-    return false_v;
-  }
-#else
-  if (!gmtime_r(&now.tv_sec, &utc)) {
-    return false_v;
-  }
-#endif
-  return snprintf(out_timestamp, 40, "%04d-%02d-%02dT%02d:%02d:%02d.%03ldZ",
-                  utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday, utc.tm_hour,
-                  utc.tm_min, utc.tm_sec, now.tv_nsec / 1000000L) > 0;
+  return string_format(out_timestamp, 40, "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ",
+                       utc.year + 1900, utc.month + 1, utc.day, utc.hours,
+                       utc.minutes, utc.seconds, utc.milliseconds) > 0;
 }

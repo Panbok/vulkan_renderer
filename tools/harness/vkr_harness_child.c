@@ -14,11 +14,6 @@
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
 
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 typedef struct VkrHarnessChildContext {
   const VkrHarnessCase *case_manifest;
   const VkrHarnessArenas *arenas;
@@ -121,7 +116,7 @@ static void vkr_harness_child_fail(Application *application,
   VkrHarnessChildContext *child = g_harness_child;
   if (!child->failed) {
     child->failed = true_v;
-    snprintf(child->failure, sizeof(child->failure), "%s", reason);
+    string_format(child->failure, sizeof(child->failure), "%s", reason);
   }
   application_close(application);
 }
@@ -181,7 +176,7 @@ static void vkr_harness_child_sample(Application *application) {
       const VkrRendererMetricsPassSample *source = &passes->samples[pass];
       const uint64_t offset = (uint64_t)frame * child->pass_count + pass;
       const bool8_t executed =
-          strcmp(source->name, child->pass_catalog[pass].name) == 0 &&
+          string_equals(source->name, child->pass_catalog[pass].name) &&
           !source->culled && !source->disabled;
       child->pass_cpu_samples[offset] = source->cpu_ms;
       child->pass_gpu_samples[offset] = source->gpu_ms;
@@ -210,11 +205,11 @@ static void vkr_harness_child_drain_events(Application *application) {
     }
     VkrHarnessSampleEvent *sample = &child->events[child->event_count++];
     const uint32_t source_index = vkr_metric_id_index(event.source);
-    snprintf(sample->source, sizeof(sample->source), "%s",
-             catalog && source_index < catalog_count
-                 ? catalog[source_index].name
-                 : "unknown");
-    memcpy(sample->subject, event.subject, event.subject_length);
+    string_format(sample->source, sizeof(sample->source), "%s",
+                  catalog && source_index < catalog_count
+                      ? catalog[source_index].name
+                      : "unknown");
+    MemCopy(sample->subject, event.subject, event.subject_length);
     sample->subject[event.subject_length] = '\0';
     sample->start_ns = event.start_ns;
     sample->duration_ns = event.duration_ns;
@@ -302,9 +297,9 @@ static bool8_t vkr_harness_child_activate_scene(Application *application) {
           pass_value_count * sizeof(*child->pass_gpu_samples));
   MemZero(child->pass_flags, pass_value_count);
   for (uint32_t pass = 0; pass < child->pass_count; ++pass) {
-    snprintf(child->pass_catalog[pass].name,
-             sizeof(child->pass_catalog[pass].name), "%s",
-             passes->samples[pass].name);
+    string_format(child->pass_catalog[pass].name,
+                  sizeof(child->pass_catalog[pass].name), "%s",
+                  passes->samples[pass].name);
   }
   child->phase_started = true_v;
   return true_v;
@@ -354,7 +349,7 @@ static bool8_t vkr_harness_catalog_has(const VkrMetrics *metrics,
   const VkrMetricCatalogEntry *catalog =
       vkr_metrics_get_catalog(metrics, &count);
   for (uint32_t i = 0; i < count; ++i) {
-    if (strcmp(catalog[i].name, name) == 0) {
+    if (string_equals(catalog[i].name, name)) {
       return true_v;
     }
   }
@@ -376,9 +371,9 @@ static bool8_t vkr_harness_warmup_stable(const VkrHarnessCase *case_manifest,
   int32_t submit_metric = -1;
   int32_t pipeline_metric = -1;
   for (uint32_t i = 0; i < metric_count; ++i) {
-    if (strcmp(catalog[i].name, "cpu.render_submit") == 0) {
+    if (string_equals(catalog[i].name, "cpu.render_submit")) {
       submit_metric = (int32_t)i;
-    } else if (strcmp(catalog[i].name, "pipeline.created") == 0) {
+    } else if (string_equals(catalog[i].name, "pipeline.created")) {
       pipeline_metric = (int32_t)i;
     }
   }
@@ -424,7 +419,7 @@ static bool8_t vkr_harness_warmup_stable(const VkrHarnessCase *case_manifest,
   second /= second_count;
   const float64_t denominator = first > second ? first : second;
   const float64_t drift =
-      denominator > 0.0 ? fabs(first - second) / denominator : 0.0;
+      denominator > 0.0 ? vkr_abs_f64(first - second) / denominator : 0.0;
   return drift <= profile->warmup_max_drift_ratio;
 }
 
@@ -467,7 +462,7 @@ vkr_harness_child_apply_renderer(Application *application,
                                  const VkrHarnessCase *case_manifest) {
   application->editor_viewport.enabled = case_manifest->renderer.editor;
   VkrShadowConfig shadow_config =
-      strcmp(case_manifest->renderer.shadow_preset, "balanced") == 0
+      string_equals(case_manifest->renderer.shadow_preset, "balanced")
           ? VKR_SHADOW_CONFIG_BALANCED
           : VKR_SHADOW_CONFIG_DEFAULT;
   shadow_config.cascade_count = case_manifest->renderer.shadow_cascades;
@@ -477,11 +472,11 @@ vkr_harness_child_apply_renderer(Application *application,
                               &application->renderer, &shadow_config)) {
     return false_v;
   }
-  if (strcmp(case_manifest->renderer.render_mode, "lighting") == 0) {
+  if (string_equals(case_manifest->renderer.render_mode, "lighting")) {
     application->renderer.globals.render_mode = VKR_RENDER_MODE_LIGHTING;
-  } else if (strcmp(case_manifest->renderer.render_mode, "normal") == 0) {
+  } else if (string_equals(case_manifest->renderer.render_mode, "normal")) {
     application->renderer.globals.render_mode = VKR_RENDER_MODE_NORMAL;
-  } else if (strcmp(case_manifest->renderer.render_mode, "unlit") == 0) {
+  } else if (string_equals(case_manifest->renderer.render_mode, "unlit")) {
     application->renderer.globals.render_mode = VKR_RENDER_MODE_UNLIT;
   }
   /* Determinism rule 3: the harness camera receives an explicit extent and
@@ -506,12 +501,12 @@ vkr_harness_child_device_provenance(Application *application,
   vkr_renderer_get_device_information(&application->renderer, &device,
                                       device_arena);
   char text[128];
-  snprintf(text, sizeof(text), "%.*s", (int)device.device_name.length,
-           device.device_name.str);
+  string_format(text, sizeof(text), "%.*s", (int)device.device_name.length,
+                device.device_name.str);
   vkr_harness_provenance_set_text(provenance->gpu, sizeof(provenance->gpu),
                                   text);
-  snprintf(text, sizeof(text), "%.*s", (int)device.driver_version.length,
-           device.driver_version.str);
+  string_format(text, sizeof(text), "%.*s", (int)device.driver_version.length,
+                device.driver_version.str);
   vkr_harness_provenance_set_text(provenance->driver,
                                   sizeof(provenance->driver), text);
   provenance->gpu_vendor_id = device.vendor_id;
@@ -519,10 +514,11 @@ vkr_harness_child_device_provenance(Application *application,
   provenance->actual_present =
       vkr_harness_present_from_renderer(device.actual_present_mode);
   provenance->actual_target_image_count = device.actual_target_image_count;
-  snprintf(provenance->color_format, sizeof(provenance->color_format), "%s",
-           vkr_harness_surface_format_name(device.actual_color_format));
-  snprintf(provenance->color_space, sizeof(provenance->color_space), "%s",
-           vkr_harness_color_space_name(device.actual_color_space));
+  string_format(provenance->color_format, sizeof(provenance->color_format),
+                "%s",
+                vkr_harness_surface_format_name(device.actual_color_format));
+  string_format(provenance->color_space, sizeof(provenance->color_space), "%s",
+                vkr_harness_color_space_name(device.actual_color_space));
   arena_destroy(device_arena);
 }
 
@@ -547,7 +543,7 @@ static bool8_t vkr_harness_child_write_report(
       .events_dropped = samples->header.events_dropped,
       .event_subjects_truncated = samples->header.event_subjects_truncated,
   };
-  snprintf(report.run_id, sizeof(report.run_id), "child");
+  string_format(report.run_id, sizeof(report.run_id), "child");
   vkr_harness_report_set_status(&report, failed ? "incomplete" : "pass",
                                 failed ? VKR_HARNESS_EXIT_ERROR
                                        : VKR_HARNESS_EXIT_PASS);
@@ -604,8 +600,10 @@ static bool8_t vkr_harness_child_write_report(
     for (uint32_t i = 0; ok && i < samples->header.event_count; ++i) {
       const VkrHarnessSampleEvent *source = &samples->events[i];
       VkrHarnessEvent *target = &report.events[report.event_count++];
-      snprintf(target->source, sizeof(target->source), "%s", source->source);
-      snprintf(target->subject, sizeof(target->subject), "%s", source->subject);
+      string_format(target->source, sizeof(target->source), "%s",
+                    source->source);
+      string_format(target->subject, sizeof(target->subject), "%s",
+                    source->subject);
       target->start_ns = source->start_ns;
       target->duration_ns = source->duration_ns;
       target->bytes = source->bytes;
@@ -643,13 +641,13 @@ static VkrHarnessSampleFileHeader vkr_harness_child_sample_header(
                           (child->failed ? VKR_HARNESS_SAMPLE_FLAG_CHILD_FAILED
                                          : 0u)),
   };
-  memcpy(header.magic, VKR_HARNESS_SAMPLE_MAGIC, sizeof(header.magic));
-  snprintf(header.gpu, sizeof(header.gpu), "%s", provenance->gpu);
-  snprintf(header.driver, sizeof(header.driver), "%s", provenance->driver);
-  snprintf(header.color_format, sizeof(header.color_format), "%s",
-           provenance->color_format);
-  snprintf(header.color_space, sizeof(header.color_space), "%s",
-           provenance->color_space);
+  MemCopy(header.magic, VKR_HARNESS_SAMPLE_MAGIC, sizeof(header.magic));
+  string_format(header.gpu, sizeof(header.gpu), "%s", provenance->gpu);
+  string_format(header.driver, sizeof(header.driver), "%s", provenance->driver);
+  string_format(header.color_format, sizeof(header.color_format), "%s",
+                provenance->color_format);
+  string_format(header.color_space, sizeof(header.color_space), "%s",
+                provenance->color_space);
   return header;
 }
 
@@ -663,17 +661,17 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   VkrHarnessProfile profile = {0};
   if (!vkr_harness_case_load(repo_root, case_path, &case_manifest, &error) ||
       !vkr_harness_profile_load(repo_root, profile_path, &profile, &error)) {
-    fprintf(stderr, "%s: %s\n", error.code, error.message);
+    vkr_harness_stderr("%s: %s\n", error.code, error.message);
     return VKR_HARNESS_EXIT_INVALID;
   }
   const char *unsupported =
       vkr_harness_phase2_unsupported(&case_manifest, &profile);
   if (unsupported) {
-    fprintf(stderr, "%s\n", unsupported);
+    vkr_harness_stderr("%s\n", unsupported);
     return VKR_HARNESS_EXIT_UNAVAILABLE;
   }
   if (case_manifest.target != profile.target) {
-    fprintf(stderr, "Case and execution profile targets differ\n");
+    vkr_harness_stderr("Case and execution profile targets differ\n");
     return VKR_HARNESS_EXIT_MISSING_BASELINE;
   }
   /* A prewarm process exists only to populate the isolated pipeline cache; it
@@ -683,7 +681,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     case_manifest.warmup_frames =
         case_manifest.warmup_frames > 0u ? case_manifest.warmup_frames : 1u;
   }
-  srand((unsigned)case_manifest.seed);
+  vkr_rand_seed(case_manifest.seed);
   vkr_harness_provenance_collect(executable, repo_root, &provenance);
 
   /* One bump allocation for everything this repetition produces, and one
@@ -691,7 +689,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   VkrHarnessArenas arenas = {.persistent = arena_create(),
                              .transient = arena_create()};
   if (!arenas.persistent || !arenas.transient) {
-    fprintf(stderr, "Unable to create the repetition arenas\n");
+    vkr_harness_stderr("Unable to create the repetition arenas\n");
     arena_destroy(arenas.persistent);
     arena_destroy(arenas.transient);
     return VKR_HARNESS_EXIT_ERROR;
@@ -714,15 +712,15 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   }
   application_live = true_v;
   if (!vkr_harness_child_apply_renderer(&application, &case_manifest)) {
-    fprintf(stderr, "Unable to apply the case renderer configuration\n");
+    vkr_harness_stderr("Unable to apply the case renderer configuration\n");
     exit_code = VKR_HARNESS_EXIT_INVALID;
     goto cleanup;
   }
   for (uint32_t i = 0; i < profile.required_metric_count; ++i) {
     if (!vkr_harness_catalog_has(application.metrics,
                                  profile.required_metrics[i])) {
-      fprintf(stderr, "Required metric is not registered: %s\n",
-              profile.required_metrics[i]);
+      vkr_harness_stderr("Required metric is not registered: %s\n",
+                         profile.required_metrics[i]);
       exit_code = VKR_HARNESS_EXIT_INVALID;
       goto cleanup;
     }
@@ -746,7 +744,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
       arena_alloc(arenas.persistent, catalog_bytes, ARENA_MEMORY_TAG_STRUCT);
   events = arena_alloc(arenas.persistent, event_bytes, ARENA_MEMORY_TAG_STRUCT);
   if (!samples || !availability || !sample_catalog || !events) {
-    fprintf(stderr, "Unable to allocate repetition sample storage\n");
+    vkr_harness_stderr("Unable to allocate repetition sample storage\n");
     goto cleanup;
   }
   /* Arenas bump rather than zero, and this storage needs zeroing for two
@@ -760,10 +758,10 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   MemZero(sample_catalog, catalog_bytes);
   MemZero(events, event_bytes);
   for (uint32_t i = 0; i < metric_count; ++i) {
-    snprintf(sample_catalog[i].name, sizeof(sample_catalog[i].name), "%s",
-             metric_catalog[i].name);
-    snprintf(sample_catalog[i].unit, sizeof(sample_catalog[i].unit), "%s",
-             vkr_harness_metric_unit_name(metric_catalog[i].unit));
+    string_format(sample_catalog[i].name, sizeof(sample_catalog[i].name), "%s",
+                  metric_catalog[i].name);
+    string_format(sample_catalog[i].unit, sizeof(sample_catalog[i].unit), "%s",
+                  vkr_harness_metric_unit_name(metric_catalog[i].unit));
   }
   child = (VkrHarnessChildContext){
       .case_manifest = &case_manifest,
@@ -784,14 +782,14 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
                                 &application.renderer.scratch_allocator,
                                 &child.scene_resource, &load_error)) {
     child.failed = true_v;
-    snprintf(child.failure, sizeof(child.failure), "scene.enqueue_failed");
+    string_format(child.failure, sizeof(child.failure), "scene.enqueue_failed");
   } else {
     application_start(&application);
     application_close(&application);
   }
   vkr_harness_child_drain_events(&application);
   if (child.failed) {
-    fprintf(stderr, "Repetition did not complete: %s\n", child.failure);
+    vkr_harness_stderr("Repetition did not complete: %s\n", child.failure);
   }
 
   vkr_harness_child_device_provenance(&application, &provenance);
@@ -814,8 +812,8 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
 
   char samples_path[VKR_HARNESS_PATH_MAX];
   char report_path[VKR_HARNESS_PATH_MAX];
-  snprintf(samples_path, sizeof(samples_path), "%s/samples.bin", run_dir);
-  snprintf(report_path, sizeof(report_path), "%s/report.json", run_dir);
+  string_format(samples_path, sizeof(samples_path), "%s/samples.bin", run_dir);
+  string_format(report_path, sizeof(report_path), "%s/report.json", run_dir);
   const VkrHarnessSampleSet sample_set = {
       .header = vkr_harness_child_sample_header(&child, &case_manifest,
                                                 &provenance, warmup_stable),
@@ -836,7 +834,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
                                      samples_path, &error)) {
     exit_code = child.failed ? VKR_HARNESS_EXIT_ERROR : VKR_HARNESS_EXIT_PASS;
   } else {
-    fprintf(stderr, "%s: %s\n", error.code, error.message);
+    vkr_harness_stderr("%s: %s\n", error.code, error.message);
     exit_code = VKR_HARNESS_EXIT_ERROR;
   }
 
@@ -861,7 +859,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   (void)profile_path;
   (void)run_dir;
   (void)prewarm;
-  fprintf(stderr, "The harness requires VKR_METRICS_ENABLED=1\n");
+  vkr_harness_stderr("The harness requires VKR_METRICS_ENABLED=1\n");
   return VKR_HARNESS_EXIT_UNAVAILABLE;
 }
 

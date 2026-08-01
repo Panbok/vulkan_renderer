@@ -1,8 +1,5 @@
 #include "vkr_harness_runtime.h"
 
-#include <stdio.h>
-#include <string.h>
-
 typedef struct VkrHarnessSampleLayout {
   uint64_t value_count;
   uint64_t pass_value_count;
@@ -55,31 +52,6 @@ vkr_harness_sample_layout(const VkrHarnessSampleFileHeader *header) {
   return layout;
 }
 
-bool8_t vkr_harness_read_file(const char *path, Arena *arena,
-                              uint8_t **out_data, uint64_t *out_length) {
-  FILE *file = fopen(path, "rb");
-  if (!file || fseek(file, 0, SEEK_END) != 0) {
-    if (file) {
-      fclose(file);
-    }
-    return false_v;
-  }
-  const long length = ftell(file);
-  if (length <= 0 || fseek(file, 0, SEEK_SET) != 0) {
-    fclose(file);
-    return false_v;
-  }
-  uint8_t *data = arena_alloc(arena, (uint64_t)length, ARENA_MEMORY_TAG_FILE);
-  if (!data || fread(data, 1u, (size_t)length, file) != (size_t)length) {
-    fclose(file);
-    return false_v;
-  }
-  fclose(file);
-  *out_data = data;
-  *out_length = (uint64_t)length;
-  return true_v;
-}
-
 bool8_t vkr_harness_samples_write(const char *path,
                                   const VkrHarnessSampleFileHeader *header,
                                   const VkrHarnessSampleSet *samples,
@@ -97,25 +69,26 @@ bool8_t vkr_harness_samples_write(const char *path,
   /* Zeroed so inter-section alignment padding is defined rather than whatever
      the arena block last held. */
   MemZero(data, layout.total);
-  memcpy(data, header, sizeof(*header));
-  memcpy(data + layout.metrics, samples->metrics,
-         sizeof(*samples->metrics) * header->metric_count);
-  memcpy(data + layout.values, samples->values,
-         sizeof(*samples->values) * layout.value_count);
-  memcpy(data + layout.availability, samples->availability, layout.value_count);
+  MemCopy(data, header, sizeof(*header));
+  MemCopy(data + layout.metrics, samples->metrics,
+          sizeof(*samples->metrics) * header->metric_count);
+  MemCopy(data + layout.values, samples->values,
+          sizeof(*samples->values) * layout.value_count);
+  MemCopy(data + layout.availability, samples->availability,
+          layout.value_count);
   if (header->pass_count > 0u) {
-    memcpy(data + layout.passes, samples->passes,
-           sizeof(*samples->passes) * header->pass_count);
-    memcpy(data + layout.pass_cpu_ms, samples->pass_cpu_ms,
-           sizeof(*samples->pass_cpu_ms) * layout.pass_value_count);
-    memcpy(data + layout.pass_gpu_ms, samples->pass_gpu_ms,
-           sizeof(*samples->pass_gpu_ms) * layout.pass_value_count);
-    memcpy(data + layout.pass_flags, samples->pass_flags,
-           layout.pass_value_count);
+    MemCopy(data + layout.passes, samples->passes,
+            sizeof(*samples->passes) * header->pass_count);
+    MemCopy(data + layout.pass_cpu_ms, samples->pass_cpu_ms,
+            sizeof(*samples->pass_cpu_ms) * layout.pass_value_count);
+    MemCopy(data + layout.pass_gpu_ms, samples->pass_gpu_ms,
+            sizeof(*samples->pass_gpu_ms) * layout.pass_value_count);
+    MemCopy(data + layout.pass_flags, samples->pass_flags,
+            layout.pass_value_count);
   }
   if (header->event_count > 0u) {
-    memcpy(data + layout.events, samples->events,
-           sizeof(*samples->events) * header->event_count);
+    MemCopy(data + layout.events, samples->events,
+            sizeof(*samples->events) * header->event_count);
   }
   const bool8_t written =
       vkr_harness_atomic_write(path, data, layout.total, out_error);
@@ -134,9 +107,9 @@ bool8_t vkr_harness_samples_read(const char *path,
     return false_v;
   }
   VkrHarnessSampleFileHeader header;
-  memcpy(&header, data, sizeof(header));
-  if (memcmp(header.magic, VKR_HARNESS_SAMPLE_MAGIC, sizeof(header.magic)) !=
-          0 ||
+  MemCopy(&header, data, sizeof(header));
+  if (MemCompare(header.magic, VKR_HARNESS_SAMPLE_MAGIC,
+                 sizeof(header.magic)) != 0 ||
       header.schema_version != VKR_HARNESS_SCHEMA_VERSION ||
       header.metric_count == 0u ||
       header.metric_count > VKR_METRICS_MAX_SLOTS ||
@@ -187,10 +160,10 @@ bool8_t vkr_harness_compute_metric_results(
   }
   MemZero(results, (uint64_t)metric_count * sizeof(*results));
   for (uint32_t metric = 0; metric < metric_count; ++metric) {
-    snprintf(results[metric].name, sizeof(results[metric].name), "%s",
-             catalog[metric].name);
-    snprintf(results[metric].unit, sizeof(results[metric].unit), "%s",
-             catalog[metric].unit);
+    string_format(results[metric].name, sizeof(results[metric].name), "%s",
+                  catalog[metric].name);
+    string_format(results[metric].unit, sizeof(results[metric].unit), "%s",
+                  catalog[metric].unit);
     uint64_t valid_count = 0;
     uint64_t invalid_count = 0;
     for (uint32_t frame = 0; frame < measure_frames; ++frame) {
@@ -243,8 +216,8 @@ bool8_t vkr_harness_compute_pass_results(
   }
   MemZero(results, (uint64_t)pass_count * sizeof(*results));
   for (uint32_t pass = 0; pass < pass_count; ++pass) {
-    snprintf(results[pass].name, sizeof(results[pass].name), "%s",
-             catalog[pass].name);
+    string_format(results[pass].name, sizeof(results[pass].name), "%s",
+                  catalog[pass].name);
     const float64_t *const series[2] = {cpu_ms, gpu_ms};
     const uint8_t series_flag[2] = {VKR_HARNESS_PASS_FLAG_CPU_VALID,
                                     VKR_HARNESS_PASS_FLAG_GPU_VALID};

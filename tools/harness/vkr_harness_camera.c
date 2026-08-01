@@ -1,19 +1,12 @@
 #include "vkr_harness.h"
 
-#include <math.h>
-
-static float32_t vkr_harness_lerp_f32(float32_t a, float32_t b, float32_t t) {
-  return a + (b - a) * t;
-}
-
 static Vec3 vkr_harness_lerp_vec3(Vec3 a, Vec3 b, float32_t t) {
-  return vec3_new(vkr_harness_lerp_f32(a.x, b.x, t),
-                  vkr_harness_lerp_f32(a.y, b.y, t),
-                  vkr_harness_lerp_f32(a.z, b.z, t));
+  return vec3_new(vkr_lerp_f32(a.x, b.x, t), vkr_lerp_f32(a.y, b.y, t),
+                  vkr_lerp_f32(a.z, b.z, t));
 }
 
 static float32_t vkr_harness_yaw_delta(float32_t from, float32_t to) {
-  float32_t delta = fmodf(to - from, 360.0f);
+  float32_t delta = vkr_fmod_f32(to - from, 360.0f);
   if (delta < -180.0f) {
     delta += 360.0f;
   } else if (delta > 180.0f) {
@@ -90,7 +83,7 @@ static void vkr_harness_camera_evaluate_keys(const VkrHarnessCamera *camera,
         a->yaw_degrees +
         vkr_harness_yaw_delta(a->yaw_degrees, b->yaw_degrees) * t;
     out_pose->pitch_degrees =
-        vkr_harness_lerp_f32(a->pitch_degrees, b->pitch_degrees, t);
+        vkr_lerp_f32(a->pitch_degrees, b->pitch_degrees, t);
     return;
   }
   const VkrHarnessCameraKey *p0 =
@@ -208,16 +201,16 @@ bool8_t vkr_harness_camera_evaluate(const VkrHarnessCamera *camera,
     const float32_t angle_degrees =
         camera->orbit_start_angle_degrees +
         (float32_t)normalized * camera->orbit_revolutions * 360.0f;
-    const float32_t angle = angle_degrees * (float32_t)(M_PI / 180.0);
-    out_pose->position =
-        vec3_new(camera->orbit_center.x + cosf(angle) * camera->orbit_radius,
-                 camera->orbit_center.y + camera->orbit_height,
-                 camera->orbit_center.z + sinf(angle) * camera->orbit_radius);
+    const float32_t angle = vkr_to_radians(angle_degrees);
+    out_pose->position = vec3_new(
+        camera->orbit_center.x + vkr_cos_f32(angle) * camera->orbit_radius,
+        camera->orbit_center.y + camera->orbit_height,
+        camera->orbit_center.z + vkr_sin_f32(angle) * camera->orbit_radius);
     const Vec3 direction =
         vec3_normalize(vec3_sub(camera->orbit_center, out_pose->position));
     out_pose->yaw_degrees =
-        atan2f(direction.z, direction.x) * (float32_t)(180.0 / M_PI);
-    out_pose->pitch_degrees = asinf(direction.y) * (float32_t)(180.0 / M_PI);
+        vkr_to_degrees(vkr_atan2_f32(direction.z, direction.x));
+    out_pose->pitch_degrees = vkr_to_degrees(vkr_asin_f32(direction.y));
     return true_v;
   }
   if (camera->key_count < 2u) {
@@ -246,8 +239,8 @@ bool8_t vkr_harness_camera_evaluate(const VkrHarnessCamera *camera,
     const float32_t b = camera->fly_lookup_lengths[hi];
     const float32_t local = b > a ? (target - a) / (b - a) : 0.0f;
     const float32_t parameter =
-        vkr_harness_lerp_f32(camera->fly_lookup_parameters[lo],
-                             camera->fly_lookup_parameters[hi], local);
+        vkr_lerp_f32(camera->fly_lookup_parameters[lo],
+                     camera->fly_lookup_parameters[hi], local);
     key_time = camera->keys[0].time_seconds + duration * parameter;
   }
   vkr_harness_camera_evaluate_keys(camera, key_time, out_pose);

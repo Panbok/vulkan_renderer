@@ -1,13 +1,8 @@
 #include "vkr_harness.h"
 
-#include <math.h>
-#include <stdarg.h>
-#include <stdio.h>
-#include <string.h>
-
 void vkr_harness_error_clear(VkrHarnessError *error) {
   if (error) {
-    memset(error, 0, sizeof(*error));
+    MemZero(error, sizeof(*error));
   }
 }
 
@@ -16,12 +11,68 @@ void vkr_harness_error_set(VkrHarnessError *error, const char *code,
   if (!error) {
     return;
   }
-  snprintf(error->code, sizeof(error->code), "%s", code ? code : "error");
-  snprintf(error->field, sizeof(error->field), "%s", field ? field : "$");
+  string_format(error->code, sizeof(error->code), "%s", code ? code : "error");
+  string_format(error->field, sizeof(error->field), "%s", field ? field : "$");
   va_list args;
   va_start(args, format);
-  vsnprintf(error->message, sizeof(error->message), format, args);
+  string_format_v(error->message, sizeof(error->message), format, args);
   va_end(args);
+}
+
+static void vkr_harness_stream_write(bool8_t error_stream, const char *format,
+                                     va_list args) {
+  char message[4096];
+  string_format_v(message, sizeof(message), format, args);
+  if (error_stream) {
+    vkr_platform_stderr_write(message);
+  } else {
+    vkr_platform_stdout_write(message);
+  }
+}
+
+void vkr_harness_stdout(const char *format, ...) {
+  va_list args;
+  va_start(args, format);
+  vkr_harness_stream_write(false_v, format, args);
+  va_end(args);
+}
+
+void vkr_harness_stderr(const char *format, ...) {
+  va_list args;
+  va_start(args, format);
+  vkr_harness_stream_write(true_v, format, args);
+  va_end(args);
+}
+
+FilePath vkr_harness_file_path(const char *path) {
+  const uint64_t length = path ? string_length(path) : 0u;
+  return (FilePath){
+      .path = string8_create_from_cstr((const uint8_t *)path, length),
+      .type = path && (path[0] == '/' || (path[0] && path[1] == ':'))
+                  ? FILE_PATH_TYPE_ABSOLUTE
+                  : FILE_PATH_TYPE_RELATIVE,
+  };
+}
+
+bool8_t vkr_harness_read_file(const char *path, Arena *arena,
+                              uint8_t **out_data, uint64_t *out_size) {
+  if (!path || !arena || !out_data || !out_size) {
+    return false_v;
+  }
+  FilePath file_path = vkr_harness_file_path(path);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+  FileHandle file = {0};
+  if (file_open(&file_path, mode, &file) != FILE_ERROR_NONE) {
+    return false_v;
+  }
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
+  const FileError result = file_read_all(&file, &allocator, out_data, out_size);
+  file_close(&file);
+  vkr_allocator_release_global_accounting(&allocator);
+  return result == FILE_ERROR_NONE;
 }
 
 const char *vkr_harness_tool_name(VkrHarnessTool tool) {
@@ -108,7 +159,7 @@ vkr_harness_statistic_from_name(const char *name,
     return false_v;
   }
   for (uint32_t i = 0; i < VKR_HARNESS_STAT_COUNT; ++i) {
-    if (strcmp(name, vkr_harness_statistic_names[i]) == 0) {
+    if (string_equals(name, vkr_harness_statistic_names[i])) {
       *out_statistic = (VkrHarnessStatisticKind)i;
       return true_v;
     }
@@ -154,7 +205,7 @@ const VkrHarnessMetricResult *
 vkr_harness_report_find_metric(const VkrHarnessReport *report,
                                const char *name) {
   for (uint32_t i = 0; i < report->metric_count; ++i) {
-    if (strcmp(report->metrics[i].name, name) == 0) {
+    if (string_equals(report->metrics[i].name, name)) {
       return &report->metrics[i];
     }
   }
@@ -189,7 +240,7 @@ vkr_harness_assertion_evaluate(const VkrHarnessReport *report,
     break;
   case VKR_HARNESS_ASSERT_EQUALS:
   default:
-    passed = fabs(actual - assertion->limit) <= assertion->tolerance;
+    passed = vkr_abs_f64(actual - assertion->limit) <= assertion->tolerance;
     break;
   }
   return passed ? VKR_HARNESS_ASSERTION_PASS : VKR_HARNESS_ASSERTION_FAIL;

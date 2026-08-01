@@ -10,90 +10,27 @@
  */
 #include "vkr_harness_runtime.h"
 
-#include "platform/vkr_platform.h"
-
-#include <errno.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-#if defined(_WIN32)
-#include <direct.h>
-#include <windows.h>
-#else
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/file.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#endif
-
 /**
  * Serializes authoritative runs against each other on one machine. Removing a
  * window does not remove GPU contention, so this is a policy the profile owns
  * rather than an implementation detail.
  */
 typedef struct VkrHarnessGpuLane {
-#if defined(_WIN32)
-  HANDLE mutex;
-#else
-  int descriptor;
-#endif
+  VkrPlatformProcessLock lock;
 } VkrHarnessGpuLane;
 
 static void vkr_harness_gpu_lane_init(VkrHarnessGpuLane *lane) {
-#if defined(_WIN32)
-  lane->mutex = NULL;
-#else
-  lane->descriptor = -1;
-#endif
+  MemZero(lane, sizeof(*lane));
 }
 
 static bool8_t vkr_harness_gpu_lane_acquire(VkrHarnessGpuLane *lane,
                                             const char *artifact_root) {
-#if defined(_WIN32)
-  (void)artifact_root;
-  lane->mutex = CreateMutexA(NULL, TRUE, "Local\\VkrHarnessGpuLane");
-  if (lane->mutex && GetLastError() != ERROR_ALREADY_EXISTS) {
-    return true_v;
-  }
-  if (lane->mutex) {
-    CloseHandle(lane->mutex);
-    lane->mutex = NULL;
-  }
-  return false_v;
-#else
-  char lane_path[VKR_HARNESS_PATH_MAX];
-  snprintf(lane_path, sizeof(lane_path), "%s/.gpu-lane.lock", artifact_root);
-  lane->descriptor = open(lane_path, O_CREAT | O_RDWR, 0644);
-  if (lane->descriptor >= 0 &&
-      flock(lane->descriptor, LOCK_EX | LOCK_NB) == 0) {
-    return true_v;
-  }
-  if (lane->descriptor >= 0) {
-    close(lane->descriptor);
-    lane->descriptor = -1;
-  }
-  return false_v;
-#endif
+  return vkr_platform_process_lock_acquire("VkrHarnessGpuLane", artifact_root,
+                                           &lane->lock);
 }
 
 static void vkr_harness_gpu_lane_release(VkrHarnessGpuLane *lane) {
-#if defined(_WIN32)
-  if (lane->mutex) {
-    ReleaseMutex(lane->mutex);
-    CloseHandle(lane->mutex);
-    lane->mutex = NULL;
-  }
-#else
-  if (lane->descriptor >= 0) {
-    flock(lane->descriptor, LOCK_UN);
-    close(lane->descriptor);
-    lane->descriptor = -1;
-  }
-#endif
+  vkr_platform_process_lock_release(&lane->lock);
 }
 
 /** stdout carries exactly one machine-readable line, on every exit path. */
@@ -102,14 +39,13 @@ static void vkr_harness_emit_result(const char *status,
                                     const char *report_relative_path,
                                     const char *report_digest) {
   if (report_relative_path) {
-    fprintf(stdout,
-            "{\"status\":\"%s\",\"exit_code\":%u,\"report\":\"%s\","
-            "\"sha256\":\"%s\"}\n",
-            status, exit_code, report_relative_path,
-            report_digest ? report_digest : "");
+    vkr_harness_stdout("{\"status\":\"%s\",\"exit_code\":%u,\"report\":\"%s\","
+                       "\"sha256\":\"%s\"}\n",
+                       status, exit_code, report_relative_path,
+                       report_digest ? report_digest : "");
   } else {
-    fprintf(stdout, "{\"status\":\"%s\",\"exit_code\":%u,\"report\":null}\n",
-            status, exit_code);
+    vkr_harness_stdout("{\"status\":\"%s\",\"exit_code\":%u,\"report\":null}\n",
+                       status, exit_code);
   }
 }
 
@@ -118,132 +54,38 @@ static int vkr_harness_spawn_child(const char *executable,
                                    const char *profile_path,
                                    const char *run_dir, const char *cache_path,
                                    uint32_t timeout_ms, bool8_t prewarm) {
-#if defined(_WIN32)
-  if (strchr(executable, '"') || strchr(repo_root, '"') ||
-      strchr(case_path, '"') || strchr(profile_path, '"') ||
-      strchr(run_dir, '"') || (cache_path && strchr(cache_path, '"'))) {
-    return VKR_HARNESS_EXIT_INVALID;
-  }
   char stdout_path[VKR_HARNESS_PATH_MAX];
   char stderr_path[VKR_HARNESS_PATH_MAX];
-  char command[VKR_HARNESS_PATH_MAX * 5u];
-  snprintf(stdout_path, sizeof(stdout_path), "%s/stdout.log", run_dir);
-  snprintf(stderr_path, sizeof(stderr_path), "%s/stderr.log", run_dir);
-  snprintf(command, sizeof(command),
-           "\"%s\" --child-profile --repo-root \"%s\" --case \"%s\" "
-           "--profile \"%s\" --run-dir \"%s\"%s",
-           executable, repo_root, case_path, profile_path, run_dir,
-           prewarm ? " --prewarm" : "");
-  SECURITY_ATTRIBUTES security = {.nLength = sizeof(security),
-                                  .bInheritHandle = TRUE};
-  HANDLE stdout_handle =
-      CreateFileA(stdout_path, GENERIC_WRITE, FILE_SHARE_READ, &security,
-                  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-  HANDLE stderr_handle =
-      CreateFileA(stderr_path, GENERIC_WRITE, FILE_SHARE_READ, &security,
-                  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (stdout_handle == INVALID_HANDLE_VALUE ||
-      stderr_handle == INVALID_HANDLE_VALUE) {
-    if (stdout_handle != INVALID_HANDLE_VALUE) {
-      CloseHandle(stdout_handle);
-    }
-    if (stderr_handle != INVALID_HANDLE_VALUE) {
-      CloseHandle(stderr_handle);
-    }
+  string_format(stdout_path, sizeof(stdout_path), "%s/stdout.log", run_dir);
+  string_format(stderr_path, sizeof(stderr_path), "%s/stderr.log", run_dir);
+  const char *arguments[11] = {"--child-profile", "--repo-root", repo_root,
+                               "--case",          case_path,     "--profile",
+                               profile_path,      "--run-dir",   run_dir};
+  uint32_t argument_count = 9u;
+  if (prewarm) {
+    arguments[argument_count++] = "--prewarm";
+  }
+  const VkrPlatformEnvironmentVariable environment = {
+      .name = "VKR_PIPELINE_CACHE_PATH", .value = cache_path};
+  const VkrPlatformProcessConfig config = {
+      .executable = executable,
+      .arguments = arguments,
+      .argument_count = argument_count,
+      .working_directory = repo_root,
+      .stdout_path = stdout_path,
+      .stderr_path = stderr_path,
+      .environment = cache_path && cache_path[0] ? &environment : NULL,
+      .environment_count = cache_path && cache_path[0] ? 1u : 0u,
+      .timeout_ms = timeout_ms,
+      .termination_grace_ms = 100u,
+      .hidden = true_v,
+  };
+  int32_t exit_code = VKR_HARNESS_EXIT_ERROR;
+  bool8_t timed_out = false_v;
+  if (!vkr_platform_process_run(&config, &exit_code, &timed_out) || timed_out) {
     return VKR_HARNESS_EXIT_ERROR;
   }
-  char previous_cache[VKR_HARNESS_PATH_MAX] = {0};
-  const DWORD previous_length = GetEnvironmentVariableA(
-      "VKR_PIPELINE_CACHE_PATH", previous_cache, sizeof(previous_cache));
-  if (cache_path && cache_path[0]) {
-    SetEnvironmentVariableA("VKR_PIPELINE_CACHE_PATH", cache_path);
-  }
-  STARTUPINFOA startup = {.cb = sizeof(startup),
-                          .dwFlags = STARTF_USESTDHANDLES,
-                          .hStdInput = GetStdHandle(STD_INPUT_HANDLE),
-                          .hStdOutput = stdout_handle,
-                          .hStdError = stderr_handle};
-  PROCESS_INFORMATION process = {0};
-  const BOOL created =
-      CreateProcessA(NULL, command, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL,
-                     repo_root, &startup, &process);
-  if (previous_length > 0u) {
-    SetEnvironmentVariableA("VKR_PIPELINE_CACHE_PATH", previous_cache);
-  } else {
-    SetEnvironmentVariableA("VKR_PIPELINE_CACHE_PATH", NULL);
-  }
-  CloseHandle(stdout_handle);
-  CloseHandle(stderr_handle);
-  if (!created) {
-    return VKR_HARNESS_EXIT_ERROR;
-  }
-  const DWORD wait = WaitForSingleObject(process.hProcess, timeout_ms);
-  DWORD exit_code = VKR_HARNESS_EXIT_ERROR;
-  if (wait == WAIT_TIMEOUT) {
-    TerminateProcess(process.hProcess, VKR_HARNESS_EXIT_ERROR);
-    WaitForSingleObject(process.hProcess, INFINITE);
-  } else if (wait == WAIT_OBJECT_0) {
-    GetExitCodeProcess(process.hProcess, &exit_code);
-  }
-  CloseHandle(process.hThread);
-  CloseHandle(process.hProcess);
-  return (int)exit_code;
-#else
-  const pid_t pid = fork();
-  if (pid < 0) {
-    return VKR_HARNESS_EXIT_ERROR;
-  }
-  if (pid == 0) {
-    char stdout_path[VKR_HARNESS_PATH_MAX];
-    char stderr_path[VKR_HARNESS_PATH_MAX];
-    snprintf(stdout_path, sizeof(stdout_path), "%s/stdout.log", run_dir);
-    snprintf(stderr_path, sizeof(stderr_path), "%s/stderr.log", run_dir);
-    const int stdout_fd = open(stdout_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
-    const int stderr_fd = open(stderr_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
-    if (stdout_fd >= 0) {
-      dup2(stdout_fd, STDOUT_FILENO);
-      close(stdout_fd);
-    }
-    if (stderr_fd >= 0) {
-      dup2(stderr_fd, STDERR_FILENO);
-      close(stderr_fd);
-    }
-    if (cache_path && cache_path[0]) {
-      setenv("VKR_PIPELINE_CACHE_PATH", cache_path, 1);
-    }
-    char *const args[] = {
-        (char *)executable,
-        (char *)"--child-profile",
-        (char *)"--repo-root",
-        (char *)repo_root,
-        (char *)"--case",
-        (char *)case_path,
-        (char *)"--profile",
-        (char *)profile_path,
-        (char *)"--run-dir",
-        (char *)run_dir,
-        prewarm ? (char *)"--prewarm" : NULL,
-        NULL,
-    };
-    execv(executable, args);
-    _exit(VKR_HARNESS_EXIT_ERROR);
-  }
-  const float64_t start = vkr_platform_get_absolute_time();
-  int status = 0;
-  while (waitpid(pid, &status, WNOHANG) == 0) {
-    if ((vkr_platform_get_absolute_time() - start) * 1000.0 > timeout_ms) {
-      kill(pid, SIGTERM);
-      if (waitpid(pid, &status, WNOHANG) == 0) {
-        vkr_platform_sleep(100u);
-        kill(pid, SIGKILL);
-      }
-      waitpid(pid, &status, 0);
-      return VKR_HARNESS_EXIT_ERROR;
-    }
-    vkr_platform_sleep(10u);
-  }
-  return WIFEXITED(status) ? WEXITSTATUS(status) : VKR_HARNESS_EXIT_ERROR;
-#endif
+  return exit_code;
 }
 
 /**
@@ -258,19 +100,17 @@ vkr_harness_create_run_root(const char *artifact_root, char run_id[64],
     if (!vkr_harness_generate_run_id(run_id)) {
       return false_v;
     }
-    const int written = snprintf(run_root, VKR_HARNESS_PATH_MAX, "%s/%s",
-                                 artifact_root, run_id);
-    if (written < 0 || written >= (int)VKR_HARNESS_PATH_MAX) {
+    const int32_t written = string_format(run_root, VKR_HARNESS_PATH_MAX,
+                                          "%s/%s", artifact_root, run_id);
+    if (written < 0 || written >= (int32_t)VKR_HARNESS_PATH_MAX) {
       return false_v;
     }
-#if defined(_WIN32)
-    if (_mkdir(run_root) == 0) {
-#else
-    if (mkdir(run_root, 0755) == 0) {
-#endif
+    FilePath path = vkr_harness_file_path(run_root);
+    const FileError result = file_create_directory_exclusive(&path);
+    if (result == FILE_ERROR_NONE) {
       return true_v;
     }
-    if (errno != EEXIST) {
+    if (result != FILE_ERROR_ALREADY_EXISTS) {
       return false_v;
     }
   }
@@ -304,12 +144,12 @@ static bool8_t vkr_harness_child_sample_digest_matches(const char *report_path,
     if (text) {
       MemCopy(text, report_data, (size_t)report_length);
       text[report_length] = '\0';
-      const char *artifact = strstr(text, "\"role\":\"samples.raw\"");
+      const char *artifact = string_find(text, "\"role\":\"samples.raw\"");
       const char *recorded =
-          artifact ? strstr(artifact, "\"sha256\":\"") : NULL;
-      const char *end = artifact ? strchr(artifact, '}') : NULL;
+          artifact ? string_find(artifact, "\"sha256\":\"") : NULL;
+      const char *end = artifact ? string_find_char(artifact, '}') : NULL;
       matches = recorded && end && recorded < end &&
-                strncmp(recorded + 10u, digest, strlen(digest)) == 0;
+                string_n_equals(recorded + 10u, digest, string_length(digest));
     }
   }
   scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
@@ -322,9 +162,9 @@ static bool8_t vkr_harness_child_sample_digest_matches(const char *report_path,
  * evidence regardless of its average.
  */
 static bool8_t vkr_harness_work_metric(const char *name) {
-  return strncmp(name, "draw.", 5u) == 0 ||
-         strncmp(name, "visibility.", 11u) == 0 ||
-         strstr(name, "overflow") != NULL || strstr(name, "capture") != NULL;
+  return string_n_equals(name, "draw.", 5u) ||
+         string_n_equals(name, "visibility.", 11u) ||
+         string_find(name, "overflow") || string_find(name, "capture");
 }
 
 static bool8_t
@@ -348,8 +188,9 @@ vkr_harness_work_volume_matches(const VkrHarnessCase *case_manifest,
       }
       if (runs[0].availability[first + offset] !=
               runs[run].availability[first + offset] ||
-          memcmp(&runs[0].values[first + offset],
-                 &runs[run].values[first + offset], sizeof(float64_t)) != 0) {
+          MemCompare(&runs[0].values[first + offset],
+                     &runs[run].values[first + offset],
+                     sizeof(float64_t)) != 0) {
         return false_v;
       }
     }
@@ -359,7 +200,7 @@ vkr_harness_work_volume_matches(const VkrHarnessCase *case_manifest,
 
 static bool8_t vkr_harness_profile_matches(const char *required,
                                            const char *actual) {
-  return !required[0] || strcmp(required, actual) == 0;
+  return !required[0] || string_equals(required, actual);
 }
 
 static bool8_t
@@ -412,10 +253,11 @@ vkr_harness_run_is_compatible(const VkrHarnessSampleSet *first,
                               const VkrHarnessSampleSet *candidate) {
   return candidate->header.metric_count == first->header.metric_count &&
          candidate->header.pass_count == first->header.pass_count &&
-         memcmp(first->metrics, candidate->metrics,
-                sizeof(*first->metrics) * first->header.metric_count) == 0 &&
-         memcmp(first->passes, candidate->passes,
-                sizeof(*first->passes) * first->header.pass_count) == 0 &&
+         MemCompare(first->metrics, candidate->metrics,
+                    sizeof(*first->metrics) * first->header.metric_count) ==
+             0 &&
+         MemCompare(first->passes, candidate->passes,
+                    sizeof(*first->passes) * first->header.pass_count) == 0 &&
          candidate->header.gpu_vendor_id == first->header.gpu_vendor_id &&
          candidate->header.gpu_device_id == first->header.gpu_device_id &&
          candidate->header.actual_present == first->header.actual_present;
@@ -461,8 +303,10 @@ static bool8_t vkr_harness_collect_run_evidence(VkrHarnessReport *report,
     for (uint32_t i = 0; i < runs[run].header.event_count; ++i) {
       const VkrHarnessSampleEvent *source = &runs[run].events[i];
       VkrHarnessEvent *target = &report->events[report->event_count++];
-      snprintf(target->source, sizeof(target->source), "%s", source->source);
-      snprintf(target->subject, sizeof(target->subject), "%s", source->subject);
+      string_format(target->source, sizeof(target->source), "%s",
+                    source->source);
+      string_format(target->subject, sizeof(target->subject), "%s",
+                    source->subject);
       target->start_ns = source->start_ns;
       target->duration_ns = source->duration_ns;
       target->bytes = source->bytes;
@@ -524,19 +368,20 @@ static bool8_t vkr_harness_aggregate_runs(const VkrHarnessArenas *arenas,
         (uint64_t)case_manifest->warmup_frames * metric_count;
     const uint64_t pass_source =
         (uint64_t)case_manifest->warmup_frames * pass_count;
-    memcpy(values + (uint64_t)run * metric_values,
-           runs[run].values + metric_source, sizeof(float64_t) * metric_values);
-    memcpy(availability + (uint64_t)run * metric_values,
-           runs[run].availability + metric_source, metric_values);
+    MemCopy(values + (uint64_t)run * metric_values,
+            runs[run].values + metric_source,
+            sizeof(float64_t) * metric_values);
+    MemCopy(availability + (uint64_t)run * metric_values,
+            runs[run].availability + metric_source, metric_values);
     if (pass_values > 0u) {
-      memcpy(pass_cpu + (uint64_t)run * pass_values,
-             runs[run].pass_cpu_ms + pass_source,
-             sizeof(float64_t) * pass_values);
-      memcpy(pass_gpu + (uint64_t)run * pass_values,
-             runs[run].pass_gpu_ms + pass_source,
-             sizeof(float64_t) * pass_values);
-      memcpy(pass_flags + (uint64_t)run * pass_values,
-             runs[run].pass_flags + pass_source, pass_values);
+      MemCopy(pass_cpu + (uint64_t)run * pass_values,
+              runs[run].pass_cpu_ms + pass_source,
+              sizeof(float64_t) * pass_values);
+      MemCopy(pass_gpu + (uint64_t)run * pass_values,
+              runs[run].pass_gpu_ms + pass_source,
+              sizeof(float64_t) * pass_values);
+      MemCopy(pass_flags + (uint64_t)run * pass_values,
+              runs[run].pass_flags + pass_source, pass_values);
     }
   }
   const uint32_t aggregate_frames = measured * run_count;
@@ -569,21 +414,21 @@ static bool8_t vkr_harness_execute_repetition(
     VkrHarnessRunReference *reference, VkrHarnessSampleSet *out_samples,
     VkrHarnessError *error) {
   char run_dir[VKR_HARNESS_PATH_MAX];
-  snprintf(run_dir, sizeof(run_dir), "%s/runs/%u", run_root, index);
+  string_format(run_dir, sizeof(run_dir), "%s/runs/%u", run_root, index);
   reference->index = index;
-  snprintf(reference->report, sizeof(reference->report), "runs/%u/report.json",
-           index);
-  snprintf(reference->status, sizeof(reference->status), "incomplete");
+  string_format(reference->report, sizeof(reference->report),
+                "runs/%u/report.json", index);
+  string_format(reference->status, sizeof(reference->status), "incomplete");
   if (!vkr_harness_make_directories(run_dir, error)) {
     return false_v;
   }
   char cache_path[VKR_HARNESS_PATH_MAX] = {0};
   if (case_manifest->cache != VKR_HARNESS_CACHE_SHARED) {
-    snprintf(cache_path, sizeof(cache_path), "%s/pipeline.cache", run_dir);
+    string_format(cache_path, sizeof(cache_path), "%s/pipeline.cache", run_dir);
   }
   if (case_manifest->cache == VKR_HARNESS_CACHE_ISOLATED_WARM) {
     char prewarm_dir[VKR_HARNESS_PATH_MAX];
-    snprintf(prewarm_dir, sizeof(prewarm_dir), "%s/prewarm", run_dir);
+    string_format(prewarm_dir, sizeof(prewarm_dir), "%s/prewarm", run_dir);
     if (!vkr_harness_make_directories(prewarm_dir, error) ||
         vkr_harness_spawn_child(executable, repo_root, case_path, profile_path,
                                 prewarm_dir, cache_path,
@@ -597,8 +442,8 @@ static bool8_t vkr_harness_execute_repetition(
       case_manifest->repetition_timeout_ms, false_v);
   char child_report[VKR_HARNESS_PATH_MAX];
   char samples_path[VKR_HARNESS_PATH_MAX];
-  snprintf(child_report, sizeof(child_report), "%s/report.json", run_dir);
-  snprintf(samples_path, sizeof(samples_path), "%s/samples.bin", run_dir);
+  string_format(child_report, sizeof(child_report), "%s/report.json", run_dir);
+  string_format(samples_path, sizeof(samples_path), "%s/samples.bin", run_dir);
   if (child_exit != VKR_HARNESS_EXIT_PASS ||
       !vkr_harness_sha256_file(child_report, reference->sha256) ||
       !vkr_harness_child_sample_digest_matches(child_report, samples_path,
@@ -629,10 +474,11 @@ static bool8_t vkr_harness_record_run_artifacts(VkrHarnessReport *report,
     char relative[VKR_HARNESS_PATH_MAX];
     char absolute[VKR_HARNESS_PATH_MAX];
     char role[96];
-    snprintf(relative, sizeof(relative), "runs/%u/%s", index,
-             kArtifacts[i].file);
-    snprintf(absolute, sizeof(absolute), "%s/%s", run_root, relative);
-    snprintf(role, sizeof(role), "run.%u.%s", index, kArtifacts[i].role_suffix);
+    string_format(relative, sizeof(relative), "runs/%u/%s", index,
+                  kArtifacts[i].file);
+    string_format(absolute, sizeof(absolute), "%s/%s", run_root, relative);
+    string_format(role, sizeof(role), "run.%u.%s", index,
+                  kArtifacts[i].role_suffix);
     complete &= vkr_harness_report_add_artifact(
         report, role, relative, kArtifacts[i].media_type, absolute);
   }
@@ -701,7 +547,7 @@ static void vkr_harness_apply_verdict(VkrHarnessReport *report,
     /* A case may explore timing locally, but it may not gate on it. */
     const VkrHarnessMetricResult *metric =
         vkr_harness_report_find_metric(report, assertion->metric);
-    if (metric && strcmp(metric->unit, "ns") == 0) {
+    if (metric && string_equals(metric->unit, "ns")) {
       vkr_harness_report_add_authority_reason(report,
                                               "policy.case_timing_assertion");
     }
@@ -728,7 +574,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   (void)repo_root;
   (void)case_path;
   (void)profile_path;
-  fprintf(stderr, "The harness requires VKR_METRICS_ENABLED=1\n");
+  vkr_harness_stderr("The harness requires VKR_METRICS_ENABLED=1\n");
   vkr_harness_emit_result("unavailable", VKR_HARNESS_EXIT_UNAVAILABLE, NULL,
                           NULL);
   return VKR_HARNESS_EXIT_UNAVAILABLE;
@@ -737,15 +583,15 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   VkrHarnessCase case_manifest = {0};
   VkrHarnessProfile profile = {0};
   if (!vkr_harness_case_load(repo_root, case_path, &case_manifest, &error)) {
-    fprintf(stderr, "%s: %s\n", error.code, error.message);
+    vkr_harness_stderr("%s: %s\n", error.code, error.message);
     vkr_harness_emit_result("invalid", VKR_HARNESS_EXIT_INVALID, NULL, NULL);
     return VKR_HARNESS_EXIT_INVALID;
   }
   if (!vkr_harness_profile_load(repo_root, profile_path, &profile, &error)) {
     /* An unreadable profile is a missing instrument, not a malformed one. */
-    const bool8_t missing = strncmp(error.code, "path.", 5u) == 0 ||
-                            strcmp(error.code, "manifest.read") == 0;
-    fprintf(stderr, "%s: %s\n", error.code, error.message);
+    const bool8_t missing = string_n_equals(error.code, "path.", 5u) ||
+                            string_equals(error.code, "manifest.read");
+    vkr_harness_stderr("%s: %s\n", error.code, error.message);
     const VkrHarnessExitCode exit_code =
         missing ? VKR_HARNESS_EXIT_MISSING_BASELINE : VKR_HARNESS_EXIT_INVALID;
     vkr_harness_emit_result(missing ? "missing_baseline" : "invalid", exit_code,
@@ -755,14 +601,14 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   const char *unsupported =
       vkr_harness_phase2_unsupported(&case_manifest, &profile);
   if (unsupported) {
-    fprintf(stderr, "%s\n", unsupported);
+    vkr_harness_stderr("%s\n", unsupported);
     vkr_harness_emit_result("unavailable", VKR_HARNESS_EXIT_UNAVAILABLE, NULL,
                             NULL);
     return VKR_HARNESS_EXIT_UNAVAILABLE;
   }
   if (case_manifest.target != profile.target ||
       case_manifest.present != profile.required_present) {
-    fprintf(stderr, "Case and execution profile are incompatible\n");
+    vkr_harness_stderr("Case and execution profile are incompatible\n");
     vkr_harness_emit_result("missing_baseline",
                             VKR_HARNESS_EXIT_MISSING_BASELINE, NULL, NULL);
     return VKR_HARNESS_EXIT_MISSING_BASELINE;
@@ -783,7 +629,8 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
       .provenance = {.actual_present = VKR_HARNESS_PRESENT_UNKNOWN},
   };
   if (report.requested_repetitions > VKR_HARNESS_MAX_RUNS) {
-    fprintf(stderr, "Requested repetitions exceed %u\n", VKR_HARNESS_MAX_RUNS);
+    vkr_harness_stderr("Requested repetitions exceed %u\n",
+                       VKR_HARNESS_MAX_RUNS);
     vkr_harness_emit_result("invalid", VKR_HARNESS_EXIT_INVALID, NULL, NULL);
     return VKR_HARNESS_EXIT_INVALID;
   }
@@ -794,7 +641,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   }
   if (report.provenance.dirty) {
     if (!profile.allow_dirty) {
-      fprintf(stderr, "Execution profile requires a clean worktree\n");
+      vkr_harness_stderr("Execution profile requires a clean worktree\n");
       vkr_harness_emit_result("unavailable", VKR_HARNESS_EXIT_UNAVAILABLE, NULL,
                               NULL);
       return VKR_HARNESS_EXIT_UNAVAILABLE;
@@ -805,14 +652,14 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   char artifact_candidate[VKR_HARNESS_PATH_MAX];
   char artifact_root[VKR_HARNESS_PATH_MAX];
   char run_root[VKR_HARNESS_PATH_MAX];
-  snprintf(artifact_candidate, sizeof(artifact_candidate), "%s/%s", repo_root,
-           VKR_HARNESS_ARTIFACT_ROOT);
+  string_format(artifact_candidate, sizeof(artifact_candidate), "%s/%s",
+                repo_root, VKR_HARNESS_ARTIFACT_ROOT);
   if (!vkr_harness_make_directories(artifact_candidate, &error) ||
       !vkr_harness_resolve_existing_path(repo_root, VKR_HARNESS_ARTIFACT_ROOT,
                                          artifact_root, &error) ||
       !vkr_harness_create_run_root(artifact_root, report.run_id, run_root)) {
-    fprintf(stderr, "Unable to create a unique artifact run directory: %s\n",
-            error.message);
+    vkr_harness_stderr("Unable to create a unique artifact run directory: %s\n",
+                       error.message);
     vkr_harness_emit_result("error", VKR_HARNESS_EXIT_ERROR, NULL, NULL);
     return VKR_HARNESS_EXIT_ERROR;
   }
@@ -821,7 +668,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   VkrHarnessArenas arenas = {.persistent = arena_create(),
                              .transient = arena_create()};
   if (!arenas.persistent || !arenas.transient) {
-    fprintf(stderr, "Unable to create the aggregation arenas\n");
+    vkr_harness_stderr("Unable to create the aggregation arenas\n");
     arena_destroy(arenas.persistent);
     arena_destroy(arenas.transient);
     vkr_harness_emit_result("error", VKR_HARNESS_EXIT_ERROR, NULL, NULL);
@@ -833,7 +680,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
     report.gpu_lane_lock_acquired =
         vkr_harness_gpu_lane_acquire(&lane, artifact_root);
     if (!report.gpu_lane_lock_acquired) {
-      fprintf(stderr, "Exclusive GPU lane is busy\n");
+      vkr_harness_stderr("Exclusive GPU lane is busy\n");
       arena_destroy(arenas.transient);
       arena_destroy(arenas.persistent);
       vkr_harness_emit_result("unavailable", VKR_HARNESS_EXIT_UNAVAILABLE, NULL,
@@ -851,13 +698,14 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
       break;
     }
     if (run > 0u && !vkr_harness_run_is_compatible(&runs[0], &runs[run])) {
-      snprintf(reference->status, sizeof(reference->status), "incompatible");
+      string_format(reference->status, sizeof(reference->status),
+                    "incompatible");
       break;
     }
     if (run == 0u) {
       vkr_harness_adopt_run_provenance(&report.provenance, &runs[0].header);
     }
-    snprintf(reference->status, sizeof(reference->status), "pass");
+    string_format(reference->status, sizeof(reference->status), "pass");
     report.completed_repetitions++;
   }
   bool8_t snapshot_dropped = false_v;
@@ -888,8 +736,8 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
 
   char final_report[VKR_HARNESS_PATH_MAX];
   char summary[VKR_HARNESS_PATH_MAX];
-  snprintf(final_report, sizeof(final_report), "%s/report.json", run_root);
-  snprintf(summary, sizeof(summary), "%s/summary.csv", run_root);
+  string_format(final_report, sizeof(final_report), "%s/report.json", run_root);
+  string_format(summary, sizeof(summary), "%s/summary.csv", run_root);
   vkr_harness_timestamp_utc(report.provenance.ended_at);
   bool8_t artifacts_complete = true_v;
   for (uint32_t run = 0; run < report.completed_repetitions; ++run) {
@@ -898,7 +746,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   }
   if (!vkr_harness_summary_csv_write(summary, &report, arenas.transient,
                                      &error)) {
-    fprintf(stderr, "%s: %s\n", error.code, error.message);
+    vkr_harness_stderr("%s: %s\n", error.code, error.message);
     vkr_harness_report_mark_incomplete(&report, "artifacts.incomplete");
   } else {
     artifacts_complete &= vkr_harness_report_add_artifact(
@@ -910,15 +758,15 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   /* The report is the last write: a killed process leaves an incomplete run
      directory rather than a plausible partial report. */
   if (!vkr_harness_report_write(final_report, &report, &error)) {
-    fprintf(stderr, "%s: %s\n", error.code, error.message);
+    vkr_harness_stderr("%s: %s\n", error.code, error.message);
     vkr_harness_report_set_status(&report, "error", VKR_HARNESS_EXIT_ERROR);
     vkr_harness_emit_result("error", VKR_HARNESS_EXIT_ERROR, NULL, NULL);
   } else {
     char report_digest[VKR_HARNESS_DIGEST_MAX] = {0};
     char relative[VKR_HARNESS_PATH_MAX];
     (void)vkr_harness_sha256_file(final_report, report_digest);
-    snprintf(relative, sizeof(relative), "%s/%s/report.json",
-             VKR_HARNESS_ARTIFACT_ROOT, report.run_id);
+    string_format(relative, sizeof(relative), "%s/%s/report.json",
+                  VKR_HARNESS_ARTIFACT_ROOT, report.run_id);
     vkr_harness_emit_result(report.status, report.exit_code, relative,
                             report_digest);
   }

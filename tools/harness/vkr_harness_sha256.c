@@ -1,8 +1,5 @@
 #include "vkr_harness.h"
 
-#include <stdio.h>
-#include <string.h>
-
 static const uint32_t vkr_harness_sha256_constants[64] = {
     0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu,
     0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u, 0xd807aa98u, 0x12835b01u,
@@ -128,7 +125,7 @@ static void vkr_harness_sha256_final(VkrHarnessSha256 *hash,
 static void vkr_harness_sha256_format(const uint8_t digest[32],
                                       char out[VKR_HARNESS_DIGEST_MAX]) {
   static const char hex[] = "0123456789abcdef";
-  memcpy(out, "sha256:", 7u);
+  MemCopy(out, "sha256:", 7u);
   for (uint32_t i = 0; i < 32; ++i) {
     out[7u + i * 2u] = hex[digest[i] >> 4u];
     out[8u + i * 2u] = hex[digest[i] & 0x0fu];
@@ -156,19 +153,31 @@ bool8_t vkr_harness_sha256_file(const char *path,
   if (!path || !out_digest) {
     return false_v;
   }
-  FILE *file = fopen(path, "rb");
-  if (!file) {
+  FilePath file_path = vkr_harness_file_path(path);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+  FileHandle file = {0};
+  if (file_open(&file_path, mode, &file) != FILE_ERROR_NONE) {
     return false_v;
   }
   VkrHarnessSha256 hash;
   vkr_harness_sha256_begin(&hash);
   uint8_t buffer[16384];
-  size_t read = 0;
-  while ((read = fread(buffer, 1, sizeof(buffer), file)) > 0) {
-    vkr_harness_sha256_update(&hash, buffer, read);
+  bool8_t success = true_v;
+  for (;;) {
+    uint64_t bytes_read = 0u;
+    if (file_read_into(&file, buffer, sizeof(buffer), &bytes_read) !=
+        FILE_ERROR_NONE) {
+      success = false_v;
+      break;
+    }
+    if (bytes_read == 0u) {
+      break;
+    }
+    vkr_harness_sha256_update(&hash, buffer, bytes_read);
   }
-  const bool8_t success = !ferror(file);
-  fclose(file);
+  file_close(&file);
   if (!success) {
     return false_v;
   }
