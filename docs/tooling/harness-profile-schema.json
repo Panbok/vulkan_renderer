@@ -1,0 +1,90 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://vkr.local/schemas/harness-profile-v1.schema.json",
+  "title": "Vulkan Renderer Harness Execution Profile",
+  "type": "object",
+  "required": ["schema_version", "id", "authoritative", "dirty_policy", "environment", "instrumentation", "execution", "required_metrics"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": { "type": "string", "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)+$" },
+    "description": { "type": "string" },
+    "authoritative": { "type": "boolean" },
+    "dirty_policy": { "enum": ["require_clean", "allow"] },
+    "environment": {
+      "type": "object",
+      "required": ["target", "required_present", "require_actual_present"],
+      "properties": {
+        "target": { "enum": ["windowed_visible", "windowed_hidden", "offscreen"] },
+        "required_present": { "enum": ["immediate", "fifo", "none"] },
+        "require_actual_present": { "type": "boolean" },
+        "os": { "type": "string" },
+        "cpu": { "type": "string" },
+        "gpu": { "type": "string" },
+        "driver": { "type": "string" },
+        "gpu_vendor_id": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "gpu_device_id": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "power_mode": { "type": "string" },
+        "thermal_state": { "type": "string" },
+        "process_priority": { "type": "integer", "minimum": -20, "maximum": 20 }
+      },
+      "additionalProperties": false
+    },
+    "instrumentation": {
+      "type": "object",
+      "required": ["gpu_timing", "event_subjects"],
+      "properties": {
+        "gpu_timing": { "type": "boolean" },
+        "event_subjects": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "execution": {
+      "type": "object",
+      "required": ["minimum_repetitions", "warmup_stability_window", "warmup_max_drift_ratio", "require_warmup_stability", "exclusive_gpu_lane"],
+      "properties": {
+        "minimum_repetitions": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "warmup_stability_window": { "type": "integer", "minimum": 2 },
+        "warmup_max_drift_ratio": { "type": "number", "minimum": 0 },
+        "require_warmup_stability": { "type": "boolean" },
+        "exclusive_gpu_lane": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "required_metrics": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$" },
+      "uniqueItems": true,
+      "maxItems": 64
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "environment": {
+            "type": "object",
+            "properties": { "target": { "const": "offscreen" } },
+            "required": ["target"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "environment": {
+            "type": "object",
+            "properties": { "required_present": { "const": "none" } }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "environment": {
+            "type": "object",
+            "properties": { "required_present": { "enum": ["immediate", "fifo"] } }
+          }
+        }
+      }
+    }
+  ]
+}

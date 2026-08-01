@@ -23,8 +23,8 @@ else()
     target_compile_options(vulkan_renderer_tester PRIVATE -march=native)
 endif()
 
-# Link against the renderer_lib
-target_link_libraries(vulkan_renderer_tester PRIVATE renderer_lib)
+# The harness core exports renderer_lib transitively.
+target_link_libraries(vulkan_renderer_tester PRIVATE vkr_harness_core)
 
 # Include directories
 target_include_directories(vulkan_renderer_tester

@@ -61,7 +61,7 @@ BUILD_TYPE="${1:-Debug}"
     echo "Skipping texture pack step (set VKR_VKT_PACK=1 to enable)"
   fi
 
-  cmake --build ./build --target vulkan_renderer --config ${BUILD_TYPE}
+  cmake --build ./build --target vulkan_renderer vkr_harness --config ${BUILD_TYPE}
 
   echo "Copying shaders to build/app/assets"
   mkdir -p build/app/assets

@@ -46,7 +46,7 @@ set -e # Exit early if any commands fail
       ;;
   esac
   cmake --fresh -B build_release -S . -U CMAKE_TOOLCHAIN_FILE -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS:BOOL=TRUE -DVKR_METRICS_ENABLED="${VKR_METRICS_CMAKE_VALUE}" ${GENERATOR} ${COMPILERS}
-  cmake --build ./build_release --target vulkan_renderer --config Release
+  cmake --build ./build_release --target vulkan_renderer vkr_harness --config Release
 
   echo "Copying shaders to release build directory"
   mkdir -p build_release/app/assets

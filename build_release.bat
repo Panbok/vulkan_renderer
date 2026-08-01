@@ -60,7 +60,7 @@ if %errorlevel% neq 0 (
 
 REM Build target
 echo Building vulkan_renderer (Release)
-cmake --build .\build_release --target vulkan_renderer --config Release
+cmake --build .\build_release --target vulkan_renderer vkr_harness --config Release
 if %errorlevel% neq 0 (
     echo Build failed.
     exit /b 1

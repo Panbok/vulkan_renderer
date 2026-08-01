@@ -1,0 +1,238 @@
+#include "vkr_harness.h"
+
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int vkr_harness_fingerprint_field_compare(const void *a, const void *b) {
+  const VkrHarnessFingerprintField *lhs = a;
+  const VkrHarnessFingerprintField *rhs = b;
+  return strcmp(lhs->name, rhs->name);
+}
+
+/**
+ * Canonical form is `<be32 name length><name><be32 value length><value>` per
+ * field in name order, so neither field order nor a delimiter occurring inside
+ * a value can change the digest. Absorbed incrementally: a contiguous
+ * canonical buffer would have to be sized from the field struct's capacities
+ * and silently overflows the moment either grows.
+ */
+static void vkr_harness_fingerprint_absorb(VkrHarnessSha256 *hash,
+                                           const char *text, uint32_t length) {
+  const uint8_t prefix[4] = {(uint8_t)(length >> 24u), (uint8_t)(length >> 16u),
+                             (uint8_t)(length >> 8u), (uint8_t)length};
+  vkr_harness_sha256_update(hash, prefix, sizeof(prefix));
+  vkr_harness_sha256_update(hash, text, length);
+}
+
+bool8_t vkr_harness_fingerprint(const VkrHarnessFingerprintField *fields,
+                                uint32_t field_count,
+                                char out_digest[VKR_HARNESS_DIGEST_MAX],
+                                VkrHarnessError *out_error) {
+  if (!out_digest || field_count > VKR_HARNESS_MAX_FINGERPRINT_FIELDS ||
+      (field_count > 0 && !fields)) {
+    vkr_harness_error_set(out_error, "fingerprint.input", "$.comparison",
+                          "Fingerprint field set is invalid");
+    return false_v;
+  }
+  VkrHarnessFingerprintField sorted[VKR_HARNESS_MAX_FINGERPRINT_FIELDS];
+  if (field_count > 0) {
+    memcpy(sorted, fields, sizeof(*sorted) * field_count);
+    qsort(sorted, field_count, sizeof(*sorted),
+          vkr_harness_fingerprint_field_compare);
+  }
+  VkrHarnessSha256 hash;
+  vkr_harness_sha256_begin(&hash);
+  for (uint32_t i = 0; i < field_count; ++i) {
+    if (sorted[i].name[0] == '\0' ||
+        (i > 0 && strcmp(sorted[i - 1u].name, sorted[i].name) == 0)) {
+      vkr_harness_error_set(
+          out_error, "fingerprint.field", "$.comparison",
+          "Fingerprint field names must be unique and nonempty");
+      return false_v;
+    }
+    vkr_harness_fingerprint_absorb(&hash, sorted[i].name,
+                                   (uint32_t)strlen(sorted[i].name));
+    vkr_harness_fingerprint_absorb(&hash, sorted[i].value,
+                                   (uint32_t)strlen(sorted[i].value));
+  }
+  vkr_harness_sha256_end(&hash, out_digest);
+  return true_v;
+}
+
+/**
+ * Fails rather than truncates: a clipped name or value would silently give two
+ * different effective configurations the same comparison identity.
+ */
+static bool8_t vkr_harness_add_field(
+    VkrHarnessFingerprintField fields[VKR_HARNESS_MAX_FINGERPRINT_FIELDS],
+    uint32_t *count, const char *name, const char *format, ...) {
+  if (*count >= VKR_HARNESS_MAX_FINGERPRINT_FIELDS) {
+    return false_v;
+  }
+  VkrHarnessFingerprintField *field = &fields[*count];
+  const int name_length =
+      snprintf(field->name, sizeof(field->name), "%s", name);
+  va_list args;
+  va_start(args, format);
+  const int value_length =
+      vsnprintf(field->value, sizeof(field->value), format, args);
+  va_end(args);
+  if (name_length < 0 || (uint32_t)name_length >= sizeof(field->name) ||
+      value_length < 0 || (uint32_t)value_length >= sizeof(field->value)) {
+    return false_v;
+  }
+  (*count)++;
+  return true_v;
+}
+
+bool8_t vkr_harness_case_fingerprints(
+    VkrHarnessTool tool, const VkrHarnessCase *case_manifest,
+    const VkrHarnessProfile *profile,
+    const VkrHarnessFingerprintField *environment_fields,
+    uint32_t environment_field_count,
+    char out_environment[VKR_HARNESS_DIGEST_MAX],
+    char out_workload[VKR_HARNESS_DIGEST_MAX],
+    char out_policy[VKR_HARNESS_DIGEST_MAX], VkrHarnessError *out_error) {
+  if (!case_manifest || !profile || !out_environment || !out_workload ||
+      !out_policy ||
+      environment_field_count > VKR_HARNESS_MAX_FINGERPRINT_FIELDS) {
+    vkr_harness_error_set(out_error, "fingerprint.input", "$.comparison",
+                          "Fingerprint inputs are invalid");
+    return false_v;
+  }
+  if (!vkr_harness_fingerprint(environment_fields, environment_field_count,
+                               out_environment, out_error)) {
+    return false_v;
+  }
+
+  VkrHarnessFingerprintField fields[VKR_HARNESS_MAX_FINGERPRINT_FIELDS];
+  uint32_t count = 0;
+#define ADD(NAME, FORMAT, ...)                                                 \
+  if (!vkr_harness_add_field(fields, &count, NAME, FORMAT, __VA_ARGS__))       \
+  goto too_many
+  ADD("camera.version", "%u", VKR_HARNESS_CAMERA_SCRIPT_VERSION);
+  ADD("camera.mode", "%u", case_manifest->camera.mode);
+  ADD("camera.interpolation", "%u", case_manifest->camera.interpolation);
+  ADD("camera.speed", "%u", case_manifest->camera.speed);
+  ADD("camera.lens", "%.9g,%.9g,%.9g",
+      case_manifest->camera.vertical_fov_degrees,
+      case_manifest->camera.near_plane, case_manifest->camera.far_plane);
+  ADD("camera.static", "%.9g,%.9g,%.9g,%.9g,%.9g",
+      case_manifest->camera.static_pose.position.x,
+      case_manifest->camera.static_pose.position.y,
+      case_manifest->camera.static_pose.position.z,
+      case_manifest->camera.static_pose.yaw_degrees,
+      case_manifest->camera.static_pose.pitch_degrees);
+  ADD("camera.orbit", "%.9g,%.9g,%.9g,%.9g,%.9g,%.17g,%.9g,%.9g",
+      case_manifest->camera.orbit_center.x,
+      case_manifest->camera.orbit_center.y,
+      case_manifest->camera.orbit_center.z, case_manifest->camera.orbit_radius,
+      case_manifest->camera.orbit_height,
+      case_manifest->camera.orbit_duration_seconds,
+      case_manifest->camera.orbit_revolutions,
+      case_manifest->camera.orbit_start_angle_degrees);
+  for (uint32_t i = 0; i < case_manifest->camera.key_count; ++i) {
+    char name[96];
+    snprintf(name, sizeof(name), "camera.key.%03u", i);
+    ADD(name, "%.17g,%.9g,%.9g,%.9g,%.9g,%.9g",
+        case_manifest->camera.keys[i].time_seconds,
+        case_manifest->camera.keys[i].position.x,
+        case_manifest->camera.keys[i].position.y,
+        case_manifest->camera.keys[i].position.z,
+        case_manifest->camera.keys[i].yaw_degrees,
+        case_manifest->camera.keys[i].pitch_degrees);
+  }
+  ADD("case.cache", "%s", vkr_harness_cache_name(case_manifest->cache));
+  ADD("case.boot", "%s", vkr_harness_boot_name(case_manifest->boot));
+  ADD("case.fixed_delta", "%.17g", case_manifest->fixed_delta_seconds);
+  ADD("case.frames", "%u,%u", case_manifest->warmup_frames,
+      case_manifest->measure_frames);
+  ADD("case.resolution", "%u,%u", case_manifest->width, case_manifest->height);
+  ADD("case.scene", "%s", case_manifest->scene);
+  ADD("case.seed", "%llu", (unsigned long long)case_manifest->seed);
+  ADD("renderer.editor", "%u", case_manifest->renderer.editor);
+  ADD("renderer.skybox", "%u", case_manifest->renderer.skybox);
+  ADD("renderer.shadow", "%s,%u", case_manifest->renderer.shadow_preset,
+      case_manifest->renderer.shadow_cascades);
+  ADD("renderer.render_mode", "%s", case_manifest->renderer.render_mode);
+  ADD("target", "%s,%s,%u", vkr_harness_target_name(case_manifest->target),
+      vkr_harness_present_name(case_manifest->present),
+      case_manifest->target_image_count);
+  ADD("instrumentation", "%u,%u", profile->gpu_timing, profile->event_subjects);
+  if (tool != VKR_HARNESS_TOOL_PROFILE) {
+    for (uint32_t i = 0; i < case_manifest->capture_count; ++i) {
+      char name[96];
+      snprintf(name, sizeof(name), "capture.%03u", i);
+      char value[VKR_HARNESS_TEXT_MAX];
+      int written = snprintf(value, sizeof(value), "%u",
+                             case_manifest->captures[i].at_frame);
+      for (uint32_t channel = 0;
+           channel < case_manifest->captures[i].channel_count; ++channel) {
+        if (written < 0 || (uint32_t)written >= sizeof(value)) {
+          goto too_many;
+        }
+        written +=
+            snprintf(value + written, sizeof(value) - (uint32_t)written, ",%s",
+                     case_manifest->captures[i].channels[channel]);
+      }
+      if (written < 0 || (uint32_t)written >= sizeof(value)) {
+        goto too_many;
+      }
+      ADD(name, "%s", value);
+    }
+  }
+  if (!vkr_harness_fingerprint(fields, count, out_workload, out_error)) {
+    return false_v;
+  }
+
+  count = 0;
+  ADD("profile.authoritative", "%u", profile->authoritative);
+  ADD("profile.allow_dirty", "%u", profile->allow_dirty);
+  ADD("profile.target", "%s", vkr_harness_target_name(profile->target));
+  ADD("profile.minimum_repetitions", "%u", profile->minimum_repetitions);
+  ADD("profile.present", "%s,%u",
+      vkr_harness_present_name(profile->required_present),
+      profile->require_actual_present);
+  ADD("profile.stability", "%u,%.17g,%u", profile->warmup_stability_window,
+      profile->warmup_max_drift_ratio, profile->require_warmup_stability);
+  ADD("profile.gpu_lane", "%u", profile->require_exclusive_gpu_lane);
+  ADD("profile.os", "%s", profile->required_os);
+  ADD("profile.cpu", "%s", profile->required_cpu);
+  ADD("profile.gpu", "%s", profile->required_gpu);
+  ADD("profile.driver", "%s", profile->required_driver);
+  ADD("profile.gpu_ids", "%u,%u", profile->required_gpu_vendor_id,
+      profile->required_gpu_device_id);
+  ADD("profile.power", "%s", profile->required_power_mode);
+  ADD("profile.thermal", "%s", profile->required_thermal_state);
+  ADD("profile.priority", "%u,%d", profile->has_required_process_priority,
+      profile->required_process_priority);
+  ADD("statistics.algorithm", "%s", "nearest-rank-v1,population-stddev-v1");
+  for (uint32_t i = 0; i < profile->required_metric_count; ++i) {
+    char name[96];
+    snprintf(name, sizeof(name), "required_metric.%03u", i);
+    ADD(name, "%s", profile->required_metrics[i]);
+  }
+  for (uint32_t i = 0; i < case_manifest->assertion_count; ++i) {
+    char name[96];
+    snprintf(name, sizeof(name), "assertion.%03u", i);
+    ADD(name, "%s,%u,%u,%.17g,%.17g", case_manifest->assertions[i].metric,
+        case_manifest->assertions[i].statistic,
+        case_manifest->assertions[i].operation,
+        case_manifest->assertions[i].limit,
+        case_manifest->assertions[i].tolerance);
+  }
+  if (!vkr_harness_fingerprint(fields, count, out_policy, out_error)) {
+    return false_v;
+  }
+#undef ADD
+  return true_v;
+
+too_many:
+#undef ADD
+  vkr_harness_error_set(out_error, "fingerprint.field_limit", "$.comparison",
+                        "Effective configuration exceeds the fingerprint field "
+                        "count or field capacity");
+  return false_v;
+}

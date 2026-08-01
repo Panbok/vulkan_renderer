@@ -1,0 +1,789 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://vkr.local/schemas/harness-report-v1.schema.json",
+  "title": "Vulkan Renderer Harness Report",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "tool",
+    "tool_version",
+    "run_id",
+    "status",
+    "exit_code",
+    "authoritative",
+    "authority_reasons",
+    "case",
+    "profile",
+    "provenance",
+    "comparison",
+    "effective_config",
+    "execution",
+    "runs",
+    "auxiliary_runs",
+    "aggregate",
+    "events",
+    "captures",
+    "assertions",
+    "diagnostics",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "vkr.harness.report"
+    },
+    "tool": {
+      "enum": [
+        "profile",
+        "snapshot",
+        "autotest"
+      ]
+    },
+    "tool_version": {
+      "const": "1"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.-]+$"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "fail",
+        "invalid",
+        "unavailable",
+        "missing_baseline",
+        "error",
+        "cancelled",
+        "incomplete"
+      ]
+    },
+    "exit_code": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5
+    },
+    "authoritative": {
+      "type": "boolean"
+    },
+    "authority_reasons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "case": {
+      "$ref": "#/definitions/case_identity"
+    },
+    "profile": {
+      "$ref": "#/definitions/profile_identity"
+    },
+    "provenance": {
+      "$ref": "#/definitions/provenance"
+    },
+    "comparison": {
+      "type": "object",
+      "required": [
+        "environment_fingerprint",
+        "workload_fingerprint",
+        "policy_fingerprint"
+      ],
+      "properties": {
+        "environment_fingerprint": {
+          "$ref": "#/definitions/digest"
+        },
+        "workload_fingerprint": {
+          "$ref": "#/definitions/digest"
+        },
+        "policy_fingerprint": {
+          "$ref": "#/definitions/digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "effective_config": {
+      "$ref": "#/definitions/effective_config"
+    },
+    "execution": {
+      "$ref": "#/definitions/execution"
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/run"
+      }
+    },
+    "auxiliary_runs": {
+      "type": "array"
+    },
+    "aggregate": {
+      "type": "object",
+      "required": [
+        "metrics",
+        "passes"
+      ],
+      "properties": {
+        "metrics": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/statistics"
+          }
+        },
+        "passes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/pass"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "events": {
+      "$ref": "#/definitions/events"
+    },
+    "captures": {
+      "type": "array"
+    },
+    "assertions": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/assertion"
+      }
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/diagnostic"
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/artifact"
+      },
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "authoritative": {
+            "const": true
+          }
+        },
+        "required": [
+          "authoritative"
+        ]
+      },
+      "then": {
+        "properties": {
+          "authority_reasons": {
+            "type": "array",
+            "maxItems": 0
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "authority_reasons": {
+            "type": "array",
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "digest_or_empty": {
+      "description": "A digest, or the empty string when the artifact it would cover was never produced.",
+      "oneOf": [
+        {
+          "$ref": "#/definitions/digest"
+        },
+        {
+          "type": "string",
+          "maxLength": 0
+        }
+      ]
+    },
+    "safe_path": {
+      "type": "string",
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))[^\\\\]+$"
+    },
+    "case_identity": {
+      "type": "object",
+      "required": [
+        "id",
+        "suite",
+        "manifest_sha256"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "suite": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifest_sha256": {
+          "$ref": "#/definitions/digest"
+        }
+      },
+      "additionalProperties": false
+    },
+    "profile_identity": {
+      "type": "object",
+      "required": [
+        "id",
+        "manifest_sha256",
+        "compatible",
+        "incompatibility_reasons"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifest_sha256": {
+          "$ref": "#/definitions/digest"
+        },
+        "compatible": {
+          "type": "boolean"
+        },
+        "incompatibility_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "started_at",
+        "ended_at",
+        "git_sha",
+        "dirty",
+        "binary_sha256",
+        "build_type",
+        "compiler",
+        "os",
+        "cpu",
+        "gpu",
+        "gpu_vendor_id",
+        "gpu_device_id",
+        "driver",
+        "power_mode",
+        "thermal_state_start",
+        "thermal_state_end",
+        "process_priority"
+      ],
+      "properties": {
+        "started_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+        },
+        "ended_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+        },
+        "git_sha": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "binary_sha256": {
+          "$ref": "#/definitions/digest_or_empty"
+        },
+        "build_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "compiler": {
+          "type": "string",
+          "minLength": 1
+        },
+        "os": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cpu": {
+          "type": "string",
+          "minLength": 1
+        },
+        "gpu": {
+          "type": "string",
+          "minLength": 1
+        },
+        "gpu_vendor_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "gpu_device_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "driver": {
+          "type": "string",
+          "minLength": 1
+        },
+        "power_mode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "thermal_state_start": {
+          "type": "string",
+          "minLength": 1
+        },
+        "thermal_state_end": {
+          "type": "string",
+          "minLength": 1
+        },
+        "process_priority": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": false
+    },
+    "effective_config": {
+      "type": "object",
+      "required": [
+        "resolution",
+        "scene",
+        "target",
+        "target_image_count",
+        "present_mode",
+        "boot_profile",
+        "subsystem_mask",
+        "editor",
+        "cascades",
+        "cache",
+        "camera_script_version",
+        "gpu_timing",
+        "metrics_compile_enabled",
+        "events_enabled"
+      ],
+      "properties": {
+        "resolution": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "scene": {
+          "$ref": "#/definitions/safe_path"
+        },
+        "target": {
+          "enum": [
+            "windowed_visible",
+            "windowed_hidden",
+            "offscreen"
+          ]
+        },
+        "target_image_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Actual image count of the selected target; 0 when no repetition reported one."
+        },
+        "present_mode": {
+          "enum": [
+            "immediate",
+            "fifo",
+            "mailbox",
+            "none",
+            "unknown"
+          ]
+        },
+        "boot_profile": {
+          "enum": [
+            "full",
+            "automation"
+          ]
+        },
+        "subsystem_mask": {
+          "type": "string",
+          "minLength": 1
+        },
+        "editor": {
+          "type": "boolean"
+        },
+        "cascades": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cache": {
+          "enum": [
+            "isolated_cold",
+            "isolated_warm",
+            "shared"
+          ]
+        },
+        "camera_script_version": {
+          "const": 1
+        },
+        "gpu_timing": {
+          "type": "boolean"
+        },
+        "metrics_compile_enabled": {
+          "type": "boolean"
+        },
+        "events_enabled": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "execution": {
+      "type": "object",
+      "required": [
+        "requested_repetitions",
+        "completed_repetitions",
+        "warmup_frames",
+        "measured_frames",
+        "warmup_stable",
+        "gpu_lane_lock_acquired"
+      ],
+      "properties": {
+        "requested_repetitions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "completed_repetitions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "warmup_frames": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "measured_frames": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "warmup_stable": {
+          "type": "boolean"
+        },
+        "gpu_lane_lock_acquired": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "run": {
+      "type": "object",
+      "required": [
+        "index",
+        "status",
+        "report",
+        "sha256"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "report": {
+          "$ref": "#/definitions/safe_path"
+        },
+        "sha256": {
+          "$ref": "#/definitions/digest_or_empty"
+        }
+      },
+      "additionalProperties": false
+    },
+    "statistics": {
+      "type": "object",
+      "required": [
+        "unit",
+        "sample_count",
+        "invalid_count",
+        "mean",
+        "p50",
+        "p95",
+        "min",
+        "max",
+        "stddev",
+        "total"
+      ],
+      "properties": {
+        "unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sample_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "invalid_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "mean": {
+          "type": "number"
+        },
+        "p50": {
+          "type": "number"
+        },
+        "p95": {
+          "type": "number"
+        },
+        "min": {
+          "type": "number"
+        },
+        "max": {
+          "type": "number"
+        },
+        "stddev": {
+          "type": "number"
+        },
+        "total": {
+          "type": "number"
+        },
+        "unavailable_reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "pass": {
+      "type": "object",
+      "required": [
+        "name",
+        "cpu_ms",
+        "gpu_ms",
+        "culled_count",
+        "disabled_count"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "cpu_ms": {
+          "$ref": "#/definitions/statistics"
+        },
+        "gpu_ms": {
+          "$ref": "#/definitions/statistics"
+        },
+        "culled_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "disabled_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "events": {
+      "type": "object",
+      "required": [
+        "items",
+        "dropped",
+        "subjects_truncated"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/event"
+          }
+        },
+        "dropped": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "subjects_truncated": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "required": [
+        "source",
+        "subject",
+        "start_ns",
+        "duration_ns",
+        "bytes",
+        "thread_id",
+        "repetition",
+        "status",
+        "subject_truncated"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subject": {
+          "type": "string"
+        },
+        "start_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duration_ns": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "thread_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "repetition": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "status": {
+          "enum": [
+            "success",
+            "failure"
+          ]
+        },
+        "subject_truncated": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "assertion": {
+      "type": "object",
+      "required": [
+        "metric",
+        "stat",
+        "operator",
+        "status",
+        "actual",
+        "limit"
+      ],
+      "properties": {
+        "metric": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stat": {
+          "enum": [
+            "mean",
+            "p50",
+            "p95",
+            "min",
+            "max",
+            "stddev",
+            "total"
+          ]
+        },
+        "operator": {
+          "enum": [
+            "max",
+            "min",
+            "equals"
+          ]
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "incomplete"
+          ]
+        },
+        "actual": {
+          "type": "number"
+        },
+        "limit": {
+          "type": "number"
+        }
+      },
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "required": [
+        "role",
+        "path",
+        "media_type",
+        "sha256",
+        "status"
+      ],
+      "properties": {
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "$ref": "#/definitions/safe_path"
+        },
+        "media_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/definitions/digest"
+        },
+        "status": {
+          "const": "complete"
+        }
+      },
+      "additionalProperties": false
+    },
+    "diagnostic": {
+      "type": "object",
+      "required": [
+        "code",
+        "severity",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "warning",
+            "error"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

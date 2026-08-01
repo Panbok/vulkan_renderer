@@ -104,7 +104,7 @@ if errorlevel 1 exit /b !errorlevel!
 
 REM Build target
 echo Building vulkan_renderer (%BUILD_TYPE%)
-cmake --build .\build --target vulkan_renderer --config %BUILD_TYPE%
+cmake --build .\build --target vulkan_renderer vkr_harness --config %BUILD_TYPE%
 if errorlevel 1 goto :vkr_build_failed
 
 REM Copy shaders from root assets into build output

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://vkr.local/schemas/harness-case-v1.schema.json",
   "title": "Vulkan Renderer Harness Case",
   "description": "One case manifest under tools/cases/<suite>/<case>.case.json. The same manifest drives the profile, snapshot, and autotest subcommands of vkr_harness; they differ only in which verdict policy they apply.",
@@ -107,6 +107,7 @@
       "type": "integer",
       "description": "Independent child processes. An execution profile may raise this value to its authoritative minimum.",
       "minimum": 1,
+      "maximum": 32,
       "default": 1
     },
     "repetition_timeout_ms": {

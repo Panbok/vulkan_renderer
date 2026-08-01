@@ -41,6 +41,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_json_writer_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_harness_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_event_tests();
   printf("\n"); // Add spacing
   all_passed &= run_math_tests();

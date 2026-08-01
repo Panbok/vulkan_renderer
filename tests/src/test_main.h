@@ -14,6 +14,7 @@
 #include "filesystem_test.h"
 #include "freelist_test.h"
 #include "gltf_importer_tests.h"
+#include "harness_test.h"
 #include "hashtable_test.h"
 #include "input_test.h"
 #include "job_system_test.h"
