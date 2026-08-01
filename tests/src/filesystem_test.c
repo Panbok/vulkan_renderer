@@ -137,8 +137,7 @@ vkr_internal void test_file_create_and_ensure_directory(void) {
   uint32_t id = ++g_fs_test_counter;
   String8 create_target =
       string8_create_formatted(&allocator, "%s%s/create_dir_%u",
-                               PROJECT_SOURCE_DIR,
-                               FS_TEST_RELATIVE_DIR, id);
+                               PROJECT_SOURCE_DIR, FS_TEST_RELATIVE_DIR, id);
   FilePath create_path = {.path = create_target,
                           .type = FILE_PATH_TYPE_ABSOLUTE};
   assert(file_create_directory(&create_path) == true_v);
@@ -224,8 +223,8 @@ vkr_internal void test_file_write_and_read_binary(void) {
     VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&temp_alloc);
     uint8_t *partial_buffer = NULL;
     uint64_t partial_read = 0;
-    assert(file_read(&handle, &temp_alloc, 3, &partial_read,
-                     &partial_buffer) == FILE_ERROR_NONE);
+    assert(file_read(&handle, &temp_alloc, 3, &partial_read, &partial_buffer) ==
+           FILE_ERROR_NONE);
     assert(partial_read == 3);
     assert(memcmp(partial_buffer, data, 3) == 0);
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
@@ -280,18 +279,15 @@ vkr_internal void test_file_read_line_and_write_line(void) {
   VkrAllocator another_allocator = {.ctx = another_arena};
   vkr_allocator_arena(&another_allocator);
   assert(file_read_line(&handle, &another_allocator, &line_allocator, 64,
-                        &line) ==
-         FILE_ERROR_NONE);
+                        &line) == FILE_ERROR_NONE);
   assert(strcmp((const char *)line.str, "beta\n") == 0);
 
   assert(file_read_line(&handle, &line_allocator, &another_allocator, 64,
-                        &line) ==
-         FILE_ERROR_NONE);
+                        &line) == FILE_ERROR_NONE);
   assert(strcmp((const char *)line.str, "gamma\n") == 0);
 
   assert(file_read_line(&handle, &line_allocator, &another_allocator, 64,
-                        &line) ==
-             FILE_ERROR_EOF &&
+                        &line) == FILE_ERROR_EOF &&
          "Expected EOF after last line");
 
   arena_destroy(line_arena);
@@ -385,6 +381,73 @@ vkr_internal void test_file_get_error_strings(void) {
   printf("  test_file_get_error_strings PASSED\n");
 }
 
+vkr_internal void test_file_portable_publication_primitives(void) {
+  printf("  Running test_file_portable_publication_primitives...\n");
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
+  const uint32_t id = ++g_fs_test_counter;
+  String8 directory_text =
+      string8_create_formatted(&allocator, "%s%s/portable_%u",
+                               PROJECT_SOURCE_DIR, FS_TEST_RELATIVE_DIR, id);
+  FilePath directory = {.path = directory_text,
+                        .type = FILE_PATH_TYPE_ABSOLUTE};
+  assert(file_create_directory_exclusive(&directory) == FILE_ERROR_NONE);
+  assert(file_create_directory_exclusive(&directory) ==
+         FILE_ERROR_ALREADY_EXISTS);
+
+  String8 source_text = string8_create_formatted(
+      &allocator, "%s/source.bin", (const char *)directory_text.str);
+  String8 destination_text = string8_create_formatted(
+      &allocator, "%s/destination.bin", (const char *)directory_text.str);
+  FilePath source = {.path = source_text, .type = FILE_PATH_TYPE_ABSOLUTE};
+  FilePath destination = {.path = destination_text,
+                          .type = FILE_PATH_TYPE_ABSOLUTE};
+  FileMode write_mode = bitset8_create();
+  bitset8_set(&write_mode, FILE_MODE_WRITE);
+  bitset8_set(&write_mode, FILE_MODE_BINARY);
+  bitset8_set(&write_mode, FILE_MODE_TRUNCATE);
+  FileHandle file = {0};
+  assert(file_open(&source, write_mode, &file) == FILE_ERROR_NONE);
+  const uint8_t payload[] = {9u, 8u, 7u, 6u};
+  uint64_t bytes_written = 0u;
+  assert(file_write(&file, sizeof(payload), payload, &bytes_written) ==
+         FILE_ERROR_NONE);
+  assert(bytes_written == sizeof(payload));
+  assert(file_sync(&file) == FILE_ERROR_NONE);
+  file_close(&file);
+
+  char resolved[1024];
+  char resolved_directory[1024];
+  assert(file_path_resolve(&source, resolved, sizeof(resolved)) ==
+         FILE_ERROR_NONE);
+  assert(file_path_resolve(&directory, resolved_directory,
+                           sizeof(resolved_directory)) == FILE_ERROR_NONE);
+  assert(file_path_equals(resolved, resolved));
+  assert(file_path_starts_with(resolved, resolved_directory));
+  assert(file_rename(&source, &destination, true_v) == FILE_ERROR_NONE);
+  assert(!file_exists(&source));
+  assert(file_exists(&destination));
+
+  FileMode read_mode = bitset8_create();
+  bitset8_set(&read_mode, FILE_MODE_READ);
+  bitset8_set(&read_mode, FILE_MODE_BINARY);
+  assert(file_open(&destination, read_mode, &file) == FILE_ERROR_NONE);
+  uint8_t received[sizeof(payload)] = {0};
+  uint64_t bytes_read = 0u;
+  assert(file_read_into(&file, received, sizeof(received), &bytes_read) ==
+         FILE_ERROR_NONE);
+  assert(bytes_read == sizeof(payload));
+  assert(MemCompare(payload, received, sizeof(payload)) == 0);
+  file_close(&file);
+
+  assert(file_remove(&destination) == FILE_ERROR_NONE);
+  assert(file_remove(&destination) == FILE_ERROR_NOT_FOUND);
+  fs_test_remove_dir((const char *)directory.path.str);
+  arena_destroy(arena);
+  printf("  test_file_portable_publication_primitives PASSED\n");
+}
+
 bool32_t run_filesystem_tests(void) {
   printf("--- Starting Filesystem Tests ---\n");
   g_fs_test_counter = 0;
@@ -398,6 +461,7 @@ bool32_t run_filesystem_tests(void) {
   test_file_load_spirv_shader();
   test_file_path_helpers();
   test_file_get_error_strings();
+  test_file_portable_publication_primitives();
 
   printf("--- Filesystem Tests Completed ---\n");
   return true;

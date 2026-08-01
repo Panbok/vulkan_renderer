@@ -4,6 +4,12 @@
 
 #include "core/logger.h"
 
+#include <limits.h>
+
+vkr_internal int fs_file_descriptor(const FileHandle *handle) {
+  return (int)(intptr_t)handle->handle - 1;
+}
+
 vkr_internal String8 fs_string_duplicate(VkrAllocator *allocator,
                                          const String8 *src) {
   if (!src || !src->str || src->length == 0)
@@ -98,6 +104,41 @@ bool8_t file_create_directory(const FilePath *path) {
   if (errno == EEXIST)
     return true_v;
   return false_v;
+}
+
+FileError file_create_directory_exclusive(const FilePath *path) {
+  if (!path || !path->path.str) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  if (mkdir((char *)path->path.str, 0755) == 0) {
+    return FILE_ERROR_NONE;
+  }
+  return errno == EEXIST ? FILE_ERROR_ALREADY_EXISTS : FILE_ERROR_IO_ERROR;
+}
+
+FileError file_path_resolve(const FilePath *path, char *out_path,
+                            uint64_t out_capacity) {
+  if (!path || !path->path.str || !out_path || out_capacity == 0u) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  char resolved[PATH_MAX];
+  if (!realpath((const char *)path->path.str, resolved)) {
+    return errno == ENOENT ? FILE_ERROR_NOT_FOUND : FILE_ERROR_IO_ERROR;
+  }
+  const uint64_t length = string_length(resolved);
+  if (length + 1u > out_capacity) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  MemCopy(out_path, resolved, length + 1u);
+  return FILE_ERROR_NONE;
+}
+
+bool8_t file_path_equals(const char *lhs, const char *rhs) {
+  return string_equals(lhs, rhs);
+}
+
+bool8_t file_path_starts_with(const char *path, const char *prefix) {
+  return path && prefix && string_n_equals(path, prefix, string_length(prefix));
 }
 
 bool8_t file_ensure_directory(VkrAllocator *allocator, const String8 *path) {
@@ -200,7 +241,8 @@ FileError file_open(const FilePath *path, FileMode mode,
     return FILE_ERROR_OPEN_FAILED;
   }
 
-  out_handle->handle = (void *)(intptr_t)fd;
+  /* Offset by one so a valid descriptor zero is not confused with NULL. */
+  out_handle->handle = (void *)(intptr_t)(fd + 1);
   out_handle->path = path;
   out_handle->mode = mode;
   return FILE_ERROR_NONE;
@@ -208,17 +250,53 @@ FileError file_open(const FilePath *path, FileMode mode,
 
 void file_close(FileHandle *handle) {
   if (handle && handle->handle) {
-    close((int)(intptr_t)handle->handle);
+    close(fs_file_descriptor(handle));
     handle->handle = NULL;
   }
 }
 
 FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
                      uint64_t *bytes_written) {
-  ssize_t written = write((int)(intptr_t)handle->handle, buffer, size);
-  if (written == -1)
-    return FILE_ERROR_IO_ERROR;
-  *bytes_written = (uint64_t)written;
+  if (!handle || !handle->handle || (!buffer && size > 0u) || !bytes_written) {
+    return FILE_ERROR_INVALID_HANDLE;
+  }
+  *bytes_written = 0u;
+  while (*bytes_written < size) {
+    const ssize_t written =
+        write(fs_file_descriptor(handle), buffer + *bytes_written,
+              (size_t)(size - *bytes_written));
+    if (written < 0 && errno == EINTR) {
+      continue;
+    }
+    if (written <= 0) {
+      return FILE_ERROR_IO_ERROR;
+    }
+    *bytes_written += (uint64_t)written;
+  }
+  return FILE_ERROR_NONE;
+}
+
+FileError file_read_into(FileHandle *handle, void *buffer, uint64_t size,
+                         uint64_t *bytes_read) {
+  if (!handle || !handle->handle || (!buffer && size > 0u) || !bytes_read) {
+    return FILE_ERROR_INVALID_HANDLE;
+  }
+  *bytes_read = 0u;
+  while (*bytes_read < size) {
+    const ssize_t count =
+        read(fs_file_descriptor(handle), (uint8_t *)buffer + *bytes_read,
+             (size_t)(size - *bytes_read));
+    if (count < 0 && errno == EINTR) {
+      continue;
+    }
+    if (count < 0) {
+      return FILE_ERROR_IO_ERROR;
+    }
+    if (count == 0) {
+      break;
+    }
+    *bytes_read += (uint64_t)count;
+  }
   return FILE_ERROR_NONE;
 }
 
@@ -226,16 +304,15 @@ FileError file_read(FileHandle *handle, VkrAllocator *allocator, uint64_t size,
                     uint64_t *bytes_read, uint8_t **out_buffer) {
   *out_buffer =
       vkr_allocator_alloc(allocator, size, VKR_ALLOCATOR_MEMORY_TAG_FILE);
-  ssize_t read_count = read((int)(intptr_t)handle->handle, *out_buffer, size);
-  if (read_count == -1)
+  if (!*out_buffer && size > 0u) {
     return FILE_ERROR_IO_ERROR;
-  *bytes_read = (uint64_t)read_count;
-  return FILE_ERROR_NONE;
+  }
+  return file_read_into(handle, *out_buffer, size, bytes_read);
 }
 
 FileError file_read_all(FileHandle *handle, VkrAllocator *allocator,
                         uint8_t **out_buffer, uint64_t *bytes_read) {
-  int fd = (int)(intptr_t)handle->handle;
+  int fd = fs_file_descriptor(handle);
   struct stat st;
   if (fstat(fd, &st) == -1)
     return FILE_ERROR_IO_ERROR;
@@ -249,18 +326,45 @@ FileError file_read_all(FileHandle *handle, VkrAllocator *allocator,
 
   *out_buffer = vkr_allocator_alloc(allocator, size - current_pos,
                                     VKR_ALLOCATOR_MEMORY_TAG_FILE);
-  ssize_t read_res = read(fd, *out_buffer, size - current_pos);
-  if (read_res == -1)
-    return FILE_ERROR_IO_ERROR;
+  return file_read_into(handle, *out_buffer, size - current_pos, bytes_read);
+}
 
-  *bytes_read = (uint64_t)read_res;
-  return FILE_ERROR_NONE;
+FileError file_sync(FileHandle *handle) {
+  if (!handle || !handle->handle) {
+    return FILE_ERROR_INVALID_HANDLE;
+  }
+  return fsync(fs_file_descriptor(handle)) == 0 ? FILE_ERROR_NONE
+                                                : FILE_ERROR_IO_ERROR;
+}
+
+FileError file_remove(const FilePath *path) {
+  if (!path || !path->path.str) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  if (unlink((const char *)path->path.str) == 0) {
+    return FILE_ERROR_NONE;
+  }
+  return errno == ENOENT ? FILE_ERROR_NOT_FOUND : FILE_ERROR_IO_ERROR;
+}
+
+FileError file_rename(const FilePath *source, const FilePath *destination,
+                      bool8_t overwrite) {
+  if (!source || !source->path.str || !destination || !destination->path.str) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  if (!overwrite && file_exists(destination)) {
+    return FILE_ERROR_ALREADY_EXISTS;
+  }
+  return rename((const char *)source->path.str,
+                (const char *)destination->path.str) == 0
+             ? FILE_ERROR_NONE
+             : FILE_ERROR_IO_ERROR;
 }
 
 FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
                          VkrAllocator *line_allocator, uint64_t max_line_length,
                          String8 *out_line) {
-  int fd = (int)(intptr_t)handle->handle;
+  int fd = fs_file_descriptor(handle);
   VkrAllocator *target_alloc = line_allocator ? line_allocator : allocator;
 
   char chunk[128];
@@ -318,7 +422,7 @@ FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
 }
 
 FileError file_write_line(FileHandle *handle, const String8 *text) {
-  int fd = (int)(intptr_t)handle->handle;
+  int fd = fs_file_descriptor(handle);
   if (write(fd, text->str, text->length) == -1)
     return FILE_ERROR_IO_ERROR;
   if (write(fd, "\n", 1) == -1)
@@ -368,6 +472,8 @@ String8 file_get_error_string(FileError error) {
     return string8_lit("Invalid SPIR-V file format");
   case FILE_ERROR_FILE_EMPTY:
     return string8_lit("File is empty");
+  case FILE_ERROR_ALREADY_EXISTS:
+    return string8_lit("Already exists");
   default:
     return string8_lit("Unknown error");
   }

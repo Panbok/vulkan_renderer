@@ -237,6 +237,9 @@ void string8_destroy(String8 *str);
  */
 bool8_t string_equals(const char *str1, const char *str2);
 
+/** Lexicographically compares two null-terminated strings. */
+int32_t string_compare(const char *str1, const char *str2);
+
 /**
  * @brief Check if two strings are equal ignoring case.
  * @param str1 The first string.
@@ -244,6 +247,17 @@ bool8_t string_equals(const char *str1, const char *str2);
  * @return True if the strings are equal, false otherwise.
  */
 bool8_t string_equalsi(const char *str1, const char *str2);
+
+/**
+ * @brief Compare at most `length` bytes of two null-terminated strings.
+ * @return True when the compared prefixes are byte-identical.
+ */
+bool8_t string_n_equals(const char *str1, const char *str2, uint64_t length);
+
+/**
+ * @brief ASCII case-insensitive version of string_n_equals().
+ */
+bool8_t string_n_equalsi(const char *str1, const char *str2, uint64_t length);
 
 /**
  * @brief Alias for case-insensitive equality on C-strings (ASCII only)
@@ -273,6 +287,12 @@ char *string_duplicate(const char *str);
  * @return True if the string contains the substring, false otherwise.
  */
 bool8_t string_contains(const char *str, const char *substring);
+
+/** @return Pointer to the first substring occurrence, or NULL when absent. */
+const char *string_find(const char *str, const char *substring);
+
+/** @return Pointer to the first character occurrence, or NULL when absent. */
+const char *string_find_char(const char *str, int32_t ch);
 
 /**
  * @brief Get a substring of a string.

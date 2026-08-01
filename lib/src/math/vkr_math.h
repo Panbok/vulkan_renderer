@@ -401,6 +401,11 @@ vkr_internal INLINE float64_t vkr_sqrt_f64(float64_t value) {
   return sqrt(value);
 }
 
+/** @brief Returns whether a float64_t value is finite. */
+vkr_internal INLINE bool8_t vkr_is_finite_f64(float64_t value) {
+  return isfinite(value) ? true_v : false_v;
+}
+
 /**
  * @brief Rounds a float32_t value down to the nearest integer
  * @param value Input floating-point value
@@ -409,6 +414,17 @@ vkr_internal INLINE float64_t vkr_sqrt_f64(float64_t value) {
  */
 vkr_internal INLINE float32_t vkr_floor_f32(float32_t value) {
   return floorf(value);
+}
+
+/** @brief Rounds a float64_t value down to the nearest integer. */
+vkr_internal INLINE float64_t vkr_floor_f64(float64_t value) {
+  return floor(value);
+}
+
+/** @brief Computes the floating-point remainder of numerator/denominator. */
+vkr_internal INLINE float32_t vkr_fmod_f32(float32_t numerator,
+                                           float32_t denominator) {
+  return fmodf(numerator, denominator);
 }
 
 /**
@@ -555,6 +571,12 @@ vkr_internal INLINE float32_t vkr_atan2_f32(float32_t y, float32_t x) {
  */
 vkr_internal INLINE float32_t vkr_rand_f32() {
   return (float32_t)rand() / (float32_t)RAND_MAX;
+}
+
+/** @brief Seeds the renderer's standard pseudo-random number source. */
+vkr_internal INLINE void vkr_rand_seed(uint64_t seed) {
+  srand((uint32_t)seed);
+  vkr_rand_seeded = true_v;
 }
 
 /**

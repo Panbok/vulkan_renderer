@@ -83,7 +83,7 @@
  * bitset8_set(&mode, FILE_MODE_READ);
  *
  * FileHandle handle;
- * if (file_open(&path, mode, &handle)) {
+ * if (file_open(&path, mode, &handle) == FILE_ERROR_NONE) {
  *     String8 content;
  *     if (file_read_string(&handle, arena, &content) == FILE_ERROR_NONE) {
  *         // Use content.str and content.length
@@ -102,7 +102,7 @@
  * bitset8_set(&mode, FILE_MODE_TRUNCATE);
  *
  * FileHandle handle;
- * if (file_open(&path, mode, &handle)) {
+ * if (file_open(&path, mode, &handle) == FILE_ERROR_NONE) {
  *     uint8_t data[] = {0x00, 0x01, 0x02, 0x03};
  *     uint64_t written;
  *     file_write(&handle, sizeof(data), data, &written);
@@ -186,6 +186,7 @@ typedef enum FileError {
   FILE_ERROR_INVALID_HANDLE, /**< File handle is invalid or file is not open */
   FILE_ERROR_INVALID_SPIR_V, /**< Invalid SPIR-V file */
   FILE_ERROR_FILE_EMPTY,     /**< File is empty */
+  FILE_ERROR_ALREADY_EXISTS, /**< Destination already exists */
   FILE_ERROR_COUNT,          /**< Total number of error types */
 } FileError;
 
@@ -258,7 +259,7 @@ FilePath file_path_create(const char *path, VkrAllocator *allocator,
  * associated arena-allocated memory.
  * @param mode Bitset containing the desired file mode flags.
  * @param out_handle Pointer to store the opened file handle. Must not be NULL.
- * @return `true` if the file was opened successfully, `false` otherwise.
+ * @return `FILE_ERROR_NONE` on success, or a failure code otherwise.
  *
  * @example
  * ```c
@@ -267,7 +268,7 @@ FilePath file_path_create(const char *path, VkrAllocator *allocator,
  * bitset8_set(&mode, FILE_MODE_BINARY);
  *
  * FileHandle handle;
- * if (file_open(&path, mode, &handle)) {
+ * if (file_open(&path, mode, &handle) == FILE_ERROR_NONE) {
  *     // File is now open for binary reading
  *     file_close(&handle);
  * }
@@ -404,6 +405,15 @@ FileError file_read(FileHandle *handle, VkrAllocator *allocator, uint64_t size,
                     uint64_t *bytes_read, uint8_t **out_buffer);
 
 /**
+ * Reads into caller-owned storage without allocating.
+ *
+ * Returns `FILE_ERROR_NONE` for a successful read, including EOF. The actual
+ * byte count may be smaller than `size` at EOF.
+ */
+FileError file_read_into(FileHandle *handle, void *buffer, uint64_t size,
+                         uint64_t *bytes_read);
+
+/**
  * @brief Writes raw data to a file.
  *
  * Writes the specified buffer contents to the file at the
@@ -503,6 +513,32 @@ FileError file_load_spirv_shader(const FilePath *path, VkrAllocator *allocator,
  * @return `true` if the directory was created successfully, `false` otherwise.
  */
 bool8_t file_create_directory(const FilePath *path);
+
+/** Creates one directory and fails with ALREADY_EXISTS when it is present. */
+FileError file_create_directory_exclusive(const FilePath *path);
+
+/** Flushes file contents to durable storage before publication. */
+FileError file_sync(FileHandle *handle);
+
+/** Removes one file. Missing files report FILE_ERROR_NOT_FOUND. */
+FileError file_remove(const FilePath *path);
+
+/** Atomically renames a file on the same filesystem. */
+FileError file_rename(const FilePath *source, const FilePath *destination,
+                      bool8_t overwrite);
+
+/**
+ * Resolves an existing path, following symbolic links/reparse points, into a
+ * caller-owned null-terminated buffer.
+ */
+FileError file_path_resolve(const FilePath *path, char *out_path,
+                            uint64_t out_capacity);
+
+/** Compares canonical path text using the host filesystem's case rules. */
+bool8_t file_path_equals(const char *lhs, const char *rhs);
+
+/** Tests a path-text prefix using the host filesystem's case rules. */
+bool8_t file_path_starts_with(const char *path, const char *prefix);
 
 /**
  * @brief Extracts the directory portion from a file path.

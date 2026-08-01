@@ -327,6 +327,12 @@ bool8_t string_equals(const char *str1, const char *str2) {
   return strcmp(str1, str2) == 0;
 }
 
+int32_t string_compare(const char *str1, const char *str2) {
+  assert(str1 != NULL && "String1 is NULL");
+  assert(str2 != NULL && "String2 is NULL");
+  return (int32_t)strcmp(str1, str2);
+}
+
 bool8_t string_equalsi(const char *str1, const char *str2) {
   assert(str1 != NULL && "String1 is NULL");
   assert(str2 != NULL && "String2 is NULL");
@@ -336,6 +342,28 @@ bool8_t string_equalsi(const char *str1, const char *str2) {
 #else
   return strcasecmp(str1, str2) == 0;
 #endif
+}
+
+bool8_t string_n_equals(const char *str1, const char *str2, uint64_t length) {
+  assert(str1 != NULL && "String1 is NULL");
+  assert(str2 != NULL && "String2 is NULL");
+  return strncmp(str1, str2, (size_t)length) == 0;
+}
+
+bool8_t string_n_equalsi(const char *str1, const char *str2, uint64_t length) {
+  assert(str1 != NULL && "String1 is NULL");
+  assert(str2 != NULL && "String2 is NULL");
+  for (uint64_t i = 0; i < length; ++i) {
+    const unsigned char a = (unsigned char)str1[i];
+    const unsigned char b = (unsigned char)str2[i];
+    if (tolower(a) != tolower(b)) {
+      return false_v;
+    }
+    if (a == '\0') {
+      return true_v;
+    }
+  }
+  return true_v;
 }
 
 uint64_t string_length(const char *str) {
@@ -357,6 +385,17 @@ bool8_t string_contains(const char *str, const char *substring) {
   assert(substring != NULL && "Substring is NULL");
 
   return strstr(str, substring) != NULL;
+}
+
+const char *string_find(const char *str, const char *substring) {
+  assert(str != NULL && "String is NULL");
+  assert(substring != NULL && "Substring is NULL");
+  return strstr(str, substring);
+}
+
+const char *string_find_char(const char *str, int32_t ch) {
+  assert(str != NULL && "String is NULL");
+  return strchr(str, ch);
 }
 
 char *string_substring(VkrAllocator *allocator, const char *str, int32_t start,
@@ -529,8 +568,9 @@ vkr_internal INLINE bool8_t string__parse_f64(const char *s, float64_t *out) {
   char *endptr = NULL;
   const char *start = string__skip_ws(s);
 
+  errno = 0;
   float64_t v = strtod(start, &endptr);
-  if (start == endptr)
+  if (start == endptr || errno == ERANGE || !isfinite(v))
     return false_v;
 
   const char *trail = string__skip_ws(endptr);

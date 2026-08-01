@@ -107,6 +107,73 @@ bool8_t file_create_directory(const FilePath *path) {
   return false_v;
 }
 
+FileError file_create_directory_exclusive(const FilePath *path) {
+  if (!path || !path->path.str) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  if (CreateDirectoryA((char *)path->path.str, NULL)) {
+    return FILE_ERROR_NONE;
+  }
+  return GetLastError() == ERROR_ALREADY_EXISTS ? FILE_ERROR_ALREADY_EXISTS
+                                                : FILE_ERROR_IO_ERROR;
+}
+
+FileError file_path_resolve(const FilePath *path, char *out_path,
+                            uint64_t out_capacity) {
+  if (!path || !path->path.str || !out_path || out_capacity == 0u ||
+      out_capacity > UINT32_MAX) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  HANDLE handle =
+      CreateFileA((const char *)path->path.str, FILE_READ_ATTRIBUTES,
+                  FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                  OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+  if (handle == INVALID_HANDLE_VALUE) {
+    return GetLastError() == ERROR_FILE_NOT_FOUND ? FILE_ERROR_NOT_FOUND
+                                                  : FILE_ERROR_IO_ERROR;
+  }
+  char resolved[4096];
+  const DWORD length =
+      GetFinalPathNameByHandleA(handle, resolved, sizeof(resolved),
+                                FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+  CloseHandle(handle);
+  if (length == 0u || length >= sizeof(resolved)) {
+    return FILE_ERROR_IO_ERROR;
+  }
+  const char *source = resolved;
+  char normalized[4096];
+  if (string_n_equals(source, "\\\\?\\UNC\\", 8u)) {
+    const int32_t written =
+        string_format(normalized, sizeof(normalized), "\\\\%s", source + 8u);
+    if (written < 0 || (uint64_t)written >= sizeof(normalized)) {
+      return FILE_ERROR_INVALID_PATH;
+    }
+    source = normalized;
+  } else if (string_n_equals(source, "\\\\?\\", 4u)) {
+    source += 4u;
+  }
+  const uint64_t normalized_length = string_length(source);
+  if (normalized_length + 1u > out_capacity) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  MemCopy(out_path, source, normalized_length + 1u);
+  return FILE_ERROR_NONE;
+}
+
+bool8_t file_path_equals(const char *lhs, const char *rhs) {
+  if (!lhs || !rhs) {
+    return false_v;
+  }
+  const uint64_t lhs_length = string_length(lhs);
+  return lhs_length == string_length(rhs) &&
+         string_n_equalsi(lhs, rhs, lhs_length);
+}
+
+bool8_t file_path_starts_with(const char *path, const char *prefix) {
+  return path && prefix &&
+         string_n_equalsi(path, prefix, string_length(prefix));
+}
+
 bool8_t file_ensure_directory(VkrAllocator *allocator, const String8 *path) {
   assert_log(allocator != NULL, "allocator is NULL");
   assert_log(path != NULL, "path is NULL");
@@ -248,6 +315,9 @@ void file_close(FileHandle *handle) {
 
 FileError file_write(FileHandle *handle, uint64_t size, const uint8_t *buffer,
                      uint64_t *bytes_written) {
+  if (!handle || !handle->handle || (!buffer && size > 0u) || !bytes_written) {
+    return FILE_ERROR_INVALID_HANDLE;
+  }
   *bytes_written = 0;
   const uint8_t *current = buffer;
   uint64_t remaining = size;
@@ -270,8 +340,19 @@ FileError file_read(FileHandle *handle, VkrAllocator *allocator, uint64_t size,
                     uint64_t *bytes_read, uint8_t **out_buffer) {
   *out_buffer =
       vkr_allocator_alloc(allocator, size, VKR_ALLOCATOR_MEMORY_TAG_FILE);
+  if (!*out_buffer && size > 0u) {
+    return FILE_ERROR_IO_ERROR;
+  }
+  return file_read_into(handle, *out_buffer, size, bytes_read);
+}
+
+FileError file_read_into(FileHandle *handle, void *buffer, uint64_t size,
+                         uint64_t *bytes_read) {
+  if (!handle || !handle->handle || (!buffer && size > 0u) || !bytes_read) {
+    return FILE_ERROR_INVALID_HANDLE;
+  }
   *bytes_read = 0;
-  uint8_t *current = *out_buffer;
+  uint8_t *current = buffer;
   uint64_t remaining = size;
 
   while (remaining > 0) {
@@ -303,22 +384,43 @@ FileError file_read_all(FileHandle *handle, VkrAllocator *allocator,
   *out_buffer = vkr_allocator_alloc(allocator, bytesToRead,
                                     VKR_ALLOCATOR_MEMORY_TAG_FILE);
 
-  *bytes_read = 0;
-  uint8_t *current = *out_buffer;
-  uint64_t remaining = bytesToRead;
+  return file_read_into(handle, *out_buffer, bytesToRead, bytes_read);
+}
 
-  while (remaining > 0) {
-    DWORD chunk = (DWORD)(remaining > 0xFFFFFFFF ? 0xFFFFFFFF : remaining);
-    DWORD read_len = 0;
-    if (!ReadFile(hFile, current, chunk, &read_len, NULL))
-      return FILE_ERROR_IO_ERROR;
-    *bytes_read += read_len;
-    if (read_len < chunk)
-      break;
-    current += read_len;
-    remaining -= read_len;
+FileError file_sync(FileHandle *handle) {
+  if (!handle || !handle->handle) {
+    return FILE_ERROR_INVALID_HANDLE;
   }
-  return FILE_ERROR_NONE;
+  return FlushFileBuffers((HANDLE)handle->handle) ? FILE_ERROR_NONE
+                                                  : FILE_ERROR_IO_ERROR;
+}
+
+FileError file_remove(const FilePath *path) {
+  if (!path || !path->path.str) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  if (DeleteFileA((const char *)path->path.str)) {
+    return FILE_ERROR_NONE;
+  }
+  return GetLastError() == ERROR_FILE_NOT_FOUND ? FILE_ERROR_NOT_FOUND
+                                                : FILE_ERROR_IO_ERROR;
+}
+
+FileError file_rename(const FilePath *source, const FilePath *destination,
+                      bool8_t overwrite) {
+  if (!source || !source->path.str || !destination || !destination->path.str) {
+    return FILE_ERROR_INVALID_PATH;
+  }
+  DWORD flags = MOVEFILE_WRITE_THROUGH;
+  if (overwrite) {
+    flags |= MOVEFILE_REPLACE_EXISTING;
+  }
+  if (MoveFileExA((const char *)source->path.str,
+                  (const char *)destination->path.str, flags)) {
+    return FILE_ERROR_NONE;
+  }
+  return GetLastError() == ERROR_ALREADY_EXISTS ? FILE_ERROR_ALREADY_EXISTS
+                                                : FILE_ERROR_IO_ERROR;
 }
 
 FileError file_read_line(FileHandle *handle, VkrAllocator *allocator,
@@ -429,6 +531,8 @@ String8 file_get_error_string(FileError error) {
     return string8_lit("Invalid SPIR-V file format");
   case FILE_ERROR_FILE_EMPTY:
     return string8_lit("File is empty");
+  case FILE_ERROR_ALREADY_EXISTS:
+    return string8_lit("Already exists");
   default:
     return string8_lit("Unknown error");
   }

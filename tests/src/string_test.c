@@ -525,6 +525,7 @@ static void test_string_conversions(void) {
   uint32_t u32;
   bool8_t b;
   assert(string_to_f64("3.14", &d) && fabs(d - 3.14) < 1e-9);
+  assert(!string_to_f64("1e9999", &d));
   assert(string_to_f32("2.5", &f) && fabsf(f - 2.5f) < 1e-6f);
   assert(string_to_i64("-42", &i64) && i64 == -42);
   assert(string_to_u64("42", &u64) && u64 == 42ULL);
@@ -542,6 +543,21 @@ static void test_string_conversions(void) {
   assert(string_to_vec4("1,2,3,4", &v4) && v4.x == 1.0f && v4.y == 2.0f &&
          v4.z == 3.0f && v4.w == 4.0f);
   printf("  test_string_conversions PASSED\n");
+}
+
+static void test_cstring_compare_and_search(void) {
+  printf("  Running test_cstring_compare_and_search...\n");
+  assert(string_compare("alpha", "beta") < 0);
+  assert(string_compare("beta", "alpha") > 0);
+  assert(string_compare("same", "same") == 0);
+  assert(string_n_equals("render.graph", "render.pass", 7u));
+  assert(!string_n_equals("render", "Render", 6u));
+  assert(string_n_equalsi("Render", "render", 6u));
+  assert(string_find("renderer.metrics", "metrics") != NULL);
+  assert(string_find("renderer.metrics", "missing") == NULL);
+  assert(string_find_char("renderer", 'd') != NULL);
+  assert(string_find_char("renderer", 'x') == NULL);
+  printf("  test_cstring_compare_and_search PASSED\n");
 }
 
 static void test_cstring_index_of(void) {
@@ -593,6 +609,7 @@ bool32_t run_string_tests(void) {
   test_cstring_mid();
   test_cstring_get_last_char_occurrence();
   test_cstring_index_of();
+  test_cstring_compare_and_search();
   test_string_conversions();
 
   printf("--- String Tests Completed ---\n");
