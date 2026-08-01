@@ -10,11 +10,17 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 add_compile_definitions(PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}/")
 
 option(VKR_ENABLE_SANITIZERS "Enable ASan/UBSan (Clang/GCC only)" OFF)
+option(VKR_METRICS_ENABLED "Compile renderer metrics instrumentation" ON)
+
+if(VKR_METRICS_ENABLED)
+    add_compile_definitions(VKR_METRICS_ENABLED=1)
+else()
+    add_compile_definitions(VKR_METRICS_ENABLED=0)
+endif()
 
 if(MSVC)
     set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /Zi -W4 /FC")
     set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} ${SAN_FLAGS}")
-    
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /wd4013 /arch:AVX2")  # implicit function declaration
 else()
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-implicit-function-declaration -march=native")
