@@ -31,7 +31,7 @@ VkSurfaceFormatKHR *vulkan_device_choose_swap_surface_format(
     VulkanSwapchainDetails *swapchain_details);
 
 VkPresentModeKHR vulkan_device_choose_swap_present_mode(
-    VulkanSwapchainDetails *swapchain_details);
+    VulkanSwapchainDetails *swapchain_details, VkrPresentMode requested_mode);
 
 VkExtent2D
 vulkan_device_choose_swap_extent(VulkanBackendState *state,

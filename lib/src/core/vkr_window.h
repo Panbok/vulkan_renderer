@@ -61,6 +61,8 @@ typedef struct VkrWindow {
   int32_t y;   /**< Initial y-coordinate of the window's top-left corner. */
   uint32_t width;  /**< Initial width of the window's client area. */
   uint32_t height; /**< Initial height of the window's client area. */
+  /** Create the native window without activating or showing it. */
+  bool8_t hidden;
 } VkrWindow;
 
 typedef struct VkrWindowPixelSize {

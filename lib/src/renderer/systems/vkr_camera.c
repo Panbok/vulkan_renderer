@@ -167,6 +167,35 @@ void vkr_camera_rotate(VkrCamera *camera, float32_t yaw_delta,
   vkr_camera_update_orientation(camera);
 }
 
+void vkr_camera_set_pose(VkrCamera *camera, Vec3 position,
+                         float32_t yaw_degrees, float32_t pitch_degrees) {
+  assert_log(camera != NULL, "Camera is NULL");
+  camera->position = position;
+  camera->yaw = yaw_degrees;
+  camera->pitch =
+      vkr_clamp_f32(pitch_degrees, VKR_MIN_CAMERA_PITCH, VKR_MAX_CAMERA_PITCH);
+  vkr_camera_update_orientation(camera);
+}
+
+bool8_t vkr_camera_set_perspective_lens(VkrCamera *camera,
+                                        float32_t vertical_fov_degrees,
+                                        float32_t near_clip, float32_t far_clip,
+                                        uint32_t width, uint32_t height) {
+  if (!camera || camera->type != VKR_CAMERA_TYPE_PERSPECTIVE || width == 0u ||
+      height == 0u || vertical_fov_degrees <= 0.0f ||
+      vertical_fov_degrees >= 180.0f || near_clip <= 0.0f ||
+      far_clip <= near_clip) {
+    return false_v;
+  }
+  camera->zoom = vertical_fov_degrees;
+  camera->near_clip = near_clip;
+  camera->far_clip = far_clip;
+  camera->cached_window_width = width;
+  camera->cached_window_height = height;
+  camera->projection_dirty = true_v;
+  return true_v;
+}
+
 void vkr_camera_zoom(VkrCamera *camera, float32_t zoom_delta) {
   assert_log(camera != NULL, "Camera is NULL");
   camera->zoom = vkr_camera_clamp_zoom(camera->zoom + zoom_delta);

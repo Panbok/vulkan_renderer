@@ -432,6 +432,27 @@ typedef struct VkrDeviceRequirements {
   VkrSamplerFilterFlags supported_sampler_filters;
 } VkrDeviceRequirements;
 
+/** Requested/actual presentation mode at the backend-neutral seam. */
+typedef enum VkrPresentMode {
+  VKR_PRESENT_MODE_DEFAULT = 0,
+  VKR_PRESENT_MODE_IMMEDIATE,
+  VKR_PRESENT_MODE_FIFO,
+  VKR_PRESENT_MODE_MAILBOX,
+} VkrPresentMode;
+
+typedef enum VkrSurfaceColorFormat {
+  VKR_SURFACE_COLOR_FORMAT_UNKNOWN = 0,
+  VKR_SURFACE_COLOR_FORMAT_BGRA8_SRGB,
+  VKR_SURFACE_COLOR_FORMAT_RGBA8_SRGB,
+  VKR_SURFACE_COLOR_FORMAT_BGRA8_UNORM,
+  VKR_SURFACE_COLOR_FORMAT_RGBA8_UNORM,
+} VkrSurfaceColorFormat;
+
+typedef enum VkrSurfaceColorSpace {
+  VKR_SURFACE_COLOR_SPACE_UNKNOWN = 0,
+  VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR,
+} VkrSurfaceColorSpace;
+
 typedef struct VkrDeviceInformation {
   String8 device_name;
   String8 vendor_name;
@@ -452,6 +473,12 @@ typedef struct VkrDeviceInformation {
   bool8_t supports_texture_eac_rg11;
   bool8_t supports_multi_draw_indirect;
   bool8_t supports_draw_indirect_first_instance;
+  uint32_t vendor_id;
+  uint32_t device_id;
+  VkrPresentMode actual_present_mode;
+  uint32_t actual_target_image_count;
+  VkrSurfaceColorFormat actual_color_format;
+  VkrSurfaceColorSpace actual_color_space;
 } VkrDeviceInformation;
 
 // ============================================================================
@@ -1165,6 +1192,7 @@ typedef struct VkrRendererBackendConfig {
   VkrMetricEventProducer pipeline_create_metrics;
   VkrMetricEventProducer shader_load_metrics;
   VkrMetricEventProducer shader_reflection_metrics;
+  VkrPresentMode requested_present_mode;
 } VkrRendererBackendConfig;
 
 // ============================================================================

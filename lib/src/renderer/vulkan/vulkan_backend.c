@@ -4086,6 +4086,9 @@ renderer_vulkan_initialize(void **out_backend_state,
   backend_state->window = window;
   backend_state->render_thread_id = vkr_thread_current_id();
   backend_state->device_requirements = device_requirements;
+  backend_state->requested_present_mode =
+      backend_config ? backend_config->requested_present_mode
+                     : VKR_PRESENT_MODE_DEFAULT;
   backend_state->descriptor_writes_avoided = 0;
   backend_state->render_pass_registry = (Array_VkrRenderPassEntry){0};
   backend_state->render_pass_count = 0;

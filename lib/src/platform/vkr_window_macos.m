@@ -537,8 +537,10 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
     // Putting window in front on launch
-    [NSApp activateIgnoringOtherApps:YES];
-    [state->window makeKeyAndOrderFront:nil];
+    if (!window->hidden) {
+      [NSApp activateIgnoringOtherApps:YES];
+      [state->window makeKeyAndOrderFront:nil];
+    }
 
     event_manager_dispatch(event_manager,
                            (Event){.type = EVENT_TYPE_WINDOW_INIT});

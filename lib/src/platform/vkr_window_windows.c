@@ -145,7 +145,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
   }
 
   // Show and update window
-  ShowWindow(state->window, SW_SHOW);
+  ShowWindow(state->window, window->hidden ? SW_HIDE : SW_SHOW);
   UpdateWindow(state->window);
 
   // Dispatch window init event

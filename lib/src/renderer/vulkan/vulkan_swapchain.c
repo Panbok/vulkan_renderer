@@ -13,8 +13,12 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
 
   VkSurfaceFormatKHR *surface_format =
       vulkan_device_choose_swap_surface_format(&swapchain_details);
-  VkPresentModeKHR present_mode =
-      vulkan_device_choose_swap_present_mode(&swapchain_details);
+  VkPresentModeKHR present_mode = vulkan_device_choose_swap_present_mode(
+      &swapchain_details, state->requested_present_mode);
+  state->actual_present_mode =
+      present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? VKR_PRESENT_MODE_IMMEDIATE
+      : present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? VKR_PRESENT_MODE_MAILBOX
+                                                    : VKR_PRESENT_MODE_FIFO;
   VkExtent2D extent =
       vulkan_device_choose_swap_extent(state, &swapchain_details);
 
@@ -90,6 +94,7 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
   }
 
   state->swapchain.format = surface_format->format;
+  state->swapchain.color_space = surface_format->colorSpace;
   state->swapchain.extent = extent;
 
   state->swapchain.image_views =
@@ -171,8 +176,12 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
 
   VkSurfaceFormatKHR *surface_format =
       vulkan_device_choose_swap_surface_format(&swapchain_details);
-  VkPresentModeKHR present_mode =
-      vulkan_device_choose_swap_present_mode(&swapchain_details);
+  VkPresentModeKHR present_mode = vulkan_device_choose_swap_present_mode(
+      &swapchain_details, state->requested_present_mode);
+  state->actual_present_mode =
+      present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? VKR_PRESENT_MODE_IMMEDIATE
+      : present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? VKR_PRESENT_MODE_MAILBOX
+                                                    : VKR_PRESENT_MODE_FIFO;
   VkExtent2D extent =
       vulkan_device_choose_swap_extent(state, &swapchain_details);
 
@@ -271,6 +280,7 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
   }
 
   state->swapchain.format = surface_format->format;
+  state->swapchain.color_space = surface_format->colorSpace;
   state->swapchain.extent = extent;
 
   state->swapchain.image_views =

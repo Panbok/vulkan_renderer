@@ -194,6 +194,16 @@ void vkr_camera_translate(VkrCamera *camera, Vec3 delta);
 void vkr_camera_rotate(VkrCamera *camera, float32_t yaw_delta,
                        float32_t pitch_delta);
 
+/** Applies an authored world pose without consulting input or window state. */
+void vkr_camera_set_pose(VkrCamera *camera, Vec3 position,
+                         float32_t yaw_degrees, float32_t pitch_degrees);
+
+/** Applies authored perspective lens values and an explicit render extent. */
+bool8_t vkr_camera_set_perspective_lens(VkrCamera *camera,
+                                        float32_t vertical_fov_degrees,
+                                        float32_t near_clip, float32_t far_clip,
+                                        uint32_t width, uint32_t height);
+
 /**
  * @brief Adjusts zoom (perspective FOV) and marks projection dirty.
  * @param camera Camera to zoom

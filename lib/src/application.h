@@ -123,6 +123,12 @@ typedef struct ApplicationConfig {
   VkrDeviceRequirements device_requirements; /**< The device requirements for
                                              the application. */
   VkrMetricsConfig metrics_config; /**< Runtime instrumentation policy. */
+  /** Harness controls. Zero values preserve the interactive application. */
+  float64_t fixed_delta_seconds;
+  bool8_t disable_camera_controller;
+  bool8_t window_hidden;
+  bool8_t disable_skybox;
+  VkrPresentMode requested_present_mode;
 } ApplicationConfig;
 
 typedef struct ApplicationMetricIds {
@@ -395,6 +401,7 @@ bool8_t application_create(Application *application,
   }
 
   event_manager_create(&application->event_manager);
+  application->window.hidden = config->window_hidden;
   vkr_window_create(&application->window, &application->event_manager,
                     config->title, config->x, config->y, config->width,
                     config->height);
@@ -418,6 +425,7 @@ bool8_t application_create(Application *application,
       .pipeline_create_metrics = metrics_producers->pipeline_create,
       .shader_load_metrics = metrics_producers->shader_load,
       .shader_reflection_metrics = metrics_producers->shader_reflection,
+      .requested_present_mode = config->requested_present_mode,
   };
   if (!vkr_renderer_initialize(
           &application->renderer, VKR_RENDERER_BACKEND_TYPE_VULKAN,
@@ -1328,7 +1336,7 @@ void application_draw_frame(Application *application, float64_t delta) {
           },
       .world = has_world ? &world_payload : NULL,
       .shadow = has_shadow ? &shadow_payload : NULL,
-      .skybox = &skybox_payload,
+      .skybox = application->config->disable_skybox ? NULL : &skybox_payload,
       .ui = &ui_payload,
       .editor = has_editor ? &editor_payload : NULL,
       .picking = has_picking ? &picking_payload : NULL,
@@ -1416,7 +1424,9 @@ void application_start(Application *application) {
     float64_t current_absolute_time = vkr_platform_get_absolute_time();
     float64_t current_total_time = application->clock.elapsed;
 
-    float64_t delta = current_total_time - application->last_frame_time;
+    float64_t delta = application->config->fixed_delta_seconds > 0.0
+                          ? application->config->fixed_delta_seconds
+                          : current_total_time - application->last_frame_time;
 
     if (delta > 0.1f) {
       delta = 0.1f;
@@ -1480,7 +1490,7 @@ void application_start(Application *application) {
       log_warn("Active camera handle invalid; skipping controller update");
     }
 
-    if (camera) {
+    if (camera && !application->config->disable_camera_controller) {
       vkr_camera_controller_update(&application->renderer.camera_controller,
                                    delta);
     }

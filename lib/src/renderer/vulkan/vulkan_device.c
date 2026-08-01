@@ -403,7 +403,23 @@ VkSurfaceFormatKHR *vulkan_device_choose_swap_surface_format(
 }
 
 VkPresentModeKHR vulkan_device_choose_swap_present_mode(
-    VulkanSwapchainDetails *swapchain_details) {
+    VulkanSwapchainDetails *swapchain_details, VkrPresentMode requested_mode) {
+  VkPresentModeKHR requested = VK_PRESENT_MODE_MAX_ENUM_KHR;
+  if (requested_mode == VKR_PRESENT_MODE_IMMEDIATE) {
+    requested = VK_PRESENT_MODE_IMMEDIATE_KHR;
+  } else if (requested_mode == VKR_PRESENT_MODE_FIFO) {
+    requested = VK_PRESENT_MODE_FIFO_KHR;
+  } else if (requested_mode == VKR_PRESENT_MODE_MAILBOX) {
+    requested = VK_PRESENT_MODE_MAILBOX_KHR;
+  }
+  if (requested != VK_PRESENT_MODE_MAX_ENUM_KHR) {
+    for (uint32_t i = 0; i < swapchain_details->present_modes.length; ++i) {
+      if (*array_get_VkPresentModeKHR(&swapchain_details->present_modes, i) ==
+          requested) {
+        return requested;
+      }
+    }
+  }
   for (uint32_t i = 0; i < swapchain_details->present_modes.length; i++) {
     VkPresentModeKHR present_mode =
         *array_get_VkPresentModeKHR(&swapchain_details->present_modes, i);
@@ -686,6 +702,35 @@ void vulkan_device_get_information(VulkanBackendState *state,
 
   device_information->max_sampler_anisotropy =
       (float64_t)state->device.properties.limits.maxSamplerAnisotropy;
+  device_information->vendor_id = properties.vendorID;
+  device_information->device_id = properties.deviceID;
+  device_information->actual_present_mode = state->actual_present_mode;
+  device_information->actual_target_image_count = state->swapchain.image_count;
+  switch (state->swapchain.format) {
+  case VK_FORMAT_B8G8R8A8_SRGB:
+    device_information->actual_color_format =
+        VKR_SURFACE_COLOR_FORMAT_BGRA8_SRGB;
+    break;
+  case VK_FORMAT_R8G8B8A8_SRGB:
+    device_information->actual_color_format =
+        VKR_SURFACE_COLOR_FORMAT_RGBA8_SRGB;
+    break;
+  case VK_FORMAT_B8G8R8A8_UNORM:
+    device_information->actual_color_format =
+        VKR_SURFACE_COLOR_FORMAT_BGRA8_UNORM;
+    break;
+  case VK_FORMAT_R8G8B8A8_UNORM:
+    device_information->actual_color_format =
+        VKR_SURFACE_COLOR_FORMAT_RGBA8_UNORM;
+    break;
+  default:
+    device_information->actual_color_format = VKR_SURFACE_COLOR_FORMAT_UNKNOWN;
+    break;
+  }
+  device_information->actual_color_space =
+      state->swapchain.color_space == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+          ? VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR
+          : VKR_SURFACE_COLOR_SPACE_UNKNOWN;
   device_information->supports_texture_astc_4x4 =
       vulkan_device_supports_sampled_format(state->device.physical_device,
                                             VK_FORMAT_ASTC_4x4_UNORM_BLOCK) &&

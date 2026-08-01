@@ -370,6 +370,7 @@ Array(VulkanFramebuffer);
 typedef struct VulkanSwapchain {
   VkSwapchainKHR handle;
   VkFormat format;
+  VkColorSpaceKHR color_space;
   VkExtent2D extent;
 
   uint32_t image_count;
@@ -715,6 +716,8 @@ typedef struct VulkanBackendState {
   // upload command emission.
   uint64_t render_thread_id;
   VkrDeviceRequirements *device_requirements;
+  VkrPresentMode requested_present_mode;
+  VkrPresentMode actual_present_mode;
 
   VulkanAllocator vk_allocator;
   VkAllocationCallbacks *allocator;
