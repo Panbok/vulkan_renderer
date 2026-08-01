@@ -140,6 +140,11 @@ The contract, in order of importance:
    the **single caller** of
    `vkr_renderer_get_and_reset_upload_wait_stats()`; a second caller would steal
    samples.
+   Device-memory rows include fixed logical-owner state copied from the Vulkan
+   handle tracker. Live and peak values are gauges; the tracker's lifetime
+   allocation totals are differenced into per-frame `bytes.allocated` and
+   `allocations.created` counters. The owner is typed creation data and is never
+   derived from a metric name, resource debug name, usage flags, or memory type.
 7. **Allocator snapshots obey allocator ownership.** Global allocator totals
    may be pulled through `vkr_allocator_get_global_statistics()`, whose storage
    is atomic. `vkr_allocator_get_statistics()` returns non-atomic local fields

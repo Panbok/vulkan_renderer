@@ -118,8 +118,9 @@ Performance workflow and evidence rules:
 
 | Document | Status | Purpose |
 |---|---|---|
-| [renderer-harness-and-metrics-spec.md](tooling/renderer-harness-and-metrics-spec.md) | partial | Metrics phase 1 ships; harness, capture, automation boot, and offscreen phases remain proposed |
+| [renderer-harness-and-metrics-spec.md](tooling/renderer-harness-and-metrics-spec.md) | partial | Metrics phases 1/1b ship; harness, capture, automation boot, and offscreen phases remain proposed |
 | [renderer-metrics-phase1-verification.md](tooling/renderer-metrics-phase1-verification.md) | investigation | Phase-1 functional, Vulkan, pipeline-cache, and paired Release-overhead evidence |
+| [renderer-metrics-phase1b-verification.md](tooling/renderer-metrics-phase1b-verification.md) | investigation | Phase-1b GPU-owner propagation, exactness, Vulkan, and paired Release-overhead evidence |
 | [harness-case-schema.json](tooling/harness-case-schema.json) | proposed | Draft-07 schema for `tools/cases/**/*.case.json`; no code consumes it yet |
 
 Rationale for the two decisions this series depends on:

@@ -5,13 +5,15 @@ authority: spec
 ---
 # Renderer Metrics Module and Automation Harness
 
-> **Status note.** Phase 1 ships: the centralized registry, renderer adapter,
+> **Status note.** Phases 1 and 1b ship: the centralized registry, renderer adapter,
 > catalog/validity model, event ring, JSON writer and snapshot dump, producer
-> instrumentation, and metrics-backed HUD are production call sites. Phases 1b
-> and 2-6 remain proposed; there is still no harness, capture path, automation
-> boot profile, logical GPU-owner attribution, or offscreen target. Phase-1
-> evidence is recorded in
-> [renderer-metrics-phase1-verification.md](renderer-metrics-phase1-verification.md).
+> instrumentation, metrics-backed HUD, and explicit logical GPU allocation
+> owners are production call sites. Phases 2-6 remain proposed; there is still
+> no harness, capture path, automation boot profile, or offscreen target.
+> Evidence is recorded in
+> [renderer-metrics-phase1-verification.md](renderer-metrics-phase1-verification.md)
+> and
+> [renderer-metrics-phase1b-verification.md](renderer-metrics-phase1b-verification.md).
 
 ## 1. Problem
 
@@ -122,7 +124,7 @@ typedef struct VkrMetricsSnapshotView {
 } VkrMetricsSnapshotView;
 
 typedef enum VkrMetricKind {
-  VKR_METRIC_KIND_COUNTER,  /**< Monotonic u64; frame delta is derived. */
+  VKR_METRIC_KIND_COUNTER,  /**< Interval u64; cumulative sources are differenced. */
   VKR_METRIC_KIND_GAUGE,    /**< Instantaneous u64 or f64. */
   VKR_METRIC_KIND_DURATION, /**< Integer ns; aggregate shape depends on writer. */
 } VkrMetricKind;
@@ -254,12 +256,16 @@ global tag totals. Bulk arena destruction still requires
 history, not live memory.
 
 Device-memory metrics preserve both `heap_usage_valid` and
-`live_totals_exact`. The current backend can group by memory type/heap, not by
-logical owner such as font versus mesh. Logical GPU attribution is a separate
-instrumentation slice: add a fixed `VkrGpuAllocationOwner` to resource creation
-descriptions and the live allocation table before publishing
-`memory.gpu.owner.*`. Until then the report must not infer ownership from debug
-names or memory types.
+`live_totals_exact`. Phase 1b adds a fixed `VkrGpuAllocationOwner` to resource
+creation descriptions, retained Vulkan resources, and the live allocation
+table. The tracker retains live/peak/lifetime-total bytes and allocation counts.
+The metrics adapter publishes live/peak gauges plus per-frame
+`bytes.allocated` and `allocations.created` counter deltas under
+`memory.gpu.owner.*` for `unknown`, `mesh`, `texture`, `font`, `render_graph`,
+`shader`, `instance`, `indirect`, `staging`, `readback`, and `swapchain`.
+Allocation and free use the stored enum directly; no path infers ownership from
+debug names, usage flags, or memory types. `unknown` is a reportable first-class
+bucket so a missed or external caller is visible rather than misattributed.
 
 ### 3.5 Per-pass table
 
@@ -350,14 +356,14 @@ describes nothing. A counter nobody incremented publishes a valid zero, because
 "no draws this frame" and "draws were not measured" are different claims and
 only the second one is missing evidence.
 
-Metric names describe one interval. `frame.wall` includes limiter sleep and
-window-event work; `cpu.frame_work` excludes sleep; `cpu.render_submit`
-includes graph execute, command-buffer end, queue submit, and windowed present
-unless the backend publishes the nested present duration. FPS is derived from a
-declared frame-time series, not maintained as a second clock. The first catalog
-version and each metric's exact start/end boundary land beside the code; the
-names above are not permission to time overlapping regions and add them as if
-they were disjoint.
+Counter and duration names describe one interval; gauges describe state at the
+collection boundary. `frame.wall` includes limiter sleep and window-event work;
+`cpu.frame_work` excludes sleep; `cpu.render_submit` includes graph execute,
+command-buffer end, queue submit, and windowed present unless the backend
+publishes the nested present duration. FPS is derived from a declared frame-time
+series, not maintained as a second clock. The first catalog version and each
+metric's exact start/end boundary land beside the code; the names above are not
+permission to time overlapping regions and add them as if they were disjoint.
 
 ### 3.9 JSON writer
 
@@ -1099,7 +1105,7 @@ unsupported.
 |---|---|---|
 | 0 | This document, ADR-014, ADR-015, and immediate factual repair of the live `vkr-performance` skill | `docs/`, `.codex/skills/vkr-performance/SKILL.md` |
 | 1 | **Implemented 2026-08-01.** Explicit `VkrMetrics` owner, core registry, renderer adapter, catalog/validity, JSON writer; HUD reads snapshots; `--metrics-json` dump | `lib/src/core/`, `lib/src/renderer/`, `application.h`, `app/src/main.c` |
-| 1b | Explicit logical GPU allocation owners and owner aggregates; no inferred font/mesh categories | resource descriptions, Vulkan allocation tracker |
+| 1b | **Implemented 2026-08-01.** Explicit logical GPU allocation owners; tracker live/peak/lifetime totals; live/peak gauges and allocated/created interval counters; no inferred font/mesh categories | resource descriptions, Vulkan allocation tracker, renderer metrics adapter |
 | 2 | Shared harness runtime, strict case/profile parsers, case/profile/report schemas, three fingerprints, safe paths/atomic artifacts, camera scripting, isolated repetitions, `profile` | `tools/harness/`, `tools/cases/`, `tools/profiles/` |
 | 2b | Establish parity, then retire the grep/awk benchmark script and migrate `vkr-performance` to the harness | tooling and skills |
 | 3 | Dependency-resolved automation boot profile; measured boot/memory reduction | `renderer_frontend.c`, `application.h`, harness runtime |
@@ -1123,6 +1129,9 @@ verification record, and the relevant ADR status in the same change.
   once without writing a recycled frame; validity/inexactness propagation;
   snapshot pin/release and non-blocking publication-drop behavior; event-ring
   publication, truncation, and exact overflow accounting.
+- **GPU owners:** allocation/free attribution, colliding-handle deletion and
+  reinsertion, live/peak/total owner aggregates, invalid-owner normalization to
+  `unknown`, saturation/inexact behavior, and owner catalog names/units.
 - **JSON/artifacts:** escaping, length-prefixed strings, nesting, non-finite
   rejection, interrupted-write behavior, atomic rename, digest verification,
   and absolute/`..`/symlink-escape rejection.

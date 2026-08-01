@@ -292,7 +292,7 @@ farther than the finite cube mesh.
 | JSON render graph | Implemented, partial | Scheduling/culling/timing; access- and subresource-aware barriers for declared resources; IBL bake work remains undeclared |
 | SPIR-V reflection | Implemented | Descriptors, push constants, vertex ABI, and uniform members validated against `.shadercfg` |
 | Pipeline cache | Implemented | Disk-backed Vulkan cache |
-| Metrics registry and snapshot export | Implemented | Bounded typed slots, MPSC cold-event ring, triple-buffered snapshots, renderer catalog/validity, metrics-backed HUD, and atomic `--metrics-json`; harness aggregation is a later phase |
+| Metrics registry and snapshot export | Implemented | Bounded typed slots, MPSC cold-event ring, triple-buffered snapshots, renderer catalog/validity, explicit GPU allocation-owner aggregates, metrics-backed HUD, and atomic `--metrics-json`; harness aggregation is a later phase |
 | Cascaded shadow maps | Implemented | Four-cascade default with debug/fit controls |
 | PBR materials | Implemented, evolving | Metallic-roughness and texture slots present |
 | IBL | In progress | Runtime bake paths and scene/probe model present; bake work still undeclared to the graph, output visibility now barriered explicitly |
@@ -359,12 +359,17 @@ buffers. A `VulkanBuffer` also owns a `VkrDMemory` offset allocator for ranges
 inside that buffer; this permits suballocation where callers deliberately share
 a buffer, but does not make arbitrary buffers or images share device memory.
 
-All device allocations route through one tracked allocation/free pair. The
-renderer exposes live/peak/total allocation counts and bytes, per-memory-type
-distribution, heap capacities, and driver heap usage/budget when
+All device allocations route through one tracked allocation/free pair. Resource
+descriptions declare a fixed logical owner, and the handle table retains it so
+free-side accounting never reclassifies a resource. The renderer exposes
+live/peak/total allocation counts and bytes globally and by owner, per-memory-
+type distribution, heap capacities, and driver heap usage/budget when
 `VK_EXT_memory_budget` is available. If its fixed handle table saturates it
-marks live totals inexact rather than presenting them as authoritative. The
-graph also tracks sizes of its own resources. Missing capabilities are:
+marks live totals and owner live/peak rows inexact rather than presenting them
+as authoritative. The metrics adapter publishes the live/peak state as gauges
+and differences the lifetime allocation totals into per-frame allocated-byte
+and allocation-created counters. The graph also tracks sizes of its own
+resources. Missing capabilities are:
 
 - pooled blocks by memory type;
 - defragmentation/eviction;
@@ -641,15 +646,20 @@ required gate — see §10.
    logs. `tests/src/texture_vkt_tests.c` sweeps all 1024 combinations of texture
    class, device type, sRGB intent, and the five capability flags, asserting
    every selector result has a transcode target.
-10. **Add device-memory pooling and budget telemetry.** Telemetry **done
-   2026-07-31**; pooling deliberately not started. All device allocations now
+10. **Add device-memory pooling and budget telemetry.** Device/type/heap
+   telemetry **done 2026-07-31** and explicit logical-owner attribution **done
+   2026-08-01**; pooling deliberately not started. All device allocations now
    route through `vulkan_backend_allocate_device_memory` /
    `vulkan_backend_free_device_memory`, which record into a handle-keyed table
    so live counts remain exact while that table has capacity; saturation marks
    them inexact. `VK_EXT_memory_budget` is enabled when present for driver heap
    usage. `vkr_renderer_get_device_memory_stats`
-   reports live/peak/total allocation counts, bytes, and the per-memory-type
-   distribution, logged by the app at startup, scene load-ready, and unload.
+   reports live/peak/total allocation counts and bytes globally and for eleven
+   fixed owner buckets, plus the per-memory-type distribution, logged by the app
+   at startup, scene load-ready, and unload. The metrics registry keeps
+   live/peak as gauges and publishes lifetime-total differences as interval
+   counters. Owners are caller-declared and stored in the live handle table;
+   they are never inferred from names or memory types.
    `find_memory_index_with_fallback` replaces three hand-rolled retry
    strategies, one of which (`vulkan_image.c`) had no fallback at all.
    **Baseline captured** — see
@@ -775,6 +785,7 @@ following checks were rerun:
 | `tools/validate_multithreaded_backend_matrix.sh` after P2 review | Exit 0; all five compile/runtime configurations passed |
 | `./build_release.sh` and P2 Release Sponza smoke | Exit 0; 192 samples in 50 seconds, 16.957 ms mean frame and 0.156 ms mean render-graph CPU. This is runtime evidence, not a comparison with the different-scene San Miguel baseline |
 | Metrics phase 1 | CPU suite and Debug build passed; validation-layer snapshot exposed 155 slots and eight provenance-carrying pass rows with no drops; Release Sponza activated with all asset-event classes; compile-disabled Release passed; pipeline-cache cold/warm validation consumed 23 events per run. Five paired Release A/B blocks measured a +0.243299% median frame delta with a -0.877233% to +0.462384% range. Full configuration and repetitions: [phase-1 verification](../tooling/renderer-metrics-phase1-verification.md) |
+| Metrics phase 1b | CPU tracker/catalog/delta tests and full suite passed; Debug validation exposed 66 owner rows as 44 live/peak gauges and 22 allocated/created counters with no running-total rows or drops; earlier Sponza snapshots proved exact owner/global live sums and zero live `unknown`/`staging`; compile-disabled Release and pipeline-cache cold/warm workflows passed. Five paired Release A/B blocks measured a -0.064025% median frame delta with a -0.363189% to +1.188834% range. Full configuration and repetitions: [phase-1b verification](../tooling/renderer-metrics-phase1b-verification.md) |
 | `vkr_frustum` production references | Application world-payload construction creates camera and cascade frustums and classifies submeshes against them |
 | `VkrDrawBatcher` production references | None outside its module/tests/docs; P2 batching instead uses visibility and pass-local batch structures |
 | `vkr_indirect_draw_alloc` callers | The shared pass indirect-submission path allocates production world/shadow command ranges |

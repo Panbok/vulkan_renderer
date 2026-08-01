@@ -42,8 +42,12 @@ Supporting behavior:
   host-visible memory when the combined type is unavailable, and resources
   retain the selected memory type's actual property flags;
 - allocation sizes are reported to the project's GPU/Vulkan accounting tags;
-- a handle-keyed table exposes live/peak/total allocation counts and bytes plus
-  per-memory-type distribution; saturation marks live totals inexact;
+- resource descriptions declare a fixed logical allocation owner, retained in
+  the handle-keyed table so free removes the exact owner's bytes/count without
+  classifying from names, usage, or memory types;
+- the table exposes live/peak/total allocation counts and bytes globally and by
+  logical owner plus per-memory-type distribution; saturation marks live totals
+  and owner live/peak rows inexact;
 - heap capacity is always reported and `VK_EXT_memory_budget` adds driver usage
   and budget when available;
 - graph-resource statistics separately track graph-owned image/buffer sizes;
