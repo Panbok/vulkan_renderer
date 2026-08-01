@@ -1,47 +1,53 @@
 ---
-status: proposed
+status: partial
 updated: 2026-07-31
 authority: adr
 ---
 # ADR-013: Measured Draw Submission — Culling, Instancing, and MDI
 
-**Status:** Proposed
-**Priority:** High after ADR-004/008/009 correctness fixes.
+**Status:** Accepted (partial)
 
 ## Context
 
-### Current behavior
+### Implemented behavior
 
-Application world-payload construction scans all live mesh-manager slots twice:
-once to count and once to populate submesh draw/instance arrays. Apart from the
-retained `visible` flag and load state, it performs no spatial rejection.
+Application world-payload construction scans live mesh-manager slots for
+capacity, then performs a count/visibility pass and a population pass.
+Conservative world-space submesh spheres are classified against the camera and
+the union of all shadow cascade volumes before final arrays are materialized.
+The two visible sets and their instance arrays remain independent.
 
-The world pass then resolves mesh/submesh, material, pipeline, range, and probe
-state for every item, binds per-material descriptor state, and issues direct
-indexed draws. Packet construction currently emits one instance record and
-`instance_count = 1` for each submesh draw, including repeated compatible
-objects. Opaque sort keys are not used to create batches. Transparent/cutout
-items preserve distance ordering through a separate sort.
+Opaque candidates are sorted by a complete instancing key. Compatible runs
+emit contiguous instance records and one indexed draw. Position-dependent local
+reflection-probe descriptors are still selected once per draw, so their binding
+context deliberately prevents unsafe merging across different positions.
+Transparent/alpha-tested lists remain ordered and direct.
 
-Existing but unintegrated infrastructure:
+The world and opaque shadow paths accumulate bounded MDI groups. A group uses
+one `vkCmdDrawIndexedIndirect` only when it contains multiple commands and all
+bound state—including the selected index buffer—matches; otherwise it uses the
+direct fallback. Metrics distinguish logical commands from API calls.
+
+Integrated infrastructure and remaining boundaries:
 
 | Module | Current state |
 |---|---|
-| `math/vkr_frustum.*` | Sphere/frustum functions; no production caller |
+| `math/vkr_frustum.*` | Production camera/cascade sphere classification with Vulkan-ZO tests |
 | `renderer/vkr_draw_batch.*` | Draw key/batch structures; no production caller |
-| `renderer/vkr_indirect_draw.*` | Initialized fixed mapped command ring; no allocation caller |
-| Geometry/submesh bounds | Present, but must be transformed conservatively |
-| Capability flags | MDI and indirect first-instance support are queried |
-| Batch metrics | Fields exist, but current average/max batch size report one |
+| `renderer/vkr_visibility.*` | Production candidate sorting, conservative bounds, visibility, and merge metrics |
+| `renderer/vkr_indirect_draw.*` | Production fixed mapped command ring with bounded direct fallback |
+| Geometry/submesh bounds | Transformed conservatively for TRS/non-uniform scale; no spatial hierarchy |
+| Capability flags | MDI and indirect first-instance gate submission independently |
+| Batch metrics | Commands, direct/indirect calls, visibility, and merge runs reported separately |
 
 These modules are useful starting points, not proof that the final pipeline is
 already designed. In particular, the existing key includes geometry/range; one
 indirect command per such “batch” followed by one MDI call per batch would not
 reduce draw calls.
 
-## Decision (Proposed)
+## Decision
 
-Implement and measure the following stages independently.
+Keep the following implemented stages independent and measurable.
 
 ### 1. Establish baselines and correctness tests
 
@@ -106,7 +112,27 @@ buffer changes. Large MDI wins may therefore require:
 Before enabling the existing indirect stream, also fix its frame-resource
 indexing described by ADR-008/009.
 
-## Consequences (Expected)
+## Implementation Evidence
+
+Release measurements on Apple M1 Pro/MoltenVK found:
+
+- Sponza: 36 tested submeshes, zero camera/light rejections;
+- San Miguel: 282 tested, roughly 37% camera rejection as the camera moves;
+- zero compatible world instancing runs on both measured scenes;
+- 1,124 opaque shadow commands carried by 8 indirect calls;
+- no measurable frame-time difference between MDI enabled/disabled because the
+  full render-graph CPU slice is only about 0.3–0.5 ms of a ~20 ms frame.
+
+The P2 review corrected four invariants before acceptance: the perspective
+matrix now shares `mat4_look_at`'s right-handed convention; shadow visibility
+tests every cascade rather than assuming the last contains earlier cascades;
+instancing includes position-dependent descriptor compatibility; and indirect
+submission binds the same compacted/default index buffer as direct fallback.
+
+Native Vulkan hardware validation remains missing, so this ADR is accepted
+partial rather than accepted.
+
+## Consequences
 
 **Positive**
 
@@ -120,8 +146,8 @@ indexing described by ADR-008/009.
 
 **Negative / risks**
 
-- Bounds errors cause visible popping; shadow-caster culling is especially
-  sensitive.
+- Bounds/cascade-union errors cause visible or shadow popping; both are pinned
+  by CPU regressions but still need broader scene/device validation.
 - Culling/sorting adds CPU work and scratch memory; small scenes may not win.
 - Opaque batching and transparent ordering require separate paths.
 - Existing geometry/material ownership may limit batch size more than expected.
@@ -145,10 +171,11 @@ indexing described by ADR-008/009.
 
 ## Revisit When
 
-Mark this ADR accepted only after implemented stages include captured
-before/after metrics and validation on at least one native Vulkan target and the
-supported MoltenVK path. A later GPU-driven design should supersede the command
-generation portion while retaining the visibility/order correctness rules.
+Mark this ADR fully accepted after validation on at least one native Vulkan
+target in addition to the supported MoltenVK path. Move local-probe selection
+into per-instance data before allowing instancing across position-dependent
+probe state. A later GPU-driven design should supersede command generation while
+retaining the visibility/order correctness rules.
 
 ## Implementation Order
 

@@ -63,7 +63,7 @@ owning document status in the same change.
 | [010](architecture/adr/010-ecs-scene-system.md) | implemented | Archetype ECS as authoritative scene state |
 | [011](architecture/adr/011-vulkan-1-2-baseline.md) | implemented | Vulkan 1.2 baseline with classic render passes |
 | [012](architecture/adr/012-texture-compression-pipeline.md) | implemented | Offline KTX2/UASTC packing with runtime transcode |
-| [013](architecture/adr/013-draw-submission-strategy.md) | proposed | Measured draw submission — culling, instancing, MDI |
+| [013](architecture/adr/013-draw-submission-strategy.md) | partial | Measured draw submission — culling, instancing, MDI; native Vulkan validation pending |
 
 ## Rendering
 
@@ -103,11 +103,11 @@ owning document status in the same change.
 | Document | Status | Purpose |
 |---|---|---|
 | [mesh-system/mesh-assets-and-instances/SPEC.md](mesh-system/mesh-assets-and-instances/SPEC.md) | partial | Mesh asset dedup/instances ship; historical renderer names remain |
-| [instanced-rendering/SPEC.md](instanced-rendering/SPEC.md) | partial | World-pass batching and transparent sorting; draw merging not implemented |
+| [instanced-rendering/SPEC.md](instanced-rendering/SPEC.md) | partial | Direct instancing and shadow MDI ship; bindless/material-table phase absent |
 | [instanced-rendering/opaque-compaction/SPEC.md](instanced-rendering/opaque-compaction/SPEC.md) | proposed | Opaque index compaction for an MDI megabuffer |
 | [performance/ecs-hot-path-optimization-spec.md](performance/ecs-hot-path-optimization-spec.md) | partial | ECS hot-path changes ship; before/after performance is unmeasured |
 | [performance/gpu-memory-baseline.md](performance/gpu-memory-baseline.md) | investigation | Captured device-memory baseline; concludes pooling is not justified by the numbers |
-| [performance/p2-throughput-findings.md](performance/p2-throughput-findings.md) | investigation | Measured P2: culling and shadow visibility ship; instancing and MDI have zero mergeable draws |
+| [performance/p2-throughput-findings.md](performance/p2-throughput-findings.md) | investigation | Measured P2 plus review corrections for visibility, instancing, MDI, and camera handedness |
 
 Performance workflow and evidence rules:
 [`.codex/skills/vkr-performance/SKILL.md`](../.codex/skills/vkr-performance/SKILL.md).

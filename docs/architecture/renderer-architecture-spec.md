@@ -44,12 +44,12 @@ document overstated how completely those systems are integrated:
   longer blocks: a full Sponza load measures zero render-thread fence waits,
   queue waits, and device waits. Uploads outside an active frame still block,
   and parallel upload command pools still require an explicitly unsafe opt-in.
-- The world path culls, merges instanced draws, and submits multi-draw-indirect
-  where binding state permits. On the measured content the payoff is confined to
-  the shadow pass, which collapses 1124 depth-only draw calls into 8 indirect
-  calls; the world pass batches nothing because each material owns a descriptor
-  set. Frame time is unchanged either way — the whole render graph is ~2% of a
-  20 ms frame. See
+- The world path culls, merges compatible instanced draws, and submits
+  multi-draw-indirect where binding state permits. On the measured content the
+  payoff is confined to the shadow pass, which carries 1,124 depth-only commands
+  in 8 indirect calls; the world pass batches nothing because each material owns
+  a descriptor set. Frame time is unchanged either way — the whole render graph
+  is ~2% of a 20 ms frame. See
   [performance/p2-throughput-findings.md](../performance/p2-throughput-findings.md).
 
 The correctness issues that previously took precedence over new visual features
@@ -248,11 +248,37 @@ The scene is authoritative retained state, but packets are not extracted
 directly from ECS archetype arrays. `vkr_scene_handle_sync()` mirrors dirty
 scene state into `VkrMeshManager`; application packet construction then scans
 mesh-manager slots and submeshes. Packet construction performs a count pass and
-a population pass. This bridge is useful for decoupling, but it duplicates
-state and means ECS locality is not yet the direct draw-collection path.
+a population pass after a capacity scan, caching visibility between the latter
+two. This bridge is useful for decoupling, but it duplicates state and means ECS
+locality is not yet the direct draw-collection path.
 
 Scene resource loading is asynchronous at the CPU preparation level and is
 activated once dependency/GPU finalization completes.
+
+### 3.6 Coordinate and clip-space convention
+
+World/view math is right-handed: `-Z` is forward, `mat4_look_at` maps a target
+in front to negative view-space Z, and `mat4_perspective` maps that point to
+positive clip W. Projection uses Vulkan depth `[0,1]` and inverts clip-space Y.
+Perspective and renderer-facing orthographic cameras use that same clip-space
+convention, and frustum extraction assumes it without matrix-shape heuristics.
+Positive camera-controller forward input moves along the camera's declared
+forward vector. The default sample camera starts on positive Z looking toward
+`-Z`.
+
+The P2 review found that `mat4_perspective` had left-handed signs despite its
+right-handed contract. Rendering and frustum culling agreed only because both
+consumed the same invalid product; camera movement, CSM extraction, local probe
+selection, and future picking rays did not share that accidental meaning. The
+projection signs, the controller's historical sign compensation, and
+convention-specific tests now agree.
+
+Rasterization preserves the authored counter-clockwise front-face convention
+used by glTF and VKR-generated geometry. Ordinary opaque materials cull back
+faces, while skybox and IBL capture pipelines cull front faces to render the
+inside of their outward-wound cubes. The skybox pass runs before world rendering
+and disables depth test/write so it contributes color without occluding geometry
+farther than the finite cube mesh.
 
 ---
 
@@ -272,10 +298,10 @@ activated once dependency/GPU finalization completes.
 | KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; every selector result is transcodable |
 | Editor viewport and picking | Implemented | Picking fully declared in the render graph; readback usually deferred but ring wrap can block |
 | Text | Implemented | Bitmap, MTSDF, system-font, UI and world text paths |
-| Instance stream | Implemented, underused | Fixed 65,536 entries; measured content repeats no asset, so runs are length 1 |
-| CPU frustum culling | Implemented | Per-submesh, camera and light volumes classified independently; rejects ~37% on San Miguel, 0% on Sponza |
-| Draw batching | Implemented | Opaque draws merged by geometry/material/range into instanced draws; merges 0 on measured content |
-| Multi-draw indirect | Implemented | Fires where a pass binds state once: 1124 shadow draws → 8 indirect calls; world pass batches nothing until bindless |
+| Instance stream | Implemented, underused | Fixed 65,536 entries; measured content repeats no compatible asset/state run |
+| CPU frustum culling | Implemented | Per-submesh; camera and union-of-cascade light visibility classified independently; rejects ~37% on San Miguel, 0% on Sponza |
+| Draw batching | Implemented | Opaque draws merge by complete compatible state; local-probe descriptors prevent unsafe world instancing across positions |
+| Multi-draw indirect | Implemented | Fires where a pass binds state once: 1,124 shadow commands → 8 indirect calls; world pass batches nothing until descriptor state can be shared |
 | Compute dispatch | Not exercised | “compute” JSON passes currently orchestrate graphics/CPU work |
 | Device-memory suballocation | Absent, measured | Still one `VkDeviceMemory` per buffer/image/readback buffer; allocation-count and per-type telemetry now exists to size a pool |
 | Bindless/descriptor indexing | Absent | Per-material descriptor binding model |
@@ -358,7 +384,8 @@ allocations against a limit of ~1.07e9.
 `VkrInstanceBufferPool` owns three persistently mapped buffers with a fixed
 65,536-instance capacity. Overflow is reported and the affected pass can drop
 work; it is not silent. `VkrIndirectDrawSystem` mirrors the design for 16,384
-commands but is unused by passes.
+commands and is consumed by world/shadow MDI groups, with direct fallback on
+unsupported features or stream exhaustion.
 
 Global shader UBOs use swapchain-image-indexed regions, and global descriptor
 sets are allocated/indexed per swapchain image. Descriptor updates are cached
@@ -648,15 +675,17 @@ required gate — see §10.
     content that kept its spatial locality. See
     [performance/p2-throughput-findings.md](../performance/p2-throughput-findings.md).
 12. ~~**Use real instancing first.**~~ **Shipped 2026-07-31.** Opaque draws are
-    sorted by merge key and runs sharing geometry, material and index range
-    collapse into one instanced draw, with instance records emitted in run order
-    so each run is contiguous — the property that makes a single instanced draw
-    legal. On both measured scenes it merges **zero** draws, because neither
-    repeats an asset: Sponza is two models with per-submesh materials, and San
-    Miguel is one geometry buffer with a distinct material per submesh
-    (`geoms=1 mats=180`). The merge counters ship in the benchmark line and the
-    algorithm is tested against synthetic repeated-asset inputs, so content that
-    *does* instance one asset many times shows the opportunity immediately.
+    sorted by merge key and runs sharing geometry, generation-bearing material,
+    index range, pipeline domain, and position-independent binding context
+    collapse into one instanced draw. Instance records are emitted in run order
+    so each run is contiguous. Local reflection-probe descriptors are selected
+    once per draw from world position; while a local probe is pending or ready,
+    a unique binding-context key prevents objects at different positions from
+    being merged and receiving the first object's probe state. Pending probes
+    are included because the IBL pass can make one ready after packet building.
+    On measured content it merges **zero** draws. The merge sort also supplies
+    the counters, avoiding the original duplicate key allocation and duplicate
+    `qsort`.
 13. ~~**Use MDI only for meaningful binding-state groups.**~~ **Shipped
     2026-07-31.** Draws accumulate into a bounded batch and are submitted with
     `vkCmdDrawIndexedIndirect` when more than one shares all bound state,
@@ -666,21 +695,23 @@ required gate — see §10.
     per draw, not by how many draws it has.** The world pass batches nothing —
     every draw changes descriptor set, since materials own one each. The
     depth-only shadow pass binds its pipeline and instance state once for the
-    whole list, so all 281 opaque casters × 4 cascades collapse into **8
-    indirect calls**. Frame time is unchanged (20.57 ms with, 20.91 ms without,
-    across three interleaved runs whose own spread is larger), because the
-    render graph's entire CPU cost is 0.3–0.5 ms of a 20 ms frame. This confirms
-    the item's suspicion from the other direction: bindless/material tables are
-    the prerequisite for the *world* pass to batch, and even then the win will
-    not be frame time on GPU-bound content.
+    whole list, so all 281 opaque casters × 4 cascades are carried by **8
+    indirect calls**. The P2 review fixed indirect submission to bind the same
+    optional compacted opaque index buffer as its direct fallback; previously it
+    always rebound the geometry's default index buffer, so capability could
+    change which indices were rendered. Metrics now distinguish logical
+    commands from actual direct/indirect calls. Frame time was unchanged in the
+    original A/B (20.57 ms with, 20.91 ms without), because the render graph's
+    entire CPU cost is 0.3–0.5 ms of a 20 ms frame.
 14. ~~**Keep camera and shadow visibility separate.**~~ **Shipped 2026-07-31.**
     The shadow payload previously aliased the world payload's arrays, so the
     moment culling rejected anything every camera-culled object would silently
     stop casting a shadow. Camera and light visibility are now classified
-    independently in one traversal, with the caster list built from the widest
-    cascade volume (cascades nest, so it bounds every caster any cascade needs).
-    Unobservable today precisely because nothing is culled, which is why it had
-    to land together with item 11.
+    independently in one traversal. Shadow visibility is the union of all
+    cascade volumes: cascade centers shift with their camera slices, so the last
+    or widest cascade is not guaranteed to contain earlier ones. The original
+    P2 implementation tested only the last cascade and could drop a near-only
+    caster; a focused regression now pins the union rule.
 
 ### P3 — Feature growth after measurement
 
@@ -735,6 +766,12 @@ following checks were rerun:
 | `./validate_pipeline_cache.sh` after P1 review | Exit 0; cold cache created/saved and warm cache loaded; 20 pipelines created in both runs |
 | P1 Sponza validation-layer run | Apple M1 Pro/MoltenVK, three-image swapchain: Sponza ready in 33.1 Debug seconds, 50-second run clean, exact device-memory telemetry, and zero fence/queue/device upload waits |
 | `tools/validate_multithreaded_backend_matrix.sh` after P1 review | Exit 0; all five compile/runtime configurations passed |
+| `./build_test.sh` after P2 review | Exit 0; coordinate-convention, cascade-union, merge-context, orthographic-frustum, and single-target graph regressions passed with every registered suite |
+| `./build.sh Debug` after P2 review | Exit 0; application and shaders built successfully |
+| P2 Sponza validation-layer run | Apple M1 Pro/MoltenVK, three-image swapchain: exact Sponza scene activated in a 50-second Debug run, no validation messages observed, and upload-wait counters remained zero |
+| P2 front-face correction validation | Paired viewpoints reproduced reversed one-sided surfaces; after switching immutable pipeline front-face state to CCW, a direct Sponza capture showed the intended interior wall with skybox and both reflection probes intact, no validation messages, and zero upload waits |
+| `tools/validate_multithreaded_backend_matrix.sh` after P2 review | Exit 0; all five compile/runtime configurations passed |
+| `./build_release.sh` and P2 Release Sponza smoke | Exit 0; 192 samples in 50 seconds, 16.957 ms mean frame and 0.156 ms mean render-graph CPU. This is runtime evidence, not a comparison with the different-scene San Miguel baseline |
 | `vkr_frustum` production references | None outside its module/tests/docs |
 | `VkrDrawBatcher` production references | None outside its module/tests/docs |
 | `vkr_indirect_draw_alloc` callers | None |
@@ -745,7 +782,7 @@ following checks were rerun:
 | Uniform block reflection output | Populated; validated against all 13 `.shadercfg` files by `reflection_pipeline_test` |
 | `vkr_renderer_transition_texture_layout` callers | Replaced by `vkr_renderer_image_barrier`; the layout-pair table survives only for upload/copy paths in `vulkan_image.c` |
 
-The CPU suite and one hardware smoke configuration do not replace
+The CPU suite and one MoltenVK smoke configuration do not replace
 validation-layer runs across two- and four-image swapchains, queue-family
 layouts, other GPUs, resize/minimize/cancel paths, interactive picking, and
 injected acquire, fence, submit, and present failures.

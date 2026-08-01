@@ -53,7 +53,10 @@ updates. Dirty render entities are mirrored by the scene render bridge into
 Application draw-packet construction then scans mesh-manager slots/submeshes;
 it does not currently extract draw arrays directly from ECS archetype queries.
 This makes the mesh manager a retained render mirror and duplicates some scene
-state, but keeps renderer asset/instance handles out of the ECS core.
+state, but keeps renderer asset/instance handles out of the ECS core. Extraction
+classifies conservative submesh spheres against the camera and every shadow
+cascade before final arrays are populated, then sorts/merges compatible opaque
+draws.
 
 Scene JSON loading has CPU async prepare/dependency states followed by
 render-thread finalization. Scene-owned mesh instances, mesh slots, environment
@@ -78,10 +81,11 @@ textures, and probe textures are released on destroy/reload paths.
 - Component pointers can be invalidated by structural changes.
 - Scene state is mirrored into mesh-manager state, so dirty/full synchronization
   must remain correct and cleanup symmetric.
-- Packet construction scans the render mirror twice (count, then populate) and
-  does not currently realize the ECS locality benefit for draw extraction.
-- No spatial structure or active frustum culling reduces the value of fast
-  iteration on large scenes.
+- Packet construction scans the render mirror for capacity, count/visibility,
+  and population, so it still does not realize the ECS locality benefit for
+  draw extraction.
+- Frustum culling is linear over every live submesh; there is no BVH/grid to
+  avoid the classification scan on large scenes.
 - Some scene operations directly use renderer systems, so the scene layer is
   not renderer-independent despite the update/sync split.
 
@@ -98,8 +102,8 @@ textures, and probe textures are released on destroy/reload paths.
 
 ## Revisit When
 
-- Integrate culling and decide whether packet extraction should query ECS
-  directly or keep the render mirror.
+- Decide whether packet extraction should query ECS directly or keep the render
+  mirror now that culling/merge work lives in extraction.
 - Add a BVH/grid only after measuring collection/culling cost and scene churn.
 - Validate repeated partial scene load/unload and renderer-handle symmetry.
 - Reconsider storage when component churn or transform hierarchy becomes a

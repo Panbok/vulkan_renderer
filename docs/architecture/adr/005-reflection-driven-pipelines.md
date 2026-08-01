@@ -39,8 +39,13 @@ set/binding/type/count. Host vertex, instance, and indirect command layouts are
 pinned independently with `_Static_assert`.
 
 `.shadercfg` declares shader identity, stages/files, render pass, instance use,
-`vertex_abi`, and named uniforms. The frontend uses those declarations to stage
-named values. At shader creation, each non-sampler frame/draw declaration must
+`vertex_abi`, cull and depth-test/write state, and named uniforms. The frontend
+uses those declarations to construct the graphics pipeline and stage named
+values. Depth state defaults to test/write enabled; passes such as the skybox
+must opt out explicitly when their depth attachment is only cleared for a
+later pass. Rasterization keeps CCW authored triangles front-facing; inside-cube
+passes use front-face culling instead of reversing shared geometry winding. At
+shader creation, each non-sampler frame/draw declaration must
 match a member in the corresponding reflected block by name, offset, exact
 size, scalar/vector/matrix shape, array count/stride, and matrix stride.
 Matching `(set,binding)` blocks reflected from multiple stages must have

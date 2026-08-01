@@ -26,7 +26,9 @@ and `flush_range` handles non-coherent visibility. Overflow logs/fails and can
 cause the pass to omit work.
 
 `VkrIndirectDrawSystem` mirrors this for 16,384 layout-asserted indirect
-commands, but no production pass currently calls `vkr_indirect_draw_alloc()`.
+commands. World and shadow passes allocate bounded compatible groups from it;
+single-command groups, unsupported features, and exhausted capacity fall back
+to direct indexed draws.
 
 Both stream rings are reset with the frame-in-flight slot exposed by the
 backend. Reuse is therefore protected by the same fence that `begin_frame`

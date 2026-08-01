@@ -17,7 +17,11 @@ authority: spec
 
 ## Executive Summary
 
-This specification defines a practical instancing + batching path for the renderer **without relying on bindless** features. The current architecture issues one draw call per submesh with per-object descriptor binding and per-object push constants, which multiplies into ~2000+ draws when combined with CSM cascades.
+This specification defines a practical instancing + batching path for the
+renderer **without relying on bindless** features. Direct instancing and bounded
+MDI now ship; sections below retain parts of the original design for rationale,
+so ADR-013 and the renderer architecture spec are authoritative for current
+behavior.
 
 The core idea is:
 - keep the existing **material instance descriptor set** (textures/material params) binding model,
@@ -34,10 +38,10 @@ Summary of what is implemented vs. remaining work.
 
 | Phase | Status | Notes |
 |-------|--------|-------|
-| Phase 0 (metrics + feature probes) | Partially implemented | Per-frame world/shadow batch metrics + UI HUD are in place; feature probes and CPU/GPU timing still missing. |
+| Phase 0 (metrics + feature probes) | Implemented, partial | Command/call, visibility, merge, graph CPU/GPU timing, MDI and first-instance probes ship; per-stage extraction timing remains absent. |
 | Phase 1 (draw sorting) | Implemented | Opaque draws are sorted/batched by key; transparent draws are sorted back-to-front and rendered per object. |
 | Phase 2 (instance buffer + direct instancing) | Implemented | Instance buffer pool, SSBO binding (set 0, binding 1), shaders switched to instance data, and world/picking/shadow/gizmo paths use instance data. |
-| Phase 3 (indirect draws) | Implemented | Indirect draw buffer system + backend API; pass.world issues indirect draws for opaque batches. |
+| Phase 3 (indirect draws) | Implemented | Indirect draw buffer system + backend API; compatible world/shadow groups use MDI with direct fallback. |
 | Phase 4 (material SSBO/bindless) | Not implemented | No material SSBO or descriptor indexing path. |
 | Phase 5 (shadow batching) | Implemented | pass.shadow batches instanced draws; opaque/alpha split with opaque using no set 1. |
 
@@ -50,8 +54,15 @@ Summary of what is implemented vs. remaining work.
 - Transparent rendering uses the transparent pipeline domain but still renders per object; global descriptors are re-applied on pipeline changes to avoid stale bindings.
 - Instance buffer pool uses preferred/fallback memory flags and explicit flush when memory is non-coherent.
 - Default material fallback is applied when submesh materials are missing to avoid null material paths in the world and gizmo renderers.
-- Indirect draw system uses a triple-buffered command stream and `vkCmdDrawIndexedIndirect` for opaque world batches when enabled.
-- Shadow rendering batches instanced draws per key and splits opaque vs alpha-tested pipelines; the opaque shadow pass uses only set 0.
+- Indirect draw system uses a frame-slot-indexed command stream and
+  `vkCmdDrawIndexedIndirect` for compatible world/shadow groups when enabled.
+- Shadow rendering keeps a light-visible instance list separate from the camera
+  list, batches opaque commands by geometry/index-buffer state, and leaves
+  alpha-tested draws direct; the opaque shadow pass uses only set 0.
+- Camera culling tests conservative submesh spheres; shadow culling keeps the
+  union of all cascade volumes rather than assuming cascades are nested.
+- Local reflection probes are selected once per draw, so their position-
+  dependent binding context prevents unsafe world instancing across positions.
 - Per-frame batch metrics (world draws/batches, shadow draws/batches/set1 binds, batch avg/max) are collected and shown in UI.
 - Mesh loading reuses geometry by a stable key derived from `mesh_path + subset_index`; material loader returns existing handles instead of failing on duplicates. Texture system already dedups by path.
 - San Miguel content is heavily submesh-split (~1563 `usemtl` switches, 281 materials), so batching gains are limited unless geometry is reused across multiple scene instances.
@@ -60,7 +71,7 @@ Summary of what is implemented vs. remaining work.
 
 ## Current Architecture Analysis
 
-### Draw Call Flow (Bottleneck)
+### Original Draw Call Flow (Historical Bottleneck)
 
 ```
 Per Frame:

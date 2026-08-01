@@ -1,7 +1,7 @@
 ---
-status: implemented
+status: investigation
 updated: 2026-07-31
-authority: spec
+authority: investigation
 ---
 # P2 Throughput — Measured Findings
 
@@ -35,10 +35,14 @@ VKR_AUTOLOAD_SCENE=1 VKR_BENCHMARK_LOG=1 VKR_BENCHMARK_LABEL=<label> \
   VKR_AUTOCLOSE_SECONDS=60 ./build_release/app/vulkan_renderer
 ```
 
-`BENCHMARK_SAMPLE` carries the visibility, merge and submission counters added
-for this work: `vis_tested`, `vis_cull_cam`, `vis_cull_shadow`,
-`opaque_before`, `opaque_after`, `mergeable`, `max_run`, `geoms`, `mats`,
-`indirect`.
+`BENCHMARK_SAMPLE` carries visibility and merge counters plus separate logical
+command/API-call counters: `vis_tested`, `vis_cull_cam`, `vis_cull_shadow`,
+`opaque_before`, `opaque_after`, `mergeable`, `max_run`, `geoms`,
+`geom_mat_pairs`, `world_commands`, `world_calls`,
+`world_indirect_commands`/`world_indirect_calls`, and the corresponding shadow
+counters. The original capture used one ambiguous `indirect` counter; the P2
+review split it after confirming that it mixed shadow commands into world
+metrics.
 
 `VKR_DISABLE_MDI=1` turns the indirect path off at runtime, so the A/B in
 Finding 4 is the same binary against the same content — the only way to
@@ -107,11 +111,11 @@ The shadow payload previously aliased the world payload's arrays outright. The
 moment culling rejects anything, every camera-culled object silently stops
 casting a shadow.
 
-Camera and light visibility are now classified independently in one traversal,
-and the shadow caster list is built from the widest cascade's volume (cascades
-are nested, so the widest bounds every caster any cascade needs). This is
-unobservable today precisely because nothing is culled — which is exactly why it
-needed to land *with* culling rather than after it.
+Camera and light visibility are classified independently in one traversal. The
+review corrected the light test to keep the union of every cascade volume:
+cascade centers shift with their receiver slices, so the final/widest cascade
+does not necessarily contain earlier cascades. Testing only it could drop a
+near-only caster.
 
 `tests/src/draw_merge_test.c` pins the property directly: an object outside the
 camera volume but inside the light volume must be marked
@@ -146,7 +150,9 @@ geoms=1 mats=180 indirect=1124
   never touches a material. Geometry and index buffer are the only things left
   that can break a batch — and there is exactly one geometry. So all 281 opaque
   casters × 4 cascades collapse into **8 indirect calls** (batches are capped at
-  256 commands), which is what `indirect=1124` counts.
+  256 commands), which the old `indirect=1124` counter represented. Current
+  telemetry reports this as `shadow_indirect_commands=1124` and
+  `shadow_indirect_calls=8`.
 
 This asymmetry is the useful result: **MDI's reach is set by how much state a
 pass binds per draw, not by how many draws it has.** The depth-only pass was
@@ -174,10 +180,10 @@ barrier — is about 2% of frame time. Deleting 1116 draw calls from a 2% slice
 cannot move the total. San Miguel at ~20 ms is GPU-bound on shading, not on
 submission.
 
-Both features ship regardless, because they are correct, cost nothing measurable,
-and are the prerequisite for content that *is* submission-bound. The counters
-are in the benchmark line, so the day such a scene exists the payoff is visible
-without new instrumentation.
+Both features ship regardless, because their work-volume effect is real and
+they are prerequisites for content that *is* submission-bound. The original
+frame-time A/B is retained as historical evidence; the review fixed correctness
+and telemetry defects described below before treating the path as accepted.
 
 **What would make instancing pay:** content that instances one asset many times
 — foliage, props, modular kits. `VkrMeshAsset` is already shared across
@@ -191,32 +197,58 @@ The merge measurement itself is tested against synthetic inputs with known
 answers (`test_repeated_asset_is_mergeable` expects `mergeable=2`, `max_run=3`),
 so the zero on this content is a measurement, not a broken counter.
 
-## Incidental finding — the projection and view matrices disagree on handedness
+## Review corrections
 
-`mat4_perspective` builds a **+Z-forward (left-handed)** projection
-(`m22 = far/(far-near)`, `m32 = +1`), while `mat4_look_at` builds a
-**−Z-forward (right-handed)** view. Verified with the engine's own functions: a
-point at world −10 Z, with a camera at the origin and
-`VKR_DEFAULT_CAMERA_FORWARD = (0,0,-1)`, lands at clip `w = -10` — behind the
-eye — while a point at +50 Z is inside the clip volume.
+The P2 review found four correctness issues hidden by the measured scenes:
 
-Rendering is unaffected: the shader uses `mul(projection, mul(view, world_pos))`
-and is self-consistent, and the frustum is extracted from that same product, so
-culling agrees with what is actually rasterized. `tests/src/draw_merge_test.c`
-pins that agreement over an 860-point sample: anything inside the clip volume
-survives the frustum test.
+1. Indirect submission always rebound a geometry's default index buffer even
+   when range resolution selected its compacted opaque index buffer. Direct and
+   indirect capability paths could therefore render different indices. MDI now
+   binds the batch's selected index buffer.
+2. Cascade culling assumed the last/widest cascade contained every earlier
+   cascade. Their centers shift, so shadow visibility now tests their union.
+3. World instancing ignored position-dependent local reflection-probe
+   descriptors. A probe binding context now prevents merging across positions
+   while a local probe is pending or ready; pending matters because the IBL
+   pass can make it ready after packet construction.
+4. Merge measurement allocated/sorted a duplicate key array before sorting the
+   candidates again. The candidate sort now supplies the run metrics directly.
+5. With shadows disabled, the conservative classifier still marked every
+   camera-culled object shadow-visible, forcing material lookup and candidate
+   construction for payloads that could not be submitted. The extraction path
+   now clears shadow visibility when no shadow payload was requested.
+6. Single-buffer render-graph targets were fixed to serve every swapchain image,
+   but the rule had no regression test. A CPU graph-execution test now exercises
+   image index 2 against a single target.
 
-What *is* wrong is the documented meaning of the camera's `forward` vector: the
-effective view direction is its negation. Nothing depends on that today, but it
-is a trap for any future code that reasons about camera direction — picking rays,
-audio, AI visibility. Worth reconciling deliberately rather than discovering it
-again.
+The benchmark counters were also corrected to distinguish logical commands
+from actual API calls and to keep world and shadow submission separate. The
+sample application's benchmark-only San Miguel default was reverted to Sponza.
+
+## Resolved finding — projection and view handedness disagreed
+
+The report was verified. `mat4_perspective` used `m22 = far/(far-near)` and
+`m32 = +1` (left-handed) while `mat4_look_at`, camera/shadow extraction,
+direction helpers, shaders, and documentation all required right-handed `-Z`
+forward. A nominal point at world `-10 Z` produced negative clip W; `+Z` was
+raster-visible while movement/shadow code reasoned about `-Z`.
+
+`mat4_perspective` now uses the right-handed Vulkan-ZO signs, and the default
+sample camera moved to positive Z so it still starts facing the scene. Tests
+assert the declared axis, positive W in front, near/far NDC depth, points behind
+the eye, forward controller motion, and the independent clip-volume/frustum
+invariant over the sample. The controller's old sign inversion had compensated
+for the invalid projection and would have made `W` move backward after the
+projection fix, so positive forward input now moves along `camera->forward`.
+The review also moved renderer-facing orthographic cameras to the same
+Vulkan-ZO, Y-inverted projection and removed a matrix-shape heuristic that
+misclassified orthographic Vulkan projections as OpenGL depth.
 
 ## Status against spec §8 P2
 
 | Item | Outcome |
 |---|---|
 | 11. Cull before materializing world payloads | Shipped; rejects 0 on Sponza, ~37% on San Miguel |
-| 12. Use real instancing first | Shipped; merges 0 on both scenes (no repeated asset), pinned by test |
-| 13. Use MDI only for meaningful groups | Shipped; 1124 shadow draws → 8 indirect calls, frame time unchanged |
-| 14. Keep camera and shadow visibility separate | Shipped; correctness fix, pinned by test |
+| 12. Use real instancing first | Shipped; merge key includes descriptor binding context, and pending/ready local probes conservatively prevent cross-position merging |
+| 13. Use MDI only for meaningful groups | Shipped; selected index buffer matches direct fallback, 1,124 shadow commands → 8 calls |
+| 14. Keep camera and shadow visibility separate | Shipped; camera list independent and shadow list uses the union of all cascades |

@@ -36,7 +36,7 @@ Considered → Revisit When**.
 | [ADR-010](010-ecs-scene-system.md) | Archetype ECS as authoritative scene state | Accepted |
 | [ADR-011](011-vulkan-1-2-baseline.md) | Vulkan 1.2 baseline with classic render passes | Accepted |
 | [ADR-012](012-texture-compression-pipeline.md) | Offline KTX2/UASTC packing with runtime transcode | Accepted |
-| [ADR-013](013-draw-submission-strategy.md) | Measured draw submission: culling, instancing, and MDI | **Proposed** |
+| [ADR-013](013-draw-submission-strategy.md) | Measured draw submission: culling, instancing, and MDI | **Accepted (partial)** |
 
 ## Relationship to the Specification
 
