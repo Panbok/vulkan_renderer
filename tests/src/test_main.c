@@ -17,6 +17,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_atomic_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_metrics_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_arena_tests();
   printf("\n"); // Add spacing
   all_passed &= run_array_tests();
@@ -36,6 +38,8 @@ int main(int argc, char **argv) {
   all_passed &= run_input_tests();
   printf("\n"); // Add spacing
   all_passed &= run_json_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_json_writer_tests();
   printf("\n"); // Add spacing
   all_passed &= run_event_tests();
   printf("\n"); // Add spacing
