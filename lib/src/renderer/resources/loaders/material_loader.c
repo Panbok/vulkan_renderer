@@ -51,6 +51,7 @@ typedef struct VkrParsedMaterialData {
   VkrMaterialType material_type;
   VkrMaterialAlphaMode alpha_mode;
   bool8_t alpha_mode_explicit;
+  bool8_t double_sided;
   VkrPhongProperties phong;
   VkrPbrProperties pbr;
   float32_t alpha_cutoff;
@@ -247,6 +248,7 @@ vkr_internal void vkr_material_init_defaults(VkrMaterial *material,
   material->material_type = VKR_MATERIAL_TYPE_PHONG;
   material->alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
   material->alpha_mode_explicit = false_v;
+  material->double_sided = false_v;
   material->phong.diffuse_color = vec4_new(1, 1, 1, 1);
   material->phong.specular_color = vec4_new(1, 1, 1, 1);
   material->phong.shininess = 32.0f;
@@ -945,6 +947,7 @@ vkr_material_loader_init_from_parsed(VkrMaterial *material,
   material->material_type = parsed->material_type;
   material->alpha_mode = parsed->alpha_mode;
   material->alpha_mode_explicit = parsed->alpha_mode_explicit;
+  material->double_sided = parsed->double_sided;
   material->phong = parsed->phong;
   material->pbr = parsed->pbr;
   if (parsed->alpha_cutoff_set) {
@@ -984,9 +987,8 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
 
   VkrMaterialHandle existing_handle = VKR_MATERIAL_HANDLE_INVALID;
   VkrRendererError acquire_err = VKR_RENDERER_ERROR_NONE;
-  if (vkr_material_loader_try_acquire_existing(system, material_name, true_v,
-                                               &existing_handle,
-                                               &acquire_err)) {
+  if (vkr_material_loader_try_acquire_existing(
+          system, material_name, true_v, &existing_handle, &acquire_err)) {
     vkr_material_cleanup_shader_name(system, loaded_material.shader_name);
     out_handle->type = VKR_RESOURCE_TYPE_MATERIAL;
     out_handle->as.material = existing_handle;
@@ -1162,9 +1164,8 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
 
   VkrMaterialHandle existing_handle = VKR_MATERIAL_HANDLE_INVALID;
   VkrRendererError acquire_error = VKR_RENDERER_ERROR_NONE;
-  if (vkr_material_loader_try_acquire_existing(system, material_name, true_v,
-                                               &existing_handle,
-                                               &acquire_error)) {
+  if (vkr_material_loader_try_acquire_existing(
+          system, material_name, true_v, &existing_handle, &acquire_error)) {
     out_handle->type = VKR_RESOURCE_TYPE_MATERIAL;
     out_handle->loader_id = self->id;
     out_handle->as.material = existing_handle;
@@ -1429,6 +1430,7 @@ vkr_material_loader_unload(VkrResourceLoader *self,
   material->material_type = VKR_MATERIAL_TYPE_PHONG;
   material->alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
   material->alpha_mode_explicit = false_v;
+  material->double_sided = false_v;
   material->phong.diffuse_color = vec4_new(1, 1, 1, 1);
   material->phong.specular_color = vec4_new(1, 1, 1, 1);
   material->phong.shininess = 0.0f;
@@ -1669,6 +1671,7 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
   out_data->material_type = VKR_MATERIAL_TYPE_PHONG;
   out_data->alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
   out_data->alpha_mode_explicit = false_v;
+  out_data->double_sided = false_v;
   out_data->phong.diffuse_color = vec4_new(1, 1, 1, 1);
   out_data->phong.specular_color = vec4_new(1, 1, 1, 1);
   out_data->phong.shininess = 32.0f;
@@ -1827,6 +1830,8 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
         out_data->alpha_mode = alpha_mode;
         out_data->alpha_mode_explicit = true_v;
       }
+    } else if (vkr_string8_equals_cstr_i(&key, "double_sided")) {
+      (void)string8_to_bool(&value, &out_data->double_sided);
     } else if (string8_contains_cstr(&key, "alpha_cutoff")) {
       float32_t cutoff = 0.0f;
       if (string8_to_f32(&value, &cutoff)) {
@@ -2140,6 +2145,7 @@ vkr_internal uint32_t vkr_material_loader_load_batch(
     material->material_type = parsed_data[i].material_type;
     material->alpha_mode = parsed_data[i].alpha_mode;
     material->alpha_mode_explicit = parsed_data[i].alpha_mode_explicit;
+    material->double_sided = parsed_data[i].double_sided;
     material->phong = parsed_data[i].phong;
     material->pbr = parsed_data[i].pbr;
     if (parsed_data[i].alpha_cutoff_set) {

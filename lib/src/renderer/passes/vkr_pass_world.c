@@ -310,9 +310,26 @@ vkr_internal void vkr_pass_world_flush_mdi_batch(
     RendererFrontend *rf, const VkrFrameInfo *frame,
     const VkrWorldPassPayload *payload, VkrPassMdiBatch *batch,
     uint32_t base_instance, VkrPipelineDomain domain,
-    const VkrGlobalMaterialState *globals, const VkrShadowFrameData *shadow_data,
-    bool8_t shadow_valid, VkrPipelineHandle *inout_globals_pipeline) {
+    const VkrGlobalMaterialState *globals,
+    const VkrShadowFrameData *shadow_data, bool8_t shadow_valid,
+    VkrPipelineHandle *inout_globals_pipeline) {
   if (!batch->open || batch->count == 0) {
+    batch->open = false_v;
+    batch->count = 0;
+    return;
+  }
+
+  // Resolving the next draw selects its shader before this deferred batch is
+  // flushed. Restore the shader recorded by the batch before writing globals,
+  // uniforms, or samplers, otherwise alternating Phong/PBR draws populate one
+  // manifest with the other's descriptor locations.
+  VkrPipeline *batch_pipeline = NULL;
+  if (!vkr_pipeline_registry_get_pipeline(&rf->pipeline_registry,
+                                          batch->pipeline, &batch_pipeline) ||
+      !batch_pipeline || !batch_pipeline->shader_name.str ||
+      batch_pipeline->shader_name.length == 0 ||
+      !vkr_shader_system_use(&rf->shader_system,
+                             (const char *)batch_pipeline->shader_name.str)) {
     batch->open = false_v;
     batch->count = 0;
     return;

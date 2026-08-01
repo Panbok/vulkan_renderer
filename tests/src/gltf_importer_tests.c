@@ -226,18 +226,16 @@ static void gltf_test_make_material_id(char *out_id, size_t out_id_size,
            (unsigned long long)source_hash, material_index);
 }
 
-static void gltf_test_make_material_paths(const char *stem,
-                                          const char *source_path,
-                                          uint32_t material_index,
-                                          char *out_absolute,
-                                          size_t out_absolute_size,
-                                          char *out_relative,
-                                          size_t out_relative_size,
-                                          char *out_material_id,
-                                          size_t out_material_id_size) {
+static void
+gltf_test_make_material_paths(const char *stem, const char *source_path,
+                              uint32_t material_index, char *out_absolute,
+                              size_t out_absolute_size, char *out_relative,
+                              size_t out_relative_size, char *out_material_id,
+                              size_t out_material_id_size) {
   assert(stem != NULL);
   assert(source_path != NULL);
-  assert(out_absolute != NULL || out_relative != NULL || out_material_id != NULL);
+  assert(out_absolute != NULL || out_relative != NULL ||
+         out_material_id != NULL);
 
   char material_id[128] = {0};
   gltf_test_make_material_id(material_id, sizeof(material_id), source_path,
@@ -248,8 +246,8 @@ static void gltf_test_make_material_paths(const char *stem,
              PROJECT_SOURCE_DIR, stem, material_id);
   }
   if (out_relative && out_relative_size > 0) {
-    snprintf(out_relative, out_relative_size, "assets/materials/%s/%s.mt",
-             stem, material_id);
+    snprintf(out_relative, out_relative_size, "assets/materials/%s/%s.mt", stem,
+             material_id);
   }
 
   if (out_material_id && out_material_id_size > 0) {
@@ -257,9 +255,9 @@ static void gltf_test_make_material_paths(const char *stem,
   }
 }
 
-static bool8_t gltf_test_material_path_matches_pattern(String8 path,
-                                                       const char *stem,
-                                                       uint32_t material_index) {
+static bool8_t
+gltf_test_material_path_matches_pattern(String8 path, const char *stem,
+                                        uint32_t material_index) {
   if (!path.str || !stem) {
     return false_v;
   }
@@ -267,7 +265,8 @@ static bool8_t gltf_test_material_path_matches_pattern(String8 path,
   char prefix[256];
   snprintf(prefix, sizeof(prefix), "assets/materials/%s/gltf_mat_", stem);
   uint64_t prefix_len = string_length(prefix);
-  if (path.length < prefix_len || MemCompare(path.str, prefix, prefix_len) != 0) {
+  if (path.length < prefix_len ||
+      MemCompare(path.str, prefix, prefix_len) != 0) {
     return false_v;
   }
 
@@ -305,8 +304,8 @@ gltf_test_capture_primitive(void *user_data,
 
 static void gltf_test_remove_generated_material(const char *stem) {
   char source_path[1024] = {0};
-  snprintf(source_path, sizeof(source_path), "%stests/tmp/gltf_importer/%s.gltf",
-           PROJECT_SOURCE_DIR, stem);
+  snprintf(source_path, sizeof(source_path),
+           "%stests/tmp/gltf_importer/%s.gltf", PROJECT_SOURCE_DIR, stem);
 
   char material_file[1024] = {0};
   gltf_test_make_material_paths(stem, source_path, 0, material_file,
@@ -409,7 +408,7 @@ static void test_gltf_import_basic_and_deterministic_mt(void) {
            "\"baseColorTexture\":{\"index\":0}},\"normalTexture\":{\"index\":1,"
            "\"scale\":0.9},\"occlusionTexture\":{\"index\":2,\"strength\":0.4},"
            "\"emissiveTexture\":{\"index\":3},\"emissiveFactor\":[0.1,0.2,0.3],"
-           "\"alphaMode\":\"BLEND\"}],"
+           "\"alphaMode\":\"BLEND\",\"doubleSided\":true}],"
            "\"textures\":[{\"source\":0},{\"source\":1},{\"source\":2},{"
            "\"source\":3}],"
            "\"images\":[{\"uri\":\"base.png\"},{\"uri\":\"normal.png\"},{"
@@ -444,8 +443,8 @@ static void test_gltf_import_basic_and_deterministic_mt(void) {
   assert(gltf_test_material_path_matches_pattern(capture.first_material_path,
                                                  stem, 0) == true_v);
 
-  String8 expected_rel = string8_create_formatted(
-      &allocator, "%s", mt_relative_path);
+  String8 expected_rel =
+      string8_create_formatted(&allocator, "%s", mt_relative_path);
   assert(gltf_test_string8_equals_cstr(capture.first_material_path,
                                        (const char *)expected_rel.str) ==
          true_v);
@@ -455,6 +454,7 @@ static void test_gltf_import_basic_and_deterministic_mt(void) {
          true_v);
   assert(strstr((const char *)first_contents.str, "type=pbr") != NULL);
   assert(strstr((const char *)first_contents.str, "alpha_mode=blend") != NULL);
+  assert(strstr((const char *)first_contents.str, "double_sided=true") != NULL);
   assert(strstr((const char *)first_contents.str, "base_color_texture=") !=
          NULL);
   assert(strstr((const char *)first_contents.str, "cs=srgb") != NULL);
@@ -978,18 +978,16 @@ static void test_gltf_import_material_ids_are_unique_per_source(void) {
   char mt_path_a[1024] = {0};
   char mt_relative_path_a[256] = {0};
   char material_id_a[128] = {0};
-  gltf_test_make_material_paths(stem_a, gltf_path_a, 0, mt_path_a,
-                                sizeof(mt_path_a), mt_relative_path_a,
-                                sizeof(mt_relative_path_a), material_id_a,
-                                sizeof(material_id_a));
+  gltf_test_make_material_paths(
+      stem_a, gltf_path_a, 0, mt_path_a, sizeof(mt_path_a), mt_relative_path_a,
+      sizeof(mt_relative_path_a), material_id_a, sizeof(material_id_a));
 
   char mt_path_b[1024] = {0};
   char mt_relative_path_b[256] = {0};
   char material_id_b[128] = {0};
-  gltf_test_make_material_paths(stem_b, gltf_path_b, 0, mt_path_b,
-                                sizeof(mt_path_b), mt_relative_path_b,
-                                sizeof(mt_relative_path_b), material_id_b,
-                                sizeof(material_id_b));
+  gltf_test_make_material_paths(
+      stem_b, gltf_path_b, 0, mt_path_b, sizeof(mt_path_b), mt_relative_path_b,
+      sizeof(mt_relative_path_b), material_id_b, sizeof(material_id_b));
 
   assert(strcmp(material_id_a, material_id_b) != 0);
   assert(gltf_test_string8_equals_cstr(capture_a.first_material_path,
@@ -999,8 +997,10 @@ static void test_gltf_import_material_ids_are_unique_per_source(void) {
 
   String8 contents_a = {0};
   String8 contents_b = {0};
-  assert(gltf_test_read_file_text(&allocator, mt_path_a, &contents_a) == true_v);
-  assert(gltf_test_read_file_text(&allocator, mt_path_b, &contents_b) == true_v);
+  assert(gltf_test_read_file_text(&allocator, mt_path_a, &contents_a) ==
+         true_v);
+  assert(gltf_test_read_file_text(&allocator, mt_path_b, &contents_b) ==
+         true_v);
 
   char expected_name_line_a[192] = {0};
   char expected_name_line_b[192] = {0};

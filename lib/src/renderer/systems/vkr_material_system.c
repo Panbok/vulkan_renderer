@@ -374,6 +374,7 @@ vkr_internal void vkr_material_system_init_surface_material(
   material->material_type = VKR_MATERIAL_TYPE_PHONG;
   material->alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
   material->alpha_mode_explicit = false_v;
+  material->double_sided = false_v;
   material->phong.diffuse_color = diffuse_color;
   material->phong.specular_color = vec4_new(1, 1, 1, 1);
   material->phong.emission_color = vec3_zero();
@@ -814,6 +815,10 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
                                         VkrPipelineDomain domain) {
   assert_log(system != NULL, "System is NULL");
   assert_log(material != NULL, "Material is NULL");
+
+  // A material owns the complete descriptor state for its shader. Optional
+  // slots must not inherit images from a previously applied material.
+  vkr_shader_system_reset_material_state(system->shader_system);
 
   VkrTextureHandle diffuse_handle =
       material->textures[VKR_TEXTURE_SLOT_DIFFUSE].handle;

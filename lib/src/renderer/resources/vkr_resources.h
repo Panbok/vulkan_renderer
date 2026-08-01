@@ -163,6 +163,8 @@ typedef struct VkrMaterial {
   VkrMaterialType material_type;
   VkrMaterialAlphaMode alpha_mode;
   bool8_t alpha_mode_explicit;
+  /** Disable face culling for thin or explicitly two-sided surfaces. */
+  bool8_t double_sided;
 
   // Material parameters. `phong` remains for backwards compatibility.
   VkrPhongProperties phong;

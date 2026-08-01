@@ -61,10 +61,8 @@ vkr_mesh_loader_gltf_hash_source_path(String8 source_path) {
   return hash;
 }
 
-vkr_internal String8
-vkr_mesh_loader_gltf_make_material_id(VkrAllocator *allocator,
-                                      uint64_t source_hash,
-                                      uint32_t material_index) {
+vkr_internal String8 vkr_mesh_loader_gltf_make_material_id(
+    VkrAllocator *allocator, uint64_t source_hash, uint32_t material_index) {
   return string8_create_formatted(allocator, "gltf_mat_%016llx_%u",
                                   (unsigned long long)source_hash,
                                   material_index);
@@ -298,8 +296,8 @@ typedef struct VkrMeshLoaderGltfTextureWriteLine {
   const char *prefix_literal;
 } VkrMeshLoaderGltfTextureWriteLine;
 
-vkr_internal bool8_t vkr_mesh_loader_gltf_write_literal_line(
-    FileHandle *file, const char *literal) {
+vkr_internal bool8_t
+vkr_mesh_loader_gltf_write_literal_line(FileHandle *file, const char *literal) {
   if (!literal || literal[0] == '\0') {
     return true_v;
   }
@@ -319,9 +317,10 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_key_string(
                                      (int32_t)value.length, value.str));
 }
 
-vkr_internal bool8_t vkr_mesh_loader_gltf_write_key_f32(
-    FileHandle *file, VkrAllocator *allocator, const char *key,
-    float32_t value) {
+vkr_internal bool8_t vkr_mesh_loader_gltf_write_key_f32(FileHandle *file,
+                                                        VkrAllocator *allocator,
+                                                        const char *key,
+                                                        float32_t value) {
   if (!file || !allocator || !key) {
     return false_v;
   }
@@ -345,8 +344,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_key_vec4(
     return false_v;
   }
   return vkr_mesh_loader_gltf_write_line(
-      file, string8_create_formatted(allocator, "%s=%f,%f,%f,%f", key,
-                                     value.x, value.y, value.z, value.w));
+      file, string8_create_formatted(allocator, "%s=%f,%f,%f,%f", key, value.x,
+                                     value.y, value.z, value.w));
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_optional_texture_line(
@@ -362,7 +361,7 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_optional_texture_line(
     return false_v;
   }
   return vkr_mesh_loader_gltf_write_key_string(file, allocator, line->key,
-                                                line->value);
+                                               line->value);
 }
 
 vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
@@ -445,31 +444,34 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
   }
 
   bool8_t ok = true_v;
-  ok = ok && vkr_mesh_loader_gltf_write_key_string(
-                 &file, info->load_allocator, "name", material_id);
+  ok = ok && vkr_mesh_loader_gltf_write_key_string(&file, info->load_allocator,
+                                                   "name", material_id);
   ok = ok && vkr_mesh_loader_gltf_write_literal_line(&file, "type=pbr");
   ok = ok && vkr_mesh_loader_gltf_write_literal_line(
                  &file, "base_color_colorspace=srgb");
-  ok = ok && vkr_mesh_loader_gltf_write_key_vec4(
-                 &file, info->load_allocator, "base_color", base_color);
-  ok = ok && vkr_mesh_loader_gltf_write_key_f32(
-                 &file, info->load_allocator, "metallic", metallic);
-  ok = ok && vkr_mesh_loader_gltf_write_key_f32(
-                 &file, info->load_allocator, "roughness", roughness);
-  ok = ok && vkr_mesh_loader_gltf_write_key_f32(
-                 &file, info->load_allocator, "normal_scale", normal_scale);
+  ok = ok && vkr_mesh_loader_gltf_write_key_vec4(&file, info->load_allocator,
+                                                 "base_color", base_color);
   ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
-                                                 "occlusion_strength",
-                                                 occlusion_strength);
-  ok = ok && vkr_mesh_loader_gltf_write_key_vec3(
-                 &file, info->load_allocator, "emissive_factor",
-                 emissive_factor);
-  ok = ok && vkr_mesh_loader_gltf_write_key_string(
-                 &file, info->load_allocator, "alpha_mode", alpha_mode);
-  ok = ok && vkr_mesh_loader_gltf_write_key_f32(
-                 &file, info->load_allocator, "alpha_cutoff", alpha_cutoff);
+                                                "metallic", metallic);
+  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
+                                                "roughness", roughness);
+  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
+                                                "normal_scale", normal_scale);
+  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
+                                                "occlusion_strength",
+                                                occlusion_strength);
+  ok = ok &&
+       vkr_mesh_loader_gltf_write_key_vec3(&file, info->load_allocator,
+                                           "emissive_factor", emissive_factor);
+  ok = ok && vkr_mesh_loader_gltf_write_key_string(&file, info->load_allocator,
+                                                   "alpha_mode", alpha_mode);
   ok = ok && vkr_mesh_loader_gltf_write_literal_line(
-                 &file, "shader=shader.pbr.world");
+                 &file, material->double_sided ? "double_sided=true"
+                                               : "double_sided=false");
+  ok = ok && vkr_mesh_loader_gltf_write_key_f32(&file, info->load_allocator,
+                                                "alpha_cutoff", alpha_cutoff);
+  ok = ok && vkr_mesh_loader_gltf_write_literal_line(&file,
+                                                     "shader=shader.pbr.world");
   ok = ok && vkr_mesh_loader_gltf_write_literal_line(&file, "pipeline=world");
 
   if (ok) {
@@ -531,7 +533,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_files(
     return false_v;
   }
 
-  uint64_t source_hash = vkr_mesh_loader_gltf_hash_source_path(info->source_path);
+  uint64_t source_hash =
+      vkr_mesh_loader_gltf_hash_source_path(info->source_path);
   for (uint32_t i = 0; i < (uint32_t)data->materials_count; ++i) {
     String8 material_id = vkr_mesh_loader_gltf_make_material_id(
         info->load_allocator, source_hash, i);
@@ -673,7 +676,8 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
     return true_v;
   }
   if (pos_count > (cgltf_size)UINT32_MAX ||
-      (primitive->indices && primitive->indices->count > (cgltf_size)UINT32_MAX)) {
+      (primitive->indices &&
+       primitive->indices->count > (cgltf_size)UINT32_MAX)) {
     vkr_mesh_loader_gltf_set_error(info, VKR_RENDERER_ERROR_INVALID_PARAMETER);
     return false_v;
   }

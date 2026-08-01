@@ -257,21 +257,34 @@ bool8_t vkr_pass_packet_resolve_pipeline(RendererFrontend *rf,
 
   if (pipeline_override.id == 0) {
     char domain_shader_name[256] = {0};
-    const char *lookup_candidates[3] = {0};
+    char double_sided_shader_name[256] = {0};
+    const char *lookup_candidates[4] = {0};
     uint32_t lookup_count = 0;
     if (has_material_shader) {
+      const char *domain_candidate = pipeline_shader;
       if (domain == VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT) {
         int written = snprintf(domain_shader_name, sizeof(domain_shader_name),
                                "%s.transparent", pipeline_shader);
         if (written > 0 && (size_t)written < sizeof(domain_shader_name)) {
-          lookup_candidates[lookup_count++] = domain_shader_name;
+          domain_candidate = domain_shader_name;
         }
       } else if (domain == VKR_PIPELINE_DOMAIN_WORLD_OVERLAY) {
         int written = snprintf(domain_shader_name, sizeof(domain_shader_name),
                                "%s.overlay", pipeline_shader);
         if (written > 0 && (size_t)written < sizeof(domain_shader_name)) {
-          lookup_candidates[lookup_count++] = domain_shader_name;
+          domain_candidate = domain_shader_name;
         }
+      }
+      if (material && material->double_sided) {
+        int written =
+            snprintf(double_sided_shader_name, sizeof(double_sided_shader_name),
+                     "%s.double_sided", domain_candidate);
+        if (written > 0 && (size_t)written < sizeof(double_sided_shader_name)) {
+          lookup_candidates[lookup_count++] = double_sided_shader_name;
+        }
+      }
+      if (domain_candidate != pipeline_shader) {
+        lookup_candidates[lookup_count++] = domain_candidate;
       }
       lookup_candidates[lookup_count++] = pipeline_shader;
     }

@@ -105,6 +105,27 @@ vkr_internal bool8_t vkr_validate_shader_id(VkrShaderSystem *state,
          (*array_get_bool8_t(&state->active_shaders, shader_id));
 }
 
+void vkr_shader_system_reset_material_state(VkrShaderSystem *state) {
+  if (!state) {
+    return;
+  }
+
+  MemZero(&state->material_state, sizeof(state->material_state));
+}
+
+vkr_internal void vkr_shader_system_select(VkrShaderSystem *state,
+                                           uint32_t shader_id) {
+  if (state->current_shader_id != shader_id) {
+    // Sampler locations are local to a shader manifest. Carrying slot N from
+    // one shader into slot N of another can bind a cube image to a 2D sampler
+    // (or a color image to a comparison shadow sampler).
+    vkr_shader_system_reset_material_state(state);
+  }
+
+  state->current_shader_id = shader_id;
+  state->current_shader = vkr_shader_system_get_by_id(state, shader_id);
+}
+
 bool8_t vkr_shader_system_initialize(VkrShaderSystem *state,
                                      VkrShaderSystemConfig cfg) {
   assert_log(state != NULL, "State is NULL");
@@ -294,13 +315,11 @@ bool8_t vkr_shader_system_use(VkrShaderSystem *state, const char *shader_name) {
   if (id == 0 &&
       !vkr_hash_table_contains_uint32_t(&state->name_to_id, shader_name)) {
     // Tolerant: leave current_shader unset; registry path still works
-    state->current_shader_id = 0;
-    state->current_shader = NULL;
+    vkr_shader_system_select(state, 0);
     return false_v;
   }
 
-  state->current_shader_id = id;
-  state->current_shader = vkr_shader_system_get_by_id(state, id);
+  vkr_shader_system_select(state, id);
   return true_v;
 }
 
@@ -310,13 +329,11 @@ bool8_t vkr_shader_system_use_by_id(VkrShaderSystem *state,
 
   if (shader_id != 0 && !vkr_validate_shader_id(state, shader_id)) {
     log_warn("Invalid shader ID: %u", shader_id);
-    state->current_shader_id = 0;
-    state->current_shader = NULL;
+    vkr_shader_system_select(state, 0);
     return false_v;
   }
 
-  state->current_shader_id = shader_id;
-  state->current_shader = vkr_shader_system_get_by_id(state, shader_id);
+  vkr_shader_system_select(state, shader_id);
   return true_v;
 }
 

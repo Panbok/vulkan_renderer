@@ -61,10 +61,16 @@ typedef struct VkrWorldResources {
   VkrShaderConfig pbr_transparent_shader_config; /**< PBR shader config for
                                                     transparent domain */
   VkrShaderConfig
-      pbr_overlay_shader_config;  /**< PBR shader config for overlay domain */
-  VkrPipelineHandle pbr_pipeline; /**< PBR opaque pipeline */
+      pbr_overlay_shader_config; /**< PBR shader config for overlay domain */
+  VkrShaderConfig pbr_double_sided_shader_config;
+  VkrShaderConfig pbr_transparent_double_sided_shader_config;
+  VkrShaderConfig pbr_overlay_double_sided_shader_config;
+  VkrPipelineHandle pbr_pipeline;             /**< PBR opaque pipeline */
   VkrPipelineHandle pbr_transparent_pipeline; /**< PBR transparent pipeline */
   VkrPipelineHandle pbr_overlay_pipeline;     /**< PBR overlay pipeline */
+  VkrPipelineHandle pbr_double_sided_pipeline;
+  VkrPipelineHandle pbr_transparent_double_sided_pipeline;
+  VkrPipelineHandle pbr_overlay_double_sided_pipeline;
 
   VkrShaderConfig text_shader_config; /**< 3D text shader config */
   VkrPipelineHandle text_pipeline;    /**< 3D text glyph pipeline */
@@ -162,7 +168,8 @@ void vkr_world_resources_apply_active_ibl_to_material_system(
  */
 void vkr_world_resources_select_probe_slots_for_position(
     struct s_RendererFrontend *rf, VkrWorldResources *resources,
-    const VkrScene *scene, Vec3 world_position, VkrWorldIblProbeSlot out_slots[2]);
+    const VkrScene *scene, Vec3 world_position,
+    VkrWorldIblProbeSlot out_slots[2]);
 
 /**
  * @brief Create or replace a 3D text slot.

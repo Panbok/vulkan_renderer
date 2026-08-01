@@ -137,6 +137,15 @@ bool8_t vkr_shader_system_use(VkrShaderSystem *state, const char *shader_name);
  */
 bool8_t vkr_shader_system_use_by_id(VkrShaderSystem *state, uint32_t shader_id);
 
+/**
+ * @brief Clears transient per-material sampler bindings.
+ *
+ * Call before populating a material so omitted optional samplers cannot reuse
+ * descriptors from the previous material. Shader switches call this
+ * automatically because sampler locations are manifest-local.
+ */
+void vkr_shader_system_reset_material_state(VkrShaderSystem *state);
+
 // =============================================================================
 // Shader System - Uniform/Sampler API
 // =============================================================================

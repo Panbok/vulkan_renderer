@@ -615,19 +615,43 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
       resources->pbr_world_shader_config = resources->pbr_shader_config;
       resources->pbr_transparent_shader_config = resources->pbr_shader_config;
       resources->pbr_overlay_shader_config = resources->pbr_shader_config;
+      resources->pbr_double_sided_shader_config = resources->pbr_shader_config;
+      resources->pbr_transparent_double_sided_shader_config =
+          resources->pbr_shader_config;
+      resources->pbr_overlay_double_sided_shader_config =
+          resources->pbr_shader_config;
 
       resources->pbr_world_shader_config.name = string8_lit("shader.pbr.world");
       resources->pbr_transparent_shader_config.name =
           string8_lit("shader.pbr.world.transparent");
       resources->pbr_overlay_shader_config.name =
           string8_lit("shader.pbr.world.overlay");
+      resources->pbr_double_sided_shader_config.name =
+          string8_lit("shader.pbr.world.double_sided");
+      resources->pbr_transparent_double_sided_shader_config.name =
+          string8_lit("shader.pbr.world.transparent.double_sided");
+      resources->pbr_overlay_double_sided_shader_config.name =
+          string8_lit("shader.pbr.world.overlay.double_sided");
+      resources->pbr_double_sided_shader_config.cull_mode = VKR_CULL_MODE_NONE;
+      resources->pbr_transparent_double_sided_shader_config.cull_mode =
+          VKR_CULL_MODE_NONE;
+      resources->pbr_overlay_double_sided_shader_config.cull_mode =
+          VKR_CULL_MODE_NONE;
 
       if (!vkr_shader_system_create(&rf->shader_system,
                                     &resources->pbr_world_shader_config) ||
           !vkr_shader_system_create(
               &rf->shader_system, &resources->pbr_transparent_shader_config) ||
           !vkr_shader_system_create(&rf->shader_system,
-                                    &resources->pbr_overlay_shader_config)) {
+                                    &resources->pbr_overlay_shader_config) ||
+          !vkr_shader_system_create(
+              &rf->shader_system, &resources->pbr_double_sided_shader_config) ||
+          !vkr_shader_system_create(
+              &rf->shader_system,
+              &resources->pbr_transparent_double_sided_shader_config) ||
+          !vkr_shader_system_create(
+              &rf->shader_system,
+              &resources->pbr_overlay_double_sided_shader_config)) {
         log_warn("Failed to register PBR world shaders");
       } else {
         VkrRendererError pbr_world_err = VKR_RENDERER_ERROR_NONE;
@@ -664,6 +688,52 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
           log_warn("PBR overlay pipeline creation failed: %s",
                    string8_cstr(&err_str));
           resources->pbr_overlay_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+        }
+
+        VkrRendererError pbr_double_sided_err = VKR_RENDERER_ERROR_NONE;
+        if (!vkr_pipeline_registry_create_from_shader_config(
+                &rf->pipeline_registry,
+                &resources->pbr_double_sided_shader_config,
+                VKR_PIPELINE_DOMAIN_WORLD,
+                string8_lit("pbr_world_double_sided"),
+                &resources->pbr_double_sided_pipeline, &pbr_double_sided_err)) {
+          String8 err_str = vkr_renderer_get_error_string(pbr_double_sided_err);
+          log_warn("PBR double-sided pipeline creation failed: %s",
+                   string8_cstr(&err_str));
+          resources->pbr_double_sided_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+        }
+
+        VkrRendererError pbr_transparent_double_sided_err =
+            VKR_RENDERER_ERROR_NONE;
+        if (!vkr_pipeline_registry_create_from_shader_config(
+                &rf->pipeline_registry,
+                &resources->pbr_transparent_double_sided_shader_config,
+                VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT,
+                string8_lit("pbr_world_transparent_double_sided"),
+                &resources->pbr_transparent_double_sided_pipeline,
+                &pbr_transparent_double_sided_err)) {
+          String8 err_str =
+              vkr_renderer_get_error_string(pbr_transparent_double_sided_err);
+          log_warn("PBR transparent double-sided pipeline creation failed: %s",
+                   string8_cstr(&err_str));
+          resources->pbr_transparent_double_sided_pipeline =
+              VKR_PIPELINE_HANDLE_INVALID;
+        }
+
+        VkrRendererError pbr_overlay_double_sided_err = VKR_RENDERER_ERROR_NONE;
+        if (!vkr_pipeline_registry_create_from_shader_config(
+                &rf->pipeline_registry,
+                &resources->pbr_overlay_double_sided_shader_config,
+                VKR_PIPELINE_DOMAIN_WORLD_OVERLAY,
+                string8_lit("pbr_world_overlay_double_sided"),
+                &resources->pbr_overlay_double_sided_pipeline,
+                &pbr_overlay_double_sided_err)) {
+          String8 err_str =
+              vkr_renderer_get_error_string(pbr_overlay_double_sided_err);
+          log_warn("PBR overlay double-sided pipeline creation failed: %s",
+                   string8_cstr(&err_str));
+          resources->pbr_overlay_double_sided_pipeline =
+              VKR_PIPELINE_HANDLE_INVALID;
         }
       }
     } else {
@@ -746,6 +816,23 @@ cleanup:
                                            resources->text_pipeline);
     resources->text_pipeline = VKR_PIPELINE_HANDLE_INVALID;
   }
+  if (resources->pbr_overlay_double_sided_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(
+        &rf->pipeline_registry, resources->pbr_overlay_double_sided_pipeline);
+    resources->pbr_overlay_double_sided_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+  if (resources->pbr_transparent_double_sided_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(
+        &rf->pipeline_registry,
+        resources->pbr_transparent_double_sided_pipeline);
+    resources->pbr_transparent_double_sided_pipeline =
+        VKR_PIPELINE_HANDLE_INVALID;
+  }
+  if (resources->pbr_double_sided_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(
+        &rf->pipeline_registry, resources->pbr_double_sided_pipeline);
+    resources->pbr_double_sided_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
   if (resources->pbr_overlay_pipeline.id != 0) {
     vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
                                            resources->pbr_overlay_pipeline);
@@ -784,6 +871,12 @@ cleanup:
           sizeof(resources->pbr_transparent_shader_config));
   MemZero(&resources->pbr_overlay_shader_config,
           sizeof(resources->pbr_overlay_shader_config));
+  MemZero(&resources->pbr_double_sided_shader_config,
+          sizeof(resources->pbr_double_sided_shader_config));
+  MemZero(&resources->pbr_transparent_double_sided_shader_config,
+          sizeof(resources->pbr_transparent_double_sided_shader_config));
+  MemZero(&resources->pbr_overlay_double_sided_shader_config,
+          sizeof(resources->pbr_overlay_double_sided_shader_config));
   MemZero(&resources->text_shader_config,
           sizeof(resources->text_shader_config));
   return false_v;
@@ -1473,6 +1566,24 @@ void vkr_world_resources_shutdown(RendererFrontend *rf,
     vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
                                            resources->text_pipeline);
     resources->text_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+
+  if (resources->pbr_overlay_double_sided_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(
+        &rf->pipeline_registry, resources->pbr_overlay_double_sided_pipeline);
+    resources->pbr_overlay_double_sided_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+  if (resources->pbr_transparent_double_sided_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(
+        &rf->pipeline_registry,
+        resources->pbr_transparent_double_sided_pipeline);
+    resources->pbr_transparent_double_sided_pipeline =
+        VKR_PIPELINE_HANDLE_INVALID;
+  }
+  if (resources->pbr_double_sided_pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(
+        &rf->pipeline_registry, resources->pbr_double_sided_pipeline);
+    resources->pbr_double_sided_pipeline = VKR_PIPELINE_HANDLE_INVALID;
   }
 
   if (resources->overlay_pipeline.id != 0) {

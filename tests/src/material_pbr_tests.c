@@ -57,9 +57,10 @@ static void material_pbr_mock_get_device_information(
   MemZero(device_information, sizeof(*device_information));
 }
 
-static VkrBackendResourceHandle material_pbr_mock_texture_create(
-    void *backend_state, const VkrTextureDescription *desc,
-    const void *initial_data) {
+static VkrBackendResourceHandle
+material_pbr_mock_texture_create(void *backend_state,
+                                 const VkrTextureDescription *desc,
+                                 const void *initial_data) {
   (void)desc;
   (void)initial_data;
 
@@ -298,12 +299,9 @@ static void material_pbr_test_shutdown_context(MaterialPbrTestContext *ctx) {
   material_pbr_test_shutdown_renderer(ctx);
 }
 
-static bool8_t material_pbr_test_load_material(MaterialPbrTestContext *ctx,
-                                               const char *stem,
-                                               const char *content,
-                                               char *out_path,
-                                               size_t out_path_size,
-                                               VkrResourceHandleInfo *out_info) {
+static bool8_t material_pbr_test_load_material(
+    MaterialPbrTestContext *ctx, const char *stem, const char *content,
+    char *out_path, size_t out_path_size, VkrResourceHandleInfo *out_info) {
   assert(ctx != NULL);
   assert(stem != NULL);
   assert(content != NULL);
@@ -332,9 +330,8 @@ static bool8_t material_pbr_test_load_material(MaterialPbrTestContext *ctx,
 
   VkrRendererError err = VKR_RENDERER_ERROR_NONE;
   MemZero(out_info, sizeof(*out_info));
-  const bool8_t loaded =
-      ctx->material_loader.load(&ctx->material_loader, path,
-                                &ctx->temp_allocator, out_info, &err);
+  const bool8_t loaded = ctx->material_loader.load(
+      &ctx->material_loader, path, &ctx->temp_allocator, out_info, &err);
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_UNKNOWN);
 
   return (loaded == true_v && err == VKR_RENDERER_ERROR_NONE &&
@@ -379,8 +376,44 @@ static bool8_t material_pbr_test_string_contains(const char *value,
   return strstr(value, needle) != NULL ? true_v : false_v;
 }
 
-static void test_material_pbr_inference_from_scalar_keys(
-    MaterialPbrTestContext *ctx) {
+static void
+test_shader_switch_isolates_material_descriptors(MaterialPbrTestContext *ctx) {
+  printf("  Running test_shader_switch_isolates_material_descriptors...\n");
+
+  VkrShaderConfig configs[2] = {
+      {.name = string8_lit("test.shader.material_a")},
+      {.name = string8_lit("test.shader.material_b")},
+  };
+  assert(vkr_shader_system_create(&ctx->shader_system, &configs[0]) == true_v);
+  assert(vkr_shader_system_create(&ctx->shader_system, &configs[1]) == true_v);
+
+  assert(vkr_shader_system_use(&ctx->shader_system, "test.shader.material_a") ==
+         true_v);
+  ctx->shader_system.material_state.texture_count = 1;
+  ctx->shader_system.material_state.textures_enabled[0] = true_v;
+  ctx->shader_system.material_state.textures[0] =
+      (VkrTextureOpaqueHandle)(uintptr_t)0x1u;
+
+  // Re-selecting the same manifest is not a descriptor boundary.
+  assert(vkr_shader_system_use(&ctx->shader_system, "test.shader.material_a") ==
+         true_v);
+  assert(ctx->shader_system.material_state.texture_count == 1u);
+  assert(ctx->shader_system.material_state.textures_enabled[0] == true_v);
+
+  // A different manifest reinterprets sampler locations, so no slot survives.
+  assert(vkr_shader_system_use(&ctx->shader_system, "test.shader.material_b") ==
+         true_v);
+  assert(ctx->shader_system.material_state.texture_count == 0u);
+  for (uint32_t i = 0; i < VKR_MAX_INSTANCE_TEXTURES; ++i) {
+    assert(ctx->shader_system.material_state.textures[i] == NULL);
+    assert(ctx->shader_system.material_state.textures_enabled[i] == false_v);
+  }
+
+  printf("  test_shader_switch_isolates_material_descriptors PASSED\n");
+}
+
+static void
+test_material_pbr_inference_from_scalar_keys(MaterialPbrTestContext *ctx) {
   printf("  Running test_material_pbr_inference_from_scalar_keys...\n");
 
   const char *material_text = "pipeline=world\n"
@@ -389,10 +422,9 @@ static void test_material_pbr_inference_from_scalar_keys(
 
   char material_path[1024] = {0};
   VkrResourceHandleInfo handle_info = {0};
-  assert(material_pbr_test_load_material(ctx, "pbr_scalar_inference",
-                                         material_text, material_path,
-                                         sizeof(material_path),
-                                         &handle_info) == true_v);
+  assert(material_pbr_test_load_material(
+             ctx, "pbr_scalar_inference", material_text, material_path,
+             sizeof(material_path), &handle_info) == true_v);
 
   VkrMaterial *material = vkr_material_system_get_by_handle(
       &ctx->material_system, handle_info.as.material);
@@ -408,8 +440,8 @@ static void test_material_pbr_inference_from_scalar_keys(
   printf("  test_material_pbr_inference_from_scalar_keys PASSED\n");
 }
 
-static void test_material_pbr_alias_slots_and_inference(
-    MaterialPbrTestContext *ctx) {
+static void
+test_material_pbr_alias_slots_and_inference(MaterialPbrTestContext *ctx) {
   printf("  Running test_material_pbr_alias_slots_and_inference...\n");
 
   char material_text[4096] = {0};
@@ -422,10 +454,9 @@ static void test_material_pbr_alias_slots_and_inference(
 
   char material_path[1024] = {0};
   VkrResourceHandleInfo handle_info = {0};
-  assert(material_pbr_test_load_material(ctx, "pbr_alias_inference",
-                                         material_text, material_path,
-                                         sizeof(material_path),
-                                         &handle_info) == true_v);
+  assert(material_pbr_test_load_material(
+             ctx, "pbr_alias_inference", material_text, material_path,
+             sizeof(material_path), &handle_info) == true_v);
 
   VkrMaterial *material = vkr_material_system_get_by_handle(
       &ctx->material_system, handle_info.as.material);
@@ -456,15 +487,15 @@ static void test_material_pbr_alias_slots_and_inference(
   printf("  test_material_pbr_alias_slots_and_inference PASSED\n");
 }
 
-static void test_material_alpha_mode_cutout_defaults(MaterialPbrTestContext *ctx) {
+static void
+test_material_alpha_mode_cutout_defaults(MaterialPbrTestContext *ctx) {
   printf("  Running test_material_alpha_mode_cutout_defaults...\n");
 
   const struct {
     const char *stem;
     const char *content;
   } cases[] = {
-      {.stem = "pbr_alpha_cutout_default",
-       .content = "alpha_mode=cutout\n"},
+      {.stem = "pbr_alpha_cutout_default", .content = "alpha_mode=cutout\n"},
       {.stem = "pbr_alpha_cutout_zero",
        .content = "alpha_mode=cutout\n"
                   "alpha_cutoff=0.0\n"},
@@ -474,8 +505,7 @@ static void test_material_alpha_mode_cutout_defaults(MaterialPbrTestContext *ctx
     char material_path[1024] = {0};
     VkrResourceHandleInfo handle_info = {0};
     assert(material_pbr_test_load_material(ctx, cases[i].stem, cases[i].content,
-                                           material_path,
-                                           sizeof(material_path),
+                                           material_path, sizeof(material_path),
                                            &handle_info) == true_v);
 
     VkrMaterial *material = vkr_material_system_get_by_handle(
@@ -493,20 +523,38 @@ static void test_material_alpha_mode_cutout_defaults(MaterialPbrTestContext *ctx
   printf("  test_material_alpha_mode_cutout_defaults PASSED\n");
 }
 
+static void test_material_double_sided_state(MaterialPbrTestContext *ctx) {
+  printf("  Running test_material_double_sided_state...\n");
+
+  char material_path[1024] = {0};
+  VkrResourceHandleInfo handle_info = {0};
+  assert(material_pbr_test_load_material(
+             ctx, "pbr_double_sided", "type=pbr\ndouble_sided=true\n",
+             material_path, sizeof(material_path), &handle_info) == true_v);
+
+  VkrMaterial *material = vkr_material_system_get_by_handle(
+      &ctx->material_system, handle_info.as.material);
+  assert(material != NULL);
+  assert(material->double_sided == true_v);
+
+  material_pbr_test_unload_material(ctx, &handle_info, material_path);
+  material_pbr_test_remove_file(material_path);
+
+  printf("  test_material_double_sided_state PASSED\n");
+}
+
 static void
 test_material_legacy_cutout_compatibility(MaterialPbrTestContext *ctx) {
   printf("  Running test_material_legacy_cutout_compatibility...\n");
 
   char material_path[1024] = {0};
   VkrResourceHandleInfo handle_info = {0};
-  assert(material_pbr_test_load_material(ctx, "pbr_legacy_cutout",
-                                         "cutout=true\n", material_path,
-                                         sizeof(material_path),
-                                         &handle_info) == true_v);
+  assert(material_pbr_test_load_material(
+             ctx, "pbr_legacy_cutout", "cutout=true\n", material_path,
+             sizeof(material_path), &handle_info) == true_v);
 
-  VkrMaterial *material =
-      vkr_material_system_get_by_handle(&ctx->material_system,
-                                        handle_info.as.material);
+  VkrMaterial *material = vkr_material_system_get_by_handle(
+      &ctx->material_system, handle_info.as.material);
   assert(material != NULL);
   assert(material->alpha_mode == VKR_MATERIAL_ALPHA_OPAQUE);
   assert(material->alpha_mode_explicit == false_v);
@@ -532,10 +580,9 @@ test_material_texture_intent_query_normalization(MaterialPbrTestContext *ctx) {
 
   char material_path[1024] = {0};
   VkrResourceHandleInfo handle_info = {0};
-  assert(material_pbr_test_load_material(ctx, "pbr_intent_normalization",
-                                         material_text, material_path,
-                                         sizeof(material_path),
-                                         &handle_info) == true_v);
+  assert(material_pbr_test_load_material(
+             ctx, "pbr_intent_normalization", material_text, material_path,
+             sizeof(material_path), &handle_info) == true_v);
 
   VkrMaterial *material = vkr_material_system_get_by_handle(
       &ctx->material_system, handle_info.as.material);
@@ -561,9 +608,10 @@ test_material_texture_intent_query_normalization(MaterialPbrTestContext *ctx) {
   printf("  test_material_texture_intent_query_normalization PASSED\n");
 }
 
-static void
-test_material_texture_intent_override_is_deterministic(MaterialPbrTestContext *ctx) {
-  printf("  Running test_material_texture_intent_override_is_deterministic...\n");
+static void test_material_texture_intent_override_is_deterministic(
+    MaterialPbrTestContext *ctx) {
+  printf(
+      "  Running test_material_texture_intent_override_is_deterministic...\n");
 
   char material_text[4096] = {0};
   snprintf(material_text, sizeof(material_text),
@@ -587,8 +635,7 @@ test_material_texture_intent_override_is_deterministic(MaterialPbrTestContext *c
   const char *texture_key =
       material_pbr_test_texture_key(&ctx->texture_system, diffuse_handle);
   assert(texture_key != NULL);
-  assert(material_pbr_test_string_contains(texture_key, "cs=linear") ==
-         true_v);
+  assert(material_pbr_test_string_contains(texture_key, "cs=linear") == true_v);
   assert(material_pbr_test_string_contains(texture_key, "tc=data_mask") ==
          true_v);
   assert(material_pbr_test_string_contains(texture_key, "cs=srgb") == false_v);
@@ -599,9 +646,10 @@ test_material_texture_intent_override_is_deterministic(MaterialPbrTestContext *c
   printf("  test_material_texture_intent_override_is_deterministic PASSED\n");
 }
 
-static void
-test_material_batch_load_honors_parsed_name_over_stem(MaterialPbrTestContext *ctx) {
-  printf("  Running test_material_batch_load_honors_parsed_name_over_stem...\n");
+static void test_material_batch_load_honors_parsed_name_over_stem(
+    MaterialPbrTestContext *ctx) {
+  printf(
+      "  Running test_material_batch_load_honors_parsed_name_over_stem...\n");
 
   char dir_a_abs[1024] = {0};
   char dir_b_abs[1024] = {0};
@@ -679,10 +727,12 @@ bool32_t run_material_pbr_tests(void) {
   test_material_pbr_inference_from_scalar_keys(&context);
   test_material_pbr_alias_slots_and_inference(&context);
   test_material_alpha_mode_cutout_defaults(&context);
+  test_material_double_sided_state(&context);
   test_material_legacy_cutout_compatibility(&context);
   test_material_texture_intent_query_normalization(&context);
   test_material_texture_intent_override_is_deterministic(&context);
   test_material_batch_load_honors_parsed_name_over_stem(&context);
+  test_shader_switch_isolates_material_descriptors(&context);
 
   material_pbr_test_shutdown_context(&context);
 
