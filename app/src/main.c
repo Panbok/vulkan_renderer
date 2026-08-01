@@ -28,7 +28,7 @@
 #define VKR_FPS_DELTA_MIN 0.000001
 #define VKR_WORLD_TIME_UPDATE_INTERVAL 0.25
 #define VKR_UI_TEXT_PADDING 16.0f
-#define SCENE_PATH "assets/scenes/san_miguel.scene.json"
+#define SCENE_PATH "assets/scenes/sponza.scene.json"
 
 typedef struct FilterModeEntry {
   VkrFilter min_filter;
