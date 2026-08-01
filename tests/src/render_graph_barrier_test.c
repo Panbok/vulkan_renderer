@@ -24,6 +24,18 @@ static void rg_barrier_test_fail_execute(VkrRgPassContext *ctx,
   ctx->error = VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
 }
 
+typedef struct RgTargetCapture {
+  VkrRenderTargetHandle expected;
+  bool8_t called;
+} RgTargetCapture;
+
+static void rg_barrier_test_capture_target(VkrRgPassContext *ctx,
+                                           void *user_data) {
+  RgTargetCapture *capture = (RgTargetCapture *)user_data;
+  assert(ctx->render_target == capture->expected);
+  capture->called = true_v;
+}
+
 /**
  * @brief Declares a pass; caller adds uses via the returned builder.
  *
@@ -264,6 +276,41 @@ static void test_executor_error_reaches_graph_caller(void) {
   printf("  test_executor_error_reaches_graph_caller PASSED\n");
 }
 
+static void test_single_render_target_serves_every_swapchain_image(void) {
+  printf(
+      "  Running test_single_render_target_serves_every_swapchain_image...\n");
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph != NULL);
+  VkrRenderGraphFrameInfo frame = {.image_index = 2u};
+  vkr_rg_begin_frame(graph, &frame);
+
+  VkrRenderTargetHandle target = (VkrRenderTargetHandle)(uintptr_t)1u;
+  VkrRenderTargetHandle targets[1] = {target};
+  RgTargetCapture capture = {.expected = target};
+  VkrRgPassBuilder builder =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "SingleTarget");
+  vkr_rg_pass_set_execute(&builder, rg_barrier_test_capture_target, &capture);
+  assert(vkr_rg_compile_schedule(graph));
+
+  VkrRgPass *pass = vector_get_VkrRgPass(&graph->passes, 0);
+  pass->render_targets = targets;
+  pass->render_target_count = 1u;
+  // Renderer allocation is outside this CPU test; execution only needs the
+  // already-built target array to verify image-index resolution.
+  graph->compiled = true_v;
+
+  assert(vkr_rg_execute(graph, NULL) == VKR_RENDERER_ERROR_NONE);
+  assert(capture.called);
+
+  vkr_rg_destroy(graph);
+  arena_destroy(arena);
+  printf("  test_single_render_target_serves_every_swapchain_image PASSED\n");
+}
+
 static void test_cascade_slices_are_per_layer_then_coalesce(void) {
   printf("  Running test_cascade_slices_are_per_layer_then_coalesce...\n");
   Arena *arena = arena_create(MB(1), MB(1));
@@ -457,6 +504,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_same_pass_storage_read_write_combines();
   test_same_pass_incompatible_layouts_are_rejected();
   test_executor_error_reaches_graph_caller();
+  test_single_render_target_serves_every_swapchain_image();
   test_cascade_slices_are_per_layer_then_coalesce();
   test_disjoint_layer_writes_coalesce_on_read();
 
