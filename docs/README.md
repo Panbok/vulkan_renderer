@@ -64,6 +64,8 @@ owning document status in the same change.
 | [011](architecture/adr/011-vulkan-1-2-baseline.md) | implemented | Vulkan 1.2 baseline with classic render passes |
 | [012](architecture/adr/012-texture-compression-pipeline.md) | implemented | Offline KTX2/UASTC packing with runtime transcode |
 | [013](architecture/adr/013-draw-submission-strategy.md) | partial | Measured draw submission — culling, instancing, MDI; native Vulkan validation pending |
+| [014](architecture/adr/014-offscreen-present-target.md) | proposed | Present target seam decoupling the frame path from the swapchain |
+| [015](architecture/adr/015-metrics-module.md) | implemented | Centralized metrics registry with pre-registered slots |
 
 ## Rendering
 
@@ -111,6 +113,18 @@ owning document status in the same change.
 
 Performance workflow and evidence rules:
 [`.codex/skills/vkr-performance/SKILL.md`](../.codex/skills/vkr-performance/SKILL.md).
+
+## Tooling and automation
+
+| Document | Status | Purpose |
+|---|---|---|
+| [renderer-harness-and-metrics-spec.md](tooling/renderer-harness-and-metrics-spec.md) | partial | Metrics phase 1 ships; harness, capture, automation boot, and offscreen phases remain proposed |
+| [renderer-metrics-phase1-verification.md](tooling/renderer-metrics-phase1-verification.md) | investigation | Phase-1 functional, Vulkan, pipeline-cache, and paired Release-overhead evidence |
+| [harness-case-schema.json](tooling/harness-case-schema.json) | proposed | Draft-07 schema for `tools/cases/**/*.case.json`; no code consumes it yet |
+
+Rationale for the two decisions this series depends on:
+[ADR-014](architecture/adr/014-offscreen-present-target.md) (present target
+seam) and [ADR-015](architecture/adr/015-metrics-module.md) (metrics registry).
 
 ## Memory
 

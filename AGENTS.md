@@ -34,10 +34,10 @@ For any renderer task, read in this order:
 1. `docs/architecture/renderer-architecture-spec.md` — **status authority**.
    §4 is the feature table, §8 is the prioritized known-issues list. Check §8
    before "fixing" anything; most surprising behaviour is already logged there.
-2. `docs/architecture/adr/README.md` — **rationale authority**, 13 ADRs covering
+2. `docs/architecture/adr/README.md` — **rationale authority**, 15 ADRs covering
    the backend seam, render graph, packet API, reflection, allocators, GPU
    memory, synchronization, ECS, Vulkan baseline, texture compression, and draw
-   submission.
+   submission, plus proposed present-target and metrics-registry seams.
 3. `docs/README.md` — complete index of the doc tree.
 
 Conflict rule: **code is the implementation authority**, the architecture spec

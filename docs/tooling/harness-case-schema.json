@@ -1,0 +1,446 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "$id": "https://vkr.local/schemas/harness-case-v1.schema.json",
+  "title": "Vulkan Renderer Harness Case",
+  "description": "One case manifest under tools/cases/<suite>/<case>.case.json. The same manifest drives the profile, snapshot, and autotest subcommands of vkr_harness; they differ only in which verdict policy they apply.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "suite",
+    "scene",
+    "seed",
+    "resolution",
+    "boot",
+    "target",
+    "present",
+    "cache",
+    "fixed_delta",
+    "frames",
+    "renderer",
+    "camera"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "id": {
+      "type": "string",
+      "description": "Stable case identifier, conventionally <suite>.<scene>.<motion>.",
+      "pattern": "^[a-z0-9_]+(\\.[a-z0-9_]+)+$"
+    },
+    "suite": {
+      "type": "string",
+      "description": "Suite this case belongs to. Must match the containing directory.",
+      "pattern": "^[a-z0-9_]+$"
+    },
+    "description": { "type": "string" },
+    "scene": {
+      "type": "string",
+      "description": "Repository-relative path below assets/scenes. Runtime validation also resolves the path under the repository root and requires the file to exist.",
+      "pattern": "^(?!.*(?:^|/)\\.\\.(?:/|$))assets/scenes/[A-Za-z0-9_./-]+\\.scene\\.json$"
+    },
+    "seed": {
+      "type": "integer",
+      "description": "Seed for every harness-owned pseudo-random decision.",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "resolution": {
+      "type": "array",
+      "description": "Render target extent in pixels. Fill-bound passes scale with it, so it is part of the comparison config.",
+      "items": { "type": "integer", "minimum": 1 },
+      "minItems": 2,
+      "maxItems": 2,
+      "default": [1280, 720]
+    },
+    "boot": {
+      "type": "string",
+      "description": "Subsystem initialization profile. 'automation' is dependency-resolved from the workload and capture requirements; it does not itself imply a windowless target.",
+      "enum": ["full", "automation"]
+    },
+    "target": {
+      "type": "string",
+      "description": "Output target and window visibility. 'offscreen' creates no window, surface, or swapchain.",
+      "enum": ["windowed_visible", "windowed_hidden", "offscreen"]
+    },
+    "present": {
+      "type": "string",
+      "description": "Requested windowed present mode, or 'none' for offscreen. Runtime validation records and verifies the actual selected mode.",
+      "enum": ["immediate", "fifo", "none"]
+    },
+    "target_image_count": {
+      "type": "integer",
+      "description": "Requested offscreen image count. Windowed image count is selected by WSI and reported as actual configuration.",
+      "minimum": 1,
+      "maximum": 8,
+      "default": 3
+    },
+    "cache": {
+      "type": "string",
+      "description": "Pipeline-cache policy. Isolated modes use a per-run path and never delete or mutate the user's ordinary cache; 'shared' is investigative.",
+      "enum": ["isolated_cold", "isolated_warm", "shared"]
+    },
+    "fixed_delta": {
+      "type": "number",
+      "description": "Simulation timestep in seconds. Drives camera advancement. Wall-clock is measured for timing metrics but never fed back into scene state.",
+      "exclusiveMinimum": 0,
+      "default": 0.016666667
+    },
+    "frames": {
+      "type": "object",
+      "required": ["measure"],
+      "properties": {
+        "warmup": {
+          "type": "integer",
+          "description": "Exact frames rendered and discarded after the separate asset-readiness/pipeline-prewarm gate. Stability failure invalidates the run; it does not extend this phase and shift camera time.",
+          "minimum": 0,
+          "default": 120
+        },
+        "measure": {
+          "type": "integer",
+          "description": "Frames aggregated into the report.",
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "repetitions": {
+      "type": "integer",
+      "description": "Independent child processes. An execution profile may raise this value to its authoritative minimum.",
+      "minimum": 1,
+      "default": 1
+    },
+    "repetition_timeout_ms": {
+      "type": "integer",
+      "description": "Wall-clock timeout for each child process.",
+      "minimum": 1,
+      "default": 60000
+    },
+    "asset_ready_timeout_ms": {
+      "type": "integer",
+      "description": "How long to wait for every scene-requested resource to report ready before failing the run. Exceeding it is a run failure, never a silent capture of a partially loaded scene.",
+      "minimum": 1,
+      "default": 30000
+    },
+    "camera": { "$ref": "#/definitions/camera" },
+    "renderer": { "$ref": "#/definitions/renderer" },
+    "captures": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/capture" }
+    },
+    "assertions": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/assertion" }
+    },
+    "compare": { "$ref": "#/definitions/compare" }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "target": { "const": "offscreen" } }, "required": ["target"] },
+      "then": { "properties": { "present": { "const": "none" } } },
+      "else": {
+        "properties": { "present": { "enum": ["immediate", "fifo"] } },
+        "not": { "required": ["target_image_count"] }
+      }
+    }
+  ],
+
+  "definitions": {
+    "vec3": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+
+    "speed": {
+      "type": "string",
+      "description": "Scales authored camera time with fixed multipliers slow=0.5, medium=1, fast=2.",
+      "enum": ["slow", "medium", "fast"],
+      "default": "medium"
+    },
+
+    "renderer": {
+      "type": "object",
+      "description": "Renderer features that affect graph topology, work volume, or pixels. The effective dependency-resolved subsystem mask is reported separately.",
+      "required": ["editor", "skybox", "shadow_preset", "shadow_cascades"],
+      "properties": {
+        "editor": { "type": "boolean" },
+        "skybox": { "type": "boolean" },
+        "shadow_preset": {
+          "type": "string",
+          "enum": ["default", "balanced", "high"]
+        },
+        "shadow_cascades": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
+        },
+        "render_mode": {
+          "type": "string",
+          "description": "Global shading mode for measured frames. Auxiliary debug captures execute as replay runs and do not change this value.",
+          "enum": ["default", "lighting", "normal", "unlit"],
+          "default": "default"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "camera": {
+      "type": "object",
+      "description": "Scripted camera. Poses are applied directly to VkrCamera; VkrCameraController is bypassed. Runtime semantic validation requires far_plane > near_plane and strictly increasing key times.",
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["static", "keyframes", "orbit", "flythrough"]
+        },
+        "speed": { "$ref": "#/definitions/speed" },
+
+        "position": { "$ref": "#/definitions/vec3" },
+        "yaw": { "type": "number", "description": "Yaw in degrees." },
+        "pitch": { "type": "number", "description": "Pitch in degrees.", "minimum": -89, "maximum": 89 },
+        "vertical_fov_degrees": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 180,
+          "default": 70
+        },
+        "near_plane": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 0.1
+        },
+        "far_plane": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 500
+        },
+
+        "keys": {
+          "type": "array",
+          "description": "Required by 'keyframes' and 'flythrough'. Ordered by t.",
+          "items": { "$ref": "#/definitions/camera_key" },
+          "minItems": 2
+        },
+        "interpolation": {
+          "type": "string",
+          "enum": ["linear", "catmull_rom"],
+          "default": "linear"
+        },
+
+        "center": { "$ref": "#/definitions/vec3" },
+        "radius": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "description": "Orbit height relative to center.y.", "default": 0 },
+        "revolutions": { "type": "number", "exclusiveMinimum": 0 },
+        "duration_seconds": {
+          "type": "number",
+          "description": "Authored duration. Runtime duration is this value divided by the speed multiplier.",
+          "exclusiveMinimum": 0
+        },
+        "start_angle_degrees": { "type": "number", "default": 0 }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "mode": { "const": "static" } }, "required": ["mode"] },
+          "then": {
+            "required": ["position", "yaw", "pitch"],
+            "not": {
+              "anyOf": [
+                { "required": ["keys"] },
+                { "required": ["interpolation"] },
+                { "required": ["center"] },
+                { "required": ["radius"] },
+                { "required": ["height"] },
+                { "required": ["revolutions"] },
+                { "required": ["duration_seconds"] },
+                { "required": ["start_angle_degrees"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "keyframes" } }, "required": ["mode"] },
+          "then": {
+            "required": ["keys"],
+            "not": {
+              "anyOf": [
+                { "required": ["position"] },
+                { "required": ["yaw"] },
+                { "required": ["pitch"] },
+                { "required": ["center"] },
+                { "required": ["radius"] },
+                { "required": ["height"] },
+                { "required": ["revolutions"] },
+                { "required": ["duration_seconds"] },
+                { "required": ["start_angle_degrees"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "flythrough" } }, "required": ["mode"] },
+          "then": {
+            "required": ["keys"],
+            "not": {
+              "anyOf": [
+                { "required": ["position"] },
+                { "required": ["yaw"] },
+                { "required": ["pitch"] },
+                { "required": ["center"] },
+                { "required": ["radius"] },
+                { "required": ["height"] },
+                { "required": ["revolutions"] },
+                { "required": ["duration_seconds"] },
+                { "required": ["start_angle_degrees"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": { "properties": { "mode": { "const": "orbit" } }, "required": ["mode"] },
+          "then": {
+            "required": ["center", "radius", "revolutions", "duration_seconds"],
+            "not": {
+              "anyOf": [
+                { "required": ["position"] },
+                { "required": ["yaw"] },
+                { "required": ["pitch"] },
+                { "required": ["keys"] },
+                { "required": ["interpolation"] }
+              ]
+            }
+          }
+        }
+      ]
+    },
+
+    "camera_key": {
+      "type": "object",
+      "required": ["t", "position", "yaw", "pitch"],
+      "properties": {
+        "t": { "type": "number", "minimum": 0, "description": "Seconds along the path." },
+        "position": { "$ref": "#/definitions/vec3" },
+        "yaw": { "type": "number", "description": "Yaw in degrees." },
+        "pitch": { "type": "number", "description": "Pitch in degrees.", "minimum": -89, "maximum": 89 }
+      },
+      "additionalProperties": false
+    },
+
+    "channel": {
+      "type": "string",
+      "description": "Capture channel. final_color/scene_color/depth/shadow_cascade_N/picking_ids read a real graph image. normals, unlit, lighting, and the shadow_debug_* channels are re-renders of a settled frame with a different renderer global; this renderer is forward and has no normals attachment.",
+      "enum": [
+        "final_color",
+        "scene_color",
+        "depth",
+        "shadow_cascade_0",
+        "shadow_cascade_1",
+        "shadow_cascade_2",
+        "shadow_cascade_3",
+        "shadow_cascade_4",
+        "shadow_cascade_5",
+        "shadow_cascade_6",
+        "shadow_cascade_7",
+        "picking_ids",
+        "normals",
+        "unlit",
+        "lighting",
+        "shadow_debug_cascades",
+        "shadow_debug_factor",
+        "shadow_debug_depth"
+      ]
+    },
+
+    "capture": {
+      "type": "object",
+      "required": ["at_frame", "channels"],
+      "properties": {
+        "at_frame": {
+          "type": "integer",
+          "description": "Measured-frame index at which to capture. Capture additionally requires asset readiness; a manifest cannot opt out of that.",
+          "minimum": 0
+        },
+        "channels": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/channel" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "compare": { "$ref": "#/definitions/compare" }
+      },
+      "additionalProperties": false
+    },
+
+    "compare": {
+      "type": "object",
+      "description": "Image comparison thresholds in a normalized [0,1] error domain. RGBA8 code values are divided by 255 and depth/shadow values are normalized device depth. Omitted fields fall back to the case-level block, then to these defaults. picking_ids ignores tolerances and always compares exactly.",
+      "properties": {
+        "max_pixel_delta": {
+          "type": "number",
+          "description": "Largest permitted normalized component difference. A pixel fails if any component exceeds it.",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.00784313725490196
+        },
+        "max_mean_absolute_error": {
+          "type": "number",
+          "description": "Largest permitted mean normalized absolute error over all scalar components.",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.000392156862745098
+        },
+        "max_failed_pixel_ratio": {
+          "type": "number",
+          "description": "Fraction of pixels permitted to exceed max_pixel_delta.",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.001
+        },
+        "emit_diff": {
+          "type": "boolean",
+          "description": "Write a *_diff.png heat map beside the candidate.",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "assertion": {
+      "type": "object",
+      "description": "A case-owned gate over one aggregated metric. Exactly one of max, min, or equals must be present. Case-local timing limits are investigative; authoritative performance thresholds belong to an accepted execution-profile baseline.",
+      "required": ["metric"],
+      "properties": {
+        "metric": {
+          "type": "string",
+          "description": "Registered lowercase dotted metric name, for example cpu.render_submit_ms or draw.calls_issued.",
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
+        },
+        "stat": {
+          "type": "string",
+          "enum": ["mean", "p50", "p95", "min", "max", "stddev", "total"],
+          "default": "mean"
+        },
+        "max": { "type": "number" },
+        "min": { "type": "number" },
+        "equals": { "type": "number" },
+        "tolerance": {
+          "type": "number",
+          "description": "Permitted absolute deviation for 'equals'. Work-volume metrics are deterministic and should use the default.",
+          "minimum": 0,
+          "default": 0
+        }
+      },
+      "additionalProperties": false,
+      "dependencies": {
+        "tolerance": ["equals"]
+      },
+      "oneOf": [
+        { "required": ["max"] },
+        { "required": ["min"] },
+        { "required": ["equals"] }
+      ]
+    }
+  }
+}

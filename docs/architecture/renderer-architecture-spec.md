@@ -1,11 +1,12 @@
 ---
 status: implemented
-updated: 2026-07-31
+updated: 2026-08-01
 authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
 
-**Document status:** Reviewed against the working tree on 2026-07-31
+**Document status:** Reviewed against the working tree on 2026-07-31; P2
+production-reference record corrected on 2026-08-01.
 **Scope:** Renderer architecture, implemented features, CPU/GPU memory, data
 transfer, synchronization, known issues, and recommended direction.
 **Audience:** Contributors and reviewers.
@@ -291,6 +292,7 @@ farther than the finite cube mesh.
 | JSON render graph | Implemented, partial | Scheduling/culling/timing; access- and subresource-aware barriers for declared resources; IBL bake work remains undeclared |
 | SPIR-V reflection | Implemented | Descriptors, push constants, vertex ABI, and uniform members validated against `.shadercfg` |
 | Pipeline cache | Implemented | Disk-backed Vulkan cache |
+| Metrics registry and snapshot export | Implemented | Bounded typed slots, MPSC cold-event ring, triple-buffered snapshots, renderer catalog/validity, metrics-backed HUD, and atomic `--metrics-json`; harness aggregation is a later phase |
 | Cascaded shadow maps | Implemented | Four-cascade default with debug/fit controls |
 | PBR materials | Implemented, evolving | Metallic-roughness and texture slots present |
 | IBL | In progress | Runtime bake paths and scene/probe model present; bake work still undeclared to the graph, output visibility now barriered explicitly |
@@ -772,9 +774,10 @@ following checks were rerun:
 | P2 front-face correction validation | Paired viewpoints reproduced reversed one-sided surfaces; after switching immutable pipeline front-face state to CCW, a direct Sponza capture showed the intended interior wall with skybox and both reflection probes intact, no validation messages, and zero upload waits |
 | `tools/validate_multithreaded_backend_matrix.sh` after P2 review | Exit 0; all five compile/runtime configurations passed |
 | `./build_release.sh` and P2 Release Sponza smoke | Exit 0; 192 samples in 50 seconds, 16.957 ms mean frame and 0.156 ms mean render-graph CPU. This is runtime evidence, not a comparison with the different-scene San Miguel baseline |
-| `vkr_frustum` production references | None outside its module/tests/docs |
-| `VkrDrawBatcher` production references | None outside its module/tests/docs |
-| `vkr_indirect_draw_alloc` callers | None |
+| Metrics phase 1 | CPU suite and Debug build passed; validation-layer snapshot exposed 155 slots and eight provenance-carrying pass rows with no drops; Release Sponza activated with all asset-event classes; compile-disabled Release passed; pipeline-cache cold/warm validation consumed 23 events per run. Five paired Release A/B blocks measured a +0.243299% median frame delta with a -0.877233% to +0.462384% range. Full configuration and repetitions: [phase-1 verification](../tooling/renderer-metrics-phase1-verification.md) |
+| `vkr_frustum` production references | Application world-payload construction creates camera and cascade frustums and classifies submeshes against them |
+| `VkrDrawBatcher` production references | None outside its module/tests/docs; P2 batching instead uses visibility and pass-local batch structures |
+| `vkr_indirect_draw_alloc` callers | The shared pass indirect-submission path allocates production world/shadow command ranges |
 | `vkAllocateMemory` call sites | Centralized in one tracked backend wrapper; one raw allocate/free pair remains inside that wrapper |
 | VMA | Not present |
 | Dynamic rendering | Not present |
