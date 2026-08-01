@@ -321,7 +321,9 @@ static INLINE Mat4 mat4_identity(void) {
  * @param far Far clipping plane distance (positive value, > near)
  * @return Orthographic projection matrix that maps the view volume to NDC
  *         with X,Y in [-1,1] and Z in [-1,1] (OpenGL-style depth range).
- * @note Used for 2D rendering, CAD applications, and shadow mapping
+ * @note Legacy OpenGL-depth helper. Renderer 3D cameras and shadow mapping use
+ *       mat4_ortho_zo_yinv() so projection and frustum extraction share the
+ *       canonical Vulkan [0,1] convention.
  * @note No perspective foreshortening - parallel lines remain parallel
  * @note Objects maintain their size regardless of distance from camera
  * @note View volume is a rectangular box (frustum with infinite focal length)
@@ -409,8 +411,8 @@ static INLINE Mat4 mat4_perspective(float32_t fov, float32_t aspect,
   // We negate the Y scaling to account for this
   return mat4_new(f / aspect, 0.0f, 0.0f, 0.0f, 0.0f, -f, 0.0f,
                   0.0f, // Negated Y for Vulkan
-                  0.0f, 0.0f, far_clip / (far_clip - near_clip), 1.0f, 0.0f,
-                  0.0f, -(far_clip * near_clip) / (far_clip - near_clip), 0.0f);
+                  0.0f, 0.0f, far_clip / (near_clip - far_clip), -1.0f, 0.0f,
+                  0.0f, (far_clip * near_clip) / (near_clip - far_clip), 0.0f);
 }
 
 /**

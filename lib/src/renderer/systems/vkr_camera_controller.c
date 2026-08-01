@@ -20,7 +20,7 @@ void vkr_camera_controller_create(VkrCameraController *controller,
 void vkr_camera_controller_move_forward(VkrCameraController *controller,
                                         float32_t amount) {
   assert_log(controller != NULL, "Camera controller is NULL");
-  controller->frame_move_forward -= amount;
+  controller->frame_move_forward += amount;
 }
 
 void vkr_camera_controller_move_right(VkrCameraController *controller,

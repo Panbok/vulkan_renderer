@@ -21,7 +21,7 @@
 #define VKR_MAX_CAMERA_PITCH 89.0f
 #define VKR_MIN_CAMERA_PITCH -89.0f
 
-#define VKR_DEFAULT_CAMERA_POSITION vec3_new(-1.5f, 0.0f, -17.0f)
+#define VKR_DEFAULT_CAMERA_POSITION vec3_new(-1.5f, 0.0f, 17.0f)
 #define VKR_DEFAULT_CAMERA_FORWARD vec3_new(0.0f, 0.0f, -1.0f)
 #define VKR_DEFAULT_CAMERA_UP vec3_new(0.0f, 1.0f, 0.0f)
 #define VKR_DEFAULT_CAMERA_RIGHT vec3_new(1.0f, 0.0f, 0.0f)

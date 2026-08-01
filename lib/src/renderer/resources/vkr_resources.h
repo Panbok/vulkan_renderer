@@ -471,11 +471,13 @@ typedef struct VkrShaderStageFile {
 Array(VkrShaderStageFile);
 
 typedef struct VkrShaderConfig {
-  String8 name;            // shader.unique name
-  String8 renderpass_name; // renderpass key string
-  uint8_t use_instance;    // enable instance scope (set 1)
-  uint8_t use_local;       // enable push constants
-  VkrCullMode cull_mode;   // culling mode (default: VKR_CULL_MODE_BACK)
+  String8 name;                // shader.unique name
+  String8 renderpass_name;     // renderpass key string
+  uint8_t use_instance;        // enable instance scope (set 1)
+  uint8_t use_local;           // enable push constants
+  VkrCullMode cull_mode;       // culling mode (default: VKR_CULL_MODE_BACK)
+  bool8_t depth_test_enabled;  // depth test (default: enabled)
+  bool8_t depth_write_enabled; // depth writes (default: enabled)
   VkrVertexAbiProfile vertex_abi_profile; // Explicit host vertex ABI contract.
 
   // Stages

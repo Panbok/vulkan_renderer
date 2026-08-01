@@ -753,6 +753,51 @@ vkr_internal void test_reflection_all_shadercfg_match_spirv(void) {
          (uint32_t)ArrayCount(manifests));
 }
 
+vkr_internal void test_shadercfg_pipeline_state(void) {
+  printf("  Running test_shadercfg_pipeline_state...\n");
+  Arena *arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  vkr_allocator_arena(&allocator);
+  Arena *temp_arena = arena_create(MB(1), MB(1));
+  VkrAllocator temp_allocator = {.ctx = temp_arena};
+  vkr_allocator_arena(&temp_allocator);
+
+  VkrShaderConfig skybox = {0};
+  VkrShaderConfigParseResult result = vkr_shader_loader_parse(
+      string8_lit("assets/shaders/default.skybox.shadercfg"), &allocator,
+      &temp_allocator, &skybox);
+  assert(result.is_valid);
+  assert(skybox.cull_mode == VKR_CULL_MODE_FRONT);
+  assert(skybox.depth_test_enabled == false_v);
+  assert(skybox.depth_write_enabled == false_v);
+
+  VkrShaderConfig ibl = {0};
+  result = vkr_shader_loader_parse(
+      string8_lit("assets/shaders/ibl.diffuse_convolution.shadercfg"),
+      &allocator, &temp_allocator, &ibl);
+  assert(result.is_valid);
+  assert(ibl.cull_mode == VKR_CULL_MODE_FRONT);
+
+  VkrShaderConfig specular_ibl = {0};
+  result = vkr_shader_loader_parse(
+      string8_lit("assets/shaders/ibl.specular_prefilter.shadercfg"),
+      &allocator, &temp_allocator, &specular_ibl);
+  assert(result.is_valid);
+  assert(specular_ibl.cull_mode == VKR_CULL_MODE_FRONT);
+
+  VkrShaderConfig world = {0};
+  result =
+      vkr_shader_loader_parse(string8_lit("assets/shaders/pbr.world.shadercfg"),
+                              &allocator, &temp_allocator, &world);
+  assert(result.is_valid);
+  assert(world.depth_test_enabled == true_v);
+  assert(world.depth_write_enabled == true_v);
+
+  arena_destroy(temp_arena);
+  arena_destroy(arena);
+  printf("  test_shadercfg_pipeline_state PASSED\n");
+}
+
 bool32_t run_reflection_pipeline_tests(void) {
   printf("--- Starting Reflection Pipeline Tests ---\n");
 
@@ -764,6 +809,7 @@ bool32_t run_reflection_pipeline_tests(void) {
   test_reflection_missing_temp_allocator_rejected();
   test_reflection_shadercfg_matches_spirv();
   test_reflection_all_shadercfg_match_spirv();
+  test_shadercfg_pipeline_state();
 
   printf("--- Reflection Pipeline Tests Completed ---\n");
   return true;

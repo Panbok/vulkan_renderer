@@ -30,9 +30,9 @@ vkr_internal Mat4 vkr_camera_calculate_projection(const VkrCamera *camera) {
   }
 
   if (camera->type == VKR_CAMERA_TYPE_ORTHOGRAPHIC) {
-    return mat4_ortho(camera->left_clip, camera->right_clip,
-                      camera->bottom_clip, camera->top_clip, camera->near_clip,
-                      camera->far_clip);
+    return mat4_ortho_zo_yinv(camera->left_clip, camera->right_clip,
+                              camera->bottom_clip, camera->top_clip,
+                              camera->near_clip, camera->far_clip);
   }
 
   assert_log(false, "Unhandled camera type");

@@ -1,5 +1,7 @@
 version=1.0
 cull_mode=front
+depth_test=0
+depth_write=0
 name=shader.default.skybox
 renderpass=Renderpass.Builtin.Skybox
 stages=vertex,fragment

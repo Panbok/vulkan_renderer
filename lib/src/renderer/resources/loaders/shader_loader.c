@@ -769,6 +769,8 @@ vkr_initialize_config(VkrAllocator *config_alloc, VkrShaderConfig *config) {
   config->use_instance = 0;
   config->use_local = 0;
   config->cull_mode = VKR_CULL_MODE_BACK;
+  config->depth_test_enabled = true_v;
+  config->depth_write_enabled = true_v;
   config->name = (String8){0};
   config->renderpass_name = (String8){0};
   config->vertex_abi_profile = VKR_VERTEX_ABI_PROFILE_UNKNOWN;
@@ -939,6 +941,20 @@ vkr_shader_loader_parse(String8 path, VkrAllocator *allocator,
       }
     } else if (vkr_string8_equals_cstr_i(&key, "cull_mode")) {
       out_config->cull_mode = vkr_parse_cull_mode(&value);
+    } else if (vkr_string8_equals_cstr_i(&key, "depth_test") ||
+               vkr_string8_equals_cstr_i(&key, "depth_write")) {
+      uint32_t enabled = 0;
+      if (!string8_to_u32(&value, &enabled) || enabled > 1u) {
+        line_result = vkr_create_parse_error(
+            parser.allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
+            parser.line_number, 0,
+            "Invalid %.*s value '%.*s' (expected 0 or 1)", (int)key.length,
+            (const char *)key.str, (int)value.length, (const char *)value.str);
+      } else if (vkr_string8_equals_cstr_i(&key, "depth_test")) {
+        out_config->depth_test_enabled = (bool8_t)enabled;
+      } else {
+        out_config->depth_write_enabled = (bool8_t)enabled;
+      }
     } else if (vkr_string8_equals_cstr_i(&key, "vertex_layout")) {
       log_warn("vertex_layout key is deprecated and will be ignored");
     } else if (vkr_string8_equals_cstr_i(&key, "version")) {

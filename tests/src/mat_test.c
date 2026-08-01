@@ -395,11 +395,20 @@ static void test_mat4_projection_matrices(void) {
   Mat4 perspective =
       mat4_perspective(vkr_to_radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f);
 
-  // Test that center point at near plane has w equal to original z coordinate
+  // Right-handed Vulkan projection: points in front have negative view Z,
+  // positive clip W, and depth in [0, 1]. Pin both planes so a sign error in
+  // the perspective matrix cannot hide behind a W-only assertion.
   Vec4 center_near =
       mat4_mul_vec4(perspective, vec4_new(0.0f, 0.0f, -0.1f, 1.0f));
-  assert(float_equals(center_near.w, -0.1f, 0.001f) &&
-         "Perspective near plane w failed");
+  Vec4 center_far =
+      mat4_mul_vec4(perspective, vec4_new(0.0f, 0.0f, -100.0f, 1.0f));
+  Vec4 behind = mat4_mul_vec4(perspective, vec4_new(0.0f, 0.0f, 1.0f, 1.0f));
+  assert(center_near.w > 0.0f && "Perspective point in front has negative W");
+  assert(float_equals(center_near.z / center_near.w, 0.0f, 0.001f) &&
+         "Perspective Vulkan near depth failed");
+  assert(float_equals(center_far.z / center_far.w, 1.0f, 0.001f) &&
+         "Perspective Vulkan far depth failed");
+  assert(behind.w < 0.0f && "Perspective point behind camera has positive W");
 
   // Test look-at matrix
   Vec3 eye = vec3_new(0.0f, 0.0f, 5.0f);
@@ -411,6 +420,11 @@ static void test_mat4_projection_matrices(void) {
   Vec4 eye_transformed = mat4_mul_vec4(view, vec3_to_vec4(eye, 1.0f));
   assert(vec3_equals(vec4_to_vec3(eye_transformed), vec3_zero(), 0.001f) &&
          "Look-at eye transform failed");
+
+  Vec4 target_view = mat4_mul_vec4(view, vec3_to_vec4(center, 1.0f));
+  Vec4 target_clip = mat4_mul_vec4(perspective, target_view);
+  assert(target_view.z < 0.0f && target_clip.w > 0.0f &&
+         "Look-at and perspective handedness disagree");
 
   printf("  test_mat4_projection_matrices PASSED\n");
 }

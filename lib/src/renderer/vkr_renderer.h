@@ -1077,6 +1077,8 @@ typedef struct VkrGraphicsPipelineDescription {
 
   VkrPolygonMode polygon_mode;
   VkrCullMode cull_mode;
+  bool8_t depth_test_enabled;
+  bool8_t depth_write_enabled;
 
   VkrRenderPassHandle renderpass;
   VkrPipelineDomain domain;

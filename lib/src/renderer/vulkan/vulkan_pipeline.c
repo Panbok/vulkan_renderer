@@ -186,7 +186,8 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
       .rasterizerDiscardEnable = VK_FALSE,
       .polygonMode = vulkan_polygon_mode_to_vk(desc->polygon_mode),
       .cullMode = vulkan_cull_mode_to_vk(desc->cull_mode),
-      .frontFace = VK_FRONT_FACE_CLOCKWISE,
+      // glTF and generated VKR geometry retain CCW authored front faces.
+      .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
       .depthBiasEnable = VK_FALSE,
       .depthBiasConstantFactor = 0.0f,
       .depthBiasClamp = 0.0f,
@@ -206,8 +207,8 @@ bool8_t vulkan_graphics_graphics_pipeline_create(
 
   VkPipelineDepthStencilStateCreateInfo depth_stencil_state = {
       .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-      .depthTestEnable = VK_TRUE,
-      .depthWriteEnable = VK_TRUE,
+      .depthTestEnable = desc->depth_test_enabled ? VK_TRUE : VK_FALSE,
+      .depthWriteEnable = desc->depth_write_enabled ? VK_TRUE : VK_FALSE,
       .depthCompareOp = VK_COMPARE_OP_LESS,
       .depthBoundsTestEnable = VK_FALSE,
       .stencilTestEnable = VK_FALSE,

@@ -1650,13 +1650,16 @@ vkr_internal void application_handle_input(Application *application,
     if (!((x == last_x && y == last_y) || (x == 0 && y == 0) ||
           (last_x == 0 && last_y == 0))) {
       float32_t x_offset = (float32_t)(x - last_x);
-      float32_t y_offset = (float32_t)(last_y - y);
+      float32_t y_offset = (float32_t)(y - last_y);
 
       float32_t max_mouse_delta = VKR_MAX_MOUSE_DELTA / camera->sensitivity;
       x_offset = vkr_clamp_f32(x_offset, -max_mouse_delta, max_mouse_delta);
       y_offset = vkr_clamp_f32(y_offset, -max_mouse_delta, max_mouse_delta);
 
-      yaw_input = -x_offset;
+      // Positive screen-space X turns the +yaw camera direction to the right.
+      // Captured platform input exposes upward motion as positive virtual Y,
+      // so both positive deltas map directly to positive camera rotation.
+      yaw_input = x_offset;
       pitch_input = y_offset;
       should_rotate = true_v;
     }
