@@ -5,15 +5,17 @@ authority: spec
 ---
 # Renderer Metrics Module and Automation Harness
 
-> **Status note.** Phases 1 and 1b ship: the centralized registry, renderer adapter,
-> catalog/validity model, event ring, JSON writer and snapshot dump, producer
-> instrumentation, metrics-backed HUD, and explicit logical GPU allocation
-> owners are production call sites. Phases 2-6 remain proposed; there is still
-> no harness, capture path, automation boot profile, or offscreen target.
+> **Status note.** Phases 1, 1b, and 2 ship: the centralized registry and
+> renderer adapter feed a structured `vkr_harness profile` runtime with strict
+> manifests, deterministic cameras, isolated repetitions, fingerprints, and
+> atomic reports. Phases 2b-6 remain proposed; there is still no harness capture
+> path, automation boot profile, baseline workflow, or offscreen target.
 > Evidence is recorded in
 > [renderer-metrics-phase1-verification.md](renderer-metrics-phase1-verification.md)
 > and
 > [renderer-metrics-phase1b-verification.md](renderer-metrics-phase1b-verification.md).
+> Phase-2 evidence is recorded in
+> [renderer-harness-phase2-verification.md](renderer-harness-phase2-verification.md).
 
 ## 1. Problem
 
@@ -872,6 +874,16 @@ demonstrate the value of a shared runtime, profiles, fingerprints, and
 independent repetitions. VKR keeps one C executable and does not import their
 external CLI/JSON/image stack.
 
+**Implemented Phase-2 boundary.** `profile` now runs full-boot windowed-visible
+or windowed-hidden cases. It freezes harness-owned scene/camera simulation until
+the requested scene is ready, applies a fixed delta and scripted pose/lens,
+isolates cold/warm cache state, verifies actual presentation configuration,
+launches independent timed child processes, checks work-volume identity, and
+aggregates metrics, per-pass timings, and bounded events. `automation` boot and
+`offscreen` targets fail as unavailable until phases 3 and 6; captures,
+`snapshot`, `autotest`, comparisons, and baselines remain unavailable until
+phases 4 and 5.
+
 ## 7. Reports and exit codes
 
 Artifacts land in `build/_artifacts/<tool>/<run-id>/`. The run ID is generated,
@@ -1106,7 +1118,7 @@ unsupported.
 | 0 | This document, ADR-014, ADR-015, and immediate factual repair of the live `vkr-performance` skill | `docs/`, `.codex/skills/vkr-performance/SKILL.md` |
 | 1 | **Implemented 2026-08-01.** Explicit `VkrMetrics` owner, core registry, renderer adapter, catalog/validity, JSON writer; HUD reads snapshots; `--metrics-json` dump | `lib/src/core/`, `lib/src/renderer/`, `application.h`, `app/src/main.c` |
 | 1b | **Implemented 2026-08-01.** Explicit logical GPU allocation owners; tracker live/peak/lifetime totals; live/peak gauges and allocated/created interval counters; no inferred font/mesh categories | resource descriptions, Vulkan allocation tracker, renderer metrics adapter |
-| 2 | Shared harness runtime, strict case/profile parsers, case/profile/report schemas, three fingerprints, safe paths/atomic artifacts, camera scripting, isolated repetitions, `profile` | `tools/harness/`, `tools/cases/`, `tools/profiles/` |
+| 2 | **Implemented 2026-08-01.** Shared harness runtime, strict case/profile parsers, case/profile/report schemas, three fingerprints, safe paths/atomic artifacts, camera scripting, isolated repetitions, `profile` | `tools/harness/`, `tools/cases/`, `tools/profiles/` |
 | 2b | Establish parity, then retire the grep/awk benchmark script and migrate `vkr-performance` to the harness | tooling and skills |
 | 3 | Dependency-resolved automation boot profile; measured boot/memory reduction | `renderer_frontend.c`, `application.h`, harness runtime |
 | 4 | Capture batch API/ring, request-specific declared graph reads, canonical converters, direct-channel `snapshot` | backend, graph, `tools/harness/` |

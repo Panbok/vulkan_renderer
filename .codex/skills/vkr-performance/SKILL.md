@@ -15,9 +15,11 @@ That principle is only useful with its counterweight: **an unmeasured
 performance claim is not a result.** This skill defines what counts as evidence
 in this repository, which instruments exist, and what they do and do not prove.
 
-This project has **no Tracy, no external profiler integration, and no dedicated
-benchmark binary.** Do not write instructions or reports that assume otherwise.
-Everything below is a real, present API or script.
+This project has **no Tracy or external profiler integration.** The Phase 2
+`vkr_harness` binary now produces structured windowed profile observations, but
+the legacy benchmark remains this skill's performance-claim workflow until
+Phase 2b establishes parity and migrates the evidence policy. Everything below
+is a real, present API or script.
 
 ## Instruments that exist
 

@@ -255,10 +255,15 @@ depend on every producer.
 
 Accepted on 2026-08-01. The registry has production application, renderer,
 backend, resource-loader, shader, pipeline, job, and instance-stream writers;
-the HUD and atomic JSON dump consume its snapshots. The required Release A/B,
+the HUD, atomic JSON dump, and Phase-2 harness consume its snapshots. The
+harness drains bounded events, samples the provenance-carrying pass table beside
+the matching published frame, and refuses required invalid samples or snapshot
+drops instead of manufacturing zeros. The required Release A/B,
 environment, spread, compile-disabled build, CPU tests, Vulkan validation, and
 pipeline-cache integration are recorded in
 [the phase-1 verification](../../tooling/renderer-metrics-phase1-verification.md).
+Harness integration evidence is in
+[the phase-2 verification](../../tooling/renderer-harness-phase2-verification.md).
 
 ## Revisit When
 

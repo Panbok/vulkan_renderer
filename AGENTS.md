@@ -56,6 +56,7 @@ enumerated.
 | Renderer architecture, refactors, backend/graph/pass changes, hot paths, API design | `.codex/skills/vkr-renderer-design/SKILL.md` |
 | Auditing for LOC reduction, file-by-file compression plans, consolidation passes | `.codex/skills/compress-codebase/SKILL.md` |
 | Frame-time or hitch investigation, optimization, benchmarks, any speed claim | `.codex/skills/vkr-performance/SKILL.md` |
+| Structured renderer cases, profiles, reports, and deterministic repetitions | `.codex/skills/vkr-harness/SKILL.md` |
 | Allocator choice, ownership, lifetime, hash keys, scene reload growth, leaks | `.codex/skills/vkr-memory/SKILL.md` |
 | Deciding on and running tests, validation layers, pipeline-cache and backend matrices | `.codex/skills/vkr-validation/SKILL.md` |
 | Writing or updating docs and ADRs, marking a proposal shipped, archiving | `.codex/skills/vkr-docs/SKILL.md` |
@@ -75,6 +76,7 @@ task notes under `.scratch/`, which is local and untracked.
 ./build.sh [Debug|Release]     # compile shaders, configure, build, copy assets
 ./build_run.sh [Debug|Release] # build and launch
 ./build_release.sh             # optimized build -> build_release/app/vulkan_renderer
+build_release/tools/vkr_harness profile --case <case> --profile <profile>
 ./build_test.sh                # build + run the CPU suite
 ./build_test_batch.sh          # 50 runs; confirm or refute a flake
 ./validate_pipeline_cache.sh   # cold/warm pipeline cache behaviour
