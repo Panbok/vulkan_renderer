@@ -1,5 +1,8 @@
 #include "metrics_test.h"
 
+#include "renderer/vkr_renderer_metrics.h"
+#include "renderer/vulkan/vulkan_backend.h"
+
 #include "core/vkr_metrics.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
@@ -151,8 +154,8 @@ static void test_metrics_registration_and_samples(void) {
          u64_value == 5u);
   assert(vkr_metrics_frame_read_f64(view.frame, gauge, &f64_value) &&
          f64_value == 0.25);
-  assert(vkr_metrics_frame_read_duration(view.frame, duration,
-                                         &duration_sample));
+  assert(
+      vkr_metrics_frame_read_duration(view.frame, duration, &duration_sample));
   assert(duration_sample.sum_ns == 40u);
   assert(duration_sample.count == 2u);
   assert(duration_sample.min_ns == 10u);
@@ -292,8 +295,8 @@ static void test_metrics_concurrent_counter(void) {
   assert(vkr_metrics_frame_read_u64(view.frame, gauge, &value) &&
          value < THREAD_COUNT * ITERATIONS);
   VkrMetricDurationSample duration_sample = {0};
-  assert(vkr_metrics_frame_read_duration(view.frame, duration,
-                                         &duration_sample));
+  assert(
+      vkr_metrics_frame_read_duration(view.frame, duration, &duration_sample));
   assert(duration_sample.sum_ns == THREAD_COUNT * ITERATIONS);
   assert(duration_sample.count == THREAD_COUNT * ITERATIONS);
   // Cumulative atomics cannot be differenced into extrema, so concurrent
@@ -309,8 +312,8 @@ static void test_metrics_concurrent_counter(void) {
   assert(vkr_metrics_end_frame(metrics));
   assert(vkr_metrics_snapshot_acquire(metrics, &view));
   assert(vkr_metrics_frame_read_u64(view.frame, gauge, &value) && value == 73u);
-  assert(vkr_metrics_frame_read_duration(view.frame, duration,
-                                         &duration_sample));
+  assert(
+      vkr_metrics_frame_read_duration(view.frame, duration, &duration_sample));
   assert(duration_sample.sum_ns == 18u);
   assert(duration_sample.count == 2u);
   vkr_metrics_snapshot_release(metrics, &view);
@@ -605,6 +608,184 @@ static void test_metrics_registry_generation(void) {
   printf("  test_metrics_registry_generation PASSED\n");
 }
 
+static VkDeviceMemory test_device_memory_handle(uintptr_t value) {
+  return (VkDeviceMemory)value;
+}
+
+static void test_device_memory_owner_tracking(void) {
+  printf("  Running test_device_memory_owner_tracking...\n");
+
+  VulkanDeviceMemoryEntry entries[8] = {0};
+  VulkanDeviceMemoryStats stats = {
+      .entries = entries,
+      .entry_capacity = 8,
+      .tracking_exact = true_v,
+  };
+  // These two handles collide in the eight-slot table. Freeing the first must
+  // reinsert the second so owner attribution remains reachable.
+  const VkDeviceMemory mesh_a = test_device_memory_handle(0x10u);
+  const VkDeviceMemory font = test_device_memory_handle(0x90u);
+  const VkDeviceMemory mesh_b = test_device_memory_handle(0x20u);
+  vulkan_device_memory_stats_record_alloc(&stats, mesh_a, 100u, 2u,
+                                          VKR_GPU_ALLOCATION_OWNER_MESH);
+  vulkan_device_memory_stats_record_alloc(&stats, font, 50u, 2u,
+                                          VKR_GPU_ALLOCATION_OWNER_FONT);
+  vulkan_device_memory_stats_record_alloc(&stats, mesh_b, 25u, 3u,
+                                          VKR_GPU_ALLOCATION_OWNER_MESH);
+
+  const VkrGpuAllocationOwnerTotals *mesh =
+      &stats.owners[VKR_GPU_ALLOCATION_OWNER_MESH];
+  const VkrGpuAllocationOwnerTotals *font_totals =
+      &stats.owners[VKR_GPU_ALLOCATION_OWNER_FONT];
+  assert(stats.live_allocation_count == 3u);
+  assert(stats.live_bytes == 175u);
+  assert(mesh->live_allocation_count == 2u);
+  assert(mesh->live_bytes == 125u);
+  assert(mesh->peak_bytes == 125u);
+  assert(font_totals->total_bytes == 50u);
+  assert(stats.live_count_by_type[2] == 2u);
+
+  vulkan_device_memory_stats_record_free(&stats, mesh_a);
+  vulkan_device_memory_stats_record_free(&stats, font);
+  assert(stats.live_allocation_count == 1u);
+  assert(stats.live_bytes == 25u);
+  assert(font_totals->live_allocation_count == 0u);
+  // Peak and cumulative totals survive the frees that live counts do not.
+  assert(mesh->peak_allocation_count == 2u);
+  assert(mesh->total_allocation_count == 2u);
+
+  const VkDeviceMemory invalid_owner = test_device_memory_handle(0x30u);
+  vulkan_device_memory_stats_record_alloc(
+      &stats, invalid_owner, 7u, 4u,
+      (VkrGpuAllocationOwner)VKR_GPU_ALLOCATION_OWNER_COUNT);
+  assert(stats.owners[VKR_GPU_ALLOCATION_OWNER_UNKNOWN].live_bytes == 7u);
+  vulkan_device_memory_stats_record_free(&stats, invalid_owner);
+  vulkan_device_memory_stats_record_free(&stats, mesh_b);
+  assert(stats.live_allocation_count == 0u);
+  assert(stats.live_bytes == 0u);
+
+  VulkanDeviceMemoryEntry short_entries[2] = {0};
+  VulkanDeviceMemoryStats saturated = {
+      .entries = short_entries,
+      .entry_capacity = 2,
+      .tracking_exact = true_v,
+  };
+  const VkDeviceMemory first = test_device_memory_handle(0x10u);
+  const VkDeviceMemory second = test_device_memory_handle(0x20u);
+  const VkDeviceMemory overflow = test_device_memory_handle(0x30u);
+  vulkan_device_memory_stats_record_alloc(&saturated, first, 10u, 0u,
+                                          VKR_GPU_ALLOCATION_OWNER_STAGING);
+  vulkan_device_memory_stats_record_alloc(&saturated, second, 20u, 0u,
+                                          VKR_GPU_ALLOCATION_OWNER_STAGING);
+  vulkan_device_memory_stats_record_alloc(&saturated, overflow, 30u, 0u,
+                                          VKR_GPU_ALLOCATION_OWNER_READBACK);
+  assert(!saturated.tracking_exact);
+  assert(saturated.total_allocation_count == 3u);
+  // The overflowing allocation never entered the table, so its cumulative row
+  // is still exact while the live figures it feeds are not.
+  assert(saturated.owners[VKR_GPU_ALLOCATION_OWNER_READBACK].total_bytes ==
+         30u);
+  vulkan_device_memory_stats_record_free(&saturated, first);
+  vulkan_device_memory_stats_record_free(&saturated, second);
+  assert(saturated.live_allocation_count == 1u);
+  assert(saturated.live_bytes == 30u);
+  assert(saturated.owners[VKR_GPU_ALLOCATION_OWNER_READBACK].live_bytes == 30u);
+
+  printf("  test_device_memory_owner_tracking PASSED\n");
+}
+
+static void test_renderer_owner_metric_catalog(void) {
+  printf("  Running test_renderer_owner_metric_catalog...\n");
+
+  MetricsFixture fixture = metrics_fixture_create();
+  VkrRendererMetrics renderer_metrics = {0};
+  assert(vkr_renderer_metrics_register(&renderer_metrics, fixture.metrics));
+  assert(renderer_metrics.previous.gpu_memory_interval_contiguous);
+
+  uint32_t catalog_count = 0;
+  const VkrMetricCatalogEntry *catalog =
+      vkr_metrics_get_catalog(fixture.metrics, &catalog_count);
+
+  // Every owner publishes every row, under a name the report contract fixes.
+  // Spot-checking two rows would not catch a bucket whose name went missing.
+  static const char *const owner_names[VKR_GPU_ALLOCATION_OWNER_COUNT] = {
+      "unknown",  "mesh",     "texture", "font",     "render_graph", "shader",
+      "instance", "indirect", "staging", "readback", "swapchain",
+  };
+  static const struct {
+    const char *suffix;
+    VkrMetricKind kind;
+    VkrMetricUnit unit;
+  } rows[VKR_GPU_OWNER_METRIC_ROW_COUNT] = {
+      [VKR_GPU_OWNER_METRIC_ROW_LIVE_BYTES] = {"bytes.live",
+                                               VKR_METRIC_KIND_GAUGE,
+                                               VKR_METRIC_UNIT_BYTES},
+      [VKR_GPU_OWNER_METRIC_ROW_PEAK_BYTES] = {"bytes.peak",
+                                               VKR_METRIC_KIND_GAUGE,
+                                               VKR_METRIC_UNIT_BYTES},
+      [VKR_GPU_OWNER_METRIC_ROW_ALLOCATED_BYTES] = {"bytes.allocated",
+                                                    VKR_METRIC_KIND_COUNTER,
+                                                    VKR_METRIC_UNIT_BYTES},
+      [VKR_GPU_OWNER_METRIC_ROW_LIVE_ALLOCATIONS] = {"allocations.live",
+                                                     VKR_METRIC_KIND_GAUGE,
+                                                     VKR_METRIC_UNIT_COUNT},
+      [VKR_GPU_OWNER_METRIC_ROW_PEAK_ALLOCATIONS] = {"allocations.peak",
+                                                     VKR_METRIC_KIND_GAUGE,
+                                                     VKR_METRIC_UNIT_COUNT},
+      [VKR_GPU_OWNER_METRIC_ROW_CREATED_ALLOCATIONS] = {"allocations.created",
+                                                        VKR_METRIC_KIND_COUNTER,
+                                                        VKR_METRIC_UNIT_COUNT},
+  };
+
+  const uint32_t aggregate_counter_index =
+      vkr_metric_id_index(renderer_metrics.ids.gpu_allocations_created);
+  assert(aggregate_counter_index < catalog_count);
+  assert(strcmp(catalog[aggregate_counter_index].name,
+                "memory.gpu.allocations.created") == 0);
+  assert(catalog[aggregate_counter_index].kind == VKR_METRIC_KIND_COUNTER);
+  assert(catalog[aggregate_counter_index].unit == VKR_METRIC_UNIT_COUNT);
+
+  for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner) {
+    for (uint32_t row = 0; row < VKR_GPU_OWNER_METRIC_ROW_COUNT; ++row) {
+      const VkrMetricId id = renderer_metrics.ids.gpu_owner[owner][row];
+      assert(id != VKR_METRIC_ID_INVALID);
+      const uint32_t index = vkr_metric_id_index(id);
+      assert(index < catalog_count);
+
+      char expected[64];
+      snprintf(expected, sizeof(expected), "memory.gpu.owner.%s.%s",
+               owner_names[owner], rows[row].suffix);
+      assert(strcmp(catalog[index].name, expected) == 0);
+      assert(catalog[index].unit == rows[row].unit);
+      assert(catalog[index].kind == rows[row].kind);
+      assert(catalog[index].scalar == VKR_METRIC_SCALAR_U64);
+      assert(catalog[index].domain == VKR_METRIC_DOMAIN_MEMORY_GPU);
+    }
+  }
+
+  metrics_fixture_destroy(&fixture);
+  printf("  test_renderer_owner_metric_catalog PASSED\n");
+}
+
+static void test_renderer_cumulative_delta(void) {
+  printf("  Running test_renderer_cumulative_delta...\n");
+
+  uint64_t previous = 0;
+  assert(vkr_renderer_metrics_cumulative_delta(17u, &previous) == 17u);
+  assert(previous == 17u);
+  assert(vkr_renderer_metrics_cumulative_delta(23u, &previous) == 6u);
+  assert(previous == 23u);
+  assert(vkr_renderer_metrics_cumulative_delta(23u, &previous) == 0u);
+  // A reset cannot be attributed to one frame. Match the other process-lifetime
+  // pull sources: publish zero for the reset interval and resume from the new
+  // baseline on the following frame.
+  assert(vkr_renderer_metrics_cumulative_delta(4u, &previous) == 0u);
+  assert(previous == 4u);
+  assert(vkr_renderer_metrics_cumulative_delta(9u, &previous) == 5u);
+
+  printf("  test_renderer_cumulative_delta PASSED\n");
+}
+
 bool32_t run_metrics_tests(void) {
   printf("--- Running Metrics tests... ---\n");
   test_metrics_registration_and_samples();
@@ -616,6 +797,9 @@ bool32_t run_metrics_tests(void) {
   test_metrics_event_record_status();
   test_metrics_event_ring_mpsc();
   test_metrics_registry_generation();
+  test_device_memory_owner_tracking();
+  test_renderer_owner_metric_catalog();
+  test_renderer_cumulative_delta();
   printf("--- Metrics tests completed. ---\n");
   return true_v;
 }
