@@ -37,7 +37,7 @@ deliberately left unchanged. Indiscriminate edits are anti-compression. Use
 
 Before optimizing, measure at least:
 
-- per-pass CPU and GPU milliseconds (`vkr_rg_get_timings`);
+- per-pass CPU and GPU milliseconds (`vkr_rg_get_pass_timings`);
 - upload wait count and bytes
   (`vkr_renderer_get_and_reset_upload_wait_stats`);
 - graph resource live/peak counts (`vkr_rg_get_resource_stats`);
@@ -51,15 +51,17 @@ Before optimizing, measure at least:
 1. Fix proven correctness and lifetime bugs, with a regression test.
 2. Remove frame hitches: pipeline compilation during encoding, blocking upload
    waits, per-draw allocation, and non-reused command/framebuffer objects.
-3. Make the render graph the single state authority — bring undeclared executor
-   work (picking, IBL) into declared passes.
+3. Make the render graph the single state authority — picking is declared;
+   nested IBL bake work remains the known executor-owned boundary.
 4. Centralize handle generation, retirement, and completion proof.
 5. Replace invalid-combination records with typed variants rejected before
    lowering.
 6. Split backend source by lifecycle where that deepens ownership.
 7. Add semantic validation at creation/compile/debug layers.
-8. Only then pursue throughput: cull, then real instancing, then MDI for
-   compatible binding groups (architecture spec §8 P2, ADR-013).
+8. Only then pursue further throughput work from the shipped baseline of
+   conservative culling, real instancing, and compatible MDI groups. Measure the
+   current visibility/binding-state limit first (architecture spec §8 P2,
+   ADR-013).
 
 Each item is a vertical slice with its own tests and compatible before/after
 evidence. Do not combine state-authority, lifetime, backend representation, and

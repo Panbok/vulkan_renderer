@@ -24,9 +24,9 @@ Everything below is a real, present API or script.
 ### Per-pass CPU and GPU time
 
 ```c
-bool8_t vkr_rg_get_timings(const VkrRenderGraph *graph,
-                           const VkrRgPassTiming **out_timings,
-                           uint32_t *out_count);
+bool8_t vkr_rg_get_pass_timings(const VkrRenderGraph *graph,
+                                const VkrRgPassTiming **out_timings,
+                                uint32_t *out_count);
 ```
 
 `VkrRgPassTiming` (`lib/src/renderer/vkr_render_graph.h`) carries `cpu_ms`,
@@ -46,19 +46,32 @@ regression.
 not time:
 
 - `world` (`VkrWorldBatchMetrics`): `draws_collected`, `opaque_draws`,
-  `transparent_draws`, `opaque_batches`, `draws_issued`, `batches_created`,
-  `draws_merged`, `indirect_draws_issued`, `avg_batch_size`, `max_batch_size`.
+  `transparent_draws`, `opaque_batches`, `draws_issued`,
+  `draw_calls_issued`, `batches_created`, `draws_merged`,
+  `indirect_draws_issued`, `indirect_calls_issued`, `avg_batch_size`, and
+  `max_batch_size`.
 - `shadow` (`VkrShadowMetrics`): per-cascade opaque/alpha draw calls, set-1
-  descriptor binds, and opaque/alpha batch counts.
+  descriptor binds, opaque/alpha batch counts, and opaque indirect-command and
+  indirect-call counts.
 
-These are the right numbers for throughput work, because they change
-deterministically and do not depend on GPU or driver. Use them to prove a
-batching or culling change did what you claim — `draws_issued` falling while
-`draws_collected` holds is real evidence — then confirm with timing.
+These are deterministic submission metrics; they do not depend on GPU or
+driver. Hold logical work and captures constant while using them to prove that
+an API-submission change reduced calls, then confirm with timing.
 
-Note that `draws_merged` is currently hardcoded to zero in
-`passes/vkr_pass_world.c` and `batches_created` mirrors the opaque count. Merging
-is not implemented, so a nonzero `draws_merged` means someone wired step 2 below.
+`draws_issued` counts logical indexed commands after CPU instancing;
+`draw_calls_issued` counts the actual direct or indirect Vulkan calls.
+`draws_merged` is derived from logical commands versus submitted binding-state
+batches; despite its name, it does not report the earlier CPU instancing merge.
+The indirect counters distinguish commands carried from MDI calls recorded.
+Inspect all four when evaluating batching: a lower API-call count alone does
+not prove that visibility, ordering, or logical work stayed equivalent.
+
+`VkrVisibilityStats` (`lib/src/renderer/vkr_visibility.h`) covers the extraction
+stage instead: tested/culled objects, missing bounds, opaque draws before/after
+CPU merging, merge opportunities/run length, and distinct geometry/material
+groups. Use those counters for culling or instancing claims, and pair them with
+the frame metrics and image validation so rejected or merged work does not hide
+a rendering change.
 
 ### Upload stalls
 
@@ -144,27 +157,34 @@ submit path directly rather than concluding "no change".
 command stream. Compare timestamp-on against timestamp-on, never against a
 timestamp-off baseline.
 
-## Optimization order
+## Current throughput baseline
 
-When the goal is throughput rather than a specific regression, follow the ranked
-plan in `docs/architecture/renderer-architecture-spec.md` §8 P2 and ADR-013
-(**Proposed** — read it before adding a caller):
+The ranked P2 plan in `docs/architecture/renderer-architecture-spec.md` §8 and
+ADR-013 is shipped; ADR-013 is **Accepted (partial)** pending native Vulkan
+validation. Production payload construction performs conservative camera and
+union-of-cascades visibility classification. Opaque world work uses a complete
+instancing key, and the world/shadow passes use bounded MDI groups with direct
+fallback. `vkr_indirect_draw_alloc` is called by the shared pass submission
+path.
 
-1. **Cull before materializing world payloads.** `vkr_frustum` exists and is
-   tested but has no production call site. Bounds must be correctly transformed
-   — non-uniform scale requires conservatively expanding spheres or transforming
-   AABBs.
-2. **Real instancing next.** Consecutive draws sharing pipeline, material,
-   geometry buffers, and index range collapse into one indexed draw with
-   `instance_count > 1` when the instance records are contiguous.
-   `VkrDrawBatcher` exists and is tested but is unwired.
-3. **MDI only for meaningful binding-state groups.** Multiple indirect commands
-   share one call only while pipeline, descriptors, and vertex/index buffers stay
-   compatible. Per-material descriptor sets and per-geometry buffers limit
-   grouping today — bindless or material tables and shared mega-buffers may be
-   prerequisites for a large win. `vkr_indirect_draw_alloc` has no caller.
-4. **Keep camera and shadow visibility separate.** A camera-culled list cannot be
-   reused for CSM: off-camera objects still cast visible shadows.
+The older `VkrDrawBatcher` module still has no production caller, but that is
+not evidence that batching is absent: P2 shipped through the visibility and
+pass-local batching paths. Before proposing another throughput layer, read
+ADR-013's implemented behavior and measure which current boundary dominates:
+
+1. **Visibility granularity.** Sponza's material-merged submeshes have poor
+   spatial locality, while San Miguel demonstrates useful CPU culling. Improve
+   content/bounds granularity only from representative measurements.
+2. **Instancing compatibility.** Local reflection-probe descriptor selection is
+   position-dependent and intentionally prevents unsafe merges. Preserve that
+   binding-context invariant or move the state into per-instance data first.
+3. **MDI group reach.** Multiple indirect commands share one call only while
+   pipeline, descriptors, and vertex/index buffers remain compatible.
+   Per-material descriptor sets and per-geometry buffers limit world grouping;
+   shared buffers or a material table may be prerequisites for a larger win.
+4. **Separate visibility domains.** Camera visibility cannot replace the union
+   of shadow-cascade visibility: off-camera objects may still cast visible
+   shadows.
 
 Known hitch sources before you go hunting for a new one: synchronous upload
 fence waits (§7.2), pipeline variant creation outside the prebuilt set, graph
@@ -177,7 +197,7 @@ still-pending slot (§7.3).
 Change:        <what>
 Config:        Release / <GPU> / <driver> / <WxH> / <scene> / <N> swapchain images /
                present <mode> / editor <on|off> / <N> cascades
-Instrument:    <vkr_rg_get_timings | work-volume metrics | upload wait stats | benchmark harness>
+Instrument:    <vkr_rg_get_pass_timings | work-volume metrics | upload wait stats | benchmark harness>
 Runs:          <N>, <window> frames each
 Before:        <metric> = <value> (spread <lo>–<hi>)
 After:         <metric> = <value> (spread <lo>–<hi>)

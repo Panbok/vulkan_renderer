@@ -82,7 +82,10 @@ frame/draw sets. `.shadercfg` supplies shader identity, stages, render pass,
 
 Static assertions pin the `VkrVertex3d`, `VkrInstanceDataGPU`, and
 `VkrIndirectDrawCommand` host layouts. Pipeline cache persistence is
-implemented and validated by `./validate_pipeline_cache.sh`.
+implemented and validated by `./validate_pipeline_cache.sh`. Reflected uniform
+members are validated against `.shadercfg` names, offsets, exact sizes,
+scalar/vector/matrix shapes, array count/stride, and matrix stride at shader
+creation; all shipped shader manifests are covered by the CPU suite.
 
 ### Frame synchronization — ADR-009
 
@@ -118,56 +121,46 @@ These are logged in the architecture spec §3.3, §7, and §8. If your task is n
 one of them, do not opportunistically half-fix one; if it is, read the spec
 entry first.
 
-**P0 — correctness and error contracts**
+The former P0 correctness list is resolved: graph barriers carry access and
+subresource ranges; frame streams use frame-in-flight slots; backend/graph
+failures propagate; rejected packets cancel explicitly. Do not re-propose those
+repairs from an older audit. The remaining boundaries are:
 
-- Graph image barriers execute from layout pairs, dropping the compiler's
-  `src_access`/`dst_access`. Barriers are skipped when layouts match, so
-  write→read and write→write hazards in the same layout are unrepresented.
-  Buffer barriers are likewise skipped on matching access flags.
-- Image state and barriers cover whole images even when an attachment names a
-  mip/layer slice. Subresource granularity is not tracked.
-- The graph is not the sole authority over GPU work: the picking executor opens
-  its own retained render pass/target, and the IBL executor creates targets and
-  records several graphics passes. Neither declares those resources or accesses.
-- Instance and indirect stream arrays hold three buffers but are reset using
-  `image_index % 3`. A four-image swapchain aliases images 0 and 3 while both
-  can be in flight.
-- Fence wait, acquire, command-buffer begin/end, submit, and present failures
-  are logged in several paths but returned as `VKR_RENDERER_ERROR_NONE`.
-- `vkr_rg_execute()` returns `void`, so compile, barrier, and begin/end-pass
-  failures cannot reach `vkr_renderer_submit_packet()`.
-- Ending a rejected packet assumes the acquired image was in
-  `COLOR_ATTACHMENT_OPTIMAL`, though no pass may have transitioned it.
-
-**P1 — architectural completion**
-
-- `vulkan_spirv_shader_reflection_create()` sets `uniform_block_count` to zero.
-  There is no member-level reflection and no cross-validation of `.shadercfg`
-  names, types, strides, or offsets against SPIR-V. Treat the manifest uniform
-  layout as manually synchronized data.
-- Image and buffer upload helpers submit and then wait on fences, so upload
-  completion does not overlap later rendering and staging is not retired
-  asynchronously. The dedicated transfer queue is selected when available but is
-  a synchronous path today. Per-worker parallel upload pools require both
-  `VKR_PARALLEL_UPLOAD` and `VKR_PARALLEL_UPLOAD_UNSAFE=1`; that is not the
-  shipped path.
-- KTX2 normal-map fallback: the format selector returns `R8G8_UNORM` when
-  neither BC5 nor ASTC is supported, but the transcode mapper has no
-  `R8G8_UNORM` case and returns `KTX_TTF_NOSELECTION`.
+- **Graph authority.** Picking resources and readback are declared. IBL baking
+  still creates targets and records passes inside an executor, so the graph
+  cannot schedule that work; an explicit write→sample barrier makes the current
+  path visible and correct, but does not make the graph authoritative.
+- **Upload completion.** Uploads recorded during an active frame are deferred,
+  and staging retirement is submit-serial/fence gated. Bootstrap and other
+  uploads outside an active frame still use blocking single-use submits.
+  Timeline-semaphore retirement is not implemented.
+- **Readback pressure.** Picking's three-slot ring is deferred in the common
+  case, but wrapping onto a pending slot waits on its associated frame fence.
+- **Device memory.** Allocation accounting and `VK_EXT_memory_budget` telemetry
+  are centralized in the backend wrapper. There is no VMA or device-memory
+  block allocator; current Apple M1 Pro measurements argue against adding one
+  until a target reports a low allocation limit or a materially different
+  allocation distribution.
+- **Validation breadth.** The corrected frame path and P2 throughput path have
+  a three-image MoltenVK validation record. Two/four-image swapchains, wider
+  failure injection, other GPUs/queue layouts, and a native Vulkan target remain
+  unverified.
 
 **Absent by design-so-far, not bugs**
 
-No VMA or `VkDeviceMemory` block allocator — `vkAllocateMemory` is called per
-image, per buffer create/resize, and per readback buffer (four direct backend
-sites). No dynamic rendering. No descriptor indexing or bindless. No HDR,
-tonemap, or post chain — the `POST` domain is reserved. No shader hot reload.
-`compute` JSON passes currently orchestrate graphics/CPU work; real compute
-dispatch is not exercised.
+No dynamic rendering. No descriptor indexing or bindless. No HDR, tonemap, or
+post chain — the `POST` domain is reserved. No shader hot reload. `compute` JSON
+passes currently orchestrate graphics/CPU work; real compute dispatch is not
+exercised.
 
-**Plumbed but unused** — `vkr_frustum` (culling), `VkrDrawBatcher` (batching),
-and `vkr_indirect_draw_alloc` (MDI) all exist with tests but have no production
-call sites. ADR-013 is the **Proposed** plan for wiring them; read it before
-adding a caller.
+**Throughput baseline** — production payload extraction uses `vkr_frustum` for
+camera and union-of-cascade visibility, CPU-merges compatible opaque candidates
+into instanced draws, and calls `vkr_indirect_draw_alloc` through shared
+world/shadow pass submission. The older `VkrDrawBatcher` module alone remains
+unwired; production batching uses visibility and pass-local structures.
+ADR-013 is **Accepted (partial)** pending native Vulkan validation. Read its
+implemented behavior and measurements before proposing another submission
+layer.
 
 ## Adopt these invariants
 
