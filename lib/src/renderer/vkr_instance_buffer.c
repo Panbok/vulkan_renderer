@@ -18,6 +18,7 @@ vkr_internal bool8_t vkr_instance_buffer_pool_try_init(
       .buffer_type = buffer_type,
       .bind_on_create = true_v,
       .persistently_mapped = true_v,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_INSTANCE,
   };
 
   for (uint32_t i = 0; i < VKR_INSTANCE_BUFFER_FRAMES; ++i) {

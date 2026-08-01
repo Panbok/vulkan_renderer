@@ -945,6 +945,7 @@ vkr_internal bool8_t vkr_rg_allocate_image_textures(VkrRenderGraph *graph,
           .height = image->desc.height,
           .format = image->desc.format,
           .usage = image->desc.usage,
+          .allocation_owner = VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
       };
       image->textures[i] = vkr_renderer_create_render_target_texture(
           graph->renderer, &tex_desc, &tex_err);
@@ -1017,6 +1018,7 @@ vkr_internal bool8_t vkr_rg_allocate_buffer_handles(VkrRenderGraph *graph,
       .buffer_type = buffer_type,
       .bind_on_create = true_v,
       .persistently_mapped = false_v,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
   };
 
   buffer->buffers = vkr_allocator_alloc(graph->allocator,
@@ -1493,6 +1495,7 @@ vkr_internal void vkr_rg_sync_scene_color_handles(VkrRenderGraph *graph) {
           .channels = 4,
           .type = VKR_TEXTURE_TYPE_2D,
           .format = scene_color->desc.format,
+          .allocation_owner = VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
           .sample_count = VKR_SAMPLE_COUNT_1,
           .properties = vkr_texture_property_flags_create(),
           .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,

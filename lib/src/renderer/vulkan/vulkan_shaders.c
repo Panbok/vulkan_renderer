@@ -1689,6 +1689,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
             VKR_MEMORY_PROPERTY_HOST_VISIBLE |
             VKR_MEMORY_PROPERTY_HOST_COHERENT),
         .buffer_type = buffer_type,
+        .allocation_owner = VKR_GPU_ALLOCATION_OWNER_SHADER,
         .bind_on_create = true_v};
 
     if (!vulkan_buffer_create(state, &global_uniform_buffer_desc,
@@ -1772,6 +1773,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
             VKR_MEMORY_PROPERTY_HOST_VISIBLE |
             VKR_MEMORY_PROPERTY_HOST_COHERENT),
         .buffer_type = buffer_type,
+        .allocation_owner = VKR_GPU_ALLOCATION_OWNER_SHADER,
         .bind_on_create = true_v};
 
     if (!vulkan_buffer_create(state, &instance_uniform_buffer_desc,

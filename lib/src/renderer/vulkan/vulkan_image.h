@@ -3,14 +3,33 @@
 #include "vulkan_backend.h"
 #include "vulkan_utils.h"
 
-bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
-                             uint32_t width, uint32_t height, VkFormat format,
-                             VkImageTiling tiling, VkImageUsageFlags usage,
-                             VkMemoryPropertyFlags memory_flags,
-                             uint32_t mip_levels, uint32_t array_layers,
-                             VkSampleCountFlagBits samples,
-                             VkImageViewType view_type,
-                             VkImageAspectFlags view_aspect_flags,
+/**
+ * @brief Everything vulkan_image_create needs, named at the call site.
+ *
+ * A positional argument list this wide reads as a run of bare literals — the
+ * mip/layer pair and the four enums in particular are transposable without a
+ * compiler complaint. Every field is required; there is no useful zero default
+ * for `mip_levels`, `array_layers`, or `samples`.
+ */
+typedef struct VulkanImageDescription {
+  VkImageType image_type;
+  uint32_t width;
+  uint32_t height;
+  VkFormat format;
+  VkImageTiling tiling;
+  VkImageUsageFlags usage;
+  VkMemoryPropertyFlags memory_flags;
+  uint32_t mip_levels;
+  uint32_t array_layers;
+  VkSampleCountFlagBits samples;
+  VkImageViewType view_type;
+  VkImageAspectFlags view_aspect_flags;
+  /** Logical owner recorded against the resulting device allocation. */
+  VkrGpuAllocationOwner allocation_owner;
+} VulkanImageDescription;
+
+bool32_t vulkan_image_create(VulkanBackendState *state,
+                             const VulkanImageDescription *desc,
                              VulkanImage *out_image);
 
 void vulkan_image_destroy(VulkanBackendState *state, VulkanImage *image);

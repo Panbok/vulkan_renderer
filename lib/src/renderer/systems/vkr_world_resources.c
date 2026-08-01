@@ -137,6 +137,7 @@ vkr_internal bool8_t vkr_world_resources_create_writable_cube_texture(
       .channels = 4,
       .type = VKR_TEXTURE_TYPE_CUBE_MAP,
       .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
       .sample_count = VKR_SAMPLE_COUNT_1,
       .properties = vkr_texture_property_flags_create(),
       .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,

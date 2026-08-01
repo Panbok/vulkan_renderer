@@ -16,25 +16,20 @@ vulkan_image_aspect_flags_from_format(VkFormat format) {
   }
 }
 
-bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
-                             uint32_t width, uint32_t height, VkFormat format,
-                             VkImageTiling tiling, VkImageUsageFlags usage,
-                             VkMemoryPropertyFlags memory_flags,
-                             uint32_t mip_levels, uint32_t array_layers,
-                             VkSampleCountFlagBits samples,
-                             VkImageViewType view_type,
-                             VkImageAspectFlags view_aspect_flags,
+bool32_t vulkan_image_create(VulkanBackendState *state,
+                             const VulkanImageDescription *desc,
                              VulkanImage *out_image) {
   assert_log(state != NULL, "State is NULL");
+  assert_log(desc != NULL, "Image description is NULL");
   assert_log(out_image != NULL, "Output image is NULL");
 
   // todo: support configurable depth and sharing mode.
   VkImageCreateFlags create_flags = 0;
-  if (view_type == VK_IMAGE_VIEW_TYPE_CUBE) {
-    if (array_layers % 6 != 0) {
+  if (desc->view_type == VK_IMAGE_VIEW_TYPE_CUBE) {
+    if (desc->array_layers % 6 != 0) {
       log_fatal(
           "Cube map images require array_layers to be a multiple of 6, got %u",
-          array_layers);
+          desc->array_layers);
       return false_v;
     }
     create_flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
@@ -43,31 +38,32 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
   VkImageCreateInfo image_create_info = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
       .flags = create_flags,
-      .imageType = image_type,
-      .extent.width = width,
-      .extent.height = height,
+      .imageType = desc->image_type,
+      .extent.width = desc->width,
+      .extent.height = desc->height,
       .extent.depth = 1,
-      .mipLevels = mip_levels,
-      .arrayLayers = array_layers,
-      .format = format,
-      .tiling = tiling,
+      .mipLevels = desc->mip_levels,
+      .arrayLayers = desc->array_layers,
+      .format = desc->format,
+      .tiling = desc->tiling,
       .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-      .usage = usage,
-      .samples = samples,
+      .usage = desc->usage,
+      .samples = desc->samples,
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
   };
 
-  out_image->width = width;
-  out_image->height = height;
-  out_image->mip_levels = mip_levels;
-  out_image->array_layers = array_layers;
-  out_image->samples = samples;
+  out_image->width = desc->width;
+  out_image->height = desc->height;
+  out_image->mip_levels = desc->mip_levels;
+  out_image->array_layers = desc->array_layers;
+  out_image->samples = desc->samples;
   out_image->view = VK_NULL_HANDLE;
   out_image->allocation_size = 0;
+  out_image->allocation_owner = desc->allocation_owner;
   // Provisional; overwritten below with the flags actually granted, because
   // vulkan_image_destroy derives the free-side allocator tag from this field
   // and the two must agree.
-  out_image->memory_property_flags = memory_flags;
+  out_image->memory_property_flags = desc->memory_flags;
 
   if (vkCreateImage(state->device.logical_device, &image_create_info,
                     state->allocator, &out_image->handle) != VK_SUCCESS) {
@@ -78,10 +74,10 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
   VkMemoryRequirements memory_requirements;
   vkGetImageMemoryRequirements(state->device.logical_device, out_image->handle,
                                &memory_requirements);
-  uint32_t granted_memory_flags = memory_flags;
+  uint32_t granted_memory_flags = desc->memory_flags;
   int32_t memory_type = find_memory_index_with_fallback(
       state->device.physical_device, memory_requirements.memoryTypeBits,
-      memory_flags, &granted_memory_flags);
+      desc->memory_flags, &granted_memory_flags);
 
   // Tag from the flags actually granted, not the ones requested: a fallback
   // that dropped DEVICE_LOCAL would otherwise report host memory as GPU memory.
@@ -106,6 +102,7 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
   };
 
   if (vulkan_backend_allocate_device_memory(state, &memory_allocate_info,
+                                            desc->allocation_owner,
                                             &out_image->memory) != VK_SUCCESS) {
     log_error("Failed to allocate memory");
     vkDestroyImage(state->device.logical_device, out_image->handle,
@@ -127,10 +124,10 @@ bool32_t vulkan_image_create(VulkanBackendState *state, VkImageType image_type,
     return false;
   }
 
-  if (view_type != VK_IMAGE_VIEW_TYPE_MAX_ENUM) {
+  if (desc->view_type != VK_IMAGE_VIEW_TYPE_MAX_ENUM) {
     out_image->view = 0;
-    if (!vulkan_create_image_view(state, format, view_type, out_image,
-                                  view_aspect_flags)) {
+    if (!vulkan_create_image_view(state, desc->format, desc->view_type,
+                                  out_image, desc->view_aspect_flags)) {
       log_error("Failed to create image view");
       vkr_allocator_report(&state->alloc, memory_requirements.size, alloc_tag,
                            false_v);

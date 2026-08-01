@@ -153,7 +153,9 @@ vkr_uniform_buffer_create(VkrRendererFrontendHandle renderer, const void *data,
                                          VKR_MEMORY_PROPERTY_HOST_COHERENT)
                                    : vkr_memory_property_flags_from_bits(
                                          VKR_MEMORY_PROPERTY_DEVICE_LOCAL),
-      .buffer_type = buffer_type};
+      .buffer_type = buffer_type,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_SHADER,
+  };
 
   uniform_buffer.handle =
       vkr_renderer_create_buffer(renderer, &desc, data, out_error);

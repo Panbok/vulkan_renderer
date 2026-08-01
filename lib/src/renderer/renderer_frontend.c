@@ -707,7 +707,9 @@ vkr_renderer_create_vertex_buffer(VkrRendererFrontendHandle renderer,
                                                 VKR_BUFFER_USAGE_TRANSFER_DST |
                                                 VKR_BUFFER_USAGE_TRANSFER_SRC),
       .bind_on_create = true_v,
-      .buffer_type = buffer_type};
+      .buffer_type = buffer_type,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_MESH,
+  };
 
   return vkr_renderer_create_buffer(renderer, &desc, initial_data, out_error);
 }
@@ -729,7 +731,9 @@ VkrBufferHandle vkr_renderer_create_index_buffer(
                                                 VKR_BUFFER_USAGE_TRANSFER_DST |
                                                 VKR_BUFFER_USAGE_TRANSFER_SRC),
       .bind_on_create = true_v,
-      .buffer_type = buffer_type};
+      .buffer_type = buffer_type,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_MESH,
+  };
 
   return vkr_renderer_create_buffer(renderer, &desc, initial_data, out_error);
 }
@@ -746,7 +750,9 @@ VkrBufferHandle vkr_renderer_create_vertex_buffer_dynamic(
       .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_VERTEX_BUFFER |
                                                 VKR_BUFFER_USAGE_TRANSFER_DST),
       .bind_on_create = true_v,
-      .buffer_type = buffer_type};
+      .buffer_type = buffer_type,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_MESH,
+  };
 
   return vkr_renderer_create_buffer(renderer, &desc, initial_data, out_error);
 }
@@ -765,7 +771,9 @@ VkrBufferHandle vkr_renderer_create_index_buffer_dynamic(
       .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_INDEX_BUFFER |
                                                 VKR_BUFFER_USAGE_TRANSFER_DST),
       .bind_on_create = true_v,
-      .buffer_type = buffer_type};
+      .buffer_type = buffer_type,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_MESH,
+  };
 
   return vkr_renderer_create_buffer(renderer, &desc, initial_data, out_error);
 }

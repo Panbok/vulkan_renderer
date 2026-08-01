@@ -63,6 +63,7 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
   out_buffer->buffer.total_size = desc->size;
   out_buffer->buffer.usage = usage;
   out_buffer->buffer.memory_property_flags = memory_property_flags;
+  out_buffer->buffer.allocation_owner = desc->allocation_owner;
 
   VkBufferCreateInfo buffer_info = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -108,7 +109,8 @@ bool8_t vulkan_buffer_create(VulkanBackendState *state,
   };
 
   if (vulkan_backend_allocate_device_memory(
-          state, &alloc_info, &out_buffer->buffer.memory) != VK_SUCCESS) {
+          state, &alloc_info, desc->allocation_owner,
+          &out_buffer->buffer.memory) != VK_SUCCESS) {
     log_error("Failed to allocate memory for buffer");
     vkDestroyBuffer(state->device.logical_device, out_buffer->buffer.handle,
                     state->allocator);
@@ -256,8 +258,9 @@ bool8_t vulkan_buffer_resize(VulkanBackendState *state, uint64_t new_size,
   };
 
   VkDeviceMemory new_memory;
-  if (vulkan_backend_allocate_device_memory(state, &alloc_info, &new_memory) !=
-      VK_SUCCESS) {
+  if (vulkan_backend_allocate_device_memory(state, &alloc_info,
+                                            buffer->allocation_owner,
+                                            &new_memory) != VK_SUCCESS) {
     log_error("Failed to allocate memory for new buffer during resize");
     vkDestroyBuffer(state->device.logical_device, new_buffer, state->allocator);
     return false_v;

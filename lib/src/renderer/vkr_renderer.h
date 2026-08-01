@@ -458,6 +458,63 @@ typedef struct VkrDeviceInformation {
 // Resource Descriptions
 // ============================================================================
 
+/**
+ * @brief Logical owner supplied when a renderer resource is created.
+ *
+ * This is allocation telemetry, not a Vulkan memory classification. The value
+ * travels into the device-allocation tracker (invalid values become UNKNOWN);
+ * it must never be inferred from a debug name, usage flags, or memory type.
+ */
+typedef enum VkrGpuAllocationOwner {
+  VKR_GPU_ALLOCATION_OWNER_UNKNOWN = 0,
+  VKR_GPU_ALLOCATION_OWNER_MESH,
+  VKR_GPU_ALLOCATION_OWNER_TEXTURE,
+  VKR_GPU_ALLOCATION_OWNER_FONT,
+  VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
+  VKR_GPU_ALLOCATION_OWNER_SHADER,
+  VKR_GPU_ALLOCATION_OWNER_INSTANCE,
+  VKR_GPU_ALLOCATION_OWNER_INDIRECT,
+  VKR_GPU_ALLOCATION_OWNER_STAGING,
+  VKR_GPU_ALLOCATION_OWNER_READBACK,
+  VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN,
+  VKR_GPU_ALLOCATION_OWNER_COUNT,
+} VkrGpuAllocationOwner;
+
+/**
+ * @brief Coerces a caller-supplied owner into a reportable bucket.
+ *
+ * An out-of-range value becomes UNKNOWN rather than indexing past the owner
+ * arrays. UNKNOWN is first-class in every report, so a missed or external
+ * caller stays visible instead of being folded into a real owner's row.
+ */
+vkr_internal INLINE VkrGpuAllocationOwner
+vkr_gpu_allocation_owner_normalize(VkrGpuAllocationOwner owner) {
+  return owner < VKR_GPU_ALLOCATION_OWNER_COUNT
+             ? owner
+             : VKR_GPU_ALLOCATION_OWNER_UNKNOWN;
+}
+
+/**
+ * @brief Device-memory accounting for one logical owner bucket.
+ *
+ * Kept as one struct per owner rather than parallel per-statistic arrays: an
+ * allocation or free updates exactly one of these, so the six counters share a
+ * cache line, and a new statistic is one field instead of one array in each of
+ * the backend tracker and the public snapshot.
+ *
+ * `total_*` are cumulative and stay exact even after the handle table
+ * saturates. `live_*` and `peak_*` are derived from that table and drift once
+ * it does, which `VkrDeviceMemoryStats.live_totals_exact` reports.
+ */
+typedef struct VkrGpuAllocationOwnerTotals {
+  uint64_t live_bytes;
+  uint64_t peak_bytes;
+  uint64_t total_bytes;
+  uint64_t live_allocation_count;
+  uint64_t peak_allocation_count;
+  uint64_t total_allocation_count;
+} VkrGpuAllocationOwnerTotals;
+
 typedef struct VkrBufferDescription {
   uint64_t size;
   VkrBufferUsageFlags usage;
@@ -467,6 +524,7 @@ typedef struct VkrBufferDescription {
   // Or the backend abstracts this.
 
   VkrBufferTypeFlags buffer_type;
+  VkrGpuAllocationOwner allocation_owner;
 
   bool8_t bind_on_create;
   bool8_t persistently_mapped;
@@ -651,6 +709,7 @@ typedef struct VkrTextureDescription {
 
   VkrTextureType type;
   VkrTextureFormat format;
+  VkrGpuAllocationOwner allocation_owner;
   VkrSampleCount
       sample_count; // MSAA sample count (default: VKR_SAMPLE_COUNT_1)
   VkrTexturePropertyFlags properties;
@@ -1066,6 +1125,7 @@ typedef struct VkrRenderTargetTextureDesc {
   uint32_t height;
   VkrTextureFormat format;
   VkrTextureUsageFlags usage;
+  VkrGpuAllocationOwner allocation_owner;
 } VkrRenderTargetTextureDesc;
 
 typedef struct VkrGraphicsPipelineDescription {
@@ -1172,8 +1232,9 @@ typedef struct VkrRendererUploadWaitStats {
  * doing and what block size it should use, which is why they are captured
  * before any allocator is written.
  *
- * `heap_usage_bytes`/`heap_budget_bytes` are populated only when
- * VK_EXT_memory_budget is available; `heap_usage_valid` says which it is.
+ * Owner rows use caller-declared resource metadata; they are never inferred
+ * from memory types. `heap_usage_bytes`/`heap_budget_bytes` are populated only
+ * when VK_EXT_memory_budget is available; `heap_usage_valid` says which it is.
  */
 typedef struct VkrDeviceMemoryStats {
   uint64_t live_allocation_count;
@@ -1190,6 +1251,8 @@ typedef struct VkrDeviceMemoryStats {
   /** False once the tracking table overflowed; live figures are then inexact.
    */
   bool8_t live_totals_exact;
+
+  VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT];
 
   uint32_t memory_type_count;
   uint64_t live_bytes_by_type[VKR_DEVICE_MEMORY_TYPE_MAX];

@@ -244,6 +244,7 @@ typedef struct VulkanBuffer {
   VkBufferUsageFlagBits usage;
   uint64_t total_size;
   uint64_t allocation_size;
+  VkrGpuAllocationOwner allocation_owner;
 
   bool8_t is_locked;
   void *mapped_ptr;
@@ -288,6 +289,7 @@ typedef struct VulkanImage {
   VkDeviceMemory memory;
   VkImageView view;
   uint64_t allocation_size;
+  VkrGpuAllocationOwner allocation_owner;
   uint32_t width;
   uint32_t height;
   uint32_t mip_levels;
@@ -669,6 +671,7 @@ typedef struct VulkanDeviceMemoryEntry {
   VkDeviceMemory memory; /**< VK_NULL_HANDLE marks a free slot */
   uint64_t size;
   uint32_t memory_type_index;
+  VkrGpuAllocationOwner owner;
 } VulkanDeviceMemoryEntry;
 
 /**
@@ -676,8 +679,9 @@ typedef struct VulkanDeviceMemoryEntry {
  *
  * The renderer allocates one VkDeviceMemory per buffer/image/readback buffer.
  * Byte totals were already tracked through allocator tags, but allocation
- * *count* and per-memory-type distribution were not, and those are what decide
- * whether pooling is worth doing and what block sizes it should use.
+ * *count*, per-memory-type distribution, and caller-declared logical owners
+ * are retained here; those decide whether pooling is worth doing and what
+ * block sizes it should use.
  *
  * Allocations are recorded in an open-addressed table keyed by the
  * VkDeviceMemory handle, so a free only needs the handle and the counters
@@ -693,6 +697,7 @@ typedef struct VulkanDeviceMemoryStats {
   uint64_t peak_bytes;
   uint64_t live_bytes_by_type[VK_MAX_MEMORY_TYPES];
   uint64_t live_count_by_type[VK_MAX_MEMORY_TYPES];
+  VkrGpuAllocationOwnerTotals owners[VKR_GPU_ALLOCATION_OWNER_COUNT];
   VulkanDeviceMemoryEntry *entries; /**< Capacity-sized, zeroed on init */
   uint32_t entry_capacity;
   bool8_t tracking_exact; /**< False once the table has overflowed */

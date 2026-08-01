@@ -321,6 +321,7 @@ vkr_internal bool8_t vkr_system_font_create_atlas_texture(
       .height = state->atlas_height,
       .channels = 4,
       .format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_FONT,
       .type = VKR_TEXTURE_TYPE_2D,
       .properties = props,
       .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,

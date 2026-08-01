@@ -18,15 +18,23 @@ vulkan_backend_queue_present_locked(VulkanBackendState *state, VkQueue queue,
  * All VkDeviceMemory the renderer owns must go through this pair so live
  * counts, byte totals, and per-memory-type distribution stay exact.
  */
-VkResult
-vulkan_backend_allocate_device_memory(VulkanBackendState *state,
-                                      const VkMemoryAllocateInfo *alloc_info,
-                                      VkDeviceMemory *out_memory);
+VkResult vulkan_backend_allocate_device_memory(
+    VulkanBackendState *state, const VkMemoryAllocateInfo *alloc_info,
+    VkrGpuAllocationOwner owner, VkDeviceMemory *out_memory);
 
 /** @brief Frees device memory allocated by
  * vulkan_backend_allocate_device_memory. */
 void vulkan_backend_free_device_memory(VulkanBackendState *state,
                                        VkDeviceMemory memory);
+
+/** Tracker bookkeeping operations exposed for deterministic CPU tests. */
+void vulkan_device_memory_stats_record_alloc(VulkanDeviceMemoryStats *stats,
+                                             VkDeviceMemory memory,
+                                             uint64_t size,
+                                             uint32_t memory_type_index,
+                                             VkrGpuAllocationOwner owner);
+void vulkan_device_memory_stats_record_free(VulkanDeviceMemoryStats *stats,
+                                            VkDeviceMemory memory);
 
 VkResult vulkan_backend_queue_wait_idle_locked(VulkanBackendState *state,
                                                VkQueue queue);

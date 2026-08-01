@@ -136,12 +136,22 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
     return false;
   }
 
-  if (!vulkan_image_create(state, VK_IMAGE_TYPE_2D, extent.width, extent.height,
-                           state->device.depth_format, VK_IMAGE_TILING_OPTIMAL,
-                           VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1,
-                           VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
-                           VK_IMAGE_ASPECT_DEPTH_BIT,
+  const VulkanImageDescription depth_desc = {
+      .image_type = VK_IMAGE_TYPE_2D,
+      .width = extent.width,
+      .height = extent.height,
+      .format = state->device.depth_format,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+      .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .mip_levels = 1,
+      .array_layers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .view_type = VK_IMAGE_VIEW_TYPE_2D,
+      .view_aspect_flags = VK_IMAGE_ASPECT_DEPTH_BIT,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN,
+  };
+  if (!vulkan_image_create(state, &depth_desc,
                            &state->swapchain.depth_attachment)) {
     log_error("Failed to create depth attachment");
     return false;
@@ -307,12 +317,22 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
     return VULKAN_SWAPCHAIN_RESULT_FAILED;
   }
 
-  if (!vulkan_image_create(state, VK_IMAGE_TYPE_2D, extent.width, extent.height,
-                           state->device.depth_format, VK_IMAGE_TILING_OPTIMAL,
-                           VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-                           VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1,
-                           VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
-                           VK_IMAGE_ASPECT_DEPTH_BIT,
+  const VulkanImageDescription depth_desc = {
+      .image_type = VK_IMAGE_TYPE_2D,
+      .width = extent.width,
+      .height = extent.height,
+      .format = state->device.depth_format,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+      .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .mip_levels = 1,
+      .array_layers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .view_type = VK_IMAGE_VIEW_TYPE_2D,
+      .view_aspect_flags = VK_IMAGE_ASPECT_DEPTH_BIT,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN,
+  };
+  if (!vulkan_image_create(state, &depth_desc,
                            &state->swapchain.depth_attachment)) {
     log_error("Failed to create depth attachment");
     return VULKAN_SWAPCHAIN_RESULT_FAILED;

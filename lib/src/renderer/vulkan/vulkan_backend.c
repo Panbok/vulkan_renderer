@@ -542,11 +542,15 @@ vkr_internal uint32_t vulkan_device_memory_slot(
   return (uint32_t)(hash & (uint64_t)(stats->entry_capacity - 1));
 }
 
-vkr_internal void
-vulkan_device_memory_record_alloc(VulkanBackendState *state,
-                                  VkDeviceMemory memory, uint64_t size,
-                                  uint32_t memory_type_index) {
-  VulkanDeviceMemoryStats *stats = &state->device_memory_stats;
+void vulkan_device_memory_stats_record_alloc(VulkanDeviceMemoryStats *stats,
+                                             VkDeviceMemory memory,
+                                             uint64_t size,
+                                             uint32_t memory_type_index,
+                                             VkrGpuAllocationOwner owner) {
+  if (!stats || memory == VK_NULL_HANDLE) {
+    return;
+  }
+  owner = vkr_gpu_allocation_owner_normalize(owner);
 
   stats->total_allocation_count++;
   stats->live_allocation_count++;
@@ -561,6 +565,17 @@ vulkan_device_memory_record_alloc(VulkanBackendState *state,
     stats->live_bytes_by_type[memory_type_index] += size;
     stats->live_count_by_type[memory_type_index]++;
   }
+  VkrGpuAllocationOwnerTotals *totals = &stats->owners[owner];
+  totals->total_allocation_count++;
+  totals->live_allocation_count++;
+  if (totals->live_allocation_count > totals->peak_allocation_count) {
+    totals->peak_allocation_count = totals->live_allocation_count;
+  }
+  totals->total_bytes += size;
+  totals->live_bytes += size;
+  if (totals->live_bytes > totals->peak_bytes) {
+    totals->peak_bytes = totals->live_bytes;
+  }
 
   if (!stats->entries || !stats->tracking_exact) {
     return;
@@ -573,6 +588,7 @@ vulkan_device_memory_record_alloc(VulkanBackendState *state,
       entry->memory = memory;
       entry->size = size;
       entry->memory_type_index = memory_type_index;
+      entry->owner = owner;
       return;
     }
   }
@@ -585,10 +601,9 @@ vulkan_device_memory_record_alloc(VulkanBackendState *state,
            stats->entry_capacity);
 }
 
-vkr_internal void vulkan_device_memory_record_free(VulkanBackendState *state,
-                                                   VkDeviceMemory memory) {
-  VulkanDeviceMemoryStats *stats = &state->device_memory_stats;
-  if (!stats->entries || memory == VK_NULL_HANDLE) {
+void vulkan_device_memory_stats_record_free(VulkanDeviceMemoryStats *stats,
+                                            VkDeviceMemory memory) {
+  if (!stats || !stats->entries || memory == VK_NULL_HANDLE) {
     return;
   }
 
@@ -610,6 +625,10 @@ vkr_internal void vulkan_device_memory_record_free(VulkanBackendState *state,
       stats->live_bytes_by_type[entry->memory_type_index] -= entry->size;
       stats->live_count_by_type[entry->memory_type_index]--;
     }
+    VkrGpuAllocationOwnerTotals *totals =
+        &stats->owners[vkr_gpu_allocation_owner_normalize(entry->owner)];
+    totals->live_allocation_count--;
+    totals->live_bytes -= entry->size;
     *entry = (VulkanDeviceMemoryEntry){0};
 
     // Re-insert the following run so linear probing stays intact.
@@ -641,16 +660,15 @@ vkr_internal void vulkan_device_memory_record_free(VulkanBackendState *state,
  * through vulkan_backend_free_device_memory. Counts remain exact while the
  * handle table has capacity; overflow is surfaced through tracking_exact.
  */
-VkResult
-vulkan_backend_allocate_device_memory(VulkanBackendState *state,
-                                      const VkMemoryAllocateInfo *alloc_info,
-                                      VkDeviceMemory *out_memory) {
+VkResult vulkan_backend_allocate_device_memory(
+    VulkanBackendState *state, const VkMemoryAllocateInfo *alloc_info,
+    VkrGpuAllocationOwner owner, VkDeviceMemory *out_memory) {
   VkResult result = vkAllocateMemory(state->device.logical_device, alloc_info,
                                      state->allocator, out_memory);
   if (result == VK_SUCCESS) {
-    vulkan_device_memory_record_alloc(state, *out_memory,
-                                      alloc_info->allocationSize,
-                                      alloc_info->memoryTypeIndex);
+    vulkan_device_memory_stats_record_alloc(
+        &state->device_memory_stats, *out_memory, alloc_info->allocationSize,
+        alloc_info->memoryTypeIndex, owner);
   }
   return result;
 }
@@ -660,7 +678,7 @@ void vulkan_backend_free_device_memory(VulkanBackendState *state,
   if (memory == VK_NULL_HANDLE) {
     return;
   }
-  vulkan_device_memory_record_free(state, memory);
+  vulkan_device_memory_stats_record_free(&state->device_memory_stats, memory);
   vkFreeMemory(state->device.logical_device, memory, state->allocator);
 }
 
@@ -685,6 +703,7 @@ vkr_internal bool8_t vulkan_backend_prepare_staging_buffer(
       .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_TRANSFER_SRC),
       .buffer_type = buffer_type,
       .bind_on_create = true_v,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_STAGING,
   };
 
   if (!vulkan_buffer_create(state, &staging_desc, out_staging_buffer)) {
@@ -3607,6 +3626,7 @@ renderer_vulkan_get_device_memory_stats(void *backend_state,
   out_stats->live_totals_exact = stats->tracking_exact;
   out_stats->max_allocation_count =
       state->device.properties.limits.maxMemoryAllocationCount;
+  MemCopy(out_stats->owners, stats->owners, sizeof(out_stats->owners));
 
   VkPhysicalDeviceMemoryProperties memory_properties = {0};
   vkGetPhysicalDeviceMemoryProperties(state->device.physical_device,
@@ -6003,11 +6023,22 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
 
   MemZero(texture, sizeof(struct s_TextureHandle));
 
-  if (!vulkan_image_create(
-          state, VK_IMAGE_TYPE_2D, desc->width, desc->height, image_format,
-          VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-          1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
-          VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
+  const VulkanImageDescription image_desc = {
+      .image_type = VK_IMAGE_TYPE_2D,
+      .width = desc->width,
+      .height = desc->height,
+      .format = image_format,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = usage,
+      .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .mip_levels = 1,
+      .array_layers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .view_type = VK_IMAGE_VIEW_TYPE_2D,
+      .view_aspect_flags = VK_IMAGE_ASPECT_COLOR_BIT,
+      .allocation_owner = desc->allocation_owner,
+  };
+  if (!vulkan_image_create(state, &image_desc, &texture->texture.image)) {
     log_fatal("Failed to create render target image");
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
@@ -6048,6 +6079,7 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
       .channels = vulkan_texture_format_channel_count(desc->format),
       .type = VKR_TEXTURE_TYPE_2D,
       .format = desc->format,
+      .allocation_owner = desc->allocation_owner,
       .sample_count = VKR_SAMPLE_COUNT_1,
       .properties = vkr_texture_property_flags_create(),
       .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
@@ -6100,12 +6132,22 @@ renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
 
   MemZero(texture, sizeof(struct s_TextureHandle));
 
-  if (!vulkan_image_create(
-          state, VK_IMAGE_TYPE_2D, width, height, depth_format,
-          VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 1, 1, VK_SAMPLE_COUNT_1_BIT,
-          VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_DEPTH_BIT,
-          &texture->texture.image)) {
+  const VulkanImageDescription image_desc = {
+      .image_type = VK_IMAGE_TYPE_2D,
+      .width = width,
+      .height = height,
+      .format = depth_format,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+      .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .mip_levels = 1,
+      .array_layers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .view_type = VK_IMAGE_VIEW_TYPE_2D,
+      .view_aspect_flags = VK_IMAGE_ASPECT_DEPTH_BIT,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
+  };
+  if (!vulkan_image_create(state, &image_desc, &texture->texture.image)) {
     log_fatal("Failed to create depth attachment image");
     vkr_allocator_free(&state->texture_pool_alloc, texture,
                        sizeof(struct s_TextureHandle),
@@ -6120,6 +6162,7 @@ renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
       .channels = 1,
       .type = VKR_TEXTURE_TYPE_2D,
       .format = vkr_format,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
       .sample_count = VKR_SAMPLE_COUNT_1,
       .properties = vkr_texture_property_flags_create(),
       .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
@@ -6170,11 +6213,22 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
 
   VkImageUsageFlags usage =
       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-  if (!vulkan_image_create(
-          state, VK_IMAGE_TYPE_2D, width, height, depth_format,
-          VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-          1, 1, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
-          VK_IMAGE_ASPECT_DEPTH_BIT, &texture->texture.image)) {
+  const VulkanImageDescription image_desc = {
+      .image_type = VK_IMAGE_TYPE_2D,
+      .width = width,
+      .height = height,
+      .format = depth_format,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = usage,
+      .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .mip_levels = 1,
+      .array_layers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .view_type = VK_IMAGE_VIEW_TYPE_2D,
+      .view_aspect_flags = VK_IMAGE_ASPECT_DEPTH_BIT,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
+  };
+  if (!vulkan_image_create(state, &image_desc, &texture->texture.image)) {
     log_fatal("Failed to create sampled depth attachment image");
     vkr_allocator_free(&state->texture_pool_alloc, texture,
                        sizeof(struct s_TextureHandle),
@@ -6225,6 +6279,7 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
       .channels = 1,
       .type = VKR_TEXTURE_TYPE_2D,
       .format = vkr_format,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
       .sample_count = VKR_SAMPLE_COUNT_1,
       .properties = vkr_texture_property_flags_create(),
       .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_BORDER,
@@ -6277,11 +6332,22 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment_array(
 
   VkImageUsageFlags usage =
       VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-  if (!vulkan_image_create(
-          state, VK_IMAGE_TYPE_2D, width, height, depth_format,
-          VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-          1, layers, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D_ARRAY,
-          VK_IMAGE_ASPECT_DEPTH_BIT, &texture->texture.image)) {
+  const VulkanImageDescription image_desc = {
+      .image_type = VK_IMAGE_TYPE_2D,
+      .width = width,
+      .height = height,
+      .format = depth_format,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = usage,
+      .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .mip_levels = 1,
+      .array_layers = layers,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .view_type = VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+      .view_aspect_flags = VK_IMAGE_ASPECT_DEPTH_BIT,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
+  };
+  if (!vulkan_image_create(state, &image_desc, &texture->texture.image)) {
     log_fatal("Failed to create sampled depth attachment array image");
     vkr_allocator_free(&state->texture_pool_alloc, texture,
                        sizeof(struct s_TextureHandle),
@@ -6330,6 +6396,7 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment_array(
       .channels = 1,
       .type = VKR_TEXTURE_TYPE_2D,
       .format = vkr_format,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
       .sample_count = VKR_SAMPLE_COUNT_1,
       .properties = vkr_texture_property_flags_create(),
       .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_BORDER,
@@ -6387,11 +6454,22 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture_msaa(
 
   MemZero(texture, sizeof(struct s_TextureHandle));
 
-  if (!vulkan_image_create(
-          state, VK_IMAGE_TYPE_2D, width, height, image_format,
-          VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-          1, 1, vk_samples, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
-          &texture->texture.image)) {
+  const VulkanImageDescription image_desc = {
+      .image_type = VK_IMAGE_TYPE_2D,
+      .width = width,
+      .height = height,
+      .format = image_format,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = usage,
+      .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .mip_levels = 1,
+      .array_layers = 1,
+      .samples = vk_samples,
+      .view_type = VK_IMAGE_VIEW_TYPE_2D,
+      .view_aspect_flags = VK_IMAGE_ASPECT_COLOR_BIT,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
+  };
+  if (!vulkan_image_create(state, &image_desc, &texture->texture.image)) {
     log_fatal("Failed to create MSAA image");
     vkr_allocator_free(&state->texture_pool_alloc, texture,
                        sizeof(struct s_TextureHandle),
@@ -6408,6 +6486,7 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture_msaa(
       .channels = vulkan_texture_format_channel_count(format),
       .type = VKR_TEXTURE_TYPE_2D,
       .format = format,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_RENDER_GRAPH,
       .properties = vkr_texture_property_flags_create(),
       .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
       .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE,
@@ -6605,6 +6684,7 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
           VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
       .buffer_type = buffer_type,
       .bind_on_create = true_v,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_STAGING,
   };
 
   staging_buffer =
@@ -6635,12 +6715,22 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
 
   const VkFormat image_format =
       vulkan_image_format_from_texture_format(desc->format);
-  if (!vulkan_image_create(
-          state, VK_IMAGE_TYPE_2D, desc->width, desc->height, image_format,
-          VK_IMAGE_TILING_OPTIMAL, usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-          payload->mip_levels, payload->array_layers, VK_SAMPLE_COUNT_1_BIT,
-          VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT,
-          &texture->texture.image)) {
+  const VulkanImageDescription image_desc = {
+      .image_type = VK_IMAGE_TYPE_2D,
+      .width = desc->width,
+      .height = desc->height,
+      .format = image_format,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = usage,
+      .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .mip_levels = payload->mip_levels,
+      .array_layers = payload->array_layers,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .view_type = VK_IMAGE_VIEW_TYPE_2D,
+      .view_aspect_flags = VK_IMAGE_ASPECT_COLOR_BIT,
+      .allocation_owner = desc->allocation_owner,
+  };
+  if (!vulkan_image_create(state, &image_desc, &texture->texture.image)) {
     log_fatal("Failed to create Vulkan image for payload upload");
     goto cleanup_texture;
   }
@@ -6983,13 +7073,22 @@ uint32_t renderer_vulkan_create_texture_with_payload_batch(
 
     const VkFormat image_format =
         vulkan_image_format_from_texture_format(request->description->format);
-    if (!vulkan_image_create(
-            state, VK_IMAGE_TYPE_2D, request->description->width,
-            request->description->height, image_format, VK_IMAGE_TILING_OPTIMAL,
-            usage, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            request->payload->mip_levels, request->payload->array_layers,
-            VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
-            VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
+    const VulkanImageDescription image_desc = {
+        .image_type = VK_IMAGE_TYPE_2D,
+        .width = request->description->width,
+        .height = request->description->height,
+        .format = image_format,
+        .tiling = VK_IMAGE_TILING_OPTIMAL,
+        .usage = usage,
+        .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+        .mip_levels = request->payload->mip_levels,
+        .array_layers = request->payload->array_layers,
+        .samples = VK_SAMPLE_COUNT_1_BIT,
+        .view_type = VK_IMAGE_VIEW_TYPE_2D,
+        .view_aspect_flags = VK_IMAGE_ASPECT_COLOR_BIT,
+        .allocation_owner = request->description->allocation_owner,
+    };
+    if (!vulkan_image_create(state, &image_desc, &texture->texture.image)) {
       vulkan_buffer_destroy(state, &staging.buffer);
       vulkan_backend_destroy_partial_texture(state, texture);
       out_errors[i] = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
@@ -7266,6 +7365,7 @@ renderer_vulkan_create_texture(void *backend_state,
             VKR_MEMORY_PROPERTY_HOST_COHERENT),
         .buffer_type = buffer_type,
         .bind_on_create = true_v,
+        .allocation_owner = VKR_GPU_ALLOCATION_OWNER_STAGING,
     };
 
     scope = vkr_allocator_begin_scope(&state->temp_scope);
@@ -7292,14 +7392,24 @@ renderer_vulkan_create_texture(void *backend_state,
     }
   }
 
-  if (!vulkan_image_create(
-          state, VK_IMAGE_TYPE_2D, desc->width, desc->height, image_format,
-          VK_IMAGE_TILING_OPTIMAL,
-          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-              VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mip_levels, 1,
-          VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_2D,
-          VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
+  const VulkanImageDescription image_desc = {
+      .image_type = VK_IMAGE_TYPE_2D,
+      .width = desc->width,
+      .height = desc->height,
+      .format = image_format,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .mip_levels = mip_levels,
+      .array_layers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .view_type = VK_IMAGE_VIEW_TYPE_2D,
+      .view_aspect_flags = VK_IMAGE_ASPECT_COLOR_BIT,
+      .allocation_owner = desc->allocation_owner,
+  };
+  if (!vulkan_image_create(state, &image_desc, &texture->texture.image)) {
     log_fatal("Failed to create Vulkan image");
     goto cleanup_texture;
   }
@@ -7516,6 +7626,7 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
             VKR_MEMORY_PROPERTY_HOST_COHERENT),
         .buffer_type = buffer_type,
         .bind_on_create = true_v,
+        .allocation_owner = VKR_GPU_ALLOCATION_OWNER_STAGING,
     };
 
     scope = vkr_allocator_begin_scope(&state->temp_scope);
@@ -7542,15 +7653,23 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
     }
   }
 
-  // Create cube map image with 6 array layers
-  if (!vulkan_image_create(
-          state, VK_IMAGE_TYPE_2D, desc->width, desc->height, image_format,
-          VK_IMAGE_TILING_OPTIMAL,
-          VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-              VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mip_levels, 6,
-          VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_VIEW_TYPE_CUBE,
-          VK_IMAGE_ASPECT_COLOR_BIT, &texture->texture.image)) {
+  const VulkanImageDescription image_desc = {
+      .image_type = VK_IMAGE_TYPE_2D,
+      .width = desc->width,
+      .height = desc->height,
+      .format = image_format,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .mip_levels = mip_levels,
+      .array_layers = 6, // One per cube face.
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .view_type = VK_IMAGE_VIEW_TYPE_CUBE,
+      .view_aspect_flags = VK_IMAGE_ASPECT_COLOR_BIT,
+      .allocation_owner = desc->allocation_owner,
+  };
+  if (!vulkan_image_create(state, &image_desc, &texture->texture.image)) {
     log_fatal("Failed to create Vulkan cube map image");
     goto cleanup_texture;
   }
@@ -7852,6 +7971,7 @@ VkrRendererError renderer_vulkan_write_texture(
           VKR_MEMORY_PROPERTY_HOST_VISIBLE | VKR_MEMORY_PROPERTY_HOST_COHERENT),
       .buffer_type = buffer_type,
       .bind_on_create = true_v,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_STAGING,
   };
 
   VkrAllocatorScope scope = vkr_allocator_begin_scope(&state->temp_scope);
@@ -8052,14 +8172,27 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
           : Min(texture->texture.image.mip_levels, max_mip_levels);
 
   VulkanImage new_image = {0};
-  if (!vulkan_image_create(
-          state, VK_IMAGE_TYPE_2D, new_width, new_height, image_format,
-          VK_IMAGE_TILING_OPTIMAL,
-          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-              VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, mip_levels,
-          texture->texture.image.array_layers, VK_SAMPLE_COUNT_1_BIT,
-          VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_ASPECT_COLOR_BIT, &new_image)) {
+  // The replacement inherits the owner recorded against the live allocation,
+  // so a resize moves bytes within one owner row instead of reclassifying
+  // them. Mirrors vulkan_buffer_resize.
+  const VulkanImageDescription image_desc = {
+      .image_type = VK_IMAGE_TYPE_2D,
+      .width = new_width,
+      .height = new_height,
+      .format = image_format,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .mip_levels = mip_levels,
+      .array_layers = texture->texture.image.array_layers,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .view_type = VK_IMAGE_VIEW_TYPE_2D,
+      .view_aspect_flags = VK_IMAGE_ASPECT_COLOR_BIT,
+      .allocation_owner = texture->texture.image.allocation_owner,
+  };
+  if (!vulkan_image_create(state, &image_desc, &new_image)) {
     return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   }
 
@@ -9434,7 +9567,8 @@ vkr_internal bool8_t vulkan_create_readback_buffer(VulkanBackendState *state,
   };
 
   if (vulkan_backend_allocate_device_memory(
-          state, &alloc_info, &out_buffer->memory) != VK_SUCCESS) {
+          state, &alloc_info, VKR_GPU_ALLOCATION_OWNER_READBACK,
+          &out_buffer->memory) != VK_SUCCESS) {
     log_error("Failed to allocate memory for readback buffer");
     vkDestroyBuffer(state->device.logical_device, out_buffer->handle,
                     state->allocator);

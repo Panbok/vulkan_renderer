@@ -626,6 +626,7 @@ uint32_t vkr_geometry_system_create_batch(VkrGeometrySystem *system,
             VKR_MEMORY_PROPERTY_DEVICE_LOCAL),
         .buffer_type = buffer_type,
         .bind_on_create = true_v,
+        .allocation_owner = VKR_GPU_ALLOCATION_OWNER_MESH,
     };
     buffer_uploads[request_count] = (VkrBufferUploadPayload){
         .data = config->vertices,
@@ -648,6 +649,7 @@ uint32_t vkr_geometry_system_create_batch(VkrGeometrySystem *system,
             VKR_MEMORY_PROPERTY_DEVICE_LOCAL),
         .buffer_type = buffer_type,
         .bind_on_create = true_v,
+        .allocation_owner = VKR_GPU_ALLOCATION_OWNER_MESH,
     };
     buffer_uploads[request_count] = (VkrBufferUploadPayload){
         .data = config->indices,
