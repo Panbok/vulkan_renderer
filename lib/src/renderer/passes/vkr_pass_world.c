@@ -364,9 +364,14 @@ vkr_internal void vkr_pass_world_flush_mdi_batch(
   };
   MemCopy(indirect.commands, batch->commands,
           sizeof(VkrIndirectDrawCommand) * (uint64_t)batch->count);
-  vkr_pass_indirect_batch_submit(rf, &indirect);
+  const bool8_t used_indirect = vkr_pass_indirect_batch_submit(rf, &indirect);
 
   rf->frame_metrics.world.draws_issued += submitted;
+  rf->frame_metrics.world.draw_calls_issued += used_indirect ? 1u : submitted;
+  if (used_indirect) {
+    rf->frame_metrics.world.indirect_draws_issued += submitted;
+    rf->frame_metrics.world.indirect_calls_issued++;
+  }
   rf->frame_metrics.world.batches_created++;
   if (submitted > rf->frame_metrics.world.max_batch_size) {
     rf->frame_metrics.world.max_batch_size = submitted;
@@ -611,8 +616,8 @@ vkr_internal void vkr_pass_world_execute(VkrRgPassContext *ctx,
     uint32_t transparent_count = payload->transparent_draw_count;
     uint32_t total_draws = opaque_count + transparent_count;
 
-    // draws_issued, batches_created, max_batch_size and indirect_draws_issued
-    // are accumulated by vkr_pass_world_flush_mdi_batch as batches submit.
+    // Command, call, batch, and indirect counters are accumulated by
+    // vkr_pass_world_flush_mdi_batch as batches submit.
     rf->frame_metrics.world.draws_collected = total_draws;
     rf->frame_metrics.world.opaque_draws = opaque_count;
     rf->frame_metrics.world.transparent_draws = transparent_count;

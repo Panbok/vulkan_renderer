@@ -1771,37 +1771,56 @@ vkr_internal void application_update_fps_text(Application *application,
       }
 
       const VkrVisibilityStats *vis = &application->visibility_stats;
+      uint32_t shadow_calls = 0;
+      uint32_t shadow_indirect_commands = 0;
+      uint32_t shadow_indirect_calls = 0;
+      for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
+        shadow_calls += shadow->shadow_draw_calls_opaque[i] +
+                        shadow->shadow_draw_calls_alpha[i];
+        shadow_indirect_commands += shadow->shadow_indirect_draws_opaque[i];
+        shadow_indirect_calls += shadow->shadow_indirect_calls_opaque[i];
+      }
       log_info("BENCHMARK_SAMPLE label=%s frame_ms=%.3f fps=%.2f "
                "rg_cpu_total_ms=%.3f "
-               "world_draws=%u world_batches=%u world_calls=%u "
+               "world_draws=%u world_batches=%u world_commands=%u "
+               "world_calls=%u world_indirect_commands=%u "
+               "world_indirect_calls=%u shadow_calls=%u "
+               "shadow_indirect_commands=%u shadow_indirect_calls=%u "
                "vis_tested=%u vis_cull_cam=%u vis_cull_shadow=%u "
                "opaque_before=%u opaque_after=%u mergeable=%u max_run=%u "
-               "geoms=%u mats=%u indirect=%u",
+               "geoms=%u geom_mat_pairs=%u",
                state->benchmark_label ? state->benchmark_label : "default",
                frame_ms, state->current_fps, rg_cpu_total_ms,
                world->draws_collected, world->batches_created,
-               world->draws_issued, vis->objects_tested,
-               vis->objects_culled_camera, vis->objects_culled_shadow,
-               vis->opaque_draws_before_merge, vis->opaque_draws_emitted,
-               vis->mergeable_opaque_draws, vis->largest_mergeable_run,
-               vis->distinct_geometries, vis->distinct_materials,
-               world->indirect_draws_issued);
+               world->draws_issued, world->draw_calls_issued,
+               world->indirect_draws_issued, world->indirect_calls_issued,
+               shadow_calls, shadow_indirect_commands, shadow_indirect_calls,
+               vis->objects_tested, vis->objects_culled_camera,
+               vis->objects_culled_shadow, vis->opaque_draws_before_merge,
+               vis->opaque_draws_emitted, vis->mergeable_opaque_draws,
+               vis->largest_mergeable_run, vis->distinct_geometries,
+               vis->distinct_geometry_material_pairs);
       fprintf(stdout,
               "BENCHMARK_SAMPLE label=%s frame_ms=%.3f fps=%.2f "
               "rg_cpu_total_ms=%.3f "
-              "world_draws=%u world_batches=%u world_calls=%u "
+              "world_draws=%u world_batches=%u world_commands=%u "
+              "world_calls=%u world_indirect_commands=%u "
+              "world_indirect_calls=%u shadow_calls=%u "
+              "shadow_indirect_commands=%u shadow_indirect_calls=%u "
               "vis_tested=%u vis_cull_cam=%u vis_cull_shadow=%u "
               "opaque_before=%u opaque_after=%u mergeable=%u max_run=%u "
-              "geoms=%u mats=%u indirect=%u\n",
+              "geoms=%u geom_mat_pairs=%u\n",
               state->benchmark_label ? state->benchmark_label : "default",
               frame_ms, state->current_fps, rg_cpu_total_ms,
               world->draws_collected, world->batches_created,
-              world->draws_issued, vis->objects_tested,
-              vis->objects_culled_camera, vis->objects_culled_shadow,
-              vis->opaque_draws_before_merge, vis->opaque_draws_emitted,
-              vis->mergeable_opaque_draws, vis->largest_mergeable_run,
-              vis->distinct_geometries, vis->distinct_materials,
-               world->indirect_draws_issued);
+              world->draws_issued, world->draw_calls_issued,
+              world->indirect_draws_issued, world->indirect_calls_issued,
+              shadow_calls, shadow_indirect_commands, shadow_indirect_calls,
+              vis->objects_tested, vis->objects_culled_camera,
+              vis->objects_culled_shadow, vis->opaque_draws_before_merge,
+              vis->opaque_draws_emitted, vis->mergeable_opaque_draws,
+              vis->largest_mergeable_run, vis->distinct_geometries,
+              vis->distinct_geometry_material_pairs);
       fflush(stdout);
     }
 

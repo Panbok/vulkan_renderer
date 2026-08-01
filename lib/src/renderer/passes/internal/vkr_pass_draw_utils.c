@@ -374,11 +374,15 @@ bool8_t vkr_pass_indirect_batch_submit(RendererFrontend *rf,
         VkrBufferHandle indirect_buffer =
             vkr_indirect_draw_get_current(&rf->indirect_draw_system);
         if (indirect_buffer) {
-          vkr_geometry_system_render_indirect(
-              rf, &rf->geometry_system, batch->geometry, indirect_buffer,
+          // The range may refer to geometry's compacted opaque index buffer.
+          // Binding the default index buffer here while direct fallback binds
+          // batch->index_buffer changes the meaning of first_index and renders
+          // different geometry depending on device capability.
+          vkr_geometry_system_render_indirect_with_index_buffer(
+              rf, &rf->geometry_system, batch->geometry, batch->index_buffer,
+              indirect_buffer,
               (uint64_t)base_draw * sizeof(VkrIndirectDrawCommand),
               batch->count, (uint32_t)sizeof(VkrIndirectDrawCommand));
-          rf->frame_metrics.world.indirect_draws_issued += batch->count;
           used_indirect = true_v;
         }
       }

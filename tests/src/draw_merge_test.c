@@ -1,16 +1,16 @@
 #include "draw_merge_test.h"
 
 #include "math/vkr_math.h"
+#include "renderer/systems/vkr_camera_controller.h"
 #include "renderer/vkr_visibility.h"
 
 #include <assert.h>
 #include <stdio.h>
 
 /**
- * The merge measurement decides whether instancing and MDI are worth building.
- * A broken measurement would report "nothing to merge" for a scene full of
- * merge opportunities and silently justify skipping both, so the counter is
- * pinned here against inputs with known answers.
+ * These tests pin the compatibility rules used by instancing/MDI, visibility
+ * classification, and the renderer's coordinate convention against inputs
+ * with known answers.
  */
 
 static VkrDrawMergeKey merge_key(uint32_t geom, uint32_t mat, uint32_t first,
@@ -46,9 +46,8 @@ static void test_repeated_asset_is_mergeable(void) {
   // The same submesh of the same asset drawn three times, plus two unrelated
   // draws: exactly the shape instancing exists to collapse.
   VkrDrawMergeKey keys[5] = {
-      merge_key(7, 3, 0, 120), merge_key(1, 1, 0, 10),
-      merge_key(7, 3, 0, 120), merge_key(2, 2, 0, 10),
-      merge_key(7, 3, 0, 120),
+      merge_key(7, 3, 0, 120), merge_key(1, 1, 0, 10),  merge_key(7, 3, 0, 120),
+      merge_key(2, 2, 0, 10),  merge_key(7, 3, 0, 120),
   };
   VkrVisibilityStats stats = {0};
   vkr_draw_measure_merge_opportunity(keys, 5, &stats);
@@ -95,22 +94,19 @@ static void test_empty_input_is_safe(void) {
   printf("  test_empty_input_is_safe PASSED\n");
 }
 
-
 /**
  * Culling that rejects nothing and culling that is broken look identical from a
  * frame-time graph, so the classifier is pinned here.
  *
- * These tests deliberately avoid asserting which world axis is "in front".
- * mat4_perspective is a +Z-forward (left-handed) projection while mat4_look_at
- * is -Z-forward (right-handed), so the pair's effective view direction is not
- * what VKR_DEFAULT_CAMERA_FORWARD suggests. The frustum is extracted from the
- * same P*V product the shaders use, so it describes the real clip volume; the
- * invariant worth pinning is that the two agree, not which axis they agree on.
+ * The renderer's canonical convention is right-handed: camera forward is -Z,
+ * Vulkan depth is [0,1], and points in front have positive clip W. These tests
+ * pin both that declared convention and the independent safety invariant that
+ * frustum extraction agrees with raster clip-space classification.
  */
 static void frustum_test_matrices(Mat4 *out_view, Mat4 *out_proj) {
-  *out_view = mat4_look_at(vec3_new(0.0f, 0.0f, 0.0f),
-                           vec3_new(0.0f, 0.0f, -1.0f),
-                           vec3_new(0.0f, 1.0f, 0.0f));
+  *out_view =
+      mat4_look_at(vec3_new(0.0f, 0.0f, 0.0f), vec3_new(0.0f, 0.0f, -1.0f),
+                   vec3_new(0.0f, 1.0f, 0.0f));
   *out_proj = mat4_perspective(vkr_to_radians(60.0f), 1.0f, 0.1f, 100.0f);
 }
 
@@ -123,6 +119,44 @@ static bool8_t clip_contains_point(Mat4 vp, Vec3 p) {
           c.y >= -c.w && c.y <= c.w)
              ? true_v
              : false_v;
+}
+
+static void test_projection_and_view_face_declared_forward(void) {
+  printf("  Running test_projection_and_view_face_declared_forward...\n");
+  Mat4 view, proj;
+  frustum_test_matrices(&view, &proj);
+  Mat4 vp = mat4_mul(proj, view);
+
+  Vec4 forward = mat4_mul_vec4(vp, vec4_new(0.0f, 0.0f, -10.0f, 1.0f));
+  Vec4 backward = mat4_mul_vec4(vp, vec4_new(0.0f, 0.0f, 10.0f, 1.0f));
+  assert(forward.w > 0.0f);
+  assert(forward.z >= 0.0f && forward.z <= forward.w);
+  assert(backward.w < 0.0f);
+  assert(clip_contains_point(vp, vec3_new(0.0f, 0.0f, -10.0f)));
+  assert(!clip_contains_point(vp, vec3_new(0.0f, 0.0f, 10.0f)));
+  printf("  test_projection_and_view_face_declared_forward PASSED\n");
+}
+
+static void test_camera_controller_moves_along_declared_forward(void) {
+  printf("  Running test_camera_controller_moves_along_declared_forward...\n");
+  VkrCamera camera = {
+      .position = vec3_zero(),
+      .forward = vec3_forward(),
+      .right = vec3_right(),
+      .world_up = vec3_up(),
+      .speed = 2.0f,
+      .sensitivity = 1.0f,
+  };
+  VkrCameraController controller = {0};
+  vkr_camera_controller_create(&controller, &camera, 60.0f);
+
+  vkr_camera_controller_move_forward(&controller, 1.0f);
+  vkr_camera_controller_update(&controller, 0.5);
+
+  assert(vkr_abs_f32(camera.position.x) < 0.001f);
+  assert(vkr_abs_f32(camera.position.y) < 0.001f);
+  assert(vkr_abs_f32(camera.position.z + 1.0f) < 0.001f);
+  printf("  test_camera_controller_moves_along_declared_forward PASSED\n");
 }
 
 /**
@@ -155,8 +189,9 @@ static void test_frustum_never_rejects_visible_geometry(void) {
     }
   }
   assert(inside > 0);
-  printf("  test_frustum_never_rejects_visible_geometry PASSED (%u/%u inside)\n",
-         inside, checked);
+  printf(
+      "  test_frustum_never_rejects_visible_geometry PASSED (%u/%u inside)\n",
+      inside, checked);
 }
 
 /** The frustum must actually reject something, or culling is a no-op. */
@@ -168,9 +203,9 @@ static void test_frustum_rejects_far_offscreen_geometry(void) {
   VkrVisibilityStats stats = {0};
 
   // Far outside the horizontal field of view, whichever way the camera faces.
-  uint8_t flags = vkr_visibility_classify(&frustum, NULL, true_v,
-                                          vec3_new(10000.0f, 0.0f, 10.0f), 1.0f,
-                                          &stats);
+  uint8_t flags =
+      vkr_visibility_classify(&frustum, NULL, 0u, true_v,
+                              vec3_new(10000.0f, 0.0f, 10.0f), 1.0f, &stats);
   assert((flags & VKR_VISIBLE_CAMERA) == 0);
   assert(stats.objects_culled_camera == 1);
   printf("  test_frustum_rejects_far_offscreen_geometry PASSED\n");
@@ -188,17 +223,17 @@ static void test_camera_and_shadow_visibility_are_independent(void) {
   VkrFrustum camera = vkr_frustum_from_view_projection(view, proj);
 
   // A light volume wide enough to contain the off-camera point.
-  Mat4 light_view = mat4_look_at(vec3_new(0.0f, 200.0f, 0.0f),
-                                 vec3_new(0.0f, 0.0f, 0.0f),
-                                 vec3_new(0.0f, 0.0f, 1.0f));
-  Mat4 light_proj =
-      mat4_ortho(-20000.0f, 20000.0f, -20000.0f, 20000.0f, -20000.0f, 20000.0f);
+  Mat4 light_view =
+      mat4_look_at(vec3_new(0.0f, 200.0f, 0.0f), vec3_new(0.0f, 0.0f, 0.0f),
+                   vec3_new(0.0f, 0.0f, 1.0f));
+  Mat4 light_proj = mat4_ortho_zo_yinv(-20000.0f, 20000.0f, -20000.0f, 20000.0f,
+                                       0.1f, 400.0f);
   VkrFrustum light = vkr_frustum_from_view_projection(light_view, light_proj);
 
   VkrVisibilityStats stats = {0};
-  uint8_t flags = vkr_visibility_classify(&camera, &light, true_v,
-                                          vec3_new(10000.0f, 0.0f, 10.0f), 1.0f,
-                                          &stats);
+  uint8_t flags =
+      vkr_visibility_classify(&camera, &light, 1u, true_v,
+                              vec3_new(10000.0f, 0.0f, 10.0f), 1.0f, &stats);
   assert((flags & VKR_VISIBLE_CAMERA) == 0);
   assert((flags & VKR_VISIBLE_SHADOW) != 0);
   assert(stats.objects_culled_camera == 1);
@@ -214,14 +249,56 @@ static void test_visibility_without_bounds_is_conservative(void) {
   VkrVisibilityStats stats = {0};
   // Bounds not ready: keep it in both lists. Being conservative costs a draw,
   // being wrong drops geometry.
-  uint8_t flags = vkr_visibility_classify(&camera, &camera, false_v,
-                                          vec3_new(99999.0f, 0.0f, 0.0f), 1.0f,
-                                          &stats);
+  uint8_t flags =
+      vkr_visibility_classify(&camera, &camera, 1u, false_v,
+                              vec3_new(99999.0f, 0.0f, 0.0f), 1.0f, &stats);
   assert((flags & VKR_VISIBLE_CAMERA) != 0);
   assert((flags & VKR_VISIBLE_SHADOW) != 0);
   assert(stats.objects_without_bounds == 1);
   assert(stats.objects_culled_camera == 0);
   printf("  test_visibility_without_bounds_is_conservative PASSED\n");
+}
+
+static void test_shadow_visibility_is_union_of_cascades(void) {
+  printf("  Running test_shadow_visibility_is_union_of_cascades...\n");
+  Mat4 projection = mat4_perspective(vkr_to_radians(60.0f), 1.0f, 0.1f, 100.0f);
+  Mat4 left_view = mat4_look_at(vec3_new(-20.0f, 0.0f, 0.0f),
+                                vec3_new(-20.0f, 0.0f, -1.0f), vec3_up());
+  Mat4 right_view = mat4_look_at(vec3_new(20.0f, 0.0f, 0.0f),
+                                 vec3_new(20.0f, 0.0f, -1.0f), vec3_up());
+  VkrFrustum cascades[2] = {
+      vkr_frustum_from_view_projection(left_view, projection),
+      vkr_frustum_from_view_projection(right_view, projection),
+  };
+  VkrVisibilityStats stats = {0};
+
+  // Inside cascade 0 and outside cascade 1. Testing only the last cascade
+  // would incorrectly drop this caster.
+  Vec3 caster = vec3_new(-20.0f, 0.0f, -10.0f);
+  assert(vkr_frustum_test_sphere(&cascades[0], caster, 1.0f));
+  assert(!vkr_frustum_test_sphere(&cascades[1], caster, 1.0f));
+  uint8_t flags =
+      vkr_visibility_classify(NULL, cascades, 2u, true_v, caster, 1.0f, &stats);
+  assert((flags & VKR_VISIBLE_SHADOW) != 0);
+  assert(stats.objects_culled_shadow == 0);
+  printf("  test_shadow_visibility_is_union_of_cascades PASSED\n");
+}
+
+static void test_orthographic_frustum_uses_vulkan_depth(void) {
+  printf("  Running test_orthographic_frustum_uses_vulkan_depth...\n");
+  Mat4 view = mat4_look_at(vec3_zero(), vec3_forward(), vec3_up());
+  Mat4 projection =
+      mat4_ortho_zo_yinv(-10.0f, 10.0f, -10.0f, 10.0f, 0.1f, 100.0f);
+  VkrFrustum frustum = vkr_frustum_from_view_projection(view, projection);
+
+  // Stay just inside the planes: exact zero-radius boundary tests are sensitive
+  // to normalization roundoff, while mat_test pins the exact NDC endpoints.
+  assert(vkr_frustum_test_sphere(&frustum, vec3_new(0.0f, 0.0f, -0.11f), 0.0f));
+  assert(vkr_frustum_test_sphere(&frustum, vec3_new(0.0f, 0.0f, -99.9f), 0.0f));
+  assert(!vkr_frustum_test_sphere(&frustum, vec3_new(0.0f, 0.0f, 1.0f), 0.0f));
+  assert(
+      !vkr_frustum_test_sphere(&frustum, vec3_new(0.0f, 0.0f, -101.0f), 0.0f));
+  printf("  test_orthographic_frustum_uses_vulkan_depth PASSED\n");
 }
 
 static void test_submesh_sphere_is_conservative_under_scale(void) {
@@ -245,7 +322,6 @@ static void test_submesh_sphere_is_conservative_under_scale(void) {
   assert(radius > 6.92f && radius < 6.94f);
   printf("  test_submesh_sphere_is_conservative_under_scale PASSED\n");
 }
-
 
 static VkrDrawCandidate make_candidate(uint32_t geom, uint32_t mat,
                                        uint32_t first, uint32_t count,
@@ -277,7 +353,7 @@ static void test_merged_runs_have_contiguous_instances(void) {
   uint32_t draw_count = 0;
 
   uint32_t written = vkr_draw_merge_candidates(cands, 6, 0u, draws, &draw_count,
-                                               instances);
+                                               instances, NULL);
   assert(written == 6);
   // geom7 x3, geom1 x2, geom2 x1 -> three draws.
   assert(draw_count == 3);
@@ -335,6 +411,28 @@ static void test_unmerged_emission_preserves_order(void) {
   printf("  test_unmerged_emission_preserves_order PASSED\n");
 }
 
+static void test_binding_context_prevents_unsafe_instancing(void) {
+  printf("  Running test_binding_context_prevents_unsafe_instancing...\n");
+  VkrDrawCandidate cands[2] = {
+      make_candidate(7, 3, 0, 120, 10),
+      make_candidate(7, 3, 0, 120, 11),
+  };
+  // Geometry/material/range match, but the draws require different
+  // position-dependent reflection-probe descriptor state.
+  cands[0].key.binding_context = 1u;
+  cands[1].key.binding_context = 2u;
+
+  VkrDrawItem draws[2] = {0};
+  VkrInstanceDataGPU instances[2] = {0};
+  VkrVisibilityStats stats = {0};
+  uint32_t draw_count = 0;
+  vkr_draw_merge_candidates(cands, 2, 0u, draws, &draw_count, instances,
+                            &stats);
+  assert(draw_count == 2);
+  assert(stats.mergeable_opaque_draws == 0);
+  printf("  test_binding_context_prevents_unsafe_instancing PASSED\n");
+}
+
 static void test_merge_of_all_distinct_emits_one_draw_each(void) {
   printf("  Running test_merge_of_all_distinct_emits_one_draw_each...\n");
   VkrDrawCandidate cands[3] = {
@@ -345,7 +443,7 @@ static void test_merge_of_all_distinct_emits_one_draw_each(void) {
   VkrDrawItem draws[3] = {0};
   VkrInstanceDataGPU instances[3] = {0};
   uint32_t draw_count = 0;
-  vkr_draw_merge_candidates(cands, 3, 0u, draws, &draw_count, instances);
+  vkr_draw_merge_candidates(cands, 3, 0u, draws, &draw_count, instances, NULL);
   assert(draw_count == 3);
   for (uint32_t i = 0; i < 3; ++i) {
     assert(draws[i].instance_count == 1);
@@ -363,11 +461,16 @@ bool32_t run_draw_merge_tests(void) {
   test_empty_input_is_safe();
   test_merged_runs_have_contiguous_instances();
   test_unmerged_emission_preserves_order();
+  test_binding_context_prevents_unsafe_instancing();
   test_merge_of_all_distinct_emits_one_draw_each();
+  test_projection_and_view_face_declared_forward();
+  test_camera_controller_moves_along_declared_forward();
   test_frustum_never_rejects_visible_geometry();
   test_frustum_rejects_far_offscreen_geometry();
   test_camera_and_shadow_visibility_are_independent();
   test_visibility_without_bounds_is_conservative();
+  test_shadow_visibility_is_union_of_cascades();
+  test_orthographic_frustum_uses_vulkan_depth();
   test_submesh_sphere_is_conservative_under_scale();
 
   printf("--- Draw Merge Tests Completed ---\n");

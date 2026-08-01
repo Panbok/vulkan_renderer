@@ -32,7 +32,8 @@ typedef struct VkrVisibilityStats {
   uint32_t objects_tested;
   uint32_t objects_culled_camera;
   uint32_t objects_culled_shadow;
-  /** Objects kept because their bounds were not ready; conservative, not free. */
+  /** Objects kept because their bounds were not ready; conservative, not free.
+   */
   uint32_t objects_without_bounds;
 
   /**
@@ -55,7 +56,9 @@ typedef struct VkrVisibilityStats {
    * however it is submitted.
    */
   uint32_t distinct_geometries;
-  uint32_t distinct_materials;
+  /** Distinct geometry/material pairs after key sorting (not unique handles).
+   */
+  uint32_t distinct_geometry_material_pairs;
 } VkrVisibilityStats;
 
 /**
@@ -67,6 +70,12 @@ typedef struct VkrVisibilityStats {
 typedef struct VkrDrawMergeKey {
   uint64_t geometry;
   uint64_t material;
+  /**
+   * Per-draw binding state not represented by geometry/material handles.
+   * Zero means freely compatible. A unique value prevents merging when state
+   * is position-dependent (currently local reflection-probe descriptors).
+   */
+  uint64_t binding_context;
   uint32_t first_index;
   uint32_t index_count;
   int32_t vertex_offset;
@@ -111,13 +120,15 @@ int vkr_draw_candidate_depth_compare(const void *lhs, const void *rhs);
  * @param instance_base Index in @p out_instances where this list starts, so
  *        several lists can share one instance array.
  * @param out_draw_count Receives the number of draws emitted (<= @p count).
+ * @param stats Optional merge measurements derived from the same sort/run scan.
  * @return Number of instance records written, always @p count.
  */
 uint32_t vkr_draw_merge_candidates(VkrDrawCandidate *candidates, uint32_t count,
                                    uint32_t instance_base,
                                    VkrDrawItem *out_draws,
                                    uint32_t *out_draw_count,
-                                   VkrInstanceDataGPU *out_instances);
+                                   VkrInstanceDataGPU *out_instances,
+                                   VkrVisibilityStats *stats);
 
 /**
  * @brief Emits candidates one draw each, preserving their current order.
@@ -132,12 +143,11 @@ uint32_t vkr_draw_emit_unmerged(const VkrDrawCandidate *candidates,
                                 VkrInstanceDataGPU *out_instances);
 
 /**
- * @brief Measures how many opaque draws instancing could collapse.
+ * @brief Measures opaque merge opportunity for diagnostics and tests.
  *
- * Sorts @p keys in place and records run lengths into @p stats. This is the
- * input to the instancing and multi-draw-indirect decisions: a scene whose runs
- * are all length one has nothing for either to merge, however draws are
- * submitted.
+ * Sorts @p keys in place and records run lengths into @p stats. Production
+ * packet construction gathers the same counters while merging candidates so
+ * the hot path does not allocate and sort a second key array.
  */
 void vkr_draw_measure_merge_opportunity(VkrDrawMergeKey *keys, uint32_t count,
                                         VkrVisibilityStats *stats);
@@ -156,13 +166,16 @@ void vkr_visibility_submesh_sphere(Mat4 model, Vec3 center, Vec3 min_extents,
 /**
  * @brief Classifies one bounding sphere against the camera and light volumes.
  *
- * A NULL frustum means "no culling for that view". An object whose bounds are
- * not yet valid is treated as visible to both — being conservative costs a
+ * Shadow visibility is the union of every cascade volume; cascades have
+ * different centers and are not generally nested. A NULL camera, or a NULL/
+ * empty shadow array, means "no culling for that view". An object whose bounds
+ * are not yet valid is treated as visible to both — being conservative costs a
  * draw, being wrong drops geometry.
  *
  * @return Bitwise OR of VKR_VISIBLE_CAMERA and VKR_VISIBLE_SHADOW.
  */
 uint8_t vkr_visibility_classify(const VkrFrustum *camera_frustum,
-                                const VkrFrustum *shadow_frustum,
+                                const VkrFrustum *shadow_frustums,
+                                uint32_t shadow_frustum_count,
                                 bool8_t bounds_valid, Vec3 center,
                                 float32_t radius, VkrVisibilityStats *stats);

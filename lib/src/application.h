@@ -56,7 +56,6 @@
 #include "defines.h"
 #include "math/vec.h"
 #include "math/vkr_frustum.h"
-#include "renderer/vkr_visibility.h"
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/renderer_frontend.h"
@@ -66,6 +65,7 @@
 #include "renderer/systems/vkr_picking_ids.h"
 #include "renderer/vkr_render_packet.h"
 #include "renderer/vkr_renderer.h"
+#include "renderer/vkr_visibility.h"
 
 /**
  * @brief Editor viewport state owned by the application.
@@ -148,7 +148,6 @@ typedef struct VkrShadowDrawLists {
   uint32_t instance_count;
 } VkrShadowDrawLists;
 
-
 typedef struct Application {
   Arena *app_arena; /**< Main memory arena for general application use (e.g.,
                        game entities, state). */
@@ -171,7 +170,8 @@ typedef struct Application {
 
   VkrGamepad gamepad; /**< The gamepad system for the application. */
 
-  /** Last frame's frustum-culling counters, produced by payload construction. */
+  /** Last frame's frustum-culling counters, produced by payload construction.
+   */
   VkrVisibilityStats visibility_stats;
 
   VkrJobSystem job_system; /**< Engine-wide job system. */
@@ -422,6 +422,31 @@ vkr_internal bool8_t application_material_is_cutout(RendererFrontend *rf,
                                                        material);
 }
 
+/**
+ * Local reflection-probe descriptors are selected from world position and
+ * applied once per draw. Until probe selection moves into per-instance data,
+ * instances at different positions cannot legally share one world draw.
+ */
+vkr_internal bool8_t
+application_world_may_have_position_dependent_ibl(const RendererFrontend *rf) {
+  if (!rf || !rf->world_resources.initialized || !rf->active_scene) {
+    return false_v;
+  }
+
+  const VkrScene *scene = rf->active_scene;
+  for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
+    const VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
+    // PENDING matters too: the IBL-bake pass precedes the world pass and can
+    // make the probe READY after this packet has already been built.
+    if (probe->enabled &&
+        (probe->bake_state == VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_PENDING ||
+         probe->bake_state == VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_READY)) {
+      return true_v;
+    }
+  }
+  return false_v;
+}
+
 vkr_internal float32_t application_transparent_depth(Mat4 view, Mat4 model,
                                                      Vec3 local_center) {
   Vec3 world_center = mat4_mul_vec3(model, local_center);
@@ -438,26 +463,6 @@ vkr_internal uint64_t application_pack_transparent_sort_key(
   return ((uint64_t)distance_bits << 32) | (uint64_t)tie_breaker;
 }
 
-vkr_internal int application_transparent_draw_compare(const void *lhs,
-                                                      const void *rhs) {
-  const VkrDrawItem *a = (const VkrDrawItem *)lhs;
-  const VkrDrawItem *b = (const VkrDrawItem *)rhs;
-  if (a->sort_key > b->sort_key) {
-    return -1;
-  }
-  if (a->sort_key < b->sort_key) {
-    return 1;
-  }
-  if (a->first_instance < b->first_instance) {
-    return -1;
-  }
-  if (a->first_instance > b->first_instance) {
-    return 1;
-  }
-  return 0;
-}
-
-
 /**
  * @brief Builds the world and shadow draw lists for one frame.
  *
@@ -471,15 +476,16 @@ vkr_internal int application_transparent_draw_compare(const void *lhs,
  * `visibility`, because the count and populate passes must agree exactly --
  * re-testing risks a divergence that would desynchronize the arrays.
  *
- * @param shadow_frustum Light volume to test casters against; NULL disables
- *        shadow-side culling and keeps every object as a caster.
+ * @param shadow_frustums Cascade volumes to test casters against. Shadow
+ *        visibility is their union; NULL/zero disables shadow-side culling.
  * @param out_shadow Optional shadow draw lists; may be NULL when shadows are
  *        disabled for this frame.
  */
 vkr_internal bool8_t application_build_world_payload(
     Application *application, VkrAllocator *scratch,
-    const VkrFrustum *shadow_frustum, VkrWorldPassPayload *out_payload,
-    VkrShadowDrawLists *out_shadow, VkrVisibilityStats *out_stats) {
+    const VkrFrustum *shadow_frustums, uint32_t shadow_frustum_count,
+    VkrWorldPassPayload *out_payload, VkrShadowDrawLists *out_shadow,
+    VkrVisibilityStats *out_stats) {
   if (!application || !scratch || !out_payload) {
     return false_v;
   }
@@ -490,6 +496,8 @@ vkr_internal bool8_t application_build_world_payload(
       vkr_frustum_from_view_projection(view, rf->globals.projection);
 
   VkrVisibilityStats stats = {0};
+  const bool8_t position_dependent_ibl =
+      application_world_may_have_position_dependent_ibl(rf);
   if (out_shadow) {
     *out_shadow = (VkrShadowDrawLists){0};
   }
@@ -569,12 +577,14 @@ vkr_internal bool8_t application_build_world_payload(
       Vec3 sphere_center = {0};
       float32_t sphere_radius = 0.0f;
       vkr_visibility_submesh_sphere(mesh->model, submesh->center,
-                                       submesh->min_extents,
-                                       submesh->max_extents, &sphere_center,
-                                       &sphere_radius);
-      const uint8_t flags = vkr_visibility_classify(
-          &camera_frustum, shadow_frustum, mesh->bounds_valid, sphere_center,
-          sphere_radius, &stats);
+                                    submesh->min_extents, submesh->max_extents,
+                                    &sphere_center, &sphere_radius);
+      uint8_t flags = vkr_visibility_classify(
+          &camera_frustum, shadow_frustums, shadow_frustum_count,
+          mesh->bounds_valid, sphere_center, sphere_radius, &stats);
+      if (!out_shadow) {
+        flags &= (uint8_t)~VKR_VISIBLE_SHADOW;
+      }
       visibility[vis_slot++] = flags;
       if (flags == 0) {
         continue;
@@ -626,12 +636,14 @@ vkr_internal bool8_t application_build_world_payload(
       Vec3 sphere_center = {0};
       float32_t sphere_radius = 0.0f;
       vkr_visibility_submesh_sphere(instance->model, submesh->center,
-                                       submesh->min_extents,
-                                       submesh->max_extents, &sphere_center,
-                                       &sphere_radius);
-      const uint8_t flags = vkr_visibility_classify(
-          &camera_frustum, shadow_frustum, instance->bounds_valid,
-          sphere_center, sphere_radius, &stats);
+                                    submesh->min_extents, submesh->max_extents,
+                                    &sphere_center, &sphere_radius);
+      uint8_t flags = vkr_visibility_classify(
+          &camera_frustum, shadow_frustums, shadow_frustum_count,
+          instance->bounds_valid, sphere_center, sphere_radius, &stats);
+      if (!out_shadow) {
+        flags &= (uint8_t)~VKR_VISIBLE_SHADOW;
+      }
       visibility[vis_slot++] = flags;
       if (flags == 0) {
         continue;
@@ -731,14 +743,6 @@ vkr_internal bool8_t application_build_world_payload(
         scratch, sizeof(VkrInstanceDataGPU) * (uint64_t)world_instance_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
-  VkrDrawMergeKey *merge_keys = NULL;
-  if (camera_opaque_count > 0) {
-    merge_keys = vkr_allocator_alloc(
-        scratch, sizeof(VkrDrawMergeKey) * (uint64_t)camera_opaque_count,
-        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-  uint32_t merge_key_count = 0;
-
   VkrInstanceDataGPU *shadow_instances = NULL;
   if (shadow_instance_count > 0) {
     shadow_instances = vkr_allocator_alloc(
@@ -802,15 +806,19 @@ vkr_internal bool8_t application_build_world_payload(
                                                  submesh->center)
                  : 0.0f;
       const uint64_t sort_key =
-          cutout ? application_pack_transparent_sort_key(mesh_distance, vis_slot)
-                 : 0u;
+          cutout
+              ? application_pack_transparent_sort_key(mesh_distance, vis_slot)
+              : 0u;
 
       const VkrDrawCandidate candidate = {
           .key =
               {
                   .geometry = ((uint64_t)submesh->geometry.id << 32) |
                               (uint64_t)submesh->geometry.generation,
-                  .material = (uint64_t)submesh->material.id,
+                  .material = ((uint64_t)submesh->material.id << 32) |
+                              (uint64_t)submesh->material.generation,
+                  .binding_context =
+                      position_dependent_ibl ? (uint64_t)vis_slot : 0u,
                   .first_index = submesh->first_index,
                   .index_count = submesh->index_count,
                   .vertex_offset = submesh->vertex_offset,
@@ -828,16 +836,15 @@ vkr_internal bool8_t application_build_world_payload(
           camera_transparent_cands[transparent_index++] = candidate;
         } else {
           camera_opaque_cands[opaque_index++] = candidate;
-          if (merge_keys) {
-            merge_keys[merge_key_count++] = candidate.key;
-          }
         }
       }
       if ((flags & VKR_VISIBLE_SHADOW) && out_shadow) {
+        VkrDrawCandidate shadow_candidate = candidate;
+        shadow_candidate.key.binding_context = 0u;
         if (cutout) {
-          shadow_alpha_cands[shadow_alpha_index++] = candidate;
+          shadow_alpha_cands[shadow_alpha_index++] = shadow_candidate;
         } else {
-          shadow_opaque_cands[shadow_opaque_index++] = candidate;
+          shadow_opaque_cands[shadow_opaque_index++] = shadow_candidate;
         }
       }
     }
@@ -885,16 +892,19 @@ vkr_internal bool8_t application_build_world_payload(
           cutout ? application_transparent_depth(view, instance->model,
                                                  submesh->center)
                  : 0.0f;
-      const uint64_t sort_key =
-          cutout ? application_pack_transparent_sort_key(instance_distance, vis_slot)
-                 : 0u;
+      const uint64_t sort_key = cutout ? application_pack_transparent_sort_key(
+                                             instance_distance, vis_slot)
+                                       : 0u;
 
       const VkrDrawCandidate candidate = {
           .key =
               {
                   .geometry = ((uint64_t)submesh->geometry.id << 32) |
                               (uint64_t)submesh->geometry.generation,
-                  .material = (uint64_t)submesh->material.id,
+                  .material = ((uint64_t)submesh->material.id << 32) |
+                              (uint64_t)submesh->material.generation,
+                  .binding_context =
+                      position_dependent_ibl ? (uint64_t)vis_slot : 0u,
                   .first_index = submesh->first_index,
                   .index_count = submesh->index_count,
                   .vertex_offset = submesh->vertex_offset,
@@ -912,22 +922,19 @@ vkr_internal bool8_t application_build_world_payload(
           camera_transparent_cands[transparent_index++] = candidate;
         } else {
           camera_opaque_cands[opaque_index++] = candidate;
-          if (merge_keys) {
-            merge_keys[merge_key_count++] = candidate.key;
-          }
         }
       }
       if ((flags & VKR_VISIBLE_SHADOW) && out_shadow) {
+        VkrDrawCandidate shadow_candidate = candidate;
+        shadow_candidate.key.binding_context = 0u;
         if (cutout) {
-          shadow_alpha_cands[shadow_alpha_index++] = candidate;
+          shadow_alpha_cands[shadow_alpha_index++] = shadow_candidate;
         } else {
-          shadow_opaque_cands[shadow_opaque_index++] = candidate;
+          shadow_opaque_cands[shadow_opaque_index++] = shadow_candidate;
         }
       }
     }
   }
-
-  vkr_draw_measure_merge_opportunity(merge_keys, merge_key_count, &stats);
 
   // ---- Emission: opaque merges; transparent and alpha do not. ----
   // Transparent draws carry a back-to-front order and alpha-tested shadow draws
@@ -936,7 +943,7 @@ vkr_internal bool8_t application_build_world_payload(
   uint32_t merged_opaque_draws = 0;
   const uint32_t opaque_instances_written = vkr_draw_merge_candidates(
       camera_opaque_cands, camera_opaque_count, 0u, opaque_draws,
-      &merged_opaque_draws, instances);
+      &merged_opaque_draws, instances, &stats);
 
   if (camera_transparent_count > 1) {
     qsort(camera_transparent_cands, camera_transparent_count,
@@ -950,7 +957,7 @@ vkr_internal bool8_t application_build_world_payload(
   if (out_shadow) {
     const uint32_t shadow_written = vkr_draw_merge_candidates(
         shadow_opaque_cands, shadow_opaque_count, 0u, shadow_opaque_draws,
-        &merged_shadow_draws, shadow_instances);
+        &merged_shadow_draws, shadow_instances, NULL);
     vkr_draw_emit_unmerged(shadow_alpha_cands, shadow_alpha_count,
                            shadow_written, shadow_alpha_draws,
                            shadow_instances);
@@ -1030,23 +1037,28 @@ void application_draw_frame(Application *application, float64_t delta) {
     vkr_shadow_system_get_frame_data(&application->renderer.shadow_system,
                                      setup.image_index, &shadow_frame);
     shadow_cascade_count = shadow_frame.cascade_count;
+    if (shadow_cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX) {
+      log_error("Shadow frame returned %u cascades; clamping to %u",
+                shadow_cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX);
+      shadow_cascade_count = VKR_SHADOW_CASCADE_COUNT_MAX;
+    }
   }
 
-  // Cascades are nested, so the widest one bounds every caster that any cascade
-  // can need. One frustum is both sufficient and cheaper than testing four.
-  VkrFrustum shadow_frustum = {0};
-  const VkrFrustum *shadow_frustum_ptr = NULL;
-  if (shadow_cascade_count > 0) {
-    shadow_frustum = vkr_frustum_from_matrix(
-        shadow_frame.view_projection[shadow_cascade_count - 1]);
-    shadow_frustum_ptr = &shadow_frustum;
+  // Cascade projections have different centers and are not generally nested.
+  // A caster survives if it intersects any cascade; testing only the last one
+  // can drop near-cascade shadows near the edge of its shifted far volume.
+  VkrFrustum shadow_frustums[VKR_SHADOW_CASCADE_COUNT_MAX] = {0};
+  for (uint32_t i = 0; i < shadow_cascade_count; ++i) {
+    shadow_frustums[i] =
+        vkr_frustum_from_matrix(shadow_frame.view_projection[i]);
   }
 
   VkrWorldPassPayload world_payload = {0};
   VkrShadowDrawLists shadow_lists = {0};
   VkrVisibilityStats visibility_stats = {0};
   bool8_t has_world = application_build_world_payload(
-      application, scratch, shadow_frustum_ptr, &world_payload,
+      application, scratch, shadow_cascade_count > 0 ? shadow_frustums : NULL,
+      shadow_cascade_count, &world_payload,
       shadow_cascade_count > 0 ? &shadow_lists : NULL, &visibility_stats);
   application->visibility_stats = visibility_stats;
 

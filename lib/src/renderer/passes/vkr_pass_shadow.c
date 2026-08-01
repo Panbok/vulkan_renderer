@@ -207,7 +207,8 @@ vkr_internal bool8_t vkr_pass_shadow_bind_next_alpha_instance(
       &rf->shader_system, system->alpha_instance_states[slot].id);
 }
 
-/** Resolves material by handle with default fallback. Returns NULL if invalid. */
+/** Resolves material by handle with default fallback. Returns NULL if invalid.
+ */
 static VkrMaterial *vkr_pass_shadow_resolve_material(RendererFrontend *rf,
                                                      VkrMaterialHandle handle) {
   VkrMaterial *material =
@@ -219,9 +220,32 @@ static VkrMaterial *vkr_pass_shadow_resolve_material(RendererFrontend *rf,
   return material;
 }
 
+static void vkr_pass_shadow_submit_opaque_batch(RendererFrontend *rf,
+                                                VkrPassIndirectBatch *batch,
+                                                uint32_t cascade_index) {
+  const uint32_t submitted = batch ? batch->count : 0u;
+  if (!rf || submitted == 0 || cascade_index >= VKR_SHADOW_CASCADE_COUNT_MAX) {
+    if (batch) {
+      batch->count = 0;
+    }
+    return;
+  }
+
+  const bool8_t used_indirect = vkr_pass_indirect_batch_submit(rf, batch);
+  VkrShadowMetrics *metrics = &rf->frame_metrics.shadow;
+  metrics->shadow_batches_opaque[cascade_index]++;
+  metrics->shadow_draw_calls_opaque[cascade_index] +=
+      used_indirect ? 1u : submitted;
+  if (used_indirect) {
+    metrics->shadow_indirect_draws_opaque[cascade_index] += submitted;
+    metrics->shadow_indirect_calls_opaque[cascade_index]++;
+  }
+}
+
 /**
- * Binds pipeline/shader when needed, applies alpha instance state when use_alpha,
- * then issues the draw. Updates inout_current_pipeline and inout_current_alpha.
+ * Binds pipeline/shader when needed, applies alpha instance state when
+ * use_alpha, then issues the draw. Updates inout_current_pipeline and
+ * inout_current_alpha.
  */
 static bool8_t vkr_pass_shadow_bind_and_draw(
     RendererFrontend *rf, const VkrShadowConfig *config,
@@ -229,7 +253,8 @@ static bool8_t vkr_pass_shadow_bind_and_draw(
     const VkrDrawItem *draw, uint32_t base_instance, bool8_t alpha_list,
     const VkrMaterial *material, VkrGeometryHandle geometry,
     const VkrPassDrawRange *range, VkrPipelineHandle *inout_current_pipeline,
-    bool8_t *inout_current_alpha, VkrPassIndirectBatch *batch) {
+    bool8_t *inout_current_alpha, VkrPassIndirectBatch *batch,
+    uint32_t cascade_index) {
   bool8_t use_alpha = alpha_list;
   VkrPipelineHandle pipeline = use_alpha ? shadow->shadow_pipeline_alpha
                                          : shadow->shadow_pipeline_opaque;
@@ -241,14 +266,14 @@ static bool8_t vkr_pass_shadow_bind_and_draw(
     return false_v;
   }
 
-  const bool8_t rebind = pipeline.id != inout_current_pipeline->id ||
-                         pipeline.generation !=
-                             inout_current_pipeline->generation ||
-                         use_alpha != *inout_current_alpha;
+  const bool8_t rebind =
+      pipeline.id != inout_current_pipeline->id ||
+      pipeline.generation != inout_current_pipeline->generation ||
+      use_alpha != *inout_current_alpha;
   if (rebind || use_alpha) {
     // Batched commands were recorded against the currently bound state, so
     // they must be submitted before anything rebinds.
-    vkr_pass_indirect_batch_submit(rf, batch);
+    vkr_pass_shadow_submit_opaque_batch(rf, batch, cascade_index);
   }
 
   if (rebind) {
@@ -296,6 +321,9 @@ static bool8_t vkr_pass_shadow_bind_and_draw(
         rf, &rf->geometry_system, geometry, range->index_buffer,
         range->index_count, range->first_index, range->vertex_offset,
         draw->instance_count, first_instance);
+    rf->frame_metrics.shadow.shadow_draw_calls_alpha[cascade_index]++;
+    rf->frame_metrics.shadow.shadow_batches_alpha[cascade_index]++;
+    rf->frame_metrics.shadow.shadow_descriptor_binds_set1[cascade_index]++;
     return true_v;
   }
 
@@ -303,12 +331,11 @@ static bool8_t vkr_pass_shadow_bind_and_draw(
   // list -- depth-only rendering needs no material. Geometry and index buffer
   // are therefore the only things left that can break a batch, which is why
   // this pass can collapse draws the world pass cannot.
-  if (batch->count > 0 &&
-      (batch->geometry.id != geometry.id ||
-       batch->geometry.generation != geometry.generation ||
-       batch->index_buffer != range->index_buffer ||
-       batch->count >= VKR_PASS_INDIRECT_MAX_BATCH)) {
-    vkr_pass_indirect_batch_submit(rf, batch);
+  if (batch->count > 0 && (batch->geometry.id != geometry.id ||
+                           batch->geometry.generation != geometry.generation ||
+                           batch->index_buffer != range->index_buffer ||
+                           batch->count >= VKR_PASS_INDIRECT_MAX_BATCH)) {
+    vkr_pass_shadow_submit_opaque_batch(rf, batch, cascade_index);
   }
   batch->geometry = geometry;
   batch->index_buffer = range->index_buffer;
@@ -326,7 +353,7 @@ vkr_internal void
 vkr_pass_shadow_draw_list(RendererFrontend *rf, const VkrShadowConfig *config,
                           const Mat4 *light_view_proj, uint32_t base_instance,
                           const VkrDrawItem *draws, uint32_t draw_count,
-                          bool8_t alpha_list) {
+                          bool8_t alpha_list, uint32_t cascade_index) {
   if (!rf || !draws || draw_count == 0 || !light_view_proj) {
     return;
   }
@@ -370,11 +397,10 @@ vkr_pass_shadow_draw_list(RendererFrontend *rf, const VkrShadowConfig *config,
         continue;
       }
 
-      vkr_pass_shadow_bind_and_draw(rf, config, shadow, light_view_proj, draw,
-                                    base_instance, alpha_list, material,
-                                    submesh->geometry, &range,
-                                    &current_pipeline, &current_alpha,
-                                    &batch);
+      vkr_pass_shadow_bind_and_draw(
+          rf, config, shadow, light_view_proj, draw, base_instance, alpha_list,
+          material, submesh->geometry, &range, &current_pipeline,
+          &current_alpha, &batch, cascade_index);
     } else {
       VkrMesh *mesh = NULL;
       VkrSubMesh *submesh = NULL;
@@ -398,15 +424,14 @@ vkr_pass_shadow_draw_list(RendererFrontend *rf, const VkrShadowConfig *config,
         continue;
       }
 
-      vkr_pass_shadow_bind_and_draw(rf, config, shadow, light_view_proj, draw,
-                                    base_instance, alpha_list, material,
-                                    submesh->geometry, &range,
-                                    &current_pipeline, &current_alpha,
-                                    &batch);
+      vkr_pass_shadow_bind_and_draw(
+          rf, config, shadow, light_view_proj, draw, base_instance, alpha_list,
+          material, submesh->geometry, &range, &current_pipeline,
+          &current_alpha, &batch, cascade_index);
     }
   }
 
-  vkr_pass_indirect_batch_submit(rf, &batch);
+  vkr_pass_shadow_submit_opaque_batch(rf, &batch, cascade_index);
 }
 
 vkr_internal void vkr_pass_shadow_execute(VkrRgPassContext *ctx,
@@ -461,10 +486,10 @@ vkr_internal void vkr_pass_shadow_execute(VkrRgPassContext *ctx,
   const Mat4 *light_view_proj = &payload->light_view_proj[cascade_index];
   vkr_pass_shadow_draw_list(rf, config, light_view_proj, base_instance,
                             payload->opaque_draws, payload->opaque_draw_count,
-                            false_v);
+                            false_v, cascade_index);
   vkr_pass_shadow_draw_list(rf, config, light_view_proj, base_instance,
                             payload->alpha_draws, payload->alpha_draw_count,
-                            true_v);
+                            true_v, cascade_index);
 
   vkr_renderer_set_depth_bias(rf, 0.0f, 0.0f, 0.0f);
 }

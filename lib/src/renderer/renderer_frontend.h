@@ -36,18 +36,24 @@
  * @brief Per-frame batching statistics for the world render path.
  *
  * Counts are reset at frame begin and updated by the world view after draw
- * collection. draws_issued counts draw calls actually submitted (opaque
- * batches + transparent draws).
+ * collection. `draws_issued` counts logical indexed commands after CPU
+ * instancing; `draw_calls_issued` counts actual direct/indirect API calls.
  */
 typedef struct VkrWorldBatchMetrics {
   uint32_t draws_collected;
   uint32_t opaque_draws;
   uint32_t transparent_draws;
   uint32_t opaque_batches;
+  /** Logical indexed commands represented by direct or indirect submission. */
   uint32_t draws_issued;
+  /** Actual vkCmdDrawIndexed/vkCmdDrawIndexedIndirect calls recorded. */
+  uint32_t draw_calls_issued;
   uint32_t batches_created;
   uint32_t draws_merged;
+  /** Logical commands carried by multi-draw-indirect calls. */
   uint32_t indirect_draws_issued;
+  /** Actual multi-draw-indirect calls recorded. */
+  uint32_t indirect_calls_issued;
   float32_t avg_batch_size;
   uint32_t max_batch_size;
 } VkrWorldBatchMetrics;
@@ -65,6 +71,8 @@ typedef struct VkrShadowMetrics {
   uint32_t shadow_descriptor_binds_set1[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t shadow_batches_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
   uint32_t shadow_batches_alpha[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t shadow_indirect_draws_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
+  uint32_t shadow_indirect_calls_opaque[VKR_SHADOW_CASCADE_COUNT_MAX];
 } VkrShadowMetrics;
 
 /**

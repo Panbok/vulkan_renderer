@@ -13,6 +13,9 @@ int vkr_draw_merge_key_compare(const void *lhs, const void *rhs) {
   if (a->material != b->material) {
     return a->material < b->material ? -1 : 1;
   }
+  if (a->binding_context != b->binding_context) {
+    return a->binding_context < b->binding_context ? -1 : 1;
+  }
   if (a->first_index != b->first_index) {
     return a->first_index < b->first_index ? -1 : 1;
   }
@@ -37,6 +40,8 @@ void vkr_draw_measure_merge_opportunity(VkrDrawMergeKey *keys, uint32_t count,
     stats->distinct_opaque_keys = 0;
     stats->mergeable_opaque_draws = 0;
     stats->largest_mergeable_run = 0;
+    stats->distinct_geometries = 0;
+    stats->distinct_geometry_material_pairs = 0;
     return;
   }
 
@@ -46,8 +51,8 @@ void vkr_draw_measure_merge_opportunity(VkrDrawMergeKey *keys, uint32_t count,
   uint32_t largest_run = 0;
   uint32_t run = 1;
   for (uint32_t i = 1; i <= count; ++i) {
-    const bool8_t same = (i < count) &&
-                         vkr_draw_merge_key_compare(&keys[i - 1], &keys[i]) == 0;
+    const bool8_t same =
+        (i < count) && vkr_draw_merge_key_compare(&keys[i - 1], &keys[i]) == 0;
     if (same) {
       run++;
       continue;
@@ -61,23 +66,24 @@ void vkr_draw_measure_merge_opportunity(VkrDrawMergeKey *keys, uint32_t count,
   stats->mergeable_opaque_draws = count - distinct;
   stats->largest_mergeable_run = largest_run;
 
-  // Keys are already sorted by geometry then material, so distinct counts fall
-  // out of a single linear scan.
+  // Keys are already sorted by geometry then material, so geometry and
+  // geometry/material-pair counts fall out of the same linear scan. This is
+  // intentionally not named "distinct materials": one material used with two
+  // geometry buffers is two binding groups.
   uint32_t geometries = 1;
-  uint32_t materials = 1;
+  uint32_t geometry_material_pairs = 1;
   for (uint32_t i = 1; i < count; ++i) {
     if (keys[i].geometry != keys[i - 1].geometry) {
       geometries++;
     }
     if (keys[i].geometry != keys[i - 1].geometry ||
         keys[i].material != keys[i - 1].material) {
-      materials++;
+      geometry_material_pairs++;
     }
   }
   stats->distinct_geometries = geometries;
-  stats->distinct_materials = materials;
+  stats->distinct_geometry_material_pairs = geometry_material_pairs;
 }
-
 
 int vkr_draw_candidate_key_compare(const void *lhs, const void *rhs) {
   const VkrDrawCandidate *a = (const VkrDrawCandidate *)lhs;
@@ -101,11 +107,19 @@ uint32_t vkr_draw_merge_candidates(VkrDrawCandidate *candidates, uint32_t count,
                                    uint32_t instance_base,
                                    VkrDrawItem *out_draws,
                                    uint32_t *out_draw_count,
-                                   VkrInstanceDataGPU *out_instances) {
+                                   VkrInstanceDataGPU *out_instances,
+                                   VkrVisibilityStats *stats) {
   if (out_draw_count) {
     *out_draw_count = 0;
   }
   if (!candidates || count == 0 || !out_draws || !out_instances) {
+    if (stats) {
+      stats->distinct_opaque_keys = 0;
+      stats->mergeable_opaque_draws = 0;
+      stats->largest_mergeable_run = 0;
+      stats->distinct_geometries = 0;
+      stats->distinct_geometry_material_pairs = 0;
+    }
     return 0;
   }
 
@@ -115,6 +129,7 @@ uint32_t vkr_draw_merge_candidates(VkrDrawCandidate *candidates, uint32_t count,
   uint32_t draw_count = 0;
   uint32_t written = 0;
   uint32_t run_start = 0;
+  uint32_t largest_run = 0;
   for (uint32_t i = 1; i <= count; ++i) {
     const bool8_t same =
         (i < count) && vkr_draw_merge_key_compare(&candidates[i - 1].key,
@@ -124,6 +139,7 @@ uint32_t vkr_draw_merge_candidates(VkrDrawCandidate *candidates, uint32_t count,
     }
 
     const uint32_t run_length = i - run_start;
+    largest_run = run_length > largest_run ? run_length : largest_run;
     // Instance records are emitted in run order, so the whole run occupies
     // [instance_base + written, ... + run_length) and can be drawn at once.
     out_draws[draw_count] = (VkrDrawItem){
@@ -152,6 +168,24 @@ uint32_t vkr_draw_merge_candidates(VkrDrawCandidate *candidates, uint32_t count,
 
   if (out_draw_count) {
     *out_draw_count = draw_count;
+  }
+  if (stats) {
+    uint32_t geometries = 1;
+    uint32_t geometry_material_pairs = 1;
+    for (uint32_t i = 1; i < count; ++i) {
+      if (candidates[i].key.geometry != candidates[i - 1].key.geometry) {
+        geometries++;
+      }
+      if (candidates[i].key.geometry != candidates[i - 1].key.geometry ||
+          candidates[i].key.material != candidates[i - 1].key.material) {
+        geometry_material_pairs++;
+      }
+    }
+    stats->distinct_opaque_keys = draw_count;
+    stats->mergeable_opaque_draws = count - draw_count;
+    stats->largest_mergeable_run = largest_run;
+    stats->distinct_geometries = geometries;
+    stats->distinct_geometry_material_pairs = geometry_material_pairs;
   }
   return written;
 }
@@ -201,7 +235,8 @@ void vkr_visibility_submesh_sphere(Mat4 model, Vec3 center, Vec3 min_extents,
 }
 
 uint8_t vkr_visibility_classify(const VkrFrustum *camera_frustum,
-                                const VkrFrustum *shadow_frustum,
+                                const VkrFrustum *shadow_frustums,
+                                uint32_t shadow_frustum_count,
                                 bool8_t bounds_valid, Vec3 center,
                                 float32_t radius, VkrVisibilityStats *stats) {
   stats->objects_tested++;
@@ -218,8 +253,12 @@ uint8_t vkr_visibility_classify(const VkrFrustum *camera_frustum,
     stats->objects_culled_camera++;
   }
 
-  if (!shadow_frustum ||
-      vkr_frustum_test_sphere(shadow_frustum, center, radius)) {
+  bool8_t shadow_visible = !shadow_frustums || shadow_frustum_count == 0;
+  for (uint32_t i = 0; !shadow_visible && i < shadow_frustum_count; ++i) {
+    shadow_visible =
+        vkr_frustum_test_sphere(&shadow_frustums[i], center, radius);
+  }
+  if (shadow_visible) {
     flags |= VKR_VISIBLE_SHADOW;
   } else {
     stats->objects_culled_shadow++;
