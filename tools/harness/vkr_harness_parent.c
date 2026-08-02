@@ -206,10 +206,16 @@ vkr_harness_adopt_run_provenance(VkrHarnessProvenance *provenance,
   provenance->gpu_vendor_id = header->gpu_vendor_id;
   provenance->gpu_device_id = header->gpu_device_id;
   provenance->actual_present = (VkrHarnessPresentMode)header->actual_present;
+  provenance->actual_target = (VkrHarnessTarget)header->actual_target;
   provenance->actual_target_image_count = header->actual_image_count;
+  provenance->actual_target_width = header->actual_width;
+  provenance->actual_target_height = header->actual_height;
   vkr_harness_provenance_set_text(provenance->color_format,
                                   sizeof(provenance->color_format),
                                   header->color_format);
+  vkr_harness_provenance_set_text(provenance->depth_format,
+                                  sizeof(provenance->depth_format),
+                                  header->depth_format);
   vkr_harness_provenance_set_text(provenance->color_space,
                                   sizeof(provenance->color_space),
                                   header->color_space);
@@ -232,8 +238,17 @@ vkr_harness_run_is_compatible(const VkrHarnessSampleSet *first,
          candidate->header.gpu_vendor_id == first->header.gpu_vendor_id &&
          candidate->header.gpu_device_id == first->header.gpu_device_id &&
          candidate->header.actual_present == first->header.actual_present &&
+         candidate->header.actual_target == first->header.actual_target &&
          candidate->header.actual_image_count ==
              first->header.actual_image_count &&
+         candidate->header.actual_width == first->header.actual_width &&
+         candidate->header.actual_height == first->header.actual_height &&
+         string_equals(candidate->header.color_format,
+                       first->header.color_format) &&
+         string_equals(candidate->header.depth_format,
+                       first->header.depth_format) &&
+         string_equals(candidate->header.color_space,
+                       first->header.color_space) &&
          candidate->header.subsystem_mask == first->header.subsystem_mask;
 }
 
@@ -544,16 +559,32 @@ static void vkr_harness_apply_verdict(VkrHarnessReport *report,
   }
   if (profile->require_actual_present &&
       report->provenance.actual_present != profile->required_present) {
-    vkr_harness_report_add_incompatibility(report, "environment.present_mode");
-    vkr_harness_report_set_status(report, "unavailable",
-                                  VKR_HARNESS_EXIT_UNAVAILABLE);
+    vkr_harness_report_mark_unavailable(report, "environment.present_mode");
+  }
+  /* Only a completed repetition reports an actual target. An offscreen case
+     owns its extent and image count outright, so a backend that clamped either
+     ran a different workload than the manifest asked for. */
+  if (report->completed_repetitions > 0u) {
+    const VkrHarnessProvenance *actual = &report->provenance;
+    const bool8_t offscreen =
+        case_manifest->target == VKR_HARNESS_TARGET_OFFSCREEN;
+    if (actual->actual_target != profile->target) {
+      vkr_harness_report_mark_unavailable(report, "environment.target");
+    }
+    if (offscreen && (actual->actual_target_width != case_manifest->width ||
+                      actual->actual_target_height != case_manifest->height)) {
+      vkr_harness_report_mark_unavailable(report, "environment.target_extent");
+    }
+    if (offscreen && actual->actual_target_image_count !=
+                         case_manifest->target_image_count) {
+      vkr_harness_report_mark_unavailable(report,
+                                          "environment.target_image_count");
+    }
   }
   if (!vkr_harness_environment_satisfies_profile(profile,
                                                  &report->provenance)) {
-    vkr_harness_report_add_incompatibility(report,
-                                           "environment.profile_constraint");
-    vkr_harness_report_set_status(report, "unavailable",
-                                  VKR_HARNESS_EXIT_UNAVAILABLE);
+    vkr_harness_report_mark_unavailable(report,
+                                        "environment.profile_constraint");
   }
 }
 
@@ -598,13 +629,6 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
                             NULL, NULL);
     return exit_code;
   }
-  const char *unsupported = vkr_harness_unsupported(&case_manifest, &profile);
-  if (unsupported) {
-    vkr_harness_stderr("%s\n", unsupported);
-    vkr_harness_emit_result("unavailable", VKR_HARNESS_EXIT_UNAVAILABLE, NULL,
-                            NULL);
-    return VKR_HARNESS_EXIT_UNAVAILABLE;
-  }
   const char *mismatch =
       vkr_harness_case_profile_mismatch(&case_manifest, &profile);
   if (mismatch) {
@@ -638,7 +662,8 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
       .gpu_lane_lock_acquired = !profile.require_exclusive_gpu_lane,
       /* Until a repetition reports one, no presentation configuration is
          claimed. */
-      .provenance = {.actual_present = VKR_HARNESS_PRESENT_UNKNOWN},
+      .provenance = {.actual_target = case_manifest.target,
+                     .actual_present = VKR_HARNESS_PRESENT_UNKNOWN},
   };
   if (report.requested_repetitions > VKR_HARNESS_MAX_RUNS) {
     vkr_harness_stderr("Requested repetitions exceed %u\n",

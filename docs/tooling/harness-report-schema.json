@@ -377,6 +377,9 @@
         "scene",
         "target",
         "target_image_count",
+        "color_format",
+        "depth_format",
+        "color_space",
         "present_mode",
         "boot_profile",
         "subsystem_mask",
@@ -412,6 +415,21 @@
           "type": "integer",
           "minimum": 0,
           "description": "Actual image count of the selected target; 0 when no repetition reported one."
+        },
+        "color_format": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Actual target color format, or unknown when no repetition opened a target."
+        },
+        "depth_format": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Actual target depth format, or unknown when no repetition opened a target."
+        },
+        "color_space": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Actual WSI color space; unknown for an ordinary-image offscreen target."
         },
         "present_mode": {
           "enum": [

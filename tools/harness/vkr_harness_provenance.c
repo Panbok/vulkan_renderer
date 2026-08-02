@@ -36,6 +36,8 @@ void vkr_harness_provenance_system(VkrHarnessProvenance *provenance) {
   string_format(provenance->driver, sizeof(provenance->driver), "unknown");
   string_format(provenance->color_format, sizeof(provenance->color_format),
                 "unknown");
+  string_format(provenance->depth_format, sizeof(provenance->depth_format),
+                "unknown");
   string_format(provenance->color_space, sizeof(provenance->color_space),
                 "unknown");
 }
@@ -116,11 +118,15 @@ uint32_t vkr_harness_environment_fields(
   string_format(composite, sizeof(composite), "%u:%u",
                 provenance->gpu_vendor_id, provenance->gpu_device_id);
   VKR_HARNESS_ENVIRONMENT_FIELD("gpu_ids", composite);
-  string_format(composite, sizeof(composite), "%s:%u",
+  string_format(composite, sizeof(composite), "%s:%s:%u:%ux%u",
+                vkr_harness_target_name(provenance->actual_target),
                 vkr_harness_present_name(provenance->actual_present),
-                provenance->actual_target_image_count);
+                provenance->actual_target_image_count,
+                provenance->actual_target_width,
+                provenance->actual_target_height);
   VKR_HARNESS_ENVIRONMENT_FIELD("target", composite);
   VKR_HARNESS_ENVIRONMENT_FIELD("color_format", provenance->color_format);
+  VKR_HARNESS_ENVIRONMENT_FIELD("depth_format", provenance->depth_format);
   VKR_HARNESS_ENVIRONMENT_FIELD("color_space", provenance->color_space);
   VKR_HARNESS_ENVIRONMENT_FIELD("power_mode", provenance->power_mode);
   string_format(composite, sizeof(composite), "%d:%u",
@@ -128,20 +134,4 @@ uint32_t vkr_harness_environment_fields(
   VKR_HARNESS_ENVIRONMENT_FIELD("execution", composite);
 #undef VKR_HARNESS_ENVIRONMENT_FIELD
   return count;
-}
-
-const char *vkr_harness_unsupported(const VkrHarnessCase *case_manifest,
-                                    const VkrHarnessProfile *profile) {
-  if (case_manifest->target == VKR_HARNESS_TARGET_OFFSCREEN ||
-      profile->target == VKR_HARNESS_TARGET_OFFSCREEN) {
-    return "Offscreen targets ship in Phase 6";
-  }
-  if (case_manifest->present == VKR_HARNESS_PRESENT_NONE ||
-      profile->required_present == VKR_HARNESS_PRESENT_NONE) {
-    return "present=none requires an offscreen target (Phase 6)";
-  }
-  /* A case that also declares captures is still profileable: `profile` runs
-     capture-free primary repetitions and excludes captures from its
-     fingerprint. Only `snapshot`/`autotest` need Phase 4. */
-  return NULL;
 }

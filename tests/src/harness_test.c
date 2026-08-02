@@ -78,6 +78,9 @@ static void test_harness_case_parser(void) {
   assert(parsed.warmup_frames == 120u && parsed.repetitions == 1u);
   assert(parsed.camera.speed == VKR_HARNESS_SPEED_MEDIUM);
   assert(!harness_parse_case("offscreen", "fifo", static_camera, "", &parsed));
+  assert(harness_parse_case("offscreen", "none", static_camera, "", &parsed));
+  assert(parsed.target == VKR_HARNESS_TARGET_OFFSCREEN);
+  assert(parsed.target_image_count == 3u);
   assert(!harness_parse_case(
       "windowed_hidden", "immediate",
       "{\"mode\":\"keyframes\",\"keys\":[{\"t\":1,\"position\":[0,0,0],"

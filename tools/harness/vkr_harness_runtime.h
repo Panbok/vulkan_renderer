@@ -41,13 +41,17 @@ typedef struct VkrHarnessSampleFileHeader {
   uint32_t warmup_frames;
   uint32_t measure_frames;
   uint32_t actual_present;
+  uint32_t actual_target;
   uint32_t actual_image_count;
+  uint32_t actual_width;
+  uint32_t actual_height;
   uint32_t gpu_vendor_id;
   uint32_t gpu_device_id;
   uint32_t flags;
   char gpu[128];
   char driver[128];
   char color_format[32];
+  char depth_format[32];
   char color_space[32];
 } VkrHarnessSampleFileHeader;
 
@@ -138,7 +142,7 @@ void vkr_harness_provenance_set_text(char *field, uint64_t capacity,
 void vkr_harness_provenance_collect(const char *executable,
                                     const char *repo_root,
                                     VkrHarnessProvenance *provenance);
-#define VKR_HARNESS_ENVIRONMENT_FIELD_COUNT 12u
+#define VKR_HARNESS_ENVIRONMENT_FIELD_COUNT 13u
 
 /**
  * Environment fingerprint inputs. Parent and child must project the same
@@ -150,13 +154,6 @@ void vkr_harness_provenance_collect(const char *executable,
 uint32_t vkr_harness_environment_fields(
     const VkrHarnessProvenance *provenance, bool8_t exclusive_gpu_lane,
     VkrHarnessFingerprintField fields[VKR_HARNESS_ENVIRONMENT_FIELD_COUNT]);
-
-/**
- * @return NULL when the harness can run this case/profile pair, otherwise a
- * stable reason string.
- */
-const char *vkr_harness_unsupported(const VkrHarnessCase *case_manifest,
-                                    const VkrHarnessProfile *profile);
 
 int vkr_harness_child_run(const char *executable, const char *repo_root,
                           const char *case_path, const char *profile_path,

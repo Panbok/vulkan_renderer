@@ -188,7 +188,8 @@ int vkr_harness_autotest_run(const char *executable, const char *repo_root,
       .profile_compatible = true_v,
       .subsystem_mask = subsystem_plan.effective_mask,
       .requested_repetitions = 2u,
-      .provenance = {.actual_present = VKR_HARNESS_PRESENT_UNKNOWN},
+      .provenance = {.actual_target = case_manifest.target,
+                     .actual_present = VKR_HARNESS_PRESENT_UNKNOWN},
   };
   /* Assertions are evaluated against the metrics of the child that produced
      them and are published in that child's report. Folding them into a run

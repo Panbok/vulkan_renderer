@@ -268,6 +268,13 @@ void vkr_harness_report_mark_incomplete(VkrHarnessReport *report,
   }
 }
 
+void vkr_harness_report_mark_unavailable(VkrHarnessReport *report,
+                                         const char *reason) {
+  vkr_harness_report_add_incompatibility(report, reason);
+  vkr_harness_report_set_status(report, "unavailable",
+                                VKR_HARNESS_EXIT_UNAVAILABLE);
+}
+
 bool8_t vkr_harness_report_write(const char *path,
                                  const VkrHarnessReport *report,
                                  VkrHarnessError *out_error) {
@@ -373,16 +380,26 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_json_writer_begin_object(writer) &&
       vkr_harness_json_emit_name(writer, "resolution") &&
       vkr_json_writer_begin_array(writer) &&
-      vkr_json_writer_u64(writer, report->case_manifest.width) &&
-      vkr_json_writer_u64(writer, report->case_manifest.height) &&
+      vkr_json_writer_u64(writer, report->provenance.actual_target_width
+                                      ? report->provenance.actual_target_width
+                                      : report->case_manifest.width) &&
+      vkr_json_writer_u64(writer, report->provenance.actual_target_height
+                                      ? report->provenance.actual_target_height
+                                      : report->case_manifest.height) &&
       vkr_json_writer_end_array(writer) &&
       vkr_harness_json_emit_string(writer, "scene",
                                    report->case_manifest.scene) &&
       vkr_harness_json_emit_string(
           writer, "target",
-          vkr_harness_target_name(report->case_manifest.target)) &&
+          vkr_harness_target_name(report->provenance.actual_target)) &&
       vkr_harness_json_emit_u64(writer, "target_image_count",
                                 report->provenance.actual_target_image_count) &&
+      vkr_harness_json_emit_string(writer, "color_format",
+                                   report->provenance.color_format) &&
+      vkr_harness_json_emit_string(writer, "depth_format",
+                                   report->provenance.depth_format) &&
+      vkr_harness_json_emit_string(writer, "color_space",
+                                   report->provenance.color_space) &&
       vkr_harness_json_emit_string(
           writer, "present_mode",
           vkr_harness_present_name(report->provenance.actual_present)) &&

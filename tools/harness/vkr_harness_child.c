@@ -120,6 +120,19 @@ static const char *vkr_harness_color_space_name(VkrSurfaceColorSpace space) {
                                                          : "unknown";
 }
 
+static const char *vkr_harness_depth_format_name(VkrSurfaceDepthFormat format) {
+  switch (format) {
+  case VKR_SURFACE_DEPTH_FORMAT_D16_UNORM:
+    return "d16_unorm";
+  case VKR_SURFACE_DEPTH_FORMAT_D32_SFLOAT:
+    return "d32_sfloat";
+  case VKR_SURFACE_DEPTH_FORMAT_D24_UNORM_S8_UINT:
+    return "d24_unorm_s8_uint";
+  default:
+    return "unknown";
+  }
+}
+
 static void vkr_harness_child_fail(Application *application,
                                    const char *reason) {
   VkrHarnessChildContext *child = g_harness_child;
@@ -516,6 +529,15 @@ static ApplicationConfig vkr_harness_child_application_config(
       .window_hidden =
           case_manifest->target == VKR_HARNESS_TARGET_WINDOWED_HIDDEN,
       .disable_skybox = !case_manifest->renderer.skybox,
+      .present_target =
+          {
+              .kind = case_manifest->target == VKR_HARNESS_TARGET_OFFSCREEN
+                          ? VKR_PRESENT_TARGET_OFFSCREEN
+                          : VKR_PRESENT_TARGET_WINDOWED,
+              .width = case_manifest->width,
+              .height = case_manifest->height,
+              .image_count = case_manifest->target_image_count,
+          },
       .requested_present_mode =
           vkr_harness_present_to_renderer(case_manifest->present),
       .capture_enabled = capture_max_batch_bytes > 0u,
@@ -572,6 +594,7 @@ vkr_harness_child_apply_renderer(Application *application,
 
 static void
 vkr_harness_child_device_provenance(Application *application,
+                                    const VkrHarnessCase *case_manifest,
                                     VkrHarnessProvenance *provenance) {
   Arena *device_arena = arena_create(KB(16), KB(16));
   if (!device_arena) {
@@ -593,10 +616,19 @@ vkr_harness_child_device_provenance(Application *application,
   provenance->gpu_device_id = device.device_id;
   provenance->actual_present =
       vkr_harness_present_from_renderer(device.actual_present_mode);
+  provenance->actual_target =
+      device.actual_target_kind == VKR_PRESENT_TARGET_OFFSCREEN
+          ? VKR_HARNESS_TARGET_OFFSCREEN
+          : case_manifest->target;
   provenance->actual_target_image_count = device.actual_target_image_count;
+  provenance->actual_target_width = device.actual_target_width;
+  provenance->actual_target_height = device.actual_target_height;
   string_format(provenance->color_format, sizeof(provenance->color_format),
                 "%s",
                 vkr_harness_surface_format_name(device.actual_color_format));
+  string_format(provenance->depth_format, sizeof(provenance->depth_format),
+                "%s",
+                vkr_harness_depth_format_name(device.actual_depth_format));
   string_format(provenance->color_space, sizeof(provenance->color_space), "%s",
                 vkr_harness_color_space_name(device.actual_color_space));
   arena_destroy(device_arena);
@@ -738,7 +770,10 @@ static VkrHarnessSampleFileHeader vkr_harness_child_sample_header(
       .warmup_frames = case_manifest->warmup_frames,
       .measure_frames = case_manifest->measure_frames,
       .actual_present = provenance->actual_present,
+      .actual_target = provenance->actual_target,
       .actual_image_count = provenance->actual_target_image_count,
+      .actual_width = provenance->actual_target_width,
+      .actual_height = provenance->actual_target_height,
       .gpu_vendor_id = provenance->gpu_vendor_id,
       .gpu_device_id = provenance->gpu_device_id,
       .flags = (uint32_t)((warmup_stable ? VKR_HARNESS_SAMPLE_FLAG_WARMUP_STABLE
@@ -751,6 +786,8 @@ static VkrHarnessSampleFileHeader vkr_harness_child_sample_header(
   string_format(header.driver, sizeof(header.driver), "%s", provenance->driver);
   string_format(header.color_format, sizeof(header.color_format), "%s",
                 provenance->color_format);
+  string_format(header.depth_format, sizeof(header.depth_format), "%s",
+                provenance->depth_format);
   string_format(header.color_space, sizeof(header.color_space), "%s",
                 provenance->color_space);
   return header;
@@ -769,11 +806,6 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
       !vkr_harness_profile_load(repo_root, profile_path, &profile, &error)) {
     vkr_harness_stderr("%s: %s\n", error.code, error.message);
     return VKR_HARNESS_EXIT_INVALID;
-  }
-  const char *unsupported = vkr_harness_unsupported(&case_manifest, &profile);
-  if (unsupported) {
-    vkr_harness_stderr("%s\n", unsupported);
-    return VKR_HARNESS_EXIT_UNAVAILABLE;
   }
   if (capture_index >= (int32_t)case_manifest.capture_count) {
     vkr_harness_stderr("Capture index is out of range\n");
@@ -921,6 +953,18 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     exit_code = VKR_HARNESS_EXIT_INVALID;
     goto cleanup;
   }
+  /* Every true-offscreen child proves the explicit lifecycle before loading
+     case resources. This is outside the measured/warmup windows and recreates
+     the requested configuration exactly, so it cannot change workload
+     identity while still exercising teardown, arena reset, and sync rebuild. */
+  if (case_manifest.target == VKR_HARNESS_TARGET_OFFSCREEN &&
+      vkr_renderer_present_target_recreate(
+          &application.renderer, case_manifest.width, case_manifest.height,
+          case_manifest.target_image_count) != VKR_RENDERER_ERROR_NONE) {
+    vkr_harness_stderr("Unable to recreate the offscreen present target\n");
+    exit_code = VKR_HARNESS_EXIT_UNAVAILABLE;
+    goto cleanup;
+  }
   for (uint32_t i = 0; i < profile.required_metric_count; ++i) {
     if (!vkr_harness_catalog_has(application.metrics,
                                  profile.required_metrics[i])) {
@@ -1024,7 +1068,8 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     vkr_harness_stderr("Repetition did not complete: %s\n", child.failure);
   }
 
-  vkr_harness_child_device_provenance(&application, &provenance);
+  vkr_harness_child_device_provenance(&application, &case_manifest,
+                                      &provenance);
   vkr_harness_timestamp_utc(provenance.ended_at);
   const bool8_t warmup_stable =
       !child.failed &&

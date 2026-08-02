@@ -381,9 +381,13 @@ typedef struct VkrHarnessProvenance {
   int32_t process_priority;
   char binary_sha256[VKR_HARNESS_DIGEST_MAX];
   char color_format[32];
+  char depth_format[32];
   char color_space[32];
+  VkrHarnessTarget actual_target;
   VkrHarnessPresentMode actual_present;
   uint32_t actual_target_image_count;
+  uint32_t actual_target_width;
+  uint32_t actual_target_height;
 } VkrHarnessProvenance;
 
 typedef struct VkrHarnessRunReference {
@@ -772,6 +776,9 @@ void vkr_harness_report_set_status(VkrHarnessReport *report, const char *status,
 /** Terminal "evidence is missing" outcome: status, exit code, and reason. */
 void vkr_harness_report_mark_incomplete(VkrHarnessReport *report,
                                         const char *reason);
+/** Terminal "the environment is not the requested one" outcome. */
+void vkr_harness_report_mark_unavailable(VkrHarnessReport *report,
+                                         const char *reason);
 
 /**
  * Named-member shorthand over `core/vkr_json_writer.h` for the C strings the

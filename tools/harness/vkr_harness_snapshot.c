@@ -169,11 +169,6 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
     vkr_harness_stderr("%s: %s\n", error.code, error.message);
     return VKR_HARNESS_EXIT_INVALID;
   }
-  const char *unsupported = vkr_harness_unsupported(&case_manifest, &profile);
-  if (unsupported) {
-    vkr_harness_stderr("%s\n", unsupported);
-    return VKR_HARNESS_EXIT_UNAVAILABLE;
-  }
   if (case_manifest.capture_count == 0u) {
     vkr_harness_stderr(
         "Snapshot requires at least one captures[] checkpoint\n");
@@ -214,7 +209,8 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
       .profile_compatible = true_v,
       .subsystem_mask = subsystem_plan.effective_mask,
       .requested_repetitions = replay_count,
-      .provenance = {.actual_present = VKR_HARNESS_PRESENT_UNKNOWN},
+      .provenance = {.actual_target = case_manifest.target,
+                     .actual_present = VKR_HARNESS_PRESENT_UNKNOWN},
   };
   if (!vkr_harness_make_directories(artifact_candidate, &error) ||
       !vkr_harness_resolve_existing_path(repo_root, artifact_root_relative,
@@ -325,14 +321,22 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
       string_format(report.provenance.color_format,
                     sizeof(report.provenance.color_format), "%s",
                     summary.provenance.color_format);
+      string_format(report.provenance.depth_format,
+                    sizeof(report.provenance.depth_format), "%s",
+                    summary.provenance.depth_format);
       string_format(report.provenance.color_space,
                     sizeof(report.provenance.color_space), "%s",
                     summary.provenance.color_space);
       report.provenance.gpu_vendor_id = summary.provenance.gpu_vendor_id;
       report.provenance.gpu_device_id = summary.provenance.gpu_device_id;
       report.provenance.actual_present = summary.provenance.actual_present;
+      report.provenance.actual_target = summary.provenance.actual_target;
       report.provenance.actual_target_image_count =
           summary.provenance.actual_target_image_count;
+      report.provenance.actual_target_width =
+          summary.provenance.actual_target_width;
+      report.provenance.actual_target_height =
+          summary.provenance.actual_target_height;
     }
     scratch_destroy(summary_scratch, ARENA_MEMORY_TAG_ARRAY);
     report.completed_repetitions++;
