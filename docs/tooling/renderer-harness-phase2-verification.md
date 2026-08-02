@@ -1,6 +1,6 @@
 ---
 status: investigation
-updated: 2026-08-01
+updated: 2026-08-02
 authority: investigation
 ---
 
@@ -23,9 +23,10 @@ rows, and the bounded event stream without event or snapshot-publication drops.
 The local profile and dirty implementation tree correctly made the observation
 non-authoritative.
 
-This evidence does not claim Phase 2b benchmark parity or a performance win.
-Capture, `snapshot`, `autotest`, automation boot, baselines, and offscreen
-targets remain unavailable by design.
+This Phase-2 evidence predates the separately verified Phase-2b benchmark
+migration and does not claim a performance win. Capture, `snapshot`,
+`autotest`, automation boot, baselines, and offscreen targets remain unavailable
+by design.
 
 ## Functional and integration evidence
 
@@ -74,8 +75,8 @@ layer matrix is not claimed here.
 
 ## Remaining phases
 
-- Phase 2b establishes parity with the legacy benchmark before changing the
-  performance skill or retiring its grep/awk path.
+- Phase 2b is implemented and recorded in
+  [`renderer-harness-phase2b-verification.md`](renderer-harness-phase2b-verification.md).
 - Phase 3 implements dependency-resolved automation boot.
 - Phases 4 and 5 implement capture, snapshot/autotest, comparison, and guarded
   baselines.

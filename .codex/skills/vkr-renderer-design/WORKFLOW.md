@@ -78,8 +78,8 @@ Run the cheapest step that completely covers the invariant you touched.
    queue-family layouts your change can reach.
 5. `./validate_pipeline_cache.sh` for shader, pipeline, or reflection changes.
 6. `tools/validate_multithreaded_backend_matrix.sh` for backend threading.
-7. Same-config Release measurement via `tools/benchmark_multithreaded_backend.sh`
-   for anything performance-relevant.
+7. Same-config Release measurement via `vkr_harness profile` and an
+   authoritative performance profile for anything performance-relevant.
 
 Stop and report rather than asserting a result when: the baseline was already
 red, the configuration changed between measurements, required metrics are

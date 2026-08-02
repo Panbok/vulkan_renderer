@@ -7,9 +7,10 @@ description: Run and interpret VKR's structured renderer automation harness. Use
 
 Use `vkr_harness` for structured, repeatable renderer observations. Phase 2
 supports the `profile` command with full boot and visible or hidden windowed
-targets. Capture, `snapshot`, `autotest`, baseline comparison/promotion,
-automation boot, and true offscreen targets are later phases and must not be
-claimed from this binary.
+targets. Phase 2b adds authoritative CPU and GPU-timestamp performance profiles
+and retires the old log-scraping benchmark. Capture, `snapshot`, `autotest`,
+baseline comparison/promotion, automation boot, and true offscreen targets are
+later phases and must not be claimed from this binary.
 
 ## Run a profile
 
@@ -61,7 +62,18 @@ No Phase 2 command mutates accepted evidence. Baseline proposal and acceptance
 arrive in Phase 5. If those commands are added later, never accept or promote a
 baseline unless the user explicitly requests that mutation.
 
-Use `vkr-validation` for CPU and Vulkan correctness gates. Until Phase 2b
-establishes parity and migrates the performance workflow, use `vkr-performance`
-for repository performance claims and treat Phase 2 harness output as
-structured observational evidence.
+Use `vkr-validation` for CPU and Vulkan correctness gates and `vkr-performance`
+for repository performance claims.
+
+| Profile | Timestamps | Use |
+|---|---|---|
+| `local-windowed.json` | off | Observational; two repetitions, drift not enforced |
+| `local-windowed-gpu.json` | on | Observational per-pass GPU timing |
+| `performance-windowed.json` | off | Authoritative CPU and work-volume evidence |
+| `performance-windowed-gpu.json` | on | Authoritative evidence including complete per-pass GPU timing |
+
+The authoritative profiles encode the repetition, warmup, exclusivity, and
+completeness policy; a parser rejects any authoritative profile declaring fewer
+than two independent repetitions. A dirty tree or any authority reason still
+makes their output non-authoritative. A timestamp-on run is a different
+comparison configuration from a timestamp-off run, so never compare the two.

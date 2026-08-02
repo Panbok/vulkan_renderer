@@ -1,49 +1,52 @@
 ---
 status: partial
-updated: 2026-08-01
+updated: 2026-08-02
 authority: spec
 ---
 # Renderer Metrics Module and Automation Harness
 
-> **Status note.** Phases 1, 1b, and 2 ship: the centralized registry and
+> **Status note.** Phases 1, 1b, 2, and 2b ship: the centralized registry and
 > renderer adapter feed a structured `vkr_harness profile` runtime with strict
 > manifests, deterministic cameras, isolated repetitions, fingerprints, and
-> atomic reports. Phases 2b-6 remain proposed; there is still no harness capture
+> atomic reports. Reviewed CPU/GPU performance profiles now replace the retired
+> grep/awk benchmark. Phases 3-6 remain proposed; there is still no harness capture
 > path, automation boot profile, baseline workflow, or offscreen target.
 > Evidence is recorded in
 > [renderer-metrics-phase1-verification.md](renderer-metrics-phase1-verification.md)
 > and
 > [renderer-metrics-phase1b-verification.md](renderer-metrics-phase1b-verification.md).
-> Phase-2 evidence is recorded in
-> [renderer-harness-phase2-verification.md](renderer-harness-phase2-verification.md).
+> Phase-2 and Phase-2b evidence is recorded in
+> [renderer-harness-phase2-verification.md](renderer-harness-phase2-verification.md)
+> and
+> [renderer-harness-phase2b-verification.md](renderer-harness-phase2b-verification.md).
 
 ## 1. Problem
 
-The renderer already produces most of the numbers an automated workflow needs.
-What it lacks is a way to get them out of a running process in a form a machine
-can act on.
+The renderer already produced most of the numbers an automated workflow needed,
+but lacked a machine-readable transport. Phases 1-2b implement that transport
+and replace the legacy scrape path described below; the remaining problem is
+capture, automation boot, accepted baselines, and offscreen execution.
 
-Today every signal lives in its own struct with its own reader, and the only
-transport is `log_info` plus a shell pipeline:
+Before this series, every signal lived in its own struct with its own reader,
+and the only transport was `log_info` plus a shell pipeline:
 
-- `tools/benchmark_multithreaded_backend.sh` launches the app with
+- The former `tools/benchmark_multithreaded_backend.sh` launched the app with
   `VKR_BENCHMARK_LOG=1`, greps a single `BENCHMARK_SUMMARY` line out of stdout,
   and splits it with `awk` into an eight-column CSV. Adding a metric means
   editing a `snprintf`, a `grep`, and an `awk` field index in three files.
-- `app/src/main.c` carries the automation logic inline with the editor, gizmo,
+- `app/src/main.c` carried benchmark accumulation inline with the editor, gizmo,
   and picking demo code: `VKR_AUTOCLOSE_SECONDS`, `VKR_METRICS_INTERVAL_SECONDS`,
   `VKR_BENCHMARK_LOG`, `VKR_BENCHMARK_LABEL`, `VKR_RG_GPU_TIMING`,
   `VKR_ASSERT_NO_UPLOAD_WAITS`, `VKR_AUTOLOAD_SCENE`, `VKR_SCENE_MEM_VERBOSE`.
   Eight environment knobs feeding hand-rolled accumulators.
-- Image capture is limited to **one pixel** — the picking readback ring. There
-  is no scripted camera, no asset-load or pipeline-creation timing that survives
-  the process, and no way to run without a visible window.
+- Image capture was limited to **one pixel** — the picking readback ring. There
+  was no scripted camera, no asset-load or pipeline-creation timing that
+  survived the process, and no way to run without a visible window.
 
 `.codex/skills/vkr-performance/SKILL.md` states the governing rule — *an
-unmeasured performance claim is not a result* — and then hands an agent a grep
-pipeline as the instrument. Phase 0 corrected its invalid timing symbol and
-pre-P2 batching/status guidance immediately; Phase 2b later migrates that skill
-from the legacy grep/awk benchmark to this harness after parity is established.
+unmeasured performance claim is not a result*. Phase 0 corrected its invalid
+timing symbol and pre-P2 batching/status guidance; Phase 2b now routes that skill
+through the structured harness after establishing metric/pass/workload parity.
 
 **Goal:** one bounded publication contract every subsystem can feed, and one
 binary that reads it, so an agent can run a case, obtain a structured report,
@@ -1082,7 +1085,9 @@ it as a gate or a performance result.
   `.codex/skills/vkr-performance/SKILL.md`; do not leave invalid instruments or
   pre-P2 status in live agent guidance while the harness is only proposed.
 - Phase 2b rewrites that skill to use the harness after parity with the legacy
-  benchmark is established.
+  benchmark is established. Authoritative profiles require multiple isolated
+  repetitions, and timestamp-enabled profiles require complete per-pass GPU
+  samples.
 - `AGENTS.md`: one row in the skill table, and an updated build/test command
   block.
 - **Baseline rule, stated in the skill:** an agent never runs
@@ -1119,7 +1124,7 @@ unsupported.
 | 1 | **Implemented 2026-08-01.** Explicit `VkrMetrics` owner, core registry, renderer adapter, catalog/validity, JSON writer; HUD reads snapshots; `--metrics-json` dump | `lib/src/core/`, `lib/src/renderer/`, `application.h`, `app/src/main.c` |
 | 1b | **Implemented 2026-08-01.** Explicit logical GPU allocation owners; tracker live/peak/lifetime totals; live/peak gauges and allocated/created interval counters; no inferred font/mesh categories | resource descriptions, Vulkan allocation tracker, renderer metrics adapter |
 | 2 | **Implemented 2026-08-01.** Shared harness runtime, strict case/profile parsers, case/profile/report schemas, three fingerprints, safe paths/atomic artifacts, camera scripting, isolated repetitions, `profile` | `tools/harness/`, `tools/cases/`, `tools/profiles/` |
-| 2b | Establish parity, then retire the grep/awk benchmark script and migrate `vkr-performance` to the harness | tooling and skills |
+| 2b | **Implemented 2026-08-02.** Established structured metric/pass parity, added reviewed CPU and GPU-timestamp performance profiles plus a deterministic Sponza case, rejected one-process authoritative profiles, made requested GPU timing completeness-gated, retired the grep/awk script/app accumulator, and migrated `vkr-performance` | tooling and skills |
 | 3 | Dependency-resolved automation boot profile; measured boot/memory reduction | `renderer_frontend.c`, `application.h`, harness runtime |
 | 4 | Capture batch API/ring, request-specific declared graph reads, canonical converters, direct-channel `snapshot` | backend, graph, `tools/harness/` |
 | 5 | Auxiliary debug replay, `autotest`, profile-scoped baselines, guarded promotion | `tools/harness/`, `tools/baselines/` |
@@ -1153,7 +1158,10 @@ verification record, and the relevant ADR status in the same change.
   negative frame count.
 - **reports:** schema validation; fingerprint field order independence;
   provenance changes do not change comparison identity; every effective config
-  change does; incompatible/missing/inexact evidence cannot pass.
+  change does; incompatible/missing/inexact evidence cannot pass;
+  authoritative profiles reject fewer than two independent repetitions; a
+  requested GPU timing series is incomplete unless every executed pass CPU
+  sample has a matching GPU sample.
 - **camera:** the same case produces an identical pose sequence across two runs.
 - **capture state:** batch-slot state transitions, `BUSY`, release ownership,
   submit association, and cancel rollback.

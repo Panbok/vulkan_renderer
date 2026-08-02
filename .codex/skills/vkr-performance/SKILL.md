@@ -1,6 +1,6 @@
 ---
 name: vkr-performance
-description: The measured-performance workflow for the VKR renderer. Use when investigating frame-time or hitch regressions, optimizing a renderer hot path, adding or reading per-pass timings, comparing before/after numbers, running the backend benchmark harness, or validating any claim that a change made the renderer faster or slower.
+description: The measured-performance workflow for the VKR renderer. Use when investigating frame-time or hitch regressions, optimizing a renderer hot path, adding or reading per-pass timings, comparing before/after numbers, running a structured performance profile, or validating any claim that a change made the renderer faster or slower.
 ---
 
 # VKR Performance
@@ -15,11 +15,10 @@ That principle is only useful with its counterweight: **an unmeasured
 performance claim is not a result.** This skill defines what counts as evidence
 in this repository, which instruments exist, and what they do and do not prove.
 
-This project has **no Tracy or external profiler integration.** The Phase 2
-`vkr_harness` binary now produces structured windowed profile observations, but
-the legacy benchmark remains this skill's performance-claim workflow until
-Phase 2b establishes parity and migrates the evidence policy. Everything below
-is a real, present API or script.
+This project has **no Tracy or external profiler integration.** Structured
+performance evidence comes from `vkr_harness profile`; the former application
+`BENCHMARK_SUMMARY` log and grep/awk shell runner were retired after Phase-2b
+parity. Everything below is a real, present API, profile, or report field.
 
 ## Instruments that exist
 
@@ -106,25 +105,34 @@ accounting artifact rather than a leak.
 overflow. Occupancy near capacity, or any overflow report, is a signal — the
 pass drops work rather than growing.
 
-## Harness
+## Performance workflow
 
 ```sh
-# Release build + timed cases, writes summary.csv
-tools/benchmark_multithreaded_backend.sh
+# CPU and work-volume evidence; timestamps are disabled.
+./build_release.sh
+./build_release/tools/vkr_harness profile \
+  --case tools/cases/performance/sponza_orbit.case.json \
+  --profile tools/profiles/performance-windowed.json
 
-# Fast subset
-tools/benchmark_multithreaded_backend.sh --smoke
+# Per-pass GPU evidence; timestamp-on is a distinct configuration.
+./build_release/tools/vkr_harness profile \
+  --case tools/cases/performance/sponza_orbit.case.json \
+  --profile tools/profiles/performance-windowed-gpu.json
 ```
 
-Output lands in `build/_validation/multithreaded_backend/perf/` —
-`summary.csv` plus per-case logs under `logs/`.
+The final stdout line identifies the aggregate `report.json` and its SHA-256.
+The same run root under `build/_artifacts/profile/` contains long-form
+`summary.csv`, every child report, raw samples, and stdout/stderr digests. The
+performance profiles require a clean tree, five independent child processes,
+stable warmup, actual IMMEDIATE presentation, an exclusive GPU lane, complete
+required metrics, and bit-identical work volume. The GPU profile additionally
+requires every executed pass CPU sample to have a matching valid GPU timestamp;
+unsupported or incomplete timestamps make the run incomplete rather than zero.
 
-Environment overrides: `VKR_BENCH_BUILD_TYPE` (default `Release`),
-`VKR_BENCH_FORCE_BUILD`, `VKR_BENCH_SKIP_BUILD`, `VKR_BENCH_AUTOCLOSE_SECONDS`
-(default 8), `VKR_BENCH_MAX_WAIT_SECONDS` (default 45).
-
-Release runs use `./build_release.sh` and `build_release/app/vulkan_renderer`;
-Debug and RelWithDebInfo use `./build.sh <type>` and `build/app/vulkan_renderer`.
+Use `tools/cases/smoke/sponza_static.case.json` with
+`tools/profiles/local-windowed.json` for a short integration observation. That
+profile is deliberately non-authoritative and cannot support a performance
+claim.
 
 Correctness is a separate gate — see `vkr-validation`. A faster frame that fails
 the validation layer is not an improvement.
@@ -148,8 +156,12 @@ does not predict Release behavior.
 | Editor enabled | Changes graph topology — the editor composite is an alternative pass, not additive |
 | Cascade count | Changes the shadow repeat expansion |
 
-**Report what you did not measure.** State the instrument, the sample window,
-the number of runs, and the variance. One run is an observation, not a result.
+**Report what you did not measure.** State the report path/digest, instrument,
+sample window, independent repetition count, and variance. Require
+`status=pass`, `authoritative=true`, an empty `authority_reasons` array, and
+matching environment/workload/policy fingerprints before presenting a run as
+evidence. One process is an observation, not a result; authoritative profiles
+with fewer than two independent repetitions are rejected by the parser.
 
 **Present mode masks CPU improvements.** If the app is FIFO-locked at refresh
 rate, `cpu.frame` improvements will not show up in frame time. Measure the CPU
@@ -199,12 +211,13 @@ still-pending slot (§7.3).
 Change:        <what>
 Config:        Release / <GPU> / <driver> / <WxH> / <scene> / <N> swapchain images /
                present <mode> / editor <on|off> / <N> cascades
-Instrument:    <vkr_rg_get_pass_timings | work-volume metrics | upload wait stats | benchmark harness>
+Instrument:    <vkr_harness profile/report metric or pass row | direct diagnostic API>
 Runs:          <N>, <window> frames each
 Before:        <metric> = <value> (spread <lo>–<hi>)
 After:         <metric> = <value> (spread <lo>–<hi>)
 Not measured:  <what this run does not cover>
 Invariants:    <what still proves lifetime/ownership/completion correctness>
+Evidence:      <report path + SHA-256; three comparison fingerprints>
 ```
 
 A report without the `Config` and `Not measured` lines is investigative

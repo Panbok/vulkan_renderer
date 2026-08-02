@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-01
+updated: 2026-08-02
 authority: adr
 ---
 # ADR-015: Centralized Metrics Registry with Pre-Registered Slots
@@ -264,6 +264,10 @@ pipeline-cache integration are recorded in
 [the phase-1 verification](../../tooling/renderer-metrics-phase1-verification.md).
 Harness integration evidence is in
 [the phase-2 verification](../../tooling/renderer-harness-phase2-verification.md).
+Phase 2b established parity with and removed the duplicate application
+benchmark accumulator and grep/awk transport; reviewed CPU/GPU profiles and the
+evidence are recorded in
+[the phase-2b verification](../../tooling/renderer-harness-phase2b-verification.md).
 
 ## Revisit When
 

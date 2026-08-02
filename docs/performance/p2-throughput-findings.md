@@ -1,9 +1,15 @@
 ---
 status: investigation
-updated: 2026-07-31
+updated: 2026-08-02
 authority: investigation
 ---
 # P2 Throughput — Measured Findings
+
+> **Historical instrument note.** The measurements below remain the evidence
+> for the shipped P2 decision, but their `BENCHMARK_SAMPLE` command was retired
+> in harness Phase 2b. New measurements use `vkr_harness profile` and the
+> authoritative workflow in `.codex/skills/vkr-performance/SKILL.md`; do not use
+> the command below as current guidance.
 
 > **Headline.** All four P2 items ship. Culling rejects ~37% of submeshes on
 > San Miguel (0% on Sponza). Instancing and multi-draw-indirect are implemented
@@ -24,7 +30,7 @@ Two of the four assumptions did not survive contact with the content, and the
 two remaining ones shipped with numbers that say where the frame time actually
 goes.
 
-## Method
+## Method (historical)
 
 Release build, headless, no input. Two scenes: Sponza (36 draws) for Findings
 1-3, San Miguel (282 submeshes) for Finding 4.

@@ -53,10 +53,11 @@ the artifact, and the decisive result.
 
 **Copy the decisive values out of `build/` into the note.** `build/` is
 gitignored and regenerated; `vkr-validation` notes that the CPU suite
-reconfigures with `--fresh`, and the benchmark harness rewrites its output
-directory under `build/_validation/`. A note that points at an artifact the next
-run destroys has recorded nothing. Paste the handful of numbers a conclusion
-rests on; link or path-reference the bulk logs rather than copying them.
+reconfigures with `--fresh`. Harness profile runs use unique artifact
+directories, but they remain ignored build output rather than durable
+repository evidence. A note that points at an artifact the next clean build can
+destroy has recorded nothing. Paste the handful of numbers a conclusion rests
+on; link or path-reference the bulk logs rather than copying them.
 
 Keep gate status in the Gates section even when its command also appears in the
 evidence ledger. Name an unavailable or inapplicable gate, give the concrete
