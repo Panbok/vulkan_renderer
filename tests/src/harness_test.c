@@ -12,6 +12,8 @@
 #include <string.h>
 
 #if !defined(_WIN32)
+#include <dirent.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -622,11 +624,14 @@ static void test_harness_capture_catalog_and_converters(void) {
       .source_frame_index = 7u,
       .submit_serial = 9u,
   };
+  const char logical_channels[][64] = {"final_color", "depth", "picking_ids"};
   VkrHarnessError error = {0};
-  assert(vkr_harness_capture_publish(first_dir, 1u, &poll, &arenas, first,
-                                     &error));
-  assert(vkr_harness_capture_publish(second_dir, 1u, &poll, &arenas, second,
-                                     &error));
+  assert(vkr_harness_capture_publish(first_dir, 1u, &poll, logical_channels,
+                                     ArrayCount(logical_channels), &arenas,
+                                     first, &error));
+  assert(vkr_harness_capture_publish(second_dir, 1u, &poll, logical_channels,
+                                     ArrayCount(logical_channels), &arenas,
+                                     second, &error));
   assert(first->capture_count == 3u && second->capture_count == 3u);
   for (uint32_t i = 0; i < first->capture_count; ++i) {
     assert(strcmp(first->captures[i].data_sha256,
@@ -669,6 +674,240 @@ static void test_harness_capture_catalog_and_converters(void) {
   arena_destroy(persistent);
 #endif
   printf("  test_harness_capture_catalog_and_converters PASSED\n");
+}
+
+static void test_harness_capture_replays(void) {
+  printf("  Running test_harness_capture_replays...\n");
+  VkrHarnessCase case_manifest = {.capture_count = 1u};
+  VkrHarnessCapture *capture = &case_manifest.captures[0];
+  capture->at_frame = 2u;
+  capture->channel_count = 5u;
+  const char *channels[] = {"final_color", "depth", "normals", "unlit",
+                            "shadow_debug_factor"};
+  for (uint32_t i = 0; i < ArrayCount(channels); ++i) {
+    snprintf(capture->channels[i], sizeof(capture->channels[i]), "%s",
+             channels[i]);
+  }
+  VkrHarnessCaptureReplay replays[8] = {0};
+  uint32_t replay_count = 0u;
+  VkrHarnessError error = {0};
+  assert(vkr_harness_capture_replays_build(
+      &case_manifest, replays, ArrayCount(replays), &replay_count, &error));
+  assert(replay_count == 4u);
+  assert(strcmp(replays[0].mode, "direct") == 0 &&
+         replays[0].channel_count == 2u);
+  assert(strcmp(replays[1].mode, "normals") == 0 &&
+         replays[1].render_mode == VKR_RENDER_MODE_NORMAL);
+  assert(strcmp(replays[2].mode, "unlit") == 0 &&
+         replays[2].render_mode == VKR_RENDER_MODE_UNLIT);
+  assert(strcmp(replays[3].mode, "shadow_debug_factor") == 0 &&
+         replays[3].shadow_debug_mode == 2u);
+  VkrHarnessCaptureReplay found = {0};
+  assert(vkr_harness_capture_replay_find(&case_manifest, 0u, "normals", &found,
+                                         &error));
+  assert(strcmp(found.logical_channels[0], "normals") == 0 &&
+         strcmp(found.direct_channels[0], "final_color") == 0);
+  printf("  test_harness_capture_replays PASSED\n");
+}
+
+static void test_harness_comparison_algorithms(void) {
+  printf("  Running test_harness_comparison_algorithms...\n");
+  const VkrHarnessCompareConfig thresholds = {
+      .max_pixel_delta = 0.01,
+      .max_mean_absolute_error = 0.01,
+      .max_failed_pixel_ratio = 0.0,
+  };
+  const uint8_t baseline[] = {0, 10, 20, 255, 30, 40, 50, 255};
+  uint8_t actual[sizeof(baseline)];
+  memcpy(actual, baseline, sizeof(actual));
+  VkrHarnessComparisonResult result =
+      vkr_harness_compare_rgba8(actual, baseline, 2u, &thresholds, NULL);
+  assert(result.outcome == VKR_HARNESS_COMPARISON_PASS);
+  actual[0] = 255u;
+  result = vkr_harness_compare_rgba8(actual, baseline, 2u, &thresholds, NULL);
+  assert(result.outcome == VKR_HARNESS_COMPARISON_FAIL);
+  assert(result.max_absolute_error == 1.0 && result.failing_pixel_count == 1u &&
+         result.failed_pixel_ratio == 0.5);
+
+  uint8_t floats[8];
+  uint8_t float_baseline[8];
+  harness_test_write_f32_le(floats, 0.25f);
+  harness_test_write_f32_le(floats + 4u, 0.5f);
+  memcpy(float_baseline, floats, sizeof(floats));
+  result =
+      vkr_harness_compare_f32_le(floats, float_baseline, 2u, &thresholds, NULL);
+  assert(result.outcome == VKR_HARNESS_COMPARISON_PASS);
+  harness_test_write_f32_le(floats + 4u, NAN);
+  result =
+      vkr_harness_compare_f32_le(floats, float_baseline, 2u, &thresholds, NULL);
+  assert(result.outcome == VKR_HARNESS_COMPARISON_INCOMPATIBLE);
+
+  const uint8_t ids[] = {1, 0, 0, 0, 2, 0, 0, 0};
+  uint8_t changed_ids[sizeof(ids)];
+  memcpy(changed_ids, ids, sizeof(ids));
+  result = vkr_harness_compare_u32_le(ids, changed_ids, 2u, NULL);
+  assert(result.outcome == VKR_HARNESS_COMPARISON_PASS);
+  changed_ids[4] = 3u;
+  result = vkr_harness_compare_u32_le(ids, changed_ids, 2u, NULL);
+  assert(result.outcome == VKR_HARNESS_COMPARISON_FAIL &&
+         result.failing_pixel_count == 1u);
+  printf("  test_harness_comparison_algorithms PASSED\n");
+}
+
+#if !defined(_WIN32)
+static bool8_t harness_remove_tree(const char *path) {
+  struct stat status;
+  if (lstat(path, &status) != 0) {
+    return true_v;
+  }
+  if (!S_ISDIR(status.st_mode)) {
+    return unlink(path) == 0;
+  }
+  DIR *directory = opendir(path);
+  if (!directory) {
+    return false_v;
+  }
+  bool8_t ok = true_v;
+  struct dirent *entry = NULL;
+  while (ok && (entry = readdir(directory)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+      continue;
+    }
+    char child[VKR_HARNESS_PATH_MAX];
+    snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
+    ok = harness_remove_tree(child);
+  }
+  closedir(directory);
+  return ok && rmdir(path) == 0;
+}
+
+static bool8_t harness_find_only_child(const char *path, char out[64]) {
+  DIR *directory = opendir(path);
+  if (!directory) {
+    return false_v;
+  }
+  uint32_t count = 0u;
+  struct dirent *entry = NULL;
+  while ((entry = readdir(directory)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+      continue;
+    }
+    snprintf(out, 64u, "%s", entry->d_name);
+    count++;
+  }
+  closedir(directory);
+  return count == 1u;
+}
+#endif
+
+static void test_harness_guarded_baseline_accept(void) {
+  printf("  Running test_harness_guarded_baseline_accept...\n");
+#if defined(_WIN32)
+  printf("  test_harness_guarded_baseline_accept SKIPPED (POSIX fixture)\n");
+#else
+  char root[] = "/tmp/vkr-harness-baseline-XXXXXX";
+  assert(mkdtemp(root));
+  VkrHarnessError error = {0};
+  char source[VKR_HARNESS_PATH_MAX];
+  char captures[VKR_HARNESS_PATH_MAX];
+  snprintf(source, sizeof(source), "%s/build/_artifacts/snapshot/source", root);
+  snprintf(captures, sizeof(captures), "%s/captures", source);
+  assert(vkr_harness_make_directories(captures, &error));
+  char raw_path[VKR_HARNESS_PATH_MAX];
+  snprintf(raw_path, sizeof(raw_path), "%s/frame.raw", captures);
+  const uint8_t rgba[] = {1u, 2u, 3u, 255u};
+  assert(vkr_harness_atomic_write(raw_path, rgba, sizeof(rgba), &error));
+
+  Arena *arena = arena_create();
+  assert(arena);
+  VkrHarnessReport report = {
+      .tool = VKR_HARNESS_TOOL_SNAPSHOT,
+      .profile_compatible = true_v,
+      .requested_repetitions = 1u,
+      .completed_repetitions = 1u,
+  };
+  assert(vkr_harness_report_init_storage(&report, arena, 1u, 1u));
+  snprintf(report.run_id, sizeof(report.run_id), "source");
+  snprintf(report.case_manifest.id, sizeof(report.case_manifest.id),
+           "smoke.baseline-test");
+  snprintf(report.profile.id, sizeof(report.profile.id), "local.baseline-test");
+  snprintf(report.environment_fingerprint,
+           sizeof(report.environment_fingerprint),
+           "sha256:"
+           "0000000000000000000000000000000000000000000000000000000000000001");
+  snprintf(report.workload_fingerprint, sizeof(report.workload_fingerprint),
+           "sha256:"
+           "0000000000000000000000000000000000000000000000000000000000000002");
+  snprintf(report.policy_fingerprint, sizeof(report.policy_fingerprint),
+           "sha256:"
+           "0000000000000000000000000000000000000000000000000000000000000003");
+  vkr_harness_report_set_status(&report, "pass", VKR_HARNESS_EXIT_PASS);
+  VkrHarnessCaptureResult *capture = &report.captures[report.capture_count++];
+  snprintf(capture->channel, sizeof(capture->channel), "final_color");
+  snprintf(capture->source_format, sizeof(capture->source_format), "rgba8");
+  snprintf(capture->canonical_encoding, sizeof(capture->canonical_encoding),
+           "rgba8");
+  snprintf(capture->value_kind, sizeof(capture->value_kind), "color");
+  snprintf(capture->color_space, sizeof(capture->color_space), "srgb");
+  snprintf(capture->origin, sizeof(capture->origin), "top_left");
+  snprintf(capture->data_path, sizeof(capture->data_path),
+           "captures/frame.raw");
+  capture->width = 1u;
+  capture->height = 1u;
+  assert(vkr_harness_sha256_file(raw_path, capture->data_sha256));
+  VkrHarnessArtifact *artifact = &report.artifacts[report.artifact_count++];
+  snprintf(artifact->role, sizeof(artifact->role), "capture.raw");
+  snprintf(artifact->path, sizeof(artifact->path), "captures/frame.raw");
+  snprintf(artifact->media_type, sizeof(artifact->media_type),
+           "application/octet-stream");
+  snprintf(artifact->sha256, sizeof(artifact->sha256), "%s",
+           capture->data_sha256);
+
+  char report_path[VKR_HARNESS_PATH_MAX];
+  char summary_path[VKR_HARNESS_PATH_MAX];
+  snprintf(report_path, sizeof(report_path), "%s/report.json", source);
+  snprintf(summary_path, sizeof(summary_path), "%s/capture-summary.bin",
+           source);
+  assert(vkr_harness_atomic_write(report_path, "{}\n", 3u, &error));
+  assert(
+      vkr_harness_capture_summary_write(summary_path, &report, arena, &error));
+  assert(vkr_harness_baseline_propose(
+             root, "build/_artifacts/snapshot/source", "unit-test",
+             "guarded acceptance fixture") == VKR_HARNESS_EXIT_PASS);
+
+  char proposal_root[VKR_HARNESS_PATH_MAX];
+  char proposal_id[64];
+  snprintf(proposal_root, sizeof(proposal_root), "%s/build/_artifacts/baseline",
+           root);
+  assert(harness_find_only_child(proposal_root, proposal_id));
+  char plan_relative[VKR_HARNESS_RELATIVE_PATH_MAX];
+  char plan_absolute[VKR_HARNESS_PATH_MAX];
+  snprintf(plan_relative, sizeof(plan_relative),
+           "build/_artifacts/baseline/%s/plan.json", proposal_id);
+  snprintf(plan_absolute, sizeof(plan_absolute), "%s/%s", root, plan_relative);
+  const char *wrong_digest =
+      "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+  assert(vkr_harness_baseline_accept(root, plan_relative, wrong_digest) ==
+         VKR_HARNESS_EXIT_ERROR);
+  char plan_digest[VKR_HARNESS_DIGEST_MAX];
+  assert(vkr_harness_sha256_file(plan_absolute, plan_digest));
+  assert(vkr_harness_baseline_accept(root, plan_relative, plan_digest) ==
+         VKR_HARNESS_EXIT_PASS);
+
+  Arena *load_arena = arena_create();
+  assert(load_arena);
+  char generation_root[VKR_HARNESS_PATH_MAX];
+  VkrHarnessCaptureSummary accepted = {0};
+  assert(vkr_harness_baseline_current(root, "local.baseline-test",
+                                      "smoke.baseline-test", load_arena,
+                                      generation_root, &accepted, &error));
+  assert(accepted.capture_count == 1u &&
+         strcmp(accepted.captures[0].data_sha256, capture->data_sha256) == 0);
+  arena_destroy(load_arena);
+  arena_destroy(arena);
+  assert(harness_remove_tree(root));
+  printf("  test_harness_guarded_baseline_accept PASSED\n");
+#endif
 }
 
 static void test_capture_slot_state_machine(void) {
@@ -749,6 +988,9 @@ bool32_t run_harness_tests(void) {
   test_harness_safe_paths();
   test_harness_platform_process_primitives();
   test_harness_capture_catalog_and_converters();
+  test_harness_capture_replays();
+  test_harness_comparison_algorithms();
+  test_harness_guarded_baseline_accept();
   test_capture_slot_state_machine();
   printf("--- Harness tests completed. ---\n");
   return true;
