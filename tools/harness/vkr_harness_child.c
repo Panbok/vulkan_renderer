@@ -43,6 +43,7 @@ typedef struct VkrHarnessChildContext {
   int32_t capture_index;
   const char *run_dir;
   VkrCaptureItemRequest capture_items[VKR_HARNESS_MAX_CAPTURE_CHANNELS];
+  char logical_channels[VKR_HARNESS_MAX_CAPTURE_CHANNELS][64];
   VkrCaptureBatchRequest capture_request;
   bool8_t capture_requested;
   bool8_t capture_complete;
@@ -345,8 +346,8 @@ void application_update(Application *application, float64_t delta) {
       if (!vkr_harness_capture_publish(
               child->run_dir,
               child->case_manifest->captures[child->capture_index].at_frame,
-              &poll, child->arenas, child->capture_report,
-              &child->capture_error)) {
+              &poll, child->logical_channels, child->capture_request.item_count,
+              child->arenas, child->capture_report, &child->capture_error)) {
         vkr_renderer_capture_release(&application->renderer,
                                      child->capture_request.request_id);
         vkr_harness_child_fail(application, "capture.publish_failed");
@@ -354,6 +355,15 @@ void application_update(Application *application, float64_t delta) {
       }
       vkr_renderer_capture_release(&application->renderer,
                                    child->capture_request.request_id);
+      const VkrHarnessCompareConfig thresholds =
+          child->case_manifest->captures[child->capture_index].compare;
+      for (uint32_t i = 0; i < child->capture_report->capture_count; ++i) {
+        child->capture_report->captures[i].thresholds = thresholds;
+        string_format(
+            child->capture_report->captures[i].comparison_status,
+            sizeof(child->capture_report->captures[i].comparison_status),
+            "not_run");
+      }
       child->capture_complete = true_v;
     } else if (status == VKR_CAPTURE_STATUS_FAILED) {
       vkr_renderer_capture_release(&application->renderer,
@@ -547,6 +557,8 @@ vkr_harness_child_apply_renderer(Application *application,
   } else if (string_equals(case_manifest->renderer.render_mode, "unlit")) {
     application->renderer.globals.render_mode = VKR_RENDER_MODE_UNLIT;
   }
+  application->renderer.shadow_debug_mode =
+      case_manifest->renderer.shadow_debug_mode;
   /* Determinism rule 3: the harness camera receives an explicit extent and
      lens; it never reads window size or input state. */
   VkrCamera *camera =
@@ -747,7 +759,7 @@ static VkrHarnessSampleFileHeader vkr_harness_child_sample_header(
 int vkr_harness_child_run(const char *executable, const char *repo_root,
                           const char *case_path, const char *profile_path,
                           const char *run_dir, bool8_t prewarm,
-                          int32_t capture_index) {
+                          int32_t capture_index, const char *replay_mode) {
   VkrHarnessProvenance provenance = {0};
   vkr_harness_timestamp_utc(provenance.started_at);
   VkrHarnessError error = {0};
@@ -767,6 +779,24 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     vkr_harness_stderr("Capture index is out of range\n");
     return VKR_HARNESS_EXIT_INVALID;
   }
+  VkrHarnessCaptureReplay replay = {0};
+  if (capture_index >= 0 &&
+      !vkr_harness_capture_replay_find(&case_manifest, (uint32_t)capture_index,
+                                       replay_mode, &replay, &error)) {
+    vkr_harness_stderr("%s: %s\n", error.code, error.message);
+    return VKR_HARNESS_EXIT_INVALID;
+  }
+  if (capture_index >= 0) {
+    const char *render_mode =
+        replay.render_mode == VKR_RENDER_MODE_NORMAL     ? "normal"
+        : replay.render_mode == VKR_RENDER_MODE_UNLIT    ? "unlit"
+        : replay.render_mode == VKR_RENDER_MODE_LIGHTING ? "lighting"
+                                                         : "default";
+    string_format(case_manifest.renderer.render_mode,
+                  sizeof(case_manifest.renderer.render_mode), "%s",
+                  render_mode);
+    case_manifest.renderer.shadow_debug_mode = replay.shadow_debug_mode;
+  }
   const char *mismatch =
       vkr_harness_case_profile_mismatch(&case_manifest, &profile);
   if (mismatch) {
@@ -774,8 +804,9 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     return VKR_HARNESS_EXIT_MISSING_BASELINE;
   }
   VkrSubsystemPlan subsystem_plan = {0};
-  if (!vkr_harness_subsystem_plan(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
-                                  &subsystem_plan, &error)) {
+  if (!vkr_harness_subsystem_plan(capture_index >= 0 ? VKR_HARNESS_TOOL_SNAPSHOT
+                                                     : VKR_HARNESS_TOOL_PROFILE,
+                                  &case_manifest, &subsystem_plan, &error)) {
     vkr_harness_stderr("%s: %s\n", error.code, error.message);
     return VKR_HARNESS_EXIT_INVALID;
   }
@@ -813,7 +844,6 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   uint64_t capture_max_batch_bytes = 0u;
   VkrCaptureItemRequest capture_items[VKR_HARNESS_MAX_CAPTURE_CHANNELS] = {0};
   if (capture_index >= 0) {
-    const VkrHarnessCapture *capture = &case_manifest.captures[capture_index];
     uint64_t seen = 0u;
     VkrShadowConfig shadow_config =
         string_equals(case_manifest.renderer.shadow_preset, "balanced")
@@ -822,13 +852,13 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     shadow_config.cascade_count = case_manifest.renderer.shadow_cascades;
     const uint32_t shadow_size =
         vkr_shadow_config_get_max_map_size(&shadow_config);
-    for (uint32_t i = 0; i < capture->channel_count; ++i) {
+    for (uint32_t i = 0; i < replay.channel_count; ++i) {
       VkrCaptureChannelId channel =
-          vkr_renderer_capture_channel_from_name(capture->channels[i]);
+          vkr_renderer_capture_channel_from_name(replay.direct_channels[i]);
       if (channel == VKR_CAPTURE_CHANNEL_INVALID || channel >= 64u ||
           (seen & (1ull << channel))) {
         vkr_harness_stderr("Unknown or duplicate capture channel: %s\n",
-                           capture->channels[i]);
+                           replay.direct_channels[i]);
         exit_code = VKR_HARNESS_EXIT_INVALID;
         goto cleanup;
       }
@@ -840,7 +870,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
               &subsystem_plan,
               (VkrRendererSubsystem)description->required_subsystem)) {
         vkr_harness_stderr("Capture channel is unavailable: %s\n",
-                           capture->channels[i]);
+                           replay.logical_channels[i]);
         exit_code = VKR_HARNESS_EXIT_UNAVAILABLE;
         goto cleanup;
       }
@@ -951,7 +981,6 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
       .run_dir = run_dir,
   };
   if (capture_index >= 0) {
-    const VkrHarnessCapture *capture = &case_manifest.captures[capture_index];
     child.capture_report = arena_alloc(
         arenas.persistent, sizeof(VkrHarnessReport), ARENA_MEMORY_TAG_STRUCT);
     if (!child.capture_report) {
@@ -960,17 +989,19 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     }
     MemZero(child.capture_report, sizeof(VkrHarnessReport));
     if (!vkr_harness_report_init_storage(
-            child.capture_report, arenas.persistent, capture->channel_count,
-            capture->channel_count * VKR_HARNESS_ARTIFACTS_PER_CAPTURE)) {
+            child.capture_report, arenas.persistent, replay.channel_count,
+            replay.channel_count * VKR_HARNESS_ARTIFACTS_PER_CAPTURE)) {
       vkr_harness_stderr("Unable to size the capture report tables\n");
       goto cleanup;
     }
     MemCopy(child.capture_items, capture_items,
-            sizeof(VkrCaptureItemRequest) * capture->channel_count);
+            sizeof(VkrCaptureItemRequest) * replay.channel_count);
+    MemCopy(child.logical_channels, replay.logical_channels,
+            sizeof(child.logical_channels[0]) * replay.channel_count);
     child.capture_request = (VkrCaptureBatchRequest){
         .request_id = (VkrCaptureRequestId)capture_index + 1u,
         .items = child.capture_items,
-        .item_count = capture->channel_count,
+        .item_count = replay.channel_count,
     };
     child.capture_report->tool = VKR_HARNESS_TOOL_SNAPSHOT;
   }
@@ -1031,7 +1062,34 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
       .events = events,
   };
   if (child.capture_report) {
+    child.capture_report->case_manifest = case_manifest;
+    child.capture_report->profile = profile;
+    child.capture_report->profile_compatible = true_v;
     child.capture_report->provenance = provenance;
+    child.capture_report->subsystem_mask = subsystem_mask;
+    child.capture_report->requested_repetitions = 1u;
+    child.capture_report->completed_repetitions = child.failed ? 0u : 1u;
+    string_format(child.capture_report->run_id,
+                  sizeof(child.capture_report->run_id), "child");
+    vkr_harness_report_set_status(
+        child.capture_report, child.failed ? "incomplete" : "pass",
+        child.failed ? VKR_HARNESS_EXIT_ERROR : VKR_HARNESS_EXIT_PASS);
+    VkrHarnessFingerprintField
+        capture_environment[VKR_HARNESS_ENVIRONMENT_FIELD_COUNT];
+    const uint32_t capture_environment_count = vkr_harness_environment_fields(
+        &provenance, false_v, capture_environment);
+    VkrHarnessCase effective_capture_case = case_manifest;
+    effective_capture_case.target_image_count =
+        provenance.actual_target_image_count;
+    if (!vkr_harness_case_fingerprints(
+            VKR_HARNESS_TOOL_SNAPSHOT, &effective_capture_case, &profile,
+            subsystem_mask, capture_environment, capture_environment_count,
+            child.capture_report->environment_fingerprint,
+            child.capture_report->workload_fingerprint,
+            child.capture_report->policy_fingerprint, &error)) {
+      vkr_harness_stderr("%s: %s\n", error.code, error.message);
+      goto cleanup;
+    }
   }
   /* The samples file is durable before the report references its digest. */
   if (vkr_harness_samples_write(samples_path, &sample_set.header, &sample_set,
@@ -1063,7 +1121,7 @@ cleanup:
 int vkr_harness_child_run(const char *executable, const char *repo_root,
                           const char *case_path, const char *profile_path,
                           const char *run_dir, bool8_t prewarm,
-                          int32_t capture_index) {
+                          int32_t capture_index, const char *replay_mode) {
   (void)executable;
   (void)repo_root;
   (void)case_path;
@@ -1071,6 +1129,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   (void)run_dir;
   (void)prewarm;
   (void)capture_index;
+  (void)replay_mode;
   vkr_harness_stderr("The harness requires VKR_METRICS_ENABLED=1\n");
   return VKR_HARNESS_EXIT_UNAVAILABLE;
 }

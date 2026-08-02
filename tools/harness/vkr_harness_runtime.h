@@ -161,25 +161,69 @@ const char *vkr_harness_unsupported(const VkrHarnessCase *case_manifest,
 int vkr_harness_child_run(const char *executable, const char *repo_root,
                           const char *case_path, const char *profile_path,
                           const char *run_dir, bool8_t prewarm,
-                          int32_t capture_index);
+                          int32_t capture_index, const char *replay_mode);
 int vkr_harness_profile_run(const char *executable, const char *repo_root,
-                            const char *case_path, const char *profile_path);
+                            const char *case_path, const char *profile_path,
+                            const char *artifact_root_override);
 int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
+                             const char *case_path, const char *profile_path,
+                             const char *artifact_root_override);
+int vkr_harness_autotest_run(const char *executable, const char *repo_root,
                              const char *case_path, const char *profile_path);
-bool8_t vkr_harness_capture_publish(const char *run_dir,
-                                    uint32_t checkpoint_frame,
-                                    const VkrCapturePollResult *poll,
-                                    const VkrHarnessArenas *arenas,
-                                    VkrHarnessReport *report,
-                                    VkrHarnessError *error);
+bool8_t vkr_harness_capture_publish(
+    const char *run_dir, uint32_t checkpoint_frame,
+    const VkrCapturePollResult *poll, const char logical_channels[][64],
+    uint32_t logical_channel_count, const VkrHarnessArenas *arenas,
+    VkrHarnessReport *report, VkrHarnessError *error);
+bool8_t vkr_harness_capture_png_write(const char *path, const uint8_t *rgba,
+                                      uint32_t width, uint32_t height,
+                                      const VkrHarnessArenas *arenas,
+                                      VkrHarnessError *error);
+VkrHarnessExitCode vkr_harness_compare_capture_sets(
+    const char *actual_root, const char *baseline_root,
+    VkrHarnessCaptureResult *actual, uint32_t actual_count,
+    const VkrHarnessCaptureResult *baseline, uint32_t baseline_count,
+    const VkrHarnessArenas *arenas, VkrHarnessError *error);
+/**
+ * Registers every diff image a comparison produced. Diffs are written beside
+ * the captures they explain, so `run_root` is the report's own run root.
+ */
+void vkr_harness_compare_publish_diffs(VkrHarnessReport *report,
+                                       const char *run_root);
+int vkr_harness_baseline_propose(const char *repo_root, const char *from_run,
+                                 const char *actor, const char *reason);
+int vkr_harness_baseline_accept(const char *repo_root, const char *plan_path,
+                                const char *confirmation);
+int vkr_harness_compare_run(const char *repo_root, const char *run_path);
 
 typedef struct VkrHarnessCaptureSummary {
+  VkrHarnessTool tool;
+  char status[24];
+  VkrHarnessExitCode exit_code;
+  bool8_t authoritative;
+  bool8_t profile_compatible;
+  char case_id[VKR_HARNESS_ID_MAX];
+  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char profile_id[VKR_HARNESS_ID_MAX];
+  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  VkrHarnessCase case_manifest;
+  VkrHarnessProfile profile;
   VkrHarnessProvenance provenance;
   const VkrHarnessCaptureResult *captures;
   uint32_t capture_count;
   const VkrHarnessArtifact *artifacts;
   uint32_t artifact_count;
 } VkrHarnessCaptureSummary;
+
+bool8_t vkr_harness_baseline_current(const char *repo_root,
+                                     const char *profile_id,
+                                     const char *case_id, Arena *arena,
+                                     char generation_root[VKR_HARNESS_PATH_MAX],
+                                     VkrHarnessCaptureSummary *summary,
+                                     VkrHarnessError *error);
 
 /** Compact parent/child transport for snapshot metadata, not a public artifact.
  */

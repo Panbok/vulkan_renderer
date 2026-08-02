@@ -156,6 +156,8 @@ bool8_t vkr_harness_case_fingerprints(
   ADD("renderer.shadow", "%s,%u", case_manifest->renderer.shadow_preset,
       case_manifest->renderer.shadow_cascades);
   ADD("renderer.render_mode", "%s", case_manifest->renderer.render_mode);
+  ADD("renderer.shadow_debug_mode", "%u",
+      case_manifest->renderer.shadow_debug_mode);
   ADD("target", "%s,%s,%u", vkr_harness_target_name(case_manifest->target),
       vkr_harness_present_name(case_manifest->present),
       case_manifest->target_image_count);

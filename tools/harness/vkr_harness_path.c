@@ -46,6 +46,34 @@ static bool8_t vkr_harness_path_below(const char *root, const char *path) {
          path[root_length] == '\\';
 }
 
+bool8_t vkr_harness_path_parent(const char *path,
+                                char out_directory[VKR_HARNESS_PATH_MAX]) {
+  if (!path || !out_directory || string_length(path) >= VKR_HARNESS_PATH_MAX ||
+      string_format(out_directory, VKR_HARNESS_PATH_MAX, "%s", path) <= 0) {
+    return false_v;
+  }
+  char *separator = string_get_last_char_occurrence(out_directory, '/');
+  char *backslash = string_get_last_char_occurrence(out_directory, '\\');
+  if (backslash && (!separator || backslash > separator)) {
+    separator = backslash;
+  }
+  if (!separator || separator == out_directory) {
+    return false_v;
+  }
+  *separator = '\0';
+  return true_v;
+}
+
+void vkr_harness_path_to_run_root(char *path) {
+  static const char suffix[] = "/report.json";
+  static const uint64_t suffix_length = sizeof(suffix) - 1u;
+  const uint64_t length = path ? string_length(path) : 0u;
+  if (length > suffix_length &&
+      string_equals(path + length - suffix_length, suffix)) {
+    path[length - suffix_length] = '\0';
+  }
+}
+
 bool8_t vkr_harness_existing_path_is_below(const char *root, const char *path) {
   char resolved_root[VKR_HARNESS_PATH_MAX];
   char resolved_path[VKR_HARNESS_PATH_MAX];

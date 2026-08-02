@@ -8,12 +8,15 @@ add_library(vkr_harness_core STATIC
     harness/vkr_harness_camera.c
     harness/vkr_harness_capture.c
     harness/vkr_harness_common.c
+    harness/vkr_harness_compare.c
     harness/vkr_harness_artifact.c
+    harness/vkr_harness_baseline.c
     harness/vkr_harness_fingerprint.c
     harness/vkr_harness_json.c
     harness/vkr_harness_manifest.c
     harness/vkr_harness_path.c
     harness/vkr_harness_report.c
+    harness/vkr_harness_replay.c
     harness/vkr_harness_sha256.c
     harness/vkr_harness_statistics.c
 )
@@ -36,6 +39,7 @@ endif()
 # sample/provenance seam. Only the child opens a renderer target.
 add_executable(vkr_harness
     harness/vkr_harness_main.c
+    harness/vkr_harness_autotest.c
     harness/vkr_harness_parent.c
     harness/vkr_harness_child.c
     harness/vkr_harness_provenance.c

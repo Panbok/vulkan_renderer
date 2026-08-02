@@ -29,6 +29,8 @@
 #define VKR_HARNESS_MAX_CAMERA_KEYS 64u
 #define VKR_HARNESS_MAX_CAPTURES 32u
 #define VKR_HARNESS_MAX_CAPTURE_CHANNELS 16u
+#define VKR_HARNESS_MAX_REPLAYS                                                \
+  (VKR_HARNESS_MAX_CAPTURES * (VKR_HARNESS_MAX_CAPTURE_CHANNELS + 1u))
 #define VKR_HARNESS_MAX_ASSERTIONS 64u
 #define VKR_HARNESS_MAX_REQUIRED_METRICS 64u
 #define VKR_HARNESS_MAX_RUNS 32u
@@ -73,6 +75,7 @@ typedef enum VkrHarnessTool {
   VKR_HARNESS_TOOL_PROFILE = 0,
   VKR_HARNESS_TOOL_SNAPSHOT,
   VKR_HARNESS_TOOL_AUTOTEST,
+  VKR_HARNESS_TOOL_COMPARE,
 } VkrHarnessTool;
 
 typedef enum VkrHarnessBootProfile {
@@ -215,6 +218,7 @@ typedef struct VkrHarnessRendererConfig {
   char shadow_preset[32];
   uint32_t shadow_cascades;
   char render_mode[16];
+  uint32_t shadow_debug_mode;
 } VkrHarnessRendererConfig;
 
 typedef struct VkrHarnessCompareConfig {
@@ -230,6 +234,31 @@ typedef struct VkrHarnessCapture {
   uint32_t channel_count;
   VkrHarnessCompareConfig compare;
 } VkrHarnessCapture;
+
+/**
+ * One logically-named capture output. Several logical channels can read the
+ * same backend resource under different renderer state — `normals` and `unlit`
+ * are both `final_color` — so the logical name, not the backend channel,
+ * identifies a row for baseline comparison. Channels that agree on
+ * `replay_mode` are produced by one replay; each distinct mode costs a process.
+ */
+typedef struct VkrHarnessCaptureChannelDescription {
+  const char *name;
+  const char *direct_channel;
+  const char *replay_mode;
+  uint32_t render_mode;
+  uint32_t shadow_debug_mode;
+} VkrHarnessCaptureChannelDescription;
+
+typedef struct VkrHarnessCaptureReplay {
+  uint32_t capture_index;
+  char mode[32];
+  char logical_channels[VKR_HARNESS_MAX_CAPTURE_CHANNELS][64];
+  char direct_channels[VKR_HARNESS_MAX_CAPTURE_CHANNELS][64];
+  uint32_t channel_count;
+  uint32_t render_mode;
+  uint32_t shadow_debug_mode;
+} VkrHarnessCaptureReplay;
 
 typedef struct VkrHarnessAssertion {
   char metric[128];
@@ -362,6 +391,9 @@ typedef struct VkrHarnessRunReference {
   char status[24];
   char report[VKR_HARNESS_RELATIVE_PATH_MAX];
   char sha256[VKR_HARNESS_DIGEST_MAX];
+  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
 } VkrHarnessRunReference;
 
 typedef struct VkrHarnessArtifact {
@@ -371,6 +403,24 @@ typedef struct VkrHarnessArtifact {
   char sha256[VKR_HARNESS_DIGEST_MAX];
   char status[24];
 } VkrHarnessArtifact;
+
+typedef enum VkrHarnessComparisonOutcome {
+  VKR_HARNESS_COMPARISON_NOT_RUN = 0,
+  VKR_HARNESS_COMPARISON_PASS,
+  VKR_HARNESS_COMPARISON_FAIL,
+  VKR_HARNESS_COMPARISON_INCOMPATIBLE,
+} VkrHarnessComparisonOutcome;
+
+typedef struct VkrHarnessComparisonResult {
+  VkrHarnessComparisonOutcome outcome;
+  float64_t mean_absolute_error;
+  float64_t max_absolute_error;
+  uint64_t failing_value_count;
+  uint64_t failing_pixel_count;
+  uint64_t value_count;
+  uint64_t pixel_count;
+  float64_t failed_pixel_ratio;
+} VkrHarnessComparisonResult;
 
 typedef struct VkrHarnessCaptureResult {
   uint32_t checkpoint_frame;
@@ -395,6 +445,13 @@ typedef struct VkrHarnessCaptureResult {
   char preview_sha256[VKR_HARNESS_DIGEST_MAX];
   char metadata_path[VKR_HARNESS_RELATIVE_PATH_MAX];
   char metadata_sha256[VKR_HARNESS_DIGEST_MAX];
+  char comparison_status[24];
+  char baseline_data_path[VKR_HARNESS_RELATIVE_PATH_MAX];
+  char baseline_data_sha256[VKR_HARNESS_DIGEST_MAX];
+  char diff_path[VKR_HARNESS_RELATIVE_PATH_MAX];
+  char diff_sha256[VKR_HARNESS_DIGEST_MAX];
+  VkrHarnessCompareConfig thresholds;
+  VkrHarnessComparisonResult comparison;
 } VkrHarnessCaptureResult;
 
 typedef struct VkrHarnessEvent {
@@ -433,8 +490,9 @@ typedef struct VkrHarnessReport {
   bool8_t gpu_lane_lock_acquired;
   VkrHarnessRunReference runs[VKR_HARNESS_MAX_RUNS];
   uint32_t run_count;
-  VkrHarnessRunReference auxiliary_runs[VKR_HARNESS_MAX_CAPTURES];
+  VkrHarnessRunReference *auxiliary_runs;
   uint32_t auxiliary_run_count;
+  uint32_t auxiliary_run_capacity;
   VkrHarnessMetricResult *metrics;
   uint32_t metric_count;
   VkrHarnessPassResult *passes;
@@ -480,6 +538,19 @@ bool8_t vkr_harness_case_load(const char *repository_root,
                               const char *relative_manifest_path,
                               VkrHarnessCase *out_case,
                               VkrHarnessError *out_error);
+
+const VkrHarnessCaptureChannelDescription *
+vkr_harness_capture_channel_description(const char *name);
+bool8_t vkr_harness_capture_replays_build(const VkrHarnessCase *case_manifest,
+                                          VkrHarnessCaptureReplay *out_replays,
+                                          uint32_t capacity,
+                                          uint32_t *out_count,
+                                          VkrHarnessError *out_error);
+bool8_t vkr_harness_capture_replay_find(const VkrHarnessCase *case_manifest,
+                                        uint32_t capture_index,
+                                        const char *mode,
+                                        VkrHarnessCaptureReplay *out_replay,
+                                        VkrHarnessError *out_error);
 bool8_t vkr_harness_profile_load(const char *repository_root,
                                  const char *relative_manifest_path,
                                  VkrHarnessProfile *out_profile,
@@ -506,6 +577,17 @@ bool8_t vkr_harness_resolve_output_path(const char *root,
                                         char out_path[VKR_HARNESS_PATH_MAX],
                                         VkrHarnessError *out_error);
 bool8_t vkr_harness_existing_path_is_below(const char *root, const char *path);
+/**
+ * Writes everything before `path`'s last separator. Fails on a path with no
+ * separator rather than silently yielding the working directory.
+ */
+bool8_t vkr_harness_path_parent(const char *path,
+                                char out_directory[VKR_HARNESS_PATH_MAX]);
+/**
+ * Accepts either a run directory or the `report.json` inside it, so every
+ * command that names a prior run resolves the same directory. In-place.
+ */
+void vkr_harness_path_to_run_root(char *path);
 
 /** Incremental SHA-256 so a hash input never needs a contiguous buffer. */
 typedef struct VkrHarnessSha256 {
@@ -582,7 +664,22 @@ bool8_t vkr_harness_statistics_compute(const float64_t *samples,
 bool8_t vkr_harness_gpu_pass_samples_complete(const uint8_t *flags,
                                               uint64_t sample_count);
 
+VkrHarnessComparisonResult vkr_harness_compare_rgba8(
+    const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,
+    const VkrHarnessCompareConfig *config, uint8_t *diff_rgba);
+VkrHarnessComparisonResult vkr_harness_compare_f32_le(
+    const uint8_t *actual, const uint8_t *baseline, uint64_t pixel_count,
+    const VkrHarnessCompareConfig *config, uint8_t *diff_rgba);
+VkrHarnessComparisonResult vkr_harness_compare_u32_le(const uint8_t *actual,
+                                                      const uint8_t *baseline,
+                                                      uint64_t pixel_count,
+                                                      uint8_t *diff_rgba);
+const char *
+vkr_harness_comparison_outcome_name(VkrHarnessComparisonOutcome outcome);
+
 const char *vkr_harness_tool_name(VkrHarnessTool tool);
+/** The report `status` string every exit code is published under. */
+const char *vkr_harness_exit_code_name(VkrHarnessExitCode exit_code);
 const char *vkr_harness_target_name(VkrHarnessTarget target);
 const char *vkr_harness_present_name(VkrHarnessPresentMode present);
 const char *vkr_harness_cache_name(VkrHarnessCacheMode cache);
@@ -614,6 +711,14 @@ bool8_t vkr_harness_make_directories(const char *path,
 bool8_t vkr_harness_atomic_write(const char *path, const void *data,
                                  uint64_t length, VkrHarnessError *out_error);
 bool8_t vkr_harness_generate_run_id(char out_run_id[64]);
+/**
+ * Creates a fresh `<artifact_root>/<run id>` directory, retrying on the
+ * millisecond collision that two runs started in the same tick would produce.
+ * Exclusive creation is the claim: no two runs can ever share a directory.
+ */
+bool8_t vkr_harness_create_run_root(const char *artifact_root,
+                                    char out_run_id[64],
+                                    char out_run_root[VKR_HARNESS_PATH_MAX]);
 bool8_t vkr_harness_timestamp_utc(char out_timestamp[40]);
 bool8_t vkr_harness_report_write(const char *path,
                                  const VkrHarnessReport *report,
@@ -634,6 +739,21 @@ bool8_t vkr_harness_summary_csv_write(const char *path,
 bool8_t vkr_harness_report_init_storage(VkrHarnessReport *report, Arena *arena,
                                         uint32_t capture_capacity,
                                         uint32_t artifact_capacity);
+bool8_t vkr_harness_report_init_auxiliary_runs(VkrHarnessReport *report,
+                                               Arena *arena, uint32_t capacity);
+
+/**
+ * Fills a run reference's three comparison fingerprints from the report it
+ * points at.
+ *
+ * A published report routinely holds several times the JSON parser's fixed
+ * token budget, so this scans the serialized text rather than parsing it. The
+ * scan is bounded to the top-level `comparison` object, which is why a nested
+ * run reference cannot answer in the report's place.
+ */
+bool8_t
+vkr_harness_report_read_fingerprints(const char *report_path, Arena *transient,
+                                     VkrHarnessRunReference *out_reference);
 
 /** Records why the run may not be used as evidence; always clears authority. */
 void vkr_harness_report_add_authority_reason(VkrHarnessReport *report,

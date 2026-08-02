@@ -89,35 +89,6 @@ static int vkr_harness_spawn_child(const char *executable,
 }
 
 /**
- * Run IDs are generated, never accepted from the command line, and the
- * directory is created exclusively so two concurrent invocations cannot share
- * a run root.
- */
-static bool8_t
-vkr_harness_create_run_root(const char *artifact_root, char run_id[64],
-                            char run_root[VKR_HARNESS_PATH_MAX]) {
-  for (uint32_t attempt = 0; attempt < 16u; ++attempt) {
-    if (!vkr_harness_generate_run_id(run_id)) {
-      return false_v;
-    }
-    const int32_t written = string_format(run_root, VKR_HARNESS_PATH_MAX,
-                                          "%s/%s", artifact_root, run_id);
-    if (written < 0 || written >= (int32_t)VKR_HARNESS_PATH_MAX) {
-      return false_v;
-    }
-    FilePath path = vkr_harness_file_path(run_root);
-    const FileError result = file_create_directory_exclusive(&path);
-    if (result == FILE_ERROR_NONE) {
-      return true_v;
-    }
-    if (result != FILE_ERROR_ALREADY_EXISTS) {
-      return false_v;
-    }
-  }
-  return false_v;
-}
-
-/**
  * Confirms the child recorded the same samples digest the parent now measures,
  * so a stale or rewritten samples file cannot be aggregated under a report
  * that never covered it.
@@ -458,6 +429,8 @@ static bool8_t vkr_harness_execute_repetition(
       !vkr_harness_sha256_file(child_report, reference->sha256) ||
       !vkr_harness_child_sample_digest_matches(child_report, samples_path,
                                                arenas->transient) ||
+      !vkr_harness_report_read_fingerprints(child_report, arenas->transient,
+                                            reference) ||
       !vkr_harness_samples_read(samples_path, case_manifest, arenas->persistent,
                                 out_samples)) {
     return false_v;
@@ -585,18 +558,28 @@ static void vkr_harness_apply_verdict(VkrHarnessReport *report,
 }
 
 int vkr_harness_profile_run(const char *executable, const char *repo_root,
-                            const char *case_path, const char *profile_path) {
+                            const char *case_path, const char *profile_path,
+                            const char *artifact_root_override) {
 #if !VKR_METRICS_ENABLED
   (void)executable;
   (void)repo_root;
   (void)case_path;
   (void)profile_path;
+  (void)artifact_root_override;
   vkr_harness_stderr("The harness requires VKR_METRICS_ENABLED=1\n");
   vkr_harness_emit_result("unavailable", VKR_HARNESS_EXIT_UNAVAILABLE, NULL,
                           NULL);
   return VKR_HARNESS_EXIT_UNAVAILABLE;
 #else
   VkrHarnessError error = {0};
+  const char *artifact_root_relative =
+      artifact_root_override && artifact_root_override[0]
+          ? artifact_root_override
+          : VKR_HARNESS_ARTIFACT_ROOT;
+  if (!vkr_harness_path_is_safe_relative(artifact_root_relative)) {
+    vkr_harness_emit_result("invalid", VKR_HARNESS_EXIT_INVALID, NULL, NULL);
+    return VKR_HARNESS_EXIT_INVALID;
+  }
   VkrHarnessCase case_manifest = {0};
   VkrHarnessProfile profile = {0};
   if (!vkr_harness_case_load(repo_root, case_path, &case_manifest, &error)) {
@@ -682,9 +665,9 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   char artifact_root[VKR_HARNESS_PATH_MAX];
   char run_root[VKR_HARNESS_PATH_MAX];
   string_format(artifact_candidate, sizeof(artifact_candidate), "%s/%s",
-                repo_root, VKR_HARNESS_ARTIFACT_ROOT);
+                repo_root, artifact_root_relative);
   if (!vkr_harness_make_directories(artifact_candidate, &error) ||
-      !vkr_harness_resolve_existing_path(repo_root, VKR_HARNESS_ARTIFACT_ROOT,
+      !vkr_harness_resolve_existing_path(repo_root, artifact_root_relative,
                                          artifact_root, &error) ||
       !vkr_harness_create_run_root(artifact_root, report.run_id, run_root)) {
     vkr_harness_stderr("Unable to create a unique artifact run directory: %s\n",
@@ -804,7 +787,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
     char relative[VKR_HARNESS_PATH_MAX];
     (void)vkr_harness_sha256_file(final_report, report_digest);
     string_format(relative, sizeof(relative), "%s/%s/report.json",
-                  VKR_HARNESS_ARTIFACT_ROOT, report.run_id);
+                  artifact_root_relative, report.run_id);
     vkr_harness_emit_result(report.status, report.exit_code, relative,
                             report_digest);
   }

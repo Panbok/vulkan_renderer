@@ -92,6 +92,33 @@ bool8_t vkr_harness_generate_run_id(char out_run_id[64]) {
                        utc.minutes, utc.seconds, utc.milliseconds, nonce) > 0;
 }
 
+bool8_t vkr_harness_create_run_root(const char *artifact_root,
+                                    char out_run_id[64],
+                                    char out_run_root[VKR_HARNESS_PATH_MAX]) {
+  if (!artifact_root || !out_run_id || !out_run_root) {
+    return false_v;
+  }
+  for (uint32_t attempt = 0; attempt < 16u; ++attempt) {
+    const int32_t written =
+        vkr_harness_generate_run_id(out_run_id)
+            ? string_format(out_run_root, VKR_HARNESS_PATH_MAX, "%s/%s",
+                            artifact_root, out_run_id)
+            : -1;
+    if (written < 0 || written >= (int32_t)VKR_HARNESS_PATH_MAX) {
+      return false_v;
+    }
+    FilePath path = vkr_harness_file_path(out_run_root);
+    const FileError result = file_create_directory_exclusive(&path);
+    if (result == FILE_ERROR_NONE) {
+      return true_v;
+    }
+    if (result != FILE_ERROR_ALREADY_EXISTS) {
+      return false_v;
+    }
+  }
+  return false_v;
+}
+
 bool8_t vkr_harness_timestamp_utc(char out_timestamp[40]) {
   if (!out_timestamp) {
     return false_v;

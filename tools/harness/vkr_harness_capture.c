@@ -23,7 +23,21 @@ typedef struct VkrHarnessCaptureSummaryHeader {
   uint32_t version;
   uint32_t capture_count;
   uint32_t artifact_count;
-  uint32_t reserved;
+  uint32_t tool;
+  uint32_t exit_code;
+  bool8_t authoritative;
+  bool8_t profile_compatible;
+  uint8_t reserved[2];
+  char status[24];
+  char case_id[VKR_HARNESS_ID_MAX];
+  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char profile_id[VKR_HARNESS_ID_MAX];
+  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  VkrHarnessCase case_manifest;
+  VkrHarnessProfile profile;
   VkrHarnessProvenance provenance;
 } VkrHarnessCaptureSummaryHeader;
 
@@ -111,10 +125,10 @@ static void vkr_harness_capture_write_u32_le(uint8_t *bytes, uint32_t value) {
   bytes[3] = (uint8_t)(value >> 24u);
 }
 
-static bool8_t vkr_harness_capture_png(const char *path, const uint8_t *rgba,
-                                       uint32_t width, uint32_t height,
-                                       const VkrHarnessArenas *arenas,
-                                       VkrHarnessError *error) {
+bool8_t vkr_harness_capture_png_write(const char *path, const uint8_t *rgba,
+                                      uint32_t width, uint32_t height,
+                                      const VkrHarnessArenas *arenas,
+                                      VkrHarnessError *error) {
   const uint64_t capacity = (uint64_t)width * height * 5u + KB(64);
   Scratch scratch = scratch_create(arenas->transient);
   VkrHarnessPngBuffer output = {
@@ -323,12 +337,17 @@ static bool8_t vkr_harness_capture_write_metadata(
 static void vkr_harness_capture_describe(
     VkrHarnessCaptureResult *capture, const VkrCaptureItemResult *item,
     const VkrCaptureChannelDescription *channel,
+    const VkrHarnessCaptureChannelDescription *logical_channel,
     const VkrCapturePollResult *poll, uint32_t checkpoint_frame,
     const char *stem, bool8_t color) {
   capture->checkpoint_frame = checkpoint_frame;
+  /* The payload version belongs to the backend channel that produced it: a
+     logical name only chooses renderer state, never the canonical encoding.
+     Recording the backend's version is what invalidates a stored baseline when
+     that encoding changes. */
   capture->capture_version = channel->version;
   string_format(capture->channel, sizeof(capture->channel), "%s",
-                channel->name);
+                logical_channel->name);
   /* The backend reports which resource it actually copied; the catalog name is
      only a fallback for a producer that did not name itself. */
   string_format(capture->producer_resource, sizeof(capture->producer_resource),
@@ -352,6 +371,9 @@ static void vkr_harness_capture_describe(
   capture->layer = item->layer;
   capture->source_frame_index = poll->source_frame_index;
   capture->submit_serial = poll->submit_serial;
+  capture->comparison.outcome = VKR_HARNESS_COMPARISON_NOT_RUN;
+  string_format(capture->comparison_status, sizeof(capture->comparison_status),
+                "not_run");
   string_format(capture->data_path, sizeof(capture->data_path), "captures/%s%s",
                 stem, color ? ".png" : ".raw");
   string_format(capture->preview_path, sizeof(capture->preview_path),
@@ -360,14 +382,15 @@ static void vkr_harness_capture_describe(
                 "captures/%s.json", stem);
 }
 
-bool8_t vkr_harness_capture_publish(const char *run_dir,
-                                    uint32_t checkpoint_frame,
-                                    const VkrCapturePollResult *poll,
-                                    const VkrHarnessArenas *arenas,
-                                    VkrHarnessReport *report,
-                                    VkrHarnessError *error) {
+bool8_t vkr_harness_capture_publish(
+    const char *run_dir, uint32_t checkpoint_frame,
+    const VkrCapturePollResult *poll, const char logical_channels[][64],
+    uint32_t logical_channel_count, const VkrHarnessArenas *arenas,
+    VkrHarnessReport *report, VkrHarnessError *error) {
   if (!run_dir || !poll || poll->status != VKR_CAPTURE_STATUS_READY ||
-      !poll->items || !arenas || !report || !report->captures) {
+      !poll->items || !logical_channels ||
+      logical_channel_count != poll->item_count || !arenas || !report ||
+      !report->captures) {
     return false_v;
   }
   char capture_dir[VKR_HARNESS_PATH_MAX];
@@ -383,8 +406,10 @@ bool8_t vkr_harness_capture_publish(const char *run_dir,
     const VkrCaptureItemResult *item = &poll->items[i];
     const VkrCaptureChannelDescription *channel =
         vkr_renderer_capture_channel_get(item->channel);
+    const VkrHarnessCaptureChannelDescription *logical_channel =
+        vkr_harness_capture_channel_description(logical_channels[i]);
     if (report->capture_count >= report->capture_capacity || !channel ||
-        !item->data) {
+        !logical_channel || !item->data) {
       vkr_harness_error_set(error, "capture.publish", "captures",
                             "Capture item %u cannot be published", i);
       return false_v;
@@ -397,7 +422,7 @@ bool8_t vkr_harness_capture_publish(const char *run_dir,
     char data_path[VKR_HARNESS_PATH_MAX];
     char metadata_path[VKR_HARNESS_PATH_MAX];
     string_format(stem, sizeof(stem), "frame_%06u_%s", checkpoint_frame,
-                  channel->name);
+                  logical_channel->name);
     string_format(png_path, sizeof(png_path), "%s/%s.png", capture_dir, stem);
     string_format(metadata_path, sizeof(metadata_path), "%s/%s.json",
                   capture_dir, stem);
@@ -430,11 +455,11 @@ bool8_t vkr_harness_capture_publish(const char *run_dir,
       vkr_harness_capture_canonical_u32(item, tight);
       ok = vkr_harness_atomic_write(data_path, tight, pixel_bytes, error);
     }
-    ok = ok && vkr_harness_capture_png(png_path, rgba, item->width,
-                                       item->height, arenas, error);
+    ok = ok && vkr_harness_capture_png_write(png_path, rgba, item->width,
+                                             item->height, arenas, error);
     if (ok) {
-      vkr_harness_capture_describe(capture, item, channel, poll,
-                                   checkpoint_frame, stem, color);
+      vkr_harness_capture_describe(capture, item, channel, logical_channel,
+                                   poll, checkpoint_frame, stem, color);
       /* Digests of the payloads must exist before the sidecar quotes them. */
       ok = vkr_harness_sha256_file(data_path, capture->data_sha256) &&
            vkr_harness_sha256_file(png_path, capture->preview_sha256) &&
@@ -493,9 +518,34 @@ bool8_t vkr_harness_capture_summary_write(const char *path,
   VkrHarnessCaptureSummaryHeader *header =
       (VkrHarnessCaptureSummaryHeader *)bytes;
   MemCopy(header->magic, s_capture_summary_magic, sizeof(header->magic));
-  header->version = 1u;
+  header->version = 2u;
   header->capture_count = report->capture_count;
   header->artifact_count = report->artifact_count;
+  header->tool = (uint32_t)report->tool;
+  header->exit_code = (uint32_t)report->exit_code;
+  header->authoritative = report->authoritative;
+  header->profile_compatible = report->profile_compatible;
+  string_format(header->status, sizeof(header->status), "%s", report->status);
+  string_format(header->case_id, sizeof(header->case_id), "%s",
+                report->case_manifest.id);
+  string_format(header->case_manifest_sha256,
+                sizeof(header->case_manifest_sha256), "%s",
+                report->case_manifest.manifest_sha256);
+  string_format(header->profile_id, sizeof(header->profile_id), "%s",
+                report->profile.id);
+  string_format(header->profile_manifest_sha256,
+                sizeof(header->profile_manifest_sha256), "%s",
+                report->profile.manifest_sha256);
+  string_format(header->environment_fingerprint,
+                sizeof(header->environment_fingerprint), "%s",
+                report->environment_fingerprint);
+  string_format(header->workload_fingerprint,
+                sizeof(header->workload_fingerprint), "%s",
+                report->workload_fingerprint);
+  string_format(header->policy_fingerprint, sizeof(header->policy_fingerprint),
+                "%s", report->policy_fingerprint);
+  header->case_manifest = report->case_manifest;
+  header->profile = report->profile;
   header->provenance = report->provenance;
   if (capture_bytes) {
     MemCopy(bytes + sizeof(*header), report->captures, capture_bytes);
@@ -525,7 +575,8 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
       (const VkrHarnessCaptureSummaryHeader *)bytes;
   if (MemCompare(header->magic, s_capture_summary_magic,
                  sizeof(header->magic)) != 0 ||
-      header->version != 1u ||
+      header->version != 2u || header->tool > VKR_HARNESS_TOOL_COMPARE ||
+      header->exit_code > VKR_HARNESS_EXIT_ERROR ||
       header->capture_count > VKR_HARNESS_MAX_CAPTURE_RESULTS ||
       header->artifact_count > VKR_HARNESS_MAX_ARTIFACTS) {
     return false_v;
@@ -539,6 +590,33 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
   }
   out_summary->captures =
       (const VkrHarnessCaptureResult *)(bytes + sizeof(*header));
+  out_summary->tool = (VkrHarnessTool)header->tool;
+  out_summary->exit_code = (VkrHarnessExitCode)header->exit_code;
+  out_summary->authoritative = header->authoritative;
+  out_summary->profile_compatible = header->profile_compatible;
+  string_format(out_summary->status, sizeof(out_summary->status), "%s",
+                header->status);
+  string_format(out_summary->case_id, sizeof(out_summary->case_id), "%s",
+                header->case_id);
+  string_format(out_summary->case_manifest_sha256,
+                sizeof(out_summary->case_manifest_sha256), "%s",
+                header->case_manifest_sha256);
+  string_format(out_summary->profile_id, sizeof(out_summary->profile_id), "%s",
+                header->profile_id);
+  string_format(out_summary->profile_manifest_sha256,
+                sizeof(out_summary->profile_manifest_sha256), "%s",
+                header->profile_manifest_sha256);
+  string_format(out_summary->environment_fingerprint,
+                sizeof(out_summary->environment_fingerprint), "%s",
+                header->environment_fingerprint);
+  string_format(out_summary->workload_fingerprint,
+                sizeof(out_summary->workload_fingerprint), "%s",
+                header->workload_fingerprint);
+  string_format(out_summary->policy_fingerprint,
+                sizeof(out_summary->policy_fingerprint), "%s",
+                header->policy_fingerprint);
+  out_summary->case_manifest = header->case_manifest;
+  out_summary->profile = header->profile;
   out_summary->provenance = header->provenance;
   out_summary->capture_count = header->capture_count;
   out_summary->artifacts =

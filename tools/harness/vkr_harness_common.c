@@ -211,8 +211,28 @@ const char *vkr_harness_tool_name(VkrHarnessTool tool) {
     return "snapshot";
   case VKR_HARNESS_TOOL_AUTOTEST:
     return "autotest";
+  case VKR_HARNESS_TOOL_COMPARE:
+    return "compare";
   default:
     return "unknown";
+  }
+}
+
+const char *vkr_harness_exit_code_name(VkrHarnessExitCode exit_code) {
+  switch (exit_code) {
+  case VKR_HARNESS_EXIT_PASS:
+    return "pass";
+  case VKR_HARNESS_EXIT_FAIL:
+    return "fail";
+  case VKR_HARNESS_EXIT_INVALID:
+    return "invalid";
+  case VKR_HARNESS_EXIT_UNAVAILABLE:
+    return "unavailable";
+  case VKR_HARNESS_EXIT_MISSING_BASELINE:
+    return "missing_baseline";
+  case VKR_HARNESS_EXIT_ERROR:
+  default:
+    return "incomplete";
   }
 }
 

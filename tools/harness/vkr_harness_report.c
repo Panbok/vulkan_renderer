@@ -107,6 +107,97 @@ bool8_t vkr_harness_report_init_storage(VkrHarnessReport *report, Arena *arena,
   return true_v;
 }
 
+bool8_t vkr_harness_report_init_auxiliary_runs(VkrHarnessReport *report,
+                                               Arena *arena,
+                                               uint32_t capacity) {
+  if (!report || !arena || capacity > VKR_HARNESS_MAX_REPLAYS) {
+    return false_v;
+  }
+  const uint64_t bytes = (uint64_t)capacity * sizeof(*report->auxiliary_runs);
+  report->auxiliary_runs =
+      capacity ? arena_alloc(arena, bytes, ARENA_MEMORY_TAG_ARRAY) : NULL;
+  if (capacity && !report->auxiliary_runs) {
+    return false_v;
+  }
+  if (bytes) {
+    MemZero(report->auxiliary_runs, bytes);
+  }
+  report->auxiliary_run_count = 0u;
+  report->auxiliary_run_capacity = capacity;
+  return true_v;
+}
+
+/** `"<name>":"sha256:<64 hex>"` within `object`; any other shape is a miss. */
+static bool8_t
+vkr_harness_report_scan_digest(const char *object, const char *name,
+                               char out_digest[VKR_HARNESS_DIGEST_MAX]) {
+  const uint64_t digest_length = VKR_HARNESS_DIGEST_MAX - 1u;
+  char needle[128];
+  if (string_format(needle, sizeof(needle), "\"%s\":\"", name) <= 0) {
+    return false_v;
+  }
+  const char *found = string_find(object, needle);
+  if (!found) {
+    return false_v;
+  }
+  found += string_length(needle);
+  if (!string_n_equals(found, "sha256:", 7u) ||
+      string_length(found) <= digest_length || found[digest_length] != '"') {
+    return false_v;
+  }
+  MemCopy(out_digest, found, digest_length);
+  out_digest[digest_length] = '\0';
+  return true_v;
+}
+
+bool8_t
+vkr_harness_report_read_fingerprints(const char *report_path, Arena *transient,
+                                     VkrHarnessRunReference *out_reference) {
+  if (!report_path || !transient || !out_reference) {
+    return false_v;
+  }
+  uint8_t *bytes = NULL;
+  uint64_t length = 0u;
+  char *text = NULL;
+  Scratch scratch = scratch_create(transient);
+  bool8_t ok = vkr_harness_read_file(report_path, transient, &bytes, &length);
+  if (ok) {
+    text = arena_alloc(transient, length + 1u, ARENA_MEMORY_TAG_STRING);
+    ok = text != NULL;
+  }
+  if (ok) {
+    static const char *const names[] = {"environment_fingerprint",
+                                        "workload_fingerprint",
+                                        "policy_fingerprint"};
+    char *const values[] = {out_reference->environment_fingerprint,
+                            out_reference->workload_fingerprint,
+                            out_reference->policy_fingerprint};
+    MemCopy(text, bytes, length);
+    text[length] = '\0';
+    ok = false_v;
+    /* A report names `comparison` more than once — the run's own identity and
+       one per capture row — so the match is the first such object that actually
+       carries all three fingerprints, not the first that appears. Each holds
+       only scalars, so its first closing brace bounds the search. */
+    for (char *object = (char *)string_find(text, "\"comparison\":{");
+         object && !ok;
+         object = (char *)string_find(object + 1u, "\"comparison\":{")) {
+      char *object_end = (char *)string_find_char(object, '}');
+      if (!object_end) {
+        break;
+      }
+      *object_end = '\0';
+      ok = true_v;
+      for (uint32_t i = 0; ok && i < ArrayCount(names); ++i) {
+        ok = vkr_harness_report_scan_digest(object, names[i], values[i]);
+      }
+      *object_end = '}';
+    }
+  }
+  scratch_destroy(scratch, ARENA_MEMORY_TAG_STRING);
+  return ok;
+}
+
 void vkr_harness_report_add_authority_reason(VkrHarnessReport *report,
                                              const char *reason) {
   report->authoritative = false_v;
@@ -339,6 +430,12 @@ bool8_t vkr_harness_report_write(const char *path,
          vkr_harness_json_emit_string(writer, "status", run->status) &&
          vkr_harness_json_emit_string(writer, "report", run->report) &&
          vkr_harness_json_emit_string(writer, "sha256", run->sha256) &&
+         vkr_harness_json_emit_string(writer, "environment_fingerprint",
+                                      run->environment_fingerprint) &&
+         vkr_harness_json_emit_string(writer, "workload_fingerprint",
+                                      run->workload_fingerprint) &&
+         vkr_harness_json_emit_string(writer, "policy_fingerprint",
+                                      run->policy_fingerprint) &&
          vkr_json_writer_end_object(writer);
   }
   ok = ok && vkr_json_writer_end_array(writer) &&
@@ -351,6 +448,12 @@ bool8_t vkr_harness_report_write(const char *path,
          vkr_harness_json_emit_string(writer, "status", run->status) &&
          vkr_harness_json_emit_string(writer, "report", run->report) &&
          vkr_harness_json_emit_string(writer, "sha256", run->sha256) &&
+         vkr_harness_json_emit_string(writer, "environment_fingerprint",
+                                      run->environment_fingerprint) &&
+         vkr_harness_json_emit_string(writer, "workload_fingerprint",
+                                      run->workload_fingerprint) &&
+         vkr_harness_json_emit_string(writer, "policy_fingerprint",
+                                      run->policy_fingerprint) &&
          vkr_json_writer_end_object(writer);
   }
   ok = ok && vkr_json_writer_end_array(writer) &&
@@ -457,6 +560,44 @@ bool8_t vkr_harness_report_write(const char *path,
                                      capture->metadata_path) &&
         vkr_harness_json_emit_string(writer, "metadata_sha256",
                                      capture->metadata_sha256) &&
+        vkr_harness_json_emit_string(writer, "comparison_status",
+                                     capture->comparison_status) &&
+        vkr_harness_json_emit_string(writer, "baseline_data_path",
+                                     capture->baseline_data_path) &&
+        vkr_harness_json_emit_string(writer, "baseline_data_sha256",
+                                     capture->baseline_data_sha256) &&
+        vkr_harness_json_emit_string(writer, "diff_path", capture->diff_path) &&
+        vkr_harness_json_emit_string(writer, "diff_sha256",
+                                     capture->diff_sha256) &&
+        vkr_harness_json_emit_name(writer, "thresholds") &&
+        vkr_json_writer_begin_object(writer) &&
+        vkr_harness_json_emit_f64(writer, "max_pixel_delta",
+                                  capture->thresholds.max_pixel_delta) &&
+        vkr_harness_json_emit_f64(
+            writer, "max_mean_absolute_error",
+            capture->thresholds.max_mean_absolute_error) &&
+        vkr_harness_json_emit_f64(writer, "max_failed_pixel_ratio",
+                                  capture->thresholds.max_failed_pixel_ratio) &&
+        vkr_harness_json_emit_bool(writer, "emit_diff",
+                                   capture->thresholds.emit_diff) &&
+        vkr_json_writer_end_object(writer) &&
+        vkr_harness_json_emit_name(writer, "comparison") &&
+        vkr_json_writer_begin_object(writer) &&
+        vkr_harness_json_emit_f64(writer, "mean_absolute_error",
+                                  capture->comparison.mean_absolute_error) &&
+        vkr_harness_json_emit_f64(writer, "max_absolute_error",
+                                  capture->comparison.max_absolute_error) &&
+        vkr_harness_json_emit_u64(writer, "failing_value_count",
+                                  capture->comparison.failing_value_count) &&
+        vkr_harness_json_emit_u64(writer, "failing_pixel_count",
+                                  capture->comparison.failing_pixel_count) &&
+        vkr_harness_json_emit_u64(writer, "value_count",
+                                  capture->comparison.value_count) &&
+        vkr_harness_json_emit_u64(writer, "pixel_count",
+                                  capture->comparison.pixel_count) &&
+        vkr_harness_json_emit_f64(writer, "failed_pixel_ratio",
+                                  capture->comparison.failed_pixel_ratio) &&
+        vkr_json_writer_end_object(writer) &&
         vkr_json_writer_end_object(writer);
   }
   ok = ok && vkr_json_writer_end_array(writer) &&

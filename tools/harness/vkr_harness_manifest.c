@@ -473,30 +473,7 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
 }
 
 static bool8_t vkr_harness_capture_channel_known(const char *channel) {
-  static const char *const fixed[] = {
-      "final_color",
-      "scene_color",
-      "depth",
-      "picking_ids",
-      "normals",
-      "unlit",
-      "lighting",
-      "shadow_debug_cascades",
-      "shadow_debug_factor",
-      "shadow_debug_depth",
-  };
-  for (uint32_t i = 0; i < ArrayCount(fixed); ++i) {
-    if (string_equals(channel, fixed[i])) {
-      return true_v;
-    }
-  }
-  const char prefix[] = "shadow_cascade_";
-  if (string_n_equals(channel, prefix, sizeof(prefix) - 1u) &&
-      channel[sizeof(prefix) - 1u] >= '0' &&
-      channel[sizeof(prefix) - 1u] <= '7' && channel[sizeof(prefix)] == '\0') {
-    return true_v;
-  }
-  return false_v;
+  return vkr_harness_capture_channel_description(channel) != NULL;
 }
 
 static bool8_t vkr_harness_parse_captures(const VkrHarnessJsonDocument *doc,
