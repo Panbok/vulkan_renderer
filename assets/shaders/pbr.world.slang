@@ -420,6 +420,7 @@ float4 fragmentMain(VertexDto input) : SV_Target
     }
 
     float dir_shadow = 1.0f;
+    uint effective_cascade = selected_cascade;
     if (g_ubo.shadow_enabled != 0u && g_ubo.dir_enabled != 0u)
     {
         float4 view_pos = mul(g_ubo.view, float4(input.frag_position, 1.0f));
@@ -428,6 +429,7 @@ float4 fragmentMain(VertexDto input) : SV_Target
             calculate_shadow_blended(input.frag_position, normal, view_depth,
                                      selected_cascade);
         dir_shadow = shadow_result.factor;
+        effective_cascade = shadow_result.effective_cascade;
     }
 
     if (g_ubo.dir_enabled != 0u)
@@ -483,5 +485,32 @@ float4 fragmentMain(VertexDto input) : SV_Target
     }
 
     color += emissive;
+    if (g_ubo.shadow_debug_mode == 2u)
+    {
+        return float4(dir_shadow.xxx, 1.0f);
+    }
+    if (g_ubo.shadow_debug_mode == 3u)
+    {
+        ShadowProjection p = project_shadow(input.frag_position, effective_cascade);
+        float shadow_depth = sample_shadow_depth(effective_cascade, p.uv_clamped);
+        float delta = saturate(abs(p.z_clamped - shadow_depth) * 50.0f);
+        float3 debug_color = float3(p.z_clamped, shadow_depth, delta);
+        if (p.uv_out)
+        {
+            debug_color = lerp(debug_color, float3(1.0f, 0.0f, 0.0f), 0.75f);
+        }
+        if (p.z_out)
+        {
+            debug_color = lerp(debug_color, float3(0.0f, 0.0f, 1.0f), 0.75f);
+        }
+        return float4(debug_color, 1.0f);
+    }
+    if (g_ubo.shadow_debug_mode == 1u)
+    {
+        const float3 debug_color = g_ubo.shadow_enabled != 0u
+                                       ? SHADOW_CASCADE_DEBUG_COLORS[effective_cascade]
+                                       : float3(1.0f, 0.0f, 1.0f);
+        return float4(debug_color, 1.0f);
+    }
     return float4(color, alpha);
 }
