@@ -5,13 +5,15 @@ description: Run and interpret VKR's structured renderer automation harness. Use
 
 # VKR Harness
 
-Use `vkr_harness` for structured, repeatable renderer observations. Phases 2-3
+Use `vkr_harness` for structured, repeatable renderer observations. Phases 2-4
 support the `profile` command with full or dependency-resolved automation boot
 and visible or hidden windowed targets. Phase 2b adds authoritative CPU and
 GPU-timestamp performance profiles and retires the old log-scraping benchmark;
 Phase 3 adds paired boot/residency profiles and actual effective subsystem
-masks. Capture, `snapshot`, `autotest`, baseline comparison/promotion, and true
-offscreen targets are later phases and must not be claimed from this binary.
+masks. Phase 4 adds diagnostic direct-channel `snapshot` replays with canonical
+color, depth, shadow-layer, and picking-ID artifacts. `autotest`, auxiliary
+debug replay, baseline comparison/promotion, and true offscreen targets are
+later phases and must not be claimed from this binary.
 
 ## Run a profile
 
@@ -31,6 +33,28 @@ Cases own the workload. Profiles own environment constraints, instrumentation,
 minimum independent repetitions, stability policy, and authority policy. Do
 not weaken a profile to make a run pass. Add a separate local profile for an
 investigative environment.
+
+## Run a snapshot
+
+```sh
+./build.sh Debug
+build/tools/vkr_harness snapshot \
+  --case tools/cases/smoke/sponza_snapshot.case.json \
+  --profile tools/profiles/local-windowed.json
+```
+
+Snapshot starts one isolated replay child per capture checkpoint and preserves
+the case's fixed delta, seed, warmup, camera, and cache policy. Its output lives
+under `build/_artifacts/snapshot/<run-id>/`. Read `captures[]` for the resolved
+producer, canonical encoding, source frame/submit serial, paths, and digests;
+read `auxiliary_runs[]` to audit each child report. A snapshot is diagnostic and
+never primary performance evidence. Compare direct-capture digests across at
+least two independent processes when testing determinism.
+
+Shipped direct channels are `final_color`, editor-only `scene_color`, `depth`,
+`shadow_cascade_0` through `_3`, and `picking_ids`. Debug-mode channels and
+baseline verdicts remain Phase 5. Final-color availability is target/surface
+capability dependent; unavailable means exit `3`, never a silent substitute.
 
 ## Interpret evidence
 
@@ -95,6 +119,8 @@ narrowing the profile's window.
 | `performance/sponza_orbit_automation.case.json` | automation | 120/300 | The same workload under automation boot; use it to observe automation steady state on its own, never as the other orbit case's comparand |
 | `performance/sponza_boot_full.case.json` | full | 120/60 | Paired boot/residency evidence |
 | `performance/sponza_boot_automation.case.json` | automation | 120/60 | Paired boot/residency evidence |
+| `smoke/sponza_snapshot.case.json` | automation | 2/3 | Direct final/depth/shadow/picking snapshot fixture |
+| `smoke/sponza_snapshot_editor.case.json` | automation | 2/3 | Editor scene-color/depth/picking snapshot fixture |
 
 ## Compare full and automation boot
 

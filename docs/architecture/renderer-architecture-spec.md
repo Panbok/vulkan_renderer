@@ -6,8 +6,8 @@ authority: spec
 # VKR Renderer — Architecture and Status Specification
 
 **Document status:** Reviewed against the working tree on 2026-07-31; P2
-production-reference record corrected on 2026-08-01 and harness Phase 3 status
-recorded on 2026-08-02.
+production-reference record corrected on 2026-08-01 and harness Phases 3-4
+status recorded on 2026-08-02.
 **Scope:** Renderer architecture, implemented features, CPU/GPU memory, data
 transfer, synchronization, known issues, and recommended direction.
 **Audience:** Contributors and reviewers.
@@ -294,7 +294,7 @@ farther than the finite cube mesh.
 | SPIR-V reflection | Implemented | Descriptors, push constants, vertex ABI, and uniform members validated against `.shadercfg` |
 | Pipeline cache | Implemented | Disk-backed Vulkan cache |
 | Metrics registry and snapshot export | Implemented | Bounded typed slots, MPSC cold-event ring, triple-buffered snapshots, renderer catalog/validity, explicit GPU allocation-owner aggregates, metrics-backed HUD, atomic `--metrics-json`, and harness aggregation |
-| Renderer automation harness | Implemented, partial | Strict cases/profiles, deterministic cameras, isolated windowed repetitions, dependency-resolved full/automation boot with actual subsystem masks, authoritative CPU/GPU/boot evidence policies, three comparison fingerprints, metric/pass/event aggregation, atomic artifacts, and `profile`; capture, baselines, and offscreen targets are later phases |
+| Renderer automation harness | Implemented, partial | Strict cases/profiles, deterministic cameras, isolated windowed repetitions, dependency-resolved full/automation boot with actual subsystem masks, authoritative CPU/GPU/boot evidence policies, three comparison fingerprints, metric/pass/event aggregation, atomic artifacts, `profile`, and direct-channel `snapshot` with canonical color/depth/ID output; baseline/debug replay and offscreen targets are later phases |
 | Cascaded shadow maps | Implemented | Four-cascade default with debug/fit controls |
 | PBR materials | Implemented, evolving | Metallic-roughness and texture slots present |
 | IBL | In progress | Runtime bake paths and scene/probe model present; bake work still undeclared to the graph, output visibility now barriered explicitly |
@@ -791,6 +791,7 @@ following checks were rerun:
 | Renderer harness phase 2 | CPU suite and Release build passed; a hidden-window Sponza profile completed two isolated warm-cache repetitions with stable warmup, matching work-volume rows, 222 aggregate metrics, eight pass rows, bounded event aggregation, verified child/artifact digests, and a passing work-volume assertion. Compile-disabled behavior and exact commands are recorded in [phase-2 verification](../tooling/renderer-harness-phase2-verification.md) |
 | Renderer harness phase 2b | The final CPU suite and Release build passed; a 600-frame deterministic Sponza observation exposed 222 metric/eight pass rows with matching work volume, and a timestamp-on run produced complete CPU/GPU samples for all eight passes. Authoritative profiles now require multiple isolated repetitions, clean provenance, stable warmup, an exclusive GPU lane, and complete requested evidence; the legacy app log/shell scrape is retired. The clean baseline's unrelated event-test intermittent and exact artifacts are recorded in [phase-2b verification](../tooling/renderer-harness-phase2b-verification.md) |
 | Renderer harness phase 3 | CPU suite and Release build passed; five full and five automation Sponza repetitions reported masks `0x000000000007ffff` and `0x000000000000bfff`, identical draw/visibility work, complete `boot.*` and exact GPU residency, a 5.64% lower observational `boot.systems` mean, and 1,494,056 fewer resident GPU bytes. A validation-layer automation profile completed with no validation diagnostics. These dirty local observations are not an authoritative speed claim; exact artifacts and limitations are recorded in [phase-3 verification](../tooling/renderer-harness-phase3-verification.md) |
+| Renderer harness phase 4 | CPU suite and Debug build passed; a fixed asynchronous capture ring and request-specific exact-slice graph overlay produced canonical final color, swapchain/editor depth, shadow-layer, scene-color, and picking-ID artifacts. Two isolated non-editor Sponza snapshot processes had bit-identical data/preview digests; an editor replay resolved depth to `scene_depth`; Debug validation logs were clean and the five-case backend matrix passed. These diagnostic dirty-tree runs are not performance or baseline evidence; exact artifacts and limitations are recorded in [phase-4 verification](../tooling/renderer-harness-phase4-verification.md) |
 | `vkr_frustum` production references | Application world-payload construction creates camera and cascade frustums and classifies submeshes against them |
 | `VkrDrawBatcher` production references | None outside its module/tests/docs; P2 batching instead uses visibility and pass-local batch structures |
 | `vkr_indirect_draw_alloc` callers | The shared pass indirect-submission path allocates production world/shadow command ranges |

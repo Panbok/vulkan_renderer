@@ -5,13 +5,15 @@ authority: spec
 ---
 # Renderer Metrics Module and Automation Harness
 
-> **Status note.** Phases 1, 1b, 2, 2b, and 3 ship: the centralized registry and
+> **Status note.** Phases 1, 1b, 2, 2b, 3, and 4 ship: the centralized registry and
 > renderer adapter feed a structured `vkr_harness profile` runtime with strict
 > manifests, deterministic cameras, isolated repetitions, fingerprints, and
 > atomic reports. Reviewed CPU/GPU performance profiles replace the retired
 > grep/awk benchmark, and dependency-resolved automation boot reports its actual
-> subsystem mask. Phases 4-6 remain proposed; there is still no harness capture
-> path, baseline workflow, or offscreen target.
+> subsystem mask. `vkr_harness snapshot` now publishes canonical direct color,
+> depth, shadow-layer, and picking-ID captures through a declared graph pass and
+> bounded asynchronous ring. Phases 5-6 remain proposed; there is still no
+> baseline workflow, auxiliary debug replay, or offscreen target.
 > Evidence is recorded in
 > [renderer-metrics-phase1-verification.md](renderer-metrics-phase1-verification.md)
 > and
@@ -22,13 +24,16 @@ authority: spec
 > [renderer-harness-phase2b-verification.md](renderer-harness-phase2b-verification.md).
 > Phase-3 evidence is recorded in
 > [renderer-harness-phase3-verification.md](renderer-harness-phase3-verification.md).
+> Phase-4 evidence is recorded in
+> [renderer-harness-phase4-verification.md](renderer-harness-phase4-verification.md).
 
 ## 1. Problem
 
 The renderer already produced most of the numbers an automated workflow needed,
-but lacked a machine-readable transport. Phases 1-3 implement that transport,
-replace the legacy scrape path, and add dependency-resolved boot; the remaining
-problem is capture, accepted baselines, and offscreen execution.
+but lacked a machine-readable transport. Phases 1-4 implement that transport,
+replace the legacy scrape path, add dependency-resolved boot, and add direct
+capture; the remaining problem is accepted baseline comparison, auxiliary
+debug replay, and offscreen execution.
 
 Before this series, every signal lived in its own struct with its own reader,
 and the only transport was `log_info` plus a shell pipeline:
@@ -73,7 +78,7 @@ This work is mostly consolidation. Reuse these; do not rebuild them.
 | Upload stall counters | `vkr_renderer_get_and_reset_upload_wait_stats()` |
 | Pipeline creation time (measured, then discarded into a log line) | `vulkan_graphics_graphics_pipeline_create()` in `vulkan/vulkan_pipeline.c` |
 | Pipeline bind and descriptor telemetry | `VkrPipelineRegistry.stats` |
-| Image→buffer copy with region and aspect selection, currently fixed to mip 0/layer 0 | `vulkan_image_copy_to_buffer_ex()` |
+| Image→buffer copy with checked mip/layer/aspect regions and row layout | `vulkan_image_copy_to_buffer_region()` |
 | Fenced readback ring, three slots | `VulkanReadbackRing`, `renderer_vulkan_request_pixel_readback()` |
 | A **declared** graph readback pass — the pattern to copy | `Picking.Readback` in `assets/render_graphs/main.rendergraph.json`, `vkr_pass_picking_readback_execute()` |
 | Debug channels: normals, unlit, lighting | `VkrRenderMode`, consumed in `assets/shaders/pbr.world.slang` and `default.world.slang` |
@@ -94,9 +99,9 @@ Existing telemetry is not uniformly safe to pull. Per-allocator
 `vkr_allocator_get_statistics()` reads non-atomic fields and cannot be sampled
 concurrently with that allocator's owner. GPU pass results refer to a completed
 earlier submission and currently lack an exported source frame/submit serial.
-The existing image-copy helper does not yet implement the `mip` or `layer`
-fields proposed for capture. These are integration obligations, not capabilities
-the registry may assume.
+Capture capability remains format/surface dependent. Catalog preflight and
+backend initialization reject unsupported color/depth transfer sources rather
+than letting the registry assume they exist.
 
 ## 3. `VkrMetrics` — the centralized module
 
@@ -540,15 +545,18 @@ typedef struct VkrCaptureBatchRequest {
 
 typedef struct VkrCaptureItemResult {
   VkrCaptureChannelId channel;
+  char producer_resource[64];
   uint32_t width;
   uint32_t height;
-  uint32_t row_pitch;
+  uint64_t row_pitch;
   VkrTextureFormat format;
   VkrCaptureValueKind value_kind;
   VkrColorSpace color_space;
   VkrImageOrigin origin;
   const uint8_t *data;
   uint64_t data_size;
+  uint32_t mip;
+  uint32_t layer;
 } VkrCaptureItemResult;
 
 typedef enum VkrCaptureStatus {
@@ -643,8 +651,10 @@ publication; no string switch is added to the executor. `depth` resolves to
 `swapchain_depth` or `scene_depth` from the effective editor configuration, which
 is recorded in the workload fingerprint rather than inferred after capture.
 
-`swapchain_depth` and `scene_depth` need `TRANSFER_SRC` usage added in
-`assets/render_graphs/main.rendergraph.json`.
+The JSON-owned `scene_depth`, `scene_color`, and `shadow_map` resources declare
+`TRANSFER_SRC`. Imported swapchain color/depth resources are augmented only by
+the request-specific overlay after their capture-capable Vulkan usage was
+validated at initialization.
 
 That usage bit is a Vulkan copy-legality requirement, not evidence that the
 change is free or that it disables depth compression. On the MoltenVK revision
@@ -1140,12 +1150,12 @@ unsupported.
 | 2 | **Implemented 2026-08-01.** Shared harness runtime, strict case/profile parsers, case/profile/report schemas, three fingerprints, safe paths/atomic artifacts, camera scripting, isolated repetitions, `profile` | `tools/harness/`, `tools/cases/`, `tools/profiles/` |
 | 2b | **Implemented 2026-08-02.** Established structured metric/pass parity, added reviewed CPU and GPU-timestamp performance profiles plus a deterministic Sponza case, rejected one-process authoritative profiles, made requested GPU timing completeness-gated, retired the grep/awk script/app accumulator, and migrated `vkr-performance` | tooling and skills |
 | 3 | **Implemented 2026-08-02.** Dependency-resolved automation boot; actual effective masks in samples/reports/fingerprints; paired full/automation boot and residency profiles with identical work-volume gates | `renderer_frontend.c`, `application.h`, harness runtime |
-| 4 | Capture batch API/ring, request-specific declared graph reads, canonical converters, direct-channel `snapshot` | backend, graph, `tools/harness/` |
+| 4 | **Implemented 2026-08-02.** Capture batch API and fixed ring, request-specific declared exact-slice graph reads, capability-gated transfer sources, canonical converters and metadata, isolated direct-channel `snapshot` replays | backend, graph, `tools/harness/` |
 | 5 | Auxiliary debug replay, `autotest`, profile-scoped baselines, guarded promotion | `tools/harness/`, `tools/baselines/` |
 | 6 | Target-neutral frontend queries and `VulkanPresentTarget`; true offscreen headless | backend configuration/device selection, graph imports, frame path |
 
 Phases 4 and 6 both touch GPU-completion and frame-failure invariants: phase 4
-associates/rolls back asynchronous readback slots, while phase 6 changes
+now associates/rolls back asynchronous readback slots, while phase 6 changes
 acquire/submit/present synchronization. Phase 6 remains last so the windowed
 harness can validate it. After each implementation phase, update this document's
 front-matter, both indexes, the architecture specification's feature table and
