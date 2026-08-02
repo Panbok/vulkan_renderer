@@ -139,16 +139,6 @@ typedef struct State {
   uint32_t metrics_dump_index;
   bool8_t auto_close_requested;
 
-  // Optional benchmark logging for non-interactive perf validation runs.
-  bool8_t benchmark_enabled;
-  const char *benchmark_label;
-  uint64_t benchmark_sample_count;
-  float64_t benchmark_frame_ms_sum;
-  float64_t benchmark_frame_ms_min;
-  float64_t benchmark_frame_ms_max;
-  uint64_t benchmark_rg_cpu_sample_count;
-  float64_t benchmark_rg_cpu_ms_sum;
-
   // Upload wait telemetry for async streaming validation runs.
   bool8_t assert_no_upload_waits;
   bool8_t upload_wait_violation_seen;
@@ -1813,95 +1803,6 @@ vkr_internal void application_update_fps_text(Application *application,
     const uint32_t rg_pass_timing_count = pass_table ? pass_table->count : 0;
     const bool8_t have_rg_timings = rg_pass_timing_count > 0;
 
-    if (state->benchmark_enabled) {
-      // Preserve the legacy benchmark's interval-average boundary for both
-      // metrics-enabled and compile-disabled binaries. The HUD may display the
-      // latest published frame, but using that value here would make the Phase
-      // 1 overhead A/B compare two different sampling methods.
-      const float64_t frame_ms = state->fps_frame_count > 0
-                                     ? (state->fps_accumulated_time /
-                                        (float64_t)state->fps_frame_count) *
-                                           1000.0
-                                     : 0.0;
-      state->benchmark_sample_count++;
-      state->benchmark_frame_ms_sum += frame_ms;
-      if (state->benchmark_sample_count == 1) {
-        state->benchmark_frame_ms_min = frame_ms;
-        state->benchmark_frame_ms_max = frame_ms;
-      } else {
-        state->benchmark_frame_ms_min =
-            Min(state->benchmark_frame_ms_min, frame_ms);
-        state->benchmark_frame_ms_max =
-            Max(state->benchmark_frame_ms_max, frame_ms);
-      }
-
-      float64_t rg_cpu_total_ms = 0.0;
-      if (have_rg_timings && rg_pass_timings && rg_pass_timing_count > 0) {
-        for (uint32_t i = 0; i < rg_pass_timing_count; ++i) {
-          const VkrRendererMetricsPassSample *timing = &rg_pass_timings[i];
-          if (timing->culled || timing->disabled) {
-            continue;
-          }
-          rg_cpu_total_ms += timing->cpu_ms;
-        }
-        state->benchmark_rg_cpu_sample_count++;
-        state->benchmark_rg_cpu_ms_sum += rg_cpu_total_ms;
-      }
-
-      const VkrVisibilityStats *vis = &visibility_snapshot;
-      uint32_t shadow_calls = 0;
-      uint32_t shadow_indirect_commands = 0;
-      uint32_t shadow_indirect_calls = 0;
-      for (uint32_t i = 0; i < VKR_SHADOW_CASCADE_COUNT_MAX; ++i) {
-        shadow_calls += shadow->shadow_draw_calls_opaque[i] +
-                        shadow->shadow_draw_calls_alpha[i];
-        shadow_indirect_commands += shadow->shadow_indirect_draws_opaque[i];
-        shadow_indirect_calls += shadow->shadow_indirect_calls_opaque[i];
-      }
-      log_info("BENCHMARK_SAMPLE label=%s frame_ms=%.3f fps=%.2f "
-               "rg_cpu_total_ms=%.3f "
-               "world_draws=%u world_batches=%u world_commands=%u "
-               "world_calls=%u world_indirect_commands=%u "
-               "world_indirect_calls=%u shadow_calls=%u "
-               "shadow_indirect_commands=%u shadow_indirect_calls=%u "
-               "vis_tested=%u vis_cull_cam=%u vis_cull_shadow=%u "
-               "opaque_before=%u opaque_after=%u mergeable=%u max_run=%u "
-               "geoms=%u geom_mat_pairs=%u",
-               state->benchmark_label ? state->benchmark_label : "default",
-               frame_ms, state->current_fps, rg_cpu_total_ms,
-               world->draws_collected, world->batches_created,
-               world->draws_issued, world->draw_calls_issued,
-               world->indirect_draws_issued, world->indirect_calls_issued,
-               shadow_calls, shadow_indirect_commands, shadow_indirect_calls,
-               vis->objects_tested, vis->objects_culled_camera,
-               vis->objects_culled_shadow, vis->opaque_draws_before_merge,
-               vis->opaque_draws_emitted, vis->mergeable_opaque_draws,
-               vis->largest_mergeable_run, vis->distinct_geometries,
-               vis->distinct_geometry_material_pairs);
-      fprintf(stdout,
-              "BENCHMARK_SAMPLE label=%s frame_ms=%.3f fps=%.2f "
-              "rg_cpu_total_ms=%.3f "
-              "world_draws=%u world_batches=%u world_commands=%u "
-              "world_calls=%u world_indirect_commands=%u "
-              "world_indirect_calls=%u shadow_calls=%u "
-              "shadow_indirect_commands=%u shadow_indirect_calls=%u "
-              "vis_tested=%u vis_cull_cam=%u vis_cull_shadow=%u "
-              "opaque_before=%u opaque_after=%u mergeable=%u max_run=%u "
-              "geoms=%u geom_mat_pairs=%u\n",
-              state->benchmark_label ? state->benchmark_label : "default",
-              frame_ms, state->current_fps, rg_cpu_total_ms,
-              world->draws_collected, world->batches_created,
-              world->draws_issued, world->draw_calls_issued,
-              world->indirect_draws_issued, world->indirect_calls_issued,
-              shadow_calls, shadow_indirect_commands, shadow_indirect_calls,
-              vis->objects_tested, vis->objects_culled_camera,
-              vis->objects_culled_shadow, vis->opaque_draws_before_merge,
-              vis->opaque_draws_emitted, vis->mergeable_opaque_draws,
-              vis->largest_mergeable_run, vis->distinct_geometries,
-              vis->distinct_geometry_material_pairs);
-      fflush(stdout);
-    }
-
     String8 fps_text = string8_create_formatted(
         frame_alloc, "FPS: %.1f\nFrametime: %.2f ms", state->current_fps,
         state->current_frametime * 1000.0);
@@ -2675,14 +2576,6 @@ int main(int argc, char **argv) {
   state->metrics_dump_interval_seconds = 0.0;
   state->metrics_dump_index = 0;
   state->auto_close_requested = false_v;
-  state->benchmark_enabled = false_v;
-  state->benchmark_label = "default";
-  state->benchmark_sample_count = 0;
-  state->benchmark_frame_ms_sum = 0.0;
-  state->benchmark_frame_ms_min = 0.0;
-  state->benchmark_frame_ms_max = 0.0;
-  state->benchmark_rg_cpu_sample_count = 0;
-  state->benchmark_rg_cpu_ms_sum = 0.0;
   state->assert_no_upload_waits = false_v;
   state->upload_wait_violation_seen = false_v;
   state->upload_wait_fence_total = 0;
@@ -2761,16 +2654,6 @@ int main(int argc, char **argv) {
     log_info("Metrics event subjects enabled via VKR_METRICS_EVENT_SUBJECTS");
   }
 
-  state->benchmark_enabled = application_env_flag("VKR_BENCHMARK_LOG", false_v);
-  const char *benchmark_label_env = getenv("VKR_BENCHMARK_LABEL");
-  if (benchmark_label_env && benchmark_label_env[0] != '\0') {
-    state->benchmark_label = benchmark_label_env;
-  }
-  if (state->benchmark_enabled) {
-    log_info("Benchmark logging enabled (label=%s)",
-             state->benchmark_label ? state->benchmark_label : "default");
-  }
-
   state->assert_no_upload_waits =
       application_env_flag("VKR_ASSERT_NO_UPLOAD_WAITS", false_v);
   if (state->assert_no_upload_waits) {
@@ -2817,45 +2700,6 @@ int main(int argc, char **argv) {
 
   application_start(&application);
   application_close(&application);
-
-  if (state->benchmark_enabled) {
-    if (state->benchmark_sample_count > 0) {
-      const float64_t avg_frame_ms = state->benchmark_frame_ms_sum /
-                                     (float64_t)state->benchmark_sample_count;
-      const float64_t avg_rg_cpu_ms =
-          state->benchmark_rg_cpu_sample_count > 0
-              ? state->benchmark_rg_cpu_ms_sum /
-                    (float64_t)state->benchmark_rg_cpu_sample_count
-              : 0.0;
-      log_info("BENCHMARK_SUMMARY label=%s samples=%llu avg_frame_ms=%.3f "
-               "min_frame_ms=%.3f max_frame_ms=%.3f rg_cpu_samples=%llu "
-               "avg_rg_cpu_ms=%.3f",
-               state->benchmark_label ? state->benchmark_label : "default",
-               (unsigned long long)state->benchmark_sample_count, avg_frame_ms,
-               state->benchmark_frame_ms_min, state->benchmark_frame_ms_max,
-               (unsigned long long)state->benchmark_rg_cpu_sample_count,
-               avg_rg_cpu_ms);
-      fprintf(stdout,
-              "BENCHMARK_SUMMARY label=%s samples=%llu avg_frame_ms=%.3f "
-              "min_frame_ms=%.3f max_frame_ms=%.3f rg_cpu_samples=%llu "
-              "avg_rg_cpu_ms=%.3f\n",
-              state->benchmark_label ? state->benchmark_label : "default",
-              (unsigned long long)state->benchmark_sample_count, avg_frame_ms,
-              state->benchmark_frame_ms_min, state->benchmark_frame_ms_max,
-              (unsigned long long)state->benchmark_rg_cpu_sample_count,
-              avg_rg_cpu_ms);
-      fflush(stdout);
-    } else {
-      log_warn("BENCHMARK_SUMMARY label=%s samples=0",
-               state->benchmark_label ? state->benchmark_label : "default");
-      fprintf(stdout,
-              "BENCHMARK_SUMMARY label=%s samples=0 avg_frame_ms=0.000 "
-              "min_frame_ms=0.000 max_frame_ms=0.000 rg_cpu_samples=0 "
-              "avg_rg_cpu_ms=0.000\n",
-              state->benchmark_label ? state->benchmark_label : "default");
-      fflush(stdout);
-    }
-  }
 
   if (state->upload_wait_fence_total > 0 ||
       state->upload_wait_queue_idle_total > 0 ||
