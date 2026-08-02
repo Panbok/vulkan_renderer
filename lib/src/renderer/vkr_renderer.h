@@ -118,6 +118,10 @@ typedef enum VkrRendererError {
   VKR_RENDERER_ERROR_FRAME_SKIPPED,
   /** Queue submission failed; the frame's work never reached the device. */
   VKR_RENDERER_ERROR_SUBMISSION_FAILED,
+  /** Recoverable: every capture-batch slot is still owned by earlier work. */
+  VKR_RENDERER_ERROR_CAPTURE_BUSY,
+  /** A requested capture channel or subresource is unavailable. */
+  VKR_RENDERER_ERROR_CAPTURE_UNAVAILABLE,
 
   VKR_RENDERER_ERROR_COUNT
 } VkrRendererError;
@@ -612,6 +616,110 @@ typedef enum VkrTextureFormat {
 
   VKR_TEXTURE_FORMAT_COUNT,
 } VkrTextureFormat;
+
+#define VKR_CAPTURE_MAX_ITEMS 16u
+#define VKR_CAPTURE_CHANNEL_INVALID UINT16_MAX
+
+/**
+ * Published batch-buffer layout contract. The frontend lays every item out at
+ * `VKR_CAPTURE_BUFFER_ALIGNMENT` and no canonical source texel exceeds
+ * `VKR_CAPTURE_MAX_BYTES_PER_PIXEL`, so a caller that must size the backend
+ * ring before the renderer exists can compute the same upper bound instead of
+ * re-deriving one that silently drifts out of agreement.
+ */
+#define VKR_CAPTURE_BUFFER_ALIGNMENT 256u
+#define VKR_CAPTURE_MAX_BYTES_PER_PIXEL 4u
+
+typedef uint16_t VkrCaptureChannelId;
+typedef uint64_t VkrCaptureRequestId;
+
+typedef enum VkrCaptureValueKind {
+  VKR_CAPTURE_VALUE_COLOR = 0,
+  VKR_CAPTURE_VALUE_DEPTH,
+  VKR_CAPTURE_VALUE_UINT,
+} VkrCaptureValueKind;
+
+typedef enum VkrCaptureColorSpace {
+  VKR_CAPTURE_COLOR_SPACE_NONE = 0,
+  VKR_CAPTURE_COLOR_SPACE_LINEAR,
+  VKR_CAPTURE_COLOR_SPACE_SRGB,
+} VkrCaptureColorSpace;
+
+typedef enum VkrCaptureOrigin {
+  VKR_CAPTURE_ORIGIN_TOP_LEFT = 0,
+  VKR_CAPTURE_ORIGIN_BOTTOM_LEFT,
+} VkrCaptureOrigin;
+
+typedef enum VkrCaptureStatus {
+  VKR_CAPTURE_STATUS_NOT_FOUND = 0,
+  VKR_CAPTURE_STATUS_PENDING,
+  VKR_CAPTURE_STATUS_READY,
+  VKR_CAPTURE_STATUS_FAILED,
+} VkrCaptureStatus;
+
+typedef enum VkrCaptureAspect {
+  VKR_CAPTURE_ASPECT_COLOR = 0,
+  VKR_CAPTURE_ASPECT_DEPTH,
+} VkrCaptureAspect;
+
+typedef struct VkrCaptureItemRequest {
+  VkrCaptureChannelId channel;
+  uint32_t mip;
+  uint32_t layer;
+} VkrCaptureItemRequest;
+
+typedef struct VkrCaptureBatchRequest {
+  VkrCaptureRequestId request_id;
+  const VkrCaptureItemRequest *items;
+  uint32_t item_count;
+} VkrCaptureBatchRequest;
+
+typedef struct VkrCaptureItemResult {
+  VkrCaptureChannelId channel;
+  /** Resolved graph resource copied by this item (not a channel alias). */
+  char producer_resource[64];
+  uint32_t width;
+  uint32_t height;
+  uint64_t row_pitch;
+  VkrTextureFormat format;
+  VkrCaptureValueKind value_kind;
+  VkrCaptureColorSpace color_space;
+  VkrCaptureOrigin origin;
+  const void *data;
+  uint64_t data_size;
+  uint32_t mip;
+  uint32_t layer;
+} VkrCaptureItemResult;
+
+typedef struct VkrCapturePollResult {
+  VkrCaptureStatus status;
+  VkrRendererError error;
+  const VkrCaptureItemResult *items;
+  uint32_t item_count;
+  uint64_t source_frame_index;
+  uint64_t submit_serial;
+} VkrCapturePollResult;
+
+/** Stable direct-capture catalog entry. `source_name` names a graph resource.
+ */
+typedef struct VkrCaptureChannelDescription {
+  VkrCaptureChannelId id;
+  const char *name;
+  const char *source_name;
+  uint32_t required_subsystem; /**< VkrRendererSubsystem, or COUNT for none. */
+  VkrCaptureAspect aspect;
+  VkrCaptureValueKind value_kind;
+  VkrCaptureColorSpace color_space;
+  const char *canonical_encoding;
+  uint32_t version;
+} VkrCaptureChannelDescription;
+
+/** Frontend-computed immutable layout reserved by the backend before mutation.
+ */
+typedef struct VkrCaptureBackendItemPlan {
+  VkrCaptureItemResult result;
+  uint64_t buffer_offset;
+} VkrCaptureBackendItemPlan;
 
 typedef enum VkrTextureUsageBits {
   VKR_TEXTURE_USAGE_NONE = 0,
@@ -1281,6 +1389,9 @@ typedef struct VkrRendererBackendConfig {
   VkrMetricEventProducer shader_load_metrics;
   VkrMetricEventProducer shader_reflection_metrics;
   VkrPresentMode requested_present_mode;
+  bool8_t capture_enabled;
+  uint32_t capture_ring_capacity;
+  uint64_t capture_max_batch_bytes;
 } VkrRendererBackendConfig;
 
 // ============================================================================
@@ -1489,17 +1600,15 @@ VkrTextureOpaqueHandle vkr_renderer_create_render_target_texture(
     VkrRendererFrontendHandle renderer, const VkrRenderTargetTextureDesc *desc,
     VkrRendererError *out_error);
 
-VkrTextureOpaqueHandle
-vkr_renderer_create_depth_attachment(VkrRendererFrontendHandle renderer,
-                                     uint32_t width, uint32_t height,
-                                     VkrRendererError *out_error);
-VkrTextureOpaqueHandle
-vkr_renderer_create_sampled_depth_attachment(VkrRendererFrontendHandle renderer,
-                                             uint32_t width, uint32_t height,
-                                             VkrRendererError *out_error);
+VkrTextureOpaqueHandle vkr_renderer_create_depth_attachment(
+    VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
+    VkrTextureUsageFlags usage, VkrRendererError *out_error);
+VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment(
+    VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
+    VkrTextureUsageFlags usage, VkrRendererError *out_error);
 VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment_array(
     VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
-    uint32_t layers, VkrRendererError *out_error);
+    uint32_t layers, VkrTextureUsageFlags usage, VkrRendererError *out_error);
 
 /**
  * @brief Creates an MSAA (multisampled) render target texture.
@@ -1778,6 +1887,8 @@ uint32_t vkr_renderer_frame_in_flight_count(VkrRendererFrontendHandle renderer);
 VkrTextureFormat
 vkr_renderer_get_swapchain_format(VkrRendererFrontendHandle renderer);
 VkrTextureFormat
+vkr_renderer_get_swapchain_depth_format(VkrRendererFrontendHandle renderer);
+VkrTextureFormat
 vkr_renderer_get_shadow_depth_format(VkrRendererFrontendHandle renderer);
 // --- END Render Pass & Target Management ---
 
@@ -1789,6 +1900,16 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
                            const VkrRenderPacket *packet,
                            VkrRendererFrameMetrics *out_metrics,
                            VkrValidationError *out_validation_error);
+
+uint32_t vkr_renderer_capture_channel_count(void);
+const VkrCaptureChannelDescription *
+vkr_renderer_capture_channel_get(uint32_t index);
+VkrCaptureChannelId vkr_renderer_capture_channel_from_name(const char *name);
+VkrCaptureStatus vkr_renderer_capture_poll(VkrRendererFrontendHandle renderer,
+                                           VkrCaptureRequestId request_id,
+                                           VkrCapturePollResult *out_result);
+bool8_t vkr_renderer_capture_release(VkrRendererFrontendHandle renderer,
+                                     VkrCaptureRequestId request_id);
 
 void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
                          uint32_t height);
@@ -2057,13 +2178,15 @@ typedef struct VkrRendererBackendInterface {
       VkrRendererError *out_errors);
   VkrBackendResourceHandle (*render_target_texture_create)(
       void *backend_state, const VkrRenderTargetTextureDesc *desc);
-  VkrBackendResourceHandle (*depth_attachment_create)(void *backend_state,
-                                                      uint32_t width,
-                                                      uint32_t height);
+  VkrBackendResourceHandle (*depth_attachment_create)(
+      void *backend_state, uint32_t width, uint32_t height,
+      VkrTextureUsageFlags usage);
   VkrBackendResourceHandle (*sampled_depth_attachment_create)(
-      void *backend_state, uint32_t width, uint32_t height);
+      void *backend_state, uint32_t width, uint32_t height,
+      VkrTextureUsageFlags usage);
   VkrBackendResourceHandle (*sampled_depth_attachment_array_create)(
-      void *backend_state, uint32_t width, uint32_t height, uint32_t layers);
+      void *backend_state, uint32_t width, uint32_t height, uint32_t layers,
+      VkrTextureUsageFlags usage);
   VkrBackendResourceHandle (*render_target_texture_msaa_create)(
       void *backend_state, uint32_t width, uint32_t height,
       VkrTextureFormat format, VkrSampleCount samples);
@@ -2178,6 +2301,22 @@ typedef struct VkrRendererBackendInterface {
   VkrRendererError (*get_pixel_readback_result)(void *backend_state,
                                                 VkrPixelReadbackResult *result);
   void (*update_readback_ring)(void *backend_state);
+
+  // --- Declared image capture batches (separate from picking readback) ---
+  VkrRendererError (*capture_reserve)(void *backend_state,
+                                      const VkrCaptureBatchRequest *request,
+                                      const VkrCaptureBackendItemPlan *plans,
+                                      uint64_t source_frame_index,
+                                      VkrBackendResourceHandle *out_buffer);
+  VkrRendererError (*capture_record_item)(void *backend_state,
+                                          VkrCaptureRequestId request_id,
+                                          uint32_t item_index,
+                                          VkrBackendResourceHandle texture);
+  VkrCaptureStatus (*capture_poll)(void *backend_state,
+                                   VkrCaptureRequestId request_id,
+                                   VkrCapturePollResult *out_result);
+  bool8_t (*capture_release)(void *backend_state,
+                             VkrCaptureRequestId request_id);
 
   // Utility functions
   VkrAllocator *(*get_allocator)(void *backend_state);

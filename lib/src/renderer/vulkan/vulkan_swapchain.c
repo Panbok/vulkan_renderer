@@ -28,6 +28,12 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
       requested_image_count > swapchain_details.capabilities.maxImageCount) {
     requested_image_count = swapchain_details.capabilities.maxImageCount;
   }
+  if (state->capture_enabled &&
+      !(swapchain_details.capabilities.supportedUsageFlags &
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+    log_error("Surface does not support swapchain transfer-source capture");
+    return false;
+  }
 
   VkSwapchainCreateInfoKHR create_info = {
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -37,7 +43,9 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
       .imageColorSpace = surface_format->colorSpace,
       .imageExtent = extent,
       .imageArrayLayers = 1,
-      .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .imageUsage =
+          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+          (state->capture_enabled ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0),
       .preTransform = swapchain_details.capabilities.currentTransform,
       .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
       .presentMode = present_mode,
@@ -136,7 +144,8 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
     }
   }
 
-  if (!vulkan_device_check_depth_format(&state->device)) {
+  if (!vulkan_device_check_depth_format(&state->device,
+                                        state->capture_enabled)) {
     log_error("Failed to find suitable depth format");
     return false;
   }
@@ -147,7 +156,8 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
       .height = extent.height,
       .format = state->device.depth_format,
       .tiling = VK_IMAGE_TILING_OPTIMAL,
-      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+               (state->capture_enabled ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0),
       .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
       .mip_levels = 1,
       .array_layers = 1,
@@ -198,6 +208,12 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
       requested_image_count > swapchain_details.capabilities.maxImageCount) {
     requested_image_count = swapchain_details.capabilities.maxImageCount;
   }
+  if (state->capture_enabled &&
+      !(swapchain_details.capabilities.supportedUsageFlags &
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
+    log_error("Surface no longer supports swapchain transfer-source capture");
+    return VULKAN_SWAPCHAIN_RESULT_FAILED;
+  }
 
   VkSwapchainCreateInfoKHR create_info = {
       .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
@@ -207,7 +223,9 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
       .imageColorSpace = surface_format->colorSpace,
       .imageExtent = extent,
       .imageArrayLayers = 1,
-      .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .imageUsage =
+          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+          (state->capture_enabled ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0),
       .preTransform = swapchain_details.capabilities.currentTransform,
       .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
       .presentMode = present_mode,
@@ -322,7 +340,8 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
     }
   }
 
-  if (!vulkan_device_check_depth_format(&state->device)) {
+  if (!vulkan_device_check_depth_format(&state->device,
+                                        state->capture_enabled)) {
     log_error("Failed to find suitable depth format");
     return VULKAN_SWAPCHAIN_RESULT_FAILED;
   }
@@ -333,7 +352,8 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
       .height = extent.height,
       .format = state->device.depth_format,
       .tiling = VK_IMAGE_TILING_OPTIMAL,
-      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+               (state->capture_enabled ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0),
       .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
       .mip_levels = 1,
       .array_layers = 1,

@@ -20,7 +20,7 @@
       "extent": { "mode": "square", "size_source": "shadow_map_size" },
       "layers_source": "shadow_cascade_count",
       "format": "SHADOW_DEPTH",
-      "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"],
+      "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"],
       "flags": ["TRANSIENT", "PER_IMAGE"]
     },
     {
@@ -29,7 +29,7 @@
       "condition": "editor_enabled",
       "extent": { "mode": "viewport" },
       "format": "SWAPCHAIN",
-      "usage": ["COLOR_ATTACHMENT", "SAMPLED"],
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"],
       "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
     },
     {
@@ -38,7 +38,7 @@
       "condition": "editor_enabled",
       "extent": { "mode": "viewport" },
       "format": "SWAPCHAIN_DEPTH",
-      "usage": ["DEPTH_STENCIL_ATTACHMENT"],
+      "usage": ["DEPTH_STENCIL_ATTACHMENT", "TRANSFER_SRC"],
       "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
     },
     {

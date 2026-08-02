@@ -461,7 +461,11 @@ vkr_internal bool8_t vkr_shadow_create_shadow_maps(VkrShadowSystem *system,
     VkrRendererError tex_err = VKR_RENDERER_ERROR_NONE;
     system->frames[f].shadow_map =
         vkr_renderer_create_sampled_depth_attachment_array(
-            rf, map_size, map_size, cascades, &tex_err);
+            rf, map_size, map_size, cascades,
+            vkr_texture_usage_flags_from_bits(
+                VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT |
+                VKR_TEXTURE_USAGE_SAMPLED),
+            &tex_err);
     if (!system->frames[f].shadow_map) {
       String8 err = vkr_renderer_get_error_string(tex_err);
       log_error("Failed to create shadow depth array: %s", string8_cstr(&err));
@@ -948,18 +952,16 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
       float32_t uv_margin_scale;
       if (has_margin_per) {
         float32_t per = system->config.shadow_uv_margin_scale_per[i];
-        uv_margin_scale = (per > 0.0f)
-                             ? per
-                             : vkr_shadow_default_uv_margin_scale(i,
-                                                                  cascade_count);
+        uv_margin_scale =
+            (per > 0.0f) ? per
+                         : vkr_shadow_default_uv_margin_scale(i, cascade_count);
       } else {
         uv_margin_scale = vkr_shadow_default_uv_margin_scale(i, cascade_count);
       }
 
       float32_t uv_soft_margin_scale;
       if (has_soft_margin_per) {
-        float32_t per =
-            system->config.shadow_uv_soft_margin_scale_per[i];
+        float32_t per = system->config.shadow_uv_soft_margin_scale_per[i];
         uv_soft_margin_scale =
             (per > 0.0f)
                 ? per
@@ -971,8 +973,7 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
 
       float32_t uv_kernel_margin_scale;
       if (has_kernel_margin_per) {
-        float32_t per =
-            system->config.shadow_uv_kernel_margin_scale_per[i];
+        float32_t per = system->config.shadow_uv_kernel_margin_scale_per[i];
         uv_kernel_margin_scale =
             (per > 0.0f)
                 ? per

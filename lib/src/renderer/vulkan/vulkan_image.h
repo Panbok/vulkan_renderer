@@ -177,6 +177,26 @@ bool8_t vulkan_image_copy_to_buffer(VulkanBackendState *state,
  * vulkan_image_copy_to_buffer when you need to copy depth/stencil data or
  * specify a different image aspect.
  */
+typedef struct VulkanImageCopyToBufferRegion {
+  uint64_t buffer_offset;
+  uint32_t buffer_row_length;
+  uint32_t buffer_image_height;
+  uint32_t x;
+  uint32_t y;
+  uint32_t width;
+  uint32_t height;
+  uint32_t mip_level;
+  uint32_t base_array_layer;
+  uint32_t layer_count;
+  VkImageAspectFlags aspect_flags;
+} VulkanImageCopyToBufferRegion;
+
+bool8_t
+vulkan_image_copy_to_buffer_region(VulkanBackendState *state,
+                                   VulkanImage *image, VkBuffer buffer,
+                                   const VulkanImageCopyToBufferRegion *region,
+                                   VulkanCommandBuffer *command_buffer);
+
 bool8_t vulkan_image_copy_to_buffer_ex(VulkanBackendState *state,
                                        VulkanImage *image, VkBuffer buffer,
                                        uint64_t buffer_offset, uint32_t x,

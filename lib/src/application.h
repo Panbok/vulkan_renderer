@@ -129,6 +129,9 @@ typedef struct ApplicationConfig {
   bool8_t window_hidden;
   bool8_t disable_skybox;
   VkrPresentMode requested_present_mode;
+  bool8_t capture_enabled;
+  uint32_t capture_ring_capacity;
+  uint64_t capture_max_batch_bytes;
   /** Boot intent only: `profile`, `requested_mask`, and `excluded_mask` are
       read and the closure is recomputed. Zero-initialized means full boot. */
   VkrSubsystemPlan subsystem_plan;
@@ -212,6 +215,8 @@ typedef struct Application {
   uint32_t world_text_update_count;
 
   ApplicationEditorViewport editor_viewport;
+  const VkrCaptureBatchRequest *capture_request;
+  VkrRendererError last_renderer_error;
   /* Per-pass GPU timing is owned by `metrics->config.pass_gpu_timings`. */
 } Application;
 
@@ -303,15 +308,15 @@ vkr_internal bool8_t application_metrics_initialize(Application *application) {
   // Durations are nanoseconds. No name carries a unit suffix, because the
   // catalog unit is the contract and a name that disagreed with it would be
   // wrong by a factor of a million in every consumer that trusted it.
-  if (!application_register_duration_metric(
-          application->metrics, "frame.wall", VKR_METRIC_DOMAIN_FRAME, true_v,
-          &ids->frame_wall) ||
+  if (!application_register_duration_metric(application->metrics, "frame.wall",
+                                            VKR_METRIC_DOMAIN_FRAME, true_v,
+                                            &ids->frame_wall) ||
       !application_register_duration_metric(
           application->metrics, "cpu.frame_work", VKR_METRIC_DOMAIN_FRAME,
           true_v, &ids->frame_work) ||
-      !application_register_duration_metric(
-          application->metrics, "cpu.update", VKR_METRIC_DOMAIN_FRAME, true_v,
-          &ids->update) ||
+      !application_register_duration_metric(application->metrics, "cpu.update",
+                                            VKR_METRIC_DOMAIN_FRAME, true_v,
+                                            &ids->update) ||
       !application_register_duration_metric(
           application->metrics, "cpu.render_prepare", VKR_METRIC_DOMAIN_FRAME,
           true_v, &ids->render_prepare) ||
@@ -429,6 +434,9 @@ bool8_t application_create(Application *application,
       .shader_load_metrics = metrics_producers->shader_load,
       .shader_reflection_metrics = metrics_producers->shader_reflection,
       .requested_present_mode = config->requested_present_mode,
+      .capture_enabled = config->capture_enabled,
+      .capture_ring_capacity = config->capture_ring_capacity,
+      .capture_max_batch_bytes = config->capture_max_batch_bytes,
   };
   if (!vkr_renderer_initialize(
           &application->renderer, VKR_RENDERER_BACKEND_TYPE_VULKAN,
@@ -1221,6 +1229,22 @@ void application_draw_frame(Application *application, float64_t delta) {
   VkrPickingPassPayload picking_payload = {0};
   bool8_t has_picking =
       application->renderer.picking.state == VKR_PICKING_STATE_RENDER_PENDING;
+  /* An identifier capture has no producer unless the picking pass runs this
+     frame, so the request itself schedules it. The catalog names the dependency
+     as a subsystem; matching on the channel name instead would silently stop
+     working the moment a channel is renamed. */
+  if (!has_picking && application->capture_request) {
+    for (uint32_t i = 0; i < application->capture_request->item_count; ++i) {
+      const VkrCaptureChannelDescription *channel =
+          vkr_renderer_capture_channel_get(
+              application->capture_request->items[i].channel);
+      if (channel &&
+          channel->required_subsystem == VKR_RENDERER_SUBSYSTEM_PICKING) {
+        has_picking = true_v;
+        break;
+      }
+    }
+  }
   if (has_picking) {
     picking_payload.pending = true_v;
     picking_payload.x = application->renderer.picking.requested_x;
@@ -1324,8 +1348,10 @@ void application_draw_frame(Application *application, float64_t delta) {
   VkrGpuDebugPayload debug_payload = {
       .enable_timing = gpu_timing,
       .capture_pass_timestamps = gpu_timing,
+      .capture = application->capture_request,
   };
-  const VkrGpuDebugPayload *debug_ptr = gpu_timing ? &debug_payload : NULL;
+  const VkrGpuDebugPayload *debug_ptr =
+      (gpu_timing || application->capture_request) ? &debug_payload : NULL;
 
   VkrRenderPacket packet = {
       .packet_version = VKR_RENDER_PACKET_VERSION,
@@ -1365,6 +1391,10 @@ void application_draw_frame(Application *application, float64_t delta) {
                        application->metric_ids.render_submit) {
     submit_err = vkr_renderer_submit_packet(&application->renderer, &packet,
                                             &metrics, &validation);
+  }
+  application->last_renderer_error = submit_err;
+  if (submit_err != VKR_RENDERER_ERROR_CAPTURE_BUSY) {
+    application->capture_request = NULL;
   }
 #if VKR_METRICS_ENABLED
   VkrRendererMetricsCollectContext metrics_context = {
@@ -1474,8 +1504,7 @@ void application_start(Application *application) {
     application->ui_text_update_count = 0;
     application->world_text_update_count = 0;
 
-    VKR_METRICS_SCOPE_NS(application->metrics,
-                         application->metric_ids.update) {
+    VKR_METRICS_SCOPE_NS(application->metrics, application->metric_ids.update) {
       application_update(application, delta);
     }
 

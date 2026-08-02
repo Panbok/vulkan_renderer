@@ -22,6 +22,7 @@
 #include "renderer/systems/vkr_skybox_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "renderer/systems/vkr_world_resources.h"
+#include "renderer/vkr_capture.h"
 #include "renderer/vkr_render_packet.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vkr_rg_json.h"
@@ -630,6 +631,10 @@ String8 vkr_renderer_get_error_string(VkrRendererError error) {
     return string8_lit("Frame skipped");
   case VKR_RENDERER_ERROR_SUBMISSION_FAILED:
     return string8_lit("Queue submission failed");
+  case VKR_RENDERER_ERROR_CAPTURE_BUSY:
+    return string8_lit("Capture ring busy");
+  case VKR_RENDERER_ERROR_CAPTURE_UNAVAILABLE:
+    return string8_lit("Capture unavailable");
   case VKR_RENDERER_ERROR_COUNT:
     break;
   }
@@ -1108,10 +1113,9 @@ VkrTextureOpaqueHandle vkr_renderer_create_render_target_texture(
   return vkr_renderer_texture_create_result(handle, out_error);
 }
 
-VkrTextureOpaqueHandle
-vkr_renderer_create_depth_attachment(VkrRendererFrontendHandle renderer,
-                                     uint32_t width, uint32_t height,
-                                     VkrRendererError *out_error) {
+VkrTextureOpaqueHandle vkr_renderer_create_depth_attachment(
+    VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
+    VkrTextureUsageFlags usage, VkrRendererError *out_error) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
@@ -1121,14 +1125,13 @@ vkr_renderer_create_depth_attachment(VkrRendererFrontendHandle renderer,
   }
 
   VkrBackendResourceHandle handle = renderer->backend.depth_attachment_create(
-      renderer->backend_state, width, height);
+      renderer->backend_state, width, height, usage);
   return vkr_renderer_texture_create_result(handle, out_error);
 }
 
-VkrTextureOpaqueHandle
-vkr_renderer_create_sampled_depth_attachment(VkrRendererFrontendHandle renderer,
-                                             uint32_t width, uint32_t height,
-                                             VkrRendererError *out_error) {
+VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment(
+    VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
+    VkrTextureUsageFlags usage, VkrRendererError *out_error) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
@@ -1139,13 +1142,13 @@ vkr_renderer_create_sampled_depth_attachment(VkrRendererFrontendHandle renderer,
 
   VkrBackendResourceHandle handle =
       renderer->backend.sampled_depth_attachment_create(renderer->backend_state,
-                                                        width, height);
+                                                        width, height, usage);
   return vkr_renderer_texture_create_result(handle, out_error);
 }
 
 VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment_array(
     VkrRendererFrontendHandle renderer, uint32_t width, uint32_t height,
-    uint32_t layers, VkrRendererError *out_error) {
+    uint32_t layers, VkrTextureUsageFlags usage, VkrRendererError *out_error) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
 
@@ -1161,7 +1164,7 @@ VkrTextureOpaqueHandle vkr_renderer_create_sampled_depth_attachment_array(
 
   VkrBackendResourceHandle handle =
       renderer->backend.sampled_depth_attachment_array_create(
-          renderer->backend_state, width, height, layers);
+          renderer->backend_state, width, height, layers, usage);
   return vkr_renderer_texture_create_result(handle, out_error);
 }
 
@@ -1799,7 +1802,7 @@ vkr_renderer_validation_failf(VkrValidationError *out_error,
  * transitions. This helper keeps callers on a deterministic fallback format
  * until the backend depth wrapper is available again.
  */
-static VkrTextureFormat
+VkrTextureFormat
 vkr_renderer_get_swapchain_depth_format(VkrRendererFrontendHandle renderer) {
   if (!renderer) {
     return VKR_TEXTURE_FORMAT_D32_SFLOAT;
@@ -2139,6 +2142,24 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
     goto cancel;
   }
 
+  VkrShadowConfig shadow_cfg_fallback = VKR_SHADOW_CONFIG_DEFAULT;
+  const VkrShadowConfig *shadow_cfg = rf->shadow_system.initialized
+                                          ? &rf->shadow_system.config
+                                          : &shadow_cfg_fallback;
+  uint32_t cascade_count = shadow_cfg->cascade_count;
+  if (cascade_count == 0) {
+    cascade_count = 1;
+  }
+  if (cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX) {
+    cascade_count = VKR_SHADOW_CASCADE_COUNT_MAX;
+  }
+  err = vkr_capture_frame_reserve(
+      rf, packet, vkr_shadow_config_get_max_map_size(shadow_cfg), cascade_count,
+      out_validation_error);
+  if (err != VKR_RENDERER_ERROR_NONE) {
+    goto cancel;
+  }
+
   // ---- Retained-state mutation begins here. ----
   // Failures past this point still cancel the frame, but do not roll back what
   // has already been applied: rolling back would need a shadow copy of every
@@ -2205,18 +2226,6 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
     goto cancel;
   }
 
-  VkrShadowConfig shadow_cfg_fallback = VKR_SHADOW_CONFIG_DEFAULT;
-  const VkrShadowConfig *shadow_cfg = rf->shadow_system.initialized
-                                          ? &rf->shadow_system.config
-                                          : &shadow_cfg_fallback;
-  uint32_t cascade_count = shadow_cfg->cascade_count;
-  if (cascade_count == 0) {
-    cascade_count = 1;
-  }
-  if (cascade_count > VKR_SHADOW_CASCADE_COUNT_MAX) {
-    cascade_count = VKR_SHADOW_CASCADE_COUNT_MAX;
-  }
-
   VkrRenderGraphFrameInfo frame = {
       .frame_index = packet->frame.frame_index,
       .image_index = vkr_renderer_window_image_index(renderer),
@@ -2242,6 +2251,12 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
     err = vkr_renderer_validation_fail(
         out_validation_error, VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED,
         "render_graph", "render graph build failed");
+    goto cancel;
+  }
+  if (!vkr_capture_graph_overlay_build(rf)) {
+    err = vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_CAPTURE_UNAVAILABLE,
+        "debug.capture", "capture graph source is unavailable");
     goto cancel;
   }
 
@@ -2284,6 +2299,7 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
     // so a failed submit cannot leave picking pending forever.
     vkr_picking_cancel(&rf->picking);
   }
+  vkr_capture_frame_clear(rf);
   return err;
 
 cancel:
@@ -2294,6 +2310,7 @@ cancel:
     vkr_picking_cancel(&rf->picking);
   }
   VkrRendererError cancel_err = vkr_renderer_cancel_frame(renderer);
+  vkr_capture_frame_clear(rf);
   if (cancel_err != VKR_RENDERER_ERROR_NONE) {
     String8 cancel_error_string = vkr_renderer_get_error_string(cancel_err);
     log_error("Failed to cancel renderer frame: %s",

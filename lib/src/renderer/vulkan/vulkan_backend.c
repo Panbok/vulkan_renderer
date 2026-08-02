@@ -6,6 +6,7 @@
 #include "memory/vkr_dmemory_allocator.h"
 #include "memory/vkr_pool_allocator.h"
 #include "vulkan_buffer.h"
+#include "vulkan_capture.h"
 #include "vulkan_command.h"
 #include "vulkan_device.h"
 #include "vulkan_fence.h"
@@ -3550,6 +3551,10 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .request_pixel_readback = renderer_vulkan_request_pixel_readback,
       .get_pixel_readback_result = renderer_vulkan_get_pixel_readback_result,
       .update_readback_ring = renderer_vulkan_update_readback_ring,
+      .capture_reserve = vulkan_capture_reserve,
+      .capture_record_item = vulkan_capture_record_item,
+      .capture_poll = vulkan_capture_poll,
+      .capture_release = vulkan_capture_release,
       .get_allocator = renderer_vulkan_get_allocator,
       .set_default_2d_texture = renderer_vulkan_set_default_2d_texture,
   };
@@ -4089,6 +4094,8 @@ renderer_vulkan_initialize(void **out_backend_state,
   backend_state->requested_present_mode =
       backend_config ? backend_config->requested_present_mode
                      : VKR_PRESENT_MODE_DEFAULT;
+  backend_state->capture_enabled =
+      backend_config ? backend_config->capture_enabled : false_v;
   backend_state->descriptor_writes_avoided = 0;
   backend_state->render_pass_registry = (Array_VkrRenderPassEntry){0};
   backend_state->render_pass_count = 0;
@@ -4341,6 +4348,16 @@ renderer_vulkan_initialize(void **out_backend_state,
     return false;
   }
 
+  if (backend_config && backend_config->capture_enabled &&
+      !vulkan_capture_ring_init(backend_state,
+                                backend_config->capture_ring_capacity
+                                    ? backend_config->capture_ring_capacity
+                                    : BUFFERING_FRAMES,
+                                backend_config->capture_max_batch_bytes)) {
+    log_fatal("Failed to create capture batch ring");
+    return false;
+  }
+
   return true;
 }
 
@@ -4370,6 +4387,7 @@ void renderer_vulkan_shutdown(void *backend_state) {
 
   // Ensure pixel readback ring resources are destroyed before device teardown.
   renderer_vulkan_readback_ring_shutdown(state);
+  vulkan_capture_ring_shutdown(state);
   vulkan_rg_timing_destroy(state);
 
   // Free command buffers first to release references to pipelines
@@ -4825,9 +4843,13 @@ vulkan_backend_record_present_transition(VulkanBackendState *state,
 
   const bool8_t was_written =
       state->swapchain_image_layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  const bool8_t was_copied =
+      state->swapchain_image_layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   VkImageMemoryBarrier present_barrier = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-      .srcAccessMask = was_written ? VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT : 0,
+      .srcAccessMask = was_written  ? VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                       : was_copied ? VK_ACCESS_TRANSFER_READ_BIT
+                                    : 0,
       .dstAccessMask = 0,
       .oldLayout = state->swapchain_image_layout,
       .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -4847,7 +4869,8 @@ vulkan_backend_record_present_transition(VulkanBackendState *state,
   vkCmdPipelineBarrier(command_buffer->handle,
                        was_written
                            ? VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
-                           : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                       : was_copied ? VK_PIPELINE_STAGE_TRANSFER_BIT
+                                    : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                        VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0,
                        NULL, 1, &present_barrier);
   state->swapchain_image_layout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
@@ -4950,6 +4973,8 @@ vkr_internal VkrRendererError vulkan_backend_submit_and_present(
   if (state->current_frame < BUFFERING_FRAMES) {
     state->frame_submit_serial[state->current_frame] = state->submit_serial;
   }
+  vulkan_capture_submit_active(state, state->current_frame,
+                               state->submit_serial);
 
   // Advance the frame slot after queue submit so readback fence checks can
   // detect completion. This is the only place the slot advances.
@@ -5018,9 +5043,21 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
   return vulkan_backend_submit_and_present(state, command_buffer);
 }
 
-/** @brief Rolls back readbacks recorded into the unsubmitted primary buffer. */
+/**
+ * @brief Rolls back every readback and capture recorded into the unsubmitted
+ *        primary buffer.
+ *
+ * Picking slots return to IDLE because their request is simply dropped, while a
+ * capture batch keeps an observable FAILED tombstone until its owner releases
+ * it: a poller that already holds the request id must learn the batch died
+ * rather than wait for a copy that will never be submitted.
+ */
 vkr_internal void
 vulkan_backend_discard_unsubmitted_readbacks(VulkanBackendState *state) {
+  vulkan_capture_fail_unsubmitted(
+      state, state->frame_recovery_required
+                 ? VKR_RENDERER_ERROR_SUBMISSION_FAILED
+                 : VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED);
   VulkanReadbackRing *ring = &state->readback_ring;
   if (!ring->initialized || ring->pending_count == 0) {
     return;
@@ -5851,6 +5888,11 @@ VkrRendererError renderer_vulkan_image_barrier(
     }
     vkCmdPipelineBarrier(command_buffer->handle, src_stage, dst_stage, 0, 0,
                          NULL, 0, NULL, 1, &barrier);
+    if (state->swapchain_image_textures &&
+        state->image_index < state->swapchain.image_count &&
+        texture == state->swapchain_image_textures[state->image_index]) {
+      state->swapchain_image_layout = barrier.newLayout;
+    }
     return VKR_RENDERER_ERROR_NONE;
   }
 
@@ -6109,7 +6151,8 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
 
 VkrBackendResourceHandle
 renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
-                                        uint32_t height) {
+                                        uint32_t height,
+                                        VkrTextureUsageFlags usage_flags) {
   assert_log(backend_state != NULL, "Backend state is NULL");
 
   if (width == 0 || height == 0) {
@@ -6141,7 +6184,8 @@ renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
       .height = height,
       .format = depth_format,
       .tiling = VK_IMAGE_TILING_OPTIMAL,
-      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+      .usage = vulkan_image_usage_from_texture_usage(usage_flags) |
+               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
       .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
       .mip_levels = 1,
       .array_layers = 1,
@@ -6183,7 +6227,8 @@ renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
 }
 
 VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
-    void *backend_state, uint32_t width, uint32_t height) {
+    void *backend_state, uint32_t width, uint32_t height,
+    VkrTextureUsageFlags usage_flags) {
   assert_log(backend_state != NULL, "Backend state is NULL");
 
   if (width == 0 || height == 0) {
@@ -6214,8 +6259,9 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
 
   MemZero(texture, sizeof(struct s_TextureHandle));
 
-  VkImageUsageFlags usage =
-      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  VkImageUsageFlags usage = vulkan_image_usage_from_texture_usage(usage_flags) |
+                            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                            VK_IMAGE_USAGE_SAMPLED_BIT;
   const VulkanImageDescription image_desc = {
       .image_type = VK_IMAGE_TYPE_2D,
       .width = width,
@@ -6302,7 +6348,8 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
 }
 
 VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment_array(
-    void *backend_state, uint32_t width, uint32_t height, uint32_t layers) {
+    void *backend_state, uint32_t width, uint32_t height, uint32_t layers,
+    VkrTextureUsageFlags usage_flags) {
   assert_log(backend_state != NULL, "Backend state is NULL");
 
   if (width == 0 || height == 0 || layers == 0) {
@@ -6333,8 +6380,9 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment_array(
 
   MemZero(texture, sizeof(struct s_TextureHandle));
 
-  VkImageUsageFlags usage =
-      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  VkImageUsageFlags usage = vulkan_image_usage_from_texture_usage(usage_flags) |
+                            VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                            VK_IMAGE_USAGE_SAMPLED_BIT;
   const VulkanImageDescription image_desc = {
       .image_type = VK_IMAGE_TYPE_2D,
       .width = width,

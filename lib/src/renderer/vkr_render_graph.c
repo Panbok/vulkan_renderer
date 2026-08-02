@@ -719,6 +719,21 @@ VkrRgImageHandle vkr_rg_import_depth(VkrRenderGraph *graph) {
                              VKR_TEXTURE_LAYOUT_UNDEFINED, NULL);
 }
 
+bool8_t vkr_rg_imported_image_add_usage(VkrRenderGraph *graph,
+                                        VkrRgImageHandle handle,
+                                        VkrTextureUsageBits usage) {
+  if (!graph || !vkr_rg_image_handle_valid(handle) ||
+      handle.id > graph->images.length) {
+    return false_v;
+  }
+  VkrRgImage *image = vector_get_VkrRgImage(&graph->images, handle.id - 1u);
+  if (image->generation != handle.generation || !image->imported) {
+    return false_v;
+  }
+  bitset8_set(&image->desc.usage, usage);
+  return true_v;
+}
+
 VkrRgBufferHandle vkr_rg_create_buffer(VkrRenderGraph *graph, String8 name,
                                        const VkrRgBufferDesc *desc) {
   if (!graph || !desc || name.length == 0) {
@@ -806,6 +821,21 @@ VkrRgBufferHandle vkr_rg_import_buffer(VkrRenderGraph *graph, String8 name,
 
   uint32_t id = (uint32_t)graph->buffers.length;
   return (VkrRgBufferHandle){id, buffer.generation};
+}
+
+bool8_t vkr_rg_imported_buffer_add_usage(VkrRenderGraph *graph,
+                                         VkrRgBufferHandle handle,
+                                         VkrBufferUsageBits usage) {
+  if (!graph || !vkr_rg_buffer_handle_valid(handle) ||
+      handle.id > graph->buffers.length) {
+    return false_v;
+  }
+  VkrRgBuffer *buffer = vector_get_VkrRgBuffer(&graph->buffers, handle.id - 1u);
+  if (buffer->generation != handle.generation || !buffer->imported) {
+    return false_v;
+  }
+  bitset8_set(&buffer->desc.usage, usage);
+  return true_v;
 }
 
 VkrRgPassBuilder vkr_rg_add_pass(VkrRenderGraph *graph, VkrRgPassType type,
@@ -936,6 +966,23 @@ void vkr_rg_pass_read_image(VkrRgPassBuilder *pb, VkrRgImageHandle image,
                        .access = access,
                        .binding = binding,
                        .array_index = array_index};
+  vector_push_VkrRgImageUse(&pass->desc.image_reads, use);
+}
+
+void vkr_rg_pass_read_image_slice(VkrRgPassBuilder *pb, VkrRgImageHandle image,
+                                  VkrRgImageAccessFlags access,
+                                  uint32_t binding, uint32_t array_index,
+                                  VkrRgImageSlice slice) {
+  VkrRgPass *pass = vkr_rg_builder_get_pass(pb);
+  if (!pass || !vkr_rg_image_from_handle(pb->graph, image)) {
+    return;
+  }
+  VkrRgImageUse use = {.image = image,
+                       .access = access,
+                       .binding = binding,
+                       .array_index = array_index,
+                       .slice = slice,
+                       .has_slice = true_v};
   vector_push_VkrRgImageUse(&pass->desc.image_reads, use);
 }
 

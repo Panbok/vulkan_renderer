@@ -1674,35 +1674,44 @@ bool8_t vulkan_image_upload_via_transfer(VulkanBackendState *state,
   return true_v;
 }
 
-bool8_t vulkan_image_copy_to_buffer_ex(VulkanBackendState *state,
-                                       VulkanImage *image, VkBuffer buffer,
-                                       uint64_t buffer_offset, uint32_t x,
-                                       uint32_t y, uint32_t width,
-                                       uint32_t height,
-                                       VkImageAspectFlags aspect_flags,
-                                       VulkanCommandBuffer *command_buffer) {
+bool8_t
+vulkan_image_copy_to_buffer_region(VulkanBackendState *state,
+                                   VulkanImage *image, VkBuffer buffer,
+                                   const VulkanImageCopyToBufferRegion *copy,
+                                   VulkanCommandBuffer *command_buffer) {
   assert_log(state != NULL, "State is NULL");
   assert_log(image != NULL, "Image is NULL");
   assert_log(buffer != VK_NULL_HANDLE, "Buffer is NULL");
   assert_log(command_buffer != NULL, "Command buffer is NULL");
-  assert_log(width > 0 && height > 0,
-             "Width and height must be greater than 0");
-  assert_log(x + width <= image->width, "Region exceeds image width");
-  assert_log(y + height <= image->height, "Region exceeds image height");
+  if (!copy || copy->width == 0 || copy->height == 0 ||
+      copy->layer_count == 0 || copy->mip_level >= image->mip_levels ||
+      copy->base_array_layer >= image->array_layers ||
+      copy->layer_count > image->array_layers - copy->base_array_layer) {
+    return false_v;
+  }
+  const uint32_t mip_width = vkr_max_u32(1u, image->width >> copy->mip_level);
+  const uint32_t mip_height = vkr_max_u32(1u, image->height >> copy->mip_level);
+  if (copy->x > mip_width || copy->width > mip_width - copy->x ||
+      copy->y > mip_height || copy->height > mip_height - copy->y ||
+      (copy->buffer_row_length != 0 && copy->buffer_row_length < copy->width) ||
+      (copy->buffer_image_height != 0 &&
+       copy->buffer_image_height < copy->height)) {
+    return false_v;
+  }
 
   VkBufferImageCopy region = {
-      .bufferOffset = buffer_offset,
-      .bufferRowLength = 0,   // Tightly packed
-      .bufferImageHeight = 0, // Tightly packed
+      .bufferOffset = copy->buffer_offset,
+      .bufferRowLength = copy->buffer_row_length,
+      .bufferImageHeight = copy->buffer_image_height,
       .imageSubresource =
           {
-              .aspectMask = aspect_flags,
-              .mipLevel = 0,
-              .baseArrayLayer = 0,
-              .layerCount = 1,
+              .aspectMask = copy->aspect_flags,
+              .mipLevel = copy->mip_level,
+              .baseArrayLayer = copy->base_array_layer,
+              .layerCount = copy->layer_count,
           },
-      .imageOffset = {(int32_t)x, (int32_t)y, 0},
-      .imageExtent = {width, height, 1},
+      .imageOffset = {(int32_t)copy->x, (int32_t)copy->y, 0},
+      .imageExtent = {copy->width, copy->height, 1},
   };
 
   vkCmdCopyImageToBuffer(command_buffer->handle, image->handle,
@@ -1710,6 +1719,28 @@ bool8_t vulkan_image_copy_to_buffer_ex(VulkanBackendState *state,
                          &region);
 
   return true_v;
+}
+
+bool8_t vulkan_image_copy_to_buffer_ex(VulkanBackendState *state,
+                                       VulkanImage *image, VkBuffer buffer,
+                                       uint64_t buffer_offset, uint32_t x,
+                                       uint32_t y, uint32_t width,
+                                       uint32_t height,
+                                       VkImageAspectFlags aspect_flags,
+                                       VulkanCommandBuffer *command_buffer) {
+  const VulkanImageCopyToBufferRegion region = {
+      .buffer_offset = buffer_offset,
+      .x = x,
+      .y = y,
+      .width = width,
+      .height = height,
+      .mip_level = 0,
+      .base_array_layer = 0,
+      .layer_count = 1,
+      .aspect_flags = aspect_flags,
+  };
+  return vulkan_image_copy_to_buffer_region(state, image, buffer, &region,
+                                            command_buffer);
 }
 
 bool8_t vulkan_image_copy_to_buffer(VulkanBackendState *state,

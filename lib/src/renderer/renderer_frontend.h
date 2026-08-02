@@ -87,6 +87,17 @@ typedef struct VkrRendererFrameMetrics {
   bool8_t backend_present_valid;
 } VkrRendererFrameMetrics;
 
+typedef struct VkrCaptureFrameState {
+  bool8_t active;
+  VkrCaptureRequestId request_id;
+  uint32_t item_count;
+  bool8_t editor_enabled;
+  VkrCaptureBackendItemPlan plans[VKR_CAPTURE_MAX_ITEMS];
+  VkrRgImageHandle images[VKR_CAPTURE_MAX_ITEMS];
+  VkrBackendResourceHandle buffer;
+  VkrRgBufferHandle graph_buffer;
+} VkrCaptureFrameState;
+
 struct s_RendererFrontend {
   Arena *arena;
   VkrAllocator allocator;
@@ -173,6 +184,7 @@ struct s_RendererFrontend {
 
   // Per-frame render statistics for UI/debug use.
   VkrRendererFrameMetrics frame_metrics;
+  VkrCaptureFrameState capture_frame;
 
   // Debug visualization mode for CSM sampling in the world shader:
   // 0=off, 1=cascades, 2=shadow factor, 3=shadow map depth.

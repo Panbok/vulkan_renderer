@@ -431,6 +431,51 @@ static void test_disjoint_layer_writes_coalesce_on_read(void) {
   printf("  test_disjoint_layer_writes_coalesce_on_read PASSED\n");
 }
 
+static void test_capture_read_uses_exact_array_slice(void) {
+  printf("  Running test_capture_read_uses_exact_array_slice...\n");
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph != NULL);
+
+  VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
+  desc.width = desc.height = 64u;
+  desc.layers = 4u;
+  desc.usage = vkr_texture_usage_flags_from_bits(
+      VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT |
+      VKR_TEXTURE_USAGE_TRANSFER_SRC);
+  VkrRgImageHandle image =
+      vkr_rg_create_image(graph, string8_lit("capture_layers"), &desc);
+
+  VkrRgPassBuilder writer =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_GRAPHICS, "Writer");
+  VkrRgAttachmentDesc attachment = {.slice = VKR_RG_IMAGE_SLICE_DEFAULT};
+  attachment.slice.base_layer = 2u;
+  attachment.slice.layer_count = 1u;
+  vkr_rg_pass_set_depth_attachment(&writer, image, &attachment, false_v);
+
+  VkrRgPassBuilder capture =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_TRANSFER, "Capture");
+  vkr_rg_pass_read_image_slice(
+      &capture, image, VKR_RG_IMAGE_ACCESS_TRANSFER_SRC, 0u, 0u,
+      (VkrRgImageSlice){.mip_level = 0u, .base_layer = 2u, .layer_count = 1u});
+
+  assert(vkr_rg_compile_schedule(graph));
+  const VkrRgPass *compiled = rg_barrier_test_pass(graph, 1u);
+  assert(compiled->pre_image_barriers.length == 1u);
+  const VkrRgImageBarrier *barrier = vector_get_VkrRgImageBarrier(
+      (Vector_VkrRgImageBarrier *)&compiled->pre_image_barriers, 0u);
+  assert(barrier->range.base_layer == 2u);
+  assert(barrier->range.layer_count == 1u);
+  assert(barrier->range.base_mip == 0u);
+  assert(barrier->range.mip_count == 1u);
+
+  vkr_rg_destroy(graph);
+  arena_destroy(arena);
+  printf("  test_capture_read_uses_exact_array_slice PASSED\n");
+}
+
 static void test_subresource_range_resolve(void) {
   printf("  Running test_subresource_range_resolve...\n");
 
@@ -507,6 +552,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_single_render_target_serves_every_swapchain_image();
   test_cascade_slices_are_per_layer_then_coalesce();
   test_disjoint_layer_writes_coalesce_on_read();
+  test_capture_read_uses_exact_array_slice();
 
   printf("--- RenderGraph barrier tests completed. ---\n");
   return true;

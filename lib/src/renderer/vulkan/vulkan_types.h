@@ -639,6 +639,42 @@ typedef struct VulkanReadbackRing {
   bool8_t initialized;    // True if ring has been initialized
 } VulkanReadbackRing;
 
+#define VKR_CAPTURE_RING_CAPACITY_MAX 8u
+
+typedef enum VulkanCaptureSlotState {
+  VULKAN_CAPTURE_SLOT_IDLE = 0,
+  VULKAN_CAPTURE_SLOT_RESERVED,
+  VULKAN_CAPTURE_SLOT_RECORDED,
+  VULKAN_CAPTURE_SLOT_SUBMITTED,
+  VULKAN_CAPTURE_SLOT_READY,
+  VULKAN_CAPTURE_SLOT_ACQUIRED,
+  VULKAN_CAPTURE_SLOT_FAILED,
+  VULKAN_CAPTURE_SLOT_ABANDONED,
+} VulkanCaptureSlotState;
+
+typedef struct VulkanCaptureSlot {
+  struct s_BufferHandle buffer;
+  VulkanCaptureSlotState state;
+  VkrCaptureRequestId request_id;
+  VkrRendererError error;
+  uint64_t source_frame_index;
+  uint64_t submit_serial;
+  uint32_t submit_frame_slot;
+  uint32_t item_count;
+  uint32_t recorded_count;
+  uint64_t recorded_mask;
+  VkrCaptureBackendItemPlan plans[VKR_CAPTURE_MAX_ITEMS];
+  VkrCaptureItemResult results[VKR_CAPTURE_MAX_ITEMS];
+} VulkanCaptureSlot;
+
+typedef struct VulkanCaptureRing {
+  VulkanCaptureSlot slots[VKR_CAPTURE_RING_CAPACITY_MAX];
+  uint32_t capacity;
+  uint64_t max_batch_bytes;
+  VkrCaptureRequestId last_request_id;
+  bool8_t initialized;
+} VulkanCaptureRing;
+
 typedef struct VulkanRgTimingState {
   bool8_t supported;
   uint32_t query_capacity;
@@ -718,6 +754,7 @@ typedef struct VulkanBackendState {
   VkrDeviceRequirements *device_requirements;
   VkrPresentMode requested_present_mode;
   VkrPresentMode actual_present_mode;
+  bool8_t capture_enabled;
 
   VulkanAllocator vk_allocator;
   VkAllocationCallbacks *allocator;
@@ -848,6 +885,7 @@ typedef struct VulkanBackendState {
 
   // Pixel readback system for picking and screenshots
   VulkanReadbackRing readback_ring;
+  VulkanCaptureRing capture_ring;
   VulkanRgTimingState rg_timing;
 
   // Framebuffer cache for reusing framebuffers with same attachments

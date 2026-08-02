@@ -129,11 +129,15 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture(
     void *backend_state, const VkrRenderTargetTextureDesc *desc);
 VkrBackendResourceHandle
 renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
-                                        uint32_t height);
-VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
-    void *backend_state, uint32_t width, uint32_t height);
+                                        uint32_t height,
+                                        VkrTextureUsageFlags usage);
+VkrBackendResourceHandle
+renderer_vulkan_create_sampled_depth_attachment(void *backend_state,
+                                                uint32_t width, uint32_t height,
+                                                VkrTextureUsageFlags usage);
 VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment_array(
-    void *backend_state, uint32_t width, uint32_t height, uint32_t layers);
+    void *backend_state, uint32_t width, uint32_t height, uint32_t layers,
+    VkrTextureUsageFlags usage);
 VkrRendererError renderer_vulkan_image_barrier(
     void *backend_state, VkrBackendResourceHandle handle,
     VkrImageAccessFlags src_access, VkrImageAccessFlags dst_access,

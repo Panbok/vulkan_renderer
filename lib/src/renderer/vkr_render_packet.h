@@ -177,6 +177,8 @@ typedef struct VkrTextUpdatesPayload {
 typedef struct VkrGpuDebugPayload {
   bool8_t enable_timing;
   bool8_t capture_pass_timestamps;
+  /** Optional batch reserved and copied by this frame. Borrowed for submit. */
+  const VkrCaptureBatchRequest *capture;
 } VkrGpuDebugPayload;
 
 /**

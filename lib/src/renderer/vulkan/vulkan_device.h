@@ -21,7 +21,8 @@ void vulkan_device_get_information(VulkanBackendState *state,
 void vulkan_device_query_queue_indices(VulkanBackendState *state,
                                        QueueFamilyIndexResult *indices);
 
-bool32_t vulkan_device_check_depth_format(VulkanDevice *device);
+bool32_t vulkan_device_check_depth_format(VulkanDevice *device,
+                                          bool8_t transfer_source);
 
 void vulkan_device_query_swapchain_details(VulkanBackendState *state,
                                            VkPhysicalDevice device,

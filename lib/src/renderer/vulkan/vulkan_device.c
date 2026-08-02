@@ -508,14 +508,15 @@ static const char *vk_format_to_string(VkFormat format) {
 vkr_internal bool32_t vulkan_device_pick_sampled_depth_format(
     VulkanDevice *device, const VkFormat *candidates, uint32_t candidate_count,
     VkFormat *out_format, bool8_t *out_uses_linear_tiling,
-    bool8_t *out_supports_linear_filtering) {
+    bool8_t *out_supports_linear_filtering, bool8_t transfer_source) {
   if (!device || !candidates || candidate_count == 0 || !out_format) {
     return false;
   }
 
   const uint32_t required_features =
       VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
-      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+      (transfer_source ? VK_FORMAT_FEATURE_TRANSFER_SRC_BIT : 0u);
 
   for (uint32_t i = 0; i < candidate_count; ++i) {
     VkFormatProperties properties = {0};
@@ -558,7 +559,8 @@ vkr_internal bool32_t vulkan_device_pick_sampled_depth_format(
   return false;
 }
 
-bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
+bool32_t vulkan_device_check_depth_format(VulkanDevice *device,
+                                          bool8_t transfer_source) {
   assert_log(device != NULL, "Device is NULL");
   assert_log(device->physical_device != VK_NULL_HANDLE,
              "Physical device was not acquired");
@@ -567,15 +569,22 @@ bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
   // Exclude VK_FORMAT_D32_SFLOAT_S8_UINT: it maps to
   // VKR_TEXTURE_FORMAT_D32_SFLOAT but requires depth+stencil aspects, causing
   // render-pass/image-view mismatches.
+  //
+  // A capture-capable device drops every combined depth/stencil candidate: the
+  // canonical depth converter has no defined behaviour for a copy that carries
+  // a stencil aspect, so an unqualified format must not be selected merely
+  // because the device advertises it.
   const VkFormat depth_candidates[] = {VK_FORMAT_D32_SFLOAT,
                                        VK_FORMAT_D24_UNORM_S8_UINT};
+  const VkFormat capture_depth_candidates[] = {VK_FORMAT_D32_SFLOAT};
   bool8_t depth_linear_tiling = false_v;
   bool8_t depth_linear_filtering = false_v;
   if (!vulkan_device_pick_sampled_depth_format(
-          device, depth_candidates,
-          (uint32_t)(sizeof(depth_candidates) / sizeof(depth_candidates[0])),
-          &device->depth_format, &depth_linear_tiling,
-          &depth_linear_filtering)) {
+          device, transfer_source ? capture_depth_candidates : depth_candidates,
+          transfer_source ? (uint32_t)ArrayCount(capture_depth_candidates)
+                          : (uint32_t)ArrayCount(depth_candidates),
+          &device->depth_format, &depth_linear_tiling, &depth_linear_filtering,
+          transfer_source)) {
     return false;
   }
 
@@ -589,13 +598,17 @@ bool32_t vulkan_device_check_depth_format(VulkanDevice *device) {
   // footprint, then falls back to the wider formats.
   const VkFormat shadow_candidates[] = {
       VK_FORMAT_D16_UNORM, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT};
+  const VkFormat capture_shadow_candidates[] = {VK_FORMAT_D16_UNORM,
+                                                VK_FORMAT_D32_SFLOAT};
   bool8_t shadow_linear_tiling = false_v;
   bool8_t shadow_linear_filtering = false_v;
   if (!vulkan_device_pick_sampled_depth_format(
-          device, shadow_candidates,
-          (uint32_t)(sizeof(shadow_candidates) / sizeof(shadow_candidates[0])),
+          device,
+          transfer_source ? capture_shadow_candidates : shadow_candidates,
+          transfer_source ? (uint32_t)ArrayCount(capture_shadow_candidates)
+                          : (uint32_t)ArrayCount(shadow_candidates),
           &device->shadow_depth_format, &shadow_linear_tiling,
-          &shadow_linear_filtering)) {
+          &shadow_linear_filtering, transfer_source)) {
     device->shadow_depth_format = device->depth_format;
     log_warn("No dedicated sampled shadow depth format found; reusing "
              "swapchain depth format: %s (%d)",

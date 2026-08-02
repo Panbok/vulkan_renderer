@@ -931,13 +931,15 @@ vkr_internal bool8_t vkr_rg_allocate_image_textures(VkrRenderGraph *graph,
         }
         image->textures[i] = vkr_renderer_create_sampled_depth_attachment_array(
             graph->renderer, image->desc.width, image->desc.height,
-            image->desc.layers, &tex_err);
+            image->desc.layers, image->desc.usage, &tex_err);
       } else if (is_sampled) {
         image->textures[i] = vkr_renderer_create_sampled_depth_attachment(
-            graph->renderer, image->desc.width, image->desc.height, &tex_err);
+            graph->renderer, image->desc.width, image->desc.height,
+            image->desc.usage, &tex_err);
       } else {
         image->textures[i] = vkr_renderer_create_depth_attachment(
-            graph->renderer, image->desc.width, image->desc.height, &tex_err);
+            graph->renderer, image->desc.width, image->desc.height,
+            image->desc.usage, &tex_err);
       }
     } else {
       VkrRenderTargetTextureDesc tex_desc = {
@@ -2159,7 +2161,8 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
     for (uint64_t i = 0; i < pass->desc.image_reads.length; ++i) {
       VkrRgImageUse *use = vector_get_VkrRgImageUse(&pass->desc.image_reads, i);
       if (!vkr_rg_declare_image_access(graph, pass, use->image, use->access,
-                                       NULL, token, &touched_image_count)) {
+                                       use->has_slice ? &use->slice : NULL,
+                                       token, &touched_image_count)) {
         return false_v;
       }
     }
@@ -2168,7 +2171,8 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
       VkrRgImageUse *use =
           vector_get_VkrRgImageUse(&pass->desc.image_writes, i);
       if (!vkr_rg_declare_image_access(graph, pass, use->image, use->access,
-                                       NULL, token, &touched_image_count)) {
+                                       use->has_slice ? &use->slice : NULL,
+                                       token, &touched_image_count)) {
         return false_v;
       }
     }

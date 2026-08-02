@@ -211,6 +211,8 @@ typedef struct VkrRgImageUse {
   VkrRgImageAccessFlags access; /**< Access type for barriers */
   uint32_t binding;             /**< Descriptor binding index */
   uint32_t array_index;         /**< Descriptor array index */
+  VkrRgImageSlice slice;        /**< Exact transfer subresource when set */
+  bool8_t has_slice;
 } VkrRgImageUse;
 
 Vector(VkrRgImageUse);
@@ -703,6 +705,17 @@ VkrRgImageHandle vkr_rg_import_swapchain(VkrRenderGraph *graph);
 VkrRgImageHandle vkr_rg_import_depth(VkrRenderGraph *graph);
 
 /**
+ * @brief Adds a usage capability to an imported image for the current graph.
+ *
+ * The caller must only advertise capabilities that the backing external image
+ * was created with. This is used by optional graph overlays whose external
+ * image requirements are not part of the authored graph.
+ */
+bool8_t vkr_rg_imported_image_add_usage(VkrRenderGraph *graph,
+                                        VkrRgImageHandle image,
+                                        VkrTextureUsageBits usage);
+
+/**
  * @brief Declares a new graph-owned buffer.
  * @param graph Render graph
  * @param name Unique buffer name
@@ -724,6 +737,11 @@ VkrRgBufferHandle vkr_rg_create_buffer(VkrRenderGraph *graph, String8 name,
 VkrRgBufferHandle vkr_rg_import_buffer(VkrRenderGraph *graph, String8 name,
                                        VkrBufferHandle handle,
                                        VkrRgBufferAccessFlags current_access);
+
+/** Adds a capability present on an imported buffer's backing allocation. */
+bool8_t vkr_rg_imported_buffer_add_usage(VkrRenderGraph *graph,
+                                         VkrRgBufferHandle buffer,
+                                         VkrBufferUsageBits usage);
 
 /**
  * @brief Adds a pass and returns a builder for it. Builder is invalid after
@@ -794,6 +812,10 @@ void vkr_rg_pass_set_depth_attachment(VkrRgPassBuilder *pb,
 void vkr_rg_pass_read_image(VkrRgPassBuilder *pb, VkrRgImageHandle image,
                             VkrRgImageAccessFlags access, uint32_t binding,
                             uint32_t array_index);
+void vkr_rg_pass_read_image_slice(VkrRgPassBuilder *pb, VkrRgImageHandle image,
+                                  VkrRgImageAccessFlags access,
+                                  uint32_t binding, uint32_t array_index,
+                                  VkrRgImageSlice slice);
 
 /**
  * @brief Declares a write use of an image.
