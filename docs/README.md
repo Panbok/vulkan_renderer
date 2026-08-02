@@ -118,13 +118,14 @@ Performance workflow and evidence rules:
 
 | Document | Status | Purpose |
 |---|---|---|
-| [renderer-harness-and-metrics-spec.md](tooling/renderer-harness-and-metrics-spec.md) | partial | Metrics, windowed profiling/automation boot, and direct snapshot phases 1-4 ship; baseline/debug replay and offscreen phases remain proposed |
+| [renderer-harness-and-metrics-spec.md](tooling/renderer-harness-and-metrics-spec.md) | partial | Metrics, windowed profiling/automation boot, direct/auxiliary snapshot, autotest, comparison, and guarded baseline phases 1-5 ship; true offscreen remains proposed |
 | [renderer-metrics-phase1-verification.md](tooling/renderer-metrics-phase1-verification.md) | investigation | Phase-1 functional, Vulkan, pipeline-cache, and paired Release-overhead evidence |
 | [renderer-metrics-phase1b-verification.md](tooling/renderer-metrics-phase1b-verification.md) | investigation | Phase-1b GPU-owner propagation, exactness, Vulkan, and paired Release-overhead evidence |
 | [renderer-harness-phase2-verification.md](tooling/renderer-harness-phase2-verification.md) | investigation | Phase-2 parser, determinism, artifact, build, and isolated-profile evidence |
 | [renderer-harness-phase2b-verification.md](tooling/renderer-harness-phase2b-verification.md) | investigation | Phase-2b benchmark-parity, authoritative-policy, retirement, and Release profile evidence |
 | [renderer-harness-phase3-verification.md](tooling/renderer-harness-phase3-verification.md) | investigation | Phase-3 dependency-plan, full/automation work-equivalence, boot/residency, and Vulkan-validation evidence |
 | [renderer-harness-phase4-verification.md](tooling/renderer-harness-phase4-verification.md) | investigation | Phase-4 capture-ring, graph-overlay, canonical converter, deterministic snapshot, and Vulkan-validation evidence |
+| [renderer-harness-phase5-verification.md](tooling/renderer-harness-phase5-verification.md) | investigation | Phase-5 debug replay, canonical comparison, autotest separation, guarded baseline, and Vulkan-validation evidence |
 | [harness-case-schema.json](tooling/harness-case-schema.json) | implemented | Draft-07 structural contract mirrored by the strict runtime case parser |
 | [harness-profile-schema.json](tooling/harness-profile-schema.json) | implemented | Draft-07 execution-profile contract mirrored by the strict runtime parser |
 | [harness-report-schema.json](tooling/harness-report-schema.json) | implemented | Draft-07 aggregate/child report contract for machine validation |

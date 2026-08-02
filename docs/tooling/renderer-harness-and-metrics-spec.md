@@ -5,15 +5,17 @@ authority: spec
 ---
 # Renderer Metrics Module and Automation Harness
 
-> **Status note.** Phases 1, 1b, 2, 2b, 3, and 4 ship: the centralized registry and
+> **Status note.** Phases 1, 1b, 2, 2b, 3, 4, and 5 ship: the centralized registry and
 > renderer adapter feed a structured `vkr_harness profile` runtime with strict
 > manifests, deterministic cameras, isolated repetitions, fingerprints, and
 > atomic reports. Reviewed CPU/GPU performance profiles replace the retired
 > grep/awk benchmark, and dependency-resolved automation boot reports its actual
 > subsystem mask. `vkr_harness snapshot` now publishes canonical direct color,
 > depth, shadow-layer, and picking-ID captures through a declared graph pass and
-> bounded asynchronous ring. Phases 5-6 remain proposed; there is still no
-> baseline workflow, auxiliary debug replay, or offscreen target.
+> bounded asynchronous ring. Phase 5 adds auxiliary forward-render debug
+> replays, canonical comparison and diffs, combined `autotest`, and
+> profile-scoped immutable baseline generations with digest-confirmed guarded
+> promotion. Phase 6 remains proposed; there is still no true offscreen target.
 > Evidence is recorded in
 > [renderer-metrics-phase1-verification.md](renderer-metrics-phase1-verification.md)
 > and
@@ -26,14 +28,16 @@ authority: spec
 > [renderer-harness-phase3-verification.md](renderer-harness-phase3-verification.md).
 > Phase-4 evidence is recorded in
 > [renderer-harness-phase4-verification.md](renderer-harness-phase4-verification.md).
+> Phase-5 evidence is recorded in
+> [renderer-harness-phase5-verification.md](renderer-harness-phase5-verification.md).
 
 ## 1. Problem
 
 The renderer already produced most of the numbers an automated workflow needed,
-but lacked a machine-readable transport. Phases 1-4 implement that transport,
+but lacked a machine-readable transport. Phases 1-5 implement that transport,
 replace the legacy scrape path, add dependency-resolved boot, and add direct
-capture; the remaining problem is accepted baseline comparison, auxiliary
-debug replay, and offscreen execution.
+and auxiliary capture, comparison, autotest orchestration, and guarded baseline
+promotion. The remaining problem is true offscreen execution.
 
 Before this series, every signal lived in its own struct with its own reader,
 and the only transport was `log_info` plus a shell pipeline:
@@ -898,7 +902,7 @@ demonstrate the value of a shared runtime, profiles, fingerprints, and
 independent repetitions. VKR keeps one C executable and does not import their
 external CLI/JSON/image stack.
 
-**Implemented Phase-3 boundary.** `profile` runs full or automation boot on
+**Implemented Phase-5 boundary.** `profile` runs full or automation boot on
 windowed-visible
 or windowed-hidden cases. It freezes harness-owned scene/camera simulation until
 the requested scene is ready, applies a fixed delta and scripted pose/lens,
@@ -907,9 +911,9 @@ launches independent timed child processes, checks work-volume identity, and
 aggregates metrics, per-pass timings, and bounded events. Automation resolves a
 typed dependency closure before initialization and persists the renderer's
 actual mask in samples, reports, and workload identity. `offscreen` targets
-fail as unavailable until phase 6; captures,
-`snapshot`, `autotest`, comparisons, and baselines remain unavailable until
-phases 4 and 5.
+fail as unavailable until phase 6. `snapshot`, auxiliary debug replay,
+`autotest`, comparison, and guarded profile-scoped baselines are implemented
+for the windowed targets.
 
 ## 7. Reports and exit codes
 
@@ -1151,7 +1155,7 @@ unsupported.
 | 2b | **Implemented 2026-08-02.** Established structured metric/pass parity, added reviewed CPU and GPU-timestamp performance profiles plus a deterministic Sponza case, rejected one-process authoritative profiles, made requested GPU timing completeness-gated, retired the grep/awk script/app accumulator, and migrated `vkr-performance` | tooling and skills |
 | 3 | **Implemented 2026-08-02.** Dependency-resolved automation boot; actual effective masks in samples/reports/fingerprints; paired full/automation boot and residency profiles with identical work-volume gates | `renderer_frontend.c`, `application.h`, harness runtime |
 | 4 | **Implemented 2026-08-02.** Capture batch API and fixed ring, request-specific declared exact-slice graph reads, capability-gated transfer sources, canonical converters and metadata, isolated direct-channel `snapshot` replays | backend, graph, `tools/harness/` |
-| 5 | Auxiliary debug replay, `autotest`, profile-scoped baselines, guarded promotion | `tools/harness/`, `tools/baselines/` |
+| 5 | **Implemented 2026-08-02.** Logical auxiliary debug replays; canonical color/depth/ID comparison and diffs; primary-plus-snapshot `autotest`; profile-scoped immutable baseline generations; no-mutation proposals and digest-confirmed atomic promotion | `tools/harness/`, `tools/baselines/` |
 | 6 | Target-neutral frontend queries and `VulkanPresentTarget`; true offscreen headless | backend configuration/device selection, graph imports, frame path |
 
 Phases 4 and 6 both touch GPU-completion and frame-failure invariants: phase 4

@@ -273,6 +273,14 @@ full/automation profiles. The harness persists the renderer-reported subsystem
 mask in raw samples, reports, and workload fingerprints; implementation and
 observational evidence are recorded in
 [the phase-3 verification](../../tooling/renderer-harness-phase3-verification.md).
+Phase 4 adds bounded direct capture and canonical artifacts. Phase 5 keeps
+performance and capture evidence separate while composing them in `autotest`,
+adds logical debug replays and canonical comparison, and protects accepted
+profile-scoped evidence with immutable generations plus digest-confirmed atomic
+promotion. Their implementation evidence is recorded in
+[the phase-4 verification](../../tooling/renderer-harness-phase4-verification.md)
+and
+[the phase-5 verification](../../tooling/renderer-harness-phase5-verification.md).
 
 ## Revisit When
 

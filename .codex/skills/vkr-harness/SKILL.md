@@ -5,15 +5,16 @@ description: Run and interpret VKR's structured renderer automation harness. Use
 
 # VKR Harness
 
-Use `vkr_harness` for structured, repeatable renderer observations. Phases 2-4
+Use `vkr_harness` for structured, repeatable renderer observations. Phases 2-5
 support the `profile` command with full or dependency-resolved automation boot
 and visible or hidden windowed targets. Phase 2b adds authoritative CPU and
 GPU-timestamp performance profiles and retires the old log-scraping benchmark;
 Phase 3 adds paired boot/residency profiles and actual effective subsystem
-masks. Phase 4 adds diagnostic direct-channel `snapshot` replays with canonical
-color, depth, shadow-layer, and picking-ID artifacts. `autotest`, auxiliary
-debug replay, baseline comparison/promotion, and true offscreen targets are
-later phases and must not be claimed from this binary.
+masks. Phase 4 adds direct-channel `snapshot` replays with canonical color,
+depth, shadow-layer, and picking-ID artifacts. Phase 5 adds forward-render
+debug replays, canonical comparison and diff artifacts, separated `autotest`
+orchestration, and profile-scoped guarded baselines. True offscreen targets are
+Phase 6 and must not be claimed from this binary.
 
 ## Run a profile
 
@@ -43,18 +44,40 @@ build/tools/vkr_harness snapshot \
   --profile tools/profiles/local-windowed.json
 ```
 
-Snapshot starts one isolated replay child per capture checkpoint and preserves
+Snapshot starts one isolated replay child per required replay configuration and preserves
 the case's fixed delta, seed, warmup, camera, and cache policy. Its output lives
 under `build/_artifacts/snapshot/<run-id>/`. Read `captures[]` for the resolved
-producer, canonical encoding, source frame/submit serial, paths, and digests;
-read `auxiliary_runs[]` to audit each child report. A snapshot is diagnostic and
-never primary performance evidence. Compare direct-capture digests across at
-least two independent processes when testing determinism.
+producer, canonical encoding, source frame/submit serial, paths, digests,
+thresholds, and comparison result; read `auxiliary_runs[]` to audit each child
+report and its effective fingerprints. Replay-child timings are auxiliary and
+never primary performance evidence.
 
 Shipped direct channels are `final_color`, editor-only `scene_color`, `depth`,
-`shadow_cascade_0` through `_3`, and `picking_ids`. Debug-mode channels and
-baseline verdicts remain Phase 5. Final-color availability is target/surface
-capability dependent; unavailable means exit `3`, never a silent substitute.
+`shadow_cascade_0` through `_3`, and `picking_ids`. Logical auxiliary channels
+are `normals`, `unlit`, `lighting`, `shadow_debug_cascades`,
+`shadow_debug_factor`, and `shadow_debug_depth`. Channels sharing one render
+mode and checkpoint share a replay; distinct debug modes do not. Final-color
+availability is target/surface capability dependent; unavailable means exit
+`3`, never a silent substitute.
+
+## Run combined autotest and comparison
+
+```sh
+build/tools/vkr_harness autotest \
+  --case tools/cases/smoke/sponza_snapshot.case.json \
+  --profile tools/profiles/local-windowed.json
+
+build/tools/vkr_harness compare \
+  --run build/_artifacts/snapshot/<run-id>
+```
+
+`autotest` runs capture-free primary repetitions and snapshot replays as
+separate nested reports. Its top-level report references both; it never merges
+capture-replay timings into primary metrics or image verdicts into timing
+assertions. `compare` verifies the source summary and artifact digests before
+reading the accepted baseline. Missing or fingerprint-incompatible baselines
+return exit `4`; threshold failures return exit `1`; internal/incomplete
+comparison returns exit `5`.
 
 ## Interpret evidence
 
@@ -85,9 +108,21 @@ or incomplete evidence.
 
 ## Baseline safety
 
-No current command mutates accepted evidence. Baseline proposal and acceptance
-arrive in Phase 5. If those commands are added later, never accept or promote a
-baseline unless the user explicitly requests that mutation.
+Ordinary `profile`, `snapshot`, `autotest`, and `compare` commands are
+read-only with respect to `tools/baselines/`. A safe proposal verifies a
+completed snapshot without mutation:
+
+```sh
+build/tools/vkr_harness baseline propose \
+  --from build/_artifacts/snapshot/<run-id> \
+  --actor '<actor>' --reason '<reason>'
+```
+
+Review `plan.json` and `entries.ndjson`. Never run `baseline accept` unless the
+user explicitly requests baseline promotion. Acceptance requires the exact
+proposal digest, re-verifies the prior generation and every source digest,
+writes an immutable content-addressed generation, then atomically replaces
+`current.json`. Manual copying into `tools/baselines/` is unsupported.
 
 Use `vkr-validation` for CPU and Vulkan correctness gates and `vkr-performance`
 for repository performance claims.
@@ -121,6 +156,7 @@ narrowing the profile's window.
 | `performance/sponza_boot_automation.case.json` | automation | 120/60 | Paired boot/residency evidence |
 | `smoke/sponza_snapshot.case.json` | automation | 2/3 | Direct final/depth/shadow/picking snapshot fixture |
 | `smoke/sponza_snapshot_editor.case.json` | automation | 2/3 | Editor scene-color/depth/picking snapshot fixture |
+| `smoke/sponza_snapshot_debug.case.json` | automation | 2/3 | Normals/unlit/lighting and three shadow-debug replay fixture |
 
 ## Compare full and automation boot
 

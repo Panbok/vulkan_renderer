@@ -17,9 +17,11 @@ uses the case's pipeline-cache policy, canonicalizes results, verifies child
 digests, and publishes one atomic diagnostic report.
 
 This is capture evidence, not performance evidence. Snapshot reports are
-non-authoritative by policy, and the implementation worktree was dirty. Phase 5
-still owns comparison, auxiliary debug replays, accepted baselines, and guarded
-promotion; Phase 6 still owns a true offscreen target.
+non-authoritative by policy, and the implementation worktree was dirty. At the
+Phase-4 boundary, comparison, auxiliary debug replays, accepted baselines, and
+guarded promotion remained Phase 5; those now ship and are recorded in the
+[Phase-5 verification](renderer-harness-phase5-verification.md). Phase 6 still
+owns a true offscreen target.
 
 ## Capture contract
 
@@ -148,5 +150,7 @@ or two/four-image coverage.
 No capture-capable/no-copy AB/BA overhead comparison was run. Ordinary profiles
 structurally leave capture disabled, while a future target-device study must
 still quantify the resource-usage cost before any claim about transfer-source
-usage or depth compression. Baseline comparisons, visual thresholds, debug-mode
-replays, and offscreen/windowed equivalence remain later-phase work.
+usage or depth compression. At this Phase-4 checkpoint, baseline comparisons,
+visual thresholds, debug-mode replays, and offscreen/windowed equivalence
+remained later-phase work. Phase 5 now implements the first three;
+offscreen/windowed equivalence remains Phase 6.

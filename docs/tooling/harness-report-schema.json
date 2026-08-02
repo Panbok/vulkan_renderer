@@ -39,7 +39,8 @@
       "enum": [
         "profile",
         "snapshot",
-        "autotest"
+        "autotest",
+        "compare"
       ]
     },
     "tool_version": {
@@ -502,7 +503,10 @@
         "index",
         "status",
         "report",
-        "sha256"
+        "sha256",
+        "environment_fingerprint",
+        "workload_fingerprint",
+        "policy_fingerprint"
       ],
       "properties": {
         "index": {
@@ -517,6 +521,15 @@
           "$ref": "#/definitions/safe_path"
         },
         "sha256": {
+          "$ref": "#/definitions/digest_or_empty"
+        },
+        "environment_fingerprint": {
+          "$ref": "#/definitions/digest_or_empty"
+        },
+        "workload_fingerprint": {
+          "$ref": "#/definitions/digest_or_empty"
+        },
+        "policy_fingerprint": {
           "$ref": "#/definitions/digest_or_empty"
         }
       },
@@ -601,7 +614,14 @@
         "preview_path",
         "preview_sha256",
         "metadata_path",
-        "metadata_sha256"
+        "metadata_sha256",
+        "comparison_status",
+        "baseline_data_path",
+        "baseline_data_sha256",
+        "diff_path",
+        "diff_sha256",
+        "thresholds",
+        "comparison"
       ],
       "properties": {
         "checkpoint_frame": {
@@ -689,6 +709,79 @@
         },
         "metadata_sha256": {
           "$ref": "#/definitions/digest"
+        },
+        "comparison_status": {
+          "enum": ["not_run", "pass", "fail", "incompatible"]
+        },
+        "baseline_data_path": {
+          "oneOf": [
+            { "$ref": "#/definitions/safe_path" },
+            { "type": "string", "maxLength": 0 }
+          ]
+        },
+        "baseline_data_sha256": {
+          "$ref": "#/definitions/digest_or_empty"
+        },
+        "diff_path": {
+          "oneOf": [
+            { "$ref": "#/definitions/safe_path" },
+            { "type": "string", "maxLength": 0 }
+          ]
+        },
+        "diff_sha256": {
+          "$ref": "#/definitions/digest_or_empty"
+        },
+        "thresholds": {
+          "$ref": "#/definitions/comparison_thresholds"
+        },
+        "comparison": {
+          "$ref": "#/definitions/comparison_result"
+        }
+      },
+      "additionalProperties": false
+    },
+    "comparison_thresholds": {
+      "type": "object",
+      "required": [
+        "max_pixel_delta",
+        "max_mean_absolute_error",
+        "max_failed_pixel_ratio",
+        "emit_diff"
+      ],
+      "properties": {
+        "max_pixel_delta": { "type": "number", "minimum": 0 },
+        "max_mean_absolute_error": { "type": "number", "minimum": 0 },
+        "max_failed_pixel_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "emit_diff": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "comparison_result": {
+      "type": "object",
+      "required": [
+        "mean_absolute_error",
+        "max_absolute_error",
+        "failing_value_count",
+        "failing_pixel_count",
+        "value_count",
+        "pixel_count",
+        "failed_pixel_ratio"
+      ],
+      "properties": {
+        "mean_absolute_error": { "type": "number", "minimum": 0 },
+        "max_absolute_error": { "type": "number", "minimum": 0 },
+        "failing_value_count": { "type": "integer", "minimum": 0 },
+        "failing_pixel_count": { "type": "integer", "minimum": 0 },
+        "value_count": { "type": "integer", "minimum": 0 },
+        "pixel_count": { "type": "integer", "minimum": 0 },
+        "failed_pixel_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
         }
       },
       "additionalProperties": false
