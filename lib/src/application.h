@@ -129,6 +129,9 @@ typedef struct ApplicationConfig {
   bool8_t window_hidden;
   bool8_t disable_skybox;
   VkrPresentMode requested_present_mode;
+  /** Boot intent only: `profile`, `requested_mask`, and `excluded_mask` are
+      read and the closure is recomputed. Zero-initialized means full boot. */
+  VkrSubsystemPlan subsystem_plan;
 } ApplicationConfig;
 
 typedef struct ApplicationMetricIds {
@@ -444,9 +447,20 @@ bool8_t application_create(Application *application,
 
   vkr_gamepad_init(&application->gamepad, &application->window.input_state);
 
+  /* The closure is always recomputed from the config's intent, so a caller
+     cannot hand-assemble an `effective_mask` that the renderer never agreed
+     to, and a zero-initialized config resolves to the full interactive plan. */
+  VkrSubsystemPlan subsystem_plan = {0};
+  if (!vkr_renderer_subsystem_plan_build(config->subsystem_plan.profile,
+                                         config->subsystem_plan.requested_mask,
+                                         config->subsystem_plan.excluded_mask,
+                                         &subsystem_plan, &renderer_error)) {
+    log_fatal("Failed to build the renderer subsystem plan");
+    return false_v;
+  }
   if (!vkr_renderer_systems_initialize(&application->renderer,
                                        &application->job_system,
-                                       metrics_producers)) {
+                                       metrics_producers, &subsystem_plan)) {
     log_fatal("Failed to initialize renderer frontend systems");
     return false_v;
   }

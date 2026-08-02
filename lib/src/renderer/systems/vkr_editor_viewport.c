@@ -283,6 +283,11 @@ bool8_t vkr_editor_viewport_init(RendererFrontend *rf,
   }
 
   vkr_mesh_manager_update_model(&rf->mesh_manager, resources->mesh_index);
+  /* The editor pass submits this plane explicitly. Keep it out of the scene
+     mesh enumeration so merely initializing editor resources cannot change
+     world work when editor mode is disabled. */
+  (void)vkr_mesh_manager_set_visible(&rf->mesh_manager, resources->mesh_index,
+                                     false_v);
 
   resources->initialized = true_v;
   return true_v;

@@ -103,6 +103,7 @@ struct s_RendererFrontend {
   bool8_t supports_multi_draw_indirect;
   bool8_t supports_draw_indirect_first_instance;
   VkrRendererBootMetrics boot_metrics;
+  VkrSubsystemPlan subsystem_plan;
 
   // High-level renderer subsystems and state (now accessible)
   VkrPipelineRegistry pipeline_registry;

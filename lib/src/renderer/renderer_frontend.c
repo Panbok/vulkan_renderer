@@ -139,6 +139,164 @@ renderer_frontend_validate_render_graph(RendererFrontend *rf) {
   return ok;
 }
 
+static const VkrSubsystemMask
+    vkr_renderer_subsystem_dependencies[VKR_RENDERER_SUBSYSTEM_COUNT] = {
+        [VKR_RENDERER_SUBSYSTEM_CAMERA] = 0u,
+        [VKR_RENDERER_SUBSYSTEM_PIPELINES] = 0u,
+        [VKR_RENDERER_SUBSYSTEM_RENDER_GRAPH] = 0u,
+        [VKR_RENDERER_SUBSYSTEM_FRAME_STREAMS] = 0u,
+        [VKR_RENDERER_SUBSYSTEM_SHADERS] =
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_PIPELINES),
+        [VKR_RENDERER_SUBSYSTEM_RESOURCES] = 0u,
+        [VKR_RENDERER_SUBSYSTEM_GEOMETRY] = 0u,
+        [VKR_RENDERER_SUBSYSTEM_TEXTURES] =
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_RESOURCES),
+        [VKR_RENDERER_SUBSYSTEM_MATERIALS] =
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_TEXTURES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_SHADERS),
+        [VKR_RENDERER_SUBSYSTEM_MESHES] =
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_GEOMETRY) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_MATERIALS) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_PIPELINES),
+        [VKR_RENDERER_SUBSYSTEM_FONTS] =
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_RESOURCES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_TEXTURES),
+        [VKR_RENDERER_SUBSYSTEM_LIGHTING] = 0u,
+        [VKR_RENDERER_SUBSYSTEM_SHADOWS] =
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_RENDER_GRAPH) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_PIPELINES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_SHADERS) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_RESOURCES),
+        [VKR_RENDERER_SUBSYSTEM_WORLD] =
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_PIPELINES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_SHADERS) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_RESOURCES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_GEOMETRY) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_TEXTURES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_MATERIALS),
+        [VKR_RENDERER_SUBSYSTEM_UI] =
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_PIPELINES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_SHADERS) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_RESOURCES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_MATERIALS) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_FONTS),
+        [VKR_RENDERER_SUBSYSTEM_SKYBOX] =
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_PIPELINES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_SHADERS) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_RESOURCES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_GEOMETRY) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_TEXTURES),
+        [VKR_RENDERER_SUBSYSTEM_EDITOR] =
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_PIPELINES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_SHADERS) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_RESOURCES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_GEOMETRY) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_MATERIALS) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_MESHES),
+        [VKR_RENDERER_SUBSYSTEM_GIZMO] =
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_PIPELINES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_SHADERS) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_GEOMETRY) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_MATERIALS) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_MESHES),
+        [VKR_RENDERER_SUBSYSTEM_PICKING] =
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_PIPELINES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_SHADERS) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_RESOURCES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_GEOMETRY) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_TEXTURES) |
+            VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_MATERIALS),
+};
+
+bool8_t vkr_renderer_subsystem_plan_build(VkrBootProfile profile,
+                                          VkrSubsystemMask requested_mask,
+                                          VkrSubsystemMask excluded_mask,
+                                          VkrSubsystemPlan *out_plan,
+                                          VkrRendererError *out_error) {
+  VkrRendererError discarded_error = VKR_RENDERER_ERROR_NONE;
+  if (!out_error) {
+    out_error = &discarded_error;
+  }
+  if (!out_plan || profile > VKR_BOOT_PROFILE_AUTOMATION ||
+      ((requested_mask | excluded_mask) & ~VKR_RENDERER_SUBSYSTEM_ALL) != 0u ||
+      (profile == VKR_BOOT_PROFILE_FULL && excluded_mask != 0u)) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  VkrSubsystemMask effective =
+      profile == VKR_BOOT_PROFILE_FULL
+          ? VKR_RENDERER_SUBSYSTEM_ALL
+          : VKR_RENDERER_SUBSYSTEM_MANDATORY | requested_mask;
+  /* Iterated to a fixed point rather than swept once: the dependency table is
+     ordered for readability, not topologically, so a later unit may pull in an
+     earlier one that has dependencies of its own. The mask only ever grows
+     within a bounded bit space, so this terminates. */
+  VkrSubsystemMask prior = 0u;
+  while (prior != effective) {
+    prior = effective;
+    for (uint32_t subsystem = 0u; subsystem < VKR_RENDERER_SUBSYSTEM_COUNT;
+         ++subsystem) {
+      if ((effective & VKR_RENDERER_SUBSYSTEM_BIT(subsystem)) != 0u) {
+        effective |= vkr_renderer_subsystem_dependencies[subsystem];
+      }
+    }
+  }
+  if ((effective & excluded_mask) != 0u) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  *out_plan = (VkrSubsystemPlan){
+      .profile = profile,
+      .requested_mask = profile == VKR_BOOT_PROFILE_FULL
+                            ? VKR_RENDERER_SUBSYSTEM_ALL
+                            : requested_mask,
+      .excluded_mask = excluded_mask,
+      .effective_mask = effective,
+  };
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return true_v;
+}
+
+bool8_t vkr_renderer_subsystem_plan_includes(const VkrSubsystemPlan *plan,
+                                             VkrRendererSubsystem subsystem) {
+  return plan && subsystem < VKR_RENDERER_SUBSYSTEM_COUNT &&
+         (plan->effective_mask & VKR_RENDERER_SUBSYSTEM_BIT(subsystem)) != 0u;
+}
+
+/**
+ * Narrows the plan to what actually came up.
+ *
+ * Editor, gizmo, and picking retain non-fatal startup behavior; picking is also
+ * skipped on a zero-extent window. UI and skybox failures abort initialization
+ * before this point. The reported mask is comparison identity: leaving an
+ * absent unit set would make two runs that rendered different work compare as
+ * the same observation.
+ */
+static void renderer_frontend_narrow_plan_to_initialized(RendererFrontend *rf) {
+  const struct {
+    VkrRendererSubsystem subsystem;
+    bool8_t initialized;
+  } observed[] = {
+      {VKR_RENDERER_SUBSYSTEM_UI, rf->ui_system.initialized},
+      {VKR_RENDERER_SUBSYSTEM_SKYBOX, rf->skybox_system.initialized},
+      {VKR_RENDERER_SUBSYSTEM_EDITOR, rf->editor_viewport.initialized},
+      {VKR_RENDERER_SUBSYSTEM_GIZMO, rf->gizmo_system.initialized},
+      {VKR_RENDERER_SUBSYSTEM_PICKING, rf->picking.initialized},
+  };
+  for (uint32_t i = 0u; i < ArrayCount(observed); ++i) {
+    const VkrSubsystemMask bit =
+        VKR_RENDERER_SUBSYSTEM_BIT(observed[i].subsystem);
+    if (!observed[i].initialized && (rf->subsystem_plan.effective_mask & bit)) {
+      log_warn("Planned renderer subsystem %u did not initialize; the reported "
+               "mask omits it",
+               (uint32_t)observed[i].subsystem);
+      rf->subsystem_plan.effective_mask &= ~bit;
+    }
+  }
+}
+
 bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
                                  VkrRendererBackendType backend_type,
                                  VkrWindow *window, EventManager *event_manager,
@@ -230,6 +388,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   };
   renderer->frame_metrics = (VkrRendererFrameMetrics){0};
   renderer->boot_metrics = (VkrRendererBootMetrics){0};
+  renderer->subsystem_plan = (VkrSubsystemPlan){0};
   renderer->rf_mutex = NULL;
   renderer->offscreen_color_handles = NULL;
   renderer->offscreen_color_handle_count = 0;
@@ -2445,9 +2604,25 @@ bool8_t vkr_renderer_rg_timing_get_results(VkrRendererFrontendHandle renderer,
 
 bool32_t vkr_renderer_systems_initialize(
     VkrRendererFrontendHandle renderer, VkrJobSystem *job_system,
-    const VkrRendererMetricsProducerConfig *metrics_producers) {
+    const VkrRendererMetricsProducerConfig *metrics_producers,
+    const VkrSubsystemPlan *subsystem_plan) {
   assert_log(renderer != NULL, "Renderer is NULL");
   RendererFrontend *rf = (RendererFrontend *)renderer;
+  if (!subsystem_plan) {
+    log_error("Renderer subsystem plan is required");
+    return false_v;
+  }
+
+  VkrSubsystemPlan resolved_plan = {0};
+  VkrRendererError plan_error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_renderer_subsystem_plan_build(
+          subsystem_plan->profile, subsystem_plan->requested_mask,
+          subsystem_plan->excluded_mask, &resolved_plan, &plan_error) ||
+      resolved_plan.effective_mask != subsystem_plan->effective_mask) {
+    log_error("Renderer subsystem plan is invalid or not dependency-closed");
+    return false_v;
+  }
+  rf->subsystem_plan = resolved_plan;
 #if VKR_METRICS_ENABLED
   const float64_t systems_start = vkr_platform_get_absolute_time();
 #endif
@@ -2511,9 +2686,7 @@ bool32_t vkr_renderer_systems_initialize(
   rf->render_graph_loaded = true_v;
   rf->render_graph_enabled = true_v;
 #if VKR_METRICS_ENABLED
-  rf->boot_metrics.graph_ns =
-      (uint64_t)((vkr_platform_get_absolute_time() - graph_start) *
-                 1000000000.0);
+  rf->boot_metrics.graph_ns = vkr_metrics_elapsed_ns(graph_start);
 #endif
 
   // Per-frame streams are indexed directly by the backend's frame-in-flight
@@ -2736,31 +2909,42 @@ bool32_t vkr_renderer_systems_initialize(
     return false_v;
   }
 
-  if (!vkr_ui_system_init(rf, &rf->ui_system)) {
+  if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,
+                                           VKR_RENDERER_SUBSYSTEM_UI) &&
+      !vkr_ui_system_init(rf, &rf->ui_system)) {
     log_error("Failed to initialize UI system");
     renderer_frontend_destroy_loader_async_allocators(rf);
     return false_v;
   }
 
-  if (!vkr_skybox_system_init(rf, &rf->skybox_system)) {
+  if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,
+                                           VKR_RENDERER_SUBSYSTEM_SKYBOX) &&
+      !vkr_skybox_system_init(rf, &rf->skybox_system)) {
     log_error("Failed to initialize skybox system");
     renderer_frontend_destroy_loader_async_allocators(rf);
     return false_v;
   }
 
-  if (!vkr_editor_viewport_init(rf, &rf->editor_viewport)) {
+  if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,
+                                           VKR_RENDERER_SUBSYSTEM_EDITOR) &&
+      !vkr_editor_viewport_init(rf, &rf->editor_viewport)) {
     log_warn("Editor viewport resources unavailable (non-fatal)");
   }
 
-  VkrGizmoConfig gizmo_cfg = VKR_GIZMO_CONFIG_DEFAULT;
-  if (!vkr_gizmo_system_init(&rf->gizmo_system, rf, &gizmo_cfg)) {
-    log_warn("Failed to initialize gizmo system (non-fatal)");
+  if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,
+                                           VKR_RENDERER_SUBSYSTEM_GIZMO)) {
+    VkrGizmoConfig gizmo_cfg = VKR_GIZMO_CONFIG_DEFAULT;
+    if (!vkr_gizmo_system_init(&rf->gizmo_system, rf, &gizmo_cfg)) {
+      log_warn("Failed to initialize gizmo system (non-fatal)");
+    }
   }
 
   VkrWindowPixelSize initial_size = vkr_window_get_pixel_size(rf->window);
 
   // Initialize picking system with initial window dimensions
-  if (initial_size.width > 0 && initial_size.height > 0) {
+  if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,
+                                           VKR_RENDERER_SUBSYSTEM_PICKING) &&
+      initial_size.width > 0 && initial_size.height > 0) {
     if (!vkr_picking_init(rf, &rf->picking, initial_size.width,
                           initial_size.height)) {
       log_warn("Failed to initialize picking system (non-fatal)");
@@ -2770,13 +2954,18 @@ bool32_t vkr_renderer_systems_initialize(
   if (initial_size.width > 0 && initial_size.height > 0) {
     vkr_renderer_resize(rf, initial_size.width, initial_size.height);
   }
+  renderer_frontend_narrow_plan_to_initialized(rf);
 
 #if VKR_METRICS_ENABLED
-  rf->boot_metrics.systems_ns =
-      (uint64_t)((vkr_platform_get_absolute_time() - systems_start) *
-                 1000000000.0);
+  rf->boot_metrics.systems_ns = vkr_metrics_elapsed_ns(systems_start);
 #endif
   return true_v;
+}
+
+VkrSubsystemMask
+vkr_renderer_get_subsystem_mask(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  return ((RendererFrontend *)renderer)->subsystem_plan.effective_mask;
 }
 
 // =============================================================================
