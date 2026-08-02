@@ -4,7 +4,7 @@
  *        until the scene is ready, drive the scripted camera on a fixed delta,
  *        and publish this repetition's raw samples and report.
  *
- * The parent never links the renderer; everything below runs only in a
+ * The parent never opens a renderer target; everything below runs only in a
  * `--child-profile` process.
  */
 #include "vkr_harness_runtime.h"
@@ -250,6 +250,11 @@ static bool8_t vkr_harness_child_activate_scene(Application *application) {
     }
     return false_v;
   }
+  /* `boot.scene` closes the moment the requested closure reaches READY, which
+     is still before the first measured frame. */
+  vkr_renderer_metrics_set_scene_boot_ns(
+      &application->renderer_metrics,
+      vkr_metrics_elapsed_ns(child->load_started));
   if (!child->scene_resource.as.scene) {
     VkrResourceHandleInfo resolved = {0};
     if (!vkr_resource_system_try_get_resolved(&child->scene_resource,
@@ -432,7 +437,8 @@ static bool8_t vkr_harness_warmup_stable(const VkrHarnessCase *case_manifest,
 
 static ApplicationConfig
 vkr_harness_child_application_config(const VkrHarnessCase *case_manifest,
-                                     const VkrHarnessProfile *profile) {
+                                     const VkrHarnessProfile *profile,
+                                     const VkrSubsystemPlan *subsystem_plan) {
   return (ApplicationConfig){
       .title = "VKR Harness",
       .x = 100,
@@ -451,6 +457,7 @@ vkr_harness_child_application_config(const VkrHarnessCase *case_manifest,
       .disable_skybox = !case_manifest->renderer.skybox,
       .requested_present_mode =
           vkr_harness_present_to_renderer(case_manifest->present),
+      .subsystem_plan = *subsystem_plan,
       .device_requirements =
           {.supported_stages =
                VKR_SHADER_STAGE_VERTEX_BIT | VKR_SHADER_STAGE_FRAGMENT_BIT,
@@ -543,6 +550,7 @@ static bool8_t vkr_harness_child_write_report(
       .profile = *profile,
       .profile_compatible = true_v,
       .provenance = *provenance,
+      .subsystem_mask = samples->header.subsystem_mask,
       .requested_repetitions = 1u,
       .completed_repetitions = failed ? 0u : 1u,
       .warmup_stable =
@@ -570,8 +578,8 @@ static bool8_t vkr_harness_child_write_report(
   VkrHarnessCase effective_case = *case_manifest;
   effective_case.target_image_count = provenance->actual_target_image_count;
   (void)vkr_harness_case_fingerprints(
-      VKR_HARNESS_TOOL_PROFILE, &effective_case, profile, environment,
-      environment_count, report.environment_fingerprint,
+      VKR_HARNESS_TOOL_PROFILE, &effective_case, profile, report.subsystem_mask,
+      environment, environment_count, report.environment_fingerprint,
       report.workload_fingerprint, report.policy_fingerprint, error);
 
   bool8_t ok = vkr_harness_compute_metric_results(
@@ -628,7 +636,8 @@ static bool8_t vkr_harness_child_write_report(
  */
 static VkrHarnessSampleFileHeader vkr_harness_child_sample_header(
     const VkrHarnessChildContext *child, const VkrHarnessCase *case_manifest,
-    const VkrHarnessProvenance *provenance, bool8_t warmup_stable) {
+    const VkrHarnessProvenance *provenance, VkrSubsystemMask subsystem_mask,
+    bool8_t warmup_stable) {
   VkrHarnessSampleFileHeader header = {
       .schema_version = VKR_HARNESS_SCHEMA_VERSION,
       .metric_count = child->metric_count,
@@ -637,6 +646,7 @@ static VkrHarnessSampleFileHeader vkr_harness_child_sample_header(
       .events_dropped = child->events_dropped + child->event_storage_dropped,
       .event_subjects_truncated = child->event_subjects_truncated,
       .snapshot_publications_dropped = child->snapshot_publications_dropped,
+      .subsystem_mask = subsystem_mask,
       .warmup_frames = case_manifest->warmup_frames,
       .measure_frames = case_manifest->measure_frames,
       .actual_present = provenance->actual_present,
@@ -671,15 +681,22 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     vkr_harness_stderr("%s: %s\n", error.code, error.message);
     return VKR_HARNESS_EXIT_INVALID;
   }
-  const char *unsupported =
-      vkr_harness_phase2_unsupported(&case_manifest, &profile);
+  const char *unsupported = vkr_harness_unsupported(&case_manifest, &profile);
   if (unsupported) {
     vkr_harness_stderr("%s\n", unsupported);
     return VKR_HARNESS_EXIT_UNAVAILABLE;
   }
-  if (case_manifest.target != profile.target) {
-    vkr_harness_stderr("Case and execution profile targets differ\n");
+  const char *mismatch =
+      vkr_harness_case_profile_mismatch(&case_manifest, &profile);
+  if (mismatch) {
+    vkr_harness_stderr("%s\n", mismatch);
     return VKR_HARNESS_EXIT_MISSING_BASELINE;
+  }
+  VkrSubsystemPlan subsystem_plan = {0};
+  if (!vkr_harness_subsystem_plan(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
+                                  &subsystem_plan, &error)) {
+    vkr_harness_stderr("%s: %s\n", error.code, error.message);
+    return VKR_HARNESS_EXIT_INVALID;
   }
   /* A prewarm process exists only to populate the isolated pipeline cache; it
      measures nothing and publishes no artifact. */
@@ -707,17 +724,31 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   VkrHarnessSampleMetric *sample_catalog = NULL;
   VkrHarnessSampleEvent *events = NULL;
   bool8_t application_live = false_v;
+  VkrSubsystemMask subsystem_mask = 0u;
   VkrHarnessChildContext child = {0};
   Application application = {0};
   /* Retained by the application for the lifetime of the run, so it must not be
      const-qualified nor go out of scope before shutdown. */
-  ApplicationConfig config =
-      vkr_harness_child_application_config(&case_manifest, &profile);
+  ApplicationConfig config = vkr_harness_child_application_config(
+      &case_manifest, &profile, &subsystem_plan);
   if (!application_create(&application, &config)) {
     exit_code = VKR_HARNESS_EXIT_UNAVAILABLE;
     goto cleanup;
   }
   application_live = true_v;
+  subsystem_mask = vkr_renderer_get_subsystem_mask(&application.renderer);
+  if (subsystem_mask != subsystem_plan.effective_mask) {
+    char planned_text[VKR_HARNESS_SUBSYSTEM_MASK_MAX] = {0};
+    char actual_text[VKR_HARNESS_SUBSYSTEM_MASK_MAX] = {0};
+    vkr_harness_format_subsystem_mask(planned_text,
+                                      subsystem_plan.effective_mask);
+    vkr_harness_format_subsystem_mask(actual_text, subsystem_mask);
+    vkr_harness_stderr("Renderer initialized subsystem mask %s; the workload "
+                       "requires %s\n",
+                       actual_text, planned_text);
+    exit_code = VKR_HARNESS_EXIT_UNAVAILABLE;
+    goto cleanup;
+  }
   if (!vkr_harness_child_apply_renderer(&application, &case_manifest)) {
     vkr_harness_stderr("Unable to apply the case renderer configuration\n");
     exit_code = VKR_HARNESS_EXIT_INVALID;
@@ -822,8 +853,8 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   string_format(samples_path, sizeof(samples_path), "%s/samples.bin", run_dir);
   string_format(report_path, sizeof(report_path), "%s/report.json", run_dir);
   const VkrHarnessSampleSet sample_set = {
-      .header = vkr_harness_child_sample_header(&child, &case_manifest,
-                                                &provenance, warmup_stable),
+      .header = vkr_harness_child_sample_header(
+          &child, &case_manifest, &provenance, subsystem_mask, warmup_stable),
       .metrics = sample_catalog,
       .values = samples,
       .availability = availability,

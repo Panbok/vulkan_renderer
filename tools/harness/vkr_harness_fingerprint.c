@@ -85,7 +85,7 @@ static bool8_t vkr_harness_add_field(
 
 bool8_t vkr_harness_case_fingerprints(
     VkrHarnessTool tool, const VkrHarnessCase *case_manifest,
-    const VkrHarnessProfile *profile,
+    const VkrHarnessProfile *profile, VkrSubsystemMask subsystem_mask,
     const VkrHarnessFingerprintField *environment_fields,
     uint32_t environment_field_count,
     char out_environment[VKR_HARNESS_DIGEST_MAX],
@@ -142,6 +142,9 @@ bool8_t vkr_harness_case_fingerprints(
   }
   ADD("case.cache", "%s", vkr_harness_cache_name(case_manifest->cache));
   ADD("case.boot", "%s", vkr_harness_boot_name(case_manifest->boot));
+  char subsystem_text[VKR_HARNESS_SUBSYSTEM_MASK_MAX];
+  vkr_harness_format_subsystem_mask(subsystem_text, subsystem_mask);
+  ADD("case.subsystems", "%s", subsystem_text);
   ADD("case.fixed_delta", "%.17g", case_manifest->fixed_delta_seconds);
   ADD("case.frames", "%u,%u", case_manifest->warmup_frames,
       case_manifest->measure_frames);

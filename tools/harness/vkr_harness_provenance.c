@@ -130,8 +130,8 @@ uint32_t vkr_harness_environment_fields(
   return count;
 }
 
-const char *vkr_harness_phase2_unsupported(const VkrHarnessCase *case_manifest,
-                                           const VkrHarnessProfile *profile) {
+const char *vkr_harness_unsupported(const VkrHarnessCase *case_manifest,
+                                    const VkrHarnessProfile *profile) {
   if (case_manifest->target == VKR_HARNESS_TARGET_OFFSCREEN ||
       profile->target == VKR_HARNESS_TARGET_OFFSCREEN) {
     return "Offscreen targets ship in Phase 6";
@@ -139,9 +139,6 @@ const char *vkr_harness_phase2_unsupported(const VkrHarnessCase *case_manifest,
   if (case_manifest->present == VKR_HARNESS_PRESENT_NONE ||
       profile->required_present == VKR_HARNESS_PRESENT_NONE) {
     return "present=none requires an offscreen target (Phase 6)";
-  }
-  if (case_manifest->boot == VKR_HARNESS_BOOT_AUTOMATION) {
-    return "The automation boot profile ships in Phase 3";
   }
   /* A case that also declares captures is still profileable: `profile` runs
      capture-free primary repetitions and excludes captures from its

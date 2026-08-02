@@ -152,6 +152,8 @@ bool8_t vkr_harness_report_write(const char *path,
     return false_v;
   }
   VkrJsonWriter *writer = &file_writer.writer;
+  char subsystem_mask[VKR_HARNESS_SUBSYSTEM_MASK_MAX];
+  vkr_harness_format_subsystem_mask(subsystem_mask, report->subsystem_mask);
   bool8_t ok =
       vkr_json_writer_begin_object(writer) &&
       vkr_harness_json_u64(writer, "schema_version",
@@ -253,7 +255,7 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_harness_json_string(
           writer, "boot_profile",
           vkr_harness_boot_name(report->case_manifest.boot)) &&
-      vkr_harness_json_string(writer, "subsystem_mask", "full") &&
+      vkr_harness_json_string(writer, "subsystem_mask", subsystem_mask) &&
       vkr_harness_json_bool(writer, "editor",
                             report->case_manifest.renderer.editor) &&
       vkr_harness_json_u64(writer, "cascades",

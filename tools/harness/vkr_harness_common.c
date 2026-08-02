@@ -1,5 +1,133 @@
 #include "vkr_harness.h"
 
+/**
+ * @return True when `metric` belongs to `subsystem`'s own family, spelled
+ *         either `<subsystem>.*` or `draw.<subsystem>.*`.
+ */
+static bool8_t vkr_harness_metric_is_owned_by(const char *metric,
+                                              const char *subsystem) {
+  static const char draw_prefix[] = "draw.";
+  static const uint64_t draw_length = sizeof(draw_prefix) - 1u;
+  const uint64_t length = string_length(subsystem);
+  if (string_n_equals(metric, draw_prefix, draw_length)) {
+    metric += draw_length;
+  }
+  /* `string_n_equals` stops at the terminator, so the trailing separator is
+     only read once the name itself matched. */
+  return string_n_equals(metric, subsystem, length) && metric[length] == '.';
+}
+
+/**
+ * An assertion over a subsystem's own metrics cannot be answered by a boot that
+ * omitted it, so naming one requests it. No such metric family is registered
+ * today; this is the seam `autotest` assertions arrive through in Phase 5.
+ */
+static VkrSubsystemMask
+vkr_harness_assertion_subsystems(const VkrHarnessCase *case_manifest) {
+  static const struct {
+    const char *name;
+    VkrRendererSubsystem subsystem;
+  } owners[] = {
+      {"ui", VKR_RENDERER_SUBSYSTEM_UI},
+      {"skybox", VKR_RENDERER_SUBSYSTEM_SKYBOX},
+      {"editor", VKR_RENDERER_SUBSYSTEM_EDITOR},
+      {"gizmo", VKR_RENDERER_SUBSYSTEM_GIZMO},
+      {"picking", VKR_RENDERER_SUBSYSTEM_PICKING},
+  };
+  VkrSubsystemMask mask = 0u;
+  for (uint32_t assertion = 0u; assertion < case_manifest->assertion_count;
+       ++assertion) {
+    const char *metric = case_manifest->assertions[assertion].metric;
+    for (uint32_t owner = 0u; owner < ArrayCount(owners); ++owner) {
+      if (vkr_harness_metric_is_owned_by(metric, owners[owner].name)) {
+        mask |= VKR_RENDERER_SUBSYSTEM_BIT(owners[owner].subsystem);
+      }
+    }
+  }
+  return mask;
+}
+
+bool8_t vkr_harness_subsystem_plan(VkrHarnessTool tool,
+                                   const VkrHarnessCase *case_manifest,
+                                   VkrSubsystemPlan *out_plan,
+                                   VkrHarnessError *out_error) {
+  if (!case_manifest || !out_plan) {
+    vkr_harness_error_set(out_error, "boot.plan", "$.boot",
+                          "Subsystem plan inputs are invalid");
+    return false_v;
+  }
+
+  VkrSubsystemMask requested = vkr_harness_assertion_subsystems(case_manifest);
+  if (case_manifest->renderer.skybox) {
+    requested |= VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_SKYBOX);
+  }
+  if (case_manifest->renderer.editor) {
+    requested |= VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_EDITOR);
+  }
+  if (tool != VKR_HARNESS_TOOL_PROFILE) {
+    for (uint32_t capture = 0u; capture < case_manifest->capture_count;
+         ++capture) {
+      for (uint32_t channel = 0u;
+           channel < case_manifest->captures[capture].channel_count;
+           ++channel) {
+        if (string_equals(case_manifest->captures[capture].channels[channel],
+                          "picking_ids")) {
+          requested |=
+              VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_PICKING);
+        }
+      }
+    }
+  }
+
+  VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
+  const VkrBootProfile profile =
+      case_manifest->boot == VKR_HARNESS_BOOT_AUTOMATION
+          ? VKR_BOOT_PROFILE_AUTOMATION
+          : VKR_BOOT_PROFILE_FULL;
+  /* Automation excludes every optional unit the workload did not ask for, so
+     the exclusion set tracks the renderer's own definition of optional rather
+     than a second list here that could drift as units are added. */
+  const VkrSubsystemMask excluded =
+      profile == VKR_BOOT_PROFILE_AUTOMATION
+          ? VKR_RENDERER_SUBSYSTEM_OPTIONAL & ~requested
+          : 0u;
+  if (!vkr_renderer_subsystem_plan_build(profile, requested, excluded, out_plan,
+                                         &renderer_error)) {
+    vkr_harness_error_set(out_error, "boot.plan", "$.boot",
+                          "Workload requirements do not form a valid "
+                          "renderer subsystem plan (%u)",
+                          renderer_error);
+    return false_v;
+  }
+  return true_v;
+}
+
+void vkr_harness_format_subsystem_mask(
+    char out_text[VKR_HARNESS_SUBSYSTEM_MASK_MAX], VkrSubsystemMask mask) {
+  string_format(out_text, VKR_HARNESS_SUBSYSTEM_MASK_MAX, "0x%016llx",
+                (unsigned long long)mask);
+}
+
+const char *
+vkr_harness_case_profile_mismatch(const VkrHarnessCase *case_manifest,
+                                  const VkrHarnessProfile *profile) {
+  if (case_manifest->target != profile->target) {
+    return "Case and execution profile targets differ";
+  }
+  if (case_manifest->present != profile->required_present) {
+    return "Case and execution profile presentation modes differ";
+  }
+  /* The stability gate compares the two halves of the last `window` warmup
+     frames, so a window wider than the warmup can never be answered and the
+     run is unconditionally incomplete. Rejected here as an incompatible
+     pairing rather than after every repetition has already executed. */
+  if (profile->require_warmup_stability &&
+      case_manifest->warmup_frames < profile->warmup_stability_window) {
+    return "Case warmup is shorter than the profile's warmup stability window";
+  }
+  return NULL;
+}
+
 void vkr_harness_error_clear(VkrHarnessError *error) {
   if (error) {
     MemZero(error, sizeof(*error));

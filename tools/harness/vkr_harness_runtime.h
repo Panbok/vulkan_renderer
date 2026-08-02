@@ -4,9 +4,10 @@
  *        repetition processes.
  *
  * The parent orchestrates isolated child processes and aggregates their
- * evidence; only a child links the renderer and produces samples. Everything
- * they must agree on — the raw sample file layout, provenance collection, and
- * the Phase-2 support boundary — lives here rather than in either side.
+ * evidence; only a child opens a renderer target and produces samples.
+ * Everything they must agree on — the raw sample file layout, provenance
+ * collection, and the current support boundary — lives here rather than in
+ * either side.
  */
 #pragma once
 
@@ -36,6 +37,7 @@ typedef struct VkrHarnessSampleFileHeader {
   uint64_t events_dropped;
   uint64_t event_subjects_truncated;
   uint64_t snapshot_publications_dropped;
+  uint64_t subsystem_mask;
   uint32_t warmup_frames;
   uint32_t measure_frames;
   uint32_t actual_present;
@@ -150,11 +152,11 @@ uint32_t vkr_harness_environment_fields(
     VkrHarnessFingerprintField fields[VKR_HARNESS_ENVIRONMENT_FIELD_COUNT]);
 
 /**
- * @return NULL when Phase 2 can run this case/profile pair, otherwise a stable
- *         reason string.
+ * @return NULL when the harness can run this case/profile pair, otherwise a
+ * stable reason string.
  */
-const char *vkr_harness_phase2_unsupported(const VkrHarnessCase *case_manifest,
-                                           const VkrHarnessProfile *profile);
+const char *vkr_harness_unsupported(const VkrHarnessCase *case_manifest,
+                                    const VkrHarnessProfile *profile);
 
 int vkr_harness_child_run(const char *executable, const char *repo_root,
                           const char *case_path, const char *profile_path,

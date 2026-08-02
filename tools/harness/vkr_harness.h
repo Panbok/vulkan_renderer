@@ -10,6 +10,7 @@
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "platform/vkr_platform.h"
+#include "renderer/vkr_renderer.h"
 
 #define VKR_HARNESS_SCHEMA_VERSION 1u
 #define VKR_HARNESS_CAMERA_SCRIPT_VERSION 1u
@@ -381,6 +382,7 @@ typedef struct VkrHarnessReport {
   char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
   char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
   char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  VkrSubsystemMask subsystem_mask;
   uint32_t requested_repetitions;
   uint32_t completed_repetitions;
   bool8_t warmup_stable;
@@ -474,12 +476,39 @@ bool8_t vkr_harness_fingerprint(const VkrHarnessFingerprintField *fields,
                                 VkrHarnessError *out_error);
 bool8_t vkr_harness_case_fingerprints(
     VkrHarnessTool tool, const VkrHarnessCase *case_manifest,
-    const VkrHarnessProfile *profile,
+    const VkrHarnessProfile *profile, VkrSubsystemMask subsystem_mask,
     const VkrHarnessFingerprintField *environment_fields,
     uint32_t environment_field_count,
     char out_environment[VKR_HARNESS_DIGEST_MAX],
     char out_workload[VKR_HARNESS_DIGEST_MAX],
     char out_policy[VKR_HARNESS_DIGEST_MAX], VkrHarnessError *out_error);
+
+/** Resolves the case's boot profile and optional workload requirements. */
+bool8_t vkr_harness_subsystem_plan(VkrHarnessTool tool,
+                                   const VkrHarnessCase *case_manifest,
+                                   VkrSubsystemPlan *out_plan,
+                                   VkrHarnessError *out_error);
+
+/**
+ * @return NULL when the case's workload can answer the profile's policy,
+ *         otherwise a stable reason. A mismatch means the wrong instrument for
+ *         the experiment, so it resolves to
+ *         `VKR_HARNESS_EXIT_MISSING_BASELINE`.
+ */
+const char *
+vkr_harness_case_profile_mismatch(const VkrHarnessCase *case_manifest,
+                                  const VkrHarnessProfile *profile);
+
+/** "0x" + 16 hexadecimal digits + terminator. */
+#define VKR_HARNESS_SUBSYSTEM_MASK_MAX 19u
+
+/**
+ * The one producer of the canonical mask text. The report schema pins
+ * `^0x[0-9a-f]{16}$` and the workload fingerprint hashes the same string, so a
+ * second spelling would silently split comparison identity.
+ */
+void vkr_harness_format_subsystem_mask(
+    char out_text[VKR_HARNESS_SUBSYSTEM_MASK_MAX], VkrSubsystemMask mask);
 
 /**
  * @param sort_scratch Caller-owned buffer of at least `sample_count` values.

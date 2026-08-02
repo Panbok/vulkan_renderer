@@ -31,7 +31,7 @@ if(NOT MSVC)
 endif()
 
 # The parent orchestrator, the child repetition runtime, and their shared
-# sample/provenance seam. Only the child links the renderer.
+# sample/provenance seam. Only the child opens a renderer target.
 add_executable(vkr_harness
     harness/vkr_harness_main.c
     harness/vkr_harness_parent.c

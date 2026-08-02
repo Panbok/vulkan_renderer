@@ -194,8 +194,9 @@ static void test_harness_fingerprints(void) {
   char workload[VKR_HARNESS_DIGEST_MAX];
   char policy[VKR_HARNESS_DIGEST_MAX];
   assert(vkr_harness_case_fingerprints(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
-                                       &profile, NULL, 0u, environment,
-                                       workload, policy, &error));
+                                       &profile, VKR_RENDERER_SUBSYSTEM_ALL,
+                                       NULL, 0u, environment, workload, policy,
+                                       &error));
   char original_workload[VKR_HARNESS_DIGEST_MAX];
   snprintf(original_workload, sizeof(original_workload), "%s", workload);
   snprintf(case_manifest.description, sizeof(case_manifest.description),
@@ -203,15 +204,142 @@ static void test_harness_fingerprints(void) {
   snprintf(case_manifest.manifest_sha256, sizeof(case_manifest.manifest_sha256),
            "sha256:changed");
   assert(vkr_harness_case_fingerprints(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
-                                       &profile, NULL, 0u, environment,
-                                       workload, policy, &error));
+                                       &profile, VKR_RENDERER_SUBSYSTEM_ALL,
+                                       NULL, 0u, environment, workload, policy,
+                                       &error));
   assert(strcmp(original_workload, workload) == 0);
+  assert(vkr_harness_case_fingerprints(
+      VKR_HARNESS_TOOL_PROFILE, &case_manifest, &profile,
+      VKR_RENDERER_SUBSYSTEM_ALL &
+          ~VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_UI),
+      NULL, 0u, environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
   case_manifest.width++;
   assert(vkr_harness_case_fingerprints(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
-                                       &profile, NULL, 0u, environment,
-                                       workload, policy, &error));
+                                       &profile, VKR_RENDERER_SUBSYSTEM_ALL,
+                                       NULL, 0u, environment, workload, policy,
+                                       &error));
   assert(strcmp(original_workload, workload) != 0);
   printf("  test_harness_fingerprints PASSED\n");
+}
+
+static void test_harness_subsystem_plans(void) {
+  printf("  Running test_harness_subsystem_plans...\n");
+  VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
+  VkrSubsystemPlan plan = {0};
+  assert(vkr_renderer_subsystem_plan_build(VKR_BOOT_PROFILE_FULL, 0u, 0u, &plan,
+                                           &renderer_error));
+  assert(plan.effective_mask == VKR_RENDERER_SUBSYSTEM_ALL);
+
+  /* The two published masks must partition the enum, or the harness would
+     exclude a unit the renderer initializes unconditionally. */
+  assert((VKR_RENDERER_SUBSYSTEM_MANDATORY & VKR_RENDERER_SUBSYSTEM_OPTIONAL) ==
+         0u);
+  assert((VKR_RENDERER_SUBSYSTEM_MANDATORY | VKR_RENDERER_SUBSYSTEM_OPTIONAL) ==
+         VKR_RENDERER_SUBSYSTEM_ALL);
+
+  /* The rejection reason is optional; a NULL out_error is not itself an error.
+   */
+  assert(vkr_renderer_subsystem_plan_build(VKR_BOOT_PROFILE_AUTOMATION, 0u, 0u,
+                                           &plan, NULL));
+  assert(plan.effective_mask == VKR_RENDERER_SUBSYSTEM_MANDATORY);
+
+  const VkrSubsystemMask skybox =
+      VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_SKYBOX);
+  assert(vkr_renderer_subsystem_plan_build(
+      VKR_BOOT_PROFILE_AUTOMATION, skybox,
+      VKR_RENDERER_SUBSYSTEM_OPTIONAL & ~skybox, &plan, &renderer_error));
+  assert(vkr_renderer_subsystem_plan_includes(&plan,
+                                              VKR_RENDERER_SUBSYSTEM_SKYBOX));
+  assert(vkr_renderer_subsystem_plan_includes(&plan,
+                                              VKR_RENDERER_SUBSYSTEM_FONTS));
+  assert(
+      !vkr_renderer_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_UI));
+
+  assert(!vkr_renderer_subsystem_plan_build(
+      VKR_BOOT_PROFILE_AUTOMATION,
+      VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_UI),
+      VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_FONTS), &plan,
+      &renderer_error));
+  assert(renderer_error == VKR_RENDERER_ERROR_INVALID_PARAMETER);
+
+  const char *static_camera =
+      "{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,\"pitch\":-5}";
+  VkrHarnessCase case_manifest = {0};
+  assert(harness_parse_case("windowed_hidden", "immediate", static_camera, "",
+                            &case_manifest));
+  case_manifest.boot = VKR_HARNESS_BOOT_AUTOMATION;
+  VkrHarnessError harness_error = {0};
+  assert(vkr_harness_subsystem_plan(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
+                                    &plan, &harness_error));
+  assert(vkr_renderer_subsystem_plan_includes(&plan,
+                                              VKR_RENDERER_SUBSYSTEM_SKYBOX));
+  assert(!vkr_renderer_subsystem_plan_includes(&plan,
+                                               VKR_RENDERER_SUBSYSTEM_EDITOR));
+  case_manifest.assertion_count = 1u;
+  snprintf(case_manifest.assertions[0].metric,
+           sizeof(case_manifest.assertions[0].metric), "draw.ui.calls_issued");
+  assert(vkr_harness_subsystem_plan(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
+                                    &plan, &harness_error));
+  assert(
+      vkr_renderer_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_UI));
+  assert(vkr_renderer_subsystem_plan_includes(&plan,
+                                              VKR_RENDERER_SUBSYSTEM_FONTS));
+  /* Both spellings of a subsystem's own metric family request it, and a name
+     that merely contains the word does not. */
+  snprintf(case_manifest.assertions[0].metric,
+           sizeof(case_manifest.assertions[0].metric), "picking.readbacks");
+  assert(vkr_harness_subsystem_plan(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
+                                    &plan, &harness_error));
+  assert(vkr_renderer_subsystem_plan_includes(&plan,
+                                              VKR_RENDERER_SUBSYSTEM_PICKING));
+  snprintf(case_manifest.assertions[0].metric,
+           sizeof(case_manifest.assertions[0].metric),
+           "draw.world.picking_ish");
+  assert(vkr_harness_subsystem_plan(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
+                                    &plan, &harness_error));
+  assert(!vkr_renderer_subsystem_plan_includes(&plan,
+                                               VKR_RENDERER_SUBSYSTEM_PICKING));
+
+  /* The report schema pins this spelling; the workload fingerprint hashes it.
+   */
+  char mask_text[VKR_HARNESS_SUBSYSTEM_MASK_MAX];
+  vkr_harness_format_subsystem_mask(mask_text, VKR_RENDERER_SUBSYSTEM_ALL);
+  assert(strcmp(mask_text, "0x000000000007ffff") == 0);
+  vkr_harness_format_subsystem_mask(mask_text,
+                                    VKR_RENDERER_SUBSYSTEM_MANDATORY);
+  assert(strcmp(mask_text, "0x0000000000003fff") == 0);
+  printf("  test_harness_subsystem_plans PASSED\n");
+}
+
+static void test_harness_case_profile_pairing(void) {
+  printf("  Running test_harness_case_profile_pairing...\n");
+  const char *static_camera =
+      "{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,\"pitch\":-5}";
+  VkrHarnessCase case_manifest = {0};
+  assert(harness_parse_case("windowed_hidden", "immediate", static_camera, "",
+                            &case_manifest));
+  VkrHarnessProfile profile = {
+      .target = case_manifest.target,
+      .required_present = case_manifest.present,
+      .require_warmup_stability = true_v,
+      .warmup_stability_window = case_manifest.warmup_frames,
+  };
+  assert(vkr_harness_case_profile_mismatch(&case_manifest, &profile) == NULL);
+
+  /* A window wider than the warmup can never be answered, so the pairing is
+     rejected instead of running every repetition into an incomplete verdict. */
+  profile.warmup_stability_window = case_manifest.warmup_frames + 1u;
+  assert(vkr_harness_case_profile_mismatch(&case_manifest, &profile) != NULL);
+  profile.require_warmup_stability = false_v;
+  assert(vkr_harness_case_profile_mismatch(&case_manifest, &profile) == NULL);
+
+  profile.required_present = VKR_HARNESS_PRESENT_FIFO;
+  assert(vkr_harness_case_profile_mismatch(&case_manifest, &profile) != NULL);
+  profile.required_present = case_manifest.present;
+  profile.target = VKR_HARNESS_TARGET_WINDOWED_VISIBLE;
+  assert(vkr_harness_case_profile_mismatch(&case_manifest, &profile) != NULL);
+  printf("  test_harness_case_profile_pairing PASSED\n");
 }
 
 static void test_harness_assertion_verdict(void) {
@@ -277,6 +405,7 @@ static void test_harness_report_shape(void) {
       .tool = VKR_HARNESS_TOOL_PROFILE,
       .exit_code = VKR_HARNESS_EXIT_PASS,
       .profile_compatible = true_v,
+      .subsystem_mask = UINT64_C(0x1234),
   };
   snprintf(report.run_id, sizeof(report.run_id), "test-run");
   snprintf(report.status, sizeof(report.status), "pass");
@@ -313,6 +442,7 @@ static void test_harness_report_shape(void) {
   char *json = malloc((size_t)length);
   assert(json && fread(json, 1u, (size_t)length, file) == (size_t)length);
   fclose(file);
+  assert(strstr(json, "\"subsystem_mask\":\"0x0000000000001234\"") != NULL);
   VkrHarnessJsonDocument document = {0};
   assert(vkr_harness_json_parse(&document, json, (uint64_t)length, &error));
   static const char *const fields[] = {"schema_version",
@@ -412,6 +542,8 @@ bool32_t run_harness_tests(void) {
   test_harness_profile_parser();
   test_harness_camera_determinism();
   test_harness_fingerprints();
+  test_harness_subsystem_plans();
+  test_harness_case_profile_pairing();
   test_harness_assertion_verdict();
   test_harness_report_shape();
   test_harness_safe_paths();

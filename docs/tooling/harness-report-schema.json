@@ -423,7 +423,7 @@
         },
         "subsystem_mask": {
           "type": "string",
-          "minLength": 1
+          "pattern": "^0x[0-9a-f]{16}$"
         },
         "editor": {
           "type": "boolean"

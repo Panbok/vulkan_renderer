@@ -260,7 +260,10 @@ vkr_harness_run_is_compatible(const VkrHarnessSampleSet *first,
                     sizeof(*first->passes) * first->header.pass_count) == 0 &&
          candidate->header.gpu_vendor_id == first->header.gpu_vendor_id &&
          candidate->header.gpu_device_id == first->header.gpu_device_id &&
-         candidate->header.actual_present == first->header.actual_present;
+         candidate->header.actual_present == first->header.actual_present &&
+         candidate->header.actual_image_count ==
+             first->header.actual_image_count &&
+         candidate->header.subsystem_mask == first->header.subsystem_mask;
 }
 
 /**
@@ -612,20 +615,31 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
                             NULL, NULL);
     return exit_code;
   }
-  const char *unsupported =
-      vkr_harness_phase2_unsupported(&case_manifest, &profile);
+  const char *unsupported = vkr_harness_unsupported(&case_manifest, &profile);
   if (unsupported) {
     vkr_harness_stderr("%s\n", unsupported);
     vkr_harness_emit_result("unavailable", VKR_HARNESS_EXIT_UNAVAILABLE, NULL,
                             NULL);
     return VKR_HARNESS_EXIT_UNAVAILABLE;
   }
-  if (case_manifest.target != profile.target ||
-      case_manifest.present != profile.required_present) {
-    vkr_harness_stderr("Case and execution profile are incompatible\n");
+  const char *mismatch =
+      vkr_harness_case_profile_mismatch(&case_manifest, &profile);
+  if (mismatch) {
+    vkr_harness_stderr("%s\n", mismatch);
     vkr_harness_emit_result("missing_baseline",
                             VKR_HARNESS_EXIT_MISSING_BASELINE, NULL, NULL);
     return VKR_HARNESS_EXIT_MISSING_BASELINE;
+  }
+
+  /* Resolved here so an impossible workload is rejected before any child is
+     launched. The closure is only a prediction — the first completed
+     repetition replaces it with the mask the renderer actually reached. */
+  VkrSubsystemPlan subsystem_plan = {0};
+  if (!vkr_harness_subsystem_plan(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
+                                  &subsystem_plan, &error)) {
+    vkr_harness_stderr("%s: %s\n", error.code, error.message);
+    vkr_harness_emit_result("invalid", VKR_HARNESS_EXIT_INVALID, NULL, NULL);
+    return VKR_HARNESS_EXIT_INVALID;
   }
 
   VkrHarnessReport report = {
@@ -634,6 +648,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
       .case_manifest = case_manifest,
       .profile = profile,
       .profile_compatible = true_v,
+      .subsystem_mask = subsystem_plan.effective_mask,
       /* A profile may raise the repetition count but never lower it. */
       .requested_repetitions =
           Max(case_manifest.repetitions, profile.minimum_repetitions),
@@ -718,6 +733,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
     }
     if (run == 0u) {
       vkr_harness_adopt_run_provenance(&report.provenance, &runs[0].header);
+      report.subsystem_mask = runs[0].header.subsystem_mask;
     }
     string_format(reference->status, sizeof(reference->status), "pass");
     report.completed_repetitions++;
@@ -743,9 +759,10 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   effective_case.target_image_count =
       report.provenance.actual_target_image_count;
   if (!vkr_harness_case_fingerprints(
-          VKR_HARNESS_TOOL_PROFILE, &effective_case, &profile, environment,
-          environment_count, report.environment_fingerprint,
-          report.workload_fingerprint, report.policy_fingerprint, &error)) {
+          VKR_HARNESS_TOOL_PROFILE, &effective_case, &profile,
+          report.subsystem_mask, environment, environment_count,
+          report.environment_fingerprint, report.workload_fingerprint,
+          report.policy_fingerprint, &error)) {
     vkr_harness_report_mark_incomplete(&report, "comparison.unavailable");
   }
 

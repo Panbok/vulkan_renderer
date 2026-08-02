@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "performance.windowed.boot",
+  "description": "Authoritative boot-time, residency, and work-volume evidence for full-versus-automation comparisons.",
+  "authoritative": true,
+  "dirty_policy": "require_clean",
+  "environment": {
+    "target": "windowed_hidden",
+    "required_present": "immediate",
+    "require_actual_present": true
+  },
+  "instrumentation": {
+    "gpu_timing": false,
+    "event_subjects": false
+  },
+  "execution": {
+    "minimum_repetitions": 5,
+    "warmup_stability_window": 60,
+    "warmup_max_drift_ratio": 0.1,
+    "require_warmup_stability": true,
+    "exclusive_gpu_lane": true
+  },
+  "required_metrics": [
+    "boot.instance",
+    "boot.device",
+    "boot.target",
+    "boot.systems",
+    "boot.graph",
+    "boot.scene",
+    "memory.cpu.bytes.live",
+    "memory.gpu.bytes.live",
+    "memory.gpu.live_totals_exact",
+    "draw.world.calls_issued",
+    "visibility.objects_tested"
+  ]
+}
