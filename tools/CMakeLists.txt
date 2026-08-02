@@ -6,6 +6,7 @@ find_package(Vulkan REQUIRED)
 
 add_library(vkr_harness_core STATIC
     harness/vkr_harness_camera.c
+    harness/vkr_harness_capture.c
     harness/vkr_harness_common.c
     harness/vkr_harness_artifact.c
     harness/vkr_harness_fingerprint.c
@@ -38,6 +39,7 @@ add_executable(vkr_harness
     harness/vkr_harness_child.c
     harness/vkr_harness_provenance.c
     harness/vkr_harness_samples.c
+    harness/vkr_harness_snapshot.c
 )
 
 target_link_libraries(vkr_harness PRIVATE vkr_harness_core)

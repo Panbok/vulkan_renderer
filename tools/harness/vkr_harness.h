@@ -2,6 +2,7 @@
 
 #include "containers/str.h"
 #include "containers/vkr_sort.h"
+#include "core/vkr_json_writer.h"
 #include "core/vkr_metrics.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
@@ -15,6 +16,12 @@
 #define VKR_HARNESS_SCHEMA_VERSION 1u
 #define VKR_HARNESS_CAMERA_SCRIPT_VERSION 1u
 #define VKR_HARNESS_PATH_MAX 1024u
+/**
+ * Paths recorded inside a report are relative to its run root, never absolute.
+ * Sizing them separately keeps a report's artifact and capture tables one order
+ * of magnitude smaller than the filesystem path limit would make them.
+ */
+#define VKR_HARNESS_RELATIVE_PATH_MAX 256u
 /** `"sha256:"` + 64 lowercase hex digits + terminator. */
 #define VKR_HARNESS_DIGEST_MAX 72u
 #define VKR_HARNESS_ID_MAX 96u
@@ -26,7 +33,19 @@
 #define VKR_HARNESS_MAX_REQUIRED_METRICS 64u
 #define VKR_HARNESS_MAX_RUNS 32u
 #define VKR_HARNESS_MAX_AUTHORITY_REASONS 32u
-#define VKR_HARNESS_MAX_ARTIFACTS 160u
+/**
+ * Upper bounds on the arena-backed report tables. Each writer requests the
+ * capacity its command can actually reach; these only bound what a report or a
+ * child summary file is allowed to claim.
+ */
+#define VKR_HARNESS_MAX_CAPTURE_RESULTS                                        \
+  (VKR_HARNESS_MAX_CAPTURES * VKR_HARNESS_MAX_CAPTURE_CHANNELS)
+/** Every published capture contributes canonical data, preview, and metadata.
+ */
+#define VKR_HARNESS_ARTIFACTS_PER_CAPTURE 3u
+#define VKR_HARNESS_MAX_ARTIFACTS                                              \
+  ((VKR_HARNESS_MAX_CAPTURE_RESULTS * VKR_HARNESS_ARTIFACTS_PER_CAPTURE) +     \
+   VKR_HARNESS_MAX_CAPTURES + VKR_HARNESS_MAX_RUNS + 32u)
 #define VKR_HARNESS_MAX_EVENTS 4096u
 #define VKR_HARNESS_MAX_FINGERPRINT_FIELDS 256u
 #define VKR_HARNESS_FLY_LOOKUP_SUBDIVISIONS 32u
@@ -341,17 +360,42 @@ typedef struct VkrHarnessProvenance {
 typedef struct VkrHarnessRunReference {
   uint32_t index;
   char status[24];
-  char report[VKR_HARNESS_PATH_MAX];
+  char report[VKR_HARNESS_RELATIVE_PATH_MAX];
   char sha256[VKR_HARNESS_DIGEST_MAX];
 } VkrHarnessRunReference;
 
 typedef struct VkrHarnessArtifact {
   char role[96];
-  char path[VKR_HARNESS_PATH_MAX];
+  char path[VKR_HARNESS_RELATIVE_PATH_MAX];
   char media_type[64];
   char sha256[VKR_HARNESS_DIGEST_MAX];
   char status[24];
 } VkrHarnessArtifact;
+
+typedef struct VkrHarnessCaptureResult {
+  uint32_t checkpoint_frame;
+  uint32_t capture_version;
+  char channel[64];
+  char producer_resource[64];
+  char source_format[32];
+  char canonical_encoding[32];
+  char value_kind[24];
+  char color_space[24];
+  char origin[24];
+  uint32_t width;
+  uint32_t height;
+  uint64_t source_row_pitch;
+  uint32_t mip;
+  uint32_t layer;
+  uint64_t source_frame_index;
+  uint64_t submit_serial;
+  char data_path[VKR_HARNESS_RELATIVE_PATH_MAX];
+  char data_sha256[VKR_HARNESS_DIGEST_MAX];
+  char preview_path[VKR_HARNESS_RELATIVE_PATH_MAX];
+  char preview_sha256[VKR_HARNESS_DIGEST_MAX];
+  char metadata_path[VKR_HARNESS_RELATIVE_PATH_MAX];
+  char metadata_sha256[VKR_HARNESS_DIGEST_MAX];
+} VkrHarnessCaptureResult;
 
 typedef struct VkrHarnessEvent {
   char source[128];
@@ -389,6 +433,8 @@ typedef struct VkrHarnessReport {
   bool8_t gpu_lane_lock_acquired;
   VkrHarnessRunReference runs[VKR_HARNESS_MAX_RUNS];
   uint32_t run_count;
+  VkrHarnessRunReference auxiliary_runs[VKR_HARNESS_MAX_CAPTURES];
+  uint32_t auxiliary_run_count;
   VkrHarnessMetricResult *metrics;
   uint32_t metric_count;
   VkrHarnessPassResult *passes;
@@ -397,8 +443,16 @@ typedef struct VkrHarnessReport {
   uint64_t event_subjects_truncated;
   VkrHarnessEvent *events;
   uint32_t event_count;
-  VkrHarnessArtifact artifacts[VKR_HARNESS_MAX_ARTIFACTS];
+  /* Arena-backed like `metrics`, `passes`, and `events`: a snapshot parent
+     merges hundreds of child rows, and inlining them would put megabytes on the
+     stack of every writer. Sized once by
+     `vkr_harness_report_init_storage()`. */
+  VkrHarnessCaptureResult *captures;
+  uint32_t capture_count;
+  uint32_t capture_capacity;
+  VkrHarnessArtifact *artifacts;
   uint32_t artifact_count;
+  uint32_t artifact_capacity;
 } VkrHarnessReport;
 
 void vkr_harness_error_clear(VkrHarnessError *error);
@@ -569,6 +623,18 @@ bool8_t vkr_harness_summary_csv_write(const char *path,
                                       Arena *transient,
                                       VkrHarnessError *out_error);
 
+/**
+ * Sizes the report's arena-backed capture and artifact tables.
+ *
+ * Must be called before the first `vkr_harness_report_add_artifact()` or
+ * capture publication; both refuse to write past the requested capacity rather
+ * than silently truncating evidence. Capacities are clamped to
+ * `VKR_HARNESS_MAX_CAPTURE_RESULTS` and `VKR_HARNESS_MAX_ARTIFACTS`.
+ */
+bool8_t vkr_harness_report_init_storage(VkrHarnessReport *report, Arena *arena,
+                                        uint32_t capture_capacity,
+                                        uint32_t artifact_capacity);
+
 /** Records why the run may not be used as evidence; always clears authority. */
 void vkr_harness_report_add_authority_reason(VkrHarnessReport *report,
                                              const char *reason);
@@ -586,3 +652,20 @@ void vkr_harness_report_set_status(VkrHarnessReport *report, const char *status,
 /** Terminal "evidence is missing" outcome: status, exit code, and reason. */
 void vkr_harness_report_mark_incomplete(VkrHarnessReport *report,
                                         const char *reason);
+
+/**
+ * Named-member shorthand over `core/vkr_json_writer.h` for the C strings the
+ * harness stores. Every document the harness emits goes through these, so no
+ * writer hand-builds JSON into a fixed buffer.
+ */
+bool8_t vkr_harness_json_emit_name(VkrJsonWriter *writer, const char *name);
+bool8_t vkr_harness_json_emit_string(VkrJsonWriter *writer, const char *name,
+                                     const char *value);
+bool8_t vkr_harness_json_emit_u64(VkrJsonWriter *writer, const char *name,
+                                  uint64_t value);
+bool8_t vkr_harness_json_emit_i64(VkrJsonWriter *writer, const char *name,
+                                  int64_t value);
+bool8_t vkr_harness_json_emit_f64(VkrJsonWriter *writer, const char *name,
+                                  float64_t value);
+bool8_t vkr_harness_json_emit_bool(VkrJsonWriter *writer, const char *name,
+                                   bool8_t value);

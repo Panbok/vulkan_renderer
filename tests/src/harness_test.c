@@ -1,7 +1,9 @@
 #include "harness_test.h"
 
+#include "renderer/vulkan/vulkan_capture.h"
 #include "vkr_harness.h"
 #include "vkr_harness_json.h"
+#include "vkr_harness_runtime.h"
 
 #include <assert.h>
 #include <math.h>
@@ -535,6 +537,204 @@ static void test_harness_platform_process_primitives(void) {
   printf("  test_harness_platform_process_primitives PASSED\n");
 }
 
+static void harness_test_write_f32_le(uint8_t bytes[4], float32_t value) {
+  uint32_t bits = 0u;
+  memcpy(&bits, &value, sizeof(bits));
+  bytes[0] = (uint8_t)bits;
+  bytes[1] = (uint8_t)(bits >> 8u);
+  bytes[2] = (uint8_t)(bits >> 16u);
+  bytes[3] = (uint8_t)(bits >> 24u);
+}
+
+static void test_harness_capture_catalog_and_converters(void) {
+  printf("  Running test_harness_capture_catalog_and_converters...\n");
+  assert(vkr_renderer_capture_channel_count() == 8u);
+  assert(vkr_renderer_capture_channel_from_name("missing") ==
+         VKR_CAPTURE_CHANNEL_INVALID);
+  const VkrCaptureChannelId final_color =
+      vkr_renderer_capture_channel_from_name("final_color");
+  const VkrCaptureChannelId depth =
+      vkr_renderer_capture_channel_from_name("depth");
+  const VkrCaptureChannelId picking =
+      vkr_renderer_capture_channel_from_name("picking_ids");
+  assert(final_color != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(depth != VKR_CAPTURE_CHANNEL_INVALID);
+  assert(picking != VKR_CAPTURE_CHANNEL_INVALID);
+
+#if !defined(_WIN32)
+  char first_dir[] = "/tmp/vkr-capture-first-XXXXXX";
+  char second_dir[] = "/tmp/vkr-capture-second-XXXXXX";
+  assert(mkdtemp(first_dir) && mkdtemp(second_dir));
+  Arena *persistent = arena_create(MB(1), MB(1));
+  Arena *transient = arena_create(MB(1), MB(1));
+  assert(persistent && transient);
+  VkrHarnessArenas arenas = {.persistent = persistent, .transient = transient};
+  VkrHarnessReport *first = calloc(1u, sizeof(*first));
+  VkrHarnessReport *second = calloc(1u, sizeof(*second));
+  assert(first && second);
+  assert(vkr_harness_report_init_storage(
+      first, persistent, VKR_HARNESS_MAX_CAPTURE_CHANNELS,
+      VKR_HARNESS_MAX_CAPTURE_CHANNELS * VKR_HARNESS_ARTIFACTS_PER_CAPTURE));
+  assert(vkr_harness_report_init_storage(
+      second, persistent, VKR_HARNESS_MAX_CAPTURE_CHANNELS,
+      VKR_HARNESS_MAX_CAPTURE_CHANNELS * VKR_HARNESS_ARTIFACTS_PER_CAPTURE));
+
+  const uint8_t bgra_bottom_left[] = {1,  2,  3,  4,  5,  6,  7,  8,
+                                      99, 99, 99, 99, 9,  10, 11, 12,
+                                      13, 14, 15, 16, 99, 99, 99, 99};
+  const uint16_t depth_bottom_left[] = {65535u, 32768u, 0u, 0u,
+                                        0u,     16384u, 0u, 0u};
+  const uint32_t picking_bottom_left[] = {3u, 4u, 0u, 1u, 2u, 0u};
+  VkrCaptureItemResult items[] = {
+      {.channel = final_color,
+       .width = 2u,
+       .height = 2u,
+       .row_pitch = 12u,
+       .format = VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB,
+       .value_kind = VKR_CAPTURE_VALUE_COLOR,
+       .color_space = VKR_CAPTURE_COLOR_SPACE_SRGB,
+       .origin = VKR_CAPTURE_ORIGIN_BOTTOM_LEFT,
+       .data = bgra_bottom_left,
+       .data_size = sizeof(bgra_bottom_left)},
+      {.channel = depth,
+       .width = 2u,
+       .height = 2u,
+       .row_pitch = 8u,
+       .format = VKR_TEXTURE_FORMAT_D16_UNORM,
+       .value_kind = VKR_CAPTURE_VALUE_DEPTH,
+       .origin = VKR_CAPTURE_ORIGIN_BOTTOM_LEFT,
+       .data = (const uint8_t *)depth_bottom_left,
+       .data_size = sizeof(depth_bottom_left)},
+      {.channel = picking,
+       .width = 2u,
+       .height = 2u,
+       .row_pitch = 12u,
+       .format = VKR_TEXTURE_FORMAT_R32_UINT,
+       .value_kind = VKR_CAPTURE_VALUE_UINT,
+       .origin = VKR_CAPTURE_ORIGIN_BOTTOM_LEFT,
+       .data = (const uint8_t *)picking_bottom_left,
+       .data_size = sizeof(picking_bottom_left)},
+  };
+  const VkrCapturePollResult poll = {
+      .status = VKR_CAPTURE_STATUS_READY,
+      .items = items,
+      .item_count = ArrayCount(items),
+      .source_frame_index = 7u,
+      .submit_serial = 9u,
+  };
+  VkrHarnessError error = {0};
+  assert(vkr_harness_capture_publish(first_dir, 1u, &poll, &arenas, first,
+                                     &error));
+  assert(vkr_harness_capture_publish(second_dir, 1u, &poll, &arenas, second,
+                                     &error));
+  assert(first->capture_count == 3u && second->capture_count == 3u);
+  for (uint32_t i = 0; i < first->capture_count; ++i) {
+    assert(strcmp(first->captures[i].data_sha256,
+                  second->captures[i].data_sha256) == 0);
+    assert(strcmp(first->captures[i].preview_sha256,
+                  second->captures[i].preview_sha256) == 0);
+  }
+
+  char raw_path[VKR_HARNESS_PATH_MAX];
+  snprintf(raw_path, sizeof(raw_path), "%s/%s", first_dir,
+           first->captures[1].data_path);
+  uint8_t *raw = NULL;
+  uint64_t raw_size = 0u;
+  assert(vkr_harness_read_file(raw_path, transient, &raw, &raw_size));
+  assert(raw_size == 16u);
+  uint8_t expected[16];
+  harness_test_write_f32_le(expected + 0u, 0.0f);
+  harness_test_write_f32_le(expected + 4u, 16384.0f / 65535.0f);
+  harness_test_write_f32_le(expected + 8u, 1.0f);
+  harness_test_write_f32_le(expected + 12u, 32768.0f / 65535.0f);
+  assert(memcmp(raw, expected, sizeof(expected)) == 0);
+
+  VkrHarnessReport *reports[] = {first, second};
+  const char *roots[] = {first_dir, second_dir};
+  for (uint32_t r = 0; r < ArrayCount(reports); ++r) {
+    for (uint32_t i = 0; i < reports[r]->artifact_count; ++i) {
+      char path[VKR_HARNESS_PATH_MAX];
+      snprintf(path, sizeof(path), "%s/%s", roots[r],
+               reports[r]->artifacts[i].path);
+      assert(unlink(path) == 0);
+    }
+    char captures[VKR_HARNESS_PATH_MAX];
+    snprintf(captures, sizeof(captures), "%s/captures", roots[r]);
+    assert(rmdir(captures) == 0);
+    assert(rmdir(roots[r]) == 0);
+  }
+  free(first);
+  free(second);
+  arena_destroy(transient);
+  arena_destroy(persistent);
+#endif
+  printf("  test_harness_capture_catalog_and_converters PASSED\n");
+}
+
+static void test_capture_slot_state_machine(void) {
+  printf("  Running test_capture_slot_state_machine...\n");
+  VulkanBackendState state = {0};
+  state.capture_ring.capacity = 3u;
+  state.capture_ring.initialized = true_v;
+  VulkanCaptureSlot *submitted = &state.capture_ring.slots[0];
+  submitted->state = VULKAN_CAPTURE_SLOT_RECORDED;
+  submitted->request_id = 1u;
+  submitted->item_count = submitted->recorded_count = 1u;
+  submitted->recorded_mask = 1u;
+  vulkan_capture_submit_active(&state, 2u, 7u);
+  assert(submitted->state == VULKAN_CAPTURE_SLOT_SUBMITTED);
+  assert(submitted->submit_frame_slot == 2u && submitted->submit_serial == 7u);
+  assert(vulkan_capture_release(&state, 1u));
+  assert(submitted->state == VULKAN_CAPTURE_SLOT_ABANDONED);
+
+  submitted->state = VULKAN_CAPTURE_SLOT_RECORDED;
+  submitted->request_id = 1u;
+  submitted->submit_serial = 0u;
+  assert(vulkan_capture_release(&state, 1u));
+  VkrCapturePollResult abandoned_poll = {0};
+  assert(vulkan_capture_poll(&state, 1u, &abandoned_poll) ==
+         VKR_CAPTURE_STATUS_NOT_FOUND);
+  assert(submitted->state == VULKAN_CAPTURE_SLOT_ABANDONED);
+  vulkan_capture_submit_active(&state, 1u, 8u);
+  assert(submitted->state == VULKAN_CAPTURE_SLOT_ABANDONED);
+  assert(submitted->submit_frame_slot == 1u && submitted->submit_serial == 8u);
+
+  VulkanCaptureSlot *cancelled = &state.capture_ring.slots[1];
+  cancelled->state = VULKAN_CAPTURE_SLOT_RESERVED;
+  cancelled->request_id = 2u;
+  VulkanCaptureSlot *recorded = &state.capture_ring.slots[2];
+  recorded->state = VULKAN_CAPTURE_SLOT_RECORDED;
+  recorded->request_id = 3u;
+  vulkan_capture_fail_unsubmitted(&state,
+                                  VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED);
+  assert(cancelled->state == VULKAN_CAPTURE_SLOT_FAILED);
+  assert(recorded->state == VULKAN_CAPTURE_SLOT_FAILED);
+  assert(cancelled->error == VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED);
+  assert(vulkan_capture_release(&state, 2u));
+  assert(cancelled->state == VULKAN_CAPTURE_SLOT_IDLE);
+  assert(!vulkan_capture_release(&state, 99u));
+
+  submitted->state = VULKAN_CAPTURE_SLOT_FAILED;
+  submitted->request_id = 1u;
+  cancelled->state = VULKAN_CAPTURE_SLOT_FAILED;
+  cancelled->request_id = 2u;
+  recorded->state = VULKAN_CAPTURE_SLOT_FAILED;
+  recorded->request_id = 3u;
+  state.capture_ring.last_request_id = 3u;
+  VkrCaptureItemRequest item = {.channel = 0u};
+  VkrCaptureBatchRequest request = {
+      .request_id = 4u, .items = &item, .item_count = 1u};
+  VkrCaptureBackendItemPlan plan = {
+      .result = {.width = 1u, .height = 1u, .data_size = 4u}};
+  VkrBackendResourceHandle buffer = {0};
+  assert(vulkan_capture_reserve(&state, &request, &plan, 0u, &buffer) ==
+         VKR_RENDERER_ERROR_CAPTURE_BUSY);
+  request.request_id = 3u;
+  assert(vulkan_capture_reserve(&state, &request, &plan, 0u, &buffer) ==
+         VKR_RENDERER_ERROR_INVALID_PARAMETER);
+  printf("  test_capture_slot_state_machine PASSED\n");
+}
+
 bool32_t run_harness_tests(void) {
   printf("--- Running Harness tests... ---\n");
   test_harness_hash_and_statistics();
@@ -548,6 +748,8 @@ bool32_t run_harness_tests(void) {
   test_harness_report_shape();
   test_harness_safe_paths();
   test_harness_platform_process_primitives();
+  test_harness_capture_catalog_and_converters();
+  test_capture_slot_state_machine();
   printf("--- Harness tests completed. ---\n");
   return true;
 }

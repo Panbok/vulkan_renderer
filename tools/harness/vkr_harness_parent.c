@@ -696,7 +696,13 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
      written, so they share one bump allocation released at exit. */
   VkrHarnessArenas arenas = {.persistent = arena_create(),
                              .transient = arena_create()};
-  if (!arenas.persistent || !arenas.transient) {
+  /* A capture-free command publishes no capture rows. Each repetition
+     contributes its report, samples, stdout, and stderr; the aggregate adds
+     `summary.csv`. */
+  if (!arenas.persistent || !arenas.transient ||
+      !vkr_harness_report_init_storage(&report, arenas.persistent, 0u,
+                                       (report.requested_repetitions * 4u) +
+                                           8u)) {
     vkr_harness_stderr("Unable to create the aggregation arenas\n");
     arena_destroy(arenas.persistent);
     arena_destroy(arenas.transient);

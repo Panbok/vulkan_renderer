@@ -160,6 +160,32 @@ const char *vkr_harness_unsupported(const VkrHarnessCase *case_manifest,
 
 int vkr_harness_child_run(const char *executable, const char *repo_root,
                           const char *case_path, const char *profile_path,
-                          const char *run_dir, bool8_t prewarm);
+                          const char *run_dir, bool8_t prewarm,
+                          int32_t capture_index);
 int vkr_harness_profile_run(const char *executable, const char *repo_root,
                             const char *case_path, const char *profile_path);
+int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
+                             const char *case_path, const char *profile_path);
+bool8_t vkr_harness_capture_publish(const char *run_dir,
+                                    uint32_t checkpoint_frame,
+                                    const VkrCapturePollResult *poll,
+                                    const VkrHarnessArenas *arenas,
+                                    VkrHarnessReport *report,
+                                    VkrHarnessError *error);
+
+typedef struct VkrHarnessCaptureSummary {
+  VkrHarnessProvenance provenance;
+  const VkrHarnessCaptureResult *captures;
+  uint32_t capture_count;
+  const VkrHarnessArtifact *artifacts;
+  uint32_t artifact_count;
+} VkrHarnessCaptureSummary;
+
+/** Compact parent/child transport for snapshot metadata, not a public artifact.
+ */
+bool8_t vkr_harness_capture_summary_write(const char *path,
+                                          const VkrHarnessReport *report,
+                                          Arena *transient,
+                                          VkrHarnessError *error);
+bool8_t vkr_harness_capture_summary_read(const char *path, Arena *arena,
+                                         VkrHarnessCaptureSummary *out_summary);

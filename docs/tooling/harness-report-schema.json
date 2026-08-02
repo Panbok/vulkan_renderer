@@ -119,7 +119,10 @@
       }
     },
     "auxiliary_runs": {
-      "type": "array"
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/run"
+      }
     },
     "aggregate": {
       "type": "object",
@@ -147,7 +150,10 @@
       "$ref": "#/definitions/events"
     },
     "captures": {
-      "type": "array"
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/capture"
+      }
     },
     "assertions": {
       "type": "array",
@@ -567,6 +573,122 @@
         "unavailable_reason": {
           "type": "string",
           "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "capture": {
+      "type": "object",
+      "required": [
+        "checkpoint_frame",
+        "capture_version",
+        "channel",
+        "producer_resource",
+        "source_format",
+        "canonical_encoding",
+        "value_kind",
+        "color_space",
+        "origin",
+        "width",
+        "height",
+        "source_row_pitch",
+        "mip",
+        "layer",
+        "source_frame_index",
+        "submit_serial",
+        "data_path",
+        "data_sha256",
+        "preview_path",
+        "preview_sha256",
+        "metadata_path",
+        "metadata_sha256"
+      ],
+      "properties": {
+        "checkpoint_frame": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "capture_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "channel": {
+          "type": "string",
+          "minLength": 1
+        },
+        "producer_resource": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_format": {
+          "type": "string",
+          "minLength": 1
+        },
+        "canonical_encoding": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value_kind": {
+          "enum": [
+            "color",
+            "depth",
+            "uint"
+          ]
+        },
+        "color_space": {
+          "enum": [
+            "srgb",
+            "none"
+          ]
+        },
+        "origin": {
+          "const": "top_left"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "source_row_pitch": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "mip": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "layer": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "source_frame_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "submit_serial": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "data_path": {
+          "$ref": "#/definitions/safe_path"
+        },
+        "data_sha256": {
+          "$ref": "#/definitions/digest"
+        },
+        "preview_path": {
+          "$ref": "#/definitions/safe_path"
+        },
+        "preview_sha256": {
+          "$ref": "#/definitions/digest"
+        },
+        "metadata_path": {
+          "$ref": "#/definitions/safe_path"
+        },
+        "metadata_sha256": {
+          "$ref": "#/definitions/digest"
         }
       },
       "additionalProperties": false
