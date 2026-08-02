@@ -13,22 +13,6 @@
 #include "renderer/systems/vkr_shader_system.h"
 #include "renderer/vulkan/vulkan_types.h"
 
-static VkrTextureFormat vkr_editor_viewport_get_swapchain_format(
-    RendererFrontend *rf) {
-  if (!rf) {
-    return VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM;
-  }
-
-  VkrTextureOpaqueHandle swapchain_tex =
-      vkr_renderer_window_attachment_get(rf, 0);
-  if (!swapchain_tex) {
-    return VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM;
-  }
-
-  struct s_TextureHandle *handle = (struct s_TextureHandle *)swapchain_tex;
-  return handle->description.format;
-}
-
 static Vec4 vkr_editor_viewport_compute_panel_rect(uint32_t width,
                                                    uint32_t height) {
   const uint32_t top_bar =
@@ -94,7 +78,8 @@ bool8_t vkr_editor_viewport_init(RendererFrontend *rf,
   VkrRenderPassHandle renderpass =
       vkr_renderer_renderpass_get(rf, string8_lit("Renderpass.Editor"));
   if (!renderpass) {
-    VkrTextureFormat color_format = vkr_editor_viewport_get_swapchain_format(rf);
+    VkrTextureFormat color_format = vkr_renderer_present_target_format(
+        rf, VKR_PRESENT_TARGET_ATTACHMENT_COLOR);
     VkrClearValue clear_color = {.color_f32 = {0.0f, 0.0f, 0.0f, 1.0f}};
     VkrRenderPassAttachmentDesc editor_color = {
         .format = color_format,
@@ -104,7 +89,10 @@ bool8_t vkr_editor_viewport_init(RendererFrontend *rf,
         .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
         .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
         .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
-        .final_layout = VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR,
+        .final_layout =
+            vkr_renderer_present_target_kind(rf) == VKR_PRESENT_TARGET_WINDOWED
+                ? VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR
+                : VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
         .clear_value = clear_color,
     };
     VkrRenderPassDesc editor_desc = {
@@ -143,7 +131,8 @@ bool8_t vkr_editor_viewport_init(RendererFrontend *rf,
 
   resources->shader_config = *(VkrShaderConfig *)cfg_info.as.custom;
 
-  if (!vkr_shader_system_create(&rf->shader_system, &resources->shader_config)) {
+  if (!vkr_shader_system_create(&rf->shader_system,
+                                &resources->shader_config)) {
     log_error("Editor viewport shader create failed");
     if (owns_renderpass) {
       vkr_renderer_renderpass_destroy(rf, resources->renderpass);
@@ -202,8 +191,8 @@ bool8_t vkr_editor_viewport_init(RendererFrontend *rf,
   verts[0].position = vec2_new(0.0f, 0.0f);
   verts[0].texcoord = vec2_new(0.0f, 1.0f);
 
-  verts[1].position = vec2_new(resources->plane_size.x,
-                               resources->plane_size.y);
+  verts[1].position =
+      vec2_new(resources->plane_size.x, resources->plane_size.y);
   verts[1].texcoord = vec2_new(1.0f, 0.0f);
 
   verts[2].position = vec2_new(0.0f, resources->plane_size.y);
@@ -229,9 +218,8 @@ bool8_t vkr_editor_viewport_init(RendererFrontend *rf,
   string_format(geo_cfg.name, sizeof(geo_cfg.name), "Editor Viewport Plane");
 
   VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
-  VkrGeometryHandle geometry =
-      vkr_geometry_system_create(&rf->geometry_system, &geo_cfg, true_v,
-                                 &geo_err);
+  VkrGeometryHandle geometry = vkr_geometry_system_create(
+      &rf->geometry_system, &geo_cfg, true_v, &geo_err);
   if (geometry.id == 0) {
     String8 err = vkr_renderer_get_error_string(geo_err);
     log_error("Editor viewport geometry create failed: %s", string8_cstr(&err));
@@ -330,8 +318,8 @@ bool8_t vkr_editor_viewport_compute_mapping(uint32_t window_width,
   }
 
   float32_t clamped_scale = vkr_clamp_f32(render_scale, 0.25f, 2.0f);
-  Vec4 panel = vkr_editor_viewport_compute_panel_rect(window_width,
-                                                      window_height);
+  Vec4 panel =
+      vkr_editor_viewport_compute_panel_rect(window_width, window_height);
 
   const float32_t panel_w = vkr_max_f32(1.0f, panel.z);
   const float32_t panel_h = vkr_max_f32(1.0f, panel.w);

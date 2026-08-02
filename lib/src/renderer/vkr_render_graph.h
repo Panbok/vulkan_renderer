@@ -541,8 +541,10 @@ typedef struct VkrRgPassBuilder {
  */
 typedef struct VkrRenderGraphFrameInfo {
   uint32_t frame_index;     /**< Current frame index */
-  uint32_t image_index;     /**< Swapchain image index */
+  uint32_t image_index;     /**< Present-target image index */
   float64_t delta_time;     /**< Frame delta time */
+  uint32_t target_width;    /**< Present-target width */
+  uint32_t target_height;   /**< Present-target height */
   uint32_t window_width;    /**< Window width */
   uint32_t window_height;   /**< Window height */
   uint32_t viewport_width;  /**< Viewport width */
@@ -553,11 +555,16 @@ typedef struct VkrRenderGraphFrameInfo {
    * and passes so a non-picking frame pays nothing for them.
    */
   bool8_t picking_pending;
-  VkrTextureFormat swapchain_format;       /**< Swapchain color format */
-  VkrTextureFormat swapchain_depth_format; /**< Swapchain depth format */
-  VkrTextureFormat shadow_depth_format;    /**< Shadow map depth format */
-  uint32_t shadow_map_size;                /**< Shadow map dimension */
-  uint32_t shadow_cascade_count;           /**< Number of shadow cascades */
+  VkrTextureFormat target_color_format; /**< Present-target color format */
+  VkrTextureFormat target_depth_format; /**< Present-target depth format */
+  /** Access/layout each imported target attachment arrives in. */
+  VkrPresentTargetImageState target_color_initial_state;
+  VkrPresentTargetImageState target_depth_initial_state;
+  /** Access/layout the graph must leave the present image in. */
+  VkrPresentTargetImageState target_terminal_state;
+  VkrTextureFormat shadow_depth_format; /**< Shadow map depth format */
+  uint32_t shadow_map_size;             /**< Shadow map dimension */
+  uint32_t shadow_cascade_count;        /**< Number of shadow cascades */
 } VkrRenderGraphFrameInfo;
 
 /**
@@ -607,6 +614,15 @@ VkrRenderGraph *vkr_rg_create(VkrAllocator *allocator);
  * @param graph Graph to destroy; no-op if NULL
  */
 void vkr_rg_destroy(VkrRenderGraph *graph);
+
+/**
+ * @brief Drops every cached framebuffer, keeping the cached render passes.
+ *
+ * Present-target recreation retires the attachment views the framebuffers were
+ * built from, while the render passes stay valid because their formats do not
+ * change. The caller must prove GPU completion first.
+ */
+void vkr_rg_invalidate_render_targets(VkrRenderGraph *graph);
 
 /**
  * @brief Starts a new frame; updates frame info and may resize/recreate

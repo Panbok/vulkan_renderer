@@ -128,6 +128,7 @@ typedef struct ApplicationConfig {
   bool8_t disable_camera_controller;
   bool8_t window_hidden;
   bool8_t disable_skybox;
+  VkrPresentTargetConfig present_target;
   VkrPresentMode requested_present_mode;
   bool8_t capture_enabled;
   uint32_t capture_ring_capacity;
@@ -219,6 +220,18 @@ typedef struct Application {
   VkrRendererError last_renderer_error;
   /* Per-pass GPU timing is owned by `metrics->config.pass_gpu_timings`. */
 } Application;
+
+/**
+ * @brief True when the application owns a window.
+ *
+ * An offscreen application creates no window, so it has no surface, input
+ * state, or gamepads to poll, update, or destroy.
+ */
+vkr_internal INLINE bool8_t
+application_is_windowed(const Application *application) {
+  return application->config->present_target.kind !=
+         VKR_PRESENT_TARGET_OFFSCREEN;
+}
 
 /**
  * @brief Default event handler for general application events.
@@ -409,10 +422,17 @@ bool8_t application_create(Application *application,
   }
 
   event_manager_create(&application->event_manager);
-  application->window.hidden = config->window_hidden;
-  vkr_window_create(&application->window, &application->event_manager,
-                    config->title, config->x, config->y, config->width,
-                    config->height);
+  const bool8_t windowed =
+      config->present_target.kind != VKR_PRESENT_TARGET_OFFSCREEN;
+  if (windowed) {
+    application->window.hidden = config->window_hidden;
+    if (!vkr_window_create(&application->window, &application->event_manager,
+                           config->title, config->x, config->y, config->width,
+                           config->height)) {
+      log_fatal("Failed to create application window");
+      return false_v;
+    }
+  }
   application->clock = vkr_clock_create();
   if (!vkr_mutex_create(&application->app_allocator, &application->app_mutex)) {
     log_fatal("Failed to create application mutex!");
@@ -433,6 +453,7 @@ bool8_t application_create(Application *application,
       .pipeline_create_metrics = metrics_producers->pipeline_create,
       .shader_load_metrics = metrics_producers->shader_load,
       .shader_reflection_metrics = metrics_producers->shader_reflection,
+      .present_target = config->present_target,
       .requested_present_mode = config->requested_present_mode,
       .capture_enabled = config->capture_enabled,
       .capture_ring_capacity = config->capture_ring_capacity,
@@ -440,7 +461,7 @@ bool8_t application_create(Application *application,
   };
   if (!vkr_renderer_initialize(
           &application->renderer, VKR_RENDERER_BACKEND_TYPE_VULKAN,
-          &application->window, &application->event_manager,
+          windowed ? &application->window : NULL, &application->event_manager,
           &application->config->device_requirements, &backend_cfg,
           application->config->target_frame_rate, &renderer_error)) {
     log_fatal("Failed to create renderer!");
@@ -453,7 +474,9 @@ bool8_t application_create(Application *application,
     return false_v;
   }
 
-  vkr_gamepad_init(&application->gamepad, &application->window.input_state);
+  if (windowed) {
+    vkr_gamepad_init(&application->gamepad, &application->window.input_state);
+  }
 
   /* The closure is always recomputed from the config's intent, so a caller
      cannot hand-assemble an `effective_mask` that the renderer never agreed
@@ -1480,8 +1503,12 @@ void application_start(Application *application) {
       delta = target_frame_seconds > 0.0 ? target_frame_seconds : (1.0 / 60.0);
     }
 
-    running = vkr_window_update(&application->window);
-    vkr_gamepad_poll_all(&application->gamepad);
+    // Without a window there is no close request or input device to poll; an
+    // offscreen run ends through its own exit condition.
+    if (application_is_windowed(application)) {
+      running = vkr_window_update(&application->window);
+      vkr_gamepad_poll_all(&application->gamepad);
+    }
 
     if (!running ||
         bitset8_is_set(&application->app_flags, APPLICATION_FLAG_SUSPENDED)) {
@@ -1631,7 +1658,9 @@ void application_start(Application *application) {
 
     application->last_frame_time = current_total_time;
 
-    input_update(&application->window.input_state);
+    if (application_is_windowed(application)) {
+      input_update(&application->window.input_state);
+    }
   }
 }
 
@@ -1724,10 +1753,14 @@ void application_shutdown(Application *application) {
   vkr_job_system_shutdown(&application->job_system);
 
   vkr_renderer_destroy(&application->renderer);
-  vkr_window_destroy(&application->window);
+  if (application_is_windowed(application)) {
+    vkr_window_destroy(&application->window);
+  }
   event_manager_destroy(&application->event_manager);
   vkr_mutex_destroy(&application->app_allocator, &application->app_mutex);
-  vkr_gamepad_shutdown(&application->gamepad);
+  if (application_is_windowed(application)) {
+    vkr_gamepad_shutdown(&application->gamepad);
+  }
 
   arena_destroy(application->metrics_arena);
   application->metrics_arena = NULL;

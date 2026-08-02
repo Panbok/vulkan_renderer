@@ -63,46 +63,48 @@ QueueFamilyIndexResult find_queue_family_indices(VulkanBackendState *state,
   vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_family_count,
                                            queue_family_properties.data);
 
+  int32_t fallback_transfer = -1;
   for (uint32_t i = 0; i < queue_family_count; i++) {
-    QueueFamilyIndex *graphics_index =
-        &result.indices[QUEUE_FAMILY_TYPE_GRAPHICS];
-    QueueFamilyIndex *present_index =
-        &result.indices[QUEUE_FAMILY_TYPE_PRESENT];
-    QueueFamilyIndex *transfer_index =
-        &result.indices[QUEUE_FAMILY_TYPE_TRANSFER];
-
-    if (graphics_index->is_present && present_index->is_present &&
-        transfer_index->is_present) {
-      break;
-    }
-
     VkQueueFamilyProperties properties =
         *array_get_VkQueueFamilyProperties(&queue_family_properties, i);
 
     if ((properties.queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
-        !graphics_index->is_present) {
-      QueueFamilyIndex index = {
+        !result.indices[QUEUE_FAMILY_TYPE_GRAPHICS].is_present) {
+      result.indices[QUEUE_FAMILY_TYPE_GRAPHICS] = (QueueFamilyIndex){
           .index = i, .type = QUEUE_FAMILY_TYPE_GRAPHICS, .is_present = true};
-      result.indices[QUEUE_FAMILY_TYPE_GRAPHICS] = index;
-      continue;
     }
 
-    VkBool32 presentSupport = false;
-    vkGetPhysicalDeviceSurfaceSupportKHR(device, i, state->surface,
-                                         &presentSupport);
-    if (presentSupport && !present_index->is_present) {
-      QueueFamilyIndex index = {
-          .index = i, .type = QUEUE_FAMILY_TYPE_PRESENT, .is_present = true};
-      result.indices[QUEUE_FAMILY_TYPE_PRESENT] = index;
-      continue;
+    if (vulkan_present_target_uses_wsi(state) &&
+        !result.indices[QUEUE_FAMILY_TYPE_PRESENT].is_present) {
+      VkBool32 present_support = false;
+      vkGetPhysicalDeviceSurfaceSupportKHR(device, i, state->surface,
+                                           &present_support);
+      if (present_support) {
+        result.indices[QUEUE_FAMILY_TYPE_PRESENT] = (QueueFamilyIndex){
+            .index = i, .type = QUEUE_FAMILY_TYPE_PRESENT, .is_present = true};
+      }
     }
 
-    if ((properties.queueFlags & VK_QUEUE_TRANSFER_BIT) &&
-        !transfer_index->is_present) {
-      QueueFamilyIndex index = {
-          .index = i, .type = QUEUE_FAMILY_TYPE_TRANSFER, .is_present = true};
-      result.indices[QUEUE_FAMILY_TYPE_TRANSFER] = index;
+    // A dedicated transfer family is preferred, but every graphics family also
+    // accepts transfers, so remember the first candidate as the fallback.
+    if (properties.queueFlags & VK_QUEUE_TRANSFER_BIT) {
+      if (fallback_transfer < 0) {
+        fallback_transfer = (int32_t)i;
+      }
+      if ((properties.queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0 &&
+          !result.indices[QUEUE_FAMILY_TYPE_TRANSFER].is_present) {
+        result.indices[QUEUE_FAMILY_TYPE_TRANSFER] = (QueueFamilyIndex){
+            .index = i, .type = QUEUE_FAMILY_TYPE_TRANSFER, .is_present = true};
+      }
     }
+  }
+
+  if (!result.indices[QUEUE_FAMILY_TYPE_TRANSFER].is_present &&
+      fallback_transfer >= 0) {
+    result.indices[QUEUE_FAMILY_TYPE_TRANSFER] =
+        (QueueFamilyIndex){.index = (uint32_t)fallback_transfer,
+                           .type = QUEUE_FAMILY_TYPE_TRANSFER,
+                           .is_present = true};
   }
 
   array_destroy_VkQueueFamilyProperties(&queue_family_properties);

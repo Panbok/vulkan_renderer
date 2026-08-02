@@ -644,7 +644,7 @@ vkr_internal uint32_t vkr_rg_resolve_image_count(const VkrRenderGraph *graph,
     return 1;
   }
 
-  uint32_t count = vkr_renderer_window_attachment_count(graph->renderer);
+  uint32_t count = vkr_renderer_present_target_image_count(graph->renderer);
   return count > 0 ? count : 1;
 }
 
@@ -662,7 +662,7 @@ vkr_internal uint32_t vkr_rg_resolve_buffer_count(const VkrRenderGraph *graph,
     return 1;
   }
 
-  uint32_t count = vkr_renderer_window_attachment_count(graph->renderer);
+  uint32_t count = vkr_renderer_present_target_image_count(graph->renderer);
   return count > 0 ? count : 1;
 }
 
@@ -758,14 +758,13 @@ vkr_internal bool8_t vkr_rg_refresh_imported_textures(VkrRenderGraph *graph,
 
   if (vkr_string8_equals_cstr_i(&image->name, "swapchain")) {
     for (uint32_t i = 0; i < image->texture_count; ++i) {
-      image->textures[i] =
-          vkr_renderer_window_attachment_get(graph->renderer, i);
+      image->textures[i] = vkr_renderer_present_target_attachment_get(
+          graph->renderer, VKR_PRESENT_TARGET_ATTACHMENT_COLOR, i);
     }
   } else if (vkr_string8_equals_cstr_i(&image->name, "swapchain_depth")) {
-    VkrTextureOpaqueHandle depth =
-        vkr_renderer_depth_attachment_get(graph->renderer);
     for (uint32_t i = 0; i < image->texture_count; ++i) {
-      image->textures[i] = depth;
+      image->textures[i] = vkr_renderer_present_target_attachment_get(
+          graph->renderer, VKR_PRESENT_TARGET_ATTACHMENT_DEPTH, i);
     }
   } else if (image->imported_handle) {
     for (uint32_t i = 0; i < image->texture_count; ++i) {
@@ -1286,7 +1285,7 @@ vkr_internal bool8_t vkr_rg_build_pass_targets(VkrRenderGraph *graph,
   }
 
   uint32_t target_count =
-      per_image ? vkr_renderer_window_attachment_count(graph->renderer) : 1;
+      per_image ? vkr_renderer_present_target_image_count(graph->renderer) : 1;
   if (target_count == 0) {
     target_count = 1;
   }
@@ -2146,6 +2145,7 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
   if (!vkr_rg_ensure_barrier_state(graph)) {
     return false_v;
   }
+  vector_clear_VkrRgImageBarrier(&graph->terminal_image_barriers);
 
   for (uint64_t order_index = 0; order_index < graph->execution_order.length;
        ++order_index) {
@@ -2221,6 +2221,34 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
                                 touched_buffer_count);
   }
 
+  /* The graph owns the target's completion transition, so the backend never
+     injects a hidden one at end_frame. The present image is single-mip and
+     single-layer, so subresource 0 describes all of it. */
+  const VkrPresentTargetImageState terminal =
+      graph->frame_info.target_terminal_state;
+  if (vkr_rg_image_handle_valid(graph->present_image) &&
+      terminal.access != VKR_IMAGE_ACCESS_NONE &&
+      terminal.layout != VKR_TEXTURE_LAYOUT_UNDEFINED) {
+    uint32_t target_index = graph->present_image.id - 1u;
+    VkrRgSubresourceState *state =
+        &graph->subresource_states[graph->image_state_offsets[target_index]];
+    VkrRgImageBarrier barrier = {
+        .image = graph->present_image,
+        .src_access = state->access,
+        .dst_access = (VkrRgImageAccessFlags)terminal.access,
+        .src_layout = state->layout,
+        .dst_layout = terminal.layout,
+    };
+    // A write must still be made visible even when the layout already matches.
+    if (barrier.src_access != barrier.dst_access ||
+        barrier.src_layout != barrier.dst_layout ||
+        vkr_image_access_is_write(barrier.src_access)) {
+      vector_push_VkrRgImageBarrier(&graph->terminal_image_barriers, barrier);
+    }
+    state->access = barrier.dst_access;
+    state->layout = barrier.dst_layout;
+  }
+
   // Exported images report subresource 0's layout. Layers left in differing
   // layouts cannot be described by a single export layout, so warn rather than
   // pick one silently.
@@ -2258,6 +2286,7 @@ bool8_t vkr_rg_compile_schedule(VkrRenderGraph *graph) {
     vector_clear_VkrRgBufferBarrier(&pass->pre_buffer_barriers);
     pass->culled = false_v;
   }
+  vector_clear_VkrRgImageBarrier(&graph->terminal_image_barriers);
 
   for (uint64_t i = 0; i < graph->passes.length; ++i) {
     VkrRgPass *pass = vector_get_VkrRgPass(&graph->passes, i);

@@ -176,6 +176,8 @@ typedef struct VkrRenderGraph {
       render_target_cache; /**< Cached render passes + framebuffers */
 
   VkrRgImageHandle present_image; /**< Image used for present (swapchain) */
+  Vector_VkrRgImageBarrier
+      terminal_image_barriers; /**< Graph-owned target completion barriers */
   Vector_VkrRgImageHandle export_images;   /**< Images marked for export */
   Vector_VkrRgBufferHandle export_buffers; /**< Buffers marked for export */
 

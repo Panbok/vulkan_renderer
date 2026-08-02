@@ -26,17 +26,9 @@
 
 vkr_internal VkrTextureFormat
 vkr_picking_get_depth_format(RendererFrontend *rf) {
-  if (!rf) {
-    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
-  }
-
-  VkrTextureOpaqueHandle depth_tex = vkr_renderer_depth_attachment_get(rf);
-  if (!depth_tex) {
-    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
-  }
-
-  struct s_TextureHandle *handle = (struct s_TextureHandle *)depth_tex;
-  return handle->description.format;
+  return rf ? vkr_renderer_present_target_format(
+                  rf, VKR_PRESENT_TARGET_ATTACHMENT_DEPTH)
+            : VKR_TEXTURE_FORMAT_D32_SFLOAT;
 }
 
 /**

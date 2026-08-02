@@ -16,6 +16,11 @@ const char **vulkan_platform_get_required_extensions(uint32_t *out_count) {
   return extensions;
 }
 
+bool8_t vulkan_platform_extension_is_surface(const char *extension_name) {
+  return string_equals(extension_name, VK_KHR_SURFACE_EXTENSION_NAME) ||
+         string_equals(extension_name, VK_EXT_METAL_SURFACE_EXTENSION_NAME);
+}
+
 const char **
 vulkan_platform_get_required_device_extensions(uint32_t *out_count) {
   static const char *extensions[] = {

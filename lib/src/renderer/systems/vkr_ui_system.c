@@ -29,7 +29,7 @@ vkr_internal bool8_t vkr_ui_system_get_layout_size(RendererFrontend *rf,
 
   uint32_t width = rf->last_window_width;
   uint32_t height = rf->last_window_height;
-  if (width == 0 || height == 0) {
+  if ((width == 0 || height == 0) && rf->window) {
     VkrWindowPixelSize size = vkr_window_get_pixel_size(rf->window);
     width = size.width;
     height = size.height;
@@ -201,8 +201,8 @@ bool8_t vkr_ui_system_init(RendererFrontend *rf, VkrUiSystem *system) {
   VkrRendererError material_err = VKR_RENDERER_ERROR_NONE;
   if (vkr_resource_system_load_sync(
           VKR_RESOURCE_TYPE_MATERIAL,
-          string8_lit("assets/materials/default.ui.mt"),
-          &rf->scratch_allocator, &material_info, &material_err)) {
+          string8_lit("assets/materials/default.ui.mt"), &rf->scratch_allocator,
+          &material_info, &material_err)) {
     system->material = material_info.as.material;
   } else {
     String8 err_str = vkr_renderer_get_error_string(material_err);

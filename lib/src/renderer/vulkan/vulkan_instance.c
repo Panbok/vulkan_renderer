@@ -38,11 +38,10 @@ static bool32_t check_validation_layer_support(VulkanBackendState *state,
 
 bool32_t vulkan_instance_create(VulkanBackendState *state, VkrWindow *window) {
   assert_log(state != NULL, "State is NULL");
-  assert_log(window != NULL, "Window is NULL");
 
   VkApplicationInfo app_info = {
       .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-      .pApplicationName = window->title,
+      .pApplicationName = window ? window->title : "vulkan_renderer.offscreen",
       .applicationVersion = VK_MAKE_VERSION(1, 0, 0),
       .pEngineName = "Vulkan Renderer",
       .engineVersion = VK_MAKE_VERSION(1, 0, 0),
@@ -53,9 +52,21 @@ bool32_t vulkan_instance_create(VulkanBackendState *state, VkrWindow *window) {
   create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   create_info.pApplicationInfo = &app_info;
 
+  uint32_t required_extension_count = 0;
+  const char **required_extension_names =
+      vulkan_platform_get_required_extensions(&required_extension_count);
+  const char *extension_names[16] = {0};
+  assert_log(required_extension_count <= ArrayCount(extension_names),
+             "Too many required instance extensions");
+  const bool8_t offscreen = !vulkan_present_target_uses_wsi(state);
   uint32_t extension_count = 0;
-  const char **extension_names =
-      vulkan_platform_get_required_extensions(&extension_count);
+  for (uint32_t i = 0; i < required_extension_count; ++i) {
+    if (offscreen &&
+        vulkan_platform_extension_is_surface(required_extension_names[i])) {
+      continue;
+    }
+    extension_names[extension_count++] = required_extension_names[i];
+  }
 
 #ifndef NDEBUG
   if (!check_validation_layer_support(state, VALIDATION_LAYERS,

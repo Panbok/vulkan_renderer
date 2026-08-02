@@ -212,13 +212,6 @@ void renderer_vulkan_draw_indexed_indirect(
     void *backend_state, VkrBackendResourceHandle indirect_buffer,
     uint64_t offset, uint32_t draw_count, uint32_t stride);
 
-VkrTextureOpaqueHandle
-renderer_vulkan_window_attachment_get(void *backend_state,
-                                      uint32_t image_index);
-VkrTextureOpaqueHandle
-renderer_vulkan_depth_attachment_get(void *backend_state);
-uint32_t renderer_vulkan_window_attachment_count(void *backend_state);
-uint32_t renderer_vulkan_window_attachment_index(void *backend_state);
 uint32_t renderer_vulkan_frame_in_flight_index(void *backend_state);
 uint32_t renderer_vulkan_frame_in_flight_count(void *backend_state);
 VkrTextureFormat renderer_vulkan_shadow_depth_format_get(void *backend_state);

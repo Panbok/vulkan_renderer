@@ -106,7 +106,9 @@ vkr_internal bool8_t vkr_renderer_on_window_resize(Event *event,
 vkr_internal void
 renderer_frontend_regenerate_render_targets(RendererFrontend *rf) {
   assert_log(rf != NULL, "Renderer frontend is NULL");
-  (void)rf;
+  if (rf->render_graph) {
+    vkr_rg_invalidate_render_targets(rf->render_graph);
+  }
 }
 
 vkr_internal void renderer_frontend_on_target_refresh_required(void) {
@@ -306,10 +308,26 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
                                  uint64_t target_frame_rate,
                                  VkrRendererError *out_error) {
   assert_log(renderer != NULL, "Renderer is NULL");
-  assert_log(window != NULL, "Window is NULL");
   assert_log(event_manager != NULL, "Event manager is NULL");
   assert_log(out_error != NULL, "Out error is NULL");
   assert_log(device_requirements != NULL, "Device requirements is NULL");
+
+  VkrPresentTargetConfig requested_target = backend_config
+                                                ? backend_config->present_target
+                                                : (VkrPresentTargetConfig){0};
+  if (requested_target.kind == VKR_PRESENT_TARGET_OFFSCREEN) {
+    if (requested_target.width == 0 || requested_target.height == 0 ||
+        requested_target.image_count == 0) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+      log_error("Offscreen target requires non-zero width, height, and image "
+                "count");
+      return false_v;
+    }
+  } else if (!window) {
+    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    log_error("Windowed target requires a window");
+    return false_v;
+  }
 
   // if (!vkr_dmemory_create(MB(100), MB(500), &renderer->dmemory)) {
   //   log_fatal("Failed to create dmemory!");
@@ -348,6 +366,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   // Initialize struct in-place
   renderer->backend_type = backend_type;
   renderer->window = window;
+  renderer->present_target = requested_target;
   renderer->event_manager = event_manager;
   renderer->frame_active = false;
   renderer->backend_state = NULL;
@@ -416,11 +435,19 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
-  VkrWindowPixelSize initial = vkr_window_get_pixel_size(window);
+  VkrWindowPixelSize initial = requested_target.kind ==
+                                       VKR_PRESENT_TARGET_OFFSCREEN
+                                   ? (VkrWindowPixelSize){
+                                         .width = requested_target.width,
+                                         .height = requested_target.height,
+                                     }
+                                   : vkr_window_get_pixel_size(window);
   renderer->last_window_width = initial.width;
   renderer->last_window_height = initial.height;
-  renderer->window->width = initial.width;
-  renderer->window->height = initial.height;
+  if (renderer->window) {
+    renderer->window->width = initial.width;
+    renderer->window->height = initial.height;
+  }
   uint32_t width = initial.width;
   uint32_t height = initial.height;
 
@@ -438,6 +465,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
       .on_render_target_refresh_required =
           renderer_frontend_on_target_refresh_required,
       .boot_metrics = &renderer->boot_metrics,
+      .present_target = requested_target,
   };
   if (backend_config) {
     resolved_backend_config = *backend_config;
@@ -464,9 +492,10 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->supports_draw_indirect_first_instance =
       device_info.supports_draw_indirect_first_instance;
 
-  // Subscribe to window resize events internally
-  event_manager_subscribe(renderer->event_manager, EVENT_TYPE_WINDOW_RESIZE,
-                          vkr_renderer_on_window_resize, renderer);
+  if (requested_target.kind != VKR_PRESENT_TARGET_OFFSCREEN) {
+    event_manager_subscribe(renderer->event_manager, EVENT_TYPE_WINDOW_RESIZE,
+                            vkr_renderer_on_window_resize, renderer);
+  }
 
   *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
@@ -1691,42 +1720,132 @@ vkr_renderer_end_render_pass(VkrRendererFrontendHandle renderer) {
   return renderer->backend.end_render_pass(renderer->backend_state);
 }
 
-VkrTextureOpaqueHandle
-vkr_renderer_window_attachment_get(VkrRendererFrontendHandle renderer,
-                                   uint32_t image_index) {
+VkrTextureOpaqueHandle vkr_renderer_present_target_attachment_get(
+    VkrRendererFrontendHandle renderer, VkrPresentTargetAttachment attachment,
+    uint32_t image_index) {
   assert_log(renderer != NULL, "Renderer is NULL");
-  if (!renderer->backend.window_attachment_get) {
+  if (!renderer->backend.present_target_attachment_get) {
     return NULL;
   }
-  return renderer->backend.window_attachment_get(renderer->backend_state,
-                                                 image_index);
-}
-
-VkrTextureOpaqueHandle
-vkr_renderer_depth_attachment_get(VkrRendererFrontendHandle renderer) {
-  assert_log(renderer != NULL, "Renderer is NULL");
-  if (!renderer->backend.depth_attachment_get) {
-    return NULL;
-  }
-  return renderer->backend.depth_attachment_get(renderer->backend_state);
+  return renderer->backend.present_target_attachment_get(
+      renderer->backend_state, attachment, image_index);
 }
 
 uint32_t
-vkr_renderer_window_attachment_count(VkrRendererFrontendHandle renderer) {
+vkr_renderer_present_target_image_count(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
-  if (!renderer->backend.window_attachment_count_get) {
+  if (!renderer->backend.present_target_image_count_get) {
     return 0;
   }
-  return renderer->backend.window_attachment_count_get(renderer->backend_state);
+  return renderer->backend.present_target_image_count_get(
+      renderer->backend_state);
+}
+
+uint32_t
+vkr_renderer_present_target_image_index(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.present_target_image_index_get) {
+    return 0;
+  }
+  return renderer->backend.present_target_image_index_get(
+      renderer->backend_state);
+}
+
+VkrPresentTargetKind
+vkr_renderer_present_target_kind(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.present_target_kind_get) {
+    return VKR_PRESENT_TARGET_WINDOWED;
+  }
+  return renderer->backend.present_target_kind_get(renderer->backend_state);
+}
+
+void vkr_renderer_present_target_extent(VkrRendererFrontendHandle renderer,
+                                        uint32_t *out_width,
+                                        uint32_t *out_height) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (renderer->backend.present_target_extent_get) {
+    renderer->backend.present_target_extent_get(renderer->backend_state,
+                                                out_width, out_height);
+    return;
+  }
+  if (out_width) {
+    *out_width = renderer->last_window_width;
+  }
+  if (out_height) {
+    *out_height = renderer->last_window_height;
+  }
 }
 
 VkrTextureFormat
-vkr_renderer_get_swapchain_format(VkrRendererFrontendHandle renderer) {
+vkr_renderer_present_target_format(VkrRendererFrontendHandle renderer,
+                                   VkrPresentTargetAttachment attachment) {
   assert_log(renderer != NULL, "Renderer is NULL");
-  if (!renderer->backend.swapchain_format_get) {
-    return VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
+  if (!renderer->backend.present_target_format_get) {
+    return attachment == VKR_PRESENT_TARGET_ATTACHMENT_COLOR
+               ? VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB
+               : VKR_TEXTURE_FORMAT_D32_SFLOAT;
   }
-  return renderer->backend.swapchain_format_get(renderer->backend_state);
+  return renderer->backend.present_target_format_get(renderer->backend_state,
+                                                     attachment);
+}
+
+VkrPresentTargetImageState
+vkr_renderer_present_target_image_state(VkrRendererFrontendHandle renderer,
+                                        VkrPresentTargetAttachment attachment,
+                                        uint32_t image_index) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.present_target_image_state_get) {
+    return (VkrPresentTargetImageState){0};
+  }
+  return renderer->backend.present_target_image_state_get(
+      renderer->backend_state, attachment, image_index);
+}
+
+VkrPresentTargetImageState
+vkr_renderer_present_target_terminal_state(VkrRendererFrontendHandle renderer) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (!renderer->backend.present_target_terminal_state_get) {
+    return (VkrPresentTargetImageState){
+        .access = VKR_IMAGE_ACCESS_PRESENT,
+        .layout = VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR,
+    };
+  }
+  return renderer->backend.present_target_terminal_state_get(
+      renderer->backend_state);
+}
+
+VkrRendererError
+vkr_renderer_present_target_recreate(VkrRendererFrontendHandle renderer,
+                                     uint32_t width, uint32_t height,
+                                     uint32_t image_count) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  if (renderer->frame_active) {
+    return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
+  }
+  if (!renderer->backend.present_target_recreate || width == 0 || height == 0 ||
+      image_count == 0) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  VkrRendererError result = renderer->backend.present_target_recreate(
+      renderer->backend_state, width, height, image_count);
+  if (result != VKR_RENDERER_ERROR_NONE) {
+    return result;
+  }
+
+  vkr_renderer_present_target_extent(renderer, &width, &height);
+  renderer->present_target.width = width;
+  renderer->present_target.height = height;
+  renderer->present_target.image_count =
+      vkr_renderer_present_target_image_count(renderer);
+  renderer->last_window_width = width;
+  renderer->last_window_height = height;
+  if (renderer->ui_system.initialized) {
+    vkr_ui_system_resize(renderer, &renderer->ui_system, width, height);
+  }
+  vkr_pipeline_registry_mark_global_state_dirty(&renderer->pipeline_registry);
+  return VKR_RENDERER_ERROR_NONE;
 }
 
 VkrTextureFormat
@@ -1736,14 +1855,6 @@ vkr_renderer_get_shadow_depth_format(VkrRendererFrontendHandle renderer) {
     return VKR_TEXTURE_FORMAT_D32_SFLOAT;
   }
   return renderer->backend.shadow_depth_format_get(renderer->backend_state);
-}
-
-uint32_t vkr_renderer_window_image_index(VkrRendererFrontendHandle renderer) {
-  assert_log(renderer != NULL, "Renderer is NULL");
-  if (!renderer->backend.window_attachment_index_get) {
-    return 0;
-  }
-  return renderer->backend.window_attachment_index_get(renderer->backend_state);
 }
 
 uint32_t
@@ -1793,29 +1904,6 @@ vkr_renderer_validation_failf(VkrValidationError *out_error,
   out_error->field_path = field_path;
   out_error->message = message;
   return code;
-}
-
-/**
- * @brief Returns the active swapchain depth texture format.
- *
- * Depth attachment recreation can lag behind frame setup during resize/minimize
- * transitions. This helper keeps callers on a deterministic fallback format
- * until the backend depth wrapper is available again.
- */
-VkrTextureFormat
-vkr_renderer_get_swapchain_depth_format(VkrRendererFrontendHandle renderer) {
-  if (!renderer) {
-    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
-  }
-
-  VkrTextureOpaqueHandle depth_tex =
-      vkr_renderer_depth_attachment_get(renderer);
-  if (!depth_tex) {
-    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
-  }
-
-  struct s_TextureHandle *depth_handle = (struct s_TextureHandle *)depth_tex;
-  return depth_handle->description.format;
 }
 
 static bool8_t
@@ -1896,17 +1984,17 @@ VkrRendererError vkr_renderer_prepare_frame(VkrRendererFrontendHandle renderer,
   }
   rf->frame_number++;
 
-  out_setup->image_index = vkr_renderer_window_image_index(renderer);
+  out_setup->image_index = vkr_renderer_present_target_image_index(renderer);
   out_setup->window_width = rf->last_window_width;
   out_setup->window_height = rf->last_window_height;
-  out_setup->swapchain_format = vkr_renderer_get_swapchain_format(renderer);
-  out_setup->swapchain_depth_format =
-      vkr_renderer_get_swapchain_depth_format(renderer);
+  out_setup->swapchain_format = vkr_renderer_present_target_format(
+      renderer, VKR_PRESENT_TARGET_ATTACHMENT_COLOR);
+  out_setup->swapchain_depth_format = vkr_renderer_present_target_format(
+      renderer, VKR_PRESENT_TARGET_ATTACHMENT_DEPTH);
 
   if (out_setup->window_width == 0 || out_setup->window_height == 0) {
-    VkrWindowPixelSize size = vkr_window_get_pixel_size(rf->window);
-    out_setup->window_width = size.width;
-    out_setup->window_height = size.height;
+    vkr_renderer_present_target_extent(renderer, &out_setup->window_width,
+                                       &out_setup->window_height);
   }
 
   return VKR_RENDERER_ERROR_NONE;
@@ -2226,10 +2314,17 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
     goto cancel;
   }
 
+  uint32_t target_width = 0;
+  uint32_t target_height = 0;
+  vkr_renderer_present_target_extent(renderer, &target_width, &target_height);
+  const uint32_t target_image_index =
+      vkr_renderer_present_target_image_index(renderer);
   VkrRenderGraphFrameInfo frame = {
       .frame_index = packet->frame.frame_index,
-      .image_index = vkr_renderer_window_image_index(renderer),
+      .image_index = target_image_index,
       .delta_time = packet->frame.delta_time,
+      .target_width = target_width,
+      .target_height = target_height,
       .window_width = packet->frame.window_width,
       .window_height = packet->frame.window_height,
       .viewport_width = viewport_width,
@@ -2237,9 +2332,16 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
       .editor_enabled = packet->frame.editor_enabled,
       .picking_pending =
           (packet->picking && packet->picking->pending) ? true_v : false_v,
-      .swapchain_format = vkr_renderer_get_swapchain_format(renderer),
-      .swapchain_depth_format =
-          vkr_renderer_get_swapchain_depth_format(renderer),
+      .target_color_format = vkr_renderer_present_target_format(
+          renderer, VKR_PRESENT_TARGET_ATTACHMENT_COLOR),
+      .target_depth_format = vkr_renderer_present_target_format(
+          renderer, VKR_PRESENT_TARGET_ATTACHMENT_DEPTH),
+      .target_color_initial_state = vkr_renderer_present_target_image_state(
+          renderer, VKR_PRESENT_TARGET_ATTACHMENT_COLOR, target_image_index),
+      .target_depth_initial_state = vkr_renderer_present_target_image_state(
+          renderer, VKR_PRESENT_TARGET_ATTACHMENT_DEPTH, target_image_index),
+      .target_terminal_state =
+          vkr_renderer_present_target_terminal_state(renderer),
       .shadow_depth_format = vkr_renderer_get_shadow_depth_format(renderer),
       .shadow_map_size = vkr_shadow_config_get_max_map_size(shadow_cfg),
       .shadow_cascade_count = cascade_count,
@@ -2339,11 +2441,13 @@ VkrRendererError vkr_renderer_begin_frame(VkrRendererFrontendHandle renderer,
       vkr_renderer_resize(renderer, width, height);
     }
   }
-  VkrWindowPixelSize pixel_size = vkr_window_get_pixel_size(renderer->window);
-  if (pixel_size.width > 0 && pixel_size.height > 0 &&
-      (pixel_size.width != renderer->last_window_width ||
-       pixel_size.height != renderer->last_window_height)) {
-    vkr_renderer_resize(renderer, pixel_size.width, pixel_size.height);
+  if (renderer->window) {
+    VkrWindowPixelSize pixel_size = vkr_window_get_pixel_size(renderer->window);
+    if (pixel_size.width > 0 && pixel_size.height > 0 &&
+        (pixel_size.width != renderer->last_window_width ||
+         pixel_size.height != renderer->last_window_height)) {
+      vkr_renderer_resize(renderer, pixel_size.width, pixel_size.height);
+    }
   }
 
   VkrRendererError result =
@@ -2388,8 +2492,10 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
   if (rf->rf_mutex) {
     vkr_mutex_lock(rf->rf_mutex);
   }
-  rf->window->width = width;
-  rf->window->height = height;
+  if (rf->window) {
+    rf->window->width = width;
+    rf->window->height = height;
+  }
   rf->last_window_width = width;
   rf->last_window_height = height;
   if (rf->rf_mutex) {
@@ -2653,15 +2759,32 @@ bool32_t vkr_renderer_systems_initialize(
     log_fatal("Failed to initialize camera system");
     return false_v;
   }
+  const float32_t default_vertical_fov_degrees = 70.0f;
+  const float32_t default_near_clip = 0.1f;
+  const float32_t default_far_clip = 500.0f;
   VkrCameraHandle default_camera = VKR_CAMERA_HANDLE_INVALID;
   if (!vkr_camera_registry_create_perspective(
-          &rf->camera_system, string8_lit("camera.default"), rf->window, 70.0f,
-          0.1f, 500.0f, &default_camera)) {
+          &rf->camera_system, string8_lit("camera.default"), rf->window,
+          default_vertical_fov_degrees, default_near_clip, default_far_clip,
+          &default_camera)) {
     log_fatal("Failed to create default camera");
     return false_v;
   }
   vkr_camera_registry_set_active(&rf->camera_system, default_camera);
   rf->active_camera = default_camera;
+  /* Creation seeds the aspect from the window, which an offscreen renderer does
+     not have. Restate the lens against the actual target extent so both target
+     kinds project identically. */
+  VkrCamera *initial_camera =
+      vkr_camera_registry_get_by_handle(&rf->camera_system, default_camera);
+  if (!initial_camera ||
+      !vkr_camera_set_perspective_lens(
+          initial_camera, default_vertical_fov_degrees, default_near_clip,
+          default_far_clip, rf->last_window_width, rf->last_window_height)) {
+    log_fatal("Failed to configure default camera target extent");
+    return false_v;
+  }
+  vkr_camera_system_update(initial_camera);
 
   if (!vkr_pipeline_registry_init(&rf->pipeline_registry, rf, NULL)) {
     log_fatal("Failed to initialize pipeline registry");
@@ -2956,7 +3079,10 @@ bool32_t vkr_renderer_systems_initialize(
     }
   }
 
-  VkrWindowPixelSize initial_size = vkr_window_get_pixel_size(rf->window);
+  VkrWindowPixelSize initial_size =
+      rf->window
+          ? vkr_window_get_pixel_size(rf->window)
+          : (VkrWindowPixelSize){rf->last_window_width, rf->last_window_height};
 
   // Initialize picking system with initial window dimensions
   if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,

@@ -383,6 +383,118 @@ typedef struct VulkanSwapchain {
   Array_VulkanFramebuffer framebuffers;
 } VulkanSwapchain;
 
+/**
+ * Access/layout an offscreen target image pair carries between submissions.
+ * Ordinary images are never acquired, so the state a frame leaves behind is
+ * the state the next graph import must declare.
+ */
+typedef struct VulkanPresentTargetState {
+  VkImageLayout color_layout;
+  VkImageLayout depth_layout;
+  VkrImageAccessFlags color_access;
+  VkrImageAccessFlags depth_access;
+} VulkanPresentTargetState;
+
+/** One offscreen color/depth pair and the state it retains. */
+typedef struct VulkanPresentTargetImage {
+  VulkanImage color;
+  VulkanImage depth;
+  VulkanPresentTargetState state;
+} VulkanPresentTargetImage;
+
+Array(VulkanPresentTargetImage);
+
+/**
+ * Outcome of acquiring or completing a frame's target image.
+ *
+ * `SKIP` and `FAILED` must stay distinct: a resized surface produces no image
+ * this frame but the device is fine, while collapsing them turns every window
+ * resize into a fatal error.
+ */
+typedef enum VulkanPresentTargetResult {
+  VULKAN_PRESENT_TARGET_RESULT_OK = 0,
+  /** No image was produced this frame; the caller should skip and retry next.
+   */
+  VULKAN_PRESENT_TARGET_RESULT_SKIP,
+  /** Unrecoverable device or surface error. */
+  VULKAN_PRESENT_TARGET_RESULT_FAILED,
+} VulkanPresentTargetResult;
+
+/**
+ * Submit synchronization a target requires for the frame it just handed out.
+ * A target with no presentation engine to hand the image back to leaves both
+ * handles null and submits with fences alone.
+ */
+typedef struct VulkanPresentTargetSync {
+  VkSemaphore wait;
+  VkSemaphore signal;
+} VulkanPresentTargetSync;
+
+typedef struct VulkanBackendState VulkanBackendState;
+
+/**
+ * One present-target implementation.
+ *
+ * The frame path asks the target what to do rather than asking which kind it
+ * is: acquisition, submit synchronization, completion, cancellation, and
+ * recovery policy all differ between a WSI swapchain and ordinary images, and
+ * nothing else in the backend needs to know which of the two it holds.
+ */
+typedef struct VulkanPresentTargetOps {
+  /** Name used in diagnostics. */
+  const char *name;
+  /**
+   * Presented through a surface. Instance surface extensions, the swapchain
+   * device extension, a present queue family, and a real present mode exist
+   * only for these targets, and device selection runs before any target does.
+   */
+  bool8_t uses_wsi;
+  /**
+   * A failed frame is recovered by recreating the target. Windowed recreation
+   * rebuilds the acquire semaphore a dead frame left signalled; a target that
+   * owns no such semaphore has no equivalent recovery and retires the device.
+   */
+  bool8_t recovers_by_recreation;
+  /** Access/layout the graph must leave the present image in. */
+  VkrPresentTargetImageState terminal_state;
+
+  /** Opens the target's images, views, and per-image state. */
+  bool8_t (*create)(VulkanBackendState *state);
+  /** Retires everything `create` opened. */
+  void (*destroy)(VulkanBackendState *state);
+  /** Reacts to a new surface extent; targets without a resize event ignore it.
+   */
+  void (*resize)(VulkanBackendState *state, uint32_t width, uint32_t height);
+
+  /** Per-frame preamble run before the frame-slot fence wait. */
+  VkrRendererError (*frame_begin)(VulkanBackendState *state);
+  /**
+   * Selects this frame's image into `state->image_index` and reports the
+   * submit synchronization it needs.
+   */
+  VulkanPresentTargetResult (*acquire)(VulkanBackendState *state,
+                                       VulkanPresentTargetSync *out_sync);
+  /** Hands the submitted image to its presentation engine, if it has one. */
+  VulkanPresentTargetResult (*complete)(VulkanBackendState *state);
+  /**
+   * Restores the image state a cancelled frame found and records whatever
+   * transition the discarded image still owes.
+   */
+  void (*frame_cancel)(VulkanBackendState *state,
+                       VulkanCommandBuffer *command_buffer);
+} VulkanPresentTargetOps;
+
+/** Private implementation storage for the selected present-target kind. */
+typedef struct VulkanPresentTarget {
+  VkrPresentTargetConfig config;
+  /** Bound from `config.kind` before any Vulkan object is created. */
+  const VulkanPresentTargetOps *ops;
+  /** Offscreen only; windowed targets own their images through the swapchain.
+   */
+  Array_VulkanPresentTargetImage images;
+  uint32_t next_offscreen_image;
+} VulkanPresentTarget;
+
 typedef VulkanFence *VulkanFencePtr;
 
 Array(VulkanCommandBuffer);
@@ -754,6 +866,7 @@ typedef struct VulkanBackendState {
   VkrDeviceRequirements *device_requirements;
   VkrPresentMode requested_present_mode;
   VkrPresentMode actual_present_mode;
+  VulkanPresentTarget present_target;
   bool8_t capture_enabled;
 
   VulkanAllocator vk_allocator;
@@ -861,8 +974,23 @@ typedef struct VulkanBackendState {
    */
   VkImageLayout swapchain_image_layout;
 
+  /**
+   * Submit synchronization the target handed out with this frame's image.
+   * Written by acquire, consumed by the submit; both handles are null for a
+   * target with no presentation engine.
+   */
+  VulkanPresentTargetSync frame_submit_sync;
+
+  /**
+   * Offscreen only: the state of the image pair this frame started from.
+   * Cancellation restores it so a discarded frame leaves no phantom
+   * transition behind for the next import.
+   */
+  VulkanPresentTargetState frame_target_initial;
+
   struct s_TextureHandle **swapchain_image_textures;
-  struct s_TextureHandle *depth_texture;
+  /** One depth wrapper per target image; windowed entries share one image. */
+  struct s_TextureHandle **depth_textures;
   struct s_TextureHandle
       *default_2d_texture;                // Fallback for empty sampler slots
   struct s_BufferHandle *instance_buffer; // Per-frame instance data buffer
@@ -909,6 +1037,56 @@ typedef struct VulkanBackendState {
   uint32_t texture_generation_counter;
 #endif
 } VulkanBackendState;
+
+/** The bound implementation. Valid from target selection until shutdown. */
+vkr_internal INLINE const VulkanPresentTargetOps *
+vulkan_present_target_ops(const VulkanBackendState *state) {
+  return state->present_target.ops;
+}
+
+/**
+ * True when the target is presented through a surface.
+ *
+ * Instance/device extension filtering, physical-device scoring, and queue
+ * selection all run before a target is opened, so they ask this rather than
+ * calling into the implementation.
+ */
+vkr_internal INLINE bool8_t
+vulkan_present_target_uses_wsi(const VulkanBackendState *state) {
+  return state && state->present_target.ops &&
+         state->present_target.ops->uses_wsi;
+}
+
+/**
+ * True when frames render into ordinary images.
+ *
+ * Only per-image state retention and reported provenance depend on this;
+ * everything the frame path does differently goes through the ops table.
+ */
+vkr_internal INLINE bool8_t
+vulkan_present_target_is_offscreen(const VulkanBackendState *state) {
+  return state &&
+         state->present_target.config.kind == VKR_PRESENT_TARGET_OFFSCREEN;
+}
+
+/** Layout the graph must leave the present image in. */
+vkr_internal INLINE VkrTextureLayout
+vulkan_present_target_terminal_layout(const VulkanBackendState *state) {
+  return vulkan_present_target_ops(state)->terminal_state.layout;
+}
+
+/**
+ * Allocator for the command buffers and fences rebuilt with the target.
+ *
+ * Explicit offscreen recreation resets the swapchain arena, so anything it
+ * rebuilds must live there to be reclaimed. Swapchain recreation keeps that
+ * arena, so its frame synchronization outlives an individual swapchain.
+ */
+vkr_internal INLINE VkrAllocator *
+vulkan_present_target_frame_storage(VulkanBackendState *state) {
+  return vulkan_present_target_uses_wsi(state) ? &state->alloc
+                                               : &state->swapchain_alloc;
+}
 
 /**
  * Returns the active graphics command buffer for the current frame.

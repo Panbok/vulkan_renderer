@@ -6,6 +6,32 @@
 #include "vulkan_backend.h"
 #include "vulkan_utils.h"
 
+/**
+ * @brief Collects the distinct families that will access swapchain images.
+ *
+ * Concurrent sharing rejects a repeated family index, and the graphics,
+ * present, and transfer roles routinely resolve to the same family.
+ */
+vkr_internal uint32_t vulkan_swapchain_unique_queue_families(
+    const QueueFamilyIndexResult *indices,
+    uint32_t out_families[QUEUE_FAMILY_TYPE_COUNT]) {
+  uint32_t count = 0;
+  for (uint32_t i = 0; i < indices->length; ++i) {
+    if (!indices->indices[i].is_present) {
+      continue;
+    }
+    const uint32_t candidate = indices->indices[i].index;
+    bool8_t duplicate = false_v;
+    for (uint32_t existing = 0; existing < count; ++existing) {
+      duplicate |= out_families[existing] == candidate;
+    }
+    if (!duplicate) {
+      out_families[count++] = candidate;
+    }
+  }
+  return count;
+}
+
 bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
   VulkanSwapchainDetails swapchain_details = {0};
   vulkan_device_query_swapchain_details(state, state->device.physical_device,
@@ -56,13 +82,11 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
   QueueFamilyIndexResult indices =
       find_queue_family_indices(state, state->device.physical_device);
   uint32_t queue_family_indices[QUEUE_FAMILY_TYPE_COUNT] = {0};
-  if (indices.length > 1) {
-    for (uint32_t i = 0; i < indices.length; i++) {
-      queue_family_indices[i] = indices.indices[i].index;
-    }
-
+  const uint32_t queue_family_count =
+      vulkan_swapchain_unique_queue_families(&indices, queue_family_indices);
+  if (queue_family_count > 1) {
     create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-    create_info.queueFamilyIndexCount = indices.length;
+    create_info.queueFamilyIndexCount = queue_family_count;
     create_info.pQueueFamilyIndices = queue_family_indices;
   } else {
     create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -177,7 +201,7 @@ bool32_t vulkan_swapchain_create(VulkanBackendState *state) {
   return true;
 }
 
-vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
+vkr_internal VulkanPresentTargetResult vulkan_swapchain_create_with_old(
     VulkanBackendState *state, VkSwapchainKHR old_swapchain) {
   // Query new swapchain details FIRST, before destroying anything
   VulkanSwapchainDetails swapchain_details = {0};
@@ -199,7 +223,7 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
   // Important: return false WITHOUT destroying anything
   if (extent.width == 0 || extent.height == 0) {
     log_warn("Swapchain extent is zero, skipping recreation");
-    return VULKAN_SWAPCHAIN_RESULT_SKIP;
+    return VULKAN_PRESENT_TARGET_RESULT_SKIP;
   }
 
   uint32_t requested_image_count =
@@ -212,7 +236,7 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
       !(swapchain_details.capabilities.supportedUsageFlags &
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT)) {
     log_error("Surface no longer supports swapchain transfer-source capture");
-    return VULKAN_SWAPCHAIN_RESULT_FAILED;
+    return VULKAN_PRESENT_TARGET_RESULT_FAILED;
   }
 
   VkSwapchainCreateInfoKHR create_info = {
@@ -236,13 +260,11 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
   QueueFamilyIndexResult indices =
       find_queue_family_indices(state, state->device.physical_device);
   uint32_t queue_family_indices[QUEUE_FAMILY_TYPE_COUNT] = {0};
-  if (indices.length > 1) {
-    for (uint32_t i = 0; i < indices.length; i++) {
-      queue_family_indices[i] = indices.indices[i].index;
-    }
-
+  const uint32_t queue_family_count =
+      vulkan_swapchain_unique_queue_families(&indices, queue_family_indices);
+  if (queue_family_count > 1) {
     create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-    create_info.queueFamilyIndexCount = indices.length;
+    create_info.queueFamilyIndexCount = queue_family_count;
     create_info.pQueueFamilyIndices = queue_family_indices;
   } else {
     create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -255,7 +277,7 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
                            state->allocator, &new_swapchain);
   if (result != VK_SUCCESS) {
     log_error("Failed to create swapchain with old reference: %d", result);
-    return VULKAN_SWAPCHAIN_RESULT_FAILED;
+    return VULKAN_PRESENT_TARGET_RESULT_FAILED;
   }
 
   uint32_t image_count = 0;
@@ -265,7 +287,7 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
     log_error("Failed to query recreated swapchain images: %d", result);
     vkDestroySwapchainKHR(state->device.logical_device, new_swapchain,
                           state->allocator);
-    return VULKAN_SWAPCHAIN_RESULT_FAILED;
+    return VULKAN_PRESENT_TARGET_RESULT_FAILED;
   }
 
   // New swapchain created successfully - NOW destroy old resources
@@ -294,7 +316,7 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
   if (result != VK_SUCCESS) {
     log_error("Failed to retrieve recreated swapchain images: %d", result);
     array_destroy_VkImage(&state->swapchain.images);
-    return VULKAN_SWAPCHAIN_RESULT_FAILED;
+    return VULKAN_PRESENT_TARGET_RESULT_FAILED;
   }
 
   state->swapchain.format = surface_format->format;
@@ -336,14 +358,14 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
       }
       array_destroy_VkImageView(&state->swapchain.image_views);
       array_destroy_VkImage(&state->swapchain.images);
-      return VULKAN_SWAPCHAIN_RESULT_FAILED;
+      return VULKAN_PRESENT_TARGET_RESULT_FAILED;
     }
   }
 
   if (!vulkan_device_check_depth_format(&state->device,
                                         state->capture_enabled)) {
     log_error("Failed to find suitable depth format");
-    return VULKAN_SWAPCHAIN_RESULT_FAILED;
+    return VULKAN_PRESENT_TARGET_RESULT_FAILED;
   }
 
   const VulkanImageDescription depth_desc = {
@@ -365,13 +387,13 @@ vkr_internal VulkanSwapchainResult vulkan_swapchain_create_with_old(
   if (!vulkan_image_create(state, &depth_desc,
                            &state->swapchain.depth_attachment)) {
     log_error("Failed to create depth attachment");
-    return VULKAN_SWAPCHAIN_RESULT_FAILED;
+    return VULKAN_PRESENT_TARGET_RESULT_FAILED;
   }
 
   log_debug("Swapchain recreated with handle %p (old: %p)", new_swapchain,
             old_swapchain);
 
-  return VULKAN_SWAPCHAIN_RESULT_OK;
+  return VULKAN_PRESENT_TARGET_RESULT_OK;
 }
 
 // Internal function to destroy old swapchain handle after recreation
@@ -418,7 +440,7 @@ void vulkan_swapchain_destroy(VulkanBackendState *state) {
   state->swapchain.handle = VK_NULL_HANDLE;
 }
 
-VulkanSwapchainResult
+VulkanPresentTargetResult
 vulkan_swapchain_acquire_next_image(VulkanBackendState *state, uint64_t timeout,
                                     VkSemaphore image_available_semaphore,
                                     VkFence in_flight_fence,
@@ -432,14 +454,14 @@ vulkan_swapchain_acquire_next_image(VulkanBackendState *state, uint64_t timeout,
   // Recreation in progress or failed; not an error, just nothing to draw into.
   if (state->swapchain.handle == VK_NULL_HANDLE) {
     log_warn("Swapchain handle is NULL, skipping acquire");
-    return VULKAN_SWAPCHAIN_RESULT_SKIP;
+    return VULKAN_PRESENT_TARGET_RESULT_SKIP;
   }
 
   // Zero-sized swapchain (window minimized).
   if (state->swapchain.extent.width == 0 ||
       state->swapchain.extent.height == 0) {
     log_debug("Swapchain extent is zero, skipping acquire");
-    return VULKAN_SWAPCHAIN_RESULT_SKIP;
+    return VULKAN_PRESENT_TARGET_RESULT_SKIP;
   }
 
   // Store current handle to detect if recreation happened during acquire
@@ -456,11 +478,11 @@ vulkan_swapchain_acquire_next_image(VulkanBackendState *state, uint64_t timeout,
       VkrRendererError recreate_result =
           vulkan_backend_recreate_swapchain(state);
       if (recreate_result == VKR_RENDERER_ERROR_FRAME_SKIPPED) {
-        return VULKAN_SWAPCHAIN_RESULT_SKIP;
+        return VULKAN_PRESENT_TARGET_RESULT_SKIP;
       }
       if (recreate_result != VKR_RENDERER_ERROR_NONE) {
         log_error("Failed to recreate swapchain during image acquisition");
-        return VULKAN_SWAPCHAIN_RESULT_FAILED;
+        return VULKAN_PRESENT_TARGET_RESULT_FAILED;
       }
 
       // Do not retry the acquire here. The recreate destroyed and rebuilt the
@@ -468,20 +490,20 @@ vulkan_swapchain_acquire_next_image(VulkanBackendState *state, uint64_t timeout,
       // caller will wait on. Skip this frame and let the next one acquire
       // against consistent state.
       log_debug("Swapchain recreated; skipping this frame's acquire");
-      return VULKAN_SWAPCHAIN_RESULT_SKIP;
+      return VULKAN_PRESENT_TARGET_RESULT_SKIP;
     } else if (result == VK_SUBOPTIMAL_KHR) {
       log_warn("Swapchain suboptimal during image acquisition");
       // Continue despite suboptimal result: the semaphore was still signalled.
     } else {
       log_error("Failed to acquire next image with error code: %d", result);
-      return VULKAN_SWAPCHAIN_RESULT_FAILED;
+      return VULKAN_PRESENT_TARGET_RESULT_FAILED;
     }
   }
 
-  return VULKAN_SWAPCHAIN_RESULT_OK;
+  return VULKAN_PRESENT_TARGET_RESULT_OK;
 }
 
-VulkanSwapchainResult
+VulkanPresentTargetResult
 vulkan_swapchain_present(VulkanBackendState *state,
                          VkSemaphore queue_complete_semaphore,
                          uint32_t image_index) {
@@ -520,23 +542,23 @@ vulkan_swapchain_present(VulkanBackendState *state,
       VkrRendererError recreate_result =
           vulkan_backend_recreate_swapchain(state);
       if (recreate_result == VKR_RENDERER_ERROR_FRAME_SKIPPED) {
-        return VULKAN_SWAPCHAIN_RESULT_SKIP;
+        return VULKAN_PRESENT_TARGET_RESULT_SKIP;
       }
       if (recreate_result != VKR_RENDERER_ERROR_NONE) {
         log_error("Failed to recreate swapchain during present");
-        return VULKAN_SWAPCHAIN_RESULT_FAILED;
+        return VULKAN_PRESENT_TARGET_RESULT_FAILED;
       }
 
       // The frame's work was already submitted and its fence will signal; only
       // the presentation was lost. Report SKIP, not FAILED.
       log_debug("Swapchain recreated successfully after present failure");
-      return VULKAN_SWAPCHAIN_RESULT_SKIP;
+      return VULKAN_PRESENT_TARGET_RESULT_SKIP;
     } else if (result == VK_SUBOPTIMAL_KHR) {
       log_warn("Swapchain suboptimal during present");
       // Continue despite suboptimal result
     } else {
       log_error("Failed to present image with error code: %d", result);
-      return VULKAN_SWAPCHAIN_RESULT_FAILED;
+      return VULKAN_PRESENT_TARGET_RESULT_FAILED;
     }
   }
 
@@ -544,10 +566,10 @@ vulkan_swapchain_present(VulkanBackendState *state,
   // after queue submit and before this call. Advancing again here would skip a
   // slot every frame -- and with max_in_flight_frames == 2 it pinned the slot
   // at 0 forever, reusing one fence and one acquire semaphore for every frame.
-  return VULKAN_SWAPCHAIN_RESULT_OK;
+  return VULKAN_PRESENT_TARGET_RESULT_OK;
 }
 
-VulkanSwapchainResult vulkan_swapchain_recreate(VulkanBackendState *state) {
+VulkanPresentTargetResult vulkan_swapchain_recreate(VulkanBackendState *state) {
   assert_log(state != NULL, "State not initialized");
   assert_log(state->swapchain.handle != VK_NULL_HANDLE,
              "Swapchain not initialized");
@@ -561,9 +583,9 @@ VulkanSwapchainResult vulkan_swapchain_recreate(VulkanBackendState *state) {
   // outcome that guarantees the old WSI state remains usable; FAILED may occur
   // after vkCreateSwapchainKHR retired the old handle and is therefore fatal to
   // this frame lifecycle.
-  VulkanSwapchainResult result =
+  VulkanPresentTargetResult result =
       vulkan_swapchain_create_with_old(state, old_swapchain);
-  if (result != VULKAN_SWAPCHAIN_RESULT_OK) {
+  if (result != VULKAN_PRESENT_TARGET_RESULT_OK) {
     if (state->swapchain.handle != old_swapchain) {
       // The helper committed the new handle before a later view/depth setup
       // failure. The old handle is retired and no longer stored in state.
@@ -579,5 +601,5 @@ VulkanSwapchainResult vulkan_swapchain_recreate(VulkanBackendState *state) {
   // created
   vulkan_swapchain_destroy_old_handle(state, old_swapchain);
 
-  return VULKAN_SWAPCHAIN_RESULT_OK;
+  return VULKAN_PRESENT_TARGET_RESULT_OK;
 }

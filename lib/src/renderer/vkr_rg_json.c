@@ -1713,8 +1713,8 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
               resource->image.layers_source.length > 0) {
             desc.flags |= VKR_RG_RESOURCE_FLAG_FORCE_ARRAY;
           }
-          desc.width = frame->window_width;
-          desc.height = frame->window_height;
+          desc.width = frame->target_width;
+          desc.height = frame->target_height;
           desc.usage = resource->image.usage;
           uint32_t layers = 1;
           if (!vkr_rg_json_resolve_layers(&resource->image, frame, &layers)) {
@@ -1722,11 +1722,16 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
             return false_v;
           }
           desc.layers = layers;
+          /* `swapchain` and `swapchain_depth` are compatibility names for the
+             present target's color and depth attachments, whichever kind of
+             target the renderer opened. Their arrival state comes from the
+             target, never from an assumption about acquisition. */
           if (vkr_string8_equals_cstr_i(&resource->image.import_name,
                                         "swapchain")) {
-            access = VKR_RG_IMAGE_ACCESS_PRESENT;
-            layout = VKR_TEXTURE_LAYOUT_UNDEFINED;
-            desc.format = frame->swapchain_format;
+            access =
+                (VkrRgImageAccessFlags)frame->target_color_initial_state.access;
+            layout = frame->target_color_initial_state.layout;
+            desc.format = frame->target_color_format;
             desc.layers = 1;
             if (desc.usage.set == 0) {
               desc.usage = vkr_texture_usage_flags_from_bits(
@@ -1734,9 +1739,10 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
             }
           } else if (vkr_string8_equals_cstr_i(&resource->image.import_name,
                                                "swapchain_depth")) {
-            access = VKR_RG_IMAGE_ACCESS_DEPTH_ATTACHMENT;
-            layout = VKR_TEXTURE_LAYOUT_UNDEFINED;
-            desc.format = frame->swapchain_depth_format;
+            access =
+                (VkrRgImageAccessFlags)frame->target_depth_initial_state.access;
+            layout = frame->target_depth_initial_state.layout;
+            desc.format = frame->target_depth_format;
             desc.layers = 1;
             if (desc.usage.set == 0) {
               desc.usage = vkr_texture_usage_flags_from_bits(
@@ -1777,10 +1783,10 @@ bool8_t vkr_rg_build_from_json(VkrRenderGraph *rg,
           desc.layers = layers;
           switch (resource->image.format_source) {
           case VKR_RG_JSON_IMAGE_FORMAT_SWAPCHAIN:
-            desc.format = frame->swapchain_format;
+            desc.format = frame->target_color_format;
             break;
           case VKR_RG_JSON_IMAGE_FORMAT_SWAPCHAIN_DEPTH:
-            desc.format = frame->swapchain_depth_format;
+            desc.format = frame->target_depth_format;
             break;
           case VKR_RG_JSON_IMAGE_FORMAT_SHADOW_DEPTH:
             desc.format = frame->shadow_depth_format;

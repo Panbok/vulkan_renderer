@@ -104,6 +104,73 @@ static void test_same_layout_write_then_read_emits_barrier(void) {
   printf("  test_same_layout_write_then_read_emits_barrier PASSED\n");
 }
 
+static void test_present_target_import_and_terminal_states(void) {
+  printf("  Running test_present_target_import_and_terminal_states...\n");
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+
+  for (uint32_t windowed = 0; windowed < 2; ++windowed) {
+    VkrRenderGraph *graph = vkr_rg_create(&allocator);
+    assert(graph != NULL);
+    VkrRenderGraphFrameInfo frame = {
+        .target_terminal_state =
+            windowed
+                ? (VkrPresentTargetImageState){
+                      .access = VKR_IMAGE_ACCESS_PRESENT,
+                      .layout = VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR,
+                  }
+                : (VkrPresentTargetImageState){
+                      .access = VKR_IMAGE_ACCESS_COLOR_ATTACHMENT,
+                      .layout = VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                  },
+    };
+    vkr_rg_begin_frame(graph, &frame);
+
+    VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
+    desc.width = 32;
+    desc.height = 32;
+    desc.usage = vkr_texture_usage_flags_from_bits(
+        VKR_TEXTURE_USAGE_COLOR_ATTACHMENT | VKR_TEXTURE_USAGE_TRANSFER_SRC);
+    VkrRgImageHandle target =
+        vkr_rg_import_image(graph, string8_lit("swapchain"), NULL,
+                            windowed ? VKR_RG_IMAGE_ACCESS_PRESENT
+                                     : VKR_RG_IMAGE_ACCESS_TRANSFER_SRC,
+                            windowed ? VKR_TEXTURE_LAYOUT_UNDEFINED
+                                     : VKR_TEXTURE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                            &desc);
+    VkrRgPassBuilder pass = rg_barrier_test_add_pass(
+        graph, VKR_RG_PASS_TYPE_GRAPHICS, "TargetWrite");
+    VkrRgAttachmentDesc attachment = {
+        .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+        .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+        .slice = VKR_RG_IMAGE_SLICE_DEFAULT,
+    };
+    vkr_rg_pass_add_color_attachment(&pass, target, &attachment);
+    vkr_rg_set_present_image(graph, target);
+
+    assert(vkr_rg_compile_schedule(graph));
+    const VkrRgImageBarrier *initial = vector_get_VkrRgImageBarrier(
+        &graph->passes.data[0].pre_image_barriers, 0);
+    assert(initial->src_layout ==
+           (windowed ? VKR_TEXTURE_LAYOUT_UNDEFINED
+                     : VKR_TEXTURE_LAYOUT_TRANSFER_SRC_OPTIMAL));
+    assert(graph->terminal_image_barriers.length == 1);
+    const VkrRgImageBarrier *terminal =
+        vector_get_VkrRgImageBarrier(&graph->terminal_image_barriers, 0);
+    assert(terminal->dst_layout ==
+           (windowed ? VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR
+                     : VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL));
+    assert(terminal->dst_layout !=
+           (windowed ? VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                     : VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR));
+    vkr_rg_destroy(graph);
+  }
+
+  arena_destroy(arena);
+  printf("  test_present_target_import_and_terminal_states PASSED\n");
+}
+
 static void test_write_after_write_emits_barrier(void) {
   printf("  Running test_write_after_write_emits_barrier...\n");
   Arena *arena = arena_create(MB(1), MB(1));
@@ -544,6 +611,7 @@ bool32_t run_render_graph_barrier_tests() {
   test_image_access_is_write();
   test_subresource_range_resolve();
   test_same_layout_write_then_read_emits_barrier();
+  test_present_target_import_and_terminal_states();
   test_write_after_write_emits_barrier();
   test_read_after_read_emits_nothing();
   test_same_pass_storage_read_write_combines();

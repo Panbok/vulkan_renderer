@@ -444,6 +444,25 @@ typedef enum VkrPresentMode {
   VKR_PRESENT_MODE_MAILBOX,
 } VkrPresentMode;
 
+/** Backend-neutral kind of image target rendered by a frame. */
+typedef enum VkrPresentTargetKind {
+  VKR_PRESENT_TARGET_WINDOWED = 0,
+  VKR_PRESENT_TARGET_OFFSCREEN,
+} VkrPresentTargetKind;
+
+/**
+ * Selected before backend creation. Windowed targets derive extent and image
+ * count from WSI; offscreen targets use the validated/clamped configuration.
+ */
+typedef struct VkrPresentTargetConfig {
+  VkrPresentTargetKind kind;
+  uint32_t width;
+  uint32_t height;
+  uint32_t image_count;
+} VkrPresentTargetConfig;
+
+#define VKR_PRESENT_TARGET_MAX_IMAGES 8u
+
 typedef enum VkrSurfaceColorFormat {
   VKR_SURFACE_COLOR_FORMAT_UNKNOWN = 0,
   VKR_SURFACE_COLOR_FORMAT_BGRA8_SRGB,
@@ -456,6 +475,13 @@ typedef enum VkrSurfaceColorSpace {
   VKR_SURFACE_COLOR_SPACE_UNKNOWN = 0,
   VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR,
 } VkrSurfaceColorSpace;
+
+typedef enum VkrSurfaceDepthFormat {
+  VKR_SURFACE_DEPTH_FORMAT_UNKNOWN = 0,
+  VKR_SURFACE_DEPTH_FORMAT_D16_UNORM,
+  VKR_SURFACE_DEPTH_FORMAT_D32_SFLOAT,
+  VKR_SURFACE_DEPTH_FORMAT_D24_UNORM_S8_UINT,
+} VkrSurfaceDepthFormat;
 
 typedef struct VkrDeviceInformation {
   String8 device_name;
@@ -479,9 +505,13 @@ typedef struct VkrDeviceInformation {
   bool8_t supports_draw_indirect_first_instance;
   uint32_t vendor_id;
   uint32_t device_id;
+  VkrPresentTargetKind actual_target_kind;
   VkrPresentMode actual_present_mode;
   uint32_t actual_target_image_count;
+  uint32_t actual_target_width;
+  uint32_t actual_target_height;
   VkrSurfaceColorFormat actual_color_format;
+  VkrSurfaceDepthFormat actual_depth_format;
   VkrSurfaceColorSpace actual_color_space;
 } VkrDeviceInformation;
 
@@ -1388,11 +1418,23 @@ typedef struct VkrRendererBackendConfig {
   VkrMetricEventProducer pipeline_create_metrics;
   VkrMetricEventProducer shader_load_metrics;
   VkrMetricEventProducer shader_reflection_metrics;
+  VkrPresentTargetConfig present_target;
   VkrPresentMode requested_present_mode;
   bool8_t capture_enabled;
   uint32_t capture_ring_capacity;
   uint64_t capture_max_batch_bytes;
 } VkrRendererBackendConfig;
+
+typedef enum VkrPresentTargetAttachment {
+  VKR_PRESENT_TARGET_ATTACHMENT_COLOR = 0,
+  VKR_PRESENT_TARGET_ATTACHMENT_DEPTH,
+} VkrPresentTargetAttachment;
+
+/** State retained by one imported target image between submissions. */
+typedef struct VkrPresentTargetImageState {
+  VkrImageAccessFlags access;
+  VkrTextureLayout layout;
+} VkrPresentTargetImageState;
 
 // ============================================================================
 // View Helpers
@@ -1866,14 +1908,6 @@ VkrRenderTargetHandle vkr_renderer_render_target_create(
 
 void vkr_renderer_render_target_destroy(VkrRendererFrontendHandle renderer,
                                         VkrRenderTargetHandle target);
-VkrTextureOpaqueHandle
-vkr_renderer_window_attachment_get(VkrRendererFrontendHandle renderer,
-                                   uint32_t image_index);
-VkrTextureOpaqueHandle
-vkr_renderer_depth_attachment_get(VkrRendererFrontendHandle renderer);
-uint32_t
-vkr_renderer_window_attachment_count(VkrRendererFrontendHandle renderer);
-uint32_t vkr_renderer_window_image_index(VkrRendererFrontendHandle renderer);
 /**
  * @brief Frame-in-flight slot currently being recorded.
  *
@@ -1884,10 +1918,45 @@ uint32_t vkr_renderer_window_image_index(VkrRendererFrontendHandle renderer);
 uint32_t vkr_renderer_frame_in_flight_index(VkrRendererFrontendHandle renderer);
 /** @brief Number of distinct frame-in-flight slots (<= BUFFERING_FRAMES). */
 uint32_t vkr_renderer_frame_in_flight_count(VkrRendererFrontendHandle renderer);
+/**
+ * Target-neutral attachment and frame configuration queries.
+ *
+ * These are the only way to reach the images a frame renders into. The
+ * `swapchain`-named graph imports resolve through them, so a windowed and an
+ * offscreen renderer present the same contract to every caller above the
+ * backend.
+ */
+VkrTextureOpaqueHandle vkr_renderer_present_target_attachment_get(
+    VkrRendererFrontendHandle renderer, VkrPresentTargetAttachment attachment,
+    uint32_t image_index);
+uint32_t
+vkr_renderer_present_target_image_count(VkrRendererFrontendHandle renderer);
+uint32_t
+vkr_renderer_present_target_image_index(VkrRendererFrontendHandle renderer);
+VkrPresentTargetKind
+vkr_renderer_present_target_kind(VkrRendererFrontendHandle renderer);
+void vkr_renderer_present_target_extent(VkrRendererFrontendHandle renderer,
+                                        uint32_t *out_width,
+                                        uint32_t *out_height);
 VkrTextureFormat
-vkr_renderer_get_swapchain_format(VkrRendererFrontendHandle renderer);
-VkrTextureFormat
-vkr_renderer_get_swapchain_depth_format(VkrRendererFrontendHandle renderer);
+vkr_renderer_present_target_format(VkrRendererFrontendHandle renderer,
+                                   VkrPresentTargetAttachment attachment);
+VkrPresentTargetImageState
+vkr_renderer_present_target_image_state(VkrRendererFrontendHandle renderer,
+                                        VkrPresentTargetAttachment attachment,
+                                        uint32_t image_index);
+VkrPresentTargetImageState
+vkr_renderer_present_target_terminal_state(VkrRendererFrontendHandle renderer);
+/**
+ * @brief Recreates an offscreen target outside an active frame.
+ *
+ * This is the only resize path for an offscreen target. It waits for GPU
+ * completion before replacing all per-image attachments and synchronization.
+ */
+VkrRendererError
+vkr_renderer_present_target_recreate(VkrRendererFrontendHandle renderer,
+                                     uint32_t width, uint32_t height,
+                                     uint32_t image_count);
 VkrTextureFormat
 vkr_renderer_get_shadow_depth_format(VkrRendererFrontendHandle renderer);
 // --- END Render Pass & Target Management ---
@@ -2122,11 +2191,6 @@ typedef struct VkrRendererBackendInterface {
                                         VkrRenderPassHandle pass,
                                         VkrRenderTargetHandle target);
   VkrRendererError (*end_render_pass)(void *backend_state);
-  VkrTextureOpaqueHandle (*window_attachment_get)(void *backend_state,
-                                                  uint32_t image_index);
-  VkrTextureOpaqueHandle (*depth_attachment_get)(void *backend_state);
-  uint32_t (*window_attachment_count_get)(void *backend_state);
-  uint32_t (*window_attachment_index_get)(void *backend_state);
   /**
    * Index of the frame-in-flight slot the backend is currently recording into,
    * in [0, frame_in_flight_count_get()). Distinct from the swapchain image
@@ -2135,8 +2199,25 @@ typedef struct VkrRendererBackendInterface {
    */
   uint32_t (*frame_in_flight_index_get)(void *backend_state);
   uint32_t (*frame_in_flight_count_get)(void *backend_state);
-  VkrTextureFormat (*swapchain_format_get)(void *backend_state);
   VkrTextureFormat (*shadow_depth_format_get)(void *backend_state);
+  VkrTextureOpaqueHandle (*present_target_attachment_get)(
+      void *backend_state, VkrPresentTargetAttachment attachment,
+      uint32_t image_index);
+  uint32_t (*present_target_image_count_get)(void *backend_state);
+  uint32_t (*present_target_image_index_get)(void *backend_state);
+  VkrPresentTargetKind (*present_target_kind_get)(void *backend_state);
+  void (*present_target_extent_get)(void *backend_state, uint32_t *out_width,
+                                    uint32_t *out_height);
+  VkrTextureFormat (*present_target_format_get)(
+      void *backend_state, VkrPresentTargetAttachment attachment);
+  VkrPresentTargetImageState (*present_target_image_state_get)(
+      void *backend_state, VkrPresentTargetAttachment attachment,
+      uint32_t image_index);
+  VkrPresentTargetImageState (*present_target_terminal_state_get)(
+      void *backend_state);
+  VkrRendererError (*present_target_recreate)(void *backend_state,
+                                              uint32_t width, uint32_t height,
+                                              uint32_t image_count);
 
   // --- Resource Management ---
   VkrBackendResourceHandle (*buffer_create)(void *backend_state,

@@ -15,6 +15,20 @@ static bool8_t vulkan_device_supports_sampled_format(VkPhysicalDevice device,
              : false_v;
 }
 
+static VkrSurfaceDepthFormat
+vulkan_device_surface_depth_format(VkFormat format) {
+  switch (format) {
+  case VK_FORMAT_D16_UNORM:
+    return VKR_SURFACE_DEPTH_FORMAT_D16_UNORM;
+  case VK_FORMAT_D24_UNORM_S8_UINT:
+    return VKR_SURFACE_DEPTH_FORMAT_D24_UNORM_S8_UINT;
+  case VK_FORMAT_D32_SFLOAT:
+    return VKR_SURFACE_DEPTH_FORMAT_D32_SFLOAT;
+  default:
+    return VKR_SURFACE_DEPTH_FORMAT_UNKNOWN;
+  }
+}
+
 static bool32_t has_required_extensions(VulkanBackendState *state,
                                         VkPhysicalDevice device) {
   uint32_t extension_count = 0;
@@ -34,6 +48,11 @@ static bool32_t has_required_extensions(VulkanBackendState *state,
       vulkan_platform_get_required_device_extensions(&required_extension_count);
 
   for (uint32_t i = 0; i < required_extension_count; i++) {
+    if (!vulkan_present_target_uses_wsi(state) &&
+        string_equals(required_extensions[i],
+                      VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+      continue;
+    }
     bool32_t extension_found = false;
     for (uint32_t j = 0; j < extension_count; j++) {
       if (string_equals(required_extensions[i], array_get_VkExtensionProperties(
@@ -132,9 +151,9 @@ static uint32_t score_device(VulkanBackendState *state,
       array_get_QueueFamilyIndex(&indices_view, QUEUE_FAMILY_TYPE_PRESENT);
   QueueFamilyIndex *transfer_index =
       array_get_QueueFamilyIndex(&indices_view, QUEUE_FAMILY_TYPE_TRANSFER);
-  const bool32_t has_required_queues = graphics_index->is_present &&
-                                       present_index->is_present &&
-                                       transfer_index->is_present;
+  const bool32_t has_required_queues =
+      graphics_index->is_present && transfer_index->is_present &&
+      (!vulkan_present_target_uses_wsi(state) || present_index->is_present);
 
   if (!has_required_queues) {
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
@@ -145,12 +164,14 @@ static uint32_t score_device(VulkanBackendState *state,
       .formats = NULL,
       .present_modes = NULL,
       .capabilities = (VkSurfaceCapabilitiesKHR){0}};
-  vulkan_device_query_swapchain_details(state, device, &swapchain_details);
+  if (vulkan_present_target_uses_wsi(state)) {
+    vulkan_device_query_swapchain_details(state, device, &swapchain_details);
 
-  if (array_is_null_VkSurfaceFormatKHR(&swapchain_details.formats) ||
-      array_is_null_VkPresentModeKHR(&swapchain_details.present_modes)) {
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    return 0;
+    if (array_is_null_VkSurfaceFormatKHR(&swapchain_details.formats) ||
+        array_is_null_VkPresentModeKHR(&swapchain_details.present_modes)) {
+      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+      return 0;
+    }
   }
 
   if (properties.apiVersion < VK_API_VERSION_1_2) {
@@ -204,6 +225,7 @@ static uint32_t score_device(VulkanBackendState *state,
   bool32_t has_required_protected =
       !bitset8_is_set(&req->supported_queues, VKR_DEVICE_QUEUE_PROTECTED_BIT);
   bool32_t has_required_present =
+      !vulkan_present_target_uses_wsi(state) ||
       !bitset8_is_set(&req->supported_queues, VKR_DEVICE_QUEUE_PRESENT_BIT);
 
   for (uint32_t i = 0; i < queue_family_count; i++) {
@@ -228,7 +250,8 @@ static uint32_t score_device(VulkanBackendState *state,
   }
 
   // Check present support separately (surface-dependent)
-  if (bitset8_is_set(&req->supported_queues, VKR_DEVICE_QUEUE_PRESENT_BIT)) {
+  if (vulkan_present_target_uses_wsi(state) &&
+      bitset8_is_set(&req->supported_queues, VKR_DEVICE_QUEUE_PRESENT_BIT)) {
     QueueFamilyIndex *present_index =
         array_get_QueueFamilyIndex(&indices_view, QUEUE_FAMILY_TYPE_PRESENT);
     has_required_present = present_index->is_present;
@@ -641,7 +664,8 @@ void vulkan_device_query_queue_indices(VulkanBackendState *state,
   QueueFamilyIndex *transfer_index = &res.indices[QUEUE_FAMILY_TYPE_TRANSFER];
 
   state->device.graphics_queue_index = graphics_index->index;
-  state->device.present_queue_index = present_index->index;
+  state->device.present_queue_index =
+      present_index->is_present ? (int32_t)present_index->index : -1;
   state->device.transfer_queue_index = transfer_index->index;
 }
 
@@ -717,8 +741,13 @@ void vulkan_device_get_information(VulkanBackendState *state,
       (float64_t)state->device.properties.limits.maxSamplerAnisotropy;
   device_information->vendor_id = properties.vendorID;
   device_information->device_id = properties.deviceID;
+  device_information->actual_target_kind = state->present_target.config.kind;
   device_information->actual_present_mode = state->actual_present_mode;
   device_information->actual_target_image_count = state->swapchain.image_count;
+  device_information->actual_target_width = state->swapchain.extent.width;
+  device_information->actual_target_height = state->swapchain.extent.height;
+  device_information->actual_depth_format =
+      vulkan_device_surface_depth_format(state->device.depth_format);
   switch (state->swapchain.format) {
   case VK_FORMAT_B8G8R8A8_SRGB:
     device_information->actual_color_format =
@@ -741,7 +770,8 @@ void vulkan_device_get_information(VulkanBackendState *state,
     break;
   }
   device_information->actual_color_space =
-      state->swapchain.color_space == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
+      vulkan_present_target_uses_wsi(state) &&
+              state->swapchain.color_space == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR
           ? VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR
           : VKR_SURFACE_COLOR_SPACE_UNKNOWN;
   device_information->supports_texture_astc_4x4 =
@@ -908,7 +938,7 @@ void vulkan_device_get_information(VulkanBackendState *state,
   // Check for present support (this is surface-dependent)
   QueueFamilyIndex *present_index = array_get_QueueFamilyIndex(
       &queue_indices_view, QUEUE_FAMILY_TYPE_PRESENT);
-  if (present_index->is_present) {
+  if (vulkan_present_target_uses_wsi(state) && present_index->is_present) {
     bitset8_set(&device_queues, VKR_DEVICE_QUEUE_PRESENT_BIT);
   }
 
@@ -973,16 +1003,34 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
       array_create_VkDeviceQueueCreateInfo(&state->temp_scope, indices.length);
 
   static const float32_t queue_priority = 1.0f;
+  /* One VkDeviceQueueCreateInfo per distinct family: the roles routinely share
+     a family, and naming one twice is invalid. An offscreen target resolves no
+     present family at all, so it contributes nothing here. */
+  uint32_t queue_create_info_count = 0;
   for (uint32_t i = 0; i < indices.length; i++) {
     QueueFamilyIndex *index = array_get_QueueFamilyIndex(&indices_view, i);
+    if (!index->is_present) {
+      continue;
+    }
+    bool8_t duplicate = false_v;
+    for (uint32_t q = 0; q < queue_create_info_count; ++q) {
+      if (array_get_VkDeviceQueueCreateInfo(&queue_create_infos, q)
+              ->queueFamilyIndex == index->index) {
+        duplicate = true_v;
+        break;
+      }
+    }
+    if (duplicate) {
+      continue;
+    }
     VkDeviceQueueCreateInfo queue_create_info = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
         .queueFamilyIndex = index->index,
         .queueCount = 1,
         .pQueuePriorities = &queue_priority,
     };
-    array_set_VkDeviceQueueCreateInfo(&queue_create_infos, i,
-                                      queue_create_info);
+    array_set_VkDeviceQueueCreateInfo(
+        &queue_create_infos, queue_create_info_count++, queue_create_info);
   }
 
   QueueFamilyIndex *graphics_index =
@@ -1060,6 +1108,11 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
   assert_log(required_ext_count <= ArrayCount(extension_names),
              "Too many required device extensions");
   for (uint32_t i = 0; i < required_ext_count; ++i) {
+    if (!vulkan_present_target_uses_wsi(state) &&
+        string_equals(required_extension_names[i],
+                      VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
+      continue;
+    }
     extension_names[ext_count++] = required_extension_names[i];
   }
 
@@ -1077,7 +1130,7 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
   VkDeviceCreateInfo device_create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
       .pNext = &enabled_features,
-      .queueCreateInfoCount = queue_create_infos.length,
+      .queueCreateInfoCount = queue_create_info_count,
       .pQueueCreateInfos = queue_create_infos.data,
       .pEnabledFeatures = NULL,
       .enabledExtensionCount = ext_count,
@@ -1126,20 +1179,19 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
             state->device.transfer_command_pool);
 
   vkGetDeviceQueue(state->device.logical_device,
-                   array_get_VkDeviceQueueCreateInfo(&queue_create_infos,
-                                                     QUEUE_FAMILY_TYPE_GRAPHICS)
-                       ->queueFamilyIndex,
-                   0, &state->device.graphics_queue);
+                   (uint32_t)state->device.graphics_queue_index, 0,
+                   &state->device.graphics_queue);
+  if (vulkan_present_target_uses_wsi(state)) {
+    vkGetDeviceQueue(state->device.logical_device,
+                     (uint32_t)state->device.present_queue_index, 0,
+                     &state->device.present_queue);
+  } else {
+    state->device.present_queue = VK_NULL_HANDLE;
+    state->device.present_queue_index = -1;
+  }
   vkGetDeviceQueue(state->device.logical_device,
-                   array_get_VkDeviceQueueCreateInfo(&queue_create_infos,
-                                                     QUEUE_FAMILY_TYPE_PRESENT)
-                       ->queueFamilyIndex,
-                   0, &state->device.present_queue);
-  vkGetDeviceQueue(state->device.logical_device,
-                   array_get_VkDeviceQueueCreateInfo(&queue_create_infos,
-                                                     QUEUE_FAMILY_TYPE_TRANSFER)
-                       ->queueFamilyIndex,
-                   0, &state->device.transfer_queue);
+                   (uint32_t)state->device.transfer_queue_index, 0,
+                   &state->device.transfer_queue);
 
   array_destroy_VkDeviceQueueCreateInfo(&queue_create_infos);
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_RENDERER);

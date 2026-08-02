@@ -93,8 +93,29 @@ uint32_t renderer_vulkan_create_texture_with_payload_batch(
     void *backend_state, const VkrTextureBatchCreateRequest *requests,
     uint32_t count, VkrBackendResourceHandle *out_handles,
     VkrRendererError *out_errors);
-VkrTextureFormat renderer_vulkan_swapchain_format_get(void *backend_state);
 VkrTextureFormat renderer_vulkan_shadow_depth_format_get(void *backend_state);
+VkrTextureOpaqueHandle renderer_vulkan_present_target_attachment_get(
+    void *backend_state, VkrPresentTargetAttachment attachment,
+    uint32_t image_index);
+uint32_t renderer_vulkan_present_target_image_count(void *backend_state);
+uint32_t renderer_vulkan_present_target_image_index(void *backend_state);
+VkrPresentTargetKind renderer_vulkan_present_target_kind(void *backend_state);
+void renderer_vulkan_present_target_extent(void *backend_state,
+                                           uint32_t *out_width,
+                                           uint32_t *out_height);
+VkrTextureFormat
+renderer_vulkan_present_target_format(void *backend_state,
+                                      VkrPresentTargetAttachment attachment);
+VkrPresentTargetImageState renderer_vulkan_present_target_image_state(
+    void *backend_state, VkrPresentTargetAttachment attachment,
+    uint32_t image_index);
+VkrPresentTargetImageState
+renderer_vulkan_present_target_terminal_state(void *backend_state);
+VkrRendererError renderer_vulkan_present_target_recreate(void *backend_state,
+                                                         uint32_t width,
+                                                         uint32_t height,
+                                                         uint32_t image_count);
+VkrRendererError renderer_vulkan_wait_idle(void *backend_state);
 bool8_t renderer_vulkan_pipeline_get_shader_runtime_layout(
     void *backend_state, VkrBackendResourceHandle pipeline_handle,
     VkrShaderRuntimeLayout *out_layout);
@@ -113,6 +134,9 @@ vkr_internal uint32_t vulkan_texture_mip_extent(uint32_t base, uint32_t level);
 vkr_internal uint64_t vulkan_texture_expected_region_size_bytes(
     VkrTextureFormat format, uint32_t channels, uint32_t width,
     uint32_t height);
+vkr_internal void
+vulkan_present_target_destroy_offscreen(VulkanBackendState *state);
+vkr_internal void vulkan_backend_mark_frame_failed(VulkanBackendState *state);
 
 static void vulkan_rg_timing_fetch_results(VulkanBackendState *state);
 vkr_internal void vulkan_backend_parallel_worker_context_reset(
@@ -2437,7 +2461,8 @@ vulkan_texture_layout_to_vk(VkrTextureLayout layout) {
 
 vkr_internal bool32_t create_command_buffers(VulkanBackendState *state) {
   state->graphics_command_buffers = array_create_VulkanCommandBuffer(
-      &state->alloc, state->swapchain.images.length);
+      vulkan_present_target_frame_storage(state),
+      state->swapchain.images.length);
   for (uint32_t i = 0; i < state->swapchain.images.length; i++) {
     VulkanCommandBuffer *command_buffer =
         array_get_VulkanCommandBuffer(&state->graphics_command_buffers, i);
@@ -2542,7 +2567,7 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
           .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
           .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
           .initial_layout = VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-          .final_layout = VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR,
+          .final_layout = vulkan_present_target_terminal_layout(state),
           .clear_value = clear_transparent,
       };
       desc = (VkrRenderPassDesc){
@@ -2586,7 +2611,7 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
           .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
           .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
           .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
-          .final_layout = VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR,
+          .final_layout = vulkan_present_target_terminal_layout(state),
           .clear_value = clear_black,
       };
       desc = (VkrRenderPassDesc){
@@ -2769,11 +2794,18 @@ vulkan_backend_destroy_attachment_wrappers(VulkanBackendState *state,
     state->swapchain_image_textures = NULL;
   }
 
-  if (state->depth_texture) {
-    vkr_allocator_free(&state->swapchain_alloc, state->depth_texture,
-                       sizeof(struct s_TextureHandle),
-                       VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
-    state->depth_texture = NULL;
+  if (state->depth_textures) {
+    for (uint32_t i = 0; i < image_count; ++i) {
+      if (state->depth_textures[i]) {
+        vkr_allocator_free(&state->swapchain_alloc, state->depth_textures[i],
+                           sizeof(struct s_TextureHandle),
+                           VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+      }
+    }
+    vkr_allocator_free(&state->swapchain_alloc, state->depth_textures,
+                       sizeof(struct s_TextureHandle *) * image_count,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+    state->depth_textures = NULL;
   }
 }
 
@@ -2823,27 +2855,292 @@ vulkan_backend_create_attachment_wrappers(VulkanBackendState *state) {
     state->swapchain_image_textures[i] = wrapper;
   }
 
-  struct s_TextureHandle *depth_wrapper = vkr_allocator_alloc(
-      &state->swapchain_alloc, sizeof(struct s_TextureHandle),
-      VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
-  if (!depth_wrapper) {
-    log_fatal("Failed to allocate depth attachment wrapper");
+  state->depth_textures = vkr_allocator_alloc(
+      &state->swapchain_alloc, sizeof(struct s_TextureHandle *) * image_count,
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  if (!state->depth_textures) {
+    log_fatal("Failed to allocate depth attachment wrapper array");
     return false;
   }
-  MemZero(depth_wrapper, sizeof(struct s_TextureHandle));
-  depth_wrapper->texture.image = state->swapchain.depth_attachment;
-  depth_wrapper->texture.image.samples = VK_SAMPLE_COUNT_1_BIT;
-  depth_wrapper->texture.sampler = VK_NULL_HANDLE;
-  depth_wrapper->description.width = state->swapchain.extent.width;
-  depth_wrapper->description.height = state->swapchain.extent.height;
-  depth_wrapper->description.channels = 1;
-  depth_wrapper->description.format =
-      vulkan_vk_format_to_vkr(state->device.depth_format);
-  depth_wrapper->description.sample_count = VKR_SAMPLE_COUNT_1;
-
-  state->depth_texture = depth_wrapper;
+  MemZero(state->depth_textures,
+          sizeof(struct s_TextureHandle *) * image_count);
+  for (uint32_t i = 0; i < image_count; ++i) {
+    struct s_TextureHandle *depth_wrapper = vkr_allocator_alloc(
+        &state->swapchain_alloc, sizeof(struct s_TextureHandle),
+        VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
+    if (!depth_wrapper) {
+      log_fatal("Failed to allocate depth attachment wrapper");
+      return false;
+    }
+    MemZero(depth_wrapper, sizeof(struct s_TextureHandle));
+    depth_wrapper->texture.image = vulkan_present_target_is_offscreen(state)
+                                       ? array_get_VulkanPresentTargetImage(
+                                             &state->present_target.images, i)
+                                             ->depth
+                                       : state->swapchain.depth_attachment;
+    depth_wrapper->texture.image.samples = VK_SAMPLE_COUNT_1_BIT;
+    depth_wrapper->texture.sampler = VK_NULL_HANDLE;
+    depth_wrapper->description.width = state->swapchain.extent.width;
+    depth_wrapper->description.height = state->swapchain.extent.height;
+    depth_wrapper->description.channels = 1;
+    depth_wrapper->description.format =
+        vulkan_vk_format_to_vkr(state->device.depth_format);
+    depth_wrapper->description.sample_count = VKR_SAMPLE_COUNT_1;
+    state->depth_textures[i] = depth_wrapper;
+  }
 
   return true;
+}
+
+vkr_internal bool8_t
+vulkan_present_target_create_offscreen(VulkanBackendState *state) {
+  VkrPresentTargetConfig *config = &state->present_target.config;
+  if (config->width == 0 || config->height == 0 || config->image_count == 0) {
+    log_error("Invalid offscreen target configuration");
+    return false_v;
+  }
+  config->image_count = Min(config->image_count, VKR_PRESENT_TARGET_MAX_IMAGES);
+
+  const VkFormat color_candidates[] = {VK_FORMAT_B8G8R8A8_SRGB,
+                                       VK_FORMAT_R8G8B8A8_SRGB};
+  VkFormat color_format = VK_FORMAT_UNDEFINED;
+  const VkFormatFeatureFlags required_color_features =
+      VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+      (state->capture_enabled ? VK_FORMAT_FEATURE_TRANSFER_SRC_BIT : 0u);
+  for (uint32_t i = 0; i < ArrayCount(color_candidates); ++i) {
+    VkFormatProperties properties = {0};
+    vkGetPhysicalDeviceFormatProperties(state->device.physical_device,
+                                        color_candidates[i], &properties);
+    if ((properties.optimalTilingFeatures & required_color_features) ==
+        required_color_features) {
+      color_format = color_candidates[i];
+      break;
+    }
+  }
+  if (color_format == VK_FORMAT_UNDEFINED ||
+      !vulkan_device_check_depth_format(&state->device,
+                                        state->capture_enabled)) {
+    log_error("No compatible offscreen color/depth format pair");
+    return false_v;
+  }
+
+  const uint32_t image_count = config->image_count;
+  state->swapchain.handle = VK_NULL_HANDLE;
+  state->swapchain.format = color_format;
+  state->swapchain.color_space = VK_COLOR_SPACE_MAX_ENUM_KHR;
+  state->swapchain.extent =
+      (VkExtent2D){.width = config->width, .height = config->height};
+  state->swapchain.image_count = image_count;
+  state->swapchain.max_in_flight_frames =
+      (uint8_t)Min(image_count, (uint32_t)BUFFERING_FRAMES);
+
+  state->present_target.images = array_create_VulkanPresentTargetImage(
+      &state->swapchain_alloc, image_count);
+  state->swapchain.images =
+      array_create_VkImage(&state->swapchain_alloc, image_count);
+  state->swapchain.image_views =
+      array_create_VkImageView(&state->swapchain_alloc, image_count);
+  if (!state->present_target.images.data || !state->swapchain.images.data ||
+      !state->swapchain.image_views.data) {
+    log_error("Failed to allocate offscreen target storage");
+    goto cleanup;
+  }
+  MemZero(state->present_target.images.data,
+          sizeof(VulkanPresentTargetImage) * image_count);
+
+  const VulkanImageDescription color_desc = {
+      .image_type = VK_IMAGE_TYPE_2D,
+      .width = config->width,
+      .height = config->height,
+      .format = color_format,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+               (state->capture_enabled ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0),
+      .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .mip_levels = 1,
+      .array_layers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .view_type = VK_IMAGE_VIEW_TYPE_2D,
+      .view_aspect_flags = VK_IMAGE_ASPECT_COLOR_BIT,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN,
+  };
+  const VulkanImageDescription depth_desc = {
+      .image_type = VK_IMAGE_TYPE_2D,
+      .width = config->width,
+      .height = config->height,
+      .format = state->device.depth_format,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+               (state->capture_enabled ? VK_IMAGE_USAGE_TRANSFER_SRC_BIT : 0),
+      .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+      .mip_levels = 1,
+      .array_layers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .view_type = VK_IMAGE_VIEW_TYPE_2D,
+      .view_aspect_flags = VK_IMAGE_ASPECT_DEPTH_BIT,
+      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_SWAPCHAIN,
+  };
+
+  for (uint32_t i = 0; i < image_count; ++i) {
+    VulkanPresentTargetImage *target =
+        array_get_VulkanPresentTargetImage(&state->present_target.images, i);
+    if (!vulkan_image_create(state, &color_desc, &target->color) ||
+        !vulkan_image_create(state, &depth_desc, &target->depth)) {
+      log_error("Failed to create offscreen target image pair %u", i);
+      goto cleanup;
+    }
+    array_set_VkImage(&state->swapchain.images, i, target->color.handle);
+    array_set_VkImageView(&state->swapchain.image_views, i, target->color.view);
+    target->state = (VulkanPresentTargetState){
+        .color_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .depth_layout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .color_access = VKR_IMAGE_ACCESS_NONE,
+        .depth_access = VKR_IMAGE_ACCESS_NONE,
+    };
+  }
+  state->present_target.next_offscreen_image = 0;
+  state->actual_present_mode = VKR_PRESENT_MODE_DEFAULT;
+  return true_v;
+
+cleanup:
+  vulkan_present_target_destroy_offscreen(state);
+  return false_v;
+}
+
+vkr_internal void
+vulkan_present_target_destroy_offscreen(VulkanBackendState *state) {
+  for (uint32_t i = 0; i < state->present_target.images.length; ++i) {
+    VulkanPresentTargetImage *target =
+        array_get_VulkanPresentTargetImage(&state->present_target.images, i);
+    if (target->color.handle != VK_NULL_HANDLE) {
+      vulkan_image_destroy(state, &target->color);
+    }
+    if (target->depth.handle != VK_NULL_HANDLE) {
+      vulkan_image_destroy(state, &target->depth);
+    }
+  }
+  array_destroy_VulkanPresentTargetImage(&state->present_target.images);
+  array_destroy_VkImage(&state->swapchain.images);
+  array_destroy_VkImageView(&state->swapchain.image_views);
+  state->swapchain.image_count = 0;
+}
+
+vkr_internal void vulkan_present_target_destroy_offscreen_frame_resources(
+    VulkanBackendState *state) {
+  for (uint32_t i = 0; i < state->graphics_command_buffers.length; ++i) {
+    vulkan_command_buffer_free(state, array_get_VulkanCommandBuffer(
+                                          &state->graphics_command_buffers, i));
+  }
+  array_destroy_VulkanCommandBuffer(&state->graphics_command_buffers);
+
+  for (uint32_t i = 0; i < state->swapchain.framebuffers.length; ++i) {
+    vulkan_framebuffer_destroy(
+        state, array_get_VulkanFramebuffer(&state->swapchain.framebuffers, i));
+  }
+  array_destroy_VulkanFramebuffer(&state->swapchain.framebuffers);
+
+  for (uint32_t i = 0; i < state->in_flight_fences.length; ++i) {
+    vulkan_fence_destroy(state,
+                         array_get_VulkanFence(&state->in_flight_fences, i));
+  }
+  array_destroy_VulkanFence(&state->in_flight_fences);
+  array_destroy_VulkanFencePtr(&state->images_in_flight);
+  vulkan_backend_destroy_attachment_wrappers(state,
+                                             state->swapchain.image_count);
+}
+
+vkr_internal bool8_t vulkan_present_target_create_offscreen_frame_resources(
+    VulkanBackendState *state) {
+  const uint32_t image_count = state->swapchain.image_count;
+  const uint32_t frame_count = state->swapchain.max_in_flight_frames;
+  if (!vulkan_backend_create_attachment_wrappers(state)) {
+    return false_v;
+  }
+
+  state->swapchain.framebuffers =
+      array_create_VulkanFramebuffer(&state->swapchain_alloc, image_count);
+  if (!state->swapchain.framebuffers.data) {
+    return false_v;
+  }
+  MemZero(state->swapchain.framebuffers.data,
+          sizeof(VulkanFramebuffer) * image_count);
+
+  if (!create_command_buffers(state)) {
+    return false_v;
+  }
+
+  state->in_flight_fences =
+      array_create_VulkanFence(&state->swapchain_alloc, frame_count);
+  state->images_in_flight =
+      array_create_VulkanFencePtr(&state->swapchain_alloc, image_count);
+  if (!state->in_flight_fences.data || !state->images_in_flight.data) {
+    return false_v;
+  }
+  MemZero(state->in_flight_fences.data, sizeof(VulkanFence) * frame_count);
+  MemZero(state->images_in_flight.data, sizeof(VulkanFencePtr) * image_count);
+  for (uint32_t i = 0; i < frame_count; ++i) {
+    VulkanFence *fence = array_get_VulkanFence(&state->in_flight_fences, i);
+    vulkan_fence_create(state, true_v, fence);
+    if (fence->handle == VK_NULL_HANDLE) {
+      return false_v;
+    }
+  }
+  return true_v;
+}
+
+VkrRendererError renderer_vulkan_present_target_recreate(void *backend_state,
+                                                         uint32_t width,
+                                                         uint32_t height,
+                                                         uint32_t image_count) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!state || !vulkan_present_target_is_offscreen(state) || width == 0 ||
+      height == 0 || image_count == 0) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+  if (state->frame_active) {
+    return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
+  }
+  if (state->device_unusable) {
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+  if (renderer_vulkan_wait_idle(state) != VKR_RENDERER_ERROR_NONE) {
+    state->device_unusable = true_v;
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  /* The frontend releases graph-owned framebuffers before any imported image
+     wrapper or VkImage is retired. Device-idle makes those deferred destroys
+     immediately eligible. */
+  if (state->on_render_target_refresh_required) {
+    state->on_render_target_refresh_required();
+    vulkan_deferred_destroy_process(state);
+  }
+  framebuffer_cache_invalidate(state);
+  vulkan_present_target_destroy_offscreen_frame_resources(state);
+  vulkan_present_target_destroy_offscreen(state);
+  arena_reset_to(state->swapchain_arena, 0, ARENA_MEMORY_TAG_RENDERER);
+
+  state->present_target.config = (VkrPresentTargetConfig){
+      .kind = VKR_PRESENT_TARGET_OFFSCREEN,
+      .width = width,
+      .height = height,
+      .image_count = Min(image_count, VKR_PRESENT_TARGET_MAX_IMAGES),
+  };
+  if (!vulkan_present_target_create_offscreen(state) ||
+      !vulkan_present_target_create_offscreen_frame_resources(state)) {
+    log_error("Failed to recreate offscreen present target");
+    state->device_unusable = true_v;
+    return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  }
+
+  state->current_frame = 0;
+  state->image_index = 0;
+  state->active_image_index = 0;
+  state->swapchain_image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+  state->frame_recovery_required = false_v;
+  state->active_named_render_pass = NULL;
+  state->active_named_render_target = NULL;
+  return VKR_RENDERER_ERROR_NONE;
 }
 
 vkr_internal struct s_RenderPass *
@@ -3187,7 +3484,7 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
         .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
         .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
         .initial_layout = VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .final_layout = VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR,
+        .final_layout = vulkan_present_target_terminal_layout(state),
         .clear_value = clear_transparent,
     };
     VkrRenderPassDesc ui_desc = {
@@ -3283,10 +3580,19 @@ VkrRendererError vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
-  VulkanSwapchainResult swapchain_result = vulkan_swapchain_recreate(state);
-  if (swapchain_result != VULKAN_SWAPCHAIN_RESULT_OK) {
+  /* Graph-owned framebuffers must be retired before the swapchain module
+     destroys their attachment views. Device-idle makes the deferred handles
+     immediately reclaimable. */
+  if (state->on_render_target_refresh_required) {
+    state->on_render_target_refresh_required();
+    vulkan_deferred_destroy_process(state);
+  }
+  framebuffer_cache_invalidate(state);
+
+  VulkanPresentTargetResult swapchain_result = vulkan_swapchain_recreate(state);
+  if (swapchain_result != VULKAN_PRESENT_TARGET_RESULT_OK) {
     state->is_swapchain_recreation_requested = false_v;
-    if (swapchain_result == VULKAN_SWAPCHAIN_RESULT_SKIP) {
+    if (swapchain_result == VULKAN_PRESENT_TARGET_RESULT_SKIP) {
       log_warn("Swapchain recreation deferred; keeping old swapchain");
       return VKR_RENDERER_ERROR_FRAME_SKIPPED;
     }
@@ -3297,10 +3603,6 @@ VkrRendererError vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
 
   // Swapchain recreation succeeded - now clean up old resources and create new
   // ones
-
-  // Invalidate framebuffer cache - all cached framebuffers reference old
-  // swapchain images that are now invalid
-  framebuffer_cache_invalidate(state);
 
   vulkan_backend_destroy_attachment_wrappers(state, old_image_count);
 
@@ -3435,10 +3737,6 @@ VkrRendererError vulkan_backend_recreate_swapchain(VulkanBackendState *state) {
                                 });
   }
 
-  if (state->on_render_target_refresh_required) {
-    state->on_render_target_refresh_required();
-  }
-
   // Ensure current_frame is within bounds of new max_in_flight_frames
   if (state->current_frame >= state->swapchain.max_in_flight_frames) {
     state->current_frame = 0;
@@ -3465,6 +3763,221 @@ recreate_failed:
   return VKR_RENDERER_ERROR_DEVICE_ERROR;
 }
 
+// ============================================================================
+// Present target implementations
+//
+// Two implementations of one seam. The swapchain target owns the surface, WSI
+// extensions, present queue, acquire/render-complete semaphores, and
+// out-of-date recreation. The offscreen target owns N color/depth pairs and
+// needs none of them. The image-in-flight fence table and every per-frame
+// query are shared, so nothing below is duplicated between them.
+// ============================================================================
+
+vkr_internal void
+vulkan_backend_record_present_transition(VulkanBackendState *state,
+                                         VulkanCommandBuffer *command_buffer);
+
+vkr_internal bool8_t
+vulkan_present_target_swapchain_create(VulkanBackendState *state) {
+  return vulkan_swapchain_create(state) ? true_v : false_v;
+}
+
+vkr_internal void
+vulkan_present_target_swapchain_destroy(VulkanBackendState *state) {
+  vulkan_swapchain_destroy(state);
+}
+
+vkr_internal void
+vulkan_present_target_swapchain_resize(VulkanBackendState *state,
+                                       uint32_t width, uint32_t height) {
+  if (state->is_swapchain_recreation_requested) {
+    return;
+  }
+
+  state->swapchain.extent.width = width;
+  state->swapchain.extent.height = height;
+
+  VkrRendererError result = vulkan_backend_recreate_swapchain(state);
+  // A refused recreation is the normal minimize/zero-extent case; the next
+  // frame retries it.
+  if (result != VKR_RENDERER_ERROR_NONE &&
+      result != VKR_RENDERER_ERROR_FRAME_SKIPPED) {
+    log_error("Failed to recreate swapchain during resize");
+  }
+}
+
+/**
+ * A frame that acquired an image but never submitted left its acquire
+ * semaphore signalled with no waiter. Handing that semaphore back to
+ * vkAcquireNextImageKHR is invalid
+ * (VUID-vkAcquireNextImageKHR-semaphore-01779), so the swapchain -- and with it
+ * the sync objects -- is rebuilt first.
+ */
+vkr_internal VkrRendererError
+vulkan_present_target_swapchain_frame_begin(VulkanBackendState *state) {
+  // WSI acquisition permits discarding the prior contents.
+  state->swapchain_image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+  if (!state->frame_recovery_required) {
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
+  log_warn("Recovering from an incomplete frame; recreating swapchain");
+  VkrRendererError recovery = vulkan_backend_recreate_swapchain(state);
+  if (recovery != VKR_RENDERER_ERROR_NONE) {
+    // Recreation is refused while the window is minimized. Keep the flag set so
+    // recovery is retried, otherwise the stale acquire semaphore would be
+    // reused the moment the window comes back.
+    if (recovery == VKR_RENDERER_ERROR_FRAME_SKIPPED) {
+      log_warn("Frame recovery deferred: swapchain could not be recreated yet");
+    }
+    return recovery;
+  }
+  state->frame_recovery_required = false_v;
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+vkr_internal VulkanPresentTargetResult vulkan_present_target_swapchain_acquire(
+    VulkanBackendState *state, VulkanPresentTargetSync *out_sync) {
+  VkSemaphore acquired = *array_get_VkSemaphore(
+      &state->image_available_semaphores, state->current_frame);
+  const VulkanPresentTargetResult result = vulkan_swapchain_acquire_next_image(
+      state, UINT64_MAX, acquired,
+      // A fence here would conflict with the queue submit's fence.
+      VK_NULL_HANDLE, &state->image_index);
+  if (result != VULKAN_PRESENT_TARGET_RESULT_OK) {
+    return result;
+  }
+  *out_sync = (VulkanPresentTargetSync){
+      .wait = acquired,
+      .signal = *array_get_VkSemaphore(&state->queue_complete_semaphores,
+                                       state->image_index),
+  };
+  return VULKAN_PRESENT_TARGET_RESULT_OK;
+}
+
+vkr_internal VulkanPresentTargetResult
+vulkan_present_target_swapchain_complete(VulkanBackendState *state) {
+  return vulkan_swapchain_present(
+      state,
+      *array_get_VkSemaphore(&state->queue_complete_semaphores,
+                             state->image_index),
+      state->image_index);
+}
+
+vkr_internal void
+vulkan_present_target_swapchain_frame_cancel(VulkanBackendState *state,
+                                             VulkanCommandBuffer *cb) {
+  // The image was acquired and must still reach PRESENT_SRC_KHR, even though
+  // this frame recorded nothing into it.
+  state->swapchain_image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
+  vulkan_backend_record_present_transition(state, cb);
+}
+
+vkr_internal void
+vulkan_present_target_offscreen_ignore_resize(VulkanBackendState *state,
+                                              uint32_t width, uint32_t height) {
+  // Ordinary images have no surface to go out of date. Extent changes arrive
+  // as explicit recreations outside an active frame.
+  (void)state;
+  (void)width;
+  (void)height;
+}
+
+vkr_internal VkrRendererError
+vulkan_present_target_offscreen_frame_begin(VulkanBackendState *state) {
+  // The retained layout is restored by acquire, so there is nothing to reset
+  // and no WSI state that a failed frame could have left behind.
+  (void)state;
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+vkr_internal VulkanPresentTargetResult vulkan_present_target_offscreen_acquire(
+    VulkanBackendState *state, VulkanPresentTargetSync *out_sync) {
+  // Ordinary images are never acquired: pick the next one round-robin and
+  // resume the state its last frame left behind. The shared image-in-flight
+  // fence is what makes the reuse safe.
+  state->image_index = state->present_target.next_offscreen_image;
+  state->present_target.next_offscreen_image =
+      (state->present_target.next_offscreen_image + 1u) %
+      state->swapchain.image_count;
+  state->frame_target_initial =
+      array_get_VulkanPresentTargetImage(&state->present_target.images,
+                                         state->image_index)
+          ->state;
+  state->swapchain_image_layout = state->frame_target_initial.color_layout;
+  *out_sync = (VulkanPresentTargetSync){0};
+  return VULKAN_PRESENT_TARGET_RESULT_OK;
+}
+
+vkr_internal VulkanPresentTargetResult
+vulkan_present_target_offscreen_complete(VulkanBackendState *state) {
+  // Nothing presents an ordinary image; the submit fence is the completion.
+  (void)state;
+  return VULKAN_PRESENT_TARGET_RESULT_OK;
+}
+
+vkr_internal void
+vulkan_present_target_offscreen_frame_cancel(VulkanBackendState *state,
+                                             VulkanCommandBuffer *cb) {
+  // The cancellation buffer records nothing against the target, so the image
+  // must go back to the state this frame found it in.
+  (void)cb;
+  array_get_VulkanPresentTargetImage(&state->present_target.images,
+                                     state->image_index)
+      ->state = state->frame_target_initial;
+  state->swapchain_image_layout = state->frame_target_initial.color_layout;
+}
+
+vkr_internal const VulkanPresentTargetOps VULKAN_PRESENT_TARGET_SWAPCHAIN = {
+    .name = "swapchain",
+    .uses_wsi = true_v,
+    .recovers_by_recreation = true_v,
+    .terminal_state =
+        {
+            .access = VKR_IMAGE_ACCESS_PRESENT,
+            .layout = VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR,
+        },
+    .create = vulkan_present_target_swapchain_create,
+    .destroy = vulkan_present_target_swapchain_destroy,
+    .resize = vulkan_present_target_swapchain_resize,
+    .frame_begin = vulkan_present_target_swapchain_frame_begin,
+    .acquire = vulkan_present_target_swapchain_acquire,
+    .complete = vulkan_present_target_swapchain_complete,
+    .frame_cancel = vulkan_present_target_swapchain_frame_cancel,
+};
+
+vkr_internal const VulkanPresentTargetOps VULKAN_PRESENT_TARGET_OFFSCREEN = {
+    .name = "offscreen",
+    .uses_wsi = false_v,
+    .recovers_by_recreation = false_v,
+    // The graph leaves the image in the state its next import will declare.
+    .terminal_state =
+        {
+            .access = VKR_IMAGE_ACCESS_COLOR_ATTACHMENT,
+            .layout = VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        },
+    .create = vulkan_present_target_create_offscreen,
+    .destroy = vulkan_present_target_destroy_offscreen,
+    .resize = vulkan_present_target_offscreen_ignore_resize,
+    .frame_begin = vulkan_present_target_offscreen_frame_begin,
+    .acquire = vulkan_present_target_offscreen_acquire,
+    .complete = vulkan_present_target_offscreen_complete,
+    .frame_cancel = vulkan_present_target_offscreen_frame_cancel,
+};
+
+/**
+ * @brief Binds the implementation for the configured kind.
+ *
+ * Runs before instance creation: extension filtering, physical-device scoring,
+ * and queue selection all read `uses_wsi` from the bound implementation.
+ */
+vkr_internal void vulkan_present_target_bind(VulkanBackendState *state) {
+  state->present_target.ops =
+      state->present_target.config.kind == VKR_PRESENT_TARGET_OFFSCREEN
+          ? &VULKAN_PRESENT_TARGET_OFFSCREEN
+          : &VULKAN_PRESENT_TARGET_SWAPCHAIN;
+}
+
 VkrRendererBackendInterface renderer_vulkan_get_interface() {
   return (VkrRendererBackendInterface){
       .initialize = renderer_vulkan_initialize,
@@ -3484,14 +3997,23 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .render_target_destroy = renderer_vulkan_render_target_destroy,
       .begin_render_pass = renderer_vulkan_begin_render_pass,
       .end_render_pass = renderer_vulkan_end_render_pass,
-      .window_attachment_get = renderer_vulkan_window_attachment_get,
-      .depth_attachment_get = renderer_vulkan_depth_attachment_get,
-      .window_attachment_count_get = renderer_vulkan_window_attachment_count,
-      .window_attachment_index_get = renderer_vulkan_window_attachment_index,
       .frame_in_flight_index_get = renderer_vulkan_frame_in_flight_index,
       .frame_in_flight_count_get = renderer_vulkan_frame_in_flight_count,
-      .swapchain_format_get = renderer_vulkan_swapchain_format_get,
       .shadow_depth_format_get = renderer_vulkan_shadow_depth_format_get,
+      .present_target_attachment_get =
+          renderer_vulkan_present_target_attachment_get,
+      .present_target_image_count_get =
+          renderer_vulkan_present_target_image_count,
+      .present_target_image_index_get =
+          renderer_vulkan_present_target_image_index,
+      .present_target_kind_get = renderer_vulkan_present_target_kind,
+      .present_target_extent_get = renderer_vulkan_present_target_extent,
+      .present_target_format_get = renderer_vulkan_present_target_format,
+      .present_target_image_state_get =
+          renderer_vulkan_present_target_image_state,
+      .present_target_terminal_state_get =
+          renderer_vulkan_present_target_terminal_state,
+      .present_target_recreate = renderer_vulkan_present_target_recreate,
       .buffer_create = renderer_vulkan_create_buffer,
       .buffer_create_batch = renderer_vulkan_create_buffer_batch,
       .buffer_destroy = renderer_vulkan_destroy_buffer,
@@ -4035,7 +4557,6 @@ renderer_vulkan_initialize(void **out_backend_state,
   assert_log(out_backend_state != NULL, "Out backend state is NULL");
   assert_log(type == VKR_RENDERER_BACKEND_TYPE_VULKAN,
              "Vulkan backend type is required");
-  assert_log(window != NULL, "Window is NULL");
   assert_log(initial_width > 0, "Initial width is 0");
   assert_log(initial_height > 0, "Initial height is 0");
   assert_log(device_requirements != NULL, "Device requirements is NULL");
@@ -4095,13 +4616,22 @@ renderer_vulkan_initialize(void **out_backend_state,
   backend_state->requested_present_mode =
       backend_config ? backend_config->requested_present_mode
                      : VKR_PRESENT_MODE_DEFAULT;
+  backend_state->present_target.config = backend_config
+                                             ? backend_config->present_target
+                                             : (VkrPresentTargetConfig){0};
+  /* Bound before instance creation: extension filtering, device scoring, and
+     queue selection all read the implementation's capabilities. */
+  vulkan_present_target_bind(backend_state);
+  assert_log(vulkan_present_target_uses_wsi(backend_state) == (window != NULL),
+             "A windowed target requires a window and an offscreen target must "
+             "not own one");
   backend_state->capture_enabled =
       backend_config ? backend_config->capture_enabled : false_v;
   backend_state->descriptor_writes_avoided = 0;
   backend_state->render_pass_registry = (Array_VkrRenderPassEntry){0};
   backend_state->render_pass_count = 0;
   backend_state->swapchain_image_textures = NULL;
-  backend_state->depth_texture = NULL;
+  backend_state->depth_textures = NULL;
   backend_state->on_render_target_refresh_required =
       backend_config ? backend_config->on_render_target_refresh_required : NULL;
   if (backend_config) {
@@ -4183,7 +4713,8 @@ renderer_vulkan_initialize(void **out_backend_state,
   }
 #endif
 
-  if (!vulkan_platform_create_surface(backend_state)) {
+  if (vulkan_present_target_uses_wsi(backend_state) &&
+      !vulkan_platform_create_surface(backend_state)) {
     log_fatal("Failed to create Vulkan surface");
     return false;
   }
@@ -4221,8 +4752,9 @@ renderer_vulkan_initialize(void **out_backend_state,
 #if VKR_METRICS_ENABLED
   const float64_t target_start = vkr_platform_get_absolute_time();
 #endif
-  if (!vulkan_swapchain_create(backend_state)) {
-    log_fatal("Failed to create Vulkan swapchain");
+  if (!vulkan_present_target_ops(backend_state)->create(backend_state)) {
+    log_fatal("Failed to create the %s present target",
+              vulkan_present_target_ops(backend_state)->name);
     return false;
   }
 #if VKR_METRICS_ENABLED
@@ -4263,51 +4795,55 @@ renderer_vulkan_initialize(void **out_backend_state,
     log_fatal("Failed to create Vulkan command buffers");
     return false;
   }
-  backend_state->image_available_semaphores = array_create_VkSemaphore(
-      &backend_state->alloc, backend_state->swapchain.max_in_flight_frames);
-  backend_state->queue_complete_semaphores = array_create_VkSemaphore(
-      &backend_state->alloc, backend_state->swapchain.image_count);
-  backend_state->in_flight_fences = array_create_VulkanFence(
-      &backend_state->alloc, backend_state->swapchain.max_in_flight_frames);
-  for (uint32_t i = 0; i < backend_state->swapchain.max_in_flight_frames; i++) {
-    VkSemaphoreCreateInfo semaphore_info = {
+  // Acquire/present semaphores only order WSI work. An offscreen target has no
+  // acquire and no present, so its frames are ordered by fences alone.
+  if (vulkan_present_target_uses_wsi(backend_state)) {
+    const VkSemaphoreCreateInfo semaphore_info = {
         .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
     };
-
-    if (vkCreateSemaphore(backend_state->device.logical_device, &semaphore_info,
-                          backend_state->allocator,
-                          array_get_VkSemaphore(
-                              &backend_state->image_available_semaphores, i)) !=
-        VK_SUCCESS) {
-      log_fatal("Failed to create Vulkan image available semaphore");
-      return false;
+    backend_state->image_available_semaphores = array_create_VkSemaphore(
+        &backend_state->alloc, backend_state->swapchain.max_in_flight_frames);
+    backend_state->queue_complete_semaphores = array_create_VkSemaphore(
+        &backend_state->alloc, backend_state->swapchain.image_count);
+    for (uint32_t i = 0; i < backend_state->swapchain.max_in_flight_frames;
+         i++) {
+      if (vkCreateSemaphore(
+              backend_state->device.logical_device, &semaphore_info,
+              backend_state->allocator,
+              array_get_VkSemaphore(&backend_state->image_available_semaphores,
+                                    i)) != VK_SUCCESS) {
+        log_fatal("Failed to create Vulkan image available semaphore");
+        return false;
+      }
     }
+    for (uint32_t i = 0; i < backend_state->swapchain.image_count; i++) {
+      if (vkCreateSemaphore(
+              backend_state->device.logical_device, &semaphore_info,
+              backend_state->allocator,
+              array_get_VkSemaphore(&backend_state->queue_complete_semaphores,
+                                    i)) != VK_SUCCESS) {
+        log_fatal("Failed to create Vulkan queue complete semaphore");
+        return false;
+      }
+    }
+  }
 
-    // fence is created with is_signaled set to true, because we want to wait
-    // on the fence until the previous frame is finished
+  /* Offscreen frame synchronization lives in the swapchain arena because
+     explicit target recreation resets that arena and rebuilds it. */
+  VkrAllocator *frame_sync_alloc =
+      vulkan_present_target_frame_storage(backend_state);
+  backend_state->in_flight_fences = array_create_VulkanFence(
+      frame_sync_alloc, backend_state->swapchain.max_in_flight_frames);
+  for (uint32_t i = 0; i < backend_state->swapchain.max_in_flight_frames; i++) {
+    // Created signalled: the first frame must not wait on a submit that never
+    // happened.
     vulkan_fence_create(
         backend_state, true_v,
         array_get_VulkanFence(&backend_state->in_flight_fences, i));
   }
 
-  // Create queue complete semaphores for each swapchain image
-  for (uint32_t i = 0; i < backend_state->swapchain.image_count; i++) {
-    VkSemaphoreCreateInfo semaphore_info = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO,
-    };
-
-    if (vkCreateSemaphore(backend_state->device.logical_device, &semaphore_info,
-                          backend_state->allocator,
-                          array_get_VkSemaphore(
-                              &backend_state->queue_complete_semaphores, i)) !=
-        VK_SUCCESS) {
-      log_fatal("Failed to create Vulkan queue complete semaphore");
-      return false;
-    }
-  }
-
   backend_state->images_in_flight = array_create_VulkanFencePtr(
-      &backend_state->alloc, backend_state->swapchain.image_count);
+      frame_sync_alloc, backend_state->swapchain.image_count);
   for (uint32_t i = 0; i < backend_state->swapchain.image_count; i++) {
     array_set_VulkanFencePtr(&backend_state->images_in_flight, i, NULL);
   }
@@ -4401,15 +4937,17 @@ void renderer_vulkan_shutdown(void *backend_state) {
   // Wait again to ensure command buffer cleanup is complete
   vkDeviceWaitIdle(state->device.logical_device);
 
-  for (uint32_t i = 0; i < state->swapchain.max_in_flight_frames; i++) {
+  for (uint32_t i = 0; i < state->in_flight_fences.length; i++) {
     vulkan_fence_destroy(state,
                          array_get_VulkanFence(&state->in_flight_fences, i));
+  }
+  for (uint32_t i = 0; i < state->image_available_semaphores.length; i++) {
     vkDestroySemaphore(
         state->device.logical_device,
         *array_get_VkSemaphore(&state->image_available_semaphores, i),
         state->allocator);
   }
-  for (uint32_t i = 0; i < state->swapchain.image_count; i++) {
+  for (uint32_t i = 0; i < state->queue_complete_semaphores.length; i++) {
     vkDestroySemaphore(
         state->device.logical_device,
         *array_get_VkSemaphore(&state->queue_complete_semaphores, i),
@@ -4466,10 +5004,12 @@ void renderer_vulkan_shutdown(void *backend_state) {
   vulkan_backend_parallel_runtime_shutdown(state);
   vulkan_backend_destroy_attachment_wrappers(state,
                                              state->swapchain.image_count);
-  vulkan_swapchain_destroy(state);
+  vulkan_present_target_ops(state)->destroy(state);
   vulkan_device_destroy_logical_device(state);
   vulkan_device_release_physical_device(state);
-  vulkan_platform_destroy_surface(state);
+  if (state->surface != VK_NULL_HANDLE) {
+    vulkan_platform_destroy_surface(state);
+  }
 #ifndef NDEBUG
   vulkan_debug_destroy_debug_messenger(state);
 #endif
@@ -4491,26 +5031,8 @@ void renderer_vulkan_shutdown(void *backend_state) {
 
 void renderer_vulkan_on_resize(void *backend_state, uint32_t new_width,
                                uint32_t new_height) {
-  // log_debug("Resizing Vulkan backend to %d x %d", new_width, new_height);
-
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
-
-  if (state->is_swapchain_recreation_requested) {
-    // log_debug("Swapchain recreation was already requested");
-    return;
-  }
-
-  state->swapchain.extent.width = new_width;
-  state->swapchain.extent.height = new_height;
-
-  VkrRendererError result = vulkan_backend_recreate_swapchain(state);
-  if (result != VKR_RENDERER_ERROR_NONE &&
-      result != VKR_RENDERER_ERROR_FRAME_SKIPPED) {
-    log_error("Failed to recreate swapchain during resize");
-    return;
-  }
-
-  return;
+  vulkan_present_target_ops(state)->resize(state, new_width, new_height);
 }
 
 VkrRendererError renderer_vulkan_wait_idle(void *backend_state) {
@@ -4632,27 +5154,11 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
   state->frame_delta = delta_time;
-  // Acquiring an image does not preserve its contents; nothing has recorded
-  // against it yet this frame.
-  state->swapchain_image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-  // A previous frame acquired an image but never submitted, so its acquire
-  // semaphore is still signalled. Recreating the swapchain rebuilds the sync
-  // objects and clears that state.
-  if (state->frame_recovery_required) {
-    log_warn("Recovering from an incomplete frame; recreating swapchain");
-    VkrRendererError recovery_result = vulkan_backend_recreate_swapchain(state);
-    if (recovery_result != VKR_RENDERER_ERROR_NONE) {
-      // Recreation is refused while the window is minimized. Keep the flag set
-      // so recovery is retried, otherwise the stale acquire semaphore would be
-      // reused the moment the window comes back.
-      if (recovery_result == VKR_RENDERER_ERROR_FRAME_SKIPPED) {
-        log_warn(
-            "Frame recovery deferred: swapchain could not be recreated yet");
-      }
-      return recovery_result;
-    }
-    state->frame_recovery_required = false_v;
+  const VulkanPresentTargetOps *target = vulkan_present_target_ops(state);
+  VkrRendererError begin_result = target->frame_begin(state);
+  if (begin_result != VKR_RENDERER_ERROR_NONE) {
+    return begin_result;
   }
 
   // Wait for the current frame slot's fence (its previous submission finished).
@@ -4680,20 +5186,26 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
   // (safe to destroy resources from BUFFERING_FRAMES ago)
   vulkan_deferred_destroy_process(state);
 
-  // Acquire the next image from the swapchain
-  VulkanSwapchainResult acquire_result = vulkan_swapchain_acquire_next_image(
-      state, UINT64_MAX,
-      *array_get_VkSemaphore(&state->image_available_semaphores,
-                             state->current_frame),
-      VK_NULL_HANDLE, // Don't use fence with acquire - it conflicts with
-                      // queue submit
-      &state->image_index);
-  if (acquire_result == VULKAN_SWAPCHAIN_RESULT_SKIP) {
-    // No image was acquired, so no semaphore is left pending: a plain skip.
+  const VulkanPresentTargetResult acquire_result =
+      target->acquire(state, &state->frame_submit_sync);
+  if (acquire_result == VULKAN_PRESENT_TARGET_RESULT_SKIP) {
+    // No image was produced, so no synchronization is left pending.
     return VKR_RENDERER_ERROR_FRAME_SKIPPED;
   }
-  if (acquire_result == VULKAN_SWAPCHAIN_RESULT_FAILED) {
-    log_error("Failed to acquire next swapchain image");
+  if (acquire_result == VULKAN_PRESENT_TARGET_RESULT_FAILED) {
+    log_error("Failed to acquire an image from the %s target", target->name);
+    return VKR_RENDERER_ERROR_DEVICE_ERROR;
+  }
+
+  // The image-in-flight fence table guards both implementations: an image is
+  // reusable only once its last submission completed.
+  VulkanFencePtr *image_fence =
+      array_get_VulkanFencePtr(&state->images_in_flight, state->image_index);
+  if (*image_fence != NULL &&
+      !vulkan_fence_wait(state, UINT64_MAX, *image_fence)) {
+    log_error("Failed to wait for the fence guarding target image %u",
+              state->image_index);
+    vulkan_backend_mark_frame_failed(state);
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
@@ -4747,11 +5259,9 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
 
 cleanup:
   // An image was acquired but this frame will never submit, so nothing will
-  // wait on image_available_semaphores[current_frame]. Handing that
-  // already-signalled semaphore back to vkAcquireNextImageKHR is invalid
-  // (VUID-vkAcquireNextImageKHR-semaphore-01779), so force a recreate first.
+  // wait on the acquire synchronization the target handed out.
   state->frame_active = false_v;
-  state->frame_recovery_required = true_v;
+  vulkan_backend_mark_frame_failed(state);
   return result;
 }
 
@@ -4784,9 +5294,9 @@ void renderer_vulkan_draw(void *backend_state, uint32_t vertex_count,
 /**
  * @brief End the current rendering frame and submit it to the GPU.
  *
- * Flow: end any active render pass, transition the swapchain image to
- * PRESENT_SRC_KHR from its tracked layout, end the command buffer, then submit
- * and present through vulkan_backend_submit_and_present.
+ * Flow: end any active render pass, end the command buffer, then submit through
+ * vulkan_backend_submit_and_present. The render graph owns the normal terminal
+ * target barrier; only cancellation records a discard-to-present transition.
  *
  * Synchronization:
  * - image_available_semaphores[slot]: signalled by acquire, waited by submit
@@ -4894,62 +5404,66 @@ vulkan_backend_discard_unsubmitted_readbacks(VulkanBackendState *state);
  * 3. images_in_flight[image_index] is published only after a successful submit,
  *    so no image is ever left pointing at a fence that will never signal.
  */
+/**
+ * @brief Records how a frame that failed at submission time can be recovered.
+ *
+ * A windowed frame leaves a signalled acquire semaphore with no waiter, and
+ * only swapchain recreation clears it. An offscreen target owns no WSI state to
+ * rebuild, so the same failure has no recovery path and retires the device.
+ */
+vkr_internal void vulkan_backend_mark_frame_failed(VulkanBackendState *state) {
+  if (vulkan_present_target_ops(state)->recovers_by_recreation) {
+    state->frame_recovery_required = true_v;
+  } else {
+    state->device_unusable = true_v;
+  }
+}
+
 vkr_internal VkrRendererError vulkan_backend_submit_and_present(
     VulkanBackendState *state, VulkanCommandBuffer *command_buffer) {
   state->last_present_duration_valid = false_v;
   state->last_present_duration_ns = 0;
   if (state->swapchain.max_in_flight_frames == 0 ||
       state->current_frame >= state->in_flight_fences.length ||
-      state->current_frame >= state->image_available_semaphores.length ||
-      state->image_index >= state->images_in_flight.length ||
-      state->image_index >= state->queue_complete_semaphores.length) {
+      state->image_index >= state->images_in_flight.length) {
     log_error("Frame synchronization index is out of bounds "
               "(slot=%u/%llu image=%u/%llu)",
               state->current_frame,
               (unsigned long long)state->in_flight_fences.length,
               state->image_index,
-              (unsigned long long)state->queue_complete_semaphores.length);
-    state->frame_recovery_required = true_v;
+              (unsigned long long)state->images_in_flight.length);
+    vulkan_backend_mark_frame_failed(state);
     vulkan_backend_discard_unsubmitted_readbacks(state);
     return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
   }
 
-  // Make sure the previous frame that used this image has finished.
   VulkanFencePtr *image_fence =
       array_get_VulkanFencePtr(&state->images_in_flight, state->image_index);
-  if (*image_fence != NULL) {
-    if (!vulkan_fence_wait(state, UINT64_MAX, *image_fence)) {
-      log_error("Failed to wait for the fence guarding swapchain image %u",
-                state->image_index);
-      // The acquire semaphore is already signalled and will not be consumed.
-      state->frame_recovery_required = true_v;
-      vulkan_backend_discard_unsubmitted_readbacks(state);
-      return VKR_RENDERER_ERROR_DEVICE_ERROR;
-    }
-  }
 
   VulkanFence *frame_fence =
       array_get_VulkanFence(&state->in_flight_fences, state->current_frame);
   if (!vulkan_fence_reset(state, frame_fence)) {
     // As above, the acquired image has no submit waiting on its semaphore.
-    state->frame_recovery_required = true_v;
+    vulkan_backend_mark_frame_failed(state);
     vulkan_backend_discard_unsubmitted_readbacks(state);
     return VKR_RENDERER_ERROR_DEVICE_ERROR;
   }
 
-  VkPipelineStageFlags flags[1] = {
-      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+  // The target reported what this frame's image needs; a target with no
+  // presentation engine submits with the fence alone.
+  const VulkanPresentTargetSync *sync = &state->frame_submit_sync;
+  const VkPipelineStageFlags wait_stage =
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
   VkSubmitInfo submit_info = {
       .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
       .commandBufferCount = 1,
       .pCommandBuffers = &command_buffer->handle,
-      .signalSemaphoreCount = 1,
-      .pSignalSemaphores = array_get_VkSemaphore(
-          &state->queue_complete_semaphores, state->image_index),
-      .waitSemaphoreCount = 1,
-      .pWaitSemaphores = array_get_VkSemaphore(
-          &state->image_available_semaphores, state->current_frame),
-      .pWaitDstStageMask = flags,
+      .signalSemaphoreCount = sync->signal != VK_NULL_HANDLE ? 1u : 0u,
+      .pSignalSemaphores =
+          sync->signal != VK_NULL_HANDLE ? &sync->signal : NULL,
+      .waitSemaphoreCount = sync->wait != VK_NULL_HANDLE ? 1u : 0u,
+      .pWaitSemaphores = sync->wait != VK_NULL_HANDLE ? &sync->wait : NULL,
+      .pWaitDstStageMask = sync->wait != VK_NULL_HANDLE ? &wait_stage : NULL,
   };
 
   VkResult result =
@@ -4959,7 +5473,7 @@ vkr_internal VkrRendererError vulkan_backend_submit_and_present(
     log_error("Failed to submit Vulkan command buffer: %d", result);
     // The fence was reset but nothing will signal it, and the acquire semaphore
     // is still pending. Recovery recreates both.
-    state->frame_recovery_required = true_v;
+    vulkan_backend_mark_frame_failed(state);
     vulkan_backend_discard_unsubmitted_readbacks(state);
     return VKR_RENDERER_ERROR_SUBMISSION_FAILED;
   }
@@ -4982,16 +5496,14 @@ vkr_internal VkrRendererError vulkan_backend_submit_and_present(
   state->current_frame =
       (state->current_frame + 1) % state->swapchain.max_in_flight_frames;
 
-  VulkanSwapchainResult present_result = vulkan_swapchain_present(
-      state,
-      *array_get_VkSemaphore(&state->queue_complete_semaphores,
-                             state->image_index),
-      state->image_index);
-  if (present_result == VULKAN_SWAPCHAIN_RESULT_FAILED) {
-    log_error("Failed to present Vulkan image");
+  const VulkanPresentTargetResult complete_result =
+      vulkan_present_target_ops(state)->complete(state);
+  if (complete_result == VULKAN_PRESENT_TARGET_RESULT_FAILED) {
+    log_error("Failed to complete the %s target's frame",
+              vulkan_present_target_ops(state)->name);
     // Queue submission succeeded, but the state of the per-image present
     // semaphore is no longer safe to infer. Recreate it before reuse.
-    state->frame_recovery_required = true_v;
+    vulkan_backend_mark_frame_failed(state);
     return VKR_RENDERER_ERROR_PRESENTATION_FAILED;
   }
   // SKIP means the swapchain was recreated after the work was already
@@ -5010,7 +5522,7 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
       vulkan_backend_get_active_graphics_command_buffer(state);
   if (!command_buffer) {
     state->frame_active = false_v;
-    state->frame_recovery_required = true_v;
+    vulkan_backend_mark_frame_failed(state);
     vulkan_backend_discard_unsubmitted_readbacks(state);
     return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
   }
@@ -5020,22 +5532,16 @@ VkrRendererError renderer_vulkan_end_frame(void *backend_state,
     if (end_err != VKR_RENDERER_ERROR_NONE) {
       log_error("Failed to end active render pass");
       state->frame_active = false_v;
-      state->frame_recovery_required = true_v;
+      vulkan_backend_mark_frame_failed(state);
       vulkan_backend_discard_unsubmitted_readbacks(state);
       return end_err;
     }
   }
 
-  // Graph render passes leave the swapchain image in COLOR_ATTACHMENT_OPTIMAL
-  // (their attachment finalLayout), while a pass flagged ends_in_present has
-  // already reached PRESENT_SRC_KHR. Either way the source layout is read from
-  // tracked state, never assumed.
-  vulkan_backend_record_present_transition(state, command_buffer);
-
   if (!vulkan_command_buffer_end(command_buffer)) {
     log_error("Failed to end Vulkan command buffer");
     state->frame_active = false_v;
-    state->frame_recovery_required = true_v;
+    vulkan_backend_mark_frame_failed(state);
     vulkan_backend_discard_unsubmitted_readbacks(state);
     return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
   }
@@ -5107,14 +5613,14 @@ VkrRendererError renderer_vulkan_cancel_frame(void *backend_state) {
       vulkan_backend_get_active_graphics_command_buffer(state);
   if (!command_buffer) {
     state->frame_active = false_v;
-    state->frame_recovery_required = true_v;
+    vulkan_backend_mark_frame_failed(state);
     vulkan_backend_discard_unsubmitted_readbacks(state);
     return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
   }
 
   if (!vulkan_command_buffer_reset(state, command_buffer)) {
     state->frame_active = false_v;
-    state->frame_recovery_required = true_v;
+    vulkan_backend_mark_frame_failed(state);
     vulkan_backend_discard_unsubmitted_readbacks(state);
     return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
   }
@@ -5123,7 +5629,6 @@ VkrRendererError renderer_vulkan_cancel_frame(void *backend_state) {
   state->current_render_pass_domain = VKR_PIPELINE_DOMAIN_COUNT;
   state->active_named_render_pass = NULL;
   state->active_named_render_target = NULL;
-  state->swapchain_image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
   vulkan_backend_discard_unsubmitted_readbacks(state);
   if (state->current_frame < BUFFERING_FRAMES) {
     state->rg_timing.frame_pass_counts[state->current_frame] = 0;
@@ -5132,16 +5637,19 @@ VkrRendererError renderer_vulkan_cancel_frame(void *backend_state) {
   if (!vulkan_command_buffer_begin(command_buffer)) {
     log_error("Failed to begin discard command buffer while cancelling frame");
     state->frame_active = false_v;
-    state->frame_recovery_required = true_v;
+    vulkan_backend_mark_frame_failed(state);
     return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
   }
 
-  vulkan_backend_record_present_transition(state, command_buffer);
+  // The target decides what a discarded image still owes: a swapchain image
+  // must reach PRESENT_SRC_KHR to be handed back, while an ordinary image only
+  // has to forget the transitions this frame never submitted.
+  vulkan_present_target_ops(state)->frame_cancel(state, command_buffer);
 
   if (!vulkan_command_buffer_end(command_buffer)) {
     log_error("Failed to end Vulkan command buffer while cancelling frame");
     state->frame_active = false_v;
-    state->frame_recovery_required = true_v;
+    vulkan_backend_mark_frame_failed(state);
     return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
   }
 
@@ -5889,10 +6397,26 @@ VkrRendererError renderer_vulkan_image_barrier(
     }
     vkCmdPipelineBarrier(command_buffer->handle, src_stage, dst_stage, 0, 0,
                          NULL, 0, NULL, 1, &barrier);
-    if (state->swapchain_image_textures &&
-        state->image_index < state->swapchain.image_count &&
-        texture == state->swapchain_image_textures[state->image_index]) {
-      state->swapchain_image_layout = barrier.newLayout;
+    // Transitions of the frame's own target images are what the next frame's
+    // graph import reads back, so record them against the active image.
+    if (state->image_index < state->swapchain.image_count) {
+      VulkanPresentTargetImage *target =
+          vulkan_present_target_is_offscreen(state)
+              ? array_get_VulkanPresentTargetImage(
+                    &state->present_target.images, state->image_index)
+              : NULL;
+      if (state->swapchain_image_textures &&
+          texture == state->swapchain_image_textures[state->image_index]) {
+        state->swapchain_image_layout = barrier.newLayout;
+        if (target) {
+          target->state.color_layout = barrier.newLayout;
+          target->state.color_access = dst_access;
+        }
+      } else if (target && state->depth_textures &&
+                 texture == state->depth_textures[state->image_index]) {
+        target->state.depth_layout = barrier.newLayout;
+        target->state.depth_access = dst_access;
+      }
     }
     return VKR_RENDERER_ERROR_NONE;
   }
@@ -9499,54 +10023,118 @@ VkrRendererError renderer_vulkan_end_render_pass(void *backend_state) {
   return VKR_RENDERER_ERROR_NONE;
 }
 
-VkrTextureOpaqueHandle
-renderer_vulkan_window_attachment_get(void *backend_state,
-                                      uint32_t image_index) {
+VkrTextureOpaqueHandle renderer_vulkan_present_target_attachment_get(
+    void *backend_state, VkrPresentTargetAttachment attachment,
+    uint32_t image_index) {
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  if (!state || !state->swapchain_image_textures ||
-      image_index >= state->swapchain.image_count) {
+  if (!state || image_index >= state->swapchain.image_count) {
     return NULL;
   }
-
-  return (VkrTextureOpaqueHandle)state->swapchain_image_textures[image_index];
+  struct s_TextureHandle **wrappers =
+      attachment == VKR_PRESENT_TARGET_ATTACHMENT_COLOR
+          ? state->swapchain_image_textures
+          : state->depth_textures;
+  return wrappers ? (VkrTextureOpaqueHandle)wrappers[image_index] : NULL;
 }
 
-VkrTextureOpaqueHandle
-renderer_vulkan_depth_attachment_get(void *backend_state) {
+uint32_t renderer_vulkan_present_target_image_count(void *backend_state) {
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  if (!state) {
-    return NULL;
-  }
-  return (VkrTextureOpaqueHandle)state->depth_texture;
+  return state ? state->swapchain.image_count : 0;
 }
 
-uint32_t renderer_vulkan_window_attachment_count(void *backend_state) {
+uint32_t renderer_vulkan_present_target_image_index(void *backend_state) {
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  if (!state) {
-    return 0;
-  }
-  return state->swapchain.image_count;
+  return state ? state->image_index : 0;
 }
 
-VkrTextureFormat renderer_vulkan_swapchain_format_get(void *backend_state) {
+VkrPresentTargetKind renderer_vulkan_present_target_kind(void *backend_state) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  return state ? state->present_target.config.kind
+               : VKR_PRESENT_TARGET_WINDOWED;
+}
+
+void renderer_vulkan_present_target_extent(void *backend_state,
+                                           uint32_t *out_width,
+                                           uint32_t *out_height) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (out_width) {
+    *out_width = state ? state->swapchain.extent.width : 0;
+  }
+  if (out_height) {
+    *out_height = state ? state->swapchain.extent.height : 0;
+  }
+}
+
+VkrTextureFormat
+renderer_vulkan_present_target_format(void *backend_state,
+                                      VkrPresentTargetAttachment attachment) {
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   if (!state) {
-    return VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
+    return attachment == VKR_PRESENT_TARGET_ATTACHMENT_COLOR
+               ? VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB
+               : VKR_TEXTURE_FORMAT_D32_SFLOAT;
   }
-  return vulkan_vk_format_to_vkr(state->swapchain.format);
+  return vulkan_vk_format_to_vkr(attachment ==
+                                         VKR_PRESENT_TARGET_ATTACHMENT_COLOR
+                                     ? state->swapchain.format
+                                     : state->device.depth_format);
+}
+
+vkr_internal VkrTextureLayout
+vulkan_present_target_layout_to_vkr(VkImageLayout layout) {
+  switch (layout) {
+  case VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL:
+    return VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  case VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL:
+    return VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
+    return VKR_TEXTURE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  case VK_IMAGE_LAYOUT_PRESENT_SRC_KHR:
+    return VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR;
+  case VK_IMAGE_LAYOUT_UNDEFINED:
+  default:
+    return VKR_TEXTURE_LAYOUT_UNDEFINED;
+  }
+}
+
+/**
+ * Windowed images are re-acquired every frame and carry no state forward, so
+ * they report the empty state the graph treats as "undefined contents".
+ */
+VkrPresentTargetImageState renderer_vulkan_present_target_image_state(
+    void *backend_state, VkrPresentTargetAttachment attachment,
+    uint32_t image_index) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  if (!vulkan_present_target_is_offscreen(state) ||
+      image_index >= state->present_target.images.length) {
+    return (VkrPresentTargetImageState){0};
+  }
+  const VulkanPresentTargetState *retained =
+      &array_get_VulkanPresentTargetImage(&state->present_target.images,
+                                          image_index)
+           ->state;
+  return attachment == VKR_PRESENT_TARGET_ATTACHMENT_COLOR
+             ? (VkrPresentTargetImageState){
+                   .access = retained->color_access,
+                   .layout = vulkan_present_target_layout_to_vkr(
+                       retained->color_layout),
+               }
+             : (VkrPresentTargetImageState){
+                   .access = retained->depth_access,
+                   .layout = vulkan_present_target_layout_to_vkr(
+                       retained->depth_layout),
+               };
+}
+
+VkrPresentTargetImageState
+renderer_vulkan_present_target_terminal_state(void *backend_state) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  return vulkan_present_target_ops(state)->terminal_state;
 }
 
 VkrTextureFormat renderer_vulkan_shadow_depth_format_get(void *backend_state) {
   return vulkan_shadow_depth_vkr_format_get(
       (const VulkanBackendState *)backend_state);
-}
-
-uint32_t renderer_vulkan_window_attachment_index(void *backend_state) {
-  VulkanBackendState *state = (VulkanBackendState *)backend_state;
-  if (!state) {
-    return 0;
-  }
-  return state->image_index;
 }
 
 uint32_t renderer_vulkan_frame_in_flight_index(void *backend_state) {

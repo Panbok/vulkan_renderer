@@ -141,7 +141,8 @@ vkr_internal VkrCaptureSourceLayout vkr_capture_resolve_source(
       .height = packet->frame.viewport_height ? packet->frame.viewport_height
                                               : packet->frame.window_height,
       .layer = 0,
-      .format = vkr_renderer_get_swapchain_format(rf),
+      .format = vkr_renderer_present_target_format(
+          rf, VKR_PRESENT_TARGET_ATTACHMENT_COLOR),
   };
   switch (channel->id) {
   case VKR_CAPTURE_CHANNEL_FINAL_COLOR:
@@ -149,7 +150,8 @@ vkr_internal VkrCaptureSourceLayout vkr_capture_resolve_source(
     layout.height = packet->frame.window_height;
     break;
   case VKR_CAPTURE_CHANNEL_DEPTH:
-    layout.format = vkr_renderer_get_swapchain_depth_format(rf);
+    layout.format = vkr_renderer_present_target_format(
+        rf, VKR_PRESENT_TARGET_ATTACHMENT_DEPTH);
     break;
   case VKR_CAPTURE_CHANNEL_SHADOW_0:
   case VKR_CAPTURE_CHANNEL_SHADOW_1:

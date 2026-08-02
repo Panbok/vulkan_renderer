@@ -124,7 +124,11 @@ vkr_internal void vkr_shadow_compute_frustum_corners(const VkrCamera *camera,
   float32_t far_half_h = 0.0f;
 
   if (camera->type == VKR_CAMERA_TYPE_PERSPECTIVE) {
-    VkrWindowPixelSize window_size = vkr_window_get_pixel_size(camera->window);
+    VkrWindowPixelSize window_size = {camera->cached_window_width,
+                                      camera->cached_window_height};
+    if ((window_size.width == 0 || window_size.height == 0) && camera->window) {
+      window_size = vkr_window_get_pixel_size(camera->window);
+    }
     float32_t aspect = 1.0f;
     if (window_size.width > 0 && window_size.height > 0) {
       aspect = (float32_t)window_size.width / (float32_t)window_size.height;
@@ -438,7 +442,7 @@ vkr_internal bool8_t vkr_shadow_create_renderpass(VkrShadowSystem *system,
 vkr_internal bool8_t vkr_shadow_create_shadow_maps(VkrShadowSystem *system,
                                                    RendererFrontend *rf) {
   uint32_t cascades = system->config.cascade_count;
-  uint32_t frames = vkr_renderer_window_attachment_count(rf);
+  uint32_t frames = vkr_renderer_present_target_image_count(rf);
   if (frames == 0 || cascades == 0) {
     return false_v;
   }

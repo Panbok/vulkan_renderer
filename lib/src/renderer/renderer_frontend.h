@@ -107,6 +107,7 @@ struct s_RendererFrontend {
   // VkrAllocator dmemory_allocator;
 
   VkrWindow *window;
+  VkrPresentTargetConfig present_target;
   EventManager *event_manager;
   void *backend_state;
   VkrRendererBackendType backend_type;

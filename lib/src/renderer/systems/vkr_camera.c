@@ -13,7 +13,7 @@ vkr_internal Mat4 vkr_camera_calculate_projection(const VkrCamera *camera) {
   if (camera->type == VKR_CAMERA_TYPE_PERSPECTIVE) {
     uint32_t width = camera->cached_window_width;
     uint32_t height = camera->cached_window_height;
-    if (width == 0 || height == 0) {
+    if ((width == 0 || height == 0) && camera->window) {
       VkrWindowPixelSize window_size =
           vkr_window_get_pixel_size(camera->window);
       width = window_size.width;
@@ -58,8 +58,6 @@ vkr_internal float32_t vkr_camera_clamp_zoom(float32_t zoom) {
 void vkr_camera_system_perspective_create(VkrCamera *camera, VkrWindow *window,
                                           float32_t zoom, float32_t near_clip,
                                           float32_t far_clip) {
-  assert_log(window != NULL, "Window is NULL");
-
   camera->window = window;
 
   camera->type = VKR_CAMERA_TYPE_PERSPECTIVE;
@@ -85,7 +83,8 @@ void vkr_camera_system_perspective_create(VkrCamera *camera, VkrWindow *window,
 
   vkr_camera_update_orientation(camera);
 
-  VkrWindowPixelSize window_size = vkr_window_get_pixel_size(window);
+  VkrWindowPixelSize window_size =
+      window ? vkr_window_get_pixel_size(window) : (VkrWindowPixelSize){1u, 1u};
   camera->cached_window_width = window_size.width;
   camera->cached_window_height = window_size.height;
   vkr_camera_system_update(camera);
@@ -96,8 +95,6 @@ void vkr_camera_system_orthographic_create(VkrCamera *camera, VkrWindow *window,
                                            float32_t bottom, float32_t top,
                                            float32_t near_clip,
                                            float32_t far_clip) {
-  assert_log(window != NULL, "Window is NULL");
-
   camera->window = window;
 
   camera->type = VKR_CAMERA_TYPE_ORTHOGRAPHIC;
@@ -127,7 +124,8 @@ void vkr_camera_system_orthographic_create(VkrCamera *camera, VkrWindow *window,
 
   vkr_camera_update_orientation(camera);
 
-  VkrWindowPixelSize window_size = vkr_window_get_pixel_size(window);
+  VkrWindowPixelSize window_size =
+      window ? vkr_window_get_pixel_size(window) : (VkrWindowPixelSize){1u, 1u};
   camera->cached_window_width = window_size.width;
   camera->cached_window_height = window_size.height;
 
@@ -136,7 +134,6 @@ void vkr_camera_system_orthographic_create(VkrCamera *camera, VkrWindow *window,
 
 void vkr_camera_system_update(VkrCamera *camera) {
   assert_log(camera != NULL, "Camera is NULL");
-  assert_log(camera->window != NULL, "Camera window is NULL");
   assert_log(camera->type != VKR_CAMERA_TYPE_NONE, "Camera type is NONE");
 
   if (camera->view_dirty) {
@@ -377,7 +374,6 @@ bool8_t vkr_camera_registry_create_perspective(
     VkrCameraSystem *system, String8 name, VkrWindow *window, float32_t zoom,
     float32_t near_clip, float32_t far_clip, VkrCameraHandle *out_handle) {
   assert_log(system != NULL, "System is NULL");
-  assert_log(window != NULL, "Window is NULL");
   assert_log(name.str != NULL, "Name is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
 
@@ -429,7 +425,6 @@ bool8_t vkr_camera_registry_create_orthographic(
     float32_t right, float32_t bottom, float32_t top, float32_t near_clip,
     float32_t far_clip, VkrCameraHandle *out_handle) {
   assert_log(system != NULL, "System is NULL");
-  assert_log(window != NULL, "Window is NULL");
   assert_log(name.str != NULL, "Name is NULL");
   assert_log(out_handle != NULL, "Out handle is NULL");
 
@@ -584,7 +579,7 @@ void vkr_camera_registry_update_all(VkrCameraSystem *system) {
   for (uint32_t i = 0; i < system->cameras.length; i++) {
     VkrCamera *camera = &system->cameras.data[i];
     if (camera->generation == VKR_INVALID_ID ||
-        camera->type == VKR_CAMERA_TYPE_NONE || camera->window == NULL) {
+        camera->type == VKR_CAMERA_TYPE_NONE) {
       continue;
     }
     vkr_camera_system_update(camera);

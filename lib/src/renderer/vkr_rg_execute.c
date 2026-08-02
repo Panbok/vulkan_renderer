@@ -54,29 +54,35 @@ vkr_internal void vkr_rg_apply_gpu_timings(VkrRenderGraph *graph,
   }
 }
 
+/**
+ * @brief Records one list of image barriers against this frame's textures.
+ *
+ * @param source Names the barrier's origin in diagnostics: the owning pass, or
+ *        the graph's terminal target transition.
+ */
 vkr_internal VkrRendererError vkr_rg_apply_image_barriers(
-    VkrRenderGraph *graph, RendererFrontend *rf, const VkrRgPass *pass) {
+    VkrRenderGraph *graph, RendererFrontend *rf,
+    const Vector_VkrRgImageBarrier *barriers, String8 source) {
   assert_log(graph != NULL, "graph is NULL");
   assert_log(rf != NULL, "rf is NULL");
-  assert_log(pass != NULL, "pass is NULL");
+  assert_log(barriers != NULL, "barriers is NULL");
 
   uint32_t image_index = graph->frame_info.image_index;
-  for (uint64_t i = 0; i < pass->pre_image_barriers.length; ++i) {
-    VkrRgImageBarrier *barrier =
-        vector_get_VkrRgImageBarrier(&pass->pre_image_barriers, i);
+  for (uint64_t i = 0; i < barriers->length; ++i) {
+    VkrRgImageBarrier *barrier = vector_get_VkrRgImageBarrier(barriers, i);
     VkrRgImage *image = vkr_rg_image_from_handle(graph, barrier->image);
     if (!image) {
-      log_error("RenderGraph pass '%.*s' references an invalid image barrier",
-                (int)pass->desc.name.length, pass->desc.name.str);
+      log_error("RenderGraph '%.*s' references an invalid image barrier",
+                (int)source.length, source.str);
       return VKR_RENDERER_ERROR_INVALID_HANDLE;
     }
 
     VkrTextureOpaqueHandle tex = vkr_rg_pick_image_texture(image, image_index);
     if (!tex) {
-      log_error("RenderGraph pass '%.*s' has no texture for image '%.*s' at "
-                "swapchain image %u",
-                (int)pass->desc.name.length, pass->desc.name.str,
-                (int)image->name.length, image->name.str, image_index);
+      log_error("RenderGraph '%.*s' has no texture for image '%.*s' at target "
+                "image %u",
+                (int)source.length, source.str, (int)image->name.length,
+                image->name.str, image_index);
       return VKR_RENDERER_ERROR_INVALID_HANDLE;
     }
 
@@ -197,7 +203,9 @@ VkrRendererError vkr_rg_execute(VkrRenderGraph *graph,
     failed_pass_index = pass_index;
 
     if (rf) {
-      result = vkr_rg_apply_image_barriers(graph, (RendererFrontend *)rf, pass);
+      result = vkr_rg_apply_image_barriers(graph, (RendererFrontend *)rf,
+                                           &pass->pre_image_barriers,
+                                           pass->desc.name);
       if (result != VKR_RENDERER_ERROR_NONE) {
         goto execute_failed;
       }
@@ -284,6 +292,17 @@ VkrRendererError vkr_rg_execute(VkrRenderGraph *graph,
     if (gpu_timing_active) {
       vkr_renderer_rg_timing_end_pass(rf, pass_index);
       timing_pass_open = false_v;
+    }
+  }
+
+  // The graph, not the backend, owns the present target's completion
+  // transition, so it is recorded here rather than injected at end_frame.
+  if (rf) {
+    result = vkr_rg_apply_image_barriers(graph, (RendererFrontend *)rf,
+                                         &graph->terminal_image_barriers,
+                                         string8_lit("target.terminal"));
+    if (result != VKR_RENDERER_ERROR_NONE) {
+      goto execute_failed;
     }
   }
 
