@@ -134,6 +134,27 @@ Use `tools/cases/smoke/sponza_static.case.json` with
 profile is deliberately non-authoritative and cannot support a performance
 claim.
 
+### Boot and resident-memory evidence
+
+Phase 3 has a separate paired workflow:
+
+```sh
+./build_release/tools/vkr_harness profile \
+  --case tools/cases/performance/sponza_boot_full.case.json \
+  --profile tools/profiles/performance-windowed-boot.json
+./build_release/tools/vkr_harness profile \
+  --case tools/cases/performance/sponza_boot_automation.case.json \
+  --profile tools/profiles/performance-windowed-boot.json
+```
+
+This is the one intentional exception to the ordinary matching-workload-
+fingerprint rule: boot profile and effective subsystem mask are the independent
+variables and therefore produce different workload fingerprints. All other
+case/profile inputs must match, and every deterministic work-volume row must be
+bit-identical. Compare `boot.*`, `memory.cpu.bytes.live`,
+`memory.gpu.bytes.live`, and `memory.gpu.live_totals_exact`; never present
+steady-state frame timing across the two masks as a like-for-like result.
+
 Correctness is a separate gate — see `vkr-validation`. A faster frame that fails
 the validation layer is not an improvement.
 

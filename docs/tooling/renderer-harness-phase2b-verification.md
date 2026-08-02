@@ -122,5 +122,6 @@ layers.
 
 The unrelated event-system intermittent remains: the clean baseline reproduced
 four crashes in 50 processes. This phase neither touches nor claims to repair
-that subsystem. Capture, automation boot, accepted baselines/comparison, and
-offscreen targets remain phases 3-6.
+that subsystem. At the Phase-2b boundary, capture, automation boot, accepted
+baselines/comparison, and offscreen targets remained Phases 3-6. Automation
+boot has since shipped in Phase 3; the other boundaries remain.

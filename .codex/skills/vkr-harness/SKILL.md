@@ -5,12 +5,13 @@ description: Run and interpret VKR's structured renderer automation harness. Use
 
 # VKR Harness
 
-Use `vkr_harness` for structured, repeatable renderer observations. Phase 2
-supports the `profile` command with full boot and visible or hidden windowed
-targets. Phase 2b adds authoritative CPU and GPU-timestamp performance profiles
-and retires the old log-scraping benchmark. Capture, `snapshot`, `autotest`,
-baseline comparison/promotion, automation boot, and true offscreen targets are
-later phases and must not be claimed from this binary.
+Use `vkr_harness` for structured, repeatable renderer observations. Phases 2-3
+support the `profile` command with full or dependency-resolved automation boot
+and visible or hidden windowed targets. Phase 2b adds authoritative CPU and
+GPU-timestamp performance profiles and retires the old log-scraping benchmark;
+Phase 3 adds paired boot/residency profiles and actual effective subsystem
+masks. Capture, `snapshot`, `autotest`, baseline comparison/promotion, and true
+offscreen targets are later phases and must not be claimed from this binary.
 
 ## Run a profile
 
@@ -40,6 +41,8 @@ Read these report fields before quoting a number:
   used as evidence. A passing local or dirty run is still non-authoritative.
 - the three `comparison` fingerprints prove environment, workload, and policy
   compatibility.
+- `effective_config.boot_profile` and `subsystem_mask` identify the actual boot
+  closure. The mask is a canonical 16-digit hexadecimal string, not a label.
 - `execution` proves isolated repetition count and warmup stability.
 - `aggregate.metrics` and `aggregate.passes` contain nearest-rank percentiles
   and population standard deviation; unavailable GPU samples retain an
@@ -58,7 +61,7 @@ or incomplete evidence.
 
 ## Baseline safety
 
-No Phase 2 command mutates accepted evidence. Baseline proposal and acceptance
+No current command mutates accepted evidence. Baseline proposal and acceptance
 arrive in Phase 5. If those commands are added later, never accept or promote a
 baseline unless the user explicitly requests that mutation.
 
@@ -71,9 +74,46 @@ for repository performance claims.
 | `local-windowed-gpu.json` | on | Observational per-pass GPU timing |
 | `performance-windowed.json` | off | Authoritative CPU and work-volume evidence |
 | `performance-windowed-gpu.json` | on | Authoritative evidence including complete per-pass GPU timing |
+| `local-windowed-boot.json` | off | Observational five-repetition boot, residency, and work equivalence |
+| `performance-windowed-boot.json` | off | Authoritative clean-tree boot/residency evidence |
 
 The authoritative profiles encode the repetition, warmup, exclusivity, and
 completeness policy; a parser rejects any authoritative profile declaring fewer
 than two independent repetitions. A dirty tree or any authority reason still
 makes their output non-authoritative. A timestamp-on run is a different
 comparison configuration from a timestamp-off run, so never compare the two.
+
+A case whose `frames.warmup` is smaller than the profile's
+`warmup_stability_window` cannot answer that profile's stability gate. The
+pairing is rejected up front with exit `4`; raise the case's warmup rather than
+narrowing the profile's window.
+
+| Case | Boot | Frames | Use |
+|---|---|---|---|
+| `smoke/sponza_static.case.json` | full | 30/60 | Fast functional smoke |
+| `performance/sponza_orbit.case.json` | full | 120/300 | Steady-state frame evidence |
+| `performance/sponza_orbit_automation.case.json` | automation | 120/300 | The same workload under automation boot; use it to observe automation steady state on its own, never as the other orbit case's comparand |
+| `performance/sponza_boot_full.case.json` | full | 120/60 | Paired boot/residency evidence |
+| `performance/sponza_boot_automation.case.json` | automation | 120/60 | Paired boot/residency evidence |
+
+## Compare full and automation boot
+
+Use the paired focused cases; do not change scene, camera, rendered features,
+frame window, or profile between commands:
+
+```sh
+./build_release/tools/vkr_harness profile \
+  --case tools/cases/performance/sponza_boot_full.case.json \
+  --profile tools/profiles/performance-windowed-boot.json
+
+./build_release/tools/vkr_harness profile \
+  --case tools/cases/performance/sponza_boot_automation.case.json \
+  --profile tools/profiles/performance-windowed-boot.json
+```
+
+Boot profile and subsystem mask intentionally make the workload fingerprints
+different. Treat this as a declared boot/residency comparison, not an ordinary
+frame-performance baseline comparison. Require every deterministic draw,
+command, visibility, and overflow row to be identical before interpreting
+`boot.*` or resident memory. Report both masks and
+`memory.gpu.live_totals_exact`; do not infer savings from subsystem count alone.

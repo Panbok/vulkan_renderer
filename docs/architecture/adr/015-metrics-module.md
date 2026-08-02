@@ -268,6 +268,11 @@ Phase 2b established parity with and removed the duplicate application
 benchmark accumulator and grep/awk transport; reviewed CPU/GPU profiles and the
 evidence are recorded in
 [the phase-2b verification](../../tooling/renderer-harness-phase2b-verification.md).
+Phase 3 wires scene-readiness boot duration and resident memory rows into paired
+full/automation profiles. The harness persists the renderer-reported subsystem
+mask in raw samples, reports, and workload fingerprints; implementation and
+observational evidence are recorded in
+[the phase-3 verification](../../tooling/renderer-harness-phase3-verification.md).
 
 ## Revisit When
 
