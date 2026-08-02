@@ -46,6 +46,21 @@ static void test_harness_hash_and_statistics(void) {
                                         sort_scratch, &stats));
   assert(stats.mean == 2.5 && stats.p50 == 2.0 && stats.p95 == 4.0);
   assert(stats.invalid_count == 1u);
+  uint8_t pass_flags[] = {
+      VKR_HARNESS_PASS_FLAG_CPU_VALID | VKR_HARNESS_PASS_FLAG_GPU_VALID,
+      VKR_HARNESS_PASS_FLAG_CULLED,
+      VKR_HARNESS_PASS_FLAG_CPU_VALID | VKR_HARNESS_PASS_FLAG_GPU_VALID,
+  };
+  assert(vkr_harness_gpu_pass_samples_complete(pass_flags,
+                                               ArrayCount(pass_flags)));
+  assert(!vkr_harness_gpu_pass_samples_complete(NULL, 0u));
+  pass_flags[1] = 0u;
+  assert(!vkr_harness_gpu_pass_samples_complete(pass_flags,
+                                                ArrayCount(pass_flags)));
+  pass_flags[1] = VKR_HARNESS_PASS_FLAG_DISABLED;
+  pass_flags[2] = VKR_HARNESS_PASS_FLAG_CPU_VALID;
+  assert(!vkr_harness_gpu_pass_samples_complete(pass_flags,
+                                                ArrayCount(pass_flags)));
   printf("  test_harness_hash_and_statistics PASSED\n");
 }
 
@@ -101,6 +116,22 @@ static void test_harness_profile_parser(void) {
                                    &error));
   assert(parsed.minimum_repetitions == 2u &&
          parsed.required_metric_count == 1u);
+  const char *one_authoritative =
+      "{\"schema_version\":1,\"id\":\"performance.test\","
+      "\"authoritative\":true,\"dirty_policy\":\"require_clean\","
+      "\"environment\":{\"target\":\"windowed_hidden\","
+      "\"required_present\":\"immediate\",\"require_actual_present\":true},"
+      "\"instrumentation\":{\"gpu_timing\":false,"
+      "\"event_subjects\":false},\"execution\":{"
+      "\"minimum_repetitions\":1,\"warmup_stability_window\":20,"
+      "\"warmup_max_drift_ratio\":0.1,"
+      "\"require_warmup_stability\":true,"
+      "\"exclusive_gpu_lane\":true},\"required_metrics\":[]}";
+  assert(!vkr_harness_profile_parse(
+      one_authoritative, strlen(one_authoritative), "memory", &parsed, &error));
+  /* A rejected policy must say which rule it broke; an empty code reaches the
+     operator as a bare "invalid manifest". */
+  assert(string_equals(error.code, "profile.authoritative_repetitions"));
   char duplicate[4096];
   snprintf(duplicate, sizeof(duplicate), "%.*s,\"extra\":true}",
            (int)strlen(profile) - 1, profile);

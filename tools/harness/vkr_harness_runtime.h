@@ -22,12 +22,6 @@
 #define VKR_HARNESS_SAMPLE_FLAG_WARMUP_STABLE 0x1u
 #define VKR_HARNESS_SAMPLE_FLAG_CHILD_FAILED 0x2u
 
-/** Per-frame validity of one pass row; see vkr_harness_child_sample(). */
-#define VKR_HARNESS_PASS_FLAG_CPU_VALID 0x1u
-#define VKR_HARNESS_PASS_FLAG_GPU_VALID 0x2u
-#define VKR_HARNESS_PASS_FLAG_CULLED 0x4u
-#define VKR_HARNESS_PASS_FLAG_DISABLED 0x8u
-
 /**
  * Fixed-layout header of `runs/<n>/samples.bin`. Written and read by one build
  * of one binary within a single parent invocation, so the payload is raw

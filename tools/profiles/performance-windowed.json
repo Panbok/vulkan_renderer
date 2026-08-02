@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "performance.windowed",
+  "description": "Authoritative CPU and work-volume evidence with GPU timestamps disabled.",
+  "authoritative": true,
+  "dirty_policy": "require_clean",
+  "environment": {
+    "target": "windowed_hidden",
+    "required_present": "immediate",
+    "require_actual_present": true
+  },
+  "instrumentation": {
+    "gpu_timing": false,
+    "event_subjects": false
+  },
+  "execution": {
+    "minimum_repetitions": 5,
+    "warmup_stability_window": 60,
+    "warmup_max_drift_ratio": 0.1,
+    "require_warmup_stability": true,
+    "exclusive_gpu_lane": true
+  },
+  "required_metrics": [
+    "frame.wall",
+    "cpu.frame_work",
+    "cpu.render_prepare",
+    "cpu.render_submit",
+    "draw.world.commands_issued",
+    "draw.world.calls_issued",
+    "draw.world.indirect_commands_issued",
+    "draw.world.indirect_calls_issued",
+    "visibility.objects_tested",
+    "upload.fence_waits",
+    "instance_buffer.overflows"
+  ]
+}

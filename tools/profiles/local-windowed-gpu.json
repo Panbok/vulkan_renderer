@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "local.windowed_gpu",
+  "description": "Non-authoritative local profiling with complete per-pass GPU timestamps required.",
+  "authoritative": false,
+  "dirty_policy": "allow",
+  "environment": {
+    "target": "windowed_hidden",
+    "required_present": "immediate",
+    "require_actual_present": true
+  },
+  "instrumentation": {
+    "gpu_timing": true,
+    "event_subjects": false
+  },
+  "execution": {
+    "minimum_repetitions": 2,
+    "warmup_stability_window": 20,
+    "warmup_max_drift_ratio": 0.15,
+    "require_warmup_stability": false,
+    "exclusive_gpu_lane": false
+  },
+  "required_metrics": [
+    "cpu.render_submit",
+    "draw.world.calls_issued"
+  ]
+}

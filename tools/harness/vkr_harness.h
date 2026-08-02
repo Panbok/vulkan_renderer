@@ -34,6 +34,12 @@
     VKR_HARNESS_FLY_LOOKUP_SUBDIVISIONS) +                                     \
    1u)
 
+/** Per-frame validity of one pass row in the raw harness sample stream. */
+#define VKR_HARNESS_PASS_FLAG_CPU_VALID 0x1u
+#define VKR_HARNESS_PASS_FLAG_GPU_VALID 0x2u
+#define VKR_HARNESS_PASS_FLAG_CULLED 0x4u
+#define VKR_HARNESS_PASS_FLAG_DISABLED 0x8u
+
 typedef enum VkrHarnessExitCode {
   VKR_HARNESS_EXIT_PASS = 0,
   VKR_HARNESS_EXIT_FAIL = 1,
@@ -485,6 +491,13 @@ bool8_t vkr_harness_statistics_compute(const float64_t *samples,
                                        uint64_t invalid_count,
                                        float64_t *sort_scratch,
                                        VkrHarnessStatistics *out_statistics);
+
+/**
+ * GPU timing is complete only when each measured pass/frame row is explicitly
+ * culled/disabled or has matching valid CPU/GPU samples.
+ */
+bool8_t vkr_harness_gpu_pass_samples_complete(const uint8_t *flags,
+                                              uint64_t sample_count);
 
 const char *vkr_harness_tool_name(VkrHarnessTool tool);
 const char *vkr_harness_target_name(VkrHarnessTarget target);

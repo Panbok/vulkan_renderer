@@ -85,6 +85,22 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": { "authoritative": { "const": true } },
+        "required": ["authoritative"]
+      },
+      "then": {
+        "properties": {
+          "execution": {
+            "type": "object",
+            "properties": {
+              "minimum_repetitions": { "minimum": 2 }
+            }
+          }
+        }
+      }
     }
   ]
 }

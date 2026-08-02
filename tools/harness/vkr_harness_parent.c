@@ -324,11 +324,16 @@ static bool8_t vkr_harness_collect_run_evidence(VkrHarnessReport *report,
  * series per metric and per pass. Warmup frames are excluded here rather than
  * inside the statistics, so the aggregate case describes exactly what it
  * summarizes.
+ *
+ * `out_gpu_pass_complete` reports whether every aggregated pass row carries
+ * matching CPU/GPU samples. It is answered here, over the concatenated flags,
+ * so the completeness claim covers exactly the window that was summarized.
  */
 static bool8_t vkr_harness_aggregate_runs(const VkrHarnessArenas *arenas,
                                           VkrHarnessReport *report,
                                           const VkrHarnessCase *case_manifest,
                                           const VkrHarnessSampleSet *runs,
+                                          bool8_t *out_gpu_pass_complete,
                                           VkrHarnessError *error) {
   const uint32_t run_count = report->completed_repetitions;
   const uint32_t metric_count = runs[0].header.metric_count;
@@ -384,6 +389,8 @@ static bool8_t vkr_harness_aggregate_runs(const VkrHarnessArenas *arenas,
               runs[run].pass_flags + pass_source, pass_values);
     }
   }
+  *out_gpu_pass_complete = ok && vkr_harness_gpu_pass_samples_complete(
+                                     pass_flags, pass_values * run_count);
   const uint32_t aggregate_frames = measured * run_count;
   if (ok && vkr_harness_compute_metric_results(
                 arenas, 0u, aggregate_frames, metric_count, runs[0].metrics,
@@ -494,7 +501,8 @@ static void vkr_harness_apply_verdict(VkrHarnessReport *report,
                                       const VkrHarnessCase *case_manifest,
                                       const VkrHarnessProfile *profile,
                                       const VkrHarnessSampleSet *runs,
-                                      bool8_t snapshot_dropped) {
+                                      bool8_t snapshot_dropped,
+                                      bool8_t gpu_pass_complete) {
   if (report->completed_repetitions != report->requested_repetitions) {
     vkr_harness_report_mark_incomplete(report,
                                        "execution.repetitions_incomplete");
@@ -532,6 +540,12 @@ static void vkr_harness_apply_verdict(VkrHarnessReport *report,
       vkr_harness_report_mark_incomplete(report, "metrics.required_incomplete");
       break;
     }
+  }
+  /* Only meaningful once a repetition produced pass evidence; with none, the
+     missing repetitions are the reason and this would restate it. */
+  if (profile->gpu_timing && report->completed_repetitions > 0u &&
+      !gpu_pass_complete) {
+    vkr_harness_report_mark_incomplete(report, "passes.gpu_timing_incomplete");
   }
   for (uint32_t i = 0; i < case_manifest->assertion_count; ++i) {
     const VkrHarnessAssertion *assertion = &case_manifest->assertions[i];
@@ -713,13 +727,14 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
                                         &snapshot_dropped)) {
     vkr_harness_report_mark_incomplete(&report, "events.unavailable");
   }
+  bool8_t gpu_pass_complete = false_v;
   if (report.completed_repetitions > 0u &&
       !vkr_harness_aggregate_runs(&arenas, &report, &case_manifest, runs,
-                                  &error)) {
+                                  &gpu_pass_complete, &error)) {
     vkr_harness_report_mark_incomplete(&report, "aggregate.failed");
   }
   vkr_harness_apply_verdict(&report, &case_manifest, &profile, runs,
-                            snapshot_dropped);
+                            snapshot_dropped, gpu_pass_complete);
 
   VkrHarnessFingerprintField environment[VKR_HARNESS_ENVIRONMENT_FIELD_COUNT];
   const uint32_t environment_count = vkr_harness_environment_fields(

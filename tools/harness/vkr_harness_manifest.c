@@ -1059,10 +1059,35 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
                                  out_error) ||
       !vkr_harness_manifest_bool(&doc, execution, "exclusive_gpu_lane", true_v,
                                  &out_profile->require_exclusive_gpu_lane,
-                                 out_error) ||
-      minimum_repetitions == 0u || minimum_repetitions > VKR_HARNESS_MAX_RUNS ||
-      stability_window == 0u || stability_window > UINT32_MAX ||
-      out_profile->warmup_max_drift_ratio < 0.0) {
+                                 out_error)) {
+    return false_v;
+  }
+  if (minimum_repetitions == 0u || minimum_repetitions > VKR_HARNESS_MAX_RUNS) {
+    vkr_harness_error_set(
+        out_error, "profile.repetitions", "$.execution.minimum_repetitions",
+        "minimum_repetitions must be between 1 and %u", VKR_HARNESS_MAX_RUNS);
+    return false_v;
+  }
+  /* One process is an observation, not a result: an authoritative profile
+     cannot describe fewer than two independent repetitions. */
+  if (out_profile->authoritative && minimum_repetitions < 2u) {
+    vkr_harness_error_set(out_error, "profile.authoritative_repetitions",
+                          "$.execution.minimum_repetitions",
+                          "An authoritative profile requires at least two "
+                          "independent repetitions");
+    return false_v;
+  }
+  if (stability_window < 2u || stability_window > UINT32_MAX) {
+    vkr_harness_error_set(out_error, "profile.stability_window",
+                          "$.execution.warmup_stability_window",
+                          "warmup_stability_window must be between 2 and %u",
+                          UINT32_MAX);
+    return false_v;
+  }
+  if (out_profile->warmup_max_drift_ratio < 0.0) {
+    vkr_harness_error_set(out_error, "profile.drift_ratio",
+                          "$.execution.warmup_max_drift_ratio",
+                          "warmup_max_drift_ratio must not be negative");
     return false_v;
   }
   out_profile->minimum_repetitions = (uint32_t)minimum_repetitions;

@@ -175,9 +175,13 @@ static void vkr_harness_child_sample(Application *application) {
     for (uint32_t pass = 0; pass < child->pass_count; ++pass) {
       const VkrRendererMetricsPassSample *source = &passes->samples[pass];
       const uint64_t offset = (uint64_t)frame * child->pass_count + pass;
-      const bool8_t executed =
-          string_equals(source->name, child->pass_catalog[pass].name) &&
-          !source->culled && !source->disabled;
+      /* Culled and disabled describe the catalog row only when the source row
+         is that row; inherited from a reordered table they would claim this
+         pass was legitimately skipped and satisfy the completeness gate on
+         another pass's evidence. */
+      const bool8_t matched =
+          string_equals(source->name, child->pass_catalog[pass].name);
+      const bool8_t executed = matched && !source->culled && !source->disabled;
       child->pass_cpu_samples[offset] = source->cpu_ms;
       child->pass_gpu_samples[offset] = source->gpu_ms;
       child->pass_flags[offset] =
@@ -185,8 +189,11 @@ static void vkr_harness_child_sample(Application *application) {
                     (executed && source->gpu_valid
                          ? VKR_HARNESS_PASS_FLAG_GPU_VALID
                          : 0u) |
-                    (source->culled ? VKR_HARNESS_PASS_FLAG_CULLED : 0u) |
-                    (source->disabled ? VKR_HARNESS_PASS_FLAG_DISABLED : 0u));
+                    (matched && source->culled ? VKR_HARNESS_PASS_FLAG_CULLED
+                                               : 0u) |
+                    (matched && source->disabled
+                         ? VKR_HARNESS_PASS_FLAG_DISABLED
+                         : 0u));
     }
   }
   vkr_metrics_snapshot_release(application->metrics, &view);

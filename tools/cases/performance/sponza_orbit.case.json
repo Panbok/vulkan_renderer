@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "id": "performance.sponza.orbit",
+  "suite": "performance",
+  "description": "Deterministic Sponza orbit for repository performance evidence. The authored duration spans the whole 420-frame run at 1.2 degrees per frame, so the camera never freezes mid-run and the 300 measured frames cover exactly one revolution.",
+  "scene": "assets/scenes/sponza.scene.json",
+  "seed": 1,
+  "resolution": [1280, 720],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 120, "measure": 300 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "default",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "orbit",
+    "speed": "medium",
+    "center": [0, 2, 0],
+    "radius": 12,
+    "height": 3,
+    "revolutions": 1.4,
+    "duration_seconds": 7,
+    "start_angle_degrees": 0,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "assertions": [
+    { "metric": "draw.world.calls_issued", "stat": "min", "min": 1 }
+  ]
+}
