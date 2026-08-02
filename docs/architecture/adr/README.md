@@ -37,7 +37,7 @@ Considered → Revisit When**.
 | [ADR-011](011-vulkan-1-2-baseline.md) | Vulkan 1.2 baseline with classic render passes | Accepted |
 | [ADR-012](012-texture-compression-pipeline.md) | Offline KTX2/UASTC packing with runtime transcode | Accepted |
 | [ADR-013](013-draw-submission-strategy.md) | Measured draw submission: culling, instancing, and MDI | **Accepted (partial)** |
-| [ADR-014](014-offscreen-present-target.md) | Present target seam for offscreen rendering | Proposed |
+| [ADR-014](014-offscreen-present-target.md) | Present target seam for offscreen rendering | Accepted |
 | [ADR-015](015-metrics-module.md) | Centralized metrics registry with pre-registered slots | Accepted |
 
 ## Relationship to the Specification

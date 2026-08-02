@@ -80,4 +80,6 @@ layer matrix is not claimed here.
 - Phase 3 implements dependency-resolved automation boot.
 - Phases 4 and 5 implement capture, snapshot/autotest, comparison, and guarded
   baselines.
-- Phase 6 implements the target-neutral offscreen path.
+- Phase 6 was reserved for the target-neutral offscreen path; it is now
+  implemented and recorded in
+  [the Phase-6 verification](renderer-harness-phase6-verification.md).

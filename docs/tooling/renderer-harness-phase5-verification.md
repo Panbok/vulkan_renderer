@@ -23,7 +23,9 @@ every source digest, copies an immutable generation, and publishes
 accepted into this working tree during implementation; the successful accept
 path was exercised under an isolated temporary repository root.
 
-Phase 6 still owns the target-neutral present seam and true offscreen execution.
+At the time of this evidence, Phase 6 still owned the target-neutral present
+seam and true offscreen execution; it is now recorded in
+[the Phase-6 verification](renderer-harness-phase6-verification.md).
 The evidence here is dirty-tree, local-profile correctness evidence, not a
 performance claim or an accepted visual baseline.
 
@@ -161,4 +163,5 @@ user action.
 Validation covered Apple M1 Pro/MoltenVK with the existing hidden window and
 three-image configuration. It does not establish cross-vendor, different
 swapchain-image-count, or true headless behavior. Offscreen/windowed target
-equivalence remains Phase 6.
+equivalence is now recorded in
+[the Phase-6 verification](renderer-harness-phase6-verification.md).

@@ -1,11 +1,11 @@
 ---
-status: proposed
-updated: 2026-08-01
+status: implemented
+updated: 2026-08-02
 authority: adr
 ---
 # ADR-014: Present Target Seam for Offscreen Rendering
 
-**Status:** Proposed
+**Status:** Accepted
 
 ## Context
 
@@ -186,10 +186,10 @@ Constraints on the seam:
   Results from the two must not be compared as though they were the same
   configuration.
 - [Upstream MoltenVK guidance](https://github.com/KhronosGroup/MoltenVK/issues/2049)
-  supports rendering to ordinary images without creating a swapchain; the
-  unverified part is VKR's surface-free instance/device selection, queue
-  requirements, formats, validation behavior, and performance on the pinned
-  MoltenVK development stack and on a native Vulkan target.
+  supports rendering to ordinary images without creating a swapchain. VKR's
+  surface-free instance/device selection, queue requirements, formats,
+  recreation, and validation behavior are now verified on the local pinned
+  MoltenVK development stack; native Vulkan and cross-vendor coverage remain.
 - One GPU still provides one authoritative performance lane. Offscreen output
   removes window contention, not GPU/driver scheduling contention.
 
@@ -214,10 +214,12 @@ Constraints on the seam:
 
 ## Revisit When
 
-Promote to Accepted once the offscreen target passes
-`tools/validate_multithreaded_backend_matrix.sh` and a validation-layer run, and
-once an offscreen and a swapchain run of the same case are shown to produce
-identical work-volume metrics and compatible captures after canonicalization.
+Revisit if a native Vulkan target cannot support the selected ordinary-image
+formats or surface-free queue policy, or if future graph topology needs multiple
+terminal output roles. Acceptance evidence, including the backend matrix,
+validation scans, two offscreen image counts, explicit recreation, 80 identical
+work-volume metrics, and byte-identical canonical color/depth captures, is in
+[the Phase-6 verification record](../../tooling/renderer-harness-phase6-verification.md).
 Differing work volume means the seam changed what is rendered, not merely where
 it lands. The gate must cover at least two offscreen image counts and the
 windowed image count reported by the device.

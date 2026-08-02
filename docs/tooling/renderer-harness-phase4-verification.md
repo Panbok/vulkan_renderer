@@ -20,8 +20,9 @@ This is capture evidence, not performance evidence. Snapshot reports are
 non-authoritative by policy, and the implementation worktree was dirty. At the
 Phase-4 boundary, comparison, auxiliary debug replays, accepted baselines, and
 guarded promotion remained Phase 5; those now ship and are recorded in the
-[Phase-5 verification](renderer-harness-phase5-verification.md). Phase 6 still
-owns a true offscreen target.
+[Phase-5 verification](renderer-harness-phase5-verification.md). At that
+boundary Phase 6 still owned a true offscreen target; it is now recorded in
+[the Phase-6 verification](renderer-harness-phase6-verification.md).
 
 ## Capture contract
 
@@ -152,5 +153,6 @@ structurally leave capture disabled, while a future target-device study must
 still quantify the resource-usage cost before any claim about transfer-source
 usage or depth compression. At this Phase-4 checkpoint, baseline comparisons,
 visual thresholds, debug-mode replays, and offscreen/windowed equivalence
-remained later-phase work. Phase 5 now implements the first three;
-offscreen/windowed equivalence remains Phase 6.
+remained later-phase work. Phase 5 now implements the first three, and
+offscreen/windowed equivalence is recorded in
+[the Phase-6 verification](renderer-harness-phase6-verification.md).

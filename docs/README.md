@@ -64,7 +64,7 @@ owning document status in the same change.
 | [011](architecture/adr/011-vulkan-1-2-baseline.md) | implemented | Vulkan 1.2 baseline with classic render passes |
 | [012](architecture/adr/012-texture-compression-pipeline.md) | implemented | Offline KTX2/UASTC packing with runtime transcode |
 | [013](architecture/adr/013-draw-submission-strategy.md) | partial | Measured draw submission — culling, instancing, MDI; native Vulkan validation pending |
-| [014](architecture/adr/014-offscreen-present-target.md) | proposed | Present target seam decoupling the frame path from the swapchain |
+| [014](architecture/adr/014-offscreen-present-target.md) | implemented | Present target seam decoupling the frame path from the swapchain |
 | [015](architecture/adr/015-metrics-module.md) | implemented | Centralized metrics registry with pre-registered slots |
 
 ## Rendering
@@ -118,7 +118,7 @@ Performance workflow and evidence rules:
 
 | Document | Status | Purpose |
 |---|---|---|
-| [renderer-harness-and-metrics-spec.md](tooling/renderer-harness-and-metrics-spec.md) | partial | Metrics, windowed profiling/automation boot, direct/auxiliary snapshot, autotest, comparison, and guarded baseline phases 1-5 ship; true offscreen remains proposed |
+| [renderer-harness-and-metrics-spec.md](tooling/renderer-harness-and-metrics-spec.md) | implemented | Metrics, deterministic profiling, capture/comparison/autotest, guarded baselines, and true window-free offscreen execution ship through Phase 6 |
 | [renderer-metrics-phase1-verification.md](tooling/renderer-metrics-phase1-verification.md) | investigation | Phase-1 functional, Vulkan, pipeline-cache, and paired Release-overhead evidence |
 | [renderer-metrics-phase1b-verification.md](tooling/renderer-metrics-phase1b-verification.md) | investigation | Phase-1b GPU-owner propagation, exactness, Vulkan, and paired Release-overhead evidence |
 | [renderer-harness-phase2-verification.md](tooling/renderer-harness-phase2-verification.md) | investigation | Phase-2 parser, determinism, artifact, build, and isolated-profile evidence |
@@ -126,6 +126,7 @@ Performance workflow and evidence rules:
 | [renderer-harness-phase3-verification.md](tooling/renderer-harness-phase3-verification.md) | investigation | Phase-3 dependency-plan, full/automation work-equivalence, boot/residency, and Vulkan-validation evidence |
 | [renderer-harness-phase4-verification.md](tooling/renderer-harness-phase4-verification.md) | investigation | Phase-4 capture-ring, graph-overlay, canonical converter, deterministic snapshot, and Vulkan-validation evidence |
 | [renderer-harness-phase5-verification.md](tooling/renderer-harness-phase5-verification.md) | investigation | Phase-5 debug replay, canonical comparison, autotest separation, guarded baseline, and Vulkan-validation evidence |
+| [renderer-harness-phase6-verification.md](tooling/renderer-harness-phase6-verification.md) | investigation | Phase-6 target seam, WSI-free offscreen lifecycle, target equivalence, recreation, and Vulkan-validation evidence |
 | [harness-case-schema.json](tooling/harness-case-schema.json) | implemented | Draft-07 structural contract mirrored by the strict runtime case parser |
 | [harness-profile-schema.json](tooling/harness-profile-schema.json) | implemented | Draft-07 execution-profile contract mirrored by the strict runtime parser |
 | [harness-report-schema.json](tooling/harness-report-schema.json) | implemented | Draft-07 aggregate/child report contract for machine validation |

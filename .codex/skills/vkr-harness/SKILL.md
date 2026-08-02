@@ -5,16 +5,18 @@ description: Run and interpret VKR's structured renderer automation harness. Use
 
 # VKR Harness
 
-Use `vkr_harness` for structured, repeatable renderer observations. Phases 2-5
+Use `vkr_harness` for structured, repeatable renderer observations. Phases 2-6
 support the `profile` command with full or dependency-resolved automation boot
-and visible or hidden windowed targets. Phase 2b adds authoritative CPU and
-GPU-timestamp performance profiles and retires the old log-scraping benchmark;
+and visible, hidden-window, or true offscreen targets. Phase 2b adds
+authoritative CPU and GPU-timestamp performance profiles and retires the old
+log-scraping benchmark;
 Phase 3 adds paired boot/residency profiles and actual effective subsystem
 masks. Phase 4 adds direct-channel `snapshot` replays with canonical color,
 depth, shadow-layer, and picking-ID artifacts. Phase 5 adds forward-render
 debug replays, canonical comparison and diff artifacts, separated `autotest`
-orchestration, and profile-scoped guarded baselines. True offscreen targets are
-Phase 6 and must not be claimed from this binary.
+orchestration, and profile-scoped guarded baselines. Phase 6 adds a surface- and
+swapchain-free ordinary-image target with explicit image count/recreation and
+actual target extent/format provenance.
 
 ## Run a profile
 
@@ -34,6 +36,13 @@ Cases own the workload. Profiles own environment constraints, instrumentation,
 minimum independent repetitions, stability policy, and authority policy. Do
 not weaken a profile to make a run pass. Add a separate local profile for an
 investigative environment.
+
+Use `tools/profiles/local-offscreen.json` only with a case declaring
+`target=offscreen` and `present=none`. Reports expose the actual target kind,
+image count, drawable extent, color/depth formats, color space, and present
+mode in `effective_config`; never infer those values from the manifest. On
+Retina macOS, logical window points and the reported Vulkan drawable extent can
+differ.
 
 ## Run a snapshot
 
@@ -57,7 +66,7 @@ Shipped direct channels are `final_color`, editor-only `scene_color`, `depth`,
 are `normals`, `unlit`, `lighting`, `shadow_debug_cascades`,
 `shadow_debug_factor`, and `shadow_debug_depth`. Channels sharing one render
 mode and checkpoint share a replay; distinct debug modes do not. Final-color
-availability is target/surface capability dependent; unavailable means exit
+availability is target capability dependent; unavailable means exit
 `3`, never a silent substitute.
 
 ## Run combined autotest and comparison
@@ -90,6 +99,10 @@ Read these report fields before quoting a number:
   compatibility.
 - `effective_config.boot_profile` and `subsystem_mask` identify the actual boot
   closure. The mask is a canonical 16-digit hexadecimal string, not a label.
+- `effective_config.target`, `target_image_count`, `resolution`, color/depth
+  formats, color space, and present mode are actual backend results. Offscreen
+  ordinary images report `present_mode=none` and may report an unknown WSI color
+  space because none exists.
 - `execution` proves isolated repetition count and warmup stability.
 - `aggregate.metrics` and `aggregate.passes` contain nearest-rank percentiles
   and population standard deviation; unavailable GPU samples retain an
@@ -130,6 +143,7 @@ for repository performance claims.
 | Profile | Timestamps | Use |
 |---|---|---|
 | `local-windowed.json` | off | Observational; two repetitions, drift not enforced |
+| `local-offscreen.json` | off | Observational WSI-free correctness/work-volume evidence; two repetitions |
 | `local-windowed-gpu.json` | on | Observational per-pass GPU timing |
 | `performance-windowed.json` | off | Authoritative CPU and work-volume evidence |
 | `performance-windowed-gpu.json` | on | Authoritative evidence including complete per-pass GPU timing |
@@ -157,6 +171,10 @@ narrowing the profile's window.
 | `smoke/sponza_snapshot.case.json` | automation | 2/3 | Direct final/depth/shadow/picking snapshot fixture |
 | `smoke/sponza_snapshot_editor.case.json` | automation | 2/3 | Editor scene-color/depth/picking snapshot fixture |
 | `smoke/sponza_snapshot_debug.case.json` | automation | 2/3 | Normals/unlit/lighting and three shadow-debug replay fixture |
+| `smoke/sponza_offscreen.case.json` | full | 2/3 | Three-image WSI-free work-volume and recreation fixture |
+| `smoke/sponza_offscreen_snapshot.case.json` | full | 2/3 | Two-image WSI-free final-color/depth capture and recreation fixture |
+| `smoke/sponza_windowed_equivalent.case.json` | full | 2/3 | Local hidden-window work-volume counterpart to the offscreen fixture |
+| `smoke/sponza_windowed_snapshot_equivalent.case.json` | full | 2/3 | Local hidden-window capture counterpart to the offscreen fixture |
 
 ## Compare full and automation boot
 

@@ -1,11 +1,11 @@
 ---
-status: partial
+status: implemented
 updated: 2026-08-02
 authority: spec
 ---
 # Renderer Metrics Module and Automation Harness
 
-> **Status note.** Phases 1, 1b, 2, 2b, 3, 4, and 5 ship: the centralized registry and
+> **Status note.** Phases 1, 1b, 2, 2b, 3, 4, 5, and 6 ship: the centralized registry and
 > renderer adapter feed a structured `vkr_harness profile` runtime with strict
 > manifests, deterministic cameras, isolated repetitions, fingerprints, and
 > atomic reports. Reviewed CPU/GPU performance profiles replace the retired
@@ -15,7 +15,9 @@ authority: spec
 > bounded asynchronous ring. Phase 5 adds auxiliary forward-render debug
 > replays, canonical comparison and diffs, combined `autotest`, and
 > profile-scoped immutable baseline generations with digest-confirmed guarded
-> promotion. Phase 6 remains proposed; there is still no true offscreen target.
+> promotion. Phase 6 adds target-neutral attachment/state queries and a true
+> ordinary-image offscreen target that creates no window, surface, swapchain, or
+> present queue.
 > Evidence is recorded in
 > [renderer-metrics-phase1-verification.md](renderer-metrics-phase1-verification.md)
 > and
@@ -30,14 +32,17 @@ authority: spec
 > [renderer-harness-phase4-verification.md](renderer-harness-phase4-verification.md).
 > Phase-5 evidence is recorded in
 > [renderer-harness-phase5-verification.md](renderer-harness-phase5-verification.md).
+> Phase-6 evidence is recorded in
+> [renderer-harness-phase6-verification.md](renderer-harness-phase6-verification.md).
 
 ## 1. Problem
 
 The renderer already produced most of the numbers an automated workflow needed,
-but lacked a machine-readable transport. Phases 1-5 implement that transport,
+but lacked a machine-readable transport. Phases 1-6 implement that transport,
 replace the legacy scrape path, add dependency-resolved boot, and add direct
 and auxiliary capture, comparison, autotest orchestration, and guarded baseline
-promotion. The remaining problem is true offscreen execution.
+promotion. The final phase removes WSI from offscreen execution while retaining
+the same graph and packet path used by the application.
 
 Before this series, every signal lived in its own struct with its own reader,
 and the only transport was `log_info` plus a shell pipeline:
@@ -486,7 +491,11 @@ complete semaphore.
 Acquisition returns an image index plus optional submit wait/signal semaphores
 and preserves `OK`, `SKIP`, and `FAILED`. The common image-in-flight fence table
 guards both implementations; offscreen round-robin may select an image only
-after its associated fence completes. Target completion calls presentation only
+after its associated fence completes. The seam is a `VulkanPresentTargetOps`
+table -- create/destroy/resize, per-frame begin/acquire/complete/cancel, plus
+the WSI capability, recovery policy, and terminal state each implementation
+declares -- so the frame path asks the target what to do instead of asking
+which kind it is. Target completion calls presentation only
 on the windowed path. The graph compiler obtains the target's terminal
 access/layout: windowed output ends at `PRESENT`/`PRESENT_SRC_KHR`; offscreen
 output ends in the target's retained state. Any capture read precedes that
@@ -495,9 +504,10 @@ performed by `present()`; it is declared graph work in §5.
 
 The graph's legacy `"import": "swapchain"` and `"swapchain_depth"` names resolve
 through target-neutral backend handle, initial-state, extent, count, and format
-queries. Graph compilation and frame setup stop calling
-`vkr_renderer_window_*`/`swapchain_*`; compatibility wrappers can remain for
-interactive callers, but they do not define the new seam. Import layout/access
+queries. `vkr_renderer_window_*`/`swapchain_*` are retired outright rather than
+kept as compatibility wrappers: graph compilation, frame setup, capture, shadow,
+picking, and the editor viewport all reach the target's attachments through
+`vkr_renderer_present_target_*`, so one seam describes both target kinds. Import layout/access
 is never hard-coded to `UNDEFINED` when the offscreen target retained contents.
 
 Two invariants this must not break, both documented in the architecture
@@ -1156,7 +1166,7 @@ unsupported.
 | 3 | **Implemented 2026-08-02.** Dependency-resolved automation boot; actual effective masks in samples/reports/fingerprints; paired full/automation boot and residency profiles with identical work-volume gates | `renderer_frontend.c`, `application.h`, harness runtime |
 | 4 | **Implemented 2026-08-02.** Capture batch API and fixed ring, request-specific declared exact-slice graph reads, capability-gated transfer sources, canonical converters and metadata, isolated direct-channel `snapshot` replays | backend, graph, `tools/harness/` |
 | 5 | **Implemented 2026-08-02.** Logical auxiliary debug replays; canonical color/depth/ID comparison and diffs; primary-plus-snapshot `autotest`; profile-scoped immutable baseline generations; no-mutation proposals and digest-confirmed atomic promotion | `tools/harness/`, `tools/baselines/` |
-| 6 | Target-neutral frontend queries and `VulkanPresentTarget`; true offscreen headless | backend configuration/device selection, graph imports, frame path |
+| 6 | **Implemented 2026-08-02.** Target-neutral queries and graph imports; graph-owned terminal barriers; surface/swapchain/present-free ordinary-image targets; retained per-image state; explicit recreation; actual target provenance; windowed/offscreen work and capture equivalence | backend configuration/device selection, graph imports, frame path, harness runtime |
 
 Phases 4 and 6 both touch GPU-completion and frame-failure invariants: phase 4
 now associates/rolls back asynchronous readback slots, while phase 6 changes
@@ -1231,8 +1241,10 @@ verification record, and the relevant ADR status in the same change.
   advance.
 - **Cross-machine baselines.** Visual baselines are profile-scoped
   (`local-macos-mvk`) because GPU, driver, and OS all affect output. Whether a
-  shared CI profile is achievable is unanswered and depends on phase 6.
-- **Surface-free VKR integration.** MoltenVK can render to ordinary images
-  without WSI, but VKR's surface-free instance/device selection, queue policy,
-  formats, validation behavior, and performance remain unverified on its pinned
-  MoltenVK development stack and on a native Vulkan target.
+  shared CI profile is achievable remains unanswered and depends on native
+  Vulkan/cross-vendor evidence plus an explicitly pinned CI profile.
+- **Surface-free native-Vulkan coverage.** VKR's surface-free instance/device
+  selection, queue policy, formats, recreation, and validation behavior are
+  verified on the local Apple M1 Pro/MoltenVK stack. Native Vulkan and
+  cross-vendor coverage remain open; the local dirty-tree runs are correctness
+  evidence, not an authoritative performance result.
