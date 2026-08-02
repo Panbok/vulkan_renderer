@@ -8,6 +8,7 @@ file(GLOB_RECURSE TEST_SOURCES src/*.c src/*.h)
 
 # Create the test executable
 add_executable(vulkan_renderer_tester ${TEST_SOURCES})
+vkr_require_declared_c_functions(vulkan_renderer_tester)
 
 if(CMAKE_GENERATOR MATCHES "Visual Studio")
     set_property(TARGET vulkan_renderer_tester PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/")

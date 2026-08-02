@@ -1,5 +1,7 @@
 #include "arena_test.h"
 
+#include "containers/str.h"
+
 // Helper to get the initial position (header size aligned up)
 static uint64_t get_initial_pos() {
   // ARENA_HEADER_SIZE should already be multiple of MaxAlign() or page size

@@ -1,6 +1,7 @@
 #include "logger.h"
 
 #include "core/vkr_threads.h"
+#include "memory/vkr_arena_allocator.h"
 
 vkr_global Arena *g_log_arena = NULL;
 vkr_global VkrAllocator g_log_allocator = {0};

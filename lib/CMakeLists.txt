@@ -12,6 +12,7 @@ list(APPEND LIB_SOURCES ${CMAKE_SOURCE_DIR}/vendor/spirv_reflect.c)
 
 # Create a static library
 add_library(renderer_lib STATIC ${LIB_SOURCES})
+vkr_require_declared_c_functions(renderer_lib)
 
 target_compile_definitions(renderer_lib PUBLIC SPIRV_REFLECT_USE_SYSTEM_SPIRV_H)
 

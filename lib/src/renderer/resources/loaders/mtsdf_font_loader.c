@@ -5,6 +5,7 @@
 #include "core/vkr_json.h"
 #include "filesystem/filesystem.h"
 #include "memory/arena.h"
+#include "memory/vkr_arena_allocator.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 

@@ -1,6 +1,7 @@
 #include "renderer/systems/vkr_material_system.h"
 
 #include "defines.h"
+#include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_resource_system.h"
 

@@ -7,6 +7,7 @@ file(GLOB_RECURSE APP_SOURCES src/*.c src/*.h)
 
 # Create the main application executable
 add_executable(vulkan_renderer ${APP_SOURCES})
+vkr_require_declared_c_functions(vulkan_renderer)
 
 if(CMAKE_GENERATOR MATCHES "Visual Studio")
     set_property(TARGET vulkan_renderer PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/")
@@ -42,4 +43,4 @@ target_compile_definitions(vulkan_renderer PRIVATE
 )
 
 # Set up installation rules if needed
-# install(TARGETS vulkan_renderer DESTINATION bin) 
+# install(TARGETS vulkan_renderer DESTINATION bin)

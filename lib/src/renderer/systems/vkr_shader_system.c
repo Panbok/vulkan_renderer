@@ -1,6 +1,7 @@
 #include "renderer/systems/vkr_shader_system.h"
 #include "containers/str.h"
 #include "core/logger.h"
+#include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/vkr_resources.h"
 
 typedef struct VkrShaderRuntimeSizes {

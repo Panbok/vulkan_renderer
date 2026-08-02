@@ -2,6 +2,7 @@
 #include "core/vkr_threads.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "vulkan_backend.h"
+#include "vulkan_fence.h"
 
 void vulkan_buffer_flush(VulkanBackendState *state, VulkanBuffer *buffer,
                          uint64_t offset, uint64_t size) {

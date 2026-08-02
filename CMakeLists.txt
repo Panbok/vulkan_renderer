@@ -21,10 +21,26 @@ endif()
 if(MSVC)
     set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /Zi -W4 /FC")
     set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} ${SAN_FLAGS}")
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /wd4013 /arch:AVX2")  # implicit function declaration
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /arch:AVX2")
 else()
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-implicit-function-declaration -march=native")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
 endif()
+
+# An undeclared C function is an ABI bug, not a tolerable warning: the compiler
+# otherwise assumes a signature that can bind to an unrelated same-named symbol
+# and fail only at runtime. Apply this to VKR-owned targets explicitly so the
+# policy does not leak into third-party subdirectories.
+function(vkr_require_declared_c_functions target)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE
+            $<$<COMPILE_LANGUAGE:C>:/we4013>
+        )
+    elseif(CMAKE_C_COMPILER_ID MATCHES "^(AppleClang|Clang|GNU)$")
+        target_compile_options(${target} PRIVATE
+            $<$<COMPILE_LANGUAGE:C,OBJC>:-Werror=implicit-function-declaration>
+        )
+    endif()
+endfunction()
 
 if(VKR_ENABLE_SANITIZERS AND NOT MSVC)
     set(_VKR_SAN_FLAGS "-fsanitize=address,undefined" "-fno-omit-frame-pointer")

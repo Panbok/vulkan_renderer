@@ -17,6 +17,7 @@ add_library(vkr_harness_core STATIC
     harness/vkr_harness_sha256.c
     harness/vkr_harness_statistics.c
 )
+vkr_require_declared_c_functions(vkr_harness_core)
 
 target_include_directories(vkr_harness_core
     PUBLIC
@@ -41,6 +42,7 @@ add_executable(vkr_harness
     harness/vkr_harness_samples.c
     harness/vkr_harness_snapshot.c
 )
+vkr_require_declared_c_functions(vkr_harness)
 
 target_link_libraries(vkr_harness PRIVATE vkr_harness_core)
 target_compile_definitions(vkr_harness PRIVATE
@@ -57,6 +59,7 @@ target_compile_definitions(vkr_harness PRIVATE
 add_executable(vkr_vkt_packer
     vkr_vkt_packer.cpp
 )
+vkr_require_declared_c_functions(vkr_vkt_packer)
 
 target_compile_features(vkr_vkt_packer PRIVATE cxx_std_17)
 

@@ -6,6 +6,7 @@
 #include "filesystem/filesystem.h"
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
+#include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_arena_pool.h"
 #include "renderer/systems/vkr_resource_system.h"
 

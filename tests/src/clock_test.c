@@ -1,5 +1,7 @@
 #include "clock_test.h"
 
+#include "platform/vkr_platform.h"
+
 static void test_clock_create(void) {
   printf("  Running test_clock_create...\n");
   VkrClock clock = vkr_clock_create();

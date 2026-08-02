@@ -2,6 +2,8 @@
 #include "core/logger.h"
 #include "core/vkr_threads.h"
 #include "memory/arena.h"
+#include "memory/vkr_arena_allocator.h"
+#include "memory/vkr_dmemory_allocator.h"
 
 vkr_internal INLINE uint64_t
 vulkan_allocator_effective_alignment(size_t alignment) {

@@ -3,6 +3,7 @@
 #include "core/vkr_threads.h"
 #include "defines.h"
 #include "filesystem/filesystem.h"
+#include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "memory/vkr_pool_allocator.h"
 #include "vulkan_buffer.h"
