@@ -28,7 +28,7 @@
 #define VKR_FPS_DELTA_MIN 0.000001
 #define VKR_WORLD_TIME_UPDATE_INTERVAL 0.25
 #define VKR_UI_TEXT_PADDING 16.0f
-#define SCENE_PATH "assets/scenes/sponza.scene.json"
+#define SCENE_PATH "assets/scenes/bistro.scene.json"
 
 typedef struct FilterModeEntry {
   VkrFilter min_filter;
@@ -1520,6 +1520,46 @@ vkr_internal void application_update_memory_text(Application *application) {
   }
 }
 
+/** Logs a paste-ready static camera block for a harness snapshot case. */
+vkr_internal void application_log_camera_snapshot(Application *application) {
+  if (!application) {
+    log_warn("Cannot capture camera snapshot without an application");
+    return;
+  }
+
+  VkrCamera *camera =
+      vkr_camera_registry_get_by_handle(&application->renderer.camera_system,
+                                        application->renderer.active_camera);
+  if (!camera) {
+    log_warn("Cannot capture camera snapshot: active camera is unavailable");
+    return;
+  }
+  if (camera->type != VKR_CAMERA_TYPE_PERSPECTIVE) {
+    log_warn("Cannot capture harness camera snapshot from a non-perspective "
+             "camera");
+    return;
+  }
+
+  /* Scene entities and the camera share renderer world space. The harness
+     applies this pose after loading the same transformed scene, so applying an
+     inverse scene transform here would transform the position twice. */
+  log_info("CAMERA_SNAPSHOT scene=\"%s\" coordinate_space=world "
+           "resolution=[%u, %u]\n"
+           "\"camera\": {\n"
+           "  \"mode\": \"static\",\n"
+           "  \"position\": [%.9g, %.9g, %.9g],\n"
+           "  \"yaw\": %.9g,\n"
+           "  \"pitch\": %.9g,\n"
+           "  \"vertical_fov_degrees\": %.9g,\n"
+           "  \"near_plane\": %.9g,\n"
+           "  \"far_plane\": %.9g\n"
+           "}",
+           SCENE_PATH, camera->cached_window_width,
+           camera->cached_window_height, camera->position.x, camera->position.y,
+           camera->position.z, camera->yaw, camera->pitch, camera->zoom,
+           camera->near_clip, camera->far_clip);
+}
+
 vkr_internal void application_handle_input(Application *application,
                                            float64_t delta_time) {
   if (state == NULL || state->input_state == NULL) {
@@ -1604,6 +1644,11 @@ vkr_internal void application_handle_input(Application *application,
     state->ibl_validation_scalar =
         Min(2.0f, state->ibl_validation_scalar + 0.1f);
     log_info("IBL validation scalar: %.2f", state->ibl_validation_scalar);
+  }
+
+  if (input_is_key_up(input_state, KEY_G) &&
+      input_was_key_down(input_state, KEY_G)) {
+    application_log_camera_snapshot(application);
   }
 
   if (input_is_key_down(input_state, KEY_TAB) &&
@@ -1814,7 +1859,7 @@ vkr_internal void application_update_fps_text(Application *application,
           frame_alloc,
           "Camera: {x: %.2f, y: %.2f, z: %.2f}\nCamera rotation: {yaw: %.2f, "
           "pitch: %.2f}\nPress Tab for free mode\nIBL mode: %s (x%.2f)\n"
-          "F8 cycle mode, F9/F10 intensity",
+          "F8 cycle mode, F9/F10 intensity\nG log camera snapshot",
           camera->position.x, camera->position.y, camera->position.z,
           camera->yaw, camera->pitch,
           application_ibl_validation_mode_label(state->ibl_validation_mode),
