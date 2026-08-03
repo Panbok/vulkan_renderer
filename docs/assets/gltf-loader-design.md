@@ -1,13 +1,14 @@
 ---
 status: partial
-updated: 2026-07-31
+updated: 2026-08-03
 authority: design
 ---
 # glTF Loader Design (Revised)
 
-> **Current boundary.** glTF import ships, but the current Phong conversion is
-> lossy and parsed occlusion/double-sided properties do not yet have complete
-> material and pipeline behavior.
+> **Current boundary.** glTF import emits native metallic-roughness PBR
+> materials. Legacy `KHR_materials_pbrSpecularGlossiness` receives a deliberate
+> diffuse-only compatibility conversion; its packed specular-glossiness texture
+> is not converted to the incompatible metallic-roughness channel layout.
 
 This spec replaces the previous draft and aligns with the current renderer architecture (`VkrResourceLoader` async callbacks, resource-system batching behavior, allocator/lifetime rules).
 
@@ -115,34 +116,51 @@ To match current mesh asset shape (single transformed mesh payload), v1 flattens
 
 ### Coordinate System
 
-No handedness conversion in v1. Import keeps glTF space as-authored. Any future conversion must be explicit and tested against tangent handedness and normal transforms.
+Position, normal, tangent, winding, and handedness data remain in glTF space.
+Texture coordinates are the deliberate exception: glTF defines `(0,0)` at the
+upper-left of an image, while VKR's ordinary 2D source and `.vkt` paths store
+vertically flipped image rows for a bottom-left origin. The importer lowers
+`TEXCOORD_0` once as `(u, 1-v)` before caching vertices. Missing texture
+coordinates retain the engine's zero default. Any future spatial coordinate
+conversion must remain explicit and tested against tangent handedness and normal
+transforms.
 
-## Material Mapping (v1, pragmatic)
+## Material Mapping
 
-Current runtime material is Phong-based. glTF PBR fields are mapped conservatively:
+The importer writes generated `.mt` files for the current PBR material path:
 
 | glTF field | Runtime mapping |
 |------------|-----------------|
-| `baseColorFactor` | `material.phong.diffuse_color` |
-| `baseColorTexture` | `VKR_TEXTURE_SLOT_DIFFUSE` (`?cs=srgb`) |
-| `normalTexture` | `VKR_TEXTURE_SLOT_NORMAL` (`?cs=linear`) |
-| `emissiveFactor` | `material.phong.emission_color` |
-| `emissiveTexture` | `VKR_TEXTURE_SLOT_EMISSION` (`?cs=srgb`) if enabled in pipeline |
-| `metallicRoughnessTexture` | temporary mapping to specular slot (`?cs=linear`) |
+| `pbrMetallicRoughness.baseColorFactor` | `base_color` |
+| `pbrMetallicRoughness.baseColorTexture` | base-color slot (`cs=srgb&tc=color_srgb`) |
+| `metallicFactor` / `roughnessFactor` | `metallic` / `roughness` |
+| `metallicRoughnessTexture` | metallic-roughness slot (`tc=data_mask`) |
+| `normalTexture` | normal slot (`tc=normal_rg`) |
+| `occlusionTexture` | occlusion slot (`tc=data_mask`) |
+| `emissiveFactor` / `emissiveTexture` | emissive factor/slot (`cs=srgb&tc=color_srgb`) |
 | `alphaMode=MASK` | set `alpha_cutoff` (default 0.5 if missing) |
-| `alphaMode=BLEND` | leave cutoff off; preserve base alpha for transparent path |
+| `alphaMode=BLEND` | preserve base alpha for the transparent path |
+| `KHR_materials_pbrSpecularGlossiness.diffuseFactor` | `base_color` |
+| `KHR_materials_pbrSpecularGlossiness.diffuseTexture` | base-color slot (`cs=srgb&tc=color_srgb`) |
+| `KHR_materials_pbrSpecularGlossiness.glossinessFactor` | `roughness = 1 - glossiness`, with `metallic = 0` |
 
 Notes:
 
-1. `metallicFactor/roughnessFactor` are lossy in Phong. Keep explicit TODO marker in code for later PBR-native material path.
-2. `occlusionTexture` and `doubleSided` are parsed but may not fully affect shading until pipeline/material support is expanded.
+1. The RGB specular plus alpha glossiness texture cannot be rebound as the
+   current G-roughness/B-metallic texture without an offline conversion or a
+   separate shader workflow, so it remains unsupported.
+2. The compatibility conversion prefers the specular-glossiness extension over
+   an empty fallback `pbrMetallicRoughness` object, matching Bistro-style assets.
 
 ## Texture Source Policy
 
 ### v1 Required
 
-1. External image URIs (`image.uri` that is not `data:`), resolved relative to glTF file directory.
-2. Paths normalized through existing helper usage (`file_path_get_directory`, `file_path_join`).
+1. External image URIs (`image.uri` that is not `data:`), resolved relative to
+   the glTF file directory, `assets/`, or `assets/textures/` while preserving
+   nested URI components. A basename-only `assets/textures/` lookup is retained
+   as a final compatibility fallback.
+2. Source paths and sidecar `<source>.vkt` files use the same candidate order.
 3. Colorspace intent appended via existing texture request query pattern (`?cs=...` / `tc=...` as needed).
 
 ### v1 Explicitly Unsupported (returns clear error/warn)

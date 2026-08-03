@@ -27,6 +27,8 @@ typedef struct GltfImporterTestCapture {
   uint32_t primitive_count;
   uint32_t total_vertices;
   uint32_t total_indices;
+  uint32_t first_texcoord_count;
+  Vec2 first_texcoords[3];
   String8 first_material_path;
 } GltfImporterTestCapture;
 
@@ -293,6 +295,13 @@ gltf_test_capture_primitive(void *user_data,
   capture->primitive_count++;
   capture->total_vertices += primitive->vertex_count;
   capture->total_indices += primitive->index_count;
+  if (capture->first_texcoord_count == 0) {
+    capture->first_texcoord_count =
+        primitive->vertex_count < 3u ? primitive->vertex_count : 3u;
+    for (uint32_t i = 0; i < capture->first_texcoord_count; ++i) {
+      capture->first_texcoords[i] = primitive->vertices[i].texcoord;
+    }
+  }
   if (capture->first_material_path.length == 0 &&
       primitive->material_path.str && primitive->material_path.length > 0) {
     capture->first_material_path =
@@ -440,6 +449,11 @@ static void test_gltf_import_basic_and_deterministic_mt(void) {
   assert(capture.primitive_count == 1u);
   assert(capture.total_vertices == 3u);
   assert(capture.total_indices == 3u);
+  assert(capture.first_texcoord_count == 3u);
+  for (uint32_t i = 0; i < capture.first_texcoord_count; ++i) {
+    assert(capture.first_texcoords[i].x == 0.0f);
+    assert(capture.first_texcoords[i].y == 0.0f);
+  }
   assert(gltf_test_material_path_matches_pattern(capture.first_material_path,
                                                  stem, 0) == true_v);
 
@@ -484,6 +498,90 @@ static void test_gltf_import_basic_and_deterministic_mt(void) {
   gltf_test_remove_generated_material(stem);
 
   printf("  test_gltf_import_basic_and_deterministic_mt PASSED\n");
+}
+
+static void test_gltf_import_converts_texture_coordinates(void) {
+  printf("  Running test_gltf_import_converts_texture_coordinates...\n");
+
+  const char *stem = "gltf_import_texcoords";
+  gltf_test_ensure_dirs();
+  gltf_test_remove_source_files(stem);
+
+  char gltf_path[1024];
+  snprintf(gltf_path, sizeof(gltf_path), "%stests/tmp/gltf_importer/%s.gltf",
+           PROJECT_SOURCE_DIR, stem);
+  char bin_path[1024];
+  snprintf(bin_path, sizeof(bin_path), "%stests/tmp/gltf_importer/%s.bin",
+           PROJECT_SOURCE_DIR, stem);
+
+  const float positions[9] = {
+      0.0f, 0.0f, 0.0f, //
+      1.0f, 0.0f, 0.0f, //
+      0.0f, 1.0f, 0.0f, //
+  };
+  const float texcoords[6] = {
+      0.25f, 0.75f, //
+      0.50f, 0.25f, //
+      0.75f, 0.00f, //
+  };
+  const uint16_t indices[3] = {0u, 1u, 2u};
+  uint8_t bytes[66] = {0};
+  MemCopy(bytes, positions, sizeof(positions));
+  MemCopy(bytes + sizeof(positions), texcoords, sizeof(texcoords));
+  MemCopy(bytes + sizeof(positions) + sizeof(texcoords), indices,
+          sizeof(indices));
+  assert(gltf_test_write_file_bytes(bin_path, bytes, sizeof(bytes)) == true_v);
+
+  char gltf_json[4096];
+  snprintf(gltf_json, sizeof(gltf_json),
+           "{"
+           "\"asset\":{\"version\":\"2.0\"},"
+           "\"scene\":0,"
+           "\"scenes\":[{\"nodes\":[0]}],"
+           "\"nodes\":[{\"mesh\":0}],"
+           "\"meshes\":[{\"primitives\":[{\"attributes\":{"
+           "\"POSITION\":0,\"TEXCOORD_0\":1},\"indices\":2}]}],"
+           "\"buffers\":[{\"uri\":\"%s.bin\",\"byteLength\":66}],"
+           "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,"
+           "\"byteLength\":36,\"target\":34962},{\"buffer\":0,"
+           "\"byteOffset\":36,\"byteLength\":24,\"target\":34962},{"
+           "\"buffer\":0,\"byteOffset\":60,\"byteLength\":6,"
+           "\"target\":34963}],"
+           "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,"
+           "\"count\":3,\"type\":\"VEC3\"},{\"bufferView\":1,"
+           "\"componentType\":5126,\"count\":3,\"type\":\"VEC2\"},{"
+           "\"bufferView\":2,\"componentType\":5123,\"count\":3,"
+           "\"type\":\"SCALAR\"}]"
+           "}",
+           stem);
+  assert(gltf_test_write_file_text(gltf_path, gltf_json) == true_v);
+
+  Arena *arena = arena_create(MB(2), MB(2));
+  Arena *scratch_arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  VkrAllocator scratch_allocator = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&allocator));
+  assert(vkr_allocator_arena(&scratch_allocator));
+
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  GltfImporterTestCapture capture = {.allocator = &allocator};
+  VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
+      &allocator, &scratch_allocator, gltf_path, &error, &capture);
+  assert(vkr_mesh_loader_gltf_parse(&parse_info) == true_v);
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(capture.first_texcoord_count == 3u);
+  assert(capture.first_texcoords[0].x == 0.25f);
+  assert(capture.first_texcoords[0].y == 0.25f);
+  assert(capture.first_texcoords[1].x == 0.50f);
+  assert(capture.first_texcoords[1].y == 0.75f);
+  assert(capture.first_texcoords[2].x == 0.75f);
+  assert(capture.first_texcoords[2].y == 1.00f);
+
+  arena_destroy(scratch_arena);
+  arena_destroy(arena);
+  gltf_test_remove_source_files(stem);
+
+  printf("  test_gltf_import_converts_texture_coordinates PASSED\n");
 }
 
 static void test_gltf_import_fails_without_position(void) {
@@ -877,6 +975,121 @@ test_gltf_import_generate_materials_regenerates_missing_files(void) {
          "PASSED\n");
 }
 
+static void test_gltf_import_spec_gloss_nested_vkt(void) {
+  printf("  Running test_gltf_import_spec_gloss_nested_vkt...\n");
+
+  const char *stem = "gltf_import_spec_gloss";
+  const char *texture_uri = "gltf_importer_spec_gloss/nested/diffuse.png";
+  const char *texture_request =
+      "assets/textures/gltf_importer_spec_gloss/nested/diffuse.png";
+  const char *texture_sidecar =
+      "assets/textures/gltf_importer_spec_gloss/nested/diffuse.png.vkt";
+  gltf_test_ensure_dirs();
+  gltf_test_remove_source_files(stem);
+  gltf_test_remove_generated_material(stem);
+
+  char texture_dir[1024];
+  snprintf(texture_dir, sizeof(texture_dir),
+           "%sassets/textures/gltf_importer_spec_gloss", PROJECT_SOURCE_DIR);
+  assert(gltf_test_make_dir(texture_dir) == true_v);
+
+  char nested_texture_dir[1024];
+  snprintf(nested_texture_dir, sizeof(nested_texture_dir), "%s/nested",
+           texture_dir);
+  assert(gltf_test_make_dir(nested_texture_dir) == true_v);
+
+  char absolute_sidecar_path[1024];
+  snprintf(absolute_sidecar_path, sizeof(absolute_sidecar_path), "%s%s",
+           PROJECT_SOURCE_DIR, texture_sidecar);
+  gltf_test_remove_file(absolute_sidecar_path);
+  const uint8_t sidecar_stub[4] = {0xAB, 0x4B, 0x54, 0x58};
+  assert(gltf_test_write_file_bytes(absolute_sidecar_path, sidecar_stub,
+                                    sizeof(sidecar_stub)) == true_v);
+
+  char gltf_path[1024];
+  snprintf(gltf_path, sizeof(gltf_path), "%stests/tmp/gltf_importer/%s.gltf",
+           PROJECT_SOURCE_DIR, stem);
+  char bin_path[1024];
+  snprintf(bin_path, sizeof(bin_path), "%stests/tmp/gltf_importer/%s.bin",
+           PROJECT_SOURCE_DIR, stem);
+  char mt_path[1024] = {0};
+  gltf_test_make_material_paths(stem, gltf_path, 0, mt_path, sizeof(mt_path),
+                                NULL, 0, NULL, 0);
+
+  gltf_test_write_basic_triangle_bin(bin_path);
+
+  char gltf_json[8192];
+  snprintf(gltf_json, sizeof(gltf_json),
+           "{"
+           "\"asset\":{\"version\":\"2.0\"},"
+           "\"extensionsUsed\":[\"KHR_materials_pbrSpecularGlossiness\"],"
+           "\"scene\":0,"
+           "\"scenes\":[{\"nodes\":[0]}],"
+           "\"nodes\":[{\"mesh\":0}],"
+           "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},"
+           "\"indices\":1,\"material\":0}]}],"
+           "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":["
+           "0.1,0.1,0.1,1.0],\"metallicFactor\":0.9,\"roughnessFactor\":0.9},"
+           "\"extensions\":{\"KHR_materials_pbrSpecularGlossiness\":{"
+           "\"diffuseFactor\":[0.25,0.5,0.75,0.8],"
+           "\"specularFactor\":[0.9,0.8,0.7],\"glossinessFactor\":0.65,"
+           "\"diffuseTexture\":{\"index\":0}}}}],"
+           "\"textures\":[{\"source\":0}],"
+           "\"images\":[{\"uri\":\"%s\"}],"
+           "\"buffers\":[{\"uri\":\"%s.bin\",\"byteLength\":42}],"
+           "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36,"
+           "\"target\":34962},{\"buffer\":0,\"byteOffset\":36,"
+           "\"byteLength\":6,\"target\":34963}],"
+           "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,"
+           "\"count\":3,\"type\":\"VEC3\"},{\"bufferView\":1,"
+           "\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}]"
+           "}",
+           texture_uri, stem);
+  assert(gltf_test_write_file_text(gltf_path, gltf_json) == true_v);
+
+  Arena *arena = arena_create(MB(2), MB(2));
+  Arena *scratch_arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  VkrAllocator scratch_allocator = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&allocator));
+  assert(vkr_allocator_arena(&scratch_allocator));
+
+  Vector_String8 dependency_paths = vector_create_String8(&allocator);
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  GltfImporterTestCapture capture = {.allocator = &allocator};
+  VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
+      &allocator, &scratch_allocator, gltf_path, &error, &capture);
+  parse_info.out_dependency_paths = &dependency_paths;
+  assert(vkr_mesh_loader_gltf_parse(&parse_info) == true_v);
+  assert(error == VKR_RENDERER_ERROR_NONE);
+  assert(gltf_test_vector_contains_path(&dependency_paths, texture_sidecar) ==
+         true_v);
+
+  String8 contents = {0};
+  assert(gltf_test_read_file_text(&allocator, mt_path, &contents) == true_v);
+  assert(strstr((const char *)contents.str,
+                "base_color=0.250000,0.500000,0.750000,0.800000") != NULL);
+  assert(strstr((const char *)contents.str, "metallic=0.000000") != NULL);
+  assert(strstr((const char *)contents.str, "roughness=0.350000") != NULL);
+
+  char expected_texture_line[1024];
+  snprintf(expected_texture_line, sizeof(expected_texture_line),
+           "base_color_texture=%s?cs=srgb&tc=color_srgb", texture_request);
+  assert(strstr((const char *)contents.str, expected_texture_line) != NULL);
+  assert(strstr((const char *)contents.str, "metallic_roughness_texture=") ==
+         NULL);
+
+  arena_destroy(scratch_arena);
+  arena_destroy(arena);
+  gltf_test_remove_file(absolute_sidecar_path);
+  gltf_test_remove_dir(nested_texture_dir);
+  gltf_test_remove_dir(texture_dir);
+  gltf_test_remove_source_files(stem);
+  gltf_test_remove_generated_material(stem);
+
+  printf("  test_gltf_import_spec_gloss_nested_vkt PASSED\n");
+}
+
 static void test_gltf_import_material_ids_are_unique_per_source(void) {
   printf("  Running test_gltf_import_material_ids_are_unique_per_source...\n");
 
@@ -1025,11 +1238,13 @@ bool32_t run_gltf_importer_tests(void) {
   printf("--- Starting glTF Importer Tests ---\n");
 
   test_gltf_import_basic_and_deterministic_mt();
+  test_gltf_import_converts_texture_coordinates();
   test_gltf_import_fails_without_position();
   test_gltf_import_rejects_data_uri_images();
   test_gltf_import_rejects_buffer_view_images();
   test_gltf_import_collects_external_dependencies();
   test_gltf_import_generate_materials_regenerates_missing_files();
+  test_gltf_import_spec_gloss_nested_vkt();
   test_gltf_import_material_ids_are_unique_per_source();
 
   printf("--- glTF Importer Tests Completed ---\n");

@@ -1,13 +1,14 @@
 ---
 status: implemented
-updated: 2026-08-01
+updated: 2026-08-03
 authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
 
 **Document status:** Reviewed against the working tree on 2026-07-31; P2
-production-reference record corrected on 2026-08-01 and harness Phases 3-6
-status recorded on 2026-08-02.
+production-reference record corrected on 2026-08-01, harness Phases 3-6 status
+recorded on 2026-08-02, and nested glTF texture/specular-glossiness diffuse
+compatibility recorded on 2026-08-03.
 **Scope:** Renderer architecture, implemented features, CPU/GPU memory, data
 transfer, synchronization, known issues, and recommended direction.
 **Audience:** Contributors and reviewers.
@@ -296,9 +297,9 @@ farther than the finite cube mesh.
 | Metrics registry and snapshot export | Implemented | Bounded typed slots, MPSC cold-event ring, triple-buffered snapshots, renderer catalog/validity, explicit GPU allocation-owner aggregates, metrics-backed HUD, atomic `--metrics-json`, and harness aggregation |
 | Renderer automation harness | Implemented | Strict cases/profiles, deterministic cameras, isolated repetitions, dependency-resolved boot, authoritative evidence policies, metric/pass/event aggregation, atomic artifacts, direct and auxiliary captures, canonical comparison/diffs, separated `autotest`, guarded immutable baselines, and target-neutral windowed or true surface-free offscreen execution with actual configuration provenance |
 | Cascaded shadow maps | Implemented | Four-cascade default with debug/fit controls |
-| PBR materials | Implemented, evolving | Metallic-roughness and texture slots present |
+| PBR materials | Implemented, evolving | Metallic-roughness and texture slots present; legacy specular-glossiness receives diffuse-only conversion |
 | IBL | In progress | Runtime bake paths and scene/probe model present; bake work still undeclared to the graph, output visibility now barriered explicitly |
-| glTF and scene loading | Implemented | CPU async pipeline; frame-path uploads measured non-blocking |
+| glTF and scene loading | Implemented | CPU async pipeline; nested `assets/textures/` URIs and sidecars resolve without flattening; upper-left glTF UVs lower once to VKR's bottom-left 2D texture convention; frame-path uploads measured non-blocking |
 | KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; every selector result is transcodable |
 | Editor viewport and picking | Implemented | Picking fully declared in the render graph; readback usually deferred but ring wrap can block |
 | Text | Implemented | Bitmap, MTSDF, system-font, UI and world text paths |

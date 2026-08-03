@@ -78,8 +78,8 @@ Vector(VkrMeshLoaderSubset);
 Vector(VkrMeshLoaderSubmeshRange);
 #define DEFAULT_SHADER string8_lit("shader.default.world")
 #define VKR_MESH_CACHE_MAGIC 0x564B4D48u /* 'VKMH' */
-/* v6 regenerates glTF materials with their double-sided raster state. */
-#define VKR_MESH_CACHE_VERSION 6u
+/* v8 regenerates glTF vertices with VKR-oriented texture coordinates. */
+#define VKR_MESH_CACHE_VERSION 8u
 #define VKR_MESH_CACHE_EXT "vkb"
 
 typedef struct VkrMeshCacheDependency {

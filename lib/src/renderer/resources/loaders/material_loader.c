@@ -76,6 +76,7 @@ typedef struct VkrMaterialParseJobPayload {
 
 typedef struct VkrMaterialAsyncDependency {
   bool8_t requested;
+  bool8_t failure_reported;
   VkrTextureSlot slot;
   char resolved_path[VKR_MATERIAL_PATH_MAX];
   VkrResourceHandleInfo request_info;
@@ -1186,6 +1187,20 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
     VkrRendererError dependency_error = VKR_RENDERER_ERROR_NONE;
     VkrResourceLoadState state = vkr_resource_system_get_state(
         &dependency->request_info, &dependency_error);
+    if ((state == VKR_RESOURCE_LOAD_STATE_FAILED ||
+         state == VKR_RESOURCE_LOAD_STATE_INVALID) &&
+        !dependency->failure_reported) {
+      String8 dependency_path =
+          vkr_material_make_string8_from_path_buffer(dependency->resolved_path);
+      String8 error_string = vkr_renderer_get_error_string(dependency_error);
+      log_warn("Material '%.*s': %s texture '%.*s' failed to load (%.*s); "
+               "using default",
+               (int32_t)material_name.length, material_name.str,
+               vkr_material_slot_name(dependency->slot),
+               (int32_t)dependency_path.length, dependency_path.str,
+               (int32_t)error_string.length, error_string.str);
+      dependency->failure_reported = true_v;
+    }
     if (state == VKR_RESOURCE_LOAD_STATE_PENDING_CPU ||
         state == VKR_RESOURCE_LOAD_STATE_PENDING_DEPENDENCIES ||
         state == VKR_RESOURCE_LOAD_STATE_PENDING_GPU) {

@@ -192,15 +192,14 @@ vkr_internal String8 vkr_mesh_loader_gltf_resolve_relative_texture_uri(
       file_path_join(info->load_allocator, info->source_dir, uri);
   String8 assets_candidate =
       file_path_join(info->load_allocator, string8_lit("assets"), uri);
+  String8 assets_textures_uri_candidate =
+      file_path_join(info->load_allocator, string8_lit("assets/textures"), uri);
   String8 basename = vkr_mesh_loader_gltf_basename_view(uri);
-  String8 assets_textures_candidate =
+  String8 assets_textures_basename_candidate =
       basename.length > 0
           ? file_path_join(info->load_allocator, string8_lit("assets/textures"),
                            basename)
-          : (String8){0};
-  bool8_t has_distinct_assets_textures_candidate =
-      assets_textures_candidate.length > 0 &&
-      !string8_equals(&assets_candidate, &assets_textures_candidate);
+          : assets_textures_uri_candidate;
 
   if (vkr_mesh_loader_gltf_find_existing_texture_file(
           info->load_allocator, source_candidate, out_existing_path)) {
@@ -212,28 +211,31 @@ vkr_internal String8 vkr_mesh_loader_gltf_resolve_relative_texture_uri(
     *out_found = true_v;
     return assets_candidate;
   }
-  if (has_distinct_assets_textures_candidate &&
-      vkr_mesh_loader_gltf_find_existing_texture_file(
-          info->load_allocator, assets_textures_candidate, out_existing_path)) {
+  if (vkr_mesh_loader_gltf_find_existing_texture_file(
+          info->load_allocator, assets_textures_uri_candidate,
+          out_existing_path)) {
     *out_found = true_v;
-    return assets_textures_candidate;
+    return assets_textures_uri_candidate;
+  }
+  if (!string8_equals(&assets_textures_uri_candidate,
+                      &assets_textures_basename_candidate) &&
+      vkr_mesh_loader_gltf_find_existing_texture_file(
+          info->load_allocator, assets_textures_basename_candidate,
+          out_existing_path)) {
+    *out_found = true_v;
+    return assets_textures_basename_candidate;
   }
 
   if (log_missing) {
-    if (has_distinct_assets_textures_candidate) {
-      log_warn("MeshLoader(glTF): texture '%.*s' not found; tried '%.*s', "
-               "'%.*s', '%.*s'",
-               (int32_t)uri.length, uri.str, (int32_t)source_candidate.length,
-               source_candidate.str, (int32_t)assets_candidate.length,
-               assets_candidate.str, (int32_t)assets_textures_candidate.length,
-               assets_textures_candidate.str);
-    } else {
-      log_warn(
-          "MeshLoader(glTF): texture '%.*s' not found; tried '%.*s', '%.*s'",
-          (int32_t)uri.length, uri.str, (int32_t)source_candidate.length,
-          source_candidate.str, (int32_t)assets_candidate.length,
-          assets_candidate.str);
-    }
+    log_warn("MeshLoader(glTF): texture '%.*s' not found; tried '%.*s', "
+             "'%.*s', '%.*s', '%.*s'",
+             (int32_t)uri.length, uri.str, (int32_t)source_candidate.length,
+             source_candidate.str, (int32_t)assets_candidate.length,
+             assets_candidate.str,
+             (int32_t)assets_textures_uri_candidate.length,
+             assets_textures_uri_candidate.str,
+             (int32_t)assets_textures_basename_candidate.length,
+             assets_textures_basename_candidate.str);
   }
 
   return source_candidate;
@@ -390,10 +392,24 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
   }
 
   const cgltf_pbr_metallic_roughness *pbr = &material->pbr_metallic_roughness;
+  const cgltf_pbr_specular_glossiness *specular_glossiness =
+      &material->pbr_specular_glossiness;
+  const cgltf_texture_view *base_color_texture_view = &pbr->base_color_texture;
+  const cgltf_texture_view *metallic_roughness_texture_view =
+      &pbr->metallic_roughness_texture;
   Vec4 base_color = vec4_new(1.0f, 1.0f, 1.0f, 1.0f);
   float32_t metallic = 1.0f;
   float32_t roughness = 1.0f;
-  if (material->has_pbr_metallic_roughness) {
+  if (material->has_pbr_specular_glossiness) {
+    base_color = vec4_new(specular_glossiness->diffuse_factor[0],
+                          specular_glossiness->diffuse_factor[1],
+                          specular_glossiness->diffuse_factor[2],
+                          specular_glossiness->diffuse_factor[3]);
+    metallic = 0.0f;
+    roughness = 1.0f - (float32_t)specular_glossiness->glossiness_factor;
+    base_color_texture_view = &specular_glossiness->diffuse_texture;
+    metallic_roughness_texture_view = NULL;
+  } else if (material->has_pbr_metallic_roughness) {
     base_color = vec4_new(pbr->base_color_factor[0], pbr->base_color_factor[1],
                           pbr->base_color_factor[2], pbr->base_color_factor[3]);
     metallic = (float32_t)pbr->metallic_factor;
@@ -425,11 +441,11 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_write_material_file(
   String8 normal_texture = {0};
   String8 emissive_texture = {0};
 
-  if (!vkr_mesh_loader_gltf_resolve_texture_path(info, &pbr->base_color_texture,
+  if (!vkr_mesh_loader_gltf_resolve_texture_path(info, base_color_texture_view,
                                                  "cs=srgb&tc=color_srgb",
                                                  &base_color_texture) ||
       !vkr_mesh_loader_gltf_resolve_texture_path(
-          info, &pbr->metallic_roughness_texture, "tc=data_mask",
+          info, metallic_roughness_texture_view, "tc=data_mask",
           &metallic_roughness_texture) ||
       !vkr_mesh_loader_gltf_resolve_texture_path(
           info, &material->occlusion_texture, "tc=data_mask",
@@ -733,6 +749,12 @@ vkr_internal bool8_t vkr_mesh_loader_gltf_emit_primitive(
     Vec3 world_tangent = vkr_mesh_loader_gltf_transform_direction(
         normal_matrix, vec3_new(tangent.x, tangent.y, tangent.z),
         vec3_new(1.0f, 0.0f, 0.0f));
+
+    if (texcoord_accessor) {
+      // glTF uses an upper-left texture origin; VKR's 2D image paths store
+      // vertically flipped rows and therefore use a bottom-left origin.
+      texcoord.y = 1.0f - texcoord.y;
+    }
 
     vertices[i].position = vkr_vertex_pack_vec3(world_position);
     vertices[i].normal = vkr_vertex_pack_vec3(world_normal);

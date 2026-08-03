@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-07-31
+updated: 2026-08-03
 authority: design
 ---
 # PBR Material System Design (Simplified + Implementation-Accurate)
@@ -29,7 +29,8 @@ It replaces older draft content that described APIs/layouts not present in the c
 ### Out of scope (v1)
 
 1. Image-based lighting (irradiance/prefilter cubemaps, BRDF LUT).
-2. Clearcoat/transmission/specular-glossiness extensions.
+2. Clearcoat/transmission and full specular-glossiness shading. The glTF
+   importer implements only a diffuse-compatible specular-glossiness conversion.
 3. Separate PBR-only material subsystem.
 
 ## Canonical Data Model
@@ -163,6 +164,12 @@ Source of truth: `lib/src/renderer/resources/loaders/mesh_loader_gltf.c`.
 - glTF alpha mode -> `alpha_mode`
 - glTF alpha cutoff -> `alpha_cutoff` (mask defaults to 0.5 if missing)
 
+Legacy `KHR_materials_pbrSpecularGlossiness` compatibility maps
+`diffuseFactor`/`diffuseTexture` to base color, uses `metallic = 0`, and maps
+scalar glossiness to `roughness = 1 - glossiness`. Its packed RGB-specular and
+alpha-glossiness texture is not compatible with the current G-roughness/
+B-metallic texture contract and is intentionally not bound.
+
 ### Texture path mapping
 
 Generated material files encode texture intent directly in path queries:
@@ -170,6 +177,10 @@ Generated material files encode texture intent directly in path queries:
 - Base color/emissive: `cs=srgb&tc=color_srgb`
 - Metallic-roughness/occlusion: `tc=data_mask`
 - Normal: `tc=normal_rg`
+
+External glTF URIs retain their nested path beneath `assets/textures/` when the
+source or its `.vkt` sidecar exists there; basename flattening is only a final
+compatibility fallback.
 
 ## Shader Contract (`pbr.world`)
 

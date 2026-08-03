@@ -75,7 +75,7 @@ owning document status in the same change.
 | [render-graph-schema.json](rendering/render-graph-schema.json) | — | JSON schema for `assets/render_graphs/*.rendergraph.json` |
 | [stateless_renderer/stateless_renderer_spec.md](rendering/stateless_renderer/stateless_renderer_spec.md) | partial | Packet API design; see ADR-004 for the real boundary |
 | [pipeline-layout-reflection-and-cache-spec.md](rendering/pipeline-layout-reflection-and-cache-spec.md) | partial | Reflection-driven pipeline layout and cache |
-| [pbr-material-system-design.md](rendering/pbr-material-system-design.md) | implemented | Metallic-roughness PBR materials and texture slots |
+| [pbr-material-system-design.md](rendering/pbr-material-system-design.md) | implemented | Metallic-roughness PBR materials, texture slots, and legacy diffuse compatibility |
 | [texture-format-and-colorspace-design.md](rendering/texture-format-and-colorspace-design.md) | implemented | sRGB vs linear UNORM format selection |
 | [cascading-shadow-mapping-design.md](rendering/cascading-shadow-mapping-design.md) | partial | CSM ships; historical view/layer integration examples remain |
 | [csm/cascade-coverage-spec.md](rendering/csm/cascade-coverage-spec.md) | partial | Cascade policy ships; debug-mode validation remains unchecked |
@@ -90,7 +90,7 @@ owning document status in the same change.
 
 | Document | Status | Purpose |
 |---|---|---|
-| [gltf-loader-design.md](assets/gltf-loader-design.md) | partial | glTF import ships; material conversion has named gaps |
+| [gltf-loader-design.md](assets/gltf-loader-design.md) | partial | glTF import ships; nested texture resolution, UV orientation, and partial legacy material conversion are documented |
 | [texture-compression-policy/SPEC.md](assets/texture-compression-policy/SPEC.md) | implemented | Capability-driven `.vkt` policy with transcodable `NORMAL_RG` fallbacks |
 | [texture-compression-vkt-ktx2-uastc-spec.md](assets/texture-compression-vkt-ktx2-uastc-spec.md) | partial | `.vkt` via KTX2 + Basis Universal UASTC |
 | [texture-compression-vkt-ktx2-uastc-implementation-tracker.md](assets/texture-compression-vkt-ktx2-uastc-implementation-tracker.md) | implemented | Completed implementation tracker, including normal-map fallback hardening |
