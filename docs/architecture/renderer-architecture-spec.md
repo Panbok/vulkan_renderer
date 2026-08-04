@@ -1,14 +1,16 @@
 ---
 status: implemented
-updated: 2026-08-03
+updated: 2026-08-04
 authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
 
 **Document status:** Reviewed against the working tree on 2026-07-31; P2
 production-reference record corrected on 2026-08-01, harness Phases 3-6 status
-recorded on 2026-08-02, and nested glTF texture/specular-glossiness diffuse
-compatibility recorded on 2026-08-03.
+recorded on 2026-08-02, nested glTF texture/specular-glossiness diffuse
+compatibility recorded on 2026-08-03, and HDR environment/IBL plus tonemap
+activation recorded on 2026-08-03 with seam-safe cube baking corrected on
+2026-08-04.
 **Scope:** Renderer architecture, implemented features, CPU/GPU memory, data
 transfer, synchronization, known issues, and recommended direction.
 **Audience:** Contributors and reviewers.
@@ -27,7 +29,8 @@ Its strongest implemented work is architectural: a public frontend/backend
 boundary, packet-based frame submission, a JSON-authored render graph, SPIR-V
 reflection for descriptor and vertex layouts, explicit allocator families,
 asynchronous CPU resource preparation, an ECS scene model, editor rendering,
-picking, CSM, text, glTF, and a KTX2/UASTC asset pipeline.
+picking, CSM, text, glTF, a KTX2/UASTC asset pipeline, and a half-float HDR
+environment/IBL path with tonemapped presentation.
 
 It is beyond tutorial scale, but several claims in the earlier version of this
 document overstated how completely those systems are integrated:
@@ -129,7 +132,8 @@ a zero-side-effect rejection.
 
 ### 3.2 Packet-based submission
 
-`VkrRenderPacket` version 2 contains frame information, globals, and optional
+`VkrRenderPacket` version 3 contains frame information, globals (including
+manual HDR exposure), and optional
 world, shadow, skybox, UI, editor, picking, text-update, and debug payloads.
 Important properties are implemented:
 
@@ -168,12 +172,13 @@ Implemented graph capabilities:
 - CPU timing and optional buffered GPU timestamp results;
 - live/peak graph-resource statistics.
 
-The source JSON contains seven resource declarations and eleven pass
-declarations. Conditions gate four of the resources: `scene_color`/`scene_depth`
-on `editor_enabled`, and `picking_color`/`picking_depth` on `picking_pending`, so
-a frame that neither uses the editor nor picks realizes none of them. The
-fullscreen/editor variants are alternatives, not additive passes, and the
-four-cascade shadow repeat expands at build time.
+The source JSON contains eight resource declarations and twelve pass
+declarations. Conditions gate five resources: `scene_color`/`scene_depth` on
+`editor_enabled`, `hdr_scene_color` on `!editor_enabled`, and
+`picking_color`/`picking_depth` on `picking_pending`. The fullscreen/editor
+variants are alternatives, not additive passes; fullscreen world/sky feed the
+tonemap pass while editor world/sky feed viewport composition. The four-cascade
+shadow repeat expands at build time.
 
 #### Synchronization boundary
 
@@ -203,10 +208,10 @@ Remaining boundaries:
 
 The graph is also not the sole authority over current GPU work. Picking now
 uses graph-owned attachments and a separately declared transfer read for its
-pixel copy. The IBL executor still invokes helpers that create targets and
-record several graphics passes; those internal resources and accesses are not
-declared in the JSON graph. This must be fixed before graph inference can be
-treated as a correctness guarantee for the whole frame.
+pixel copy. The IBL executor still records several prepared graphics passes
+whose internal resources and accesses are not declared in the JSON graph. This
+must be fixed before graph inference can be treated as a correctness guarantee
+for the whole frame.
 
 `VKR_RG_RESOURCE_FLAG_TRANSIENT` currently means graph-owned/reusable rather
 than “freed after each frame”: resources survive between realizations and are
@@ -278,10 +283,43 @@ convention-specific tests now agree.
 
 Rasterization preserves the authored counter-clockwise front-face convention
 used by glTF and VKR-generated geometry. Ordinary opaque materials cull back
-faces, while skybox and IBL capture pipelines cull front faces to render the
-inside of their outward-wound cubes. The skybox pass runs before world rendering
-and disables depth test/write so it contributes color without occluding geometry
-farther than the finite cube mesh.
+faces, while the skybox culls front faces to render the inside of its
+outward-wound cube. IBL cube bakes use a fullscreen plane with culling and depth
+disabled. The skybox pass runs before world rendering and disables depth
+test/write so it contributes color without occluding geometry farther than the
+finite cube mesh.
+
+### 3.7 HDR environment, IBL, and presentation
+
+The default world environment is the 4096×2048 Citrus Orchard Radiance HDR.
+Worker-side content probing decodes finite 2:1 HDR data without vertical flip,
+clamps it into binary16 range, and prepares an explicit RGBA16F payload without
+using the legacy `.vkt` cache. Exact backend capability results gate both the
+2D upload and cube-compatible sampled/color-attachment combinations; failure
+keeps the six-face LDR cubemap active.
+
+The runtime projects the source into a 1024², eleven-mip RGBA16F cubemap, then
+bakes a 64² irradiance cubemap, a 256² full-mip GGX prefilter, and a 128² BRDF
+LUT in RGBA16F. Source conversion uses explicit LOD 0 with wrapped equirect U,
+and all three cube bakes reconstruct the Vulkan `+X/-X/+Y/-Y/+Z/-Z` direction
+from fullscreen UV through one shared mapping. Face and roughness/mip controls
+are push constants so each recorded draw retains its own values until GPU
+execution. The prefilter selects source mips from the GGX light-direction PDF
+and texel solid angle. Pipelines, compatible render passes, images, descriptor
+state, and face/mip targets are prepared before the executor records; explicit
+upload/write/read barriers cover the resources that remain outside graph
+authority.
+
+Fullscreen sky/world rendering targets graph-owned `hdr_scene_color` in
+RGBA16F. `VkrFrameGlobals.exposure` carries finite, non-negative manual
+exposure (default `0.30`) through packet validation to
+`Post.Tonemap.Fullscreen`; the pass applies it before an ACES-fitted curve into
+the sRGB present target. Editor viewport display and canonical RGBA16F
+scene-color capture apply the same exposure and curve. Scene environments use
+a tagged cubemap/equirect source with all-or-fallback activation, while local
+reflection probes remain cubemap-sourced. PBR materials use constant ambient
+only when IBL is disabled, avoiding two contributions for the same environment
+illumination.
 
 ---
 
@@ -298,7 +336,7 @@ farther than the finite cube mesh.
 | Renderer automation harness | Implemented | Strict cases/profiles, deterministic cameras, isolated repetitions, dependency-resolved boot, authoritative evidence policies, metric/pass/event aggregation, atomic artifacts, direct and auxiliary captures, canonical comparison/diffs, separated `autotest`, guarded immutable baselines, and target-neutral windowed or true surface-free offscreen execution with actual configuration provenance |
 | Cascaded shadow maps | Implemented | Four-cascade default with debug/fit controls |
 | PBR materials | Implemented, evolving | Metallic-roughness and texture slots present; legacy specular-glossiness receives diffuse-only conversion |
-| IBL | In progress | Runtime bake paths and scene/probe model present; bake work still undeclared to the graph, output visibility now barriered explicitly |
+| IBL | Implemented, partial integration | HDR/cubemap sources, prepared RGBA16F environment/irradiance/prefilter/BRDF bakes, and scene/probe ownership ship; bake work remains undeclared to the graph and explicitly barriered |
 | glTF and scene loading | Implemented | CPU async pipeline; nested `assets/textures/` URIs and sidecars resolve without flattening; upper-left glTF UVs lower once to VKR's bottom-left 2D texture convention; frame-path uploads measured non-blocking |
 | KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; every selector result is transcodable |
 | Editor viewport and picking | Implemented | Picking fully declared in the render graph; readback usually deferred but ring wrap can block |
@@ -310,7 +348,7 @@ farther than the finite cube mesh.
 | Compute dispatch | Not exercised | “compute” JSON passes currently orchestrate graphics/CPU work |
 | Device-memory suballocation | Absent, measured | Still one `VkDeviceMemory` per buffer/image/readback buffer; allocation-count and per-type telemetry now exists to size a pool |
 | Bindless/descriptor indexing | Absent | Per-material descriptor binding model |
-| HDR/tonemap/post chain | Absent | Post domain is reserved |
+| HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-carried manual exposure (default `0.30`), ACES-fitted tonemap, and exposure-equivalent canonical HDR capture; automatic exposure and additional post effects are absent |
 | Shader hot reload | Absent | Build-time shader compilation only |
 
 ---
@@ -592,9 +630,11 @@ required gate — see §10.
    work was built to express, and one the old layout-pair model could not have
    represented.
 
-   The genuine remaining gap is unchanged: the bake still creates render targets
-   and records passes the graph cannot see. Closing that means moving the bake
-   in, which stays out of scope.
+   The genuine remaining gap is unchanged: the bake records prepared render
+   targets and passes the graph cannot see. Pipelines, images, descriptors, and
+   face/mip targets are no longer lazily created in the executor, but closing
+   graph authority still means importing or declaring those persistent
+   resources and passes.
 7. ~~**Reflect and validate uniform members.**~~ **Done 2026-07-31.**
    `vulkan_reflection_collect_uniform_blocks` populates what was previously
    hardcoded to zero, and `vulkan_shader_validate_uniform_layout` cross-checks
@@ -730,7 +770,8 @@ required gate — see §10.
 
 ### P3 — Feature growth after measurement
 
-- HDR scene color, tonemap, and post-processing;
+- automatic exposure, bloom, and post-processing beyond manual exposure plus
+  the initial ACES tonemap;
 - real compute dispatch followed by GPU culling/compaction;
 - clustered/tiled light assignment and a storage-buffer light list;
 - shader hot reload with pipeline/descriptor invalidation rules;
@@ -795,6 +836,12 @@ following checks were rerun:
 | Renderer harness phase 4 | CPU suite and Debug build passed; a fixed asynchronous capture ring and request-specific exact-slice graph overlay produced canonical final color, swapchain/editor depth, shadow-layer, scene-color, and picking-ID artifacts. Two isolated non-editor Sponza snapshot processes had bit-identical data/preview digests; an editor replay resolved depth to `scene_depth`; Debug validation logs were clean and the five-case backend matrix passed. These diagnostic dirty-tree runs are not performance or baseline evidence; exact artifacts and limitations are recorded in [phase-4 verification](../tooling/renderer-harness-phase4-verification.md) |
 | Renderer harness phase 5 | CPU suite and Debug build passed; six logical Sponza debug channels replayed independently with distinct canonical digests and clean validation logs. Canonical color/depth/ID comparison, diff reporting, aggregate summary transport, primary-plus-snapshot autotest separation, no-mutation proposals, digest confirmation, immutable generations, and atomic current-pointer publication are implemented. The real baseline tree was not mutated; successful acceptance was verified under an isolated temporary repository root. Exact artifacts and limitations are recorded in [phase-5 verification](../tooling/renderer-harness-phase5-verification.md) |
 | Renderer harness phase 6 | CPU suite and Debug build passed; the five-case backend matrix passed. Surface-free two- and three-image offscreen targets completed explicit recreation and validation-clean Sponza runs. A three-image windowed counterpart exercised swapchain recreation; all 80 deterministic work metrics matched across targets, and canonical final-color/depth digests were byte-identical. Exact artifacts and local MoltenVK limitations are recorded in [phase-6 verification](../tooling/renderer-harness-phase6-verification.md) |
+| HDR environment/IBL deterministic and build gates | `./build_test.sh`, `./build.sh Debug`, `./build_release.sh`, `./validate_pipeline_cache.sh`, and all five multithreaded-backend matrix configurations passed; focused tests cover RGBA16F metadata/lowering, binary16 boundaries, HDR orientation/aspect/cache bypass/cleanup, scene source alternatives, cube derivation/direction mapping, and GGX source LOD |
+| HDR validation snapshot | Debug Apple M1 Pro/MoltenVK, offscreen 640×480 with two images and validation enabled: full HDR upload/conversion/convolution/BRDF/skybox/world/tonemap/capture/shutdown path passed with no VUID/error/fatal diagnostics; `scene_color` captured `R16G16B16A16_SFLOAT`; both local probes reached ready. Report `20260803T205636.755Z-01405b`, digest `sha256:09b1ab3b0cd8349eb1f2f05ea982f61cb7215cf053351eee063e6de21b2b191e` |
+| HDR cubemap seam correction | Debug Apple M1 Pro/MoltenVK, offscreen 960×720 with two images and validation enabled: the camera points exactly through the `+X/+Y/+Z` cube corner, and the final Citrus Orchard capture is continuous across all three faces with no VUID/error/fatal diagnostics. CPU tests cover all 12 shared edges and all 8 corners. Report `20260803T214124.246Z-0172b1`, digest `sha256:a5f0c7a3fff4d14d2287da68a9a4515dc02587afaa67fde22d0ab10a532b1afb` |
+| HDR Release boot observation | Five Release repetitions at 2560×1440, hidden immediate-present window, three images, isolated warm cache: all passed with exact GPU totals and zero upload fence/queue/device-idle waits. Non-authoritative because the local profile permits dirty provenance and warmup was unstable; GPU timing was disabled, so this is not a speed result. Report `20260803T205253.704Z-013cad`, digest `sha256:00db04dd1bec14efb4df09674315de961fb82e8c6ce88ebaff0c7c50fa39d455` |
+| HDR manual-exposure equivalence | Debug Apple M1 Pro/MoltenVK local offscreen replay captured `final_color` plus canonical RGBA16F `scene_color` at exposure `0.30`; their 1,228,800 byte values differ by mean `0.0163` and at most one quantization step. No VUID/error/fatal diagnostics. Report `20260804T090320.491Z-00c100`, digest `sha256:4de538b3c698428afe37b9c5f5f9dae431523765b0c4e5b76ed0e3eba3f176e2` |
+| Bistro HDR baseline safety | Final exposure `0.30`/sun `0.75` run completed all five fixed views with clean validation logs; full-resolution inspection found continuous sky and bright-luma coverage of `0.05%-1.05%`, down from `6.44%-21.38%` before calibration. Report `20260804T085151.570Z-00b294`, digest `sha256:8ebe00c3a2c596482049b9dbdb0be523cbd5790b60d2df65675e233c57bab678`. The pre-seam proposal is obsolete; no baseline was proposed or accepted |
 | `vkr_frustum` production references | Application world-payload construction creates camera and cascade frustums and classifies submeshes against them |
 | `VkrDrawBatcher` production references | None outside its module/tests/docs; P2 batching instead uses visibility and pass-local batch structures |
 | `vkr_indirect_draw_alloc` callers | The shared pass indirect-submission path allocates production world/shadow command ranges |
@@ -802,7 +849,7 @@ following checks were rerun:
 | VMA | Not present |
 | Dynamic rendering | Not present |
 | Descriptor indexing/bindless | Not enabled |
-| Uniform block reflection output | Populated; validated against all 13 `.shadercfg` files by `reflection_pipeline_test` |
+| Uniform block reflection output | Populated; validated against all 16 `.shadercfg` files by `reflection_pipeline_test` |
 | `vkr_renderer_transition_texture_layout` callers | Replaced by `vkr_renderer_image_barrier`; the layout-pair table survives only for upload/copy paths in `vulkan_image.c` |
 
 The CPU suite and one MoltenVK smoke configuration do not replace

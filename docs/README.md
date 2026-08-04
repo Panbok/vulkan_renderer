@@ -66,6 +66,7 @@ owning document status in the same change.
 | [013](architecture/adr/013-draw-submission-strategy.md) | partial | Measured draw submission — culling, instancing, MDI; native Vulkan validation pending |
 | [014](architecture/adr/014-offscreen-present-target.md) | implemented | Present target seam decoupling the frame path from the swapchain |
 | [015](architecture/adr/015-metrics-module.md) | implemented | Centralized metrics registry with pre-registered slots |
+| [016](architecture/adr/016-hdr-environment-format.md) | implemented | Equirectangular HDR delivery, cubemap runtime |
 
 ## Rendering
 
@@ -82,6 +83,9 @@ owning document status in the same change.
 | [csm/confirmed-assumptions.md](rendering/csm/confirmed-assumptions.md) | investigation | Verified CSM assumptions |
 | [stable-csm-spec.md](rendering/stable-csm-spec.md) | proposed | Texel-snapped stable directional CSM |
 | [lighting-system-design-plan.md](rendering/lighting-system-design-plan.md) | partial | Lighting across scene, ECS, and picking |
+| [bistro-baseline-shading-investigation.md](rendering/bistro-baseline-shading-investigation.md) | investigation | Why the Bistro baseline renders wrong: missing sun, spec-gloss loss, no tonemap, LDR IBL, opaque glass |
+| [shadow-transmission-transparency-improvements.md](rendering/shadow-transmission-transparency-improvements.md) | proposed | SDSM cascade fitting, PCF early-out, glTF transmission, and transparent sort stability |
+| [hdr-environment-ibl-spec.md](rendering/hdr-environment-ibl-spec.md) | implemented | HDR equirect loading, equirect→cubemap bake, half-float IBL storage, prefilter mip fix, and tonemap activation |
 | [uniform-buffer-std430-migration.md](rendering/uniform-buffer-std430-migration.md) | partial | DX cbuffer → std140/std430 migration; phase 0 done |
 | [render-pass-and-target-improvements.md](rendering/render-pass-and-target-improvements.md) | proposed | Render pass and target system improvements |
 | [terrain-rendering-design.md](rendering/terrain-rendering-design.md) | proposed | Terrain rendering; no code exists |

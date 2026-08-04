@@ -39,6 +39,7 @@ Considered → Revisit When**.
 | [ADR-013](013-draw-submission-strategy.md) | Measured draw submission: culling, instancing, and MDI | **Accepted (partial)** |
 | [ADR-014](014-offscreen-present-target.md) | Present target seam for offscreen rendering | Accepted |
 | [ADR-015](015-metrics-module.md) | Centralized metrics registry with pre-registered slots | Accepted |
+| [ADR-016](016-hdr-environment-format.md) | Equirectangular HDR delivery, cubemap runtime | Accepted |
 
 ## Relationship to the Specification
 
