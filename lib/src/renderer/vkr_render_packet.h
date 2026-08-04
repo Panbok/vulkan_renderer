@@ -11,7 +11,10 @@
 #include "renderer/vkr_renderer.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 2u
+#define VKR_RENDER_PACKET_VERSION 3u
+
+/** Default manual camera exposure for HDR scene presentation. */
+#define VKR_DEFAULT_EXPOSURE 0.30f
 
 /**
  * @brief Alias for mesh handles used by stateless draw items.
@@ -49,6 +52,7 @@ typedef struct VkrFrameGlobals {
   Mat4 projection;
   Vec3 view_position;
   Vec4 ambient_color;
+  float32_t exposure;
   uint32_t render_mode;
 } VkrFrameGlobals;
 

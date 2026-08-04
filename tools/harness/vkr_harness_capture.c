@@ -67,6 +67,8 @@ static const char *vkr_harness_capture_format_name(VkrTextureFormat format) {
     return "B8G8R8A8_UNORM";
   case VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB:
     return "B8G8R8A8_SRGB";
+  case VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT:
+    return "R16G16B16A16_SFLOAT";
   case VKR_TEXTURE_FORMAT_D32_SFLOAT:
     return "D32_SFLOAT";
   case VKR_TEXTURE_FORMAT_D16_UNORM:
@@ -145,14 +147,67 @@ bool8_t vkr_harness_capture_png_write(const char *path, const uint8_t *rgba,
   return ok;
 }
 
+static float32_t vkr_harness_capture_half_to_float(uint16_t half) {
+  const uint32_t sign = half >> 15u;
+  const uint32_t exponent = (half >> 10u) & 0x1fu;
+  const uint32_t mantissa = half & 0x3ffu;
+  float32_t value = 0.0f;
+  if (exponent == 0u) {
+    value = (float32_t)mantissa * (1.0f / 16777216.0f);
+  } else if (exponent < 31u) {
+    value = (1.0f + (float32_t)mantissa * (1.0f / 1024.0f)) *
+            vkr_pow_f32(2.0f, (float32_t)((int32_t)exponent - 15));
+  }
+  return sign ? -value : value;
+}
+
+static float32_t vkr_harness_capture_aces(float32_t value) {
+  const float32_t nonnegative = Max(value, 0.0f);
+  return Clamp((nonnegative * (2.51f * nonnegative + 0.03f)) /
+                   (nonnegative * (2.43f * nonnegative + 0.59f) + 0.14f),
+               0.0f, 1.0f);
+}
+
+static uint8_t vkr_harness_capture_linear_to_srgb8(float32_t value,
+                                                   float32_t exposure) {
+  const float32_t linear = vkr_harness_capture_aces(value * exposure);
+  const float32_t srgb =
+      linear <= 0.0031308f ? linear * 12.92f
+                           : 1.055f * vkr_pow_f32(linear, 1.0f / 2.4f) - 0.055f;
+  return (uint8_t)(Clamp(srgb, 0.0f, 1.0f) * 255.0f + 0.5f);
+}
+
 static void vkr_harness_capture_color_rgba(const VkrCaptureItemResult *item,
                                            uint8_t *rgba) {
   const bool8_t bgra = item->format == VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM ||
                        item->format == VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB;
+  const bool8_t hdr = item->format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
   for (uint32_t y = 0; y < item->height; ++y) {
     const uint8_t *source = vkr_harness_capture_row(item, y);
     uint8_t *target = rgba + (uint64_t)y * item->width * 4u;
     for (uint32_t x = 0; x < item->width; ++x) {
+      if (hdr) {
+        const uint8_t *texel = source + (uint64_t)x * 8u;
+        target[x * 4u + 0u] = vkr_harness_capture_linear_to_srgb8(
+            vkr_harness_capture_half_to_float(
+                vkr_harness_capture_read_u16(texel + 0u)),
+            item->display_exposure);
+        target[x * 4u + 1u] = vkr_harness_capture_linear_to_srgb8(
+            vkr_harness_capture_half_to_float(
+                vkr_harness_capture_read_u16(texel + 2u)),
+            item->display_exposure);
+        target[x * 4u + 2u] = vkr_harness_capture_linear_to_srgb8(
+            vkr_harness_capture_half_to_float(
+                vkr_harness_capture_read_u16(texel + 4u)),
+            item->display_exposure);
+        target[x * 4u + 3u] =
+            (uint8_t)(Clamp(vkr_harness_capture_half_to_float(
+                                vkr_harness_capture_read_u16(texel + 6u)),
+                            0.0f, 1.0f) *
+                          255.0f +
+                      0.5f);
+        continue;
+      }
       target[x * 4u + 0u] = source[x * 4u + (bgra ? 2u : 0u)];
       target[x * 4u + 1u] = source[x * 4u + 1u];
       target[x * 4u + 2u] = source[x * 4u + (bgra ? 0u : 2u)];
@@ -276,7 +331,7 @@ static void vkr_harness_capture_canonical_u32(const VkrCaptureItemResult *item,
  */
 static bool8_t vkr_harness_capture_write_metadata(
     const char *path, const VkrHarnessCaptureResult *capture,
-    float32_t preview_min, float32_t preview_max) {
+    float32_t display_exposure, float32_t preview_min, float32_t preview_max) {
   VkrJsonFileWriter file = {0};
   if (!vkr_json_file_writer_begin(
           &file, string8_create_from_cstr((const uint8_t *)path,
@@ -308,6 +363,7 @@ static bool8_t vkr_harness_capture_write_metadata(
                                 capture->source_row_pitch) &&
       vkr_harness_json_emit_u64(writer, "mip", capture->mip) &&
       vkr_harness_json_emit_u64(writer, "layer", capture->layer) &&
+      vkr_harness_json_emit_f64(writer, "display_exposure", display_exposure) &&
       vkr_harness_json_emit_u64(writer, "source_frame_index",
                                 capture->source_frame_index) &&
       vkr_harness_json_emit_u64(writer, "submit_serial",
@@ -464,6 +520,7 @@ bool8_t vkr_harness_capture_publish(
       ok = vkr_harness_sha256_file(data_path, capture->data_sha256) &&
            vkr_harness_sha256_file(png_path, capture->preview_sha256) &&
            vkr_harness_capture_write_metadata(metadata_path, capture,
+                                              item->display_exposure,
                                               preview_min, preview_max) &&
            vkr_harness_sha256_file(metadata_path, capture->metadata_sha256) &&
            vkr_harness_report_add_artifact(

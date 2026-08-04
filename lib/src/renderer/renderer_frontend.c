@@ -10,6 +10,7 @@
 #include "renderer/passes/vkr_pass_picking.h"
 #include "renderer/passes/vkr_pass_shadow.h"
 #include "renderer/passes/vkr_pass_skybox.h"
+#include "renderer/passes/vkr_pass_tonemap.h"
 #include "renderer/passes/vkr_pass_ui.h"
 #include "renderer/passes/vkr_pass_world.h"
 #include "renderer/resources/loaders/material_loader.h"
@@ -25,9 +26,11 @@
 #include "renderer/vkr_capture.h"
 #include "renderer/vkr_render_packet.h"
 #include "renderer/vkr_renderer.h"
+#include "renderer/vkr_renderer_metrics.h"
 #include "renderer/vkr_rg_json.h"
 #include "renderer/vulkan/vulkan_backend.h"
 
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 
@@ -404,6 +407,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->camera_controller = (VkrCameraController){0};
   renderer->globals = (VkrGlobalMaterialState){
       .ambient_color = vec4_new(0.1, 0.1, 0.1, 1.0),
+      .exposure = VKR_DEFAULT_EXPOSURE,
       .render_mode = VKR_RENDER_MODE_DEFAULT,
   };
   renderer->frame_metrics = (VkrRendererFrameMetrics){0};
@@ -2031,6 +2035,12 @@ vkr_internal VkrRendererError vkr_renderer_validate_packet(
         "frame.window_width", "frame dimensions must be non-zero");
   }
 
+  if (!isfinite(packet->globals.exposure) || packet->globals.exposure < 0.0f) {
+    return vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+        "globals.exposure", "exposure must be finite and non-negative");
+  }
+
   const VkrWorldPassPayload *world = packet->world;
   if (world) {
     if (world->instance_count > 0 && !world->instances) {
@@ -2296,6 +2306,7 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
       .ui_view = mat4_identity(),
       .ambient_color = packet->globals.ambient_color,
       .view_position = packet->globals.view_position,
+      .exposure = packet->globals.exposure,
       .render_mode = (VkrRenderMode)packet->globals.render_mode,
   };
 
@@ -2746,6 +2757,11 @@ bool32_t vkr_renderer_systems_initialize(
     return false_v;
   }
   rf->subsystem_plan = resolved_plan;
+  if (metrics_producers) {
+    rf->hdr_decode_metrics = metrics_producers->hdr_decode;
+    rf->ibl_conversion_metrics = metrics_producers->ibl_conversion;
+    rf->ibl_convolution_metrics = metrics_producers->ibl_convolution;
+  }
 #if VKR_METRICS_ENABLED
   const float64_t systems_start = vkr_platform_get_absolute_time();
 #endif
@@ -2802,6 +2818,7 @@ bool32_t vkr_renderer_systems_initialize(
       !vkr_pass_ibl_bake_register(&rf->rg_executor_registry) ||
       !vkr_pass_skybox_register(&rf->rg_executor_registry) ||
       !vkr_pass_world_register(&rf->rg_executor_registry) ||
+      !vkr_pass_tonemap_register(&rf->rg_executor_registry) ||
       !vkr_pass_ui_register(&rf->rg_executor_registry) ||
       !vkr_pass_editor_register(&rf->rg_executor_registry)) {
     log_fatal("Failed to register render graph pass executors");
@@ -2885,6 +2902,7 @@ bool32_t vkr_renderer_systems_initialize(
     log_fatal("Failed to initialize texture system");
     return false_v;
   }
+  rf->texture_system.hdr_decode_metrics = rf->hdr_decode_metrics;
 
   // Set default 2D texture in backend for fallback in empty sampler slots
   VkrTexture *default_tex = vkr_texture_system_get_default(&rf->texture_system);
@@ -3063,6 +3081,11 @@ bool32_t vkr_renderer_systems_initialize(
     log_error("Failed to initialize skybox system");
     renderer_frontend_destroy_loader_async_allocators(rf);
     return false_v;
+  }
+
+  if (!vkr_world_resources_prepare_default_ibl(rf, &rf->world_resources)) {
+    log_warn("Default HDR IBL preparation failed; legacy skybox fallback is "
+             "still available");
   }
 
   if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,

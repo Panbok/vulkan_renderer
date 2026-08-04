@@ -667,28 +667,12 @@ vkr_internal uint32_t vkr_rg_resolve_buffer_count(const VkrRenderGraph *graph,
 }
 
 vkr_internal uint32_t vkr_rg_format_bytes_per_pixel(VkrTextureFormat format) {
-  switch (format) {
-  case VKR_TEXTURE_FORMAT_R8_UNORM:
-    return 1;
-  case VKR_TEXTURE_FORMAT_R8G8_UNORM:
-  case VKR_TEXTURE_FORMAT_R16_SFLOAT:
-  case VKR_TEXTURE_FORMAT_D16_UNORM:
-    return 2;
-  case VKR_TEXTURE_FORMAT_R32_SFLOAT:
-  case VKR_TEXTURE_FORMAT_R32_UINT:
-  case VKR_TEXTURE_FORMAT_D32_SFLOAT:
-  case VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT:
-  case VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM:
-  case VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB:
-  case VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM:
-  case VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB:
-  case VKR_TEXTURE_FORMAT_R8G8B8A8_UINT:
-  case VKR_TEXTURE_FORMAT_R8G8B8A8_SNORM:
-  case VKR_TEXTURE_FORMAT_R8G8B8A8_SINT:
-    return 4;
-  default:
+  VkrTextureFormatInfo info = {0};
+  if (!vkr_texture_format_get_info(format, &info) || info.block_width != 1 ||
+      info.block_height != 1) {
     return 0;
   }
+  return info.bytes_per_block;
 }
 
 vkr_internal uint64_t

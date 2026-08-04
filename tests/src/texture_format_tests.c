@@ -95,6 +95,43 @@ static bool32_t test_vulkan_image_format_depth_mapping(void) {
   return true_v;
 }
 
+static bool32_t test_hdr_format_metadata_and_mapping(void) {
+  printf("  Running test_hdr_format_metadata_and_mapping...\n");
+  VkrTextureFormatInfo info = {0};
+  assert(vkr_texture_format_get_info(VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
+                                     &info));
+  assert(info.channel_count == 4u);
+  assert(info.block_width == 1u && info.block_height == 1u);
+  assert(info.bytes_per_block == 8u);
+  assert(!info.is_block_compressed && !info.is_depth_stencil);
+  assert(vkr_texture_format_region_size(VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
+                                        4u, 2u) == 64u);
+  assert(vkr_texture_format_region_size(VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
+                                        UINT32_MAX, UINT32_MAX) == 0u);
+  assert(vulkan_image_format_from_texture_format(
+             VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT) ==
+         VK_FORMAT_R16G16B16A16_SFLOAT);
+  assert(
+      vulkan_texture_format_from_image_format(VK_FORMAT_R16G16B16A16_SFLOAT) ==
+      VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT);
+  printf("  test_hdr_format_metadata_and_mapping PASSED\n");
+  return true_v;
+}
+
+static bool32_t test_compressed_format_region_sizes(void) {
+  printf("  Running test_compressed_format_region_sizes...\n");
+  assert(vkr_texture_format_region_size(VKR_TEXTURE_FORMAT_BC7_UNORM, 4u, 4u) ==
+         16u);
+  assert(vkr_texture_format_region_size(VKR_TEXTURE_FORMAT_BC7_UNORM, 5u, 5u) ==
+         64u);
+  assert(vkr_texture_format_region_size(VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM, 1u,
+                                        1u) == 16u);
+  assert(vkr_texture_format_region_size(VKR_TEXTURE_FORMAT_COUNT, 1u, 1u) ==
+         0u);
+  printf("  test_compressed_format_region_sizes PASSED\n");
+  return true_v;
+}
+
 static bool32_t test_vulkan_storage_image_usage_mapping(void) {
   printf("  Running test_vulkan_storage_image_usage_mapping...\n");
   VkrTextureUsageFlags usage = vkr_texture_usage_flags_from_bits(
@@ -147,6 +184,8 @@ bool32_t run_texture_format_tests(void) {
   ok &= test_vulkan_image_format_astc_mapping();
   ok &= test_vulkan_image_format_bc5_etc2_mapping();
   ok &= test_vulkan_image_format_depth_mapping();
+  ok &= test_hdr_format_metadata_and_mapping();
+  ok &= test_compressed_format_region_sizes();
   ok &= test_vulkan_storage_image_usage_mapping();
   ok &= test_vulkan_attachment_subresource_view_selection();
 

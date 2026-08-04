@@ -3,7 +3,7 @@
 #include "renderer/systems/vkr_texture_system.h"
 
 vkr_internal const char *vkr_texture_loader_supported_extensions[] = {
-    "png", "jpg", "jpeg", "bmp", "tga", "vkt",
+    "png", "jpg", "jpeg", "bmp", "tga", "hdr", "vkt",
 };
 
 #define VKR_TEXTURE_LOADER_SUPPORTED_EXTENSION_COUNT                           \

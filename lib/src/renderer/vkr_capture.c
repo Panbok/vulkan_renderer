@@ -17,9 +17,9 @@ static const VkrCaptureChannelDescription s_capture_channels[] = {
      VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_SRGB, "RGBA8_SRGB_PNG",
      1},
     {VKR_CAPTURE_CHANNEL_SCENE_COLOR, "scene_color", "scene_color",
-     VKR_RENDERER_SUBSYSTEM_EDITOR, VKR_CAPTURE_ASPECT_COLOR,
+     VKR_RENDERER_SUBSYSTEM_COUNT, VKR_CAPTURE_ASPECT_COLOR,
      VKR_CAPTURE_VALUE_COLOR, VKR_CAPTURE_COLOR_SPACE_SRGB, "RGBA8_SRGB_PNG",
-     1},
+     2},
     {VKR_CAPTURE_CHANNEL_DEPTH, "depth", "depth", VKR_RENDERER_SUBSYSTEM_COUNT,
      VKR_CAPTURE_ASPECT_DEPTH, VKR_CAPTURE_VALUE_DEPTH,
      VKR_CAPTURE_COLOR_SPACE_NONE, "R32_FLOAT_LE", 1},
@@ -105,16 +105,18 @@ vkr_internal VkrRendererError vkr_capture_reject(VkrValidationError *validation,
 }
 
 /**
- * `depth` is the only channel whose producer depends on configuration: the
- * editor target renders the scene into its own attachment. Resolving it here
- * keeps the reserved plan, the graph overlay, and the reported
- * `producer_resource` naming the same resource.
+ * `depth` and `scene_color` have configuration-dependent producers because the
+ * editor target renders into viewport attachments. Resolving them here keeps
+ * the reserved plan, graph overlay, and reported `producer_resource` aligned.
  */
 vkr_internal const char *
 vkr_capture_source_name(const VkrCaptureChannelDescription *channel,
                         bool8_t editor_enabled) {
   if (channel->id == VKR_CAPTURE_CHANNEL_DEPTH) {
     return editor_enabled ? "scene_depth" : "swapchain_depth";
+  }
+  if (channel->id == VKR_CAPTURE_CHANNEL_SCENE_COLOR) {
+    return editor_enabled ? "scene_color" : "hdr_scene_color";
   }
   return channel->source_name;
 }
@@ -148,6 +150,9 @@ vkr_internal VkrCaptureSourceLayout vkr_capture_resolve_source(
   case VKR_CAPTURE_CHANNEL_FINAL_COLOR:
     layout.width = packet->frame.window_width;
     layout.height = packet->frame.window_height;
+    break;
+  case VKR_CAPTURE_CHANNEL_SCENE_COLOR:
+    layout.format = VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
     break;
   case VKR_CAPTURE_CHANNEL_DEPTH:
     layout.format = vkr_renderer_present_target_format(
@@ -220,12 +225,6 @@ VkrRendererError vkr_capture_frame_reserve(RendererFrontend *rf,
                                 VKR_RENDERER_ERROR_CAPTURE_UNAVAILABLE,
                                 "capture channel needs an omitted subsystem");
     }
-    if (channel->id == VKR_CAPTURE_CHANNEL_SCENE_COLOR &&
-        !packet->frame.editor_enabled) {
-      return vkr_capture_reject(validation,
-                                VKR_RENDERER_ERROR_CAPTURE_UNAVAILABLE,
-                                "scene_color exists only in editor mode");
-    }
     /* An identifier image with no producer is an unavailable channel, never a
        transparent capture that would silently compare as "no objects". */
     if (channel->id == VKR_CAPTURE_CHANNEL_PICKING_IDS &&
@@ -264,10 +263,29 @@ VkrRendererError vkr_capture_frame_reserve(RendererFrontend *rf,
                                 "capture source has an empty extent");
     }
 
-    offset = vkr_capture_align(offset, VKR_CAPTURE_BUFFER_ALIGNMENT);
-    const uint64_t bytes_per_pixel =
-        source.format == VKR_TEXTURE_FORMAT_D16_UNORM ? 2u : 4u;
+    VkrTextureFormatInfo format_info = {0};
+    if (!vkr_texture_format_get_info(source.format, &format_info) ||
+        format_info.block_width != 1u || format_info.block_height != 1u ||
+        format_info.bytes_per_block == 0u) {
+      return vkr_capture_reject(validation,
+                                VKR_RENDERER_ERROR_CAPTURE_UNAVAILABLE,
+                                "capture source format has no linear texel "
+                                "encoding");
+    }
+
+    const uint64_t bytes_per_pixel = format_info.bytes_per_block;
     const uint64_t row_pitch = (uint64_t)source.width * bytes_per_pixel;
+    const uint64_t data_size = vkr_texture_format_region_size(
+        source.format, source.width, source.height);
+    const uint64_t aligned_offset =
+        vkr_capture_align(offset, VKR_CAPTURE_BUFFER_ALIGNMENT);
+    if (data_size == 0u || aligned_offset < offset ||
+        data_size > UINT64_MAX - aligned_offset) {
+      return vkr_capture_reject(validation,
+                                VKR_RENDERER_ERROR_CAPTURE_UNAVAILABLE,
+                                "capture source byte size overflows");
+    }
+    offset = aligned_offset;
     frame->plans[i] = (VkrCaptureBackendItemPlan){
         .result = {.channel = item->channel,
                    .width = source.width,
@@ -277,15 +295,16 @@ VkrRendererError vkr_capture_frame_reserve(RendererFrontend *rf,
                    .value_kind = channel->value_kind,
                    .color_space = channel->color_space,
                    .origin = VKR_CAPTURE_ORIGIN_TOP_LEFT,
-                   .data_size = row_pitch * source.height,
+                   .data_size = data_size,
                    .mip = item->mip,
-                   .layer = source.layer},
+                   .layer = source.layer,
+                   .display_exposure = packet->globals.exposure},
         .buffer_offset = offset};
     string_format(
         frame->plans[i].result.producer_resource,
         sizeof(frame->plans[i].result.producer_resource), "%s",
         vkr_capture_source_name(channel, packet->frame.editor_enabled));
-    offset += frame->plans[i].result.data_size;
+    offset += data_size;
   }
 
   const VkrRendererError error =

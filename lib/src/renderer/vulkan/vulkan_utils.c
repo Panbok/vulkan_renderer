@@ -372,6 +372,8 @@ VkFormat vulkan_image_format_from_texture_format(VkrTextureFormat format) {
     return VK_FORMAT_ASTC_4x4_SRGB_BLOCK;
   case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
     return VK_FORMAT_EAC_R11G11_UNORM_BLOCK;
+  case VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT:
+    return VK_FORMAT_R16G16B16A16_SFLOAT;
   case VKR_TEXTURE_FORMAT_R8_UNORM:
     return VK_FORMAT_R8_UNORM;
   case VKR_TEXTURE_FORMAT_R16_SFLOAT:
@@ -391,6 +393,46 @@ VkFormat vulkan_image_format_from_texture_format(VkrTextureFormat format) {
   default:
     log_fatal("Invalid texture format: %d", format);
     return VK_FORMAT_UNDEFINED;
+  }
+}
+
+VkrTextureFormat vulkan_texture_format_from_image_format(VkFormat format) {
+  switch (format) {
+  case VK_FORMAT_B8G8R8A8_SRGB:
+    return VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB;
+  case VK_FORMAT_B8G8R8A8_UNORM:
+    return VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM;
+  case VK_FORMAT_R8G8B8A8_SRGB:
+    return VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
+  case VK_FORMAT_R8G8B8A8_UNORM:
+    return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
+  case VK_FORMAT_BC7_UNORM_BLOCK:
+    return VKR_TEXTURE_FORMAT_BC7_UNORM;
+  case VK_FORMAT_BC7_SRGB_BLOCK:
+    return VKR_TEXTURE_FORMAT_BC7_SRGB;
+  case VK_FORMAT_BC5_UNORM_BLOCK:
+    return VKR_TEXTURE_FORMAT_BC5_UNORM;
+  case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
+    return VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM;
+  case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
+    return VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB;
+  case VK_FORMAT_ASTC_4x4_UNORM_BLOCK:
+    return VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
+  case VK_FORMAT_ASTC_4x4_SRGB_BLOCK:
+    return VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB;
+  case VK_FORMAT_R16G16B16A16_SFLOAT:
+    return VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
+  case VK_FORMAT_R32_UINT:
+    return VKR_TEXTURE_FORMAT_R32_UINT;
+  case VK_FORMAT_D16_UNORM:
+    return VKR_TEXTURE_FORMAT_D16_UNORM;
+  case VK_FORMAT_D32_SFLOAT:
+    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
+  case VK_FORMAT_D24_UNORM_S8_UINT:
+    return VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT;
+  default:
+    log_warn("Unmapped VkFormat %d, defaulting to R8G8B8A8_UNORM", format);
+    return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
   }
 }
 

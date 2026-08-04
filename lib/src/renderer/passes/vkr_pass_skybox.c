@@ -23,6 +23,8 @@ vkr_internal void vkr_pass_skybox_execute(VkrRgPassContext *ctx,
 
   VkrSkyboxPassPayload effective_payload = *payload;
   if (effective_payload.cubemap.id == 0 && rf->active_scene &&
+      rf->active_scene->environment.bake_state ==
+          VKR_SCENE_ENV_BAKE_STATE_READY &&
       rf->active_scene->environment.source_cubemap.id != 0) {
     VkrTexture *scene_cubemap = vkr_texture_system_get_by_handle(
         &rf->texture_system, rf->active_scene->environment.source_cubemap);
@@ -30,6 +32,11 @@ vkr_internal void vkr_pass_skybox_execute(VkrRgPassContext *ctx,
         scene_cubemap->description.type == VKR_TEXTURE_TYPE_CUBE_MAP) {
       effective_payload.cubemap = rf->active_scene->environment.source_cubemap;
     }
+  }
+  if (effective_payload.cubemap.id == 0 &&
+      rf->world_resources.ibl_default_ready &&
+      rf->world_resources.ibl_fallback_source_cubemap.id != 0) {
+    effective_payload.cubemap = rf->world_resources.ibl_fallback_source_cubemap;
   }
 
   if (rf->skybox_system.initialized) {

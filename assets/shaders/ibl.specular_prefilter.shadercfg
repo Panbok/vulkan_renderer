@@ -1,11 +1,13 @@
 version=1.0
-cull_mode=front
+cull_mode=none
+depth_test=0
+depth_write=0
 name=shader.ibl.specular_prefilter
 renderpass=Renderpass.Builtin.IBL.Convolution
 stages=vertex,fragment
 stagefiles=assets/shaders/ibl.specular_prefilter.spv
 use_instance=1
-use_local=0
+use_local=1
 vertex_abi=3d
 
 attribute=vec3,in_position
@@ -14,7 +16,6 @@ attribute=vec2,in_texcoord
 attribute=vec4,in_color
 attribute=vec4,in_tangent
 
-uniform=mat4,0,projection
-uniform=mat4,0,view
-uniform=float,1,roughness
 uniform=samp,1,source_cubemap
+uniform=vec4,2,face_params
+uniform=vec4,2,sample_params

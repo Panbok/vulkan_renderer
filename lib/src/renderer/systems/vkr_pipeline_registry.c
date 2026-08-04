@@ -446,6 +446,9 @@ bool8_t vkr_pipeline_registry_create_from_shader_config(
     case VKR_PIPELINE_DOMAIN_PICKING_OVERLAY:
       fallback = string8_lit("Renderpass.Builtin.Picking");
       break;
+    case VKR_PIPELINE_DOMAIN_POST:
+      fallback = string8_lit("Renderpass.Builtin.Post");
+      break;
     default:
       fallback = string8_lit("Renderpass.Builtin.World");
       break;

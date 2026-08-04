@@ -1,9 +1,8 @@
-#include "vkr_shader_transform.slangh"
+#include "vkr_shader_cube.slangh"
 
-struct GlobalUniformBufferObject
+struct PushConstants
 {
-    column_major float4x4 projection;
-    column_major float4x4 view;
+    float4 face_params;
 };
 
 struct VertexInput
@@ -18,11 +17,11 @@ struct VertexInput
 struct VertexDto
 {
     float4 position : SV_Position;
-    float3 direction : TEXCOORD;
+    float2 face_uv : TEXCOORD;
 };
 
-[[vk::binding(0, 0)]]
-ConstantBuffer<GlobalUniformBufferObject> g_ubo;
+[[vk::push_constant]]
+ConstantBuffer<PushConstants> push_constants;
 
 [[vk::binding(1, 1)]]
 TextureCube<float4> source_cubemap;
@@ -34,10 +33,8 @@ SamplerState source_sampler;
 VertexDto vertexMain(VertexInput input)
 {
     VertexDto output;
-    output.direction = input.position;
-
-    float4 world_pos = float4(input.position, 1.0f);
-    output.position = vkr_clip_from_world(g_ubo.projection, g_ubo.view, world_pos);
+    output.face_uv = input.texcoord;
+    output.position = float4(input.texcoord * 2.0f - 1.0f, 0.0f, 1.0f);
     return output;
 }
 
@@ -46,7 +43,8 @@ static const float PI = 3.14159265359f;
 [shader("fragment")]
 float4 fragmentMain(VertexDto input) : SV_Target
 {
-    float3 normal = normalize(input.direction);
+    uint face = uint(push_constants.face_params.x + 0.5f);
+    float3 normal = normalize(vkr_cube_face_uv_to_direction(face, input.face_uv));
 
     float3 up = abs(normal.y) < 0.999f ? float3(0.0f, 1.0f, 0.0f)
                                         : float3(1.0f, 0.0f, 0.0f);
@@ -67,7 +65,7 @@ float4 fragmentMain(VertexDto input) : SV_Target
                                 tangent_sample.z * normal;
 
             irradiance +=
-                source_cubemap.Sample(source_sampler, sample_dir).rgb *
+                source_cubemap.SampleLevel(source_sampler, sample_dir, 0.0f).rgb *
                 cos(theta) * sin(theta);
             sample_count += 1.0f;
         }

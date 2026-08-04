@@ -151,9 +151,8 @@ vkr_internal bool8_t scene_grow_array(VkrAllocator *alloc, void **array,
   return true_v;
 }
 
-vkr_internal void
-scene_release_owned_texture_handle(RendererFrontend *rf,
-                                   VkrTextureHandle *handle) {
+vkr_internal void scene_release_owned_texture_handle(RendererFrontend *rf,
+                                                     VkrTextureHandle *handle) {
   if (!rf || !handle || handle->id == 0) {
     return;
   }
@@ -162,8 +161,8 @@ scene_release_owned_texture_handle(RendererFrontend *rf,
   *handle = VKR_TEXTURE_HANDLE_INVALID;
 }
 
-vkr_internal void scene_reset_reflection_probe_runtime(
-    VkrSceneReflectionProbe *probe) {
+vkr_internal void
+scene_reset_reflection_probe_runtime(VkrSceneReflectionProbe *probe) {
   if (!probe) {
     return;
   }
@@ -176,6 +175,8 @@ vkr_internal void scene_reset_reflection_probe_runtime(
       .intensity = 1.0f,
       .diffuse_intensity = 1.0f,
       .specular_intensity = 1.0f,
+      .source_mip_count = 1u,
+      .uses_scene_environment_source = false_v,
       .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
@@ -1048,9 +1049,11 @@ bool8_t vkr_scene_init(VkrScene *scene, VkrAllocator *alloc, uint16_t world_id,
   scene->next_render_id = 1;
   scene->environment = (VkrSceneEnvironment){
       .enabled = false_v,
+      .source_kind = VKR_SCENE_ENV_SOURCE_NONE,
       .intensity = 1.0f,
       .diffuse_intensity = 1.0f,
       .specular_intensity = 1.0f,
+      .delivery_equirect = VKR_TEXTURE_HANDLE_INVALID,
       .source_cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID,
       .prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID,
@@ -1075,7 +1078,8 @@ typedef struct DestroyText3DContext {
 } DestroyText3DContext;
 
 /**
- * @brief Wait for renderer idle during scene teardown and log phase-specific failures.
+ * @brief Wait for renderer idle during scene teardown and log phase-specific
+ * failures.
  *
  * Scene unload enqueues deferred GPU destruction; waiting again after teardown
  * allows serial-based deferred queues to drain immediately instead of carrying
@@ -1173,12 +1177,18 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
   // Scene-owned resources were retired above; wait once more so deferred Vulkan
   // destruction completes before the next scene load begins.
   if (rf) {
+    vkr_world_resources_release_scene_environment_targets(
+        (RendererFrontend *)rf, scene);
+    vkr_world_resources_release_scene_reflection_probe_targets(
+        (RendererFrontend *)rf, scene);
     scene_release_owned_texture_handle((RendererFrontend *)rf,
                                        &scene->environment.prefilter_cubemap);
     scene_release_owned_texture_handle((RendererFrontend *)rf,
                                        &scene->environment.irradiance_cubemap);
     scene_release_owned_texture_handle((RendererFrontend *)rf,
                                        &scene->environment.source_cubemap);
+    scene_release_owned_texture_handle((RendererFrontend *)rf,
+                                       &scene->environment.delivery_equirect);
     for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
       VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
       scene_release_owned_texture_handle((RendererFrontend *)rf,
@@ -2600,9 +2610,9 @@ bool8_t vkr_scene_set_shape(VkrScene *scene, struct s_RendererFrontend *rf,
       VkrResourceHandleInfo handle_info = {0};
       VkrRendererError load_err = VKR_RENDERER_ERROR_NONE;
 
-      if (vkr_resource_system_load_sync(
-              VKR_RESOURCE_TYPE_MATERIAL, mat_path, &rf->scratch_allocator,
-              &handle_info, &load_err)) {
+      if (vkr_resource_system_load_sync(VKR_RESOURCE_TYPE_MATERIAL, mat_path,
+                                        &rf->scratch_allocator, &handle_info,
+                                        &load_err)) {
         // After loading, acquire with name to get proper ref count
         acquired_mat = vkr_material_system_acquire(&rf->material_system,
                                                    mat_name, true_v, &mat_err);

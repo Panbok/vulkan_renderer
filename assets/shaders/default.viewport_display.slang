@@ -1,4 +1,5 @@
 #include "vkr_shader_transform.slangh"
+#include "vkr_shader_tonemap.slangh"
 
 // Viewport display shader.
 // Matches the default UI layout to sample the scene texture in a UI plane.
@@ -6,6 +7,7 @@
 struct UniformBufferObject {
   column_major float4x4 projection;
   column_major float4x4 view;
+  float exposure;
 };
 
 struct LocalUniformObject {
@@ -54,5 +56,7 @@ VertexOutput vertexMain(VertexInput input) {
 
 [shader("fragment")]
 float4 fragmentMain(VertexOutput input) : SV_Target {
-  return texture.Sample(sampler, input.texcoord) * local_ubo.diffuse_color;
+  float4 hdr = texture.Sample(sampler, input.texcoord);
+  return float4(vkr_aces_fitted(hdr.rgb * ubo.exposure), hdr.a) *
+         local_ubo.diffuse_color;
 }

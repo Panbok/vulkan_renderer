@@ -15,6 +15,65 @@ static bool8_t vulkan_device_supports_sampled_format(VkPhysicalDevice device,
              : false_v;
 }
 
+static void vulkan_device_query_hdr_ibl_support(VkPhysicalDevice device,
+                                                bool8_t *out_supported,
+                                                uint32_t *out_max_cube_extent,
+                                                uint32_t *out_max_mip_levels) {
+  *out_supported = false_v;
+  *out_max_cube_extent = 0u;
+  *out_max_mip_levels = 0u;
+
+  VkFormatProperties format_properties = {0};
+  vkGetPhysicalDeviceFormatProperties(device, VK_FORMAT_R16G16B16A16_SFLOAT,
+                                      &format_properties);
+  const VkFormatFeatureFlags source_features =
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+      VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+  const VkFormatFeatureFlags cube_features =
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+      VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT;
+  if ((format_properties.optimalTilingFeatures & source_features) !=
+          source_features ||
+      (format_properties.optimalTilingFeatures & cube_features) !=
+          cube_features) {
+    return;
+  }
+
+  VkImageFormatProperties source_properties = {0};
+  if (vkGetPhysicalDeviceImageFormatProperties(
+          device, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_TYPE_2D,
+          VK_IMAGE_TILING_OPTIMAL,
+          VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0,
+          &source_properties) != VK_SUCCESS ||
+      source_properties.maxMipLevels < 1u ||
+      (source_properties.sampleCounts & VK_SAMPLE_COUNT_1_BIT) == 0u) {
+    return;
+  }
+
+  VkImageFormatProperties cube_properties = {0};
+  if (vkGetPhysicalDeviceImageFormatProperties(
+          device, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_TYPE_2D,
+          VK_IMAGE_TILING_OPTIMAL,
+          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+          VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT,
+          &cube_properties) != VK_SUCCESS ||
+      cube_properties.maxArrayLayers < 6u ||
+      cube_properties.maxMipLevels < 1u ||
+      (cube_properties.sampleCounts & VK_SAMPLE_COUNT_1_BIT) == 0u) {
+    return;
+  }
+
+  *out_supported = true_v;
+  *out_max_cube_extent =
+      Min(cube_properties.maxExtent.width, cube_properties.maxExtent.height);
+  *out_max_mip_levels = cube_properties.maxMipLevels;
+  if (*out_max_cube_extent == 0u || *out_max_mip_levels == 0u) {
+    *out_supported = false_v;
+  }
+}
+
 static VkrSurfaceDepthFormat
 vulkan_device_surface_depth_format(VkFormat format) {
   switch (format) {
@@ -798,6 +857,10 @@ void vulkan_device_get_information(VulkanBackendState *state,
   device_information->supports_texture_eac_rg11 =
       vulkan_device_supports_sampled_format(state->device.physical_device,
                                             VK_FORMAT_EAC_R11G11_UNORM_BLOCK);
+  vulkan_device_query_hdr_ibl_support(
+      state->device.physical_device, &device_information->supports_hdr_ibl,
+      &device_information->hdr_ibl_max_cube_extent,
+      &device_information->hdr_ibl_max_mip_levels);
 
   VkrAllocator *temp_alloc = &state->temp_scope;
   VkrAllocator *arena_alloc = &state->alloc;

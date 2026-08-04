@@ -561,11 +561,11 @@ vkr_internal bool8_t vulkan_shader_resolve_runtime_set_contract(
       vulkan_shader_reflection_find_set_by_role(reflection,
                                                 VKR_DESCRIPTOR_SET_ROLE_DRAW);
 
-  if (!frame_set && reflection->set_count > 0) {
-    frame_set = &reflection->sets[0];
+  if (!frame_set) {
+    frame_set = vulkan_shader_reflection_find_set_by_index(reflection, 0u);
   }
-  if (!draw_set && reflection->set_count > 1) {
-    draw_set = &reflection->sets[1];
+  if (!draw_set) {
+    draw_set = vulkan_shader_reflection_find_set_by_index(reflection, 1u);
   }
   if (draw_set && frame_set && draw_set->set == frame_set->set) {
     draw_set = NULL;
@@ -1054,9 +1054,9 @@ vulkan_shader_find_scope_uniform_block(const VkrShaderReflection *reflection,
                                         : VKR_DESCRIPTOR_SET_ROLE_DRAW;
   const VkrDescriptorSetDesc *set =
       vulkan_shader_reflection_find_set_by_role(reflection, role);
-  const uint32_t fallback_index = scope == VKR_SHADER_SCOPE_GLOBAL ? 0u : 1u;
-  if (!set && reflection->set_count > fallback_index) {
-    set = &reflection->sets[fallback_index];
+  if (!set) {
+    const uint32_t set_index = scope == VKR_SHADER_SCOPE_GLOBAL ? 0u : 1u;
+    set = vulkan_shader_reflection_find_set_by_index(reflection, set_index);
   }
   if (!set) {
     return NULL;

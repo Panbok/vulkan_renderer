@@ -670,11 +670,14 @@ vkr_internal void test_reflection_all_shadercfg_match_spirv(void) {
       "assets/shaders/default.viewport_display.shadercfg",
       "assets/shaders/default.world_text.shadercfg",
       "assets/shaders/default.world.shadercfg",
+      "assets/shaders/ibl.brdf_lut.shadercfg",
       "assets/shaders/ibl.diffuse_convolution.shadercfg",
+      "assets/shaders/ibl.equirect_to_cube.shadercfg",
       "assets/shaders/ibl.specular_prefilter.shadercfg",
       "assets/shaders/pbr.world.shadercfg",
       "assets/shaders/picking_text.shadercfg",
       "assets/shaders/picking.shadercfg",
+      "assets/shaders/post.tonemap.shadercfg",
       "assets/shaders/shadow_opaque.shadercfg",
       "assets/shaders/shadow.shadercfg",
   };
@@ -776,14 +779,33 @@ vkr_internal void test_shadercfg_pipeline_state(void) {
       string8_lit("assets/shaders/ibl.diffuse_convolution.shadercfg"),
       &allocator, &temp_allocator, &ibl);
   assert(result.is_valid);
-  assert(ibl.cull_mode == VKR_CULL_MODE_FRONT);
+  assert(ibl.cull_mode == VKR_CULL_MODE_NONE);
+  assert(ibl.depth_test_enabled == false_v);
+  assert(ibl.depth_write_enabled == false_v);
+  assert(ibl.instance_texture_count == 1u);
+  assert(ibl.push_constant_size == 16u);
 
   VkrShaderConfig specular_ibl = {0};
   result = vkr_shader_loader_parse(
       string8_lit("assets/shaders/ibl.specular_prefilter.shadercfg"),
       &allocator, &temp_allocator, &specular_ibl);
   assert(result.is_valid);
-  assert(specular_ibl.cull_mode == VKR_CULL_MODE_FRONT);
+  assert(specular_ibl.cull_mode == VKR_CULL_MODE_NONE);
+  assert(specular_ibl.depth_test_enabled == false_v);
+  assert(specular_ibl.depth_write_enabled == false_v);
+  assert(specular_ibl.instance_texture_count == 1u);
+  assert(specular_ibl.push_constant_size == 32u);
+
+  VkrShaderConfig equirect_ibl = {0};
+  result = vkr_shader_loader_parse(
+      string8_lit("assets/shaders/ibl.equirect_to_cube.shadercfg"), &allocator,
+      &temp_allocator, &equirect_ibl);
+  assert(result.is_valid);
+  assert(equirect_ibl.cull_mode == VKR_CULL_MODE_NONE);
+  assert(equirect_ibl.depth_test_enabled == false_v);
+  assert(equirect_ibl.depth_write_enabled == false_v);
+  assert(equirect_ibl.instance_texture_count == 1u);
+  assert(equirect_ibl.push_constant_size == 16u);
 
   VkrShaderConfig world = {0};
   result =
@@ -792,6 +814,26 @@ vkr_internal void test_shadercfg_pipeline_state(void) {
   assert(result.is_valid);
   assert(world.depth_test_enabled == true_v);
   assert(world.depth_write_enabled == true_v);
+
+  VkrShaderConfig viewport = {0};
+  result = vkr_shader_loader_parse(
+      string8_lit("assets/shaders/default.viewport_display.shadercfg"),
+      &allocator, &temp_allocator, &viewport);
+  assert(result.is_valid);
+  bool8_t found_exposure = false_v;
+  for (uint32_t i = 0; i < viewport.uniform_count; ++i) {
+    const VkrShaderUniformDesc *uniform =
+        array_get_VkrShaderUniformDesc(&viewport.uniforms, i);
+    if (!vkr_string8_equals_cstr(&uniform->name, "exposure")) {
+      continue;
+    }
+    assert(uniform->scope == VKR_SHADER_SCOPE_GLOBAL);
+    assert(uniform->type == SHADER_UNIFORM_TYPE_FLOAT32);
+    assert(uniform->array_count == 1u);
+    found_exposure = true_v;
+    break;
+  }
+  assert(found_exposure);
 
   arena_destroy(temp_arena);
   arena_destroy(arena);

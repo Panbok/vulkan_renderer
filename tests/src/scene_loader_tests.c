@@ -36,6 +36,10 @@ static bool8_t scene_loader_test_context_init(SceneLoaderTestContext *ctx) {
   }
 
   MemZero(&ctx->renderer, sizeof(ctx->renderer));
+  ctx->renderer.arena = ctx->arena;
+  ctx->renderer.allocator = ctx->allocator;
+  ctx->renderer.scratch_arena = ctx->arena;
+  ctx->renderer.scratch_allocator = ctx->allocator;
 
   VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
   if (!vkr_scene_init(&ctx->scene, &ctx->allocator, 1u, 32u, &scene_error)) {
@@ -163,10 +167,81 @@ static void test_scene_loader_env_cubemap_load_failure_falls_back(void) {
   assert(ctx.scene.environment.source_cubemap.id == 0u);
   assert(ctx.scene.environment.irradiance_cubemap.id == 0u);
   assert(ctx.scene.environment.prefilter_cubemap.id == 0u);
-  assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_NONE);
+  assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_FAILED);
 
   scene_loader_test_context_shutdown(&ctx);
   printf("  test_scene_loader_env_cubemap_load_failure_falls_back PASSED\n");
+}
+
+static void test_scene_loader_environment_sources_are_mutually_exclusive(void) {
+  printf("  Running "
+         "test_scene_loader_environment_sources_are_mutually_exclusive...\n");
+
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  String8 json =
+      string8_lit("{\"version\":2,\"environment\":{\"enabled\":true,"
+                  "\"equirect\":\"assets/textures/environment.hdr\","
+                  "\"cubemap\":{\"base_path\":\"assets/textures/skybox\","
+                  "\"extension\":\"jpg\"}},\"entities\":[]}");
+  VkrSceneLoadResult result = {0};
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_load_from_json(&ctx.scene, &ctx.renderer, json,
+                                  &ctx.allocator, &result, &error));
+  assert(error == VKR_SCENE_ERROR_NONE);
+  assert(ctx.scene.environment.enabled == false_v);
+  assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_NONE);
+  assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_NONE);
+
+  scene_loader_test_context_shutdown(&ctx);
+  printf("  test_scene_loader_environment_sources_are_mutually_exclusive "
+         "PASSED\n");
+}
+
+static void test_scene_loader_equirect_load_failure_falls_back(void) {
+  printf("  Running test_scene_loader_equirect_load_failure_falls_back...\n");
+
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  String8 json =
+      string8_lit("{\"version\":2,\"environment\":{\"enabled\":true,"
+                  "\"equirect\":\"assets/textures/does_not_exist.hdr\"},"
+                  "\"entities\":[]}");
+  VkrSceneLoadResult result = {0};
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_load_from_json(&ctx.scene, &ctx.renderer, json,
+                                  &ctx.allocator, &result, &error));
+  assert(error == VKR_SCENE_ERROR_NONE);
+  assert(ctx.scene.environment.enabled == false_v);
+  assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_NONE);
+  assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_FAILED);
+
+  scene_loader_test_context_shutdown(&ctx);
+  printf("  test_scene_loader_equirect_load_failure_falls_back PASSED\n");
+}
+
+static void test_scene_loader_disabled_environment_ignores_sources(void) {
+  printf("  Running "
+         "test_scene_loader_disabled_environment_ignores_sources...\n");
+
+  SceneLoaderTestContext ctx;
+  assert(scene_loader_test_context_init(&ctx) == true_v);
+  String8 json =
+      string8_lit("{\"version\":2,\"environment\":{\"enabled\":false,"
+                  "\"equirect\":\"assets/textures/environment.hdr\","
+                  "\"cubemap\":{\"base_path\":\"assets/textures/skybox\","
+                  "\"extension\":\"jpg\"}},\"entities\":[]}");
+  VkrSceneLoadResult result = {0};
+  VkrSceneError error = VKR_SCENE_ERROR_NONE;
+  assert(vkr_scene_load_from_json(&ctx.scene, &ctx.renderer, json,
+                                  &ctx.allocator, &result, &error));
+  assert(error == VKR_SCENE_ERROR_NONE);
+  assert(ctx.scene.environment.enabled == false_v);
+  assert(ctx.scene.environment.source_kind == VKR_SCENE_ENV_SOURCE_NONE);
+  assert(ctx.scene.environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_NONE);
+
+  scene_loader_test_context_shutdown(&ctx);
+  printf("  test_scene_loader_disabled_environment_ignores_sources PASSED\n");
 }
 
 static void test_scene_loader_missing_reflection_probes_succeeds(void) {
@@ -311,6 +386,9 @@ bool32_t run_scene_loader_tests(void) {
   test_scene_loader_invalid_environment_preserves_scene_load();
   test_scene_loader_disabled_environment_parses_controls();
   test_scene_loader_env_cubemap_load_failure_falls_back();
+  test_scene_loader_environment_sources_are_mutually_exclusive();
+  test_scene_loader_equirect_load_failure_falls_back();
+  test_scene_loader_disabled_environment_ignores_sources();
   test_scene_loader_missing_reflection_probes_succeeds();
   test_scene_loader_reflection_probes_parse_valid_block();
   test_scene_loader_reflection_probe_invalid_entries_skipped();

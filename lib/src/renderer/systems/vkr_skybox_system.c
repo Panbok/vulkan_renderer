@@ -178,6 +178,7 @@ void vkr_skybox_system_render_packet(RendererFrontend *rf,
       .ui_view = mat4_identity(),
       .ambient_color = globals->ambient_color,
       .view_position = globals->view_position,
+      .exposure = globals->exposure,
       .render_mode = (VkrRenderMode)globals->render_mode,
   };
   vkr_material_system_apply_global(&rf->material_system, &skybox_globals,

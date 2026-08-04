@@ -28,7 +28,16 @@
       "type": "image",
       "condition": "editor_enabled",
       "extent": { "mode": "viewport" },
-      "format": "SWAPCHAIN",
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "hdr_scene_color",
+      "type": "image",
+      "condition": "!editor_enabled",
+      "extent": { "mode": "window" },
+      "format": "R16G16B16A16_SFLOAT",
       "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"],
       "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
     },
@@ -128,7 +137,7 @@
       "attachments": {
         "color": [
           {
-            "image": "swapchain",
+            "image": "hdr_scene_color",
             "load": "CLEAR",
             "store": "STORE",
             "clear": { "color": [0.02, 0.02, 0.03, 1.0] }
@@ -180,7 +189,7 @@
       ],
       "attachments": {
         "color": [
-          { "image": "swapchain", "load": "LOAD", "store": "STORE" }
+          { "image": "hdr_scene_color", "load": "LOAD", "store": "STORE" }
         ],
         "depth": {
           "image": "swapchain_depth",
@@ -215,28 +224,29 @@
       "execute": "pass.world"
     },
     {
-      "name": "UI.Fullscreen",
+      "name": "Post.Tonemap.Fullscreen",
       "type": "graphics",
-      "domain": "UI",
+      "domain": "POST",
       "condition": "!editor_enabled",
+      "reads": [
+        {
+          "image": "hdr_scene_color",
+          "access": "SAMPLED",
+          "binding": 0,
+          "array_index": 0
+        }
+      ],
       "attachments": {
         "color": [
-          { "image": "swapchain", "load": "LOAD", "store": "STORE" }
+          {
+            "image": "swapchain",
+            "load": "CLEAR",
+            "store": "STORE",
+            "clear": { "color": [0, 0, 0, 1] }
+          }
         ]
       },
-      "execute": "pass.ui"
-    },
-    {
-      "name": "UI.Editor",
-      "type": "graphics",
-      "domain": "UI",
-      "condition": "editor_enabled",
-      "attachments": {
-        "color": [
-          { "image": "scene_color", "load": "LOAD", "store": "STORE" }
-        ]
-      },
-      "execute": "pass.ui"
+      "execute": "pass.tonemap"
     },
     {
       "name": "Editor.Composite",
@@ -262,6 +272,30 @@
         ]
       },
       "execute": "pass.editor"
+    },
+    {
+      "name": "UI.Fullscreen",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "!editor_enabled",
+      "attachments": {
+        "color": [
+          { "image": "swapchain", "load": "LOAD", "store": "STORE" }
+        ]
+      },
+      "execute": "pass.ui"
+    },
+    {
+      "name": "UI.Editor",
+      "type": "graphics",
+      "domain": "UI",
+      "condition": "editor_enabled",
+      "attachments": {
+        "color": [
+          { "image": "swapchain", "load": "LOAD", "store": "STORE" }
+        ]
+      },
+      "execute": "pass.ui"
     }
   ],
   "outputs": {

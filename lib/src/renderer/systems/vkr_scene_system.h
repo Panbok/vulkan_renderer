@@ -19,6 +19,7 @@
 #include "math/vkr_quat.h"
 #include "memory/vkr_allocator.h"
 #include "renderer/resources/vkr_resources.h"
+#include "renderer/systems/vkr_ibl_bake_types.h"
 
 // Forward declarations
 struct s_RendererFrontend;
@@ -195,10 +196,18 @@ typedef struct ScenePointLight {
  */
 typedef enum VkrSceneEnvironmentBakeState {
   VKR_SCENE_ENV_BAKE_STATE_NONE = 0,
-  VKR_SCENE_ENV_BAKE_STATE_PENDING,
+  VKR_SCENE_ENV_BAKE_STATE_SOURCE_LOADING,
+  VKR_SCENE_ENV_BAKE_STATE_CUBE_PENDING,
+  VKR_SCENE_ENV_BAKE_STATE_CONVOLUTION_PENDING,
   VKR_SCENE_ENV_BAKE_STATE_READY,
   VKR_SCENE_ENV_BAKE_STATE_FAILED,
 } VkrSceneEnvironmentBakeState;
+
+typedef enum VkrSceneEnvironmentSourceKind {
+  VKR_SCENE_ENV_SOURCE_NONE = 0,
+  VKR_SCENE_ENV_SOURCE_CUBEMAP,
+  VKR_SCENE_ENV_SOURCE_EQUIRECT,
+} VkrSceneEnvironmentSourceKind;
 
 /**
  * @brief Runtime status of reflection probe bake products.
@@ -227,6 +236,8 @@ typedef enum VkrSceneReflectionProbeBakeState {
  * Ownership:
  * - `source_cubemap`, `irradiance_cubemap`, `prefilter_cubemap` are scene
  *   handles released by scene reset/shutdown paths.
+ * - Prepared targets exist only until bake recording completes. Their backend
+ *   objects retire after the submit serial that protects the recorded work.
  */
 typedef struct VkrSceneReflectionProbe {
   bool8_t enabled;
@@ -236,9 +247,13 @@ typedef struct VkrSceneReflectionProbe {
   float32_t intensity;
   float32_t diffuse_intensity;
   float32_t specular_intensity;
+  uint32_t source_mip_count;
+  bool8_t uses_scene_environment_source;
   VkrTextureHandle source_cubemap;
   VkrTextureHandle irradiance_cubemap;
   VkrTextureHandle prefilter_cubemap;
+  VkrIblPreparedTargetSet irradiance_targets;
+  VkrIblPreparedTargetSet prefilter_targets;
   VkrSceneReflectionProbeBakeState bake_state;
 } VkrSceneReflectionProbe;
 
@@ -250,16 +265,26 @@ typedef struct VkrSceneReflectionProbe {
  *   by the scene and released by scene shutdown/reload paths.
  * - Bake products are scene-owned writable cubemaps generated at runtime and
  *   released with normal texture-system handle symmetry.
+ * - Prepared targets exist only until bake recording completes. Their backend
+ *   objects retire after the submit serial that protects the recorded work.
  */
 typedef struct VkrSceneEnvironment {
   bool8_t enabled;
+  VkrSceneEnvironmentSourceKind source_kind;
   float32_t intensity;
   float32_t diffuse_intensity;
   float32_t specular_intensity;
 
+  VkrTextureHandle delivery_equirect;
   VkrTextureHandle source_cubemap;
   VkrTextureHandle irradiance_cubemap;
   VkrTextureHandle prefilter_cubemap;
+
+  uint32_t source_face_size;
+  uint32_t source_mip_count;
+  VkrIblPreparedTargetSet cube_targets;
+  VkrIblPreparedTargetSet irradiance_targets;
+  VkrIblPreparedTargetSet prefilter_targets;
 
   VkrSceneEnvironmentBakeState bake_state;
 } VkrSceneEnvironment;
@@ -331,8 +356,7 @@ typedef struct VkrScene {
   uint32_t next_render_id; // Monotonic render id allocator (0 reserved)
 
   VkrSceneEnvironment environment; // Scene environment and bake state
-  VkrSceneReflectionProbe
-      reflection_probes[VKR_SCENE_REFLECTION_PROBE_MAX];
+  VkrSceneReflectionProbe reflection_probes[VKR_SCENE_REFLECTION_PROBE_MAX];
   uint32_t reflection_probe_count;
 } VkrScene;
 

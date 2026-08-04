@@ -1,0 +1,11 @@
+version=1.0
+cull_mode=none
+depth_test=0
+depth_write=0
+name=shader.ibl.brdf_lut
+renderpass=Renderpass.Builtin.IBL.Convolution
+stages=vertex,fragment
+stagefiles=assets/shaders/ibl.brdf_lut.spv
+use_instance=0
+use_local=0
+vertex_abi=none

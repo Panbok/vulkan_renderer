@@ -501,6 +501,10 @@ typedef struct VkrDeviceInformation {
   bool8_t supports_texture_bc5;
   /** EAC RG11: the only compressed two-channel target on ETC2-class GPUs. */
   bool8_t supports_texture_eac_rg11;
+  /** Exact RGBA16F source/cube combinations required by runtime HDR IBL. */
+  bool8_t supports_hdr_ibl;
+  uint32_t hdr_ibl_max_cube_extent;
+  uint32_t hdr_ibl_max_mip_levels;
   bool8_t supports_multi_draw_indirect;
   bool8_t supports_draw_indirect_first_instance;
   uint32_t vendor_id;
@@ -633,6 +637,8 @@ typedef enum VkrTextureFormat {
   VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB,
   /** Two-channel EAC; the only compressed RG target on ETC2-class devices. */
   VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM,
+  /** Linear half-float RGBA used by HDR environments, IBL, and scene color. */
+  VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
   // Single/dual channel formats
   VKR_TEXTURE_FORMAT_R8_UNORM,
   VKR_TEXTURE_FORMAT_R16_SFLOAT,
@@ -647,6 +653,24 @@ typedef enum VkrTextureFormat {
   VKR_TEXTURE_FORMAT_COUNT,
 } VkrTextureFormat;
 
+/** Backend-independent storage metadata for one texture format. */
+typedef struct VkrTextureFormatInfo {
+  uint8_t channel_count;
+  uint8_t block_width;
+  uint8_t block_height;
+  uint8_t bytes_per_block;
+  bool8_t is_block_compressed;
+  bool8_t is_depth_stencil;
+} VkrTextureFormatInfo;
+
+/** Returns false for an invalid/unsupported enum value. */
+bool8_t vkr_texture_format_get_info(VkrTextureFormat format,
+                                    VkrTextureFormatInfo *out_info);
+
+/** Exact bytes occupied by a tightly packed 2D mip/layer region. */
+uint64_t vkr_texture_format_region_size(VkrTextureFormat format, uint32_t width,
+                                        uint32_t height);
+
 #define VKR_CAPTURE_MAX_ITEMS 16u
 #define VKR_CAPTURE_CHANNEL_INVALID UINT16_MAX
 
@@ -658,7 +682,7 @@ typedef enum VkrTextureFormat {
  * re-deriving one that silently drifts out of agreement.
  */
 #define VKR_CAPTURE_BUFFER_ALIGNMENT 256u
-#define VKR_CAPTURE_MAX_BYTES_PER_PIXEL 4u
+#define VKR_CAPTURE_MAX_BYTES_PER_PIXEL 8u
 
 typedef uint16_t VkrCaptureChannelId;
 typedef uint64_t VkrCaptureRequestId;
@@ -719,6 +743,8 @@ typedef struct VkrCaptureItemResult {
   uint64_t data_size;
   uint32_t mip;
   uint32_t layer;
+  /** Manual exposure used when canonicalizing an HDR color source. */
+  float32_t display_exposure;
 } VkrCaptureItemResult;
 
 typedef struct VkrCapturePollResult {
@@ -965,6 +991,7 @@ typedef struct VkrGlobalMaterialState {
   Mat4 ui_view;
   Vec4 ambient_color;
   Vec3 view_position;
+  float32_t exposure;
   VkrRenderMode render_mode;
 } VkrGlobalMaterialState;
 

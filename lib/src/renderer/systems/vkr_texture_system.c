@@ -5,11 +5,14 @@
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory_allocator.h"
 #include "renderer/systems/vkr_resource_system.h"
+#include "renderer/vkr_ibl_math.h"
 
 #include "ktx.h"
 #include "stb_image.h"
 
 #include <ctype.h>
+#include <float.h>
+#include <limits.h>
 
 // =============================================================================
 // Texture Cache Format
@@ -868,42 +871,16 @@ vkr_internal bool8_t vkr_texture_has_transparency(const uint8_t *pixels,
 
 vkr_internal bool8_t
 vkr_texture_format_is_block_compressed(VkrTextureFormat format) {
-  switch (format) {
-  case VKR_TEXTURE_FORMAT_BC7_UNORM:
-  case VKR_TEXTURE_FORMAT_BC7_SRGB:
-  case VKR_TEXTURE_FORMAT_BC5_UNORM:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
-  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
-    return true_v;
-  default:
-    return false_v;
-  }
+  VkrTextureFormatInfo info = {0};
+  return vkr_texture_format_get_info(format, &info) && info.is_block_compressed;
 }
 
 vkr_internal uint32_t
 vkr_texture_channel_count_from_format(VkrTextureFormat format) {
-  switch (format) {
-  case VKR_TEXTURE_FORMAT_R8_UNORM:
-    return VKR_TEXTURE_R_CHANNELS;
-  case VKR_TEXTURE_FORMAT_R8G8_UNORM:
-  case VKR_TEXTURE_FORMAT_BC5_UNORM:
-  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
-    return VKR_TEXTURE_RG_CHANNELS;
-  case VKR_TEXTURE_FORMAT_BC7_UNORM:
-  case VKR_TEXTURE_FORMAT_BC7_SRGB:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
-  case VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM:
-  case VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB:
-    return VKR_TEXTURE_RGBA_CHANNELS;
-  default:
-    return VKR_TEXTURE_RGBA_CHANNELS;
-  }
+  VkrTextureFormatInfo info = {0};
+  return vkr_texture_format_get_info(format, &info)
+             ? (uint32_t)info.channel_count
+             : VKR_TEXTURE_RGBA_CHANNELS;
 }
 
 vkr_internal ktx_transcode_fmt_e
@@ -1898,9 +1875,9 @@ VkrRendererError vkr_texture_system_write(VkrTextureSystem *system,
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
 
-  uint64_t expected_size = (uint64_t)texture->description.width *
-                           (uint64_t)texture->description.height *
-                           (uint64_t)texture->description.channels;
+  uint64_t expected_size = vkr_texture_format_region_size(
+      texture->description.format, texture->description.width,
+      texture->description.height);
   if (size < expected_size) {
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
@@ -1942,8 +1919,8 @@ VkrRendererError vkr_texture_system_write_region(
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
 
-  uint64_t expected_size = (uint64_t)region->width * (uint64_t)region->height *
-                           (uint64_t)texture->description.channels;
+  uint64_t expected_size = vkr_texture_format_region_size(
+      texture->description.format, region->width, region->height);
   if (size < expected_size) {
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
@@ -2676,6 +2653,35 @@ vkr_texture_probe_vkt_container(VkrAllocator *allocator, String8 vkt_path) {
   return vkr_texture_detect_vkt_container(probe, bytes_read);
 }
 
+/** Probes the Radiance signature without decoding or trusting an extension. */
+vkr_internal bool8_t vkr_texture_probe_hdr_source(VkrAllocator *allocator,
+                                                  String8 source_path) {
+  char *path_cstr = vkr_texture_path_to_cstr(allocator, source_path);
+  if (!path_cstr) {
+    return false_v;
+  }
+
+  FilePath fp = file_path_create(path_cstr, allocator, FILE_PATH_TYPE_RELATIVE);
+  FileMode mode = bitset8_create();
+  bitset8_set(&mode, FILE_MODE_READ);
+  bitset8_set(&mode, FILE_MODE_BINARY);
+
+  FileHandle fh = {0};
+  if (file_open(&fp, mode, &fh) != FILE_ERROR_NONE) {
+    return false_v;
+  }
+
+  uint8_t *probe = NULL;
+  uint64_t bytes_read = 0;
+  const FileError read_error =
+      file_read(&fh, allocator, 16u, &bytes_read, &probe);
+  file_close(&fh);
+  return read_error == FILE_ERROR_NONE && probe && bytes_read >= 11u &&
+                 stbi_is_hdr_from_memory(probe, (int)bytes_read)
+             ? true_v
+             : false_v;
+}
+
 /**
  * @brief Populates result from a legacy `.vkt` cache file.
  *
@@ -2745,6 +2751,133 @@ vkr_internal bool8_t vkr_texture_try_read_legacy_cache(
 /**
  * @brief Decodes a source image file and optionally refreshes sidecar cache.
  */
+vkr_internal bool8_t vkr_texture_decode_hdr_image(
+    const uint8_t *file_data, uint64_t file_size, const char *source_cstr,
+    VkrTextureDecodeResult *out_result) {
+  if (!file_data || file_size == 0u || file_size > INT_MAX || !source_cstr ||
+      !out_result) {
+    if (out_result) {
+      out_result->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    }
+    return false_v;
+  }
+
+  int32_t width = 0;
+  int32_t height = 0;
+  int32_t source_channels = 0;
+  stbi_set_flip_vertically_on_load_thread(0);
+  float32_t *rgb =
+      stbi_loadf_from_memory(file_data, (int)file_size, &width, &height,
+                             &source_channels, VKR_TEXTURE_RGB_CHANNELS);
+  if (!rgb) {
+    const char *reason = stbi_failure_reason();
+    log_error("Failed to decode HDR texture '%s': %s", source_cstr,
+              reason ? reason : "unknown");
+    out_result->error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return false_v;
+  }
+
+  uint16_t *rgba16 = NULL;
+  VkrTextureUploadRegion *upload_region = NULL;
+  bool8_t success = false_v;
+  if (width <= 0 || height <= 0 || width > VKR_TEXTURE_MAX_DIMENSION ||
+      height > VKR_TEXTURE_MAX_DIMENSION || width != height * 2) {
+    log_error("HDR environment '%s' must have a positive 2:1 equirectangular "
+              "extent (got %dx%d)",
+              source_cstr, width, height);
+    out_result->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    goto cleanup;
+  }
+
+  const uint64_t pixel_count = (uint64_t)width * (uint64_t)height;
+  if (pixel_count > SIZE_MAX / (VKR_TEXTURE_RGBA_CHANNELS * sizeof(uint16_t))) {
+    out_result->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    goto cleanup;
+  }
+
+  const uint64_t upload_size =
+      pixel_count * VKR_TEXTURE_RGBA_CHANNELS * sizeof(uint16_t);
+  rgba16 = (uint16_t *)malloc((size_t)upload_size);
+  upload_region =
+      (VkrTextureUploadRegion *)malloc(sizeof(VkrTextureUploadRegion));
+  if (!rgba16 || !upload_region) {
+    out_result->error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    goto cleanup;
+  }
+
+  uint64_t clamped_count = 0u;
+  float32_t observed_min = FLT_MAX;
+  float32_t observed_max = -FLT_MAX;
+  for (uint64_t pixel_index = 0; pixel_index < pixel_count; ++pixel_index) {
+    for (uint32_t channel = 0; channel < VKR_TEXTURE_RGB_CHANNELS; ++channel) {
+      float32_t value = rgb[pixel_index * VKR_TEXTURE_RGB_CHANNELS + channel];
+      if (!isfinite(value)) {
+        log_error("HDR environment '%s' contains a non-finite sample at "
+                  "pixel %llu channel %u",
+                  source_cstr, (unsigned long long)pixel_index, channel);
+        out_result->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+        goto cleanup;
+      }
+      observed_min = Min(observed_min, value);
+      observed_max = Max(observed_max, value);
+      if (value < 0.0f) {
+        value = 0.0f;
+        clamped_count++;
+      } else if (value > 65504.0f) {
+        value = 65504.0f;
+        clamped_count++;
+      }
+      rgba16[pixel_index * VKR_TEXTURE_RGBA_CHANNELS + channel] =
+          vkr_float32_to_float16(value);
+    }
+    rgba16[pixel_index * VKR_TEXTURE_RGBA_CHANNELS + 3u] = 0x3c00u;
+  }
+
+  if (clamped_count > 0u) {
+    log_warn("HDR environment '%s' clamped %llu radiance samples to [0, "
+             "65504] (observed finite min=%g max=%g)",
+             source_cstr, (unsigned long long)clamped_count,
+             (double)observed_min, (double)observed_max);
+  }
+
+  *upload_region = (VkrTextureUploadRegion){
+      .mip_level = 0u,
+      .array_layer = 0u,
+      .width = (uint32_t)width,
+      .height = (uint32_t)height,
+      .depth = 1u,
+      .byte_offset = 0u,
+      .byte_size = upload_size,
+  };
+  out_result->upload_data = (uint8_t *)rgba16;
+  out_result->upload_data_size = upload_size;
+  out_result->upload_regions = upload_region;
+  out_result->upload_region_count = 1u;
+  out_result->upload_mip_levels = 1u;
+  out_result->upload_array_layers = 1u;
+  out_result->upload_format = VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
+  out_result->upload_is_compressed = false_v;
+  out_result->width = width;
+  out_result->height = height;
+  out_result->original_channels = source_channels;
+  out_result->has_transparency = false_v;
+  out_result->alpha_mask = false_v;
+  out_result->success = true_v;
+  rgba16 = NULL;
+  upload_region = NULL;
+  success = true_v;
+
+cleanup:
+  stbi_image_free(rgb);
+  if (rgba16) {
+    free(rgba16);
+  }
+  if (upload_region) {
+    free(upload_region);
+  }
+  return success;
+}
+
 vkr_internal bool8_t vkr_texture_decode_from_source_image(
     VkrAllocator *allocator, VkrTextureSystem *system, String8 source_path,
     bool8_t flip_vertical, String8 sidecar_cache_path,
@@ -2784,6 +2917,25 @@ vkr_internal bool8_t vkr_texture_decode_from_source_image(
     log_error("Failed to read texture file: %s", source_cstr);
     out_result->error = VKR_RENDERER_ERROR_FILE_NOT_FOUND;
     return false_v;
+  }
+
+  if (file_size > INT_MAX) {
+    log_error("Texture file is too large for stb_image: %s", source_cstr);
+    out_result->error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    return false_v;
+  }
+
+  if (stbi_is_hdr_from_memory(file_data, (int)file_size)) {
+    const float64_t start_seconds = vkr_platform_get_absolute_time();
+    const bool8_t decoded = vkr_texture_decode_hdr_image(
+        file_data, file_size, source_cstr, out_result);
+    (void)vkr_metrics_event_record(
+        system ? system->hdr_decode_metrics : (VkrMetricEventProducer){0},
+        source_path, (uint64_t)(start_seconds * 1000000000.0),
+        vkr_metrics_elapsed_ns(start_seconds), file_size,
+        decoded ? VKR_METRIC_EVENT_STATUS_SUCCESS
+                : VKR_METRIC_EVENT_STATUS_FAILED);
+    return decoded;
   }
 
   stbi_set_flip_vertically_on_load_thread(flip_vertical ? 1 : 0);
@@ -2864,6 +3016,13 @@ vkr_internal bool8_t vkr_texture_decode_job_run(VkrJobContext *ctx,
   direct_vkt = vkr_texture_strip_resource_key_prefix(direct_vkt);
   sidecar_vkt = vkr_texture_strip_resource_key_prefix(sidecar_vkt);
   source_path = vkr_texture_strip_resource_key_prefix(source_path);
+
+  if (source_path.str &&
+      vkr_texture_probe_hdr_source(scratch_allocator, source_path)) {
+    return vkr_texture_decode_from_source_image(
+        scratch_allocator, job->system, source_path, false_v, (String8){0},
+        false_v, NULL, result);
+  }
 
   const bool8_t has_direct_vkt =
       direct_vkt.str && vkr_texture_path_exists(scratch_allocator, direct_vkt);
@@ -3149,7 +3308,9 @@ bool8_t vkr_texture_system_prepare_load_from_file(
       .type = VKR_TEXTURE_TYPE_2D,
       .properties = props,
       .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
-      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .v_repeat_mode = format == VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT
+                           ? VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE
+                           : VKR_TEXTURE_REPEAT_MODE_REPEAT,
       .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
       .min_filter = VKR_FILTER_LINEAR,
       .mag_filter = VKR_FILTER_LINEAR,

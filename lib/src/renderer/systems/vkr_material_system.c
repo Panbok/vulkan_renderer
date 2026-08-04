@@ -808,6 +808,9 @@ void vkr_material_system_apply_global(
     }
   }
 
+  vkr_material_system_uniform_set_optional(system, "exposure",
+                                           &global_state->exposure);
+
   vkr_shader_system_apply_global(system->shader_system);
 }
 

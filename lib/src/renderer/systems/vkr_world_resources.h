@@ -2,9 +2,9 @@
 
 /**
  * @file vkr_world_resources.h
- * @brief Stateless world pipelines and 3D text resources.
+ * @brief Shared world pipelines, HDR/IBL state, and 3D text resources.
  *
- * Owns the default world pipelines (opaque, transparent, overlay) and the
+ * Owns world pipelines, prepared HDR/IBL runtime state, tonemapping, and the
  * persistent 3D text slots used by the stateless renderer.
  */
 
@@ -13,6 +13,7 @@
 #include "defines.h"
 #include "math/vkr_transform.h"
 #include "renderer/resources/world/vkr_text_3d.h"
+#include "renderer/systems/vkr_ibl_bake_types.h"
 #include "renderer/vkr_renderer.h"
 
 struct s_RendererFrontend;
@@ -72,23 +73,43 @@ typedef struct VkrWorldResources {
   VkrPipelineHandle pbr_transparent_double_sided_pipeline;
   VkrPipelineHandle pbr_overlay_double_sided_pipeline;
 
+  VkrShaderConfig tonemap_shader_config;
+  VkrPipelineHandle tonemap_pipeline;
+  VkrRendererInstanceStateHandle tonemap_instance_state;
+  uint32_t tonemap_shader_id;
+
   VkrShaderConfig text_shader_config; /**< 3D text shader config */
   VkrPipelineHandle text_pipeline;    /**< 3D text glyph pipeline */
   Array_VkrWorldTextSlot text_slots;  /**< Allocated 3D text slots */
 
   VkrTextureHandle ibl_fallback_source_cubemap;
+  VkrTextureHandle ibl_legacy_fallback_source_cubemap;
+  VkrTextureHandle ibl_default_delivery_equirect;
   VkrTextureHandle ibl_fallback_irradiance_cubemap;
   VkrTextureHandle ibl_fallback_prefilter_cubemap;
   VkrTextureHandle ibl_brdf_lut;
 
   VkrRenderPassHandle ibl_bake_render_pass;
+  VkrShaderConfig ibl_equirect_bake_shader_config;
   VkrShaderConfig ibl_diffuse_bake_shader_config;
   VkrShaderConfig ibl_specular_bake_shader_config;
+  VkrShaderConfig ibl_brdf_bake_shader_config;
+  VkrPipelineHandle ibl_equirect_bake_pipeline;
   VkrPipelineHandle ibl_diffuse_bake_pipeline;
   VkrPipelineHandle ibl_specular_bake_pipeline;
+  VkrPipelineHandle ibl_brdf_bake_pipeline;
+  uint32_t ibl_equirect_bake_shader_id;
+  uint32_t ibl_diffuse_bake_shader_id;
+  uint32_t ibl_specular_bake_shader_id;
+  uint32_t ibl_brdf_bake_shader_id;
+  VkrRendererInstanceStateHandle ibl_equirect_bake_instance_state;
   VkrRendererInstanceStateHandle ibl_diffuse_bake_instance_state;
   VkrRendererInstanceStateHandle ibl_specular_bake_instance_state;
-  VkrGeometryHandle ibl_bake_cube_geometry;
+  VkrGeometryHandle ibl_bake_plane_geometry;
+  VkrRenderTargetHandle ibl_brdf_bake_target;
+  VkrIblPreparedTargetSet ibl_default_source_targets;
+  VkrIblPreparedTargetSet ibl_default_irradiance_targets;
+  VkrIblPreparedTargetSet ibl_default_prefilter_targets;
 
   VkrTextureHandle ibl_active_irradiance_cubemap;
   VkrTextureHandle ibl_active_prefilter_cubemap;
@@ -99,6 +120,13 @@ typedef struct VkrWorldResources {
   bool8_t ibl_bake_runtime_ready;
   bool8_t ibl_bake_render_pass_owned;
   bool8_t ibl_default_ready;
+  bool8_t ibl_default_prepared;
+  bool8_t ibl_brdf_baked;
+  bool8_t ibl_default_cube_baked;
+  bool8_t supports_hdr_ibl;
+  bool8_t hdr_capability_failure_logged;
+  uint32_t hdr_ibl_max_cube_extent;
+  uint32_t hdr_ibl_max_mip_levels;
 
   bool8_t initialized; /**< Resources have been initialized */
 } VkrWorldResources;
@@ -130,6 +158,27 @@ bool8_t
 vkr_world_resources_ensure_default_ibl_ready(struct s_RendererFrontend *rf,
                                              VkrWorldResources *resources);
 
+/** Allocates default HDR IBL targets after the skybox system is initialized. */
+bool8_t vkr_world_resources_prepare_default_ibl(struct s_RendererFrontend *rf,
+                                                VkrWorldResources *resources);
+
+/** Prepares all scene-owned bake products and cached face/mip targets. */
+bool8_t
+vkr_world_resources_prepare_scene_environment(struct s_RendererFrontend *rf,
+                                              VkrWorldResources *resources,
+                                              VkrScene *scene);
+
+/** Destroys cached target views before their scene-owned textures retire. */
+void vkr_world_resources_release_scene_environment_targets(
+    struct s_RendererFrontend *rf, VkrScene *scene);
+
+bool8_t vkr_world_resources_prepare_scene_reflection_probes(
+    struct s_RendererFrontend *rf, VkrWorldResources *resources,
+    VkrScene *scene);
+
+void vkr_world_resources_release_scene_reflection_probe_targets(
+    struct s_RendererFrontend *rf, VkrScene *scene);
+
 /**
  * @brief Produces scene IBL maps when the scene environment bake is pending.
  *
@@ -159,6 +208,12 @@ void vkr_world_resources_set_active_ibl_from_scene_or_default(
  */
 void vkr_world_resources_apply_active_ibl_to_material_system(
     struct s_RendererFrontend *rf, VkrWorldResources *resources);
+
+/** Records the fullscreen HDR scene-color to swapchain tonemap draw. */
+VkrRendererError vkr_world_resources_record_tonemap(
+    struct s_RendererFrontend *rf, VkrWorldResources *resources,
+    VkrTextureOpaqueHandle source_hdr, uint32_t width, uint32_t height,
+    float32_t exposure);
 
 /**
  * @brief Selects and blends two probe slots for the given world position.

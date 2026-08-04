@@ -26,7 +26,10 @@
 // todo: make these configurable
 #define VKR_MAX_TEXTURE_HANDLES 4096
 #define VKR_MAX_BUFFER_HANDLES 8192
-#define VKR_MAX_RENDER_TARGET_HANDLES 256
+/* Worst-case prepared HDR state is 16 probes * 60 targets plus two
+ * scene/default environment jobs of up to 157 targets each, before graph-owned
+ * targets. */
+#define VKR_MAX_RENDER_TARGET_HANDLES 2048
 
 // Assign texture generation for descriptor invalidation and debug liveness
 #ifndef NDEBUG
@@ -121,7 +124,6 @@ bool8_t renderer_vulkan_pipeline_get_shader_runtime_layout(
     VkrShaderRuntimeLayout *out_layout);
 
 // Local helpers defined later in this file.
-vkr_internal VkrTextureFormat vulkan_vk_format_to_vkr(VkFormat format);
 vkr_internal VkrSampleCount
 vulkan_vk_samples_to_vkr(VkSampleCountFlagBits samples);
 vkr_internal VkImageAspectFlags
@@ -134,6 +136,8 @@ vkr_internal uint32_t vulkan_texture_mip_extent(uint32_t base, uint32_t level);
 vkr_internal uint64_t vulkan_texture_expected_region_size_bytes(
     VkrTextureFormat format, uint32_t channels, uint32_t width,
     uint32_t height);
+vkr_internal VkImageUsageFlags
+vulkan_texture_payload_usage(const VkrTextureDescription *desc);
 vkr_internal void
 vulkan_present_target_destroy_offscreen(VulkanBackendState *state);
 vkr_internal void vulkan_backend_mark_frame_failed(VulkanBackendState *state);
@@ -1109,8 +1113,13 @@ vkr_internal bool8_t vulkan_backend_validate_texture_payload_request(
     return false_v;
   }
 
-  const bool8_t format_is_compressed =
-      vulkan_texture_format_is_compressed(desc->format);
+  VkrTextureFormatInfo format_info = {0};
+  if (!vkr_texture_format_get_info(desc->format, &format_info) ||
+      format_info.is_depth_stencil ||
+      desc->channels != format_info.channel_count) {
+    return false_v;
+  }
+  const bool8_t format_is_compressed = format_info.is_block_compressed;
   *out_format_is_compressed = format_is_compressed;
   if (payload->is_compressed != format_is_compressed) {
     return false_v;
@@ -1125,10 +1134,6 @@ vkr_internal bool8_t vulkan_backend_validate_texture_payload_request(
   const uint32_t max_mip_levels =
       vulkan_calculate_mip_levels(desc->width, desc->height);
   if (payload->mip_levels > max_mip_levels) {
-    return false_v;
-  }
-
-  if (!format_is_compressed && (desc->channels == 0 || desc->channels > 4)) {
     return false_v;
   }
 
@@ -1531,7 +1536,7 @@ vulkan_shadow_depth_vkr_format_get(const VulkanBackendState *state) {
   if (shadow_format == VK_FORMAT_UNDEFINED) {
     return VKR_TEXTURE_FORMAT_D32_SFLOAT;
   }
-  return vulkan_vk_format_to_vkr(shadow_format);
+  return vulkan_texture_format_from_image_format(shadow_format);
 }
 
 // todo: we are having issues with image ghosting when camera moves
@@ -2267,14 +2272,8 @@ vkr_internal void vulkan_select_shadow_sampler_filter_modes(
 }
 
 vkr_internal bool8_t vulkan_texture_format_is_depth(VkrTextureFormat format) {
-  switch (format) {
-  case VKR_TEXTURE_FORMAT_D16_UNORM:
-  case VKR_TEXTURE_FORMAT_D32_SFLOAT:
-  case VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT:
-    return true_v;
-  default:
-    return false_v;
-  }
+  VkrTextureFormatInfo info = {0};
+  return vkr_texture_format_get_info(format, &info) && info.is_depth_stencil;
 }
 
 vkr_internal bool8_t vulkan_texture_format_is_integer(VkrTextureFormat format) {
@@ -2290,19 +2289,8 @@ vkr_internal bool8_t vulkan_texture_format_is_integer(VkrTextureFormat format) {
 
 vkr_internal bool8_t
 vulkan_texture_format_is_compressed(VkrTextureFormat format) {
-  switch (format) {
-  case VKR_TEXTURE_FORMAT_BC7_UNORM:
-  case VKR_TEXTURE_FORMAT_BC7_SRGB:
-  case VKR_TEXTURE_FORMAT_BC5_UNORM:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
-  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
-    return true_v;
-  default:
-    return false_v;
-  }
+  VkrTextureFormatInfo info = {0};
+  return vkr_texture_format_get_info(format, &info) && info.is_block_compressed;
 }
 
 /**
@@ -2326,88 +2314,10 @@ vkr_internal VkrRendererError vulkan_texture_reject_compressed_mutation(
 
 vkr_internal uint32_t
 vulkan_texture_format_channel_count(VkrTextureFormat format) {
-  switch (format) {
-  case VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM:
-  case VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB:
-  case VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM:
-  case VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB:
-  case VKR_TEXTURE_FORMAT_R8G8B8A8_UINT:
-  case VKR_TEXTURE_FORMAT_R8G8B8A8_SNORM:
-  case VKR_TEXTURE_FORMAT_R8G8B8A8_SINT:
-    return 4;
-  case VKR_TEXTURE_FORMAT_BC7_UNORM:
-  case VKR_TEXTURE_FORMAT_BC7_SRGB:
-  case VKR_TEXTURE_FORMAT_BC5_UNORM:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
-  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
-    return 0;
-  case VKR_TEXTURE_FORMAT_R8G8_UNORM:
-    return 2;
-  case VKR_TEXTURE_FORMAT_R8_UNORM:
-  case VKR_TEXTURE_FORMAT_R16_SFLOAT:
-  case VKR_TEXTURE_FORMAT_R32_SFLOAT:
-  case VKR_TEXTURE_FORMAT_R32_UINT:
-  case VKR_TEXTURE_FORMAT_D16_UNORM:
-  case VKR_TEXTURE_FORMAT_D32_SFLOAT:
-  case VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT:
-    return 1;
-  default:
-    return 1;
-  }
-}
-
-vkr_internal uint32_t
-vulkan_texture_format_block_width(VkrTextureFormat format) {
-  switch (format) {
-  case VKR_TEXTURE_FORMAT_BC7_UNORM:
-  case VKR_TEXTURE_FORMAT_BC7_SRGB:
-  case VKR_TEXTURE_FORMAT_BC5_UNORM:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
-  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
-    return 4;
-  default:
-    return 1;
-  }
-}
-
-vkr_internal uint32_t
-vulkan_texture_format_block_height(VkrTextureFormat format) {
-  switch (format) {
-  case VKR_TEXTURE_FORMAT_BC7_UNORM:
-  case VKR_TEXTURE_FORMAT_BC7_SRGB:
-  case VKR_TEXTURE_FORMAT_BC5_UNORM:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
-  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
-    return 4;
-  default:
-    return 1;
-  }
-}
-
-vkr_internal uint32_t vulkan_texture_format_block_size_bytes(
-    VkrTextureFormat format, uint32_t channels) {
-  switch (format) {
-  case VKR_TEXTURE_FORMAT_BC7_UNORM:
-  case VKR_TEXTURE_FORMAT_BC7_SRGB:
-  case VKR_TEXTURE_FORMAT_BC5_UNORM:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM:
-  case VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM:
-  case VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB:
-  case VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM:
-    return 16;
-  default:
-    return channels;
-  }
+  VkrTextureFormatInfo info = {0};
+  return vkr_texture_format_get_info(format, &info)
+             ? (uint32_t)info.channel_count
+             : 0u;
 }
 
 vkr_internal uint32_t vulkan_texture_mip_extent(uint32_t base,
@@ -2418,18 +2328,23 @@ vkr_internal uint32_t vulkan_texture_mip_extent(uint32_t base,
 vkr_internal uint64_t vulkan_texture_expected_region_size_bytes(
     VkrTextureFormat format, uint32_t channels, uint32_t width,
     uint32_t height) {
-  const uint32_t block_width = vulkan_texture_format_block_width(format);
-  const uint32_t block_height = vulkan_texture_format_block_height(format);
-  const uint32_t block_size =
-      vulkan_texture_format_block_size_bytes(format, channels);
-  if (block_size == 0) {
+  (void)channels;
+  const uint64_t size = vkr_texture_format_region_size(format, width, height);
+  if (size == 0) {
     return 0;
   }
+  return size;
+}
 
-  const uint64_t blocks_x = (width + (uint64_t)block_width - 1) / block_width;
-  const uint64_t blocks_y =
-      (height + (uint64_t)block_height - 1) / block_height;
-  return blocks_x * blocks_y * (uint64_t)block_size;
+vkr_internal VkImageUsageFlags
+vulkan_texture_payload_usage(const VkrTextureDescription *desc) {
+  VkImageUsageFlags usage =
+      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  if (desc &&
+      bitset8_is_set(&desc->properties, VKR_TEXTURE_PROPERTY_WRITABLE_BIT)) {
+    usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  }
+  return usage;
 }
 
 vkr_internal VkImageLayout
@@ -2479,9 +2394,11 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
   assert_log(state != NULL, "State not initialized");
 
   VkrTextureFormat swapchain_format =
-      vulkan_vk_format_to_vkr(state->swapchain.format);
+      vulkan_texture_format_from_image_format(state->swapchain.format);
+  const VkrTextureFormat hdr_scene_format =
+      VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
   VkrTextureFormat depth_format =
-      vulkan_vk_format_to_vkr(state->device.depth_format);
+      vulkan_texture_format_from_image_format(state->device.depth_format);
   VkrTextureFormat shadow_depth_format =
       vulkan_shadow_depth_vkr_format_get(state);
   VkrClearValue clear_world = {.color_f32 = {0.1f, 0.1f, 0.2f, 1.0f}};
@@ -2526,7 +2443,7 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
       VkrClearValue color_clear =
           (domain == VKR_PIPELINE_DOMAIN_SKYBOX) ? clear_black : clear_world;
       color_attachment = (VkrRenderPassAttachmentDesc){
-          .format = swapchain_format,
+          .format = hdr_scene_format,
           .samples = VKR_SAMPLE_COUNT_1,
           .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
           .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -2692,44 +2609,6 @@ vkr_internal bool32_t create_domain_render_passes(VulkanBackendState *state) {
   return true;
 }
 
-vkr_internal VkrTextureFormat vulkan_vk_format_to_vkr(VkFormat format) {
-  switch (format) {
-  case VK_FORMAT_B8G8R8A8_SRGB:
-    return VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB;
-  case VK_FORMAT_B8G8R8A8_UNORM:
-    return VKR_TEXTURE_FORMAT_B8G8R8A8_UNORM;
-  case VK_FORMAT_R8G8B8A8_SRGB:
-    return VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB;
-  case VK_FORMAT_R8G8B8A8_UNORM:
-    return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
-  case VK_FORMAT_BC7_UNORM_BLOCK:
-    return VKR_TEXTURE_FORMAT_BC7_UNORM;
-  case VK_FORMAT_BC7_SRGB_BLOCK:
-    return VKR_TEXTURE_FORMAT_BC7_SRGB;
-  case VK_FORMAT_BC5_UNORM_BLOCK:
-    return VKR_TEXTURE_FORMAT_BC5_UNORM;
-  case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
-    return VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM;
-  case VK_FORMAT_ETC2_R8G8B8A8_SRGB_BLOCK:
-    return VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_SRGB;
-  case VK_FORMAT_ASTC_4x4_UNORM_BLOCK:
-    return VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM;
-  case VK_FORMAT_ASTC_4x4_SRGB_BLOCK:
-    return VKR_TEXTURE_FORMAT_ASTC_4x4_SRGB;
-  case VK_FORMAT_R32_UINT:
-    return VKR_TEXTURE_FORMAT_R32_UINT;
-  case VK_FORMAT_D16_UNORM:
-    return VKR_TEXTURE_FORMAT_D16_UNORM;
-  case VK_FORMAT_D32_SFLOAT:
-    return VKR_TEXTURE_FORMAT_D32_SFLOAT;
-  case VK_FORMAT_D24_UNORM_S8_UINT:
-    return VKR_TEXTURE_FORMAT_D24_UNORM_S8_UINT;
-  default:
-    log_warn("Unmapped VkFormat %d, defaulting to R8G8B8A8_UNORM", format);
-    return VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
-  }
-}
-
 vkr_internal VkrSampleCount
 vulkan_vk_samples_to_vkr(VkSampleCountFlagBits samples) {
   switch (samples) {
@@ -2849,7 +2728,7 @@ vulkan_backend_create_attachment_wrappers(VulkanBackendState *state) {
     wrapper->description.height = state->swapchain.extent.height;
     wrapper->description.channels = 4;
     wrapper->description.format =
-        vulkan_vk_format_to_vkr(state->swapchain.format);
+        vulkan_texture_format_from_image_format(state->swapchain.format);
     wrapper->description.sample_count = VKR_SAMPLE_COUNT_1;
 
     state->swapchain_image_textures[i] = wrapper;
@@ -2884,7 +2763,7 @@ vulkan_backend_create_attachment_wrappers(VulkanBackendState *state) {
     depth_wrapper->description.height = state->swapchain.extent.height;
     depth_wrapper->description.channels = 1;
     depth_wrapper->description.format =
-        vulkan_vk_format_to_vkr(state->device.depth_format);
+        vulkan_texture_format_from_image_format(state->device.depth_format);
     depth_wrapper->description.sample_count = VKR_SAMPLE_COUNT_1;
     state->depth_textures[i] = depth_wrapper;
   }
@@ -3372,6 +3251,10 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
         state->domain_render_passes[VKR_PIPELINE_DOMAIN_SKYBOX] = created->vk;
         state->domain_initialized[VKR_PIPELINE_DOMAIN_SKYBOX] = true;
       } else if (vkr_string8_equals_cstr_i(&descs[i].name,
+                                           "renderpass.builtin.post")) {
+        state->domain_render_passes[VKR_PIPELINE_DOMAIN_POST] = created->vk;
+        state->domain_initialized[VKR_PIPELINE_DOMAIN_POST] = true;
+      } else if (vkr_string8_equals_cstr_i(&descs[i].name,
                                            "renderpass.builtin.picking")) {
         state->domain_render_passes[VKR_PIPELINE_DOMAIN_PICKING] = created->vk;
         state->domain_initialized[VKR_PIPELINE_DOMAIN_PICKING] = true;
@@ -3380,9 +3263,11 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
   }
 
   VkrTextureFormat swapchain_format =
-      vulkan_vk_format_to_vkr(state->swapchain.format);
+      vulkan_texture_format_from_image_format(state->swapchain.format);
+  const VkrTextureFormat hdr_scene_format =
+      VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT;
   VkrTextureFormat depth_format =
-      vulkan_vk_format_to_vkr(state->device.depth_format);
+      vulkan_texture_format_from_image_format(state->device.depth_format);
   VkrClearValue clear_black = {.color_f32 = {0.0f, 0.0f, 0.0f, 1.0f}};
   VkrClearValue clear_world = {.color_f32 = {0.1f, 0.1f, 0.2f, 1.0f}};
   VkrClearValue clear_transparent = {.color_f32 = {0.0f, 0.0f, 0.0f, 0.0f}};
@@ -3392,7 +3277,7 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
   if (!vulkan_backend_renderpass_lookup(
           state, string8_lit("Renderpass.Builtin.Skybox"))) {
     VkrRenderPassAttachmentDesc skybox_color = {
-        .format = swapchain_format,
+        .format = hdr_scene_format,
         .samples = VKR_SAMPLE_COUNT_1,
         .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
         .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -3435,7 +3320,7 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
   if (!vulkan_backend_renderpass_lookup(
           state, string8_lit("Renderpass.Builtin.World"))) {
     VkrRenderPassAttachmentDesc world_color = {
-        .format = swapchain_format,
+        .format = hdr_scene_format,
         .samples = VKR_SAMPLE_COUNT_1,
         .load_op = VKR_ATTACHMENT_LOAD_OP_LOAD,
         .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
@@ -3503,6 +3388,37 @@ vkr_internal bool32_t vulkan_backend_create_builtin_passes(
     }
     state->domain_render_passes[VKR_PIPELINE_DOMAIN_UI] = ui->vk;
     state->domain_initialized[VKR_PIPELINE_DOMAIN_UI] = true;
+  }
+
+  if (!vulkan_backend_renderpass_lookup(
+          state, string8_lit("Renderpass.Builtin.Post"))) {
+    VkrRenderPassAttachmentDesc post_color = {
+        .format = swapchain_format,
+        .samples = VKR_SAMPLE_COUNT_1,
+        .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
+        .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
+        .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
+        .final_layout = vulkan_present_target_terminal_layout(state),
+        .clear_value = clear_black,
+    };
+    VkrRenderPassDesc post_desc = {
+        .name = string8_lit("Renderpass.Builtin.Post"),
+        .domain = VKR_PIPELINE_DOMAIN_POST,
+        .color_attachment_count = 1,
+        .color_attachments = &post_color,
+        .depth_stencil_attachment = NULL,
+        .resolve_attachment_count = 0,
+        .resolve_attachments = NULL,
+    };
+    struct s_RenderPass *post =
+        vulkan_backend_renderpass_create_from_desc_internal(state, &post_desc);
+    if (!post) {
+      return false;
+    }
+    state->domain_render_passes[VKR_PIPELINE_DOMAIN_POST] = post->vk;
+    state->domain_initialized[VKR_PIPELINE_DOMAIN_POST] = true;
   }
 
   if (!vulkan_backend_renderpass_lookup(
@@ -6687,7 +6603,8 @@ renderer_vulkan_create_depth_attachment(void *backend_state, uint32_t width,
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
   VkFormat depth_format = state->device.depth_format;
-  VkrTextureFormat vkr_format = vulkan_vk_format_to_vkr(depth_format);
+  VkrTextureFormat vkr_format =
+      vulkan_texture_format_from_image_format(depth_format);
   if (!vulkan_texture_format_is_depth(vkr_format)) {
     log_error("Unsupported depth format for depth attachment");
     return (VkrBackendResourceHandle){.ptr = NULL};
@@ -6767,7 +6684,8 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment(
     log_error("No valid depth format available for sampled depth attachment");
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
-  VkrTextureFormat vkr_format = vulkan_vk_format_to_vkr(depth_format);
+  VkrTextureFormat vkr_format =
+      vulkan_texture_format_from_image_format(depth_format);
   if (!vulkan_texture_format_is_depth(vkr_format)) {
     log_error("Unsupported depth format for sampled depth attachment");
     return (VkrBackendResourceHandle){.ptr = NULL};
@@ -6889,7 +6807,8 @@ VkrBackendResourceHandle renderer_vulkan_create_sampled_depth_attachment_array(
         "No valid depth format available for sampled depth attachment array");
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
-  VkrTextureFormat vkr_format = vulkan_vk_format_to_vkr(depth_format);
+  VkrTextureFormat vkr_format =
+      vulkan_texture_format_from_image_format(depth_format);
   if (!vulkan_texture_format_is_depth(vkr_format)) {
     log_error("Unsupported depth format for sampled depth attachment array");
     return (VkrBackendResourceHandle){.ptr = NULL};
@@ -7106,8 +7025,15 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
-  const bool8_t format_is_compressed =
-      vulkan_texture_format_is_compressed(desc->format);
+  VkrTextureFormatInfo format_info = {0};
+  if (!vkr_texture_format_get_info(desc->format, &format_info) ||
+      format_info.is_depth_stencil ||
+      desc->channels != format_info.channel_count) {
+    log_error("Payload texture description does not match canonical format "
+              "metadata");
+    return (VkrBackendResourceHandle){.ptr = NULL};
+  }
+  const bool8_t format_is_compressed = format_info.is_block_compressed;
   if (payload->is_compressed != format_is_compressed) {
     log_error("Payload compression flag must match texture format");
     return (VkrBackendResourceHandle){.ptr = NULL};
@@ -7128,11 +7054,6 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
     log_error("Payload mip level count exceeds valid chain length "
               "(requested=%u, max=%u)",
               payload->mip_levels, max_mip_levels);
-    return (VkrBackendResourceHandle){.ptr = NULL};
-  }
-
-  if (!format_is_compressed && (desc->channels == 0 || desc->channels > 4)) {
-    log_error("Uncompressed payload upload requires channel count in [1,4]");
     return (VkrBackendResourceHandle){.ptr = NULL};
   }
 
@@ -7282,12 +7203,7 @@ VkrBackendResourceHandle renderer_vulkan_create_texture_with_payload(
     goto cleanup_texture;
   }
 
-  VkImageUsageFlags usage =
-      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-  if (!format_is_compressed) {
-    usage |=
-        VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-  }
+  const VkImageUsageFlags usage = vulkan_texture_payload_usage(desc);
 
   const VkFormat image_format =
       vulkan_image_format_from_texture_format(desc->format);
@@ -7640,12 +7556,8 @@ uint32_t renderer_vulkan_create_texture_with_payload_batch(
       continue;
     }
 
-    VkImageUsageFlags usage =
-        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    if (!format_is_compressed) {
-      usage |=
-          VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    }
+    const VkImageUsageFlags usage =
+        vulkan_texture_payload_usage(request->description);
 
     const VkFormat image_format =
         vulkan_image_format_from_texture_format(request->description->format);
@@ -7905,9 +7817,8 @@ renderer_vulkan_create_texture(void *backend_state,
 
   texture->description = *desc;
 
-  VkDeviceSize image_size = (VkDeviceSize)desc->width *
-                            (VkDeviceSize)desc->height *
-                            (VkDeviceSize)desc->channels;
+  VkDeviceSize image_size = (VkDeviceSize)vkr_texture_format_region_size(
+      desc->format, desc->width, desc->height);
 
   VkFormat image_format = vulkan_image_format_from_texture_format(desc->format);
   VkFormatProperties format_props;
@@ -8014,7 +7925,22 @@ renderer_vulkan_create_texture(void *backend_state,
       }
     }
   } else {
-    // Writable texture - just transition layout on graphics queue
+    // Resource finalization inside an active frame records into that frame;
+    // startup creation keeps the cold single-use path.
+    VulkanCommandBuffer *frame_command_buffer =
+        state->frame_active && !state->render_pass_active
+            ? vulkan_backend_get_active_graphics_command_buffer(state)
+            : NULL;
+    if (frame_command_buffer) {
+      if (!vulkan_image_transition_layout(
+              state, &texture->texture.image, frame_command_buffer,
+              image_format, VK_IMAGE_LAYOUT_UNDEFINED,
+              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+        goto cleanup_texture;
+      }
+      goto writable_2d_transition_complete;
+    }
+
     VulkanCommandBuffer temp_command_buffer = {0};
     if (!vulkan_command_buffer_allocate_and_begin_single_use(
             state, &temp_command_buffer)) {
@@ -8049,6 +7975,7 @@ renderer_vulkan_create_texture(void *backend_state,
     vkFreeCommandBuffers(state->device.logical_device,
                          state->device.graphics_command_pool, 1,
                          &temp_command_buffer.handle);
+  writable_2d_transition_complete:;
   }
 
   VkFilter min_filter = VK_FILTER_LINEAR;
@@ -8190,8 +8117,12 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
     VkrBufferTypeFlags buffer_type = bitset8_create();
     bitset8_set(&buffer_type, VKR_BUFFER_TYPE_GRAPHICS);
 
-    face_size = (VkDeviceSize)desc->width * (VkDeviceSize)desc->height *
-                (VkDeviceSize)desc->channels;
+    face_size = (VkDeviceSize)vkr_texture_format_region_size(
+        desc->format, desc->width, desc->height);
+    if (face_size == 0u || face_size > UINT64_MAX / 6u) {
+      log_error("Cube texture byte size is invalid or overflows");
+      goto cleanup_texture;
+    }
     VkDeviceSize total_size = face_size * 6;
     const VkrBufferDescription staging_buffer_desc = {
         .size = total_size,
@@ -8229,14 +8160,20 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
     }
   }
 
+  VkImageUsageFlags image_usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+  if (initial_data) {
+    image_usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  }
+  if (writable) {
+    image_usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  }
   const VulkanImageDescription image_desc = {
       .image_type = VK_IMAGE_TYPE_2D,
       .width = desc->width,
       .height = desc->height,
       .format = image_format,
       .tiling = VK_IMAGE_TILING_OPTIMAL,
-      .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .usage = image_usage,
       .memory_flags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
       .mip_levels = mip_levels,
       .array_layers = 6, // One per cube face.
@@ -8269,7 +8206,20 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
       vulkan_buffer_destroy(state, &staging_buffer->buffer);
     }
   } else {
-    // Writable cube map: make all subresources readable by default.
+    VulkanCommandBuffer *frame_command_buffer =
+        state->frame_active && !state->render_pass_active
+            ? vulkan_backend_get_active_graphics_command_buffer(state)
+            : NULL;
+    if (frame_command_buffer) {
+      if (!vulkan_image_transition_layout(
+              state, &texture->texture.image, frame_command_buffer,
+              image_format, VK_IMAGE_LAYOUT_UNDEFINED,
+              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)) {
+        goto cleanup_texture;
+      }
+      goto writable_cube_transition_complete;
+    }
+
     VulkanCommandBuffer temp_command_buffer = {0};
     if (!vulkan_command_buffer_allocate_and_begin_single_use(
             state, &temp_command_buffer)) {
@@ -8304,6 +8254,7 @@ vkr_internal VkrBackendResourceHandle renderer_vulkan_create_cube_texture(
     vkFreeCommandBuffers(state->device.logical_device,
                          state->device.graphics_command_pool, 1,
                          &temp_command_buffer.handle);
+  writable_cube_transition_complete:;
   }
 
   VkFilter min_filter = VK_FILTER_LINEAR;
@@ -8528,13 +8479,14 @@ VkrRendererError renderer_vulkan_write_texture(
   uint32_t mip_width = Max(1u, texture->texture.image.width >> mip_level);
   uint32_t mip_height = Max(1u, texture->texture.image.height >> mip_level);
 
-  if (x + width > mip_width || y + height > mip_height) {
+  if (x > mip_width || y > mip_height || width > mip_width - x ||
+      height > mip_height - y) {
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
 
-  uint64_t expected_size = (uint64_t)width * (uint64_t)height *
-                           (uint64_t)texture->description.channels;
-  if (size < expected_size) {
+  const uint64_t expected_size = vkr_texture_format_region_size(
+      texture->description.format, width, height);
+  if (expected_size == 0u || size < expected_size) {
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
 
@@ -10074,10 +10026,10 @@ renderer_vulkan_present_target_format(void *backend_state,
                ? VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB
                : VKR_TEXTURE_FORMAT_D32_SFLOAT;
   }
-  return vulkan_vk_format_to_vkr(attachment ==
-                                         VKR_PRESENT_TARGET_ATTACHMENT_COLOR
-                                     ? state->swapchain.format
-                                     : state->device.depth_format);
+  return vulkan_texture_format_from_image_format(
+      attachment == VKR_PRESENT_TARGET_ATTACHMENT_COLOR
+          ? state->swapchain.format
+          : state->device.depth_format);
 }
 
 vkr_internal VkrTextureLayout

@@ -116,6 +116,9 @@ struct s_RendererFrontend {
   bool8_t supports_draw_indirect_first_instance;
   VkrRendererBootMetrics boot_metrics;
   VkrSubsystemPlan subsystem_plan;
+  VkrMetricEventProducer hdr_decode_metrics;
+  VkrMetricEventProducer ibl_conversion_metrics;
+  VkrMetricEventProducer ibl_convolution_metrics;
 
   // High-level renderer subsystems and state (now accessible)
   VkrPipelineRegistry pipeline_registry;

@@ -410,7 +410,9 @@ float4 fragmentMain(VertexDto input) : SV_Target
     float3 v = normalize(g_ubo.view_position - input.frag_position);
     float ndotv = max(dot(normal, v), 0.0f);
     float3 f0 = lerp(float3(0.04f, 0.04f, 0.04f), base_color.rgb, metallic);
-    float3 color = g_ubo.ambient_color.rgb * base_color.rgb * ao;
+    float3 color = g_ubo.ibl_enabled != 0u
+                       ? float3(0.0f, 0.0f, 0.0f)
+                       : g_ubo.ambient_color.rgb * base_color.rgb * ao;
 
     uint selected_cascade = 0u;
     if (g_ubo.shadow_enabled != 0u && g_ubo.dir_enabled != 0u)

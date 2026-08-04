@@ -145,6 +145,7 @@ vkr_internal void vkr_pass_ui_execute(VkrRgPassContext *ctx, void *user_data) {
                                   0.0f, -1.0f, 1.0f),
       .ambient_color = packet->globals.ambient_color,
       .view_position = packet->globals.view_position,
+      .exposure = packet->globals.exposure,
       .render_mode = (VkrRenderMode)packet->globals.render_mode,
   };
 

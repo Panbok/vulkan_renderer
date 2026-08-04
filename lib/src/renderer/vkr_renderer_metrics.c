@@ -393,7 +393,16 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                                    &ids->shader_load_event) ||
       !vkr_renderer_event_register(metrics, "shader.reflection",
                                    VKR_METRIC_DOMAIN_ASSET,
-                                   &ids->shader_reflection_event)) {
+                                   &ids->shader_reflection_event) ||
+      !vkr_renderer_event_register(metrics, "asset.hdr_decode",
+                                   VKR_METRIC_DOMAIN_ASSET,
+                                   &ids->hdr_decode_event) ||
+      !vkr_renderer_event_register(metrics, "ibl.equirect_to_cube",
+                                   VKR_METRIC_DOMAIN_RENDERGRAPH,
+                                   &ids->ibl_conversion_event) ||
+      !vkr_renderer_event_register(metrics, "ibl.convolution",
+                                   VKR_METRIC_DOMAIN_RENDERGRAPH,
+                                   &ids->ibl_convolution_event)) {
     return false_v;
   }
   static const char *asset_names[VKR_RENDERER_ASSET_METRIC_COUNT] = {
@@ -412,6 +421,9 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
       .pipeline_create = {metrics, ids->pipeline_create_event},
       .shader_load = {metrics, ids->shader_load_event},
       .shader_reflection = {metrics, ids->shader_reflection_event},
+      .hdr_decode = {metrics, ids->hdr_decode_event},
+      .ibl_conversion = {metrics, ids->ibl_conversion_event},
+      .ibl_convolution = {metrics, ids->ibl_convolution_event},
   };
   for (uint32_t i = 0; i < VKR_RENDERER_ASSET_METRIC_COUNT; ++i) {
     renderer_metrics->producers.asset_load[i] =

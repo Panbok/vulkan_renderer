@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "id": "smoke.hdr_environment.seams",
+  "suite": "smoke",
+  "description": "Sky-only cubemap continuity capture looking directly through the +X/+Y/+Z corner so three face boundaries cross the frame center.",
+  "scene": "assets/scenes/sponza.scene.json",
+  "seed": 1,
+  "resolution": [960, 720],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 2,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 90000,
+  "frames": { "warmup": 2, "measure": 3 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1000, 0],
+    "yaw": 45,
+    "pitch": 35.26439,
+    "vertical_fov_degrees": 90,
+    "near_plane": 0.1,
+    "far_plane": 500
+  },
+  "captures": [
+    {
+      "at_frame": 1,
+      "channels": ["final_color", "scene_color"]
+    }
+  ]
+}

@@ -598,6 +598,7 @@ vkr_internal void vkr_pass_world_execute(VkrRgPassContext *ctx,
       .ui_view = mat4_identity(),
       .ambient_color = packet->globals.ambient_color,
       .view_position = packet->globals.view_position,
+      .exposure = packet->globals.exposure,
       .render_mode = (VkrRenderMode)packet->globals.render_mode,
   };
 

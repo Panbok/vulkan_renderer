@@ -675,7 +675,10 @@ typedef struct VkrFramebufferCache {
 // Deferred Destruction Queue - delays resource destruction until GPU is done
 // ============================================================================
 
-#define VKR_DEFERRED_DESTROY_QUEUE_SIZE 4096
+/* Each one-attachment IBL bake target retires a view, framebuffer, and wrapper.
+ * A full 2048-target IBL burst therefore needs 6144 entries, leaving headroom
+ * for ordinary texture/buffer retirement. */
+#define VKR_DEFERRED_DESTROY_QUEUE_SIZE 8192
 
 typedef enum VkrDeferredDestroyKind {
   VKR_DEFERRED_DESTROY_FRAMEBUFFER = 0,

@@ -1,15 +1,9 @@
-#include "vkr_shader_transform.slangh"
+#include "vkr_shader_cube.slangh"
 
-struct GlobalUniformBufferObject
+struct PushConstants
 {
-    column_major float4x4 projection;
-    column_major float4x4 view;
-};
-
-struct InstanceUniformBufferObject
-{
-    float roughness;
-    float3 _padding;
+    float4 face_params;
+    float4 sample_params;
 };
 
 struct VertexInput
@@ -24,14 +18,11 @@ struct VertexInput
 struct VertexDto
 {
     float4 position : SV_Position;
-    float3 direction : TEXCOORD;
+    float2 face_uv : TEXCOORD;
 };
 
-[[vk::binding(0, 0)]]
-ConstantBuffer<GlobalUniformBufferObject> g_ubo;
-
-[[vk::binding(0, 1)]]
-ConstantBuffer<InstanceUniformBufferObject> i_ubo;
+[[vk::push_constant]]
+ConstantBuffer<PushConstants> push_constants;
 
 [[vk::binding(1, 1)]]
 TextureCube<float4> source_cubemap;
@@ -43,10 +34,8 @@ SamplerState source_sampler;
 VertexDto vertexMain(VertexInput input)
 {
     VertexDto output;
-    output.direction = input.position;
-
-    float4 world_pos = float4(input.position, 1.0f);
-    output.position = vkr_clip_from_world(g_ubo.projection, g_ubo.view, world_pos);
+    output.face_uv = input.texcoord;
+    output.position = float4(input.texcoord * 2.0f - 1.0f, 0.0f, 1.0f);
     return output;
 }
 
@@ -89,12 +78,24 @@ float3 importance_sample_ggx(float2 xi, float3 n, float roughness)
     return normalize(sample_vec);
 }
 
+float distribution_ggx(float no_h, float roughness)
+{
+    float alpha = max(roughness * roughness, 1e-6f);
+    float alpha2 = alpha * alpha;
+    float denominator = no_h * no_h * (alpha2 - 1.0f) + 1.0f;
+    return alpha2 / max(PI * denominator * denominator, 1e-6f);
+}
+
 [shader("fragment")]
 float4 fragmentMain(VertexDto input) : SV_Target
 {
-    float3 n = normalize(input.direction);
+    uint face = uint(push_constants.face_params.x + 0.5f);
+    float3 n = normalize(vkr_cube_face_uv_to_direction(face, input.face_uv));
     float3 r = n;
     float3 v = r;
+    float roughness = push_constants.sample_params.x;
+    float source_face_size = push_constants.sample_params.y;
+    float source_mip_count = push_constants.sample_params.z;
 
     const uint sample_count = 256u;
     float3 prefiltered_color = float3(0.0f, 0.0f, 0.0f);
@@ -103,13 +104,25 @@ float4 fragmentMain(VertexDto input) : SV_Target
     for (uint i = 0u; i < sample_count; ++i)
     {
         float2 xi = hammersley(i, sample_count);
-        float3 h = importance_sample_ggx(xi, n, i_ubo.roughness);
+        float3 h = importance_sample_ggx(xi, n, roughness);
         float3 l = normalize(2.0f * dot(v, h) * h - v);
 
         float ndotl = max(dot(n, l), 0.0f);
         if (ndotl > 0.0f)
         {
-            prefiltered_color += source_cubemap.Sample(source_sampler, l).rgb * ndotl;
+            float no_h = max(dot(n, h), 1e-6f);
+            float vo_h = max(dot(v, h), 1e-6f);
+            float d = distribution_ggx(no_h, roughness);
+            float pdf = d * no_h / max(4.0f * vo_h, 1e-6f);
+            float omega_s = 1.0f / (float(sample_count) * max(pdf, 1e-6f));
+            float omega_p = 4.0f * PI /
+                max(6.0f * source_face_size * source_face_size, 1.0f);
+            float lod = roughness <= 0.001f
+                ? 0.0f
+                : 0.5f * log2(4.0f * omega_s / omega_p);
+            lod = clamp(lod, 0.0f, max(source_mip_count - 1.0f, 0.0f));
+            prefiltered_color +=
+                source_cubemap.SampleLevel(source_sampler, l, lod).rgb * ndotl;
             total_weight += ndotl;
         }
     }

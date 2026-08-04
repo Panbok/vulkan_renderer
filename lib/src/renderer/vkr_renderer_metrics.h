@@ -161,6 +161,9 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId pipeline_create_event;
   VkrMetricId shader_load_event;
   VkrMetricId shader_reflection_event;
+  VkrMetricId hdr_decode_event;
+  VkrMetricId ibl_conversion_event;
+  VkrMetricId ibl_convolution_event;
   VkrMetricId asset_load_event[VKR_RENDERER_ASSET_METRIC_COUNT];
 } VkrRendererMetricIds;
 
@@ -168,6 +171,9 @@ typedef struct VkrRendererMetricsProducerConfig {
   VkrMetricEventProducer pipeline_create;
   VkrMetricEventProducer shader_load;
   VkrMetricEventProducer shader_reflection;
+  VkrMetricEventProducer hdr_decode;
+  VkrMetricEventProducer ibl_conversion;
+  VkrMetricEventProducer ibl_convolution;
   VkrMetricEventProducer asset_load[VKR_RENDERER_ASSET_METRIC_COUNT];
 } VkrRendererMetricsProducerConfig;
 
