@@ -83,16 +83,18 @@ static bool8_t vkr_harness_add_field(
   return true_v;
 }
 
-bool8_t vkr_harness_case_fingerprints(
+bool8_t vkr_harness_case_fingerprints_with_scene_digest(
     VkrHarnessTool tool, const VkrHarnessCase *case_manifest,
     const VkrHarnessProfile *profile, VkrSubsystemMask subsystem_mask,
     const VkrHarnessFingerprintField *environment_fields,
-    uint32_t environment_field_count,
+    uint32_t environment_field_count, const char *scene_content_digest,
     char out_environment[VKR_HARNESS_DIGEST_MAX],
     char out_workload[VKR_HARNESS_DIGEST_MAX],
     char out_policy[VKR_HARNESS_DIGEST_MAX], VkrHarnessError *out_error) {
-  if (!case_manifest || !profile || !out_environment || !out_workload ||
-      !out_policy ||
+  if (!case_manifest || !profile || !scene_content_digest ||
+      !string_n_equals(scene_content_digest, "sha256:", 7u) ||
+      string_length(scene_content_digest) != VKR_HARNESS_DIGEST_MAX - 1u ||
+      !out_environment || !out_workload || !out_policy ||
       environment_field_count > VKR_HARNESS_MAX_FINGERPRINT_FIELDS) {
     vkr_harness_error_set(out_error, "fingerprint.input", "$.comparison",
                           "Fingerprint inputs are invalid");
@@ -150,6 +152,7 @@ bool8_t vkr_harness_case_fingerprints(
       case_manifest->measure_frames);
   ADD("case.resolution", "%u,%u", case_manifest->width, case_manifest->height);
   ADD("case.scene", "%s", case_manifest->scene);
+  ADD("case.scene_content", "%s", scene_content_digest);
   ADD("case.seed", "%llu", (unsigned long long)case_manifest->seed);
   ADD("renderer.editor", "%u", case_manifest->renderer.editor);
   ADD("renderer.skybox", "%u", case_manifest->renderer.skybox);
@@ -236,4 +239,29 @@ too_many:
                         "Effective configuration exceeds the fingerprint field "
                         "count or field capacity");
   return false_v;
+}
+
+bool8_t vkr_harness_case_fingerprints(
+    const char *repo_root, VkrHarnessTool tool,
+    const VkrHarnessCase *case_manifest, const VkrHarnessProfile *profile,
+    VkrSubsystemMask subsystem_mask,
+    const VkrHarnessFingerprintField *environment_fields,
+    uint32_t environment_field_count,
+    char out_environment[VKR_HARNESS_DIGEST_MAX],
+    char out_workload[VKR_HARNESS_DIGEST_MAX],
+    char out_policy[VKR_HARNESS_DIGEST_MAX], VkrHarnessError *out_error) {
+  Arena *arena = arena_create(MB(8), MB(4));
+  VkrHarnessSceneManifest manifest = {0};
+  const bool8_t ok =
+      repo_root && case_manifest && arena &&
+      vkr_harness_scene_manifest_build(repo_root, case_manifest->scene, arena,
+                                       &manifest, out_error) &&
+      vkr_harness_case_fingerprints_with_scene_digest(
+          tool, case_manifest, profile, subsystem_mask, environment_fields,
+          environment_field_count, manifest.sha256, out_environment,
+          out_workload, out_policy, out_error);
+  if (arena) {
+    arena_destroy(arena);
+  }
+  return ok;
 }

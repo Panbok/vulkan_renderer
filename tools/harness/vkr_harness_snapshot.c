@@ -2,19 +2,18 @@
 
 #define VKR_HARNESS_SNAPSHOT_ARTIFACT_ROOT "build/_artifacts/snapshot"
 
-static int
-vkr_harness_snapshot_spawn(const char *executable, const char *repo_root,
-                           const char *case_path, const char *profile_path,
-                           const char *run_dir, uint32_t capture_index,
-                           const char *replay_mode, const char *cache_path,
-                           uint32_t timeout_ms, bool8_t prewarm) {
+static int vkr_harness_snapshot_spawn(
+    const char *executable, const char *repo_root, const char *case_path,
+    const char *profile_path, const char *run_dir, uint32_t capture_index,
+    const char *replay_mode, const char *cache_path, uint32_t timeout_ms,
+    bool8_t prewarm, const char *scene_content_digest) {
   char stdout_path[VKR_HARNESS_PATH_MAX];
   char stderr_path[VKR_HARNESS_PATH_MAX];
   char index[16];
   string_format(stdout_path, sizeof(stdout_path), "%s/stdout.log", run_dir);
   string_format(stderr_path, sizeof(stderr_path), "%s/stderr.log", run_dir);
   string_format(index, sizeof(index), "%u", capture_index);
-  const char *arguments[14] = {
+  const char *arguments[16] = {
       prewarm ? "--child-profile" : "--child-snapshot",
       "--repo-root",
       repo_root,
@@ -24,8 +23,10 @@ vkr_harness_snapshot_spawn(const char *executable, const char *repo_root,
       profile_path,
       "--run-dir",
       run_dir,
+      "--scene-content-digest",
+      scene_content_digest,
   };
-  uint32_t argument_count = 9u;
+  uint32_t argument_count = 11u;
   if (prewarm) {
     arguments[argument_count++] = "--prewarm";
   } else {
@@ -239,10 +240,26 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
   if (!vkr_harness_report_init_storage(
           &report, summary_arena, merged_captures,
           (merged_captures * VKR_HARNESS_ARTIFACTS_PER_CAPTURE) + replay_count +
-              merged_captures + 1u) ||
+              merged_captures + 2u) ||
       !vkr_harness_report_init_auxiliary_runs(&report, summary_arena,
                                               replay_count)) {
     vkr_harness_stderr("Unable to size the snapshot report tables\n");
+    arena_destroy(summary_arena);
+    return VKR_HARNESS_EXIT_ERROR;
+  }
+  VkrHarnessSceneManifest scene_manifest = {0};
+  char scene_manifest_path[VKR_HARNESS_PATH_MAX];
+  string_format(scene_manifest_path, sizeof(scene_manifest_path),
+                "%s/scene-content-manifest.json", run_root);
+  if (!vkr_harness_scene_manifest_build(repo_root, case_manifest.scene,
+                                        summary_arena, &scene_manifest,
+                                        &error) ||
+      !vkr_harness_scene_manifest_write(scene_manifest_path, &scene_manifest,
+                                        &error) ||
+      !vkr_harness_report_add_artifact(
+          &report, "scene.content_manifest", "scene-content-manifest.json",
+          "application/json", scene_manifest_path)) {
+    vkr_harness_stderr("%s: %s\n", error.code, error.message);
     arena_destroy(summary_arena);
     return VKR_HARNESS_EXIT_ERROR;
   }
@@ -270,15 +287,15 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
           vkr_harness_snapshot_spawn(
               executable, repo_root, case_path, profile_path, prewarm_dir,
               replay->capture_index, replay->mode, cache_path,
-              case_manifest.repetition_timeout_ms,
-              true_v) != VKR_HARNESS_EXIT_PASS) {
+              case_manifest.repetition_timeout_ms, true_v,
+              scene_manifest.sha256) != VKR_HARNESS_EXIT_PASS) {
         break;
       }
     }
     const int child_exit = vkr_harness_snapshot_spawn(
         executable, repo_root, case_path, profile_path, child_dir,
         replay->capture_index, replay->mode, cache_path,
-        case_manifest.repetition_timeout_ms, false_v);
+        case_manifest.repetition_timeout_ms, false_v, scene_manifest.sha256);
     VkrHarnessRunReference *reference =
         &report.auxiliary_runs[report.auxiliary_run_count++];
     reference->index = i;
@@ -345,11 +362,11 @@ int vkr_harness_snapshot_run(const char *executable, const char *repo_root,
   VkrHarnessFingerprintField environment[VKR_HARNESS_ENVIRONMENT_FIELD_COUNT];
   const uint32_t environment_count =
       vkr_harness_environment_fields(&report.provenance, false_v, environment);
-  (void)vkr_harness_case_fingerprints(
+  (void)vkr_harness_case_fingerprints_with_scene_digest(
       VKR_HARNESS_TOOL_SNAPSHOT, &case_manifest, &profile,
       report.subsystem_mask, environment, environment_count,
-      report.environment_fingerprint, report.workload_fingerprint,
-      report.policy_fingerprint, &error);
+      scene_manifest.sha256, report.environment_fingerprint,
+      report.workload_fingerprint, report.policy_fingerprint, &error);
   vkr_harness_timestamp_utc(report.provenance.ended_at);
   const bool8_t complete = report.completed_repetitions == replay_count;
   vkr_harness_report_set_status(&report, complete ? "pass" : "incomplete",

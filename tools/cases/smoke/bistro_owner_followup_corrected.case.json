@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "id": "smoke.bistro.owner.followup.corrected",
+  "suite": "smoke",
+  "description": "Final-color regression at the five owner-supplied follow-up cameras after fragment-local light lookup and specular-IBL stabilization.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [1600, 1200],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 2,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": { "warmup": 2, "measure": 5 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "medium",
+    "interpolation": "linear",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500,
+    "keys": [
+      { "t": 0.033333334, "position": [-32.6019173, 7.83103323, -11.6438322], "yaw": 37.0054893, "pitch": -3.40110445 },
+      { "t": 0.050000001, "position": [-34.5210419, 7.83103323, -9.09757233], "yaw": 37.0054893, "pitch": -3.40110445 },
+      { "t": 0.066666668, "position": [-18.7347088, 5.1005826, 5.40255022], "yaw": 3.65705204, "pitch": -4.13440514 },
+      { "t": 0.083333335, "position": [-8.10211945, 5.4742136, -2.73104811], "yaw": -142.922913, "pitch": -13.1802654 },
+      { "t": 0.100000002, "position": [-30.166748, 5.12076569, -0.32898587], "yaw": -161.152786, "pitch": -11.1276827 }
+    ]
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color"] },
+    { "at_frame": 1, "channels": ["final_color"] },
+    { "at_frame": 2, "channels": ["final_color"] },
+    { "at_frame": 3, "channels": ["final_color"] },
+    { "at_frame": 4, "channels": ["final_color"] }
+  ],
+  "assertions": [
+    { "metric": "lighting.point.selected", "stat": "min", "min": 72 },
+    { "metric": "lighting.point.selected", "stat": "max", "max": 72 },
+    { "metric": "lighting.point.dropped", "stat": "max", "max": 0 },
+    { "metric": "lighting.point.grid.cells", "stat": "min", "min": 1 },
+    { "metric": "lighting.point.grid.cells", "stat": "max", "max": 384 },
+    { "metric": "lighting.point.grid.max_lights_per_cell", "stat": "min", "min": 1 },
+    { "metric": "lighting.point.grid.max_lights_per_cell", "stat": "max", "max": 128 }
+  ]
+}

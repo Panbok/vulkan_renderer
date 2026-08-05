@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "id": "smoke.local_ibl.broad_mesh.snapshot",
+  "suite": "smoke",
+  "description": "Fragment-level local-probe influence across one broad draw with global fallback.",
+  "scene": "assets/scenes/fixtures/local_ibl_broad_mesh.scene.json",
+  "seed": 11,
+  "resolution": [960, 540],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 2,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 2, "measure": 1 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "slow",
+    "interpolation": "linear",
+    "vertical_fov_degrees": 55,
+    "near_plane": 0.1,
+    "far_plane": 100,
+    "keys": [
+      { "t": 0.0, "position": [0, 1.2, 6.0], "yaw": -90, "pitch": 0 },
+      { "t": 0.1, "position": [0, 1.2, 6.0], "yaw": -90, "pitch": 0 }
+    ]
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color"] }
+  ]
+}

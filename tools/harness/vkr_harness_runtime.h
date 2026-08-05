@@ -158,7 +158,8 @@ uint32_t vkr_harness_environment_fields(
 int vkr_harness_child_run(const char *executable, const char *repo_root,
                           const char *case_path, const char *profile_path,
                           const char *run_dir, bool8_t prewarm,
-                          int32_t capture_index, const char *replay_mode);
+                          int32_t capture_index, const char *replay_mode,
+                          const char *scene_content_digest);
 int vkr_harness_profile_run(const char *executable, const char *repo_root,
                             const char *case_path, const char *profile_path,
                             const char *artifact_root_override);

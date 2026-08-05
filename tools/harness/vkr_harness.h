@@ -50,6 +50,7 @@
    VKR_HARNESS_MAX_CAPTURES + VKR_HARNESS_MAX_RUNS + 32u)
 #define VKR_HARNESS_MAX_EVENTS 4096u
 #define VKR_HARNESS_MAX_FINGERPRINT_FIELDS 256u
+#define VKR_HARNESS_MAX_SCENE_ASSETS 2048u
 #define VKR_HARNESS_FLY_LOOKUP_SUBDIVISIONS 32u
 #define VKR_HARNESS_FLY_LOOKUP_MAX                                             \
   (((VKR_HARNESS_MAX_CAMERA_KEYS - 1u) *                                       \
@@ -336,6 +337,19 @@ typedef struct VkrHarnessFingerprintField {
   char value[VKR_HARNESS_TEXT_MAX];
 } VkrHarnessFingerprintField;
 
+typedef struct VkrHarnessSceneAsset {
+  char path[VKR_HARNESS_PATH_MAX];
+  char sha256[VKR_HARNESS_DIGEST_MAX];
+  uint64_t size;
+} VkrHarnessSceneAsset;
+
+typedef struct VkrHarnessSceneManifest {
+  VkrHarnessSceneAsset *assets;
+  uint32_t asset_count;
+  char scene[VKR_HARNESS_PATH_MAX];
+  char sha256[VKR_HARNESS_DIGEST_MAX];
+} VkrHarnessSceneManifest;
+
 typedef struct VkrHarnessStatistics {
   uint64_t sample_count;
   uint64_t invalid_count;
@@ -610,18 +624,44 @@ void vkr_harness_sha256_bytes(const void *data, uint64_t length,
                               char out_digest[VKR_HARNESS_DIGEST_MAX]);
 bool8_t vkr_harness_sha256_file(const char *path,
                                 char out_digest[VKR_HARNESS_DIGEST_MAX]);
+bool8_t vkr_harness_sha256_file_sized(const char *path,
+                                      char out_digest[VKR_HARNESS_DIGEST_MAX],
+                                      uint64_t *out_size);
 bool8_t vkr_harness_fingerprint(const VkrHarnessFingerprintField *fields,
                                 uint32_t field_count,
                                 char out_digest[VKR_HARNESS_DIGEST_MAX],
                                 VkrHarnessError *out_error);
 bool8_t vkr_harness_case_fingerprints(
-    VkrHarnessTool tool, const VkrHarnessCase *case_manifest,
-    const VkrHarnessProfile *profile, VkrSubsystemMask subsystem_mask,
+    const char *repo_root, VkrHarnessTool tool,
+    const VkrHarnessCase *case_manifest, const VkrHarnessProfile *profile,
+    VkrSubsystemMask subsystem_mask,
     const VkrHarnessFingerprintField *environment_fields,
     uint32_t environment_field_count,
     char out_environment[VKR_HARNESS_DIGEST_MAX],
     char out_workload[VKR_HARNESS_DIGEST_MAX],
     char out_policy[VKR_HARNESS_DIGEST_MAX], VkrHarnessError *out_error);
+bool8_t vkr_harness_case_fingerprints_with_scene_digest(
+    VkrHarnessTool tool, const VkrHarnessCase *case_manifest,
+    const VkrHarnessProfile *profile, VkrSubsystemMask subsystem_mask,
+    const VkrHarnessFingerprintField *environment_fields,
+    uint32_t environment_field_count, const char *scene_content_digest,
+    char out_environment[VKR_HARNESS_DIGEST_MAX],
+    char out_workload[VKR_HARNESS_DIGEST_MAX],
+    char out_policy[VKR_HARNESS_DIGEST_MAX], VkrHarnessError *out_error);
+
+bool8_t vkr_harness_scene_manifest_build(const char *repo_root,
+                                         const char *scene, Arena *arena,
+                                         VkrHarnessSceneManifest *out_manifest,
+                                         VkrHarnessError *out_error);
+bool8_t
+vkr_harness_scene_manifest_write(const char *path,
+                                 const VkrHarnessSceneManifest *manifest,
+                                 VkrHarnessError *out_error);
+bool8_t vkr_harness_scene_manifest_publish(const char *repo_root,
+                                           const char *scene,
+                                           const char *run_root, Arena *arena,
+                                           VkrHarnessReport *report,
+                                           VkrHarnessError *out_error);
 
 /** Resolves the case's boot profile and optional workload requirements. */
 bool8_t vkr_harness_subsystem_plan(VkrHarnessTool tool,

@@ -85,13 +85,29 @@ void vkr_harness_sha256_begin(VkrHarnessSha256 *hash) {
 void vkr_harness_sha256_update(VkrHarnessSha256 *hash, const void *data,
                                uint64_t length) {
   const uint8_t *bytes = data;
-  for (uint64_t i = 0; i < length; ++i) {
-    hash->block[hash->block_length++] = bytes[i];
+  if (hash->block_length > 0u) {
+    const uint64_t available = 64u - hash->block_length;
+    const uint64_t copied = length < available ? length : available;
+    MemCopy(hash->block + hash->block_length, bytes, copied);
+    hash->block_length += (uint32_t)copied;
+    bytes += copied;
+    length -= copied;
     if (hash->block_length == 64u) {
       vkr_harness_sha256_transform(hash, hash->block);
       hash->bit_length += 512u;
       hash->block_length = 0;
     }
+  }
+
+  while (length >= 64u) {
+    vkr_harness_sha256_transform(hash, bytes);
+    hash->bit_length += 512u;
+    bytes += 64u;
+    length -= 64u;
+  }
+  if (length > 0u) {
+    MemCopy(hash->block, bytes, length);
+    hash->block_length = (uint32_t)length;
   }
 }
 
@@ -148,8 +164,9 @@ void vkr_harness_sha256_bytes(const void *data, uint64_t length,
   vkr_harness_sha256_end(&hash, out_digest);
 }
 
-bool8_t vkr_harness_sha256_file(const char *path,
-                                char out_digest[VKR_HARNESS_DIGEST_MAX]) {
+bool8_t vkr_harness_sha256_file_sized(const char *path,
+                                      char out_digest[VKR_HARNESS_DIGEST_MAX],
+                                      uint64_t *out_size) {
   if (!path || !out_digest) {
     return false_v;
   }
@@ -164,6 +181,7 @@ bool8_t vkr_harness_sha256_file(const char *path,
   VkrHarnessSha256 hash;
   vkr_harness_sha256_begin(&hash);
   uint8_t buffer[16384];
+  uint64_t size = 0u;
   bool8_t success = true_v;
   for (;;) {
     uint64_t bytes_read = 0u;
@@ -176,11 +194,20 @@ bool8_t vkr_harness_sha256_file(const char *path,
       break;
     }
     vkr_harness_sha256_update(&hash, buffer, bytes_read);
+    size += bytes_read;
   }
   file_close(&file);
   if (!success) {
     return false_v;
   }
   vkr_harness_sha256_end(&hash, out_digest);
+  if (out_size) {
+    *out_size = size;
+  }
   return true_v;
+}
+
+bool8_t vkr_harness_sha256_file(const char *path,
+                                char out_digest[VKR_HARNESS_DIGEST_MAX]) {
+  return vkr_harness_sha256_file_sized(path, out_digest, NULL);
 }

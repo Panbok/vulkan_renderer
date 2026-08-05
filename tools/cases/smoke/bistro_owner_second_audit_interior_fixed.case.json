@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "id": "smoke.bistro.owner.second_audit.interior_fixed",
+  "suite": "smoke",
+  "description": "Fast final-color calibration at the two owner-supplied café interior cameras using the authored indoor diffuse probe.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [1600, 1200],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 2,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": { "warmup": 2, "measure": 2 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "medium",
+    "interpolation": "linear",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500,
+    "keys": [
+      { "t": 0.033333334, "position": [-11.2575998, 2.21105599, 10.8723927], "yaw": -30.2232304, "pitch": -17.22966 },
+      { "t": 0.050000001, "position": [-10.3811522, 3.43943954, 10.1932774], "yaw": -31.3200779, "pitch": -34.5219383 }
+    ]
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color"] },
+    { "at_frame": 1, "channels": ["final_color"] }
+  ],
+  "assertions": [
+    { "metric": "lighting.point.dropped", "stat": "max", "max": 0 }
+  ]
+}

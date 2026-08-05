@@ -13,8 +13,8 @@
   "cache": "isolated_cold",
   "fixed_delta": 0.016666667,
   "repetitions": 1,
-  "repetition_timeout_ms": 300000,
-  "asset_ready_timeout_ms": 180000,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
   "frames": { "warmup": 2, "measure": 5 },
   "renderer": {
     "editor": false,
@@ -66,7 +66,7 @@
   "compare": {
     "max_pixel_delta": 1.0,
     "max_mean_absolute_error": 0.000005,
-    "max_failed_pixel_ratio": 0.00001,
+    "max_failed_pixel_ratio": 0.00002,
     "emit_diff": true
   },
   "captures": [

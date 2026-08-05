@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "id": "smoke.bistro.owner.followup.no.specular.ibl",
+  "suite": "smoke",
+  "description": "First two owner cameras with diffuse IBL retained and specular IBL disabled.",
+  "scene": "assets/scenes/fixtures/bistro_no_specular_ibl.scene.json",
+  "seed": 1,
+  "resolution": [1600, 1200],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 2,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": { "warmup": 2, "measure": 2 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "medium",
+    "interpolation": "linear",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500,
+    "keys": [
+      { "t": 0.033333334, "position": [-32.6019173, 7.83103323, -11.6438322], "yaw": 37.0054893, "pitch": -3.40110445 },
+      { "t": 0.050000001, "position": [-34.5210419, 7.83103323, -9.09757233], "yaw": 37.0054893, "pitch": -3.40110445 }
+    ]
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color"] },
+    { "at_frame": 1, "channels": ["final_color"] }
+  ]
+}

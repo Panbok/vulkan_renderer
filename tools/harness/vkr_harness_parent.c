@@ -773,7 +773,7 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
   effective_case.target_image_count =
       report.provenance.actual_target_image_count;
   if (!vkr_harness_case_fingerprints(
-          VKR_HARNESS_TOOL_PROFILE, &effective_case, &profile,
+          repo_root, VKR_HARNESS_TOOL_PROFILE, &effective_case, &profile,
           report.subsystem_mask, environment, environment_count,
           report.environment_fingerprint, report.workload_fingerprint,
           report.policy_fingerprint, &error)) {
@@ -798,6 +798,9 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
     artifacts_complete &= vkr_harness_report_add_artifact(
         &report, "summary.metrics", "summary.csv", "text/csv", summary);
   }
+  artifacts_complete &= vkr_harness_scene_manifest_publish(
+      repo_root, case_manifest.scene, run_root, arenas.transient, &report,
+      &error);
   if (!artifacts_complete) {
     vkr_harness_report_mark_incomplete(&report, "artifacts.incomplete");
   }

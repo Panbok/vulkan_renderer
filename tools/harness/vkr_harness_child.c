@@ -578,6 +578,16 @@ vkr_harness_child_apply_renderer(Application *application,
     application->renderer.globals.render_mode = VKR_RENDER_MODE_NORMAL;
   } else if (string_equals(case_manifest->renderer.render_mode, "unlit")) {
     application->renderer.globals.render_mode = VKR_RENDER_MODE_UNLIT;
+  } else if (string_equals(case_manifest->renderer.render_mode,
+                           "direct_diffuse")) {
+    application->renderer.globals.render_mode = VKR_RENDER_MODE_DIRECT_DIFFUSE;
+  } else if (string_equals(case_manifest->renderer.render_mode,
+                           "direct_specular")) {
+    application->renderer.globals.render_mode =
+        VKR_RENDER_MODE_DIRECT_SPECULAR;
+  } else if (string_equals(case_manifest->renderer.render_mode,
+                           "material_params")) {
+    application->renderer.globals.render_mode = VKR_RENDER_MODE_MATERIAL_PARAMS;
   }
   application->renderer.shadow_debug_mode =
       case_manifest->renderer.shadow_debug_mode;
@@ -636,10 +646,11 @@ vkr_harness_child_device_provenance(Application *application,
 
 /** Publishes this repetition's report; the samples file is already durable. */
 static bool8_t vkr_harness_child_write_report(
-    const VkrHarnessArenas *arenas, const char *report_path,
-    const VkrHarnessCase *case_manifest, const VkrHarnessProfile *profile,
-    const VkrHarnessProvenance *provenance, const VkrHarnessSampleSet *samples,
-    const char *samples_path, const VkrHarnessReport *capture_source,
+    const VkrHarnessArenas *arenas, const char *repo_root,
+    const char *report_path, const VkrHarnessCase *case_manifest,
+    const VkrHarnessProfile *profile, const VkrHarnessProvenance *provenance,
+    const VkrHarnessSampleSet *samples, const char *samples_path,
+    const VkrHarnessReport *capture_source, const char *scene_content_digest,
     VkrHarnessError *error) {
   const bool8_t failed =
       (samples->header.flags & VKR_HARNESS_SAMPLE_FLAG_CHILD_FAILED) != 0u;
@@ -692,15 +703,35 @@ static bool8_t vkr_harness_child_write_report(
     vkr_harness_report_add_authority_reason(&report, "provenance.dirty");
   }
 
-  VkrHarnessFingerprintField environment[VKR_HARNESS_ENVIRONMENT_FIELD_COUNT];
-  const uint32_t environment_count = vkr_harness_environment_fields(
-      provenance, profile->require_exclusive_gpu_lane, environment);
-  VkrHarnessCase effective_case = *case_manifest;
-  effective_case.target_image_count = provenance->actual_target_image_count;
-  (void)vkr_harness_case_fingerprints(
-      report.tool, &effective_case, profile, report.subsystem_mask, environment,
-      environment_count, report.environment_fingerprint,
-      report.workload_fingerprint, report.policy_fingerprint, error);
+  if (capture_source) {
+    string_format(report.environment_fingerprint,
+                  sizeof(report.environment_fingerprint), "%s",
+                  capture_source->environment_fingerprint);
+    string_format(report.workload_fingerprint,
+                  sizeof(report.workload_fingerprint), "%s",
+                  capture_source->workload_fingerprint);
+    string_format(report.policy_fingerprint, sizeof(report.policy_fingerprint),
+                  "%s", capture_source->policy_fingerprint);
+  } else {
+    VkrHarnessFingerprintField environment[VKR_HARNESS_ENVIRONMENT_FIELD_COUNT];
+    const uint32_t environment_count = vkr_harness_environment_fields(
+        provenance, profile->require_exclusive_gpu_lane, environment);
+    VkrHarnessCase effective_case = *case_manifest;
+    effective_case.target_image_count = provenance->actual_target_image_count;
+    if (scene_content_digest) {
+      (void)vkr_harness_case_fingerprints_with_scene_digest(
+          report.tool, &effective_case, profile, report.subsystem_mask,
+          environment, environment_count, scene_content_digest,
+          report.environment_fingerprint, report.workload_fingerprint,
+          report.policy_fingerprint, error);
+    } else {
+      (void)vkr_harness_case_fingerprints(
+          repo_root, report.tool, &effective_case, profile,
+          report.subsystem_mask, environment, environment_count,
+          report.environment_fingerprint, report.workload_fingerprint,
+          report.policy_fingerprint, error);
+    }
+  }
 
   bool8_t ok = vkr_harness_compute_metric_results(
       arenas, case_manifest->warmup_frames, case_manifest->measure_frames,
@@ -796,7 +827,8 @@ static VkrHarnessSampleFileHeader vkr_harness_child_sample_header(
 int vkr_harness_child_run(const char *executable, const char *repo_root,
                           const char *case_path, const char *profile_path,
                           const char *run_dir, bool8_t prewarm,
-                          int32_t capture_index, const char *replay_mode) {
+                          int32_t capture_index, const char *replay_mode,
+                          const char *scene_content_digest) {
   VkrHarnessProvenance provenance = {0};
   vkr_harness_timestamp_utc(provenance.started_at);
   VkrHarnessError error = {0};
@@ -807,6 +839,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     vkr_harness_stderr("%s: %s\n", error.code, error.message);
     return VKR_HARNESS_EXIT_INVALID;
   }
+  const VkrHarnessRendererConfig fingerprint_renderer = case_manifest.renderer;
   if (capture_index >= (int32_t)case_manifest.capture_count) {
     vkr_harness_stderr("Capture index is out of range\n");
     return VKR_HARNESS_EXIT_INVALID;
@@ -823,7 +856,13 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
         replay.render_mode == VKR_RENDER_MODE_NORMAL     ? "normal"
         : replay.render_mode == VKR_RENDER_MODE_UNLIT    ? "unlit"
         : replay.render_mode == VKR_RENDER_MODE_LIGHTING ? "lighting"
-                                                         : "default";
+        : replay.render_mode == VKR_RENDER_MODE_DIRECT_DIFFUSE
+            ? "direct_diffuse"
+        : replay.render_mode == VKR_RENDER_MODE_DIRECT_SPECULAR
+            ? "direct_specular"
+        : replay.render_mode == VKR_RENDER_MODE_MATERIAL_PARAMS
+            ? "material_params"
+            : "default";
     string_format(case_manifest.renderer.render_mode,
                   sizeof(case_manifest.renderer.render_mode), "%s",
                   render_mode);
@@ -1124,14 +1163,26 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
     const uint32_t capture_environment_count = vkr_harness_environment_fields(
         &provenance, false_v, capture_environment);
     VkrHarnessCase effective_capture_case = case_manifest;
+    effective_capture_case.renderer = fingerprint_renderer;
     effective_capture_case.target_image_count =
         provenance.actual_target_image_count;
-    if (!vkr_harness_case_fingerprints(
-            VKR_HARNESS_TOOL_SNAPSHOT, &effective_capture_case, &profile,
-            subsystem_mask, capture_environment, capture_environment_count,
-            child.capture_report->environment_fingerprint,
-            child.capture_report->workload_fingerprint,
-            child.capture_report->policy_fingerprint, &error)) {
+    const bool8_t fingerprints_ok =
+        scene_content_digest
+            ? vkr_harness_case_fingerprints_with_scene_digest(
+                  VKR_HARNESS_TOOL_SNAPSHOT, &effective_capture_case, &profile,
+                  subsystem_mask, capture_environment,
+                  capture_environment_count, scene_content_digest,
+                  child.capture_report->environment_fingerprint,
+                  child.capture_report->workload_fingerprint,
+                  child.capture_report->policy_fingerprint, &error)
+            : vkr_harness_case_fingerprints(
+                  repo_root, VKR_HARNESS_TOOL_SNAPSHOT, &effective_capture_case,
+                  &profile, subsystem_mask, capture_environment,
+                  capture_environment_count,
+                  child.capture_report->environment_fingerprint,
+                  child.capture_report->workload_fingerprint,
+                  child.capture_report->policy_fingerprint, &error);
+    if (!fingerprints_ok) {
       vkr_harness_stderr("%s: %s\n", error.code, error.message);
       goto cleanup;
     }
@@ -1140,8 +1191,9 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   if (vkr_harness_samples_write(samples_path, &sample_set.header, &sample_set,
                                 arenas.transient, &error) &&
       vkr_harness_child_write_report(
-          &arenas, report_path, &case_manifest, &profile, &provenance,
-          &sample_set, samples_path, child.capture_report, &error) &&
+          &arenas, repo_root, report_path, &case_manifest, &profile,
+          &provenance, &sample_set, samples_path, child.capture_report,
+          scene_content_digest, &error) &&
       (capture_index < 0 || vkr_harness_capture_summary_write(
                                 capture_summary_path, child.capture_report,
                                 arenas.transient, &error))) {
@@ -1166,7 +1218,8 @@ cleanup:
 int vkr_harness_child_run(const char *executable, const char *repo_root,
                           const char *case_path, const char *profile_path,
                           const char *run_dir, bool8_t prewarm,
-                          int32_t capture_index, const char *replay_mode) {
+                          int32_t capture_index, const char *replay_mode,
+                          const char *scene_content_digest) {
   (void)executable;
   (void)repo_root;
   (void)case_path;
@@ -1175,6 +1228,7 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
   (void)prewarm;
   (void)capture_index;
   (void)replay_mode;
+  (void)scene_content_digest;
   vkr_harness_stderr("The harness requires VKR_METRICS_ENABLED=1\n");
   return VKR_HARNESS_EXIT_UNAVAILABLE;
 }

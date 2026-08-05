@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "id": "performance.bistro.light.assignment.static",
+  "suite": "performance",
+  "description": "Static Bistro view at the first owner-reported defect camera for matched local observations of receiver-local punctual-light assignment.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [1600, 1200],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_warm",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": { "warmup": 120, "measure": 300 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [-35.9016342, 5.81466007, -7.73436356],
+    "yaw": -17.4734058,
+    "pitch": 3.99791694,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500
+  },
+  "assertions": [
+    { "metric": "draw.world.calls_issued", "stat": "min", "min": 1 }
+  ]
+}

@@ -215,7 +215,7 @@ int vkr_harness_autotest_run(const char *executable, const char *repo_root,
       &report.provenance, profile.require_exclusive_gpu_lane,
       initial_environment);
   (void)vkr_harness_case_fingerprints(
-      VKR_HARNESS_TOOL_AUTOTEST, &case_manifest, &profile,
+      repo_root, VKR_HARNESS_TOOL_AUTOTEST, &case_manifest, &profile,
       report.subsystem_mask, initial_environment, initial_environment_count,
       report.environment_fingerprint, report.workload_fingerprint,
       report.policy_fingerprint, &error);
@@ -330,6 +330,10 @@ publish:
                                             artifacts[i].relative, "text/plain",
                                             artifacts[i].absolute);
     }
+  }
+  if (!vkr_harness_scene_manifest_publish(repo_root, case_manifest.scene,
+                                          run_root, arena, &report, &error)) {
+    vkr_harness_report_mark_incomplete(&report, "scene_manifest.unavailable");
   }
   char report_path[VKR_HARNESS_PATH_MAX];
   char digest[VKR_HARNESS_DIGEST_MAX];

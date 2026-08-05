@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "id": "smoke.bistro.owner.third_audit.no_ibl",
+  "suite": "smoke",
+  "description": "Exact three-camera residual wall-band audit with all image-based lighting disabled.",
+  "scene": "assets/scenes/fixtures/bistro_no_ibl.scene.json",
+  "seed": 1,
+  "resolution": [1600, 1200],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 2,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": { "warmup": 2, "measure": 3 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "medium",
+    "interpolation": "linear",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500,
+    "keys": [
+      { "t": 0.033333334, "position": [28.8405819, 3.67631197, 29.54776], "yaw": 292.712067, "pitch": -5.52839756 },
+      { "t": 0.050000001, "position": [34.3669891, 3.67631197, 31.860878], "yaw": 292.712067, "pitch": -5.52839756 },
+      { "t": 0.066666668, "position": [40.8812637, 3.67631197, 34.5874672], "yaw": 292.712067, "pitch": -5.52839756 }
+    ]
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color"] },
+    { "at_frame": 1, "channels": ["final_color"] },
+    { "at_frame": 2, "channels": ["final_color"] }
+  ]
+}

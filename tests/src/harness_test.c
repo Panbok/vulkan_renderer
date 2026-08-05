@@ -195,40 +195,184 @@ static void test_harness_fingerprints(void) {
   VkrHarnessCase case_manifest = {0};
   assert(harness_parse_case("windowed_hidden", "immediate", static_camera, "",
                             &case_manifest));
+  snprintf(case_manifest.scene, sizeof(case_manifest.scene),
+           "assets/scenes/fixtures/local_ibl_broad_mesh.scene.json");
   VkrHarnessProfile profile = {.required_present =
                                    VKR_HARNESS_PRESENT_IMMEDIATE};
   char environment[VKR_HARNESS_DIGEST_MAX];
   char workload[VKR_HARNESS_DIGEST_MAX];
   char policy[VKR_HARNESS_DIGEST_MAX];
-  assert(vkr_harness_case_fingerprints(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
-                                       &profile, VKR_RENDERER_SUBSYSTEM_ALL,
-                                       NULL, 0u, environment, workload, policy,
-                                       &error));
+  bool8_t fingerprinted = vkr_harness_case_fingerprints(
+      ".", VKR_HARNESS_TOOL_PROFILE, &case_manifest, &profile,
+      VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u, environment, workload, policy,
+      &error);
+  if (!fingerprinted) {
+    printf("  fingerprint error %s: %s\n", error.code, error.message);
+  }
+  assert(fingerprinted);
   char original_workload[VKR_HARNESS_DIGEST_MAX];
   snprintf(original_workload, sizeof(original_workload), "%s", workload);
   snprintf(case_manifest.description, sizeof(case_manifest.description),
            "provenance-only edit");
   snprintf(case_manifest.manifest_sha256, sizeof(case_manifest.manifest_sha256),
            "sha256:changed");
-  assert(vkr_harness_case_fingerprints(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
-                                       &profile, VKR_RENDERER_SUBSYSTEM_ALL,
-                                       NULL, 0u, environment, workload, policy,
-                                       &error));
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) == 0);
   assert(vkr_harness_case_fingerprints(
-      VKR_HARNESS_TOOL_PROFILE, &case_manifest, &profile,
+      ".", VKR_HARNESS_TOOL_PROFILE, &case_manifest, &profile,
       VKR_RENDERER_SUBSYSTEM_ALL &
           ~VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_UI),
       NULL, 0u, environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) != 0);
   case_manifest.width++;
-  assert(vkr_harness_case_fingerprints(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
-                                       &profile, VKR_RENDERER_SUBSYSTEM_ALL,
-                                       NULL, 0u, environment, workload, policy,
-                                       &error));
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) != 0);
   printf("  test_harness_fingerprints PASSED\n");
 }
+
+#if !defined(_WIN32)
+static void test_harness_scene_manifest_tracks_transitive_content(void) {
+  printf(
+      "  Running test_harness_scene_manifest_tracks_transitive_content...\n");
+  char root[] = "/tmp/vkr_scene_manifest_XXXXXX";
+  assert(mkdtemp(root));
+  VkrHarnessError error = {0};
+  char scenes[VKR_HARNESS_PATH_MAX];
+  char models[VKR_HARNESS_PATH_MAX];
+  char materials[VKR_HARNESS_PATH_MAX];
+  char generated_materials[VKR_HARNESS_PATH_MAX];
+  char textures[VKR_HARNESS_PATH_MAX];
+  char generated_textures[VKR_HARNESS_PATH_MAX];
+  snprintf(scenes, sizeof(scenes), "%s/assets/scenes", root);
+  snprintf(models, sizeof(models), "%s/assets/models", root);
+  snprintf(materials, sizeof(materials), "%s/assets/materials", root);
+  snprintf(generated_materials, sizeof(generated_materials),
+           "%s/assets/materials/test", root);
+  snprintf(textures, sizeof(textures), "%s/assets/textures", root);
+  snprintf(generated_textures, sizeof(generated_textures),
+           "%s/assets/textures/generated", root);
+  assert(vkr_harness_make_directories(scenes, &error));
+  assert(vkr_harness_make_directories(models, &error));
+  assert(vkr_harness_make_directories(materials, &error));
+  assert(vkr_harness_make_directories(generated_materials, &error));
+  assert(vkr_harness_make_directories(textures, &error));
+  assert(vkr_harness_make_directories(generated_textures, &error));
+
+  char scene_path[VKR_HARNESS_PATH_MAX];
+  char gltf_path[VKR_HARNESS_PATH_MAX];
+  char material_path[VKR_HARNESS_PATH_MAX];
+  char generated_material_path[VKR_HARNESS_PATH_MAX];
+  char texture_path[VKR_HARNESS_PATH_MAX];
+  char generated_texture_path[VKR_HARNESS_PATH_MAX];
+  char generated_packed_path[VKR_HARNESS_PATH_MAX];
+  snprintf(scene_path, sizeof(scene_path), "%s/test.scene.json", scenes);
+  snprintf(gltf_path, sizeof(gltf_path), "%s/test.gltf", models);
+  snprintf(material_path, sizeof(material_path), "%s/test.mt", materials);
+  snprintf(texture_path, sizeof(texture_path), "%s/test.png", textures);
+  snprintf(generated_texture_path, sizeof(generated_texture_path),
+           "%s/test.png", generated_textures);
+  snprintf(generated_packed_path, sizeof(generated_packed_path), "%s.vkt",
+           generated_texture_path);
+  const char *gltf_relative = "assets/models/test.gltf";
+  uint64_t source_hash = 0xcbf29ce484222325ull;
+  for (uint64_t i = 0u; gltf_relative[i]; ++i) {
+    source_hash ^= (uint64_t)(uint8_t)gltf_relative[i];
+    source_hash *= 0x100000001b3ull;
+  }
+  snprintf(generated_material_path, sizeof(generated_material_path),
+           "%s/gltf_mat_%016llx_0.mt", generated_materials,
+           (unsigned long long)source_hash);
+  const char *scene = "{\"material\":\"assets/materials/test.mt\","
+                      "\"mesh\":\"assets/models/test.gltf\",\"entities\":[]}";
+  const char *material =
+      "base_color_texture=assets/textures/test.png?cs=srgb\n";
+  const char *generated_material =
+      "base_color_texture=assets/textures/generated/test.png?cs=srgb\n";
+  assert(vkr_harness_atomic_write(scene_path, scene, strlen(scene), &error));
+  assert(vkr_harness_atomic_write(gltf_path, "{}", 2u, &error));
+  assert(vkr_harness_atomic_write(material_path, material, strlen(material),
+                                  &error));
+  assert(vkr_harness_atomic_write(generated_material_path, generated_material,
+                                  strlen(generated_material), &error));
+  assert(vkr_harness_atomic_write(texture_path, "first", 5u, &error));
+  assert(vkr_harness_atomic_write(generated_texture_path, "generated", 9u,
+                                  &error));
+  assert(vkr_harness_atomic_write(generated_packed_path, "packed-first", 12u,
+                                  &error));
+
+  Arena *first_arena = arena_create(MB(8), MB(4));
+  Arena *second_arena = arena_create(MB(8), MB(4));
+  assert(first_arena && second_arena);
+  VkrHarnessSceneManifest first = {0};
+  VkrHarnessSceneManifest second = {0};
+  assert(vkr_harness_scene_manifest_build(root, "assets/scenes/test.scene.json",
+                                          first_arena, &first, &error));
+  if (first.asset_count != 7u) {
+    printf("  unexpected scene asset count %u\n", first.asset_count);
+    for (uint32_t i = 0; i < first.asset_count; ++i) {
+      printf("    %s\n", first.assets[i].path);
+    }
+  }
+  assert(first.asset_count == 7u);
+
+  VkrHarnessCase case_manifest = {0};
+  assert(harness_parse_case("windowed_hidden", "immediate",
+                            "{\"mode\":\"static\",\"position\":[0,0,3],"
+                            "\"yaw\":-90,\"pitch\":0}",
+                            "", &case_manifest));
+  snprintf(case_manifest.scene, sizeof(case_manifest.scene),
+           "assets/scenes/test.scene.json");
+  VkrHarnessProfile profile = {.required_present =
+                                   VKR_HARNESS_PRESENT_IMMEDIATE};
+  char environment[VKR_HARNESS_DIGEST_MAX];
+  char workload_before[VKR_HARNESS_DIGEST_MAX];
+  char workload_after[VKR_HARNESS_DIGEST_MAX];
+  char policy[VKR_HARNESS_DIGEST_MAX];
+  assert(vkr_harness_case_fingerprints(
+      root, VKR_HARNESS_TOOL_PROFILE, &case_manifest, &profile,
+      VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u, environment, workload_before,
+      policy, &error));
+
+  assert(vkr_harness_atomic_write(generated_packed_path, "packed-second", 13u,
+                                  &error));
+  assert(vkr_harness_scene_manifest_build(root, "assets/scenes/test.scene.json",
+                                          second_arena, &second, &error));
+  assert(second.asset_count == 7u);
+  assert(strcmp(first.sha256, second.sha256) != 0);
+  assert(vkr_harness_case_fingerprints(
+      root, VKR_HARNESS_TOOL_PROFILE, &case_manifest, &profile,
+      VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u, environment, workload_after, policy,
+      &error));
+  assert(strcmp(workload_before, workload_after) != 0);
+  arena_destroy(first_arena);
+  arena_destroy(second_arena);
+
+  assert(remove(generated_packed_path) == 0);
+  assert(remove(generated_texture_path) == 0);
+  assert(remove(texture_path) == 0);
+  assert(remove(generated_material_path) == 0);
+  assert(remove(material_path) == 0);
+  assert(remove(gltf_path) == 0);
+  assert(remove(scene_path) == 0);
+  assert(rmdir(generated_textures) == 0);
+  assert(rmdir(textures) == 0);
+  assert(rmdir(generated_materials) == 0);
+  assert(rmdir(materials) == 0);
+  assert(rmdir(models) == 0);
+  assert(rmdir(scenes) == 0);
+  char assets[VKR_HARNESS_PATH_MAX];
+  snprintf(assets, sizeof(assets), "%s/assets", root);
+  assert(rmdir(assets) == 0);
+  assert(rmdir(root) == 0);
+  printf("  test_harness_scene_manifest_tracks_transitive_content PASSED\n");
+}
+#endif
 
 static void test_harness_subsystem_plans(void) {
   printf("  Running test_harness_subsystem_plans...\n");
@@ -984,6 +1128,9 @@ bool32_t run_harness_tests(void) {
   test_harness_profile_parser();
   test_harness_camera_determinism();
   test_harness_fingerprints();
+#if !defined(_WIN32)
+  test_harness_scene_manifest_tracks_transitive_content();
+#endif
   test_harness_subsystem_plans();
   test_harness_case_profile_pairing();
   test_harness_assertion_verdict();

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "smoke.bistro.shading.diagnostics",
+  "suite": "smoke",
+  "description": "Controlled Bistro exterior final/direct/shadow diagnostic for the authored scene.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [960, 720],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 2,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 2,
+    "measure": 1
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500,
+    "position": [-18.5538139, 8.64268303, 10.2048397],
+    "yaw": 255.452667,
+    "pitch": -3.10771728
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": [
+        "final_color",
+        "lighting",
+        "shadow_debug_factor"
+      ]
+    }
+  ]
+}

@@ -463,7 +463,13 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
   const bool8_t mode_valid = string_equals(renderer->render_mode, "default") ||
                              string_equals(renderer->render_mode, "lighting") ||
                              string_equals(renderer->render_mode, "normal") ||
-                             string_equals(renderer->render_mode, "unlit");
+                             string_equals(renderer->render_mode, "unlit") ||
+                             string_equals(renderer->render_mode,
+                                           "direct_diffuse") ||
+                             string_equals(renderer->render_mode,
+                                           "direct_specular") ||
+                             string_equals(renderer->render_mode,
+                                           "material_params");
   if (!preset_valid || !mode_valid || cascades < 1u || cascades > 8u) {
     vkr_harness_error_set(error, "renderer.config", "$.renderer",
                           "Renderer preset, mode, or cascade count is invalid");

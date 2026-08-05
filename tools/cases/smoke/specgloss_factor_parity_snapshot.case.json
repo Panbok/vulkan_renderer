@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "id": "smoke.specgloss.factor_parity.snapshot",
+  "suite": "smoke",
+  "description": "Prepared specular-glossiness factor lowering beside an equivalent native metallic-roughness material.",
+  "scene": "assets/scenes/fixtures/specgloss_factor_parity.scene.json",
+  "seed": 7,
+  "resolution": [800, 450],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 2,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 2, "measure": 1 },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 3,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0, 1.2, 5.0],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 55,
+    "near_plane": 0.1,
+    "far_plane": 100
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["unlit"] }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "id": "smoke.bistro.owner.second_audit.material",
+  "suite": "smoke",
+  "description": "Exact wall-pair metallic/roughness/F0 diagnostic for the second Bistro owner audit.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [1600, 1200],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 2,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": { "warmup": 2, "measure": 2 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "medium",
+    "interpolation": "linear",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500,
+    "keys": [
+      { "t": 0.033333334, "position": [-30.7169724, 5.03707218, -13.758604], "yaw": 41.808033, "pitch": -0.717481673 },
+      { "t": 0.050000001, "position": [-33.0907631, 5.03707218, -11.1044121], "yaw": 41.808033, "pitch": -0.717481673 }
+    ]
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["material_params"] },
+    { "at_frame": 1, "channels": ["material_params"] }
+  ]
+}

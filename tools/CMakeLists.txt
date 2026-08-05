@@ -17,6 +17,7 @@ add_library(vkr_harness_core STATIC
     harness/vkr_harness_path.c
     harness/vkr_harness_report.c
     harness/vkr_harness_replay.c
+    harness/vkr_harness_scene_manifest.c
     harness/vkr_harness_sha256.c
     harness/vkr_harness_statistics.c
 )

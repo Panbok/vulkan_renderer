@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "id": "smoke.bistro.windowed.snapshot",
+  "suite": "smoke",
+  "description": "Hidden-window Bistro interior counterpart to the offscreen shading diagnostic.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [960, 720],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": {
+    "warmup": 2,
+    "measure": 1
+  },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500,
+    "position": [-10.4779406, 3.17550254, 10.6171732],
+    "yaw": -30.3624344,
+    "pitch": -22.5336933
+  },
+  "captures": [
+    {
+      "at_frame": 0,
+      "channels": ["final_color"]
+    }
+  ]
+}

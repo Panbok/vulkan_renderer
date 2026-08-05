@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "smoke.bistro.owner.second_audit.no_specular_ibl",
+  "suite": "smoke",
+  "description": "Exact five second-audit Bistro cameras with diffuse IBL retained and specular IBL disabled.",
+  "scene": "assets/scenes/fixtures/bistro_no_specular_ibl.scene.json",
+  "seed": 1,
+  "resolution": [1600, 1200],
+  "boot": "full",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 2,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": { "warmup": 2, "measure": 5 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "medium",
+    "interpolation": "linear",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500,
+    "keys": [
+      { "t": 0.033333334, "position": [-30.7169724, 5.03707218, -13.758604], "yaw": 41.808033, "pitch": -0.717481673 },
+      { "t": 0.050000001, "position": [-33.0907631, 5.03707218, -11.1044121], "yaw": 41.808033, "pitch": -0.717481673 },
+      { "t": 0.066666668, "position": [-15.8888721, 2.46228814, 13.4179678], "yaw": -26.6119099, "pitch": -13.2399626 },
+      { "t": 0.083333335, "position": [-11.2575998, 2.21105599, 10.8723927], "yaw": -30.2232304, "pitch": -17.22966 },
+      { "t": 0.100000002, "position": [-10.3811522, 3.43943954, 10.1932774], "yaw": -31.3200779, "pitch": -34.5219383 }
+    ]
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color"] },
+    { "at_frame": 1, "channels": ["final_color"] },
+    { "at_frame": 2, "channels": ["final_color"] },
+    { "at_frame": 3, "channels": ["final_color"] },
+    { "at_frame": 4, "channels": ["final_color"] }
+  ]
+}

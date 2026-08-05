@@ -135,7 +135,8 @@ int main(int argc, char **argv) {
     }
     return vkr_harness_child_run(
         executable, repo_root, case_path, profile_path, run_dir,
-        vkr_harness_flag(argc, argv, "--prewarm"), capture_index, replay_mode);
+        vkr_harness_flag(argc, argv, "--prewarm"), capture_index, replay_mode,
+        vkr_harness_option(argc, argv, "--scene-content-digest"));
   }
   if (!vkr_platform_init()) {
     vkr_harness_stderr("Unable to initialize the platform layer\n");
