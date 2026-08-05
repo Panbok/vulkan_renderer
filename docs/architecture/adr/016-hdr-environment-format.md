@@ -19,9 +19,11 @@ Before this decision, the environment probe loaded six LDR JPEG cube faces
 (jpg/png)". Both IBL bake outputs are then stored as `R8G8B8A8_UNORM`.
 
 [bistro-baseline-shading-investigation.md](../../rendering/bistro-baseline-shading-investigation.md)
-established that this chain is the cause of two distinct visual defects: flat
-directionless ambient (§5a, LDR source) and concentric chromatic banding on
-glossy surfaces (§7, 8-bit linear storage).
+established that this chain cannot preserve HDR range and identified 8-bit
+linear IBL storage as the leading code-backed explanation for concentric
+chromatic banding on glossy surfaces. It did not capture an isolated
+format-only ablation, and the missing analytic sun independently accounted for
+the baseline's directionless lighting.
 
 Moving to HDR forces a format decision, because no HDRI is distributed as six
 cube faces. Every practical source — Poly Haven, HDRI Haven, in-house captures —

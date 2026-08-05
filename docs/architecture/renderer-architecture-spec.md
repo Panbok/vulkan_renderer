@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-04
+updated: 2026-08-05
 authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
@@ -10,7 +10,11 @@ production-reference record corrected on 2026-08-01, harness Phases 3-6 status
 recorded on 2026-08-02, nested glTF texture/specular-glossiness diffuse
 compatibility recorded on 2026-08-03, and HDR environment/IBL plus tonemap
 activation recorded on 2026-08-03 with seam-safe cube baking corrected on
-2026-08-04.
+2026-08-04; Bistro alpha-mask shadow routing and the PCF hash-grid origin were
+corrected on 2026-08-04; prepared specular-glossiness lowering, graph-declared
+transmission feedback, bounded glTF punctual lights, caster-relevant cascade
+fit, fragment-local IBL, and transitive scene-content fingerprints were added
+on 2026-08-04.
 **Scope:** Renderer architecture, implemented features, CPU/GPU memory, data
 transfer, synchronization, known issues, and recommended direction.
 **Audience:** Contributors and reviewers.
@@ -287,7 +291,13 @@ faces, while the skybox culls front faces to render the inside of its
 outward-wound cube. IBL cube bakes use a fullscreen plane with culling and depth
 disabled. The skybox pass runs before world rendering and disables depth
 test/write so it contributes color without occluding geometry farther than the
-finite cube mesh.
+finite cube mesh. Material alpha routing is resolved once per draw candidate:
+`BLEND` selects the transparent world list while `CUTOUT` independently selects
+the alpha-tested shadow list. The PCF hash grid converts the fitted light-view
+origin into the shader's reconstructed right/up basis, including the negated X
+axis introduced by `mat4_look_at`. Two-sided PBR shading uses
+`SV_IsFrontFace` to orient geometric and tangent-space normals; it never flips
+a stationary receiver according to the camera vector.
 
 ### 3.7 HDR environment, IBL, and presentation
 
@@ -305,8 +315,11 @@ and all three cube bakes reconstruct the Vulkan `+X/-X/+Y/-Y/+Z/-Z` direction
 from fullscreen UV through one shared mapping. Face and roughness/mip controls
 are push constants so each recorded draw retains its own values until GPU
 execution. The prefilter selects source mips from the GGX light-direction PDF
-and texel solid angle. Pipelines, compatible render passes, images, descriptor
-state, and face/mip targets are prepared before the executor records; explicit
+and texel solid angle. Pipelines, compatible render passes, images, and
+face/mip targets are prepared before the executor records. Each conversion or
+convolution acquires one immutable source descriptor state; releasing it is
+tagged to the frame submit serial so a later probe bake cannot update or recycle
+descriptors already referenced by the command buffer. Explicit
 upload/write/read barriers cover the resources that remain outside graph
 authority.
 
@@ -321,6 +334,51 @@ reflection probes remain cubemap-sourced. PBR materials use constant ambient
 only when IBL is disabled, avoiding two contributions for the same environment
 illumination.
 
+### 3.8 Bistro material and spatial-lighting completion
+
+Legacy glTF specular-glossiness materials are prepared into versioned generated
+base-color and metallic-roughness textures before they enter the runtime PBR
+contract. Authored dielectric F0 is retained as a uniform for factor-only
+materials and an optional generated linear-RGB companion for packed
+specular/glossiness textures. Direct and IBL Fresnel derive
+`F90 = saturate(max(F0) * 25)`, so zero authored specular cannot regain a
+camera-moving white grazing highlight. Generated namespace version 2 includes
+the Khronos sub-F0 non-metal rule; companion image version 1 and mesh-cache
+version 12 invalidate incomplete or stale prepared references. Generated image
+and material-file publication is atomic and resumable.
+
+Transmission is a distinct material and draw class. The graph renders opaque
+geometry into a pre-transmission HDR image, copies it into the working scene
+color while retaining the source as immutable feedback, renders transmission
+with IOR, thickness, attenuation, refraction, and Fresnel, then renders ordinary
+alpha blending. This prevents same-pass feedback and preserves the fullscreen
+and editor output paths. Double-sided transmission faces use primitive-facing
+normal orientation before refraction.
+
+glTF punctual point, spot, and directional lights lower through the scene
+loader. A stable, camera-independent scene table retains up to 128 point/spot
+lights. A fixed 384-cell adaptive world grid stores one full 128-bit membership
+mask per cell; finite range spheres populate it conservatively and unbounded
+legacy lights use a global mask. Each fragment indexes the grid from world
+position, iterates set bits, rejects zero range/cone contribution before BRDF
+work, then applies exact glTF attenuation. The grid grows its cell size rather
+than discarding references, so
+broad material-merged submeshes do not impose a secondary light cap. The
+80-byte instance ABI remains stable with its last three words reserved. Metrics
+distinguish scene-table overflow and report grid cells, references, peak local
+membership, and global lights. Color and intensity remain separate until the
+shader applies intensity once. World draws select at most two local reflection
+probes by bounding-sphere/AABB overlap; the shader computes per-fragment box
+weights, normalizes overlaps, and assigns the remainder to the global
+environment. Scene-environment probes retain the already-baked scene
+irradiance/prefilter maps rather than duplicating them. Specular IBL applies
+normal-footprint roughness filtering, specular AO, and geometric-horizon
+rejection. Bistro's café volume uses an authored indoor cubemap for diffuse
+irradiance rather than reusing the outdoor scene environment; its probe
+specular intensity is zero because no indoor reflection capture is authored.
+Diffuse irradiance samples the surface normal directly, while box projection is
+restricted to specular reflection rays.
+
 ---
 
 ## 4. Feature Status
@@ -333,11 +391,12 @@ illumination.
 | SPIR-V reflection | Implemented | Descriptors, push constants, vertex ABI, and uniform members validated against `.shadercfg` |
 | Pipeline cache | Implemented | Disk-backed Vulkan cache |
 | Metrics registry and snapshot export | Implemented | Bounded typed slots, MPSC cold-event ring, triple-buffered snapshots, renderer catalog/validity, explicit GPU allocation-owner aggregates, metrics-backed HUD, atomic `--metrics-json`, and harness aggregation |
-| Renderer automation harness | Implemented | Strict cases/profiles, deterministic cameras, isolated repetitions, dependency-resolved boot, authoritative evidence policies, metric/pass/event aggregation, atomic artifacts, direct and auxiliary captures, canonical comparison/diffs, separated `autotest`, guarded immutable baselines, and target-neutral windowed or true surface-free offscreen execution with actual configuration provenance |
-| Cascaded shadow maps | Implemented | Four-cascade default with debug/fit controls |
-| PBR materials | Implemented, evolving | Metallic-roughness and texture slots present; legacy specular-glossiness receives diffuse-only conversion |
-| IBL | Implemented, partial integration | HDR/cubemap sources, prepared RGBA16F environment/irradiance/prefilter/BRDF bakes, and scene/probe ownership ship; bake work remains undeclared to the graph and explicitly barriered |
-| glTF and scene loading | Implemented | CPU async pipeline; nested `assets/textures/` URIs and sidecars resolve without flattening; upper-left glTF UVs lower once to VKR's bottom-left 2D texture convention; frame-path uploads measured non-blocking |
+| Renderer automation harness | Implemented | Strict cases/profiles, deterministic cameras, isolated repetitions, dependency-resolved boot, authoritative evidence policies, metric/pass/event aggregation, atomic artifacts, direct and auxiliary captures, canonical comparison/diffs, separated `autotest`, guarded immutable baselines, target-neutral windowed or true surface-free offscreen execution with actual configuration provenance, and a sorted transitive scene-content manifest—including prepared glTF material files, generated textures, and present packed siblings—whose digest participates in workload identity |
+| Cascaded shadow maps | Implemented | Four-cascade default with debug/fit controls; cutout casters use the alpha-tested path, PCF grid coordinates share the shader basis, and opt-in scene-bounds Z fit clips caster bounds against each final cascade XY rectangle |
+| PBR materials | Implemented, evolving | Metallic-roughness and texture slots plus prepared, cached specular-glossiness lowering with retained dielectric F0/F90 response; transmission adds IOR, volume, attenuation, and scene-color refraction while clearcoat and sheen remain absent |
+| IBL | Implemented, partial integration | HDR/cubemap sources, prepared RGBA16F bakes, global environment, and two fragment-weighted local probes per draw ship; bake work remains undeclared to the graph and explicitly barriered |
+| glTF and scene loading | Implemented | CPU async pipeline; nested texture URIs and sidecars resolve without flattening; UVs lower once to VKR convention; point, spot, and directional punctual lights import through the scene transform into a stable 128-light table with a fragment-local 384-cell bitmask grid; frame-path uploads measured non-blocking |
+| Transmission | Implemented, initial | Graph-declared opaque, HDR feedback-copy, transmission, and ordinary-blend stages; screen-space refraction has no order-independent transparency or deep compositing |
 | KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; every selector result is transcodable |
 | Editor viewport and picking | Implemented | Picking fully declared in the render graph; readback usually deferred but ring wrap can block |
 | Text | Implemented | Bitmap, MTSDF, system-font, UI and world text paths |
@@ -593,6 +652,18 @@ required gate — see §10.
    Picking is now declared (P1 item 6), but IBL baking still records nested GPU
    work on resources the graph cannot see.
 
+### ~~P0 — Descriptor sampler-limit compatibility~~ Resolved 2026-08-05
+
+PBR still exposes 17 independently bound sampled images, but reflection and
+the shader manifest now separate image slots from sampler slots. Irradiance
+probe B/C share probe A's sampler, as do prefilter probe B/C, because those
+generated maps have identical filtering/addressing semantics. Authored material
+textures retain their independent sampler state. The resulting fragment layout
+uses 13 samplers, below the Apple M1 Pro / MoltenVK limit of 16. Reflection tests
+pin the 17-image/13-sampler contract, and exact Bistro validation replay
+`20260805T101216.174Z-00c0d6` contains no
+`VUID-VkPipelineLayoutCreateInfo-descriptorType-03016` diagnostic.
+
 ### P1 — Architectural completion
 
 6. **Bring picking and IBL GPU work into the graph.** Picking: **done
@@ -842,6 +913,13 @@ following checks were rerun:
 | HDR Release boot observation | Five Release repetitions at 2560×1440, hidden immediate-present window, three images, isolated warm cache: all passed with exact GPU totals and zero upload fence/queue/device-idle waits. Non-authoritative because the local profile permits dirty provenance and warmup was unstable; GPU timing was disabled, so this is not a speed result. Report `20260803T205253.704Z-013cad`, digest `sha256:00db04dd1bec14efb4df09674315de961fb82e8c6ce88ebaff0c7c50fa39d455` |
 | HDR manual-exposure equivalence | Debug Apple M1 Pro/MoltenVK local offscreen replay captured `final_color` plus canonical RGBA16F `scene_color` at exposure `0.30`; their 1,228,800 byte values differ by mean `0.0163` and at most one quantization step. No VUID/error/fatal diagnostics. Report `20260804T090320.491Z-00c100`, digest `sha256:4de538b3c698428afe37b9c5f5f9dae431523765b0c4e5b76ed0e3eba3f176e2` |
 | Bistro HDR baseline safety | Final exposure `0.30`/sun `0.75` run completed all five fixed views with clean validation logs; full-resolution inspection found continuous sky and bright-luma coverage of `0.05%-1.05%`, down from `6.44%-21.38%` before calibration. Report `20260804T085151.570Z-00b294`, digest `sha256:8ebe00c3a2c596482049b9dbdb0be523cbd5790b60d2df65675e233c57bab678`. The pre-seam proposal is obsolete; no baseline was proposed or accepted |
+| Bistro alpha-mask shadow routing and PCF origin | `./build_test.sh` and `./build.sh Debug` passed. Five-view validation snapshot `20260804T105412.251Z-010923` completed all replay children with 20 alpha-tested calls per cascade and clean logs; aggregate exit 1 is only the intentional pre-HDR baseline mismatch. Direct `shadow_cascade_0` snapshot from the final rebuilt binary, `20260804T110741.708Z-0115f8`, exited 0 and shows fine branch/foliage silhouettes. Both are non-authoritative local/dirty correctness observations; no baseline was proposed or accepted |
+| Bistro shading completion focused snapshots | Final Debug reports passed for spec-gloss unlit parity (`20260804T150302.250Z-0053fa`), layered transmission fullscreen/editor (`20260804T150225.308Z-005383`, `20260804T150236.277Z-0053c5`), broad-mesh local IBL (`20260804T150248.830Z-0051d5`), and five-position shadow factor (`20260804T145726.557Z-004c7f`). The motion aggregate and all children share one workload fingerprint backed by a published 689-asset scene-content manifest; completed child logs contain no validation diagnostics. These are local/dirty correctness observations, not performance evidence |
+| Bistro shading correction | Owner review invalidated snapshot `20260804T151505.151Z-00644f` and its unaccepted proposal: the real Bistro scene had no environment controls or local probe, stale mesh-cache material references bypassed the corrected converter, and the converter omitted the Khronos sub-F0 dielectric branch. The invalid plan `20260804T152024.898Z-0064a8` must not be accepted. After generated namespace v2/mesh cache v10, authored café IBL, shared probe resources, and a real analytic-light diagnostic mode, the hidden-window report `20260804T163924.287Z-0099c7` matches the corrected interior path. Paired interior final/HDR/unlit/analytic/shadow captures pass in `20260804T170935.156Z-00b50b`; paired exterior final/analytic/shadow captures pass in `20260804T172035.207Z-00bcd0`, where same-façade lit/shadow receiver samples align with factor `175/255` versus `0/255`. The definitive five-view run `20260804T170504.198Z-00b23e` has five passing children, matching fingerprint `sha256:f69476b246d98fc2edddffeae76963822fbe22b5c41eb8f6228b2b66455e6f22`, empty validation stderr, and a 1,442-asset manifest including present prepared-cache sidecars; aggregate exit 4 is expected baseline incompatibility. Corrected generation `sha256:364c0da293733ec9ec6e59996f2707a3df6573f0347a3087ae70aabc3cb43b95` is proposed by plan `20260804T171130.209Z-00b65a`, digest `sha256:c7d22dff733c8aa68ddd4ecf8858a67dadb53ee078b985bc763d4c5771005d00`, and remains unaccepted |
+| Bistro camera-light/Fresnel correction | Owner cameras `[-35.9016342, 5.81466007, -7.73436356]` and `[-29.3909912, 6.29170275, -9.78384113]` exposed camera-ranked light membership and an implicit white F90 on zero-specular legacy materials; therefore the second unaccepted proposal recorded in the preceding row is also invalid and must not be accepted. The fixed six-channel replay `20260804T200153.974Z-011f62` passes, digest `sha256:f2248e5a4cd3d5dccec164edfe11e7957291c78d84bb38737d86b290a6a88eb3`; both final-color endpoints remove the circular sign highlight, every child records a constant 72-light scene table with zero table drops over all seven frames, and stderr contains no validation diagnostics. The final five-view replay `20260804T202607.453Z-013306`, digest `sha256:138efcb9fab10b0079eb4f0115f6b138cf16a641d986b0c4d3879ebe53ee8112`, has five passing children, one workload fingerprint, all 72 scene lights, and clean validation logs. Its no-mutation proposal is plan `20260804T203308.761Z-01348d`, digest `sha256:70ac562cfa980fef21ddeaf4567b6b3f0e9ab17af3fba5027518d4d97045f044`, generation `sha256:2b7d1f695fbc6a715b63a4be980a0d5331a939feecb4a9ae5ca29085c6252abf`; it remains unaccepted and the accepted pointer is unchanged. CPU tests, pipeline-cache validation, and the five-case backend matrix pass. A matched local/dirty 3200×2400 Release observation `20260804T200948.429Z-0120be`, digest `sha256:b1f1eb28c3d00458e0568583884a506d78f061139841f6acb4e148aacc3ed9db`, has stable warmup and unchanged 206-draw work; CPU submit p50 is 4.21 ms versus 5.32 ms before, while opaque GPU p50 is 93.27 ms versus 87.32 ms. The fingerprints differ, so the timings are diagnostic and not an authoritative performance claim |
+| Bistro fragment-light/specular-IBL correction | Five further owner cameras invalidated the receiver-level 12-light completion claim: their diagnostic replay retained all 72 scene lights but measured 44,200 influencing receiver/light pairs and discarded 34,305, leaving valid fixtures dark. Final/unlit/analytic/shadow plus no-specular and no-IBL ablations initially appeared to isolate a separate moving wall boundary to specular IBL. ADR-019 now owns a camera-independent 384-cell world grid with full 128-bit masks; fragments apply exact range/cone rejection, while the PBR path adds normal-footprint roughness filtering, specular AO, and horizon rejection. The optimized five-camera replay `20260804T223449.580Z-000d77`, digest `sha256:2de757f5aa6d221fdf03b53d80f98ea2c0a691c695e28d5f6b50c1d55d5136e1`, has five passing children and 35 passing metric assertions: all 72 lights remain with zero drops, using 363 cells, 1,635 references, and at most 47 candidates per cell. Same-fingerprint local/dirty optimization reports `20260804T221657.247Z-01866a` → `20260804T222805.692Z-000857` reduce World Opaque p50 from 109.528 ms to 93.243 ms; the older receiver report's 93.272 ms has a different workload fingerprint and is context only. That historical snapshot was not validation-clean because the then-open 17-vs-16 sampler-limit VUID occurred at startup; §8 records its subsequent resolution. The prior proposal remains invalid and no replacement has been accepted |
+| Bistro face-orientation/indoor-probe correction | The final owner audit superseded the wall's specular-IBL attribution: direct-diffuse and normal captures showed a sharp view-vector `faceforward` flip on two-sided geometry, while shadow factor remained stable. PBR now uses `SV_IsFrontFace`, samples diffuse irradiance from the surface normal without box projection, and uses box projection only for specular reflection rays. Bistro's café volume now references an authored indoor diffuse cubemap with local specular intensity zero rather than reusing the outdoor environment. PBR reflects 17 sampled images and 13 sampler descriptors through explicit semantically identical aliases. Each IBL conversion/convolution owns immutable descriptor state released against the submit serial, preventing later probe bakes from invalidating recorded commands. The exact five-camera 1600×1200 replay `20260805T102236.609Z-01020d`, digest `sha256:ee1810dbaa479cf627458f24de79096a97ec12850f07b55658b1a46a2728d6de`, has five passing children with workload fingerprint `sha256:b99fd4de02f3e8c76938d83cc4ab17d4c4d3bc2bede84b5a6e76cbdff970ad97`; full-resolution review shows no sharp camera-translating wall boundary or outdoor environment wash in the café, and logs contain no VUID/error/fatal/sampler-limit/invalid-command diagnostics. This is local/dirty correctness evidence, not an authoritative baseline or performance result; no replacement baseline has been proposed or accepted |
+| Bistro curved-wall shadow audit | Three later 1600×1200 owner cameras isolate a separate curved-wall boundary to raw directional shadow factor and direct diffuse. Exact diagnostic `20260805T120354.711Z-0177c1`, digest `sha256:5d77c58149cf0e14b7aef5db3c4bcd85430398c05545f03b389156fc99f2afe0`, excludes unlit, normals, material parameters, direct specular, and IBL. Cascade replay `20260805T122914.160Z-006da8` places the edge inside cascade 1 with identical 234 opaque indirect commands, 20 alpha calls, and zero shadow-union culls at all positions. Scene-depth replay `20260805T130951.874Z-013a91`, digest `sha256:b50cdffd044c9aeaa48330050264f7718ce47def78e1a9776a1a342ddda22c98`, proves screen-row-600 edge pixels x=934 and x=393 unproject to the same wall point within 5.6 cm. The edge is a world-stationary sun shadow revealed by camera parallax, not a camera-locked renderer artifact; experimental scene-bounds wiring did not change it and was discarded. Runs are local/dirty correctness evidence with clean diagnostics, not an accepted baseline or performance result |
 | `vkr_frustum` production references | Application world-payload construction creates camera and cascade frustums and classifies submeshes against them |
 | `VkrDrawBatcher` production references | None outside its module/tests/docs; P2 batching instead uses visibility and pass-local batch structures |
 | `vkr_indirect_draw_alloc` callers | The shared pass indirect-submission path allocates production world/shadow command ranges |

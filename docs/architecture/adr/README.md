@@ -40,6 +40,9 @@ Considered → Revisit When**.
 | [ADR-014](014-offscreen-present-target.md) | Present target seam for offscreen rendering | Accepted |
 | [ADR-015](015-metrics-module.md) | Centralized metrics registry with pre-registered slots | Accepted |
 | [ADR-016](016-hdr-environment-format.md) | Equirectangular HDR delivery, cubemap runtime | Accepted |
+| [ADR-017](017-prepared-specular-glossiness-lowering.md) | Prepared specular-glossiness lowering with retained dielectric reflectance | Accepted |
+| [ADR-018](018-graph-declared-transmission-feedback.md) | Graph-declared transmission feedback | Accepted |
+| [ADR-019](019-bounded-forward-spatial-lighting.md) | Stable-table, fragment-local bitmask-grid lighting | Accepted |
 
 ## Relationship to the Specification
 
