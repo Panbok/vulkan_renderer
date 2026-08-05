@@ -11,7 +11,7 @@
 #include "renderer/vkr_renderer.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 3u
+#define VKR_RENDER_PACKET_VERSION 4u
 
 /** Default manual camera exposure for HDR scene presentation. */
 #define VKR_DEFAULT_EXPOSURE 0.30f
@@ -73,11 +73,13 @@ typedef struct VkrDrawItem {
 } VkrDrawItem;
 
 /**
- * @brief Payload for the world pass (opaque + transparent draw lists).
+ * @brief Payload for explicit opaque, transmission, and blend world stages.
  */
 typedef struct VkrWorldPassPayload {
   const VkrDrawItem *opaque_draws;
   uint32_t opaque_draw_count;
+  const VkrDrawItem *transmission_draws;
+  uint32_t transmission_draw_count;
   const VkrDrawItem *transparent_draws;
   uint32_t transparent_draw_count;
   const VkrInstanceDataGPU *instances;

@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "Sun",
+      "parent": null,
+      "transform": { "pos": [0, 3, 3], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "directional_light": {
+        "enabled": false,
+        "color": [1.0, 0.96, 0.9],
+        "intensity": 1.5,
+        "direction_local": [0.0, -0.4, -1.0]
+      }
+    },
+    {
+      "name": "PreparedSpecGlossParity",
+      "parent": null,
+      "transform": { "pos": [0, 1.2, -2.0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "mesh": {
+        "path": "tests/fixtures/rendering/specgloss_factor_parity.gltf",
+        "pipeline_domain": "world"
+      }
+    }
+  ]
+}

@@ -325,9 +325,6 @@ void vkr_gizmo_system_render(VkrGizmoSystem *system,
   instance[0] = (VkrInstanceDataGPU){
       .model = model,
       .object_id = 0,
-      .material_index = 0,
-      .flags = 0,
-      ._padding = 0,
   };
   vkr_instance_buffer_flush_range(instance_pool, base_instance, 1);
 
@@ -486,9 +483,6 @@ void vkr_gizmo_system_render_picking(VkrGizmoSystem *system,
     *instance_ptr = (VkrInstanceDataGPU){
         .model = model,
         .object_id = object_id,
-        .material_index = 0,
-        .flags = 0,
-        ._padding = 0,
     };
     vkr_instance_buffer_flush_range(instance_pool, base_instance, 1);
 

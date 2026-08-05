@@ -260,6 +260,7 @@ vkr_internal void vkr_material_init_defaults(VkrMaterial *material,
   material->pbr.normal_scale = 1.0f;
   material->pbr.occlusion_strength = 1.0f;
   material->pbr.emissive_factor = vec3_new(0, 0, 0);
+  material->pbr.dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
   material->alpha_cutoff = 0.0f;
 
   for (uint32_t tex_slot = 0; tex_slot < VKR_TEXTURE_SLOT_COUNT; tex_slot++) {
@@ -460,6 +461,8 @@ vkr_internal VkrMaterialTextureClass vkr_material_texture_class_from_slot(
   case VKR_TEXTURE_SLOT_SPECULAR:
   case VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS:
   case VKR_TEXTURE_SLOT_OCCLUSION:
+  case VKR_TEXTURE_SLOT_TRANSMISSION:
+  case VKR_TEXTURE_SLOT_THICKNESS:
     return VKR_MATERIAL_TEXTURE_CLASS_DATA_MASK;
   default:
     return colorspace == VKR_MATERIAL_TEXTURE_COLORSPACE_SRGB
@@ -482,6 +485,10 @@ vkr_internal const char *vkr_material_slot_name(VkrTextureSlot slot) {
     return "metallic_roughness";
   case VKR_TEXTURE_SLOT_OCCLUSION:
     return "occlusion";
+  case VKR_TEXTURE_SLOT_TRANSMISSION:
+    return "transmission";
+  case VKR_TEXTURE_SLOT_THICKNESS:
+    return "thickness";
   default:
     return "unknown";
   }
@@ -499,6 +506,8 @@ vkr_internal bool8_t vkr_material_parse_texture_slot_from_key(
       {"normal_texture", VKR_TEXTURE_SLOT_NORMAL},
       {"norm_texture", VKR_TEXTURE_SLOT_NORMAL},
       {"specular_texture", VKR_TEXTURE_SLOT_SPECULAR},
+      {"transmission_texture", VKR_TEXTURE_SLOT_TRANSMISSION},
+      {"thickness_texture", VKR_TEXTURE_SLOT_THICKNESS},
   };
 
   if (!out_slot) {
@@ -527,6 +536,8 @@ vkr_internal bool8_t vkr_material_parse_texture_colorspace_slot_from_key(
       {"normal_colorspace", VKR_TEXTURE_SLOT_NORMAL},
       {"norm_colorspace", VKR_TEXTURE_SLOT_NORMAL},
       {"specular_colorspace", VKR_TEXTURE_SLOT_SPECULAR},
+      {"transmission_colorspace", VKR_TEXTURE_SLOT_TRANSMISSION},
+      {"thickness_colorspace", VKR_TEXTURE_SLOT_THICKNESS},
   };
 
   if (!out_slot) {
@@ -546,7 +557,9 @@ vkr_internal bool8_t vkr_material_parse_texture_colorspace_slot_from_key(
 vkr_internal bool8_t vkr_material_slot_implies_pbr_type(VkrTextureSlot slot) {
   return (slot == VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS ||
           slot == VKR_TEXTURE_SLOT_OCCLUSION ||
-          slot == VKR_TEXTURE_SLOT_EMISSION)
+          slot == VKR_TEXTURE_SLOT_EMISSION ||
+          slot == VKR_TEXTURE_SLOT_TRANSMISSION ||
+          slot == VKR_TEXTURE_SLOT_THICKNESS)
              ? true_v
              : false_v;
 }
@@ -1456,6 +1469,7 @@ vkr_material_loader_unload(VkrResourceLoader *self,
   material->pbr.normal_scale = 1.0f;
   material->pbr.occlusion_strength = 1.0f;
   material->pbr.emissive_factor = vec3_zero();
+  material->pbr.dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
   material->alpha_cutoff = 0.0f;
   for (uint32_t tex_slot = 0; tex_slot < VKR_TEXTURE_SLOT_COUNT; tex_slot++) {
     material->textures[tex_slot].handle = VKR_TEXTURE_HANDLE_INVALID;
@@ -1697,6 +1711,12 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
   out_data->pbr.normal_scale = 1.0f;
   out_data->pbr.occlusion_strength = 1.0f;
   out_data->pbr.emissive_factor = vec3_new(0, 0, 0);
+  out_data->pbr.dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
+  out_data->pbr.transmission_factor = 0.0f;
+  out_data->pbr.ior = 1.5f;
+  out_data->pbr.thickness_factor = 0.0f;
+  out_data->pbr.attenuation_color = vec3_new(1, 1, 1);
+  out_data->pbr.attenuation_distance = 0.0f;
   out_data->alpha_cutoff = 0.0f;
   out_data->alpha_cutoff_set = false_v;
   out_data->cutout_enabled = false_v;
@@ -1839,6 +1859,24 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
     } else if (vkr_string8_equals_cstr_i(&key, "occlusion_strength")) {
       out_data->material_type = VKR_MATERIAL_TYPE_PBR;
       (void)string8_to_f32(&value, &out_data->pbr.occlusion_strength);
+    } else if (vkr_string8_equals_cstr_i(&key, "dielectric_specular")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      (void)string8_to_vec3(&value, &out_data->pbr.dielectric_specular);
+    } else if (vkr_string8_equals_cstr_i(&key, "transmission_factor")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      (void)string8_to_f32(&value, &out_data->pbr.transmission_factor);
+    } else if (vkr_string8_equals_cstr_i(&key, "ior")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      (void)string8_to_f32(&value, &out_data->pbr.ior);
+    } else if (vkr_string8_equals_cstr_i(&key, "thickness_factor")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      (void)string8_to_f32(&value, &out_data->pbr.thickness_factor);
+    } else if (vkr_string8_equals_cstr_i(&key, "attenuation_color")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      (void)string8_to_vec3(&value, &out_data->pbr.attenuation_color);
+    } else if (vkr_string8_equals_cstr_i(&key, "attenuation_distance")) {
+      out_data->material_type = VKR_MATERIAL_TYPE_PBR;
+      (void)string8_to_f32(&value, &out_data->pbr.attenuation_distance);
     } else if (vkr_string8_equals_cstr_i(&key, "alpha_mode")) {
       VkrMaterialAlphaMode alpha_mode = VKR_MATERIAL_ALPHA_OPAQUE;
       if (vkr_material_parse_alpha_mode_value(value, &alpha_mode)) {
@@ -1894,7 +1932,9 @@ vkr_internal bool8_t vkr_material_loader_parse_file(
       (out_data->texture_paths[VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS][0] !=
            '\0' ||
        out_data->texture_paths[VKR_TEXTURE_SLOT_OCCLUSION][0] != '\0' ||
-       out_data->texture_paths[VKR_TEXTURE_SLOT_EMISSION][0] != '\0')) {
+       out_data->texture_paths[VKR_TEXTURE_SLOT_EMISSION][0] != '\0' ||
+       out_data->texture_paths[VKR_TEXTURE_SLOT_TRANSMISSION][0] != '\0' ||
+       out_data->texture_paths[VKR_TEXTURE_SLOT_THICKNESS][0] != '\0')) {
     out_data->material_type = VKR_MATERIAL_TYPE_PBR;
   }
 

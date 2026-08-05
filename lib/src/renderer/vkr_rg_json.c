@@ -1014,6 +1014,10 @@ vkr_internal bool8_t vkr_rg_json_parse_pass(VkrRgJsonParseContext *ctx,
     out_pass->has_domain = true_v;
     if (vkr_string8_equals_cstr_i(&domain, "WORLD")) {
       out_pass->domain = VKR_PIPELINE_DOMAIN_WORLD;
+    } else if (vkr_string8_equals_cstr_i(&domain, "WORLD_TRANSPARENT")) {
+      out_pass->domain = VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT;
+    } else if (vkr_string8_equals_cstr_i(&domain, "WORLD_OVERLAY")) {
+      out_pass->domain = VKR_PIPELINE_DOMAIN_WORLD_OVERLAY;
     } else if (vkr_string8_equals_cstr_i(&domain, "UI")) {
       out_pass->domain = VKR_PIPELINE_DOMAIN_UI;
     } else if (vkr_string8_equals_cstr_i(&domain, "SHADOW")) {

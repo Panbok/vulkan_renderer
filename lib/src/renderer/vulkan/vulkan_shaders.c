@@ -63,6 +63,75 @@ vkr_internal bool8_t vulkan_shader_texture_ready_for_descriptors(
   return true_v;
 }
 
+vkr_internal bool8_t vulkan_shader_texture_sampler_state_equals(
+    const struct s_TextureHandle *a, const struct s_TextureHandle *b) {
+  if (!a || !b) {
+    return false_v;
+  }
+  const VkrTextureDescription *lhs = &a->description;
+  const VkrTextureDescription *rhs = &b->description;
+  return lhs->u_repeat_mode == rhs->u_repeat_mode &&
+         lhs->v_repeat_mode == rhs->v_repeat_mode &&
+         lhs->w_repeat_mode == rhs->w_repeat_mode &&
+         lhs->min_filter == rhs->min_filter &&
+         lhs->mag_filter == rhs->mag_filter &&
+         lhs->mip_filter == rhs->mip_filter &&
+         lhs->anisotropy_enable == rhs->anisotropy_enable;
+}
+
+vkr_internal bool8_t vulkan_shader_resolve_instance_sampler_mapping(
+    const VkrShaderObjectDescription *desc, uint32_t texture_count,
+    uint32_t sampler_count, VulkanShaderObject *shader_object) {
+  if (!desc || !shader_object || texture_count > VKR_MAX_INSTANCE_TEXTURES) {
+    return false_v;
+  }
+  for (uint32_t i = 0; i < VKR_MAX_INSTANCE_TEXTURES; ++i) {
+    shader_object->instance_texture_sampler_indices[i] = UINT32_MAX;
+  }
+  if (texture_count == 0u) {
+    return sampler_count == 0u;
+  }
+
+  uint32_t mapped_count = 0u;
+  if (desc->uniforms && desc->uniform_count > 0u) {
+    for (uint32_t i = 0; i < desc->uniform_count; ++i) {
+      const VkrShaderUniformDesc *uniform = &desc->uniforms[i];
+      if (uniform->type != SHADER_UNIFORM_TYPE_SAMPLER ||
+          uniform->scope != VKR_SHADER_SCOPE_INSTANCE) {
+        continue;
+      }
+      if (uniform->location >= texture_count ||
+          uniform->sampler_location >= sampler_count ||
+          shader_object
+                  ->instance_texture_sampler_indices[uniform->location] !=
+              UINT32_MAX) {
+        log_error("Invalid instance sampler mapping for uniform '%.*s' "
+                  "(texture=%u/%u sampler=%u/%u)",
+                  (int)uniform->name.length, uniform->name.str,
+                  uniform->location, texture_count, uniform->sampler_location,
+                  sampler_count);
+        return false_v;
+      }
+      shader_object->instance_texture_sampler_indices[uniform->location] =
+          uniform->sampler_location;
+      mapped_count++;
+    }
+  } else if (texture_count == sampler_count) {
+    for (uint32_t i = 0; i < texture_count; ++i) {
+      shader_object->instance_texture_sampler_indices[i] = i;
+    }
+    mapped_count = texture_count;
+  }
+
+  if (mapped_count != texture_count) {
+    log_error("Shader instance sampler mapping is incomplete (%u/%u sampled "
+              "images, %u sampler descriptors)",
+              mapped_count, texture_count, sampler_count);
+    return false_v;
+  }
+  return true_v;
+}
+
 vkr_internal void
 vulkan_shader_reflection_input_destroy(VkrAllocator *allocator,
                                        VulkanShaderReflectionInput *input) {
@@ -1465,6 +1534,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
       vulkan_shader_max_push_constant_end(&out_shader_object->reflection);
   uint32_t reflected_global_texture_count = 0;
   uint32_t reflected_instance_texture_count = 0;
+  uint32_t reflected_instance_sampler_count = 0;
   if (frame_set_desc) {
     const uint32_t frame_sampled_images =
         vulkan_shader_reflection_count_descriptors_of_type(
@@ -1481,7 +1551,8 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
     const uint32_t draw_samplers =
         vulkan_shader_reflection_count_descriptors_of_type(
             draw_set_desc, vulkan_shader_descriptor_type_is_sampler);
-    reflected_instance_texture_count = Min(draw_sampled_images, draw_samplers);
+    reflected_instance_texture_count = draw_sampled_images;
+    reflected_instance_sampler_count = draw_samplers;
   }
 
   if (reflected_global_ubo_size >
@@ -1523,14 +1594,30 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
                 reflected_instance_texture_count);
       goto cleanup_reflection;
     }
+  }
+  if (reflected_instance_sampler_count > 0) {
     if (!vulkan_shader_validate_linear_binding_slots(
             draw_set_desc, out_shader_object->draw_sampler_binding_base,
-            VK_DESCRIPTOR_TYPE_SAMPLER, reflected_instance_texture_count)) {
+            VK_DESCRIPTOR_TYPE_SAMPLER, reflected_instance_sampler_count)) {
       log_fatal("Draw sampler bindings must be contiguous, single-slot "
                 "bindings for %u slots",
-                reflected_instance_texture_count);
+                reflected_instance_sampler_count);
       goto cleanup_reflection;
     }
+  }
+  if ((reflected_instance_texture_count == 0u) !=
+      (reflected_instance_sampler_count == 0u)) {
+    log_fatal("Draw sampled images and samplers must either both be absent or "
+              "both be present (%u images, %u samplers)",
+              reflected_instance_texture_count,
+              reflected_instance_sampler_count);
+    goto cleanup_reflection;
+  }
+  if (!vulkan_shader_resolve_instance_sampler_mapping(
+          desc, reflected_instance_texture_count,
+          reflected_instance_sampler_count, out_shader_object)) {
+    log_fatal("Failed to resolve draw sampled-image to sampler mapping");
+    goto cleanup_reflection;
   }
   if (out_shader_object->frame_uniform_binding !=
           VKR_SHADER_REFLECTION_INDEX_INVALID &&
@@ -1562,6 +1649,7 @@ bool8_t vulkan_shader_object_create(VulkanBackendState *state,
   out_shader_object->push_constant_size = reflected_push_constant_size;
   out_shader_object->global_texture_count = reflected_global_texture_count;
   out_shader_object->instance_texture_count = reflected_instance_texture_count;
+  out_shader_object->instance_sampler_count = reflected_instance_sampler_count;
   out_shader_object->instance_descriptor_pool_count = 0;
   out_shader_object->instance_pool_fallback_allocations = 0;
   out_shader_object->instance_pool_overflow_creations = 0;
@@ -2150,27 +2238,30 @@ bool8_t vulkan_shader_update_instance(
     }
   }
 
-  const uint32_t sampler_count = shader_object->instance_texture_count;
+  const uint32_t texture_count = shader_object->instance_texture_count;
+  const uint32_t sampler_count = shader_object->instance_sampler_count;
   const bool8_t has_sampled_images =
       shader_object->draw_sampled_image_binding_base !=
       VKR_SHADER_REFLECTION_INDEX_INVALID;
   const bool8_t has_samplers = shader_object->draw_sampler_binding_base !=
                                VKR_SHADER_REFLECTION_INDEX_INVALID;
-  if ((sampler_count > 0) && (!has_sampled_images || !has_samplers)) {
+  if ((texture_count > 0) && (!has_sampled_images || !has_samplers)) {
     log_warn("Material textures requested (%u) but draw set lacks sampled "
              "image/sampler "
              "bindings",
-             sampler_count);
+             texture_count);
   }
 
-  for (uint32_t sampler_index = 0; sampler_index < sampler_count;
-       sampler_index++) {
+  struct s_TextureHandle *sampler_textures[VKR_MAX_INSTANCE_TEXTURES];
+  MemZero(sampler_textures, sizeof(sampler_textures));
+  for (uint32_t texture_index = 0; texture_index < texture_count;
+       texture_index++) {
     const bool8_t needs_image_view = has_sampled_images;
     const bool8_t needs_sampler = has_samplers;
     struct s_TextureHandle *texture = NULL;
-    if (material && sampler_index < material->texture_count &&
-        material->textures_enabled[sampler_index]) {
-      texture = (struct s_TextureHandle *)material->textures[sampler_index];
+    if (material && texture_index < material->texture_count &&
+        material->textures_enabled[texture_index]) {
+      texture = (struct s_TextureHandle *)material->textures[texture_index];
     }
     if (!vulkan_shader_texture_ready_for_descriptors(texture, needs_image_view,
                                                      needs_sampler)) {
@@ -2186,10 +2277,27 @@ bool8_t vulkan_shader_update_instance(
     }
 
     VulkanTexture *texture_object = &texture->texture;
+    const uint32_t sampler_index =
+        shader_object->instance_texture_sampler_indices[texture_index];
+    if (sampler_index >= sampler_count) {
+      log_error("Texture slot %u maps outside sampler descriptor count %u",
+                texture_index, sampler_count);
+      return false_v;
+    }
+    const bool8_t owns_sampler = sampler_textures[sampler_index] == NULL;
+    if (owns_sampler) {
+      sampler_textures[sampler_index] = texture;
+    } else if (!vulkan_shader_texture_sampler_state_equals(
+                   sampler_textures[sampler_index], texture)) {
+      log_error("Texture slot %u aliases sampler slot %u with incompatible "
+                "sampling state",
+                texture_index, sampler_index);
+      return false_v;
+    }
 
     if (has_sampled_images) {
       uint32_t binding_image =
-          shader_object->draw_sampled_image_binding_base + sampler_index;
+          shader_object->draw_sampled_image_binding_base + texture_index;
       uint32_t image_state_slot = 0;
       if (!vulkan_shader_descriptor_state_index_from_binding(
               binding_image, &image_state_slot)) {
@@ -2236,7 +2344,7 @@ bool8_t vulkan_shader_update_instance(
       }
     }
 
-    if (has_samplers) {
+    if (has_samplers && owns_sampler) {
       uint32_t binding_sampler =
           shader_object->draw_sampler_binding_base + sampler_index;
       uint32_t sampler_state_slot = 0;

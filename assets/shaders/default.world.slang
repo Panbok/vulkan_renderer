@@ -3,7 +3,9 @@
 #include "vkr_shader_alpha_cutout.slangh"
 
 // Maximum number of point lights
-static const uint32_t MAX_POINT_LIGHTS = 16u;
+static const uint32_t MAX_SCENE_POINT_LIGHTS = 128u;
+static const uint32_t POINT_LIGHT_GRID_MASK_WORDS = 4u;
+static const uint32_t POINT_LIGHT_GRID_MAX_CELLS = 384u;
 
 // Uniform buffer for MVP matrices
 struct GlobalUniformBufferObject
@@ -22,7 +24,11 @@ struct GlobalUniformBufferObject
 
     // Point lights (packed vec4 array)
     uint32_t point_light_count;
-    float4 point_light_data[MAX_POINT_LIGHTS * 3];
+    float4 point_light_data[MAX_SCENE_POINT_LIGHTS * 4];
+    float4 point_light_grid_origin_cell_size;
+    float4 point_light_grid_dimensions_count;
+    float4 point_light_grid_global_mask;
+    float4 point_light_grid_masks[POINT_LIGHT_GRID_MAX_CELLS];
 
     // Cascaded shadows (CSM)
     uint32_t shadow_enabled;
@@ -80,6 +86,12 @@ struct PointLight
     float linear;
     // Makes the light fall off slower at longer distances.
     float quadratic;
+    float intensity;
+    float range;
+    uint32_t kind;
+    float3 direction;
+    float inner_cone_cos;
+    float outer_cone_cos;
 };
 
 [[vk::binding(1, 1)]]
@@ -166,6 +178,28 @@ static const uint32_t RENDER_MODE_LIGHTING = 1u;
 static const uint32_t RENDER_MODE_NORMAL = 2u;
 static const uint32_t RENDER_MODE_UNLIT = 3u;
 
+uint4 point_light_mask_at(float3 world_position)
+{
+    uint4 mask = asuint(g_ubo.point_light_grid_global_mask);
+    float cell_size = g_ubo.point_light_grid_origin_cell_size.w;
+    uint3 dimensions = (uint3)(g_ubo.point_light_grid_dimensions_count.xyz + 0.5f);
+    uint cell_count = (uint)(g_ubo.point_light_grid_dimensions_count.w + 0.5f);
+    if (cell_size <= 0.0f || cell_count == 0u)
+    {
+        return mask;
+    }
+    int3 cell = (int3)floor((world_position -
+                             g_ubo.point_light_grid_origin_cell_size.xyz) /
+                            cell_size);
+    if (any(cell < int3(0, 0, 0)) || any(cell >= (int3)dimensions))
+    {
+        return mask;
+    }
+    uint index = (uint)cell.x +
+                 dimensions.x * ((uint)cell.y + dimensions.y * (uint)cell.z);
+    return mask | asuint(g_ubo.point_light_grid_masks[index]);
+}
+
 float3 compute_normal_from_map(VertexDto input)
 {
     float3 normal = input.normal;
@@ -229,16 +263,51 @@ float4 calculate_point_light(PointLight light, float3 normal,
                              uint32_t render_mode,
                              float4 diffuse_sample, float specular_mask)
 {
-    float3 light_direction = normalize(light.position - frag_position);
+    float3 to_light = light.position - frag_position;
+    float distance_squared = dot(to_light, to_light);
+    if (light.kind != 0u && light.range > 0.0f &&
+        distance_squared >= light.range * light.range)
+    {
+        return float4(0.0f);
+    }
+    float distance = sqrt(distance_squared);
+    float3 light_direction = distance > 1e-6f
+                                 ? to_light / distance
+                                 : float3(0.0f, 0.0f, 0.0f);
     float diff = max(dot(normal, light_direction), 0.0f);
     float3 half_direction = normalize(view_direction + light_direction);
     float spec = pow(max(dot(half_direction, normal), 0.0f), local_ubo.shininess);
 
-    float distance = length(light.position - frag_position);
-    float attenuation =
-        1.0f /
-        (light.constant + light.linear * distance +
-         light.quadratic * (distance * distance));
+    float attenuation = 0.0f;
+    if (light.kind == 0u)
+    {
+        attenuation = 1.0f /
+                      (light.constant + light.linear * distance +
+                       light.quadratic * (distance * distance));
+    }
+    else
+    {
+        float range_attenuation = 1.0f;
+        if (light.range > 0.0f)
+        {
+            float ratio = distance / light.range;
+            range_attenuation = saturate(1.0f - ratio * ratio * ratio * ratio);
+            range_attenuation *= range_attenuation;
+        }
+        attenuation = range_attenuation / max(distance * distance, 1e-4f);
+        if (light.kind == 2u)
+        {
+            float cone_attenuation = smoothstep(
+                light.outer_cone_cos, light.inner_cone_cos,
+                dot(-light_direction, normalize(light.direction)));
+            if (cone_attenuation <= 0.0f)
+            {
+                return float4(0.0f);
+            }
+            attenuation *= cone_attenuation;
+        }
+    }
+    attenuation *= light.intensity;
 
     float4 diffuse = light.color * diff;
     float4 specular = light.color * spec;
@@ -358,27 +427,43 @@ float4 fragmentMain(VertexDto input) : SV_Target
     }
 
     // Point lights (loop through active lights)
-    for (uint i = 0; i < g_ubo.point_light_count && i < MAX_POINT_LIGHTS; i++)
+    uint point_count = min(g_ubo.point_light_count, MAX_SCENE_POINT_LIGHTS);
+    uint4 point_light_mask = point_light_mask_at(input.frag_position);
+    for (uint word = 0u; word < POINT_LIGHT_GRID_MASK_WORDS; ++word)
     {
-        // Unpack point light data from vec4 array
-        // [i*3+0] = {position.xyz, constant}
-        // [i*3+1] = {color.rgb * intensity, linear}
-        // [i*3+2] = {intensity, quadratic, 0, 0}
-        float4 d0 = g_ubo.point_light_data[i * 3 + 0];
-        float4 d1 = g_ubo.point_light_data[i * 3 + 1];
-        float4 d2 = g_ubo.point_light_data[i * 3 + 2];
+        uint remaining = point_light_mask[word];
+        while (remaining != 0u)
+        {
+            uint i = word * 32u + (uint)firstbitlow(remaining);
+            remaining &= remaining - 1u;
+            if (i >= point_count)
+            {
+                continue;
+            }
+            // Unpack point light data from vec4 array
+            float4 d0 = g_ubo.point_light_data[i * 4 + 0];
+            float4 d1 = g_ubo.point_light_data[i * 4 + 1];
+            float4 d2 = g_ubo.point_light_data[i * 4 + 2];
+            float4 d3 = g_ubo.point_light_data[i * 4 + 3];
 
-        PointLight point_light;
-        point_light.position = d0.xyz;
-        point_light.constant = d0.w;
-        point_light.color = float4(d1.xyz, 1.0);
-        point_light.linear = d1.w;
-        point_light.quadratic = d2.y;
+            PointLight point_light;
+            point_light.position = d0.xyz;
+            point_light.constant = d0.w;
+            point_light.color = float4(d1.xyz, 1.0);
+            point_light.linear = d1.w;
+            point_light.quadratic = d2.y;
+            point_light.intensity = d2.x;
+            point_light.range = d2.z;
+            point_light.kind = (uint32_t)(d2.w + 0.5f);
+            point_light.direction = d3.xyz;
+            point_light.inner_cone_cos = d0.w;
+            point_light.outer_cone_cos = d1.w;
 
-        color += calculate_point_light(point_light, normal, input.frag_position,
-                                       view_direction,
-                                       render_mode, diffuse_sample,
-                                       specular_sample);
+            color += calculate_point_light(point_light, normal, input.frag_position,
+                                           view_direction,
+                                           render_mode, diffuse_sample,
+                                           specular_sample);
+        }
     }
 
     color.rgb += local_ubo.emission_color.rgb;

@@ -181,6 +181,9 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                             VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64_REQUIRED(world_opaque_draws, "draw.world.opaque_draws",
                             VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(world_transmission_draws,
+                            "draw.world.transmission_draws",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64_REQUIRED(world_transparent_draws,
                             "draw.world.transparent_draws",
                             VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
@@ -204,6 +207,21 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
   VKR_REGISTER_U64(world_max_batch_size, "draw.world.max_batch_size",
                    VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(lighting_point_selected, "lighting.point.selected",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64_REQUIRED(lighting_point_dropped, "lighting.point.dropped",
+                            VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(lighting_point_grid_cells, "lighting.point.grid.cells",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(lighting_point_grid_references,
+                   "lighting.point.grid.references", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(lighting_point_grid_max_lights_per_cell,
+                   "lighting.point.grid.max_lights_per_cell",
+                   VKR_METRIC_DOMAIN_DRAW, VKR_METRIC_UNIT_COUNT);
+  VKR_REGISTER_U64(lighting_point_grid_global_lights,
+                   "lighting.point.grid.global_lights", VKR_METRIC_DOMAIN_DRAW,
+                   VKR_METRIC_UNIT_COUNT);
 
   VKR_REGISTER_U64_REQUIRED(visibility_objects_tested,
                             "visibility.objects_tested", VKR_METRIC_DOMAIN_DRAW,
@@ -679,6 +697,7 @@ void vkr_renderer_metrics_collect(
   }
   VKR_SET_U64(world_draws_collected, world->draws_collected);
   VKR_SET_U64(world_opaque_draws, world->opaque_draws);
+  VKR_SET_U64(world_transmission_draws, world->transmission_draws);
   VKR_SET_U64(world_transparent_draws, world->transparent_draws);
   VKR_SET_U64(world_opaque_batches, world->opaque_batches);
   VKR_SET_U64(world_draws_issued, world->draws_issued);
@@ -689,6 +708,18 @@ void vkr_renderer_metrics_collect(
   VKR_SET_U64(world_indirect_calls_issued, world->indirect_calls_issued);
   VKR_SET_F64(world_avg_batch_size, world->avg_batch_size);
   VKR_SET_U64(world_max_batch_size, world->max_batch_size);
+  VKR_SET_U64(lighting_point_selected,
+              renderer->lighting_system.point_light_count);
+  VKR_SET_U64(lighting_point_dropped,
+              renderer->lighting_system.point_light_dropped_count);
+  VKR_SET_U64(lighting_point_grid_cells,
+              renderer->lighting_system.point_light_grid.cell_count);
+  VKR_SET_U64(lighting_point_grid_references,
+              renderer->lighting_system.point_light_grid.reference_count);
+  VKR_SET_U64(lighting_point_grid_max_lights_per_cell,
+              renderer->lighting_system.point_light_grid.max_lights_per_cell);
+  VKR_SET_U64(lighting_point_grid_global_lights,
+              renderer->lighting_system.point_light_grid.global_light_count);
 
   VKR_SET_U64(visibility_objects_tested, visibility->objects_tested);
   VKR_SET_U64(visibility_culled_camera, visibility->objects_culled_camera);
@@ -927,6 +958,7 @@ vkr_renderer_metrics_read_frame(const VkrRendererMetrics *renderer_metrics,
       world->draws_collected = (uint32_t)collected;
     }
     VKR_READ_U32(world->opaque_draws, ids->world_opaque_draws);
+    VKR_READ_U32(world->transmission_draws, ids->world_transmission_draws);
     VKR_READ_U32(world->transparent_draws, ids->world_transparent_draws);
     VKR_READ_U32(world->opaque_batches, ids->world_opaque_batches);
     VKR_READ_U32(world->draws_issued, ids->world_draws_issued);

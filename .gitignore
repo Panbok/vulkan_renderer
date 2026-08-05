@@ -7,14 +7,18 @@ build_xcode
 build_release
 build_release_info
 build_novcpkg
-# Runtime textures stay local except for explicitly licensed source assets.
+# Runtime textures stay local except for explicitly committed source assets.
 assets/textures/*
 !assets/textures/citrus_orchard_puresky_4k.hdr
 !assets/textures/citrus_orchard_puresky_4k.hdr.license.md
+!assets/textures/bistro_indoor_probe_*.png
 assets/models
 assets/meters
 assets/materials
-assets/scenes
+assets/scenes/*
+!assets/scenes/bistro.scene.json
+!assets/scenes/fixtures/
+!assets/scenes/fixtures/*.scene.json
 
 *.o
 *.out

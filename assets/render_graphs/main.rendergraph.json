@@ -29,11 +29,29 @@
       "condition": "editor_enabled",
       "extent": { "mode": "viewport" },
       "format": "R16G16B16A16_SFLOAT",
-      "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"],
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC", "TRANSFER_DST"],
       "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
     },
     {
       "name": "hdr_scene_color",
+      "type": "image",
+      "condition": "!editor_enabled",
+      "extent": { "mode": "window" },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC", "TRANSFER_DST"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "scene_pre_transmission",
+      "type": "image",
+      "condition": "editor_enabled",
+      "extent": { "mode": "viewport" },
+      "format": "R16G16B16A16_SFLOAT",
+      "usage": ["COLOR_ATTACHMENT", "SAMPLED", "TRANSFER_SRC"],
+      "flags": ["TRANSIENT", "RESIZABLE", "PER_IMAGE"]
+    },
+    {
+      "name": "hdr_pre_transmission",
       "type": "image",
       "condition": "!editor_enabled",
       "extent": { "mode": "window" },
@@ -137,7 +155,7 @@
       "attachments": {
         "color": [
           {
-            "image": "hdr_scene_color",
+            "image": "hdr_pre_transmission",
             "load": "CLEAR",
             "store": "STORE",
             "clear": { "color": [0.02, 0.02, 0.03, 1.0] }
@@ -160,7 +178,7 @@
       "attachments": {
         "color": [
           {
-            "image": "scene_color",
+            "image": "scene_pre_transmission",
             "load": "CLEAR",
             "store": "STORE",
             "clear": { "color": [0.02, 0.02, 0.03, 1.0] }
@@ -176,7 +194,7 @@
       "execute": "pass.skybox"
     },
     {
-      "name": "World.Fullscreen",
+      "name": "World.Opaque.Fullscreen",
       "type": "graphics",
       "domain": "WORLD",
       "condition": "!editor_enabled",
@@ -189,7 +207,7 @@
       ],
       "attachments": {
         "color": [
-          { "image": "hdr_scene_color", "load": "LOAD", "store": "STORE" }
+          { "image": "hdr_pre_transmission", "load": "LOAD", "store": "STORE" }
         ],
         "depth": {
           "image": "swapchain_depth",
@@ -197,10 +215,10 @@
           "store": "STORE"
         }
       },
-      "execute": "pass.world"
+      "execute": "pass.world.opaque"
     },
     {
-      "name": "World.Editor",
+      "name": "World.Opaque.Editor",
       "type": "graphics",
       "domain": "WORLD",
       "condition": "editor_enabled",
@@ -213,6 +231,72 @@
       ],
       "attachments": {
         "color": [
+          { "image": "scene_pre_transmission", "load": "LOAD", "store": "STORE" }
+        ],
+        "depth": {
+          "image": "scene_depth",
+          "load": "LOAD",
+          "store": "STORE"
+        }
+      },
+      "execute": "pass.world.opaque"
+    },
+    {
+      "name": "World.FeedbackCopy.Fullscreen",
+      "type": "transfer",
+      "condition": "!editor_enabled",
+      "reads": [
+        { "image": "hdr_pre_transmission", "access": "TRANSFER_SRC" }
+      ],
+      "writes": [
+        { "image": "hdr_scene_color", "access": "TRANSFER_DST" }
+      ],
+      "execute": "pass.copy.pre_transmission.fullscreen"
+    },
+    {
+      "name": "World.FeedbackCopy.Editor",
+      "type": "transfer",
+      "condition": "editor_enabled",
+      "reads": [
+        { "image": "scene_pre_transmission", "access": "TRANSFER_SRC" }
+      ],
+      "writes": [
+        { "image": "scene_color", "access": "TRANSFER_DST" }
+      ],
+      "execute": "pass.copy.pre_transmission.editor"
+    },
+    {
+      "name": "World.Transmission.Fullscreen",
+      "type": "graphics",
+      "domain": "WORLD_TRANSPARENT",
+      "condition": "!editor_enabled",
+      "reads": [
+        { "image": "shadow_map", "access": "SAMPLED", "binding": 0 },
+        { "image": "hdr_pre_transmission", "access": "SAMPLED", "binding": 1 }
+      ],
+      "attachments": {
+        "color": [
+          { "image": "hdr_scene_color", "load": "LOAD", "store": "STORE" }
+        ],
+        "depth": {
+          "image": "swapchain_depth",
+          "load": "LOAD",
+          "store": "STORE"
+        }
+      },
+      "execute": "pass.world.transmission"
+    },
+    {
+      "name": "World.Transmission.Editor",
+      "type": "graphics",
+      "domain": "WORLD_TRANSPARENT",
+      "condition": "editor_enabled",
+      "reads": [
+        { "image": "shadow_map", "access": "SAMPLED", "binding": 0 },
+        { "image": "scene_pre_transmission", "access": "SAMPLED", "binding": 1 }
+      ],
+      "attachments": {
+        "color": [
           { "image": "scene_color", "load": "LOAD", "store": "STORE" }
         ],
         "depth": {
@@ -221,7 +305,47 @@
           "store": "STORE"
         }
       },
-      "execute": "pass.world"
+      "execute": "pass.world.transmission"
+    },
+    {
+      "name": "World.Blend.Fullscreen",
+      "type": "graphics",
+      "domain": "WORLD_TRANSPARENT",
+      "condition": "!editor_enabled",
+      "reads": [
+        { "image": "shadow_map", "access": "SAMPLED", "binding": 0 }
+      ],
+      "attachments": {
+        "color": [
+          { "image": "hdr_scene_color", "load": "LOAD", "store": "STORE" }
+        ],
+        "depth": {
+          "image": "swapchain_depth",
+          "load": "LOAD",
+          "store": "STORE"
+        }
+      },
+      "execute": "pass.world.blend"
+    },
+    {
+      "name": "World.Blend.Editor",
+      "type": "graphics",
+      "domain": "WORLD_TRANSPARENT",
+      "condition": "editor_enabled",
+      "reads": [
+        { "image": "shadow_map", "access": "SAMPLED", "binding": 0 }
+      ],
+      "attachments": {
+        "color": [
+          { "image": "scene_color", "load": "LOAD", "store": "STORE" }
+        ],
+        "depth": {
+          "image": "scene_depth",
+          "load": "LOAD",
+          "store": "STORE"
+        }
+      },
+      "execute": "pass.world.blend"
     },
     {
       "name": "Post.Tonemap.Fullscreen",

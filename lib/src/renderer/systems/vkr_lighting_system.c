@@ -24,66 +24,114 @@ typedef struct DirectionalLightSyncContext {
 typedef struct PointLightSyncContext {
   VkrLightingSystem *system;
   const VkrScene *scene;
-  struct PointLightCandidate {
-    uint32_t render_id;
-    Vec3 position;
-    Vec3 color;
-    float32_t intensity;
-    float32_t constant;
-    float32_t linear;
-    float32_t quadratic;
-  } candidates[VKR_MAX_POINT_LIGHTS];
-  uint32_t count;
+  uint32_t total_considered;
 } PointLightSyncContext;
 
-vkr_internal void point_light_insert_sorted(PointLightSyncContext *ctx,
-                                            uint32_t render_id, Vec3 position,
-                                            Vec3 color, float32_t intensity,
-                                            float32_t constant,
-                                            float32_t linear,
-                                            float32_t quadratic) {
-  if (!ctx)
-    return;
+vkr_internal bool8_t point_light_stable_precedes(const VkrPointLight *light,
+                                                 const VkrPointLight *other) {
+  const uint32_t stable_id = light->render_id ? light->render_id : UINT32_MAX;
+  const uint32_t other_id = other->render_id ? other->render_id : UINT32_MAX;
+  if (stable_id != other_id) {
+    return stable_id < other_id;
+  }
+  if (light->position.x != other->position.x) {
+    return light->position.x < other->position.x;
+  }
+  if (light->position.y != other->position.y) {
+    return light->position.y < other->position.y;
+  }
+  return light->position.z < other->position.z;
+}
 
-  uint32_t count = ctx->count;
-  uint32_t sort_key = render_id ? render_id : UINT32_MAX;
-  uint32_t insert = 0;
-  while (insert < count && ctx->candidates[insert].render_id < sort_key) {
+vkr_internal void point_light_insert_stable(PointLightSyncContext *ctx,
+                                            VkrPointLight candidate) {
+  if (!ctx) {
+    return;
+  }
+  ctx->total_considered++;
+
+  uint32_t insert = 0u;
+  while (insert < ctx->system->point_light_count &&
+         !point_light_stable_precedes(&candidate,
+                                      &ctx->system->point_lights[insert])) {
     insert++;
   }
+  if (insert == VKR_MAX_SCENE_POINT_LIGHTS) {
+    return;
+  }
 
-  if (count < VKR_MAX_POINT_LIGHTS) {
-    for (uint32_t j = count; j > insert; j--) {
-      ctx->candidates[j] = ctx->candidates[j - 1];
+  const uint32_t shifted_count =
+      Min(ctx->system->point_light_count, VKR_MAX_SCENE_POINT_LIGHTS - 1u);
+  for (uint32_t i = shifted_count; i > insert; --i) {
+    ctx->system->point_lights[i] = ctx->system->point_lights[i - 1u];
+  }
+  ctx->system->point_lights[insert] = candidate;
+  ctx->system->point_light_count =
+      Min(ctx->system->point_light_count + 1u, VKR_MAX_SCENE_POINT_LIGHTS);
+}
+
+vkr_internal void point_light_mask_add(VkrPointLightMask *mask,
+                                       uint32_t light_index) {
+  if (!mask || light_index >= VKR_MAX_SCENE_POINT_LIGHTS) {
+    return;
+  }
+  mask->words[light_index / 32u] |= 1u << (light_index % 32u);
+}
+
+vkr_internal uint32_t point_light_mask_count(VkrPointLightMask mask) {
+  uint32_t count = 0u;
+  for (uint32_t word = 0u; word < VKR_POINT_LIGHT_GRID_MASK_WORDS; ++word) {
+    uint32_t bits = mask.words[word];
+    while (bits) {
+      bits &= bits - 1u;
+      count++;
     }
-    ctx->candidates[insert] = (struct PointLightCandidate){
-        .render_id = sort_key,
-        .position = position,
-        .color = color,
-        .intensity = intensity,
-        .constant = constant,
-        .linear = linear,
-        .quadratic = quadratic,
-    };
-    ctx->count = count + 1;
-    return;
   }
+  return count;
+}
 
-  if (sort_key >= ctx->candidates[count - 1].render_id)
-    return;
+vkr_internal uint32_t point_light_grid_index(const VkrPointLightGrid *grid,
+                                             uint32_t x, uint32_t y,
+                                             uint32_t z) {
+  return x + grid->dimensions[0] * (y + grid->dimensions[1] * z);
+}
 
-  for (uint32_t j = count - 1; j > insert; j--) {
-    ctx->candidates[j] = ctx->candidates[j - 1];
-  }
-  ctx->candidates[insert] = (struct PointLightCandidate){
-      .render_id = sort_key,
-      .position = position,
-      .color = color,
-      .intensity = intensity,
-      .constant = constant,
-      .linear = linear,
-      .quadratic = quadratic,
+vkr_internal uint32_t point_light_grid_dimension(float32_t extent,
+                                                 float32_t cell_size) {
+  return Max((uint32_t)ceilf(Max(extent, 0.0f) / cell_size), 1u);
+}
+
+vkr_internal uint64_t point_light_grid_dimensions_for_size(
+    Vec3 extent, float32_t cell_size, uint32_t dimensions[3]) {
+  dimensions[0] = point_light_grid_dimension(extent.x, cell_size);
+  dimensions[1] = point_light_grid_dimension(extent.y, cell_size);
+  dimensions[2] = point_light_grid_dimension(extent.z, cell_size);
+  return (uint64_t)dimensions[0] * (uint64_t)dimensions[1] *
+         (uint64_t)dimensions[2];
+}
+
+vkr_internal bool8_t point_light_intersects_grid_cell(
+    const VkrPointLightGrid *grid, const VkrPointLight *light, uint32_t x,
+    uint32_t y, uint32_t z) {
+  const Vec3 cell_min = {
+      grid->origin.x + (float32_t)x * grid->cell_size,
+      grid->origin.y + (float32_t)y * grid->cell_size,
+      grid->origin.z + (float32_t)z * grid->cell_size,
   };
+  const Vec3 cell_max = {
+      cell_min.x + grid->cell_size,
+      cell_min.y + grid->cell_size,
+      cell_min.z + grid->cell_size,
+  };
+  const Vec3 closest = {
+      Clamp(light->position.x, cell_min.x, cell_max.x),
+      Clamp(light->position.y, cell_min.y, cell_max.y),
+      Clamp(light->position.z, cell_min.z, cell_max.z),
+  };
+  const Vec3 delta = vec3_sub(light->position, closest);
+  const float32_t range_squared = light->range * light->range;
+  const float32_t conservative_epsilon = Max(range_squared * 1e-6f, 1e-5f);
+  return vec3_length_squared(delta) <= range_squared + conservative_epsilon;
 }
 
 // ============================================================================
@@ -170,9 +218,23 @@ vkr_internal void sync_point_lights_cb(const VkrArchetype *arch,
     // Get world position from transform
     Vec3 world_position = mat4_position(transforms[i].world);
     uint32_t render_id = vkr_scene_get_render_id(scene, entities[i]);
-    point_light_insert_sorted(ctx, render_id, world_position, lights[i].color,
-                              lights[i].intensity, lights[i].constant,
-                              lights[i].linear, lights[i].quadratic);
+    const Vec3 direction =
+        vkr_quat_rotate_vec3(transforms[i].rotation, lights[i].direction_local);
+    point_light_insert_stable(
+        ctx, (VkrPointLight){
+                 .position = world_position,
+                 .color = lights[i].color,
+                 .intensity = lights[i].intensity,
+                 .constant = lights[i].constant,
+                 .linear = lights[i].linear,
+                 .quadratic = lights[i].quadratic,
+                 .range = lights[i].range,
+                 .direction = direction,
+                 .inner_cone_angle = lights[i].inner_cone_angle,
+                 .outer_cone_angle = lights[i].outer_cone_angle,
+                 .kind = lights[i].kind,
+                 .render_id = render_id,
+             });
   }
 }
 
@@ -216,6 +278,7 @@ void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
   // Reset state
   system->directional.enabled = false_v;
   system->point_light_count = 0;
+  system->point_light_dropped_count = 0;
 
   // Sync directional light (take first enabled)
   DirectionalLightSyncContext dir_ctx = {
@@ -233,22 +296,187 @@ void vkr_lighting_system_sync_from_scene(VkrLightingSystem *system,
   PointLightSyncContext point_ctx = {
       .system = system,
       .scene = scene,
-      .count = 0,
   };
   vkr_entity_query_compiled_each_chunk(
       (VkrQueryCompiled *)&scene->query_point_lights, sync_point_lights_cb,
       &point_ctx);
 
-  system->point_light_count = point_ctx.count;
-  for (uint32_t i = 0; i < point_ctx.count; i++) {
-    system->point_lights[i].position = point_ctx.candidates[i].position;
-    system->point_lights[i].color = point_ctx.candidates[i].color;
-    system->point_lights[i].intensity = point_ctx.candidates[i].intensity;
-    system->point_lights[i].constant = point_ctx.candidates[i].constant;
-    system->point_lights[i].linear = point_ctx.candidates[i].linear;
-    system->point_lights[i].quadratic = point_ctx.candidates[i].quadratic;
-  }
+  system->point_light_dropped_count =
+      point_ctx.total_considered > system->point_light_count
+          ? point_ctx.total_considered - system->point_light_count
+          : 0u;
+  vkr_lighting_system_build_point_light_grid(system);
   system->dirty = true_v;
+}
+
+void vkr_lighting_system_build_point_light_grid(VkrLightingSystem *system) {
+  if (!system) {
+    return;
+  }
+  VkrPointLightGrid *grid = &system->point_light_grid;
+  MemZero(grid, sizeof(*grid));
+  if (system->point_light_count == 0u) {
+    return;
+  }
+
+  Vec3 bounds_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
+  Vec3 bounds_max = vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
+  uint32_t finite_count = 0u;
+  for (uint32_t i = 0; i < system->point_light_count; ++i) {
+    const VkrPointLight *light = &system->point_lights[i];
+    if (light->kind == VKR_POINT_LIGHT_KIND_POLYNOMIAL ||
+        light->range <= 0.0f) {
+      point_light_mask_add(&grid->global_mask, i);
+      continue;
+    }
+    const float32_t range = light->range;
+    bounds_min.x = Min(bounds_min.x, light->position.x - range);
+    bounds_min.y = Min(bounds_min.y, light->position.y - range);
+    bounds_min.z = Min(bounds_min.z, light->position.z - range);
+    bounds_max.x = Max(bounds_max.x, light->position.x + range);
+    bounds_max.y = Max(bounds_max.y, light->position.y + range);
+    bounds_max.z = Max(bounds_max.z, light->position.z + range);
+    finite_count++;
+  }
+
+  if (finite_count == 0u) {
+    grid->global_light_count = point_light_mask_count(grid->global_mask);
+    grid->reference_count = grid->global_light_count;
+    grid->max_lights_per_cell = grid->global_light_count;
+    return;
+  }
+
+  const Vec3 extent = vec3_sub(bounds_max, bounds_min);
+  float32_t cell_size = VKR_POINT_LIGHT_GRID_MIN_CELL_SIZE;
+  uint32_t dimensions[3] = {0};
+  uint64_t cell_count =
+      point_light_grid_dimensions_for_size(extent, cell_size, dimensions);
+  if (cell_count > VKR_POINT_LIGHT_GRID_MAX_CELLS) {
+    float32_t rejected_size = cell_size;
+    do {
+      rejected_size = cell_size;
+      cell_size *= 1.25f;
+      cell_count =
+          point_light_grid_dimensions_for_size(extent, cell_size, dimensions);
+    } while (cell_count > VKR_POINT_LIGHT_GRID_MAX_CELLS);
+
+    // The coarse growth step only brackets the answer. Bisection chooses the
+    // densest representable grid so a quantization jump cannot leave a large
+    // part of the fixed uniform budget unused.
+    for (uint32_t iteration = 0u; iteration < 16u; ++iteration) {
+      const float32_t candidate_size = (rejected_size + cell_size) * 0.5f;
+      uint32_t candidate_dimensions[3];
+      const uint64_t candidate_count = point_light_grid_dimensions_for_size(
+          extent, candidate_size, candidate_dimensions);
+      if (candidate_count > VKR_POINT_LIGHT_GRID_MAX_CELLS) {
+        rejected_size = candidate_size;
+      } else {
+        cell_size = candidate_size;
+        dimensions[0] = candidate_dimensions[0];
+        dimensions[1] = candidate_dimensions[1];
+        dimensions[2] = candidate_dimensions[2];
+        cell_count = candidate_count;
+      }
+    }
+  }
+
+  grid->origin = bounds_min;
+  grid->cell_size = cell_size;
+  grid->dimensions[0] = dimensions[0];
+  grid->dimensions[1] = dimensions[1];
+  grid->dimensions[2] = dimensions[2];
+  grid->cell_count = (uint32_t)cell_count;
+
+  for (uint32_t i = 0; i < system->point_light_count; ++i) {
+    const VkrPointLight *light = &system->point_lights[i];
+    if (light->kind == VKR_POINT_LIGHT_KIND_POLYNOMIAL ||
+        light->range <= 0.0f) {
+      continue;
+    }
+    int32_t min_cell[3] = {
+        (int32_t)floorf((light->position.x - light->range - grid->origin.x) /
+                        grid->cell_size),
+        (int32_t)floorf((light->position.y - light->range - grid->origin.y) /
+                        grid->cell_size),
+        (int32_t)floorf((light->position.z - light->range - grid->origin.z) /
+                        grid->cell_size),
+    };
+    int32_t max_cell[3] = {
+        (int32_t)floorf((light->position.x + light->range - grid->origin.x) /
+                        grid->cell_size),
+        (int32_t)floorf((light->position.y + light->range - grid->origin.y) /
+                        grid->cell_size),
+        (int32_t)floorf((light->position.z + light->range - grid->origin.z) /
+                        grid->cell_size),
+    };
+    for (uint32_t axis = 0u; axis < 3u; ++axis) {
+      min_cell[axis] =
+          Clamp(min_cell[axis], 0, (int32_t)grid->dimensions[axis] - 1);
+      max_cell[axis] =
+          Clamp(max_cell[axis], 0, (int32_t)grid->dimensions[axis] - 1);
+    }
+    for (int32_t z = min_cell[2]; z <= max_cell[2]; ++z) {
+      for (int32_t y = min_cell[1]; y <= max_cell[1]; ++y) {
+        for (int32_t x = min_cell[0]; x <= max_cell[0]; ++x) {
+          if (!point_light_intersects_grid_cell(grid, light, (uint32_t)x,
+                                                (uint32_t)y, (uint32_t)z)) {
+            continue;
+          }
+          const uint32_t cell = point_light_grid_index(
+              grid, (uint32_t)x, (uint32_t)y, (uint32_t)z);
+          point_light_mask_add(&grid->masks[cell], i);
+          grid->reference_count++;
+        }
+      }
+    }
+  }
+
+  grid->global_light_count = point_light_mask_count(grid->global_mask);
+  grid->reference_count += grid->global_light_count;
+  for (uint32_t cell = 0u; cell < grid->cell_count; ++cell) {
+    const uint32_t local_count = point_light_mask_count(grid->masks[cell]);
+    grid->max_lights_per_cell =
+        Max(grid->max_lights_per_cell, local_count + grid->global_light_count);
+  }
+}
+
+VkrPointLightMask
+vkr_lighting_system_point_light_mask_at(const VkrLightingSystem *system,
+                                        Vec3 world_position) {
+  VkrPointLightMask result = {0};
+  if (!system) {
+    return result;
+  }
+  const VkrPointLightGrid *grid = &system->point_light_grid;
+  result = grid->global_mask;
+  if (grid->cell_count == 0u || grid->cell_size <= 0.0f) {
+    return result;
+  }
+  const int32_t cell[3] = {
+      (int32_t)floorf((world_position.x - grid->origin.x) / grid->cell_size),
+      (int32_t)floorf((world_position.y - grid->origin.y) / grid->cell_size),
+      (int32_t)floorf((world_position.z - grid->origin.z) / grid->cell_size),
+  };
+  for (uint32_t axis = 0u; axis < 3u; ++axis) {
+    if (cell[axis] < 0 || cell[axis] >= (int32_t)grid->dimensions[axis]) {
+      return result;
+    }
+  }
+  const uint32_t index = point_light_grid_index(
+      grid, (uint32_t)cell[0], (uint32_t)cell[1], (uint32_t)cell[2]);
+  for (uint32_t word = 0u; word < VKR_POINT_LIGHT_GRID_MASK_WORDS; ++word) {
+    result.words[word] |= grid->masks[index].words[word];
+  }
+  return result;
+}
+
+bool8_t
+vkr_lighting_system_point_light_mask_contains(const VkrPointLightMask *mask,
+                                              uint32_t light_index) {
+  if (!mask || light_index >= VKR_MAX_SCENE_POINT_LIGHTS) {
+    return false_v;
+  }
+  return (mask->words[light_index / 32u] & (1u << (light_index % 32u))) != 0u;
 }
 
 void vkr_lighting_system_apply_uniforms(VkrLightingSystem *system) {
@@ -277,35 +505,67 @@ void vkr_lighting_system_apply_uniforms(VkrLightingSystem *system) {
   vkr_shader_system_uniform_set(ss, "point_light_count",
                                 &system->point_light_count);
 
-  // Pack point light data into vec4 array (3 vec4s per light)
-  // [i*3+0] = {position.xyz, constant}
-  // [i*3+1] = {color.rgb * intensity, linear}
-  // [i*3+2] = {intensity, quadratic, 0, 0}
-  Vec4 point_light_data[VKR_MAX_POINT_LIGHTS * 3];
+  // Pack point light data into vec4 array (4 vec4s per light)
+  // [i*4+0] = {position.xyz, constant/spot inner cosine}
+  // [i*4+1] = {color.rgb, linear/spot outer cosine}
+  // [i*4+2] = {intensity, quadratic, range, kind}
+  // [i*4+3] = {direction.xyz, 0}
+  Vec4 point_light_data[VKR_MAX_SCENE_POINT_LIGHTS * 4u];
   MemZero(point_light_data, sizeof(point_light_data));
 
   for (uint32_t i = 0; i < system->point_light_count; i++) {
-    point_light_data[i * 3 + 0] = (Vec4){
+    point_light_data[i * 4 + 0] = (Vec4){
         system->point_lights[i].position.x,
         system->point_lights[i].position.y,
         system->point_lights[i].position.z,
-        system->point_lights[i].constant,
+        system->point_lights[i].kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
+            ? cosf(system->point_lights[i].inner_cone_angle)
+            : system->point_lights[i].constant,
     };
-    point_light_data[i * 3 + 1] = (Vec4){
-        system->point_lights[i].color.x * system->point_lights[i].intensity,
-        system->point_lights[i].color.y * system->point_lights[i].intensity,
-        system->point_lights[i].color.z * system->point_lights[i].intensity,
-        system->point_lights[i].linear,
+    point_light_data[i * 4 + 1] = (Vec4){
+        system->point_lights[i].color.x,
+        system->point_lights[i].color.y,
+        system->point_lights[i].color.z,
+        system->point_lights[i].kind == VKR_POINT_LIGHT_KIND_GLTF_SPOT
+            ? cosf(system->point_lights[i].outer_cone_angle)
+            : system->point_lights[i].linear,
     };
-    point_light_data[i * 3 + 2] = (Vec4){
+    point_light_data[i * 4 + 2] = (Vec4){
         system->point_lights[i].intensity,
         system->point_lights[i].quadratic,
-        0.0f,
+        system->point_lights[i].range,
+        (float32_t)system->point_lights[i].kind,
+    };
+    point_light_data[i * 4 + 3] = (Vec4){
+        system->point_lights[i].direction.x,
+        system->point_lights[i].direction.y,
+        system->point_lights[i].direction.z,
         0.0f,
     };
   }
 
   vkr_shader_system_uniform_set(ss, "point_light_data", point_light_data);
+
+  const VkrPointLightGrid *grid = &system->point_light_grid;
+  const Vec4 grid_origin_cell_size = {
+      grid->origin.x,
+      grid->origin.y,
+      grid->origin.z,
+      grid->cell_size,
+  };
+  const Vec4 grid_dimensions_count = {
+      (float32_t)grid->dimensions[0],
+      (float32_t)grid->dimensions[1],
+      (float32_t)grid->dimensions[2],
+      (float32_t)grid->cell_count,
+  };
+  vkr_shader_system_uniform_set(ss, "point_light_grid_origin_cell_size",
+                                &grid_origin_cell_size);
+  vkr_shader_system_uniform_set(ss, "point_light_grid_dimensions_count",
+                                &grid_dimensions_count);
+  vkr_shader_system_uniform_set(ss, "point_light_grid_global_mask",
+                                &grid->global_mask);
+  vkr_shader_system_uniform_set(ss, "point_light_grid_masks", grid->masks);
 
   system->dirty = false_v;
 }

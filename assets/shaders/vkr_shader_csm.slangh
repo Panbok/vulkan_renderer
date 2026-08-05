@@ -272,9 +272,18 @@ CascadeLookup find_covering_cascade(float3 world_pos, uint initial_cascade)
 {
     CascadeLookup result;
     initial_cascade = clamp_cascade_index(initial_cascade);
+    ShadowProjection projections[SHADOW_CASCADE_MAX];
+    bool projected[SHADOW_CASCADE_MAX];
+    [unroll]
+    for (uint i = 0u; i < SHADOW_CASCADE_MAX; ++i)
+    {
+        projected[i] = false;
+    }
     result.cascade = initial_cascade;
     result.covered = false;
     result.proj = project_shadow(world_pos, initial_cascade);
+    projections[initial_cascade] = result.proj;
+    projected[initial_cascade] = true;
 
     uint count = min(max(g_ubo.shadow_cascade_count, 1u), SHADOW_CASCADE_MAX);
 
@@ -294,10 +303,12 @@ CascadeLookup find_covering_cascade(float3 world_pos, uint initial_cascade)
     [unroll]
     for (uint step = 1u; step < SHADOW_CASCADE_MAX; ++step)
     {
-        uint left = (initial_cascade >= step) ? (initial_cascade - step) : 0u;
-        if (left < count)
+        if (initial_cascade >= step)
         {
+            uint left = initial_cascade - step;
             ShadowProjection p = project_shadow(world_pos, left);
+            projections[left] = p;
+            projected[left] = true;
             if (!p.uv_out && !p.z_out)
             {
                 result.cascade = left;
@@ -311,6 +322,8 @@ CascadeLookup find_covering_cascade(float3 world_pos, uint initial_cascade)
         if (right < count)
         {
             ShadowProjection p = project_shadow(world_pos, right);
+            projections[right] = p;
+            projected[right] = true;
             if (!p.uv_out && !p.z_out)
             {
                 result.cascade = right;
@@ -333,7 +346,13 @@ CascadeLookup find_covering_cascade(float3 world_pos, uint initial_cascade)
     for (uint i = 0u; i < SHADOW_CASCADE_MAX; ++i)
     {
         if (i >= count) continue;
-        ShadowProjection p = (i == initial_cascade) ? result.proj : project_shadow(world_pos, i);
+        ShadowProjection p = projections[i];
+        if (!projected[i])
+        {
+            p = project_shadow(world_pos, i);
+            projections[i] = p;
+            projected[i] = true;
+        }
         bool z_ok = (p.z >= -z_soft && p.z <= 1.0f + z_soft);
         if (!z_ok) continue;
         float soft_uv = shadow_uv_soft_margin(i);

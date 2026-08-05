@@ -26,6 +26,36 @@ typedef struct VkrSceneLoadResult {
   uint32_t point_light_count;
 } VkrSceneLoadResult;
 
+typedef enum VkrSceneGltfPunctualLightType {
+  VKR_SCENE_GLTF_LIGHT_DIRECTIONAL = 0,
+  VKR_SCENE_GLTF_LIGHT_POINT,
+  VKR_SCENE_GLTF_LIGHT_SPOT,
+} VkrSceneGltfPunctualLightType;
+
+typedef struct VkrSceneGltfPunctualLightImport {
+  char name[64];
+  Vec3 position;
+  Vec3 direction;
+  Vec3 color;
+  float32_t intensity;
+  float32_t range;
+  float32_t inner_cone_angle;
+  float32_t outer_cone_angle;
+  VkrSceneGltfPunctualLightType type;
+} VkrSceneGltfPunctualLightImport;
+
+/**
+ * @brief Inspect punctual-light nodes in one glTF instance.
+ *
+ * Applies the glTF node hierarchy followed by @p scene_world and writes at
+ * most @p capacity deterministic import records. No GPU or scene state is
+ * created; the async scene loader consumes the same records during finalize.
+ */
+bool8_t vkr_scene_loader_read_gltf_punctual_lights(
+    String8 path, Mat4 scene_world, uint32_t scene_entity_index,
+    VkrSceneGltfPunctualLightImport *out_lights, uint32_t capacity,
+    uint32_t *out_count);
+
 /**
  * @brief Load a scene from a JSON file path.
  *

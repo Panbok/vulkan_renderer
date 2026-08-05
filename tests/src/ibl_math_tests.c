@@ -1,5 +1,6 @@
 #include "ibl_math_tests.h"
 
+#include "renderer/systems/vkr_world_resources.h"
 #include "renderer/vkr_ibl_math.h"
 
 static bool32_t vkr_test_float_near(float32_t actual, float32_t expected,
@@ -223,6 +224,34 @@ static bool32_t test_ibl_prefilter_source_lod(void) {
   return true_v;
 }
 
+static bool32_t test_local_probe_fragment_influence_and_draw_visibility(void) {
+  printf(
+      "  Running test_local_probe_fragment_influence_and_draw_visibility...\n");
+  Vec3 center = vec3_zero();
+  Vec3 extents = vec3_new(2.0f, 2.0f, 2.0f);
+
+  assert(vkr_test_float_near(vkr_world_resources_probe_fragment_influence(
+                                 center, extents, 2.0f, vec3_zero()),
+                             1.0f, 1e-6f));
+  assert(vkr_test_float_near(
+      vkr_world_resources_probe_fragment_influence(center, extents, 2.0f,
+                                                   vec3_new(3.0f, 0.0f, 0.0f)),
+      0.5f, 1e-6f));
+  assert(vkr_test_float_near(
+      vkr_world_resources_probe_fragment_influence(center, extents, 2.0f,
+                                                   vec3_new(4.1f, 0.0f, 0.0f)),
+      0.0f, 1e-6f));
+
+  // A broad draw centered outside the room still binds the local candidate
+  // when its world bounds overlap the authored influence volume.
+  assert(vkr_world_resources_probe_intersects_sphere(
+      center, extents, 2.0f, vec3_new(10.0f, 0.0f, 0.0f), 6.1f));
+  assert(!vkr_world_resources_probe_intersects_sphere(
+      center, extents, 2.0f, vec3_new(10.0f, 0.0f, 0.0f), 5.9f));
+  printf("  test_local_probe_fragment_influence_and_draw_visibility PASSED\n");
+  return true_v;
+}
+
 bool32_t run_ibl_math_tests(void) {
   printf("--- Starting HDR IBL Math Tests ---\n");
   bool32_t passed = true_v;
@@ -231,6 +260,7 @@ bool32_t run_ibl_math_tests(void) {
   passed &= test_ibl_equirect_cardinal_mapping();
   passed &= test_ibl_cube_face_convention();
   passed &= test_ibl_prefilter_source_lod();
+  passed &= test_local_probe_fragment_influence_and_draw_visibility();
   printf("--- HDR IBL Math Tests Completed ---\n");
   return passed;
 }

@@ -1,0 +1,9 @@
+name=layered_glass_backdrop
+type=pbr
+base_color=0.22,0.7,0.28,1.0
+metallic=0.0
+roughness=0.65
+emissive_factor=0.08,1.5,0.12
+alpha_mode=opaque
+shader=shader.pbr.world
+pipeline=world

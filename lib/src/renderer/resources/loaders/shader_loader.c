@@ -20,7 +20,7 @@
 #define VKR_SHADER_CONFIG_MAX_STAGES 8
 
 #define VKR_SHADER_ATTRIBUTE_COUNT_MAX 32
-#define VKR_SHADER_UNIFORM_COUNT_MAX 64
+#define VKR_SHADER_UNIFORM_COUNT_MAX 96
 
 // Temporary allocator sizes for parsing operations
 #define VKR_SHADER_PARSER_SCRATCH_SIZE MB(1)
@@ -382,6 +382,7 @@ vkr_internal void vkr_compute_uniform_layout(VkrShaderConfig *cfg) {
   uint64_t global_align = VKR_SHADER_STD140_BASE_ALIGNMENT;
   uint64_t instance_align = VKR_SHADER_STD140_BASE_ALIGNMENT;
   uint32_t global_tex = 0, instance_tex = 0;
+  uint32_t global_sampler = 0, instance_sampler = 0;
 
   for (uint64_t i = 0; i < cfg->uniform_count; i++) {
     VkrShaderUniformDesc *ud =
@@ -395,8 +396,22 @@ vkr_internal void vkr_compute_uniform_layout(VkrShaderConfig *cfg) {
     if (ud->type == SHADER_UNIFORM_TYPE_SAMPLER) {
       if (ud->scope == VKR_SHADER_SCOPE_GLOBAL) {
         ud->location = global_tex++;
+        if (ud->sampler_alias_enabled) {
+          const VkrShaderUniformDesc *alias = array_get_VkrShaderUniformDesc(
+              &cfg->uniforms, ud->sampler_alias_uniform_index);
+          ud->sampler_location = alias->sampler_location;
+        } else {
+          ud->sampler_location = global_sampler++;
+        }
       } else if (ud->scope == VKR_SHADER_SCOPE_INSTANCE) {
         ud->location = instance_tex++;
+        if (ud->sampler_alias_enabled) {
+          const VkrShaderUniformDesc *alias = array_get_VkrShaderUniformDesc(
+              &cfg->uniforms, ud->sampler_alias_uniform_index);
+          ud->sampler_location = alias->sampler_location;
+        } else {
+          ud->sampler_location = instance_sampler++;
+        }
       }
       ud->offset = 0;
       ud->size = 0;
@@ -455,7 +470,9 @@ vkr_internal void vkr_compute_uniform_layout(VkrShaderConfig *cfg) {
       cfg->push_constant_size, VKR_SHADER_PUSH_CONSTANT_ALIGNMENT);
 
   cfg->global_texture_count = global_tex;
+  cfg->global_sampler_count = global_sampler;
   cfg->instance_texture_count = instance_tex;
+  cfg->instance_sampler_count = instance_sampler;
 }
 
 // =============================================================================
@@ -553,12 +570,12 @@ vkr_parse_uniform_line(VkrShaderConfigParser *parser, const String8 *value,
 
   if (!vkr_split_csv_values_scratch(parser->scratch_allocator, value, tokens, 4,
                                     &token_count) ||
-      token_count != 3) {
+      (token_count != 3 && token_count != 4)) {
     vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
     return vkr_create_parse_error(
         parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_FORMAT,
         parser->line_number, 0,
-        "Uniform line must have format: type,scope,name");
+        "Uniform line must have format: type,scope,name[,sampler_alias]");
   }
 
   // Parse type, checking for array syntax: type[count]
@@ -638,6 +655,45 @@ vkr_parse_uniform_line(VkrShaderConfigParser *parser, const String8 *value,
   uniform.type = type;
   uniform.scope = (VkrShaderScope)scope_val;
   uniform.array_count = array_count;
+  if (token_count == 4) {
+    if (type != SHADER_UNIFORM_TYPE_SAMPLER ||
+        uniform.scope != VKR_SHADER_SCOPE_INSTANCE) {
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      return vkr_create_parse_error(
+          parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
+          parser->line_number, 0,
+          "Only instance sampler uniforms may declare an alias");
+    }
+
+    bool8_t alias_found = false_v;
+    for (uint32_t i = 0; i < config->uniform_count; ++i) {
+      const VkrShaderUniformDesc *candidate =
+          array_get_VkrShaderUniformDesc(&config->uniforms, i);
+      if (!string8_equals(&candidate->name, &tokens[3])) {
+        continue;
+      }
+      if (candidate->type != SHADER_UNIFORM_TYPE_SAMPLER ||
+          candidate->scope != uniform.scope) {
+        vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+        return vkr_create_parse_error(
+            parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
+            parser->line_number, 0,
+            "Sampler alias must name an earlier sampler in the same scope");
+      }
+      uniform.sampler_alias_uniform_index = i;
+      uniform.sampler_alias_enabled = true_v;
+      alias_found = true_v;
+      break;
+    }
+    if (!alias_found) {
+      vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+      return vkr_create_parse_error(
+          parser->allocator, VKR_SHADER_CONFIG_ERROR_INVALID_VALUE,
+          parser->line_number, 0,
+          "Sampler alias '%.*s' must name an earlier sampler declaration",
+          (int)tokens[3].length, tokens[3].str);
+    }
+  }
   // Store the name in the main arena for persistence
   uniform.name = string8_duplicate(parser->allocator, &tokens[2]);
 

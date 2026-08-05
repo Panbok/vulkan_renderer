@@ -78,8 +78,8 @@ Vector(VkrMeshLoaderSubset);
 Vector(VkrMeshLoaderSubmeshRange);
 #define DEFAULT_SHADER string8_lit("shader.default.world")
 #define VKR_MESH_CACHE_MAGIC 0x564B4D48u /* 'VKMH' */
-/* v8 regenerates glTF vertices with VKR-oriented texture coordinates. */
-#define VKR_MESH_CACHE_VERSION 8u
+/* v10 regenerates glTF materials after corrected spec-gloss lowering. */
+#define VKR_MESH_CACHE_VERSION 12u
 #define VKR_MESH_CACHE_EXT "vkb"
 
 typedef struct VkrMeshCacheDependency {
@@ -524,6 +524,57 @@ vkr_mesh_loader_are_cached_gltf_materials_present(VkrMeshLoaderState *state) {
       log_warn("MeshLoader: cached glTF material file is missing '%s'",
                path.path.str);
       return false_v;
+    }
+
+    String8 material_text = {0};
+    VkrRendererError read_error = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_mesh_loader_read_file_to_string(state->load_allocator,
+                                             range->material_name,
+                                             &material_text, &read_error)) {
+      return false_v;
+    }
+
+    uint64_t offset = 0;
+    while (offset < material_text.length) {
+      String8 line = {0};
+      vkr_mesh_loader_parse_next_line(&material_text, &offset, &line);
+      const String8 base_prefix = string8_lit("base_color_texture=");
+      const String8 mr_prefix = string8_lit("metallic_roughness_texture=");
+      const String8 specular_prefix = string8_lit("specular_texture=");
+      uint64_t value_offset = 0;
+      if (vkr_string8_starts_with(&line, string8_cstr(&base_prefix))) {
+        value_offset = base_prefix.length;
+      } else if (vkr_string8_starts_with(&line, string8_cstr(&mr_prefix))) {
+        value_offset = mr_prefix.length;
+      } else if (vkr_string8_starts_with(&line,
+                                         string8_cstr(&specular_prefix))) {
+        value_offset = specular_prefix.length;
+      } else {
+        continue;
+      }
+
+      String8 value = string8_substring(&line, value_offset, line.length);
+      const String8 generated_prefix =
+          string8_lit("assets/textures/generated/");
+      if (!vkr_string8_starts_with(&value, string8_cstr(&generated_prefix))) {
+        continue;
+      }
+      for (uint64_t ch = 0; ch < value.length; ++ch) {
+        if (value.str[ch] == '?') {
+          value.length = ch;
+          break;
+        }
+      }
+      String8 generated_path = string8_create_formatted(
+          state->load_allocator, "%.*s", (int32_t)value.length, value.str);
+      FilePath generated =
+          file_path_create((const char *)generated_path.str,
+                           state->load_allocator, FILE_PATH_TYPE_RELATIVE);
+      if (!file_exists(&generated)) {
+        log_warn("MeshLoader: cached prepared glTF texture is missing '%s'",
+                 generated.path.str);
+        return false_v;
+      }
     }
   }
   return true_v;

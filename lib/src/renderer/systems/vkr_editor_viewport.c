@@ -385,9 +385,6 @@ bool8_t vkr_editor_viewport_build_payload(
   out_instance[0] = (VkrInstanceDataGPU){
       .model = model,
       .object_id = 0,
-      .material_index = 0,
-      .flags = 0,
-      ._padding = 0,
   };
 
   VkrMeshHandle mesh_handle = {

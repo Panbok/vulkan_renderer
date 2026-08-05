@@ -5,6 +5,8 @@
 
 #include "renderer/resources/loaders/scene_loader.h"
 
+#include <cgltf.h>
+
 #include "core/logger.h"
 #include "core/vkr_json.h"
 #include "filesystem/filesystem.h"
@@ -39,6 +41,11 @@ typedef struct ScenePointLightImport {
   float32_t constant;
   float32_t linear;
   float32_t quadratic;
+  float32_t range;
+  Vec3 direction_local;
+  float32_t inner_cone_angle;
+  float32_t outer_cone_angle;
+  VkrPointLightKind kind;
   bool8_t enabled;
 } ScenePointLightImport;
 
@@ -99,11 +106,14 @@ typedef struct SceneEntityImport {
 #define SCENE_ASYNC_RELATION_CHUNK 128u
 #define SCENE_ASYNC_COMPONENT_CHUNK 16u
 #define SCENE_ASYNC_MESH_CHUNK 8u
+#define SCENE_GLTF_PATH_MAX 1024u
+#define SCENE_GLTF_PUNCTUAL_LIGHT_MAX 256u
 
 typedef enum SceneAsyncFinalizeStage {
   SCENE_ASYNC_STAGE_CREATE_ENTITIES = 0,
   SCENE_ASYNC_STAGE_SET_PARENTS,
   SCENE_ASYNC_STAGE_SET_COMPONENTS,
+  SCENE_ASYNC_STAGE_APPLY_GLTF_LIGHTS,
   SCENE_ASYNC_STAGE_ATTACH_MESHES,
   SCENE_ASYNC_STAGE_WAIT_DEPENDENCIES,
   SCENE_ASYNC_STAGE_COMPLETE
@@ -128,6 +138,9 @@ typedef struct VkrSceneLoaderAsyncPayload {
   SceneEntityImport *imports;
   uint32_t imports_capacity;
   uint32_t entity_count;
+  VkrSceneGltfPunctualLightImport
+      gltf_punctual_lights[SCENE_GLTF_PUNCTUAL_LIGHT_MAX];
+  uint32_t gltf_punctual_light_count;
   VkrEntityId *entity_ids;
   SceneMeshAsyncState *mesh_states;
   SceneShapeMaterialAsyncState *shape_material_states;
@@ -226,6 +239,79 @@ vkr_internal bool8_t scene_string8_ends_with_cstr_i(String8 s,
   String8 tail = string8_substring(&s, s.length - suffix_len, s.length);
   String8 suf = string8_create_from_cstr((const uint8_t *)suffix, suffix_len);
   return string8_equalsi(&tail, &suf);
+}
+
+vkr_internal bool8_t scene_loader_apply_gltf_punctual_light(
+    VkrSceneLoaderAsyncPayload *payload, uint32_t light_index,
+    VkrRendererError *out_error) {
+  if (!payload || !payload->scene_handle || !out_error ||
+      light_index >= payload->gltf_punctual_light_count) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    }
+    return false_v;
+  }
+  VkrScene *scene = vkr_scene_handle_get_scene(payload->scene_handle);
+  if (!scene) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return false_v;
+  }
+
+  const VkrSceneGltfPunctualLightImport *import =
+      &payload->gltf_punctual_lights[light_index];
+  VkrSceneError scene_error = VKR_SCENE_ERROR_NONE;
+  const VkrEntityId entity = vkr_scene_create_entity(scene, &scene_error);
+  if (entity.u64 == VKR_ENTITY_ID_INVALID.u64) {
+    *out_error = scene_error_to_renderer_error(scene_error);
+    return false_v;
+  }
+  String8 name = string8_create_from_cstr((const uint8_t *)import->name,
+                                          string_length(import->name));
+  if (!vkr_scene_set_name(scene, entity, name) ||
+      !vkr_scene_set_transform(scene, entity, import->position,
+                               vkr_quat_identity(), vec3_one())) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return false_v;
+  }
+
+  if (import->type == VKR_SCENE_GLTF_LIGHT_DIRECTIONAL) {
+    const SceneDirectionalLight light = {
+        .color = import->color,
+        .intensity = import->intensity,
+        .direction_local = import->direction,
+        .enabled = true_v,
+    };
+    if (!vkr_scene_set_directional_light(scene, entity, &light)) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      return false_v;
+    }
+    payload->load_result.directional_light_count++;
+  } else if (import->type == VKR_SCENE_GLTF_LIGHT_POINT ||
+             import->type == VKR_SCENE_GLTF_LIGHT_SPOT) {
+    const ScenePointLight light = {
+        .color = import->color,
+        .intensity = import->intensity,
+        .constant = 1.0f,
+        .linear = 0.0f,
+        .quadratic = 0.0f,
+        .range = import->range,
+        .direction_local = import->direction,
+        .inner_cone_angle = import->inner_cone_angle,
+        .outer_cone_angle = import->outer_cone_angle,
+        .kind = import->type == VKR_SCENE_GLTF_LIGHT_SPOT
+                    ? VKR_POINT_LIGHT_KIND_GLTF_SPOT
+                    : VKR_POINT_LIGHT_KIND_GLTF_POINT,
+        .enabled = true_v,
+    };
+    if (!vkr_scene_set_point_light(scene, entity, &light)) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      return false_v;
+    }
+    payload->load_result.point_light_count++;
+  }
+  payload->load_result.entity_count++;
+  *out_error = VKR_RENDERER_ERROR_NONE;
+  return true_v;
 }
 
 vkr_internal bool8_t scene_json_parse_null(VkrJsonReader *reader) {
@@ -437,6 +523,11 @@ vkr_internal ScenePointLightImport scene_point_light_import_defaults(void) {
       .constant = 1.0f,
       .linear = 0.35f,
       .quadratic = 0.44f,
+      .range = 0.0f,
+      .direction_local = {0.0f, 0.0f, -1.0f},
+      .inner_cone_angle = 0.0f,
+      .outer_cone_angle = 0.78539816339f,
+      .kind = VKR_POINT_LIGHT_KIND_POLYNOMIAL,
       .enabled = true_v,
   };
 }
@@ -449,6 +540,157 @@ scene_directional_light_import_defaults(void) {
       .direction_local = vec3_new(0.0f, -1.0f, 0.0f),
       .enabled = true_v,
   };
+}
+
+vkr_internal Mat4 scene_loader_entity_import_world_matrix(
+    const SceneEntityImport *imports, uint32_t entity_count,
+    uint32_t entity_index) {
+  uint32_t chain[VKR_TRANSFORM_MAX_DEPTH];
+  uint32_t chain_count = 0;
+  int32_t current = (int32_t)entity_index;
+  while (current >= 0 && (uint32_t)current < entity_count &&
+         chain_count < VKR_TRANSFORM_MAX_DEPTH) {
+    chain[chain_count++] = (uint32_t)current;
+    current = imports[current].parent_index;
+  }
+
+  Mat4 world = mat4_identity();
+  while (chain_count > 0) {
+    const SceneEntityImport *import = &imports[chain[--chain_count]];
+    Mat4 local = mat4_translate(import->position);
+    local = mat4_mul(local, vkr_quat_to_mat4(import->rotation));
+    local = mat4_mul(local, mat4_scale(import->scale));
+    world = mat4_mul(world, local);
+  }
+  return world;
+}
+
+bool8_t vkr_scene_loader_read_gltf_punctual_lights(
+    String8 path, Mat4 scene_world, uint32_t scene_entity_index,
+    VkrSceneGltfPunctualLightImport *out_lights, uint32_t capacity,
+    uint32_t *out_count) {
+  if (!path.str || path.length == 0u || path.length >= SCENE_GLTF_PATH_MAX ||
+      !out_lights || capacity == 0u || !out_count) {
+    return false_v;
+  }
+  *out_count = 0u;
+
+  char path_cstr[SCENE_GLTF_PATH_MAX] = {0};
+  MemCopy(path_cstr, path.str, path.length);
+  cgltf_options options = {0};
+  cgltf_data *data = NULL;
+  if (cgltf_parse_file(&options, path_cstr, &data) != cgltf_result_success ||
+      !data) {
+    return false_v;
+  }
+
+  for (uint32_t node_index = 0;
+       node_index < data->nodes_count && *out_count < capacity; ++node_index) {
+    const cgltf_node *node = &data->nodes[node_index];
+    if (!node->light) {
+      continue;
+    }
+
+    VkrSceneGltfPunctualLightType type;
+    switch (node->light->type) {
+    case cgltf_light_type_directional:
+      type = VKR_SCENE_GLTF_LIGHT_DIRECTIONAL;
+      break;
+    case cgltf_light_type_point:
+      type = VKR_SCENE_GLTF_LIGHT_POINT;
+      break;
+    case cgltf_light_type_spot:
+      type = VKR_SCENE_GLTF_LIGHT_SPOT;
+      break;
+    default:
+      continue;
+    }
+
+    cgltf_float gltf_values[16];
+    cgltf_node_transform_world(node, gltf_values);
+    const Mat4 gltf_world = mat4_new(
+        gltf_values[0], gltf_values[1], gltf_values[2], gltf_values[3],
+        gltf_values[4], gltf_values[5], gltf_values[6], gltf_values[7],
+        gltf_values[8], gltf_values[9], gltf_values[10], gltf_values[11],
+        gltf_values[12], gltf_values[13], gltf_values[14], gltf_values[15]);
+    const Mat4 combined = mat4_mul(scene_world, gltf_world);
+    const Vec4 direction4 =
+        mat4_mul_vec4(combined, vec4_new(0.0f, 0.0f, -1.0f, 0.0f));
+    VkrSceneGltfPunctualLightImport *out = &out_lights[(*out_count)++];
+    *out = (VkrSceneGltfPunctualLightImport){
+        .position = mat4_position(combined),
+        .direction =
+            vec3_normalize(vec3_new(direction4.x, direction4.y, direction4.z)),
+        .color = vec3_new(node->light->color[0], node->light->color[1],
+                          node->light->color[2]),
+        .intensity = (float32_t)node->light->intensity,
+        .range = (float32_t)node->light->range,
+        .inner_cone_angle = (float32_t)node->light->spot_inner_cone_angle,
+        .outer_cone_angle = (float32_t)node->light->spot_outer_cone_angle,
+        .type = type,
+    };
+    snprintf(out->name, sizeof(out->name), "gltf.%u.%s", scene_entity_index,
+             node->name          ? node->name
+             : node->light->name ? node->light->name
+                                 : "light");
+  }
+  cgltf_free(data);
+  return true_v;
+}
+
+vkr_internal void
+scene_loader_collect_gltf_punctual_lights(VkrSceneLoaderAsyncPayload *payload) {
+  if (!payload || !payload->imports) {
+    return;
+  }
+
+  for (uint32_t entity_index = 0; entity_index < payload->entity_count;
+       ++entity_index) {
+    const SceneEntityImport *entity = &payload->imports[entity_index];
+    if (!entity->has_mesh || !entity->mesh_path.str ||
+        entity->mesh_path.length < 4u) {
+      continue;
+    }
+    const String8 gltf_extension = string8_lit(".gltf");
+    const String8 glb_extension = string8_lit(".glb");
+    const String8 extension =
+        string8_substring(&entity->mesh_path,
+                          entity->mesh_path.length >= gltf_extension.length
+                              ? entity->mesh_path.length - gltf_extension.length
+                              : entity->mesh_path.length,
+                          entity->mesh_path.length);
+    const String8 short_extension = string8_substring(
+        &entity->mesh_path, entity->mesh_path.length - glb_extension.length,
+        entity->mesh_path.length);
+    if (!string8_equalsi(&extension, &gltf_extension) &&
+        !string8_equalsi(&short_extension, &glb_extension)) {
+      continue;
+    }
+
+    const Mat4 scene_world = scene_loader_entity_import_world_matrix(
+        payload->imports, payload->entity_count, entity_index);
+    const uint32_t remaining =
+        SCENE_GLTF_PUNCTUAL_LIGHT_MAX - payload->gltf_punctual_light_count;
+    if (remaining == 0u) {
+      log_warn("Scene loader: glTF punctual-light import capacity reached (%u)",
+               SCENE_GLTF_PUNCTUAL_LIGHT_MAX);
+      break;
+    }
+    uint32_t imported_count = 0u;
+    if (!vkr_scene_loader_read_gltf_punctual_lights(
+            entity->mesh_path, scene_world, entity_index,
+            payload->gltf_punctual_lights + payload->gltf_punctual_light_count,
+            remaining, &imported_count)) {
+      log_warn("Scene loader: unable to inspect glTF punctual lights in '%.*s'",
+               (int32_t)entity->mesh_path.length, entity->mesh_path.str);
+      continue;
+    }
+    payload->gltf_punctual_light_count += imported_count;
+    if (imported_count == remaining && remaining > 0u) {
+      log_warn("Scene loader: glTF punctual-light import capacity reached (%u)",
+               SCENE_GLTF_PUNCTUAL_LIGHT_MAX);
+    }
+  }
 }
 
 vkr_internal SceneEnvironmentImport scene_environment_import_defaults(void) {
@@ -1709,6 +1951,11 @@ bool8_t vkr_scene_load_from_json(VkrScene *scene, struct s_RendererFrontend *rf,
         .constant = light_import->constant,
         .linear = light_import->linear,
         .quadratic = light_import->quadratic,
+        .range = light_import->range,
+        .direction_local = light_import->direction_local,
+        .inner_cone_angle = light_import->inner_cone_angle,
+        .outer_cone_angle = light_import->outer_cone_angle,
+        .kind = light_import->kind,
         .enabled = light_import->enabled,
     };
 
@@ -2084,6 +2331,11 @@ vkr_internal bool8_t scene_loader_apply_component_for_entity(
         .constant = light_import->constant,
         .linear = light_import->linear,
         .quadratic = light_import->quadratic,
+        .range = light_import->range,
+        .direction_local = light_import->direction_local,
+        .inner_cone_angle = light_import->inner_cone_angle,
+        .outer_cone_angle = light_import->outer_cone_angle,
+        .kind = light_import->kind,
         .enabled = light_import->enabled,
     };
 
@@ -2360,6 +2612,7 @@ vkr_internal bool8_t vkr_scene_loader_prepare_async(
     *out_error = scene_error_to_renderer_error(scene_error);
     return false_v;
   }
+  scene_loader_collect_gltf_punctual_lights(payload);
 
   payload->environment_import =
       scene_loader_parse_environment_import(json_copy);
@@ -2590,6 +2843,30 @@ vkr_internal bool8_t vkr_scene_loader_finalize_async(
 
     scene_loader_sync_partial(async_payload);
     if (async_payload->stage_cursor < async_payload->entity_count) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+      return false_v;
+    }
+    async_payload->stage = SCENE_ASYNC_STAGE_APPLY_GLTF_LIGHTS;
+    async_payload->stage_cursor = 0;
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
+    return false_v;
+  }
+
+  if (async_payload->stage == SCENE_ASYNC_STAGE_APPLY_GLTF_LIGHTS) {
+    uint32_t processed = 0;
+    while (async_payload->stage_cursor <
+               async_payload->gltf_punctual_light_count &&
+           processed < SCENE_ASYNC_COMPONENT_CHUNK) {
+      if (!scene_loader_apply_gltf_punctual_light(
+              async_payload, async_payload->stage_cursor, out_error)) {
+        return false_v;
+      }
+      async_payload->stage_cursor++;
+      processed++;
+    }
+    scene_loader_sync_partial(async_payload);
+    if (async_payload->stage_cursor <
+        async_payload->gltf_punctual_light_count) {
       *out_error = VKR_RENDERER_ERROR_RESOURCE_NOT_LOADED;
       return false_v;
     }

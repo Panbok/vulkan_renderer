@@ -382,9 +382,6 @@ vkr_internal bool8_t picking_upload_instance_payload(
   *instance_ptr = (VkrInstanceDataGPU){
       .model = model,
       .object_id = object_id,
-      .material_index = 0,
-      .flags = 0,
-      ._padding = 0,
   };
   vkr_instance_buffer_flush_range(instance_pool, base_instance, 1);
   *out_first_instance = base_instance;
@@ -1077,9 +1074,6 @@ vkr_internal void picking_render_point_light_cb(const VkrArchetype *arch,
     *instance_ptr = (VkrInstanceDataGPU){
         .model = model,
         .object_id = object_id,
-        .material_index = 0,
-        .flags = 0,
-        ._padding = 0,
     };
     vkr_instance_buffer_flush_range(instance_pool, base_instance, 1);
 

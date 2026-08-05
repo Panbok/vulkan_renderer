@@ -69,6 +69,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_ibl_math_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_lighting_system_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_texture_vkt_tests();
   printf("\n"); // Add spacing
   all_passed &= run_renderer_batch_tests();

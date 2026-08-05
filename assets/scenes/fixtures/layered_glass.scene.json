@@ -1,0 +1,60 @@
+{
+  "version": 2,
+  "entities": [
+    {
+      "name": "Root",
+      "parent": null,
+      "transform": { "pos": [0, 0, 0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] }
+    },
+    {
+      "name": "Sun",
+      "parent": 0,
+      "transform": { "pos": [0, 4, 2], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "directional_light": {
+        "enabled": true,
+        "color": [1.0, 0.96, 0.9],
+        "intensity": 2.5,
+        "direction_local": [-0.4, -0.7, -0.5]
+      }
+    },
+    {
+      "name": "Backdrop",
+      "parent": 0,
+      "transform": { "pos": [0, 1.3, -4.0], "rot": [0, 0, 0, 1], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [4.5, 2.8, 0.6],
+        "material": {
+          "name": "layered_glass_backdrop",
+          "path": "tests/fixtures/rendering/layered_glass_backdrop.mt"
+        }
+      }
+    },
+    {
+      "name": "AmberLayer",
+      "parent": 0,
+      "transform": { "pos": [-0.35, 1.35, -1.9], "rot": [0, 0.12, 0, 0.9927739], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [2.7, 2.4, 0.16],
+        "material": {
+          "name": "layered_glass_amber",
+          "path": "tests/fixtures/rendering/layered_glass_amber.mt"
+        }
+      }
+    },
+    {
+      "name": "BlueLayer",
+      "parent": 0,
+      "transform": { "pos": [0.35, 1.25, -1.15], "rot": [0, -0.08, 0, 0.9967949], "scale": [1, 1, 1] },
+      "shape": {
+        "type": "cube",
+        "dimensions": [2.7, 2.4, 0.16],
+        "material": {
+          "name": "layered_glass_blue",
+          "path": "tests/fixtures/rendering/layered_glass_blue.mt"
+        }
+      }
+    }
+  ]
+}

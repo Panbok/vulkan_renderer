@@ -1,4 +1,5 @@
 #include "render_graph_barrier_test.h"
+#include "renderer/vkr_rg_json.h"
 
 /**
  * Barrier planning is a deterministic function of the declared graph, so it is
@@ -605,10 +606,49 @@ static void test_image_access_is_write(void) {
   printf("  test_image_access_is_write PASSED\n");
 }
 
+static void test_main_graph_declares_transmission_stages(void) {
+  printf("  Running test_main_graph_declares_transmission_stages...\n");
+  Arena *arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  VkrRgJsonGraph graph = {0};
+  assert(vkr_rg_json_load_file(&allocator,
+                               "assets/render_graphs/main.rendergraph.json",
+                               &graph) == true_v);
+
+  const char *ordered[] = {
+      "World.Opaque.Fullscreen", "World.FeedbackCopy.Fullscreen",
+      "World.Transmission.Fullscreen", "World.Blend.Fullscreen"};
+  uint32_t found = 0u;
+  for (uint64_t i = 0u; i < graph.passes.length && found < ArrayCount(ordered);
+       ++i) {
+    VkrRgJsonPass *pass = vector_get_VkrRgJsonPass(&graph.passes, i);
+    if (pass && vkr_string8_equals_cstr(&pass->name, ordered[found])) {
+      if (found == 1u) {
+        assert(pass->type == VKR_RG_JSON_PASS_TRANSFER);
+        assert(pass->reads.length == 1u && pass->writes.length == 1u);
+        VkrRgJsonResourceUse *read =
+            vector_get_VkrRgJsonResourceUse(&pass->reads, 0u);
+        VkrRgJsonResourceUse *write =
+            vector_get_VkrRgJsonResourceUse(&pass->writes, 0u);
+        assert(read && write);
+        assert(read->image_access == VKR_RG_JSON_IMAGE_ACCESS_TRANSFER_SRC);
+        assert(write->image_access == VKR_RG_JSON_IMAGE_ACCESS_TRANSFER_DST);
+      }
+      found++;
+    }
+  }
+  assert(found == ArrayCount(ordered));
+  vkr_rg_json_destroy(&graph);
+  arena_destroy(arena);
+  printf("  test_main_graph_declares_transmission_stages PASSED\n");
+}
+
 bool32_t run_render_graph_barrier_tests() {
   printf("--- Running RenderGraph barrier tests... ---\n");
 
   test_image_access_is_write();
+  test_main_graph_declares_transmission_stages();
   test_subresource_range_resolve();
   test_same_layout_write_then_read_emits_barrier();
   test_present_target_import_and_terminal_states();

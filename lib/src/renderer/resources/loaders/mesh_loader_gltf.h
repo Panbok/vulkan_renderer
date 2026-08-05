@@ -56,6 +56,7 @@ typedef struct VkrMeshLoaderGltfParseInfo {
   Vector_String8 *out_dependency_paths; // The paths to the dependency files.
   Vector_String8 *out_generated_material_paths; // The paths to the generated
                                                 // material files.
+  Vector_String8 *out_generated_asset_paths;    // Persistent derived textures.
 } VkrMeshLoaderGltfParseInfo;
 
 /**

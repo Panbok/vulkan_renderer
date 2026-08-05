@@ -1,0 +1,14 @@
+name=layered_glass_amber
+type=pbr
+base_color=1.0,0.78,0.42,1.0
+metallic=0.0
+roughness=0.14
+transmission_factor=0.82
+ior=1.60
+thickness_factor=0.50
+attenuation_color=1.0,0.48,0.16
+attenuation_distance=1.0
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

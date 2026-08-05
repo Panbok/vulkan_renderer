@@ -3956,6 +3956,7 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
       .texture_update = renderer_vulkan_update_texture,
       .texture_write = renderer_vulkan_write_texture,
       .texture_resize = renderer_vulkan_resize_texture,
+      .texture_copy = renderer_vulkan_copy_texture,
       .texture_destroy = renderer_vulkan_destroy_texture,
       .graphics_pipeline_create = renderer_vulkan_create_graphics_pipeline,
       .pipeline_get_shader_runtime_layout =
@@ -8659,6 +8660,51 @@ VkrRendererError renderer_vulkan_write_texture(
   vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   texture->description.generation++;
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+VkrRendererError
+renderer_vulkan_copy_texture(void *backend_state,
+                             VkrBackendResourceHandle source_handle,
+                             VkrBackendResourceHandle destination_handle) {
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  struct s_TextureHandle *source = (struct s_TextureHandle *)source_handle.ptr;
+  struct s_TextureHandle *destination =
+      (struct s_TextureHandle *)destination_handle.ptr;
+  if (!state || !source || !destination || !state->frame_active ||
+      state->render_pass_active || !source->texture.image.handle ||
+      !destination->texture.image.handle ||
+      source->description.format != destination->description.format ||
+      source->texture.image.width != destination->texture.image.width ||
+      source->texture.image.height != destination->texture.image.height ||
+      source->texture.image.array_layers != 1u ||
+      destination->texture.image.array_layers != 1u) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
+
+  VulkanCommandBuffer *command_buffer =
+      vulkan_backend_get_active_graphics_command_buffer(state);
+  if (!command_buffer) {
+    return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
+  }
+
+  const VkImageCopy region = {
+      .srcSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                         .mipLevel = 0u,
+                         .baseArrayLayer = 0u,
+                         .layerCount = 1u},
+      .dstSubresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                         .mipLevel = 0u,
+                         .baseArrayLayer = 0u,
+                         .layerCount = 1u},
+      .extent = {.width = source->texture.image.width,
+                 .height = source->texture.image.height,
+                 .depth = 1u},
+  };
+  vkCmdCopyImage(command_buffer->handle, source->texture.image.handle,
+                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 destination->texture.image.handle,
+                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, &region);
   return VKR_RENDERER_ERROR_NONE;
 }
 

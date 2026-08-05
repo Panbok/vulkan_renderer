@@ -578,13 +578,20 @@ vkr_internal VkrMaterial *application_get_material(RendererFrontend *rf,
   return material;
 }
 
-vkr_internal bool8_t application_material_is_cutout(RendererFrontend *rf,
-                                                    VkrMaterial *material) {
+vkr_internal VkrDrawAlphaRouting application_material_alpha_routing(
+    RendererFrontend *rf, VkrMaterial *material) {
   if (!rf || !material) {
-    return false_v;
+    return (VkrDrawAlphaRouting){0};
   }
-  return vkr_material_system_material_has_transparency(&rf->material_system,
-                                                       material);
+  return vkr_draw_alpha_routing(
+      vkr_material_system_material_alpha_mode(&rf->material_system, material));
+}
+
+vkr_internal bool8_t application_material_is_transmissive(
+    RendererFrontend *rf, VkrMaterial *material) {
+  return rf && material ? vkr_material_system_material_is_transmissive(
+                              &rf->material_system, material)
+                        : false_v;
 }
 
 /**
@@ -716,6 +723,7 @@ vkr_internal bool8_t application_build_world_payload(
   uint32_t vis_slot = 0;
 
   uint32_t camera_opaque_count = 0;
+  uint32_t camera_transmission_count = 0;
   uint32_t camera_transparent_count = 0;
   uint32_t shadow_opaque_count = 0;
   uint32_t shadow_alpha_count = 0;
@@ -756,16 +764,21 @@ vkr_internal bool8_t application_build_world_payload(
       }
 
       VkrMaterial *material = application_get_material(rf, submesh->material);
-      const bool8_t cutout = application_material_is_cutout(rf, material);
+      const VkrDrawAlphaRouting alpha =
+          application_material_alpha_routing(rf, material);
+      const bool8_t transmissive =
+          application_material_is_transmissive(rf, material);
       if (flags & VKR_VISIBLE_CAMERA) {
-        if (cutout) {
+        if (transmissive) {
+          camera_transmission_count++;
+        } else if (alpha.world_transparent) {
           camera_transparent_count++;
         } else {
           camera_opaque_count++;
         }
       }
       if (flags & VKR_VISIBLE_SHADOW) {
-        if (cutout) {
+        if (alpha.shadow_alpha_tested) {
           shadow_alpha_count++;
         } else {
           shadow_opaque_count++;
@@ -815,16 +828,21 @@ vkr_internal bool8_t application_build_world_payload(
       }
 
       VkrMaterial *material = application_get_material(rf, submesh->material);
-      const bool8_t cutout = application_material_is_cutout(rf, material);
+      const VkrDrawAlphaRouting alpha =
+          application_material_alpha_routing(rf, material);
+      const bool8_t transmissive =
+          application_material_is_transmissive(rf, material);
       if (flags & VKR_VISIBLE_CAMERA) {
-        if (cutout) {
+        if (transmissive) {
+          camera_transmission_count++;
+        } else if (alpha.world_transparent) {
           camera_transparent_count++;
         } else {
           camera_opaque_count++;
         }
       }
       if (flags & VKR_VISIBLE_SHADOW) {
-        if (cutout) {
+        if (alpha.shadow_alpha_tested) {
           shadow_alpha_count++;
         } else {
           shadow_opaque_count++;
@@ -847,6 +865,7 @@ vkr_internal bool8_t application_build_world_payload(
   // fact: merging needs equal keys adjacent AND their instance records
   // contiguous, which is only decidable once every candidate is known.
   VkrDrawCandidate *camera_opaque_cands = NULL;
+  VkrDrawCandidate *camera_transmission_cands = NULL;
   VkrDrawCandidate *camera_transparent_cands = NULL;
   VkrDrawCandidate *shadow_opaque_cands = NULL;
   VkrDrawCandidate *shadow_alpha_cands = NULL;
@@ -858,6 +877,11 @@ vkr_internal bool8_t application_build_world_payload(
   if (camera_transparent_count > 0) {
     camera_transparent_cands = vkr_allocator_alloc(
         scratch, sizeof(VkrDrawCandidate) * (uint64_t)camera_transparent_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (camera_transmission_count > 0) {
+    camera_transmission_cands = vkr_allocator_alloc(
+        scratch, sizeof(VkrDrawCandidate) * (uint64_t)camera_transmission_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   if (out_shadow && shadow_opaque_count > 0) {
@@ -883,6 +907,12 @@ vkr_internal bool8_t application_build_world_payload(
         scratch, sizeof(VkrDrawItem) * (uint64_t)camera_transparent_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
+  VkrDrawItem *transmission_draws = NULL;
+  if (camera_transmission_count > 0) {
+    transmission_draws = vkr_allocator_alloc(
+        scratch, sizeof(VkrDrawItem) * (uint64_t)camera_transmission_count,
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
   VkrDrawItem *shadow_opaque_draws = NULL;
   if (out_shadow && shadow_opaque_count > 0) {
     shadow_opaque_draws = vkr_allocator_alloc(
@@ -898,8 +928,9 @@ vkr_internal bool8_t application_build_world_payload(
 
   // World and shadow keep separate instance arrays: their visible sets differ,
   // so one array cannot hold contiguous merged runs for both.
-  const uint32_t world_instance_count =
-      camera_opaque_count + camera_transparent_count;
+  const uint32_t world_instance_count = camera_opaque_count +
+                                        camera_transmission_count +
+                                        camera_transparent_count;
   const uint32_t shadow_instance_count =
       out_shadow ? shadow_opaque_count + shadow_alpha_count : 0u;
   VkrInstanceDataGPU *instances = NULL;
@@ -916,6 +947,8 @@ vkr_internal bool8_t application_build_world_payload(
   }
 
   if ((camera_opaque_count > 0 && (!opaque_draws || !camera_opaque_cands)) ||
+      (camera_transmission_count > 0 &&
+       (!transmission_draws || !camera_transmission_cands)) ||
       (camera_transparent_count > 0 &&
        (!transparent_draws || !camera_transparent_cands)) ||
       (out_shadow && shadow_opaque_count > 0 &&
@@ -932,6 +965,7 @@ vkr_internal bool8_t application_build_world_payload(
   }
 
   uint32_t opaque_index = 0;
+  uint32_t transmission_index = 0;
   uint32_t transparent_index = 0;
   uint32_t shadow_opaque_index = 0;
   uint32_t shadow_alpha_index = 0;
@@ -965,16 +999,19 @@ vkr_internal bool8_t application_build_world_payload(
       }
 
       VkrMaterial *material = application_get_material(rf, submesh->material);
-      const bool8_t cutout = application_material_is_cutout(rf, material);
+      const VkrDrawAlphaRouting alpha =
+          application_material_alpha_routing(rf, material);
+      const bool8_t transmissive =
+          application_material_is_transmissive(rf, material);
       const float32_t mesh_distance =
-          cutout ? application_transparent_depth(view, mesh->model,
-                                                 submesh->center)
-                 : 0.0f;
+          (transmissive || alpha.world_transparent)
+              ? application_transparent_depth(view, mesh->model,
+                                              submesh->center)
+              : 0.0f;
       const uint64_t sort_key =
-          cutout
+          (transmissive || alpha.world_transparent)
               ? application_pack_transparent_sort_key(mesh_distance, vis_slot)
               : 0u;
-
       const VkrDrawCandidate candidate = {
           .key =
               {
@@ -997,7 +1034,9 @@ vkr_internal bool8_t application_build_world_payload(
       };
 
       if (flags & VKR_VISIBLE_CAMERA) {
-        if (cutout) {
+        if (transmissive) {
+          camera_transmission_cands[transmission_index++] = candidate;
+        } else if (alpha.world_transparent) {
           camera_transparent_cands[transparent_index++] = candidate;
         } else {
           camera_opaque_cands[opaque_index++] = candidate;
@@ -1006,7 +1045,7 @@ vkr_internal bool8_t application_build_world_payload(
       if ((flags & VKR_VISIBLE_SHADOW) && out_shadow) {
         VkrDrawCandidate shadow_candidate = candidate;
         shadow_candidate.key.binding_context = 0u;
-        if (cutout) {
+        if (alpha.shadow_alpha_tested) {
           shadow_alpha_cands[shadow_alpha_index++] = shadow_candidate;
         } else {
           shadow_opaque_cands[shadow_opaque_index++] = shadow_candidate;
@@ -1052,15 +1091,19 @@ vkr_internal bool8_t application_build_world_payload(
       }
 
       VkrMaterial *material = application_get_material(rf, submesh->material);
-      const bool8_t cutout = application_material_is_cutout(rf, material);
+      const VkrDrawAlphaRouting alpha =
+          application_material_alpha_routing(rf, material);
+      const bool8_t transmissive =
+          application_material_is_transmissive(rf, material);
       const float32_t instance_distance =
-          cutout ? application_transparent_depth(view, instance->model,
-                                                 submesh->center)
-                 : 0.0f;
-      const uint64_t sort_key = cutout ? application_pack_transparent_sort_key(
-                                             instance_distance, vis_slot)
-                                       : 0u;
-
+          (transmissive || alpha.world_transparent)
+              ? application_transparent_depth(view, instance->model,
+                                              submesh->center)
+              : 0.0f;
+      const uint64_t sort_key = (transmissive || alpha.world_transparent)
+                                    ? application_pack_transparent_sort_key(
+                                          instance_distance, vis_slot)
+                                    : 0u;
       const VkrDrawCandidate candidate = {
           .key =
               {
@@ -1083,7 +1126,9 @@ vkr_internal bool8_t application_build_world_payload(
       };
 
       if (flags & VKR_VISIBLE_CAMERA) {
-        if (cutout) {
+        if (transmissive) {
+          camera_transmission_cands[transmission_index++] = candidate;
+        } else if (alpha.world_transparent) {
           camera_transparent_cands[transparent_index++] = candidate;
         } else {
           camera_opaque_cands[opaque_index++] = candidate;
@@ -1092,7 +1137,7 @@ vkr_internal bool8_t application_build_world_payload(
       if ((flags & VKR_VISIBLE_SHADOW) && out_shadow) {
         VkrDrawCandidate shadow_candidate = candidate;
         shadow_candidate.key.binding_context = 0u;
-        if (cutout) {
+        if (alpha.shadow_alpha_tested) {
           shadow_alpha_cands[shadow_alpha_index++] = shadow_candidate;
         } else {
           shadow_opaque_cands[shadow_opaque_index++] = shadow_candidate;
@@ -1110,13 +1155,21 @@ vkr_internal bool8_t application_build_world_payload(
       camera_opaque_cands, camera_opaque_count, 0u, opaque_draws,
       &merged_opaque_draws, instances, &stats);
 
+  if (camera_transmission_count > 1) {
+    qsort(camera_transmission_cands, camera_transmission_count,
+          sizeof(VkrDrawCandidate), vkr_draw_candidate_depth_compare);
+  }
+  vkr_draw_emit_unmerged(camera_transmission_cands, camera_transmission_count,
+                         opaque_instances_written, transmission_draws,
+                         instances);
+
   if (camera_transparent_count > 1) {
     qsort(camera_transparent_cands, camera_transparent_count,
           sizeof(VkrDrawCandidate), vkr_draw_candidate_depth_compare);
   }
   vkr_draw_emit_unmerged(camera_transparent_cands, camera_transparent_count,
-                         opaque_instances_written, transparent_draws,
-                         instances);
+                         opaque_instances_written + camera_transmission_count,
+                         transparent_draws, instances);
 
   uint32_t merged_shadow_draws = 0;
   if (out_shadow) {
@@ -1137,6 +1190,8 @@ vkr_internal bool8_t application_build_world_payload(
   *out_payload = (VkrWorldPassPayload){
       .opaque_draws = opaque_draws,
       .opaque_draw_count = merged_opaque_draws,
+      .transmission_draws = transmission_draws,
+      .transmission_draw_count = camera_transmission_count,
       .transparent_draws = transparent_draws,
       .transparent_draw_count = camera_transparent_count,
       .instances = instances,

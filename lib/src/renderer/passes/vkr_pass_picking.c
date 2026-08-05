@@ -258,6 +258,8 @@ vkr_internal void vkr_pass_picking_execute(VkrRgPassContext *ctx,
 
   const VkrDrawItem *transparent_draws = NULL;
   uint32_t transparent_count = 0;
+  const VkrDrawItem *transmission_draws = NULL;
+  uint32_t transmission_count = 0;
 
   if (!draws) {
     if (!packet->world) {
@@ -268,6 +270,8 @@ vkr_internal void vkr_pass_picking_execute(VkrRgPassContext *ctx,
     draw_count = packet->world->opaque_draw_count;
     transparent_draws = packet->world->transparent_draws;
     transparent_count = packet->world->transparent_draw_count;
+    transmission_draws = packet->world->transmission_draws;
+    transmission_count = packet->world->transmission_draw_count;
     instances = packet->world->instances;
     instance_count = packet->world->instance_count;
   }
@@ -282,6 +286,8 @@ vkr_internal void vkr_pass_picking_execute(VkrRgPassContext *ctx,
 
   vkr_pass_picking_draw_list(rf, picking, &packet->globals, draws, draw_count,
                              base_instance);
+  vkr_pass_picking_draw_list(rf, picking, &packet->globals, transmission_draws,
+                             transmission_count, base_instance);
   vkr_pass_picking_draw_list(rf, picking, &packet->globals, transparent_draws,
                              transparent_count, base_instance);
 

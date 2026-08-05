@@ -22,6 +22,31 @@
 #define VKR_VISIBLE_SHADOW 0x2u
 
 /**
+ * Independent world and shadow routing derived from one material alpha mode.
+ */
+typedef struct VkrDrawAlphaRouting {
+  bool8_t world_transparent;
+  bool8_t shadow_alpha_tested;
+} VkrDrawAlphaRouting;
+
+/**
+ * @brief Maps material alpha semantics to the two draw-list decisions.
+ *
+ * Blending controls the transparent world list. Cutout controls the
+ * alpha-tested shadow list. All non-cutout shadow casters use the opaque
+ * shadow path, independently of world blending.
+ */
+static INLINE VkrDrawAlphaRouting
+vkr_draw_alpha_routing(VkrMaterialAlphaMode alpha_mode) {
+  return (VkrDrawAlphaRouting){
+      .world_transparent =
+          alpha_mode == VKR_MATERIAL_ALPHA_BLEND ? true_v : false_v,
+      .shadow_alpha_tested =
+          alpha_mode == VKR_MATERIAL_ALPHA_CUTOUT ? true_v : false_v,
+  };
+}
+
+/**
  * @brief Per-frame visibility and merge-opportunity counters.
  *
  * These exist so throughput claims are measurements rather than assumptions:

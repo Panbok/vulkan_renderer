@@ -55,7 +55,11 @@ uniform=vec4,0,dir_color           # RGB = color * intensity, A = 1
 # [i*3+2] = {intensity, quadratic, 0, 0}
 uniform=uint32,0,point_light_count
 
-uniform=vec4[48],0,point_light_data
+uniform=vec4[512],0,point_light_data
+uniform=vec4,0,point_light_grid_origin_cell_size
+uniform=vec4,0,point_light_grid_dimensions_count
+uniform=vec4,0,point_light_grid_global_mask
+uniform=vec4[384],0,point_light_grid_masks
 
 # Cascaded shadows (CSM)
 uniform=uint32,0,shadow_enabled

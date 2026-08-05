@@ -82,7 +82,11 @@ typedef struct VkrMaterialSystem {
   float32_t ibl_intensity;
   float32_t ibl_diffuse_intensity;
   float32_t ibl_specular_intensity;
-  VkrMaterialIblProbeSlot ibl_probe_slots[2];
+  VkrMaterialIblProbeSlot ibl_probe_slots[3];
+
+  // Graph-owned pre-transmission HDR image; valid only for transmission pass.
+  VkrTextureOpaqueHandle transmission_source;
+  bool8_t transmission_pass_enabled;
 
   uint32_t next_free_index;
   uint32_t generation_counter;
@@ -219,17 +223,24 @@ void vkr_material_system_set_shadow_map(VkrMaterialSystem *system,
  * Call once per frame before world draws. Passing enabled=false keeps maps
  * bound for descriptor validity while disabling IBL contribution in shader.
  */
-void vkr_material_system_set_ibl_maps(
-    VkrMaterialSystem *system, VkrTextureOpaqueHandle irradiance_map,
-    VkrTextureOpaqueHandle prefilter_map, VkrTextureOpaqueHandle brdf_lut,
-    bool8_t enabled, float32_t intensity, float32_t diffuse_intensity,
-    float32_t specular_intensity);
+void vkr_material_system_set_ibl_maps(VkrMaterialSystem *system,
+                                      VkrTextureOpaqueHandle irradiance_map,
+                                      VkrTextureOpaqueHandle prefilter_map,
+                                      VkrTextureOpaqueHandle brdf_lut,
+                                      bool8_t enabled, float32_t intensity,
+                                      float32_t diffuse_intensity,
+                                      float32_t specular_intensity);
 
 /**
  * @brief Updates two per-draw local probe slots for PBR IBL blending.
  */
 void vkr_material_system_set_ibl_probe_slots(
-    VkrMaterialSystem *system, const VkrMaterialIblProbeSlot slots[2]);
+    VkrMaterialSystem *system, const VkrMaterialIblProbeSlot slots[3]);
+
+/** Binds the graph-declared pre-transmission HDR source for world materials. */
+void vkr_material_system_set_transmission_source(VkrMaterialSystem *system,
+                                                 VkrTextureOpaqueHandle source,
+                                                 bool8_t enabled);
 
 /**
  * @brief Applies the local material state to the material system
@@ -250,6 +261,17 @@ void vkr_material_system_apply_local(VkrMaterialSystem *system,
  */
 VkrMaterial *vkr_material_system_get_by_handle(VkrMaterialSystem *system,
                                                VkrMaterialHandle handle);
+
+/**
+ * @brief Resolves the effective alpha mode used for draw-list routing.
+ *
+ * Explicit material modes take precedence. Legacy materials fall back to
+ * factor alpha and diffuse-texture alpha metadata. Call once when both blend
+ * and cutout decisions are needed so texture state is resolved only once.
+ */
+VkrMaterialAlphaMode
+vkr_material_system_material_alpha_mode(const VkrMaterialSystem *system,
+                                        const VkrMaterial *material);
 
 /**
  * @brief Returns whether a material should be treated as transparent.
@@ -273,6 +295,11 @@ vkr_material_system_material_has_transparency(const VkrMaterialSystem *system,
 bool8_t
 vkr_material_system_material_uses_cutout(const VkrMaterialSystem *system,
                                          const VkrMaterial *material);
+
+/** True when transmission factor or a transmission texture contributes. */
+bool8_t
+vkr_material_system_material_is_transmissive(const VkrMaterialSystem *system,
+                                             const VkrMaterial *material);
 
 /**
  * @brief Returns the effective alpha cutoff for cutout materials.

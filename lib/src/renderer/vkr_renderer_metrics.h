@@ -71,6 +71,7 @@ typedef struct VkrRendererMetricsPassTable {
 typedef struct VkrRendererMetricIds {
   VkrMetricId world_draws_collected;
   VkrMetricId world_opaque_draws;
+  VkrMetricId world_transmission_draws;
   VkrMetricId world_transparent_draws;
   VkrMetricId world_opaque_batches;
   VkrMetricId world_draws_issued;
@@ -81,6 +82,12 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId world_indirect_calls_issued;
   VkrMetricId world_avg_batch_size;
   VkrMetricId world_max_batch_size;
+  VkrMetricId lighting_point_selected;
+  VkrMetricId lighting_point_dropped;
+  VkrMetricId lighting_point_grid_cells;
+  VkrMetricId lighting_point_grid_references;
+  VkrMetricId lighting_point_grid_max_lights_per_cell;
+  VkrMetricId lighting_point_grid_global_lights;
 
   VkrMetricId visibility_objects_tested;
   VkrMetricId visibility_culled_camera;

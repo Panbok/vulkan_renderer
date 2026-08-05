@@ -5,6 +5,7 @@
 #include "math/vec.h"
 #include "memory/vkr_arena_allocator.h"
 #include "memory/vkr_dmemory_allocator.h"
+#include "renderer/passes/vkr_pass_copy.h"
 #include "renderer/passes/vkr_pass_editor.h"
 #include "renderer/passes/vkr_pass_ibl_bake.h"
 #include "renderer/passes/vkr_pass_picking.h"
@@ -1280,6 +1281,20 @@ VkrRendererError vkr_renderer_resize_texture(VkrRendererFrontendHandle renderer,
                                           preserve_contents);
 }
 
+VkrRendererError vkr_renderer_copy_texture(VkrRendererFrontendHandle renderer,
+                                           VkrTextureOpaqueHandle source,
+                                           VkrTextureOpaqueHandle destination) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(source != NULL, "Source texture is NULL");
+  assert_log(destination != NULL, "Destination texture is NULL");
+  if (!renderer->backend.texture_copy) {
+    return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+  }
+  return renderer->backend.texture_copy(
+      renderer->backend_state, (VkrBackendResourceHandle){.ptr = source},
+      (VkrBackendResourceHandle){.ptr = destination});
+}
+
 void vkr_renderer_destroy_texture(VkrRendererFrontendHandle renderer,
                                   VkrTextureOpaqueHandle texture) {
   assert_log(renderer != NULL, "Renderer is NULL");
@@ -2056,6 +2071,13 @@ vkr_internal VkrRendererError vkr_renderer_validate_packet(
       return err;
     }
     err = vkr_renderer_validate_draws(
+        rf, world->transmission_draws, world->transmission_draw_count,
+        world->instance_count, "world.transmission_draws",
+        VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT, out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      return err;
+    }
+    err = vkr_renderer_validate_draws(
         rf, world->transparent_draws, world->transparent_draw_count,
         world->instance_count, "world.transparent_draws",
         VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT, out_validation_error);
@@ -2818,6 +2840,7 @@ bool32_t vkr_renderer_systems_initialize(
       !vkr_pass_ibl_bake_register(&rf->rg_executor_registry) ||
       !vkr_pass_skybox_register(&rf->rg_executor_registry) ||
       !vkr_pass_world_register(&rf->rg_executor_registry) ||
+      !vkr_pass_copy_register(&rf->rg_executor_registry) ||
       !vkr_pass_tonemap_register(&rf->rg_executor_registry) ||
       !vkr_pass_ui_register(&rf->rg_executor_registry) ||
       !vkr_pass_editor_register(&rf->rg_executor_registry)) {

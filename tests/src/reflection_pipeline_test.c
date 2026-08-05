@@ -4,6 +4,7 @@
 #include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/loaders/shader_loader.h"
+#include "renderer/vkr_instance_buffer.h"
 #include "renderer/vulkan/vulkan_shaders.h"
 #include "renderer/vulkan/vulkan_spirv_reflection.h"
 
@@ -244,19 +245,44 @@ vkr_internal void test_reflection_pbr_world_program_layout(void) {
   assert(set0_instances != NULL);
   assert(set0_instances->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
 
+  VulkanSpirvReflectionModule vertex_module = {0};
+  VkrReflectionErrorContext vertex_error = {0};
+  assert(vulkan_spirv_reflection_module_create(
+             shader_data, shader_size, VK_SHADER_STAGE_VERTEX_BIT,
+             string8_lit("vertexMain"), &vertex_module,
+             &vertex_error) == true_v);
+  SpvReflectResult binding_result = SPV_REFLECT_RESULT_SUCCESS;
+  const SpvReflectDescriptorBinding *instance_binding =
+      spvReflectGetEntryPointDescriptorBinding(
+          &vertex_module.module, "vertexMain", 1u, 0u, &binding_result);
+  assert(binding_result == SPV_REFLECT_RESULT_SUCCESS);
+  assert(instance_binding != NULL);
+  assert(instance_binding->block.member_count == 1u);
+  const SpvReflectBlockVariable *instance_array =
+      &instance_binding->block.members[0];
+  assert(instance_array->size == sizeof(VkrInstanceDataGPU));
+  assert(instance_array->padded_size == sizeof(VkrInstanceDataGPU));
+  assert(instance_array->member_count == 5u);
+  assert(instance_array->members[0].offset == 0u);
+  assert(instance_array->members[1].offset == 64u);
+  assert(instance_array->members[2].offset == 68u);
+  assert(instance_array->members[3].offset == 72u);
+  assert(instance_array->members[4].offset == 76u);
+  vulkan_spirv_reflection_module_destroy(&vertex_module);
+
   const VkrDescriptorBindingDesc *set1_local =
       reflection_test_find_descriptor_binding(set1, 0);
   assert(set1_local != NULL);
   assert(set1_local->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER);
 
-  for (uint32_t binding = 1; binding <= 11; ++binding) {
+  for (uint32_t binding = 1; binding <= 17; ++binding) {
     const VkrDescriptorBindingDesc *desc =
         reflection_test_find_descriptor_binding(set1, binding);
     assert(desc != NULL);
     assert(desc->type == VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE);
   }
 
-  for (uint32_t binding = 12; binding <= 22; ++binding) {
+  for (uint32_t binding = 18; binding <= 30; ++binding) {
     const VkrDescriptorBindingDesc *desc =
         reflection_test_find_descriptor_binding(set1, binding);
     assert(desc != NULL);
@@ -814,6 +840,38 @@ vkr_internal void test_shadercfg_pipeline_state(void) {
   assert(result.is_valid);
   assert(world.depth_test_enabled == true_v);
   assert(world.depth_write_enabled == true_v);
+  assert(world.instance_texture_count == 17u);
+  assert(world.instance_sampler_count == 13u);
+  const VkrShaderUniformDesc *irradiance_a = NULL;
+  const VkrShaderUniformDesc *irradiance_b = NULL;
+  const VkrShaderUniformDesc *irradiance_c = NULL;
+  const VkrShaderUniformDesc *prefilter_a = NULL;
+  const VkrShaderUniformDesc *prefilter_b = NULL;
+  const VkrShaderUniformDesc *prefilter_c = NULL;
+  for (uint32_t i = 0; i < world.uniform_count; ++i) {
+    const VkrShaderUniformDesc *uniform =
+        array_get_VkrShaderUniformDesc(&world.uniforms, i);
+    if (vkr_string8_equals_cstr(&uniform->name, "irradiance_map"))
+      irradiance_a = uniform;
+    else if (vkr_string8_equals_cstr(&uniform->name, "irradiance_map_b"))
+      irradiance_b = uniform;
+    else if (vkr_string8_equals_cstr(&uniform->name, "irradiance_map_c"))
+      irradiance_c = uniform;
+    else if (vkr_string8_equals_cstr(&uniform->name, "prefilter_map"))
+      prefilter_a = uniform;
+    else if (vkr_string8_equals_cstr(&uniform->name, "prefilter_map_b"))
+      prefilter_b = uniform;
+    else if (vkr_string8_equals_cstr(&uniform->name, "prefilter_map_c"))
+      prefilter_c = uniform;
+  }
+  assert(irradiance_a && irradiance_b && irradiance_c);
+  assert(prefilter_a && prefilter_b && prefilter_c);
+  assert(irradiance_a->location != irradiance_b->location);
+  assert(irradiance_a->location != irradiance_c->location);
+  assert(irradiance_a->sampler_location == irradiance_b->sampler_location);
+  assert(irradiance_a->sampler_location == irradiance_c->sampler_location);
+  assert(prefilter_a->sampler_location == prefilter_b->sampler_location);
+  assert(prefilter_a->sampler_location == prefilter_c->sampler_location);
 
   VkrShaderConfig viewport = {0};
   result = vkr_shader_loader_parse(

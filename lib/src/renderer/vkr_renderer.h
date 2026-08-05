@@ -981,6 +981,9 @@ typedef enum VkrRenderMode {
   VKR_RENDER_MODE_LIGHTING = 1,
   VKR_RENDER_MODE_NORMAL = 2,
   VKR_RENDER_MODE_UNLIT = 3,
+  VKR_RENDER_MODE_DIRECT_DIFFUSE = 4,
+  VKR_RENDER_MODE_DIRECT_SPECULAR = 5,
+  VKR_RENDER_MODE_MATERIAL_PARAMS = 6,
   VKR_RENDER_MODE_COUNT,
 } VkrRenderMode;
 
@@ -1033,7 +1036,7 @@ typedef struct VkrShaderStateObject {
 typedef struct VkrRendererMaterialState {
   // Per-material uniforms (raw mode only; legacy struct removed)
 // Dynamic sampler slots (config-driven). Only the first texture_count are used.
-#define VKR_MAX_INSTANCE_TEXTURES 12
+#define VKR_MAX_INSTANCE_TEXTURES 17
   VkrTextureOpaqueHandle textures[VKR_MAX_INSTANCE_TEXTURES];
   bool8_t textures_enabled[VKR_MAX_INSTANCE_TEXTURES];
   uint32_t texture_count;
@@ -1728,6 +1731,11 @@ VkrRendererError vkr_renderer_resize_texture(VkrRendererFrontendHandle renderer,
                                              uint32_t new_height,
                                              bool8_t preserve_contents);
 
+/** Records an exact base-level 2D image copy inside the active frame. */
+VkrRendererError vkr_renderer_copy_texture(VkrRendererFrontendHandle renderer,
+                                           VkrTextureOpaqueHandle source,
+                                           VkrTextureOpaqueHandle destination);
+
 void vkr_renderer_destroy_texture(VkrRendererFrontendHandle renderer,
                                   VkrTextureOpaqueHandle texture);
 
@@ -2327,6 +2335,9 @@ typedef struct VkrRendererBackendInterface {
                                      VkrBackendResourceHandle handle,
                                      uint32_t new_width, uint32_t new_height,
                                      bool8_t preserve_contents);
+  VkrRendererError (*texture_copy)(void *backend_state,
+                                   VkrBackendResourceHandle source,
+                                   VkrBackendResourceHandle destination);
   void (*texture_destroy)(void *backend_state, VkrBackendResourceHandle handle);
 
   // Pipeline creation uses VertexInputAttributeDescription and

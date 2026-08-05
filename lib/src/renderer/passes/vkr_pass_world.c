@@ -9,6 +9,13 @@
 #include "renderer/systems/vkr_world_resources.h"
 #include "renderer/vkr_render_packet.h"
 
+typedef enum VkrWorldPassStage {
+  VKR_WORLD_PASS_STAGE_OPAQUE = 0,
+  VKR_WORLD_PASS_STAGE_TRANSMISSION,
+  VKR_WORLD_PASS_STAGE_BLEND,
+  VKR_WORLD_PASS_STAGE_ALL,
+} VkrWorldPassStage;
+
 vkr_internal void vkr_pass_world_apply_shadow_globals(
     RendererFrontend *rf, const VkrFrameInfo *frame,
     const VkrShadowFrameData *data, bool8_t shadow_valid) {
@@ -198,20 +205,21 @@ static VkrMaterial *vkr_pass_world_resolve_material(RendererFrontend *rf,
   return material;
 }
 
-static void vkr_pass_world_apply_probe_slots_for_draw(
-    RendererFrontend *rf, const VkrWorldPassPayload *payload,
-    const VkrDrawItem *draw, Vec3 probe_sample_position) {
-  if (!rf || !payload || !draw || !rf->world_resources.initialized) {
+static void
+vkr_pass_world_apply_probe_slots_for_draw(RendererFrontend *rf,
+                                          Vec3 probe_bounds_center,
+                                          float32_t probe_bounds_radius) {
+  if (!rf || !rf->world_resources.initialized) {
     return;
   }
 
-  VkrWorldIblProbeSlot world_slots[2] = {0};
-  vkr_world_resources_select_probe_slots_for_position(
-      rf, &rf->world_resources, rf->active_scene, probe_sample_position,
-      world_slots);
+  VkrWorldIblProbeSlot world_slots[3] = {0};
+  vkr_world_resources_select_probe_slots_for_bounds(
+      rf, &rf->world_resources, rf->active_scene, probe_bounds_center,
+      probe_bounds_radius, world_slots);
 
-  VkrMaterialIblProbeSlot material_slots[2] = {0};
-  for (uint32_t i = 0; i < 2u; ++i) {
+  VkrMaterialIblProbeSlot material_slots[3] = {0};
+  for (uint32_t i = 0; i < 3u; ++i) {
     material_slots[i] = (VkrMaterialIblProbeSlot){
         .irradiance_map = world_slots[i].irradiance_map,
         .prefilter_map = world_slots[i].prefilter_map,
@@ -276,7 +284,8 @@ typedef struct VkrPassMdiBatch {
   VkrGeometryHandle geometry;
   const VkrIndexBuffer *index_buffer;
   uint32_t instance_state_id;
-  Vec3 probe_position;
+  Vec3 probe_bounds_center;
+  float32_t probe_bounds_radius;
   const VkrDrawItem *first_draw;
   bool8_t open;
 } VkrPassMdiBatch;
@@ -285,7 +294,7 @@ vkr_internal bool8_t vkr_pass_mdi_key_matches(
     const VkrPassMdiBatch *batch, VkrPipelineHandle pipeline,
     const VkrMaterial *material, VkrGeometryHandle geometry,
     const VkrIndexBuffer *index_buffer, uint32_t instance_state_id,
-    Vec3 probe_position) {
+    Vec3 probe_bounds_center, float32_t probe_bounds_radius) {
   return batch->open && batch->count < VKR_PASS_MDI_MAX_BATCH &&
          batch->pipeline.id == pipeline.id &&
          batch->pipeline.generation == pipeline.generation &&
@@ -293,9 +302,10 @@ vkr_internal bool8_t vkr_pass_mdi_key_matches(
          batch->geometry.generation == geometry.generation &&
          batch->index_buffer == index_buffer &&
          batch->instance_state_id == instance_state_id &&
-         batch->probe_position.x == probe_position.x &&
-         batch->probe_position.y == probe_position.y &&
-         batch->probe_position.z == probe_position.z;
+         batch->probe_bounds_center.x == probe_bounds_center.x &&
+         batch->probe_bounds_center.y == probe_bounds_center.y &&
+         batch->probe_bounds_center.z == probe_bounds_center.z &&
+         batch->probe_bounds_radius == probe_bounds_radius;
 }
 
 /**
@@ -350,8 +360,8 @@ vkr_internal void vkr_pass_world_flush_mdi_batch(
     *inout_globals_pipeline = batch->pipeline;
   }
 
-  vkr_pass_world_apply_probe_slots_for_draw(rf, payload, batch->first_draw,
-                                            batch->probe_position);
+  vkr_pass_world_apply_probe_slots_for_draw(rf, batch->probe_bounds_center,
+                                            batch->probe_bounds_radius);
   vkr_shader_system_bind_instance(&rf->shader_system, batch->instance_state_id);
   vkr_material_system_apply_instance(&rf->material_system, batch->material,
                                      domain);
@@ -397,10 +407,11 @@ static void vkr_pass_world_bind_globals_and_draw(
     VkrPipelineHandle *inout_globals_pipeline, VkrPipelineHandle pipeline,
     uint32_t instance_id, const VkrMaterial *material,
     VkrGeometryHandle geometry, const VkrPassDrawRange *range,
-    Vec3 probe_position, VkrPassMdiBatch *batch) {
+    Vec3 probe_bounds_center, float32_t probe_bounds_radius,
+    VkrPassMdiBatch *batch) {
   if (!vkr_pass_mdi_key_matches(batch, pipeline, material, geometry,
                                 range->index_buffer, instance_id,
-                                probe_position)) {
+                                probe_bounds_center, probe_bounds_radius)) {
     vkr_pass_world_flush_mdi_batch(rf, frame, payload, batch, base_instance,
                                    domain, globals, shadow_data, shadow_valid,
                                    inout_globals_pipeline);
@@ -409,7 +420,8 @@ static void vkr_pass_world_bind_globals_and_draw(
     batch->geometry = geometry;
     batch->index_buffer = range->index_buffer;
     batch->instance_state_id = instance_id;
-    batch->probe_position = probe_position;
+    batch->probe_bounds_center = probe_bounds_center;
+    batch->probe_bounds_radius = probe_bounds_radius;
     batch->first_draw = draw;
     batch->open = true_v;
   }
@@ -446,6 +458,7 @@ vkr_internal void vkr_pass_world_draw_list(
 
     Vec3 probe_sample_position = vkr_pass_world_probe_sample_position_for_draw(
         payload, draw, fallback_probe_sample_position);
+    float32_t probe_bounds_radius = 0.0f;
 
     if (vkr_pass_packet_handle_is_instance(draw->mesh)) {
       VkrMeshInstance *instance = NULL;
@@ -456,6 +469,10 @@ vkr_internal void vkr_pass_world_draw_list(
                                             &instance, &asset, &submesh,
                                             &inst_state)) {
         continue;
+      }
+      if (instance->bounds_valid) {
+        probe_sample_position = instance->bounds_world_center;
+        probe_bounds_radius = instance->bounds_world_radius;
       }
 
       VkrMaterialHandle material_handle =
@@ -489,7 +506,7 @@ vkr_internal void vkr_pass_world_draw_list(
           rf, frame, payload, draw, base_instance, domain, globals, shadow_data,
           shadow_valid, &globals_pipeline, pipeline,
           inst_state->instance_state.id, material, submesh->geometry, &range,
-          probe_sample_position, &batch);
+          probe_sample_position, probe_bounds_radius, &batch);
     } else {
       uint32_t mesh_index = draw->mesh.id - 1u;
       VkrMesh *mesh = NULL;
@@ -499,6 +516,10 @@ vkr_internal void vkr_pass_world_draw_list(
         continue;
       }
       (void)mesh;
+      if (mesh->bounds_valid) {
+        probe_sample_position = mesh->bounds_world_center;
+        probe_bounds_radius = mesh->bounds_world_radius;
+      }
 
       VkrMaterialHandle material_handle =
           draw->material.id == 0 ? submesh->material : draw->material;
@@ -530,7 +551,8 @@ vkr_internal void vkr_pass_world_draw_list(
       vkr_pass_world_bind_globals_and_draw(
           rf, frame, payload, draw, base_instance, domain, globals, shadow_data,
           shadow_valid, &globals_pipeline, pipeline, submesh->instance_state.id,
-          material, submesh->geometry, &range, probe_sample_position, &batch);
+          material, submesh->geometry, &range, probe_sample_position,
+          probe_bounds_radius, &batch);
     }
   }
 
@@ -542,7 +564,9 @@ vkr_internal void vkr_pass_world_draw_list(
 
 vkr_internal void vkr_pass_world_execute(VkrRgPassContext *ctx,
                                          void *user_data) {
-  (void)user_data;
+  const VkrWorldPassStage stage = user_data
+                                      ? *(const VkrWorldPassStage *)user_data
+                                      : VKR_WORLD_PASS_STAGE_ALL;
 
   if (!ctx || !ctx->renderer) {
     return;
@@ -585,6 +609,24 @@ vkr_internal void vkr_pass_world_execute(VkrRgPassContext *ctx,
   shadow_data.shadow_map = shadow_map;
   bool8_t shadow_valid = shadow_map != NULL;
 
+  VkrTextureOpaqueHandle transmission_source = NULL;
+  if (stage == VKR_WORLD_PASS_STAGE_TRANSMISSION && ctx->graph) {
+    const String8 source_name = packet->frame.editor_enabled
+                                    ? string8_lit("scene_pre_transmission")
+                                    : string8_lit("hdr_pre_transmission");
+    const VkrRgImageHandle source_handle =
+        vkr_rg_find_image(ctx->graph, source_name);
+    transmission_source =
+        vkr_rg_get_image_texture(ctx->graph, source_handle, ctx->image_index);
+    if (!transmission_source) {
+      ctx->error = VKR_RENDERER_ERROR_INVALID_HANDLE;
+      return;
+    }
+  }
+  vkr_material_system_set_transmission_source(
+      &rf->material_system, transmission_source,
+      stage == VKR_WORLD_PASS_STAGE_TRANSMISSION);
+
   uint32_t base_instance = 0;
   if (!vkr_pass_packet_upload_instances(
           rf, payload->instances, payload->instance_count, &base_instance)) {
@@ -602,25 +644,43 @@ vkr_internal void vkr_pass_world_execute(VkrRgPassContext *ctx,
       .render_mode = (VkrRenderMode)packet->globals.render_mode,
   };
 
-  vkr_pass_world_draw_list(rf, &packet->frame, payload, payload->opaque_draws,
-                           payload->opaque_draw_count, base_instance, true_v,
-                           VKR_PIPELINE_DOMAIN_WORLD, &globals, &shadow_data,
-                           shadow_valid);
-  vkr_pass_world_draw_list(rf, &packet->frame, payload,
-                           payload->transparent_draws,
-                           payload->transparent_draw_count, base_instance,
-                           false_v, VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT,
-                           &globals, &shadow_data, shadow_valid);
+  if (stage == VKR_WORLD_PASS_STAGE_OPAQUE ||
+      stage == VKR_WORLD_PASS_STAGE_ALL) {
+    vkr_pass_world_draw_list(rf, &packet->frame, payload, payload->opaque_draws,
+                             payload->opaque_draw_count, base_instance, true_v,
+                             VKR_PIPELINE_DOMAIN_WORLD, &globals, &shadow_data,
+                             shadow_valid);
+  }
+  if (stage == VKR_WORLD_PASS_STAGE_TRANSMISSION ||
+      stage == VKR_WORLD_PASS_STAGE_ALL) {
+    vkr_pass_world_draw_list(rf, &packet->frame, payload,
+                             payload->transmission_draws,
+                             payload->transmission_draw_count, base_instance,
+                             false_v, VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT,
+                             &globals, &shadow_data, shadow_valid);
+  }
+  if (stage == VKR_WORLD_PASS_STAGE_BLEND ||
+      stage == VKR_WORLD_PASS_STAGE_ALL) {
+    vkr_pass_world_draw_list(rf, &packet->frame, payload,
+                             payload->transparent_draws,
+                             payload->transparent_draw_count, base_instance,
+                             false_v, VKR_PIPELINE_DOMAIN_WORLD_TRANSPARENT,
+                             &globals, &shadow_data, shadow_valid);
+  }
 
-  {
+  if (stage == VKR_WORLD_PASS_STAGE_BLEND ||
+      stage == VKR_WORLD_PASS_STAGE_ALL) {
     uint32_t opaque_count = payload->opaque_draw_count;
+    uint32_t transmission_count = payload->transmission_draw_count;
     uint32_t transparent_count = payload->transparent_draw_count;
-    uint32_t total_draws = opaque_count + transparent_count;
+    uint32_t total_draws =
+        opaque_count + transmission_count + transparent_count;
 
     // Command, call, batch, and indirect counters are accumulated by
     // vkr_pass_world_flush_mdi_batch as batches submit.
     rf->frame_metrics.world.draws_collected = total_draws;
     rf->frame_metrics.world.opaque_draws = opaque_count;
+    rf->frame_metrics.world.transmission_draws = transmission_count;
     rf->frame_metrics.world.transparent_draws = transparent_count;
     rf->frame_metrics.world.opaque_batches =
         rf->frame_metrics.world.batches_created;
@@ -637,11 +697,15 @@ vkr_internal void vkr_pass_world_execute(VkrRgPassContext *ctx,
             : 0.0f;
   }
 
-  if (rf->world_resources.initialized) {
+  if ((stage == VKR_WORLD_PASS_STAGE_BLEND ||
+       stage == VKR_WORLD_PASS_STAGE_ALL) &&
+      rf->world_resources.initialized) {
     vkr_world_resources_render_text(rf, &rf->world_resources);
   }
 
-  if (rf->gizmo_system.initialized) {
+  if ((stage == VKR_WORLD_PASS_STAGE_BLEND ||
+       stage == VKR_WORLD_PASS_STAGE_ALL) &&
+      rf->gizmo_system.initialized) {
     uint32_t viewport_height = packet->frame.viewport_height;
     if (viewport_height == 0) {
       viewport_height = packet->frame.window_height;
@@ -660,11 +724,30 @@ bool8_t vkr_pass_world_register(VkrRgExecutorRegistry *registry) {
     return false_v;
   }
 
-  VkrRgPassExecutor entry = {
-      .name = string8_lit("pass.world"),
-      .execute = vkr_pass_world_execute,
-      .user_data = NULL,
+  static const VkrWorldPassStage stages[] = {
+      VKR_WORLD_PASS_STAGE_OPAQUE,
+      VKR_WORLD_PASS_STAGE_TRANSMISSION,
+      VKR_WORLD_PASS_STAGE_BLEND,
+      VKR_WORLD_PASS_STAGE_ALL,
   };
-
-  return vkr_rg_executor_registry_register(registry, &entry);
+  const VkrRgPassExecutor entries[] = {
+      {.name = string8_lit("pass.world.opaque"),
+       .execute = vkr_pass_world_execute,
+       .user_data = (void *)&stages[0]},
+      {.name = string8_lit("pass.world.transmission"),
+       .execute = vkr_pass_world_execute,
+       .user_data = (void *)&stages[1]},
+      {.name = string8_lit("pass.world.blend"),
+       .execute = vkr_pass_world_execute,
+       .user_data = (void *)&stages[2]},
+      {.name = string8_lit("pass.world"),
+       .execute = vkr_pass_world_execute,
+       .user_data = (void *)&stages[3]},
+  };
+  for (uint32_t i = 0u; i < ArrayCount(entries); ++i) {
+    if (!vkr_rg_executor_registry_register(registry, &entries[i])) {
+      return false_v;
+    }
+  }
+  return true_v;
 }

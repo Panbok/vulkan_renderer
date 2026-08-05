@@ -592,6 +592,10 @@ typedef struct VulkanShaderObject {
   uint64_t push_constant_size;
   uint32_t global_texture_count;
   uint32_t instance_texture_count;
+  uint32_t instance_sampler_count;
+  /** Sampled-image slot -> sampler descriptor slot. Multiple images may share
+   * one sampler when their shadercfg declarations explicitly alias it. */
+  uint32_t instance_texture_sampler_indices[VKR_MAX_INSTANCE_TEXTURES];
 } VulkanShaderObject;
 
 struct s_GraphicsPipeline {

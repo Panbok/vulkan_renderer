@@ -155,6 +155,10 @@ VkrRendererError renderer_vulkan_resize_texture(void *backend_state,
                                                 uint32_t new_width,
                                                 uint32_t new_height,
                                                 bool8_t preserve_contents);
+VkrRendererError
+renderer_vulkan_copy_texture(void *backend_state,
+                             VkrBackendResourceHandle source,
+                             VkrBackendResourceHandle destination);
 
 void renderer_vulkan_destroy_texture(void *backend_state,
                                      VkrBackendResourceHandle handle);

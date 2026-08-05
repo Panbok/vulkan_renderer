@@ -330,16 +330,6 @@ vkr_world_resources_destroy_ibl_bake_runtime(RendererFrontend *rf,
     return;
   }
 
-  vkr_world_resources_release_instance_state(
-      rf, resources->ibl_diffuse_bake_pipeline,
-      &resources->ibl_diffuse_bake_instance_state);
-  vkr_world_resources_release_instance_state(
-      rf, resources->ibl_equirect_bake_pipeline,
-      &resources->ibl_equirect_bake_instance_state);
-  vkr_world_resources_release_instance_state(
-      rf, resources->ibl_specular_bake_pipeline,
-      &resources->ibl_specular_bake_instance_state);
-
   if (resources->ibl_diffuse_bake_pipeline.id != 0) {
     vkr_pipeline_registry_destroy_pipeline(
         &rf->pipeline_registry, resources->ibl_diffuse_bake_pipeline);
@@ -572,48 +562,6 @@ vkr_internal bool8_t vkr_world_resources_ensure_ibl_bake_runtime_ready(
     return false_v;
   }
 
-  resources->ibl_diffuse_bake_instance_state.id = VKR_INVALID_ID;
-  resources->ibl_equirect_bake_instance_state.id = VKR_INVALID_ID;
-  resources->ibl_specular_bake_instance_state.id = VKR_INVALID_ID;
-
-  VkrRendererError equirect_instance_error = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_pipeline_registry_acquire_instance_state(
-          &rf->pipeline_registry, resources->ibl_equirect_bake_pipeline,
-          &resources->ibl_equirect_bake_instance_state,
-          &equirect_instance_error)) {
-    String8 error_string =
-        vkr_renderer_get_error_string(equirect_instance_error);
-    log_warn("World resources: failed to acquire equirect instance: %s",
-             string8_cstr(&error_string));
-    vkr_world_resources_destroy_ibl_bake_runtime(rf, resources);
-    return false_v;
-  }
-
-  VkrRendererError diffuse_instance_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_pipeline_registry_acquire_instance_state(
-          &rf->pipeline_registry, resources->ibl_diffuse_bake_pipeline,
-          &resources->ibl_diffuse_bake_instance_state, &diffuse_instance_err)) {
-    String8 err = vkr_renderer_get_error_string(diffuse_instance_err);
-    log_warn(
-        "World resources: failed to acquire diffuse bake instance state: %s",
-        string8_cstr(&err));
-    vkr_world_resources_destroy_ibl_bake_runtime(rf, resources);
-    return false_v;
-  }
-
-  VkrRendererError specular_instance_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_pipeline_registry_acquire_instance_state(
-          &rf->pipeline_registry, resources->ibl_specular_bake_pipeline,
-          &resources->ibl_specular_bake_instance_state,
-          &specular_instance_err)) {
-    String8 err = vkr_renderer_get_error_string(specular_instance_err);
-    log_warn(
-        "World resources: failed to acquire specular bake instance state: %s",
-        string8_cstr(&err));
-    vkr_world_resources_destroy_ibl_bake_runtime(rf, resources);
-    return false_v;
-  }
-
   resources->ibl_bake_runtime_ready = true_v;
   return true_v;
 }
@@ -746,20 +694,30 @@ finish:
 /** Records a cubemap bake using face/mip attachments prepared beforehand. */
 vkr_internal bool8_t vkr_world_resources_bake_cubemap(
     RendererFrontend *rf, VkrWorldResources *resources, String8 shader_name,
-    uint32_t shader_id, VkrPipelineHandle pipeline,
-    VkrRendererInstanceStateHandle instance_state, const char *source_binding,
+    uint32_t shader_id, VkrPipelineHandle pipeline, const char *source_binding,
     VkrTextureOpaqueHandle source_texture,
     const VkrIblPreparedTargetSet *target_set, bool8_t use_sample_params,
     uint32_t source_face_size, uint32_t source_mip_count) {
   if (!rf || !resources || !shader_name.str || shader_id == 0u ||
-      pipeline.id == 0 || instance_state.id == VKR_INVALID_ID ||
-      !source_binding || !source_texture || !target_set || !target_set->ready ||
-      !target_set->texture || target_set->base_size == 0u ||
-      target_set->mip_count == 0u || !resources->ibl_bake_render_pass) {
+      pipeline.id == 0 || !source_binding || !source_texture || !target_set ||
+      !target_set->ready || !target_set->texture ||
+      target_set->base_size == 0u || target_set->mip_count == 0u ||
+      !resources->ibl_bake_render_pass) {
     return false_v;
   }
 
   const float64_t start_seconds = vkr_platform_get_absolute_time();
+  VkrRendererInstanceStateHandle instance_state = {.id = VKR_INVALID_ID};
+  VkrRendererError instance_error = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_pipeline_registry_acquire_instance_state(
+          &rf->pipeline_registry, pipeline, &instance_state, &instance_error)) {
+    String8 err = vkr_renderer_get_error_string(instance_error);
+    log_error("IBL bake: failed to acquire immutable source state for "
+              "'%.*s': %s",
+              (int)shader_name.length, shader_name.str, string8_cstr(&err));
+    return false_v;
+  }
+
   bool8_t result = false_v;
   for (uint32_t mip = 0; mip < target_set->mip_count; ++mip) {
     const uint32_t mip_size = Max(1u, target_set->base_size >> mip);
@@ -813,6 +771,8 @@ vkr_internal bool8_t vkr_world_resources_bake_cubemap(
   result = true_v;
 
 finish: {
+  vkr_world_resources_release_instance_state(rf, pipeline, &instance_state);
+
   uint64_t output_bytes = 0u;
   for (uint32_t mip = 0u; mip < target_set->mip_count; ++mip) {
     const uint32_t size = Max(1u, target_set->base_size >> mip);
@@ -1164,9 +1124,6 @@ bool8_t vkr_world_resources_init(RendererFrontend *rf,
   resources->ibl_diffuse_bake_shader_id = 0u;
   resources->ibl_specular_bake_shader_id = 0u;
   resources->ibl_brdf_bake_shader_id = 0u;
-  resources->ibl_equirect_bake_instance_state.id = VKR_INVALID_ID;
-  resources->ibl_diffuse_bake_instance_state.id = VKR_INVALID_ID;
-  resources->ibl_specular_bake_instance_state.id = VKR_INVALID_ID;
   resources->ibl_bake_plane_geometry = (VkrGeometryHandle){0};
   resources->ibl_active_irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID;
   resources->ibl_active_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
@@ -1495,10 +1452,8 @@ vkr_world_resources_ensure_default_ibl_ready(RendererFrontend *rf,
         !vkr_world_resources_bake_cubemap(
             rf, resources, string8_lit("shader.ibl.equirect_to_cube"),
             resources->ibl_equirect_bake_shader_id,
-            resources->ibl_equirect_bake_pipeline,
-            resources->ibl_equirect_bake_instance_state, "source_equirect",
-            delivery, &resources->ibl_default_source_targets, false_v, 1u,
-            1u)) {
+            resources->ibl_equirect_bake_pipeline, "source_equirect", delivery,
+            &resources->ibl_default_source_targets, false_v, 1u, 1u)) {
       return false_v;
     }
     vkr_world_resources_release_texture(
@@ -1510,16 +1465,14 @@ vkr_world_resources_ensure_default_ibl_ready(RendererFrontend *rf,
       !vkr_world_resources_bake_cubemap(
           rf, resources, string8_lit("shader.ibl.diffuse_convolution"),
           resources->ibl_diffuse_bake_shader_id,
-          resources->ibl_diffuse_bake_pipeline,
-          resources->ibl_diffuse_bake_instance_state, "source_cubemap",
+          resources->ibl_diffuse_bake_pipeline, "source_cubemap",
           source->handle, &resources->ibl_default_irradiance_targets, false_v,
           source->description.width,
           resources->ibl_default_source_targets.mip_count) ||
       !vkr_world_resources_bake_cubemap(
           rf, resources, string8_lit("shader.ibl.specular_prefilter"),
           resources->ibl_specular_bake_shader_id,
-          resources->ibl_specular_bake_pipeline,
-          resources->ibl_specular_bake_instance_state, "source_cubemap",
+          resources->ibl_specular_bake_pipeline, "source_cubemap",
           source->handle, &resources->ibl_default_prefilter_targets, true_v,
           source->description.width,
           resources->ibl_default_source_targets.mip_count)) {
@@ -1722,8 +1675,7 @@ void vkr_world_resources_bake_scene_ibl_if_pending(RendererFrontend *rf,
         !vkr_world_resources_bake_cubemap(
             rf, resources, string8_lit("shader.ibl.equirect_to_cube"),
             resources->ibl_equirect_bake_shader_id,
-            resources->ibl_equirect_bake_pipeline,
-            resources->ibl_equirect_bake_instance_state, "source_equirect",
+            resources->ibl_equirect_bake_pipeline, "source_equirect",
             delivery_texture, &environment->cube_targets, false_v, 1u, 1u)) {
       vkr_world_resources_fail_scene_environment(rf, scene);
       return;
@@ -1742,15 +1694,13 @@ void vkr_world_resources_bake_scene_ibl_if_pending(RendererFrontend *rf,
       !vkr_world_resources_bake_cubemap(
           rf, resources, string8_lit("shader.ibl.diffuse_convolution"),
           resources->ibl_diffuse_bake_shader_id,
-          resources->ibl_diffuse_bake_pipeline,
-          resources->ibl_diffuse_bake_instance_state, "source_cubemap",
+          resources->ibl_diffuse_bake_pipeline, "source_cubemap",
           source_texture, &environment->irradiance_targets, false_v,
           environment->source_face_size, environment->source_mip_count) ||
       !vkr_world_resources_bake_cubemap(
           rf, resources, string8_lit("shader.ibl.specular_prefilter"),
           resources->ibl_specular_bake_shader_id,
-          resources->ibl_specular_bake_pipeline,
-          resources->ibl_specular_bake_instance_state, "source_cubemap",
+          resources->ibl_specular_bake_pipeline, "source_cubemap",
           source_texture, &environment->prefilter_targets, true_v,
           environment->source_face_size, environment->source_mip_count)) {
     vkr_world_resources_fail_scene_environment(rf, scene);
@@ -1813,6 +1763,13 @@ bool8_t vkr_world_resources_prepare_scene_reflection_probes(
     VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
     if (!probe->enabled ||
         probe->bake_state != VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_PENDING) {
+      continue;
+    }
+
+    // A probe sourced from the scene environment needs different spatial
+    // controls, not a second convolution of identical texels. The environment
+    // bake publishes retained map references once it becomes ready below.
+    if (probe->uses_scene_environment_source) {
       continue;
     }
 
@@ -1894,6 +1851,27 @@ void vkr_world_resources_bake_scene_reflection_probes_if_pending(
       if (scene->environment.bake_state != VKR_SCENE_ENV_BAKE_STATE_READY) {
         continue;
       }
+
+      if (!vkr_world_resources_texture_is_valid(
+              &rf->texture_system, scene->environment.irradiance_cubemap,
+              VKR_TEXTURE_TYPE_CUBE_MAP) ||
+          !vkr_world_resources_texture_is_valid(
+              &rf->texture_system, scene->environment.prefilter_cubemap,
+              VKR_TEXTURE_TYPE_CUBE_MAP)) {
+        vkr_world_resources_fail_reflection_probe(rf, probe);
+        baked_failed_count++;
+        continue;
+      }
+
+      vkr_texture_system_add_ref_by_handle(
+          &rf->texture_system, scene->environment.irradiance_cubemap);
+      vkr_texture_system_add_ref_by_handle(
+          &rf->texture_system, scene->environment.prefilter_cubemap);
+      probe->irradiance_cubemap = scene->environment.irradiance_cubemap;
+      probe->prefilter_cubemap = scene->environment.prefilter_cubemap;
+      probe->bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_READY;
+      baked_ready_count++;
+      continue;
     }
 
     VkrTexture *source = vkr_texture_system_get_by_handle(
@@ -1910,15 +1888,13 @@ void vkr_world_resources_bake_scene_reflection_probes_if_pending(
         vkr_world_resources_bake_cubemap(
             rf, resources, string8_lit("shader.ibl.diffuse_convolution"),
             resources->ibl_diffuse_bake_shader_id,
-            resources->ibl_diffuse_bake_pipeline,
-            resources->ibl_diffuse_bake_instance_state, "source_cubemap",
+            resources->ibl_diffuse_bake_pipeline, "source_cubemap",
             source->handle, &probe->irradiance_targets, false_v,
             source->description.width, Max(1u, probe->source_mip_count)) &&
         vkr_world_resources_bake_cubemap(
             rf, resources, string8_lit("shader.ibl.specular_prefilter"),
             resources->ibl_specular_bake_shader_id,
-            resources->ibl_specular_bake_pipeline,
-            resources->ibl_specular_bake_instance_state, "source_cubemap",
+            resources->ibl_specular_bake_pipeline, "source_cubemap",
             source->handle, &probe->prefilter_targets, true_v,
             source->description.width, Max(1u, probe->source_mip_count));
 
@@ -1942,29 +1918,43 @@ void vkr_world_resources_bake_scene_reflection_probes_if_pending(
   }
 }
 
-vkr_internal float32_t vkr_world_resources_probe_influence(
-    const VkrSceneReflectionProbe *probe, Vec3 world_position) {
-  if (!probe) {
-    return 0.0f;
-  }
-
-  float32_t dx = vkr_abs_f32(world_position.x - probe->center.x);
-  float32_t dy = vkr_abs_f32(world_position.y - probe->center.y);
-  float32_t dz = vkr_abs_f32(world_position.z - probe->center.z);
-  float32_t outside_x = vkr_max_f32(0.0f, dx - probe->extents.x);
-  float32_t outside_y = vkr_max_f32(0.0f, dy - probe->extents.y);
-  float32_t outside_z = vkr_max_f32(0.0f, dz - probe->extents.z);
+float32_t vkr_world_resources_probe_fragment_influence(Vec3 center,
+                                                       Vec3 extents,
+                                                       float32_t blend_distance,
+                                                       Vec3 world_position) {
+  float32_t dx = vkr_abs_f32(world_position.x - center.x);
+  float32_t dy = vkr_abs_f32(world_position.y - center.y);
+  float32_t dz = vkr_abs_f32(world_position.z - center.z);
+  float32_t outside_x = vkr_max_f32(0.0f, dx - extents.x);
+  float32_t outside_y = vkr_max_f32(0.0f, dy - extents.y);
+  float32_t outside_z = vkr_max_f32(0.0f, dz - extents.z);
   float32_t outside_distance = vkr_sqrt_f32(
       outside_x * outside_x + outside_y * outside_y + outside_z * outside_z);
 
   if (outside_distance <= 1e-6f) {
     return 1.0f;
   }
-  if (probe->blend_distance <= 0.0f) {
+  if (blend_distance <= 0.0f) {
     return 0.0f;
   }
 
-  return vkr_max_f32(0.0f, 1.0f - outside_distance / probe->blend_distance);
+  return vkr_max_f32(0.0f, 1.0f - outside_distance / blend_distance);
+}
+
+bool8_t vkr_world_resources_probe_intersects_sphere(Vec3 center, Vec3 extents,
+                                                    float32_t blend_distance,
+                                                    Vec3 sphere_center,
+                                                    float32_t sphere_radius) {
+  Vec3 influence_extents = vec3_add(
+      extents, vec3_new(blend_distance, blend_distance, blend_distance));
+  Vec3 delta = vec3_new(vkr_abs_f32(sphere_center.x - center.x),
+                        vkr_abs_f32(sphere_center.y - center.y),
+                        vkr_abs_f32(sphere_center.z - center.z));
+  Vec3 outside = vec3_new(vkr_max_f32(0.0f, delta.x - influence_extents.x),
+                          vkr_max_f32(0.0f, delta.y - influence_extents.y),
+                          vkr_max_f32(0.0f, delta.z - influence_extents.z));
+  float32_t radius = vkr_max_f32(sphere_radius, 0.0f);
+  return vec3_length_squared(outside) <= radius * radius ? true_v : false_v;
 }
 
 vkr_internal VkrWorldIblProbeSlot vkr_world_resources_fallback_probe_slot(
@@ -2007,29 +1997,43 @@ vkr_internal VkrWorldIblProbeSlot vkr_world_resources_fallback_probe_slot(
 
 void vkr_world_resources_select_probe_slots_for_position(
     RendererFrontend *rf, VkrWorldResources *resources, const VkrScene *scene,
-    Vec3 world_position, VkrWorldIblProbeSlot out_slots[2]) {
+    Vec3 world_position, VkrWorldIblProbeSlot out_slots[3]) {
+  vkr_world_resources_select_probe_slots_for_bounds(
+      rf, resources, scene, world_position, 0.0f, out_slots);
+}
+
+void vkr_world_resources_select_probe_slots_for_bounds(
+    RendererFrontend *rf, VkrWorldResources *resources, const VkrScene *scene,
+    Vec3 bounds_center, float32_t bounds_radius,
+    VkrWorldIblProbeSlot out_slots[3]) {
   if (!out_slots) {
     return;
   }
 
-  MemZero(out_slots, sizeof(VkrWorldIblProbeSlot) * 2u);
+  MemZero(out_slots, sizeof(VkrWorldIblProbeSlot) * 3u);
   if (!rf || !resources) {
-    out_slots[0].weight = 1.0f;
+    out_slots[2].weight = 1.0f;
     return;
   }
 
   if (!resources->ibl_default_ready) {
     if (!vkr_world_resources_ensure_default_ibl_ready(rf, resources)) {
-      out_slots[0].weight = 1.0f;
+      out_slots[2].weight = 1.0f;
       return;
     }
   }
 
   VkrWorldIblProbeSlot fallback =
       vkr_world_resources_fallback_probe_slot(rf, resources);
+  out_slots[0] = fallback;
+  out_slots[1] = fallback;
+  out_slots[2] = fallback;
+  out_slots[0].weight = 0.0f;
+  out_slots[1].weight = 0.0f;
+  out_slots[2].weight = 1.0f;
 
   uint32_t best_probe_index[2] = {0xFFFFFFFFu, 0xFFFFFFFFu};
-  float32_t best_probe_influence[2] = {0.0f, 0.0f};
+  float32_t best_probe_score[2] = {-VKR_FLOAT_MAX, -VKR_FLOAT_MAX};
   if (scene) {
     for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
       const VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
@@ -2050,95 +2054,50 @@ void vkr_world_resources_select_probe_slots_for_position(
         continue;
       }
 
-      float32_t influence =
-          vkr_world_resources_probe_influence(probe, world_position);
-      if (influence <= 0.0f) {
+      if (!vkr_world_resources_probe_intersects_sphere(
+              probe->center, probe->extents, probe->blend_distance,
+              bounds_center, bounds_radius)) {
         continue;
       }
 
-      if (influence > best_probe_influence[0]) {
-        best_probe_influence[1] = best_probe_influence[0];
+      float32_t center_distance =
+          vec3_length(vec3_sub(bounds_center, probe->center));
+      float32_t score = -center_distance;
+      if (score > best_probe_score[0]) {
+        best_probe_score[1] = best_probe_score[0];
         best_probe_index[1] = best_probe_index[0];
-        best_probe_influence[0] = influence;
+        best_probe_score[0] = score;
         best_probe_index[0] = i;
-      } else if (influence > best_probe_influence[1]) {
-        best_probe_influence[1] = influence;
+      } else if (score > best_probe_score[1]) {
+        best_probe_score[1] = score;
         best_probe_index[1] = i;
       }
     }
   }
 
-  const bool8_t has_first_local = best_probe_index[0] != 0xFFFFFFFFu;
-  const bool8_t has_second_local = best_probe_index[1] != 0xFFFFFFFFu;
-
-  if (!has_first_local) {
-    out_slots[0] = fallback;
-    out_slots[1] = fallback;
-    out_slots[0].weight = 1.0f;
-    out_slots[1].weight = 0.0f;
-    return;
+  for (uint32_t slot_index = 0; slot_index < 2u; ++slot_index) {
+    if (best_probe_index[slot_index] == 0xFFFFFFFFu) {
+      continue;
+    }
+    const VkrSceneReflectionProbe *probe =
+        &scene->reflection_probes[best_probe_index[slot_index]];
+    out_slots[slot_index] = (VkrWorldIblProbeSlot){
+        .irradiance_map = vkr_world_resources_resolve_backend_texture(
+            &rf->texture_system, probe->irradiance_cubemap,
+            VKR_TEXTURE_TYPE_CUBE_MAP),
+        .prefilter_map = vkr_world_resources_resolve_backend_texture(
+            &rf->texture_system, probe->prefilter_cubemap,
+            VKR_TEXTURE_TYPE_CUBE_MAP),
+        .center = probe->center,
+        .extents = probe->extents,
+        .blend_distance = probe->blend_distance,
+        .weight = 1.0f,
+        .intensity = probe->intensity,
+        .diffuse_intensity = probe->diffuse_intensity,
+        .specular_intensity = probe->specular_intensity,
+        .box_projection_enabled = true_v,
+    };
   }
-
-  const VkrSceneReflectionProbe *probe0 =
-      &scene->reflection_probes[best_probe_index[0]];
-  VkrWorldIblProbeSlot slot0 = {
-      .irradiance_map = vkr_world_resources_resolve_backend_texture(
-          &rf->texture_system, probe0->irradiance_cubemap,
-          VKR_TEXTURE_TYPE_CUBE_MAP),
-      .prefilter_map = vkr_world_resources_resolve_backend_texture(
-          &rf->texture_system, probe0->prefilter_cubemap,
-          VKR_TEXTURE_TYPE_CUBE_MAP),
-      .center = probe0->center,
-      .extents = probe0->extents,
-      .blend_distance = probe0->blend_distance,
-      .weight = 1.0f,
-      .intensity = probe0->intensity,
-      .diffuse_intensity = probe0->diffuse_intensity,
-      .specular_intensity = probe0->specular_intensity,
-      .box_projection_enabled = true_v,
-  };
-
-  if (!has_second_local) {
-    float32_t local_weight = vkr_clamp_f32(best_probe_influence[0], 0.0f, 1.0f);
-    out_slots[0] = slot0;
-    out_slots[1] = fallback;
-    out_slots[0].weight = local_weight;
-    out_slots[1].weight = 1.0f - local_weight;
-    return;
-  }
-
-  const VkrSceneReflectionProbe *probe1 =
-      &scene->reflection_probes[best_probe_index[1]];
-  VkrWorldIblProbeSlot slot1 = {
-      .irradiance_map = vkr_world_resources_resolve_backend_texture(
-          &rf->texture_system, probe1->irradiance_cubemap,
-          VKR_TEXTURE_TYPE_CUBE_MAP),
-      .prefilter_map = vkr_world_resources_resolve_backend_texture(
-          &rf->texture_system, probe1->prefilter_cubemap,
-          VKR_TEXTURE_TYPE_CUBE_MAP),
-      .center = probe1->center,
-      .extents = probe1->extents,
-      .blend_distance = probe1->blend_distance,
-      .weight = 1.0f,
-      .intensity = probe1->intensity,
-      .diffuse_intensity = probe1->diffuse_intensity,
-      .specular_intensity = probe1->specular_intensity,
-      .box_projection_enabled = true_v,
-  };
-
-  float32_t weight_sum = best_probe_influence[0] + best_probe_influence[1];
-  if (weight_sum <= 1e-6f) {
-    out_slots[0] = fallback;
-    out_slots[1] = fallback;
-    out_slots[0].weight = 1.0f;
-    out_slots[1].weight = 0.0f;
-    return;
-  }
-
-  out_slots[0] = slot0;
-  out_slots[1] = slot1;
-  out_slots[0].weight = best_probe_influence[0] / weight_sum;
-  out_slots[1].weight = best_probe_influence[1] / weight_sum;
 }
 
 void vkr_world_resources_set_active_ibl_from_scene_or_default(

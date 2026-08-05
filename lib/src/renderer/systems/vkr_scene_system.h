@@ -172,6 +172,12 @@ typedef struct SceneDirectionalLight {
   bool8_t enabled;      // Whether this light is active
 } SceneDirectionalLight;
 
+typedef enum VkrPointLightKind {
+  VKR_POINT_LIGHT_KIND_POLYNOMIAL = 0,
+  VKR_POINT_LIGHT_KIND_GLTF_POINT = 1,
+  VKR_POINT_LIGHT_KIND_GLTF_SPOT = 2,
+} VkrPointLightKind;
+
 /**
  * @brief Point light component.
  *
@@ -184,7 +190,12 @@ typedef struct ScenePointLight {
   float32_t constant;  // Attenuation constant term (usually 1.0)
   float32_t linear;    // Attenuation linear term
   float32_t quadratic; // Attenuation quadratic term
-  bool8_t enabled;     // Whether this light is active
+  float32_t range;     // Zero means unbounded.
+  Vec3 direction_local;
+  float32_t inner_cone_angle;
+  float32_t outer_cone_angle;
+  VkrPointLightKind kind;
+  bool8_t enabled; // Whether this light is active
 } ScenePointLight;
 
 /**

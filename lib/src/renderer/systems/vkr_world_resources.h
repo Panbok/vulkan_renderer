@@ -32,6 +32,16 @@ typedef struct VkrWorldIblProbeSlot {
   bool8_t box_projection_enabled;
 } VkrWorldIblProbeSlot;
 
+float32_t vkr_world_resources_probe_fragment_influence(Vec3 center,
+                                                       Vec3 extents,
+                                                       float32_t blend_distance,
+                                                       Vec3 world_position);
+
+bool8_t vkr_world_resources_probe_intersects_sphere(Vec3 center, Vec3 extents,
+                                                    float32_t blend_distance,
+                                                    Vec3 sphere_center,
+                                                    float32_t sphere_radius);
+
 /**
  * @brief A single 3D text slot in the world resources.
  *
@@ -102,9 +112,6 @@ typedef struct VkrWorldResources {
   uint32_t ibl_diffuse_bake_shader_id;
   uint32_t ibl_specular_bake_shader_id;
   uint32_t ibl_brdf_bake_shader_id;
-  VkrRendererInstanceStateHandle ibl_equirect_bake_instance_state;
-  VkrRendererInstanceStateHandle ibl_diffuse_bake_instance_state;
-  VkrRendererInstanceStateHandle ibl_specular_bake_instance_state;
   VkrGeometryHandle ibl_bake_plane_geometry;
   VkrRenderTargetHandle ibl_brdf_bake_target;
   VkrIblPreparedTargetSet ibl_default_source_targets;
@@ -216,7 +223,7 @@ VkrRendererError vkr_world_resources_record_tonemap(
     float32_t exposure);
 
 /**
- * @brief Selects and blends two probe slots for the given world position.
+ * @brief Selects two local probe candidates plus a global fallback.
  *
  * Slot selection prefers local reflection probes by influence and falls back
  * to active/global IBL maps when no local probe contributes.
@@ -224,7 +231,12 @@ VkrRendererError vkr_world_resources_record_tonemap(
 void vkr_world_resources_select_probe_slots_for_position(
     struct s_RendererFrontend *rf, VkrWorldResources *resources,
     const VkrScene *scene, Vec3 world_position,
-    VkrWorldIblProbeSlot out_slots[2]);
+    VkrWorldIblProbeSlot out_slots[3]);
+
+void vkr_world_resources_select_probe_slots_for_bounds(
+    struct s_RendererFrontend *rf, VkrWorldResources *resources,
+    const VkrScene *scene, Vec3 bounds_center, float32_t bounds_radius,
+    VkrWorldIblProbeSlot out_slots[3]);
 
 /**
  * @brief Create or replace a 3D text slot.

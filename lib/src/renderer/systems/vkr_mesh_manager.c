@@ -526,7 +526,8 @@ vkr_mesh_manager_asset_instance_index_clear_asset(VkrMeshManager *manager,
     return;
   }
 
-  array_set_uint32_t(&manager->asset_instance_heads, asset_slot, VKR_INVALID_ID);
+  array_set_uint32_t(&manager->asset_instance_heads, asset_slot,
+                     VKR_INVALID_ID);
   array_set_uint32_t(&manager->asset_instance_generations, asset_slot,
                      VKR_INVALID_ID);
 }
@@ -558,7 +559,8 @@ vkr_internal void vkr_mesh_manager_asset_instance_index_add_instance(
                        asset_handle.generation);
   }
 
-  uint32_t head = *array_get_uint32_t(&manager->asset_instance_heads, asset_slot);
+  uint32_t head =
+      *array_get_uint32_t(&manager->asset_instance_heads, asset_slot);
   array_set_uint32_t(&manager->instance_asset_prev, instance_slot,
                      VKR_INVALID_ID);
   array_set_uint32_t(&manager->instance_asset_next, instance_slot, head);
@@ -578,8 +580,10 @@ vkr_internal void vkr_mesh_manager_asset_instance_index_remove_instance(
     return;
   }
 
-  uint32_t prev = *array_get_uint32_t(&manager->instance_asset_prev, instance_slot);
-  uint32_t next = *array_get_uint32_t(&manager->instance_asset_next, instance_slot);
+  uint32_t prev =
+      *array_get_uint32_t(&manager->instance_asset_prev, instance_slot);
+  uint32_t next =
+      *array_get_uint32_t(&manager->instance_asset_next, instance_slot);
 
   if (asset_handle.id != 0) {
     uint32_t asset_slot = asset_handle.id - 1;
@@ -591,21 +595,25 @@ vkr_internal void vkr_mesh_manager_asset_instance_index_remove_instance(
         uint32_t head =
             *array_get_uint32_t(&manager->asset_instance_heads, asset_slot);
 
-        if (prev != VKR_INVALID_ID && prev < manager->instance_asset_next.length) {
+        if (prev != VKR_INVALID_ID &&
+            prev < manager->instance_asset_next.length) {
           array_set_uint32_t(&manager->instance_asset_next, prev, next);
         } else if (head == instance_slot) {
           array_set_uint32_t(&manager->asset_instance_heads, asset_slot, next);
         }
 
-        if (next != VKR_INVALID_ID && next < manager->instance_asset_prev.length) {
+        if (next != VKR_INVALID_ID &&
+            next < manager->instance_asset_prev.length) {
           array_set_uint32_t(&manager->instance_asset_prev, next, prev);
         }
       }
     }
   }
 
-  array_set_uint32_t(&manager->instance_asset_prev, instance_slot, VKR_INVALID_ID);
-  array_set_uint32_t(&manager->instance_asset_next, instance_slot, VKR_INVALID_ID);
+  array_set_uint32_t(&manager->instance_asset_prev, instance_slot,
+                     VKR_INVALID_ID);
+  array_set_uint32_t(&manager->instance_asset_next, instance_slot,
+                     VKR_INVALID_ID);
 }
 
 vkr_internal void vkr_mesh_manager_destroy_asset_slot(VkrMeshManager *manager,
@@ -807,10 +815,9 @@ vkr_mesh_manager_refresh_instances_for_asset(VkrMeshManager *manager,
     } else {
       uint32_t submesh_count = (uint32_t)asset->submeshes.length;
       bool8_t submesh_state_ready =
-          submesh_count > 0 &&
-          (instance->submesh_state.data ||
-           vkr_mesh_manager_init_instance_state_array(manager, instance,
-                                                      submesh_count));
+          submesh_count > 0 && (instance->submesh_state.data ||
+                                vkr_mesh_manager_init_instance_state_array(
+                                    manager, instance, submesh_count));
       if (!submesh_state_ready) {
         instance->loading_state = VKR_MESH_LOADING_STATE_FAILED;
         instance->bounds_valid = false_v;
@@ -1142,8 +1149,8 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
   manager->asset_generation_counter = 1;
   manager->asset_by_key = vkr_hash_table_create_VkrMeshAssetEntry(
       &manager->allocator, ((uint64_t)max_assets) * 2u);
-  manager->asset_instance_heads = array_create_uint32_t(&manager->allocator,
-                                                         max_assets);
+  manager->asset_instance_heads =
+      array_create_uint32_t(&manager->allocator, max_assets);
   manager->asset_instance_generations =
       array_create_uint32_t(&manager->allocator, max_assets);
 
@@ -2580,7 +2587,8 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
   }
 
   array_set_uint32_t(&manager->instance_live_indices, inst->live_index, slot);
-  vkr_mesh_manager_asset_instance_index_add_instance(manager, slot, inst->asset);
+  vkr_mesh_manager_asset_instance_index_add_instance(manager, slot,
+                                                     inst->asset);
   asset->ref_count++;
   manager->instance_count++;
 

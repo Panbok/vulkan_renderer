@@ -84,6 +84,14 @@ vkr_material_system_apply_ibl_samplers(VkrMaterialSystem *system) {
       system->ibl_probe_slots[1].prefilter_map
           ? system->ibl_probe_slots[1].prefilter_map
           : prefilter_map;
+  VkrTextureOpaqueHandle irradiance_map_c =
+      system->ibl_probe_slots[2].irradiance_map
+          ? system->ibl_probe_slots[2].irradiance_map
+          : irradiance_map;
+  VkrTextureOpaqueHandle prefilter_map_c =
+      system->ibl_probe_slots[2].prefilter_map
+          ? system->ibl_probe_slots[2].prefilter_map
+          : prefilter_map;
 
   if (irradiance_map) {
     vkr_material_system_sampler_set_optional(system, "irradiance_map",
@@ -106,6 +114,14 @@ vkr_material_system_apply_ibl_samplers(VkrMaterialSystem *system) {
     vkr_material_system_sampler_set_optional(system, "prefilter_map_b",
                                              prefilter_map_b);
   }
+  if (irradiance_map_c) {
+    vkr_material_system_sampler_set_optional(system, "irradiance_map_c",
+                                             irradiance_map_c);
+  }
+  if (prefilter_map_c) {
+    vkr_material_system_sampler_set_optional(system, "prefilter_map_c",
+                                             prefilter_map_c);
+  }
 }
 
 vkr_internal void
@@ -114,11 +130,11 @@ vkr_material_system_apply_ibl_probe_uniforms(VkrMaterialSystem *system) {
     return;
   }
 
-  Vec4 center_blend[2] = {0};
-  Vec4 extents_weight[2] = {0};
-  Vec4 intensity_box[2] = {0};
+  Vec4 center_blend[3] = {0};
+  Vec4 extents_weight[3] = {0};
+  Vec4 intensity_box[3] = {0};
 
-  for (uint32_t i = 0; i < 2u; ++i) {
+  for (uint32_t i = 0; i < 3u; ++i) {
     const VkrMaterialIblProbeSlot *slot = &system->ibl_probe_slots[i];
     center_blend[i] = vec4_new(slot->center.x, slot->center.y, slot->center.z,
                                slot->blend_distance);
@@ -141,6 +157,12 @@ vkr_material_system_apply_ibl_probe_uniforms(VkrMaterialSystem *system) {
                                            &extents_weight[1]);
   vkr_material_system_uniform_set_optional(system, "ibl_probe1_intensity_box",
                                            &intensity_box[1]);
+  vkr_material_system_uniform_set_optional(system, "ibl_probe2_center_blend",
+                                           &center_blend[2]);
+  vkr_material_system_uniform_set_optional(system, "ibl_probe2_extents_weight",
+                                           &extents_weight[2]);
+  vkr_material_system_uniform_set_optional(system, "ibl_probe2_intensity_box",
+                                           &intensity_box[2]);
 }
 
 /**
@@ -185,6 +207,8 @@ vkr_internal VkrTextureHandle vkr_material_system_default_texture_for_slot(
         system->texture_system);
   case VKR_TEXTURE_SLOT_OCCLUSION:
   case VKR_TEXTURE_SLOT_EMISSION:
+  case VKR_TEXTURE_SLOT_TRANSMISSION:
+  case VKR_TEXTURE_SLOT_THICKNESS:
   case VKR_TEXTURE_SLOT_DIFFUSE:
   default:
     return vkr_texture_system_get_default_diffuse_handle(
@@ -225,8 +249,9 @@ vkr_internal void vkr_material_system_sampler_set_optional(
   vkr_shader_system_sampler_set(system->shader_system, name, value);
 }
 
-vkr_internal VkrMaterialAlphaMode vkr_material_system_material_alpha_mode(
-    const VkrMaterialSystem *system, const VkrMaterial *material) {
+VkrMaterialAlphaMode
+vkr_material_system_material_alpha_mode(const VkrMaterialSystem *system,
+                                        const VkrMaterial *material) {
   if (!system || !system->texture_system || !material) {
     return VKR_MATERIAL_ALPHA_OPAQUE;
   }
@@ -291,6 +316,28 @@ vkr_material_system_material_uses_cutout(const VkrMaterialSystem *system,
                  VKR_MATERIAL_ALPHA_CUTOUT
              ? true_v
              : false_v;
+}
+
+bool8_t
+vkr_material_system_material_is_transmissive(const VkrMaterialSystem *system,
+                                             const VkrMaterial *material) {
+  if (!material || material->material_type != VKR_MATERIAL_TYPE_PBR) {
+    return false_v;
+  }
+  if (material->pbr.transmission_factor > 0.0f) {
+    return true_v;
+  }
+  const VkrMaterialTexture *texture =
+      &material->textures[VKR_TEXTURE_SLOT_TRANSMISSION];
+  if (!texture->enabled || texture->handle.id == 0) {
+    return false_v;
+  }
+  if (!system || !system->texture_system) {
+    return true_v;
+  }
+  VkrTexture *resolved =
+      vkr_texture_system_get_by_handle(system->texture_system, texture->handle);
+  return resolved && resolved->handle ? true_v : false_v;
 }
 
 float32_t
@@ -386,6 +433,12 @@ vkr_internal void vkr_material_system_init_surface_material(
   material->pbr.normal_scale = 1.0f;
   material->pbr.occlusion_strength = 1.0f;
   material->pbr.emissive_factor = vec3_zero();
+  material->pbr.dielectric_specular = vec3_new(0.04f, 0.04f, 0.04f);
+  material->pbr.transmission_factor = 0.0f;
+  material->pbr.ior = 1.5f;
+  material->pbr.thickness_factor = 0.0f;
+  material->pbr.attenuation_color = vec3_new(1.0f, 1.0f, 1.0f);
+  material->pbr.attenuation_distance = 0.0f;
   material->pipeline_id = VKR_INVALID_ID;
 
   vkr_material_system_reset_texture_slots(material);
@@ -445,14 +498,14 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   system->ibl_intensity = 1.0f;
   system->ibl_diffuse_intensity = 1.0f;
   system->ibl_specular_intensity = 1.0f;
-  for (uint32_t i = 0; i < 2u; ++i) {
+  for (uint32_t i = 0; i < 3u; ++i) {
     system->ibl_probe_slots[i] = (VkrMaterialIblProbeSlot){
         .irradiance_map = NULL,
         .prefilter_map = NULL,
         .center = {0},
         .extents = {0},
         .blend_distance = 0.0f,
-        .weight = (i == 0u) ? 1.0f : 0.0f,
+        .weight = (i == 2u) ? 1.0f : 0.0f,
         .intensity = 1.0f,
         .diffuse_intensity = 1.0f,
         .specular_intensity = 1.0f,
@@ -860,39 +913,70 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
     }
   } else {
     if (material->material_type == VKR_MATERIAL_TYPE_PBR) {
+      VkrTextureHandle specular_handle =
+          material->textures[VKR_TEXTURE_SLOT_SPECULAR].handle;
       VkrTextureHandle mr_handle =
           material->textures[VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS].handle;
       VkrTextureHandle occlusion_handle =
           material->textures[VKR_TEXTURE_SLOT_OCCLUSION].handle;
       VkrTextureHandle emissive_handle =
           material->textures[VKR_TEXTURE_SLOT_EMISSION].handle;
+      VkrTextureHandle transmission_handle =
+          material->textures[VKR_TEXTURE_SLOT_TRANSMISSION].handle;
+      VkrTextureHandle thickness_handle =
+          material->textures[VKR_TEXTURE_SLOT_THICKNESS].handle;
 
       VkrTextureHandle default_mr =
           vkr_material_system_default_texture_for_slot(
               system, VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS);
+      VkrTextureHandle default_specular =
+          vkr_material_system_default_texture_for_slot(
+              system, VKR_TEXTURE_SLOT_SPECULAR);
       VkrTextureHandle default_occlusion =
           vkr_material_system_default_texture_for_slot(
               system, VKR_TEXTURE_SLOT_OCCLUSION);
       VkrTextureHandle default_emissive =
           vkr_material_system_default_texture_for_slot(
               system, VKR_TEXTURE_SLOT_EMISSION);
+      VkrTextureHandle default_transmission =
+          vkr_material_system_default_texture_for_slot(
+              system, VKR_TEXTURE_SLOT_TRANSMISSION);
+      VkrTextureHandle default_thickness =
+          vkr_material_system_default_texture_for_slot(
+              system, VKR_TEXTURE_SLOT_THICKNESS);
 
+      VkrTexture *specular_texture = vkr_material_system_resolve_2d_texture(
+          system, specular_handle, default_specular);
       VkrTexture *mr_texture =
           vkr_material_system_resolve_2d_texture(system, mr_handle, default_mr);
       VkrTexture *occlusion_texture = vkr_material_system_resolve_2d_texture(
           system, occlusion_handle, default_occlusion);
       VkrTexture *emissive_texture = vkr_material_system_resolve_2d_texture(
           system, emissive_handle, default_emissive);
+      VkrTexture *transmission_texture = vkr_material_system_resolve_2d_texture(
+          system, transmission_handle, default_transmission);
+      VkrTexture *thickness_texture = vkr_material_system_resolve_2d_texture(
+          system, thickness_handle, default_thickness);
 
+      VkrTexture *requested_specular = vkr_texture_system_get_by_handle(
+          system->texture_system, specular_handle);
       VkrTexture *requested_mr =
           vkr_texture_system_get_by_handle(system->texture_system, mr_handle);
       VkrTexture *requested_occlusion = vkr_texture_system_get_by_handle(
           system->texture_system, occlusion_handle);
       VkrTexture *requested_emissive = vkr_texture_system_get_by_handle(
           system->texture_system, emissive_handle);
+      VkrTexture *requested_transmission = vkr_texture_system_get_by_handle(
+          system->texture_system, transmission_handle);
+      VkrTexture *requested_thickness = vkr_texture_system_get_by_handle(
+          system->texture_system, thickness_handle);
       VkrTexture *requested_normal = vkr_texture_system_get_by_handle(
           system->texture_system, normal_handle);
 
+      bool8_t specular_valid =
+          requested_specular && requested_specular->handle &&
+          requested_specular->description.type == VKR_TEXTURE_TYPE_2D &&
+          specular_handle.id != default_specular.id;
       bool8_t normal_valid =
           requested_normal && requested_normal->handle &&
           requested_normal->description.type == VKR_TEXTURE_TYPE_2D &&
@@ -909,6 +993,14 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
           requested_emissive && requested_emissive->handle &&
           requested_emissive->description.type == VKR_TEXTURE_TYPE_2D &&
           emissive_handle.id != default_emissive.id;
+      bool8_t transmission_valid =
+          requested_transmission && requested_transmission->handle &&
+          requested_transmission->description.type == VKR_TEXTURE_TYPE_2D &&
+          transmission_handle.id != default_transmission.id;
+      bool8_t thickness_valid =
+          requested_thickness && requested_thickness->handle &&
+          requested_thickness->description.type == VKR_TEXTURE_TYPE_2D &&
+          thickness_handle.id != default_thickness.id;
 
       vkr_material_system_uniform_set_optional(system, "base_color",
                                                &material->pbr.base_color);
@@ -922,6 +1014,21 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
           system, "occlusion_strength", &material->pbr.occlusion_strength);
       vkr_material_system_uniform_set_optional(system, "emissive_factor",
                                                &material->pbr.emissive_factor);
+      vkr_material_system_uniform_set_optional(
+          system, "dielectric_specular", &material->pbr.dielectric_specular);
+      vkr_material_system_uniform_set_optional(
+          system, "transmission_factor", &material->pbr.transmission_factor);
+      vkr_material_system_uniform_set_optional(system, "ior",
+                                               &material->pbr.ior);
+      vkr_material_system_uniform_set_optional(system, "thickness_factor",
+                                               &material->pbr.thickness_factor);
+      vkr_material_system_uniform_set_optional(
+          system, "attenuation_color", &material->pbr.attenuation_color);
+      vkr_material_system_uniform_set_optional(
+          system, "attenuation_distance", &material->pbr.attenuation_distance);
+      uint32_t transmission_pass = system->transmission_pass_enabled ? 1u : 0u;
+      vkr_material_system_uniform_set_optional(system, "transmission_pass",
+                                               &transmission_pass);
 
       uint32_t alpha_mode =
           (uint32_t)vkr_material_system_material_alpha_mode(system, material);
@@ -963,6 +1070,15 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
       if (emissive_valid) {
         texture_flags |= 0x10u;
       }
+      if (transmission_valid) {
+        texture_flags |= 0x20u;
+      }
+      if (thickness_valid) {
+        texture_flags |= 0x40u;
+      }
+      if (specular_valid) {
+        texture_flags |= 0x80u;
+      }
       vkr_shader_system_uniform_set(system->shader_system, "texture_flags",
                                     &texture_flags);
 
@@ -980,6 +1096,10 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
         vkr_material_system_sampler_set_optional(
             system, "metallic_roughness_texture", mr_texture->handle);
       }
+      if (specular_texture) {
+        vkr_material_system_sampler_set_optional(
+            system, "dielectric_specular_texture", specular_texture->handle);
+      }
       if (occlusion_texture) {
         vkr_material_system_sampler_set_optional(system, "occlusion_texture",
                                                  occlusion_texture->handle);
@@ -987,6 +1107,18 @@ void vkr_material_system_apply_instance(VkrMaterialSystem *system,
       if (emissive_texture) {
         vkr_material_system_sampler_set_optional(system, "emissive_texture",
                                                  emissive_texture->handle);
+      }
+      if (transmission_texture) {
+        vkr_material_system_sampler_set_optional(system, "transmission_texture",
+                                                 transmission_texture->handle);
+      }
+      if (thickness_texture) {
+        vkr_material_system_sampler_set_optional(system, "thickness_texture",
+                                                 thickness_texture->handle);
+      }
+      if (system->transmission_source) {
+        vkr_material_system_sampler_set_optional(system, "transmission_source",
+                                                 system->transmission_source);
       }
       vkr_material_system_apply_ibl_probe_uniforms(system);
       vkr_material_system_apply_ibl_samplers(system);
@@ -1099,18 +1231,18 @@ void vkr_material_system_set_ibl_maps(VkrMaterialSystem *system,
 }
 
 void vkr_material_system_set_ibl_probe_slots(
-    VkrMaterialSystem *system, const VkrMaterialIblProbeSlot slots[2]) {
+    VkrMaterialSystem *system, const VkrMaterialIblProbeSlot slots[3]) {
   assert_log(system != NULL, "System is NULL");
 
   if (!slots) {
-    for (uint32_t i = 0; i < 2u; ++i) {
+    for (uint32_t i = 0; i < 3u; ++i) {
       system->ibl_probe_slots[i] = (VkrMaterialIblProbeSlot){
           .irradiance_map = NULL,
           .prefilter_map = NULL,
           .center = {0},
           .extents = {0},
           .blend_distance = 0.0f,
-          .weight = (i == 0u) ? 1.0f : 0.0f,
+          .weight = (i == 2u) ? 1.0f : 0.0f,
           .intensity = 1.0f,
           .diffuse_intensity = 1.0f,
           .specular_intensity = 1.0f,
@@ -1120,7 +1252,7 @@ void vkr_material_system_set_ibl_probe_slots(
     return;
   }
 
-  for (uint32_t i = 0; i < 2u; ++i) {
+  for (uint32_t i = 0; i < 3u; ++i) {
     system->ibl_probe_slots[i] = slots[i];
     if (system->ibl_probe_slots[i].blend_distance < 0.0f) {
       system->ibl_probe_slots[i].blend_distance = 0.0f;
@@ -1129,6 +1261,14 @@ void vkr_material_system_set_ibl_probe_slots(
       system->ibl_probe_slots[i].weight = 0.0f;
     }
   }
+}
+
+void vkr_material_system_set_transmission_source(VkrMaterialSystem *system,
+                                                 VkrTextureOpaqueHandle source,
+                                                 bool8_t enabled) {
+  assert_log(system != NULL, "System is NULL");
+  system->transmission_source = enabled ? source : NULL;
+  system->transmission_pass_enabled = enabled && source ? true_v : false_v;
 }
 
 void vkr_material_system_apply_local(VkrMaterialSystem *system,

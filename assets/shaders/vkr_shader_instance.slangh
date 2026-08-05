@@ -6,9 +6,12 @@ struct InstanceData
 {
     column_major float4x4 model;
     uint object_id;
-    uint material_index;
-    uint flags;
-    uint _padding;
+    // Three scalars preserve the CPU ABI at offsets 68/72/76 and an 80-byte
+    // stride. A uint3 is 16-byte aligned in std430 and would inflate this
+    // StructuredBuffer element to 96 bytes.
+    uint reserved_0;
+    uint reserved_1;
+    uint reserved_2;
 };
 
 #endif

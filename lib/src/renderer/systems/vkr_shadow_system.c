@@ -236,6 +236,133 @@ vkr_internal Mat4 vkr_shadow_compute_light_view(
   return mat4_look_at(light_pos, anchor, up);
 }
 
+Vec2 vkr_shadow_light_space_origin_from_view(const Mat4 *light_view,
+                                             float32_t left, float32_t bottom) {
+  const Mat4 view = light_view ? *light_view : mat4_identity();
+  return vec2_new(view.columns.col3.x - left, bottom - view.columns.col3.y);
+}
+
+vkr_internal void vkr_shadow_include_z(float32_t z, bool8_t *found,
+                                       float32_t *min_z, float32_t *max_z) {
+  *min_z = *found ? vkr_min_f32(*min_z, z) : z;
+  *max_z = *found ? vkr_max_f32(*max_z, z) : z;
+  *found = true_v;
+}
+
+bool8_t vkr_shadow_fit_relevant_caster_z(
+    const Mat4 *light_view, const VkrShadowSceneBounds *scene_bounds,
+    float32_t left, float32_t right, float32_t bottom, float32_t top,
+    float32_t *out_min_z, float32_t *out_max_z) {
+  if (!light_view || !scene_bounds || !out_min_z || !out_max_z ||
+      scene_bounds->min.x > scene_bounds->max.x ||
+      scene_bounds->min.y > scene_bounds->max.y ||
+      scene_bounds->min.z > scene_bounds->max.z || left > right ||
+      bottom > top) {
+    return false_v;
+  }
+
+  Vec3 corners[8];
+  bool8_t found = false_v;
+  float32_t min_z = 0.0f;
+  float32_t max_z = 0.0f;
+  for (uint32_t i = 0; i < 8u; ++i) {
+    Vec3 corner =
+        vec3_new((i & 1u) ? scene_bounds->max.x : scene_bounds->min.x,
+                 (i & 2u) ? scene_bounds->max.y : scene_bounds->min.y,
+                 (i & 4u) ? scene_bounds->max.z : scene_bounds->min.z);
+    Vec4 light_corner = mat4_mul_vec4(*light_view, vec3_to_vec4(corner, 1.0f));
+    corners[i] = vec3_new(light_corner.x, light_corner.y, light_corner.z);
+    if (light_corner.x >= left && light_corner.x <= right &&
+        light_corner.y >= bottom && light_corner.y <= top) {
+      vkr_shadow_include_z(light_corner.z, &found, &min_z, &max_z);
+    }
+  }
+
+  static const uint8_t edges[12][2] = {
+      {0, 1}, {2, 3}, {4, 5}, {6, 7}, {0, 2}, {1, 3},
+      {4, 6}, {5, 7}, {0, 4}, {1, 5}, {2, 6}, {3, 7},
+  };
+  const float32_t x_planes[2] = {left, right};
+  const float32_t y_planes[2] = {bottom, top};
+  for (uint32_t edge_index = 0; edge_index < 12u; ++edge_index) {
+    Vec3 a = corners[edges[edge_index][0]];
+    Vec3 b = corners[edges[edge_index][1]];
+    Vec3 delta = vec3_sub(b, a);
+    if (vkr_abs_f32(delta.x) > 1e-6f) {
+      for (uint32_t plane_index = 0; plane_index < 2u; ++plane_index) {
+        float32_t t = (x_planes[plane_index] - a.x) / delta.x;
+        float32_t y = a.y + delta.y * t;
+        if (t >= 0.0f && t <= 1.0f && y >= bottom && y <= top) {
+          vkr_shadow_include_z(a.z + delta.z * t, &found, &min_z, &max_z);
+        }
+      }
+    }
+    if (vkr_abs_f32(delta.y) > 1e-6f) {
+      for (uint32_t plane_index = 0; plane_index < 2u; ++plane_index) {
+        float32_t t = (y_planes[plane_index] - a.y) / delta.y;
+        float32_t x = a.x + delta.x * t;
+        if (t >= 0.0f && t <= 1.0f && x >= left && x <= right) {
+          vkr_shadow_include_z(a.z + delta.z * t, &found, &min_z, &max_z);
+        }
+      }
+    }
+  }
+
+  // The remaining possible extrema lie where two cascade clip planes meet.
+  // Intersect the four light-space Z lines through the rectangle corners with
+  // the world-space AABB using a slab test.
+  Mat4 inverse_view = mat4_inverse_rigid(*light_view);
+  for (uint32_t corner_index = 0; corner_index < 4u; ++corner_index) {
+    Vec4 origin4 = mat4_mul_vec4(
+        inverse_view, vec4_new((corner_index & 1u) ? right : left,
+                               (corner_index & 2u) ? top : bottom, 0.0f, 1.0f));
+    Vec4 direction4 = mat4_mul_vec4(inverse_view, vec4_new(0, 0, 1, 0));
+    float32_t t_min = -VKR_FLOAT_MAX;
+    float32_t t_max = VKR_FLOAT_MAX;
+    const float32_t origin[3] = {origin4.x, origin4.y, origin4.z};
+    const float32_t direction[3] = {direction4.x, direction4.y, direction4.z};
+    const float32_t bounds_min[3] = {scene_bounds->min.x, scene_bounds->min.y,
+                                     scene_bounds->min.z};
+    const float32_t bounds_max[3] = {scene_bounds->max.x, scene_bounds->max.y,
+                                     scene_bounds->max.z};
+    bool8_t intersects = true_v;
+    for (uint32_t axis = 0; axis < 3u; ++axis) {
+      if (vkr_abs_f32(direction[axis]) <= 1e-6f) {
+        if (origin[axis] < bounds_min[axis] ||
+            origin[axis] > bounds_max[axis]) {
+          intersects = false_v;
+          break;
+        }
+        continue;
+      }
+      float32_t t0 = (bounds_min[axis] - origin[axis]) / direction[axis];
+      float32_t t1 = (bounds_max[axis] - origin[axis]) / direction[axis];
+      if (t0 > t1) {
+        float32_t swap = t0;
+        t0 = t1;
+        t1 = swap;
+      }
+      t_min = vkr_max_f32(t_min, t0);
+      t_max = vkr_min_f32(t_max, t1);
+      if (t_min > t_max) {
+        intersects = false_v;
+        break;
+      }
+    }
+    if (intersects) {
+      vkr_shadow_include_z(t_min, &found, &min_z, &max_z);
+      vkr_shadow_include_z(t_max, &found, &min_z, &max_z);
+    }
+  }
+
+  if (!found) {
+    return false_v;
+  }
+  *out_min_z = min_z;
+  *out_max_z = max_z;
+  return true_v;
+}
+
 vkr_internal void vkr_shadow_compute_cascade_matrix(
     const Mat4 *light_view, const Vec3 frustum_corners[8],
     uint32_t shadow_map_size, bool8_t stabilize, float32_t guard_band_texels,
@@ -291,32 +418,12 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
     max_z = vkr_max_f32(max_z, corner_ls.z);
   }
 
-  // Extend Z bounds using scene AABB (like reference implementation)
-  // This ensures all shadow casters in the scene are included in the depth
-  // range, regardless of camera position - eliminating shadow pop-in.
-  if (scene_bounds && scene_bounds->use_scene_bounds) {
-    // Transform all 8 corners of the scene AABB to light space and extend Z
-    for (int i = 0; i < 8; ++i) {
-      Vec3 corner =
-          vec3_new((i & 1) ? scene_bounds->max.x : scene_bounds->min.x,
-                   (i & 2) ? scene_bounds->max.y : scene_bounds->min.y,
-                   (i & 4) ? scene_bounds->max.z : scene_bounds->min.z);
-      Vec4 corner_ls = mat4_mul_vec4(view, vec3_to_vec4(corner, 1.0f));
-      // Only extend Z, not XY (XY is fitted to frustum for resolution)
-      min_z = vkr_min_f32(min_z, corner_ls.z);
-      max_z = vkr_max_f32(max_z, corner_ls.z);
-    }
-  } else if (z_extension_factor > 0.0f) {
+  if ((!scene_bounds || !scene_bounds->use_scene_bounds) &&
+      z_extension_factor > 0.0f) {
     float32_t z_ext = radius * z_extension_factor;
     min_z -= z_ext;
     max_z += z_ext;
   }
-
-  float32_t z_range = max_z - min_z;
-  // Small padding for depth precision
-  float32_t z_pad = vkr_max_f32(0.5f, z_range * 0.05f);
-  min_z -= z_pad;
-  max_z += z_pad;
 
   float32_t extent_x = max_x - min_x;
   float32_t extent_y = max_y - min_y;
@@ -373,10 +480,27 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   float32_t right = center_x + half;
   float32_t bottom = center_y - half;
   float32_t top = center_y + half;
+
+  if (scene_bounds && scene_bounds->use_scene_bounds) {
+    float32_t caster_min_z = 0.0f;
+    float32_t caster_max_z = 0.0f;
+    if (vkr_shadow_fit_relevant_caster_z(&view, scene_bounds, left, right,
+                                         bottom, top, &caster_min_z,
+                                         &caster_max_z)) {
+      min_z = vkr_min_f32(min_z, caster_min_z);
+      max_z = vkr_max_f32(max_z, caster_max_z);
+    }
+  }
+
+  float32_t z_range = max_z - min_z;
+  float32_t z_pad = vkr_max_f32(0.5f, z_range * 0.05f);
+  min_z -= z_pad;
+  max_z += z_pad;
+
   *out_world_units_per_texel = texel_size;
   if (out_light_space_origin) {
-    out_light_space_origin->x = left - view.columns.col3.x;
-    out_light_space_origin->y = bottom - view.columns.col3.y;
+    *out_light_space_origin =
+        vkr_shadow_light_space_origin_from_view(&view, left, bottom);
   }
 
   float32_t near_clip = -max_z;

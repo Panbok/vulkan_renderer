@@ -1,0 +1,14 @@
+name=layered_glass_blue
+type=pbr
+base_color=0.65,0.85,1.0,1.0
+metallic=0.0
+roughness=0.08
+transmission_factor=0.92
+ior=1.45
+thickness_factor=0.35
+attenuation_color=0.45,0.75,1.0
+attenuation_distance=1.5
+alpha_mode=opaque
+double_sided=true
+shader=shader.pbr.world
+pipeline=world

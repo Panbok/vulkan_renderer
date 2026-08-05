@@ -2,6 +2,7 @@
 
 #include "math/vkr_math.h"
 #include "renderer/systems/vkr_camera_controller.h"
+#include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/vkr_visibility.h"
 
 #include <assert.h>
@@ -23,6 +24,83 @@ static VkrDrawMergeKey merge_key(uint32_t geom, uint32_t mat, uint32_t first,
       .vertex_offset = 0,
       .domain = 0,
   };
+}
+
+static void test_alpha_mode_routes_world_and_shadow_independently(void) {
+  printf(
+      "  Running test_alpha_mode_routes_world_and_shadow_independently...\n");
+
+  VkrDrawAlphaRouting opaque =
+      vkr_draw_alpha_routing(VKR_MATERIAL_ALPHA_OPAQUE);
+  assert(opaque.world_transparent == false_v);
+  assert(opaque.shadow_alpha_tested == false_v);
+
+  VkrDrawAlphaRouting cutout =
+      vkr_draw_alpha_routing(VKR_MATERIAL_ALPHA_CUTOUT);
+  assert(cutout.world_transparent == false_v);
+  assert(cutout.shadow_alpha_tested == true_v);
+
+  VkrDrawAlphaRouting blend = vkr_draw_alpha_routing(VKR_MATERIAL_ALPHA_BLEND);
+  assert(blend.world_transparent == true_v);
+  assert(blend.shadow_alpha_tested == false_v);
+
+  printf("  test_alpha_mode_routes_world_and_shadow_independently PASSED\n");
+}
+
+static void assert_shadow_origin_alignment(Vec3 light_direction, Vec3 eye,
+                                           float32_t left, float32_t bottom,
+                                           Vec3 world_point) {
+  Vec3 dir = vec3_normalize(light_direction);
+  Vec3 up_ref = vkr_abs_f32(dir.y) > 0.99f ? vec3_new(0.0f, 0.0f, 1.0f)
+                                           : vec3_new(0.0f, 1.0f, 0.0f);
+  Vec3 right = vec3_normalize(vec3_cross(up_ref, dir));
+  Vec3 up = vec3_cross(dir, right);
+  Mat4 view = mat4_look_at(eye, vec3_add(eye, dir), up);
+  Vec2 origin = vkr_shadow_light_space_origin_from_view(&view, left, bottom);
+  Vec4 view_point = mat4_mul_vec4(view, vec3_to_vec4(world_point, 1.0f));
+
+  float32_t shader_x = vec3_dot(world_point, right) - origin.x;
+  float32_t shader_y = vec3_dot(world_point, up) - origin.y;
+  assert(vkr_abs_f32(shader_x + (view_point.x - left)) < 0.0001f);
+  assert(vkr_abs_f32(shader_y - (view_point.y - bottom)) < 0.0001f);
+}
+
+static void test_shadow_origin_matches_shader_basis(void) {
+  printf("  Running test_shadow_origin_matches_shader_basis...\n");
+
+  assert_shadow_origin_alignment(vec3_new(0.35f, -0.8f, 0.48f),
+                                 vec3_new(12.0f, -7.0f, 3.0f), -9.5f, -4.25f,
+                                 vec3_new(-2.0f, 5.0f, 11.0f));
+  assert_shadow_origin_alignment(vec3_new(0.01f, -1.0f, 0.02f),
+                                 vec3_new(-3.0f, 14.0f, 8.0f), -6.0f, -7.0f,
+                                 vec3_new(9.0f, -2.0f, 1.0f));
+
+  printf("  test_shadow_origin_matches_shader_basis PASSED\n");
+}
+
+static void test_shadow_scene_bounds_fit_only_relevant_casters(void) {
+  printf("  Running test_shadow_scene_bounds_fit_only_relevant_casters...\n");
+
+  VkrShadowSceneBounds bounds = {
+      .min = {-4.0f, -2.0f, -4.0f},
+      .max = {4.0f, 2.0f, 4.0f},
+      .use_scene_bounds = true_v,
+  };
+  Mat4 view = mat4_euler_rotate_y(vkr_to_radians(45.0f));
+  float32_t full_min = 0.0f;
+  float32_t full_max = 0.0f;
+  assert(vkr_shadow_fit_relevant_caster_z(&view, &bounds, -6.0f, 6.0f, -3.0f,
+                                          3.0f, &full_min, &full_max));
+
+  float32_t slice_min = 0.0f;
+  float32_t slice_max = 0.0f;
+  assert(vkr_shadow_fit_relevant_caster_z(&view, &bounds, 4.5f, 5.5f, -1.0f,
+                                          1.0f, &slice_min, &slice_max));
+  assert(slice_max - slice_min < full_max - full_min);
+
+  assert(!vkr_shadow_fit_relevant_caster_z(&view, &bounds, 20.0f, 22.0f, -1.0f,
+                                           1.0f, &slice_min, &slice_max));
+  printf("  test_shadow_scene_bounds_fit_only_relevant_casters PASSED\n");
 }
 
 static void test_all_distinct_keys_are_unmergeable(void) {
@@ -384,6 +462,11 @@ static void test_merged_runs_have_contiguous_instances(void) {
   for (uint32_t i = 0; i < 3; ++i) {
     uint32_t oid = instances[draws[run_of_three].first_instance + i].object_id;
     assert(oid >= 10 && oid <= 12);
+    const VkrInstanceDataGPU *instance =
+        &instances[draws[run_of_three].first_instance + i];
+    assert(instance->reserved[0] == 0u);
+    assert(instance->reserved[1] == 0u);
+    assert(instance->reserved[2] == 0u);
     seen |= 1u << (oid - 10);
   }
   assert(seen == 0x7);
@@ -459,6 +542,9 @@ bool32_t run_draw_merge_tests(void) {
   test_same_geometry_different_range_does_not_merge();
   test_same_geometry_different_material_does_not_merge();
   test_empty_input_is_safe();
+  test_alpha_mode_routes_world_and_shadow_independently();
+  test_shadow_origin_matches_shader_basis();
+  test_shadow_scene_bounds_fit_only_relevant_casters();
   test_merged_runs_have_contiguous_instances();
   test_unmerged_emission_preserves_order();
   test_binding_context_prevents_unsafe_instancing();

@@ -157,9 +157,6 @@ uint32_t vkr_draw_merge_candidates(VkrDrawCandidate *candidates, uint32_t count,
       out_instances[instance_base + written] = (VkrInstanceDataGPU){
           .model = candidates[r].model,
           .object_id = candidates[r].object_id,
-          .material_index = 0,
-          .flags = 0,
-          ._padding = 0,
       };
       written++;
     }
@@ -211,9 +208,6 @@ uint32_t vkr_draw_emit_unmerged(const VkrDrawCandidate *candidates,
     out_instances[instance_base + i] = (VkrInstanceDataGPU){
         .model = candidates[i].model,
         .object_id = candidates[i].object_id,
-        .material_index = 0,
-        .flags = 0,
-        ._padding = 0,
     };
   }
   return count;

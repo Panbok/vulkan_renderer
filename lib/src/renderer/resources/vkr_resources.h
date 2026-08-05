@@ -90,6 +90,8 @@ typedef enum VkrTextureSlot {
   VKR_TEXTURE_SLOT_EMISSION = 3,
   VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS = 4,
   VKR_TEXTURE_SLOT_OCCLUSION = 5,
+  VKR_TEXTURE_SLOT_TRANSMISSION = 6,
+  VKR_TEXTURE_SLOT_THICKNESS = 7,
   VKR_TEXTURE_SLOT_COUNT
 } VkrTextureSlot;
 
@@ -142,6 +144,17 @@ typedef struct VkrPbrProperties {
   float32_t normal_scale;
   float32_t occlusion_strength;
   Vec3 emissive_factor;
+  /** Dielectric normal-incidence reflectance; glTF metallic-roughness defaults
+   * to 0.04 while prepared specular-glossiness may author lower RGB values. */
+  Vec3 dielectric_specular;
+  /** KHR_materials_transmission; independent of base-color alpha mode. */
+  float32_t transmission_factor;
+  float32_t ior;
+  float32_t thickness_factor;
+  Vec3 attenuation_color;
+  /** World-space distance at which attenuation_color is reached; <=0 disables.
+   */
+  float32_t attenuation_distance;
 } VkrPbrProperties;
 
 typedef struct VkrMaterialTexture {
@@ -459,6 +472,16 @@ typedef struct VkrShaderUniformDesc {
   VkrShaderScope scope; // 0=global,1=instance,2=local
   String8 name;
   uint32_t location;    // within-scope index; for samplers = texture slot
+  /** Descriptor sampler slot used by this texture slot. Sampler uniforms may
+   * alias an earlier sampler declaration when several sampled images require
+   * identical sampling state. */
+  uint32_t sampler_location;
+  /** Earlier uniform index named by an optional fourth shadercfg token, or
+   * zero when sampler_alias_enabled is false. */
+  uint32_t sampler_alias_uniform_index;
+  /** True only when shadercfg explicitly aliases this sampler to an earlier
+   * declaration. Keeps zero-initialized programmatic configs unambiguous. */
+  bool8_t sampler_alias_enabled;
   uint32_t offset;      // UBO offset (scopes 0/1); 0 for samplers
   uint32_t size;        // total size in bytes (element_size * array_count)
   uint32_t array_count; // 1 for scalars, >1 for arrays
@@ -501,10 +524,12 @@ typedef struct VkrShaderConfig {
   uint64_t global_ubo_size;
   uint64_t global_ubo_stride;
   uint32_t global_texture_count;
+  uint32_t global_sampler_count;
 
   uint64_t instance_ubo_size;
   uint64_t instance_ubo_stride;
   uint32_t instance_texture_count;
+  uint32_t instance_sampler_count;
 
   uint64_t push_constant_size;
   uint64_t push_constant_stride;
@@ -539,9 +564,9 @@ Array(VkrShader);
 
 #define VKR_SHADER_SYSTEM_CONFIG_DEFAULT                                       \
   {.max_shader_count = 512,                                                    \
-   .max_uniform_count = 32,                                                    \
+   .max_uniform_count = 96,                                                    \
    .max_global_textures = 8,                                                   \
-   .max_instance_textures = 12}
+   .max_instance_textures = 16}
 
 // =============================================================================
 // Font resource types (decoupled from systems)

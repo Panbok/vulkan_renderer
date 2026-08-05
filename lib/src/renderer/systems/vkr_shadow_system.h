@@ -37,10 +37,9 @@ typedef struct VkrCascadeData {
 /**
  * @brief Axis-aligned bounding box for shadow scene bounds.
  *
- * When set (use_scene_bounds = true), the shadow system extends each cascade's
- * light-space depth range to include this entire bounding box. This ensures all
- * potential shadow casters are included in shadow maps regardless of camera
- * position, eliminating shadow "pop-in" when moving.
+ * When set (use_scene_bounds = true), the shadow system clips this caster AABB
+ * against each cascade's final light-space XY footprint and extends only that
+ * cascade's depth range to the intersecting volume.
  *
  * If use_scene_bounds is false, the system falls back to extending the camera
  * frustum along the light direction by z_extension_factor * radius.
@@ -216,6 +215,26 @@ vkr_shadow_config_get_max_map_size(const VkrShadowConfig *config) {
   }
   return size;
 }
+
+/**
+ * @brief Converts fitted view-space bounds into the shader's right/up grid.
+ *
+ * The light view's X axis is the negation of the right basis reconstructed by
+ * `shadow_light_space_xy`; Y has the same sign as the reconstructed up basis.
+ * Keeping that sign relation here makes the PCF rotation cell stable under
+ * light-view translation.
+ */
+Vec2 vkr_shadow_light_space_origin_from_view(const Mat4 *light_view,
+                                             float32_t left, float32_t bottom);
+
+/**
+ * Fits the light-space Z interval of the scene AABB portion intersecting the
+ * supplied cascade XY rectangle. Returns false when the volumes do not overlap.
+ */
+bool8_t vkr_shadow_fit_relevant_caster_z(
+    const Mat4 *light_view, const VkrShadowSceneBounds *scene_bounds,
+    float32_t left, float32_t right, float32_t bottom, float32_t top,
+    float32_t *out_min_z, float32_t *out_max_z);
 
 /**
  * @brief Per-frame shadow resources (one per swapchain image).

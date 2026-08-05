@@ -418,7 +418,8 @@ test_material_pbr_inference_from_scalar_keys(MaterialPbrTestContext *ctx) {
 
   const char *material_text = "pipeline=world\n"
                               "metallic=0.25\n"
-                              "roughness=0.60\n";
+                              "roughness=0.60\n"
+                              "dielectric_specular=0.01,0.02,0.03\n";
 
   char material_path[1024] = {0};
   VkrResourceHandleInfo handle_info = {0};
@@ -433,11 +434,50 @@ test_material_pbr_inference_from_scalar_keys(MaterialPbrTestContext *ctx) {
   assert(material->pipeline_id == VKR_PIPELINE_DOMAIN_WORLD);
   assert(fabsf(material->pbr.metallic - 0.25f) < 0.0001f);
   assert(fabsf(material->pbr.roughness - 0.60f) < 0.0001f);
+  assert(fabsf(material->pbr.dielectric_specular.x - 0.01f) < 0.0001f);
+  assert(fabsf(material->pbr.dielectric_specular.y - 0.02f) < 0.0001f);
+  assert(fabsf(material->pbr.dielectric_specular.z - 0.03f) < 0.0001f);
 
   material_pbr_test_unload_material(ctx, &handle_info, material_path);
   material_pbr_test_remove_file(material_path);
 
   printf("  test_material_pbr_inference_from_scalar_keys PASSED\n");
+}
+
+static void test_material_transmission_is_independent_of_alpha(
+    MaterialPbrTestContext *ctx) {
+  printf("  Running test_material_transmission_is_independent_of_alpha...\n");
+
+  const char *material_text = "type=pbr\n"
+                              "alpha_mode=opaque\n"
+                              "transmission_factor=0.75\n"
+                              "ior=1.33\n"
+                              "thickness_factor=0.40\n"
+                              "attenuation_color=0.8,0.6,0.4\n"
+                              "attenuation_distance=2.5\n";
+
+  char material_path[1024] = {0};
+  VkrResourceHandleInfo handle_info = {0};
+  assert(material_pbr_test_load_material(ctx, "pbr_transmission", material_text,
+                                         material_path, sizeof(material_path),
+                                         &handle_info) == true_v);
+
+  VkrMaterial *material = vkr_material_system_get_by_handle(
+      &ctx->material_system, handle_info.as.material);
+  assert(material != NULL);
+  assert(vkr_material_system_material_alpha_mode(
+             &ctx->material_system, material) == VKR_MATERIAL_ALPHA_OPAQUE);
+  assert(vkr_material_system_material_is_transmissive(&ctx->material_system,
+                                                      material) == true_v);
+  assert(fabsf(material->pbr.transmission_factor - 0.75f) < 0.0001f);
+  assert(fabsf(material->pbr.ior - 1.33f) < 0.0001f);
+  assert(fabsf(material->pbr.thickness_factor - 0.40f) < 0.0001f);
+  assert(fabsf(material->pbr.attenuation_color.x - 0.8f) < 0.0001f);
+  assert(fabsf(material->pbr.attenuation_distance - 2.5f) < 0.0001f);
+
+  material_pbr_test_unload_material(ctx, &handle_info, material_path);
+  material_pbr_test_remove_file(material_path);
+  printf("  test_material_transmission_is_independent_of_alpha PASSED\n");
 }
 
 static void
@@ -515,6 +555,12 @@ test_material_alpha_mode_cutout_defaults(MaterialPbrTestContext *ctx) {
     assert(material->alpha_mode == VKR_MATERIAL_ALPHA_CUTOUT);
     assert(fabsf(material->alpha_cutoff - VKR_MATERIAL_ALPHA_CUTOFF_DEFAULT) <
            0.0001f);
+    assert(vkr_material_system_material_alpha_mode(
+               &ctx->material_system, material) == VKR_MATERIAL_ALPHA_CUTOUT);
+    assert(vkr_material_system_material_has_transparency(&ctx->material_system,
+                                                         material) == false_v);
+    assert(vkr_material_system_material_uses_cutout(&ctx->material_system,
+                                                    material) == true_v);
 
     material_pbr_test_unload_material(ctx, &handle_info, material_path);
     material_pbr_test_remove_file(material_path);
@@ -725,6 +771,7 @@ bool32_t run_material_pbr_tests(void) {
   assert(material_pbr_test_init_context(&context) == true_v);
 
   test_material_pbr_inference_from_scalar_keys(&context);
+  test_material_transmission_is_independent_of_alpha(&context);
   test_material_pbr_alias_slots_and_inference(&context);
   test_material_alpha_mode_cutout_defaults(&context);
   test_material_double_sided_state(&context);

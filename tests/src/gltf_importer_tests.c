@@ -4,9 +4,13 @@
 #include "filesystem/filesystem.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/resources/loaders/mesh_loader_gltf.h"
+#include "renderer/resources/loaders/vkr_gltf_material_conversion.h"
 
 #include <assert.h>
 #include <errno.h>
+#include <math.h>
+#include <stb_image.h>
+#include <stb_image_write.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -108,6 +112,37 @@ static bool8_t gltf_test_write_file_text(const char *path, const char *text) {
   }
 
   return gltf_test_write_file_bytes(path, text, strlen(text));
+}
+
+static uint8_t *gltf_test_load_png_rgba(const char *path, int *out_width,
+                                        int *out_height, int *out_channels) {
+  FILE *file = fopen(path, "rb");
+  if (!file || fseek(file, 0, SEEK_END) != 0) {
+    if (file) {
+      fclose(file);
+    }
+    return NULL;
+  }
+  long size = ftell(file);
+  if (size <= 0 || size > INT32_MAX || fseek(file, 0, SEEK_SET) != 0) {
+    fclose(file);
+    return NULL;
+  }
+  uint8_t *encoded = (uint8_t *)malloc((size_t)size);
+  if (!encoded) {
+    fclose(file);
+    return NULL;
+  }
+  const size_t read = fread(encoded, 1, (size_t)size, file);
+  fclose(file);
+  if (read != (size_t)size) {
+    free(encoded);
+    return NULL;
+  }
+  uint8_t *pixels = stbi_load_from_memory(encoded, (int)size, out_width,
+                                          out_height, out_channels, 4);
+  free(encoded);
+  return pixels;
 }
 
 static bool8_t gltf_test_read_file_text(VkrAllocator *allocator,
@@ -975,15 +1010,136 @@ test_gltf_import_generate_materials_regenerates_missing_files(void) {
          "PASSED\n");
 }
 
-static void test_gltf_import_spec_gloss_nested_vkt(void) {
-  printf("  Running test_gltf_import_spec_gloss_nested_vkt...\n");
+static void test_gltf_import_preserves_transmission_volume(void) {
+  printf("  Running test_gltf_import_preserves_transmission_volume...\n");
+  const char *stem = "gltf_import_transmission";
+  gltf_test_ensure_dirs();
+  gltf_test_remove_source_files(stem);
+  gltf_test_remove_generated_material(stem);
+
+  char gltf_path[1024] = {0};
+  snprintf(gltf_path, sizeof(gltf_path), "%stests/tmp/gltf_importer/%s.gltf",
+           PROJECT_SOURCE_DIR, stem);
+  char mt_path[1024] = {0};
+  gltf_test_make_material_paths(stem, gltf_path, 0, mt_path, sizeof(mt_path),
+                                NULL, 0, NULL, 0);
+
+  const char *json =
+      "{\"asset\":{\"version\":\"2.0\"},"
+      "\"extensionsUsed\":[\"KHR_materials_transmission\","
+      "\"KHR_materials_ior\",\"KHR_materials_volume\"],"
+      "\"materials\":[{\"alphaMode\":\"OPAQUE\",\"extensions\":{"
+      "\"KHR_materials_transmission\":{\"transmissionFactor\":0.75},"
+      "\"KHR_materials_ior\":{\"ior\":1.33},"
+      "\"KHR_materials_volume\":{\"thicknessFactor\":0.4,"
+      "\"attenuationColor\":[0.8,0.6,0.4],"
+      "\"attenuationDistance\":2.5}}}]}";
+  assert(gltf_test_write_file_text(gltf_path, json) == true_v);
+
+  Arena *arena = arena_create(MB(2), MB(2));
+  Arena *scratch_arena = arena_create(MB(2), MB(2));
+  VkrAllocator allocator = {.ctx = arena};
+  VkrAllocator scratch_allocator = {.ctx = scratch_arena};
+  assert(vkr_allocator_arena(&allocator));
+  assert(vkr_allocator_arena(&scratch_allocator));
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
+      &allocator, &scratch_allocator, gltf_path, &error, NULL);
+  parse_info.on_primitive = NULL;
+  assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == true_v);
+  assert(error == VKR_RENDERER_ERROR_NONE);
+
+  String8 contents = {0};
+  assert(gltf_test_read_file_text(&allocator, mt_path, &contents) == true_v);
+  const char *text = (const char *)contents.str;
+  assert(strstr(text, "alpha_mode=opaque") != NULL);
+  assert(strstr(text, "transmission_factor=0.750000") != NULL);
+  assert(strstr(text, "ior=1.330000") != NULL);
+  assert(strstr(text, "thickness_factor=0.400000") != NULL);
+  assert(strstr(text, "attenuation_color=0.800000,0.600000,0.400000") != NULL);
+  assert(strstr(text, "attenuation_distance=2.500000") != NULL);
+
+  arena_destroy(scratch_arena);
+  arena_destroy(arena);
+  gltf_test_remove_source_files(stem);
+  gltf_test_remove_generated_material(stem);
+  printf("  test_gltf_import_preserves_transmission_volume PASSED\n");
+}
+
+static void test_gltf_spec_gloss_numeric_conversion(void) {
+  printf("  Running test_gltf_spec_gloss_numeric_conversion...\n");
+
+  VkrGltfMetalRoughSample dielectric =
+      vkr_gltf_convert_spec_gloss_sample((VkrGltfSpecGlossSample){
+          .diffuse = vec4_new(0.5f, 0.25f, 0.75f, 0.4f),
+          .specular = vec3_new(0.04f, 0.04f, 0.04f),
+          .glossiness = 0.75f,
+      });
+  assert(fabsf(dielectric.base_color.x - 0.5f) < 1e-5f);
+  assert(fabsf(dielectric.base_color.y - 0.25f) < 1e-5f);
+  assert(fabsf(dielectric.base_color.z - 0.75f) < 1e-5f);
+  assert(fabsf(dielectric.base_color.w - 0.4f) < 1e-5f);
+  assert(dielectric.metallic < 1e-5f);
+  assert(fabsf(dielectric.roughness - 0.25f) < 1e-5f);
+  assert(fabsf(dielectric.dielectric_specular.x - 0.04f) < 1e-5f);
+
+  VkrGltfMetalRoughSample metal =
+      vkr_gltf_convert_spec_gloss_sample((VkrGltfSpecGlossSample){
+          .diffuse = vec4_new(0.0f, 0.0f, 0.0f, 1.0f),
+          .specular = vec3_new(0.8f, 0.6f, 0.2f),
+          .glossiness = 0.2f,
+      });
+  assert(fabsf(metal.base_color.x - 0.8f) < 1e-5f);
+  assert(fabsf(metal.base_color.y - 0.6f) < 1e-5f);
+  assert(fabsf(metal.base_color.z - 0.2f) < 1e-5f);
+  assert(fabsf(metal.metallic - 1.0f) < 1e-5f);
+  assert(fabsf(metal.roughness - 0.8f) < 1e-5f);
+
+  // Khronos' reference solver classifies sub-F0 specular as dielectric before
+  // evaluating the quadratic. Without this edge condition a black diffuse,
+  // zero-specular texel incorrectly solves to metallic=1.
+  VkrGltfMetalRoughSample black_dielectric =
+      vkr_gltf_convert_spec_gloss_sample((VkrGltfSpecGlossSample){
+          .diffuse = vec4_new(0.0f, 0.0f, 0.0f, 1.0f),
+          .specular = vec3_new(0.0f, 0.0f, 0.0f),
+          .glossiness = 0.03921600058674812f,
+      });
+  assert(black_dielectric.metallic == 0.0f);
+  assert(fabsf(black_dielectric.roughness - 0.960784f) < 1e-5f);
+  assert(black_dielectric.base_color.x == 0.0f);
+  assert(black_dielectric.base_color.y == 0.0f);
+  assert(black_dielectric.base_color.z == 0.0f);
+  assert(black_dielectric.dielectric_specular.x == 0.0f);
+  assert(black_dielectric.dielectric_specular.y == 0.0f);
+  assert(black_dielectric.dielectric_specular.z == 0.0f);
+
+  // Representative dark texel from Bistro's room-interior material. Its
+  // authored specular factor is zero, so darkness must never turn it metallic.
+  VkrGltfMetalRoughSample bistro_room =
+      vkr_gltf_convert_spec_gloss_sample((VkrGltfSpecGlossSample){
+          .diffuse = vec4_new(0.003f, 0.006f, 0.012f, 1.0f),
+          .specular = vec3_new(0.0f, 0.0f, 0.0f),
+          .glossiness = 0.03921600058674812f,
+      });
+  assert(bistro_room.metallic == 0.0f);
+  assert(fabsf(bistro_room.base_color.x - 0.003125f) < 1e-6f);
+  assert(fabsf(bistro_room.base_color.y - 0.00625f) < 1e-6f);
+  assert(fabsf(bistro_room.base_color.z - 0.0125f) < 1e-6f);
+  assert(fabsf(bistro_room.roughness - 0.960784f) < 1e-5f);
+
+  printf("  test_gltf_spec_gloss_numeric_conversion PASSED\n");
+}
+
+static void test_gltf_import_prepares_spec_gloss_textures(void) {
+  printf("  Running test_gltf_import_prepares_spec_gloss_textures...\n");
 
   const char *stem = "gltf_import_spec_gloss";
-  const char *texture_uri = "gltf_importer_spec_gloss/nested/diffuse.png";
-  const char *texture_request =
+  const char *diffuse_uri = "gltf_importer_spec_gloss/nested/diffuse.png";
+  const char *spec_gloss_uri = "gltf_importer_spec_gloss/nested/spec.png";
+  const char *diffuse_request =
       "assets/textures/gltf_importer_spec_gloss/nested/diffuse.png";
-  const char *texture_sidecar =
-      "assets/textures/gltf_importer_spec_gloss/nested/diffuse.png.vkt";
+  const char *spec_gloss_request =
+      "assets/textures/gltf_importer_spec_gloss/nested/spec.png";
   gltf_test_ensure_dirs();
   gltf_test_remove_source_files(stem);
   gltf_test_remove_generated_material(stem);
@@ -998,13 +1154,18 @@ static void test_gltf_import_spec_gloss_nested_vkt(void) {
            texture_dir);
   assert(gltf_test_make_dir(nested_texture_dir) == true_v);
 
-  char absolute_sidecar_path[1024];
-  snprintf(absolute_sidecar_path, sizeof(absolute_sidecar_path), "%s%s",
-           PROJECT_SOURCE_DIR, texture_sidecar);
-  gltf_test_remove_file(absolute_sidecar_path);
-  const uint8_t sidecar_stub[4] = {0xAB, 0x4B, 0x54, 0x58};
-  assert(gltf_test_write_file_bytes(absolute_sidecar_path, sidecar_stub,
-                                    sizeof(sidecar_stub)) == true_v);
+  char diffuse_path[1024];
+  char spec_gloss_path[1024];
+  snprintf(diffuse_path, sizeof(diffuse_path), "%s/diffuse.png",
+           nested_texture_dir);
+  snprintf(spec_gloss_path, sizeof(spec_gloss_path), "%s/spec.png",
+           nested_texture_dir);
+  gltf_test_remove_file(diffuse_path);
+  gltf_test_remove_file(spec_gloss_path);
+  const uint8_t diffuse_texel[4] = {188u, 124u, 64u, 128u};
+  const uint8_t spec_gloss_texel[4] = {56u, 56u, 56u, 191u};
+  assert(stbi_write_png(diffuse_path, 1, 1, 4, diffuse_texel, 4) != 0);
+  assert(stbi_write_png(spec_gloss_path, 1, 1, 4, spec_gloss_texel, 4) != 0);
 
   char gltf_path[1024];
   snprintf(gltf_path, sizeof(gltf_path), "%stests/tmp/gltf_importer/%s.gltf",
@@ -1031,11 +1192,12 @@ static void test_gltf_import_spec_gloss_nested_vkt(void) {
            "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":["
            "0.1,0.1,0.1,1.0],\"metallicFactor\":0.9,\"roughnessFactor\":0.9},"
            "\"extensions\":{\"KHR_materials_pbrSpecularGlossiness\":{"
-           "\"diffuseFactor\":[0.25,0.5,0.75,0.8],"
-           "\"specularFactor\":[0.9,0.8,0.7],\"glossinessFactor\":0.65,"
-           "\"diffuseTexture\":{\"index\":0}}}}],"
-           "\"textures\":[{\"source\":0}],"
-           "\"images\":[{\"uri\":\"%s\"}],"
+           "\"diffuseFactor\":[1.0,1.0,1.0,1.0],"
+           "\"specularFactor\":[1.0,1.0,1.0],\"glossinessFactor\":1.0,"
+           "\"diffuseTexture\":{\"index\":0},"
+           "\"specularGlossinessTexture\":{\"index\":1}}}}],"
+           "\"textures\":[{\"source\":0},{\"source\":1}],"
+           "\"images\":[{\"uri\":\"%s\"},{\"uri\":\"%s\"}],"
            "\"buffers\":[{\"uri\":\"%s.bin\",\"byteLength\":42}],"
            "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36,"
            "\"target\":34962},{\"buffer\":0,\"byteOffset\":36,"
@@ -1044,7 +1206,7 @@ static void test_gltf_import_spec_gloss_nested_vkt(void) {
            "\"count\":3,\"type\":\"VEC3\"},{\"bufferView\":1,"
            "\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}]"
            "}",
-           texture_uri, stem);
+           diffuse_uri, spec_gloss_uri, stem);
   assert(gltf_test_write_file_text(gltf_path, gltf_json) == true_v);
 
   Arena *arena = arena_create(MB(2), MB(2));
@@ -1055,39 +1217,102 @@ static void test_gltf_import_spec_gloss_nested_vkt(void) {
   assert(vkr_allocator_arena(&scratch_allocator));
 
   Vector_String8 dependency_paths = vector_create_String8(&allocator);
+  Vector_String8 generated_asset_paths = vector_create_String8(&allocator);
   VkrRendererError error = VKR_RENDERER_ERROR_NONE;
   GltfImporterTestCapture capture = {.allocator = &allocator};
   VkrMeshLoaderGltfParseInfo parse_info = gltf_test_make_parse_info(
       &allocator, &scratch_allocator, gltf_path, &error, &capture);
   parse_info.out_dependency_paths = &dependency_paths;
+  parse_info.out_generated_asset_paths = &generated_asset_paths;
   assert(vkr_mesh_loader_gltf_parse(&parse_info) == true_v);
   assert(error == VKR_RENDERER_ERROR_NONE);
-  assert(gltf_test_vector_contains_path(&dependency_paths, texture_sidecar) ==
+  assert(gltf_test_vector_contains_path(&dependency_paths, diffuse_request) ==
          true_v);
+  assert(gltf_test_vector_contains_path(&dependency_paths,
+                                        spec_gloss_request) == true_v);
+  assert(generated_asset_paths.length == 3u);
+
+  const uint64_t source_hash = gltf_test_hash_source_path(gltf_path);
+  char generated_dir[1024];
+  char generated_base_path[1024];
+  char generated_mr_path[1024];
+  char generated_specular_path[1024];
+  snprintf(generated_dir, sizeof(generated_dir),
+           "%sassets/textures/generated/gltf_sg2_%016llx", PROJECT_SOURCE_DIR,
+           (unsigned long long)source_hash);
+  snprintf(generated_base_path, sizeof(generated_base_path),
+           "%s/material_0_basecolor.png", generated_dir);
+  snprintf(generated_mr_path, sizeof(generated_mr_path),
+           "%s/material_0_metalrough.png", generated_dir);
+  snprintf(generated_specular_path, sizeof(generated_specular_path),
+           "%s/material_0_dielectric_specular_v1.png", generated_dir);
+  assert(gltf_test_file_exists(generated_base_path) == true_v);
+  assert(gltf_test_file_exists(generated_mr_path) == true_v);
+  assert(gltf_test_file_exists(generated_specular_path) == true_v);
 
   String8 contents = {0};
   assert(gltf_test_read_file_text(&allocator, mt_path, &contents) == true_v);
   assert(strstr((const char *)contents.str,
-                "base_color=0.250000,0.500000,0.750000,0.800000") != NULL);
-  assert(strstr((const char *)contents.str, "metallic=0.000000") != NULL);
-  assert(strstr((const char *)contents.str, "roughness=0.350000") != NULL);
-
-  char expected_texture_line[1024];
-  snprintf(expected_texture_line, sizeof(expected_texture_line),
-           "base_color_texture=%s?cs=srgb&tc=color_srgb", texture_request);
-  assert(strstr((const char *)contents.str, expected_texture_line) != NULL);
-  assert(strstr((const char *)contents.str, "metallic_roughness_texture=") ==
+                "base_color=1.000000,1.000000,1.000000,1.000000") != NULL);
+  assert(strstr((const char *)contents.str, "metallic=1.000000") != NULL);
+  assert(strstr((const char *)contents.str, "roughness=1.000000") != NULL);
+  assert(strstr((const char *)contents.str,
+                "base_color_texture=assets/textures/generated/") != NULL);
+  assert(strstr((const char *)contents.str,
+                "metallic_roughness_texture=assets/textures/generated/") !=
          NULL);
+  assert(strstr((const char *)contents.str,
+                "specular_texture=assets/textures/generated/") != NULL);
+
+  int width = 0, height = 0, channels = 0;
+  uint8_t *prepared_base =
+      gltf_test_load_png_rgba(generated_base_path, &width, &height, &channels);
+  assert(prepared_base != NULL && width == 1 && height == 1);
+  assert(abs((int)prepared_base[0] - 188) <= 1);
+  assert(abs((int)prepared_base[1] - 124) <= 1);
+  assert(abs((int)prepared_base[2] - 64) <= 1);
+  assert(prepared_base[3] == 128u);
+  stbi_image_free(prepared_base);
+
+  uint8_t *prepared_mr =
+      gltf_test_load_png_rgba(generated_mr_path, &width, &height, &channels);
+  assert(prepared_mr != NULL && width == 1 && height == 1);
+  assert(prepared_mr[0] == 255u);
+  assert(abs((int)prepared_mr[1] - 64) <= 1);
+  assert(prepared_mr[2] == 0u);
+  assert(prepared_mr[3] == 255u);
+  stbi_image_free(prepared_mr);
+
+  uint8_t *prepared_specular = gltf_test_load_png_rgba(
+      generated_specular_path, &width, &height, &channels);
+  assert(prepared_specular != NULL && width == 1 && height == 1);
+  assert(abs((int)prepared_specular[0] - 10) <= 1);
+  assert(abs((int)prepared_specular[1] - 10) <= 1);
+  assert(abs((int)prepared_specular[2] - 10) <= 1);
+  assert(prepared_specular[3] == 255u);
+  stbi_image_free(prepared_specular);
+
+  vector_clear_String8(&generated_asset_paths);
+  assert(vkr_mesh_loader_gltf_generate_materials(&parse_info) == true_v);
+  assert(generated_asset_paths.length == 3u);
+  assert(gltf_test_file_exists(generated_base_path) == true_v);
+  assert(gltf_test_file_exists(generated_mr_path) == true_v);
+  assert(gltf_test_file_exists(generated_specular_path) == true_v);
 
   arena_destroy(scratch_arena);
   arena_destroy(arena);
-  gltf_test_remove_file(absolute_sidecar_path);
+  gltf_test_remove_file(generated_base_path);
+  gltf_test_remove_file(generated_mr_path);
+  gltf_test_remove_file(generated_specular_path);
+  gltf_test_remove_dir(generated_dir);
+  gltf_test_remove_file(diffuse_path);
+  gltf_test_remove_file(spec_gloss_path);
   gltf_test_remove_dir(nested_texture_dir);
   gltf_test_remove_dir(texture_dir);
   gltf_test_remove_source_files(stem);
   gltf_test_remove_generated_material(stem);
 
-  printf("  test_gltf_import_spec_gloss_nested_vkt PASSED\n");
+  printf("  test_gltf_import_prepares_spec_gloss_textures PASSED\n");
 }
 
 static void test_gltf_import_material_ids_are_unique_per_source(void) {
@@ -1244,7 +1469,9 @@ bool32_t run_gltf_importer_tests(void) {
   test_gltf_import_rejects_buffer_view_images();
   test_gltf_import_collects_external_dependencies();
   test_gltf_import_generate_materials_regenerates_missing_files();
-  test_gltf_import_spec_gloss_nested_vkt();
+  test_gltf_import_preserves_transmission_volume();
+  test_gltf_spec_gloss_numeric_conversion();
+  test_gltf_import_prepares_spec_gloss_textures();
   test_gltf_import_material_ids_are_unique_per_source();
 
   printf("--- glTF Importer Tests Completed ---\n");

@@ -17,9 +17,8 @@
 typedef struct VkrInstanceDataGPU {
   Mat4 model;
   uint32_t object_id;
-  uint32_t material_index;
-  uint32_t flags;
-  uint32_t _padding;
+  /** Reserved ABI tail; keeps the std430 element stride at 80 bytes. */
+  uint32_t reserved[3];
 } VkrInstanceDataGPU;
 
 _Static_assert(sizeof(VkrInstanceDataGPU) == 80,

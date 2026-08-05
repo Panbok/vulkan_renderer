@@ -42,6 +42,7 @@
 typedef struct VkrWorldBatchMetrics {
   uint32_t draws_collected;
   uint32_t opaque_draws;
+  uint32_t transmission_draws;
   uint32_t transparent_draws;
   uint32_t opaque_batches;
   /** Logical indexed commands represented by direct or indirect submission. */

@@ -9,6 +9,7 @@
 #include <assert.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 typedef struct SceneLoaderTestContext {
   Arena *arena;
@@ -379,6 +380,41 @@ test_scene_loader_reflection_probe_missing_cubemap_disables_probe(void) {
          "PASSED\n");
 }
 
+static void test_scene_loader_imports_gltf_punctual_lights(void) {
+  printf("  Running test_scene_loader_imports_gltf_punctual_lights...\n");
+  char path[1024];
+  snprintf(path, sizeof(path),
+           "%stests/fixtures/rendering/punctual_lights.gltf",
+           PROJECT_SOURCE_DIR);
+  VkrSceneGltfPunctualLightImport lights[4] = {0};
+  uint32_t count = 0u;
+  const Mat4 scene_world = mat4_translate(vec3_new(10.0f, 0.0f, 0.0f));
+  assert(vkr_scene_loader_read_gltf_punctual_lights(
+      string8_create_from_cstr((const uint8_t *)path, string_length(path)),
+      scene_world, 7u, lights, ArrayCount(lights), &count));
+  assert(count == 3u);
+
+  assert(lights[0].type == VKR_SCENE_GLTF_LIGHT_POINT);
+  assert(strcmp(lights[0].name, "gltf.7.PointNode") == 0);
+  assert(fabsf(lights[0].position.x - 11.0f) < 0.0001f);
+  assert(fabsf(lights[0].position.y - 2.0f) < 0.0001f);
+  assert(fabsf(lights[0].position.z - 3.0f) < 0.0001f);
+  assert(fabsf(lights[0].color.x - 0.5f) < 0.0001f);
+  assert(fabsf(lights[0].intensity - 12.0f) < 0.0001f);
+  assert(fabsf(lights[0].range - 8.0f) < 0.0001f);
+
+  assert(lights[1].type == VKR_SCENE_GLTF_LIGHT_SPOT);
+  assert(fabsf(lights[1].inner_cone_angle - 0.2f) < 0.0001f);
+  assert(fabsf(lights[1].outer_cone_angle - 0.6f) < 0.0001f);
+  assert(fabsf(lights[1].direction.x) < 0.0001f);
+  assert(fabsf(lights[1].direction.y) < 0.0001f);
+  assert(fabsf(lights[1].direction.z + 1.0f) < 0.0001f);
+
+  assert(lights[2].type == VKR_SCENE_GLTF_LIGHT_DIRECTIONAL);
+  assert(fabsf(lights[2].intensity - 3.0f) < 0.0001f);
+  printf("  test_scene_loader_imports_gltf_punctual_lights PASSED\n");
+}
+
 bool32_t run_scene_loader_tests(void) {
   printf("--- Starting Scene Loader Tests ---\n");
 
@@ -393,6 +429,7 @@ bool32_t run_scene_loader_tests(void) {
   test_scene_loader_reflection_probes_parse_valid_block();
   test_scene_loader_reflection_probe_invalid_entries_skipped();
   test_scene_loader_reflection_probe_missing_cubemap_disables_probe();
+  test_scene_loader_imports_gltf_punctual_lights();
 
   printf("--- Scene Loader Tests Completed ---\n");
   return true;
