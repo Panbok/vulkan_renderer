@@ -216,6 +216,8 @@ typedef struct VkrHarnessCamera {
 typedef struct VkrHarnessRendererConfig {
   bool8_t editor;
   bool8_t skybox;
+  bool8_t text_fixture;
+  char backend[16];
   char shadow_preset[32];
   uint32_t shadow_cascades;
   char render_mode[16];
@@ -315,6 +317,7 @@ typedef struct VkrHarnessProfile {
   bool8_t event_subjects;
   uint32_t minimum_repetitions;
   uint32_t warmup_stability_window;
+  char warmup_stability_metric[128];
   float64_t warmup_max_drift_ratio;
   bool8_t require_warmup_stability;
   bool8_t require_exclusive_gpu_lane;
@@ -668,6 +671,12 @@ bool8_t vkr_harness_subsystem_plan(VkrHarnessTool tool,
                                    const VkrHarnessCase *case_manifest,
                                    VkrSubsystemPlan *out_plan,
                                    VkrHarnessError *out_error);
+
+/** Resolves an optional case pin against the caller's environment request. */
+bool8_t
+vkr_harness_renderer_backend_resolve(const VkrHarnessRendererConfig *renderer,
+                                     const char *environment_request,
+                                     VkrRendererBackendType *out_backend);
 
 /**
  * @return NULL when the case's workload can answer the profile's policy,

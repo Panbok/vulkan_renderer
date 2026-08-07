@@ -31,8 +31,8 @@ typedef struct RendererBatchMockState {
   uintptr_t next_handle_token;
 } RendererBatchMockState;
 
-static VkrBackendResourceHandle renderer_batch_mock_make_handle(
-    RendererBatchMockState *state) {
+static VkrBackendResourceHandle
+renderer_batch_mock_make_handle(RendererBatchMockState *state) {
   state->next_handle_token++;
   return (VkrBackendResourceHandle){
       .ptr = (void *)((state->next_handle_token << 4u) | 1u)};
@@ -89,9 +89,10 @@ static uint32_t renderer_batch_mock_texture_create_with_payload_batch(
   return state->scripted_created;
 }
 
-static VkrBackendResourceHandle renderer_batch_mock_buffer_create(
-    void *backend_state, const VkrBufferDescription *desc,
-    const void *initial_data) {
+static VkrBackendResourceHandle
+renderer_batch_mock_buffer_create(void *backend_state,
+                                  const VkrBufferDescription *desc,
+                                  const void *initial_data) {
   (void)desc;
   (void)initial_data;
   RendererBatchMockState *state = backend_state;
@@ -117,8 +118,9 @@ static VkrRendererError renderer_batch_mock_buffer_upload(
   return VKR_RENDERER_ERROR_NONE;
 }
 
-static void renderer_batch_mock_buffer_destroy(void *backend_state,
-                                               VkrBackendResourceHandle handle) {
+static void
+renderer_batch_mock_buffer_destroy(void *backend_state,
+                                   VkrBackendResourceHandle handle) {
   (void)handle;
   RendererBatchMockState *state = backend_state;
   state->destroy_call_count++;
@@ -182,7 +184,8 @@ static void test_renderer_buffer_batch_fallback_cleanup(void) {
 
   VkrBufferDescription descs[3] = {
       {.size = 16,
-       .usage = vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_VERTEX_BUFFER),
+       .usage =
+           vkr_buffer_usage_flags_from_bits(VKR_BUFFER_USAGE_VERTEX_BUFFER),
        .memory_properties = vkr_memory_property_flags_from_bits(
            VKR_MEMORY_PROPERTY_DEVICE_LOCAL),
        .buffer_type = buffer_type,
@@ -247,7 +250,8 @@ static void test_renderer_buffer_batch_backend_mapping(void) {
   RendererFrontend renderer = {0};
   RendererBatchMockState state = {0};
   renderer_batch_test_init_frontend(&renderer, &state);
-  renderer.backend.buffer_create_batch = renderer_batch_mock_buffer_create_batch;
+  renderer.backend.buffer_create_batch =
+      renderer_batch_mock_buffer_create_batch;
 
   state.use_scripted_batch = true_v;
   state.scripted_count = 3;
@@ -349,18 +353,21 @@ static void test_renderer_texture_batch_backend_mapping(void) {
 }
 
 static void test_geometry_system_batch_failure_rolls_back_buffers(void) {
-  printf("  Running test_geometry_system_batch_failure_rolls_back_buffers...\n");
+  printf(
+      "  Running test_geometry_system_batch_failure_rolls_back_buffers...\n");
 
   RendererFrontend renderer = {0};
   RendererBatchMockState state = {0};
   renderer_batch_test_init_frontend(&renderer, &state);
-  renderer.backend.buffer_create_batch = renderer_batch_mock_buffer_create_batch;
+  renderer.backend.buffer_create_batch =
+      renderer_batch_mock_buffer_create_batch;
   renderer.backend.buffer_destroy = renderer_batch_mock_buffer_destroy;
 
   VkrGeometrySystem geometry_system = {0};
   VkrGeometrySystemConfig config = {.max_geometries = 32};
   VkrRendererError error = VKR_RENDERER_ERROR_UNKNOWN;
-  assert(vkr_geometry_system_init(&geometry_system, &renderer, &config, &error));
+  assert(
+      vkr_geometry_system_init(&geometry_system, &renderer, &config, &error));
   assert(error == VKR_RENDERER_ERROR_NONE);
 
   const uint32_t batch_calls_after_init = state.batch_call_count;
@@ -446,6 +453,26 @@ static void test_renderer_upload_wait_stats_mapping(void) {
   printf("  test_renderer_upload_wait_stats_mapping PASSED\n");
 }
 
+static void test_renderer_texture_destroy_status(void) {
+  printf("  Running test_renderer_texture_destroy_status...\n");
+
+  RendererFrontend renderer = {0};
+  RendererBatchMockState state = {0};
+  renderer_batch_test_init_frontend(&renderer, &state);
+  renderer.backend.texture_destroy = renderer_batch_mock_buffer_destroy;
+
+  VkrTextureOpaqueHandle texture = (VkrTextureOpaqueHandle)(uintptr_t)0x1234u;
+  assert(vkr_renderer_destroy_texture(&renderer, texture));
+  assert(state.destroy_call_count == 1u);
+
+  renderer.backend.texture_destroy = NULL;
+  assert(!vkr_renderer_destroy_texture(&renderer, texture));
+  assert(state.destroy_call_count == 1u);
+
+  renderer_batch_test_shutdown_frontend(&renderer);
+  printf("  test_renderer_texture_destroy_status PASSED\n");
+}
+
 bool32_t run_renderer_batch_tests(void) {
   printf("--- Running Renderer Batch tests... ---\n");
   test_renderer_buffer_batch_fallback_cleanup();
@@ -453,6 +480,7 @@ bool32_t run_renderer_batch_tests(void) {
   test_renderer_texture_batch_backend_mapping();
   test_geometry_system_batch_failure_rolls_back_buffers();
   test_renderer_upload_wait_stats_mapping();
+  test_renderer_texture_destroy_status();
   printf("--- Renderer Batch tests completed. ---\n");
   return true_v;
 }

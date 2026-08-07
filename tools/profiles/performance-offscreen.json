@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "id": "performance.offscreen",
+  "description": "Authoritative WSI-free CPU, work-volume, and bounded-wait evidence with GPU timestamps disabled.",
+  "authoritative": true,
+  "dirty_policy": "require_clean",
+  "environment": {
+    "target": "offscreen",
+    "required_present": "none",
+    "require_actual_present": false
+  },
+  "instrumentation": {
+    "gpu_timing": false,
+    "event_subjects": false
+  },
+  "execution": {
+    "minimum_repetitions": 5,
+    "warmup_stability_window": 480,
+    "warmup_stability_metric": "frame.wall",
+    "warmup_max_drift_ratio": 0.1,
+    "require_warmup_stability": true,
+    "exclusive_gpu_lane": true
+  },
+  "required_metrics": [
+    "frame.wall",
+    "cpu.frame_work",
+    "cpu.render_prepare",
+    "cpu.render_submit",
+    "frame.command_slot_waits",
+    "draw.world.commands_issued",
+    "draw.world.calls_issued",
+    "upload.fence_waits"
+  ]
+}

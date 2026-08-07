@@ -81,6 +81,37 @@ static void test_harness_case_parser(void) {
   assert(harness_parse_case("offscreen", "none", static_camera, "", &parsed));
   assert(parsed.target == VKR_HARNESS_TARGET_OFFSCREEN);
   assert(parsed.target_image_count == 3u);
+  assert(!parsed.renderer.text_fixture);
+  assert(parsed.renderer.backend[0] == '\0');
+  const char *metal_case =
+      "{\"schema_version\":1,\"id\":\"smoke.test.metal\",\"suite\":\"smoke\","
+      "\"scene\":\"assets/scenes/default.scene.json\",\"seed\":1,"
+      "\"resolution\":[64,64],\"boot\":\"full\",\"target\":\"offscreen\","
+      "\"present\":\"none\",\"cache\":\"isolated_cold\",\"fixed_delta\":0.016,"
+      "\"frames\":{\"measure\":3},\"renderer\":{\"editor\":false,"
+      "\"skybox\":true,\"text_fixture\":true,\"backend\":\"metal\","
+      "\"shadow_preset\":\"default\",\"shadow_cascades\":4},"
+      "\"camera\":{\"mode\":\"static\",\"position\":[1,2,3],\"yaw\":10,"
+      "\"pitch\":-5}}";
+  VkrHarnessError backend_error = {0};
+  assert(vkr_harness_case_parse(metal_case, strlen(metal_case), "memory",
+                                &parsed, &backend_error));
+  assert(strcmp(parsed.renderer.backend, "metal") == 0);
+  VkrRendererBackendType resolved_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
+  assert(vkr_harness_renderer_backend_resolve(&parsed.renderer, NULL,
+                                              &resolved_backend));
+  assert(resolved_backend == VKR_RENDERER_BACKEND_TYPE_METAL);
+  assert(vkr_harness_renderer_backend_resolve(&parsed.renderer, "metal",
+                                              &resolved_backend));
+  assert(!vkr_harness_renderer_backend_resolve(&parsed.renderer, "vulkan",
+                                               &resolved_backend));
+  char invalid_backend[2048];
+  snprintf(invalid_backend, sizeof(invalid_backend), "%s", metal_case);
+  char *metal_value = strstr(invalid_backend, "\"metal\"");
+  assert(metal_value);
+  memcpy(metal_value, "\"dx12x\"", 7u);
+  assert(!vkr_harness_case_parse(invalid_backend, strlen(invalid_backend),
+                                 "memory", &parsed, &backend_error));
   assert(!harness_parse_case(
       "windowed_hidden", "immediate",
       "{\"mode\":\"keyframes\",\"keys\":[{\"t\":1,\"position\":[0,0,0],"
@@ -114,7 +145,8 @@ static void test_harness_profile_parser(void) {
       "\"require_actual_present\":true},\"instrumentation\":{\"gpu_timing\":"
       "false,\"event_subjects\":false},\"execution\":{\"minimum_repetitions\":"
       "2,"
-      "\"warmup_stability_window\":10,\"warmup_max_drift_ratio\":0.1,"
+      "\"warmup_stability_window\":10,\"warmup_stability_metric\":"
+      "\"frame.wall\",\"warmup_max_drift_ratio\":0.1,"
       "\"require_warmup_stability\":true,\"exclusive_gpu_lane\":false},"
       "\"required_metrics\":[\"cpu.render_submit\"]}";
   VkrHarnessProfile parsed = {0};
@@ -123,6 +155,7 @@ static void test_harness_profile_parser(void) {
                                    &error));
   assert(parsed.minimum_repetitions == 2u &&
          parsed.required_metric_count == 1u);
+  assert(string_equals(parsed.warmup_stability_metric, "frame.wall"));
   const char *one_authoritative =
       "{\"schema_version\":1,\"id\":\"performance.test\","
       "\"authoritative\":true,\"dirty_policy\":\"require_clean\","
@@ -210,8 +243,36 @@ static void test_harness_fingerprints(void) {
     printf("  fingerprint error %s: %s\n", error.code, error.message);
   }
   assert(fingerprinted);
+  char default_policy[VKR_HARNESS_DIGEST_MAX];
+  snprintf(default_policy, sizeof(default_policy), "%s", policy);
+  snprintf(profile.warmup_stability_metric,
+           sizeof(profile.warmup_stability_metric), "frame.wall");
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(default_policy, policy) != 0);
+  snprintf(profile.warmup_stability_metric,
+           sizeof(profile.warmup_stability_metric), "cpu.render_submit");
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(default_policy, policy) == 0);
   char original_workload[VKR_HARNESS_DIGEST_MAX];
   snprintf(original_workload, sizeof(original_workload), "%s", workload);
+  case_manifest.renderer.text_fixture = true_v;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  case_manifest.renderer.text_fixture = false_v;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) == 0);
   snprintf(case_manifest.description, sizeof(case_manifest.description),
            "provenance-only edit");
   snprintf(case_manifest.manifest_sha256, sizeof(case_manifest.manifest_sha256),
@@ -427,6 +488,12 @@ static void test_harness_subsystem_plans(void) {
                                               VKR_RENDERER_SUBSYSTEM_SKYBOX));
   assert(!vkr_renderer_subsystem_plan_includes(&plan,
                                                VKR_RENDERER_SUBSYSTEM_EDITOR));
+  case_manifest.renderer.text_fixture = true_v;
+  assert(vkr_harness_subsystem_plan(VKR_HARNESS_TOOL_PROFILE, &case_manifest,
+                                    &plan, &harness_error));
+  assert(
+      vkr_renderer_subsystem_plan_includes(&plan, VKR_RENDERER_SUBSYSTEM_UI));
+  case_manifest.renderer.text_fixture = false_v;
   case_manifest.assertion_count = 1u;
   snprintf(case_manifest.assertions[0].metric,
            sizeof(case_manifest.assertions[0].metric), "draw.ui.calls_issued");

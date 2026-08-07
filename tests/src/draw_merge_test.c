@@ -18,7 +18,7 @@ static VkrDrawMergeKey merge_key(uint32_t geom, uint32_t mat, uint32_t first,
                                  uint32_t count) {
   return (VkrDrawMergeKey){
       .geometry = ((uint64_t)geom << 32) | 1u,
-      .material = mat,
+      .material = ((uint64_t)mat << 32) | 1u,
       .first_index = first,
       .index_count = count,
       .vertex_offset = 0,
@@ -439,6 +439,8 @@ static void test_merged_runs_have_contiguous_instances(void) {
   uint32_t total_instances = 0;
   for (uint32_t d = 0; d < draw_count; ++d) {
     assert(draws[d].instance_count >= 1);
+    assert(draws[d].material.id != 0u);
+    assert(draws[d].material.generation == 1u);
     total_instances += draws[d].instance_count;
     // Each draw's range must lie inside the array and not overlap the next.
     assert(draws[d].first_instance + draws[d].instance_count <= written);
@@ -489,6 +491,8 @@ static void test_unmerged_emission_preserves_order(void) {
   for (uint32_t i = 0; i < 3; ++i) {
     assert(draws[i].instance_count == 1);
     assert(draws[i].first_instance == 5u + i);
+    assert(draws[i].material.id == 1u);
+    assert(draws[i].material.generation == 1u);
     assert(instances[5u + i].object_id == 100u + i);
   }
   printf("  test_unmerged_emission_preserves_order PASSED\n");

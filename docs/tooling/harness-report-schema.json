@@ -384,6 +384,8 @@
         "boot_profile",
         "subsystem_mask",
         "editor",
+        "text_fixture",
+        "renderer_backend",
         "cascades",
         "cache",
         "camera_script_version",
@@ -453,6 +455,12 @@
         "editor": {
           "type": "boolean"
         },
+        "text_fixture": {
+          "type": "boolean"
+        },
+        "renderer_backend": {
+          "enum": ["external", "vulkan", "metal"]
+        },
         "cascades": {
           "type": "integer",
           "minimum": 1
@@ -486,6 +494,7 @@
         "completed_repetitions",
         "warmup_frames",
         "measured_frames",
+        "warmup_stability_metric",
         "warmup_stable",
         "gpu_lane_lock_acquired"
       ],
@@ -505,6 +514,10 @@
         "measured_frames": {
           "type": "integer",
           "minimum": 1
+        },
+        "warmup_stability_metric": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$"
         },
         "warmup_stable": {
           "type": "boolean"

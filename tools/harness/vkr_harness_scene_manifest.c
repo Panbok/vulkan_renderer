@@ -13,9 +13,9 @@ static bool8_t vkr_harness_scene_path_below(const char *root,
 
 static bool8_t vkr_harness_scene_asset_extension(const char *path) {
   static const char *extensions[] = {
-      ".json", ".gltf", ".glb", ".bin", ".obj", ".mtl", ".mt",   ".png",
-      ".jpg",  ".jpeg", ".bmp", ".tga", ".hdr", ".ktx", ".ktx2",
-      ".vkt",
+      ".json", ".gltf", ".glb",     ".bin", ".obj", ".mtl", ".mt",
+      ".png",  ".jpg",  ".jpeg",    ".bmp", ".tga", ".hdr", ".ktx",
+      ".ktx2", ".vkt",  ".fontcfg", ".ttf", ".ttc", ".fnt", ".vkf",
   };
   uint64_t length = 0u;
   while (path[length] && path[length] != '?' && path[length] != '#') {
@@ -142,7 +142,10 @@ static bool8_t vkr_harness_scene_manifest_resolve(
     const bool8_t owner_is_glb =
         owner_length >= 4u &&
         string_equals(owner_relative + owner_length - 4u, ".glb");
-    if (!owner_is_mtl && !owner_is_gltf && !owner_is_glb) {
+    const bool8_t owner_is_fnt =
+        owner_length >= 4u &&
+        string_equals(owner_relative + owner_length - 4u, ".fnt");
+    if (!owner_is_mtl && !owner_is_gltf && !owner_is_glb && !owner_is_fnt) {
       return false_v;
     }
     if (owner_is_gltf || owner_is_glb) {
@@ -345,7 +348,9 @@ bool8_t vkr_harness_scene_manifest_build(const char *repo_root,
     const bool8_t scan_lines =
         vkr_harness_scene_path_ends_with(asset->path, ".obj") ||
         vkr_harness_scene_path_ends_with(asset->path, ".mtl") ||
-        vkr_harness_scene_path_ends_with(asset->path, ".mt");
+        vkr_harness_scene_path_ends_with(asset->path, ".mt") ||
+        vkr_harness_scene_path_ends_with(asset->path, ".fontcfg") ||
+        vkr_harness_scene_path_ends_with(asset->path, ".fnt");
     if ((vkr_harness_scene_path_ends_with(asset->path, ".gltf") || is_glb) &&
         !vkr_harness_scene_manifest_add_gltf_material_cache(
             resolved_root, asset->path, out_manifest, out_error)) {
@@ -544,7 +549,14 @@ bool8_t vkr_harness_scene_manifest_build(const char *repo_root,
     }
 
     // Runtime texture loading prefers a packed sibling when one exists.
-    if (ok && !vkr_harness_scene_path_ends_with(asset->path, ".vkt")) {
+    if (ok && vkr_harness_scene_path_ends_with(asset->path, ".fnt")) {
+      char cache[VKR_HARNESS_PATH_MAX];
+      if (string_format(cache, sizeof(cache), "%s.vkf", asset->path) > 0) {
+        (void)vkr_harness_scene_manifest_add_reference(
+            resolved_root, asset->path, out_manifest, cache, false_v,
+            out_error);
+      }
+    } else if (ok && !vkr_harness_scene_path_ends_with(asset->path, ".vkt")) {
       char packed[VKR_HARNESS_PATH_MAX];
       if (string_format(packed, sizeof(packed), "%s.vkt", asset->path) > 0) {
         (void)vkr_harness_scene_manifest_add_reference(

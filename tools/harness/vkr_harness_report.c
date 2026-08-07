@@ -409,6 +409,12 @@ bool8_t vkr_harness_report_write(const char *path,
       vkr_harness_json_emit_string(writer, "subsystem_mask", subsystem_mask) &&
       vkr_harness_json_emit_bool(writer, "editor",
                                  report->case_manifest.renderer.editor) &&
+      vkr_harness_json_emit_bool(writer, "text_fixture",
+                                 report->case_manifest.renderer.text_fixture) &&
+      vkr_harness_json_emit_string(writer, "renderer_backend",
+                                   report->case_manifest.renderer.backend[0]
+                                       ? report->case_manifest.renderer.backend
+                                       : "external") &&
       vkr_harness_json_emit_u64(
           writer, "cascades", report->case_manifest.renderer.shadow_cascades) &&
       vkr_harness_json_emit_string(
@@ -433,6 +439,8 @@ bool8_t vkr_harness_report_write(const char *path,
                                 report->case_manifest.warmup_frames) &&
       vkr_harness_json_emit_u64(writer, "measured_frames",
                                 report->case_manifest.measure_frames) &&
+      vkr_harness_json_emit_string(writer, "warmup_stability_metric",
+                                   report->profile.warmup_stability_metric) &&
       vkr_harness_json_emit_bool(writer, "warmup_stable",
                                  report->warmup_stable) &&
       vkr_harness_json_emit_bool(writer, "gpu_lane_lock_acquired",

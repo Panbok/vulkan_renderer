@@ -44,6 +44,7 @@
       "properties": {
         "minimum_repetitions": { "type": "integer", "minimum": 1, "maximum": 32 },
         "warmup_stability_window": { "type": "integer", "minimum": 2 },
+        "warmup_stability_metric": { "type": "string", "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$" },
         "warmup_max_drift_ratio": { "type": "number", "minimum": 0 },
         "require_warmup_stability": { "type": "boolean" },
         "exclusive_gpu_lane": { "type": "boolean" }

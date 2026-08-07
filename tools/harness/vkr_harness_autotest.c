@@ -175,6 +175,15 @@ int vkr_harness_autotest_run(const char *executable, const char *repo_root,
     vkr_harness_stderr("%s: %s\n", error.code, error.message);
     return VKR_HARNESS_EXIT_INVALID;
   }
+  VkrRendererBackendType renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
+  if (!vkr_harness_renderer_backend_resolve(
+          &case_manifest.renderer, getenv("VKR_HARNESS_RENDERER_BACKEND"),
+          &renderer_backend)) {
+    vkr_harness_stderr(
+        "Case renderer backend conflicts with the environment\n");
+    return VKR_HARNESS_EXIT_INVALID;
+  }
+  (void)renderer_backend;
   Arena *arena = arena_create();
   if (!arena) {
     return VKR_HARNESS_EXIT_ERROR;

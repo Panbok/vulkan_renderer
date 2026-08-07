@@ -21,6 +21,14 @@ static bool32_t test_float32_to_float16_boundaries(void) {
   assert(vkr_float32_to_float16(-INFINITY) == 0xfc00u);
   assert((vkr_float32_to_float16(NAN) & 0x7c00u) == 0x7c00u);
   assert((vkr_float32_to_float16(NAN) & 0x03ffu) != 0u);
+  assert(vkr_float16_to_float32(0x0000u) == 0.0f);
+  assert(signbit(vkr_float16_to_float32(0x8000u)));
+  assert(vkr_float16_to_float32(0x0001u) == ldexpf(1.0f, -24));
+  assert(vkr_float16_to_float32(0x0400u) == ldexpf(1.0f, -14));
+  assert(vkr_float16_to_float32(0x3c00u) == 1.0f);
+  assert(vkr_float16_to_float32(0xbc00u) == -1.0f);
+  assert(isinf(vkr_float16_to_float32(0x7c00u)));
+  assert(isnan(vkr_float16_to_float32(0x7e00u)));
   printf("  test_float32_to_float16_boundaries PASSED\n");
   return true_v;
 }

@@ -156,6 +156,10 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
   ADD("case.seed", "%llu", (unsigned long long)case_manifest->seed);
   ADD("renderer.editor", "%u", case_manifest->renderer.editor);
   ADD("renderer.skybox", "%u", case_manifest->renderer.skybox);
+  ADD("renderer.text_fixture", "%u", case_manifest->renderer.text_fixture);
+  ADD("renderer.backend", "%s",
+      case_manifest->renderer.backend[0] ? case_manifest->renderer.backend
+                                         : "external");
   ADD("renderer.shadow", "%s,%u", case_manifest->renderer.shadow_preset,
       case_manifest->renderer.shadow_cascades);
   ADD("renderer.render_mode", "%s", case_manifest->renderer.render_mode);
@@ -199,8 +203,18 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
   ADD("profile.present", "%s,%u",
       vkr_harness_present_name(profile->required_present),
       profile->require_actual_present);
-  ADD("profile.stability", "%u,%.17g,%u", profile->warmup_stability_window,
-      profile->warmup_max_drift_ratio, profile->require_warmup_stability);
+  if (!profile->warmup_stability_metric[0] ||
+      string_equals(profile->warmup_stability_metric, "cpu.render_submit")) {
+    /* Preserve the version-2 policy fingerprint for the historical default so
+     * accepted snapshot baselines do not require promotion without a policy
+     * change. Non-default metrics remain fingerprint-significant. */
+    ADD("profile.stability", "%u,%.17g,%u", profile->warmup_stability_window,
+        profile->warmup_max_drift_ratio, profile->require_warmup_stability);
+  } else {
+    ADD("profile.stability", "%s,%u,%.17g,%u", profile->warmup_stability_metric,
+        profile->warmup_stability_window, profile->warmup_max_drift_ratio,
+        profile->require_warmup_stability);
+  }
   ADD("profile.gpu_lane", "%u", profile->require_exclusive_gpu_lane);
   ADD("profile.os", "%s", profile->required_os);
   ADD("profile.cpu", "%s", profile->required_cpu);

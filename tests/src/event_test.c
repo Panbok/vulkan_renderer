@@ -184,13 +184,16 @@ static void *dispatch_thread(void *arg) {
   ThreadData *data = (ThreadData *)arg;
 
   for (uint32_t i = 0; i < EVENTS_PER_THREAD; i++) {
-    TestEventData *event_data = arena_alloc(data->arena, sizeof(TestEventData),
-                                            ARENA_MEMORY_TAG_UNKNOWN);
-    event_data->value = (data->thread_id * 1000) + i;
-    event_data->processed = false;
+    /* event_manager_dispatch copies the payload before returning. Keeping the
+       producer payload on its own stack avoids concurrently allocating from
+       the suite's deliberately non-thread-safe arena. */
+    TestEventData event_data = {
+        .value = (data->thread_id * 1000) + i,
+        .processed = false,
+    };
 
     Event event = {.type = EVENT_TYPE_KEY_PRESS,
-                   .data = event_data,
+                   .data = &event_data,
                    .data_size = sizeof(TestEventData)};
     event_manager_dispatch(data->manager, event);
   }
@@ -534,6 +537,7 @@ static void test_concurrent_dispatch(void) {
   // Wait for all threads to complete
   for (uint32_t i = 0; i < THREAD_COUNT; i++) {
     vkr_thread_join(threads[i]);
+    vkr_thread_destroy(&test_allocator, &threads[i]);
   }
 
   // Wait for event processing to complete

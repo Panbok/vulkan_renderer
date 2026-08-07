@@ -18,6 +18,64 @@ typedef struct VkrHarnessPngBuffer {
   bool8_t failed;
 } VkrHarnessPngBuffer;
 
+/* Version 2 embedded the profile struct directly. Keep its exact layout so
+ * accepted capture summaries remain readable when the in-memory profile grows.
+ */
+typedef struct VkrHarnessProfileV2 {
+  uint32_t schema_version;
+  char manifest_path[VKR_HARNESS_PATH_MAX];
+  char manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char id[VKR_HARNESS_ID_MAX];
+  char description[VKR_HARNESS_TEXT_MAX];
+  bool8_t authoritative;
+  bool8_t allow_dirty;
+  VkrHarnessTarget target;
+  VkrHarnessPresentMode required_present;
+  bool8_t require_actual_present;
+  bool8_t gpu_timing;
+  bool8_t event_subjects;
+  uint32_t minimum_repetitions;
+  uint32_t warmup_stability_window;
+  float64_t warmup_max_drift_ratio;
+  bool8_t require_warmup_stability;
+  bool8_t require_exclusive_gpu_lane;
+  char required_os[64];
+  char required_cpu[128];
+  char required_gpu[128];
+  char required_driver[128];
+  uint32_t required_gpu_vendor_id;
+  uint32_t required_gpu_device_id;
+  char required_power_mode[32];
+  char required_thermal_state[32];
+  int32_t required_process_priority;
+  bool8_t has_required_process_priority;
+  char required_metrics[VKR_HARNESS_MAX_REQUIRED_METRICS][128];
+  uint32_t required_metric_count;
+} VkrHarnessProfileV2;
+
+typedef struct VkrHarnessCaptureSummaryHeaderV2 {
+  uint8_t magic[8];
+  uint32_t version;
+  uint32_t capture_count;
+  uint32_t artifact_count;
+  uint32_t tool;
+  uint32_t exit_code;
+  bool8_t authoritative;
+  bool8_t profile_compatible;
+  uint8_t reserved[2];
+  char status[24];
+  char case_id[VKR_HARNESS_ID_MAX];
+  char case_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char profile_id[VKR_HARNESS_ID_MAX];
+  char profile_manifest_sha256[VKR_HARNESS_DIGEST_MAX];
+  char environment_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char workload_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  char policy_fingerprint[VKR_HARNESS_DIGEST_MAX];
+  VkrHarnessCase case_manifest;
+  VkrHarnessProfileV2 profile;
+  VkrHarnessProvenance provenance;
+} VkrHarnessCaptureSummaryHeaderV2;
+
 typedef struct VkrHarnessCaptureSummaryHeader {
   uint8_t magic[8];
   uint32_t version;
@@ -43,6 +101,58 @@ typedef struct VkrHarnessCaptureSummaryHeader {
 
 static const uint8_t s_capture_summary_magic[8] = {'V', 'K', 'R', 'C',
                                                    'A', 'P', '0', '1'};
+
+static void vkr_harness_profile_from_v2(const VkrHarnessProfileV2 *source,
+                                        VkrHarnessProfile *destination) {
+  MemZero(destination, sizeof(*destination));
+  destination->schema_version = source->schema_version;
+  string_format(destination->manifest_path, sizeof(destination->manifest_path),
+                "%s", source->manifest_path);
+  string_format(destination->manifest_sha256,
+                sizeof(destination->manifest_sha256), "%s",
+                source->manifest_sha256);
+  string_format(destination->id, sizeof(destination->id), "%s", source->id);
+  string_format(destination->description, sizeof(destination->description),
+                "%s", source->description);
+  destination->authoritative = source->authoritative;
+  destination->allow_dirty = source->allow_dirty;
+  destination->target = source->target;
+  destination->required_present = source->required_present;
+  destination->require_actual_present = source->require_actual_present;
+  destination->gpu_timing = source->gpu_timing;
+  destination->event_subjects = source->event_subjects;
+  destination->minimum_repetitions = source->minimum_repetitions;
+  destination->warmup_stability_window = source->warmup_stability_window;
+  string_format(destination->warmup_stability_metric,
+                sizeof(destination->warmup_stability_metric), "%s",
+                "cpu.render_submit");
+  destination->warmup_max_drift_ratio = source->warmup_max_drift_ratio;
+  destination->require_warmup_stability = source->require_warmup_stability;
+  destination->require_exclusive_gpu_lane = source->require_exclusive_gpu_lane;
+  string_format(destination->required_os, sizeof(destination->required_os),
+                "%s", source->required_os);
+  string_format(destination->required_cpu, sizeof(destination->required_cpu),
+                "%s", source->required_cpu);
+  string_format(destination->required_gpu, sizeof(destination->required_gpu),
+                "%s", source->required_gpu);
+  string_format(destination->required_driver,
+                sizeof(destination->required_driver), "%s",
+                source->required_driver);
+  destination->required_gpu_vendor_id = source->required_gpu_vendor_id;
+  destination->required_gpu_device_id = source->required_gpu_device_id;
+  string_format(destination->required_power_mode,
+                sizeof(destination->required_power_mode), "%s",
+                source->required_power_mode);
+  string_format(destination->required_thermal_state,
+                sizeof(destination->required_thermal_state), "%s",
+                source->required_thermal_state);
+  destination->required_process_priority = source->required_process_priority;
+  destination->has_required_process_priority =
+      source->has_required_process_priority;
+  MemCopy(destination->required_metrics, source->required_metrics,
+          sizeof(destination->required_metrics));
+  destination->required_metric_count = source->required_metric_count;
+}
 
 static void vkr_harness_png_write(void *context, void *data, int size) {
   VkrHarnessPngBuffer *buffer = context;
@@ -575,7 +685,7 @@ bool8_t vkr_harness_capture_summary_write(const char *path,
   VkrHarnessCaptureSummaryHeader *header =
       (VkrHarnessCaptureSummaryHeader *)bytes;
   MemCopy(header->magic, s_capture_summary_magic, sizeof(header->magic));
-  header->version = 2u;
+  header->version = 3u;
   header->capture_count = report->capture_count;
   header->artifact_count = report->artifact_count;
   header->tool = (uint32_t)report->tool;
@@ -625,59 +735,70 @@ vkr_harness_capture_summary_read(const char *path, Arena *arena,
   uint8_t *bytes = NULL;
   uint64_t size = 0u;
   if (!vkr_harness_read_file(path, arena, &bytes, &size) ||
-      size < sizeof(VkrHarnessCaptureSummaryHeader)) {
+      size < sizeof(VkrHarnessCaptureSummaryHeaderV2)) {
     return false_v;
   }
-  const VkrHarnessCaptureSummaryHeader *header =
-      (const VkrHarnessCaptureSummaryHeader *)bytes;
-  if (MemCompare(header->magic, s_capture_summary_magic,
-                 sizeof(header->magic)) != 0 ||
-      header->version != 2u || header->tool > VKR_HARNESS_TOOL_COMPARE ||
-      header->exit_code > VKR_HARNESS_EXIT_ERROR ||
-      header->capture_count > VKR_HARNESS_MAX_CAPTURE_RESULTS ||
-      header->artifact_count > VKR_HARNESS_MAX_ARTIFACTS) {
+  const VkrHarnessCaptureSummaryHeaderV2 *common =
+      (const VkrHarnessCaptureSummaryHeaderV2 *)bytes;
+  if (MemCompare(common->magic, s_capture_summary_magic,
+                 sizeof(common->magic)) != 0 ||
+      (common->version != 2u && common->version != 3u) ||
+      common->tool > VKR_HARNESS_TOOL_COMPARE ||
+      common->exit_code > VKR_HARNESS_EXIT_ERROR ||
+      common->capture_count > VKR_HARNESS_MAX_CAPTURE_RESULTS ||
+      common->artifact_count > VKR_HARNESS_MAX_ARTIFACTS) {
     return false_v;
   }
+  const uint64_t header_size = common->version == 2u
+                                   ? sizeof(VkrHarnessCaptureSummaryHeaderV2)
+                                   : sizeof(VkrHarnessCaptureSummaryHeader);
   const uint64_t capture_bytes =
-      (uint64_t)header->capture_count * sizeof(VkrHarnessCaptureResult);
+      (uint64_t)common->capture_count * sizeof(VkrHarnessCaptureResult);
   const uint64_t artifact_bytes =
-      (uint64_t)header->artifact_count * sizeof(VkrHarnessArtifact);
-  if (size != sizeof(*header) + capture_bytes + artifact_bytes) {
+      (uint64_t)common->artifact_count * sizeof(VkrHarnessArtifact);
+  if (size != header_size + capture_bytes + artifact_bytes) {
     return false_v;
   }
   out_summary->captures =
-      (const VkrHarnessCaptureResult *)(bytes + sizeof(*header));
-  out_summary->tool = (VkrHarnessTool)header->tool;
-  out_summary->exit_code = (VkrHarnessExitCode)header->exit_code;
-  out_summary->authoritative = header->authoritative;
-  out_summary->profile_compatible = header->profile_compatible;
+      (const VkrHarnessCaptureResult *)(bytes + header_size);
+  out_summary->tool = (VkrHarnessTool)common->tool;
+  out_summary->exit_code = (VkrHarnessExitCode)common->exit_code;
+  out_summary->authoritative = common->authoritative;
+  out_summary->profile_compatible = common->profile_compatible;
   string_format(out_summary->status, sizeof(out_summary->status), "%s",
-                header->status);
+                common->status);
   string_format(out_summary->case_id, sizeof(out_summary->case_id), "%s",
-                header->case_id);
+                common->case_id);
   string_format(out_summary->case_manifest_sha256,
                 sizeof(out_summary->case_manifest_sha256), "%s",
-                header->case_manifest_sha256);
+                common->case_manifest_sha256);
   string_format(out_summary->profile_id, sizeof(out_summary->profile_id), "%s",
-                header->profile_id);
+                common->profile_id);
   string_format(out_summary->profile_manifest_sha256,
                 sizeof(out_summary->profile_manifest_sha256), "%s",
-                header->profile_manifest_sha256);
+                common->profile_manifest_sha256);
   string_format(out_summary->environment_fingerprint,
                 sizeof(out_summary->environment_fingerprint), "%s",
-                header->environment_fingerprint);
+                common->environment_fingerprint);
   string_format(out_summary->workload_fingerprint,
                 sizeof(out_summary->workload_fingerprint), "%s",
-                header->workload_fingerprint);
+                common->workload_fingerprint);
   string_format(out_summary->policy_fingerprint,
                 sizeof(out_summary->policy_fingerprint), "%s",
-                header->policy_fingerprint);
-  out_summary->case_manifest = header->case_manifest;
-  out_summary->profile = header->profile;
-  out_summary->provenance = header->provenance;
-  out_summary->capture_count = header->capture_count;
+                common->policy_fingerprint);
+  out_summary->case_manifest = common->case_manifest;
+  if (common->version == 2u) {
+    vkr_harness_profile_from_v2(&common->profile, &out_summary->profile);
+    out_summary->provenance = common->provenance;
+  } else {
+    const VkrHarnessCaptureSummaryHeader *header =
+        (const VkrHarnessCaptureSummaryHeader *)bytes;
+    out_summary->profile = header->profile;
+    out_summary->provenance = header->provenance;
+  }
+  out_summary->capture_count = common->capture_count;
   out_summary->artifacts =
-      (const VkrHarnessArtifact *)(bytes + sizeof(*header) + capture_bytes);
-  out_summary->artifact_count = header->artifact_count;
+      (const VkrHarnessArtifact *)(bytes + header_size + capture_bytes);
+  out_summary->artifact_count = common->artifact_count;
   return true_v;
 }

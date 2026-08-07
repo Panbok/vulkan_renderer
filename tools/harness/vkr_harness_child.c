@@ -10,6 +10,7 @@
 #include "vkr_harness_runtime.h"
 
 #include "application.h"
+#include "renderer/resources/ui/vkr_ui_text.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
@@ -445,9 +446,10 @@ static bool8_t vkr_harness_catalog_has(const VkrMetrics *metrics,
 
 /**
  * Determinism rule 4: warmup is a gate, not a settling period. It requires no
- * required pipeline creation during warmup and bounded drift between the two
- * halves of the profile's stability window. The window is never extended,
- * because that would shift every later simulation pose.
+ * required pipeline creation during warmup and bounded drift in the
+ * profile-selected metric between the two halves of its stability window. The
+ * window is never extended because that would shift every later simulation
+ * pose.
  */
 static bool8_t vkr_harness_warmup_stable(const VkrHarnessCase *case_manifest,
                                          const VkrHarnessProfile *profile,
@@ -455,17 +457,18 @@ static bool8_t vkr_harness_warmup_stable(const VkrHarnessCase *case_manifest,
                                          const VkrHarnessSampleMetric *catalog,
                                          const float64_t *samples,
                                          const uint8_t *availability) {
-  int32_t submit_metric = -1;
+  int32_t stability_metric = -1;
   int32_t pipeline_metric = -1;
   for (uint32_t i = 0; i < metric_count; ++i) {
-    if (string_equals(catalog[i].name, "cpu.render_submit")) {
-      submit_metric = (int32_t)i;
-    } else if (string_equals(catalog[i].name, "pipeline.created")) {
+    if (string_equals(catalog[i].name, profile->warmup_stability_metric)) {
+      stability_metric = (int32_t)i;
+    }
+    if (string_equals(catalog[i].name, "pipeline.created")) {
       pipeline_metric = (int32_t)i;
     }
   }
   const uint32_t window = profile->warmup_stability_window;
-  if (submit_metric < 0 || case_manifest->warmup_frames < window ||
+  if (stability_metric < 0 || case_manifest->warmup_frames < window ||
       window < 2u) {
     return false_v;
   }
@@ -487,7 +490,7 @@ static bool8_t vkr_harness_warmup_stable(const VkrHarnessCase *case_manifest,
       continue;
     }
     const uint64_t offset =
-        (uint64_t)frame * metric_count + (uint32_t)submit_metric;
+        (uint64_t)frame * metric_count + (uint32_t)stability_metric;
     if (availability[offset] != VKR_METRIC_AVAILABILITY_VALID) {
       return false_v;
     }
@@ -512,7 +515,8 @@ static bool8_t vkr_harness_warmup_stable(const VkrHarnessCase *case_manifest,
 
 static ApplicationConfig vkr_harness_child_application_config(
     const VkrHarnessCase *case_manifest, const VkrHarnessProfile *profile,
-    const VkrSubsystemPlan *subsystem_plan, uint64_t capture_max_batch_bytes) {
+    const VkrSubsystemPlan *subsystem_plan, uint64_t capture_max_batch_bytes,
+    VkrRendererBackendType renderer_backend) {
   return (ApplicationConfig){
       .title = "VKR Harness",
       .x = 100,
@@ -522,6 +526,7 @@ static ApplicationConfig vkr_harness_child_application_config(
       /* Determinism rule 5: the frame limiter is off for profiling. */
       .target_frame_rate = 0u,
       .app_arena_size = MB(2),
+      .renderer_backend = renderer_backend,
       .metrics_config = {.pass_gpu_timings = profile->gpu_timing,
                          .event_subjects = profile->event_subjects},
       .fixed_delta_seconds = case_manifest->fixed_delta_seconds,
@@ -583,8 +588,7 @@ vkr_harness_child_apply_renderer(Application *application,
     application->renderer.globals.render_mode = VKR_RENDER_MODE_DIRECT_DIFFUSE;
   } else if (string_equals(case_manifest->renderer.render_mode,
                            "direct_specular")) {
-    application->renderer.globals.render_mode =
-        VKR_RENDER_MODE_DIRECT_SPECULAR;
+    application->renderer.globals.render_mode = VKR_RENDER_MODE_DIRECT_SPECULAR;
   } else if (string_equals(case_manifest->renderer.render_mode,
                            "material_params")) {
     application->renderer.globals.render_mode = VKR_RENDER_MODE_MATERIAL_PARAMS;
@@ -600,6 +604,68 @@ vkr_harness_child_apply_renderer(Application *application,
       camera, case_manifest->camera.vertical_fov_degrees,
       case_manifest->camera.near_plane, case_manifest->camera.far_plane,
       case_manifest->width, case_manifest->height);
+}
+
+/**
+ * Creates a fixed text workload before scene activation. The case flag owns
+ * whether this exists; all content, fonts, colors, and positions are constants
+ * so backend selection is the only run-to-run variable.
+ */
+static bool8_t
+vkr_harness_child_create_text_fixture(Application *application,
+                                      const VkrHarnessCase *case_manifest) {
+  if (!case_manifest->renderer.text_fixture) {
+    return true_v;
+  }
+  if (!application->renderer.ui_system.initialized) {
+    return false_v;
+  }
+
+  typedef struct VkrHarnessUiTextFixture {
+    String8 content;
+    VkrFontHandle font;
+    Vec4 color;
+    float32_t size;
+    Vec2 padding;
+  } VkrHarnessUiTextFixture;
+  const VkrHarnessUiTextFixture fixtures[] = {
+      {.content = string8_lit("SYSTEM | Aa Bb 0123456789 !?"),
+       .font = application->renderer.font_system.default_system_font_handle,
+       .color = {0.20f, 0.85f, 1.00f, 1.00f},
+       .size = 40.0f,
+       .padding = {32.0f, 32.0f}},
+      {.content = string8_lit("BITMAP | PIXEL 0123456789"),
+       .font = application->renderer.font_system.default_bitmap_font_handle,
+       .color = {1.00f, 0.35f, 0.60f, 1.00f},
+       .size = 42.0f,
+       .padding = {32.0f, 112.0f}},
+      {.content = string8_lit("MTSDF | Smooth Aa 0123456789"),
+       .font = application->renderer.font_system.default_mtsdf_font_handle,
+       .color = {1.00f, 0.85f, 0.20f, 1.00f},
+       .size = 48.0f,
+       .padding = {32.0f, 192.0f}},
+  };
+  for (uint32_t i = 0; i < ArrayCount(fixtures); ++i) {
+    VkrUiTextConfig config = VKR_UI_TEXT_CONFIG_DEFAULT;
+    config.font = fixtures[i].font;
+    config.color = fixtures[i].color;
+    config.font_size = fixtures[i].size;
+    config.uv_inset_px = 0.5f;
+    const VkrUiTextCreateData payload = {
+        .text_id = VKR_INVALID_ID,
+        .content = fixtures[i].content,
+        .config = &config,
+        .anchor = VKR_UI_TEXT_ANCHOR_TOP_LEFT,
+        .padding = fixtures[i].padding,
+    };
+    uint32_t text_id = VKR_INVALID_ID;
+    if (!vkr_renderer_create_ui_text(&application->renderer, &payload,
+                                     &text_id) ||
+        text_id == VKR_INVALID_ID) {
+      return false_v;
+    }
+  }
+  return true_v;
 }
 
 static void
@@ -967,8 +1033,19 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
           width * height * VKR_CAPTURE_MAX_BYTES_PER_PIXEL;
     }
   }
+  VkrRendererBackendType renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
+  if (!vkr_harness_renderer_backend_resolve(
+          &case_manifest.renderer, getenv("VKR_HARNESS_RENDERER_BACKEND"),
+          &renderer_backend)) {
+    vkr_harness_stderr(
+        "Renderer backend must be 'vulkan' or 'metal', and an explicit case "
+        "backend must match VKR_HARNESS_RENDERER_BACKEND\n");
+    exit_code = VKR_HARNESS_EXIT_INVALID;
+    goto cleanup;
+  }
   ApplicationConfig config = vkr_harness_child_application_config(
-      &case_manifest, &profile, &subsystem_plan, capture_max_batch_bytes);
+      &case_manifest, &profile, &subsystem_plan, capture_max_batch_bytes,
+      renderer_backend);
   if (!application_create(&application, &config)) {
     exit_code = VKR_HARNESS_EXIT_UNAVAILABLE;
     goto cleanup;
@@ -1002,6 +1079,11 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
           case_manifest.target_image_count) != VKR_RENDERER_ERROR_NONE) {
     vkr_harness_stderr("Unable to recreate the offscreen present target\n");
     exit_code = VKR_HARNESS_EXIT_UNAVAILABLE;
+    goto cleanup;
+  }
+  if (!vkr_harness_child_create_text_fixture(&application, &case_manifest)) {
+    vkr_harness_stderr("Unable to create the deterministic text fixture\n");
+    exit_code = VKR_HARNESS_EXIT_INVALID;
     goto cleanup;
   }
   for (uint32_t i = 0; i < profile.required_metric_count; ++i) {

@@ -26,6 +26,9 @@ endif()
 
 # The harness core exports renderer_lib transitively.
 target_link_libraries(vulkan_renderer_tester PRIVATE vkr_harness_core)
+if(TARGET Vulkan::Vulkan)
+    target_link_libraries(vulkan_renderer_tester PRIVATE Vulkan::Vulkan)
+endif()
 
 # Include directories
 target_include_directories(vulkan_renderer_tester

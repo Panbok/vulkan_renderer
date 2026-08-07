@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "harness_assets": [
+    "assets/fonts/NotoSansCJK.fontcfg",
+    "assets/fonts/UbuntuMono-bitmap.fontcfg",
+    "assets/fonts/UbuntuMono-2d.fontcfg"
+  ],
+  "entities": [
+    {
+      "name": "SceneRoot",
+      "parent": null,
+      "transform": {
+        "pos": [0.0, 0.0, 0.0],
+        "rot": [0.0, 0.0, 0.0, 1.0],
+        "scale": [1.0, 1.0, 1.0]
+      }
+    },
+    {
+      "name": "WorldText",
+      "parent": 0,
+      "transform": {
+        "pos": [-2.6, -0.2, 0.0],
+        "rot": [0.0, 0.0, 0.0, 1.0],
+        "scale": [3.5, 3.5, 1.0]
+      },
+      "text3d": {
+        "text": "WORLD MTSDF | Aa 0123456789",
+        "font": "UbuntuMono-mtsdf",
+        "font_size": 64.0,
+        "color": [0.30, 1.00, 0.45, 1.00],
+        "texture_width": 1024,
+        "texture_height": 256,
+        "inset": 1.0
+      }
+    }
+  ]
+}

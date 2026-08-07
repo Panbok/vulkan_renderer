@@ -1,5 +1,31 @@
 #include "vkr_harness.h"
 
+bool8_t
+vkr_harness_renderer_backend_resolve(const VkrHarnessRendererConfig *renderer,
+                                     const char *environment_request,
+                                     VkrRendererBackendType *out_backend) {
+  if (!renderer || !out_backend) {
+    return false_v;
+  }
+  const char *pinned = renderer->backend;
+  if (pinned[0] != '\0' && environment_request &&
+      environment_request[0] != '\0' &&
+      !string_equals(pinned, environment_request)) {
+    return false_v;
+  }
+  const char *requested = pinned[0] != '\0' ? pinned : environment_request;
+  if (!requested || requested[0] == '\0' ||
+      string_equals(requested, "vulkan")) {
+    *out_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
+    return true_v;
+  }
+  if (string_equals(requested, "metal")) {
+    *out_backend = VKR_RENDERER_BACKEND_TYPE_METAL;
+    return true_v;
+  }
+  return false_v;
+}
+
 /**
  * @return True when `metric` belongs to `subsystem`'s own family, spelled
  *         either `<subsystem>.*` or `draw.<subsystem>.*`.
@@ -63,6 +89,9 @@ bool8_t vkr_harness_subsystem_plan(VkrHarnessTool tool,
   }
   if (case_manifest->renderer.editor) {
     requested |= VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_EDITOR);
+  }
+  if (case_manifest->renderer.text_fixture) {
+    requested |= VKR_RENDERER_SUBSYSTEM_BIT(VKR_RENDERER_SUBSYSTEM_UI);
   }
   if (tool != VKR_HARNESS_TOOL_PROFILE) {
     for (uint32_t capture = 0u; capture < case_manifest->capture_count;

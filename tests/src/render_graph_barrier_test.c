@@ -1,5 +1,6 @@
 #include "render_graph_barrier_test.h"
 #include "renderer/vkr_rg_json.h"
+#include "renderer/vulkan/vulkan_dependency.h"
 
 /**
  * Barrier planning is a deterministic function of the declared graph, so it is
@@ -99,10 +100,115 @@ static void test_same_layout_write_then_read_emits_barrier(void) {
   assert(barrier->src_access == VKR_RG_IMAGE_ACCESS_STORAGE_WRITE);
   assert(barrier->dst_access == VKR_RG_IMAGE_ACCESS_STORAGE_READ);
   assert(barrier->src_layout == barrier->dst_layout);
+  assert(barrier->dependency.src_stages ==
+         (VKR_GPU_STAGE_ALL_GRAPHICS | VKR_GPU_STAGE_COMPUTE_SHADER));
+  assert(barrier->dependency.dst_stages ==
+         (VKR_GPU_STAGE_ALL_GRAPHICS | VKR_GPU_STAGE_COMPUTE_SHADER));
+  assert(barrier->dependency.visibility == VKR_GPU_VISIBILITY_DEVICE);
 
   vkr_rg_destroy(graph);
   arena_destroy(arena);
   printf("  test_same_layout_write_then_read_emits_barrier PASSED\n");
+}
+
+static void test_explicit_stage_and_subresource_dependency(void) {
+  printf("  Running test_explicit_stage_and_subresource_dependency...\n");
+  Arena *arena = arena_create(MB(1), MB(1));
+  VkrAllocator allocator = {.ctx = arena};
+  assert(vkr_allocator_arena(&allocator));
+  VkrRenderGraph *graph = vkr_rg_create(&allocator);
+  assert(graph != NULL);
+
+  VkrRgImageDesc source_desc = VKR_RG_IMAGE_DESC_DEFAULT;
+  source_desc.width = 32;
+  source_desc.height = 32;
+  source_desc.layers = 3;
+  source_desc.usage = vkr_texture_usage_flags_from_bits(
+      VKR_TEXTURE_USAGE_STORAGE | VKR_TEXTURE_USAGE_SAMPLED);
+  VkrRgImageHandle source =
+      vkr_rg_create_image(graph, string8_lit("staged_source"), &source_desc);
+
+  VkrRgImageDesc target_desc = VKR_RG_IMAGE_DESC_DEFAULT;
+  target_desc.width = 32;
+  target_desc.height = 32;
+  target_desc.usage =
+      vkr_texture_usage_flags_from_bits(VKR_TEXTURE_USAGE_COLOR_ATTACHMENT);
+  VkrRgImageHandle target =
+      vkr_rg_create_image(graph, string8_lit("staged_target"), &target_desc);
+
+  VkrRgPassBuilder writer =
+      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "ComputeWrite");
+  vkr_rg_pass_write_image_at_stages(&writer, source,
+                                    VKR_RG_IMAGE_ACCESS_STORAGE_WRITE,
+                                    VKR_GPU_STAGE_COMPUTE_SHADER, 0, 0);
+
+  VkrRgPassBuilder reader = rg_barrier_test_add_pass(
+      graph, VKR_RG_PASS_TYPE_GRAPHICS, "FragmentRead");
+  vkr_rg_pass_read_image_slice_at_stages(
+      &reader, source, VKR_RG_IMAGE_ACCESS_SAMPLED,
+      VKR_GPU_STAGE_FRAGMENT_SHADER, 0, 0,
+      (VkrRgImageSlice){.mip_level = 0, .base_layer = 1, .layer_count = 1});
+  VkrRgAttachmentDesc attachment = {.slice = VKR_RG_IMAGE_SLICE_DEFAULT};
+  vkr_rg_pass_add_color_attachment(&reader, target, &attachment);
+
+  assert(vkr_rg_compile_schedule(graph));
+  const VkrRgPass *compiled = rg_barrier_test_pass(graph, 1);
+  assert(compiled->pre_image_barriers.length == 2);
+
+  const VkrRgImageBarrier *source_barrier = NULL;
+  for (uint64_t i = 0; i < compiled->pre_image_barriers.length; ++i) {
+    const VkrRgImageBarrier *candidate = vector_get_VkrRgImageBarrier(
+        (Vector_VkrRgImageBarrier *)&compiled->pre_image_barriers, i);
+    if (candidate->image.id == source.id) {
+      source_barrier = candidate;
+      break;
+    }
+  }
+  assert(source_barrier != NULL);
+  assert(source_barrier->range.base_layer == 1);
+  assert(source_barrier->range.layer_count == 1);
+  assert(source_barrier->dependency.src_stages == VKR_GPU_STAGE_COMPUTE_SHADER);
+  assert(source_barrier->dependency.dst_stages ==
+         VKR_GPU_STAGE_FRAGMENT_SHADER);
+  assert(source_barrier->dependency.visibility == VKR_GPU_VISIBILITY_DEVICE);
+
+  const VulkanLegacyDependency lowered = vulkan_legacy_lower_image_dependency(
+      source_barrier->src_access, source_barrier->dst_access,
+      &source_barrier->dependency);
+  assert(lowered.src_stages == VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+  assert(lowered.dst_stages == VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+  assert(lowered.src_access == VK_ACCESS_SHADER_WRITE_BIT);
+  assert(lowered.dst_access == VK_ACCESS_SHADER_READ_BIT);
+
+  vkr_rg_destroy(graph);
+  arena_destroy(arena);
+  printf("  test_explicit_stage_and_subresource_dependency PASSED\n");
+}
+
+static void test_legacy_vulkan_lowering_is_unchanged(void) {
+  printf("  Running test_legacy_vulkan_lowering_is_unchanged...\n");
+  const VkrGpuDependency image_dependency = vkr_gpu_image_dependency_default(
+      VKR_IMAGE_ACCESS_STORAGE_WRITE, VKR_IMAGE_ACCESS_SAMPLED);
+  const VulkanLegacyDependency image = vulkan_legacy_lower_image_dependency(
+      VKR_IMAGE_ACCESS_STORAGE_WRITE, VKR_IMAGE_ACCESS_SAMPLED,
+      &image_dependency);
+  assert(image.src_stages == (VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
+                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT));
+  assert(image.dst_stages == (VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
+                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT));
+  assert(image.src_access == VK_ACCESS_SHADER_WRITE_BIT);
+  assert(image.dst_access == VK_ACCESS_SHADER_READ_BIT);
+
+  const VkrGpuDependency buffer_dependency = vkr_gpu_buffer_dependency_default(
+      VKR_BUFFER_ACCESS_TRANSFER_DST, VKR_BUFFER_ACCESS_VERTEX);
+  const VulkanLegacyDependency buffer = vulkan_legacy_lower_buffer_dependency(
+      VKR_BUFFER_ACCESS_TRANSFER_DST, VKR_BUFFER_ACCESS_VERTEX,
+      &buffer_dependency);
+  assert(buffer.src_stages == VK_PIPELINE_STAGE_TRANSFER_BIT);
+  assert(buffer.dst_stages == VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
+  assert(buffer.src_access == VK_ACCESS_TRANSFER_WRITE_BIT);
+  assert(buffer.dst_access == VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
+  printf("  test_legacy_vulkan_lowering_is_unchanged PASSED\n");
 }
 
 static void test_present_target_import_and_terminal_states(void) {
@@ -644,13 +750,70 @@ static void test_main_graph_declares_transmission_stages(void) {
   printf("  test_main_graph_declares_transmission_stages PASSED\n");
 }
 
+static void test_frame_allocator_reclaims_authored_passes(void) {
+  printf("  Running test_frame_allocator_reclaims_authored_passes...\n");
+  Arena *persistent_arena = arena_create(MB(1), MB(1));
+  Arena *frame_arena = arena_create(KB(64), KB(64));
+  assert(persistent_arena && frame_arena);
+  VkrAllocator persistent_allocator = {.ctx = persistent_arena};
+  VkrAllocator frame_allocator = {.ctx = frame_arena};
+  assert(vkr_allocator_arena(&persistent_allocator));
+  assert(vkr_allocator_arena(&frame_allocator));
+
+  VkrRenderGraph *graph = vkr_rg_create(&persistent_allocator);
+  assert(graph && vkr_rg_set_frame_allocator(graph, &frame_allocator));
+  VkrRenderGraphFrameInfo frame = {.target_width = 64, .target_height = 64};
+  uint64_t first_frame_end = 0;
+  uint64_t first_persistent_end = 0;
+
+  // Without a frame scope, these identical authored graphs exhaust 64 KiB
+  // after only a few iterations. The scoped allocator must return to the same
+  // high-water position on every rebuild.
+  for (uint32_t iteration = 0; iteration < 500; ++iteration) {
+    vkr_rg_begin_frame(graph, &frame);
+    VkrRgImageDesc desc = VKR_RG_IMAGE_DESC_DEFAULT;
+    desc.width = 64;
+    desc.height = 64;
+    desc.usage = vkr_texture_usage_flags_from_bits(VKR_TEXTURE_USAGE_STORAGE);
+    VkrRgImageHandle image =
+        vkr_rg_create_image(graph, string8_lit("Scoped.Storage"), &desc);
+    assert(vkr_rg_image_handle_valid(image));
+
+    for (uint32_t pass_index = 0; pass_index < 16; ++pass_index) {
+      VkrRgPassBuilder pass = rg_barrier_test_add_pass(
+          graph, VKR_RG_PASS_TYPE_COMPUTE, "Scoped.Write");
+      vkr_rg_pass_write_image(&pass, image, VKR_RG_IMAGE_ACCESS_STORAGE_WRITE,
+                              0, 0);
+    }
+    assert(vkr_rg_compile_schedule(graph));
+    assert(graph->passes.length == 16);
+    uint64_t frame_end = arena_pos(frame_arena);
+    if (iteration == 0) {
+      first_frame_end = frame_end;
+      first_persistent_end = arena_pos(persistent_arena);
+    } else {
+      assert(frame_end == first_frame_end);
+      assert(arena_pos(persistent_arena) == first_persistent_end);
+    }
+    vkr_rg_end_frame(graph);
+  }
+
+  vkr_rg_destroy(graph);
+  arena_destroy(frame_arena);
+  arena_destroy(persistent_arena);
+  printf("  test_frame_allocator_reclaims_authored_passes PASSED\n");
+}
+
 bool32_t run_render_graph_barrier_tests() {
   printf("--- Running RenderGraph barrier tests... ---\n");
 
   test_image_access_is_write();
+  test_frame_allocator_reclaims_authored_passes();
   test_main_graph_declares_transmission_stages();
   test_subresource_range_resolve();
+  test_legacy_vulkan_lowering_is_unchanged();
   test_same_layout_write_then_read_emits_barrier();
+  test_explicit_stage_and_subresource_dependency();
   test_present_target_import_and_terminal_states();
   test_write_after_write_emits_barrier();
   test_read_after_read_emits_nothing();

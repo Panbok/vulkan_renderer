@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "id": "smoke.bistro.bindless.gate_a",
+  "suite": "smoke",
+  "description": "Backend-neutral Bistro capture fixture for the bindless Gate A color, depth, and identifier contract.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [1280, 720],
+  "boot": "automation",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": { "warmup": 3, "measure": 2 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "speed": "medium",
+    "position": [-28.4774647, 4.60749865, 2.86034966],
+    "yaw": 228.125198,
+    "pitch": -3.32655358,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500
+  },
+  "compare": {
+    "max_pixel_delta": 1.0,
+    "max_mean_absolute_error": 0.0005,
+    "max_failed_pixel_ratio": 0.00002,
+    "emit_diff": true
+  },
+  "captures": [
+    {
+      "at_frame": 1,
+      "channels": ["final_color", "depth", "picking_ids"]
+    }
+  ]
+}

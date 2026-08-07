@@ -629,6 +629,16 @@ int vkr_harness_profile_run(const char *executable, const char *repo_root,
                             NULL, NULL);
     return exit_code;
   }
+  VkrRendererBackendType renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
+  if (!vkr_harness_renderer_backend_resolve(
+          &case_manifest.renderer, getenv("VKR_HARNESS_RENDERER_BACKEND"),
+          &renderer_backend)) {
+    vkr_harness_stderr(
+        "Case renderer backend conflicts with the environment\n");
+    vkr_harness_emit_result("invalid", VKR_HARNESS_EXIT_INVALID, NULL, NULL);
+    return VKR_HARNESS_EXIT_INVALID;
+  }
+  (void)renderer_backend;
   const char *mismatch =
       vkr_harness_case_profile_mismatch(&case_manifest, &profile);
   if (mismatch) {

@@ -67,6 +67,8 @@ int main(int argc, char **argv) {
   printf("\n"); // Add spacing
   all_passed &= run_texture_hdr_tests();
   printf("\n"); // Add spacing
+  all_passed &= run_texture_lifetime_tests();
+  printf("\n"); // Add spacing
   all_passed &= run_ibl_math_tests();
   printf("\n"); // Add spacing
   all_passed &= run_lighting_system_tests();
@@ -96,6 +98,14 @@ int main(int argc, char **argv) {
   all_passed &= run_hashtable_tests();
   printf("\n"); // Add spacing
   all_passed &= run_freelist_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_metal_memory_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_metal_packet_abi_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_metal_capture_ring_tests();
+  printf("\n"); // Add spacing
+  all_passed &= run_metal_material_tests();
   printf("\n"); // Add spacing
   all_passed &= run_pool_tests();
   printf("\n"); // Add spacing

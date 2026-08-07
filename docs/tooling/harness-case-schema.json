@@ -168,6 +168,16 @@
       "properties": {
         "editor": { "type": "boolean" },
         "skybox": { "type": "boolean" },
+        "text_fixture": {
+          "type": "boolean",
+          "description": "Creates deterministic system-font, bitmap, and MTSDF UI text before scene activation.",
+          "default": false
+        },
+        "backend": {
+          "type": "string",
+          "description": "Optional renderer pin. When present, VKR_HARNESS_RENDERER_BACKEND may confirm but cannot override it.",
+          "enum": ["vulkan", "metal"]
+        },
         "shadow_preset": {
           "type": "string",
           "enum": ["default", "balanced", "high"]
@@ -180,7 +190,7 @@
         "render_mode": {
           "type": "string",
           "description": "Global shading mode for measured frames. Auxiliary debug captures execute as replay runs and do not change this value.",
-          "enum": ["default", "lighting", "normal", "unlit"],
+          "enum": ["default", "lighting", "normal", "unlit", "direct_diffuse", "direct_specular", "material_params"],
           "default": "default"
         }
       },

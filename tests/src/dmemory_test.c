@@ -54,6 +54,23 @@ static void test_dmemory_alloc_basic(void) {
   printf("  test_dmemory_alloc_basic PASSED\n");
 }
 
+static void test_dmemory_default_alignment(void) {
+  printf("  Running test_dmemory_default_alignment...\n");
+
+  VkrDMemory dmemory;
+  assert(vkr_dmemory_create(MB(1), MB(2), &dmemory));
+
+  for (uint64_t size = 1; size <= 64; ++size) {
+    void *ptr = vkr_dmemory_alloc(&dmemory, size);
+    assert(ptr != NULL);
+    assert(((uintptr_t)ptr % MaxAlign()) == 0 &&
+           "Default allocation did not satisfy maximum C alignment");
+  }
+
+  vkr_dmemory_destroy(&dmemory);
+  printf("  test_dmemory_default_alignment PASSED\n");
+}
+
 static void test_dmemory_multiple_allocs(void) {
   printf("  Running test_dmemory_multiple_allocs...\n");
 
@@ -227,6 +244,12 @@ static void test_dmemory_aligned_allocations(void) {
   assert(vkr_dmemory_create(TOTAL_SIZE, RESERVE_SIZE, &dmemory));
 
   uint64_t free_before = vkr_dmemory_get_free_space(&dmemory);
+
+  void *minimum_aligned = vkr_dmemory_alloc_aligned(&dmemory, 32, 8);
+  assert(minimum_aligned != NULL);
+  assert(((uintptr_t)minimum_aligned % MaxAlign()) == 0 &&
+         "DMemory did not promote a sub-minimum alignment");
+  assert(vkr_dmemory_free_aligned(&dmemory, minimum_aligned, 32, 8));
 
   void *ptr = vkr_dmemory_alloc_aligned(&dmemory, SIZE, ALIGNMENT);
   assert(ptr != NULL);
@@ -656,6 +679,7 @@ bool32_t run_dmemory_tests(void) {
 
   test_dmemory_create();
   test_dmemory_alloc_basic();
+  test_dmemory_default_alignment();
   test_dmemory_multiple_allocs();
   test_dmemory_free_and_realloc();
   test_dmemory_out_of_memory();

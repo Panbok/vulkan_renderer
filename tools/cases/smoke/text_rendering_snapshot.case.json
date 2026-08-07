@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "id": "smoke.text.rendering.snapshot",
+  "suite": "smoke",
+  "description": "Deterministic system-font, bitmap, UI MTSDF, and world MTSDF cross-backend capture fixture.",
+  "scene": "assets/scenes/fixtures/text_rendering.scene.json",
+  "seed": 1,
+  "resolution": [960, 540],
+  "boot": "automation",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 3,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 3, "measure": 2 },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "text_fixture": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 1,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0.0, 0.0, 6.0],
+    "yaw": -90.0,
+    "pitch": 0.0,
+    "vertical_fov_degrees": 60.0,
+    "near_plane": 0.1,
+    "far_plane": 100.0
+  },
+  "captures": [
+    {
+      "at_frame": 1,
+      "channels": ["final_color", "picking_ids"]
+    }
+  ]
+}

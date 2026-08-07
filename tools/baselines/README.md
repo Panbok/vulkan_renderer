@@ -35,3 +35,16 @@ Acceptance records the actor, reason, source report and summary digests,
 previous generation, accepted generation, and acceptance timestamp in
 `current.json`. Ordinary `profile`, `snapshot`, `autotest`, and `compare`
 commands never mutate this directory.
+
+## Current Bistro authorities
+
+The accepted tree intentionally retains exactly two Bistro roots, each with one
+generation and the same fourteen cameras plus deterministic system-font,
+bitmap, and MTSDF text:
+
+- `local.offscreen/smoke.bistro.vulkan.text.snapshot` — legacy Vulkan 1.2
+- `local.offscreen/smoke.bistro.metal.text.snapshot` — Metal 4
+
+The case manifests pin their backend and reject a conflicting environment
+request. Cross-backend image differences are diagnostic; each root is compared
+only with later runs of the same backend.

@@ -745,6 +745,15 @@ static void test_renderer_owner_metric_catalog(void) {
   assert(catalog[aggregate_counter_index].kind == VKR_METRIC_KIND_COUNTER);
   assert(catalog[aggregate_counter_index].unit == VKR_METRIC_UNIT_COUNT);
 
+  const uint32_t command_wait_index =
+      vkr_metric_id_index(renderer_metrics.ids.frame_command_slot_waits);
+  assert(command_wait_index < catalog_count);
+  assert(strcmp(catalog[command_wait_index].name, "frame.command_slot_waits") ==
+         0);
+  assert(catalog[command_wait_index].domain == VKR_METRIC_DOMAIN_FRAME);
+  assert(catalog[command_wait_index].kind == VKR_METRIC_KIND_GAUGE);
+  assert(catalog[command_wait_index].unit == VKR_METRIC_UNIT_COUNT);
+
   for (uint32_t owner = 0; owner < VKR_GPU_ALLOCATION_OWNER_COUNT; ++owner) {
     for (uint32_t row = 0; row < VKR_GPU_OWNER_METRIC_ROW_COUNT; ++row) {
       const VkrMetricId id = renderer_metrics.ids.gpu_owner[owner][row];
@@ -786,6 +795,33 @@ static void test_renderer_cumulative_delta(void) {
   printf("  test_renderer_cumulative_delta PASSED\n");
 }
 
+static void test_renderer_pass_sample_publication(void) {
+  printf("  Running test_renderer_pass_sample_publication...\n");
+  VkrRendererMetricsPassSample storage[2] = {0};
+  VkrRendererMetricsPassSample source[3] = {
+      {.name = "shadow", .name_length = 6, .gpu_ms = 0.25, .gpu_valid = true_v},
+      {.name = "opaque", .name_length = 6, .gpu_ms = 0.50, .gpu_valid = true_v},
+      {.name = "tonemap",
+       .name_length = 7,
+       .gpu_ms = 0.10,
+       .gpu_valid = true_v},
+  };
+  VkrRendererMetrics metrics = {
+      .passes = {.samples = storage, .capacity = ArrayCount(storage)},
+  };
+  assert(vkr_renderer_metrics_publish_pass_samples(&metrics, source,
+                                                   ArrayCount(source), 42u));
+  assert(metrics.passes.count == ArrayCount(storage));
+  assert(metrics.passes.truncated);
+  assert(metrics.passes.cpu_frame_index == 42u);
+  assert(storage[0].cpu_frame_index == 42u);
+  assert(storage[1].cpu_frame_index == 42u);
+  assert(strcmp(storage[0].name, "shadow") == 0);
+  assert(storage[1].gpu_ms == 0.50);
+  assert(!vkr_renderer_metrics_publish_pass_samples(NULL, source, 1u, 0u));
+  printf("  test_renderer_pass_sample_publication PASSED\n");
+}
+
 bool32_t run_metrics_tests(void) {
   printf("--- Running Metrics tests... ---\n");
   test_metrics_registration_and_samples();
@@ -800,6 +836,7 @@ bool32_t run_metrics_tests(void) {
   test_device_memory_owner_tracking();
   test_renderer_owner_metric_catalog();
   test_renderer_cumulative_delta();
+  test_renderer_pass_sample_publication();
   printf("--- Metrics tests completed. ---\n");
   return true_v;
 }

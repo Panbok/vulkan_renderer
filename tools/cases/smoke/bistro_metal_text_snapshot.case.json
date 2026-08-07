@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "id": "smoke.bistro.metal.text.snapshot",
+  "suite": "smoke",
+  "description": "Backend-pinned fourteen-view Bistro final-color snapshot with deterministic text coverage.",
+  "scene": "assets/scenes/bistro.scene.json",
+  "seed": 1,
+  "resolution": [1600, 1200],
+  "boot": "automation",
+  "target": "offscreen",
+  "present": "none",
+  "target_image_count": 2,
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 1200000,
+  "asset_ready_timeout_ms": 900000,
+  "frames": { "warmup": 2, "measure": 14 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "text_fixture": true,
+    "backend": "metal",
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "keyframes",
+    "speed": "medium",
+    "interpolation": "linear",
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.100000001,
+    "far_plane": 500,
+    "keys": [
+      {
+        "t": 0.033333334,
+        "position": [-28.4774647, 4.60749865, 2.86034966],
+        "yaw": 228.125198,
+        "pitch": -3.32655358
+      },
+      {
+        "t": 0.050000001,
+        "position": [-36.0456238, 5.61244059, -6.61309624],
+        "yaw": 332.796722,
+        "pitch": -2.20956993
+      },
+      {
+        "t": 0.066666668,
+        "position": [-25.6134262, 4.99596262, 4.69890976],
+        "yaw": 400.191406,
+        "pitch": -5.30775833
+      },
+      {
+        "t": 0.083333335,
+        "position": [-18.0096397, 5.05334187, 8.66211796],
+        "yaw": 332.668182,
+        "pitch": -1.55708086
+      },
+      {
+        "t": 0.100000002,
+        "position": [-7.99768782, 5.32574797, -6.63407183],
+        "yaw": 310.808258,
+        "pitch": -0.825241446
+      },
+      {
+        "t": 0.116666669,
+        "position": [1.88960266, 5.17050791, -18.7858658],
+        "yaw": 283.597595,
+        "pitch": -2.27742887
+      },
+      {
+        "t": 0.133333336,
+        "position": [-15.4823837, 4.51190281, 17.0369129],
+        "yaw": 389.674835,
+        "pitch": -4.85786676
+      },
+      {
+        "t": 0.150000003,
+        "position": [-17.8530293, 3.33339, 13.3927479],
+        "yaw": 335.02298,
+        "pitch": -20.5943317
+      },
+      {
+        "t": 0.16666667,
+        "position": [-11.4465389, 1.73645651, 10.7613335],
+        "yaw": 329.265076,
+        "pitch": -2.32331729
+      },
+      {
+        "t": 0.183333337,
+        "position": [-8.28089523, 1.45478344, 9.61519814],
+        "yaw": 395.960907,
+        "pitch": -5.86349249
+      },
+      {
+        "t": 0.200000004,
+        "position": [-9.35497856, 3.58593941, 21.3709049],
+        "yaw": 375.778351,
+        "pitch": -5.19821882
+      },
+      {
+        "t": 0.216666671,
+        "position": [11.7400227, 3.03159356, 25.9914494],
+        "yaw": 400.829498,
+        "pitch": 1.74905837
+      },
+      {
+        "t": 0.233333338,
+        "position": [28.0169888, 4.04450512, 29.5084362],
+        "yaw": 334.983765,
+        "pitch": -3.75358176
+      },
+      {
+        "t": 0.250000005,
+        "position": [37.761837, 1.44007862, 33.0305481],
+        "yaw": 453.404572,
+        "pitch": 1.23108363
+      }
+    ]
+  },
+  "compare": {
+    "max_pixel_delta": 1.0,
+    "max_mean_absolute_error": 0.0005,
+    "max_failed_pixel_ratio": 0.00002,
+    "emit_diff": true
+  },
+  "captures": [
+    { "at_frame": 0, "channels": ["final_color"] },
+    { "at_frame": 1, "channels": ["final_color"] },
+    { "at_frame": 2, "channels": ["final_color"] },
+    { "at_frame": 3, "channels": ["final_color"] },
+    { "at_frame": 4, "channels": ["final_color"] },
+    { "at_frame": 5, "channels": ["final_color"] },
+    { "at_frame": 6, "channels": ["final_color"] },
+    { "at_frame": 7, "channels": ["final_color"] },
+    { "at_frame": 8, "channels": ["final_color"] },
+    { "at_frame": 9, "channels": ["final_color"] },
+    { "at_frame": 10, "channels": ["final_color"] },
+    { "at_frame": 11, "channels": ["final_color"] },
+    { "at_frame": 12, "channels": ["final_color"] },
+    { "at_frame": 13, "channels": ["final_color"] }
+  ]
+}

@@ -430,8 +430,9 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                           int32_t token,
                                           VkrHarnessRendererConfig *renderer,
                                           VkrHarnessError *error) {
-  static const char *const allowed[] = {"editor", "skybox", "shadow_preset",
-                                        "shadow_cascades", "render_mode"};
+  static const char *const allowed[] = {
+      "editor",        "skybox",          "text_fixture", "backend",
+      "shadow_preset", "shadow_cascades", "render_mode"};
   static const char *const required[] = {"editor", "skybox", "shadow_preset",
                                          "shadow_cascades"};
   if (!vkr_harness_json_object_validate(
@@ -445,6 +446,11 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
                                  &renderer->editor, error) ||
       !vkr_harness_manifest_bool(doc, token, "skybox", true_v,
                                  &renderer->skybox, error) ||
+      !vkr_harness_manifest_bool(doc, token, "text_fixture", false_v,
+                                 &renderer->text_fixture, error) ||
+      !vkr_harness_manifest_string(doc, token, "backend", false_v,
+                                   renderer->backend, sizeof(renderer->backend),
+                                   error) ||
       !vkr_harness_manifest_string(doc, token, "shadow_preset", true_v,
                                    renderer->shadow_preset,
                                    sizeof(renderer->shadow_preset), error) ||
@@ -460,19 +466,22 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
       string_equals(renderer->shadow_preset, "default") ||
       string_equals(renderer->shadow_preset, "balanced") ||
       string_equals(renderer->shadow_preset, "high");
-  const bool8_t mode_valid = string_equals(renderer->render_mode, "default") ||
-                             string_equals(renderer->render_mode, "lighting") ||
-                             string_equals(renderer->render_mode, "normal") ||
-                             string_equals(renderer->render_mode, "unlit") ||
-                             string_equals(renderer->render_mode,
-                                           "direct_diffuse") ||
-                             string_equals(renderer->render_mode,
-                                           "direct_specular") ||
-                             string_equals(renderer->render_mode,
-                                           "material_params");
-  if (!preset_valid || !mode_valid || cascades < 1u || cascades > 8u) {
-    vkr_harness_error_set(error, "renderer.config", "$.renderer",
-                          "Renderer preset, mode, or cascade count is invalid");
+  const bool8_t mode_valid =
+      string_equals(renderer->render_mode, "default") ||
+      string_equals(renderer->render_mode, "lighting") ||
+      string_equals(renderer->render_mode, "normal") ||
+      string_equals(renderer->render_mode, "unlit") ||
+      string_equals(renderer->render_mode, "direct_diffuse") ||
+      string_equals(renderer->render_mode, "direct_specular") ||
+      string_equals(renderer->render_mode, "material_params");
+  const bool8_t backend_valid = renderer->backend[0] == '\0' ||
+                                string_equals(renderer->backend, "vulkan") ||
+                                string_equals(renderer->backend, "metal");
+  if (!preset_valid || !mode_valid || !backend_valid || cascades < 1u ||
+      cascades > 8u) {
+    vkr_harness_error_set(
+        error, "renderer.config", "$.renderer",
+        "Renderer backend, preset, mode, or cascade count is invalid");
     return false_v;
   }
   return true_v;
@@ -887,6 +896,9 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
       .warmup_max_drift_ratio = 0.10,
       .require_warmup_stability = true_v,
   };
+  string_format(out_profile->warmup_stability_metric,
+                sizeof(out_profile->warmup_stability_metric),
+                "cpu.render_submit");
   string_format(out_profile->manifest_path, sizeof(out_profile->manifest_path),
                 "%s", manifest_path ? manifest_path : "<memory>");
   uint64_t schema = 0;
@@ -1017,6 +1029,10 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
     return false_v;
   }
   static const char *const execution_fields[] = {
+      "minimum_repetitions",      "warmup_stability_window",
+      "warmup_stability_metric",  "warmup_max_drift_ratio",
+      "require_warmup_stability", "exclusive_gpu_lane"};
+  static const char *const required_execution_fields[] = {
       "minimum_repetitions", "warmup_stability_window",
       "warmup_max_drift_ratio", "require_warmup_stability",
       "exclusive_gpu_lane"};
@@ -1024,8 +1040,8 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
                                   out_error) ||
       !vkr_harness_json_object_validate(
           &doc, execution, execution_fields, ArrayCount(execution_fields),
-          execution_fields, ArrayCount(execution_fields), "$.execution",
-          out_error)) {
+          required_execution_fields, ArrayCount(required_execution_fields),
+          "$.execution", out_error)) {
     return false_v;
   }
   uint64_t minimum_repetitions = 0;
@@ -1034,6 +1050,10 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
                                 &minimum_repetitions, out_error) ||
       !vkr_harness_manifest_u64(&doc, execution, "warmup_stability_window",
                                 true_v, &stability_window, out_error) ||
+      !vkr_harness_manifest_string(
+          &doc, execution, "warmup_stability_metric", false_v,
+          out_profile->warmup_stability_metric,
+          sizeof(out_profile->warmup_stability_metric), out_error) ||
       !vkr_harness_manifest_f64(&doc, execution, "warmup_max_drift_ratio",
                                 true_v, &out_profile->warmup_max_drift_ratio,
                                 out_error) ||
@@ -1071,6 +1091,12 @@ bool8_t vkr_harness_profile_parse(const char *json, uint64_t json_length,
     vkr_harness_error_set(out_error, "profile.drift_ratio",
                           "$.execution.warmup_max_drift_ratio",
                           "warmup_max_drift_ratio must not be negative");
+    return false_v;
+  }
+  if (!vkr_harness_metric_name_valid(out_profile->warmup_stability_metric)) {
+    vkr_harness_error_set(out_error, "profile.stability_metric",
+                          "$.execution.warmup_stability_metric",
+                          "warmup_stability_metric must be a metric name");
     return false_v;
   }
   out_profile->minimum_repetitions = (uint32_t)minimum_repetitions;
