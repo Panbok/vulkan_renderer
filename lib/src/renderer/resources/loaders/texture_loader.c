@@ -411,7 +411,14 @@ vkr_internal void vkr_texture_loader_unload(VkrResourceLoader *self,
 
   // Destroy GPU resources
   VkrTexture *texture = &system->textures.data[texture_index];
-  vkr_texture_destroy(self->renderer, texture);
+  if (!vkr_texture_destroy(system, texture)) {
+    log_warn("Texture '%s' remains registered because GPU destruction failed",
+             remove_key);
+    vkr_texture_loader_release_unload_keys(system, &primary_key,
+                                           primary_key_size, &queryless_key,
+                                           queryless_key_size);
+    return;
+  }
 
   // Mark slot as free
   texture->description.id = VKR_INVALID_ID;

@@ -18,6 +18,7 @@
 
 struct s_RendererFrontend;
 typedef struct VkrScene VkrScene;
+typedef struct VkrPreparedTextDraw VkrPreparedTextDraw;
 
 typedef struct VkrWorldIblProbeSlot {
   VkrTextureOpaqueHandle irradiance_map;
@@ -146,6 +147,10 @@ typedef struct VkrWorldResources {
  */
 bool8_t vkr_world_resources_init(struct s_RendererFrontend *rf,
                                  VkrWorldResources *resources);
+
+/** Initialize retained world-text CPU state for a packet-native renderer. */
+bool8_t vkr_world_resources_init_retained(struct s_RendererFrontend *rf,
+                                          VkrWorldResources *resources);
 
 /**
  * @brief Release pipelines and text resources.
@@ -299,6 +304,12 @@ bool8_t vkr_world_resources_text_destroy(struct s_RendererFrontend *rf,
  */
 void vkr_world_resources_render_text(struct s_RendererFrontend *rf,
                                      VkrWorldResources *resources);
+
+/** Builds packet-ready world-text descriptors without issuing GPU commands. */
+uint32_t vkr_world_resources_prepare_text_draws(struct s_RendererFrontend *rf,
+                                                VkrWorldResources *resources,
+                                                VkrPreparedTextDraw *out_draws,
+                                                uint32_t capacity);
 
 /**
  * @brief Render world text into the picking pass.

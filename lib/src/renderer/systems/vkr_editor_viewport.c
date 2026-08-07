@@ -68,6 +68,7 @@ bool8_t vkr_editor_viewport_init(RendererFrontend *rf,
 
   MemZero(resources, sizeof(*resources));
   resources->mesh_index = VKR_INVALID_ID;
+  resources->geometry = VKR_GEOMETRY_HANDLE_INVALID;
   resources->pipeline = VKR_PIPELINE_HANDLE_INVALID;
   resources->material = VKR_MATERIAL_HANDLE_INVALID;
   resources->renderpass = NULL;
@@ -235,6 +236,7 @@ bool8_t vkr_editor_viewport_init(RendererFrontend *rf,
     }
     return false_v;
   }
+  resources->geometry = geometry;
 
   VkrSubMeshDesc submesh = {
       .geometry = geometry,
@@ -290,6 +292,7 @@ void vkr_editor_viewport_shutdown(RendererFrontend *rf,
   if (resources->mesh_index != VKR_INVALID_ID) {
     vkr_mesh_manager_remove(&rf->mesh_manager, resources->mesh_index);
     resources->mesh_index = VKR_INVALID_ID;
+    resources->geometry = VKR_GEOMETRY_HANDLE_INVALID;
   }
 
   if (resources->pipeline.id != 0) {
@@ -394,6 +397,7 @@ bool8_t vkr_editor_viewport_build_payload(
 
   out_draw[0] = (VkrDrawItem){
       .mesh = mesh_handle,
+      .geometry = resources->geometry,
       .submesh_index = 0,
       .material = resources->material,
       .instance_count = 1,

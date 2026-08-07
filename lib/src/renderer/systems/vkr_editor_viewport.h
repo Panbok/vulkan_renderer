@@ -29,7 +29,8 @@ typedef struct VkrEditorViewportResources {
   VkrRenderPassHandle renderpass;
   bool8_t owns_renderpass;
   uint32_t mesh_index; /**< Mesh manager index for the viewport quad. */
-  Vec2 plane_size;     /**< Base quad size used to compute model scale. */
+  VkrGeometryHandle geometry;
+  Vec2 plane_size; /**< Base quad size used to compute model scale. */
   bool8_t initialized;
 } VkrEditorViewportResources;
 
@@ -50,8 +51,8 @@ void vkr_editor_viewport_shutdown(struct s_RendererFrontend *rf,
 /**
  * @brief Compute editor viewport mapping for the standard editor layout.
  *
- * Uses the same panel proportions as the original editor viewport (top/bottom/left/
- * right gutters). render_scale is clamped to a safe range.
+ * Uses the same panel proportions as the original editor viewport
+ * (top/bottom/left/ right gutters). render_scale is clamped to a safe range.
  */
 bool8_t vkr_editor_viewport_compute_mapping(uint32_t window_width,
                                             uint32_t window_height,

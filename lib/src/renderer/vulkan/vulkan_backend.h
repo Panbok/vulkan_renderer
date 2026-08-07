@@ -142,7 +142,7 @@ VkrRendererError renderer_vulkan_image_barrier(
     void *backend_state, VkrBackendResourceHandle handle,
     VkrImageAccessFlags src_access, VkrImageAccessFlags dst_access,
     VkrTextureLayout old_layout, VkrTextureLayout new_layout,
-    const VkrImageSubresourceRange *range);
+    const VkrImageSubresourceRange *range, const VkrGpuDependency *dependency);
 VkrRendererError
 renderer_vulkan_update_texture(void *backend_state,
                                VkrBackendResourceHandle handle,

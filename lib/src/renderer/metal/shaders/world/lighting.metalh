@@ -1,0 +1,109 @@
+constant float vkr_metal_packet_pbr_pi = 3.14159265359;
+
+float3 vkr_metal_packet_fresnel(float cosine, float3 f0) {
+  float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0);
+  return f0 + (f90 - f0) * pow(max(1.0 - cosine, 0.0), 5.0);
+}
+
+float3 vkr_metal_packet_fresnel_roughness(float cosine, float3 f0,
+                                          float roughness) {
+  float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0);
+  float3 rough_f90 = f90 * (1.0 - roughness);
+  return f0 + (max(rough_f90, f0) - f0) * pow(max(1.0 - cosine, 0.0), 5.0);
+}
+
+float vkr_metal_packet_pbr_geometry_schlick(float no_x, float roughness) {
+  float r = roughness + 1.0;
+  float k = r * r * 0.125;
+  return no_x / max(no_x * (1.0 - k) + k, 1e-6);
+}
+
+float vkr_metal_packet_distribution(float3 normal, float3 half_vector,
+                                    float roughness) {
+  float alpha = roughness * roughness;
+  float alpha2 = alpha * alpha;
+  float no_h = max(dot(normal, half_vector), 0.0);
+  float denominator = no_h * no_h * (alpha2 - 1.0) + 1.0;
+  return alpha2 /
+         max(vkr_metal_packet_pbr_pi * denominator * denominator, 1e-6);
+}
+
+struct VkrMetalPacketDirectResult {
+  float3 diffuse;
+  float3 specular;
+};
+
+VkrMetalPacketDirectResult
+vkr_metal_packet_direct(float3 normal, float3 view, float3 light,
+                        float3 radiance, float3 albedo, float metallic,
+                        float roughness, float3 f0) {
+  float3 half_vector = normalize(view + light);
+  float no_l = max(dot(normal, light), 0.0);
+  float no_v = max(dot(normal, view), 0.0);
+  float3 fresnel =
+      vkr_metal_packet_fresnel(max(dot(half_vector, view), 0.0), f0);
+  float distribution =
+      vkr_metal_packet_distribution(normal, half_vector, roughness);
+  float geometry = vkr_metal_packet_pbr_geometry_schlick(no_v, roughness) *
+                   vkr_metal_packet_pbr_geometry_schlick(no_l, roughness);
+  float3 specular =
+      distribution * geometry * fresnel / max(4.0 * no_v * no_l, 1e-6);
+  float3 kd = (1.0 - fresnel) * (1.0 - metallic);
+  float3 scale = radiance * no_l;
+  return {kd * albedo / vkr_metal_packet_pbr_pi * scale, specular * scale};
+}
+
+float vkr_metal_packet_specular_ao(float ao, float no_v, float roughness) {
+  return saturate(pow(no_v + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao);
+}
+
+float vkr_metal_packet_probe_influence(
+    const device VkrMetalPacketIblProbe &probe, float3 world_position) {
+  float weight = max(probe.extents_weight.w, 0.0);
+  if (weight <= 1e-6 || probe.intensity_box.w <= 0.5)
+    return weight;
+  float3 outside = max(abs(world_position - probe.center_blend.xyz) -
+                           max(probe.extents_weight.xyz, 0.0),
+                       0.0);
+  float distance = length(outside);
+  if (distance <= 1e-6)
+    return weight;
+  return probe.center_blend.w > 1e-6
+             ? weight * saturate(1.0 - distance / probe.center_blend.w)
+             : 0.0;
+}
+
+float3 vkr_metal_packet_box_project(float3 direction, float3 world_position,
+                                    float3 center, float3 extents) {
+  if (any(extents <= 1e-4))
+    return normalize(direction);
+  float3 safe_direction = direction;
+  for (uint axis = 0u; axis < 3u; ++axis) {
+    if (abs(safe_direction[axis]) < 1e-4)
+      safe_direction[axis] = safe_direction[axis] < 0.0 ? -1e-4 : 1e-4;
+  }
+  float3 t_min = (center - extents - world_position) / safe_direction;
+  float3 t_max = (center + extents - world_position) / safe_direction;
+  float3 t_far = max(t_min, t_max);
+  float t_hit = max(min(t_far.x, min(t_far.y, t_far.z)), 0.0);
+  return normalize(world_position + safe_direction * t_hit - center);
+}
+
+uint4 vkr_metal_packet_point_light_mask(constant VkrMetalPacketDrawRoot *root,
+                                        float3 world_position) {
+  uint4 result = root->point_light_global_mask;
+  uint4 dimensions = root->point_light_grid_dimensions_count;
+  float cell_size = root->point_light_grid_origin_cell_size.w;
+  if (dimensions.w == 0u || cell_size <= 0.0 ||
+      root->point_light_masks == nullptr)
+    return result;
+  int3 cell = int3(
+      floor((world_position - root->point_light_grid_origin_cell_size.xyz) /
+            cell_size));
+  if (any(cell < 0) || cell.x >= int(dimensions.x) ||
+      cell.y >= int(dimensions.y) || cell.z >= int(dimensions.z))
+    return result;
+  uint index = uint(cell.x) +
+               dimensions.x * (uint(cell.y) + dimensions.y * uint(cell.z));
+  return result | root->point_light_masks[index];
+}

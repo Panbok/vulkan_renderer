@@ -32,6 +32,8 @@
 #include "renderer/vkr_renderer.h"
 #include "renderer/vkr_rg_json.h"
 
+typedef struct VkrMetalPacketRenderer VkrMetalPacketRenderer;
+
 /**
  * @brief Per-frame batching statistics for the world render path.
  *
@@ -113,6 +115,12 @@ struct s_RendererFrontend {
   void *backend_state;
   VkrRendererBackendType backend_type;
   VkrRendererBackendInterface backend;
+  VkrMetalPacketRenderer *metal_renderer;
+  VkrAssetPublisher asset_publisher;
+  void *metal_timing_result;
+  uint64_t metal_timing_source_cpu_frame_index;
+  uint64_t metal_last_completed_timing_submit_value;
+  bool8_t metal_completed_timing_ready;
   bool8_t supports_multi_draw_indirect;
   bool8_t supports_draw_indirect_first_instance;
   VkrRendererBootMetrics boot_metrics;

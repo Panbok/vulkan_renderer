@@ -58,6 +58,21 @@ uint16_t vkr_float32_to_float16(float32_t value) {
   return (uint16_t)(sign | ((uint32_t)half_exponent << 10u) | rounded_mantissa);
 }
 
+float32_t vkr_float16_to_float32(uint16_t value) {
+  const bool8_t negative = (value & 0x8000u) != 0;
+  const uint32_t exponent = (value >> 10u) & 0x1fu;
+  const uint32_t mantissa = value & 0x03ffu;
+  float32_t result = 0.0f;
+  if (exponent == 0u) {
+    result = ldexpf((float32_t)mantissa, -24);
+  } else if (exponent == 0x1fu) {
+    result = mantissa == 0u ? INFINITY : NAN;
+  } else {
+    result = ldexpf((float32_t)(1024u + mantissa), (int32_t)exponent - 25);
+  }
+  return negative ? -result : result;
+}
+
 bool8_t
 vkr_ibl_derive_cubemap_size(uint32_t equirect_width, uint32_t equirect_height,
                             uint32_t max_cube_extent, uint32_t max_mip_levels,

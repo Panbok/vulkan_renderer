@@ -5,6 +5,8 @@
 #include "platform/vkr_platform.h"
 #include "renderer/vkr_renderer_metrics.h"
 
+#define VKR_RESOURCE_ASYNC_PATH_MAX 1024u
+
 typedef struct VkrResourceAsyncRequest {
   bool8_t in_use;
   uint64_t request_id;
@@ -41,10 +43,11 @@ typedef struct VkrResourceAsyncJobPayload {
   uint64_t request_id;
   uint32_t loader_id;
   VkrResourceType type;
-  String8 path;
+  uint64_t path_length;
+  uint8_t path[VKR_RESOURCE_ASYNC_PATH_MAX];
 } VkrResourceAsyncJobPayload;
 
-#define VKR_RESOURCE_METRIC_PATH_MAX 1024u
+#define VKR_RESOURCE_METRIC_PATH_MAX VKR_RESOURCE_ASYNC_PATH_MAX
 
 struct VkrResourceSystem {
   VkrAllocator *allocator;
@@ -660,8 +663,16 @@ vkr_internal bool8_t vkr_resource_system_try_submit_cpu_job_locked(
       .request_id = request->request_id,
       .loader_id = request->loader_id,
       .type = request->type,
-      .path = request->path,
+      .path_length = request->path.length,
   };
+  if (!request->path.str || request->path.length == 0 ||
+      request->path.length >= ArrayCount(payload.path)) {
+    request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
+    request->last_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return false_v;
+  }
+  MemCopy(payload.path, request->path.str, request->path.length);
+  payload.path[request->path.length] = '\0';
 
   Bitset8 type_mask = bitset8_create();
   bitset8_set(&type_mask, VKR_JOB_TYPE_RESOURCE);
@@ -731,19 +742,28 @@ vkr_internal bool8_t vkr_resource_system_async_load_job_run(VkrJobContext *ctx,
 
   VkrResourceAsyncJobPayload *job = (VkrResourceAsyncJobPayload *)payload;
   VkrResourceSystem *system = job->system;
-  if (!system || !job->path.str || job->path.length == 0) {
+  if (!system || job->path_length == 0 ||
+      job->path_length >= ArrayCount(job->path) ||
+      job->path[job->path_length] != '\0') {
     return false_v;
   }
 
   VkrAllocator *temp_alloc =
       (ctx && ctx->allocator) ? ctx->allocator : system->allocator;
 
+  /*
+   * Job slots outlive the request-table call that submits them. The job owns
+   * its canonical path inline, so loaders never observe a borrowed request or
+   * allocator-scratch pointer while decoding on another thread.
+   */
+  String8 path = {.str = job->path, .length = job->path_length};
+
   VkrResourceLoader *loader = NULL;
   if (job->loader_id != VKR_INVALID_ID &&
       job->loader_id < system->loader_count) {
     loader = &system->loaders[job->loader_id];
   } else {
-    loader = vkr_resource_system_find_loader_for_path(job->type, job->path);
+    loader = vkr_resource_system_find_loader_for_path(job->type, path);
   }
 
   VkrResourceAsyncCompletion completion = {0};
@@ -754,7 +774,7 @@ vkr_internal bool8_t vkr_resource_system_async_load_job_run(VkrJobContext *ctx,
   if (loader && loader->prepare_async && loader->finalize_async) {
     void *async_payload = NULL;
     VkrRendererError prepare_error = VKR_RENDERER_ERROR_NONE;
-    if (loader->prepare_async(loader, job->path, temp_alloc, &async_payload,
+    if (loader->prepare_async(loader, path, temp_alloc, &async_payload,
                               &prepare_error) &&
         async_payload) {
       completion.has_async_payload = true_v;
@@ -776,14 +796,14 @@ vkr_internal bool8_t vkr_resource_system_async_load_job_run(VkrJobContext *ctx,
     bool8_t previous_force_sync = g_resource_system_force_sync;
     g_resource_system_force_sync = true_v;
     if (loader && loader->load) {
-      loaded = loader->load(loader, job->path, temp_alloc, &loaded_info,
-                            &load_error);
+      loaded =
+          loader->load(loader, path, temp_alloc, &loaded_info, &load_error);
       if (loaded) {
         loaded_info.loader_id = loader->id;
       }
     } else {
       loaded = vkr_resource_system_load_sync_internal(
-          job->type, job->path, temp_alloc, &loaded_info, &load_error);
+          job->type, path, temp_alloc, &loaded_info, &load_error);
     }
     g_resource_system_force_sync = previous_force_sync;
 
@@ -793,24 +813,11 @@ vkr_internal bool8_t vkr_resource_system_async_load_job_run(VkrJobContext *ctx,
     if (loaded) {
       completion.loader_id = loaded_info.loader_id;
     }
-
-    char *path_cstr = NULL;
-    String8 path_copy = {0};
-    if (loaded && !vkr_resource_system_allocate_string8_copy(
-                      system, job->path, &path_cstr, &path_copy)) {
-      vkr_resource_system_unload_sync_internal(&loaded_info, job->path);
-      vkr_resource_system_reset_handle_info(&completion.loaded_info);
-      completion.loaded = false_v;
-      completion.load_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    } else if (loaded) {
-      completion.path = path_copy;
-    }
   }
 
   if (!vkr_mutex_lock(system->mutex)) {
     if (completion.loaded) {
-      vkr_resource_system_unload_sync_internal(&completion.loaded_info,
-                                               completion.path);
+      vkr_resource_system_unload_sync_internal(&completion.loaded_info, path);
     }
     if (completion.has_async_payload) {
       vkr_resource_system_release_async_payload(completion.loader_id,
@@ -822,6 +829,24 @@ vkr_internal bool8_t vkr_resource_system_async_load_job_run(VkrJobContext *ctx,
     return false_v;
   }
 
+  if (completion.loaded) {
+    char *path_cstr = NULL;
+    String8 path_copy = {0};
+    if (!vkr_resource_system_allocate_string8_copy(system, path, &path_cstr,
+                                                   &path_copy)) {
+      vkr_mutex_unlock(system->mutex);
+      vkr_resource_system_unload_sync_internal(&completion.loaded_info, path);
+      vkr_resource_system_reset_handle_info(&completion.loaded_info);
+      completion.loaded = false_v;
+      completion.load_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      if (!vkr_mutex_lock(system->mutex)) {
+        return false_v;
+      }
+    } else {
+      completion.path = path_copy;
+    }
+  }
+
   if (!vkr_resource_system_completion_enqueue_locked(system, &completion)) {
     int32_t request_index =
         vkr_resource_system_request_find_by_id_locked(system, job->request_id);
@@ -830,8 +855,8 @@ vkr_internal bool8_t vkr_resource_system_async_load_job_run(VkrJobContext *ctx,
       if (request->in_use) {
         request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
         request->last_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-        vkr_resource_system_record_request_load(
-            system, request, VKR_METRIC_EVENT_STATUS_FAILED);
+        vkr_resource_system_record_request_load(system, request,
+                                                VKR_METRIC_EVENT_STATUS_FAILED);
       }
     }
     vkr_mutex_unlock(system->mutex);
@@ -1779,8 +1804,8 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
         }
         request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
         request->last_error = VKR_RENDERER_ERROR_NONE;
-        vkr_resource_system_record_request_load(
-            vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
+        vkr_resource_system_record_request_load(vkr_resource_system, request,
+                                                VKR_METRIC_EVENT_STATUS_FAILED);
         uint32_t detached_loader_id = VKR_INVALID_ID;
         void *detached_payload = NULL;
         vkr_resource_system_request_release_locked(
@@ -1808,8 +1833,8 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
       } else {
         request->last_error = completion.load_error;
         request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
-        vkr_resource_system_record_request_load(
-            vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
+        vkr_resource_system_record_request_load(vkr_resource_system, request,
+                                                VKR_METRIC_EVENT_STATUS_FAILED);
       }
     }
 
@@ -1899,8 +1924,8 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
       if (request->cancel_requested && request->ref_count == 0) {
         request->load_state = VKR_RESOURCE_LOAD_STATE_CANCELED;
         request->last_error = VKR_RENDERER_ERROR_NONE;
-        vkr_resource_system_record_request_load(
-            vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
+        vkr_resource_system_record_request_load(vkr_resource_system, request,
+                                                VKR_METRIC_EVENT_STATUS_FAILED);
         if (!request->cpu_job_in_flight) {
           uint32_t detached_loader_id = VKR_INVALID_ID;
           void *detached_payload = NULL;
@@ -1940,7 +1965,7 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
           request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
           request->last_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
           vkr_resource_system_record_request_load(
-            vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
+              vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
           vkr_mutex_unlock(vkr_resource_system->mutex);
           vkr_resource_system_release_async_payload(payload_loader_id,
                                                     payload_ptr);
@@ -2021,7 +2046,7 @@ void vkr_resource_system_pump(const VkrResourceAsyncBudget *budget) {
           request->load_state = VKR_RESOURCE_LOAD_STATE_FAILED;
           request->last_error = finalize_error;
           vkr_resource_system_record_request_load(
-            vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
+              vkr_resource_system, request, VKR_METRIC_EVENT_STATUS_FAILED);
           vkr_mutex_unlock(vkr_resource_system->mutex);
           vkr_resource_system_release_async_payload(payload_loader_id,
                                                     payload_ptr);

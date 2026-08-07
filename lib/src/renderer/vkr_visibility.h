@@ -122,6 +122,7 @@ typedef struct VkrDrawCandidate {
   VkrDrawMergeKey key;
   Mat4 model;
   VkrMeshHandle mesh;
+  VkrGeometryHandle geometry;
   uint32_t submesh_index;
   uint32_t object_id;
   /** Back-to-front ordering for transparent draws; unused when opaque. */

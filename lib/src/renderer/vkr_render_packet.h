@@ -6,24 +6,38 @@
 #include "math/vec.h"
 #include "math/vkr_transform.h"
 #include "renderer/resources/vkr_resources.h"
+#include "renderer/systems/vkr_lighting_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
+#include "renderer/vkr_buffer.h"
 #include "renderer/vkr_instance_buffer.h"
 #include "renderer/vkr_renderer.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 4u
+#define VKR_RENDER_PACKET_VERSION 9u
 
 /** Default manual camera exposure for HDR scene presentation. */
 #define VKR_DEFAULT_EXPOSURE 0.30f
+#define VKR_FRAME_IBL_PROBE_MAX 16u
+#define VKR_PREPARED_TEXT_DRAW_MAX 64u
 
-/**
- * @brief Alias for mesh handles used by stateless draw items.
- *
- * Generation rules:
- * - generation != 0: mesh instance handle (managed by mesh manager)
- * - generation == 0: mesh slot handle (non-instanced mesh index + 1)
- */
+/** Frame-local reflection probe descriptor lowered by the selected renderer. */
+typedef struct VkrFrameIblProbe {
+  VkrTextureHandle irradiance;
+  VkrTextureHandle prefilter;
+  Vec3 center;
+  Vec3 extents;
+  float32_t blend_distance;
+  float32_t weight;
+  float32_t intensity;
+  float32_t diffuse_intensity;
+  float32_t specular_intensity;
+  bool8_t box_projection_enabled;
+} VkrFrameIblProbe;
+
+/** Scene mesh-instance identity retained for legacy instance state. */
 typedef VkrMeshInstanceHandle VkrMeshHandle;
+
+#define VKR_MESH_HANDLE_INVALID VKR_MESH_INSTANCE_HANDLE_INVALID
 
 /**
  * @brief Frame-level metadata provided by the application.
@@ -56,6 +70,24 @@ typedef struct VkrFrameGlobals {
   uint32_t render_mode;
 } VkrFrameGlobals;
 
+/** Backend-neutral frame lighting controls consumed by world shading. */
+typedef struct VkrFrameLighting {
+  bool8_t directional_enabled;
+  Vec3 directional_direction;
+  Vec3 directional_color;
+  float32_t directional_intensity;
+  bool8_t ibl_enabled;
+  float32_t ibl_intensity;
+  float32_t ibl_diffuse_intensity;
+  float32_t ibl_specular_intensity;
+  /** Borrowed, frame-local scene light table and its conservative lookup. */
+  const VkrPointLight *point_lights;
+  uint32_t point_light_count;
+  const VkrPointLightGrid *point_light_grid;
+  const VkrFrameIblProbe *ibl_probes;
+  uint32_t ibl_probe_count;
+} VkrFrameLighting;
+
 /**
  * @brief Draw item referencing cached resources and instance data ranges.
  *
@@ -64,6 +96,9 @@ typedef struct VkrFrameGlobals {
  */
 typedef struct VkrDrawItem {
   VkrMeshHandle mesh;
+  /** Shared GPU geometry identity. Bindless renderers resolve this handle so
+   * repeated scene instances do not duplicate vertex/index allocations. */
+  VkrGeometryHandle geometry;
   uint32_t submesh_index;
   VkrMaterialHandle material;
   uint32_t instance_count;
@@ -71,6 +106,28 @@ typedef struct VkrDrawItem {
   uint64_t sort_key;
   VkrPipelineHandle pipeline_override;
 } VkrDrawItem;
+
+/**
+ * @brief Prepared retained-text geometry borrowed for one packet submission.
+ *
+ * Text shaping and atlas selection are frontend work. Backends only lower the
+ * already-shaped indexed geometry and the logical atlas handle. revision is
+ * incremented whenever the borrowed geometry changes so a backend may cache a
+ * private copy without comparing content.
+ */
+typedef struct VkrPreparedTextDraw {
+  const VkrTextVertex *vertices;
+  uint32_t vertex_count;
+  const uint32_t *indices;
+  uint32_t index_count;
+  uint32_t max_index;
+  VkrTextureHandle atlas;
+  Mat4 model;
+  float32_t screen_px_range;
+  uint32_t font_mode;
+  uint32_t object_id;
+  uint32_t revision;
+} VkrPreparedTextDraw;
 
 /**
  * @brief Payload for explicit opaque, transmission, and blend world stages.
@@ -84,6 +141,8 @@ typedef struct VkrWorldPassPayload {
   uint32_t transparent_draw_count;
   const VkrInstanceDataGPU *instances;
   uint32_t instance_count;
+  const VkrPreparedTextDraw *text_draws;
+  uint32_t text_draw_count;
 } VkrWorldPassPayload;
 
 /**
@@ -121,6 +180,8 @@ typedef struct VkrUiPassPayload {
   uint32_t draw_count;
   const VkrInstanceDataGPU *instances;
   uint32_t instance_count;
+  const VkrPreparedTextDraw *text_draws;
+  uint32_t text_draw_count;
 } VkrUiPassPayload;
 
 /**
@@ -197,6 +258,7 @@ typedef struct VkrRenderPacket {
   uint32_t packet_version;
   VkrFrameInfo frame;
   VkrFrameGlobals globals;
+  const VkrFrameLighting *lighting;
   const VkrWorldPassPayload *world;
   const VkrShadowPassPayload *shadow;
   const VkrSkyboxPassPayload *skybox;

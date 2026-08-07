@@ -1,0 +1,117 @@
+#include <metal_stdlib>
+using namespace metal;
+
+struct VkrMetalPacketVertex {
+  float position_x;
+  float position_y;
+  float position_z;
+  float normal_x;
+  float normal_y;
+  float normal_z;
+  float2 texcoord;
+  float4 color;
+  float4 tangent;
+};
+
+struct VkrMetalPacketInstance {
+  float4x4 model;
+  uint object_id;
+  uint reserved_0;
+  uint reserved_1;
+  uint reserved_2;
+};
+
+struct VkrMetalPacketMaterial {
+  float4 tint;
+  texture2d<float, access::sample> base_color_texture;
+  texture2d<float, access::sample> normal_texture;
+  texture2d<float, access::sample> orm_texture;
+  texture2d<float, access::sample> emissive_texture;
+  uint material_id;
+  uint flags;
+  ulong reserved;
+};
+
+struct VkrMetalPacketIblProbe {
+  texturecube<float, access::sample> irradiance;
+  texturecube<float, access::sample> prefilter;
+  float4 center_blend;
+  float4 extents_weight;
+  float4 intensity_box;
+};
+
+struct VkrMetalPacketDrawRoot {
+  device VkrMetalPacketVertex *vertices;
+  device VkrMetalPacketInstance *instances;
+  float4x4 view_projection;
+  device VkrMetalPacketMaterial *materials;
+  texturecube<float, access::sample> irradiance;
+  texturecube<float, access::sample> prefilter;
+  texture2d<float, access::sample> brdf_lut;
+  float4 view_position;
+  uint material_index;
+  uint first_instance;
+  uint prefilter_mip_count;
+  uint flags;
+  float4 material_emissive;
+  float4 material_dielectric_specular;
+  float4 material_surface;
+  float4 material_alpha;
+  float4 ibl_controls;
+  float4 directional_direction_enabled;
+  float4 directional_color_intensity;
+  float4 ambient_color;
+  uint render_mode;
+  uint alpha_mode;
+  uint material_flags;
+  uint reserved;
+  device float4 *point_light_data;
+  device uint4 *point_light_masks;
+  float4 point_light_grid_origin_cell_size;
+  uint4 point_light_grid_dimensions_count;
+  uint4 point_light_global_mask;
+  uint point_light_count;
+  uint point_light_reserved_0;
+  uint point_light_reserved_1;
+  uint point_light_reserved_2;
+  texture2d_array<float, access::sample> shadow_map;
+  device struct VkrMetalPacketShadowCascade *shadow_cascades;
+  float4x4 view;
+  uint shadow_cascade_count;
+  float shadow_bias;
+  uint shadow_reserved_0;
+  uint shadow_reserved_1;
+  texture2d<float, access::sample> transmission_source;
+  float4 material_attenuation_color;
+  device VkrMetalPacketIblProbe *ibl_probes;
+  uint ibl_probe_count;
+  uint ibl_probe_reserved;
+};
+
+struct VkrMetalPacketShadowCascade {
+  float4x4 light_view_projection;
+  float4 split_depth;
+};
+
+struct VkrMetalPacketVertexOutput {
+  float4 position [[position]];
+  float2 texcoord [[user(TEXCOORD)]];
+  float4 color [[user(COLOR)]];
+  uint object_id [[user(TEXCOORD_1), flat]];
+  float3 world_position [[user(TEXCOORD_2)]];
+  float3 world_normal [[user(TEXCOORD_3)]];
+  float4 world_tangent [[user(TEXCOORD_4)]];
+};
+
+static_assert(sizeof(VkrMetalPacketVertex) == 64,
+              "VkrVertex3d Metal ABI must remain 64 bytes");
+static_assert(sizeof(VkrMetalPacketInstance) == 80,
+              "VkrInstanceDataGPU Metal ABI must remain 80 bytes");
+static_assert(sizeof(VkrMetalPacketMaterial) == 64,
+              "Metal material row ABI must remain 64 bytes");
+static_assert(sizeof(VkrMetalPacketDrawRoot) == 512,
+              "Metal packet draw root ABI must remain 512 bytes");
+static_assert(sizeof(VkrMetalPacketIblProbe) == 64,
+              "Metal packet IBL probe ABI must remain 64 bytes");
+static_assert(sizeof(VkrMetalPacketShadowCascade) == 80,
+              "Metal packet shadow cascade ABI must remain 80 bytes");

@@ -2,6 +2,12 @@
 
 #include "defines.h"
 
+/** Shipping IBL target contract shared by every renderer implementation. */
+#define VKR_IBL_IRRADIANCE_SIZE 64u
+#define VKR_IBL_PREFILTER_SIZE 256u
+#define VKR_IBL_BRDF_SIZE 128u
+#define VKR_IBL_PREFILTER_MIP_COUNT 9u
+
 typedef struct VkrIblUv {
   float32_t u;
   float32_t v;
@@ -26,6 +32,9 @@ typedef enum VkrIblCubeFace {
 
 /** Converts IEEE-754 binary32 to binary16 with round-to-nearest-even. */
 uint16_t vkr_float32_to_float16(float32_t value);
+
+/** Converts IEEE-754 binary16 to binary32 exactly. */
+float32_t vkr_float16_to_float32(uint16_t value);
 
 /**
  * Validates a 2:1 equirect source and derives a power-of-two cube extent and

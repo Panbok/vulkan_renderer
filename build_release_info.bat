@@ -4,36 +4,6 @@ setlocal EnableDelayedExpansion
 
 cd /d "%~dp0"
 
-REM Compile shaders from root assets directory
-echo Compiling shaders
-pushd assets 2>nul
-if errorlevel 1 (
-    echo Error: assets directory not found.
-    exit /b 1
-)
-
-where slangc >nul 2>&1
-if %errorlevel% neq 0 (
-    echo Error: slangc compiler not found. Please install slangc.
-    popd
-    exit /b 1
-)
-
-pushd shaders 2>nul
-if not errorlevel 1 (
-    dir *.slang >nul 2>&1
-    if %errorlevel% equ 0 (
-        for %%f in (*.slang) do (
-            echo Compiling %%f
-            slangc -target spirv -o "%%~nf.spv" "%%f"
-        )
-    ) else (
-        echo No .slang files found to compile
-    )
-    popd
-)
-popd
-
 REM Configure CMake (RelWithDebInfo)
 echo Configuring CMake (RelWithDebInfo)
 set "GENERATOR="

@@ -7,6 +7,7 @@
 #include "memory/arena.h"
 #include "memory/vkr_allocator.h"
 #include "renderer/resources/vkr_resources.h"
+#include "renderer/vkr_asset_publisher.h"
 #include "renderer/vkr_buffer.h"
 #include "renderer/vkr_renderer.h"
 
@@ -16,6 +17,7 @@
 
 typedef struct VkrGeometrySystemConfig {
   uint32_t max_geometries;
+  const VkrAssetPublisher *asset_publisher;
 } VkrGeometrySystemConfig;
 
 /**
@@ -63,6 +65,7 @@ typedef struct VkrGeometrySystem {
   VkrAllocator allocator;
 
   VkrRendererFrontendHandle renderer;
+  const VkrAssetPublisher *asset_publisher;
 
   // Geometry storage and ID free list
   Array_VkrGeometry geometries;

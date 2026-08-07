@@ -3,29 +3,6 @@
 set -e # Exit early if any commands fail
 
 (
-  echo "Compiling shaders"
-  cd "$(dirname "$0")" # Ensure compile steps are run within the repository directory
-  cd assets
-  
-  # Check if slangc compiler is available
-  if ! command -v slangc >/dev/null 2>&1; then
-    echo "Error: slangc compiler not found. Please install slangc." >&2
-    exit 1
-  fi
-  
-  # Check if any .slang files exist in shaders subdirectory
-  cd shaders 2>/dev/null || exit 0
-  if ls *.slang >/dev/null 2>&1; then
-    for file in *.slang; do
-      echo "Compiling $file"
-      slangc -target spirv -o "${file%.slang}.spv" "$file"
-    done
-  else
-    echo "No .slang files found to compile"
-  fi
-  
-  cd ../..
-
   echo "Building renderer_lib"
   cd "$(dirname "$0")" # Ensure compile steps are run within the repository directory
   GENERATOR=""

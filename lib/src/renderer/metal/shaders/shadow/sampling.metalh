@@ -1,0 +1,23 @@
+float vkr_metal_packet_directional_shadow(constant VkrMetalPacketDrawRoot *root,
+                                          float3 world_position) {
+  if (root->shadow_cascade_count == 0u || root->shadow_cascades == nullptr)
+    return 1.0;
+  float view_depth = abs((root->view * float4(world_position, 1.0)).z);
+  uint cascade = 0u;
+  for (uint i = 0u; i + 1u < root->shadow_cascade_count; ++i) {
+    if (view_depth > root->shadow_cascades[i].split_depth.x)
+      cascade = i + 1u;
+  }
+  float4 clip = root->shadow_cascades[cascade].light_view_projection *
+                float4(world_position, 1.0);
+  if (abs(clip.w) <= 1e-6)
+    return 1.0;
+  float3 projected = clip.xyz / clip.w;
+  float2 uv = projected.xy * 0.5 + 0.5;
+  if (any(uv < 0.0) || any(uv > 1.0) || projected.z < 0.0 || projected.z > 1.0)
+    return 1.0;
+  constexpr sampler shadow_sampler(coord::normalized, address::clamp_to_edge,
+                                   filter::nearest);
+  float shadow_depth = root->shadow_map.sample(shadow_sampler, uv, cascade).r;
+  return projected.z - root->shadow_bias <= shadow_depth ? 1.0 : 0.0;
+}

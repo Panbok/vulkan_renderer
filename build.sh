@@ -5,29 +5,6 @@ set -e # Exit early if any commands fail
 BUILD_TYPE="${1:-Debug}"
 
 (
-  echo "Compiling shaders"
-  cd "$(dirname "$0")"
-  cd assets
-
-  # Check if slangc compiler is available
-  if ! command -v slangc >/dev/null 2>&1; then
-    echo "Error: slangc compiler not found. Please install slangc." >&2
-    exit 1
-  fi
-
-  # Check if any .slang files exist in shaders subdirectory
-  cd shaders 2>/dev/null || exit 0
-  if ls *.slang >/dev/null 2>&1; then
-    for file in *.slang; do
-      echo "Compiling $file"
-      slangc -target spirv -o "${file%.slang}.spv" "$file"
-    done
-  else
-    echo "No .slang files found to compile"
-  fi
-
-  cd ../..
-
   echo "Building vulkan_renderer (${BUILD_TYPE})"
   cd "$(dirname "$0")"
 
@@ -61,7 +38,8 @@ BUILD_TYPE="${1:-Debug}"
     echo "Skipping texture pack step (set VKR_VKT_PACK=1 to enable)"
   fi
 
-  cmake --build ./build --target vulkan_renderer vkr_harness --config ${BUILD_TYPE}
+  BUILD_TARGETS="vulkan_renderer vkr_harness"
+  cmake --build ./build --target $BUILD_TARGETS --config ${BUILD_TYPE}
 
   echo "Copying shaders to build/app/assets"
   mkdir -p build/app/assets

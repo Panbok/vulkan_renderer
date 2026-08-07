@@ -19,7 +19,7 @@ vkr_internal INLINE uint64_t vkr_dmemory_metadata_size(void) {
 }
 
 vkr_internal INLINE uint64_t vkr_dmemory_min_alignment(void) {
-  uint64_t min_alignment = AlignOf(void *);
+  uint64_t min_alignment = MaxAlign();
   if (AlignOf(uint64_t) > min_alignment) {
     min_alignment = AlignOf(uint64_t);
   }
@@ -281,7 +281,7 @@ void *vkr_dmemory_alloc_aligned(VkrDMemory *dmemory, uint64_t size,
     return NULL;
   }
 
-allocation_success:
+allocation_success:;
 
   uint64_t aligned_offset = AlignPow2(offset + metadata_size, eff_alignment);
   uint64_t aligned_end = aligned_offset + size;
@@ -322,7 +322,13 @@ vkr_dmemory_free_internal(VkrDMemory *dmemory, void *ptr,
              (uint64_t)provided_size, (uint64_t)header->user_size);
   }
 
-  if (provided_alignment > 0 && provided_alignment != header->alignment) {
+  uint64_t effective_provided_alignment = provided_alignment;
+  if (effective_provided_alignment > 0 &&
+      effective_provided_alignment < vkr_dmemory_min_alignment()) {
+    effective_provided_alignment = vkr_dmemory_min_alignment();
+  }
+  if (effective_provided_alignment > 0 &&
+      effective_provided_alignment != header->alignment) {
     log_warn("dmemory free alignment mismatch: provided=%llu, stored=%llu",
              (uint64_t)provided_alignment, (uint64_t)header->alignment);
   }

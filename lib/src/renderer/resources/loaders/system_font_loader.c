@@ -346,6 +346,36 @@ vkr_internal bool8_t vkr_system_font_create_atlas_texture(
       state->font_size, state->font_index);
 
   VkrRendererError tex_error = VKR_RENDERER_ERROR_NONE;
+  if (texture_system->asset_publisher) {
+    VkrTextureUploadRegion region = {
+        .mip_level = 0,
+        .array_layer = 0,
+        .width = state->atlas_width,
+        .height = state->atlas_height,
+        .depth = 1,
+        .byte_offset = 0,
+        .byte_size = rgba_size,
+    };
+    VkrTexturePreparedLoad prepared = {
+        .description = desc,
+        .upload_data = rgba_data,
+        .upload_data_size = rgba_size,
+        .upload_regions = &region,
+        .upload_region_count = 1,
+        .upload_mip_levels = 1,
+        .upload_array_layers = 1,
+        .upload_is_compressed = false_v,
+    };
+    if (!vkr_texture_system_finalize_prepared_load(
+            texture_system, tex_name, &prepared, out_handle, &tex_error)) {
+      log_error("SystemFontLoader: failed to publish atlas texture");
+      *state->out_error = tex_error;
+      return false_v;
+    }
+    *out_name = tex_name;
+    return true_v;
+  }
+
   VkrTextureOpaqueHandle backend_handle = vkr_renderer_create_texture(
       texture_system->renderer, &desc, rgba_data, &tex_error);
   if (tex_error != VKR_RENDERER_ERROR_NONE || backend_handle == NULL) {
@@ -505,7 +535,12 @@ vkr_internal bool8_t vkr_system_font_remove_atlas_by_entry(
   }
 
   VkrTexture *texture = &system->textures.data[texture_index];
-  vkr_texture_destroy(system->renderer, texture);
+  if (!vkr_texture_destroy(system, texture)) {
+    log_warn("SystemFontLoader: atlas '%s' remains registered because GPU "
+             "destruction failed",
+             key_cstr);
+    return false_v;
+  }
 
   texture->description.id = VKR_INVALID_ID;
   texture->description.generation = VKR_INVALID_ID;

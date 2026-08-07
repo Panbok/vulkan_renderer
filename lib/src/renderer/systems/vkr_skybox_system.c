@@ -23,6 +23,20 @@ bool8_t vkr_skybox_system_init(RendererFrontend *rf, VkrSkyboxSystem *system) {
   MemZero(system, sizeof(*system));
   system->instance_state.id = VKR_INVALID_ID;
 
+  if (rf->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    VkrRendererError texture_error = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_texture_system_load_cube_map(
+            &rf->texture_system, string8_lit("assets/textures/skybox"),
+            string8_lit("jpg"), &system->cube_map_texture, &texture_error)) {
+      String8 error = vkr_renderer_get_error_string(texture_error);
+      log_error("Metal skybox cubemap load failed: %s",
+                string8_cstr(&error));
+      return false_v;
+    }
+    system->initialized = true_v;
+    return true_v;
+  }
+
   VkrResourceHandleInfo skybox_cfg_info = {0};
   VkrRendererError shadercfg_err = VKR_RENDERER_ERROR_NONE;
   if (!vkr_resource_system_load_custom(

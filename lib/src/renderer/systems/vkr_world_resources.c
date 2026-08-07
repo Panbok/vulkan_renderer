@@ -22,11 +22,12 @@
 #include "renderer/systems/vkr_scene_system.h"
 #include "renderer/systems/vkr_shader_system.h"
 #include "renderer/vkr_ibl_math.h"
+#include "renderer/vkr_render_packet.h"
 
 #define VKR_WORLD_RESOURCES_MAX_TEXTS 16
-#define VKR_WORLD_RESOURCES_IBL_IRRADIANCE_SIZE 64u
-#define VKR_WORLD_RESOURCES_IBL_PREFILTER_SIZE 256u
-#define VKR_WORLD_RESOURCES_IBL_BRDF_SIZE 128u
+#define VKR_WORLD_RESOURCES_IBL_IRRADIANCE_SIZE VKR_IBL_IRRADIANCE_SIZE
+#define VKR_WORLD_RESOURCES_IBL_PREFILTER_SIZE VKR_IBL_PREFILTER_SIZE
+#define VKR_WORLD_RESOURCES_IBL_BRDF_SIZE VKR_IBL_BRDF_SIZE
 #define VKR_WORLD_RESOURCES_IBL_RENDERPASS_NAME                                \
   "Renderpass.Builtin.IBL.Convolution"
 
@@ -1233,6 +1234,38 @@ cleanup:
   return false_v;
 }
 
+bool8_t vkr_world_resources_init_retained(RendererFrontend *rf,
+                                          VkrWorldResources *resources) {
+  if (!rf || !resources) {
+    return false_v;
+  }
+  MemZero(resources, sizeof(*resources));
+  resources->pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  resources->transparent_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  resources->overlay_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  resources->text_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  resources->tonemap_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  resources->tonemap_instance_state.id = VKR_INVALID_ID;
+  resources->ibl_fallback_source_cubemap = VKR_TEXTURE_HANDLE_INVALID;
+  resources->ibl_fallback_irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID;
+  resources->ibl_fallback_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
+  resources->ibl_brdf_lut = VKR_TEXTURE_HANDLE_INVALID;
+  resources->ibl_active_irradiance_cubemap = VKR_TEXTURE_HANDLE_INVALID;
+  resources->ibl_active_prefilter_cubemap = VKR_TEXTURE_HANDLE_INVALID;
+  resources->ibl_active_intensity = 1.0f;
+  resources->ibl_active_diffuse_intensity = 1.0f;
+  resources->ibl_active_specular_intensity = 1.0f;
+  resources->text_slots = array_create_VkrWorldTextSlot(
+      &rf->allocator, VKR_WORLD_RESOURCES_MAX_TEXTS);
+  if (!resources->text_slots.data) {
+    return false_v;
+  }
+  MemZero(resources->text_slots.data,
+          sizeof(VkrWorldTextSlot) * (uint64_t)resources->text_slots.length);
+  resources->initialized = true_v;
+  return true_v;
+}
+
 bool8_t vkr_world_resources_prepare_default_ibl(RendererFrontend *rf,
                                                 VkrWorldResources *resources) {
   if (!rf || !resources) {
@@ -2378,7 +2411,8 @@ bool8_t vkr_world_resources_text_create(RendererFrontend *rf,
     return false_v;
   }
 
-  if (resources->text_pipeline.id == 0) {
+  if (rf->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
+      resources->text_pipeline.id == 0) {
     log_error("World text pipeline not ready");
     return false_v;
   }
@@ -2469,6 +2503,64 @@ bool8_t vkr_world_resources_text_destroy(RendererFrontend *rf,
   vkr_text_3d_destroy(&slot->text);
   slot->active = false_v;
   return true_v;
+}
+
+uint32_t vkr_world_resources_prepare_text_draws(RendererFrontend *rf,
+                                                VkrWorldResources *resources,
+                                                VkrPreparedTextDraw *out_draws,
+                                                uint32_t capacity) {
+  if (!rf || !resources || !out_draws || capacity == 0)
+    return 0;
+  uint32_t count = 0;
+  for (uint64_t i = 0; i < resources->text_slots.length; ++i) {
+    VkrWorldTextSlot *slot = &resources->text_slots.data[i];
+    VkrText3D *text = &slot->text;
+    if (!slot->active || !vkr_text_3d_prepare_geometry(text) ||
+        text->index_count == 0)
+      continue;
+    if (count == capacity) {
+      log_error("World text packet capacity exceeded (%u)", capacity);
+      break;
+    }
+    VkrFont *font =
+        vkr_font_system_get_by_handle(text->font_system, text->font);
+    if (!font)
+      font = vkr_font_system_get_default_mtsdf_font(text->font_system);
+    if (!font || font->atlas.id == 0 ||
+        font->atlas.generation == VKR_INVALID_ID)
+      continue;
+    float32_t screen_px_range = 0.0f;
+    uint32_t font_mode = 0;
+    if (font->type == VKR_FONT_TYPE_MTSDF && font->em_size > 0.0f) {
+      const float32_t render_size =
+          text->font_size > 0.0f ? text->font_size : (float32_t)font->size;
+      font_mode = 1;
+      screen_px_range = Clamp(
+          font->sdf_distance_range * (render_size / font->em_size), 1.0f, 4.0f);
+    }
+    Mat4 model = vkr_transform_get_world(&text->transform);
+    if (text->texture_width > 0 && text->texture_height > 0) {
+      model = mat4_mul(
+          model, mat4_scale(vec3_new(text->world_width / text->texture_width,
+                                     text->world_height / text->texture_height,
+                                     1.0f)));
+    }
+    out_draws[count++] = (VkrPreparedTextDraw){
+        .vertices = text->vertices,
+        .vertex_count = text->vertex_count,
+        .indices = text->indices,
+        .index_count = text->index_count,
+        .max_index = text->vertex_count - 1u,
+        .atlas = font->atlas,
+        .model = model,
+        .screen_px_range = screen_px_range,
+        .font_mode = font_mode,
+        .object_id =
+            vkr_picking_encode_id(VKR_PICKING_ID_KIND_WORLD_TEXT, (uint32_t)i),
+        .revision = text->geometry_revision,
+    };
+  }
+  return count;
 }
 
 void vkr_world_resources_render_text(RendererFrontend *rf,

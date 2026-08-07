@@ -77,6 +77,7 @@ typedef struct VkrRgImageBarrier {
   VkrRgImageAccessFlags dst_access; /**< Destination access mask */
   VkrTextureLayout src_layout;      /**< Source layout */
   VkrTextureLayout dst_layout;      /**< Destination layout */
+  VkrGpuDependency dependency;      /**< Canonical execution/visibility */
   /** Subresources this barrier covers; zeroed means the whole image. */
   VkrImageSubresourceRange range;
 } VkrRgImageBarrier;
@@ -88,8 +89,10 @@ Vector(VkrRgImageBarrier);
  */
 typedef struct VkrRgSubresourceState {
   VkrRgImageAccessFlags access;
+  VkrGpuStageFlags stages;
   VkrTextureLayout layout;
   VkrRgImageAccessFlags pending_access;
+  VkrGpuStageFlags pending_stages;
   VkrTextureLayout pending_layout;
   uint32_t pending_token;
 } VkrRgSubresourceState;
@@ -99,7 +102,9 @@ typedef struct VkrRgSubresourceState {
  */
 typedef struct VkrRgBufferState {
   VkrRgBufferAccessFlags access;
+  VkrGpuStageFlags stages;
   VkrRgBufferAccessFlags pending_access;
+  VkrGpuStageFlags pending_stages;
   uint32_t pending_token;
 } VkrRgBufferState;
 
@@ -110,6 +115,7 @@ typedef struct VkrRgBufferBarrier {
   VkrRgBufferHandle buffer;          /**< Buffer to transition */
   VkrRgBufferAccessFlags src_access; /**< Source access mask */
   VkrRgBufferAccessFlags dst_access; /**< Destination access mask */
+  VkrGpuDependency dependency;       /**< Canonical execution/visibility */
 } VkrRgBufferBarrier;
 
 Vector(VkrRgBufferBarrier);
@@ -161,6 +167,9 @@ Vector(VkrRgRenderTargetCacheEntry);
  */
 typedef struct VkrRenderGraph {
   VkrAllocator *allocator;            /**< Allocator for graph-owned data */
+  VkrAllocator *frame_allocator;      /**< Allocator for frame-owned passes */
+  VkrAllocatorScope frame_scope;      /**< Active frame-allocation scope */
+  bool8_t frame_scope_active;         /**< True while frame_scope is live */
   VkrRenderGraphFrameInfo frame_info; /**< Frame info from last begin_frame */
   struct s_RendererFrontend
       *renderer;                 /**< Renderer frontend (set at execute) */

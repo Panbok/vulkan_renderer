@@ -1,0 +1,3 @@
+struct VkrMetalPacketTonemapOutput {
+  float4 position [[position]];
+};

@@ -16,6 +16,7 @@
 #include "renderer/vkr_renderer.h"
 
 struct s_RendererFrontend;
+typedef struct VkrPreparedTextDraw VkrPreparedTextDraw;
 
 /**
  * @brief A single UI text slot in the system.
@@ -24,10 +25,10 @@ struct s_RendererFrontend;
  * text_id; inactive slots may be reused for new text.
  */
 typedef struct VkrUiTextSlot {
-  VkrUiText text;          /**< Text resource and GPU state */
-  bool8_t active;          /**< Slot is in use and should be rendered */
-  VkrUiTextAnchor anchor;   /**< Corner anchor for positioning (e.g. top-left) */
-  Vec2 padding;            /**< Offset from the anchor in pixels */
+  VkrUiText text;         /**< Text resource and GPU state */
+  bool8_t active;         /**< Slot is in use and should be rendered */
+  VkrUiTextAnchor anchor; /**< Corner anchor for positioning (e.g. top-left) */
+  Vec2 padding;           /**< Offset from the anchor in pixels */
 } VkrUiTextSlot;
 Array(VkrUiTextSlot);
 
@@ -39,22 +40,23 @@ Array(VkrUiTextSlot);
  * for editor viewport overlay). Call vkr_ui_system_resize on window resize.
  */
 typedef struct VkrUiSystem {
-  VkrShaderConfig shader_config;           /**< Base UI shader config */
-  VkrPipelineHandle pipeline;               /**< UI quad pipeline */
-  VkrMaterialHandle material;               /**< UI material */
-  VkrRendererInstanceStateHandle instance_state; /**< Per-frame instance state */
+  VkrShaderConfig shader_config; /**< Base UI shader config */
+  VkrPipelineHandle pipeline;    /**< UI quad pipeline */
+  VkrMaterialHandle material;    /**< UI material */
+  VkrRendererInstanceStateHandle
+      instance_state; /**< Per-frame instance state */
 
-  VkrShaderConfig text_shader_config;       /**< Text shader config */
-  VkrPipelineHandle text_pipeline;           /**< Text glyph pipeline */
+  VkrShaderConfig text_shader_config; /**< Text shader config */
+  VkrPipelineHandle text_pipeline;    /**< Text glyph pipeline */
 
-  uint32_t offscreen_width;                 /**< Override width when offscreen enabled */
-  uint32_t offscreen_height;                 /**< Override height when offscreen enabled */
-  bool8_t offscreen_enabled;                /**< Use offscreen dimensions for layout */
-  uint32_t screen_width;                    /**< Last layout width used */
-  uint32_t screen_height;                   /**< Last layout height used */
+  uint32_t offscreen_width;  /**< Override width when offscreen enabled */
+  uint32_t offscreen_height; /**< Override height when offscreen enabled */
+  bool8_t offscreen_enabled; /**< Use offscreen dimensions for layout */
+  uint32_t screen_width;     /**< Last layout width used */
+  uint32_t screen_height;    /**< Last layout height used */
 
-  Array_VkrUiTextSlot text_slots;           /**< Allocated text slots */
-  bool8_t initialized;                     /**< System has been initialized */
+  Array_VkrUiTextSlot text_slots; /**< Allocated text slots */
+  bool8_t initialized;            /**< System has been initialized */
 } VkrUiSystem;
 
 /**
@@ -63,16 +65,18 @@ typedef struct VkrUiSystem {
  * @param system UI system to initialize
  * @return true on success, false on failure
  */
-bool8_t vkr_ui_system_init(struct s_RendererFrontend *rf,
-                           VkrUiSystem *system);
+bool8_t vkr_ui_system_init(struct s_RendererFrontend *rf, VkrUiSystem *system);
+
+/** Initialize retained UI/text CPU state for a packet-native renderer. */
+bool8_t vkr_ui_system_init_retained(struct s_RendererFrontend *rf,
+                                    VkrUiSystem *system);
 
 /**
  * @brief Release UI pipelines and text slots.
  * @param rf Renderer frontend
  * @param system UI system to shutdown
  */
-void vkr_ui_system_shutdown(struct s_RendererFrontend *rf,
-                            VkrUiSystem *system);
+void vkr_ui_system_shutdown(struct s_RendererFrontend *rf, VkrUiSystem *system);
 
 /**
  * @brief Update UI layout sizing for the current window.
@@ -145,17 +149,25 @@ bool8_t vkr_ui_system_text_destroy(struct s_RendererFrontend *rf,
 /**
  * @brief Render UI text with the current global UI projection.
  *
- * Uses screen or offscreen dimensions depending on vkr_ui_system_set_offscreen_size.
+ * Uses screen or offscreen dimensions depending on
+ * vkr_ui_system_set_offscreen_size.
  * @param rf Renderer frontend
  * @param system UI system
  */
 void vkr_ui_system_render_text(struct s_RendererFrontend *rf,
                                VkrUiSystem *system);
 
+/** Builds packet-ready UI text descriptors without issuing GPU commands. */
+uint32_t vkr_ui_system_prepare_text_draws(struct s_RendererFrontend *rf,
+                                          VkrUiSystem *system,
+                                          VkrPreparedTextDraw *out_draws,
+                                          uint32_t capacity);
+
 /**
  * @brief Render UI text into a picking pass.
  *
- * Same geometry as render_text but uses the given picking pipeline for ID output.
+ * Same geometry as render_text but uses the given picking pipeline for ID
+ * output.
  * @param rf Renderer frontend
  * @param system UI system
  * @param pipeline Picking pipeline to bind

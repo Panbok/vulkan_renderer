@@ -367,79 +367,58 @@ vkr_internal void vkr_text_3d_generate_vertices(
   *out_index_count = index_idx;
 }
 
-vkr_internal bool8_t vkr_text_3d_generate_buffers(VkrText3D *text_3d,
-                                                  VkrFont *font) {
+vkr_internal bool8_t vkr_text_3d_generate_geometry(VkrText3D *text_3d,
+                                                   VkrFont *font) {
   assert_log(text_3d != NULL, "Text3D instance is NULL");
   assert_log(font != NULL, "Font is NULL");
 
   uint32_t glyph_count = (uint32_t)text_3d->layout.glyphs.length;
   if (glyph_count == 0) {
     text_3d->quad_count = 0;
+    text_3d->vertex_count = 0;
+    text_3d->index_count = 0;
+    text_3d->geometry_revision++;
     text_3d->buffers_dirty = false_v;
+    text_3d->gpu_buffers_dirty = true_v;
     return true_v;
   }
 
   uint32_t required_vertex_count = glyph_count * VKR_TEXT_3D_QUAD_COUNT;
   uint32_t required_index_count = glyph_count * VKR_TEXT_3D_INDEX_COUNT;
 
-  bool8_t has_buffers = text_3d->vertex_buffer.handle != NULL &&
-                        text_3d->index_buffer.handle != NULL;
-  bool8_t need_realloc = !has_buffers ||
-                         required_vertex_count > text_3d->vertex_capacity ||
-                         required_index_count > text_3d->index_capacity;
-
-  uint32_t alloc_vertex_count = required_vertex_count;
-  uint32_t alloc_index_count = required_index_count;
-  if (need_realloc) {
-    alloc_vertex_count =
+  if (required_vertex_count > text_3d->vertex_capacity) {
+    const uint32_t capacity =
         required_vertex_count + VKR_TEXT_3D_VERTEX_GROWTH_COUNT;
-    alloc_index_count = required_index_count + VKR_TEXT_3D_INDEX_GROWTH_COUNT;
+    VkrTextVertex *vertices = vkr_allocator_realloc(
+        text_3d->allocator, text_3d->vertices,
+        (uint64_t)text_3d->vertex_capacity * sizeof(VkrTextVertex),
+        (uint64_t)capacity * sizeof(VkrTextVertex),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!vertices)
+      return false_v;
+    text_3d->vertices = vertices;
+    text_3d->vertex_capacity = capacity;
   }
-
-  VkrAllocatorScope scope = vkr_allocator_begin_scope(text_3d->allocator);
-  bool8_t use_scope = scope.allocator != NULL;
-
-  VkrTextVertex *vertices = vkr_allocator_alloc(
-      text_3d->allocator, sizeof(VkrTextVertex) * alloc_vertex_count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *indices = vkr_allocator_alloc(text_3d->allocator,
-                                          sizeof(uint32_t) * alloc_index_count,
-                                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-
-  if (!vertices || !indices) {
-    if (use_scope) {
-      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    } else {
-      if (vertices) {
-        vkr_allocator_free(text_3d->allocator, vertices,
-                           sizeof(VkrTextVertex) * alloc_vertex_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      }
-      if (indices) {
-        vkr_allocator_free(text_3d->allocator, indices,
-                           sizeof(uint32_t) * alloc_index_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      }
-    }
-    return false_v;
+  if (required_index_count > text_3d->index_capacity) {
+    const uint32_t capacity =
+        required_index_count + VKR_TEXT_3D_INDEX_GROWTH_COUNT;
+    uint32_t *indices = vkr_allocator_realloc(
+        text_3d->allocator, text_3d->indices,
+        (uint64_t)text_3d->index_capacity * sizeof(uint32_t),
+        (uint64_t)capacity * sizeof(uint32_t), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!indices)
+      return false_v;
+    text_3d->indices = indices;
+    text_3d->index_capacity = capacity;
   }
-
-  MemZero(vertices, sizeof(VkrTextVertex) * alloc_vertex_count);
-  MemZero(indices, sizeof(uint32_t) * alloc_index_count);
+  VkrTextVertex *vertices = text_3d->vertices;
+  uint32_t *indices = text_3d->indices;
+  MemZero(vertices, sizeof(VkrTextVertex) * required_vertex_count);
+  MemZero(indices, sizeof(uint32_t) * required_index_count);
 
   float32_t atlas_w = (float32_t)font->atlas_size_x;
   float32_t atlas_h = (float32_t)font->atlas_size_y;
   if (atlas_w <= 0.0f || atlas_h <= 0.0f) {
-    if (use_scope) {
-      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    } else {
-      vkr_allocator_free(text_3d->allocator, vertices,
-                         sizeof(VkrTextVertex) * alloc_vertex_count,
-                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      vkr_allocator_free(text_3d->allocator, indices,
-                         sizeof(uint32_t) * alloc_index_count,
-                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    }
     return false_v;
   }
   float32_t inv_atlas_w = 1.0f / atlas_w;
@@ -471,19 +450,40 @@ vkr_internal bool8_t vkr_text_3d_generate_buffers(VkrText3D *text_3d,
   text_3d->quad_count = vertex_count / VKR_TEXT_3D_QUAD_COUNT;
 
   if (vertex_count == 0 || index_count == 0) {
+    text_3d->vertex_count = 0;
+    text_3d->index_count = 0;
+    text_3d->geometry_revision++;
     text_3d->buffers_dirty = false_v;
-    if (use_scope) {
-      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    } else {
-      vkr_allocator_free(text_3d->allocator, vertices,
-                         sizeof(VkrTextVertex) * alloc_vertex_count,
-                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      vkr_allocator_free(text_3d->allocator, indices,
-                         sizeof(uint32_t) * alloc_index_count,
-                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    }
+    text_3d->gpu_buffers_dirty = true_v;
     return true_v;
   }
+
+  text_3d->vertex_count = vertex_count;
+  text_3d->index_count = index_count;
+  text_3d->geometry_revision++;
+  text_3d->buffers_dirty = false_v;
+  text_3d->gpu_buffers_dirty = true_v;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_text_3d_upload_geometry(VkrText3D *text_3d) {
+  if (!text_3d || !text_3d->renderer)
+    return false_v;
+  const uint32_t vertex_count = text_3d->vertex_count;
+  const uint32_t index_count = text_3d->index_count;
+  if (vertex_count == 0 || index_count == 0) {
+    text_3d->gpu_buffers_dirty = false_v;
+    return true_v;
+  }
+  VkrTextVertex *vertices = text_3d->vertices;
+  uint32_t *indices = text_3d->indices;
+  const bool8_t has_buffers = text_3d->vertex_buffer.handle != NULL &&
+                              text_3d->index_buffer.handle != NULL;
+  const bool8_t need_realloc = !has_buffers ||
+                               vertex_count > text_3d->gpu_vertex_capacity ||
+                               index_count > text_3d->gpu_index_capacity;
+  const uint32_t alloc_vertex_count = text_3d->vertex_capacity;
+  const uint32_t alloc_index_count = text_3d->index_capacity;
 
   VkrRendererError buffer_err = VKR_RENDERER_ERROR_NONE;
   if (need_realloc) {
@@ -500,16 +500,6 @@ vkr_internal bool8_t vkr_text_3d_generate_buffers(VkrText3D *text_3d,
         &buffer_err);
 
     if (buffer_err != VKR_RENDERER_ERROR_NONE) {
-      if (use_scope) {
-        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      } else {
-        vkr_allocator_free(text_3d->allocator, vertices,
-                           sizeof(VkrTextVertex) * alloc_vertex_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-        vkr_allocator_free(text_3d->allocator, indices,
-                           sizeof(uint32_t) * alloc_index_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      }
       return false_v;
     }
 
@@ -519,21 +509,11 @@ vkr_internal bool8_t vkr_text_3d_generate_buffers(VkrText3D *text_3d,
 
     if (buffer_err != VKR_RENDERER_ERROR_NONE) {
       vkr_vertex_buffer_destroy(text_3d->renderer, &text_3d->vertex_buffer);
-      if (use_scope) {
-        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      } else {
-        vkr_allocator_free(text_3d->allocator, vertices,
-                           sizeof(VkrTextVertex) * alloc_vertex_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-        vkr_allocator_free(text_3d->allocator, indices,
-                           sizeof(uint32_t) * alloc_index_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      }
       return false_v;
     }
 
-    text_3d->vertex_capacity = alloc_vertex_count;
-    text_3d->index_capacity = alloc_index_count;
+    text_3d->gpu_vertex_capacity = alloc_vertex_count;
+    text_3d->gpu_index_capacity = alloc_index_count;
   } else {
     buffer_err = vkr_vertex_buffer_update(
         text_3d->renderer, &text_3d->vertex_buffer, vertices, 0, vertex_count);
@@ -542,32 +522,11 @@ vkr_internal bool8_t vkr_text_3d_generate_buffers(VkrText3D *text_3d,
           text_3d->renderer, &text_3d->index_buffer, indices, 0, index_count);
     }
     if (buffer_err != VKR_RENDERER_ERROR_NONE) {
-      if (use_scope) {
-        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      } else {
-        vkr_allocator_free(text_3d->allocator, vertices,
-                           sizeof(VkrTextVertex) * alloc_vertex_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-        vkr_allocator_free(text_3d->allocator, indices,
-                           sizeof(uint32_t) * alloc_index_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      }
       return false_v;
     }
   }
 
-  if (use_scope) {
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  } else {
-    vkr_allocator_free(text_3d->allocator, vertices,
-                       sizeof(VkrTextVertex) * alloc_vertex_count,
-                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    vkr_allocator_free(text_3d->allocator, indices,
-                       sizeof(uint32_t) * alloc_index_count,
-                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-
-  text_3d->buffers_dirty = false_v;
+  text_3d->gpu_buffers_dirty = false_v;
   return true_v;
 }
 
@@ -613,7 +572,8 @@ bool8_t vkr_text_3d_create(VkrText3D *text_3d,
   RendererFrontend *rf = (RendererFrontend *)renderer;
 
   text_3d->pipeline = cfg.pipeline;
-  if (text_3d->pipeline.id == 0) {
+  if (rf->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
+      text_3d->pipeline.id == 0) {
     VkrRendererError pipe_err = VKR_RENDERER_ERROR_NONE;
     String8 name = string8_lit("shader.default.world_text");
     if (vkr_pipeline_registry_acquire_by_name(&rf->pipeline_registry, name,
@@ -623,7 +583,8 @@ bool8_t vkr_text_3d_create(VkrText3D *text_3d,
     }
   }
 
-  if (text_3d->pipeline.id != 0) {
+  if (rf->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
+      text_3d->pipeline.id != 0) {
     VkrRendererError inst_err = VKR_RENDERER_ERROR_NONE;
     if (!vkr_pipeline_registry_acquire_instance_state(
             &rf->pipeline_registry, text_3d->pipeline, &text_3d->instance_state,
@@ -689,6 +650,17 @@ void vkr_text_3d_destroy(VkrText3D *text_3d) {
                        text_3d->text.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
   }
+  if (text_3d->vertices && text_3d->allocator) {
+    vkr_allocator_free(text_3d->allocator, text_3d->vertices,
+                       (uint64_t)text_3d->vertex_capacity *
+                           sizeof(VkrTextVertex),
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (text_3d->indices && text_3d->allocator) {
+    vkr_allocator_free(text_3d->allocator, text_3d->indices,
+                       (uint64_t)text_3d->index_capacity * sizeof(uint32_t),
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
 
   MemZero(text_3d, sizeof(*text_3d));
 }
@@ -741,9 +713,9 @@ void vkr_text_3d_set_scale(VkrText3D *text_3d, Vec3 scale) {
   vkr_transform_set_scale(&text_3d->transform, scale);
 }
 
-void vkr_text_3d_update(VkrText3D *text_3d) {
-  assert_log(text_3d != NULL, "Text3D instance is NULL");
-  assert_log(text_3d->initialized, "Text3D instance is not initialized");
+bool8_t vkr_text_3d_prepare_geometry(VkrText3D *text_3d) {
+  if (!text_3d || !text_3d->initialized)
+    return false_v;
 
   VkrFont *font =
       vkr_font_system_get_by_handle(text_3d->font_system, text_3d->font);
@@ -753,7 +725,7 @@ void vkr_text_3d_update(VkrText3D *text_3d) {
 
   if (!font) {
     log_warn("Text3D: no font available for rasterization");
-    return;
+    return false_v;
   }
 
   if (text_3d->layout_dirty) {
@@ -761,10 +733,19 @@ void vkr_text_3d_update(VkrText3D *text_3d) {
   }
 
   if (text_3d->buffers_dirty) {
-    if (!vkr_text_3d_generate_buffers(text_3d, font)) {
-      log_warn("Text3D: failed to build glyph buffers");
-    }
+    if (!vkr_text_3d_generate_geometry(text_3d, font))
+      return false_v;
   }
+  return text_3d->vertex_count > 0 && text_3d->index_count > 0;
+}
+
+void vkr_text_3d_update(VkrText3D *text_3d) {
+  assert_log(text_3d != NULL, "Text3D instance is NULL");
+  assert_log(text_3d->initialized, "Text3D instance is not initialized");
+  if (!vkr_text_3d_prepare_geometry(text_3d))
+    return;
+  if (text_3d->gpu_buffers_dirty && !vkr_text_3d_upload_geometry(text_3d))
+    log_warn("Text3D: failed to upload glyph geometry");
 }
 
 void vkr_text_3d_draw(VkrText3D *text_3d) {

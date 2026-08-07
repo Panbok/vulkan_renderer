@@ -2522,6 +2522,7 @@ void application_update(Application *application, float64_t delta) {
 int main(int argc, char **argv) {
   int exit_code = 0;
   const char *metrics_json_path = NULL;
+  VkrRendererBackendType renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--metrics-json") == 0) {
       if (i + 1 >= argc || argv[i + 1][0] == '\0') {
@@ -2529,6 +2530,20 @@ int main(int argc, char **argv) {
         return 2;
       }
       metrics_json_path = argv[++i];
+    } else if (strcmp(argv[i], "--renderer") == 0) {
+      if (i + 1 >= argc || argv[i + 1][0] == '\0') {
+        fprintf(stderr, "--renderer requires 'vulkan' or 'metal'\n");
+        return 2;
+      }
+      const char *renderer_name = argv[++i];
+      if (strcmp(renderer_name, "vulkan") == 0) {
+        renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
+      } else if (strcmp(renderer_name, "metal") == 0) {
+        renderer_backend = VKR_RENDERER_BACKEND_TYPE_METAL;
+      } else {
+        fprintf(stderr, "unknown renderer '%s'\n", renderer_name);
+        return 2;
+      }
     }
   }
   const bool8_t rg_gpu_timing_enabled =
@@ -2544,6 +2559,7 @@ int main(int argc, char **argv) {
   config.height = 600;
   config.app_arena_size = MB(1);
   config.target_frame_rate = 0;
+  config.renderer_backend = renderer_backend;
   config.metrics_config = (VkrMetricsConfig){
       .pass_gpu_timings = rg_gpu_timing_enabled,
       .event_subjects = metrics_event_subjects,

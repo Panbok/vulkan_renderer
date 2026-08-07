@@ -314,6 +314,7 @@ bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
 
   system->renderer = renderer;
   system->config = *config;
+  system->asset_publisher = config->asset_publisher;
   system->max_geometries =
       (config->max_geometries > 0) ? config->max_geometries : 1024;
 
@@ -364,6 +365,14 @@ void vkr_geometry_system_shutdown(VkrGeometrySystem *system) {
 
   for (uint32_t i = 0; i < system->geometries.length; ++i) {
     VkrGeometry *geometry = array_get_VkrGeometry(&system->geometries, i);
+    if (geometry->id != 0 && system->asset_publisher &&
+        system->asset_publisher->unpublish_geometry) {
+      (void)system->asset_publisher->unpublish_geometry(
+          system->asset_publisher->state,
+          (VkrGeometryHandle){.id = geometry->id,
+                              .generation = geometry->generation});
+      continue;
+    }
     if (geometry->vertex_buffer.handle) {
       vkr_vertex_buffer_destroy(system->renderer, &geometry->vertex_buffer);
       geometry->vertex_buffer.handle = NULL;
@@ -472,26 +481,35 @@ VkrGeometryHandle vkr_geometry_system_create(VkrGeometrySystem *system,
     debug_name = string8_lit("geometry");
   }
 
-  VkrRendererError err = VKR_RENDERER_ERROR_NONE;
-  geom->vertex_buffer = vkr_vertex_buffer_create(
-      system->renderer, config->vertices, geom->vertex_size, geom->vertex_count,
-      VKR_VERTEX_INPUT_RATE_VERTEX, debug_name, &err);
-  if (err != VKR_RENDERER_ERROR_NONE) {
-    log_error("Failed to create vertex buffer for '%s'", geom->name);
-    *out_error = err;
-    return geometry_creation_failure(system, geom, handle);
-  }
+  if (system->asset_publisher && system->asset_publisher->publish_geometry) {
+    if (!system->asset_publisher->publish_geometry(
+            system->asset_publisher->state, handle, config)) {
+      log_error("Failed to publish geometry '%s'", geom->name);
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+      return geometry_creation_failure(system, geom, handle);
+    }
+  } else {
+    VkrRendererError err = VKR_RENDERER_ERROR_NONE;
+    geom->vertex_buffer = vkr_vertex_buffer_create(
+        system->renderer, config->vertices, geom->vertex_size,
+        geom->vertex_count, VKR_VERTEX_INPUT_RATE_VERTEX, debug_name, &err);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      log_error("Failed to create vertex buffer for '%s'", geom->name);
+      *out_error = err;
+      return geometry_creation_failure(system, geom, handle);
+    }
 
-  VkrIndexType index_type = (config->index_size == sizeof(uint16_t))
-                                ? VKR_INDEX_TYPE_UINT16
-                                : VKR_INDEX_TYPE_UINT32;
-  geom->index_buffer =
-      vkr_index_buffer_create(system->renderer, config->indices, index_type,
-                              geom->index_count, debug_name, &err);
-  if (err != VKR_RENDERER_ERROR_NONE) {
-    log_error("Failed to create index buffer for '%s'", geom->name);
-    *out_error = err;
-    return geometry_creation_failure(system, geom, handle);
+    VkrIndexType index_type = (config->index_size == sizeof(uint16_t))
+                                  ? VKR_INDEX_TYPE_UINT16
+                                  : VKR_INDEX_TYPE_UINT32;
+    geom->index_buffer =
+        vkr_index_buffer_create(system->renderer, config->indices, index_type,
+                                geom->index_count, debug_name, &err);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      log_error("Failed to create index buffer for '%s'", geom->name);
+      *out_error = err;
+      return geometry_creation_failure(system, geom, handle);
+    }
   }
 
   const char *stable_name = geom->name;
@@ -516,6 +534,17 @@ uint32_t vkr_geometry_system_create_batch(VkrGeometrySystem *system,
   assert_log(count > 0, "Count must be > 0");
   assert_log(out_handles != NULL, "Out handles is NULL");
   assert_log(out_errors != NULL, "Out errors is NULL");
+
+  if (system->asset_publisher) {
+    uint32_t created = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+      out_handles[i] = vkr_geometry_system_create(system, &configs[i],
+                                                  auto_release, &out_errors[i]);
+      if (out_handles[i].id != 0)
+        created++;
+    }
+    return created;
+  }
 
   for (uint32_t i = 0; i < count; ++i) {
     out_handles[i] = VKR_GEOMETRY_HANDLE_INVALID;
@@ -1602,6 +1631,14 @@ void vkr_geometry_system_release(VkrGeometrySystem *system,
   }
 
   if (should_release) {
+    if (system->asset_publisher &&
+        system->asset_publisher->unpublish_geometry) {
+      if (!system->asset_publisher->unpublish_geometry(
+              system->asset_publisher->state, handle)) {
+        log_error("Failed to unpublish geometry '%s'", geometry->name);
+        return;
+      }
+    }
     if (geometry->vertex_buffer.handle) {
       vkr_vertex_buffer_destroy(system->renderer, &geometry->vertex_buffer);
       geometry->vertex_buffer.handle = NULL;

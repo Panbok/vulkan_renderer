@@ -1508,8 +1508,9 @@ vkr_internal void vkr_rg_sync_scene_color_handles(VkrRenderGraph *graph) {
 }
 
 vkr_internal void vkr_rg_mark_reachable(VkrRenderGraph *graph, uint32_t start,
-                                        bool8_t *keep) {
-  Vector_uint32_t stack = vector_create_uint32_t(graph->allocator);
+                                        bool8_t *keep,
+                                        VkrAllocator *scratch_allocator) {
+  Vector_uint32_t stack = vector_create_uint32_t(scratch_allocator);
   vector_push_uint32_t(&stack, start);
 
   while (stack.length > 0) {
@@ -1533,8 +1534,10 @@ vkr_internal void vkr_rg_cull_passes(VkrRenderGraph *graph) {
     return;
   }
 
+  VkrAllocator *scratch_allocator =
+      graph->frame_allocator ? graph->frame_allocator : graph->allocator;
   bool8_t *keep =
-      vkr_allocator_alloc(graph->allocator, sizeof(bool8_t) * pass_count,
+      vkr_allocator_alloc(scratch_allocator, sizeof(bool8_t) * pass_count,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   MemZero(keep, sizeof(bool8_t) * pass_count);
 
@@ -1550,7 +1553,7 @@ vkr_internal void vkr_rg_cull_passes(VkrRenderGraph *graph) {
     for (uint32_t i = 0; i < pass_count; ++i) {
       VkrRgPass *pass = vector_get_VkrRgPass(&graph->passes, i);
       if (pass->desc.flags & VKR_RG_PASS_FLAG_NO_CULL) {
-        vkr_rg_mark_reachable(graph, i, keep);
+        vkr_rg_mark_reachable(graph, i, keep, scratch_allocator);
       }
     }
 
@@ -1558,7 +1561,7 @@ vkr_internal void vkr_rg_cull_passes(VkrRenderGraph *graph) {
       for (uint32_t i = 0; i < pass_count; ++i) {
         VkrRgPass *pass = vector_get_VkrRgPass(&graph->passes, i);
         if (vkr_rg_pass_writes_image(pass, graph->present_image)) {
-          vkr_rg_mark_reachable(graph, i, keep);
+          vkr_rg_mark_reachable(graph, i, keep, scratch_allocator);
         }
       }
     }
@@ -1568,7 +1571,7 @@ vkr_internal void vkr_rg_cull_passes(VkrRenderGraph *graph) {
       for (uint32_t p = 0; p < pass_count; ++p) {
         VkrRgPass *pass = vector_get_VkrRgPass(&graph->passes, p);
         if (vkr_rg_pass_writes_image(pass, handle)) {
-          vkr_rg_mark_reachable(graph, p, keep);
+          vkr_rg_mark_reachable(graph, p, keep, scratch_allocator);
         }
       }
     }
@@ -1578,7 +1581,7 @@ vkr_internal void vkr_rg_cull_passes(VkrRenderGraph *graph) {
       for (uint32_t p = 0; p < pass_count; ++p) {
         VkrRgPass *pass = vector_get_VkrRgPass(&graph->passes, p);
         if (vkr_rg_pass_writes_buffer(pass, handle)) {
-          vkr_rg_mark_reachable(graph, p, keep);
+          vkr_rg_mark_reachable(graph, p, keep, scratch_allocator);
         }
       }
     }
@@ -1590,7 +1593,7 @@ vkr_internal void vkr_rg_cull_passes(VkrRenderGraph *graph) {
     pass->culled = !keep[i] || disabled;
   }
 
-  vkr_allocator_free(graph->allocator, keep, sizeof(bool8_t) * pass_count,
+  vkr_allocator_free(scratch_allocator, keep, sizeof(bool8_t) * pass_count,
                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 }
 
@@ -1600,8 +1603,10 @@ vkr_internal bool8_t vkr_rg_topo_sort(VkrRenderGraph *graph) {
     return true_v;
   }
 
+  VkrAllocator *scratch_allocator =
+      graph->frame_allocator ? graph->frame_allocator : graph->allocator;
   uint32_t *in_degree =
-      vkr_allocator_alloc(graph->allocator, sizeof(uint32_t) * pass_count,
+      vkr_allocator_alloc(scratch_allocator, sizeof(uint32_t) * pass_count,
                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   MemZero(in_degree, sizeof(uint32_t) * pass_count);
 
@@ -1621,7 +1626,7 @@ vkr_internal bool8_t vkr_rg_topo_sort(VkrRenderGraph *graph) {
     }
   }
 
-  Vector_uint32_t queue = vector_create_uint32_t(graph->allocator);
+  Vector_uint32_t queue = vector_create_uint32_t(scratch_allocator);
   for (uint32_t i = 0; i < pass_count; ++i) {
     VkrRgPass *pass = vector_get_VkrRgPass(&graph->passes, i);
     if (pass->culled) {
@@ -1661,7 +1666,8 @@ vkr_internal bool8_t vkr_rg_topo_sort(VkrRenderGraph *graph) {
     log_error("RenderGraph compile failed: dependency cycle detected");
   }
 
-  vkr_allocator_free(graph->allocator, in_degree, sizeof(uint32_t) * pass_count,
+  vkr_allocator_free(scratch_allocator, in_degree,
+                     sizeof(uint32_t) * pass_count,
                      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
 
   return ok;
@@ -1912,6 +1918,9 @@ vkr_internal bool8_t vkr_rg_ensure_barrier_state(VkrRenderGraph *graph) {
     VkrRgSubresourceState seed = {
         .access =
             image->imported ? image->imported_access : VKR_RG_IMAGE_ACCESS_NONE,
+        .stages = vkr_gpu_stages_for_image_access(
+            image->imported ? image->imported_access : VKR_RG_IMAGE_ACCESS_NONE,
+            true_v),
         .layout = image->imported ? image->imported_layout
                                   : VKR_TEXTURE_LAYOUT_UNDEFINED,
     };
@@ -1926,6 +1935,10 @@ vkr_internal bool8_t vkr_rg_ensure_barrier_state(VkrRenderGraph *graph) {
     graph->buffer_states[i] = (VkrRgBufferState){
         .access = buffer->imported ? buffer->imported_access
                                    : VKR_RG_BUFFER_ACCESS_NONE,
+        .stages = vkr_gpu_stages_for_buffer_access(
+            buffer->imported ? buffer->imported_access
+                             : VKR_RG_BUFFER_ACCESS_NONE,
+            true_v),
     };
   }
 
@@ -1941,10 +1954,15 @@ vkr_internal bool8_t vkr_rg_ensure_barrier_state(VkrRenderGraph *graph) {
  */
 vkr_internal bool8_t vkr_rg_declare_image_access(
     VkrRenderGraph *graph, const VkrRgPass *pass, VkrRgImageHandle handle,
-    VkrRgImageAccessFlags access, const VkrRgImageSlice *slice, uint32_t token,
-    uint32_t *touched_count) {
+    VkrRgImageAccessFlags access, VkrGpuStageFlags stages,
+    const VkrRgImageSlice *slice, uint32_t token, uint32_t *touched_count) {
   VkrRgImage *image = vkr_rg_image_from_handle(graph, handle);
   if (!image) {
+    return false_v;
+  }
+  if (stages == VKR_GPU_STAGE_NONE) {
+    log_error("RenderGraph pass '%.*s' declares no execution stage for image",
+              (int)pass->desc.name.length, pass->desc.name.str);
     return false_v;
   }
   uint32_t image_index = handle.id - 1;
@@ -2004,8 +2022,11 @@ vkr_internal bool8_t vkr_rg_declare_image_access(
         }
         state->pending_access =
             (VkrRgImageAccessFlags)(state->pending_access | access);
+        state->pending_stages =
+            (VkrGpuStageFlags)(state->pending_stages | stages);
       } else {
         state->pending_access = access;
+        state->pending_stages = stages;
         state->pending_layout = desired_layout;
         state->pending_token = token;
       }
@@ -2019,6 +2040,7 @@ vkr_internal bool8_t vkr_rg_declare_image_access(
 vkr_internal bool8_t vkr_rg_declare_buffer_access(VkrRenderGraph *graph,
                                                   VkrRgBufferHandle handle,
                                                   VkrRgBufferAccessFlags access,
+                                                  VkrGpuStageFlags stages,
                                                   uint32_t token,
                                                   uint32_t *touched_count) {
   uint32_t index = handle.id - 1;
@@ -2026,12 +2048,17 @@ vkr_internal bool8_t vkr_rg_declare_buffer_access(VkrRenderGraph *graph,
       index >= graph->touched_buffer_capacity) {
     return false_v;
   }
+  if (stages == VKR_GPU_STAGE_NONE) {
+    return false_v;
+  }
   VkrRgBufferState *state = &graph->buffer_states[index];
   if (state->pending_token == token) {
     state->pending_access =
         (VkrRgBufferAccessFlags)(state->pending_access | access);
+    state->pending_stages = (VkrGpuStageFlags)(state->pending_stages | stages);
   } else {
     state->pending_access = access;
+    state->pending_stages = stages;
     state->pending_token = token;
     graph->touched_buffer_indices[(*touched_count)++] = index;
   }
@@ -2067,8 +2094,9 @@ vkr_internal void vkr_rg_commit_pass_barriers(VkrRenderGraph *graph,
         while (run_end < layers) {
           VkrRgSubresourceState *next = &states[mip * layers + run_end];
           if (next->pending_token != token || next->access != first->access ||
-              next->layout != first->layout ||
+              next->stages != first->stages || next->layout != first->layout ||
               next->pending_access != first->pending_access ||
+              next->pending_stages != first->pending_stages ||
               next->pending_layout != first->pending_layout) {
             break;
           }
@@ -2085,6 +2113,14 @@ vkr_internal void vkr_rg_commit_pass_barriers(VkrRenderGraph *graph,
               .dst_access = first->pending_access,
               .src_layout = first->layout,
               .dst_layout = first->pending_layout,
+              .dependency =
+                  {
+                      .src_stages = first->stages,
+                      .dst_stages = first->pending_stages,
+                      .visibility = vkr_image_access_is_write(first->access)
+                                        ? VKR_GPU_VISIBILITY_DEVICE
+                                        : VKR_GPU_VISIBILITY_NONE,
+                  },
               .range =
                   {
                       .base_mip = mip,
@@ -2099,6 +2135,7 @@ vkr_internal void vkr_rg_commit_pass_barriers(VkrRenderGraph *graph,
         for (uint32_t l = layer; l < run_end; ++l) {
           VkrRgSubresourceState *state = &states[mip * layers + l];
           state->access = state->pending_access;
+          state->stages = state->pending_stages;
           state->layout = state->pending_layout;
         }
         layer = run_end;
@@ -2118,10 +2155,18 @@ vkr_internal void vkr_rg_commit_pass_barriers(VkrRenderGraph *graph,
           .buffer = {.id = index + 1, .generation = buffer->generation},
           .src_access = state->access,
           .dst_access = state->pending_access,
+          .dependency =
+              {
+                  .src_stages = state->stages,
+                  .dst_stages = state->pending_stages,
+                  .visibility = prior_writes ? VKR_GPU_VISIBILITY_DEVICE
+                                             : VKR_GPU_VISIBILITY_NONE,
+              },
       };
       vector_push_VkrRgBufferBarrier(&pass->pre_buffer_barriers, barrier);
     }
     state->access = state->pending_access;
+    state->stages = state->pending_stages;
   }
 }
 
@@ -2145,6 +2190,7 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
     for (uint64_t i = 0; i < pass->desc.image_reads.length; ++i) {
       VkrRgImageUse *use = vector_get_VkrRgImageUse(&pass->desc.image_reads, i);
       if (!vkr_rg_declare_image_access(graph, pass, use->image, use->access,
+                                       use->stages,
                                        use->has_slice ? &use->slice : NULL,
                                        token, &touched_image_count)) {
         return false_v;
@@ -2155,6 +2201,7 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
       VkrRgImageUse *use =
           vector_get_VkrRgImageUse(&pass->desc.image_writes, i);
       if (!vkr_rg_declare_image_access(graph, pass, use->image, use->access,
+                                       use->stages,
                                        use->has_slice ? &use->slice : NULL,
                                        token, &touched_image_count)) {
         return false_v;
@@ -2166,7 +2213,8 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
           vector_get_VkrRgAttachment(&pass->desc.color_attachments, i);
       if (!vkr_rg_declare_image_access(
               graph, pass, att->image, VKR_RG_IMAGE_ACCESS_COLOR_ATTACHMENT,
-              &att->desc.slice, token, &touched_image_count)) {
+              VKR_GPU_STAGE_COLOR_OUTPUT, &att->desc.slice, token,
+              &touched_image_count)) {
         return false_v;
       }
     }
@@ -2176,9 +2224,10 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
       VkrRgImageAccessFlags access = att->read_only
                                          ? VKR_RG_IMAGE_ACCESS_DEPTH_READ_ONLY
                                          : VKR_RG_IMAGE_ACCESS_DEPTH_ATTACHMENT;
-      if (!vkr_rg_declare_image_access(graph, pass, att->image, access,
-                                       &att->desc.slice, token,
-                                       &touched_image_count)) {
+      if (!vkr_rg_declare_image_access(
+              graph, pass, att->image, access,
+              vkr_gpu_stages_for_image_access(access, false_v),
+              &att->desc.slice, token, &touched_image_count)) {
         return false_v;
       }
     }
@@ -2186,7 +2235,8 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
     for (uint64_t i = 0; i < pass->desc.buffer_reads.length; ++i) {
       VkrRgBufferUse *use =
           vector_get_VkrRgBufferUse(&pass->desc.buffer_reads, i);
-      if (!vkr_rg_declare_buffer_access(graph, use->buffer, use->access, token,
+      if (!vkr_rg_declare_buffer_access(graph, use->buffer, use->access,
+                                        use->stages, token,
                                         &touched_buffer_count)) {
         return false_v;
       }
@@ -2195,7 +2245,8 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
     for (uint64_t i = 0; i < pass->desc.buffer_writes.length; ++i) {
       VkrRgBufferUse *use =
           vector_get_VkrRgBufferUse(&pass->desc.buffer_writes, i);
-      if (!vkr_rg_declare_buffer_access(graph, use->buffer, use->access, token,
+      if (!vkr_rg_declare_buffer_access(graph, use->buffer, use->access,
+                                        use->stages, token,
                                         &touched_buffer_count)) {
         return false_v;
       }
@@ -2222,6 +2273,15 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
         .dst_access = (VkrRgImageAccessFlags)terminal.access,
         .src_layout = state->layout,
         .dst_layout = terminal.layout,
+        .dependency =
+            {
+                .src_stages = state->stages,
+                .dst_stages = vkr_gpu_stages_for_image_access(
+                    (VkrImageAccessFlags)terminal.access, false_v),
+                .visibility = vkr_image_access_is_write(state->access)
+                                  ? VKR_GPU_VISIBILITY_DEVICE
+                                  : VKR_GPU_VISIBILITY_NONE,
+            },
     };
     // A write must still be made visible even when the layout already matches.
     if (barrier.src_access != barrier.dst_access ||
@@ -2230,6 +2290,7 @@ vkr_internal bool8_t vkr_rg_generate_barriers(VkrRenderGraph *graph) {
       vector_push_VkrRgImageBarrier(&graph->terminal_image_barriers, barrier);
     }
     state->access = barrier.dst_access;
+    state->stages = barrier.dependency.dst_stages;
     state->layout = barrier.dst_layout;
   }
 
@@ -2281,12 +2342,14 @@ bool8_t vkr_rg_compile_schedule(VkrRenderGraph *graph) {
 
   uint32_t image_count = (uint32_t)graph->images.length;
   uint32_t buffer_count = (uint32_t)graph->buffers.length;
+  VkrAllocator *scratch_allocator =
+      graph->frame_allocator ? graph->frame_allocator : graph->allocator;
 
   VkrRgDependencyState *image_states = NULL;
   VkrRgDependencyState *buffer_states = NULL;
   if (image_count > 0) {
     image_states = vkr_allocator_alloc(
-        graph->allocator, sizeof(VkrRgDependencyState) * image_count,
+        scratch_allocator, sizeof(VkrRgDependencyState) * image_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     if (!image_states) {
       log_error("RenderGraph compile: image_states allocation failed");
@@ -2295,11 +2358,11 @@ bool8_t vkr_rg_compile_schedule(VkrRenderGraph *graph) {
   }
   if (buffer_count > 0) {
     buffer_states = vkr_allocator_alloc(
-        graph->allocator, sizeof(VkrRgDependencyState) * buffer_count,
+        scratch_allocator, sizeof(VkrRgDependencyState) * buffer_count,
         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
     if (!buffer_states) {
       if (image_states) {
-        vkr_allocator_free(graph->allocator, image_states,
+        vkr_allocator_free(scratch_allocator, image_states,
                            sizeof(VkrRgDependencyState) * image_count,
                            VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
       }
@@ -2310,12 +2373,12 @@ bool8_t vkr_rg_compile_schedule(VkrRenderGraph *graph) {
 
   if (image_states && image_count > 0) {
     for (uint32_t i = 0; i < image_count; ++i) {
-      vkr_rg_dependency_state_init(&image_states[i], graph->allocator);
+      vkr_rg_dependency_state_init(&image_states[i], scratch_allocator);
     }
   }
   if (buffer_states && buffer_count > 0) {
     for (uint32_t i = 0; i < buffer_count; ++i) {
-      vkr_rg_dependency_state_init(&buffer_states[i], graph->allocator);
+      vkr_rg_dependency_state_init(&buffer_states[i], scratch_allocator);
     }
   }
 
@@ -2385,12 +2448,12 @@ bool8_t vkr_rg_compile_schedule(VkrRenderGraph *graph) {
   }
 
   if (image_count > 0) {
-    vkr_allocator_free(graph->allocator, image_states,
+    vkr_allocator_free(scratch_allocator, image_states,
                        sizeof(VkrRgDependencyState) * image_count,
                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
   if (buffer_count > 0) {
-    vkr_allocator_free(graph->allocator, buffer_states,
+    vkr_allocator_free(scratch_allocator, buffer_states,
                        sizeof(VkrRgDependencyState) * buffer_count,
                        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }

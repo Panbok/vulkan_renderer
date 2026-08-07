@@ -16,6 +16,7 @@
 #include "renderer/systems/vkr_pipeline_registry.h"
 #include "renderer/systems/vkr_resource_system.h"
 #include "renderer/systems/vkr_shader_system.h"
+#include "renderer/vkr_render_packet.h"
 
 #define VKR_UI_SYSTEM_MAX_TEXTS 16
 
@@ -286,6 +287,27 @@ cleanup:
   return false_v;
 }
 
+bool8_t vkr_ui_system_init_retained(RendererFrontend *rf, VkrUiSystem *system) {
+  if (!rf || !system) {
+    return false_v;
+  }
+  MemZero(system, sizeof(*system));
+  system->instance_state.id = VKR_INVALID_ID;
+  system->pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  system->text_pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  system->text_slots =
+      array_create_VkrUiTextSlot(&rf->allocator, VKR_UI_SYSTEM_MAX_TEXTS);
+  if (!system->text_slots.data) {
+    return false_v;
+  }
+  MemZero(system->text_slots.data,
+          sizeof(VkrUiTextSlot) * (uint64_t)system->text_slots.length);
+  system->screen_width = rf->last_window_width;
+  system->screen_height = rf->last_window_height;
+  system->initialized = true_v;
+  return true_v;
+}
+
 void vkr_ui_system_shutdown(RendererFrontend *rf, VkrUiSystem *system) {
   if (!rf || !system) {
     return;
@@ -331,7 +353,9 @@ void vkr_ui_system_resize(RendererFrontend *rf, VkrUiSystem *system,
   rf->globals.ui_view = mat4_identity();
   rf->globals.ui_projection =
       mat4_ortho(0.0f, (float32_t)width, (float32_t)height, 0.0f, -1.0f, 1.0f);
-  vkr_pipeline_registry_mark_global_state_dirty(&rf->pipeline_registry);
+  if (rf->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL) {
+    vkr_pipeline_registry_mark_global_state_dirty(&rf->pipeline_registry);
+  }
 
   uint32_t layout_width = width;
   uint32_t layout_height = height;
@@ -372,7 +396,8 @@ bool8_t vkr_ui_system_text_create(RendererFrontend *rf, VkrUiSystem *system,
     return false_v;
   }
 
-  if (system->text_pipeline.id == 0) {
+  if (rf->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
+      system->text_pipeline.id == 0) {
     log_error("UI text pipeline not initialized");
     return false_v;
   }
@@ -460,6 +485,55 @@ bool8_t vkr_ui_system_text_destroy(RendererFrontend *rf, VkrUiSystem *system,
   vkr_ui_text_destroy(&slot->text);
   slot->active = false_v;
   return true_v;
+}
+
+uint32_t vkr_ui_system_prepare_text_draws(RendererFrontend *rf,
+                                          VkrUiSystem *system,
+                                          VkrPreparedTextDraw *out_draws,
+                                          uint32_t capacity) {
+  if (!rf || !system || !out_draws || capacity == 0)
+    return 0;
+  vkr_ui_system_refresh_layout(rf, system);
+  uint32_t count = 0;
+  for (uint64_t i = 0; i < system->text_slots.length; ++i) {
+    VkrUiTextSlot *slot = &system->text_slots.data[i];
+    if (!slot->active || !vkr_ui_text_prepare_geometry(&slot->text) ||
+        slot->text.geometry.index_count == 0)
+      continue;
+    if (count == capacity) {
+      log_error("UI text packet capacity exceeded (%u)", capacity);
+      break;
+    }
+    VkrFont *font = slot->text.resolved_font;
+    if (!font || font->atlas.id == 0 ||
+        font->atlas.generation == VKR_INVALID_ID)
+      continue;
+    float32_t screen_px_range = 0.0f;
+    uint32_t font_mode = 0;
+    if (font->type == VKR_FONT_TYPE_MTSDF && font->em_size > 0.0f) {
+      float32_t render_size = slot->text.config.font_size > 0.0f
+                                  ? slot->text.config.font_size
+                                  : (float32_t)font->size;
+      font_mode = 1;
+      screen_px_range = Clamp(
+          font->sdf_distance_range * (render_size / font->em_size), 1.0f, 4.0f);
+    }
+    out_draws[count++] = (VkrPreparedTextDraw){
+        .vertices = slot->text.geometry.vertices,
+        .vertex_count = slot->text.geometry.vertex_count,
+        .indices = slot->text.geometry.indices,
+        .index_count = slot->text.geometry.index_count,
+        .max_index = slot->text.geometry.vertex_count - 1u,
+        .atlas = font->atlas,
+        .model = vkr_transform_get_world(&slot->text.transform),
+        .screen_px_range = screen_px_range,
+        .font_mode = font_mode,
+        .object_id =
+            vkr_picking_encode_id(VKR_PICKING_ID_KIND_UI_TEXT, (uint32_t)i),
+        .revision = slot->text.geometry.revision,
+    };
+  }
+  return count;
 }
 
 void vkr_ui_system_render_text(RendererFrontend *rf, VkrUiSystem *system) {

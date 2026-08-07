@@ -178,6 +178,26 @@ typedef struct VkrOpaqueRangeInfo {
   uint32_t index_count;
 } VkrOpaqueRangeInfo;
 
+vkr_internal bool8_t vkr_mesh_manager_publish_loaded_mesh(
+    VkrMeshManager *manager, VkrGeometryHandle geometry,
+    const VkrMeshLoaderResult *mesh_result, VkrRendererError *out_error) {
+  const VkrAssetPublisher *publisher =
+      manager->geometry_system->asset_publisher;
+  if (!publisher || !publisher->publish_loaded_mesh) {
+    return true_v;
+  }
+  if (publisher->publish_loaded_mesh(publisher->state, geometry, mesh_result)) {
+    return true_v;
+  }
+
+  log_error("MeshManager: failed to publish merged geometry %u:%u", geometry.id,
+            geometry.generation);
+  if (out_error) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+  }
+  return false_v;
+}
+
 vkr_internal bool8_t vkr_mesh_manager_material_uses_cutout(
     VkrMaterialSystem *material_system, VkrMaterialHandle handle) {
   if (!material_system || handle.id == 0) {
@@ -1659,7 +1679,14 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
       }
     }
 
-    if (subsets_success && build_opaque_indices && merged_geometry.id != 0) {
+    if (subsets_success &&
+        !vkr_mesh_manager_publish_loaded_mesh(manager, merged_geometry,
+                                              mesh_result, out_error)) {
+      subsets_success = false_v;
+    }
+
+    if (subsets_success && build_opaque_indices && merged_geometry.id != 0 &&
+        !manager->geometry_system->asset_publisher) {
       VkrGeometry *geometry = vkr_geometry_system_get_by_handle(
           manager->geometry_system, merged_geometry);
       if (geometry) {
@@ -2872,6 +2899,12 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
     }
   }
 
+  if (subsets_success && use_merged &&
+      !vkr_mesh_manager_publish_loaded_mesh(manager, merged_geometry,
+                                            mesh_result, out_error)) {
+    subsets_success = false_v;
+  }
+
   Vec3 bounds_union_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);
   Vec3 bounds_union_max =
       vec3_new(-VKR_FLOAT_MAX, -VKR_FLOAT_MAX, -VKR_FLOAT_MAX);
@@ -3186,6 +3219,12 @@ vkr_internal VkrMeshAssetHandle vkr_mesh_manager_create_asset_from_handle_info(
         }
       }
     }
+  }
+
+  if (subsets_success && use_merged &&
+      !vkr_mesh_manager_publish_loaded_mesh(manager, merged_geometry,
+                                            mesh_result, out_error)) {
+    subsets_success = false_v;
   }
 
   Vec3 bounds_union_min = vec3_new(VKR_FLOAT_MAX, VKR_FLOAT_MAX, VKR_FLOAT_MAX);

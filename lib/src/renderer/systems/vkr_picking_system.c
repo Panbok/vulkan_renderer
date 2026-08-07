@@ -528,6 +528,14 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
     return false_v;
   }
 
+  if (rf->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    if (!picking_set_target_size(ctx, width, height)) {
+      return false_v;
+    }
+    ctx->initialized = true_v;
+    return true_v;
+  }
+
   ctx->picking_pass = vkr_renderer_renderpass_get(
       rf, string8_lit("Renderpass.Builtin.Picking"));
   if (!ctx->picking_pass) {

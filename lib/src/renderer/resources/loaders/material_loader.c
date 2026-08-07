@@ -243,6 +243,52 @@ vkr_internal uint32_t vkr_material_find_slot(VkrMaterialSystem *system) {
   return slot;
 }
 
+vkr_internal void vkr_material_loader_discard_slot(VkrMaterialSystem *system,
+                                                   uint32_t slot,
+                                                   bool8_t published) {
+  if (!system || slot >= system->materials.length) {
+    return;
+  }
+
+  VkrMaterial *material = &system->materials.data[slot];
+  VkrMaterialHandle handle = {
+      .id = material->id,
+      .generation = material->generation,
+  };
+  const char *stable_name = material->name;
+  const char *stable_shader = material->shader_name;
+  if (published && handle.id != 0) {
+    (void)vkr_material_system_unpublish(system, handle);
+  }
+  if (stable_name) {
+    (void)vkr_hash_table_remove_VkrMaterialEntry(&system->material_by_name,
+                                                 stable_name);
+  }
+  for (uint32_t i = 0; i < VKR_TEXTURE_SLOT_COUNT; ++i) {
+    if (material->textures[i].handle.id != 0) {
+      vkr_texture_system_release_by_handle(system->texture_system,
+                                           material->textures[i].handle);
+    }
+  }
+  if (stable_shader &&
+      vkr_dmemory_owns_ptr(&system->string_memory, (void *)stable_shader)) {
+    vkr_material_cleanup_shader_name(system, stable_shader);
+  }
+  if (stable_name &&
+      vkr_dmemory_owns_ptr(&system->string_memory, (void *)stable_name)) {
+    uint64_t name_size = string_length(stable_name) + 1;
+    vkr_allocator_free(&system->string_allocator, (void *)stable_name,
+                       name_size, VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+  MemZero(material, sizeof(*material));
+  if (system->free_count < system->free_ids.length) {
+    system->free_ids.data[system->free_count++] = slot;
+  }
+  if (slot < system->next_free_index) {
+    system->next_free_index = slot;
+  }
+}
+
 vkr_internal void vkr_material_init_defaults(VkrMaterial *material,
                                              VkrMaterialSystem *system) {
   MemZero(material, sizeof(*material));
@@ -1046,11 +1092,18 @@ vkr_internal bool8_t vkr_material_loader_load(VkrResourceLoader *self,
                                 .ref_count = 0,
                                 .auto_release = true_v,
                                 .name = (const char *)stable_name};
-  vkr_hash_table_insert_VkrMaterialEntry(&system->material_by_name,
-                                         (const char *)stable_name, new_entry);
-
   VkrMaterialHandle handle = {.id = material->id,
                               .generation = material->generation};
+  if (!vkr_hash_table_insert_VkrMaterialEntry(
+          &system->material_by_name, (const char *)stable_name, new_entry)) {
+    *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    vkr_material_loader_discard_slot(system, slot, false_v);
+    return false_v;
+  }
+  if (!vkr_material_system_publish(system, handle, out_error)) {
+    vkr_material_loader_discard_slot(system, slot, false_v);
+    return false_v;
+  }
 
   out_handle->type = VKR_RESOURCE_TYPE_MATERIAL;
   out_handle->loader_id = self->id;
@@ -1346,12 +1399,18 @@ vkr_internal bool8_t vkr_material_loader_finalize_async(
     return false_v;
   }
 
-  out_handle->type = VKR_RESOURCE_TYPE_MATERIAL;
-  out_handle->loader_id = self->id;
-  out_handle->as.material = (VkrMaterialHandle){
+  VkrMaterialHandle material_handle = {
       .id = dst->id,
       .generation = dst->generation,
   };
+  if (!vkr_material_system_publish(system, material_handle, out_error)) {
+    vkr_material_loader_discard_slot(system, slot, false_v);
+    return false_v;
+  }
+
+  out_handle->type = VKR_RESOURCE_TYPE_MATERIAL;
+  out_handle->loader_id = self->id;
+  out_handle->as.material = material_handle;
   *out_error = VKR_RENDERER_ERROR_NONE;
   return true_v;
 }
@@ -1443,6 +1502,10 @@ vkr_material_loader_unload(VkrResourceLoader *self,
   VkrMaterial *material = &system->materials.data[material_index];
   const char *stable_name = entry->name;
   const char *stable_shader = material->shader_name;
+
+  (void)vkr_material_system_unpublish(
+      system, (VkrMaterialHandle){.id = material->id,
+                                  .generation = material->generation});
 
   for (uint32_t tex_slot = 0; tex_slot < VKR_TEXTURE_SLOT_COUNT; tex_slot++) {
     VkrTextureHandle handle = material->textures[tex_slot].handle;
@@ -2237,13 +2300,23 @@ vkr_internal uint32_t vkr_material_loader_load_batch(
         .auto_release = true_v,
         .name = stable_name,
     };
-    vkr_hash_table_insert_VkrMaterialEntry(&mat_sys->material_by_name,
-                                           stable_name, new_entry);
-
-    out_handles[i] = (VkrMaterialHandle){
+    VkrMaterialHandle material_handle = (VkrMaterialHandle){
         .id = material->id,
         .generation = material->generation,
     };
+    if (!vkr_hash_table_insert_VkrMaterialEntry(&mat_sys->material_by_name,
+                                                stable_name, new_entry)) {
+      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      vkr_material_loader_discard_slot(mat_sys, slot, false_v);
+      continue;
+    }
+    if (!vkr_material_system_publish(mat_sys, material_handle,
+                                     &out_errors[i])) {
+      vkr_material_loader_discard_slot(mat_sys, slot, false_v);
+      continue;
+    }
+
+    out_handles[i] = material_handle;
     out_errors[i] = VKR_RENDERER_ERROR_NONE;
     loaded++;
   }

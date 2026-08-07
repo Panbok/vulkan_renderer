@@ -445,6 +445,51 @@ vkr_internal void vkr_material_system_init_surface_material(
   vkr_material_system_apply_default_surface_textures(system, material);
 }
 
+bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
+                                    VkrMaterialHandle handle,
+                                    VkrRendererError *out_error) {
+  assert_log(system != NULL, "Material system is NULL");
+  if (out_error) {
+    *out_error = VKR_RENDERER_ERROR_NONE;
+  }
+  if (!system->asset_publisher || !system->asset_publisher->publish_material) {
+    return true_v;
+  }
+  if (handle.id == 0 || handle.id > system->materials.length) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
+    }
+    return false_v;
+  }
+
+  VkrMaterial *material = &system->materials.data[handle.id - 1];
+  if (material->id != handle.id || material->generation != handle.generation ||
+      !system->asset_publisher->publish_material(system->asset_publisher->state,
+                                                 handle, material)) {
+    if (out_error) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
+    return false_v;
+  }
+  return true_v;
+}
+
+bool8_t vkr_material_system_unpublish(VkrMaterialSystem *system,
+                                      VkrMaterialHandle handle) {
+  assert_log(system != NULL, "Material system is NULL");
+  if (!system->asset_publisher ||
+      !system->asset_publisher->unpublish_material) {
+    return true_v;
+  }
+  if (!system->asset_publisher->unpublish_material(
+          system->asset_publisher->state, handle)) {
+    log_warn("MaterialSystem: failed to unpublish material %u:%u", handle.id,
+             handle.generation);
+    return false_v;
+  }
+  return true_v;
+}
+
 bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
                                  VkrTextureSystem *texture_system,
                                  VkrShaderSystem *shader_system,
@@ -452,8 +497,9 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   assert_log(system != NULL, "Material system is NULL");
   assert_log(arena != NULL, "Arena is NULL");
   assert_log(texture_system != NULL, "Texture system is NULL");
-  assert_log(shader_system != NULL, "Shader system is NULL");
   assert_log(config != NULL, "Config is NULL");
+  assert_log(shader_system != NULL || config->asset_publisher != NULL,
+             "Shader system is NULL without an asset publisher");
 
   MemZero(system, sizeof(*system));
 
@@ -495,6 +541,7 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
 
   system->texture_system = texture_system;
   system->shader_system = shader_system;
+  system->asset_publisher = config->asset_publisher;
   system->ibl_intensity = 1.0f;
   system->ibl_diffuse_intensity = 1.0f;
   system->ibl_specular_intensity = 1.0f;
@@ -545,6 +592,10 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
   }
 
   system->default_material = vkr_material_system_create_default(system);
+  if (system->default_material.id == 0) {
+    vkr_material_system_shutdown(system);
+    return false_v;
+  }
   // Register default in lifetime map with non-releasable entry
   VkrMaterial *def = &system->materials.data[0];
   VkrMaterialEntry def_entry = {
@@ -557,6 +608,17 @@ bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
 void vkr_material_system_shutdown(VkrMaterialSystem *system) {
   if (!system)
     return;
+  if (system->asset_publisher) {
+    for (uint32_t i = 0; i < system->materials.length; ++i) {
+      VkrMaterial *material = &system->materials.data[i];
+      if (material->id == 0) {
+        continue;
+      }
+      (void)vkr_material_system_unpublish(
+          system, (VkrMaterialHandle){.id = material->id,
+                                      .generation = material->generation});
+    }
+  }
   array_destroy_VkrMaterial(&system->materials);
   array_destroy_uint32_t(&system->free_ids);
   if (system->async_mutex) {
@@ -589,6 +651,11 @@ vkr_material_system_create_default(VkrMaterialSystem *system) {
 
   VkrMaterialHandle handle = {.id = material->id,
                               .generation = material->generation};
+  if (!vkr_material_system_publish(system, handle, NULL)) {
+    MemZero(material, sizeof(*material));
+    system->next_free_index = 0;
+    return VKR_MATERIAL_HANDLE_INVALID;
+  }
   return handle;
 }
 
@@ -655,11 +722,30 @@ vkr_material_system_create_colored(VkrMaterialSystem *system, const char *name,
       .auto_release = true_v,
       .name = name_copy,
   };
-  vkr_hash_table_insert_VkrMaterialEntry(&system->material_by_name, name_copy,
-                                         entry);
+  if (!vkr_hash_table_insert_VkrMaterialEntry(&system->material_by_name,
+                                              name_copy, entry)) {
+    vkr_allocator_free(&system->string_allocator, name_copy, name_len + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    MemZero(material, sizeof(*material));
+    system->free_ids.data[system->free_count++] = slot;
+    if (out_error)
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    return VKR_MATERIAL_HANDLE_INVALID;
+  }
 
-  return (VkrMaterialHandle){.id = material->id,
-                             .generation = material->generation};
+  VkrMaterialHandle handle = {.id = material->id,
+                              .generation = material->generation};
+  if (!vkr_material_system_publish(system, handle, out_error)) {
+    vkr_hash_table_remove_VkrMaterialEntry(&system->material_by_name,
+                                           name_copy);
+    vkr_allocator_free(&system->string_allocator, name_copy, name_len + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    MemZero(material, sizeof(*material));
+    system->free_ids.data[system->free_count++] = slot;
+    return VKR_MATERIAL_HANDLE_INVALID;
+  }
+
+  return handle;
 }
 
 bool8_t
@@ -705,6 +791,13 @@ vkr_material_system_create_gizmo_materials(VkrMaterialSystem *system,
     material->phong.emission_color = defs[i].emission;
     material->phong.shininess = 8.0f;
     material->shader_name = "shader.default.world";
+
+    if (system->asset_publisher) {
+      if (!vkr_material_system_unpublish(system, handle) ||
+          !vkr_material_system_publish(system, handle, out_error)) {
+        return false_v;
+      }
+    }
 
     VkrMaterialEntry *entry = vkr_hash_table_get_VkrMaterialEntry(
         &system->material_by_name, defs[i].name);

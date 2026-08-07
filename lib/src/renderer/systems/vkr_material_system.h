@@ -9,6 +9,7 @@
 #include "renderer/systems/vkr_shader_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_texture_system.h"
+#include "renderer/vkr_asset_publisher.h"
 #include "renderer/vkr_renderer.h"
 
 #define VKR_MATERIAL_NAME_MAX 128
@@ -19,6 +20,7 @@
 
 typedef struct VkrMaterialSystemConfig {
   uint32_t max_material_count;
+  const VkrAssetPublisher *asset_publisher;
 } VkrMaterialSystemConfig;
 
 typedef struct VkrMaterialIblProbeSlot {
@@ -59,6 +61,7 @@ typedef struct VkrMaterialSystem {
   VkrAllocator async_allocator;  // allocator wrapper for async_memory
   VkrMutex async_mutex;          // guards async allocator across threads
   VkrMaterialSystemConfig config;
+  const VkrAssetPublisher *asset_publisher;
 
   Array_VkrMaterial materials;                    // contiguous array
   VkrHashTable_VkrMaterialEntry material_by_name; // lifetime map
@@ -187,6 +190,15 @@ void vkr_material_system_release(VkrMaterialSystem *system,
  */
 void vkr_material_system_add_ref(VkrMaterialSystem *system,
                                  VkrMaterialHandle handle);
+
+/** Publish an initialized CPU material under its exact shared handle. */
+bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
+                                    VkrMaterialHandle handle,
+                                    VkrRendererError *out_error);
+
+/** Retire the GPU material associated with an exact shared handle. */
+bool8_t vkr_material_system_unpublish(VkrMaterialSystem *system,
+                                      VkrMaterialHandle handle);
 
 /**
  * @brief Applies the global material state to the material system

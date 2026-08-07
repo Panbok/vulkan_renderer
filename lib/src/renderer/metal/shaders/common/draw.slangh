@@ -1,0 +1,60 @@
+struct VkrMetalPacketVertex
+{
+    float position_x;
+    float position_y;
+    float position_z;
+    float normal_x;
+    float normal_y;
+    float normal_z;
+    float2 texcoord;
+    float4 color;
+    float4 tangent;
+};
+
+struct VkrMetalPacketInstance
+{
+    column_major float4x4 model;
+    uint object_id;
+    uint reserved_0;
+    uint reserved_1;
+    uint reserved_2;
+};
+
+struct VkrMetalPacketDrawRoot
+{
+    StructuredBuffer<VkrMetalPacketVertex> vertices;
+    StructuredBuffer<VkrMetalPacketInstance> instances;
+    column_major float4x4 view_projection;
+    uint64_t materials_address;
+    TextureCube<float4> irradiance;
+    TextureCube<float4> prefilter;
+    Texture2D<float4> brdf_lut;
+    float4 view_position;
+    uint material_index;
+    uint first_instance;
+    uint prefilter_mip_count;
+    uint flags;
+    float4 material_emissive;
+    float4 material_dielectric_specular;
+    float4 material_surface;
+    float4 material_alpha;
+    float4 ibl_controls;
+    float4 directional_direction_enabled;
+    float4 directional_color_intensity;
+    float4 ambient_color;
+    uint render_mode;
+    uint alpha_mode;
+    uint material_flags;
+    uint reserved;
+};
+
+struct VkrMetalPacketVertexOutput
+{
+    float4 position : SV_Position;
+    float2 texcoord : TEXCOORD0;
+    float4 color : COLOR0;
+    nointerpolation uint object_id : TEXCOORD1;
+    float3 world_position : TEXCOORD2;
+    float3 world_normal : TEXCOORD3;
+    float4 world_tangent : TEXCOORD4;
+};

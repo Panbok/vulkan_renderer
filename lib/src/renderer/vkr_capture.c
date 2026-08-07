@@ -1,5 +1,9 @@
 #include "vkr_capture.h"
 
+#if defined(PLATFORM_APPLE)
+#include "renderer/metal/vkr_metal_packet_renderer.h"
+#endif
+
 enum {
   VKR_CAPTURE_CHANNEL_FINAL_COLOR = 0,
   VKR_CAPTURE_CHANNEL_SCENE_COLOR,
@@ -70,6 +74,18 @@ VkrCaptureChannelId vkr_renderer_capture_channel_from_name(const char *name) {
 VkrCaptureStatus vkr_renderer_capture_poll(VkrRendererFrontendHandle renderer,
                                            VkrCaptureRequestId request_id,
                                            VkrCapturePollResult *out_result) {
+  if (renderer && renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+#if defined(PLATFORM_APPLE)
+    return vkr_metal_packet_renderer_capture_poll(renderer->metal_renderer,
+                                                  request_id, out_result);
+#else
+    if (out_result) {
+      MemZero(out_result, sizeof(*out_result));
+      out_result->error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    }
+    return VKR_CAPTURE_STATUS_NOT_FOUND;
+#endif
+  }
   if (!renderer || !renderer->backend.capture_poll) {
     if (out_result) {
       MemZero(out_result, sizeof(*out_result));
@@ -83,6 +99,14 @@ VkrCaptureStatus vkr_renderer_capture_poll(VkrRendererFrontendHandle renderer,
 
 bool8_t vkr_renderer_capture_release(VkrRendererFrontendHandle renderer,
                                      VkrCaptureRequestId request_id) {
+  if (renderer && renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+#if defined(PLATFORM_APPLE)
+    return vkr_metal_packet_renderer_capture_release(renderer->metal_renderer,
+                                                     request_id);
+#else
+    return false_v;
+#endif
+  }
   if (renderer && renderer->backend.capture_release) {
     return renderer->backend.capture_release(renderer->backend_state,
                                              request_id);

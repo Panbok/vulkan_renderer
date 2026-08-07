@@ -144,8 +144,14 @@ uint32_t vkr_draw_merge_candidates(VkrDrawCandidate *candidates, uint32_t count,
     // [instance_base + written, ... + run_length) and can be drawn at once.
     out_draws[draw_count] = (VkrDrawItem){
         .mesh = candidates[run_start].mesh,
+        .geometry = candidates[run_start].geometry,
         .submesh_index = candidates[run_start].submesh_index,
-        .material = VKR_MATERIAL_HANDLE_INVALID,
+        .material =
+            {
+                .id = (uint32_t)(candidates[run_start].key.material >> 32u),
+                .generation =
+                    (uint32_t)candidates[run_start].key.material,
+            },
         .instance_count = run_length,
         .first_instance = instance_base + written,
         .sort_key = 0u,
@@ -198,8 +204,13 @@ uint32_t vkr_draw_emit_unmerged(const VkrDrawCandidate *candidates,
   for (uint32_t i = 0; i < count; ++i) {
     out_draws[i] = (VkrDrawItem){
         .mesh = candidates[i].mesh,
+        .geometry = candidates[i].geometry,
         .submesh_index = candidates[i].submesh_index,
-        .material = VKR_MATERIAL_HANDLE_INVALID,
+        .material =
+            {
+                .id = (uint32_t)(candidates[i].key.material >> 32u),
+                .generation = (uint32_t)candidates[i].key.material,
+            },
         .instance_count = 1,
         .first_instance = instance_base + i,
         .sort_key = candidates[i].sort_key,

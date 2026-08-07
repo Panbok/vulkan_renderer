@@ -128,6 +128,8 @@ typedef struct ApplicationConfig {
   bool8_t disable_camera_controller;
   bool8_t window_hidden;
   bool8_t disable_skybox;
+  /** Coarse renderer selection; zero-initialized preserves Vulkan. */
+  VkrRendererBackendType renderer_backend;
   VkrPresentTargetConfig present_target;
   VkrPresentMode requested_present_mode;
   bool8_t capture_enabled;
@@ -460,7 +462,7 @@ bool8_t application_create(Application *application,
       .capture_max_batch_bytes = config->capture_max_batch_bytes,
   };
   if (!vkr_renderer_initialize(
-          &application->renderer, VKR_RENDERER_BACKEND_TYPE_VULKAN,
+          &application->renderer, config->renderer_backend,
           windowed ? &application->window : NULL, &application->event_manager,
           &application->config->device_requirements, &backend_cfg,
           application->config->target_frame_rate, &renderer_error)) {
@@ -980,7 +982,6 @@ vkr_internal bool8_t application_build_world_payload(
         mesh->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
       continue;
     }
-    VkrMeshHandle mesh_handle = {.id = mesh_slot + 1u, .generation = 0};
     uint32_t object_id =
         mesh->render_id
             ? vkr_picking_encode_id(VKR_PICKING_ID_KIND_SCENE, mesh->render_id)
@@ -999,6 +1000,10 @@ vkr_internal bool8_t application_build_world_payload(
       }
 
       VkrMaterial *material = application_get_material(rf, submesh->material);
+      const VkrMaterialHandle draw_material =
+          material ? (VkrMaterialHandle){.id = material->id,
+                                         .generation = material->generation}
+                   : submesh->material;
       const VkrDrawAlphaRouting alpha =
           application_material_alpha_routing(rf, material);
       const bool8_t transmissive =
@@ -1017,8 +1022,8 @@ vkr_internal bool8_t application_build_world_payload(
               {
                   .geometry = ((uint64_t)submesh->geometry.id << 32) |
                               (uint64_t)submesh->geometry.generation,
-                  .material = ((uint64_t)submesh->material.id << 32) |
-                              (uint64_t)submesh->material.generation,
+                  .material = ((uint64_t)draw_material.id << 32) |
+                              (uint64_t)draw_material.generation,
                   .binding_context =
                       position_dependent_ibl ? (uint64_t)vis_slot : 0u,
                   .first_index = submesh->first_index,
@@ -1027,7 +1032,8 @@ vkr_internal bool8_t application_build_world_payload(
                   .domain = (uint32_t)submesh->pipeline_domain,
               },
           .model = mesh->model,
-          .mesh = mesh_handle,
+          .mesh = {.id = mesh_slot + 1u, .generation = 0},
+          .geometry = submesh->geometry,
           .submesh_index = s,
           .object_id = object_id,
           .sort_key = sort_key,
@@ -1068,10 +1074,6 @@ vkr_internal bool8_t application_build_world_payload(
     if (!asset) {
       continue;
     }
-    VkrMeshInstanceHandle handle = {
-        .id = instance_slot + 1u,
-        .generation = instance->generation,
-    };
     uint32_t object_id = 0;
     if (instance->render_id != 0) {
       object_id =
@@ -1091,6 +1093,10 @@ vkr_internal bool8_t application_build_world_payload(
       }
 
       VkrMaterial *material = application_get_material(rf, submesh->material);
+      const VkrMaterialHandle draw_material =
+          material ? (VkrMaterialHandle){.id = material->id,
+                                         .generation = material->generation}
+                   : submesh->material;
       const VkrDrawAlphaRouting alpha =
           application_material_alpha_routing(rf, material);
       const bool8_t transmissive =
@@ -1109,8 +1115,8 @@ vkr_internal bool8_t application_build_world_payload(
               {
                   .geometry = ((uint64_t)submesh->geometry.id << 32) |
                               (uint64_t)submesh->geometry.generation,
-                  .material = ((uint64_t)submesh->material.id << 32) |
-                              (uint64_t)submesh->material.generation,
+                  .material = ((uint64_t)draw_material.id << 32) |
+                              (uint64_t)draw_material.generation,
                   .binding_context =
                       position_dependent_ibl ? (uint64_t)vis_slot : 0u,
                   .first_index = submesh->first_index,
@@ -1119,7 +1125,9 @@ vkr_internal bool8_t application_build_world_payload(
                   .domain = (uint32_t)submesh->pipeline_domain,
               },
           .model = instance->model,
-          .mesh = handle,
+          .mesh = {.id = instance_slot + 1u,
+                   .generation = instance->generation},
+          .geometry = submesh->geometry,
           .submesh_index = s,
           .object_id = object_id,
           .sort_key = sort_key,
@@ -1327,6 +1335,42 @@ void application_draw_frame(Application *application, float64_t delta) {
     picking_payload.pending = true_v;
     picking_payload.x = application->renderer.picking.requested_x;
     picking_payload.y = application->renderer.picking.requested_y;
+    if (has_world) {
+      const uint32_t picking_draw_count =
+          world_payload.opaque_draw_count +
+          world_payload.transmission_draw_count +
+          world_payload.transparent_draw_count;
+      VkrDrawItem *picking_draws =
+          picking_draw_count > 0
+              ? vkr_allocator_alloc(
+                    scratch,
+                    (uint64_t)picking_draw_count * sizeof(*picking_draws),
+                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+              : NULL;
+      if (picking_draw_count == 0 || picking_draws) {
+        uint32_t offset = 0;
+#define VKR_COPY_PICKING_DRAWS(FIELD)                                         \
+  do {                                                                         \
+    if (world_payload.FIELD##_draw_count > 0) {                                \
+      MemCopy(picking_draws + offset, world_payload.FIELD##_draws,             \
+              (uint64_t)world_payload.FIELD##_draw_count *                     \
+                  sizeof(*picking_draws));                                     \
+      offset += world_payload.FIELD##_draw_count;                              \
+    }                                                                          \
+  } while (0)
+        VKR_COPY_PICKING_DRAWS(opaque);
+        VKR_COPY_PICKING_DRAWS(transmission);
+        VKR_COPY_PICKING_DRAWS(transparent);
+#undef VKR_COPY_PICKING_DRAWS
+        picking_payload.draws = picking_draws;
+        picking_payload.draw_count = picking_draw_count;
+        picking_payload.instances = world_payload.instances;
+        picking_payload.instance_count = world_payload.instance_count;
+      } else {
+        log_error("Unable to allocate the frame picking draw list");
+        has_picking = false_v;
+      }
+    }
   }
 
   bool8_t editor_enabled = application->editor_viewport.enabled &&
@@ -1373,7 +1417,9 @@ void application_draw_frame(Application *application, float64_t delta) {
 
   VkrUiPassPayload ui_payload = {0};
   VkrSkyboxPassPayload skybox_payload = {
-      .cubemap = VKR_TEXTURE_HANDLE_INVALID,
+      .cubemap = application->renderer.skybox_system.initialized
+                     ? application->renderer.skybox_system.cube_map_texture
+                     : VKR_TEXTURE_HANDLE_INVALID,
       .material = VKR_MATERIAL_HANDLE_INVALID,
   };
 
@@ -1430,6 +1476,60 @@ void application_draw_frame(Application *application, float64_t delta) {
   };
   const VkrGpuDebugPayload *debug_ptr =
       (gpu_timing || application->capture_request) ? &debug_payload : NULL;
+  VkrFrameIblProbe frame_ibl_probes[VKR_FRAME_IBL_PROBE_MAX] = {0};
+  uint32_t frame_ibl_probe_count = 0;
+  const VkrScene *active_scene = application->renderer.active_scene;
+  if (active_scene) {
+    for (uint32_t i = 0; i < active_scene->reflection_probe_count &&
+                         frame_ibl_probe_count < VKR_FRAME_IBL_PROBE_MAX;
+         ++i) {
+      const VkrSceneReflectionProbe *probe =
+          &active_scene->reflection_probes[i];
+      if (!probe->enabled ||
+          probe->bake_state != VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_READY ||
+          probe->irradiance_cubemap.id == 0 ||
+          probe->irradiance_cubemap.generation == VKR_INVALID_ID ||
+          probe->prefilter_cubemap.id == 0 ||
+          probe->prefilter_cubemap.generation == VKR_INVALID_ID) {
+        continue;
+      }
+      frame_ibl_probes[frame_ibl_probe_count++] = (VkrFrameIblProbe){
+          .irradiance = probe->irradiance_cubemap,
+          .prefilter = probe->prefilter_cubemap,
+          .center = probe->center,
+          .extents = probe->extents,
+          .blend_distance = probe->blend_distance,
+          .weight = 1.0f,
+          .intensity = probe->intensity,
+          .diffuse_intensity = probe->diffuse_intensity,
+          .specular_intensity = probe->specular_intensity,
+          .box_projection_enabled = true_v,
+      };
+    }
+  }
+  const VkrFrameLighting frame_lighting = {
+      .directional_enabled =
+          application->renderer.lighting_system.directional.enabled,
+      .directional_direction =
+          application->renderer.lighting_system.directional.direction,
+      .directional_color =
+          application->renderer.lighting_system.directional.color,
+      .directional_intensity =
+          application->renderer.lighting_system.directional.intensity,
+      .ibl_enabled = application->renderer.material_system.ibl_enabled,
+      .ibl_intensity = application->renderer.material_system.ibl_intensity,
+      .ibl_diffuse_intensity =
+          application->renderer.material_system.ibl_diffuse_intensity,
+      .ibl_specular_intensity =
+          application->renderer.material_system.ibl_specular_intensity,
+      .point_lights = application->renderer.lighting_system.point_lights,
+      .point_light_count =
+          application->renderer.lighting_system.point_light_count,
+      .point_light_grid =
+          &application->renderer.lighting_system.point_light_grid,
+      .ibl_probes = frame_ibl_probes,
+      .ibl_probe_count = frame_ibl_probe_count,
+  };
 
   VkrRenderPacket packet = {
       .packet_version = VKR_RENDER_PACKET_VERSION,
@@ -1453,9 +1553,14 @@ void application_draw_frame(Application *application, float64_t delta) {
               .render_mode =
                   (uint32_t)application->renderer.globals.render_mode,
           },
+      .lighting = &frame_lighting,
       .world = has_world ? &world_payload : NULL,
       .shadow = has_shadow ? &shadow_payload : NULL,
-      .skybox = application->config->disable_skybox ? NULL : &skybox_payload,
+      .skybox = !application->config->disable_skybox &&
+                        skybox_payload.cubemap.id != 0 &&
+                        skybox_payload.cubemap.generation != VKR_INVALID_ID
+                    ? &skybox_payload
+                    : NULL,
       .ui = &ui_payload,
       .editor = has_editor ? &editor_payload : NULL,
       .picking = has_picking ? &picking_payload : NULL,

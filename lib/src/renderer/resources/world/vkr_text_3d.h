@@ -63,16 +63,24 @@ typedef struct VkrText3D {
   VkrRendererInstanceStateHandle instance_state; // Renderer instance state
   VkrVertexBuffer vertex_buffer;                 // Vertex buffer
   VkrIndexBuffer index_buffer;                   // Index buffer
+  VkrTextVertex *vertices;                       // Retained shaped vertices
+  uint32_t *indices;                             // Retained shaped indices
+  uint32_t vertex_count;                         // Shaped vertex count
+  uint32_t index_count;                          // Shaped index count
+  uint32_t geometry_revision;                    // Changes after rebuild
   uint32_t quad_count;                           // Number of glyph quads
   uint32_t vertex_capacity;                      // Allocated vertex count
   uint32_t index_capacity;                       // Allocated index count
+  uint32_t gpu_vertex_capacity;                  // Legacy GPU vertex capacity
+  uint32_t gpu_index_capacity;                   // Legacy GPU index capacity
 
   VkrTransform transform; // Position/rotation/scale
   float32_t world_width;  // Width in world units
   float32_t world_height; // Height in world units
   float32_t uv_inset_px; // Half-texel inset (in atlas pixels) to avoid bleeding
 
-  bool8_t initialized; // Initialized flag
+  bool8_t initialized;       // Initialized flag
+  bool8_t gpu_buffers_dirty; // Need to publish geometry to legacy buffers
 } VkrText3D;
 
 // =============================================================================
@@ -155,6 +163,9 @@ void vkr_text_3d_set_scale(VkrText3D *text_3d, Vec3 scale);
  * @param text_3d The text 3D instance.
  */
 void vkr_text_3d_update(VkrText3D *text_3d);
+
+/** Prepares shaped CPU geometry without issuing renderer API calls. */
+bool8_t vkr_text_3d_prepare_geometry(VkrText3D *text_3d);
 
 /**
  * @brief Draws the text 3D instance.

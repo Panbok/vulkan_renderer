@@ -6,6 +6,7 @@
 #include "memory/arena.h"
 #include "memory/vkr_dmemory.h"
 #include "renderer/resources/vkr_resources.h"
+#include "renderer/vkr_asset_publisher.h"
 #include "renderer/vkr_renderer.h"
 
 // todo: should we merge this with material system, since
@@ -28,6 +29,7 @@ VkrHashTable(VkrTextureEntry);
 
 typedef struct VkrTextureSystemConfig {
   uint32_t max_texture_count;
+  const VkrAssetPublisher *asset_publisher;
 } VkrTextureSystemConfig;
 
 typedef enum VkrTextureVktContainerType {
@@ -60,6 +62,7 @@ typedef struct VkrTextureSystem {
   VkrAllocator async_allocator;  // allocator wrapper for async_memory
   VkrMutex async_mutex;          // guards async allocator across threads
   VkrTextureSystemConfig config;
+  const VkrAssetPublisher *asset_publisher;
 
   Array_VkrTexture textures; // contiguous array of textures
   VkrHashTable_VkrTextureEntry
@@ -492,11 +495,12 @@ uint32_t vkr_texture_system_find_free_slot(VkrTextureSystem *system);
 
 /**
  * @brief Destroys a texture
- * @param renderer The renderer to use
+ * @param system The owning texture system
  * @param texture The texture to destroy
+ * @return True when ownership was released. On failure the texture remains
+ * valid and may be passed again to retry destruction.
  */
-void vkr_texture_destroy(VkrRendererFrontendHandle renderer,
-                         VkrTexture *texture);
+bool8_t vkr_texture_destroy(VkrTextureSystem *system, VkrTexture *texture);
 
 /**
  * @brief Loads a cube map texture from 6 face images.

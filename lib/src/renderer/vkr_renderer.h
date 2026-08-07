@@ -300,6 +300,57 @@ typedef enum VkrImageAccessFlags {
 } VkrImageAccessFlags;
 
 /**
+ * @brief Backend-neutral execution stages carried by graph dependencies.
+ *
+ * ALL_GRAPHICS is intentionally a first-class bit rather than an expansion to
+ * individual stages: legacy declarations use it to preserve the Vulkan 1.2
+ * backend's conservative VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT lowering. New
+ * declarations may select narrower shader/fixed-function scopes.
+ */
+typedef enum VkrGpuStageFlags {
+  VKR_GPU_STAGE_NONE = 0,
+  VKR_GPU_STAGE_ALL_GRAPHICS = 1 << 0,
+  VKR_GPU_STAGE_DRAW_INDIRECT = 1 << 1,
+  VKR_GPU_STAGE_VERTEX_INPUT = 1 << 2,
+  VKR_GPU_STAGE_VERTEX_SHADER = 1 << 3,
+  VKR_GPU_STAGE_FRAGMENT_SHADER = 1 << 4,
+  VKR_GPU_STAGE_EARLY_DEPTH = 1 << 5,
+  VKR_GPU_STAGE_LATE_DEPTH = 1 << 6,
+  VKR_GPU_STAGE_COLOR_OUTPUT = 1 << 7,
+  VKR_GPU_STAGE_COMPUTE_SHADER = 1 << 8,
+  VKR_GPU_STAGE_TRANSFER = 1 << 9,
+  VKR_GPU_STAGE_HOST = 1 << 10,
+  VKR_GPU_STAGE_TOP = 1 << 11,
+  VKR_GPU_STAGE_BOTTOM = 1 << 12,
+} VkrGpuStageFlags;
+
+/** Visibility work required in addition to the execution dependency. */
+typedef enum VkrGpuVisibilityFlags {
+  VKR_GPU_VISIBILITY_NONE = 0,
+  VKR_GPU_VISIBILITY_DEVICE = 1 << 0,
+  VKR_GPU_VISIBILITY_RESOURCE_ALIAS = 1 << 1,
+} VkrGpuVisibilityFlags;
+
+/** Canonical dependency lowered once by each backend. */
+typedef struct VkrGpuDependency {
+  VkrGpuStageFlags src_stages;
+  VkrGpuStageFlags dst_stages;
+  VkrGpuVisibilityFlags visibility;
+} VkrGpuDependency;
+
+/** Conservative compatibility scopes matching the legacy Vulkan 1.2 path. */
+VkrGpuStageFlags vkr_gpu_stages_for_buffer_access(VkrBufferAccessFlags access,
+                                                  bool8_t is_src);
+VkrGpuStageFlags vkr_gpu_stages_for_image_access(VkrImageAccessFlags access,
+                                                 bool8_t is_src);
+VkrGpuDependency
+vkr_gpu_buffer_dependency_default(VkrBufferAccessFlags src_access,
+                                  VkrBufferAccessFlags dst_access);
+VkrGpuDependency
+vkr_gpu_image_dependency_default(VkrImageAccessFlags src_access,
+                                 VkrImageAccessFlags dst_access);
+
+/**
  * @brief Subresource span addressed by a barrier.
  *
  * A count of 0 means "through the last one", so a zeroed struct addresses the
@@ -1612,6 +1663,9 @@ uint64_t
 vkr_renderer_get_completed_submit_serial(VkrRendererFrontendHandle renderer);
 bool8_t vkr_renderer_get_and_reset_upload_wait_stats(
     VkrRendererFrontendHandle renderer, VkrRendererUploadWaitStats *out_stats);
+/** Returns and resets CPU waits caused by bounded command-slot reuse. */
+bool8_t vkr_renderer_get_and_reset_command_slot_wait_count(
+    VkrRendererFrontendHandle renderer, uint64_t *out_wait_count);
 bool8_t
 vkr_renderer_get_last_present_duration(VkrRendererFrontendHandle renderer,
                                        uint64_t *out_duration_ns);
@@ -1716,6 +1770,11 @@ VkrRendererError vkr_renderer_image_barrier(
     VkrImageAccessFlags src_access, VkrImageAccessFlags dst_access,
     VkrTextureLayout old_layout, VkrTextureLayout new_layout,
     const VkrImageSubresourceRange *range);
+VkrRendererError vkr_renderer_image_barrier_scoped(
+    VkrRendererFrontendHandle renderer, VkrTextureOpaqueHandle texture,
+    VkrImageAccessFlags src_access, VkrImageAccessFlags dst_access,
+    VkrTextureLayout old_layout, VkrTextureLayout new_layout,
+    const VkrImageSubresourceRange *range, const VkrGpuDependency *dependency);
 
 VkrRendererError vkr_renderer_write_texture(VkrRendererFrontendHandle renderer,
                                             VkrTextureOpaqueHandle texture,
@@ -1736,8 +1795,14 @@ VkrRendererError vkr_renderer_copy_texture(VkrRendererFrontendHandle renderer,
                                            VkrTextureOpaqueHandle source,
                                            VkrTextureOpaqueHandle destination);
 
-void vkr_renderer_destroy_texture(VkrRendererFrontendHandle renderer,
-                                  VkrTextureOpaqueHandle texture);
+/**
+ * Destroys a legacy backend texture.
+ *
+ * @return False when the active backend does not expose the legacy texture
+ *         destruction seam. On failure the caller retains ownership.
+ */
+bool8_t vkr_renderer_destroy_texture(VkrRendererFrontendHandle renderer,
+                                     VkrTextureOpaqueHandle texture);
 
 VkrRendererError
 vkr_renderer_update_texture(VkrRendererFrontendHandle renderer,
@@ -1790,6 +1855,10 @@ VkrRendererError vkr_renderer_buffer_barrier(VkrRendererFrontendHandle renderer,
                                              VkrBufferHandle buffer,
                                              VkrBufferAccessFlags src_access,
                                              VkrBufferAccessFlags dst_access);
+VkrRendererError vkr_renderer_buffer_barrier_scoped(
+    VkrRendererFrontendHandle renderer, VkrBufferHandle buffer,
+    VkrBufferAccessFlags src_access, VkrBufferAccessFlags dst_access,
+    const VkrGpuDependency *dependency);
 void vkr_renderer_set_instance_buffer(VkrRendererFrontendHandle renderer,
                                       VkrBufferHandle buffer);
 
@@ -2280,7 +2349,8 @@ typedef struct VkrRendererBackendInterface {
   VkrRendererError (*buffer_barrier)(void *backend_state,
                                      VkrBackendResourceHandle handle,
                                      VkrBufferAccessFlags src_access,
-                                     VkrBufferAccessFlags dst_access);
+                                     VkrBufferAccessFlags dst_access,
+                                     const VkrGpuDependency *dependency);
 
   VkrBackendResourceHandle (*texture_create)(void *backend_state,
                                              const VkrTextureDescription *desc,
@@ -2323,7 +2393,8 @@ typedef struct VkrRendererBackendInterface {
                                     VkrImageAccessFlags dst_access,
                                     VkrTextureLayout old_layout,
                                     VkrTextureLayout new_layout,
-                                    const VkrImageSubresourceRange *range);
+                                    const VkrImageSubresourceRange *range,
+                                    const VkrGpuDependency *dependency);
   VkrRendererError (*texture_update)(void *backend_state,
                                      VkrBackendResourceHandle handle,
                                      const VkrTextureDescription *desc);

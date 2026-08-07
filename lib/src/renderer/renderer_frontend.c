@@ -30,6 +30,9 @@
 #include "renderer/vkr_renderer_metrics.h"
 #include "renderer/vkr_rg_json.h"
 #include "renderer/vulkan/vulkan_backend.h"
+#if defined(PLATFORM_APPLE)
+#include "renderer/metal/vkr_metal_packet_renderer.h"
+#endif
 
 #include <math.h>
 #include <stdarg.h>
@@ -341,7 +344,8 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   // renderer->dmemory_allocator = (VkrAllocator){.ctx = &renderer->dmemory};
   // vkr_dmemory_allocator_create(&renderer->dmemory_allocator);
 
-  renderer->arena = arena_create(MB(6));
+  renderer->arena = arena_create(
+      backend_type == VKR_RENDERER_BACKEND_TYPE_METAL ? MB(64) : MB(6));
   if (!renderer->arena) {
     log_fatal("Failed to create renderer arena!");
     return false_v;
@@ -354,7 +358,9 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
-  renderer->scratch_arena = arena_create(MB(1), KB(8));
+  renderer->scratch_arena = backend_type == VKR_RENDERER_BACKEND_TYPE_METAL
+                                ? arena_create(MB(32), MB(1))
+                                : arena_create(MB(1), KB(8));
   if (!renderer->scratch_arena) {
     log_fatal("Failed to create scratch_arena!");
     return false_v;
@@ -374,6 +380,12 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   renderer->event_manager = event_manager;
   renderer->frame_active = false;
   renderer->backend_state = NULL;
+  renderer->metal_renderer = NULL;
+  renderer->asset_publisher = (VkrAssetPublisher){0};
+  renderer->metal_timing_result = NULL;
+  renderer->metal_timing_source_cpu_frame_index = 0;
+  renderer->metal_last_completed_timing_submit_value = 0;
+  renderer->metal_completed_timing_ready = false_v;
   renderer->supports_multi_draw_indirect = false_v;
   renderer->supports_draw_indirect_first_instance = false_v;
 
@@ -458,7 +470,7 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
 
   if (backend_type == VKR_RENDERER_BACKEND_TYPE_VULKAN) {
     renderer->backend = renderer_vulkan_get_interface();
-  } else {
+  } else if (backend_type != VKR_RENDERER_BACKEND_TYPE_METAL) {
     *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
     return false_v;
   }
@@ -480,6 +492,81 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
   }
   const VkrRendererBackendConfig *backend_cfg = &resolved_backend_config;
   g_renderer_rt_refresh = renderer;
+
+  if (backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+#if defined(PLATFORM_APPLE)
+    const uint32_t frame_slot_count = 3u;
+    const uint32_t capture_capacity = backend_cfg->capture_ring_capacity > 0
+                                          ? backend_cfg->capture_ring_capacity
+                                          : frame_slot_count;
+    const uint64_t capture_bytes = backend_cfg->capture_max_batch_bytes > 0
+                                       ? backend_cfg->capture_max_batch_bytes
+                                       : MB(32);
+    VkrMetalPacketRendererConfig metal_config = {
+        .allocator = &renderer->render_graph_allocator,
+        .graph_path = "assets/render_graphs/main.rendergraph.json",
+        .slang_msl_path = VKR_METAL_PACKET_SLANG_MSL,
+        .fragment_msl_path = VKR_METAL_PACKET_FRAGMENT_MSL,
+        .pipeline_archive_path = VKR_METAL_PACKET_ARCHIVE_PATH,
+        .target_kind = requested_target.kind == VKR_PRESENT_TARGET_OFFSCREEN
+                           ? VKR_METAL_PACKET_TARGET_OFFSCREEN
+                           : VKR_METAL_PACKET_TARGET_WINDOW,
+        .metal_layer = window ? vkr_window_get_metal_layer(window) : NULL,
+        // The measured Metal Bistro Gate A runs peak below 4.7 GiB. Keep one
+        // explicit production heap with headroom for placement alignment and
+        // render-graph images; exhaustion remains reported.
+        .heap_size = GB(6),
+        // Bistro's largest prepared mip payload exceeds 16 MiB. Three 128 MiB
+        // upload slots cover the measured stream, while three 32 MiB readback
+        // slots match the configured maximum capture batch.
+        .upload_ring_size = MB(384),
+        .readback_ring_size = MB(96),
+        .frame_slot_count = frame_slot_count,
+        .capture_ring_capacity = capture_capacity,
+        .capture_max_batch_bytes = capture_bytes,
+        .synchronous_validation_readback = false_v,
+        .srgb_output = true_v,
+        .convert_vulkan_clip_y = true_v,
+        .max_images = 128,
+        .max_passes = 64,
+        .max_material_rows = 8192,
+        .max_meshes = 16384,
+        .max_submeshes_per_mesh = 512,
+        .max_textures = 16384,
+        .max_draws = 262144,
+        .max_instances = 262144,
+    };
+    if (!vkr_metal_packet_renderer_create(&metal_config,
+                                          &renderer->metal_renderer)) {
+      g_renderer_rt_refresh = NULL;
+      *out_error = VKR_RENDERER_ERROR_INITIALIZATION_FAILED;
+      return false_v;
+    }
+    renderer->backend_state = renderer->metal_renderer;
+    renderer->metal_timing_result = calloc(1, sizeof(VkrMetalPacketResult));
+    if (!renderer->metal_timing_result) {
+      vkr_metal_packet_renderer_destroy(renderer->metal_renderer);
+      renderer->metal_renderer = NULL;
+      renderer->backend_state = NULL;
+      free(renderer->metal_timing_result);
+      renderer->metal_timing_result = NULL;
+      *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+      return false_v;
+    }
+    vkr_metal_packet_renderer_get_asset_publisher(renderer->metal_renderer,
+                                                  &renderer->asset_publisher);
+    if (requested_target.kind != VKR_PRESENT_TARGET_OFFSCREEN) {
+      event_manager_subscribe(renderer->event_manager, EVENT_TYPE_WINDOW_RESIZE,
+                              vkr_renderer_on_window_resize, renderer);
+    }
+    *out_error = VKR_RENDERER_ERROR_NONE;
+    log_info("Selected Metal 4 packet renderer");
+    return true_v;
+#else
+    *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    return false_v;
+#endif
+  }
 
   if (!renderer->backend.initialize(&renderer->backend_state, backend_type,
                                     window, width, height, device_requirements,
@@ -516,27 +603,29 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   // Ensure GPU idle before tearing down
   vkr_renderer_wait_idle(rf);
 
-  // Release per-mesh local renderer state before destroying pipelines
-  uint32_t mesh_capacity = vkr_mesh_manager_capacity(&rf->mesh_manager);
-  for (uint32_t i = 0; i < mesh_capacity; ++i) {
-    VkrMesh *m = vkr_mesh_manager_get(&rf->mesh_manager, i);
-    if (!m)
-      continue;
-    uint32_t submesh_count = vkr_mesh_manager_submesh_count(m);
-    for (uint32_t submesh_index = 0; submesh_index < submesh_count;
-         ++submesh_index) {
-      VkrSubMesh *submesh =
-          vkr_mesh_manager_get_submesh(&rf->mesh_manager, i, submesh_index);
-      if (!submesh || submesh->pipeline.id == 0)
+  if (rf->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL) {
+    // Release per-mesh local renderer state before destroying pipelines.
+    uint32_t mesh_capacity = vkr_mesh_manager_capacity(&rf->mesh_manager);
+    for (uint32_t i = 0; i < mesh_capacity; ++i) {
+      VkrMesh *m = vkr_mesh_manager_get(&rf->mesh_manager, i);
+      if (!m)
         continue;
-      if (submesh->instance_state.id != VKR_INVALID_ID) {
-        vkr_pipeline_registry_release_instance_state(
-            &rf->pipeline_registry, submesh->pipeline, submesh->instance_state,
-            &(VkrRendererError){0});
+      uint32_t submesh_count = vkr_mesh_manager_submesh_count(m);
+      for (uint32_t submesh_index = 0; submesh_index < submesh_count;
+           ++submesh_index) {
+        VkrSubMesh *submesh =
+            vkr_mesh_manager_get_submesh(&rf->mesh_manager, i, submesh_index);
+        if (!submesh || submesh->pipeline.id == 0)
+          continue;
+        if (submesh->instance_state.id != VKR_INVALID_ID) {
+          vkr_pipeline_registry_release_instance_state(
+              &rf->pipeline_registry, submesh->pipeline,
+              submesh->instance_state, &(VkrRendererError){0});
+        }
+        submesh->pipeline = VKR_PIPELINE_HANDLE_INVALID;
+        submesh->instance_state =
+            (VkrRendererInstanceStateHandle){.id = VKR_INVALID_ID};
       }
-      submesh->pipeline = VKR_PIPELINE_HANDLE_INVALID;
-      submesh->instance_state =
-          (VkrRendererInstanceStateHandle){.id = VKR_INVALID_ID};
     }
   }
 
@@ -579,10 +668,12 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
   vkr_rg_executor_registry_destroy(&rf->rg_executor_registry);
   vkr_lighting_system_shutdown(&rf->lighting_system);
   vkr_mesh_manager_shutdown(&rf->mesh_manager);
-  vkr_shader_system_shutdown(&rf->shader_system);
-  vkr_pipeline_registry_shutdown(&rf->pipeline_registry);
-  vkr_instance_buffer_pool_shutdown(&rf->instance_buffer_pool, rf);
-  vkr_indirect_draw_shutdown(&rf->indirect_draw_system, rf);
+  if (rf->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL) {
+    vkr_shader_system_shutdown(&rf->shader_system);
+    vkr_pipeline_registry_shutdown(&rf->pipeline_registry);
+    vkr_instance_buffer_pool_shutdown(&rf->instance_buffer_pool, rf);
+    vkr_indirect_draw_shutdown(&rf->indirect_draw_system, rf);
+  }
   vkr_font_system_shutdown(&rf->font_system);
   vkr_material_system_shutdown(&rf->material_system);
   vkr_geometry_system_shutdown(&rf->geometry_system);
@@ -590,7 +681,15 @@ void vkr_renderer_destroy(VkrRendererFrontendHandle renderer) {
 
   g_renderer_rt_refresh = NULL;
 
-  if (renderer->backend_state && renderer->backend.shutdown) {
+  if (rf->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+#if defined(PLATFORM_APPLE)
+    vkr_metal_packet_renderer_destroy(rf->metal_renderer);
+    rf->metal_renderer = NULL;
+    rf->backend_state = NULL;
+    free(rf->metal_timing_result);
+    rf->metal_timing_result = NULL;
+#endif
+  } else if (renderer->backend_state && renderer->backend.shutdown) {
     renderer->backend.shutdown(renderer->backend_state);
   }
 
@@ -698,6 +797,45 @@ void vkr_renderer_get_device_information(
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(device_information != NULL, "Device information is NULL");
   assert_log(temp_arena != NULL, "Temp arena is NULL");
+  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    VkrDeviceTypeFlags device_types = bitset8_create();
+    VkrDeviceQueueFlags device_queues = bitset8_create();
+    VkrSamplerFilterFlags sampler_filters = bitset8_create();
+    bitset8_set(&device_types, VKR_DEVICE_TYPE_INTEGRATED_BIT);
+    bitset8_set(&device_queues, VKR_DEVICE_QUEUE_GRAPHICS_BIT);
+    bitset8_set(&device_queues, VKR_DEVICE_QUEUE_TRANSFER_BIT);
+    bitset8_set(&device_queues, VKR_DEVICE_QUEUE_PRESENT_BIT);
+    bitset8_set(&sampler_filters, VKR_SAMPLER_FILTER_LINEAR_BIT);
+    bitset8_set(&sampler_filters, VKR_SAMPLER_FILTER_ANISOTROPIC_BIT);
+    *device_information = (VkrDeviceInformation){
+        .device_name = string8_lit("Apple Metal 4 GPU"),
+        .vendor_name = string8_lit("Apple"),
+        .driver_version = string8_lit("Metal 4"),
+        .api_version = string8_lit("Metal 4"),
+        .device_types = device_types,
+        .device_queues = device_queues,
+        .sampler_filters = sampler_filters,
+        .max_sampler_anisotropy = 16.0,
+        .supports_texture_astc_4x4 = true_v,
+        .supports_texture_bc7 = true_v,
+        .supports_texture_bc5 = true_v,
+        .supports_hdr_ibl = true_v,
+        .hdr_ibl_max_cube_extent = VKR_IBL_PREFILTER_SIZE,
+        .hdr_ibl_max_mip_levels = VKR_IBL_PREFILTER_MIP_COUNT,
+        .actual_target_kind = renderer->present_target.kind,
+        .actual_present_mode = VKR_PRESENT_MODE_FIFO,
+        .actual_target_image_count = 3,
+        .actual_target_width = renderer->last_window_width,
+        .actual_target_height = renderer->last_window_height,
+        .actual_color_format =
+            renderer->present_target.kind == VKR_PRESENT_TARGET_OFFSCREEN
+                ? VKR_SURFACE_COLOR_FORMAT_RGBA8_SRGB
+                : VKR_SURFACE_COLOR_FORMAT_BGRA8_SRGB,
+        .actual_depth_format = VKR_SURFACE_DEPTH_FORMAT_D32_SFLOAT,
+        .actual_color_space = VKR_SURFACE_COLOR_SPACE_SRGB_NONLINEAR,
+    };
+    return;
+  }
   renderer->backend.get_device_information(renderer->backend_state,
                                            device_information, temp_arena);
 }
@@ -709,11 +847,27 @@ bool32_t vkr_renderer_is_frame_active(VkrRendererFrontendHandle renderer) {
 
 VkrRendererError vkr_renderer_wait_idle(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
+  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+#if defined(PLATFORM_APPLE)
+    return vkr_metal_packet_renderer_wait_idle(renderer->metal_renderer)
+               ? VKR_RENDERER_ERROR_NONE
+               : VKR_RENDERER_ERROR_DEVICE_ERROR;
+#else
+    return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+#endif
+  }
   return renderer->backend.wait_idle(renderer->backend_state);
 }
 
 uint64_t vkr_renderer_get_submit_serial(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
+  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+#if defined(PLATFORM_APPLE)
+    return vkr_metal_packet_renderer_submit_value(renderer->metal_renderer);
+#else
+    return 0;
+#endif
+  }
   if (!renderer->backend.get_submit_serial) {
     return 0;
   }
@@ -723,6 +877,13 @@ uint64_t vkr_renderer_get_submit_serial(VkrRendererFrontendHandle renderer) {
 uint64_t
 vkr_renderer_get_completed_submit_serial(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
+  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+#if defined(PLATFORM_APPLE)
+    return vkr_metal_packet_renderer_completed_value(renderer->metal_renderer);
+#else
+    return 0;
+#endif
+  }
   if (!renderer->backend.get_completed_submit_serial) {
     return 0;
   }
@@ -738,12 +899,39 @@ bool8_t vkr_renderer_get_and_reset_upload_wait_stats(
   out_stats->queue_wait_idle_count = 0;
   out_stats->device_wait_idle_count = 0;
 
+  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+#if defined(PLATFORM_APPLE)
+    return vkr_metal_packet_renderer_get_and_reset_upload_wait_count(
+        renderer->metal_renderer, &out_stats->fence_wait_count);
+#else
+    return false_v;
+#endif
+  }
+
   if (!renderer->backend.get_and_reset_upload_wait_stats) {
     return false_v;
   }
 
   return renderer->backend.get_and_reset_upload_wait_stats(
       renderer->backend_state, out_stats);
+}
+
+bool8_t vkr_renderer_get_and_reset_command_slot_wait_count(
+    VkrRendererFrontendHandle renderer, uint64_t *out_wait_count) {
+  assert_log(renderer != NULL, "Renderer is NULL");
+  assert_log(out_wait_count != NULL, "Out wait count is NULL");
+
+  *out_wait_count = 0;
+  if (renderer->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL) {
+    return false_v;
+  }
+
+#if defined(PLATFORM_APPLE)
+  return vkr_metal_packet_renderer_get_and_reset_command_slot_wait_count(
+      renderer->metal_renderer, out_wait_count);
+#else
+  return false_v;
+#endif
 }
 
 bool8_t
@@ -763,6 +951,38 @@ bool8_t vkr_renderer_get_device_memory_stats(VkrRendererFrontendHandle renderer,
   assert_log(out_stats != NULL, "Out stats is NULL");
 
   MemZero(out_stats, sizeof(*out_stats));
+  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+#if defined(PLATFORM_APPLE)
+    VkrMetalMemoryDeviceMetrics metrics = {0};
+    if (!vkr_metal_packet_renderer_get_memory_metrics(renderer->metal_renderer,
+                                                      &metrics)) {
+      return false_v;
+    }
+    /* These legacy rows count native device allocations. Placement records are
+       published separately as memory.gpu.suballocations.*; mapping them here
+       would silently change the meaning of the cross-backend metric. */
+    out_stats->live_allocation_count = metrics.native_heap_size > 0 ? 1u : 0u;
+    out_stats->peak_allocation_count = out_stats->live_allocation_count;
+    out_stats->total_allocation_count = out_stats->live_allocation_count;
+    out_stats->max_allocation_count = 1u;
+    out_stats->live_bytes = metrics.native_heap_allocated_size;
+    out_stats->peak_bytes = metrics.native_heap_peak_allocated_size;
+    out_stats->live_totals_exact = true_v;
+    out_stats->memory_type_count = 1;
+    out_stats->live_bytes_by_type[0] = out_stats->live_bytes;
+    out_stats->live_count_by_type[0] = out_stats->live_allocation_count;
+    out_stats->heap_index_by_type[0] = 0;
+    out_stats->heap_count = 1;
+    out_stats->heap_size_bytes[0] = metrics.native_heap_size;
+    out_stats->heap_usage_bytes[0] = metrics.native_heap_used_size;
+    out_stats->heap_budget_bytes[0] =
+        metrics.driver_recommended_working_set_size;
+    out_stats->heap_usage_valid = true_v;
+    return true_v;
+#else
+    return false_v;
+#endif
+  }
   if (!renderer->backend.get_device_memory_stats) {
     return false_v;
   }
@@ -1225,9 +1445,25 @@ VkrRendererError vkr_renderer_image_barrier(
     VkrImageAccessFlags src_access, VkrImageAccessFlags dst_access,
     VkrTextureLayout old_layout, VkrTextureLayout new_layout,
     const VkrImageSubresourceRange *range) {
+  const VkrGpuDependency dependency =
+      vkr_gpu_image_dependency_default(src_access, dst_access);
+  return vkr_renderer_image_barrier_scoped(renderer, texture, src_access,
+                                           dst_access, old_layout, new_layout,
+                                           range, &dependency);
+}
+
+VkrRendererError vkr_renderer_image_barrier_scoped(
+    VkrRendererFrontendHandle renderer, VkrTextureOpaqueHandle texture,
+    VkrImageAccessFlags src_access, VkrImageAccessFlags dst_access,
+    VkrTextureLayout old_layout, VkrTextureLayout new_layout,
+    const VkrImageSubresourceRange *range, const VkrGpuDependency *dependency) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(texture != NULL, "Texture is NULL");
+  assert_log(dependency != NULL, "Dependency is NULL");
 
+  if (!dependency) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
   if (!renderer->backend.image_barrier) {
     return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
   }
@@ -1235,7 +1471,7 @@ VkrRendererError vkr_renderer_image_barrier(
   VkrBackendResourceHandle handle = {.ptr = (void *)texture};
   return renderer->backend.image_barrier(renderer->backend_state, handle,
                                          src_access, dst_access, old_layout,
-                                         new_layout, range);
+                                         new_layout, range, dependency);
 }
 
 VkrRendererError vkr_renderer_write_texture(VkrRendererFrontendHandle renderer,
@@ -1295,15 +1531,18 @@ VkrRendererError vkr_renderer_copy_texture(VkrRendererFrontendHandle renderer,
       (VkrBackendResourceHandle){.ptr = destination});
 }
 
-void vkr_renderer_destroy_texture(VkrRendererFrontendHandle renderer,
-                                  VkrTextureOpaqueHandle texture) {
+bool8_t vkr_renderer_destroy_texture(VkrRendererFrontendHandle renderer,
+                                     VkrTextureOpaqueHandle texture) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(texture != NULL, "Texture is NULL");
 
-  // log_debug("Destroying texture");
+  if (!renderer->backend.texture_destroy) {
+    return false_v;
+  }
 
   VkrBackendResourceHandle handle = {.ptr = (void *)texture};
   renderer->backend.texture_destroy(renderer->backend_state, handle);
+  return true_v;
 }
 
 VkrRendererError
@@ -1529,8 +1768,22 @@ VkrRendererError vkr_renderer_buffer_barrier(VkrRendererFrontendHandle renderer,
                                              VkrBufferHandle buffer,
                                              VkrBufferAccessFlags src_access,
                                              VkrBufferAccessFlags dst_access) {
+  const VkrGpuDependency dependency =
+      vkr_gpu_buffer_dependency_default(src_access, dst_access);
+  return vkr_renderer_buffer_barrier_scoped(renderer, buffer, src_access,
+                                            dst_access, &dependency);
+}
+
+VkrRendererError vkr_renderer_buffer_barrier_scoped(
+    VkrRendererFrontendHandle renderer, VkrBufferHandle buffer,
+    VkrBufferAccessFlags src_access, VkrBufferAccessFlags dst_access,
+    const VkrGpuDependency *dependency) {
   assert_log(renderer != NULL, "Renderer is NULL");
   assert_log(buffer != NULL, "Buffer is NULL");
+  assert_log(dependency != NULL, "Dependency is NULL");
+  if (!dependency) {
+    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+  }
   if (!renderer->backend.buffer_barrier) {
     return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
   }
@@ -1539,7 +1792,7 @@ VkrRendererError vkr_renderer_buffer_barrier(VkrRendererFrontendHandle renderer,
   // ordering before the backend ever sees it.
   VkrBackendResourceHandle handle = {.ptr = (void *)buffer};
   return renderer->backend.buffer_barrier(renderer->backend_state, handle,
-                                          src_access, dst_access);
+                                          src_access, dst_access, dependency);
 }
 
 void vkr_renderer_set_instance_buffer(VkrRendererFrontendHandle renderer,
@@ -1753,6 +2006,9 @@ VkrTextureOpaqueHandle vkr_renderer_present_target_attachment_get(
 uint32_t
 vkr_renderer_present_target_image_count(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
+  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    return 3u;
+  }
   if (!renderer->backend.present_target_image_count_get) {
     return 0;
   }
@@ -1773,6 +2029,9 @@ vkr_renderer_present_target_image_index(VkrRendererFrontendHandle renderer) {
 VkrPresentTargetKind
 vkr_renderer_present_target_kind(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
+  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    return renderer->present_target.kind;
+  }
   if (!renderer->backend.present_target_kind_get) {
     return VKR_PRESENT_TARGET_WINDOWED;
   }
@@ -1800,6 +2059,13 @@ VkrTextureFormat
 vkr_renderer_present_target_format(VkrRendererFrontendHandle renderer,
                                    VkrPresentTargetAttachment attachment) {
   assert_log(renderer != NULL, "Renderer is NULL");
+  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    if (attachment == VKR_PRESENT_TARGET_ATTACHMENT_DEPTH)
+      return VKR_TEXTURE_FORMAT_D32_SFLOAT;
+    return renderer->present_target.kind == VKR_PRESENT_TARGET_OFFSCREEN
+               ? VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB
+               : VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB;
+  }
   if (!renderer->backend.present_target_format_get) {
     return attachment == VKR_PRESENT_TARGET_ATTACHMENT_COLOR
                ? VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB
@@ -1842,6 +2108,24 @@ vkr_renderer_present_target_recreate(VkrRendererFrontendHandle renderer,
   if (renderer->frame_active) {
     return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
   }
+  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    if (width == 0 || height == 0 || image_count == 0) {
+      return VKR_RENDERER_ERROR_INVALID_PARAMETER;
+    }
+    VkrRendererError idle = vkr_renderer_wait_idle(renderer);
+    if (idle != VKR_RENDERER_ERROR_NONE) {
+      return idle;
+    }
+    renderer->present_target.width = width;
+    renderer->present_target.height = height;
+    renderer->present_target.image_count = 3u;
+    renderer->last_window_width = width;
+    renderer->last_window_height = height;
+    if (renderer->ui_system.initialized) {
+      vkr_ui_system_resize(renderer, &renderer->ui_system, width, height);
+    }
+    return VKR_RENDERER_ERROR_NONE;
+  }
   if (!renderer->backend.present_target_recreate || width == 0 || height == 0 ||
       image_count == 0) {
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
@@ -1879,6 +2163,9 @@ vkr_renderer_get_shadow_depth_format(VkrRendererFrontendHandle renderer) {
 uint32_t
 vkr_renderer_frame_in_flight_index(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
+  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    return (uint32_t)(renderer->frame_number % 3u);
+  }
   if (!renderer->backend.frame_in_flight_index_get) {
     return 0;
   }
@@ -1888,6 +2175,9 @@ vkr_renderer_frame_in_flight_index(VkrRendererFrontendHandle renderer) {
 uint32_t
 vkr_renderer_frame_in_flight_count(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
+  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    return 3;
+  }
   if (!renderer->backend.frame_in_flight_count_get) {
     return 1;
   }
@@ -1964,6 +2254,11 @@ vkr_renderer_validate_draws(RendererFrontend *rf, const VkrDrawItem *draws,
           out_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
           "mesh handle is invalid", "%s[%u].mesh", field_prefix, i);
     }
+    if (draw->geometry.id == 0 || draw->geometry.generation == VKR_INVALID_ID) {
+      return vkr_renderer_validation_failf(
+          out_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "geometry handle is invalid", "%s[%u].geometry", field_prefix, i);
+    }
     if (draw->instance_count == 0) {
       continue;
     }
@@ -1997,6 +2292,87 @@ VkrRendererError vkr_renderer_prepare_frame(VkrRendererFrontendHandle renderer,
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
 
+  if (rf->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+#if defined(PLATFORM_APPLE)
+    if (rf->frame_active) {
+      return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
+    }
+    if (rf->window) {
+      VkrWindowPixelSize pixels = vkr_window_get_pixel_size(rf->window);
+      if (pixels.width == 0 || pixels.height == 0) {
+        return VKR_RENDERER_ERROR_FRAME_SKIPPED;
+      }
+      rf->last_window_width = pixels.width;
+      rf->last_window_height = pixels.height;
+    }
+    rf->frame_active = true_v;
+    vkr_resource_system_pump(NULL);
+    vkr_mesh_manager_pump_async(&rf->mesh_manager);
+    VkrRenderGraphFrameInfo frame = {
+        .frame_index = (uint32_t)(rf->frame_number + 1u),
+        .image_index = 0,
+        .delta_time = 1.0 / 60.0,
+        .target_width = rf->last_window_width,
+        .target_height = rf->last_window_height,
+        .window_width = rf->last_window_width,
+        .window_height = rf->last_window_height,
+        .viewport_width = rf->last_window_width,
+        .viewport_height = rf->last_window_height,
+        /* The packet is not available until submit. The Metal packet renderer
+           patches this value from packet->picking before it builds the graph;
+           subsystem initialization alone must not schedule picking work. */
+        .picking_pending = false_v,
+        .target_color_format = rf->window ? VKR_TEXTURE_FORMAT_B8G8R8A8_SRGB
+                                          : VKR_TEXTURE_FORMAT_R8G8B8A8_SRGB,
+        .target_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+        .target_color_initial_state = {.access = VKR_IMAGE_ACCESS_NONE,
+                                       .layout = VKR_TEXTURE_LAYOUT_UNDEFINED},
+        .target_depth_initial_state = {.access = VKR_IMAGE_ACCESS_NONE,
+                                       .layout = VKR_TEXTURE_LAYOUT_UNDEFINED},
+        .target_terminal_state = {.access = VKR_IMAGE_ACCESS_TRANSFER_SRC,
+                                  .layout =
+                                      VKR_TEXTURE_LAYOUT_TRANSFER_SRC_OPTIMAL},
+        .shadow_depth_format = VKR_TEXTURE_FORMAT_D32_SFLOAT,
+        .shadow_map_size =
+            rf->shadow_system.initialized
+                ? vkr_shadow_config_get_max_map_size(&rf->shadow_system.config)
+                : 2048,
+        .shadow_cascade_count = rf->shadow_system.initialized
+                                    ? rf->shadow_system.config.cascade_count
+                                    : 0,
+    };
+    if (!vkr_metal_packet_renderer_prepare_frame(rf->metal_renderer, &frame)) {
+      rf->frame_active = false_v;
+      return VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED;
+    }
+    VkrMetalPacketResult *timing_result =
+        (VkrMetalPacketResult *)rf->metal_timing_result;
+    rf->metal_completed_timing_ready = false_v;
+    if (timing_result &&
+        vkr_metal_packet_renderer_pass_timings_poll_latest(
+            rf->metal_renderer, rf->metal_last_completed_timing_submit_value,
+            timing_result)) {
+      rf->metal_last_completed_timing_submit_value =
+          timing_result->submit_value;
+      rf->metal_timing_source_cpu_frame_index =
+          timing_result->source_frame_index;
+      rf->metal_completed_timing_ready = true_v;
+    }
+    rf->frame_number++;
+    MemZero(&rf->frame_metrics, sizeof(rf->frame_metrics));
+    *out_setup = (VkrFrameSetup){
+        .image_index = 0,
+        .window_width = rf->last_window_width,
+        .window_height = rf->last_window_height,
+        .swapchain_format = frame.target_color_format,
+        .swapchain_depth_format = frame.target_depth_format,
+    };
+    return VKR_RENDERER_ERROR_NONE;
+#else
+    return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+#endif
+  }
+
   VkrRendererError result = vkr_renderer_begin_frame(renderer, 0.0);
   if (result != VKR_RENDERER_ERROR_NONE) {
     return result;
@@ -2016,6 +2392,37 @@ VkrRendererError vkr_renderer_prepare_frame(VkrRendererFrontendHandle renderer,
                                        &out_setup->window_height);
   }
 
+  return VKR_RENDERER_ERROR_NONE;
+}
+
+vkr_internal VkrRendererError vkr_renderer_validate_text_draws(
+    const VkrPreparedTextDraw *draws, uint32_t draw_count, const char *path,
+    VkrValidationError *out_validation_error) {
+  if (draw_count > 0 && !draws) {
+    return vkr_renderer_validation_fail(out_validation_error,
+                                        VKR_RENDERER_ERROR_INVALID_PARAMETER,
+                                        path, "text draw list is NULL");
+  }
+  for (uint32_t i = 0; i < draw_count; ++i) {
+    const VkrPreparedTextDraw *draw = &draws[i];
+    if (!draw->vertices || draw->vertex_count == 0 || !draw->indices ||
+        draw->index_count == 0 || draw->max_index >= draw->vertex_count ||
+        draw->atlas.id == 0 || draw->atlas.generation == VKR_INVALID_ID ||
+        !isfinite(draw->screen_px_range) || draw->screen_px_range < 0.0f ||
+        draw->font_mode > 1u) {
+      return vkr_renderer_validation_failf(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "prepared text draw is malformed", "%s[%u]", path, i);
+    }
+    for (uint32_t element = 0; element < ArrayCount(draw->model.elements);
+         ++element) {
+      if (!isfinite(draw->model.elements[element])) {
+        return vkr_renderer_validation_failf(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "text model contains a non-finite value", "%s[%u].model", path, i);
+      }
+    }
+  }
   return VKR_RENDERER_ERROR_NONE;
 }
 
@@ -2056,6 +2463,113 @@ vkr_internal VkrRendererError vkr_renderer_validate_packet(
         "globals.exposure", "exposure must be finite and non-negative");
   }
 
+  const VkrFrameLighting *lighting = packet->lighting;
+  if (lighting && (!isfinite(lighting->directional_direction.x) ||
+                   !isfinite(lighting->directional_direction.y) ||
+                   !isfinite(lighting->directional_direction.z) ||
+                   !isfinite(lighting->directional_color.x) ||
+                   !isfinite(lighting->directional_color.y) ||
+                   !isfinite(lighting->directional_color.z) ||
+                   !isfinite(lighting->directional_intensity) ||
+                   !isfinite(lighting->ibl_intensity) ||
+                   !isfinite(lighting->ibl_diffuse_intensity) ||
+                   !isfinite(lighting->ibl_specular_intensity) ||
+                   lighting->directional_color.x < 0.0f ||
+                   lighting->directional_color.y < 0.0f ||
+                   lighting->directional_color.z < 0.0f ||
+                   lighting->directional_intensity < 0.0f ||
+                   lighting->ibl_intensity < 0.0f ||
+                   lighting->ibl_diffuse_intensity < 0.0f ||
+                   lighting->ibl_specular_intensity < 0.0f)) {
+    return vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER, "lighting",
+        "lighting values must be finite and non-negative");
+  }
+  if (lighting &&
+      (lighting->point_light_count > VKR_MAX_SCENE_POINT_LIGHTS ||
+       (lighting->point_light_count > 0 &&
+        (!lighting->point_lights || !lighting->point_light_grid)))) {
+    return vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+        "lighting.point_lights", "point-light table or grid is invalid");
+  }
+  if (lighting && lighting->point_light_count > 0) {
+    const VkrPointLightGrid *grid = lighting->point_light_grid;
+    const uint64_t grid_cells = (uint64_t)grid->dimensions[0] *
+                                grid->dimensions[1] * grid->dimensions[2];
+    if (!isfinite(grid->origin.x) || !isfinite(grid->origin.y) ||
+        !isfinite(grid->origin.z) || !isfinite(grid->cell_size) ||
+        grid->cell_size < 0.0f ||
+        grid->cell_count > VKR_POINT_LIGHT_GRID_MAX_CELLS ||
+        grid_cells != grid->cell_count) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+          "lighting.point_light_grid", "point-light grid is malformed");
+    }
+    for (uint32_t i = 0; i < lighting->point_light_count; ++i) {
+      const VkrPointLight *light = &lighting->point_lights[i];
+      const float32_t values[] = {
+          light->position.x,       light->position.y,  light->position.z,
+          light->color.x,          light->color.y,     light->color.z,
+          light->intensity,        light->constant,    light->linear,
+          light->quadratic,        light->range,       light->direction.x,
+          light->direction.y,      light->direction.z, light->inner_cone_angle,
+          light->outer_cone_angle,
+      };
+      for (uint32_t value = 0; value < ArrayCount(values); ++value) {
+        if (!isfinite(values[value])) {
+          return vkr_renderer_validation_fail(
+              out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+              "lighting.point_lights", "point-light values must be finite");
+        }
+      }
+      if (light->color.x < 0.0f || light->color.y < 0.0f ||
+          light->color.z < 0.0f || light->intensity < 0.0f ||
+          light->range < 0.0f || light->kind > VKR_POINT_LIGHT_KIND_GLTF_SPOT) {
+        return vkr_renderer_validation_fail(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "lighting.point_lights", "point-light domain is invalid");
+      }
+    }
+  }
+  if (lighting && (lighting->ibl_probe_count > VKR_FRAME_IBL_PROBE_MAX ||
+                   (lighting->ibl_probe_count > 0 && !lighting->ibl_probes))) {
+    return vkr_renderer_validation_fail(
+        out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+        "lighting.ibl_probes", "IBL probe table is invalid");
+  }
+  if (lighting) {
+    for (uint32_t i = 0; i < lighting->ibl_probe_count; ++i) {
+      const VkrFrameIblProbe *probe = &lighting->ibl_probes[i];
+      const float32_t values[] = {
+          probe->center.x,           probe->center.y,
+          probe->center.z,           probe->extents.x,
+          probe->extents.y,          probe->extents.z,
+          probe->blend_distance,     probe->weight,
+          probe->intensity,          probe->diffuse_intensity,
+          probe->specular_intensity,
+      };
+      for (uint32_t value = 0; value < ArrayCount(values); ++value) {
+        if (!isfinite(values[value])) {
+          return vkr_renderer_validation_fail(
+              out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+              "lighting.ibl_probes", "IBL probe values must be finite");
+        }
+      }
+      if (probe->irradiance.id == 0 || probe->prefilter.id == 0 ||
+          probe->irradiance.generation == VKR_INVALID_ID ||
+          probe->prefilter.generation == VKR_INVALID_ID ||
+          probe->extents.x < 0.0f || probe->extents.y < 0.0f ||
+          probe->extents.z < 0.0f || probe->blend_distance < 0.0f ||
+          probe->weight < 0.0f || probe->intensity < 0.0f ||
+          probe->diffuse_intensity < 0.0f || probe->specular_intensity < 0.0f) {
+        return vkr_renderer_validation_fail(
+            out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
+            "lighting.ibl_probes", "IBL probe domain is invalid");
+      }
+    }
+  }
+
   const VkrWorldPassPayload *world = packet->world;
   if (world) {
     if (world->instance_count > 0 && !world->instances) {
@@ -2066,6 +2580,12 @@ vkr_internal VkrRendererError vkr_renderer_validate_packet(
     VkrRendererError err = vkr_renderer_validate_draws(
         rf, world->opaque_draws, world->opaque_draw_count,
         world->instance_count, "world.opaque_draws", VKR_PIPELINE_DOMAIN_WORLD,
+        out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      return err;
+    }
+    err = vkr_renderer_validate_text_draws(
+        world->text_draws, world->text_draw_count, "world.text_draws",
         out_validation_error);
     if (err != VKR_RENDERER_ERROR_NONE) {
       return err;
@@ -2131,6 +2651,12 @@ vkr_internal VkrRendererError vkr_renderer_validate_packet(
     VkrRendererError err = vkr_renderer_validate_draws(
         rf, ui->draws, ui->draw_count, ui->instance_count, "ui.draws",
         VKR_PIPELINE_DOMAIN_UI, out_validation_error);
+    if (err != VKR_RENDERER_ERROR_NONE) {
+      return err;
+    }
+    err =
+        vkr_renderer_validate_text_draws(ui->text_draws, ui->text_draw_count,
+                                         "ui.text_draws", out_validation_error);
     if (err != VKR_RENDERER_ERROR_NONE) {
       return err;
     }
@@ -2260,6 +2786,92 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
   if (err != VKR_RENDERER_ERROR_NONE) {
     // Nothing has been mutated and no pass has touched the acquired image.
     goto cancel;
+  }
+
+  if (rf->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+#if defined(PLATFORM_APPLE)
+    const VkrTextUpdatesPayload *updates = packet->text_updates;
+    if (updates) {
+      for (uint32_t i = 0; i < updates->world_text_update_count; ++i) {
+        const VkrTextUpdate *update = &updates->world_text_updates[i];
+        if (rf->world_resources.initialized) {
+          vkr_world_resources_text_update(rf, &rf->world_resources,
+                                          update->text_id, update->content);
+          if (update->transform) {
+            vkr_world_resources_text_set_transform(
+                rf, &rf->world_resources, update->text_id, update->transform);
+          }
+        }
+      }
+      for (uint32_t i = 0; i < updates->ui_text_update_count; ++i) {
+        const VkrTextUpdate *update = &updates->ui_text_updates[i];
+        if (rf->ui_system.initialized) {
+          vkr_ui_system_text_update(rf, &rf->ui_system, update->text_id,
+                                    update->content);
+        }
+      }
+    }
+
+    VkrPreparedTextDraw world_text_draws[VKR_PREPARED_TEXT_DRAW_MAX] = {0};
+    VkrPreparedTextDraw ui_text_draws[VKR_PREPARED_TEXT_DRAW_MAX] = {0};
+    VkrWorldPassPayload world =
+        packet->world ? *packet->world : (VkrWorldPassPayload){0};
+    VkrUiPassPayload ui = packet->ui ? *packet->ui : (VkrUiPassPayload){0};
+    VkrRenderPacket prepared_packet = *packet;
+    if (rf->world_resources.initialized) {
+      world.text_draw_count = vkr_world_resources_prepare_text_draws(
+          rf, &rf->world_resources, world_text_draws,
+          VKR_PREPARED_TEXT_DRAW_MAX);
+      world.text_draws =
+          world.text_draw_count > 0
+              ? world_text_draws
+              : (packet->world ? packet->world->text_draws : NULL);
+      if (world.text_draw_count == 0 && packet->world) {
+        world.text_draw_count = packet->world->text_draw_count;
+      }
+      prepared_packet.world = &world;
+    }
+    if (rf->ui_system.initialized) {
+      ui.text_draw_count = vkr_ui_system_prepare_text_draws(
+          rf, &rf->ui_system, ui_text_draws, VKR_PREPARED_TEXT_DRAW_MAX);
+      ui.text_draws = ui.text_draw_count > 0
+                          ? ui_text_draws
+                          : (packet->ui ? packet->ui->text_draws : NULL);
+      if (ui.text_draw_count == 0 && packet->ui) {
+        ui.text_draw_count = packet->ui->text_draw_count;
+      }
+      prepared_packet.ui = &ui;
+    }
+
+    VkrMetalPacketResult result = {0};
+    const bool8_t submitted = vkr_metal_packet_renderer_submit_packet(
+        rf->metal_renderer, &prepared_packet, &result);
+    rf->frame_active = false_v;
+    if (!submitted) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_SUBMISSION_FAILED, "metal",
+          "Metal packet submission failed");
+    }
+    if (rf->metal_timing_result && !rf->metal_completed_timing_ready) {
+      *(VkrMetalPacketResult *)rf->metal_timing_result = result;
+      rf->metal_timing_source_cpu_frame_index = packet->frame.frame_index;
+    }
+    rf->frame_metrics.world.draws_collected = result.indexed_draw_count;
+    rf->frame_metrics.world.opaque_draws = result.opaque_draw_count;
+    rf->frame_metrics.world.transmission_draws = result.transmission_draw_count;
+    rf->frame_metrics.world.transparent_draws = result.blend_draw_count;
+    rf->frame_metrics.world.draws_issued = result.indexed_draw_count;
+    rf->frame_metrics.world.draw_calls_issued = result.indexed_draw_count;
+    rf->frame_metrics.shadow.shadow_draw_calls_opaque[0] =
+        result.shadow_draw_count;
+    if (out_metrics) {
+      *out_metrics = rf->frame_metrics;
+    }
+    return VKR_RENDERER_ERROR_NONE;
+#else
+    rf->frame_active = false_v;
+    return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+#endif
   }
 
   VkrShadowConfig shadow_cfg_fallback = VKR_SHADOW_CONFIG_DEFAULT;
@@ -2395,7 +3007,36 @@ vkr_renderer_submit_packet(VkrRendererFrontendHandle renderer,
     goto cancel;
   }
 
-  vkr_rg_set_packet(rf->render_graph, packet);
+  VkrPreparedTextDraw world_text_draws[VKR_PREPARED_TEXT_DRAW_MAX] = {0};
+  VkrPreparedTextDraw ui_text_draws[VKR_PREPARED_TEXT_DRAW_MAX] = {0};
+  VkrWorldPassPayload prepared_world =
+      packet->world ? *packet->world : (VkrWorldPassPayload){0};
+  VkrUiPassPayload prepared_ui =
+      packet->ui ? *packet->ui : (VkrUiPassPayload){0};
+  VkrRenderPacket prepared_packet = *packet;
+  if (rf->world_resources.initialized) {
+    prepared_world.text_draw_count = vkr_world_resources_prepare_text_draws(
+        rf, &rf->world_resources, world_text_draws, VKR_PREPARED_TEXT_DRAW_MAX);
+    prepared_world.text_draws = prepared_world.text_draw_count > 0
+                                    ? world_text_draws
+                                : packet->world ? packet->world->text_draws
+                                                : NULL;
+    if (prepared_world.text_draw_count == 0 && packet->world)
+      prepared_world.text_draw_count = packet->world->text_draw_count;
+    prepared_packet.world = &prepared_world;
+  }
+  if (rf->ui_system.initialized) {
+    prepared_ui.text_draw_count = vkr_ui_system_prepare_text_draws(
+        rf, &rf->ui_system, ui_text_draws, VKR_PREPARED_TEXT_DRAW_MAX);
+    prepared_ui.text_draws = prepared_ui.text_draw_count > 0 ? ui_text_draws
+                             : packet->ui ? packet->ui->text_draws
+                                          : NULL;
+    if (prepared_ui.text_draw_count == 0 && packet->ui)
+      prepared_ui.text_draw_count = packet->ui->text_draw_count;
+    prepared_packet.ui = &prepared_ui;
+  }
+
+  vkr_rg_set_packet(rf->render_graph, &prepared_packet);
   VkrPickingState picking_state_before = rf->picking.state;
   err = vkr_rg_execute(rf->render_graph, rf);
   if (err != VKR_RENDERER_ERROR_NONE) {
@@ -2520,7 +3161,10 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
 
-  rf->backend.on_resize(rf->backend_state, width, height);
+  if (rf->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
+      rf->backend.on_resize) {
+    rf->backend.on_resize(rf->backend_state, width, height);
+  }
 
   if (rf->rf_mutex) {
     vkr_mutex_lock(rf->rf_mutex);
@@ -2540,8 +3184,10 @@ void vkr_renderer_resize(VkrRendererFrontendHandle renderer, uint32_t width,
   if (rf->ui_system.initialized) {
     vkr_ui_system_resize(rf, &rf->ui_system, width, height);
   }
-  renderer_frontend_regenerate_render_targets(rf);
-  vkr_pipeline_registry_mark_global_state_dirty(&rf->pipeline_registry);
+  if (rf->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL) {
+    renderer_frontend_regenerate_render_targets(rf);
+    vkr_pipeline_registry_mark_global_state_dirty(&rf->pipeline_registry);
+  }
 }
 
 void vkr_renderer_bind_vertex_buffer(VkrRendererFrontendHandle renderer,
@@ -2674,6 +3320,11 @@ VkrRendererError vkr_renderer_cancel_frame(VkrRendererFrontendHandle renderer) {
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
 
+  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    renderer->frame_active = false_v;
+    return VKR_RENDERER_ERROR_NONE;
+  }
+
   VkrRendererError result = VKR_RENDERER_ERROR_NONE;
   if (renderer->backend.cancel_frame) {
     result = renderer->backend.cancel_frame(renderer->backend_state);
@@ -2758,6 +3409,156 @@ bool8_t vkr_renderer_rg_timing_get_results(VkrRendererFrontendHandle renderer,
       out_source_frame_index, out_source_submit_serial);
 }
 
+vkr_internal bool8_t renderer_frontend_initialize_metal_systems(
+    RendererFrontend *rf, VkrJobSystem *job_system,
+    const VkrRendererMetricsProducerConfig *metrics_producers) {
+  if (!vkr_resource_system_init(&rf->allocator, rf, job_system,
+                                metrics_producers)) {
+    return false_v;
+  }
+
+  VkrRendererError error = VKR_RENDERER_ERROR_NONE;
+  VkrGeometrySystemConfig geometry_config = {
+      .max_geometries = 16384,
+      .asset_publisher = &rf->asset_publisher,
+  };
+  if (!vkr_geometry_system_init(&rf->geometry_system, rf, &geometry_config,
+                                &error)) {
+    return false_v;
+  }
+  VkrTextureSystemConfig texture_config = {
+      .max_texture_count = 16384,
+      .asset_publisher = &rf->asset_publisher,
+  };
+  if (!vkr_texture_system_init(rf, &texture_config, job_system,
+                               &rf->texture_system)) {
+    return false_v;
+  }
+  rf->texture_system.hdr_decode_metrics = rf->hdr_decode_metrics;
+  VkrMaterialSystemConfig material_config = {
+      .max_material_count = 8192,
+      .asset_publisher = &rf->asset_publisher,
+  };
+  if (!vkr_material_system_init(&rf->material_system, rf->arena,
+                                &rf->texture_system, NULL, &material_config)) {
+    return false_v;
+  }
+  VkrMeshManagerConfig mesh_config = {.max_mesh_count = 16384};
+  if (!vkr_mesh_manager_init(&rf->mesh_manager, &rf->geometry_system,
+                             &rf->material_system, &rf->pipeline_registry,
+                             &mesh_config)) {
+    return false_v;
+  }
+
+  const uint32_t pool_chunk_count =
+      job_system ? job_system->worker_count + 4 : 8;
+  if (!vkr_arena_pool_create(MB(6), pool_chunk_count, &rf->allocator,
+                             &rf->mesh_arena_pool)) {
+    return false_v;
+  }
+  rf->mesh_loader =
+      (VkrMeshLoaderContext){.geometry_system = &rf->geometry_system,
+                             .material_system = &rf->material_system,
+                             .mesh_manager = &rf->mesh_manager,
+                             .job_system = job_system,
+                             .arena_pool = &rf->mesh_arena_pool};
+  rf->mesh_loader.allocator.ctx = rf->arena;
+  vkr_allocator_arena(&rf->mesh_loader.allocator);
+  if (!vkr_dmemory_create(VKR_MESH_LOADER_ASYNC_DMEMORY_INITIAL,
+                          VKR_MESH_LOADER_ASYNC_DMEMORY_RESERVE,
+                          &rf->mesh_loader.async_memory)) {
+    return false_v;
+  }
+  rf->mesh_loader.async_allocator =
+      (VkrAllocator){.ctx = &rf->mesh_loader.async_memory};
+  vkr_dmemory_allocator_create(&rf->mesh_loader.async_allocator);
+  if (!vkr_mutex_create(&rf->allocator, &rf->mesh_loader.async_mutex)) {
+    return false_v;
+  }
+  if (!vkr_dmemory_create(VKR_SCENE_LOADER_ASYNC_DMEMORY_INITIAL,
+                          VKR_SCENE_LOADER_ASYNC_DMEMORY_RESERVE,
+                          &rf->scene_async_memory)) {
+    return false_v;
+  }
+  rf->scene_async_allocator = (VkrAllocator){.ctx = &rf->scene_async_memory};
+  vkr_dmemory_allocator_create(&rf->scene_async_allocator);
+  if (!vkr_mutex_create(&rf->allocator, &rf->scene_async_mutex)) {
+    return false_v;
+  }
+  rf->mesh_manager.loader_context = &rf->mesh_loader;
+
+  if (!vkr_arena_pool_create(MB(6), pool_chunk_count, &rf->allocator,
+                             &rf->bitmap_font_arena_pool) ||
+      !vkr_arena_pool_create(MB(6), pool_chunk_count, &rf->allocator,
+                             &rf->system_font_arena_pool) ||
+      !vkr_arena_pool_create(MB(6), pool_chunk_count, &rf->allocator,
+                             &rf->mtsdf_font_arena_pool)) {
+    return false_v;
+  }
+  rf->bitmap_font_loader = (VkrBitmapFontLoaderContext){
+      .job_system = job_system, .arena_pool = &rf->bitmap_font_arena_pool};
+  rf->system_font_loader = (VkrSystemFontLoaderContext){
+      .job_system = job_system,
+      .arena_pool = &rf->system_font_arena_pool,
+      .texture_system = &rf->texture_system,
+  };
+  rf->mtsdf_font_loader = (VkrMtsdfFontLoaderContext){
+      .job_system = job_system,
+      .arena_pool = &rf->mtsdf_font_arena_pool,
+      .texture_system = &rf->texture_system,
+  };
+
+  vkr_resource_system_register_loader((void *)&rf->texture_system,
+                                      vkr_texture_loader_create());
+  vkr_resource_system_register_loader((void *)&rf->material_system,
+                                      vkr_material_loader_create());
+  vkr_resource_system_register_loader((void *)&rf->mesh_loader,
+                                      vkr_mesh_loader_create(&rf->mesh_loader));
+  vkr_resource_system_register_loader(
+      (void *)&rf->bitmap_font_loader,
+      vkr_bitmap_font_loader_create(&rf->bitmap_font_loader));
+  vkr_resource_system_register_loader(
+      (void *)&rf->system_font_loader,
+      vkr_system_font_loader_create(&rf->system_font_loader));
+  vkr_resource_system_register_loader(
+      (void *)&rf->mtsdf_font_loader,
+      vkr_mtsdf_font_loader_create(&rf->mtsdf_font_loader));
+  vkr_resource_system_register_loader((void *)rf, vkr_scene_loader_create());
+
+  VkrFontSystemConfig font_config = {
+      .max_system_font_count = 16,
+      .max_bitmap_font_count = 16,
+      .max_mtsdf_font_count = 16,
+  };
+  if (!vkr_font_system_init(&rf->font_system, rf, &font_config, &error) ||
+      !vkr_lighting_system_init(&rf->lighting_system) ||
+      !vkr_world_resources_init_retained(rf, &rf->world_resources)) {
+    return false_v;
+  }
+  VkrShadowConfig shadow_config = VKR_SHADOW_CONFIG_DEFAULT;
+  if (!vkr_shadow_system_init(&rf->shadow_system, rf, &shadow_config)) {
+    return false_v;
+  }
+  if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,
+                                           VKR_RENDERER_SUBSYSTEM_UI) &&
+      !vkr_ui_system_init_retained(rf, &rf->ui_system)) {
+    return false_v;
+  }
+  if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,
+                                           VKR_RENDERER_SUBSYSTEM_SKYBOX) &&
+      !vkr_skybox_system_init(rf, &rf->skybox_system)) {
+    return false_v;
+  }
+  if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,
+                                           VKR_RENDERER_SUBSYSTEM_PICKING) &&
+      !vkr_picking_init(rf, &rf->picking, rf->last_window_width,
+                        rf->last_window_height)) {
+    return false_v;
+  }
+  renderer_frontend_narrow_plan_to_initialized(rf);
+  return true_v;
+}
+
 bool32_t vkr_renderer_systems_initialize(
     VkrRendererFrontendHandle renderer, VkrJobSystem *job_system,
     const VkrRendererMetricsProducerConfig *metrics_producers,
@@ -2823,6 +3624,18 @@ bool32_t vkr_renderer_systems_initialize(
     return false_v;
   }
   vkr_camera_system_update(initial_camera);
+
+  if (rf->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    if (!renderer_frontend_initialize_metal_systems(rf, job_system,
+                                                    metrics_producers)) {
+      log_fatal("Failed to initialize Metal packet renderer systems");
+      return false_v;
+    }
+#if VKR_METRICS_ENABLED
+    rf->boot_metrics.systems_ns = vkr_metrics_elapsed_ns(systems_start);
+#endif
+    return true_v;
+  }
 
   if (!vkr_pipeline_registry_init(&rf->pipeline_registry, rf, NULL)) {
     log_fatal("Failed to initialize pipeline registry");
@@ -2965,7 +3778,7 @@ bool32_t vkr_renderer_systems_initialize(
                              .mesh_manager = &rf->mesh_manager,
                              .job_system = job_system,
                              .arena_pool = &rf->mesh_arena_pool};
-  rf->mesh_loader.allocator.ctx = &rf->allocator;
+  rf->mesh_loader.allocator.ctx = rf->arena;
   vkr_allocator_arena(&rf->mesh_loader.allocator);
   if (!vkr_dmemory_create(VKR_MESH_LOADER_ASYNC_DMEMORY_INITIAL,
                           VKR_MESH_LOADER_ASYNC_DMEMORY_RESERVE,
@@ -3199,5 +4012,8 @@ vkr_renderer_get_backend_allocator(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
   RendererFrontend *rf = (RendererFrontend *)renderer;
   assert_log(rf->backend_state != NULL, "Backend state is NULL");
+  if (rf->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+    return &rf->allocator;
+  }
   return rf->backend.get_allocator(rf->backend_state);
 }

@@ -9,6 +9,7 @@ stagefiles=assets/shaders/default.text.spv
 use_instance=1
 use_local=1
 vertex_abi=text2d
+cull_mode=none
 
 # ============================================================================
 # Vertex Attributes (VkrTextVertex layout)

@@ -68,6 +68,8 @@ typedef struct VkrRendererMetricsPassTable {
   bool8_t truncated;
 } VkrRendererMetricsPassTable;
 
+#define VKR_METAL_MEMORY_METRIC_MAX 64u
+
 typedef struct VkrRendererMetricIds {
   VkrMetricId world_draws_collected;
   VkrMetricId world_opaque_draws;
@@ -121,6 +123,7 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId upload_fence_waits;
   VkrMetricId upload_queue_idle_waits;
   VkrMetricId upload_device_idle_waits;
+  VkrMetricId frame_command_slot_waits;
   VkrMetricId backend_present;
 
   VkrMetricId boot_instance;
@@ -154,6 +157,9 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId gpu_heap_size_bytes[VKR_DEVICE_MEMORY_HEAP_MAX];
   VkrMetricId gpu_heap_usage_bytes[VKR_DEVICE_MEMORY_HEAP_MAX];
   VkrMetricId gpu_heap_budget_bytes[VKR_DEVICE_MEMORY_HEAP_MAX];
+  /** Backend-specific Metal heap/suballocation rows registered at device init.
+   */
+  VkrMetricId metal_memory[VKR_METAL_MEMORY_METRIC_MAX];
 
   VkrMetricId pipelines_created;
   VkrMetricId pipeline_binds;
@@ -199,12 +205,14 @@ typedef struct VkrRendererCumulativeBaselines {
   uint64_t meshes_batched;
   uint64_t jobs_completed;
   uint64_t gpu_allocations_created;
+  uint64_t metal_memory[VKR_METAL_MEMORY_METRIC_MAX];
   struct {
     uint64_t allocated_bytes;
     uint64_t allocations_created;
   } gpu_owner[VKR_GPU_ALLOCATION_OWNER_COUNT];
   /** False after a failed pull until one snapshot re-establishes baselines. */
   bool8_t gpu_memory_interval_contiguous;
+  bool8_t metal_memory_interval_contiguous;
 } VkrRendererCumulativeBaselines;
 
 /** Advances one cumulative-source baseline and returns its interval delta. */
@@ -224,6 +232,7 @@ typedef struct VkrRendererMetrics {
   uint64_t boot_scene_ns;
   uint32_t device_memory_type_count;
   uint32_t device_memory_heap_count;
+  uint32_t metal_memory_metric_count;
 } VkrRendererMetrics;
 
 typedef struct VkrRendererMetricsCollectContext {
@@ -237,6 +246,14 @@ typedef struct VkrRendererMetricsCollectContext {
 
 bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                                       VkrMetrics *metrics);
+/**
+ * Publishes backend-produced pass samples into the bounded application table.
+ * The source may alias neither the destination table nor outlive this call.
+ */
+bool8_t vkr_renderer_metrics_publish_pass_samples(
+    VkrRendererMetrics *renderer_metrics,
+    const VkrRendererMetricsPassSample *samples, uint32_t sample_count,
+    uint64_t cpu_frame_index);
 /**
  * @brief Registers the rows whose count only the device knows.
  *

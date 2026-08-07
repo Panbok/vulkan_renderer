@@ -55,6 +55,17 @@ typedef struct VkrUiTextRenderState {
   uint64_t last_frame_rendered;
 } VkrUiTextRenderState;
 
+/** CPU-owned shaped geometry shared by backend lowering paths. */
+typedef struct VkrUiTextGeometry {
+  VkrTextVertex *vertices;
+  uint32_t *indices;
+  uint32_t vertex_count;
+  uint32_t index_count;
+  uint32_t vertex_capacity;
+  uint32_t index_capacity;
+  uint32_t revision;
+} VkrUiTextGeometry;
+
 /**
  * @brief Retired buffer set waiting for GPU completion.
  *
@@ -94,13 +105,16 @@ typedef struct VkrUiText {
 
   // Render state
   VkrUiTextRenderState render;
+  VkrUiTextGeometry geometry;
 
   // Retired GPU buffers pending safe destruction.
-  VkrUiTextRetiredBufferSet retired_buffers[VKR_UI_TEXT_MAX_RETIRED_BUFFER_SETS];
+  VkrUiTextRetiredBufferSet
+      retired_buffers[VKR_UI_TEXT_MAX_RETIRED_BUFFER_SETS];
 
   // Dirty flags
-  bool8_t layout_dirty;  // Need to recompute layout
-  bool8_t buffers_dirty; // Need to regenerate GPU buffers
+  bool8_t layout_dirty;      // Need to recompute layout
+  bool8_t buffers_dirty;     // Need to regenerate shaped CPU geometry
+  bool8_t gpu_buffers_dirty; // Need to publish geometry to legacy GPU buffers
 } VkrUiText;
 Vector(VkrUiText);
 
@@ -165,6 +179,9 @@ VkrTextBounds vkr_ui_text_get_bounds(VkrUiText *text);
  * @return true if buffers are valid and ready for drawing.
  */
 bool8_t vkr_ui_text_prepare(VkrUiText *text);
+
+/** Prepares shaped CPU geometry without issuing renderer API calls. */
+bool8_t vkr_ui_text_prepare_geometry(VkrUiText *text);
 
 /**
  * @brief Submits text draw command to the renderer.

@@ -14,6 +14,58 @@ list(APPEND LIB_SOURCES ${CMAKE_SOURCE_DIR}/vendor/spirv_reflect.c)
 add_library(renderer_lib STATIC ${LIB_SOURCES})
 vkr_require_declared_c_functions(renderer_lib)
 
+# Backend-owned Vulkan sources compile to the stable runtime asset names used by
+# .shadercfg manifests. Source organization is independent of that runtime ABI.
+find_program(VKR_SLANGC_EXECUTABLE NAMES slangc REQUIRED)
+set(VKR_VULKAN_SHADER_SOURCE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/vulkan/shaders")
+set(VKR_VULKAN_SHADER_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/assets/shaders")
+file(GLOB_RECURSE VKR_VULKAN_SHADER_HEADERS CONFIGURE_DEPENDS
+     "${VKR_VULKAN_SHADER_SOURCE_DIR}/*.slangh")
+set(VKR_VULKAN_SHADER_OUTPUTS "")
+function(vkr_add_vulkan_shader VKR_VULKAN_SHADER_SOURCE_RELATIVE
+                               VKR_VULKAN_SHADER_NAME)
+    set(VKR_VULKAN_SHADER_SOURCE
+        "${VKR_VULKAN_SHADER_SOURCE_DIR}/${VKR_VULKAN_SHADER_SOURCE_RELATIVE}")
+    set(VKR_VULKAN_SHADER_OUTPUT
+        "${VKR_VULKAN_SHADER_OUTPUT_DIR}/${VKR_VULKAN_SHADER_NAME}.spv")
+    add_custom_command(
+        OUTPUT "${VKR_VULKAN_SHADER_OUTPUT}"
+        COMMAND "${VKR_SLANGC_EXECUTABLE}"
+                -target spirv
+                -I "${VKR_VULKAN_SHADER_SOURCE_DIR}"
+                -o "${VKR_VULKAN_SHADER_OUTPUT}"
+                "${VKR_VULKAN_SHADER_SOURCE}"
+        DEPENDS "${VKR_VULKAN_SHADER_SOURCE}"
+                ${VKR_VULKAN_SHADER_HEADERS}
+        COMMENT "Compiling Vulkan shader ${VKR_VULKAN_SHADER_NAME}"
+        VERBATIM
+    )
+    set(VKR_VULKAN_SHADER_OUTPUTS
+        ${VKR_VULKAN_SHADER_OUTPUTS} "${VKR_VULKAN_SHADER_OUTPUT}"
+        PARENT_SCOPE)
+endfunction()
+
+vkr_add_vulkan_shader("skybox/default.slang" "default.skybox")
+vkr_add_vulkan_shader("text/default.slang" "default.text")
+vkr_add_vulkan_shader("ui/default.slang" "default.ui")
+vkr_add_vulkan_shader("viewport/display.slang" "default.viewport_display")
+vkr_add_vulkan_shader("world/default.slang" "default.world")
+vkr_add_vulkan_shader("world/pbr.slang" "pbr.world")
+vkr_add_vulkan_shader("picking/world.slang" "picking")
+vkr_add_vulkan_shader("picking/text.slang" "picking_text")
+vkr_add_vulkan_shader("post/tonemap.slang" "post.tonemap")
+vkr_add_vulkan_shader("shadow/cutout.slang" "shadow")
+vkr_add_vulkan_shader("shadow/opaque.slang" "shadow_opaque")
+vkr_add_vulkan_shader("ibl/brdf_lut.slang" "ibl.brdf_lut")
+vkr_add_vulkan_shader("ibl/diffuse_convolution.slang"
+                      "ibl.diffuse_convolution")
+vkr_add_vulkan_shader("ibl/equirect_to_cube.slang" "ibl.equirect_to_cube")
+vkr_add_vulkan_shader("ibl/specular_prefilter.slang"
+                      "ibl.specular_prefilter")
+add_custom_target(vkr_vulkan_shaders DEPENDS ${VKR_VULKAN_SHADER_OUTPUTS})
+add_dependencies(renderer_lib vkr_vulkan_shaders)
+
 target_compile_definitions(renderer_lib PUBLIC SPIRV_REFLECT_USE_SYSTEM_SPIRV_H)
 
 # Platform-specific optimization flags
@@ -121,13 +173,72 @@ target_link_libraries(renderer_lib PRIVATE ktx_read)
 
 # Set platform-specific definitions and link libraries
 if(APPLE)
-    target_compile_definitions(renderer_lib PRIVATE PLATFORM_APPLE=1)
+    set(VKR_METAL_PACKET_SHADER_DIR
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/metal/shaders")
+    set(VKR_METAL_PACKET_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/metal")
+    set(VKR_METAL_PACKET_SLANG_MSL
+        "${VKR_METAL_PACKET_GENERATED_DIR}/library.slang.metal")
+    set(VKR_METAL_PACKET_FRAGMENT_MSL
+        "${VKR_METAL_PACKET_GENERATED_DIR}/library.metal")
+    file(GLOB_RECURSE VKR_METAL_PACKET_SLANG_SOURCES CONFIGURE_DEPENDS
+         "${VKR_METAL_PACKET_SHADER_DIR}/*.slang"
+         "${VKR_METAL_PACKET_SHADER_DIR}/*.slangh")
+    set(VKR_METAL_PACKET_MSL_SOURCES
+        "${VKR_METAL_PACKET_SHADER_DIR}/common/draw.metalh"
+        "${VKR_METAL_PACKET_SHADER_DIR}/world/lighting.metalh"
+        "${VKR_METAL_PACKET_SHADER_DIR}/shadow/sampling.metalh"
+        "${VKR_METAL_PACKET_SHADER_DIR}/common/fullscreen.metalh"
+        "${VKR_METAL_PACKET_SHADER_DIR}/world/default.metal"
+        "${VKR_METAL_PACKET_SHADER_DIR}/ibl/common.metalh"
+        "${VKR_METAL_PACKET_SHADER_DIR}/ibl/equirect_to_cube.metal"
+        "${VKR_METAL_PACKET_SHADER_DIR}/ibl/diffuse_convolution.metal"
+        "${VKR_METAL_PACKET_SHADER_DIR}/ibl/specular_prefilter.metal"
+        "${VKR_METAL_PACKET_SHADER_DIR}/ibl/brdf_lut.metal"
+        "${VKR_METAL_PACKET_SHADER_DIR}/text/default.metal"
+        "${VKR_METAL_PACKET_SHADER_DIR}/skybox/default.metal"
+        "${VKR_METAL_PACKET_SHADER_DIR}/post/tonemap.metal")
+    list(JOIN VKR_METAL_PACKET_MSL_SOURCES "|"
+         VKR_METAL_PACKET_MSL_SOURCE_ARGUMENT)
+    add_custom_command(
+        OUTPUT "${VKR_METAL_PACKET_SLANG_MSL}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+                "${VKR_METAL_PACKET_GENERATED_DIR}"
+        COMMAND "${VKR_SLANGC_EXECUTABLE}"
+                -target metal
+                -line-directive-mode none
+                "${VKR_METAL_PACKET_SHADER_DIR}/library.slang"
+                -o "${VKR_METAL_PACKET_SLANG_MSL}"
+        DEPENDS ${VKR_METAL_PACKET_SLANG_SOURCES}
+        VERBATIM
+    )
+    add_custom_command(
+        OUTPUT "${VKR_METAL_PACKET_FRAGMENT_MSL}"
+        COMMAND "${CMAKE_COMMAND}"
+                "-DVKR_SHADER_OUTPUT=${VKR_METAL_PACKET_FRAGMENT_MSL}"
+                "-DVKR_SHADER_INPUTS=${VKR_METAL_PACKET_MSL_SOURCE_ARGUMENT}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/vkr_concat_shader_sources.cmake"
+        DEPENDS ${VKR_METAL_PACKET_MSL_SOURCES}
+                "${CMAKE_SOURCE_DIR}/cmake/vkr_concat_shader_sources.cmake"
+        VERBATIM
+    )
+    set_source_files_properties("${VKR_METAL_PACKET_SLANG_MSL}"
+                                "${VKR_METAL_PACKET_FRAGMENT_MSL}"
+                                PROPERTIES HEADER_FILE_ONLY TRUE)
+    target_sources(renderer_lib PRIVATE "${VKR_METAL_PACKET_SLANG_MSL}"
+                                        "${VKR_METAL_PACKET_FRAGMENT_MSL}")
+    target_compile_definitions(renderer_lib PRIVATE
+        PLATFORM_APPLE=1
+        VKR_METAL_PACKET_SLANG_MSL="${VKR_METAL_PACKET_SLANG_MSL}"
+        VKR_METAL_PACKET_FRAGMENT_MSL="${VKR_METAL_PACKET_FRAGMENT_MSL}"
+        VKR_METAL_PACKET_ARCHIVE_PATH="${VKR_METAL_PACKET_GENERATED_DIR}/vkr_application.mtlarchive"
+    )
     # Link Cocoa framework if needed for macOS-specific functionality
     find_library(COCOA_LIBRARY Cocoa)
     find_library(FOUNDATION_LIBRARY Foundation)
+    find_library(METAL_LIBRARY Metal)
     find_library(QUARTZCORE_LIBRARY QuartzCore)
     find_library(GAMECONTROLLER_LIBRARY GameController)
-    target_link_libraries(renderer_lib PRIVATE ${COCOA_LIBRARY} ${FOUNDATION_LIBRARY} ${QUARTZCORE_LIBRARY} ${GAMECONTROLLER_LIBRARY})
+    target_link_libraries(renderer_lib PRIVATE ${COCOA_LIBRARY} ${FOUNDATION_LIBRARY} ${METAL_LIBRARY} ${QUARTZCORE_LIBRARY} ${GAMECONTROLLER_LIBRARY})
 elseif(WIN32)
     target_compile_definitions(renderer_lib PRIVATE PLATFORM_WINDOWS=1)
     target_link_libraries(renderer_lib PRIVATE user32.lib winmm.lib Xinput.lib)

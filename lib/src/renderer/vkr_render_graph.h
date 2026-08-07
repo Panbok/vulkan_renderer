@@ -209,6 +209,7 @@ typedef VkrImageAccessFlags VkrRgImageAccessFlags;
 typedef struct VkrRgImageUse {
   VkrRgImageHandle image;       /**< Image handle */
   VkrRgImageAccessFlags access; /**< Access type for barriers */
+  VkrGpuStageFlags stages;      /**< Exact execution scope */
   uint32_t binding;             /**< Descriptor binding index */
   uint32_t array_index;         /**< Descriptor array index */
   VkrRgImageSlice slice;        /**< Exact transfer subresource when set */
@@ -234,6 +235,7 @@ typedef VkrBufferAccessFlags VkrRgBufferAccessFlags;
 typedef struct VkrRgBufferUse {
   VkrRgBufferHandle buffer;      /**< Buffer handle */
   VkrRgBufferAccessFlags access; /**< Access type for barriers */
+  VkrGpuStageFlags stages;       /**< Exact execution scope */
   uint32_t binding;              /**< Descriptor binding index */
   uint32_t array_index;          /**< Descriptor array index */
 } VkrRgBufferUse;
@@ -610,6 +612,20 @@ Vector(VkrRgPassTiming);
 VkrRenderGraph *vkr_rg_create(VkrAllocator *allocator);
 
 /**
+ * @brief Assigns a scoped allocator for frame-authored pass data.
+ *
+ * Persistent resources and backend caches remain on the allocator passed to
+ * vkr_rg_create. The frame allocator is reset by the next vkr_rg_begin_frame,
+ * after timing/name views from the preceding frame cease to be valid.
+ *
+ * @param graph Graph with no authored passes
+ * @param allocator Scoped allocator that must outlive the graph
+ * @return true on success, false if arguments or allocator are invalid
+ */
+bool8_t vkr_rg_set_frame_allocator(VkrRenderGraph *graph,
+                                   VkrAllocator *allocator);
+
+/**
  * @brief Destroys the graph and all owned resources.
  * @param graph Graph to destroy; no-op if NULL
  */
@@ -828,10 +844,19 @@ void vkr_rg_pass_set_depth_attachment(VkrRgPassBuilder *pb,
 void vkr_rg_pass_read_image(VkrRgPassBuilder *pb, VkrRgImageHandle image,
                             VkrRgImageAccessFlags access, uint32_t binding,
                             uint32_t array_index);
+void vkr_rg_pass_read_image_at_stages(VkrRgPassBuilder *pb,
+                                      VkrRgImageHandle image,
+                                      VkrRgImageAccessFlags access,
+                                      VkrGpuStageFlags stages, uint32_t binding,
+                                      uint32_t array_index);
 void vkr_rg_pass_read_image_slice(VkrRgPassBuilder *pb, VkrRgImageHandle image,
                                   VkrRgImageAccessFlags access,
                                   uint32_t binding, uint32_t array_index,
                                   VkrRgImageSlice slice);
+void vkr_rg_pass_read_image_slice_at_stages(
+    VkrRgPassBuilder *pb, VkrRgImageHandle image, VkrRgImageAccessFlags access,
+    VkrGpuStageFlags stages, uint32_t binding, uint32_t array_index,
+    VkrRgImageSlice slice);
 
 /**
  * @brief Declares a write use of an image.
@@ -844,6 +869,11 @@ void vkr_rg_pass_read_image_slice(VkrRgPassBuilder *pb, VkrRgImageHandle image,
 void vkr_rg_pass_write_image(VkrRgPassBuilder *pb, VkrRgImageHandle image,
                              VkrRgImageAccessFlags access, uint32_t binding,
                              uint32_t array_index);
+void vkr_rg_pass_write_image_at_stages(VkrRgPassBuilder *pb,
+                                       VkrRgImageHandle image,
+                                       VkrRgImageAccessFlags access,
+                                       VkrGpuStageFlags stages,
+                                       uint32_t binding, uint32_t array_index);
 
 /**
  * @brief Declares a read use of a buffer.
@@ -856,6 +886,11 @@ void vkr_rg_pass_write_image(VkrRgPassBuilder *pb, VkrRgImageHandle image,
 void vkr_rg_pass_read_buffer(VkrRgPassBuilder *pb, VkrRgBufferHandle buffer,
                              VkrRgBufferAccessFlags access, uint32_t binding,
                              uint32_t array_index);
+void vkr_rg_pass_read_buffer_at_stages(VkrRgPassBuilder *pb,
+                                       VkrRgBufferHandle buffer,
+                                       VkrRgBufferAccessFlags access,
+                                       VkrGpuStageFlags stages,
+                                       uint32_t binding, uint32_t array_index);
 
 /**
  * @brief Declares a write use of a buffer.
@@ -868,6 +903,11 @@ void vkr_rg_pass_read_buffer(VkrRgPassBuilder *pb, VkrRgBufferHandle buffer,
 void vkr_rg_pass_write_buffer(VkrRgPassBuilder *pb, VkrRgBufferHandle buffer,
                               VkrRgBufferAccessFlags access, uint32_t binding,
                               uint32_t array_index);
+void vkr_rg_pass_write_buffer_at_stages(VkrRgPassBuilder *pb,
+                                        VkrRgBufferHandle buffer,
+                                        VkrRgBufferAccessFlags access,
+                                        VkrGpuStageFlags stages,
+                                        uint32_t binding, uint32_t array_index);
 
 /**
  * @brief Marks the image as the present target for the frame (swapchain).

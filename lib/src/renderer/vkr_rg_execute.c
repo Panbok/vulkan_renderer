@@ -86,9 +86,9 @@ vkr_internal VkrRendererError vkr_rg_apply_image_barriers(
       return VKR_RENDERER_ERROR_INVALID_HANDLE;
     }
 
-    VkrRendererError err = vkr_renderer_image_barrier(
+    VkrRendererError err = vkr_renderer_image_barrier_scoped(
         rf, tex, barrier->src_access, barrier->dst_access, barrier->src_layout,
-        barrier->dst_layout, &barrier->range);
+        barrier->dst_layout, &barrier->range, &barrier->dependency);
     if (err != VKR_RENDERER_ERROR_NONE) {
       // A dropped barrier means the next pass reads a resource in the wrong
       // layout or races a still-running write. There is no "continue anyway"
@@ -130,8 +130,9 @@ vkr_internal VkrRendererError vkr_rg_apply_buffer_barriers(
       return VKR_RENDERER_ERROR_INVALID_HANDLE;
     }
 
-    VkrRendererError err = vkr_renderer_buffer_barrier(
-        rf, handle, barrier->src_access, barrier->dst_access);
+    VkrRendererError err = vkr_renderer_buffer_barrier_scoped(
+        rf, handle, barrier->src_access, barrier->dst_access,
+        &barrier->dependency);
     if (err != VKR_RENDERER_ERROR_NONE) {
       String8 err_str = vkr_renderer_get_error_string(err);
       log_error("RenderGraph buffer barrier failed for '%.*s': %s",

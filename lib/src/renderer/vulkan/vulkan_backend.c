@@ -9,6 +9,7 @@
 #include "vulkan_buffer.h"
 #include "vulkan_capture.h"
 #include "vulkan_command.h"
+#include "vulkan_dependency.h"
 #include "vulkan_device.h"
 #include "vulkan_fence.h"
 #include "vulkan_framebuffer.h"
@@ -83,7 +84,8 @@ VkrBackendResourceHandle renderer_vulkan_create_render_target_texture_msaa(
     VkrTextureFormat format, VkrSampleCount samples);
 VkrRendererError renderer_vulkan_buffer_barrier(
     void *backend_state, VkrBackendResourceHandle handle,
-    VkrBufferAccessFlags src_access, VkrBufferAccessFlags dst_access);
+    VkrBufferAccessFlags src_access, VkrBufferAccessFlags dst_access,
+    const VkrGpuDependency *dependency);
 VkrRendererError renderer_vulkan_update_buffer(void *backend_state,
                                                VkrBackendResourceHandle handle,
                                                uint64_t offset, uint64_t size,
@@ -6007,64 +6009,10 @@ VkrRendererError renderer_vulkan_flush_buffer(void *backend_state,
   return VKR_RENDERER_ERROR_NONE;
 }
 
-vkr_internal VkAccessFlags
-vulkan_buffer_access_to_vk(VkrBufferAccessFlags access) {
-  VkAccessFlags flags = 0;
-  if (access & VKR_BUFFER_ACCESS_VERTEX) {
-    flags |= VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
-  }
-  if (access & VKR_BUFFER_ACCESS_INDEX) {
-    flags |= VK_ACCESS_INDEX_READ_BIT;
-  }
-  if (access & VKR_BUFFER_ACCESS_UNIFORM) {
-    flags |= VK_ACCESS_UNIFORM_READ_BIT;
-  }
-  if (access & VKR_BUFFER_ACCESS_STORAGE_READ) {
-    flags |= VK_ACCESS_SHADER_READ_BIT;
-  }
-  if (access & VKR_BUFFER_ACCESS_STORAGE_WRITE) {
-    flags |= VK_ACCESS_SHADER_WRITE_BIT;
-  }
-  if (access & VKR_BUFFER_ACCESS_TRANSFER_SRC) {
-    flags |= VK_ACCESS_TRANSFER_READ_BIT;
-  }
-  if (access & VKR_BUFFER_ACCESS_TRANSFER_DST) {
-    flags |= VK_ACCESS_TRANSFER_WRITE_BIT;
-  }
-  return flags;
-}
-
-vkr_internal VkPipelineStageFlags
-vulkan_buffer_stage_for_access(VkrBufferAccessFlags access, bool8_t is_src) {
-  if (access == VKR_BUFFER_ACCESS_NONE) {
-    return is_src ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                  : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-  }
-
-  VkPipelineStageFlags flags = 0;
-  if (access & (VKR_BUFFER_ACCESS_VERTEX | VKR_BUFFER_ACCESS_INDEX)) {
-    flags |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
-  }
-  if (access & (VKR_BUFFER_ACCESS_UNIFORM | VKR_BUFFER_ACCESS_STORAGE_READ |
-                VKR_BUFFER_ACCESS_STORAGE_WRITE)) {
-    flags |= VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
-             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-  }
-  if (access &
-      (VKR_BUFFER_ACCESS_TRANSFER_SRC | VKR_BUFFER_ACCESS_TRANSFER_DST)) {
-    flags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-  }
-
-  if (flags == 0) {
-    flags = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-  }
-
-  return flags;
-}
-
 VkrRendererError renderer_vulkan_buffer_barrier(
     void *backend_state, VkrBackendResourceHandle handle,
-    VkrBufferAccessFlags src_access, VkrBufferAccessFlags dst_access) {
+    VkrBufferAccessFlags src_access, VkrBufferAccessFlags dst_access,
+    const VkrGpuDependency *dependency) {
   assert_log(backend_state != NULL, "Backend state is NULL");
   assert_log(handle.ptr != NULL, "Buffer handle is NULL");
 
@@ -6084,21 +6032,18 @@ VkrRendererError renderer_vulkan_buffer_barrier(
     return VKR_RENDERER_ERROR_INVALID_PARAMETER;
   }
 
+  const VulkanLegacyDependency lowered =
+      vulkan_legacy_lower_buffer_dependency(src_access, dst_access, dependency);
   VkBufferMemoryBarrier barrier = {
       .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-      .srcAccessMask = vulkan_buffer_access_to_vk(src_access),
-      .dstAccessMask = vulkan_buffer_access_to_vk(dst_access),
+      .srcAccessMask = lowered.src_access,
+      .dstAccessMask = lowered.dst_access,
       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
       .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
       .buffer = buffer->buffer.handle,
       .offset = 0,
       .size = VK_WHOLE_SIZE,
   };
-
-  VkPipelineStageFlags src_stage =
-      vulkan_buffer_stage_for_access(src_access, true_v);
-  VkPipelineStageFlags dst_stage =
-      vulkan_buffer_stage_for_access(dst_access, false_v);
 
   if (state->frame_active) {
     if (state->render_pass_active) {
@@ -6113,8 +6058,8 @@ VkrRendererError renderer_vulkan_buffer_barrier(
     if (!command_buffer) {
       return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
     }
-    vkCmdPipelineBarrier(command_buffer->handle, src_stage, dst_stage, 0, 0,
-                         NULL, 1, &barrier, 0, NULL);
+    vkCmdPipelineBarrier(command_buffer->handle, lowered.src_stages,
+                         lowered.dst_stages, 0, 0, NULL, 1, &barrier, 0, NULL);
     return VKR_RENDERER_ERROR_NONE;
   }
 
@@ -6124,8 +6069,8 @@ VkrRendererError renderer_vulkan_buffer_barrier(
     return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
   }
 
-  vkCmdPipelineBarrier(temp_command_buffer.handle, src_stage, dst_stage, 0, 0,
-                       NULL, 1, &barrier, 0, NULL);
+  vkCmdPipelineBarrier(temp_command_buffer.handle, lowered.src_stages,
+                       lowered.dst_stages, 0, 0, NULL, 1, &barrier, 0, NULL);
 
   if (!vulkan_command_buffer_end_single_use(state, &temp_command_buffer,
                                             state->device.graphics_queue,
@@ -6134,94 +6079,6 @@ VkrRendererError renderer_vulkan_buffer_barrier(
   }
 
   return VKR_RENDERER_ERROR_NONE;
-}
-
-/**
- * @brief Maps an image access to Vulkan access flags.
- *
- * Source masks name writes only: a read never needs to be made available, and
- * the execution dependency that orders a write after a read comes from the
- * stage masks. Destination masks name everything the next user will do.
- */
-vkr_internal VkAccessFlags vulkan_image_access_to_vk(VkrImageAccessFlags access,
-                                                     bool8_t is_src) {
-  VkAccessFlags flags = 0;
-  if (access & VKR_IMAGE_ACCESS_STORAGE_WRITE) {
-    flags |= VK_ACCESS_SHADER_WRITE_BIT;
-  }
-  if (access & VKR_IMAGE_ACCESS_COLOR_ATTACHMENT) {
-    flags |= VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-  }
-  if (access & VKR_IMAGE_ACCESS_DEPTH_ATTACHMENT) {
-    flags |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-  }
-  if (access & VKR_IMAGE_ACCESS_TRANSFER_DST) {
-    flags |= VK_ACCESS_TRANSFER_WRITE_BIT;
-  }
-  if (is_src) {
-    return flags;
-  }
-
-  if (access & (VKR_IMAGE_ACCESS_SAMPLED | VKR_IMAGE_ACCESS_STORAGE_READ)) {
-    flags |= VK_ACCESS_SHADER_READ_BIT;
-  }
-  if (access & VKR_IMAGE_ACCESS_COLOR_ATTACHMENT) {
-    flags |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT;
-  }
-  if (access & VKR_IMAGE_ACCESS_DEPTH_ATTACHMENT) {
-    flags |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
-  }
-  if (access & VKR_IMAGE_ACCESS_DEPTH_READ_ONLY) {
-    flags |=
-        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
-  }
-  if (access & VKR_IMAGE_ACCESS_TRANSFER_SRC) {
-    flags |= VK_ACCESS_TRANSFER_READ_BIT;
-  }
-  if (access & VKR_IMAGE_ACCESS_PRESENT) {
-    flags |= VK_ACCESS_MEMORY_READ_BIT;
-  }
-  return flags;
-}
-
-/** @brief Maps an image access to the pipeline stages that perform it. */
-vkr_internal VkPipelineStageFlags
-vulkan_image_stage_for_access(VkrImageAccessFlags access, bool8_t is_src) {
-  if (access == VKR_IMAGE_ACCESS_NONE) {
-    return is_src ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT
-                  : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-  }
-
-  VkPipelineStageFlags flags = 0;
-  if (access & (VKR_IMAGE_ACCESS_SAMPLED | VKR_IMAGE_ACCESS_STORAGE_READ |
-                VKR_IMAGE_ACCESS_STORAGE_WRITE)) {
-    flags |= VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
-             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-  }
-  if (access & VKR_IMAGE_ACCESS_COLOR_ATTACHMENT) {
-    flags |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-  }
-  if (access &
-      (VKR_IMAGE_ACCESS_DEPTH_ATTACHMENT | VKR_IMAGE_ACCESS_DEPTH_READ_ONLY)) {
-    flags |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-             VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
-  }
-  if (access & VKR_IMAGE_ACCESS_DEPTH_READ_ONLY) {
-    flags |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-  }
-  if (access &
-      (VKR_IMAGE_ACCESS_TRANSFER_SRC | VKR_IMAGE_ACCESS_TRANSFER_DST)) {
-    flags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
-  }
-  if (access & VKR_IMAGE_ACCESS_PRESENT) {
-    flags |= VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT;
-  }
-
-  if (flags == 0) {
-    flags = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
-  }
-
-  return flags;
 }
 
 /**
@@ -6240,7 +6097,7 @@ VkrRendererError renderer_vulkan_image_barrier(
     void *backend_state, VkrBackendResourceHandle handle,
     VkrImageAccessFlags src_access, VkrImageAccessFlags dst_access,
     VkrTextureLayout old_layout, VkrTextureLayout new_layout,
-    const VkrImageSubresourceRange *range) {
+    const VkrImageSubresourceRange *range, const VkrGpuDependency *dependency) {
   assert_log(backend_state != NULL, "Backend state is NULL");
 
   VulkanBackendState *state = (VulkanBackendState *)backend_state;
@@ -6278,10 +6135,12 @@ VkrRendererError renderer_vulkan_image_barrier(
                                       &base_mip, &mip_count, &base_layer,
                                       &layer_count);
 
+  const VulkanLegacyDependency lowered =
+      vulkan_legacy_lower_image_dependency(src_access, dst_access, dependency);
   VkImageMemoryBarrier barrier = {
       .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-      .srcAccessMask = vulkan_image_access_to_vk(src_access, true_v),
-      .dstAccessMask = vulkan_image_access_to_vk(dst_access, false_v),
+      .srcAccessMask = lowered.src_access,
+      .dstAccessMask = lowered.dst_access,
       .oldLayout = vulkan_texture_layout_to_vk(old_layout),
       .newLayout = vulkan_texture_layout_to_vk(new_layout),
       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
@@ -6297,11 +6156,6 @@ VkrRendererError renderer_vulkan_image_barrier(
           },
   };
 
-  VkPipelineStageFlags src_stage =
-      vulkan_image_stage_for_access(src_access, true_v);
-  VkPipelineStageFlags dst_stage =
-      vulkan_image_stage_for_access(dst_access, false_v);
-
   if (state->frame_active) {
     if (state->render_pass_active) {
       log_error("Cannot apply image barrier during active render pass");
@@ -6312,8 +6166,8 @@ VkrRendererError renderer_vulkan_image_barrier(
     if (!command_buffer) {
       return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
     }
-    vkCmdPipelineBarrier(command_buffer->handle, src_stage, dst_stage, 0, 0,
-                         NULL, 0, NULL, 1, &barrier);
+    vkCmdPipelineBarrier(command_buffer->handle, lowered.src_stages,
+                         lowered.dst_stages, 0, 0, NULL, 0, NULL, 1, &barrier);
     // Transitions of the frame's own target images are what the next frame's
     // graph import reads back, so record them against the active image.
     if (state->image_index < state->swapchain.image_count) {
@@ -6344,8 +6198,8 @@ VkrRendererError renderer_vulkan_image_barrier(
     return VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
   }
 
-  vkCmdPipelineBarrier(temp_command_buffer.handle, src_stage, dst_stage, 0, 0,
-                       NULL, 0, NULL, 1, &barrier);
+  vkCmdPipelineBarrier(temp_command_buffer.handle, lowered.src_stages,
+                       lowered.dst_stages, 0, 0, NULL, 0, NULL, 1, &barrier);
 
   if (!vulkan_command_buffer_end_single_use(state, &temp_command_buffer,
                                             state->device.graphics_queue,

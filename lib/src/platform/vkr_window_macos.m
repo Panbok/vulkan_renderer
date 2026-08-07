@@ -497,7 +497,7 @@ bool8_t vkr_window_create(VkrWindow *window, EventManager *event_manager,
     }
 
     // Layer creation
-    state->layer = [CAMetalLayer layer];
+    state->layer = [[CAMetalLayer layer] retain];
     if (!state->layer) {
       log_error("Failed to create layer for view");
       free(state);

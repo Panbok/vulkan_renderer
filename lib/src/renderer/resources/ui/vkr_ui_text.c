@@ -174,14 +174,10 @@ vkr_internal void vkr_ui_text_compute_layout(VkrUiText *text) {
   text->layout_dirty = false_v;
 }
 
-vkr_internal bool8_t vkr_ui_text_generate_buffers(VkrUiText *text) {
+vkr_internal bool8_t vkr_ui_text_generate_geometry(VkrUiText *text) {
   if (!text || !text->resolved_font) {
     return false_v;
   }
-
-  RendererFrontend *rf = (RendererFrontend *)text->renderer;
-  uint64_t current_frame = rf ? rf->frame_number : 0;
-  vkr_ui_text_collect_retired_buffers(text, current_frame);
 
   if (text->layout.glyphs.length > UINT32_MAX) {
     log_error("Glyph count exceeds maximum supported: %llu",
@@ -192,7 +188,11 @@ vkr_internal bool8_t vkr_ui_text_generate_buffers(VkrUiText *text) {
   uint32_t glyph_count = (uint32_t)text->layout.glyphs.length;
   if (glyph_count == 0) {
     text->render.quad_count = 0;
+    text->geometry.vertex_count = 0;
+    text->geometry.index_count = 0;
+    text->geometry.revision++;
     text->buffers_dirty = false_v;
+    text->gpu_buffers_dirty = true_v;
     return true_v;
   }
 
@@ -209,50 +209,36 @@ vkr_internal bool8_t vkr_ui_text_generate_buffers(VkrUiText *text) {
   uint32_t required_vertex_count = glyph_count * VKR_UI_TEXT_QUAD_COUNT;
   uint32_t required_index_count = glyph_count * VKR_UI_TEXT_INDEX_COUNT;
 
-  bool8_t has_buffers = text->render.vertex_buffer.handle != NULL &&
-                        text->render.index_buffer.handle != NULL;
-  bool8_t need_realloc = !has_buffers ||
-                         required_vertex_count > text->render.vertex_capacity ||
-                         required_index_count > text->render.index_capacity;
-
-  uint32_t alloc_vertex_count = required_vertex_count;
-  uint32_t alloc_index_count = required_index_count;
-  if (need_realloc) {
-    alloc_vertex_count =
+  if (required_vertex_count > text->geometry.vertex_capacity) {
+    const uint32_t capacity =
         required_vertex_count + VKR_UI_TEXT_VERTEX_GROWTH_COUNT;
-    alloc_index_count = required_index_count + VKR_UI_TEXT_INDEX_GROWTH_COUNT;
+    VkrTextVertex *vertices = vkr_allocator_realloc(
+        text->allocator, text->geometry.vertices,
+        (uint64_t)text->geometry.vertex_capacity * sizeof(VkrTextVertex),
+        (uint64_t)capacity * sizeof(VkrTextVertex),
+        VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!vertices)
+      return false_v;
+    text->geometry.vertices = vertices;
+    text->geometry.vertex_capacity = capacity;
+  }
+  if (required_index_count > text->geometry.index_capacity) {
+    const uint32_t capacity =
+        required_index_count + VKR_UI_TEXT_INDEX_GROWTH_COUNT;
+    uint32_t *indices = vkr_allocator_realloc(
+        text->allocator, text->geometry.indices,
+        (uint64_t)text->geometry.index_capacity * sizeof(uint32_t),
+        (uint64_t)capacity * sizeof(uint32_t), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+    if (!indices)
+      return false_v;
+    text->geometry.indices = indices;
+    text->geometry.index_capacity = capacity;
   }
 
-  VkrAllocatorScope scope = vkr_allocator_begin_scope(text->allocator);
-  bool8_t use_scope = scope.allocator != NULL;
-
-  VkrTextVertex *vertices = vkr_allocator_alloc(
-      text->allocator, sizeof(VkrTextVertex) * alloc_vertex_count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *indices =
-      vkr_allocator_alloc(text->allocator, sizeof(uint32_t) * alloc_index_count,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-
-  if (!vertices || !indices) {
-    if (use_scope) {
-      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    } else {
-      if (vertices) {
-        vkr_allocator_free(text->allocator, vertices,
-                           sizeof(VkrTextVertex) * alloc_vertex_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      }
-      if (indices) {
-        vkr_allocator_free(text->allocator, indices,
-                           sizeof(uint32_t) * alloc_index_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      }
-    }
-    return false_v;
-  }
-
-  MemZero(vertices, sizeof(VkrTextVertex) * alloc_vertex_count);
-  MemZero(indices, sizeof(uint32_t) * alloc_index_count);
+  VkrTextVertex *vertices = text->geometry.vertices;
+  uint32_t *indices = text->geometry.indices;
+  MemZero(vertices, sizeof(VkrTextVertex) * required_vertex_count);
+  MemZero(indices, sizeof(uint32_t) * required_index_count);
 
   float32_t atlas_w = (float32_t)text->resolved_font->atlas_size_x;
   float32_t atlas_h = (float32_t)text->resolved_font->atlas_size_y;
@@ -377,19 +363,43 @@ vkr_internal bool8_t vkr_ui_text_generate_buffers(VkrUiText *text) {
   text->render.quad_count = vertex_count / VKR_UI_TEXT_QUAD_COUNT;
 
   if (vertex_count == 0 || index_count == 0) {
+    text->geometry.vertex_count = 0;
+    text->geometry.index_count = 0;
+    text->geometry.revision++;
     text->buffers_dirty = false_v;
-    if (use_scope) {
-      vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    } else {
-      vkr_allocator_free(text->allocator, vertices,
-                         sizeof(VkrTextVertex) * alloc_vertex_count,
-                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      vkr_allocator_free(text->allocator, indices,
-                         sizeof(uint32_t) * alloc_index_count,
-                         VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    }
+    text->gpu_buffers_dirty = true_v;
     return true_v;
   }
+
+  text->geometry.vertex_count = vertex_count;
+  text->geometry.index_count = index_count;
+  text->geometry.revision++;
+  text->buffers_dirty = false_v;
+  text->gpu_buffers_dirty = true_v;
+  return true_v;
+}
+
+vkr_internal bool8_t vkr_ui_text_upload_geometry(VkrUiText *text) {
+  if (!text || !text->renderer)
+    return false_v;
+  const uint32_t vertex_count = text->geometry.vertex_count;
+  const uint32_t index_count = text->geometry.index_count;
+  if (vertex_count == 0 || index_count == 0) {
+    text->gpu_buffers_dirty = false_v;
+    return true_v;
+  }
+  RendererFrontend *rf = (RendererFrontend *)text->renderer;
+  const uint64_t current_frame = rf ? rf->frame_number : 0;
+  vkr_ui_text_collect_retired_buffers(text, current_frame);
+  VkrTextVertex *vertices = text->geometry.vertices;
+  uint32_t *indices = text->geometry.indices;
+  const bool8_t has_buffers = text->render.vertex_buffer.handle != NULL &&
+                              text->render.index_buffer.handle != NULL;
+  const bool8_t need_realloc = !has_buffers ||
+                               vertex_count > text->render.vertex_capacity ||
+                               index_count > text->render.index_capacity;
+  const uint32_t alloc_vertex_count = text->geometry.vertex_capacity;
+  const uint32_t alloc_index_count = text->geometry.index_capacity;
 
   VkrRendererError buffer_err = VKR_RENDERER_ERROR_NONE;
   if (need_realloc) {
@@ -402,16 +412,6 @@ vkr_internal bool8_t vkr_ui_text_generate_buffers(VkrUiText *text) {
         &buffer_err);
 
     if (buffer_err != VKR_RENDERER_ERROR_NONE) {
-      if (use_scope) {
-        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      } else {
-        vkr_allocator_free(text->allocator, vertices,
-                           sizeof(VkrTextVertex) * alloc_vertex_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-        vkr_allocator_free(text->allocator, indices,
-                           sizeof(uint32_t) * alloc_index_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      }
       return false_v;
     }
 
@@ -421,16 +421,6 @@ vkr_internal bool8_t vkr_ui_text_generate_buffers(VkrUiText *text) {
 
     if (buffer_err != VKR_RENDERER_ERROR_NONE) {
       vkr_vertex_buffer_destroy(text->renderer, &new_vertex_buffer);
-      if (use_scope) {
-        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      } else {
-        vkr_allocator_free(text->allocator, vertices,
-                           sizeof(VkrTextVertex) * alloc_vertex_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-        vkr_allocator_free(text->allocator, indices,
-                           sizeof(uint32_t) * alloc_index_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      }
       return false_v;
     }
 
@@ -449,32 +439,11 @@ vkr_internal bool8_t vkr_ui_text_generate_buffers(VkrUiText *text) {
           text->renderer, &text->render.index_buffer, indices, 0, index_count);
     }
     if (buffer_err != VKR_RENDERER_ERROR_NONE) {
-      if (use_scope) {
-        vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      } else {
-        vkr_allocator_free(text->allocator, vertices,
-                           sizeof(VkrTextVertex) * alloc_vertex_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-        vkr_allocator_free(text->allocator, indices,
-                           sizeof(uint32_t) * alloc_index_count,
-                           VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-      }
       return false_v;
     }
   }
 
-  if (use_scope) {
-    vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  } else {
-    vkr_allocator_free(text->allocator, vertices,
-                       sizeof(VkrTextVertex) * alloc_vertex_count,
-                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    vkr_allocator_free(text->allocator, indices,
-                       sizeof(uint32_t) * alloc_index_count,
-                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  }
-
-  text->buffers_dirty = false_v;
+  text->gpu_buffers_dirty = false_v;
   return true_v;
 }
 
@@ -503,8 +472,8 @@ bool8_t vkr_ui_text_create(VkrRendererFrontendHandle renderer,
   out_text->layout_dirty = true_v;
   out_text->buffers_dirty = true_v;
   out_text->render.pipeline = pipeline;
-  out_text->render.instance_state = (VkrRendererInstanceStateHandle){
-      .id = VKR_INVALID_ID};
+  out_text->render.instance_state =
+      (VkrRendererInstanceStateHandle){.id = VKR_INVALID_ID};
 
   if (out_text->config.font.id != 0) {
     out_text->resolved_font =
@@ -524,18 +493,20 @@ bool8_t vkr_ui_text_create(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
-  VkrRendererError text_ls_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_pipeline_registry_acquire_instance_state(
-          &out_text->renderer->pipeline_registry, pipeline,
-          &out_text->render.instance_state, &text_ls_err)) {
-    vkr_ui_text_destroy(out_text);
-    String8 err_str = vkr_renderer_get_error_string(text_ls_err);
-    if (out_error) {
-      *out_error = text_ls_err;
+  if (out_text->renderer->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL) {
+    VkrRendererError text_ls_err = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_pipeline_registry_acquire_instance_state(
+            &out_text->renderer->pipeline_registry, pipeline,
+            &out_text->render.instance_state, &text_ls_err)) {
+      vkr_ui_text_destroy(out_text);
+      String8 err_str = vkr_renderer_get_error_string(text_ls_err);
+      if (out_error) {
+        *out_error = text_ls_err;
+      }
+      log_error("Failed to acquire instance state for text pipeline: %s",
+                string8_cstr(&err_str));
+      return false_v;
     }
-    log_error("Failed to acquire instance state for text pipeline: %s",
-              string8_cstr(&err_str));
-    return false_v;
   }
 
   return true_v;
@@ -555,8 +526,8 @@ void vkr_ui_text_destroy(VkrUiText *text) {
       text->render.pipeline.id != 0) {
     VkrRendererError release_error = VKR_RENDERER_ERROR_NONE;
     if (!vkr_pipeline_registry_release_instance_state(
-        &text->renderer->pipeline_registry, text->render.pipeline,
-        text->render.instance_state, &release_error)) {
+            &text->renderer->pipeline_registry, text->render.pipeline,
+            text->render.instance_state, &release_error)) {
       log_warn("UI text: failed to release instance state (pipeline=%u, "
                "generation=%u, state=%u, err=%d)",
                text->render.pipeline.id, text->render.pipeline.generation,
@@ -587,6 +558,18 @@ void vkr_ui_text_destroy(VkrUiText *text) {
     vkr_allocator_free(text->allocator, (void *)text->content.str,
                        text->content.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
+  }
+  if (text->geometry.vertices && text->allocator) {
+    vkr_allocator_free(text->allocator, text->geometry.vertices,
+                       (uint64_t)text->geometry.vertex_capacity *
+                           sizeof(VkrTextVertex),
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
+  }
+  if (text->geometry.indices && text->allocator) {
+    vkr_allocator_free(text->allocator, text->geometry.indices,
+                       (uint64_t)text->geometry.index_capacity *
+                           sizeof(uint32_t),
+                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   }
 
   MemZero(text, sizeof(VkrUiText));
@@ -691,14 +674,9 @@ VkrTextBounds vkr_ui_text_get_bounds(VkrUiText *text) {
   return text->bounds;
 }
 
-bool8_t vkr_ui_text_prepare(VkrUiText *text) {
+bool8_t vkr_ui_text_prepare_geometry(VkrUiText *text) {
   if (!text) {
     return false_v;
-  }
-
-  RendererFrontend *rf = (RendererFrontend *)text->renderer;
-  if (rf) {
-    vkr_ui_text_collect_retired_buffers(text, rf->frame_number);
   }
 
   if (text->layout_dirty) {
@@ -706,10 +684,24 @@ bool8_t vkr_ui_text_prepare(VkrUiText *text) {
   }
 
   if (text->buffers_dirty) {
-    if (!vkr_ui_text_generate_buffers(text)) {
-      log_error("Failed to generate UI text buffers");
+    if (!vkr_ui_text_generate_geometry(text)) {
+      log_error("Failed to generate UI text geometry");
       return false_v;
     }
+  }
+
+  return text->geometry.vertex_count > 0 && text->geometry.index_count > 0;
+}
+
+bool8_t vkr_ui_text_prepare(VkrUiText *text) {
+  if (!vkr_ui_text_prepare_geometry(text))
+    return false_v;
+  RendererFrontend *rf = (RendererFrontend *)text->renderer;
+  if (rf)
+    vkr_ui_text_collect_retired_buffers(text, rf->frame_number);
+  if (text->gpu_buffers_dirty && !vkr_ui_text_upload_geometry(text)) {
+    log_error("Failed to upload UI text geometry");
+    return false_v;
   }
 
   return (text->render.quad_count > 0 &&
