@@ -42,7 +42,7 @@ include it.
 Directional light data is already driven by the scene + lighting system:
 - `lib/src/renderer/systems/vkr_lighting_system.c` caches a single directional
   light (enabled, direction, color*intensity) and applies it to shader uniforms.
-- `assets/shaders/default.world.shadercfg` / `assets/shaders/default.world.slang`
+- `assets/shaders/default.world.shadercfg` / `lib/src/renderer/vulkan/shaders/world/default.slang`
   expose:
   - `dir_enabled` (uint32)
   - `dir_direction` (vec3)
@@ -227,7 +227,7 @@ typedef struct VkrShadowSystem {
 
 #### Shadow Uniform Buffer Extension
 
-Extend `GlobalUniformBufferObject` in `assets/shaders/default.world.slang`.
+Extend `GlobalUniformBufferObject` in `lib/src/renderer/vulkan/shaders/world/default.slang`.
 
 Design goals for the uniform layout:
 - Reuse the existing directional light uniforms (`dir_*`) for bias direction.
@@ -569,7 +569,7 @@ cull_mode=front
 
 ### Shadow Vertex Shader
 
-Create `assets/shaders/shadow.slang`:
+Create `lib/src/renderer/vulkan/shaders/shadow/cutout.slang`:
 
 ```hlsl
 struct GlobalUniformBufferObject {
@@ -702,7 +702,7 @@ Update `assets/shaders/default.world.shadercfg`:
   - `uniform=samp,1,shadow_map_2`
   - `uniform=samp,1,shadow_map_3`
 
-Update `assets/shaders/default.world.slang` to match the new binding layout:
+Update `lib/src/renderer/vulkan/shaders/world/default.slang` to match the new binding layout:
 
 ```hlsl
 // Existing textures (set 1)
@@ -732,7 +732,7 @@ For simplicity and portability, use **manual depth compares** instead of a
 comparison sampler (`SamplerComparisonState`). This only requires that the
 shadow depth textures are created with `SAMPLED` usage and a sampler.
 
-Add to `assets/shaders/default.world.slang`:
+Add to `lib/src/renderer/vulkan/shaders/world/default.slang`:
 
 ```hlsl
 uint select_cascade(float view_depth)
@@ -813,7 +813,7 @@ float calculate_shadow(float3 world_pos, float3 normal, float view_depth)
 
 ### Directional Light Integration (Shadow Only Diffuse+Specular)
 
-Modify `calculate_directional_light()` in `assets/shaders/default.world.slang`
+Modify `calculate_directional_light()` in `lib/src/renderer/vulkan/shaders/world/default.slang`
 to accept `shadow` and apply it only to the non-ambient terms:
 
 ```hlsl
@@ -1051,7 +1051,7 @@ binding and descriptor updates are cached aggressively for performance.
 | `lib/src/renderer/systems/vkr_shadow_system.c` | Shadow system implementation |
 | `lib/src/renderer/passes/vkr_pass_shadow.h` | Shadow pass executor header |
 | `lib/src/renderer/passes/vkr_pass_shadow.c` | Shadow pass executor |
-| `assets/shaders/shadow.slang` | Shadow pass shader |
+| `lib/src/renderer/vulkan/shaders/shadow/cutout.slang` | Shadow pass shader |
 | `assets/shaders/shadow.shadercfg` | Shadow shader configuration |
 
 ### Modified Files
@@ -1064,7 +1064,7 @@ binding and descriptor updates are cached aggressively for performance.
 | `lib/src/renderer/renderer_frontend.h` | Store shadow system state pointer |
 | `lib/src/renderer/systems/vkr_material_system.h` | Optionally add “bind shadow maps” hook for world instances |
 | `lib/src/renderer/systems/vkr_material_system.c` | Bind `shadow_map_0..3` for world shader instances |
-| `assets/shaders/default.world.slang` | Add shadow sampling |
+| `lib/src/renderer/vulkan/shaders/world/default.slang` | Add shadow sampling |
 | `assets/shaders/default.world.shadercfg` | Add shadow map binding |
 | `lib/src/math/mat.h` | Add `mat4_ortho_vulkan()` for light projection |
 

@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-02
+updated: 2026-08-07
 authority: spec
 ---
 # Renderer Metrics Module and Automation Harness
@@ -85,12 +85,13 @@ This work is mostly consolidation. Reuse these; do not rebuild them.
 | CPU allocator statistics, 14 memory tags, scope tracking | `vkr_allocator_get_statistics()`, `VkrAllocatorStatistics` |
 | Graph resource live/peak counts and bytes | `vkr_rg_get_resource_stats()` |
 | Upload stall counters | `vkr_renderer_get_and_reset_upload_wait_stats()` |
+| Bounded command-slot reuse waits | `vkr_renderer_get_and_reset_command_slot_wait_count()` |
 | Pipeline creation time (measured, then discarded into a log line) | `vulkan_graphics_graphics_pipeline_create()` in `vulkan/vulkan_pipeline.c` |
 | Pipeline bind and descriptor telemetry | `VkrPipelineRegistry.stats` |
 | Image→buffer copy with checked mip/layer/aspect regions and row layout | `vulkan_image_copy_to_buffer_region()` |
 | Fenced readback ring, three slots | `VulkanReadbackRing`, `renderer_vulkan_request_pixel_readback()` |
 | A **declared** graph readback pass — the pattern to copy | `Picking.Readback` in `assets/render_graphs/main.rendergraph.json`, `vkr_pass_picking_readback_execute()` |
-| Debug channels: normals, unlit, lighting | `VkrRenderMode`, consumed in `assets/shaders/pbr.world.slang` and `default.world.slang` |
+| Debug channels: normals, unlit, lighting | `VkrRenderMode`, consumed in `lib/src/renderer/vulkan/shaders/world/pbr.slang` and `world/default.slang` |
 | Shadow debug: cascades, factor, depth | `RendererFrontend.shadow_debug_mode` |
 | Offscreen editor color target | conditional graph resource `scene_color`, `RendererFrontend.offscreen_color_handles` |
 | Monotonic timer | `vkr_platform_get_absolute_time()` |
@@ -265,10 +266,13 @@ typedef struct VkrRendererMetricsCollectContext {
 It pulls `vkr_renderer_get_device_memory_stats()`, `vkr_rg_get_pass_timings()`,
 `vkr_rg_get_resource_stats()`, `VkrPipelineRegistry` telemetry, the atomic global
 allocator snapshot, and `vkr_renderer_get_and_reset_upload_wait_stats()`.
+It also resets `vkr_renderer_get_and_reset_command_slot_wait_count()` into
+`frame.command_slot_waits`. The upload count is a subset of that total rather
+than an independent wait category.
 
-**That last call resets its counters.** The collector therefore becomes its
-single caller. Any second caller silently steals samples, so this ownership must
-be stated at the call site.
+**Those wait calls reset their counters.** The collector therefore becomes
+their single caller. Any second caller silently steals samples, so this
+ownership must be stated at the call site.
 
 Per-allocator `vkr_allocator_get_statistics()` is deliberately absent from the
 context: its fields are non-atomic. An allocator owner may publish a local
@@ -858,10 +862,13 @@ requirement, not a default.
    frame-rate dependent. Add `vkr_camera_set_pose()` and an explicit lens/extent
    setter. No harness camera reads window size or input state.
 4. **Warmup is an exact phase and a gate.** During the configured warmup, require
-   no new required pipeline creations and stable non-overlapping
-   `cpu.render_submit` windows for authoritative profiling. The execution
-   profile owns window size and allowed drift. The harness never extends warmup
-   to chase stability, because that would shift simulation and capture poses.
+   no new required pipeline creations and stable non-overlapping windows of the
+   profile-selected metric for authoritative profiling. Existing profiles
+   default to `cpu.render_submit`; profiles for an implementation where driver
+   work moves between prepare and submit may explicitly select `frame.wall`.
+   The execution profile owns metric, window size, and allowed drift. The
+   harness never extends warmup to chase stability, because that would shift
+   simulation and capture poses.
    Insufficient frames or unstable warmup sets `authoritative=false`, or makes
    the run `incomplete` when the selected profile requires stability.
 5. **Control pacing and cache state.** The frame limiter is off. Windowed
@@ -881,7 +888,8 @@ evidence environment and authority policy: dirty-tree policy,
 OS/CPU/GPU/vendor/device/driver constraints, target/window mode, required actual
 present mode, power/thermal policy, process priority, exclusive GPU-lane policy,
 instrumentation flags, minimum isolated repetitions, warmup stability
-window/drift, required metrics/channels, and comparison-threshold ownership.
+metric/window/drift, required metrics/channels, and comparison-threshold
+ownership.
 
 Authoritative performance thresholds live with an accepted profile baseline,
 not in a case that can weaken its own gate. Case-local timing assertions are
@@ -997,6 +1005,7 @@ leaves an incomplete run directory, never a plausible partial report.
     "completed_repetitions": 1,
     "warmup_frames": 120,
     "measured_frames": 300,
+    "warmup_stability_metric": "cpu.render_submit",
     "warmup_stable": true,
     "gpu_lane_lock_acquired": true
   },

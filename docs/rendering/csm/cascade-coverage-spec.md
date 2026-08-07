@@ -160,6 +160,6 @@ Add optional debug modes or logging to verify:
       order.
   Impl: Added `shadow_uv_margin_scale`, `shadow_uv_soft_margin_scale`, and
   `shadow_uv_kernel_margin_scale` in UBO order.
-- [x] Update `assets/shaders/vkr_shader_csm.slangh` to use the scales.
+- [x] Update `lib/src/renderer/vulkan/shaders/common/csm.slangh` to use the scales.
   Impl: Applied the scales to strict/soft/kernel margin calculations.
 - [ ] Recompile shaders and validate with debug modes.

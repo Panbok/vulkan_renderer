@@ -186,7 +186,7 @@ compatibility fallback.
 
 Source of truth:
 - `assets/shaders/pbr.world.shadercfg`
-- `assets/shaders/pbr.world.slang`
+- `lib/src/renderer/vulkan/shaders/world/pbr.slang`
 
 ### Shader asset names
 
@@ -304,4 +304,4 @@ The loader computes UBO offsets using std140-like alignment rules and explicit a
 - `lib/src/renderer/resources/loaders/mesh_loader_gltf.c`
 - `lib/src/renderer/systems/vkr_material_system.c`
 - `assets/shaders/pbr.world.shadercfg`
-- `assets/shaders/pbr.world.slang`
+- `lib/src/renderer/vulkan/shaders/world/pbr.slang`

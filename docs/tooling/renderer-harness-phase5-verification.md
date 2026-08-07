@@ -1,6 +1,6 @@
 ---
 status: investigation
-updated: 2026-08-02
+updated: 2026-08-07
 authority: investigation
 ---
 
@@ -52,13 +52,15 @@ be compatible. Comparison results and effective thresholds are persisted in
 `captures[]`; image failures can publish canonical RGBA diff PNGs.
 
 The aggregate `capture-summary.bin` is the comparison and promotion trust
-boundary. Version 2 carries the tool verdict, case/profile manifests and
+boundary. Version 3 carries the tool verdict, case/profile manifests and
 digests, effective fingerprints, provenance, captures, and artifact inventory.
-`compare --run` copies verified source artifacts into its own atomic report
-root. `snapshot` also compares automatically when a compatible accepted
-baseline exists. A missing baseline remains a completed diagnostic snapshot
-with `baseline.missing`; explicit compare and autotest require one and return
-exit 4.
+The reader retains the exact version-2 profile layout used by accepted
+baselines; its absent warmup-stability metric maps to the historical
+`cpu.render_submit` default, whose policy fingerprint is unchanged. `compare
+--run` copies verified source artifacts into its own atomic report root.
+`snapshot` also compares automatically when a compatible accepted baseline
+exists. A missing baseline remains a completed diagnostic snapshot with
+`baseline.missing`; explicit compare and autotest require one and return exit 4.
 
 `autotest` launches a normal capture-free profile under `primary/` and a
 snapshot under `snapshot/`. The top report has one primary `runs[]` reference
@@ -101,7 +103,7 @@ Final six-channel debug replay:
 The first debug replay revealed that the PBR shader declared but did not consume
 `shadow_debug_mode`, so all three logical shadow outputs matched ordinary
 lighting. The implementation added the cascade, factor, and receiver/map depth
-visualizations to `pbr.world.slang`; the final replay above proves the three
+visualizations to `world/pbr.slang`; the final replay above proves the three
 paths now produce distinct canonical outputs.
 
 Guarded workflow artifacts:

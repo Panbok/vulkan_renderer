@@ -371,7 +371,7 @@ This turns instance writes into a tight memcpy/struct-fill loop.
 
 ### Shader Modifications
 
-**`assets/shaders/default.world.slang`**
+**`lib/src/renderer/vulkan/shaders/world/default.slang`**
 ```slang
 // Keep g_ubo at (set 0, binding 0) unchanged.
 
@@ -750,7 +750,7 @@ for (cascade = 0; cascade < 4; cascade++) {
 
 ### Shadow Shader Modification
 
-**`assets/shaders/shadow.slang`**
+**`lib/src/renderer/vulkan/shaders/shadow/cutout.slang`**
 ```slang
 struct ShadowPushConstants {
     column_major float4x4 light_view_projection;
@@ -909,9 +909,9 @@ typedef struct VkrInstancingConfig {
 | `app/src/main.c` | On-screen metrics HUD (world/shadow batching) |
 | `lib/src/renderer/systems/vkr_geometry_system.c` | Geometry indirect draw helper |
 | `lib/src/renderer/systems/vkr_geometry_system.h` | Geometry indirect draw helper |
-| `assets/shaders/default.world.slang` | Instance buffer sampling |
-| `assets/shaders/shadow.slang` | Shadow instancing support |
-| `assets/shaders/picking.slang` | Object ID from instance buffer |
+| `lib/src/renderer/vulkan/shaders/world/default.slang` | Instance buffer sampling |
+| `lib/src/renderer/vulkan/shaders/shadow/cutout.slang` | Shadow instancing support |
+| `lib/src/renderer/vulkan/shaders/picking/world.slang` | Object ID from instance buffer |
 
 ---
 

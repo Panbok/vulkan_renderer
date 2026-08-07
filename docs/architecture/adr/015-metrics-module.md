@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-02
+updated: 2026-08-07
 authority: adr
 ---
 # ADR-015: Centralized Metrics Registry with Pre-Registered Slots
@@ -137,9 +137,11 @@ The contract, in order of importance:
    `lib/src/renderer/vkr_renderer_metrics.{h,c}` registers and samples render
    graph, frontend, pipeline, visibility, upload, and device-memory metrics.
    `core/vkr_metrics.c` never includes renderer headers. The renderer adapter is
-   the **single caller** of
-   `vkr_renderer_get_and_reset_upload_wait_stats()`; a second caller would steal
-   samples.
+   the **single caller** of both resettable wait sources:
+   `vkr_renderer_get_and_reset_upload_wait_stats()` and
+   `vkr_renderer_get_and_reset_command_slot_wait_count()`; a second caller would
+   steal samples. `frame.command_slot_waits` is the total bounded-slot wait
+   count, while `upload.fence_waits` is its upload-path subset on Metal.
    Device-memory rows include fixed logical-owner state copied from the Vulkan
    handle tracker. Live and peak values are gauges; the tracker's lifetime
    allocation totals are differenced into per-frame `bytes.allocated` and

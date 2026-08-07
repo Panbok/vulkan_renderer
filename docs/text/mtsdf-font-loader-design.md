@@ -1210,12 +1210,12 @@ VkrResourceLoader vkr_mtsdf_font_loader_create(
 
 ## Unified Text Shader (Bitmap + MTSDF)
 
-Instead of creating a separate MTSDF shader, we extend the existing `assets/shaders/default.text.slang` to support both bitmap and MTSDF fonts via a mode toggle. This keeps a single unified shader for all font types.
+Instead of creating a separate MTSDF shader, we extend the existing `lib/src/renderer/vulkan/shaders/text/default.slang` to support both bitmap and MTSDF fonts via a mode toggle. This keeps a single unified shader for all font types.
 
 ### Modified Shader
 
 ```slang
-// assets/shaders/default.text.slang
+// lib/src/renderer/vulkan/shaders/text/default.slang
 
 // Uniform buffer for MVP matrices
 struct UniformBufferObject
@@ -1719,7 +1719,7 @@ typedef struct VkrFontLoaderResultExtended {
 - [ ] Implement `vkr_mtsdf_build_font()`
 - [ ] Implement loader interface functions
 - [ ] Add `VKR_RESOURCE_TYPE_MTSDF_FONT` to resource system
-- [ ] Modify `default.text.slang` to add MTSDF mode toggle
+- [ ] Modify `text/default.slang` to add MTSDF mode toggle
 - [ ] Add `screen_px_range` and `font_mode` to LocalUniformObject
 - [ ] Update `default.text.shadercfg` with new uniforms
 - [ ] Update font system dispatch for `VKR_FONT_TYPE_MTSDF`

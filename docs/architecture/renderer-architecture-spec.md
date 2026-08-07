@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-05
+updated: 2026-08-07
 authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
@@ -14,7 +14,11 @@ activation recorded on 2026-08-03 with seam-safe cube baking corrected on
 corrected on 2026-08-04; prepared specular-glossiness lowering, graph-declared
 transmission feedback, bounded glTF punctual lights, caster-relevant cascade
 fit, fragment-local IBL, and transitive scene-content fingerprints were added
-on 2026-08-04.
+on 2026-08-04; the reviewed fourteen-view Bistro golden baseline was accepted
+on 2026-08-05; the optional Metal 4 Stages 0–5 path was recorded on 2026-08-06,
+and cross-backend text parity plus accepted backend-pinned Vulkan/Metal
+Bistro-plus-text authority were recorded on 2026-08-07; production shader
+sources were moved behind their backend owners on 2026-08-07.
 **Scope:** Renderer architecture, implemented features, CPU/GPU memory, data
 transfer, synchronization, known issues, and recommended direction.
 **Audience:** Contributors and reviewers.
@@ -97,10 +101,11 @@ lib/src/
     ├── passes/                Named pass executors
     ├── systems/               Scene-facing renderer subsystems
     ├── resources/loaders/     Asset loaders
-    └── vulkan/                Vulkan backend and SPIR-V reflection
+    ├── metal/                 Metal packet backend and production shaders
+    └── vulkan/                Vulkan backend, production shaders, reflection
 app/src/main.c                 Sample/editor application
-assets/                        Shaders, materials, scenes, textures, graph JSON
-tools/                         Offline texture packer and validation scripts
+assets/                        Shader manifests/SPIR-V, materials, scenes, data
+tools/                         Offline utilities and focused validation stages
 tests/src/                     CPU-side unit and subsystem tests
 docs/                          Specifications, plans, investigations, ADRs
 ```
@@ -247,6 +252,20 @@ a shader may contain a member the host never writes.
 Static assertions correctly pin `VkrVertex3d`, `VkrInstanceDataGPU`, and
 `VkrIndirectDrawCommand` host layouts. Pipeline cache persistence is also
 implemented.
+
+Production source ownership follows the backend boundary. Both
+`lib/src/renderer/vulkan/shaders/` and `lib/src/renderer/metal/shaders/` are
+organized by render domain (`common`, `world`, `shadow`, `picking`, `text`,
+`skybox`, `ibl`, and `post`), with Vulkan-only `ui` and `viewport` domains kept
+explicit. CMake maps the reorganized Vulkan modules to the stable
+`assets/shaders/*.spv` names consumed by `.shadercfg`; those generated modules
+remain runtime assets rather than source authority. Metal's domain Slang and
+native MSL inputs are compiled/aggregated into one generated runtime library.
+No shader source or backend-specific renderer validator is owned by `tools/`.
+The CPU suite owns deterministic Metal memory/lifetime, packet-ABI,
+capture-ring, material-table, and dependency-lowering checks. Backend-pinned
+harness snapshots exercise the production Metal shader artifacts, graph/pass
+execution, capture path, pixels, and API/GPU validation.
 
 ### 3.5 Scene and render extraction
 
@@ -399,14 +418,14 @@ restricted to specular reflection rays.
 | Transmission | Implemented, initial | Graph-declared opaque, HDR feedback-copy, transmission, and ordinary-blend stages; screen-space refraction has no order-independent transparency or deep compositing |
 | KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; every selector result is transcodable |
 | Editor viewport and picking | Implemented | Picking fully declared in the render graph; readback usually deferred but ring wrap can block |
-| Text | Implemented | Bitmap, MTSDF, system-font, UI and world text paths |
+| Text | Implemented | Bitmap, MTSDF, system-font, UI and world text paths; the dedicated harness fixture produces byte-identical final RGBA output on legacy Vulkan and Metal, with deterministic backend-specific picking coverage |
 | Instance stream | Implemented, underused | Fixed 65,536 entries; measured content repeats no compatible asset/state run |
 | CPU frustum culling | Implemented | Per-submesh; camera and union-of-cascade light visibility classified independently; rejects ~37% on San Miguel, 0% on Sponza |
 | Draw batching | Implemented | Opaque draws merge by complete compatible state; local-probe descriptors prevent unsafe world instancing across positions |
 | Multi-draw indirect | Implemented | Fires where a pass binds state once: 1,124 shadow commands → 8 indirect calls; world pass batches nothing until descriptor state can be shared |
 | Compute dispatch | Not exercised | “compute” JSON passes currently orchestrate graphics/CPU work |
 | Device-memory suballocation | Absent, measured | Still one `VkDeviceMemory` per buffer/image/readback buffer; allocation-count and per-type telemetry now exists to size a pool |
-| Bindless/descriptor indexing | Absent | Per-material descriptor binding model |
+| Bindless/descriptor indexing | Implemented, optional Metal path | Metal 4 Stages 0–5 implement GPU-addressed buffers, native texture-reference material rows, placement/ring retirement, backend-lowered graph dependencies, all authored pass categories, PBR/lighting/IBL/transmission/text/picking, capture, metrics, and pipeline archives. The application selects it with `--renderer metal`, shared loaders publish generation-safe assets, and backend-pinned harness cases prevent accidental renderer substitution. Metal graph ownership is isolated from async resource allocation, frame-only schedule scratch is scoped, bounded command-slot waits publish as `frame.command_slot_waits`, and failed texture unpublication preserves logical ownership for retry. The accepted fourteen-view Metal Bistro-plus-text generation passes fresh comparison, completing Gate A evidence. Vulkan 1.2 remains the default pending a separate default-switch change. Modern Vulkan Stage 6 is absent. |
 | HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-carried manual exposure (default `0.30`), ACES-fitted tonemap, and exposure-equivalent canonical HDR capture; automatic exposure and additional post effects are absent |
 | Shader hot reload | Absent | Build-time shader compilation only |
 
@@ -846,8 +865,15 @@ pin the 17-image/13-sampler contract, and exact Bistro validation replay
 - real compute dispatch followed by GPU culling/compaction;
 - clustered/tiled light assignment and a storage-buffer light list;
 - shader hot reload with pipeline/descriptor invalidation rules;
-- optional descriptor indexing/bindless and capability-gated modern Vulkan
-  features.
+- the proposed native-Metal/modern-Vulkan
+  [GPU-address renderer](bindless-gpu-pointer-renderer-spec.md), whose focused
+  Metal Stages 0–5 now ship as an optional application/harness path with
+  production asset publication, memory retirement, explicit-ID material rows,
+  graph lowering, authored packet-pass execution, pipeline archives, capture,
+  retained text, lighting/IBL, and metrics. Gate A evidence, guarded baseline
+  acceptance, and fresh same-backend comparison are complete; the default-
+  backend change remains separately pending. The modern-Vulkan target remains
+  unimplemented.
 
 ---
 
@@ -920,6 +946,7 @@ following checks were rerun:
 | Bistro fragment-light/specular-IBL correction | Five further owner cameras invalidated the receiver-level 12-light completion claim: their diagnostic replay retained all 72 scene lights but measured 44,200 influencing receiver/light pairs and discarded 34,305, leaving valid fixtures dark. Final/unlit/analytic/shadow plus no-specular and no-IBL ablations initially appeared to isolate a separate moving wall boundary to specular IBL. ADR-019 now owns a camera-independent 384-cell world grid with full 128-bit masks; fragments apply exact range/cone rejection, while the PBR path adds normal-footprint roughness filtering, specular AO, and horizon rejection. The optimized five-camera replay `20260804T223449.580Z-000d77`, digest `sha256:2de757f5aa6d221fdf03b53d80f98ea2c0a691c695e28d5f6b50c1d55d5136e1`, has five passing children and 35 passing metric assertions: all 72 lights remain with zero drops, using 363 cells, 1,635 references, and at most 47 candidates per cell. Same-fingerprint local/dirty optimization reports `20260804T221657.247Z-01866a` → `20260804T222805.692Z-000857` reduce World Opaque p50 from 109.528 ms to 93.243 ms; the older receiver report's 93.272 ms has a different workload fingerprint and is context only. That historical snapshot was not validation-clean because the then-open 17-vs-16 sampler-limit VUID occurred at startup; §8 records its subsequent resolution. The prior proposal remains invalid and no replacement has been accepted |
 | Bistro face-orientation/indoor-probe correction | The final owner audit superseded the wall's specular-IBL attribution: direct-diffuse and normal captures showed a sharp view-vector `faceforward` flip on two-sided geometry, while shadow factor remained stable. PBR now uses `SV_IsFrontFace`, samples diffuse irradiance from the surface normal without box projection, and uses box projection only for specular reflection rays. Bistro's café volume now references an authored indoor diffuse cubemap with local specular intensity zero rather than reusing the outdoor environment. PBR reflects 17 sampled images and 13 sampler descriptors through explicit semantically identical aliases. Each IBL conversion/convolution owns immutable descriptor state released against the submit serial, preventing later probe bakes from invalidating recorded commands. The exact five-camera 1600×1200 replay `20260805T102236.609Z-01020d`, digest `sha256:ee1810dbaa479cf627458f24de79096a97ec12850f07b55658b1a46a2728d6de`, has five passing children with workload fingerprint `sha256:b99fd4de02f3e8c76938d83cc4ab17d4c4d3bc2bede84b5a6e76cbdff970ad97`; full-resolution review shows no sharp camera-translating wall boundary or outdoor environment wash in the café, and logs contain no VUID/error/fatal/sampler-limit/invalid-command diagnostics. This is local/dirty correctness evidence, not an authoritative baseline or performance result; no replacement baseline has been proposed or accepted |
 | Bistro curved-wall shadow audit | Three later 1600×1200 owner cameras isolate a separate curved-wall boundary to raw directional shadow factor and direct diffuse. Exact diagnostic `20260805T120354.711Z-0177c1`, digest `sha256:5d77c58149cf0e14b7aef5db3c4bcd85430398c05545f03b389156fc99f2afe0`, excludes unlit, normals, material parameters, direct specular, and IBL. Cascade replay `20260805T122914.160Z-006da8` places the edge inside cascade 1 with identical 234 opaque indirect commands, 20 alpha calls, and zero shadow-union culls at all positions. Scene-depth replay `20260805T130951.874Z-013a91`, digest `sha256:b50cdffd044c9aeaa48330050264f7718ce47def78e1a9776a1a342ddda22c98`, proves screen-row-600 edge pixels x=934 and x=393 unproject to the same wall point within 5.6 cm. The edge is a world-stationary sun shadow revealed by camera parallax, not a camera-locked renderer artifact; experimental scene-bounds wiring did not change it and was discarded. Runs are local/dirty correctness evidence with clean diagnostics, not an accepted baseline or performance result |
+| Bistro current golden baselines | Exactly two `local.offscreen` roots own the same fourteen 1600x1200 views plus deterministic system/bitmap/MTSDF text: legacy Vulkan generation `sha256:c3596ff14cdf206d0be4138840957925bd18353dd5d8eab339bfdec575df3564` and Metal generation `sha256:3db4f4d2294e5fdbc3618e64c4b2baf03bf66051dee0c4ff452e341d20cae51d`. Source runs `20260807T092207.874Z-01305c` and `20260807T091943.686Z-012428` passed all fourteen children and were visually reviewed before exact-digest acceptance. Fresh Vulkan compare `20260807T093053.007Z-0160b7` and Metal compare `20260807T092754.437Z-015047` pass every row with zero pixels over policy. These local/dirty same-backend goldens are correctness evidence, not authoritative performance evidence; the superseded shared root and its three generations were removed |
 | `vkr_frustum` production references | Application world-payload construction creates camera and cascade frustums and classifies submeshes against them |
 | `VkrDrawBatcher` production references | None outside its module/tests/docs; P2 batching instead uses visibility and pass-local batch structures |
 | `vkr_indirect_draw_alloc` callers | The shared pass indirect-submission path allocates production world/shadow command ranges |

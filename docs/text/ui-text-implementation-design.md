@@ -721,7 +721,7 @@ typedef struct VkrTextVertex {
 } VkrTextVertex;
 ```
 
-### Text Shader: `default.text.slang`
+### Text Shader: `text/default.slang`
 
 ```slang
 // Uniform buffer for MVP matrices (set 0, binding 0)
@@ -883,7 +883,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target
 
 ## Implementation Order
 
-1. **Shader Setup**: Create `default.text.slang` and `default.text.shadercfg`
+1. **Shader Setup**: Create `text/default.slang` and `default.text.shadercfg`
 2. **Phase 1**: `vkr_ui_text_create` and `vkr_ui_text_destroy`
 3. **Phase 2**: Configuration setters
 4. **Phase 3**: `vkr_ui_text_compute_layout` (layout integration)
@@ -899,7 +899,7 @@ float4 fragmentMain(VertexOutput input) : SV_Target
 | File | Changes |
 |------|---------|
 | `lib/src/renderer/resources/vkr_ui_text.c` | Full implementation |
-| `assets/shaders/default.text.slang` | **NEW**: Text shader with VkrTextVertex layout |
+| `lib/src/renderer/vulkan/shaders/text/default.slang` | **NEW**: Text shader with VkrTextVertex layout |
 | `assets/shaders/default.text.shadercfg` | **NEW**: Shader configuration |
 | `lib/src/renderer/passes/vkr_pass_ui.c` | Add text rendering in `on_render` |
 | `lib/src/renderer/systems/vkr_ui_system.h` | Add text storage to `VkrUiSystem` |

@@ -836,7 +836,7 @@ if (rf->terrain_system.initialized) {
 | `lib/src/renderer/resources/loaders/heightmap_loader.c` | Heightmap loading implementation |
 | `assets/shaders/terrain.slang` | Terrain rendering shader |
 | `assets/shaders/terrain.shadercfg` | Terrain shader configuration |
-| `assets/shaders/terrain_shadow.slang` | Terrain shadow pass shader |
+| `assets/shaders/terrain_shadow/cutout.slang` | Terrain shadow pass shader |
 | `assets/shaders/terrain_shadow.shadercfg` | Terrain shadow shader config |
 
 ### Modified Files

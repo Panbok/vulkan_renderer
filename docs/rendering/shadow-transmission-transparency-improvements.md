@@ -22,7 +22,7 @@ which records the original diagnosis and the later owner-driven corrections.
 | glTF transmission and volume import | Implemented | Material/import tests plus [ADR-018](../architecture/adr/018-graph-declared-transmission-feedback.md) |
 | Graph-declared transmission feedback/refraction | Implemented, initial | Separate opaque, feedback-copy, transmission, and ordinary-blend stages; one immutable feedback copy per frame |
 | Stable transparent ordering and opaque alpha | Implemented | Packed depth/tie-break keys and explicit opaque output alpha |
-| PDF/solid-angle prefilter source LOD | Implemented | `ibl.specular_prefilter.slang` uses `SampleLevel`; CPU math tests pin the LOD |
+| PDF/solid-angle prefilter source LOD | Implemented | `ibl/specular_prefilter.slang` uses `SampleLevel`; CPU math tests pin the LOD |
 
 The 2026-08-05 owner audits also found issues outside the proposal's original
 attribution. The first moving exterior-wall band was analytic diffuse, caused
@@ -166,7 +166,7 @@ cost is shared.
 
 ### 1.3 PCF: corrected origin ships; the early-out remains proposed
 
-`sample_shadow_pcf()` in `vkr_shader_csm.slangh` unconditionally takes **16
+`sample_shadow_pcf()` in `common/csm.slangh` unconditionally takes **16
 `SampleCmpLevelZero` taps** for every shadowed fragment. In practice the large
 majority of pixels are fully lit or fully shadowed, and all 16 taps agree.
 
@@ -307,7 +307,7 @@ Shipped staging:
 - **Stage 2 — feedback resource.** `World.TransmissionFeedback` is an immutable
   graph-declared copy of opaque HDR scene color, created once per frame.
 - **Stage 3 — refraction.** The dedicated transmission draw stage activates the
-  refraction branch in `pbr.world.slang`; ordinary opaque fragments do not take
+  refraction branch in `world/pbr.slang`; ordinary opaque fragments do not take
   that branch because they run through a different pass/list contract.
 - **Stage 4 — per-draw refresh remains unimplemented.** Deep transmissive
   compositing still sees the once-per-frame opaque feedback rather than prior
@@ -354,7 +354,7 @@ duplicate what `renderer_frontend.c` already guarantees.
 
 ### 3.4 Implemented opaque-alpha correction
 
-`pbr.world.slang` forces output alpha to one for `OPAQUE` materials. This keeps
+`world/pbr.slang` forces output alpha to one for `OPAQUE` materials. This keeps
 the HDR feedback attachment valid for transmission consumers.
 
 ---
@@ -364,7 +364,7 @@ the HDR feedback attachment valid for transmission consumers.
 This correction ships and is retained here because it came from the same
 review.
 
-The old `ibl.specular_prefilter.slang` used `source_cubemap.Sample(...)` inside the
+The old `ibl/specular_prefilter.slang` used `source_cubemap.Sample(...)` inside the
 importance-sampling loop. Implicit derivatives are meaningless for an
 importance-sampled direction, so every one of the 256 taps reads source mip 0,
 leaving the high-roughness mips under-converged and firefly-prone.

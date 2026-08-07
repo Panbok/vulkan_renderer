@@ -8,10 +8,10 @@ authority: investigation
 
 ## Conclusion
 
-This document diagnoses the accepted **pre-HDR** Bistro generation committed in
-`b48eb82`, records the implemented follow-ups, and preserves the correction of
-an initially false visual-completion claim. The baseline's flat, grey, opaque
-appearance had several independent causes:
+This document diagnoses the now-historical **pre-HDR** Bistro generation
+committed in `b48eb82`, records the implemented follow-ups, and preserves the
+correction of an initially false visual-completion claim. That baseline's flat,
+grey, opaque appearance had several independent causes:
 
 - its recorded frames contain no analytic directional or point-light
   contribution, and every cascade reports zero shadow draws;
@@ -83,6 +83,12 @@ vector. PBR now orients them from `SV_IsFrontFace`, making the receiver
 orientation primitive-defined rather than camera-defined. The receiver-level
 completion claim and every prior unaccepted baseline proposal remain invalid.
 
+After those corrections and the curved-wall audit closed the last owner
+question, the owner authorized a replacement golden on 2026-08-05. The current
+fixture uses fourteen supplied world-space cameras at 1600x1200. All previews
+were reviewed before guarded exact-digest acceptance; the current generation
+and reproducibility evidence are recorded below.
+
 ### Current status
 
 The current status authority is
@@ -95,7 +101,7 @@ not this investigation.
 | HDR environment and half-float IBL chain | Implemented | [ADR-016](../architecture/adr/016-hdr-environment-format.md) |
 | HDR scene color, exposure, and ACES-fitted tonemap | Implemented | Architecture spec §3.7 and feature table |
 | PDF/solid-angle prefilter source LOD | Implemented | [HDR/IBL implementation spec](hdr-environment-ibl-spec.md) |
-| Constant ambient while IBL is active | Removed; ambient is now the no-IBL fallback | `pbr.world.slang` |
+| Constant ambient while IBL is active | Removed; ambient is now the no-IBL fallback | `world/pbr.slang` |
 | Blend/cutout draw routing | Implemented independently for world and shadow lists | `application_build_world_payload()` and `vkr_draw_alpha_routing()` |
 | PCF light-space hash origin | Corrected and CPU-pinned against the shader basis | `vkr_shadow_light_space_origin_from_view()` |
 | Specular-glossiness material conversion | Implemented | Prepared, cached repack into base-color/metallic-roughness plus uniform or optional per-texel dielectric F0; F90 is derived from retained F0; [ADR-017](../architecture/adr/017-prepared-specular-glossiness-lowering.md) |
@@ -103,7 +109,7 @@ not this investigation.
 | `KHR_lights_punctual` | Implemented | Point, spot, and directional import into a stable 128-light scene table; a bounded 384-cell world grid carries complete 128-bit masks to fragment-local exact rejection, with table/grid metrics |
 | Localized indoor IBL | Implemented for Bistro | Two local probes selected per draw, fragment AABB weights, and global remainder. The café volume uses an authored indoor diffuse cubemap; local specular is zero until an indoor reflection capture exists; [ADR-019](../architecture/adr/019-bounded-forward-spatial-lighting.md) |
 | Scene-content provenance | Implemented | Sorted transitive manifest includes prepared glTF material files, generated textures, and present packed siblings; its digest participates in the workload fingerprint and is published as a report artifact |
-| Accepted Bistro baseline | Still the pre-HDR generation; every replacement proposal is invalid after owner review and no fragment-grid replacement has been proposed or accepted | `tools/baselines/.../current.json`; acceptance remains owner-gated |
+| Accepted Bistro baselines | Backend-pinned fourteen-view post-correction goldens with deterministic text; prior rejected proposals remain invalid | Legacy Vulkan generation `sha256:c3596ff14cdf206d0be4138840957925bd18353dd5d8eab339bfdec575df3564` and Metal generation `sha256:3db4f4d2294e5fdbc3618e64c4b2baf03bf66051dee0c4ff452e341d20cae51d`; fresh explicit compares pass all fourteen rows |
 
 The final calibrated local HDR/sun run is
 `20260804T085151.570Z-00b294`, report digest
@@ -281,14 +287,16 @@ comparison. The optimized run records 103.452 ms frame-wall p50.
 
 ### Baseline inspected
 
-The accepted generation is:
+The accepted generation inspected by this historical investigation was:
 
 ```text
 tools/baselines/local.offscreen/smoke.bistro.snapshot/generations/
 3045cea88015bb0efb35f6f0b0b47384c0ac7b71b8502bd731b537d3aff8d465/
 ```
 
-Its report records a Debug Apple M1 Pro/MoltenVK run at 1600×1200, two-image
+That root was superseded and removed when regression authority was consolidated
+into the backend-pinned Vulkan-plus-text and Metal-plus-text roots. Its report
+records a Debug Apple M1 Pro/MoltenVK run at 1600×1200, two-image
 offscreen target, `bgra8_srgb` color, `d32_sfloat` depth, and four cascades.
 The run is explicitly non-authoritative (`profile.local_only` and
 `provenance.dirty`). That is sufficient for the structural metric and code-path
@@ -342,7 +350,7 @@ visibility.objects_culled_shadow      mean=0  total=0
 `sync_directional_light_cb()` enables it only after finding an enabled
 `SceneDirectionalLight`. The scene used for the historical investigation had
 no such component. The CSM pass therefore recorded no casters, and the direct
-sun branch in `pbr.world.slang` did not run. Any shadow-shaped detail visible in
+sun branch in `world/pbr.slang` did not run. Any shadow-shaped detail visible in
 the accepted frames was not produced by the CSM pass.
 
 The loaded `bistro-lights.gltf` contains eight
@@ -363,7 +371,7 @@ The original gap was not just a parser omission:
   lights without an overflow metric or warning; and
 - `vkr_lighting_system_apply_uniforms()` stored
   `color * intensity` in `point_light_data`, stores intensity again, and
-  `pbr.world.slang` multiplies the two. Point-light radiance therefore scales
+  `world/pbr.slang` multiplies the two. Point-light radiance therefore scales
   with intensity squared.
 
 The intermediate implementation replaced that traversal-order set with a
@@ -618,7 +626,7 @@ bounds, so the latent path no longer extends every cascade to the whole scene.
 
 ### 4. Behavior-preserving shadow lookup cleanup — resolved 2026-08-04
 
-`pbr.world.slang` now computes view position once and reuses resolved cascade
+`world/pbr.slang` now computes view position once and reuses resolved cascade
 coverage around blended lookups. The PCF kernel, cascade choice, blend band, and
 fallback behavior are unchanged. This is a static behavior-preserving cleanup;
 no speedup is claimed, so it does not substitute instruction counts for a
@@ -659,7 +667,7 @@ content correction is warranted for this observation.
 | 4 | **Shipped, corrected 2026-08-05:** punctual import, stable scene table, and fragment-local bitmask grid | ADR-019, numeric glTF fixture, grid locality/range/capacity/determinism tests and table/grid metrics |
 | 5 | **Shipped:** relevant-caster fit and lookup cleanup | CPU fit tests and moving-camera shadow-factor case; no speed claim |
 | 6 | **Shipped:** fragment-local IBL foundation | Broad-mesh authored probe fixture and local/transition/global capture |
-| 7 | **Proposed after final evidence; not accepted:** new Bistro baseline | Fresh five-view snapshot, full review, exact proposal digest; acceptance remains separately authorized |
+| 7 | **Accepted 2026-08-05:** fourteen-view Bistro golden | Full preview review, exact-digest guarded acceptance, fresh fourteen-view snapshot, and explicit compare |
 
 Do not combine every item into one visual change. One vertical slice per
 comparison makes regressions attributable. The guarded baseline may be
@@ -684,9 +692,12 @@ an implementation gate and must not be run without owner authorization.
 
 ## References
 
-- Accepted pre-HDR generation:
-  `tools/baselines/local.offscreen/smoke.bistro.snapshot/generations/3045cea88015bb0efb35f6f0b0b47384c0ac7b71b8502bd731b537d3aff8d465/`
-- Case: `tools/cases/smoke/bistro_snapshot.case.json`
+- Historical pre-HDR/shared-root generations were removed after consolidation.
+- Current Vulkan case: `tools/cases/smoke/bistro_snapshot.case.json`
+- Current Metal case: `tools/cases/smoke/bistro_metal_text_snapshot.case.json`
+- Current accepted roots:
+  `tools/baselines/local.offscreen/smoke.bistro.vulkan.text.snapshot/` and
+  `tools/baselines/local.offscreen/smoke.bistro.metal.text.snapshot/`
 - Status authority:
   [renderer-architecture-spec.md](../architecture/renderer-architecture-spec.md)
 - HDR rationale:

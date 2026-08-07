@@ -17,7 +17,7 @@ Currently, image textures loaded from files are effectively created as **UNORM**
 
 Consequences:
 - **Color textures** (albedo/baseColor/UI images/skybox) are sampled as linear UNORM, which causes incorrect gamma handling unless shaders manually compensate.
-- The renderer already contains **manual gamma correction** in at least one shader (`assets/shaders/default.world.slang` uses `pow(x, 2.2)` on diffuse samples), which will cause **double correction** if we later switch to hardware sRGB sampling without cleaning up.
+- The renderer already contains **manual gamma correction** in at least one shader (`lib/src/renderer/vulkan/shaders/world/default.slang` uses `pow(x, 2.2)` on diffuse samples), which will cause **double correction** if we later switch to hardware sRGB sampling without cleaning up.
 - **Data textures** (fonts, normal maps, masks, MSDF/MTSDF atlases) must remain **linear**; sampling them as sRGB breaks their meaning.
 
 Relevant code locations:
@@ -198,7 +198,7 @@ Note:
 Once diffuse/baseColor textures start sampling as sRGB (`*_SRGB`), remove any manual sRGB decode in shaders to avoid double-correction.
 
 Current example:
-- `assets/shaders/default.world.slang` applies `pow(diffuse_sample.rgb, 2.2)`.
+- `lib/src/renderer/vulkan/shaders/world/default.slang` applies `pow(diffuse_sample.rgb, 2.2)`.
 
 Target:
 - For sRGB textures, hardware will decode to linear automatically on sampling.
@@ -269,7 +269,7 @@ This is intentionally prescriptive so it can be executed quickly.
   - Emit `specular_colorspace=linear` (default).
 
 ### Shaders
-- `assets/shaders/default.world.slang`
+- `lib/src/renderer/vulkan/shaders/world/default.slang`
   - Remove manual diffuse `pow(x, 2.2)` only after diffuse maps are consistently requested as sRGB.
 
 ---

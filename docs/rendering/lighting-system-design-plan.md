@@ -19,7 +19,7 @@ authority: design
 
 ## Purpose
 
-Turn the current hardcoded lighting in `assets/shaders/default.world.slang` into
+Turn the current hardcoded lighting in `lib/src/renderer/vulkan/shaders/world/default.slang` into
 **ECS-driven light entities** that:
 
 - Live in the Scene's ECS (`VkrWorld`), not in the renderer as ad-hoc globals.
@@ -38,7 +38,7 @@ can consume ECS.
 
 ### Dynamic ECS-driven lights (IMPLEMENTED)
 
-`assets/shaders/default.world.slang` now receives light data from the UBO:
+`lib/src/renderer/vulkan/shaders/world/default.slang` now receives light data from the UBO:
 
 - Directional light: `gUBO.dir_enabled`, `gUBO.dir_direction`, `gUBO.dir_color`
 - Point lights: `gUBO.point_light_count`, `gUBO.point_light_data[48]` (packed vec4 array)
@@ -133,7 +133,7 @@ Design implications:
 1. **ECS light entities**:
    - A light is an entity with components (e.g. `SceneTransform` + `ScenePointLight`).
 2. **Replace shader constants**:
-   - Remove `static const ...` lights from `assets/shaders/default.world.slang`.
+   - Remove `static const ...` lights from `lib/src/renderer/vulkan/shaders/world/default.slang`.
 3. **Picking support**:
    - Lights render into `Renderpass.Builtin.Picking` with stable object IDs and
      map back to the owning `VkrEntityId`.
@@ -306,7 +306,7 @@ struct PointLight {
 
 ### Shader changes (replace static const lights)
 
-Update `assets/shaders/default.world.slang`:
+Update `lib/src/renderer/vulkan/shaders/world/default.slang`:
 
 1. Remove the `static const` light declarations.
 2. Extend `GlobalUniformBufferObject` to include:
@@ -508,7 +508,7 @@ world position into the picking target:
 
 - **Geometry**: Unit cube via `vkr_geometry_system_create_cube()`.
 - **Model matrix**: `translate(light_position) * scale(gizmo_size)`
-- **Pipeline**: Existing picking pipeline (`assets/shaders/picking.slang`)
+- **Pipeline**: Existing picking pipeline (`lib/src/renderer/vulkan/shaders/picking/world.slang`)
 - **object_id**: passed via picking shader push constant (`PushConstants.object_id`)
 
 ### Required changes
@@ -613,7 +613,7 @@ ordering.
    - Sets `point_light_data` as single bulk write (3 vec4s per light)
 
 4. **Shader + shadercfg updated**:
-   - `assets/shaders/default.world.slang`: Removed static lights, added UBO fields
+   - `lib/src/renderer/vulkan/shaders/world/default.slang`: Removed static lights, added UBO fields
    - `assets/shaders/default.world.shadercfg`: Added light uniforms
 
 5. **Per-frame wiring** in `vkr_pass_world.c`:
@@ -792,7 +792,7 @@ When fixed-slot UBO becomes limiting:
 - `lib/src/renderer/systems/vkr_scene_system.h` — light component types, compiled queries, helper APIs
 - `lib/src/renderer/renderer_frontend.c` — lighting system init/shutdown
 - `lib/src/renderer/renderer_frontend.h` — `VkrLightingSystem` and `active_scene` fields
-- `assets/shaders/default.world.slang` — removed static lights, added UBO fields for dynamic lights
+- `lib/src/renderer/vulkan/shaders/world/default.slang` — removed static lights, added UBO fields for dynamic lights
 - `assets/shaders/default.world.shadercfg` — added light uniforms
 - `lib/src/renderer/passes/vkr_pass_world.c` — light gizmo visualization (spheres, depth-tested)
 - `lib/src/renderer/systems/vkr_geometry_system.c` — UV sphere generator

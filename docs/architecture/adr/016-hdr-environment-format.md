@@ -64,7 +64,7 @@ Rationale, in order of weight:
    pinwheel artifact directly overhead — visible in any scene where the camera
    can look up.
 4. **The conversion is not avoidable by choosing equirect.**
-   `ibl.diffuse_convolution.slang` and `ibl.specular_prefilter.slang` both
+   `ibl/diffuse_convolution.slang` and `ibl/specular_prefilter.slang` both
    declare `TextureCube<float4> source_cubemap` and are driven per-face by
    `vkr_world_resources_bake_cubemap()`. Sampling equirect at runtime means
    rewriting both bake shaders as well — the conversion moves, it does not

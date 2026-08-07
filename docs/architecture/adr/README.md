@@ -43,6 +43,9 @@ Considered → Revisit When**.
 | [ADR-017](017-prepared-specular-glossiness-lowering.md) | Prepared specular-glossiness lowering with retained dielectric reflectance | Accepted |
 | [ADR-018](018-graph-declared-transmission-feedback.md) | Graph-declared transmission feedback | Accepted |
 | [ADR-019](019-bounded-forward-spatial-lighting.md) | Stable-table, fragment-local bitmask-grid lighting | Accepted |
+| [ADR-020](020-bindless-backend-seam.md) | Parallel renderer implementation boundary for the bindless path | Accepted (partial) |
+| [ADR-021](021-metal-first-bindless-backend.md) | Metal 4 first; modern Vulkan for Windows and Linux | Accepted (partial) |
+| [ADR-022](022-gpu-pointer-resource-model.md) | GPU-address resources, native texture references, backend-lowered dependencies | Accepted (partial) |
 
 ## Relationship to the Specification
 

@@ -46,6 +46,7 @@ owning document status in the same change.
 | [renderer-architecture-spec.md](architecture/renderer-architecture-spec.md) | implemented | Current architecture, feature status, memory, sync, prioritized issues |
 | [adr/README.md](architecture/adr/README.md) | — | ADR index and format |
 | [event-payload-lifetime-and-resize-mailbox.md](architecture/event-payload-lifetime-and-resize-mailbox.md) | implemented | Stable event payload copies and lock-free resize mailbox |
+| [bindless-gpu-pointer-renderer-spec.md](architecture/bindless-gpu-pointer-renderer-spec.md) | partial | Metal 4 Stages 0–5 and Gate A evidence are complete through accepted backend-pinned Bistro-plus-text regression authority; the macOS default switch and Stage 6 modern Vulkan remain deferred |
 
 ### Architecture Decision Records
 
@@ -70,6 +71,9 @@ owning document status in the same change.
 | [017](architecture/adr/017-prepared-specular-glossiness-lowering.md) | implemented | Prepared specular-glossiness lowering with retained dielectric F0/F90 response in the runtime PBR path |
 | [018](architecture/adr/018-graph-declared-transmission-feedback.md) | implemented | Separate opaque, feedback-copy, transmission, and ordinary-blend graph stages |
 | [019](architecture/adr/019-bounded-forward-spatial-lighting.md) | implemented | Stable punctual-light table, fragment-local bitmask grid, and fragment-aware local IBL |
+| [020](architecture/adr/020-bindless-backend-seam.md) | partial | Parallel renderer implementation boundary for the bindless path |
+| [021](architecture/adr/021-metal-first-bindless-backend.md) | partial | Metal 4 first; capability-gated modern Vulkan for Windows and Linux |
+| [022](architecture/adr/022-gpu-pointer-resource-model.md) | partial | GPU-address resources, backend-native texture references, and backend-lowered graph dependencies |
 
 ## Rendering
 

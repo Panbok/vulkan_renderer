@@ -405,7 +405,7 @@ void scene_viewport_resize(SceneViewportData *data,
 ### 4.4 UI Viewport Shader
 
 ```hlsl
-// default.viewport_display.slang
+// viewport/display.slang
 [[vk::binding(0, 0)]]
 ConstantBuffer<UiGlobalUBO> g_ubo;
 
@@ -497,7 +497,7 @@ uniform=mat4,2,model
 uniform=uint32,2,object_id
 ```
 
-**File: `assets/shaders/picking.slang`**
+**File: `lib/src/renderer/vulkan/shaders/picking/world.slang`**
 ```hlsl
 struct GlobalUBO {
   column_major float4x4 projection;
@@ -745,7 +745,7 @@ bool8_t vulkan_image_copy_to_buffer(VulkanBackendState *state,
 
 1. Add `vkr_renderer_transition_texture_layout()` function
 2. Ensure texture layout tracking in backend state
-3. Create viewport display shader (`default.viewport_display.slang`)
+3. Create viewport display shader (`viewport/display.slang`)
 4. Create scene viewport layer example
 5. Test: Render scene to texture, display in UI quad
 
@@ -753,7 +753,7 @@ bool8_t vulkan_image_copy_to_buffer(VulkanBackendState *state,
 - `lib/src/renderer/vulkan/vulkan_backend.c`
 - `lib/src/renderer/vulkan/vulkan_image.c`
 - `assets/shaders/default.viewport_display.shadercfg` (new)
-- `assets/shaders/default.viewport_display.slang` (new)
+- `lib/src/renderer/vulkan/shaders/viewport/display.slang` (new)
 
 ### Phase 4: Viewport Rendering Hardening & Future-Proofing ✅ COMPLETE (1-3 days)
 
@@ -830,7 +830,7 @@ The focus is **viewport rendering correctness and picking-ready coordinate mappi
 
 1. Add `VKR_PIPELINE_DOMAIN_PICKING` domain
 2. Create picking render pass configuration
-3. Create picking shader (`picking.shadercfg`, `picking.slang`)
+3. Create picking shader (`picking.shadercfg`, `picking/world.slang`)
 4. Fix/extend clear semantics for integer attachments
    - `R32_UINT` attachments require integer clear values (current `Vec4 clear_color` is float-based).
    - Either add an integer clear path or switch to a normalized/float ID encoding (less ideal).
@@ -848,7 +848,7 @@ The focus is **viewport rendering correctness and picking-ready coordinate mappi
 - `lib/src/renderer/vulkan/vulkan_framebuffer.c` - Added PICKING case (deferred)
 - `lib/src/renderer/passes/vkr_pass_world.c` - Pass object_id in push constants
 - `assets/shaders/picking.shadercfg` (NEW)
-- `assets/shaders/picking.slang` (NEW)
+- `lib/src/renderer/vulkan/shaders/picking/world.slang` (NEW)
 
 ### Phase 7: Picking System Integration ✅ COMPLETE (2-4 days)
 
@@ -913,7 +913,7 @@ The focus is **viewport rendering correctness and picking-ready coordinate mappi
 |------|--------|
 | Add `vkr_renderer_transition_texture_layout()` function | ✅ Done |
 | Ensure texture layout tracking in backend state | ✅ Done |
-| Create viewport display shader (`default.viewport_display.slang`) | ✅ Done |
+| Create viewport display shader (`viewport/display.slang`) | ✅ Done |
 | Create scene viewport layer (Editor layer) | ✅ Done |
 | Test: Render scene to texture, display in UI quad | ✅ Done |
 
@@ -1014,7 +1014,7 @@ if (vkr_editor_viewport_compute_mapping(window_width, window_height, fit_mode,
 | Extend `VkrLocalMaterialState` with `object_id` field | ✅ Done |
 | Update world render to pass `mesh_index + 1` as object_id | ✅ Done |
 | Create `picking.shadercfg` shader configuration | ✅ Done |
-| Create `picking.slang` shader source | ✅ Done |
+| Create `picking/world.slang` shader source | ✅ Done |
 
 #### Phase 6 implementation notes (how it was implemented)
 
@@ -1129,7 +1129,7 @@ if (vkr_editor_viewport_compute_mapping(window_width, window_height, fit_mode,
 - Integer clear value support (`clear_color_uint` in render pass)
 - `vulkan_renderpass_create_picking()` with proper layout transitions for readback
 - Extended `VkrLocalMaterialState` with `object_id` field in push constants
-- Picking shader (`picking.slang`) outputs object_id as uint32 directly
+- Picking shader (`picking/world.slang`) outputs object_id as uint32 directly
 - World view now passes `mesh_index + 1` as object_id for all rendered meshes
 - Deferred initialization pattern (render pass/framebuffers created on-demand)
 
@@ -1180,9 +1180,9 @@ if (vkr_editor_viewport_compute_mapping(window_width, window_height, fit_mode,
 
 **Assets:**
 - `assets/shaders/default.viewport_display.shadercfg` (NEW)
-- `assets/shaders/default.viewport_display.slang` (NEW)
+- `lib/src/renderer/vulkan/shaders/viewport/display.slang` (NEW)
 - `assets/shaders/picking.shadercfg` (NEW - Phase 6)
-- `assets/shaders/picking.slang` (NEW - Phase 6)
+- `lib/src/renderer/vulkan/shaders/picking/world.slang` (NEW - Phase 6)
 - `assets/materials/default.viewport_display.mt` (NEW)
 
 **Application:**
@@ -1366,9 +1366,9 @@ implemented changes to date are listed in Section 6.1.
 | `lib/src/renderer/systems/vkr_picking_system.h` | Picking system types and API |
 | `lib/src/renderer/systems/vkr_picking_system.c` | Picking system implementation |
 | `assets/shaders/picking.shadercfg` | Picking shader configuration |
-| `assets/shaders/picking.slang` | Picking shader source |
+| `lib/src/renderer/vulkan/shaders/picking/world.slang` | Picking shader source |
 | `assets/shaders/default.viewport_display.shadercfg` | Viewport display shader config |
-| `assets/shaders/default.viewport_display.slang` | Viewport display shader source |
+| `lib/src/renderer/vulkan/shaders/viewport/display.slang` | Viewport display shader source |
 
 ### Modified Files
 

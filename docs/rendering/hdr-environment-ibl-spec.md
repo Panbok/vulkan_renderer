@@ -254,7 +254,7 @@ resource until completion/recovery proves it safe.
 
 ## Phase 4 — Source mip chain and prefilter LOD
 
-The previous `ibl.specular_prefilter.slang` called `TextureCube.Sample()` inside
+The previous `ibl/specular_prefilter.slang` called `TextureCube.Sample()` inside
 an importance-sampling loop. Derivatives did not describe those generated
 sample directions, so the result effectively sampled source mip 0. The
 implemented path supplies a complete source cubemap mip chain and selects
@@ -345,7 +345,7 @@ Rounding down avoids inventing source detail. A 4096×2048 source therefore
 produces 1024² faces and an eleven-mip environment cube. At RGBA16F that cube is
 approximately 64 MiB (67 MB decimal).
 
-### Shader: `assets/shaders/ibl.equirect_to_cube.slang`
+### Shader: `lib/src/renderer/vulkan/shaders/ibl/equirect_to_cube.slang`
 
 Render the prepared fullscreen plane and reconstruct a direction from the
 destination face index and top-left image-space UV. Do not derive the mapping
@@ -505,9 +505,11 @@ native Vulkan and other format/queue layouts unverified.
 
 ### Harness and baseline safety
 
-`tools/cases/smoke/bistro_snapshot.case.json` is the existing five-view Bistro
-fixture. The implemented storage, environment, and tonemap changes intentionally
-change its pixels. Run a fresh snapshot with
+`tools/cases/smoke/bistro_snapshot.case.json` is the backend-pinned legacy
+Vulkan fourteen-view Bistro-plus-text fixture; its Metal mate is
+`tools/cases/smoke/bistro_metal_text_snapshot.case.json`. The implemented
+storage, environment, and tonemap changes intentionally change their pixels.
+Run a fresh same-backend snapshot with
 `tools/profiles/local-offscreen.json`, inspect every comparison/diff and
 effective configuration, then create a baseline proposal with
 `vkr_harness baseline propose`.

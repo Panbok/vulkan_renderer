@@ -29,7 +29,7 @@ Important nuance: **“std430” is not the default layout for uniform buffers.*
 
 - Toolchain: DX packing removed from all shader build scripts (std140 UBOs by default).
 - Loader: `std140` alignment rules fixed; DX register packing removed.
-- Shaders: padding-only fields removed from `default.text.slang` (others still need audit under std140).
+- Shaders: padding-only fields removed from `text/default.slang` (others still need audit under std140).
 
 Pending:
 - Recompile `.spv` with the new flags.
@@ -64,7 +64,7 @@ The uniform buffer layout calculation is centralized in the shader loader:
 |------|---------|
 | `lib/src/renderer/resources/loaders/shader_loader.c` | Layout computation (`vkr_compute_uniform_layout`) |
 | `lib/src/renderer/resources/vkr_resources.h` | Shader config structs (`VkrShaderConfig`, `VkrShaderUniformDesc`) |
-| `assets/shaders/*.slang` | GPU-side struct definitions using Slang `ConstantBuffer<T>` |
+| `lib/src/renderer/vulkan/shaders/**/*.slang` | GPU-side struct definitions using Slang `ConstantBuffer<T>` |
 
 ### Current Constants (shader_loader.c:18-21)
 
@@ -118,7 +118,7 @@ if (ud->array_count > 1) {
 
 ### Shader-Side Current Patterns (Slang)
 
-#### default.world.slang (Lines 1-30)
+#### world/default.slang (Lines 1-30)
 ```slang
 struct GlobalUniformBufferObject {
     column_major float4x4 projection;  // offset 0,   size 64
@@ -136,7 +136,7 @@ struct GlobalUniformBufferObject {
 };
 ```
 
-#### default.text.slang (Lines 8-13)
+#### text/default.slang (Lines 8-13)
 ```slang
 struct LocalUniformObject {
     float4 diffuse_color;     // 16 bytes
@@ -210,7 +210,7 @@ DX packing makes it very easy for shader structs to “accidentally” become DX
 
 This matters because the renderer’s CPU-side layout computation in `shader_loader.c` must match the SPIR-V member offsets exactly. If we want portability, we need to pick a standard layout (baseline: `std140`) and adjust shader structs accordingly.
 
-As an example, `assets/shaders/default.world.slang` uses:
+As an example, `lib/src/renderer/vulkan/shaders/world/default.slang` uses:
 
 ```c
 // GPU (shader)
@@ -227,7 +227,7 @@ The renderer avoids direct-struct memcpy for most material data (it writes each 
 
 ### 4. Explicit Padding Requirements
 
-Shaders sometimes add manual padding (see `float2 _padding` in `assets/shaders/default.text.slang`) to make the *struct size/stride* a clean multiple of 16 bytes. This is a symptom of two separate issues:
+Shaders sometimes add manual padding (see `float2 _padding` in `lib/src/renderer/vulkan/shaders/text/default.slang`) to make the *struct size/stride* a clean multiple of 16 bytes. This is a symptom of two separate issues:
 - DX packing: many layouts “work” until a field order changes and crosses a 16B boundary.
 - Engine stride: even if the last member ends at byte 24, the next per-instance block must start aligned for its first member (often 16, and then rounded up to `minUniformBufferOffsetAlignment` if using dynamic offsets).
 
@@ -339,7 +339,7 @@ struct GlobalUniformBufferObject {
 
 If a padding field exists only to make the struct “look aligned”, but it is not declared in the `.shadercfg`, it becomes a maintenance hazard (it can silently drift from what the CPU thinks exists).
 
-Example: `assets/shaders/default.text.slang` previously included `float2 _padding;` as the last member (now removed). It can be removed if:
+Example: `lib/src/renderer/vulkan/shaders/text/default.slang` previously included `float2 _padding;` as the last member (now removed). It can be removed if:
 - the engine’s instance UBO stride is already aligned (it is, via `minUniformBufferOffsetAlignment`), and
 - no shader code reads the padding field.
 
@@ -395,8 +395,8 @@ Many `.shadercfg` files contain “computed layout” comments that can drift fr
 |------|---------|
 | `build.sh`, `build.bat`, release scripts | Remove `-fvk-use-dx-layout` (baseline `std140`) or replace with `-fvk-use-scalar-layout` (optional) |
 | `lib/src/renderer/resources/loaders/shader_loader.c` | Implement correct `std140` layout and delete DX register packing |
-| `assets/shaders/default.text.slang` | Remove padding-only member (`_padding`) |
-| `assets/shaders/*.slang` | Repack structs that relied on DX packing (avoid `uint` → `float3` patterns) |
+| `lib/src/renderer/vulkan/shaders/text/default.slang` | Remove padding-only member (`_padding`) |
+| `lib/src/renderer/vulkan/shaders/**/*.slang` | Repack structs that relied on DX packing (avoid `uint` → `float3` patterns) |
 | `assets/shaders/*.spv` | Recompile all shaders |
 
 ### Step-by-Step Implementation
@@ -412,7 +412,7 @@ Many `.shadercfg` files contain “computed layout” comments that can drift fr
 
 3. **Phase 2: Shader structs** (HIGH)
    - [ ] Fix any UBO structs that depended on DX packing to keep the layout stable under `std140`
-   - [x] Remove “padding-only” members that aren’t part of the `.shadercfg` contract (e.g. `default.text.slang`)
+   - [x] Remove “padding-only” members that aren’t part of the `.shadercfg` contract (e.g. `text/default.slang`)
 
 4. **Phase 3: Validation** (CRITICAL)
    - [ ] Run the app and check Vulkan validation output

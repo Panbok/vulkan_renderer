@@ -14,7 +14,7 @@ true in the implementation.
 - Shadow view orchestration: `lib/src/renderer/passes/vkr_pass_shadow.c`
 - Camera math and matrices: `lib/src/renderer/systems/vkr_camera.c`,
   `lib/src/renderer/systems/vkr_camera_controller.c`, `lib/src/math/mat.h`
-- Shader usage context: `assets/shaders/default.world.slang`
+- Shader usage context: `lib/src/renderer/vulkan/shaders/world/default.slang`
 
 ## Confirmed Assumptions
 - The camera basis used for frustum corner generation is orthonormalized when
@@ -35,7 +35,7 @@ true in the implementation.
 
 - The shader’s view-depth usage (`view_depth = -view_pos.z`) matches the
   right-handed view convention and Vulkan clip-space setup in the math library.
-  - Source: `assets/shaders/default.world.slang:780`
+  - Source: `lib/src/renderer/vulkan/shaders/world/default.slang:780`
   - Source: `lib/src/math/mat.h:445`
   - Source: `lib/src/math/mat.h:403`
 
@@ -49,7 +49,7 @@ true in the implementation.
   vertical). This means CPU and shader basis generation are consistent as long
   as the light direction is consistent.
   - Source: `lib/src/renderer/systems/vkr_shadow_system.c:135`
-  - Source: `assets/shaders/default.world.slang:374`
+  - Source: `lib/src/renderer/vulkan/shaders/world/default.slang:374`
 
 - The shadow system update reads the active camera and directional light once
   per frame; all cascades for that frame are computed from those values.
@@ -59,4 +59,3 @@ true in the implementation.
 - Cascade splits are computed from the camera near/far with optional max shadow
   distance clamping and a lambda blend of log/linear splits.
   - Source: `lib/src/renderer/systems/vkr_shadow_system.c:40`
-

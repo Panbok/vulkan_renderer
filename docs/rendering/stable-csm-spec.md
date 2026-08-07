@@ -157,7 +157,7 @@ Add slope-scaled receiver bias for acne reduction at grazing angles.
   - Optional radius quantization.
 - `lib/src/renderer/systems/vkr_shadow_system.h`
   - If Phase 2: add `shadow_slope_bias` to `VkrShadowConfig` + frame data.
-- `assets/shaders/default.world.slang`
+- `lib/src/renderer/vulkan/shaders/world/default.slang`
   - Phase 2 only: consume `shadow_slope_bias`.
 
 ## Debugging & Validation

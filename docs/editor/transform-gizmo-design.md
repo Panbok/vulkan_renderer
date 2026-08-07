@@ -1034,7 +1034,7 @@ Optional future additions:
 | `lib/src/math/vkr_ray.c` | Ray intersection implementations |
 | `assets/shaders/gizmo.slang` | Gizmo rendering shader |
 | `assets/shaders/gizmo.shadercfg` | Gizmo shader configuration |
-| `assets/shaders/gizmo_picking.slang` | Gizmo picking shader |
+| `assets/shaders/gizmo_picking/world.slang` | Gizmo picking shader |
 | `assets/shaders/gizmo_picking.shadercfg` | Gizmo picking shader config |
 
 ### Modified Files
