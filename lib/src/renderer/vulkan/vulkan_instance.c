@@ -59,13 +59,19 @@ bool32_t vulkan_instance_create(VulkanBackendState *state, VkrWindow *window) {
   assert_log(required_extension_count <= ArrayCount(extension_names),
              "Too many required instance extensions");
   const bool8_t offscreen = !vulkan_present_target_uses_wsi(state);
+  bool8_t portability_enumeration_enabled = false_v;
   uint32_t extension_count = 0;
   for (uint32_t i = 0; i < required_extension_count; ++i) {
     if (offscreen &&
         vulkan_platform_extension_is_surface(required_extension_names[i])) {
       continue;
     }
-    extension_names[extension_count++] = required_extension_names[i];
+    const char *extension_name = required_extension_names[i];
+    extension_names[extension_count++] = extension_name;
+    if (string_equals(extension_name,
+                      VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)) {
+      portability_enumeration_enabled = true_v;
+    }
   }
 
 #ifndef NDEBUG
@@ -84,7 +90,9 @@ bool32_t vulkan_instance_create(VulkanBackendState *state, VkrWindow *window) {
   create_info.enabledLayerCount = ArrayCount(VALIDATION_LAYERS);
   create_info.ppEnabledLayerNames = VALIDATION_LAYERS;
 #endif
-  create_info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+  if (portability_enumeration_enabled) {
+    create_info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+  }
 
   VkResult result =
       vkCreateInstance(&create_info, state->allocator, &state->instance);
