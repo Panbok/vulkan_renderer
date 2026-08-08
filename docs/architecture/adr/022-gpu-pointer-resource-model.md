@@ -104,6 +104,17 @@ or overlapping frees, and report metadata-capacity exhaustion. `VkrFreeList`
 may be reused only after these requirements are met; rounding request size alone
 is not aligned allocation.
 
+The Vulkan realization of these classes maps `UPLOAD` to host-visible coherent
+memory, preferring a device-local host-visible type where resizable BAR provides
+one; `DEVICE` to device-local memory that is not host visible; and `READBACK` to
+host-visible cached memory. Vulkan additionally has `bufferImageGranularity`,
+which Metal does not; it is handled by **segregating buffers from optimal-tiling
+images into separate allocator instances and separate device-memory blocks**,
+using the buffer-versus-texture parameter the allocator already carries, rather
+than by padding. Host-visible blocks are mapped once persistently at block
+creation, and non-coherent memory is flushed per ring slice at submit rather
+than per write.
+
 GPU allocation remains outside the `VkrAllocator` vtable. It shares accounting
 through `vkr_allocator_report()` and `VkrGpuAllocationOwner`, while device-heap
 counts and logical-suballocation counts are published as distinct metrics.
@@ -121,9 +132,29 @@ representation. Each backend lowers it once into a concrete GPU row:
   texture slot (or an address to a row containing those IDs), or a compact index
   into a bounded `MTLTextureViewPool` after Stage 3 proves the shader arithmetic,
   ABI, growth, and retirement rules.
-- Modern Vulkan may store compact indices/base indices into an application-
-  managed descriptor heap when its selected extension and stride rules prove
-  that representation valid.
+- Modern Vulkan stores compact 32-bit indices into application-managed
+  descriptor-buffer heaps, per
+  [ADR-023](023-vulkan-1-4-bindless-capability-profile.md). Per-binding base
+  offsets and per-descriptor strides are read from the device at initialization
+  and never written as literals, so **backend-defined descriptor sizes never
+  reach the shader**: the shader indexes an unbounded array with an integer and
+  the driver performs the strided lookup. Two descriptor buffers are used, one
+  for resources and one for samplers, and sampled images and samplers are kept
+  as separate descriptors rather than combined ones, because
+  `combinedImageSamplerDescriptorSingleArray` may be false and would then make
+  index arithmetic driver-dependent. The resulting row is 64 bytes against
+  Metal's 96 — the denser representation this ADR anticipated, and the reason
+  its "standardize every backend on a 64-bit texture token" alternative was
+  rejected.
+
+  One Vulkan-only consequence: when `descriptorBufferImageLayoutIgnored` is
+  false a descriptor is baked with an image layout, so a texture that is
+  storage-written in one pass and sampled in another needs **two heap slots over
+  the same image view**, one per layout. Every IBL bake target has this shape.
+  Descriptor immutability is also stricter than under descriptor sets — a
+  descriptor buffer is plain memory read at execution time, with no
+  update-after-bind window and no driver-side copy, so an in-place overwrite
+  while a submission can read it is an unrepairable race.
 
 GPU-visible texture-reference/material rows are immutable while any pending
 submission can read them. Updates allocate and publish a new row at a frame
@@ -162,13 +193,37 @@ required. `VK_KHR_unified_image_layouts`, when present, simplifies most internal
 states but does not eliminate all exceptions or guarantee that a global barrier
 is optimal on every device.
 
+The modern Vulkan lowerer emits `VkImageMemoryBarrier2` per compiled image
+barrier, preserving resource identity and subresource range, and collapses a
+pass's buffer barriers into a single `VkMemoryBarrier2` — valid because the
+initial path uses one queue family, so no ownership transfer exists, and the
+graph retains buffer identity for diagnostics regardless. Everything batches
+into one barrier command per pass boundary. Synchronization2 also lets the
+canonical visibility flag be expressed exactly: device visibility becomes a
+memory dependency with non-zero access masks, its absence an execution-only
+dependency. Resource-alias visibility is **rejected with a named error** until
+the graph actually aliases placement ranges, rather than silently ignored.
+
+One asymmetry is worth recording as evidence against a premature low-level seam:
+Metal models producer, consumer, and intra-encoder barrier forms, and the
+intra-encoder form has no general Vulkan analogue.
+
 One totally ordered completion domain is the only authority for command-
 allocator reset, frame/upload/readback slot reuse, native object release,
 texture-reference/material-row recycling, heap-range reuse, and residency
 removal. The initial one-queue path represents it with a monotonically
-increasing submit value. An independent transfer or compute queue must either
-join that domain or extend the retirement point with every relevant queue; the
-maximum of unrelated queue serials is not completion proof.
+increasing submit value — a Metal shared event, or a Vulkan timeline semaphore.
+An independent transfer or compute queue must either join that domain or extend
+the retirement point with every relevant queue; the maximum of unrelated queue
+serials is not completion proof.
+
+Vulkan has one exception the timeline cannot absorb: swapchain acquire and
+present require **binary** semaphores. A windowed submit therefore signals both
+the timeline, for retirement, and a per-image binary render-complete semaphore,
+for present. Acquire semaphores are sized by frames in flight; render-complete
+semaphores by the *actual* swapchain image count rather than the requested
+minimum; fences disappear entirely, with image-in-flight tracking becoming a
+per-image last-submit value.
 
 **Scope:** This ADR does not supersede ADR-005, ADR-007, ADR-008, or ADR-009 for
 the Vulkan 1.2 renderer.
@@ -259,9 +314,15 @@ the Vulkan 1.2 renderer.
   requires a different data structure or heap policy.
 - Texture streaming or memory pressure requires eviction/relocation rather than
   stable allocation-lifetime addresses.
-- The modern Vulkan implementation establishes whether
+- ~~The modern Vulkan implementation establishes whether
   `VK_EXT_descriptor_heap` or `VK_EXT_descriptor_buffer` is the supported
-  descriptor contract and supplies the second barrier lowering.
+  descriptor contract~~ — **resolved to `VK_EXT_descriptor_buffer` by
+  [ADR-023](023-vulkan-1-4-bindless-capability-profile.md)**, since
+  `VK_EXT_descriptor_heap` is absent from the installed SDK. The forward trigger
+  is now the reverse: revisit when `VK_EXT_descriptor_heap` reaches SDK,
+  drivers, validation, and shader tooling. Because indices stay indices, only the
+  heap module should change and the shader ABI should not. The second barrier
+  lowering is still owed by the implementation.
 - `VK_KHR_unified_image_layouts` target coverage and performance justify a
   simpler Vulkan layout state machine.
 - A real workload requires stage-scoped split barriers beyond the minimum

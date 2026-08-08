@@ -426,7 +426,7 @@ restricted to specular reflection rays.
 | Multi-draw indirect | Implemented | Fires where a pass binds state once: 1,124 shadow commands → 8 indirect calls; world pass batches nothing until descriptor state can be shared |
 | Compute dispatch | Not exercised | “compute” JSON passes currently orchestrate graphics/CPU work |
 | Device-memory suballocation | Absent, measured | Still one `VkDeviceMemory` per buffer/image/readback buffer; allocation-count and per-type telemetry now exists to size a pool |
-| Bindless/descriptor indexing | Implemented, optional Metal path | Metal 4 Stages 0–5 implement GPU-addressed buffers, native texture/sampler material rows, placement/ring retirement, backend-lowered graph dependencies, all authored pass categories, PBR/lighting/IBL/transmission/text/picking, capture, metrics, and pipeline archives. The application selects it with `--renderer metal`, shared loaders publish generation-safe assets plus writable environment bake targets, and backend-pinned harness cases prevent accidental renderer substitution. Packet version 10 separates the visible skybox from the lighting IBL source. Metal graph ownership is isolated from async resource allocation, frame-only schedule scratch is scoped, bounded command-slot waits publish as `frame.command_slot_waits`, and failed texture unpublication preserves logical ownership for retry. The formerly accepted Metal Bistro generation is historical after a parity audit exposed retained IBL, sampler, transparency, and presentation defects; corrected Gate A pixel acceptance remains open. Vulkan 1.2 remains the default. Modern Vulkan Stage 6 is absent. |
+| Bindless/descriptor indexing | Implemented, optional Metal path | Metal 4 Stages 0–5 implement GPU-addressed buffers, native texture/sampler material rows, placement/ring retirement, backend-lowered graph dependencies, all authored pass categories, PBR/lighting/IBL/transmission/text/picking, capture, metrics, and pipeline archives. The application selects it with `--renderer metal`, shared loaders publish generation-safe assets plus writable environment bake targets, and backend-pinned harness cases prevent accidental renderer substitution. Packet version 10 separates the visible skybox from the lighting IBL source. Metal graph ownership is isolated from async resource allocation, frame-only schedule scratch is scoped, bounded command-slot waits publish as `frame.command_slot_waits`, and failed texture unpublication preserves logical ownership for retry. The formerly accepted Metal Bistro generation is historical after a parity audit exposed retained IBL, sampler, transparency, and presentation defects; corrected Gate A pixel acceptance remains open. Vulkan 1.2 remains the default. Modern Vulkan Stage 6 is **absent** — it now has a detailed design in the [bindless Vulkan backend specification](bindless-vulkan-backend-spec.md) plus proposed ADRs 023–026, but no code, no call site, and no executable evidence. That backend requires `VK_EXT_descriptor_buffer` and Vulkan 1.4, so it cannot run on the macOS development machine at all; every runtime gate needs Windows hardware. |
 | HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-carried manual exposure (default `0.30`), ACES-fitted tonemap, and exposure-equivalent canonical HDR capture; automatic exposure and additional post effects are absent |
 | Shader hot reload | Absent | Build-time shader compilation only |
 
@@ -806,6 +806,22 @@ pin the 17-image/13-sampler contract, and exact Bistro validation replay
    large allocations are already block-sized, and the only population pooling
    would help totals ~1% of device memory. Revisit on a device reporting a low
    allocation limit.
+
+10b. **The backend-selection ladder does not survive a third backend.** There
+    are 46 `backend_type == VKR_RENDERER_BACKEND_TYPE_METAL` tests — 27 in
+    `renderer_frontend.c`, 4 in `vkr_renderer_metrics.c`, and the rest spread
+    across capture, six systems, the harness, and the CLI. Reading them shows
+    most are not backend questions at all: the shadow, UI-text, world-text, UI,
+    and world-resources sites all guard pipeline-registry or pipeline-readiness
+    work, and the comment above the shadow site says so outright — the subsystem
+    "must not recreate legacy renderpass, descriptor, or pipeline state."
+    Adding a third backend turns each into a three-way branch across fifteen
+    files. Related: `RendererFrontend` stores `void *metal_timing_result` and
+    three sites cast it to the Metal-specific result type, so a second bindless
+    backend has nowhere to put its result without a second untyped pointer.
+    [ADR-025](adr/025-selected-renderer-implementation-strategy.md) proposes
+    replacing both with one capability struct plus a coarse selected strategy.
+    Not started.
 
 ### P2 — Throughput
 

@@ -158,6 +158,28 @@ and corrected a tonemap-root padding error.
 intact while the new path is developed and defers any shared low-level seam
 until working slices reveal it.
 
+### The modern Vulkan premise is inverted
+
+This ADR chose Metal first partly because "the most uncertain shader/resource
+ABI is tested on the machine used for daily iteration." That premise does not
+carry over to the Vulkan side of the decision.
+
+The local Vulkan runtime is MoltenVK, reporting `apiVersion 1.2.296` on the
+Apple M1 Pro development machine and exposing no `VK_EXT_descriptor_buffer`.
+[ADR-023](023-vulkan-1-4-bindless-capability-profile.md) requires both Vulkan
+1.4 and descriptor buffers, so **the bindless Vulkan backend cannot run on the
+development machine at all** — not in a degraded mode, not for a smoke test.
+Every runtime gate for it needs Windows hardware, and if none is available that
+work cannot start.
+
+This does not change the Metal-first decision, which remains correct for the
+reasons recorded below. It does change what the later stage costs, and it makes
+the observation periods in [ADR-026](026-vulkan-1-2-retirement.md) more valuable
+rather than less. The
+[bindless Vulkan backend specification](../bindless-vulkan-backend-spec.md) §1
+enumerates the gates that remain executable on macOS; that list is the ceiling
+on local iteration for the rest of this programme.
+
 ## Decision
 
 Implement the bindless renderer first with Metal 4 on Apple Silicon, targeting
@@ -199,8 +221,8 @@ gates below are passed.
 | Gate | Required evidence | What it authorizes |
 |---|---|---|
 | **A — default Metal on macOS** | Metal completes every required graph/pass domain; windowed/offscreen, resize/drawable lifecycle, capture, exact ID/picking, readback, asset load/unload, memory/retirement metrics, and pipeline/archive cold/warm behavior; Metal API/shader validation is clean; an owner-reviewed Metal Bistro baseline is accepted under the design spec's policy and passes twice fresh | Metal becomes the default macOS renderer; MoltenVK becomes a non-default diagnostic build path |
-| **A2 — retire MoltenVK** | A defined observation period after Gate A has no unresolved Metal-only correctness/lifetime regression; the modern Vulkan path has native Windows validation coverage; documentation and build support no longer claim MoltenVK as a supported renderer | Remove the MoltenVK rendering path and its macOS build wiring |
-| **B — retire Vulkan 1.2** | The modern Vulkan backend passes the same functional checklist, native validation, baseline, pipeline/shader, load/unload, and metrics gates on Windows; every other platform claimed to use Vulkan has equivalent evidence | Remove `VkrRendererBackendInterface`, the Vulkan 1.2 implementation, and descriptor-set-only shaders that no supported path uses |
+| **A2 — retire MoltenVK** | A defined observation period after Gate A has no unresolved Metal-only correctness/lifetime regression; the modern Vulkan path has native Windows validation coverage — **at minimum stage V3 of the [bindless Vulkan backend specification](../bindless-vulkan-backend-spec.md), realistically stage V5**; documentation and build support no longer claim MoltenVK as a supported renderer | Remove the MoltenVK rendering path and its macOS build wiring |
+| **B — retire Vulkan 1.2** | **Split into B1 and B2 by [ADR-026](026-vulkan-1-2-retirement.md).** B1 requires the modern Vulkan backend to pass the same functional checklist, native validation, baseline, pipeline/shader, load/unload, metrics, and performance gates on Windows; B2 additionally requires an observation period after B1 with no unresolved bindless-only regression, plus equivalent evidence for every other platform claimed to use Vulkan | B1 flips the Windows default and demotes Vulkan 1.2 to a diagnostic path. B2 authorizes removing `VkrRendererBackendInterface`, the Vulkan 1.2 implementation, and descriptor-set-only shaders, in the order ADR-026 specifies |
 
 Bistro color parity alone is insufficient for every gate. It does not cover
 resource lifetime, window recreation, exact identifier data, capture/readback,
@@ -243,6 +265,17 @@ evidence before the backend is described as Windows/Linux complete.
   and a third in progress, its maximum maintenance cost.
 - Removing MoltenVK reduces the ability to observe Vulkan regressions on the
   primary machine; native Windows automation must exist before A2.
+- **The modern Vulkan backend has no macOS development loop at all.** Under
+  [ADR-023](023-vulkan-1-4-bindless-capability-profile.md)'s required profile it
+  cannot run on MoltenVK, so every runtime defect costs a remote Windows round
+  trip and the project depends on Windows hardware being available for the whole
+  Stage 6 programme. This is the sharpest cost of the Metal-first ordering: the
+  platform with the mature bindless renderer is the one that cannot test the
+  other.
+- After Gate B2 there is no portable diagnostic renderer on any platform. Metal
+  serves macOS, bindless Vulkan serves Windows, and a Windows machine lacking
+  descriptor buffers has no renderer. ADR-026 records this as the intended end
+  state.
 
 ## Alternatives Considered
 

@@ -28,6 +28,18 @@ domains rather than a second low-level interface; command-slot waits are
 published through the shared metrics boundary without widening the legacy
 Vulkan vtable.
 
+The "Revisit When" triggers below are now being acted on by three proposals.
+[ADR-024](024-shared-bindless-gpu-cores.md) extracts four already-API-neutral
+Metal modules into shared cores; [ADR-025](025-selected-renderer-implementation-strategy.md)
+replaces the 46-site backend-type ladder with one coarse selected strategy; and
+the [bindless Vulkan backend specification](../bindless-vulkan-backend-spec.md)
+supplies the second implementation those extractions are measured against. The
+extraction condition stated in the Decision is therefore **met for those four
+cores and for roughly twenty coarse operations, and still unmet for a low-level
+`VkrGpuInterface`** — the bindless Vulkan design supplies concrete evidence
+against the latter, since Metal models three barrier forms and Vulkan has an
+analogue for only two.
+
 ## Context
 
 [ADR-001](001-frontend-backend-separation.md) established
@@ -187,7 +199,11 @@ receives an owner-reviewed replacement baseline.
   belong to the legacy implementation.
 - The modern Vulkan path supplies the second concrete lowering, at which point
   repeated Metal/Vulkan operations can be compressed into a real
-  `VkrGpuInterface`.
+  `VkrGpuInterface`. Partially acted on: see
+  [ADR-024](024-shared-bindless-gpu-cores.md) for the four shared cores and
+  [ADR-025](025-selected-renderer-implementation-strategy.md) for the coarse
+  strategy. Neither creates a low-level GPU vtable, and ADR-025 records why the
+  evidence now argues against one.
 - Maintaining duplicated orchestration costs more than adapting the legacy
   backend to the proven bindless semantic model.
 - The bindless path is abandoned or the Vulkan 1.2 path retires, removing the

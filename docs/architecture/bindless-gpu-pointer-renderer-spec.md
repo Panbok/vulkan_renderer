@@ -16,7 +16,10 @@ A later cross-backend audit found that generation preserved broken retained IBL,
 sampler, transparency, and presentation behavior. Those defects are corrected,
 so the old Metal generation is historical and Gate A pixel acceptance is open
 again pending owner review of a replacement. Stage 6 modern Vulkan and any
-performance claim remain incomplete.
+performance claim remain incomplete. Stage 6 now has a detailed design in the
+[bindless Vulkan backend specification](bindless-vulkan-backend-spec.md) and
+four proposed ADRs; none of that is implemented, and the backend cannot run on
+the current development machine.
 Capability observations in §4 and §8 were checked against the macOS 26.5 SDK,
 the Apple M1 Pro runtime, and Slang 2025.7.1 installed on the development
 machine. The completed evidence proves only the focused paths described in §12.
@@ -34,6 +37,14 @@ block size before measurement, or promising speed without a Release profile.
 [ADR-021](adr/021-metal-first-bindless-backend.md),
 [ADR-022](adr/022-gpu-pointer-resource-model.md), and the
 [renderer status specification](renderer-architecture-spec.md).
+
+Stage 6 is designed in detail by the
+[bindless Vulkan backend specification](bindless-vulkan-backend-spec.md), with
+[ADR-023](adr/023-vulkan-1-4-bindless-capability-profile.md) owning the
+capability contract, [ADR-024](adr/024-shared-bindless-gpu-cores.md) the shared
+backend-neutral cores, [ADR-025](adr/025-selected-renderer-implementation-strategy.md)
+the implementation seam, and [ADR-026](adr/026-vulkan-1-2-retirement.md) the
+retirement sequence. All four are proposals; none has executable evidence.
 
 The status authority remains the renderer status specification. It records the
 implemented optional Metal path separately from the default Vulkan 1.2 path.
@@ -260,11 +271,20 @@ can have a valid allocation handle and no `VkrGpuAddressPair`.
 
 ### 6.1 Memory classes
 
-| Class | Intended use | Metal starting point |
-|---|---|---|
-| `UPLOAD` | Root data, frame streams, frequently updated material rows, staging | Shared storage, write-combined CPU cache mode |
-| `DEVICE` | Textures and persistent buffers/rows that benefit from private or compressed storage | Private placement heaps |
-| `READBACK` | Capture, picking, counters read by CPU | Shared storage, default CPU cache mode |
+| Class | Intended use | Metal starting point | Vulkan memory-property search |
+|---|---|---|---|
+| `UPLOAD` | Root data, frame streams, frequently updated material rows, staging, and the descriptor buffers | Shared storage, write-combined CPU cache mode | `HOST_VISIBLE\|HOST_COHERENT\|DEVICE_LOCAL` (resizable BAR), else `HOST_VISIBLE\|HOST_COHERENT` |
+| `DEVICE` | Textures and persistent buffers/rows that benefit from private or compressed storage | Private placement heaps | `DEVICE_LOCAL` and not `HOST_VISIBLE` |
+| `READBACK` | Capture, picking, counters read by CPU | Shared storage, default CPU cache mode | `HOST_VISIBLE\|HOST_CACHED\|HOST_COHERENT`, else `HOST_VISIBLE\|HOST_CACHED` |
+
+Vulkan additionally has `bufferImageGranularity`, which Metal does not. It is
+handled by **segregation rather than padding**: one allocator instance and one
+device-memory block per (class, kind) pair, using the buffer-versus-texture
+parameter the allocator core already carries, so buffers and optimal-tiling
+images never share a block and the hazard cannot occur. Metal's adapter
+collapses (class, kind) onto its single placement heap. Same core, different
+adapter policy. Where padding is unavoidable it is counted into the existing
+alignment-waste row rather than hidden.
 
 The exact heap count and block sizes are not decided here. They must come from
 the observed Stage 2 allocation distribution, working-set budget, fragmentation,
@@ -383,11 +403,24 @@ assumption.
 
 ### Modern Vulkan
 
-The same CPU material can lower to compact indices into an application-managed
-resource heap. A base index is permitted only when the selected descriptor
-model actually guarantees contiguous entries with a stable stride. The Vulkan
-GPU row may therefore differ from the Metal row; this is a backend lowering,
-not a second CPU authority.
+The same CPU material lowers to compact 32-bit indices into application-managed
+descriptor-buffer heaps. The selected row is 64 bytes — one cache line — holding
+tint, four texture indices, four sampler indices, material identifier, and
+flags, against Metal's 96 bytes carrying eight 64-bit resource identifiers. That
+is a third less material-row bandwidth, and it is the "denser natural
+representation" ADR-022 anticipated for Vulkan and explicitly refused to force
+onto Metal.
+
+The two rows are **deliberately not unified.** Unifying would require either
+Metal carrying compact texture-view-pool indices, which Stage 3 left unproven,
+or Vulkan carrying 32 bytes of padding for nothing. The Vulkan GPU row therefore
+differs from the Metal row; this is a backend lowering, not a second CPU
+authority, and the ABI manifest simply gains a second record family.
+
+Contiguity and stride are guaranteed by the descriptor-buffer layout queries
+rather than assumed: the per-binding base offset and the per-descriptor stride
+are read from the device at initialization and never written as literals. See
+the [bindless Vulkan backend specification](bindless-vulkan-backend-spec.md) §4.
 
 ### Publication and updates
 
@@ -495,8 +528,19 @@ entry points:
 | IBL bake | `ibl/*.slang` | matching `ibl/*.metal` modules plus `ibl/common.metalh` |
 | Tonemap and display | `post/tonemap.slang`, `viewport/display.slang` | `post/tonemap.metal` |
 
+The bindless Vulkan backend adds a third tree,
+`lib/src/renderer/vulkan_bindless/shaders/`, with the same domain split and a
+**separate SPIR-V output namespace**, so the fifteen legacy outputs and their
+`.shadercfg` manifests are untouched throughout migration. The legacy column of
+the table above is deleted at [ADR-026](adr/026-vulkan-1-2-retirement.md)
+step 1. Its shaders may be pure Slang: the limitation that forced hand-written
+MSL on Metal — Slang aborting on a structured-buffer element containing texture
+resource fields — has no analogue there, because the Vulkan material row carries
+32-bit indices rather than texture objects.
+
 Backend-only helpers stay local. Vulkan's transform, instance, alpha-cutout,
-cube, CSM, and tonemap headers express descriptor-era reuse. Metal keeps a
+cube, CSM, and tonemap headers express descriptor-era reuse, and the bindless
+tree does not reuse them for that reason. Metal keeps a
 hybrid Slang/native-MSL library because Slang 2025.7.1 cannot lower a
 texture-resource-bearing `StructuredBuffer` row; the native resource model and
 lighting helpers are split by the same domains instead of hidden in one packet
@@ -542,7 +586,18 @@ graph diagnostics even though Metal's encoded barrier carries no resource list.
 Metal has no Vulkan image layouts. A modern Vulkan backend may use
 `VK_KHR_unified_image_layouts` to keep most images in `GENERAL`, but that feature
 is optional and has exceptions such as initialization from `UNDEFINED`, present,
-some feedback-loop information, and video/external ownership.
+some feedback-loop information, and video/external ownership. **It is also absent
+from the locally installed Vulkan 1.4.313 SDK headers**, so it cannot currently
+be selected at all; the bindless Vulkan backend keeps the full layout state
+machine and would select a unified path behind one profile boolean.
+
+Layouts also reach the descriptor model, which Metal's resource identifiers do
+not. When `descriptorBufferImageLayoutIgnored` is false a descriptor is baked
+with a specific layout, so a texture that is storage-written in one pass and
+sampled in another needs **two descriptor slots over the same image view** — one
+baked `GENERAL` for the write, one baked shader-read-only for the sample. Every
+IBL bake target has this shape. Unified image layouts would collapse the two
+slots into one.
 
 The portable graph therefore does not make applications author Vulkan layouts.
 The Vulkan lowerer still owns every layout or external-state transition required
@@ -625,31 +680,59 @@ render-pass operations.
 
 ## 11. Modern Vulkan Capability Profile
 
-"Vulkan 1.4" is a version floor, not the feature contract. The future Windows/
-Linux backend must query and record an immutable capability profile at startup.
+**This section is now a summary.** The full profile, its rationale, and its
+staged implementation live in the
+[bindless Vulkan backend specification](bindless-vulkan-backend-spec.md), and
+the decision itself in
+[ADR-023](adr/023-vulkan-1-4-bindless-capability-profile.md).
 
-Minimum intended capabilities:
+"Vulkan 1.4" is a version floor, not the feature contract. The Windows backend
+queries and records an immutable capability profile at startup and rejects any
+device that does not satisfy it, with a precise per-device report.
+
+Minimum required capabilities:
 
 | Capability | Requirement |
 |---|---|
-| Buffer device address | Core Vulkan 1.2 feature enabled; shader physical-address ABI validated |
+| Buffer device address, 64-bit shader integers | Core Vulkan 1.2/1.0 features enabled; shader address ABI validated by reflection |
 | Timeline semaphore | Core Vulkan 1.2 feature enabled for completion/retirement |
-| Dynamic rendering | Core Vulkan 1.3 feature enabled |
-| Synchronization2 | Core Vulkan 1.3 feature enabled |
-| Bindless texture references | Require a proven app-managed model: prefer `VK_EXT_descriptor_heap` when SDK/driver support and shader tooling are mature; otherwise evaluate `VK_EXT_descriptor_buffer` |
-| Unified image layouts | Optional `VK_KHR_unified_image_layouts`; backend retains layout lowering when absent and handles extension exceptions when present |
-| Shader language/toolchain | Slang→SPIR-V physical-address and descriptor model validated by reflection, validation layers, and a rendered case |
+| Descriptor indexing minimum set | Runtime descriptor arrays, partially bound bindings, non-uniform sampled-image and storage-image indexing |
+| Scalar block layout | Makes the SPIR-V layout of a mixed address/vector/matrix record equal the C layout |
+| Host query reset | Timestamp pool reset for per-pass timings |
+| Dynamic rendering, synchronization2, maintenance4 | Core Vulkan 1.3 features enabled |
+| Maintenance5 | Core Vulkan 1.4 feature enabled; size-bounded index binding |
+| Bindless texture references | **`VK_EXT_descriptor_buffer` required, with no fallback** |
+| Shader language/toolchain | Slang→SPIR-V address and descriptor model validated by reflection, validation layers, and a rendered case |
 
-`VK_EXT_descriptor_buffer` still retains descriptor layout/mapping rules and
-backend-defined sizes. The newer `VK_EXT_descriptor_heap` is closer to the
-article's raw heap model, but it is absent from the locally installed Vulkan
-1.4.313 SDK and cannot be selected until target drivers, SDK, validation, and
-Slang/SPIR-V support are demonstrated.
+`VK_EXT_descriptor_heap` is closer to the article's raw heap model, but it is
+absent from the locally installed Vulkan 1.4.313 SDK and cannot be selected,
+validated, or evaluated until target drivers, SDK, validation, and shader
+tooling are demonstrated. It is retained as a forward migration trigger, not as
+the preferred option; leaving it preferred would leave the profile undecided
+indefinitely.
 
-No fallback to traditional per-material descriptor sets is required for this
-new backend. A device missing the selected profile is rejected with a precise
-capability report. The frozen Vulkan 1.2 renderer remains the compatibility path
-until Gate B.
+Descriptor buffers do retain layout and mapping rules, and their descriptor
+sizes are backend-defined — but that variance is contained rather than exposed.
+**Backend-defined descriptor sizes never reach the shader:** the shader indexes
+an unbounded array with a 32-bit integer, and the driver turns that index into a
+strided offset. The application computes byte offsets only when writing a
+descriptor, host-side, so a size that varies across drivers changes one line of
+host code and zero bytes of shader ABI.
+
+No fallback to traditional per-material descriptor sets is required or provided.
+The frozen Vulkan 1.2 renderer remains the compatibility path until its
+retirement gates in [ADR-026](adr/026-vulkan-1-2-retirement.md).
+
+Optional capabilities — `VK_KHR_unified_image_layouts` (also absent from the
+installed SDK), mesh shaders, device-generated commands, shader objects,
+graphics pipeline libraries, and host image copy — are recorded unconditionally
+at startup but consumed only after a named measurement gate. The backend retains
+layout lowering whether or not unified layouts are present.
+
+**The backend cannot run on the current development machine.** The local Vulkan
+runtime is MoltenVK reporting `apiVersion 1.2.296` without
+`VK_EXT_descriptor_buffer`, so every runtime gate requires Windows hardware.
+This inverts the premise ADR-021 used to choose Metal first.
 
 Linux platform/window support does not currently exist and is separate work.
 The Vulkan backend cannot be called a Windows/Linux implementation until the
@@ -671,7 +754,7 @@ stage.
 | 3 — bindless materials | Multiple materials lowered to explicit Metal texture-reference rows; immutable publication and retirement | Multi-material capture; texture replacement while frames are pending; no per-material texture slot binding in the draw loop; capacity/overflow metrics |
 | 4 — graph lowering | Canonical access+stage records and separate Vulkan 1.2/Metal barrier lowerers | Existing graph CPU tests plus new stage/subresource cases; `./build_test.sh`; Vulkan validation for the unchanged legacy result; Metal validation and deterministic dependency cases |
 | 5 — feature parity | Packet/graph execution for every required pass, capture/readback, windowed/offscreen, metrics, asset load/unload | Gate A checklist in ADR-021, including Bistro bootstrap/comparison policy below |
-| 6 — modern Vulkan | Capability-gated Windows implementation, then any claimed Linux target, using the proven semantic model | Native validation layers, pipeline/shader checks, backend matrix, snapshots, load/unload, and authoritative performance profiles per target |
+| 6 — modern Vulkan | Capability-gated Windows implementation, then any claimed Linux target, using the proven semantic model. **Expanded into the V0–V7 ladder in the [bindless Vulkan backend specification](bindless-vulkan-backend-spec.md) §11**, because a single row is not a vertical slice | Native validation layers, pipeline/shader checks, backend matrix, snapshots, load/unload, and authoritative performance profiles per target — all on Windows hardware, since the backend cannot run on macOS |
 
 Stage 0 completed on 2026-08-06 in a standalone capability fixture that was
 retired after the production explicit-ID path and packet validator subsumed its
@@ -924,6 +1007,15 @@ authority. Cross-backend comparison remains a separately labelled diagnostic;
 legitimate rasterization/filtering/precision differences must not weaken either
 backend's own regression threshold.
 
+The same seven-step policy applies unchanged to the first bindless Vulkan
+baseline, with two additions. **Windows hardware is a prerequisite** — the
+backend cannot run on the development machine at all, so the baseline cannot be
+bootstrapped locally. And after the legacy Vulkan 1.2 path retires there is no
+second renderer on Windows, so cross-backend comparison there becomes
+cross-*platform* comparison against Metal on macOS, which confounds driver, API,
+and platform differences at once. That comparison remains a diagnostic and never
+becomes either backend's regression authority.
+
 ### 13.2 What CPU tests do and do not prove
 
 CPU tests own graph dependency construction, range allocation, generation
@@ -974,6 +1066,25 @@ fingerprints, variance, and what was not measured.
   fixes; the proposal does not authorize neglect of the only shipping backend.
 - **Modern Vulkan capability support is too narrow.** Revisit the required
   descriptor model or target matrix from real Windows/Linux device data.
+- **The bindless Vulkan backend has no local development loop.** MoltenVK
+  reports Vulkan 1.2 without descriptor buffers, so every runtime defect costs a
+  remote Windows round trip. Maximize locally executable coverage, keep the
+  offscreen target headless so a display-less runner executes the whole
+  functional matrix, and establish remote build and harness invocation early.
+- **Graphics-debugger capture is degraded on descriptor-buffer applications**
+  without `descriptorBufferCaptureReplay`. Losing RenderDoc or PIX on the only
+  platform that can run the backend compounds the previous risk. Enable the
+  feature in diagnostic configurations when present; never in Release.
+- **`VK_EXT_descriptor_heap` later supersedes descriptor buffers.** One migration
+  is already scheduled. Keep index-to-descriptor translation in a single module
+  so the swap does not reach the material table, the ABI manifest, or shaders.
+- **The shared-core extraction destabilizes the shipping Metal path.** Land it as
+  a pure rename before any Vulkan code, with the Metal snapshot as its
+  correctness witness and a Release Metal profile as its performance witness.
+- **Retiring Vulkan 1.2 leaves no portable diagnostic path.** After the final
+  gate a Windows machine without descriptor buffers has no renderer at all. This
+  is the intended end state and is recorded in
+  [ADR-026](adr/026-vulkan-1-2-retirement.md) rather than discovered.
 - **Independent queues are justified.** Replace the single scalar retirement
   point with a proven queue join or per-queue vector before enabling their
   resources to retire independently.
@@ -1014,7 +1125,23 @@ rg -n 'VkrRgSubresourceState|VkrRgImageBarrier' \
 
 # Installed Vulkan runtime/SDK observation; not a future target matrix.
 vulkaninfo --summary
+
+# Which bindless-relevant extensions exist in the installed SDK headers.
+sdk="$VULKAN_SDK/include/vulkan/vulkan_core.h"
+for e in VK_EXT_descriptor_buffer VK_EXT_descriptor_heap \
+         VK_KHR_unified_image_layouts; do
+  grep -q "define $e 1" "$sdk" && echo "PRESENT $e" || echo "ABSENT  $e"
+done
 ```
+
+Observed on 2026-08-08 with SDK 1.4.313: `VK_EXT_descriptor_buffer` is present;
+`VK_EXT_descriptor_heap` and `VK_KHR_unified_image_layouts` are absent. The local
+runtime is MoltenVK on an Apple M1 Pro reporting `apiVersion 1.2.296` without
+descriptor buffers, so it cannot run the bindless Vulkan backend. The
+[bindless Vulkan backend specification](bindless-vulkan-backend-spec.md) §12
+carries the full observation set and records what was *not* verifiable — notably
+the specification's per-version mandatory-support tables, which no claim in
+either document depends on.
 
 Primary Vulkan references for the future capability profile:
 
