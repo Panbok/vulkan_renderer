@@ -15,6 +15,16 @@ REM Optional: accept build type
 set "BUILD_TYPE=%~1"
 if "%BUILD_TYPE%"=="" set "BUILD_TYPE=Debug"
 
+set "BUILD_DIR="
+if /I "%BUILD_TYPE%"=="Debug" set "BUILD_DIR=build_debug"
+if /I "%BUILD_TYPE%"=="Release" set "BUILD_DIR=build_release"
+if /I "%BUILD_TYPE%"=="RelWithDebInfo" set "BUILD_DIR=build_release_info"
+if /I "%BUILD_TYPE%"=="MinSizeRel" set "BUILD_DIR=build_min_size_rel"
+if "%BUILD_DIR%"=="" (
+    echo Error: unsupported build type "%BUILD_TYPE%".
+    exit /b 1
+)
+
 REM Call the build script
 call "%SCRIPT_DIR%build.bat" %BUILD_TYPE%
 if %errorlevel% neq 0 (
@@ -27,7 +37,8 @@ echo Build successful! Starting vulkan_renderer...
 echo.
 
 REM Execute the vulkan_renderer with working directory set to repo root
-set "APP_EXE=%SCRIPT_DIR%build\app\vulkan_renderer.exe"
+set "APP_EXE=%SCRIPT_DIR%%BUILD_DIR%\app\vulkan_renderer.exe"
+if not exist "%APP_EXE%" set "APP_EXE=%SCRIPT_DIR%%BUILD_DIR%\app\%BUILD_TYPE%\vulkan_renderer.exe"
 if not exist "%APP_EXE%" (
     echo Error: executable not found at "%APP_EXE%"
     exit /b 1
@@ -55,4 +66,4 @@ if %errorlevel% equ 0 (
     popd
 )
 
-endlocal 
+endlocal

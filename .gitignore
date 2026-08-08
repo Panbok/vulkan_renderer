@@ -3,9 +3,14 @@
 .traces
 .DS_Store
 build
+build_debug
 build_xcode
 build_release
 build_release_info
+build_min_size_rel
+build_test
+build_lib
+build_vkt_packer
 build_novcpkg
 # Runtime textures stay local except for explicitly committed source assets.
 assets/textures/*

@@ -2,7 +2,10 @@
 set -eu
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
-BIN="${SCRIPT_DIR}/build/app/vulkan_renderer"
+BIN="${SCRIPT_DIR}/build_debug/app/vulkan_renderer"
+if [ ! -x "${BIN}" ] && [ -x "${SCRIPT_DIR}/build_debug/app/Debug/vulkan_renderer" ]; then
+  BIN="${SCRIPT_DIR}/build_debug/app/Debug/vulkan_renderer"
+fi
 CACHE_PATH="/tmp/vkr_pipeline_cache_phase7.bin"
 RUN1_LOG="/tmp/vkr_phase7_run1.log"
 RUN2_LOG="/tmp/vkr_phase7_run2.log"

@@ -5,7 +5,7 @@
 set -e
 
 echo "=== Building project ==="
-cmake --build build
+cmake --build build_test --target vulkan_renderer_tester --config Debug
 
 echo ""
 echo "=== Running tests 50 times ==="
@@ -15,7 +15,7 @@ failed=0
 tmpfile=$(mktemp)
 
 for i in {1..50}; do
-    if ./build/tests/vulkan_renderer_tester > "$tmpfile" 2>&1; then
+    if ./build_test/tests/vulkan_renderer_tester > "$tmpfile" 2>&1; then
         ((passed++))
         echo "Run $i: PASSED"
     else
