@@ -32,7 +32,7 @@ target_include_directories(vkr_harness_core
 
 target_link_libraries(vkr_harness_core PUBLIC renderer_lib)
 
-if(NOT MSVC)
+if(NOT WIN32)
     target_link_libraries(vkr_harness_core PUBLIC m)
 endif()
 
