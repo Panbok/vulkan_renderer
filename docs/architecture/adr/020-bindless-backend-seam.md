@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-07
+updated: 2026-08-08
 authority: adr
 ---
 
@@ -14,8 +14,11 @@ pipeline-archive slices behind this boundary. The focused renderer exercises
 all currently authored pass categories and the production asynchronous capture
 lifecycle. The application now selects Metal at initialization, shared loaders
 publish assets into it, and the harness has a backend-pinned Metal selector.
-The allocator race is fixed and the accepted Metal Bistro-plus-text baseline
-passes fresh comparison, completing Gate A evidence. Migration-only shader
+The allocator race is fixed. A later cross-backend audit invalidated the
+accepted Metal Bistro-plus-text generation as current evidence because it
+preserved incorrect retained IBL, sampler, transparency, and presentation
+behavior. Those backend defects are corrected; Gate A pixel acceptance is open
+pending owner review of a replacement generation. Migration-only shader
 fixtures, focused stage validators, and the superseded walking module have been
 retired. Deterministic Metal subsystem/ABI behavior is covered by CPU tests;
 backend-pinned harness snapshots exercise the production renderer, its
@@ -101,7 +104,7 @@ convolution work. A decoded RGBA16F equirectangular payload is converted to a
 mipmapped cube, and a focused PBR fragment consumes the baked outputs. A declared
 five-channel capture batch returns aligned color, depth, shadow-layer, and ID
 data; cold capture and warm reload exercise the Metal 4 pipeline archive. This
-proves the intended orchestration and hot-loop boundary. Version-9 packets now
+proves the intended orchestration and hot-loop boundary. Version-10 packets now
 carry shared directional/IBL controls, the bounded point-light table/grid, and
 up to 16 frame-local reflection-probe descriptors,
 and the immutable Metal material records
@@ -114,20 +117,20 @@ heap returns one named finite interval per executed pass. The fixed-capacity
 Metal-private capture ring now retains request-owned result storage until
 explicit release and uses submit-completion values to promote or abandon slots.
 Completed Metal intervals now publish into the bounded shared application pass
-table. Version-9 packets additionally carry up to 16 frame-local reflection
+table. Version-10 packets additionally carry up to 16 frame-local reflection
 probe descriptors; Metal lowers them once per frame into native texture-reference
 records, normalizes overlap, box-projects specular rays, and preserves global IBL
 as fallback. A focused capture proves local-probe influence. Asynchronous
 submissions retain completed intervals by submit value for later publication.
-Version-9 packets also borrow prepared retained UI/world text geometry, logical
+Version-10 packets also borrow prepared retained UI/world text geometry, logical
 atlas handles, models, font controls, and picking IDs. Shared text systems retain
 their shaped CPU geometry; Metal lowers it through dedicated world/UI/picking
 pipelines, and exact capture pixels plus both text IDs validate the result.
 The application frontend selects this implementation with `--renderer metal`;
 its resource publisher resolves shared loader output at the coarse boundary,
-and harness child selection remains outside all draw/dispatch loops. Gate A is
-accepted; Vulkan 1.2 continues as the default until the separately scoped
-default switch is implemented.
+and harness child selection remains outside all draw/dispatch loops. Vulkan 1.2
+continues as the default; Gate A remains open until the corrected Metal output
+receives an owner-reviewed replacement baseline.
 
 ## Consequences
 

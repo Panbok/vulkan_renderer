@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-07
+updated: 2026-08-08
 authority: adr
 ---
 
@@ -21,9 +21,11 @@ opt-in per-pass Metal 4 timestamps; and cold/warm pipeline archives.
 The production application and harness can select this renderer, and shared
 loaders publish production assets through the coarse backend boundary. The
 Metal-private capture ring owns asynchronous request polling/release and
-completion-safe result lifetime. The allocator race is fixed, and the accepted
-backend-pinned Metal Bistro-plus-text baseline passes fresh comparison,
-completing Gate A evidence. Version-9 packets and the
+completion-safe result lifetime. The allocator race is fixed. The formerly
+accepted backend-pinned Metal Bistro-plus-text baseline is now historical after
+a cross-backend audit exposed retained IBL, sampler, transparency, and
+presentation defects; corrected pixel acceptance remains open. Version-10
+packets and the
 Metal frame upload now include bounded local-reflection-probe records with
 native texture references, normalized box influence, and global IBL fallback. They also carry
 prepared retained UI/world text geometry whose atlas handles are resolved to

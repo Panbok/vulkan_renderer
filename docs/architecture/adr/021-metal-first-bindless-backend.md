@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-07
+updated: 2026-08-08
 authority: adr
 ---
 
@@ -9,10 +9,12 @@ authority: adr
 ## Status
 
 **Accepted (partial)** — Metal 4 is implemented as an application-selectable
-macOS renderer. The Bistro bootstrap allocator race is fixed and the accepted
-fourteen-view Metal Bistro-plus-text baseline passes fresh comparison,
-completing Gate A evidence. Vulkan 1.2/MoltenVK remains the default until the
-separately scoped default switch is implemented. Modern Vulkan remains Stage 6
+macOS renderer. The Bistro bootstrap allocator race is fixed. A later
+cross-backend review invalidated the accepted Metal baseline as current Gate A
+evidence because it captured broken retained IBL, sampler, transparency, and
+presentation behavior. Those defects are corrected, but Gate A pixel acceptance
+is open pending owner review of a replacement. Vulkan 1.2/MoltenVK remains the
+default. Modern Vulkan remains Stage 6
 work for native Windows and any later claimed Linux target. Historical
 milestone fixtures and focused backend validators have been retired. CPU tests
 own deterministic subsystem/ABI checks, and backend-pinned harness snapshots
@@ -106,11 +108,11 @@ array, and IOR/thickness attenuation from the graph-declared pre-transmission
 copy. Four immutable texture references additionally prove base, normal,
 ORM, and emissive sampling plus alpha cutoff. Opt-in Metal 4 counter heaps return one named finite GPU
 interval per executed pass and publish it into the bounded shared pass table.
-Version-9 packets also carry up to 16 ready reflection probes, lowered once per
+Version-10 packets also carry up to 16 ready reflection probes, lowered once per
 frame into native irradiance/prefilter references and box-influence records. A
 focused capture proves normalized local influence, box-projected reflection, and
 global-environment fallback. Asynchronous completion retains timestamp intervals
-under their submit value for later application publication. Version-9 prepared
+under their submit value for later application publication. Version-10 prepared
 text records lower retained shaped geometry and logical atlas handles through
 dedicated world/UI/picking pipelines; exact HDR/UI pixels and both text IDs pass
 in the declared capture. A backend-neutral text harness fixture additionally
@@ -130,8 +132,9 @@ passed every child and became accepted generation
 `sha256:3db4f4d2294e5fdbc3618e64c4b2baf03bf66051dee0c4ff452e341d20cae51d`.
 Fresh snapshot `20260807T092542.337Z-0144b6` and explicit compare
 `20260807T092754.437Z-015047` pass all fourteen rows with zero pixels over
-policy. Gate A evidence is therefore complete; it authorizes, but does not by
-itself perform, the default-backend change.
+policy. This generation is retained as historical same-backend evidence only:
+the later parity audit exposed the visual defects described above, and the
+corrected renderer intentionally no longer compares equal to it.
 
 Metal 4 is close to Aaltonen's proposal, not identical to it. Direct texture
 IDs are opaque 64-bit `MTLResourceID` values rather than entries in an implicit,
@@ -195,7 +198,7 @@ gates below are passed.
 
 | Gate | Required evidence | What it authorizes |
 |---|---|---|
-| **A — default Metal on macOS** | Metal completes every required graph/pass domain; windowed/offscreen, resize/drawable lifecycle, capture, exact ID/picking, readback, asset load/unload, memory/retirement metrics, and pipeline/archive cold/warm behavior; Metal API/shader validation is clean; the accepted Metal Bistro baseline is bootstrapped under the design spec's policy and passes twice fresh | Metal becomes the default macOS renderer; MoltenVK becomes a non-default diagnostic build path |
+| **A — default Metal on macOS** | Metal completes every required graph/pass domain; windowed/offscreen, resize/drawable lifecycle, capture, exact ID/picking, readback, asset load/unload, memory/retirement metrics, and pipeline/archive cold/warm behavior; Metal API/shader validation is clean; an owner-reviewed Metal Bistro baseline is accepted under the design spec's policy and passes twice fresh | Metal becomes the default macOS renderer; MoltenVK becomes a non-default diagnostic build path |
 | **A2 — retire MoltenVK** | A defined observation period after Gate A has no unresolved Metal-only correctness/lifetime regression; the modern Vulkan path has native Windows validation coverage; documentation and build support no longer claim MoltenVK as a supported renderer | Remove the MoltenVK rendering path and its macOS build wiring |
 | **B — retire Vulkan 1.2** | The modern Vulkan backend passes the same functional checklist, native validation, baseline, pipeline/shader, load/unload, and metrics gates on Windows; every other platform claimed to use Vulkan has equivalent evidence | Remove `VkrRendererBackendInterface`, the Vulkan 1.2 implementation, and descriptor-set-only shaders that no supported path uses |
 

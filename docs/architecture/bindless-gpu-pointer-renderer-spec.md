@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-07
+updated: 2026-08-08
 authority: design
 ---
 
@@ -11,10 +11,12 @@ on Metal 4. The application and harness can select the production Metal packet
 renderer; shared loaders publish generation-safe assets; and the authored graph,
 PBR/lighting/text paths, capture, metrics, retirement, and pipeline archives are
 exercised by focused and Bistro cases. The bootstrap allocator race is fixed,
-and Gate A now has an accepted fourteen-view Metal Bistro-plus-text baseline
-plus a passing fresh comparison. Gate A evidence is complete; changing the
-macOS default remains a separate implementation action. Stage 6 modern Vulkan
-and any performance claim remain incomplete.
+and Gate A once produced a fourteen-view Metal Bistro-plus-text baseline.
+A later cross-backend audit found that generation preserved broken retained IBL,
+sampler, transparency, and presentation behavior. Those defects are corrected,
+so the old Metal generation is historical and Gate A pixel acceptance is open
+again pending owner review of a replacement. Stage 6 modern Vulkan and any
+performance claim remain incomplete.
 Capability observations in §4 and §8 were checked against the macOS 26.5 SDK,
 the Apple M1 Pro runtime, and Slang 2025.7.1 installed on the development
 machine. The completed evidence proves only the focused paths described in §12.
@@ -401,6 +403,18 @@ required state. Dynamic sampler state is a separate backend-native reference
 with the same publication and retirement rule. The old MoltenVK sampler-alias
 field remains required on the Vulkan 1.2 path until that path retires.
 
+The implemented Metal material row stores one native sampler reference beside
+each base-color, normal, ORM, and emissive texture reference. Loader-authored
+repeat, min/mag, mip, and anisotropy state is cached outside draw recording and
+published with the immutable row; the draw loop performs no sampler lookup or
+creation. A retained texture's sampler may change before material publication;
+once a live material references it, changing the sampler requires material
+republication and the backend rejects an isolated in-place update. Because
+sampler objects remain alive with renderer-lifetime immutable rows, the cache
+covers the complete current canonical key domain (15,872 states) rather than
+the simultaneous texture count; texture churn therefore cannot consume a
+smaller lifetime-only cache.
+
 Configured capacity is explicit. Exhaustion is reported and measured; it never
 silently substitutes another texture or grows storage in the draw loop.
 
@@ -695,10 +709,10 @@ exercise the integrated native allocation and retirement path.
 
 Stage 3 completed on 2026-08-06 in `vkr_metal_material_table` and a focused GPU
 fixture that was retired after production packet validation covered material
-publication, replacement, exact IDs, and capture. The selected 64-byte Metal
-row stores four
-explicit 64-bit `MTLResourceID` payloads, tint, material ID, and flags. A three-
-row fixed-capacity table published red/blue rows, held the first render pending
+publication, replacement, exact IDs, and capture. The selected 96-byte Metal
+row stores four texture and four sampler `MTLResourceID` payloads, tint,
+material ID, and flags. A three-row fixed-capacity table published red/blue
+rows, held the first render pending
 behind a GPU event, atomically published a green replacement, immediately
 invalidated the red generation, and retained the old row and placed texture
 until submit completion. One indexed draw covered both materials without a per-
@@ -711,7 +725,7 @@ Slang 2025.7.1 currently aborts with an internal compiler error when a
 `StructuredBuffer` element contains texture resource fields. Stage 3 therefore
 retains a Slang-generated vertex/root-address path and uses a bounded hand-
 written MSL fragment as the resource-bearing control. The Metal compiler's
-64-byte row `static_assert`, host offsets, pixels, and IDs validate this Metal
+96-byte row `static_assert`, host offsets, pixels, and IDs validate this Metal
 ABI, but do not prove portable Slang material-row lowering. The production path
 therefore keeps the fallback as an explicit, domain-split Metal-only shader
 boundary; it does not claim the failing Slang path works.
@@ -768,9 +782,12 @@ The source asset boundary accepts the same finite 2:1 RGBA16F payload produced
 by the shared HDR decoder. An additional compute pipeline uploads it, converts
 it to a mipmapped cube, and retires the temporary source against the completed
 submit value. The focused world fragment consumes irradiance, prefilter, and
-BRDF references from its 512-byte root record. The version-9 packet additionally
+BRDF references from its 512-byte root record. The version-10 packet additionally
 carries backend-neutral directional-light and IBL controls plus immutable PBR
-scalar material fields. It also borrows the application lighting system's
+scalar material fields. Visible skybox selection and the lighting IBL source
+are distinct handles, so a compatibility sky may remain visible without
+silently replacing the scene-authored HDR environment used for convolution. It
+also borrows the application lighting system's
 bounded point-light table and conservative grid; Metal packs those records once
 per frame into GPU-addressed upload storage. It also borrows up to 16 ready scene
 reflection probes. Metal resolves their generation handles once per frame into
@@ -791,7 +808,7 @@ influence displaces the global environment at an enclosed receiver. The 512-byte
 record and upload stride keep adjacent draw roots disjoint while retaining
 Metal's 256-byte address alignment.
 
-Packet version 9 also carries prepared retained-text draws. The UI and world
+Packet version 10 also carries prepared retained-text draws. The UI and world
 text resources now retain shaped CPU vertices/indices and a revision instead of
 discarding geometry after a legacy Vulkan upload. Backend-neutral collectors
 publish the logical atlas handle, model transform, font mode/range, and picking
@@ -841,8 +858,10 @@ monotonic request identity, nonblocking submit, completion-value polling,
 durable request-owned result bytes, explicit release, and abandoned-request
 retirement. Production output uses an sRGB target, the shared ACES tonemap, and
 the Metal clip-space conversion required by the Vulkan-oriented shared camera
-matrices. The guarded Metal Bistro baseline is accepted and passes a fresh
-comparison, so Gate A now authorizes a separately scoped default-backend change.
+matrices. The guarded Metal Bistro generation remains immutable, but its pixel
+acceptance is historical after the retained-IBL, sampler, transparency, and
+presentation corrections. Gate A does not authorize a default-backend change
+until an owner accepts corrected replacement pixels.
 Per-pass Metal timing
 publishes in the shared pass-table format for synchronous evidence and is
 submit-keyed for later polling after asynchronous completion.
@@ -851,19 +870,22 @@ Stage order can change only when dependencies permit it. In particular, graph
 lowering cannot delete or bypass the legacy Vulkan lowering merely because the
 CPU dependency planner has tests.
 
-The final Gate A authority is the backend-pinned
+The historical Gate A image generation is the backend-pinned
 `smoke.bistro.metal.text.snapshot` case: fourteen 1600x1200 Bistro views with
 the deterministic system-font, bitmap, and MTSDF text fixture. Release source
 run `20260807T091943.686Z-012428` passed all fourteen children and produced
-accepted generation
+generation
 `sha256:3db4f4d2294e5fdbc3618e64c4b2baf03bf66051dee0c4ff452e341d20cae51d`.
 Fresh snapshot `20260807T092542.337Z-0144b6` and explicit compare
 `20260807T092754.437Z-015047` pass every row; maximum MAE is
 `0.0000012208946078431343`, maximum normalized delta is
 `0.35294117647058826`, and no pixel exceeds policy. Metal API, GPU, and shader
 validation had already passed twice for the deterministic text fixture and
-across the Stage 1-5 matrix. The legacy Vulkan mate is a separate same-backend
-authority and does not widen Metal's thresholds.
+across the Stage 1-5 matrix. A later parity review invalidated those pixels as
+current acceptance evidence; the immutable generation is retained only to
+detect and explain the intended correction. Gate A remains open until an owner
+reviews and accepts a replacement. The legacy Vulkan mate is a separate same-
+backend authority and does not widen Metal's thresholds.
 
 The earlier failed repetition, `20260806T182054.703Z-009e5d`, exposed a real
 allocator race: the Metal packet graph and async resource path storage shared
