@@ -25,11 +25,14 @@
 #include "renderer/systems/vkr_ui_system.h"
 #include "renderer/systems/vkr_world_resources.h"
 #include "renderer/vkr_capture.h"
+#include "renderer/vkr_ibl_math.h"
 #include "renderer/vkr_render_packet.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vkr_renderer_metrics.h"
 #include "renderer/vkr_rg_json.h"
 #include "renderer/vulkan/vulkan_backend.h"
+
+
 #if defined(PLATFORM_APPLE)
 #include "renderer/metal/vkr_metal_packet_renderer.h"
 #endif
