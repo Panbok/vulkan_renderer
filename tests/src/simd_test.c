@@ -277,6 +277,7 @@ static void test_simd_arithmetic(void) {
 static void test_simd_sqrt(void) {
   printf("  Running test_simd_sqrt...\n");
 
+  const float32_t refined_rsqrt_epsilon = 0.00005f;
   VKR_SIMD_F32X4 v = vkr_simd_set_f32x4(4.0f, 9.0f, 16.0f, 25.0f);
 
   // Test square root
@@ -289,8 +290,9 @@ static void test_simd_sqrt(void) {
   VKR_SIMD_F32X4 rsqrt_result = vkr_simd_rsqrt_f32x4(v);
   VKR_SIMD_F32X4 expected_rsqrt =
       vkr_simd_set_f32x4(0.5f, 1.0f / 3.0f, 0.25f, 0.2f);
-  assert(simd_vector_equals(rsqrt_result, expected_rsqrt, 0.001f) &&
-         "vkr_simd_rsqrt_f32x4 failed");
+  assert(
+      simd_vector_equals(rsqrt_result, expected_rsqrt, refined_rsqrt_epsilon) &&
+      "vkr_simd_rsqrt_f32x4 failed");
 
   // Test special case: sqrt of 1
   VKR_SIMD_F32X4 ones = vkr_simd_set1_f32x4(1.0f);
@@ -300,7 +302,8 @@ static void test_simd_sqrt(void) {
 
   // Test special case: rsqrt of 1
   VKR_SIMD_F32X4 rsqrt_ones = vkr_simd_rsqrt_f32x4(ones);
-  assert(simd_vector_equals(rsqrt_ones, ones, 0.001f) && "rsqrt(1) failed");
+  assert(simd_vector_equals(rsqrt_ones, ones, refined_rsqrt_epsilon) &&
+         "rsqrt(1) failed");
 
   printf("  test_simd_sqrt PASSED\n");
 }

@@ -309,9 +309,9 @@ static void test_vec3_geometric(void) {
   assert(float_equals(len, vkr_sqrt_f32(14.0f), VKR_FLOAT_EPSILON) &&
          "vec3_length failed");
 
-  // Test normalization (use larger epsilon due to SIMD rsqrt approximation)
+  // Test normalization against the portable one-step SIMD rsqrt precision.
   Vec3 normalized = vec3_normalize(unit_x);
-  assert(vec3_equals(normalized, unit_x, 0.001f) &&
+  assert(vec3_equals(normalized, unit_x, 0.00005f) &&
          "vec3_normalize unit vector failed");
 
   // Test normalization of zero vector

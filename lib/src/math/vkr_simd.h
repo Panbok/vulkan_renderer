@@ -838,7 +838,15 @@ vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_sqrt_f32x4(VKR_SIMD_F32X4 v) {
 
 vkr_internal INLINE VKR_SIMD_F32X4 vkr_simd_rsqrt_f32x4(VKR_SIMD_F32X4 v) {
   VKR_SIMD_F32X4 result;
-  result.sse = _mm_rsqrt_ps(v.sse);
+  // One Newton-Raphson step brings the hardware estimate to float precision
+  // and matches the NEON path's refinement.
+  const __m128 estimate = _mm_rsqrt_ps(v.sse);
+  const __m128 half = _mm_set1_ps(0.5f);
+  const __m128 three_halves = _mm_set1_ps(1.5f);
+  result.sse = _mm_mul_ps(
+      estimate,
+      _mm_sub_ps(three_halves, _mm_mul_ps(_mm_mul_ps(half, v.sse),
+                                          _mm_mul_ps(estimate, estimate))));
   return result;
 }
 
