@@ -3,6 +3,8 @@
 #include "core/vkr_json_writer.h"
 #include "core/vkr_threads.h"
 
+#include <stdlib.h>
+
 typedef struct JsonMemorySink {
   uint8_t data[4096];
   uint64_t length;
@@ -127,9 +129,17 @@ static void test_json_file_writer_atomic_commit_and_abort(void) {
       &file_writer,
       string8_create(embedded_nul_path, sizeof(embedded_nul_path))));
 
-  char path[256];
-  snprintf(path, sizeof(path), "/tmp/vkr_json_writer_test_%llu.json",
-           (unsigned long long)vkr_thread_current_id());
+  const char *temp_directory = getenv("TMPDIR");
+  if (!temp_directory || temp_directory[0] == '\0') {
+    temp_directory = getenv("TEMP");
+  }
+  if (!temp_directory || temp_directory[0] == '\0') {
+    temp_directory = ".";
+  }
+
+  char path[1024];
+  snprintf(path, sizeof(path), "%s/vkr_json_writer_test_%llu.json",
+           temp_directory, (unsigned long long)vkr_thread_current_id());
   remove(path);
   String8 path_string =
       string8_create_from_cstr((const uint8_t *)path, string_length(path));
