@@ -78,3 +78,89 @@ target_link_libraries(vkr_vkt_packer
     PRIVATE
         ktx
 )
+
+# Stage V0 of the bindless Vulkan design is deliberately independent of
+# renderer_lib: building the spike must not rebuild legacy production shaders or
+# pull the shipping backend into its capability result.
+find_program(VKR_V0_SLANGC_EXECUTABLE NAMES slangc REQUIRED)
+find_program(VKR_V0_SPIRV_VAL_EXECUTABLE NAMES spirv-val)
+set(VKR_V0_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/bindless_vulkan_v0")
+set(VKR_V0_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/bindless_vulkan_v0")
+set(VKR_V0_VERTEX_SPV "${VKR_V0_OUTPUT_DIR}/v0.vert.spv")
+set(VKR_V0_FRAGMENT_SPV "${VKR_V0_OUTPUT_DIR}/v0.frag.spv")
+
+function(vkr_add_v0_shader output entry stage)
+    set(_VKR_V0_COMMAND
+        "${VKR_V0_SLANGC_EXECUTABLE}"
+        -target spirv
+        -profile spirv_1_6
+        -fvk-use-entrypoint-name
+        -fvk-use-scalar-layout
+        -entry "${entry}"
+        -stage "${stage}"
+        "${VKR_V0_SOURCE_DIR}/v0.slang"
+        -o "${output}"
+    )
+    add_custom_command(
+        OUTPUT "${output}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${VKR_V0_OUTPUT_DIR}"
+        COMMAND ${_VKR_V0_COMMAND}
+        DEPENDS "${VKR_V0_SOURCE_DIR}/v0.slang"
+        COMMENT "Compiling bindless Vulkan V0 ${stage} shader"
+        VERBATIM
+    )
+    if(VKR_V0_SPIRV_VAL_EXECUTABLE)
+        add_custom_command(
+            OUTPUT "${output}.validated"
+            COMMAND "${VKR_V0_SPIRV_VAL_EXECUTABLE}"
+                    --target-env vulkan1.4
+                    --scalar-block-layout
+                    "${output}"
+            COMMAND "${CMAKE_COMMAND}" -E touch "${output}.validated"
+            DEPENDS "${output}"
+            COMMENT "Validating bindless Vulkan V0 ${stage} SPIR-V"
+            VERBATIM
+        )
+        set_property(GLOBAL APPEND PROPERTY VKR_V0_VALIDATED_OUTPUTS
+                     "${output}.validated")
+    endif()
+endfunction()
+
+vkr_add_v0_shader("${VKR_V0_VERTEX_SPV}" vert_main vertex)
+vkr_add_v0_shader("${VKR_V0_FRAGMENT_SPV}" frag_main fragment)
+get_property(VKR_V0_VALIDATED_OUTPUTS GLOBAL PROPERTY VKR_V0_VALIDATED_OUTPUTS)
+if(VKR_V0_SPIRV_VAL_EXECUTABLE)
+    set(VKR_V0_SHADER_DEPENDENCIES ${VKR_V0_VALIDATED_OUTPUTS})
+else()
+    set(VKR_V0_SHADER_DEPENDENCIES
+        "${VKR_V0_VERTEX_SPV}"
+        "${VKR_V0_FRAGMENT_SPV}")
+endif()
+add_custom_target(vkr_bindless_vulkan_v0_shaders
+    DEPENDS ${VKR_V0_SHADER_DEPENDENCIES})
+
+add_executable(vkr_bindless_vulkan_v0
+    bindless_vulkan_v0/vkr_bindless_vulkan_v0.c
+    ${CMAKE_SOURCE_DIR}/vendor/spirv_reflect.c
+)
+vkr_require_declared_c_functions(vkr_bindless_vulkan_v0)
+add_dependencies(vkr_bindless_vulkan_v0 vkr_bindless_vulkan_v0_shaders)
+target_compile_definitions(vkr_bindless_vulkan_v0 PRIVATE
+    SPIRV_REFLECT_USE_SYSTEM_SPIRV_H
+    _CRT_SECURE_NO_WARNINGS
+    VKR_V0_VERTEX_SPV="${VKR_V0_VERTEX_SPV}"
+    VKR_V0_FRAGMENT_SPV="${VKR_V0_FRAGMENT_SPV}"
+)
+if(WIN32)
+    target_compile_definitions(vkr_bindless_vulkan_v0 PRIVATE
+        VK_USE_PLATFORM_WIN32_KHR)
+endif()
+target_include_directories(vkr_bindless_vulkan_v0 PRIVATE
+    ${CMAKE_SOURCE_DIR}/vendor
+    ${Vulkan_INCLUDE_DIRS}
+)
+if(TARGET Vulkan::Vulkan)
+    target_link_libraries(vkr_bindless_vulkan_v0 PRIVATE Vulkan::Vulkan)
+else()
+    target_link_libraries(vkr_bindless_vulkan_v0 PRIVATE ${Vulkan_LIBRARIES})
+endif()
