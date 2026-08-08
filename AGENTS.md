@@ -17,7 +17,8 @@ GPU is done with it has measured nothing. Never trade an invariant for a number.
 
 Vulkan 1.2 renderer and engine framework in C11 — ~212 source files, ~115k LOC.
 The frontend (`lib/src/renderer/renderer_frontend.c`) owns the subsystems and
-reaches the Vulkan backend only through the `VkrRendererBackendInterface`
+selects one coarse `VkrRendererImpl` strategy at initialization. Its retained
+legacy adaptor reaches Vulkan through the `VkrRendererBackendInterface`
 function-pointer table; Vulkan types stay behind `lib/src/renderer/vulkan/`.
 Frame orchestration is a JSON-authored render graph
 (`assets/render_graphs/main.rendergraph.json`) with named pass executors in
@@ -85,6 +86,7 @@ build_release/tools/vkr_harness profile \
   --case tools/cases/performance/sponza_orbit.case.json \
   --profile tools/profiles/performance-windowed.json # Release performance evidence
 tools/pack_vkt_textures.sh                       # explicit shared KTX2/UASTC packing
+# Windows V1/V2: powershell -ExecutionPolicy Bypass -File tools\validate_v1_v2_windows.ps1
 # Windows: tools\pack_vkt_textures.bat
 ```
 

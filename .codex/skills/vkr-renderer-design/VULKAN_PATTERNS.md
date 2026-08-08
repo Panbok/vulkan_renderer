@@ -19,17 +19,21 @@ Status authority for everything here is
 
 ### Frontend/backend boundary — ADR-001
 
-`renderer_frontend.c/h` owns the renderer subsystems and reaches the backend
-only through the `VkrRendererBackendInterface` function-pointer table declared
-in `vkr_renderer.h`. Vulkan types live behind `lib/src/renderer/vulkan/` and do
+`renderer_frontend.c/h` owns the renderer subsystems and selects one coarse
+`VkrRendererImpl` strategy at initialization. Metal and the retained legacy
+Vulkan adaptor are real strategies; the bindless Vulkan identity is a rejecting
+stub until V3. A normal successful frame crosses the strategy seam exactly
+twice, through prepare and submit. The legacy adaptor alone reaches the old
+`VkrRendererBackendInterface` function-pointer table declared in
+`vkr_renderer.h`. Vulkan types remain behind `lib/src/renderer/vulkan/` and do
 not appear in public headers; public code uses opaque handles
 (`TextureHandle`, `BufferHandle`, `GraphicsPipeline`, `RenderPass`,
 `RenderTarget`) with internal structs prefixed `s_`.
 
-This is a real seam, but it has **one** implementation and still exposes
-concepts shaped by Vulkan's render-pass and descriptor model. Do not widen the
-interface for a hypothetical second backend; do keep Vulkan types from leaking
-across it.
+The retained backend table still exposes concepts shaped by Vulkan's render-pass
+and descriptor model. Keep that legacy detail inside its strategy; extend the
+coarse selected implementation contract only for behavior shared by real
+implementations, and keep Vulkan types from leaking across it.
 
 ### JSON render graph — ADR-002, ADR-003
 
@@ -148,10 +152,12 @@ repairs from an older audit. The remaining boundaries are:
 
 **Absent by design-so-far, not bugs**
 
-No dynamic rendering. No descriptor indexing or bindless. No HDR, tonemap, or
-post chain — the `POST` domain is reserved. No shader hot reload. `compute` JSON
-passes currently orchestrate graphics/CPU work; real compute dispatch is not
-exercised.
+The retained Vulkan 1.2 implementation has no dynamic rendering, descriptor
+indexing, or bindless path. Metal has a production bindless implementation, and
+the shared V2 selection seam exists, but the modern Vulkan production strategy
+is still the rejecting V3 stub. No HDR, tonemap, or post chain — the `POST`
+domain is reserved. No shader hot reload. `compute` JSON passes currently
+orchestrate graphics/CPU work; real compute dispatch is not exercised.
 
 **Throughput baseline** — production payload extraction uses `vkr_frustum` for
 camera and union-of-cascade visibility, CPU-merges compatible opaque candidates

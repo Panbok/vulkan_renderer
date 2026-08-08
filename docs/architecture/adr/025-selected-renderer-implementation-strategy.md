@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: partial
 updated: 2026-08-08
 authority: adr
 ---
@@ -8,13 +8,22 @@ authority: adr
 
 ## Status
 
-**Proposed** — no code. This ADR acts on
+**Accepted (partial)** — `VkrRendererImpl` now selects one immutable capability
+record and coarse operation strategy for the real Metal and legacy-Vulkan
+implementations. A recognized bindless Vulkan strategy deterministically rejects
+initialization until V3. The neutral submit result carries capture, memory,
+material, and pass-timing data; renderer behavior no longer tests backend type
+after factory selection; and the normal frame path contains only the declared
+prepare and submit indirect calls. This ADR acts on
 [ADR-020](020-bindless-backend-seam.md)'s contingency that "if sharing
 `renderer_frontend.c` produces branch duplication, split it." It becomes
-Accepted (partial) when V2 replaces the current behavior ladder for the real
-Metal and legacy-Vulkan implementations while the bindless Vulkan entry remains
-a rejecting stub, and Accepted when the production bindless Vulkan strategy
-passes V3.
+Accepted when the production bindless Vulkan strategy passes V3. V2's Windows
+CPU/runtime witnesses remain open evidence gates; they do not change the
+implemented architecture recorded by this ADR. The matched clean Release Metal
+profile passes its predeclared no-regression tolerance. On macOS, Debug
+legacy-Vulkan report `20260808T204053.961Z-01220d` passes two explicit native
+window resize round trips with renderer-observed extents and clean validation,
+startup, and shutdown diagnostics.
 
 ## Context
 
@@ -29,8 +38,8 @@ contracts would have forced Metal to reproduce the Vulkan 1.2 data model.
 That decision was right, but its implementation took a shortcut. On Metal the
 86-entry table is left **entirely NULL** and the frontend short-circuits above
 it to call the Metal packet renderer directly. The mechanism for
-short-circuiting is an `if (backend_type == VKR_RENDERER_BACKEND_TYPE_METAL)`
-test, and there are now 46 of them:
+short-circuiting was an `if (backend_type == VKR_RENDERER_BACKEND_TYPE_METAL)`
+test. The pre-V2 inventory found 46 of them:
 
 | Location | Sites |
 |---|---|
@@ -40,7 +49,7 @@ test, and there are now 46 of them:
 | `vkr_world_resources.c`, `vkr_skybox_system.c`, `vkr_shadow_system.c`, `vkr_picking_system.c`, `vkr_ui_text.c`, `vkr_renderer.h` | 1 each |
 | Outside `lib/`: `app/src/main.c`, `tools/harness/vkr_harness_common.c`, `tests/src/harness_test.c` | 1 each |
 
-Adding a third backend to this structure turns every one of them into a
+Adding a third backend to that structure would have turned every one into a
 three-way ladder across 14 files, most of them outside the renderer frontend.
 That is the concrete cost ADR-020 anticipated but did not yet have to pay.
 
@@ -53,8 +62,8 @@ all guard pipeline-registry acquisition or a pipeline-readiness check. "Metal" i
 not why those sites behave differently; "this implementation owns its own
 precreated pipelines" is.
 
-There is also a latent defect that a third backend would make concrete.
-`RendererFrontend` stores `void *metal_timing_result`, and three sites cast it to
+There was also a latent defect that a third backend would have made concrete.
+`RendererFrontend` stored `void *metal_timing_result`, and three sites cast it to
 the Metal-specific result type — one in `vkr_renderer_metrics.c` and two in
 `renderer_frontend.c`. A second bindless backend has nowhere to put its result
 without either a second untyped pointer or a second cast.
@@ -209,10 +218,8 @@ duplication is measurable, not in advance.**
 - A capability struct can accrete fields the way a vtable accretes entries.
   `uses_legacy_pipeline_state` is defensible because it names a real subsystem
   cluster; a second boolean per behavioural difference would not be.
-- `AGENTS.md`'s statement that the frontend "reaches the Vulkan backend only
-  through the `VkrRendererBackendInterface`" becomes false when this lands. Per
-  that document's own rule, it must be amended in the same change — not before,
-  since it is accurate today.
+- `AGENTS.md` now names `VkrRendererImpl` as the selected coarse strategy and
+  retains `VkrRendererBackendInterface` as the legacy Vulkan adaptor seam.
 
 ## Alternatives Considered
 

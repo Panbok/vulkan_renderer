@@ -85,7 +85,7 @@ owning document status in the same change.
 | [adr/README.md](architecture/adr/README.md) | — | ADR index and format |
 | [event-payload-lifetime-and-resize-mailbox.md](architecture/event-payload-lifetime-and-resize-mailbox.md) | implemented | Stable event payload copies and lock-free resize mailbox |
 | [bindless-gpu-pointer-renderer-spec.md](architecture/bindless-gpu-pointer-renderer-spec.md) | partial | Metal 4 Stages 0–5 ship, but the formerly accepted Bistro-plus-text generation is historical after the parity audit; corrected Gate A pixel acceptance, the macOS default switch, and Stage 6 modern Vulkan remain open |
-| [bindless-vulkan-backend-spec.md](architecture/bindless-vulkan-backend-spec.md) | proposed | Stage 6 in detail: Vulkan 1.4 capability profile, descriptor-buffer texture heap, presentation-fence lifetime, per-memory-type placement, measurement-gated sync2 lowering, and the V0–V7 ladder. Standalone V0 offscreen evidence is complete with validation layer 1.4.357; the production path remains absent |
+| [bindless-vulkan-backend-spec.md](architecture/bindless-vulkan-backend-spec.md) | proposed | Stage 6 in detail: Vulkan 1.4 capability profile, descriptor-buffer texture heap, presentation-fence lifetime, per-memory-type placement, measurement-gated sync2 lowering, and the V0–V7 ladder. V0 is complete, V1 is characterized locally without extraction, and the V2 implementation seam plus its macOS evidence are present with Windows gates still open; the production bindless path remains absent |
 
 ### Architecture Decision Records
 
@@ -115,7 +115,7 @@ owning document status in the same change.
 | [022](architecture/adr/022-gpu-pointer-resource-model.md) | partial | GPU-address resources, backend-native texture references, and backend-lowered graph dependencies |
 | [023](architecture/adr/023-vulkan-1-4-bindless-capability-profile.md) | proposed | Vulkan 1.4 bindless profile; descriptor buffers required, with present fences required for windowed targets |
 | [024](architecture/adr/024-shared-bindless-gpu-cores.md) | proposed | Four backend-neutral GPU-core candidates, each extracted only when its real Vulkan caller lands |
-| [025](architecture/adr/025-selected-renderer-implementation-strategy.md) | proposed | One coarse selected renderer strategy replacing the 46-site, 14-file backend-type ladder |
+| [025](architecture/adr/025-selected-renderer-implementation-strategy.md) | partial | One coarse selected renderer strategy replacing the 46-site, 14-file backend-type ladder; the bindless strategy remains a rejecting V3 stub |
 | [026](architecture/adr/026-vulkan-1-2-retirement.md) | proposed | Predeclared default-flip/deletion gates plus an executable six-step legacy removal order |
 
 ## Rendering

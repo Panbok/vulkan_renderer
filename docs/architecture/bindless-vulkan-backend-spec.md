@@ -9,9 +9,12 @@ authority: design
 **Document status:** Proposed. The standalone V0 spike now exists under
 `tools/bindless_vulkan_v0/` and has complete native Windows offscreen evidence,
 including synchronization and GPU-assisted validation with validation layer
-1.4.357, but there is no production backend or call site. Section 12 records the
-exact toolchain boundary and the older 1.4.335 limitation. Nothing here is a
-performance measurement, and the spike does not authorize a status change in the
+1.4.357. V1 is characterized locally without extraction, and V2's selected
+implementation seam is present for Metal, legacy Vulkan, and a rejecting
+bindless stub. There is still no production bindless backend or call site.
+Section 12 records the exact toolchain boundary and the older 1.4.335
+limitation. Nothing here is a performance claim, and these partial stages do not
+authorize accepting the production backend in the
 [renderer status specification](renderer-architecture-spec.md).
 
 **Scope:** A bindless Vulkan 1.4 renderer for Windows, built on the semantic
@@ -1037,6 +1040,73 @@ remain visible and are counted separately. Layer 1.4.335 still returns
 than a pass. V0 is complete as a standalone spike; it does not implement or
 accept the production backend.
 
+**V1 implementation status (2026-08-08):** characterization is complete on the
+macOS development platform without moving or renaming a production module. The
+four candidates remain Metal-owned and have these exact integration witnesses:
+
+| Candidate | Production integration callers | Contract test |
+|---|---|---|
+| Memory and submit ring | `vkr_metal_memory_device.m`; packet resource, graph, frame, command, lifecycle, and setup units consume only the typed device adapter | `tests/src/metal_memory_test.c` pins aligned placement/accounting, generation invalidation, completion-ordered collection, exhaustion classification, bounded-ring reuse, address-pair slicing, and wait-counter reset |
+| Material slot table | `vkr_metal_material_table_device.m`; packet setup, resource, frame, and lifecycle units consume the typed device adapter | `tests/src/metal_material_test.c` pins publish-new-before-retire-old replacement, stale-handle rejection, completion-gated collection, and transactional capacity failure |
+| Capture ring | packet setup, command, graph, frame, and lifecycle units call `vkr_metal_capture_ring_*` directly | `tests/src/metal_capture_ring_test.c` pins reserve/submit/poll/release ownership, abandoned pending retirement, capacity, and retained failure state |
+| Host ABI manifest | packet setup validates the manifest before renderer publication | `tests/src/metal_packet_abi_test.c` pins every record/field name, expected range, unique shader member, host size/alignment/offset validation, and invalid-record rejection |
+
+The macOS CPU suite passes this characterization. The Windows CPU-suite half of
+the V1 evidence remains to be rerun for this source revision; the candidates
+already compile and their tests register unconditionally there. Per ADR-024,
+this characterization creates no shared forwarding API and authorizes no
+extraction before the corresponding V3–V5 Vulkan caller exists.
+
+**V2 implementation status (2026-08-08):** the implementation seam is locally
+implemented. `VkrRendererImpl` owns one immutable capability record, opaque
+state, asset publisher, and coarse operation table. The factory selects real
+Metal and legacy-Vulkan strategies and recognizes a bindless Vulkan strategy
+whose initialization is deliberately unsupported until V3. Property/value
+sites consume capabilities; resource ownership and lifecycle enter the selected
+strategy; and the normal frame path makes exactly two indirect calls, prepare
+and submit. Legacy-only orchestration still calls
+`VkrRendererBackendInterface` directly inside the legacy strategy, preserving
+the retained adaptor without widening it.
+
+`VkrRendererImplSubmitResult` now carries the shared capture snapshot, memory
+metrics, material metrics, draw counters, and pass timings. The former untyped
+Metal result pointer and casts are absent. A renderer-source audit finds
+backend-type behavior only in `vkr_renderer_impl_select()`; the legacy Vulkan
+backend retains one initialization invariant assertion. Factory tests cover the
+two real strategies, platform rejection, and the bindless stub, and the complete
+macOS CPU suite plus Debug and Release wrapper builds pass.
+
+For the macOS visual witness, clean pre-change text report
+`20260808T195724.431Z-010759` and current report
+`20260808T195733.500Z-0106f8` both pass with matching workload identity. Their
+final-color bytes are identical at
+`sha256:019ba7752b653ea77dc8fce8e4125b042f67794d1978aa12044ed4c5b44ad3a6`
+and their picking-identifier bytes are identical at
+`sha256:ed47dbf1b5e6ade6820370e0313b257c3067d667dd277a1d0033c4d204a26388`.
+Debug legacy-Vulkan report `20260808T204053.961Z-01220d`
+(`sha256:cc53632c1810dce60fa97e4195b9d677588e1eb517234fa93b47f29621917a58`)
+passes both requested children and aggregate reporting. Each child performs an
+explicit hidden native-window resize from 640×480 logical points to 400×300 and
+back, proves that the renderer observed both resulting pixel extents, records
+three swapchain recreations on the Retina host, creates and destroys the debug
+messenger, and emits no stderr, VUID, validation warning, error, or fatal log.
+
+The Windows CPU-suite and legacy-Vulkan runtime halves remain unavailable on
+this macOS host. The predeclared Release Metal tolerance requires identical
+environment/workload/policy identities and work volume, no more than +5% in
+`frame.wall` mean or p50, +10% in `frame.wall` p95, and +5% in
+`cpu.render_prepare` and `cpu.render_submit` p50. Clean baseline report
+`20260808T202226.320Z-01173e`
+(`sha256:9805f7d84179337df4681c39c546f1e365f6b68a8a7e8a6bd78f4131fc8cfb73`)
+and clean candidate report `20260808T201602.292Z-01150f`
+(`sha256:e01eab23669cd886452ce92593e9bc95c6282681d9a67b504b5610fd636ac65b`)
+are authoritative, have empty authority reasons, share all three fingerprints,
+and each contain 1,500 valid samples at exactly 322 calls per frame. Candidate
+deltas are `frame.wall` mean +0.890%, p50 +0.419%, p95 -2.182%; prepare p50
++0.231%; and submit p50 -2.199%. Every threshold passes. Therefore V2 delivery
+and its macOS evidence are present, ADR-025 is Accepted (partial), and stage
+acceptance remains open only on the required Windows evidence.
+
 Optional capabilities are deliberately outside this ladder. Each is its own
 measured change after V6, per §3.5.
 
@@ -1081,6 +1151,9 @@ build_bindless_vulkan_v0_Release\tools\vkr_bindless_vulkan_v0.exe
 build_bindless_vulkan_v0.bat Debug
 build_bindless_vulkan_v0_Debug\tools\vkr_bindless_vulkan_v0.exe --validation
 build_bindless_vulkan_v0_Debug\tools\vkr_bindless_vulkan_v0.exe --gpu-assisted
+
+# Reproduce the remaining V1/V2 Windows CPU and legacy-runtime gates.
+powershell -ExecutionPolicy Bypass -File tools\validate_v1_v2_windows.ps1
 
 # The branch ladder ADR-025 removes.
 grep -rn "VKR_RENDERER_BACKEND_TYPE_METAL" lib/ app/ tools/ tests/ | wc -l

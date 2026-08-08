@@ -8,8 +8,10 @@ authority: adr
 
 ## Status
 
-**Proposed** — nothing is extracted yet. This ADR identifies four candidates and
-the evidence required to extract each one. It preserves
+**Proposed** — V1 has characterized the four candidates and pinned their current
+Metal integration callers and CPU contract tests in the bindless Vulkan backend
+specification §11, but nothing is extracted yet. This ADR identifies the
+evidence required to extract each one. It preserves
 [ADR-020](020-bindless-backend-seam.md)'s multiple-real-caller rule: a candidate
 remains Metal-owned until the vertical slice that adds its first real bindless
 Vulkan caller.
