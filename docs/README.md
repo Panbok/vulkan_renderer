@@ -5,6 +5,44 @@ artifact is listed here. `archive/README.md` owns the recursive archive index;
 the legacy pre-render-graph collection is deliberately indexed as one preserved
 unit.
 
+## Optional Metal validation
+
+Debug builds and Metal validation are diagnostic configurations. Use them only
+for a concrete issue reproduction, with the smallest case that exercises the
+issue. Snapshot/baseline comparisons and performance runs must use the normal
+Release configuration with validation environment variables unset; run any
+needed validation as a separate diagnostic command.
+
+Metal validation is opt-in on macOS, including for Debug builds:
+
+- `MTL_DEBUG_LAYER=1` enables API validation for incorrect Metal API usage.
+- `MTL_SHADER_VALIDATION=1` enables shader/GPU validation for faults such as
+  invalid or out-of-bounds resource access.
+
+Enable either mode independently or both together before launching:
+
+```sh
+MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1 \
+  ./build_run.sh Debug --renderer metal
+```
+
+**Warning:** these diagnostics can tank frame rate, especially shader
+validation. In one local, non-authoritative Debug observation, enabling both
+dropped the renderer from roughly 30–40 FPS to 6–7 FPS. Debug timings are not
+performance evidence; never compare or profile performance with either mode
+enabled. `build_run.sh` prints a warning whenever it detects a nonzero
+validation variable. Do not run shader/GPU validation across a broad
+multi-capture or baseline suite: a validation-enabled 14-capture snapshot was
+immediately followed by a macOS watchdog kernel panic. That timing does not
+prove causation, but it warrants limiting shader validation to minimal issue
+reproductions.
+
+The Metal backend bypasses pipeline-archive lookup while shader validation is
+enabled because Apple's validator currently crashes in the Metal 4-to-3
+archive-conversion path. These runtime variables must be present before the
+process creates its first Metal device; when running
+`build/app/vulkan_renderer` directly, set them in the calling environment.
+
 ## Authority
 
 1. **Code** is the implementation authority. If a document disagrees with the

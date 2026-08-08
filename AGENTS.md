@@ -87,13 +87,39 @@ build_release/tools/vkr_harness profile \
 tools/pack_vkt_textures.sh                       # offline KTX2/UASTC packing
 ```
 
+Debug builds and graphics validation layers are diagnostic configurations, not
+baseline configurations. Use them only while reproducing or debugging a
+concrete issue, and use the smallest focused case that exercises that issue.
+Snapshot/baseline comparisons and performance runs must use the normal Release
+configuration with Metal and Vulkan validation environment variables unset.
+Run any required diagnostic validation separately; never mix it into a
+baseline or performance command.
+
+Metal validation is opt-in on macOS, including in Debug builds. Set
+`MTL_DEBUG_LAYER=1` for API validation and `MTL_SHADER_VALIDATION=1` for
+shader/GPU validation; set both to enable both modes. The variables must be in
+the environment before the first Metal device is created.
+
+**Warning:** Metal validation can tank frame rate, especially shader
+validation. One local, non-authoritative Debug observation fell from roughly
+30–40 FPS to 6–7 FPS with both modes enabled. Debug timings are not performance
+evidence; never benchmark or make a performance claim from a run with either
+validation mode enabled. `build_run.sh` warns when it detects either nonzero
+variable. Never run Metal shader/GPU validation across a broad multi-capture or
+baseline suite: a validation-enabled 14-capture snapshot was immediately
+followed by a macOS watchdog kernel panic. This is correlation rather than a
+proven root cause, but it is sufficient reason to keep shader validation to a
+minimal issue reproduction.
+
 The core build/run/test wrappers have `.bat` equivalents. The pipeline-cache,
 backend-matrix, and texture-packing utilities are currently POSIX shell only;
 the C harness is cross-platform. Use the repository scripts rather than
 invoking `cmake` directly — they own shader compilation and asset copying.
 
-A green CPU suite is not evidence that Vulkan usage is correct. Anything that
-records commands or transitions resources needs a validation-layer run.
+A green CPU suite is not evidence that Vulkan usage is correct. When debugging
+a concrete command-recording or resource-transition issue, use a separate,
+focused validation-layer run; do not turn baseline execution into an implicit
+validation run.
 
 ## Code conventions
 
