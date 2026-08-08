@@ -353,7 +353,7 @@ void vkr_ui_system_resize(RendererFrontend *rf, VkrUiSystem *system,
   rf->globals.ui_view = mat4_identity();
   rf->globals.ui_projection =
       mat4_ortho(0.0f, (float32_t)width, (float32_t)height, 0.0f, -1.0f, 1.0f);
-  if (rf->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL) {
+  if (rf->impl.caps.uses_legacy_pipeline_state) {
     vkr_pipeline_registry_mark_global_state_dirty(&rf->pipeline_registry);
   }
 
@@ -396,7 +396,7 @@ bool8_t vkr_ui_system_text_create(RendererFrontend *rf, VkrUiSystem *system,
     return false_v;
   }
 
-  if (rf->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
+  if (rf->impl.caps.uses_legacy_pipeline_state &&
       system->text_pipeline.id == 0) {
     log_error("UI text pipeline not initialized");
     return false_v;

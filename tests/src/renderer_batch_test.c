@@ -138,6 +138,18 @@ static bool8_t renderer_batch_mock_get_and_reset_upload_wait_stats(
   return true_v;
 }
 
+static bool8_t renderer_batch_impl_get_and_reset_upload_wait_stats(
+    void *state, VkrRendererUploadWaitStats *out_stats) {
+  RendererFrontend *renderer = state;
+  return renderer->backend.get_and_reset_upload_wait_stats(
+      renderer->backend_state, out_stats);
+}
+
+static const VkrRendererImplOps renderer_batch_impl_ops = {
+    .get_and_reset_upload_wait_stats =
+        renderer_batch_impl_get_and_reset_upload_wait_stats,
+};
+
 static void renderer_batch_test_init_frontend(RendererFrontend *renderer,
                                               RendererBatchMockState *state) {
   MemZero(renderer, sizeof(*renderer));
@@ -424,6 +436,8 @@ static void test_renderer_upload_wait_stats_mapping(void) {
   RendererFrontend renderer = {0};
   RendererBatchMockState state = {0};
   renderer_batch_test_init_frontend(&renderer, &state);
+  renderer.impl.ops = &renderer_batch_impl_ops;
+  renderer.impl.state = &renderer;
   renderer.backend.get_and_reset_upload_wait_stats =
       renderer_batch_mock_get_and_reset_upload_wait_stats;
 

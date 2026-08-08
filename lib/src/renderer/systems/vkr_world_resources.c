@@ -2610,7 +2610,7 @@ bool8_t vkr_world_resources_text_create(RendererFrontend *rf,
     return false_v;
   }
 
-  if (rf->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
+  if (rf->impl.caps.uses_legacy_pipeline_state &&
       resources->text_pipeline.id == 0) {
     log_error("World text pipeline not ready");
     return false_v;

@@ -493,7 +493,7 @@ bool8_t vkr_ui_text_create(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
-  if (out_text->renderer->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL) {
+  if (out_text->renderer->impl.caps.uses_legacy_pipeline_state) {
     VkrRendererError text_ls_err = VKR_RENDERER_ERROR_NONE;
     if (!vkr_pipeline_registry_acquire_instance_state(
             &out_text->renderer->pipeline_registry, pipeline,

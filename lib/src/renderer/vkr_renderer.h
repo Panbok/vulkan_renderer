@@ -86,8 +86,10 @@ typedef union {
 
 typedef enum VkrRendererBackendType {
   VKR_RENDERER_BACKEND_TYPE_VULKAN,
-  VKR_RENDERER_BACKEND_TYPE_DX12,  // Future
-  VKR_RENDERER_BACKEND_TYPE_METAL, // Future
+  VKR_RENDERER_BACKEND_TYPE_DX12, // Future
+  VKR_RENDERER_BACKEND_TYPE_METAL,
+  /** V2 rejecting stub; the production implementation begins at V3. */
+  VKR_RENDERER_BACKEND_TYPE_BINDLESS_VULKAN,
   VKR_RENDERER_BACKEND_TYPE_COUNT
 } VkrRendererBackendType;
 

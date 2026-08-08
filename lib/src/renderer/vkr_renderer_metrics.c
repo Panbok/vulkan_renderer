@@ -6,10 +6,6 @@
 #include "renderer/vkr_render_graph.h"
 #include "renderer/vkr_renderer.h"
 
-#if defined(PLATFORM_APPLE)
-#include "renderer/metal/vkr_metal_packet_renderer.h"
-#endif
-
 vkr_internal bool8_t vkr_renderer_metric_register_full(
     VkrMetrics *metrics, const char *name, VkrMetricDomain domain,
     VkrMetricKind kind, VkrMetricUnit unit, VkrMetricScalar scalar,
@@ -171,134 +167,129 @@ vkr_internal void vkr_gpu_owner_metric_row_values(
           &baselines->gpu_owner[owner].allocations_created);
 }
 
-#if defined(PLATFORM_APPLE)
-typedef struct VkrMetalMemoryMetricDescription {
+typedef struct VkrRendererImplMemoryMetricDescription {
   const char *name;
   VkrMetricKind kind;
   VkrMetricUnit unit;
-} VkrMetalMemoryMetricDescription;
+} VkrRendererImplMemoryMetricDescription;
 
-#define VKR_METAL_GAUGE(NAME, UNIT) {NAME, VKR_METRIC_KIND_GAUGE, UNIT}
-#define VKR_METAL_COUNTER(NAME, UNIT) {NAME, VKR_METRIC_KIND_COUNTER, UNIT}
+#define VKR_IMPL_GAUGE(NAME, UNIT) {NAME, VKR_METRIC_KIND_GAUGE, UNIT}
+#define VKR_IMPL_COUNTER(NAME, UNIT) {NAME, VKR_METRIC_KIND_COUNTER, UNIT}
 
-vkr_internal const VkrMetalMemoryMetricDescription
-    vkr_metal_memory_metric_descriptions[] = {
-        VKR_METAL_GAUGE("memory.gpu.heaps.live", VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_GAUGE("memory.gpu.heaps.peak", VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.heaps.created", VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_GAUGE("memory.gpu.suballocations.live",
-                        VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_GAUGE("memory.gpu.suballocations.peak",
-                        VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.suballocations.created",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_GAUGE("memory.gpu.suballocations.bytes.requested.live",
-                        VKR_METRIC_UNIT_BYTES),
-        VKR_METAL_GAUGE("memory.gpu.suballocations.bytes.requested.retired",
-                        VKR_METRIC_UNIT_BYTES),
-        VKR_METAL_GAUGE("memory.gpu.suballocations.bytes.requested.peak",
-                        VKR_METRIC_UNIT_BYTES),
-        VKR_METAL_GAUGE("memory.gpu.suballocations.bytes.reserved.live",
-                        VKR_METRIC_UNIT_BYTES),
-        VKR_METAL_GAUGE("memory.gpu.suballocations.bytes.reserved.retired",
-                        VKR_METRIC_UNIT_BYTES),
-        VKR_METAL_GAUGE("memory.gpu.suballocations.bytes.reserved.peak",
-                        VKR_METRIC_UNIT_BYTES),
-        VKR_METAL_COUNTER("memory.gpu.suballocations.bytes.alignment_waste",
-                          VKR_METRIC_UNIT_BYTES),
-        VKR_METAL_GAUGE("memory.gpu.suballocations.bytes.free",
-                        VKR_METRIC_UNIT_BYTES),
-        VKR_METAL_GAUGE("memory.gpu.suballocations.bytes.largest_free_range",
-                        VKR_METRIC_UNIT_BYTES),
-        VKR_METAL_GAUGE("memory.gpu.retirements.live", VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.retirements.collected",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_GAUGE("memory.gpu.residency.allocations",
-                        VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_GAUGE("memory.gpu.resources.live", VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.resources.released",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.suballocations.failures.bytes",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.suballocations.failures.fragmentation",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.suballocations.failures.handles",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.suballocations.failures.range_metadata",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER(
+vkr_internal const VkrRendererImplMemoryMetricDescription
+    vkr_renderer_impl_memory_metric_descriptions[] = {
+        VKR_IMPL_GAUGE("memory.gpu.heaps.live", VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_GAUGE("memory.gpu.heaps.peak", VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.heaps.created", VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_GAUGE("memory.gpu.suballocations.live", VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_GAUGE("memory.gpu.suballocations.peak", VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.suballocations.created",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_GAUGE("memory.gpu.suballocations.bytes.requested.live",
+                       VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_GAUGE("memory.gpu.suballocations.bytes.requested.retired",
+                       VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_GAUGE("memory.gpu.suballocations.bytes.requested.peak",
+                       VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_GAUGE("memory.gpu.suballocations.bytes.reserved.live",
+                       VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_GAUGE("memory.gpu.suballocations.bytes.reserved.retired",
+                       VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_GAUGE("memory.gpu.suballocations.bytes.reserved.peak",
+                       VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_COUNTER("memory.gpu.suballocations.bytes.alignment_waste",
+                         VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_GAUGE("memory.gpu.suballocations.bytes.free",
+                       VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_GAUGE("memory.gpu.suballocations.bytes.largest_free_range",
+                       VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_GAUGE("memory.gpu.retirements.live", VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.retirements.collected",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_GAUGE("memory.gpu.residency.allocations",
+                       VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_GAUGE("memory.gpu.resources.live", VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.resources.released",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.suballocations.failures.bytes",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.suballocations.failures.fragmentation",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.suballocations.failures.handles",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.suballocations.failures.range_metadata",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER(
             "memory.gpu.suballocations.failures.retirement_capacity",
             VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.suballocations.failures.stale_handle",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.suballocations.failures.native",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_GAUGE("memory.gpu.driver.current_allocated_bytes",
-                        VKR_METRIC_UNIT_BYTES),
-        VKR_METAL_GAUGE("memory.gpu.driver.recommended_budget_bytes",
-                        VKR_METRIC_UNIT_BYTES),
-        VKR_METAL_COUNTER("memory.gpu.rings.upload.acquires",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.rings.upload.reuses",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.rings.upload.busy_failures",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.rings.readback.acquires",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.rings.readback.reuses",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_COUNTER("memory.gpu.rings.readback.busy_failures",
-                          VKR_METRIC_UNIT_COUNT),
-        VKR_METAL_GAUGE("memory.gpu.heaps.bytes.used.current",
-                        VKR_METRIC_UNIT_BYTES),
-        VKR_METAL_GAUGE("memory.gpu.heaps.bytes.allocated.current",
-                        VKR_METRIC_UNIT_BYTES),
-#define VKR_METAL_CLASS_ROWS(CLASS)                                            \
-  VKR_METAL_GAUGE("memory.gpu.suballocations.owner." CLASS                     \
-                  ".allocations.live",                                         \
-                  VKR_METRIC_UNIT_COUNT),                                      \
-      VKR_METAL_GAUGE("memory.gpu.suballocations.owner." CLASS                 \
-                      ".allocations.retired",                                  \
-                      VKR_METRIC_UNIT_COUNT),                                  \
-      VKR_METAL_GAUGE("memory.gpu.suballocations.owner." CLASS                 \
-                      ".allocations.peak",                                     \
-                      VKR_METRIC_UNIT_COUNT),                                  \
-      VKR_METAL_COUNTER("memory.gpu.suballocations.owner." CLASS               \
-                        ".allocations.created",                                \
-                        VKR_METRIC_UNIT_COUNT),                                \
-      VKR_METAL_GAUGE("memory.gpu.suballocations.owner." CLASS                 \
-                      ".bytes.requested.live",                                 \
-                      VKR_METRIC_UNIT_BYTES),                                  \
-      VKR_METAL_GAUGE("memory.gpu.suballocations.owner." CLASS                 \
-                      ".bytes.requested.retired",                              \
-                      VKR_METRIC_UNIT_BYTES),                                  \
-      VKR_METAL_GAUGE("memory.gpu.suballocations.owner." CLASS                 \
-                      ".bytes.requested.peak",                                 \
-                      VKR_METRIC_UNIT_BYTES),                                  \
-      VKR_METAL_GAUGE("memory.gpu.suballocations.owner." CLASS                 \
-                      ".bytes.reserved.live",                                  \
-                      VKR_METRIC_UNIT_BYTES),                                  \
-      VKR_METAL_GAUGE("memory.gpu.suballocations.owner." CLASS                 \
-                      ".bytes.reserved.retired",                               \
-                      VKR_METRIC_UNIT_BYTES),                                  \
-      VKR_METAL_GAUGE("memory.gpu.suballocations.owner." CLASS                 \
-                      ".bytes.reserved.peak",                                  \
-                      VKR_METRIC_UNIT_BYTES),                                  \
-      VKR_METAL_COUNTER("memory.gpu.suballocations.owner." CLASS               \
-                        ".bytes.alignment_waste",                              \
-                        VKR_METRIC_UNIT_BYTES)
-        VKR_METAL_CLASS_ROWS("buffer"),
-        VKR_METAL_CLASS_ROWS("texture"),
-#undef VKR_METAL_CLASS_ROWS
+        VKR_IMPL_COUNTER("memory.gpu.suballocations.failures.stale_handle",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.suballocations.failures.native",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_GAUGE("memory.gpu.driver.current_allocated_bytes",
+                       VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_GAUGE("memory.gpu.driver.recommended_budget_bytes",
+                       VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_COUNTER("memory.gpu.rings.upload.acquires",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.rings.upload.reuses",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.rings.upload.busy_failures",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.rings.readback.acquires",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.rings.readback.reuses",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.rings.readback.busy_failures",
+                         VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_GAUGE("memory.gpu.heaps.bytes.used.current",
+                       VKR_METRIC_UNIT_BYTES),
+        VKR_IMPL_GAUGE("memory.gpu.heaps.bytes.allocated.current",
+                       VKR_METRIC_UNIT_BYTES),
+#define VKR_IMPL_CLASS_ROWS(CLASS)                                             \
+  VKR_IMPL_GAUGE("memory.gpu.suballocations.owner." CLASS ".allocations.live", \
+                 VKR_METRIC_UNIT_COUNT),                                       \
+      VKR_IMPL_GAUGE("memory.gpu.suballocations.owner." CLASS                  \
+                     ".allocations.retired",                                   \
+                     VKR_METRIC_UNIT_COUNT),                                   \
+      VKR_IMPL_GAUGE("memory.gpu.suballocations.owner." CLASS                  \
+                     ".allocations.peak",                                      \
+                     VKR_METRIC_UNIT_COUNT),                                   \
+      VKR_IMPL_COUNTER("memory.gpu.suballocations.owner." CLASS                \
+                       ".allocations.created",                                 \
+                       VKR_METRIC_UNIT_COUNT),                                 \
+      VKR_IMPL_GAUGE("memory.gpu.suballocations.owner." CLASS                  \
+                     ".bytes.requested.live",                                  \
+                     VKR_METRIC_UNIT_BYTES),                                   \
+      VKR_IMPL_GAUGE("memory.gpu.suballocations.owner." CLASS                  \
+                     ".bytes.requested.retired",                               \
+                     VKR_METRIC_UNIT_BYTES),                                   \
+      VKR_IMPL_GAUGE("memory.gpu.suballocations.owner." CLASS                  \
+                     ".bytes.requested.peak",                                  \
+                     VKR_METRIC_UNIT_BYTES),                                   \
+      VKR_IMPL_GAUGE("memory.gpu.suballocations.owner." CLASS                  \
+                     ".bytes.reserved.live",                                   \
+                     VKR_METRIC_UNIT_BYTES),                                   \
+      VKR_IMPL_GAUGE("memory.gpu.suballocations.owner." CLASS                  \
+                     ".bytes.reserved.retired",                                \
+                     VKR_METRIC_UNIT_BYTES),                                   \
+      VKR_IMPL_GAUGE("memory.gpu.suballocations.owner." CLASS                  \
+                     ".bytes.reserved.peak",                                   \
+                     VKR_METRIC_UNIT_BYTES),                                   \
+      VKR_IMPL_COUNTER("memory.gpu.suballocations.owner." CLASS                \
+                       ".bytes.alignment_waste",                               \
+                       VKR_METRIC_UNIT_BYTES)
+        VKR_IMPL_CLASS_ROWS("buffer"),
+        VKR_IMPL_CLASS_ROWS("texture"),
+#undef VKR_IMPL_CLASS_ROWS
 };
 
-_Static_assert(ArrayCount(vkr_metal_memory_metric_descriptions) <=
-                   VKR_METAL_MEMORY_METRIC_MAX,
-               "Metal memory metric ID storage is too small");
+_Static_assert(ArrayCount(vkr_renderer_impl_memory_metric_descriptions) <=
+                   VKR_RENDERER_IMPL_MEMORY_METRIC_MAX,
+               "Renderer implementation memory metric ID storage is too small");
 
-#undef VKR_METAL_COUNTER
-#undef VKR_METAL_GAUGE
-#endif
+#undef VKR_IMPL_COUNTER
+#undef VKR_IMPL_GAUGE
 
 bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
                                       VkrMetrics *metrics) {
@@ -308,7 +299,7 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
   MemZero(renderer_metrics, sizeof(*renderer_metrics));
   renderer_metrics->metrics = metrics;
   renderer_metrics->previous.gpu_memory_interval_contiguous = true_v;
-  renderer_metrics->previous.metal_memory_interval_contiguous = true_v;
+  renderer_metrics->previous.impl_memory_interval_contiguous = true_v;
   VkrRendererMetricIds *ids = &renderer_metrics->ids;
 
   VKR_REGISTER_U64_REQUIRED(world_draws_collected, "draw.world.draws_collected",
@@ -592,31 +583,30 @@ bool8_t vkr_renderer_metrics_register(VkrRendererMetrics *renderer_metrics,
 #undef VKR_REGISTER_F64
 #undef VKR_REGISTER_COUNTER
 
-#if defined(PLATFORM_APPLE)
-static bool8_t vkr_renderer_metrics_register_metal_memory(
+static bool8_t vkr_renderer_metrics_register_impl_memory(
     VkrRendererMetrics *renderer_metrics) {
   VkrMetrics *metrics = renderer_metrics->metrics;
-  VkrMetricId *ids = renderer_metrics->ids.metal_memory;
+  VkrMetricId *ids = renderer_metrics->ids.impl_memory;
   uint32_t registered = 0;
-  for (; registered < ArrayCount(vkr_metal_memory_metric_descriptions);
+  for (; registered < ArrayCount(vkr_renderer_impl_memory_metric_descriptions);
        ++registered) {
-    const VkrMetalMemoryMetricDescription *description =
-        &vkr_metal_memory_metric_descriptions[registered];
+    const VkrRendererImplMemoryMetricDescription *description =
+        &vkr_renderer_impl_memory_metric_descriptions[registered];
     if (!vkr_renderer_metric_register(metrics, description->name,
                                       VKR_METRIC_DOMAIN_MEMORY_GPU,
                                       description->kind, description->unit,
                                       VKR_METRIC_SCALAR_U64, &ids[registered]))
       break;
   }
-  renderer_metrics->metal_memory_metric_count = registered;
-  if (registered != ArrayCount(vkr_metal_memory_metric_descriptions)) {
-    log_warn("Metrics catalog holds %u/%zu Metal memory rows", registered,
-             ArrayCount(vkr_metal_memory_metric_descriptions));
+  renderer_metrics->impl_memory_metric_count = registered;
+  if (registered != ArrayCount(vkr_renderer_impl_memory_metric_descriptions)) {
+    log_warn("Metrics catalog holds %u/%zu implementation memory rows",
+             registered,
+             ArrayCount(vkr_renderer_impl_memory_metric_descriptions));
     return false_v;
   }
   return true_v;
 }
-#endif
 
 bool8_t vkr_renderer_metrics_register_device_memory(
     VkrRendererMetrics *renderer_metrics, VkrRendererFrontendHandle renderer) {
@@ -630,10 +620,8 @@ bool8_t vkr_renderer_metrics_register_device_memory(
     return false_v;
   }
 
-#if defined(PLATFORM_APPLE)
-  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL)
-    (void)vkr_renderer_metrics_register_metal_memory(renderer_metrics);
-#endif
+  if (!renderer->impl.caps.uses_legacy_pipeline_state)
+    (void)vkr_renderer_metrics_register_impl_memory(renderer_metrics);
 
   // Two rows per memory type and three per heap. A device at the Vulkan
   // maxima would ask for more rows than the catalog can hold, so the count is
@@ -716,7 +704,7 @@ vkr_renderer_metrics_prepare_pass_table(VkrRendererMetrics *renderer_metrics,
     return false_v;
   }
   RendererFrontend *frontend = (RendererFrontend *)renderer;
-  if (frontend->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+  if (!frontend->impl.caps.uses_legacy_pipeline_state) {
     const uint64_t capacity = 64;
     VkrRendererMetricsPassSample *samples = vkr_allocator_alloc(
         allocator, capacity * sizeof(*samples), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
@@ -762,20 +750,42 @@ vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
   table->count = 0;
   table->truncated = false_v;
   table->cpu_frame_index = cpu_frame_index;
-  if (renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
-#if defined(PLATFORM_APPLE)
-    VkrMetalPacketResult *result =
-        (VkrMetalPacketResult *)renderer->metal_timing_result;
-    if (result && result->pass_timing_count > 0 &&
-        vkr_metal_packet_result_publish_pass_metrics(result, renderer_metrics,
-                                                     cpu_frame_index)) {
-      const uint64_t source_frame =
-          renderer->metal_timing_source_cpu_frame_index;
+  if (!renderer->impl.caps.uses_legacy_pipeline_state) {
+    const VkrRendererImplSubmitResult *result = &renderer->timing_result;
+    VkrRendererMetricsPassSample samples[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS] = {
+        0};
+    bool8_t valid =
+        result->pass_timing_count > 0 &&
+        result->pass_timing_count <= VKR_RENDERER_IMPL_MAX_PASS_TIMINGS;
+    for (uint32_t i = 0; valid && i < result->pass_timing_count; ++i) {
+      const VkrRendererImplPassTiming *source = &result->pass_timings[i];
+      valid = isfinite(source->cpu_ms) && source->cpu_ms >= 0.0 &&
+              (!source->valid ||
+               (isfinite(source->gpu_ms) && source->gpu_ms >= 0.0));
+      if (!valid) {
+        break;
+      }
+      VkrRendererMetricsPassSample *sample = &samples[i];
+      const uint64_t length =
+          Min(string_length(source->name), (uint64_t)VKR_METRIC_NAME_MAX);
+      MemCopy(sample->name, source->name, length);
+      sample->name[length] = '\0';
+      sample->name_length = (uint8_t)length;
+      sample->cpu_ms = source->cpu_ms;
+      sample->gpu_ms = source->gpu_ms;
+      sample->cpu_frame_index = cpu_frame_index;
+      sample->gpu_source_frame_index = result->source_frame_index;
+      sample->gpu_source_submit_serial = result->submit_value;
+      sample->gpu_valid = source->valid;
+    }
+    if (valid && vkr_renderer_metrics_publish_pass_samples(
+                     renderer_metrics, samples, result->pass_timing_count,
+                     cpu_frame_index)) {
+      const uint64_t source_frame = result->source_frame_index;
       for (uint32_t i = 0; i < table->count; ++i) {
         table->samples[i].gpu_source_frame_index = source_frame;
       }
     }
-#endif
     return;
   }
   if (!renderer->render_graph) {
@@ -832,9 +842,8 @@ bool8_t vkr_renderer_metrics_publish_pass_samples(
   return true_v;
 }
 
-#if defined(PLATFORM_APPLE)
-static uint32_t vkr_renderer_metrics_metal_class_values(
-    const VkrMetalMemoryClassMetrics *class_metrics, uint64_t *values) {
+static uint32_t vkr_renderer_metrics_impl_class_values(
+    const VkrRendererImplMemoryClassMetrics *class_metrics, uint64_t *values) {
   uint32_t i = 0;
   values[i++] = class_metrics->live_allocations;
   values[i++] = class_metrics->retired_allocations;
@@ -850,10 +859,10 @@ static uint32_t vkr_renderer_metrics_metal_class_values(
   return i;
 }
 
-static uint32_t vkr_renderer_metrics_metal_values(
-    const VkrMetalMemoryDeviceMetrics *memory,
-    uint64_t values[VKR_METAL_MEMORY_METRIC_MAX]) {
-  const VkrMetalMemoryMetrics *suballocations = &memory->suballocations;
+static uint32_t vkr_renderer_metrics_impl_values(
+    const VkrRendererImplMemoryMetrics *memory,
+    uint64_t values[VKR_RENDERER_IMPL_MEMORY_METRIC_MAX]) {
+  const VkrRendererImplMemoryMetrics *suballocations = memory;
   const uint64_t heap_live = memory->native_heap_size > 0 ? 1u : 0u;
   uint32_t i = 0;
   values[i++] = heap_live;
@@ -893,44 +902,41 @@ static uint32_t vkr_renderer_metrics_metal_values(
   values[i++] = memory->readback_ring_busy_failures;
   values[i++] = memory->native_heap_used_size;
   values[i++] = memory->native_heap_allocated_size;
-  i += vkr_renderer_metrics_metal_class_values(
-      &suballocations->classes[VKR_METAL_MEMORY_CLASS_BUFFER], &values[i]);
-  i += vkr_renderer_metrics_metal_class_values(
-      &suballocations->classes[VKR_METAL_MEMORY_CLASS_TEXTURE], &values[i]);
+  i += vkr_renderer_metrics_impl_class_values(
+      &suballocations->classes[VKR_RENDERER_IMPL_MEMORY_CLASS_BUFFER],
+      &values[i]);
+  i += vkr_renderer_metrics_impl_class_values(
+      &suballocations->classes[VKR_RENDERER_IMPL_MEMORY_CLASS_TEXTURE],
+      &values[i]);
   return i;
 }
 
 static void
-vkr_renderer_metrics_collect_metal_memory(VkrRendererMetrics *renderer_metrics,
-                                          RendererFrontend *renderer) {
-  if (renderer_metrics->metal_memory_metric_count == 0 ||
-      renderer->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL)
+vkr_renderer_metrics_collect_impl_memory(VkrRendererMetrics *renderer_metrics,
+                                         RendererFrontend *renderer) {
+  if (renderer_metrics->impl_memory_metric_count == 0)
     return;
-  VkrMetalMemoryDeviceMetrics memory = {0};
-  if (!vkr_metal_packet_renderer_get_memory_metrics(renderer->metal_renderer,
-                                                    &memory)) {
-    renderer_metrics->previous.metal_memory_interval_contiguous = false_v;
-    return;
-  }
-  uint64_t values[VKR_METAL_MEMORY_METRIC_MAX] = {0};
+  uint64_t values[VKR_RENDERER_IMPL_MEMORY_METRIC_MAX] = {0};
   const uint32_t value_count =
-      vkr_renderer_metrics_metal_values(&memory, values);
-  if (value_count != ArrayCount(vkr_metal_memory_metric_descriptions)) {
-    log_error("Metal memory metric projection has %u values for %zu rows",
-              value_count, ArrayCount(vkr_metal_memory_metric_descriptions));
-    renderer_metrics->previous.metal_memory_interval_contiguous = false_v;
+      vkr_renderer_metrics_impl_values(&renderer->timing_result.memory, values);
+  if (value_count != ArrayCount(vkr_renderer_impl_memory_metric_descriptions)) {
+    log_error("Implementation memory metric projection has %u values for %zu "
+              "rows",
+              value_count,
+              ArrayCount(vkr_renderer_impl_memory_metric_descriptions));
+    renderer_metrics->previous.impl_memory_interval_contiguous = false_v;
     return;
   }
   const uint32_t count =
-      Min(value_count, renderer_metrics->metal_memory_metric_count);
+      Min(value_count, renderer_metrics->impl_memory_metric_count);
   const bool8_t counters_valid =
-      renderer_metrics->previous.metal_memory_interval_contiguous;
+      renderer_metrics->previous.impl_memory_interval_contiguous;
   for (uint32_t i = 0; i < count; ++i) {
-    const VkrMetricId id = renderer_metrics->ids.metal_memory[i];
-    if (vkr_metal_memory_metric_descriptions[i].kind ==
+    const VkrMetricId id = renderer_metrics->ids.impl_memory[i];
+    if (vkr_renderer_impl_memory_metric_descriptions[i].kind ==
         VKR_METRIC_KIND_COUNTER) {
       const uint64_t delta = vkr_renderer_metrics_cumulative_delta(
-          values[i], &renderer_metrics->previous.metal_memory[i]);
+          values[i], &renderer_metrics->previous.impl_memory[i]);
       if (counters_valid)
         vkr_metrics_counter_add(renderer_metrics->metrics, id, delta);
       else
@@ -941,9 +947,8 @@ vkr_renderer_metrics_collect_metal_memory(VkrRendererMetrics *renderer_metrics,
       vkr_metrics_gauge_set_u64(renderer_metrics->metrics, id, values[i]);
     }
   }
-  renderer_metrics->previous.metal_memory_interval_contiguous = true_v;
+  renderer_metrics->previous.impl_memory_interval_contiguous = true_v;
 }
-#endif
 
 void vkr_renderer_metrics_collect(
     VkrRendererMetrics *renderer_metrics,
@@ -1220,9 +1225,7 @@ void vkr_renderer_metrics_collect(
     }
   }
 
-#if defined(PLATFORM_APPLE)
-  vkr_renderer_metrics_collect_metal_memory(renderer_metrics, renderer);
-#endif
+  vkr_renderer_metrics_collect_impl_memory(renderer_metrics, renderer);
 
   uint32_t pipeline_created = 0;
   uint32_t pipeline_binds = 0;

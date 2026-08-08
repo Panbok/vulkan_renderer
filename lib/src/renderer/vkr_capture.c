@@ -1,9 +1,5 @@
 #include "vkr_capture.h"
 
-#if defined(PLATFORM_APPLE)
-#include "renderer/metal/vkr_metal_packet_renderer.h"
-#endif
-
 enum {
   VKR_CAPTURE_CHANNEL_FINAL_COLOR = 0,
   VKR_CAPTURE_CHANNEL_SCENE_COLOR,
@@ -74,42 +70,22 @@ VkrCaptureChannelId vkr_renderer_capture_channel_from_name(const char *name) {
 VkrCaptureStatus vkr_renderer_capture_poll(VkrRendererFrontendHandle renderer,
                                            VkrCaptureRequestId request_id,
                                            VkrCapturePollResult *out_result) {
-  if (renderer && renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
-#if defined(PLATFORM_APPLE)
-    return vkr_metal_packet_renderer_capture_poll(renderer->metal_renderer,
-                                                  request_id, out_result);
-#else
-    if (out_result) {
-      MemZero(out_result, sizeof(*out_result));
-      out_result->error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
-    }
-    return VKR_CAPTURE_STATUS_NOT_FOUND;
-#endif
-  }
-  if (!renderer || !renderer->backend.capture_poll) {
+  if (!renderer || !renderer->impl.ops || !renderer->impl.ops->capture_poll) {
     if (out_result) {
       MemZero(out_result, sizeof(*out_result));
       out_result->error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
     }
     return VKR_CAPTURE_STATUS_NOT_FOUND;
   }
-  return renderer->backend.capture_poll(renderer->backend_state, request_id,
-                                        out_result);
+  return renderer->impl.ops->capture_poll(renderer->impl.state, request_id,
+                                          out_result);
 }
 
 bool8_t vkr_renderer_capture_release(VkrRendererFrontendHandle renderer,
                                      VkrCaptureRequestId request_id) {
-  if (renderer && renderer->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
-#if defined(PLATFORM_APPLE)
-    return vkr_metal_packet_renderer_capture_release(renderer->metal_renderer,
-                                                     request_id);
-#else
-    return false_v;
-#endif
-  }
-  if (renderer && renderer->backend.capture_release) {
-    return renderer->backend.capture_release(renderer->backend_state,
-                                             request_id);
+  if (renderer && renderer->impl.ops && renderer->impl.ops->capture_release) {
+    return renderer->impl.ops->capture_release(renderer->impl.state,
+                                               request_id);
   }
   return false_v;
 }
@@ -210,7 +186,7 @@ VkrRendererError vkr_capture_frame_reserve(RendererFrontend *rf,
   if (!request) {
     return VKR_RENDERER_ERROR_NONE;
   }
-  if (!rf->backend.capture_reserve || request->request_id == 0 ||
+  if (!rf->impl.ops->capture_reserve || request->request_id == 0 ||
       !request->items || request->item_count == 0 ||
       request->item_count > VKR_CAPTURE_MAX_ITEMS) {
     return vkr_capture_reject(validation, VKR_RENDERER_ERROR_INVALID_PARAMETER,
@@ -332,8 +308,8 @@ VkrRendererError vkr_capture_frame_reserve(RendererFrontend *rf,
   }
 
   const VkrRendererError error =
-      rf->backend.capture_reserve(rf->backend_state, request, frame->plans,
-                                  packet->frame.frame_index, &frame->buffer);
+      rf->impl.ops->capture_reserve(rf->impl.state, request, frame->plans,
+                                    packet->frame.frame_index, &frame->buffer);
   if (error != VKR_RENDERER_ERROR_NONE) {
     return error == VKR_RENDERER_ERROR_CAPTURE_BUSY
                ? error
@@ -363,8 +339,8 @@ vkr_internal void vkr_capture_execute(VkrRgPassContext *ctx, void *user_data) {
       ctx->error = VKR_RENDERER_ERROR_INVALID_HANDLE;
       return;
     }
-    ctx->error = ctx->renderer->backend.capture_record_item(
-        ctx->renderer->backend_state, frame->request_id, i,
+    ctx->error = ctx->renderer->impl.ops->capture_record_item(
+        ctx->renderer->impl.state, frame->request_id, i,
         (VkrBackendResourceHandle){.ptr = texture});
     if (ctx->error != VKR_RENDERER_ERROR_NONE) {
       return;

@@ -57,6 +57,17 @@ static void material_pbr_mock_get_device_information(
   MemZero(device_information, sizeof(*device_information));
 }
 
+static void material_pbr_impl_get_device_information(
+    void *state, VkrDeviceInformation *device_information, Arena *temp_arena) {
+  RendererFrontend *renderer = state;
+  renderer->backend.get_device_information(renderer->backend_state,
+                                           device_information, temp_arena);
+}
+
+static const VkrRendererImplOps material_pbr_impl_ops = {
+    .get_device_information = material_pbr_impl_get_device_information,
+};
+
 static VkrBackendResourceHandle
 material_pbr_mock_texture_create(void *backend_state,
                                  const VkrTextureDescription *desc,
@@ -192,6 +203,8 @@ static void material_pbr_test_init_renderer(MaterialPbrTestContext *ctx) {
   ctx->renderer.backend_state = &ctx->backend_state;
   ctx->renderer.backend.get_device_information =
       material_pbr_mock_get_device_information;
+  ctx->renderer.impl.ops = &material_pbr_impl_ops;
+  ctx->renderer.impl.state = &ctx->renderer;
   ctx->renderer.backend.texture_create = material_pbr_mock_texture_create;
   ctx->renderer.backend.texture_create_with_payload =
       material_pbr_mock_texture_create_with_payload;

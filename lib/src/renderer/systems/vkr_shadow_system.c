@@ -822,11 +822,10 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
     }
   }
 
-  /* Metal owns the graph shadow array and precreated pipelines. The retained
-     subsystem still owns the shared cascade configuration/matrices used to
-     build the backend-neutral packet, but must not recreate legacy renderpass,
-     descriptor, or pipeline state. */
-  if (rf->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+  /* Bindless implementations own the graph shadow array and pipelines. The
+     retained subsystem still owns shared cascade configuration and matrices,
+     but must not recreate legacy render-pass or descriptor state. */
+  if (!rf->impl.caps.uses_legacy_pipeline_state) {
     system->initialized = true_v;
     return true_v;
   }

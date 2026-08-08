@@ -63,35 +63,6 @@ bool8_t vkr_metal_packet_renderer_pass_timings_poll_latest(
   return true_v;
 }
 
-bool8_t vkr_metal_packet_result_publish_pass_metrics(
-    const VkrMetalPacketResult *result, VkrRendererMetrics *renderer_metrics,
-    uint64_t cpu_frame_index) {
-  if (!result || !renderer_metrics ||
-      result->pass_timing_count > VKR_METAL_PACKET_MAX_PASS_TIMINGS)
-    return false_v;
-  VkrRendererMetricsPassSample samples[VKR_METAL_PACKET_MAX_PASS_TIMINGS] = {0};
-  for (uint32_t i = 0; i < result->pass_timing_count; ++i) {
-    const VkrMetalPacketPassTiming *source = &result->pass_timings[i];
-    if (!isfinite(source->cpu_ms) || source->cpu_ms < 0.0 ||
-        (source->valid && (!isfinite(source->gpu_ms) || source->gpu_ms < 0.0)))
-      return false_v;
-    VkrRendererMetricsPassSample *sample = &samples[i];
-    const uint64_t length =
-        Min(string_length(source->name), (uint64_t)VKR_METRIC_NAME_MAX);
-    MemCopy(sample->name, source->name, length);
-    sample->name[length] = '\0';
-    sample->name_length = (uint8_t)length;
-    sample->cpu_ms = source->cpu_ms;
-    sample->gpu_ms = source->gpu_ms;
-    sample->cpu_frame_index = cpu_frame_index;
-    sample->gpu_source_frame_index = cpu_frame_index;
-    sample->gpu_source_submit_serial = result->submit_value;
-    sample->gpu_valid = source->valid;
-  }
-  return vkr_renderer_metrics_publish_pass_samples(
-      renderer_metrics, samples, result->pass_timing_count, cpu_frame_index);
-}
-
 bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer) {
   if (!renderer || renderer->frame_prepared || renderer->active_command_slot)
     return false_v;

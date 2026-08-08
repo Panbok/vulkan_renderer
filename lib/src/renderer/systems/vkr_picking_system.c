@@ -528,7 +528,7 @@ bool8_t vkr_picking_init(struct s_RendererFrontend *renderer,
     return false_v;
   }
 
-  if (rf->backend_type == VKR_RENDERER_BACKEND_TYPE_METAL) {
+  if (!rf->impl.caps.uses_legacy_pipeline_state) {
     if (!picking_set_target_size(ctx, width, height)) {
       return false_v;
     }

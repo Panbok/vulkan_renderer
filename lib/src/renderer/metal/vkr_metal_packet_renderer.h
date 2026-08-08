@@ -9,7 +9,6 @@
 #include "renderer/vkr_render_packet.h"
 
 typedef struct VkrMetalPacketRenderer VkrMetalPacketRenderer;
-typedef struct VkrRendererMetrics VkrRendererMetrics;
 struct VkrMeshLoaderResult;
 struct VkrTexturePreparedLoad;
 struct VkrMaterial;
@@ -171,10 +170,6 @@ typedef struct VkrMetalPacketResult {
 bool8_t
 vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
                                  VkrMetalPacketRenderer **out_renderer);
-/** Copies completed Metal pass intervals into the shared application table. */
-bool8_t vkr_metal_packet_result_publish_pass_metrics(
-    const VkrMetalPacketResult *result, VkrRendererMetrics *renderer_metrics,
-    uint64_t cpu_frame_index);
 
 /** Publishes immutable asset records. These calls are not frame-hot APIs. */
 bool8_t vkr_metal_packet_renderer_create_mesh(

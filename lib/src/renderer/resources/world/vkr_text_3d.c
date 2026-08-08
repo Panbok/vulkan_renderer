@@ -572,8 +572,7 @@ bool8_t vkr_text_3d_create(VkrText3D *text_3d,
   RendererFrontend *rf = (RendererFrontend *)renderer;
 
   text_3d->pipeline = cfg.pipeline;
-  if (rf->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
-      text_3d->pipeline.id == 0) {
+  if (rf->impl.caps.uses_legacy_pipeline_state && text_3d->pipeline.id == 0) {
     VkrRendererError pipe_err = VKR_RENDERER_ERROR_NONE;
     String8 name = string8_lit("shader.default.world_text");
     if (vkr_pipeline_registry_acquire_by_name(&rf->pipeline_registry, name,
@@ -583,8 +582,7 @@ bool8_t vkr_text_3d_create(VkrText3D *text_3d,
     }
   }
 
-  if (rf->backend_type != VKR_RENDERER_BACKEND_TYPE_METAL &&
-      text_3d->pipeline.id != 0) {
+  if (rf->impl.caps.uses_legacy_pipeline_state && text_3d->pipeline.id != 0) {
     VkrRendererError inst_err = VKR_RENDERER_ERROR_NONE;
     if (!vkr_pipeline_registry_acquire_instance_state(
             &rf->pipeline_registry, text_3d->pipeline, &text_3d->instance_state,

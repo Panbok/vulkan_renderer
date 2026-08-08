@@ -37,6 +37,7 @@
 #include "reflection_pipeline_test.h"
 #include "render_graph_barrier_test.h"
 #include "renderer_batch_test.h"
+#include "renderer_impl_test.h"
 #include "resource_async_state_tests.h"
 #include "scene_loader_tests.h"
 #include "simd_test.h"

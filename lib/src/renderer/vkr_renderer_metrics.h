@@ -68,7 +68,7 @@ typedef struct VkrRendererMetricsPassTable {
   bool8_t truncated;
 } VkrRendererMetricsPassTable;
 
-#define VKR_METAL_MEMORY_METRIC_MAX 64u
+#define VKR_RENDERER_IMPL_MEMORY_METRIC_MAX 64u
 
 typedef struct VkrRendererMetricIds {
   VkrMetricId world_draws_collected;
@@ -157,9 +157,8 @@ typedef struct VkrRendererMetricIds {
   VkrMetricId gpu_heap_size_bytes[VKR_DEVICE_MEMORY_HEAP_MAX];
   VkrMetricId gpu_heap_usage_bytes[VKR_DEVICE_MEMORY_HEAP_MAX];
   VkrMetricId gpu_heap_budget_bytes[VKR_DEVICE_MEMORY_HEAP_MAX];
-  /** Backend-specific Metal heap/suballocation rows registered at device init.
-   */
-  VkrMetricId metal_memory[VKR_METAL_MEMORY_METRIC_MAX];
+  /** Strategy-provided heap/suballocation rows registered at device init. */
+  VkrMetricId impl_memory[VKR_RENDERER_IMPL_MEMORY_METRIC_MAX];
 
   VkrMetricId pipelines_created;
   VkrMetricId pipeline_binds;
@@ -205,14 +204,14 @@ typedef struct VkrRendererCumulativeBaselines {
   uint64_t meshes_batched;
   uint64_t jobs_completed;
   uint64_t gpu_allocations_created;
-  uint64_t metal_memory[VKR_METAL_MEMORY_METRIC_MAX];
+  uint64_t impl_memory[VKR_RENDERER_IMPL_MEMORY_METRIC_MAX];
   struct {
     uint64_t allocated_bytes;
     uint64_t allocations_created;
   } gpu_owner[VKR_GPU_ALLOCATION_OWNER_COUNT];
   /** False after a failed pull until one snapshot re-establishes baselines. */
   bool8_t gpu_memory_interval_contiguous;
-  bool8_t metal_memory_interval_contiguous;
+  bool8_t impl_memory_interval_contiguous;
 } VkrRendererCumulativeBaselines;
 
 /** Advances one cumulative-source baseline and returns its interval delta. */
@@ -232,7 +231,7 @@ typedef struct VkrRendererMetrics {
   uint64_t boot_scene_ns;
   uint32_t device_memory_type_count;
   uint32_t device_memory_heap_count;
-  uint32_t metal_memory_metric_count;
+  uint32_t impl_memory_metric_count;
 } VkrRendererMetrics;
 
 typedef struct VkrRendererMetricsCollectContext {
