@@ -387,6 +387,12 @@ bool8_t vkr_harness_report_write(const char *path,
                                       ? report->provenance.actual_target_height
                                       : report->case_manifest.height) &&
       vkr_json_writer_end_array(writer) &&
+      (!report->case_manifest.resize_round_trip ||
+       (vkr_harness_json_emit_name(writer, "resize_round_trip") &&
+        vkr_json_writer_begin_array(writer) &&
+        vkr_json_writer_u64(writer, report->case_manifest.resize_width) &&
+        vkr_json_writer_u64(writer, report->case_manifest.resize_height) &&
+        vkr_json_writer_end_array(writer))) &&
       vkr_harness_json_emit_string(writer, "scene",
                                    report->case_manifest.scene) &&
       vkr_harness_json_emit_string(

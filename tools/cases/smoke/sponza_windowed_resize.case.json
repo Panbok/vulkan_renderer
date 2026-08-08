@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "id": "smoke.sponza.windowed_resize",
+  "suite": "smoke",
+  "description": "Hidden-window startup, native resize round trip, and shutdown witness for renderer implementation seams.",
+  "scene": "assets/scenes/sponza.scene.json",
+  "seed": 1,
+  "resolution": [320, 240],
+  "resize_round_trip": [400, 300],
+  "boot": "full",
+  "target": "windowed_hidden",
+  "present": "immediate",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 3, "measure": 3 },
+  "renderer": {
+    "editor": false,
+    "skybox": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 4,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [-1.5, 0, 17],
+    "yaw": -90,
+    "pitch": 0,
+    "vertical_fov_degrees": 70,
+    "near_plane": 0.1,
+    "far_plane": 500
+  }
+}

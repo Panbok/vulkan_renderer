@@ -238,6 +238,30 @@ VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window) {
   };
 }
 
+bool8_t vkr_window_resize(VkrWindow *window, uint32_t width, uint32_t height) {
+  assert_log(window != NULL, "Window not initialized");
+  assert_log(window->platform_state != NULL, "Platform state not initialized");
+  if (width == 0 || height == 0) {
+    return false_v;
+  }
+
+  PlatformState *state = (PlatformState *)window->platform_state;
+  const DWORD style = (DWORD)GetWindowLongPtr(state->window, GWL_STYLE);
+  const DWORD ex_style = (DWORD)GetWindowLongPtr(state->window, GWL_EXSTYLE);
+  RECT rect = {0, 0, (LONG)width, (LONG)height};
+  if (!AdjustWindowRectEx(&rect, style, FALSE, ex_style) ||
+      !SetWindowPos(state->window, NULL, 0, 0, rect.right - rect.left,
+                    rect.bottom - rect.top,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE)) {
+    log_error("Failed to resize native window client area to %u x %u", width,
+              height);
+    return false_v;
+  }
+  window->width = width;
+  window->height = height;
+  return true_v;
+}
+
 void *vkr_window_get_win32_handle(VkrWindow *window) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");

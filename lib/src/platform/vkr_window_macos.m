@@ -640,6 +640,28 @@ VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window) {
   };
 }
 
+bool8_t vkr_window_resize(VkrWindow *window, uint32_t width, uint32_t height) {
+  assert_log(window != NULL, "Window not initialized");
+  assert_log(window->platform_state != NULL, "Platform state not initialized");
+  if (width == 0 || height == 0) {
+    return false_v;
+  }
+
+  PlatformState *state = (PlatformState *)window->platform_state;
+  @autoreleasepool {
+    if (!state->window || !state->view || !state->layer) {
+      return false_v;
+    }
+    [state->window setContentSize:NSMakeSize(width, height)];
+    const NSRect framebuffer =
+        [state->view convertRectToBacking:[state->view frame]];
+    [state->layer setDrawableSize:framebuffer.size];
+  }
+  window->width = width;
+  window->height = height;
+  return true_v;
+}
+
 void *vkr_window_get_metal_layer(VkrWindow *window) {
   assert_log(window != NULL, "Window not initialized");
   assert_log(window->platform_state != NULL, "Platform state not initialized");

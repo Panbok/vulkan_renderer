@@ -48,6 +48,14 @@ typedef struct VkrHarnessChildContext {
   VkrCaptureBatchRequest capture_request;
   bool8_t capture_requested;
   bool8_t capture_complete;
+  bool8_t resize_outbound_requested;
+  bool8_t resize_outbound_observed;
+  bool8_t resize_restore_requested;
+  bool8_t resize_round_trip_complete;
+  uint32_t resize_outbound_pixel_width;
+  uint32_t resize_outbound_pixel_height;
+  uint32_t resize_restore_pixel_width;
+  uint32_t resize_restore_pixel_height;
   VkrHarnessReport *capture_report;
   VkrHarnessError capture_error;
 } VkrHarnessChildContext;
@@ -142,6 +150,75 @@ static void vkr_harness_child_fail(Application *application,
     string_format(child->failure, sizeof(child->failure), "%s", reason);
   }
   application_close(application);
+}
+
+static bool8_t vkr_harness_child_resize_round_trip(Application *application) {
+  VkrHarnessChildContext *child = g_harness_child;
+  const VkrHarnessCase *case_manifest = child->case_manifest;
+  if (!case_manifest->resize_round_trip || child->resize_round_trip_complete) {
+    return true_v;
+  }
+
+  if (!child->resize_outbound_requested && child->completed_frames >= 1u) {
+    if (!vkr_window_resize(&application->window, case_manifest->resize_width,
+                           case_manifest->resize_height)) {
+      vkr_harness_child_fail(application, "resize.outbound_request_failed");
+      return false_v;
+    }
+    const VkrWindowPixelSize pixels =
+        vkr_window_get_pixel_size(&application->window);
+    if (pixels.width == 0u || pixels.height == 0u) {
+      vkr_harness_child_fail(application, "resize.outbound_extent_invalid");
+      return false_v;
+    }
+    child->resize_outbound_pixel_width = pixels.width;
+    child->resize_outbound_pixel_height = pixels.height;
+    child->resize_outbound_requested = true_v;
+    return true_v;
+  }
+
+  if (child->resize_outbound_requested && !child->resize_outbound_observed &&
+      child->completed_frames >= 2u) {
+    if (application->renderer.last_window_width !=
+            child->resize_outbound_pixel_width ||
+        application->renderer.last_window_height !=
+            child->resize_outbound_pixel_height) {
+      vkr_harness_child_fail(application, "resize.outbound_not_observed");
+      return false_v;
+    }
+    child->resize_outbound_observed = true_v;
+    if (!vkr_window_resize(&application->window, case_manifest->width,
+                           case_manifest->height)) {
+      vkr_harness_child_fail(application, "resize.restore_request_failed");
+      return false_v;
+    }
+    const VkrWindowPixelSize pixels =
+        vkr_window_get_pixel_size(&application->window);
+    if (pixels.width == 0u || pixels.height == 0u) {
+      vkr_harness_child_fail(application, "resize.restore_extent_invalid");
+      return false_v;
+    }
+    child->resize_restore_pixel_width = pixels.width;
+    child->resize_restore_pixel_height = pixels.height;
+    child->resize_restore_requested = true_v;
+    return true_v;
+  }
+
+  if (child->resize_restore_requested && child->completed_frames >= 3u) {
+    if (application->renderer.last_window_width !=
+            child->resize_restore_pixel_width ||
+        application->renderer.last_window_height !=
+            child->resize_restore_pixel_height) {
+      vkr_harness_child_fail(application, "resize.restore_not_observed");
+      return false_v;
+    }
+    child->resize_round_trip_complete = true_v;
+    vkr_harness_stdout(
+        "VKR_HARNESS_RESIZE_ROUND_TRIP_PASS outbound=%ux%u restored=%ux%u\n",
+        child->resize_outbound_pixel_width, child->resize_outbound_pixel_height,
+        child->resize_restore_pixel_width, child->resize_restore_pixel_height);
+  }
+  return true_v;
 }
 
 /**
@@ -400,6 +477,9 @@ void application_update(Application *application, float64_t delta) {
   }
   vkr_resource_system_pump(NULL);
   if (!child->phase_started && !vkr_harness_child_activate_scene(application)) {
+    return;
+  }
+  if (!vkr_harness_child_resize_round_trip(application)) {
     return;
   }
   if (child->capture_index >= 0 && !child->capture_requested &&

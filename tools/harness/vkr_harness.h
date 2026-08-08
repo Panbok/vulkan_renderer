@@ -282,6 +282,9 @@ typedef struct VkrHarnessCase {
   uint64_t seed;
   uint32_t width;
   uint32_t height;
+  bool8_t resize_round_trip;
+  uint32_t resize_width;
+  uint32_t resize_height;
   VkrHarnessBootProfile boot;
   VkrHarnessTarget target;
   VkrHarnessPresentMode present;

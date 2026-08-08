@@ -660,6 +660,7 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
                                         "scene",
                                         "seed",
                                         "resolution",
+                                        "resize_round_trip",
                                         "boot",
                                         "target",
                                         "present",
@@ -794,6 +795,7 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
     return false_v;
   }
   int32_t resolution = -1;
+  int32_t resize_round_trip = -1;
   int32_t frames = -1;
   int32_t renderer = -1;
   int32_t camera = -1;
@@ -839,6 +841,41 @@ bool8_t vkr_harness_case_parse(const char *json, uint64_t json_length,
   }
   out_case->warmup_frames = (uint32_t)warmup;
   out_case->measure_frames = (uint32_t)measure;
+  if (!vkr_harness_manifest_field(&doc, 0, "resize_round_trip", false_v,
+                                  &resize_round_trip, out_error)) {
+    return false_v;
+  }
+  if (resize_round_trip >= 0) {
+    if (doc.tokens[resize_round_trip].type != VKR_HARNESS_JSON_ARRAY ||
+        doc.tokens[resize_round_trip].child_count != 2u) {
+      vkr_harness_error_set(out_error, "case.resize_round_trip",
+                            "$.resize_round_trip",
+                            "Resize round trip must be [width, height]");
+      return false_v;
+    }
+    uint64_t resize_width = 0u;
+    uint64_t resize_height = 0u;
+    const int32_t resize_width_token = resize_round_trip + 1;
+    if (!vkr_harness_json_u64(&doc, resize_width_token, &resize_width,
+                              "$.resize_round_trip[0]", out_error) ||
+        !vkr_harness_json_u64(
+            &doc, vkr_harness_json_next(&doc, resize_width_token),
+            &resize_height, "$.resize_round_trip[1]", out_error) ||
+        resize_width == 0u || resize_height == 0u ||
+        resize_width > UINT32_MAX || resize_height > UINT32_MAX ||
+        (resize_width == width && resize_height == height) ||
+        out_case->target != VKR_HARNESS_TARGET_WINDOWED_HIDDEN ||
+        out_case->warmup_frames < 3u) {
+      vkr_harness_error_set(
+          out_error, "case.resize_round_trip", "$.resize_round_trip",
+          "Resize round trip requires a different non-zero windowed-hidden "
+          "extent and at least three warmup frames");
+      return false_v;
+    }
+    out_case->resize_round_trip = true_v;
+    out_case->resize_width = (uint32_t)resize_width;
+    out_case->resize_height = (uint32_t)resize_height;
+  }
   /* Case-level comparison thresholds are the fallback each capture inherits,
      so they must be resolved before the capture list is walked. */
   if (!vkr_harness_manifest_field(&doc, 0, "renderer", true_v, &renderer,

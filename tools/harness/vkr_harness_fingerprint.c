@@ -151,6 +151,10 @@ bool8_t vkr_harness_case_fingerprints_with_scene_digest(
   ADD("case.frames", "%u,%u", case_manifest->warmup_frames,
       case_manifest->measure_frames);
   ADD("case.resolution", "%u,%u", case_manifest->width, case_manifest->height);
+  if (case_manifest->resize_round_trip) {
+    ADD("case.resize_round_trip", "%u,%u", case_manifest->resize_width,
+        case_manifest->resize_height);
+  }
   ADD("case.scene", "%s", case_manifest->scene);
   ADD("case.scene_content", "%s", scene_content_digest);
   ADD("case.seed", "%llu", (unsigned long long)case_manifest->seed);

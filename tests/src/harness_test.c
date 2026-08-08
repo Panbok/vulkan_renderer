@@ -83,6 +83,14 @@ static void test_harness_case_parser(void) {
   assert(parsed.target_image_count == 3u);
   assert(!parsed.renderer.text_fixture);
   assert(parsed.renderer.backend[0] == '\0');
+  assert(harness_parse_case("windowed_hidden", "immediate", static_camera,
+                            ",\"resize_round_trip\":[80,72]", &parsed));
+  assert(parsed.resize_round_trip && parsed.resize_width == 80u &&
+         parsed.resize_height == 72u);
+  assert(!harness_parse_case("windowed_hidden", "immediate", static_camera,
+                             ",\"resize_round_trip\":[64,64]", &parsed));
+  assert(!harness_parse_case("offscreen", "none", static_camera,
+                             ",\"resize_round_trip\":[80,72]", &parsed));
   const char *metal_case =
       "{\"schema_version\":1,\"id\":\"smoke.test.metal\",\"suite\":\"smoke\","
       "\"scene\":\"assets/scenes/default.scene.json\",\"seed\":1,"
@@ -268,6 +276,20 @@ static void test_harness_fingerprints(void) {
                                        environment, workload, policy, &error));
   assert(strcmp(original_workload, workload) != 0);
   case_manifest.renderer.text_fixture = false_v;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) == 0);
+  case_manifest.resize_round_trip = true_v;
+  case_manifest.resize_width = 80u;
+  case_manifest.resize_height = 72u;
+  assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
+                                       &case_manifest, &profile,
+                                       VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,
+                                       environment, workload, policy, &error));
+  assert(strcmp(original_workload, workload) != 0);
+  case_manifest.resize_round_trip = false_v;
   assert(vkr_harness_case_fingerprints(".", VKR_HARNESS_TOOL_PROFILE,
                                        &case_manifest, &profile,
                                        VKR_RENDERER_SUBSYSTEM_ALL, NULL, 0u,

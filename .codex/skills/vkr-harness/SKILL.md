@@ -175,6 +175,7 @@ narrowing the profile's window.
 | `smoke/sponza_offscreen_snapshot.case.json` | full | 2/3 | Two-image WSI-free final-color/depth capture and recreation fixture |
 | `smoke/sponza_windowed_equivalent.case.json` | full | 2/3 | Local hidden-window work-volume counterpart to the offscreen fixture |
 | `smoke/sponza_windowed_snapshot_equivalent.case.json` | full | 2/3 | Local hidden-window capture counterpart to the offscreen fixture |
+| `smoke/sponza_windowed_resize.case.json` | full | 3/3 | Hidden-window native resize round trip; requires the renderer to observe the alternate and restored pixel extents |
 
 ## Compare full and automation boot
 

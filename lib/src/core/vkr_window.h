@@ -141,6 +141,17 @@ bool8_t vkr_window_update(VkrWindow *window);
  */
 VkrWindowPixelSize vkr_window_get_pixel_size(VkrWindow *window);
 
+/**
+ * @brief Resizes the native window's client area.
+ *
+ * The requested dimensions use the same logical-window units as
+ * `vkr_window_create()`. Platform resize events remain the authority for the
+ * renderer's pixel extent, including backing-scale conversion on macOS.
+ *
+ * @return `true_v` when the platform accepted the resize request.
+ */
+bool8_t vkr_window_resize(VkrWindow *window, uint32_t width, uint32_t height);
+
 #if defined(PLATFORM_APPLE)
 /**
  * @brief Gets the Metal layer from the window for Vulkan surface creation.
