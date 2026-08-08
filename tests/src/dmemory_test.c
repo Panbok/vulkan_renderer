@@ -406,6 +406,36 @@ static void test_dmemory_fragmentation(void) {
   printf("  test_dmemory_fragmentation PASSED\n");
 }
 
+static void test_dmemory_fragmentation_auto_growth(void) {
+  printf("  Running test_dmemory_fragmentation_auto_growth...\n");
+
+  VkrDMemory dmemory;
+  assert(vkr_dmemory_create(KB(64), KB(256), &dmemory));
+
+  void *blocks[4];
+  for (uint32_t i = 0; i < ArrayCount(blocks); ++i) {
+    blocks[i] = vkr_dmemory_alloc(&dmemory, KB(16));
+    assert(blocks[i] != NULL);
+  }
+
+  assert(vkr_dmemory_free(&dmemory, blocks[0], KB(16)));
+  assert(vkr_dmemory_free(&dmemory, blocks[2], KB(16)));
+  const uint64_t total_before = dmemory.total_size;
+  assert(vkr_dmemory_get_free_space(&dmemory) > KB(20));
+
+  void *grown = vkr_dmemory_alloc(&dmemory, KB(20));
+  assert(grown != NULL);
+  assert(dmemory.total_size > total_before);
+
+  assert(vkr_dmemory_free(&dmemory, blocks[1], KB(16)));
+  assert(vkr_dmemory_free(&dmemory, blocks[3], KB(16)));
+  assert(vkr_dmemory_free(&dmemory, grown, KB(20)));
+  assert(vkr_dmemory_get_free_space(&dmemory) == dmemory.total_size);
+
+  vkr_dmemory_destroy(&dmemory);
+  printf("  test_dmemory_fragmentation_auto_growth PASSED\n");
+}
+
 static void test_dmemory_boundary_conditions(void) {
   printf("  Running test_dmemory_boundary_conditions...\n");
 
@@ -689,6 +719,7 @@ bool32_t run_dmemory_tests(void) {
   test_dmemory_free_pattern();
   test_dmemory_invalid_free();
   test_dmemory_fragmentation();
+  test_dmemory_fragmentation_auto_growth();
   test_dmemory_boundary_conditions();
   test_dmemory_realloc_preserves_data();
   test_dmemory_write_read_integrity();

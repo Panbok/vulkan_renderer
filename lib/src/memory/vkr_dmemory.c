@@ -238,6 +238,14 @@ void *vkr_dmemory_alloc_aligned(VkrDMemory *dmemory, uint64_t size,
       uint64_t needed_total_overhead = used_space + request_size;
       if (needed_total_overhead < used_space) {
         needed_total_overhead = dmemory->reserve_size; // overflow; clamp
+      } else if (needed_total_overhead <= dmemory->total_size) {
+        // Aggregate free space is sufficient, but no individual block can
+        // satisfy the request. Commit enough new contiguous space for one.
+        const uint64_t remaining_reserve =
+            dmemory->reserve_size - dmemory->total_size;
+        needed_total_overhead = request_size > remaining_reserve
+                                    ? dmemory->reserve_size
+                                    : dmemory->total_size + request_size;
       }
 
       uint64_t target_total_overhead = dmemory->total_size;
