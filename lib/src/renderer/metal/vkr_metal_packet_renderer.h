@@ -218,6 +218,20 @@ bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
 bool8_t vkr_metal_packet_renderer_publish_prepared_texture(
     VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,
     const struct VkrTexturePreparedLoad *prepared);
+bool8_t vkr_metal_packet_renderer_publish_writable_texture(
+    VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,
+    const VkrTextureDescription *description);
+/** Updates the sampler selected by subsequently published material rows. */
+bool8_t vkr_metal_packet_renderer_update_texture_sampler(
+    VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,
+    const VkrTextureDescription *description);
+bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
+    VkrMetalPacketRenderer *renderer, VkrTextureHandle source,
+    VkrTextureHandle irradiance, VkrTextureHandle prefilter);
+bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
+    VkrMetalPacketRenderer *renderer, VkrTextureHandle equirect,
+    VkrTextureHandle source, VkrTextureHandle irradiance,
+    VkrTextureHandle prefilter);
 bool8_t vkr_metal_packet_renderer_create_hdr_environment(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketHdrEnvironmentCreateInfo *create_info,

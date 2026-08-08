@@ -784,6 +784,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
     renderer->max_submeshes_per_mesh = config->max_submeshes_per_mesh;
     renderer->max_materials = config->max_material_rows;
     renderer->max_textures = config->max_textures;
+    renderer->max_samplers = VKR_METAL_PACKET_SAMPLER_CACHE_CAPACITY;
     renderer->max_draws = config->max_draws;
     renderer->max_instances = config->max_instances;
     renderer->command_slot_count = config->frame_slot_count;
@@ -807,6 +808,8 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         calloc(config->max_material_rows, sizeof(*renderer->packet_materials));
     renderer->textures =
         calloc(config->max_textures, sizeof(*renderer->textures));
+    renderer->samplers =
+        calloc(renderer->max_samplers, sizeof(*renderer->samplers));
     renderer->text_uploads =
         calloc(config->max_draws, sizeof(*renderer->text_uploads));
     renderer->render_passes =
@@ -843,9 +846,9 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         vkr_allocator_arena(&renderer->graph_frame_allocator) &&
         renderer->images && renderer->meshes && renderer->submeshes &&
         renderer->packet_materials && renderer->textures &&
-        renderer->text_uploads && renderer->render_passes &&
-        renderer->capture_storage && renderer->completed_timing_results &&
-        command_slots_created &&
+        renderer->samplers && renderer->text_uploads &&
+        renderer->render_passes && renderer->capture_storage &&
+        renderer->completed_timing_results && command_slots_created &&
         vkr_metal_capture_ring_init(
             &renderer->capture_ring, config->capture_ring_capacity,
             config->capture_max_batch_bytes, renderer->capture_storage,

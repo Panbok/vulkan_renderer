@@ -27,6 +27,10 @@ typedef struct VKR_SIMD_ALIGN VkrMetalMaterialGpuRow {
   uint64_t normal_texture_id;
   uint64_t orm_texture_id;
   uint64_t emissive_texture_id;
+  uint64_t base_color_sampler_id;
+  uint64_t normal_sampler_id;
+  uint64_t orm_sampler_id;
+  uint64_t emissive_sampler_id;
   uint32_t material_id;
   uint32_t flags;
   uint64_t reserved;

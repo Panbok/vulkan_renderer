@@ -279,6 +279,9 @@ vkr_metal_packet_lighting_valid(const VkrFrameLighting *lighting) {
       (lighting->point_light_count > 0 &&
        (!lighting->point_lights || !lighting->point_light_grid)))
     return false_v;
+  if (lighting->ibl_source.id != 0 &&
+      lighting->ibl_source.generation == VKR_INVALID_ID)
+    return false_v;
   if (lighting->ibl_probe_count > VKR_FRAME_IBL_PROBE_MAX ||
       (lighting->ibl_probe_count > 0 && !lighting->ibl_probes))
     return false_v;

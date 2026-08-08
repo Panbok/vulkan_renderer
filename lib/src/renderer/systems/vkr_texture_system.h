@@ -237,8 +237,11 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
  * @brief Releases a texture by name
  * @param system The texture system to release the texture from
  * @param texture_name The name of the texture to release
+ * @return true when the caller's reference was released. A false return keeps
+ * an auto-release reference retryable after GPU destruction fails.
  */
-void vkr_texture_system_release(VkrTextureSystem *system, String8 texture_name);
+bool8_t vkr_texture_system_release(VkrTextureSystem *system,
+                                   String8 texture_name);
 
 /**
  * @brief Adds one reference to a texture by handle.
@@ -257,9 +260,11 @@ void vkr_texture_system_add_ref_by_handle(VkrTextureSystem *system,
  * @brief Releases a texture by handle
  * @param system The texture system to release the texture from
  * @param handle The handle of the texture to release
+ * @return true when the caller's reference was released. A false return keeps
+ * an auto-release reference retryable after GPU destruction fails.
  */
-void vkr_texture_system_release_by_handle(VkrTextureSystem *system,
-                                          VkrTextureHandle handle);
+bool8_t vkr_texture_system_release_by_handle(VkrTextureSystem *system,
+                                             VkrTextureHandle handle);
 
 /**
  * @brief Updates sampler filtering/wrapping for a texture handle.

@@ -463,9 +463,13 @@ bool8_t vkr_material_system_publish(VkrMaterialSystem *system,
   }
 
   VkrMaterial *material = &system->materials.data[handle.id - 1];
+  VkrMaterial published = *material;
+  published.alpha_mode =
+      vkr_material_system_material_alpha_mode(system, material);
+  published.alpha_mode_explicit = true_v;
   if (material->id != handle.id || material->generation != handle.generation ||
       !system->asset_publisher->publish_material(system->asset_publisher->state,
-                                                 handle, material)) {
+                                                 handle, &published)) {
     if (out_error) {
       *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
     }

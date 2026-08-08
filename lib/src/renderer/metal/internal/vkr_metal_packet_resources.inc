@@ -1,4 +1,119 @@
 /* Immutable mesh/material/texture publication, lookup, and retirement. */
+static bool8_t
+vkr_metal_packet_sampler_key_equal(const VkrMetalPacketSamplerKey *a,
+                                   const VkrMetalPacketSamplerKey *b) {
+  return a->u_repeat_mode == b->u_repeat_mode &&
+         a->v_repeat_mode == b->v_repeat_mode &&
+         a->w_repeat_mode == b->w_repeat_mode &&
+         a->min_filter == b->min_filter && a->mag_filter == b->mag_filter &&
+         a->mip_filter == b->mip_filter &&
+         a->mip_level_count == b->mip_level_count &&
+         a->anisotropy_enable == b->anisotropy_enable;
+}
+
+static MTLSamplerAddressMode
+vkr_metal_packet_sampler_address(VkrTextureRepeatMode mode) {
+  switch (mode) {
+  case VKR_TEXTURE_REPEAT_MODE_REPEAT:
+    return MTLSamplerAddressModeRepeat;
+  case VKR_TEXTURE_REPEAT_MODE_MIRRORED_REPEAT:
+    return MTLSamplerAddressModeMirrorRepeat;
+  case VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_EDGE:
+    return MTLSamplerAddressModeClampToEdge;
+  case VKR_TEXTURE_REPEAT_MODE_CLAMP_TO_BORDER:
+    return MTLSamplerAddressModeClampToBorderColor;
+  default:
+    return MTLSamplerAddressModeClampToZero;
+  }
+}
+
+static id<MTLSamplerState>
+vkr_metal_packet_sampler(VkrMetalPacketRenderer *renderer,
+                         const VkrTextureDescription *description,
+                         uint32_t mip_level_count) API_AVAILABLE(macos(26.0)) {
+  if (!renderer || !description || mip_level_count == 0 ||
+      mip_level_count > VKR_METAL_PACKET_MAX_TEXTURE_MIPS ||
+      (uint32_t)description->u_repeat_mode >= VKR_TEXTURE_REPEAT_MODE_COUNT ||
+      (uint32_t)description->v_repeat_mode >= VKR_TEXTURE_REPEAT_MODE_COUNT ||
+      (uint32_t)description->w_repeat_mode >= VKR_TEXTURE_REPEAT_MODE_COUNT ||
+      (uint32_t)description->min_filter >= VKR_FILTER_COUNT ||
+      (uint32_t)description->mag_filter >= VKR_FILTER_COUNT ||
+      (uint32_t)description->mip_filter >= VKR_MIP_FILTER_COUNT)
+    return nil;
+  const uint32_t sampler_mip_count =
+      description->mip_filter == VKR_MIP_FILTER_NONE ? 1u : mip_level_count;
+  const VkrMetalPacketSamplerKey key = {
+      .u_repeat_mode = description->u_repeat_mode,
+      .v_repeat_mode = description->v_repeat_mode,
+      .w_repeat_mode = description->w_repeat_mode,
+      .min_filter = description->min_filter,
+      .mag_filter = description->mag_filter,
+      .mip_filter = description->mip_filter,
+      .mip_level_count = sampler_mip_count,
+      .anisotropy_enable = description->anisotropy_enable ? true_v : false_v,
+  };
+  for (uint32_t i = 0; i < renderer->sampler_count; ++i) {
+    if (vkr_metal_packet_sampler_key_equal(&renderer->samplers[i].key, &key))
+      return renderer->samplers[i].state;
+  }
+  if (renderer->sampler_count >= renderer->max_samplers) {
+    log_error("Metal sampler cache exhausted: %u unique states (max=%u)",
+              renderer->sampler_count, renderer->max_samplers);
+    return nil;
+  }
+
+  MTLSamplerDescriptor *descriptor = [MTLSamplerDescriptor new];
+  descriptor.supportArgumentBuffers = YES;
+  descriptor.sAddressMode =
+      vkr_metal_packet_sampler_address(description->u_repeat_mode);
+  descriptor.tAddressMode =
+      vkr_metal_packet_sampler_address(description->v_repeat_mode);
+  descriptor.rAddressMode =
+      vkr_metal_packet_sampler_address(description->w_repeat_mode);
+  descriptor.minFilter = description->min_filter == VKR_FILTER_LINEAR
+                             ? MTLSamplerMinMagFilterLinear
+                             : MTLSamplerMinMagFilterNearest;
+  descriptor.magFilter = description->mag_filter == VKR_FILTER_LINEAR
+                             ? MTLSamplerMinMagFilterLinear
+                             : MTLSamplerMinMagFilterNearest;
+  descriptor.mipFilter =
+      description->mip_filter == VKR_MIP_FILTER_LINEAR
+          ? MTLSamplerMipFilterLinear
+          : (description->mip_filter == VKR_MIP_FILTER_NEAREST
+                 ? MTLSamplerMipFilterNearest
+                 : MTLSamplerMipFilterNotMipmapped);
+  descriptor.lodMinClamp = 0.0f;
+  descriptor.lodMaxClamp = description->mip_filter == VKR_MIP_FILTER_NONE
+                               ? 0.0f
+                               : (float32_t)(sampler_mip_count - 1u);
+  descriptor.maxAnisotropy = description->anisotropy_enable ? 16u : 1u;
+  descriptor.borderColor = MTLSamplerBorderColorOpaqueBlack;
+  id<MTLSamplerState> state =
+      [renderer->device newSamplerStateWithDescriptor:descriptor];
+  [descriptor release];
+  if (!state)
+    return nil;
+  renderer->samplers[renderer->sampler_count++] =
+      (VkrMetalPacketSampler){.key = key, .state = state};
+  return state;
+}
+
+static id<MTLSamplerState>
+vkr_metal_packet_default_material_sampler(VkrMetalPacketRenderer *renderer,
+                                          uint32_t mip_level_count)
+    API_AVAILABLE(macos(26.0)) {
+  const VkrTextureDescription description = {
+      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
+      .min_filter = VKR_FILTER_LINEAR,
+      .mag_filter = VKR_FILTER_LINEAR,
+      .mip_filter =
+          mip_level_count > 1 ? VKR_MIP_FILTER_LINEAR : VKR_MIP_FILTER_NONE,
+  };
+  return vkr_metal_packet_sampler(renderer, &description, mip_level_count);
+}
+
 static bool8_t vkr_metal_packet_renderer_create_mesh_internal(
     VkrMetalPacketRenderer *renderer,
     const VkrMetalPacketMeshCreateInfo *create_info,
@@ -307,6 +422,11 @@ bool8_t vkr_metal_packet_renderer_create_material(
     return false_v;
   if (!@available(macOS 26.0, *))
     return false_v;
+  id<MTLSamplerState> material_sampler =
+      vkr_metal_packet_default_material_sampler(renderer, 1);
+  if (!material_sampler || material_sampler.gpuResourceID._impl == 0)
+    return false_v;
+  const uint64_t material_sampler_id = material_sampler.gpuResourceID._impl;
   for (uint32_t i = 0; i < renderer->max_materials; ++i) {
     VkrMetalPacketMaterial *slot = &renderer->packet_materials[i];
     if (slot->live)
@@ -359,6 +479,10 @@ bool8_t vkr_metal_packet_renderer_create_material(
         .normal_texture_id = slot->textures[1].resource_id,
         .orm_texture_id = slot->textures[2].resource_id,
         .emissive_texture_id = slot->textures[3].resource_id,
+        .base_color_sampler_id = material_sampler_id,
+        .normal_sampler_id = material_sampler_id,
+        .orm_sampler_id = material_sampler_id,
+        .emissive_sampler_id = material_sampler_id,
         .material_id = create_info->material_id,
         .flags = create_info->texture_flags,
     };
@@ -396,6 +520,7 @@ bool8_t vkr_metal_packet_renderer_create_material(
     slot->alpha_mode = create_info->alpha_mode;
     slot->alpha_cutoff = create_info->alpha_cutoff;
     slot->owns_textures = true_v;
+    slot->double_sided = false_v;
     slot->live = true_v;
     *out_handle =
         (VkrMaterialHandle){.id = i + 1, .generation = slot->generation};
@@ -416,7 +541,6 @@ vkr_metal_packet_renderer_destroy_material(VkrMetalPacketRenderer *renderer,
                                              slot->last_use_submit_value) !=
       VKR_METAL_MATERIAL_STATUS_OK)
     return false_v;
-  VkrTextureHandle referenced_textures[ArrayCount(slot->texture_handles)] = {0};
   for (uint32_t texture_index = 0; texture_index < ArrayCount(slot->textures);
        ++texture_index) {
     if (slot->owns_textures) {
@@ -425,8 +549,7 @@ vkr_metal_packet_renderer_destroy_material(VkrMetalPacketRenderer *renderer,
               slot->last_use_submit_value) != VKR_METAL_MEMORY_STATUS_OK)
         return false_v;
     } else {
-      referenced_textures[texture_index] = slot->texture_handles[texture_index];
-      VkrMetalPacketTexture *texture = vkr_metal_packet_resolve_retired_texture(
+      VkrMetalPacketTexture *texture = vkr_metal_packet_resolve_texture(
           renderer, slot->texture_handles[texture_index]);
       if (texture &&
           texture->last_use_submit_value < slot->last_use_submit_value)
@@ -441,15 +564,7 @@ vkr_metal_packet_renderer_destroy_material(VkrMetalPacketRenderer *renderer,
   slot->row = (VkrMetalMaterialHandle){0};
   slot->row_index = 0;
   slot->owns_textures = false_v;
-  for (uint32_t texture_index = 0;
-       texture_index < ArrayCount(referenced_textures); ++texture_index) {
-    const VkrTextureHandle texture_handle = referenced_textures[texture_index];
-    VkrMetalPacketTexture *texture =
-        vkr_metal_packet_resolve_retired_texture(renderer, texture_handle);
-    if (texture && texture->pending_destroy &&
-        !vkr_metal_packet_renderer_destroy_texture(renderer, texture_handle))
-      return false_v;
-  }
+  slot->double_sided = false_v;
   return true_v;
 }
 
@@ -486,7 +601,8 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
     const VkrMaterialTexture *source = &material->textures[source_slots[i]];
     if (source->handle.id == 0 ||
         !(textures[i] =
-              vkr_metal_packet_resolve_texture(renderer, source->handle)))
+              vkr_metal_packet_resolve_texture(renderer, source->handle)) ||
+        textures[i]->sampler_resource_id == 0)
       return false_v;
     slot->texture_handles[i] = source->handle;
   }
@@ -505,6 +621,10 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
       .normal_texture_id = textures[1]->resource.resource_id,
       .orm_texture_id = textures[2]->resource.resource_id,
       .emissive_texture_id = textures[3]->resource.resource_id,
+      .base_color_sampler_id = textures[0]->sampler_resource_id,
+      .normal_sampler_id = textures[1]->sampler_resource_id,
+      .orm_sampler_id = textures[2]->sampler_resource_id,
+      .emissive_sampler_id = textures[3]->sampler_resource_id,
       .material_id = handle.id,
       .flags = flags,
   };
@@ -532,6 +652,7 @@ vkr_metal_packet_renderer_publish_material(VkrMetalPacketRenderer *renderer,
   slot->alpha_mode = material->alpha_mode;
   slot->alpha_cutoff = material->alpha_cutoff;
   slot->owns_textures = false_v;
+  slot->double_sided = material->double_sided;
   slot->live = true_v;
   return true_v;
 }
@@ -543,11 +664,17 @@ bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
   if (!renderer || !create_info || !out_handle || renderer->frame_prepared ||
       !create_info->pixels || create_info->width == 0 ||
       create_info->height == 0 ||
+      create_info->width > VKR_TEXTURE_MAX_DIMENSION ||
+      create_info->height > VKR_TEXTURE_MAX_DIMENSION ||
       (uint64_t)create_info->width >
           UINT64_MAX / ((uint64_t)create_info->height * 4u))
     return false_v;
   *out_handle = VKR_TEXTURE_HANDLE_INVALID;
   if (!@available(macOS 26.0, *))
+    return false_v;
+  id<MTLSamplerState> sampler =
+      vkr_metal_packet_default_material_sampler(renderer, 1u);
+  if (!sampler || sampler.gpuResourceID._impl == 0)
     return false_v;
   for (uint32_t i = 0; i < renderer->max_textures; ++i) {
     VkrMetalPacketTexture *slot = &renderer->textures[i];
@@ -585,6 +712,7 @@ bool8_t vkr_metal_packet_renderer_create_rgba8_texture(
         slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
     if (slot->generation == 0)
       slot->generation = 1;
+    slot->sampler_resource_id = sampler.gpuResourceID._impl;
     slot->last_use_submit_value = renderer->submit_value;
     slot->live = true_v;
     *out_handle =
@@ -602,6 +730,8 @@ bool8_t vkr_metal_packet_renderer_publish_prepared_texture(
       handle.generation == VKR_INVALID_ID || !prepared->upload_data ||
       prepared->upload_data_size == 0 || prepared->description.width == 0 ||
       prepared->description.height == 0 ||
+      prepared->description.width > VKR_TEXTURE_MAX_DIMENSION ||
+      prepared->description.height > VKR_TEXTURE_MAX_DIMENSION ||
       prepared->description.width != prepared->description.height &&
           prepared->description.type == VKR_TEXTURE_TYPE_CUBE_MAP)
     return false_v;
@@ -623,14 +753,17 @@ bool8_t vkr_metal_packet_renderer_publish_prepared_texture(
       (prepared->description.type != VKR_TEXTURE_TYPE_2D ||
        !prepared->upload_regions || prepared->upload_region_count == 0 ||
        prepared->upload_mip_levels == 0 ||
+       prepared->upload_mip_levels > VKR_METAL_PACKET_MAX_TEXTURE_MIPS ||
        prepared->upload_array_layers != 1)) {
     [descriptor release];
     return false_v;
   }
   const uint64_t cube_bytes = (uint64_t)prepared->description.width *
                               prepared->description.height * 4u * 6u;
-  if (cubemap && (prepared->description.channels != 4 ||
-                  prepared->upload_data_size != cube_bytes)) {
+  if (cubemap &&
+      (prepared->description.channels != 4 ||
+       prepared->upload_mip_levels != 1 || prepared->upload_array_layers != 6 ||
+       prepared->upload_data_size != cube_bytes)) {
     [descriptor release];
     return false_v;
   }
@@ -662,7 +795,12 @@ bool8_t vkr_metal_packet_renderer_publish_prepared_texture(
            : vkr_metal_packet_upload_texture(
                  renderer, &payload, prepared->description.format,
                  (id<MTLTexture>)slot->resource.metal_texture));
-  if (!uploaded) {
+  id<MTLSamplerState> sampler =
+      uploaded
+          ? vkr_metal_packet_sampler(renderer, &prepared->description,
+                                     cubemap ? 1u : prepared->upload_mip_levels)
+          : nil;
+  if (!uploaded || !sampler || sampler.gpuResourceID._impl == 0) {
     if (slot->resource.metal_texture) {
       (void)vkr_metal_memory_device_retire(
           renderer->memory, slot->resource.handle, renderer->submit_value);
@@ -672,10 +810,319 @@ bool8_t vkr_metal_packet_renderer_publish_prepared_texture(
     *slot = (VkrMetalPacketTexture){.generation = prior_generation};
     return false_v;
   }
+  slot->sampler_resource_id = sampler.gpuResourceID._impl;
   slot->generation = handle.generation;
   slot->last_use_submit_value = renderer->submit_value;
   slot->live = true_v;
   return true_v;
+}
+
+bool8_t vkr_metal_packet_renderer_publish_writable_texture(
+    VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,
+    const VkrTextureDescription *description) {
+  if (!renderer || !description || renderer->frame_prepared || handle.id == 0 ||
+      handle.id > renderer->max_textures ||
+      handle.generation == VKR_INVALID_ID || description->id != handle.id ||
+      description->generation != handle.generation || description->width == 0 ||
+      description->height == 0 ||
+      description->width > VKR_TEXTURE_MAX_DIMENSION ||
+      description->height > VKR_TEXTURE_MAX_DIMENSION ||
+      description->sample_count != VKR_SAMPLE_COUNT_1 ||
+      (description->type != VKR_TEXTURE_TYPE_2D &&
+       description->type != VKR_TEXTURE_TYPE_CUBE_MAP) ||
+      (description->type == VKR_TEXTURE_TYPE_CUBE_MAP &&
+       description->width != description->height)) {
+    return false_v;
+  }
+  if (!@available(macOS 26.0, *))
+    return false_v;
+
+  VkrMetalPacketTexture *slot = &renderer->textures[handle.id - 1];
+  if (slot->live)
+    return false_v;
+  const uint32_t prior_generation = slot->generation;
+  const MTLPixelFormat pixel_format =
+      vkr_metal_packet_pixel_format(description->format);
+  if (pixel_format == MTLPixelFormatInvalid)
+    return false_v;
+
+  const uint32_t mip_count =
+      description->mip_filter == VKR_MIP_FILTER_NONE
+          ? 1u
+          : vkr_metal_packet_mip_count(
+                Max(description->width, description->height));
+  MTLTextureDescriptor *descriptor = [MTLTextureDescriptor new];
+  descriptor.textureType = description->type == VKR_TEXTURE_TYPE_CUBE_MAP
+                               ? MTLTextureTypeCube
+                               : MTLTextureType2D;
+  descriptor.pixelFormat = pixel_format;
+  descriptor.width = description->width;
+  descriptor.height = description->height;
+  descriptor.mipmapLevelCount = mip_count;
+  descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+  const bool8_t created = vkr_metal_memory_device_create_texture(
+                              renderer->memory, descriptor, &slot->resource) ==
+                          VKR_METAL_MEMORY_STATUS_OK;
+  [descriptor release];
+  id<MTLSamplerState> sampler =
+      created ? vkr_metal_packet_sampler(renderer, description, mip_count)
+              : nil;
+  if (!created || !sampler || sampler.gpuResourceID._impl == 0) {
+    if (slot->resource.metal_texture) {
+      (void)vkr_metal_memory_device_retire(
+          renderer->memory, slot->resource.handle, renderer->submit_value);
+      (void)vkr_metal_memory_device_collect(renderer->memory,
+                                            renderer->submit_value, NULL);
+    }
+    *slot = (VkrMetalPacketTexture){.generation = prior_generation};
+    return false_v;
+  }
+
+  slot->sampler_resource_id = sampler.gpuResourceID._impl;
+  slot->generation = handle.generation;
+  slot->last_use_submit_value = renderer->submit_value;
+  slot->live = true_v;
+  return true_v;
+}
+
+bool8_t vkr_metal_packet_renderer_update_texture_sampler(
+    VkrMetalPacketRenderer *renderer, VkrTextureHandle handle,
+    const VkrTextureDescription *description) {
+  if (!renderer || !description || renderer->frame_prepared || handle.id == 0 ||
+      description->id != handle.id ||
+      description->generation != handle.generation) {
+    return false_v;
+  }
+  if (!@available(macOS 26.0, *)) {
+    return false_v;
+  }
+
+  VkrMetalPacketTexture *texture =
+      vkr_metal_packet_resolve_texture(renderer, handle);
+  if (!texture) {
+    return false_v;
+  }
+  for (uint32_t material_index = 0; material_index < renderer->max_materials;
+       ++material_index) {
+    const VkrMetalPacketMaterial *material =
+        &renderer->packet_materials[material_index];
+    if (!material->live || material->owns_textures) {
+      continue;
+    }
+    for (uint32_t texture_index = 0;
+         texture_index < ArrayCount(material->texture_handles);
+         ++texture_index) {
+      const VkrTextureHandle referenced =
+          material->texture_handles[texture_index];
+      if (referenced.id == handle.id &&
+          referenced.generation == handle.generation) {
+        log_warn("Metal sampler update for texture %u:%u requires material "
+                 "republication; update rejected",
+                 handle.id, handle.generation);
+        return false_v;
+      }
+    }
+  }
+  id<MTLTexture> metal_texture =
+      (id<MTLTexture>)texture->resource.metal_texture;
+  const uint32_t mip_level_count = (uint32_t)metal_texture.mipmapLevelCount;
+  id<MTLSamplerState> sampler =
+      vkr_metal_packet_sampler(renderer, description, mip_level_count);
+  if (!sampler || sampler.gpuResourceID._impl == 0) {
+    return false_v;
+  }
+  texture->sampler_resource_id = sampler.gpuResourceID._impl;
+  return true_v;
+}
+
+static bool8_t
+vkr_metal_packet_validate_ibl_textures(const VkrMetalPacketTexture *source,
+                                       const VkrMetalPacketTexture *irradiance,
+                                       const VkrMetalPacketTexture *prefilter)
+    API_AVAILABLE(macos(26.0)) {
+  if (!source || !irradiance || !prefilter || source == irradiance ||
+      source == prefilter || irradiance == prefilter) {
+    return false_v;
+  }
+
+  id<MTLTexture> source_texture =
+      (id<MTLTexture>)source->resource.metal_texture;
+  id<MTLTexture> irradiance_texture =
+      (id<MTLTexture>)irradiance->resource.metal_texture;
+  id<MTLTexture> prefilter_texture =
+      (id<MTLTexture>)prefilter->resource.metal_texture;
+  return source_texture && irradiance_texture && prefilter_texture &&
+         source_texture.textureType == MTLTextureTypeCube &&
+         irradiance_texture.textureType == MTLTextureTypeCube &&
+         prefilter_texture.textureType == MTLTextureTypeCube &&
+         source_texture.width == source_texture.height &&
+         irradiance_texture.width == irradiance_texture.height &&
+         prefilter_texture.width == prefilter_texture.height &&
+         irradiance_texture.pixelFormat == MTLPixelFormatRGBA16Float &&
+         prefilter_texture.pixelFormat == MTLPixelFormatRGBA16Float &&
+         (source_texture.usage & MTLTextureUsageShaderRead) != 0 &&
+         (irradiance_texture.usage & MTLTextureUsageShaderWrite) != 0 &&
+         (prefilter_texture.usage & MTLTextureUsageShaderWrite) != 0 &&
+         source_texture.mipmapLevelCount > 0 &&
+         source_texture.mipmapLevelCount <= VKR_METAL_PACKET_MAX_TEXTURE_MIPS &&
+         irradiance_texture.mipmapLevelCount == 1 &&
+         prefilter_texture.mipmapLevelCount > 0 &&
+         prefilter_texture.mipmapLevelCount <=
+             VKR_METAL_PACKET_MAX_TEXTURE_MIPS;
+}
+
+bool8_t vkr_metal_packet_renderer_bake_ibl_cubemap(
+    VkrMetalPacketRenderer *renderer, VkrTextureHandle source_handle,
+    VkrTextureHandle irradiance_handle, VkrTextureHandle prefilter_handle) {
+  if (!renderer || renderer->frame_prepared) {
+    return false_v;
+  }
+  if (!@available(macOS 26.0, *)) {
+    return false_v;
+  }
+  VkrMetalPacketTexture *source =
+      vkr_metal_packet_resolve_texture(renderer, source_handle);
+  VkrMetalPacketTexture *irradiance =
+      vkr_metal_packet_resolve_texture(renderer, irradiance_handle);
+  VkrMetalPacketTexture *prefilter =
+      vkr_metal_packet_resolve_texture(renderer, prefilter_handle);
+  if (!vkr_metal_packet_validate_ibl_textures(source, irradiance, prefilter))
+    return false_v;
+
+  id<MTLTexture> source_texture =
+      (id<MTLTexture>)source->resource.metal_texture;
+  id<MTLTexture> irradiance_texture =
+      (id<MTLTexture>)irradiance->resource.metal_texture;
+  id<MTLTexture> prefilter_texture =
+      (id<MTLTexture>)prefilter->resource.metal_texture;
+  const uint32_t prefilter_mip_count =
+      (uint32_t)prefilter_texture.mipmapLevelCount;
+  const uint64_t root_count = 1u + prefilter_mip_count;
+  const uint64_t root_bytes = root_count * VKR_METAL_PACKET_ROOT_ALIGNMENT;
+  VkrMetalRingSlice slice = {0};
+  VkrMetalAddressPair upload = {0};
+  id<MTLBuffer> upload_buffer = nil;
+  id<MTL4ComputeCommandEncoder> encoder = nil;
+  if (!vkr_metal_packet_begin_upload(renderer, root_bytes, &slice, &upload,
+                                     &upload_buffer, &encoder)) {
+    return false_v;
+  }
+
+  VkrMetalPacketIrradianceRoot *irradiance_root = upload.cpu_address;
+  *irradiance_root = (VkrMetalPacketIrradianceRoot){
+      .source_texture_id = source->resource.resource_id,
+      .target_texture_id = irradiance->resource.resource_id,
+      .sample_count = 128u,
+      .target_size = (uint32_t)irradiance_texture.width,
+  };
+  [renderer->argument_table setAddress:upload.gpu_address atIndex:0];
+  [encoder setComputePipelineState:renderer->ibl_irradiance_pipeline];
+  [encoder setArgumentTable:renderer->argument_table];
+  [encoder dispatchThreads:MTLSizeMake(irradiance_texture.width,
+                                       irradiance_texture.height, 6)
+      threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+
+  for (uint32_t mip = 0; mip < prefilter_mip_count; ++mip) {
+    const uint64_t root_offset =
+        (uint64_t)(mip + 1u) * VKR_METAL_PACKET_ROOT_ALIGNMENT;
+    VkrMetalPacketPrefilterRoot *prefilter_root =
+        (VkrMetalPacketPrefilterRoot *)((uint8_t *)upload.cpu_address +
+                                        root_offset);
+    *prefilter_root = (VkrMetalPacketPrefilterRoot){
+        .source_texture_id = source->resource.resource_id,
+        .target_texture_id = prefilter->resource.resource_id,
+        .roughness =
+            prefilter_mip_count > 1u
+                ? (float32_t)mip / (float32_t)(prefilter_mip_count - 1u)
+                : 0.0f,
+        .source_face_size = (float32_t)source_texture.width,
+        .source_mip_count = (float32_t)source_texture.mipmapLevelCount,
+        .target_mip = mip,
+    };
+    const uint32_t mip_size = Max(1u, (uint32_t)prefilter_texture.width >> mip);
+    [renderer->argument_table setAddress:upload.gpu_address + root_offset
+                                 atIndex:0];
+    [encoder setComputePipelineState:renderer->ibl_prefilter_pipeline];
+    [encoder setArgumentTable:renderer->argument_table];
+    [encoder dispatchThreads:MTLSizeMake(mip_size, mip_size, 6)
+        threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+  }
+
+  if (!vkr_metal_packet_submit_upload(renderer, encoder, slice))
+    return false_v;
+  source->last_use_submit_value = renderer->submit_value;
+  irradiance->last_use_submit_value = renderer->submit_value;
+  prefilter->last_use_submit_value = renderer->submit_value;
+  return true_v;
+}
+
+bool8_t vkr_metal_packet_renderer_bake_hdr_environment(
+    VkrMetalPacketRenderer *renderer, VkrTextureHandle equirect_handle,
+    VkrTextureHandle source_handle, VkrTextureHandle irradiance_handle,
+    VkrTextureHandle prefilter_handle) {
+  if (!renderer || renderer->frame_prepared) {
+    return false_v;
+  }
+  if (!@available(macOS 26.0, *)) {
+    return false_v;
+  }
+  VkrMetalPacketTexture *equirect =
+      vkr_metal_packet_resolve_texture(renderer, equirect_handle);
+  VkrMetalPacketTexture *source =
+      vkr_metal_packet_resolve_texture(renderer, source_handle);
+  VkrMetalPacketTexture *irradiance =
+      vkr_metal_packet_resolve_texture(renderer, irradiance_handle);
+  VkrMetalPacketTexture *prefilter =
+      vkr_metal_packet_resolve_texture(renderer, prefilter_handle);
+  if (!equirect || equirect == source || equirect == irradiance ||
+      equirect == prefilter ||
+      !vkr_metal_packet_validate_ibl_textures(source, irradiance, prefilter)) {
+    return false_v;
+  }
+  id<MTLTexture> equirect_texture =
+      (id<MTLTexture>)equirect->resource.metal_texture;
+  id<MTLTexture> source_texture =
+      (id<MTLTexture>)source->resource.metal_texture;
+  if (equirect_texture.textureType != MTLTextureType2D ||
+      equirect_texture.width != equirect_texture.height * 2u ||
+      (equirect_texture.usage & MTLTextureUsageShaderRead) == 0 ||
+      source_texture.pixelFormat != MTLPixelFormatRGBA16Float ||
+      (source_texture.usage & MTLTextureUsageShaderWrite) == 0) {
+    return false_v;
+  }
+
+  VkrMetalRingSlice slice = {0};
+  VkrMetalAddressPair upload = {0};
+  id<MTLBuffer> upload_buffer = nil;
+  id<MTL4ComputeCommandEncoder> encoder = nil;
+  if (!vkr_metal_packet_begin_upload(renderer, VKR_METAL_PACKET_ROOT_ALIGNMENT,
+                                     &slice, &upload, &upload_buffer,
+                                     &encoder)) {
+    return false_v;
+  }
+  VkrMetalPacketEquirectRoot *root = upload.cpu_address;
+  *root = (VkrMetalPacketEquirectRoot){
+      .source_texture_id = equirect->resource.resource_id,
+      .target_texture_id = source->resource.resource_id,
+      .target_size = (uint32_t)source_texture.width,
+  };
+  [renderer->argument_table setAddress:upload.gpu_address atIndex:0];
+  [encoder setComputePipelineState:renderer->ibl_equirect_pipeline];
+  [encoder setArgumentTable:renderer->argument_table];
+  [encoder dispatchThreads:MTLSizeMake(source_texture.width,
+                                       source_texture.height, 6)
+      threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+  [encoder barrierAfterEncoderStages:MTLStageDispatch
+                 beforeEncoderStages:MTLStageBlit
+                   visibilityOptions:MTL4VisibilityOptionDevice];
+  [encoder generateMipmapsForTexture:source_texture];
+  if (!vkr_metal_packet_submit_upload(renderer, encoder, slice)) {
+    return false_v;
+  }
+  equirect->last_use_submit_value = renderer->submit_value;
+  source->last_use_submit_value = renderer->submit_value;
+  return vkr_metal_packet_renderer_bake_ibl_cubemap(
+      renderer, source_handle, irradiance_handle, prefilter_handle);
 }
 
 bool8_t vkr_metal_packet_renderer_create_cubemap(
@@ -683,10 +1130,15 @@ bool8_t vkr_metal_packet_renderer_create_cubemap(
     const VkrMetalPacketCubemapCreateInfo *create_info,
     VkrTextureHandle *out_handle) {
   if (!renderer || !create_info || !out_handle || renderer->frame_prepared ||
-      !create_info->rgba8_faces || create_info->extent == 0)
+      !create_info->rgba8_faces || create_info->extent == 0 ||
+      create_info->extent > VKR_TEXTURE_MAX_DIMENSION)
     return false_v;
   *out_handle = VKR_TEXTURE_HANDLE_INVALID;
   if (!@available(macOS 26.0, *))
+    return false_v;
+  id<MTLSamplerState> sampler =
+      vkr_metal_packet_default_material_sampler(renderer, 1u);
+  if (!sampler || sampler.gpuResourceID._impl == 0)
     return false_v;
   for (uint32_t i = 0; i < renderer->max_textures; ++i) {
     VkrMetalPacketTexture *slot = &renderer->textures[i];
@@ -725,6 +1177,7 @@ bool8_t vkr_metal_packet_renderer_create_cubemap(
         slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
     if (slot->generation == 0)
       slot->generation = 1;
+    slot->sampler_resource_id = sampler.gpuResourceID._impl;
     slot->last_use_submit_value = renderer->submit_value;
     slot->live = true_v;
     *out_handle =
@@ -741,11 +1194,20 @@ bool8_t vkr_metal_packet_renderer_create_hdr_environment(
   if (!renderer || !create_info || !out_handle || renderer->frame_prepared ||
       !create_info->rgba16_equirect || create_info->width == 0 ||
       create_info->height == 0 || create_info->cube_extent == 0 ||
+      create_info->width > VKR_TEXTURE_MAX_DIMENSION ||
+      create_info->height > VKR_TEXTURE_MAX_DIMENSION ||
+      create_info->cube_extent > VKR_TEXTURE_MAX_DIMENSION ||
       create_info->height > UINT32_MAX / 2u ||
       create_info->width != create_info->height * 2u)
     return false_v;
   *out_handle = VKR_TEXTURE_HANDLE_INVALID;
   if (!@available(macOS 26.0, *))
+    return false_v;
+  const uint32_t cube_mip_count =
+      vkr_metal_packet_mip_count(create_info->cube_extent);
+  id<MTLSamplerState> sampler =
+      vkr_metal_packet_default_material_sampler(renderer, cube_mip_count);
+  if (!sampler || sampler.gpuResourceID._impl == 0)
     return false_v;
   for (uint32_t i = 0; i < renderer->max_textures; ++i) {
     VkrMetalPacketTexture *slot = &renderer->textures[i];
@@ -767,8 +1229,7 @@ bool8_t vkr_metal_packet_renderer_create_hdr_environment(
     descriptor.textureType = MTLTextureTypeCube;
     descriptor.width = create_info->cube_extent;
     descriptor.height = create_info->cube_extent;
-    descriptor.mipmapLevelCount =
-        vkr_metal_packet_mip_count(create_info->cube_extent);
+    descriptor.mipmapLevelCount = cube_mip_count;
     descriptor.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
     const bool8_t cube_created =
         source_created && vkr_metal_memory_device_create_texture(
@@ -800,6 +1261,7 @@ bool8_t vkr_metal_packet_renderer_create_hdr_environment(
         slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
     if (slot->generation == 0)
       slot->generation = 1;
+    slot->sampler_resource_id = sampler.gpuResourceID._impl;
     slot->last_use_submit_value = renderer->submit_value;
     slot->live = true_v;
     *out_handle =
@@ -837,11 +1299,11 @@ vkr_metal_packet_renderer_destroy_texture(VkrMetalPacketRenderer *renderer,
           material->texture_handles[texture_index];
       if (referenced.id == handle.id &&
           referenced.generation == handle.generation) {
-        /* Logical owners may release a texture before all materials that
-           reference its immutable row are retired. Keep the placement alive
-           and complete destruction when the final material disappears. */
-        slot->pending_destroy = true_v;
-        return true_v;
+        log_warn("Metal texture %u:%u is still referenced by material %u:%u; "
+                 "ownership retained for retry",
+                 handle.id, handle.generation, material_index + 1u,
+                 material->generation);
+        return false_v;
       }
     }
   }
@@ -858,24 +1320,33 @@ vkr_metal_packet_renderer_destroy_texture(VkrMetalPacketRenderer *renderer,
     renderer->ibl_ready = false_v;
     renderer->ibl_source = VKR_TEXTURE_HANDLE_INVALID;
   }
-  slot->live = false_v;
-  slot->generation =
+  const uint32_t next_generation =
       slot->generation == UINT32_MAX ? 1u : slot->generation + 1u;
-  slot->resource = (VkrMetalTextureResource){0};
-  slot->pending_destroy = false_v;
+  *slot = (VkrMetalPacketTexture){.generation = next_generation};
   return true_v;
+}
+
+static bool8_t vkr_metal_packet_ibl_source(const VkrRenderPacket *packet,
+                                           VkrTextureHandle *out_source) {
+  if (!packet || !out_source)
+    return false_v;
+  *out_source = VKR_TEXTURE_HANDLE_INVALID;
+  if (packet->lighting && packet->lighting->ibl_source.id != 0) {
+    *out_source = packet->lighting->ibl_source;
+  } else if (packet->skybox && packet->skybox->cubemap.id != 0) {
+    *out_source = packet->skybox->cubemap;
+  }
+  return out_source->id != 0;
 }
 
 static bool8_t
 vkr_metal_packet_ibl_needs_bake(const VkrMetalPacketRenderer *renderer,
                                 const VkrRenderPacket *packet) {
-  if (!renderer || !packet || !packet->skybox ||
-      packet->skybox->cubemap.id == 0)
+  VkrTextureHandle source = VKR_TEXTURE_HANDLE_INVALID;
+  if (!renderer || !vkr_metal_packet_ibl_source(packet, &source))
     return false_v;
-  return !renderer->ibl_ready ||
-                 renderer->ibl_source.id != packet->skybox->cubemap.id ||
-                 renderer->ibl_source.generation !=
-                     packet->skybox->cubemap.generation
+  return !renderer->ibl_ready || renderer->ibl_source.id != source.id ||
+                 renderer->ibl_source.generation != source.generation
              ? true_v
              : false_v;
 }
@@ -916,11 +1387,10 @@ vkr_metal_packet_prepare_upload(VkrMetalPacketRenderer *renderer,
   if (instance_count > renderer->max_instances)
     return false_v;
   uint64_t root_count = 1;
-  if (packet->skybox) {
+  if (packet->skybox)
     root_count += 1;
-    if (vkr_metal_packet_ibl_needs_bake(renderer, packet))
-      root_count += 2 + VKR_IBL_PREFILTER_MIP_COUNT;
-  }
+  if (vkr_metal_packet_ibl_needs_bake(renderer, packet))
+    root_count += 2 + VKR_IBL_PREFILTER_MIP_COUNT;
   if (packet->world)
     root_count += (uint64_t)packet->world->opaque_draw_count +
                   packet->world->transmission_draw_count +

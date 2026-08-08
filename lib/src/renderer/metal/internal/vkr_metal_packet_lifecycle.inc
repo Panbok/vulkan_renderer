@@ -273,6 +273,35 @@ static bool8_t vkr_metal_packet_publish_texture_adapter(
                                                             texture);
 }
 
+static bool8_t vkr_metal_packet_publish_writable_texture_adapter(
+    void *state, VkrTextureHandle handle,
+    const VkrTextureDescription *description) {
+  return vkr_metal_packet_renderer_publish_writable_texture(state, handle,
+                                                            description);
+}
+
+static bool8_t vkr_metal_packet_update_texture_sampler_adapter(
+    void *state, VkrTextureHandle handle,
+    const VkrTextureDescription *description) {
+  return vkr_metal_packet_renderer_update_texture_sampler(state, handle,
+                                                          description);
+}
+
+static bool8_t
+vkr_metal_packet_bake_ibl_cubemap_adapter(void *state, VkrTextureHandle source,
+                                          VkrTextureHandle irradiance,
+                                          VkrTextureHandle prefilter) {
+  return vkr_metal_packet_renderer_bake_ibl_cubemap(state, source, irradiance,
+                                                    prefilter);
+}
+
+static bool8_t vkr_metal_packet_bake_hdr_environment_adapter(
+    void *state, VkrTextureHandle equirect, VkrTextureHandle source,
+    VkrTextureHandle irradiance, VkrTextureHandle prefilter) {
+  return vkr_metal_packet_renderer_bake_hdr_environment(state, equirect, source,
+                                                        irradiance, prefilter);
+}
+
 static bool8_t
 vkr_metal_packet_unpublish_texture_adapter(void *state,
                                            VkrTextureHandle handle) {
@@ -306,6 +335,14 @@ void vkr_metal_packet_renderer_get_asset_publisher(
                                  vkr_metal_packet_unpublish_geometry_adapter,
                              .publish_texture =
                                  vkr_metal_packet_publish_texture_adapter,
+                             .publish_writable_texture =
+                                 vkr_metal_packet_publish_writable_texture_adapter,
+                             .update_texture_sampler =
+                                 vkr_metal_packet_update_texture_sampler_adapter,
+                             .bake_ibl_cubemap =
+                                 vkr_metal_packet_bake_ibl_cubemap_adapter,
+                             .bake_hdr_environment =
+                                 vkr_metal_packet_bake_hdr_environment_adapter,
                              .unpublish_texture =
                                  vkr_metal_packet_unpublish_texture_adapter,
                              .publish_material =
@@ -332,6 +369,10 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
         [renderer->command_slots[i].allocator release];
         [renderer->command_slots[i].timestamp_heap release];
       }
+    }
+    if (renderer->samplers) {
+      for (uint32_t i = 0; i < renderer->sampler_count; ++i)
+        [renderer->samplers[i].state release];
     }
     [renderer->argument_table release];
     [renderer->depth_read_state release];
@@ -371,6 +412,7 @@ void vkr_metal_packet_renderer_destroy(VkrMetalPacketRenderer *renderer) {
   free(renderer->render_passes);
   free(renderer->packet_materials);
   free(renderer->textures);
+  free(renderer->samplers);
   free(renderer->text_uploads);
   free(renderer->submeshes);
   free(renderer->meshes);

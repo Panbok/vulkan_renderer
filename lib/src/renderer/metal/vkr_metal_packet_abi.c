@@ -32,9 +32,16 @@ static const VkrMetalPacketAbiField vkr_material_fields[] = {
     VKR_ABI_FIELD(VkrMetalMaterialGpuRow, orm_texture_id, "orm_texture", 32),
     VKR_ABI_FIELD(VkrMetalMaterialGpuRow, emissive_texture_id,
                   "emissive_texture", 40),
-    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, material_id, "material_id", 48),
-    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, flags, "flags", 52),
-    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, reserved, "reserved", 56),
+    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, base_color_sampler_id,
+                  "base_color_sampler", 48),
+    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, normal_sampler_id, "normal_sampler",
+                  56),
+    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, orm_sampler_id, "orm_sampler", 64),
+    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, emissive_sampler_id,
+                  "emissive_sampler", 72),
+    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, material_id, "material_id", 80),
+    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, flags, "flags", 84),
+    VKR_ABI_FIELD(VkrMetalMaterialGpuRow, reserved, "reserved", 88),
 };
 
 static const VkrMetalPacketAbiField vkr_text_vertex_fields[] = {
@@ -253,7 +260,7 @@ static const VkrMetalPacketAbiRecord
             VKR_ABI_RECORD(VkrInstanceDataGPU, "VkrMetalPacketInstance", 80, 16,
                            vkr_instance_fields),
         [VKR_METAL_PACKET_ABI_MATERIAL] =
-            VKR_ABI_RECORD(VkrMetalMaterialGpuRow, "VkrMetalPacketMaterial", 64,
+            VKR_ABI_RECORD(VkrMetalMaterialGpuRow, "VkrMetalPacketMaterial", 96,
                            16, vkr_material_fields),
         [VKR_METAL_PACKET_ABI_TEXT_VERTEX] =
             VKR_ABI_RECORD(VkrTextVertex, "VkrMetalPacketTextVertex", 32, 16,

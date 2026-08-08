@@ -32,28 +32,13 @@ vkr_metal_packet_resolve_material(VkrMetalPacketRenderer *renderer,
 }
 
 static VkrMetalPacketTexture *
-vkr_metal_packet_resolve_texture_internal(VkrMetalPacketRenderer *renderer,
-                                          VkrTextureHandle handle,
-                                          bool8_t allow_pending_destroy) {
+vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
+                                 VkrTextureHandle handle) {
   if (!renderer || handle.id == 0 || handle.id > renderer->max_textures)
     return NULL;
   VkrMetalPacketTexture *texture = &renderer->textures[handle.id - 1];
-  return texture->live && texture->generation == handle.generation &&
-                 (allow_pending_destroy || !texture->pending_destroy)
-             ? texture
-             : NULL;
-}
-
-static VkrMetalPacketTexture *
-vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
-                                 VkrTextureHandle handle) {
-  return vkr_metal_packet_resolve_texture_internal(renderer, handle, false_v);
-}
-
-static VkrMetalPacketTexture *
-vkr_metal_packet_resolve_retired_texture(VkrMetalPacketRenderer *renderer,
-                                         VkrTextureHandle handle) {
-  return vkr_metal_packet_resolve_texture_internal(renderer, handle, true_v);
+  return texture->live && texture->generation == handle.generation ? texture
+                                                                   : NULL;
 }
 
 static bool8_t vkr_metal_packet_encode_draws(
@@ -75,7 +60,9 @@ static bool8_t vkr_metal_packet_encode_draws(
   }
   [encoder setViewport:(MTLViewport){0.0, 0.0, target_width, target_height, 0.0,
                                      1.0}];
-  [encoder setCullMode:MTLCullModeNone];
+  MTLCullMode active_cull_mode = MTLCullModeNone;
+  [encoder setCullMode:active_cull_mode];
+  [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
   [encoder setDepthStencilState:depth_state];
   [encoder setRenderPipelineState:pipeline];
   for (uint32_t i = 0; i < draw_count; ++i) {
@@ -100,6 +87,12 @@ static bool8_t vkr_metal_packet_encode_draws(
                 draw->material.id, draw->material.generation, material != NULL,
                 draw->submesh_index, mesh ? mesh->submesh_count : 0);
       return false_v;
+    }
+    const MTLCullMode material_cull_mode =
+        material->double_sided ? MTLCullModeNone : MTLCullModeBack;
+    if (material_cull_mode != active_cull_mode) {
+      [encoder setCullMode:material_cull_mode];
+      active_cull_mode = material_cull_mode;
     }
     const VkrMetalPacketSubmeshCreateInfo *submesh =
         &renderer->submeshes[(uint64_t)(geometry.id - 1) *
@@ -174,7 +167,7 @@ static bool8_t vkr_metal_packet_encode_draws(
         .alpha_mode = material->alpha_mode,
         .material_flags =
             packet->lighting && packet->lighting->ibl_enabled ? 1u : 0u,
-        .reserved = renderer->convert_vulkan_clip_y ? 1u : 0u,
+        .reserved = 0u,
         .point_light_data = upload->point_light_data_gpu,
         .point_light_masks = upload->point_light_masks_gpu,
         .point_light_grid_origin_cell_size =
@@ -378,10 +371,11 @@ static bool8_t vkr_metal_packet_encode_ibl(
     VkrMetalPacketRenderer *renderer, const VkrRenderPacket *packet,
     id<MTL4ComputeCommandEncoder> encoder, VkrMetalPacketFrameUpload *upload,
     VkrMetalPacketResult *result) API_AVAILABLE(macos(26.0)) {
-  if (!packet->skybox)
+  VkrTextureHandle source_handle = VKR_TEXTURE_HANDLE_INVALID;
+  if (!vkr_metal_packet_ibl_source(packet, &source_handle))
     return true_v;
   VkrMetalPacketTexture *source =
-      vkr_metal_packet_resolve_texture(renderer, packet->skybox->cubemap);
+      vkr_metal_packet_resolve_texture(renderer, source_handle);
   if (!source || !renderer->ibl_live)
     return false_v;
   if (!vkr_metal_packet_ibl_needs_bake(renderer, packet))
@@ -713,7 +707,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   }
 
   const bool8_t picking = renderer->prepared_frame.picking_pending;
-  const bool8_t ibl = packet->skybox != NULL;
+  VkrTextureHandle ibl_source = VKR_TEXTURE_HANDLE_INVALID;
+  const bool8_t ibl = vkr_metal_packet_ibl_source(packet, &ibl_source);
   const bool8_t ibl_bake = vkr_metal_packet_ibl_needs_bake(renderer, packet);
   const bool8_t timing_requested = packet->debug &&
                                    packet->debug->enable_timing &&
@@ -1074,6 +1069,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       (uint32_t)renderer->graph->passes.length * 2u;
   command_slot->timing_requested = timing_requested;
   id<MTL4CommandBuffer> submissions[] = {renderer->command_buffer};
+  if (renderer->drawable)
+    [renderer->queue waitForDrawable:renderer->drawable];
   [renderer->queue commit:submissions count:1];
   [renderer->queue signalEvent:renderer->completion value:submit_value];
   if (renderer->drawable) {
@@ -1162,7 +1159,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     }
   }
   if (ibl_bake) {
-    renderer->ibl_source = packet->skybox->cubemap;
+    renderer->ibl_source = ibl_source;
     renderer->ibl_ready = true_v;
   }
   if (capture_count > 0) {

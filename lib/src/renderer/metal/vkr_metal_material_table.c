@@ -27,11 +27,13 @@ struct VkrMetalMaterialTableCore {
   VkrMetalMaterialTableMetrics metrics;
 };
 
-_Static_assert(sizeof(VkrMetalMaterialGpuRow) == 64,
-               "Metal material row ABI must remain 64 bytes");
+_Static_assert(sizeof(VkrMetalMaterialGpuRow) == 96,
+               "Metal material row ABI must remain 96 bytes");
 _Static_assert(offsetof(VkrMetalMaterialGpuRow, base_color_texture_id) == 16,
                "Metal material base texture offset changed");
-_Static_assert(offsetof(VkrMetalMaterialGpuRow, material_id) == 48,
+_Static_assert(offsetof(VkrMetalMaterialGpuRow, base_color_sampler_id) == 48,
+               "Metal material sampler offset changed");
+_Static_assert(offsetof(VkrMetalMaterialGpuRow, material_id) == 80,
                "Metal material identifier offset changed");
 
 static bool8_t vkr_metal_material_add_storage(uint64_t *size, uint64_t count,

@@ -89,15 +89,24 @@ vkr_internal VkrTextureOpaqueHandle vkr_world_resources_resolve_backend_texture(
   return texture->handle;
 }
 
-vkr_internal void
-vkr_world_resources_release_texture(VkrTextureSystem *texture_system,
-                                    VkrTextureHandle *handle) {
+vkr_internal bool8_t vkr_world_resources_release_texture(
+    VkrTextureSystem *texture_system, VkrTextureHandle *handle) {
   if (!texture_system || !handle || handle->id == 0) {
-    return;
+    return true_v;
   }
 
-  vkr_texture_system_release_by_handle(texture_system, *handle);
+  if (!vkr_texture_system_release_by_handle(texture_system, *handle)) {
+    return false_v;
+  }
   *handle = VKR_TEXTURE_HANDLE_INVALID;
+  return true_v;
+}
+
+vkr_internal bool8_t
+vkr_world_resources_has_retained_ibl_publisher(const RendererFrontend *rf) {
+  return rf && rf->asset_publisher.publish_writable_texture &&
+         rf->asset_publisher.bake_ibl_cubemap &&
+         rf->asset_publisher.bake_hdr_environment;
 }
 
 vkr_internal void vkr_world_resources_release_instance_state(
@@ -1255,6 +1264,9 @@ bool8_t vkr_world_resources_init_retained(RendererFrontend *rf,
   resources->ibl_active_intensity = 1.0f;
   resources->ibl_active_diffuse_intensity = 1.0f;
   resources->ibl_active_specular_intensity = 1.0f;
+  resources->supports_hdr_ibl = true_v;
+  resources->hdr_ibl_max_cube_extent = VKR_IBL_PREFILTER_SIZE;
+  resources->hdr_ibl_max_mip_levels = VKR_IBL_PREFILTER_MIP_COUNT;
   resources->text_slots = array_create_VkrWorldTextSlot(
       &rf->allocator, VKR_WORLD_RESOURCES_MAX_TEXTS);
   if (!resources->text_slots.data) {
@@ -1349,8 +1361,32 @@ bool8_t vkr_world_resources_prepare_default_ibl(RendererFrontend *rf,
       !vkr_world_resources_create_writable_cube_texture(
           rf, string8_lit("__ibl.default.prefilter"),
           VKR_WORLD_RESOURCES_IBL_PREFILTER_SIZE, true_v,
-          VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT, &prefilter) ||
-      !vkr_world_resources_create_writable_2d_texture(
+          VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT, &prefilter)) {
+    goto cleanup;
+  }
+
+  if (vkr_world_resources_has_retained_ibl_publisher(rf)) {
+    if (!rf->asset_publisher.bake_hdr_environment(rf->asset_publisher.state,
+                                                  delivery, source_cubemap,
+                                                  irradiance, prefilter)) {
+      goto cleanup;
+    }
+    resources->ibl_fallback_source_cubemap = source_cubemap;
+    resources->ibl_fallback_irradiance_cubemap = irradiance;
+    resources->ibl_fallback_prefilter_cubemap = prefilter;
+    resources->ibl_brdf_lut =
+        vkr_texture_system_get_default_specular_handle(&rf->texture_system);
+    resources->ibl_default_delivery_equirect = delivery;
+    (void)vkr_world_resources_release_texture(
+        &rf->texture_system, &resources->ibl_default_delivery_equirect);
+    (void)vkr_world_resources_release_texture(
+        &rf->texture_system, &resources->ibl_legacy_fallback_source_cubemap);
+    resources->ibl_default_prepared = true_v;
+    resources->ibl_default_ready = true_v;
+    return true_v;
+  }
+
+  if (!vkr_world_resources_create_writable_2d_texture(
           rf, string8_lit("__ibl.default.brdf_lut"),
           VKR_WORLD_RESOURCES_IBL_BRDF_SIZE, VKR_WORLD_RESOURCES_IBL_BRDF_SIZE,
           VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT, &brdf)) {
@@ -1558,15 +1594,110 @@ vkr_world_resources_fail_scene_environment(RendererFrontend *rf,
   environment->bake_state = VKR_SCENE_ENV_BAKE_STATE_FAILED;
 }
 
+vkr_internal bool8_t vkr_world_resources_prepare_published_environment(
+    RendererFrontend *rf, VkrWorldResources *resources, VkrScene *scene) {
+  VkrSceneEnvironment *environment = &scene->environment;
+  if (environment->source_kind == VKR_SCENE_ENV_SOURCE_EQUIRECT) {
+    VkrTexture *delivery = vkr_texture_system_get_by_handle(
+        &rf->texture_system, environment->delivery_equirect);
+    if (!delivery || !delivery->handle ||
+        delivery->description.type != VKR_TEXTURE_TYPE_2D ||
+        delivery->description.format !=
+            VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT ||
+        !rf->asset_publisher.bake_hdr_environment ||
+        !vkr_ibl_derive_cubemap_size(
+            delivery->description.width, delivery->description.height,
+            resources->hdr_ibl_max_cube_extent,
+            vkr_world_resources_ibl_mip_limit(resources),
+            &environment->source_face_size, &environment->source_mip_count)) {
+      goto failed;
+    }
+  } else if (environment->source_kind == VKR_SCENE_ENV_SOURCE_CUBEMAP) {
+    VkrTexture *source = vkr_texture_system_get_by_handle(
+        &rf->texture_system, environment->source_cubemap);
+    if (!source || !source->handle ||
+        source->description.type != VKR_TEXTURE_TYPE_CUBE_MAP) {
+      goto failed;
+    }
+    environment->source_face_size = source->description.width;
+    environment->source_mip_count = 1u;
+  } else {
+    goto failed;
+  }
+
+  char source_name_storage[128];
+  char irradiance_name_storage[128];
+  char prefilter_name_storage[128];
+  snprintf(source_name_storage, sizeof(source_name_storage),
+           "__ibl.scene.%p.source", (void *)scene);
+  snprintf(irradiance_name_storage, sizeof(irradiance_name_storage),
+           "__ibl.scene.%p.irradiance", (void *)scene);
+  snprintf(prefilter_name_storage, sizeof(prefilter_name_storage),
+           "__ibl.scene.%p.prefilter", (void *)scene);
+  const String8 source_name = string8_create_from_cstr(
+      (const uint8_t *)source_name_storage, string_length(source_name_storage));
+  const String8 irradiance_name =
+      string8_create_from_cstr((const uint8_t *)irradiance_name_storage,
+                               string_length(irradiance_name_storage));
+  const String8 prefilter_name =
+      string8_create_from_cstr((const uint8_t *)prefilter_name_storage,
+                               string_length(prefilter_name_storage));
+
+  if ((environment->source_kind == VKR_SCENE_ENV_SOURCE_EQUIRECT &&
+       !vkr_world_resources_create_writable_cube_texture(
+           rf, source_name, environment->source_face_size, true_v,
+           VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
+           &environment->source_cubemap)) ||
+      !vkr_world_resources_create_writable_cube_texture(
+          rf, irradiance_name, VKR_WORLD_RESOURCES_IBL_IRRADIANCE_SIZE, false_v,
+          VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
+          &environment->irradiance_cubemap) ||
+      !vkr_world_resources_create_writable_cube_texture(
+          rf, prefilter_name, VKR_WORLD_RESOURCES_IBL_PREFILTER_SIZE, true_v,
+          VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
+          &environment->prefilter_cubemap)) {
+    goto failed;
+  }
+
+  const bool8_t baked =
+      environment->source_kind == VKR_SCENE_ENV_SOURCE_EQUIRECT
+          ? rf->asset_publisher.bake_hdr_environment(
+                rf->asset_publisher.state, environment->delivery_equirect,
+                environment->source_cubemap, environment->irradiance_cubemap,
+                environment->prefilter_cubemap)
+          : rf->asset_publisher.bake_ibl_cubemap(
+                rf->asset_publisher.state, environment->source_cubemap,
+                environment->irradiance_cubemap,
+                environment->prefilter_cubemap);
+  if (!baked) {
+    goto failed;
+  }
+  (void)vkr_world_resources_release_texture(&rf->texture_system,
+                                            &environment->delivery_equirect);
+  environment->bake_state = VKR_SCENE_ENV_BAKE_STATE_READY;
+  return true_v;
+
+failed:
+  vkr_world_resources_fail_scene_environment(rf, scene);
+  return false_v;
+}
+
 bool8_t vkr_world_resources_prepare_scene_environment(
     RendererFrontend *rf, VkrWorldResources *resources, VkrScene *scene) {
-  if (!rf || !resources || !scene || !scene->environment.enabled ||
-      !resources->supports_hdr_ibl || !resources->ibl_bake_runtime_ready) {
+  if (!rf || !resources || !scene || !scene->environment.enabled) {
     if (rf && scene) {
       vkr_world_resources_fail_scene_environment(rf, scene);
     } else if (scene) {
       scene->environment.bake_state = VKR_SCENE_ENV_BAKE_STATE_FAILED;
     }
+    return false_v;
+  }
+  if (vkr_world_resources_has_retained_ibl_publisher(rf)) {
+    return vkr_world_resources_prepare_published_environment(rf, resources,
+                                                             scene);
+  }
+  if (!resources->supports_hdr_ibl || !resources->ibl_bake_runtime_ready) {
+    vkr_world_resources_fail_scene_environment(rf, scene);
     return false_v;
   }
 
@@ -1776,10 +1907,90 @@ vkr_world_resources_fail_reflection_probe(RendererFrontend *rf,
   probe->bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_FAILED;
 }
 
+vkr_internal bool8_t vkr_world_resources_retain_environment_probe_maps(
+    RendererFrontend *rf, VkrScene *scene, VkrSceneReflectionProbe *probe) {
+  if (!rf || !scene || !probe ||
+      scene->environment.bake_state != VKR_SCENE_ENV_BAKE_STATE_READY ||
+      !vkr_world_resources_texture_is_valid(
+          &rf->texture_system, scene->environment.irradiance_cubemap,
+          VKR_TEXTURE_TYPE_CUBE_MAP) ||
+      !vkr_world_resources_texture_is_valid(
+          &rf->texture_system, scene->environment.prefilter_cubemap,
+          VKR_TEXTURE_TYPE_CUBE_MAP)) {
+    return false_v;
+  }
+
+  vkr_texture_system_add_ref_by_handle(&rf->texture_system,
+                                       scene->environment.irradiance_cubemap);
+  vkr_texture_system_add_ref_by_handle(&rf->texture_system,
+                                       scene->environment.prefilter_cubemap);
+  probe->irradiance_cubemap = scene->environment.irradiance_cubemap;
+  probe->prefilter_cubemap = scene->environment.prefilter_cubemap;
+  probe->bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_READY;
+  return true_v;
+}
+
 bool8_t vkr_world_resources_prepare_scene_reflection_probes(
     RendererFrontend *rf, VkrWorldResources *resources, VkrScene *scene) {
   if (!rf || !resources || !scene) {
     return false_v;
+  }
+  if (vkr_world_resources_has_retained_ibl_publisher(rf)) {
+    bool8_t all_prepared = true_v;
+    for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
+      VkrSceneReflectionProbe *probe = &scene->reflection_probes[i];
+      if (!probe->enabled ||
+          probe->bake_state != VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_PENDING) {
+        continue;
+      }
+
+      if (probe->uses_scene_environment_source) {
+        if (scene->environment.bake_state != VKR_SCENE_ENV_BAKE_STATE_READY) {
+          if (scene->environment.bake_state ==
+              VKR_SCENE_ENV_BAKE_STATE_FAILED) {
+            vkr_world_resources_fail_reflection_probe(rf, probe);
+            all_prepared = false_v;
+          }
+          continue;
+        }
+        if (!vkr_world_resources_retain_environment_probe_maps(rf, scene,
+                                                               probe)) {
+          vkr_world_resources_fail_reflection_probe(rf, probe);
+          all_prepared = false_v;
+        }
+        continue;
+      }
+
+      char irradiance_name_storage[160];
+      char prefilter_name_storage[160];
+      snprintf(irradiance_name_storage, sizeof(irradiance_name_storage),
+               "__ibl.scene.%p.probe.%u.irradiance", (void *)scene, i);
+      snprintf(prefilter_name_storage, sizeof(prefilter_name_storage),
+               "__ibl.scene.%p.probe.%u.prefilter", (void *)scene, i);
+      const String8 irradiance_name =
+          string8_create_from_cstr((const uint8_t *)irradiance_name_storage,
+                                   string_length(irradiance_name_storage));
+      const String8 prefilter_name =
+          string8_create_from_cstr((const uint8_t *)prefilter_name_storage,
+                                   string_length(prefilter_name_storage));
+      if (!vkr_world_resources_create_writable_cube_texture(
+              rf, irradiance_name, VKR_WORLD_RESOURCES_IBL_IRRADIANCE_SIZE,
+              false_v, VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
+              &probe->irradiance_cubemap) ||
+          !vkr_world_resources_create_writable_cube_texture(
+              rf, prefilter_name, VKR_WORLD_RESOURCES_IBL_PREFILTER_SIZE,
+              true_v, VKR_TEXTURE_FORMAT_R16G16B16A16_SFLOAT,
+              &probe->prefilter_cubemap) ||
+          !rf->asset_publisher.bake_ibl_cubemap(
+              rf->asset_publisher.state, probe->source_cubemap,
+              probe->irradiance_cubemap, probe->prefilter_cubemap)) {
+        vkr_world_resources_fail_reflection_probe(rf, probe);
+        all_prepared = false_v;
+        continue;
+      }
+      probe->bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_READY;
+    }
+    return all_prepared;
   }
   if (!resources->supports_hdr_ibl || !resources->ibl_bake_runtime_ready) {
     for (uint32_t i = 0; i < scene->reflection_probe_count; ++i) {
@@ -1885,24 +2096,12 @@ void vkr_world_resources_bake_scene_reflection_probes_if_pending(
         continue;
       }
 
-      if (!vkr_world_resources_texture_is_valid(
-              &rf->texture_system, scene->environment.irradiance_cubemap,
-              VKR_TEXTURE_TYPE_CUBE_MAP) ||
-          !vkr_world_resources_texture_is_valid(
-              &rf->texture_system, scene->environment.prefilter_cubemap,
-              VKR_TEXTURE_TYPE_CUBE_MAP)) {
+      if (!vkr_world_resources_retain_environment_probe_maps(rf, scene,
+                                                             probe)) {
         vkr_world_resources_fail_reflection_probe(rf, probe);
         baked_failed_count++;
         continue;
       }
-
-      vkr_texture_system_add_ref_by_handle(
-          &rf->texture_system, scene->environment.irradiance_cubemap);
-      vkr_texture_system_add_ref_by_handle(
-          &rf->texture_system, scene->environment.prefilter_cubemap);
-      probe->irradiance_cubemap = scene->environment.irradiance_cubemap;
-      probe->prefilter_cubemap = scene->environment.prefilter_cubemap;
-      probe->bake_state = VKR_SCENE_REFLECTION_PROBE_BAKE_STATE_READY;
       baked_ready_count++;
       continue;
     }

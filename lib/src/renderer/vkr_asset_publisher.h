@@ -23,6 +23,17 @@ typedef struct VkrAssetPublisher {
   bool8_t (*unpublish_geometry)(void *state, VkrGeometryHandle handle);
   bool8_t (*publish_texture)(void *state, VkrTextureHandle handle,
                              const struct VkrTexturePreparedLoad *texture);
+  bool8_t (*publish_writable_texture)(void *state, VkrTextureHandle handle,
+                                      const VkrTextureDescription *description);
+  bool8_t (*update_texture_sampler)(void *state, VkrTextureHandle handle,
+                                    const VkrTextureDescription *description);
+  bool8_t (*bake_ibl_cubemap)(void *state, VkrTextureHandle source,
+                              VkrTextureHandle irradiance,
+                              VkrTextureHandle prefilter);
+  bool8_t (*bake_hdr_environment)(void *state, VkrTextureHandle equirect,
+                                  VkrTextureHandle source,
+                                  VkrTextureHandle irradiance,
+                                  VkrTextureHandle prefilter);
   bool8_t (*unpublish_texture)(void *state, VkrTextureHandle handle);
   bool8_t (*publish_material)(void *state, VkrMaterialHandle handle,
                               const struct VkrMaterial *material);

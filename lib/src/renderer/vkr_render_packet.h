@@ -13,7 +13,7 @@
 #include "renderer/vkr_renderer.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
-#define VKR_RENDER_PACKET_VERSION 9u
+#define VKR_RENDER_PACKET_VERSION 10u
 
 /** Default manual camera exposure for HDR scene presentation. */
 #define VKR_DEFAULT_EXPOSURE 0.30f
@@ -77,6 +77,9 @@ typedef struct VkrFrameLighting {
   Vec3 directional_color;
   float32_t directional_intensity;
   bool8_t ibl_enabled;
+  /** Logical cubemap used to derive global IBL; independent of the visible
+   * skybox so retained backends do not have to infer lighting from a pass. */
+  VkrTextureHandle ibl_source;
   float32_t ibl_intensity;
   float32_t ibl_diffuse_intensity;
   float32_t ibl_specular_intensity;

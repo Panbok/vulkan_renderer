@@ -1342,14 +1342,14 @@ void application_draw_frame(Application *application, float64_t delta) {
           world_payload.transparent_draw_count;
       VkrDrawItem *picking_draws =
           picking_draw_count > 0
-              ? vkr_allocator_alloc(
-                    scratch,
-                    (uint64_t)picking_draw_count * sizeof(*picking_draws),
-                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
+              ? vkr_allocator_alloc(scratch,
+                                    (uint64_t)picking_draw_count *
+                                        sizeof(*picking_draws),
+                                    VKR_ALLOCATOR_MEMORY_TAG_ARRAY)
               : NULL;
       if (picking_draw_count == 0 || picking_draws) {
         uint32_t offset = 0;
-#define VKR_COPY_PICKING_DRAWS(FIELD)                                         \
+#define VKR_COPY_PICKING_DRAWS(FIELD)                                          \
   do {                                                                         \
     if (world_payload.FIELD##_draw_count > 0) {                                \
       MemCopy(picking_draws + offset, world_payload.FIELD##_draws,             \
@@ -1416,12 +1416,42 @@ void application_draw_frame(Application *application, float64_t delta) {
   }
 
   VkrUiPassPayload ui_payload = {0};
+  const VkrScene *active_scene = application->renderer.active_scene;
   VkrSkyboxPassPayload skybox_payload = {
       .cubemap = application->renderer.skybox_system.initialized
                      ? application->renderer.skybox_system.cube_map_texture
                      : VKR_TEXTURE_HANDLE_INVALID,
       .material = VKR_MATERIAL_HANDLE_INVALID,
   };
+  const bool8_t scene_environment_ready =
+      active_scene && active_scene->environment.enabled &&
+      active_scene->environment.bake_state == VKR_SCENE_ENV_BAKE_STATE_READY;
+  const VkrSceneEnvironment *scene_environment =
+      scene_environment_ready ? &active_scene->environment : NULL;
+  VkrTextureHandle frame_ibl_source = VKR_TEXTURE_HANDLE_INVALID;
+  if (scene_environment) {
+    frame_ibl_source = scene_environment->source_cubemap;
+  } else if (application->renderer.world_resources.ibl_default_ready) {
+    frame_ibl_source =
+        application->renderer.world_resources.ibl_fallback_source_cubemap;
+  } else {
+    frame_ibl_source = skybox_payload.cubemap;
+  }
+  bool8_t frame_ibl_enabled = application->renderer.material_system.ibl_enabled;
+  float32_t frame_ibl_intensity =
+      application->renderer.material_system.ibl_intensity;
+  float32_t frame_ibl_diffuse_intensity =
+      application->renderer.material_system.ibl_diffuse_intensity;
+  float32_t frame_ibl_specular_intensity =
+      application->renderer.material_system.ibl_specular_intensity;
+  if (scene_environment) {
+    frame_ibl_enabled = true_v;
+    frame_ibl_intensity = scene_environment->intensity;
+    frame_ibl_diffuse_intensity = scene_environment->diffuse_intensity;
+    frame_ibl_specular_intensity = scene_environment->specular_intensity;
+  } else if (!frame_ibl_enabled && frame_ibl_source.id != 0) {
+    frame_ibl_enabled = true_v;
+  }
 
   VkrTextUpdate world_text_updates[VKR_MAX_PENDING_TEXT_UPDATES];
   VkrTextUpdate ui_text_updates[VKR_MAX_PENDING_TEXT_UPDATES];
@@ -1478,7 +1508,6 @@ void application_draw_frame(Application *application, float64_t delta) {
       (gpu_timing || application->capture_request) ? &debug_payload : NULL;
   VkrFrameIblProbe frame_ibl_probes[VKR_FRAME_IBL_PROBE_MAX] = {0};
   uint32_t frame_ibl_probe_count = 0;
-  const VkrScene *active_scene = application->renderer.active_scene;
   if (active_scene) {
     for (uint32_t i = 0; i < active_scene->reflection_probe_count &&
                          frame_ibl_probe_count < VKR_FRAME_IBL_PROBE_MAX;
@@ -1516,12 +1545,11 @@ void application_draw_frame(Application *application, float64_t delta) {
           application->renderer.lighting_system.directional.color,
       .directional_intensity =
           application->renderer.lighting_system.directional.intensity,
-      .ibl_enabled = application->renderer.material_system.ibl_enabled,
-      .ibl_intensity = application->renderer.material_system.ibl_intensity,
-      .ibl_diffuse_intensity =
-          application->renderer.material_system.ibl_diffuse_intensity,
-      .ibl_specular_intensity =
-          application->renderer.material_system.ibl_specular_intensity,
+      .ibl_enabled = frame_ibl_enabled,
+      .ibl_source = frame_ibl_source,
+      .ibl_intensity = frame_ibl_intensity,
+      .ibl_diffuse_intensity = frame_ibl_diffuse_intensity,
+      .ibl_specular_intensity = frame_ibl_specular_intensity,
       .point_lights = application->renderer.lighting_system.point_lights,
       .point_light_count =
           application->renderer.lighting_system.point_light_count,

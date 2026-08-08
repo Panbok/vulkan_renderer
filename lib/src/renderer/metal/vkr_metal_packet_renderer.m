@@ -28,7 +28,20 @@ enum {
   VKR_METAL_PACKET_TIMEOUT_MS = 5000,
   VKR_METAL_PACKET_MAX_COLOR_ATTACHMENTS = 8,
   VKR_METAL_PACKET_LOADER_SUBMESH_MAX = 4096,
+  VKR_METAL_PACKET_MAX_TEXTURE_MIPS = 15,
+  /* Four address modes on three axes, two min/mag filters, one canonical
+     non-mipmapped key plus fifteen keys for each mip filter, and anisotropy
+     on/off. Samplers remain alive with immutable material rows, so this cache
+     covers the complete key domain rather than only simultaneous textures. */
+  VKR_METAL_PACKET_SAMPLER_CACHE_CAPACITY =
+      VKR_TEXTURE_REPEAT_MODE_COUNT * VKR_TEXTURE_REPEAT_MODE_COUNT *
+      VKR_TEXTURE_REPEAT_MODE_COUNT * VKR_FILTER_COUNT * VKR_FILTER_COUNT *
+      (1 + (VKR_MIP_FILTER_COUNT - 1) * VKR_METAL_PACKET_MAX_TEXTURE_MIPS) * 2,
 };
+
+_Static_assert(VKR_TEXTURE_MAX_DIMENSION ==
+                   (1u << (VKR_METAL_PACKET_MAX_TEXTURE_MIPS - 1u)),
+               "Metal sampler mip-domain bound must match texture limits");
 
 static uint64_t vkr_metal_packet_align_up(uint64_t value, uint64_t alignment);
 
@@ -73,23 +86,37 @@ typedef struct VkrMetalPacketMaterial {
   uint32_t generation;
   uint64_t last_use_submit_value;
   bool8_t owns_textures;
+  bool8_t double_sided;
   bool8_t live;
 } VkrMetalPacketMaterial;
 
+typedef struct VkrMetalPacketSamplerKey {
+  VkrTextureRepeatMode u_repeat_mode;
+  VkrTextureRepeatMode v_repeat_mode;
+  VkrTextureRepeatMode w_repeat_mode;
+  VkrFilter min_filter;
+  VkrFilter mag_filter;
+  VkrMipFilter mip_filter;
+  uint32_t mip_level_count;
+  bool8_t anisotropy_enable;
+} VkrMetalPacketSamplerKey;
+
+typedef struct VkrMetalPacketSampler {
+  VkrMetalPacketSamplerKey key;
+  id<MTLSamplerState> state;
+} VkrMetalPacketSampler;
+
 typedef struct VkrMetalPacketTexture {
   VkrMetalTextureResource resource;
+  uint64_t sampler_resource_id;
   uint32_t generation;
   uint64_t last_use_submit_value;
-  bool8_t pending_destroy;
   bool8_t live;
 } VkrMetalPacketTexture;
 
 static VkrMetalPacketTexture *
 vkr_metal_packet_resolve_texture(VkrMetalPacketRenderer *renderer,
                                  VkrTextureHandle handle);
-static VkrMetalPacketTexture *
-vkr_metal_packet_resolve_retired_texture(VkrMetalPacketRenderer *renderer,
-                                         VkrTextureHandle handle);
 
 typedef struct VkrMetalPacketTextUpload {
   uint64_t vertices_gpu;
@@ -156,6 +183,7 @@ struct VkrMetalPacketRenderer {
   VkrMetalPacketSubmeshCreateInfo *submeshes;
   VkrMetalPacketMaterial *packet_materials;
   VkrMetalPacketTexture *textures;
+  VkrMetalPacketSampler *samplers;
   VkrMetalPacketTextUpload *text_uploads;
   MTL4RenderPassDescriptor **render_passes;
   id<MTLDevice> device;
@@ -204,6 +232,8 @@ struct VkrMetalPacketRenderer {
   uint32_t max_submeshes_per_mesh;
   uint32_t max_materials;
   uint32_t max_textures;
+  uint32_t max_samplers;
+  uint32_t sampler_count;
   uint32_t max_draws;
   uint32_t max_instances;
   uint64_t upload_slot_size;

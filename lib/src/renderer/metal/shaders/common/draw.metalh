@@ -27,6 +27,10 @@ struct VkrMetalPacketMaterial {
   texture2d<float, access::sample> normal_texture;
   texture2d<float, access::sample> orm_texture;
   texture2d<float, access::sample> emissive_texture;
+  sampler base_color_sampler;
+  sampler normal_sampler;
+  sampler orm_sampler;
+  sampler emissive_sampler;
   uint material_id;
   uint flags;
   ulong reserved;
@@ -107,8 +111,8 @@ static_assert(sizeof(VkrMetalPacketVertex) == 64,
               "VkrVertex3d Metal ABI must remain 64 bytes");
 static_assert(sizeof(VkrMetalPacketInstance) == 80,
               "VkrInstanceDataGPU Metal ABI must remain 80 bytes");
-static_assert(sizeof(VkrMetalPacketMaterial) == 64,
-              "Metal material row ABI must remain 64 bytes");
+static_assert(sizeof(VkrMetalPacketMaterial) == 96,
+              "Metal material row ABI must remain 96 bytes");
 static_assert(sizeof(VkrMetalPacketDrawRoot) == 512,
               "Metal packet draw root ABI must remain 512 bytes");
 static_assert(sizeof(VkrMetalPacketIblProbe) == 64,

@@ -1147,7 +1147,11 @@ vkr_internal bool8_t vkr_texture_system_publish_prepared(
 
   *out_backend_handle = NULL;
   *out_error = VKR_RENDERER_ERROR_NONE;
-  if (system->asset_publisher && system->asset_publisher->publish_texture) {
+  if (system->asset_publisher) {
+    if (!system->asset_publisher->publish_texture) {
+      *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+      return false_v;
+    }
     if (!system->asset_publisher->publish_texture(
             system->asset_publisher->state, logical_handle, prepared)) {
       *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
@@ -1710,14 +1714,8 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
   bitset8_set(&desc_copy.properties, VKR_TEXTURE_PROPERTY_WRITABLE_BIT);
   desc_copy.id = free_slot_index + 1;
   desc_copy.generation = system->generation_counter++;
-
-  VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
-  VkrTextureOpaqueHandle handle = vkr_renderer_create_writable_texture(
-      system->renderer, &desc_copy, &renderer_error);
-  if (renderer_error != VKR_RENDERER_ERROR_NONE || handle == NULL) {
-    *out_error = renderer_error;
-    return false_v;
-  }
+  const VkrTextureHandle logical_handle = {.id = desc_copy.id,
+                                           .generation = desc_copy.generation};
 
   char *stable_key =
       (char *)vkr_allocator_alloc(&system->string_allocator, name.length + 1,
@@ -1725,7 +1723,7 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
   if (!stable_key) {
     log_error("Failed to allocate key copy for texture map");
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    vkr_renderer_destroy_texture(system->renderer, handle);
+    system->next_free_index = Min(system->next_free_index, free_slot_index);
     return false_v;
   }
   MemCopy(stable_key, name.str, (size_t)name.length);
@@ -1734,7 +1732,6 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
   VkrTexture *texture = &system->textures.data[free_slot_index];
   MemZero(texture, sizeof(*texture));
   texture->description = desc_copy;
-  texture->handle = handle;
 
   VkrTextureEntry entry = {
       .index = free_slot_index,
@@ -1748,11 +1745,45 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
     log_error("Failed to insert texture '%s' into hash table", stable_key);
     vkr_allocator_free(&system->string_allocator, stable_key, name.length + 1,
                        VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    vkr_renderer_destroy_texture(system->renderer, handle);
+    texture->description.id = VKR_INVALID_ID;
+    texture->description.generation = VKR_INVALID_ID;
+    system->next_free_index = Min(system->next_free_index, free_slot_index);
     *out_error = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
     return false_v;
   }
   system->texture_keys_by_index[free_slot_index] = stable_key;
+
+  VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
+  VkrTextureOpaqueHandle handle = NULL;
+  if (system->asset_publisher) {
+    if (!system->asset_publisher->publish_writable_texture) {
+      renderer_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    } else if (system->asset_publisher->publish_writable_texture(
+                   system->asset_publisher->state, logical_handle,
+                   &desc_copy)) {
+      handle = (VkrTextureOpaqueHandle)texture;
+    } else {
+      renderer_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
+  } else {
+    handle = vkr_renderer_create_writable_texture(system->renderer, &desc_copy,
+                                                  &renderer_error);
+  }
+  if (renderer_error != VKR_RENDERER_ERROR_NONE || !handle) {
+    (void)vkr_hash_table_remove_VkrTextureEntry(&system->texture_map,
+                                                stable_key);
+    system->texture_keys_by_index[free_slot_index] = NULL;
+    vkr_allocator_free(&system->string_allocator, stable_key, name.length + 1,
+                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
+    texture->description.id = VKR_INVALID_ID;
+    texture->description.generation = VKR_INVALID_ID;
+    system->next_free_index = Min(system->next_free_index, free_slot_index);
+    *out_error = renderer_error != VKR_RENDERER_ERROR_NONE
+                     ? renderer_error
+                     : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return false_v;
+  }
+  texture->handle = handle;
 
   if (out_handle) {
     *out_handle =
@@ -1764,8 +1795,8 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
   return true_v;
 }
 
-void vkr_texture_system_release(VkrTextureSystem *system,
-                                String8 texture_name) {
+bool8_t vkr_texture_system_release(VkrTextureSystem *system,
+                                   String8 texture_name) {
   assert_log(system != NULL, "System is NULL");
   assert_log(texture_name.str != NULL, "Name is NULL");
 
@@ -1803,19 +1834,20 @@ void vkr_texture_system_release(VkrTextureSystem *system,
     if (queryless_key) {
       free(queryless_key);
     }
-    return;
+    return true_v;
   }
 
-  if (entry->ref_count == 0) {
+  if (entry->ref_count > 0) {
+    entry->ref_count--;
+  } else if (!entry->auto_release) {
     log_warn("Over-release detected for texture '%s'", texture_key);
     if (queryless_key) {
       free(queryless_key);
     }
-    return;
+    return false_v;
   }
 
-  entry->ref_count--;
-
+  bool8_t released = true_v;
   if (entry->ref_count == 0 && entry->auto_release) {
     uint32_t texture_index = entry->index;
     if (texture_index != system->default_texture.id - 1) {
@@ -1833,12 +1865,15 @@ void vkr_texture_system_release(VkrTextureSystem *system,
               .generation =
                   system->textures.data[texture_index].description.generation}};
       vkr_resource_system_unload(&handle_info, unload_name);
+      released = vkr_texture_system_get_by_handle(
+                     system, handle_info.as.texture) == NULL;
     }
   }
 
   if (queryless_key) {
     free(queryless_key);
   }
+  return released;
 }
 
 void vkr_texture_system_add_ref_by_handle(VkrTextureSystem *system,
@@ -1872,39 +1907,39 @@ void vkr_texture_system_add_ref_by_handle(VkrTextureSystem *system,
   }
 }
 
-void vkr_texture_system_release_by_handle(VkrTextureSystem *system,
-                                          VkrTextureHandle handle) {
+bool8_t vkr_texture_system_release_by_handle(VkrTextureSystem *system,
+                                             VkrTextureHandle handle) {
   assert_log(system != NULL, "System is NULL");
 
   if (handle.id == 0 || handle.generation == VKR_INVALID_ID) {
     log_warn("Attempted to release invalid texture handle");
-    return;
+    return false_v;
   }
 
   uint32_t texture_index = handle.id - 1;
   if (!system->texture_keys_by_index ||
       texture_index >= system->textures.length) {
-    return;
+    return false_v;
   }
 
   VkrTexture *texture = &system->textures.data[texture_index];
   if (texture->description.generation != handle.generation) {
-    return;
+    return false_v;
   }
 
   const char *key = system->texture_keys_by_index[texture_index];
   if (!key) {
-    return;
+    return false_v;
   }
 
   uint64_t key_length = string_length(key);
   if (key_length == 0) {
-    return;
+    return false_v;
   }
 
   String8 texture_name =
       string8_create_from_cstr((const uint8_t *)key, key_length);
-  vkr_texture_system_release(system, texture_name);
+  return vkr_texture_system_release(system, texture_name);
 }
 
 VkrRendererError vkr_texture_system_update_sampler(
@@ -1929,10 +1964,13 @@ VkrRendererError vkr_texture_system_update_sampler(
   updated_desc.w_repeat_mode = w_repeat_mode;
 
   if (system->asset_publisher) {
-    // The Metal packet shaders use static samplers for the currently shipped
-    // texture classes. Preserve the shared CPU description so a later
-    // republish observes the requested state without calling the absent
-    // Vulkan-shaped texture_update callback.
+    if (!system->asset_publisher->update_texture_sampler) {
+      return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+    }
+    if (!system->asset_publisher->update_texture_sampler(
+            system->asset_publisher->state, handle, &updated_desc)) {
+      return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    }
     texture->description = updated_desc;
     return VKR_RENDERER_ERROR_NONE;
   }

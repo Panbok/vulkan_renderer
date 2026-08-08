@@ -2493,6 +2493,17 @@ vkr_internal VkrRendererError vkr_renderer_validate_packet(
         out_validation_error, VKR_RENDERER_ERROR_INVALID_PARAMETER,
         "lighting.point_lights", "point-light table or grid is invalid");
   }
+  if (lighting && lighting->ibl_source.id != 0) {
+    VkrTexture *ibl_source = vkr_texture_system_get_by_handle(
+        &rf->texture_system, lighting->ibl_source);
+    if (lighting->ibl_source.generation == VKR_INVALID_ID || !ibl_source ||
+        !ibl_source->handle ||
+        ibl_source->description.type != VKR_TEXTURE_TYPE_CUBE_MAP) {
+      return vkr_renderer_validation_fail(
+          out_validation_error, VKR_RENDERER_ERROR_INVALID_HANDLE,
+          "lighting.ibl_source", "IBL source must resolve to a cubemap");
+    }
+  }
   if (lighting && lighting->point_light_count > 0) {
     const VkrPointLightGrid *grid = lighting->point_light_grid;
     const uint64_t grid_cells = (uint64_t)grid->dimensions[0] *

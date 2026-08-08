@@ -17,7 +17,7 @@ fragment float4 vkr_metal_packet_tonemap_fragment(
     VkrMetalPacketTonemapOutput input [[stage_in]],
     constant VkrMetalPacketTonemapRoot *root [[buffer(1)]]) {
   float4 hdr = root->source.read(uint2(input.position.xy), 0);
-  float3 color = clamp(hdr.rgb * root->exposure, 0.0, 1.0);
+  float3 color = max(hdr.rgb * root->exposure, 0.0);
   if (root->reserved.x != 0u) {
     const float a = 2.51;
     const float b = 0.03;
@@ -26,6 +26,8 @@ fragment float4 vkr_metal_packet_tonemap_fragment(
     const float e = 0.14;
     color = clamp((color * (a * color + b)) / (color * (c * color + d) + e),
                   0.0, 1.0);
+  } else {
+    color = clamp(color, 0.0, 1.0);
   }
   return float4(color, hdr.a);
 }

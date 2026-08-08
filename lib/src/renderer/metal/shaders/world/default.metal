@@ -4,27 +4,25 @@ fragment float4 vkr_metal_packet_opaque_fragment(
     bool front_facing [[front_facing]]) {
   const device VkrMetalPacketMaterial &material =
       root->materials[root->material_index];
-  constexpr sampler material_sampler(coord::normalized, address::clamp_to_edge,
-                                     filter::linear);
-  float4 base =
-      material.base_color_texture.sample(material_sampler, input.texcoord) *
-      material.tint * input.color;
+  float4 base = material.base_color_texture.sample(material.base_color_sampler,
+                                                   input.texcoord) *
+                material.tint * input.color;
   if (root->alpha_mode == 1u && base.a < root->material_alpha.x)
     discard_fragment();
   if ((root->flags & 1u) == 0u)
     return base;
 
-  float face_sign = root->reserved != 0u && !front_facing ? -1.0 : 1.0;
+  float face_sign = front_facing ? 1.0 : -1.0;
   float3 geometric_normal = normalize(input.world_normal) * face_sign;
   float3 normal = geometric_normal;
   if ((material.flags & 1u) != 0u) {
     float3 sampled =
-        material.normal_texture.sample(material_sampler, input.texcoord).xyz *
+        material.normal_texture.sample(material.normal_sampler, input.texcoord)
+                .xyz *
             2.0 -
         1.0;
     sampled.xy *= root->material_surface.z;
-    if (root->reserved != 0u)
-      sampled.y = -sampled.y;
+    sampled.y = -sampled.y;
     float3 tangent = normalize(input.world_tangent.xyz);
     tangent = normalize(tangent - dot(tangent, normal) * normal);
     float3 bitangent =
@@ -42,21 +40,20 @@ fragment float4 vkr_metal_packet_opaque_fragment(
   float3 emissive = root->material_emissive.rgb;
   if ((material.flags & 2u) != 0u) {
     float3 orm =
-        material.orm_texture.sample(material_sampler, input.texcoord).rgb;
+        material.orm_texture.sample(material.orm_sampler, input.texcoord).rgb;
     ao *= orm.r;
     roughness = clamp(roughness * orm.g, 0.04, 1.0);
     metallic = saturate(metallic * orm.b);
   }
-  if (root->reserved != 0u) {
-    float3 normal_dx = dfdx(normal);
-    float3 normal_dy = dfdy(normal);
-    float variance =
-        0.25 * (dot(normal_dx, normal_dx) + dot(normal_dy, normal_dy));
-    roughness = sqrt(saturate(roughness * roughness + min(variance, 0.25)));
-  }
+  float3 normal_dx = dfdx(normal);
+  float3 normal_dy = dfdy(normal);
+  float variance =
+      0.25 * (dot(normal_dx, normal_dx) + dot(normal_dy, normal_dy));
+  roughness = sqrt(saturate(roughness * roughness + min(variance, 0.25)));
   if ((material.flags & 4u) != 0u) {
-    emissive *=
-        material.emissive_texture.sample(material_sampler, input.texcoord).rgb;
+    emissive *= material.emissive_texture
+                    .sample(material.emissive_sampler, input.texcoord)
+                    .rgb;
   }
   if (root->render_mode == 3u)
     return float4(base.rgb + emissive, root->alpha_mode == 0u ? 1.0 : base.a);
@@ -148,9 +145,7 @@ fragment float4 vkr_metal_packet_opaque_fragment(
     float2 brdf =
         root->brdf_lut.sample(environment_sampler, float2(no_v, roughness)).rg;
     float f90 = saturate(max(f0.x, max(f0.y, f0.z)) * 25.0);
-    float horizon =
-        saturate(1.0 + dot(reflection,
-                           root->reserved != 0u ? geometric_normal : normal));
+    float horizon = saturate(1.0 + dot(reflection, geometric_normal));
     float specular_visibility =
         horizon * horizon * vkr_metal_packet_specular_ao(ao, no_v, roughness);
     float3 diffuse = 0.0;
