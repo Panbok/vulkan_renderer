@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-07-31
+updated: 2026-08-08
 authority: adr
 ---
 # ADR-012: Offline KTX2/UASTC Packing with Runtime Transcode
@@ -25,9 +25,11 @@ signature rather than extension alone.
 
 `tools/vkr_vkt_packer.cpp` uses the vendored KTX-Software library to read source
 images, build mip payloads, attach texture-class/colorspace metadata, encode
-UASTC, and write KTX2 files. `build.sh` builds/runs the packer by default. A
-Release build refuses `VKR_VKT_PACK=0` and defaults
-`VKR_VKT_PACK_STRICT=1`, making pack errors fatal.
+UASTC, and write KTX2 files. Texture packing is an explicit, build-type-
+independent asset operation: `tools/pack_vkt_textures.sh` and its `.bat`
+equivalent build the tool in the shared `build_vkt_packer` tree, then update
+only stale `.vkt` sidecars. Debug and Release application builds do not build or
+invoke the packer and keep separate output trees.
 
 Runtime resolution supports direct `.vkt`, a sidecar for a source path, and
 optional source decoding. KTX2 currently accepts 2D, single-layer,
@@ -59,10 +61,11 @@ Runtime rollout controls are separate from build packing controls:
 | `VKR_TEXTURE_VKT_ALLOW_LEGACY` | Permit legacy raw `.vkt` reads |
 | `VKR_TEXTURE_VKT_WRITE_LEGACY_CACHE` | Permit legacy cache writes |
 
-`VKR_VKT_PACK_STRICT` makes the offline packing step strict; it does **not** set
-`VKR_TEXTURE_VKT_STRICT` for the application process. A Release build therefore
-proves that packing completed, not by itself that runtime source/legacy fallback
-is disabled.
+`VKR_VKT_PACK_STRICT` makes an explicit offline packing invocation strict; it
+does **not** set `VKR_TEXTURE_VKT_STRICT` for the application process. Release
+packaging that requires a complete packed asset set must therefore invoke the
+packer with `VKR_VKT_PACK_STRICT=1`. Compiling the Release application alone
+does not validate or regenerate assets.
 
 The vendored submodule is currently KTX-Software v4.4.2 at
 `4d6fc70eaf62ad0558e63e8d97eb9766118327a6`.
@@ -73,7 +76,10 @@ The vendored submodule is currently KTX-Software v4.4.2 at
 
 - One portable intermediate can target several GPU-native compressed families.
 - Mip data and texture intent metadata travel with the container.
-- Build integration catches missing/failed packed assets in strict packing mode.
+- Packing work is shared across build configurations and skipped for unchanged
+  source textures.
+- Explicit strict packing catches missing/failed packed assets when an asset set
+  is prepared for distribution.
 - Dual-path rollout preserves development compatibility while migration is in
   progress.
 
@@ -83,7 +89,8 @@ The vendored submodule is currently KTX-Software v4.4.2 at
   time must be measured rather than assumed.
 - Current KTX2 decode rejects cubemaps, arrays, and non-Basis KTX2 payloads.
 - KTX-Software adds a sizeable C/C++ dependency and build cost.
-- Several build/runtime environment switches can be confused.
+- Release packaging must explicitly run strict packing; a compile-only build no
+  longer proves that packed assets are complete.
 - Block-compressed assets cannot use generic writable/resize paths.
 - Output format and visual result can differ by device capability.
 

@@ -41,7 +41,7 @@ The Metal backend bypasses pipeline-archive lookup while shader validation is
 enabled because Apple's validator currently crashes in the Metal 4-to-3
 archive-conversion path. These runtime variables must be present before the
 process creates its first Metal device; when running
-`build/app/vulkan_renderer` directly, set them in the calling environment.
+`build_debug/app/vulkan_renderer` directly, set them in the calling environment.
 
 ## Authority
 

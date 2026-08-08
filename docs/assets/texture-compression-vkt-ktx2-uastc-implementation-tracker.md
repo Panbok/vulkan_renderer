@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-07-31
+updated: 2026-08-08
 authority: progress
 ---
 # Texture Compression KTX2/UASTC Implementation Tracker
@@ -8,7 +8,7 @@ authority: progress
 ## Scope
 - Feature: transition `.vkt` from raw RGBA cache to KTX2 + Basis UASTC runtime asset.
 - This tracker is the source of truth for implementation status and per-phase details.
-- Current cycle target: complete tooling/build-hook integration (`P5`) and rollout hardening (`P6`).
+- Current cycle target: keep packing explicit and shared across configuration-specific build trees (`P7`).
 
 ## Phase Status Board
 | Phase | Status | Owner | Branch | Changed Files | Tests Run | Acceptance | Blockers |
@@ -20,6 +20,7 @@ authority: progress
 | P4 | COMPLETED | Codex | current | lib/src/renderer/vulkan/vulkan_backend.c | ./build_test.sh; ./build.sh Debug | Payload-driven Vulkan upload path active with mip/layer region copies | none |
 | P5 | COMPLETED | Codex | current | CMakeLists.txt; tools/CMakeLists.txt; tools/vkr_vkt_packer.cpp; tools/pack_vkt_textures.sh; build.sh | ./build_test.sh; VKR_TEXTURE_PACK_INPUT_DIR=/tmp/vkt_pack_test VKR_VKT_PACK=1 ./build.sh Debug | Fully programmatic `.vkt` KTX2/UASTC packer integrated and build-hooked without external KTX CLI dependency | none |
 | P6 | COMPLETED | Codex | current | lib/src/renderer/systems/vkr_texture_system.h; lib/src/renderer/systems/vkr_texture_system.c; build.sh | ./build_test.sh; ./build/tools/vkr_vkt_packer --input-dir /tmp/vkt_pack_test --strict --verbose; VKR_TEXTURE_PACK_INPUT_DIR=/tmp/vkt_pack_test VKR_VKT_PACK=1 ./build.sh Debug | Runtime strict/dual-path controls and release pack strictness gate are active | none |
+| P7 | COMPLETED | Codex | current | build wrappers; tools/pack_vkt_textures.sh; tools/pack_vkt_textures.bat; .gitignore; AGENTS.md; ADR-012 | build.bat Debug; build.bat Release; switch back to each; explicit pack twice on temporary input | Debug/Release outputs persist independently; normal builds do not pack; explicit packing reuses one tool tree and skips current outputs | CPU suite compiled but hit the existing Windows `/tmp` assertion in json_writer_test.c |
 
 ## Decisions Log
 - Default rollout policy: dual-path + migration warning.
@@ -32,7 +33,9 @@ authority: progress
 - Runtime rollout controls are environment-driven:
   - `VKR_TEXTURE_VKT_STRICT` enforces `.vkt`-only runtime and disables source fallback/legacy read.
   - `VKR_TEXTURE_VKT_ALLOW_SOURCE_FALLBACK`, `VKR_TEXTURE_VKT_ALLOW_LEGACY`, and `VKR_TEXTURE_VKT_WRITE_LEGACY_CACHE` tune dual-path development behavior.
-- `build.sh` now enforces strict texture packing defaults for `Release` builds (`VKR_VKT_PACK_STRICT=1` unless explicitly overridden) and rejects `Release` builds with `VKR_VKT_PACK=0`.
+- The P6 Release build hook was superseded by P7: normal builds never pack.
+  Release packaging that needs a complete asset set explicitly runs
+  `tools/pack_vkt_textures.sh` or `.bat` with `VKR_VKT_PACK_STRICT=1`.
 - `NORMAL_RG` uses BC5/ASTC/EAC RG11 with a terminal RGBA target because
   libktx has no uncompressed two-channel Basis transcode target. EAC capability
   is probed independently from ETC2 RGBA.
@@ -162,6 +165,28 @@ authority: progress
 - Status:
   - Completed.
 
+### P7
+- Goal: isolate build configurations and remove version-independent packing
+  work from ordinary compilation.
+- Interfaces:
+  - Configuration-specific build directories in the root wrappers.
+  - Explicit `tools/pack_vkt_textures.sh` and `.bat` entry points.
+- Implementation Steps:
+  1. Map Debug, Release, RelWithDebInfo, and MinSizeRel to persistent trees.
+  2. Give tests, library-only builds, and the packer dedicated trees.
+  3. Remove the application-build pack hook and Release pack gate.
+  4. Keep incremental timestamp checks in the packer.
+- Failure Modes:
+  - A packaging workflow omits the explicit strict pack operation.
+- Validation:
+  - Switch Release to Debug and confirm the prior Debug tree is incremental.
+  - Pack one temporary texture twice and confirm the second pass skips it.
+- Rollback:
+  - Invoke explicit packing before compilation without reintroducing shared
+    application build directories.
+- Status:
+  - Completed.
+
 ## Validation Log
 - `P0`: tracker schema and required section order verified.
 - `P1`:
@@ -207,6 +232,17 @@ authority: progress
   - `./build/tools/vkr_vkt_packer --input-dir /tmp/vkt_pack_test --strict --verbose` completed successfully.
   - `VKR_TEXTURE_PACK_INPUT_DIR=/tmp/vkt_pack_test VKR_VKT_PACK=1 ./build.sh Debug` completed successfully.
   - Existing unrelated warnings remained in `bitmap_font_loader.c` and `vkr_rg_debug.c`.
+- `P7`:
+  - `build.bat Debug` and `build.bat Release` completed in `build_debug` and
+    `build_release`; neither built or invoked `vkr_vkt_packer`.
+  - Switching back to Debug and then Release reported `ninja: no work to do`
+    for each, proving both object trees survived the round trip.
+  - `tools/pack_vkt_textures.bat` built the packer in `build_vkt_packer` and
+    packed one temporary input; the second invocation reported
+    `packed=0 skipped=1 failed=0`.
+  - `build_test.bat` compiled `vulkan_renderer_tester` in `build_test`. The test
+    run hit the existing Windows-incompatible `/tmp` path assertion at
+    `tests/src/json_writer_test.c` and was stopped after it stalled.
 - Post-phase cleanup/semantic-compression pass:
   - Refactored duplicated extension parsing in `texture_loader.c` into local helpers.
   - Centralized frontend texture-create result mapping in `renderer_frontend.c`.
@@ -223,7 +259,7 @@ authority: progress
 
 ## Open Risks
 - Compressed texture write/resize semantics are intentionally restricted in rollout 1.
-- First full-repository texture pack can be expensive; incremental skips make subsequent builds fast.
+- First full-repository texture pack can be expensive; incremental skips make subsequent explicit pack invocations fast.
 - Strict runtime mode requires migrated `.vkt` coverage; enabling it too early will hard-fail legacy/source-only assets.
 
 ## Next Phase Entry Criteria
@@ -233,3 +269,5 @@ authority: progress
 - `P3 -> P4`: payload contract stable and validated. (`P4` implementation is complete; full value depends on `P3` decode output integration.)
 - `P4 -> P5`: runtime upload path validated on target platforms.
 - `P5 -> P6`: packaging flow stable and migration coverage complete.
+- `P6 -> P7`: build configurations persist independently and explicit packing
+  owns version-independent asset generation.

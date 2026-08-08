@@ -73,7 +73,7 @@ task notes under `.scratch/`, which is local and untracked.
 ## Build, test, validate
 
 ```sh
-./build.sh [Debug|Release]     # compile shaders, configure, build, copy assets
+./build.sh [Debug|Release]     # Debug -> build_debug; Release -> build_release
 ./build_run.sh [Debug|Release] # build and launch
 ./build_release.sh             # optimized build -> build_release/app/vulkan_renderer
 build_release/tools/vkr_harness profile --case <case> --profile <profile>
@@ -84,8 +84,15 @@ tools/validate_multithreaded_backend_matrix.sh   # backend threading matrix
 build_release/tools/vkr_harness profile \
   --case tools/cases/performance/sponza_orbit.case.json \
   --profile tools/profiles/performance-windowed.json # Release performance evidence
-tools/pack_vkt_textures.sh                       # offline KTX2/UASTC packing
+tools/pack_vkt_textures.sh                       # explicit shared KTX2/UASTC packing
+# Windows: tools\pack_vkt_textures.bat
 ```
+
+Build configurations use persistent, non-overlapping output trees. Normal
+builds never pack textures. Run `tools/pack_vkt_textures.sh` (or its `.bat`
+equivalent) when source textures change or before producing a packed asset set;
+the packer uses the shared `build_vkt_packer` tree and skips up-to-date `.vkt`
+outputs unless `VKR_VKT_PACK_FORCE=1` is set.
 
 Debug builds and graphics validation layers are diagnostic configurations, not
 baseline configurations. Use them only while reproducing or debugging a
@@ -111,8 +118,8 @@ followed by a macOS watchdog kernel panic. This is correlation rather than a
 proven root cause, but it is sufficient reason to keep shader validation to a
 minimal issue reproduction.
 
-The core build/run/test wrappers have `.bat` equivalents. The pipeline-cache,
-backend-matrix, and texture-packing utilities are currently POSIX shell only;
+The core build/run/test and texture-packing wrappers have `.bat` equivalents.
+The pipeline-cache and backend-matrix utilities are currently POSIX shell only;
 the C harness is cross-platform. Use the repository scripts rather than
 invoking `cmake` directly — they own shader compilation and asset copying.
 
