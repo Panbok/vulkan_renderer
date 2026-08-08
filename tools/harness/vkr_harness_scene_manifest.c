@@ -167,6 +167,21 @@ static bool8_t vkr_harness_scene_manifest_resolve(
                              relative) > 0;
       }
     }
+    if ((owner_is_gltf || owner_is_glb) &&
+        string_n_equals(clean, "objects/", 8u)) {
+      if (string_format(candidate, sizeof(candidate), "%s/assets/textures/%s",
+                        resolved_root, clean + 8u) > 0 &&
+          vkr_harness_realpath(candidate, out_absolute) &&
+          vkr_harness_scene_path_below(resolved_root, out_absolute)) {
+        const uint64_t root_length = string_length(resolved_root);
+        const char *relative = out_absolute + root_length;
+        if (*relative == '/' || *relative == '\\') {
+          relative++;
+        }
+        return string_format(out_relative, VKR_HARNESS_PATH_MAX, "%s",
+                             relative) > 0;
+      }
+    }
     const char *basename = clean;
     for (const char *cursor = clean; *cursor; ++cursor) {
       if (*cursor == '/' || *cursor == '\\') {

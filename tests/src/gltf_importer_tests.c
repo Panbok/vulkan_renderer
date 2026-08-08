@@ -1134,8 +1134,10 @@ static void test_gltf_import_prepares_spec_gloss_textures(void) {
   printf("  Running test_gltf_import_prepares_spec_gloss_textures...\n");
 
   const char *stem = "gltf_import_spec_gloss";
-  const char *diffuse_uri = "gltf_importer_spec_gloss/nested/diffuse.png";
-  const char *spec_gloss_uri = "gltf_importer_spec_gloss/nested/spec.png";
+  const char *diffuse_uri =
+      "objects/gltf_importer_spec_gloss/nested/diffuse.png";
+  const char *spec_gloss_uri =
+      "objects/gltf_importer_spec_gloss/nested/spec.png";
   const char *diffuse_request =
       "assets/textures/gltf_importer_spec_gloss/nested/diffuse.png";
   const char *spec_gloss_request =

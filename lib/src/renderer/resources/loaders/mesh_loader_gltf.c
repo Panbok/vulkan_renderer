@@ -199,6 +199,17 @@ vkr_internal String8 vkr_mesh_loader_gltf_resolve_relative_texture_uri(
       file_path_join(info->load_allocator, string8_lit("assets"), uri);
   String8 assets_textures_uri_candidate =
       file_path_join(info->load_allocator, string8_lit("assets/textures"), uri);
+  String8 legacy_objects_candidate = {0};
+  const bool8_t has_legacy_objects_candidate =
+      uri.length > sizeof("objects/") - 1u &&
+      vkr_string8_starts_with(&uri, "objects/");
+  if (has_legacy_objects_candidate) {
+    String8 texture_relative =
+        string8_substring(&uri, sizeof("objects/") - 1u, uri.length);
+    legacy_objects_candidate = string8_create_formatted(
+        info->load_allocator, "assets/textures/%.*s",
+        (int32_t)texture_relative.length, texture_relative.str);
+  }
   String8 basename = vkr_mesh_loader_gltf_basename_view(uri);
   String8 assets_textures_basename_candidate =
       basename.length > 0
@@ -222,6 +233,12 @@ vkr_internal String8 vkr_mesh_loader_gltf_resolve_relative_texture_uri(
     *out_found = true_v;
     return assets_textures_uri_candidate;
   }
+  if (has_legacy_objects_candidate &&
+      vkr_mesh_loader_gltf_find_existing_texture_file(
+          info->load_allocator, legacy_objects_candidate, out_existing_path)) {
+    *out_found = true_v;
+    return legacy_objects_candidate;
+  }
   if (!string8_equals(&assets_textures_uri_candidate,
                       &assets_textures_basename_candidate) &&
       vkr_mesh_loader_gltf_find_existing_texture_file(
@@ -232,15 +249,29 @@ vkr_internal String8 vkr_mesh_loader_gltf_resolve_relative_texture_uri(
   }
 
   if (log_missing) {
-    log_warn("MeshLoader(glTF): texture '%.*s' not found; tried '%.*s', "
-             "'%.*s', '%.*s', '%.*s'",
-             (int32_t)uri.length, uri.str, (int32_t)source_candidate.length,
-             source_candidate.str, (int32_t)assets_candidate.length,
-             assets_candidate.str,
-             (int32_t)assets_textures_uri_candidate.length,
-             assets_textures_uri_candidate.str,
-             (int32_t)assets_textures_basename_candidate.length,
-             assets_textures_basename_candidate.str);
+    if (has_legacy_objects_candidate) {
+      log_warn("MeshLoader(glTF): texture '%.*s' not found; tried '%.*s', "
+               "'%.*s', '%.*s', '%.*s', '%.*s'",
+               (int32_t)uri.length, uri.str, (int32_t)source_candidate.length,
+               source_candidate.str, (int32_t)assets_candidate.length,
+               assets_candidate.str,
+               (int32_t)assets_textures_uri_candidate.length,
+               assets_textures_uri_candidate.str,
+               (int32_t)legacy_objects_candidate.length,
+               legacy_objects_candidate.str,
+               (int32_t)assets_textures_basename_candidate.length,
+               assets_textures_basename_candidate.str);
+    } else {
+      log_warn("MeshLoader(glTF): texture '%.*s' not found; tried '%.*s', "
+               "'%.*s', '%.*s', '%.*s'",
+               (int32_t)uri.length, uri.str, (int32_t)source_candidate.length,
+               source_candidate.str, (int32_t)assets_candidate.length,
+               assets_candidate.str,
+               (int32_t)assets_textures_uri_candidate.length,
+               assets_textures_uri_candidate.str,
+               (int32_t)assets_textures_basename_candidate.length,
+               assets_textures_basename_candidate.str);
+    }
   }
 
   return source_candidate;
