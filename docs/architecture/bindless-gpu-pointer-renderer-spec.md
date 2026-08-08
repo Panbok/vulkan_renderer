@@ -273,18 +273,25 @@ can have a valid allocation handle and no `VkrGpuAddressPair`.
 
 | Class | Intended use | Metal starting point | Vulkan memory-property search |
 |---|---|---|---|
-| `UPLOAD` | Root data, frame streams, frequently updated material rows, staging, and the descriptor buffers | Shared storage, write-combined CPU cache mode | `HOST_VISIBLE\|HOST_COHERENT\|DEVICE_LOCAL` (resizable BAR), else `HOST_VISIBLE\|HOST_COHERENT` |
-| `DEVICE` | Textures and persistent buffers/rows that benefit from private or compressed storage | Private placement heaps | `DEVICE_LOCAL` and not `HOST_VISIBLE` |
-| `READBACK` | Capture, picking, counters read by CPU | Shared storage, default CPU cache mode | `HOST_VISIBLE\|HOST_CACHED\|HOST_COHERENT`, else `HOST_VISIBLE\|HOST_CACHED` |
+| `UPLOAD` | Root data, frame streams, frequently updated material rows, staging, and the descriptor buffers | Shared storage, write-combined CPU cache mode | Prefer `HOST_VISIBLE\|HOST_COHERENT\|DEVICE_LOCAL`, then `HOST_VISIBLE\|HOST_COHERENT`, then compatible `HOST_VISIBLE` |
+| `DEVICE` | Textures and persistent buffers that benefit from private or compressed storage | Private placement heaps | Prefer `DEVICE_LOCAL` without `HOST_VISIBLE`, then compatible `DEVICE_LOCAL`, then any compatible type with a named degraded-placement report |
+| `READBACK` | Capture, picking, counters read by CPU | Shared storage, default CPU cache mode | Prefer `HOST_VISIBLE\|HOST_CACHED\|HOST_COHERENT`, then cached, coherent, and finally compatible `HOST_VISIBLE` |
 
 Vulkan additionally has `bufferImageGranularity`, which Metal does not. It is
-handled by **segregation rather than padding**: one allocator instance and one
-device-memory block per (class, kind) pair, using the buffer-versus-texture
-parameter the allocator core already carries, so buffers and optimal-tiling
-images never share a block and the hazard cannot occur. Metal's adapter
-collapses (class, kind) onto its single placement heap. Same core, different
-adapter policy. Where padding is unavoidable it is counted into the existing
-alignment-waste row rather than hidden.
+handled by **segregation rather than padding**: allocator/device-memory blocks
+are pooled by `(class, kind, memory_type_index, device_address_required)`, using
+the buffer-versus-texture parameter the allocator core already carries, so
+buffers and optimal-tiling images never share a block, every placement respects
+the resource's exact `memoryTypeBits`, and address-bearing buffers never enter a
+block allocated without the device-address flag. Metal's adapter collapses
+those keys onto its placement heap. Same core, different adapter policy.
+`VkMemoryDedicatedRequirements` is queried before placement; required and
+initially preferred dedicated allocations bypass the range core but retain owner
+and retirement accounting.
+Where padding is unavoidable it is counted into the existing alignment-waste
+row rather than hidden. Non-coherent upload ranges are flushed before submit,
+and non-coherent readback ranges are invalidated after completion before CPU
+access.
 
 The exact heap count and block sizes are not decided here. They must come from
 the observed Stage 2 allocation distribution, working-set budget, fragmentation,
@@ -404,10 +411,11 @@ assumption.
 ### Modern Vulkan
 
 The same CPU material lowers to compact 32-bit indices into application-managed
-descriptor-buffer heaps. The selected row is 64 bytes — one cache line — holding
+descriptor-buffer heaps. The selected row is 64 bytes, holding
 tint, four texture indices, four sampler indices, material identifier, and
 flags, against Metal's 96 bytes carrying eight 64-bit resource identifiers. That
-is a third less material-row bandwidth, and it is the "denser natural
+removes one third of the row bytes; any bandwidth or frame-time effect requires
+measurement. It is the "denser natural
 representation" ADR-022 anticipated for Vulkan and explicitly refused to force
 onto Metal.
 
@@ -416,6 +424,12 @@ Metal carrying compact texture-view-pool indices, which Stage 3 left unproven,
 or Vulkan carrying 32 bytes of padding for nothing. The Vulkan GPU row therefore
 differs from the Metal row; this is a backend lowering, not a second CPU
 authority, and the ABI manifest simply gains a second record family.
+
+Descriptor slots are owned by published texture/sampler resources, not by a
+single material. A material row retains those publications; retiring the row
+releases them only after completion. A slot returns to the heap only after its
+last logical reference and last GPU use are both gone, which keeps shared
+textures and canonical samplers valid across independent material replacement.
 
 Contiguity and stride are guaranteed by the descriptor-buffer layout queries
 rather than assumed: the per-binding base offset and the per-descriptor stride
@@ -533,7 +547,7 @@ The bindless Vulkan backend adds a third tree,
 **separate SPIR-V output namespace**, so the fifteen legacy outputs and their
 `.shadercfg` manifests are untouched throughout migration. The legacy column of
 the table above is deleted at [ADR-026](adr/026-vulkan-1-2-retirement.md)
-step 1. Its shaders may be pure Slang: the limitation that forced hand-written
+step 2. Its shaders may be pure Slang: the limitation that forced hand-written
 MSL on Metal — Slang aborting on a structured-buffer element containing texture
 resource fields — has no analogue there, because the Vulkan material row carries
 32-bit indices rather than texture objects.
@@ -639,6 +653,14 @@ timeline or a multi-queue retirement point. A numerically larger value from one
 queue is not evidence that an unrelated queue has completed. The same rule
 applies to the later Vulkan implementation.
 
+Window-system presentation is outside that submit-completion domain. The
+bindless Vulkan windowed target requires
+`VK_KHR_swapchain_maintenance1` present fences so a retired swapchain's views,
+render-complete semaphores, and handle are recycled only after the presentation
+contract permits it. A timeline value or wait-idle inference is not substituted
+for that WSI proof; the fence may signal before display, and offscreen targets
+have no such obligation.
+
 The CPU waits only when it would otherwise exceed the configured frames-in-
 flight or reuse a still-owned bounded slot. Such waits are counted and must not
 appear per draw or as an unreported allocation fallback.
@@ -696,28 +718,29 @@ Minimum required capabilities:
 |---|---|
 | Buffer device address, 64-bit shader integers | Core Vulkan 1.2/1.0 features enabled; shader address ABI validated by reflection |
 | Timeline semaphore | Core Vulkan 1.2 feature enabled for completion/retirement |
-| Descriptor indexing minimum set | Runtime descriptor arrays, partially bound bindings, non-uniform sampled-image and storage-image indexing |
+| Descriptor indexing minimum set | Runtime descriptor arrays plus non-uniform sampled-image and storage-image indexing; descriptor-buffer bindings already imply partially-bound/update-after-bind behavior without those feature bits |
 | Scalar block layout | Makes the SPIR-V layout of a mixed address/vector/matrix record equal the C layout |
 | Host query reset | Timestamp pool reset for per-pass timings |
 | Dynamic rendering, synchronization2, maintenance4 | Core Vulkan 1.3 features enabled |
 | Maintenance5 | Core Vulkan 1.4 feature enabled; size-bounded index binding |
 | Bindless texture references | **`VK_EXT_descriptor_buffer` required, with no fallback** |
+| Windowed presentation lifetime | `VK_KHR_surface_maintenance1` and `VK_KHR_swapchain_maintenance1` present fences; offscreen drops the WSI extensions |
 | Shader language/toolchain | Slang→SPIR-V address and descriptor model validated by reflection, validation layers, and a rendered case |
 
-`VK_EXT_descriptor_heap` is closer to the article's raw heap model, but it is
-absent from the locally installed Vulkan 1.4.313 SDK and cannot be selected,
-validated, or evaluated until target drivers, SDK, validation, and shader
-tooling are demonstrated. It is retained as a forward migration trigger, not as
-the preferred option; leaving it preferred would leave the profile undecided
-indefinitely.
+`VK_EXT_descriptor_heap` is the standardized successor and closer to the
+article's raw heap model, but it is absent from the observed Vulkan 1.4.313 SDK
+and cannot be selected until target drivers, SDK, validation, debugger, shader
+tooling, and rendered behavior are demonstrated. It is retained as a forward
+migration trigger, not as the current implementation; a specification page is
+not executable target evidence.
 
 Descriptor buffers do retain layout and mapping rules, and their descriptor
 sizes are backend-defined — but that variance is contained rather than exposed.
 **Backend-defined descriptor sizes never reach the shader:** the shader indexes
 an unbounded array with a 32-bit integer, and the driver turns that index into a
-strided offset. The application computes byte offsets only when writing a
-descriptor, host-side, so a size that varies across drivers changes one line of
-host code and zero bytes of shader ABI.
+layout-defined byte address. The application computes byte offsets only when
+writing a descriptor, host-side, so a size that varies across drivers is
+contained in the heap layout/writer module and changes zero bytes of shader ABI.
 
 No fallback to traditional per-material descriptor sets is required or provided.
 The frozen Vulkan 1.2 renderer remains the compatibility path until its
@@ -1076,11 +1099,13 @@ fingerprints, variance, and what was not measured.
   platform that can run the backend compounds the previous risk. Enable the
   feature in diagnostic configurations when present; never in Release.
 - **`VK_EXT_descriptor_heap` later supersedes descriptor buffers.** One migration
-  is already scheduled. Keep index-to-descriptor translation in a single module
-  so the swap does not reach the material table, the ABI manifest, or shaders.
+  is plausible. Keep index-to-descriptor translation in a single module to
+  contain it, while still rerunning pipeline-layout, reflection, capture, and
+  shader ABI gates rather than assuming a one-file swap.
 - **The shared-core extraction destabilizes the shipping Metal path.** Land it as
-  a pure rename before any Vulkan code, with the Metal snapshot as its
-  correctness witness and a Release Metal profile as its performance witness.
+  one module at a time only when its real Vulkan caller lands, with the Metal
+  snapshot as its correctness witness and a Release Metal profile as its
+  performance witness.
 - **Retiring Vulkan 1.2 leaves no portable diagnostic path.** After the final
   gate a Windows machine without descriptor buffers has no renderer at all. This
   is the intended end state and is recorded in

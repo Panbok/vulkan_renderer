@@ -46,10 +46,10 @@ Considered → Revisit When**.
 | [ADR-020](020-bindless-backend-seam.md) | Parallel renderer implementation boundary for the bindless path | Accepted (partial) |
 | [ADR-021](021-metal-first-bindless-backend.md) | Metal 4 first; modern Vulkan for Windows and Linux | Accepted (partial) |
 | [ADR-022](022-gpu-pointer-resource-model.md) | GPU-address resources, native texture references, backend-lowered dependencies | Accepted (partial) |
-| [ADR-023](023-vulkan-1-4-bindless-capability-profile.md) | Vulkan 1.4 bindless capability profile with required descriptor buffers | Proposed |
-| [ADR-024](024-shared-bindless-gpu-cores.md) | Shared backend-neutral GPU cores extracted from the Metal backend | Proposed |
+| [ADR-023](023-vulkan-1-4-bindless-capability-profile.md) | Vulkan 1.4 bindless profile with descriptor buffers and windowed present fences | Proposed |
+| [ADR-024](024-shared-bindless-gpu-cores.md) | Backend-neutral GPU cores extracted only with a second real caller | Proposed |
 | [ADR-025](025-selected-renderer-implementation-strategy.md) | One selected renderer implementation strategy replacing the backend-type ladder | Proposed |
-| [ADR-026](026-vulkan-1-2-retirement.md) | Vulkan 1.2 retirement sequencing and the bindless-only end state | Proposed |
+| [ADR-026](026-vulkan-1-2-retirement.md) | Predeclared Vulkan 1.2 retirement gates and the bindless-only end state | Proposed |
 
 ## Relationship to the Specification
 

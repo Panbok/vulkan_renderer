@@ -10,9 +10,11 @@ authority: adr
 
 **Proposed** — no code. This ADR acts on
 [ADR-020](020-bindless-backend-seam.md)'s contingency that "if sharing
-`renderer_frontend.c` produces branch duplication, split it," and on its
-"Revisit When" trigger that a second bindless implementation reveals which
-operations are genuinely shared.
+`renderer_frontend.c` produces branch duplication, split it." It becomes
+Accepted (partial) when V2 replaces the current behavior ladder for the real
+Metal and legacy-Vulkan implementations while the bindless Vulkan entry remains
+a rejecting stub, and Accepted when the production bindless Vulkan strategy
+passes V3.
 
 ## Context
 
@@ -39,7 +41,7 @@ test, and there are now 46 of them:
 | Outside `lib/`: `app/src/main.c`, `tools/harness/vkr_harness_common.c`, `tests/src/harness_test.c` | 1 each |
 
 Adding a third backend to this structure turns every one of them into a
-three-way ladder, in fifteen files, most of them outside the renderer frontend.
+three-way ladder across 14 files, most of them outside the renderer frontend.
 That is the concrete cost ADR-020 anticipated but did not yet have to pay.
 
 Reading every site rather than counting them reveals something more useful:
@@ -111,16 +113,19 @@ cancel frame, resize, present-target recreate, capture reserve, capture record
 item, capture poll, capture release, pass-timing poll, and the backend allocator
 accessor.
 
-Every one of these will have **two concrete implementations with the same
-ownership and completion contract** once the bindless Vulkan backend exists.
-That is precisely ADR-020's stated extraction condition — and it is satisfied
-*only* for these operations. They become a `VkrRendererImpl` struct of function
-pointers carrying an opaque state pointer, the capability struct from kinds 1
-and 2, and the asset publisher from kind 3.
+Metal and legacy Vulkan already provide two concrete implementations of these
+coarse operations, even though the current dispatch shape exposes them
+unevenly. V2 first proves they fit one ownership and completion contract through
+the real implementations and a rejecting bindless stub; the production bindless
+Vulkan backend becomes the third caller in V3. Only these coarse operations
+satisfy ADR-020's extraction condition. They become a `VkrRendererImpl` struct
+of function pointers carrying an opaque state pointer, the capability struct
+from kinds 1 and 2, and the asset publisher from kind 3.
 
 The implementation is selected once by a small factory keyed on backend type and
-guarded by the platform macros. **That factory is the only place backend type is
-tested at runtime after initialization.**
+guarded by the platform macros. **After selection, renderer behavior never
+branches on backend type.** CLI parsing, harness case decoding, reporting, and
+factory selection may still inspect the enum; they do not choose frame behavior.
 
 Explicitly **not** in the table: draw, indexed draw, buffer or texture binding,
 viewport and scissor state, barriers, resource creation, pipeline creation, and
@@ -140,9 +145,11 @@ evidence entry point.
 
 ### Where legacy Vulkan 1.2 sits
 
-It becomes a **third implementation** whose entries forward into the existing
-`VkrRendererBackendInterface`, with `uses_legacy_pipeline_state` set true. A
-mechanical adaptor.
+Legacy Vulkan remains one of V2's **two production implementations**. Its entries
+forward into the existing `VkrRendererBackendInterface`, with
+`uses_legacy_pipeline_state` set true. The bindless Vulkan stub is the third
+strategy entry and becomes the third production implementation only at V3. The
+legacy entry is a mechanical adaptor.
 
 Critically, **the direct `rf->backend.*` call sites stay exactly where they
 are.** They live in functions that only the legacy implementation reaches,
@@ -150,15 +157,17 @@ because their callers are already gated by the capability boolean. Routing them
 through the strategy table would be the speculative-vtable mistake ADR-020
 rejects. The adaptor's value is containment: at the final retirement gate,
 deleting the 86-entry table means deleting one implementation and its adaptor
-rather than unpicking a ladder across fifteen files.
+rather than unpicking a ladder across 14 files.
 
 ### Hot-path guarantee
 
-After initialization the frame path executes **exactly two indirect calls per
-frame** — prepare frame and submit packet. Inside submit the backend is
-direct-typed. No per-pass indirect call, no per-draw indirect call, no
-backend-type test, no allocation, no lock, and no string construction. A source
-audit proving this is required evidence in every stage that touches the seam.
+After initialization a normal successful frame executes **two indirect calls**
+— prepare frame and submit packet. Exceptional lifecycle, resize, and explicitly
+requested capture/poll operations may add bounded coarse calls; none is
+dispatched per pass or per draw. Inside submit the backend is direct-typed. No
+per-pass indirect call, no per-draw indirect call, no backend-behavior type test,
+no allocation, no lock, and no string construction. A source audit proving this
+is required evidence in every stage that touches the seam.
 
 ### File split, only when it is earned
 
@@ -172,7 +181,7 @@ duplication is measurable, not in advance.**
 
 **Positive**
 
-- A third backend costs a factory entry and a capability struct, not fifteen
+- A third backend costs a factory entry and a capability struct, not 14
   files of three-way branches.
 - Roughly a dozen sites lose their branch entirely, replaced by a field read, so
   the majority of the ladder disappears without any dispatch mechanism.
@@ -191,10 +200,10 @@ duplication is measurable, not in advance.**
 - This is a wide, behaviour-preserving refactor across the frontend, metrics,
   capture, and six systems files. Its review value depends almost entirely on the
   snapshot and validation witnesses, not on reading the diff.
-- It lands **before** the second bindless backend exists, so the operation set is
-  shaped by one real implementation plus one designed one. If the Vulkan backend
-  needs an operation the table lacks, the table grows — and growth is the failure
-  mode this ADR is trying to avoid.
+- It lands before the second bindless backend exists, but the operation set is
+  shaped by two real implementations: Metal and legacy Vulkan. If bindless
+  Vulkan needs an operation the table lacks, the table grows — and repeated
+  growth is evidence the partition was wrong.
 - Three implementations coexist during migration, which is the project's maximum
   maintenance cost, as ADR-021 already noted.
 - A capability struct can accrete fields the way a vtable accretes entries.
@@ -213,7 +222,7 @@ duplication is measurable, not in advance.**
   descriptor-write-telemetry contracts encode the Vulkan 1.2 data model, and a
   bindless backend would have to reconstruct that model to satisfy them.
 - **Add a third arm to the existing ladder.** Rejected. It is the cheapest change
-  today and the most expensive one thereafter: forty-six sites across fifteen
+  today and the most expensive one thereafter: 46 sites across 14
   files, most of which are not backend questions, and each of which is an
   independent opportunity to get the third case wrong.
 - **Extract a full low-level `VkrGpuInterface` now.** Rejected, consistent with
@@ -250,6 +259,6 @@ duplication is measurable, not in advance.**
   [ADR-026](026-vulkan-1-2-retirement.md), at which point the adaptor and the
   capability boolean it exists to serve are both removed and the strategy has two
   implementations instead of three.
-- A measured profile shows the two per-frame indirect calls are themselves a cost,
-  which would contradict the premise that coarse dispatch is free at frame
-  granularity.
+- A measured profile shows the two per-frame indirect calls are a material cost,
+  at which point replace the selected strategy with a cheaper coarse mechanism
+  while preserving the no-per-pass/no-per-draw dispatch invariant.

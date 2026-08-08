@@ -8,13 +8,15 @@ authority: adr
 
 ## Status
 
-**Proposed** — no production code, no call site, and no executable evidence.
-The capability observations behind this decision were made against the locally
-installed Vulkan SDK 1.4.313 headers, the `vk.xml` registry shipped with it, and
-the local MoltenVK runtime, and are reproduced in
+**Proposed** — no production code or call site. The standalone V0 spike now
+provides native Windows offscreen evidence for this capability profile, recorded
+in
 [the bindless Vulkan backend specification](../bindless-vulkan-backend-spec.md)
-§12. This ADR becomes Accepted only when stage V0 of that specification passes on
-Windows hardware.
+§12. Validation layer 1.4.357 completes the descriptor-buffer GPU-assisted gate;
+the older 1.4.335 limitation remains recorded as a toolchain boundary. Stage V0
+is complete but remains a standalone spike. This ADR becomes Accepted only when
+the production bindless backend selects and creates devices through this profile
+and stage V3 passes both its windowed and offscreen gates on Windows hardware.
 
 ## Context
 
@@ -31,9 +33,12 @@ profile that preferred `VK_EXT_descriptor_heap` "when SDK/driver support and
 shader tooling are mature" and otherwise proposed evaluating
 `VK_EXT_descriptor_buffer`. Two things have changed since that wording:
 
-1. `VK_EXT_descriptor_heap` is **absent from the installed SDK 1.4.313 headers**.
-   It cannot be selected, evaluated, or validated locally, so treating it as the
-   preferred option leaves the profile undecided indefinitely.
+1. `VK_EXT_descriptor_heap` is **absent from the observed SDK 1.4.313 headers**.
+   Khronos now documents it as the successor to descriptor buffers, but this
+   repository still has no target SDK, driver, validation, debugger, or shader
+   evidence for it. It cannot be selected for this profile on a specification
+   page alone, so treating it as the preferred implementation leaves the profile
+   undecided.
 2. The §11 wording lists descriptor buffers' "backend-defined sizes" as a
    drawback. That understates how contained the variance is — see the Decision.
 
@@ -53,10 +58,10 @@ all.**
 
 ## Decision
 
-Define one immutable capability profile, captured once during physical-device
-selection and `const` thereafter, and reject any device that does not satisfy it
-with a precise, per-device report. There is no fallback path and no silent
-degradation.
+Define one immutable capability profile, assembled during initialization and
+`const` before the backend is exposed, and reject any device that does not
+satisfy it with a precise, per-device report. There is no fallback path and no
+silent degradation.
 
 ### 1. `VK_EXT_descriptor_buffer` is required
 
@@ -70,16 +75,17 @@ property, stated here because every other decision depends on it:
 > **Backend-defined descriptor sizes never reach the shader.**
 
 The shader declares an unbounded texture array and indexes it with a 32-bit
-integer. The driver, not the application, turns that index into
-`base + index * stride`. The application computes byte offsets only when
-*writing* a descriptor, host-side. A descriptor size varying across drivers
-therefore changes one line of host code and zero bytes of shader ABI.
+integer. The driver, not the application, turns that index into a layout-defined
+byte address. The application computes byte offsets only when *writing* a
+descriptor, host-side. A descriptor size varying across drivers is therefore
+contained in the heap layout/writer module and changes zero bytes of shader ABI.
 
 Two corollaries are part of the decision rather than implementation detail:
 
-- **Two descriptor buffers, never one.** The specification segregates sampler and
-  resource descriptors into buffers with distinct usage bits, and drivers report
-  their address-space sizes separately.
+- **Two descriptor-buffer bindings by policy.** Sampler and resource descriptors
+  have distinct usage bits, category binding limits, range limits, and address
+  spaces. The profile checks all of those limits independently rather than
+  assuming the total binding limit is sufficient.
 - **Separate sampled-image and sampler descriptors, never combined ones.**
   `combinedImageSamplerDescriptorSingleArray == VK_FALSE` on some drivers splits
   a combined array into two non-contiguous sub-arrays, making index arithmetic
@@ -91,11 +97,16 @@ Two corollaries are part of the decision rather than implementation detail:
 
 The required floor is enumerated in the backend specification §3.2. It comprises
 buffer device address, 64-bit shader integers, timeline semaphores, the
-descriptor-indexing minimum set with runtime descriptor arrays, partially bound
-bindings and non-uniform sampled-image and storage-image indexing, scalar block
+descriptor-indexing minimum set with runtime descriptor arrays and non-uniform
+sampled-image and storage-image indexing, scalar block
 layout, host query reset, dynamic rendering, synchronization2, maintenance4 and
 maintenance5, `VK_EXT_descriptor_buffer`, a queue family with graphics, compute
-and transfer, and the surface and swapchain extensions for windowed targets only.
+and transfer, and — for windowed targets only — surface/swapchain plus
+`VK_KHR_surface_maintenance1` / `VK_KHR_swapchain_maintenance1` with the
+`swapchainMaintenance1` feature. Present fences are required because a submit
+timeline does not prove presentation resources may be safely recycled or
+destroyed. Those fences are resource-lifetime proof, not evidence that an image
+was displayed.
 
 **No entry is assumed to be guaranteed by the core version.** Several of these
 features are promoted into core Vulkan and some are mandatory to support at some
@@ -113,18 +124,36 @@ descriptor indexing, its sub-features, or 64-bit shader integers among the
 features newly required in 1.4. Asserting the framing would put an unverified
 claim into a rationale document.
 
-A limit floor is also rejected against, covering per-stage and per-set
-descriptor counts against the configured heap capacities, push-constant size,
-bound descriptor sets, per-buffer descriptor ranges, and total descriptor
-address space.
+A limit floor is also rejected against, covering per-stage, per-set, and
+combined per-stage resource counts against the configured heap capacities;
+push-constant size; bound descriptor sets; total/resource/sampler
+descriptor-buffer binding counts; per-buffer descriptor ranges; total descriptor
+address space; and explicit `vkGetDescriptorSetLayoutSupport` checks for both
+concrete heap layouts.
+
+`descriptorBindingPartiallyBound` and the update-after-bind feature bits are not
+part of that floor. Descriptor-buffer bindings already have equivalent
+partially-bound/update-after-bind semantics without enabling those features, and
+descriptor-buffer layouts cannot use the update-after-bind-pool create flag.
+Requiring the redundant bits would narrow the target matrix without changing
+the selected behavior.
+
+Those layout-support calls require a logical device, so evaluation has two
+phases rather than pretending every check happens during physical-device
+selection. First reject on physical extensions, features, limits, queues, and
+formats. Then create a candidate device for the highest-ranked viable physical
+device, run both concrete layout-support checks, and either retain it and
+finalize its immutable profile or destroy it and continue to the next candidate.
+Post-create rejection is recorded against that same physical device.
 
 ### 3. Rejection is precise and per device
 
 A fixed-capacity, allocation-free report is emitted **per candidate physical
 device**, so a two-GPU machine explains both. Each entry names its kind — API
-version, instance extension, device extension, feature, limit, queue, or format
-— its name, whether it was required, whether it was present, and a detail
-string. Each device header records the device name and, from the driver
+version, instance extension, device extension, feature, limit, queue, format,
+device creation, or layout support — its name, whether it was required, whether
+it was present, and a detail string. Each device header records the device name
+and, from the driver
 properties, the driver identifier, name, info string, and conformance version.
 
 That driver group is load-bearing rather than decorative. Descriptor-buffer
@@ -180,22 +209,32 @@ driver allocation.
   `descriptorBufferCaptureReplay`.** Losing RenderDoc or PIX on the only platform
   that can run the backend is a sharper practical cost than device coverage, and
   it compounds the remote-development problem.
+- **GPU-assisted coverage depends on the validation-layer version.** Khronos
+  validation layer 1.4.335 disables all shader instrumentation checks when
+  `VK_EXT_descriptor_buffer` is enabled; 1.4.357 executes and passes the V0 path.
+  Reports must name the layer version, keep setup adjustments visible, and treat
+  an instrumentation self-disable as an unavailable gate rather than clean
+  validation evidence.
 - Requiring an extension with narrower deployment than descriptor sets means
   older-driver users get a hard rejection with no renderer.
-- `VK_EXT_descriptor_heap` is the strictly better long-term fit, so one migration
-  is already scheduled the day this is accepted. Containing it means the heap
-  module must be the single owner of index-to-descriptor translation.
+- `VK_EXT_descriptor_heap` is the standardized successor and may become the
+  better long-term fit, so a future migration is plausible. Containing
+  index-to-descriptor translation in one heap module reduces that migration's
+  surface, but shader/layout/capture-tool compatibility still needs evidence.
+- Requiring swapchain maintenance narrows the windowed target matrix beyond the
+  offscreen profile, in exchange for an explicit presentation-completion proof.
 - Recording optional capabilities without consuming them means the profile
   carries fields that nothing reads for some time. This is deliberate; the
   alternative is an opportunistic enable that forks behaviour without evidence.
 
 ## Alternatives Considered
 
-- **Wait for `VK_EXT_descriptor_heap`.** Strictly closer to the source article's
-  raw-heap model. Rejected because it is absent from the installed SDK 1.4.313
-  headers and cannot be selected, validated, or even evaluated locally; it would
-  block the backend on external tooling with no committed date. Retained as the
-  forward migration trigger.
+- **Wait for `VK_EXT_descriptor_heap`.** It is the standardized successor and is
+  closer to the source article's raw-heap model. Rejected because it is absent
+  from the observed SDK 1.4.313 headers and this project has no target-driver,
+  validation, debugger, shader-tooling, or rendered evidence for it; waiting
+  would block the backend on an unproven target. Retained as the forward
+  migration trigger.
 - **Descriptor indexing with conventional descriptor pools as the required
   baseline, descriptor buffers as an opt-in.** The widest driver support, and the
   shader ABI would be identical because indices stay indices. Rejected by owner
@@ -213,6 +252,11 @@ driver allocation.
   because it creates behaviour that differs by device with no evidence that the
   difference is an improvement, and it makes every bug report ambiguous about
   which path ran.
+- **Use only base `VK_KHR_swapchain` and infer present completion from the submit
+  timeline or a wait-idle call.** Rejected because neither proves presentation
+  completion. A deferred old-swapchain history can be correct, but it adds a
+  second WSI lifetime algorithm; the chosen narrow profile requires present
+  fences instead. Offscreen remains available without the WSI extensions.
 - **Assume the Vulkan 1.4 core version guarantees the floor and skip the
   queries.** Rejected on two grounds: the mandatory-support tables were not
   verifiable when this was written, and a supported feature must be enabled
@@ -220,9 +264,10 @@ driver allocation.
 
 ## Revisit When
 
-- `VK_EXT_descriptor_heap` reaches SDK, drivers, validation layers, and shader
-  tooling. Only the heap module should need to change; the shader ABI does not,
-  because indices stay indices.
+- `VK_EXT_descriptor_heap` reaches the target SDK, drivers, validation layers,
+  debugger, and shader tooling. The heap module should contain most of the
+  implementation change because indices stay indices, but the migration still
+  reruns pipeline-layout, reflection, capture, and shader ABI gates.
 - Real Windows device data shows the required floor excludes machines the project
   needs to support.
 - Descriptor-buffer driver defects or debugger limitations make the development

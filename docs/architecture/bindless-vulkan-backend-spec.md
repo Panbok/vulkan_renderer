@@ -6,12 +6,12 @@ authority: design
 
 # Bindless Vulkan 1.4 Backend — Design Specification
 
-**Document status:** Proposed. No production code, no call site, and no
-executable evidence exists for this backend. Every capability observation below
-was made against the locally installed Vulkan SDK 1.4.313 headers, the
-`vk.xml` registry shipped with it, and the local MoltenVK runtime; those
-observations are recorded in §12. Nothing here is a measurement, and nothing
-here authorizes a status change in the
+**Document status:** Proposed. The standalone V0 spike now exists under
+`tools/bindless_vulkan_v0/` and has complete native Windows offscreen evidence,
+including synchronization and GPU-assisted validation with validation layer
+1.4.357, but there is no production backend or call site. Section 12 records the
+exact toolchain boundary and the older 1.4.335 limitation. Nothing here is a
+performance measurement, and the spike does not authorize a status change in the
 [renderer status specification](renderer-architecture-spec.md).
 
 **Scope:** A bindless Vulkan 1.4 renderer for Windows, built on the semantic
@@ -37,7 +37,7 @@ implementation seam, and
 
 ---
 
-## 1. Prerequisite: this backend cannot run on the development machine
+## 1. Prerequisite: runtime work requires native Vulkan 1.4 hardware
 
 The local Vulkan runtime is MoltenVK. It reports `apiVersion 1.2.296` on an
 Apple M1 Pro and does not expose `VK_EXT_descriptor_buffer`. Both facts are
@@ -46,8 +46,9 @@ change: MoltenVK has no descriptor-buffer implementation, and Metal argument
 buffers are a poor structural match for one.
 
 The consequence is stated first because it governs the whole staging plan:
-**every runtime gate in this document requires Windows hardware.** If no Windows
-machine or runner is available, stage V0 does not start.
+**every runtime gate in this document requires Windows hardware.** A native
+Windows machine became available for V0 and produced the evidence in §12. The
+macOS/MoltenVK environment still cannot execute this backend.
 
 This inverts the premise ADR-021 used to choose Metal first — that "the most
 uncertain shader/resource ABI is tested on the machine used for daily
@@ -62,7 +63,7 @@ This list is the ceiling on local iteration and is referenced by every stage in
 
 | Gate | Why it works on macOS |
 |---|---|
-| Shared-core extraction (V1) | The four extracted modules are pure C with no GPU API; the shipping Metal snapshot is their correctness witness |
+| Shared-core characterization (V1) | The four candidate modules are pure C with no GPU API; their existing CPU tests and the shipping Metal snapshot pin behaviour before any extraction |
 | Implementation-seam refactor (V2) | Metal and legacy Vulkan-via-MoltenVK are both selectable locally |
 | Host ABI manifest check | `vkr_gpu_abi_validate_host()` compares `offsetof`/`sizeof`/`_Alignof` against a durable table; no device needed |
 | Offline SPIR-V reflection | Runs against built `.spv` artifacts in the CPU suite; `slangc` targets SPIR-V on macOS |
@@ -109,9 +110,15 @@ specifies the mechanism.
 
 ### 3.1 Shape
 
-One `VkrVkCapabilityProfile`, filled once during physical-device selection,
-stored by value, and `const` after initialization. Nothing in the frame path
-re-queries it. It carries three sections:
+One `VkrVkCapabilityProfile`, assembled in two initialization phases, stored by
+value, and `const` before the backend is exposed. Physical-device evaluation
+fills extensions, features, limits, queues, formats, and recorded optionals. A
+candidate logical-device attempt then proves device creation and the two concrete
+layout-support queries; success retains the device for the backend, while failure
+records the attempt, destroys a successfully created candidate when necessary,
+and continues to the next viable physical device.
+Nothing in the frame path re-queries the accepted profile. It carries three
+sections:
 
 - **enabled** — what the device was created with;
 - **recorded** — what the device reports but no code consumes yet;
@@ -127,10 +134,9 @@ device with a named report row.
 | `apiVersion >= VK_API_VERSION_1_4` | — | Version floor for instance and device |
 | `bufferDeviceAddress` | 1.2 | The entire model. Root records and every array are reached by address. Also required to bind a descriptor buffer, whose binding info takes a device address |
 | `shaderInt64` | 1.0 | Address fields and address arithmetic in the root record |
-| `timelineSemaphore` | 1.2 | The retirement domain (§6.4) |
+| `timelineSemaphore` | 1.2 | The ordinary GPU retirement domain (§6) |
 | `descriptorIndexing` | 1.2 | Gates the minimum descriptor-indexing set |
 | `runtimeDescriptorArray` | 1.2 | Unbounded `Texture2D g_textures[]` declaration |
-| `descriptorBindingPartiallyBound` | 1.2 | Sparse occupancy of the heaps |
 | `shaderSampledImageArrayNonUniformIndexing` | 1.2 | Per-lane material indices |
 | `shaderStorageImageArrayNonUniformIndexing` | 1.2 | Per-lane storage-image indices in IBL bake |
 | `scalarBlockLayout` | 1.2 | Makes the SPIR-V layout of a mixed `uint64`/`vec4`/`mat4` record equal the C layout. Without it the ABI manifest fights std140/std430 padding |
@@ -141,7 +147,8 @@ device with a named report row.
 | `maintenance5` | 1.4 | `VkBufferUsageFlags2CreateInfo`; `vkCmdBindIndexBuffer2` for size-bounded index binding, matching Metal's `indexBufferLength:` |
 | `VK_EXT_descriptor_buffer` with `descriptorBuffer == VK_TRUE` | extension | The global texture heap (§4). No fallback |
 | One queue family with graphics + compute + transfer (+ present when windowed) | — | Keeps the scalar submit value a valid total order (§6.5) |
-| `VK_KHR_surface` + `VK_KHR_win32_surface` + `VK_KHR_swapchain` | — | Windowed targets only; dropped for offscreen (§1.2) |
+| `VK_KHR_surface` + `VK_KHR_get_surface_capabilities2` + `VK_KHR_surface_maintenance1` + `VK_KHR_win32_surface` | instance extensions | Windowed targets only; surface creation plus the dependency of swapchain maintenance. Dropped for offscreen (§1.2) |
+| `VK_KHR_swapchain` + `VK_KHR_swapchain_maintenance1` with `swapchainMaintenance1 == VK_TRUE` | device extensions/feature | Windowed targets only. Present fences are the completion proof for recycling present semaphores and destroying retired swapchains (§6.4); a submit timeline is insufficient |
 
 **Verification boundary.** Several of these features are promoted into core
 Vulkan and some are mandatory-to-support at some core version. The
@@ -165,8 +172,13 @@ Rejected against, not merely recorded:
 
 - `maxPerStageDescriptorSampledImages` and `maxDescriptorSetSampledImages` ≥
   configured sampled-image heap capacity;
-- `maxPerStageDescriptorSamplers` ≥ sampler heap capacity;
-- `maxPerStageDescriptorStorageImages` ≥ storage-image heap capacity;
+- `maxPerStageDescriptorSamplers` and `maxDescriptorSetSamplers` ≥ sampler
+  heap capacity;
+- `maxPerStageDescriptorStorageImages` and
+  `maxDescriptorSetStorageImages` ≥ storage-image heap capacity;
+- `maxPerStageResources` ≥ sampled-image plus storage-image descriptors visible
+  to each stage at the configured capacities, plus fragment color attachments
+  for the fragment stage; separate samplers do not count against this limit;
 - `maxPushConstantsSize` ≥ the reserved root range (§7.1);
 - `maxBoundDescriptorSets` ≥ 2;
 - each descriptor-set layout size ≤ `maxResourceDescriptorBufferRange` /
@@ -174,13 +186,18 @@ Rejected against, not merely recorded:
 - combined heap bytes ≤ `descriptorBufferAddressSpaceSize`, and each buffer
   within its own `resourceDescriptorBufferAddressSpaceSize` /
   `samplerDescriptorBufferAddressSpaceSize`;
-- `maxDescriptorBufferBindings` ≥ 2.
+- `maxDescriptorBufferBindings` ≥ 2,
+  `maxResourceDescriptorBufferBindings` ≥ 1, and
+  `maxSamplerDescriptorBufferBindings` ≥ 1;
+- both concrete descriptor-set layouts report supported through
+  `vkGetDescriptorSetLayoutSupport` at their configured capacities.
 
-Recorded but not rejected against: `bufferImageGranularity`,
+Also retained in the diagnostic profile: `bufferImageGranularity`,
 `nonCoherentAtomSize`, `minMemoryMapAlignment`,
 `optimalBufferCopyOffsetAlignment`, `optimalBufferCopyRowPitchAlignment`,
-`timestampComputeAndGraphics`, `timestampPeriod`, and the whole of
-`VkPhysicalDeviceDescriptorBufferPropertiesEXT`.
+`timestampComputeAndGraphics`, `timestampPeriod`, and the complete
+`VkPhysicalDeviceDescriptorBufferPropertiesEXT`. Fields named in the floor above
+still reject; the remaining recorded values are observation only.
 
 ### 3.4 Rejection report
 
@@ -190,7 +207,7 @@ a two-GPU machine explains both:
 ```text
 VkrVkCapabilityReportEntry { kind, name, required, present, detail }
   kind ∈ { API_VERSION, INSTANCE_EXTENSION, DEVICE_EXTENSION,
-           FEATURE, LIMIT, QUEUE, FORMAT }
+           FEATURE, LIMIT, QUEUE, FORMAT, DEVICE_CREATE, LAYOUT }
 ```
 
 Each device header records `deviceName` and, from
@@ -228,10 +245,10 @@ There is no hidden fork.
 **Backend-defined descriptor sizes never reach the shader.**
 
 Slang declares `Texture2D g_textures[]` and indexes it with a 32-bit integer.
-The driver, not the application, turns that index into `base + index * stride`.
-The application computes byte offsets only when *writing* a descriptor,
-host-side. `sampledImageDescriptorSize` varying across drivers therefore changes
-exactly one line of host code and zero bytes of shader ABI.
+The driver, not the application, turns that index into a layout-defined byte
+address. The application computes byte offsets only when *writing* a descriptor,
+host-side. `sampledImageDescriptorSize` varying across drivers is therefore
+contained in the heap layout/writer module and changes zero bytes of shader ABI.
 
 This is why `VK_EXT_descriptor_buffer` is a workable global texture heap despite
 its backend-defined sizes, and it is why the umbrella spec's earlier framing —
@@ -242,15 +259,17 @@ section depends on it.
 
 ### 4.2 Two buffers, three bindings
 
-Two descriptor buffers, not one, because the specification segregates sampler
-and resource descriptors into buffers with distinct usage bits and drivers
-report their address-space sizes separately. Two, not three, so
-`maxDescriptorBufferBindings` is never a constraint.
+The design uses two descriptor-buffer bindings because sampler and resource
+descriptors have distinct usage bits, binding limits, range limits, and address
+spaces. This is an application policy, not an assumption that one native buffer
+could never carry both usage bits. The capability profile checks the total,
+resource, and sampler binding limits independently; using two bindings keeps the
+consumption explicit and bounded.
 
 | Buffer | Usage bits | Set | Bindings |
 |---|---|---|---|
-| Resource | `RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT \| SHADER_DEVICE_ADDRESS` | 0 | `SAMPLED_IMAGE[N_tex]`, `STORAGE_IMAGE[N_storage]` |
-| Sampler | `SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT \| SHADER_DEVICE_ADDRESS` | 1 | `SAMPLER[N_smp]` |
+| Resource | `VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT \| VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT` | 0 | `SAMPLED_IMAGE[N_tex]`, `STORAGE_IMAGE[N_storage]` |
+| Sampler | `VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT \| VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT` | 1 | `SAMPLER[N_smp]` |
 
 **Separate `SAMPLED_IMAGE` and `SAMPLER`, never `COMBINED_IMAGE_SAMPLER`.**
 Three reasons, the third of which is a correctness trap rather than a
@@ -268,7 +287,7 @@ preference:
 **Buffers are not descriptors.** Vertex, index, instance, material, light table,
 light mask grid, shadow cascade, IBL probe, and text-vertex arrays are all
 reached by device address, exactly as on Metal. Storage buffers are never
-descriptors. This keeps the descriptor buffers to a few hundred kilobytes and
+descriptors. This bounds descriptor memory by the configured capacities and
 makes "global texture heap" the only descriptor concept in the renderer, which
 is what keeps the seam narrow.
 
@@ -277,7 +296,9 @@ is what keeps the seam narrow.
 At initialization, after the profile is captured:
 
 1. Create both `VkDescriptorSetLayout`s with
-   `VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT`.
+   `VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT`. Each binding's
+   `descriptorCount` is the configured finite heap capacity even though the
+   shader declaration is runtime-sized.
 2. `vkGetDescriptorSetLayoutSizeEXT` gives total bytes;
    `vkGetDescriptorSetLayoutBindingOffsetEXT` gives each binding's base offset.
 3. Freeze one immutable record per binding —
@@ -288,28 +309,49 @@ At initialization, after the profile is captured:
    `mapped_base + base_offset + (uint64_t)index * stride`. No API object is
    created; it is a blob write into persistently mapped host-visible memory.
 
-Binding happens **once per command buffer** at recording start:
-`vkCmdBindDescriptorBuffersEXT` for both buffers, then one
-`vkCmdSetDescriptorBufferOffsetsEXT` for both sets at offset 0. Never per pass,
-never per draw. Because the bound offsets are always zero,
+Do **not** add `VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT`,
+`VK_DESCRIPTOR_BINDING_UPDATE_UNUSED_WHILE_PENDING_BIT`, or
+`VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT`, and do not require their feature
+bits merely for descriptor buffers. The
+[descriptor-buffer binding contract](https://docs.vulkan.org/spec/latest/chapters/descriptorbuffers.html)
+already provides the equivalent behavior without enabling those features, and a
+descriptor-buffer layout is incompatible with
+`VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT`. Runtime arrays and
+non-uniform indexing remain explicit requirements because the shaders use them.
+The heaps are fixed-capacity, so
+`VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT` is also unnecessary.
+
+The two buffers are bound **once per command buffer** at recording start with
+`vkCmdBindDescriptorBuffersEXT`. Descriptor offsets are then set once for every
+bind point the command buffer actually uses — graphics and, when present,
+compute — before its first draw or dispatch. All bindless pipelines must use
+identical set-0/set-1 heap layouts, so pipeline-layout compatibility preserves
+those offsets; an incompatible pipeline is rejected at creation rather than
+causing a per-pass rebind. Never bind or set offsets per draw. Because the bound
+offsets are always zero,
 `descriptorBufferOffsetAlignment` is trivially satisfied at the command level;
-it is enforced instead on the descriptor buffers' own suballocation alignment as
+the address supplied by `VkDescriptorBufferBindingInfoEXT` is aligned by placing
+each descriptor buffer at
 `max(descriptorBufferOffsetAlignment, memoryRequirements.alignment)`, asserted
 once at initialization.
 
 ### 4.4 Capacity, sentinel, and the two-slot rule
 
-**The heap never grows.** Growth would invalidate every published 32-bit index
-and every in-flight submission's descriptor-buffer address. Exhaustion is an
+**The heap never grows.** Growth would require a new descriptor buffer and set
+layout, compatible pipeline-layout and pipeline rebuilds, and simultaneous old
+and new heaps until every in-flight command using the old binding retires.
+Published 32-bit indices could retain their numeric values, but the containing
+layout/address contract could not change in place. Exhaustion is therefore an
 explicit, metered failure, exactly as the Metal material table reports capacity
 exhaustion rather than silently substituting or reallocating.
 
 **Slot 0 is a sentinel.** Each heap's slot 0 holds a valid descriptor — a 1×1
 opaque-white image, a flat-normal image, a default sampler. A material without a
-normal map still resolves to a valid descriptor. `descriptorBindingPartiallyBound`
-makes never-accessed slots legal, but proving non-access is harder than filling a
-sentinel. Keep the material `flags` bit for shader branching, matching Metal, **and**
-fill the sentinel, so a flags defect is a wrong pixel rather than a device loss.
+normal map still resolves to a valid descriptor. Descriptor-buffer rules allow
+undefined descriptors that are not dynamically accessed, but proving non-access
+is harder than filling a sentinel. Keep the material `flags` bit for shader
+branching, matching Metal, **and** fill the sentinel, so a flags defect is a
+wrong pixel rather than a device loss.
 
 **The two-slot rule.** A texture that is storage-written in one pass and sampled
 in another — every IBL bake target — occupies **one slot in the storage-image
@@ -325,7 +367,7 @@ This is where a naive port breaks, and it is where
 ### 4.5 The material row
 
 ```c
-/* 64 bytes, 16-byte aligned — one cache line. */
+/* 64 bytes, 16-byte aligned. */
 typedef struct VkrVkMaterialGpuRow {
   float32_t tint[4];           /* 16 @  0  — identical to Metal              */
   uint32_t  base_color_texture;/*  4 @ 16                                    */
@@ -344,7 +386,8 @@ typedef struct VkrVkMaterialGpuRow {
 
 `VkrMetalMaterialGpuRow` is 96 bytes because its eight resource-ID payloads are
 64-bit. The Vulkan row narrows those eight fields to 32-bit heap indices: 64
-bytes, one cache line, a third less material-row bandwidth.
+bytes instead of 96. That removes one third of the row bytes; any bandwidth or
+frame-time effect still requires measurement.
 
 **The rows are deliberately not unified.** This is precisely the "denser natural
 representation" that [ADR-022](adr/022-gpu-pointer-resource-model.md)
@@ -358,15 +401,24 @@ is a lowering, not a second authority.
 
 ### 4.6 Publication, immutability, retirement
 
-The protocol is identical to Metal because the code path *is* the shared slot
-table from [ADR-024](adr/024-shared-bindless-gpu-cores.md):
+The slot state machines are shared with Metal through
+[ADR-024](adr/024-shared-bindless-gpu-cores.md), but their typed ownership is
+different and remains explicit:
 
-1. Acquire descriptor-heap slots for newly referenced image views and samplers.
-2. Fill a **new** material row in a free slot of the material buffer, an
-   `UPLOAD`-class suballocation reached by device address.
+1. Texture and sampler publication acquire and fill descriptor-heap slots.
+   Sampled/storage slot pairs belong to the published image resource; canonical
+   sampler slots are deduplicated and reference-counted by the sampler publisher.
+2. Material lowering resolves those already-published indices, retains the
+   referenced resource publications, and fills a **new** row in a free slot of
+   the material buffer, an `UPLOAD`-class suballocation reached by device
+   address.
 3. Publish the new row, then retire the old one against its
-   `last_use_submit_value`.
-4. Collect on completion, returning both the row slot and the descriptor slots.
+   `last_use_submit_value`. Replacing a resource publishes its new descriptor
+   slot before rebuilding every affected material row.
+4. Completion recycles a retired material row and releases its retained resource
+   references. A descriptor slot is recycled only after no live row/publication
+   references it **and** its own last use has completed; retiring one material
+   must never recycle a texture or sampler shared by another.
 
 Two Vulkan-specific notes:
 
@@ -378,8 +430,10 @@ Two Vulkan-specific notes:
   `VkImageView` *object* may be created after the descriptor is recorded. It does
   **not** relax the memory hazard above. This is an easy misread and is recorded
   so it is not made.
-- Host writes to `HOST_COHERENT` descriptor memory become visible at queue
-  submission; no barrier is needed.
+- Host writes to `HOST_COHERENT` descriptor memory need no flush. If the selected
+  `UPLOAD` memory type is non-coherent, descriptor and material dirty ranges are
+  atom-aligned and flushed once before queue submission (§5.4). No GPU barrier is
+  needed for these host-only writes.
   `VK_ACCESS_2_DESCRIPTOR_BUFFER_READ_BIT_EXT` exists for GPU-written
   descriptors, which this design does not use. Recorded as unused.
 
@@ -419,32 +473,45 @@ churn that a binning allocator would fix.
 
 ### 5.2 Block topology
 
-One shared allocator core instance per `(class, kind)` pair, each backed by one
-`VkDeviceMemory` allocated with
-`VkMemoryAllocateFlagsInfo{ VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT }`.
+A pool per `(class, kind, memory_type_index, device_address_required)` key owns
+one or more fixed-capacity allocator-core blocks, each backed by one
+`VkDeviceMemory`. The exact resource requirements select the memory type first;
+the key prevents a later image or buffer whose `memoryTypeBits` exclude an
+existing block from being bound to incompatible memory. The addressability bit
+also prevents an address-bearing buffer from entering a block allocated without
+`VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT`. That allocation flag is used only for
+buffer blocks whose resources expose device addresses, never for image blocks.
+Block creation is a cold allocation/publication path, not frame or draw work;
+block size and maximum blocks per pool remain configuration justified by
+metrics rather than constants asserted here.
 
 | Class | Memory property search, in order | Contents |
 |---|---|---|
-| `DEVICE` | `DEVICE_LOCAL` and not `HOST_VISIBLE` | Placement images; persistent vertex, index, and material buffers |
-| `UPLOAD` | `HOST_VISIBLE\|HOST_COHERENT\|DEVICE_LOCAL` (resizable BAR), else `HOST_VISIBLE\|HOST_COHERENT` | Root records, frame streams, light tables, **both descriptor buffers**, staging |
-| `READBACK` | `HOST_VISIBLE\|HOST_CACHED\|HOST_COHERENT`, else `HOST_VISIBLE\|HOST_CACHED` | Capture, picking, query results |
+| `DEVICE` | Prefer `DEVICE_LOCAL` without `HOST_VISIBLE`, then any compatible `DEVICE_LOCAL`, then any compatible type with a named degraded-placement report | Placement images; persistent vertex and index buffers |
+| `UPLOAD` | Prefer `HOST_VISIBLE\|HOST_COHERENT\|DEVICE_LOCAL` (resizable BAR), then `HOST_VISIBLE\|HOST_COHERENT`, then compatible `HOST_VISIBLE` | Root records, frame streams, material/light tables, **both descriptor buffers**, staging |
+| `READBACK` | Prefer `HOST_VISIBLE\|HOST_CACHED\|HOST_COHERENT`, then `HOST_VISIBLE\|HOST_CACHED`, then `HOST_VISIBLE\|HOST_COHERENT`, then compatible `HOST_VISIBLE` | Capture, picking, query results |
 
-**`bufferImageGranularity` is handled by segregation, not padding.** One block
-per `(class, kind)`, where `kind` is the buffer-versus-texture parameter the core
-already carries, means buffers and optimal-tiling images never share a
-`VkDeviceMemory` and the granularity hazard cannot occur. Metal's adapter
-collapses `(class, kind)` onto its single placement heap; Vulkan's keeps them
-separate. Same core, different adapter policy — which is what keeps a
-Vulkan-only concept out of shared code. If padding is ever needed anyway, it
-must be counted into the existing alignment-waste row rather than hidden.
+**`bufferImageGranularity` is handled by segregation, not padding.** Including
+`kind` in the key means buffers and optimal-tiling images never share a
+`VkDeviceMemory`, so the granularity hazard cannot occur. Metal's adapter
+collapses class and kind onto its placement heap; Vulkan also keys by memory
+type. Same core, different adapter policy — which is what keeps Vulkan-only
+concepts out of shared code. If padding is ever needed anyway, it must be
+counted into the existing alignment-waste row rather than hidden.
 
 ### 5.3 Placement
 
 `vkGetDeviceBufferMemoryRequirements` and `vkGetDeviceImageMemoryRequirements`
-yield size and alignment from the create-info **without creating an object** —
-the exact analogue of Metal's `heapBufferSizeAndAlignWithLength:`. The core then
-returns a placement, and the adapter creates the object and binds it at
-`placement.resource_offset`.
+yield size, alignment, and `memoryTypeBits` from the create-info **without
+creating an object** — the analogue of Metal's
+`heapBufferSizeAndAlignWithLength:`. Chain `VkMemoryDedicatedRequirements` into
+the query. `requiresDedicatedAllocation` takes a dedicated path; the initial
+policy also honors `prefersDedicatedAllocation`, and changing that hint policy
+requires a same-device measurement. Dedicated resources chain the created
+buffer or image through `VkMemoryDedicatedAllocateInfo`, use the same owner and
+retirement accounting, and never enter the free-range core. Otherwise the
+selected memory type chooses the pool, one compatible block returns a placement,
+and the adapter creates and binds the object at `placement.resource_offset`.
 
 ### 5.4 Addresses and mapping
 
@@ -454,8 +521,17 @@ returns a placement, and the adapter creates the object and binds it at
 - Mapping: each host-visible block is mapped **once, persistently, at block
   creation**. A suballocation's CPU pointer is
   `mapped_base + placement.resource_offset`. Never map per resource.
-- Non-coherent memory: flush the written range rounded to `nonCoherentAtomSize`
-  **once per ring slice at submit time**, not per write.
+- Non-coherent upload memory: flush the union of written ranges, rounded to
+  `nonCoherentAtomSize`, **once per ring slice or descriptor/material batch at
+  submit time**, not per write. Rounding is relative to the containing
+  `VkDeviceMemory` allocation and never crosses its mapped range.
+- Non-coherent readback memory: after the completion value proves device writes
+  are done, invalidate the atom-aligned result range before the CPU reads it.
+
+The atom-range calculation is a pure overflow-checked helper with CPU cases for
+unaligned starts/ends, exact atoms, allocation-end clamping, and disjoint writes.
+Hardware evidence exercises a non-coherent type when the target exposes one;
+the helper tests remain mandatory when it does not.
 
 ### 5.5 Rings
 
@@ -504,17 +580,43 @@ an addend.
 ### 6.3 Retirement obligations
 
 Command pools, frame streams, upload and readback ring slices, descriptor-heap
-slots, material rows, image views, placement ranges, and swapchain image views
-all obey the same rule. An assumed frame lag is never completion proof.
+slots, material rows, ordinary image views, and placement ranges all obey the
+submit-timeline rule. Swapchain presentation resources use the additional proof
+in §6.4. An assumed frame lag is never completion proof.
 
 ### 6.4 WSI is the one place the timeline is not enough
 
-`vkAcquireNextImageKHR` and `vkQueuePresentKHR` require **binary** semaphores.
-So a windowed submit signals two things — the timeline at value N for
-retirement, and a per-swapchain-image binary render-complete semaphore for
-present — and waits on a per-frame-slot binary acquire semaphore.
-`VkSubmitInfo2` takes arrays of `VkSemaphoreSubmitInfo`, so this remains one
-submit.
+`vkAcquireNextImageKHR` and `vkQueuePresentKHR` require **binary** semaphores,
+and completion of the submit timeline does not prove that presentation
+resources may be safely recycled or destroyed. Windowed targets
+therefore require `VK_KHR_swapchain_maintenance1` and attach a
+`VkSwapchainPresentFenceInfoKHR` fence to every present. A windowed submit still
+signals the timeline at value N for ordinary GPU retirement and a
+per-swapchain-image binary render-complete semaphore for present, while waiting
+on a per-frame-slot binary acquire semaphore. `VkSubmitInfo2` carries the submit
+semaphores; the present fence is carried by `vkQueuePresentKHR`.
+
+Present-result classification is explicit. `VK_SUCCESS`, `VK_SUBOPTIMAL_KHR`,
+and presentation-engine rejection results for which the specification says the
+queue operations were still enqueued — including `VK_ERROR_OUT_OF_DATE_KHR`,
+`VK_ERROR_SURFACE_LOST_KHR`,
+`VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT`, and
+`VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT` when their extensions are enabled —
+leave the fence pending. `VK_ERROR_OUT_OF_HOST_MEMORY` and
+`VK_ERROR_OUT_OF_DEVICE_MEMORY` fail to enqueue, leave it unassociated, and
+leave the image acquired; if the device remains usable, release that image with
+`vkReleaseSwapchainImagesKHR` before target teardown. `VK_ERROR_DEVICE_LOST`
+enters device-loss teardown rather than normal retirement. Any other result
+fails the target without recycling or destroying present-owned resources under
+an unproven fence. One pure classifier owns this distinction and has a table test
+over every handled `VkResult`, so no
+unassociated fence becomes an infinite wait. The
+[Khronos queue-present result contract](https://docs.vulkan.org/refpages/latest/refpages/source/vkQueuePresentKHR.html)
+is the authority for which rejection results still enqueue work. The
+[Khronos present-fence contract](https://docs.vulkan.org/refpages/latest/refpages/source/VkSwapchainPresentFenceInfoKHR.html)
+explicitly makes these fences the authority for destroying present wait
+semaphores and a retired swapchain. It may signal before the image is displayed;
+this is resource-lifetime proof, not presentation-timing evidence.
 
 This is a genuine divergence from Metal, where drawable presentation needs no
 semaphore, and it lands on the sizing table that
@@ -526,11 +628,17 @@ family in this repository. The invariants are therefore stated explicitly:
 - render-complete semaphores are sized by the **actual swapchain image count
   returned by `vkGetSwapchainImagesKHR`**, not by the requested minimum, and are
   indexed by acquired image;
-- `VkFence` is **eliminated entirely** — the timeline replaces both the per-frame
-  submit fence and the image-in-flight fence references;
+- submit fences are eliminated — the timeline replaces the per-frame submit
+  fence and the image-in-flight fence references — but presentation fences are
+  retained solely as WSI resource-lifetime proof and never drive ordinary GPU
+  retirement;
 - image-in-flight tracking survives as `uint64_t image_last_submit_value[]`, with
-  a timeline wait after acquire. This is strictly simpler than the fence-reference
-  scheme it replaces.
+  a timeline wait after acquire;
+- present fences are sized by actual swapchain image count, waited and reset
+  before reuse for a later present of that image, and all outstanding present
+  fences for a retired swapchain must signal before its image views,
+  render-complete semaphores, and swapchain are destroyed. An acquired image
+  abandoned before submission is released with `vkReleaseSwapchainImagesKHR`.
 
 ### 6.5 Independent queues
 
@@ -554,10 +662,10 @@ someone would accidentally implement it.
 Metal writes a 64-bit address into a bounded argument table per draw. **Vulkan
 uses a push constant holding the root record's device address**, visible to
 vertex and fragment stages (and compute for compute pipelines). Per draw that is
-one `vkCmdPushConstants` of eight bytes — the cheapest per-draw state change
-Vulkan offers, with no descriptor rebind, no offset change, no allocation, no
-lock, and no string construction. It is the exact semantic analogue of the
-argument-table address write.
+one `vkCmdPushConstants` of eight bytes — one bounded per-draw command, with no
+descriptor rebind, no offset change, no allocation, no lock, and no string
+construction. It is the exact semantic analogue of the argument-table address
+write; its cost is measured rather than inferred.
 
 Reserve a 16-byte push-constant range in the pipeline layout (address plus a
 material index and flags) but populate only the address at first. The reserved
@@ -587,8 +695,10 @@ Rejected alternatives, recorded so they are not relitigated:
 **Stride is not portable.** Metal's 512-byte root stride at 256-byte alignment
 exists because Metal requires 256-byte address alignment for a bound buffer
 address. Vulkan has no such requirement for a record reached by device address;
-the only constraint is the record's own alignment. Vulkan therefore uses
-cache-line granularity so adjacent draw roots never share a line. The 512 and
+the constraints are the record's manifest alignment and the buffer-address
+rules proven by V0. Vulkan therefore uses the smallest stride that satisfies the
+manifest and device requirements. A guessed CPU or GPU cache-line size is not a
+portable alignment rule; any extra padding requires measurement. The 512 and
 256 figures are Metal facts and must not be copied as portable ones.
 
 The byte-identical vertex-prefix trick — where the vertex stage consumes only a
@@ -687,7 +797,7 @@ manifests are untouched throughout migration.
 Do **not** reuse the legacy `vulkan/shaders/common/*.slangh` headers. The
 umbrella spec already records that the transform, instance, alpha-cutout, cube,
 cascade, and tonemap headers encode descriptor-era reuse. They are deleted with
-the legacy path at ADR-026 step 1.
+the legacy path at ADR-026 step 2.
 
 ---
 
@@ -734,14 +844,13 @@ Access lowering mirrors the legacy access mapping with `VkAccessFlags2` bits.
 - **Images:** one `VkImageMemoryBarrier2` per compiled image barrier, carrying
   stages, accesses, old and new layout, image, and subresource range. The
   canonical subresource range maps directly through the existing resolve helper.
-- **Buffers:** collapse all of a pass's buffer barriers into **one
-  `VkMemoryBarrier2`**. With a single queue family there is no ownership
-  transfer, so per-buffer barriers provide no benefit on any known desktop
-  driver, and the graph retains resource identity for diagnostics regardless.
-  The umbrella spec's rule — a global barrier only where the specification
-  permits it and measurement shows it is not materially worse — is satisfied by
-  construction for buffers without queue transfer. The measurement caveat would
-  apply if images were also collapsed, which they are not.
+- **Buffers:** emit one `VkBufferMemoryBarrier2` per compiled buffer barrier,
+  preserving resource identity and the graph's current whole-buffer range.
+  Batch them into the pass's single barrier command. A future change may collapse
+  them into a global `VkMemoryBarrier2` only after a same-device Release A/B
+  shows no material regression and synchronization validation proves equivalent
+  behavior. Single-queue ownership makes a global barrier legal; it does not
+  make its cost free by construction.
 - **One `vkCmdPipelineBarrier2` per pass boundary**, batching everything. The
   graph already batches into per-pass pre-image and pre-buffer barrier lists plus
   the terminal list. Barrier generation must not allocate in steady state; that
@@ -759,7 +868,7 @@ Consequences:
 - the graph's render-pass handle, render-target array, render-target cache
   entries, and render-pass hash map become **dead for this backend**. They
   survive only for legacy Vulkan 1.2 during migration and are deleted at
-  ADR-026 step 5.
+  ADR-026 step 6.
 - Pipelines take `VkPipelineRenderingCreateInfo` with color and depth attachment
   formats instead of a render pass, so pipeline creation depends on
   graph-declared formats rather than a cached render-pass object. Render-pass
@@ -772,7 +881,7 @@ Metal models three barrier forms — producer, consumer, and intra-encoder. **Th
 Vulkan lowerer needs only producer and consumer; the intra-encoder form has no
 general Vulkan analogue.** This is precisely the kind of difference a
 speculative shared low-level GPU vtable would have gotten wrong, and it is the
-concrete evidence for ADR-025's decision not to build one.
+concrete evidence for ADR-020 and ADR-024's decision not to build one.
 
 ### 8.6 Layouts
 
@@ -799,7 +908,7 @@ boolean; the graph is unchanged in both cases.
 | Layouts | yes | none | yes, or `GENERAL` under unified layouts |
 | `NONE` stage | substitutes top/bottom | all stages | real stage-none |
 | Transfer granularity | one transfer bit | blit stage | split copy/blit/resolve/clear |
-| Buffer barriers | per-buffer | none | one merged memory barrier per pass |
+| Buffer barriers | per-buffer | none | per-buffer, batched into one command per pass |
 | Encoder scoping | render-pass restrictions | producer, consumer, intra | producer, consumer |
 | Emission | per pass | per pass | one barrier command per pass |
 
@@ -828,12 +937,15 @@ polls, memory metrics, and wait counters. Everything else — device, queues,
 memory, descriptor heaps, pipelines, recording, presentation, residency — is
 private.
 
-**Hot-path guarantee.** After initialization the frame path executes exactly two
-indirect calls per frame. Inside `submit_packet` the backend is direct-typed.
-There is no per-pass indirect call, no per-draw indirect call, no backend-type
-test, no allocation, no lock, and no string construction. A source audit proving
-this is required evidence in every stage from V3 onward, mirroring what the
-Metal walking slice did.
+**Hot-path guarantee.** After initialization a normal successful frame executes
+two indirect strategy calls — `prepare_frame` and `submit_packet`. Exceptional
+lifecycle, resize, and explicitly requested capture/poll operations may add
+bounded coarse calls, but none is dispatched per pass or per draw. Inside
+`submit_packet` the backend is direct-typed. There is no per-pass indirect call,
+no per-draw indirect call, no backend-behavior type test, no allocation, no
+lock, and no string construction. A source audit proving this is required
+evidence in every stage from V3 onward, mirroring what the Metal walking slice
+did.
 
 ---
 
@@ -849,8 +961,8 @@ out surface, plus the instance and device extension lists and the
 
 One Windows implementation then serves **both** backends during migration and
 serves Linux later without a third copy. This is a genuine compression, and it
-is why ADR-026 records the legacy platform files as superseded at V3 rather than
-deleted at the end.
+is why ADR-026 records the legacy platform files as superseded at V3 so their
+later deletion removes already-replaced code.
 
 ### 10.2 Swapchain
 
@@ -871,12 +983,15 @@ deleted at the end.
 ### 10.3 Resize, and what Linux would add
 
 Out-of-date or suboptimal results from acquire or present mark the target dirty.
-Recreation happens at the next `prepare_frame` boundary after a timeline wait —
-full idle of *our own* work, never a device-wide idle. The old swapchain is
-passed as the retire handle; old image views retire against the last submit
-value through the shared retirement core. A zero extent returns the existing
-frame-skipped error, matching the Metal branch. Graph-owned placement images
-recreate through the same cache path Metal already uses.
+Recreation happens at the next `prepare_frame` boundary after the submit
+timeline proves the renderer's GPU work complete. The old swapchain is passed as
+`oldSwapchain`, but its views, present semaphores, present fences, and handle are
+not destroyed until every outstanding present fence for that retired swapchain
+signals. This is WSI resource-lifetime proof, not ordinary submit retirement or
+presentation-timing evidence, and requires no device-wide idle. A zero extent
+returns the existing frame-skipped error,
+matching the Metal branch. Graph-owned placement images recreate through the
+same cache path Metal already uses.
 
 **Linux, named but not designed.** It requires five new files under
 `lib/src/platform/` — window, platform, filesystem, threads, and gamepad — none
@@ -895,25 +1010,42 @@ stage: fractional scaling, present timing, and gamepad hotplug.
 Each stage is a vertical slice. A header that compiles without a caller is not a
 stage. **Every runtime gate requires Windows hardware (§1).**
 
+Every "flat" or "no material regression" profile below uses a tolerance declared
+before the paired runs, with the authoritative harness provenance and repetition
+policy. The wording is not permission to choose a threshold after seeing data.
+
 | Stage | Deliverable | Required evidence | Runs on |
 |---|---|---|---|
 | **V0 — capability and toolchain spike** | Standalone Windows executable: enumerate devices, build and print the capability profile and rejection report; create a 1.4 device with the full floor; create both descriptor buffers; publish one sampled image and one sampler; allocate one `UPLOAD` buffer and capture its device address; compile a Slang→SPIR-V pair with a push-constant root address, a `PhysicalStorageBuffer` vertex array, and one non-uniform texture sample; one indexed textured offscreen draw; exact readback; timeline signal and wait | Validation layers clean, including synchronization and GPU-assisted; exact RGBA8; profile printed; **SPIRV-Reflect `PhysicalStorageBuffer` recursion proven or the fallback walker written**; Slang scalar-layout offsets match `offsetof` | Windows, plus macOS for the offline reflection half |
-| **V1 — shared-core extraction** | The four extractions of ADR-024; Metal keeps its device adapters and its own ABI record table; tests renamed | CPU suite green; **the shipping Metal harness snapshot byte-identical before and after**; Metal API and GPU validation clean; a Release Metal profile showing no frame-time regression | macOS |
-| **V2 — implementation seam** | ADR-025's capability struct and coarse strategy, three implementations (Metal, legacy-Vulkan adaptor, bindless stub that fails initialization); all branch sites replaced; the neutral submit result replaces the untyped timing pointer | CPU suite green; Metal snapshot byte-identical; legacy Vulkan Debug startup, resize, and shutdown validation-clean on both platforms; source audit proving no backend-type test outside the factory; Release Metal profile flat | macOS and Windows |
-| **V3 — walking bindless renderer** | Device, queue, timeline, command pools; Vulkan adapters for the shared memory core; descriptor heaps; offscreen and windowed targets; one indexed textured draw through the real prepare and submit path; resize | Validation clean windowed and offscreen; deterministic offscreen readback and exact identifier capture; resize across two extents; source audit and runtime counters proving no per-draw allocation, lock, string, or dispatch; wait counters publishing | Windows |
-| **V4 — memory, materials, descriptor heaps** | Material row publication through the shared slot table; texture, sampler, and storage-image publish, replace, and retire; sentinel slot; two-slot rule; capacity reporting; the full bindless memory metric family; asset publisher wired to the shared loaders | Multi-material capture exact; texture replacement while frames are pending; capacity-exhaustion metric fires; repeated create, submit, and destroy returns every logical total to its initial value; validation clean | Windows |
-| **V5 — graph, sync2, dynamic rendering, pass parity** | The bindless dependency lowerer; dynamic rendering for every authored pass; shadow cascades, skybox, opaque, transmission, blend, picking, tonemap, editor and UI, text, the full IBL bake, capture overlay, per-pass timestamps | The same declared five-channel capture batch as Metal returning exact final color, HDR scene color, depth, shadow layer, and picking identifiers; analytical IBL checks across irradiance and every prefilter mip; **synchronization validation clean across the whole authored graph**; deterministic repetitions; the CPU barrier-lowering table test | Windows, plus macOS for the CPU half |
-| **V6 — feature parity and Windows baseline** | Application and harness backend selection; pipeline cache cold and warm; asset load and unload; metrics parity | ADR-021's Gate-B functional checklist on Windows; a Windows Bistro-plus-text baseline bootstrapped under the umbrella spec's seven-step policy, with report path and digest recorded; pipeline-cache and backend-matrix scripts; an **authoritative Release performance profile against legacy Windows Vulkan 1.2 on identical cases** | Windows |
+| **V1 — shared-core characterization** | Pin the four ADR-024 candidate contracts with API-neutral tests and record the exact Metal call sites; move no production module before a second caller exists | CPU suite green on both platforms; the candidate modules remain Metal-owned; no new forwarding layer or speculative shared API | macOS and Windows |
+| **V2 — implementation seam** | ADR-025's capability struct and coarse strategy, three implementations (Metal, legacy-Vulkan adaptor, bindless stub that fails initialization); all behavior branches replaced; the neutral submit result replaces the untyped timing pointer | CPU suite green; Metal snapshot byte-identical; legacy Vulkan Debug startup, resize, and shutdown validation-clean on both platforms; source audit proving no renderer-behavior backend-type test after factory selection; Release Metal profile meets its predeclared no-regression tolerance | macOS and Windows |
+| **V3 — walking bindless renderer** | Device, queue, timeline, command pools; offscreen and windowed targets with present fences; descriptor heaps; one indexed textured draw through the real prepare and submit path; resize; extract the memory, submit-ring, and ABI cores only when their Vulkan call sites land | Validation clean windowed and offscreen; deterministic offscreen readback and exact identifier capture; resize across two extents with retired-present proof; present-result classifier table test; source audit and runtime counters proving no per-draw allocation, lock, string, or dispatch; wait counters publishing; Metal snapshot/API validation and Release profile before/after each extraction | Windows, plus macOS for Metal extraction witnesses |
+| **V4 — memory, materials, descriptor heaps** | Material row publication; texture, sampler, and storage-image publish, replace, and retire; sentinel slot; two-slot rule; capacity reporting; the full bindless memory metric family; asset publisher wired to the shared loaders; extract the slot table with this second caller | Multi-material capture exact; two materials share one texture/sampler, one retires while work is pending, and the survivor remains exact; texture replacement while frames are pending; non-coherent atom-range CPU cases and target execution when available; capacity-exhaustion metric fires; repeated create, submit, and destroy returns every logical total to its initial value; validation clean; Metal snapshot/API validation and Release profile before/after extraction | Windows and macOS |
+| **V5 — graph, sync2, dynamic rendering, pass parity** | The bindless dependency lowerer; dynamic rendering for every authored pass; shadow cascades, skybox, opaque, transmission, blend, picking, tonemap, editor and UI, text, the full IBL bake, asynchronous capture overlay, per-pass timestamps; extract the capture ring with this second caller | The same declared five-channel capture batch as Metal returning exact final color, HDR scene color, depth, shadow layer, and picking identifiers; analytical IBL checks across irradiance and every prefilter mip; **synchronization validation clean across the whole authored graph**; deterministic repetitions; the CPU barrier-lowering table test; Metal snapshot/API validation and Release profile before/after extraction | Windows, plus macOS for the CPU and Metal halves |
+| **V6 — feature parity and Windows baseline** | Application and harness backend selection; pipeline cache cold and warm; asset load and unload; metrics parity; a Windows-capable pipeline-cache and implementation-matrix gate | ADR-021's Gate-B functional checklist on Windows; a Windows Bistro-plus-text baseline bootstrapped under the umbrella spec's seven-step policy, with report path and digest recorded; the Windows-capable pipeline-cache and implementation-matrix gates pass; an **authoritative Release performance profile against legacy Windows Vulkan 1.2 on identical cases and predeclared acceptance thresholds** | Windows |
 | **V7 — legacy retirement** | Per [ADR-026](adr/026-vulkan-1-2-retirement.md) | Per ADR-026's gates B1 and B2 | Windows and macOS |
+
+**V0 implementation status (2026-08-08):** the standalone executable, shader,
+build wrappers, recursive reflection check, descriptor-buffer publication,
+indexed offscreen draw, exact readback, and timeline wait are implemented.
+Release execution and synchronization validation pass on the Windows device
+recorded in §12. Validation layer 1.4.357 executes the descriptor-buffer
+GPU-assisted path and the V0 gate passes with zero actionable validation
+warnings or errors. Its three `WARNING-Setting-Limit-Adjusted` setup notices
+remain visible and are counted separately. Layer 1.4.335 still returns
+`GPU_ASSISTED_UNAVAILABLE`, which remains evidence of an unavailable gate rather
+than a pass. V0 is complete as a standalone spike; it does not implement or
+accept the production backend.
 
 Optional capabilities are deliberately outside this ladder. Each is its own
 measured change after V6, per §3.5.
 
 **Locally executable coverage** — the complete set of gates that can run without
-Windows hardware, and therefore the ceiling on local iteration: all of V1 and
-V2; the host ABI manifest gate; the offline SPIR-V reflection check against
-built artifacts; the pure barrier-lowering table tests; and compile-only builds.
-Everything else needs Windows.
+Windows hardware, and therefore the ceiling on local iteration: V1 and the
+macOS half of V2; every Metal before/after extraction witness; the host ABI
+manifest gate; the offline SPIR-V reflection check against built artifacts; the
+pure barrier-lowering table tests; and compile-only builds. Every bindless
+Vulkan runtime result still needs Windows.
 
 ---
 
@@ -940,8 +1072,15 @@ awk '/typedef struct VkPhysicalDeviceDescriptorBufferPropertiesEXT/,/PropertiesE
 grep -o '<extension name="VK_EXT_descriptor_buffer"[^>]*>' \
   "$VULKAN_SDK/share/vulkan/registry/vk.xml"
 
-# The local runtime, which cannot run this backend.
+# Enumerate the active runtime.
 vulkaninfo --summary
+
+# Build and run the standalone V0 spike on Windows.
+build_bindless_vulkan_v0.bat Release
+build_bindless_vulkan_v0_Release\tools\vkr_bindless_vulkan_v0.exe
+build_bindless_vulkan_v0.bat Debug
+build_bindless_vulkan_v0_Debug\tools\vkr_bindless_vulkan_v0.exe --validation
+build_bindless_vulkan_v0_Debug\tools\vkr_bindless_vulkan_v0.exe --gpu-assisted
 
 # The branch ladder ADR-025 removes.
 grep -rn "VKR_RENDERER_BACKEND_TYPE_METAL" lib/ app/ tools/ tests/ | wc -l
@@ -971,9 +1110,52 @@ Observed on 2026-08-08 with SDK 1.4.313:
 - The local runtime is MoltenVK on an Apple M1 Pro reporting
   `apiVersion 1.2.296`, without `VK_EXT_descriptor_buffer`.
 - `slangc` reports 2025.7.1.
-- The metal-backend branch ladder is 46 sites, 44 of them under `lib/`.
+- The metal-backend branch ladder is 46 sites across 14 files, 43 of the sites
+  under `lib/`.
 - The four extraction candidates contain no Metal type references outside
   comments.
+
+Initial Windows evidence on 2026-08-08 with SDK 1.4.335.0 and Slang 2025.23.2:
+
+- The AMD Radeon RX 6700 XT reports Vulkan 1.4.315, AMD proprietary driver
+  26.6.3, and conformance 1.4.0.0. The complete V0 common/offscreen profile is
+  viable on queue family 0.
+- The driver reports 32-byte sampled/storage-image descriptors, 16-byte sampler
+  descriptors, and 16-byte descriptor-buffer offset alignment. Layout support
+  succeeds for both finite V0 layouts.
+- The Release path completes one indexed draw, signals and waits for timeline
+  value 1, and reads back an exact 4x4 `R8G8B8A8_UNORM` image of
+  `(255, 0, 255, 255)`. Recursive SPIR-V reflection matches every host
+  `offsetof` used by the push/root/vertex ABI.
+- Synchronization validation completes with zero Vulkan validation warnings and
+  errors. Loader policy warnings for disabled implicit overlay layers are
+  reported separately and are not counted as validation messages.
+- GPU-assisted validation is **unavailable with this toolchain**. Khronos
+  validation layer 1.4.335 reports that it does not currently support
+  descriptor buffers and disables all shader instrumentation checks. The V0
+  executable returns `GPU_ASSISTED_UNAVAILABLE` rather than misreporting this as
+  a clean GPU-assisted run.
+- The offscreen profile is viable. Window preflight is rejected because this
+  runtime lacks `VK_KHR_surface_maintenance1` and
+  `VK_KHR_swapchain_maintenance1`; WSI is not an executed V0 deliverable.
+
+Superseding GPU-assisted evidence on 2026-08-08 with SDK and validation layer
+1.4.357:
+
+- The dedicated Debug wrapper fresh-configures against the selected SDK; its
+  CMake cache resolves both Vulkan headers and `vulkan-1.lib` from
+  `C:/VulkanSDK/1.4.357.0`.
+- Khronos validation layer 1.4.357 keeps GPU-assisted shader instrumentation
+  active for the descriptor-buffer path. The indexed draw, timeline completion,
+  and exact 4x4 `(255, 0, 255, 255)` readback all pass.
+- The layer emits three `WARNING-Setting-Limit-Adjusted` messages while reserving
+  GPU-AV limits and enabling required device features. The executable prints and
+  counts those as setup notices rather than actionable diagnostics; the result
+  is `setup-notices=3 warnings=0 errors=0` and `V0 RESULT PASS`. Any other
+  validation warning or error still fails the gate.
+- Loading validation layer 1.4.335 against the same executable still produces
+  the explicit descriptor-buffer instrumentation self-disable and returns
+  `GPU_ASSISTED_UNAVAILABLE`, proving the unavailable path was not weakened.
 
 **Not verified:** the specification's per-version mandatory-support tables. See
 the verification boundary in §3.2 before writing any claim that depends on them.
@@ -982,14 +1164,14 @@ the verification boundary in §3.2 before writing any claim that depends on them
 
 ## 13. Risks and revisit triggers
 
-### 13.1 No local development loop
+### 13.1 Split development loop
 
-The highest-impact process risk. Every runtime defect costs a Windows round
-trip. Mitigations in priority order: maximize locally executable coverage
-(§11); keep the offscreen target headless so a display-less Windows runner
-executes the whole functional matrix; and establish remote build and harness
-invocation on Windows early, because a long round trip changes this design's
-cost model materially.
+The macOS environment still cannot execute this backend, but a native Windows
+machine is now available for V0. The remaining process risk is keeping the
+offline/macOS and runtime/Windows halves reproducible. Mitigations in priority
+order: retain the standalone offscreen target and wrapper; maximize
+platform-neutral coverage (§11); and keep runtime reports self-contained so a
+failure does not depend on an interactive debugger session.
 
 Revisit trigger: MoltenVK reporting Vulkan 1.4 with `VK_EXT_descriptor_buffer`.
 Unlikely, since MoltenVK has no descriptor-buffer implementation.
@@ -1007,11 +1189,20 @@ and it is a sharper practical cost than device coverage. Mitigation: enable the
 feature in Debug and diagnostic configurations when present, and record its
 absence as a named profile limitation.
 
-Revisit: if `VK_EXT_descriptor_heap` reaches SDK, drivers, validation, and
-shader tooling, it is strictly closer to the article's model, and **the only code
-that changes is the heap layer** — the shader ABI does not, because indices stay
-indices. Structuring the heap module as the single owner of index-to-descriptor
-translation is what keeps that swap to one file.
+The first native run exposed a tooling-version dependency: Khronos validation
+layer 1.4.335 disables GPU-assisted shader instrumentation when descriptor
+buffers are enabled, while 1.4.357 executes this V0 path successfully. Keep the
+layer version in every report, keep setup adjustments visible, and continue to
+treat an explicit instrumentation self-disable as
+`GPU_ASSISTED_UNAVAILABLE` rather than clean GPU-assisted evidence.
+
+Revisit: if `VK_EXT_descriptor_heap` reaches the target SDK, drivers,
+validation, debugger, and shader tooling, it is the standardized successor and
+closer to the article's model. Keeping index-to-descriptor translation in one
+heap module contains the expected change, but acceptance must still revalidate
+pipeline layouts, shader declarations, capture tooling, and the ABI; an
+unimplemented extension is not evidence that the migration is literally one
+file.
 
 ### 13.3 Shader toolchain
 
@@ -1021,10 +1212,12 @@ blocks, both V0 gates with named fallbacks.
 
 ### 13.4 The shared-core extraction destabilizing the shipping Metal path
 
-Mitigated structurally: V1 is a pure rename and relocation with no behaviour
-change, landed *before* any Vulkan implementation code, with the shipping Metal
-snapshot as its correctness witness and a Release Metal profile as its
-performance witness.
+Mitigated structurally: V1 characterizes the existing contracts without moving
+production code. Each core is extracted only in the later vertical slice that
+adds its second real caller, with the shipping Metal snapshot as its correctness
+witness and a Release Metal profile as its performance witness. This preserves
+ADR-020's evidence rule instead of treating a design document as an
+implementation.
 
 Additional guard: **do not improve the allocator during extraction.** The one
 genuine change is parameterizing the slot table by row size so it serves both
@@ -1035,24 +1228,27 @@ one slower one — performance is correctness.
 
 ### 13.5 Retirement sequencing
 
-**No file under the legacy Vulkan tree is deleted until the bindless Vulkan
-backend has passed V6 on Windows and has been the default Windows renderer for a
-defined observation period.** ADR-026 owns the split gate that enforces this.
+**No file under the legacy Vulkan tree is deleted until Gate A2 is complete, the
+bindless Vulkan backend has passed V6 on Windows, and it has been the default
+Windows renderer for the predeclared observation contract.** ADR-026 owns the
+split gate that enforces this.
 
 ### 13.6 Accepted costs of the chosen decisions
 
 - Requiring descriptor buffers with no fallback narrows the target matrix and,
   more importantly, the tooling matrix. Defensible for a project with one
   supported Windows machine, but recorded as a deliberate acceptance.
-- Requiring descriptor buffers while `VK_EXT_descriptor_heap` is the better
-  long-term fit means one migration is already scheduled. Contain it in one
-  module; do not let descriptor-buffer specifics leak into the material table,
-  the ABI manifest, or the shaders.
-- Extracting the shared cores now is technically ahead of ADR-020's stated rule,
-  which says extract when two concrete implementations exist rather than when the
-  second is planned. The mitigation is the containment rule in ADR-024 — extract
-  only what is already API-neutral and already compiles on Windows — plus
-  re-validating any forced core API change against Metal.
+- Requiring descriptor buffers while `VK_EXT_descriptor_heap` is the intended
+  successor creates a likely future migration. Contain descriptor-buffer
+  specifics in the heap module, while still treating the later shader/layout/
+  tooling gates as real work.
+- Waiting to extract each shared core until its Vulkan caller exists temporarily
+  leaves Metal-owned names and may require a short private walking
+  implementation. That is the accepted cost of preserving the project's
+  multiple-real-caller rule.
+- Requiring swapchain maintenance for windowed targets narrows the windowed
+  device matrix further. It buys an explicit presentation-completion proof;
+  offscreen targets do not require the extension.
 - Eliminating the legacy path entirely removes the only renderer that runs on
   non-descriptor-buffer hardware and on MoltenVK. After the final gate the
   project has Metal on macOS and bindless Vulkan on Windows and **no portable

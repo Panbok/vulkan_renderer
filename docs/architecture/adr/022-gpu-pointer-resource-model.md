@@ -104,16 +104,23 @@ or overlapping frees, and report metadata-capacity exhaustion. `VkrFreeList`
 may be reused only after these requirements are met; rounding request size alone
 is not aligned allocation.
 
-The Vulkan realization of these classes maps `UPLOAD` to host-visible coherent
-memory, preferring a device-local host-visible type where resizable BAR provides
-one; `DEVICE` to device-local memory that is not host visible; and `READBACK` to
-host-visible cached memory. Vulkan additionally has `bufferImageGranularity`,
-which Metal does not; it is handled by **segregating buffers from optimal-tiling
-images into separate allocator instances and separate device-memory blocks**,
-using the buffer-versus-texture parameter the allocator already carries, rather
-than by padding. Host-visible blocks are mapped once persistently at block
-creation, and non-coherent memory is flushed per ring slice at submit rather
-than per write.
+The Vulkan realization selects a compatible type from each resource's exact
+`memoryTypeBits`. `UPLOAD` prefers host-visible coherent device-local memory,
+then host-visible coherent memory, then non-coherent host-visible memory;
+`DEVICE` prefers device-local memory that is not host visible, then any
+compatible device-local type, and finally any compatible type with a named
+degraded-placement report; `READBACK` prefers host-visible
+cached coherent memory, then cached, coherent, and finally any compatible
+host-visible type. Vulkan additionally has `bufferImageGranularity`, which Metal
+does not; it is handled by **segregating buffers from optimal-tiling images and
+keying blocks by memory type and addressability** —
+`(class, kind, memory_type_index, device_address_required)` — rather than by
+padding. `VkMemoryDedicatedRequirements` is queried before placement and a
+required or initially preferred dedicated allocation bypasses the range core
+while retaining the same owner and retirement accounting. Host-visible blocks
+are mapped once persistently at creation. Non-coherent upload ranges are flushed
+once per ring slice or publication batch before submit, and non-coherent
+readback ranges are invalidated after completion and before CPU access.
 
 GPU allocation remains outside the `VkrAllocator` vtable. It shares accounting
 through `vkr_allocator_report()` and `VkrGpuAllocationOwner`, while device-heap
@@ -138,9 +145,9 @@ representation. Each backend lowers it once into a concrete GPU row:
   offsets and per-descriptor strides are read from the device at initialization
   and never written as literals, so **backend-defined descriptor sizes never
   reach the shader**: the shader indexes an unbounded array with an integer and
-  the driver performs the strided lookup. Two descriptor buffers are used, one
-  for resources and one for samplers, and sampled images and samplers are kept
-  as separate descriptors rather than combined ones, because
+  the driver performs the layout-defined lookup. Two descriptor buffers are
+  used, one for resources and one for samplers. Sampled images and samplers are
+  kept as separate descriptors rather than combined ones, because
   `combinedImageSamplerDescriptorSingleArray` may be false and would then make
   index arithmetic driver-dependent. The resulting row is 64 bytes against
   Metal's 96 — the denser representation this ADR anticipated, and the reason
@@ -160,6 +167,12 @@ GPU-visible texture-reference/material rows are immutable while any pending
 submission can read them. Updates allocate and publish a new row at a frame
 boundary and retire the old row by retirement point. A barrier does not make an
 in-place CPU overwrite safe for already-submitted work.
+
+Descriptor slots belong to published texture/sampler resources, not to one
+material row. Material publication retains those resources; row collection
+releases them. A shared descriptor slot is reusable only after its last logical
+reference is gone and its last GPU use is complete, so retiring one material
+cannot invalidate another material that uses the same texture or sampler.
 
 Static samplers are shader literals where supported. Dynamic sampler references
 are backend-native values with the same publication/retirement rule.
@@ -194,11 +207,11 @@ states but does not eliminate all exceptions or guarantee that a global barrier
 is optimal on every device.
 
 The modern Vulkan lowerer emits `VkImageMemoryBarrier2` per compiled image
-barrier, preserving resource identity and subresource range, and collapses a
-pass's buffer barriers into a single `VkMemoryBarrier2` — valid because the
-initial path uses one queue family, so no ownership transfer exists, and the
-graph retains buffer identity for diagnostics regardless. Everything batches
-into one barrier command per pass boundary. Synchronization2 also lets the
+barrier and `VkBufferMemoryBarrier2` per compiled buffer barrier, preserving
+resource identity and range while batching both arrays into one barrier command
+per pass boundary. A later measured change may replace a pass's buffer array
+with one `VkMemoryBarrier2`; single-queue ownership makes that legal, but does
+not prove its cost immaterial. Synchronization2 also lets the
 canonical visibility flag be expressed exactly: device visibility becomes a
 memory dependency with non-zero access masks, its absence an execution-only
 dependency. Resource-alias visibility is **rejected with a named error** until
@@ -217,13 +230,19 @@ An independent transfer or compute queue must either join that domain or extend
 the retirement point with every relevant queue; the maximum of unrelated queue
 serials is not completion proof.
 
-Vulkan has one exception the timeline cannot absorb: swapchain acquire and
-present require **binary** semaphores. A windowed submit therefore signals both
-the timeline, for retirement, and a per-image binary render-complete semaphore,
-for present. Acquire semaphores are sized by frames in flight; render-complete
-semaphores by the *actual* swapchain image count rather than the requested
-minimum; fences disappear entirely, with image-in-flight tracking becoming a
-per-image last-submit value.
+Vulkan has one exception the timeline cannot absorb: presentation completion.
+Swapchain acquire and present require **binary** semaphores, while the submit
+timeline does not prove presentation resources may be safely recycled or
+destroyed.
+Windowed bindless Vulkan therefore also requires
+`VK_KHR_swapchain_maintenance1` present fences. A submit signals the timeline,
+for ordinary retirement, and a per-image binary render-complete semaphore, for
+present. Acquire semaphores are sized by frames in flight; render-complete
+semaphores and present fences by the *actual* swapchain image count rather than
+the requested minimum. Submit fences disappear, image-in-flight tracking becomes
+a per-image last-submit value, and swapchain views/semaphores/handles retire only
+after their present fences prove safe WSI resource release. Present fences are
+not presentation-timing evidence and may signal before an image is displayed.
 
 **Scope:** This ADR does not supersede ADR-005, ADR-007, ADR-008, or ADR-009 for
 the Vulkan 1.2 renderer.
@@ -320,9 +339,10 @@ the Vulkan 1.2 renderer.
   [ADR-023](023-vulkan-1-4-bindless-capability-profile.md)**, since
   `VK_EXT_descriptor_heap` is absent from the installed SDK. The forward trigger
   is now the reverse: revisit when `VK_EXT_descriptor_heap` reaches SDK,
-  drivers, validation, and shader tooling. Because indices stay indices, only the
-  heap module should change and the shader ABI should not. The second barrier
-  lowering is still owed by the implementation.
+  drivers, validation, debugger, and shader tooling. Because indices stay
+  indices, the heap module should contain most of the change, but the migration
+  still reruns pipeline-layout, reflection, capture, and shader ABI gates. The
+  second barrier lowering is still owed by the implementation.
 - `VK_KHR_unified_image_layouts` target coverage and performance justify a
   simpler Vulkan layout state machine.
 - A real workload requires stage-scoped split barriers beyond the minimum

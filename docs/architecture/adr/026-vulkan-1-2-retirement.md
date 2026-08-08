@@ -10,7 +10,9 @@ authority: adr
 
 **Proposed** — nothing is deleted, and no gate below has been passed. This ADR
 refines [ADR-021](021-metal-first-bindless-backend.md)'s Gate B; it does not
-supersede that ADR, which remains the authority for Gates A and A2.
+supersede that ADR, which remains the authority for Gates A and A2. It becomes
+Accepted only when B2 and the deletion sequence are complete; B1 alone leaves
+it Proposed because no retirement has occurred.
 
 ## Context
 
@@ -38,10 +40,11 @@ project's only Vulkan observation path too early.
 
 Two facts sharpen both points:
 
-- The bindless Vulkan backend **cannot run on the development machine**. Local
-  MoltenVK reports `apiVersion 1.2.296` without `VK_EXT_descriptor_buffer`. All
-  of its evidence comes from remote Windows hardware, which makes an
-  observation period more valuable, not less.
+- The macOS development environment cannot run the bindless Vulkan backend:
+  MoltenVK reports `apiVersion 1.2.296` without `VK_EXT_descriptor_buffer`.
+  Native Windows hardware is now available for the standalone V0 spike, but
+  production and windowed evidence remain absent. The split development loop
+  makes an observation period more valuable, not less.
 - Gate A is currently **open**. The previously accepted Metal Bistro generation
   was invalidated by a cross-backend audit that found retained IBL, sampler,
   transparency, and presentation defects. Those are corrected, but replacement
@@ -61,8 +64,16 @@ that exist only to serve the descriptor-set model.
 
 | Gate | Required evidence | What it authorizes |
 |---|---|---|
-| **B1 — Windows default flip, no deletion** | Backend specification stage V6 complete: ADR-021's Gate-B functional checklist on Windows; native validation clean including synchronization validation; an owner-accepted Windows baseline bootstrapped under the umbrella specification's seven-step policy and passing twice fresh; pipeline-cache cold and warm behaviour; asset load and unload; metrics parity; and an authoritative Release performance profile against legacy Windows Vulkan 1.2 on identical cases | Bindless Vulkan becomes the default Windows renderer. Vulkan 1.2 becomes a non-default diagnostic path, still selectable and still building |
-| **B2 — deletion** | A defined observation period after B1 with no unresolved bindless-only correctness or lifetime regression on Windows, plus equivalent evidence for any other platform claimed to use Vulkan | The deletion sequence in §3 |
+| **B1 — Windows default flip, no deletion** | Backend specification stage V6 complete: ADR-021's Gate-B functional checklist on Windows; native validation clean including synchronization validation; an owner-accepted Windows baseline bootstrapped under the umbrella specification's seven-step policy and passing twice fresh; pipeline-cache cold and warm behaviour; asset load and unload; metrics parity; and an authoritative Release profile against legacy Windows Vulkan 1.2 on identical cases that meets thresholds declared before the run | Bindless Vulkan becomes the default Windows renderer. Vulkan 1.2 becomes a non-default diagnostic path, still selectable and still building |
+| **B2 — deletion** | Gate A2 is complete; the observation contract recorded before B1 has elapsed and its minimum successful sessions/harness repetitions have passed with no unresolved bindless-only correctness or lifetime regression on Windows; and equivalent evidence exists for any other platform claimed to use Vulkan | The deletion sequence in §3 |
+
+Before B1 flips the default, its acceptance record must define the observation
+contract as both a calendar duration and a minimum number of successful real
+sessions or harness repetitions. B2 cannot define or shorten that contract in
+hindsight. Gate A2 is a hard dependency because steps 2 and 4 remove assets and
+code the MoltenVK path still needs. Performance thresholds are likewise declared
+before V6; merely recording an authoritative comparison does not authorize a
+slower default.
 
 Splitting the gate costs one flag and one observation period. It buys the
 ability to fall back without a revert during the window when unknown defects are
@@ -72,11 +83,11 @@ driver-version-specific extension behaviour, is exactly when they will.
 ### 2. Name Gate A2's dependency
 
 Gate A2's requirement that "the modern Vulkan path has native Windows validation
-coverage" means **at minimum stage V3** — a walking bindless renderer producing
-validation-clean windowed and offscreen frames on Windows — and realistically
-**stage V5**, where the full authored graph runs under synchronization
-validation. Removing MoltenVK before that trades the project's only local Vulkan
-observation path for nothing.
+coverage" means **stage V5**: the full authored graph runs under synchronization
+validation in both the windowed and offscreen targets. V3 is valuable walking
+evidence, but it does not cover the pass, barrier, capture, and IBL behavior that
+MoltenVK currently observes. Removing MoltenVK before V5 trades the project's
+only local Vulkan observation path for an incomplete replacement.
 
 Note the ordering consequence: Gate A2 deletes the macOS Vulkan platform
 implementation, and Gate B2 deletes the Windows one. Between them the bindless
@@ -88,55 +99,70 @@ these are removals of superseded code rather than of load-bearing code.
 Each step is independently buildable and testable, ordered by blast radius
 rather than by size.
 
-**Step 1 — descriptor-set shaders and their build rules.** The fifteen Slang
+**Step 1 — make legacy Vulkan unreachable.** Rebind the public `vulkan`
+command-line/harness selector to the bindless implementation, remove any
+temporary public bindless-Vulkan spelling, and remove public selection of the
+legacy implementation. The legacy adaptor and tree may still compile for the
+next deletion steps, but no application or harness path can initialize them.
+Evidence: selector tests, the CPU suite, and fresh Metal plus bindless-Vulkan
+snapshots. This step must precede asset deletion; otherwise a nominally
+selectable renderer would remain while its shaders disappear.
+
+**Step 2 — descriptor-set shaders and their build rules.** The fifteen Slang
 sources and six shared headers under the legacy shader tree, the CMake function
-that compiles them and its fifteen invocations, the fifteen SPIR-V outputs, and
-the `.shadercfg` manifests naming them. Evidence: no manifest reference remains,
-and bindless SPIR-V is the only SPIR-V the application loads.
+that compiles them and its fifteen invocations, the fifteen SPIR-V outputs, the
+`.shadercfg` manifests naming them, and the legacy-only reflection fixtures.
+Evidence: no manifest or runtime reference remains, and bindless SPIR-V is the
+only SPIR-V the application loads.
 
-This is the largest removal with the smallest blast radius, and it goes first
-for a second reason: it proves nothing in the bindless path depends on the
-legacy assets, which is cheaper to discover here than after the backend is gone.
-
-**Step 2 — legacy-only frontend subsystems.** The pipeline registry, shader
+**Step 3 — legacy-only frontend subsystems.** The pipeline registry, shader
 system, instance buffer, and indirect-draw modules, plus the descriptor-instance
 -state fields carried by submeshes, UI text, world text, and world resources. The
 capability boolean from
 [ADR-025](025-selected-renderer-implementation-strategy.md) makes each of these a
-mechanical deletion of the branch that is now unreachable. The draw-batch module
-is audited separately — it may be genuinely shared. Evidence: CPU suite green;
-both backends' snapshots byte-identical.
+mechanical deletion of a now-unreachable branch. The draw-batch module is
+audited separately — it may be genuinely shared. Evidence: CPU suite green and
+fresh snapshots from the two surviving backends: Metal and bindless Vulkan.
 
-**Step 3 — the backend interface and its adaptor.** `VkrRendererBackendInterface`,
-the legacy implementation adaptor from ADR-025, and the frontend wrappers that
-call through the table. This is where the frontend loses most of its bulk.
-Evidence: compile, full suite, both backends' snapshots.
+**Step 4 — the Vulkan 1.2 backend tree and its adaptor.** Audit every file rather
+than deleting the directory wholesale:
 
-**Step 4 — the Vulkan 1.2 backend tree.** Audited per file rather than deleted
-wholesale:
-
-- **reused and relocated:** the SPIR-V reflection wrapper, which the bindless ABI
-  cross-check depends on; the debug-messenger module; parts of the format and
-  enum conversion utilities;
+- **reused and relocated:** the SPIR-V reflection wrapper required by the
+  bindless ABI cross-check; the debug-messenger module; the Vulkan host
+  `VkAllocationCallbacks` module, which is distinct from GPU device-memory
+  placement; and the format/enum conversion utilities still used by the new
+  backend;
 - **already superseded at V3:** the Vulkan platform seam and its per-OS
   implementations, replaced by the parameterized bindless platform seam;
 - **deleted outright:** the legacy dependency lowerer, replaced by the
   synchronization2 lowerer; render passes and framebuffers, replaced by dynamic
-  rendering; the host allocation-callback module, replaced by the shared core;
-  and the remainder.
+  rendering; descriptor-set/device-resource code with no bindless caller; and
+  the remainder.
 
-Evidence: full suite; both backends' baselines; a Release profile confirming the
-removal itself caused no regression.
+Remove the internal legacy implementation tag/adaptor and its source registration
+in the same step, so no forwarding entry points at deleted code. Leave the now
+unused `VkrRendererBackendInterface` definition and frontend wrappers until the
+next step; removing them first would leave the legacy tree unable to satisfy its
+own compile-time contract. Evidence: full suite, both surviving backends'
+baselines, and a Release profile against the immediately preceding bindless
+build confirming the removal itself caused no material regression.
 
-**Step 5 — graph legacy fields.** The render-pass handle, render-target array and
-count, render-target cache, and render-pass hash map on the graph. The imported
-and final layout fields survive unless unified image layouts have landed.
-Evidence: the render-graph barrier test plus both backends' snapshots.
+**Step 5 — the backend interface and frontend wrappers.** Remove the now-unused
+`VkrRendererBackendInterface` definition and every frontend wrapper that called
+through its 86-entry table. This is where the frontend loses most of its bulk.
+Evidence: compile, full suite, and both surviving backends' snapshots. In the
+same change ADR-001 becomes `Superseded by ADR-025`, and the ADR/status indexes
+are updated.
 
-**Step 6 — enum and selector meaning, last.** Both backend-type enumerators
-survive; the Vulkan one now means the bindless backend. The harness string
-mapping and its test are updated here. Doing this last means pinned harness case
-files and the command-line selector keep working through every preceding step.
+**Step 6 — graph legacy fields and migration residue.** Remove the graph's
+render-pass handle, render-target array and count, render-target cache, and
+render-pass hash map. Imported and final layout fields survive unless unified
+image layouts have landed. Remove any remaining temporary selector aliases or
+migration-only tests; `VKR_RENDERER_BACKEND_TYPE_VULKAN` now unambiguously means
+the bindless implementation, while Metal remains unchanged. The unused future
+DX12 enumerator is outside this ADR and is neither evidence for nor against the
+retirement. Evidence: render-graph barrier tests, selector tests, and both
+surviving backends' snapshots.
 
 ### 4. The end state is recorded, not discovered
 
@@ -173,14 +199,14 @@ it is written here so it is a decision rather than a discovery.
 - Devices without descriptor buffers lose support entirely and permanently.
 - The observation period between B1 and B2 is a real calendar cost, during which
   three renderer paths still exist.
-- Steps 2 through 5 touch shared code — systems, the frontend, and the graph —
-  so a defect there affects Metal, which is the shipping macOS renderer by then.
-  Both backends' snapshots are required evidence at every one of those steps for
-  exactly that reason.
+- Steps 3, 5, and 6 touch shared systems, the frontend, or the graph, so a defect
+  there affects Metal, which is the shipping macOS renderer by then. Both
+  surviving backends' snapshots are required evidence at those steps for exactly
+  that reason.
 - Relocating the SPIR-V reflection wrapper out of a tree being deleted is the
   step most likely to be done carelessly, because it looks like deletion and is
   actually a move.
-- Once step 3 lands, ADR-001's decision is no longer in force and its status must
+- Once step 5 lands, ADR-001's decision is no longer in force and its status must
   move in the same change.
 
 ## Alternatives Considered
@@ -203,6 +229,9 @@ it is written here so it is a decision rather than a discovery.
 - **Delete the whole Vulkan tree in one commit.** Rejected: it merges a shader
   removal, a subsystem removal, an interface removal, a backend removal, and a
   graph change into one change whose failure is not diagnosable.
+- **Delete legacy shaders before changing public selection.** Rejected because
+  it leaves a renderer nominally selectable after removing assets it requires;
+  every intermediate step must remain honest and executable.
 - **Retire the enum value and rename the selector to `vulkan-bindless`
   permanently.** Rejected as the end state: after retirement there is one Vulkan
   backend, and making every harness case file and script carry a qualifier for a

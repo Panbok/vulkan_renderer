@@ -29,15 +29,17 @@ published through the shared metrics boundary without widening the legacy
 Vulkan vtable.
 
 The "Revisit When" triggers below are now being acted on by three proposals.
-[ADR-024](024-shared-bindless-gpu-cores.md) extracts four already-API-neutral
-Metal modules into shared cores; [ADR-025](025-selected-renderer-implementation-strategy.md)
-replaces the 46-site backend-type ladder with one coarse selected strategy; and
-the [bindless Vulkan backend specification](../bindless-vulkan-backend-spec.md)
-supplies the second implementation those extractions are measured against. The
-extraction condition stated in the Decision is therefore **met for those four
-cores and for roughly twenty coarse operations, and still unmet for a low-level
-`VkrGpuInterface`** — the bindless Vulkan design supplies concrete evidence
-against the latter, since Metal models three barrier forms and Vulkan has an
+[ADR-024](024-shared-bindless-gpu-cores.md) identifies four already-API-neutral
+Metal modules and now preserves this ADR's rule by extracting each only with its
+first real bindless-Vulkan caller;
+[ADR-025](025-selected-renderer-implementation-strategy.md) replaces the 46-site
+backend-type ladder with one coarse selected strategy over the two real current
+implementations; and the
+[bindless Vulkan backend specification](../bindless-vulkan-backend-spec.md)
+defines the second bindless implementation. The extraction condition remains
+**unmet for those four cores until their V3–V5 callers land, and unmet for a
+low-level `VkrGpuInterface`**. The Vulkan design already supplies concrete
+evidence against the latter: Metal models three barrier forms and Vulkan has an
 analogue for only two.
 
 ## Context

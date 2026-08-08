@@ -8,10 +8,11 @@ authority: adr
 
 ## Status
 
-**Proposed** — nothing is extracted yet. This ADR acts on
-[ADR-020](020-bindless-backend-seam.md)'s third "Revisit When" trigger in
-anticipation of a second bindless backend; the honest tension in that timing is
-recorded under Consequences rather than glossed.
+**Proposed** — nothing is extracted yet. This ADR identifies four candidates and
+the evidence required to extract each one. It preserves
+[ADR-020](020-bindless-backend-seam.md)'s multiple-real-caller rule: a candidate
+remains Metal-owned until the vertical slice that adds its first real bindless
+Vulkan caller.
 
 ## Context
 
@@ -33,8 +34,8 @@ out to be written as pure, API-neutral C rather than as Metal code:
 | `vkr_metal_capture_ring.c` | 204 | Request-owned capture slot state machine: reserve, submit, ready, acquired, released |
 | `vkr_metal_packet_abi.c` | 334 | The durable host ABI manifest machinery: per-record expected size, alignment, and per-field offset, validated against `sizeof`, `_Alignof`, and `offsetof` |
 
-Three facts about these four make the extraction question concrete rather than
-speculative:
+Three facts make these credible extraction candidates, while not by themselves
+satisfying the second-caller rule:
 
 1. **None contains a Metal type.** Their only references to Metal are in
    comments. Their headers include the project's own `defines.h`, math headers,
@@ -46,22 +47,27 @@ speculative:
    memory, material, capture-ring, and ABI suites unconditionally.
 
 Meanwhile the
-[bindless Vulkan backend design](../bindless-vulkan-backend-spec.md) needs
+[bindless Vulkan backend design](../bindless-vulkan-backend-spec.md) predicts it
+will need
 exactly these four behaviours, with identical contracts: the same suballocation
 and retirement semantics over `VkDeviceMemory` instead of a Metal placement
 heap; the same slot table for material rows *and* for descriptor-heap slots; the
 same capture request lifecycle; and the same manifest validation against SPIR-V
 reflection instead of Metal reflection.
 
-Duplicating roughly 1,350 lines of tested state machines and then maintaining
-two copies of the allocator, two retirement state machines, and two metrics
-models is the alternative. That directly contradicts the reason the shared
-metrics model exists.
+The prediction is strong enough to define an extraction boundary, but a design
+document is not a second implementation. The sequencing below permits a short
+Vulkan-private walking implementation where needed, then compresses only after
+the second call site demonstrates the common contract.
 
 ## Decision
 
-Extract exactly four modules into shared, backend-neutral C. Each backend keeps
-only its device adapter and its own backend-specific record tables.
+Extract at most these four modules into shared, backend-neutral C, one at a time
+when a real bindless Vulkan caller for that module lands. Each backend keeps only
+its device adapter and its own backend-specific record tables. If the Vulkan
+caller forces a different ownership or completion contract, leave that module
+private rather than weakening either backend's invariants to make the table come
+true.
 
 | Shared module | Extracted from | Backend keeps |
 |---|---|---|
@@ -83,6 +89,10 @@ standardizing every backend on a 64-bit texture token.
 **Extract only what is already API-neutral and already compiles on Windows.
 Extract nothing else.**
 
+API neutrality is necessary but not sufficient: the extracting change must
+contain two production or representative integration callers. Do not create a
+shared forwarding wrapper whose only caller remains Metal.
+
 In particular:
 
 - Do **not** extract a low-level `VkrGpuInterface` function-pointer table.
@@ -93,12 +103,18 @@ In particular:
 - Do **not** "improve" the allocator during extraction. The one genuine change is
   parameterizing the slot table by row size so it serves both material rows and
   descriptor-heap slots. Material publication stays a thin typed wrapper so the
-  Metal call sites are textually unchanged.
+  Metal call sites are textually unchanged. The generic table owns slot state,
+  not resource sharing: Vulkan's typed publisher retains and reference-counts
+  shared image/sampler publications so retiring one material cannot free a slot
+  another material still references.
 - Do **not** move Vulkan-only concepts into shared code. Buffer-image granularity
-  is handled by the Vulkan adapter allocating one core instance per
-  class-and-kind pair, using the buffer-versus-texture parameter the core already
-  carries. Metal's adapter collapses those onto its single heap. Same core,
-  different adapter policy.
+  is handled by the Vulkan adapter pooling blocks by
+  `(class, kind, memory_type_index, device_address_required)`, using the
+  buffer-versus-texture parameter the core already carries and the exact Vulkan
+  memory requirements. The final bit prevents address-bearing buffers from
+  entering memory allocated without the device-address flag. Metal's adapter
+  collapses those keys onto its placement heap. Same core, different adapter
+  policy.
 
 ### No VMA
 
@@ -113,16 +129,25 @@ backends, which adding a second allocator would undo.
 
 ### Sequencing and its witness
 
-The extraction lands as stage V1 of the backend specification — **before any
-Vulkan implementation code** — as a pure rename and relocation with no behaviour
-change. Its required evidence is that the shipping Metal harness snapshot is
-byte-identical before and after, that Metal API and GPU validation stay clean,
-and that a Release Metal profile shows no frame-time regression. The CPU suite
-runs on both platforms.
+Stage V1 of the backend specification characterizes the four contracts and pins
+their CPU tests; it moves no production module. Extraction then follows the
+first real Vulkan use:
 
-If a Vulkan need forces a core API change during stages V3 through V5, that
-change must be re-validated against Metal with the same snapshot gate. A shared
-core is not permission to change Metal's behaviour without Metal's evidence.
+- memory, submit-ring, and ABI machinery with the V3 walking renderer;
+- the slot table with V4 material/descriptor publication;
+- the capture ring with V5 asynchronous capture.
+
+Within each vertical slice, write the representative Vulkan use first, confirm
+the ownership/completion contract matches, and then extract the observed
+intersection. The required witness for every extraction is a byte-identical
+shipping Metal snapshot, clean Metal API/GPU validation, the CPU suite on both
+platforms, and a same-configuration Release Metal profile showing no material
+regression under a tolerance declared before the paired runs. The Vulkan slice
+supplies its own Windows runtime evidence.
+
+Any later core API change must be re-validated against Metal with the same
+witness. A shared core is not permission to change Metal's behaviour without
+Metal evidence.
 
 ## Consequences
 
@@ -130,46 +155,48 @@ core is not permission to change Metal's behaviour without Metal's evidence.
 
 - One allocator, one retirement state machine, one capture lifecycle, and one
   manifest validator, each with one set of CPU tests and one metrics model.
-- The Vulkan backend inherits behaviour that is already exercised by a shipping
-  renderer, rather than reimplementing a state machine whose edge cases were
-  already found once.
+- Once each second caller exists, the Vulkan backend shares behaviour already
+  exercised by a shipping renderer rather than retaining a duplicate state
+  machine whose edge cases were already found once.
 - The slot table serving both material rows and descriptor-heap slots means the
   descriptor heaps get generation safety and completion-gated recycling for free,
   which is exactly the property ADR-022 requires of texture references.
-- Roughly 1,350 lines are not duplicated, and a defect fixed in the core is fixed
-  for both backends.
-- The extraction is verifiable without Vulkan hardware, which matters because the
-  Vulkan backend cannot run on the development machine.
+- Long-lived duplication of roughly 1,350 lines is avoided, and a defect fixed
+  in a proven shared core is fixed for both backends.
+- The shared-core invariants and Metal regression witnesses remain locally
+  verifiable; the second caller's integrated behavior still requires Windows
+  Vulkan hardware.
 
 **Negative / risks**
 
-- **This is technically ahead of ADR-020's stated rule**, which says extract when
-  two concrete implementations exist, not when the second is planned. The risk
-  accepted is that the shared core gets shaped by a hypothesis about Vulkan
-  rather than by a working Vulkan implementation. The containment rule above is
-  the mitigation: only modules that are already neutral move, and the second
-  implementation must re-validate any change it forces.
+- Extraction is spread across V3–V5 instead of one mechanically convenient V1
+  rename. That produces smaller, behavior-bearing diffs but temporarily leaves
+  Metal-owned names and may require a short Vulkan-private walking
+  implementation before compression.
 - Parameterizing the slot table by row size introduces indirection where Metal
   previously had a concrete type. If that costs measurable time in the Metal
   Release profile, the correct response is to keep two copies rather than one
   slower one — performance is correctness.
 - Shared code raises the blast radius of a defect. A regression in the core
   breaks both backends at once, where duplication would have broken one.
-- The module names change, so every Metal call site and four test suites are
-  touched by a change that alters no behaviour. That is a large, boring diff whose
-  review value depends entirely on the snapshot witness rather than on reading it.
+- Module names change only when a second caller lands, so every extraction mixes
+  a behavior-bearing Vulkan slice with Metal renames. The bounded per-module
+  sequencing and dual-backend witnesses are what keep that diff reviewable.
 - Two ABI record tables plus one shared table is more structure than one table
   per backend. It is justified only because the three shared records are
   genuinely identical; if that stops being true, split them back.
 
 ## Alternatives Considered
 
-- **Duplicate all four into Vulkan-private modules, extract later.** Safest
-  against premature abstraction, and strictly what ADR-020's rule prescribes.
-  Rejected because it creates roughly 1,350 lines of near-duplicate state machine
-  with two places to fix every defect and two metrics models, and because the
-  four modules are already demonstrably API-neutral rather than
-  hypothetically so.
+- **Extract all four before any Vulkan caller exists.** Mechanically simple and
+  locally testable, but rejected because API-neutral syntax is not evidence of a
+  shared ownership/completion contract. It would violate ADR-020 and the project
+  N+1 rule.
+- **Keep full Vulkan-private copies indefinitely.** Safest against a shared-core
+  regression, but rejected once matching real callers exist because it creates
+  roughly 1,350 lines of duplicate state machines, fixes, and metrics. A short
+  private walking use before extraction is allowed; permanent duplication is
+  not the target.
 - **Extract a full low-level `VkrGpuInterface` function-pointer table now.**
   Rejected. ADR-020 rejected this shape explicitly, and the Metal-versus-Vulkan
   barrier asymmetry is concrete evidence that a low-level seam designed before the
@@ -190,9 +217,9 @@ core is not permission to change Metal's behaviour without Metal's evidence.
 
 ## Revisit When
 
-- The bindless Vulkan implementation forces a core API change that cannot be
-  expressed as adapter policy. That is the signal the extraction was shaped by a
-  hypothesis, and the change must be re-validated against Metal before it lands.
+- A bindless Vulkan caller does not match a candidate's ownership or completion
+  contract. Leave that candidate private or split the contract; do not extract
+  it merely because this ADR listed it.
 - The Metal Release profile shows measurable regression from row-size
   parameterization or any other extraction-induced indirection.
 - The allocator core's fragmentation, largest-free-range, or range-metadata
