@@ -1,6 +1,6 @@
 ---
-status: proposed
-updated: 2026-08-08
+status: implemented
+updated: 2026-08-09
 authority: adr
 ---
 
@@ -8,15 +8,19 @@ authority: adr
 
 ## Status
 
-**Proposed** — no production code or call site. The standalone V0 spike now
-provides native Windows offscreen evidence for this capability profile, recorded
-in
+**Accepted** — the selected production bindless strategy enumerates, reports,
+selects, and creates a Vulkan 1.4 device through this immutable profile. Its
+production offscreen and windowed prepare/submit paths pass deterministic
+readback, recursive SPIR-V ABI reflection, synchronization validation, and
+descriptor-buffer GPU-assisted validation with layer 1.4.357. The target AMD
+Radeon RX 6700 XT exposes the common floor plus core surface, Win32-surface, and
+swapchain extensions, but neither surface/swapchain-maintenance extension. The
+accepted baseline therefore uses per-image present semaphores and image
+reacquisition as the presentation-completion proof; swapchain maintenance is an
+optional future optimization, not a profile requirement. The standalone V0
+evidence and the older layer 1.4.335 GPU-assisted limitation remain recorded in
 [the bindless Vulkan backend specification](../bindless-vulkan-backend-spec.md)
-§12. Validation layer 1.4.357 completes the descriptor-buffer GPU-assisted gate;
-the older 1.4.335 limitation remains recorded as a toolchain boundary. Stage V0
-is complete but remains a standalone spike. This ADR becomes Accepted only when
-the production bindless backend selects and creates devices through this profile
-and stage V3 passes both its windowed and offscreen gates on Windows hardware.
+§12.
 
 ## Context
 
@@ -101,12 +105,15 @@ descriptor-indexing minimum set with runtime descriptor arrays and non-uniform
 sampled-image and storage-image indexing, scalar block
 layout, host query reset, dynamic rendering, synchronization2, maintenance4 and
 maintenance5, `VK_EXT_descriptor_buffer`, a queue family with graphics, compute
-and transfer, and — for windowed targets only — surface/swapchain plus
-`VK_KHR_surface_maintenance1` / `VK_KHR_swapchain_maintenance1` with the
-`swapchainMaintenance1` feature. Present fences are required because a submit
-timeline does not prove presentation resources may be safely recycled or
-destroyed. Those fences are resource-lifetime proof, not evidence that an image
-was displayed.
+and transfer, and — for windowed targets only — `VK_KHR_surface`, the native
+platform surface extension, and `VK_KHR_swapchain`. A submit timeline does not
+prove presentation resources may be safely recycled or destroyed. The baseline
+therefore sizes render-complete semaphores by actual swapchain image count and
+reuses one only after that image is acquired again. Reacquisition proves the
+previous presentation of that image has completed. After recreation, the first
+reacquisition from the successor swapchain proves its first presentation has
+completed and permits collection of every predecessor retired before it.
+`VK_KHR_swapchain_maintenance1` is recorded but not enabled or consumed.
 
 **No entry is assumed to be guaranteed by the core version.** Several of these
 features are promoted into core Vulkan and some are mandatory to support at some
@@ -177,6 +184,10 @@ specification §3.5. The indexed vertex-pulling path stays authoritative per
 [ADR-013](013-draw-submission-strategy.md) until a mesh path measures better
 under identical conditions.
 
+`VK_KHR_swapchain_maintenance1` is also recorded-only. Present fences may later
+replace the baseline reacquisition bookkeeping if a measured target case
+justifies the extra branch and the complete windowed validation matrix passes.
+
 `descriptorBufferCaptureReplay` is the exception that is not a performance
 feature: it is enabled in Debug and diagnostic configurations when present so
 graphics debuggers can capture, and never in Release, because it constrains
@@ -221,8 +232,10 @@ driver allocation.
   better long-term fit, so a future migration is plausible. Containing
   index-to-descriptor translation in one heap module reduces that migration's
   surface, but shader/layout/capture-tool compatibility still needs evidence.
-- Requiring swapchain maintenance narrows the windowed target matrix beyond the
-  offscreen profile, in exchange for an explicit presentation-completion proof.
+- The unextended WSI path must retain old swapchains until successor
+  reacquisition proves presentation completion. The retirement history is
+  bounded and reports capacity exhaustion instead of destroying under an
+  unproven condition.
 - Recording optional capabilities without consuming them means the profile
   carries fields that nothing reads for some time. This is deliberate; the
   alternative is an opportunistic enable that forks behaviour without evidence.
@@ -252,11 +265,13 @@ driver allocation.
   because it creates behaviour that differs by device with no evidence that the
   difference is an improvement, and it makes every bug report ambiguous about
   which path ran.
-- **Use only base `VK_KHR_swapchain` and infer present completion from the submit
-  timeline or a wait-idle call.** Rejected because neither proves presentation
-  completion. A deferred old-swapchain history can be correct, but it adds a
-  second WSI lifetime algorithm; the chosen narrow profile requires present
-  fences instead. Offscreen remains available without the WSI extensions.
+- **Require `VK_KHR_swapchain_maintenance1` and present fences.** Rejected for
+  the baseline because the RX 6700 XT target does not expose the extension.
+  Present fences remain a recorded optional. The selected unextended algorithm
+  does not infer completion from a submit timeline or a queue/device-idle wait:
+  reacquiring a previously presented image is the proof that permits its
+  per-image semaphore reuse, and successor reacquisition permits retired
+  swapchain collection.
 - **Assume the Vulkan 1.4 core version guarantees the floor and skip the
   queries.** Rejected on two grounds: the mandatory-support tables were not
   verifiable when this was written, and a supported feature must be enabled

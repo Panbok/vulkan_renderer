@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-08-08
+updated: 2026-08-09
 authority: adr
 ---
 
@@ -42,9 +42,10 @@ Two facts sharpen both points:
 
 - The macOS development environment cannot run the bindless Vulkan backend:
   MoltenVK reports `apiVersion 1.2.296` without `VK_EXT_descriptor_buffer`.
-  Native Windows hardware is now available for the standalone V0 spike, but
-  production and windowed evidence remain absent. The split development loop
-  makes an observation period more valuable, not less.
+  Native Windows hardware now exercises the completed RX 6700 XT V3 offscreen
+  and windowed walking renderer and V4 publisher. Full V5 authored-graph
+  synchronization-validation coverage remains absent. The split development
+  loop makes an observation period more valuable, not less.
 - Gate A is currently **open**. The previously accepted Metal Bistro generation
   was invalidated by a cross-backend audit that found retained IBL, sampler,
   transparency, and presentation defects. Those are corrected, but replacement

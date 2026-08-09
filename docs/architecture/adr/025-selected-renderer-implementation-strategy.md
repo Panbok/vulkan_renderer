@@ -1,6 +1,6 @@
 ---
-status: partial
-updated: 2026-08-08
+status: implemented
+updated: 2026-08-09
 authority: adr
 ---
 
@@ -8,22 +8,36 @@ authority: adr
 
 ## Status
 
-**Accepted (partial)** — `VkrRendererImpl` now selects one immutable capability
-record and coarse operation strategy for the real Metal and legacy-Vulkan
-implementations. A recognized bindless Vulkan strategy deterministically rejects
-initialization until V3. The neutral submit result carries capture, memory,
-material, and pass-timing data; renderer behavior no longer tests backend type
-after factory selection; and the normal frame path contains only the declared
-prepare and submit indirect calls. This ADR acts on
+**Accepted** — `VkrRendererImpl` selects one immutable capability
+record and coarse operation strategy for Metal, the retained legacy-Vulkan
+adaptor, and the production bindless Vulkan implementation. The bindless
+strategy now owns a Vulkan 1.4 device, offscreen and window-target state,
+descriptor heaps, prepare/submit execution, completion, memory/heap metrics,
+and the partial V4 asset-publication boundary. The neutral submit result carries capture,
+memory, material, and pass-timing data; renderer behavior no longer tests
+backend type after factory selection; and the normal frame path contains only
+the declared prepare and submit indirect calls. This ADR acts on
 [ADR-020](020-bindless-backend-seam.md)'s contingency that "if sharing
-`renderer_frontend.c` produces branch duplication, split it." It becomes
-Accepted when the production bindless Vulkan strategy passes V3. V2's Windows
-CPU/runtime witnesses remain open evidence gates; they do not change the
-implemented architecture recorded by this ADR. The matched clean Release Metal
-profile passes its predeclared no-regression tolerance. On macOS, Debug
+`renderer_frontend.c` produces branch duplication, split it." The production
+bindless Vulkan strategy now passes the V3 offscreen and native RX 6700 XT
+window/resize gates, so the ADR's final acceptance condition is met; V4
+completeness is not an acceptance condition for this selection seam. V2 is
+complete on both required platforms. The matched clean Release Metal profile passes its
+predeclared no-regression tolerance. On macOS, Debug
 legacy-Vulkan report `20260808T204053.961Z-01220d` passes two explicit native
 window resize round trips with renderer-observed extents and clean validation,
-startup, and shutdown diagnostics.
+startup, and shutdown diagnostics. On Windows, report
+`20260809T084713.791Z-003636`
+(`sha256:0e4964fa31bb7e9dd575e868986fda82a3d50b61989ef6d38aa9ced969a0d5f7`)
+passes the complete CPU suite plus two equivalent hidden-window runtime
+children against a tracked text fixture, with clean validation and lifecycle
+diagnostics. After the V3/V4 production slice and shared-core extraction,
+current-tree Windows report `20260809T113259.325Z-003da8`
+(`sha256:fbb9ec7686f3cd0fc6ba999c962e5566802366a9bed695bd3d7ff78bf488e12b`)
+repeats the complete CPU, build, and two-child legacy resize/lifecycle gate.
+The bindless window witness uses only core surface, Win32-surface, and swapchain
+extensions: per-image reacquisition proves semaphore reuse and retired
+swapchain collection without adding a backend-type branch or hot-path dispatch.
 
 ## Context
 
@@ -124,9 +138,9 @@ accessor.
 
 Metal and legacy Vulkan already provide two concrete implementations of these
 coarse operations, even though the current dispatch shape exposes them
-unevenly. V2 first proves they fit one ownership and completion contract through
-the real implementations and a rejecting bindless stub; the production bindless
-Vulkan backend becomes the third caller in V3. Only these coarse operations
+unevenly. V2 first proved they fit one ownership and completion contract through
+the real implementations and a rejecting bindless stub; V3 then made the
+production bindless Vulkan backend the third caller. Only these coarse operations
 satisfy ADR-020's extraction condition. They become a `VkrRendererImpl` struct
 of function pointers carrying an opaque state pointer, the capability struct
 from kinds 1 and 2, and the asset publisher from kind 3.
@@ -156,8 +170,8 @@ evidence entry point.
 
 Legacy Vulkan remains one of V2's **two production implementations**. Its entries
 forward into the existing `VkrRendererBackendInterface`, with
-`uses_legacy_pipeline_state` set true. The bindless Vulkan stub is the third
-strategy entry and becomes the third production implementation only at V3. The
+`uses_legacy_pipeline_state` set true. The bindless Vulkan entry became the third
+production implementation in V3. The
 legacy entry is a mechanical adaptor.
 
 Critically, **the direct `rf->backend.*` call sites stay exactly where they

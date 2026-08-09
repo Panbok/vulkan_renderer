@@ -1,6 +1,6 @@
 ---
-status: proposed
-updated: 2026-08-08
+status: partial
+updated: 2026-08-09
 authority: adr
 ---
 
@@ -8,13 +8,21 @@ authority: adr
 
 ## Status
 
-**Proposed** — V1 has characterized the four candidates and pinned their current
-Metal integration callers and CPU contract tests in the bindless Vulkan backend
-specification §11, but nothing is extracted yet. This ADR identifies the
-evidence required to extract each one. It preserves
-[ADR-020](020-bindless-backend-seam.md)'s multiple-real-caller rule: a candidate
-remains Metal-owned until the vertical slice that adds its first real bindless
-Vulkan caller.
+**Accepted (partial)** — V1 characterized all four candidates on macOS and
+Windows. The production V3 and partial V4 Vulkan callers now share the extracted
+`vkr_gpu_memory`, `vkr_gpu_submit_ring`, `vkr_gpu_abi`, and
+`vkr_gpu_slot_table` cores with typed Metal adapters. Their RX 6700 XT callers
+complete the V3 target slice and exercise the V4 slot-table contract, including
+native window resize/reacquisition, loaded geometry consumption, writable
+sampled/storage textures, unreferenced-texture sampler replacement, and
+material retirement. V4 production integration remains open because uploads
+block on the timeline and sampler ownership is not yet canonical/shared. The capture ring remains
+Metal-owned until its V5 Vulkan caller exists. The complete Windows CPU suite,
+production Vulkan synchronization validation, and Vulkan GPU-assisted
+validation pass. Required post-extraction Metal snapshot, API/GPU-validation,
+and matched Release witnesses remain unavailable in this Windows workspace, so
+the cross-platform extraction decision and this ADR remain partial rather than
+fully accepted.
 
 ## Context
 
@@ -73,7 +81,7 @@ true.
 
 | Shared module | Extracted from | Backend keeps |
 |---|---|---|
-| `vkr_gpu_memory` | `vkr_metal_memory.c` | The device adapter: Metal's placement heap and residency set; Vulkan's `VkDeviceMemory` blocks, persistent mapping, and device-address capture |
+| `vkr_gpu_memory` and `vkr_gpu_submit_ring` | `vkr_metal_memory.c` | The device adapter: Metal's placement heap and residency set; Vulkan's `VkDeviceMemory` blocks, persistent mapping, and device-address capture |
 | `vkr_gpu_slot_table` | `vkr_metal_material_table.c`, parameterized by row size | The storage adapter: Metal's shared write-combined buffer; Vulkan's upload-class suballocation. Also the row type itself |
 | `vkr_gpu_capture_ring` | `vkr_metal_capture_ring.c` | The blit or copy that fills a slot, and the readback storage |
 | `vkr_gpu_abi` | The manifest machinery in `vkr_metal_packet_abi.c` | Its own record table and its own reflection cross-check |
