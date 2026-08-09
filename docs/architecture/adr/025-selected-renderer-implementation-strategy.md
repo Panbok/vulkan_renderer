@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-09
+updated: 2026-08-10
 authority: adr
 ---
 
@@ -13,8 +13,9 @@ record and coarse operation strategy for Metal, the retained legacy-Vulkan
 adaptor, and the production bindless Vulkan implementation. The bindless
 strategy now owns a Vulkan 1.4 device, offscreen and window-target state,
 descriptor heaps, prepare/submit execution, completion, memory/heap metrics,
-and the partial V4 asset-publication boundary. The neutral submit result carries capture,
-memory, material, and pass-timing data; renderer behavior no longer tests
+and the V4 asset-publication boundary pending post-change target validation.
+The neutral submit result carries capture, memory, material, and pass-timing
+data; renderer behavior no longer tests
 backend type after factory selection; and the normal frame path contains only
 the declared prepare and submit indirect calls. This ADR acts on
 [ADR-020](020-bindless-backend-seam.md)'s contingency that "if sharing

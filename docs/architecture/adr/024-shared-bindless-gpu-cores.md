@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-09
+updated: 2026-08-10
 authority: adr
 ---
 
@@ -9,20 +9,34 @@ authority: adr
 ## Status
 
 **Accepted (partial)** — V1 characterized all four candidates on macOS and
-Windows. The production V3 and partial V4 Vulkan callers now share the extracted
+Windows. The production V3 and V4 Vulkan callers now share the extracted
 `vkr_gpu_memory`, `vkr_gpu_submit_ring`, `vkr_gpu_abi`, and
 `vkr_gpu_slot_table` cores with typed Metal adapters. Their RX 6700 XT callers
 complete the V3 target slice and exercise the V4 slot-table contract, including
 native window resize/reacquisition, loaded geometry consumption, writable
-sampled/storage textures, unreferenced-texture sampler replacement, and
-material retirement. V4 production integration remains open because uploads
-block on the timeline and sampler ownership is not yet canonical/shared. The capture ring remains
-Metal-owned until its V5 Vulkan caller exists. The complete Windows CPU suite,
-production Vulkan synchronization validation, and Vulkan GPU-assisted
-validation pass. Required post-extraction Metal snapshot, API/GPU-validation,
-and matched Release witnesses remain unavailable in this Windows workspace, so
-the cross-platform extraction decision and this ADR remain partial rather than
-fully accepted.
+sampled/storage textures, asynchronous frame-batched initialization, canonical
+shared samplers, dependent material-row republication, and material retirement.
+The changed path still needs its native RX 6700 XT revalidation through
+`tools/validate_v3_v4_windows.ps1`. The Vulkan memory adapter currently backs
+four long-lived upload buffers with the shared allocator core; dynamic geometry,
+texture staging, and image allocations do not yet implement the block topology
+specified by the Vulkan design. The capture ring remains Metal-owned until its
+V5 Vulkan caller exists. The complete
+CPU suite passes on macOS and Windows; production Vulkan synchronization and
+GPU-assisted validation pass. On macOS, clean post-extraction snapshot
+`20260809T144750.194Z-00878c` is byte-identical to the pre-extraction final-color
+and picking bytes, focused Metal API/GPU-validation snapshot
+`20260809T144806.578Z-00852e` repeats those bytes without a diagnostic, and
+the fresh-toolchain Release pair matches all fingerprints and work. Its wall
+mean, p50, p95, and prepare p50 pass their predeclared upper bounds, but submit
+p50 does not: authoritative candidate `20260809T154933.555Z-00bb51` is
+`+172.421%` against pre-extraction baseline
+`20260809T152943.486Z-00b06c`, above the `+5%` bound. An earlier authoritative
+run of the identical candidate binary also misses at `+41.920%`, so the Release
+extraction witness remains open even though total frame time does not regress.
+This ADR remains partial for the failed Release submit bound, the incomplete
+Vulkan dynamic-allocation caller, post-change V4 target revalidation, and the V5
+capture-ring extraction.
 
 ## Context
 

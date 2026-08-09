@@ -41,7 +41,8 @@ project's only Vulkan observation path too early.
 Two facts sharpen both points:
 
 - The macOS development environment cannot run the bindless Vulkan backend:
-  MoltenVK reports `apiVersion 1.2.296` without `VK_EXT_descriptor_buffer`.
+  with SDK 1.4.357.0 the Apple M1 Pro reports Vulkan 1.4.334 and MoltenVK 1.4.1
+  but still does not expose required `VK_EXT_descriptor_buffer`.
   Native Windows hardware now exercises the completed RX 6700 XT V3 offscreen
   and windowed walking renderer and V4 publisher. Full V5 authored-graph
   synchronization-validation coverage remains absent. The split development

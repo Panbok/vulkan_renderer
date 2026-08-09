@@ -1,28 +1,35 @@
 ---
 status: partial
-updated: 2026-08-09
+updated: 2026-08-10
 authority: design
 ---
 
 # Bindless Vulkan 1.4 Backend — Design Specification
 
-**Document status:** Partial. V0–V3 are complete and V4 is a validated walking
-slice for the AMD Radeon RX 6700 XT Windows target. The selected production
-strategy owns the Vulkan 1.4
+**Document status:** Partial. V0–V3 are complete and V4 has a validated walking
+slice plus a production asset-publication implementation. The selected
+production strategy owns the Vulkan 1.4
 device/profile, exact offscreen and windowed prepare/submit/readback, an
 unextended WSI reacquisition-completion path, reflected production ABI, shared
-GPU cores, descriptor heaps, and an initial V4
-geometry/texture/sampler/material publisher. V4 remains partial because
-prepared texture uploads and writable-image transitions block on the submit
-timeline, samplers are owned per texture rather than by a canonical shared
-publisher, and in-use sampler replacement is rejected instead of republishing
-dependent material rows. Synchronization and GPU-assisted validation pass with
-validation layer 1.4.357. V5 authored-graph/pass parity, V6 baseline selection,
-and V7 legacy retirement remain open. Post-extraction Metal snapshot,
-validation, and matched Release witnesses are unavailable in this Windows workspace, so
-[ADR-024](adr/024-shared-bindless-gpu-cores.md) remains partial and no
-cross-backend performance claim is made. Section 12 records the exact target
-evidence and the older 1.4.335 tooling limitation.
+GPU cores, descriptor heaps, and the V4 geometry/texture/sampler/material
+publisher. Prepared and writable texture initialization is now recorded into
+the next frame command buffer without a CPU timeline wait; staging lifetime is
+tied to that frame's completion value; publication flushes are batched;
+samplers are canonical, shared, and reference-counted; and sampler replacement
+republishes every dependent material row before retiring the old sampler. V4
+remains partial because this post-change tree has not yet rerun the required
+native RX 6700 XT offscreen, windowed, synchronization-validation,
+GPU-assisted, and repeated lifecycle gate, and because the §5.2 dynamic
+device-memory pool and its complete metric family are not yet wired to geometry,
+texture staging, or images.
+`tools/validate_v3_v4_windows.ps1` owns that gate. V5 authored-graph/pass parity,
+V6 baseline selection,
+and V7 legacy retirement remain open. The post-extraction Metal snapshot,
+API/GPU-validation, and complete CPU suite pass on macOS. The matched Release
+pair passes its wall and prepare bounds but misses the predeclared submit-p50
+bound, so ADR-024's cross-platform extraction-evidence gap remains open.
+Section 12 records the exact target and macOS evidence plus the older 1.4.335
+tooling limitation.
 
 **Scope:** A bindless Vulkan 1.4 renderer for Windows, built on the semantic
 model that the Metal 4 backend already implements, followed by the complete
@@ -33,7 +40,7 @@ here.
 **Non-goals:** Changing shipping Vulkan 1.2 behaviour before its retirement
 gates; making a mesh-shader, device-generated-command, or shader-object path
 authoritative without measurement; designing the Linux window/input/filesystem
-layer; claiming any performance result.
+layer; claiming speed without matched Release evidence.
 
 **Companions:** The
 [bindless GPU-address design](bindless-gpu-pointer-renderer-spec.md) remains the
@@ -49,11 +56,11 @@ implementation seam, and
 
 ## 1. Prerequisite: runtime work requires native Vulkan 1.4 hardware
 
-The local Vulkan runtime is MoltenVK. It reports `apiVersion 1.2.296` on an
-Apple M1 Pro and does not expose `VK_EXT_descriptor_buffer`. Both facts are
-disqualifying against the capability profile in §3, and neither is likely to
-change: MoltenVK has no descriptor-buffer implementation, and Metal argument
-buffers are a poor structural match for one.
+The local Vulkan runtime is MoltenVK. With SDK 1.4.357.0 it reports device
+`apiVersion 1.4.334`, MoltenVK 1.4.1, on an Apple M1 Pro, but does not expose
+`VK_EXT_descriptor_buffer`. The missing required extension is disqualifying
+against the capability profile in §3; advertising Vulkan 1.4 alone is not
+enough.
 
 The consequence is stated first because it governs the whole staging plan:
 **every runtime gate in this document requires Windows hardware.** A native
@@ -238,7 +245,7 @@ There is no hidden fork.
 
 | Optional | Gate before any consuming code lands |
 |---|---|
-| `VK_KHR_unified_image_layouts` (absent from 1.4.313) | Deterministic readback parity with layout tracking disabled, plus a Release A/B on the same device. Layout lowering stays in the code either way |
+| `VK_KHR_unified_image_layouts` (present in 1.4.357 headers; target-driver gate unrun) | Deterministic readback parity with layout tracking disabled, plus a Release A/B on the same device. Layout lowering stays in the code either way |
 | `VK_EXT_mesh_shader` | Indexed vertex pulling stays authoritative per [ADR-013](adr/013-draw-submission-strategy.md). A mesh path must measure better on identical case, resolution, and scene in Release |
 | `VK_EXT_device_generated_commands` | Only after CPU draw-record time is measured as a bottleneck in a Release profile |
 | `VK_EXT_shader_object` | Only if cold pipeline creation or state-permutation count is measured as a problem. It conflicts with pipeline caches, so `validate_pipeline_cache.sh`'s cold/warm evidence needs a replacement first |
@@ -362,6 +369,13 @@ undefined descriptors that are not dynamically accessed, but proving non-access
 is harder than filling a sentinel. Keep the material `flags` bit for shader
 branching, matching Metal, **and** fill the sentinel, so a flags defect is a
 wrong pixel rather than a device loss.
+
+Logical material capacity and material-row slot capacity are distinct. The
+production publisher admits 8,192 material IDs; its GPU table reserves row zero
+plus two generations of every logical material (16,385 rows). This guarantees
+that a full-table sampler change can publish every successor row before any
+predecessor retires. Configuration validation rejects smaller row tables rather
+than deferring the mismatch to publication.
 
 **The two-slot rule.** A texture that is storage-written in one pass and sampled
 in another — every IBL bake target — occupies **one slot in the storage-image
@@ -494,6 +508,16 @@ buffer blocks whose resources expose device addresses, never for image blocks.
 Block creation is a cold allocation/publication path, not frame or draw work;
 block size and maximum blocks per pool remain configuration justified by
 metrics rather than constants asserted here.
+
+**Implementation status:** the current V3/V4 caller uses `vkr_gpu_memory` for
+four long-lived upload-class buffers: the frame upload ring, material rows, and
+the resource and sampler descriptor buffers. Published geometry, per-texture
+staging buffers, and images still use resource-local `VkDeviceMemory`
+allocations. They are therefore not yet evidence for the pool topology,
+persistent device-local geometry placement, or the complete logical
+suballocation metrics specified in this section. Moving them is a separate,
+measured allocator change; the publication and completion fixes do not imply
+that migration.
 
 | Class | Memory property search, in order | Contents |
 |---|---|---|
@@ -905,12 +929,13 @@ separate depth and stencil layouts available since Vulkan 1.2.
 Descriptor-buffer interaction is the two-slot rule of §4.4: sampled-image slots
 are baked with `SHADER_READ_ONLY_OPTIMAL`, storage-image slots with `GENERAL`.
 
-With `VK_KHR_unified_image_layouts` — absent from 1.4.313, therefore currently
-unselectable — internal transitions collapse to `GENERAL`, and the two-slot rule
-collapses to one slot. Exceptions survive: initialization from `UNDEFINED`,
-present, and external or video ownership. The lowerer keeps the full layout
-state machine either way and selects the unified path behind one profile
-boolean; the graph is unchanged in both cases.
+With `VK_KHR_unified_image_layouts` — present in the current 1.4.357 headers but
+still unselected because its target-driver parity/performance gate has not run —
+internal transitions collapse to `GENERAL`, and the two-slot rule collapses to
+one slot. Exceptions survive: initialization from `UNDEFINED`, present, and
+external or video ownership. The lowerer keeps the full layout state machine
+either way and selects the unified path behind one profile boolean; the graph
+is unchanged in both cases.
 
 ### 8.7 The three lowerers
 
@@ -1034,7 +1059,7 @@ policy. The wording is not permission to choose a threshold after seeing data.
 | **V1 — shared-core characterization** | Pin the four ADR-024 candidate contracts with API-neutral tests and record the exact Metal call sites; move no production module before a second caller exists | CPU suite green on both platforms; the candidate modules remain Metal-owned; no new forwarding layer or speculative shared API | macOS and Windows |
 | **V2 — implementation seam** | ADR-025's capability struct and coarse strategy, three implementations (Metal, legacy-Vulkan adaptor, bindless stub that fails initialization); all behavior branches replaced; the neutral submit result replaces the untyped timing pointer | CPU suite green; Metal snapshot byte-identical; legacy Vulkan Debug startup, resize, and shutdown validation-clean on both platforms; source audit proving no renderer-behavior backend-type test after factory selection; Release Metal profile meets its predeclared no-regression tolerance | macOS and Windows |
 | **V3 — walking bindless renderer** | Device, queue, timeline, command pools; offscreen and windowed targets with per-image present semaphores and reacquisition completion proof; descriptor heaps; one indexed textured draw through the real prepare and submit path; resize; extract the memory, submit-ring, and ABI cores only when their Vulkan call sites land | Validation clean windowed and offscreen; deterministic offscreen readback and exact identifier capture; resize across two extents with retired-present proof; present-result and reacquisition table tests; source audit and runtime counters proving no per-draw allocation, lock, string, or dispatch; wait counters publishing; Metal snapshot/API validation and Release profile before/after each extraction | Windows, plus macOS for Metal extraction witnesses |
-| **V4 — memory, materials, descriptor heaps** | Material row publication; texture, sampler, and storage-image publish, replace, and retire; sentinel slot; two-slot rule; capacity reporting; the full bindless memory metric family; asset publisher wired to the shared loaders; extract the slot table with this second caller | Multi-material capture exact; two materials share one texture/sampler, one retires while work is pending, and the survivor remains exact; texture replacement while frames are pending; non-coherent atom-range CPU cases and target execution when available; capacity-exhaustion metric fires; repeated create, submit, and destroy returns every logical total to its initial value; validation clean; Metal snapshot/API validation and Release profile before/after extraction | Windows and macOS |
+| **V4 — memory, materials, descriptor heaps** | Material row publication; texture, sampler, and storage-image publish, replace, and retire; sentinel slot; two-slot rule; capacity reporting; asset publisher wired to the shared loaders; extract the slot table with this second caller; finish the §5.2 dynamic memory pool and full bindless memory metric family | Multi-material capture exact; two materials share one texture/sampler, one retires while work is pending, and the survivor remains exact; texture replacement while frames are pending; non-coherent atom-range CPU cases and target execution when available; capacity-exhaustion metric fires; repeated create, submit, and destroy returns every logical total to its initial value; validation clean; Metal snapshot/API validation and Release profile before/after extraction | Windows and macOS |
 | **V5 — graph, sync2, dynamic rendering, pass parity** | The bindless dependency lowerer; dynamic rendering for every authored pass; shadow cascades, skybox, opaque, transmission, blend, picking, tonemap, editor and UI, text, the full IBL bake, asynchronous capture overlay, per-pass timestamps; extract the capture ring with this second caller | The same declared five-channel capture batch as Metal returning exact final color, HDR scene color, depth, shadow layer, and picking identifiers; analytical IBL checks across irradiance and every prefilter mip; **synchronization validation clean across the whole authored graph**; deterministic repetitions; the CPU barrier-lowering table test; Metal snapshot/API validation and Release profile before/after extraction | Windows, plus macOS for the CPU and Metal halves |
 | **V6 — feature parity and Windows baseline** | Application and harness backend selection; pipeline cache cold and warm; asset load and unload; metrics parity; a Windows-capable pipeline-cache and implementation-matrix gate | ADR-021's Gate-B functional checklist on Windows; a Windows Bistro-plus-text baseline bootstrapped under the umbrella spec's seven-step policy, with report path and digest recorded; the Windows-capable pipeline-cache and implementation-matrix gates pass; an **authoritative Release performance profile against legacy Windows Vulkan 1.2 on identical cases and predeclared acceptance thresholds** | Windows |
 | **V7 — legacy retirement** | Per [ADR-026](adr/026-vulkan-1-2-retirement.md) | Per ADR-026's gates B1 and B2 | Windows and macOS |
@@ -1156,14 +1181,16 @@ confined to final windowed shutdown after the timeline wait.
 
 The memory, submit-ring, and shared vertex/instance/text ABI intersections moved
 to `vkr_gpu_memory`, `vkr_gpu_submit_ring`, and `vkr_gpu_abi` only after this
-production Vulkan caller existed. Metal retains typed adapters. The full CPU
-suite passes. This Windows workspace cannot provide the current Metal snapshot,
-API/GPU-validation, or matched Release evidence, so ADR-024 retains that
-cross-platform extraction gap; it does not leave the RX 6700 XT V3 caller
-unfinished, and no cross-backend performance claim is made.
+production Vulkan caller existed. Metal retains typed adapters. The complete
+CPU suite passes on both required platforms. The current macOS post-extraction
+snapshot is byte-identical to the pre-extraction witness, the focused Metal
+API/GPU-validation replay is clean, and the matched authoritative Release pair
+passes its frame-wall and prepare bounds. Submit p50 remains over the
+predeclared `+5%` bound, so the cross-platform extraction gate is not closed.
+This does not change the completed RX 6700 XT V3 status or constitute a
+Vulkan-versus-Metal performance comparison.
 
-**V4 implementation status (partial walking slice for RX 6700 XT,
-2026-08-09):**
+**V4 implementation status (target revalidation pending, 2026-08-10):**
 `vkr_gpu_slot_table` is now shared by the Metal material wrapper and production
 Vulkan sampled-image, sampler, storage-image, and material tables. Slot zero is
 the permanent sentinel. Publication is fixed-capacity and generation checked;
@@ -1175,12 +1202,13 @@ by an API-neutral CPU contract test.
 The bindless `VkrAssetPublisher` publishes and completion-retires geometry and
 loaded-mesh buffers, prepared and writable 2D/cubemap textures, sampled-image,
 storage-image, and sampler descriptors, and material rows through the real
-geometry, texture, mesh, and material systems. Sampler replacement for an
-unreferenced texture publishes the new native object and slot before retiring
-the old pair; an identical update on that texture is a no-op. This is not yet
-canonical sampler deduplication across textures, and material-referenced
-textures cannot replace their sampler. Writable targets obey the two-slot
-sampled/storage rule.
+geometry, texture, mesh, and material systems. Samplers use one canonical key
+over the effective filter, address, and mip-level state; equivalent
+textures share one native sampler and descriptor slot under reference counting.
+Replacement acquires the successor first, republishes all dependent material
+rows, then completion-retires the old row and sampler. An identical update is a
+no-op. Writable targets obey the two-slot sampled/storage rule and publish their
+sampled descriptor with `GENERAL` layout.
 Two materials share one texture in the runtime fixture; one material and the
 logical texture retire while submitted work is pending; the survivor remains
 exact; a new texture/material row replaces the old dependency; and collection
@@ -1197,21 +1225,30 @@ also publishes a writable storage+sampled texture, performs one sampler
 replacement and one identical no-op update, and verifies the latter creates no
 slot publication. Full IBL convolution remains V5 graph/pass work; V4 supplies
 the writable cubemap targets and descriptor publication it needs. Prepared
-texture uploads and writable-image initialization still submit through one
-shared asset command buffer and wait synchronously on the timeline before
-publication. Moving this work onto a bounded asynchronous upload path, batching
-descriptor flush ranges, canonicalizing sampler ownership, and republishing
-dependent rows are the remaining V4 production-integration boundary.
+texture uploads and writable-image initialization are bounded by the
+sampled-image publication capacity and recorded at the start of the next frame
+command buffer. Publication is immediately visible to material construction;
+the initialization commands precede the draw in that submission, staging
+buffers retire at its timeline value, and cancellation preserves the pending
+batch for retry. Descriptor and material dirty intervals accumulate between
+submissions and flush once per backing buffer immediately before queue submit.
+The runtime fixture now requires zero upload waits, shared canonical sampler
+ownership, dependent-row republication, rejection of stale enabled texture
+handles, and the shared material-flag ABI. Native Windows validation of this
+changed path and the §5.2 dynamic-memory/metrics work remain V4 gates.
 
 Optional capabilities are deliberately outside this ladder. Each is its own
 measured change after V6, per §3.5.
 
-**Platform coverage boundary:** this Windows workspace executes the RX 6700 XT
+**Platform coverage boundary:** Windows evidence executes the RX 6700 XT
 offscreen/windowed Vulkan, CPU, reflection, synchronization-validation, and
-GPU-assisted gates. It cannot execute Metal extraction witnesses; those remain
-an explicit ADR-024 gap rather than being inferred from source. V3 is target
-complete; V4 is a validated walking slice, not a cross-backend regression or
-performance claim.
+GPU-assisted gates. macOS evidence executes the complete shared-core CPU gate
+and the post-extraction Metal snapshot and API/GPU-validation gates. The matched
+Release wall/prepare metrics pass, but submit p50 misses its bound. macOS still
+cannot execute the descriptor-buffer backend, and no native Windows result is
+inferred from its evidence. V3 is target complete. V4's asset-publication slice
+is implemented, but its post-change target validation and dynamic-memory/metric
+boundary remain pending.
 
 ---
 
@@ -1252,6 +1289,9 @@ build_bindless_vulkan_v0_Debug\tools\vkr_bindless_vulkan_v0.exe --gpu-assisted
 powershell -ExecutionPolicy Bypass -File tools\validate_v1_v2_windows.ps1
 
 # Build and run the selected production V3/V4 slices on Windows.
+powershell -ExecutionPolicy Bypass -File tools\validate_v3_v4_windows.ps1
+
+# Individual diagnostic invocations used by that gate.
 build_bindless_vulkan_v3.bat Debug
 build_bindless_vulkan_v3_Debug\tools\vkr_bindless_vulkan_v3.exe --validation
 build_bindless_vulkan_v3_Debug\tools\vkr_bindless_vulkan_v3.exe --validation --windowed
@@ -1289,6 +1329,18 @@ Observed on 2026-08-08 with SDK 1.4.313:
   under `lib/`.
 - The four extraction candidates contain no Metal type references outside
   comments.
+
+Current macOS tooling observation on 2026-08-09 with SDK 1.4.357.0:
+
+- `VK_EXT_descriptor_buffer`, `VK_EXT_descriptor_heap`, and
+  `VK_KHR_unified_image_layouts` are present in the headers. Header presence
+  does not alter the accepted profile or enable an optional path without its
+  target-driver evidence gate.
+- The Apple M1 Pro device reports Vulkan 1.4.334 and MoltenVK 1.4.1 but still
+  does not enumerate `VK_EXT_descriptor_buffer`, so the bindless Vulkan backend
+  remains unavailable on macOS for the required-extension reason.
+- `slangc` reports `2026.13.1-1-g84792eb15`; the Release wrapper and complete
+  CPU suite compile against Vulkan headers/libraries 1.4.357.
 
 Initial Windows evidence on 2026-08-08 with SDK 1.4.335.0 and Slang 2025.23.2:
 
@@ -1335,7 +1387,7 @@ Superseding GPU-assisted evidence on 2026-08-08 with SDK and validation layer
   the explicit descriptor-buffer instrumentation self-disable and returns
   `GPU_ASSISTED_UNAVAILABLE`, proving the unavailable path was not weakened.
 
-Completed production V3/V4 target evidence on 2026-08-09 with the RX 6700 XT,
+Pre-integration production V3/V4 target evidence on 2026-08-09 with the RX 6700 XT,
 SDK/validation layer 1.4.357, and driver Vulkan 1.4.315:
 
 - The offscreen validation run passes exact RGBA `{37,91,173,255}` and identifier
@@ -1352,9 +1404,67 @@ SDK/validation layer 1.4.357, and driver Vulkan 1.4.315:
   non-coherent range, shared memory/ring/ABI/slot, and capacity-exhaustion
   contracts. Three new whole-process validation repetitions return identical
   live/pending/retirement totals.
-- These are local dirty-tree correctness witnesses. No Release performance or
-  cross-backend regression claim is made; post-extraction Metal witnesses are
-  unavailable in this Windows workspace.
+- These are local dirty-tree correctness witnesses. Their native Windows scope
+  is unchanged by the separate macOS extraction evidence below.
+
+This Windows evidence predates the asynchronous initialization, canonical
+sampler, dependent-row republication, and batched-flush change. It remains a
+hardware characterization and V3 witness, but it is not acceptance evidence
+for the current V4 implementation. Run
+`tools/validate_v3_v4_windows.ps1` on the same target to close that gate.
+
+Post-extraction macOS evidence on 2026-08-09 with SDK 1.4.357.0,
+Slang `2026.13.1-1-g84792eb15`, Apple M1 Pro, and Metal 4:
+
+- The complete CPU suite and Release wrapper pass, including the shared
+  memory, submit-ring, ABI, and slot-table cores plus their Metal adapters.
+- Clean Release snapshot `20260809T144750.194Z-00878c`
+  (`sha256:1d498ecdfa982b04fa750439bd558991703cf8a9fb9f48f4e3f0e0c3b7d993ba`)
+  matches the pre-extraction environment, workload, and policy fingerprints.
+  Final color remains byte-identical at
+  `sha256:019ba7752b653ea77dc8fce8e4125b042f67794d1978aa12044ed4c5b44ad3a6`
+  and picking identifiers at
+  `sha256:ed47dbf1b5e6ade6820370e0313b257c3067d667dd277a1d0033c4d204a26388`.
+- Focused Release snapshot `20260809T144806.578Z-00852e`
+  (`sha256:003155a6e5833aef057a4ca5744b516feb9e88eb52997e1995fbdf21c60a2e3f`)
+  repeats those exact bytes with Metal API and GPU validation enabled. Its
+  stderr contains only the two validation-enabled notices and no diagnostic.
+- The compiler update changes generated Metal source, so the historical
+  old-Slang report is not a causal extraction baseline. The clean
+  fresh-toolchain pair uses pre-extraction baseline
+  `20260809T152943.486Z-00b06c`
+  (`sha256:f06afcd405f5b5826907fef381890b934547e0726b6f2baecbd69a971cd07710`)
+  and authoritative candidate `20260809T154933.555Z-00bb51`
+  (`sha256:b01763fc83ca0e1038951b4ab824ec0f91e560b62ce97efad3a704586b5000a9`).
+  All three fingerprints, 1,500 valid samples, and exactly 322 calls per frame
+  match. Candidate deltas are `frame.wall` mean -6.823%, p50 -3.082%, p95
+  -8.881%, and prepare p50 -36.130%, all within their upper bounds. Submit p50
+  is +172.421%, above the predeclared +5% bound. Earlier authoritative candidate
+  `20260809T145648.867Z-008dd2`, built from the identical binary, also misses
+  submit p50 at +41.920%. Therefore snapshot and validation evidence is
+  complete, total frame time does not regress, but the strict Release extraction
+  gate remains open; no cross-backend speed claim is made.
+
+Current V4-integration macOS evidence on the same toolchain:
+
+- The Release wrapper, standalone V3/V4 target compile, and complete CPU suite
+  pass. The standalone executable then rejects initialization for the expected
+  missing `VK_EXT_descriptor_buffer` capability.
+- Metal snapshot `20260809T192826.053Z-00f844`
+  (`sha256:f739f41a712a0ee68837313434fc51b2982000b6b1ce5ea43562a8d754581eda`)
+  preserves the exact final-color and picking hashes above on the newly linked
+  binary. Focused API/GPU-validation snapshot
+  `20260809T192835.966Z-00fbb9`
+  (`sha256:5e1b4a20f9e85e3161050e84ea0926f08b06df927651a00321ac215bc8d9e576`)
+  repeats those bytes and emits only the two validation-enabled notices.
+- The authoritative performance profile refuses the dirty implementation tree
+  by policy. The clean failed submit-p50 extraction gate above therefore
+  remains the status authority. Non-authoritative dirty-tree diagnostic profile
+  `20260809T192443.606Z-00f53e`
+  (`sha256:c60e96634c21f2ad420d50fa2829906b901b014e611246c18425b4150c855ada`)
+  preserves 322 calls/frame, zero upload waits, and a 3.626 ms wall p50 while
+  repeating the candidate prepare/submit phase split. Its unstable warmup and
+  dirty provenance prevent it from closing or replacing the clean-tree gate.
 
 **Not verified:** the specification's per-version mandatory-support tables. See
 the verification boundary in §3.2 before writing any claim that depends on them.
@@ -1372,8 +1482,8 @@ order: retain the standalone offscreen target and wrapper; maximize
 platform-neutral coverage (§11); and keep runtime reports self-contained so a
 failure does not depend on an interactive debugger session.
 
-Revisit trigger: MoltenVK reporting Vulkan 1.4 with `VK_EXT_descriptor_buffer`.
-Unlikely, since MoltenVK has no descriptor-buffer implementation.
+Revisit trigger: MoltenVK enumerating `VK_EXT_descriptor_buffer`; Vulkan 1.4 is
+already reported locally and is insufficient by itself.
 
 ### 13.2 Descriptor-buffer maturity and tooling
 

@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-08
+updated: 2026-08-09
 authority: adr
 ---
 
@@ -164,13 +164,15 @@ This ADR chose Metal first partly because "the most uncertain shader/resource
 ABI is tested on the machine used for daily iteration." That premise does not
 carry over to the Vulkan side of the decision.
 
-The local Vulkan runtime is MoltenVK, reporting `apiVersion 1.2.296` on the
-Apple M1 Pro development machine and exposing no `VK_EXT_descriptor_buffer`.
-[ADR-023](023-vulkan-1-4-bindless-capability-profile.md) requires both Vulkan
-1.4 and descriptor buffers, so **the bindless Vulkan backend cannot run on the
-development machine at all** — not in a degraded mode, not for a smoke test.
-Every runtime gate for it needs Windows hardware, and if none is available that
-work cannot start.
+The local Vulkan runtime is MoltenVK. With SDK 1.4.357.0 the Apple M1 Pro now
+reports Vulkan 1.4.334 and MoltenVK 1.4.1, but still exposes no
+`VK_EXT_descriptor_buffer`. [ADR-023](023-vulkan-1-4-bindless-capability-profile.md)
+requires descriptor buffers as well as Vulkan 1.4, so **the bindless Vulkan
+backend cannot run on the development machine at all** — not in a degraded
+mode, not for a smoke test. Every runtime gate for it needs Windows hardware;
+the available RX 6700 XT target supplies the completed V3 evidence and the
+pre-integration V4 witness. The completed local V4 integration still requires a
+fresh run of `tools/validate_v3_v4_windows.ps1` on that target.
 
 This does not change the Metal-first decision, which remains correct for the
 reasons recorded below. It does change what the later stage costs, and it makes

@@ -54,11 +54,13 @@ indexing, no buffer device address, no timeline semaphores, and no dynamic
 rendering. There is nothing to extend; the bindless backend is a new device
 setup.
 
-One environment fact dominates the consequences. The local Vulkan runtime is
-MoltenVK, reporting `apiVersion 1.2.296` on an Apple M1 Pro without
-`VK_EXT_descriptor_buffer`. Whatever profile is chosen, if it requires
-descriptor buffers then **the backend cannot run on the development machine at
-all.**
+One environment fact dominates the consequences. The original local Vulkan
+observation was MoltenVK `apiVersion 1.2.296` on an Apple M1 Pro without
+`VK_EXT_descriptor_buffer`. After updating to SDK 1.4.357.0, the device reports
+Vulkan 1.4.334 and MoltenVK 1.4.1 but still does not expose the required
+extension. Whatever profile is chosen, if it requires descriptor buffers then
+**the backend cannot run on the development machine at all.** Advertising
+Vulkan 1.4 does not satisfy this profile by itself.
 
 ## Decision
 

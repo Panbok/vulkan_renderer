@@ -191,5 +191,7 @@ survive into `docs/`.
 
 ## Configuration
 
-Required: CMake 3.27+, Vulkan SDK, `slangc`. Optional: set `VCPKG_ROOT` to use
-the vcpkg toolchain. Build scripts prefer Ninja and clang when available.
+Required: CMake 3.27+, Vulkan SDK 1.4.357+, and Slang 2026.13.1+ (`slangc`).
+Older local toolchains fail on the current Vulkan headers and shader semantics.
+Optional: set `VCPKG_ROOT` to use the vcpkg toolchain. Build scripts prefer
+Ninja and clang when available.
