@@ -5,24 +5,6 @@
 #define VKR_ABI_FIELD(TYPE, HOST, SHADER, OFFSET)                              \
   {#HOST, SHADER, OFFSET, (uint32_t)offsetof(TYPE, HOST)}
 
-static const VkrMetalPacketAbiField vkr_vertex_fields[] = {
-    VKR_ABI_FIELD(VkrVertex3d, position.x, "position_x", 0),
-    VKR_ABI_FIELD(VkrVertex3d, position.y, "position_y", 4),
-    VKR_ABI_FIELD(VkrVertex3d, position.z, "position_z", 8),
-    VKR_ABI_FIELD(VkrVertex3d, normal.x, "normal_x", 12),
-    VKR_ABI_FIELD(VkrVertex3d, normal.y, "normal_y", 16),
-    VKR_ABI_FIELD(VkrVertex3d, normal.z, "normal_z", 20),
-    VKR_ABI_FIELD(VkrVertex3d, texcoord, "texcoord", 24),
-    VKR_ABI_FIELD(VkrVertex3d, colour, "color", 32),
-    VKR_ABI_FIELD(VkrVertex3d, tangent, "tangent", 48),
-};
-
-static const VkrMetalPacketAbiField vkr_instance_fields[] = {
-    VKR_ABI_FIELD(VkrInstanceDataGPU, model, "model", 0),
-    VKR_ABI_FIELD(VkrInstanceDataGPU, object_id, "object_id", 64),
-    VKR_ABI_FIELD(VkrInstanceDataGPU, reserved, "reserved_0", 68),
-};
-
 static const VkrMetalPacketAbiField vkr_material_fields[] = {
     VKR_ABI_FIELD(VkrMetalMaterialGpuRow, tint, "tint", 0),
     VKR_ABI_FIELD(VkrMetalMaterialGpuRow, base_color_texture_id,
@@ -42,12 +24,6 @@ static const VkrMetalPacketAbiField vkr_material_fields[] = {
     VKR_ABI_FIELD(VkrMetalMaterialGpuRow, material_id, "material_id", 80),
     VKR_ABI_FIELD(VkrMetalMaterialGpuRow, flags, "flags", 84),
     VKR_ABI_FIELD(VkrMetalMaterialGpuRow, reserved, "reserved", 88),
-};
-
-static const VkrMetalPacketAbiField vkr_text_vertex_fields[] = {
-    VKR_ABI_FIELD(VkrTextVertex, position, "position", 0),
-    VKR_ABI_FIELD(VkrTextVertex, texcoord, "texcoord", 8),
-    VKR_ABI_FIELD(VkrTextVertex, color, "color", 16),
 };
 
 static const VkrMetalPacketAbiField vkr_vertex_draw_root_fields[] = {
@@ -254,17 +230,9 @@ static const VkrMetalPacketAbiField vkr_text_root_fields[] = {
 
 static const VkrMetalPacketAbiRecord
     vkr_metal_packet_abi_records[VKR_METAL_PACKET_ABI_RECORD_COUNT] = {
-        [VKR_METAL_PACKET_ABI_VERTEX] = VKR_ABI_RECORD(
-            VkrVertex3d, "VkrMetalPacketVertex", 64, 16, vkr_vertex_fields),
-        [VKR_METAL_PACKET_ABI_INSTANCE] =
-            VKR_ABI_RECORD(VkrInstanceDataGPU, "VkrMetalPacketInstance", 80, 16,
-                           vkr_instance_fields),
         [VKR_METAL_PACKET_ABI_MATERIAL] =
             VKR_ABI_RECORD(VkrMetalMaterialGpuRow, "VkrMetalPacketMaterial", 96,
                            16, vkr_material_fields),
-        [VKR_METAL_PACKET_ABI_TEXT_VERTEX] =
-            VKR_ABI_RECORD(VkrTextVertex, "VkrMetalPacketTextVertex", 32, 16,
-                           vkr_text_vertex_fields),
         [VKR_METAL_PACKET_ABI_VERTEX_DRAW_ROOT] = VKR_ABI_RECORD(
             VkrMetalPacketVertexDrawRoot, "VkrMetalPacketDrawRoot", 288, 16,
             vkr_vertex_draw_root_fields),
@@ -302,6 +270,16 @@ static const VkrMetalPacketAbiRecord
 
 const VkrMetalPacketAbiRecord *
 vkr_metal_packet_abi_record(VkrMetalPacketAbiRecordId id) {
+  switch (id) {
+  case VKR_METAL_PACKET_ABI_VERTEX:
+    return vkr_gpu_abi_record(VKR_GPU_ABI_VERTEX);
+  case VKR_METAL_PACKET_ABI_INSTANCE:
+    return vkr_gpu_abi_record(VKR_GPU_ABI_INSTANCE);
+  case VKR_METAL_PACKET_ABI_TEXT_VERTEX:
+    return vkr_gpu_abi_record(VKR_GPU_ABI_TEXT_VERTEX);
+  default:
+    break;
+  }
   return id < VKR_METAL_PACKET_ABI_RECORD_COUNT
              ? &vkr_metal_packet_abi_records[id]
              : NULL;
@@ -311,7 +289,7 @@ bool8_t vkr_metal_packet_abi_validate_host(void) {
   for (uint32_t record_index = 0;
        record_index < VKR_METAL_PACKET_ABI_RECORD_COUNT; ++record_index) {
     const VkrMetalPacketAbiRecord *record =
-        &vkr_metal_packet_abi_records[record_index];
+        vkr_metal_packet_abi_record((VkrMetalPacketAbiRecordId)record_index);
     if (record->host_size != record->expected_size ||
         record->host_alignment != record->expected_alignment)
       return false_v;

@@ -5,6 +5,7 @@
 #include "renderer/metal/vkr_metal_material_table.h"
 #include "renderer/systems/vkr_lighting_system.h"
 #include "renderer/vkr_buffer.h"
+#include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_instance_buffer.h"
 
 enum {
@@ -174,23 +175,8 @@ typedef enum VkrMetalPacketAbiRecordId {
   VKR_METAL_PACKET_ABI_RECORD_COUNT,
 } VkrMetalPacketAbiRecordId;
 
-typedef struct VkrMetalPacketAbiField {
-  const char *host_name;
-  const char *shader_name;
-  uint32_t expected_offset;
-  uint32_t host_offset;
-} VkrMetalPacketAbiField;
-
-typedef struct VkrMetalPacketAbiRecord {
-  const char *host_name;
-  const char *shader_name;
-  uint32_t expected_size;
-  uint32_t expected_alignment;
-  uint32_t host_size;
-  uint32_t host_alignment;
-  const VkrMetalPacketAbiField *fields;
-  uint32_t field_count;
-} VkrMetalPacketAbiRecord;
+typedef VkrGpuAbiField VkrMetalPacketAbiField;
+typedef VkrGpuAbiRecord VkrMetalPacketAbiRecord;
 
 const VkrMetalPacketAbiRecord *
 vkr_metal_packet_abi_record(VkrMetalPacketAbiRecordId id);

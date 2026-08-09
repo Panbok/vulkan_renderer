@@ -1,10 +1,12 @@
 #include "metal_material_test.h"
 
 #include "renderer/metal/vkr_metal_material_table.h"
+#include "renderer/vkr_gpu_slot_table.h"
 
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 typedef struct MaterialFixture {
   void *storage;
@@ -114,10 +116,59 @@ static void test_material_replacement_capacity_is_transactional(void) {
   printf("  test_material_replacement_capacity_is_transactional PASSED\n");
 }
 
+static void test_shared_slot_table_row_size_and_sentinel_rule(void) {
+  printf("  Running test_shared_slot_table_row_size_and_sentinel_rule...\n");
+  const VkrGpuSlotTableConfig config = {
+      .max_slots = 3u,
+      .max_retirements = 3u,
+      .row_size = 37u,
+  };
+  const uint64_t storage_size = vkr_gpu_slot_table_storage_requirement(&config);
+  void *storage = malloc(storage_size);
+  uint8_t rows[3][37] = {0};
+  VkrGpuSlotTable *table = NULL;
+  assert(storage &&
+         vkr_gpu_slot_table_create(&config, storage, storage_size, rows,
+                                   &table) == VKR_GPU_SLOT_STATUS_OK);
+  uint8_t sentinel[37], first[37], replacement[37];
+  memset(sentinel, 0x11, sizeof(sentinel));
+  memset(first, 0x22, sizeof(first));
+  memset(replacement, 0x33, sizeof(replacement));
+  VkrGpuSlotHandle sentinel_handle = {0}, first_handle = {0}, new_handle = {0};
+  assert(vkr_gpu_slot_table_publish(table, sentinel, &sentinel_handle) ==
+             VKR_GPU_SLOT_STATUS_OK &&
+         sentinel_handle.index == 0u);
+  assert(vkr_gpu_slot_table_publish(table, first, &first_handle) ==
+             VKR_GPU_SLOT_STATUS_OK &&
+         first_handle.index == 1u);
+  assert(vkr_gpu_slot_table_replace(table, first_handle, replacement, 9u,
+                                    &new_handle) == VKR_GPU_SLOT_STATUS_OK);
+  assert(new_handle.index == 2u && rows[1][0] == 0x22 && rows[2][0] == 0x33);
+  VkrGpuSlotHandle exhausted = {0};
+  assert(vkr_gpu_slot_table_publish(table, first, &exhausted) ==
+         VKR_GPU_SLOT_STATUS_CAPACITY_EXHAUSTED);
+  VkrGpuSlotTableMetrics capacity_metrics = {0};
+  vkr_gpu_slot_table_get_metrics(table, &capacity_metrics);
+  assert(capacity_metrics.capacity_failures == 1u);
+  assert(vkr_gpu_slot_table_collect(table, 8u, NULL) ==
+             VKR_GPU_SLOT_STATUS_OK &&
+         rows[1][0] == 0x22);
+  assert(vkr_gpu_slot_table_collect(table, 9u, NULL) ==
+             VKR_GPU_SLOT_STATUS_OK &&
+         rows[1][0] == 0x00 && rows[0][0] == 0x11);
+  uint32_t sentinel_index = VKR_INVALID_ID;
+  assert(vkr_gpu_slot_table_resolve(table, sentinel_handle, &sentinel_index) ==
+             VKR_GPU_SLOT_STATUS_OK &&
+         sentinel_index == 0u && rows[0][0] == 0x11);
+  free(storage);
+  printf("  test_shared_slot_table_row_size_and_sentinel_rule PASSED\n");
+}
+
 bool32_t run_metal_material_tests(void) {
   printf("Running Metal material tests...\n");
   test_material_publication_and_pending_replacement();
   test_material_replacement_capacity_is_transactional();
+  test_shared_slot_table_row_size_and_sentinel_rule();
   printf("Metal material tests PASSED\n");
   return true_v;
 }
