@@ -28,8 +28,8 @@ if (-not (Test-Path $harness)) {
 
 Write-Host "== Windows legacy-Vulkan startup/resize/shutdown validation =="
 $harnessLines = @(& $harness profile `
-    --case tools/cases/smoke/sponza_windowed_resize.case.json `
-    --profile tools/profiles/local-windowed.json 2>&1 | Tee-Object -Variable output)
+    --case tools/cases/smoke/text_windowed_resize.case.json `
+    --profile tools/profiles/validation-windowed.json 2>&1 | Tee-Object -Variable output)
 $harnessExit = $LASTEXITCODE
 if ($harnessExit -ne 0) {
     throw "Harness failed with exit code $harnessExit`n$($harnessLines -join [Environment]::NewLine)"

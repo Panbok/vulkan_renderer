@@ -1504,6 +1504,10 @@ typedef struct VkrRendererBackendConfig {
   VkrPresentTargetConfig present_target;
   VkrPresentMode requested_present_mode;
   bool8_t capture_enabled;
+  /** Diagnostic-only API validation. Never part of a performance profile. */
+  bool8_t validation_enabled;
+  /** Diagnostic shader instrumentation; implies validation_enabled. */
+  bool8_t gpu_assisted_validation;
   uint32_t capture_ring_capacity;
   uint64_t capture_max_batch_bytes;
 } VkrRendererBackendConfig;
@@ -1567,6 +1571,12 @@ typedef struct VkrFrameSetup {
 } VkrFrameSetup;
 
 typedef struct VkrRendererUploadWaitStats {
+  /**
+   * Legacy metric name for a blocking upload-completion wait. Backends
+   * may use
+   * an equivalent explicit completion primitive, such as a
+   * timeline semaphore.
+   */
   uint64_t fence_wait_count;
   uint64_t queue_wait_idle_count;
   uint64_t device_wait_idle_count;

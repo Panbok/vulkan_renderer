@@ -164,3 +164,22 @@ if(TARGET Vulkan::Vulkan)
 else()
     target_link_libraries(vkr_bindless_vulkan_v0 PRIVATE ${Vulkan_LIBRARIES})
 endif()
+
+# Production V3 capability/device witness. Unlike the standalone V0 spike this
+# links the renderer-owned bindless Vulkan implementation.
+add_executable(vkr_bindless_vulkan_v3
+    bindless_vulkan_v3/vkr_bindless_vulkan_v3.c
+)
+vkr_require_declared_c_functions(vkr_bindless_vulkan_v3)
+target_include_directories(vkr_bindless_vulkan_v3 PRIVATE
+    ${CMAKE_SOURCE_DIR}/lib/src
+)
+target_link_libraries(vkr_bindless_vulkan_v3 PRIVATE renderer_lib)
+target_compile_definitions(vkr_bindless_vulkan_v3 PRIVATE
+    $<$<CONFIG:Release>:LOG_LEVEL=1>
+    $<$<CONFIG:Release>:ASSERT_LOG=0>
+    $<$<CONFIG:RelWithDebInfo>:LOG_LEVEL=3>
+    $<$<CONFIG:RelWithDebInfo>:ASSERT_LOG=0>
+    $<$<CONFIG:Debug>:LOG_LEVEL=4>
+    $<$<CONFIG:Debug>:ASSERT_LOG=1>
+)

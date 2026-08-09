@@ -35,8 +35,8 @@ static void test_renderer_impl_capability_partition(void) {
   printf("  test_renderer_impl_capability_partition PASSED\n");
 }
 
-static void test_bindless_vulkan_stub_rejects_initialization(void) {
-  printf("  Running test_bindless_vulkan_stub_rejects_initialization...\n");
+static void test_bindless_vulkan_platform_availability(void) {
+  printf("  Running test_bindless_vulkan_platform_availability...\n");
   VkrRendererImpl impl = {0};
   const VkrRendererImplOps legacy_ops = {0};
   const VkrRendererImplOps metal_ops = {0};
@@ -52,17 +52,21 @@ static void test_bindless_vulkan_stub_rejects_initialization(void) {
   assert(impl.kind == VKR_RENDERER_IMPL_BINDLESS_VULKAN);
   assert(!impl.caps.uses_legacy_pipeline_state);
   assert(impl.ops == &bindless_ops);
+#if defined(_WIN32)
+  assert(impl.initialization_supported);
+#else
   assert(!impl.initialization_supported);
+#endif
   assert(!vkr_renderer_impl_select(VKR_RENDERER_BACKEND_TYPE_DX12,
                                    VKR_PRESENT_TARGET_WINDOWED, &strategies,
                                    &impl));
-  printf("  test_bindless_vulkan_stub_rejects_initialization PASSED\n");
+  printf("  test_bindless_vulkan_platform_availability PASSED\n");
 }
 
 bool32_t run_renderer_impl_tests(void) {
   printf("--- Running renderer implementation tests... ---\n");
   test_renderer_impl_capability_partition();
-  test_bindless_vulkan_stub_rejects_initialization();
+  test_bindless_vulkan_platform_availability();
   printf("--- Renderer implementation tests completed. ---\n");
   return true_v;
 }

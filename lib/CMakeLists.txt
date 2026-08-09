@@ -66,6 +66,48 @@ vkr_add_vulkan_shader("ibl/specular_prefilter.slang"
 add_custom_target(vkr_vulkan_shaders DEPENDS ${VKR_VULKAN_SHADER_OUTPUTS})
 add_dependencies(renderer_lib vkr_vulkan_shaders)
 
+# Production bindless walking shaders stay in the build tree. They are not part
+# of the retained Vulkan runtime shader-name ABI under assets/shaders.
+set(VKR_BINDLESS_VK_SHADER_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/vulkan/bindless/shaders/walking.slang")
+set(VKR_BINDLESS_VK_SHADER_OUTPUT_DIR
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/bindless_vulkan")
+set(VKR_BINDLESS_VK_VERTEX_SPV
+    "${VKR_BINDLESS_VK_SHADER_OUTPUT_DIR}/walking.vert.spv")
+set(VKR_BINDLESS_VK_FRAGMENT_SPV
+    "${VKR_BINDLESS_VK_SHADER_OUTPUT_DIR}/walking.frag.spv")
+function(vkr_add_bindless_vulkan_shader output entry stage)
+    add_custom_command(
+        OUTPUT "${output}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+                "${VKR_BINDLESS_VK_SHADER_OUTPUT_DIR}"
+        COMMAND "${VKR_SLANGC_EXECUTABLE}"
+                -target spirv
+                -profile "spirv_1_6+SPV_GOOGLE_user_type+spvDerivativeControl+spvImageQuery+spvImageGatherExtended+spvSparseResidency+spvMinLod+spvFragmentFullyCoveredEXT"
+                -fvk-use-entrypoint-name
+                -fvk-use-scalar-layout
+                -entry "${entry}"
+                -stage "${stage}"
+                "${VKR_BINDLESS_VK_SHADER_SOURCE}"
+                -o "${output}"
+        DEPENDS "${VKR_BINDLESS_VK_SHADER_SOURCE}"
+        COMMENT "Compiling bindless Vulkan walking ${stage} shader"
+        VERBATIM
+    )
+endfunction()
+vkr_add_bindless_vulkan_shader("${VKR_BINDLESS_VK_VERTEX_SPV}"
+                               vert_main vertex)
+vkr_add_bindless_vulkan_shader("${VKR_BINDLESS_VK_FRAGMENT_SPV}"
+                               frag_main fragment)
+add_custom_target(vkr_bindless_vulkan_shaders DEPENDS
+    "${VKR_BINDLESS_VK_VERTEX_SPV}"
+    "${VKR_BINDLESS_VK_FRAGMENT_SPV}")
+add_dependencies(renderer_lib vkr_bindless_vulkan_shaders)
+target_compile_definitions(renderer_lib PRIVATE
+    VKR_BINDLESS_VK_VERTEX_SPV="${VKR_BINDLESS_VK_VERTEX_SPV}"
+    VKR_BINDLESS_VK_FRAGMENT_SPV="${VKR_BINDLESS_VK_FRAGMENT_SPV}"
+)
+
 target_compile_definitions(renderer_lib PUBLIC SPIRV_REFLECT_USE_SYSTEM_SPIRV_H)
 
 # Platform-specific optimization flags

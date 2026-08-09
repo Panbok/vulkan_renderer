@@ -34,6 +34,7 @@
 #include "renderer/vkr_rg_json.h"
 
 typedef struct VkrMetalPacketRenderer VkrMetalPacketRenderer;
+typedef struct VkrBindlessVulkanRenderer VkrBindlessVulkanRenderer;
 
 /**
  * @brief Per-frame batching statistics for the world render path.
@@ -118,6 +119,7 @@ struct s_RendererFrontend {
   VkrRendererImpl impl;
   VkrRendererBackendInterface backend;
   VkrMetalPacketRenderer *metal_renderer;
+  VkrBindlessVulkanRenderer *bindless_vulkan_renderer;
   VkrAssetPublisher asset_publisher;
   VkrRendererImplSubmitResult timing_result;
   uint64_t timing_last_completed_submit_value;

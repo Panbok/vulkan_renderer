@@ -4,6 +4,7 @@
 #include "arena_test.h"
 #include "array_test.h"
 #include "atomic_test.h"
+#include "bindless_vulkan_test.h"
 #include "bitset_test.h"
 #include "clock_test.h"
 #include "dmemory_test.h"

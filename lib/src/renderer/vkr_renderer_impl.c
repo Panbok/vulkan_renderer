@@ -67,7 +67,11 @@ bool8_t vkr_renderer_impl_select(VkrRendererBackendType backend_type,
         .kind = VKR_RENDERER_IMPL_BINDLESS_VULKAN,
         .ops = strategies->bindless_vulkan,
         .caps = vkr_renderer_impl_bindless_caps(target_kind),
+#if defined(PLATFORM_WINDOWS)
+        .initialization_supported = true_v,
+#else
         .initialization_supported = false_v,
+#endif
     };
     return true_v;
 

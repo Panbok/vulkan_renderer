@@ -1198,10 +1198,6 @@ bool32_t vulkan_device_create_logical_device(VulkanBackendState *state) {
       .pEnabledFeatures = NULL,
       .enabledExtensionCount = ext_count,
       .ppEnabledExtensionNames = extension_names,
-#ifndef NDEBUG
-      .enabledLayerCount = ArrayCount(VALIDATION_LAYERS),
-      .ppEnabledLayerNames = VALIDATION_LAYERS,
-#endif
   };
 
   VkDevice device;

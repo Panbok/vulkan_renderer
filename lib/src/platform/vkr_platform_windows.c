@@ -539,7 +539,7 @@ void vkr_platform_process_lock_release(VkrPlatformProcessLock *lock) {
 
 void vkr_platform_console_write(const char *message, uint8_t colour) {
   HANDLE console_handle = GetStdHandle(STD_OUTPUT_HANDLE);
-  if (console_handle == INVALID_HANDLE_VALUE) {
+  if (!console_handle || console_handle == INVALID_HANDLE_VALUE) {
     OutputDebugStringA(message);
     return;
   }
@@ -549,14 +549,22 @@ void vkr_platform_console_write(const char *message, uint8_t colour) {
   uint8_t safe_colour =
       (colour < 6) ? colour
                    : 3; // Default to INFO level (index 3) if out of bounds
-  SetConsoleTextAttribute(console_handle, levels[safe_colour]);
-
   OutputDebugStringA(message);
   uint64_t length = strlen(message);
   DWORD number_written_var;
-  WriteConsoleA(console_handle, message, (DWORD)length, &number_written_var, 0);
-  SetConsoleTextAttribute(console_handle,
-                          FOREGROUND_RED | FOREGROUND_GREEN | FOREGROUND_BLUE);
+  DWORD console_mode;
+  if (GetConsoleMode(console_handle, &console_mode)) {
+    SetConsoleTextAttribute(console_handle, levels[safe_colour]);
+    WriteConsoleA(console_handle, message, (DWORD)length, &number_written_var,
+                  0);
+    SetConsoleTextAttribute(console_handle, FOREGROUND_RED | FOREGROUND_GREEN |
+                                                FOREGROUND_BLUE);
+    return;
+  }
+
+  // WriteConsole fails when stdout is redirected. Keep diagnostics available
+  // to automation and ordinary shell redirection without changing logger API.
+  WriteFile(console_handle, message, (DWORD)length, &number_written_var, NULL);
 }
 
 void vkr_platform_shutdown() {

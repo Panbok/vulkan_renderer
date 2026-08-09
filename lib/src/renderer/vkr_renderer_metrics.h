@@ -68,7 +68,7 @@ typedef struct VkrRendererMetricsPassTable {
   bool8_t truncated;
 } VkrRendererMetricsPassTable;
 
-#define VKR_RENDERER_IMPL_MEMORY_METRIC_MAX 64u
+#define VKR_RENDERER_IMPL_MEMORY_METRIC_MAX 96u
 
 typedef struct VkrRendererMetricIds {
   VkrMetricId world_draws_collected;

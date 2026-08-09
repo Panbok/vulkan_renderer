@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "id": "smoke.text.windowed_resize",
+  "suite": "smoke",
+  "description": "Tracked text fixture startup, native resize round trip, and shutdown witness for renderer implementation seams.",
+  "scene": "assets/scenes/fixtures/text_rendering.scene.json",
+  "seed": 1,
+  "resolution": [320, 240],
+  "resize_round_trip": [400, 300],
+  "boot": "automation",
+  "target": "windowed_hidden",
+  "present": "fifo",
+  "cache": "isolated_cold",
+  "fixed_delta": 0.016666667,
+  "repetitions": 1,
+  "repetition_timeout_ms": 120000,
+  "asset_ready_timeout_ms": 60000,
+  "frames": { "warmup": 3, "measure": 3 },
+  "renderer": {
+    "editor": false,
+    "skybox": false,
+    "text_fixture": true,
+    "shadow_preset": "balanced",
+    "shadow_cascades": 1,
+    "render_mode": "default"
+  },
+  "camera": {
+    "mode": "static",
+    "position": [0.0, 0.0, 6.0],
+    "yaw": -90.0,
+    "pitch": 0.0,
+    "vertical_fov_degrees": 60.0,
+    "near_plane": 0.1,
+    "far_plane": 100.0
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "id": "validation.windowed",
+  "description": "Non-authoritative hidden-window lifecycle and validation witness.",
+  "authoritative": false,
+  "dirty_policy": "allow",
+  "environment": {
+    "target": "windowed_hidden",
+    "required_present": "fifo",
+    "require_actual_present": true
+  },
+  "instrumentation": {
+    "gpu_timing": false,
+    "event_subjects": false
+  },
+  "execution": {
+    "minimum_repetitions": 2,
+    "warmup_stability_window": 20,
+    "warmup_max_drift_ratio": 0.15,
+    "require_warmup_stability": false,
+    "exclusive_gpu_lane": false
+  },
+  "required_metrics": [
+    "cpu.render_submit"
+  ]
+}

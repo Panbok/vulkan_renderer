@@ -52,6 +52,24 @@ typedef struct VkrRendererImplMemoryClassMetrics {
   uint64_t alignment_waste_bytes;
 } VkrRendererImplMemoryClassMetrics;
 
+typedef enum VkrRendererImplSlotTableKind {
+  VKR_RENDERER_IMPL_SLOT_TABLE_SAMPLED_IMAGE = 0,
+  VKR_RENDERER_IMPL_SLOT_TABLE_SAMPLER,
+  VKR_RENDERER_IMPL_SLOT_TABLE_STORAGE_IMAGE,
+  VKR_RENDERER_IMPL_SLOT_TABLE_MATERIAL,
+  VKR_RENDERER_IMPL_SLOT_TABLE_COUNT,
+} VkrRendererImplSlotTableKind;
+
+typedef struct VkrRendererImplSlotTableMetrics {
+  uint64_t live;
+  uint64_t peak;
+  uint64_t capacity;
+  uint64_t published;
+  uint64_t retired;
+  uint64_t collected;
+  uint64_t capacity_failures;
+} VkrRendererImplSlotTableMetrics;
+
 typedef struct VkrRendererImplMemoryMetrics {
   uint64_t heap_size;
   uint64_t free_bytes;
@@ -77,6 +95,11 @@ typedef struct VkrRendererImplMemoryMetrics {
   uint64_t native_allocation_failures;
   VkrRendererImplMemoryClassMetrics
       classes[VKR_RENDERER_IMPL_MEMORY_CLASS_COUNT];
+  VkrRendererImplSlotTableMetrics
+      slot_tables[VKR_RENDERER_IMPL_SLOT_TABLE_COUNT];
+  uint64_t native_heap_count;
+  uint64_t native_heap_peak_count;
+  uint64_t native_heaps_created;
   uint64_t native_heap_size;
   uint64_t native_heap_used_size;
   uint64_t native_heap_allocated_size;
@@ -202,7 +225,7 @@ typedef struct VkrRendererImpl {
 
 /**
  * Selects immutable implementation properties. The bindless Vulkan entry is a
- * deliberate V2 rejecting stub until its V3 production initializer exists.
+ * production V3 strategy on Windows and remains unavailable elsewhere.
  */
 bool8_t vkr_renderer_impl_select(VkrRendererBackendType backend_type,
                                  VkrPresentTargetKind target_kind,

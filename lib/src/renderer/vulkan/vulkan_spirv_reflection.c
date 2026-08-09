@@ -949,6 +949,35 @@ vkr_internal bool8_t vulkan_reflection_copy_slang_matrix_shape(
   return true_v;
 }
 
+vkr_internal bool8_t vulkan_reflection_copy_direct_matrix_shape(
+    const SpvReflectBlockVariable *matrix, VkrUniformMemberDesc *out_member) {
+  const SpvReflectTypeFlags flags =
+      matrix->type_description ? matrix->type_description->type_flags : 0;
+  if (!(flags & SPV_REFLECT_TYPE_FLAG_MATRIX)) {
+    return false_v;
+  }
+
+  out_member->scalar_width = matrix->numeric.scalar.width;
+  out_member->scalar_kind = vulkan_reflection_uniform_scalar_kind(matrix);
+  out_member->vector_component_count = 0;
+  out_member->matrix_columns = matrix->numeric.matrix.column_count;
+  out_member->matrix_rows = matrix->numeric.matrix.row_count;
+  out_member->matrix_stride = matrix->numeric.matrix.stride;
+  if (out_member->matrix_stride == 0 && matrix->array.stride > 0) {
+    // Current Slang emits direct matrix arrays whose SPIRV-Reflect block
+    // variable retains ArrayStride but drops the member's MatrixStride.
+    const uint32_t major_vector_count =
+        (matrix->decoration_flags & SPV_REFLECT_DECORATION_ROW_MAJOR)
+            ? out_member->matrix_rows
+            : out_member->matrix_columns;
+    if (major_vector_count > 0 &&
+        matrix->array.stride % major_vector_count == 0) {
+      out_member->matrix_stride = matrix->array.stride / major_vector_count;
+    }
+  }
+  return true_v;
+}
+
 vkr_internal void
 vulkan_reflection_copy_uniform_shape(const SpvReflectBlockVariable *member,
                                      VkrUniformMemberDesc *out_member) {
@@ -967,7 +996,8 @@ vulkan_reflection_copy_uniform_shape(const SpvReflectBlockVariable *member,
     out_member->array_stride = data->array.stride;
     out_member->array_count =
         vulkan_reflection_uniform_array_count(&data->array);
-    if (!vulkan_reflection_copy_slang_matrix_shape(data, out_member)) {
+    if (!vulkan_reflection_copy_slang_matrix_shape(data, out_member) &&
+        !vulkan_reflection_copy_direct_matrix_shape(data, out_member)) {
       vulkan_reflection_copy_uniform_numeric_shape(data, out_member);
     }
     return;
@@ -983,15 +1013,12 @@ vulkan_reflection_copy_uniform_shape(const SpvReflectBlockVariable *member,
       vulkan_reflection_uniform_array_count(&member->array);
   vulkan_reflection_copy_uniform_numeric_shape(member, out_member);
 
-  if (flags & SPV_REFLECT_TYPE_FLAG_MATRIX) {
-    out_member->matrix_stride = member->numeric.matrix.stride;
-    out_member->matrix_columns = member->numeric.matrix.column_count;
-    out_member->matrix_rows = member->numeric.matrix.row_count;
-    out_member->vector_component_count = 0;
-  } else {
+  if (!(flags & SPV_REFLECT_TYPE_FLAG_MATRIX)) {
     out_member->matrix_stride = 0;
     out_member->matrix_columns = 0;
     out_member->matrix_rows = 0;
+  } else {
+    vulkan_reflection_copy_direct_matrix_shape(member, out_member);
   }
 }
 

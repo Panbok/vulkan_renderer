@@ -282,6 +282,19 @@ vkr_internal const VkrRendererImplMemoryMetricDescription
         VKR_IMPL_CLASS_ROWS("buffer"),
         VKR_IMPL_CLASS_ROWS("texture"),
 #undef VKR_IMPL_CLASS_ROWS
+#define VKR_IMPL_SLOT_ROWS(PREFIX)                                             \
+  VKR_IMPL_GAUGE(PREFIX ".live", VKR_METRIC_UNIT_COUNT),                       \
+      VKR_IMPL_GAUGE(PREFIX ".peak", VKR_METRIC_UNIT_COUNT),                   \
+      VKR_IMPL_GAUGE(PREFIX ".capacity", VKR_METRIC_UNIT_COUNT),               \
+      VKR_IMPL_COUNTER(PREFIX ".published", VKR_METRIC_UNIT_COUNT),            \
+      VKR_IMPL_COUNTER(PREFIX ".retired", VKR_METRIC_UNIT_COUNT),              \
+      VKR_IMPL_COUNTER(PREFIX ".collected", VKR_METRIC_UNIT_COUNT),            \
+      VKR_IMPL_COUNTER(PREFIX ".failures.capacity", VKR_METRIC_UNIT_COUNT)
+        VKR_IMPL_SLOT_ROWS("memory.gpu.descriptors.sampled_image"),
+        VKR_IMPL_SLOT_ROWS("memory.gpu.descriptors.sampler"),
+        VKR_IMPL_SLOT_ROWS("memory.gpu.descriptors.storage_image"),
+        VKR_IMPL_SLOT_ROWS("memory.gpu.materials"),
+#undef VKR_IMPL_SLOT_ROWS
 };
 
 _Static_assert(ArrayCount(vkr_renderer_impl_memory_metric_descriptions) <=
@@ -863,11 +876,18 @@ static uint32_t vkr_renderer_metrics_impl_values(
     const VkrRendererImplMemoryMetrics *memory,
     uint64_t values[VKR_RENDERER_IMPL_MEMORY_METRIC_MAX]) {
   const VkrRendererImplMemoryMetrics *suballocations = memory;
-  const uint64_t heap_live = memory->native_heap_size > 0 ? 1u : 0u;
+  const uint64_t heap_live = memory->native_heap_count
+                                 ? memory->native_heap_count
+                                 : (memory->native_heap_size > 0 ? 1u : 0u);
+  const uint64_t heap_peak = memory->native_heap_peak_count
+                                 ? memory->native_heap_peak_count
+                                 : heap_live;
+  const uint64_t heaps_created =
+      memory->native_heaps_created ? memory->native_heaps_created : heap_live;
   uint32_t i = 0;
   values[i++] = heap_live;
-  values[i++] = heap_live;
-  values[i++] = heap_live;
+  values[i++] = heap_peak;
+  values[i++] = heaps_created;
   values[i++] = suballocations->live_allocations;
   values[i++] = suballocations->peak_allocations;
   values[i++] = suballocations->allocations_created;
@@ -908,6 +928,18 @@ static uint32_t vkr_renderer_metrics_impl_values(
   i += vkr_renderer_metrics_impl_class_values(
       &suballocations->classes[VKR_RENDERER_IMPL_MEMORY_CLASS_TEXTURE],
       &values[i]);
+  for (uint32_t table_index = 0;
+       table_index < VKR_RENDERER_IMPL_SLOT_TABLE_COUNT; ++table_index) {
+    const VkrRendererImplSlotTableMetrics *table =
+        &memory->slot_tables[table_index];
+    values[i++] = table->live;
+    values[i++] = table->peak;
+    values[i++] = table->capacity;
+    values[i++] = table->published;
+    values[i++] = table->retired;
+    values[i++] = table->collected;
+    values[i++] = table->capacity_failures;
+  }
   return i;
 }
 

@@ -800,64 +800,70 @@ static bool8_t vkr_harness_child_write_report(
     VkrHarnessError *error) {
   const bool8_t failed =
       (samples->header.flags & VKR_HARNESS_SAMPLE_FLAG_CHILD_FAILED) != 0u;
-  VkrHarnessReport report = {
-      .tool =
-          capture_source ? VKR_HARNESS_TOOL_SNAPSHOT : VKR_HARNESS_TOOL_PROFILE,
-      .case_manifest = *case_manifest,
-      .profile = *profile,
-      .profile_compatible = true_v,
-      .provenance = *provenance,
-      .subsystem_mask = samples->header.subsystem_mask,
-      .requested_repetitions = 1u,
-      .completed_repetitions = failed ? 0u : 1u,
-      .warmup_stable =
-          (samples->header.flags & VKR_HARNESS_SAMPLE_FLAG_WARMUP_STABLE) != 0u,
-      .events_dropped = samples->header.events_dropped,
-      .event_subjects_truncated = samples->header.event_subjects_truncated,
-  };
+  VkrHarnessReport *report =
+      arena_alloc(arenas->persistent, sizeof(*report), ARENA_MEMORY_TAG_STRUCT);
+  if (!report) {
+    vkr_harness_error_set(error, "report.storage", "$",
+                          "Unable to allocate the child report");
+    return false_v;
+  }
+  MemZero(report, sizeof(*report));
+  report->tool =
+      capture_source ? VKR_HARNESS_TOOL_SNAPSHOT : VKR_HARNESS_TOOL_PROFILE;
+  report->case_manifest = *case_manifest;
+  report->profile = *profile;
+  report->profile_compatible = true_v;
+  report->provenance = *provenance;
+  report->subsystem_mask = samples->header.subsystem_mask;
+  report->requested_repetitions = 1u;
+  report->completed_repetitions = failed ? 0u : 1u;
+  report->warmup_stable =
+      (samples->header.flags & VKR_HARNESS_SAMPLE_FLAG_WARMUP_STABLE) != 0u;
+  report->events_dropped = samples->header.events_dropped;
+  report->event_subjects_truncated = samples->header.event_subjects_truncated;
   const uint32_t capture_capacity =
       capture_source ? capture_source->capture_count : 0u;
   /* One `samples.raw` row on top of whatever the capture phase published. */
   if (!vkr_harness_report_init_storage(
-          &report, arenas->persistent, capture_capacity,
+          report, arenas->persistent, capture_capacity,
           (capture_source ? capture_source->artifact_count : 0u) + 1u)) {
     vkr_harness_error_set(error, "report.storage", "$",
                           "Unable to size the child report tables");
     return false_v;
   }
   if (capture_source) {
-    report.capture_count = capture_source->capture_count;
-    report.artifact_count = capture_source->artifact_count;
-    MemCopy(report.captures, capture_source->captures,
+    report->capture_count = capture_source->capture_count;
+    report->artifact_count = capture_source->artifact_count;
+    MemCopy(report->captures, capture_source->captures,
             sizeof(VkrHarnessCaptureResult) * capture_source->capture_count);
-    MemCopy(report.artifacts, capture_source->artifacts,
+    MemCopy(report->artifacts, capture_source->artifacts,
             sizeof(VkrHarnessArtifact) * capture_source->artifact_count);
-    vkr_harness_report_add_authority_reason(&report,
+    vkr_harness_report_add_authority_reason(report,
                                             "execution.diagnostic_replay");
   }
-  string_format(report.run_id, sizeof(report.run_id), "child");
-  vkr_harness_report_set_status(&report, failed ? "incomplete" : "pass",
+  string_format(report->run_id, sizeof(report->run_id), "child");
+  vkr_harness_report_set_status(report, failed ? "incomplete" : "pass",
                                 failed ? VKR_HARNESS_EXIT_ERROR
                                        : VKR_HARNESS_EXIT_PASS);
   /* A single repetition is a sample, never independent evidence. */
-  vkr_harness_report_add_authority_reason(&report,
-                                          "execution.child_repetition");
+  vkr_harness_report_add_authority_reason(report, "execution.child_repetition");
   if (!profile->authoritative) {
-    vkr_harness_report_add_authority_reason(&report, "profile.local_only");
+    vkr_harness_report_add_authority_reason(report, "profile.local_only");
   }
-  if (report.provenance.dirty) {
-    vkr_harness_report_add_authority_reason(&report, "provenance.dirty");
+  if (report->provenance.dirty) {
+    vkr_harness_report_add_authority_reason(report, "provenance.dirty");
   }
 
   if (capture_source) {
-    string_format(report.environment_fingerprint,
-                  sizeof(report.environment_fingerprint), "%s",
+    string_format(report->environment_fingerprint,
+                  sizeof(report->environment_fingerprint), "%s",
                   capture_source->environment_fingerprint);
-    string_format(report.workload_fingerprint,
-                  sizeof(report.workload_fingerprint), "%s",
+    string_format(report->workload_fingerprint,
+                  sizeof(report->workload_fingerprint), "%s",
                   capture_source->workload_fingerprint);
-    string_format(report.policy_fingerprint, sizeof(report.policy_fingerprint),
-                  "%s", capture_source->policy_fingerprint);
+    string_format(report->policy_fingerprint,
+                  sizeof(report->policy_fingerprint), "%s",
+                  capture_source->policy_fingerprint);
   } else {
     VkrHarnessFingerprintField environment[VKR_HARNESS_ENVIRONMENT_FIELD_COUNT];
     const uint32_t environment_count = vkr_harness_environment_fields(
@@ -866,33 +872,33 @@ static bool8_t vkr_harness_child_write_report(
     effective_case.target_image_count = provenance->actual_target_image_count;
     if (scene_content_digest) {
       (void)vkr_harness_case_fingerprints_with_scene_digest(
-          report.tool, &effective_case, profile, report.subsystem_mask,
+          report->tool, &effective_case, profile, report->subsystem_mask,
           environment, environment_count, scene_content_digest,
-          report.environment_fingerprint, report.workload_fingerprint,
-          report.policy_fingerprint, error);
+          report->environment_fingerprint, report->workload_fingerprint,
+          report->policy_fingerprint, error);
     } else {
       (void)vkr_harness_case_fingerprints(
-          repo_root, report.tool, &effective_case, profile,
-          report.subsystem_mask, environment, environment_count,
-          report.environment_fingerprint, report.workload_fingerprint,
-          report.policy_fingerprint, error);
+          repo_root, report->tool, &effective_case, profile,
+          report->subsystem_mask, environment, environment_count,
+          report->environment_fingerprint, report->workload_fingerprint,
+          report->policy_fingerprint, error);
     }
   }
 
   bool8_t ok = vkr_harness_compute_metric_results(
       arenas, case_manifest->warmup_frames, case_manifest->measure_frames,
       samples->header.metric_count, samples->metrics, samples->values,
-      samples->availability, &report.metrics, error);
+      samples->availability, &report->metrics, error);
   if (ok) {
-    report.metric_count = samples->header.metric_count;
+    report->metric_count = samples->header.metric_count;
     ok = vkr_harness_compute_pass_results(
         arenas, case_manifest->warmup_frames, case_manifest->measure_frames,
         samples->header.pass_count, samples->passes, samples->pass_cpu_ms,
-        samples->pass_gpu_ms, samples->pass_flags, &report.passes, error);
+        samples->pass_gpu_ms, samples->pass_flags, &report->passes, error);
   }
   if (ok) {
-    report.pass_count = samples->header.pass_count;
-    ok = vkr_harness_report_add_artifact(&report, "samples.raw", "samples.bin",
+    report->pass_count = samples->header.pass_count;
+    ok = vkr_harness_report_add_artifact(report, "samples.raw", "samples.bin",
                                          "application/vnd.vkr.harness-samples",
                                          samples_path);
     if (!ok) {
@@ -902,16 +908,16 @@ static bool8_t vkr_harness_child_write_report(
   }
   if (ok && samples->header.event_count > 0u) {
     const uint64_t bytes =
-        (uint64_t)samples->header.event_count * sizeof(*report.events);
-    report.events =
+        (uint64_t)samples->header.event_count * sizeof(*report->events);
+    report->events =
         arena_alloc(arenas->persistent, bytes, ARENA_MEMORY_TAG_STRUCT);
-    ok = report.events != NULL;
+    ok = report->events != NULL;
     if (ok) {
-      MemZero(report.events, bytes);
+      MemZero(report->events, bytes);
     }
     for (uint32_t i = 0; ok && i < samples->header.event_count; ++i) {
       const VkrHarnessSampleEvent *source = &samples->events[i];
-      VkrHarnessEvent *target = &report.events[report.event_count++];
+      VkrHarnessEvent *target = &report->events[report->event_count++];
       string_format(target->source, sizeof(target->source), "%s",
                     source->source);
       string_format(target->subject, sizeof(target->subject), "%s",
@@ -924,7 +930,7 @@ static bool8_t vkr_harness_child_write_report(
       target->subject_truncated = source->subject_truncated;
     }
   }
-  return ok && vkr_harness_report_write(report_path, &report, error);
+  return ok && vkr_harness_report_write(report_path, report, error);
 }
 
 /**
