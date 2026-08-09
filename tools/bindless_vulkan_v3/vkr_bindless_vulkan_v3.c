@@ -130,7 +130,7 @@ int main(int argc, char **argv) {
   uint64_t last_polled = 0u;
   const uint32_t offscreen_extents[][2] = {{4u, 4u}, {7u, 5u}};
   const uint32_t window_extents[][2] = {{320u, 240u}, {400u, 300u}};
-  const uint32_t (*extents)[2] = windowed ? window_extents : offscreen_extents;
+  const uint32_t(*extents)[2] = windowed ? window_extents : offscreen_extents;
   uint64_t frame_index = 0u;
   for (uint32_t extent_index = 0; walking_pass && extent_index < 2u;
        ++extent_index) {
@@ -259,11 +259,15 @@ int main(int argc, char **argv) {
     if (walking_pass) {
       printf("V4 PUBLICATION PASS callbacks=prepared+writable+sampler+"
              "loaded-mesh exact-draws=%u shared=%u replacement=%u "
+             "sampler-shared=%u material-republish=%u upload-waits=%u "
              "sampled-live=%llu storage-live=%llu sampler-live=%llu "
              "material-live=%llu published=%llu pending=%llu "
              "retirements=%llu collected=%llu\n",
              publication.exact_draw_count, publication.shared_resource_survived,
              publication.replacement_survived,
+             publication.shared_sampler_reused,
+             publication.dependent_materials_republished,
+             publication.upload_wait_free ? 0u : 1u,
              (unsigned long long)publication.sampled_images.slots_live,
              (unsigned long long)publication.storage_images.slots_live,
              (unsigned long long)publication.samplers.slots_live,
