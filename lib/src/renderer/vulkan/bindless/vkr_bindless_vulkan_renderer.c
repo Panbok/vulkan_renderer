@@ -32,6 +32,12 @@ enum {
   VKR_BINDLESS_VK_RETIRED_SWAPCHAIN_MAX = 8,
 };
 
+typedef enum VkrBindlessVkMaterialFlag {
+  VKR_BINDLESS_VK_MATERIAL_TEXTURE_NORMAL = 1u << 0u,
+  VKR_BINDLESS_VK_MATERIAL_TEXTURE_ORM = 1u << 1u,
+  VKR_BINDLESS_VK_MATERIAL_TEXTURE_EMISSIVE = 1u << 2u,
+} VkrBindlessVkMaterialFlag;
+
 typedef struct VkrBindlessVkDrawRoot {
   uint64_t vertices;
   float32_t tint[4];
@@ -129,6 +135,12 @@ typedef struct VkrBindlessVkImage {
   VkFormat format;
 } VkrBindlessVkImage;
 
+typedef struct VkrBindlessVkDirtyRange {
+  VkDeviceSize offset;
+  VkDeviceSize end;
+  bool8_t dirty;
+} VkrBindlessVkDirtyRange;
+
 typedef struct VkrBindlessVkTargetSet {
   VkrBindlessVkImage images[VKR_BINDLESS_VK_TARGET_IMAGE_MAX];
   uint32_t image_count;
@@ -176,17 +188,42 @@ typedef struct VkrBindlessVkRetiredWindowTarget {
 typedef struct VkrBindlessVkPublishedTexture {
   VkrTextureHandle handle;
   VkrBindlessVkImage image;
-  VkSampler sampler;
-  VkrTextureDescription sampler_description;
   VkrGpuSlotHandle sampled_slot;
   VkrGpuSlotHandle storage_slot;
-  VkrGpuSlotHandle sampler_slot;
+  uint32_t sampler_record_index;
   uint32_t material_reference_count;
   uint64_t last_use_submit_value;
   bool8_t has_storage_slot;
+  bool8_t initialization_pending;
   bool8_t live;
   bool8_t pending_retire;
 } VkrBindlessVkPublishedTexture;
+
+typedef struct VkrBindlessVkPublishedSampler {
+  VkrTextureDescription description;
+  VkSampler sampler;
+  VkrGpuSlotHandle slot;
+  uint64_t last_use_submit_value;
+  uint32_t mip_levels;
+  uint32_t reference_count;
+  bool8_t live;
+  bool8_t pending_retire;
+} VkrBindlessVkPublishedSampler;
+
+typedef struct VkrBindlessVkPendingTextureInitialization {
+  VkrBindlessVkBuffer staging;
+  VkBufferImageCopy2 *regions;
+  uint64_t regions_size;
+  uint32_t texture_record_index;
+  uint32_t region_count;
+  bool8_t writable;
+} VkrBindlessVkPendingTextureInitialization;
+
+typedef struct VkrBindlessVkRetiredStagingBuffer {
+  VkrBindlessVkBuffer buffer;
+  uint64_t retire_value;
+  bool8_t occupied;
+} VkrBindlessVkRetiredStagingBuffer;
 
 typedef struct VkrBindlessVkPublishedGeometry {
   VkrGeometryHandle handle;
@@ -203,14 +240,13 @@ typedef struct VkrBindlessVkPublishedGeometry {
 typedef struct VkrBindlessVkPublishedMaterial {
   VkrMaterialHandle handle;
   VkrGpuSlotHandle slot;
+  VkrBindlessVkMaterialGpuRow row;
   uint32_t texture_record_indices[4];
-  uint32_t texture_count;
   bool8_t live;
 } VkrBindlessVkPublishedMaterial;
 
 typedef struct VkrBindlessVkRetiredMaterial {
   uint32_t texture_record_indices[4];
-  uint32_t texture_count;
   uint64_t retire_value;
   bool8_t occupied;
 } VkrBindlessVkRetiredMaterial;
@@ -239,12 +275,20 @@ struct VkrBindlessVulkanRenderer {
   VkrGpuSlotTable *material_slots;
   VkrBindlessVkPublishedGeometry *published_geometries;
   VkrBindlessVkPublishedTexture *published_textures;
+  VkrBindlessVkPublishedSampler *published_samplers;
   VkrBindlessVkPublishedMaterial *published_materials;
   VkrBindlessVkRetiredMaterial *retired_materials;
+  VkrBindlessVkPendingTextureInitialization *pending_texture_initializations;
+  VkrBindlessVkRetiredStagingBuffer *retired_staging_buffers;
   uint64_t published_geometries_size;
   uint64_t published_textures_size;
+  uint64_t published_samplers_size;
   uint64_t published_materials_size;
   uint64_t retired_materials_size;
+  uint64_t pending_texture_initializations_size;
+  uint64_t retired_staging_buffers_size;
+  uint32_t pending_texture_initialization_count;
+  uint32_t staging_buffer_count;
   void *sampled_image_slot_storage;
   void *storage_image_slot_storage;
   void *sampler_slot_storage;
@@ -255,6 +299,9 @@ struct VkrBindlessVulkanRenderer {
   uint64_t material_slot_storage_size;
   uint8_t *descriptor_scratch;
   uint32_t descriptor_scratch_size;
+  VkrBindlessVkDirtyRange resource_descriptor_dirty;
+  VkrBindlessVkDirtyRange sampler_descriptor_dirty;
+  VkrBindlessVkDirtyRange material_dirty;
   VkrBindlessVkBuffer upload;
   VkrBindlessVkBuffer materials;
   VkrBindlessVkImage sentinel_image;
@@ -264,8 +311,6 @@ struct VkrBindlessVulkanRenderer {
   VkPipelineLayout pipeline_layout;
   VkPipeline pipeline;
   VkSemaphore timeline;
-  VkCommandPool asset_command_pool;
-  VkCommandBuffer asset_command_buffer;
   uint64_t submit_value;
   uint64_t completed_value;
   uint64_t upload_wait_count;
@@ -407,6 +452,51 @@ static bool8_t vkr_bindless_vk_flush(const VkrBindlessVulkanRenderer *renderer,
   };
   return vkFlushMappedMemoryRanges(vkr_bindless_vk_renderer_device(renderer),
                                    1u, &range) == VK_SUCCESS;
+}
+
+static bool8_t vkr_bindless_vk_mark_dirty(VkrBindlessVkDirtyRange *dirty,
+                                          const VkrBindlessVkBuffer *buffer,
+                                          VkDeviceSize offset,
+                                          VkDeviceSize size) {
+  if (!dirty || !buffer || !size || offset > buffer->size ||
+      size > buffer->size - offset)
+    return false_v;
+  const VkDeviceSize end = offset + size;
+  if (!dirty->dirty) {
+    *dirty = (VkrBindlessVkDirtyRange){
+        .offset = offset,
+        .end = end,
+        .dirty = true_v,
+    };
+  } else {
+    dirty->offset = Min(dirty->offset, offset);
+    dirty->end = Max(dirty->end, end);
+  }
+  return true_v;
+}
+
+static bool8_t
+vkr_bindless_vk_flush_publication_ranges(VkrBindlessVulkanRenderer *renderer) {
+  VkrBindlessVkDirtyRange *ranges[] = {
+      &renderer->resource_descriptor_dirty,
+      &renderer->sampler_descriptor_dirty,
+      &renderer->material_dirty,
+  };
+  VkrBindlessVkBuffer *buffers[] = {
+      &renderer->resource_descriptors,
+      &renderer->sampler_descriptors,
+      &renderer->materials,
+  };
+  for (uint32_t i = 0; i < ArrayCount(ranges); ++i) {
+    VkrBindlessVkDirtyRange *range = ranges[i];
+    if (range->dirty &&
+        !vkr_bindless_vk_flush(renderer, &buffers[i]->allocation, range->offset,
+                               range->end - range->offset))
+      return false_v;
+  }
+  for (uint32_t i = 0; i < ArrayCount(ranges); ++i)
+    MemZero(ranges[i], sizeof(*ranges[i]));
+  return true_v;
 }
 
 static bool8_t
@@ -553,7 +643,7 @@ vkr_bindless_vk_create_upload_block(VkrBindlessVulkanRenderer *renderer) {
        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
            VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT},
       {&renderer->materials,
-       (VkDeviceSize)renderer->config.material_capacity *
+       (VkDeviceSize)renderer->config.material_slot_capacity *
            sizeof(VkrBindlessVkMaterialGpuRow),
        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT},
   };
@@ -1115,30 +1205,6 @@ vkr_bindless_vk_create_frame_slots(VkrBindlessVulkanRenderer *renderer) {
   return true_v;
 }
 
-static bool8_t
-vkr_bindless_vk_create_asset_commands(VkrBindlessVulkanRenderer *renderer) {
-  VkDevice device = vkr_bindless_vk_renderer_device(renderer);
-  const VkCommandPoolCreateInfo pool_info = {
-      .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-      .flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT |
-               VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
-      .queueFamilyIndex =
-          vkr_bindless_vulkan_device_queue_family(renderer->device),
-  };
-  if (vkCreateCommandPool(device, &pool_info, NULL,
-                          &renderer->asset_command_pool) != VK_SUCCESS)
-    return false_v;
-  const VkCommandBufferAllocateInfo command_info = {
-      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-      .commandPool = renderer->asset_command_pool,
-      .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-      .commandBufferCount = 1u,
-  };
-  return vkAllocateCommandBuffers(device, &command_info,
-                                  &renderer->asset_command_buffer) ==
-         VK_SUCCESS;
-}
-
 static void
 vkr_bindless_vk_destroy_frame_slots(VkrBindlessVulkanRenderer *renderer) {
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
@@ -1207,8 +1273,7 @@ vkr_bindless_vk_create_resources(VkrBindlessVulkanRenderer *renderer) {
       !vkr_bindless_vk_create_target_set(
           renderer, renderer->config.width, renderer->config.height,
           renderer->config.image_count, &renderer->targets) ||
-      !vkr_bindless_vk_create_frame_slots(renderer) ||
-      !vkr_bindless_vk_create_asset_commands(renderer)) {
+      !vkr_bindless_vk_create_frame_slots(renderer)) {
     return false_v;
   }
   const VkDeviceSize descriptor_alignment =
@@ -1267,8 +1332,8 @@ static bool8_t vkr_bindless_vk_create_descriptor_slot_tables(
       .row_size = (uint32_t)properties->storageImageDescriptorSize,
   };
   const VkrGpuSlotTableConfig material_config = {
-      .max_slots = renderer->config.material_capacity,
-      .max_retirements = renderer->config.material_capacity,
+      .max_slots = renderer->config.material_slot_capacity,
+      .max_retirements = renderer->config.material_slot_capacity,
       .row_size = sizeof(VkrBindlessVkMaterialGpuRow),
   };
   renderer->sampled_image_slot_storage_size =
@@ -1285,12 +1350,21 @@ static bool8_t vkr_bindless_vk_create_descriptor_slot_tables(
   renderer->published_textures_size =
       (uint64_t)renderer->config.sampled_image_capacity *
       sizeof(*renderer->published_textures);
+  renderer->published_samplers_size =
+      (uint64_t)renderer->config.sampler_capacity *
+      sizeof(*renderer->published_samplers);
   renderer->published_materials_size =
-      (uint64_t)renderer->config.material_capacity *
+      (uint64_t)renderer->config.material_record_capacity *
       sizeof(*renderer->published_materials);
   renderer->retired_materials_size =
-      (uint64_t)renderer->config.material_capacity *
+      (uint64_t)renderer->config.material_record_capacity *
       sizeof(*renderer->retired_materials);
+  renderer->pending_texture_initializations_size =
+      (uint64_t)renderer->config.sampled_image_capacity *
+      sizeof(*renderer->pending_texture_initializations);
+  renderer->retired_staging_buffers_size =
+      (uint64_t)renderer->config.sampled_image_capacity *
+      sizeof(*renderer->retired_staging_buffers);
   renderer->descriptor_scratch_size =
       (uint32_t)Max(Max(properties->sampledImageDescriptorSize,
                         properties->storageImageDescriptorSize),
@@ -1316,24 +1390,40 @@ static bool8_t vkr_bindless_vk_create_descriptor_slot_tables(
   renderer->published_textures = vkr_allocator_alloc(
       renderer->allocator, renderer->published_textures_size,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  renderer->published_samplers = vkr_allocator_alloc(
+      renderer->allocator, renderer->published_samplers_size,
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   renderer->published_materials = vkr_allocator_alloc(
       renderer->allocator, renderer->published_materials_size,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   renderer->retired_materials =
       vkr_allocator_alloc(renderer->allocator, renderer->retired_materials_size,
                           VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  renderer->pending_texture_initializations = vkr_allocator_alloc(
+      renderer->allocator, renderer->pending_texture_initializations_size,
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  renderer->retired_staging_buffers = vkr_allocator_alloc(
+      renderer->allocator, renderer->retired_staging_buffers_size,
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!renderer->sampled_image_slot_storage ||
       !renderer->storage_image_slot_storage ||
       !renderer->sampler_slot_storage || !renderer->material_slot_storage ||
       !renderer->descriptor_scratch || !renderer->published_geometries ||
-      !renderer->published_textures || !renderer->published_materials ||
-      !renderer->retired_materials) {
+      !renderer->published_textures || !renderer->published_samplers ||
+      !renderer->published_materials || !renderer->retired_materials ||
+      !renderer->pending_texture_initializations ||
+      !renderer->retired_staging_buffers) {
     return false_v;
   }
   MemZero(renderer->published_geometries, renderer->published_geometries_size);
   MemZero(renderer->published_textures, renderer->published_textures_size);
+  MemZero(renderer->published_samplers, renderer->published_samplers_size);
   MemZero(renderer->published_materials, renderer->published_materials_size);
   MemZero(renderer->retired_materials, renderer->retired_materials_size);
+  MemZero(renderer->pending_texture_initializations,
+          renderer->pending_texture_initializations_size);
+  MemZero(renderer->retired_staging_buffers,
+          renderer->retired_staging_buffers_size);
   return vkr_gpu_slot_table_create(
              &sampled_config, renderer->sampled_image_slot_storage,
              renderer->sampled_image_slot_storage_size,
@@ -1440,20 +1530,20 @@ static bool8_t vkr_bindless_vk_publish_sentinel_descriptors(
       material_handle.index != 0u) {
     return false_v;
   }
-  return vkr_bindless_vk_flush(renderer,
-                               &renderer->resource_descriptors.allocation,
-                               resource_layout->sampled_image_offset,
-                               properties->sampledImageDescriptorSize) &&
-         vkr_bindless_vk_flush(renderer,
-                               &renderer->resource_descriptors.allocation,
-                               resource_layout->storage_image_offset,
-                               properties->storageImageDescriptorSize) &&
-         vkr_bindless_vk_flush(renderer,
-                               &renderer->sampler_descriptors.allocation,
-                               sampler_layout->sampler_offset,
-                               properties->samplerDescriptorSize) &&
-         vkr_bindless_vk_flush(renderer, &renderer->materials.allocation, 0u,
-                               sizeof(material));
+  return vkr_bindless_vk_mark_dirty(&renderer->resource_descriptor_dirty,
+                                    &renderer->resource_descriptors,
+                                    resource_layout->sampled_image_offset,
+                                    properties->sampledImageDescriptorSize) &&
+         vkr_bindless_vk_mark_dirty(&renderer->resource_descriptor_dirty,
+                                    &renderer->resource_descriptors,
+                                    resource_layout->storage_image_offset,
+                                    properties->storageImageDescriptorSize) &&
+         vkr_bindless_vk_mark_dirty(&renderer->sampler_descriptor_dirty,
+                                    &renderer->sampler_descriptors,
+                                    sampler_layout->sampler_offset,
+                                    properties->samplerDescriptorSize) &&
+         vkr_bindless_vk_mark_dirty(&renderer->material_dirty,
+                                    &renderer->materials, 0u, sizeof(material));
 }
 
 static SpvReflectBlockVariable *
@@ -1864,13 +1954,18 @@ vkr_bindless_vk_refresh_completed(VkrBindlessVulkanRenderer *renderer) {
 bool8_t vkr_bindless_vulkan_renderer_create(
     const VkrBindlessVulkanRendererConfig *config,
     VkrBindlessVulkanRenderer **out_renderer) {
-  if (!config || !config->allocator || !out_renderer || !config->width ||
-      !config->height || !config->image_count ||
+  if (!out_renderer)
+    return false_v;
+  *out_renderer = NULL;
+  if (!config || !config->allocator || !config->width || !config->height ||
+      !config->image_count ||
       config->image_count > VKR_BINDLESS_VK_TARGET_IMAGE_MAX ||
-      !config->material_capacity) {
+      !config->sampled_image_capacity || !config->storage_image_capacity ||
+      !config->sampler_capacity || !config->material_record_capacity ||
+      (uint64_t)config->material_slot_capacity <
+          (uint64_t)config->material_record_capacity * 2u + 1u) {
     return false_v;
   }
-  *out_renderer = NULL;
   VkrBindlessVulkanRenderer *renderer = vkr_allocator_alloc(
       config->allocator, sizeof(*renderer), VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!renderer) {
@@ -1965,14 +2060,41 @@ static void vkr_bindless_vk_cmd_image_barrier(
                                           old_layout, new_layout, 1u, 1u);
 }
 
-static bool8_t
-vkr_bindless_vk_upload_prepared_texture(VkrBindlessVulkanRenderer *renderer,
-                                        const VkrTexturePreparedLoad *prepared,
-                                        VkrBindlessVkImage *out_image) {
-  if (!prepared || !out_image || !prepared->upload_data ||
-      !prepared->upload_data_size || !prepared->upload_regions ||
-      !prepared->upload_region_count || !prepared->upload_mip_levels ||
-      !prepared->upload_array_layers ||
+static void vkr_bindless_vk_release_texture_initialization(
+    VkrBindlessVulkanRenderer *renderer,
+    VkrBindlessVkPendingTextureInitialization *initialization) {
+  if (initialization->regions)
+    vkr_allocator_free(renderer->allocator, initialization->regions,
+                       initialization->regions_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  vkr_bindless_vk_destroy_buffer(renderer, &initialization->staging);
+  MemZero(initialization, sizeof(*initialization));
+}
+
+static bool8_t vkr_bindless_vk_enqueue_texture_initialization(
+    VkrBindlessVulkanRenderer *renderer,
+    const VkrBindlessVkPendingTextureInitialization *initialization) {
+  if (renderer->pending_texture_initialization_count >=
+          renderer->config.sampled_image_capacity ||
+      (initialization->staging.handle &&
+       renderer->staging_buffer_count >=
+           renderer->config.sampled_image_capacity))
+    return false_v;
+  renderer->pending_texture_initializations
+      [renderer->pending_texture_initialization_count++] = *initialization;
+  if (initialization->staging.handle)
+    renderer->staging_buffer_count++;
+  return true_v;
+}
+
+static bool8_t vkr_bindless_vk_upload_prepared_texture(
+    VkrBindlessVulkanRenderer *renderer, const VkrTexturePreparedLoad *prepared,
+    uint32_t texture_record_index, VkrBindlessVkImage *out_image,
+    VkrBindlessVkPendingTextureInitialization *out_initialization) {
+  if (!prepared || !out_image || !out_initialization ||
+      !prepared->upload_data || !prepared->upload_data_size ||
+      !prepared->upload_regions || !prepared->upload_region_count ||
+      !prepared->upload_mip_levels || !prepared->upload_array_layers ||
       (prepared->description.sample_count != 0u &&
        prepared->description.sample_count != VKR_SAMPLE_COUNT_1) ||
       (prepared->description.type != VKR_TEXTURE_TYPE_2D &&
@@ -2058,85 +2180,120 @@ vkr_bindless_vk_upload_prepared_texture(VkrBindlessVulkanRenderer *renderer,
                         .depth = source->depth},
     };
   }
-  VkDevice device = vkr_bindless_vk_renderer_device(renderer);
-  if (valid)
-    valid = vkResetCommandPool(device, renderer->asset_command_pool, 0u) ==
-            VK_SUCCESS;
-  const VkCommandBufferBeginInfo begin_info = {
-      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-  };
-  if (valid)
-    valid = vkBeginCommandBuffer(renderer->asset_command_buffer, &begin_info) ==
-            VK_SUCCESS;
   if (valid) {
+    *out_initialization = (VkrBindlessVkPendingTextureInitialization){
+        .staging = staging,
+        .regions = regions,
+        .regions_size = regions_size,
+        .texture_record_index = texture_record_index,
+        .region_count = prepared->upload_region_count,
+    };
+    out_image->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  } else {
+    VkrBindlessVkPendingTextureInitialization initialization = {
+        .staging = staging,
+        .regions = regions,
+        .regions_size = regions_size,
+    };
+    vkr_bindless_vk_release_texture_initialization(renderer, &initialization);
+    vkr_bindless_vk_destroy_image(renderer, out_image);
+  }
+  return valid;
+}
+
+static void vkr_bindless_vk_record_texture_initializations(
+    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command) {
+  for (uint32_t i = 0; i < renderer->pending_texture_initialization_count;
+       ++i) {
+    const VkrBindlessVkPendingTextureInitialization *initialization =
+        &renderer->pending_texture_initializations[i];
+    const VkrBindlessVkPublishedTexture *texture =
+        &renderer->published_textures[initialization->texture_record_index];
+    if (initialization->writable) {
+      vkr_bindless_vk_cmd_image_barrier_range(
+          command, texture->image.handle, VK_PIPELINE_STAGE_2_NONE,
+          VK_ACCESS_2_NONE,
+          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+          VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |
+              VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+              VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+          VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+          texture->image.mip_levels, texture->image.array_layers);
+      continue;
+    }
     vkr_bindless_vk_cmd_image_barrier_range(
-        renderer->asset_command_buffer, out_image->handle,
-        VK_PIPELINE_STAGE_2_NONE, VK_ACCESS_2_NONE,
-        VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        prepared->upload_mip_levels, prepared->upload_array_layers);
+        command, texture->image.handle, VK_PIPELINE_STAGE_2_NONE,
+        VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COPY_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, texture->image.mip_levels,
+        texture->image.array_layers);
     const VkCopyBufferToImageInfo2 copy_info = {
         .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_TO_IMAGE_INFO_2,
-        .srcBuffer = staging.handle,
-        .dstImage = out_image->handle,
+        .srcBuffer = initialization->staging.handle,
+        .dstImage = texture->image.handle,
         .dstImageLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        .regionCount = prepared->upload_region_count,
-        .pRegions = regions,
+        .regionCount = initialization->region_count,
+        .pRegions = initialization->regions,
     };
-    vkCmdCopyBufferToImage2(renderer->asset_command_buffer, &copy_info);
+    vkCmdCopyBufferToImage2(command, &copy_info);
     vkr_bindless_vk_cmd_image_barrier_range(
-        renderer->asset_command_buffer, out_image->handle,
-        VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+        command, texture->image.handle, VK_PIPELINE_STAGE_2_COPY_BIT,
+        VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, prepared->upload_mip_levels,
-        prepared->upload_array_layers);
-    valid = vkEndCommandBuffer(renderer->asset_command_buffer) == VK_SUCCESS;
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, texture->image.mip_levels,
+        texture->image.array_layers);
   }
-  const uint64_t signal_value = renderer->submit_value + 1u;
-  const VkCommandBufferSubmitInfo command_info = {
-      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-      .commandBuffer = renderer->asset_command_buffer,
-  };
-  const VkSemaphoreSubmitInfo signal_info = {
-      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-      .semaphore = renderer->timeline,
-      .value = signal_value,
-      .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-  };
-  const VkSubmitInfo2 submit_info = {
-      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-      .commandBufferInfoCount = 1u,
-      .pCommandBufferInfos = &command_info,
-      .signalSemaphoreInfoCount = 1u,
-      .pSignalSemaphoreInfos = &signal_info,
-  };
-  if (valid)
-    valid = vkQueueSubmit2(vkr_bindless_vulkan_device_queue(renderer->device),
-                           1u, &submit_info, VK_NULL_HANDLE) == VK_SUCCESS;
-  if (valid) {
-    renderer->submit_value = signal_value;
-    const VkSemaphoreWaitInfo wait_info = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-        .semaphoreCount = 1u,
-        .pSemaphores = &renderer->timeline,
-        .pValues = &signal_value,
-    };
-    renderer->upload_wait_count++;
-    valid = vkWaitSemaphores(device, &wait_info, UINT64_MAX) == VK_SUCCESS;
-    if (valid)
-      renderer->completed_value = signal_value;
+}
+
+static void vkr_bindless_vk_commit_texture_initializations(
+    VkrBindlessVulkanRenderer *renderer, uint64_t retire_value) {
+  for (uint32_t i = 0; i < renderer->pending_texture_initialization_count;
+       ++i) {
+    VkrBindlessVkPendingTextureInitialization *initialization =
+        &renderer->pending_texture_initializations[i];
+    VkrBindlessVkPublishedTexture *texture =
+        &renderer->published_textures[initialization->texture_record_index];
+    texture->initialization_pending = false_v;
+    texture->last_use_submit_value =
+        Max(texture->last_use_submit_value, retire_value);
+    if (initialization->staging.handle) {
+      VkrBindlessVkRetiredStagingBuffer *retired = NULL;
+      for (uint32_t slot = 0; slot < renderer->config.sampled_image_capacity;
+           ++slot) {
+        if (!renderer->retired_staging_buffers[slot].occupied) {
+          retired = &renderer->retired_staging_buffers[slot];
+          break;
+        }
+      }
+      if (!retired)
+        log_fatal("Bindless Vulkan lost bounded staging retirement capacity");
+      *retired = (VkrBindlessVkRetiredStagingBuffer){
+          .buffer = initialization->staging,
+          .retire_value = retire_value,
+          .occupied = true_v,
+      };
+      MemZero(&initialization->staging, sizeof(initialization->staging));
+    }
+    vkr_bindless_vk_release_texture_initialization(renderer, initialization);
   }
-  out_image->layout = valid ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
-                            : VK_IMAGE_LAYOUT_UNDEFINED;
-  vkr_allocator_free(renderer->allocator, regions, regions_size,
-                     VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-  vkr_bindless_vk_destroy_buffer(renderer, &staging);
-  if (!valid)
-    vkr_bindless_vk_destroy_image(renderer, out_image);
-  return valid;
+  renderer->pending_texture_initialization_count = 0u;
+}
+
+static void vkr_bindless_vk_discard_texture_initializations(
+    VkrBindlessVulkanRenderer *renderer) {
+  for (uint32_t i = 0; i < renderer->pending_texture_initialization_count;
+       ++i) {
+    VkrBindlessVkPendingTextureInitialization *initialization =
+        &renderer->pending_texture_initializations[i];
+    renderer->published_textures[initialization->texture_record_index]
+        .initialization_pending = false_v;
+    if (initialization->staging.handle)
+      renderer->staging_buffer_count--;
+    vkr_bindless_vk_release_texture_initialization(renderer, initialization);
+  }
+  renderer->pending_texture_initialization_count = 0u;
 }
 
 bool8_t
@@ -2260,6 +2417,7 @@ static bool8_t vkr_bindless_vk_record_draw(VkrBindlessVulkanRenderer *renderer,
   if (vkBeginCommandBuffer(command, &begin_info) != VK_SUCCESS) {
     return false_v;
   }
+  vkr_bindless_vk_record_texture_initializations(renderer, command);
   if (!renderer->sentinel_uploaded) {
     vkr_bindless_vk_cmd_image_barrier(
         command, renderer->sentinel_image.handle, VK_PIPELINE_STAGE_2_NONE,
@@ -2467,6 +2625,10 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
     vkr_bindless_vulkan_renderer_cancel_frame(renderer);
     return false_v;
   }
+  if (!vkr_bindless_vk_flush_publication_ranges(renderer)) {
+    vkr_bindless_vulkan_renderer_cancel_frame(renderer);
+    return false_v;
+  }
   const uint64_t signal_value = renderer->submit_value + 1u;
   VkCommandBufferSubmitInfo command_info = {
       .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
@@ -2516,6 +2678,7 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
   }
   renderer->submit_value = signal_value;
   slot->retire_value = signal_value;
+  vkr_bindless_vk_commit_texture_initializations(renderer, signal_value);
   renderer->targets.images[slot->image_index].layout =
       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   renderer->sentinel_image.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -2823,6 +2986,8 @@ vkr_bindless_vulkan_renderer_wait_idle(VkrBindlessVulkanRenderer *renderer) {
   vkr_bindless_vk_refresh_completed(renderer);
   vkr_bindless_vk_collect_retired_targets(renderer, renderer->completed_value);
   vkr_bindless_vk_collect_retired_window_targets(renderer);
+  vkr_bindless_vk_collect_asset_publications(renderer,
+                                             renderer->completed_value);
   return true_v;
 }
 
@@ -2933,17 +3098,16 @@ vkr_bindless_vulkan_renderer_allocator(VkrBindlessVulkanRenderer *renderer) {
   return renderer ? renderer->allocator : NULL;
 }
 
-static bool8_t
-vkr_bindless_vk_publish_sampled_view(VkrBindlessVulkanRenderer *renderer,
-                                     VkImageView view,
-                                     VkrGpuSlotHandle *out_handle) {
+static bool8_t vkr_bindless_vk_publish_sampled_view(
+    VkrBindlessVulkanRenderer *renderer, VkImageView view,
+    VkImageLayout image_layout, VkrGpuSlotHandle *out_handle) {
   const VkPhysicalDeviceDescriptorBufferPropertiesEXT *properties =
       vkr_bindless_vulkan_device_descriptor_properties(renderer->device);
   const VkrBindlessVulkanDescriptorLayout *layout =
       vkr_bindless_vulkan_device_resource_layout(renderer->device);
   const VkDescriptorImageInfo image_info = {
       .imageView = view,
-      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+      .imageLayout = image_layout,
   };
   const VkDescriptorGetInfoEXT get_info = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
@@ -2957,8 +3121,8 @@ vkr_bindless_vk_publish_sampled_view(VkrBindlessVulkanRenderer *renderer,
                                  renderer->descriptor_scratch,
                                  out_handle) != VKR_GPU_SLOT_STATUS_OK)
     return false_v;
-  return vkr_bindless_vk_flush(
-      renderer, &renderer->resource_descriptors.allocation,
+  return vkr_bindless_vk_mark_dirty(
+      &renderer->resource_descriptor_dirty, &renderer->resource_descriptors,
       layout->sampled_image_offset + (VkDeviceSize)out_handle->index *
                                          properties->sampledImageDescriptorSize,
       properties->sampledImageDescriptorSize);
@@ -2988,8 +3152,8 @@ vkr_bindless_vk_publish_storage_view(VkrBindlessVulkanRenderer *renderer,
                                  renderer->descriptor_scratch,
                                  out_handle) != VKR_GPU_SLOT_STATUS_OK)
     return false_v;
-  return vkr_bindless_vk_flush(
-      renderer, &renderer->resource_descriptors.allocation,
+  return vkr_bindless_vk_mark_dirty(
+      &renderer->resource_descriptor_dirty, &renderer->resource_descriptors,
       layout->storage_image_offset + (VkDeviceSize)out_handle->index *
                                          properties->storageImageDescriptorSize,
       properties->storageImageDescriptorSize);
@@ -3015,35 +3179,8 @@ vkr_bindless_vk_publish_sampler(VkrBindlessVulkanRenderer *renderer,
                                  renderer->descriptor_scratch,
                                  out_handle) != VKR_GPU_SLOT_STATUS_OK)
     return false_v;
-  return vkr_bindless_vk_flush(
-      renderer, &renderer->sampler_descriptors.allocation,
-      layout->sampler_offset +
-          (VkDeviceSize)out_handle->index * properties->samplerDescriptorSize,
-      properties->samplerDescriptorSize);
-}
-
-static bool8_t vkr_bindless_vk_replace_sampler(
-    VkrBindlessVulkanRenderer *renderer, VkrGpuSlotHandle old_handle,
-    uint64_t old_last_use_submit_value, VkSampler sampler,
-    VkrGpuSlotHandle *out_handle) {
-  const VkPhysicalDeviceDescriptorBufferPropertiesEXT *properties =
-      vkr_bindless_vulkan_device_descriptor_properties(renderer->device);
-  const VkrBindlessVulkanDescriptorLayout *layout =
-      vkr_bindless_vulkan_device_sampler_layout(renderer->device);
-  const VkDescriptorGetInfoEXT get_info = {
-      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_GET_INFO_EXT,
-      .type = VK_DESCRIPTOR_TYPE_SAMPLER,
-      .data.pSampler = &sampler,
-  };
-  vkr_bindless_vulkan_device_get_descriptor(renderer->device)(
-      vkr_bindless_vk_renderer_device(renderer), &get_info,
-      properties->samplerDescriptorSize, renderer->descriptor_scratch);
-  if (vkr_gpu_slot_table_replace(
-          renderer->sampler_slots, old_handle, renderer->descriptor_scratch,
-          old_last_use_submit_value, out_handle) != VKR_GPU_SLOT_STATUS_OK)
-    return false_v;
-  return vkr_bindless_vk_flush(
-      renderer, &renderer->sampler_descriptors.allocation,
+  return vkr_bindless_vk_mark_dirty(
+      &renderer->sampler_descriptor_dirty, &renderer->sampler_descriptors,
       layout->sampler_offset +
           (VkDeviceSize)out_handle->index * properties->samplerDescriptorSize,
       properties->samplerDescriptorSize);
@@ -3056,9 +3193,9 @@ vkr_bindless_vk_publish_material_gpu_row(VkrBindlessVulkanRenderer *renderer,
   if (vkr_gpu_slot_table_publish(renderer->material_slots, row, out_handle) !=
       VKR_GPU_SLOT_STATUS_OK)
     return false_v;
-  return vkr_bindless_vk_flush(renderer, &renderer->materials.allocation,
-                               (VkDeviceSize)out_handle->index * sizeof(*row),
-                               sizeof(*row));
+  return vkr_bindless_vk_mark_dirty(
+      &renderer->material_dirty, &renderer->materials,
+      (VkDeviceSize)out_handle->index * sizeof(*row), sizeof(*row));
 }
 
 static bool8_t vkr_bindless_vk_replace_material_gpu_row(
@@ -3069,9 +3206,9 @@ static bool8_t vkr_bindless_vk_replace_material_gpu_row(
                                  old_last_use_submit_value,
                                  out_handle) != VKR_GPU_SLOT_STATUS_OK)
     return false_v;
-  return vkr_bindless_vk_flush(renderer, &renderer->materials.allocation,
-                               (VkDeviceSize)out_handle->index * sizeof(*row),
-                               sizeof(*row));
+  return vkr_bindless_vk_mark_dirty(
+      &renderer->material_dirty, &renderer->materials,
+      (VkDeviceSize)out_handle->index * sizeof(*row), sizeof(*row));
 }
 
 static bool8_t vkr_bindless_vk_publish_material_row(
@@ -3137,15 +3274,21 @@ static bool8_t vkr_bindless_vk_create_published_sampler(
                          out_sampler) == VK_SUCCESS;
 }
 
-static bool8_t
-vkr_bindless_vk_sampler_description_equal(const VkrTextureDescription *a,
-                                          const VkrTextureDescription *b) {
-  return a && b && a->min_filter == b->min_filter &&
-         a->mag_filter == b->mag_filter && a->mip_filter == b->mip_filter &&
+static bool8_t vkr_bindless_vk_sampler_description_equal(
+    const VkrTextureDescription *a, uint32_t a_mip_levels,
+    const VkrTextureDescription *b, uint32_t b_mip_levels) {
+  if (!a || !b)
+    return false_v;
+  const uint32_t a_sampled_mip_levels =
+      a->mip_filter == VKR_MIP_FILTER_NONE ? 1u : a_mip_levels;
+  const uint32_t b_sampled_mip_levels =
+      b->mip_filter == VKR_MIP_FILTER_NONE ? 1u : b_mip_levels;
+  return a->min_filter == b->min_filter && a->mag_filter == b->mag_filter &&
+         a->mip_filter == b->mip_filter &&
          a->u_repeat_mode == b->u_repeat_mode &&
          a->v_repeat_mode == b->v_repeat_mode &&
          a->w_repeat_mode == b->w_repeat_mode &&
-         a->anisotropy_enable == b->anisotropy_enable;
+         a_sampled_mip_levels == b_sampled_mip_levels;
 }
 
 static uint32_t vkr_bindless_vk_mip_count(uint32_t width, uint32_t height) {
@@ -3156,65 +3299,103 @@ static uint32_t vkr_bindless_vk_mip_count(uint32_t width, uint32_t height) {
 }
 
 static bool8_t
-vkr_bindless_vk_transition_writable_image(VkrBindlessVulkanRenderer *renderer,
-                                          VkrBindlessVkImage *image) {
-  VkDevice device = vkr_bindless_vk_renderer_device(renderer);
-  if (vkResetCommandPool(device, renderer->asset_command_pool, 0u) !=
-      VK_SUCCESS)
+vkr_bindless_vk_acquire_sampler(VkrBindlessVulkanRenderer *renderer,
+                                const VkrTextureDescription *description,
+                                uint32_t mip_levels,
+                                uint32_t *out_record_index) {
+  for (uint32_t i = 0; i < renderer->config.sampler_capacity; ++i) {
+    VkrBindlessVkPublishedSampler *record = &renderer->published_samplers[i];
+    if (record->live && vkr_bindless_vk_sampler_description_equal(
+                            &record->description, record->mip_levels,
+                            description, mip_levels)) {
+      record->reference_count++;
+      *out_record_index = i;
+      return true_v;
+    }
+  }
+  uint32_t free_index = UINT32_MAX;
+  for (uint32_t i = 0; i < renderer->config.sampler_capacity; ++i) {
+    if (!renderer->published_samplers[i].live &&
+        !renderer->published_samplers[i].pending_retire) {
+      free_index = i;
+      break;
+    }
+  }
+  if (free_index == UINT32_MAX)
     return false_v;
-  const VkCommandBufferBeginInfo begin_info = {
-      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-      .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-  };
-  if (vkBeginCommandBuffer(renderer->asset_command_buffer, &begin_info) !=
-      VK_SUCCESS)
+  VkSampler sampler = VK_NULL_HANDLE;
+  VkrGpuSlotHandle slot = {0};
+  if (!vkr_bindless_vk_create_published_sampler(renderer, description,
+                                                mip_levels, &sampler) ||
+      !vkr_bindless_vk_publish_sampler(renderer, sampler, &slot)) {
+    if (sampler)
+      vkDestroySampler(vkr_bindless_vk_renderer_device(renderer), sampler,
+                       NULL);
     return false_v;
-  vkr_bindless_vk_cmd_image_barrier_range(
-      renderer->asset_command_buffer, image->handle, VK_PIPELINE_STAGE_2_NONE,
-      VK_ACCESS_2_NONE,
-      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-          VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-      VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |
-          VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
-          VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-      VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL, image->mip_levels,
-      image->array_layers);
-  if (vkEndCommandBuffer(renderer->asset_command_buffer) != VK_SUCCESS)
-    return false_v;
-  const uint64_t signal_value = renderer->submit_value + 1u;
-  const VkCommandBufferSubmitInfo command_info = {
-      .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO,
-      .commandBuffer = renderer->asset_command_buffer,
+  }
+  renderer->published_samplers[free_index] = (VkrBindlessVkPublishedSampler){
+      .description = *description,
+      .sampler = sampler,
+      .slot = slot,
+      .mip_levels = mip_levels,
+      .reference_count = 1u,
+      .live = true_v,
   };
-  const VkSemaphoreSubmitInfo signal_info = {
-      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
-      .semaphore = renderer->timeline,
-      .value = signal_value,
-      .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-  };
-  const VkSubmitInfo2 submit_info = {
-      .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
-      .commandBufferInfoCount = 1u,
-      .pCommandBufferInfos = &command_info,
-      .signalSemaphoreInfoCount = 1u,
-      .pSignalSemaphoreInfos = &signal_info,
-  };
-  if (vkQueueSubmit2(vkr_bindless_vulkan_device_queue(renderer->device), 1u,
-                     &submit_info, VK_NULL_HANDLE) != VK_SUCCESS)
-    return false_v;
-  renderer->submit_value = signal_value;
-  const VkSemaphoreWaitInfo wait_info = {
-      .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-      .semaphoreCount = 1u,
-      .pSemaphores = &renderer->timeline,
-      .pValues = &signal_value,
-  };
-  renderer->upload_wait_count++;
-  if (vkWaitSemaphores(device, &wait_info, UINT64_MAX) != VK_SUCCESS)
-    return false_v;
-  renderer->completed_value = signal_value;
-  image->layout = VK_IMAGE_LAYOUT_GENERAL;
+  *out_record_index = free_index;
   return true_v;
+}
+
+static bool8_t
+vkr_bindless_vk_release_sampler(VkrBindlessVulkanRenderer *renderer,
+                                uint32_t record_index,
+                                uint64_t last_use_submit_value) {
+  if (record_index >= renderer->config.sampler_capacity)
+    return false_v;
+  VkrBindlessVkPublishedSampler *record =
+      &renderer->published_samplers[record_index];
+  if (!record->live || !record->reference_count)
+    return false_v;
+  if (record->reference_count > 1u) {
+    record->reference_count--;
+    record->last_use_submit_value =
+        Max(record->last_use_submit_value, last_use_submit_value);
+    return true_v;
+  }
+  last_use_submit_value =
+      Max(record->last_use_submit_value, last_use_submit_value);
+  if (vkr_gpu_slot_table_retire(renderer->sampler_slots, record->slot,
+                                last_use_submit_value) !=
+      VKR_GPU_SLOT_STATUS_OK)
+    return false_v;
+  record->reference_count = 0u;
+  record->last_use_submit_value = last_use_submit_value;
+  record->live = false_v;
+  record->pending_retire = true_v;
+  return true_v;
+}
+
+static void
+vkr_bindless_vk_collect_samplers(VkrBindlessVulkanRenderer *renderer,
+                                 uint64_t completed) {
+  (void)vkr_gpu_slot_table_collect(renderer->sampler_slots, completed, NULL);
+  for (uint32_t i = 0; i < renderer->config.sampler_capacity; ++i) {
+    VkrBindlessVkPublishedSampler *record = &renderer->published_samplers[i];
+    if (!record->pending_retire || record->last_use_submit_value > completed)
+      continue;
+    vkDestroySampler(vkr_bindless_vk_renderer_device(renderer), record->sampler,
+                     NULL);
+    MemZero(record, sizeof(*record));
+  }
+}
+
+static void vkr_bindless_vk_prepare_writable_initialization(
+    uint32_t texture_record_index, VkrBindlessVkImage *image,
+    VkrBindlessVkPendingTextureInitialization *out_initialization) {
+  *out_initialization = (VkrBindlessVkPendingTextureInitialization){
+      .texture_record_index = texture_record_index,
+      .writable = true_v,
+  };
+  image->layout = VK_IMAGE_LAYOUT_GENERAL;
 }
 
 static VkrBindlessVkPublishedTexture *
@@ -3237,9 +3418,12 @@ static bool8_t vkr_bindless_vk_retire_unreferenced_texture(
     VkrBindlessVulkanRenderer *renderer, VkrBindlessVkPublishedTexture *texture,
     uint64_t completed) {
   if (!texture->pending_retire || texture->material_reference_count != 0u ||
+      texture->initialization_pending ||
       texture->last_use_submit_value > completed)
     return true_v;
 
+  VkrBindlessVkPublishedSampler *sampler =
+      &renderer->published_samplers[texture->sampler_record_index];
   if (vkr_gpu_slot_table_can_retire(renderer->sampled_image_slots,
                                     texture->sampled_slot) !=
           VKR_GPU_SLOT_STATUS_OK ||
@@ -3247,9 +3431,9 @@ static bool8_t vkr_bindless_vk_retire_unreferenced_texture(
        vkr_gpu_slot_table_can_retire(renderer->storage_image_slots,
                                      texture->storage_slot) !=
            VKR_GPU_SLOT_STATUS_OK) ||
-      vkr_gpu_slot_table_can_retire(renderer->sampler_slots,
-                                    texture->sampler_slot) !=
-          VKR_GPU_SLOT_STATUS_OK) {
+      (sampler->reference_count == 1u &&
+       vkr_gpu_slot_table_can_retire(renderer->sampler_slots, sampler->slot) !=
+           VKR_GPU_SLOT_STATUS_OK)) {
     log_error("Bindless Vulkan texture retirement could not reserve every "
               "descriptor retirement; preserving the complete publication");
     return false_v;
@@ -3262,21 +3446,16 @@ static bool8_t vkr_bindless_vk_retire_unreferenced_texture(
        vkr_gpu_slot_table_retire(renderer->storage_image_slots,
                                  texture->storage_slot,
                                  completed) != VKR_GPU_SLOT_STATUS_OK) ||
-      vkr_gpu_slot_table_retire(renderer->sampler_slots, texture->sampler_slot,
-                                completed) != VKR_GPU_SLOT_STATUS_OK ||
+      !vkr_bindless_vk_release_sampler(renderer, texture->sampler_record_index,
+                                       completed) ||
       vkr_gpu_slot_table_collect(renderer->sampled_image_slots, completed,
                                  NULL) != VKR_GPU_SLOT_STATUS_OK ||
       vkr_gpu_slot_table_collect(renderer->storage_image_slots, completed,
-                                 NULL) != VKR_GPU_SLOT_STATUS_OK ||
-      vkr_gpu_slot_table_collect(renderer->sampler_slots, completed, NULL) !=
-          VKR_GPU_SLOT_STATUS_OK) {
+                                 NULL) != VKR_GPU_SLOT_STATUS_OK) {
     log_error("Bindless Vulkan failed to retire a validated texture "
               "publication; preserving the native texture");
     return false_v;
   }
-  if (texture->sampler)
-    vkDestroySampler(vkr_bindless_vk_renderer_device(renderer),
-                     texture->sampler, NULL);
   vkr_bindless_vk_destroy_image(renderer, &texture->image);
   MemZero(texture, sizeof(*texture));
   return true_v;
@@ -3286,15 +3465,26 @@ static void
 vkr_bindless_vk_collect_asset_publications(VkrBindlessVulkanRenderer *renderer,
                                            uint64_t completed) {
   (void)vkr_gpu_slot_table_collect(renderer->material_slots, completed, NULL);
-  for (uint32_t i = 0; i < renderer->config.material_capacity; ++i) {
+  vkr_bindless_vk_collect_samplers(renderer, completed);
+  for (uint32_t i = 0; i < renderer->config.sampled_image_capacity; ++i) {
+    VkrBindlessVkRetiredStagingBuffer *retired =
+        &renderer->retired_staging_buffers[i];
+    if (!retired->occupied || retired->retire_value > completed)
+      continue;
+    vkr_bindless_vk_destroy_buffer(renderer, &retired->buffer);
+    renderer->staging_buffer_count--;
+    MemZero(retired, sizeof(*retired));
+  }
+  for (uint32_t i = 0; i < renderer->config.material_record_capacity; ++i) {
     VkrBindlessVkRetiredMaterial *retired = &renderer->retired_materials[i];
     if (!retired->occupied || retired->retire_value > completed)
       continue;
-    for (uint32_t texture_index = 0; texture_index < retired->texture_count;
-         ++texture_index) {
+    for (uint32_t texture_slot = 0; texture_slot < 4u; ++texture_slot) {
+      if (retired->texture_record_indices[texture_slot] == UINT32_MAX)
+        continue;
       VkrBindlessVkPublishedTexture *texture =
           &renderer->published_textures
-               [retired->texture_record_indices[texture_index]];
+               [retired->texture_record_indices[texture_slot]];
       if (texture->material_reference_count > 0u)
         texture->material_reference_count--;
     }
@@ -3313,12 +3503,13 @@ vkr_bindless_vk_collect_asset_publications(VkrBindlessVulkanRenderer *renderer,
   for (uint32_t i = 0; i < renderer->config.sampled_image_capacity; ++i)
     vkr_bindless_vk_retire_unreferenced_texture(
         renderer, &renderer->published_textures[i], completed);
+  vkr_bindless_vk_collect_samplers(renderer, completed);
 }
 
 static VkrBindlessVkRetiredMaterial *
 vkr_bindless_vk_reserve_material_retirement(
     VkrBindlessVulkanRenderer *renderer) {
-  for (uint32_t i = 0; i < renderer->config.material_capacity; ++i) {
+  for (uint32_t i = 0; i < renderer->config.material_record_capacity; ++i) {
     if (!renderer->retired_materials[i].occupied)
       return &renderer->retired_materials[i];
   }
@@ -3425,6 +3616,8 @@ static bool8_t vkr_bindless_vk_asset_publish_writable_texture(
   VkrBindlessVulkanRenderer *renderer = state;
   if (!renderer || !description || renderer->frame_active || handle.id == 0u ||
       handle.id > renderer->config.sampled_image_capacity ||
+      renderer->pending_texture_initialization_count >=
+          renderer->config.sampled_image_capacity ||
       description->id != handle.id ||
       description->generation != handle.generation || !description->width ||
       !description->height ||
@@ -3458,8 +3651,8 @@ static bool8_t vkr_bindless_vk_asset_publish_writable_texture(
   VkrBindlessVkPublishedTexture pending = {
       .handle = handle,
       .has_storage_slot = true_v,
-      .sampler_description = *description,
   };
+  VkrBindlessVkPendingTextureInitialization initialization = {0};
   const bool8_t image_created = vkr_bindless_vk_create_image_ex(
       renderer, description->width, description->height, mip_levels,
       cube ? 6u : 1u, format, cube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0u,
@@ -3467,30 +3660,29 @@ static bool8_t vkr_bindless_vk_asset_publish_writable_texture(
       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT |
           VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
       &pending.image);
-  const bool8_t transitioned =
+  const bool8_t sampler_acquired =
       image_created &&
-      vkr_bindless_vk_transition_writable_image(renderer, &pending.image);
-  const bool8_t sampler_created =
-      transitioned && vkr_bindless_vk_create_published_sampler(
-                          renderer, description, mip_levels, &pending.sampler);
+      vkr_bindless_vk_acquire_sampler(renderer, description, mip_levels,
+                                      &pending.sampler_record_index);
   const bool8_t sampled_published =
-      sampler_created &&
-      vkr_bindless_vk_publish_sampled_view(renderer, pending.image.view,
-                                           &pending.sampled_slot);
+      sampler_acquired && vkr_bindless_vk_publish_sampled_view(
+                              renderer, pending.image.view,
+                              VK_IMAGE_LAYOUT_GENERAL, &pending.sampled_slot);
   const bool8_t storage_published =
       sampled_published &&
       vkr_bindless_vk_publish_storage_view(renderer, pending.image.view,
                                            &pending.storage_slot);
-  const bool8_t sampler_published =
+  if (storage_published)
+    vkr_bindless_vk_prepare_writable_initialization(
+        handle.id - 1u, &pending.image, &initialization);
+  const bool8_t initialization_queued =
       storage_published &&
-      vkr_bindless_vk_publish_sampler(renderer, pending.sampler,
-                                      &pending.sampler_slot);
-  if (!sampler_published) {
+      vkr_bindless_vk_enqueue_texture_initialization(renderer, &initialization);
+  if (!initialization_queued) {
     VkrGpuSlotTable *tables[] = {renderer->sampled_image_slots,
-                                 renderer->storage_image_slots,
-                                 renderer->sampler_slots};
-    const VkrGpuSlotHandle handles[] = {
-        pending.sampled_slot, pending.storage_slot, pending.sampler_slot};
+                                 renderer->storage_image_slots};
+    const VkrGpuSlotHandle handles[] = {pending.sampled_slot,
+                                        pending.storage_slot};
     for (uint32_t i = 0; i < ArrayCount(tables); ++i) {
       if (handles[i].generation) {
         (void)vkr_gpu_slot_table_retire(tables[i], handles[i],
@@ -3499,68 +3691,132 @@ static bool8_t vkr_bindless_vk_asset_publish_writable_texture(
                                          NULL);
       }
     }
-    if (pending.sampler)
-      vkDestroySampler(vkr_bindless_vk_renderer_device(renderer),
-                       pending.sampler, NULL);
+    if (sampler_acquired) {
+      (void)vkr_bindless_vk_release_sampler(
+          renderer, pending.sampler_record_index, renderer->completed_value);
+      vkr_bindless_vk_collect_samplers(renderer, renderer->completed_value);
+    }
     vkr_bindless_vk_destroy_image(renderer, &pending.image);
     return false_v;
   }
+  pending.initialization_pending = true_v;
   pending.live = true_v;
   *record = pending;
   return true_v;
+}
+
+static void
+vkr_bindless_vk_material_row_set_sampler(VkrBindlessVkMaterialGpuRow *row,
+                                         uint32_t texture_slot,
+                                         uint32_t sampler_index) {
+  switch (texture_slot) {
+  case 0u:
+    row->base_color_sampler = sampler_index;
+    break;
+  case 1u:
+    row->normal_sampler = sampler_index;
+    break;
+  case 2u:
+    row->orm_sampler = sampler_index;
+    break;
+  default:
+    row->emissive_sampler = sampler_index;
+    break;
+  }
 }
 
 static bool8_t vkr_bindless_vk_asset_update_texture_sampler(
     void *state, VkrTextureHandle handle,
     const VkrTextureDescription *description) {
   VkrBindlessVulkanRenderer *renderer = state;
-  VkrBindlessVkPublishedTexture *texture =
-      vkr_bindless_vk_published_texture(renderer, handle, NULL);
+  uint32_t texture_record_index = 0u;
+  VkrBindlessVkPublishedTexture *texture = vkr_bindless_vk_published_texture(
+      renderer, handle, &texture_record_index);
   if (!texture || !description || renderer->frame_active ||
       description->id != handle.id ||
-      description->generation != handle.generation ||
-      texture->material_reference_count != 0u)
+      description->generation != handle.generation)
     return false_v;
-  if (vkr_bindless_vk_sampler_description_equal(&texture->sampler_description,
-                                                description))
+  const uint64_t completed = vkr_bindless_vk_refresh_completed(renderer);
+  vkr_bindless_vk_collect_asset_publications(renderer, completed);
+  VkrBindlessVkPublishedSampler *old_sampler =
+      &renderer->published_samplers[texture->sampler_record_index];
+  if (vkr_bindless_vk_sampler_description_equal(
+          &old_sampler->description, old_sampler->mip_levels, description,
+          texture->image.mip_levels))
     return true_v;
-  VkSampler replacement_sampler = VK_NULL_HANDLE;
-  VkrGpuSlotHandle replacement_slot = {0};
-  const uint64_t retire_value = renderer->submit_value;
-  if (!vkr_bindless_vk_create_published_sampler(renderer, description,
-                                                texture->image.mip_levels,
-                                                &replacement_sampler) ||
-      !vkr_bindless_vk_replace_sampler(renderer, texture->sampler_slot,
-                                       retire_value, replacement_sampler,
-                                       &replacement_slot)) {
-    if (replacement_sampler)
-      vkDestroySampler(vkr_bindless_vk_renderer_device(renderer),
-                       replacement_sampler, NULL);
-    return false_v;
+
+  uint32_t dependent_material_count = 0u;
+  for (uint32_t i = 0; i < renderer->config.material_record_capacity; ++i) {
+    const VkrBindlessVkPublishedMaterial *material =
+        &renderer->published_materials[i];
+    if (!material->live)
+      continue;
+    for (uint32_t texture_slot = 0; texture_slot < 4u; ++texture_slot) {
+      if (material->texture_record_indices[texture_slot] ==
+          texture_record_index) {
+        dependent_material_count++;
+        break;
+      }
+    }
   }
-  const VkSampler old_sampler = texture->sampler;
-  texture->sampler = replacement_sampler;
-  texture->sampler_slot = replacement_slot;
-  texture->sampler_description = *description;
-  if (retire_value > vkr_bindless_vk_refresh_completed(renderer)) {
-    const VkSemaphoreWaitInfo wait_info = {
-        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO,
-        .semaphoreCount = 1u,
-        .pSemaphores = &renderer->timeline,
-        .pValues = &retire_value,
-    };
-    renderer->upload_wait_count++;
-    if (vkWaitSemaphores(vkr_bindless_vk_renderer_device(renderer), &wait_info,
-                         UINT64_MAX) != VK_SUCCESS)
+  VkrGpuSlotTableMetrics material_metrics = {0};
+  vkr_gpu_slot_table_get_metrics(renderer->material_slots, &material_metrics);
+  if (material_metrics.slots_live + material_metrics.slots_retired +
+              dependent_material_count >
+          material_metrics.slots_capacity ||
+      material_metrics.slots_retired + dependent_material_count >
+          material_metrics.slots_capacity ||
+      (old_sampler->reference_count == 1u &&
+       vkr_gpu_slot_table_can_retire(renderer->sampler_slots,
+                                     old_sampler->slot) !=
+           VKR_GPU_SLOT_STATUS_OK))
+    return false_v;
+
+  uint32_t replacement_sampler_index = UINT32_MAX;
+  if (!vkr_bindless_vk_acquire_sampler(renderer, description,
+                                       texture->image.mip_levels,
+                                       &replacement_sampler_index))
+    return false_v;
+  const uint32_t replacement_slot =
+      renderer->published_samplers[replacement_sampler_index].slot.index;
+  for (uint32_t i = 0; i < renderer->config.material_record_capacity; ++i) {
+    VkrBindlessVkPublishedMaterial *material =
+        &renderer->published_materials[i];
+    if (!material->live)
+      continue;
+    VkrBindlessVkMaterialGpuRow replacement_row = material->row;
+    bool8_t dependent = false_v;
+    for (uint32_t texture_slot = 0; texture_slot < 4u; ++texture_slot) {
+      if (material->texture_record_indices[texture_slot] !=
+          texture_record_index)
+        continue;
+      vkr_bindless_vk_material_row_set_sampler(&replacement_row, texture_slot,
+                                               replacement_slot);
+      dependent = true_v;
+    }
+    if (!dependent)
+      continue;
+    VkrGpuSlotHandle replacement_material_slot = {0};
+    if (!vkr_bindless_vk_replace_material_gpu_row(
+            renderer, material->slot, &replacement_row, renderer->submit_value,
+            &replacement_material_slot)) {
+      log_error("Bindless Vulkan failed a preflighted dependent material "
+                "sampler republication");
+      renderer->terminal_failure = true_v;
       return false_v;
-    renderer->completed_value = retire_value;
+    }
+    material->slot = replacement_material_slot;
+    material->row = replacement_row;
   }
-  if (vkr_gpu_slot_table_collect(renderer->sampler_slots,
-                                 renderer->completed_value,
-                                 NULL) != VKR_GPU_SLOT_STATUS_OK)
+  const uint32_t old_sampler_index = texture->sampler_record_index;
+  texture->sampler_record_index = replacement_sampler_index;
+  if (!vkr_bindless_vk_release_sampler(renderer, old_sampler_index,
+                                       renderer->submit_value)) {
+    log_error("Bindless Vulkan failed a preflighted sampler retirement");
+    renderer->terminal_failure = true_v;
     return false_v;
-  vkDestroySampler(vkr_bindless_vk_renderer_device(renderer), old_sampler,
-                   NULL);
+  }
+  vkr_bindless_vk_collect_samplers(renderer, completed);
   return true_v;
 }
 
@@ -3645,7 +3901,10 @@ vkr_bindless_vk_asset_publish_texture(void *state, VkrTextureHandle handle,
                                       const VkrTexturePreparedLoad *prepared) {
   VkrBindlessVulkanRenderer *renderer = state;
   if (!renderer || !prepared || handle.id == 0u ||
-      handle.id > renderer->config.sampled_image_capacity)
+      handle.id > renderer->config.sampled_image_capacity ||
+      renderer->pending_texture_initialization_count >=
+          renderer->config.sampled_image_capacity ||
+      renderer->staging_buffer_count >= renderer->config.sampled_image_capacity)
     return false_v;
   VkrBindlessVkPublishedTexture *record =
       &renderer->published_textures[handle.id - 1u];
@@ -3655,27 +3914,29 @@ vkr_bindless_vk_asset_publish_texture(void *state, VkrTextureHandle handle,
     return false_v;
   }
   VkrBindlessVkPublishedTexture pending = {.handle = handle};
+  VkrBindlessVkPendingTextureInitialization initialization = {0};
   const bool8_t image_uploaded = vkr_bindless_vk_upload_prepared_texture(
-      renderer, prepared, &pending.image);
-  const bool8_t sampler_created =
-      image_uploaded && vkr_bindless_vk_create_published_sampler(
-                            renderer, &prepared->description,
-                            prepared->upload_mip_levels, &pending.sampler);
+      renderer, prepared, handle.id - 1u, &pending.image, &initialization);
+  const bool8_t sampler_acquired =
+      image_uploaded &&
+      vkr_bindless_vk_acquire_sampler(renderer, &prepared->description,
+                                      prepared->upload_mip_levels,
+                                      &pending.sampler_record_index);
   const bool8_t sampled_published =
-      sampler_created &&
-      vkr_bindless_vk_publish_sampled_view(renderer, pending.image.view,
-                                           &pending.sampled_slot);
-  const bool8_t sampler_published =
+      sampler_acquired &&
+      vkr_bindless_vk_publish_sampled_view(
+          renderer, pending.image.view,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &pending.sampled_slot);
+  const bool8_t initialization_queued =
       sampled_published &&
-      vkr_bindless_vk_publish_sampler(renderer, pending.sampler,
-                                      &pending.sampler_slot);
-  if (!sampler_published) {
+      vkr_bindless_vk_enqueue_texture_initialization(renderer, &initialization);
+  if (!initialization_queued) {
     log_error("Bindless Vulkan texture %u:%u publication failed at %s",
               handle.id, handle.generation,
               !image_uploaded      ? "image upload"
-              : !sampler_created   ? "sampler creation"
+              : !sampler_acquired  ? "sampler publication"
               : !sampled_published ? "sampled descriptor"
-                                   : "sampler descriptor");
+                                   : "initialization queue");
     if (pending.sampled_slot.generation) {
       (void)vkr_gpu_slot_table_retire(renderer->sampled_image_slots,
                                       pending.sampled_slot,
@@ -3683,20 +3944,17 @@ vkr_bindless_vk_asset_publish_texture(void *state, VkrTextureHandle handle,
       (void)vkr_gpu_slot_table_collect(renderer->sampled_image_slots,
                                        renderer->completed_value, NULL);
     }
-    if (pending.sampler_slot.generation) {
-      (void)vkr_gpu_slot_table_retire(renderer->sampler_slots,
-                                      pending.sampler_slot,
-                                      renderer->completed_value);
-      (void)vkr_gpu_slot_table_collect(renderer->sampler_slots,
-                                       renderer->completed_value, NULL);
+    if (sampler_acquired) {
+      (void)vkr_bindless_vk_release_sampler(
+          renderer, pending.sampler_record_index, renderer->completed_value);
+      vkr_bindless_vk_collect_samplers(renderer, renderer->completed_value);
     }
-    if (pending.sampler)
-      vkDestroySampler(vkr_bindless_vk_renderer_device(renderer),
-                       pending.sampler, NULL);
+    if (image_uploaded)
+      vkr_bindless_vk_release_texture_initialization(renderer, &initialization);
     vkr_bindless_vk_destroy_image(renderer, &pending.image);
     return false_v;
   }
-  pending.sampler_description = prepared->description;
+  pending.initialization_pending = true_v;
   pending.live = true_v;
   *record = pending;
   return true_v;
@@ -3722,7 +3980,8 @@ vkr_bindless_vk_asset_publish_material(void *state, VkrMaterialHandle handle,
                                        const VkrMaterial *material) {
   VkrBindlessVulkanRenderer *renderer = state;
   if (!renderer || !material || handle.id == 0u ||
-      handle.id > renderer->config.material_capacity)
+      handle.id > renderer->config.material_record_capacity ||
+      material->id != handle.id || material->generation != handle.generation)
     return false_v;
   VkrBindlessVkPublishedMaterial *record =
       &renderer->published_materials[handle.id - 1u];
@@ -3742,21 +4001,29 @@ vkr_bindless_vk_asset_publish_material(void *state, VkrMaterialHandle handle,
   };
   uint32_t texture_indices[4] = {0};
   uint32_t sampler_indices[4] = {0};
-  uint32_t texture_record_indices[4] = {0};
-  uint32_t texture_count = 0u;
+  uint32_t texture_record_indices[4] = {UINT32_MAX, UINT32_MAX, UINT32_MAX,
+                                        UINT32_MAX};
+  uint32_t material_flags = 0u;
   for (uint32_t i = 0; i < ArrayCount(row_slots); ++i) {
     const VkrMaterialTexture *source = &material->textures[row_slots[i]];
-    uint32_t record_index = 0u;
-    VkrBindlessVkPublishedTexture *texture =
-        source->enabled ? vkr_bindless_vk_published_texture(
-                              renderer, source->handle, &record_index)
-                        : NULL;
-    if (!texture)
+    if (!source->enabled)
       continue;
+    uint32_t record_index = 0u;
+    VkrBindlessVkPublishedTexture *texture = vkr_bindless_vk_published_texture(
+        renderer, source->handle, &record_index);
+    if (!texture)
+      return false_v;
     texture_indices[i] = texture->sampled_slot.index;
-    sampler_indices[i] = texture->sampler_slot.index;
-    texture_record_indices[texture_count++] = record_index;
+    sampler_indices[i] =
+        renderer->published_samplers[texture->sampler_record_index].slot.index;
+    texture_record_indices[i] = record_index;
   }
+  if (material->textures[VKR_TEXTURE_SLOT_NORMAL].enabled)
+    material_flags |= VKR_BINDLESS_VK_MATERIAL_TEXTURE_NORMAL;
+  if (material->textures[VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS].enabled)
+    material_flags |= VKR_BINDLESS_VK_MATERIAL_TEXTURE_ORM;
+  if (material->textures[VKR_TEXTURE_SLOT_EMISSION].enabled)
+    material_flags |= VKR_BINDLESS_VK_MATERIAL_TEXTURE_EMISSIVE;
   const Vec4 tint = material->material_type == VKR_MATERIAL_TYPE_PBR
                         ? material->pbr.base_color
                         : material->phong.diffuse_color;
@@ -3771,7 +4038,7 @@ vkr_bindless_vk_asset_publish_material(void *state, VkrMaterialHandle handle,
       .orm_sampler = sampler_indices[2],
       .emissive_sampler = sampler_indices[3],
       .material_id = handle.id,
-      .flags = material->double_sided ? 1u : 0u,
+      .flags = material_flags,
   };
   VkrGpuSlotHandle new_slot = {0};
   const bool8_t row_published =
@@ -3781,12 +4048,13 @@ vkr_bindless_vk_asset_publish_material(void *state, VkrMaterialHandle handle,
           : vkr_bindless_vk_publish_material_gpu_row(renderer, &row, &new_slot);
   if (!row_published)
     return false_v;
-  for (uint32_t i = 0; i < texture_count; ++i)
-    renderer->published_textures[texture_record_indices[i]]
-        .material_reference_count++;
+  for (uint32_t i = 0; i < 4u; ++i) {
+    if (texture_record_indices[i] != UINT32_MAX)
+      renderer->published_textures[texture_record_indices[i]]
+          .material_reference_count++;
+  }
   if (record->live) {
     *retirement = (VkrBindlessVkRetiredMaterial){
-        .texture_count = record->texture_count,
         .retire_value = renderer->submit_value,
         .occupied = true_v,
     };
@@ -3796,7 +4064,7 @@ vkr_bindless_vk_asset_publish_material(void *state, VkrMaterialHandle handle,
   *record = (VkrBindlessVkPublishedMaterial){
       .handle = handle,
       .slot = new_slot,
-      .texture_count = texture_count,
+      .row = row,
       .live = true_v,
   };
   MemCopy(record->texture_record_indices, texture_record_indices,
@@ -3809,7 +4077,7 @@ vkr_bindless_vk_asset_unpublish_material(void *state,
                                          VkrMaterialHandle handle) {
   VkrBindlessVulkanRenderer *renderer = state;
   if (!renderer || handle.id == 0u ||
-      handle.id > renderer->config.material_capacity)
+      handle.id > renderer->config.material_record_capacity)
     return false_v;
   VkrBindlessVkPublishedMaterial *record =
       &renderer->published_materials[handle.id - 1u];
@@ -3822,7 +4090,6 @@ vkr_bindless_vk_asset_unpublish_material(void *state,
                          renderer->submit_value) != VKR_GPU_SLOT_STATUS_OK)
     return false_v;
   *retirement = (VkrBindlessVkRetiredMaterial){
-      .texture_count = record->texture_count,
       .retire_value = renderer->submit_value,
       .occupied = true_v,
   };
@@ -3864,7 +4131,7 @@ void vkr_bindless_vulkan_renderer_get_asset_publisher(
 static void
 vkr_bindless_vk_drain_asset_publications(VkrBindlessVulkanRenderer *renderer) {
   const uint64_t completed = vkr_bindless_vk_refresh_completed(renderer);
-  for (uint32_t i = 0; i < renderer->config.material_capacity; ++i) {
+  for (uint32_t i = 0; i < renderer->config.material_record_capacity; ++i) {
     VkrBindlessVkPublishedMaterial *material =
         &renderer->published_materials[i];
     if (material->live)
@@ -3933,18 +4200,27 @@ static bool8_t vkr_bindless_vk_run_asset_publisher_fixture(
   const VkrGeometryHandle loaded_geometry = {
       .id = renderer->config.sampled_image_capacity, .generation = 1u};
   const VkrMaterialHandle material_a = {
-      .id = renderer->config.material_capacity - 1u, .generation = 1u};
+      .id = renderer->config.material_record_capacity - 1u, .generation = 1u};
   const VkrMaterialHandle material_b = {
-      .id = renderer->config.material_capacity, .generation = 1u};
+      .id = renderer->config.material_record_capacity, .generation = 1u};
   VkrMaterial material = {
       .material_type = VKR_MATERIAL_TYPE_PBR,
       .pbr.base_color = {.x = 1.0f, .y = 1.0f, .z = 1.0f, .w = 1.0f},
   };
-  material.textures[VKR_TEXTURE_SLOT_DIFFUSE] = (VkrMaterialTexture){
-      .handle = shared_texture,
-      .slot = VKR_TEXTURE_SLOT_DIFFUSE,
-      .enabled = true_v,
+  const VkrTextureSlot material_texture_slots[] = {
+      VKR_TEXTURE_SLOT_DIFFUSE,
+      VKR_TEXTURE_SLOT_NORMAL,
+      VKR_TEXTURE_SLOT_METALLIC_ROUGHNESS,
+      VKR_TEXTURE_SLOT_EMISSION,
   };
+  for (uint32_t i = 0; i < ArrayCount(material_texture_slots); ++i) {
+    const VkrTextureSlot slot = material_texture_slots[i];
+    material.textures[slot] = (VkrMaterialTexture){
+        .handle = shared_texture,
+        .slot = slot,
+        .enabled = true_v,
+    };
+  }
   const VkrVertex3d vertices[] = {
       {.position = {-1.0f, -1.0f, 0.0f},
        .normal = {0.0f, 0.0f, 1.0f},
@@ -4001,10 +4277,70 @@ static bool8_t vkr_bindless_vk_run_asset_publisher_fixture(
   if (sampler_after_duplicate.slots_published !=
           sampler_after_update.slots_published ||
       !vkr_bindless_vk_asset_publish_texture(renderer, shared_texture,
-                                             &prepared) ||
+                                             &prepared))
+    return false_v;
+
+  VkrMaterial material_a_data = material;
+  material_a_data.id = material_a.id;
+  material_a_data.generation = material_a.generation;
+  VkrMaterial invalid_material = material_a_data;
+  invalid_material.textures[VKR_TEXTURE_SLOT_NORMAL].handle.generation++;
+  if (vkr_bindless_vk_asset_publish_material(renderer, material_a,
+                                             &invalid_material) ||
       !vkr_bindless_vk_asset_publish_material(renderer, material_a,
-                                              &material) ||
-      !vkr_bindless_vk_asset_publish_material(renderer, material_b, &material))
+                                              &material_a_data))
+    return false_v;
+  VkrMaterial material_b_data = material;
+  material_b_data.id = material_b.id;
+  material_b_data.generation = material_b.generation;
+  if (!vkr_bindless_vk_asset_publish_material(renderer, material_b,
+                                              &material_b_data))
+    return false_v;
+  const uint32_t expected_material_flags =
+      VKR_BINDLESS_VK_MATERIAL_TEXTURE_NORMAL |
+      VKR_BINDLESS_VK_MATERIAL_TEXTURE_ORM |
+      VKR_BINDLESS_VK_MATERIAL_TEXTURE_EMISSIVE;
+  if (renderer->published_materials[material_a.id - 1u].row.flags !=
+          expected_material_flags ||
+      renderer->published_materials[material_b.id - 1u].row.flags !=
+          expected_material_flags)
+    return false_v;
+
+  const VkrGpuSlotHandle material_a_before_sampler_update =
+      renderer->published_materials[material_a.id - 1u].slot;
+  const VkrGpuSlotHandle material_b_before_sampler_update =
+      renderer->published_materials[material_b.id - 1u].slot;
+  VkrTextureDescription shared_sampler_description = prepared.description;
+  shared_sampler_description.id = shared_texture.id;
+  shared_sampler_description.generation = shared_texture.generation;
+  shared_sampler_description.u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT;
+  if (!vkr_bindless_vk_asset_update_texture_sampler(
+          renderer, shared_texture, &shared_sampler_description))
+    return false_v;
+  const VkrBindlessVkPublishedTexture *shared_texture_record =
+      &renderer->published_textures[shared_texture.id - 1u];
+  const uint32_t shared_sampler_slot =
+      renderer->published_samplers[shared_texture_record->sampler_record_index]
+          .slot.index;
+  out_result->shared_sampler_reused =
+      shared_texture_record->sampler_record_index ==
+      renderer->published_textures[writable_texture.id - 1u]
+          .sampler_record_index;
+  out_result->dependent_materials_republished =
+      (renderer->published_materials[material_a.id - 1u].slot.index !=
+           material_a_before_sampler_update.index ||
+       renderer->published_materials[material_a.id - 1u].slot.generation !=
+           material_a_before_sampler_update.generation) &&
+      (renderer->published_materials[material_b.id - 1u].slot.index !=
+           material_b_before_sampler_update.index ||
+       renderer->published_materials[material_b.id - 1u].slot.generation !=
+           material_b_before_sampler_update.generation) &&
+      renderer->published_materials[material_a.id - 1u]
+              .row.base_color_sampler == shared_sampler_slot &&
+      renderer->published_materials[material_b.id - 1u]
+              .row.base_color_sampler == shared_sampler_slot;
+  if (!out_result->shared_sampler_reused ||
+      !out_result->dependent_materials_republished)
     return false_v;
 
   VkrFrameSetup setup = {0};
@@ -4033,8 +4369,11 @@ static bool8_t vkr_bindless_vk_run_asset_publisher_fixture(
   if (!vkr_bindless_vk_asset_publish_texture(renderer, replacement_texture,
                                              &prepared))
     return false_v;
-  material.textures[VKR_TEXTURE_SLOT_DIFFUSE].handle = replacement_texture;
-  if (!vkr_bindless_vk_asset_publish_material(renderer, material_b, &material))
+  for (uint32_t i = 0; i < ArrayCount(material_texture_slots); ++i)
+    material_b_data.textures[material_texture_slots[i]].handle =
+        replacement_texture;
+  if (!vkr_bindless_vk_asset_publish_material(renderer, material_b,
+                                              &material_b_data))
     return false_v;
   renderer->active_material_index =
       renderer->published_materials[material_b.id - 1u].slot.index;
@@ -4077,6 +4416,11 @@ static bool8_t vkr_bindless_vk_run_asset_publisher_fixture(
     return false_v;
   vkr_bindless_vk_collect_asset_publications(renderer,
                                              renderer->completed_value);
+  uint64_t upload_wait_count = 0u;
+  if (!vkr_bindless_vulkan_renderer_get_and_reset_upload_wait_count(
+          renderer, &upload_wait_count))
+    return false_v;
+  out_result->upload_wait_free = upload_wait_count == 0u;
   return true_v;
 }
 
@@ -4098,7 +4442,8 @@ bool8_t vkr_bindless_vulkan_renderer_run_publication_test(
   VkrGpuSlotHandle replacement_sampler = {0};
   VkrGpuSlotHandle material_a = {0}, material_b = {0}, replacement = {0};
   if (!vkr_bindless_vk_publish_sampled_view(
-          renderer, renderer->sentinel_image.view, &shared_texture) ||
+          renderer, renderer->sentinel_image.view,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &shared_texture) ||
       !vkr_bindless_vk_publish_storage_view(
           renderer, renderer->sentinel_image.view, &shared_storage) ||
       !vkr_bindless_vk_publish_sampler(renderer, renderer->sentinel_sampler,
@@ -4152,7 +4497,8 @@ bool8_t vkr_bindless_vulkan_renderer_run_publication_test(
     return false_v;
 
   if (!vkr_bindless_vk_publish_sampled_view(
-          renderer, renderer->sentinel_image.view, &replacement_texture) ||
+          renderer, renderer->sentinel_image.view,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &replacement_texture) ||
       !vkr_bindless_vk_publish_storage_view(
           renderer, renderer->sentinel_image.view, &replacement_storage) ||
       !vkr_bindless_vk_publish_sampler(renderer, renderer->sentinel_sampler,
@@ -4235,6 +4581,9 @@ bool8_t vkr_bindless_vulkan_renderer_run_publication_test(
   vkr_gpu_slot_table_get_metrics(renderer->material_slots,
                                  &out_result->materials);
   return out_result->exact_draw_count == 6u &&
+         out_result->shared_sampler_reused &&
+         out_result->dependent_materials_republished &&
+         out_result->upload_wait_free &&
          out_result->sampled_images.slots_live ==
              baseline.sampled_images.slots_live &&
          out_result->sampled_images.slots_retired ==
@@ -4270,6 +4619,7 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
     vkr_bindless_vulkan_renderer_wait_idle(renderer);
     if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN)
       (void)vkDeviceWaitIdle(device);
+    vkr_bindless_vk_discard_texture_initializations(renderer);
     vkr_bindless_vk_drain_asset_publications(renderer);
     for (uint32_t i = 0; i < ArrayCount(renderer->retired_window_targets);
          ++i) {
@@ -4290,8 +4640,6 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
     }
     vkr_bindless_vk_destroy_target_set(renderer, &renderer->targets);
     vkr_bindless_vk_destroy_frame_slots(renderer);
-    if (renderer->asset_command_pool)
-      vkDestroyCommandPool(device, renderer->asset_command_pool, NULL);
     if (renderer->pipeline) {
       vkDestroyPipeline(device, renderer->pipeline, NULL);
     }
@@ -4306,6 +4654,17 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
     }
     if (renderer->sentinel_sampler) {
       vkDestroySampler(device, renderer->sentinel_sampler, NULL);
+    }
+    for (uint32_t i = 0; i < renderer->config.sampler_capacity; ++i) {
+      if (renderer->published_samplers &&
+          renderer->published_samplers[i].sampler)
+        vkDestroySampler(device, renderer->published_samplers[i].sampler, NULL);
+    }
+    for (uint32_t i = 0; i < renderer->config.sampled_image_capacity; ++i) {
+      if (renderer->retired_staging_buffers &&
+          renderer->retired_staging_buffers[i].occupied)
+        vkr_bindless_vk_destroy_buffer(
+            renderer, &renderer->retired_staging_buffers[i].buffer);
     }
     vkr_bindless_vk_destroy_image(renderer, &renderer->sentinel_image);
     vkr_bindless_vk_destroy_buffer(renderer, &renderer->materials);
@@ -4327,6 +4686,16 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
                        renderer->retired_materials_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   }
+  if (renderer->retired_staging_buffers) {
+    vkr_allocator_free(allocator, renderer->retired_staging_buffers,
+                       renderer->retired_staging_buffers_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  }
+  if (renderer->pending_texture_initializations) {
+    vkr_allocator_free(allocator, renderer->pending_texture_initializations,
+                       renderer->pending_texture_initializations_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  }
   if (renderer->published_materials) {
     vkr_allocator_free(allocator, renderer->published_materials,
                        renderer->published_materials_size,
@@ -4335,6 +4704,11 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
   if (renderer->published_textures) {
     vkr_allocator_free(allocator, renderer->published_textures,
                        renderer->published_textures_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  }
+  if (renderer->published_samplers) {
+    vkr_allocator_free(allocator, renderer->published_samplers,
+                       renderer->published_samplers_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   }
   if (renderer->published_geometries) {

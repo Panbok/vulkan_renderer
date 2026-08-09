@@ -782,7 +782,8 @@ static bool32_t renderer_impl_bindless_initialize(
       .sampled_image_capacity = 16384u,
       .storage_image_capacity = 1024u,
       .sampler_capacity = 2048u,
-      .material_capacity = 2048u,
+      .material_record_capacity = 8192u,
+      .material_slot_capacity = 16385u,
 #if !defined(NDEBUG)
       .enable_validation = true_v,
 #endif

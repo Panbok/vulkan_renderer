@@ -24,7 +24,10 @@ typedef struct VkrBindlessVulkanRendererConfig {
   uint32_t sampled_image_capacity;
   uint32_t storage_image_capacity;
   uint32_t sampler_capacity;
-  uint32_t material_capacity;
+  /** Maximum logical material IDs admitted by the asset publisher. */
+  uint32_t material_record_capacity;
+  /** GPU rows: sentinel row zero plus two generations of every record. */
+  uint32_t material_slot_capacity;
   bool8_t enable_validation;
   bool8_t enable_synchronization_validation;
   bool8_t enable_gpu_assisted;
@@ -44,6 +47,9 @@ typedef struct VkrBindlessVulkanPublicationTestResult {
   uint32_t exact_draw_count;
   bool8_t shared_resource_survived;
   bool8_t replacement_survived;
+  bool8_t shared_sampler_reused;
+  bool8_t dependent_materials_republished;
+  bool8_t upload_wait_free;
   VkrGpuSlotTableMetrics sampled_images;
   VkrGpuSlotTableMetrics storage_images;
   VkrGpuSlotTableMetrics samplers;
