@@ -784,6 +784,14 @@ static bool32_t renderer_impl_bindless_initialize(
       .sampler_capacity = 2048u,
       .material_record_capacity = 8192u,
       .material_slot_capacity = 16385u,
+      .device_buffer_block_size = 8u * 1024u * 1024u,
+      .device_image_block_size = 16u * 1024u * 1024u,
+      .upload_buffer_block_size = 4u * 1024u * 1024u,
+      .readback_buffer_block_size = 1u * 1024u * 1024u,
+      .memory_block_capacity = 64u,
+      .memory_blocks_per_pool = 8u,
+      .memory_block_allocation_capacity = 512u,
+      .publication_staging_capacity = 256u,
 #if !defined(NDEBUG)
       .enable_validation = true_v,
 #endif
@@ -1587,14 +1595,18 @@ static bool8_t renderer_impl_bindless_memory_metrics(
         .capacity_failures = input->capacity_failures,
     };
   }
-  out_metrics->native_heap_count = metrics.block_count;
-  out_metrics->native_heap_peak_count = metrics.block_count;
-  out_metrics->native_heaps_created = metrics.block_count;
-  out_metrics->native_heap_size = source->heap_size;
-  out_metrics->native_heap_used_size = source->heap_size - source->free_bytes;
-  out_metrics->native_heap_allocated_size = source->heap_size;
+  out_metrics->native_heap_count = metrics.physical_allocations_live;
+  out_metrics->native_heap_peak_count = metrics.physical_allocations_peak;
+  out_metrics->native_heaps_created = metrics.physical_allocations_created;
+  out_metrics->native_heap_capacity_failures = metrics.block_capacity_failures;
+  out_metrics->native_heap_size = metrics.physical_allocated_bytes;
+  out_metrics->native_heap_used_size =
+      source->live_reserved_bytes + source->retired_reserved_bytes;
+  out_metrics->native_heap_allocated_size = metrics.physical_allocated_bytes;
   out_metrics->native_heap_largest_free_range = source->largest_free_range;
-  out_metrics->native_heap_peak_allocated_size = source->heap_size;
+  out_metrics->native_heap_peak_allocated_size =
+      metrics.physical_allocated_bytes_peak;
+  out_metrics->residency_allocation_count = metrics.physical_allocations_live;
   out_metrics->native_live_resources = source->live_allocations;
   return true_v;
 }

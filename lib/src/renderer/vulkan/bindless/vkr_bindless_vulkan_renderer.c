@@ -100,21 +100,12 @@ typedef struct VkrBindlessVkAllocation {
   void *mapped;
   uint32_t memory_type_index;
   VkMemoryPropertyFlags properties;
-  VkrGpuAllocationHandle suballocation;
-  uint32_t pool_index;
+  VkrBindlessVkPooledAllocation pooled_allocation;
+  VkrBindlessVkMemoryPoolKey pool_key;
   bool8_t pooled;
+  bool8_t dedicated;
+  bool8_t retired;
 } VkrBindlessVkAllocation;
-
-typedef struct VkrBindlessVkMemoryBlock {
-  VkDeviceMemory memory;
-  VkDeviceSize size;
-  void *mapped;
-  uint32_t memory_type_index;
-  VkMemoryPropertyFlags properties;
-  VkrGpuMemoryCore *core;
-  void *core_storage;
-  uint64_t core_storage_size;
-} VkrBindlessVkMemoryBlock;
 
 typedef struct VkrBindlessVkBuffer {
   VkBuffer handle;
@@ -219,6 +210,15 @@ typedef struct VkrBindlessVkPendingTextureInitialization {
   bool8_t writable;
 } VkrBindlessVkPendingTextureInitialization;
 
+typedef struct VkrBindlessVkPendingBufferInitialization {
+  VkrBindlessVkBuffer staging;
+  VkBuffer destination;
+  VkDeviceSize size;
+  VkPipelineStageFlags2 destination_stage;
+  VkAccessFlags2 destination_access;
+  uint32_t geometry_record_index;
+} VkrBindlessVkPendingBufferInitialization;
+
 typedef struct VkrBindlessVkRetiredStagingBuffer {
   VkrBindlessVkBuffer buffer;
   uint64_t retire_value;
@@ -233,6 +233,7 @@ typedef struct VkrBindlessVkPublishedGeometry {
   uint32_t index_count;
   VkIndexType index_type;
   uint64_t last_use_submit_value;
+  uint32_t pending_initialization_count;
   bool8_t live;
   bool8_t pending_retire;
 } VkrBindlessVkPublishedGeometry;
@@ -265,8 +266,7 @@ struct VkrBindlessVulkanRenderer {
   VkrGpuSubmitRing command_ring;
   VkrGpuSubmitRingSlot command_ring_slots[VKR_BINDLESS_VK_FRAME_SLOT_COUNT];
   VkrGpuRingSlice active_command_slice;
-  VkrBindlessVkMemoryBlock upload_blocks[4];
-  uint32_t upload_block_count;
+  VkrBindlessVkMemoryPoolManager *memory_pool;
   VkrBindlessVkBuffer resource_descriptors;
   VkrBindlessVkBuffer sampler_descriptors;
   VkrGpuSlotTable *sampled_image_slots;
@@ -279,6 +279,7 @@ struct VkrBindlessVulkanRenderer {
   VkrBindlessVkPublishedMaterial *published_materials;
   VkrBindlessVkRetiredMaterial *retired_materials;
   VkrBindlessVkPendingTextureInitialization *pending_texture_initializations;
+  VkrBindlessVkPendingBufferInitialization *pending_buffer_initializations;
   VkrBindlessVkRetiredStagingBuffer *retired_staging_buffers;
   uint64_t published_geometries_size;
   uint64_t published_textures_size;
@@ -286,8 +287,12 @@ struct VkrBindlessVulkanRenderer {
   uint64_t published_materials_size;
   uint64_t retired_materials_size;
   uint64_t pending_texture_initializations_size;
+  uint64_t pending_buffer_initializations_size;
   uint64_t retired_staging_buffers_size;
   uint32_t pending_texture_initialization_count;
+  uint32_t pending_buffer_initialization_count;
+  uint32_t pending_buffer_initialization_capacity;
+  uint32_t retired_staging_buffer_capacity;
   uint32_t staging_buffer_count;
   void *sampled_image_slot_storage;
   void *storage_image_slot_storage;
@@ -345,33 +350,32 @@ vkr_bindless_vk_renderer_device(const VkrBindlessVulkanRenderer *renderer) {
 
 static bool8_t vkr_bindless_vk_choose_memory_type(
     const VkrBindlessVulkanRenderer *renderer, uint32_t memory_type_bits,
-    VkMemoryPropertyFlags required, const VkMemoryPropertyFlags *preferences,
-    uint32_t preference_count, uint32_t *out_index,
+    VkrBindlessVkMemoryClass memory_class, uint32_t *out_index,
     VkMemoryPropertyFlags *out_properties) {
   const VkPhysicalDeviceMemoryProperties *memory =
       vkr_bindless_vulkan_device_memory_properties(renderer->device);
-  for (uint32_t preference = 0; preference < preference_count; ++preference) {
-    const VkMemoryPropertyFlags wanted = required | preferences[preference];
-    for (uint32_t i = 0; i < memory->memoryTypeCount; ++i) {
-      const VkMemoryPropertyFlags available =
-          memory->memoryTypes[i].propertyFlags;
-      if ((memory_type_bits & (1u << i)) && (available & wanted) == wanted) {
-        *out_index = i;
-        *out_properties = available;
-        return true_v;
-      }
-    }
-  }
+  int32_t best_rank = INT32_MAX;
+  uint32_t best_index = UINT32_MAX;
   for (uint32_t i = 0; i < memory->memoryTypeCount; ++i) {
     const VkMemoryPropertyFlags available =
         memory->memoryTypes[i].propertyFlags;
-    if ((memory_type_bits & (1u << i)) && (available & required) == required) {
-      *out_index = i;
-      *out_properties = available;
-      return true_v;
+    if (!(memory_type_bits & (1u << i)))
+      continue;
+    const int32_t rank =
+        vkr_bindless_vulkan_memory_type_rank(memory_class, available);
+    if (rank >= 0 && rank < best_rank) {
+      best_rank = rank;
+      best_index = i;
     }
   }
-  return false_v;
+  if (best_index == UINT32_MAX)
+    return false_v;
+  *out_index = best_index;
+  *out_properties = memory->memoryTypes[best_index].propertyFlags;
+  if (memory_class == VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE && best_rank == 2)
+    log_warn("Bindless Vulkan DEVICE placement degraded to memory type %u",
+             best_index);
+  return true_v;
 }
 
 static VkFormat vkr_bindless_vk_texture_format(VkrTextureFormat format) {
@@ -526,36 +530,74 @@ vkr_bindless_vk_invalidate(const VkrBindlessVulkanRenderer *renderer,
          VK_SUCCESS;
 }
 
+static bool8_t
+vkr_bindless_vk_release_allocation(VkrBindlessVulkanRenderer *renderer,
+                                   VkrBindlessVkAllocation *allocation) {
+  if (allocation->pooled)
+    return vkr_bindless_vulkan_memory_pool_release(
+        renderer->memory_pool, &allocation->pooled_allocation,
+        renderer->completed_value, renderer->completed_value);
+  if (!allocation->memory)
+    return true_v;
+
+  VkDevice device = vkr_bindless_vk_renderer_device(renderer);
+  if (allocation->mapped)
+    vkUnmapMemory(device, allocation->memory);
+  vkFreeMemory(device, allocation->memory, NULL);
+  if (allocation->dedicated)
+    vkr_bindless_vulkan_memory_pool_record_dedicated_release(
+        renderer->memory_pool, allocation->pool_key, allocation->memory_size,
+        allocation->retired);
+  return true_v;
+}
+
 static void vkr_bindless_vk_destroy_buffer(VkrBindlessVulkanRenderer *renderer,
                                            VkrBindlessVkBuffer *buffer) {
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
-  if (buffer->allocation.mapped && !buffer->allocation.pooled) {
-    vkUnmapMemory(device, buffer->allocation.memory);
-  }
-  if (buffer->handle) {
+  if (buffer->handle)
     vkDestroyBuffer(device, buffer->handle, NULL);
-  }
-  VkrBindlessVkMemoryBlock *pool =
-      buffer->allocation.pool_index < renderer->upload_block_count
-          ? &renderer->upload_blocks[buffer->allocation.pool_index]
-          : NULL;
-  if (buffer->allocation.pooled && pool && pool->core) {
-    if (vkr_gpu_memory_retire(pool->core, buffer->allocation.suballocation,
-                              renderer->completed_value) ==
-        VKR_GPU_MEMORY_STATUS_OK)
-      (void)vkr_gpu_memory_collect(pool->core, renderer->completed_value, NULL,
-                                   NULL, NULL);
-  } else if (buffer->allocation.memory) {
-    vkFreeMemory(device, buffer->allocation.memory, NULL);
-  }
+  if (!vkr_bindless_vk_release_allocation(renderer, &buffer->allocation))
+    log_error("Bindless Vulkan failed to release a proven buffer placement");
   MemZero(buffer, sizeof(*buffer));
 }
 
-static bool8_t vkr_bindless_vk_create_buffer(
-    VkrBindlessVulkanRenderer *renderer, VkDeviceSize size,
-    VkBufferUsageFlags usage, VkMemoryPropertyFlags required_memory,
-    const VkMemoryPropertyFlags *preferences, uint32_t preference_count,
-    bool8_t mapped, VkrBindlessVkBuffer *out_buffer) {
+static bool8_t
+vkr_bindless_vk_retire_allocation(VkrBindlessVulkanRenderer *renderer,
+                                  VkrBindlessVkAllocation *allocation,
+                                  uint64_t retire_value) {
+  if (!allocation || allocation->retired)
+    return false_v;
+  if (allocation->pooled) {
+    if (!vkr_bindless_vulkan_memory_pool_retire(renderer->memory_pool,
+                                                &allocation->pooled_allocation,
+                                                retire_value))
+      return false_v;
+  } else if (allocation->dedicated) {
+    if (!vkr_bindless_vulkan_memory_pool_record_dedicated_retire(
+            renderer->memory_pool, allocation->pool_key,
+            allocation->memory_size))
+      return false_v;
+  } else {
+    return false_v;
+  }
+  allocation->retired = true_v;
+  return true_v;
+}
+
+static bool8_t
+vkr_bindless_vk_retire_buffer(VkrBindlessVulkanRenderer *renderer,
+                              VkrBindlessVkBuffer *buffer,
+                              uint64_t retire_value) {
+  return buffer && buffer->handle &&
+         vkr_bindless_vk_retire_allocation(renderer, &buffer->allocation,
+                                           retire_value);
+}
+
+static bool8_t
+vkr_bindless_vk_create_buffer(VkrBindlessVulkanRenderer *renderer,
+                              VkrBindlessVkMemoryClass memory_class,
+                              VkDeviceSize size, VkBufferUsageFlags usage,
+                              VkrBindlessVkBuffer *out_buffer) {
   MemZero(out_buffer, sizeof(*out_buffer));
   out_buffer->size = size;
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
@@ -565,40 +607,98 @@ static bool8_t vkr_bindless_vk_create_buffer(
       .usage = usage,
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
   };
-  if (vkCreateBuffer(device, &buffer_info, NULL, &out_buffer->handle) !=
-      VK_SUCCESS) {
-    return false_v;
-  }
-  VkMemoryRequirements requirements;
-  vkGetBufferMemoryRequirements(device, out_buffer->handle, &requirements);
+  VkMemoryDedicatedRequirements dedicated_requirements = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS,
+  };
+  VkMemoryRequirements2 requirements = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+      .pNext = &dedicated_requirements,
+  };
+  const VkDeviceBufferMemoryRequirements device_requirements = {
+      .sType = VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS,
+      .pCreateInfo = &buffer_info,
+  };
+  vkGetDeviceBufferMemoryRequirements(device, &device_requirements,
+                                      &requirements);
   VkrBindlessVkAllocation *allocation = &out_buffer->allocation;
   if (!vkr_bindless_vk_choose_memory_type(
-          renderer, requirements.memoryTypeBits, required_memory, preferences,
-          preference_count, &allocation->memory_type_index,
+          renderer, requirements.memoryRequirements.memoryTypeBits,
+          memory_class, &allocation->memory_type_index,
           &allocation->properties)) {
-    vkr_bindless_vk_destroy_buffer(renderer, out_buffer);
     return false_v;
   }
   const bool8_t has_address =
       (usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0;
-  VkMemoryAllocateFlagsInfo flags = {
-      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
-      .flags = has_address ? VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT : 0u,
+  allocation->pool_key = (VkrBindlessVkMemoryPoolKey){
+      .memory_class = memory_class,
+      .kind = VKR_BINDLESS_VK_MEMORY_KIND_BUFFER,
+      .memory_type_index = allocation->memory_type_index,
+      .device_address_required = has_address,
   };
-  VkMemoryAllocateInfo allocate_info = {
-      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-      .pNext = &flags,
-      .allocationSize = requirements.size,
-      .memoryTypeIndex = allocation->memory_type_index,
-  };
-  allocation->memory_size = requirements.size;
-  if (vkAllocateMemory(device, &allocate_info, NULL, &allocation->memory) !=
-          VK_SUCCESS ||
-      vkBindBufferMemory(device, out_buffer->handle, allocation->memory, 0u) !=
-          VK_SUCCESS ||
-      (mapped &&
-       vkMapMemory(device, allocation->memory, 0u, allocation->memory_size, 0u,
-                   &allocation->mapped) != VK_SUCCESS)) {
+  const bool8_t dedicated =
+      dedicated_requirements.requiresDedicatedAllocation ||
+      dedicated_requirements.prefersDedicatedAllocation;
+  if (!dedicated &&
+      !vkr_bindless_vulkan_memory_pool_allocate(
+          renderer->memory_pool, allocation->pool_key, allocation->properties,
+          requirements.memoryRequirements.size,
+          requirements.memoryRequirements.alignment,
+          &allocation->pooled_allocation))
+    return false_v;
+  if (vkCreateBuffer(device, &buffer_info, NULL, &out_buffer->handle) !=
+      VK_SUCCESS) {
+    if (allocation->pooled_allocation.valid)
+      (void)vkr_bindless_vulkan_memory_pool_release(
+          renderer->memory_pool, &allocation->pooled_allocation,
+          renderer->completed_value, renderer->completed_value);
+    return false_v;
+  }
+  if (dedicated) {
+    const VkMemoryDedicatedAllocateInfo dedicated_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+        .buffer = out_buffer->handle,
+    };
+    VkMemoryAllocateFlagsInfo flags = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
+        .flags = has_address ? VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT : 0u,
+        .pNext = &dedicated_info,
+    };
+    const VkMemoryAllocateInfo allocate_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext =
+            has_address ? (const void *)&flags : (const void *)&dedicated_info,
+        .allocationSize = requirements.memoryRequirements.size,
+        .memoryTypeIndex = allocation->memory_type_index,
+    };
+    allocation->memory_size = requirements.memoryRequirements.size;
+    allocation->dedicated = true_v;
+    if (vkAllocateMemory(device, &allocate_info, NULL, &allocation->memory) !=
+        VK_SUCCESS) {
+      vkr_bindless_vulkan_memory_pool_record_native_failure(
+          renderer->memory_pool);
+      vkr_bindless_vk_destroy_buffer(renderer, out_buffer);
+      return false_v;
+    }
+    vkr_bindless_vulkan_memory_pool_record_dedicated_allocate(
+        renderer->memory_pool, allocation->pool_key, allocation->memory_size);
+    if ((allocation->properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) &&
+        memory_class != VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE &&
+        vkMapMemory(device, allocation->memory, 0u, allocation->memory_size, 0u,
+                    &allocation->mapped) != VK_SUCCESS) {
+      vkr_bindless_vulkan_memory_pool_record_native_failure(
+          renderer->memory_pool);
+      vkr_bindless_vk_destroy_buffer(renderer, out_buffer);
+      return false_v;
+    }
+  } else {
+    allocation->pooled = true_v;
+    allocation->memory = allocation->pooled_allocation.memory;
+    allocation->memory_size = allocation->pooled_allocation.memory_size;
+    allocation->offset = allocation->pooled_allocation.offset;
+    allocation->mapped = allocation->pooled_allocation.mapped;
+  }
+  if (vkBindBufferMemory(device, out_buffer->handle, allocation->memory,
+                         allocation->offset) != VK_SUCCESS) {
     vkr_bindless_vk_destroy_buffer(renderer, out_buffer);
     return false_v;
   }
@@ -616,14 +716,8 @@ static bool8_t vkr_bindless_vk_create_buffer(
   return true_v;
 }
 
-typedef struct VkrBindlessVkPooledBufferSpec {
-  VkrBindlessVkBuffer *buffer;
-  VkDeviceSize size;
-  VkBufferUsageFlags usage;
-} VkrBindlessVkPooledBufferSpec;
-
 static bool8_t
-vkr_bindless_vk_create_upload_block(VkrBindlessVulkanRenderer *renderer) {
+vkr_bindless_vk_create_upload_buffers(VkrBindlessVulkanRenderer *renderer) {
   if (!vkr_gpu_abi_validate_host()) {
     log_error("Bindless Vulkan shared host ABI validation failed");
     return false_v;
@@ -632,217 +726,41 @@ vkr_bindless_vk_create_upload_block(VkrBindlessVulkanRenderer *renderer) {
       vkr_bindless_vulkan_device_resource_layout(renderer->device);
   const VkrBindlessVulkanDescriptorLayout *sampler_layout =
       vkr_bindless_vulkan_device_sampler_layout(renderer->device);
-  VkrBindlessVkPooledBufferSpec specs[] = {
-      {&renderer->resource_descriptors, resource_layout->size,
-       VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
-           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT},
-      {&renderer->sampler_descriptors, sampler_layout->size,
-       VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
-           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT},
-      {&renderer->upload, VKR_BINDLESS_VK_UPLOAD_SIZE,
-       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-           VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT},
-      {&renderer->materials,
-       (VkDeviceSize)renderer->config.material_slot_capacity *
-           sizeof(VkrBindlessVkMaterialGpuRow),
-       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT},
-  };
-  VkMemoryRequirements requirements[ArrayCount(specs)];
-  VkrGpuAllocationHandle handles[ArrayCount(specs)];
-  VkrGpuPlacement placements[ArrayCount(specs)];
-  uint32_t pool_indices[ArrayCount(specs)];
-  MemZero(requirements, sizeof(requirements));
-  MemZero(handles, sizeof(handles));
-  MemZero(placements, sizeof(placements));
-  MemZero(pool_indices, sizeof(pool_indices));
-
-  VkDevice device = vkr_bindless_vk_renderer_device(renderer);
-  const VkMemoryPropertyFlags preferences[] = {
-      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-      0u,
-  };
-  renderer->upload_block_count = 0u;
-  for (uint32_t i = 0; i < ArrayCount(specs); ++i) {
-    VkrBindlessVkBuffer *buffer = specs[i].buffer;
-    MemZero(buffer, sizeof(*buffer));
-    buffer->size = specs[i].size;
-    const VkBufferCreateInfo buffer_info = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = specs[i].size,
-        .usage = specs[i].usage,
-        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-    };
-    if (vkCreateBuffer(device, &buffer_info, NULL, &buffer->handle) !=
-        VK_SUCCESS) {
-      log_error("Bindless Vulkan upload block failed to create buffer %u", i);
-      return false_v;
-    }
-    vkGetBufferMemoryRequirements(device, buffer->handle, &requirements[i]);
-    uint32_t memory_type_index = 0u;
-    VkMemoryPropertyFlags properties = 0u;
-    if (!vkr_bindless_vk_choose_memory_type(
-            renderer, requirements[i].memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, preferences,
-            ArrayCount(preferences), &memory_type_index, &properties)) {
-      log_error("Bindless Vulkan upload buffer %u has no memory type", i);
-      return false_v;
-    }
-    uint32_t pool_index = UINT32_MAX;
-    for (uint32_t pool = 0; pool < renderer->upload_block_count; ++pool) {
-      if (renderer->upload_blocks[pool].memory_type_index ==
-          memory_type_index) {
-        pool_index = pool;
-        break;
-      }
-    }
-    if (pool_index == UINT32_MAX) {
-      if (renderer->upload_block_count == ArrayCount(renderer->upload_blocks)) {
-        log_error("Bindless Vulkan upload block table is full");
-        return false_v;
-      }
-      pool_index = renderer->upload_block_count++;
-      renderer->upload_blocks[pool_index].memory_type_index = memory_type_index;
-      renderer->upload_blocks[pool_index].properties = properties;
-    }
-    pool_indices[i] = pool_index;
-    VkrBindlessVkMemoryBlock *block = &renderer->upload_blocks[pool_index];
-    if (block->size > UINT64_MAX - (requirements[i].alignment - 1u)) {
-      log_error("Bindless Vulkan upload block size overflow");
-      return false_v;
-    }
-    block->size = AlignPow2(block->size, requirements[i].alignment);
-    if (requirements[i].size > UINT64_MAX - block->size) {
-      log_error("Bindless Vulkan upload block requirement overflow");
-      return false_v;
-    }
-    block->size += requirements[i].size;
-  }
-
-  for (uint32_t pool_index = 0; pool_index < renderer->upload_block_count;
-       ++pool_index) {
-    VkrBindlessVkMemoryBlock *block = &renderer->upload_blocks[pool_index];
-    uint32_t allocation_count = 0u;
-    for (uint32_t i = 0; i < ArrayCount(specs); ++i)
-      allocation_count += pool_indices[i] == pool_index;
-    const VkrGpuMemoryConfig core_config = {
-        .heap_size = block->size,
-        .max_allocations = allocation_count,
-        .max_retirements = allocation_count,
-        .max_free_ranges = allocation_count + 1u,
-    };
-    block->core_storage_size = vkr_gpu_memory_storage_requirement(&core_config);
-    block->core_storage =
-        vkr_allocator_alloc(renderer->allocator, block->core_storage_size,
-                            VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    if (!block->core_storage ||
-        vkr_gpu_memory_create(&core_config, block->core_storage,
-                              block->core_storage_size,
-                              &block->core) != VKR_GPU_MEMORY_STATUS_OK) {
-      log_error("Bindless Vulkan upload allocator core %u creation failed",
-                pool_index);
-      return false_v;
-    }
-  }
-  for (uint32_t i = 0; i < ArrayCount(specs); ++i) {
-    VkrBindlessVkMemoryBlock *block = &renderer->upload_blocks[pool_indices[i]];
-    if (vkr_gpu_memory_allocate(block->core, requirements[i].size,
-                                requirements[i].alignment,
-                                VKR_GPU_MEMORY_CLASS_BUFFER, &handles[i],
-                                &placements[i]) != VKR_GPU_MEMORY_STATUS_OK) {
-      log_error("Bindless Vulkan upload suballocation %u failed", i);
-      return false_v;
-    }
-  }
-
-  for (uint32_t pool_index = 0; pool_index < renderer->upload_block_count;
-       ++pool_index) {
-    VkrBindlessVkMemoryBlock *block = &renderer->upload_blocks[pool_index];
-    const VkMemoryAllocateFlagsInfo flags = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO,
-        .flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT,
-    };
-    const VkMemoryAllocateInfo allocate_info = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .pNext = &flags,
-        .allocationSize = block->size,
-        .memoryTypeIndex = block->memory_type_index,
-    };
-    if (vkAllocateMemory(device, &allocate_info, NULL, &block->memory) !=
-            VK_SUCCESS ||
-        vkMapMemory(device, block->memory, 0u, block->size, 0u,
-                    &block->mapped) != VK_SUCCESS) {
-      vkr_gpu_memory_record_native_failure(block->core);
-      log_error("Bindless Vulkan upload block %u allocation or mapping failed",
-                pool_index);
-      return false_v;
-    }
-  }
-  for (uint32_t i = 0; i < ArrayCount(specs); ++i) {
-    VkrBindlessVkBuffer *buffer = specs[i].buffer;
-    VkrBindlessVkMemoryBlock *block = &renderer->upload_blocks[pool_indices[i]];
-    if (vkBindBufferMemory(device, buffer->handle, block->memory,
-                           placements[i].resource_offset) != VK_SUCCESS) {
-      vkr_gpu_memory_record_native_failure(block->core);
-      log_error("Bindless Vulkan upload buffer %u binding failed", i);
-      return false_v;
-    }
-    buffer->allocation = (VkrBindlessVkAllocation){
-        .memory = block->memory,
-        .memory_size = block->size,
-        .offset = placements[i].resource_offset,
-        .mapped = (uint8_t *)block->mapped + placements[i].resource_offset,
-        .memory_type_index = block->memory_type_index,
-        .properties = block->properties,
-        .suballocation = handles[i],
-        .pool_index = pool_indices[i],
-        .pooled = true_v,
-    };
-    const VkBufferDeviceAddressInfo address_info = {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO,
-        .buffer = buffer->handle,
-    };
-    buffer->address = vkGetBufferDeviceAddress(device, &address_info);
-    if (!buffer->address) {
-      log_error("Bindless Vulkan upload buffer %u has no device address", i);
-      return false_v;
-    }
-  }
-  return true_v;
-}
-
-static void
-vkr_bindless_vk_destroy_upload_block(VkrBindlessVulkanRenderer *renderer) {
-  VkDevice device = vkr_bindless_vk_renderer_device(renderer);
-  for (uint32_t pool_index = 0; pool_index < renderer->upload_block_count;
-       ++pool_index) {
-    VkrBindlessVkMemoryBlock *block = &renderer->upload_blocks[pool_index];
-    if (block->mapped)
-      vkUnmapMemory(device, block->memory);
-    if (block->memory)
-      vkFreeMemory(device, block->memory, NULL);
-    if (block->core_storage)
-      vkr_allocator_free(renderer->allocator, block->core_storage,
-                         block->core_storage_size,
-                         VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-    MemZero(block, sizeof(*block));
-  }
-  renderer->upload_block_count = 0u;
+  return vkr_bindless_vk_create_buffer(
+             renderer, VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD,
+             resource_layout->size,
+             VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT |
+                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+             &renderer->resource_descriptors) &&
+         vkr_bindless_vk_create_buffer(
+             renderer, VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD,
+             sampler_layout->size,
+             VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
+                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+             &renderer->sampler_descriptors) &&
+         vkr_bindless_vk_create_buffer(
+             renderer, VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD,
+             VKR_BINDLESS_VK_UPLOAD_SIZE,
+             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                 VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+             &renderer->upload) &&
+         vkr_bindless_vk_create_buffer(
+             renderer, VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD,
+             (VkDeviceSize)renderer->config.material_slot_capacity *
+                 sizeof(VkrBindlessVkMaterialGpuRow),
+             VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, &renderer->materials);
 }
 
 static void vkr_bindless_vk_destroy_image(VkrBindlessVulkanRenderer *renderer,
                                           VkrBindlessVkImage *image) {
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
-  if (image->view) {
+  if (image->view)
     vkDestroyImageView(device, image->view, NULL);
-  }
-  if (image->handle) {
+  if (image->handle)
     vkDestroyImage(device, image->handle, NULL);
-  }
-  if (image->allocation.memory) {
-    vkFreeMemory(device, image->allocation.memory, NULL);
-  }
+  if (!vkr_bindless_vk_release_allocation(renderer, &image->allocation))
+    log_error("Bindless Vulkan failed to release a proven image placement");
   MemZero(image, sizeof(*image));
 }
 
@@ -875,34 +793,79 @@ static bool8_t vkr_bindless_vk_create_image_ex(
       .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
       .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
   };
+  VkMemoryDedicatedRequirements dedicated_requirements = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS,
+  };
+  VkMemoryRequirements2 requirements = {
+      .sType = VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2,
+      .pNext = &dedicated_requirements,
+  };
+  const VkDeviceImageMemoryRequirements device_requirements = {
+      .sType = VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS,
+      .pCreateInfo = &image_info,
+  };
+  vkGetDeviceImageMemoryRequirements(device, &device_requirements,
+                                     &requirements);
+  VkrBindlessVkAllocation *allocation = &out_image->allocation;
+  if (!vkr_bindless_vk_choose_memory_type(
+          renderer, requirements.memoryRequirements.memoryTypeBits,
+          VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE, &allocation->memory_type_index,
+          &allocation->properties)) {
+    return false_v;
+  }
+  allocation->pool_key = (VkrBindlessVkMemoryPoolKey){
+      .memory_class = VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE,
+      .kind = VKR_BINDLESS_VK_MEMORY_KIND_IMAGE,
+      .memory_type_index = allocation->memory_type_index,
+  };
+  const bool8_t dedicated =
+      dedicated_requirements.requiresDedicatedAllocation ||
+      dedicated_requirements.prefersDedicatedAllocation;
+  if (!dedicated &&
+      !vkr_bindless_vulkan_memory_pool_allocate(
+          renderer->memory_pool, allocation->pool_key, allocation->properties,
+          requirements.memoryRequirements.size,
+          requirements.memoryRequirements.alignment,
+          &allocation->pooled_allocation))
+    return false_v;
   if (vkCreateImage(device, &image_info, NULL, &out_image->handle) !=
       VK_SUCCESS) {
+    if (allocation->pooled_allocation.valid)
+      (void)vkr_bindless_vulkan_memory_pool_release(
+          renderer->memory_pool, &allocation->pooled_allocation,
+          renderer->completed_value, renderer->completed_value);
     return false_v;
   }
-  VkMemoryRequirements requirements;
-  vkGetImageMemoryRequirements(device, out_image->handle, &requirements);
-  const VkMemoryPropertyFlags preferences[] = {
-      VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-  };
-  VkrBindlessVkAllocation *allocation = &out_image->allocation;
-  if (!vkr_bindless_vk_choose_memory_type(renderer, requirements.memoryTypeBits,
-                                          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                                          preferences, ArrayCount(preferences),
-                                          &allocation->memory_type_index,
-                                          &allocation->properties)) {
-    vkr_bindless_vk_destroy_image(renderer, out_image);
-    return false_v;
+  if (dedicated) {
+    const VkMemoryDedicatedAllocateInfo dedicated_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO,
+        .image = out_image->handle,
+    };
+    const VkMemoryAllocateInfo allocate_info = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .pNext = &dedicated_info,
+        .allocationSize = requirements.memoryRequirements.size,
+        .memoryTypeIndex = allocation->memory_type_index,
+    };
+    allocation->memory_size = requirements.memoryRequirements.size;
+    allocation->dedicated = true_v;
+    if (vkAllocateMemory(device, &allocate_info, NULL, &allocation->memory) !=
+        VK_SUCCESS) {
+      vkr_bindless_vulkan_memory_pool_record_native_failure(
+          renderer->memory_pool);
+      vkr_bindless_vk_destroy_image(renderer, out_image);
+      return false_v;
+    }
+    vkr_bindless_vulkan_memory_pool_record_dedicated_allocate(
+        renderer->memory_pool, allocation->pool_key, allocation->memory_size);
+  } else {
+    allocation->pooled = true_v;
+    allocation->memory = allocation->pooled_allocation.memory;
+    allocation->memory_size = allocation->pooled_allocation.memory_size;
+    allocation->offset = allocation->pooled_allocation.offset;
   }
-  VkMemoryAllocateInfo allocate_info = {
-      .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-      .allocationSize = requirements.size,
-      .memoryTypeIndex = allocation->memory_type_index,
-  };
-  allocation->memory_size = requirements.size;
-  if (vkAllocateMemory(device, &allocate_info, NULL, &allocation->memory) !=
-          VK_SUCCESS ||
-      vkBindImageMemory(device, out_image->handle, allocation->memory, 0u) !=
-          VK_SUCCESS) {
+  if (vkBindImageMemory(device, out_image->handle, allocation->memory,
+                        allocation->offset) != VK_SUCCESS) {
     vkr_bindless_vk_destroy_image(renderer, out_image);
     return false_v;
   }
@@ -1168,12 +1131,6 @@ vkr_bindless_vk_collect_retired_targets(VkrBindlessVulkanRenderer *renderer,
 static bool8_t
 vkr_bindless_vk_create_frame_slots(VkrBindlessVulkanRenderer *renderer) {
   VkDevice device = vkr_bindless_vk_renderer_device(renderer);
-  const VkMemoryPropertyFlags readback_preferences[] = {
-      VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-      VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
-      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-      0u,
-  };
   const VkDeviceSize readback_size = 4u;
   for (uint32_t i = 0; i < VKR_BINDLESS_VK_FRAME_SLOT_COUNT; ++i) {
     VkrBindlessVkFrameSlot *slot = &renderer->frame_slots[i];
@@ -1196,9 +1153,8 @@ vkr_bindless_vk_create_frame_slots(VkrBindlessVulkanRenderer *renderer) {
     if (vkAllocateCommandBuffers(device, &command_info,
                                  &slot->command_buffer) != VK_SUCCESS ||
         !vkr_bindless_vk_create_buffer(
-            renderer, readback_size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, readback_preferences,
-            ArrayCount(readback_preferences), true_v, &slot->readback)) {
+            renderer, VKR_BINDLESS_VK_MEMORY_CLASS_READBACK, readback_size,
+            VK_BUFFER_USAGE_TRANSFER_DST_BIT, &slot->readback)) {
       return false_v;
     }
   }
@@ -1264,7 +1220,7 @@ vkr_bindless_vk_write_upload_data(VkrBindlessVulkanRenderer *renderer) {
 
 static bool8_t
 vkr_bindless_vk_create_resources(VkrBindlessVulkanRenderer *renderer) {
-  if (!vkr_bindless_vk_create_upload_block(renderer) ||
+  if (!vkr_bindless_vk_create_upload_buffers(renderer) ||
       !vkr_bindless_vk_create_image(renderer, 1u, 1u,
                                     VK_IMAGE_USAGE_SAMPLED_BIT |
                                         VK_IMAGE_USAGE_STORAGE_BIT |
@@ -1362,8 +1318,15 @@ static bool8_t vkr_bindless_vk_create_descriptor_slot_tables(
   renderer->pending_texture_initializations_size =
       (uint64_t)renderer->config.sampled_image_capacity *
       sizeof(*renderer->pending_texture_initializations);
+  renderer->pending_buffer_initialization_capacity =
+      renderer->config.publication_staging_capacity;
+  renderer->pending_buffer_initializations_size =
+      (uint64_t)renderer->pending_buffer_initialization_capacity *
+      sizeof(*renderer->pending_buffer_initializations);
+  renderer->retired_staging_buffer_capacity =
+      renderer->config.publication_staging_capacity;
   renderer->retired_staging_buffers_size =
-      (uint64_t)renderer->config.sampled_image_capacity *
+      (uint64_t)renderer->retired_staging_buffer_capacity *
       sizeof(*renderer->retired_staging_buffers);
   renderer->descriptor_scratch_size =
       (uint32_t)Max(Max(properties->sampledImageDescriptorSize,
@@ -1402,6 +1365,9 @@ static bool8_t vkr_bindless_vk_create_descriptor_slot_tables(
   renderer->pending_texture_initializations = vkr_allocator_alloc(
       renderer->allocator, renderer->pending_texture_initializations_size,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  renderer->pending_buffer_initializations = vkr_allocator_alloc(
+      renderer->allocator, renderer->pending_buffer_initializations_size,
+      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   renderer->retired_staging_buffers = vkr_allocator_alloc(
       renderer->allocator, renderer->retired_staging_buffers_size,
       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
@@ -1412,6 +1378,7 @@ static bool8_t vkr_bindless_vk_create_descriptor_slot_tables(
       !renderer->published_textures || !renderer->published_samplers ||
       !renderer->published_materials || !renderer->retired_materials ||
       !renderer->pending_texture_initializations ||
+      !renderer->pending_buffer_initializations ||
       !renderer->retired_staging_buffers) {
     return false_v;
   }
@@ -1422,6 +1389,8 @@ static bool8_t vkr_bindless_vk_create_descriptor_slot_tables(
   MemZero(renderer->retired_materials, renderer->retired_materials_size);
   MemZero(renderer->pending_texture_initializations,
           renderer->pending_texture_initializations_size);
+  MemZero(renderer->pending_buffer_initializations,
+          renderer->pending_buffer_initializations_size);
   MemZero(renderer->retired_staging_buffers,
           renderer->retired_staging_buffers_size);
   return vkr_gpu_slot_table_create(
@@ -1962,6 +1931,13 @@ bool8_t vkr_bindless_vulkan_renderer_create(
       config->image_count > VKR_BINDLESS_VK_TARGET_IMAGE_MAX ||
       !config->sampled_image_capacity || !config->storage_image_capacity ||
       !config->sampler_capacity || !config->material_record_capacity ||
+      !config->device_buffer_block_size || !config->device_image_block_size ||
+      !config->upload_buffer_block_size ||
+      !config->readback_buffer_block_size || !config->memory_block_capacity ||
+      !config->memory_blocks_per_pool ||
+      config->memory_blocks_per_pool > config->memory_block_capacity ||
+      !config->memory_block_allocation_capacity ||
+      config->publication_staging_capacity < 2u ||
       (uint64_t)config->material_slot_capacity <
           (uint64_t)config->material_record_capacity * 2u + 1u) {
     return false_v;
@@ -2001,6 +1977,40 @@ bool8_t vkr_bindless_vulkan_renderer_create(
       !vkr_bindless_vk_create_timeline(renderer)) {
     return false_v;
   }
+  const VkrBindlessVkMemoryPoolConfig memory_config = {
+      .allocator = renderer->allocator,
+      .device = vkr_bindless_vk_renderer_device(renderer),
+      .block_sizes =
+          {
+              [VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE] =
+                  {
+                      [VKR_BINDLESS_VK_MEMORY_KIND_BUFFER] =
+                          config->device_buffer_block_size,
+                      [VKR_BINDLESS_VK_MEMORY_KIND_IMAGE] =
+                          config->device_image_block_size,
+                  },
+              [VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD] =
+                  {
+                      [VKR_BINDLESS_VK_MEMORY_KIND_BUFFER] =
+                          config->upload_buffer_block_size,
+                      [VKR_BINDLESS_VK_MEMORY_KIND_IMAGE] =
+                          config->upload_buffer_block_size,
+                  },
+              [VKR_BINDLESS_VK_MEMORY_CLASS_READBACK] =
+                  {
+                      [VKR_BINDLESS_VK_MEMORY_KIND_BUFFER] =
+                          config->readback_buffer_block_size,
+                      [VKR_BINDLESS_VK_MEMORY_KIND_IMAGE] =
+                          config->readback_buffer_block_size,
+                  },
+          },
+      .max_blocks = config->memory_block_capacity,
+      .max_blocks_per_pool = config->memory_blocks_per_pool,
+      .max_allocations_per_block = config->memory_block_allocation_capacity,
+  };
+  if (!vkr_bindless_vulkan_memory_pool_create(&memory_config,
+                                              &renderer->memory_pool))
+    return false_v;
   if (config->target_kind != VKR_PRESENT_TARGET_OFFSCREEN) {
     if (!vkr_bindless_vk_create_acquire_semaphores(renderer) ||
         !vkr_bindless_vk_create_window_target(
@@ -2078,7 +2088,7 @@ static bool8_t vkr_bindless_vk_enqueue_texture_initialization(
           renderer->config.sampled_image_capacity ||
       (initialization->staging.handle &&
        renderer->staging_buffer_count >=
-           renderer->config.sampled_image_capacity))
+           renderer->retired_staging_buffer_capacity))
     return false_v;
   renderer->pending_texture_initializations
       [renderer->pending_texture_initialization_count++] = *initialization;
@@ -2126,15 +2136,10 @@ static bool8_t vkr_bindless_vk_upload_prepared_texture(
           out_image))
     return false_v;
 
-  const VkMemoryPropertyFlags staging_preferences[] = {
-      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-      0u,
-  };
   VkrBindlessVkBuffer staging = {0};
   if (!vkr_bindless_vk_create_buffer(
-          renderer, prepared->upload_data_size,
-          VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-          staging_preferences, ArrayCount(staging_preferences), true_v,
+          renderer, VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD,
+          prepared->upload_data_size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
           &staging)) {
     vkr_bindless_vk_destroy_image(renderer, out_image);
     return false_v;
@@ -2247,6 +2252,126 @@ static void vkr_bindless_vk_record_texture_initializations(
   }
 }
 
+static void vkr_bindless_vk_record_buffer_initializations(
+    VkrBindlessVulkanRenderer *renderer, VkCommandBuffer command) {
+  for (uint32_t i = 0; i < renderer->pending_buffer_initialization_count; ++i) {
+    const VkrBindlessVkPendingBufferInitialization *initialization =
+        &renderer->pending_buffer_initializations[i];
+    const VkBufferCopy2 region = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2,
+        .size = initialization->size,
+    };
+    const VkCopyBufferInfo2 copy = {
+        .sType = VK_STRUCTURE_TYPE_COPY_BUFFER_INFO_2,
+        .srcBuffer = initialization->staging.handle,
+        .dstBuffer = initialization->destination,
+        .regionCount = 1u,
+        .pRegions = &region,
+    };
+    vkCmdCopyBuffer2(command, &copy);
+    const VkBufferMemoryBarrier2 barrier = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+        .srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT,
+        .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .dstStageMask = initialization->destination_stage,
+        .dstAccessMask = initialization->destination_access,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .buffer = initialization->destination,
+        .size = VK_WHOLE_SIZE,
+    };
+    const VkDependencyInfo dependency = {
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .bufferMemoryBarrierCount = 1u,
+        .pBufferMemoryBarriers = &barrier,
+    };
+    vkCmdPipelineBarrier2(command, &dependency);
+  }
+}
+
+static VkrBindlessVkRetiredStagingBuffer *
+vkr_bindless_vk_reserve_staging_retirement(
+    VkrBindlessVulkanRenderer *renderer) {
+  for (uint32_t slot = 0; slot < renderer->retired_staging_buffer_capacity;
+       ++slot) {
+    if (!renderer->retired_staging_buffers[slot].occupied)
+      return &renderer->retired_staging_buffers[slot];
+  }
+  return NULL;
+}
+
+static void vkr_bindless_vk_commit_buffer_initializations(
+    VkrBindlessVulkanRenderer *renderer, uint64_t retire_value) {
+  for (uint32_t i = 0; i < renderer->pending_buffer_initialization_count; ++i) {
+    VkrBindlessVkPendingBufferInitialization *initialization =
+        &renderer->pending_buffer_initializations[i];
+    VkrBindlessVkPublishedGeometry *geometry =
+        &renderer->published_geometries[initialization->geometry_record_index];
+    VkrBindlessVkRetiredStagingBuffer *retired =
+        vkr_bindless_vk_reserve_staging_retirement(renderer);
+    if (!retired)
+      log_fatal("Bindless Vulkan lost bounded staging retirement capacity");
+    if (!vkr_bindless_vk_retire_buffer(renderer, &initialization->staging,
+                                       retire_value))
+      log_fatal("Bindless Vulkan failed to retire submitted staging memory");
+    *retired = (VkrBindlessVkRetiredStagingBuffer){
+        .buffer = initialization->staging,
+        .retire_value = retire_value,
+        .occupied = true_v,
+    };
+    geometry->last_use_submit_value =
+        Max(geometry->last_use_submit_value, retire_value);
+    if (geometry->pending_initialization_count)
+      geometry->pending_initialization_count--;
+    MemZero(initialization, sizeof(*initialization));
+  }
+  renderer->pending_buffer_initialization_count = 0u;
+}
+
+static void vkr_bindless_vk_discard_buffer_initializations(
+    VkrBindlessVulkanRenderer *renderer) {
+  for (uint32_t i = 0; i < renderer->pending_buffer_initialization_count; ++i) {
+    VkrBindlessVkPendingBufferInitialization *initialization =
+        &renderer->pending_buffer_initializations[i];
+    VkrBindlessVkPublishedGeometry *geometry =
+        &renderer->published_geometries[initialization->geometry_record_index];
+    vkr_bindless_vk_destroy_buffer(renderer, &initialization->staging);
+    if (renderer->staging_buffer_count)
+      renderer->staging_buffer_count--;
+    if (geometry->pending_initialization_count)
+      geometry->pending_initialization_count--;
+    MemZero(initialization, sizeof(*initialization));
+  }
+  renderer->pending_buffer_initialization_count = 0u;
+}
+
+static void vkr_bindless_vk_discard_geometry_initializations(
+    VkrBindlessVulkanRenderer *renderer, uint32_t geometry_record_index) {
+  uint32_t write_index = 0u;
+  for (uint32_t read_index = 0;
+       read_index < renderer->pending_buffer_initialization_count;
+       ++read_index) {
+    VkrBindlessVkPendingBufferInitialization *initialization =
+        &renderer->pending_buffer_initializations[read_index];
+    if (initialization->geometry_record_index == geometry_record_index) {
+      vkr_bindless_vk_destroy_buffer(renderer, &initialization->staging);
+      if (renderer->staging_buffer_count)
+        renderer->staging_buffer_count--;
+      continue;
+    }
+    if (write_index != read_index)
+      renderer->pending_buffer_initializations[write_index] = *initialization;
+    write_index++;
+  }
+  for (uint32_t i = write_index;
+       i < renderer->pending_buffer_initialization_count; ++i)
+    MemZero(&renderer->pending_buffer_initializations[i],
+            sizeof(renderer->pending_buffer_initializations[i]));
+  renderer->pending_buffer_initialization_count = write_index;
+  renderer->published_geometries[geometry_record_index]
+      .pending_initialization_count = 0u;
+}
+
 static void vkr_bindless_vk_commit_texture_initializations(
     VkrBindlessVulkanRenderer *renderer, uint64_t retire_value) {
   for (uint32_t i = 0; i < renderer->pending_texture_initialization_count;
@@ -2259,16 +2384,13 @@ static void vkr_bindless_vk_commit_texture_initializations(
     texture->last_use_submit_value =
         Max(texture->last_use_submit_value, retire_value);
     if (initialization->staging.handle) {
-      VkrBindlessVkRetiredStagingBuffer *retired = NULL;
-      for (uint32_t slot = 0; slot < renderer->config.sampled_image_capacity;
-           ++slot) {
-        if (!renderer->retired_staging_buffers[slot].occupied) {
-          retired = &renderer->retired_staging_buffers[slot];
-          break;
-        }
-      }
+      VkrBindlessVkRetiredStagingBuffer *retired =
+          vkr_bindless_vk_reserve_staging_retirement(renderer);
       if (!retired)
         log_fatal("Bindless Vulkan lost bounded staging retirement capacity");
+      if (!vkr_bindless_vk_retire_buffer(renderer, &initialization->staging,
+                                         retire_value))
+        log_fatal("Bindless Vulkan failed to retire submitted staging memory");
       *retired = (VkrBindlessVkRetiredStagingBuffer){
           .buffer = initialization->staging,
           .retire_value = retire_value,
@@ -2417,6 +2539,7 @@ static bool8_t vkr_bindless_vk_record_draw(VkrBindlessVulkanRenderer *renderer,
   if (vkBeginCommandBuffer(command, &begin_info) != VK_SUCCESS) {
     return false_v;
   }
+  vkr_bindless_vk_record_buffer_initializations(renderer, command);
   vkr_bindless_vk_record_texture_initializations(renderer, command);
   if (!renderer->sentinel_uploaded) {
     vkr_bindless_vk_cmd_image_barrier(
@@ -2514,12 +2637,14 @@ static bool8_t vkr_bindless_vk_record_draw(VkrBindlessVulkanRenderer *renderer,
           ? &renderer
                  ->published_geometries[renderer->active_geometry_record_index]
           : NULL;
-  vkCmdBindIndexBuffer(command,
-                       active_geometry ? active_geometry->indices.handle
-                                       : renderer->upload.handle,
-                       active_geometry ? 0u : VKR_BINDLESS_VK_INDEX_OFFSET,
-                       active_geometry ? active_geometry->index_type
-                                       : VK_INDEX_TYPE_UINT16);
+  vkCmdBindIndexBuffer2(command,
+                        active_geometry ? active_geometry->indices.handle
+                                        : renderer->upload.handle,
+                        active_geometry ? 0u : VKR_BINDLESS_VK_INDEX_OFFSET,
+                        active_geometry ? active_geometry->indices.size
+                                        : (VkDeviceSize)(sizeof(uint16_t) * 3u),
+                        active_geometry ? active_geometry->index_type
+                                        : VK_INDEX_TYPE_UINT16);
   const VkrBindlessVkPushConstants push = {
       .root = renderer->upload.address + VKR_BINDLESS_VK_ROOT_OFFSET,
       .material_index = renderer->active_material_index,
@@ -2678,6 +2803,7 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
   }
   renderer->submit_value = signal_value;
   slot->retire_value = signal_value;
+  vkr_bindless_vk_commit_buffer_initializations(renderer, signal_value);
   vkr_bindless_vk_commit_texture_initializations(renderer, signal_value);
   renderer->targets.images[slot->image_index].layout =
       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -3032,14 +3158,17 @@ void vkr_bindless_vulkan_renderer_memory_metrics(
   MemZero(out_metrics, sizeof(*out_metrics));
   if (!renderer)
     return;
-  out_metrics->block_count = renderer->upload_block_count;
-  for (uint32_t block_index = 0; block_index < renderer->upload_block_count;
-       ++block_index) {
-    vkr_gpu_memory_get_metrics(renderer->upload_blocks[block_index].core,
-                               &out_metrics->blocks[block_index]);
-    vkr_gpu_memory_metrics_accumulate(&out_metrics->aggregate,
-                                      &out_metrics->blocks[block_index]);
-  }
+  VkrBindlessVkMemoryPoolMetrics metrics = {0};
+  vkr_bindless_vulkan_memory_pool_get_metrics(renderer->memory_pool, &metrics);
+  out_metrics->physical_allocations_live = metrics.physical_allocations_live;
+  out_metrics->physical_allocations_peak = metrics.physical_allocations_peak;
+  out_metrics->physical_allocations_created =
+      metrics.physical_allocations_created;
+  out_metrics->physical_allocated_bytes = metrics.physical_allocated_bytes;
+  out_metrics->physical_allocated_bytes_peak =
+      metrics.physical_allocated_bytes_peak;
+  out_metrics->block_capacity_failures = metrics.block_capacity_failures;
+  out_metrics->aggregate = metrics.aggregate;
 }
 
 void vkr_bindless_vulkan_renderer_heap_metrics(
@@ -3456,6 +3585,9 @@ static bool8_t vkr_bindless_vk_retire_unreferenced_texture(
               "publication; preserving the native texture");
     return false_v;
   }
+  if (!vkr_bindless_vk_retire_allocation(renderer, &texture->image.allocation,
+                                         completed))
+    log_fatal("Bindless Vulkan failed to retire completed texture memory");
   vkr_bindless_vk_destroy_image(renderer, &texture->image);
   MemZero(texture, sizeof(*texture));
   return true_v;
@@ -3466,7 +3598,7 @@ vkr_bindless_vk_collect_asset_publications(VkrBindlessVulkanRenderer *renderer,
                                            uint64_t completed) {
   (void)vkr_gpu_slot_table_collect(renderer->material_slots, completed, NULL);
   vkr_bindless_vk_collect_samplers(renderer, completed);
-  for (uint32_t i = 0; i < renderer->config.sampled_image_capacity; ++i) {
+  for (uint32_t i = 0; i < renderer->retired_staging_buffer_capacity; ++i) {
     VkrBindlessVkRetiredStagingBuffer *retired =
         &renderer->retired_staging_buffers[i];
     if (!retired->occupied || retired->retire_value > completed)
@@ -3518,24 +3650,36 @@ vkr_bindless_vk_reserve_material_retirement(
 
 static bool8_t vkr_bindless_vk_create_published_buffer(
     VkrBindlessVulkanRenderer *renderer, const void *data, uint64_t size,
-    VkBufferUsageFlags usage, VkrBindlessVkBuffer *out_buffer) {
-  if (!data || !size)
+    VkBufferUsageFlags usage, VkPipelineStageFlags2 destination_stage,
+    VkAccessFlags2 destination_access, uint32_t geometry_record_index,
+    VkrBindlessVkBuffer *out_buffer,
+    VkrBindlessVkPendingBufferInitialization *out_initialization) {
+  if (!data || !size || !out_buffer || !out_initialization ||
+      !vkr_bindless_vk_create_buffer(
+          renderer, VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE, size,
+          usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT, out_buffer))
     return false_v;
-  const VkMemoryPropertyFlags preferences[] = {
-      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
-          VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-      VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-      0u,
-  };
+  VkrBindlessVkBuffer staging = {0};
   if (!vkr_bindless_vk_create_buffer(
-          renderer, size, usage, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-          preferences, ArrayCount(preferences), true_v, out_buffer))
-    return false_v;
-  MemCopy(out_buffer->allocation.mapped, data, size);
-  if (!vkr_bindless_vk_flush(renderer, &out_buffer->allocation, 0u, size)) {
+          renderer, VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD, size,
+          VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging)) {
     vkr_bindless_vk_destroy_buffer(renderer, out_buffer);
     return false_v;
   }
+  MemCopy(staging.allocation.mapped, data, size);
+  if (!vkr_bindless_vk_flush(renderer, &staging.allocation, 0u, size)) {
+    vkr_bindless_vk_destroy_buffer(renderer, &staging);
+    vkr_bindless_vk_destroy_buffer(renderer, out_buffer);
+    return false_v;
+  }
+  *out_initialization = (VkrBindlessVkPendingBufferInitialization){
+      .staging = staging,
+      .destination = out_buffer->handle,
+      .size = size,
+      .destination_stage = destination_stage,
+      .destination_access = destination_access,
+      .geometry_record_index = geometry_record_index,
+  };
   return true_v;
 }
 
@@ -3547,6 +3691,10 @@ vkr_bindless_vk_asset_publish_geometry(void *state, VkrGeometryHandle handle,
       handle.id > renderer->config.sampled_image_capacity ||
       !geometry->vertices || !geometry->indices || !geometry->vertex_count ||
       !geometry->index_count ||
+      renderer->pending_buffer_initialization_count >
+          renderer->pending_buffer_initialization_capacity - 2u ||
+      renderer->staging_buffer_count >
+          renderer->retired_staging_buffer_capacity - 2u ||
       (geometry->vertex_size != sizeof(VkrVertex3d) &&
        geometry->vertex_size != sizeof(VkrVertex2d)) ||
       (geometry->index_size != sizeof(uint16_t) &&
@@ -3568,6 +3716,7 @@ vkr_bindless_vk_asset_publish_geometry(void *state, VkrGeometryHandle handle,
                         ? VK_INDEX_TYPE_UINT16
                         : VK_INDEX_TYPE_UINT32,
   };
+  VkrBindlessVkPendingBufferInitialization initializations[2] = {0};
   const VkrVertex3d *vertices = geometry->vertices;
   VkrVertex3d *converted = NULL;
   if (geometry->vertex_size == sizeof(VkrVertex2d)) {
@@ -3590,23 +3739,43 @@ vkr_bindless_vk_asset_publish_geometry(void *state, VkrGeometryHandle handle,
   const bool8_t created =
       vkr_bindless_vk_create_published_buffer(
           renderer, vertices, vertex_size,
-          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-              VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          &pending.vertices) &&
+          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+          VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+          VK_ACCESS_2_SHADER_STORAGE_READ_BIT, handle.id - 1u,
+          &pending.vertices, &initializations[0]) &&
       vkr_bindless_vk_create_published_buffer(
           renderer, geometry->indices, index_size,
-          VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-          &pending.indices);
+          VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT,
+          VK_ACCESS_2_INDEX_READ_BIT, handle.id - 1u, &pending.indices,
+          &initializations[1]);
   if (converted)
     vkr_allocator_free(renderer->allocator, converted, vertex_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   if (!created) {
+    vkr_bindless_vk_destroy_buffer(renderer, &initializations[1].staging);
+    vkr_bindless_vk_destroy_buffer(renderer, &initializations[0].staging);
     vkr_bindless_vk_destroy_buffer(renderer, &pending.indices);
     vkr_bindless_vk_destroy_buffer(renderer, &pending.vertices);
     return false_v;
   }
+  if (renderer->pending_buffer_initialization_count >
+          renderer->pending_buffer_initialization_capacity - 2u ||
+      renderer->staging_buffer_count >
+          renderer->retired_staging_buffer_capacity - 2u) {
+    vkr_bindless_vk_destroy_buffer(renderer, &initializations[1].staging);
+    vkr_bindless_vk_destroy_buffer(renderer, &initializations[0].staging);
+    vkr_bindless_vk_destroy_buffer(renderer, &pending.indices);
+    vkr_bindless_vk_destroy_buffer(renderer, &pending.vertices);
+    return false_v;
+  }
+  pending.pending_initialization_count = 2u;
   pending.live = true_v;
   *record = pending;
+  renderer->pending_buffer_initializations
+      [renderer->pending_buffer_initialization_count++] = initializations[0];
+  renderer->pending_buffer_initializations
+      [renderer->pending_buffer_initialization_count++] = initializations[1];
+  renderer->staging_buffer_count += 2u;
   return true_v;
 }
 
@@ -3886,8 +4055,16 @@ vkr_bindless_vk_asset_unpublish_geometry(void *state,
     return false_v;
   VkrBindlessVkPublishedGeometry *record =
       &renderer->published_geometries[handle.id - 1u];
-  if (!record->live || record->handle.generation != handle.generation)
+  if (!record->live || record->handle.generation != handle.generation ||
+      (renderer->frame_active && record->pending_initialization_count))
     return false_v;
+  if (record->pending_initialization_count)
+    vkr_bindless_vk_discard_geometry_initializations(renderer, handle.id - 1u);
+  if (!vkr_bindless_vk_retire_buffer(renderer, &record->vertices,
+                                     renderer->submit_value) ||
+      !vkr_bindless_vk_retire_buffer(renderer, &record->indices,
+                                     renderer->submit_value))
+    log_fatal("Bindless Vulkan failed to retire geometry memory");
   record->live = false_v;
   record->pending_retire = true_v;
   record->last_use_submit_value = renderer->submit_value;
@@ -3904,7 +4081,8 @@ vkr_bindless_vk_asset_publish_texture(void *state, VkrTextureHandle handle,
       handle.id > renderer->config.sampled_image_capacity ||
       renderer->pending_texture_initialization_count >=
           renderer->config.sampled_image_capacity ||
-      renderer->staging_buffer_count >= renderer->config.sampled_image_capacity)
+      renderer->staging_buffer_count >=
+          renderer->retired_staging_buffer_capacity)
     return false_v;
   VkrBindlessVkPublishedTexture *record =
       &renderer->published_textures[handle.id - 1u];
@@ -4348,9 +4526,27 @@ static bool8_t vkr_bindless_vk_run_asset_publisher_fixture(
   VkrBindlessVulkanResult submitted[3] = {0};
   renderer->active_material_index =
       renderer->published_materials[material_a.id - 1u].slot.index;
+  uint64_t expected_staging_retirements =
+      renderer->pending_buffer_initialization_count;
+  for (uint32_t i = 0; i < renderer->pending_texture_initialization_count;
+       ++i) {
+    if (renderer->pending_texture_initializations[i].staging.handle)
+      expected_staging_retirements++;
+  }
+  VkrBindlessVulkanMemoryMetrics memory_before_submit = {0};
+  vkr_bindless_vulkan_renderer_memory_metrics(renderer, &memory_before_submit);
   if (!vkr_bindless_vulkan_renderer_prepare_frame(renderer, 2001u, &setup) ||
       !vkr_bindless_vulkan_renderer_submit_packet(renderer, &packet,
-                                                  &submitted[0]) ||
+                                                  &submitted[0]))
+    return false_v;
+  VkrBindlessVulkanMemoryMetrics memory_after_submit = {0};
+  vkr_bindless_vulkan_renderer_memory_metrics(renderer, &memory_after_submit);
+  out_result->staging_retired_at_submit =
+      expected_staging_retirements > 0u &&
+      memory_after_submit.aggregate.retired_allocations ==
+          memory_before_submit.aggregate.retired_allocations +
+              expected_staging_retirements;
+  if (!out_result->staging_retired_at_submit ||
       !vkr_bindless_vk_asset_unpublish_material(renderer, material_a) ||
       !vkr_bindless_vk_asset_unpublish_texture(renderer, shared_texture))
     return false_v;
@@ -4432,8 +4628,28 @@ bool8_t vkr_bindless_vulkan_renderer_run_publication_test(
       !vkr_bindless_vulkan_renderer_wait_idle(renderer))
     return false_v;
   MemZero(out_result, sizeof(*out_result));
+  if (renderer->pending_buffer_initialization_count ||
+      renderer->pending_texture_initialization_count) {
+    VkrFrameSetup setup = {0};
+    const VkrRenderPacket packet = {
+        .packet_version = VKR_RENDER_PACKET_VERSION,
+    };
+    VkrBindlessVulkanResult submitted = {0};
+    if (!vkr_bindless_vulkan_renderer_prepare_frame(renderer, 999u, &setup) ||
+        !vkr_bindless_vulkan_renderer_submit_packet(renderer, &packet,
+                                                    &submitted) ||
+        !vkr_bindless_vulkan_renderer_wait_idle(renderer))
+      return false_v;
+    VkrBindlessVulkanResult completed = {0};
+    if (!vkr_bindless_vulkan_renderer_poll_result(
+            renderer, submitted.submit_value - 1u, &completed) ||
+        !vkr_bindless_vk_result_is_sentinel(&completed))
+      return false_v;
+  }
   VkrBindlessVulkanHeapMetrics baseline = {0};
+  VkrBindlessVulkanMemoryMetrics memory_baseline = {0};
   vkr_bindless_vulkan_renderer_heap_metrics(renderer, &baseline);
+  vkr_bindless_vulkan_renderer_memory_metrics(renderer, &memory_baseline);
   if (!vkr_bindless_vk_run_asset_publisher_fixture(renderer, out_result))
     return false_v;
   VkrGpuSlotHandle shared_texture = {0}, shared_storage = {0};
@@ -4580,10 +4796,39 @@ bool8_t vkr_bindless_vulkan_renderer_run_publication_test(
                                  &out_result->samplers);
   vkr_gpu_slot_table_get_metrics(renderer->material_slots,
                                  &out_result->materials);
+  VkrBindlessVulkanMemoryMetrics memory_after = {0};
+  vkr_bindless_vulkan_renderer_memory_metrics(renderer, &memory_after);
+  out_result->memory_returned_to_baseline =
+      memory_after.aggregate.live_allocations ==
+          memory_baseline.aggregate.live_allocations &&
+      memory_after.aggregate.retired_allocations ==
+          memory_baseline.aggregate.retired_allocations &&
+      memory_after.aggregate.live_requested_bytes ==
+          memory_baseline.aggregate.live_requested_bytes &&
+      memory_after.aggregate.live_reserved_bytes ==
+          memory_baseline.aggregate.live_reserved_bytes &&
+      memory_after.aggregate.retired_requested_bytes ==
+          memory_baseline.aggregate.retired_requested_bytes &&
+      memory_after.aggregate.retired_reserved_bytes ==
+          memory_baseline.aggregate.retired_reserved_bytes;
+  if (!out_result->memory_returned_to_baseline)
+    log_debug(
+        "Bindless Vulkan V4 memory baseline drift: live %llu->%llu "
+        "requested %llu->%llu reserved %llu->%llu retired %llu->%llu",
+        (unsigned long long)memory_baseline.aggregate.live_allocations,
+        (unsigned long long)memory_after.aggregate.live_allocations,
+        (unsigned long long)memory_baseline.aggregate.live_requested_bytes,
+        (unsigned long long)memory_after.aggregate.live_requested_bytes,
+        (unsigned long long)memory_baseline.aggregate.live_reserved_bytes,
+        (unsigned long long)memory_after.aggregate.live_reserved_bytes,
+        (unsigned long long)memory_baseline.aggregate.retired_allocations,
+        (unsigned long long)memory_after.aggregate.retired_allocations);
   return out_result->exact_draw_count == 6u &&
          out_result->shared_sampler_reused &&
          out_result->dependent_materials_republished &&
          out_result->upload_wait_free &&
+         out_result->staging_retired_at_submit &&
+         out_result->memory_returned_to_baseline &&
          out_result->sampled_images.slots_live ==
              baseline.sampled_images.slots_live &&
          out_result->sampled_images.slots_retired ==
@@ -4619,6 +4864,7 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
     vkr_bindless_vulkan_renderer_wait_idle(renderer);
     if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN)
       (void)vkDeviceWaitIdle(device);
+    vkr_bindless_vk_discard_buffer_initializations(renderer);
     vkr_bindless_vk_discard_texture_initializations(renderer);
     vkr_bindless_vk_drain_asset_publications(renderer);
     for (uint32_t i = 0; i < ArrayCount(renderer->retired_window_targets);
@@ -4660,7 +4906,7 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
           renderer->published_samplers[i].sampler)
         vkDestroySampler(device, renderer->published_samplers[i].sampler, NULL);
     }
-    for (uint32_t i = 0; i < renderer->config.sampled_image_capacity; ++i) {
+    for (uint32_t i = 0; i < renderer->retired_staging_buffer_capacity; ++i) {
       if (renderer->retired_staging_buffers &&
           renderer->retired_staging_buffers[i].occupied)
         vkr_bindless_vk_destroy_buffer(
@@ -4671,7 +4917,8 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
     vkr_bindless_vk_destroy_buffer(renderer, &renderer->upload);
     vkr_bindless_vk_destroy_buffer(renderer, &renderer->sampler_descriptors);
     vkr_bindless_vk_destroy_buffer(renderer, &renderer->resource_descriptors);
-    vkr_bindless_vk_destroy_upload_block(renderer);
+    vkr_bindless_vulkan_memory_pool_destroy(renderer->memory_pool);
+    renderer->memory_pool = NULL;
     if (renderer->timeline) {
       vkDestroySemaphore(device, renderer->timeline, NULL);
     }
@@ -4694,6 +4941,11 @@ void vkr_bindless_vulkan_renderer_destroy(VkrBindlessVulkanRenderer *renderer) {
   if (renderer->pending_texture_initializations) {
     vkr_allocator_free(allocator, renderer->pending_texture_initializations,
                        renderer->pending_texture_initializations_size,
+                       VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
+  }
+  if (renderer->pending_buffer_initializations) {
+    vkr_allocator_free(allocator, renderer->pending_buffer_initializations,
+                       renderer->pending_buffer_initializations_size,
                        VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
   }
   if (renderer->published_materials) {

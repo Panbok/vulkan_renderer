@@ -100,6 +100,7 @@ typedef struct VkrRendererImplMemoryMetrics {
   uint64_t native_heap_count;
   uint64_t native_heap_peak_count;
   uint64_t native_heaps_created;
+  uint64_t native_heap_capacity_failures;
   uint64_t native_heap_size;
   uint64_t native_heap_used_size;
   uint64_t native_heap_allocated_size;

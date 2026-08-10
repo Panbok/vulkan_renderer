@@ -130,7 +130,7 @@ int main(int argc, char **argv) {
   uint64_t last_polled = 0u;
   const uint32_t offscreen_extents[][2] = {{4u, 4u}, {7u, 5u}};
   const uint32_t window_extents[][2] = {{320u, 240u}, {400u, 300u}};
-  const uint32_t(*extents)[2] = windowed ? window_extents : offscreen_extents;
+  const uint32_t (*extents)[2] = windowed ? window_extents : offscreen_extents;
   uint64_t frame_index = 0u;
   for (uint32_t extent_index = 0; walking_pass && extent_index < 2u;
        ++extent_index) {
@@ -241,16 +241,15 @@ int main(int argc, char **argv) {
   }
   VkrBindlessVulkanMemoryMetrics memory_metrics = {0};
   vkr_bindless_vulkan_renderer_memory_metrics(renderer, &memory_metrics);
-  uint64_t memory_live = 0u;
-  uint64_t memory_reserved = 0u;
-  for (uint32_t block = 0; block < memory_metrics.block_count; ++block) {
-    memory_live += memory_metrics.blocks[block].live_allocations;
-    memory_reserved += memory_metrics.blocks[block].live_reserved_bytes;
-  }
   if (walking_pass) {
-    printf("V3 MEMORY blocks=%u live=%llu reserved=%llu\n",
-           memory_metrics.block_count, (unsigned long long)memory_live,
-           (unsigned long long)memory_reserved);
+    printf("V3 MEMORY physical=%llu bytes=%llu live=%llu reserved=%llu "
+           "retired=%llu capacity-failures=%llu\n",
+           (unsigned long long)memory_metrics.physical_allocations_live,
+           (unsigned long long)memory_metrics.physical_allocated_bytes,
+           (unsigned long long)memory_metrics.aggregate.live_allocations,
+           (unsigned long long)memory_metrics.aggregate.live_reserved_bytes,
+           (unsigned long long)memory_metrics.aggregate.retired_allocations,
+           (unsigned long long)memory_metrics.block_capacity_failures);
   }
   VkrBindlessVulkanPublicationTestResult publication = {0};
   if (walking_pass && !windowed) {
@@ -260,6 +259,7 @@ int main(int argc, char **argv) {
       printf("V4 PUBLICATION PASS callbacks=prepared+writable+sampler+"
              "loaded-mesh exact-draws=%u shared=%u replacement=%u "
              "sampler-shared=%u material-republish=%u upload-waits=%u "
+             "staging-retirement=%u memory-baseline=%u "
              "sampled-live=%llu storage-live=%llu sampler-live=%llu "
              "material-live=%llu published=%llu pending=%llu "
              "retirements=%llu collected=%llu\n",
@@ -268,6 +268,8 @@ int main(int argc, char **argv) {
              publication.shared_sampler_reused,
              publication.dependent_materials_republished,
              publication.upload_wait_free ? 0u : 1u,
+             publication.staging_retired_at_submit,
+             publication.memory_returned_to_baseline,
              (unsigned long long)publication.sampled_images.slots_live,
              (unsigned long long)publication.storage_images.slots_live,
              (unsigned long long)publication.samplers.slots_live,

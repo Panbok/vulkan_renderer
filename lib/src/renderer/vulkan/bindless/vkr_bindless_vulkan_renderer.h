@@ -28,6 +28,14 @@ typedef struct VkrBindlessVulkanRendererConfig {
   uint32_t material_record_capacity;
   /** GPU rows: sentinel row zero plus two generations of every record. */
   uint32_t material_slot_capacity;
+  uint64_t device_buffer_block_size;
+  uint64_t device_image_block_size;
+  uint64_t upload_buffer_block_size;
+  uint64_t readback_buffer_block_size;
+  uint32_t memory_block_capacity;
+  uint32_t memory_blocks_per_pool;
+  uint32_t memory_block_allocation_capacity;
+  uint32_t publication_staging_capacity;
   bool8_t enable_validation;
   bool8_t enable_synchronization_validation;
   bool8_t enable_gpu_assisted;
@@ -50,6 +58,8 @@ typedef struct VkrBindlessVulkanPublicationTestResult {
   bool8_t shared_sampler_reused;
   bool8_t dependent_materials_republished;
   bool8_t upload_wait_free;
+  bool8_t staging_retired_at_submit;
+  bool8_t memory_returned_to_baseline;
   VkrGpuSlotTableMetrics sampled_images;
   VkrGpuSlotTableMetrics storage_images;
   VkrGpuSlotTableMetrics samplers;
@@ -64,8 +74,12 @@ typedef struct VkrBindlessVulkanHeapMetrics {
 } VkrBindlessVulkanHeapMetrics;
 
 typedef struct VkrBindlessVulkanMemoryMetrics {
-  uint32_t block_count;
-  VkrGpuMemoryMetrics blocks[4];
+  uint64_t physical_allocations_live;
+  uint64_t physical_allocations_peak;
+  uint64_t physical_allocations_created;
+  uint64_t physical_allocated_bytes;
+  uint64_t physical_allocated_bytes_peak;
+  uint64_t block_capacity_failures;
   VkrGpuMemoryMetrics aggregate;
 } VkrBindlessVulkanMemoryMetrics;
 

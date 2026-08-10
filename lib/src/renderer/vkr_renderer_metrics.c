@@ -181,6 +181,8 @@ vkr_internal const VkrRendererImplMemoryMetricDescription
         VKR_IMPL_GAUGE("memory.gpu.heaps.live", VKR_METRIC_UNIT_COUNT),
         VKR_IMPL_GAUGE("memory.gpu.heaps.peak", VKR_METRIC_UNIT_COUNT),
         VKR_IMPL_COUNTER("memory.gpu.heaps.created", VKR_METRIC_UNIT_COUNT),
+        VKR_IMPL_COUNTER("memory.gpu.heaps.failures.capacity",
+                         VKR_METRIC_UNIT_COUNT),
         VKR_IMPL_GAUGE("memory.gpu.suballocations.live", VKR_METRIC_UNIT_COUNT),
         VKR_IMPL_GAUGE("memory.gpu.suballocations.peak", VKR_METRIC_UNIT_COUNT),
         VKR_IMPL_COUNTER("memory.gpu.suballocations.created",
@@ -888,6 +890,7 @@ static uint32_t vkr_renderer_metrics_impl_values(
   values[i++] = heap_live;
   values[i++] = heap_peak;
   values[i++] = heaps_created;
+  values[i++] = memory->native_heap_capacity_failures;
   values[i++] = suballocations->live_allocations;
   values[i++] = suballocations->peak_allocations;
   values[i++] = suballocations->allocations_created;

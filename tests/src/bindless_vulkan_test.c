@@ -116,6 +116,59 @@ static void test_noncoherent_atom_ranges(void) {
   printf("  test_noncoherent_atom_ranges PASSED\n");
 }
 
+static void test_memory_pool_topology_contract(void) {
+  printf("  Running test_memory_pool_topology_contract...\n");
+  assert(vkr_bindless_vulkan_memory_type_rank(
+             VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE,
+             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0);
+  assert(vkr_bindless_vulkan_memory_type_rank(
+             VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE,
+             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
+                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 1);
+  assert(vkr_bindless_vulkan_memory_type_rank(
+             VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD,
+             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == 0);
+  assert(vkr_bindless_vulkan_memory_type_rank(
+             VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD,
+             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) == -1);
+  assert(vkr_bindless_vulkan_memory_type_rank(
+             VKR_BINDLESS_VK_MEMORY_CLASS_READBACK,
+             VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                 VK_MEMORY_PROPERTY_HOST_CACHED_BIT |
+                 VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0);
+
+  const VkrBindlessVkMemoryPoolKey buffer = {
+      .memory_class = VKR_BINDLESS_VK_MEMORY_CLASS_DEVICE,
+      .kind = VKR_BINDLESS_VK_MEMORY_KIND_BUFFER,
+      .memory_type_index = 2u,
+      .device_address_required = true_v,
+  };
+  assert(vkr_bindless_vulkan_memory_pool_key_equal(buffer, buffer));
+  VkrBindlessVkMemoryPoolKey different = buffer;
+  different.memory_class = VKR_BINDLESS_VK_MEMORY_CLASS_UPLOAD;
+  assert(!vkr_bindless_vulkan_memory_pool_key_equal(buffer, different));
+  different = buffer;
+  different.kind = VKR_BINDLESS_VK_MEMORY_KIND_IMAGE;
+  assert(!vkr_bindless_vulkan_memory_pool_key_equal(buffer, different));
+  different = buffer;
+  different.memory_type_index++;
+  assert(!vkr_bindless_vulkan_memory_pool_key_equal(buffer, different));
+  different = buffer;
+  different.device_address_required = false_v;
+  assert(!vkr_bindless_vulkan_memory_pool_key_equal(buffer, different));
+
+  uint64_t block_size = 0u;
+  assert(
+      vkr_bindless_vulkan_memory_block_size(1024u, 2049u, 256u, &block_size));
+  assert(block_size == 2304u);
+  assert(!vkr_bindless_vulkan_memory_block_size(1024u, 1u, 96u, &block_size));
+  assert(!vkr_bindless_vulkan_memory_block_size(UINT64_MAX, UINT64_MAX, 256u,
+                                                &block_size));
+  printf("  test_memory_pool_topology_contract PASSED\n");
+}
+
 static void test_shared_submit_ring_completion_contract(void) {
   printf("  Running test_shared_submit_ring_completion_contract...\n");
   VkrGpuSubmitRingSlot slots[2] = {0};
@@ -269,6 +322,7 @@ bool32_t run_bindless_vulkan_tests(void) {
   test_reacquisition_completion_contract();
   test_surface_extension_classifier();
   test_noncoherent_atom_ranges();
+  test_memory_pool_topology_contract();
   test_shared_submit_ring_completion_contract();
   test_shared_gpu_memory_and_abi_contracts();
   test_shared_slot_table_metric_contract();

@@ -70,6 +70,7 @@ $releaseText = $releaseLines -join [Environment]::NewLine
 if ($releaseText -notmatch 'V3 WALKING OFFSCREEN PASS' -or
     $releaseText -notmatch 'V4 PUBLICATION PASS .*exact-draws=6 shared=1 replacement=1' -or
     $releaseText -notmatch 'sampler-shared=1 material-republish=1 upload-waits=0' -or
+    $releaseText -notmatch 'staging-retirement=1 memory-baseline=1' -or
     $releaseText -match 'VUID-|\[ERROR\]:|\[FATAL\]:') {
     throw "Release offscreen run lacks required V3/V4 proof"
 }
@@ -86,6 +87,7 @@ for ($run = 1; $run -le $Repetitions; ++$run) {
     if (-not $publication -or
         $publication -notmatch 'exact-draws=6 shared=1 replacement=1' -or
         $publication -notmatch 'sampler-shared=1 material-republish=1 upload-waits=0' -or
+        $publication -notmatch 'staging-retirement=1 memory-baseline=1' -or
         $publication -notmatch 'pending=0' -or
         $text -notmatch 'V3 WAITS command-slots=0' -or
         $text -notmatch 'V3 VALIDATION setup-notices=0 warnings=0 errors=0 gpu-assisted=disabled') {
@@ -119,7 +121,7 @@ $gpuLines = Invoke-Captured -Label "GPU-assisted validation" `
     -Executable $debugExecutable -Arguments @("--gpu-assisted") `
     -LogPath $gpuLog
 $gpuText = $gpuLines -join [Environment]::NewLine
-if ($gpuText -notmatch 'V4 PUBLICATION PASS .*upload-waits=0' -or
+if ($gpuText -notmatch 'V4 PUBLICATION PASS .*upload-waits=0 staging-retirement=1 memory-baseline=1' -or
     $gpuText -notmatch 'V3 VALIDATION setup-notices=3 warnings=0 errors=0 gpu-assisted=enabled' -or
     $gpuText -match 'VUID-|\[ERROR\]:|\[FATAL\]:') {
     throw "GPU-assisted validation lacks required V4 proof"
