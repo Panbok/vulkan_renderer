@@ -6,8 +6,7 @@ authority: design
 
 # Bindless Vulkan 1.4 Backend — Design Specification
 
-**Document status:** Partial. V0–V3 are complete and V4 has a validated walking
-slice plus a production asset-publication implementation. The selected
+**Document status:** Partial. V0–V4 are complete on the RX 6700 XT. The selected
 production strategy owns the Vulkan 1.4
 device/profile, exact offscreen and windowed prepare/submit/readback, an
 unextended WSI reacquisition-completion path, reflected production ABI, shared
@@ -16,13 +15,13 @@ publisher. Prepared and writable texture initialization is now recorded into
 the next frame command buffer without a CPU timeline wait; staging lifetime is
 tied to that frame's completion value; publication flushes are batched;
 samplers are canonical, shared, and reference-counted; and sampler replacement
-republishes every dependent material row before retiring the old sampler. V4
-remains partial because this post-change tree has not yet rerun the required
-native RX 6700 XT offscreen, windowed, synchronization-validation,
-GPU-assisted, and repeated lifecycle gate, and because the §5.2 dynamic
-device-memory pool and its complete metric family are not yet wired to geometry,
-texture staging, or images.
-`tools/validate_v3_v4_windows.ps1` owns that gate. V5 authored-graph/pass parity,
+republishes every dependent material row before retiring the old sampler. The
+§5.2 pool now suballocates DEVICE buffers/images, UPLOAD buffers and staging,
+and READBACK buffers by `(class, kind, memory_type_index,
+device_address_required)`, honors dedicated requirements, persistently maps
+host-visible blocks, and publishes logical plus physical memory metrics. The
+post-change native offscreen, windowed, synchronization-validation,
+GPU-assisted, and repeated-lifecycle gate passes. V5 authored-graph/pass parity,
 V6 baseline selection,
 and V7 legacy retirement remain open. The post-extraction Metal snapshot,
 API/GPU-validation, and complete CPU suite pass on macOS. The matched Release
@@ -509,15 +508,16 @@ Block creation is a cold allocation/publication path, not frame or draw work;
 block size and maximum blocks per pool remain configuration justified by
 metrics rather than constants asserted here.
 
-**Implementation status:** the current V3/V4 caller uses `vkr_gpu_memory` for
-four long-lived upload-class buffers: the frame upload ring, material rows, and
-the resource and sampler descriptor buffers. Published geometry, per-texture
-staging buffers, and images still use resource-local `VkDeviceMemory`
-allocations. They are therefore not yet evidence for the pool topology,
-persistent device-local geometry placement, or the complete logical
-suballocation metrics specified in this section. Moving them is a separate,
-measured allocator change; the publication and completion fixes do not imply
-that migration.
+**Implementation status:** complete for V4. The keyed Vulkan adapter uses one
+`vkr_gpu_memory` core per lazily-created block. Dynamic geometry, texture
+staging, placement images, frame readback, descriptor/material buffers, and the
+frame upload buffer all use the class policy below. Buffer/image segregation
+and the device-address key enforce the binding invariants; dedicated-required
+and dedicated-preferred resources remain outside the free-range core but enter
+the same logical and physical accounting. Block bytes and count, peaks,
+capacity failures, logical requested/reserved bytes, ownership classes,
+retirement, fragmentation, and largest-free-range values lower into the
+pre-registered renderer metric family.
 
 | Class | Memory property search, in order | Contents |
 |---|---|---|
@@ -705,9 +705,10 @@ construction. It is the exact semantic analogue of the argument-table address
 write; its cost is measured rather than inferred.
 
 Reserve a 16-byte push-constant range in the pipeline layout (address plus a
-material index and flags) but populate only the address at first. The reserved
-range is recorded in the ABI manifest, so widening it later is a manifest change
-with a reflection gate rather than silent ABI drift.
+material index and flags). V3 populated only the address; V4 also populates the
+material index while flags remain reserved. The range is recorded in the ABI
+manifest, so widening it later is a manifest change with a reflection gate
+rather than silent ABI drift.
 
 Rejected alternatives, recorded so they are not relitigated:
 
@@ -1190,7 +1191,7 @@ predeclared `+5%` bound, so the cross-platform extraction gate is not closed.
 This does not change the completed RX 6700 XT V3 status or constitute a
 Vulkan-versus-Metal performance comparison.
 
-**V4 implementation status (target revalidation pending, 2026-08-10):**
+**V4 implementation status (complete for RX 6700 XT, 2026-08-10):**
 `vkr_gpu_slot_table` is now shared by the Metal material wrapper and production
 Vulkan sampled-image, sampler, storage-image, and material tables. Slot zero is
 the permanent sentinel. Publication is fixed-capacity and generation checked;
@@ -1232,10 +1233,18 @@ the initialization commands precede the draw in that submission, staging
 buffers retire at its timeline value, and cancellation preserves the pending
 batch for retry. Descriptor and material dirty intervals accumulate between
 submissions and flush once per backing buffer immediately before queue submit.
+Geometry vertex/index publication now stages through bounded UPLOAD placements
+into DEVICE placements. Prepared textures use the same UPLOAD pool, images use
+segregated DEVICE image pools, and frame result buffers use READBACK pools.
+Maintenance4 requirements and dedicated hints are queried before native object
+creation. Host-visible blocks are persistently mapped and address-bearing
+buffer blocks alone carry `VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT`.
 The runtime fixture now requires zero upload waits, shared canonical sampler
 ownership, dependent-row republication, rejection of stale enabled texture
-handles, and the shared material-flag ABI. Native Windows validation of this
-changed path and the §5.2 dynamic-memory/metrics work remain V4 gates.
+handles, the shared material-flag ABI, and logical memory totals returning to
+their settled pre-test baseline. The Windows gate records seven physical
+allocations, 45 MiB allocated, 31 live logical allocations before fixture
+settling, zero retired allocations, and zero pool-capacity failures.
 
 Optional capabilities are deliberately outside this ladder. Each is its own
 measured change after V6, per §3.5.
@@ -1246,9 +1255,9 @@ GPU-assisted gates. macOS evidence executes the complete shared-core CPU gate
 and the post-extraction Metal snapshot and API/GPU-validation gates. The matched
 Release wall/prepare metrics pass, but submit p50 misses its bound. macOS still
 cannot execute the descriptor-buffer backend, and no native Windows result is
-inferred from its evidence. V3 is target complete. V4's asset-publication slice
-is implemented, but its post-change target validation and dynamic-memory/metric
-boundary remain pending.
+inferred from its evidence. V3 and V4 are target complete. ADR-024 remains
+partial only for the independent Metal submit-p50 bound and the V5 capture-ring
+caller.
 
 ---
 
@@ -1407,11 +1416,25 @@ SDK/validation layer 1.4.357, and driver Vulkan 1.4.315:
 - These are local dirty-tree correctness witnesses. Their native Windows scope
   is unchanged by the separate macOS extraction evidence below.
 
-This Windows evidence predates the asynchronous initialization, canonical
-sampler, dependent-row republication, and batched-flush change. It remains a
-hardware characterization and V3 witness, but it is not acceptance evidence
-for the current V4 implementation. Run
-`tools/validate_v3_v4_windows.ps1` on the same target to close that gate.
+Post-change V4 completion evidence on 2026-08-10 with the same RX 6700 XT,
+SDK/validation layer 1.4.357, and driver Vulkan 1.4.315 is under
+`.scratch/evidence/v3-v4-windows/20260810T084205.184Z`:
+
+- Release offscreen and three fresh Debug validation processes pass the exact
+  six-draw publication fixture with `upload-waits=0`, `staging-retirement=1`,
+  `memory-baseline=1`, eight balanced retirement/collection events, and
+  identical live/pending/retirement totals.
+- The memory witness reports `physical=7`, `bytes=47185920`, `live=31`,
+  `reserved=2233112`, `retired=0`, and `capacity-failures=0` before settling the
+  shared-loader initialization batch.
+- Windowed validation records five reacquisition proofs, one retired and
+  collected swapchain, no live retired swapchain, and no warning/error. The
+  GPU-assisted process reports its three expected setup notices with zero
+  warning/error. The complete CPU suite passes the pool-key, placement-rank,
+  block-size, non-coherent range, allocator-core, slot-table, and WSI contracts.
+
+This supersedes the pre-integration witness for V4 acceptance. It is functional
+and memory-accounting evidence, not a frame-time claim.
 
 Post-extraction macOS evidence on 2026-08-09 with SDK 1.4.357.0,
 Slang `2026.13.1-1-g84792eb15`, Apple M1 Pro, and Metal 4:

@@ -12,15 +12,16 @@ authority: adr
 Windows. The production V3 and V4 Vulkan callers now share the extracted
 `vkr_gpu_memory`, `vkr_gpu_submit_ring`, `vkr_gpu_abi`, and
 `vkr_gpu_slot_table` cores with typed Metal adapters. Their RX 6700 XT callers
-complete the V3 target slice and exercise the V4 slot-table contract, including
+complete the V3 and V4 target slices, including keyed dynamic memory,
 native window resize/reacquisition, loaded geometry consumption, writable
 sampled/storage textures, asynchronous frame-batched initialization, canonical
 shared samplers, dependent material-row republication, and material retirement.
-The changed path still needs its native RX 6700 XT revalidation through
-`tools/validate_v3_v4_windows.ps1`. The Vulkan memory adapter currently backs
-four long-lived upload buffers with the shared allocator core; dynamic geometry,
-texture staging, and image allocations do not yet implement the block topology
-specified by the Vulkan design. The capture ring remains Metal-owned until its
+The post-change RX 6700 XT V4 gate passes Release offscreen, three fresh Debug
+validation lifecycles, windowed synchronization validation, GPU-assisted
+validation, and logical-memory return to baseline. The Vulkan memory adapter
+now uses the shared allocator core for keyed DEVICE, UPLOAD, and READBACK buffer
+and image pools, including dynamic geometry, texture staging, and placement
+images. The capture ring remains Metal-owned until its
 V5 Vulkan caller exists. The complete
 CPU suite passes on macOS and Windows; production Vulkan synchronization and
 GPU-assisted validation pass. On macOS, clean post-extraction snapshot
@@ -34,8 +35,7 @@ p50 does not: authoritative candidate `20260809T154933.555Z-00bb51` is
 `20260809T152943.486Z-00b06c`, above the `+5%` bound. An earlier authoritative
 run of the identical candidate binary also misses at `+41.920%`, so the Release
 extraction witness remains open even though total frame time does not regress.
-This ADR remains partial for the failed Release submit bound, the incomplete
-Vulkan dynamic-allocation caller, post-change V4 target revalidation, and the V5
+This ADR remains partial for the failed Release submit bound and the V5
 capture-ring extraction.
 
 ## Context

@@ -15,7 +15,8 @@ GPU is done with it has measured nothing. Never trade an invariant for a number.
 
 ## Project
 
-Vulkan 1.2 renderer and engine framework in C11 — ~212 source files, ~115k LOC.
+Renderer and engine framework in C11 with retained Vulkan 1.2 and selected
+Vulkan 1.4 bindless strategies — ~212 source files, ~115k LOC.
 The frontend (`lib/src/renderer/renderer_frontend.c`) owns the subsystems and
 selects one coarse `VkrRendererImpl` strategy at initialization. Its retained
 legacy adaptor reaches Vulkan through the `VkrRendererBackendInterface`
@@ -35,7 +36,7 @@ For any renderer task, read in this order:
 1. `docs/architecture/renderer-architecture-spec.md` — **status authority**.
    §4 is the feature table, §8 is the prioritized known-issues list. Check §8
    before "fixing" anything; most surprising behaviour is already logged there.
-2. `docs/architecture/adr/README.md` — **rationale authority**, 15 ADRs covering
+2. `docs/architecture/adr/README.md` — **rationale authority**, 26 ADRs covering
    the backend seam, render graph, packet API, reflection, allocators, GPU
    memory, synchronization, ECS, Vulkan baseline, texture compression, and draw
    submission, plus proposed present-target and metrics-registry seams.

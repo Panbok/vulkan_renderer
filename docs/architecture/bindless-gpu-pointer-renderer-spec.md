@@ -16,10 +16,9 @@ A later cross-backend audit found that generation preserved broken retained IBL,
 sampler, transparency, and presentation behavior. Those defects are corrected,
 so the old Metal generation is historical and Gate A pixel acceptance is open
 again pending owner review of a replacement. Stage 6 modern Vulkan is complete
-through V3 on the RX 6700 XT. Its V4 asset-publication slice is implemented,
-while post-change native Windows validation and dynamic device-memory pooling
-remain open; V5 graph parity, V6 baseline selection, and V7 retirement remain
-open. The detailed
+through V4 on the RX 6700 XT, including the keyed dynamic-memory pools and
+post-change validation gate. V5 authored-graph parity, V6 baseline selection,
+and V7 retirement remain open. The detailed
 [bindless Vulkan backend specification](bindless-vulkan-backend-spec.md) and
 ADRs 023–026 own its current status. The descriptor-buffer backend still cannot
 run on the macOS development machine. Its post-extraction CPU, byte-identical

@@ -5,8 +5,9 @@ authority: adr
 ---
 # ADR-007: Per-Resource Device-Memory Allocation
 
-**Status:** Accepted (partial) — simple current policy with an acknowledged
-scalability limit.
+**Status:** Accepted (partial) — retained legacy policy. The selected Vulkan
+1.4 bindless implementation now uses the keyed block allocator specified by
+[ADR-023](023-vulkan-1-4-bindless-capability-profile.md).
 
 ## Context
 
@@ -22,15 +23,16 @@ different Vulkan buffers/images share `VkDeviceMemory`.
 
 ## Decision
 
-Keep direct device-memory ownership for now:
+Keep direct device-memory ownership in the legacy Vulkan implementation:
 
 - image creation allocates and binds its own `VkDeviceMemory`;
 - buffer creation and resize allocate and bind their own memory;
 - each readback buffer owns one allocation;
-- no VMA or custom block allocator is present.
+- no VMA or custom block allocator is present in that legacy path.
 
-All device allocation/free operations route through one tracked backend wrapper;
-the wrapper contains the only raw `vkAllocateMemory`/`vkFreeMemory` pair.
+Legacy device allocation/free operations route through one tracked backend
+wrapper. Bindless Vulkan instead owns keyed pooled-block and dedicated
+allocation sites below its Vulkan-private strategy boundary.
 Every `VulkanBuffer` also owns a `VkrDMemory` offset allocator over its virtual
 byte range. Callers may use that to suballocate logical ranges when they
 intentionally share the same buffer; it does not imply that all mesh geometry

@@ -13,7 +13,7 @@ record and coarse operation strategy for Metal, the retained legacy-Vulkan
 adaptor, and the production bindless Vulkan implementation. The bindless
 strategy now owns a Vulkan 1.4 device, offscreen and window-target state,
 descriptor heaps, prepare/submit execution, completion, memory/heap metrics,
-and the V4 asset-publication boundary pending post-change target validation.
+and the validated V4 asset-publication and dynamic-memory boundary.
 The neutral submit result carries capture, memory, material, and pass-timing
 data; renderer behavior no longer tests
 backend type after factory selection; and the normal frame path contains only

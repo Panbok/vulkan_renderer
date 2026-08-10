@@ -47,7 +47,7 @@ Considered → Revisit When**.
 | [ADR-021](021-metal-first-bindless-backend.md) | Metal 4 first; modern Vulkan for Windows and Linux | Accepted (partial) |
 | [ADR-022](022-gpu-pointer-resource-model.md) | GPU-address resources, native texture references, backend-lowered dependencies | Accepted (partial) |
 | [ADR-023](023-vulkan-1-4-bindless-capability-profile.md) | Vulkan 1.4 bindless profile with descriptor buffers and base-swapchain reacquisition completion | Accepted |
-| [ADR-024](024-shared-bindless-gpu-cores.md) | Backend-neutral GPU cores extracted with real callers; the Vulkan dynamic-memory caller, Release submit bound, post-change V4 target validation, and V5 capture caller remain open | Accepted (partial) |
+| [ADR-024](024-shared-bindless-gpu-cores.md) | Backend-neutral GPU cores extracted with real callers; the Release submit bound and V5 capture caller remain open | Accepted (partial) |
 | [ADR-025](025-selected-renderer-implementation-strategy.md) | One selected renderer implementation strategy replacing the backend-type ladder | Accepted |
 | [ADR-026](026-vulkan-1-2-retirement.md) | Predeclared Vulkan 1.2 retirement gates and the bindless-only end state | Proposed |
 

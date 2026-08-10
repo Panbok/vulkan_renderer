@@ -20,10 +20,10 @@ Status authority for everything here is
 ### Frontend/backend boundary — ADR-001
 
 `renderer_frontend.c/h` owns the renderer subsystems and selects one coarse
-`VkrRendererImpl` strategy at initialization. Metal and the retained legacy
-Vulkan adaptor are real strategies; the bindless Vulkan identity is a rejecting
-stub until V3. A normal successful frame crosses the strategy seam exactly
-twice, through prepare and submit. The legacy adaptor alone reaches the old
+`VkrRendererImpl` strategy at initialization. Metal, the retained legacy Vulkan
+adaptor, and the Vulkan 1.4 bindless V1–V4 implementation are real strategies.
+A normal successful frame crosses the strategy seam exactly twice, through
+prepare and submit. The legacy adaptor alone reaches the old
 `VkrRendererBackendInterface` function-pointer table declared in
 `vkr_renderer.h`. Vulkan types remain behind `lib/src/renderer/vulkan/` and do
 not appear in public headers; public code uses opaque handles
@@ -140,11 +140,12 @@ repairs from an older audit. The remaining boundaries are:
   Timeline-semaphore retirement is not implemented.
 - **Readback pressure.** Picking's three-slot ring is deferred in the common
   case, but wrapping onto a pending slot waits on its associated frame fence.
-- **Device memory.** Allocation accounting and `VK_EXT_memory_budget` telemetry
-  are centralized in the backend wrapper. There is no VMA or device-memory
-  block allocator; current Apple M1 Pro measurements argue against adding one
-  until a target reports a low allocation limit or a materially different
-  allocation distribution.
+- **Device memory.** Legacy Vulkan allocation accounting and
+  `VK_EXT_memory_budget` telemetry are centralized in its backend wrapper; its
+  Apple M1 Pro measurements argue against retrofitting pooling. Bindless Vulkan
+  V4 instead uses keyed DEVICE/UPLOAD/READBACK blocks backed by
+  `vkr_gpu_memory`, with dedicated-resource bypass and separate logical/physical
+  metrics. Neither path provides defragmentation, eviction, or transient aliasing.
 - **Validation breadth.** The corrected frame path and P2 throughput path have
   a three-image MoltenVK validation record. Two/four-image swapchains, wider
   failure injection, other GPUs/queue layouts, and a native Vulkan target remain
@@ -154,10 +155,10 @@ repairs from an older audit. The remaining boundaries are:
 
 The retained Vulkan 1.2 implementation has no dynamic rendering, descriptor
 indexing, or bindless path. Metal has a production bindless implementation, and
-the shared V2 selection seam exists, but the modern Vulkan production strategy
-is still the rejecting V3 stub. No HDR, tonemap, or post chain — the `POST`
-domain is reserved. No shader hot reload. `compute` JSON passes currently
-orchestrate graphics/CPU work; real compute dispatch is not exercised.
+the Vulkan 1.4 strategy completes V1–V4 on the RX 6700 XT; authored graph,
+sync2/dynamic-rendering pass parity, and capture remain V5 work. No shader hot
+reload. Legacy `compute` JSON passes currently orchestrate graphics/CPU work;
+real compute dispatch is not exercised.
 
 **Throughput baseline** — production payload extraction uses `vkr_frustum` for
 camera and union-of-cascade visibility, CPU-merges compatible opaque candidates
