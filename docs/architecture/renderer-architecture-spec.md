@@ -5,44 +5,17 @@ authority: spec
 ---
 # VKR Renderer — Architecture and Status Specification
 
-**Document status:** Reviewed against the working tree on 2026-07-31; P2
-production-reference record corrected on 2026-08-01, harness Phases 3-6 status
-recorded on 2026-08-02, nested glTF texture/specular-glossiness diffuse
-compatibility recorded on 2026-08-03, and HDR environment/IBL plus tonemap
-activation recorded on 2026-08-03 with seam-safe cube baking corrected on
-2026-08-04; Bistro alpha-mask shadow routing and the PCF hash-grid origin were
-corrected on 2026-08-04; prepared specular-glossiness lowering, graph-declared
-transmission feedback, bounded glTF punctual lights, caster-relevant cascade
-fit, fragment-local IBL, and transitive scene-content fingerprints were added
-on 2026-08-04; the reviewed fourteen-view Bistro golden baseline was accepted
-on 2026-08-05; the optional Metal 4 Stages 0–5 path was recorded on 2026-08-06,
-and cross-backend text parity plus backend-pinned Vulkan/Metal Bistro-plus-text
-evidence were recorded on 2026-08-07; production shader sources were moved
-behind their backend owners on 2026-08-07; the Metal generation was reclassified
-as historical after the parity correction on 2026-08-08; the V1 shared-core
-characterization and V2 selected implementation seam were recorded on
-2026-08-08; matched Release performance and explicit macOS native-resize
-validation pass; native Windows CPU and resize-validation evidence completed
-V1/V2 on 2026-08-09; the selected production bindless Vulkan V3/V4 slices,
-shared GPU cores, native RX 6700 XT window/reacquisition path, and V4 asset
-publication were completed and validated on Windows on 2026-08-09; the
-post-extraction macOS CPU, byte-identical Metal snapshot, Metal API/GPU
-validation, and paired Release witnesses were recorded on 2026-08-09. The
-V4 keyed Vulkan memory pools, complete memory metric projection, and post-change
-RX 6700 XT validation gate were completed on 2026-08-10. The Windows V5
-authored graph, dynamic-rendering pass set, PBR/IBL path, shared asynchronous
-capture, timestamps, and offscreen/windowed validation gates were completed on
-2026-08-10; V6 selection, cache/lifecycle/metrics, and matrix support also ship.
-A later Bistro visual audit fixed premature global-HDR bake cancellation,
-generation-blocking deferred logical unpublication, normalized local-cubemap
-rejection, and incomplete presentation-lifetime proof.
-The owner visually accepted the corrected Bistro/text output on 2026-08-11.
-Local snapshots, reports, proposals, bindless baseline generations, and the
-legacy-only performance experiment were removed afterward at the owner's
-request. Packet-native editor/gizmo initialization completes the full-boot
-contract. Windows V6 and Gate B1 are complete, bindless Vulkan is the Windows
-default, and explicit `vulkan` retains Vulkan 1.2 as a diagnostic fallback. The
-macOS extraction witnesses remain open outside the completed Windows V6 slice.
+**Document status:** Reviewed against the V7 working tree on 2026-08-11.
+Metal 4 Stages 0–5 and bindless Vulkan V0–V6 are implemented. ADR-026 V7 is
+complete under explicit owner authorization: Vulkan 1.2, its descriptor-set
+shaders and manifests, the legacy-only frontend resource model, the
+87-operation backend interface/adaptor, and render-pass/render-target graph
+migration state are removed. `VkrRendererImpl` now selects Metal or bindless
+Vulkan once; `vulkan` unambiguously names the bindless implementation. The
+complete CPU suite and surviving macOS Metal evidence pass after retirement.
+The descriptor-buffer runtime remains unavailable on MoltenVK, so fresh native
+Windows post-retirement runtime evidence is unavailable locally and is not
+claimed.
 **Scope:** Renderer architecture, implemented features, CPU/GPU memory, data
 transfer, synchronization, known issues, and recommended direction.
 **Audience:** Contributors and reviewers.
@@ -56,52 +29,27 @@ line counts.
 
 ## 1. Executive Summary
 
-VKR is a substantial Vulkan 1.2 renderer and engine framework written in C11.
-Its strongest implemented work is architectural: a public frontend/backend
-boundary, packet-based frame submission, a JSON-authored render graph, SPIR-V
-reflection for descriptor and vertex layouts, explicit allocator families,
-asynchronous CPU resource preparation, an ECS scene model, editor rendering,
-picking, CSM, text, glTF, a KTX2/UASTC asset pipeline, and a half-float HDR
-environment/IBL path with tonemapped presentation.
+VKR is a C11 renderer and engine framework with two selected packet renderers:
+Metal 4 on macOS and capability-gated Vulkan 1.4 with descriptor buffers on
+Windows. Both consume the same versioned `VkrRenderPacket`, authored JSON graph,
+generation-safe asset publications, shared GPU memory/submit/slot/capture cores,
+and backend-neutral dependency schedule. API-specific pipelines, resource
+realization, dynamic rendering or Metal encoders, commands, and timestamps are
+owned inside the selected implementation.
 
-It is beyond tutorial scale, but several claims in the earlier version of this
-document overstated how completely those systems are integrated:
+The frontend owns scene-facing CPU systems and calls the selected strategy only
+at coarse frame and lifecycle boundaries. Geometry, textures, samplers, and
+materials publish through `VkrAssetPublisher`; there is no generic command RHI,
+descriptor-instance state, frontend shader/pipeline registry, or render-pass
+object model. The graph compiler remains shared because scheduling, conditions,
+culling, subresource state, and dependency lowering are semantic contracts; it
+does not own backend render targets or execute generic commands.
 
-- The render packet is a useful frame contract, but submission begins the
-  Vulkan frame before packet validation and mutates retained renderer systems.
-  It is packet-based, not a purely stateless or replayable renderer.
-- The render graph schedules and instruments declared work, and barrier
-  execution now derives Vulkan access and stage masks from the compiler's
-  access flags with per-(mip, layer) state. Picking is now fully declared;
-  runtime IBL baking still performs nested rendering outside graph-owned
-  passes, so graph inference is authoritative only for declared resources.
-- SPIR-V reflection drives descriptor layouts, push constants, vertex ABI, and
-  now uniform members, whose offsets and sizes are cross-validated against
-  `.shadercfg` at shader creation.
-- Resource preparation is asynchronous, and frame-path upload finalization no
-  longer blocks: a full Sponza load measures zero render-thread fence waits,
-  queue waits, and device waits. Uploads outside an active frame still block,
-  and parallel upload command pools still require an explicitly unsafe opt-in.
-- The world path culls, merges compatible instanced draws, and submits
-  multi-draw-indirect where binding state permits. On the measured content the
-  payoff is confined to the shadow pass, which carries 1,124 depth-only commands
-  in 8 indirect calls; the world pass batches nothing because each material owns
-  a descriptor set. Frame time is unchanged either way — the whole render graph
-  is ~2% of a 20 ms frame. See
-  [performance/p2-throughput-findings.md](../performance/p2-throughput-findings.md).
-
-The correctness issues that previously took precedence over new visual features
-— frame streams indexed by swapchain image modulo three, backend frame failures
-returned as success, render graph execution failures that could not reach packet
-submission, and rejected packets presenting with an assumed old layout — were
-resolved on 2026-07-31 (§8, P0). Their hardware verification still depends on a
-broader validation matrix; a three-image Apple M1 Pro/MoltenVK Debug smoke run
-is clean, while resize/minimize, other image counts, and injected failures
-remain to be exercised.
-
-The project remains a strong renderer showcase. Its next step should be to make
-the current architecture trustworthy under failure and across swapchain
-configurations, then demonstrate measured throughput improvements.
+The main evidence boundary is platform availability. The complete CPU suite and
+Metal runtime/validation path are locally executable. Bindless Vulkan was
+validated natively on an RX 6700 XT through V6, but the post-V7 tree has not
+been rerun on Windows from this macOS workspace. No performance conclusion is
+made from the retirement deletion alone.
 
 ---
 
@@ -118,29 +66,25 @@ lib/src/
     ├── renderer_frontend.c/h  Public orchestration and subsystem ownership
     ├── vkr_renderer.h         Public handles, descriptions, and API
     ├── vkr_render_packet.h    Versioned per-frame payload contract
-    ├── vkr_render_graph.*     Graph declaration and resource management
+    ├── vkr_render_graph.*     Graph declaration and shared schedule state
     ├── vkr_rg_compile.c       Dependencies, scheduling, culling, barriers
-    ├── vkr_rg_execute.c       Pass execution and timing
-    ├── vkr_rg_json.c/h        JSON graph parsing and realization
-    ├── passes/                Named pass executors
+    ├── vkr_rg_json.c/h        JSON graph parsing and authored realization
     ├── systems/               Scene-facing renderer subsystems
     ├── resources/loaders/     Asset loaders
     ├── metal/                 Metal packet backend and production shaders
-    └── vulkan/                Legacy and bindless Vulkan implementations,
-                               production shaders, reflection
+    └── vulkan/bindless/       Vulkan 1.4 implementation and shaders
 app/src/main.c                 Sample/editor application
-assets/                        Shader manifests/SPIR-V, materials, scenes, data
+assets/                        Materials, scenes, textures, and render graphs
 tools/                         Offline utilities and focused validation stages
 tests/src/                     CPU-side unit and subsystem tests
 docs/                          Specifications, plans, investigations, ADRs
 ```
 
-The renderer frontend owns the renderer subsystems and selects one coarse
-`VkrRendererImpl` strategy. The retained legacy Vulkan strategy reaches its
-backend through `VkrRendererBackendInterface`; Metal and bindless Vulkan own
-their packet paths directly. Public resources use opaque handles, and Vulkan
-types stay behind the backend boundary. The legacy adaptor still exposes
-concepts shaped by Vulkan's render-pass and descriptor model.
+The renderer frontend owns scene-facing subsystems and selects one coarse
+`VkrRendererImpl` strategy. Metal and bindless Vulkan own their packet paths,
+GPU resources, pipelines, synchronization, and capture commands directly.
+Public resources use generation handles or narrow opaque graph imports, and
+Vulkan types stay inside `renderer/vulkan/bindless/`.
 
 ---
 
@@ -150,24 +94,23 @@ concepts shaped by Vulkan's render-pass and descriptor model.
 
 The normal frame path is:
 
-1. `vkr_renderer_prepare_frame()` calls `vkr_renderer_begin_frame()`.
-2. The backend waits for a frame-slot fence, acquires a swapchain image, resets
-   and begins that image's command buffer.
-3. Async resource finalization is pumped and the instance/indirect stream
-   cursors are reset.
-4. The application creates `VkrRenderPacket` and its arrays in caller-owned
+1. `vkr_renderer_prepare_frame()` delegates to the selected implementation,
+   which proves a reusable frame slot and acquires or advances its target.
+2. Async resource finalization publishes immutable asset generations through
+   the selected implementation's `VkrAssetPublisher`.
+3. The application creates `VkrRenderPacket` and its arrays in caller-owned
    scratch memory.
-5. `vkr_renderer_submit_packet()` validates the packet, applies retained text/UI
-   updates and globals, realizes the JSON graph for the current frame, executes
-   it, ends the command buffer, submits, and presents.
+4. `vkr_renderer_submit_packet()` validates the packet and delegates graph
+   realization, recording, submission, capture, and presentation to the
+   selected implementation.
 
-This ordering matters: swapchain acquisition and command recording have
-already begun by the time validation runs. An invalid packet is therefore not
-a zero-side-effect rejection.
+This remains an ordered stateful protocol rather than a replayable command API.
+A rejected packet is canceled through the selected strategy so the acquired
+target and frame slot return to a valid state.
 
 ### 3.2 Packet-based submission
 
-`VkrRenderPacket` version 3 contains frame information, globals (including
+`VkrRenderPacket` version 10 contains frame information, globals (including
 manual HDR exposure), and optional
 world, shadow, skybox, UI, editor, picking, text-update, and debug payloads.
 Important properties are implemented:
@@ -176,25 +119,26 @@ Important properties are implemented:
 - version and field validation produce `VkrValidationError` with a field path;
 - payload arrays remain caller-owned and must live until submission returns;
 - draw items refer to stable renderer handles rather than Vulkan objects;
-- passes retrieve typed payloads from `VkrRgPassContext`.
+- implementations retrieve typed payloads through graph packet helpers.
 
 The boundary should be described as **packet-based** or **value-like**, not
 fully stateless:
 
 - `prepare_frame` is a required, ordered operation;
-- submission updates retained globals, UI/text resources, descriptor state,
-  graph caches, upload queues, and metrics;
+- submission updates retained UI/text resources, publication queues, capture
+  state, and metrics;
 - the packet is not self-contained enough to serialize and replay without the
   retained handle registries and subsystem state;
-- validation failures call `vkr_renderer_end_frame()` after image acquisition.
+- validation failures cancel the prepared frame after target acquisition.
 
 ### 3.3 JSON render graph
 
-`assets/render_graphs/main.rendergraph.json` is parsed into a reusable JSON
-model at renderer initialization. On every submitted frame,
-`vkr_rg_build_from_json()` resets and realizes the active resources and passes
-for current dimensions, editor condition, and cascade count; `vkr_rg_execute()`
-compiles the graph if needed and runs it.
+Each selected implementation parses
+`assets/render_graphs/main.rendergraph.json` and uses
+`vkr_rg_build_from_json()` plus `vkr_rg_compile()` to produce the active
+resource declarations, pass order, culling result, and barriers for the current
+dimensions and packet conditions. The implementation then realizes resources
+and executes the schedule through its API-native renderer.
 
 Implemented graph capabilities:
 
@@ -202,9 +146,9 @@ Implemented graph capabilities:
 - dependency construction, topological ordering, and pass culling;
 - conditions and `${i}` repeat expansion;
 - runtime extent/format aliases;
-- named executor registry;
-- graph-owned/imported resources and generation-bearing handles;
-- CPU timing and optional buffered GPU timestamp results;
+- named executor registry owned by each selected implementation;
+- graph-owned/imported resource declarations and persistent image state;
+- implementation-owned CPU/GPU pass timing results;
 - live/peak graph-resource statistics.
 
 The source JSON contains eight resource declarations and twelve pass
@@ -217,11 +161,11 @@ shadow repeat expands at build time.
 
 #### Synchronization boundary
 
-Barrier execution is access- and subresource-aware for declared resources:
+Barrier planning is access- and subresource-aware for declared resources:
 
-- barriers carry `src_access`/`dst_access` and a subresource range through to
-  `vkr_renderer_image_barrier`, which derives Vulkan access and stage masks from
-  them rather than from an old/new layout pair;
+- barriers carry `src_access`/`dst_access` and a subresource range to the
+  selected implementation, whose lowerer derives API-specific stages, accesses,
+  layouts, and encoder boundaries;
 - a barrier is emitted when the layout changes, the access changes, **or** the
   previous access performed a write, so same-layout write→read and write→write
   hazards are represented;
@@ -241,12 +185,11 @@ Remaining boundaries:
 - exported images report subresource 0's layout, with a compile-time warning
   when layers disagree.
 
-The graph is also not the sole authority over current GPU work. Picking now
-uses graph-owned attachments and a separately declared transfer read for its
-pixel copy. The IBL executor still records several prepared graphics passes
-whose internal resources and accesses are not declared in the JSON graph. This
-must be fixed before graph inference can be treated as a correctness guarantee
-for the whole frame.
+Picking, IBL, capture, and presentation are implementation-owned executions of
+authored categories. Backend-internal publications and transfer work that occur
+outside the authored frame schedule retain explicit implementation barriers;
+the graph is authoritative for its declared frame resources, not every GPU
+operation performed by an implementation.
 
 `VKR_RG_RESOURCE_FLAG_TRANSIENT` currently means graph-owned/reusable rather
 than “freed after each frame”: resources survive between realizations and are
@@ -255,43 +198,18 @@ implemented.
 
 ### 3.4 Shader and pipeline construction
 
-SPIR-V reflection is implemented with `spirv_reflect` and currently supplies:
+Shader and pipeline ownership is private to each selected implementation. Metal
+builds its Slang/native MSL library and pipeline archive under `renderer/metal/`.
+Bindless Vulkan builds only the packet shaders under
+`renderer/vulkan/bindless/shaders/`; recursive SPIR-V reflection validates the
+physical-storage-buffer and packet ABI against shared host manifests. The
+frontend has no shader manifests, shader system, pipeline registry, render-pass
+compatibility objects, or public pipeline creation API.
 
-- descriptor sets, bindings, descriptor type/count, and block byte sizes;
-- push constant ranges;
-- vertex inputs used to build/validate supported host vertex ABIs;
-- semantic role resolution for frame/draw sets and bindings;
-- uniform block members, including scoped names, offsets, sizes, scalar/vector/
-  matrix shape, array count/stride, and matrix stride.
-
-`.shadercfg` remains important for shader identity, stages, render pass,
-`vertex_abi`, and the frontend's named uniform declarations. Shader creation
-cross-validates those declarations against the reflected frame/draw block:
-scope, name, offset, exact byte size, scalar/vector/matrix shape, array count
-and stride, and matrix stride must agree. Matching blocks contributed by
-multiple stages must also have identical member layouts. Slang-generated
-matrix/array wrapper structs are normalized before comparison. Reflection does
-not yet flatten arbitrary user-authored nested structs into the manifest's
-flat declaration model, and reverse completeness is intentionally not required:
-a shader may contain a member the host never writes.
-
-Static assertions correctly pin `VkrVertex3d`, `VkrInstanceDataGPU`, and
-`VkrIndirectDrawCommand` host layouts. Pipeline cache persistence is also
-implemented.
-
-Production source ownership follows the backend boundary. Both
-`lib/src/renderer/vulkan/shaders/` and `lib/src/renderer/metal/shaders/` are
-organized by render domain (`common`, `world`, `shadow`, `picking`, `text`,
-`skybox`, `ibl`, and `post`), with Vulkan-only `ui` and `viewport` domains kept
-explicit. CMake maps the reorganized Vulkan modules to the stable
-`assets/shaders/*.spv` names consumed by `.shadercfg`; those generated modules
-remain runtime assets rather than source authority. Metal's domain Slang and
-native MSL inputs are compiled/aggregated into one generated runtime library.
-No shader source or backend-specific renderer validator is owned by `tools/`.
-The CPU suite owns deterministic Metal memory/lifetime, packet-ABI,
-capture-ring, material-table, and dependency-lowering checks. Backend-pinned
-harness snapshots exercise the production Metal shader artifacts, graph/pass
-execution, capture path, pixels, and API/GPU validation.
+Static assertions and shared `vkr_gpu_abi` manifests pin the vertex, instance,
+text, and implementation-specific record layouts. Bindless Vulkan persists its
+driver pipeline cache; Metal owns its archive. Both caches are implementation
+details rather than frontend resource identity.
 
 ### 3.5 Scene and render extraction
 
@@ -430,11 +348,11 @@ restricted to specular reflection rays.
 
 | Area | Status | Current boundary |
 |---|---|---|
-| Selected renderer implementation | Implemented, partial migration | One coarse `VkrRendererImpl` strategy selects Metal, retained legacy Vulkan, or bindless Vulkan once; the legacy 86-operation adaptor remains until ADR-026 retirement |
+| Selected renderer implementation | Implemented | One coarse `VkrRendererImpl` strategy selects Metal or bindless Vulkan once; no behavior ladder or legacy adaptor remains |
 | Packet submission | Implemented, partial | Versioned/validated with a real cancel path, but ordered and state-mutating |
 | JSON render graph | Implemented, partial | Scheduling/culling/timing; access- and subresource-aware barriers for declared resources; IBL bake work remains undeclared |
-| SPIR-V reflection | Implemented | Descriptors, push constants, vertex ABI, and uniform members validated against `.shadercfg` |
-| Pipeline cache | Implemented | Disk-backed Vulkan cache |
+| SPIR-V reflection | Implemented in bindless Vulkan | Recursive physical-storage-buffer and packet ABI validation; no frontend shader manifests or reflection-driven pipeline system remains |
+| Pipeline cache | Implemented per backend | Disk-backed bindless Vulkan driver cache and Metal pipeline archive |
 | Metrics registry and snapshot export | Implemented | Bounded typed slots, MPSC cold-event ring, triple-buffered snapshots, renderer catalog/validity, explicit GPU allocation-owner aggregates, metrics-backed HUD, atomic `--metrics-json`, and harness aggregation |
 | Renderer automation harness | Implemented | Strict cases/profiles, deterministic cameras, isolated repetitions, dependency-resolved boot, authoritative evidence policies, metric/pass/event aggregation, atomic artifacts, direct and auxiliary captures, canonical comparison/diffs, separated `autotest`, guarded immutable baselines, target-neutral windowed or true surface-free offscreen execution with actual configuration provenance, and a sorted transitive scene-content manifest—including prepared glTF material files, generated textures, and present packed siblings—whose digest participates in workload identity |
 | Cascaded shadow maps | Implemented | Four-cascade default with debug/fit controls; cutout casters use the alpha-tested path, PCF grid coordinates share the shader basis, and opt-in scene-bounds Z fit clips caster bounds against each final cascade XY rectangle |
@@ -444,16 +362,15 @@ restricted to specular reflection rays.
 | Transmission | Implemented, initial | Graph-declared opaque, HDR feedback-copy, transmission, and ordinary-blend stages; screen-space refraction has no order-independent transparency or deep compositing |
 | KTX2/UASTC textures | Implemented | BC7/BC5, ASTC, ETC2, EAC RG11, and RGBA32 paths; every selector result is transcodable |
 | Editor viewport and picking | Implemented | Picking fully declared in the render graph; readback usually deferred but ring wrap can block |
-| Text | Implemented | Bitmap, MTSDF, system-font, UI and world text paths; the dedicated harness fixture produces byte-identical final RGBA output on legacy Vulkan and Metal, with deterministic backend-specific picking coverage |
-| Instance stream | Implemented, underused | Fixed 65,536 entries; measured content repeats no compatible asset/state run |
+| Text | Implemented | Bitmap, MTSDF, system-font, UI and world text paths publish packet-native resources; the dedicated Metal harness fixture remains deterministic |
 | CPU frustum culling | Implemented | Per-submesh; camera and union-of-cascade light visibility classified independently; rejects ~37% on San Miguel, 0% on Sponza |
 | Draw batching | Implemented | Opaque draws merge by complete compatible state; local-probe descriptors prevent unsafe world instancing across positions |
-| Multi-draw indirect | Implemented | Fires where a pass binds state once: 1,124 shadow commands → 8 indirect calls; world pass batches nothing until descriptor state can be shared |
+| Multi-draw indirect | Implementation-owned | The retired generic indirect-draw subsystem is absent; selected implementations choose their native submission strategy from packet draws |
 | Compute dispatch | Not exercised | “compute” JSON passes currently orchestrate graphics/CPU work |
-| Device-memory suballocation | Implemented in bindless Vulkan | The Vulkan 1.4 path uses keyed DEVICE, UPLOAD, and READBACK pools backed by `vkr_gpu_memory`. Buffers and images are segregated, address-bearing buffer blocks alone carry the device-address allocation flag, maintenance4 requirements and dedicated hints are queried before object creation, and host-visible blocks are persistently mapped. Logical and physical totals, peaks, owner classes, retirement, free space, failures, and capacity lower into renderer metrics. Legacy Vulkan remains per-resource. |
-| Bindless/descriptor indexing | Implemented, partial Metal and Vulkan paths | Metal 4 Stages 0–5 implement GPU-addressed buffers, native texture/sampler material rows, placement/ring retirement, backend-lowered graph dependencies, all authored pass categories, PBR/lighting/IBL/transmission/text/picking, capture, metrics, and pipeline archives. The application selects it with `--renderer metal`, shared loaders publish generation-safe assets plus writable environment bake targets, and backend-pinned harness cases prevent accidental renderer substitution. Packet version 10 separates the visible skybox from the lighting IBL source. Metal graph ownership is isolated from async resource allocation, frame-only schedule scratch is scoped, bounded command-slot waits publish as `frame.command_slot_waits`, and failed texture unpublication preserves logical ownership for retry. The formerly accepted Metal Bistro generation is historical after a parity audit exposed retained IBL, sampler, transparency, and presentation defects; corrected Gate A pixel acceptance remains open. The selected Vulkan 1.4 bindless strategy completes RX 6700 XT V3–V6: immutable ADR-023 device selection, descriptor buffers, queue/timeline/command ring, completed acquire-wait-submit WSI with optional present fences, production SPIR-V ABI reflection, keyed memory pools, shared asset publication, authored synchronization2/dynamic-rendering graph execution, full PBR/IBL/text/picking passes, asynchronous capture, and completion-valid metrics/timestamps. Gate B1 is complete and bindless Vulkan is the Windows default. Explicit `vulkan` selects the retained Vulkan 1.2 diagnostic path; `vulkan-bindless` remains available for pinned migration cases. |
-| Bindless Vulkan V1–V4 migration | Complete for RX 6700 XT | V1 characterization and V2's selected strategy are complete on macOS and Windows. V3 extracted the memory, submit-ring, and shared ABI cores alongside their production Vulkan callers and passes native window resize with reacquisition and retired-swapchain completion proof. V4 extracted the slot table, added completion-gated asset publication, and moved geometry, staging, images, startup buffers, and readback into keyed dynamic pools with complete logical/physical metrics. Prepared and writable initialization records before the next frame draw, staging retirement uses that submit value, publication dirty ranges flush once per backing buffer, and logical totals return to baseline. MoltenVK cannot execute the descriptor-buffer path. ADR-024 remains partial only for post-capture-extraction Metal regression witnesses, not bindless Vulkan implementation. |
-| Bindless Vulkan V5/V6 migration | Windows V6 complete; bindless is the Windows default | V5 lowers the authored graph to synchronization2/dynamic rendering and implements shadow, skybox, world alpha domains, picking, tonemap, editor, UI/text, compute IBL, five-channel asynchronous capture, and completion-valid pass timestamps. Analytical nine-mip IBL and whole-graph offscreen/windowed validation pass on the RX 6700 XT. Logical unpublication frees the active ID immediately while full-handle pending work retains the retired physical generation through submission; local probes accept sampled normalized/sRGB sources. Packet-native editor/gizmo initialization completes full boot, and packet upload publishes the required zero-overflow metric. V6 selector, present mode, pipeline-cache, asset lifecycle, metrics parity, and Windows implementation-matrix support are implemented. The owner visually accepted corrected Bistro/text output. Local evidence artifacts were removed on request. Gate B1 is complete, bindless is the Windows default, and legacy Vulkan remains explicitly selectable. The required macOS extraction witnesses remain open outside Windows V6. |
+| Device-memory suballocation | Implemented | Bindless Vulkan uses keyed DEVICE, UPLOAD, and READBACK pools backed by `vkr_gpu_memory`; Metal uses the same range/submit cores through its placement adapter. Logical and physical totals, peaks, retirement, failure classes, and capacity lower into renderer metrics. |
+| Bindless resource model | Implemented | Metal 4 and Vulkan 1.4 use GPU-addressed buffers, backend-native texture/sampler rows, completion-gated publication/retirement, authored graph lowering, and shared memory/submit/slot/capture cores. Packet version 10 separates visible skybox and lighting IBL sources. Metal corrected-pixel acceptance remains open; bindless Vulkan is the sole Vulkan renderer after V7. |
+| Bindless Vulkan V1–V4 migration | Complete for RX 6700 XT | V1 characterization and V2's selected strategy are complete on macOS and Windows. V3 extracted the memory, submit-ring, and shared ABI cores alongside their production Vulkan callers and passes native window resize with reacquisition and retired-swapchain completion proof. V4 extracted the slot table, added completion-gated asset publication, and moved geometry, staging, images, startup buffers, and readback into keyed dynamic pools with complete logical/physical metrics. Prepared and writable initialization records before the next frame draw, staging retirement uses that submit value, publication dirty ranges flush once per backing buffer, and logical totals return to baseline. MoltenVK cannot execute the descriptor-buffer path. ADR-024's required cross-platform extraction witnesses now pass. |
+| Bindless Vulkan V5–V7 | Implemented; native post-V7 rerun unavailable locally | V5 lowers the authored graph to synchronization2/dynamic rendering and implements all packet pass/capture/timing categories. V6 completed selection, cache, lifecycle, metrics, and native RX 6700 XT validation. V7 removed the Vulkan 1.2 path, temporary selector, shaders/manifests, legacy frontend systems, interface/adaptor, and graph residue. CPU and Metal gates pass after deletion; fresh Windows runtime evidence requires a Windows descriptor-buffer device. |
 | HDR/tonemap/post chain | Implemented, initial | RGBA16F fullscreen/editor scene color, packet-carried manual exposure (default `0.30`), ACES-fitted tonemap, and exposure-equivalent canonical HDR capture; automatic exposure and additional post effects are absent |
 | Shader hot reload | Absent | Build-time shader compilation only |
 
@@ -491,44 +408,26 @@ required validation.
 
 ### 5.2 Vulkan host allocator
 
-Vulkan `VkAllocationCallbacks` use a dedicated `VkrDMemory` reservation plus a
-small refcounted command-scope arena. This accounts driver host allocations in
-the project's allocator statistics. It is unrelated to GPU device-memory
-suballocation.
+Bindless Vulkan currently passes `NULL` `VkAllocationCallbacks`, so driver host
+allocations use the Vulkan implementation's default allocator and are not part
+of VKR's CPU allocator totals. GPU device-memory placement remains explicitly
+tracked by the bindless memory adapter.
 
 ---
 
 ## 6. GPU Memory
 
-There is no VMA. The two Vulkan implementations deliberately use different
-device-memory policies during migration:
+There is no VMA. Bindless Vulkan suballocates buffers and optimal-tiling images
+from keyed DEVICE, UPLOAD, and READBACK blocks through `vkr_gpu_memory`. Pool
+keys include resource kind, exact memory type, and device-address requirement;
+host-visible blocks are persistently mapped. Required dedicated allocations
+bypass the range core while retaining the same logical and physical metrics.
 
-- Bindless Vulkan 1.4 suballocates buffers and optimal-tiling images from keyed
-  DEVICE, UPLOAD, and READBACK blocks through `vkr_gpu_memory`. Pool keys include
-  resource kind, exact memory type, and device-address requirement; host-visible
-  blocks are persistently mapped. Required and initially preferred dedicated
-  allocations bypass the range core while retaining the same logical and
-  physical metrics.
-- Legacy Vulkan 1.2 still calls `vkAllocateMemory` per image, buffer
-  create/resize, and readback buffer through its tracked allocation/free pair.
-  A `VulkanBuffer` may additionally use `VkrDMemory` for ranges within one
-  deliberately shared buffer; that does not pool arbitrary Vulkan resources.
-
-The bindless adapter publishes separate physical-allocation and logical-
-suballocation totals, peaks, buffer/texture owner classes, retirement, free
-space, largest range, bounded failure classes, and capacity. The legacy tracker
-publishes live/peak/total native allocation counts and bytes globally and by
-logical owner, per-memory-type distribution, heap capacities, and driver heap
-usage/budget when `VK_EXT_memory_budget` is available. If its fixed handle table
-saturates, it marks live totals and owner live/peak rows inexact. The graph also
-tracks sizes of its own resources. Neither implementation currently provides
-defragmentation/eviction or transient image/buffer aliasing.
-
-The legacy per-resource policy has been measured rather than inferred: see
-[performance/gpu-memory-baseline.md](../performance/gpu-memory-baseline.md).
-The earlier claim that Sponza/San Miguel approach a particular allocation limit
-is **refuted** on the measured configuration — Sponza peaks at 206 live
-allocations against a limit of ~1.07e9.
+The adapter publishes physical-allocation and logical-suballocation totals,
+peaks, owner classes, retirement, free space, largest range, bounded failure
+classes, and capacity. Metal uses the same shared range and submit cores behind
+its placement-heap adapter. Neither implementation currently provides online
+defragmentation, eviction, or transient image/buffer aliasing.
 
 ---
 
@@ -536,20 +435,13 @@ allocations against a limit of ~1.07e9.
 
 ### 7.1 Per-frame mapped data
 
-`VkrInstanceBufferPool` owns three persistently mapped buffers with a fixed
-65,536-instance capacity. Overflow is reported and the affected pass can drop
-work; it is not silent. `VkrIndirectDrawSystem` mirrors the design for 16,384
-commands and is consumed by world/shadow MDI groups, with direct fallback on
-unsupported features or stream exhaustion.
-
-Global shader UBOs use swapchain-image-indexed regions, and global descriptor
-sets are allocated/indexed per swapchain image. Descriptor updates are cached
-using generations plus concrete image view/sampler/buffer payloads. Instance
-descriptor-state retirement is delayed by submit serial.
-
-Two capacity values must not be conflated: the backend object descriptor pool
-may grow up to 8,192 states, while shader-system CPU tracking currently starts
-with/fixes a separate 1,024-instance capacity depending on the path.
+Each selected implementation owns bounded per-frame upload and instance storage
+indexed by a completion-protected frame slot. Packet validation and metrics
+report overflow rather than silently wrapping. Bindless Vulkan material and
+texture references are generation-safe indices into descriptor buffers and
+slot tables; Metal uses native resource identifiers in its material rows.
+There are no frontend global UBOs, descriptor sets, instance-state pool, or
+generic indirect-command stream.
 
 ### 7.2 Resource preparation and upload
 
@@ -557,70 +449,55 @@ with/fixes a separate 1,024-instance capacity depending on the path.
 `finalize_async`. The resource pump has count/op/byte budgets and guarantees
 forward progress by permitting the first oversized request.
 
-Upload helpers no longer block the render thread during a frame: when a frame is
-being recorded they record into the active command buffer and defer both the
-submission and the staging teardown, and refuse rather than wait if they cannot.
-Measured over a full Sponza load, this yields zero render-thread fence, queue,
-and device waits (§8, P1 item 8). Uploads that run outside an active frame still
-wait on their fences.
-
-A dedicated transfer queue is selected when the device exposes a separate
-family, including queue-family ownership work. Staging is retired
-asynchronously: the deferred-destroy queue is gated on submit serials against
-`completed_submit_serial`, which only advances once a frame-slot fence proves
-GPU completion. Out-of-frame upload helpers still submit and wait.
-
-Per-worker transfer/graphics-upload command pools are created only when both
-`VKR_PARALLEL_UPLOAD` and `VKR_PARALLEL_UPLOAD_UNSAFE=1` enable the experimental
-parallel runtime. It is not the default shipped upload path.
+Finalization publishes decoded assets through `VkrAssetPublisher`. Bindless
+Vulkan records prepared and writable initialization into the next frame command
+buffer, batches dirty-range flushes, and retires staging at that submit value.
+Metal follows the same publication/completion contract through its adapter.
+Replacement is publish-new-then-retire-old, and generation slots are not reused
+until their recorded completion value is proven.
 
 ### 7.3 Readback
 
-Picking uses a three-slot host-visible readback ring. Result polling normally
-checks completion without waiting and may return a result one or more frames
-later. If a new request wraps onto a still-pending slot,
-`renderer_vulkan_request_pixel_readback()` waits indefinitely on the associated
-frame fence. The correct description is **deferred in the common case**, not
-“never blocking.”
+Picking and harness capture are asynchronous packet requests. Implementations
+copy into bounded readback storage and publish results only after the associated
+submit completes. `vkr_capture_ring` owns request state and explicit release;
+capacity exhaustion returns a busy error rather than overwriting live results.
 
 ### 7.4 Frame synchronization
 
-The WSI object sizing is deliberate:
+The shared submit ring assigns monotonic completion values to bounded frame
+slots and retirement records. Bindless Vulkan signals a timeline semaphore for
+GPU completion. Windowed presentation uses per-image render-complete semaphores;
+optional maintenance1 fences provide explicit present completion, while the
+portable path uses a completed submit that consumed the reacquired image's
+acquire semaphore as proof. Metal maps the same completion contract to command
+buffer completion and residency ownership.
 
-| Object | Count/index |
-|---|---|
-| Acquire semaphores | max frames in flight / current frame slot |
-| Submit fences | max frames in flight / current frame slot |
-| Render-complete semaphores | swapchain image count / acquired image |
-| Image-in-flight fence references | swapchain image count / acquired image |
-
-Per-image render-complete semaphores avoid re-signaling a semaphore still owned
-by presentation. `max_in_flight_frames` is capped by `BUFFERING_FRAMES` (3).
-All per-image arrays use the image count returned by
-`vkGetSwapchainImagesKHR`, which may be larger than the requested minimum.
-
-The frame implementation's P0 defects were resolved on 2026-07-31 (§8):
-
-- instance and indirect streams are indexed by the fence-protected
-  frame-in-flight slot, and the slot advances exactly once per frame;
-- fence wait, acquire, command-buffer begin/end, queue submit, and present
-  failures return distinct errors, with `VKR_RENDERER_ERROR_FRAME_SKIPPED`
-  separating a recreate-and-skip from device loss;
-- `vkr_rg_execute()` returns `VkrRendererError`, so compile, barrier, and
-  begin/end-pass failures reach `vkr_renderer_submit_packet()`;
-- a rejected packet goes through `vkr_renderer_cancel_frame()`, which
-  resets the partially recorded primary command buffer, rolls back frame-local
-  readback/timing state, and records only a discard-to-present transition;
-- failures after acquire that cannot submit mark the frame for WSI/sync-object
-  recovery before the next acquire.
-
-`vkDeviceWaitIdle` is not part of the normal successful submit loop, but it is
-used by resize/shutdown and some graph timing/cache/resource recreation paths.
-Upload paths instead contain blocking fence waits.
+Normal successful frames do not wait the whole device. Explicit idle waits are
+reserved for lifecycle operations such as shutdown or target recreation.
+Command-slot reuse can still wait when CPU submission outruns the bounded ring,
+and that wait is published as a metric.
 
 ---
 
 ## 8. Prioritized Issues
+
+Current priorities after V7 are:
+
+1. Run the post-retirement Debug/Release, whole-graph, lifecycle, synchronization
+   validation, and GPU-assisted matrix on native Windows descriptor-buffer
+   hardware. macOS cannot substitute for this evidence.
+2. Complete owner review of corrected Metal Bistro pixels before treating a new
+   Metal golden generation as accepted.
+3. Establish matched Release evidence before making any performance claim about
+   the two surviving implementations or the V7 deletion.
+4. Treat Linux as unsupported until its platform integration and native evidence
+   exist.
+
+The dated items below are a historical closed-work log. Symbols belonging to
+the Vulkan 1.2 backend, generic graph executor, shader/pipeline registry,
+instance buffer, or indirect-draw system were removed by ADR-026 and are not
+current architecture or open work.
 
 ### P0 — Correctness and error contracts — **resolved 2026-07-31**
 
@@ -910,19 +787,21 @@ pin the 17-image/13-sampler contract, and exact Bistro validation replay
 - shader hot reload with pipeline/descriptor invalidation rules;
 - the proposed native-Metal/modern-Vulkan
   [GPU-address renderer](bindless-gpu-pointer-renderer-spec.md), whose focused
-  Metal Stages 0–5 now ship as an optional application/harness path with
+  Metal Stages 0–5 now ship as the selected macOS strategy with
   production asset publication, memory retirement, explicit-ID material rows,
   graph lowering, authored packet-pass execution, pipeline archives, capture,
   retained text, lighting/IBL, and metrics. The historical guarded generation
-  remains immutable, but corrected output intentionally differs and Gate A
-  awaits owner-reviewed replacement pixels; the default-backend change remains
-  pending. The modern-Vulkan Windows target now executes its complete authored
-  graph through the V5 bindless path, including dynamic rendering, IBL,
+  remains immutable, but corrected output intentionally differs; the owner
+  accepted its replacement pixels and Gate A completed. The modern-Vulkan
+  Windows target now executes its complete authored graph through the V5
+  bindless path, including dynamic rendering, IBL,
   asynchronous capture, and timestamps. The owner visually accepted corrected
   Bistro/text output; local evidence artifacts were removed afterward on
   request. Windows V6 and Gate B1 are complete, so bindless is the Windows
-  default. Required macOS post-extraction witnesses remain open as V3–V5
-  cross-platform evidence, not as Windows V6 work.
+  default. The required macOS post-extraction shared-core witnesses now pass;
+  V7 completed under the owner-authorized ADR-026 retirement contract. A fresh
+  native Windows post-V7 runtime rerun remains unavailable on the current host
+  and is not inferred from the passing CPU and Metal gates.
 
 ---
 
@@ -997,17 +876,17 @@ following checks were rerun:
 | Bistro curved-wall shadow audit | Three later 1600×1200 owner cameras isolate a separate curved-wall boundary to raw directional shadow factor and direct diffuse. Exact diagnostic `20260805T120354.711Z-0177c1`, digest `sha256:5d77c58149cf0e14b7aef5db3c4bcd85430398c05545f03b389156fc99f2afe0`, excludes unlit, normals, material parameters, direct specular, and IBL. Cascade replay `20260805T122914.160Z-006da8` places the edge inside cascade 1 with identical 234 opaque indirect commands, 20 alpha calls, and zero shadow-union culls at all positions. Scene-depth replay `20260805T130951.874Z-013a91`, digest `sha256:b50cdffd044c9aeaa48330050264f7718ce47def78e1a9776a1a342ddda22c98`, proves screen-row-600 edge pixels x=934 and x=393 unproject to the same wall point within 5.6 cm. The edge is a world-stationary sun shadow revealed by camera parallax, not a camera-locked renderer artifact; experimental scene-bounds wiring did not change it and was discarded. Runs are local/dirty correctness evidence with clean diagnostics, not an accepted baseline or performance result |
 | Bistro golden baselines | The legacy Vulkan generation `sha256:c3596ff14cdf206d0be4138840957925bd18353dd5d8eab339bfdec575df3564` remains the cross-backend visual reference. Metal generation `sha256:3db4f4d2294e5fdbc3618e64c4b2baf03bf66051dee0c4ff452e341d20cae51d` remains immutable but is historical. Corrected bindless Bistro/text output was visually accepted on 2026-08-11, but its local baseline generations were removed at the owner's request and are not retained authorities. |
 | Metal visual-parity correction | Corrected fourteen-view Metal snapshot `20260807T194321.543Z-0040dc` was compared directly with the accepted Vulkan generation: normalized per-view final-color MAE is `0.00662–0.03607` (mean `0.02060`), and the formerly divergent exterior-sky view drops from `0.1569` to `0.01153`. A matched channel audit found near-exact unlit (`0.00007`) and material-parameter (`0.00104`) output, isolating the remaining difference to normals/lighting rather than stretched texture coordinates. The production text fixture is byte-identical across backends and three isolated Metal runs are deterministic. Transmission routing emits both fixture draws. Hidden-window report `20260807T202738.082Z-01208a` completed two passing 34-frame Metal children with empty stderr; its aggregate is unavailable only because the generic profile requires immediate presentation while Metal reports FIFO and the short warmup was unstable. These are local/dirty correctness observations; no baseline was mutated or performance claim made. |
-| Bindless Vulkan V1–V4 migration | Complete on the RX 6700 XT. V4 uses keyed DEVICE/UPLOAD/READBACK buffer/image pools, maintenance4 pre-creation requirements, dedicated-hint handling, persistent host mapping, device-local staged geometry, and complete logical/physical metric projection. Native window/reacquisition synchronization, GPU-assisted validation, exact readback, submit-value staging retirement, balanced retirement/collection, and logical totals returning to baseline are implemented. macOS builds the shared code and passes the CPU contract but cannot execute the descriptor-buffer backend. ADR-024 remains partial only for unavailable post-capture-extraction Metal witnesses. |
-| Bindless Vulkan V5/V6 migration | The Windows implementation executes every authored pass category through synchronization2 and dynamic rendering, including analytical nine-mip IBL, shared asynchronous five-channel capture, and completion-valid CPU/GPU pass rows. Whole-graph offscreen/windowed and GPU-assisted validation complete without actionable diagnostics. Pipeline-cache, lifecycle, metrics, and implementation-matrix support are present. Packet-native editor/gizmo initialization supplies the full-boot contract, and packet submission supplies complete instance-overflow metrics. The owner visually accepted corrected Bistro/text output; local snapshots, profiles, proposals, and bindless baseline generations were removed on request. Gate B1 is complete, bindless Vulkan is the Windows default, and explicit `vulkan` retains the legacy diagnostic path. Required macOS extraction witnesses remain open outside Windows V6. |
+| Bindless Vulkan V1–V4 migration | Complete on the RX 6700 XT. V4 uses keyed DEVICE/UPLOAD/READBACK buffer/image pools, maintenance4 pre-creation requirements, dedicated-hint handling, persistent host mapping, device-local staged geometry, and complete logical/physical metric projection. Native window/reacquisition synchronization, GPU-assisted validation, exact readback, submit-value staging retirement, balanced retirement/collection, and logical totals returning to baseline are implemented. macOS builds the shared code and passes the CPU contract but cannot execute the descriptor-buffer backend. ADR-024's cross-platform extraction witnesses are complete. |
+| Bindless Vulkan V5–V7 | V5/V6 native Windows evidence covers the authored synchronization2/dynamic-rendering graph, analytical IBL, shared capture, timestamps, cache, lifecycle, metrics, and validation. V7 removed the legacy renderer and migration surface. Post-V7 CPU and Metal gates pass; a fresh Windows runtime rerun is unavailable on the current host. |
 | `vkr_frustum` production references | Application world-payload construction creates camera and cascade frustums and classifies submeshes against them |
 | `VkrDrawBatcher` production references | None outside its module/tests/docs; P2 batching instead uses visibility and pass-local batch structures |
-| `vkr_indirect_draw_alloc` callers | The shared pass indirect-submission path allocates production world/shadow command ranges |
-| `vkAllocateMemory` call sites | Legacy allocations remain centralized in its tracked wrapper. Bindless Vulkan has one pooled-block allocation site plus dedicated buffer/image paths, all accounted by its keyed memory adapter |
+| Generic indirect-draw subsystem | Removed by V7; selected implementations own packet draw submission |
+| `vkAllocateMemory` call sites | Bindless Vulkan has pooled-block allocation plus required dedicated buffer/image paths, all accounted by its keyed memory adapter |
 | VMA | Not present |
 | Dynamic rendering | Implemented for the complete Vulkan 1.4 authored graph; compiled synchronization2 barriers, graphics scopes, transfer copies, and compute IBL execute through the selected bindless strategy |
-| Descriptor indexing/bindless | Descriptor-buffer sampled/storage/sampler arrays are implemented and validation-clean in the Vulkan 1.4 V4 path; legacy Vulkan 1.2 remains descriptor-set based |
-| Uniform block reflection output | Populated; validated against all 16 `.shadercfg` files by `reflection_pipeline_test` |
-| `vkr_renderer_transition_texture_layout` callers | Replaced by `vkr_renderer_image_barrier`; the layout-pair table survives only for upload/copy paths in `vulkan_image.c` |
+| Descriptor indexing/bindless | Descriptor-buffer sampled/storage/sampler arrays are implemented and validation-clean in the Vulkan 1.4 path; there is no descriptor-set fallback |
+| Bindless packet ABI reflection | Shared host ABI records are covered by the CPU suite. Recursive SPIR-V layout and descriptor checks run when native Vulkan pipelines are created; the required fresh post-V7 Windows rerun is unavailable on the current host. |
+| Image-state lowering | Canonical graph barriers are covered by the CPU suite and lowered privately to synchronization2 by the bindless Vulkan implementation. Upload, IBL, capture, and presentation transitions remain explicit Vulkan-private barriers; the legacy layout-pair helper and `vulkan_image.c` were removed by V7. |
 
 The CPU suite and one MoltenVK smoke configuration do not replace
 validation-layer runs across two- and four-image swapchains, queue-family

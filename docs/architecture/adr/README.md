@@ -24,7 +24,7 @@ Considered → Revisit When**.
 
 | ADR | Title | Status |
 |---|---|---|
-| [ADR-001](001-frontend-backend-separation.md) | Frontend/backend separation via function-pointer interface | Accepted |
+| [ADR-001](../../archive/adr-001-frontend-backend-separation.md) | Frontend/backend separation via function-pointer interface | Superseded by ADR-025 |
 | [ADR-002](002-render-graph.md) | Compiled render graph with declared resource access | Accepted (partial) |
 | [ADR-003](003-json-authored-render-graph.md) | JSON-authored render graph with named executors | Accepted |
 | [ADR-004](004-stateless-render-packet.md) | Versioned render-packet submission | Accepted (partial) |
@@ -34,7 +34,7 @@ Considered → Revisit When**.
 | [ADR-008](008-cpu-gpu-communication.md) | Lifetime-tiered CPU↔GPU data paths | Accepted (partial) |
 | [ADR-009](009-frame-synchronization.md) | Per-image present semaphores and bounded frames in flight | Accepted (partial) |
 | [ADR-010](010-ecs-scene-system.md) | Archetype ECS as authoritative scene state | Accepted |
-| [ADR-011](011-vulkan-1-2-baseline.md) | Vulkan 1.2 baseline with classic render passes | Accepted |
+| [ADR-011](../../archive/adr-011-vulkan-1-2-baseline.md) | Vulkan 1.2 baseline with classic render passes | Superseded by ADR-023/026 |
 | [ADR-012](012-texture-compression-pipeline.md) | Offline KTX2/UASTC packing with runtime transcode | Accepted |
 | [ADR-013](013-draw-submission-strategy.md) | Measured draw submission: culling, instancing, and MDI | **Accepted (partial)** |
 | [ADR-014](014-offscreen-present-target.md) | Present target seam for offscreen rendering | Accepted |
@@ -44,12 +44,12 @@ Considered → Revisit When**.
 | [ADR-018](018-graph-declared-transmission-feedback.md) | Graph-declared transmission feedback | Accepted |
 | [ADR-019](019-bounded-forward-spatial-lighting.md) | Stable-table, fragment-local bitmask-grid lighting | Accepted |
 | [ADR-020](020-bindless-backend-seam.md) | Parallel renderer implementation boundary for the bindless path | Accepted (partial) |
-| [ADR-021](021-metal-first-bindless-backend.md) | Metal 4 first; modern Vulkan for Windows and Linux | Accepted (partial) |
+| [ADR-021](021-metal-first-bindless-backend.md) | Metal 4 first; modern Vulkan for Windows and Linux | Accepted and implemented |
 | [ADR-022](022-gpu-pointer-resource-model.md) | GPU-address resources, native texture references, backend-lowered dependencies | Accepted (partial) |
 | [ADR-023](023-vulkan-1-4-bindless-capability-profile.md) | Vulkan 1.4 bindless profile with descriptor buffers and base-swapchain reacquisition completion | Accepted |
-| [ADR-024](024-shared-bindless-gpu-cores.md) | Backend-neutral GPU cores extracted with real callers; only post-capture Metal regression witnesses remain open | Accepted (partial) |
+| [ADR-024](024-shared-bindless-gpu-cores.md) | Backend-neutral memory, submit-ring, ABI, slot-table, and capture-ring cores extracted with real Metal and Vulkan callers | Accepted |
 | [ADR-025](025-selected-renderer-implementation-strategy.md) | One selected renderer implementation strategy replacing the backend-type ladder | Accepted |
-| [ADR-026](026-vulkan-1-2-retirement.md) | Vulkan 1.2 retirement gates: B1/default flip complete; B2/deletion open | Proposed |
+| [ADR-026](026-vulkan-1-2-retirement.md) | Vulkan 1.2 retirement and bindless-only end state | Accepted |
 
 ## Relationship to the Specification
 

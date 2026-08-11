@@ -1,11 +1,13 @@
 ---
-status: implemented
+status: superseded
 updated: 2026-08-05
 authority: adr
 ---
 # ADR-001: Frontend/Backend Separation via Function-Pointer Interface
 
-**Status:** Accepted
+**Status:** Superseded by
+[ADR-025](../architecture/adr/025-selected-renderer-implementation-strategy.md). ADR-026 removed the
+function-pointer backend interface and its final Vulkan 1.2 implementation.
 
 ## Context
 
@@ -81,13 +83,13 @@ rules.
   audited for Vulkan-shaped assumptions (render pass/framebuffer objects,
   descriptor set model) that leaked through.
   A design-stage audit was performed for the
-  [bindless GPU-pointer renderer design](../bindless-gpu-pointer-renderer-spec.md)
+  [bindless GPU-pointer renderer design](../architecture/bindless-gpu-pointer-renderer-spec.md)
   and found the predicted leak: `renderpass_create_desc`,
   `render_target_create`, `begin_render_pass`, `instance_state_acquire`, and
   `get_and_reset_descriptor_writes_avoided` encode Vulkan 1.2 concepts rather
-  than renderer concepts. [ADR-020](020-bindless-backend-seam.md) proposes a
+  than renderer concepts. [ADR-020](../architecture/adr/020-bindless-backend-seam.md) proposes a
   parallel renderer implementation and defers a shared low-level seam until
   working Metal and modern-Vulkan slices expose real commonality. The actual
-  implementation trigger has not fired: this ADR remains Accepted and the
-  interface it defines continues to serve the shipping Vulkan 1.2 backend.
+  trigger fired: Metal and bindless Vulkan now use the selected coarse strategy,
+  and the interface described here no longer exists.
 - Profiling shows interface dispatch in the frame loop's hot path.

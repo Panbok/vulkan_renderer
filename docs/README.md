@@ -84,14 +84,14 @@ owning document status in the same change.
 | [renderer-architecture-spec.md](architecture/renderer-architecture-spec.md) | implemented | Current architecture, feature status, memory, sync, prioritized issues |
 | [adr/README.md](architecture/adr/README.md) | — | ADR index and format |
 | [event-payload-lifetime-and-resize-mailbox.md](architecture/event-payload-lifetime-and-resize-mailbox.md) | implemented | Stable event payload copies and lock-free resize mailbox |
-| [bindless-gpu-pointer-renderer-spec.md](architecture/bindless-gpu-pointer-renderer-spec.md) | partial | Metal 4 Stages 0–5 ship, but corrected Gate A pixel acceptance and the macOS default switch remain open. Stage 6 modern Vulkan is complete through Windows V6 on the RX 6700 XT: corrected Bistro/text output is owner-accepted, bindless Vulkan is the Windows default, and legacy Vulkan remains explicitly selectable. Local bindless evidence artifacts were removed on request. macOS V3–V5 extraction witnesses and V7/B2 retirement remain open |
-| [bindless-vulkan-backend-spec.md](architecture/bindless-vulkan-backend-spec.md) | partial | Stage 6 in detail: Windows V5/V6 implementation, authored graph, full pass/IBL path, shared asynchronous capture, timestamps, lifecycle, metrics, cache, selection, and native validation are complete. Corrected Bistro/text output is owner-accepted; local snapshots, reports, proposals, and bindless baseline generations were removed on request. Bindless Vulkan is the Windows default and explicit `vulkan` retains the legacy diagnostic path. macOS V3–V5 extraction witnesses and V7/B2 observation and retirement remain open |
+| [bindless-gpu-pointer-renderer-spec.md](architecture/bindless-gpu-pointer-renderer-spec.md) | partial | Metal 4 Stages 0–5 ship as the selected macOS strategy and corrected output is owner-accepted. Stage 6 modern Vulkan is implemented through V7: bindless Vulkan is the sole Vulkan renderer and the legacy migration surface is removed. Cross-platform shared-core extraction witnesses pass; fresh post-retirement Windows runtime evidence is unavailable locally |
+| [bindless-vulkan-backend-spec.md](architecture/bindless-vulkan-backend-spec.md) | implemented | Windows V0–V6 and the V7 retirement end state: authored graph, full pass/IBL path, shared asynchronous capture, timestamps, lifecycle, metrics, cache, selection, and six-step Vulkan 1.2 deletion. Post-extraction and post-retirement Metal gates pass; native Windows rerun remains unavailable on macOS |
 
 ### Architecture Decision Records
 
 | ADR | Status | Decision |
 |---|---|---|
-| [001](architecture/adr/001-frontend-backend-separation.md) | implemented | Frontend/backend separation via function-pointer interface |
+| [001](archive/adr-001-frontend-backend-separation.md) | superseded | Function-pointer backend interface, superseded by ADR-025 and removed by ADR-026 |
 | [002](architecture/adr/002-render-graph.md) | partial | Compiled render graph with declared resource access |
 | [003](architecture/adr/003-json-authored-render-graph.md) | implemented | JSON-authored render graph with named executors |
 | [004](architecture/adr/004-stateless-render-packet.md) | partial | Versioned render-packet submission |
@@ -101,7 +101,7 @@ owning document status in the same change.
 | [008](architecture/adr/008-cpu-gpu-communication.md) | partial | Lifetime-tiered CPU↔GPU data paths |
 | [009](architecture/adr/009-frame-synchronization.md) | partial | Per-image present semaphores, bounded frames in flight |
 | [010](architecture/adr/010-ecs-scene-system.md) | implemented | Archetype ECS as authoritative scene state |
-| [011](architecture/adr/011-vulkan-1-2-baseline.md) | implemented | Vulkan 1.2 baseline with classic render passes |
+| [011](archive/adr-011-vulkan-1-2-baseline.md) | superseded | Vulkan 1.2 baseline, replaced by ADR-023 and removed by ADR-026 |
 | [012](architecture/adr/012-texture-compression-pipeline.md) | implemented | Offline KTX2/UASTC packing with runtime transcode |
 | [013](architecture/adr/013-draw-submission-strategy.md) | partial | Measured draw submission — culling, instancing, MDI; native Vulkan validation pending |
 | [014](architecture/adr/014-offscreen-present-target.md) | implemented | Present target seam decoupling the frame path from the swapchain |
@@ -111,12 +111,12 @@ owning document status in the same change.
 | [018](architecture/adr/018-graph-declared-transmission-feedback.md) | implemented | Separate opaque, feedback-copy, transmission, and ordinary-blend graph stages |
 | [019](architecture/adr/019-bounded-forward-spatial-lighting.md) | implemented | Stable punctual-light table, fragment-local bitmask grid, and fragment-aware local IBL |
 | [020](architecture/adr/020-bindless-backend-seam.md) | partial | Parallel renderer implementation boundary for the bindless path |
-| [021](architecture/adr/021-metal-first-bindless-backend.md) | partial | Metal 4 first; capability-gated modern Vulkan for Windows and Linux |
+| [021](architecture/adr/021-metal-first-bindless-backend.md) | implemented | Metal 4 selected on macOS; capability-gated bindless Vulkan selected on Windows |
 | [022](architecture/adr/022-gpu-pointer-resource-model.md) | partial | GPU-address resources, backend-native texture references, and backend-lowered graph dependencies |
 | [023](architecture/adr/023-vulkan-1-4-bindless-capability-profile.md) | accepted | Vulkan 1.4 bindless profile; descriptor buffers required, with base-swapchain reacquisition completion on the RX 6700 XT window path |
-| [024](architecture/adr/024-shared-bindless-gpu-cores.md) | partial | Memory, submit-ring, ABI, slot-table, and capture-ring cores have real Metal and Vulkan callers; only post-capture Metal snapshot/API-validation witnesses remain open |
-| [025](architecture/adr/025-selected-renderer-implementation-strategy.md) | accepted | One coarse selected renderer strategy replacing the backend-type ladder; bindless Vulkan is now the Windows default while legacy Vulkan remains explicitly selectable |
-| [026](architecture/adr/026-vulkan-1-2-retirement.md) | proposed | B1/default flip is complete; the predeclared B2 observation contract and six-step legacy deletion remain open |
+| [024](architecture/adr/024-shared-bindless-gpu-cores.md) | implemented | Memory, submit-ring, ABI, slot-table, and capture-ring cores have real Metal and Vulkan callers with cross-platform regression witnesses |
+| [025](architecture/adr/025-selected-renderer-implementation-strategy.md) | accepted | One coarse selected renderer strategy for Metal and bindless Vulkan, replacing the backend-type ladder and legacy adaptor |
+| [026](architecture/adr/026-vulkan-1-2-retirement.md) | implemented | Vulkan 1.2 backend, shaders, legacy frontend model, interface, and graph migration residue removed under explicit owner authorization |
 
 ## Rendering
 

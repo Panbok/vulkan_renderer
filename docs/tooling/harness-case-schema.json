@@ -176,7 +176,7 @@
         "backend": {
           "type": "string",
           "description": "Optional renderer pin. When present, VKR_HARNESS_RENDERER_BACKEND may confirm but cannot override it.",
-          "enum": ["vulkan", "vulkan-bindless", "metal"]
+          "enum": ["vulkan", "metal"]
         },
         "shadow_preset": {
           "type": "string",

@@ -7,19 +7,19 @@ authority: design
 # Bindless GPU-Address Renderer — Design Specification
 
 **Document status:** Accepted in part. Stages 0–5 are implemented and validated
-on Metal 4. The application and harness can select the production Metal packet
+on Metal 4. The application and harness select the production Metal packet
 renderer; shared loaders publish generation-safe assets; and the authored graph,
 PBR/lighting/text paths, capture, metrics, retirement, and pipeline archives are
 exercised by focused and Bistro cases. The bootstrap allocator race is fixed,
 and Gate A once produced a fourteen-view Metal Bistro-plus-text baseline.
 A later cross-backend audit found that generation preserved broken retained IBL,
 sampler, transparency, and presentation behavior. Those defects are corrected,
-so the old Metal generation is historical and Gate A pixel acceptance is open
-again pending owner review of a replacement. Stage 6 modern Vulkan is complete
-through Windows V6 on the RX 6700 XT, including keyed dynamic-memory pools,
+the old Metal generation is historical, and the owner accepted corrected
+replacement output on 2026-08-11. Stage 6 modern Vulkan is complete
+through V7 on the RX 6700 XT implementation line, including keyed dynamic-memory pools,
 authored-graph parity, owner-accepted corrected Bistro/text output, and the
 Windows default selection. Local bindless evidence artifacts were removed on
-request. V7 retirement remains open. The detailed
+request. V7 removed the Vulkan 1.2 path and its migration surface. The detailed
 [bindless Vulkan backend specification](bindless-vulkan-backend-spec.md) and
 ADRs 023–026 own its current status. The descriptor-buffer backend still cannot
 run on the macOS development machine. Its post-extraction CPU, byte-identical
@@ -35,8 +35,7 @@ capability-gated modern Vulkan renderer for Windows and Linux. Both use 64-bit
 buffer addresses and bindless texture references, while lowering those concepts
 to their APIs' different resource models.
 
-**Non-goals:** Deleting the retained Vulkan 1.2 diagnostic path before V7/B2,
-claiming that Metal
+**Non-goals:** Claiming that Metal
 implements every primitive in Sebastian Aaltonen's proposal, choosing a heap
 block size before measurement, or promising speed without a Release profile.
 
@@ -51,12 +50,10 @@ Stage 6 is designed in detail by the
 capability contract, [ADR-024](adr/024-shared-bindless-gpu-cores.md) the shared
 backend-neutral cores, [ADR-025](adr/025-selected-renderer-implementation-strategy.md)
 the implementation seam, and [ADR-026](adr/026-vulkan-1-2-retirement.md) the
-retirement sequence. ADRs 023 and 025 are accepted, ADR-024 is accepted in
-part, and ADR-026 remains proposed because B2 deletion has not occurred.
+retirement sequence. ADRs 023–026 are accepted and implemented.
 
 The status authority remains the renderer status specification. It records the
-implemented optional Metal path separately from the default bindless Vulkan
-Windows path and the explicit legacy Vulkan diagnostic path.
+implemented Metal path separately from the bindless Vulkan Windows path.
 
 ---
 
@@ -965,10 +962,9 @@ Validation, and all shader execution runs under API plus GPU Validation with
 archive lookup disabled. No compilation-speed claim is made. The application
 frontend now selects this same renderer with `--renderer metal`, publishes
 loader-owned mesh, texture, cubemap, and material resources through a coarse
-backend boundary, and retains Vulkan 1.2 as an explicit diagnostic path. On
-Windows, bindless Vulkan is the default and explicit `--renderer vulkan`
-retains Vulkan 1.2 as the diagnostic path. The harness selects Metal with
-`VKR_HARNESS_RENDERER_BACKEND=metal`.
+backend boundary. On Windows, bindless Vulkan is the default and explicit
+`--renderer vulkan` selects it directly; no diagnostic Vulkan 1.2 path remains.
+The harness selects Metal with `VKR_HARNESS_RENDERER_BACKEND=metal`.
 Scalar PBR, four material texture slots, alpha cutoff, directional and grid-
 selected punctual lighting, directional shadow sampling, global IBL controls,
 material transmission, and local reflection probes are GPU-proven. A fixed-capacity
@@ -979,15 +975,16 @@ retirement. Production output uses an sRGB target, the shared ACES tonemap, and
 the Metal clip-space conversion required by the Vulkan-oriented shared camera
 matrices. The guarded Metal Bistro generation remains immutable, but its pixel
 acceptance is historical after the retained-IBL, sampler, transparency, and
-presentation corrections. Gate A does not authorize a default-backend change
-until an owner accepts corrected replacement pixels.
+presentation corrections. The owner accepted corrected replacement output on
+2026-08-11, completing Gate A and authorizing Metal selection.
 Per-pass Metal timing
 publishes in the shared pass-table format for synchronous evidence and is
 submit-keyed for later polling after asynchronous completion.
 
-Stage order can change only when dependencies permit it. In particular, graph
-lowering cannot delete or bypass the legacy Vulkan lowering merely because the
-CPU dependency planner has tests.
+Stage order can change only when dependencies permit it. Before V7, graph
+lowering tests alone could not authorize deleting the legacy Vulkan lowering;
+ADR-026 now records the explicit owner authorization and residual evidence risk
+under which that retirement completed.
 
 The historical Gate A image generation is the backend-pinned
 `smoke.bistro.metal.text.snapshot` case: fourteen 1600x1200 Bistro views with
@@ -1002,9 +999,11 @@ Fresh snapshot `20260807T092542.337Z-0144b6` and explicit compare
 validation had already passed twice for the deterministic text fixture and
 across the Stage 1-5 matrix. A later parity review invalidated those pixels as
 current acceptance evidence; the immutable generation is retained only to
-detect and explain the intended correction. Gate A remains open until an owner
-reviews and accepts a replacement. The legacy Vulkan mate is a separate same-
-backend authority and does not widen Metal's thresholds.
+detect and explain the intended correction. The owner reviewed and accepted
+corrected replacement output on 2026-08-11. Local replacement artifacts were
+removed on request, so this is a recorded acceptance rather than a retained
+pixel-baseline authority. The legacy Vulkan mate remains historical and does
+not widen Metal's thresholds.
 
 The earlier failed repetition, `20260806T182054.703Z-009e5d`, exposed a real
 allocator race: the Metal packet graph and async resource path storage shared
@@ -1096,10 +1095,13 @@ fingerprints, variance, and what was not measured.
 - **Resource-list-free barriers over-synchronize or hide bugs.** Preserve graph
   resource diagnostics, add per-backend validation cases, and allow a Vulkan
   resource-specific lowering.
-- **The macOS 26 floor is unacceptable.** Revisit Metal 3 or retain MoltenVK;
-  do not create an untested hidden fallback.
-- **Gate A takes too long.** Keep MoltenVK supported and avoid freezing useful
-  fixes; the proposal does not authorize neglect of the only shipping backend.
+- **The macOS 26 floor is unacceptable.** Revisit Metal 3 or add another tested
+  implementation under a new decision; do not create an untested hidden
+  fallback.
+- **Gate A takes too long.** This contingency originally kept MoltenVK supported
+  until replacement output was accepted. ADR-026 records the later explicit
+  authorization that retired it; future fallback policy requires a new decision
+  rather than a hidden legacy path.
 - **Modern Vulkan capability support is too narrow.** Revisit the required
   descriptor model or target matrix from real Windows/Linux device data.
 - **The bindless Vulkan backend has no local development loop.** MoltenVK

@@ -15,15 +15,15 @@ GPU is done with it has measured nothing. Never trade an invariant for a number.
 
 ## Project
 
-Renderer and engine framework in C11 with retained Vulkan 1.2 and selected
-Vulkan 1.4 bindless strategies — ~212 source files, ~115k LOC.
+Renderer and engine framework in C11 with selected Metal 4 and Vulkan 1.4
+bindless packet strategies.
 The frontend (`lib/src/renderer/renderer_frontend.c`) owns the subsystems and
-selects one coarse `VkrRendererImpl` strategy at initialization. Its retained
-legacy adaptor reaches Vulkan through the `VkrRendererBackendInterface`
-function-pointer table; Vulkan types stay behind `lib/src/renderer/vulkan/`.
+selects one coarse `VkrRendererImpl` strategy at initialization. Vulkan types
+stay behind `lib/src/renderer/vulkan/bindless/`; the Vulkan 1.2 adaptor and
+generic backend interface were removed by ADR-026.
 Frame orchestration is a JSON-authored render graph
-(`assets/render_graphs/main.rendergraph.json`) with named pass executors in
-`lib/src/renderer/passes/`, driven by packet submission:
+(`assets/render_graphs/main.rendergraph.json`) realized and executed inside the
+selected implementation, driven by packet submission:
 `vkr_renderer_prepare_frame()` then `vkr_renderer_submit_packet()`.
 
 There is no view/layer system. `VkrViewSystem` and `VkrLayer` were removed; any
@@ -82,12 +82,10 @@ build_release/tools/vkr_harness profile --case <case> --profile <profile>
 ./build_test.sh                # build + run the CPU suite
 ./build_test_batch.sh          # 50 runs; confirm or refute a flake
 ./validate_pipeline_cache.sh   # cold/warm pipeline cache behaviour
-tools/validate_multithreaded_backend_matrix.sh   # backend threading matrix
 build_release/tools/vkr_harness profile \
   --case tools/cases/performance/sponza_orbit.case.json \
   --profile tools/profiles/performance-windowed.json # Release performance evidence
 tools/pack_vkt_textures.sh                       # explicit shared KTX2/UASTC packing
-# Windows V1/V2: powershell -ExecutionPolicy Bypass -File tools\validate_v1_v2_windows.ps1
 # Windows: tools\pack_vkt_textures.bat
 ```
 

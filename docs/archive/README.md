@@ -22,6 +22,8 @@ graph plus pass executors under `lib/src/renderer/passes/`.
 | [renderer_frontend_refactoring.md](renderer_frontend_refactoring.md) | [Architecture spec](../architecture/renderer-architecture-spec.md) |
 | [multithreaded-vulkan-backend-spec.md](multithreaded-vulkan-backend-spec.md) | [Architecture spec](../architecture/renderer-architecture-spec.md) — retired from active scope |
 | [frustum-culling-design.md](frustum-culling-design.md) | [ADR-013 draw-submission strategy](../architecture/adr/013-draw-submission-strategy.md) |
+| [adr-001-frontend-backend-separation.md](adr-001-frontend-backend-separation.md) | [ADR-025 selected renderer implementation](../architecture/adr/025-selected-renderer-implementation-strategy.md) |
+| [adr-011-vulkan-1-2-baseline.md](adr-011-vulkan-1-2-baseline.md) | [ADR-023 bindless capability profile](../architecture/adr/023-vulkan-1-4-bindless-capability-profile.md) and [ADR-026 retirement](../architecture/adr/026-vulkan-1-2-retirement.md) |
 
 ## Completed progress logs
 

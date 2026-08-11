@@ -1,6 +1,6 @@
 ---
-status: partial
-updated: 2026-08-09
+status: implemented
+updated: 2026-08-11
 authority: adr
 ---
 
@@ -8,24 +8,22 @@ authority: adr
 
 ## Status
 
-**Accepted (partial)** — Metal 4 is implemented as an application-selectable
-macOS renderer. The Bistro bootstrap allocator race is fixed. A later
-cross-backend review invalidated the accepted Metal baseline as current Gate A
-evidence because it captured broken retained IBL, sampler, transparency, and
-presentation behavior. Those defects are corrected, but Gate A pixel acceptance
-is open pending owner review of a replacement. Vulkan 1.2/MoltenVK remains the
-default. Modern Vulkan remains Stage 6
-work for native Windows and any later claimed Linux target. Historical
-milestone fixtures and focused backend validators have been retired. CPU tests
-own deterministic subsystem/ABI checks, and backend-pinned harness snapshots
-consume the domain-organized production shader library through the application
-renderer.
+**Accepted and implemented.** Metal 4 is the selected macOS renderer. The
+Bistro bootstrap allocator race and the later retained-IBL, sampler,
+transparency, and presentation defects are fixed; the owner accepted the
+corrected output on 2026-08-11. Gate A is complete, and ADR-026's explicitly
+authorized V7 retirement completed Gate A2 by removing the Vulkan 1.2/MoltenVK
+path. Bindless Vulkan is the selected Windows implementation; no Linux target is
+currently claimed. Historical milestone fixtures and focused backend validators
+have been retired. CPU tests own deterministic subsystem/ABI checks, and
+backend-pinned harness snapshots consume the domain-organized production shader
+library through the application renderer.
 Bounded command-slot reuse is externally visible as
 `frame.command_slot_waits`, distinct from its upload-only subset.
 
 ## Context
 
-[ADR-011](011-vulkan-1-2-baseline.md) serves Windows and macOS through one
+[ADR-011](../../archive/adr-011-vulkan-1-2-baseline.md) served Windows and macOS through one
 Vulkan backend, with MoltenVK on macOS. That baseline deliberately does not use
 descriptor indexing, buffer device addresses, dynamic rendering, synchronization2,
 or timeline-based internal retirement.

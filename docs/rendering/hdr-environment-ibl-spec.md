@@ -521,9 +521,10 @@ Bistro proposal records the intentional production-pixel change separately.
 
 ## Implementation evidence
 
-- `./build_test.sh`, `./build.sh Debug`, `./build_release.sh`,
-  `./validate_pipeline_cache.sh`, and
-  `tools/validate_multithreaded_backend_matrix.sh` pass.
+- `./build_test.sh`, `./build.sh Debug`, `./build_release.sh`, and the historical
+  Vulkan 1.2 pipeline-cache/threading gates passed at implementation time. Those
+  legacy backend gates were retired with V7; current validation uses focused
+  selected-implementation harness cases.
 - Debug offscreen snapshot
   `20260803T205636.755Z-01405b` passes on Apple M1 Pro/MoltenVK with no
   VUID/error/fatal diagnostics. It captures `hdr_scene_color` from

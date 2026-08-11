@@ -1,6 +1,6 @@
 ---
 status: investigation
-updated: 2026-08-02
+updated: 2026-08-11
 authority: investigation
 ---
 # P2 Throughput — Measured Findings
@@ -10,6 +10,10 @@ authority: investigation
 > in harness Phase 2b. New measurements use `vkr_harness profile` and the
 > authoritative workflow in `.codex/skills/vkr-performance/SKILL.md`; do not use
 > the command below as current guidance.
+>
+> The `VKR_DISABLE_MDI` A/B switch described below was also retired with the
+> Vulkan 1.2 frontend submission systems in V7. It remains here only to explain
+> how the historical measurements were obtained.
 
 > **Headline.** All four P2 items ship. Culling rejects ~37% of submeshes on
 > San Miguel (0% on Sponza). Instancing and multi-draw-indirect are implemented
@@ -50,9 +54,8 @@ counters. The original capture used one ambiguous `indirect` counter; the P2
 review split it after confirming that it mixed shadow commands into world
 metrics.
 
-`VKR_DISABLE_MDI=1` turns the indirect path off at runtime, so the A/B in
-Finding 4 is the same binary against the same content — the only way to
-attribute a frame-time delta to MDI rather than to a build difference.
+At the time of the capture, `VKR_DISABLE_MDI=1` turned the indirect path off at
+runtime, so the A/B in Finding 4 used the same binary against the same content.
 
 Culling counts vary frame to frame on San Miguel because the camera moves, which
 is why Finding 4 compares 40-second means over three interleaved runs rather
@@ -167,8 +170,8 @@ materials stop owning a descriptor set each.
 
 ### Frame time: no measurable change
 
-A/B on the same binary, same scene, same camera path via `VKR_DISABLE_MDI=1`,
-three interleaved runs of 40 s each:
+The historical A/B used the same binary, scene, and camera path via the now
+retired `VKR_DISABLE_MDI=1` switch, with three interleaved runs of 40 s each:
 
 | run | MDI on | MDI off |
 |---|---|---|

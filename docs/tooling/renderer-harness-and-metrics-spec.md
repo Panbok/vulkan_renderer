@@ -1229,10 +1229,11 @@ verification record, and the relevant ADR status in the same change.
   environment/workload/policy fingerprints.
 - **Boot:** phase 3 reports `boot.*` and resident CPU/GPU bytes for `full`
   versus `automation`, with the effective subsystem masks.
-- **Backend matrix:** `tools/validate_multithreaded_backend_matrix.sh` after
-  phases 4 and 6. Phase 6 additionally covers at least two offscreen image counts
-  and available two/three/four-image windowed configurations, resize/minimize on
-  windowed, and target recreation on offscreen.
+- **Selected implementations:** run a focused validation-enabled lifecycle case
+  on each claimed platform implementation. Phase 6 additionally covers at least
+  two offscreen image counts and available two/three/four-image windowed
+  configurations, resize/minimize on windowed, and target recreation on
+  offscreen. The Vulkan 1.2 threading matrix was retired with V7.
 - **Target equivalence:** the same case on windowed and offscreen targets has
   bit-identical work-volume metrics and compatible canonical captures. Timing is
   not compared across targets.

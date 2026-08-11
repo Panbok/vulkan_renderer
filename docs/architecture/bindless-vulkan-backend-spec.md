@@ -1,12 +1,12 @@
 ---
-status: partial
+status: implemented
 updated: 2026-08-11
 authority: design
 ---
 
 # Bindless Vulkan 1.4 Backend — Design Specification
 
-**Document status:** Partial. V0–V4 are complete on the RX 6700 XT. The selected
+**Document status:** Implemented through V7. V0–V4 are complete on the RX 6700 XT. The selected
 production strategy owns the Vulkan 1.4
 device/profile, exact offscreen and windowed prepare/submit/readback, a portable
 completed acquire-wait-submit WSI path with optional present fences, reflected
@@ -36,10 +36,14 @@ used during implementation were removed afterward at the owner's request; they
 are not retained repository assets. Packet-native retained editor/gizmo
 initialization satisfies the full-boot subsystem contract, and packet
 submission publishes the required no-overflow instance metric. Windows V6 and
-Gate B1 are complete: no-argument application and unpinned harness selection
-use bindless Vulkan on Windows, while explicit `vulkan` retains Vulkan 1.2 as
-the diagnostic fallback. The required post-extraction Metal witnesses keep the
-cross-platform V5 gate open; V7 legacy retirement also remains open.
+Gate B1 are complete. ADR-026 V7 is also complete: no-argument application and
+unpinned harness selection use bindless Vulkan on Windows; explicit `vulkan`
+selects the same implementation; and the temporary `vulkan-bindless` spelling,
+Vulkan 1.2 backend, descriptor-set shaders, legacy-only frontend systems,
+adaptor/interface, and graph migration residue are removed. The required
+post-extraction Metal snapshot and focused API/GPU-validation witnesses pass,
+closing the cross-platform V5 shared-core gate. Fresh native Windows runtime
+evidence after deletion is unavailable on the current macOS host.
 Section 12 records the exact target and macOS evidence plus the older 1.4.335
 tooling limitation.
 
@@ -49,8 +53,7 @@ removal of the Vulkan 1.2 backend. Linux is admitted as a separate,
 evidence-gated stage whose platform work is named in §10.3 but not designed
 here.
 
-**Non-goals:** Changing shipping Vulkan 1.2 behaviour before its retirement
-gates; making a mesh-shader, device-generated-command, or shader-object path
+**Non-goals:** Making a mesh-shader, device-generated-command, or shader-object path
 authoritative without measurement; designing the Linux window/input/filesystem
 layer; claiming speed without matched Release evidence.
 
@@ -489,7 +492,7 @@ memory.gpu.descriptors.storage_image.*      (same shape)
 memory.gpu.materials.*                      (from the shared slot table)
 ```
 
-The legacy `memory.gpu.allocations.*` device-allocation meaning is untouched.
+The existing `memory.gpu.allocations.*` native-allocation meaning is unchanged.
 
 ---
 
@@ -933,10 +936,9 @@ infos carrying image view, layout, load and store ops, and clear value, then
 
 Consequences:
 
-- the graph's render-pass handle, render-target array, render-target cache
-  entries, and render-pass hash map become **dead for this backend**. They
-  survive only for legacy Vulkan 1.2 during migration and are deleted at
-  ADR-026 step 6.
+- ADR-026 step 6 removed the graph's render-pass handle, render-target array,
+  render-target cache entries, and render-pass hash map. The selected
+  implementations now consume attachment declarations directly.
 - Pipelines take `VkPipelineRenderingCreateInfo` with color and depth attachment
   formats instead of a render pass, so pipeline creation depends on
   graph-declared formats rather than a cached render-pass object. Render-pass
@@ -968,7 +970,7 @@ external or video ownership. The lowerer keeps the full layout state machine
 either way and selects the unified path behind one profile boolean; the graph
 is unchanged in both cases.
 
-### 8.7 The three lowerers
+### 8.7 Historical three-lowerer comparison
 
 | | Legacy Vulkan 1.2 | Metal 4 | Bindless Vulkan 1.4 |
 |---|---|---|---|
@@ -1022,16 +1024,11 @@ did.
 
 ### 10.1 The platform seam
 
-The existing Vulkan platform seam is five functions parameterized on the legacy
-backend state type. Rather than duplicating it, the bindless path parameterizes
-it on primitives instead — instance, window handle, allocation callbacks, and an
-out surface, plus the instance and device extension lists and the
-"is this a surface extension" classifier.
-
-One Windows implementation then serves **both** backends during migration and
-serves Linux later without a third copy. This is a genuine compression, and it
-is why ADR-026 records the legacy platform files as superseded at V3 so their
-later deletion removes already-replaced code.
+The bindless path parameterizes platform work on primitives — instance, window
+handle, an output surface, extension lists, and the surface-extension
+classifier. ADR-026 removed the older state-typed platform seam and both of its
+per-OS files. Windows support is owned by the bindless implementation; Linux
+still requires its own evidence-gated platform integration.
 
 ### 10.2 Swapchain
 
@@ -1094,7 +1091,7 @@ policy. The wording is not permission to choose a threshold after seeing data.
 | **V4 — memory, materials, descriptor heaps** | Material row publication; texture, sampler, and storage-image publish, replace, and retire; sentinel slot; two-slot rule; capacity reporting; asset publisher wired to the shared loaders; extract the slot table with this second caller; finish the §5.2 dynamic memory pool and full bindless memory metric family | Multi-material capture exact; two materials share one texture/sampler, one retires while work is pending, and the survivor remains exact; texture replacement while frames are pending; non-coherent atom-range CPU cases and target execution when available; capacity-exhaustion metric fires; repeated create, submit, and destroy returns every logical total to its initial value; validation clean; Metal snapshot/API validation after extraction | Windows and macOS |
 | **V5 — graph, sync2, dynamic rendering, pass parity** | The bindless dependency lowerer; dynamic rendering for every authored pass; shadow cascades, skybox, opaque, transmission, blend, picking, tonemap, editor and UI, text, the full IBL bake, asynchronous capture overlay, per-pass timestamps; extract the capture ring with this second caller | The same declared five-channel capture batch as Metal returning exact final color, HDR scene color, depth, shadow layer, and picking identifiers; analytical IBL checks across irradiance and every prefilter mip; **synchronization validation clean across the whole authored graph**; deterministic repetitions; the CPU barrier-lowering table test; Metal snapshot/API validation after extraction | Windows, plus macOS for the CPU and Metal halves |
 | **V6 — feature parity and Windows selection** | Application and harness backend selection; pipeline cache cold and warm; asset load and unload; metrics parity; a Windows-capable implementation matrix | ADR-021's Gate-B functional checklist on Windows; native validation and lifecycle correctness; and owner-accepted Bistro/text output. Local snapshots, reports, and bindless baseline generations are disposable implementation evidence, not retained product assets | Windows |
-| **V7 — legacy retirement** | Per [ADR-026](adr/026-vulkan-1-2-retirement.md) | Per ADR-026's gates B1 and B2 | Windows and macOS |
+| **V7 — legacy retirement** | Per [ADR-026](adr/026-vulkan-1-2-retirement.md) | Six-step structural deletion, complete CPU suite, and surviving Metal gates; native Windows rerun remains a separate platform evidence boundary | Windows and macOS |
 
 **V0 implementation status (2026-08-08):** the standalone executable, shader,
 build wrappers, recursive reflection check, descriptor-buffer publication,
@@ -1277,14 +1274,13 @@ their settled pre-test baseline. The Windows gate records seven physical
 allocations, 45 MiB allocated, 31 live logical allocations before fixture
 settling, zero retired allocations, and zero pool-capacity failures.
 
-**V5 Windows implementation status (complete; cross-platform extraction
-evidence open, 2026-08-10):** the Vulkan-private
+**V5 implementation status (complete, 2026-08-11):** the Vulkan-private
 `vkr_bindless_vulkan_dependency` module purely lowers canonical graph stage,
 access, and visibility records into synchronization2 masks. It preserves real
 stage-none, splits vertex input and transfer stages, emits zero access masks for
 execution-only dependencies, and rejects unsupported resource-alias visibility
-with a named result. The CPU barrier table pins these cases beside the unchanged
-legacy lowerer.
+with a named result. The CPU barrier table pins these cases beside the canonical
+planner contracts that survive V7.
 
 The selected renderer realizes authored graph resources, emits the compiled
 barrier batches once, opens dynamic-rendering scopes, records transfer copies,
@@ -1329,18 +1325,17 @@ report `20260810T150804.316Z-003609` pass with empty stderr. The dedicated gate
 passes ordinary and GPU-assisted validation with zero actionable warnings or
 errors; the windowed path records five reacquisition proofs, one retired and
 collected swapchain, and no live retirement. The complete CPU suite passes.
-The shared-core CPU contract is covered on Windows, but the required macOS
-post-extraction Metal snapshot/API-validation witnesses are unavailable in this
-workspace; no Windows result is substituted for them.
+The shared-core CPU contract is covered on Windows. The required macOS
+post-extraction Metal snapshot/API-validation witnesses subsequently passed;
+their exact evidence is recorded below, and neither platform's result is used
+as a substitute for the other.
 
 **V6 implementation status (Windows complete, 2026-08-11):** the
-application, harness schema/resolver/child, and focused tests accept the
-explicit `vulkan-bindless` selector, and no-argument application or unpinned
-harness selection now chooses bindless Vulkan on Windows. Explicit `vulkan`
-continues to select the retained legacy backend. The backend honors requested present mode,
+application, harness schema/resolver/child, and focused tests select bindless
+Vulkan for the Windows default and explicit `vulkan`. The backend honors requested present mode,
 loads and atomically saves the driver pipeline cache, completion-retires staged
 assets and replacements, and publishes graph, descriptor, material, allocation,
-draw, and timing metrics. The Windows implementation matrix covers legacy text,
+draw, and timing metrics. The pre-retirement Windows implementation matrix covered legacy text,
 bindless offscreen and windowed whole-graph text, lifecycle/IBL validation, and
 cold/warm pipeline cache. Final pipeline report
 `20260810T171129.662Z-0009cf` passes its cold-save and warm-load children.
@@ -1352,10 +1347,10 @@ at the owner's request. Performance optimization and performance gating are
 outside this implementation stage; no legacy shader change made solely for the
 comparison remains in the tree.
 
-Gate B1 therefore closes on the accepted visual/correctness result and the
-implemented functional, lifecycle, cache, metrics, and validation behavior.
-The Windows default flip is implemented. Gate B1 does not authorize legacy
-deletion; explicit `vulkan` remains available through V7/B2.
+Gate B1 closed on the accepted visual/correctness result and the implemented
+functional, lifecycle, cache, metrics, and validation behavior. ADR-026 then
+completed V7 under explicit owner authorization. The legacy comparison arm and
+temporary selector no longer exist.
 
 Optional capabilities are deliberately outside this ladder. Each is its own
 measured change after V6, per §3.5.
@@ -1365,8 +1360,21 @@ offscreen/windowed Vulkan, CPU, reflection, synchronization-validation, and
 GPU-assisted gates. macOS still cannot execute the descriptor-buffer backend,
 and no native Windows result is inferred from its evidence. V3 and V4 are target
 complete. The shared capture ring has production Metal and V5 Vulkan callers;
-ADR-024 remains partial only because its post-capture-extraction Metal snapshot
-and API/GPU-validation witnesses have not been rerun on macOS.
+the post-capture-extraction Release Metal snapshot and focused Metal
+API/GPU-validation snapshot now reproduce the established exact final-color and
+picking bytes, so ADR-024 is Accepted.
+
+**Post-capture-extraction macOS evidence (2026-08-11):** Release snapshot
+`20260811T162001.493Z-009ace` passes with report digest
+`sha256:9f232d8e202b2faa6353e3179193aed53265eb2a438779b5a15c610f1b9061f8`.
+Focused Debug snapshot `20260811T162103.331Z-00a16a` passes with Metal API and
+GPU validation enabled and report digest
+`sha256:017d712e6b738c710daa0f3fbf707cad0deef6bfd43858bcda996adfb3844785`.
+Both produce final color
+`sha256:019ba7752b653ea77dc8fce8e4125b042f67794d1978aa12044ed4c5b44ad3a6`
+and picking identifiers
+`sha256:ed47dbf1b5e6ade6820370e0313b257c3067d667dd277a1d0033c4d204a26388`;
+the validation child's stderr contains only the two validation-enabled notices.
 
 ---
 
@@ -1403,27 +1411,31 @@ build_bindless_vulkan_v0.bat Debug
 build_bindless_vulkan_v0_Debug\tools\vkr_bindless_vulkan_v0.exe --validation
 build_bindless_vulkan_v0_Debug\tools\vkr_bindless_vulkan_v0.exe --gpu-assisted
 
-# Reproduce the completed V1/V2 Windows CPU and legacy-runtime gate.
-powershell -ExecutionPolicy Bypass -File tools\validate_v1_v2_windows.ps1
+# V1/V2's completed legacy-runtime gate is historical evidence. Its script was
+# retired with the Vulkan 1.2 implementation in V7 and is not a current command.
 
-# Build and run the selected production V3/V4 slices on Windows.
-powershell -ExecutionPolicy Bypass -File tools\validate_v3_v4_windows.ps1
-
-# Individual diagnostic invocations used by that gate.
+# Build and run the retained focused Vulkan diagnostic on Windows.
 build_bindless_vulkan_v3.bat Debug
 build_bindless_vulkan_v3_Debug\tools\vkr_bindless_vulkan_v3.exe --validation
 build_bindless_vulkan_v3_Debug\tools\vkr_bindless_vulkan_v3.exe --validation --windowed
 build_bindless_vulkan_v3_Debug\tools\vkr_bindless_vulkan_v3.exe --gpu-assisted
 
-# The branch ladder ADR-025 removes.
-grep -rn "VKR_RENDERER_BACKEND_TYPE_METAL" lib/ app/ tools/ tests/ | wc -l
+# Build the selected production implementation and CPU contracts on Windows.
+build.bat Debug
+build_test.bat
 
-# The shared capture core and remaining Metal-owned candidates carry no Metal types.
+# V7 removed the generic backend interface and temporary production selectors.
+grep -Rn "VkrRendererBackendInterface\|VKR_RENDERER_IMPL_LEGACY_VULKAN" \
+  app/ lib/ tools/
+grep -Rn '"vulkan-bindless"\|"legacy-vulkan"' app/ lib/ tools/
+
+# Shared GPU cores carry no native Metal types.
 grep -n "MTL\|@interface\|id<" \
-  lib/src/renderer/metal/vkr_metal_memory.c \
-  lib/src/renderer/metal/vkr_metal_material_table.c \
+  lib/src/renderer/vkr_gpu_memory.c \
+  lib/src/renderer/vkr_gpu_submit_ring.c \
+  lib/src/renderer/vkr_gpu_slot_table.c \
   lib/src/renderer/vkr_capture_ring.c \
-  lib/src/renderer/metal/vkr_metal_packet_abi.c
+  lib/src/renderer/vkr_gpu_abi.c
 ```
 
 Observed on 2026-08-08 with SDK 1.4.313:
@@ -1668,10 +1680,10 @@ one slower one — performance is correctness.
 
 ### 13.5 Retirement sequencing
 
-**No file under the legacy Vulkan tree is deleted until Gate A2 is complete, the
-bindless Vulkan backend has passed V6 on Windows, and it has been the default
-Windows renderer for the predeclared observation contract.** ADR-026 owns the
-split gate that enforces this.
+ADR-026 records the original Gate A2 and observation-period sequence and the
+owner's 2026-08-11 decision to waive that delay and complete V7 immediately.
+The deletion is implemented. Native Windows revalidation remains required
+before making a fresh post-retirement Windows runtime claim.
 
 ### 13.6 Accepted costs of the chosen decisions
 

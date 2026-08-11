@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: implemented
 updated: 2026-08-11
 authority: adr
 ---
@@ -8,18 +8,21 @@ authority: adr
 
 ## Status
 
-**Proposed** — nothing is deleted. B1 is complete and B2 remains open. Windows
-V5 functional and validation coverage, pipeline-cache behavior,
-lifecycle/metrics, and the implementation matrix pass. The owner visually
-accepted corrected Bistro/text output on 2026-08-11 and explicitly excluded
-performance optimization from this implementation stage. Local snapshots,
-reports, proposals, and bindless baseline generations were removed afterward
-at the owner's request. B1 is closed and bindless Vulkan is the Windows default
-while legacy Vulkan 1.2 remains explicitly selectable. This ADR
-refines [ADR-021](021-metal-first-bindless-backend.md)'s Gate B; it does not
-supersede that ADR, which remains the authority for Gates A and A2. It becomes
-Accepted only when B2 and the deletion sequence are complete; B1 alone leaves
-it Proposed because no retirement has occurred.
+**Accepted and implemented.** The owner explicitly authorized full V7 retirement
+on 2026-08-11, superseding this ADR's earlier B2 observation-period condition.
+All six deletion steps are complete: public `vulkan` selects the bindless
+implementation; legacy selectors, shaders, manifests, build rules, frontend
+subsystems, Vulkan 1.2 backend/adaptor, 87-operation interface, wrappers, and
+render-pass/render-target graph residue are absent. Metal remains the macOS
+default and bindless Vulkan is the Windows Vulkan implementation.
+
+The authorization changed the risk decision; it did not manufacture missing
+evidence. The complete CPU suite and macOS Metal gates pass after deletion, but
+the resulting Windows executable cannot be run on the current macOS host and
+MoltenVK still lacks `VK_EXT_descriptor_buffer`. Fresh native Windows runtime
+and validation evidence therefore remains unavailable and is a named residual
+risk, not an acceptance claim. Historical B1/B2 rationale below is retained to
+explain the safer sequence that the owner consciously waived.
 
 ## Context
 
@@ -70,7 +73,7 @@ Two facts sharpen both points:
 
 The scale of what Gate B eventually deletes is worth stating plainly: the Vulkan
 1.2 backend is 40 files and roughly 24,600 lines, of which `vulkan_backend.c`
-alone is 10,400. On top of that sit the 86-entry backend interface, its frontend
+alone is 10,400. On top of that sit the 87-entry backend interface, its frontend
 wrappers, fifteen descriptor-set shader programs plus six shared shader headers
 with their build rules and runtime manifests, and several frontend subsystems
 that exist only to serve the descriptor-set model.
@@ -167,7 +170,7 @@ build confirming the removal itself caused no material regression.
 
 **Step 5 — the backend interface and frontend wrappers.** Remove the now-unused
 `VkrRendererBackendInterface` definition and every frontend wrapper that called
-through its 86-entry table. This is where the frontend loses most of its bulk.
+through its 87-entry table. This is where the frontend loses most of its bulk.
 Evidence: compile, full suite, and both surviving backends' snapshots. In the
 same change ADR-001 becomes `Superseded by ADR-025`, and the ADR/status indexes
 are updated.
@@ -192,11 +195,25 @@ no descriptor-set path, and no MoltenVK.
 That is the intended outcome of the owner's decision to go fully bindless, and
 it is written here so it is a decision rather than a discovery.
 
+### 5. Implementation record
+
+V7 completed on 2026-08-11 in the prescribed dependency order. Shared graph
+schedule, culling, condition, and barrier planning remain backend-neutral;
+selected implementations own GPU resource realization, dynamic rendering,
+commands, and timing. Imported and final image-state declarations survive.
+The shared asset systems now publish generation-safe geometry, textures,
+samplers, and materials through `VkrAssetPublisher` and no longer maintain a
+parallel descriptor-instance or pipeline model.
+
+The former observation contract would not have elapsed before 2026-08-25. The
+owner's explicit instruction to complete V7 immediately is the authority for
+proceeding before that date and replaces, rather than satisfies, that condition.
+
 ## Consequences
 
 **Positive**
 
-- Roughly 24,600 lines of backend, an 86-entry interface, its frontend wrappers,
+- Roughly 24,600 lines of backend, an 87-entry interface, its frontend wrappers,
   fifteen shader programs, and four frontend subsystems leave the tree. What
   remains is one renderer model rather than two.
 - Every remaining renderer path is bindless, so a feature no longer has to be
@@ -239,7 +256,7 @@ it is written here so it is a decision rather than a discovery.
   given that no portable diagnostic path survives B2, and it is what the "risks"
   above argue for. Rejected because it contradicts the owner's decision to go
   fully bindless, and because a diagnostic path that no one ships steadily decays
-  — it would keep the 86-entry interface, the descriptor-set shaders, and the
+  — it would keep the 87-entry interface, the descriptor-set shaders, and the
   legacy frontend subsystems alive to serve a path with no users and no evidence
   budget. If the loss of a diagnostic path proves painful, the honest response is
   to reopen this decision explicitly rather than to have quietly kept a rotting

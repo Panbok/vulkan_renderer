@@ -9,8 +9,8 @@ authority: adr
 ## Status
 
 **Accepted** — `VkrRendererImpl` selects one immutable capability
-record and coarse operation strategy for Metal, the retained legacy-Vulkan
-adaptor, and the production bindless Vulkan implementation. The bindless
+record and coarse operation strategy for Metal or production bindless Vulkan.
+The bindless
 strategy now owns a Vulkan 1.4 device, offscreen and window-target state,
 descriptor heaps, prepare/submit execution, completion, memory/heap metrics,
 the validated V4 asset-publication and dynamic-memory boundary, and the V5
@@ -42,15 +42,17 @@ swapchain extensions. The portable path now treats a completed submit that
 consumed the reacquired image's acquire semaphore as the presentation proof;
 when maintenance1 is available, per-image present fences provide explicit
 completion. Neither path adds a backend-type branch or per-draw dispatch.
-Windows now selects the bindless Vulkan strategy by default. The explicit
-`--renderer vulkan` selector retains the legacy Vulkan 1.2 adaptor as a
-diagnostic fallback, while `--renderer vulkan-bindless` remains available for
-pinned cases during the migration period.
+Windows selects bindless Vulkan by default and `--renderer vulkan` names that
+same implementation explicitly. ADR-026 V7 removed the legacy adaptor,
+temporary `vulkan-bindless` spelling, and the capability boolean that existed
+only to distinguish retained pipeline state. The normal frame path still has
+exactly the coarse prepare and submit dispatches and no per-pass or per-draw
+strategy call.
 
 ## Context
 
-[ADR-001](001-frontend-backend-separation.md) established
-`VkrRendererBackendInterface`, an 86-entry function-pointer table, as the
+[ADR-001](../../archive/adr-001-frontend-backend-separation.md) established
+`VkrRendererBackendInterface`, an 87-entry function-pointer table, as the
 frontend-to-backend seam. [ADR-020](020-bindless-backend-seam.md) then chose to
 add the bindless path as a *parallel renderer implementation selected once at
 initialization*, rather than filling that table with Metal, because the table's
@@ -58,7 +60,7 @@ render-pass, descriptor-instance, vertex-binding, layout, and telemetry
 contracts would have forced Metal to reproduce the Vulkan 1.2 data model.
 
 That decision was right, but its implementation took a shortcut. On Metal the
-86-entry table is left **entirely NULL** and the frontend short-circuits above
+87-entry table is left **entirely NULL** and the frontend short-circuits above
 it to call the Metal packet renderer directly. The mechanism for
 short-circuiting was an `if (backend_type == VKR_RENDERER_BACKEND_TYPE_METAL)`
 test. The pre-V2 inventory found 46 of them:
@@ -161,7 +163,7 @@ factory selection may still inspect the enum; they do not choose frame behavior.
 Explicitly **not** in the table: draw, indexed draw, buffer or texture binding,
 viewport and scissor state, barriers, resource creation, pipeline creation, and
 render-pass begin and end — anything per pass or per draw. This is a coarse
-strategy whose frame path is two entries, not a resurrected 86-entry vtable.
+strategy whose frame path is two entries, not a resurrected 87-entry vtable.
 
 ### A typed submit result
 
@@ -187,7 +189,7 @@ are.** They live in functions that only the legacy implementation reaches,
 because their callers are already gated by the capability boolean. Routing them
 through the strategy table would be the speculative-vtable mistake ADR-020
 rejects. The adaptor's value is containment: at the final retirement gate,
-deleting the 86-entry table means deleting one implementation and its adaptor
+deleting the 87-entry table means deleting one implementation and its adaptor
 rather than unpicking a ladder across 14 files.
 
 ### Hot-path guarantee
@@ -240,12 +242,12 @@ duplication is measurable, not in advance.**
 - A capability struct can accrete fields the way a vtable accretes entries.
   `uses_legacy_pipeline_state` is defensible because it names a real subsystem
   cluster; a second boolean per behavioural difference would not be.
-- `AGENTS.md` now names `VkrRendererImpl` as the selected coarse strategy and
-  retains `VkrRendererBackendInterface` as the legacy Vulkan adaptor seam.
+- `AGENTS.md` names `VkrRendererImpl` as the selected coarse strategy. The
+  legacy adaptor seam was removed by ADR-026.
 
 ## Alternatives Considered
 
-- **Implement bindless Vulkan through the existing 86-entry
+- **Implement bindless Vulkan through the existing 87-entry
   `VkrRendererBackendInterface`.** Rejected for the same reason ADR-020 rejected
   it for Metal: its render-pass, descriptor-instance, vertex-binding, layout, and
   descriptor-write-telemetry contracts encode the Vulkan 1.2 data model, and a
@@ -284,10 +286,8 @@ duplication is measurable, not in advance.**
   rather than speculation.
 - Duplication between Metal and Vulkan orchestration becomes measurable, which is
   the trigger for the `renderer_frontend.c` split.
-- The legacy implementation is deleted per
-  [ADR-026](026-vulkan-1-2-retirement.md), at which point the adaptor and the
-  capability boolean it exists to serve are both removed and the strategy has two
-  implementations instead of three.
+- A third selected implementation is added, which must preserve the same coarse
+  boundary rather than reintroducing a behavior ladder.
 - A measured profile shows the two per-frame indirect calls are a material cost,
   at which point replace the selected strategy with a cheaper coarse mechanism
   while preserving the no-per-pass/no-per-draw dispatch invariant.

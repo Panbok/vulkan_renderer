@@ -44,7 +44,7 @@ analogue for only two.
 
 ## Context
 
-[ADR-001](001-frontend-backend-separation.md) established
+[ADR-001](../../archive/adr-001-frontend-backend-separation.md) established
 `VkrRendererBackendInterface` between the frontend and the Vulkan backend. The
 interface has 86 entries and only one implementation. Its known leak is now
 concrete: render-pass/target objects, instance descriptor state, vertex binding,

@@ -1,11 +1,13 @@
 ---
-status: implemented
+status: superseded
 updated: 2026-08-05
 authority: adr
 ---
 # ADR-011: Vulkan 1.2 Baseline with Classic Render Passes
 
-**Status:** Accepted
+**Status:** Superseded by
+[ADR-023](../architecture/adr/023-vulkan-1-4-bindless-capability-profile.md) and
+[ADR-026](../architecture/adr/026-vulkan-1-2-retirement.md). No Vulkan 1.2 implementation remains.
 
 ## Context
 
@@ -77,10 +79,8 @@ necessarily changing the API version floor, subject to capability checks.
   async work enough to justify dual paths or a higher floor.
 - Bindless/material tables or timeline-based upload dependencies are designed.
   **This trigger has fired.** The
-  [bindless GPU-pointer renderer design](../bindless-gpu-pointer-renderer-spec.md)
+  [bindless GPU-pointer renderer design](../architecture/bindless-gpu-pointer-renderer-spec.md)
   specifies GPU-address data, backend-native bindless texture references, and a
-  submit-value retirement timeline. [ADR-021](021-metal-first-bindless-backend.md)
+  submit-value retirement timeline. [ADR-021](../architecture/adr/021-metal-first-bindless-backend.md)
   proposes Metal 4 first and a separately capability-gated modern Vulkan path.
-  It does not change this implemented baseline: the Vulkan 1.2 backend described
-  here is what ships until its functional and native-validation retirement gate
-  passes.
+  ADR-026 subsequently removed the baseline described here.

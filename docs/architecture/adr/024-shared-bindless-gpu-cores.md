@@ -1,5 +1,5 @@
 ---
-status: partial
+status: implemented
 updated: 2026-08-11
 authority: adr
 ---
@@ -8,7 +8,7 @@ authority: adr
 
 ## Status
 
-**Accepted (partial)** — V1 characterized all four candidates on macOS and
+**Accepted** — V1 characterized all four candidates on macOS and
 Windows. The production V3 and V4 Vulkan callers now share the extracted
 `vkr_gpu_memory`, `vkr_gpu_submit_ring`, `vkr_gpu_abi`, and
 `vkr_gpu_slot_table` cores with typed Metal adapters. Their RX 6700 XT callers
@@ -23,12 +23,16 @@ and image pools, including dynamic geometry, texture staging, and placement
 images. The capture ring is now the shared `vkr_capture_ring` core with
 production Metal and V5 Vulkan callers; its ownership state machine remains
 covered by the cross-platform CPU suite. Production Vulkan synchronization and
-GPU-assisted validation pass. The shared-core implementation is complete for
-the bindless Vulkan V5 scope. This ADR remains partial only because the
-post-capture-extraction Metal snapshot and API/GPU-validation witnesses have not
-been rerun on macOS; those are cross-platform regression checks, not remaining
-bindless Vulkan implementation. Performance optimization is outside the
-owner-selected implementation scope.
+GPU-assisted validation pass. The post-capture-extraction macOS witnesses now
+pass as well: Release snapshot `20260811T162001.493Z-009ace` and focused Metal
+API/GPU-validation snapshot `20260811T162103.331Z-00a16a` both reproduce final
+color `sha256:019ba7752b653ea77dc8fce8e4125b042f67794d1978aa12044ed4c5b44ad3a6`
+and picking identifiers
+`sha256:ed47dbf1b5e6ade6820370e0313b257c3067d667dd277a1d0033c4d204a26388`.
+The validation child reports only the expected API/GPU-validation enablement
+notices and no diagnostic. The shared-core extraction and its required
+cross-platform correctness witnesses are complete. Performance optimization is
+outside the owner-selected implementation scope.
 
 ## Context
 
