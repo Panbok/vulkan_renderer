@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-10
+updated: 2026-08-11
 authority: design
 ---
 
@@ -16,9 +16,10 @@ A later cross-backend audit found that generation preserved broken retained IBL,
 sampler, transparency, and presentation behavior. Those defects are corrected,
 so the old Metal generation is historical and Gate A pixel acceptance is open
 again pending owner review of a replacement. Stage 6 modern Vulkan is complete
-through V4 on the RX 6700 XT, including the keyed dynamic-memory pools and
-post-change validation gate. V5 authored-graph parity, V6 baseline selection,
-and V7 retirement remain open. The detailed
+through Windows V6 on the RX 6700 XT, including keyed dynamic-memory pools,
+authored-graph parity, owner-accepted corrected Bistro/text output, and the
+Windows default selection. Local bindless evidence artifacts were removed on
+request. V7 retirement remains open. The detailed
 [bindless Vulkan backend specification](bindless-vulkan-backend-spec.md) and
 ADRs 023–026 own its current status. The descriptor-buffer backend still cannot
 run on the macOS development machine. Its post-extraction CPU, byte-identical
@@ -34,7 +35,8 @@ capability-gated modern Vulkan renderer for Windows and Linux. Both use 64-bit
 buffer addresses and bindless texture references, while lowering those concepts
 to their APIs' different resource models.
 
-**Non-goals:** Changing shipping Vulkan 1.2 behavior, claiming that Metal
+**Non-goals:** Deleting the retained Vulkan 1.2 diagnostic path before V7/B2,
+claiming that Metal
 implements every primitive in Sebastian Aaltonen's proposal, choosing a heap
 block size before measurement, or promising speed without a Release profile.
 
@@ -49,10 +51,12 @@ Stage 6 is designed in detail by the
 capability contract, [ADR-024](adr/024-shared-bindless-gpu-cores.md) the shared
 backend-neutral cores, [ADR-025](adr/025-selected-renderer-implementation-strategy.md)
 the implementation seam, and [ADR-026](adr/026-vulkan-1-2-retirement.md) the
-retirement sequence. All four are proposals; none has executable evidence.
+retirement sequence. ADRs 023 and 025 are accepted, ADR-024 is accepted in
+part, and ADR-026 remains proposed because B2 deletion has not occurred.
 
 The status authority remains the renderer status specification. It records the
-implemented optional Metal path separately from the default Vulkan 1.2 path.
+implemented optional Metal path separately from the default bindless Vulkan
+Windows path and the explicit legacy Vulkan diagnostic path.
 
 ---
 
@@ -730,7 +734,7 @@ Minimum required capabilities:
 | Dynamic rendering, synchronization2, maintenance4 | Core Vulkan 1.3 features enabled |
 | Maintenance5 | Core Vulkan 1.4 feature enabled; size-bounded index binding |
 | Bindless texture references | **`VK_EXT_descriptor_buffer` required, with no fallback** |
-| Windowed presentation lifetime | Base swapchain plus per-image semaphore retention until image reacquisition proves prior presentation complete; maintenance1 present fences are an optional future optimization |
+| Windowed presentation lifetime | Base swapchain plus per-image semaphore retention until a submit consuming the reacquired image's acquire semaphore completes; maintenance1 remains optional but supplies explicit per-image present fences when available |
 | Shader language/toolchain | Slang→SPIR-V address and descriptor model validated by reflection, validation layers, and a rendered case |
 
 `VK_EXT_descriptor_heap` is the standardized successor and closer to the
@@ -961,8 +965,10 @@ Validation, and all shader execution runs under API plus GPU Validation with
 archive lookup disabled. No compilation-speed claim is made. The application
 frontend now selects this same renderer with `--renderer metal`, publishes
 loader-owned mesh, texture, cubemap, and material resources through a coarse
-backend boundary, and retains Vulkan 1.2 as the default and diagnostic path.
-The harness selects it with `VKR_HARNESS_RENDERER_BACKEND=metal`.
+backend boundary, and retains Vulkan 1.2 as an explicit diagnostic path. On
+Windows, bindless Vulkan is the default and explicit `--renderer vulkan`
+retains Vulkan 1.2 as the diagnostic path. The harness selects Metal with
+`VKR_HARNESS_RENDERER_BACKEND=metal`.
 Scalar PBR, four material texture slots, alpha cutoff, directional and grid-
 selected punctual lighting, directional shadow sampling, global IBL controls,
 material transmission, and local reflection probes are GPU-proven. A fixed-capacity

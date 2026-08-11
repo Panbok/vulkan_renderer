@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-10
+updated: 2026-08-11
 authority: adr
 ---
 
@@ -16,27 +16,19 @@ complete the V3 and V4 target slices, including keyed dynamic memory,
 native window resize/reacquisition, loaded geometry consumption, writable
 sampled/storage textures, asynchronous frame-batched initialization, canonical
 shared samplers, dependent material-row republication, and material retirement.
-The post-change RX 6700 XT V4 gate passes Release offscreen, three fresh Debug
-validation lifecycles, windowed synchronization validation, GPU-assisted
-validation, and logical-memory return to baseline. The Vulkan memory adapter
+The post-change RX 6700 XT V4 gate passes offscreen/windowed validation,
+GPU-assisted validation, and logical-memory return to baseline. The Vulkan memory adapter
 now uses the shared allocator core for keyed DEVICE, UPLOAD, and READBACK buffer
 and image pools, including dynamic geometry, texture staging, and placement
-images. The capture ring remains Metal-owned until its
-V5 Vulkan caller exists. The complete
-CPU suite passes on macOS and Windows; production Vulkan synchronization and
-GPU-assisted validation pass. On macOS, clean post-extraction snapshot
-`20260809T144750.194Z-00878c` is byte-identical to the pre-extraction final-color
-and picking bytes, focused Metal API/GPU-validation snapshot
-`20260809T144806.578Z-00852e` repeats those bytes without a diagnostic, and
-the fresh-toolchain Release pair matches all fingerprints and work. Its wall
-mean, p50, p95, and prepare p50 pass their predeclared upper bounds, but submit
-p50 does not: authoritative candidate `20260809T154933.555Z-00bb51` is
-`+172.421%` against pre-extraction baseline
-`20260809T152943.486Z-00b06c`, above the `+5%` bound. An earlier authoritative
-run of the identical candidate binary also misses at `+41.920%`, so the Release
-extraction witness remains open even though total frame time does not regress.
-This ADR remains partial for the failed Release submit bound and the V5
-capture-ring extraction.
+images. The capture ring is now the shared `vkr_capture_ring` core with
+production Metal and V5 Vulkan callers; its ownership state machine remains
+covered by the cross-platform CPU suite. Production Vulkan synchronization and
+GPU-assisted validation pass. The shared-core implementation is complete for
+the bindless Vulkan V5 scope. This ADR remains partial only because the
+post-capture-extraction Metal snapshot and API/GPU-validation witnesses have not
+been rerun on macOS; those are cross-platform regression checks, not remaining
+bindless Vulkan implementation. Performance optimization is outside the
+owner-selected implementation scope.
 
 ## Context
 
@@ -97,7 +89,7 @@ true.
 |---|---|---|
 | `vkr_gpu_memory` and `vkr_gpu_submit_ring` | `vkr_metal_memory.c` | The device adapter: Metal's placement heap and residency set; Vulkan's `VkDeviceMemory` blocks, persistent mapping, and device-address capture |
 | `vkr_gpu_slot_table` | `vkr_metal_material_table.c`, parameterized by row size | The storage adapter: Metal's shared write-combined buffer; Vulkan's upload-class suballocation. Also the row type itself |
-| `vkr_gpu_capture_ring` | `vkr_metal_capture_ring.c` | The blit or copy that fills a slot, and the readback storage |
+| `vkr_capture_ring` | `vkr_metal_capture_ring.c` | The blit or copy that fills a slot, and the readback storage |
 | `vkr_gpu_abi` | The manifest machinery in `vkr_metal_packet_abi.c` | Its own record table and its own reflection cross-check |
 
 Three ABI records are genuinely shared by both backends — the vertex, instance,
@@ -163,11 +155,11 @@ first real Vulkan use:
 
 Within each vertical slice, write the representative Vulkan use first, confirm
 the ownership/completion contract matches, and then extract the observed
-intersection. The required witness for every extraction is a byte-identical
-shipping Metal snapshot, clean Metal API/GPU validation, the CPU suite on both
-platforms, and a same-configuration Release Metal profile showing no material
-regression under a tolerance declared before the paired runs. The Vulkan slice
-supplies its own Windows runtime evidence.
+intersection. The required correctness witness for every extraction is a
+byte-identical shipping Metal snapshot, clean Metal API/GPU validation, and the
+CPU suite on both platforms. The Vulkan slice supplies its own Windows runtime
+evidence. Performance optimization and matched profiles are outside the current
+owner-selected implementation scope.
 
 Any later core API change must be re-validated against Metal with the same
 witness. A shared core is not permission to change Metal's behaviour without
@@ -198,9 +190,9 @@ Metal evidence.
   Metal-owned names and may require a short Vulkan-private walking
   implementation before compression.
 - Parameterizing the slot table by row size introduces indirection where Metal
-  previously had a concrete type. If that costs measurable time in the Metal
-  Release profile, the correct response is to keep two copies rather than one
-  slower one — performance is correctness.
+  previously had a concrete type. Performance can be revisited independently
+  if it becomes a product requirement; it does not reopen the implemented
+  extraction under the current scope.
 - Shared code raises the blast radius of a defect. A regression in the core
   breaks both backends at once, where duplication would have broken one.
 - Module names change only when a second caller lands, so every extraction mixes

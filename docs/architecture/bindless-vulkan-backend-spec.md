@@ -1,6 +1,6 @@
 ---
 status: partial
-updated: 2026-08-10
+updated: 2026-08-11
 authority: design
 ---
 
@@ -8,9 +8,10 @@ authority: design
 
 **Document status:** Partial. V0–V4 are complete on the RX 6700 XT. The selected
 production strategy owns the Vulkan 1.4
-device/profile, exact offscreen and windowed prepare/submit/readback, an
-unextended WSI reacquisition-completion path, reflected production ABI, shared
-GPU cores, descriptor heaps, and the V4 geometry/texture/sampler/material
+device/profile, exact offscreen and windowed prepare/submit/readback, a portable
+completed acquire-wait-submit WSI path with optional present fences, reflected
+production ABI, shared GPU cores, descriptor heaps, and the V4
+geometry/texture/sampler/material
 publisher. Prepared and writable texture initialization is now recorded into
 the next frame command buffer without a CPU timeline wait; staging lifetime is
 tied to that frame's completion value; publication flushes are batched;
@@ -21,12 +22,24 @@ and READBACK buffers by `(class, kind, memory_type_index,
 device_address_required)`, honors dedicated requirements, persistently maps
 host-visible blocks, and publishes logical plus physical memory metrics. The
 post-change native offscreen, windowed, synchronization-validation,
-GPU-assisted, and repeated-lifecycle gate passes. V5 authored-graph/pass parity,
-V6 baseline selection,
-and V7 legacy retirement remain open. The post-extraction Metal snapshot,
-API/GPU-validation, and complete CPU suite pass on macOS. The matched Release
-pair passes its wall and prepare bounds but misses the predeclared submit-p50
-bound, so ADR-024's cross-platform extraction-evidence gap remains open.
+GPU-assisted, and repeated-lifecycle gate passes. The Windows V5 implementation
+now lowers the canonical authored graph to synchronization2 and dynamic
+rendering, executes every required graphics/transfer/IBL category, publishes
+completion-valid per-pass timestamps, and uses the shared asynchronous capture
+ring. Analytical irradiance plus all nine prefilter mips and whole-graph
+offscreen/windowed validation pass on the RX 6700 XT. A later visual audit found
+and corrected canceled global-HDR baking, deferred logical unpublication that
+blocked generation reuse, and rejection of Bistro's normalized local-probe
+cubemap. The corrected Bistro and text output was visually accepted by the
+owner on 2026-08-11. Local snapshots, reports, and bindless baseline generations
+used during implementation were removed afterward at the owner's request; they
+are not retained repository assets. Packet-native retained editor/gizmo
+initialization satisfies the full-boot subsystem contract, and packet
+submission publishes the required no-overflow instance metric. Windows V6 and
+Gate B1 are complete: no-argument application and unpinned harness selection
+use bindless Vulkan on Windows, while explicit `vulkan` retains Vulkan 1.2 as
+the diagnostic fallback. The required post-extraction Metal witnesses keep the
+cross-platform V5 gate open; V7 legacy retirement also remains open.
 Section 12 records the exact target and macOS evidence plus the older 1.4.335
 tooling limitation.
 
@@ -150,6 +163,7 @@ device with a named report row.
 | `apiVersion >= VK_API_VERSION_1_4` | — | Version floor for instance and device |
 | `bufferDeviceAddress` | 1.2 | The entire model. Root records and every array are reached by address. Also required to bind a descriptor buffer, whose binding info takes a device address |
 | `shaderInt64` | 1.0 | Address fields and address arithmetic in the root record |
+| `shaderDrawParameters` | 1.1 | Packet vertex shaders consume `BaseInstance`/`BaseVertex` to preserve packet-local instance and indexed-draw semantics |
 | `timelineSemaphore` | 1.2 | The ordinary GPU retirement domain (§6) |
 | `descriptorIndexing` | 1.2 | Gates the minimum descriptor-indexing set |
 | `runtimeDescriptorArray` | 1.2 | Unbounded `Texture2D g_textures[]` declaration |
@@ -160,6 +174,7 @@ device with a named report row.
 | `dynamicRendering` | 1.3 | Removes `VkRenderPass`/`VkFramebuffer` and the twelve render-pass vtable entries |
 | `synchronization2` | 1.3 | Barrier vocabulary that maps onto `VkrGpuDependency`; real `VK_PIPELINE_STAGE_2_NONE`; split transfer stages |
 | `maintenance4` | 1.3 | `vkGetDeviceBufferMemoryRequirements` / `vkGetDeviceImageMemoryRequirements` — placement size and alignment **without creating a throwaway object**, the analogue of Metal's `heapBufferSizeAndAlignWithLength:` |
+| `shaderDemoteToHelperInvocation` | 1.3 | Alpha-cutout packet shaders lower `discard` to `OpDemoteToHelperInvocation` |
 | `maintenance5` | 1.4 | `VkBufferUsageFlags2CreateInfo`; `vkCmdBindIndexBuffer2` for size-bounded index binding, matching Metal's `indexBufferLength:` |
 | `VK_EXT_descriptor_buffer` with `descriptorBuffer == VK_TRUE` | extension | The global texture heap (§4). No fallback |
 | One queue family with graphics + compute + transfer (+ present when windowed) | — | Keeps the scalar submit value a valid total order (§6.5) |
@@ -621,15 +636,24 @@ in §6.4. An assumed frame lag is never completion proof.
 ### 6.4 WSI is the one place the timeline is not enough
 
 `vkAcquireNextImageKHR` and `vkQueuePresentKHR` require **binary** semaphores,
-and completion of the submit timeline does not prove that presentation
-resources may be safely recycled or destroyed. The RX 6700 XT target does not
-expose `VK_KHR_swapchain_maintenance1`, so the baseline uses the portable
-reacquisition algorithm documented by Khronos. A windowed submit signals the
-timeline at value N for ordinary GPU retirement and a per-swapchain-image binary
-render-complete semaphore for present, while waiting on a per-frame-slot binary
-acquire semaphore. `VkSubmitInfo2` carries those semaphores. A render-complete
-semaphore is reused only after `vkAcquireNextImageKHR` returns the same image
-again; that reacquisition proves its prior presentation is complete.
+and completion of an unrelated submit timeline value does not prove that
+presentation resources may be safely recycled or destroyed. A windowed submit
+signals the timeline at value N for ordinary GPU retirement and a
+per-swapchain-image binary render-complete semaphore for present, while waiting
+on a per-frame-slot binary acquire semaphore. `VkSubmitInfo2` carries those
+semaphores. Reacquiring an image is only the first half of the portable proof:
+the backend records the reacquisition, consumes that acquire semaphore in a
+successful queue submit, and waits for that submit's timeline value to complete
+before treating the prior presentation as finished. Reacquire return alone is
+not sufficient.
+
+When a windowed target exposes both the
+`VK_KHR_swapchain_maintenance1` extension and feature, the device enables it and
+chains a per-image `VkSwapchainPresentFenceInfoKHR` into presentation. The
+present fence is then the explicit completion proof before image reuse, retired
+swapchain collection, or shutdown destruction. The completed
+acquire-wait-submit algorithm remains the portable fallback, so maintenance1 is
+not part of the required profile floor.
 
 Present-result classification is explicit. `VK_SUCCESS`, `VK_SUBOPTIMAL_KHR`,
 and presentation-engine rejection results for which the specification says the
@@ -664,18 +688,20 @@ family in this repository. The invariants are therefore stated explicitly:
   returned by `vkGetSwapchainImagesKHR`**, not by the requested minimum, and are
   indexed by acquired image;
 - submit fences are eliminated — the timeline replaces the per-frame submit
-  fence and the image-in-flight fence references — while reacquisition remains
-  the separate WSI resource-lifetime proof and never drives ordinary GPU
-  retirement;
+  fence and the image-in-flight fence references — while an optional present
+  fence or a completed acquire-wait submit remains the separate WSI
+  resource-lifetime proof and never drives ordinary GPU retirement;
 - image-in-flight tracking survives as `uint64_t image_last_submit_value[]`, with
   a timeline wait after acquire;
-- presentation state is sized by actual swapchain image count. Reacquiring an
-  image permits reuse of that image's render-complete semaphore. After resize,
-  the first reacquisition from the successor swapchain proves its first present
-  complete and permits collection of all predecessor swapchains retired before
-  it. The retired list is bounded and reports exhaustion instead of unsafe
-  destruction. An acquired image cancelled before the normal draw records a
-  minimal transition/present submission so it is not abandoned.
+- presentation state is sized by actual swapchain image count. A completed
+  submit that waited on the reacquired image's acquire semaphore permits reuse
+  of that image's render-complete semaphore. After resize, the same proof from
+  the successor swapchain permits collection of predecessor swapchains retired
+  before it. When maintenance1 is enabled, the corresponding present fences
+  provide those proofs directly. The retired list is bounded and reports
+  exhaustion instead of unsafe destruction. An acquired image cancelled before
+  the normal draw records a minimal transition/present submission so it is not
+  abandoned.
 
 ### 6.5 Independent queues
 
@@ -826,11 +852,15 @@ extensions. That forks the shader language across backends and must be an
 
 ### 7.6 Shader source ownership
 
-A new tree under `lib/src/renderer/vulkan_bindless/shaders/` with the same domain
-split the umbrella spec defines — `common`, `world`, `shadow`, `picking`,
-`text`, `skybox`, `ibl`, `post` — compiled by a new CMake rule into a **separate
+The bindless source lives under
+`lib/src/renderer/vulkan/bindless/shaders/`. `packet.slang` owns the shared
+packet ABI and the `world`, `shadow`, `picking`, `text`, `skybox`, `ibl`, and
+`post` entry points in one compilation unit; API-neutral helpers such as
+tonemapping remain includes. CMake compiles each entry point into a **separate
 output namespace** so the fifteen existing Vulkan outputs and their `.shadercfg`
-manifests are untouched throughout migration.
+manifests remain untouched throughout migration. Split a domain into its own
+source only when it owns an independent ABI or the shared compilation unit
+creates measured build-time or maintenance cost.
 
 Do **not** reuse the legacy `vulkan/shaders/common/*.slangh` headers. The
 umbrella spec already records that the transform, instance, alpha-cutout, cube,
@@ -1025,10 +1055,11 @@ Out-of-date or suboptimal results from acquire or present mark the target dirty.
 Recreation happens at the next `prepare_frame` boundary after the submit
 timeline proves the renderer's GPU work complete. The old swapchain is passed as
 `oldSwapchain`, but its render-complete semaphores and handle are retained. They
-are destroyed only after reacquisition proves that the successor's first
-presentation completed, which makes every predecessor retired before it safe to
-collect. This is WSI resource-lifetime proof, not ordinary submit retirement or
-presentation-timing evidence, and resize requires no queue/device-wide idle. A
+are destroyed only after a successor acquire semaphore has been consumed by a
+completed submit, or after an enabled maintenance1 present fence signals. That
+makes every predecessor retired before the proof safe to collect. This is WSI
+resource-lifetime proof, not ordinary submit retirement or presentation-timing
+evidence, and resize requires no queue/device-wide idle. A
 zero extent returns the existing frame-skipped error,
 matching the Metal branch. Graph-owned placement images recreate through the
 same cache path Metal already uses.
@@ -1059,10 +1090,10 @@ policy. The wording is not permission to choose a threshold after seeing data.
 | **V0 — capability and toolchain spike** | Standalone Windows executable: enumerate devices, build and print the capability profile and rejection report; create a 1.4 device with the full floor; create both descriptor buffers; publish one sampled image and one sampler; allocate one `UPLOAD` buffer and capture its device address; compile a Slang→SPIR-V pair with a push-constant root address, a `PhysicalStorageBuffer` vertex array, and one non-uniform texture sample; one indexed textured offscreen draw; exact readback; timeline signal and wait | Validation layers clean, including synchronization and GPU-assisted; exact RGBA8; profile printed; **SPIRV-Reflect `PhysicalStorageBuffer` recursion proven or the fallback walker written**; Slang scalar-layout offsets match `offsetof` | Windows, plus macOS for the offline reflection half |
 | **V1 — shared-core characterization** | Pin the four ADR-024 candidate contracts with API-neutral tests and record the exact Metal call sites; move no production module before a second caller exists | CPU suite green on both platforms; the candidate modules remain Metal-owned; no new forwarding layer or speculative shared API | macOS and Windows |
 | **V2 — implementation seam** | ADR-025's capability struct and coarse strategy, three implementations (Metal, legacy-Vulkan adaptor, bindless stub that fails initialization); all behavior branches replaced; the neutral submit result replaces the untyped timing pointer | CPU suite green; Metal snapshot byte-identical; legacy Vulkan Debug startup, resize, and shutdown validation-clean on both platforms; source audit proving no renderer-behavior backend-type test after factory selection; Release Metal profile meets its predeclared no-regression tolerance | macOS and Windows |
-| **V3 — walking bindless renderer** | Device, queue, timeline, command pools; offscreen and windowed targets with per-image present semaphores and reacquisition completion proof; descriptor heaps; one indexed textured draw through the real prepare and submit path; resize; extract the memory, submit-ring, and ABI cores only when their Vulkan call sites land | Validation clean windowed and offscreen; deterministic offscreen readback and exact identifier capture; resize across two extents with retired-present proof; present-result and reacquisition table tests; source audit and runtime counters proving no per-draw allocation, lock, string, or dispatch; wait counters publishing; Metal snapshot/API validation and Release profile before/after each extraction | Windows, plus macOS for Metal extraction witnesses |
-| **V4 — memory, materials, descriptor heaps** | Material row publication; texture, sampler, and storage-image publish, replace, and retire; sentinel slot; two-slot rule; capacity reporting; asset publisher wired to the shared loaders; extract the slot table with this second caller; finish the §5.2 dynamic memory pool and full bindless memory metric family | Multi-material capture exact; two materials share one texture/sampler, one retires while work is pending, and the survivor remains exact; texture replacement while frames are pending; non-coherent atom-range CPU cases and target execution when available; capacity-exhaustion metric fires; repeated create, submit, and destroy returns every logical total to its initial value; validation clean; Metal snapshot/API validation and Release profile before/after extraction | Windows and macOS |
-| **V5 — graph, sync2, dynamic rendering, pass parity** | The bindless dependency lowerer; dynamic rendering for every authored pass; shadow cascades, skybox, opaque, transmission, blend, picking, tonemap, editor and UI, text, the full IBL bake, asynchronous capture overlay, per-pass timestamps; extract the capture ring with this second caller | The same declared five-channel capture batch as Metal returning exact final color, HDR scene color, depth, shadow layer, and picking identifiers; analytical IBL checks across irradiance and every prefilter mip; **synchronization validation clean across the whole authored graph**; deterministic repetitions; the CPU barrier-lowering table test; Metal snapshot/API validation and Release profile before/after extraction | Windows, plus macOS for the CPU and Metal halves |
-| **V6 — feature parity and Windows baseline** | Application and harness backend selection; pipeline cache cold and warm; asset load and unload; metrics parity; a Windows-capable pipeline-cache and implementation-matrix gate | ADR-021's Gate-B functional checklist on Windows; a Windows Bistro-plus-text baseline bootstrapped under the umbrella spec's seven-step policy, with report path and digest recorded; the Windows-capable pipeline-cache and implementation-matrix gates pass; an **authoritative Release performance profile against legacy Windows Vulkan 1.2 on identical cases and predeclared acceptance thresholds** | Windows |
+| **V3 — walking bindless renderer** | Device, queue, timeline, command pools; offscreen and windowed targets with per-image present semaphores and reacquisition completion proof; descriptor heaps; one indexed textured draw through the real prepare and submit path; resize; extract the memory, submit-ring, and ABI cores only when their Vulkan call sites land | Validation clean windowed and offscreen; deterministic offscreen readback and exact identifier capture; resize across two extents with retired-present proof; present-result and reacquisition table tests; source audit and runtime counters proving no per-draw allocation, lock, string, or dispatch; wait counters publishing; Metal snapshot/API validation after each extraction | Windows, plus macOS for Metal extraction witnesses |
+| **V4 — memory, materials, descriptor heaps** | Material row publication; texture, sampler, and storage-image publish, replace, and retire; sentinel slot; two-slot rule; capacity reporting; asset publisher wired to the shared loaders; extract the slot table with this second caller; finish the §5.2 dynamic memory pool and full bindless memory metric family | Multi-material capture exact; two materials share one texture/sampler, one retires while work is pending, and the survivor remains exact; texture replacement while frames are pending; non-coherent atom-range CPU cases and target execution when available; capacity-exhaustion metric fires; repeated create, submit, and destroy returns every logical total to its initial value; validation clean; Metal snapshot/API validation after extraction | Windows and macOS |
+| **V5 — graph, sync2, dynamic rendering, pass parity** | The bindless dependency lowerer; dynamic rendering for every authored pass; shadow cascades, skybox, opaque, transmission, blend, picking, tonemap, editor and UI, text, the full IBL bake, asynchronous capture overlay, per-pass timestamps; extract the capture ring with this second caller | The same declared five-channel capture batch as Metal returning exact final color, HDR scene color, depth, shadow layer, and picking identifiers; analytical IBL checks across irradiance and every prefilter mip; **synchronization validation clean across the whole authored graph**; deterministic repetitions; the CPU barrier-lowering table test; Metal snapshot/API validation after extraction | Windows, plus macOS for the CPU and Metal halves |
+| **V6 — feature parity and Windows selection** | Application and harness backend selection; pipeline cache cold and warm; asset load and unload; metrics parity; a Windows-capable implementation matrix | ADR-021's Gate-B functional checklist on Windows; native validation and lifecycle correctness; and owner-accepted Bistro/text output. Local snapshots, reports, and bindless baseline generations are disposable implementation evidence, not retained product assets | Windows |
 | **V7 — legacy retirement** | Per [ADR-026](adr/026-vulkan-1-2-retirement.md) | Per ADR-026's gates B1 and B2 | Windows and macOS |
 
 **V0 implementation status (2026-08-08):** the standalone executable, shader,
@@ -1172,8 +1203,8 @@ command-slot waits for the deterministic sequence.
 present result and pins the per-image reacquisition state machine. The RX 6700
 XT exposes `VK_EXT_descriptor_buffer`, core surface/Win32-surface/swapchain, and
 neither maintenance1 extension. The production window path therefore retains
-per-image render-complete semaphores until image reacquisition proves the prior
-present complete. A hidden native window renders once at 320×240, recreates at
+per-image render-complete semaphores until the submit that waits on a reacquired
+image's acquire semaphore completes. A hidden native window renders once at 320×240, recreates at
 400×300, then renders eight frames. The run produces five reacquisition proofs,
 retires and collects exactly one old swapchain, leaves zero retired swapchains
 live, reports zero command-slot waits, and is synchronization-validation clean.
@@ -1246,18 +1277,96 @@ their settled pre-test baseline. The Windows gate records seven physical
 allocations, 45 MiB allocated, 31 live logical allocations before fixture
 settling, zero retired allocations, and zero pool-capacity failures.
 
+**V5 Windows implementation status (complete; cross-platform extraction
+evidence open, 2026-08-10):** the Vulkan-private
+`vkr_bindless_vulkan_dependency` module purely lowers canonical graph stage,
+access, and visibility records into synchronization2 masks. It preserves real
+stage-none, splits vertex input and transfer stages, emits zero access masks for
+execution-only dependencies, and rejects unsupported resource-alias visibility
+with a named result. The CPU barrier table pins these cases beside the unchanged
+legacy lowerer.
+
+The selected renderer realizes authored graph resources, emits the compiled
+barrier batches once, opens dynamic-rendering scopes, records transfer copies,
+and executes shadow, skybox, opaque, transmission, blend, picking, tonemap,
+editor, UI/text, and compute IBL work through reflected production SPIR-V. The
+full PBR path consumes packet lights, cascaded shadows, material textures,
+diffuse/specular IBL, transmission, and alpha modes. The IBL runtime gate bakes
+a constant analytical environment and checks irradiance plus all nine prefilter
+mips within two binary16 ULP before proving memory return to baseline.
+
+The Bistro visual audit found two publication-contract defects beyond that
+analytical fixture. The decoded HDR delivery texture was unpublished after its
+bake was queued, and bindless unpublication canceled the queued work before a
+frame could submit it. A first correction retained the input but deferred its
+logical unpublication, which prevented the texture system from publishing a
+new generation in the same numeric slot. Logical unpublication now removes the
+old generation from the active ID-indexed table immediately and moves its
+physical image, descriptors, and sampler ownership to completion-gated retired
+storage. Pending upload and IBL work retain full `{id, generation}` handles and
+resolve either active or retired publications, so the old generation survives
+until the successful recording submit owns the work without blocking immediate
+slot reuse. Direct cubemap bakes also accept sampled normalized/sRGB sources
+while retaining RGBA16F requirements for writable outputs and equirectangular
+conversion. The V5 self-test now republishes the same ID at generation 2 after
+unpublishing the queued generation 1 input and before any frame submission; the
+analytical irradiance/prefilter result, validation counters, and logical memory
+return all pass. Local dirty Debug child report
+`20260810T211514.281Z-003c74/captures/0` and Release snapshot
+`20260810T212716.021Z-0029d4` (digest
+`sha256:cf8814484ab03c6f88f81f96ca869bcc5f09c53a5e6adf547e61499d7c3dddeb`)
+load Bistro and produce captures without the publication, cubemap, probe, or
+validation errors; neither is baseline-acceptance evidence.
+
+The former Metal capture ring is now `vkr_capture_ring`, with typed Metal and
+Vulkan callers. Bindless capture records bounded completion-gated copies for
+final color, HDR scene color, depth, a selected shadow layer, and picking IDs;
+per-pass timestamp rows become valid only after their submit value completes.
+Independent Bistro snapshot reports `20260810T104724.326Z-0023ef` and
+`20260810T140451.471Z-003c9a` have identical exact channel digests. Debug
+offscreen report `20260810T140413.925Z-004038` and hidden-window whole-graph
+report `20260810T150804.316Z-003609` pass with empty stderr. The dedicated gate
+passes ordinary and GPU-assisted validation with zero actionable warnings or
+errors; the windowed path records five reacquisition proofs, one retired and
+collected swapchain, and no live retirement. The complete CPU suite passes.
+The shared-core CPU contract is covered on Windows, but the required macOS
+post-extraction Metal snapshot/API-validation witnesses are unavailable in this
+workspace; no Windows result is substituted for them.
+
+**V6 implementation status (Windows complete, 2026-08-11):** the
+application, harness schema/resolver/child, and focused tests accept the
+explicit `vulkan-bindless` selector, and no-argument application or unpinned
+harness selection now chooses bindless Vulkan on Windows. Explicit `vulkan`
+continues to select the retained legacy backend. The backend honors requested present mode,
+loads and atomically saves the driver pipeline cache, completion-retires staged
+assets and replacements, and publishes graph, descriptor, material, allocation,
+draw, and timing metrics. The Windows implementation matrix covers legacy text,
+bindless offscreen and windowed whole-graph text, lifecycle/IBL validation, and
+cold/warm pipeline cache. Final pipeline report
+`20260810T171129.662Z-0009cf` passes its cold-save and warm-load children.
+
+Implementation-time Bistro/text snapshots were visually reviewed and accepted
+by the owner after the IBL and lifecycle corrections. The local snapshot,
+profile, proposal, and bindless baseline artifacts were subsequently removed
+at the owner's request. Performance optimization and performance gating are
+outside this implementation stage; no legacy shader change made solely for the
+comparison remains in the tree.
+
+Gate B1 therefore closes on the accepted visual/correctness result and the
+implemented functional, lifecycle, cache, metrics, and validation behavior.
+The Windows default flip is implemented. Gate B1 does not authorize legacy
+deletion; explicit `vulkan` remains available through V7/B2.
+
 Optional capabilities are deliberately outside this ladder. Each is its own
 measured change after V6, per §3.5.
 
 **Platform coverage boundary:** Windows evidence executes the RX 6700 XT
 offscreen/windowed Vulkan, CPU, reflection, synchronization-validation, and
-GPU-assisted gates. macOS evidence executes the complete shared-core CPU gate
-and the post-extraction Metal snapshot and API/GPU-validation gates. The matched
-Release wall/prepare metrics pass, but submit p50 misses its bound. macOS still
-cannot execute the descriptor-buffer backend, and no native Windows result is
-inferred from its evidence. V3 and V4 are target complete. ADR-024 remains
-partial only for the independent Metal submit-p50 bound and the V5 capture-ring
-caller.
+GPU-assisted gates. macOS still cannot execute the descriptor-buffer backend,
+and no native Windows result is inferred from its evidence. V3 and V4 are target
+complete. The shared capture ring has production Metal and V5 Vulkan callers;
+ADR-024 remains partial only because its post-capture-extraction Metal snapshot
+and API/GPU-validation witnesses have not been rerun on macOS.
 
 ---
 
@@ -1309,11 +1418,11 @@ build_bindless_vulkan_v3_Debug\tools\vkr_bindless_vulkan_v3.exe --gpu-assisted
 # The branch ladder ADR-025 removes.
 grep -rn "VKR_RENDERER_BACKEND_TYPE_METAL" lib/ app/ tools/ tests/ | wc -l
 
-# The four extraction candidates carry no Metal types.
+# The shared capture core and remaining Metal-owned candidates carry no Metal types.
 grep -n "MTL\|@interface\|id<" \
   lib/src/renderer/metal/vkr_metal_memory.c \
   lib/src/renderer/metal/vkr_metal_material_table.c \
-  lib/src/renderer/metal/vkr_metal_capture_ring.c \
+  lib/src/renderer/vkr_capture_ring.c \
   lib/src/renderer/metal/vkr_metal_packet_abi.c
 ```
 
@@ -1464,9 +1573,9 @@ Slang `2026.13.1-1-g84792eb15`, Apple M1 Pro, and Metal 4:
   -8.881%, and prepare p50 -36.130%, all within their upper bounds. Submit p50
   is +172.421%, above the predeclared +5% bound. Earlier authoritative candidate
   `20260809T145648.867Z-008dd2`, built from the identical binary, also misses
-  submit p50 at +41.920%. Therefore snapshot and validation evidence is
-  complete, total frame time does not regress, but the strict Release extraction
-  gate remains open; no cross-backend speed claim is made.
+  submit p50 at +41.920%. These historical measurements are not an open
+  implementation gate under the owner-selected V5/V6 scope; no cross-backend
+  speed claim is made.
 
 Current V4-integration macOS evidence on the same toolchain:
 
@@ -1481,8 +1590,7 @@ Current V4-integration macOS evidence on the same toolchain:
   (`sha256:5e1b4a20f9e85e3161050e84ea0926f08b06df927651a00321ac215bc8d9e576`)
   repeats those bytes and emits only the two validation-enabled notices.
 - The authoritative performance profile refuses the dirty implementation tree
-  by policy. The clean failed submit-p50 extraction gate above therefore
-  remains the status authority. Non-authoritative dirty-tree diagnostic profile
+  by policy. Non-authoritative dirty-tree diagnostic profile
   `20260809T192443.606Z-00f53e`
   (`sha256:c60e96634c21f2ad420d50fa2829906b901b014e611246c18425b4150c855ada`)
   preserves 322 calls/frame, zero upload waits, and a 3.626 ms wall p50 while
@@ -1547,9 +1655,9 @@ blocks, both V0 gates with named fallbacks.
 Mitigated structurally: V1 characterizes the existing contracts without moving
 production code. Each core is extracted only in the later vertical slice that
 adds its second real caller, with the shipping Metal snapshot as its correctness
-witness and a Release Metal profile as its performance witness. This preserves
-ADR-020's evidence rule instead of treating a design document as an
-implementation.
+witness. This preserves ADR-020's evidence rule instead of treating a design
+document as an implementation. Performance optimization is outside the current
+owner-selected V5/V6 scope.
 
 Additional guard: **do not improve the allocator during extraction.** The one
 genuine change is parameterizing the slot table by row size so it serves both
@@ -1578,10 +1686,11 @@ split gate that enforces this.
   leaves Metal-owned names and may require a short private walking
   implementation. That is the accepted cost of preserving the project's
   multiple-real-caller rule.
-- Retaining per-image present semaphores until reacquisition proves presentation
-  completion avoids requiring swapchain-maintenance extensions, but delays
-  collection until an image is reacquired. Swapchain maintenance remains an
-  optional optimization rather than a profile requirement.
+- Retaining per-image present semaphores until a submit that consumes the
+  reacquired image's acquire semaphore completes avoids requiring
+  swapchain-maintenance extensions, but delays collection until that proof is
+  available. Swapchain maintenance remains optional and supplies explicit
+  present fences when supported rather than changing the profile floor.
 - Eliminating the legacy path entirely removes the only renderer that runs on
   non-descriptor-buffer hardware and on MoltenVK. After the final gate the
   project has Metal on macOS and bindless Vulkan on Windows and **no portable

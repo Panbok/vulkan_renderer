@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-10
+updated: 2026-08-11
 authority: adr
 ---
 
@@ -13,7 +13,8 @@ record and coarse operation strategy for Metal, the retained legacy-Vulkan
 adaptor, and the production bindless Vulkan implementation. The bindless
 strategy now owns a Vulkan 1.4 device, offscreen and window-target state,
 descriptor heaps, prepare/submit execution, completion, memory/heap metrics,
-and the validated V4 asset-publication and dynamic-memory boundary.
+the validated V4 asset-publication and dynamic-memory boundary, and the V5
+authored graph, asynchronous capture, IBL, and pass-timing path.
 The neutral submit result carries capture, memory, material, and pass-timing
 data; renderer behavior no longer tests
 backend type after factory selection; and the normal frame path contains only
@@ -36,9 +37,15 @@ diagnostics. After the V3/V4 production slice and shared-core extraction,
 current-tree Windows report `20260809T113259.325Z-003da8`
 (`sha256:fbb9ec7686f3cd0fc6ba999c962e5566802366a9bed695bd3d7ff78bf488e12b`)
 repeats the complete CPU, build, and two-child legacy resize/lifecycle gate.
-The bindless window witness uses only core surface, Win32-surface, and swapchain
-extensions: per-image reacquisition proves semaphore reuse and retired
-swapchain collection without adding a backend-type branch or hot-path dispatch.
+The original bindless window witness used only core surface, Win32-surface, and
+swapchain extensions. The portable path now treats a completed submit that
+consumed the reacquired image's acquire semaphore as the presentation proof;
+when maintenance1 is available, per-image present fences provide explicit
+completion. Neither path adds a backend-type branch or per-draw dispatch.
+Windows now selects the bindless Vulkan strategy by default. The explicit
+`--renderer vulkan` selector retains the legacy Vulkan 1.2 adaptor as a
+diagnostic fallback, while `--renderer vulkan-bindless` remains available for
+pinned cases during the migration period.
 
 ## Context
 

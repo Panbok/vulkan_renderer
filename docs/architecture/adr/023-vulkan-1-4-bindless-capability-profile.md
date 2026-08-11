@@ -1,6 +1,6 @@
 ---
 status: implemented
-updated: 2026-08-09
+updated: 2026-08-11
 authority: adr
 ---
 
@@ -15,9 +15,11 @@ readback, recursive SPIR-V ABI reflection, synchronization validation, and
 descriptor-buffer GPU-assisted validation with layer 1.4.357. The target AMD
 Radeon RX 6700 XT exposes the common floor plus core surface, Win32-surface, and
 swapchain extensions, but neither surface/swapchain-maintenance extension. The
-accepted baseline therefore uses per-image present semaphores and image
-reacquisition as the presentation-completion proof; swapchain maintenance is an
-optional future optimization, not a profile requirement. The standalone V0
+accepted portable baseline therefore uses per-image present semaphores and a
+completed submit that consumes the reacquired image's acquire semaphore as its
+presentation-completion proof. Swapchain maintenance remains outside the
+profile floor but is now enabled when available to obtain explicit per-image
+present fences. The standalone V0
 evidence and the older layer 1.4.335 GPU-assisted limitation remain recorded in
 [the bindless Vulkan backend specification](../bindless-vulkan-backend-spec.md)
 §12.
@@ -102,20 +104,24 @@ Two corollaries are part of the decision rather than implementation detail:
 ### 2. Every required entry is queried and rejected against
 
 The required floor is enumerated in the backend specification §3.2. It comprises
-buffer device address, 64-bit shader integers, timeline semaphores, the
-descriptor-indexing minimum set with runtime descriptor arrays and non-uniform
-sampled-image and storage-image indexing, scalar block
-layout, host query reset, dynamic rendering, synchronization2, maintenance4 and
-maintenance5, `VK_EXT_descriptor_buffer`, a queue family with graphics, compute
-and transfer, and — for windowed targets only — `VK_KHR_surface`, the native
-platform surface extension, and `VK_KHR_swapchain`. A submit timeline does not
-prove presentation resources may be safely recycled or destroyed. The baseline
-therefore sizes render-complete semaphores by actual swapchain image count and
-reuses one only after that image is acquired again. Reacquisition proves the
-previous presentation of that image has completed. After recreation, the first
-reacquisition from the successor swapchain proves its first presentation has
-completed and permits collection of every predecessor retired before it.
-`VK_KHR_swapchain_maintenance1` is recorded but not enabled or consumed.
+buffer device address, 64-bit shader integers, shader draw parameters for the
+packet vertex ABI, timeline semaphores, the descriptor-indexing minimum set with
+runtime descriptor arrays and non-uniform sampled-image and storage-image
+indexing, scalar block layout, host query reset, dynamic rendering,
+synchronization2, maintenance4, shader demotion for alpha cutout, maintenance5,
+`VK_EXT_descriptor_buffer`, a queue family with graphics, compute and transfer,
+and — for windowed targets only — `VK_KHR_surface`, the native platform surface
+extension, and `VK_KHR_swapchain`. A submit timeline does not
+by itself prove presentation resources may be safely recycled or destroyed.
+The baseline therefore sizes render-complete semaphores by actual swapchain
+image count and reuses one only after that image is acquired again **and** the
+acquire semaphore has been consumed by a successful submit whose timeline value
+has completed. Reacquire return alone is not completion proof. After recreation,
+the same completed acquire-wait submit from the successor swapchain permits
+collection of predecessors retired before it. When supported for a windowed
+target, `VK_KHR_swapchain_maintenance1` is enabled and per-image present fences
+provide the explicit proof instead; the extension remains outside the required
+capability floor.
 
 **No entry is assumed to be guaranteed by the core version.** Several of these
 features are promoted into core Vulkan and some are mandatory to support at some
@@ -172,12 +178,12 @@ without sitting at the machine. The report is exposed through the harness so a
 failing runner emits a machine-readable capability row rather than an opaque
 device error.
 
-### 4. Optional capabilities are recorded, not consumed
+### 4. Optional capabilities require an explicit policy
 
-An optional capability is recorded unconditionally at startup. A code path may
-consume it only after a named harness case demonstrates the improvement. Until
-then the field exists, is reported, and nothing reads it. There is no hidden
-fork and no opportunistic enable.
+An optional performance capability is recorded unconditionally at startup. A
+code path may consume it only after a named harness case demonstrates the
+improvement. Until then the field exists, is reported, and nothing reads it.
+There is no hidden performance fork and no opportunistic enable.
 
 `VK_KHR_unified_image_layouts`, mesh shaders, device-generated commands, shader
 objects, graphics pipeline libraries, pipeline binaries, and host image copy are
@@ -186,9 +192,13 @@ specification §3.5. The indexed vertex-pulling path stays authoritative per
 [ADR-013](013-draw-submission-strategy.md) until a mesh path measures better
 under identical conditions.
 
-`VK_KHR_swapchain_maintenance1` is also recorded-only. Present fences may later
-replace the baseline reacquisition bookkeeping if a measured target case
-justifies the extra branch and the complete windowed validation matrix passes.
+`VK_KHR_swapchain_maintenance1` is a correctness exception rather than a
+performance experiment. A shutdown validation failure demonstrated that
+reacquire return alone was insufficient proof for destroying presentation
+resources. Windowed devices therefore enable the extension when both its
+feature and extension are present and attach a per-image present fence to each
+present operation. The portable completed acquire-wait-submit proof remains the
+fallback and keeps the extension outside the required floor.
 
 `descriptorBufferCaptureReplay` is the exception that is not a performance
 feature: it is enabled in Debug and diagnostic configurations when present so
@@ -234,10 +244,11 @@ driver allocation.
   better long-term fit, so a future migration is plausible. Containing
   index-to-descriptor translation in one heap module reduces that migration's
   surface, but shader/layout/capture-tool compatibility still needs evidence.
-- The unextended WSI path must retain old swapchains until successor
-  reacquisition proves presentation completion. The retirement history is
-  bounded and reports capacity exhaustion instead of destroying under an
-  unproven condition.
+- The portable WSI path must retain old swapchains until a successor acquire
+  semaphore has been consumed by a completed submit. When maintenance1 is
+  available, its present fence supplies the explicit proof. The retirement
+  history is bounded and reports capacity exhaustion instead of destroying
+  under an unproven condition.
 - Recording optional capabilities without consuming them means the profile
   carries fields that nothing reads for some time. This is deliberate; the
   alternative is an opportunistic enable that forks behaviour without evidence.
@@ -269,11 +280,12 @@ driver allocation.
   which path ran.
 - **Require `VK_KHR_swapchain_maintenance1` and present fences.** Rejected for
   the baseline because the RX 6700 XT target does not expose the extension.
-  Present fences remain a recorded optional. The selected unextended algorithm
-  does not infer completion from a submit timeline or a queue/device-idle wait:
-  reacquiring a previously presented image is the proof that permits its
-  per-image semaphore reuse, and successor reacquisition permits retired
-  swapchain collection.
+  Present fences are consumed when available, without making them mandatory.
+  The selected portable algorithm does not infer completion from reacquire
+  return or an unrelated submit timeline: the successful submit that consumes
+  the reacquired image's acquire semaphore must itself complete before the
+  prior present is treated as finished. The same proof on a successor image
+  permits retired-swapchain collection.
 - **Assume the Vulkan 1.4 core version guarantees the floor and skip the
   queries.** Rejected on two grounds: the mandatory-support tables were not
   verifiable when this was written, and a supported feature must be enabled

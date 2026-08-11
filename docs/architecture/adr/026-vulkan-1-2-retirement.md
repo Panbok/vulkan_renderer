@@ -1,6 +1,6 @@
 ---
 status: proposed
-updated: 2026-08-09
+updated: 2026-08-11
 authority: adr
 ---
 
@@ -8,7 +8,14 @@ authority: adr
 
 ## Status
 
-**Proposed** — nothing is deleted, and no gate below has been passed. This ADR
+**Proposed** — nothing is deleted. B1 is complete and B2 remains open. Windows
+V5 functional and validation coverage, pipeline-cache behavior,
+lifecycle/metrics, and the implementation matrix pass. The owner visually
+accepted corrected Bistro/text output on 2026-08-11 and explicitly excluded
+performance optimization from this implementation stage. Local snapshots,
+reports, proposals, and bindless baseline generations were removed afterward
+at the owner's request. B1 is closed and bindless Vulkan is the Windows default
+while legacy Vulkan 1.2 remains explicitly selectable. This ADR
 refines [ADR-021](021-metal-first-bindless-backend.md)'s Gate B; it does not
 supersede that ADR, which remains the authority for Gates A and A2. It becomes
 Accepted only when B2 and the deletion sequence are complete; B1 alone leaves
@@ -44,14 +51,22 @@ Two facts sharpen both points:
   with SDK 1.4.357.0 the Apple M1 Pro reports Vulkan 1.4.334 and MoltenVK 1.4.1
   but still does not expose required `VK_EXT_descriptor_buffer`.
   Native Windows hardware now exercises the completed RX 6700 XT V3 offscreen
-  and windowed walking renderer and V4 publisher. Full V5 authored-graph
-  synchronization-validation coverage remains absent. The split development
-  loop makes an observation period more valuable, not less.
+  and windowed walking renderer, V4 publisher, and V5 authored graph. The full
+  graph is synchronization-validation clean offscreen and in a hidden native
+  window, including asynchronous five-channel capture and analytical IBL. The
+  required post-extraction Metal witnesses remain unavailable on Windows. The
+  split development loop makes an observation period more valuable, not less.
 - Gate A is currently **open**. The previously accepted Metal Bistro generation
   was invalidated by a cross-backend audit that found retained IBL, sampler,
   transparency, and presentation defects. Those are corrected, but replacement
   pixels have not been owner-reviewed. Nothing downstream should be described as
   imminent while the first gate is unresolved.
+- Gate B1 is **complete**. A Windows Bistro visual audit found that the
+  bindless path canceled its queued global-HDR bake and rejected the authored
+  normalized local-probe cubemap. The implementation defects are corrected and
+  the owner visually accepted the corrected Bistro/text result. Performance is
+  not a B1 acceptance gate for this implementation-only stage. The Windows
+  default therefore flips to bindless without deleting the legacy path.
 
 The scale of what Gate B eventually deletes is worth stating plainly: the Vulkan
 1.2 backend is 40 files and roughly 24,600 lines, of which `vulkan_backend.c`
@@ -66,16 +81,17 @@ that exist only to serve the descriptor-set model.
 
 | Gate | Required evidence | What it authorizes |
 |---|---|---|
-| **B1 — Windows default flip, no deletion** | Backend specification stage V6 complete: ADR-021's Gate-B functional checklist on Windows; native validation clean including synchronization validation; an owner-accepted Windows baseline bootstrapped under the umbrella specification's seven-step policy and passing twice fresh; pipeline-cache cold and warm behaviour; asset load and unload; metrics parity; and an authoritative Release profile against legacy Windows Vulkan 1.2 on identical cases that meets thresholds declared before the run | Bindless Vulkan becomes the default Windows renderer. Vulkan 1.2 becomes a non-default diagnostic path, still selectable and still building |
+| **B1 — Windows default flip, no deletion** | Backend specification stage V6 complete: ADR-021's Gate-B functional checklist on Windows; native validation clean including synchronization validation; owner-accepted Windows Bistro/text output; pipeline-cache cold and warm behaviour; asset load and unload; and metrics parity. Performance optimization is outside this implementation-only selection gate | Bindless Vulkan becomes the default Windows renderer. Vulkan 1.2 becomes a non-default diagnostic path, still selectable and still building |
 | **B2 — deletion** | Gate A2 is complete; the observation contract recorded before B1 has elapsed and its minimum successful sessions/harness repetitions have passed with no unresolved bindless-only correctness or lifetime regression on Windows; and equivalent evidence exists for any other platform claimed to use Vulkan | The deletion sequence in §3 |
 
-Before B1 flips the default, its acceptance record must define the observation
-contract as both a calendar duration and a minimum number of successful real
-sessions or harness repetitions. B2 cannot define or shorten that contract in
-hindsight. Gate A2 is a hard dependency because steps 2 and 4 remove assets and
-code the MoltenVK path still needs. Performance thresholds are likewise declared
-before V6; merely recording an authoritative comparison does not authorize a
-slower default.
+The B2 observation contract starts with the 2026-08-11 Windows default flip. It
+requires at least 14 calendar days and 20 successful default-path Windows
+Bistro/text sessions or harness repetitions, including at least two focused
+lifecycle/validation runs, with no unresolved bindless-only correctness or
+lifetime regression. B2 cannot shorten that contract in hindsight. Gate A2 is
+a hard dependency because steps 2 and 4 remove assets and code the MoltenVK path
+still needs. Performance does not gate this implementation-only selection
+decision.
 
 Splitting the gate costs one flag and one observation period. It buys the
 ability to fall back without a revert during the window when unknown defects are
