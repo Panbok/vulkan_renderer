@@ -14,13 +14,24 @@ vkr_harness_renderer_backend_resolve(const VkrHarnessRendererConfig *renderer,
     return false_v;
   }
   const char *requested = pinned[0] != '\0' ? pinned : environment_request;
-  if (!requested || requested[0] == '\0' ||
-      string_equals(requested, "vulkan")) {
+  if (!requested || requested[0] == '\0') {
+#if defined(_WIN32)
+    *out_backend = VKR_RENDERER_BACKEND_TYPE_BINDLESS_VULKAN;
+#else
+    *out_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
+#endif
+    return true_v;
+  }
+  if (string_equals(requested, "vulkan")) {
     *out_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
     return true_v;
   }
   if (string_equals(requested, "metal")) {
     *out_backend = VKR_RENDERER_BACKEND_TYPE_METAL;
+    return true_v;
+  }
+  if (string_equals(requested, "vulkan-bindless")) {
+    *out_backend = VKR_RENDERER_BACKEND_TYPE_BINDLESS_VULKAN;
     return true_v;
   }
   return false_v;

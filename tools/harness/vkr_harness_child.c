@@ -1124,8 +1124,9 @@ int vkr_harness_child_run(const char *executable, const char *repo_root,
           &case_manifest.renderer, getenv("VKR_HARNESS_RENDERER_BACKEND"),
           &renderer_backend)) {
     vkr_harness_stderr(
-        "Renderer backend must be 'vulkan' or 'metal', and an explicit case "
-        "backend must match VKR_HARNESS_RENDERER_BACKEND\n");
+        "Renderer backend must be 'vulkan', 'vulkan-bindless', or 'metal', "
+        "and an explicit case backend must match "
+        "VKR_HARNESS_RENDERER_BACKEND\n");
     exit_code = VKR_HARNESS_EXIT_INVALID;
     goto cleanup;
   }

@@ -1898,7 +1898,7 @@ vkr_internal void application_update_fps_text(Application *application,
             "Shadow C3 o d:%u b:%u  a d:%u b:%u  s1:%u",
             world->draws_collected, world->opaque_draws,
             world->transparent_draws, world->batches_created,
-            world->opaque_batches, world->draws_issued, world->draws_merged,
+            world->opaque_batches, world->draw_calls_issued, world->draws_merged,
             world->indirect_draws_issued, world->avg_batch_size,
             world->max_batch_size,
             have_rg_stats ? rg_stats.live_image_textures : 0u,
@@ -2522,7 +2522,12 @@ void application_update(Application *application, float64_t delta) {
 int main(int argc, char **argv) {
   int exit_code = 0;
   const char *metrics_json_path = NULL;
+#if defined(_WIN32)
+  VkrRendererBackendType renderer_backend =
+      VKR_RENDERER_BACKEND_TYPE_BINDLESS_VULKAN;
+#else
   VkrRendererBackendType renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
+#endif
   for (int i = 1; i < argc; ++i) {
     if (strcmp(argv[i], "--metrics-json") == 0) {
       if (i + 1 >= argc || argv[i + 1][0] == '\0') {
@@ -2532,12 +2537,15 @@ int main(int argc, char **argv) {
       metrics_json_path = argv[++i];
     } else if (strcmp(argv[i], "--renderer") == 0) {
       if (i + 1 >= argc || argv[i + 1][0] == '\0') {
-        fprintf(stderr, "--renderer requires 'vulkan' or 'metal'\n");
+        fprintf(stderr, "--renderer requires 'vulkan', 'vulkan-bindless', or "
+                        "'metal'\n");
         return 2;
       }
       const char *renderer_name = argv[++i];
       if (strcmp(renderer_name, "vulkan") == 0) {
         renderer_backend = VKR_RENDERER_BACKEND_TYPE_VULKAN;
+      } else if (strcmp(renderer_name, "vulkan-bindless") == 0) {
+        renderer_backend = VKR_RENDERER_BACKEND_TYPE_BINDLESS_VULKAN;
       } else if (strcmp(renderer_name, "metal") == 0) {
         renderer_backend = VKR_RENDERER_BACKEND_TYPE_METAL;
       } else {
