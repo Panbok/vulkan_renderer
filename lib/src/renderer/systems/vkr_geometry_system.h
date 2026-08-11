@@ -8,7 +8,6 @@
 #include "memory/vkr_allocator.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/vkr_asset_publisher.h"
-#include "renderer/vkr_buffer.h"
 #include "renderer/vkr_renderer.h"
 
 // =============================================================================
@@ -64,7 +63,6 @@ typedef struct VkrGeometrySystem {
   Arena *arena;
   VkrAllocator allocator;
 
-  VkrRendererFrontendHandle renderer;
   const VkrAssetPublisher *asset_publisher;
 
   // Geometry storage and ID free list
@@ -95,12 +93,10 @@ typedef struct VkrGeometrySystem {
 /**
  * @brief Initializes the geometry system
  * @param system The geometry system to initialize
- * @param renderer The renderer to use
  * @param config The configuration for the geometry system
  * @param out_error The error output
  */
 bool32_t vkr_geometry_system_init(VkrGeometrySystem *system,
-                                  VkrRendererFrontendHandle renderer,
                                   const VkrGeometrySystemConfig *config,
                                   VkrRendererError *out_error);
 
@@ -296,55 +292,6 @@ void vkr_geometry_system_release(VkrGeometrySystem *system,
  */
 VkrGeometry *vkr_geometry_system_get_by_handle(VkrGeometrySystem *system,
                                                VkrGeometryHandle handle);
-
-// =============================================================================
-// Drawing
-// =============================================================================
-
-/**
- * @brief Renders the geometry
- * @param renderer The renderer to use
- * @param system The geometry system to render
- * @param handle The geometry handle to render
- * @param instance_count The number of instances to render
- */
-void vkr_geometry_system_render(VkrRendererFrontendHandle renderer,
-                                VkrGeometrySystem *system,
-                                VkrGeometryHandle handle,
-                                uint32_t instance_count);
-void vkr_geometry_system_render_instanced(VkrRendererFrontendHandle renderer,
-                                          VkrGeometrySystem *system,
-                                          VkrGeometryHandle handle,
-                                          uint32_t instance_count,
-                                          uint32_t first_instance);
-/**
- * @brief Renders a sub-range of a geometry's index buffer.
- *
- * Pass index_count == UINT32_MAX to draw the full geometry range. Callers must
- * supply ranges that stay within the geometry's index buffer.
- */
-void vkr_geometry_system_render_instanced_range(
-    VkrRendererFrontendHandle renderer, VkrGeometrySystem *system,
-    VkrGeometryHandle handle, uint32_t index_count, uint32_t first_index,
-    int32_t vertex_offset, uint32_t instance_count, uint32_t first_instance);
-
-void vkr_geometry_system_render_instanced_range_with_index_buffer(
-    VkrRendererFrontendHandle renderer, VkrGeometrySystem *system,
-    VkrGeometryHandle handle, const VkrIndexBuffer *index_buffer,
-    uint32_t index_count, uint32_t first_index, int32_t vertex_offset,
-    uint32_t instance_count, uint32_t first_instance);
-void vkr_geometry_system_render_indirect(VkrRendererFrontendHandle renderer,
-                                         VkrGeometrySystem *system,
-                                         VkrGeometryHandle handle,
-                                         VkrBufferHandle indirect_buffer,
-                                         uint64_t offset, uint32_t draw_count,
-                                         uint32_t stride);
-
-void vkr_geometry_system_render_indirect_with_index_buffer(
-    VkrRendererFrontendHandle renderer, VkrGeometrySystem *system,
-    VkrGeometryHandle handle, const VkrIndexBuffer *index_buffer,
-    VkrBufferHandle indirect_buffer, uint64_t offset, uint32_t draw_count,
-    uint32_t stride);
 
 // =============================================================================
 // Helpers

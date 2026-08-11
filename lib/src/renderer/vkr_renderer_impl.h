@@ -3,8 +3,7 @@
 #include "renderer/vkr_renderer.h"
 
 typedef enum VkrRendererImplKind {
-  VKR_RENDERER_IMPL_LEGACY_VULKAN = 0,
-  VKR_RENDERER_IMPL_METAL,
+  VKR_RENDERER_IMPL_METAL = 0,
   VKR_RENDERER_IMPL_BINDLESS_VULKAN,
 } VkrRendererImplKind;
 
@@ -14,7 +13,6 @@ typedef enum VkrRendererImplKind {
  * refreshed only at the recreate boundary and otherwise read as plain data.
  */
 typedef struct VkrRendererImplCapabilities {
-  bool8_t uses_legacy_pipeline_state;
   uint64_t renderer_arena_size;
   uint64_t scratch_arena_size;
   uint64_t scratch_arena_block_size;
@@ -192,15 +190,6 @@ typedef struct VkrRendererImplOps {
                                               uint32_t height,
                                               uint32_t image_count);
   uint32_t (*frame_in_flight_index)(void *state);
-  VkrRendererError (*capture_reserve)(void *state,
-                                      const VkrCaptureBatchRequest *request,
-                                      const VkrCaptureBackendItemPlan *plans,
-                                      uint64_t source_frame_index,
-                                      VkrBackendResourceHandle *out_buffer);
-  VkrRendererError (*capture_record_item)(void *state,
-                                          VkrCaptureRequestId request_id,
-                                          uint32_t item_index,
-                                          VkrBackendResourceHandle texture);
   VkrCaptureStatus (*capture_poll)(void *state, VkrCaptureRequestId request_id,
                                    VkrCapturePollResult *out_result);
   bool8_t (*capture_release)(void *state, VkrCaptureRequestId request_id);
@@ -210,7 +199,6 @@ typedef struct VkrRendererImplOps {
 } VkrRendererImplOps;
 
 typedef struct VkrRendererImplStrategies {
-  const VkrRendererImplOps *legacy_vulkan;
   const VkrRendererImplOps *metal;
   const VkrRendererImplOps *bindless_vulkan;
 } VkrRendererImplStrategies;
@@ -225,8 +213,8 @@ typedef struct VkrRendererImpl {
 } VkrRendererImpl;
 
 /**
- * Selects immutable implementation properties. The bindless Vulkan entry is a
- * production V3 strategy on Windows and remains unavailable elsewhere.
+ * Selects immutable implementation properties. Bindless Vulkan is the
+ * production Windows strategy and remains unavailable elsewhere.
  */
 bool8_t vkr_renderer_impl_select(VkrRendererBackendType backend_type,
                                  VkrPresentTargetKind target_kind,

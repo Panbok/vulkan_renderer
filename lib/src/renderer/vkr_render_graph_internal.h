@@ -135,30 +135,9 @@ typedef struct VkrRgPass {
       pre_buffer_barriers; /**< Buffer barriers to record before the pass */
 
   bool8_t culled; /**< True if pass was culled (outputs unused) */
-
-  VkrRenderPassHandle renderpass; /**< Backend render pass (after compile) */
-  VkrRenderTargetHandle
-      *render_targets;          /**< Backend render targets (color/depth) */
-  uint32_t render_target_count; /**< Number of render targets */
 } VkrRgPass;
 
 Vector(VkrRgPass);
-
-/**
- * @brief Cache entry for render pass + framebuffer; keyed by pass name and
- * attachment hash.
- */
-typedef struct VkrRgRenderTargetCacheEntry {
-  String8 pass_name;              /**< Pass name (for lookup) */
-  uint64_t renderpass_hash;       /**< Hash of render pass config */
-  VkrRenderPassHandle renderpass; /**< Cached render pass handle */
-  uint64_t target_hash;           /**< Hash of attachment set */
-  VkrRenderTargetHandle
-      *targets;          /**< Cached render targets (per image index) */
-  uint32_t target_count; /**< Number of targets */
-} VkrRgRenderTargetCacheEntry;
-
-Vector(VkrRgRenderTargetCacheEntry);
 
 /**
  * @brief Render graph state: resources, passes, barriers, and execution order.
@@ -171,18 +150,12 @@ typedef struct VkrRenderGraph {
   VkrAllocatorScope frame_scope;      /**< Active frame-allocation scope */
   bool8_t frame_scope_active;         /**< True while frame_scope is live */
   VkrRenderGraphFrameInfo frame_info; /**< Frame info from last begin_frame */
-  struct s_RendererFrontend
-      *renderer;                 /**< Renderer frontend (set at execute) */
   const VkrRenderPacket *packet; /**< Frame-local; set via vkr_rg_set_packet;
                                     valid during execute */
 
   Vector_VkrRgImage images;   /**< All image resources */
   Vector_VkrRgBuffer buffers; /**< All buffer resources */
   Vector_VkrRgPass passes;    /**< All passes */
-
-  Vector_uint64_t renderpass_hashes; /**< Per-pass render pass config hashes */
-  Vector_VkrRgRenderTargetCacheEntry
-      render_target_cache; /**< Cached render passes + framebuffers */
 
   VkrRgImageHandle present_image; /**< Image used for present (swapchain) */
   Vector_VkrRgImageBarrier
@@ -192,7 +165,6 @@ typedef struct VkrRenderGraph {
 
   Vector_uint32_t
       execution_order; /**< Pass indices in execution order (after compile) */
-  bool8_t compiled;    /**< True after successful vkr_rg_compile */
   VkrRenderGraphResourceStats
       resource_stats; /**< Live/peak resource counts and bytes */
   Vector_VkrRgPassTiming pass_timings; /**< Per-pass timing from last execute */
@@ -223,10 +195,8 @@ typedef struct VkrRenderGraph {
  * @brief Runs the renderer-independent half of compile: validation, dependency
  * edges, culling, topological ordering, lifetimes, and barrier planning.
  *
- * Split out of vkr_rg_compile so barrier planning -- a deterministic function
- * of the declared graph -- can be exercised without a live renderer. Everything
- * vkr_rg_compile does after this point allocates real textures and framebuffers
- * and requires a backend.
+ * This is the complete shared graph compilation stage. Resource realization
+ * and command encoding belong to the selected renderer implementation.
  *
  * @return true when the graph scheduled and its barriers were planned.
  */
@@ -361,9 +331,6 @@ vkr_internal inline void vkr_rg_release_image_textures(VkrRenderGraph *graph,
   if (!image->imported) {
     for (uint32_t i = 0; i < image->texture_count; ++i) {
       if (image->textures[i]) {
-        if (graph->renderer) {
-          vkr_renderer_destroy_texture(graph->renderer, image->textures[i]);
-        }
         released += 1;
       }
     }
@@ -406,9 +373,6 @@ vkr_internal inline void vkr_rg_release_buffer_handles(VkrRenderGraph *graph,
   if (!buffer->imported) {
     for (uint32_t i = 0; i < buffer->buffer_count; ++i) {
       if (buffer->buffers[i]) {
-        if (graph->renderer) {
-          vkr_renderer_destroy_buffer(graph->renderer, buffer->buffers[i]);
-        }
         released += 1;
       }
     }

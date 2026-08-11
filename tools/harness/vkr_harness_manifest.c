@@ -474,11 +474,9 @@ static bool8_t vkr_harness_parse_renderer(const VkrHarnessJsonDocument *doc,
       string_equals(renderer->render_mode, "direct_diffuse") ||
       string_equals(renderer->render_mode, "direct_specular") ||
       string_equals(renderer->render_mode, "material_params");
-  const bool8_t backend_valid =
-      renderer->backend[0] == '\0' ||
-      string_equals(renderer->backend, "vulkan") ||
-      string_equals(renderer->backend, "vulkan-bindless") ||
-      string_equals(renderer->backend, "metal");
+  const bool8_t backend_valid = renderer->backend[0] == '\0' ||
+                                string_equals(renderer->backend, "vulkan") ||
+                                string_equals(renderer->backend, "metal");
   if (!preset_valid || !mode_valid || !backend_valid || cascades < 1u ||
       cascades > 8u) {
     vkr_harness_error_set(

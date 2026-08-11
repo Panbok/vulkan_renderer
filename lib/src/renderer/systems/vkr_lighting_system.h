@@ -3,7 +3,6 @@
 #include "defines.h"
 #include "math/vec.h"
 #include "renderer/systems/vkr_scene_system.h"
-#include "renderer/systems/vkr_shader_system.h"
 
 #define VKR_MAX_SCENE_POINT_LIGHTS 128u
 #define VKR_POINT_LIGHT_GRID_MASK_WORDS 4u
@@ -61,8 +60,6 @@ typedef struct VkrPointLightGrid {
  * uniforms. It also tracks dirty state to avoid unnecessary updates.
  */
 typedef struct VkrLightingSystem {
-  VkrShaderSystem *shader_system;
-
   // Cached GPU-ready data (updated from ECS each frame)
   struct {
     bool8_t enabled;
@@ -120,7 +117,6 @@ vkr_lighting_system_point_light_mask_contains(const VkrPointLightMask *mask,
  * @brief Applies the lighting system to the shader uniforms.
  * @param system The lighting system to apply to the shader uniforms.
  */
-void vkr_lighting_system_apply_uniforms(VkrLightingSystem *system);
 
 /**
  * @brief Marks the lighting system as dirty.

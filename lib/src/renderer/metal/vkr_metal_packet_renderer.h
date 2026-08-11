@@ -13,6 +13,17 @@ struct VkrMeshLoaderResult;
 struct VkrTexturePreparedLoad;
 struct VkrMaterial;
 
+/** Private upload view used while publishing one decoded texture. */
+typedef struct VkrMetalPacketTextureUpload {
+  const uint8_t *data;
+  uint64_t data_size;
+  uint32_t mip_levels;
+  uint32_t array_layers;
+  bool8_t is_compressed;
+  uint32_t region_count;
+  const VkrTextureUploadRegion *regions;
+} VkrMetalPacketTextureUpload;
+
 typedef enum VkrMetalPacketTargetKind {
   VKR_METAL_PACKET_TARGET_OFFSCREEN = 0,
   VKR_METAL_PACKET_TARGET_WINDOW,

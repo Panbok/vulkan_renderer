@@ -9,7 +9,7 @@
 #include "renderer/systems/vkr_lighting_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/vkr_buffer.h"
-#include "renderer/vkr_instance_buffer.h"
+#include "renderer/vkr_gpu_abi.h"
 #include "renderer/vkr_renderer.h"
 
 /** Version constant for VkrRenderPacket.packet_version validation. */
@@ -107,7 +107,6 @@ typedef struct VkrDrawItem {
   uint32_t instance_count;
   uint32_t first_instance;
   uint64_t sort_key;
-  VkrPipelineHandle pipeline_override;
 } VkrDrawItem;
 
 /**

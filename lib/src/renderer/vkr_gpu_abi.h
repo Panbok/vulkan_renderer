@@ -1,6 +1,22 @@
 #pragma once
 
 #include "defines.h"
+#include "math/mat.h"
+
+/** Maximum packet instance records accepted per frame. */
+#define VKR_INSTANCE_BUFFER_MAX_INSTANCES 65536
+
+/** GPU-visible instance record shared by the selected implementations. */
+typedef struct VkrInstanceDataGPU {
+  Mat4 model;
+  uint32_t object_id;
+  uint32_t reserved[3];
+} VkrInstanceDataGPU;
+
+_Static_assert(sizeof(VkrInstanceDataGPU) == 80,
+               "VkrInstanceDataGPU must be 80 bytes");
+_Static_assert(sizeof(VkrInstanceDataGPU) % 16 == 0,
+               "VkrInstanceDataGPU must be 16-byte aligned");
 
 typedef enum VkrGpuAbiRecordId {
   VKR_GPU_ABI_VERTEX = 0,

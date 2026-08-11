@@ -92,9 +92,8 @@ int main(int argc, char **argv) {
   VkrDeviceRequirements requirements = {0};
   VkrRendererError create_error = VKR_RENDERER_ERROR_NONE;
   const bool8_t created = vkr_renderer_initialize(
-      frontend, VKR_RENDERER_BACKEND_TYPE_BINDLESS_VULKAN,
-      windowed ? &window : NULL, &event_manager, &requirements, &config, 60u,
-      &create_error);
+      frontend, VKR_RENDERER_BACKEND_TYPE_VULKAN, windowed ? &window : NULL,
+      &event_manager, &requirements, &config, 60u, &create_error);
   VkrBindlessVulkanRenderer *renderer = frontend->bindless_vulkan_renderer;
   const VkrBindlessVkCapabilityProfile *profile =
       vkr_bindless_vulkan_renderer_profile(renderer);
@@ -130,7 +129,7 @@ int main(int argc, char **argv) {
   uint64_t last_polled = 0u;
   const uint32_t offscreen_extents[][2] = {{4u, 4u}, {7u, 5u}};
   const uint32_t window_extents[][2] = {{320u, 240u}, {400u, 300u}};
-  const uint32_t (*extents)[2] = windowed ? window_extents : offscreen_extents;
+  const uint32_t(*extents)[2] = windowed ? window_extents : offscreen_extents;
   uint64_t frame_index = 0u;
   for (uint32_t extent_index = 0; walking_pass && extent_index < 2u;
        ++extent_index) {
@@ -222,13 +221,12 @@ int main(int argc, char **argv) {
   const bool8_t shared_loaders =
       walking_pass &&
       vkr_resource_system_init(&frontend->allocator, frontend, NULL, NULL) &&
-      vkr_geometry_system_init(&frontend->geometry_system, frontend,
-                               &geometry_config, &system_error) &&
+      vkr_geometry_system_init(&frontend->geometry_system, &geometry_config,
+                               &system_error) &&
       vkr_texture_system_init(frontend, &texture_config, NULL,
                               &frontend->texture_system) &&
       vkr_material_system_init(&frontend->material_system, frontend->arena,
-                               &frontend->texture_system, NULL,
-                               &material_config);
+                               &frontend->texture_system, &material_config);
   walking_pass = walking_pass && shared_loaders;
   if (shared_loaders) {
     vkr_resource_system_register_loader((void *)&frontend->texture_system,

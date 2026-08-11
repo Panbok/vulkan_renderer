@@ -1,7 +1,6 @@
 #include "renderer/vkr_gpu_abi.h"
 
 #include "renderer/vkr_buffer.h"
-#include "renderer/vkr_instance_buffer.h"
 
 #include <stddef.h>
 

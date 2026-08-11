@@ -53,7 +53,6 @@ typedef enum VkrTextureClass {
 } VkrTextureClass;
 
 typedef struct VkrTextureSystem {
-  VkrRendererFrontendHandle renderer;
   Arena *arena;                  // internal arena owned by the system
   VkrAllocator allocator;        // persistent allocator wrapping arena
   VkrDMemory string_memory;      // dynamic strings (freed on unload)
@@ -181,7 +180,6 @@ bool8_t vkr_texture_format_has_ktx_transcode_target(VkrTextureFormat format);
 
 /**
  * @brief Initializes the texture system
- * @param renderer The renderer to use
  * @param config The configuration for the texture system
  * @param job_system The job system for async loading (can be NULL for sync
  * only)
@@ -196,10 +194,8 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
 /**
  * @brief Shuts down the texture system
  * @param system The texture system to shutdown
- * @param renderer The renderer to use
  */
-void vkr_texture_system_shutdown(VkrRendererFrontendHandle renderer,
-                                 VkrTextureSystem *system);
+void vkr_texture_system_shutdown(VkrTextureSystem *system);
 
 // =============================================================================
 // Resource operations integrated with the system (use system arena/renderer)
@@ -284,64 +280,6 @@ VkrRendererError vkr_texture_system_update_sampler(
     VkrFilter mag_filter, VkrMipFilter mip_filter, bool8_t anisotropy_enable,
     VkrTextureRepeatMode u_repeat_mode, VkrTextureRepeatMode v_repeat_mode,
     VkrTextureRepeatMode w_repeat_mode);
-
-/**
- * @brief Writes data to a texture handle
- * @param system The texture system to write to
- * @param handle The handle of the texture to write to
- * @param data The data to write
- * @param size The size of the data
- * @return The error
- */
-VkrRendererError vkr_texture_system_write(VkrTextureSystem *system,
-                                          VkrTextureHandle handle,
-                                          const void *data, uint64_t size);
-
-/**
- * @brief Writes data to a region of a texture handle
- * @param system The texture system to write to
- * @param handle The handle of the texture to write to
- * @param region The region to write to
- * @param data The data to write
- * @param size The size of the data
- * @return The error
- */
-VkrRendererError vkr_texture_system_write_region(
-    VkrTextureSystem *system, VkrTextureHandle handle,
-    const VkrTextureWriteRegion *region, const void *data, uint64_t size);
-
-/**
- * @brief Resizes a texture handle
- * @param system The texture system to resize the texture in
- * @param handle The handle of the texture to resize
- * @param new_width The new width of the texture
- * @param new_height The new height of the texture
- * @param preserve_contents Whether to preserve the contents of the texture
- * @param out_handle The output handle
- * @param out_error The output error
- * @return true on success, false on failure
- */
-bool8_t vkr_texture_system_resize(VkrTextureSystem *system,
-                                  VkrTextureHandle handle, uint32_t new_width,
-                                  uint32_t new_height,
-                                  bool8_t preserve_contents,
-                                  VkrTextureHandle *out_handle,
-                                  VkrRendererError *out_error);
-
-/**
- * @brief Registers an external texture handle
- * @param system The texture system to register the external texture in
- * @param name The name of the texture to register
- * @param backend_handle The backend handle of the texture to register
- * @param desc The description of the texture to register
- * @param out_handle The output handle
- * @return true on success, false on failure
- */
-bool8_t
-vkr_texture_system_register_external(VkrTextureSystem *system, String8 name,
-                                     VkrTextureOpaqueHandle backend_handle,
-                                     const VkrTextureDescription *desc,
-                                     VkrTextureHandle *out_handle);
 
 // =============================================================================
 // Getters
@@ -446,19 +384,6 @@ bool8_t vkr_texture_system_finalize_prepared_load(
  * @brief Releases CPU memory owned by a prepared texture payload.
  */
 void vkr_texture_system_release_prepared_load(VkrTexturePreparedLoad *prepared);
-
-/**
- * @brief Loads a texture from a file
- * @param self The texture system
- * @param file_path The path to the file
- * @param desired_channels The desired number of channels
- * @param out_texture The output texture
- * @return The error
- */
-VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *self,
-                                                   String8 file_path,
-                                                   uint32_t desired_channels,
-                                                   VkrTexture *out_texture);
 
 /**
  * @brief Loads a texture from a file

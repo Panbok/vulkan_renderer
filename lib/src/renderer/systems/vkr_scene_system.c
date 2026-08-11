@@ -1134,7 +1134,6 @@ void vkr_scene_shutdown(VkrScene *scene, struct s_RendererFrontend *rf) {
 
     // Invalidate picking instance states before scene textures are destroyed.
     // This ensures descriptor sets don't reference stale texture handles.
-    vkr_picking_invalidate_instance_states(rf, &rf->picking);
   }
 
   // Send destroy messages for all text3d entities to world resources.
@@ -2341,10 +2340,6 @@ void vkr_scene_handle_destroy(VkrSceneHandle handle,
 
   scene_render_bridge_shutdown(&runtime->bridge);
   vkr_scene_shutdown(&runtime->scene, rf);
-  if (rf && rf->render_graph_enabled && rf->render_graph) {
-    vkr_rg_log_resource_stats(rf->render_graph, "RenderGraph (scene unload)");
-  }
-
   // Release global accounting for the scene arena before destroying it.
   // This adjusts global memory stats for all allocations made from scene_alloc
   // since arena frees are no-ops and wouldn't decrement the counters otherwise.

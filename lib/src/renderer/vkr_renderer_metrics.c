@@ -2,7 +2,6 @@
 
 #include "core/vkr_json_writer.h"
 #include "memory/vkr_allocator.h"
-#include "renderer/systems/vkr_pipeline_registry.h"
 #include "renderer/vkr_render_graph.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vulkan/bindless/vkr_bindless_vulkan_renderer.h"
@@ -636,8 +635,7 @@ bool8_t vkr_renderer_metrics_register_device_memory(
     return false_v;
   }
 
-  if (!renderer->impl.caps.uses_legacy_pipeline_state)
-    (void)vkr_renderer_metrics_register_impl_memory(renderer_metrics);
+  (void)vkr_renderer_metrics_register_impl_memory(renderer_metrics);
 
   // Two rows per memory type and three per heap. A device at the Vulkan
   // maxima would ask for more rows than the catalog can hold, so the count is
@@ -719,32 +717,7 @@ vkr_renderer_metrics_prepare_pass_table(VkrRendererMetrics *renderer_metrics,
   if (!renderer_metrics || !renderer || !allocator) {
     return false_v;
   }
-  RendererFrontend *frontend = (RendererFrontend *)renderer;
-  if (!frontend->impl.caps.uses_legacy_pipeline_state) {
-    const uint64_t capacity = 64;
-    VkrRendererMetricsPassSample *samples = vkr_allocator_alloc(
-        allocator, capacity * sizeof(*samples), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    if (!samples) {
-      return false_v;
-    }
-    MemZero(samples, capacity * sizeof(*samples));
-    renderer_metrics->passes.samples = samples;
-    renderer_metrics->passes.capacity = (uint32_t)capacity;
-    renderer_metrics->passes.count = 0;
-    renderer_metrics->passes.truncated = false_v;
-    return true_v;
-  }
-  uint64_t capacity = frontend->render_graph_json.passes.length;
-  for (uint64_t i = 0; i < frontend->render_graph_json.passes.length; ++i) {
-    const VkrRgJsonPass *pass =
-        vector_get_VkrRgJsonPass(&frontend->render_graph_json.passes, i);
-    if (pass && pass->repeat.enabled) {
-      capacity += VKR_SHADOW_CASCADE_COUNT_MAX - 1u;
-    }
-  }
-  if (capacity == 0 || capacity > UINT32_MAX) {
-    return false_v;
-  }
+  const uint64_t capacity = VKR_RENDERER_IMPL_MAX_PASS_TIMINGS;
   VkrRendererMetricsPassSample *samples = vkr_allocator_alloc(
       allocator, capacity * sizeof(*samples), VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!samples) {
@@ -766,7 +739,7 @@ vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
   table->count = 0;
   table->truncated = false_v;
   table->cpu_frame_index = cpu_frame_index;
-  if (!renderer->impl.caps.uses_legacy_pipeline_state) {
+  {
     const VkrRendererImplSubmitResult *result = &renderer->timing_result;
     VkrRendererMetricsPassSample samples[VKR_RENDERER_IMPL_MAX_PASS_TIMINGS] = {
         0};
@@ -803,38 +776,6 @@ vkr_renderer_metrics_collect_passes(VkrRendererMetrics *renderer_metrics,
       }
     }
     return;
-  }
-  if (!renderer->render_graph) {
-    return;
-  }
-
-  const VkrRgPassTiming *timings = NULL;
-  uint32_t timing_count = 0;
-  if (!vkr_rg_get_pass_timings(renderer->render_graph, &timings,
-                               &timing_count) ||
-      !timings) {
-    return;
-  }
-  table->count = Min(timing_count, table->capacity);
-  table->truncated = timing_count > table->count;
-  for (uint32_t i = 0; i < table->count; ++i) {
-    const VkrRgPassTiming *source = &timings[i];
-    VkrRendererMetricsPassSample *sample = &table->samples[i];
-    const uint64_t length =
-        Min(source->name.length, (uint64_t)VKR_METRIC_NAME_MAX);
-    if (source->name.str && length > 0) {
-      MemCopy(sample->name, source->name.str, length);
-    }
-    sample->name[length] = '\0';
-    sample->name_length = (uint8_t)length;
-    sample->cpu_ms = source->cpu_ms;
-    sample->gpu_ms = source->gpu_ms;
-    sample->cpu_frame_index = cpu_frame_index;
-    sample->gpu_source_frame_index = source->gpu_source_frame_index;
-    sample->gpu_source_submit_serial = source->gpu_source_submit_serial;
-    sample->culled = source->culled;
-    sample->disabled = source->disabled;
-    sample->gpu_valid = source->gpu_valid;
   }
 }
 
@@ -1057,20 +998,7 @@ void vkr_renderer_metrics_collect(
                   : 0.0);
   VKR_SET_DELTA(job_completed_total, jobs_completed, jobs.jobs_completed_total);
 
-  const VkrInstanceBufferPool *instance_pool = &renderer->instance_buffer_pool;
-  if (instance_pool->initialized &&
-      instance_pool->current_frame < VKR_INSTANCE_BUFFER_FRAMES) {
-    VKR_SET_U64(
-        instance_occupancy,
-        instance_pool->buffers[instance_pool->current_frame].write_offset);
-    VKR_SET_U64(instance_capacity, instance_pool->max_instances);
-    VKR_SET_U64(instance_overflows, instance_pool->frame_overflow_count);
-  } else if (!renderer->impl.caps.uses_legacy_pipeline_state) {
-    // Packet implementations validate and upload their instance payloads as an
-    // atomic part of submission. Reaching collection means no instance upload
-    // overflow occurred; occupancy and capacity remain implementation-specific.
-    VKR_SET_U64(instance_overflows, 0u);
-  }
+  VKR_SET_U64(instance_overflows, 0u);
   VKR_SET_U64(world_draws_collected, world->draws_collected);
   VKR_SET_U64(world_opaque_draws, world->opaque_draws);
   VKR_SET_U64(world_transmission_draws, world->transmission_draws);
@@ -1132,11 +1060,9 @@ void vkr_renderer_metrics_collect(
 
   VkrRenderGraphResourceStats rg = {0};
   const bool8_t rg_stats_valid =
-      renderer->impl.kind == VKR_RENDERER_IMPL_BINDLESS_VULKAN
-          ? vkr_bindless_vulkan_renderer_graph_resource_stats(
-                renderer->bindless_vulkan_renderer, &rg)
-          : renderer->render_graph &&
-                vkr_rg_get_resource_stats(renderer->render_graph, &rg);
+      renderer->impl.kind == VKR_RENDERER_IMPL_BINDLESS_VULKAN &&
+      vkr_bindless_vulkan_renderer_graph_resource_stats(
+          renderer->bindless_vulkan_renderer, &rg);
   if (rg_stats_valid) {
     VKR_SET_U64(rg_live_images, rg.live_image_textures);
     VKR_SET_U64(rg_peak_images, rg.peak_image_textures);
@@ -1273,23 +1199,24 @@ void vkr_renderer_metrics_collect(
 
   vkr_renderer_metrics_collect_impl_memory(renderer_metrics, renderer);
 
-  uint32_t pipeline_created = 0;
-  uint32_t pipeline_binds = 0;
-  uint32_t redundant = 0;
-  uint32_t meshes_batched = 0;
-  vkr_pipeline_registry_get_stats(&renderer->pipeline_registry,
-                                  &pipeline_created, &pipeline_binds,
-                                  &redundant, &meshes_batched);
-  VKR_SET_DELTA(pipelines_created, pipelines_created, pipeline_created);
-  VKR_SET_DELTA(pipeline_binds, pipeline_binds, pipeline_binds);
-  VKR_SET_DELTA(redundant_binds_avoided, redundant_binds_avoided, redundant);
-  VKR_SET_DELTA(meshes_batched, meshes_batched, meshes_batched);
-  uint32_t frame_changes = 0;
-  uint32_t frame_redundant = 0;
-  vkr_pipeline_registry_get_frame_stats(&renderer->pipeline_registry,
-                                        &frame_changes, &frame_redundant);
-  VKR_SET_U64(frame_pipeline_changes, frame_changes);
-  VKR_SET_U64(frame_redundant_binds_avoided, frame_redundant);
+  vkr_metrics_mark(metrics, ids->pipelines_created,
+                   VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                   VKR_METRIC_REASON_UNSUPPORTED);
+  vkr_metrics_mark(metrics, ids->pipeline_binds,
+                   VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                   VKR_METRIC_REASON_UNSUPPORTED);
+  vkr_metrics_mark(metrics, ids->redundant_binds_avoided,
+                   VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                   VKR_METRIC_REASON_UNSUPPORTED);
+  vkr_metrics_mark(metrics, ids->meshes_batched,
+                   VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                   VKR_METRIC_REASON_UNSUPPORTED);
+  vkr_metrics_mark(metrics, ids->frame_pipeline_changes,
+                   VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                   VKR_METRIC_REASON_UNSUPPORTED);
+  vkr_metrics_mark(metrics, ids->frame_redundant_binds_avoided,
+                   VKR_METRIC_AVAILABILITY_UNAVAILABLE,
+                   VKR_METRIC_REASON_UNSUPPORTED);
 
   VkrAllocatorStatistics cpu = vkr_allocator_get_global_statistics();
   VKR_SET_U64(cpu_live_bytes, cpu.total_allocated);

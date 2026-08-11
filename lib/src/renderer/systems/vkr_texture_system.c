@@ -1147,42 +1147,17 @@ vkr_internal bool8_t vkr_texture_system_publish_prepared(
 
   *out_backend_handle = NULL;
   *out_error = VKR_RENDERER_ERROR_NONE;
-  if (system->asset_publisher) {
-    if (!system->asset_publisher->publish_texture) {
-      *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
-      return false_v;
-    }
-    if (!system->asset_publisher->publish_texture(
-            system->asset_publisher->state, logical_handle, prepared)) {
-      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-      return false_v;
-    }
-
-    // The CPU resource model historically uses this opaque field as its
-    // readiness bit. In publisher mode GPU identity is the logical handle;
-    // this stable slot address is never passed to a backend.
-    *out_backend_handle =
-        (VkrTextureOpaqueHandle)&system->textures.data[logical_handle.id - 1];
-    return true_v;
-  }
-
-  VkrTextureUploadPayload upload_payload = {
-      .data = prepared->upload_data,
-      .data_size = prepared->upload_data_size,
-      .mip_levels = prepared->upload_mip_levels,
-      .array_layers = prepared->upload_array_layers,
-      .is_compressed = prepared->upload_is_compressed,
-      .region_count = prepared->upload_region_count,
-      .regions = prepared->upload_regions,
-  };
-  *out_backend_handle = vkr_renderer_create_texture_with_payload(
-      system->renderer, &prepared->description, &upload_payload, out_error);
-  if (!*out_backend_handle || *out_error != VKR_RENDERER_ERROR_NONE) {
-    if (*out_error == VKR_RENDERER_ERROR_NONE) {
-      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    }
+  if (!system->asset_publisher || !system->asset_publisher->publish_texture) {
+    *out_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
     return false_v;
   }
+  if (!system->asset_publisher->publish_texture(system->asset_publisher->state,
+                                                logical_handle, prepared)) {
+    *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
+    return false_v;
+  }
+  *out_backend_handle =
+      (VkrTextureOpaqueHandle)&system->textures.data[logical_handle.id - 1];
   return true_v;
 }
 
@@ -1228,6 +1203,11 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   assert_log(config->max_texture_count >= 3,
              "Texture system requires at least 3 textures for defaults");
 
+  if (!config->asset_publisher || !config->asset_publisher->publish_texture ||
+      !config->asset_publisher->unpublish_texture) {
+    return false_v;
+  }
+
   MemZero(out_system, sizeof(*out_system));
 
   ArenaFlags app_arena_flags = bitset8_create();
@@ -1240,7 +1220,6 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
-  out_system->renderer = renderer;
   out_system->config = *config;
   out_system->asset_publisher = config->asset_publisher;
   out_system->job_system = job_system;
@@ -1328,7 +1307,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
   if (!out_system->texture_keys_by_index) {
     log_error("Failed to allocate texture reverse lookup table");
-    vkr_texture_system_shutdown(renderer, out_system);
+    vkr_texture_system_shutdown(out_system);
     return false_v;
   }
   MemZero((void *)out_system->texture_keys_by_index,
@@ -1340,7 +1319,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
           VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
   if (!out_system->cache_guard) {
     log_error("Failed to allocate texture cache write guard");
-    vkr_texture_system_shutdown(renderer, out_system);
+    vkr_texture_system_shutdown(out_system);
     return false_v;
   }
 
@@ -1348,7 +1327,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   if (!vkr_mutex_create(&out_system->allocator,
                         &out_system->cache_guard->mutex)) {
     log_error("Failed to create texture cache write guard mutex");
-    vkr_texture_system_shutdown(renderer, out_system);
+    vkr_texture_system_shutdown(out_system);
     return false_v;
   }
 
@@ -1359,7 +1338,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
                                                       guard_capacity);
   if (!out_system->cache_guard->inflight.entries) {
     log_error("Failed to create texture cache write guard hash table");
-    vkr_texture_system_shutdown(renderer, out_system);
+    vkr_texture_system_shutdown(out_system);
     return false_v;
   }
 
@@ -1403,7 +1382,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
       vkr_allocator_begin_scope(&out_system->allocator);
   if (!vkr_allocator_scope_is_valid(&image_scope)) {
     log_error("Failed to allocate memory for default texture");
-    vkr_texture_system_shutdown(renderer, out_system);
+    vkr_texture_system_shutdown(out_system);
     return false_v;
   }
   default_texture->image = vkr_allocator_alloc(
@@ -1567,7 +1546,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
     String8 error_string = vkr_renderer_get_error_string(diffuse_err);
     log_error("Failed to create default diffuse texture: %s",
               string8_cstr(&error_string));
-    vkr_texture_system_shutdown(renderer, out_system);
+    vkr_texture_system_shutdown(out_system);
     return false_v;
   }
 
@@ -1582,8 +1561,7 @@ bool8_t vkr_texture_system_init(VkrRendererFrontendHandle renderer,
   return true_v;
 }
 
-void vkr_texture_system_shutdown(VkrRendererFrontendHandle renderer,
-                                 VkrTextureSystem *system) {
+void vkr_texture_system_shutdown(VkrTextureSystem *system) {
   if (!system)
     return;
 
@@ -1755,19 +1733,14 @@ bool8_t vkr_texture_system_create_writable(VkrTextureSystem *system,
 
   VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
   VkrTextureOpaqueHandle handle = NULL;
-  if (system->asset_publisher) {
-    if (!system->asset_publisher->publish_writable_texture) {
-      renderer_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
-    } else if (system->asset_publisher->publish_writable_texture(
-                   system->asset_publisher->state, logical_handle,
-                   &desc_copy)) {
-      handle = (VkrTextureOpaqueHandle)texture;
-    } else {
-      renderer_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    }
+  if (!system->asset_publisher ||
+      !system->asset_publisher->publish_writable_texture) {
+    renderer_error = VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
+  } else if (system->asset_publisher->publish_writable_texture(
+                 system->asset_publisher->state, logical_handle, &desc_copy)) {
+    handle = (VkrTextureOpaqueHandle)texture;
   } else {
-    handle = vkr_renderer_create_writable_texture(system->renderer, &desc_copy,
-                                                  &renderer_error);
+    renderer_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   }
   if (renderer_error != VKR_RENDERER_ERROR_NONE || !handle) {
     (void)vkr_hash_table_remove_VkrTextureEntry(&system->texture_map,
@@ -1963,226 +1936,16 @@ VkrRendererError vkr_texture_system_update_sampler(
   updated_desc.v_repeat_mode = v_repeat_mode;
   updated_desc.w_repeat_mode = w_repeat_mode;
 
-  if (system->asset_publisher) {
-    if (!system->asset_publisher->update_texture_sampler) {
-      return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
-    }
-    if (!system->asset_publisher->update_texture_sampler(
-            system->asset_publisher->state, handle, &updated_desc)) {
-      return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    }
-    texture->description = updated_desc;
-    return VKR_RENDERER_ERROR_NONE;
+  if (!system->asset_publisher ||
+      !system->asset_publisher->update_texture_sampler) {
+    return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
   }
-
-  VkrRendererError err = vkr_renderer_update_texture(
-      system->renderer, texture->handle, &updated_desc);
-  if (err == VKR_RENDERER_ERROR_NONE) {
-    texture->description = updated_desc;
+  if (!system->asset_publisher->update_texture_sampler(
+          system->asset_publisher->state, handle, &updated_desc)) {
+    return VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
   }
-  return err;
-}
-
-VkrRendererError vkr_texture_system_write(VkrTextureSystem *system,
-                                          VkrTextureHandle handle,
-                                          const void *data, uint64_t size) {
-  assert_log(system != NULL, "System is NULL");
-  assert_log(data != NULL, "Data is NULL");
-
-  VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
-  if (!texture || !texture->handle) {
-    return VKR_RENDERER_ERROR_INVALID_HANDLE;
-  }
-
-  if (!bitset8_is_set(&texture->description.properties,
-                      VKR_TEXTURE_PROPERTY_WRITABLE_BIT)) {
-    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
-  }
-
-  uint64_t expected_size = vkr_texture_format_region_size(
-      texture->description.format, texture->description.width,
-      texture->description.height);
-  if (size < expected_size) {
-    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
-  }
-
-  return vkr_renderer_write_texture(system->renderer, texture->handle, data,
-                                    size);
-}
-
-VkrRendererError vkr_texture_system_write_region(
-    VkrTextureSystem *system, VkrTextureHandle handle,
-    const VkrTextureWriteRegion *region, const void *data, uint64_t size) {
-  assert_log(system != NULL, "System is NULL");
-  assert_log(region != NULL, "Region is NULL");
-  assert_log(data != NULL, "Data is NULL");
-
-  VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
-  if (!texture || !texture->handle) {
-    return VKR_RENDERER_ERROR_INVALID_HANDLE;
-  }
-
-  if (!bitset8_is_set(&texture->description.properties,
-                      VKR_TEXTURE_PROPERTY_WRITABLE_BIT)) {
-    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
-  }
-
-  if (region->mip_level >= 32) {
-    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
-  }
-
-  if (region->width == 0 || region->height == 0) {
-    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
-  }
-
-  uint32_t mip_width = Max(1u, texture->description.width >> region->mip_level);
-  uint32_t mip_height =
-      Max(1u, texture->description.height >> region->mip_level);
-  if (region->x + region->width > mip_width ||
-      region->y + region->height > mip_height) {
-    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
-  }
-
-  uint64_t expected_size = vkr_texture_format_region_size(
-      texture->description.format, region->width, region->height);
-  if (size < expected_size) {
-    return VKR_RENDERER_ERROR_INVALID_PARAMETER;
-  }
-
-  return vkr_renderer_write_texture_region(system->renderer, texture->handle,
-                                           region, data, size);
-}
-
-bool8_t vkr_texture_system_resize(VkrTextureSystem *system,
-                                  VkrTextureHandle handle, uint32_t new_width,
-                                  uint32_t new_height,
-                                  bool8_t preserve_contents,
-                                  VkrTextureHandle *out_handle,
-                                  VkrRendererError *out_error) {
-  assert_log(system != NULL, "System is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
-
-  if (new_width == 0 || new_height == 0) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-    return false_v;
-  }
-
-  VkrTexture *texture = vkr_texture_system_get_by_handle(system, handle);
-  if (!texture || !texture->handle) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
-    return false_v;
-  }
-
-  if (!bitset8_is_set(&texture->description.properties,
-                      VKR_TEXTURE_PROPERTY_WRITABLE_BIT)) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-    return false_v;
-  }
-
-  VkrRendererError err =
-      vkr_renderer_resize_texture(system->renderer, texture->handle, new_width,
-                                  new_height, preserve_contents);
-  if (err != VKR_RENDERER_ERROR_NONE) {
-    *out_error = err;
-    return false_v;
-  }
-
-  texture->description.width = new_width;
-  texture->description.height = new_height;
-  texture->description.generation = system->generation_counter++;
-
-  if (out_handle) {
-    *out_handle =
-        (VkrTextureHandle){.id = texture->description.id,
-                           .generation = texture->description.generation};
-  }
-
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return true_v;
-}
-
-bool8_t
-vkr_texture_system_register_external(VkrTextureSystem *system, String8 name,
-                                     VkrTextureOpaqueHandle backend_handle,
-                                     const VkrTextureDescription *desc,
-                                     VkrTextureHandle *out_handle) {
-  assert_log(system != NULL, "System is NULL");
-  assert_log(name.str != NULL, "Name is NULL");
-  assert_log(desc != NULL, "Description is NULL");
-  assert_log(backend_handle != NULL, "Backend handle is NULL");
-  const bool8_t is_external =
-      bitset8_is_set(&desc->properties, VKR_TEXTURE_PROPERTY_EXTERNAL_BIT);
-
-  const char *texture_key = (const char *)name.str;
-  VkrTextureEntry *existing_entry =
-      vkr_hash_table_get_VkrTextureEntry(&system->texture_map, texture_key);
-  if (existing_entry) {
-    log_error("Texture with name '%s' is already registered",
-              string8_cstr(&name));
-    return false_v;
-  }
-
-  for (uint32_t i = 0; i < system->textures.length; ++i) {
-    VkrTexture *texture = &system->textures.data[i];
-    if (texture->handle == backend_handle) {
-      log_error("Backend handle is already registered for texture '%s'",
-                string8_cstr(&name));
-      return false_v;
-    }
-  }
-
-  uint32_t free_slot_index = vkr_texture_system_find_free_slot(system);
-  if (free_slot_index == VKR_INVALID_ID) {
-    log_error("Texture system is full (max=%u)",
-              system->config.max_texture_count);
-    return false_v;
-  }
-
-  char *stable_key =
-      (char *)vkr_allocator_alloc(&system->string_allocator, name.length + 1,
-                                  VKR_ALLOCATOR_MEMORY_TAG_STRING);
-  if (!stable_key) {
-    log_error("Failed to allocate key copy for external texture map");
-    return false_v;
-  }
-  MemCopy(stable_key, name.str, (size_t)name.length);
-  stable_key[name.length] = '\0';
-
-  VkrTexture *texture = &system->textures.data[free_slot_index];
-  MemZero(texture, sizeof(*texture));
-  texture->description = *desc;
-  texture->description.id = free_slot_index + 1;
-  texture->description.generation = system->generation_counter++;
-  texture->handle = backend_handle;
-
-  VkrTextureEntry entry = {
-      .index = free_slot_index,
-      .ref_count = 1,
-      .auto_release = false_v,
-      .name = stable_key,
-  };
-  bool8_t insert_success = vkr_hash_table_insert_VkrTextureEntry(
-      &system->texture_map, stable_key, entry);
-  if (!insert_success) {
-    log_error("Failed to insert external texture '%s' into hash table",
-              stable_key);
-    vkr_allocator_free(&system->string_allocator, stable_key, name.length + 1,
-                       VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    if (!is_external) {
-      vkr_renderer_destroy_texture(system->renderer, backend_handle);
-    }
-    texture->description.generation = VKR_INVALID_ID;
-    return false_v;
-  }
-  system->texture_keys_by_index[free_slot_index] = stable_key;
-
-  if (out_handle) {
-    *out_handle =
-        (VkrTextureHandle){.id = texture->description.id,
-                           .generation = texture->description.generation};
-  }
-
-  return true_v;
+  texture->description = updated_desc;
+  return VKR_RENDERER_ERROR_NONE;
 }
 
 bool8_t vkr_texture_destroy(VkrTextureSystem *system, VkrTexture *texture) {
@@ -2195,16 +1958,10 @@ bool8_t vkr_texture_destroy(VkrTextureSystem *system, VkrTexture *texture) {
         .id = texture->description.id,
         .generation = texture->description.generation,
     };
-    bool8_t destroyed = false_v;
-    if (system->asset_publisher) {
-      destroyed = system->asset_publisher->unpublish_texture
-                      ? system->asset_publisher->unpublish_texture(
-                            system->asset_publisher->state, handle)
-                      : false_v;
-    } else {
-      destroyed =
-          vkr_renderer_destroy_texture(system->renderer, texture->handle);
-    }
+    bool8_t destroyed = system->asset_publisher &&
+                        system->asset_publisher->unpublish_texture &&
+                        system->asset_publisher->unpublish_texture(
+                            system->asset_publisher->state, handle);
     if (!destroyed) {
       log_warn("TextureSystem: failed to destroy texture %u:%u; ownership "
                "retained for retry",
@@ -3628,200 +3385,6 @@ bool8_t vkr_texture_system_finalize_prepared_load(
   return true_v;
 }
 
-VkrRendererError vkr_texture_system_load_from_file(VkrTextureSystem *system,
-                                                   String8 file_path,
-                                                   uint32_t desired_channels,
-                                                   VkrTexture *out_texture) {
-  assert_log(system != NULL, "System is NULL");
-  assert_log(out_texture != NULL, "Out texture is NULL");
-  assert_log(file_path.str != NULL, "Path is NULL");
-
-  VkrTextureRequest request = vkr_texture_parse_request(file_path);
-  String8 base_path = request.base_path;
-  out_texture->file_path = (FilePath){0};
-
-  VkrTextureDecodeResult decode_result = {0};
-  vkr_texture_decode_result_reset(&decode_result);
-
-  VkrTextureDecodeJobPayload job_payload = {
-      .file_path = base_path,
-      .desired_channels = desired_channels,
-      .flip_vertical = true_v,
-      .colorspace = request.colorspace,
-      .texture_class = request.texture_class,
-      .has_explicit_colorspace = request.has_explicit_colorspace,
-      .has_explicit_class = request.has_explicit_class,
-      .system = system,
-      .result = &decode_result,
-  };
-
-  VkrAllocatorScope sync_scope = vkr_allocator_begin_scope(&system->allocator);
-  VkrJobContext fake_ctx = {.system = NULL,
-                            .worker_index = 0,
-                            .thread_id = 0,
-                            .allocator = &system->allocator,
-                            .scope = sync_scope};
-  vkr_texture_decode_job_run(&fake_ctx, &job_payload);
-  vkr_allocator_end_scope(&sync_scope, VKR_ALLOCATOR_MEMORY_TAG_STRUCT);
-
-  const bool8_t has_upload_payload = decode_result.upload_data &&
-                                     decode_result.upload_regions &&
-                                     decode_result.upload_region_count > 0;
-  if (!decode_result.success ||
-      (!decode_result.decoded_pixels && !has_upload_payload)) {
-    VkrRendererError decode_error = decode_result.error;
-    vkr_texture_decode_result_release(&decode_result);
-    return decode_error;
-  }
-
-  int32_t width = decode_result.width;
-  int32_t height = decode_result.height;
-  int32_t original_channels = decode_result.original_channels;
-
-  uint32_t actual_channels = 0;
-  VkrTextureFormat format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
-  if (has_upload_payload) {
-    format = decode_result.upload_format;
-    actual_channels = vkr_texture_channel_count_from_format(format);
-  } else {
-    actual_channels =
-        desired_channels > 0 ? desired_channels : (uint32_t)original_channels;
-
-    switch (actual_channels) {
-    case VKR_TEXTURE_R_CHANNELS:
-    case VKR_TEXTURE_RG_CHANNELS:
-    case VKR_TEXTURE_RGB_CHANNELS:
-    case VKR_TEXTURE_RGBA_CHANNELS:
-      break;
-    default:
-      actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
-      break;
-    }
-    if (actual_channels == VKR_TEXTURE_RGB_CHANNELS) {
-      actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
-    }
-
-    format =
-        vkr_texture_format_from_channels(actual_channels, request.colorspace);
-  }
-
-  VkrTexturePropertyFlags props = vkr_texture_property_flags_create();
-  if (decode_result.has_transparency) {
-    bitset8_set(&props, VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
-    if (decode_result.alpha_mask) {
-      bitset8_set(&props, VKR_TEXTURE_PROPERTY_ALPHA_MASK_BIT);
-    }
-  }
-
-  out_texture->description = (VkrTextureDescription){
-      .width = (uint32_t)width,
-      .height = (uint32_t)height,
-      .channels = actual_channels,
-      .format = format,
-      .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
-      .type = VKR_TEXTURE_TYPE_2D,
-      .properties = props,
-      .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
-      .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
-      .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
-      .min_filter = VKR_FILTER_LINEAR,
-      .mag_filter = VKR_FILTER_LINEAR,
-      .mip_filter = (has_upload_payload && decode_result.upload_mip_levels <= 1)
-                        ? VKR_MIP_FILTER_NONE
-                        : VKR_MIP_FILTER_LINEAR,
-      .anisotropy_enable = false_v,
-      // Must be stable for the lifetime of this backend texture handle so
-      // descriptor-set generation tracking can invalidate correctly on reload.
-      .generation = system->generation_counter++,
-  };
-
-  if (has_upload_payload) {
-    VkrTextureUploadPayload upload_payload = {
-        .data = decode_result.upload_data,
-        .data_size = decode_result.upload_data_size,
-        .mip_levels = decode_result.upload_mip_levels,
-        .array_layers = decode_result.upload_array_layers,
-        .is_compressed = decode_result.upload_is_compressed,
-        .region_count = decode_result.upload_region_count,
-        .regions = decode_result.upload_regions,
-    };
-    VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
-    out_texture->handle = vkr_renderer_create_texture_with_payload(
-        system->renderer, &out_texture->description, &upload_payload,
-        &renderer_error);
-    vkr_texture_decode_result_release(&decode_result);
-    out_texture->image = NULL;
-    return renderer_error;
-  }
-
-  uint8_t *loaded_image_data = decode_result.decoded_pixels;
-
-  uint32_t loaded_channels =
-      desired_channels > 0 ? desired_channels : (uint32_t)original_channels;
-  uint64_t loaded_image_size =
-      (uint64_t)width * (uint64_t)height * (uint64_t)loaded_channels;
-  uint64_t final_image_size =
-      (uint64_t)width * (uint64_t)height * (uint64_t)actual_channels;
-
-  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&system->allocator);
-  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
-    vkr_texture_decode_result_release(&decode_result);
-    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-  }
-  out_texture->image = vkr_allocator_alloc(&system->allocator, final_image_size,
-                                           VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
-  if (!out_texture->image) {
-    vkr_texture_decode_result_release(&decode_result);
-    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
-    return VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-  }
-
-  if (loaded_channels == VKR_TEXTURE_RGB_CHANNELS &&
-      actual_channels == VKR_TEXTURE_RGBA_CHANNELS) {
-    for (uint32_t pixel_index = 0;
-         pixel_index < (uint32_t)width * (uint32_t)height; pixel_index++) {
-      uint32_t src_idx = pixel_index * VKR_TEXTURE_RGB_CHANNELS;
-      uint32_t dst_idx = pixel_index * VKR_TEXTURE_RGBA_CHANNELS;
-      out_texture->image[dst_idx + 0] = loaded_image_data[src_idx + 0];
-      out_texture->image[dst_idx + 1] = loaded_image_data[src_idx + 1];
-      out_texture->image[dst_idx + 2] = loaded_image_data[src_idx + 2];
-      out_texture->image[dst_idx + 3] = 255;
-    }
-  } else {
-    MemCopy(out_texture->image, loaded_image_data, (size_t)loaded_image_size);
-  }
-
-  vkr_texture_decode_result_release(&decode_result);
-
-  // GPU upload happens on calling thread (synchronized)
-  VkrTextureUploadRegion upload_region = {
-      .mip_level = 0,
-      .array_layer = 0,
-      .width = (uint32_t)width,
-      .height = (uint32_t)height,
-      .depth = 1,
-      .byte_offset = 0,
-      .byte_size = final_image_size,
-  };
-  VkrTextureUploadPayload upload_payload = {
-      .data = out_texture->image,
-      .data_size = final_image_size,
-      .mip_levels = 1,
-      .array_layers = 1,
-      .is_compressed = false_v,
-      .region_count = 1,
-      .regions = &upload_region,
-  };
-  VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
-  out_texture->handle = vkr_renderer_create_texture_with_payload(
-      system->renderer, &out_texture->description, &upload_payload,
-      &renderer_error);
-
-  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_TEXTURE);
-  out_texture->image = NULL;
-  return renderer_error;
-}
-
 bool8_t vkr_texture_system_load(VkrTextureSystem *system, String8 name,
                                 VkrTextureHandle *out_handle,
                                 VkrRendererError *out_error) {
@@ -3853,489 +3416,27 @@ uint32_t vkr_texture_system_load_batch(VkrTextureSystem *system,
   assert_log(out_handles != NULL, "Out handles is NULL");
   assert_log(out_errors != NULL, "Out errors is NULL");
 
-  if (count == 0) {
-    return 0;
-  }
-
-  // Initialize outputs
-  for (uint32_t i = 0; i < count; i++) {
-    out_handles[i] = VKR_TEXTURE_HANDLE_INVALID;
-    out_errors[i] = VKR_RENDERER_ERROR_NONE;
-  }
-
-  if (system->asset_publisher) {
-    uint32_t loaded = 0;
-    for (uint32_t i = 0; i < count; ++i) {
-      bool8_t duplicate = false_v;
-      for (uint32_t previous = 0; previous < i; ++previous) {
-        if (string8_equals(&paths[i], &paths[previous])) {
-          out_handles[i] = out_handles[previous];
-          out_errors[i] = out_errors[previous];
-          duplicate = true_v;
-          break;
-        }
-      }
-      if (duplicate) {
-        loaded += out_handles[i].id != 0 ? 1u : 0u;
-        continue;
-      }
-      if (vkr_texture_system_load(system, paths[i], &out_handles[i],
-                                  &out_errors[i])) {
-        loaded++;
-      }
-    }
-    return loaded;
-  }
-
-  // Allocate scratch for deduplication mapping
-  VkrAllocatorScope temp_scope = vkr_allocator_begin_scope(&system->allocator);
-  if (!vkr_allocator_scope_is_valid(&temp_scope)) {
-    for (uint32_t i = 0; i < count; i++) {
-      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    }
-    return 0;
-  }
-  uint32_t *first_occurrence =
-      vkr_allocator_alloc(&system->allocator, sizeof(uint32_t) * count,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  String8 *normalized_paths =
-      vkr_allocator_alloc(&system->allocator, sizeof(String8) * count,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrTextureRequest *requests =
-      vkr_allocator_alloc(&system->allocator, sizeof(VkrTextureRequest) * count,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!first_occurrence || !normalized_paths || !requests) {
-    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    for (uint32_t i = 0; i < count; i++) {
-      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    }
-    return 0;
-  }
-
-  // DEDUPLICATION: First check which textures are already loaded
-  // and which need to be loaded. Also track duplicates within the batch.
-  uint32_t already_loaded = 0;
-  uint32_t unique_in_batch = 0;
-  for (uint32_t i = 0; i < count; i++) {
-    first_occurrence[i] = i; // Default: each is its own first occurrence
-
-    if (!paths[i].str || paths[i].length == 0) {
-      normalized_paths[i] = (String8){0};
-      requests[i] = (VkrTextureRequest){0};
-      continue;
-    }
-
-    String8 normalized_i = vkr_texture_strip_resource_key_prefix(paths[i]);
-    normalized_paths[i] = normalized_i;
-    requests[i] = vkr_texture_parse_request(normalized_i);
-
-    // Check if this texture is already loaded in the system
-    const char *texture_key = (const char *)normalized_paths[i].str;
-    VkrTextureEntry *entry =
-        vkr_hash_table_get_VkrTextureEntry(&system->texture_map, texture_key);
-    if (entry) {
-      // Already loaded - just return the existing handle
-      VkrTexture *texture = &system->textures.data[entry->index];
-      out_handles[i] =
-          (VkrTextureHandle){.id = texture->description.id,
-                             .generation = texture->description.generation};
-      out_errors[i] = VKR_RENDERER_ERROR_NONE;
-      already_loaded++;
-      continue;
-    }
-
-    // Check for duplicate within the batch (earlier occurrence)
-    bool8_t is_duplicate = false_v;
-    for (uint32_t j = 0; j < i; j++) {
-      if (!normalized_paths[j].str || normalized_paths[j].length == 0) {
-        continue;
-      }
-      if (string8_equalsi(&normalized_i, &normalized_paths[j])) {
-        first_occurrence[i] = first_occurrence[j];
-        is_duplicate = true_v;
+  uint32_t loaded = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    bool8_t duplicate = false_v;
+    for (uint32_t previous = 0; previous < i; ++previous) {
+      if (string8_equals(&paths[i], &paths[previous])) {
+        out_handles[i] = out_handles[previous];
+        out_errors[i] = out_errors[previous];
+        duplicate = true_v;
         break;
       }
     }
-    if (!is_duplicate) {
-      unique_in_batch++;
-    }
-  }
-
-  // Count how many textures still need loading (only unique ones)
-  uint32_t need_loading = 0;
-  for (uint32_t i = 0; i < count; i++) {
-    if (paths[i].str && paths[i].length > 0 && out_handles[i].id == 0 &&
-        first_occurrence[i] == i) {
-      need_loading++;
-    }
-  }
-
-  log_debug(
-      "Texture batch: %u paths, %u already loaded, %u unique need loading",
-      count, already_loaded, need_loading);
-
-  if (need_loading == 0) {
-    // Copy handles from first occurrence to duplicates
-    for (uint32_t i = 0; i < count; i++) {
-      if (first_occurrence[i] != i &&
-          out_handles[first_occurrence[i]].id != 0) {
-        out_handles[i] = out_handles[first_occurrence[i]];
-      }
-    }
-    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return already_loaded;
-  }
-
-  // Allocate arrays for decode payloads/results (temp scope).
-  VkrAllocatorScope decode_scope =
-      vkr_allocator_begin_scope(&system->allocator);
-  if (!vkr_allocator_scope_is_valid(&decode_scope)) {
-    for (uint32_t i = 0; i < count; i++) {
-      out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-    }
-    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return 0;
-  }
-  VkrTextureDecodeResult *results = vkr_allocator_alloc(
-      &system->allocator, sizeof(VkrTextureDecodeResult) * count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrTextureDecodeJobPayload *payloads = vkr_allocator_alloc(
-      &system->allocator, sizeof(VkrTextureDecodeJobPayload) * count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-
-  if (!results || !payloads) {
-    vkr_allocator_end_scope(&decode_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    // Fall back to sequential
-    uint32_t loaded = already_loaded;
-    for (uint32_t i = 0; i < count; i++) {
-      if (!paths[i].str || paths[i].length == 0) {
-        continue;
-      }
-
-      if (out_handles[i].id != 0) {
-        continue; // Already loaded above
-      }
-
-      if (first_occurrence[i] != i) {
-        continue;
-      }
-
-      if (vkr_texture_system_load(system, normalized_paths[i], &out_handles[i],
-                                  &out_errors[i])) {
-        loaded++;
-      }
-    }
-
-    for (uint32_t i = 0; i < count; i++) {
-      if (first_occurrence[i] != i &&
-          out_handles[first_occurrence[i]].id != 0) {
-        out_handles[i] = out_handles[first_occurrence[i]];
-      }
-    }
-
-    return loaded;
-  }
-
-  // Decode unique textures that are not already loaded.
-  for (uint32_t i = 0; i < count; i++) {
-    results[i] = (VkrTextureDecodeResult){0};
-    vkr_texture_decode_result_reset(&results[i]);
-
-    if (!paths[i].str || paths[i].length == 0) {
-      continue;
-    }
-
-    // Skip textures that were already loaded (deduplication above)
-    if (out_handles[i].id != 0) {
-      continue;
-    }
-
-    // Skip duplicates within batch - only decode first occurrence
-    if (first_occurrence[i] != i) {
-      continue;
-    }
-
-    payloads[i] = (VkrTextureDecodeJobPayload){
-        .file_path = requests[i].base_path,
-        .desired_channels = VKR_TEXTURE_RGBA_CHANNELS,
-        .flip_vertical = true_v,
-        .colorspace = requests[i].colorspace,
-        .texture_class = requests[i].texture_class,
-        .has_explicit_colorspace = requests[i].has_explicit_colorspace,
-        .has_explicit_class = requests[i].has_explicit_class,
-        .system = system,
-        .result = &results[i],
-    };
-
-    VkrJobContext fake_ctx = {.system = NULL,
-                              .worker_index = 0,
-                              .thread_id = 0,
-                              .allocator = &system->allocator,
-                              .scope = decode_scope};
-    vkr_texture_decode_job_run(&fake_ctx, &payloads[i]);
-  }
-
-  // Build one backend batch of texture uploads from decode results.
-  VkrTextureDescription *batch_descriptions = vkr_allocator_alloc(
-      &system->allocator, sizeof(VkrTextureDescription) * count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrTextureUploadPayload *batch_payloads = vkr_allocator_alloc(
-      &system->allocator, sizeof(VkrTextureUploadPayload) * count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrTextureUploadRegion *batch_single_regions = vkr_allocator_alloc(
-      &system->allocator, sizeof(VkrTextureUploadRegion) * count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrTextureBatchCreateRequest *batch_requests = vkr_allocator_alloc(
-      &system->allocator, sizeof(VkrTextureBatchCreateRequest) * count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  uint32_t *batch_source_indices =
-      vkr_allocator_alloc(&system->allocator, sizeof(uint32_t) * count,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrTextureOpaqueHandle *batch_gpu_handles = vkr_allocator_alloc(
-      &system->allocator, sizeof(VkrTextureOpaqueHandle) * count,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  VkrRendererError *batch_gpu_errors =
-      vkr_allocator_alloc(&system->allocator, sizeof(VkrRendererError) * count,
-                          VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-
-  if (!batch_descriptions || !batch_payloads || !batch_single_regions ||
-      !batch_requests || !batch_source_indices || !batch_gpu_handles ||
-      !batch_gpu_errors) {
-    for (uint32_t i = 0; i < count; ++i) {
-      if (results[i].decoded_pixels || results[i].upload_data) {
-        vkr_texture_decode_result_release(&results[i]);
-      }
-      if (out_errors[i] == VKR_RENDERER_ERROR_NONE) {
-        out_errors[i] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      }
-    }
-    vkr_allocator_end_scope(&decode_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    return already_loaded;
-  }
-
-  uint32_t batch_count = 0;
-  uint32_t loaded = 0;
-  for (uint32_t i = 0; i < count; ++i) {
-    if (!paths[i].str || paths[i].length == 0) {
-      continue;
-    }
-
-    const bool8_t has_upload_payload = results[i].upload_data &&
-                                       results[i].upload_regions &&
-                                       results[i].upload_region_count > 0;
-    if (!results[i].success ||
-        (!results[i].decoded_pixels && !has_upload_payload)) {
-      out_errors[i] = results[i].error;
-      vkr_texture_decode_result_release(&results[i]);
-      continue;
-    }
-
-    const char *check_key = (const char *)normalized_paths[i].str;
-    VkrTextureEntry *existing =
-        vkr_hash_table_get_VkrTextureEntry(&system->texture_map, check_key);
-    if (existing) {
-      VkrTexture *tex = &system->textures.data[existing->index];
-      out_handles[i] = (VkrTextureHandle){
-          .id = tex->description.id, .generation = tex->description.generation};
+    if (!duplicate) {
+      out_handles[i] = VKR_TEXTURE_HANDLE_INVALID;
       out_errors[i] = VKR_RENDERER_ERROR_NONE;
-      loaded++;
-      vkr_texture_decode_result_release(&results[i]);
-      continue;
+      (void)vkr_texture_system_load(system, paths[i], &out_handles[i],
+                                    &out_errors[i]);
     }
-
-    uint32_t actual_channels = VKR_TEXTURE_RGBA_CHANNELS;
-    VkrTextureFormat format = VKR_TEXTURE_FORMAT_R8G8B8A8_UNORM;
-    if (has_upload_payload) {
-      format = results[i].upload_format;
-      actual_channels = vkr_texture_channel_count_from_format(format);
-    } else {
-      format = vkr_texture_format_from_channels(actual_channels,
-                                                requests[i].colorspace);
-    }
-    bool8_t has_transparency = results[i].has_transparency;
-
-    VkrTexturePropertyFlags props = vkr_texture_property_flags_create();
-    if (has_transparency) {
-      bitset8_set(&props, VKR_TEXTURE_PROPERTY_HAS_TRANSPARENCY_BIT);
-      if (results[i].alpha_mask) {
-        bitset8_set(&props, VKR_TEXTURE_PROPERTY_ALPHA_MASK_BIT);
-      }
-    }
-
-    VkrTextureDescription *desc = &batch_descriptions[batch_count];
-    *desc = (VkrTextureDescription){
-        .width = (uint32_t)results[i].width,
-        .height = (uint32_t)results[i].height,
-        .channels = actual_channels,
-        .format = format,
-        .allocation_owner = VKR_GPU_ALLOCATION_OWNER_TEXTURE,
-        .type = VKR_TEXTURE_TYPE_2D,
-        .properties = props,
-        .u_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
-        .v_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
-        .w_repeat_mode = VKR_TEXTURE_REPEAT_MODE_REPEAT,
-        .min_filter = VKR_FILTER_LINEAR,
-        .mag_filter = VKR_FILTER_LINEAR,
-        .mip_filter = (has_upload_payload && results[i].upload_mip_levels <= 1)
-                          ? VKR_MIP_FILTER_NONE
-                          : VKR_MIP_FILTER_LINEAR,
-        .anisotropy_enable = false_v,
-        .generation = VKR_INVALID_ID,
-    };
-
-    VkrTextureUploadPayload *upload_payload = &batch_payloads[batch_count];
-    if (has_upload_payload) {
-      *upload_payload = (VkrTextureUploadPayload){
-          .data = results[i].upload_data,
-          .data_size = results[i].upload_data_size,
-          .mip_levels = results[i].upload_mip_levels,
-          .array_layers = results[i].upload_array_layers,
-          .is_compressed = results[i].upload_is_compressed,
-          .region_count = results[i].upload_region_count,
-          .regions = results[i].upload_regions,
-      };
-    } else {
-      uint64_t payload_size = (uint64_t)results[i].width *
-                              (uint64_t)results[i].height *
-                              (uint64_t)actual_channels;
-      batch_single_regions[batch_count] = (VkrTextureUploadRegion){
-          .mip_level = 0,
-          .array_layer = 0,
-          .width = (uint32_t)results[i].width,
-          .height = (uint32_t)results[i].height,
-          .depth = 1,
-          .byte_offset = 0,
-          .byte_size = payload_size,
-      };
-      *upload_payload = (VkrTextureUploadPayload){
-          .data = results[i].decoded_pixels,
-          .data_size = payload_size,
-          .mip_levels = 1,
-          .array_layers = 1,
-          .is_compressed = false_v,
-          .region_count = 1,
-          .regions = &batch_single_regions[batch_count],
-      };
-    }
-
-    batch_requests[batch_count] = (VkrTextureBatchCreateRequest){
-        .description = desc,
-        .payload = upload_payload,
-    };
-    batch_source_indices[batch_count] = i;
-    batch_count++;
+    loaded += out_handles[i].id != 0 ? 1u : 0u;
   }
-
-  if (batch_count > 0) {
-    vkr_renderer_create_texture_with_payload_batch(
-        system->renderer, batch_requests, batch_count, batch_gpu_handles,
-        batch_gpu_errors);
-  }
-
-  for (uint32_t batch_index = 0; batch_index < batch_count; ++batch_index) {
-    const uint32_t source_index = batch_source_indices[batch_index];
-    const char *key = (const char *)normalized_paths[source_index].str;
-    VkrTextureOpaqueHandle gpu_handle = batch_gpu_handles[batch_index];
-    VkrRendererError create_error = batch_gpu_errors[batch_index];
-
-    if (create_error != VKR_RENDERER_ERROR_NONE || !gpu_handle) {
-      out_errors[source_index] =
-          (create_error != VKR_RENDERER_ERROR_NONE &&
-           create_error != VKR_RENDERER_ERROR_UNKNOWN)
-              ? create_error
-              : VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-      vkr_texture_decode_result_release(&results[source_index]);
-      continue;
-    }
-
-    VkrTextureEntry *existing =
-        vkr_hash_table_get_VkrTextureEntry(&system->texture_map, key);
-    if (existing) {
-      VkrTexture *tex = &system->textures.data[existing->index];
-      out_handles[source_index] = (VkrTextureHandle){
-          .id = tex->description.id, .generation = tex->description.generation};
-      out_errors[source_index] = VKR_RENDERER_ERROR_NONE;
-      loaded++;
-      vkr_renderer_destroy_texture(system->renderer, gpu_handle);
-      vkr_texture_decode_result_release(&results[source_index]);
-      continue;
-    }
-
-    uint32_t free_slot_index = vkr_texture_system_find_free_slot(system);
-    if (free_slot_index == VKR_INVALID_ID) {
-      out_errors[source_index] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      vkr_renderer_destroy_texture(system->renderer, gpu_handle);
-      vkr_texture_decode_result_release(&results[source_index]);
-      continue;
-    }
-
-    char *stable_key = (char *)vkr_allocator_alloc(
-        &system->string_allocator, normalized_paths[source_index].length + 1,
-        VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    if (!stable_key) {
-      out_errors[source_index] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      vkr_renderer_destroy_texture(system->renderer, gpu_handle);
-      vkr_texture_decode_result_release(&results[source_index]);
-      continue;
-    }
-    MemCopy(stable_key, normalized_paths[source_index].str,
-            (size_t)normalized_paths[source_index].length);
-    stable_key[normalized_paths[source_index].length] = '\0';
-
-    VkrTexture *texture = &system->textures.data[free_slot_index];
-    MemZero(texture, sizeof(VkrTexture));
-    texture->description = batch_descriptions[batch_index];
-    texture->description.id = free_slot_index + 1;
-    texture->description.generation = system->generation_counter++;
-    texture->handle = gpu_handle;
-
-    VkrTextureEntry new_entry = {
-        .index = free_slot_index,
-        .ref_count = 0,
-        .auto_release = true_v,
-        .name = stable_key,
-    };
-    if (!vkr_hash_table_insert_VkrTextureEntry(&system->texture_map, stable_key,
-                                               new_entry)) {
-      out_errors[source_index] = VKR_RENDERER_ERROR_OUT_OF_MEMORY;
-      vkr_allocator_free(&system->string_allocator, stable_key,
-                         normalized_paths[source_index].length + 1,
-                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
-      vkr_renderer_destroy_texture(system->renderer, gpu_handle);
-      MemZero(texture, sizeof(*texture));
-      vkr_texture_decode_result_release(&results[source_index]);
-      continue;
-    }
-    system->texture_keys_by_index[free_slot_index] = stable_key;
-
-    out_handles[source_index] = (VkrTextureHandle){
-        .id = texture->description.id,
-        .generation = texture->description.generation,
-    };
-    out_errors[source_index] = VKR_RENDERER_ERROR_NONE;
-    loaded++;
-    vkr_texture_decode_result_release(&results[source_index]);
-  }
-
-  // Copy handles from first occurrence to all duplicates
-  for (uint32_t i = 0; i < count; i++) {
-    if (first_occurrence[i] != i) {
-      uint32_t first = first_occurrence[i];
-      if (out_handles[first].id != 0) {
-        out_handles[i] = out_handles[first];
-        out_errors[i] = VKR_RENDERER_ERROR_NONE;
-      }
-    }
-  }
-
-  vkr_allocator_end_scope(&decode_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  vkr_allocator_end_scope(&temp_scope, VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  return loaded + already_loaded;
+  return loaded;
 }
-
-// Helper to load a single cube face from memory
 vkr_internal uint8_t *vkr_texture_load_cube_face(VkrAllocator *allocator,
                                                  const char *path,
                                                  int32_t *out_width,
@@ -4349,29 +3450,21 @@ vkr_internal uint8_t *vkr_texture_load_cube_face(VkrAllocator *allocator,
   FileMode mode = bitset8_create();
   bitset8_set(&mode, FILE_MODE_READ);
   bitset8_set(&mode, FILE_MODE_BINARY);
-
   FileHandle fh = {0};
-  FileError ferr = file_open(&fp, mode, &fh);
-  if (ferr != FILE_ERROR_NONE) {
+  if (file_open(&fp, mode, &fh) != FILE_ERROR_NONE) {
     return NULL;
   }
-
   uint8_t *file_data = NULL;
   uint64_t file_size = 0;
   FileError read_err = file_read_all(&fh, allocator, &file_data, &file_size);
   file_close(&fh);
-
   if (read_err != FILE_ERROR_NONE || !file_data || file_size == 0) {
     return NULL;
   }
-
-  // Cube maps don't flip vertically
   stbi_set_flip_vertically_on_load_thread(0);
-
   int32_t channels = 0;
-  uint8_t *pixels = stbi_load_from_memory(file_data, (int)file_size, out_width,
-                                          out_height, &channels, 4);
-  return pixels;
+  return stbi_load_from_memory(file_data, (int)file_size, out_width, out_height,
+                               &channels, 4);
 }
 
 bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
@@ -4552,7 +3645,7 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
   texture->description.id = free_slot_index + 1;
   texture->description.generation = system->generation_counter++;
   VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
-  if (system->asset_publisher) {
+  {
     VkrTextureUploadRegion upload_regions[6];
     for (uint32_t face = 0; face < ArrayCount(upload_regions); ++face) {
       upload_regions[face] = (VkrTextureUploadRegion){
@@ -4581,9 +3674,6 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
     };
     (void)vkr_texture_system_publish_prepared(
         system, logical_handle, &prepared, &texture->handle, &renderer_error);
-  } else {
-    texture->handle = vkr_renderer_create_texture(
-        system->renderer, &texture->description, cube_data, &renderer_error);
   }
   if (renderer_error != VKR_RENDERER_ERROR_NONE || !texture->handle) {
     log_error("Failed to create cube map texture in backend");

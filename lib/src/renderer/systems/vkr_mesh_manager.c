@@ -155,11 +155,6 @@ vkr_internal bool8_t vkr_mesh_manager_build_asset_from_mesh_result(
     VkrRendererError *out_error);
 vkr_internal bool8_t vkr_mesh_manager_sync_pending_asset(
     VkrMeshManager *manager, uint32_t slot, VkrMeshAsset *asset);
-vkr_internal bool8_t vkr_mesh_manager_init_instance_state_array(
-    VkrMeshManager *manager, VkrMeshInstance *instance, uint32_t submesh_count);
-vkr_internal void
-vkr_mesh_manager_release_instance_state_array(VkrMeshManager *manager,
-                                              VkrMeshInstance *instance);
 vkr_internal void
 vkr_mesh_manager_refresh_instances_for_asset(VkrMeshManager *manager,
                                              uint32_t slot);
@@ -341,69 +336,6 @@ vkr_mesh_manager_update_instance_bounds(VkrMeshInstance *instance,
   instance->bounds_world_radius = asset->bounds_local_radius * max_scale;
 }
 
-vkr_internal bool8_t vkr_mesh_manager_init_instance_state_array(
-    VkrMeshManager *manager, VkrMeshInstance *instance,
-    uint32_t submesh_count) {
-  assert_log(manager != NULL, "Manager is NULL");
-  assert_log(instance != NULL, "Instance is NULL");
-
-  if (submesh_count == 0) {
-    return false_v;
-  }
-
-  instance->submesh_state = array_create_VkrMeshSubmeshInstanceState(
-      &manager->instance_allocator, submesh_count);
-  if (!instance->submesh_state.data) {
-    return false_v;
-  }
-
-  for (uint32_t i = 0; i < submesh_count; ++i) {
-    VkrMeshSubmeshInstanceState state = {0};
-    state.instance_state.id = VKR_INVALID_ID;
-    state.pipeline = VKR_PIPELINE_HANDLE_INVALID;
-    state.pipeline_dirty = true_v;
-    array_set_VkrMeshSubmeshInstanceState(&instance->submesh_state, i, state);
-  }
-
-  return true_v;
-}
-
-vkr_internal void
-vkr_mesh_manager_release_instance_state_array(VkrMeshManager *manager,
-                                              VkrMeshInstance *instance) {
-  assert_log(manager != NULL, "Manager is NULL");
-  assert_log(instance != NULL, "Instance is NULL");
-
-  if (!instance->submesh_state.data) {
-    return;
-  }
-
-  for (uint32_t i = 0; i < instance->submesh_state.length; ++i) {
-    VkrMeshSubmeshInstanceState *state =
-        array_get_VkrMeshSubmeshInstanceState(&instance->submesh_state, i);
-    if (!state || state->instance_state.id == VKR_INVALID_ID ||
-        state->pipeline.id == 0) {
-      continue;
-    }
-
-    VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_pipeline_registry_release_instance_state(
-            manager->pipeline_registry, state->pipeline, state->instance_state,
-            &rel_err)) {
-      log_warn("MeshManager: failed to release instance state (pipeline=%u, "
-               "generation=%u, state=%u, err=%d)",
-               state->pipeline.id, state->pipeline.generation,
-               state->instance_state.id, rel_err);
-    }
-    state->instance_state =
-        (VkrRendererInstanceStateHandle){.id = VKR_INVALID_ID};
-    state->pipeline = VKR_PIPELINE_HANDLE_INVALID;
-    state->pipeline_dirty = true_v;
-  }
-
-  array_destroy_VkrMeshSubmeshInstanceState(&instance->submesh_state);
-}
-
 vkr_internal bool8_t vkr_mesh_manager_resolve_geometry(
     VkrMeshManager *manager, const VkrSubMeshDesc *desc,
     VkrGeometryHandle *out_handle, bool8_t *out_owned,
@@ -476,14 +408,6 @@ vkr_internal void vkr_mesh_manager_release_submesh(VkrMeshManager *manager,
                                                    VkrSubMesh *submesh) {
   assert_log(manager != NULL, "Manager is NULL");
   assert_log(submesh != NULL, "Submesh is NULL");
-
-  if (submesh->pipeline.id != 0 &&
-      submesh->instance_state.id != VKR_INVALID_ID) {
-    VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
-    vkr_pipeline_registry_release_instance_state(
-        manager->pipeline_registry, submesh->pipeline, submesh->instance_state,
-        &rel_err);
-  }
 
   if (submesh->geometry.id != 0 && submesh->owns_geometry) {
     vkr_geometry_system_release(manager->geometry_system, submesh->geometry);
@@ -827,18 +751,13 @@ vkr_mesh_manager_refresh_instances_for_asset(VkrMeshManager *manager,
     }
 
     if (asset->loading_state == VKR_MESH_LOADING_STATE_FAILED) {
-      vkr_mesh_manager_release_instance_state_array(manager, instance);
       instance->loading_state = VKR_MESH_LOADING_STATE_FAILED;
       instance->bounds_valid = false_v;
     } else if (asset->loading_state != VKR_MESH_LOADING_STATE_LOADED) {
       instance->loading_state = VKR_MESH_LOADING_STATE_PENDING;
     } else {
       uint32_t submesh_count = (uint32_t)asset->submeshes.length;
-      bool8_t submesh_state_ready =
-          submesh_count > 0 && (instance->submesh_state.data ||
-                                vkr_mesh_manager_init_instance_state_array(
-                                    manager, instance, submesh_count));
-      if (!submesh_state_ready) {
+      if (submesh_count == 0) {
         instance->loading_state = VKR_MESH_LOADING_STATE_FAILED;
         instance->bounds_valid = false_v;
       } else {
@@ -1086,12 +1005,10 @@ fail_cleanup:
 bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
                               VkrGeometrySystem *geometry_system,
                               VkrMaterialSystem *material_system,
-                              VkrPipelineRegistry *pipeline_registry,
                               const VkrMeshManagerConfig *config) {
   assert_log(manager != NULL, "Manager is NULL");
   assert_log(geometry_system != NULL, "Geometry system is NULL");
   assert_log(material_system != NULL, "Material system is NULL");
-  assert_log(pipeline_registry != NULL, "Pipeline registry is NULL");
   assert_log(config != NULL, "Config is NULL");
   assert_log(config->max_mesh_count > 0, "Max mesh count is 0");
 
@@ -1113,7 +1030,6 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
 
   manager->geometry_system = geometry_system;
   manager->material_system = material_system;
-  manager->pipeline_registry = pipeline_registry;
 
   manager->config =
       config ? *config : (VkrMeshManagerConfig){.max_mesh_count = 1024};
@@ -1148,15 +1064,6 @@ bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
   }
   manager->asset_allocator.ctx = &manager->asset_dmemory;
   vkr_dmemory_allocator_create(&manager->asset_allocator);
-
-  if (!vkr_dmemory_create(MB(32), MB(128), &manager->instance_dmemory)) {
-    log_error("Failed to create mesh manager instance dmemory");
-    vkr_dmemory_allocator_destroy(&manager->asset_allocator);
-    vkr_dmemory_destroy(&manager->asset_dmemory);
-    return false_v;
-  }
-  manager->instance_allocator.ctx = &manager->instance_dmemory;
-  vkr_dmemory_allocator_create(&manager->instance_allocator);
 
   uint32_t max_assets = manager->config.max_mesh_count;
   manager->mesh_assets =
@@ -1224,17 +1131,11 @@ void vkr_mesh_manager_shutdown(VkrMeshManager *manager) {
   manager->mesh_count = 0;
   manager->next_free_index = 0;
 
-  for (uint32_t i = 0; i < manager->mesh_instances.length; ++i) {
-    VkrMeshInstance *inst =
-        array_get_VkrMeshInstance(&manager->mesh_instances, i);
-    vkr_mesh_manager_release_instance_state_array(manager, inst);
-  }
   array_destroy_VkrMeshInstance(&manager->mesh_instances);
   array_destroy_uint32_t(&manager->instance_live_indices);
   array_destroy_uint32_t(&manager->instance_free_indices);
   array_destroy_uint32_t(&manager->instance_asset_next);
   array_destroy_uint32_t(&manager->instance_asset_prev);
-  vkr_dmemory_allocator_destroy(&manager->instance_allocator);
 
   for (uint32_t i = 0; i < manager->mesh_assets.length; ++i) {
     vkr_mesh_manager_destroy_asset_slot(manager, i, false_v);
@@ -1362,9 +1263,6 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
     VkrSubMesh submesh = {
         .geometry = geometry,
         .material = material,
-        .pipeline = VKR_PIPELINE_HANDLE_INVALID,
-        .instance_state =
-            (VkrRendererInstanceStateHandle){.id = VKR_INVALID_ID},
         .pipeline_domain =
             vkr_mesh_manager_resolve_domain(sub_desc->pipeline_domain, 0),
         .shader_override =
@@ -1379,7 +1277,6 @@ bool8_t vkr_mesh_manager_add(VkrMeshManager *manager, const VkrMeshDesc *desc,
         .center = center,
         .min_extents = min_extents,
         .max_extents = max_extents,
-        .pipeline_dirty = true_v,
         .owns_geometry = owns_geometry,
         .owns_material = owns_material,
         .last_render_frame = 0,
@@ -1683,31 +1580,6 @@ vkr_internal bool8_t vkr_mesh_manager_process_resource_handle(
         !vkr_mesh_manager_publish_loaded_mesh(manager, merged_geometry,
                                               mesh_result, out_error)) {
       subsets_success = false_v;
-    }
-
-    if (subsets_success && build_opaque_indices && merged_geometry.id != 0 &&
-        !manager->geometry_system->asset_publisher) {
-      VkrGeometry *geometry = vkr_geometry_system_get_by_handle(
-          manager->geometry_system, merged_geometry);
-      if (geometry) {
-        geometry->opaque_index_count = opaque_index_count;
-        if (!geometry->opaque_index_buffer.handle && opaque_indices) {
-          String8 debug_name = string8_create((uint8_t *)geometry->name,
-                                              string_length(geometry->name));
-          VkrRendererError opaque_err = VKR_RENDERER_ERROR_NONE;
-          geometry->opaque_index_buffer = vkr_index_buffer_create(
-              manager->geometry_system->renderer, opaque_indices,
-              geometry->index_buffer.type, opaque_index_count, debug_name,
-              &opaque_err);
-          if (opaque_err != VKR_RENDERER_ERROR_NONE) {
-            log_warn("MeshManager: failed to create opaque index buffer '%s'",
-                     geometry->name);
-            geometry->opaque_index_buffer = (VkrIndexBuffer){0};
-            geometry->opaque_index_count = 0;
-            build_opaque_indices = false_v;
-          }
-        }
-      }
     }
   }
 
@@ -2036,70 +1908,6 @@ bool8_t vkr_mesh_manager_set_submesh_material(VkrMeshManager *manager,
 
   submesh->material = material;
   submesh->owns_material = true_v;
-  submesh->pipeline_dirty = true_v;
-  submesh->last_render_frame = 0;
-
-  *out_error = VKR_RENDERER_ERROR_NONE;
-  return true_v;
-}
-
-bool8_t vkr_mesh_manager_refresh_pipeline(VkrMeshManager *manager,
-                                          uint32_t mesh_index,
-                                          uint32_t submesh_index,
-                                          VkrPipelineHandle desired_pipeline,
-                                          VkrRendererError *out_error) {
-  assert_log(manager != NULL, "Manager is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
-
-  if (mesh_index >= manager->meshes.length) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
-    return false_v;
-  }
-
-  VkrMesh *mesh = array_get_VkrMesh(&manager->meshes, mesh_index);
-  if (!mesh || !mesh->submeshes.data || mesh->submeshes.length == 0) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
-    return false_v;
-  }
-
-  if (submesh_index >= mesh->submeshes.length) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
-    return false_v;
-  }
-
-  VkrSubMesh *submesh = array_get_VkrSubMesh(&mesh->submeshes, submesh_index);
-  if (!submesh) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
-    return false_v;
-  }
-
-  bool8_t requires_update =
-      submesh->pipeline_dirty || submesh->pipeline.id != desired_pipeline.id ||
-      submesh->pipeline.generation != desired_pipeline.generation;
-
-  if (!requires_update) {
-    *out_error = VKR_RENDERER_ERROR_NONE;
-    return true_v;
-  }
-
-  if (submesh->pipeline.id != 0 &&
-      submesh->instance_state.id != VKR_INVALID_ID) {
-    VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
-    vkr_pipeline_registry_release_instance_state(
-        manager->pipeline_registry, submesh->pipeline, submesh->instance_state,
-        &rel_err);
-  }
-
-  VkrRendererError acq_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_pipeline_registry_acquire_instance_state(
-          manager->pipeline_registry, desired_pipeline,
-          &submesh->instance_state, &acq_err)) {
-    *out_error = acq_err;
-    return false_v;
-  }
-
-  submesh->pipeline = desired_pipeline;
-  submesh->pipeline_dirty = false_v;
   submesh->last_render_frame = 0;
 
   *out_error = VKR_RENDERER_ERROR_NONE;
@@ -2597,11 +2405,8 @@ VkrMeshInstanceHandle vkr_mesh_manager_create_instance(
 
   if (asset->loading_state == VKR_MESH_LOADING_STATE_LOADED) {
     uint32_t submesh_count = (uint32_t)asset->submeshes.length;
-    if (submesh_count == 0 || !vkr_mesh_manager_init_instance_state_array(
-                                  manager, inst, submesh_count)) {
-      *out_error = submesh_count == 0
-                       ? VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED
-                       : VKR_RENDERER_ERROR_OUT_OF_MEMORY;
+    if (submesh_count == 0) {
+      *out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
       MemZero(inst, sizeof(*inst));
       array_set_uint32_t(&manager->instance_free_indices,
                          manager->instance_free_count, slot);
@@ -3584,8 +3389,6 @@ bool8_t vkr_mesh_manager_destroy_instance(VkrMeshManager *manager,
 
   uint32_t live_index = inst->live_index;
 
-  vkr_mesh_manager_release_instance_state_array(manager, inst);
-
   vkr_mesh_manager_asset_instance_index_remove_instance(manager, slot,
                                                         inst->asset);
 
@@ -3713,66 +3516,6 @@ bool8_t vkr_mesh_manager_instance_set_render_id(VkrMeshManager *manager,
     return false_v;
   }
   inst->render_id = render_id;
-  return true_v;
-}
-
-bool8_t vkr_mesh_manager_instance_refresh_pipeline(
-    VkrMeshManager *manager, VkrMeshInstanceHandle instance,
-    uint32_t submesh_index, VkrPipelineHandle desired_pipeline,
-    VkrRendererError *out_error) {
-  assert_log(manager != NULL, "Manager is NULL");
-  assert_log(out_error != NULL, "Out error is NULL");
-
-  *out_error = VKR_RENDERER_ERROR_NONE;
-
-  VkrMeshInstance *inst = vkr_mesh_manager_get_instance(manager, instance);
-  if (!inst) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_HANDLE;
-    return false_v;
-  }
-
-  if (submesh_index >= inst->submesh_state.length) {
-    *out_error = VKR_RENDERER_ERROR_INVALID_PARAMETER;
-    return false_v;
-  }
-
-  VkrMeshSubmeshInstanceState *state = array_get_VkrMeshSubmeshInstanceState(
-      &inst->submesh_state, submesh_index);
-
-  bool8_t requires_update =
-      state->pipeline_dirty || state->pipeline.id != desired_pipeline.id ||
-      state->pipeline.generation != desired_pipeline.generation;
-
-  if (!requires_update) {
-    return true_v;
-  }
-
-  if (state->instance_state.id != VKR_INVALID_ID &&
-      (state->pipeline.id != desired_pipeline.id ||
-       state->pipeline.generation != desired_pipeline.generation)) {
-    VkrRendererError rel_err = VKR_RENDERER_ERROR_NONE;
-    vkr_pipeline_registry_release_instance_state(
-        manager->pipeline_registry, state->pipeline, state->instance_state,
-        &rel_err);
-    state->instance_state =
-        (VkrRendererInstanceStateHandle){.id = VKR_INVALID_ID};
-  }
-
-  if (state->instance_state.id == VKR_INVALID_ID) {
-    VkrRendererError acq_err = VKR_RENDERER_ERROR_NONE;
-    VkrRendererInstanceStateHandle new_state = {.id = VKR_INVALID_ID};
-    if (!vkr_pipeline_registry_acquire_instance_state(
-            manager->pipeline_registry, desired_pipeline, &new_state,
-            &acq_err)) {
-      *out_error = acq_err;
-      return false_v;
-    }
-    state->instance_state = new_state;
-  }
-
-  state->pipeline = desired_pipeline;
-  state->pipeline_dirty = false_v;
-
   return true_v;
 }
 

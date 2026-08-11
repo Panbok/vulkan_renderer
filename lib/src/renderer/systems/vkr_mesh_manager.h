@@ -17,7 +17,6 @@
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
-#include "renderer/systems/vkr_pipeline_registry.h"
 #include "renderer/vkr_renderer.h"
 
 // ============================================================================
@@ -120,7 +119,6 @@ VkrHashTable(VkrMeshAssetEntry);
  * @param scratch_arena The scratch arena to use for the mesh manager.
  * @param geometry_system The geometry system to use for the mesh manager.
  * @param material_system The material system to use for the mesh manager.
- * @param pipeline_registry The pipeline registry to use for the mesh manager.
  * @param config The configuration for the mesh manager.
  * @param meshes The meshes managed by the mesh manager.
  * @param free_indices The indices of the free meshes.
@@ -132,7 +130,6 @@ typedef struct VkrMeshManager {
   VkrAllocator scratch_allocator;
   VkrGeometrySystem *geometry_system;
   VkrMaterialSystem *material_system;
-  VkrPipelineRegistry *pipeline_registry;
   VkrMeshLoaderContext *loader_context; // For batch loading
   VkrMeshManagerConfig config;
 
@@ -152,10 +149,6 @@ typedef struct VkrMeshManager {
   uint32_t next_asset_index;
   uint32_t asset_generation_counter;
   VkrHashTable_VkrMeshAssetEntry asset_by_key;
-
-  // Freeable allocator for per-instance state arrays
-  VkrDMemory instance_dmemory;
-  VkrAllocator instance_allocator;
 
   // Instance registry: per-entity mesh state
   Array_VkrMeshInstance mesh_instances;
@@ -181,7 +174,6 @@ typedef struct VkrMeshManager {
  * @param manager The mesh manager to initialize.
  * @param geometry_system The geometry system to use for the mesh manager.
  * @param material_system The material system to use for the mesh manager.
- * @param pipeline_registry The pipeline registry to use for the mesh manager.
  * @param config The configuration for the mesh manager.
  * @return true if the mesh manager was initialized successfully, false
  * otherwise.
@@ -189,7 +181,6 @@ typedef struct VkrMeshManager {
 bool8_t vkr_mesh_manager_init(VkrMeshManager *manager,
                               VkrGeometrySystem *geometry_system,
                               VkrMaterialSystem *material_system,
-                              VkrPipelineRegistry *pipeline_registry,
                               const VkrMeshManagerConfig *config);
 
 /**
@@ -304,21 +295,6 @@ bool8_t vkr_mesh_manager_set_submesh_material(VkrMeshManager *manager,
                                               uint32_t submesh_index,
                                               VkrMaterialHandle material,
                                               VkrRendererError *out_error);
-
-/**
- * @brief Ensures mesh has valid pipeline/instance state for draw.
- * @param manager The mesh manager to refresh the pipeline for.
- * @param mesh_index The index of the mesh to refresh the pipeline for.
- * @param submesh_index The index of the submesh to refresh within the mesh.
- * @param desired_pipeline The desired pipeline to refresh the mesh to.
- * @param out_error The error code for the operation.
- * @return true if the pipeline was refreshed successfully, false otherwise.
- */
-bool8_t vkr_mesh_manager_refresh_pipeline(VkrMeshManager *manager,
-                                          uint32_t mesh_index,
-                                          uint32_t submesh_index,
-                                          VkrPipelineHandle desired_pipeline,
-                                          VkrRendererError *out_error);
 
 /**
  * @brief Marks mesh transform dirty and recomputes cached model matrix.
@@ -566,14 +542,6 @@ bool8_t vkr_mesh_manager_instance_set_visible(VkrMeshManager *manager,
 bool8_t vkr_mesh_manager_instance_set_render_id(VkrMeshManager *manager,
                                                 VkrMeshInstanceHandle instance,
                                                 uint32_t render_id);
-
-/**
- * @brief Refresh pipeline state for an instance's submesh.
- */
-bool8_t vkr_mesh_manager_instance_refresh_pipeline(
-    VkrMeshManager *manager, VkrMeshInstanceHandle instance,
-    uint32_t submesh_index, VkrPipelineHandle desired_pipeline,
-    VkrRendererError *out_error);
 
 /**
  * @brief Get count of live mesh instances.

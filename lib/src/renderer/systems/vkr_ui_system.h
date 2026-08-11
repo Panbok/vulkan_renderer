@@ -4,9 +4,7 @@
  * @file vkr_ui_system.h
  * @brief Stateless UI text and pipeline resources.
  *
- * Owns the UI/text pipelines and persistent UI text slots. UI text is rendered
- * using the current global UI projection; callers may override via offscreen
- * sizing for editor viewports.
+ * Owns persistent CPU-side UI text slots used to assemble render packets.
  */
 
 #include "containers/array.h"
@@ -33,22 +31,13 @@ typedef struct VkrUiTextSlot {
 Array(VkrUiTextSlot);
 
 /**
- * @brief UI system state: pipelines, materials, and text slots.
+ * @brief UI text layout and packet-preparation state.
  *
- * Manages UI and text pipelines plus a fixed array of text slots. Layout
+ * Manages a fixed array of text slots. Layout
  * uses either window dimensions or offscreen dimensions when enabled (e.g.
  * for editor viewport overlay). Call vkr_ui_system_resize on window resize.
  */
 typedef struct VkrUiSystem {
-  VkrShaderConfig shader_config; /**< Base UI shader config */
-  VkrPipelineHandle pipeline;    /**< UI quad pipeline */
-  VkrMaterialHandle material;    /**< UI material */
-  VkrRendererInstanceStateHandle
-      instance_state; /**< Per-frame instance state */
-
-  VkrShaderConfig text_shader_config; /**< Text shader config */
-  VkrPipelineHandle text_pipeline;    /**< Text glyph pipeline */
-
   uint32_t offscreen_width;  /**< Override width when offscreen enabled */
   uint32_t offscreen_height; /**< Override height when offscreen enabled */
   bool8_t offscreen_enabled; /**< Use offscreen dimensions for layout */
@@ -66,10 +55,6 @@ typedef struct VkrUiSystem {
  * @return true on success, false on failure
  */
 bool8_t vkr_ui_system_init(struct s_RendererFrontend *rf, VkrUiSystem *system);
-
-/** Initialize retained UI/text CPU state for a packet-native renderer. */
-bool8_t vkr_ui_system_init_retained(struct s_RendererFrontend *rf,
-                                    VkrUiSystem *system);
 
 /**
  * @brief Release UI pipelines and text slots.
@@ -146,32 +131,8 @@ bool8_t vkr_ui_system_text_update(struct s_RendererFrontend *rf,
 bool8_t vkr_ui_system_text_destroy(struct s_RendererFrontend *rf,
                                    VkrUiSystem *system, uint32_t text_id);
 
-/**
- * @brief Render UI text with the current global UI projection.
- *
- * Uses screen or offscreen dimensions depending on
- * vkr_ui_system_set_offscreen_size.
- * @param rf Renderer frontend
- * @param system UI system
- */
-void vkr_ui_system_render_text(struct s_RendererFrontend *rf,
-                               VkrUiSystem *system);
-
 /** Builds packet-ready UI text descriptors without issuing GPU commands. */
 uint32_t vkr_ui_system_prepare_text_draws(struct s_RendererFrontend *rf,
                                           VkrUiSystem *system,
                                           VkrPreparedTextDraw *out_draws,
                                           uint32_t capacity);
-
-/**
- * @brief Render UI text into a picking pass.
- *
- * Same geometry as render_text but uses the given picking pipeline for ID
- * output.
- * @param rf Renderer frontend
- * @param system UI system
- * @param pipeline Picking pipeline to bind
- */
-void vkr_ui_system_render_picking_text(struct s_RendererFrontend *rf,
-                                       VkrUiSystem *system,
-                                       VkrPipelineHandle pipeline);

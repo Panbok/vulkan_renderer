@@ -2,7 +2,6 @@
 
 #include "core/vkr_text.h"
 #include "renderer/systems/vkr_font_system.h"
-#include "renderer/vkr_buffer.h"
 
 // =============================================================================
 // UI Text Types
@@ -41,20 +40,6 @@ typedef struct VkrUiTextConfig {
     .uv_inset_px = 0.0f,                                                       \
   }
 
-/**
- * @brief Internal render state for UI text.
- */
-typedef struct VkrUiTextRenderState {
-  VkrPipelineHandle pipeline;
-  VkrVertexBuffer vertex_buffer;
-  VkrIndexBuffer index_buffer;
-  VkrRendererInstanceStateHandle instance_state;
-  uint32_t quad_count;      // Number of glyph quads
-  uint32_t vertex_capacity; // Allocated vertex count
-  uint32_t index_capacity;  // Allocated index count
-  uint64_t last_frame_rendered;
-} VkrUiTextRenderState;
-
 /** CPU-owned shaped geometry shared by backend lowering paths. */
 typedef struct VkrUiTextGeometry {
   VkrTextVertex *vertices;
@@ -67,29 +52,12 @@ typedef struct VkrUiTextGeometry {
 } VkrUiTextGeometry;
 
 /**
- * @brief Retired buffer set waiting for GPU completion.
- *
- * UI text can resize its dynamic vertex/index buffers when content grows.
- * To avoid destroying buffers that may still be referenced by in-flight command
- * buffers, old buffers are retained for a few frames and destroyed later.
- */
-typedef struct VkrUiTextRetiredBufferSet {
-  VkrVertexBuffer vertex_buffer;
-  VkrIndexBuffer index_buffer;
-  uint64_t retire_after_frame;
-} VkrUiTextRetiredBufferSet;
-
-/** @brief Maximum number of buffer sets kept alive after resizing. */
-#define VKR_UI_TEXT_MAX_RETIRED_BUFFER_SETS 8
-
-/**
  * @brief UI text resource.
  *
- * Owns the text content, computed layout, and GPU resources for rendering.
+ * Owns the text content, computed layout, and shaped packet geometry.
  */
 typedef struct VkrUiText {
   // Dependencies
-  VkrRendererFrontendHandle renderer;
   VkrFontSystem *font_system;
   VkrAllocator *allocator;
 
@@ -103,18 +71,11 @@ typedef struct VkrUiText {
   VkrTextBounds bounds;   // Computed text bounds
   VkrFont *resolved_font; // Cached font pointer
 
-  // Render state
-  VkrUiTextRenderState render;
   VkrUiTextGeometry geometry;
 
-  // Retired GPU buffers pending safe destruction.
-  VkrUiTextRetiredBufferSet
-      retired_buffers[VKR_UI_TEXT_MAX_RETIRED_BUFFER_SETS];
-
   // Dirty flags
-  bool8_t layout_dirty;      // Need to recompute layout
-  bool8_t buffers_dirty;     // Need to regenerate shaped CPU geometry
-  bool8_t gpu_buffers_dirty; // Need to publish geometry to legacy GPU buffers
+  bool8_t layout_dirty;  // Need to recompute layout
+  bool8_t buffers_dirty; // Need to regenerate shaped CPU geometry
 } VkrUiText;
 Vector(VkrUiText);
 
@@ -124,21 +85,17 @@ Vector(VkrUiText);
 
 /**
  * @brief Creates a UI text instance.
- * @param renderer The renderer frontend handle.
  * @param allocator The allocator for memory management.
  * @param font_system The font system.
- * @param pipeline The pipeline to use for rendering.
  * @param content Initial text content (copied).
  * @param config Initial configuration (or NULL for defaults).
  * @param out_text Output text instance.
  * @param out_error Error output.
  * @return true on success.
  */
-bool8_t vkr_ui_text_create(VkrRendererFrontendHandle renderer,
-                           VkrAllocator *allocator, VkrFontSystem *font_system,
-                           VkrPipelineHandle pipeline, String8 content,
-                           const VkrUiTextConfig *config, VkrUiText *out_text,
-                           VkrRendererError *out_error);
+bool8_t vkr_ui_text_create(VkrAllocator *allocator, VkrFontSystem *font_system,
+                           String8 content, const VkrUiTextConfig *config,
+                           VkrUiText *out_text, VkrRendererError *out_error);
 
 /**
  * @brief Destroys a UI text instance and releases all resources.
@@ -173,18 +130,5 @@ void vkr_ui_text_set_color(VkrUiText *text, Vec4 color);
  */
 VkrTextBounds vkr_ui_text_get_bounds(VkrUiText *text);
 
-/**
- * @brief Prepares text for rendering (rebuilds buffers if dirty).
- * Call before draw if layout/content changed.
- * @return true if buffers are valid and ready for drawing.
- */
-bool8_t vkr_ui_text_prepare(VkrUiText *text);
-
 /** Prepares shaped CPU geometry without issuing renderer API calls. */
 bool8_t vkr_ui_text_prepare_geometry(VkrUiText *text);
-
-/**
- * @brief Submits text draw command to the renderer.
- * @param text The UI text instance.
- */
-void vkr_ui_text_draw(VkrUiText *text);

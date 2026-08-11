@@ -50,11 +50,6 @@ typedef struct VkrGeometry {
   uint32_t index_size;
   uint32_t index_count;
 
-  VkrVertexBuffer vertex_buffer;
-  VkrIndexBuffer index_buffer;
-  VkrIndexBuffer opaque_index_buffer; // Optional compacted opaque-only indices.
-  uint32_t opaque_index_count;        // Index count for opaque_index_buffer.
-
   Vec3 center;
   Vec3 min_extents;
   Vec3 max_extents;
@@ -191,32 +186,6 @@ typedef struct VkrMaterial {
 Array(VkrMaterial);
 
 // =============================================================================
-// Pipeline resource types (decoupled from systems)
-// =============================================================================
-
-typedef struct VkrPipelineHandle {
-  uint32_t id;
-  uint32_t generation;
-} VkrPipelineHandle;
-
-#define VKR_PIPELINE_HANDLE_INVALID                                            \
-  (VkrPipelineHandle) { .id = 0, .generation = VKR_INVALID_ID }
-
-typedef struct VkrPipeline {
-  VkrPipelineHandle handle;
-  VkrGraphicsPipelineDescription description;
-  /**
-   * Stable shader identifier used to keep shader-system staging/state aligned
-   * with the concrete pipeline selected for a draw.
-   */
-  String8 shader_name;
-
-  VkrPipelineDomain domain;
-  VkrRenderPassHandle renderpass;
-  VkrPipelineOpaqueHandle backend_handle;
-} VkrPipeline;
-Array(VkrPipeline);
-// =============================================================================
 // Mesh/SubMesh - app/scene-side draw units
 // =============================================================================
 
@@ -240,8 +209,6 @@ typedef enum VkrMeshLoadingState {
 typedef struct VkrSubMesh {
   VkrGeometryHandle geometry;
   VkrMaterialHandle material;
-  VkrPipelineHandle pipeline;
-  VkrRendererInstanceStateHandle instance_state;
   VkrPipelineDomain pipeline_domain;
   String8 shader_override;
   /** Stable identifier for a sub-range inside shared geometry buffers. */
@@ -258,7 +225,6 @@ typedef struct VkrSubMesh {
   Vec3 center;
   Vec3 min_extents;
   Vec3 max_extents;
-  bool8_t pipeline_dirty;
   bool8_t owns_geometry;
   bool8_t owns_material;
   uint64_t last_render_frame;
@@ -388,24 +354,9 @@ typedef struct VkrMeshInstanceHandle {
   (VkrMeshInstanceHandle) { .id = 0, .generation = VKR_INVALID_ID }
 
 /**
- * @brief Per-submesh instance state that cannot be shared across instances.
- *
- * Each instance has its own array of these, sized to match the asset's submesh
- * count. Contains pipeline handles and descriptor set bindings that are
- * instance-specific.
- */
-typedef struct VkrMeshSubmeshInstanceState {
-  VkrPipelineHandle pipeline;
-  VkrRendererInstanceStateHandle instance_state;
-  bool8_t pipeline_dirty;
-  uint64_t last_render_frame;
-} VkrMeshSubmeshInstanceState;
-Array(VkrMeshSubmeshInstanceState);
-
-/**
  * @brief Per-entity mesh instance referencing a shared asset.
  *
- * Stores transform, visibility, and per-submesh pipeline state. The actual
+ * Stores transform and visibility. The actual
  * geometry/material data is retrieved from the referenced asset.
  */
 typedef struct VkrMeshInstance {
@@ -422,151 +373,8 @@ typedef struct VkrMeshInstance {
   Vec3 bounds_world_center;
   float32_t bounds_world_radius;
 
-  Array_VkrMeshSubmeshInstanceState submesh_state;
 } VkrMeshInstance;
 Array(VkrMeshInstance);
-
-// =============================================================================
-// Shader resource types (decoupled from systems)
-// =============================================================================
-
-typedef enum VkrShaderAttributeType {
-  SHADER_ATTRIBUTE_TYPE_UNDEFINED = 0,
-  SHADER_ATTRIBUTE_TYPE_VEC2,
-  SHADER_ATTRIBUTE_TYPE_VEC3,
-  SHADER_ATTRIBUTE_TYPE_VEC4,
-  SHADER_ATTRIBUTE_TYPE_MAT4,
-  SHADER_ATTRIBUTE_TYPE_INT32,
-  SHADER_ATTRIBUTE_TYPE_UINT32,
-} VkrShaderAttributeType;
-
-typedef enum VkrShaderUniformType {
-  SHADER_UNIFORM_TYPE_UNDEFINED = 0,
-  SHADER_UNIFORM_TYPE_FLOAT32,
-  SHADER_UNIFORM_TYPE_FLOAT32_2,
-  SHADER_UNIFORM_TYPE_FLOAT32_3,
-  SHADER_UNIFORM_TYPE_FLOAT32_4,
-  SHADER_UNIFORM_TYPE_INT32,
-  SHADER_UNIFORM_TYPE_UINT32,
-  SHADER_UNIFORM_TYPE_MATRIX_4,
-  SHADER_UNIFORM_TYPE_SAMPLER,
-} VkrShaderUniformType;
-
-typedef enum VkrShaderScope {
-  VKR_SHADER_SCOPE_GLOBAL = 0,
-  VKR_SHADER_SCOPE_INSTANCE = 1,
-  VKR_SHADER_SCOPE_LOCAL = 2
-} VkrShaderScope;
-
-typedef struct VkrShaderAttributeDesc {
-  VkrShaderAttributeType type;
-  String8 name;
-  uint32_t location; // assigned in declaration order
-  uint32_t offset;   // tightly packed in declaration order
-  uint32_t size;     // in bytes
-} VkrShaderAttributeDesc;
-Array(VkrShaderAttributeDesc);
-
-typedef struct VkrShaderUniformDesc {
-  VkrShaderUniformType type;
-  VkrShaderScope scope; // 0=global,1=instance,2=local
-  String8 name;
-  uint32_t location;    // within-scope index; for samplers = texture slot
-  /** Descriptor sampler slot used by this texture slot. Sampler uniforms may
-   * alias an earlier sampler declaration when several sampled images require
-   * identical sampling state. */
-  uint32_t sampler_location;
-  /** Earlier uniform index named by an optional fourth shadercfg token, or
-   * zero when sampler_alias_enabled is false. */
-  uint32_t sampler_alias_uniform_index;
-  /** True only when shadercfg explicitly aliases this sampler to an earlier
-   * declaration. Keeps zero-initialized programmatic configs unambiguous. */
-  bool8_t sampler_alias_enabled;
-  uint32_t offset;      // UBO offset (scopes 0/1); 0 for samplers
-  uint32_t size;        // total size in bytes (element_size * array_count)
-  uint32_t array_count; // 1 for scalars, >1 for arrays
-} VkrShaderUniformDesc;
-Array(VkrShaderUniformDesc);
-
-typedef struct VkrShaderStageFile {
-  VkrShaderStage stage; // vertex/fragment
-  String8 filename;     // path to SPIR-V file
-  String8 entry_point;  // default: vertexMain/fragmentMain
-} VkrShaderStageFile;
-Array(VkrShaderStageFile);
-
-typedef struct VkrShaderConfig {
-  String8 name;                // shader.unique name
-  String8 renderpass_name;     // renderpass key string
-  uint8_t use_instance;        // enable instance scope (set 1)
-  uint8_t use_local;           // enable push constants
-  VkrCullMode cull_mode;       // culling mode (default: VKR_CULL_MODE_BACK)
-  bool8_t depth_test_enabled;  // depth test (default: enabled)
-  bool8_t depth_write_enabled; // depth writes (default: enabled)
-  VkrVertexAbiProfile vertex_abi_profile; // Explicit host vertex ABI contract.
-
-  // Stages
-  Array_VkrShaderStageFile stages;
-  uint32_t stage_count; // filled stage entries
-
-  // Attributes & uniforms
-  Array_VkrShaderAttributeDesc attributes;
-  Array_VkrShaderUniformDesc uniforms;
-  uint32_t attribute_count; // filled entries
-  uint32_t uniform_count;   // filled entries
-
-  VkrHashTable_uint32_t uniform_name_to_index;
-  VkrHashTable_uint32_t attribute_name_to_index;
-
-  // Computed layout
-  uint64_t attribute_stride;
-
-  uint64_t global_ubo_size;
-  uint64_t global_ubo_stride;
-  uint32_t global_texture_count;
-  uint32_t global_sampler_count;
-
-  uint64_t instance_ubo_size;
-  uint64_t instance_ubo_stride;
-  uint32_t instance_texture_count;
-  uint32_t instance_sampler_count;
-
-  uint64_t push_constant_size;
-  uint64_t push_constant_stride;
-} VkrShaderConfig;
-
-typedef struct VkrShader {
-  String8 name;
-  uint32_t id;
-
-  const VkrShaderConfig *config;
-
-  // Scope tracking
-  VkrShaderScope bound_scope;
-  uint32_t bound_instance_id;
-
-  // Instance resource tracking
-  uint32_t *instance_ids;
-  uint32_t instance_capacity;
-  uint32_t instance_used_count;
-
-  // Instance free list for O(1) allocation/deallocation
-  uint32_t *instance_free_list;
-  uint32_t instance_free_list_count;
-
-  // Warn-once tracking for missing uniforms/samplers per shader
-  VkrHashTable_uint8_t missing_uniform_warnings;
-} VkrShader;
-Array(VkrShader);
-
-#define VKR_SHADER_NAME_MAX_LENGTH 256
-#define VKR_SHADER_INVALID_UNIFORM_INDEX 0xFFFFu
-
-#define VKR_SHADER_SYSTEM_CONFIG_DEFAULT                                       \
-  {.max_shader_count = 512,                                                    \
-   .max_uniform_count = 96,                                                    \
-   .max_global_textures = 8,                                                   \
-   .max_instance_textures = 16}
 
 // =============================================================================
 // Font resource types (decoupled from systems)

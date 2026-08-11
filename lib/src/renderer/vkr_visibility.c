@@ -149,13 +149,11 @@ uint32_t vkr_draw_merge_candidates(VkrDrawCandidate *candidates, uint32_t count,
         .material =
             {
                 .id = (uint32_t)(candidates[run_start].key.material >> 32u),
-                .generation =
-                    (uint32_t)candidates[run_start].key.material,
+                .generation = (uint32_t)candidates[run_start].key.material,
             },
         .instance_count = run_length,
         .first_instance = instance_base + written,
         .sort_key = 0u,
-        .pipeline_override = VKR_PIPELINE_HANDLE_INVALID,
     };
     draw_count++;
 
@@ -214,7 +212,6 @@ uint32_t vkr_draw_emit_unmerged(const VkrDrawCandidate *candidates,
         .instance_count = 1,
         .first_instance = instance_base + i,
         .sort_key = candidates[i].sort_key,
-        .pipeline_override = VKR_PIPELINE_HANDLE_INVALID,
     };
     out_instances[instance_base + i] = (VkrInstanceDataGPU){
         .model = candidates[i].model,

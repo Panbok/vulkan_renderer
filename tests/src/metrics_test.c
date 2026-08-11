@@ -1,7 +1,6 @@
 #include "metrics_test.h"
 
 #include "renderer/vkr_renderer_metrics.h"
-#include "renderer/vulkan/vulkan_backend.h"
 
 #include "core/vkr_metrics.h"
 #include "memory/arena.h"
@@ -608,92 +607,6 @@ static void test_metrics_registry_generation(void) {
   printf("  test_metrics_registry_generation PASSED\n");
 }
 
-static VkDeviceMemory test_device_memory_handle(uintptr_t value) {
-  return (VkDeviceMemory)value;
-}
-
-static void test_device_memory_owner_tracking(void) {
-  printf("  Running test_device_memory_owner_tracking...\n");
-
-  VulkanDeviceMemoryEntry entries[8] = {0};
-  VulkanDeviceMemoryStats stats = {
-      .entries = entries,
-      .entry_capacity = 8,
-      .tracking_exact = true_v,
-  };
-  // These two handles collide in the eight-slot table. Freeing the first must
-  // reinsert the second so owner attribution remains reachable.
-  const VkDeviceMemory mesh_a = test_device_memory_handle(0x10u);
-  const VkDeviceMemory font = test_device_memory_handle(0x90u);
-  const VkDeviceMemory mesh_b = test_device_memory_handle(0x20u);
-  vulkan_device_memory_stats_record_alloc(&stats, mesh_a, 100u, 2u,
-                                          VKR_GPU_ALLOCATION_OWNER_MESH);
-  vulkan_device_memory_stats_record_alloc(&stats, font, 50u, 2u,
-                                          VKR_GPU_ALLOCATION_OWNER_FONT);
-  vulkan_device_memory_stats_record_alloc(&stats, mesh_b, 25u, 3u,
-                                          VKR_GPU_ALLOCATION_OWNER_MESH);
-
-  const VkrGpuAllocationOwnerTotals *mesh =
-      &stats.owners[VKR_GPU_ALLOCATION_OWNER_MESH];
-  const VkrGpuAllocationOwnerTotals *font_totals =
-      &stats.owners[VKR_GPU_ALLOCATION_OWNER_FONT];
-  assert(stats.live_allocation_count == 3u);
-  assert(stats.live_bytes == 175u);
-  assert(mesh->live_allocation_count == 2u);
-  assert(mesh->live_bytes == 125u);
-  assert(mesh->peak_bytes == 125u);
-  assert(font_totals->total_bytes == 50u);
-  assert(stats.live_count_by_type[2] == 2u);
-
-  vulkan_device_memory_stats_record_free(&stats, mesh_a);
-  vulkan_device_memory_stats_record_free(&stats, font);
-  assert(stats.live_allocation_count == 1u);
-  assert(stats.live_bytes == 25u);
-  assert(font_totals->live_allocation_count == 0u);
-  // Peak and cumulative totals survive the frees that live counts do not.
-  assert(mesh->peak_allocation_count == 2u);
-  assert(mesh->total_allocation_count == 2u);
-
-  const VkDeviceMemory invalid_owner = test_device_memory_handle(0x30u);
-  vulkan_device_memory_stats_record_alloc(
-      &stats, invalid_owner, 7u, 4u,
-      (VkrGpuAllocationOwner)VKR_GPU_ALLOCATION_OWNER_COUNT);
-  assert(stats.owners[VKR_GPU_ALLOCATION_OWNER_UNKNOWN].live_bytes == 7u);
-  vulkan_device_memory_stats_record_free(&stats, invalid_owner);
-  vulkan_device_memory_stats_record_free(&stats, mesh_b);
-  assert(stats.live_allocation_count == 0u);
-  assert(stats.live_bytes == 0u);
-
-  VulkanDeviceMemoryEntry short_entries[2] = {0};
-  VulkanDeviceMemoryStats saturated = {
-      .entries = short_entries,
-      .entry_capacity = 2,
-      .tracking_exact = true_v,
-  };
-  const VkDeviceMemory first = test_device_memory_handle(0x10u);
-  const VkDeviceMemory second = test_device_memory_handle(0x20u);
-  const VkDeviceMemory overflow = test_device_memory_handle(0x30u);
-  vulkan_device_memory_stats_record_alloc(&saturated, first, 10u, 0u,
-                                          VKR_GPU_ALLOCATION_OWNER_STAGING);
-  vulkan_device_memory_stats_record_alloc(&saturated, second, 20u, 0u,
-                                          VKR_GPU_ALLOCATION_OWNER_STAGING);
-  vulkan_device_memory_stats_record_alloc(&saturated, overflow, 30u, 0u,
-                                          VKR_GPU_ALLOCATION_OWNER_READBACK);
-  assert(!saturated.tracking_exact);
-  assert(saturated.total_allocation_count == 3u);
-  // The overflowing allocation never entered the table, so its cumulative row
-  // is still exact while the live figures it feeds are not.
-  assert(saturated.owners[VKR_GPU_ALLOCATION_OWNER_READBACK].total_bytes ==
-         30u);
-  vulkan_device_memory_stats_record_free(&saturated, first);
-  vulkan_device_memory_stats_record_free(&saturated, second);
-  assert(saturated.live_allocation_count == 1u);
-  assert(saturated.live_bytes == 30u);
-  assert(saturated.owners[VKR_GPU_ALLOCATION_OWNER_READBACK].live_bytes == 30u);
-
-  printf("  test_device_memory_owner_tracking PASSED\n");
-}
-
 static void test_renderer_owner_metric_catalog(void) {
   printf("  Running test_renderer_owner_metric_catalog...\n");
 
@@ -833,7 +746,6 @@ bool32_t run_metrics_tests(void) {
   test_metrics_event_record_status();
   test_metrics_event_ring_mpsc();
   test_metrics_registry_generation();
-  test_device_memory_owner_tracking();
   test_renderer_owner_metric_catalog();
   test_renderer_cumulative_delta();
   test_renderer_pass_sample_publication();

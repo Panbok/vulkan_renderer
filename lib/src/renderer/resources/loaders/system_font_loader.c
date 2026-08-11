@@ -346,7 +346,7 @@ vkr_internal bool8_t vkr_system_font_create_atlas_texture(
       state->font_size, state->font_index);
 
   VkrRendererError tex_error = VKR_RENDERER_ERROR_NONE;
-  if (texture_system->asset_publisher) {
+  {
     VkrTextureUploadRegion region = {
         .mip_level = 0,
         .array_layer = 0,
@@ -375,26 +375,6 @@ vkr_internal bool8_t vkr_system_font_create_atlas_texture(
     *out_name = tex_name;
     return true_v;
   }
-
-  VkrTextureOpaqueHandle backend_handle = vkr_renderer_create_texture(
-      texture_system->renderer, &desc, rgba_data, &tex_error);
-  if (tex_error != VKR_RENDERER_ERROR_NONE || backend_handle == NULL) {
-    log_error("SystemFontLoader: failed to create atlas texture");
-    *state->out_error = tex_error;
-    return false_v;
-  }
-
-  if (!vkr_texture_system_register_external(
-          texture_system, tex_name, backend_handle, &desc, out_handle)) {
-    log_error("SystemFontLoader: failed to register atlas texture '%s'",
-              string8_cstr(&tex_name));
-    vkr_renderer_destroy_texture(texture_system->renderer, backend_handle);
-    *state->out_error = VKR_RENDERER_ERROR_RESOURCE_CREATION_FAILED;
-    return false_v;
-  }
-
-  *out_name = tex_name;
-  return true_v;
 }
 
 vkr_internal bool8_t vkr_system_font_build_result(

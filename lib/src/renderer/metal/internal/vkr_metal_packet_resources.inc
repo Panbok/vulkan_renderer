@@ -777,7 +777,7 @@ bool8_t vkr_metal_packet_renderer_publish_prepared_texture(
                               renderer->memory, descriptor, &slot->resource) ==
                           VKR_METAL_MEMORY_STATUS_OK;
   [descriptor release];
-  const VkrTextureUploadPayload payload = {
+  const VkrMetalPacketTextureUpload payload = {
       .data = prepared->upload_data,
       .data_size = prepared->upload_data_size,
       .mip_levels = prepared->upload_mip_levels,

@@ -1,4 +1,4 @@
-#include "common/tonemap.slangh"
+#include "tonemap.slangh"
 
 struct VkrBindlessVertex
 {

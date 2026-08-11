@@ -19,15 +19,11 @@ struct s_RendererFrontend;
 /**
  * @brief Persistent resources for editor viewport compositing.
  *
- * This state owns a mesh (single quad) and the viewport display material/
- * pipeline. It is renderer-owned and reused across frames.
+ * This state owns a packet-published mesh (single quad) and material. It is
+ * renderer-owned and reused across frames.
  */
 typedef struct VkrEditorViewportResources {
-  VkrShaderConfig shader_config;
-  VkrPipelineHandle pipeline;
   VkrMaterialHandle material;
-  VkrRenderPassHandle renderpass;
-  bool8_t owns_renderpass;
   uint32_t mesh_index; /**< Mesh manager index for the viewport quad. */
   VkrGeometryHandle geometry;
   Vec2 plane_size; /**< Base quad size used to compute model scale. */
@@ -35,24 +31,12 @@ typedef struct VkrEditorViewportResources {
 } VkrEditorViewportResources;
 
 /**
- * @brief Initialize editor viewport resources (shader, pipeline, mesh).
+ * @brief Initialize editor viewport packet resources.
  *
  * Non-fatal: returns false if resources failed to create.
  */
 bool8_t vkr_editor_viewport_init(struct s_RendererFrontend *rf,
                                  VkrEditorViewportResources *resources);
-
-/**
- * @brief Initialize editor viewport resources for a packet-native
- * renderer.
- *
- * Publishes the material and quad geometry without creating
- * legacy render-pass,
- * shader-system, or pipeline-registry state.
- */
-bool8_t
-vkr_editor_viewport_init_retained(struct s_RendererFrontend *rf,
-                                  VkrEditorViewportResources *resources);
 
 /**
  * @brief Release editor viewport resources.

@@ -496,9 +496,9 @@ vkr_metal_packet_create_ibl_targets(VkrMetalPacketRenderer *renderer)
 }
 
 static bool8_t vkr_metal_packet_upload_texture(
-    VkrMetalPacketRenderer *renderer, const VkrTextureUploadPayload *payload,
-    VkrTextureFormat format, id<MTLTexture> destination)
-    API_AVAILABLE(macos(26.0)) {
+    VkrMetalPacketRenderer *renderer,
+    const VkrMetalPacketTextureUpload *payload, VkrTextureFormat format,
+    id<MTLTexture> destination) API_AVAILABLE(macos(26.0)) {
   VkrTextureFormatInfo info = {0};
   if (!renderer || !payload || !payload->data || payload->data_size == 0 ||
       !payload->regions || payload->region_count == 0 || !destination ||

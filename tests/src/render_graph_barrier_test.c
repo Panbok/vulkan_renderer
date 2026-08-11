@@ -1,6 +1,5 @@
 #include "render_graph_barrier_test.h"
 #include "renderer/vkr_rg_json.h"
-#include "renderer/vulkan/vulkan_dependency.h"
 
 /**
  * Barrier planning is a deterministic function of the declared graph, so it is
@@ -18,24 +17,6 @@
 static void rg_barrier_test_execute(VkrRgPassContext *ctx, void *user_data) {
   (void)ctx;
   (void)user_data;
-}
-
-static void rg_barrier_test_fail_execute(VkrRgPassContext *ctx,
-                                         void *user_data) {
-  (void)user_data;
-  ctx->error = VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED;
-}
-
-typedef struct RgTargetCapture {
-  VkrRenderTargetHandle expected;
-  bool8_t called;
-} RgTargetCapture;
-
-static void rg_barrier_test_capture_target(VkrRgPassContext *ctx,
-                                           void *user_data) {
-  RgTargetCapture *capture = (RgTargetCapture *)user_data;
-  assert(ctx->render_target == capture->expected);
-  capture->called = true_v;
 }
 
 /**
@@ -172,43 +153,9 @@ static void test_explicit_stage_and_subresource_dependency(void) {
          VKR_GPU_STAGE_FRAGMENT_SHADER);
   assert(source_barrier->dependency.visibility == VKR_GPU_VISIBILITY_DEVICE);
 
-  const VulkanLegacyDependency lowered = vulkan_legacy_lower_image_dependency(
-      source_barrier->src_access, source_barrier->dst_access,
-      &source_barrier->dependency);
-  assert(lowered.src_stages == VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-  assert(lowered.dst_stages == VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-  assert(lowered.src_access == VK_ACCESS_SHADER_WRITE_BIT);
-  assert(lowered.dst_access == VK_ACCESS_SHADER_READ_BIT);
-
   vkr_rg_destroy(graph);
   arena_destroy(arena);
   printf("  test_explicit_stage_and_subresource_dependency PASSED\n");
-}
-
-static void test_legacy_vulkan_lowering_is_unchanged(void) {
-  printf("  Running test_legacy_vulkan_lowering_is_unchanged...\n");
-  const VkrGpuDependency image_dependency = vkr_gpu_image_dependency_default(
-      VKR_IMAGE_ACCESS_STORAGE_WRITE, VKR_IMAGE_ACCESS_SAMPLED);
-  const VulkanLegacyDependency image = vulkan_legacy_lower_image_dependency(
-      VKR_IMAGE_ACCESS_STORAGE_WRITE, VKR_IMAGE_ACCESS_SAMPLED,
-      &image_dependency);
-  assert(image.src_stages == (VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
-                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT));
-  assert(image.dst_stages == (VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT |
-                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT));
-  assert(image.src_access == VK_ACCESS_SHADER_WRITE_BIT);
-  assert(image.dst_access == VK_ACCESS_SHADER_READ_BIT);
-
-  const VkrGpuDependency buffer_dependency = vkr_gpu_buffer_dependency_default(
-      VKR_BUFFER_ACCESS_TRANSFER_DST, VKR_BUFFER_ACCESS_VERTEX);
-  const VulkanLegacyDependency buffer = vulkan_legacy_lower_buffer_dependency(
-      VKR_BUFFER_ACCESS_TRANSFER_DST, VKR_BUFFER_ACCESS_VERTEX,
-      &buffer_dependency);
-  assert(buffer.src_stages == VK_PIPELINE_STAGE_TRANSFER_BIT);
-  assert(buffer.dst_stages == VK_PIPELINE_STAGE_VERTEX_INPUT_BIT);
-  assert(buffer.src_access == VK_ACCESS_TRANSFER_WRITE_BIT);
-  assert(buffer.dst_access == VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT);
-  printf("  test_legacy_vulkan_lowering_is_unchanged PASSED\n");
 }
 
 static void test_present_target_import_and_terminal_states(void) {
@@ -420,69 +367,6 @@ static void test_same_pass_incompatible_layouts_are_rejected(void) {
   vkr_rg_destroy(graph);
   arena_destroy(arena);
   printf("  test_same_pass_incompatible_layouts_are_rejected PASSED\n");
-}
-
-static void test_executor_error_reaches_graph_caller(void) {
-  printf("  Running test_executor_error_reaches_graph_caller...\n");
-  Arena *arena = arena_create(MB(1), MB(1));
-  VkrAllocator allocator = {.ctx = arena};
-  assert(vkr_allocator_arena(&allocator));
-
-  VkrRenderGraph *graph = vkr_rg_create(&allocator);
-  assert(graph != NULL);
-  VkrRenderGraphFrameInfo frame = {0};
-  vkr_rg_begin_frame(graph, &frame);
-
-  VkrRgPassBuilder pass = rg_barrier_test_add_pass(
-      graph, VKR_RG_PASS_TYPE_COMPUTE, "FailingExecutor");
-  vkr_rg_pass_set_execute(&pass, rg_barrier_test_fail_execute, NULL);
-  assert(vkr_rg_compile_schedule(graph));
-  // Renderer allocation is intentionally outside this CPU-only test. Marking
-  // the renderer-independent schedule compiled lets execute exercise the
-  // executor/error contract without a Vulkan backend.
-  graph->compiled = true_v;
-
-  assert(vkr_rg_execute(graph, NULL) ==
-         VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED);
-
-  vkr_rg_destroy(graph);
-  arena_destroy(arena);
-  printf("  test_executor_error_reaches_graph_caller PASSED\n");
-}
-
-static void test_single_render_target_serves_every_swapchain_image(void) {
-  printf(
-      "  Running test_single_render_target_serves_every_swapchain_image...\n");
-  Arena *arena = arena_create(MB(1), MB(1));
-  VkrAllocator allocator = {.ctx = arena};
-  assert(vkr_allocator_arena(&allocator));
-
-  VkrRenderGraph *graph = vkr_rg_create(&allocator);
-  assert(graph != NULL);
-  VkrRenderGraphFrameInfo frame = {.image_index = 2u};
-  vkr_rg_begin_frame(graph, &frame);
-
-  VkrRenderTargetHandle target = (VkrRenderTargetHandle)(uintptr_t)1u;
-  VkrRenderTargetHandle targets[1] = {target};
-  RgTargetCapture capture = {.expected = target};
-  VkrRgPassBuilder builder =
-      rg_barrier_test_add_pass(graph, VKR_RG_PASS_TYPE_COMPUTE, "SingleTarget");
-  vkr_rg_pass_set_execute(&builder, rg_barrier_test_capture_target, &capture);
-  assert(vkr_rg_compile_schedule(graph));
-
-  VkrRgPass *pass = vector_get_VkrRgPass(&graph->passes, 0);
-  pass->render_targets = targets;
-  pass->render_target_count = 1u;
-  // Renderer allocation is outside this CPU test; execution only needs the
-  // already-built target array to verify image-index resolution.
-  graph->compiled = true_v;
-
-  assert(vkr_rg_execute(graph, NULL) == VKR_RENDERER_ERROR_NONE);
-  assert(capture.called);
-
-  vkr_rg_destroy(graph);
-  arena_destroy(arena);
-  printf("  test_single_render_target_serves_every_swapchain_image PASSED\n");
 }
 
 static void test_cascade_slices_are_per_layer_then_coalesce(void) {
@@ -811,7 +695,6 @@ bool32_t run_render_graph_barrier_tests() {
   test_frame_allocator_reclaims_authored_passes();
   test_main_graph_declares_transmission_stages();
   test_subresource_range_resolve();
-  test_legacy_vulkan_lowering_is_unchanged();
   test_same_layout_write_then_read_emits_barrier();
   test_explicit_stage_and_subresource_dependency();
   test_present_target_import_and_terminal_states();
@@ -819,8 +702,6 @@ bool32_t run_render_graph_barrier_tests() {
   test_read_after_read_emits_nothing();
   test_same_pass_storage_read_write_combines();
   test_same_pass_incompatible_layouts_are_rejected();
-  test_executor_error_reaches_graph_caller();
-  test_single_render_target_serves_every_swapchain_image();
   test_cascade_slices_are_per_layer_then_coalesce();
   test_disjoint_layer_writes_coalesce_on_read();
   test_capture_read_uses_exact_array_slice();

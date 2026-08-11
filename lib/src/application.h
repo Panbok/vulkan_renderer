@@ -452,9 +452,6 @@ bool8_t application_create(Application *application,
       vkr_renderer_metrics_get_producers(&application->renderer_metrics);
   VkrRendererBackendConfig backend_cfg = {
       .application_name = "vulkan_renderer",
-      .pipeline_create_metrics = metrics_producers->pipeline_create,
-      .shader_load_metrics = metrics_producers->shader_load,
-      .shader_reflection_metrics = metrics_producers->shader_reflection,
       .present_target = config->present_target,
       .requested_present_mode = config->requested_present_mode,
       .capture_enabled = config->capture_enabled,

@@ -208,8 +208,6 @@ typedef struct VkrGizmoSystem {
   VkrGizmoHandle active_handle;
 
   uint32_t gizmo_mesh_index;
-  VkrPipelineHandle pipeline;
-
   bool8_t visible;
   bool8_t initialized;
 } VkrGizmoSystem;
@@ -217,10 +215,7 @@ typedef struct VkrGizmoSystem {
 /**
  * @brief Initialize gizmo resources.
  *
- * Packet-native renderers publish the
- * mesh and materials; the retained legacy
- * renderer additionally resolves its
- * pipeline-registry handle.
+ * Selected renderers publish the mesh and materials through the asset seam.
  * @param system Gizmo system to initialize.
  * @param renderer Renderer frontend.
  * @param config Optional config override (NULL uses defaults).
@@ -269,31 +264,3 @@ void vkr_gizmo_system_set_hot_handle(VkrGizmoSystem *system,
  */
 void vkr_gizmo_system_set_active_handle(VkrGizmoSystem *system,
                                         VkrGizmoHandle handle);
-
-/**
- * @brief Render the gizmo in the current render pass.
- * @param system Gizmo system to render.
- * @param renderer Renderer frontend.
- * @param camera Active camera for screen-space scaling.
- * @param viewport_height Height of the render target in pixels.
- * @param pipeline_override Pipeline handle to use (invalid to use default).
- */
-void vkr_gizmo_system_render(VkrGizmoSystem *system,
-                             struct s_RendererFrontend *renderer,
-                             const VkrCamera *camera, uint32_t viewport_height,
-                             VkrPipelineHandle pipeline_override);
-
-/**
- * @brief Render gizmo handles into an active picking pass.
- *
- * Assumes the picking shader and pipeline are already bound.
- *
- * @param system Gizmo system to render.
- * @param renderer Renderer frontend.
- * @param camera Active camera for screen-space scaling.
- * @param viewport_height Height of the picking target in pixels.
- */
-void vkr_gizmo_system_render_picking(VkrGizmoSystem *system,
-                                     struct s_RendererFrontend *renderer,
-                                     const VkrCamera *camera,
-                                     uint32_t viewport_height);

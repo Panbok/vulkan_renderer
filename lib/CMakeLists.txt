@@ -14,60 +14,9 @@ list(APPEND LIB_SOURCES ${CMAKE_SOURCE_DIR}/vendor/spirv_reflect.c)
 add_library(renderer_lib STATIC ${LIB_SOURCES})
 vkr_require_declared_c_functions(renderer_lib)
 
-# Backend-owned Vulkan sources compile to the stable runtime asset names used by
-# .shadercfg manifests. Source organization is independent of that runtime ABI.
-find_program(VKR_SLANGC_EXECUTABLE NAMES slangc REQUIRED)
-set(VKR_VULKAN_SHADER_SOURCE_DIR
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/vulkan/shaders")
-set(VKR_VULKAN_SHADER_OUTPUT_DIR "${CMAKE_SOURCE_DIR}/assets/shaders")
-file(GLOB_RECURSE VKR_VULKAN_SHADER_HEADERS CONFIGURE_DEPENDS
-     "${VKR_VULKAN_SHADER_SOURCE_DIR}/*.slangh")
-set(VKR_VULKAN_SHADER_OUTPUTS "")
-function(vkr_add_vulkan_shader VKR_VULKAN_SHADER_SOURCE_RELATIVE
-                               VKR_VULKAN_SHADER_NAME)
-    set(VKR_VULKAN_SHADER_SOURCE
-        "${VKR_VULKAN_SHADER_SOURCE_DIR}/${VKR_VULKAN_SHADER_SOURCE_RELATIVE}")
-    set(VKR_VULKAN_SHADER_OUTPUT
-        "${VKR_VULKAN_SHADER_OUTPUT_DIR}/${VKR_VULKAN_SHADER_NAME}.spv")
-    add_custom_command(
-        OUTPUT "${VKR_VULKAN_SHADER_OUTPUT}"
-        COMMAND "${VKR_SLANGC_EXECUTABLE}"
-                -target spirv
-                -I "${VKR_VULKAN_SHADER_SOURCE_DIR}"
-                -o "${VKR_VULKAN_SHADER_OUTPUT}"
-                "${VKR_VULKAN_SHADER_SOURCE}"
-        DEPENDS "${VKR_VULKAN_SHADER_SOURCE}"
-                ${VKR_VULKAN_SHADER_HEADERS}
-        COMMENT "Compiling Vulkan shader ${VKR_VULKAN_SHADER_NAME}"
-        VERBATIM
-    )
-    set(VKR_VULKAN_SHADER_OUTPUTS
-        ${VKR_VULKAN_SHADER_OUTPUTS} "${VKR_VULKAN_SHADER_OUTPUT}"
-        PARENT_SCOPE)
-endfunction()
 
-vkr_add_vulkan_shader("skybox/default.slang" "default.skybox")
-vkr_add_vulkan_shader("text/default.slang" "default.text")
-vkr_add_vulkan_shader("ui/default.slang" "default.ui")
-vkr_add_vulkan_shader("viewport/display.slang" "default.viewport_display")
-vkr_add_vulkan_shader("world/default.slang" "default.world")
-vkr_add_vulkan_shader("world/pbr.slang" "pbr.world")
-vkr_add_vulkan_shader("picking/world.slang" "picking")
-vkr_add_vulkan_shader("picking/text.slang" "picking_text")
-vkr_add_vulkan_shader("post/tonemap.slang" "post.tonemap")
-vkr_add_vulkan_shader("shadow/cutout.slang" "shadow")
-vkr_add_vulkan_shader("shadow/opaque.slang" "shadow_opaque")
-vkr_add_vulkan_shader("ibl/brdf_lut.slang" "ibl.brdf_lut")
-vkr_add_vulkan_shader("ibl/diffuse_convolution.slang"
-                      "ibl.diffuse_convolution")
-vkr_add_vulkan_shader("ibl/equirect_to_cube.slang" "ibl.equirect_to_cube")
-vkr_add_vulkan_shader("ibl/specular_prefilter.slang"
-                      "ibl.specular_prefilter")
-add_custom_target(vkr_vulkan_shaders DEPENDS ${VKR_VULKAN_SHADER_OUTPUTS})
-add_dependencies(renderer_lib vkr_vulkan_shaders)
-
-# Production bindless walking shaders stay in the build tree. They are not part
-# of the retained Vulkan runtime shader-name ABI under assets/shaders.
+# Production bindless shaders stay in the build tree and are private to the
+# selected Vulkan implementation.
 set(VKR_BINDLESS_VK_SHADER_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/vulkan/bindless/shaders/walking.slang")
 set(VKR_BINDLESS_VK_SHADER_OUTPUT_DIR
@@ -111,7 +60,7 @@ target_compile_definitions(renderer_lib PRIVATE
 set(VKR_BINDLESS_VK_PACKET_SHADER_SOURCE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/vulkan/bindless/shaders/packet.slang")
 set(VKR_BINDLESS_VK_PACKET_TONEMAP_HEADER
-    "${VKR_VULKAN_SHADER_SOURCE_DIR}/common/tonemap.slangh")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/vulkan/bindless/shaders/tonemap.slangh")
 function(vkr_add_bindless_vulkan_packet_shader output_name entry stage)
     set(output "${VKR_BINDLESS_VK_SHADER_OUTPUT_DIR}/${output_name}.spv")
     add_custom_command(
@@ -123,7 +72,6 @@ function(vkr_add_bindless_vulkan_packet_shader output_name entry stage)
                 -profile "spirv_1_6+SPV_GOOGLE_user_type+spvDerivativeControl+spvImageQuery+spvImageGatherExtended+spvSparseResidency+spvMinLod+spvFragmentFullyCoveredEXT"
                 -fvk-use-entrypoint-name
                 -fvk-use-scalar-layout
-                -I "${VKR_VULKAN_SHADER_SOURCE_DIR}"
                 -entry "${entry}"
                 -stage "${stage}"
                 "${VKR_BINDLESS_VK_PACKET_SHADER_SOURCE}"

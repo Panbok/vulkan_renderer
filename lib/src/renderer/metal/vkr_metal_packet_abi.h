@@ -6,7 +6,6 @@
 #include "renderer/systems/vkr_lighting_system.h"
 #include "renderer/vkr_buffer.h"
 #include "renderer/vkr_gpu_abi.h"
-#include "renderer/vkr_instance_buffer.h"
 
 enum {
   VKR_METAL_PACKET_ROOT_ALIGNMENT = 256,

@@ -1,6 +1,5 @@
 #include "harness_test.h"
 
-#include "renderer/vulkan/vulkan_capture.h"
 #include "vkr_harness.h"
 #include "vkr_harness_json.h"
 #include "vkr_harness_runtime.h"
@@ -113,6 +112,19 @@ static void test_harness_case_parser(void) {
                                               &resolved_backend));
   assert(!vkr_harness_renderer_backend_resolve(&parsed.renderer, "vulkan",
                                                &resolved_backend));
+  const VkrHarnessRendererConfig unpinned_renderer = {0};
+  assert(vkr_harness_renderer_backend_resolve(&unpinned_renderer, NULL,
+                                              &resolved_backend));
+#if defined(_WIN32)
+  assert(resolved_backend == VKR_RENDERER_BACKEND_TYPE_VULKAN);
+#else
+  assert(resolved_backend == VKR_RENDERER_BACKEND_TYPE_METAL);
+#endif
+  assert(!vkr_harness_renderer_backend_resolve(
+      &unpinned_renderer, "vulkan-bindless", &resolved_backend));
+  assert(vkr_harness_renderer_backend_resolve(&unpinned_renderer, "vulkan",
+                                              &resolved_backend));
+  assert(resolved_backend == VKR_RENDERER_BACKEND_TYPE_VULKAN);
   char invalid_backend[2048];
   snprintf(invalid_backend, sizeof(invalid_backend), "%s", metal_case);
   char *metal_value = strstr(invalid_backend, "\"metal\"");
@@ -545,10 +557,10 @@ static void test_harness_subsystem_plans(void) {
    */
   char mask_text[VKR_HARNESS_SUBSYSTEM_MASK_MAX];
   vkr_harness_format_subsystem_mask(mask_text, VKR_RENDERER_SUBSYSTEM_ALL);
-  assert(strcmp(mask_text, "0x000000000007ffff") == 0);
+  assert(strcmp(mask_text, "0x000000000001ffff") == 0);
   vkr_harness_format_subsystem_mask(mask_text,
                                     VKR_RENDERER_SUBSYSTEM_MANDATORY);
-  assert(strcmp(mask_text, "0x0000000000003fff") == 0);
+  assert(strcmp(mask_text, "0x0000000000000fff") == 0);
   printf("  test_harness_subsystem_plans PASSED\n");
 }
 
@@ -1146,70 +1158,6 @@ static void test_harness_guarded_baseline_accept(void) {
 #endif
 }
 
-static void test_capture_slot_state_machine(void) {
-  printf("  Running test_capture_slot_state_machine...\n");
-  VulkanBackendState state = {0};
-  state.capture_ring.capacity = 3u;
-  state.capture_ring.initialized = true_v;
-  VulkanCaptureSlot *submitted = &state.capture_ring.slots[0];
-  submitted->state = VULKAN_CAPTURE_SLOT_RECORDED;
-  submitted->request_id = 1u;
-  submitted->item_count = submitted->recorded_count = 1u;
-  submitted->recorded_mask = 1u;
-  vulkan_capture_submit_active(&state, 2u, 7u);
-  assert(submitted->state == VULKAN_CAPTURE_SLOT_SUBMITTED);
-  assert(submitted->submit_frame_slot == 2u && submitted->submit_serial == 7u);
-  assert(vulkan_capture_release(&state, 1u));
-  assert(submitted->state == VULKAN_CAPTURE_SLOT_ABANDONED);
-
-  submitted->state = VULKAN_CAPTURE_SLOT_RECORDED;
-  submitted->request_id = 1u;
-  submitted->submit_serial = 0u;
-  assert(vulkan_capture_release(&state, 1u));
-  VkrCapturePollResult abandoned_poll = {0};
-  assert(vulkan_capture_poll(&state, 1u, &abandoned_poll) ==
-         VKR_CAPTURE_STATUS_NOT_FOUND);
-  assert(submitted->state == VULKAN_CAPTURE_SLOT_ABANDONED);
-  vulkan_capture_submit_active(&state, 1u, 8u);
-  assert(submitted->state == VULKAN_CAPTURE_SLOT_ABANDONED);
-  assert(submitted->submit_frame_slot == 1u && submitted->submit_serial == 8u);
-
-  VulkanCaptureSlot *cancelled = &state.capture_ring.slots[1];
-  cancelled->state = VULKAN_CAPTURE_SLOT_RESERVED;
-  cancelled->request_id = 2u;
-  VulkanCaptureSlot *recorded = &state.capture_ring.slots[2];
-  recorded->state = VULKAN_CAPTURE_SLOT_RECORDED;
-  recorded->request_id = 3u;
-  vulkan_capture_fail_unsubmitted(&state,
-                                  VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED);
-  assert(cancelled->state == VULKAN_CAPTURE_SLOT_FAILED);
-  assert(recorded->state == VULKAN_CAPTURE_SLOT_FAILED);
-  assert(cancelled->error == VKR_RENDERER_ERROR_COMMAND_RECORDING_FAILED);
-  assert(vulkan_capture_release(&state, 2u));
-  assert(cancelled->state == VULKAN_CAPTURE_SLOT_IDLE);
-  assert(!vulkan_capture_release(&state, 99u));
-
-  submitted->state = VULKAN_CAPTURE_SLOT_FAILED;
-  submitted->request_id = 1u;
-  cancelled->state = VULKAN_CAPTURE_SLOT_FAILED;
-  cancelled->request_id = 2u;
-  recorded->state = VULKAN_CAPTURE_SLOT_FAILED;
-  recorded->request_id = 3u;
-  state.capture_ring.last_request_id = 3u;
-  VkrCaptureItemRequest item = {.channel = 0u};
-  VkrCaptureBatchRequest request = {
-      .request_id = 4u, .items = &item, .item_count = 1u};
-  VkrCaptureBackendItemPlan plan = {
-      .result = {.width = 1u, .height = 1u, .data_size = 4u}};
-  VkrBackendResourceHandle buffer = {0};
-  assert(vulkan_capture_reserve(&state, &request, &plan, 0u, &buffer) ==
-         VKR_RENDERER_ERROR_CAPTURE_BUSY);
-  request.request_id = 3u;
-  assert(vulkan_capture_reserve(&state, &request, &plan, 0u, &buffer) ==
-         VKR_RENDERER_ERROR_INVALID_PARAMETER);
-  printf("  test_capture_slot_state_machine PASSED\n");
-}
-
 bool32_t run_harness_tests(void) {
   printf("--- Running Harness tests... ---\n");
   test_harness_hash_and_statistics();
@@ -1230,7 +1178,6 @@ bool32_t run_harness_tests(void) {
   test_harness_capture_replays();
   test_harness_comparison_algorithms();
   test_harness_guarded_baseline_accept();
-  test_capture_slot_state_machine();
   printf("--- Harness tests completed. ---\n");
   return true;
 }

@@ -84,20 +84,10 @@ resource_async_mock_get_completed_submit_serial(void *backend_state) {
   return state ? state->completed_submit_serial : 0;
 }
 
-static uint64_t resource_async_impl_get_submit_serial(void *state) {
-  RendererFrontend *renderer = state;
-  return renderer->backend.get_submit_serial(renderer->backend_state);
-}
-
-static uint64_t resource_async_impl_get_completed_submit_serial(void *state) {
-  RendererFrontend *renderer = state;
-  return renderer->backend.get_completed_submit_serial(renderer->backend_state);
-}
-
 static const VkrRendererImplOps resource_async_impl_ops = {
-    .get_submit_serial = resource_async_impl_get_submit_serial,
+    .get_submit_serial = resource_async_mock_get_submit_serial,
     .get_completed_submit_serial =
-        resource_async_impl_get_completed_submit_serial,
+        resource_async_mock_get_completed_submit_serial,
 };
 
 static void resource_async_mock_init_renderer(
@@ -106,12 +96,8 @@ static void resource_async_mock_init_renderer(
   MemZero(backend_state, sizeof(*backend_state));
   backend_state->submit_serial = 1;
   backend_state->completed_submit_serial = 2;
-  renderer->backend_state = backend_state;
-  renderer->backend.get_submit_serial = resource_async_mock_get_submit_serial;
-  renderer->backend.get_completed_submit_serial =
-      resource_async_mock_get_completed_submit_serial;
   renderer->impl.ops = &resource_async_impl_ops;
-  renderer->impl.state = renderer;
+  renderer->impl.state = backend_state;
   renderer->frame_active = false_v;
 }
 

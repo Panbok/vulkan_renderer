@@ -5,78 +5,12 @@
 #include "core/vkr_text.h"
 #include "math/vkr_transform.h"
 #include "memory/vkr_allocator.h"
-#include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_font_system.h"
-#include "renderer/vkr_buffer.h"
 
 #define VKR_UI_TEXT_QUAD_COUNT 4
 #define VKR_UI_TEXT_INDEX_COUNT 6
 #define VKR_UI_TEXT_VERTEX_GROWTH_COUNT 64
 #define VKR_UI_TEXT_INDEX_GROWTH_COUNT 96
-
-#define VKR_UI_TEXT_BUFFER_RETIRE_FRAMES 3
-
-vkr_internal void vkr_ui_text_collect_retired_buffers(VkrUiText *text,
-                                                      uint64_t current_frame) {
-  assert_log(text != NULL, "Text is NULL");
-
-  for (uint32_t i = 0; i < VKR_UI_TEXT_MAX_RETIRED_BUFFER_SETS; ++i) {
-    VkrUiTextRetiredBufferSet *slot = &text->retired_buffers[i];
-    if (slot->vertex_buffer.handle == NULL &&
-        slot->index_buffer.handle == NULL) {
-      continue;
-    }
-
-    if (current_frame < slot->retire_after_frame) {
-      continue;
-    }
-
-    if (slot->vertex_buffer.handle) {
-      vkr_vertex_buffer_destroy(text->renderer, &slot->vertex_buffer);
-    }
-    if (slot->index_buffer.handle) {
-      vkr_index_buffer_destroy(text->renderer, &slot->index_buffer);
-    }
-
-    MemZero(slot, sizeof(*slot));
-  }
-}
-
-vkr_internal void vkr_ui_text_retire_buffers(VkrUiText *text,
-                                             VkrVertexBuffer vertex_buffer,
-                                             VkrIndexBuffer index_buffer,
-                                             uint64_t current_frame) {
-  assert_log(text != NULL, "Text is NULL");
-
-  if (vertex_buffer.handle == NULL && index_buffer.handle == NULL)
-    return;
-
-  uint64_t retire_after_frame =
-      current_frame + VKR_UI_TEXT_BUFFER_RETIRE_FRAMES;
-
-  for (uint32_t i = 0; i < VKR_UI_TEXT_MAX_RETIRED_BUFFER_SETS; ++i) {
-    VkrUiTextRetiredBufferSet *slot = &text->retired_buffers[i];
-    if (slot->vertex_buffer.handle != NULL ||
-        slot->index_buffer.handle != NULL) {
-      continue;
-    }
-
-    slot->vertex_buffer = vertex_buffer;
-    slot->index_buffer = index_buffer;
-    slot->retire_after_frame = retire_after_frame;
-    return;
-  }
-
-  // Edge case: too many pending resizes without enough frames progressing to
-  // retire old buffers. Fall back to a full GPU idle wait to safely destroy.
-  vkr_renderer_wait_idle(text->renderer);
-  if (vertex_buffer.handle) {
-    vkr_vertex_buffer_destroy(text->renderer, &vertex_buffer);
-  }
-  if (index_buffer.handle) {
-    vkr_index_buffer_destroy(text->renderer, &index_buffer);
-  }
-}
 
 vkr_internal bool8_t vkr_ui_text_codepoint_key(char *buffer,
                                                uint64_t buffer_size,
@@ -187,12 +121,10 @@ vkr_internal bool8_t vkr_ui_text_generate_geometry(VkrUiText *text) {
 
   uint32_t glyph_count = (uint32_t)text->layout.glyphs.length;
   if (glyph_count == 0) {
-    text->render.quad_count = 0;
     text->geometry.vertex_count = 0;
     text->geometry.index_count = 0;
     text->geometry.revision++;
     text->buffers_dirty = false_v;
-    text->gpu_buffers_dirty = true_v;
     return true_v;
   }
 
@@ -360,14 +292,11 @@ vkr_internal bool8_t vkr_ui_text_generate_geometry(VkrUiText *text) {
 
   uint32_t vertex_count = vertex_idx;
   uint32_t index_count = index_idx;
-  text->render.quad_count = vertex_count / VKR_UI_TEXT_QUAD_COUNT;
-
   if (vertex_count == 0 || index_count == 0) {
     text->geometry.vertex_count = 0;
     text->geometry.index_count = 0;
     text->geometry.revision++;
     text->buffers_dirty = false_v;
-    text->gpu_buffers_dirty = true_v;
     return true_v;
   }
 
@@ -375,84 +304,12 @@ vkr_internal bool8_t vkr_ui_text_generate_geometry(VkrUiText *text) {
   text->geometry.index_count = index_count;
   text->geometry.revision++;
   text->buffers_dirty = false_v;
-  text->gpu_buffers_dirty = true_v;
   return true_v;
 }
 
-vkr_internal bool8_t vkr_ui_text_upload_geometry(VkrUiText *text) {
-  if (!text || !text->renderer)
-    return false_v;
-  const uint32_t vertex_count = text->geometry.vertex_count;
-  const uint32_t index_count = text->geometry.index_count;
-  if (vertex_count == 0 || index_count == 0) {
-    text->gpu_buffers_dirty = false_v;
-    return true_v;
-  }
-  RendererFrontend *rf = (RendererFrontend *)text->renderer;
-  const uint64_t current_frame = rf ? rf->frame_number : 0;
-  vkr_ui_text_collect_retired_buffers(text, current_frame);
-  VkrTextVertex *vertices = text->geometry.vertices;
-  uint32_t *indices = text->geometry.indices;
-  const bool8_t has_buffers = text->render.vertex_buffer.handle != NULL &&
-                              text->render.index_buffer.handle != NULL;
-  const bool8_t need_realloc = !has_buffers ||
-                               vertex_count > text->render.vertex_capacity ||
-                               index_count > text->render.index_capacity;
-  const uint32_t alloc_vertex_count = text->geometry.vertex_capacity;
-  const uint32_t alloc_index_count = text->geometry.index_capacity;
-
-  VkrRendererError buffer_err = VKR_RENDERER_ERROR_NONE;
-  if (need_realloc) {
-    // Use dynamic buffers for UI text (host-visible, no GPU sync on update).
-    // Create new buffers first; old buffers are retired after a successful
-    // swap.
-    VkrVertexBuffer new_vertex_buffer = vkr_vertex_buffer_create_dynamic(
-        text->renderer, vertices, sizeof(VkrTextVertex), alloc_vertex_count,
-        VKR_VERTEX_INPUT_RATE_VERTEX, string8_lit("ui_text_vertices"),
-        &buffer_err);
-
-    if (buffer_err != VKR_RENDERER_ERROR_NONE) {
-      return false_v;
-    }
-
-    VkrIndexBuffer new_index_buffer = vkr_index_buffer_create_dynamic(
-        text->renderer, indices, VKR_INDEX_TYPE_UINT32, alloc_index_count,
-        string8_lit("ui_text_indices"), &buffer_err);
-
-    if (buffer_err != VKR_RENDERER_ERROR_NONE) {
-      vkr_vertex_buffer_destroy(text->renderer, &new_vertex_buffer);
-      return false_v;
-    }
-
-    vkr_ui_text_retire_buffers(text, text->render.vertex_buffer,
-                               text->render.index_buffer, current_frame);
-
-    text->render.vertex_buffer = new_vertex_buffer;
-    text->render.index_buffer = new_index_buffer;
-    text->render.vertex_capacity = alloc_vertex_count;
-    text->render.index_capacity = alloc_index_count;
-  } else {
-    buffer_err = vkr_vertex_buffer_update(
-        text->renderer, &text->render.vertex_buffer, vertices, 0, vertex_count);
-    if (buffer_err == VKR_RENDERER_ERROR_NONE) {
-      buffer_err = vkr_index_buffer_update(
-          text->renderer, &text->render.index_buffer, indices, 0, index_count);
-    }
-    if (buffer_err != VKR_RENDERER_ERROR_NONE) {
-      return false_v;
-    }
-  }
-
-  text->gpu_buffers_dirty = false_v;
-  return true_v;
-}
-
-bool8_t vkr_ui_text_create(VkrRendererFrontendHandle renderer,
-                           VkrAllocator *allocator, VkrFontSystem *font_system,
-                           VkrPipelineHandle pipeline, String8 content,
-                           const VkrUiTextConfig *config, VkrUiText *out_text,
-                           VkrRendererError *out_error) {
-  assert_log(renderer != NULL, "Renderer is NULL");
+bool8_t vkr_ui_text_create(VkrAllocator *allocator, VkrFontSystem *font_system,
+                           String8 content, const VkrUiTextConfig *config,
+                           VkrUiText *out_text, VkrRendererError *out_error) {
   assert_log(allocator != NULL, "Allocator is NULL");
   assert_log(font_system != NULL, "Font system is NULL");
   assert_log(out_text != NULL, "Output text is NULL");
@@ -463,7 +320,6 @@ bool8_t vkr_ui_text_create(VkrRendererFrontendHandle renderer,
 
   MemZero(out_text, sizeof(VkrUiText));
 
-  out_text->renderer = renderer;
   out_text->font_system = font_system;
   out_text->allocator = allocator;
   out_text->content = vkr_ui_text_copy_content(allocator, content);
@@ -471,9 +327,6 @@ bool8_t vkr_ui_text_create(VkrRendererFrontendHandle renderer,
   out_text->transform = vkr_transform_identity();
   out_text->layout_dirty = true_v;
   out_text->buffers_dirty = true_v;
-  out_text->render.pipeline = pipeline;
-  out_text->render.instance_state =
-      (VkrRendererInstanceStateHandle){.id = VKR_INVALID_ID};
 
   if (out_text->config.font.id != 0) {
     out_text->resolved_font =
@@ -493,63 +346,12 @@ bool8_t vkr_ui_text_create(VkrRendererFrontendHandle renderer,
     return false_v;
   }
 
-  if (out_text->renderer->impl.caps.uses_legacy_pipeline_state) {
-    VkrRendererError text_ls_err = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_pipeline_registry_acquire_instance_state(
-            &out_text->renderer->pipeline_registry, pipeline,
-            &out_text->render.instance_state, &text_ls_err)) {
-      vkr_ui_text_destroy(out_text);
-      String8 err_str = vkr_renderer_get_error_string(text_ls_err);
-      if (out_error) {
-        *out_error = text_ls_err;
-      }
-      log_error("Failed to acquire instance state for text pipeline: %s",
-                string8_cstr(&err_str));
-      return false_v;
-    }
-  }
-
   return true_v;
 }
 
 void vkr_ui_text_destroy(VkrUiText *text) {
   if (!text) {
     return;
-  }
-
-  RendererFrontend *rf = (RendererFrontend *)text->renderer;
-  if (rf) {
-    vkr_ui_text_collect_retired_buffers(text, rf->frame_number);
-  }
-
-  if (text->render.instance_state.id != VKR_INVALID_ID &&
-      text->render.pipeline.id != 0) {
-    VkrRendererError release_error = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_pipeline_registry_release_instance_state(
-            &text->renderer->pipeline_registry, text->render.pipeline,
-            text->render.instance_state, &release_error)) {
-      log_warn("UI text: failed to release instance state (pipeline=%u, "
-               "generation=%u, state=%u, err=%d)",
-               text->render.pipeline.id, text->render.pipeline.generation,
-               text->render.instance_state.id, release_error);
-    }
-  }
-
-  if (text->render.vertex_buffer.handle) {
-    vkr_vertex_buffer_destroy(text->renderer, &text->render.vertex_buffer);
-  }
-  if (text->render.index_buffer.handle) {
-    vkr_index_buffer_destroy(text->renderer, &text->render.index_buffer);
-  }
-
-  for (uint32_t i = 0; i < VKR_UI_TEXT_MAX_RETIRED_BUFFER_SETS; ++i) {
-    VkrUiTextRetiredBufferSet *slot = &text->retired_buffers[i];
-    if (slot->vertex_buffer.handle) {
-      vkr_vertex_buffer_destroy(text->renderer, &slot->vertex_buffer);
-    }
-    if (slot->index_buffer.handle) {
-      vkr_index_buffer_destroy(text->renderer, &slot->index_buffer);
-    }
   }
 
   vkr_text_layout_destroy(&text->layout);
@@ -578,11 +380,6 @@ void vkr_ui_text_destroy(VkrUiText *text) {
 bool8_t vkr_ui_text_set_content(VkrUiText *text, String8 content) {
   if (!text || !text->allocator) {
     return false_v;
-  }
-
-  RendererFrontend *rf = (RendererFrontend *)text->renderer;
-  if (rf) {
-    vkr_ui_text_collect_retired_buffers(text, rf->frame_number);
   }
 
   if (text->content.str) {
@@ -691,134 +488,4 @@ bool8_t vkr_ui_text_prepare_geometry(VkrUiText *text) {
   }
 
   return text->geometry.vertex_count > 0 && text->geometry.index_count > 0;
-}
-
-bool8_t vkr_ui_text_prepare(VkrUiText *text) {
-  if (!vkr_ui_text_prepare_geometry(text))
-    return false_v;
-  RendererFrontend *rf = (RendererFrontend *)text->renderer;
-  if (rf)
-    vkr_ui_text_collect_retired_buffers(text, rf->frame_number);
-  if (text->gpu_buffers_dirty && !vkr_ui_text_upload_geometry(text)) {
-    log_error("Failed to upload UI text geometry");
-    return false_v;
-  }
-
-  return (text->render.quad_count > 0 &&
-          text->render.vertex_buffer.handle != NULL &&
-          text->render.index_buffer.handle != NULL);
-}
-
-void vkr_ui_text_draw(VkrUiText *text) {
-  assert_log(text != NULL, "Text is NULL");
-
-  if (!vkr_ui_text_prepare(text)) {
-    return;
-  }
-
-  if (text->render.quad_count == 0) {
-    return;
-  }
-
-  RendererFrontend *rf = (RendererFrontend *)text->renderer;
-
-  const char *text_shader = "shader.default.text";
-  if (!vkr_shader_system_use(&rf->shader_system, text_shader)) {
-    log_warn("Failed to bind text shader; skipping UI text");
-    return;
-  }
-
-  VkrPipelineHandle current_text_pipeline =
-      vkr_pipeline_registry_get_current_pipeline(&rf->pipeline_registry);
-  if (current_text_pipeline.id != text->render.pipeline.id ||
-      current_text_pipeline.generation != text->render.pipeline.generation) {
-    VkrRendererError bind_err = VKR_RENDERER_ERROR_NONE;
-    if (!vkr_pipeline_registry_bind_pipeline(
-            &rf->pipeline_registry, text->render.pipeline, &bind_err)) {
-      String8 err_str = vkr_renderer_get_error_string(bind_err);
-      log_error("Failed to bind text pipeline: %s", string8_cstr(&err_str));
-      return;
-    }
-  }
-
-  vkr_material_system_apply_global(&rf->material_system, &rf->globals,
-                                   VKR_PIPELINE_DOMAIN_UI);
-
-  VkrFont *font = text->resolved_font;
-  if (!font) {
-    font = vkr_font_system_get_by_handle(&rf->font_system, text->config.font);
-  }
-
-  VkrTexture *atlas_texture = NULL;
-  if (font && font->atlas.id != 0) {
-    atlas_texture =
-        vkr_texture_system_get_by_handle(&rf->texture_system, font->atlas);
-  }
-  if (!atlas_texture) {
-    atlas_texture = vkr_texture_system_get_default(&rf->texture_system);
-  }
-
-  if (atlas_texture) {
-    vkr_shader_system_sampler_set(&rf->shader_system, "diffuse_texture",
-                                  atlas_texture->handle);
-  }
-
-  rf->draw_state.instance_state = text->render.instance_state;
-  vkr_shader_system_bind_instance(&rf->shader_system,
-                                  text->render.instance_state.id);
-
-  VkrVertexBufferBinding vbb = {
-      .buffer = text->render.vertex_buffer.handle,
-      .binding = 0,
-      .offset = 0,
-  };
-  vkr_renderer_bind_vertex_buffer(text->renderer, &vbb);
-
-  VkrIndexBufferBinding ibb = {
-      .buffer = text->render.index_buffer.handle,
-      .type = VKR_INDEX_TYPE_UINT32,
-      .offset = 0,
-  };
-  vkr_renderer_bind_index_buffer(text->renderer, &ibb);
-
-  Mat4 model = vkr_transform_get_world(&text->transform);
-  vkr_material_system_apply_local(&rf->material_system,
-                                  &(VkrLocalMaterialState){.model = model});
-
-  Vec4 diffuse_color = {1.0f, 1.0f, 1.0f, 1.0f};
-  vkr_shader_system_uniform_set(&rf->shader_system, "diffuse_color",
-                                &diffuse_color);
-
-  float32_t screen_px_range = 0.0f;
-  float32_t font_mode = 0.0f;
-  if (font && font->type == VKR_FONT_TYPE_MTSDF) {
-    float32_t render_size = text->config.font_size;
-    if (render_size <= 0.0f) {
-      render_size = (float32_t)font->size;
-    }
-    if (font->em_size > 0.0f) {
-      font_mode = 1.0f;
-      screen_px_range =
-          font->sdf_distance_range * (render_size / font->em_size);
-      if (screen_px_range < 1.0f) {
-        screen_px_range = 1.0f;
-      }
-      if (screen_px_range > 4.0f) {
-        screen_px_range = 4.0f;
-      }
-    }
-  }
-
-  vkr_shader_system_uniform_set(&rf->shader_system, "screen_px_range",
-                                &screen_px_range);
-  vkr_shader_system_uniform_set(&rf->shader_system, "font_mode", &font_mode);
-
-  if (!vkr_shader_system_apply_instance(&rf->shader_system)) {
-    return;
-  }
-
-  uint32_t index_count = text->render.quad_count * 6;
-  vkr_renderer_draw_indexed(text->renderer, index_count, 1, 0, 0, 0);
-
-  text->render.last_frame_rendered = rf->frame_number;
 }

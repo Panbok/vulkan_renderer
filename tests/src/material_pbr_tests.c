@@ -5,7 +5,6 @@
 #include "renderer/renderer_frontend.h"
 #include "renderer/resources/loaders/material_loader.h"
 #include "renderer/systems/vkr_material_system.h"
-#include "renderer/systems/vkr_shader_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 
 #include <assert.h>
@@ -22,17 +21,15 @@
 #include <unistd.h>
 #endif
 
-typedef struct MaterialPbrMockBackendState {
-  uintptr_t next_handle_token;
+typedef struct MaterialPbrMockPublisherState {
   uint32_t texture_create_calls;
-  uint32_t texture_batch_create_calls;
   uint32_t texture_destroy_calls;
-} MaterialPbrMockBackendState;
+} MaterialPbrMockPublisherState;
 
 typedef struct MaterialPbrTestContext {
   RendererFrontend renderer;
-  MaterialPbrMockBackendState backend_state;
-  VkrShaderSystem shader_system;
+  MaterialPbrMockPublisherState publisher_state;
+  VkrAssetPublisher asset_publisher;
   VkrTextureSystem texture_system;
   VkrMaterialSystem material_system;
   VkrResourceLoader material_loader;
@@ -40,84 +37,65 @@ typedef struct MaterialPbrTestContext {
   VkrAllocator temp_allocator;
 } MaterialPbrTestContext;
 
-static VkrBackendResourceHandle
-material_pbr_mock_make_handle(MaterialPbrMockBackendState *state) {
-  state->next_handle_token++;
-  return (VkrBackendResourceHandle){
-      .ptr = (void *)((state->next_handle_token << 4u) | 1u)};
-}
-
 static void material_pbr_mock_get_device_information(
-    void *backend_state, VkrDeviceInformation *device_information,
-    Arena *temp_arena) {
-  (void)backend_state;
+    void *state, VkrDeviceInformation *device_information, Arena *temp_arena) {
+  (void)state;
   (void)temp_arena;
   assert(device_information != NULL);
 
   MemZero(device_information, sizeof(*device_information));
 }
 
-static void material_pbr_impl_get_device_information(
-    void *state, VkrDeviceInformation *device_information, Arena *temp_arena) {
-  RendererFrontend *renderer = state;
-  renderer->backend.get_device_information(renderer->backend_state,
-                                           device_information, temp_arena);
-}
-
 static const VkrRendererImplOps material_pbr_impl_ops = {
-    .get_device_information = material_pbr_impl_get_device_information,
+    .get_device_information = material_pbr_mock_get_device_information,
 };
 
-static VkrBackendResourceHandle
-material_pbr_mock_texture_create(void *backend_state,
-                                 const VkrTextureDescription *desc,
-                                 const void *initial_data) {
-  (void)desc;
-  (void)initial_data;
-
-  MaterialPbrMockBackendState *state =
-      (MaterialPbrMockBackendState *)backend_state;
+static bool8_t material_pbr_mock_publish_texture(
+    void *publisher_state, VkrTextureHandle handle,
+    const struct VkrTexturePreparedLoad *texture) {
+  (void)handle;
+  (void)texture;
+  MaterialPbrMockPublisherState *state = publisher_state;
   assert(state != NULL);
   state->texture_create_calls++;
-  return material_pbr_mock_make_handle(state);
+  return true_v;
 }
 
-static VkrBackendResourceHandle material_pbr_mock_texture_create_with_payload(
-    void *backend_state, const VkrTextureDescription *desc,
-    const VkrTextureUploadPayload *payload) {
-  (void)payload;
-  return material_pbr_mock_texture_create(backend_state, desc, NULL);
-}
-
-static uint32_t material_pbr_mock_texture_create_with_payload_batch(
-    void *backend_state, const VkrTextureBatchCreateRequest *requests,
-    uint32_t count, VkrBackendResourceHandle *out_handles,
-    VkrRendererError *out_errors) {
-  MaterialPbrMockBackendState *state =
-      (MaterialPbrMockBackendState *)backend_state;
-  assert(state != NULL);
-  assert(requests != NULL);
-  assert(out_handles != NULL);
-  assert(out_errors != NULL);
-
-  state->texture_batch_create_calls++;
-
-  for (uint32_t i = 0; i < count; ++i) {
-    out_handles[i] = material_pbr_mock_make_handle(state);
-    out_errors[i] = VKR_RENDERER_ERROR_NONE;
-  }
-
-  return count;
-}
-
-static void material_pbr_mock_texture_destroy(void *backend_state,
-                                              VkrBackendResourceHandle handle) {
+static bool8_t material_pbr_mock_publish_writable_texture(
+    void *publisher_state, VkrTextureHandle handle,
+    const VkrTextureDescription *description) {
   (void)handle;
+  (void)description;
+  MaterialPbrMockPublisherState *state = publisher_state;
+  assert(state != NULL);
+  state->texture_create_calls++;
+  return true_v;
+}
 
-  MaterialPbrMockBackendState *state =
-      (MaterialPbrMockBackendState *)backend_state;
+static bool8_t material_pbr_mock_unpublish_texture(void *publisher_state,
+                                                   VkrTextureHandle handle) {
+  (void)handle;
+  MaterialPbrMockPublisherState *state = publisher_state;
   assert(state != NULL);
   state->texture_destroy_calls++;
+  return true_v;
+}
+
+static bool8_t
+material_pbr_mock_publish_material(void *publisher_state,
+                                   VkrMaterialHandle handle,
+                                   const struct VkrMaterial *material) {
+  (void)publisher_state;
+  (void)handle;
+  (void)material;
+  return true_v;
+}
+
+static bool8_t material_pbr_mock_unpublish_material(void *publisher_state,
+                                                    VkrMaterialHandle handle) {
+  (void)publisher_state;
+  (void)handle;
+  return true_v;
 }
 
 static bool8_t material_pbr_test_make_dir(const char *path) {
@@ -199,18 +177,16 @@ static void material_pbr_test_init_renderer(MaterialPbrTestContext *ctx) {
       (VkrAllocator){.ctx = ctx->renderer.scratch_arena};
   assert(vkr_allocator_arena(&ctx->renderer.scratch_allocator));
 
-  ctx->backend_state.next_handle_token = 0x1000u;
-  ctx->renderer.backend_state = &ctx->backend_state;
-  ctx->renderer.backend.get_device_information =
-      material_pbr_mock_get_device_information;
   ctx->renderer.impl.ops = &material_pbr_impl_ops;
-  ctx->renderer.impl.state = &ctx->renderer;
-  ctx->renderer.backend.texture_create = material_pbr_mock_texture_create;
-  ctx->renderer.backend.texture_create_with_payload =
-      material_pbr_mock_texture_create_with_payload;
-  ctx->renderer.backend.texture_create_with_payload_batch =
-      material_pbr_mock_texture_create_with_payload_batch;
-  ctx->renderer.backend.texture_destroy = material_pbr_mock_texture_destroy;
+  ctx->renderer.impl.state = &ctx->publisher_state;
+  ctx->asset_publisher = (VkrAssetPublisher){
+      .state = &ctx->publisher_state,
+      .publish_texture = material_pbr_mock_publish_texture,
+      .publish_writable_texture = material_pbr_mock_publish_writable_texture,
+      .unpublish_texture = material_pbr_mock_unpublish_texture,
+      .publish_material = material_pbr_mock_publish_material,
+      .unpublish_material = material_pbr_mock_unpublish_material,
+  };
 }
 
 static void material_pbr_test_shutdown_renderer(MaterialPbrTestContext *ctx) {
@@ -234,35 +210,23 @@ static bool8_t material_pbr_test_init_context(MaterialPbrTestContext *ctx) {
 
   material_pbr_test_init_renderer(ctx);
 
-  VkrShaderSystemConfig shader_cfg = {
-      .max_shader_count = 64,
-      .max_uniform_count = 64,
-      .max_global_textures = 16,
-      .max_instance_textures = 16,
-  };
-  if (!vkr_shader_system_initialize(&ctx->shader_system, shader_cfg)) {
-    material_pbr_test_shutdown_renderer(ctx);
-    return false_v;
-  }
-
   VkrTextureSystemConfig texture_cfg = {
       .max_texture_count = 256,
+      .asset_publisher = &ctx->asset_publisher,
   };
   if (!vkr_texture_system_init(&ctx->renderer, &texture_cfg, NULL,
                                &ctx->texture_system)) {
-    vkr_shader_system_shutdown(&ctx->shader_system);
     material_pbr_test_shutdown_renderer(ctx);
     return false_v;
   }
 
   VkrMaterialSystemConfig material_cfg = {
       .max_material_count = 128,
+      .asset_publisher = &ctx->asset_publisher,
   };
   if (!vkr_material_system_init(&ctx->material_system, ctx->renderer.arena,
-                                &ctx->texture_system, &ctx->shader_system,
-                                &material_cfg)) {
-    vkr_texture_system_shutdown(&ctx->renderer, &ctx->texture_system);
-    vkr_shader_system_shutdown(&ctx->shader_system);
+                                &ctx->texture_system, &material_cfg)) {
+    vkr_texture_system_shutdown(&ctx->texture_system);
     material_pbr_test_shutdown_renderer(ctx);
     return false_v;
   }
@@ -275,8 +239,7 @@ static bool8_t material_pbr_test_init_context(MaterialPbrTestContext *ctx) {
   ctx->temp_arena = arena_create(MB(8), MB(8));
   if (!ctx->temp_arena) {
     vkr_material_system_shutdown(&ctx->material_system);
-    vkr_texture_system_shutdown(&ctx->renderer, &ctx->texture_system);
-    vkr_shader_system_shutdown(&ctx->shader_system);
+    vkr_texture_system_shutdown(&ctx->texture_system);
     material_pbr_test_shutdown_renderer(ctx);
     return false_v;
   }
@@ -286,8 +249,7 @@ static bool8_t material_pbr_test_init_context(MaterialPbrTestContext *ctx) {
     arena_destroy(ctx->temp_arena);
     ctx->temp_arena = NULL;
     vkr_material_system_shutdown(&ctx->material_system);
-    vkr_texture_system_shutdown(&ctx->renderer, &ctx->texture_system);
-    vkr_shader_system_shutdown(&ctx->shader_system);
+    vkr_texture_system_shutdown(&ctx->texture_system);
     material_pbr_test_shutdown_renderer(ctx);
     return false_v;
   }
@@ -301,8 +263,7 @@ static void material_pbr_test_shutdown_context(MaterialPbrTestContext *ctx) {
   }
 
   vkr_material_system_shutdown(&ctx->material_system);
-  vkr_texture_system_shutdown(&ctx->renderer, &ctx->texture_system);
-  vkr_shader_system_shutdown(&ctx->shader_system);
+  vkr_texture_system_shutdown(&ctx->texture_system);
 
   if (ctx->temp_arena) {
     arena_destroy(ctx->temp_arena);
@@ -387,42 +348,6 @@ static bool8_t material_pbr_test_string_contains(const char *value,
   }
 
   return strstr(value, needle) != NULL ? true_v : false_v;
-}
-
-static void
-test_shader_switch_isolates_material_descriptors(MaterialPbrTestContext *ctx) {
-  printf("  Running test_shader_switch_isolates_material_descriptors...\n");
-
-  VkrShaderConfig configs[2] = {
-      {.name = string8_lit("test.shader.material_a")},
-      {.name = string8_lit("test.shader.material_b")},
-  };
-  assert(vkr_shader_system_create(&ctx->shader_system, &configs[0]) == true_v);
-  assert(vkr_shader_system_create(&ctx->shader_system, &configs[1]) == true_v);
-
-  assert(vkr_shader_system_use(&ctx->shader_system, "test.shader.material_a") ==
-         true_v);
-  ctx->shader_system.material_state.texture_count = 1;
-  ctx->shader_system.material_state.textures_enabled[0] = true_v;
-  ctx->shader_system.material_state.textures[0] =
-      (VkrTextureOpaqueHandle)(uintptr_t)0x1u;
-
-  // Re-selecting the same manifest is not a descriptor boundary.
-  assert(vkr_shader_system_use(&ctx->shader_system, "test.shader.material_a") ==
-         true_v);
-  assert(ctx->shader_system.material_state.texture_count == 1u);
-  assert(ctx->shader_system.material_state.textures_enabled[0] == true_v);
-
-  // A different manifest reinterprets sampler locations, so no slot survives.
-  assert(vkr_shader_system_use(&ctx->shader_system, "test.shader.material_b") ==
-         true_v);
-  assert(ctx->shader_system.material_state.texture_count == 0u);
-  for (uint32_t i = 0; i < VKR_MAX_INSTANCE_TEXTURES; ++i) {
-    assert(ctx->shader_system.material_state.textures[i] == NULL);
-    assert(ctx->shader_system.material_state.textures_enabled[i] == false_v);
-  }
-
-  printf("  test_shader_switch_isolates_material_descriptors PASSED\n");
 }
 
 static void
@@ -792,7 +717,6 @@ bool32_t run_material_pbr_tests(void) {
   test_material_texture_intent_query_normalization(&context);
   test_material_texture_intent_override_is_deterministic(&context);
   test_material_batch_load_honors_parsed_name_over_stem(&context);
-  test_shader_switch_isolates_material_descriptors(&context);
 
   material_pbr_test_shutdown_context(&context);
 

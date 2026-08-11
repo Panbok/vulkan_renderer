@@ -323,7 +323,6 @@ void vkr_rg_clear_compiled(VkrRenderGraph *graph) {
   }
 
   vector_clear_uint32_t(&graph->execution_order);
-  graph->compiled = false_v;
 }
 
 bool8_t vkr_rg_executor_registry_init(VkrRgExecutorRegistry *reg,
@@ -442,7 +441,6 @@ VkrRenderGraph *vkr_rg_create(VkrAllocator *allocator) {
   *graph = (VkrRenderGraph){0};
   graph->allocator = allocator;
   graph->frame_allocator = allocator;
-  graph->renderer = NULL;
   graph->images = vector_create_VkrRgImage(allocator);
   graph->buffers = vector_create_VkrRgBuffer(allocator);
   graph->passes = vector_create_VkrRgPass(allocator);
@@ -451,9 +449,6 @@ VkrRenderGraph *vkr_rg_create(VkrAllocator *allocator) {
   graph->export_buffers = vector_create_VkrRgBufferHandle(allocator);
   graph->execution_order = vector_create_uint32_t(allocator);
   graph->terminal_image_barriers = vector_create_VkrRgImageBarrier(allocator);
-  graph->renderpass_hashes = vector_create_uint64_t(allocator);
-  graph->render_target_cache =
-      vector_create_VkrRgRenderTargetCacheEntry(allocator);
   graph->present_image = VKR_RG_IMAGE_HANDLE_INVALID;
   return graph;
 }
@@ -471,36 +466,6 @@ bool8_t vkr_rg_set_frame_allocator(VkrRenderGraph *graph,
   graph->frame_allocator = allocator;
   graph->passes = vector_create_VkrRgPass(allocator);
   return true_v;
-}
-
-/**
- * @brief Releases one cache entry's framebuffers, keeping its render pass.
- *
- * The caller must prove GPU completion first: these handles are still named by
- * any command buffer that has not retired.
- */
-vkr_internal void
-vkr_rg_release_cached_targets(VkrRenderGraph *graph,
-                              VkrRgRenderTargetCacheEntry *entry) {
-  if (!entry->targets || entry->target_count == 0) {
-    entry->targets = NULL;
-    entry->target_count = 0;
-    entry->target_hash = 0;
-    return;
-  }
-
-  for (uint32_t i = 0; i < entry->target_count; ++i) {
-    if (graph->renderer && entry->targets[i]) {
-      vkr_renderer_render_target_destroy(graph->renderer, entry->targets[i]);
-    }
-  }
-  vkr_allocator_free(graph->allocator, entry->targets,
-                     sizeof(VkrRenderTargetHandle) *
-                         (uint64_t)entry->target_count,
-                     VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-  entry->targets = NULL;
-  entry->target_count = 0;
-  entry->target_hash = 0;
 }
 
 void vkr_rg_destroy(VkrRenderGraph *graph) {
@@ -531,21 +496,6 @@ void vkr_rg_destroy(VkrRenderGraph *graph) {
     if (buffer->name.str) {
       vkr_allocator_free(graph->allocator, buffer->name.str,
                          buffer->name.length + 1,
-                         VKR_ALLOCATOR_MEMORY_TAG_STRING);
-    }
-  }
-
-  for (uint64_t i = 0; i < graph->render_target_cache.length; ++i) {
-    VkrRgRenderTargetCacheEntry *entry =
-        vector_get_VkrRgRenderTargetCacheEntry(&graph->render_target_cache, i);
-    if (graph->renderer && entry->renderpass) {
-      vkr_renderer_renderpass_destroy(graph->renderer, entry->renderpass);
-      entry->renderpass = NULL;
-    }
-    vkr_rg_release_cached_targets(graph, entry);
-    if (entry->pass_name.str) {
-      vkr_allocator_free(graph->allocator, entry->pass_name.str,
-                         entry->pass_name.length + 1,
                          VKR_ALLOCATOR_MEMORY_TAG_STRING);
     }
   }
@@ -604,30 +554,9 @@ void vkr_rg_destroy(VkrRenderGraph *graph) {
   vector_destroy_VkrRgBufferHandle(&graph->export_buffers);
   vector_destroy_uint32_t(&graph->execution_order);
   vector_destroy_VkrRgImageBarrier(&graph->terminal_image_barriers);
-  vector_destroy_uint64_t(&graph->renderpass_hashes);
-  vector_destroy_VkrRgRenderTargetCacheEntry(&graph->render_target_cache);
 
   vkr_allocator_free(graph->allocator, graph, sizeof(VkrRenderGraph),
                      VKR_ALLOCATOR_MEMORY_TAG_RENDERER);
-}
-
-void vkr_rg_invalidate_render_targets(VkrRenderGraph *graph) {
-  if (!graph || !graph->renderer) {
-    return;
-  }
-
-  for (uint64_t i = 0; i < graph->render_target_cache.length; ++i) {
-    vkr_rg_release_cached_targets(graph, vector_get_VkrRgRenderTargetCacheEntry(
-                                             &graph->render_target_cache, i));
-  }
-
-  // Passes borrow the cache's arrays, so they must forget them together.
-  for (uint64_t i = 0; i < graph->passes.length; ++i) {
-    VkrRgPass *pass = vector_get_VkrRgPass(&graph->passes, i);
-    pass->render_targets = NULL;
-    pass->render_target_count = 0;
-  }
-  graph->compiled = false_v;
 }
 
 void vkr_rg_begin_frame(VkrRenderGraph *graph,

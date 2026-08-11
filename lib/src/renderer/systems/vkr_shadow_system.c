@@ -4,9 +4,6 @@
 #include "math/vkr_math.h"
 #include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_camera.h"
-#include "renderer/systems/vkr_pipeline_registry.h"
-#include "renderer/systems/vkr_resource_system.h"
-#include "renderer/systems/vkr_shader_system.h"
 
 // ============================================================================
 // Cascade Helpers
@@ -517,227 +514,6 @@ vkr_internal void vkr_shadow_compute_cascade_matrix(
   *out_view_projection = mat4_mul(light_projection, view);
 }
 
-// ============================================================================
-// Resource Creation
-// ============================================================================
-
-vkr_internal bool8_t vkr_shadow_create_renderpass(VkrShadowSystem *system,
-                                                  RendererFrontend *rf) {
-  VkrRenderPassHandle pass =
-      vkr_renderer_renderpass_get(rf, string8_lit("Renderpass.CSM.Shadow"));
-  if (!pass) {
-    VkrTextureFormat depth_format = vkr_renderer_get_shadow_depth_format(rf);
-    VkrClearValue clear_depth = {.depth_stencil = {1.0f, 0}};
-    VkrRenderPassAttachmentDesc depth_attachment = {
-        .format = depth_format,
-        .samples = VKR_SAMPLE_COUNT_1,
-        .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
-        .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
-        .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
-        .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
-        .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
-        .final_layout = VKR_TEXTURE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
-        .clear_value = clear_depth,
-    };
-    VkrRenderPassDesc desc = {
-        .name = string8_lit("Renderpass.CSM.Shadow"),
-        .domain = VKR_PIPELINE_DOMAIN_SHADOW,
-        .color_attachment_count = 0,
-        .color_attachments = NULL,
-        .depth_stencil_attachment = &depth_attachment,
-        .resolve_attachment_count = 0,
-        .resolve_attachments = NULL,
-    };
-    VkrRendererError pass_err = VKR_RENDERER_ERROR_NONE;
-    pass = vkr_renderer_renderpass_create_desc(rf, &desc, &pass_err);
-    if (!pass) {
-      String8 err = vkr_renderer_get_error_string(pass_err);
-      log_error("Failed to create shadow render pass");
-      log_error("Renderpass error: %s", string8_cstr(&err));
-      return false_v;
-    }
-    system->owns_renderpass = true_v;
-  }
-
-  system->shadow_renderpass = pass;
-  return true_v;
-}
-
-vkr_internal bool8_t vkr_shadow_create_shadow_maps(VkrShadowSystem *system,
-                                                   RendererFrontend *rf) {
-  uint32_t cascades = system->config.cascade_count;
-  uint32_t frames = vkr_renderer_present_target_image_count(rf);
-  if (frames == 0 || cascades == 0) {
-    return false_v;
-  }
-
-  uint32_t map_size = vkr_shadow_config_get_max_map_size(&system->config);
-  if (map_size == 0) {
-    return false_v;
-  }
-
-  system->frame_resource_count = frames;
-  system->frames = (VkrShadowFrameResources *)vkr_allocator_alloc(
-      &rf->allocator, sizeof(VkrShadowFrameResources) * (uint64_t)frames,
-      VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-  if (!system->frames) {
-    return false_v;
-  }
-  MemZero(system->frames, sizeof(VkrShadowFrameResources) * (uint64_t)frames);
-
-  for (uint32_t f = 0; f < frames; ++f) {
-    VkrRendererError tex_err = VKR_RENDERER_ERROR_NONE;
-    system->frames[f].shadow_map =
-        vkr_renderer_create_sampled_depth_attachment_array(
-            rf, map_size, map_size, cascades,
-            vkr_texture_usage_flags_from_bits(
-                VKR_TEXTURE_USAGE_DEPTH_STENCIL_ATTACHMENT |
-                VKR_TEXTURE_USAGE_SAMPLED),
-            &tex_err);
-    if (!system->frames[f].shadow_map) {
-      String8 err = vkr_renderer_get_error_string(tex_err);
-      log_error("Failed to create shadow depth array: %s", string8_cstr(&err));
-      return false_v;
-    }
-
-    for (uint32_t c = 0; c < cascades; ++c) {
-      VkrRenderTargetAttachmentRef attachments[1] = {
-          {.texture = system->frames[f].shadow_map,
-           .mip_level = 0,
-           .base_layer = c,
-           .layer_count = 1},
-      };
-      VkrRenderTargetDesc rt_desc = {
-          .sync_to_window_size = false_v,
-          .attachment_count = 1,
-          .attachments = attachments,
-          .width = map_size,
-          .height = map_size,
-      };
-
-      VkrRendererError rt_err = VKR_RENDERER_ERROR_NONE;
-      system->frames[f].shadow_targets[c] = vkr_renderer_render_target_create(
-          rf, &rt_desc, system->shadow_renderpass, &rt_err);
-      if (!system->frames[f].shadow_targets[c]) {
-        String8 err = vkr_renderer_get_error_string(rt_err);
-        log_error(
-            "Failed to create shadow render target (frame %u, cascade %u)", f,
-            c);
-        log_error("Render target error: %s", string8_cstr(&err));
-        return false_v;
-      }
-    }
-  }
-
-  return true_v;
-}
-
-vkr_internal bool8_t vkr_shadow_create_pipeline(VkrShadowSystem *system,
-                                                RendererFrontend *rf) {
-  VkrResourceHandleInfo alpha_cfg_info = {0};
-  VkrRendererError shadercfg_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_resource_system_load_custom(
-          string8_lit("shadercfg"),
-          string8_lit("assets/shaders/shadow.shadercfg"),
-          &rf->scratch_allocator, &alpha_cfg_info, &shadercfg_err)) {
-    String8 err = vkr_renderer_get_error_string(shadercfg_err);
-    log_error("Shadow shadercfg load failed: %s", string8_cstr(&err));
-    return false_v;
-  }
-
-  if (!alpha_cfg_info.as.custom) {
-    log_error("Shadow shadercfg returned null custom data");
-    return false_v;
-  }
-
-  system->shader_config_alpha = *(VkrShaderConfig *)alpha_cfg_info.as.custom;
-  if (!vkr_shader_system_create(&rf->shader_system,
-                                &system->shader_config_alpha)) {
-    log_error("Failed to create shadow alpha shader from config");
-    return false_v;
-  }
-
-  VkrResourceHandleInfo opaque_cfg_info = {0};
-  if (!vkr_resource_system_load_custom(
-          string8_lit("shadercfg"),
-          string8_lit("assets/shaders/shadow_opaque.shadercfg"),
-          &rf->scratch_allocator, &opaque_cfg_info, &shadercfg_err)) {
-    String8 err = vkr_renderer_get_error_string(shadercfg_err);
-    log_error("Shadow opaque shadercfg load failed: %s", string8_cstr(&err));
-    vkr_shader_system_delete(&rf->shader_system, "shader.shadow");
-    return false_v;
-  }
-
-  if (!opaque_cfg_info.as.custom) {
-    log_error("Shadow opaque shadercfg returned null custom data");
-    vkr_shader_system_delete(&rf->shader_system, "shader.shadow");
-    return false_v;
-  }
-
-  system->shader_config_opaque = *(VkrShaderConfig *)opaque_cfg_info.as.custom;
-  if (!vkr_shader_system_create(&rf->shader_system,
-                                &system->shader_config_opaque)) {
-    log_error("Failed to create shadow opaque shader from config");
-    vkr_shader_system_delete(&rf->shader_system, "shader.shadow");
-    return false_v;
-  }
-
-  VkrRendererError pipeline_error = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_pipeline_registry_create_from_shader_config(
-          &rf->pipeline_registry, &system->shader_config_alpha,
-          VKR_PIPELINE_DOMAIN_SHADOW, string8_lit("shadow_alpha"),
-          &system->shadow_pipeline_alpha, &pipeline_error)) {
-    String8 err = vkr_renderer_get_error_string(pipeline_error);
-    log_error("Shadow alpha pipeline creation failed: %s", string8_cstr(&err));
-    vkr_shader_system_delete(&rf->shader_system, "shader.shadow");
-    vkr_shader_system_delete(&rf->shader_system, "shader.shadow.opaque");
-    return false_v;
-  }
-
-  pipeline_error = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_pipeline_registry_create_from_shader_config(
-          &rf->pipeline_registry, &system->shader_config_opaque,
-          VKR_PIPELINE_DOMAIN_SHADOW, string8_lit("shadow_opaque"),
-          &system->shadow_pipeline_opaque, &pipeline_error)) {
-    String8 err = vkr_renderer_get_error_string(pipeline_error);
-    log_error("Shadow opaque pipeline creation failed: %s", string8_cstr(&err));
-    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
-                                           system->shadow_pipeline_alpha);
-    system->shadow_pipeline_alpha = VKR_PIPELINE_HANDLE_INVALID;
-    vkr_shader_system_delete(&rf->shader_system, "shader.shadow");
-    vkr_shader_system_delete(&rf->shader_system, "shader.shadow.opaque");
-    return false_v;
-  }
-
-  if (system->shader_config_alpha.name.str &&
-      system->shader_config_alpha.name.length > 0) {
-    VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
-    vkr_pipeline_registry_alias_pipeline_name(
-        &rf->pipeline_registry, system->shadow_pipeline_alpha,
-        system->shader_config_alpha.name, &alias_err);
-  }
-
-  if (system->shader_config_opaque.name.str &&
-      system->shader_config_opaque.name.length > 0) {
-    VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
-    vkr_pipeline_registry_alias_pipeline_name(
-        &rf->pipeline_registry, system->shadow_pipeline_opaque,
-        system->shader_config_opaque.name, &alias_err);
-  }
-
-  return true_v;
-}
-
-vkr_internal bool8_t
-vkr_shadow_system_uses_render_graph_shadow_map(const RendererFrontend *rf) {
-  // RenderGraph allocates and owns the per-frame shadow map image resource.
-  return rf && rf->render_graph_enabled && rf->render_graph_loaded;
-}
-
-// ============================================================================
-// Public API
-// ============================================================================
-
 bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
                                const VkrShadowConfig *config) {
   if (!system || !rf) {
@@ -745,11 +521,6 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
   }
 
   MemZero(system, sizeof(*system));
-  system->alpha_instance_states = NULL;
-  system->alpha_instance_state_count = 0;
-  system->alpha_instance_state_capacity = 0;
-  system->alpha_instance_cursor = 0;
-  system->alpha_instance_cursor_frame_number = UINT64_MAX;
   system->config = config ? *config : VKR_SHADOW_CONFIG_DEFAULT;
 
   if (system->config.cascade_count == 0) {
@@ -822,116 +593,15 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system, RendererFrontend *rf,
     }
   }
 
-  /* Bindless implementations own the graph shadow array and pipelines. The
-     retained subsystem still owns shared cascade configuration and matrices,
-     but must not recreate legacy render-pass or descriptor state. */
-  if (!rf->impl.caps.uses_legacy_pipeline_state) {
-    system->initialized = true_v;
-    return true_v;
-  }
-
-  if (!vkr_shadow_create_renderpass(system, rf)) {
-    goto cleanup;
-  }
-
-  if (!vkr_shadow_system_uses_render_graph_shadow_map(rf)) {
-    if (!vkr_shadow_create_shadow_maps(system, rf)) {
-      goto cleanup;
-    }
-  }
-
-  if (!vkr_shadow_create_pipeline(system, rf)) {
-    goto cleanup;
-  }
-
   system->initialized = true_v;
   return true_v;
-
-cleanup:
-  vkr_shadow_system_shutdown(system, rf);
-  return false_v;
 }
 
 void vkr_shadow_system_shutdown(VkrShadowSystem *system, RendererFrontend *rf) {
-  if (!system || !rf) {
-    return;
+  (void)rf;
+  if (system) {
+    MemZero(system, sizeof(*system));
   }
-
-  if (system->shadow_pipeline_alpha.id != 0 && system->alpha_instance_states) {
-    for (uint32_t i = 0; i < system->alpha_instance_state_count; ++i) {
-      if (system->alpha_instance_states[i].id == VKR_INVALID_ID) {
-        continue;
-      }
-      VkrRendererError release_err = VKR_RENDERER_ERROR_NONE;
-      vkr_pipeline_registry_release_instance_state(
-          &rf->pipeline_registry, system->shadow_pipeline_alpha,
-          system->alpha_instance_states[i], &release_err);
-      system->alpha_instance_states[i].id = VKR_INVALID_ID;
-    }
-  }
-
-  if (system->alpha_instance_states) {
-    vkr_allocator_free(&rf->allocator, system->alpha_instance_states,
-                       sizeof(VkrRendererInstanceStateHandle) *
-                           (uint64_t)system->alpha_instance_state_capacity,
-                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    system->alpha_instance_states = NULL;
-    system->alpha_instance_state_count = 0;
-    system->alpha_instance_state_capacity = 0;
-    system->alpha_instance_cursor = 0;
-    system->alpha_instance_cursor_frame_number = UINT64_MAX;
-  }
-
-  if (system->shadow_pipeline_alpha.id != 0) {
-    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
-                                           system->shadow_pipeline_alpha);
-    system->shadow_pipeline_alpha = VKR_PIPELINE_HANDLE_INVALID;
-  }
-
-  if (system->shadow_pipeline_opaque.id != 0) {
-    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
-                                           system->shadow_pipeline_opaque);
-    system->shadow_pipeline_opaque = VKR_PIPELINE_HANDLE_INVALID;
-  }
-
-  if (system->shader_config_alpha.name.str) {
-    vkr_shader_system_delete(&rf->shader_system, "shader.shadow");
-  }
-
-  if (system->shader_config_opaque.name.str) {
-    vkr_shader_system_delete(&rf->shader_system, "shader.shadow.opaque");
-  }
-
-  if (system->frames) {
-    for (uint32_t f = 0; f < system->frame_resource_count; ++f) {
-      for (uint32_t c = 0; c < system->config.cascade_count; ++c) {
-        if (system->frames[f].shadow_targets[c]) {
-          vkr_renderer_render_target_destroy(
-              rf, system->frames[f].shadow_targets[c]);
-          system->frames[f].shadow_targets[c] = NULL;
-        }
-      }
-      if (system->frames[f].shadow_map) {
-        vkr_renderer_destroy_texture(rf, system->frames[f].shadow_map);
-        system->frames[f].shadow_map = NULL;
-      }
-    }
-
-    vkr_allocator_free(&rf->allocator, system->frames,
-                       sizeof(VkrShadowFrameResources) *
-                           (uint64_t)system->frame_resource_count,
-                       VKR_ALLOCATOR_MEMORY_TAG_ARRAY);
-    system->frames = NULL;
-    system->frame_resource_count = 0;
-  }
-
-  if (system->shadow_renderpass && system->owns_renderpass) {
-    vkr_renderer_renderpass_destroy(rf, system->shadow_renderpass);
-  }
-  system->shadow_renderpass = NULL;
-  system->owns_renderpass = false_v;
-
-  system->initialized = false_v;
 }
 
 void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
@@ -1028,25 +698,10 @@ void vkr_shadow_system_update(VkrShadowSystem *system, const VkrCamera *camera,
   }
 }
 
-VkrRenderTargetHandle
-vkr_shadow_system_get_render_target(const VkrShadowSystem *system,
-                                    uint32_t frame_index,
-                                    uint32_t cascade_index) {
-  if (!system || !system->frames) {
-    return NULL;
-  }
-  if (frame_index >= system->frame_resource_count) {
-    return NULL;
-  }
-  if (cascade_index >= system->config.cascade_count) {
-    return NULL;
-  }
-  return system->frames[frame_index].shadow_targets[cascade_index];
-}
-
 void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
                                       uint32_t frame_index,
                                       VkrShadowFrameData *out_data) {
+  (void)frame_index;
   if (!out_data) {
     return;
   }
@@ -1054,9 +709,6 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
   MemZero(out_data, sizeof(*out_data));
 
   if (!system || !system->initialized) {
-    return;
-  }
-  if (system->frames && frame_index >= system->frame_resource_count) {
     return;
   }
 
@@ -1139,9 +791,5 @@ void vkr_shadow_system_get_frame_data(const VkrShadowSystem *system,
       out_data->light_space_origin[i] = vec2_zero();
       out_data->view_projection[i] = mat4_identity();
     }
-  }
-
-  if (system->frames && frame_index < system->frame_resource_count) {
-    out_data->shadow_map = system->frames[frame_index].shadow_map;
   }
 }

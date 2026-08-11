@@ -6,7 +6,6 @@
 #include "memory/arena.h"
 #include "memory/vkr_dmemory.h"
 #include "renderer/resources/vkr_resources.h"
-#include "renderer/systems/vkr_shader_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/vkr_asset_publisher.h"
@@ -71,7 +70,6 @@ typedef struct VkrMaterialSystem {
   uint32_t free_count;
 
   VkrTextureSystem *texture_system;
-  VkrShaderSystem *shader_system;
 
   // Shadow map bindings for world materials (updated per frame).
   VkrTextureOpaqueHandle shadow_map;
@@ -106,12 +104,10 @@ typedef struct VkrMaterialSystem {
  * @param system The material system to initialize
  * @param arena The arena to use
  * @param texture_system The texture system to use
- * @param shader_system The shader system to use
  * @param config The configuration for the material system
  */
 bool8_t vkr_material_system_init(VkrMaterialSystem *system, Arena *arena,
                                  VkrTextureSystem *texture_system,
-                                 VkrShaderSystem *shader_system,
                                  const VkrMaterialSystemConfig *config);
 
 /**
@@ -201,26 +197,6 @@ bool8_t vkr_material_system_unpublish(VkrMaterialSystem *system,
                                       VkrMaterialHandle handle);
 
 /**
- * @brief Applies the global material state to the material system
- * @param system The material system to apply the global material state to
- * @param global_state The global material state to apply
- * @param domain The domain to apply the global material state to
- */
-void vkr_material_system_apply_global(
-    VkrMaterialSystem *system, const VkrGlobalMaterialState *global_state,
-    VkrPipelineDomain domain);
-
-/**
- * @brief Applies the instance material state to the material system
- * @param system The material system to apply the instance material state to
- * @param material The material to apply the instance material state to
- * @param domain The domain to apply the instance material state to
- */
-void vkr_material_system_apply_instance(VkrMaterialSystem *system,
-                                        const VkrMaterial *material,
-                                        VkrPipelineDomain domain);
-
-/**
  * @brief Updates shadow map bindings for world materials.
  *
  * Passing enabled=false clears bindings (default textures will be used).
@@ -253,14 +229,6 @@ void vkr_material_system_set_ibl_probe_slots(
 void vkr_material_system_set_transmission_source(VkrMaterialSystem *system,
                                                  VkrTextureOpaqueHandle source,
                                                  bool8_t enabled);
-
-/**
- * @brief Applies the local material state to the material system
- * @param system The material system to apply the local material state to
- * @param local_state The local material state to apply
- */
-void vkr_material_system_apply_local(VkrMaterialSystem *system,
-                                     VkrLocalMaterialState *local_state);
 
 /**
  * @brief Returns a pointer to the material referenced by handle if valid; NULL

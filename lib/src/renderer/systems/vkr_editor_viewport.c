@@ -8,10 +8,7 @@
 #include "renderer/renderer_frontend.h"
 #include "renderer/systems/vkr_geometry_system.h"
 #include "renderer/systems/vkr_material_system.h"
-#include "renderer/systems/vkr_pipeline_registry.h"
 #include "renderer/systems/vkr_resource_system.h"
-#include "renderer/systems/vkr_shader_system.h"
-#include "renderer/vulkan/vulkan_types.h"
 
 static Vec4 vkr_editor_viewport_compute_panel_rect(uint32_t width,
                                                    uint32_t height) {
@@ -64,7 +61,6 @@ static void vkr_editor_viewport_reset(VkrEditorViewportResources *resources) {
   MemZero(resources, sizeof(*resources));
   resources->mesh_index = VKR_INVALID_ID;
   resources->geometry = VKR_GEOMETRY_HANDLE_INVALID;
-  resources->pipeline = VKR_PIPELINE_HANDLE_INVALID;
   resources->material = VKR_MATERIAL_HANDLE_INVALID;
   resources->plane_size = vec2_new(2.0f, 2.0f);
 }
@@ -88,16 +84,6 @@ vkr_editor_viewport_release_resources(RendererFrontend *rf,
     }
   }
 
-  if (resources->pipeline.id != 0) {
-    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
-                                           resources->pipeline);
-    resources->pipeline = VKR_PIPELINE_HANDLE_INVALID;
-  }
-  if (resources->renderpass && resources->owns_renderpass) {
-    vkr_renderer_renderpass_destroy(rf, resources->renderpass);
-  }
-  resources->renderpass = NULL;
-  resources->owns_renderpass = false_v;
   resources->initialized = false_v;
 }
 
@@ -190,118 +176,11 @@ bool8_t vkr_editor_viewport_init(RendererFrontend *rf,
 
   vkr_editor_viewport_reset(resources);
 
-  bool8_t owns_renderpass = false_v;
-  VkrRenderPassHandle renderpass =
-      vkr_renderer_renderpass_get(rf, string8_lit("Renderpass.Editor"));
-  if (!renderpass) {
-    VkrTextureFormat color_format = vkr_renderer_present_target_format(
-        rf, VKR_PRESENT_TARGET_ATTACHMENT_COLOR);
-    VkrClearValue clear_color = {.color_f32 = {0.0f, 0.0f, 0.0f, 1.0f}};
-    VkrRenderPassAttachmentDesc editor_color = {
-        .format = color_format,
-        .samples = VKR_SAMPLE_COUNT_1,
-        .load_op = VKR_ATTACHMENT_LOAD_OP_CLEAR,
-        .stencil_load_op = VKR_ATTACHMENT_LOAD_OP_DONT_CARE,
-        .store_op = VKR_ATTACHMENT_STORE_OP_STORE,
-        .stencil_store_op = VKR_ATTACHMENT_STORE_OP_DONT_CARE,
-        .initial_layout = VKR_TEXTURE_LAYOUT_UNDEFINED,
-        .final_layout =
-            vkr_renderer_present_target_kind(rf) == VKR_PRESENT_TARGET_WINDOWED
-                ? VKR_TEXTURE_LAYOUT_PRESENT_SRC_KHR
-                : VKR_TEXTURE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-        .clear_value = clear_color,
-    };
-    VkrRenderPassDesc editor_desc = {
-        .name = string8_lit("Renderpass.Editor"),
-        .domain = VKR_PIPELINE_DOMAIN_UI,
-        .color_attachment_count = 1,
-        .color_attachments = &editor_color,
-        .depth_stencil_attachment = NULL,
-        .resolve_attachment_count = 0,
-        .resolve_attachments = NULL,
-    };
-    VkrRendererError pass_err = VKR_RENDERER_ERROR_NONE;
-    renderpass =
-        vkr_renderer_renderpass_create_desc(rf, &editor_desc, &pass_err);
-    if (!renderpass) {
-      String8 err = vkr_renderer_get_error_string(pass_err);
-      log_error("Editor viewport renderpass create failed: %s",
-                string8_cstr(&err));
-      return false_v;
-    }
-    owns_renderpass = true_v;
-  }
-  resources->renderpass = renderpass;
-  resources->owns_renderpass = owns_renderpass;
-
-  VkrResourceHandleInfo cfg_info = {0};
-  VkrRendererError cfg_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_resource_system_load_custom(
-          string8_lit("shadercfg"),
-          string8_lit("assets/shaders/default.viewport_display.shadercfg"),
-          &rf->allocator, &cfg_info, &cfg_err)) {
-    String8 err = vkr_renderer_get_error_string(cfg_err);
-    log_error("Editor viewport shadercfg load failed: %s", string8_cstr(&err));
-    return false_v;
-  }
-
-  resources->shader_config = *(VkrShaderConfig *)cfg_info.as.custom;
-
-  if (!vkr_shader_system_create(&rf->shader_system,
-                                &resources->shader_config)) {
-    log_error("Editor viewport shader create failed");
-    if (owns_renderpass) {
-      vkr_renderer_renderpass_destroy(rf, resources->renderpass);
-      resources->renderpass = NULL;
-      resources->owns_renderpass = false_v;
-    }
-    return false_v;
-  }
-
-  VkrRendererError pipeline_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_pipeline_registry_create_from_shader_config(
-          &rf->pipeline_registry, &resources->shader_config,
-          VKR_PIPELINE_DOMAIN_UI, string8_lit("editor_viewport"),
-          &resources->pipeline, &pipeline_err)) {
-    String8 err_str = vkr_renderer_get_error_string(pipeline_err);
-    log_error("Editor viewport pipeline create failed: %s",
-              string8_cstr(&err_str));
-    if (owns_renderpass) {
-      vkr_renderer_renderpass_destroy(rf, resources->renderpass);
-      resources->renderpass = NULL;
-      resources->owns_renderpass = false_v;
-    }
-    return false_v;
-  }
-
-  if (resources->shader_config.name.str &&
-      resources->shader_config.name.length > 0) {
-    VkrRendererError alias_err = VKR_RENDERER_ERROR_NONE;
-    vkr_pipeline_registry_alias_pipeline_name(
-        &rf->pipeline_registry, resources->pipeline,
-        resources->shader_config.name, &alias_err);
-  }
-
   if (!vkr_editor_viewport_create_retained_resources(rf, resources)) {
     vkr_editor_viewport_release_resources(rf, resources);
     return false_v;
   }
 
-  resources->initialized = true_v;
-  return true_v;
-}
-
-bool8_t
-vkr_editor_viewport_init_retained(RendererFrontend *rf,
-                                  VkrEditorViewportResources *resources) {
-  if (!rf || !resources) {
-    return false_v;
-  }
-  vkr_editor_viewport_reset(resources);
-  if (!vkr_editor_viewport_create_retained_resources(rf, resources)) {
-    vkr_editor_viewport_release_resources(rf, resources);
-    return false_v;
-  }
   resources->initialized = true_v;
   return true_v;
 }
@@ -407,7 +286,6 @@ bool8_t vkr_editor_viewport_build_payload(
       .instance_count = 1,
       .first_instance = 0,
       .sort_key = 0,
-      .pipeline_override = VKR_PIPELINE_HANDLE_INVALID,
   };
 
   *out_payload = (VkrEditorPassPayload){

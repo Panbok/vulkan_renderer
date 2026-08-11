@@ -19,19 +19,14 @@
 #include "renderer/systems/vkr_material_system.h"
 #include "renderer/systems/vkr_mesh_manager.h"
 #include "renderer/systems/vkr_picking_system.h"
-#include "renderer/systems/vkr_pipeline_registry.h"
-#include "renderer/systems/vkr_shader_system.h"
 #include "renderer/systems/vkr_shadow_system.h"
 #include "renderer/systems/vkr_skybox_system.h"
 #include "renderer/systems/vkr_texture_system.h"
 #include "renderer/systems/vkr_ui_system.h"
 #include "renderer/systems/vkr_world_resources.h"
-#include "renderer/vkr_indirect_draw.h"
-#include "renderer/vkr_instance_buffer.h"
 #include "renderer/vkr_render_graph.h"
 #include "renderer/vkr_renderer.h"
 #include "renderer/vkr_renderer_impl.h"
-#include "renderer/vkr_rg_json.h"
 
 typedef struct VkrMetalPacketRenderer VkrMetalPacketRenderer;
 typedef struct VkrBindlessVulkanRenderer VkrBindlessVulkanRenderer;
@@ -92,17 +87,6 @@ typedef struct VkrRendererFrameMetrics {
   bool8_t backend_present_valid;
 } VkrRendererFrameMetrics;
 
-typedef struct VkrCaptureFrameState {
-  bool8_t active;
-  VkrCaptureRequestId request_id;
-  uint32_t item_count;
-  bool8_t editor_enabled;
-  VkrCaptureBackendItemPlan plans[VKR_CAPTURE_MAX_ITEMS];
-  VkrRgImageHandle images[VKR_CAPTURE_MAX_ITEMS];
-  VkrBackendResourceHandle buffer;
-  VkrRgBufferHandle graph_buffer;
-} VkrCaptureFrameState;
-
 struct s_RendererFrontend {
   Arena *arena;
   VkrAllocator allocator;
@@ -114,10 +98,8 @@ struct s_RendererFrontend {
   VkrWindow *window;
   VkrPresentTargetConfig present_target;
   EventManager *event_manager;
-  void *backend_state;
   VkrRendererBackendType backend_type;
   VkrRendererImpl impl;
-  VkrRendererBackendInterface backend;
   VkrMetalPacketRenderer *metal_renderer;
   VkrBindlessVulkanRenderer *bindless_vulkan_renderer;
   VkrAssetPublisher asset_publisher;
@@ -133,18 +115,11 @@ struct s_RendererFrontend {
   VkrMetricEventProducer ibl_convolution_metrics;
 
   // High-level renderer subsystems and state (now accessible)
-  VkrPipelineRegistry pipeline_registry;
-  VkrShaderSystem shader_system;
   VkrGeometrySystem geometry_system;
   VkrTextureSystem texture_system;
   VkrMaterialSystem material_system;
-  VkrRgExecutorRegistry rg_executor_registry;
-  VkrRenderGraph *render_graph;
-  VkrRgJsonGraph render_graph_json;
   VkrDMemory render_graph_dmemory;
   VkrAllocator render_graph_allocator;
-  bool8_t render_graph_loaded;
-  bool8_t render_graph_enabled;
   VkrFontSystem font_system;
   VkrGizmoSystem gizmo_system;
   VkrLightingSystem lighting_system;
@@ -170,10 +145,6 @@ struct s_RendererFrontend {
   VkrAllocator scene_async_allocator;
   VkrMutex scene_async_mutex;
 
-  // Instance data streaming
-  VkrInstanceBufferPool instance_buffer_pool;
-  VkrIndirectDrawSystem indirect_draw_system;
-
   // Bitmap fonts
   VkrBitmapFontLoaderContext bitmap_font_loader;
   VkrArenaPool bitmap_font_arena_pool;
@@ -186,21 +157,14 @@ struct s_RendererFrontend {
   VkrMtsdfFontLoaderContext mtsdf_font_loader;
   VkrArenaPool mtsdf_font_arena_pool;
 
-  VkrTextureHandle *offscreen_color_handles;
-  uint32_t offscreen_color_handle_count;
-
   // Picking system
   VkrPickingContext picking;
-
-  // Per-draw state
-  VkrShaderStateObject draw_state;
 
   // Cached global material state for both world and UI
   VkrGlobalMaterialState globals;
 
   // Per-frame render statistics for UI/debug use.
   VkrRendererFrameMetrics frame_metrics;
-  VkrCaptureFrameState capture_frame;
 
   // Debug visualization mode for CSM sampling in the world shader:
   // 0=off, 1=cascades, 2=shadow factor, 3=shadow map depth.

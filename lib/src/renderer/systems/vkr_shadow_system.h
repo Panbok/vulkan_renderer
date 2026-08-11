@@ -2,7 +2,7 @@
  * @file vkr_shadow_system.h
  * @brief Cascaded shadow mapping (directional light) system.
  *
- * Owns shadow map render targets and per-cascade matrices. Produces per-frame
+ * Owns per-cascade matrices. Produces per-frame
  * data that the world shader consumes to sample shadows.
  */
 #pragma once
@@ -237,18 +237,10 @@ bool8_t vkr_shadow_fit_relevant_caster_z(
     float32_t *out_min_z, float32_t *out_max_z);
 
 /**
- * @brief Per-frame shadow resources (one per swapchain image).
- */
-typedef struct VkrShadowFrameResources {
-  VkrTextureOpaqueHandle shadow_map;
-  VkrRenderTargetHandle shadow_targets[VKR_SHADOW_CASCADE_COUNT_MAX];
-} VkrShadowFrameResources;
-
-/**
  * @brief CPU-side frame data to upload to the world shader.
  *
- * shadow_map is an array texture containing all cascades for the swapchain
- * image (layer index = cascade).
+ * The selected renderer owns the shadow image; this structure contains only
+ * backend-neutral packet inputs.
  */
 typedef struct VkrShadowFrameData {
   bool8_t enabled;
@@ -272,42 +264,18 @@ typedef struct VkrShadowFrameData {
   Vec2 light_space_origin[VKR_SHADOW_CASCADE_COUNT_MAX];
   Mat4 view_projection[VKR_SHADOW_CASCADE_COUNT_MAX];
 
-  VkrTextureOpaqueHandle shadow_map;
 } VkrShadowFrameData;
 
 /**
  * @brief Shadow system state.
  *
- * frames is allocated with the renderer allocator and must be freed on
- * shutdown.
+ * GPU resources are owned by the selected packet renderer.
  */
 typedef struct VkrShadowSystem {
   VkrShadowConfig config;
   VkrCascadeData cascades[VKR_SHADOW_CASCADE_COUNT_MAX];
   float32_t cascade_splits[VKR_SHADOW_CASCADE_COUNT_MAX + 1];
 
-  uint32_t frame_resource_count;
-  VkrShadowFrameResources *frames;
-
-  VkrRenderPassHandle shadow_renderpass;
-  bool8_t owns_renderpass;
-  VkrShaderConfig shader_config_alpha;
-  VkrShaderConfig shader_config_opaque;
-  VkrPipelineHandle shadow_pipeline_alpha;
-  VkrPipelineHandle shadow_pipeline_opaque;
-  /**
-   * Alpha shadow pass instance states.
-   *
-   * Cutout shadow rendering updates per-material sampler bindings. A single
-   * descriptor set cannot be rewritten after being bound in the same command
-   * buffer, so the pass rotates through this pool to guarantee each draw uses
-   * a distinct instance state for the frame.
-   */
-  VkrRendererInstanceStateHandle *alpha_instance_states;
-  uint32_t alpha_instance_state_count;
-  uint32_t alpha_instance_state_capacity;
-  uint32_t alpha_instance_cursor;
-  uint64_t alpha_instance_cursor_frame_number;
   Vec3 light_direction;
   bool8_t light_enabled;
 
@@ -317,8 +285,7 @@ typedef struct VkrShadowSystem {
 /**
  * @brief Initialize shadow system resources and pipeline.
  *
- * Creates a named shadow renderpass if needed, allocates per-frame depth
- * textures and render targets, and builds the shadow pipeline from shadercfg.
+ * Normalizes the packet-facing cascade configuration.
  */
 bool8_t vkr_shadow_system_init(VkrShadowSystem *system,
                                struct s_RendererFrontend *rf,
@@ -327,7 +294,7 @@ bool8_t vkr_shadow_system_init(VkrShadowSystem *system,
 /**
  * @brief Destroy shadow system resources.
  *
- * Releases render targets, textures, pipeline, and renderpass if owned.
+ * Clears CPU-side shadow state.
  */
 void vkr_shadow_system_shutdown(VkrShadowSystem *system,
                                 struct s_RendererFrontend *rf);
@@ -340,14 +307,6 @@ void vkr_shadow_system_shutdown(VkrShadowSystem *system,
 void vkr_shadow_system_update(VkrShadowSystem *system,
                               const struct VkrCamera *camera,
                               bool8_t light_enabled, Vec3 light_direction);
-
-/**
- * @brief Get the render target for the given frame/cascade.
- */
-VkrRenderTargetHandle
-vkr_shadow_system_get_render_target(const VkrShadowSystem *system,
-                                    uint32_t frame_index,
-                                    uint32_t cascade_index);
 
 /**
  * @brief Fill frame data for shader upload and sampler binding.

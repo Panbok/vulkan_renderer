@@ -9,8 +9,8 @@
 struct VkrRgPassContext;
 
 /**
- * @brief Pass execution callback invoked once per pass per frame during
- * vkr_rg_execute().
+ * @brief Pass execution callback invoked once per scheduled pass by a selected
+ * renderer implementation.
  * @param ctx Pass context; valid only for the duration of the call
  * @param user_data User data passed when the pass was registered or set
  */
@@ -298,42 +298,23 @@ typedef struct VkrRgPassDesc {
 
 /**
  * @brief Read-only context passed to VkrRgPassExecuteFn.
- * Valid only during the execute callback. render_target is the primary target;
- * render_targets[0..render_target_count-1] are the color/depth targets.
- * image_index is the swapchain image index.
+ * Valid only during the execute callback. image_index identifies the
+ * implementation-owned present image for per-image resources.
  */
 typedef struct VkrRgPassContext {
   struct VkrRenderGraph *graph;   /**< Render graph owning this pass */
   const VkrRgPassDesc *pass_desc; /**< Pass descriptor */
   uint32_t pass_index;            /**< Pass index in the graph */
 
-  struct s_RendererFrontend
-      *renderer;                  /**< Renderer frontend for backend calls */
-  VkrRenderPassHandle renderpass; /**< Current render pass */
-  VkrRenderTargetHandle render_target; /**< Primary render target */
-  VkrRenderTargetHandle
-      *render_targets;          /**< Color/depth targets for this pass */
-  uint32_t render_target_count; /**< Number of elements in render_targets */
-
   uint32_t frame_index; /**< Current frame index */
   uint32_t image_index; /**< Swapchain image index for per-image resources */
   float64_t delta_time; /**< Frame delta time */
 
-  /**
-   * Executor result, reset to VKR_RENDERER_ERROR_NONE before each call.
-   *
-   * An executor that could not record its work sets this and returns; a
-   * non-NONE value aborts graph execution and is returned by vkr_rg_execute().
-   * Set it only when a *recording* operation failed and the command buffer is
-   * left indeterminate -- an executor with legitimately nothing to do (no
-   * payload, system uninitialized) leaves it NONE, because skipped is not
-   * failed.
-   */
-  VkrRendererError error;
 } VkrRgPassContext;
 
 /**
- * @brief Attaches a render packet to the graph for the next vkr_rg_execute().
+ * @brief Attaches a render packet to the graph for the next implementation
+ * schedule execution.
  * The graph stores the pointer only; the packet must remain valid for the
  * duration of that execute call.
  * @param graph Render graph
@@ -632,15 +613,6 @@ bool8_t vkr_rg_set_frame_allocator(VkrRenderGraph *graph,
 void vkr_rg_destroy(VkrRenderGraph *graph);
 
 /**
- * @brief Drops every cached framebuffer, keeping the cached render passes.
- *
- * Present-target recreation retires the attachment views the framebuffers were
- * built from, while the render passes stay valid because their formats do not
- * change. The caller must prove GPU completion first.
- */
-void vkr_rg_invalidate_render_targets(VkrRenderGraph *graph);
-
-/**
  * @brief Starts a new frame; updates frame info and may resize/recreate
  * transient resources. Must be paired with vkr_rg_end_frame.
  * @param graph Render graph
@@ -929,29 +901,3 @@ void vkr_rg_export_image(VkrRenderGraph *graph, VkrRgImageHandle image);
  * @param buffer Buffer handle
  */
 void vkr_rg_export_buffer(VkrRenderGraph *graph, VkrRgBufferHandle buffer);
-
-/**
- * @brief Compiles the graph: validates, schedules passes, allocates resources,
- * and prepares barriers. Must be called after all passes are added and before
- * execute.
- * @param graph Render graph
- * @return true on success, false on validation or allocation failure
- */
-bool8_t vkr_rg_compile(VkrRenderGraph *graph);
-
-/**
- * @brief Runs the compiled graph for the current frame.
- *
- * Requires a prior begin_frame; set_packet must be called if pass callbacks
- * need the packet. Aborts at the first failure rather than continuing: a pass
- * whose pre-barriers or render pass failed cannot be rescued, and recording
- * further commands against a resource in an unknown layout compounds the
- * damage.
- *
- * @param graph Render graph
- * @param rf Renderer frontend for backend calls. May be NULL, in which case
- *        barriers and render passes are skipped and only executors run.
- * @return VKR_RENDERER_ERROR_NONE when every scheduled pass completed.
- */
-VkrRendererError vkr_rg_execute(VkrRenderGraph *graph,
-                                struct s_RendererFrontend *rf);

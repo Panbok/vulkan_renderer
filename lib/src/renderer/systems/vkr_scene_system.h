@@ -19,7 +19,6 @@
 #include "math/vkr_quat.h"
 #include "memory/vkr_allocator.h"
 #include "renderer/resources/vkr_resources.h"
-#include "renderer/systems/vkr_ibl_bake_types.h"
 
 // Forward declarations
 struct s_RendererFrontend;
@@ -263,8 +262,6 @@ typedef struct VkrSceneReflectionProbe {
   VkrTextureHandle source_cubemap;
   VkrTextureHandle irradiance_cubemap;
   VkrTextureHandle prefilter_cubemap;
-  VkrIblPreparedTargetSet irradiance_targets;
-  VkrIblPreparedTargetSet prefilter_targets;
   VkrSceneReflectionProbeBakeState bake_state;
 } VkrSceneReflectionProbe;
 
@@ -293,9 +290,6 @@ typedef struct VkrSceneEnvironment {
 
   uint32_t source_face_size;
   uint32_t source_mip_count;
-  VkrIblPreparedTargetSet cube_targets;
-  VkrIblPreparedTargetSet irradiance_targets;
-  VkrIblPreparedTargetSet prefilter_targets;
 
   VkrSceneEnvironmentBakeState bake_state;
 } VkrSceneEnvironment;

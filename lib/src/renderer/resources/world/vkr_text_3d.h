@@ -4,8 +4,6 @@
 #include "math/vkr_transform.h"
 #include "renderer/resources/vkr_resources.h"
 #include "renderer/systems/vkr_font_system.h"
-#include "renderer/vkr_buffer.h"
-#include "renderer/vkr_renderer.h"
 
 // =============================================================================
 // 3D Text Types
@@ -25,24 +23,23 @@ typedef struct VkrText3DConfig {
   uint32_t texture_width;  // Texture width (0 = auto-size)
   uint32_t texture_height; // Texture height (0 = auto-size)
   float32_t uv_inset_px; // Half-texel inset (in atlas pixels) to avoid bleeding
-  VkrPipelineHandle pipeline; // Pipeline used for rendering (world/transparent)
 } VkrText3DConfig;
 
 #define VKR_TEXT_3D_CONFIG_DEFAULT                                             \
-  (VkrText3DConfig) {                                                          \
-    .text = {0}, .font = VKR_FONT_HANDLE_INVALID, .font_size = 0.0f,           \
-    .color = {1.0f, 1.0f, 1.0f, 1.0f}, .texture_width = 0,                     \
-    .texture_height = 0, .uv_inset_px = 0.5f,                                  \
-    .pipeline = VKR_PIPELINE_HANDLE_INVALID                                    \
-  }
+  (VkrText3DConfig){.text = {0},                                               \
+                    .font = VKR_FONT_HANDLE_INVALID,                           \
+                    .font_size = 0.0f,                                         \
+                    .color = {1.0f, 1.0f, 1.0f, 1.0f},                         \
+                    .texture_width = 0,                                        \
+                    .texture_height = 0,                                       \
+                    .uv_inset_px = 0.5f}
 
 /**
  * @brief 3D text resource.
  */
 typedef struct VkrText3D {
-  VkrAllocator *allocator;            // Allocator for memory management
-  VkrRendererFrontendHandle renderer; // Renderer frontend handle
-  VkrFontSystem *font_system;         // Font system
+  VkrAllocator *allocator;    // Allocator for memory management
+  VkrFontSystem *font_system; // Font system
 
   String8 text;        // Owned text content
   VkrFontHandle font;  // Font to use (or invalid for default)
@@ -58,29 +55,21 @@ typedef struct VkrText3D {
   uint32_t texture_width;  // Texture width (0 = auto-size)
   uint32_t texture_height; // Texture height (0 = auto-size)
 
-  VkrPipelineHandle pipeline; // Pipeline used for rendering (world/transparent)
-  bool8_t pipeline_ref_acquired;                 // Pipeline reference acquired
-  VkrRendererInstanceStateHandle instance_state; // Renderer instance state
-  VkrVertexBuffer vertex_buffer;                 // Vertex buffer
-  VkrIndexBuffer index_buffer;                   // Index buffer
-  VkrTextVertex *vertices;                       // Retained shaped vertices
-  uint32_t *indices;                             // Retained shaped indices
-  uint32_t vertex_count;                         // Shaped vertex count
-  uint32_t index_count;                          // Shaped index count
-  uint32_t geometry_revision;                    // Changes after rebuild
-  uint32_t quad_count;                           // Number of glyph quads
-  uint32_t vertex_capacity;                      // Allocated vertex count
-  uint32_t index_capacity;                       // Allocated index count
-  uint32_t gpu_vertex_capacity;                  // Legacy GPU vertex capacity
-  uint32_t gpu_index_capacity;                   // Legacy GPU index capacity
+  VkrTextVertex *vertices;    // Retained shaped vertices
+  uint32_t *indices;          // Retained shaped indices
+  uint32_t vertex_count;      // Shaped vertex count
+  uint32_t index_count;       // Shaped index count
+  uint32_t geometry_revision; // Changes after rebuild
+  uint32_t quad_count;        // Number of glyph quads
+  uint32_t vertex_capacity;   // Allocated vertex count
+  uint32_t index_capacity;    // Allocated index count
 
   VkrTransform transform; // Position/rotation/scale
   float32_t world_width;  // Width in world units
   float32_t world_height; // Height in world units
   float32_t uv_inset_px; // Half-texel inset (in atlas pixels) to avoid bleeding
 
-  bool8_t initialized;       // Initialized flag
-  bool8_t gpu_buffers_dirty; // Need to publish geometry to legacy buffers
+  bool8_t initialized; // Initialized flag
 } VkrText3D;
 
 // =============================================================================
@@ -90,16 +79,14 @@ typedef struct VkrText3D {
 /**
  * @brief Creates a 3D text instance.
  * @param text_3d The text 3D instance to create.
- * @param renderer The renderer frontend handle.
  * @param font_system The font system.
  * @param allocator The allocator for memory management.
  * @param config The configuration for the text 3D instance.
  * @param out_error The error output.
  * @return true on success.
  */
-bool8_t vkr_text_3d_create(VkrText3D *text_3d,
-                           VkrRendererFrontendHandle renderer,
-                           VkrFontSystem *font_system, VkrAllocator *allocator,
+bool8_t vkr_text_3d_create(VkrText3D *text_3d, VkrFontSystem *font_system,
+                           VkrAllocator *allocator,
                            const VkrText3DConfig *config,
                            VkrRendererError *out_error);
 
@@ -158,17 +145,5 @@ void vkr_text_3d_set_rotation(VkrText3D *text_3d, VkrQuat rotation);
  */
 void vkr_text_3d_set_scale(VkrText3D *text_3d, Vec3 scale);
 
-/**
- * @brief Updates the text 3D instance.
- * @param text_3d The text 3D instance.
- */
-void vkr_text_3d_update(VkrText3D *text_3d);
-
 /** Prepares shaped CPU geometry without issuing renderer API calls. */
 bool8_t vkr_text_3d_prepare_geometry(VkrText3D *text_3d);
-
-/**
- * @brief Draws the text 3D instance.
- * @param text_3d The text 3D instance.
- */
-void vkr_text_3d_draw(VkrText3D *text_3d);

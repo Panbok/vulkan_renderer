@@ -200,8 +200,8 @@ vkr_internal void vkr_rg_dot_write_edge(FileHandle *handle,
                                         const char *to, uint32_t to_index,
                                         const char *label, const char *color) {
   vkr_rg_dot_write_fmt(handle, allocator,
-                      "  %s%u -> %s%u [label=\"%s\" color=\"%s\"];\n", from,
-                      from_index, to, to_index, label, color);
+                       "  %s%u -> %s%u [label=\"%s\" color=\"%s\"];\n", from,
+                       from_index, to, to_index, label, color);
 }
 
 vkr_internal bool8_t vkr_rg_dot_write_pass_edges(FileHandle *handle,
@@ -224,21 +224,21 @@ vkr_internal bool8_t vkr_rg_dot_write_pass_edges(FileHandle *handle,
       continue;
     }
     uint32_t image_index = att->image.id - 1;
-    vkr_rg_dot_write_edge(handle, allocator, "p", pass_index, "i",
-                                image_index, "color", "red");
+    vkr_rg_dot_write_edge(handle, allocator, "p", pass_index, "i", image_index,
+                          "color", "red");
   }
 
   if (pass->desc.has_depth_attachment) {
-    VkrRgAttachment *att = &pass->desc.depth_attachment;
+    const VkrRgAttachment *att = &pass->desc.depth_attachment;
     VkrRgImage *image = vkr_rg_image_from_handle(graph, att->image);
     if (image) {
       uint32_t image_index = att->image.id - 1;
       if (att->read_only) {
         vkr_rg_dot_write_edge(handle, allocator, "i", image_index, "p",
-                                    pass_index, "depth_ro", "blue");
+                              pass_index, "depth_ro", "blue");
       } else {
         vkr_rg_dot_write_edge(handle, allocator, "p", pass_index, "i",
-                                    image_index, "depth", "red");
+                              image_index, "depth", "red");
       }
     }
   }
@@ -253,8 +253,8 @@ vkr_internal bool8_t vkr_rg_dot_write_pass_edges(FileHandle *handle,
       continue;
     }
     uint32_t image_index = use->image.id - 1;
-    vkr_rg_dot_write_edge(handle, allocator, "i", image_index, "p",
-                                pass_index, "read", "blue");
+    vkr_rg_dot_write_edge(handle, allocator, "i", image_index, "p", pass_index,
+                          "read", "blue");
   }
 
   for (uint64_t i = 0; i < pass->desc.image_writes.length; ++i) {
@@ -267,8 +267,8 @@ vkr_internal bool8_t vkr_rg_dot_write_pass_edges(FileHandle *handle,
       continue;
     }
     uint32_t image_index = use->image.id - 1;
-    vkr_rg_dot_write_edge(handle, allocator, "p", pass_index, "i",
-                                image_index, "write", "red");
+    vkr_rg_dot_write_edge(handle, allocator, "p", pass_index, "i", image_index,
+                          "write", "red");
   }
 
   for (uint64_t i = 0; i < pass->desc.buffer_reads.length; ++i) {
@@ -282,8 +282,8 @@ vkr_internal bool8_t vkr_rg_dot_write_pass_edges(FileHandle *handle,
       continue;
     }
     uint32_t buffer_index = use->buffer.id - 1;
-    vkr_rg_dot_write_edge(handle, allocator, "b", buffer_index, "p",
-                                 pass_index, "read", "blue");
+    vkr_rg_dot_write_edge(handle, allocator, "b", buffer_index, "p", pass_index,
+                          "read", "blue");
   }
 
   for (uint64_t i = 0; i < pass->desc.buffer_writes.length; ++i) {
@@ -297,8 +297,8 @@ vkr_internal bool8_t vkr_rg_dot_write_pass_edges(FileHandle *handle,
       continue;
     }
     uint32_t buffer_index = use->buffer.id - 1;
-    vkr_rg_dot_write_edge(handle, allocator, "p", pass_index, "b",
-                                 buffer_index, "write", "red");
+    vkr_rg_dot_write_edge(handle, allocator, "p", pass_index, "b", buffer_index,
+                          "write", "red");
   }
 
   return true_v;
@@ -381,8 +381,7 @@ bool8_t vkr_rg_export_dot_ex(const VkrRenderGraph *graph,
   FileError open_err = file_open(&file_path, mode, &handle);
   if (open_err != FILE_ERROR_NONE) {
     String8 err = file_get_error_string(open_err);
-    const char *err_str =
-        (err.str != NULL) ? (const char *)err.str : "(null)";
+    const char *err_str = (err.str != NULL) ? (const char *)err.str : "(null)";
     log_error("RenderGraph DOT export failed to open '%s': %s", desc->path,
               err_str);
     vkr_allocator_end_scope(&scope, VKR_ALLOCATOR_MEMORY_TAG_STRING);
