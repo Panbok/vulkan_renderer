@@ -97,6 +97,13 @@ equivalent) when source textures change or before producing a packed asset set;
 the packer uses the shared `build_vkt_packer` tree and skips up-to-date `.vkt`
 outputs unless `VKR_VKT_PACK_FORCE=1` is set.
 
+Supported non-Windows Clang/GCC Debug configurations enable ASan and UBSan by
+default. Set `VKR_ENABLE_DEBUG_SANITIZERS=OFF` for an explicit diagnostic
+opt-out; `VKR_ENABLE_SANITIZERS=ON` retains the all-configuration opt-in used by
+sanitized Release-family builds. Windows Debug defaults to sanitizers off
+because Clang ASan is incompatible with the Debug CRT and MSVC does not provide
+the requested ASan+UBSan pair.
+
 Debug builds and graphics validation layers are diagnostic configurations, not
 baseline configurations. Use them only while reproducing or debugging a
 concrete issue, and use the smallest focused case that exercises that issue.
