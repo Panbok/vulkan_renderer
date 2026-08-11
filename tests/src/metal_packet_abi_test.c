@@ -32,9 +32,26 @@ static void test_metal_packet_host_abi_manifest(void) {
   printf("  test_metal_packet_host_abi_manifest PASSED\n");
 }
 
+static void test_metal_packet_slang_draw_matrix_conversion(void) {
+  printf("  Running test_metal_packet_slang_draw_matrix_conversion...\n");
+  Mat4 source = {0};
+  for (uint32_t i = 0; i < 16u; ++i)
+    source.elements[i] = (float32_t)(i + 1u);
+
+  const Mat4 converted = vkr_metal_packet_slang_draw_matrix(source);
+  for (uint32_t column = 0; column < 4u; ++column) {
+    for (uint32_t row = 0; row < 4u; ++row) {
+      assert(converted.elements[column * 4u + row] ==
+             source.elements[row * 4u + column]);
+    }
+  }
+  printf("  test_metal_packet_slang_draw_matrix_conversion PASSED\n");
+}
+
 bool32_t run_metal_packet_abi_tests(void) {
   printf("--- Running Metal packet ABI tests... ---\n");
   test_metal_packet_host_abi_manifest();
+  test_metal_packet_slang_draw_matrix_conversion();
   printf("--- Metal packet ABI tests completed. ---\n");
   return true_v;
 }

@@ -12,6 +12,11 @@ enum {
   VKR_METAL_PACKET_DRAW_ROOT_STRIDE = 512,
 };
 
+/** Converts VKR's column-major matrix for Slang's row-vector MSL lowering. */
+static INLINE Mat4 vkr_metal_packet_slang_draw_matrix(Mat4 matrix) {
+  return mat4_transpose(matrix);
+}
+
 /** Host representations of every record read through a packet GPU address. */
 typedef struct VKR_SIMD_ALIGN VkrMetalPacketDrawRoot {
   uint64_t vertices;

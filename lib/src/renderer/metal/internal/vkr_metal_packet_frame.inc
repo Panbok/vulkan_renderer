@@ -65,6 +65,8 @@ static bool8_t vkr_metal_packet_encode_draws(
   [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
   [encoder setDepthStencilState:depth_state];
   [encoder setRenderPipelineState:pipeline];
+  const Mat4 slang_view_projection =
+      vkr_metal_packet_slang_draw_matrix(view_projection);
   for (uint32_t i = 0; i < draw_count; ++i) {
     const VkrDrawItem *draw = &draws[i];
     if (draw->instance_count == 0 || draw->first_instance > instance_count ||
@@ -111,7 +113,7 @@ static bool8_t vkr_metal_packet_encode_draws(
     *root = (VkrMetalPacketDrawRoot){
         .vertices = mesh->vertices.gpu_address,
         .instances = instances_gpu,
-        .view_projection = view_projection,
+        .view_projection = slang_view_projection,
         .materials =
             vkr_metal_material_table_device_gpu_address(renderer->materials),
         .irradiance_texture_id = renderer->ibl_irradiance.resource_id,
