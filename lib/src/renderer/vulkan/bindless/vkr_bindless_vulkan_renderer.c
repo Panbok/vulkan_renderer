@@ -5731,6 +5731,28 @@ vkr_bindless_vk_reserve_staging_retirement(
   return NULL;
 }
 
+static bool8_t
+vkr_bindless_vk_retire_submitted_staging(VkrBindlessVulkanRenderer *renderer,
+                                         VkrBindlessVkBuffer *staging,
+                                         uint64_t retire_value) {
+  VkrBindlessVkRetiredStagingBuffer *retired =
+      vkr_bindless_vk_reserve_staging_retirement(renderer);
+  if (!retired) {
+    log_error("Bindless Vulkan exhausted bounded staging retirement capacity");
+    return false_v;
+  }
+  if (!vkr_bindless_vk_retire_buffer(renderer, staging, retire_value)) {
+    log_error("Bindless Vulkan failed to retire submitted staging memory");
+    return false_v;
+  }
+  *retired = (VkrBindlessVkRetiredStagingBuffer){
+      .buffer = *staging,
+      .retire_value = retire_value,
+      .occupied = true_v,
+  };
+  return true_v;
+}
+
 static void vkr_bindless_vk_release_buffer_initialization(
     VkrBindlessVulkanRenderer *renderer,
     VkrBindlessVkPendingBufferInitialization *initialization) {
@@ -5741,8 +5763,26 @@ static void vkr_bindless_vk_release_buffer_initialization(
   MemZero(initialization, sizeof(*initialization));
 }
 
-static void vkr_bindless_vk_commit_buffer_initializations(
+static bool8_t vkr_bindless_vk_commit_buffer_initializations(
     VkrBindlessVulkanRenderer *renderer, uint64_t retire_value) {
+  VkrBindlessVkPendingBufferInitialization *submitted = NULL;
+  for (uint32_t i = 0u; i < renderer->pending_buffer_initialization_count;
+       ++i) {
+    VkrBindlessVkPendingBufferInitialization *initialization =
+        &renderer->pending_buffer_initializations[i];
+    if (!initialization->staging.handle)
+      continue;
+    if (submitted) {
+      log_error("Bindless Vulkan submitted more than one bounded staging "
+                "buffer in a frame");
+      return false_v;
+    }
+    submitted = initialization;
+  }
+  if (submitted && !vkr_bindless_vk_retire_submitted_staging(
+                       renderer, &submitted->staging, retire_value))
+    return false_v;
+
   uint32_t write_index = 0u;
   const uint32_t pending_count = renderer->pending_buffer_initialization_count;
   for (uint32_t read_index = 0u; read_index < pending_count; ++read_index) {
@@ -5758,18 +5798,6 @@ static void vkr_bindless_vk_commit_buffer_initializations(
       write_index++;
       continue;
     }
-    VkrBindlessVkRetiredStagingBuffer *retired =
-        vkr_bindless_vk_reserve_staging_retirement(renderer);
-    if (!retired)
-      log_fatal("Bindless Vulkan lost bounded staging retirement capacity");
-    if (!vkr_bindless_vk_retire_buffer(renderer, &initialization->staging,
-                                       retire_value))
-      log_fatal("Bindless Vulkan failed to retire submitted staging memory");
-    *retired = (VkrBindlessVkRetiredStagingBuffer){
-        .buffer = initialization->staging,
-        .retire_value = retire_value,
-        .occupied = true_v,
-    };
     initialization->next_offset += initialization->staging.size;
     MemZero(&initialization->staging, sizeof(initialization->staging));
     geometry->last_use_submit_value =
@@ -5790,6 +5818,7 @@ static void vkr_bindless_vk_commit_buffer_initializations(
     MemZero(&renderer->pending_buffer_initializations[i],
             sizeof(renderer->pending_buffer_initializations[i]));
   renderer->pending_buffer_initialization_count = write_index;
+  return true_v;
 }
 
 static void vkr_bindless_vk_discard_buffer_initializations(
@@ -5835,8 +5864,33 @@ static void vkr_bindless_vk_discard_geometry_initializations(
       .pending_initialization_count = 0u;
 }
 
-static void vkr_bindless_vk_commit_texture_initializations(
+static bool8_t vkr_bindless_vk_commit_texture_initializations(
     VkrBindlessVulkanRenderer *renderer, uint64_t retire_value) {
+  VkrBindlessVkPendingTextureInitialization *submitted = NULL;
+  for (uint32_t i = 0u; i < renderer->pending_texture_initialization_count;
+       ++i) {
+    VkrBindlessVkPendingTextureInitialization *initialization =
+        &renderer->pending_texture_initializations[i];
+    if (!vkr_bindless_vk_texture_publication(renderer,
+                                             initialization->texture)) {
+      log_error("Bindless Vulkan lost texture %u:%u before initialization "
+                "commit",
+                initialization->texture.id, initialization->texture.generation);
+      return false_v;
+    }
+    if (!initialization->staging.handle)
+      continue;
+    if (submitted) {
+      log_error("Bindless Vulkan submitted more than one bounded staging "
+                "buffer in a frame");
+      return false_v;
+    }
+    submitted = initialization;
+  }
+  if (submitted && !vkr_bindless_vk_retire_submitted_staging(
+                       renderer, &submitted->staging, retire_value))
+    return false_v;
+
   uint32_t write_index = 0u;
   const uint32_t pending_count = renderer->pending_texture_initialization_count;
   for (uint32_t read_index = 0; read_index < pending_count; ++read_index) {
@@ -5844,30 +5898,12 @@ static void vkr_bindless_vk_commit_texture_initializations(
         &renderer->pending_texture_initializations[read_index];
     VkrBindlessVkPublishedTexture *texture =
         vkr_bindless_vk_texture_publication(renderer, initialization->texture);
-    if (!texture) {
-      log_fatal("Bindless Vulkan lost texture %u:%u before initialization "
-                "commit",
-                initialization->texture.id, initialization->texture.generation);
-      return;
-    }
+    if (!texture)
+      return false_v;
     bool8_t progressed = initialization->writable;
     if (!initialization->writable &&
         initialization->next_batch < initialization->batch_count &&
         initialization->staging.handle && initialization->staged_batch_count) {
-      VkrBindlessVkRetiredStagingBuffer *retired =
-          vkr_bindless_vk_reserve_staging_retirement(renderer);
-      if (!retired)
-        log_fatal("Bindless Vulkan lost bounded staging retirement "
-                  "capacity");
-      if (!vkr_bindless_vk_retire_buffer(renderer, &initialization->staging,
-                                         retire_value))
-        log_fatal("Bindless Vulkan failed to retire submitted staging "
-                  "memory");
-      *retired = (VkrBindlessVkRetiredStagingBuffer){
-          .buffer = initialization->staging,
-          .retire_value = retire_value,
-          .occupied = true_v,
-      };
       MemZero(&initialization->staging, sizeof(initialization->staging));
       initialization->next_batch += initialization->staged_batch_count;
       initialization->staged_batch_count = 0u;
@@ -5894,6 +5930,7 @@ static void vkr_bindless_vk_commit_texture_initializations(
     MemZero(&renderer->pending_texture_initializations[i],
             sizeof(renderer->pending_texture_initializations[i]));
   renderer->pending_texture_initialization_count = write_index;
+  return true_v;
 }
 
 static void vkr_bindless_vk_discard_texture_initializations(
@@ -6290,6 +6327,16 @@ static bool8_t vkr_bindless_vk_record_draw(VkrBindlessVulkanRenderer *renderer,
   return true_v;
 }
 
+static bool8_t
+vkr_bindless_vk_fail_after_submit(VkrBindlessVulkanRenderer *renderer,
+                                  const char *reason) {
+  log_error("Bindless Vulkan failed after queue submit: %s", reason);
+  renderer->frame_active = false_v;
+  renderer->terminal_failure = true_v;
+  vkr_rg_end_frame(renderer->graph);
+  return false_v;
+}
+
 bool8_t vkr_bindless_vulkan_renderer_submit_packet(
     VkrBindlessVulkanRenderer *renderer, const VkrRenderPacket *packet,
     VkrBindlessVulkanResult *out_result) {
@@ -6413,6 +6460,7 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
                                renderer->active_command_slice);
     renderer->frame_active = false_v;
     renderer->terminal_failure = true_v;
+    vkr_rg_end_frame(renderer->graph);
     return false_v;
   }
   renderer->submit_value = signal_value;
@@ -6421,6 +6469,11 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
     vkr_bindless_vulkan_reacquire_record(
         &renderer->window_target.reacquire_state,
         slot->reacquired_presented_image, signal_value);
+  if (vkr_gpu_submit_ring_submit(&renderer->command_ring,
+                                 renderer->active_command_slice,
+                                 signal_value) != VKR_GPU_SUBMIT_RING_STATUS_OK)
+    return vkr_bindless_vk_fail_after_submit(
+        renderer, "the command ring lost its acquired slice");
   uint32_t pending_ibl_write = 0u;
   const uint32_t pending_ibl_count = renderer->pending_ibl_bake_count;
   for (uint32_t i = 0u; i < pending_ibl_count; ++i) {
@@ -6441,7 +6494,8 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
         texture->last_use_submit_value =
             Max(texture->last_use_submit_value, signal_value);
         if (!texture->ibl_reference_count)
-          log_fatal("Bindless Vulkan lost an IBL texture ownership reference");
+          return vkr_bindless_vk_fail_after_submit(
+              renderer, "an IBL texture lost its ownership reference");
         texture->ibl_reference_count--;
         if (!texture->ibl_reference_count && texture->unpublish_requested) {
           texture->live = false_v;
@@ -6460,20 +6514,19 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
       !vkr_capture_ring_submit(&renderer->capture_ring,
                                slot->capture_request_id, signal_value,
                                slot->capture_readback.allocation.mapped)) {
-    log_fatal("Bindless Vulkan lost a reserved capture after queue submit");
+    return vkr_bindless_vk_fail_after_submit(
+        renderer, "the capture ring lost its reserved request");
   }
-  vkr_bindless_vk_commit_buffer_initializations(renderer, signal_value);
-  vkr_bindless_vk_commit_texture_initializations(renderer, signal_value);
+  if (!vkr_bindless_vk_commit_buffer_initializations(renderer, signal_value) ||
+      !vkr_bindless_vk_commit_texture_initializations(renderer, signal_value))
+    return vkr_bindless_vk_fail_after_submit(
+        renderer, "asset staging retirement could not be committed");
   renderer->targets.images[slot->image_index].layout =
       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
   renderer->sentinel_image.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   if (renderer->active_geometry)
     renderer->published_geometries[renderer->active_geometry_record_index]
         .last_use_submit_value = signal_value;
-  if (vkr_gpu_submit_ring_submit(&renderer->command_ring,
-                                 renderer->active_command_slice,
-                                 signal_value) != VKR_GPU_SUBMIT_RING_STATUS_OK)
-    log_fatal("Vulkan command ring lost its acquired slot after queue submit");
   if (renderer->config.target_kind != VKR_PRESENT_TARGET_OFFSCREEN) {
     VkrBindlessVkWindowTarget *window = &renderer->window_target;
     const uint32_t image_index = slot->image_index;
@@ -6506,9 +6559,8 @@ bool8_t vkr_bindless_vulkan_renderer_submit_packet(
       renderer->target_dirty = true_v;
     if (disposition.acquired_image_recovery_required ||
         !disposition.enqueue_state_known || disposition.device_lost) {
-      renderer->frame_active = false_v;
-      renderer->terminal_failure = true_v;
-      return false_v;
+      return vkr_bindless_vk_fail_after_submit(
+          renderer, "presentation completion became unprovable");
     }
     slot->acquired_window_image = false_v;
   }

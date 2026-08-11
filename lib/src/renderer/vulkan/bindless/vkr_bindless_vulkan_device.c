@@ -162,6 +162,9 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vkr_bindless_vk_debug_callback(
     const VkDebugUtilsMessengerCallbackDataEXT *callback_data,
     void *user_data) {
   VkrBindlessVulkanDevice *device = user_data;
+  const char *message = callback_data && callback_data->pMessage
+                            ? callback_data->pMessage
+                            : "<no message>";
   const bool8_t validation_message =
       (types & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) != 0u;
   const bool8_t gpuav_setup_notice =
@@ -179,18 +182,18 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vkr_bindless_vk_debug_callback(
   if (validation_message &&
       (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)) {
     device->validation_error_count++;
-    log_error("Bindless Vulkan validation: %s", callback_data->pMessage);
+    log_error("Bindless Vulkan validation: %s", message);
   } else if (validation_message &&
              (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) &&
              gpuav_setup_notice) {
     device->validation_setup_notice_count++;
-    log_info("Bindless Vulkan GPU-AV setup: %s", callback_data->pMessage);
+    log_info("Bindless Vulkan GPU-AV setup: %s", message);
   } else if (validation_message &&
              (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)) {
     device->validation_warning_count++;
-    log_warn("Bindless Vulkan validation: %s", callback_data->pMessage);
+    log_warn("Bindless Vulkan validation: %s", message);
   } else {
-    log_debug("Bindless Vulkan loader: %s", callback_data->pMessage);
+    log_debug("Bindless Vulkan loader: %s", message);
   }
   return VK_FALSE;
 }
@@ -432,8 +435,7 @@ static void vkr_bindless_vk_query_candidate(
           descriptor.descriptorBufferImageLayoutIgnored,
       .descriptor_buffer_push_descriptors =
           descriptor.descriptorBufferPushDescriptors,
-      .swapchain_maintenance1 =
-          swapchain_maintenance.swapchainMaintenance1,
+      .swapchain_maintenance1 = swapchain_maintenance.swapchainMaintenance1,
   };
 
   uint32_t extension_count = 0;
