@@ -227,6 +227,9 @@ uint64_t renderer_vulkan_get_submit_serial(void *backend_state);
 uint64_t renderer_vulkan_get_completed_submit_serial(void *backend_state);
 bool8_t renderer_vulkan_get_and_reset_upload_wait_stats(
     void *backend_state, VkrRendererUploadWaitStats *out_stats);
+bool8_t
+renderer_vulkan_get_and_reset_command_slot_wait_count(void *backend_state,
+                                                      uint64_t *out_wait_count);
 bool8_t renderer_vulkan_get_last_present_duration(void *backend_state,
                                                   uint64_t *out_duration_ns);
 

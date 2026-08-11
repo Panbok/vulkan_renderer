@@ -11,11 +11,11 @@
 #include "memory/arena.h"
 #include "memory/vkr_arena_allocator.h"
 #include "renderer/metal/internal/vkr_metal_packet_waits.h"
-#include "renderer/metal/vkr_metal_capture_ring.h"
 #include "renderer/metal/vkr_metal_dependency.h"
 #include "renderer/metal/vkr_metal_packet_abi.h"
 #include "renderer/resources/loaders/mesh_loader.h"
 #include "renderer/systems/vkr_texture_system.h"
+#include "renderer/vkr_capture_ring.h"
 #include "renderer/vkr_ibl_math.h"
 #include "renderer/vkr_render_graph_internal.h"
 #include "renderer/vkr_renderer_metrics.h"
@@ -176,7 +176,7 @@ struct VkrMetalPacketRenderer {
   VkrRgExecutorRegistry executors;
   VkrMetalMemoryDevice *memory;
   VkrMetalMaterialTableDevice *materials;
-  VkrMetalCaptureRing capture_ring;
+  VkrCaptureRing capture_ring;
   void *capture_storage;
   VkrMetalPacketImage *images;
   VkrMetalPacketMesh *meshes;

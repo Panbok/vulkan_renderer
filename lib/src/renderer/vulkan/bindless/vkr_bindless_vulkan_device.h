@@ -113,6 +113,8 @@ vkr_bindless_vulkan_device_handle(const VkrBindlessVulkanDevice *device);
 VkQueue vkr_bindless_vulkan_device_queue(const VkrBindlessVulkanDevice *device);
 VkSurfaceKHR
 vkr_bindless_vulkan_device_surface(const VkrBindlessVulkanDevice *device);
+bool8_t vkr_bindless_vulkan_device_present_fences_enabled(
+    const VkrBindlessVulkanDevice *device);
 uint32_t
 vkr_bindless_vulkan_device_queue_family(const VkrBindlessVulkanDevice *device);
 const VkPhysicalDeviceProperties2 *

@@ -217,6 +217,12 @@ static uint32_t renderer_impl_bindless_frame_in_flight_index(void *state);
 static bool8_t renderer_impl_bindless_poll_submit_result(
     void *state, uint64_t after_submit_value,
     VkrRendererImplSubmitResult *out_result);
+static VkrCaptureStatus
+renderer_impl_bindless_capture_poll(void *state, VkrCaptureRequestId request_id,
+                                    VkrCapturePollResult *out_result);
+static bool8_t
+renderer_impl_bindless_capture_release(void *state,
+                                       VkrCaptureRequestId request_id);
 static VkrAllocator *renderer_impl_bindless_allocator(void *state);
 static void renderer_impl_legacy_destroy(void *state);
 static void renderer_impl_metal_destroy(void *state);
@@ -236,8 +242,8 @@ renderer_impl_legacy_upload_wait_stats(void *state,
 static bool8_t
 renderer_impl_metal_upload_wait_stats(void *state,
                                       VkrRendererUploadWaitStats *out_stats);
-static bool8_t renderer_impl_no_command_slot_waits(void *state,
-                                                   uint64_t *out_wait_count);
+static bool8_t
+renderer_impl_legacy_command_slot_waits(void *state, uint64_t *out_wait_count);
 static bool8_t renderer_impl_metal_command_slot_waits(void *state,
                                                       uint64_t *out_wait_count);
 static bool8_t
@@ -246,6 +252,9 @@ renderer_impl_legacy_device_memory_stats(void *state,
 static bool8_t
 renderer_impl_metal_device_memory_stats(void *state,
                                         VkrDeviceMemoryStats *out_stats);
+static bool8_t
+renderer_impl_bindless_device_memory_stats(void *state,
+                                           VkrDeviceMemoryStats *out_stats);
 static bool8_t
 renderer_impl_no_memory_metrics(void *state,
                                 VkrRendererImplMemoryMetrics *out_metrics);
@@ -315,7 +324,7 @@ static const VkrRendererImplOps renderer_impl_legacy_ops = {
     .get_completed_submit_serial = renderer_impl_legacy_completed_submit_serial,
     .get_and_reset_upload_wait_stats = renderer_impl_legacy_upload_wait_stats,
     .get_and_reset_command_slot_wait_count =
-        renderer_impl_no_command_slot_waits,
+        renderer_impl_legacy_command_slot_waits,
     .get_device_memory_stats = renderer_impl_legacy_device_memory_stats,
     .get_memory_metrics = renderer_impl_no_memory_metrics,
     .prepare_frame = renderer_impl_legacy_prepare_frame,
@@ -367,7 +376,7 @@ static const VkrRendererImplOps renderer_impl_bindless_ops = {
     .get_and_reset_upload_wait_stats = renderer_impl_bindless_upload_wait_stats,
     .get_and_reset_command_slot_wait_count =
         renderer_impl_bindless_command_slot_waits,
-    .get_device_memory_stats = NULL,
+    .get_device_memory_stats = renderer_impl_bindless_device_memory_stats,
     .get_memory_metrics = renderer_impl_bindless_memory_metrics,
     .prepare_frame = renderer_impl_bindless_prepare_frame,
     .submit_packet = renderer_impl_bindless_submit_packet,
@@ -375,6 +384,8 @@ static const VkrRendererImplOps renderer_impl_bindless_ops = {
     .resize = renderer_impl_bindless_resize,
     .present_target_recreate = renderer_impl_bindless_present_target_recreate,
     .frame_in_flight_index = renderer_impl_bindless_frame_in_flight_index,
+    .capture_poll = renderer_impl_bindless_capture_poll,
+    .capture_release = renderer_impl_bindless_capture_release,
     .poll_submit_result = renderer_impl_bindless_poll_submit_result,
     .get_allocator = renderer_impl_bindless_allocator,
 };
@@ -774,8 +785,10 @@ static bool32_t renderer_impl_bindless_initialize(
   RendererFrontend *renderer = state;
   VkrBindlessVulkanRendererConfig config = {
       .allocator = &renderer->render_graph_allocator,
+      .graph_path = "assets/render_graphs/main.rendergraph.json",
       .window = window,
       .target_kind = renderer->present_target.kind,
+      .requested_present_mode = backend_config->requested_present_mode,
       .width = width,
       .height = height,
       .image_count = renderer->present_target.image_count,
@@ -785,13 +798,34 @@ static bool32_t renderer_impl_bindless_initialize(
       .material_record_capacity = 8192u,
       .material_slot_capacity = 16385u,
       .device_buffer_block_size = 8u * 1024u * 1024u,
-      .device_image_block_size = 16u * 1024u * 1024u,
-      .upload_buffer_block_size = 4u * 1024u * 1024u,
+      // A four-layer 2048x2048 D32 shadow image is 64 MiB. Matching that
+      // routine graph allocation keeps smaller targets and published textures
+      // packed instead of consuming the bounded image pool one small block at
+      // a time before the per-image shadow set is realized.
+      .device_image_block_size = 64u * 1024u * 1024u,
+      // Startup publishes several 4 MiB font atlases before the first submit.
+      // Pack them into shared blocks so the bounded per-pool block count does
+      // not turn the publication batch into one physical allocation per atlas.
+      .upload_buffer_block_size = 32u * 1024u * 1024u,
       .readback_buffer_block_size = 1u * 1024u * 1024u,
-      .memory_block_capacity = 64u,
-      .memory_blocks_per_pool = 8u,
+      .capture_ring_capacity =
+          backend_config->capture_enabled
+              ? (backend_config->capture_ring_capacity
+                     ? backend_config->capture_ring_capacity
+                     : 3u)
+              : 0u,
+      .capture_max_batch_bytes =
+          backend_config->capture_enabled
+              ? (backend_config->capture_max_batch_bytes
+                     ? backend_config->capture_max_batch_bytes
+                     : MB(32))
+              : 0u,
+      .memory_block_capacity = 128u,
+      .memory_blocks_per_pool = 128u,
       .memory_block_allocation_capacity = 512u,
       .publication_staging_capacity = 256u,
+      .max_graph_images = 128u,
+      .max_graph_passes = 64u,
 #if !defined(NDEBUG)
       .enable_validation = true_v,
 #endif
@@ -957,7 +991,16 @@ bool32_t vkr_renderer_initialize(VkrRendererFrontendHandle renderer,
       (VkrShaderStateObject){.instance_state = {.id = VKR_INVALID_ID}};
   renderer->frame_number = 0;
 
-  if (!vkr_dmemory_create(MB(2), MB(16), &renderer->render_graph_dmemory)) {
+  /* The selected bindless strategy owns its persistent graph realization,
+
+   * descriptor tables, and bounded pool metadata through this allocator in
+
+   * addition to the frontend graph. Keep enough committed-growth headroom for
+
+   * a new image-pool block to be admitted after the descriptor tables are
+
+   * resident. */
+  if (!vkr_dmemory_create(MB(2), MB(64), &renderer->render_graph_dmemory)) {
     log_fatal("Failed to create render graph allocator!");
     arena_destroy(renderer->scratch_arena);
     arena_destroy(renderer->arena);
@@ -1184,29 +1227,97 @@ renderer_impl_bindless_submit_packet(void *state, const VkrRenderPacket *packet,
     renderer_impl_bindless_cancel_frame(rf);
     return validation;
   }
+  const VkrTextUpdatesPayload *updates = packet->text_updates;
+  if (updates) {
+    for (uint32_t i = 0u; i < updates->world_text_update_count; ++i) {
+      const VkrTextUpdate *update = &updates->world_text_updates[i];
+      if (rf->world_resources.initialized) {
+        vkr_world_resources_text_update(rf, &rf->world_resources,
+                                        update->text_id, update->content);
+        if (update->transform)
+          vkr_world_resources_text_set_transform(
+              rf, &rf->world_resources, update->text_id, update->transform);
+      }
+    }
+    for (uint32_t i = 0u; i < updates->ui_text_update_count; ++i) {
+      const VkrTextUpdate *update = &updates->ui_text_updates[i];
+      if (rf->ui_system.initialized)
+        vkr_ui_system_text_update(rf, &rf->ui_system, update->text_id,
+                                  update->content);
+    }
+  }
+
+  VkrPreparedTextDraw world_text_draws[VKR_PREPARED_TEXT_DRAW_MAX] = {0};
+  VkrPreparedTextDraw ui_text_draws[VKR_PREPARED_TEXT_DRAW_MAX] = {0};
+  VkrWorldPassPayload world =
+      packet->world ? *packet->world : (VkrWorldPassPayload){0};
+  VkrUiPassPayload ui = packet->ui ? *packet->ui : (VkrUiPassPayload){0};
+  VkrRenderPacket prepared_packet = *packet;
+  if (rf->world_resources.initialized) {
+    world.text_draw_count = vkr_world_resources_prepare_text_draws(
+        rf, &rf->world_resources, world_text_draws, VKR_PREPARED_TEXT_DRAW_MAX);
+    world.text_draws = world.text_draw_count > 0u ? world_text_draws
+                       : packet->world            ? packet->world->text_draws
+                                                  : NULL;
+    if (world.text_draw_count == 0u && packet->world)
+      world.text_draw_count = packet->world->text_draw_count;
+    prepared_packet.world = &world;
+  }
+  if (rf->ui_system.initialized) {
+    ui.text_draw_count = vkr_ui_system_prepare_text_draws(
+        rf, &rf->ui_system, ui_text_draws, VKR_PREPARED_TEXT_DRAW_MAX);
+    ui.text_draws = ui.text_draw_count > 0u ? ui_text_draws
+                    : packet->ui            ? packet->ui->text_draws
+                                            : NULL;
+    if (ui.text_draw_count == 0u && packet->ui)
+      ui.text_draw_count = packet->ui->text_draw_count;
+    prepared_packet.ui = &ui;
+  }
   VkrBindlessVulkanResult result = {0};
   const bool8_t submitted = vkr_bindless_vulkan_renderer_submit_packet(
-      rf->bindless_vulkan_renderer, packet, &result);
+      rf->bindless_vulkan_renderer, &prepared_packet, &result);
   rf->frame_active = false_v;
   if (!submitted) {
     return vkr_renderer_validation_fail(
         out_validation_error, VKR_RENDERER_ERROR_SUBMISSION_FAILED,
         "bindless_vulkan", "bindless Vulkan packet submission failed");
   }
+  if (packet->picking && packet->picking->pending &&
+      rf->picking.state == VKR_PICKING_STATE_RENDER_PENDING)
+    rf->picking.state = VKR_PICKING_STATE_READBACK_PENDING;
   if (!rf->timing_completed_ready) {
     rf->timing_result = (VkrRendererImplSubmitResult){
         .submit_value = result.submit_value,
         .source_frame_index = packet->frame.frame_index,
-        .executed_pass_count = 1u,
+        .executed_pass_count = result.pass_timing_count,
         .indexed_draw_count = result.indexed_draw_count,
-        .opaque_draw_count = result.indexed_draw_count,
+        .shadow_draw_count = result.shadow_draw_count,
+        .opaque_draw_count = result.opaque_draw_count,
+        .transmission_draw_count = result.transmission_draw_count,
+        .blend_draw_count = result.blend_draw_count,
+        .pass_timing_count = result.pass_timing_count,
     };
+    MemCopy(rf->timing_result.pass_timings, result.pass_timings,
+            (uint64_t)result.pass_timing_count *
+                sizeof(*rf->timing_result.pass_timings));
     (void)renderer_impl_bindless_memory_metrics(rf, &rf->timing_result.memory);
   }
-  rf->frame_metrics.world.draws_collected = result.indexed_draw_count;
-  rf->frame_metrics.world.opaque_draws = result.indexed_draw_count;
-  rf->frame_metrics.world.draws_issued = result.indexed_draw_count;
-  rf->frame_metrics.world.draw_calls_issued = result.indexed_draw_count;
+  const uint32_t world_draw_count = result.opaque_draw_count +
+                                    result.transmission_draw_count +
+                                    result.blend_draw_count;
+  rf->frame_metrics.world.draws_collected = world_draw_count;
+  rf->frame_metrics.world.opaque_draws = result.opaque_draw_count;
+  rf->frame_metrics.world.transmission_draws = result.transmission_draw_count;
+  rf->frame_metrics.world.transparent_draws = result.blend_draw_count;
+  rf->frame_metrics.world.draws_issued = world_draw_count;
+  rf->frame_metrics.world.draw_calls_issued = world_draw_count;
+  for (uint32_t cascade = 0u; cascade < VKR_SHADOW_CASCADE_COUNT_MAX;
+       ++cascade) {
+    rf->frame_metrics.shadow.shadow_draw_calls_opaque[cascade] =
+        result.shadow_opaque_draw_count[cascade];
+    rf->frame_metrics.shadow.shadow_draw_calls_alpha[cascade] =
+        result.shadow_alpha_draw_count[cascade];
+  }
   if (out_metrics) {
     *out_metrics = rf->frame_metrics;
   }
@@ -1290,6 +1401,19 @@ static void renderer_impl_bindless_get_device_information(
     bitset8_set(&device_queues, VKR_DEVICE_QUEUE_PRESENT_BIT);
   }
   bitset8_set(&sampler_filters, VKR_SAMPLER_FILTER_LINEAR_BIT);
+  uint32_t hdr_ibl_max_cube_extent = 0u;
+  uint32_t hdr_ibl_max_mip_levels = 0u;
+  const bool8_t supports_hdr_ibl = vkr_bindless_vulkan_renderer_hdr_ibl_limits(
+      renderer->bindless_vulkan_renderer, &hdr_ibl_max_cube_extent,
+      &hdr_ibl_max_mip_levels);
+  VkrPresentMode present_mode = VKR_PRESENT_MODE_DEFAULT;
+  VkrSurfaceColorFormat color_format = VKR_SURFACE_COLOR_FORMAT_UNKNOWN;
+  VkrSurfaceDepthFormat depth_format = VKR_SURFACE_DEPTH_FORMAT_UNKNOWN;
+  VkrSurfaceColorSpace color_space = VKR_SURFACE_COLOR_SPACE_UNKNOWN;
+  float32_t max_anisotropy = 1.0f;
+  vkr_bindless_vulkan_renderer_target_information(
+      renderer->bindless_vulkan_renderer, &present_mode, &color_format,
+      &depth_format, &color_space, &max_anisotropy);
   *device_information = (VkrDeviceInformation){
       .device_name = selected ? string8_create_from_cstr(
                                     (const uint8_t *)selected->device_name,
@@ -1304,16 +1428,36 @@ static void renderer_impl_bindless_get_device_information(
       .device_types = device_types,
       .device_queues = device_queues,
       .sampler_filters = sampler_filters,
-      .max_sampler_anisotropy = 1.0f,
-      .supports_hdr_ibl = false_v,
+      .max_sampler_anisotropy = max_anisotropy,
+      .supports_texture_astc_4x4 =
+          vkr_bindless_vulkan_renderer_texture_format_supported(
+              renderer->bindless_vulkan_renderer,
+              VKR_TEXTURE_FORMAT_ASTC_4x4_UNORM),
+      .supports_texture_bc7 =
+          vkr_bindless_vulkan_renderer_texture_format_supported(
+              renderer->bindless_vulkan_renderer, VKR_TEXTURE_FORMAT_BC7_UNORM),
+      .supports_texture_etc2 =
+          vkr_bindless_vulkan_renderer_texture_format_supported(
+              renderer->bindless_vulkan_renderer,
+              VKR_TEXTURE_FORMAT_ETC2_R8G8B8A8_UNORM),
+      .supports_texture_bc5 =
+          vkr_bindless_vulkan_renderer_texture_format_supported(
+              renderer->bindless_vulkan_renderer, VKR_TEXTURE_FORMAT_BC5_UNORM),
+      .supports_texture_eac_rg11 =
+          vkr_bindless_vulkan_renderer_texture_format_supported(
+              renderer->bindless_vulkan_renderer,
+              VKR_TEXTURE_FORMAT_EAC_R11G11_UNORM),
+      .supports_hdr_ibl = supports_hdr_ibl,
+      .hdr_ibl_max_cube_extent = hdr_ibl_max_cube_extent,
+      .hdr_ibl_max_mip_levels = hdr_ibl_max_mip_levels,
       .actual_target_kind = renderer->present_target.kind,
-      .actual_present_mode = VKR_PRESENT_MODE_DEFAULT,
+      .actual_present_mode = present_mode,
       .actual_target_image_count = renderer->present_target.image_count,
       .actual_target_width = renderer->last_window_width,
       .actual_target_height = renderer->last_window_height,
-      .actual_color_format = VKR_SURFACE_COLOR_FORMAT_UNKNOWN,
-      .actual_depth_format = VKR_SURFACE_DEPTH_FORMAT_UNKNOWN,
-      .actual_color_space = VKR_SURFACE_COLOR_SPACE_UNKNOWN,
+      .actual_color_format = color_format,
+      .actual_depth_format = depth_format,
+      .actual_color_space = color_space,
   };
 }
 
@@ -1420,11 +1564,12 @@ static bool8_t renderer_impl_bindless_upload_wait_stats(
       renderer->bindless_vulkan_renderer, &out_stats->fence_wait_count);
 }
 
-static bool8_t renderer_impl_no_command_slot_waits(void *state,
-                                                   uint64_t *out_wait_count) {
-  (void)state;
-  *out_wait_count = 0;
-  return false_v;
+static bool8_t
+renderer_impl_legacy_command_slot_waits(void *state, uint64_t *out_wait_count) {
+  RendererFrontend *renderer = state;
+  return renderer->backend.get_and_reset_command_slot_wait_count &&
+         renderer->backend.get_and_reset_command_slot_wait_count(
+             renderer->backend_state, out_wait_count);
 }
 
 static bool8_t
@@ -1489,6 +1634,17 @@ renderer_impl_metal_device_memory_stats(void *state,
   (void)out_stats;
   return false_v;
 #endif
+}
+
+static bool8_t
+renderer_impl_bindless_device_memory_stats(void *state,
+                                           VkrDeviceMemoryStats *out_stats) {
+  RendererFrontend *renderer = state;
+  if (!renderer || !renderer->bindless_vulkan_renderer || !out_stats)
+    return false_v;
+  vkr_bindless_vulkan_renderer_device_memory_stats(
+      renderer->bindless_vulkan_renderer, out_stats);
+  return true_v;
 }
 
 static bool8_t
@@ -3265,10 +3421,22 @@ renderer_impl_bindless_prepare_frame(void *state, VkrFrameSetup *out_setup) {
     return VKR_RENDERER_ERROR_FRAME_IN_PROGRESS;
   }
   if (!vkr_bindless_vulkan_renderer_prepare_frame(
-          rf->bindless_vulkan_renderer, rf->frame_number + 1u, out_setup)) {
+          rf->bindless_vulkan_renderer, rf->frame_number + 1u,
+          rf->shadow_system.initialized
+              ? vkr_shadow_config_get_max_map_size(&rf->shadow_system.config)
+              : 2048u,
+          rf->shadow_system.initialized ? rf->shadow_system.config.cascade_count
+                                        : 1u,
+          out_setup)) {
     return VKR_RENDERER_ERROR_FRAME_PREPARATION_FAILED;
   }
   rf->frame_active = true_v;
+  // Async finalizers may publish GPU resources only after the selected
+  // implementation has activated a frame. Keep this at the same lifecycle
+  // point as the legacy and Metal strategies so dependency closures can reach
+  // READY and stamp the submit that carries their uploads.
+  vkr_resource_system_pump(NULL);
+  vkr_mesh_manager_pump_async(&rf->mesh_manager);
   rf->frame_number++;
   rf->last_window_width = out_setup->window_width;
   rf->last_window_height = out_setup->window_height;
@@ -4320,11 +4488,35 @@ static bool8_t renderer_impl_bindless_poll_submit_result(
   *out_result = (VkrRendererImplSubmitResult){
       .submit_value = source.submit_value,
       .source_frame_index = source.source_frame_index,
-      .executed_pass_count = 1u,
+      .executed_pass_count = source.pass_timing_count,
       .indexed_draw_count = source.indexed_draw_count,
-      .opaque_draw_count = source.indexed_draw_count,
+      .shadow_draw_count = source.shadow_draw_count,
+      .opaque_draw_count = source.opaque_draw_count,
+      .transmission_draw_count = source.transmission_draw_count,
+      .blend_draw_count = source.blend_draw_count,
+      .pass_timing_count = source.pass_timing_count,
   };
+  MemCopy(out_result->pass_timings, source.pass_timings,
+          (uint64_t)source.pass_timing_count *
+              sizeof(*out_result->pass_timings));
+  (void)renderer_impl_bindless_memory_metrics(renderer, &out_result->memory);
   return true_v;
+}
+
+static VkrCaptureStatus
+renderer_impl_bindless_capture_poll(void *state, VkrCaptureRequestId request_id,
+                                    VkrCapturePollResult *out_result) {
+  RendererFrontend *renderer = state;
+  return vkr_bindless_vulkan_renderer_capture_poll(
+      renderer->bindless_vulkan_renderer, request_id, out_result);
+}
+
+static bool8_t
+renderer_impl_bindless_capture_release(void *state,
+                                       VkrCaptureRequestId request_id) {
+  RendererFrontend *renderer = state;
+  return vkr_bindless_vulkan_renderer_capture_release(
+      renderer->bindless_vulkan_renderer, request_id);
 }
 
 static VkrAllocator *renderer_impl_bindless_allocator(void *state) {
@@ -4425,7 +4617,7 @@ bool8_t vkr_renderer_rg_timing_get_results(VkrRendererFrontendHandle renderer,
       out_source_frame_index, out_source_submit_serial);
 }
 
-vkr_internal bool8_t renderer_frontend_initialize_metal_systems(
+vkr_internal bool8_t renderer_frontend_initialize_packet_systems(
     RendererFrontend *rf, VkrJobSystem *job_system,
     const VkrRendererMetricsProducerConfig *metrics_producers) {
   log_debug("Initializing packet renderer resource system");
@@ -4574,6 +4766,18 @@ vkr_internal bool8_t renderer_frontend_initialize_metal_systems(
     return false_v;
   }
   if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,
+                                           VKR_RENDERER_SUBSYSTEM_EDITOR) &&
+      !vkr_editor_viewport_init_retained(rf, &rf->editor_viewport)) {
+    return false_v;
+  }
+  if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,
+                                           VKR_RENDERER_SUBSYSTEM_GIZMO)) {
+    VkrGizmoConfig gizmo_config = VKR_GIZMO_CONFIG_DEFAULT;
+    if (!vkr_gizmo_system_init(&rf->gizmo_system, rf, &gizmo_config)) {
+      return false_v;
+    }
+  }
+  if (vkr_renderer_subsystem_plan_includes(&rf->subsystem_plan,
                                            VKR_RENDERER_SUBSYSTEM_PICKING) &&
       !vkr_picking_init(rf, &rf->picking, rf->last_window_width,
                         rf->last_window_height)) {
@@ -4650,9 +4854,9 @@ bool32_t vkr_renderer_systems_initialize(
   vkr_camera_system_update(initial_camera);
 
   if (!rf->impl.caps.uses_legacy_pipeline_state) {
-    if (!renderer_frontend_initialize_metal_systems(rf, job_system,
-                                                    metrics_producers)) {
-      log_fatal("Failed to initialize Metal packet renderer systems");
+    if (!renderer_frontend_initialize_packet_systems(rf, job_system,
+                                                     metrics_producers)) {
+      log_fatal("Failed to initialize packet renderer systems");
       return false_v;
     }
 #if VKR_METRICS_ENABLED
@@ -5008,6 +5212,8 @@ vkr_renderer_request_pixel_readback(VkrRendererFrontendHandle renderer,
   RendererFrontend *rf = (RendererFrontend *)renderer;
   struct s_TextureHandle *tex = (struct s_TextureHandle *)texture;
 
+  if (!rf->backend.request_pixel_readback)
+    return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
   VkrBackendResourceHandle handle = {.ptr = tex};
   return rf->backend.request_pixel_readback(rf->backend_state, handle, x, y);
 }
@@ -5019,6 +5225,11 @@ vkr_renderer_get_pixel_readback_result(VkrRendererFrontendHandle renderer,
   assert_log(out_result != NULL, "Output result is NULL");
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
+  if (rf->impl.kind == VKR_RENDERER_IMPL_BINDLESS_VULKAN)
+    return vkr_bindless_vulkan_renderer_get_pixel_readback_result(
+        rf->bindless_vulkan_renderer, out_result);
+  if (!rf->backend.get_pixel_readback_result)
+    return VKR_RENDERER_ERROR_BACKEND_NOT_SUPPORTED;
   return rf->backend.get_pixel_readback_result(rf->backend_state, out_result);
 }
 
@@ -5026,8 +5237,10 @@ void vkr_renderer_update_readback_ring(VkrRendererFrontendHandle renderer) {
   assert_log(renderer != NULL, "Renderer is NULL");
 
   RendererFrontend *rf = (RendererFrontend *)renderer;
-  assert_log(rf->backend.update_readback_ring != NULL,
-             "Update readback ring function is not supported");
+  if (rf->impl.kind == VKR_RENDERER_IMPL_BINDLESS_VULKAN)
+    return;
+  if (!rf->backend.update_readback_ring)
+    return;
   rf->backend.update_readback_ring(rf->backend_state);
 }
 

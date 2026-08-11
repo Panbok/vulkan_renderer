@@ -43,6 +43,18 @@ bool8_t vkr_editor_viewport_init(struct s_RendererFrontend *rf,
                                  VkrEditorViewportResources *resources);
 
 /**
+ * @brief Initialize editor viewport resources for a packet-native
+ * renderer.
+ *
+ * Publishes the material and quad geometry without creating
+ * legacy render-pass,
+ * shader-system, or pipeline-registry state.
+ */
+bool8_t
+vkr_editor_viewport_init_retained(struct s_RendererFrontend *rf,
+                                  VkrEditorViewportResources *resources);
+
+/**
  * @brief Release editor viewport resources.
  */
 void vkr_editor_viewport_shutdown(struct s_RendererFrontend *rf,

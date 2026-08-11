@@ -741,7 +741,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
       config->heap_size == 0 || config->upload_ring_size == 0 ||
       config->readback_ring_size == 0 || config->frame_slot_count == 0 ||
       config->capture_ring_capacity == 0 ||
-      config->capture_ring_capacity > VKR_METAL_CAPTURE_RING_CAPACITY_MAX ||
+      config->capture_ring_capacity > VKR_CAPTURE_RING_CAPACITY_MAX ||
       config->capture_max_batch_bytes == 0 ||
       config->frame_slot_count > UINT32_MAX / 4u ||
       config->upload_ring_size % ((uint64_t)config->frame_slot_count * 4u) !=
@@ -795,9 +795,8 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
     renderer->convert_vulkan_clip_y = config->convert_vulkan_clip_y;
     renderer->synchronous_validation_readback =
         config->synchronous_validation_readback;
-    const uint64_t capture_storage_size =
-        vkr_metal_capture_ring_storage_requirement(
-            config->capture_ring_capacity, config->capture_max_batch_bytes);
+    const uint64_t capture_storage_size = vkr_capture_ring_storage_requirement(
+        config->capture_ring_capacity, config->capture_max_batch_bytes);
     renderer->capture_storage = calloc(1, capture_storage_size);
     renderer->images = calloc(config->max_images, sizeof(*renderer->images));
     renderer->meshes = calloc(config->max_meshes, sizeof(*renderer->meshes));
@@ -849,7 +848,7 @@ vkr_metal_packet_renderer_create(const VkrMetalPacketRendererConfig *config,
         renderer->samplers && renderer->text_uploads &&
         renderer->render_passes && renderer->capture_storage &&
         renderer->completed_timing_results && command_slots_created &&
-        vkr_metal_capture_ring_init(
+        vkr_capture_ring_init(
             &renderer->capture_ring, config->capture_ring_capacity,
             config->capture_max_batch_bytes, renderer->capture_storage,
             capture_storage_size) &&

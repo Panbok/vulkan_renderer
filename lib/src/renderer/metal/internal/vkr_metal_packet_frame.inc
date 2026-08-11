@@ -679,8 +679,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
         MIN(packet->shadow->cascade_count, VKR_SHADOW_CASCADE_COUNT_MAX);
   }
   const uint64_t completed_submit_value = renderer->completion.signaledValue;
-  vkr_metal_capture_ring_collect(&renderer->capture_ring,
-                                 completed_submit_value);
+  vkr_capture_ring_collect(&renderer->capture_ring, completed_submit_value);
   uint32_t collected = 0;
   if (vkr_metal_memory_device_collect(renderer->memory, completed_submit_value,
                                       &collected) !=
@@ -746,9 +745,9 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
           .buffer_offset = capture_plans[i].buffer_offset - capture_base,
       };
     }
-    const VkrRendererError capture_error = vkr_metal_capture_ring_reserve(
-        &renderer->capture_ring, capture_request, capture_ring_plans,
-        packet->frame.frame_index);
+    const VkrRendererError capture_error =
+        vkr_capture_ring_reserve(&renderer->capture_ring, capture_request,
+                                 capture_ring_plans, packet->frame.frame_index);
     if (capture_error != VKR_RENDERER_ERROR_NONE) {
       out_result->capture = (VkrCapturePollResult){
           .status = VKR_CAPTURE_STATUS_FAILED, .error = capture_error};
@@ -1079,7 +1078,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
   }
   const bool8_t capture_submitted =
       capture_count == 0 ||
-      vkr_metal_capture_ring_submit(
+      vkr_capture_ring_submit(
           &renderer->capture_ring, capture_request->request_id, submit_value,
           (const uint8_t *)readback.cpu_address + capture_base);
   const VkrMetalMemoryStatus readback_submitted =
@@ -1119,8 +1118,8 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
       vkr_metal_packet_finish_frame(renderer, true_v, true_v);
       return false_v;
     }
-    vkr_metal_capture_ring_collect(&renderer->capture_ring,
-                                   renderer->completion.signaledValue);
+    vkr_capture_ring_collect(&renderer->capture_ring,
+                             renderer->completion.signaledValue);
     if (timing_requested)
       vkr_metal_packet_collect_pass_timings(
           renderer, command_slot->timestamp_heap,
@@ -1163,7 +1162,7 @@ vkr_metal_packet_renderer_submit_packet(VkrMetalPacketRenderer *renderer,
     renderer->ibl_ready = true_v;
   }
   if (capture_count > 0) {
-    (void)vkr_metal_capture_ring_poll(
+    (void)vkr_capture_ring_poll(
         &renderer->capture_ring, capture_request->request_id,
         renderer->completion.signaledValue, &out_result->capture);
   }

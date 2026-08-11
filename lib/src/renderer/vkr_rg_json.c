@@ -1491,7 +1491,9 @@ vkr_internal bool8_t vkr_rg_json_resolve_layers(
     }
     if (vkr_string8_equals_cstr_i(&desc->layers_source,
                                   "shadow_cascade_count")) {
-      *out_layers = frame->shadow_cascade_count;
+      // A zero cascade count suppresses repeated shadow passes, but graph
+      // images still require a physically valid allocation.
+      *out_layers = Max(frame->shadow_cascade_count, 1u);
       return true_v;
     }
     log_error("RenderGraph JSON: unknown layers source '%.*s'",

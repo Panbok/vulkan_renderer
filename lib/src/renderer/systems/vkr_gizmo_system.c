@@ -191,19 +191,21 @@ bool8_t vkr_gizmo_system_init(VkrGizmoSystem *system,
   (void)vkr_mesh_manager_set_visible(&renderer->mesh_manager,
                                      system->gizmo_mesh_index, false_v);
 
-  VkrRendererError pipeline_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_pipeline_registry_acquire_by_name(
-          &renderer->pipeline_registry, string8_lit("world_overlay"), false_v,
-          &system->pipeline, &pipeline_err)) {
-    (void)vkr_pipeline_registry_acquire_by_name(
-        &renderer->pipeline_registry, string8_lit("world"), false_v,
-        &system->pipeline, &pipeline_err);
-  }
+  if (renderer->impl.caps.uses_legacy_pipeline_state) {
+    VkrRendererError pipeline_err = VKR_RENDERER_ERROR_NONE;
+    if (!vkr_pipeline_registry_acquire_by_name(
+            &renderer->pipeline_registry, string8_lit("world_overlay"), false_v,
+            &system->pipeline, &pipeline_err)) {
+      (void)vkr_pipeline_registry_acquire_by_name(
+          &renderer->pipeline_registry, string8_lit("world"), false_v,
+          &system->pipeline, &pipeline_err);
+    }
 
-  if (system->pipeline.id == 0) {
-    String8 err = vkr_renderer_get_error_string(pipeline_err);
-    log_error("Gizmo pipeline acquire failed: %s", string8_cstr(&err));
-    goto gizmo_geometry_cleanup;
+    if (system->pipeline.id == 0) {
+      String8 err = vkr_renderer_get_error_string(pipeline_err);
+      log_error("Gizmo pipeline acquire failed: %s", string8_cstr(&err));
+      goto gizmo_geometry_cleanup;
+    }
   }
 
   system->initialized = true_v;

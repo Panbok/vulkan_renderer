@@ -60,20 +60,135 @@ static Mat4 vkr_editor_viewport_build_model(const VkrViewportMapping *mapping,
   return vkr_transform_get_world(&transform);
 }
 
+static void vkr_editor_viewport_reset(VkrEditorViewportResources *resources) {
+  MemZero(resources, sizeof(*resources));
+  resources->mesh_index = VKR_INVALID_ID;
+  resources->geometry = VKR_GEOMETRY_HANDLE_INVALID;
+  resources->pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  resources->material = VKR_MATERIAL_HANDLE_INVALID;
+  resources->plane_size = vec2_new(2.0f, 2.0f);
+}
+
+static void
+vkr_editor_viewport_release_resources(RendererFrontend *rf,
+                                      VkrEditorViewportResources *resources) {
+  if (resources->mesh_index != VKR_INVALID_ID) {
+    vkr_mesh_manager_remove(&rf->mesh_manager, resources->mesh_index);
+    resources->mesh_index = VKR_INVALID_ID;
+    resources->geometry = VKR_GEOMETRY_HANDLE_INVALID;
+    resources->material = VKR_MATERIAL_HANDLE_INVALID;
+  } else {
+    if (resources->geometry.id != 0) {
+      vkr_geometry_system_release(&rf->geometry_system, resources->geometry);
+      resources->geometry = VKR_GEOMETRY_HANDLE_INVALID;
+    }
+    if (resources->material.id != 0) {
+      vkr_material_system_release(&rf->material_system, resources->material);
+      resources->material = VKR_MATERIAL_HANDLE_INVALID;
+    }
+  }
+
+  if (resources->pipeline.id != 0) {
+    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
+                                           resources->pipeline);
+    resources->pipeline = VKR_PIPELINE_HANDLE_INVALID;
+  }
+  if (resources->renderpass && resources->owns_renderpass) {
+    vkr_renderer_renderpass_destroy(rf, resources->renderpass);
+  }
+  resources->renderpass = NULL;
+  resources->owns_renderpass = false_v;
+  resources->initialized = false_v;
+}
+
+static bool8_t vkr_editor_viewport_create_retained_resources(
+    RendererFrontend *rf, VkrEditorViewportResources *resources) {
+  VkrResourceHandleInfo material_info = {0};
+  VkrRendererError material_err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_resource_system_load_sync(
+          VKR_RESOURCE_TYPE_MATERIAL,
+          string8_lit("assets/materials/default.viewport_display.mt"),
+          &rf->allocator, &material_info, &material_err)) {
+    String8 err = vkr_renderer_get_error_string(material_err);
+    log_error("Editor viewport material load failed: %s", string8_cstr(&err));
+    return false_v;
+  }
+  resources->material = material_info.as.material;
+
+  VkrVertex2d verts[4] = {0};
+  verts[0].position = vec2_new(0.0f, 0.0f);
+  verts[0].texcoord = vec2_new(0.0f, 1.0f);
+  verts[1].position =
+      vec2_new(resources->plane_size.x, resources->plane_size.y);
+  verts[1].texcoord = vec2_new(1.0f, 0.0f);
+  verts[2].position = vec2_new(0.0f, resources->plane_size.y);
+  verts[2].texcoord = vec2_new(0.0f, 0.0f);
+  verts[3].position = vec2_new(resources->plane_size.x, 0.0f);
+  verts[3].texcoord = vec2_new(1.0f, 1.0f);
+
+  uint32_t indices[6] = {2, 1, 0, 3, 0, 1};
+  VkrGeometryConfig geo_cfg = {0};
+  geo_cfg.vertex_size = sizeof(VkrVertex2d);
+  geo_cfg.vertex_count = ArrayCount(verts);
+  geo_cfg.vertices = verts;
+  geo_cfg.index_size = sizeof(indices[0]);
+  geo_cfg.index_count = ArrayCount(indices);
+  geo_cfg.indices = indices;
+  geo_cfg.center = vec3_zero();
+  geo_cfg.min_extents =
+      vec3_new(-resources->plane_size.x, -resources->plane_size.y, 0.0f);
+  geo_cfg.max_extents =
+      vec3_new(resources->plane_size.x, resources->plane_size.y, 0.0f);
+  string_format(geo_cfg.name, sizeof(geo_cfg.name), "Editor Viewport Plane");
+
+  VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
+  resources->geometry = vkr_geometry_system_create(&rf->geometry_system,
+                                                   &geo_cfg, true_v, &geo_err);
+  if (resources->geometry.id == 0) {
+    String8 err = vkr_renderer_get_error_string(geo_err);
+    log_error("Editor viewport geometry create failed: %s", string8_cstr(&err));
+    return false_v;
+  }
+
+  VkrSubMeshDesc submesh = {
+      .geometry = resources->geometry,
+      .material = resources->material,
+      .shader_override = string8_lit("shader.default.viewport_display"),
+      .pipeline_domain = VKR_PIPELINE_DOMAIN_UI,
+      .owns_geometry = true_v,
+      .owns_material = true_v,
+  };
+  VkrMeshDesc mesh_desc = {
+      .transform = vkr_transform_identity(),
+      .submeshes = &submesh,
+      .submesh_count = 1,
+  };
+  VkrRendererError mesh_err = VKR_RENDERER_ERROR_NONE;
+  if (!vkr_mesh_manager_add(&rf->mesh_manager, &mesh_desc,
+                            &resources->mesh_index, &mesh_err)) {
+    String8 err = vkr_renderer_get_error_string(mesh_err);
+    log_error("Editor viewport mesh create failed: %s", string8_cstr(&err));
+    return false_v;
+  }
+
+  vkr_mesh_manager_update_model(&rf->mesh_manager, resources->mesh_index);
+  /* The editor pass submits this plane explicitly. Keep it out of the scene
+
+   * mesh enumeration so merely initializing editor resources cannot change
+
+   * world work when editor mode is disabled. */
+  (void)vkr_mesh_manager_set_visible(&rf->mesh_manager, resources->mesh_index,
+                                     false_v);
+  return true_v;
+}
+
 bool8_t vkr_editor_viewport_init(RendererFrontend *rf,
                                  VkrEditorViewportResources *resources) {
   if (!rf || !resources) {
     return false_v;
   }
 
-  MemZero(resources, sizeof(*resources));
-  resources->mesh_index = VKR_INVALID_ID;
-  resources->geometry = VKR_GEOMETRY_HANDLE_INVALID;
-  resources->pipeline = VKR_PIPELINE_HANDLE_INVALID;
-  resources->material = VKR_MATERIAL_HANDLE_INVALID;
-  resources->renderpass = NULL;
-  resources->owns_renderpass = false_v;
-  resources->plane_size = vec2_new(2.0f, 2.0f);
+  vkr_editor_viewport_reset(resources);
 
   bool8_t owns_renderpass = false_v;
   VkrRenderPassHandle renderpass =
@@ -167,118 +282,26 @@ bool8_t vkr_editor_viewport_init(RendererFrontend *rf,
         resources->shader_config.name, &alias_err);
   }
 
-  VkrResourceHandleInfo material_info = {0};
-  VkrRendererError material_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_resource_system_load_sync(
-          VKR_RESOURCE_TYPE_MATERIAL,
-          string8_lit("assets/materials/default.viewport_display.mt"),
-          &rf->allocator, &material_info, &material_err)) {
-    String8 err = vkr_renderer_get_error_string(material_err);
-    log_error("Editor viewport material load failed: %s", string8_cstr(&err));
-    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
-                                           resources->pipeline);
-    resources->pipeline = VKR_PIPELINE_HANDLE_INVALID;
-    if (owns_renderpass) {
-      vkr_renderer_renderpass_destroy(rf, resources->renderpass);
-      resources->renderpass = NULL;
-      resources->owns_renderpass = false_v;
-    }
+  if (!vkr_editor_viewport_create_retained_resources(rf, resources)) {
+    vkr_editor_viewport_release_resources(rf, resources);
     return false_v;
   }
 
-  resources->material = material_info.as.material;
+  resources->initialized = true_v;
+  return true_v;
+}
 
-  VkrVertex2d verts[4] = {0};
-  verts[0].position = vec2_new(0.0f, 0.0f);
-  verts[0].texcoord = vec2_new(0.0f, 1.0f);
-
-  verts[1].position =
-      vec2_new(resources->plane_size.x, resources->plane_size.y);
-  verts[1].texcoord = vec2_new(1.0f, 0.0f);
-
-  verts[2].position = vec2_new(0.0f, resources->plane_size.y);
-  verts[2].texcoord = vec2_new(0.0f, 0.0f);
-
-  verts[3].position = vec2_new(resources->plane_size.x, 0.0f);
-  verts[3].texcoord = vec2_new(1.0f, 1.0f);
-
-  uint32_t indices[6] = {2, 1, 0, 3, 0, 1};
-
-  VkrGeometryConfig geo_cfg = {0};
-  geo_cfg.vertex_size = sizeof(VkrVertex2d);
-  geo_cfg.vertex_count = 4;
-  geo_cfg.vertices = verts;
-  geo_cfg.index_size = sizeof(uint32_t);
-  geo_cfg.index_count = 6;
-  geo_cfg.indices = indices;
-  geo_cfg.center = vec3_zero();
-  geo_cfg.min_extents =
-      vec3_new(-resources->plane_size.x, -resources->plane_size.y, 0.0f);
-  geo_cfg.max_extents =
-      vec3_new(resources->plane_size.x, resources->plane_size.y, 0.0f);
-  string_format(geo_cfg.name, sizeof(geo_cfg.name), "Editor Viewport Plane");
-
-  VkrRendererError geo_err = VKR_RENDERER_ERROR_NONE;
-  VkrGeometryHandle geometry = vkr_geometry_system_create(
-      &rf->geometry_system, &geo_cfg, true_v, &geo_err);
-  if (geometry.id == 0) {
-    String8 err = vkr_renderer_get_error_string(geo_err);
-    log_error("Editor viewport geometry create failed: %s", string8_cstr(&err));
-    vkr_material_system_release(&rf->material_system, resources->material);
-    resources->material = VKR_MATERIAL_HANDLE_INVALID;
-    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
-                                           resources->pipeline);
-    resources->pipeline = VKR_PIPELINE_HANDLE_INVALID;
-    if (owns_renderpass) {
-      vkr_renderer_renderpass_destroy(rf, resources->renderpass);
-      resources->renderpass = NULL;
-      resources->owns_renderpass = false_v;
-    }
+bool8_t
+vkr_editor_viewport_init_retained(RendererFrontend *rf,
+                                  VkrEditorViewportResources *resources) {
+  if (!rf || !resources) {
     return false_v;
   }
-  resources->geometry = geometry;
-
-  VkrSubMeshDesc submesh = {
-      .geometry = geometry,
-      .material = resources->material,
-      .shader_override = string8_lit("shader.default.viewport_display"),
-      .pipeline_domain = VKR_PIPELINE_DOMAIN_UI,
-      .owns_geometry = true_v,
-      .owns_material = true_v,
-  };
-
-  VkrMeshDesc mesh_desc = {
-      .transform = vkr_transform_identity(),
-      .submeshes = &submesh,
-      .submesh_count = 1,
-  };
-
-  VkrRendererError mesh_err = VKR_RENDERER_ERROR_NONE;
-  if (!vkr_mesh_manager_add(&rf->mesh_manager, &mesh_desc,
-                            &resources->mesh_index, &mesh_err)) {
-    String8 err = vkr_renderer_get_error_string(mesh_err);
-    log_error("Editor viewport mesh create failed: %s", string8_cstr(&err));
-    vkr_geometry_system_release(&rf->geometry_system, geometry);
-    vkr_material_system_release(&rf->material_system, resources->material);
-    resources->material = VKR_MATERIAL_HANDLE_INVALID;
-    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
-                                           resources->pipeline);
-    resources->pipeline = VKR_PIPELINE_HANDLE_INVALID;
-    if (owns_renderpass) {
-      vkr_renderer_renderpass_destroy(rf, resources->renderpass);
-      resources->renderpass = NULL;
-      resources->owns_renderpass = false_v;
-    }
+  vkr_editor_viewport_reset(resources);
+  if (!vkr_editor_viewport_create_retained_resources(rf, resources)) {
+    vkr_editor_viewport_release_resources(rf, resources);
     return false_v;
   }
-
-  vkr_mesh_manager_update_model(&rf->mesh_manager, resources->mesh_index);
-  /* The editor pass submits this plane explicitly. Keep it out of the scene
-     mesh enumeration so merely initializing editor resources cannot change
-     world work when editor mode is disabled. */
-  (void)vkr_mesh_manager_set_visible(&rf->mesh_manager, resources->mesh_index,
-                                     false_v);
-
   resources->initialized = true_v;
   return true_v;
 }
@@ -289,26 +312,7 @@ void vkr_editor_viewport_shutdown(RendererFrontend *rf,
     return;
   }
 
-  if (resources->mesh_index != VKR_INVALID_ID) {
-    vkr_mesh_manager_remove(&rf->mesh_manager, resources->mesh_index);
-    resources->mesh_index = VKR_INVALID_ID;
-    resources->geometry = VKR_GEOMETRY_HANDLE_INVALID;
-  }
-
-  if (resources->pipeline.id != 0) {
-    vkr_pipeline_registry_destroy_pipeline(&rf->pipeline_registry,
-                                           resources->pipeline);
-    resources->pipeline = VKR_PIPELINE_HANDLE_INVALID;
-  }
-
-  if (resources->renderpass && resources->owns_renderpass) {
-    vkr_renderer_renderpass_destroy(rf, resources->renderpass);
-    resources->renderpass = NULL;
-    resources->owns_renderpass = false_v;
-  }
-
-  resources->material = VKR_MATERIAL_HANDLE_INVALID;
-  resources->initialized = false_v;
+  vkr_editor_viewport_release_resources(rf, resources);
 }
 
 bool8_t vkr_editor_viewport_compute_mapping(uint32_t window_width,

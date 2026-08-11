@@ -3982,6 +3982,8 @@ VkrRendererBackendInterface renderer_vulkan_get_interface() {
           renderer_vulkan_get_completed_submit_serial,
       .get_and_reset_upload_wait_stats =
           renderer_vulkan_get_and_reset_upload_wait_stats,
+      .get_and_reset_command_slot_wait_count =
+          renderer_vulkan_get_and_reset_command_slot_wait_count,
       .get_last_present_duration = renderer_vulkan_get_last_present_duration,
       .get_device_memory_stats = renderer_vulkan_get_device_memory_stats,
       .rg_timing_begin_frame = renderer_vulkan_rg_timing_begin_frame,
@@ -4038,6 +4040,18 @@ bool8_t renderer_vulkan_get_and_reset_upload_wait_stats(
   state->upload_path_fence_wait_count = 0;
   state->upload_path_queue_wait_idle_count = 0;
   state->upload_path_device_wait_idle_count = 0;
+  return true_v;
+}
+
+bool8_t renderer_vulkan_get_and_reset_command_slot_wait_count(
+    void *backend_state, uint64_t *out_wait_count) {
+  if (!backend_state || !out_wait_count) {
+    return false_v;
+  }
+
+  VulkanBackendState *state = (VulkanBackendState *)backend_state;
+  *out_wait_count = state->frame_command_slot_wait_count;
+  state->frame_command_slot_wait_count = 0u;
   return true_v;
 }
 
@@ -5080,10 +5094,24 @@ VkrRendererError renderer_vulkan_begin_frame(void *backend_state,
     return begin_result;
   }
 
-  // Wait for the current frame slot's fence (its previous submission finished).
-  if (!vulkan_fence_wait(state, UINT64_MAX,
-                         array_get_VulkanFence(&state->in_flight_fences,
-                                               state->current_frame))) {
+  // Poll before the bounded frame-slot wait so the metric records only cases
+  // where reuse actually had to wait for GPU completion. A fence already
+  // signalled by the GPU is reusable without a CPU stall.
+  VulkanFence *frame_fence =
+      array_get_VulkanFence(&state->in_flight_fences, state->current_frame);
+  if (!frame_fence->is_signaled) {
+    const VkResult status =
+        vkGetFenceStatus(state->device.logical_device, frame_fence->handle);
+    if (status == VK_SUCCESS) {
+      frame_fence->is_signaled = true_v;
+    } else if (status == VK_NOT_READY) {
+      state->frame_command_slot_wait_count++;
+    } else {
+      log_error("Failed to query Vulkan frame fence status: %d", status);
+      return VKR_RENDERER_ERROR_DEVICE_ERROR;
+    }
+  }
+  if (!vulkan_fence_wait(state, UINT64_MAX, frame_fence)) {
     // An unbounded wait that does not succeed means device loss or a hang, not
     // a transient timeout.
     log_error("Vulkan frame fence wait failed");

@@ -59,8 +59,8 @@ vkr_metal_packet_complete_command_slot(VkrMetalPacketRenderer *renderer,
       return false_v;
   }
   vkr_metal_packet_cache_slot_timing(renderer, slot);
-  vkr_metal_capture_ring_collect(&renderer->capture_ring,
-                                 renderer->completion.signaledValue);
+  vkr_capture_ring_collect(&renderer->capture_ring,
+                           renderer->completion.signaledValue);
   [slot->allocator reset];
   slot->submit_value = 0;
   slot->timestamp_entry_count = 0;

@@ -548,8 +548,8 @@ vkr_metal_packet_capture_fail_reserved(VkrMetalPacketRenderer *renderer,
                                        const VkrCaptureBatchRequest *request,
                                        VkrRendererError error) {
   if (request) {
-    (void)vkr_metal_capture_ring_fail(&renderer->capture_ring,
-                                      request->request_id, error);
+    (void)vkr_capture_ring_fail(&renderer->capture_ring, request->request_id,
+                                error);
   }
 }
 

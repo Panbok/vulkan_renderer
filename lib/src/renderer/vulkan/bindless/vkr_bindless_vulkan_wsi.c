@@ -39,12 +39,25 @@ vkr_bindless_vulkan_present_result_classify(VkResult result) {
   }
 }
 
-VkrBindlessVulkanReacquireResult
+void
 vkr_bindless_vulkan_reacquire_record(VkrBindlessVulkanReacquireState *state,
-                                     bool8_t image_was_presented) {
-  if (!state || !image_was_presented)
+                                     bool8_t image_was_presented,
+                                     uint64_t wait_submit_value) {
+  if (!state || !image_was_presented || !wait_submit_value ||
+      state->successor_present_complete || state->pending_wait_submit_value)
+    return;
+  state->pending_wait_submit_value = wait_submit_value;
+}
+
+VkrBindlessVulkanReacquireResult
+vkr_bindless_vulkan_reacquire_complete(
+    VkrBindlessVulkanReacquireState *state, uint64_t completed_submit_value) {
+  if (!state || state->successor_present_complete ||
+      !state->pending_wait_submit_value ||
+      completed_submit_value < state->pending_wait_submit_value)
     return (VkrBindlessVulkanReacquireResult){0};
   state->successor_present_complete = true_v;
+  state->pending_wait_submit_value = 0u;
   return (VkrBindlessVulkanReacquireResult){
       .image_present_complete = true_v,
       .collect_retired_swapchains = true_v,

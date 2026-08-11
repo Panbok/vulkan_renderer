@@ -108,6 +108,55 @@ target_compile_definitions(renderer_lib PRIVATE
     VKR_BINDLESS_VK_FRAGMENT_SPV="${VKR_BINDLESS_VK_FRAGMENT_SPV}"
 )
 
+set(VKR_BINDLESS_VK_PACKET_SHADER_SOURCE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/vulkan/bindless/shaders/packet.slang")
+set(VKR_BINDLESS_VK_PACKET_TONEMAP_HEADER
+    "${VKR_VULKAN_SHADER_SOURCE_DIR}/common/tonemap.slangh")
+function(vkr_add_bindless_vulkan_packet_shader output_name entry stage)
+    set(output "${VKR_BINDLESS_VK_SHADER_OUTPUT_DIR}/${output_name}.spv")
+    add_custom_command(
+        OUTPUT "${output}"
+        COMMAND "${CMAKE_COMMAND}" -E make_directory
+                "${VKR_BINDLESS_VK_SHADER_OUTPUT_DIR}"
+        COMMAND "${VKR_SLANGC_EXECUTABLE}"
+                -target spirv
+                -profile "spirv_1_6+SPV_GOOGLE_user_type+spvDerivativeControl+spvImageQuery+spvImageGatherExtended+spvSparseResidency+spvMinLod+spvFragmentFullyCoveredEXT"
+                -fvk-use-entrypoint-name
+                -fvk-use-scalar-layout
+                -I "${VKR_VULKAN_SHADER_SOURCE_DIR}"
+                -entry "${entry}"
+                -stage "${stage}"
+                "${VKR_BINDLESS_VK_PACKET_SHADER_SOURCE}"
+                -o "${output}"
+        DEPENDS "${VKR_BINDLESS_VK_PACKET_SHADER_SOURCE}"
+                "${VKR_BINDLESS_VK_PACKET_TONEMAP_HEADER}"
+        COMMENT "Compiling bindless Vulkan packet ${entry} shader"
+        VERBATIM)
+    set(VKR_BINDLESS_VK_PACKET_SHADER_OUTPUTS
+        ${VKR_BINDLESS_VK_PACKET_SHADER_OUTPUTS} "${output}" PARENT_SCOPE)
+    string(TOUPPER "${output_name}" macro_name)
+    string(REPLACE "." "_" macro_name "${macro_name}")
+    target_compile_definitions(renderer_lib PRIVATE
+        "VKR_BINDLESS_VK_${macro_name}_SPV=\"${output}\"")
+endfunction()
+vkr_add_bindless_vulkan_packet_shader("packet.world.vert" world_vertex vertex)
+vkr_add_bindless_vulkan_packet_shader("packet.world.frag" world_fragment fragment)
+vkr_add_bindless_vulkan_packet_shader("packet.shadow.vert" shadow_vertex vertex)
+vkr_add_bindless_vulkan_packet_shader("packet.shadow.frag" shadow_fragment fragment)
+vkr_add_bindless_vulkan_packet_shader("packet.picking.frag" picking_fragment fragment)
+vkr_add_bindless_vulkan_packet_shader("packet.fullscreen.vert" fullscreen_vertex vertex)
+vkr_add_bindless_vulkan_packet_shader("packet.fullscreen.frag" fullscreen_fragment fragment)
+vkr_add_bindless_vulkan_packet_shader("packet.skybox.frag" skybox_fragment fragment)
+vkr_add_bindless_vulkan_packet_shader("packet.text.vert" text_vertex vertex)
+vkr_add_bindless_vulkan_packet_shader("packet.text.frag" text_fragment fragment)
+vkr_add_bindless_vulkan_packet_shader("packet.text_picking.frag" text_picking_fragment fragment)
+vkr_add_bindless_vulkan_packet_shader("packet.ibl_equirect.comp" ibl_equirect compute)
+vkr_add_bindless_vulkan_packet_shader("packet.ibl_irradiance.comp" ibl_irradiance compute)
+vkr_add_bindless_vulkan_packet_shader("packet.ibl_prefilter.comp" ibl_prefilter compute)
+add_custom_target(vkr_bindless_vulkan_packet_shaders DEPENDS
+    ${VKR_BINDLESS_VK_PACKET_SHADER_OUTPUTS})
+add_dependencies(renderer_lib vkr_bindless_vulkan_packet_shaders)
+
 target_compile_definitions(renderer_lib PUBLIC SPIRV_REFLECT_USE_SYSTEM_SPIRV_H)
 
 # Platform-specific optimization flags

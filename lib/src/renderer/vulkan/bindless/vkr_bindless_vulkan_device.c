@@ -10,6 +10,7 @@ enum { VKR_BINDLESS_VK_MAX_EXTENSIONS = 256 };
 
 typedef struct VkrBindlessVkFeatureSet {
   bool8_t shader_int64;
+  bool8_t shader_draw_parameters;
   bool8_t buffer_device_address;
   bool8_t timeline_semaphore;
   bool8_t descriptor_indexing;
@@ -21,12 +22,14 @@ typedef struct VkrBindlessVkFeatureSet {
   bool8_t dynamic_rendering;
   bool8_t synchronization2;
   bool8_t maintenance4;
+  bool8_t shader_demote_to_helper_invocation;
   bool8_t maintenance5;
   bool8_t host_image_copy;
   bool8_t descriptor_buffer;
   bool8_t descriptor_buffer_capture_replay;
   bool8_t descriptor_buffer_image_layout_ignored;
   bool8_t descriptor_buffer_push_descriptors;
+  bool8_t swapchain_maintenance1;
 } VkrBindlessVkFeatureSet;
 
 typedef struct VkrBindlessVkCandidate {
@@ -54,6 +57,8 @@ struct VkrBindlessVulkanDevice {
   VkDevice device;
   VkQueue queue;
   VkrBindlessVkCandidate candidates[VKR_BINDLESS_VK_MAX_CANDIDATES];
+  VkExtensionProperties instance_extensions[VKR_BINDLESS_VK_MAX_EXTENSIONS];
+  VkExtensionProperties device_extensions[VKR_BINDLESS_VK_MAX_EXTENSIONS];
   uint32_t candidate_count;
   uint32_t selected_candidate_index;
   VkrBindlessVkCandidate *selected;
@@ -205,7 +210,7 @@ vkr_bindless_vk_create_instance(VkrBindlessVulkanDevice *device) {
       available_count > VKR_BINDLESS_VK_MAX_EXTENSIONS) {
     return false_v;
   }
-  VkExtensionProperties available[VKR_BINDLESS_VK_MAX_EXTENSIONS];
+  VkExtensionProperties *available = device->instance_extensions;
   if (vkEnumerateInstanceExtensionProperties(NULL, &available_count,
                                              available) != VK_SUCCESS) {
     return false_v;
@@ -374,6 +379,11 @@ static void vkr_bindless_vk_query_candidate(
   VkPhysicalDeviceDescriptorBufferFeaturesEXT descriptor = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT,
   };
+  VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchain_maintenance = {
+      .sType =
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR,
+  };
+  descriptor.pNext = &swapchain_maintenance;
   VkPhysicalDeviceVulkan14Features features14 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
       .pNext = &descriptor,
@@ -386,13 +396,18 @@ static void vkr_bindless_vk_query_candidate(
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
       .pNext = &features13,
   };
+  VkPhysicalDeviceVulkan11Features features11 = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+      .pNext = &features12,
+  };
   VkPhysicalDeviceFeatures2 features2 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-      .pNext = &features12,
+      .pNext = &features11,
   };
   vkGetPhysicalDeviceFeatures2(candidate->physical, &features2);
   candidate->features = (VkrBindlessVkFeatureSet){
       .shader_int64 = features2.features.shaderInt64,
+      .shader_draw_parameters = features11.shaderDrawParameters,
       .buffer_device_address = features12.bufferDeviceAddress,
       .timeline_semaphore = features12.timelineSemaphore,
       .descriptor_indexing = features12.descriptorIndexing,
@@ -406,6 +421,8 @@ static void vkr_bindless_vk_query_candidate(
       .dynamic_rendering = features13.dynamicRendering,
       .synchronization2 = features13.synchronization2,
       .maintenance4 = features13.maintenance4,
+      .shader_demote_to_helper_invocation =
+          features13.shaderDemoteToHelperInvocation,
       .maintenance5 = features14.maintenance5,
       .host_image_copy = features14.hostImageCopy,
       .descriptor_buffer = descriptor.descriptorBuffer,
@@ -415,10 +432,12 @@ static void vkr_bindless_vk_query_candidate(
           descriptor.descriptorBufferImageLayoutIgnored,
       .descriptor_buffer_push_descriptors =
           descriptor.descriptorBufferPushDescriptors,
+      .swapchain_maintenance1 =
+          swapchain_maintenance.swapchainMaintenance1,
   };
 
   uint32_t extension_count = 0;
-  VkExtensionProperties extensions[VKR_BINDLESS_VK_MAX_EXTENSIONS];
+  VkExtensionProperties *extensions = device->device_extensions;
   if (vkEnumerateDeviceExtensionProperties(
           candidate->physical, NULL, &extension_count, NULL) == VK_SUCCESS &&
       extension_count <= VKR_BINDLESS_VK_MAX_EXTENSIONS &&
@@ -453,6 +472,8 @@ static void vkr_bindless_vk_query_candidate(
       candidate->has_descriptor_buffer_extension ? "available" : "missing");
   vkr_bindless_vk_add_feature(report, "shaderInt64",
                               candidate->features.shader_int64);
+  vkr_bindless_vk_add_feature(report, "shaderDrawParameters",
+                              candidate->features.shader_draw_parameters);
   vkr_bindless_vk_add_feature(report, "bufferDeviceAddress",
                               candidate->features.buffer_device_address);
   vkr_bindless_vk_add_feature(report, "timelineSemaphore",
@@ -477,6 +498,9 @@ static void vkr_bindless_vk_query_candidate(
                               candidate->features.synchronization2);
   vkr_bindless_vk_add_feature(report, "maintenance4",
                               candidate->features.maintenance4);
+  vkr_bindless_vk_add_feature(
+      report, "shaderDemoteToHelperInvocation",
+      candidate->features.shader_demote_to_helper_invocation);
   vkr_bindless_vk_add_feature(report, "maintenance5",
                               candidate->features.maintenance5);
   vkr_bindless_vk_add_feature(report, "descriptorBuffer",
@@ -637,9 +661,11 @@ static void vkr_bindless_vk_query_candidate(
   vkr_bindless_vk_report_add(report, VKR_BINDLESS_VK_REPORT_DEVICE_EXTENSION,
                              VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME,
                              false_v,
-                             candidate->has_swapchain_maintenance_extension,
-                             candidate->has_swapchain_maintenance_extension
-                                 ? "optional present-fence path available"
+                             candidate->has_swapchain_maintenance_extension &&
+                                 candidate->features.swapchain_maintenance1,
+                             candidate->has_swapchain_maintenance_extension &&
+                                     candidate->features.swapchain_maintenance1
+                                 ? "optional present-fence path enabled"
                                  : "reacquisition completion path");
 
   candidate->common_viable = vkr_bindless_vk_report_passes(report);
@@ -670,7 +696,7 @@ static void vkr_bindless_vk_query_candidate(
 static bool8_t
 vkr_bindless_vk_enumerate_candidates(VkrBindlessVulkanDevice *device) {
   uint32_t instance_extension_count = 0;
-  VkExtensionProperties instance_extensions[VKR_BINDLESS_VK_MAX_EXTENSIONS];
+  VkExtensionProperties *instance_extensions = device->instance_extensions;
   if (vkEnumerateInstanceExtensionProperties(NULL, &instance_extension_count,
                                              NULL) != VK_SUCCESS ||
       instance_extension_count > VKR_BINDLESS_VK_MAX_EXTENSIONS ||
@@ -754,7 +780,8 @@ vkr_bindless_vk_create_layouts(VkrBindlessVulkanDevice *device,
           .binding = 0u,
           .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
           .descriptorCount = device->config.sampled_image_capacity,
-          .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+          .stageFlags =
+              VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
       },
       {
           .binding = 1u,
@@ -768,7 +795,7 @@ vkr_bindless_vk_create_layouts(VkrBindlessVulkanDevice *device,
       .binding = 0u,
       .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER,
       .descriptorCount = device->config.sampler_capacity,
-      .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+      .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT,
   };
   VkDescriptorSetLayoutCreateInfo resource_info = {
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
@@ -882,6 +909,18 @@ static bool8_t vkr_bindless_vk_try_candidate(VkrBindlessVulkanDevice *device,
                                                                : VK_FALSE,
 #endif
   };
+  const bool8_t enable_swapchain_maintenance =
+      device->config.windowed &&
+      candidate->has_swapchain_maintenance_extension &&
+      candidate->features.swapchain_maintenance1;
+  VkPhysicalDeviceSwapchainMaintenance1FeaturesKHR swapchain_maintenance = {
+      .sType =
+          VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_KHR,
+      .swapchainMaintenance1 =
+          enable_swapchain_maintenance ? VK_TRUE : VK_FALSE,
+  };
+  descriptor.pNext =
+      enable_swapchain_maintenance ? &swapchain_maintenance : NULL;
   VkPhysicalDeviceVulkan14Features features14 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
       .pNext = &descriptor,
@@ -893,6 +932,7 @@ static bool8_t vkr_bindless_vk_try_candidate(VkrBindlessVulkanDevice *device,
       .synchronization2 = VK_TRUE,
       .dynamicRendering = VK_TRUE,
       .maintenance4 = VK_TRUE,
+      .shaderDemoteToHelperInvocation = VK_TRUE,
   };
   VkPhysicalDeviceVulkan12Features features12 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
@@ -906,21 +946,29 @@ static bool8_t vkr_bindless_vk_try_candidate(VkrBindlessVulkanDevice *device,
       .timelineSemaphore = VK_TRUE,
       .bufferDeviceAddress = VK_TRUE,
   };
+  VkPhysicalDeviceVulkan11Features features11 = {
+      .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES,
+      .pNext = &features12,
+      .shaderDrawParameters = VK_TRUE,
+  };
   VkPhysicalDeviceFeatures2 features2 = {
       .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2,
-      .pNext = &features12,
+      .pNext = &features11,
       .features = {.shaderInt64 = VK_TRUE},
   };
-  const char *extensions[] = {
-      VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME,
-      VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-  };
+  const char *extensions[3] = {VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME};
+  uint32_t extension_count = 1u;
+  if (device->config.windowed)
+    extensions[extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+  if (enable_swapchain_maintenance)
+    extensions[extension_count++] =
+        VK_KHR_SWAPCHAIN_MAINTENANCE_1_EXTENSION_NAME;
   VkDeviceCreateInfo create_info = {
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
       .pNext = &features2,
       .queueCreateInfoCount = 1u,
       .pQueueCreateInfos = &queue_info,
-      .enabledExtensionCount = device->config.windowed ? 2u : 1u,
+      .enabledExtensionCount = extension_count,
       .ppEnabledExtensionNames = extensions,
   };
   const VkResult result =
@@ -1000,9 +1048,13 @@ vkr_bindless_vulkan_device_create(const VkrBindlessVulkanDeviceConfig *config,
   device->profile.selected_candidate_index = UINT32_MAX;
   device->selected_candidate_index = UINT32_MAX;
   *out_device = device;
-  if (!vkr_bindless_vk_create_instance(device) ||
-      !vkr_bindless_vk_enumerate_candidates(device) ||
-      !vkr_bindless_vk_select_device(device)) {
+  if (!vkr_bindless_vk_create_instance(device)) {
+    return false_v;
+  }
+  if (!vkr_bindless_vk_enumerate_candidates(device)) {
+    return false_v;
+  }
+  if (!vkr_bindless_vk_select_device(device)) {
     return false_v;
   }
   return true_v;
@@ -1066,6 +1118,13 @@ vkr_bindless_vulkan_device_queue(const VkrBindlessVulkanDevice *device) {
 VkSurfaceKHR
 vkr_bindless_vulkan_device_surface(const VkrBindlessVulkanDevice *device) {
   return device ? device->surface : VK_NULL_HANDLE;
+}
+
+bool8_t vkr_bindless_vulkan_device_present_fences_enabled(
+    const VkrBindlessVulkanDevice *device) {
+  return device && device->selected && device->config.windowed &&
+         device->selected->has_swapchain_maintenance_extension &&
+         device->selected->features.swapchain_maintenance1;
 }
 
 uint32_t

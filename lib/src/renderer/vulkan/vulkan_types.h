@@ -906,6 +906,7 @@ typedef struct VulkanBackendState {
   uint64_t upload_path_fence_wait_count;
   uint64_t upload_path_queue_wait_idle_count;
   uint64_t upload_path_device_wait_idle_count;
+  uint64_t frame_command_slot_wait_count;
   uint64_t last_present_duration_ns;
   bool8_t last_present_duration_valid;
   VkrMetricEventProducer pipeline_create_metrics;

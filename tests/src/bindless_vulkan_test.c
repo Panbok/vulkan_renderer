@@ -69,14 +69,22 @@ static void test_present_result_classifier(void) {
 static void test_reacquisition_completion_contract(void) {
   printf("  Running test_reacquisition_completion_contract...\n");
   VkrBindlessVulkanReacquireState state = {0};
+  vkr_bindless_vulkan_reacquire_record(&state, false_v, 7u);
   VkrBindlessVulkanReacquireResult result =
-      vkr_bindless_vulkan_reacquire_record(&state, false_v);
+      vkr_bindless_vulkan_reacquire_complete(&state, 7u);
   assert(!result.image_present_complete && !result.collect_retired_swapchains &&
+         !state.pending_wait_submit_value &&
          !state.successor_present_complete);
-  result = vkr_bindless_vulkan_reacquire_record(&state, true_v);
+  vkr_bindless_vulkan_reacquire_record(&state, true_v, 7u);
+  assert(state.pending_wait_submit_value == 7u);
+  result = vkr_bindless_vulkan_reacquire_complete(&state, 6u);
+  assert(!result.image_present_complete && !result.collect_retired_swapchains &&
+         state.pending_wait_submit_value == 7u &&
+         !state.successor_present_complete);
+  result = vkr_bindless_vulkan_reacquire_complete(&state, 7u);
   assert(result.image_present_complete && result.collect_retired_swapchains &&
-         state.successor_present_complete);
-  assert(!vkr_bindless_vulkan_reacquire_record(NULL, true_v)
+         !state.pending_wait_submit_value && state.successor_present_complete);
+  assert(!vkr_bindless_vulkan_reacquire_complete(NULL, 7u)
               .image_present_complete);
   printf("  test_reacquisition_completion_contract PASSED\n");
 }

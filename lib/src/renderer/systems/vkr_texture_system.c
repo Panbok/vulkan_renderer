@@ -4553,10 +4553,24 @@ bool8_t vkr_texture_system_load_cube_map(VkrTextureSystem *system,
   texture->description.generation = system->generation_counter++;
   VkrRendererError renderer_error = VKR_RENDERER_ERROR_NONE;
   if (system->asset_publisher) {
+    VkrTextureUploadRegion upload_regions[6];
+    for (uint32_t face = 0; face < ArrayCount(upload_regions); ++face) {
+      upload_regions[face] = (VkrTextureUploadRegion){
+          .mip_level = 0,
+          .array_layer = face,
+          .width = (uint32_t)width,
+          .height = (uint32_t)height,
+          .depth = 1,
+          .byte_offset = (uint64_t)face * face_size,
+          .byte_size = face_size,
+      };
+    }
     const VkrTexturePreparedLoad prepared = {
         .description = texture->description,
         .upload_data = cube_data,
         .upload_data_size = total_size,
+        .upload_regions = upload_regions,
+        .upload_region_count = ArrayCount(upload_regions),
         .upload_mip_levels = 1,
         .upload_array_layers = 6,
         .upload_is_compressed = false_v,

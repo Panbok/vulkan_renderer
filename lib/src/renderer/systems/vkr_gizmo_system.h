@@ -215,7 +215,12 @@ typedef struct VkrGizmoSystem {
 } VkrGizmoSystem;
 
 /**
- * @brief Initialize gizmo resources (mesh/pipeline lookup).
+ * @brief Initialize gizmo resources.
+ *
+ * Packet-native renderers publish the
+ * mesh and materials; the retained legacy
+ * renderer additionally resolves its
+ * pipeline-registry handle.
  * @param system Gizmo system to initialize.
  * @param renderer Renderer frontend.
  * @param config Optional config override (NULL uses defaults).

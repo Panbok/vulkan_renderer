@@ -5,6 +5,7 @@
 #include "renderer/systems/vkr_pipeline_registry.h"
 #include "renderer/vkr_render_graph.h"
 #include "renderer/vkr_renderer.h"
+#include "renderer/vulkan/bindless/vkr_bindless_vulkan_renderer.h"
 
 vkr_internal bool8_t vkr_renderer_metric_register_full(
     VkrMetrics *metrics, const char *name, VkrMetricDomain domain,
@@ -1064,6 +1065,11 @@ void vkr_renderer_metrics_collect(
         instance_pool->buffers[instance_pool->current_frame].write_offset);
     VKR_SET_U64(instance_capacity, instance_pool->max_instances);
     VKR_SET_U64(instance_overflows, instance_pool->frame_overflow_count);
+  } else if (!renderer->impl.caps.uses_legacy_pipeline_state) {
+    // Packet implementations validate and upload their instance payloads as an
+    // atomic part of submission. Reaching collection means no instance upload
+    // overflow occurred; occupancy and capacity remain implementation-specific.
+    VKR_SET_U64(instance_overflows, 0u);
   }
   VKR_SET_U64(world_draws_collected, world->draws_collected);
   VKR_SET_U64(world_opaque_draws, world->opaque_draws);
@@ -1125,8 +1131,13 @@ void vkr_renderer_metrics_collect(
   }
 
   VkrRenderGraphResourceStats rg = {0};
-  if (renderer->render_graph &&
-      vkr_rg_get_resource_stats(renderer->render_graph, &rg)) {
+  const bool8_t rg_stats_valid =
+      renderer->impl.kind == VKR_RENDERER_IMPL_BINDLESS_VULKAN
+          ? vkr_bindless_vulkan_renderer_graph_resource_stats(
+                renderer->bindless_vulkan_renderer, &rg)
+          : renderer->render_graph &&
+                vkr_rg_get_resource_stats(renderer->render_graph, &rg);
+  if (rg_stats_valid) {
     VKR_SET_U64(rg_live_images, rg.live_image_textures);
     VKR_SET_U64(rg_peak_images, rg.peak_image_textures);
     VKR_SET_U64(rg_live_image_bytes, rg.live_image_bytes);

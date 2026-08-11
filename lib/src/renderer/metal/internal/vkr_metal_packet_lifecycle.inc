@@ -9,9 +9,9 @@ vkr_metal_packet_renderer_capture_poll(VkrMetalPacketRenderer *renderer,
     return VKR_CAPTURE_STATUS_NOT_FOUND;
   }
   if (@available(macOS 26.0, *)) {
-    return vkr_metal_capture_ring_poll(&renderer->capture_ring, request_id,
-                                       renderer->completion.signaledValue,
-                                       out_result);
+    return vkr_capture_ring_poll(&renderer->capture_ring, request_id,
+                                 renderer->completion.signaledValue,
+                                 out_result);
   }
   MemZero(out_result, sizeof(*out_result));
   return VKR_CAPTURE_STATUS_NOT_FOUND;
@@ -75,8 +75,8 @@ bool8_t vkr_metal_packet_renderer_wait_idle(VkrMetalPacketRenderer *renderer) {
               renderer, &renderer->command_slots[i], false_v))
         return false_v;
     }
-    vkr_metal_capture_ring_collect(&renderer->capture_ring,
-                                   renderer->completion.signaledValue);
+    vkr_capture_ring_collect(&renderer->capture_ring,
+                             renderer->completion.signaledValue);
     return vkr_metal_memory_device_collect(
                renderer->memory, renderer->completion.signaledValue, NULL) ==
                VKR_METAL_MEMORY_STATUS_OK &&
@@ -131,9 +131,9 @@ bool8_t vkr_metal_packet_renderer_get_and_reset_command_slot_wait_count(
 bool8_t
 vkr_metal_packet_renderer_capture_release(VkrMetalPacketRenderer *renderer,
                                           VkrCaptureRequestId request_id) {
-  return renderer && request_id != 0 ? vkr_metal_capture_ring_release(
-                                           &renderer->capture_ring, request_id)
-                                     : false_v;
+  return renderer && request_id != 0
+             ? vkr_capture_ring_release(&renderer->capture_ring, request_id)
+             : false_v;
 }
 
 bool8_t vkr_metal_packet_renderer_drain(
@@ -146,8 +146,8 @@ bool8_t vkr_metal_packet_renderer_drain(
     return false_v;
   if (!vkr_metal_packet_renderer_wait_idle(renderer))
     return false_v;
-  vkr_metal_capture_ring_collect(&renderer->capture_ring,
-                                 renderer->completion.signaledValue);
+  vkr_capture_ring_collect(&renderer->capture_ring,
+                           renderer->completion.signaledValue);
 
   if (renderer->ibl_live) {
     if (vkr_metal_memory_device_retire(renderer->memory,
@@ -291,6 +291,10 @@ vkr_metal_packet_unpublish_material_adapter(void *state,
   return vkr_metal_packet_renderer_destroy_material(state, handle);
 }
 
+static bool8_t vkr_metal_packet_publications_idle_adapter(void *state) {
+  return state != NULL;
+}
+
 void vkr_metal_packet_renderer_get_asset_publisher(
     VkrMetalPacketRenderer *renderer, VkrAssetPublisher *out_publisher) {
   if (!out_publisher)
@@ -298,6 +302,8 @@ void vkr_metal_packet_renderer_get_asset_publisher(
   *out_publisher = renderer
                        ? (VkrAssetPublisher){
                              .state = renderer,
+                             .publications_idle =
+                                 vkr_metal_packet_publications_idle_adapter,
                              .publish_geometry =
                                  vkr_metal_packet_publish_geometry_adapter,
                              .publish_loaded_mesh =
