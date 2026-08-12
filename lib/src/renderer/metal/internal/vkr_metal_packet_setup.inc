@@ -59,16 +59,23 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_type(
     VkrMetalPacketAbiRecordId record_id) API_AVAILABLE(macos(26.0)) {
   const VkrMetalPacketAbiRecord *record =
       vkr_metal_packet_abi_record(record_id);
-  if (!record || !shader_type || shader_size != record->expected_size ||
-      shader_alignment != record->expected_alignment) {
-    log_error(
-        "Metal ABI mismatch for %s/%s: shader size/alignment %llu/%llu, "
-        "host authority %u/%u",
-        pipeline_label.UTF8String, record ? record->shader_name : "unknown",
-        (unsigned long long)shader_size, (unsigned long long)shader_alignment,
-        record ? record->expected_size : 0,
-        record ? record->expected_alignment : 0);
+  if (!record || !shader_type) {
+    log_error("Metal ABI type missing for %s/%s", pipeline_label.UTF8String,
+              record ? record->shader_name : "unknown");
     return false_v;
+  }
+  const bool8_t alignment_compatible =
+      vkr_metal_packet_abi_alignment_compatible(record_id,
+                                                (uint32_t)shader_alignment);
+  bool8_t valid = true_v;
+  if (shader_size != record->expected_size || !alignment_compatible) {
+    log_error(
+        "Metal ABI mismatch for %s/%s: shader size/min alignment %llu/%llu, "
+        "host authority %u/%u",
+        pipeline_label.UTF8String, record->shader_name,
+        (unsigned long long)shader_size, (unsigned long long)shader_alignment,
+        record->expected_size, record->expected_alignment);
+    valid = false_v;
   }
   for (uint32_t i = 0; i < record->field_count; ++i) {
     const VkrMetalPacketAbiField *field = &record->fields[i];
@@ -86,10 +93,10 @@ vkr_internal bool8_t vkr_metal_packet_validate_abi_type(
                 field->shader_name,
                 member ? (long long)member.offset : (long long)-1,
                 field->expected_offset);
-      return false_v;
+      valid = false_v;
     }
   }
-  return true_v;
+  return valid;
 }
 
 vkr_internal bool8_t vkr_metal_packet_validate_nested_abi(

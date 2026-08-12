@@ -240,6 +240,17 @@ vkr_metal_packet_abi_record(VkrMetalPacketAbiRecordId id) {
              : NULL;
 }
 
+bool8_t
+vkr_metal_packet_abi_alignment_compatible(VkrMetalPacketAbiRecordId id,
+                                          uint32_t shader_min_alignment) {
+  const VkrMetalPacketAbiRecord *record = vkr_metal_packet_abi_record(id);
+  return record && shader_min_alignment > 0u &&
+                 record->expected_alignment >= shader_min_alignment &&
+                 record->expected_alignment % shader_min_alignment == 0u
+             ? true_v
+             : false_v;
+}
+
 bool8_t vkr_metal_packet_abi_validate_host(void) {
   for (uint32_t record_index = 0;
        record_index < VKR_METAL_PACKET_ABI_RECORD_COUNT; ++record_index) {

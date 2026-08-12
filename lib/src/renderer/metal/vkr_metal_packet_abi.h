@@ -155,5 +155,11 @@ typedef VkrGpuAbiRecord VkrMetalPacketAbiRecord;
 const VkrMetalPacketAbiRecord *
 vkr_metal_packet_abi_record(VkrMetalPacketAbiRecordId id);
 
+/** Returns whether the host authority satisfies Metal's reflected minimum
+ * alignment for this record. */
+bool8_t
+vkr_metal_packet_abi_alignment_compatible(VkrMetalPacketAbiRecordId id,
+                                          uint32_t shader_min_alignment);
+
 /** CPU gate for the durable expected-size/alignment/offset manifest. */
 bool8_t vkr_metal_packet_abi_validate_host(void);

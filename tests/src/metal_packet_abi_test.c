@@ -48,10 +48,30 @@ static void test_metal_packet_slang_draw_matrix_conversion(void) {
   printf("  test_metal_packet_slang_draw_matrix_conversion PASSED\n");
 }
 
+static void test_metal_packet_shader_minimum_alignment(void) {
+  printf("  Running test_metal_packet_shader_minimum_alignment...\n");
+  assert(vkr_metal_packet_abi_alignment_compatible(
+      VKR_METAL_PACKET_ABI_DRAW_ROOT, 16u));
+  assert(vkr_metal_packet_abi_alignment_compatible(
+      VKR_METAL_PACKET_ABI_DRAW_ROOT, 8u));
+  assert(vkr_metal_packet_abi_alignment_compatible(VKR_METAL_PACKET_ABI_VERTEX,
+                                                   4u));
+  assert(!vkr_metal_packet_abi_alignment_compatible(
+      VKR_METAL_PACKET_ABI_DRAW_ROOT, 32u));
+  assert(!vkr_metal_packet_abi_alignment_compatible(
+      VKR_METAL_PACKET_ABI_DRAW_ROOT, 3u));
+  assert(!vkr_metal_packet_abi_alignment_compatible(
+      VKR_METAL_PACKET_ABI_DRAW_ROOT, 0u));
+  assert(!vkr_metal_packet_abi_alignment_compatible(
+      VKR_METAL_PACKET_ABI_RECORD_COUNT, 16u));
+  printf("  test_metal_packet_shader_minimum_alignment PASSED\n");
+}
+
 bool32_t run_metal_packet_abi_tests(void) {
   printf("--- Running Metal packet ABI tests... ---\n");
   test_metal_packet_host_abi_manifest();
   test_metal_packet_slang_draw_matrix_conversion();
+  test_metal_packet_shader_minimum_alignment();
   printf("--- Metal packet ABI tests completed. ---\n");
   return true_v;
 }
